@@ -39,6 +39,6 @@ export async function retrieve(query: string, opts: RetrieveOptions = {}): Promi
     LIMIT ${topK}
   `;
 
-  const rows = (await sql.query(query_sql, params as never[])) as ChunkHit[];
+  const rows = (await (sql as unknown as (q: string, p: unknown[]) => Promise<ChunkHit[]>)(query_sql, params)) as ChunkHit[];
   return rows;
 }
