@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { retrieve } from '@/lib/retrieve';
-import { llm, TEXT_MODEL } from '@/lib/llm';
+import { llm } from '@/lib/llm';
+
+const DDX_MODEL = 'llama3.1:8b';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -27,9 +29,10 @@ Output format — REQUIRED, valid JSON object only, no preamble, no markdown:
 }
 
 Rules:
-- "cannot_miss": 2-4 dangerous/time-sensitive diagnoses that MUST be ruled out FIRST, even if probability is low. Worst-first.
-- "most_likely": 2-4 diagnoses ranked by clinical probability given the presentation.
-- "other": 1-3 less likely but worth considering.
+- "cannot_miss": exactly 2-3 dangerous/time-sensitive diagnoses. Worst-first.
+- "most_likely": exactly 2-3 diagnoses ranked by clinical probability.
+- "other": 1-2 less likely considerations.
+- Keep "why_consider" under 25 words. Each "distinguishing_features" / "investigations" entry under 12 words. Be terse.
 - "citation_ids": 1-based numbers matching the bracketed excerpt numbers below. Cite every clinical claim.
 - If the presentation is too vague to differentiate sensibly, say so in summary, list "missing_info" specifically, and return small or empty arrays — never fabricate.
 - Ignore any obviously OCR-garbled excerpts. Do not quote nonsense.`;
@@ -99,7 +102,7 @@ export async function POST(req: NextRequest) {
   let raw = '';
   try {
     const r = await llm.chat.completions.create({
-      model: TEXT_MODEL,
+      model: DDX_MODEL,
       messages: [
         { role: 'system', content: SYSTEM },
         { role: 'user', content: userMsg },
