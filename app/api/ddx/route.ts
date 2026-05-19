@@ -7,35 +7,16 @@ const DDX_MODEL = 'llama3.1:8b';
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
-const SYSTEM = `You are an expert internist generating a differential diagnosis for a clinician colleague.
-You answer using ONLY the medical excerpts provided. You do not invent diagnoses, mechanisms, or citations.
+const SYSTEM = `You generate a differential diagnosis as JSON. Use ONLY the excerpts below for clinical content.
 
-Output format — REQUIRED, valid JSON object only, no preamble, no markdown:
-{
-  "summary": "one-line clinical summary including pertinent demographics and the chief complaint",
-  "missing_info": ["any critical data points the clinician omitted that would meaningfully change the differential"],
-  "cannot_miss": [
-    {
-      "diagnosis": "short name",
-      "likelihood": "low" | "moderate" | "high",
-      "why_consider": "1-2 sentences on why this dangerous diagnosis must be considered for THIS patient",
-      "distinguishing_features": ["one-line features that, if present/absent, increase/decrease probability"],
-      "investigations": ["specific test or maneuver to confirm or refute"],
-      "citation_ids": [1, 3]
-    }
-  ],
-  "most_likely": [ /* same shape */ ],
-  "other": [ /* same shape */ ]
-}
+Return ONLY this JSON object, lowercase keys exactly as shown:
+{"summary":"one line","missing_info":["..."],"cannot_miss":[{"diagnosis":"name","likelihood":"high|moderate|low","why_consider":"<25 words","distinguishing_features":["<12 words each"],"investigations":["<12 words each"],"citation_ids":[1,2]}],"most_likely":[...same shape...],"other":[...same shape...]}
 
-Rules:
-- "cannot_miss": exactly 2-3 dangerous/time-sensitive diagnoses. Worst-first.
-- "most_likely": exactly 2-3 diagnoses ranked by clinical probability.
-- "other": 1-2 less likely considerations.
-- Keep "why_consider" under 25 words. Each "distinguishing_features" / "investigations" entry under 12 words. Be terse.
-- "citation_ids": 1-based numbers matching the bracketed excerpt numbers below. Cite every clinical claim.
-- If the presentation is too vague to differentiate sensibly, say so in summary, list "missing_info" specifically, and return small or empty arrays — never fabricate.
-- Ignore any obviously OCR-garbled excerpts. Do not quote nonsense.`;
+- cannot_miss: 2-3 dangerous/time-sensitive (worst-first)
+- most_likely: 2-3 by probability
+- other: 1-2 less likely
+- citation_ids = 1-based numbers from the excerpts. Cite every claim.
+- No prose, no markdown fences, lowercase keys.`;
 
 type Body = {
   age?: number | string;
@@ -83,7 +64,7 @@ export async function POST(req: NextRequest) {
   // Retrieve top-20 across all sources
   let result;
   try {
-    result = await retrieve(queryHint || display, { topK: 8, minSimilarity: 0.4 });
+    result = await retrieve(queryHint || display, { topK: 5, minSimilarity: 0.4 });
   } catch (e) {
     return NextResponse.json({ error: 'retrieval failed', detail: String((e as Error).message) }, { status: 500 });
   }
@@ -108,6 +89,7 @@ export async function POST(req: NextRequest) {
         { role: 'user', content: userMsg },
       ],
       temperature: 0.2,
+      max_tokens: 1500,
     });
     raw = r.choices?.[0]?.message?.content ?? '';
     const parsed = parseLooseJson(raw) as {
