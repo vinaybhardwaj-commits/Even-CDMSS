@@ -3,18 +3,18 @@ import { retrieve } from '@/lib/retrieve';
 
 export const runtime = 'nodejs';
 
-// Debug-only endpoint for inspecting retrieval quality.
-// Returns the top-K chunks with similarity, NO LLM call.
 export async function GET(req: NextRequest) {
   const q = req.nextUrl.searchParams.get('q') || '';
   const topK = parseInt(req.nextUrl.searchParams.get('k') || '10', 10);
   const minSim = parseFloat(req.nextUrl.searchParams.get('min') || '0');
   const book = req.nextUrl.searchParams.get('book') || undefined;
+  const skipExpand = req.nextUrl.searchParams.get('raw') === '1';
   if (!q) return NextResponse.json({ error: 'q is required' }, { status: 400 });
   try {
-    const hits = await retrieve(q, { topK, minSimilarity: minSim, bookFilter: book });
+    const { hits, expandedQuery } = await retrieve(q, { topK, minSimilarity: minSim, bookFilter: book, skipExpand });
     return NextResponse.json({
       query: q,
+      expanded: expandedQuery,
       n: hits.length,
       hits: hits.map((h) => ({
         id: h.id,

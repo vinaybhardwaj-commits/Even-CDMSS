@@ -31,13 +31,14 @@ export async function POST(req: NextRequest) {
   }
 
   // 1. Retrieve
-  let hits;
+  let result;
   try {
-    hits = await retrieve(question, { bookFilter: body.bookFilter });
+    result = await retrieve(question, { bookFilter: body.bookFilter });
   } catch (e) {
     return new Response(JSON.stringify({ error: 'retrieval failed', detail: String((e as Error).message) }), { status: 500 });
   }
 
+  const hits = result.hits;
   if (hits.length === 0) {
     return new Response(JSON.stringify({ error: 'no relevant excerpts found above similarity threshold' }), { status: 404 });
   }

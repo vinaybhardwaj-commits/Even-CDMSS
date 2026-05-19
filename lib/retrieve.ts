@@ -1,22 +1,30 @@
 import { sql } from './db';
 import { embedQuery, vectorLiteral, TOP_K } from './llm';
+import { expandQuery } from './expand';
 import type { ChunkHit } from './db';
 
 export type RetrieveOptions = {
   topK?: number;
-  bookFilter?: string;       // exact match on book column
+  bookFilter?: string;
   chunkType?: 'narrative' | 'explanation';
-  minSimilarity?: number;    // 0..1, default 0.3 per V's handoff §5.3
+  minSimilarity?: number;
+  skipExpand?: boolean; // for debug
 };
 
-export async function retrieve(query: string, opts: RetrieveOptions = {}): Promise<ChunkHit[]> {
+export type RetrieveResult = {
+  hits: ChunkHit[];
+  expandedQuery: string;
+};
+
+export async function retrieve(query: string, opts: RetrieveOptions = {}): Promise<RetrieveResult> {
   const topK = opts.topK ?? TOP_K;
   const minSim = opts.minSimilarity ?? 0.3;
 
-  const vec = await embedQuery(query);
+  const expanded = opts.skipExpand ? query : await expandQuery(query);
+
+  const vec = await embedQuery(expanded);
   const vlit = vectorLiteral(vec);
 
-  // Build dynamic filters
   const wheres: string[] = [`1 - (embedding <=> $1::vector) > $2`];
   const params: unknown[] = [vlit, minSim];
   let pIdx = 3;
@@ -40,5 +48,5 @@ export async function retrieve(query: string, opts: RetrieveOptions = {}): Promi
   `;
 
   const rows = (await (sql as unknown as (q: string, p: unknown[]) => Promise<ChunkHit[]>)(query_sql, params)) as ChunkHit[];
-  return rows;
+  return { hits: rows, expandedQuery: expanded };
 }
