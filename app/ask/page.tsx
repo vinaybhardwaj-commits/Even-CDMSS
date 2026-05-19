@@ -1,10 +1,16 @@
-export default function Page() {
+import AskClient from './ask-client';
+
+export const metadata = { title: 'Ask · Even-Tutor' };
+
+export default function AskPage() {
   return (
     <div>
-      <h1 className="text-2xl font-semibold text-slate-900">Ask a Question</h1>
-      <p className="mt-2 text-slate-600">Free-form medical question → RAG → streamed answer with citations from MKSAP.</p>
-      <div className="mt-6 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-        Coming in sprint T1. The scaffold is live; the feature is next on the build queue.
+      <h1 className="text-2xl font-semibold text-slate-900">Ask</h1>
+      <p className="mt-1 text-sm text-slate-500">
+        Free-form medical question. Answered from MKSAP only. Citations expandable.
+      </p>
+      <div className="mt-6">
+        <AskClient />
       </div>
     </div>
   );
