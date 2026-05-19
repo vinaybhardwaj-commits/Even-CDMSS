@@ -1,0 +1,15 @@
+{
+  "name": "Even-Tutor",
+  "short_name": "Even-Tutor",
+  "description": "MKSAP-grounded medical study companion for V + RMOs",
+  "start_url": "/ask",
+  "display": "standalone",
+  "background_color": "#0F172A",
+  "theme_color": "#1F4E79",
+  "scope": "/",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "/icon-192.png", "type": "image/png", "sizes": "192x192", "purpose": "any maskable" },
+    { "src": "/icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "any maskable" }
+  ]
+}

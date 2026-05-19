@@ -1,20 +1,33 @@
 import './globals.css';
-import Nav from './nav';
+import Shell from './shell';
 
 export const metadata = {
   title: 'Even-Tutor',
-  description: 'MKSAP-grounded medical study companion',
+  description: 'Medical study companion for RMOs',
+  applicationName: 'Even-Tutor',
+  manifest: '/manifest.webmanifest',
+  appleWebApp: { capable: true, statusBarStyle: 'black-translucent', title: 'Even-Tutor' },
+};
+
+export const viewport = {
+  themeColor: '#1F4E79',
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
+      <head>
+        <link rel="manifest" href="/manifest.webmanifest" />
+        <link rel="apple-touch-icon" href="/icon-192.png" />
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-title" content="Even-Tutor" />
+      </head>
       <body className="min-h-screen bg-slate-50 text-slate-900">
-        <Nav />
-        <main className="mx-auto max-w-6xl px-6 py-8">{children}</main>
-        <footer className="mx-auto mt-12 max-w-6xl px-6 pb-8 text-center text-xs text-slate-400">
-          MKSAP 19 · 12 books · 275 chapters · 8,790 chunks · Even-Tutor v0.1
-        </footer>
+        <Shell>{children}</Shell>
+        <script src="/register-sw.js" defer />
       </body>
     </html>
   );
