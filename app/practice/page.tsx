@@ -1,11 +1,14 @@
-export default function Page() {
+import PracticeClient from './practice-client';
+export const metadata = { title: 'Practice · Even-Tutor' };
+
+export default function PracticePage() {
   return (
     <div>
-      <h1 className="text-2xl font-semibold text-slate-900">Practice Mode</h1>
-      <p className="mt-2 text-slate-600">MKSAP self-assessment items presented as quiz cards.</p>
-      <div className="mt-6 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-        Coming in sprint T4. The scaffold is live; the feature is next on the build queue.
-      </div>
+      <h1 className="text-2xl font-semibold text-slate-900">Practice</h1>
+      <p className="mt-1 text-sm text-slate-500">
+        Each card is a fresh multiple-choice question generated from a real MKSAP self-assessment item. Pick an answer, then reveal.
+      </p>
+      <div className="mt-6"><PracticeClient /></div>
     </div>
   );
 }
