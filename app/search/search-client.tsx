@@ -48,6 +48,7 @@ const BOOK_SHORT: Record<string, string> = {
 export default function SearchClient() {
   const [query, setQuery] = useState('');
   const [book, setBook] = useState<string>('');
+  const [source, setSource] = useState<string>('');
   const [chunkType, setChunkType] = useState<'' | 'narrative' | 'explanation'>('');
   const [skipExpand, setSkipExpand] = useState(false);
   const [hits, setHits] = useState<Hit[] | null>(null);
@@ -72,6 +73,7 @@ export default function SearchClient() {
           query: q,
           book: book || undefined,
           chunkType: chunkType || undefined,
+          source: source || undefined,
           skipExpand,
           topK: 20,
         }),
@@ -100,6 +102,15 @@ export default function SearchClient() {
           className="w-full rounded-lg border border-slate-300 bg-white p-3 text-base shadow-sm focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
         />
         <div className="flex flex-wrap items-center gap-3">
+          <select
+            value={source}
+            onChange={(e) => setSource(e.target.value)}
+            className="rounded border border-slate-300 bg-white px-2 py-1 text-sm"
+          >
+            <option value="">All sources</option>
+            <option value="mksap-19">MKSAP 19</option>
+            <option value="statpearls">StatPearls</option>
+          </select>
           <select
             value={book}
             onChange={(e) => setBook(e.target.value)}
@@ -152,6 +163,9 @@ export default function SearchClient() {
                 <li key={h.id} className="rounded-lg border border-slate-200 bg-white shadow-sm">
                   <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 px-4 py-3">
                     <span className="rounded bg-brand-faint px-1.5 py-0.5 text-[11px] font-semibold text-brand">#{i + 1}</span>
+                    {(h as unknown as { source?: string }).source === 'statpearls' && (
+                      <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800">StatPearls</span>
+                    )}
                     <span className="font-medium text-slate-800">{BOOK_SHORT[h.book] || h.book}</span>
                     {h.chapter && <span className="text-sm text-slate-500">· {h.chapter}</span>}
                     {h.page_start && <span className="text-xs text-slate-400">· p.{h.page_start}{h.page_end && h.page_end !== h.page_start ? `–${h.page_end}` : ''}</span>}

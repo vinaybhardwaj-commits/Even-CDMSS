@@ -6,6 +6,7 @@ export const sql = neon(process.env.DATABASE_URL!);
 
 export type Chunk = {
   id: number;
+  source: string;
   book: string;
   chapter: string | null;
   section: string | null;

@@ -4,7 +4,7 @@ import { retrieve } from '@/lib/retrieve';
 export const runtime = 'nodejs';
 
 export async function POST(req: NextRequest) {
-  let body: { query?: string; book?: string; chunkType?: 'narrative' | 'explanation'; topK?: number; skipExpand?: boolean };
+  let body: { query?: string; book?: string; chunkType?: 'narrative' | 'explanation'; source?: string; topK?: number; skipExpand?: boolean };
   try {
     body = await req.json();
   } catch {
@@ -17,6 +17,7 @@ export async function POST(req: NextRequest) {
       topK: body.topK ?? 20,
       bookFilter: body.book,
       chunkType: body.chunkType,
+      source: body.source,
       minSimilarity: 0.4,
       skipExpand: body.skipExpand,
     });
@@ -26,6 +27,7 @@ export async function POST(req: NextRequest) {
       n: hits.length,
       hits: hits.map((h) => ({
         id: h.id,
+        source: (h as unknown as { source?: string }).source,
         book: h.book,
         chapter: h.chapter,
         page_start: h.page_start,

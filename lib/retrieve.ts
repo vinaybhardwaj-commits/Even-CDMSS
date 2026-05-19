@@ -7,6 +7,7 @@ export type RetrieveOptions = {
   topK?: number;
   bookFilter?: string;
   chunkType?: 'narrative' | 'explanation';
+  source?: string; // 'mksap-19' | 'statpearls' | ...
   minSimilarity?: number;
   skipExpand?: boolean; // for debug
 };
@@ -35,6 +36,10 @@ export async function retrieve(query: string, opts: RetrieveOptions = {}): Promi
   if (opts.chunkType) {
     wheres.push(`chunk_type = $${pIdx++}`);
     params.push(opts.chunkType);
+  }
+  if (opts.source) {
+    wheres.push(`source = $${pIdx++}`);
+    params.push(opts.source);
   }
   wheres.push(`text IS NOT NULL`);
 
