@@ -44,7 +44,7 @@ export async function retrieve(query: string, opts: RetrieveOptions = {}): Promi
   wheres.push(`text IS NOT NULL`);
 
   const query_sql = `
-    SELECT id, book, chapter, section, page_start, page_end, item_number, chunk_type, text, token_count,
+    SELECT id, source, book, chapter, section, page_start, page_end, item_number, chunk_type, text, token_count,
            1 - (embedding <=> $1::vector) AS similarity
     FROM mksap_chunks
     WHERE ${wheres.join(' AND ')}
