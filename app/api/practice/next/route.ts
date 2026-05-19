@@ -37,18 +37,20 @@ export async function POST(req: NextRequest) {
   let body: { book?: string } = {};
   try { body = await req.json(); } catch {}
 
-  // Pick a random explanation chunk, optionally filtered by book.
-  // Use TABLESAMPLE for speed on large tables; fallback to ORDER BY random().
+  // Pick a random explanation chunk; skip front/back matter.
+  const skipChap = '%(bibliograph|welcome|index|abbreviation|appendix|for the convenience|table of contents)%';
   const rows = body.book
     ? (await sql`SELECT id, book, chapter, page_start, item_number, text
                  FROM mksap_chunks WHERE chunk_type='explanation'
                    AND item_number IS NOT NULL AND book = ${body.book}
                    AND length(text) BETWEEN 600 AND 2400
+                   AND (chapter IS NULL OR lower(chapter) !~ ${skipChap.replace('%(', '(').replace(')%', ')')})
                  ORDER BY random() LIMIT 1`) as Array<{ id: number; book: string; chapter: string; page_start: number; item_number: string; text: string }>
     : (await sql`SELECT id, book, chapter, page_start, item_number, text
                  FROM mksap_chunks WHERE chunk_type='explanation'
                    AND item_number IS NOT NULL
                    AND length(text) BETWEEN 600 AND 2400
+                   AND (chapter IS NULL OR lower(chapter) !~ ${skipChap.replace('%(', '(').replace(')%', ')')})
                  ORDER BY random() LIMIT 1`) as Array<{ id: number; book: string; chapter: string; page_start: number; item_number: string; text: string }>;
 
   if (rows.length === 0) return NextResponse.json({ error: 'no source chunk found' }, { status: 404 });
