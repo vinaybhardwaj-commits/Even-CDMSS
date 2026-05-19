@@ -80,7 +80,7 @@ export async function POST(req: NextRequest) {
   // Retrieve top-20 across all sources
   let result;
   try {
-    result = await retrieve(queryHint || display, { topK: 20, minSimilarity: 0.3 });
+    result = await retrieve(queryHint || display, { topK: 12, minSimilarity: 0.35 });
   } catch (e) {
     return NextResponse.json({ error: 'retrieval failed', detail: String((e as Error).message) }, { status: 500 });
   }
