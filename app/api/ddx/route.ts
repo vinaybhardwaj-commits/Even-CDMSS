@@ -80,7 +80,7 @@ export async function POST(req: NextRequest) {
   // Retrieve top-20 across all sources
   let result;
   try {
-    result = await retrieve(queryHint || display, { topK: 12, minSimilarity: 0.35 });
+    result = await retrieve(queryHint || display, { topK: 8, minSimilarity: 0.4 });
   } catch (e) {
     return NextResponse.json({ error: 'retrieval failed', detail: String((e as Error).message) }, { status: 500 });
   }
@@ -94,7 +94,7 @@ export async function POST(req: NextRequest) {
     return `--- Excerpt ${i + 1} ---\n${cite}\n${h.text}\n`;
   }).join('\n');
 
-  const userMsg = `CLINICAL PRESENTATION:\n${display}\n\nMEDICAL EXCERPTS:\n${contextBlock}\n\nGenerate the JSON differential diagnosis now.`;
+  const userMsg = `CLINICAL PRESENTATION:\n${display}\n\nMEDICAL EXCERPTS:\n${contextBlock}\n\nOutput ONLY the JSON object now, starting with {. No prose, no markdown fences, no commentary.`;
 
   let raw = '';
   try {
@@ -105,7 +105,6 @@ export async function POST(req: NextRequest) {
         { role: 'user', content: userMsg },
       ],
       temperature: 0.2,
-      response_format: { type: 'json_object' },
     });
     raw = r.choices?.[0]?.message?.content ?? '';
     const parsed = parseLooseJson(raw) as {
