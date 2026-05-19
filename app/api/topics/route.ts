@@ -5,9 +5,11 @@ import { llm, TEXT_MODEL } from '@/lib/llm';
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
-const SYSTEM = `You are Even-Tutor. Generate a tight, MKSAP-style study guide on the requested topic, using ONLY the supplied excerpts.
+const SYSTEM = `You are Even-Tutor. Generate a tight, MKSAP-style study guide.
 
-Required structure (use these exact markdown headers, in this order):
+OUTPUT FORMAT — REQUIRED, NO DEVIATION:
+Begin with these six section headers, in this order, each on its own line, no other heading levels, no preamble, no bold titles, no top-level "Study Guide" title:
+
 ## Overview
 ## Pathophysiology
 ## Clinical Features
@@ -15,13 +17,13 @@ Required structure (use these exact markdown headers, in this order):
 ## Management
 ## Pearls & Pitfalls
 
-Rules:
-- Each section is 3-8 bullets. Be dense, concrete, clinically actionable.
-- Cite each claim with bracketed numbers [1], [2] that map to the excerpts.
-- If a section cannot be supported by the excerpts, write a single line: "Not covered in the available excerpts."
-- Skip a section entirely only if it would be empty. Prefer "Not covered" over fabrication.
-- Match MKSAP voice: evidence-based, terse, no fluff, no marketing language.
-- Ignore obviously OCR-garbled excerpts (some books were scanned). Do not quote nonsense.`;
+CONTENT RULES:
+- Each section: 3-7 bullets (use "- " markers), each ONE-sentence dense, clinically actionable.
+- Cite each clinical claim with bracketed numbers like [1] or [3,5] that map to the supplied excerpts.
+- If a section has no support in the excerpts, write exactly: "- Not covered in the available excerpts."
+- Stay on the requested topic. If the top excerpts are tangential (e.g., SVT when asked for atrial fibrillation), still anchor on the requested topic — say "Not covered" rather than pivoting.
+- MKSAP voice: evidence-based, terse, no fluff, no marketing words like "comprehensive" or "robust".
+- Skip excerpts that are obviously OCR-garbled — do not quote them.`;
 
 export async function POST(req: NextRequest) {
   let body: { topic?: string; bookFilter?: string };
