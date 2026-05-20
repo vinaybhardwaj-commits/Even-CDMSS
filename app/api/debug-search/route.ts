@@ -11,10 +11,12 @@ export async function GET(req: NextRequest) {
   const skipExpand = req.nextUrl.searchParams.get('raw') === '1';
   if (!q) return NextResponse.json({ error: 'q is required' }, { status: 400 });
   try {
-    const { hits, expandedQuery } = await retrieve(q, { topK, minSimilarity: minSim, bookFilter: book, skipExpand });
+    const hybridFlag = req.nextUrl.searchParams.get('hybrid');
+    const { hits, expandedQuery, meta } = await retrieve(q, { topK, minSimilarity: minSim, bookFilter: book, skipExpand, hybrid: hybridFlag !== '0' });
     return NextResponse.json({
       query: q,
       expanded: expandedQuery,
+      meta,
       n: hits.length,
       hits: hits.map((h) => ({
         id: h.id,
