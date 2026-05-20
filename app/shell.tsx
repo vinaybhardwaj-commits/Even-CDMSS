@@ -24,15 +24,18 @@ export default function Shell({ children }: { children: React.ReactNode }) {
     <div className="flex min-h-screen flex-col sm:flex-row">
       {/* Sidebar (≥640px) */}
       <aside className="hidden border-r bg-white sm:flex sm:w-56 sm:shrink-0 sm:flex-col">
-        <div className="flex items-center gap-2 border-b px-5 py-4">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand text-white">
-            <span className="text-sm font-bold">ET</span>
+        <div className="flex items-center gap-2.5 border-b px-5 py-4">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-brand text-white shadow-sm">
+            <span className="text-[11px] font-bold tracking-tight">EC</span>
           </div>
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-semibold tracking-tight text-brand">Even CDMSS</div>
-            <div className="text-[10px] uppercase tracking-wide text-slate-400">v0.7</div>
+            <div className="truncate text-[15px] font-semibold leading-tight tracking-tight text-brand">Even CDMSS</div>
+            <div className="mt-0.5 flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-slate-400">
+              <span>v0.9</span>
+              <span className="text-slate-300">·</span>
+              <HealthPill />
+            </div>
           </div>
-          <HealthPill />
         </div>
         <nav className="flex-1 space-y-1 p-3">
           {TABS.map((t) => {
