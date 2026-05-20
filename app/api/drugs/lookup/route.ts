@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { retrieve } from '@/lib/retrieve';
 import { llm } from '@/lib/llm';
+import { startTrace, logEvent, finishTrace, tracedChat } from '@/lib/trace';
 import { parseLooseJson, normalizeDrugName } from '@/lib/drugs';
 import { makeNdjsonStream, ndjsonHeaders } from '@/lib/stream';
 
@@ -105,18 +106,36 @@ export async function POST(req: NextRequest) {
 
   const { stream, emit, close } = makeNdjsonStream();
   const t0 = Date.now();
+  const traceId = await startTrace('drugs_lookup', { drug: raw });
 
   (async () => {
+    let outcome: 'success' | 'error' | 'partial' = 'success';
+    let outcomeMsg: string | undefined;
     try {
       emit({ type: 'progress', stage: 'expanding', msg: `Normalizing "${raw}" to generic name…` });
+      await logEvent(traceId, 'progress', 'expanding', { msg: 'Normalizing drug name', input: raw });
+      const normalizeStart = Date.now();
       const normalized = await normalizeDrugName(raw);
+      await logEvent(traceId, 'normalize', 'expanding', { input: raw, output: normalized }, Date.now() - normalizeStart);
       emit({ type: 'progress', stage: 'expanding', msg: `Resolved to "${normalized}"`, ms: Date.now() - t0 });
 
       const query = `${normalized} pharmacology — mechanism receptors pharmacokinetics indications dosing contraindications adverse effects monitoring special populations`;
+      const retrieveStart = Date.now();
       const result = await retrieve(query, { topK: 10, minSimilarity: 0.3 });
       const hits = result.hits;
+      await logEvent(traceId, 'retrieve', 'retrieving', {
+        query, expanded_query: result.expandedQuery,
+        n_hits: hits.length,
+        meta: result.meta,
+        top_hits: hits.slice(0, 5).map(h => ({ id: h.id, book: h.book, chapter: h.chapter, similarity: h.similarity }))
+      }, Date.now() - retrieveStart);
       emit({ type: 'progress', stage: 'retrieving', msg: `Retrieved ${hits.length} pharmacology excerpts`, ms: Date.now() - t0 });
-      if (hits.length === 0) { emit({ type: 'error', message: `no excerpts for "${raw}"` }); close(); return; }
+      if (hits.length === 0) {
+        emit({ type: 'error', message: `no excerpts for "${raw}"` });
+        outcome = 'error'; outcomeMsg = 'no excerpts above threshold';
+        close();
+        return;
+      }
 
       const citations = hits.map((h, i) => ({
         n: i + 1, id: h.id, book: h.book, chapter: h.chapter,
@@ -140,7 +159,7 @@ export async function POST(req: NextRequest) {
 
         let raw_out = '';
         try {
-          const r = await llm.chat.completions.create({
+          const r = await tracedChat(traceId, `phase_${phase.name}`, {
             model: phase.model,
             messages: [
               { role: 'system', content: phase.system },
@@ -151,7 +170,17 @@ export async function POST(req: NextRequest) {
         ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
       });
           raw_out = r.choices?.[0]?.message?.content ?? '';
-          const parsed = parseLooseJson(raw_out) as Record<string, unknown>;
+          let parsed: Record<string, unknown>;
+          try {
+            parsed = parseLooseJson(raw_out) as Record<string, unknown>;
+            await logEvent(traceId, 'parse_ok', phase.name, { keys: Object.keys(parsed), char_count: raw_out.length });
+          } catch (parseErr) {
+            await logEvent(traceId, 'parse_error', phase.name, {
+              error: String((parseErr as Error).message),
+              raw_response: raw_out
+            });
+            throw parseErr;
+          }
 
           // Coerce all string-array fields (LLMs sometimes return [{name,description}] objects)
           const stringArrayFields = [
@@ -190,7 +219,13 @@ export async function POST(req: NextRequest) {
           }
           emit({ type: 'progress', stage: 'generating', msg: `Phase ${PHASES.indexOf(phase) + 1}/${PHASES.length} ${phase.name} complete`, ms: Date.now() - t0 });
         } catch (e) {
-          // Don't kill the whole pipeline if a later phase fails — emit error event and continue
+          await logEvent(traceId, 'phase_error', phase.name, {
+            error: String((e as Error).message),
+            stack: (e as Error).stack?.slice(0, 2000)
+          });
+          outcome = 'partial';
+          outcomeMsg = `${outcomeMsg ? outcomeMsg + '; ' : ''}phase ${phase.name} failed`;
+          // Don't kill the whole pipeline if a later phase fails
           emit({ type: 'error', message: `phase ${phase.name} failed: ${String((e as Error).message)}` });
         } finally {
           clearInterval(heartbeat);
@@ -199,9 +234,16 @@ export async function POST(req: NextRequest) {
 
       emit({ type: 'done', ms: Date.now() - t0 });
     } catch (e) {
-      emit({ type: 'error', message: String((e as Error).message) });
-    } finally { close(); }
+      outcome = 'error';
+      outcomeMsg = String((e as Error).message);
+      emit({ type: 'error', message: outcomeMsg });
+    } finally {
+      await finishTrace(traceId, outcome, outcomeMsg);
+      close();
+    }
   })();
 
-  return new Response(stream, { headers: ndjsonHeaders() });
+  const headers = ndjsonHeaders();
+  headers.set('X-Trace-Id', traceId);
+  return new Response(stream, { headers });
 }
