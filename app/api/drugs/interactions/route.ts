@@ -74,11 +74,25 @@ export async function POST(req: NextRequest) {
       preview: h.text.slice(0, 600),
     }));
 
+    // Dedup pairs by canonical (alphabetized) key so the LLM can't list the same pair twice
+    const rawPairs = Array.isArray(parsed.pairs) ? parsed.pairs : [];
+    const seen = new Set<string>();
+    const pairs = [];
+    for (const p of rawPairs as Array<{ drug_a?: string; drug_b?: string }>) {
+      const a = String(p.drug_a || '').trim().toLowerCase();
+      const b = String(p.drug_b || '').trim().toLowerCase();
+      if (!a || !b || a === b) continue;
+      const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      pairs.push(p);
+    }
+
     return NextResponse.json({
       input: raw,
       normalized,
       summary: parsed.summary ?? '',
-      pairs: Array.isArray(parsed.pairs) ? parsed.pairs : [],
+      pairs,
       citations,
       duration_ms: Date.now() - t0,
       _debug_raw: llmRaw.slice(0, 3000),
