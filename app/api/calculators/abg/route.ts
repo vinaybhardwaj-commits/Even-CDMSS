@@ -59,7 +59,9 @@ disorder. Differential items array may be empty in that case.
 
 ${NEGATIVE_INSTRUCTIONS}
 
-Output ONLY the NDJSON, one object per line, no fences, no preamble.`;
+Output ONLY the NDJSON, one object per line, no fences, no preamble.
+
+CRITICAL: You MUST emit ALL 6 sections in the order above, even if a section is "Not applicable" or "None". Do not stop after differential or next_workup — always finish with the red_flags object. For a normal ABG, red_flags should say "None on this gas." For a severe case, name the urgent findings.`;
 
 // PRD Appendix A.1.1 — single fully-detailed few-shot (the high-AG met acid case).
 // We embed one full example. Two abbreviated examples follow.
