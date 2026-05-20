@@ -8,6 +8,10 @@ export type Turn = {
   content: string;
   evaluation?: { correctness: 'correct' | 'partial' | 'incorrect' | 'clarifying'; feedback: string };
   timestamp: string;
+  /** Set on user turns where the learner requested the answer (button click or phrase). */
+  revealed?: boolean;
+  /** Set on coach turns that are the revealed answer (vs. a Socratic question). */
+  is_reveal?: boolean;
 };
 
 export type SessionRow = {
@@ -70,11 +74,52 @@ export async function loadSession(id: number): Promise<SessionRow | null> {
 }
 
 export function computeAccuracy(turns: Turn[]): number {
-  const userTurns = turns.filter((t) => t.role === 'user' && t.evaluation);
+  // Reveals don't count — they're requests for help, not attempts at the question.
+  const userTurns = turns.filter((t) => t.role === 'user' && t.evaluation && !t.revealed);
   if (userTurns.length === 0) return 0;
   const correctish = userTurns.filter((t) => t.evaluation!.correctness === 'correct').length;
   const partial = userTurns.filter((t) => t.evaluation!.correctness === 'partial').length;
   return (correctish + 0.5 * partial) / userTurns.length;
+}
+
+/**
+ * Phrase-based detection for "just give me the answer" style messages, as a
+ * keyboard-friendly companion to the UI's explicit "Show answer" button.
+ *
+ * Anchored to short messages that ARE the request — avoids false positives like
+ * "I'd give up on warfarin if INR > 5" (which contains "give up" but isn't a reveal).
+ */
+export function isRevealIntent(msg: string): boolean {
+  const m = msg.trim().toLowerCase();
+  if (m.length === 0 || m.length > 80) return false;
+  const patterns = [
+    /^(show|tell|give)\s+(me\s+)?(the\s+)?answer\b/,
+    /^just\s+(give|tell)\s+(me\s+)?(the\s+)?answer\b/,
+    /^what(?:'s|\s+is)\s+the\s+answer\b/,
+    /^reveal(?:\s+the\s+answer)?\.?$/,
+    /^(i\s+)?give\s+up\.?$/,
+    /^skip\.?$/,
+    /^idk\.?$/,
+    /^i\s+don'?t\s+know\.?$/,
+    /^pass\.?$/,
+  ];
+  return patterns.some((re) => re.test(m));
+}
+
+export function buildRevealSystemPrompt(difficulty: string, topic: string): string {
+  return `You are a Socratic medical-teaching coach. The learner has hit a wall on the question you just asked and explicitly requested the answer. Your job: give them the grounded answer, then move on with another question at the same difficulty.
+
+CURRENT TOPIC: ${topic}
+CURRENT DIFFICULTY: ${difficulty}
+
+Output ONLY this JSON, no markdown, no preamble:
+{"reveal_answer":"<your direct, grounded answer to the previous question. 2-5 sentences. Use the supplied excerpts as ground truth. Cite with [n] tags pointing to excerpt indices when relevant. Teach the reasoning — name the mechanism / decision criterion / red flag — not just the conclusion.>","next_turn":{"type":"question","content":"<ONE focused Socratic follow-up question at the SAME difficulty. 1-2 sentences. Should probe an adjacent or deeper aspect of the same topic, NOT the same question rephrased.>"}}
+
+Rules:
+- reveal_answer is the answer, not a hint. The learner asked for it; give it. Stay grounded in the excerpts.
+- Do NOT punish the learner ("you should have known…") — just teach.
+- next_turn.content keeps the session going. Same difficulty, related but distinct aspect.
+- Use plain prose for the answer. No bullet lists, no headers — this renders as a single chat bubble.`;
 }
 
 export { llm };

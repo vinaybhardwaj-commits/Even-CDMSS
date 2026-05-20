@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { Send, Loader2, Brain, Check, AlertCircle, X, MessageCircleQuestion, RotateCcw, BookOpen, Sparkles, FileText } from 'lucide-react';
+import { Send, Loader2, Brain, Check, AlertCircle, X, MessageCircleQuestion, RotateCcw, BookOpen, Sparkles, FileText, Eye, Lightbulb } from 'lucide-react';
 
 type Correctness = 'correct' | 'partial' | 'incorrect' | 'clarifying';
 type Turn = {
@@ -9,6 +9,8 @@ type Turn = {
   content: string;
   evaluation?: { correctness: Correctness; feedback: string };
   timestamp: string;
+  revealed?: boolean;
+  is_reveal?: boolean;
 };
 type Difficulty = 'novice' | 'intermediate' | 'advanced';
 
@@ -102,26 +104,40 @@ export default function CoachClient() {
 
   async function send(e?: React.FormEvent) {
     e?.preventDefault();
+    await submitTurn({ msg: input.trim(), forceAnswer: false });
+  }
+
+  // Triggered by the "Show answer" button on any coach turn. The empty user_message
+  // + force_answer:true tells the server to skip Socratic mode and reveal the answer.
+  async function revealAnswer() {
+    await submitTurn({ msg: '', forceAnswer: true });
+  }
+
+  async function submitTurn(args: { msg: string; forceAnswer: boolean }) {
     if (!sessionId) return;
-    const msg = input.trim();
-    if (!msg) return;
+    const { msg, forceAnswer } = args;
+    if (!msg && !forceAnswer) return;
     setError(null);
-    // Optimistic user turn
-    const optimistic: Turn = { role: 'user', content: msg, timestamp: new Date().toISOString() };
+    const displayContent = msg || '(show answer)';
+    // Optimistic user turn — flag as revealed when force_answer so it renders correctly even before the round-trip.
+    const optimistic: Turn = { role: 'user', content: displayContent, timestamp: new Date().toISOString(), revealed: forceAnswer || undefined };
     setTurns((t) => [...t, optimistic]);
-    setInput('');
+    if (msg) setInput('');
     setLoading(true);
     try {
       const r = await fetch('/api/coach/respond', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId, user_message: msg }),
+        body: JSON.stringify({ session_id: sessionId, user_message: msg, force_answer: forceAnswer }),
       });
       if (!r.ok) { setError(`${r.status}: ${(await r.text()).slice(0, 200)}`); setLoading(false); return; }
       const d = await r.json();
-      // Replace optimistic user turn with the server's (which has evaluation), append coach turn
+      // Replace optimistic user turn with the server's, append coach turn(s).
+      // Reveal returns BOTH coach_turn (answer) and next_coach_turn (follow-up question).
       setTurns((prev) => {
         const without = prev.slice(0, -1);
-        return [...without, d.user_turn, d.coach_turn];
+        const next: Turn[] = [...without, d.user_turn, d.coach_turn];
+        if (d.next_coach_turn) next.push(d.next_coach_turn);
+        return next;
       });
       if (d.difficulty !== difficulty) {
         setDifficulty(d.difficulty);
@@ -310,24 +326,58 @@ export default function CoachClient() {
       </header>
 
       <div ref={transcriptRef} className="max-h-[55vh] space-y-4 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50 p-4 shadow-sm">
-        {turns.map((t, i) => (
-          <div key={i}>
-            <div className={`flex ${t.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div
-                className={`max-w-[85%] whitespace-pre-wrap rounded-2xl px-3.5 py-2 text-[14px] leading-relaxed ${
-                  t.role === 'coach'
-                    ? 'bg-white text-slate-800 shadow-sm'
-                    : 'bg-brand text-white shadow'
-                }`}
-              >
-                {t.content}
+        {turns.map((t, i) => {
+          // Show the "Show answer" button only on the latest coach turn that's an actual
+          // Socratic question (not the revealed answer turn) and the session is still active.
+          const isLatestCoachQuestion =
+            t.role === 'coach' &&
+            !t.is_reveal &&
+            i === turns.length - 1 &&
+            !loading;
+          return (
+            <div key={i}>
+              <div className={`flex ${t.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div
+                  className={`max-w-[85%] whitespace-pre-wrap rounded-2xl px-3.5 py-2 text-[14px] leading-relaxed ${
+                    t.role === 'coach'
+                      ? t.is_reveal
+                        ? 'border border-amber-200 bg-amber-50 text-amber-950 shadow-sm'
+                        : 'bg-white text-slate-800 shadow-sm'
+                      : t.revealed
+                        ? 'bg-slate-200 text-slate-600 italic shadow'
+                        : 'bg-brand text-white shadow'
+                  }`}
+                >
+                  {t.role === 'coach' && t.is_reveal && (
+                    <div className="mb-1 flex items-center gap-1 text-[10.5px] font-semibold uppercase tracking-wide text-amber-700">
+                      <Lightbulb className="h-3 w-3" /> Revealed answer
+                    </div>
+                  )}
+                  {t.role === 'user' && t.revealed && (
+                    <div className="mb-0.5 text-[10.5px] font-semibold uppercase tracking-wide text-slate-500">
+                      Asked for answer
+                    </div>
+                  )}
+                  {t.content}
+                </div>
               </div>
+              {t.role === 'user' && t.evaluation && !t.revealed && (
+                <div className="mt-1 flex justify-end pr-2"><EvalChip ev={t.evaluation} /></div>
+              )}
+              {isLatestCoachQuestion && (
+                <div className="mt-1.5 flex justify-start pl-2">
+                  <button
+                    type="button"
+                    onClick={revealAnswer}
+                    className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-[11px] font-medium text-amber-800 hover:border-amber-400 hover:bg-amber-100"
+                  >
+                    <Eye className="h-3 w-3" /> Show answer
+                  </button>
+                </div>
+              )}
             </div>
-            {t.role === 'user' && t.evaluation && (
-              <div className="mt-1 flex justify-end pr-2"><EvalChip ev={t.evaluation} /></div>
-            )}
-          </div>
-        ))}
+          );
+        })}
         {loading && turns[turns.length - 1]?.role === 'user' && (
           <div className="flex justify-start">
             <div className="rounded-2xl bg-white px-3.5 py-2 text-sm text-slate-400 shadow-sm">

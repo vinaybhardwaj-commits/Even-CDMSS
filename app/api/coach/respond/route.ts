@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { retrieve } from '@/lib/retrieve';
 import { sql } from '@/lib/db';
-import { COACH_MODEL, buildCoachSystemPrompt, parseLooseJson, loadSession, computeAccuracy, Turn } from '@/lib/coach';
+import { COACH_MODEL, buildCoachSystemPrompt, buildRevealSystemPrompt, isRevealIntent, parseLooseJson, loadSession, computeAccuracy, Turn } from '@/lib/coach';
 import { startTrace, finishTrace, tracedChat } from '@/lib/trace';
 
 export const runtime = 'nodejs';
@@ -10,18 +10,92 @@ export const maxDuration = 60;
 const MAX_TURNS = 15; // total messages each side combined — hard cap
 
 export async function POST(req: NextRequest) {
-  let body: { session_id?: number; user_message?: string };
+  let body: { session_id?: number; user_message?: string; force_answer?: boolean };
   try { body = await req.json(); } catch { return NextResponse.json({ error: 'bad json' }, { status: 400 }); }
   const id = Number(body.session_id);
   const msg = (body.user_message || '').trim();
   if (!id) return NextResponse.json({ error: 'session_id required' }, { status: 400 });
-  if (!msg) return NextResponse.json({ error: 'user_message required' }, { status: 400 });
+  // For reveal-by-button, the client may send an empty user_message — accept it.
+  if (!msg && !body.force_answer) return NextResponse.json({ error: 'user_message required' }, { status: 400 });
 
   const sess = await loadSession(id);
   if (!sess) return NextResponse.json({ error: 'session not found' }, { status: 404 });
   if (sess.ended_at) return NextResponse.json({ error: 'session already ended' }, { status: 409 });
 
   const turns: Turn[] = Array.isArray(sess.turns) ? sess.turns : [];
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // REVEAL BRANCH — explicit force_answer OR phrase-detected intent
+  // ────────────────────────────────────────────────────────────────────────────
+  const isReveal = !!body.force_answer || isRevealIntent(msg);
+  if (isReveal) {
+    const lastCoachTurn = [...turns].reverse().find((t) => t.role === 'coach' && !t.is_reveal);
+    const previousQuestion = lastCoachTurn?.content || '(no previous coach question found)';
+    const userMsgForLog = msg || '(show answer)';
+    const userTurn: Turn = { role: 'user', content: userMsgForLog, timestamp: new Date().toISOString(), revealed: true };
+
+    // Retrieve excerpts grounded on the topic + the previous question (richer than topic alone).
+    const retrievalQuery = `${sess.topic} ${previousQuestion}`;
+    let hits: Awaited<ReturnType<typeof retrieve>>['hits'] = [];
+    try { hits = (await retrieve(retrievalQuery, { topK: 6, minSimilarity: 0.3, bm25Query: sess.topic })).hits; } catch {}
+    const contextBlock = hits.length
+      ? hits.map((h, i) => `--- Excerpt ${i + 1} (${h.book}${h.chapter ? ' · ' + h.chapter : ''}) ---\n${h.text.slice(0, 700)}`).join('\n\n')
+      : '(no fresh excerpts retrieved)';
+
+    const traceId = await startTrace('coach_reveal', { session_id: id, topic: sess.topic, difficulty: sess.difficulty, previous_question_chars: previousQuestion.length });
+    let raw = '';
+    try {
+      const r = await tracedChat(traceId, 'reveal', {
+        model: COACH_MODEL,
+        messages: [
+          { role: 'system', content: buildRevealSystemPrompt(sess.difficulty, sess.topic) },
+          { role: 'user', content: `Previous coach question:\n${previousQuestion}\n\nExcerpts:\n${contextBlock}\n\nThe learner has explicitly requested the answer. Output the reveal JSON now.` },
+        ],
+        temperature: 0.3,
+        max_tokens: 600,
+        ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
+      });
+      raw = r.choices?.[0]?.message?.content ?? '';
+      const parsed = parseLooseJson(raw) as { reveal_answer?: string; next_turn?: { content?: string } };
+      const answer = (parsed.reveal_answer || '').trim() || 'Sorry — I could not generate an answer this time. Try rephrasing the question or end the session.';
+      const followUp = (parsed.next_turn?.content || '').trim() || 'Want to keep going on this topic, or shift focus?';
+
+      // Two coach turns: the revealed answer, then the next question.
+      const answerTurn: Turn = { role: 'coach', content: answer, is_reveal: true, timestamp: new Date().toISOString() };
+      const questionTurn: Turn = { role: 'coach', content: followUp, timestamp: new Date().toISOString() };
+
+      const newTurns = [...turns, userTurn, answerTurn, questionTurn];
+      const accuracy = computeAccuracy(newTurns);
+
+      await (sql as unknown as (q: string, p: unknown[]) => Promise<unknown>)(
+        `UPDATE coaching_sessions SET turns = $1::jsonb, accuracy = $2 WHERE id = $3`,
+        [JSON.stringify(newTurns), accuracy, id]
+      );
+
+      await finishTrace(traceId, 'success');
+      return NextResponse.json({
+        session_id: id,
+        user_turn: userTurn,
+        coach_turn: answerTurn,
+        next_coach_turn: questionTurn,
+        revealed: true,
+        difficulty: sess.difficulty,
+        difficulty_changed: false,
+        accuracy: Number(accuracy.toFixed(2)),
+        mastered: false,
+        ended_at: null,
+        outcome: null,
+        is_summary: false,
+      }, { headers: { 'X-Trace-Id': traceId } });
+    } catch (e) {
+      await finishTrace(traceId, 'error', String((e as Error).message));
+      return NextResponse.json({ error: 'reveal failed', detail: String((e as Error).message), raw: raw.slice(0, 300) }, { status: 502, headers: { 'X-Trace-Id': traceId } });
+    }
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // NORMAL SOCRATIC BRANCH — original flow
+  // ────────────────────────────────────────────────────────────────────────────
   const userTurn: Turn = { role: 'user', content: msg, timestamp: new Date().toISOString() };
 
   // Build conversation history for LLM
