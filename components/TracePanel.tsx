@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { CheckCircle2, Loader2, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react';
+import { CheckCircle2, Loader2, ChevronDown, ChevronUp, AlertTriangle, Copy, Check } from 'lucide-react';
 
 export type TraceEvent = {
   stage: string;
@@ -22,10 +22,19 @@ const STAGE_LABEL: Record<string, string> = {
   done: 'Done',
 };
 
-export default function TracePanel({ events, totalMs }: { events: TraceEvent[]; totalMs?: number }) {
+export default function TracePanel({ events, totalMs, traceId }: { events: TraceEvent[]; totalMs?: number; traceId?: string | null }) {
   // ALL HOOKS FIRST — no early returns above this line
   const [open, setOpen] = useState(true);
   const [now, setNow] = useState(() => Date.now());
+  const [copied, setCopied] = useState(false);
+
+  function copyTraceId() {
+    if (!traceId) return;
+    navigator.clipboard?.writeText(traceId).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }).catch(() => {});
+  }
 
   const last = events.length > 0 ? events[events.length - 1] : null;
   const isComplete = events.some((e) => e.stage === 'done') || !!totalMs;
@@ -56,6 +65,20 @@ export default function TracePanel({ events, totalMs }: { events: TraceEvent[]; 
       {open && stalled && (
         <div className="border-t border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
           ⚠ No progress for {Math.round((now - last.ts) / 1000)}s. Mac Mini Ollama may be queuing behind ingest work — this can take up to 90s. If it crosses 120s the Vercel function will time out.
+        </div>
+      )}
+      {open && traceId && (
+        <div className="flex items-center gap-2 border-t border-slate-200 bg-white/60 px-3 py-1.5 text-[11px] text-slate-500">
+          <span className="font-mono uppercase tracking-wide text-slate-400">trace</span>
+          <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10.5px] text-slate-700">{traceId}</code>
+          <button
+            onClick={copyTraceId}
+            className="ml-auto inline-flex items-center gap-1 rounded border border-slate-200 px-1.5 py-0.5 text-[10.5px] text-slate-600 hover:border-brand hover:text-brand"
+            aria-label="Copy trace ID"
+          >
+            {copied ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
+            {copied ? 'Copied' : 'Copy'}
+          </button>
         </div>
       )}
       {open && (

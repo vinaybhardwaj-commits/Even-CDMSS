@@ -144,6 +144,7 @@ function LookupPanel() {
   const [openIds, setOpenIds] = useState<Record<number, boolean>>({});
   const [trace, setTrace] = useState<TraceEvent[]>([]);
   const [totalMs, setTotalMs] = useState<number | undefined>(undefined);
+  const [traceId, setTraceId] = useState<string | null>(null);
   function pushTrace(stage: string, msg: string, ms?: number, done = false, error = false) {
     setTrace((prev) => {
       const next = prev.map((p, i) => (i === prev.length - 1 && !p.done) ? { ...p, done: true } : p);
@@ -157,13 +158,14 @@ function LookupPanel() {
     const q = drug.trim();
     if (!q) return;
     setError(null); setData(null); setLoading(true); setOpenIds({});
-    setTrace([]); setTotalMs(undefined);
+    setTrace([]); setTotalMs(undefined); setTraceId(null);
     const t0 = Date.now();
     try {
       const r = await fetch('/api/drugs/lookup', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ drug: q }),
       });
+      const tid = r.headers.get('x-trace-id'); if (tid) setTraceId(tid);
       if (!r.ok) { setError(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`); return; }
       const dRef: { current: LookupResp | null } = { current: null };
       await consumeNdjson(r, (ev) => {
@@ -224,7 +226,7 @@ function LookupPanel() {
         ))}
       </div>
 
-      {(trace.length > 0 || loading) && <div className="mt-5"><TracePanel events={trace} totalMs={totalMs} /></div>}
+      {(trace.length > 0 || loading) && <div className="mt-5"><TracePanel events={trace} totalMs={totalMs} traceId={traceId} /></div>}
       {error && <div className="mt-6 rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">{error}</div>}
 
       {loading && !data && (
@@ -394,6 +396,7 @@ function InteractionsPanel() {
   const [openIds, setOpenIds] = useState<Record<number, boolean>>({});
   const [trace, setTrace] = useState<TraceEvent[]>([]);
   const [totalMs, setTotalMs] = useState<number | undefined>(undefined);
+  const [traceId, setTraceId] = useState<string | null>(null);
   function pushTrace(stage: string, msg: string, ms?: number, done = false, error = false) {
     setTrace((prev) => {
       const next = prev.map((p, i) => (i === prev.length - 1 && !p.done) ? { ...p, done: true } : p);
@@ -409,13 +412,14 @@ function InteractionsPanel() {
     const list = drugs.map((d) => d.trim()).filter(Boolean);
     if (list.length < 2) { setError('Enter at least 2 drugs'); return; }
     setError(null); setData(null); setLoading(true); setOpenIds({});
-    setTrace([]); setTotalMs(undefined);
+    setTrace([]); setTotalMs(undefined); setTraceId(null);
     const t0 = Date.now();
     try {
       const r = await fetch('/api/drugs/interactions', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ drugs: list }),
       });
+      const tid = r.headers.get('x-trace-id'); if (tid) setTraceId(tid);
       if (!r.ok) { setError(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`); return; }
       const dRef: { current: InteractionsResp | null } = { current: null };
       await consumeNdjson(r, (ev) => {
@@ -496,7 +500,7 @@ function InteractionsPanel() {
         </div>
       </form>
 
-      {(trace.length > 0 || loading) && <div className="mt-5"><TracePanel events={trace} totalMs={totalMs} /></div>}
+      {(trace.length > 0 || loading) && <div className="mt-5"><TracePanel events={trace} totalMs={totalMs} traceId={traceId} /></div>}
       {error && <div className="mt-6 rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">{error}</div>}
 
       {loading && (
