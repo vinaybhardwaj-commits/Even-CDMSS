@@ -105,7 +105,10 @@ type Phase = { name: string; model: string; system: string; userSuffix: string; 
 const PHASES: Phase[] = [
   { name: 'fast',         model: FAST_MODEL, system: PHASE1_SYSTEM, userSuffix: 'Output the clinical skeleton JSON now.',           maxTokens: 800  },
   { name: 'pharmacology', model: DEEP_MODEL, system: PHASE2_SYSTEM, userSuffix: 'Output the pharmacology JSON now.',                maxTokens: 2000},
-  { name: 'extras',       model: DEEP_MODEL, system: PHASE3_SYSTEM, userSuffix: 'Output the formulations/interactions/pops/pearls JSON now.', maxTokens: 700 },
+  // phase_extras maxTokens bumped 700 → 1500 after D12.1's depth re-tune. Trace ddea5afe-...
+  // showed qwen hitting exactly completion_tokens=700 on the warfarin run — cut off mid-thought.
+  // 1500 gives qwen room to finish the full set of pearls + hepatic_impairment + 6-12 interactions.
+  { name: 'extras',       model: DEEP_MODEL, system: PHASE3_SYSTEM, userSuffix: 'Output the formulations/interactions/pops/pearls JSON now.', maxTokens: 1500 },
 ];
 
 export async function POST(req: NextRequest) {
