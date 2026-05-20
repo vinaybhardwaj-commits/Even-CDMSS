@@ -23,18 +23,22 @@ const STAGE_LABEL: Record<string, string> = {
 };
 
 export default function TracePanel({ events, totalMs }: { events: TraceEvent[]; totalMs?: number }) {
+  // ALL HOOKS FIRST — no early returns above this line
   const [open, setOpen] = useState(true);
-  if (events.length === 0) return null;
-  const last = events[events.length - 1];
+  const [now, setNow] = useState(() => Date.now());
+
+  const last = events.length > 0 ? events[events.length - 1] : null;
   const isComplete = events.some((e) => e.stage === 'done') || !!totalMs;
   const hasError = events.some((e) => e.error);
-  // Detect stall: no events in 45s on an open pipeline
-  const [now, setNow] = useState(() => Date.now());
+
   useEffect(() => {
-    if (isComplete || hasError) return;
+    if (isComplete || hasError || events.length === 0) return;
     const t = setInterval(() => setNow(Date.now()), 5000);
     return () => clearInterval(t);
-  }, [isComplete, hasError]);
+  }, [isComplete, hasError, events.length]);
+
+  // Now safe to early-return
+  if (events.length === 0 || !last) return null;
   const stalled = !isComplete && !hasError && (now - last.ts) > 45_000;
 
   return (
