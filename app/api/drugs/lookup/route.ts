@@ -112,17 +112,74 @@ const PHASES: Phase[] = [
   { name: 'extras',       model: DEEP_MODEL, system: PHASE3_SYSTEM, userSuffix: 'Output the formulations/interactions/pops/pearls JSON now.', maxTokens: 1500 },
 ];
 
+
+// CALC.1.3 — renal context pushed from /drugs/egfr via sessionStorage.cdmss_renal_ctx.
+// When present, Phase 2 pharm prompt receives an addendum instructing qwen to use the
+// more conservative of CKD-EPI / Cockcroft-Gault for narrow-therapeutic-window drugs.
+type RenalCtx = {
+  ckdepi_2021_ml_min_173?: number;
+  cg_crcl_ml_min?: number | null;
+  stage?: string;
+  conservative_for_nti?: number;
+  displayed_equation?: string;
+  computed_at?: string;
+  source_trace_id?: string;
+};
+
+
+// CALC.1.3 — Phase 2 (pharmacology) gets a renal-context addendum when /drugs/egfr
+// has pushed a renal_ctx via sessionStorage. Phases 1 + 3 unchanged.
+function buildPhaseUserMessage(
+  phase: Phase,
+  normalized: string,
+  contextBlock: string,
+  renalCtx: RenalCtx | undefined,
+): string {
+  const base = `Drug: ${normalized}\n\nExcerpts:\n${contextBlock}\n\n${phase.userSuffix}`;
+  if (phase.name !== 'pharmacology' || !renalCtx) return base;
+  const ckdepi = renalCtx.ckdepi_2021_ml_min_173;
+  const cg = renalCtx.cg_crcl_ml_min;
+  const stage = renalCtx.stage;
+  const conservative = renalCtx.conservative_for_nti;
+  const renalAddendum = `\n\n--- Renal context from this patient's recent eGFR computation ---\n` +
+    `CKD-EPI 2021: ${ckdepi ?? '?'} mL/min/1.73 m\u00b2 (stage ${stage ?? '?'}). ` +
+    (cg !== null && cg !== undefined ? `Cockcroft-Gault: ${cg} mL/min. ` : '') +
+    `\nUse the more conservative value for narrow-therapeutic-window drugs (digoxin, vancomycin, ` +
+    `aminoglycosides, DOACs, lithium). The more conservative value here is ${conservative ?? '?'} mL/min. ` +
+    `For other drugs, use whichever the prescribing reference cites \u2014 typically Cockcroft-Gault. ` +
+    `Flag any contraindication at this renal function. ` +
+    `If renal dose adjustment is indicated, mention the threshold and the direction of adjustment ` +
+    `(do not state a specific mg/mcg dose \u2014 say e.g. \"reduce by ~50%\" or \"avoid below GFR 30\").`;
+  return base + renalAddendum;
+}
+
 export async function POST(req: NextRequest) {
-  let body: { drug?: string };
+  let body: { drug?: string; renal_ctx?: RenalCtx };
   try { body = await req.json(); } catch {
     return new Response(JSON.stringify({ error: 'bad json' }), { status: 400 });
   }
   const raw = (body.drug || '').trim();
+  const renalCtx = body.renal_ctx;
   if (!raw) return new Response(JSON.stringify({ error: 'drug required' }), { status: 400 });
 
   const { stream, emit, close } = makeNdjsonStream();
   const t0 = Date.now();
-  const traceId = await startTrace('drugs_lookup', { drug: raw });
+  const traceId = await startTrace(
+    'drugs_lookup',
+    { drug: raw, renal_ctx: renalCtx ?? null },
+    1,
+    { has_renal_ctx: !!renalCtx, source_egfr_trace_id: renalCtx?.source_trace_id ?? null }
+  );
+
+
+  if (renalCtx?.source_trace_id) {
+    try {
+      const { sql: sql_link } = await import('@/lib/db');
+      const sqlFn = sql_link as unknown as (q: string, p: unknown[]) => Promise<unknown>;
+      await sqlFn(`UPDATE traces SET parent_trace_id = $1 WHERE trace_id = $2`,
+        [renalCtx.source_trace_id, traceId]);
+    } catch {}
+  }
 
   (async () => {
     let outcome: 'success' | 'error' | 'partial' = 'success';
@@ -186,7 +243,7 @@ export async function POST(req: NextRequest) {
             model: phase.model,
             messages: [
               { role: 'system', content: phase.system },
-              { role: 'user', content: `Drug: ${normalized}\n\nExcerpts:\n${contextBlock}\n\n${phase.userSuffix}` },
+              { role: 'user', content: buildPhaseUserMessage(phase, normalized, contextBlock, renalCtx) },
             ],
             temperature: 0.2,
             max_tokens: phase.maxTokens,

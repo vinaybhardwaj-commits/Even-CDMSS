@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useRef } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { consumeNdjson } from '@/lib/ndjson-client';
 import TracePanel, { TraceEvent } from '@/components/TracePanel';
 import ErrorBoundary from '@/components/ErrorBoundary';
@@ -137,6 +137,24 @@ function SourcesRail({ citations, highlighted, openIds, setOpenIds }: {
 
 function LookupPanel() {
   const [drug, setDrug] = useState('');
+  const [renalCtxBanner, setRenalCtxBanner] = useState<{ckdepi:number; stage:string; cg:number|null; ts:string} | null>(null);
+  useEffect(() => {
+    try {
+      const stored = sessionStorage.getItem('cdmss_renal_ctx');
+      if (!stored) return;
+      const ctx = JSON.parse(stored);
+      setRenalCtxBanner({
+        ckdepi: ctx.ckdepi_2021_ml_min_173 ?? 0,
+        stage: ctx.stage ?? '?',
+        cg: ctx.cg_crcl_ml_min ?? null,
+        ts: ctx.computed_at ?? '',
+      });
+    } catch {}
+  }, []);
+  function clearRenalCtx() {
+    try { sessionStorage.removeItem('cdmss_renal_ctx'); } catch {}
+    setRenalCtxBanner(null);
+  }
   const [data, setData] = useState<LookupResp | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -161,9 +179,15 @@ function LookupPanel() {
     setTrace([]); setTotalMs(undefined); setTraceId(null);
     const t0 = Date.now();
     try {
+      // CALC.1.3: read renal context from /drugs/egfr push (if active in this session)
+      let renalCtx: unknown = null;
+      try {
+        const stored = sessionStorage.getItem('cdmss_renal_ctx');
+        if (stored) renalCtx = JSON.parse(stored);
+      } catch {}
       const r = await fetch('/api/drugs/lookup', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ drug: q }),
+        body: JSON.stringify({ drug: q, renal_ctx: renalCtx }),
       });
       const tid = r.headers.get('x-trace-id'); if (tid) setTraceId(tid);
       if (!r.ok) { setError(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`); return; }
@@ -206,6 +230,17 @@ function LookupPanel() {
 
   return (
     <div>
+      {renalCtxBanner && (
+        <div className="mb-4 flex items-center justify-between gap-3 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+          <div>
+            <span className="font-medium">Renal context active:</span>{' '}
+            eGFR {renalCtxBanner.ckdepi} ({renalCtxBanner.stage})
+            {renalCtxBanner.cg !== null && <span className="ml-1 text-emerald-700/80">· CG {renalCtxBanner.cg}</span>}
+            <span className="ml-2 text-xs text-emerald-700/70">— next lookup will receive renal-adjusted dosing context</span>
+          </div>
+          <button type="button" onClick={clearRenalCtx} className="text-xs text-emerald-800 hover:underline">Clear ×</button>
+        </div>
+      )}
       <form onSubmit={submit} className="flex gap-2">
         <input
           value={drug}
