@@ -170,7 +170,14 @@ function LookupPanel() {
       const dRef: { current: LookupResp | null } = { current: null };
       await consumeNdjson(r, (ev) => {
         if (ev.type === 'progress') pushTrace(ev.stage, ev.msg, ev.ms);
-        else if (ev.type === 'result') { dRef.current = ev.data as LookupResp; setData(dRef.current); }
+        else if (ev.type === 'result') {
+          // MERGE phases, never replace. Each phase emits only its own fields
+          // (server whitelist in PHASE_FIELDS), so phase 2's payload doesn't
+          // contain phase 1's fields and shallow-merging accumulates the full card.
+          // Bug fix: previously setData(ev.data) wiped phase 2 data when phase 3 arrived.
+          dRef.current = { ...(dRef.current || {} as LookupResp), ...(ev.data as Partial<LookupResp>) } as LookupResp;
+          setData(dRef.current);
+        }
         else if (ev.type === 'done') { setTotalMs(ev.ms); pushTrace('done', '', ev.ms, true); }
         else if (ev.type === 'error') { setError(ev.message); pushTrace('done', ev.message, undefined, true, true); }
       });
