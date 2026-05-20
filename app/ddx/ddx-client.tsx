@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useRef, useMemo } from 'react';
+import { consumeNdjson } from '@/lib/ndjson-client';
+import TracePanel, { TraceEvent } from '@/components/TracePanel';
 import { Send, Loader2, AlertTriangle, ChevronDown, ChevronUp, ClipboardList, BookOpen, Microscope } from 'lucide-react';
 
 type Citation = {
@@ -126,6 +128,15 @@ export default function DdxClient() {
   const [error, setError] = useState<string | null>(null);
   const [highlighted, setHighlighted] = useState<number | null>(null);
   const [openCites, setOpenCites] = useState<Record<number, boolean>>({});
+  const [trace, setTrace] = useState<TraceEvent[]>([]);
+  const [totalMs, setTotalMs] = useState<number | undefined>(undefined);
+
+  function pushTrace(stage: string, msg: string, ms?: number, done = false, error = false) {
+    setTrace((prev) => {
+      const next = prev.map((p, i) => (i === prev.length - 1 && !p.done) ? { ...p, done: true } : p);
+      return [...next, { stage, msg, ms, done, error, ts: Date.now() }];
+    });
+  }
   const sourcesRef = useRef<HTMLDivElement | null>(null);
   const sessionId = useMemo(() => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : String(Date.now())), []);
 
@@ -138,6 +149,7 @@ export default function DdxClient() {
     e?.preventDefault();
     if (!cc.trim()) { setError('Chief complaint is required'); return; }
     setError(null); setData(null); setLoading(true); setOpenCites({});
+    setTrace([]); setTotalMs(undefined);
     const t0 = Date.now();
     try {
       const r = await fetch('/api/ddx', {
@@ -157,8 +169,15 @@ export default function DdxClient() {
         setError(`HTTP ${r.status}: ${t.slice(0, 200)}`);
         return;
       }
-      const d = (await r.json()) as DdxResponse;
-      setData(d);
+      let d: DdxResponse | null = null;
+      await consumeNdjson(r, (ev) => {
+        if (ev.type === 'progress') pushTrace(ev.stage, ev.msg, ev.ms);
+        else if (ev.type === 'sources') { /* citations come with result */ }
+        else if (ev.type === 'result') { d = ev.data as DdxResponse; setData(d); }
+        else if (ev.type === 'done') { setTotalMs(ev.ms); pushTrace('done', '', ev.ms, true); }
+        else if (ev.type === 'error') { setError(ev.message); pushTrace('done', ev.message, undefined, true, true); }
+      });
+      if (!d) return;
       // Fire-and-forget log
       fetch('/api/log/query', {
         method: 'POST',
@@ -285,6 +304,8 @@ export default function DdxClient() {
           </button>
         ))}
       </div>
+
+      {(trace.length > 0 || loading) && <div className="mt-5"><TracePanel events={trace} totalMs={totalMs} /></div>}
 
       {error && (
         <div className="mt-6 rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">{error}</div>

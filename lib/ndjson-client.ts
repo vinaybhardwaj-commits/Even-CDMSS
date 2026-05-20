@@ -1,0 +1,35 @@
+// Client-side NDJSON consumer
+export type ServerEvent =
+  | { type: 'progress'; stage: string; msg: string; ms?: number }
+  | { type: 'sources'; items: unknown[] }
+  | { type: 'token'; content: string }
+  | { type: 'result'; data: unknown }
+  | { type: 'done'; ms: number }
+  | { type: 'error'; message: string };
+
+export async function consumeNdjson(
+  resp: Response,
+  onEvent: (ev: ServerEvent) => void
+): Promise<void> {
+  if (!resp.body) throw new Error('no body');
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf('\n')) !== -1) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      try { onEvent(JSON.parse(line) as ServerEvent); } catch {}
+    }
+  }
+  // flush any tail (shouldn't happen with our protocol)
+  const tail = buf.trim();
+  if (tail) {
+    try { onEvent(JSON.parse(tail) as ServerEvent); } catch {}
+  }
+}

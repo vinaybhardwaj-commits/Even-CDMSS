@@ -1,11 +1,12 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { retrieve } from '@/lib/retrieve';
 import { llm } from '@/lib/llm';
-
-const DDX_MODEL = 'llama3.1:8b';
+import { makeNdjsonStream, ndjsonHeaders } from '@/lib/stream';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
+
+const DDX_MODEL = 'llama3.1:8b';
 
 const SYSTEM = `You generate a differential diagnosis as JSON. Use ONLY the excerpts below for clinical content.
 
@@ -18,15 +19,7 @@ Return ONLY this JSON object, lowercase keys exactly as shown:
 - citation_ids = 1-based numbers from the excerpts. Cite every claim.
 - No prose, no markdown fences, lowercase keys.`;
 
-type Body = {
-  age?: number | string;
-  sex?: string;
-  cc?: string;
-  history?: string;
-  exam?: string;
-  vitals?: string;
-  session_id?: string;
-};
+type Body = { age?: number | string; sex?: string; cc?: string; history?: string; exam?: string; vitals?: string };
 
 function buildPresentation(b: Body): { display: string; queryHint: string } {
   const parts: string[] = [];
@@ -38,10 +31,7 @@ function buildPresentation(b: Body): { display: string; queryHint: string } {
   if (b.history) parts.push(`Key history: ${b.history.trim()}`);
   if (b.exam) parts.push(`Exam: ${b.exam.trim()}`);
   if (b.vitals) parts.push(`Vitals: ${b.vitals.trim()}`);
-  const display = parts.join('\n');
-  // For retrieval, dense one-liner
-  const queryHint = [demo, b.cc, b.history, b.exam, b.vitals].filter(Boolean).join('; ');
-  return { display, queryHint };
+  return { display: parts.join('\n'), queryHint: [demo, b.cc, b.history, b.exam, b.vitals].filter(Boolean).join('; ') };
 }
 
 function parseLooseJson(s: string): unknown {
@@ -54,75 +44,69 @@ function parseLooseJson(s: string): unknown {
 }
 
 export async function POST(req: NextRequest) {
-  const t0 = Date.now();
   let body: Body;
-  try { body = await req.json(); } catch { return NextResponse.json({ error: 'bad json' }, { status: 400 }); }
-  if (!body.cc || !body.cc.trim()) return NextResponse.json({ error: 'chief_complaint required' }, { status: 400 });
-
+  try { body = await req.json(); } catch {
+    return new Response(JSON.stringify({ error: 'invalid json' }), { status: 400 });
+  }
+  if (!body.cc || !body.cc.trim()) {
+    return new Response(JSON.stringify({ error: 'chief_complaint required' }), { status: 400 });
+  }
   const { display, queryHint } = buildPresentation(body);
 
-  // Retrieve top-20 across all sources
-  let result;
-  try {
-    result = await retrieve(queryHint || display, { topK: 5, minSimilarity: 0.4 });
-  } catch (e) {
-    return NextResponse.json({ error: 'retrieval failed', detail: String((e as Error).message) }, { status: 500 });
-  }
-  const hits = result.hits;
-  if (hits.length === 0) {
-    return NextResponse.json({ error: 'no relevant excerpts above threshold — presentation too vague?' }, { status: 404 });
-  }
+  const { stream, emit, close } = makeNdjsonStream();
+  const t0 = Date.now();
 
-  const contextBlock = hits.map((h, i) => {
-    const cite = `[${i + 1}] ${h.book}${h.chapter ? ' · ' + h.chapter : ''}${h.page_start ? ' · p.' + h.page_start : ''}`;
-    return `--- Excerpt ${i + 1} ---\n${cite}\n${h.text}\n`;
-  }).join('\n');
+  (async () => {
+    try {
+      emit({ type: 'progress', stage: 'expanding', msg: 'Building clinical summary, expanding query…' });
+      const result = await retrieve(queryHint || display, { topK: 8, minSimilarity: 0.4 });
+      const hits = result.hits;
+      emit({ type: 'progress', stage: 'retrieving', msg: `Retrieved ${hits.length} excerpts`, ms: Date.now() - t0 });
+      if (hits.length === 0) { emit({ type: 'error', message: 'no excerpts above threshold — presentation may be too vague' }); close(); return; }
 
-  const userMsg = `CLINICAL PRESENTATION:\n${display}\n\nMEDICAL EXCERPTS:\n${contextBlock}\n\nOutput ONLY the JSON object now, starting with {. No prose, no markdown fences, no commentary.`;
+      const citations = hits.map((h, i) => ({
+        n: i + 1, id: h.id, book: h.book, chapter: h.chapter,
+        page_start: h.page_start, page_end: h.page_end,
+        item_number: h.item_number, chunk_type: h.chunk_type,
+        similarity: Number(h.similarity.toFixed(3)),
+        preview: h.text.slice(0, 600),
+      }));
+      emit({ type: 'sources', items: citations });
 
-  let raw = '';
-  try {
-    const r = await llm.chat.completions.create({
-      model: DDX_MODEL,
-      messages: [
-        { role: 'system', content: SYSTEM },
-        { role: 'user', content: userMsg },
-      ],
-      temperature: 0.2,
-      max_tokens: 1500,
-    });
-    raw = r.choices?.[0]?.message?.content ?? '';
-    const parsed = parseLooseJson(raw) as {
-      summary?: string;
-      missing_info?: string[];
-      cannot_miss?: unknown[];
-      most_likely?: unknown[];
-      other?: unknown[];
-    };
+      const contextBlock = hits.map((h, i) => `--- Excerpt ${i + 1} ---\n[${i + 1}] ${h.book}${h.chapter ? ' · ' + h.chapter : ''}${h.page_start ? ' · p.' + h.page_start : ''}\n${h.text}`).join('\n\n');
+      const userMsg = `CLINICAL PRESENTATION:\n${display}\n\nMEDICAL EXCERPTS:\n${contextBlock}\n\nOutput ONLY the JSON object now, starting with {. No prose, no markdown fences.`;
 
-    const citations = hits.map((h, i) => ({
-      n: i + 1, id: h.id, book: h.book, chapter: h.chapter,
-      page_start: h.page_start, page_end: h.page_end,
-      item_number: h.item_number, chunk_type: h.chunk_type,
-      similarity: Number(h.similarity.toFixed(3)),
-      preview: h.text.slice(0, 600),
-    }));
+      emit({ type: 'progress', stage: 'generating', msg: `Reasoning with ${DDX_MODEL}…`, ms: Date.now() - t0 });
+      const r = await llm.chat.completions.create({
+        model: DDX_MODEL,
+        messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: userMsg }],
+        temperature: 0.2,
+        max_tokens: 1500,
+      });
+      const raw = r.choices?.[0]?.message?.content ?? '';
+      emit({ type: 'progress', stage: 'parsing', msg: 'Parsing differential…', ms: Date.now() - t0 });
 
-    return NextResponse.json({
-      summary: parsed.summary ?? '',
-      missing_info: Array.isArray(parsed.missing_info) ? parsed.missing_info : [],
-      cannot_miss: Array.isArray(parsed.cannot_miss) ? parsed.cannot_miss : [],
-      most_likely: Array.isArray(parsed.most_likely) ? parsed.most_likely : [],
-      other: Array.isArray(parsed.other) ? parsed.other : [],
-      citations,
-      presentation: display,
-      duration_ms: Date.now() - t0,
-    });
-  } catch (e) {
-    return NextResponse.json({
-      error: 'LLM failure',
-      detail: String((e as Error).message),
-      raw: raw.slice(0, 500),
-    }, { status: 502 });
-  }
+      const parsed = parseLooseJson(raw) as {
+        summary?: string; missing_info?: string[];
+        cannot_miss?: unknown[]; most_likely?: unknown[]; other?: unknown[];
+      };
+      emit({
+        type: 'result',
+        data: {
+          summary: parsed.summary ?? '',
+          missing_info: Array.isArray(parsed.missing_info) ? parsed.missing_info : [],
+          cannot_miss: Array.isArray(parsed.cannot_miss) ? parsed.cannot_miss : [],
+          most_likely: Array.isArray(parsed.most_likely) ? parsed.most_likely : [],
+          other: Array.isArray(parsed.other) ? parsed.other : [],
+          citations,
+          presentation: display,
+        },
+      });
+      emit({ type: 'done', ms: Date.now() - t0 });
+    } catch (e) {
+      emit({ type: 'error', message: String((e as Error).message) });
+    } finally { close(); }
+  })();
+
+  return new Response(stream, { headers: ndjsonHeaders() });
 }

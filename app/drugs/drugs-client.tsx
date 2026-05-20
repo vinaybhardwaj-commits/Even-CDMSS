@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useMemo, useRef } from 'react';
+import { consumeNdjson } from '@/lib/ndjson-client';
+import TracePanel, { TraceEvent } from '@/components/TracePanel';
 import { Send, Loader2, Pill, AlertTriangle, ChevronDown, ChevronUp, BookOpen, Plus, X, Activity } from 'lucide-react';
 
 type Citation = {
@@ -122,6 +124,14 @@ function LookupPanel() {
   const [error, setError] = useState<string | null>(null);
   const [highlighted, setHighlighted] = useState<number | null>(null);
   const [openIds, setOpenIds] = useState<Record<number, boolean>>({});
+  const [trace, setTrace] = useState<TraceEvent[]>([]);
+  const [totalMs, setTotalMs] = useState<number | undefined>(undefined);
+  function pushTrace(stage: string, msg: string, ms?: number, done = false, error = false) {
+    setTrace((prev) => {
+      const next = prev.map((p, i) => (i === prev.length - 1 && !p.done) ? { ...p, done: true } : p);
+      return [...next, { stage, msg, ms, done, error, ts: Date.now() }];
+    });
+  }
   const sessionId = useMemo(() => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : String(Date.now())), []);
 
   async function submit(e?: React.FormEvent) {
@@ -129,6 +139,7 @@ function LookupPanel() {
     const q = drug.trim();
     if (!q) return;
     setError(null); setData(null); setLoading(true); setOpenIds({});
+    setTrace([]); setTotalMs(undefined);
     const t0 = Date.now();
     try {
       const r = await fetch('/api/drugs/lookup', {
@@ -136,8 +147,14 @@ function LookupPanel() {
         body: JSON.stringify({ drug: q }),
       });
       if (!r.ok) { setError(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`); return; }
-      const d = (await r.json()) as LookupResp;
-      setData(d);
+      let d: LookupResp | null = null;
+      await consumeNdjson(r, (ev) => {
+        if (ev.type === 'progress') pushTrace(ev.stage, ev.msg, ev.ms);
+        else if (ev.type === 'result') { d = ev.data as LookupResp; setData(d); }
+        else if (ev.type === 'done') { setTotalMs(ev.ms); pushTrace('done', '', ev.ms, true); }
+        else if (ev.type === 'error') { setError(ev.message); pushTrace('done', ev.message, undefined, true, true); }
+      });
+      if (!d) return;
       fetch('/api/log/query', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -188,6 +205,7 @@ function LookupPanel() {
         ))}
       </div>
 
+      {(trace.length > 0 || loading) && <div className="mt-5"><TracePanel events={trace} totalMs={totalMs} /></div>}
       {error && <div className="mt-6 rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">{error}</div>}
 
       {loading && (
@@ -268,6 +286,14 @@ function InteractionsPanel() {
   const [error, setError] = useState<string | null>(null);
   const [highlighted, setHighlighted] = useState<number | null>(null);
   const [openIds, setOpenIds] = useState<Record<number, boolean>>({});
+  const [trace, setTrace] = useState<TraceEvent[]>([]);
+  const [totalMs, setTotalMs] = useState<number | undefined>(undefined);
+  function pushTrace(stage: string, msg: string, ms?: number, done = false, error = false) {
+    setTrace((prev) => {
+      const next = prev.map((p, i) => (i === prev.length - 1 && !p.done) ? { ...p, done: true } : p);
+      return [...next, { stage, msg, ms, done, error, ts: Date.now() }];
+    });
+  }
   const sessionId = useMemo(() => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : String(Date.now())), []);
 
   const filled = drugs.filter((d) => d.trim().length > 0).length;
@@ -277,6 +303,7 @@ function InteractionsPanel() {
     const list = drugs.map((d) => d.trim()).filter(Boolean);
     if (list.length < 2) { setError('Enter at least 2 drugs'); return; }
     setError(null); setData(null); setLoading(true); setOpenIds({});
+    setTrace([]); setTotalMs(undefined);
     const t0 = Date.now();
     try {
       const r = await fetch('/api/drugs/interactions', {
@@ -284,8 +311,14 @@ function InteractionsPanel() {
         body: JSON.stringify({ drugs: list }),
       });
       if (!r.ok) { setError(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`); return; }
-      const d = (await r.json()) as InteractionsResp;
-      setData(d);
+      let d: InteractionsResp | null = null;
+      await consumeNdjson(r, (ev) => {
+        if (ev.type === 'progress') pushTrace(ev.stage, ev.msg, ev.ms);
+        else if (ev.type === 'result') { d = ev.data as InteractionsResp; setData(d); }
+        else if (ev.type === 'done') { setTotalMs(ev.ms); pushTrace('done', '', ev.ms, true); }
+        else if (ev.type === 'error') { setError(ev.message); pushTrace('done', ev.message, undefined, true, true); }
+      });
+      if (!d) return;
       fetch('/api/log/query', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -356,6 +389,7 @@ function InteractionsPanel() {
         </div>
       </form>
 
+      {(trace.length > 0 || loading) && <div className="mt-5"><TracePanel events={trace} totalMs={totalMs} /></div>}
       {error && <div className="mt-6 rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">{error}</div>}
 
       {loading && (

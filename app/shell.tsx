@@ -3,13 +3,14 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { MessageSquare, Sparkles, Pill, Brain, BookOpen } from 'lucide-react';
+import HealthPill from '@/components/HealthPill';
 
 const TABS = [
-  { href: '/ask', label: 'Ask', icon: MessageSquare, available: true },
-  { href: '/ddx', label: 'DDx', icon: Sparkles, available: false, phase: 'Phase 2' },
-  { href: '/drugs', label: 'Drugs', icon: Pill, available: false, phase: 'Phase 2' },
-  { href: '/coach', label: 'Coach', icon: Brain, available: false, phase: 'Phase 3' },
-  { href: '/review', label: 'Review', icon: BookOpen, available: false, phase: 'Phase 4' },
+  { href: '/ask', label: 'Ask', icon: MessageSquare },
+  { href: '/ddx', label: 'DDx', icon: Sparkles },
+  { href: '/drugs', label: 'Drugs', icon: Pill },
+  { href: '/coach', label: 'Coach', icon: Brain },
+  { href: '/review', label: 'Review', icon: BookOpen },
 ];
 
 export default function Shell({ children }: { children: React.ReactNode }) {
@@ -27,10 +28,11 @@ export default function Shell({ children }: { children: React.ReactNode }) {
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand text-white">
             <span className="text-sm font-bold">ET</span>
           </div>
-          <div>
+          <div className="min-w-0 flex-1">
             <div className="text-sm font-semibold tracking-tight text-brand">Even-Tutor</div>
-            <div className="text-[10px] uppercase tracking-wide text-slate-400">v0.2</div>
+            <div className="text-[10px] uppercase tracking-wide text-slate-400">v0.7</div>
           </div>
+          <HealthPill />
         </div>
         <nav className="flex-1 space-y-1 p-3">
           {TABS.map((t) => {
@@ -48,11 +50,6 @@ export default function Shell({ children }: { children: React.ReactNode }) {
               >
                 <Icon className={`h-5 w-5 ${active ? 'text-brand' : 'text-slate-500'}`} />
                 <span>{t.label}</span>
-                {!t.available && (
-                  <span className="ml-auto rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500">
-                    {t.phase}
-                  </span>
-                )}
               </Link>
             );
           })}
