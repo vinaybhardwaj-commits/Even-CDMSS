@@ -66,6 +66,7 @@ export type CalculatorResult = {
   sections: ResultSection[];
   // For eGFR specifically: the values written to sessionStorage['cdmss_renal_ctx'].
   pushed_to_context?: Record<string, unknown>;
+  llm_failed?: boolean;
   // Banner state (PRD §14.3 row 1 for partial, §4.2/4.5 for abnormal-result auto-banners).
   banner?: { tone: 'amber' | 'red' | 'info'; text: string; cta?: { label: string; href: string } };
 };
