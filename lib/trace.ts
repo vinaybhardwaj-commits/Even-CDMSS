@@ -50,14 +50,16 @@ export async function finishTrace(
 // Wraps llm.chat.completions.create with automatic event logging.
 // Logs: model, full prompt (messages), full response content, token usage, finish_reason, latency.
 // Returns the original response so callers can use it normally.
-type ChatParams = Parameters<typeof llm.chat.completions.create>[0];
-type ChatResult = Awaited<ReturnType<typeof llm.chat.completions.create>>;
-
+// Use 'any' for params/return because the OpenAI SDK's overload-based types conflict with
+// Ollama-specific extra fields (options, keep_alive) and our streaming/non-streaming union.
+// Callers know their own use case and cast accordingly.
 export async function tracedChat(
   traceId: string,
   label: string,
-  params: ChatParams
-): Promise<ChatResult> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  params: any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Promise<any> {
   const t0 = Date.now();
   // Log the request before firing
   const requestPayload = {
