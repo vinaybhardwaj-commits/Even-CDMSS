@@ -11,18 +11,35 @@ type Citation = {
   similarity: number; preview: string;
 };
 
+type PK = {
+  absorption?: string; distribution?: string; metabolism?: string; excretion?: string;
+  half_life?: string; bioavailability?: string; onset?: string; duration?: string;
+};
+type SpecialPop = {
+  pregnancy?: string; pediatric?: string; geriatric?: string; renal_impairment?: string;
+};
 type LookupResp = {
   input?: string;
   normalized?: string;
   drug_normalized?: string;
   class?: string;
+  subclass?: string;
+  mechanism_of_action?: string;
+  receptors_targets?: string[];
+  biochemistry?: string;
+  pharmacokinetics?: PK;
+  pharmacodynamics?: string;
   indications?: string[];
+  formulations?: string[];
   typical_dosing?: string[];
   renal_adjust?: string;
   hepatic_adjust?: string;
   contraindications?: string[];
   adverse_effects?: string[];
+  drug_interactions_summary?: string[];
   monitoring?: string[];
+  special_populations?: SpecialPop;
+  key_pearls?: string[];
   citations?: Citation[];
   duration_ms?: number;
   error?: string;
@@ -219,31 +236,88 @@ function LookupPanel() {
       {data && !loading && (
         <article className="mt-6 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
           <header className="border-b pb-3">
-            <div className="flex items-baseline justify-between">
+            <div className="flex items-baseline justify-between gap-2">
               <h2 className="text-xl font-semibold capitalize text-slate-900">{data.drug_normalized}</h2>
               {data.normalized && data.normalized !== data.input && (
-                <span className="text-xs text-slate-400">from &quot;{data.input}&quot;</span>
+                <span className="shrink-0 text-xs text-slate-400">from &quot;{data.input}&quot;</span>
               )}
             </div>
-            {data.class && <p className="mt-1 text-sm text-slate-500">{data.class}</p>}
+            <div className="mt-1 flex flex-wrap items-baseline gap-x-2 text-sm text-slate-500">
+              {data.class && <span>{data.class}</span>}
+              {data.subclass && <><span className="text-slate-300">·</span><span>{data.subclass}</span></>}
+            </div>
           </header>
 
-          <div className="mt-4 space-y-4 text-sm">
-            <Section title="Indications" items={data.indications} />
-            <Section title="Typical dosing" items={data.typical_dosing} />
-            {(data.renal_adjust || data.hepatic_adjust) && (
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                {data.renal_adjust && <PlainSection title="Renal adjustment" text={data.renal_adjust} />}
-                {data.hepatic_adjust && <PlainSection title="Hepatic adjustment" text={data.hepatic_adjust} />}
-              </div>
+          <div className="mt-4 space-y-5 text-sm">
+            <Group title="Pharmacology">
+              {data.mechanism_of_action && <PlainSection title="Mechanism of action" text={data.mechanism_of_action} />}
+              {(data.receptors_targets && data.receptors_targets.length > 0) && <Section title="Molecular targets" items={data.receptors_targets} />}
+              {data.biochemistry && <PlainSection title="Biochemistry" text={data.biochemistry} />}
+              {data.pharmacokinetics && Object.values(data.pharmacokinetics).some(Boolean) && (
+                <div>
+                  <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Pharmacokinetics</h3>
+                  <dl className="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2">
+                    {(['absorption','distribution','metabolism','excretion','half_life','bioavailability','onset','duration'] as const).map((k) => {
+                      const v = data.pharmacokinetics?.[k];
+                      if (!v) return null;
+                      return (
+                        <div key={k} className="flex gap-1.5">
+                          <dt className="w-24 shrink-0 text-[11px] uppercase tracking-wide text-slate-400">{k.replace('_',' ')}</dt>
+                          <dd className="flex-1 text-slate-700">{v}</dd>
+                        </div>
+                      );
+                    })}
+                  </dl>
+                </div>
+              )}
+              {data.pharmacodynamics && <PlainSection title="Pharmacodynamics" text={data.pharmacodynamics} />}
+            </Group>
+
+            <Group title="Clinical use">
+              {(data.indications && data.indications.length > 0) && <Section title="Indications" items={data.indications} />}
+              {(data.typical_dosing && data.typical_dosing.length > 0) && <Section title="Typical dosing" items={data.typical_dosing} />}
+              {(data.formulations && data.formulations.length > 0) && <Section title="Formulations" items={data.formulations} />}
+              {(data.renal_adjust || data.hepatic_adjust) && (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {data.renal_adjust && <PlainSection title="Renal adjustment" text={data.renal_adjust} />}
+                  {data.hepatic_adjust && <PlainSection title="Hepatic adjustment" text={data.hepatic_adjust} />}
+                </div>
+              )}
+              {data.special_populations && Object.values(data.special_populations).some(Boolean) && (
+                <div>
+                  <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Special populations</h3>
+                  <dl className="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2">
+                    {(['pregnancy','pediatric','geriatric','renal_impairment'] as const).map((k) => {
+                      const v = data.special_populations?.[k];
+                      if (!v) return null;
+                      return (
+                        <div key={k} className="flex gap-1.5">
+                          <dt className="w-24 shrink-0 text-[11px] uppercase tracking-wide text-slate-400">{k.replace('_',' ')}</dt>
+                          <dd className="flex-1 text-slate-700">{v}</dd>
+                        </div>
+                      );
+                    })}
+                  </dl>
+                </div>
+              )}
+            </Group>
+
+            <Group title="Safety">
+              {(data.contraindications && data.contraindications.length > 0) && <Section title="Contraindications" items={data.contraindications} dangerous />}
+              {(data.adverse_effects && data.adverse_effects.length > 0) && <Section title="Adverse effects" items={data.adverse_effects} />}
+              {(data.drug_interactions_summary && data.drug_interactions_summary.length > 0) && <Section title="Notable interactions" items={data.drug_interactions_summary} />}
+              {(data.monitoring && data.monitoring.length > 0) && <Section title="Monitoring" items={data.monitoring} />}
+            </Group>
+
+            {(data.key_pearls && data.key_pearls.length > 0) && (
+              <Group title="Pearls">
+                <Section title="" items={data.key_pearls} pearls />
+              </Group>
             )}
-            <Section title="Contraindications" items={data.contraindications} dangerous />
-            <Section title="Key adverse effects" items={data.adverse_effects} />
-            <Section title="Monitoring" items={data.monitoring} />
           </div>
 
           {data.citations && data.citations.length > 0 && (
-            <div className="mt-4 flex flex-wrap items-center gap-1.5 border-t pt-3">
+            <div className="mt-5 flex flex-wrap items-center gap-1.5 border-t pt-3">
               <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Sources:</span>
               {data.citations.map((c) => (
                 <button key={c.n} onClick={() => onCite(c.n)}
@@ -262,13 +336,26 @@ function LookupPanel() {
   );
 }
 
-function Section({ title, items, dangerous }: { title: string; items?: string[]; dangerous?: boolean }) {
+function Section({ title, items, dangerous, pearls }: { title: string; items?: string[]; dangerous?: boolean; pearls?: boolean }) {
   if (!items || items.length === 0) return null;
   return (
     <div>
-      <h3 className={`mb-1 text-[11px] font-semibold uppercase tracking-wide ${dangerous ? 'text-rose-700' : 'text-slate-500'}`}>{title}</h3>
-      <ul className="ml-4 list-disc space-y-0.5 text-slate-700">{items.map((it, i) => <li key={i}>{it}</li>)}</ul>
+      {title && <h3 className={`mb-1 text-[11px] font-semibold uppercase tracking-wide ${dangerous ? 'text-rose-700' : 'text-slate-500'}`}>{title}</h3>}
+      <ul className={`ml-4 list-disc space-y-1 ${pearls ? 'text-slate-800 marker:text-brand' : 'text-slate-700'}`}>{items.map((it, i) => <li key={i}>{it}</li>)}</ul>
     </div>
+  );
+}
+
+function Group({ title, children, defaultOpen = true }: { title: string; children: React.ReactNode; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <section className="rounded-lg border border-slate-200/70 bg-slate-50/40">
+      <button onClick={() => setOpen(!open)} className="flex w-full items-center justify-between px-3 py-2 text-left">
+        <span className="text-[11px] font-bold uppercase tracking-wider text-brand">{title}</span>
+        <span className="text-slate-400">{open ? '−' : '+'}</span>
+      </button>
+      {open && <div className="space-y-3 border-t border-slate-200/70 px-3 py-3">{children}</div>}
+    </section>
   );
 }
 function PlainSection({ title, text }: { title: string; text: string }) {
