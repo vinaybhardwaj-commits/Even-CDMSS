@@ -72,9 +72,8 @@ export async function normalizeDrugName(input: string): Promise<string> {
       ],
       temperature: 0,
       max_tokens: 20,
-      keep_alive: '15m',
-      options: { num_ctx: 16384 },
-    } as any);
+        ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
+      });
     const out = (r.choices?.[0]?.message?.content ?? '').trim().toLowerCase();
     // Sanity: must be alphanumeric+hyphen+space, <50 chars
     if (out && /^[a-z][a-z0-9\s\-]{0,49}$/.test(out)) return out;

@@ -62,9 +62,8 @@ export async function POST(req: NextRequest) {
       ],
       temperature: 0.3,
       max_tokens: 1500,
-      keep_alive: '15m',
-      options: { num_ctx: 16384 },
-    } as any);
+        ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
+      });
     raw = r.choices?.[0]?.message?.content ?? '';
     const parsed = parseLooseJson(raw) as {
       summary?: string; themes?: string[]; gaps?: string[];

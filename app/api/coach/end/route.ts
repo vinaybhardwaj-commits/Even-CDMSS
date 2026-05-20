@@ -33,9 +33,8 @@ export async function POST(req: NextRequest) {
       ],
       temperature: 0.3,
       max_tokens: 400,
-      keep_alive: '15m',
-      options: { num_ctx: 16384 },
-    } as any);
+        ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
+      });
     raw = r.choices?.[0]?.message?.content ?? '';
     let t = raw.trim();
     if (t.startsWith('```')) t = t.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();

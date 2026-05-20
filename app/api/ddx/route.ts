@@ -82,8 +82,8 @@ export async function POST(req: NextRequest) {
         messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: userMsg }],
         temperature: 0.2,
         max_tokens: 1500,
-        options: { num_ctx: 16384 },
-      } as any);
+        ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
+      });
       const raw = r.choices?.[0]?.message?.content ?? '';
       emit({ type: 'progress', stage: 'parsing', msg: 'Parsing differential…', ms: Date.now() - t0 });
 

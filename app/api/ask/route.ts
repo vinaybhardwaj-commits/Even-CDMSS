@@ -67,8 +67,8 @@ export async function POST(req: NextRequest) {
         ],
         temperature: 0.2,
         stream: true,
-        options: { num_ctx: 16384 },
-      } as any);
+        ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
+      });
 
       for await (const part of completion) {
         const delta = part.choices?.[0]?.delta?.content ?? '';
