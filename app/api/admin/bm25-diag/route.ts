@@ -54,9 +54,9 @@ export async function GET(req: NextRequest) {
     );
     out.tsquery = tsqRows[0];
 
-    // 4. Run the BM25 query (same shape as lib/retrieve.ts) and count hits
-    const t0 = Date.now();
-    const bm25Hits = await sqlFn(
+    // 4a. Run the CURRENT (broken) BM25 query — plainto_tsquery ANDs every term
+    const tA = Date.now();
+    const bm25AndHits = await sqlFn(
       `SELECT id, ts_rank_cd(text_tsv, plainto_tsquery('english', $1)) AS rank, book, chapter
        FROM mksap_chunks
        WHERE text_tsv @@ plainto_tsquery('english', $1)
@@ -65,9 +65,25 @@ export async function GET(req: NextRequest) {
        LIMIT 5`,
       [q]
     );
-    out.bm25_latency_ms = Date.now() - t0;
-    out.bm25_hit_count = bm25Hits.length;
-    out.bm25_sample_hits = bm25Hits;
+    out.bm25_AND_latency_ms = Date.now() - tA;
+    out.bm25_AND_hit_count = bm25AndHits.length;
+    out.bm25_AND_sample_hits = bm25AndHits;
+
+    // 4b. PROPOSED FIX: rewrite the AND-tsquery to OR by string-replacement on the
+    //     plainto_tsquery output. Same lexemes, same stemming, but ' & ' → ' | '.
+    const tB = Date.now();
+    const bm25OrHits = await sqlFn(
+      `SELECT id, ts_rank_cd(text_tsv, to_tsquery('english', replace(plainto_tsquery('english', $1)::text, ' & ', ' | '))) AS rank, book, chapter
+       FROM mksap_chunks
+       WHERE text_tsv @@ to_tsquery('english', replace(plainto_tsquery('english', $1)::text, ' & ', ' | '))
+         AND text IS NOT NULL
+       ORDER BY rank DESC
+       LIMIT 5`,
+      [q]
+    );
+    out.bm25_OR_latency_ms = Date.now() - tB;
+    out.bm25_OR_hit_count = bm25OrHits.length;
+    out.bm25_OR_sample_hits = bm25OrHits;
 
     // 5. Index check
     const idx = await sqlFn(
