@@ -1,9 +1,12 @@
 import { NextResponse } from 'next/server';
+import { requireAdmin } from '@/lib/admin-gate';
+import type { NextRequest } from 'next/server';
 import { sql } from '@/lib/db';
 
 export const runtime = 'nodejs';
 
-export async function POST() {
+export async function POST(req: NextRequest) {
+  const denied = requireAdmin(req); if (denied) return denied;
   const steps: Record<string, string> = {};
   try {
     // user_profiles — lightweight, PIN auth, no passwords per PRD

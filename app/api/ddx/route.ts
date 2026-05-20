@@ -117,7 +117,6 @@ export async function POST(req: NextRequest) {
       citations,
       presentation: display,
       duration_ms: Date.now() - t0,
-      _debug_raw: raw.slice(0, 4000),
     });
   } catch (e) {
     return NextResponse.json({

@@ -79,7 +79,6 @@ export async function POST(req: NextRequest) {
       monitoring: Array.isArray(parsed.monitoring) ? parsed.monitoring : [],
       citations,
       duration_ms: Date.now() - t0,
-      _debug_raw: llmRaw.slice(0, 3000),
     });
   } catch (e) {
     return NextResponse.json({

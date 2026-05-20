@@ -95,7 +95,6 @@ export async function POST(req: NextRequest) {
       pairs,
       citations,
       duration_ms: Date.now() - t0,
-      _debug_raw: llmRaw.slice(0, 3000),
     });
   } catch (e) {
     return NextResponse.json({

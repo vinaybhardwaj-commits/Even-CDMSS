@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { requireAdmin } from '@/lib/admin-gate';
 import { retrieve } from '@/lib/retrieve';
 
 export const runtime = 'nodejs';
 
 export async function GET(req: NextRequest) {
+  const denied = requireAdmin(req); if (denied) return denied;
   const q = req.nextUrl.searchParams.get('q') || '';
   const topK = parseInt(req.nextUrl.searchParams.get('k') || '10', 10);
   const minSim = parseFloat(req.nextUrl.searchParams.get('min') || '0');

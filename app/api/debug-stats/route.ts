@@ -1,10 +1,12 @@
 import { NextResponse } from 'next/server';
+import { requireAdmin } from '@/lib/admin-gate';
 import { sql } from '@/lib/db';
 
 export const runtime = 'nodejs';
 
 // Quick corpus stats — book-level chunk counts, sample text matches.
-export async function GET(req: Request) {
+export async function GET(req: NextRequest) {
+  const denied = requireAdmin(req); if (denied) return denied;
   const url = new URL(req.url);
   const grep = url.searchParams.get('grep');
   const out: Record<string, unknown> = {};

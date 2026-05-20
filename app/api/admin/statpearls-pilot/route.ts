@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { requireAdmin } from '@/lib/admin-gate';
 import { sql } from '@/lib/db';
 import { embedQuery, vectorLiteral } from '@/lib/llm';
 import { createHash } from 'crypto';
@@ -90,6 +91,7 @@ function parseArticle(raw: string, nbk: string) {
 }
 
 export async function POST(req: NextRequest) {
+  const denied = requireAdmin(req); if (denied) return denied;
   let body: { nbks?: string[] };
   try { body = await req.json(); } catch { return NextResponse.json({ error: 'bad json' }, { status: 400 }); }
   const nbks = body.nbks || [];

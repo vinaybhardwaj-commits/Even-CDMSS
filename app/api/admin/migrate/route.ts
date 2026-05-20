@@ -1,10 +1,13 @@
 import { NextResponse } from 'next/server';
+import { requireAdmin } from '@/lib/admin-gate';
+import type { NextRequest } from 'next/server';
 import { sql } from '@/lib/db';
 
 export const runtime = 'nodejs';
 
 // One-shot, idempotent. v0.2 K1.1: add source column + index.
-export async function POST() {
+export async function POST(req: NextRequest) {
+  const denied = requireAdmin(req); if (denied) return denied;
   const steps: Record<string, string> = {};
   try {
     await sql`ALTER TABLE mksap_chunks ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'mksap-19'`;
