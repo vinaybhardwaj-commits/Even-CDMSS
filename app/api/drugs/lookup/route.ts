@@ -6,12 +6,13 @@ import { parseLooseJson, normalizeDrugName } from '@/lib/drugs';
 import { makeNdjsonStream, ndjsonHeaders } from '@/lib/stream';
 
 export const runtime = 'nodejs';
-// 300s (5 min) — needed because the 3-phase pipeline (llama fast + qwen pharm + qwen extras)
-// with full 16384-token context can run 150-200s end-to-end. At maxDuration=120 the lambda was
-// being killed mid–phase_extras, leaving traces stuck at status='running' and the last phase's
-// llm_response event unwritten. Pro Plus supports up to 800s; 300 keeps headroom without
-// hiding genuine perf regressions.
-export const maxDuration = 300;
+// 500s — D13.0 bump from 300. Amiodarone trace 33d60f4b ran 241s (80% of the 300s cap)
+// with deeper completions from D12.1's prompt re-tune. Drugs with denser clinically-rich
+// content (rivaroxaban, methotrexate, anything with 10+ interactions) project to push past
+// 300s and lose phase_extras when the lambda is killed mid-stream. 500s gives ~2× the
+// observed worst case while staying well under Pro Plus's 800s ceiling. Trace will surface
+// any drug that crosses the new bound via status='partial' + missing last llm_response.
+export const maxDuration = 500;
 
 
 function toStringList(v: unknown): string[] {
