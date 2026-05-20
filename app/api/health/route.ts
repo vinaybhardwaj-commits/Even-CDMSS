@@ -5,8 +5,9 @@ export const runtime = 'edge';
 
 export async function GET() {
   const checks: Record<string, unknown> = {};
+  let tooltipCacheVersion: string | null = null;
 
-  // 1. Neon connectivity + chunk count + book count
+  // 1. Neon connectivity + chunk count + book count + tooltip cache version (PRD §3.14)
   try {
     const sql = neon(process.env.DATABASE_URL!);
     const start = Date.now();
@@ -21,6 +22,14 @@ export async function GET() {
       chunks: rows[0]?.chunks ?? 0,
       books: rows[0]?.books ?? 0,
     };
+
+    // Tooltip cache version (best-effort — never breaks health on absence)
+    try {
+      const v = (await sql`SELECT value FROM app_settings WHERE key = 'tooltip_cache_version'`) as Array<{ value: string }>;
+      tooltipCacheVersion = v[0]?.value ?? null;
+    } catch {
+      // app_settings table may not exist yet (pre-v8); leave as null
+    }
   } catch (e) {
     checks.neon = { status: 'error', error: String((e as Error).message) };
   }
@@ -42,7 +51,13 @@ export async function GET() {
   }
 
   const allOk = Object.values(checks).every((c) => (c as { status: string }).status === 'ok');
-  return NextResponse.json({ ok: allOk, checks, timestamp: new Date().toISOString() }, {
-    status: allOk ? 200 : 503,
-  });
+  return NextResponse.json(
+    {
+      ok: allOk,
+      checks,
+      tooltip_cache_version: tooltipCacheVersion,
+      timestamp: new Date().toISOString(),
+    },
+    { status: allOk ? 200 : 503 },
+  );
 }
