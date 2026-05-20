@@ -40,6 +40,15 @@ function toStringDict(v: unknown): Record<string, string> {
   return out;
 }
 
+
+// Each phase owns specific fields. Later phases must NEVER emit Phase 1's fields,
+// or empty values would overwrite populated skeleton data client-side.
+const PHASE_FIELDS: Record<string, string[]> = {
+  fast: ['drug_normalized', 'class', 'subclass', 'indications', 'typical_dosing', 'renal_adjust', 'hepatic_adjust', 'contraindications', 'adverse_effects', 'monitoring', 'citation_ids'],
+  pharmacology: ['mechanism_of_action', 'receptors_targets', 'biochemistry', 'pharmacokinetics', 'pharmacodynamics'],
+  extras: ['formulations', 'drug_interactions_summary', 'special_populations', 'key_pearls'],
+};
+
 const FAST_MODEL = 'llama3.1:8b';
 const DEEP_MODEL = 'qwen2.5:14b';
 
@@ -166,11 +175,18 @@ export async function POST(req: NextRequest) {
             if (v != null && typeof v !== 'string') (parsed as Record<string, unknown>)[f] = String(v);
           }
 
+          // Whitelist: only fields belonging to THIS phase get emitted.
+          // Phase 2's qwen sometimes returns indications:[] or other Phase 1 keys, which would overwrite skeleton data.
+          const allowed = PHASE_FIELDS[phase.name] || [];
+          const filtered: Record<string, unknown> = {};
+          for (const k of allowed) {
+            if (k in (parsed as object)) filtered[k] = (parsed as Record<string, unknown>)[k];
+          }
           if (phase.name === 'fast') {
-            const payload = { ...parsed, input: raw, normalized, drug_normalized: parsed.drug_normalized ?? normalized, citations };
+            const payload = { ...filtered, input: raw, normalized, drug_normalized: parsed.drug_normalized ?? normalized, citations };
             emit({ type: 'result', data: { phase: 'fast', ...payload } });
           } else {
-            emit({ type: 'result', data: { phase: phase.name, ...parsed } });
+            emit({ type: 'result', data: { phase: phase.name, ...filtered } });
           }
           emit({ type: 'progress', stage: 'generating', msg: `Phase ${PHASES.indexOf(phase) + 1}/${PHASES.length} ${phase.name} complete`, ms: Date.now() - t0 });
         } catch (e) {
