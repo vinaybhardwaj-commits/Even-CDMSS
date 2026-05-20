@@ -147,14 +147,15 @@ function LookupPanel() {
         body: JSON.stringify({ drug: q }),
       });
       if (!r.ok) { setError(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`); return; }
-      let d: LookupResp | null = null;
+      const dRef: { current: LookupResp | null } = { current: null };
       await consumeNdjson(r, (ev) => {
         if (ev.type === 'progress') pushTrace(ev.stage, ev.msg, ev.ms);
-        else if (ev.type === 'result') { d = ev.data as LookupResp; setData(d); }
+        else if (ev.type === 'result') { dRef.current = ev.data as LookupResp; setData(dRef.current); }
         else if (ev.type === 'done') { setTotalMs(ev.ms); pushTrace('done', '', ev.ms, true); }
         else if (ev.type === 'error') { setError(ev.message); pushTrace('done', ev.message, undefined, true, true); }
       });
-      if (!d) return;
+      if (!dRef.current) return;
+      const d = dRef.current;
       fetch('/api/log/query', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -311,14 +312,15 @@ function InteractionsPanel() {
         body: JSON.stringify({ drugs: list }),
       });
       if (!r.ok) { setError(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`); return; }
-      let d: InteractionsResp | null = null;
+      const dRef: { current: InteractionsResp | null } = { current: null };
       await consumeNdjson(r, (ev) => {
         if (ev.type === 'progress') pushTrace(ev.stage, ev.msg, ev.ms);
-        else if (ev.type === 'result') { d = ev.data as InteractionsResp; setData(d); }
+        else if (ev.type === 'result') { dRef.current = ev.data as InteractionsResp; setData(dRef.current); }
         else if (ev.type === 'done') { setTotalMs(ev.ms); pushTrace('done', '', ev.ms, true); }
         else if (ev.type === 'error') { setError(ev.message); pushTrace('done', ev.message, undefined, true, true); }
       });
-      if (!d) return;
+      if (!dRef.current) return;
+      const d = dRef.current;
       fetch('/api/log/query', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

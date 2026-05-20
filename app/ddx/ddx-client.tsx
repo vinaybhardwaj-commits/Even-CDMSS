@@ -169,15 +169,16 @@ export default function DdxClient() {
         setError(`HTTP ${r.status}: ${t.slice(0, 200)}`);
         return;
       }
-      let d: DdxResponse | null = null;
+      const dRef: { current: DdxResponse | null } = { current: null };
       await consumeNdjson(r, (ev) => {
         if (ev.type === 'progress') pushTrace(ev.stage, ev.msg, ev.ms);
         else if (ev.type === 'sources') { /* citations come with result */ }
-        else if (ev.type === 'result') { d = ev.data as DdxResponse; setData(d); }
+        else if (ev.type === 'result') { dRef.current = ev.data as DdxResponse; setData(dRef.current); }
         else if (ev.type === 'done') { setTotalMs(ev.ms); pushTrace('done', '', ev.ms, true); }
         else if (ev.type === 'error') { setError(ev.message); pushTrace('done', ev.message, undefined, true, true); }
       });
-      if (!d) return;
+      if (!dRef.current) return;
+      const d = dRef.current;
       // Fire-and-forget log
       fetch('/api/log/query', {
         method: 'POST',
