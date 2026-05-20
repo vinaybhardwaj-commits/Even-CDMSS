@@ -56,7 +56,7 @@ export async function POST(req: NextRequest) {
       model: COACH_MODEL,
       messages: llmInput,
       temperature: 0.3,
-      max_tokens: 500,,
+      max_tokens: 500,
         // @ts-expect-error — Ollama: num_ctx prevents KV-cache thrashing
         options: { num_ctx: 16384 },
       });
