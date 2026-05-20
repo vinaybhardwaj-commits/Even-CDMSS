@@ -114,11 +114,11 @@ export async function POST(req: NextRequest) {
           // Phase 1 includes drug_normalized + citations
           if (phase.name === 'fast') {
             const payload = { ...parsed, input: raw, normalized, drug_normalized: parsed.drug_normalized ?? normalized, citations };
-            emit({ type: 'result', data: { phase: 'fast', ...payload } });
+            emit({ type: 'result', data: { phase: 'fast', ...payload, _debug_keys: Object.keys(parsed), _debug_raw: raw_out.slice(0, 2000) } });
           } else {
-            emit({ type: 'result', data: { phase: phase.name, ...parsed } });
+            emit({ type: 'result', data: { phase: phase.name, ...parsed, _debug_keys: Object.keys(parsed), _debug_raw: raw_out.slice(0, 2000) } });
           }
-          emit({ type: 'progress', stage: 'generating', msg: `Phase ${PHASES.indexOf(phase) + 1}/${PHASES.length} ${phase.name} complete`, ms: Date.now() - t0 });
+          emit({ type: 'progress', stage: 'generating', msg: `Phase ${PHASES.indexOf(phase) + 1}/${PHASES.length} ${phase.name} complete (keys: ${Object.keys(parsed).join(', ')})`, ms: Date.now() - t0 });
         } catch (e) {
           // Don't kill the whole pipeline if a later phase fails — emit error event and continue
           emit({ type: 'error', message: `phase ${phase.name} failed: ${String((e as Error).message)}` });
