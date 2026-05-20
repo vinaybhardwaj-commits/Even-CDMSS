@@ -67,7 +67,6 @@ export async function POST(req: NextRequest) {
         ],
         temperature: 0.2,
         stream: true,
-        // @ts-expect-error — Ollama: num_ctx prevents KV-cache thrashing
         options: { num_ctx: 16384 },
       } as any);
 

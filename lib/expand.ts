@@ -21,7 +21,6 @@ export async function expandQuery(question: string): Promise<string> {
       ],
       temperature: 0.1,
       max_tokens: 200,
-      // @ts-expect-error — Ollama: num_ctx + keep_alive
       keep_alive: '15m',
       options: { num_ctx: 16384 },
     } as any);

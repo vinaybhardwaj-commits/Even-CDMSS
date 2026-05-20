@@ -57,7 +57,6 @@ export async function POST(req: NextRequest) {
       messages: llmInput,
       temperature: 0.3,
       max_tokens: 500,
-        // @ts-expect-error — Ollama: num_ctx prevents KV-cache thrashing
         options: { num_ctx: 16384 },
       } as any);
     raw = r.choices?.[0]?.message?.content ?? '';

@@ -106,7 +106,6 @@ export async function POST(req: NextRequest) {
             ],
             temperature: 0.2,
             max_tokens: phase.maxTokens,
-            // @ts-expect-error — Ollama extensions: num_ctx prevents KV-cache thrashing on long prompts
             keep_alive: '15m',
             options: { num_ctx: 16384, num_predict: phase.maxTokens },
           } as any);
