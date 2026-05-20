@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { retrieve } from '@/lib/retrieve';
 import { sql } from '@/lib/db';
-import { llm, COACH_MODEL, buildCoachSystemPrompt, parseLooseJson, Turn } from '@/lib/coach';
+import { COACH_MODEL, buildCoachSystemPrompt, parseLooseJson, Turn } from '@/lib/coach';
+import { startTrace, finishTrace, tracedChat } from '@/lib/trace';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -35,15 +36,16 @@ export async function POST(req: NextRequest) {
   const system = buildCoachSystemPrompt(difficulty, mode, subject);
   const userMsg = `Excerpts (your grounding, do NOT quote to the learner):\n${contextBlock}\n\nThe learner has just initiated the session. Output the FIRST coach turn — a single Socratic opener question matched to the current difficulty. Use this exact JSON shape: {"evaluation":{"correctness":"clarifying","feedback":"Session start"},"difficulty_change":"stay","mastered":false,"next_turn":{"type":"question","content":"..."}}`;
 
+  const traceId = await startTrace('coach_start', { mode, subject, difficulty });
   let raw = '';
   try {
-    const r = await llm.chat.completions.create({
+    const r = await tracedChat(traceId, 'opener', {
       model: COACH_MODEL,
       messages: [{ role: 'system', content: system }, { role: 'user', content: userMsg }],
       temperature: 0.3,
       max_tokens: 400,
-        ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
-      });
+      ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
+    });
     raw = r.choices?.[0]?.message?.content ?? '';
     const parsed = parseLooseJson(raw) as { next_turn?: { content?: string } };
     const opener = (parsed.next_turn?.content || '').trim();
@@ -55,14 +57,16 @@ export async function POST(req: NextRequest) {
       [1, subject, difficulty, JSON.stringify([openTurn])]
     )) as Array<{ id: number }>;
 
+    await finishTrace(traceId, 'success');
     return NextResponse.json({
       session_id: inserted[0].id,
       topic: subject,
       mode,
       difficulty,
       opener: openTurn,
-    });
+    }, { headers: { 'X-Trace-Id': traceId } });
   } catch (e) {
-    return NextResponse.json({ error: 'LLM failure', detail: String((e as Error).message), raw: raw.slice(0, 300) }, { status: 502 });
+    await finishTrace(traceId, 'error', String((e as Error).message));
+    return NextResponse.json({ error: 'LLM failure', detail: String((e as Error).message), raw: raw.slice(0, 300) }, { status: 502, headers: { 'X-Trace-Id': traceId } });
   }
 }

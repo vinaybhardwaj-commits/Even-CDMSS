@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { retrieve } from '@/lib/retrieve';
 import { sql } from '@/lib/db';
-import { llm, COACH_MODEL, buildCoachSystemPrompt, parseLooseJson, loadSession, computeAccuracy, Turn } from '@/lib/coach';
+import { COACH_MODEL, buildCoachSystemPrompt, parseLooseJson, loadSession, computeAccuracy, Turn } from '@/lib/coach';
+import { startTrace, finishTrace, tracedChat } from '@/lib/trace';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -50,15 +51,16 @@ export async function POST(req: NextRequest) {
     },
   ];
 
+  const traceId = await startTrace('coach_respond', { session_id: id, user_message: msg, turn_count: turnCount, difficulty: sess.difficulty });
   let raw = '';
   try {
-    const r = await llm.chat.completions.create({
+    const r = await tracedChat(traceId, 'turn', {
       model: COACH_MODEL,
       messages: llmInput,
       temperature: 0.3,
       max_tokens: 500,
-        ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
-      });
+      ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
+    });
     raw = r.choices?.[0]?.message?.content ?? '';
     const parsed = parseLooseJson(raw) as {
       evaluation?: { correctness?: string; feedback?: string };
@@ -99,6 +101,7 @@ export async function POST(req: NextRequest) {
       [JSON.stringify(newTurns), newDifficulty, accuracy, ended_at, outcome, id]
     );
 
+    await finishTrace(traceId, 'success');
     return NextResponse.json({
       session_id: id,
       user_turn: userTurn,
@@ -110,8 +113,9 @@ export async function POST(req: NextRequest) {
       ended_at,
       outcome,
       is_summary: parsed.next_turn?.type === 'summary',
-    });
+    }, { headers: { 'X-Trace-Id': traceId } });
   } catch (e) {
-    return NextResponse.json({ error: 'LLM failure', detail: String((e as Error).message), raw: raw.slice(0, 300) }, { status: 502 });
+    await finishTrace(traceId, 'error', String((e as Error).message));
+    return NextResponse.json({ error: 'LLM failure', detail: String((e as Error).message), raw: raw.slice(0, 300) }, { status: 502, headers: { 'X-Trace-Id': traceId } });
   }
 }

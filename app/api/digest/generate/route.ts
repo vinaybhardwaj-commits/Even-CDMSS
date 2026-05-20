@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
-import { llm } from '@/lib/llm';
 import { parseLooseJson } from '@/lib/drugs';
+import { startTrace, finishTrace, tracedChat } from '@/lib/trace';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -52,9 +52,10 @@ export async function POST(req: NextRequest) {
     return `Query ID ${q.id} (${q.feature}, ${q.created_at}):\nQ: ${q.query_text}\nA: ${ans}`;
   }).join('\n\n---\n\n');
 
+  const traceId = await startTrace('digest_generate', { user_id: userId, window_start: windowStart.toISOString(), query_count: queries.length });
   let raw = '';
   try {
-    const r = await llm.chat.completions.create({
+    const r = await tracedChat(traceId, 'digest', {
       model: 'llama3.1:8b',
       messages: [
         { role: 'system', content: SYSTEM },
@@ -62,8 +63,8 @@ export async function POST(req: NextRequest) {
       ],
       temperature: 0.3,
       max_tokens: 1500,
-        ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
-      });
+      ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
+    });
     raw = r.choices?.[0]?.message?.content ?? '';
     const parsed = parseLooseJson(raw) as {
       summary?: string; themes?: string[]; gaps?: string[];
@@ -97,6 +98,7 @@ export async function POST(req: NextRequest) {
        JSON.stringify(parsed.themes || []), JSON.stringify(parsed.gaps || []), insertedIds, queries.length]
     ));
 
+    await finishTrace(traceId, 'success');
     return NextResponse.json({
       digest_id: drRows[0]?.id,
       window_start: windowStart.toISOString(),
@@ -111,8 +113,9 @@ export async function POST(req: NextRequest) {
         back: c.back,
         source_query_id: validIds.has(c.source_query_id || 0) ? c.source_query_id : null,
       })),
-    });
+    }, { headers: { 'X-Trace-Id': traceId } });
   } catch (e) {
-    return NextResponse.json({ error: 'LLM failure', detail: String((e as Error).message), raw: raw.slice(0, 300) }, { status: 502 });
+    await finishTrace(traceId, 'error', String((e as Error).message));
+    return NextResponse.json({ error: 'LLM failure', detail: String((e as Error).message), raw: raw.slice(0, 300) }, { status: 502, headers: { 'X-Trace-Id': traceId } });
   }
 }

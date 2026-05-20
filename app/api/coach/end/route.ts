@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
-import { llm, COACH_MODEL, loadSession, computeAccuracy } from '@/lib/coach';
+import { COACH_MODEL, loadSession, computeAccuracy } from '@/lib/coach';
+import { startTrace, finishTrace, tracedChat } from '@/lib/trace';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -23,9 +24,10 @@ export async function POST(req: NextRequest) {
   const transcript = (sess.turns || []).map((t) => `${t.role.toUpperCase()}: ${t.content}`).join('\n\n');
   const accuracy = computeAccuracy(sess.turns || []);
 
+  const traceId = await startTrace('coach_end', { session_id: id, topic: sess.topic, difficulty: sess.difficulty, accuracy });
   let raw = '';
   try {
-    const r = await llm.chat.completions.create({
+    const r = await tracedChat(traceId, 'summary', {
       model: COACH_MODEL,
       messages: [
         { role: 'system', content: SUMMARY_SYSTEM },
@@ -33,8 +35,8 @@ export async function POST(req: NextRequest) {
       ],
       temperature: 0.3,
       max_tokens: 400,
-        ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
-      });
+      ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
+    });
     raw = r.choices?.[0]?.message?.content ?? '';
     let t = raw.trim();
     if (t.startsWith('```')) t = t.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
@@ -49,6 +51,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    await finishTrace(traceId, 'success');
     return NextResponse.json({
       session_id: id,
       accuracy: Number(accuracy.toFixed(2)),
@@ -56,8 +59,9 @@ export async function POST(req: NextRequest) {
       concepts_mastered: Array.isArray(parsed.concepts_mastered) ? parsed.concepts_mastered : [],
       gaps: Array.isArray(parsed.gaps) ? parsed.gaps : [],
       suggested_next: parsed.suggested_next || '',
-    });
+    }, { headers: { 'X-Trace-Id': traceId } });
   } catch (e) {
-    return NextResponse.json({ error: 'LLM failure', detail: String((e as Error).message), raw: raw.slice(0, 300) }, { status: 502 });
+    await finishTrace(traceId, 'error', String((e as Error).message));
+    return NextResponse.json({ error: 'LLM failure', detail: String((e as Error).message), raw: raw.slice(0, 300) }, { status: 502, headers: { 'X-Trace-Id': traceId } });
   }
 }

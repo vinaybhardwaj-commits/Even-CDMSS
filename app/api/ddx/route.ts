@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { retrieve } from '@/lib/retrieve';
-import { llm } from '@/lib/llm';
 import { makeNdjsonStream, ndjsonHeaders } from '@/lib/stream';
+import { startTrace, finishTrace, tracedChat } from '@/lib/trace';
 
 export const runtime = 'nodejs';
 export const maxDuration = 120;
@@ -55,14 +55,17 @@ export async function POST(req: NextRequest) {
 
   const { stream, emit, close } = makeNdjsonStream();
   const t0 = Date.now();
+  const traceId = await startTrace('ddx', { cc: body.cc, age: body.age, sex: body.sex, history: body.history, exam: body.exam, vitals: body.vitals });
 
   (async () => {
+    let outcome: 'success' | 'error' | 'partial' = 'success';
+    let outcomeMsg: string | undefined;
     try {
       emit({ type: 'progress', stage: 'expanding', msg: 'Building clinical summary, expanding query…' });
       const result = await retrieve(queryHint || display, { topK: 8, minSimilarity: 0.4 });
       const hits = result.hits;
       emit({ type: 'progress', stage: 'retrieving', msg: `Retrieved ${hits.length} excerpts`, ms: Date.now() - t0 });
-      if (hits.length === 0) { emit({ type: 'error', message: 'no excerpts above threshold — presentation may be too vague' }); close(); return; }
+      if (hits.length === 0) { emit({ type: 'error', message: 'no excerpts above threshold — presentation may be too vague' }); outcome = 'error'; outcomeMsg = 'no excerpts above threshold'; close(); return; }
 
       const citations = hits.map((h, i) => ({
         n: i + 1, id: h.id, book: h.book, chapter: h.chapter,
@@ -77,7 +80,7 @@ export async function POST(req: NextRequest) {
       const userMsg = `CLINICAL PRESENTATION:\n${display}\n\nMEDICAL EXCERPTS:\n${contextBlock}\n\nOutput ONLY the JSON object now, starting with {. No prose, no markdown fences.`;
 
       emit({ type: 'progress', stage: 'generating', msg: `Reasoning with ${DDX_MODEL}…`, ms: Date.now() - t0 });
-      const r = await llm.chat.completions.create({
+      const r = await tracedChat(traceId, 'ddx_generation', {
         model: DDX_MODEL,
         messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: userMsg }],
         temperature: 0.2,
@@ -105,9 +108,16 @@ export async function POST(req: NextRequest) {
       });
       emit({ type: 'done', ms: Date.now() - t0 });
     } catch (e) {
-      emit({ type: 'error', message: String((e as Error).message) });
-    } finally { close(); }
+      outcome = 'error';
+      outcomeMsg = String((e as Error).message);
+      emit({ type: 'error', message: outcomeMsg });
+    } finally {
+      await finishTrace(traceId, outcome, outcomeMsg);
+      close();
+    }
   })();
 
-  return new Response(stream, { headers: ndjsonHeaders() });
+  const headers = ndjsonHeaders();
+  headers.set('X-Trace-Id', traceId);
+  return new Response(stream, { headers });
 }

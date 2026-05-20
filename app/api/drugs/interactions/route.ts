@@ -1,8 +1,8 @@
 import { NextRequest } from 'next/server';
 import { retrieve } from '@/lib/retrieve';
-import { llm } from '@/lib/llm';
 import { DRUGS_MODEL, parseLooseJson, normalizeDrugName } from '@/lib/drugs';
 import { makeNdjsonStream, ndjsonHeaders } from '@/lib/stream';
+import { startTrace, finishTrace, tracedChat } from '@/lib/trace';
 
 export const runtime = 'nodejs';
 export const maxDuration = 120;
@@ -29,8 +29,11 @@ export async function POST(req: NextRequest) {
 
   const { stream, emit, close } = makeNdjsonStream();
   const t0 = Date.now();
+  const traceId = await startTrace('drugs_interactions', { drugs: raw });
 
   (async () => {
+    let outcome: 'success' | 'error' | 'partial' = 'success';
+    let outcomeMsg: string | undefined;
     try {
       emit({ type: 'progress', stage: 'expanding', msg: `Normalizing ${raw.length} drug names in parallel…` });
       const normalized = await Promise.all(raw.map(normalizeDrugName));
@@ -40,7 +43,7 @@ export async function POST(req: NextRequest) {
       const result = await retrieve(query, { topK: 10, minSimilarity: 0.3 });
       const hits = result.hits;
       emit({ type: 'progress', stage: 'retrieving', msg: `Retrieved ${hits.length} excerpts (n(n-1)/2 = ${normalized.length * (normalized.length - 1) / 2} pairs to check)`, ms: Date.now() - t0 });
-      if (hits.length === 0) { emit({ type: 'error', message: 'no excerpts' }); close(); return; }
+      if (hits.length === 0) { emit({ type: 'error', message: 'no excerpts' }); outcome = 'error'; outcomeMsg = 'no excerpts'; close(); return; }
 
       const citations = hits.map((h, i) => ({
         n: i + 1, id: h.id, book: h.book, chapter: h.chapter,
@@ -52,7 +55,7 @@ export async function POST(req: NextRequest) {
 
       const contextBlock = hits.map((h, i) => `--- Excerpt ${i + 1} ---\n[${i + 1}] ${h.book}${h.chapter ? ' · ' + h.chapter : ''}\n${h.text}`).join('\n\n');
       emit({ type: 'progress', stage: 'generating', msg: `Analyzing pairs with ${DRUGS_MODEL}…`, ms: Date.now() - t0 });
-      const r = await llm.chat.completions.create({
+      const r = await tracedChat(traceId, 'interactions', {
         model: DRUGS_MODEL,
         messages: [
           { role: 'system', content: SYSTEM },
@@ -82,9 +85,16 @@ export async function POST(req: NextRequest) {
       emit({ type: 'result', data: { input: raw, normalized, summary: parsed.summary ?? '', pairs, citations } });
       emit({ type: 'done', ms: Date.now() - t0 });
     } catch (e) {
-      emit({ type: 'error', message: String((e as Error).message) });
-    } finally { close(); }
+      outcome = 'error';
+      outcomeMsg = String((e as Error).message);
+      emit({ type: 'error', message: outcomeMsg });
+    } finally {
+      await finishTrace(traceId, outcome, outcomeMsg);
+      close();
+    }
   })();
 
-  return new Response(stream, { headers: ndjsonHeaders() });
+  const headers = ndjsonHeaders();
+  headers.set('X-Trace-Id', traceId);
+  return new Response(stream, { headers });
 }

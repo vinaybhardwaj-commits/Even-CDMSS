@@ -1,7 +1,8 @@
 import { NextRequest } from 'next/server';
 import { retrieve } from '@/lib/retrieve';
-import { llm, TEXT_MODEL } from '@/lib/llm';
+import { TEXT_MODEL } from '@/lib/llm';
 import { makeNdjsonStream, ndjsonHeaders } from '@/lib/stream';
+import { startTrace, finishTrace, tracedChat, logStreamComplete } from '@/lib/trace';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -28,8 +29,11 @@ export async function POST(req: NextRequest) {
 
   const { stream, emit, close } = makeNdjsonStream();
   const t0 = Date.now();
+  const traceId = await startTrace('ask', { question, bookFilter: body.bookFilter });
 
   (async () => {
+    let outcome: 'success' | 'error' | 'partial' = 'success';
+    let outcomeMsg: string | undefined;
     try {
       emit({ type: 'progress', stage: 'expanding', msg: 'Rewriting query for semantic search…' });
       const result = await retrieve(question, { bookFilter: body.bookFilter, topK: 8 });
@@ -38,6 +42,7 @@ export async function POST(req: NextRequest) {
 
       if (hits.length === 0) {
         emit({ type: 'error', message: 'no relevant excerpts above similarity threshold' });
+        outcome = 'error'; outcomeMsg = 'no relevant excerpts';
         close();
         return;
       }
@@ -59,7 +64,8 @@ export async function POST(req: NextRequest) {
       const userMsg = `Question:\n${question}\n\nMKSAP Excerpts:\n${contextBlock}\n\nAnswer using only these excerpts. Cite each claim with [n].`;
       emit({ type: 'progress', stage: 'generating', msg: `Generating answer with ${TEXT_MODEL}…`, ms: Date.now() - t0 });
 
-      const completion = await llm.chat.completions.create({
+      const llmStart = Date.now();
+      const completion = await tracedChat(traceId, 'answer', {
         model: TEXT_MODEL,
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
@@ -70,17 +76,25 @@ export async function POST(req: NextRequest) {
         ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
       });
 
+      // Collect full content as we stream so we can log it once the stream is done.
+      let fullContent = '';
       for await (const part of completion) {
         const delta = part.choices?.[0]?.delta?.content ?? '';
-        if (delta) emit({ type: 'token', content: delta });
+        if (delta) { fullContent += delta; emit({ type: 'token', content: delta }); }
       }
+      await logStreamComplete(traceId, 'answer', fullContent, llmStart, { model: TEXT_MODEL });
       emit({ type: 'done', ms: Date.now() - t0 });
     } catch (e) {
-      emit({ type: 'error', message: String((e as Error).message) });
+      outcome = 'error';
+      outcomeMsg = String((e as Error).message);
+      emit({ type: 'error', message: outcomeMsg });
     } finally {
+      await finishTrace(traceId, outcome, outcomeMsg);
       close();
     }
   })();
 
-  return new Response(stream, { headers: ndjsonHeaders() });
+  const headers = ndjsonHeaders();
+  headers.set('X-Trace-Id', traceId);
+  return new Response(stream, { headers });
 }
