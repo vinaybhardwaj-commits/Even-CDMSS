@@ -1,17 +1,15 @@
-export const metadata = { title: 'Drug Dosing & Interactions · Even-Tutor' };
+import DrugsClient from './drugs-client';
 
-export default function Page() {
+export const metadata = { title: 'Drugs · Even-Tutor' };
+
+export default function DrugsPage() {
   return (
     <div>
-      <h1 className="text-2xl font-semibold text-slate-900">Drug Dosing & Interactions</h1>
-      <p className="mt-2 max-w-xl text-sm text-slate-600">Look up dosing, indications, renal/hepatic adjustments. Check N-way drug interactions with severity, mechanism, and management — sourced from UpToDate-Drugs and UpToDate-Interactions.</p>
-      <div className="mt-8 rounded-xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">
-        <div className="flex items-center gap-2 font-semibold">Coming in v0.4</div>
-        <p className="mt-2 leading-relaxed">
-          The PRD is locked. This feature lands after the v0.2 foundation (PWA shell + new Ask) is stable.
-          For now, the Ask tab can answer most clinical questions across MKSAP, StatPearls, and UpToDate.
-        </p>
-      </div>
+      <h1 className="text-2xl font-semibold text-slate-900 sm:text-3xl">Drug Dosing & Interactions</h1>
+      <p className="mt-1 text-sm text-slate-500">
+        Look up a single drug, or check interactions among up to 5 drugs. Grounded in MKSAP, StatPearls, and UpToDate.
+      </p>
+      <div className="mt-6"><DrugsClient /></div>
     </div>
   );
 }

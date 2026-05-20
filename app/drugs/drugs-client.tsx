@@ -1,0 +1,451 @@
+'use client';
+
+import { useState, useMemo, useRef } from 'react';
+import { Send, Loader2, Pill, AlertTriangle, ChevronDown, ChevronUp, BookOpen, Plus, X, Activity } from 'lucide-react';
+
+type Citation = {
+  n: number; id: number; book: string; chapter: string | null;
+  page_start: number | null; page_end: number | null;
+  similarity: number; preview: string;
+};
+
+type LookupResp = {
+  input?: string;
+  normalized?: string;
+  drug_normalized?: string;
+  class?: string;
+  indications?: string[];
+  typical_dosing?: string[];
+  renal_adjust?: string;
+  hepatic_adjust?: string;
+  contraindications?: string[];
+  adverse_effects?: string[];
+  monitoring?: string[];
+  citations?: Citation[];
+  duration_ms?: number;
+  error?: string;
+};
+
+type Pair = {
+  drug_a: string;
+  drug_b: string;
+  severity?: 'contraindicated' | 'major' | 'moderate' | 'minor' | 'none' | string;
+  mechanism?: string;
+  consequence?: string;
+  management?: string;
+  citation_ids?: number[];
+};
+type InteractionsResp = {
+  input?: string[];
+  normalized?: string[];
+  summary?: string;
+  pairs?: Pair[];
+  citations?: Citation[];
+  duration_ms?: number;
+  error?: string;
+};
+
+const SEVERITY_ORDER: Record<string, number> = {
+  contraindicated: 0, major: 1, moderate: 2, minor: 3, none: 4,
+};
+const SEVERITY_STYLE: Record<string, string> = {
+  contraindicated: 'border-rose-300 bg-rose-50',
+  major: 'border-orange-300 bg-orange-50',
+  moderate: 'border-amber-200 bg-amber-50',
+  minor: 'border-slate-200 bg-slate-50',
+  none: 'border-slate-100 bg-white',
+};
+const SEVERITY_PILL: Record<string, string> = {
+  contraindicated: 'bg-rose-200 text-rose-900',
+  major: 'bg-orange-200 text-orange-900',
+  moderate: 'bg-amber-200 text-amber-900',
+  minor: 'bg-slate-200 text-slate-700',
+  none: 'bg-slate-100 text-slate-500',
+};
+
+function SourcesRail({ citations, highlighted, openIds, setOpenIds }: {
+  citations: Citation[]; highlighted: number | null;
+  openIds: Record<number, boolean>; setOpenIds: (f: (p: Record<number, boolean>) => Record<number, boolean>) => void;
+}) {
+  if (!citations.length) return null;
+  return (
+    <section className="mt-6">
+      <h2 className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+        <BookOpen className="h-3.5 w-3.5" /> Sources ({citations.length})
+      </h2>
+      <ol className="space-y-2">
+        {citations.map((c) => {
+          const isOpen = !!openIds[c.n];
+          const isHi = highlighted === c.n;
+          return (
+            <li
+              key={c.n}
+              id={`drugs-cite-${c.n}`}
+              className={`rounded-lg border text-sm shadow-sm transition ${
+                isHi ? 'border-brand bg-brand-faint/40' : 'border-slate-200 bg-white'
+              }`}
+            >
+              <button
+                onClick={() => setOpenIds((p) => ({ ...p, [c.n]: !isOpen }))}
+                className="flex w-full items-start justify-between gap-2 px-3 py-2 text-left hover:bg-slate-50"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="rounded bg-brand-faint px-1.5 py-0.5 text-[11px] font-semibold text-brand">[{c.n}]</span>
+                    <span className="truncate font-medium text-slate-800">{c.book}</span>
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-slate-500">
+                    {c.chapter && <span>{c.chapter} · </span>}
+                    {c.page_start && <span>p.{c.page_start} · </span>}
+                    <span>sim {c.similarity.toFixed(2)}</span>
+                  </div>
+                </div>
+                {isOpen ? <ChevronUp className="h-4 w-4 shrink-0 text-slate-400" /> : <ChevronDown className="h-4 w-4 shrink-0 text-slate-400" />}
+              </button>
+              {isOpen && (
+                <div className="border-t border-slate-100 px-3 py-2 text-[13px] leading-relaxed text-slate-700">
+                  {c.preview}…
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+    </section>
+  );
+}
+
+function LookupPanel() {
+  const [drug, setDrug] = useState('');
+  const [data, setData] = useState<LookupResp | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [highlighted, setHighlighted] = useState<number | null>(null);
+  const [openIds, setOpenIds] = useState<Record<number, boolean>>({});
+  const sessionId = useMemo(() => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : String(Date.now())), []);
+
+  async function submit(e?: React.FormEvent) {
+    e?.preventDefault();
+    const q = drug.trim();
+    if (!q) return;
+    setError(null); setData(null); setLoading(true); setOpenIds({});
+    const t0 = Date.now();
+    try {
+      const r = await fetch('/api/drugs/lookup', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ drug: q }),
+      });
+      if (!r.ok) { setError(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`); return; }
+      const d = (await r.json()) as LookupResp;
+      setData(d);
+      fetch('/api/log/query', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          feature: 'drugs_lookup', query_text: q,
+          expanded_query: d.normalized,
+          answer_text: JSON.stringify({ class: d.class, indications: d.indications, dosing: d.typical_dosing }),
+          citation_ids: (d.citations || []).map((c) => c.id),
+          duration_ms: Date.now() - t0, session_id: sessionId,
+        }),
+      }).catch(() => {});
+    } catch (e) { setError(String((e as Error).message)); }
+    finally { setLoading(false); }
+  }
+
+  function onCite(n: number) {
+    setHighlighted(n);
+    setOpenIds((p) => ({ ...p, [n]: true }));
+    setTimeout(() => document.getElementById(`drugs-cite-${n}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50);
+    setTimeout(() => setHighlighted((h) => (h === n ? null : h)), 2000);
+  }
+
+  return (
+    <div>
+      <form onSubmit={submit} className="flex gap-2">
+        <input
+          value={drug}
+          onChange={(e) => setDrug(e.target.value)}
+          placeholder="Generic or brand (e.g. metformin, Coumadin, atorvastatin)"
+          className="flex-1 rounded-lg border border-slate-300 bg-white p-3 text-base shadow-sm focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+        />
+        <button
+          type="submit"
+          disabled={loading || !drug.trim()}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white shadow disabled:bg-slate-300"
+        >
+          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+          {loading ? 'Looking up…' : 'Look up'}
+        </button>
+      </form>
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        <span className="text-xs text-slate-400">Try:</span>
+        {['metformin', 'warfarin', 'amiodarone', 'lisinopril', 'levetiracetam'].map((d) => (
+          <button key={d} onClick={() => { setDrug(d); }} disabled={loading}
+            className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-600 hover:border-brand hover:text-brand disabled:opacity-40">
+            {d}
+          </button>
+        ))}
+      </div>
+
+      {error && <div className="mt-6 rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">{error}</div>}
+
+      {loading && (
+        <div className="mt-6 rounded-xl border bg-white p-8 text-center text-slate-400 shadow-sm">
+          <Loader2 className="mx-auto mb-2 h-6 w-6 animate-spin" />
+          Looking up…
+        </div>
+      )}
+
+      {data && !loading && (
+        <article className="mt-6 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+          <header className="border-b pb-3">
+            <div className="flex items-baseline justify-between">
+              <h2 className="text-xl font-semibold capitalize text-slate-900">{data.drug_normalized}</h2>
+              {data.normalized && data.normalized !== data.input && (
+                <span className="text-xs text-slate-400">from &quot;{data.input}&quot;</span>
+              )}
+            </div>
+            {data.class && <p className="mt-1 text-sm text-slate-500">{data.class}</p>}
+          </header>
+
+          <div className="mt-4 space-y-4 text-sm">
+            <Section title="Indications" items={data.indications} />
+            <Section title="Typical dosing" items={data.typical_dosing} />
+            {(data.renal_adjust || data.hepatic_adjust) && (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {data.renal_adjust && <PlainSection title="Renal adjustment" text={data.renal_adjust} />}
+                {data.hepatic_adjust && <PlainSection title="Hepatic adjustment" text={data.hepatic_adjust} />}
+              </div>
+            )}
+            <Section title="Contraindications" items={data.contraindications} dangerous />
+            <Section title="Key adverse effects" items={data.adverse_effects} />
+            <Section title="Monitoring" items={data.monitoring} />
+          </div>
+
+          {data.citations && data.citations.length > 0 && (
+            <div className="mt-4 flex flex-wrap items-center gap-1.5 border-t pt-3">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Sources:</span>
+              {data.citations.map((c) => (
+                <button key={c.n} onClick={() => onCite(c.n)}
+                  className="rounded-md bg-brand-faint px-1.5 py-0.5 text-[11px] font-semibold text-brand hover:bg-brand hover:text-white">
+                  [{c.n}]
+                </button>
+              ))}
+              <span className="ml-auto text-[11px] text-slate-400">{data.duration_ms}ms</span>
+            </div>
+          )}
+        </article>
+      )}
+
+      {data && data.citations && <SourcesRail citations={data.citations} highlighted={highlighted} openIds={openIds} setOpenIds={setOpenIds} />}
+    </div>
+  );
+}
+
+function Section({ title, items, dangerous }: { title: string; items?: string[]; dangerous?: boolean }) {
+  if (!items || items.length === 0) return null;
+  return (
+    <div>
+      <h3 className={`mb-1 text-[11px] font-semibold uppercase tracking-wide ${dangerous ? 'text-rose-700' : 'text-slate-500'}`}>{title}</h3>
+      <ul className="ml-4 list-disc space-y-0.5 text-slate-700">{items.map((it, i) => <li key={i}>{it}</li>)}</ul>
+    </div>
+  );
+}
+function PlainSection({ title, text }: { title: string; text: string }) {
+  return (
+    <div>
+      <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">{title}</h3>
+      <p className="text-slate-700">{text}</p>
+    </div>
+  );
+}
+
+function InteractionsPanel() {
+  const [drugs, setDrugs] = useState<string[]>(['', '']);
+  const [data, setData] = useState<InteractionsResp | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [highlighted, setHighlighted] = useState<number | null>(null);
+  const [openIds, setOpenIds] = useState<Record<number, boolean>>({});
+  const sessionId = useMemo(() => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : String(Date.now())), []);
+
+  const filled = drugs.filter((d) => d.trim().length > 0).length;
+
+  async function submit(e?: React.FormEvent) {
+    e?.preventDefault();
+    const list = drugs.map((d) => d.trim()).filter(Boolean);
+    if (list.length < 2) { setError('Enter at least 2 drugs'); return; }
+    setError(null); setData(null); setLoading(true); setOpenIds({});
+    const t0 = Date.now();
+    try {
+      const r = await fetch('/api/drugs/interactions', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ drugs: list }),
+      });
+      if (!r.ok) { setError(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`); return; }
+      const d = (await r.json()) as InteractionsResp;
+      setData(d);
+      fetch('/api/log/query', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          feature: 'drugs_interactions', query_text: list.join(' + '),
+          expanded_query: (d.normalized || []).join(' + '),
+          answer_text: JSON.stringify({ summary: d.summary, pair_count: d.pairs?.length }),
+          citation_ids: (d.citations || []).map((c) => c.id),
+          duration_ms: Date.now() - t0, session_id: sessionId,
+        }),
+      }).catch(() => {});
+    } catch (e) { setError(String((e as Error).message)); }
+    finally { setLoading(false); }
+  }
+
+  function setDrug(i: number, v: string) {
+    const copy = drugs.slice(); copy[i] = v; setDrugs(copy);
+  }
+  function addRow() { if (drugs.length < 5) setDrugs([...drugs, '']); }
+  function removeRow(i: number) { if (drugs.length > 2) setDrugs(drugs.filter((_, idx) => idx !== i)); }
+
+  function onCite(n: number) {
+    setHighlighted(n);
+    setOpenIds((p) => ({ ...p, [n]: true }));
+    setTimeout(() => document.getElementById(`drugs-cite-${n}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50);
+    setTimeout(() => setHighlighted((h) => (h === n ? null : h)), 2000);
+  }
+
+  const sortedPairs = useMemo(() => {
+    if (!data?.pairs) return [];
+    return [...data.pairs].sort((a, b) =>
+      (SEVERITY_ORDER[a.severity ?? 'none'] ?? 5) - (SEVERITY_ORDER[b.severity ?? 'none'] ?? 5)
+    );
+  }, [data]);
+
+  return (
+    <div>
+      <form onSubmit={submit} className="space-y-2">
+        {drugs.map((d, i) => (
+          <div key={i} className="flex items-center gap-2">
+            <span className="text-xs font-semibold text-slate-400">{i + 1}.</span>
+            <input
+              value={d}
+              onChange={(e) => setDrug(i, e.target.value)}
+              placeholder={i === 0 ? 'warfarin' : i === 1 ? 'amiodarone' : 'add drug'}
+              className="flex-1 rounded-lg border border-slate-300 bg-white p-2 text-sm shadow-sm focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+            />
+            {drugs.length > 2 && (
+              <button type="button" onClick={() => removeRow(i)}
+                className="rounded-full p-1.5 text-slate-400 hover:bg-slate-100 hover:text-rose-500">
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+        ))}
+        <div className="flex items-center justify-between pt-1">
+          <button type="button" onClick={addRow} disabled={drugs.length >= 5}
+            className="inline-flex items-center gap-1 rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:border-brand hover:text-brand disabled:opacity-40">
+            <Plus className="h-3 w-3" /> Add drug
+          </button>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-slate-400">{filled}/5 filled</span>
+            <button type="submit" disabled={loading || filled < 2}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white shadow disabled:bg-slate-300">
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4" />}
+              {loading ? 'Checking…' : 'Check interactions'}
+            </button>
+          </div>
+        </div>
+      </form>
+
+      {error && <div className="mt-6 rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">{error}</div>}
+
+      {loading && (
+        <div className="mt-6 rounded-xl border bg-white p-8 text-center text-slate-400 shadow-sm">
+          <Loader2 className="mx-auto mb-2 h-6 w-6 animate-spin" />
+          Checking pairs across the corpus…
+        </div>
+      )}
+
+      {data && !loading && (
+        <div className="mt-6 space-y-4">
+          {data.summary && (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <h2 className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Summary</h2>
+              <p className="mt-1 text-sm leading-relaxed text-slate-800">{data.summary}</p>
+            </div>
+          )}
+          <div className="space-y-2">
+            {sortedPairs.map((p, i) => (
+              <article key={i} className={`rounded-xl border shadow-sm ${SEVERITY_STYLE[p.severity ?? 'none'] ?? SEVERITY_STYLE.none}`}>
+                <header className="flex flex-wrap items-center gap-2 border-b border-current/10 px-4 py-2.5">
+                  {(p.severity === 'contraindicated' || p.severity === 'major') && (
+                    <AlertTriangle className="h-4 w-4 text-rose-600" />
+                  )}
+                  <span className="font-semibold capitalize text-slate-900">{p.drug_a}</span>
+                  <span className="text-slate-400">+</span>
+                  <span className="font-semibold capitalize text-slate-900">{p.drug_b}</span>
+                  <span className={`ml-auto rounded-full px-2 py-0.5 text-[11px] font-semibold uppercase ${SEVERITY_PILL[p.severity ?? 'none'] ?? SEVERITY_PILL.none}`}>
+                    {p.severity ?? 'none'}
+                  </span>
+                </header>
+                <div className="space-y-2 px-4 py-3 text-sm">
+                  {p.mechanism && <Row label="Mechanism" text={p.mechanism} />}
+                  {p.consequence && <Row label="Consequence" text={p.consequence} />}
+                  {p.management && <Row label="Management" text={p.management} />}
+                  {p.citation_ids && p.citation_ids.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                      <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Sources:</span>
+                      {p.citation_ids.map((n) => (
+                        <button key={n} onClick={() => onCite(n)}
+                          className="rounded-md bg-brand-faint px-1.5 py-0.5 text-[11px] font-semibold text-brand hover:bg-brand hover:text-white">
+                          [{n}]
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {data && data.citations && <SourcesRail citations={data.citations} highlighted={highlighted} openIds={openIds} setOpenIds={setOpenIds} />}
+    </div>
+  );
+}
+
+function Row({ label, text }: { label: string; text: string }) {
+  return (
+    <div className="flex gap-2">
+      <span className="w-28 shrink-0 text-[11px] font-semibold uppercase tracking-wide text-slate-500">{label}</span>
+      <span className="text-slate-800">{text}</span>
+    </div>
+  );
+}
+
+export default function DrugsClient() {
+  const [tab, setTab] = useState<'lookup' | 'interactions'>('lookup');
+  return (
+    <div>
+      <div className="mb-5 flex gap-1 rounded-lg bg-slate-100 p-1">
+        <button
+          onClick={() => setTab('lookup')}
+          className={`flex flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-sm font-medium transition ${
+            tab === 'lookup' ? 'bg-white text-brand shadow-sm' : 'text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <Pill className="h-4 w-4" /> Lookup
+        </button>
+        <button
+          onClick={() => setTab('interactions')}
+          className={`flex flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-sm font-medium transition ${
+            tab === 'interactions' ? 'bg-white text-brand shadow-sm' : 'text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <Activity className="h-4 w-4" /> Interactions
+        </button>
+      </div>
+      {tab === 'lookup' ? <LookupPanel /> : <InteractionsPanel />}
+    </div>
+  );
+}
