@@ -3,6 +3,7 @@
 import { useState, useMemo, useRef } from 'react';
 import { consumeNdjson } from '@/lib/ndjson-client';
 import TracePanel, { TraceEvent } from '@/components/TracePanel';
+import ErrorBoundary from '@/components/ErrorBoundary';
 import { Send, Loader2, Pill, AlertTriangle, ChevronDown, ChevronUp, BookOpen, Plus, X, Activity } from 'lucide-react';
 
 type Citation = {
@@ -573,7 +574,9 @@ export default function DrugsClient() {
           <Activity className="h-4 w-4" /> Interactions
         </button>
       </div>
-      {tab === 'lookup' ? <LookupPanel /> : <InteractionsPanel />}
+      <ErrorBoundary label={tab === 'lookup' ? 'Drug Lookup' : 'Drug Interactions'}>
+        {tab === 'lookup' ? <LookupPanel /> : <InteractionsPanel />}
+      </ErrorBoundary>
     </div>
   );
 }
