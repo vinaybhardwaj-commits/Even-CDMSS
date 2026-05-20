@@ -111,14 +111,35 @@ export async function POST(req: NextRequest) {
           raw_out = r.choices?.[0]?.message?.content ?? '';
           const parsed = parseLooseJson(raw_out) as Record<string, unknown>;
 
-          // Phase 1 includes drug_normalized + citations
+          // Coerce all string-array fields (LLMs sometimes return [{name,description}] objects)
+          const stringArrayFields = [
+            'indications', 'typical_dosing', 'contraindications', 'adverse_effects', 'monitoring',
+            'receptors_targets', 'formulations', 'drug_interactions_summary', 'key_pearls',
+          ];
+          for (const f of stringArrayFields) {
+            if (f in (parsed as object)) {
+              (parsed as Record<string, unknown>)[f] = toStringList((parsed as Record<string, unknown>)[f]);
+            }
+          }
+          if ('pharmacokinetics' in (parsed as object)) {
+            (parsed as Record<string, unknown>).pharmacokinetics = toStringDict((parsed as Record<string, unknown>).pharmacokinetics);
+          }
+          if ('special_populations' in (parsed as object)) {
+            (parsed as Record<string, unknown>).special_populations = toStringDict((parsed as Record<string, unknown>).special_populations);
+          }
+          // Strings should be strings — coerce non-string scalars too
+          for (const f of ['class', 'subclass', 'mechanism_of_action', 'biochemistry', 'pharmacodynamics', 'renal_adjust', 'hepatic_adjust']) {
+            const v = (parsed as Record<string, unknown>)[f];
+            if (v != null && typeof v !== 'string') (parsed as Record<string, unknown>)[f] = String(v);
+          }
+
           if (phase.name === 'fast') {
             const payload = { ...parsed, input: raw, normalized, drug_normalized: parsed.drug_normalized ?? normalized, citations };
-            emit({ type: 'result', data: { phase: 'fast', ...payload, _debug_keys: Object.keys(parsed), _debug_raw: raw_out.slice(0, 2000) } });
+            emit({ type: 'result', data: { phase: 'fast', ...payload } });
           } else {
-            emit({ type: 'result', data: { phase: phase.name, ...parsed, _debug_keys: Object.keys(parsed), _debug_raw: raw_out.slice(0, 2000) } });
+            emit({ type: 'result', data: { phase: phase.name, ...parsed } });
           }
-          emit({ type: 'progress', stage: 'generating', msg: `Phase ${PHASES.indexOf(phase) + 1}/${PHASES.length} ${phase.name} complete (keys: ${Object.keys(parsed).join(', ')})`, ms: Date.now() - t0 });
+          emit({ type: 'progress', stage: 'generating', msg: `Phase ${PHASES.indexOf(phase) + 1}/${PHASES.length} ${phase.name} complete`, ms: Date.now() - t0 });
         } catch (e) {
           // Don't kill the whole pipeline if a later phase fails — emit error event and continue
           emit({ type: 'error', message: `phase ${phase.name} failed: ${String((e as Error).message)}` });

@@ -269,7 +269,7 @@ function LookupPanel() {
                       return (
                         <div key={k} className="flex gap-1.5">
                           <dt className="w-24 shrink-0 text-[11px] uppercase tracking-wide text-slate-400">{k.replace('_',' ')}</dt>
-                          <dd className="flex-1 text-slate-700">{v}</dd>
+                          <dd className="flex-1 text-slate-700">{asText(v)}</dd>
                         </div>
                       );
                     })}
@@ -299,7 +299,7 @@ function LookupPanel() {
                       return (
                         <div key={k} className="flex gap-1.5">
                           <dt className="w-24 shrink-0 text-[11px] uppercase tracking-wide text-slate-400">{k.replace('_',' ')}</dt>
-                          <dd className="flex-1 text-slate-700">{v}</dd>
+                          <dd className="flex-1 text-slate-700">{asText(v)}</dd>
                         </div>
                       );
                     })}
@@ -342,12 +342,24 @@ function LookupPanel() {
   );
 }
 
-function Section({ title, items, dangerous, pearls }: { title: string; items?: string[]; dangerous?: boolean; pearls?: boolean }) {
+function asText(it: unknown): string {
+  if (typeof it === 'string') return it;
+  if (it && typeof it === 'object') {
+    const o = it as Record<string, unknown>;
+    const name = String(o.name ?? o.title ?? o.label ?? '');
+    const desc = String(o.description ?? o.detail ?? o.value ?? '');
+    if (name && desc) return `${name} — ${desc}`;
+    return name || desc || JSON.stringify(o);
+  }
+  return String(it ?? '');
+}
+
+function Section({ title, items, dangerous, pearls }: { title: string; items?: unknown[]; dangerous?: boolean; pearls?: boolean }) {
   if (!items || items.length === 0) return null;
   return (
     <div>
       {title && <h3 className={`mb-1 text-[11px] font-semibold uppercase tracking-wide ${dangerous ? 'text-rose-700' : 'text-slate-500'}`}>{title}</h3>}
-      <ul className={`ml-4 list-disc space-y-1 ${pearls ? 'text-slate-800 marker:text-brand' : 'text-slate-700'}`}>{items.map((it, i) => <li key={i}>{it}</li>)}</ul>
+      <ul className={`ml-4 list-disc space-y-1 ${pearls ? 'text-slate-800 marker:text-brand' : 'text-slate-700'}`}>{items.map((it, i) => <li key={i}>{asText(it)}</li>)}</ul>
     </div>
   );
 }
@@ -364,11 +376,11 @@ function Group({ title, children, defaultOpen = true }: { title: string; childre
     </section>
   );
 }
-function PlainSection({ title, text }: { title: string; text: string }) {
+function PlainSection({ title, text }: { title: string; text: unknown }) {
   return (
     <div>
       <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">{title}</h3>
-      <p className="text-slate-700">{text}</p>
+      <p className="text-slate-700">{asText(text)}</p>
     </div>
   );
 }
