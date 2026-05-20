@@ -17,7 +17,7 @@ type PK = {
   half_life?: string; bioavailability?: string; onset?: string; duration?: string;
 };
 type SpecialPop = {
-  pregnancy?: string; pediatric?: string; geriatric?: string; renal_impairment?: string;
+  pregnancy?: string; pediatric?: string; geriatric?: string; renal_impairment?: string; hepatic_impairment?: string;
 };
 type LookupResp = {
   input?: string;
@@ -295,7 +295,7 @@ function LookupPanel() {
                 <div>
                   <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Special populations</h3>
                   <dl className="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2">
-                    {(['pregnancy','pediatric','geriatric','renal_impairment'] as const).map((k) => {
+                    {(['pregnancy','pediatric','geriatric','renal_impairment','hepatic_impairment'] as const).map((k) => {
                       const v = data.special_populations?.[k];
                       if (!v) return null;
                       return (

@@ -71,21 +71,28 @@ Rules:
 const PHASE2_SYSTEM = `You add deep pharmacology to an existing drug card. Use ONLY the medical excerpts provided.
 
 Return ONLY this JSON, lowercase keys, no prose:
-{"mechanism_of_action":"2-4 sentences — receptors, second messengers, enzymes, channels, downstream effects. Mechanistic, not symptomatic.","receptors_targets":["specific molecular targets — receptor, enzyme, channel, transporter — one per item"],"biochemistry":"1-3 sentences on the biochemical pathway / metabolic step, or empty string","pharmacokinetics":{"absorption":"route + F + food effect","distribution":"Vd + protein binding + BBB if relevant","metabolism":"CYPs, prodrug, active metabolites","excretion":"renal/biliary/fecal, % unchanged","half_life":"t½ with range","bioavailability":"F% if oral","onset":"time to onset","duration":"duration of action"},"pharmacodynamics":"dose-response + downstream physiologic effects, 1-3 sentences"}
+{"mechanism_of_action":"4-7 dense sentences — name the SPECIFIC molecular machinery: receptor subtype, enzyme, channel, transporter, second messenger, downstream pathway, physiologic endpoint. Mechanistic, not symptomatic.","receptors_targets":["5-10 specific molecular targets when the excerpts support it — name the receptor subtype, enzyme (with EC if cited), channel, or transporter; one per item; do NOT just write 'opioid receptor' when the excerpts say 'mu-opioid receptor (MOR / OPRM1)'"],"biochemistry":"2-4 sentences on the biochemical pathway / metabolic step / cofactor / vitamin K cycle / clotting cascade position / etc., or empty string","pharmacokinetics":{"absorption":"1-2 sentences with route, F%, time-to-peak, food effect","distribution":"1-2 sentences with Vd in L/kg if cited, protein binding %, BBB / placental / breast milk if relevant","metabolism":"1-2 sentences naming CYPs / UGTs / specific enzymes, prodrug status, active metabolites by name","excretion":"1-2 sentences with renal/biliary/fecal split, % unchanged, dialyzability if cited","half_life":"t½ with range and what drives variability","bioavailability":"F% with range if oral","onset":"time-to-onset for therapeutic effect","duration":"duration of action with what drives offset"},"pharmacodynamics":"3-5 sentences — dose-response shape, therapeutic window, downstream physiologic effects, time-course separations from the mechanism (e.g. warfarin acts at vitamin-K-epoxide-reductase immediately but anticoagulation lags 36-72h because circulating factors must decay)"}
 
 Rules:
-- BE COMPREHENSIVE — boards-level depth. Receptor subtypes, enzyme kinetics, signal transduction.
-- If unsupported by excerpts, empty string or empty array. Do not fabricate.
-- Use the excerpts to ground but write at a teaching level.`;
+- DEPTH IS THE POINT. If an excerpt names a receptor subtype, ion channel, CYP enzyme, half-life range, Vd, protein-binding %, or pathway step, INCLUDE IT. Brevity that drops detail from the excerpts is a failure mode.
+- Worked example for one field — mechanism_of_action for warfarin:
+  "Warfarin inhibits vitamin-K-epoxide-reductase (VKORC1) in hepatocytes, preventing the reduction of vitamin K 2,3-epoxide back to its active hydroquinone form. Without reduced vitamin K, the gamma-glutamyl carboxylase reaction that adds Gla residues to factors II, VII, IX, X and proteins C/S fails, producing functionally inactive 'PIVKA' clotting factors. Anticoagulant effect is therefore indirect and lagged — it appears only as circulating active factors decay (factor VII first at t½ ~6h, prothrombin last at t½ ~60-72h), explaining the 2-5 day onset and the need for bridging anticoagulation. The S-enantiomer is 2-5× more potent than R-warfarin and is cleared mainly by CYP2C9, the site of major pharmacogenomic variability."
+  Aim for that density of named molecules + numbers + clinical implications. Do not write less when the excerpts support more.
+- If a field is genuinely unsupported by the excerpts, return empty string or empty array. Never invent. But err strongly on the side of including everything the excerpts mention.
+- Use the excerpts to ground but write at a teaching level — name the parts, show the mechanism's clinical consequences.`;
 
 const PHASE3_SYSTEM = `You finish a drug card by adding clinical extras. Use ONLY the medical excerpts provided.
 
 Return ONLY this JSON, lowercase keys, no prose:
-{"formulations":["available formulations + strengths"],"drug_interactions_summary":["notable interaction classes — e.g. 'NSAIDs blunt antihypertensive effect', 'CYP3A4 inhibitors raise levels'"],"special_populations":{"pregnancy":"category/risk + recommendation, or 'Not specified'","pediatric":"approved/dosing/cautions","geriatric":"considerations","renal_impairment":"additional notes"},"key_pearls":["3-5 high-yield teaching points — clinical pearls, common mistakes, distinguishing features"]}
+{"formulations":["all formulations the excerpts mention — name strength AND route AND any combination products. e.g. 'Tablet — 1, 2, 2.5, 3, 4, 5, 6, 7.5, 10 mg (oral)'. 4-8 items typical when excerpts are thorough."],"drug_interactions_summary":["6-12 named interactions when excerpts support it — each item is one full sentence: 'interacting drug/class — mechanism — clinical consequence — magnitude/management if cited'. e.g. 'Amiodarone — inhibits CYP2C9 — raises warfarin AUC and INR; reduce warfarin dose 30-50% on initiation.'"],"special_populations":{"pregnancy":"2-3 sentences with category if cited (FDA legacy or new PLLR), specific teratogenic risks, alternatives, monitoring","pediatric":"2-3 sentences with approved age range, dosing differences, specific cautions","geriatric":"2-3 sentences with PD sensitivity, dose adjustments, fall/bleeding/QT/etc risk","renal_impairment":"2-3 sentences with eGFR cutoffs, dose adjustments, dialyzability","hepatic_impairment":"2-3 sentences with Child-Pugh class adjustments, contraindications"},"key_pearls":["5-8 high-yield teaching points — each pearl 1-2 sentences. Mix: classic exam fact, common error, distinguishing feature from sister drugs, monitoring pearl, drug-of-choice / not-of-choice scenario, antidote/reversal, dietary interactions. Concrete, not generic."]}
 
 Rules:
-- Concise but specific.
-- If unsupported, empty array / "Not specified".`;
+- DEPTH IS THE POINT — when excerpts support 6-12 interactions, return 6-12, not 3. When excerpts list 9 strengths, list all 9.
+- Worked example for one key_pearls item — warfarin:
+  "Warfarin's onset is delayed 36-72h because circulating factors II/VII/IX/X must first decay; in acute venous thromboembolism, bridge with a parenteral anticoagulant for ≥5 days AND until INR is therapeutic for 2 consecutive days."
+  That's the density: a specific number + the mechanism + the clinical rule. Aim for that level on every pearl.
+- If a field is genuinely unsupported by the excerpts, return empty string or empty array. Never invent.
+- 'special_populations.hepatic_impairment' is new — include it when excerpts touch on hepatic metabolism or liver-disease use.`;
 
 function buildContext(hits: Awaited<ReturnType<typeof retrieve>>['hits']): string {
   return hits.map((h, i) =>
