@@ -29,7 +29,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
             <span className="text-sm font-bold">ET</span>
           </div>
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-semibold tracking-tight text-brand">Even-Tutor</div>
+            <div className="text-sm font-semibold tracking-tight text-brand">Even CDMSS</div>
             <div className="text-[10px] uppercase tracking-wide text-slate-400">v0.7</div>
           </div>
           <HealthPill />

@@ -1,7 +1,7 @@
 import HelpCard from '@/components/HelpCard';
 import ReviewClient from './review-client';
 
-export const metadata = { title: 'Review · Even-Tutor' };
+export const metadata = { title: 'Review · Even CDMSS' };
 
 export default function ReviewPage() {
   return (

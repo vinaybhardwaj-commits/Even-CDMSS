@@ -1,7 +1,7 @@
 import HelpCard from '@/components/HelpCard';
 import AskClient from './ask-client';
 
-export const metadata = { title: 'Ask · Even-Tutor' };
+export const metadata = { title: 'Ask · Even CDMSS' };
 
 export default function AskPage() {
   return (

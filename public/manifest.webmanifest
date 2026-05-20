@@ -1,7 +1,7 @@
 {
-  "name": "Even-Tutor",
-  "short_name": "Even-Tutor",
-  "description": "MKSAP-grounded medical study companion for V + RMOs",
+  "name": "Even CDMSS",
+  "short_name": "Even CDMSS",
+  "description": "Even CDMSS \u2014 Clinical Decision Making Support System for RMOs and physicians",
   "start_url": "/ask",
   "display": "standalone",
   "background_color": "#0F172A",
@@ -9,7 +9,17 @@
   "scope": "/",
   "orientation": "portrait",
   "icons": [
-    { "src": "/icon-192.png", "type": "image/png", "sizes": "192x192", "purpose": "any maskable" },
-    { "src": "/icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "any maskable" }
+    {
+      "src": "/icon-192.png",
+      "type": "image/png",
+      "sizes": "192x192",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "any maskable"
+    }
   ]
 }

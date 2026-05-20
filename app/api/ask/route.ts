@@ -6,7 +6,7 @@ import { makeNdjsonStream, ndjsonHeaders } from '@/lib/stream';
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
-const SYSTEM_PROMPT = `You are Even-Tutor, a medical study companion for residents and physicians.
+const SYSTEM_PROMPT = `You are Even CDMSS, a medical study companion for residents and physicians.
 You answer questions using ONLY the MKSAP/StatPearls/UpToDate excerpts provided below.
 
 Rules:

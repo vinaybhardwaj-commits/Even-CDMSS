@@ -1,4 +1,4 @@
-const SHELL_CACHE = 'even-tutor-shell-v2';   // bump on every SW change
+const SHELL_CACHE = 'even-cdmss-shell-v3';   // bump on every SW change
 const SHELL_URLS = ['/manifest.webmanifest'];
 
 self.addEventListener('install', (e) => {

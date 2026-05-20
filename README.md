@@ -1,6 +1,8 @@
-# Even-Tutor
+# Even CDMSS
 
-MKSAP-grounded medical study companion for V + RMOs.
+Even CDMSS — Clinical Decision Making Support System for V + RMOs.
+
+Grounded in MKSAP 19, StatPearls, and UpToDate via local LLM bridge.
 
 ## Stack
 - Next.js 15.5 (App Router) on Vercel

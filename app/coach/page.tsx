@@ -1,7 +1,7 @@
 import HelpCard from '@/components/HelpCard';
 import CoachClient from './coach-client';
 
-export const metadata = { title: 'Coach · Even-Tutor' };
+export const metadata = { title: 'Coach · Even CDMSS' };
 
 export default function CoachPage() {
   return (
