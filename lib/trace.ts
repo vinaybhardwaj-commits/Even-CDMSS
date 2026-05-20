@@ -73,7 +73,8 @@ export async function tracedChat(
   };
   await logEvent(traceId, 'llm_request', label, requestPayload);
 
-  let result: ChatResult;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let result: any;
   try {
     result = await llm.chat.completions.create(params);
   } catch (e) {
