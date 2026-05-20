@@ -21,6 +21,7 @@ export default function AskPage() {
         ]}
       />
       <div className="mt-4 flex flex-wrap gap-2">
+        <a href="/ask/abg" className="inline-flex items-center gap-1.5 rounded-md border border-brand bg-brand-faint px-3 py-1.5 text-sm font-medium text-brand hover:bg-brand hover:text-white">Interpret ABG →</a>
         <a href="/ask/news2" className="inline-flex items-center gap-1.5 rounded-md border border-brand bg-brand-faint px-3 py-1.5 text-sm font-medium text-brand hover:bg-brand hover:text-white">
           Compute NEWS2 score →
         </a>
