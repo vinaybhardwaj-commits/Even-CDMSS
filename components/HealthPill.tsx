@@ -61,7 +61,7 @@ export default function HealthPill() {
         {open ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
       </button>
       {open && (
-        <div className="absolute right-0 top-full z-50 mt-1.5 w-72 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700 shadow-lg">
+        <div className="absolute left-0 top-full z-50 mt-1.5 w-[18rem] max-w-[calc(100vw-2rem)] rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700 shadow-lg">
           {error && <div className="rounded border border-rose-200 bg-rose-50 p-2 text-rose-800">Fetch error: {error}</div>}
           <div className="mb-2 text-[10px] uppercase tracking-wide text-slate-400">Bridge health</div>
           {data && (
