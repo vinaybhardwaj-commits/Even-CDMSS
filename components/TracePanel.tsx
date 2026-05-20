@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { CheckCircle2, Loader2, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react';
 
 export type TraceEvent = {
@@ -28,6 +28,14 @@ export default function TracePanel({ events, totalMs }: { events: TraceEvent[]; 
   const last = events[events.length - 1];
   const isComplete = events.some((e) => e.stage === 'done') || !!totalMs;
   const hasError = events.some((e) => e.error);
+  // Detect stall: no events in 45s on an open pipeline
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (isComplete || hasError) return;
+    const t = setInterval(() => setNow(Date.now()), 5000);
+    return () => clearInterval(t);
+  }, [isComplete, hasError]);
+  const stalled = !isComplete && !hasError && (now - last.ts) > 45_000;
 
   return (
     <div className={`mb-3 rounded-lg border text-xs ${hasError ? 'border-rose-200 bg-rose-50' : 'border-slate-200 bg-slate-50'}`}>
@@ -41,6 +49,11 @@ export default function TracePanel({ events, totalMs }: { events: TraceEvent[]; 
         <span className="text-slate-400">{events.length} step{events.length !== 1 ? 's' : ''}</span>
         {open ? <ChevronUp className="h-3 w-3 text-slate-400" /> : <ChevronDown className="h-3 w-3 text-slate-400" />}
       </button>
+      {open && stalled && (
+        <div className="border-t border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
+          ⚠ No progress for {Math.round((now - last.ts) / 1000)}s. Mac Mini Ollama may be queuing behind ingest work — this can take up to 90s. If it crosses 120s the Vercel function will time out.
+        </div>
+      )}
       {open && (
         <ol className="space-y-1 border-t border-slate-200 px-3 py-2">
           {events.map((e, i) => (

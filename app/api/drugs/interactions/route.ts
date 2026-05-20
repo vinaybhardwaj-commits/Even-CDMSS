@@ -5,7 +5,7 @@ import { DRUGS_MODEL, parseLooseJson, normalizeDrugName } from '@/lib/drugs';
 import { makeNdjsonStream, ndjsonHeaders } from '@/lib/stream';
 
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 const SYSTEM = `You analyze drug-drug interactions for clinicians. Use ONLY the medical excerpts provided.
 

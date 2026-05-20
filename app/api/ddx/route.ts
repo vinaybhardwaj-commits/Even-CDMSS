@@ -4,7 +4,7 @@ import { llm } from '@/lib/llm';
 import { makeNdjsonStream, ndjsonHeaders } from '@/lib/stream';
 
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 const DDX_MODEL = 'llama3.1:8b';
 

@@ -5,7 +5,7 @@ import { parseLooseJson, normalizeDrugName } from '@/lib/drugs';
 import { makeNdjsonStream, ndjsonHeaders } from '@/lib/stream';
 
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 // Use qwen2.5:14b for richer pharmacology synthesis; UpToDate ingest is done so it's fast
 const LOOKUP_MODEL = 'qwen2.5:14b';
@@ -94,15 +94,31 @@ export async function POST(req: NextRequest) {
       ).join('\n\n');
 
       emit({ type: 'progress', stage: 'generating', msg: `Composing comprehensive pharmacology card with ${LOOKUP_MODEL}…`, ms: Date.now() - t0 });
-      const r = await llm.chat.completions.create({
-        model: LOOKUP_MODEL,
-        messages: [
-          { role: 'system', content: SYSTEM },
-          { role: 'user', content: `Drug: ${normalized}\n\nExcerpts:\n${contextBlock}\n\nOutput the full pharmacology JSON now. Start with {.` },
-        ],
-        temperature: 0.2,
-        max_tokens: 2500,
-      });
+      // Heartbeat: emit a still-generating event every 12s so the client knows we're alive.
+      // The Mac Mini may be slow during UpToDate ingest (memory contention with embeddings).
+      const heartbeatTimers: ReturnType<typeof setInterval>[] = [];
+      const startGen = Date.now();
+      const heartbeat = setInterval(() => {
+        const elapsed = Math.round((Date.now() - startGen) / 1000);
+        emit({ type: 'progress', stage: 'generating', msg: `Still generating with ${LOOKUP_MODEL}… (${elapsed}s elapsed; large pharmacology cards take 30-90s under ingest load)`, ms: Date.now() - t0 });
+      }, 12000);
+      heartbeatTimers.push(heartbeat);
+      let r;
+      try {
+        r = await llm.chat.completions.create({
+          model: LOOKUP_MODEL,
+          messages: [
+            { role: 'system', content: SYSTEM },
+            { role: 'user', content: `Drug: ${normalized}\n\nExcerpts:\n${contextBlock}\n\nOutput the full pharmacology JSON now. Start with {.` },
+          ],
+          temperature: 0.2,
+          max_tokens: 1800,
+          // @ts-expect-error — Ollama extension: keep_alive holds the model in memory between calls
+          keep_alive: '15m',
+        });
+      } finally {
+        heartbeatTimers.forEach(clearInterval);
+      }
       const llmRaw = r.choices?.[0]?.message?.content ?? '';
       emit({ type: 'progress', stage: 'parsing', msg: 'Parsing pharmacology card…', ms: Date.now() - t0 });
       const parsed = parseLooseJson(llmRaw) as Record<string, unknown>;
