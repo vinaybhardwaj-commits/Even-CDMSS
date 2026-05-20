@@ -8,7 +8,54 @@ export function parseLooseJson(s: string): unknown {
   const a = t.indexOf('{');
   const b = t.lastIndexOf('}');
   if (a >= 0 && b > a) t = t.slice(a, b + 1);
-  return JSON.parse(t);
+  try {
+    return JSON.parse(t);
+  } catch (firstErr) {
+    // Recovery: model output was truncated. Walk back to the last well-formed comma boundary
+    // and close all open braces/brackets. We give up on the truncated trailing value/key.
+    const repaired = repairTruncatedJson(t);
+    if (repaired !== null) {
+      try { return JSON.parse(repaired); } catch {}
+    }
+    throw firstErr;
+  }
+}
+
+function repairTruncatedJson(t: string): string | null {
+  // Walk forward, tracking stack of { [ and string state, until we hit truncation.
+  // Then trim to last complete key:value pair and close.
+  const stack: string[] = [];
+  let inString = false;
+  let escape = false;
+  let lastSafePos = -1; // index AFTER last successfully-completed value at depth>=1
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i];
+    if (escape) { escape = false; continue; }
+    if (c === '\\') { escape = true; continue; }
+    if (c === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (c === '{' || c === '[') stack.push(c === '{' ? '}' : ']');
+    else if (c === '}' || c === ']') stack.pop();
+    if (c === ',' && stack.length >= 1) lastSafePos = i; // valid trim point at depth >=1
+  }
+  if (lastSafePos === -1) return null;
+  // Truncate to lastSafePos (drop trailing partial), then close all open structures
+  let head = t.slice(0, lastSafePos);
+  // Re-walk to reconstruct unclosed stack
+  const closeStack: string[] = [];
+  let inStr = false;
+  let esc = false;
+  for (let i = 0; i < head.length; i++) {
+    const c = head[i];
+    if (esc) { esc = false; continue; }
+    if (c === '\\') { esc = true; continue; }
+    if (c === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (c === '{') closeStack.push('}');
+    else if (c === '[') closeStack.push(']');
+    else if (c === '}' || c === ']') closeStack.pop();
+  }
+  return head + closeStack.reverse().join('');
 }
 
 // Normalize a free-text drug name into a canonical lookup string via fast LLM

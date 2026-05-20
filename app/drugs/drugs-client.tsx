@@ -226,18 +226,18 @@ function LookupPanel() {
       {(trace.length > 0 || loading) && <div className="mt-5"><TracePanel events={trace} totalMs={totalMs} /></div>}
       {error && <div className="mt-6 rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">{error}</div>}
 
-      {loading && (
+      {loading && !data && (
         <div className="mt-6 rounded-xl border bg-white p-8 text-center text-slate-400 shadow-sm">
           <Loader2 className="mx-auto mb-2 h-6 w-6 animate-spin" />
           Looking up…
         </div>
       )}
 
-      {data && !loading && (
+      {data && (
         <article className="mt-6 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
           <header className="border-b pb-3">
             <div className="flex items-baseline justify-between gap-2">
-              <h2 className="text-xl font-semibold capitalize text-slate-900">{data.drug_normalized}</h2>
+              <h2 className="text-xl font-semibold capitalize text-slate-900">{data.drug_normalized || data.normalized}</h2>
               {data.normalized && data.normalized !== data.input && (
                 <span className="shrink-0 text-xs text-slate-400">from &quot;{data.input}&quot;</span>
               )}
@@ -246,6 +246,11 @@ function LookupPanel() {
               {data.class && <span>{data.class}</span>}
               {data.subclass && <><span className="text-slate-300">·</span><span>{data.subclass}</span></>}
             </div>
+            {loading && (
+              <div className="mt-2 flex items-center gap-2 rounded-md bg-sky-50 px-2 py-1 text-[11px] text-sky-800">
+                <Loader2 className="h-3 w-3 animate-spin" /> Deeper pharmacology sections still loading…
+              </div>
+            )}
           </header>
 
           <div className="mt-4 space-y-5 text-sm">
@@ -253,7 +258,7 @@ function LookupPanel() {
               {data.mechanism_of_action && <PlainSection title="Mechanism of action" text={data.mechanism_of_action} />}
               {(data.receptors_targets && data.receptors_targets.length > 0) && <Section title="Molecular targets" items={data.receptors_targets} />}
               {data.biochemistry && <PlainSection title="Biochemistry" text={data.biochemistry} />}
-              {data.pharmacokinetics && Object.values(data.pharmacokinetics).some(Boolean) && (
+              {data.pharmacokinetics && typeof data.pharmacokinetics === 'object' && Object.values(data.pharmacokinetics).some(Boolean) && (
                 <div>
                   <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Pharmacokinetics</h3>
                   <dl className="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2">
@@ -283,7 +288,7 @@ function LookupPanel() {
                   {data.hepatic_adjust && <PlainSection title="Hepatic adjustment" text={data.hepatic_adjust} />}
                 </div>
               )}
-              {data.special_populations && Object.values(data.special_populations).some(Boolean) && (
+              {data.special_populations && typeof data.special_populations === 'object' && Object.values(data.special_populations).some(Boolean) && (
                 <div>
                   <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Special populations</h3>
                   <dl className="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2">

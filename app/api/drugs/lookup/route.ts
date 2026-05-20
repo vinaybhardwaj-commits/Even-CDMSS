@@ -49,7 +49,7 @@ type Phase = { name: string; model: string; system: string; userSuffix: string; 
 
 const PHASES: Phase[] = [
   { name: 'fast',         model: FAST_MODEL, system: PHASE1_SYSTEM, userSuffix: 'Output the clinical skeleton JSON now.',           maxTokens: 800  },
-  { name: 'pharmacology', model: DEEP_MODEL, system: PHASE2_SYSTEM, userSuffix: 'Output the pharmacology JSON now.',                maxTokens: 1000 },
+  { name: 'pharmacology', model: DEEP_MODEL, system: PHASE2_SYSTEM, userSuffix: 'Output the pharmacology JSON now.',                maxTokens: 2000},
   { name: 'extras',       model: DEEP_MODEL, system: PHASE3_SYSTEM, userSuffix: 'Output the formulations/interactions/pops/pearls JSON now.', maxTokens: 700 },
 ];
 
