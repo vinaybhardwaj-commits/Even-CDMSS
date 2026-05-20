@@ -141,7 +141,9 @@ export async function POST(req: NextRequest) {
       // distractor noise. Phase 1 (llama8b) did improve +60%. If we want more context
       // it should be per-phase (more for llama, same/less for qwen), and we should
       // first fix the bm25_pool=0 bug (D12.2) so hybrid retrieval is actually hybrid.
-      const result = await retrieve(query, { topK: 10, minSimilarity: 0.3 });
+      // D12.2: BM25 leg gets just the drug name (highest-IDF term). The full boilerplate
+      // query AND-tokenized to zero hits across all earlier traces.
+      const result = await retrieve(query, { topK: 10, minSimilarity: 0.3, bm25Query: normalized });
       const hits = result.hits;
       await logEvent(traceId, 'retrieve', 'retrieving', {
         query, expanded_query: result.expandedQuery,

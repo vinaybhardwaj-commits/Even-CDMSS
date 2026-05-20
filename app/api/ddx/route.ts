@@ -62,7 +62,10 @@ export async function POST(req: NextRequest) {
     let outcomeMsg: string | undefined;
     try {
       emit({ type: 'progress', stage: 'expanding', msg: 'Building clinical summary, expanding query…' });
-      const result = await retrieve(queryHint || display, { topK: 8, minSimilarity: 0.4 });
+      // D12.2: BM25 leg gets just the chief complaint (the highest-IDF clinical anchor).
+      // The full queryHint includes "Age / Sex; Chief complaint:; Key history:; Exam:; Vitals:"
+      // boilerplate that AND-tokenizes to ~zero matches.
+      const result = await retrieve(queryHint || display, { topK: 8, minSimilarity: 0.4, bm25Query: (body.cc || '').trim() });
       const hits = result.hits;
       emit({ type: 'progress', stage: 'retrieving', msg: `Retrieved ${hits.length} excerpts`, ms: Date.now() - t0 });
       if (hits.length === 0) { emit({ type: 'error', message: 'no excerpts above threshold — presentation may be too vague' }); outcome = 'error'; outcomeMsg = 'no excerpts above threshold'; close(); return; }

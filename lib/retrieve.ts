@@ -11,6 +11,19 @@ export type RetrieveOptions = {
   minSimilarity?: number;
   skipExpand?: boolean;
   hybrid?: boolean; // default true; pass false to disable BM25 leg (debug/comparison)
+  /**
+   * Optional override for the BM25 leg. The vector leg always uses the (HyDE-expanded)
+   * full query, which is appropriate for semantic similarity. BM25 is term-precision-based
+   * and a wide boilerplate query like "warfarin pharmacology mechanism receptors ..."
+   * AND-tokenizes to zero matches (no single chunk contains all 13 stemmed terms).
+   *
+   * Callers with wide query templates should pass a focused bm25Query — typically the
+   * highest-IDF entity (drug name, chief complaint, topic).
+   *
+   * If omitted, retrieve() uses the same query as the vector leg, which works fine for
+   * short, focused user-typed queries (/ask, /coach).
+   */
+  bm25Query?: string;
 };
 
 export type RetrieveResult = {
@@ -20,6 +33,7 @@ export type RetrieveResult = {
     vector_pool: number;
     bm25_pool: number;
     fused: number;
+    bm25_query?: string;
   };
 };
 
@@ -59,8 +73,12 @@ export async function retrieve(query: string, opts: RetrieveOptions = {}): Promi
   `;
   const vecParams = [vlit, minSim, ...filterParams];
 
-  // ---- BM25 leg (uses ORIGINAL query, not HyDE expansion — to catch literal terms HyDE may have lost) ----
-  // Postgres plainto_tsquery is lenient about punctuation; we feed the raw user query
+  // ---- BM25 leg ----
+  // Uses opts.bm25Query if provided (focused, high-IDF terms), else falls back to the
+  // full query. plainto_tsquery ANDs every stemmed term — fine for 1-3 specific terms,
+  // catastrophic for the long boilerplate queries that drugs/lookup, drugs/interactions,
+  // and /ddx build (every term has to appear in the same chunk → bm25_pool=0).
+  const bm25Query = (opts.bm25Query ?? query).trim();
   const bm25FilterSQL = filterClauses.map((c) => c.replace(/\$FP_(\d+)/g, (_m, n) => `$${2 + Number(n)}`)).join(' AND ');
   const bm25SQL = `
     SELECT id, ROW_NUMBER() OVER (ORDER BY ts_rank_cd(text_tsv, plainto_tsquery('english', $1)) DESC) AS rank
@@ -70,7 +88,7 @@ export async function retrieve(query: string, opts: RetrieveOptions = {}): Promi
     ORDER BY ts_rank_cd(text_tsv, plainto_tsquery('english', $1)) DESC
     LIMIT ${POOL}
   `;
-  const bm25Params = [query, ...filterParams];
+  const bm25Params = [bm25Query, ...filterParams];
 
   // Run both in parallel
   type RankRow = { id: number; rank: number };
@@ -94,7 +112,7 @@ export async function retrieve(query: string, opts: RetrieveOptions = {}): Promi
     .map(([id]) => id);
 
   if (fusedIds.length === 0) {
-    return { hits: [], expandedQuery: expanded, meta: { vector_pool: vecRows.length, bm25_pool: bm25Rows.length, fused: 0 } };
+    return { hits: [], expandedQuery: expanded, meta: { vector_pool: vecRows.length, bm25_pool: bm25Rows.length, fused: 0, bm25_query: bm25Query } };
   }
 
   // Final SELECT: pull full row data for the fused IDs, with vector similarity for display
@@ -116,6 +134,6 @@ export async function retrieve(query: string, opts: RetrieveOptions = {}): Promi
   return {
     hits,
     expandedQuery: expanded,
-    meta: { vector_pool: vecRows.length, bm25_pool: bm25Rows.length, fused: hits.length },
+    meta: { vector_pool: vecRows.length, bm25_pool: bm25Rows.length, fused: hits.length, bm25_query: bm25Query },
   };
 }

@@ -40,7 +40,9 @@ export async function POST(req: NextRequest) {
       emit({ type: 'progress', stage: 'expanding', msg: `Checking: ${normalized.join(', ')}`, ms: Date.now() - t0 });
 
       const query = `drug-drug interactions between ${normalized.join(', ')}`;
-      const result = await retrieve(query, { topK: 10, minSimilarity: 0.3 });
+      // D12.2: BM25 leg gets just the drug names (highest-IDF tokens).
+      // The "drug-drug interactions between" framing is boilerplate that AND-fails on most chunks.
+      const result = await retrieve(query, { topK: 10, minSimilarity: 0.3, bm25Query: normalized.join(' ') });
       const hits = result.hits;
       emit({ type: 'progress', stage: 'retrieving', msg: `Retrieved ${hits.length} excerpts (n(n-1)/2 = ${normalized.length * (normalized.length - 1) / 2} pairs to check)`, ms: Date.now() - t0 });
       if (hits.length === 0) { emit({ type: 'error', message: 'no excerpts' }); outcome = 'error'; outcomeMsg = 'no excerpts'; close(); return; }
