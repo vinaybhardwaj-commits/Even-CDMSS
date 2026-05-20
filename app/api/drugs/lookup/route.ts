@@ -7,6 +7,39 @@ import { makeNdjsonStream, ndjsonHeaders } from '@/lib/stream';
 export const runtime = 'nodejs';
 export const maxDuration = 120;
 
+
+function toStringList(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.map((x) => {
+    if (typeof x === 'string') return x;
+    if (x && typeof x === 'object') {
+      const o = x as Record<string, unknown>;
+      const name = String(o.name ?? o.title ?? o.indication ?? o.condition ?? o.drug ?? o.label ?? '');
+      const desc = String(o.description ?? o.detail ?? o.note ?? o.value ?? o.dose ?? o.dosing ?? '');
+      if (name && desc) return `${name} — ${desc}`;
+      if (name) return name;
+      if (desc) return desc;
+      try { return JSON.stringify(o).replace(/[{}"]/g, ' ').replace(/\s+/g, ' ').trim(); } catch { return ''; }
+    }
+    return String(x);
+  }).filter(Boolean);
+}
+
+function toStringDict(v: unknown): Record<string, string> {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
+  const out: Record<string, string> = {};
+  for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+    if (typeof val === 'string') out[k] = val;
+    else if (val && typeof val === 'object') {
+      const o = val as Record<string, unknown>;
+      const name = String(o.name ?? o.label ?? '');
+      const desc = String(o.description ?? o.detail ?? o.value ?? '');
+      out[k] = name && desc ? `${name} — ${desc}` : (name || desc || JSON.stringify(o));
+    } else if (val != null) out[k] = String(val);
+  }
+  return out;
+}
+
 const FAST_MODEL = 'llama3.1:8b';
 const DEEP_MODEL = 'qwen2.5:14b';
 
