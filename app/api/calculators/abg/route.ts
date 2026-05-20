@@ -317,26 +317,30 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // CALC.3 fixup #3 — deterministic red_flags fallback. Qwen 14b reliably stops
-      // after next_workup despite the system-prompt CRITICAL completeness directive
-      // (verified on traces 9576b0de, 40b858ca, 000011ec). Rather than re-prompting,
-      // emit a deterministic red_flags section computed from the math result. This
-      // also gives us a tighter, more clinically defensible red_flags than free-text
-      // qwen would have produced.
-      if (!emittedSections.has('red_flags')) {
-        const flags: string[] = [];
-        if (body.pH < 7.10) flags.push(`Severe acidemia (pH ${body.pH}) — urgent disposition.`);
-        else if (body.pH > 7.60) flags.push(`Severe alkalemia (pH ${body.pH}) — urgent disposition.`);
-        if (body.lactate !== undefined && body.lactate >= 4) flags.push(`Lactate ${body.lactate} mmol/L — sepsis until proven otherwise; consider SSC 1-h bundle.`);
-        if (det.oxygenation.pf_band === 'moderate' || det.oxygenation.pf_band === 'severe') flags.push(`P/F ${det.oxygenation.pf_ratio} — ${det.oxygenation.pf_band} ARDS criterion.`);
-        if (det.anion_gap.ag_value !== null && det.anion_gap.ag_value > 25) flags.push(`Markedly elevated anion gap (${det.anion_gap.ag_value}) — toxic alcohols, severe DKA, or massive lactic acidosis.`);
-        const text = flags.length === 0
-          ? 'None on this gas. Clinical picture takes precedence over a normal gas if deterioration is observed.'
-          : flags.join(' ');
-        const fallbackRedFlags = { section: 'red_flags', text, citations: [] };
-        emit({ type: 'result', data: { phase: 'section', ...fallbackRedFlags } });
-        emittedSections.add('red_flags');
-        await logEvent(traceId, 'red_flags_fallback', 'synthesis', { reason: 'qwen_did_not_emit', flags_count: flags.length });
+      // CALC.3 fixup #4 — deterministic red_flags fallback (defensively wrapped).
+      // Always log a diagnostic event so we can see whether the block was reached.
+      try {
+        await logEvent(traceId, 'red_flags_fallback_check', 'synthesis', {
+          already_emitted: emittedSections.has('red_flags'),
+          emitted_so_far: Array.from(emittedSections),
+        });
+        if (!emittedSections.has('red_flags')) {
+          const flags: string[] = [];
+          if (body.pH < 7.10) flags.push(`Severe acidemia (pH ${body.pH}) — urgent disposition.`);
+          else if (body.pH > 7.60) flags.push(`Severe alkalemia (pH ${body.pH}) — urgent disposition.`);
+          if (body.lactate !== undefined && body.lactate >= 4) flags.push(`Lactate ${body.lactate} mmol/L — sepsis until proven otherwise; consider SSC 1-h bundle.`);
+          if (det.oxygenation.pf_band === 'moderate' || det.oxygenation.pf_band === 'severe') flags.push(`P/F ${det.oxygenation.pf_ratio} — ${det.oxygenation.pf_band} ARDS criterion.`);
+          if (det.anion_gap.ag_value !== null && det.anion_gap.ag_value > 25) flags.push(`Markedly elevated anion gap (${det.anion_gap.ag_value}) — toxic alcohols, severe DKA, or massive lactic acidosis.`);
+          const text = flags.length === 0
+            ? 'None on this gas. Clinical picture takes precedence over a normal gas if deterioration is observed.'
+            : flags.join(' ');
+          const fallbackRedFlags = { section: 'red_flags', text, citations: [] };
+          emit({ type: 'result', data: { phase: 'section', ...fallbackRedFlags } });
+          emittedSections.add('red_flags');
+          await logEvent(traceId, 'red_flags_fallback', 'synthesis', { reason: 'qwen_did_not_emit', flags_count: flags.length, text_length: text.length });
+        }
+      } catch (fbErr) {
+        await logEvent(traceId, 'red_flags_fallback_error', 'synthesis', { error: String((fbErr as Error).message), stack: String((fbErr as Error).stack ?? '').slice(0, 600) });
       }
 
       await logEvent(traceId, 'llm_response_stream_complete', 'synthesis', {
