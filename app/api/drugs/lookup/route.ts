@@ -126,11 +126,12 @@ export async function POST(req: NextRequest) {
 
       const query = `${normalized} pharmacology — mechanism receptors pharmacokinetics indications dosing contraindications adverse effects monitoring special populations`;
       const retrieveStart = Date.now();
-      // topK 10 → 15: with the Mac Mini OLLAMA_CONTEXT_LENGTH=16384 fix the 4096-token
-      // prompt clamp is gone, so we can feed more grounding chunks per phase. Cost is
-      // ~50% larger prompt; per-token latency is sub-linear so wall time should grow
-      // modestly. Watch trace.prompt_tokens vs completion_tokens after this lands.
-      const result = await retrieve(query, { topK: 15, minSimilarity: 0.3 });
+      // Reverted to topK=10. D12.0 tried topK=15 and quality regressed on phases 2 + 3
+      // (qwen14b completion chars -8% / -14%) — the extra chunks at sim ~0.7 act as
+      // distractor noise. Phase 1 (llama8b) did improve +60%. If we want more context
+      // it should be per-phase (more for llama, same/less for qwen), and we should
+      // first fix the bm25_pool=0 bug (D12.2) so hybrid retrieval is actually hybrid.
+      const result = await retrieve(query, { topK: 10, minSimilarity: 0.3 });
       const hits = result.hits;
       await logEvent(traceId, 'retrieve', 'retrieving', {
         query, expanded_query: result.expandedQuery,
