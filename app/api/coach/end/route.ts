@@ -36,7 +36,7 @@ export async function POST(req: NextRequest) {
       // @ts-expect-error — Ollama: num_ctx + keep_alive
       keep_alive: '15m',
       options: { num_ctx: 16384 },
-    });
+    } as any);
     raw = r.choices?.[0]?.message?.content ?? '';
     let t = raw.trim();
     if (t.startsWith('```')) t = t.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();

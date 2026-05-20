@@ -84,7 +84,7 @@ export async function POST(req: NextRequest) {
         max_tokens: 1500,
         // @ts-expect-error — Ollama: num_ctx prevents KV-cache thrashing
         options: { num_ctx: 16384 },
-      });
+      } as any);
       const raw = r.choices?.[0]?.message?.content ?? '';
       emit({ type: 'progress', stage: 'parsing', msg: 'Parsing differential…', ms: Date.now() - t0 });
 

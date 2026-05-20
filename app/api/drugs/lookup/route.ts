@@ -109,7 +109,7 @@ export async function POST(req: NextRequest) {
             // @ts-expect-error — Ollama extensions: num_ctx prevents KV-cache thrashing on long prompts
             keep_alive: '15m',
             options: { num_ctx: 16384, num_predict: phase.maxTokens },
-          });
+          } as any);
           raw_out = r.choices?.[0]?.message?.content ?? '';
           const parsed = parseLooseJson(raw_out) as Record<string, unknown>;
 

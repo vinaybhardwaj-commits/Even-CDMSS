@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
       max_tokens: 400,
         // @ts-expect-error — Ollama: num_ctx prevents KV-cache thrashing
         options: { num_ctx: 16384 },
-      });
+      } as any);
     raw = r.choices?.[0]?.message?.content ?? '';
     const parsed = parseLooseJson(raw) as { next_turn?: { content?: string } };
     const opener = (parsed.next_turn?.content || '').trim();

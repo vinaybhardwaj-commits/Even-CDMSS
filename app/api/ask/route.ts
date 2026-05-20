@@ -69,7 +69,7 @@ export async function POST(req: NextRequest) {
         stream: true,
         // @ts-expect-error — Ollama: num_ctx prevents KV-cache thrashing
         options: { num_ctx: 16384 },
-      });
+      } as any);
 
       for await (const part of completion) {
         const delta = part.choices?.[0]?.delta?.content ?? '';

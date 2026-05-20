@@ -63,7 +63,7 @@ export async function POST(req: NextRequest) {
       // @ts-expect-error — Ollama: num_ctx + keep_alive
       keep_alive: '15m',
       options: { num_ctx: 16384 },
-      });
+      } as any);
       const llmRaw = r.choices?.[0]?.message?.content ?? '';
       emit({ type: 'progress', stage: 'parsing', msg: 'Deduplicating pairs…', ms: Date.now() - t0 });
       const parsed = parseLooseJson(llmRaw) as { summary?: string; pairs?: unknown[] };

@@ -24,7 +24,7 @@ export async function expandQuery(question: string): Promise<string> {
       // @ts-expect-error — Ollama: num_ctx + keep_alive
       keep_alive: '15m',
       options: { num_ctx: 16384 },
-    });
+    } as any);
     const txt = r.choices?.[0]?.message?.content?.trim() || '';
     // Belt + suspenders: always retrieve the ORIGINAL question's terms too, so we don't lose specificity
     return txt ? `${question}\n\n${txt}` : question;
