@@ -81,7 +81,9 @@ export async function POST(req: NextRequest) {
         model: DDX_MODEL,
         messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: userMsg }],
         temperature: 0.2,
-        max_tokens: 1500,
+        max_tokens: 1500,,
+        // @ts-expect-error — Ollama: num_ctx prevents KV-cache thrashing
+        options: { num_ctx: 16384 },
       });
       const raw = r.choices?.[0]?.message?.content ?? '';
       emit({ type: 'progress', stage: 'parsing', msg: 'Parsing differential…', ms: Date.now() - t0 });

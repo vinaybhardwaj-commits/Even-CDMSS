@@ -60,6 +60,9 @@ export async function POST(req: NextRequest) {
         ],
         temperature: 0.2,
         max_tokens: 1500,
+      // @ts-expect-error — Ollama: num_ctx + keep_alive
+      keep_alive: '15m',
+      options: { num_ctx: 16384 },
       });
       const llmRaw = r.choices?.[0]?.message?.content ?? '';
       emit({ type: 'progress', stage: 'parsing', msg: 'Deduplicating pairs…', ms: Date.now() - t0 });

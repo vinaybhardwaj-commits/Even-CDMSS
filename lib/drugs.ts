@@ -72,6 +72,9 @@ export async function normalizeDrugName(input: string): Promise<string> {
       ],
       temperature: 0,
       max_tokens: 20,
+      // @ts-expect-error — Ollama: num_ctx + keep_alive
+      keep_alive: '15m',
+      options: { num_ctx: 16384 },
     });
     const out = (r.choices?.[0]?.message?.content ?? '').trim().toLowerCase();
     // Sanity: must be alphanumeric+hyphen+space, <50 chars

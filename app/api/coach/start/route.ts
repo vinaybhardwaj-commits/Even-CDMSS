@@ -41,8 +41,10 @@ export async function POST(req: NextRequest) {
       model: COACH_MODEL,
       messages: [{ role: 'system', content: system }, { role: 'user', content: userMsg }],
       temperature: 0.3,
-      max_tokens: 400,
-    });
+      max_tokens: 400,,
+        // @ts-expect-error — Ollama: num_ctx prevents KV-cache thrashing
+        options: { num_ctx: 16384 },
+      });
     raw = r.choices?.[0]?.message?.content ?? '';
     const parsed = parseLooseJson(raw) as { next_turn?: { content?: string } };
     const opener = (parsed.next_turn?.content || '').trim();

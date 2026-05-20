@@ -33,6 +33,9 @@ export async function POST(req: NextRequest) {
       ],
       temperature: 0.3,
       max_tokens: 400,
+      // @ts-expect-error — Ollama: num_ctx + keep_alive
+      keep_alive: '15m',
+      options: { num_ctx: 16384 },
     });
     raw = r.choices?.[0]?.message?.content ?? '';
     let t = raw.trim();
