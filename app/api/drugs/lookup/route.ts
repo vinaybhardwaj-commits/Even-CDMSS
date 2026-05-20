@@ -6,7 +6,12 @@ import { parseLooseJson, normalizeDrugName } from '@/lib/drugs';
 import { makeNdjsonStream, ndjsonHeaders } from '@/lib/stream';
 
 export const runtime = 'nodejs';
-export const maxDuration = 120;
+// 300s (5 min) — needed because the 3-phase pipeline (llama fast + qwen pharm + qwen extras)
+// with full 16384-token context can run 150-200s end-to-end. At maxDuration=120 the lambda was
+// being killed mid–phase_extras, leaving traces stuck at status='running' and the last phase's
+// llm_response event unwritten. Pro Plus supports up to 800s; 300 keeps headroom without
+// hiding genuine perf regressions.
+export const maxDuration = 300;
 
 
 function toStringList(v: unknown): string[] {
