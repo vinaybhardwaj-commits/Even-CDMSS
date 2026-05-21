@@ -2,10 +2,46 @@
 @tailwind components;
 @tailwind utilities;
 
+/**
+ * SP.1.4 — brand palette as CSS variables (parity with even-staff-portal).
+ * Hardcoded tokens still work; future CDMSS code should prefer these.
+ */
 :root {
   color-scheme: light;
+  --color-bg: #f2f4f8;
+  --color-card: #fcfcfc;
+  --color-text: #1a1a2e;
+  --color-text-secondary: #4a5568;
+  --color-text-muted: #7a8599;
+  --color-border: #e2e6ec;
+  --color-brand: #0055ff;
+  --color-brand-dark: #0044cc;
+  --color-brand-faint: #e6eeff;
+  --color-navy: #002054;
+  --color-pink: #f96eb1;
 }
 
 body {
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  -webkit-font-smoothing: antialiased;
+}
+
+/* NEW pulse animation — parity with staff portal (locked decision #26) */
+@keyframes new-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.7); }
+}
+.new-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-pink);
+  animation: new-pulse 2s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .new-dot { animation: none; opacity: 1; }
+  * { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
 }
