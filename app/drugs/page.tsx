@@ -20,11 +20,6 @@ export default function DrugsPage() {
           'Click any [n] citation chip to verify the source',
         ]}
       />
-      <div className="mt-4 flex flex-wrap gap-2">
-        <a href="/drugs/egfr" className="inline-flex items-center gap-1.5 rounded-md border border-brand bg-brand-faint px-3 py-1.5 text-sm font-medium text-brand hover:bg-brand hover:text-white">
-          Compute eGFR for renal dosing →
-        </a>
-      </div>
       <div className="mt-6"><DrugsClient /></div>
     </div>
   );

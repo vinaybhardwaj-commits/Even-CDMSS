@@ -67,7 +67,7 @@ export async function POST(req: NextRequest) {
     banner = {
       tone: 'red',
       text: 'High-risk NEWS2 — emergency response. Think sepsis until proven otherwise.',
-      cta: { label: 'Open sepsis 1-h bundle', href: '/coach/sepsis-bundle' },
+      cta: { label: 'Open sepsis 1-h bundle', href: '/calculators/sepsis-bundle' },
     };
   } else if (det.score >= 5) {
     banner = {

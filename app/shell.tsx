@@ -2,13 +2,14 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { MessageSquare, Sparkles, Pill, Brain, BookOpen } from 'lucide-react';
+import { MessageSquare, Sparkles, Pill, Calculator, Brain, BookOpen } from 'lucide-react';
 import HealthPill from '@/components/HealthPill';
 
 const TABS = [
   { href: '/ask', label: 'Ask', icon: MessageSquare },
   { href: '/ddx', label: 'DDx', icon: Sparkles },
   { href: '/drugs', label: 'Drugs', icon: Pill },
+  { href: '/calculators', label: 'Calc', icon: Calculator },
   { href: '/coach', label: 'Coach', icon: Brain },
   { href: '/review', label: 'Review', icon: BookOpen },
 ];

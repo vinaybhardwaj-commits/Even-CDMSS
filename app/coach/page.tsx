@@ -20,11 +20,6 @@ export default function CoachPage() {
           "Session ends automatically when the coach decides you've mastered the topic, or you tap End for a summary",
         ]}
       />
-      <div className="mt-4 flex flex-wrap gap-2">
-        <a href="/coach/sepsis-bundle" className="inline-flex items-center gap-1.5 rounded-md border border-brand bg-brand-faint px-3 py-1.5 text-sm font-medium text-brand hover:bg-brand hover:text-white">
-          Sepsis 1-hour bundle tracker →
-        </a>
-      </div>
       <div className="mt-6"><CoachClient /></div>
     </div>
   );
