@@ -15,19 +15,39 @@ export async function consumeNdjson(
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
   let buf = '';
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    let nl;
-    while ((nl = buf.indexOf('\n')) !== -1) {
-      const line = buf.slice(0, nl).trim();
-      buf = buf.slice(nl + 1);
-      if (!line) continue;
-      try { onEvent(JSON.parse(line) as ServerEvent); } catch {}
+  // Track whether the server emitted a clean 'done' event before the stream closed.
+  // iOS Safari throws TypeError: 'Load failed' from reader.read() after the
+  // server's clean close — even though we've already consumed all the data.
+  // If we've seen 'done', swallow any subsequent read error.
+  let sawDone = false;
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) !== -1) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        try {
+          const ev = JSON.parse(line) as ServerEvent;
+          if (ev.type === 'done') sawDone = true;
+          onEvent(ev);
+        } catch {}
+      }
     }
+  } catch (e) {
+    // Common iOS Safari case: server closed cleanly after 'done', reader.read()
+    // throws TypeError 'Load failed'. We have all the data; this is benign.
+    if (sawDone) return;
+    // Otherwise the stream genuinely failed mid-flight — re-throw for the
+    // caller's error handling to surface.
+    throw e;
   }
-  // flush any tail (shouldn't happen with our protocol)
+
+  // flush any tail (shouldn't happen with our protocol but be defensive)
   const tail = buf.trim();
   if (tail) {
     try { onEvent(JSON.parse(tail) as ServerEvent); } catch {}
