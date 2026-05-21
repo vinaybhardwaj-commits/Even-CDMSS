@@ -168,6 +168,7 @@ export default function CalculatorShell<T = Record<string, unknown>>({ config, r
     return init;
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [softWarnings, setSoftWarnings] = useState<string[]>([]);
   const [result, setResult] = useState<CalculatorResult | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
@@ -195,8 +196,31 @@ export default function CalculatorShell<T = Record<string, unknown>>({ config, r
       }
     }
     setErrors(e);
+
+    // Soft warnings: physiologically unusual values per softMin/softMax — allow Submit,
+    // surface as a yellow banner so the user can confirm before computing (PRD §14.4).
+    const warnings: string[] = [];
+    for (const f of config.fields) {
+      const v = values[f.key];
+      if (typeof v !== 'number') continue;
+      if (f.softMin !== undefined && v < f.softMin) warnings.push(`${f.label} ${v}${f.unit ? ' ' + f.unit : ''} is unusually low — confirm`);
+      if (f.softMax !== undefined && v > f.softMax) warnings.push(`${f.label} ${v}${f.unit ? ' ' + f.unit : ''} is unusually high — confirm`);
+    }
+    setSoftWarnings(warnings);
     return Object.keys(e).length === 0;
   }
+
+  // Live re-compute soft warnings whenever values change (so the banner appears as the user types)
+  useEffect(() => {
+    const warnings: string[] = [];
+    for (const f of config.fields) {
+      const v = values[f.key];
+      if (typeof v !== 'number') continue;
+      if (f.softMin !== undefined && v < f.softMin) warnings.push(`${f.label} ${v}${f.unit ? ' ' + f.unit : ''} is unusually low — confirm`);
+      if (f.softMax !== undefined && v > f.softMax) warnings.push(`${f.label} ${v}${f.unit ? ' ' + f.unit : ''} is unusually high — confirm`);
+    }
+    setSoftWarnings(warnings);
+  }, [values, config.fields]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -275,6 +299,14 @@ export default function CalculatorShell<T = Record<string, unknown>>({ config, r
         <form onSubmit={handleSubmit} className="space-y-5">
           {formContent}
 
+          {softWarnings.length > 0 && (
+            <div role="alert" className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              <div className="font-medium">Unusual values — confirm before computing:</div>
+              <ul className="mt-1 list-disc pl-5">
+                {softWarnings.map((w, i) => (<li key={i}>{w}</li>))}
+              </ul>
+            </div>
+          )}
           {serverError && (
             <div role="alert" className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
               {serverError}

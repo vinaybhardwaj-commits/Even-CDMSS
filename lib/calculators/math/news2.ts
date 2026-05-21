@@ -127,3 +127,20 @@ export function computeNews2(inputs: News2Inputs): News2Result {
 
   return { score, band, element_points: ep, any_single_three };
 }
+
+
+// ---------- Element direction labels (for LLM prompt + UI) ----------
+// PRD CALC.2 fixup: NEWS2 penalizes deviation in BOTH directions for several elements
+// (Temp, SBP, HR, RR), so a points value alone doesn't tell you which way to look.
+// Naming the direction prevents the llama interpretation from mis-describing a
+// hypothermic patient as having a high temperature.
+
+export function elementDirectionLabels(i: News2Inputs): Record<string, string> {
+  const rr = i.rr <= 8 ? 'bradypnea' : i.rr >= 21 ? 'tachypnea' : 'normal';
+  const spo2 = i.spo2 <= 95 ? 'hypoxemia' : 'normal';
+  const temp = i.temp_c <= 35.0 ? 'severe hypothermia' : i.temp_c <= 36.0 ? 'mild hypothermia' : i.temp_c <= 38.0 ? 'normothermic' : i.temp_c <= 39.0 ? 'low-grade fever' : 'high fever';
+  const sbp = i.sbp <= 90 ? 'hypotension' : i.sbp <= 110 ? 'low-normal' : i.sbp <= 219 ? 'normal' : 'hypertensive crisis range';
+  const hr = i.hr <= 40 ? 'severe bradycardia' : i.hr <= 50 ? 'bradycardia' : i.hr <= 90 ? 'normal' : i.hr <= 110 ? 'mild tachycardia' : i.hr <= 130 ? 'tachycardia' : 'severe tachycardia';
+  const cs = i.consciousness === 'A' ? 'alert' : i.consciousness === 'V' ? 'responsive to voice' : i.consciousness === 'P' ? 'responsive to pain only' : i.consciousness === 'U' ? 'unresponsive' : 'new-onset confusion';
+  return { rr, spo2, temp, sbp, hr, consciousness: cs };
+}

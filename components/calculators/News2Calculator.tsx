@@ -14,20 +14,20 @@ const NEWS2_CONFIG: CalculatorConfig = {
   resultSections: ['interpretation'],
   typicalLatencySec: 2,
   fields: [
-    { key: 'rr', label: 'Respiratory rate', type: 'integer', unit: 'breaths/min', required: true, hardMin: 5, hardMax: 60,
+    { key: 'rr', label: 'Respiratory rate', type: 'integer', unit: 'breaths/min', required: true, hardMin: 5, hardMax: 60, softMin: 8, softMax: 40,
       staticTooltip: 'Counted over a full 60 s when abnormal. Score breaks: ≤8, 9-11, 12-20, 21-24, ≥25.' },
     { key: 'spo2_scale', label: 'SpO2 scale', type: 'enum', required: true, defaultValue: '1',
       options: [{ value: '1', label: 'Scale 1 (standard)' }, { value: '2', label: 'Scale 2 (target 88-92% / chronic CO2 retainer)' }],
       staticTooltip: 'Scale 2 is for patients with target saturations 88-92 % — typically known Type 2 respiratory failure / chronic CO2 retainers on home oxygen. Otherwise Scale 1.' },
-    { key: 'spo2', label: 'SpO2', type: 'integer', unit: '%', required: true, hardMin: 50, hardMax: 100,
+    { key: 'spo2', label: 'SpO2', type: 'integer', unit: '%', required: true, hardMin: 50, hardMax: 100, softMin: 80,
       staticTooltip: 'Pulse oximetry on room air or current supplemental O2. Scale 1 breaks: ≤91, 92-93, 94-95, ≥96.' },
     { key: 'o2_supp', label: 'On supplemental O2', type: 'bool', required: true, defaultValue: false,
       staticTooltip: 'Any form of supplemental O2 at the time of vitals. Adds 2 points. Also affects Scale 2 SpO2 scoring above the target window.' },
-    { key: 'temp_c', label: 'Temperature', type: 'number', unit: '°C', required: true, hardMin: 30, hardMax: 43,
+    { key: 'temp_c', label: 'Temperature', type: 'number', unit: '°C', required: true, hardMin: 30, hardMax: 43, softMin: 34, softMax: 41,
       staticTooltip: 'Tympanic, oral, or axillary. Breaks: ≤35.0, 35.1-36.0, 36.1-38.0, 38.1-39.0, ≥39.1.' },
-    { key: 'sbp', label: 'Systolic BP', type: 'integer', unit: 'mmHg', required: true, hardMin: 40, hardMax: 280,
+    { key: 'sbp', label: 'Systolic BP', type: 'integer', unit: 'mmHg', required: true, hardMin: 40, hardMax: 280, softMin: 70, softMax: 220,
       staticTooltip: 'Breaks: ≤90, 91-100, 101-110, 111-219, ≥220. Note the symmetric high-end penalty.' },
-    { key: 'hr', label: 'Heart rate', type: 'integer', unit: 'bpm', required: true, hardMin: 20, hardMax: 250,
+    { key: 'hr', label: 'Heart rate', type: 'integer', unit: 'bpm', required: true, hardMin: 20, hardMax: 250, softMin: 30, softMax: 200,
       staticTooltip: 'Breaks: ≤40, 41-50, 51-90, 91-110, 111-130, ≥131.' },
     { key: 'consciousness', label: 'Consciousness', type: 'enum', required: true, defaultValue: 'A',
       options: [
@@ -92,10 +92,11 @@ function News2Result({ result }: { result: CalculatorResult & { deterministic: N
           {Object.entries(d.element_points).map(([k, v]) => (
             <div key={k} className="flex items-center justify-between rounded-md border border-slate-200 px-3 py-1.5 text-xs">
               <span className="text-slate-500">{ELEMENT_LABEL[k] ?? k}</span>
-              <span className={`font-semibold ${v === 0 ? 'text-slate-400' : v === 3 ? 'text-red-600' : v === 2 ? 'text-orange-600' : 'text-amber-700'}`}>{v}</span>
+              <span className={`font-semibold ${v === 0 ? 'text-slate-400' : v === 3 ? 'text-red-600' : v === 2 ? 'text-orange-600' : 'text-amber-700'}`}>+{v}<span className="ml-0.5 text-[10px] font-normal text-slate-400">pts</span></span>
             </div>
           ))}
         </div>
+        <div className="mt-2 text-[10px] text-slate-400">Each number is the NEWS2 score contribution (not the raw value).</div>
       </div>
 
       {/* Auto-banner (PRD §4.2) */}

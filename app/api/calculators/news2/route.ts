@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { computeNews2, type News2Inputs, type Consciousness } from '@/lib/calculators/math/news2';
+import { computeNews2, elementDirectionLabels, type News2Inputs, type Consciousness } from '@/lib/calculators/math/news2';
 import { startTrace, logEvent, finishTrace, tracedChat } from '@/lib/trace';
 import { sql } from '@/lib/db';
 import { INTERPRETATION_FALLBACKS } from '@/lib/calculators/static-fallbacks';
@@ -93,15 +93,24 @@ export async function POST(req: NextRequest) {
     } catch {}
   }
 
-  // llama 8b interpretation (band-aware)
+  // llama 8b interpretation (band-aware, direction-aware)
+  // PRD CALC.2 fixup: pre-classify each element by clinical direction so llama
+  // can never describe 32°C as 'high temperature' or 35 bpm as 'tachycardia'.
   let interpretation = '';
   let llmFailed = false;
   try {
-    const sys = `You are Even-CDMSS, an educational clinical companion. The user computed NEWS2 for a patient. Write a tight interpretation: one sentence naming the risk band and what it operationally means (monitoring frequency, escalation), then 2-4 short bullets covering: per-element drivers (which inputs contributed most), expected next actions per NICE NEWS2 algorithm, any red flags (single-parameter 3, sepsis pattern). No drug doses, no fluid rates, no first person, no apologies.`;
+    const dir = elementDirectionLabels(inputs);
+    const sys = `You are Even-CDMSS, an educational clinical companion. The user computed NEWS2 for a patient. Write a tight interpretation: one sentence naming the risk band and what it operationally means (monitoring frequency, escalation), then 2-4 short bullets covering: per-element drivers (which inputs contributed most — name the CLINICAL DIRECTION, e.g. "hypothermia" not "high temperature" for low temps), expected next actions per NICE NEWS2 algorithm, any red flags (single-parameter 3, sepsis pattern). When the patient is hypothermic, mention the differential (sepsis with paradoxical hypothermia, environmental exposure, hypothyroidism, sedative ingestion, hypoglycemia). No drug doses, no fluid rates, no first person, no apologies. NEVER mis-name a clinical direction — temperatures ≤36°C are HYPOTHERMIA, not high; HR ≤50 is BRADYCARDIA, not tachycardia.`;
     const user = `NEWS2 = ${det.score} (${det.band}${det.any_single_three ? ', single parameter scoring 3' : ''}).
-Element points: RR ${det.element_points.rr}, SpO2 ${det.element_points.spo2} (scale ${inputs.spo2_scale}), O2 supp ${det.element_points.o2_supp}, Temp ${det.element_points.temp}, SBP ${det.element_points.sbp}, HR ${det.element_points.hr}, Consciousness ${det.element_points.consciousness}.
-Raw inputs: RR ${inputs.rr}, SpO2 ${inputs.spo2}%${inputs.o2_supp ? ' on O2' : ' on air'} (scale ${inputs.spo2_scale}), T ${inputs.temp_c}°C, BP ${inputs.sbp}, HR ${inputs.hr}, ${inputs.consciousness}.
-Write the interpretation paragraph then the bullets.`;
+Element points (each integer is NEWS2 SCORE contribution, not the underlying value):
+  RR=${det.element_points.rr} pts (${dir.rr}, raw RR ${inputs.rr})
+  SpO2=${det.element_points.spo2} pts (${dir.spo2}, raw ${inputs.spo2}%${inputs.o2_supp ? ' on O2' : ' on air'}, scale ${inputs.spo2_scale})
+  O2 supp=${det.element_points.o2_supp} pts (${inputs.o2_supp ? 'on supplemental O2' : 'room air'})
+  Temp=${det.element_points.temp} pts (${dir.temp}, raw ${inputs.temp_c}°C)
+  SBP=${det.element_points.sbp} pts (${dir.sbp}, raw ${inputs.sbp})
+  HR=${det.element_points.hr} pts (${dir.hr}, raw ${inputs.hr})
+  Consciousness=${det.element_points.consciousness} pts (${dir.consciousness}, AVPU ${inputs.consciousness})
+Write the interpretation paragraph then the bullets. Tie the explanation to the named clinical directions above — do not infer direction from the points value alone.`;
 
     const resp = await tracedChat(traceId, 'interpretation', {
       model: 'llama3.1:8b',
