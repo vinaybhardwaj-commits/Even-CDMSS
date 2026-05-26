@@ -201,7 +201,7 @@ export async function POST(req: NextRequest) {
       // first fix the bm25_pool=0 bug (D12.2) so hybrid retrieval is actually hybrid.
       // D12.2: BM25 leg gets just the drug name (highest-IDF term). The full boilerplate
       // query AND-tokenized to zero hits across all earlier traces.
-      const result = await retrieve(query, { topK: 10, minSimilarity: 0.3, bm25Query: normalized });
+      const result = await retrieve(query, { topK: 10, minSimilarity: 0.3, bm25Query: normalized, intent: 'dosing', entityFilter: { drugs: [normalized] } });
       const hits = result.hits;
       await logEvent(traceId, 'retrieve', 'retrieving', {
         query, expanded_query: result.expandedQuery,
