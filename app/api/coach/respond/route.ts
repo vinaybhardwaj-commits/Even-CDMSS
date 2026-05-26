@@ -37,7 +37,7 @@ export async function POST(req: NextRequest) {
     // Retrieve excerpts grounded on the topic + the previous question (richer than topic alone).
     const retrievalQuery = `${sess.topic} ${previousQuestion}`;
     let hits: Awaited<ReturnType<typeof retrieve>>['hits'] = [];
-    try { hits = (await retrieve(retrievalQuery, { topK: 6, minSimilarity: 0.3, bm25Query: sess.topic })).hits; } catch {}
+    try { hits = (await retrieve(retrievalQuery, { topK: 6, minSimilarity: 0.3, bm25Query: sess.topic, intent: 'education' })).hits; } catch {}
     const contextBlock = hits.length
       ? hits.map((h, i) => `--- Excerpt ${i + 1} (${h.book}${h.chapter ? ' · ' + h.chapter : ''}) ---\n${h.text.slice(0, 700)}`).join('\n\n')
       : '(no fresh excerpts retrieved)';
