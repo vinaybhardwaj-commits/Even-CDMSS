@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
   // Retrieve top chunks for grounding
   let result;
   try {
-    result = await retrieve(subject, { topK: 6, minSimilarity: 0.3, intent: 'education' });
+    result = await retrieve(subject, { topK: 6, minSimilarity: 0.3 });
   } catch (e) {
     return NextResponse.json({ error: 'retrieval failed', detail: String((e as Error).message) }, { status: 500 });
   }
