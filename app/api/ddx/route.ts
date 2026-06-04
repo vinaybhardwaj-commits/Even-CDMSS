@@ -5,6 +5,7 @@ import { searchPlos, formatPlosForPrompt, type PlosHit } from '@/lib/plos';
 import { makeNdjsonStream, ndjsonHeaders } from '@/lib/stream';
 import { startTrace, finishTrace, tracedChat, logEvent, setTraceQuestionPreview, setTraceSeverity, setTraceModelSummary, setTraceFinalAnswer } from '@/lib/trace';
 import { filterByDemographics } from '@/lib/ddx-constraints';
+import { parseInvestigations, type ParsedInvestigations } from '@/lib/investigations';
 
 export const runtime = 'nodejs';
 export const maxDuration = 180;
@@ -15,7 +16,7 @@ const SYSTEM = `You are an expert physician generating a differential diagnosis 
 
 HARD RULES (a violation makes the output unsafe):
 1. DEMOGRAPHICS ARE CONSTRAINTS, NOT HINTS. Never include a diagnosis anatomically or physiologically impossible for the patient's stated sex — e.g. NO ovarian/uterine/cervical/vaginal/pregnancy/eclampsia diagnoses for a male; NO testicular/prostatic/scrotal/penile diagnoses for a female. Weight every diagnosis by age and sex prevalence; exclude diagnoses with negligible prevalence at this age unless a specific stated risk factor supports them (e.g. do not list aortic dissection in a healthy 14-year-old).
-2. GROUND EVERYTHING IN STATED FINDINGS. Do not invent or assume any symptom, sign, lab, or imaging result that is not explicitly given. Every why_consider/distinguishing_feature must reference only provided findings. If a finding is explicitly negative or normal (e.g. "no fever", "soft, non-tender abdomen"), use it to LOWER or exclude diagnoses that depend on it — never cite an absent finding as supporting evidence.
+2. GROUND EVERYTHING IN STATED FINDINGS. Do not invent or assume any symptom, sign, lab, or imaging result that is not explicitly given. Every why_consider/distinguishing_feature must reference only provided findings. If a finding is explicitly negative or normal (e.g. "no fever", "soft, non-tender abdomen"), use it to LOWER or exclude diagnoses that depend on it — never cite an absent finding as supporting evidence. INVESTIGATION RESULTS, when supplied, are stated findings: reconcile every diagnosis against them — an abnormal result that fits rules a diagnosis IN, a normal/negative result that would be expected to be abnormal rules it DOWN. Never invent or assume a result that is not in the supplied investigation list.
 3. INTERPRET, DON'T ANCHOR. Translate lay/patient terms into clinical possibilities (e.g. "indigestion"/epigastric discomfort in an older adult with cardiac risk factors MUST include acute coronary syndrome). Consider diagnoses across ALL relevant organ systems — do not stay inside the system implied by the chief complaint's wording. Explicitly weight risk factors and red flags: age, sex, comorbidities (diabetes, hypertension), sudden onset, diaphoresis, pallor, syncope, symptoms waking the patient from sleep, failure of symptomatic therapy.
 
 RANKING — two INDEPENDENT axes:
@@ -23,16 +24,18 @@ RANKING — two INDEPENDENT axes:
 - most_likely = ranked by PROBABILITY for this exact presentation.
 
 Return ONLY this JSON object, lowercase keys exactly as shown:
-{"summary":"one line","missing_info":["..."],"cannot_miss":[{"diagnosis":"name","likelihood":"high|moderate|low","why_consider":"<25 words","distinguishing_features":["<12 words each"],"investigations":["<12 words each"],"citation_ids":[1,2],"plos_citation_ids":["P1"]}],"most_likely":[...same shape...],"other":[...same shape...]}
+{"summary":"one line","missing_info":["..."],"cannot_miss":[{"diagnosis":"name","likelihood":"high|moderate|low","why_consider":"<25 words","distinguishing_features":["<12 words each"],"investigations":["<12 words each"],"investigation_fit":"","citation_ids":[1,2],"plos_citation_ids":["P1"]}],"most_likely":[...same shape...],"other":[...same shape...]}
 
 - cannot_miss: 2-3 items (worst-first)
 - most_likely: 2-3 items (by probability)
 - other: 1-2 less likely but reasonable
+- investigations = SUGGESTED next workup to confirm/refute this diagnosis (what to ORDER).
+- investigation_fit = ONLY when INVESTIGATION RESULTS are supplied in the presentation: one clause (<14 words) on how those already-back results support or argue against THIS diagnosis (e.g. "troponin elevated + anterior ST-elevation → supports"; "CT head normal → lowers but does not exclude"). Use "" (empty string) when no results were supplied. Do NOT restate results that were not provided.
 - citation_ids = 1-based numbers from the MEDICAL EXCERPTS (textbook). Cite every textbook claim.
 - plos_citation_ids = strings like "P1", "P2" from PLOS ONE ABSTRACTS, if any inform the diagnosis. May be empty array []. CRITICAL: each entry MUST be a JSON string with DOUBLE QUOTES — write ["P1","P2"] not [P1,P2]. Unquoted barewords are invalid JSON and will fail parse.
 - No prose, no markdown fences, lowercase keys.`;
 
-type Body = { age?: number | string; sex?: string; cc?: string; history?: string; exam?: string; vitals?: string; includePlos?: boolean; multiQuery?: boolean; selfCritique?: boolean };
+type Body = { age?: number | string; sex?: string; cc?: string; history?: string; exam?: string; vitals?: string; investigations?: string; includePlos?: boolean; multiQuery?: boolean; selfCritique?: boolean };
 
 const DDX_CRITIQUE_SYSTEM = `You are a clinical auditor reviewing a draft differential diagnosis (DDx) JSON for a SPECIFIC patient.
 
@@ -47,6 +50,7 @@ Output ONLY a JSON object of this shape:
   "cannot_miss_misuse": ["benign/self-limited diagnoses wrongly placed in cannot_miss, or dangerous diagnoses mis-ranked vs likelihood"],
   "likelihood_errors": ["diagnoses with wrong/implausible likelihood for this presentation"],
   "anchoring_or_atypical_miss": ["diagnostic anchoring on the chief-complaint wording or one organ system, missing cross-system possibilities the findings support"],
+  "investigation_misread": ["ONLY if investigation RESULTS were supplied: a diagnosis kept or up-ranked despite a supplied result that argues strongly against it; a supplied abnormal result not reflected anywhere in the DDx; or an investigation_fit clause that misstates or invents a result not in the supplied list"],
   "unsupported_claims": ["claims that aren't backed by the cited excerpt"],
   "investigation_problems": ["wrong, missing, or low-yield investigations"],
   "citation_problems": ["wrong source attributed, missing citation_ids, etc."],
@@ -54,14 +58,14 @@ Output ONLY a JSON object of this shape:
   "overall_severity": "none" | "minor" | "moderate" | "major"
 }
 
-Empty arrays are fine. Set needs_revision=true if ANY of demographic_impossibility, fabricated_findings, ignored_negatives, missing_cannot_miss, or cannot_miss_misuse is non-empty, OR there are major likelihood_errors. Set overall_severity to "major" if any demographic_impossibility, fabricated_findings, or missing_cannot_miss exist. Be specific and actionable. No prose outside the JSON.`;
+Empty arrays are fine. Set needs_revision=true if ANY of demographic_impossibility, fabricated_findings, ignored_negatives, missing_cannot_miss, cannot_miss_misuse, or investigation_misread is non-empty, OR there are major likelihood_errors. Set overall_severity to "major" if any demographic_impossibility, fabricated_findings, missing_cannot_miss, or investigation_misread exist. Be specific and actionable. No prose outside the JSON.`;
 
 const DDX_REVISION_SYSTEM = `You are revising your earlier DDx draft based on a clinical auditor's critique.
 
 You will receive (1) the clinical presentation, (2) source excerpts, (3) the draft JSON, (4) the auditor's critique. Output the REVISED full DDx JSON using the EXACT shape required:
-{"summary":"one line","missing_info":["..."],"cannot_miss":[{"diagnosis":"name","likelihood":"high|moderate|low","why_consider":"<25 words","distinguishing_features":["<12 words each"],"investigations":["<12 words each"],"citation_ids":[1,2],"plos_citation_ids":["P1"]}],"most_likely":[...],"other":[...]}
+{"summary":"one line","missing_info":["..."],"cannot_miss":[{"diagnosis":"name","likelihood":"high|moderate|low","why_consider":"<25 words","distinguishing_features":["<12 words each"],"investigations":["<12 words each"],"investigation_fit":"","citation_ids":[1,2],"plos_citation_ids":["P1"]}],"most_likely":[...],"other":[...]}
 
-Apply every fix in the critique: REMOVE diagnoses impossible for the patient's sex/age, DELETE any fabricated findings (reason only from stated findings), remove or down-rank diagnoses contradicted by a stated negative/normal finding, ADD missing cannot-miss diagnoses (including atypical high-risk presentations), MOVE benign/self-limited conditions out of cannot_miss, correct likelihoods, broaden across organ systems where the findings support it, replace unsupported claims, swap weak investigations, fix citations. Respect patient demographics as hard constraints. No prose, no markdown fences, lowercase keys only. CRITICAL: plos_citation_ids must be quoted strings — write ["P1","P2"] not [P1,P2]. Output MUST be valid JSON.`;
+Apply every fix in the critique: REMOVE diagnoses impossible for the patient's sex/age, DELETE any fabricated findings (reason only from stated findings), remove or down-rank diagnoses contradicted by a stated negative/normal finding OR by a supplied investigation result, ADD missing cannot-miss diagnoses (including atypical high-risk presentations), MOVE benign/self-limited conditions out of cannot_miss, correct likelihoods, broaden across organ systems where the findings support it, replace unsupported claims, swap weak investigations, fix citations. When investigation RESULTS were supplied, set investigation_fit on every diagnosis to a true clause about how the supplied results bear on it (and never invent a result not in the supplied list); leave investigation_fit as "" if no results were supplied. Respect patient demographics as hard constraints. No prose, no markdown fences, lowercase keys only. CRITICAL: plos_citation_ids must be quoted strings — write ["P1","P2"] not [P1,P2]. Output MUST be valid JSON.`;
 
 
 function buildPresentation(b: Body): { display: string; queryHint: string } {
@@ -110,7 +114,7 @@ export async function POST(req: NextRequest) {
 
   const { stream, emit, close } = makeNdjsonStream();
   const t0 = Date.now();
-  const traceId = await startTrace('ddx', { cc: body.cc, age: body.age, sex: body.sex, history: body.history, exam: body.exam, vitals: body.vitals });
+  const traceId = await startTrace('ddx', { cc: body.cc, age: body.age, sex: body.sex, history: body.history, exam: body.exam, vitals: body.vitals, investigations: body.investigations });
 
   // v1.7b S2: capture request + denormalize fast-access fields on traces row.
   await Promise.all([
@@ -125,13 +129,27 @@ export async function POST(req: NextRequest) {
     try {
       const includePlos = body.includePlos !== false;
       const useMultiQuery = body.multiQuery !== false;  // default true
+
+      // Investigation findings: LLM-parse the free text into structured, flagged
+      // findings BEFORE retrieval so abnormal terms steer recall, and inject the
+      // normalised block into the reasoning presentation. Fail-open: on any parse
+      // failure the verbatim text still flows in via promptBlock.
+      let investigations: ParsedInvestigations | null = null;
+      if (body.investigations && body.investigations.trim()) {
+        emit({ type: 'progress', stage: 'expanding', msg: 'Interpreting investigation results…' });
+        investigations = await parseInvestigations(body.investigations, { age: body.age, sex: body.sex, model: DDX_MODEL, traceId });
+      }
+      const displayForPrompt = investigations?.promptBlock ? `${display}\n\n${investigations.promptBlock}` : display;
+      const investigationTerms = investigations?.abnormalTerms ?? [];
+
       const plosQuery = (body.cc || queryHint || display).trim();
       emit({ type: 'progress', stage: 'expanding', msg: useMultiQuery ? 'Generating query variants…' : 'Building clinical summary, expanding query…' });
 
-      const retrievalQuery = queryHint || display;
+      const retrievalQuery = [queryHint || display, ...investigationTerms].filter(Boolean).join('; ');
+      const bm25Query = [(body.cc || '').trim(), ...investigationTerms].filter(Boolean).join(' ');
       const retrievePromise = useMultiQuery
-        ? retrieveMultiQuery(retrievalQuery, { topK: 8, minSimilarity: 0.4, bm25Query: (body.cc || '').trim() })
-        : retrieve(retrievalQuery, { topK: 8, minSimilarity: 0.4, bm25Query: (body.cc || '').trim() }).then((r) => ({ hits: r.hits, variants: [retrievalQuery], perVariantCounts: [r.hits.length] }));
+        ? retrieveMultiQuery(retrievalQuery, { topK: 8, minSimilarity: 0.4, bm25Query })
+        : retrieve(retrievalQuery, { topK: 8, minSimilarity: 0.4, bm25Query }).then((r) => ({ hits: r.hits, variants: [retrievalQuery], perVariantCounts: [r.hits.length] }));
       const [retrieveResult, plosHits] = await Promise.all([
         retrievePromise,
         includePlos ? searchPlos(plosQuery, { rows: 5, yearsBack: 5 }) : Promise.resolve([] as PlosHit[]),
@@ -186,8 +204,8 @@ export async function POST(req: NextRequest) {
       const plosBlock = formatPlosForPrompt(plosHits);
       const sexTxt = (body.sex && body.sex !== '?') ? String(body.sex).trim() : 'not given';
       const ageTxt = body.age ? String(body.age) : 'not given';
-      const constraintLine = `PATIENT CONSTRAINTS — apply as hard rules:\n- Sex: ${sexTxt} → exclude any diagnosis impossible for this sex. Age: ${ageTxt} → weight by age prevalence; drop negligible-prevalence diagnoses unless a stated risk factor supports them.\n- Reason ONLY from the findings stated below; do not invent findings; treat any stated negative/normal finding as ruling-down.\n- cannot_miss = by danger if missed (even at low probability; no benign conditions). most_likely = by probability.`;
-      const userMsg = `${constraintLine}\n\nCLINICAL PRESENTATION:\n${display}\n\nMEDICAL EXCERPTS:\n${contextBlock || '(none)'}\n\n${plosBlock ? 'PLOS ONE ABSTRACTS:\n' + plosBlock + '\n\n' : ''}Output ONLY the JSON object now, starting with {. No prose, no markdown fences.`;
+      const constraintLine = `PATIENT CONSTRAINTS — apply as hard rules:\n- Sex: ${sexTxt} → exclude any diagnosis impossible for this sex. Age: ${ageTxt} → weight by age prevalence; drop negligible-prevalence diagnoses unless a stated risk factor supports them.\n- Reason ONLY from the findings stated below; do not invent findings; treat any stated negative/normal finding as ruling-down.${investigations ? '\n- INVESTIGATION RESULTS are supplied below — reconcile every diagnosis against them (abnormal fitting results rule a diagnosis in; normal/negative results that would be expected abnormal rule it down) and fill investigation_fit for each diagnosis. Never cite a result not in the supplied list.' : ''}\n- cannot_miss = by danger if missed (even at low probability; no benign conditions). most_likely = by probability.`;
+      const userMsg = `${constraintLine}\n\nCLINICAL PRESENTATION:\n${displayForPrompt}\n\nMEDICAL EXCERPTS:\n${contextBlock || '(none)'}\n\n${plosBlock ? 'PLOS ONE ABSTRACTS:\n' + plosBlock + '\n\n' : ''}Output ONLY the JSON object now, starting with {. No prose, no markdown fences.`;
 
       const useSelfCritique = body.selfCritique !== false;  // default true
 
@@ -206,7 +224,7 @@ export async function POST(req: NextRequest) {
         let critiqueJson: {
           demographic_impossibility?: string[]; fabricated_findings?: string[]; ignored_negatives?: string[];
           missing_cannot_miss?: string[]; cannot_miss_misuse?: string[]; likelihood_errors?: string[];
-          anchoring_or_atypical_miss?: string[]; unsupported_claims?: string[];
+          anchoring_or_atypical_miss?: string[]; investigation_misread?: string[]; unsupported_claims?: string[];
           missing_evidence?: string[]; investigation_problems?: string[]; citation_problems?: string[];
           needs_revision?: boolean; overall_severity?: string;
         } = { needs_revision: false };
@@ -215,7 +233,7 @@ export async function POST(req: NextRequest) {
             model: DDX_MODEL,
             messages: [
               { role: 'system', content: DDX_CRITIQUE_SYSTEM },
-              { role: 'user', content: `Clinical presentation:\n${display}\n\nSource excerpts:\n${contextBlock || '(none)'}\n${plosHits.length ? '\nPLOS abstracts:\n' + plosHits.map((p, i) => `[P${i+1}] ${p.title} (${p.year})`).join('\n') + '\n' : ''}\nDraft DDx JSON:\n${raw}\n\nOutput the JSON critique now.` },
+              { role: 'user', content: `Clinical presentation:\n${displayForPrompt}\n\nSource excerpts:\n${contextBlock || '(none)'}\n${plosHits.length ? '\nPLOS abstracts:\n' + plosHits.map((p, i) => `[P${i+1}] ${p.title} (${p.year})`).join('\n') + '\n' : ''}\nDraft DDx JSON:\n${raw}\n\nOutput the JSON critique now.` },
             ],
             temperature: 0.1,
             max_tokens: 700,
@@ -235,6 +253,7 @@ export async function POST(req: NextRequest) {
           + (critiqueJson.cannot_miss_misuse?.length || 0)
           + (critiqueJson.likelihood_errors?.length || 0)
           + (critiqueJson.anchoring_or_atypical_miss?.length || 0)
+          + (critiqueJson.investigation_misread?.length || 0)
           + (critiqueJson.unsupported_claims?.length || 0)
           + (critiqueJson.missing_evidence?.length || 0)
           + (critiqueJson.investigation_problems?.length || 0)
@@ -260,7 +279,7 @@ export async function POST(req: NextRequest) {
             model: DDX_MODEL,
             messages: [
               { role: 'system', content: DDX_REVISION_SYSTEM },
-              { role: 'user', content: `Clinical presentation:\n${display}\n\nSource excerpts:\n${contextBlock || '(none)'}\n\nEarlier draft JSON:\n${raw}\n\nAuditor critique:\n${JSON.stringify(critiqueJson, null, 2)}\n\nOutput the revised JSON now.` },
+              { role: 'user', content: `Clinical presentation:\n${displayForPrompt}\n\nSource excerpts:\n${contextBlock || '(none)'}\n\nEarlier draft JSON:\n${raw}\n\nAuditor critique:\n${JSON.stringify(critiqueJson, null, 2)}\n\nOutput the revised JSON now.` },
             ],
             temperature: 0.2,
             max_tokens: 1500,
@@ -294,6 +313,7 @@ export async function POST(req: NextRequest) {
           citations,
           plos_citations: plosCitations,
           presentation: display,
+          investigations: investigations ? { findings: investigations.findings, summary: investigations.summary, structured: investigations.structured } : undefined,
         },
       });
       // v1.7b S2: emit final_answer event + denormalize parsed DDx into traces.final_answer_text

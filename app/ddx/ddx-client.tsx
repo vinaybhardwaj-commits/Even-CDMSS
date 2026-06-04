@@ -3,7 +3,7 @@
 import { useState, useRef, useMemo, useCallback, useEffect } from 'react';
 import { consumeNdjson } from '@/lib/ndjson-client';
 import TracePanel, { TraceEvent } from '@/components/TracePanel';
-import { Send, Loader2, AlertTriangle, ChevronDown, ChevronUp, ClipboardList, BookOpen, Microscope } from 'lucide-react';
+import { Send, Loader2, AlertTriangle, ChevronDown, ChevronUp, ClipboardList, BookOpen, Microscope, CheckCircle2, MinusCircle, FlaskConical } from 'lucide-react';
 import { MarkdownAnswer } from '@/components/MarkdownAnswer';
 
 type Citation = {
@@ -22,8 +22,15 @@ type Dx = {
   why_consider?: string;
   distinguishing_features?: string[];
   investigations?: string[];
+  investigation_fit?: string;
   citation_ids?: number[];
   plos_citation_ids?: string[];
+};
+type InvestigationFinding = {
+  test: string; value: string; unit?: string | null;
+  flag: 'low' | 'normal' | 'high' | 'critical' | 'abnormal' | 'indeterminate';
+  category: 'lab' | 'imaging' | 'ecg' | 'micro' | 'pathology' | 'vital' | 'other';
+  note?: string | null;
 };
 type DdxResponse = {
   summary?: string;
@@ -34,15 +41,28 @@ type DdxResponse = {
   citations?: Citation[];
   plos_citations?: PlosCitation[];
   presentation?: string;
+  investigations?: { findings: InvestigationFinding[]; summary?: string; structured?: boolean };
   duration_ms?: number;
   error?: string;
   detail?: string;
 };
 
+const FLAG_STYLE: Record<string, string> = {
+  critical: 'bg-rose-100 text-rose-800',
+  high: 'bg-amber-100 text-amber-900',
+  low: 'bg-blue-100 text-blue-800',
+  abnormal: 'bg-amber-100 text-amber-900',
+  indeterminate: 'bg-slate-100 text-slate-600',
+  normal: 'bg-emerald-100 text-emerald-800',
+};
+const FLAG_LABEL: Record<string, string> = {
+  critical: 'critical', high: 'high', low: 'low', abnormal: 'abnormal', indeterminate: '?', normal: 'normal',
+};
+
 const EXAMPLES = [
-  { age: 58, sex: 'F', cc: 'Sudden onset chest pain radiating to left arm × 30 min', history: 'HTN, hyperlipidemia, smoker', exam: 'Diaphoretic, anxious, lungs clear', vitals: 'HR 112, BP 145/95, RR 22, SpO2 95% RA' },
-  { age: 32, sex: 'M', cc: 'Severe headache "worst of my life" × 1 hour', history: 'No prior headaches; smokes', exam: 'Photophobia, neck stiffness, GCS 15', vitals: 'HR 96, BP 168/98, RR 18, T 37.2°C' },
-  { age: 72, sex: 'F', cc: 'Confusion and falls × 2 days', history: 'CKD stage 3, T2DM on metformin + glipizide', exam: 'Lethargic, dry mucosa', vitals: 'HR 105, BP 100/60, RR 22, T 37.8°C, glucose 48' },
+  { age: 58, sex: 'F', cc: 'Sudden onset chest pain radiating to left arm × 30 min', history: 'HTN, hyperlipidemia, smoker', exam: 'Diaphoretic, anxious, lungs clear', vitals: 'HR 112, BP 145/95, RR 22, SpO2 95% RA', investigations: 'ECG: 1 mm ST depression II, III, aVF. Troponin I 0.42 ng/mL (ref <0.04).' },
+  { age: 32, sex: 'M', cc: 'Severe headache "worst of my life" × 1 hour', history: 'No prior headaches; smokes', exam: 'Photophobia, neck stiffness, GCS 15', vitals: 'HR 96, BP 168/98, RR 18, T 37.2°C', investigations: 'CT head non-contrast: no acute haemorrhage. Bloods unremarkable.' },
+  { age: 72, sex: 'F', cc: 'Confusion and falls × 2 days', history: 'CKD stage 3, T2DM on metformin + glipizide', exam: 'Lethargic, dry mucosa', vitals: 'HR 105, BP 100/60, RR 22, T 37.8°C, glucose 48', investigations: 'Glucose 48 mg/dL. Na 130. Creatinine 2.1 mg/dL. WBC 13.' },
 ];
 
 const LIKELIHOOD_COLORS: Record<string, string> = {
@@ -86,6 +106,20 @@ function DxCard({ dx, idx, danger, onCite, onPlosCite }: { dx: Dx; idx: number; 
           {dx.why_consider && (
             <div className="leading-relaxed text-slate-700"><MarkdownAnswer text={dx.why_consider} onCite={(n) => { const num = parseInt(String(n), 10); if (!isNaN(num)) onCite(num); }} /></div>
           )}
+          {dx.investigation_fit && dx.investigation_fit.trim() && (() => {
+            const fit = dx.investigation_fit!.trim();
+            const lower = fit.toLowerCase();
+            const against = /(against|lower|lowers|exclude|argue|reduce|rule.{0,4}down|inconsistent|does not support|doesn't support|unlikely|refute)/.test(lower);
+            const supports = !against && /(support|consistent|fits|rule.{0,4}in|confirm|raise|favou?r|in keeping|compatible)/.test(lower);
+            const tone = supports ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : against ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-slate-200 bg-slate-50 text-slate-700';
+            const Icon = supports ? CheckCircle2 : against ? MinusCircle : Microscope;
+            return (
+              <div className={`flex items-start gap-2 rounded-lg border px-2.5 py-1.5 ${tone}`}>
+                <Icon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <div className="text-[12.5px] leading-snug"><span className="font-semibold">Fit with results: </span>{fit}</div>
+              </div>
+            );
+          })()}
           {dx.distinguishing_features && dx.distinguishing_features.length > 0 && (
             <div>
               <div className="mb-1 flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
@@ -99,7 +133,7 @@ function DxCard({ dx, idx, danger, onCite, onPlosCite }: { dx: Dx; idx: number; 
           {dx.investigations && dx.investigations.length > 0 && (
             <div>
               <div className="mb-1 flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                <Microscope className="h-3 w-3" /> Investigations
+                <Microscope className="h-3 w-3" /> Suggested workup
               </div>
               <ul className="ml-4 list-disc space-y-0.5 text-slate-700">
                 {dx.investigations.map((f, i) => <li key={i}>{f}</li>)}
@@ -150,6 +184,7 @@ export default function DdxClient() {
   const [history, setHistory] = useState('');
   const [exam, setExam] = useState('');
   const [vitals, setVitals] = useState('');
+  const [investigations, setInvestigations] = useState('');
   const [data, setData] = useState<DdxResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -203,6 +238,7 @@ export default function DdxClient() {
   function loadExample(ex: typeof EXAMPLES[number]) {
     setAge(String(ex.age)); setSex(ex.sex); setCc(ex.cc);
     setHistory(ex.history); setExam(ex.exam); setVitals(ex.vitals);
+    setInvestigations(ex.investigations || '');
   }
 
   async function submit(e?: React.FormEvent) {
@@ -221,7 +257,8 @@ export default function DdxClient() {
           cc: cc.trim(),
           history: history.trim() || undefined,
           exam: exam.trim() || undefined,
-          vitals: vitals.trim() || undefined, multiQuery, selfCritique, includePlos: true }),
+          vitals: vitals.trim() || undefined,
+          investigations: investigations.trim() || undefined, multiQuery, selfCritique, includePlos: true }),
       });
       const tid = r.headers.get('X-Trace-Id');
       if (tid) setTraceId(tid);
@@ -348,6 +385,19 @@ export default function DdxClient() {
           />
         </div>
 
+        <div>
+          <label className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-brand">
+            <Microscope className="h-3 w-3" /> Investigation findings / results
+          </label>
+          <textarea
+            value={investigations} onChange={(e) => setInvestigations(e.target.value)}
+            rows={2}
+            placeholder="ECG: ST elevation V2–V4. Troponin I 0.84. Na 131. CT head: no bleed."
+            className="mt-1 w-full resize-none rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+          />
+          <p className="mt-1 text-[11px] text-slate-400">Results already back — labs, imaging, ECG, micro, any format. CAT interprets them and reconciles each diagnosis against them.</p>
+        </div>
+
         <div className="flex items-center justify-between pt-1">
           <span className="text-xs text-slate-400">Chief complaint is required. Other fields refine the differential.</span>
           <button
@@ -444,6 +494,26 @@ export default function DdxClient() {
 
       {data && !loading && (
         <div className="mt-6 space-y-6">
+          {data.investigations && data.investigations.findings.length > 0 && (
+            <div className="rounded-xl border border-slate-200 bg-white p-4">
+              <h2 className="mb-2 flex flex-wrap items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                <FlaskConical className="h-3.5 w-3.5" /> Investigations interpreted
+                <span className="ml-1 font-normal normal-case tracking-normal text-slate-400">how CAT read your results</span>
+              </h2>
+              {data.investigations.summary && (
+                <p className="mb-2 text-[13px] text-slate-600">{data.investigations.summary}</p>
+              )}
+              <div className="flex flex-wrap gap-1.5">
+                {data.investigations.findings.map((f, i) => (
+                  <span key={i} className={`inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] ${FLAG_STYLE[f.flag] ?? FLAG_STYLE.abnormal}`}>
+                    <span className="font-medium">{f.test}{f.value ? ` ${f.value}` : ''}{f.unit ? ` ${f.unit}` : ''}</span>
+                    <span className="opacity-70">{FLAG_LABEL[f.flag] ?? f.flag}</span>
+                  </span>
+                ))}
+              </div>
+              <p className="mt-2 text-[11px] text-slate-400">Interpreted by AI from your free text — verify against the source results.</p>
+            </div>
+          )}
           {data.summary && (
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
               <h2 className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Summary</h2>

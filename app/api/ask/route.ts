@@ -6,6 +6,7 @@ import { modelLabel } from '@/lib/model-labels';
 import { searchPlos, formatPlosForPrompt, type PlosHit } from '@/lib/plos';
 import { makeNdjsonStream, ndjsonHeaders } from '@/lib/stream';
 import { startTrace, finishTrace, tracedChat, logStreamComplete, logEvent, setTraceQuestionPreview, setTraceSeverity, setTraceModelSummary, setTraceFinalAnswer } from '@/lib/trace';
+import { parseInvestigations, type ParsedInvestigations } from '@/lib/investigations';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;  // v1.6 hotfix: was 180; full stack on Mac Mini Ollama needs 200-280s with all features on
@@ -19,6 +20,7 @@ Rules:
 - Be concise, precise, and clinically useful — the audience is a working physician.
 - Cite the source for every clinical claim using bracketed numbers like [1], [2] or [P1].
 - If the excerpts do not cover the question, say so plainly. Do not invent.
+- If INVESTIGATION FINDINGS are provided with the question, treat them as the patient's actual results: incorporate them, let normal/negative results lower and abnormal results raise the relevant possibilities, and never invent a result that was not provided.
 - If an excerpt looks garbled or nonsensical, ignore it rather than quoting it.
 - Match the voice of MKSAP: structured, evidence-based, practical.
 - Prefer textbook excerpts for established clinical guidance; prefer PLOS for recent primary evidence and emerging biomarkers.
@@ -88,7 +90,7 @@ You will receive:
 Rewrite the draft to fix every issue. Keep what's correct, correct what's wrong, add what's missing. Cite every clinical claim using the same [n] / [P{n}] format. Do not include any meta-commentary about the revision process — output the final clean answer the physician will read.`;
 
 export async function POST(req: NextRequest) {
-  let body: { question?: string; bookFilter?: string; includePlos?: boolean; multiQuery?: boolean; selfCritique?: boolean; useReranker?: boolean; useSourceWeights?: boolean; useEmbeddingV2?: boolean };
+  let body: { question?: string; bookFilter?: string; investigations?: string; includePlos?: boolean; multiQuery?: boolean; selfCritique?: boolean; useReranker?: boolean; useSourceWeights?: boolean; useEmbeddingV2?: boolean };
   try { body = await req.json(); } catch {
     return new Response(JSON.stringify({ error: 'invalid json' }), { status: 400 });
   }
@@ -104,7 +106,7 @@ export async function POST(req: NextRequest) {
 
   const { stream, emit, close } = makeNdjsonStream();
   const t0 = Date.now();
-  const traceId = await startTrace('ask', { question, bookFilter: body.bookFilter, multiQuery: useMultiQuery, selfCritique: useSelfCritique, reranker: useReranker, sourceWeights: useSourceWeights, embeddingV2: useEmbeddingV2 });
+  const traceId = await startTrace('ask', { question, bookFilter: body.bookFilter, investigations: body.investigations, multiQuery: useMultiQuery, selfCritique: useSelfCritique, reranker: useReranker, sourceWeights: useSourceWeights, embeddingV2: useEmbeddingV2 });
 
   // v1.7 Sprint A: capture request + denormalize fast-access fields on traces row.
   await Promise.all([
@@ -126,6 +128,17 @@ export async function POST(req: NextRequest) {
       emit({ type: 'progress', stage: 'expanding', msg: useMultiQuery ? 'Generating query variants…' : 'Rewriting query for semantic search…' });
       const includePlos = body.includePlos !== false;
 
+      // Investigation findings (optional) — parse free text into structured,
+      // flagged findings, inject into the prompt, and steer retrieval. Fail-open:
+      // on any parse failure the verbatim text still flows in via promptBlock.
+      let investigations: ParsedInvestigations | null = null;
+      if (body.investigations && body.investigations.trim()) {
+        emit({ type: 'progress', stage: 'expanding', msg: 'Interpreting investigation results…' });
+        investigations = await parseInvestigations(body.investigations, { model: CRITIQUE_MODEL, traceId });
+      }
+      const questionForPrompt = investigations?.promptBlock ? `${question}\n\n${investigations.promptBlock}` : question;
+      const retrievalQuery = [question, ...(investigations?.abnormalTerms ?? [])].filter(Boolean).join('; ');
+
       const retrieveOpts = {
         bookFilter: body.bookFilter,
         topK: 8,
@@ -134,8 +147,8 @@ export async function POST(req: NextRequest) {
         ...(useEmbeddingV2 !== undefined ? { useEmbeddingV2 } : {}),
       };
       const retrievalPromise = useMultiQuery
-        ? retrieveMultiQuery(question, retrieveOpts)
-        : retrieve(question, retrieveOpts).then((r) => ({ hits: r.hits, variants: [question], perVariantCounts: [r.hits.length] }));
+        ? retrieveMultiQuery(retrievalQuery, retrieveOpts)
+        : retrieve(retrievalQuery, retrieveOpts).then((r) => ({ hits: r.hits, variants: [question], perVariantCounts: [r.hits.length] }));
       const plosPromise: Promise<PlosHit[]> = includePlos ? searchPlos(question, { rows: 5, yearsBack: 5 }) : Promise.resolve([]);
 
       const [retrieveResult, plosHits] = await Promise.all([retrievalPromise, plosPromise]);
@@ -219,7 +232,7 @@ export async function POST(req: NextRequest) {
           model: TEXT_MODEL,
           messages: [
             { role: 'system', content: SYSTEM_PROMPT },
-            { role: 'user', content: `Question:\n${question}\n\n${sourceBlock}Answer using only these excerpts. Cite textbook claims with [n] and PLOS abstracts with [P{n}].` },
+            { role: 'user', content: `Question:\n${questionForPrompt}\n\n${sourceBlock}Answer using only these excerpts. Cite textbook claims with [n] and PLOS abstracts with [P{n}].` },
           ],
           temperature: 0.2,
           stream: true,
@@ -253,7 +266,7 @@ export async function POST(req: NextRequest) {
             model: CRITIQUE_MODEL,  // 7b instead of 14b — ~3x faster, audit quality acceptable
             messages: [
               { role: 'system', content: CRITIQUE_SYSTEM },
-              { role: 'user', content: `Question:\n${question}\n\n${sourceBlock}Draft answer to audit:\n${draftAnswer}\n\nOutput the JSON critique now.` },
+              { role: 'user', content: `Question:\n${questionForPrompt}\n\n${sourceBlock}Draft answer to audit:\n${draftAnswer}\n\nOutput the JSON critique now.` },
             ],
             temperature: 0.1,
             stream: false,
@@ -307,7 +320,7 @@ export async function POST(req: NextRequest) {
             model: CRITIQUE_MODEL,  // 7b for the revise pass too
             messages: [
               { role: 'system', content: REVISION_SYSTEM },
-              { role: 'user', content: `Question:\n${question}\n\n${sourceBlock}Earlier draft:\n${draftAnswer}\n\nAuditor's critique (JSON):\n${JSON.stringify(critiqueJson, null, 2)}\n\nOutput the revised final answer now.` },
+              { role: 'user', content: `Question:\n${questionForPrompt}\n\n${sourceBlock}Earlier draft:\n${draftAnswer}\n\nAuditor's critique (JSON):\n${JSON.stringify(critiqueJson, null, 2)}\n\nOutput the revised final answer now.` },
             ],
             temperature: 0.2,
             stream: true,
@@ -339,7 +352,7 @@ export async function POST(req: NextRequest) {
           model: TEXT_MODEL,
           messages: [
             { role: 'system', content: SYSTEM_PROMPT },
-            { role: 'user', content: `Question:\n${question}\n\n${sourceBlock}Answer using only these excerpts. Cite textbook claims with [n] and PLOS abstracts with [P{n}].` },
+            { role: 'user', content: `Question:\n${questionForPrompt}\n\n${sourceBlock}Answer using only these excerpts. Cite textbook claims with [n] and PLOS abstracts with [P{n}].` },
           ],
           temperature: 0.2,
           stream: true,

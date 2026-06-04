@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useMemo, useCallback, useEffect } from 'react';
-import { Mic, MicOff, Send, ChevronDown, ChevronUp, BookOpen, Loader2 } from 'lucide-react';
+import { Mic, MicOff, Send, ChevronDown, ChevronUp, BookOpen, Loader2, Microscope } from 'lucide-react';
 import { consumeNdjson } from '@/lib/ndjson-client';
 import TracePanel, { TraceEvent } from '@/components/TracePanel';
 import { MarkdownAnswer } from '@/components/MarkdownAnswer';
@@ -51,6 +51,8 @@ function renderWithCitations(text: string, citations: Citation[], onCite: (n: nu
 
 export default function AskClient() {
   const [question, setQuestion] = useState('');
+  const [investigations, setInvestigations] = useState('');
+  const [showContext, setShowContext] = useState(false);
   const [answer, setAnswer] = useState('');
   const [citations, setCitations] = useState<Citation[]>([]);
   const [loading, setLoading] = useState(false);
@@ -143,7 +145,7 @@ export default function AskClient() {
     const t0 = Date.now();
     let fullAnswer = ''; let citationsLocal: Citation[] = [];
     try {
-      const r = await fetch('/api/ask', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question: q, includePlos, multiQuery, selfCritique, useReranker, useSourceWeights }), signal: ctrl.signal });
+      const r = await fetch('/api/ask', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question: q, investigations: investigations.trim() || undefined, includePlos, multiQuery, selfCritique, useReranker, useSourceWeights }), signal: ctrl.signal });
       // v1.7 Sprint D: capture trace ID so the View trace ↗ link can deep-link to it
       const tid = r.headers.get('X-Trace-Id'); if (tid) setTraceId(tid);
       if (!r.ok) { setError(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`); setLoading(false); return; }
@@ -190,6 +192,22 @@ export default function AskClient() {
               className={`absolute right-2 top-2 flex h-9 w-9 items-center justify-center rounded-full border transition ${voiceActive ? 'animate-pulse border-rose-300 bg-rose-50 text-rose-600' : 'border-slate-200 bg-white text-slate-500 hover:border-brand hover:text-brand'}`}>
               {voiceActive ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
             </button>
+          )}
+        </div>
+        <div>
+          <button type="button" onClick={() => setShowContext((v) => !v)}
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-brand">
+            {showContext ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+            <Microscope className="h-3.5 w-3.5" /> Add clinical context — investigation findings
+            {!showContext && investigations.trim() && <span className="rounded-full bg-brand-faint px-1.5 py-0.5 text-[10px] font-semibold text-brand">added</span>}
+          </button>
+          {showContext && (
+            <>
+              <textarea value={investigations} onChange={(e) => setInvestigations(e.target.value)} rows={3}
+                placeholder="Investigation results already back — e.g. Troponin I <0.01 at 0h and 3h; ECG no dynamic changes; CXR clear."
+                className="mt-2 w-full resize-none rounded-xl border border-slate-300 bg-white p-3 text-sm shadow-sm focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand" />
+              <p className="mt-1 text-[11px] text-slate-400">Optional. CAT interprets these and folds them into the answer — normal results rule down, abnormal results rule in.</p>
+            </>
           )}
         </div>
         <div className="flex items-center justify-between gap-2">
