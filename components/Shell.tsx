@@ -10,22 +10,21 @@ const CLINICIAN_NAV: [string, string][] = [
 ];
 
 const ADMIN_NAV: [string, string][] = [
-  ['/admin/literature?tab=topics', 'Topics'],
-  ['/admin/literature?tab=runs', 'Runs'],
-  ['/admin/literature?tab=library', 'Library'],
-  ['/admin/literature?tab=retractions', 'Retractions'],
+  ['/admin/literature', 'Literature'],
+  ['/admin/observability', 'Observability'],
 ];
 
 export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() || '';
   const isAdmin = pathname.startsWith('/admin');
+  const isObs = pathname.startsWith('/admin/observability');
   const nav = isAdmin ? ADMIN_NAV : CLINICIAN_NAV;
   return (
     <div style={{ display: 'flex', minHeight: '100vh' }}>
       <nav style={{ width: 180, borderRight: '1px solid #e5e7eb', padding: 16 }}>
         <div style={{ fontWeight: 700, marginBottom: 4 }}>CAT</div>
         <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 16 }}>
-          {isAdmin ? 'Admin · Literature engine' : 'Clinical Analysis Tool'}
+          {isAdmin ? (isObs ? 'Admin · Observability' : 'Admin · Literature engine') : 'Clinical Analysis Tool'}
         </div>
         {nav.map(([href, label]) => (
           <Link key={href} href={href} style={{ display: 'block', padding: '6px 0' }}>

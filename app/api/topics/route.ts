@@ -3,15 +3,23 @@ export const maxDuration = 180;
 
 import { retrieve } from '@/lib/retrieve';
 import { llm, TEXT_MODEL } from '@/lib/llm';
+import { startTrace, logEvent, finishTrace, logStreamComplete, setTraceQuestionPreview, setTraceFinalAnswer } from '@/lib/trace';
 
 // Topic synthesis: retrieve ~15 excerpts, then stream a cited study guide.
-// Wire format matches topics-client: a JSON citations header, the literal
-// delimiter "\n\n---STREAM---\n", then the markdown answer streamed as text.
+// Wire format: a JSON citations header, the delimiter "\n\n---STREAM---\n",
+// then the markdown answer streamed as text. Fully traced (feature='topics').
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({} as Record<string, unknown>));
   const topic = String((body as { topic?: unknown }).topic ?? '').trim();
   if (!topic) return new Response('topic required', { status: 400 });
 
+  const traceId = await startTrace('topics', { topic });
+  await Promise.all([
+    logEvent(traceId, 'request_received', null, { body, ua: req.headers.get('user-agent') || '', t: new Date().toISOString() }),
+    setTraceQuestionPreview(traceId, topic),
+  ]);
+
+  const t0 = Date.now();
   const { hits } = await retrieve(topic, { topK: 15 });
   const citations = hits.map((h, i) => ({
     n: i + 1, id: h.id, book: h.book, chapter: h.chapter,
@@ -19,6 +27,15 @@ export async function POST(req: Request) {
     chunk_type: h.chunk_type, similarity: h.similarity,
     preview: (h.text || '').slice(0, 240),
   }));
+  await logEvent(traceId, 'retrieval_hydrated', 'retrieving', {
+    hit_count: hits.length,
+    hits: (hits as Array<Record<string, unknown>>).map((h, i) => ({
+      n: i + 1, id: h.id, book: h.book, chapter: h.chapter, section: h.section,
+      page_start: h.page_start, page_end: h.page_end, chunk_type: h.chunk_type,
+      similarity: h.similarity, rerank_score: h.rerank_score,
+      text: String(h.text ?? '').slice(0, 600),
+    })),
+  }, Date.now() - t0);
 
   const context = hits
     .map((h, i) => `[${i + 1}] (${h.book}${h.chapter ? ', ' + h.chapter : ''})\n${h.text}`)
@@ -36,22 +53,34 @@ export async function POST(req: Request) {
         controller.enqueue(encoder.encode(JSON.stringify({ type: 'citations', items: citations }) + '\n\n---STREAM---\n'));
         if (hits.length === 0) {
           controller.enqueue(encoder.encode('No matching material was found in the corpus for this topic.'));
+          await logEvent(traceId, 'final_answer', 'done', { answer_text: '(no matching material)', char_count: 0 });
+          await finishTrace(traceId, 'success');
           controller.close();
           return;
         }
+        const llmStart = Date.now();
+        await logEvent(traceId, 'llm_request', 'drafting', {
+          model: TEXT_MODEL, messages: [{ role: 'system', content: system }, { role: 'user', content: user }], temperature: 0.2, stream: true,
+        });
         const completion = await llm.chat.completions.create({
           model: TEXT_MODEL,
           messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
           temperature: 0.2,
           stream: true,
         });
+        let full = '';
         for await (const part of completion as AsyncIterable<{ choices?: { delta?: { content?: string } }[] }>) {
           const delta = part.choices?.[0]?.delta?.content ?? '';
-          if (delta) controller.enqueue(encoder.encode(delta));
+          if (delta) { full += delta; controller.enqueue(encoder.encode(delta)); }
         }
+        await logStreamComplete(traceId, 'guide', full, llmStart, { char_count: full.length });
+        await logEvent(traceId, 'final_answer', 'done', { answer_text: full, char_count: full.length });
+        await setTraceFinalAnswer(traceId, full);
+        await finishTrace(traceId, 'success');
         controller.close();
       } catch (e) {
         controller.enqueue(encoder.encode(`\n\n[error: ${(e as Error).message}]`));
+        await finishTrace(traceId, 'error', String((e as Error).message));
         controller.close();
       }
     },
