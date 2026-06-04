@@ -76,7 +76,12 @@ function coerceFinding(x: unknown): InvestigationFinding | null {
   const test = typeof o.test === 'string' ? o.test.trim() : '';
   if (!test) return null;
   const value = o.value == null ? '' : String(o.value).trim();
-  const unit = o.unit == null || o.unit === '' ? null : String(o.unit).trim();
+  let unit = o.unit == null || o.unit === '' ? null : String(o.unit).trim();
+  // Drop the literal "null"/"none"/"n/a"/dash some models emit as a string unit,
+  // and de-duplicate a unit the model already baked into the value (e.g. value
+  // "0.84 ng/mL" + unit "ng/mL", or value "2 mm" + unit "mm") so the chip reads cleanly.
+  if (unit && /^(null|none|n\/?a|nil|-|–|—)$/i.test(unit)) unit = null;
+  if (unit && value.toLowerCase().includes(unit.toLowerCase())) unit = null;
   const flagRaw = String(o.flag ?? '').toLowerCase().trim() as InvestigationFlag;
   const catRaw = String(o.category ?? '').toLowerCase().trim() as InvestigationCategory;
   const flag: InvestigationFlag = FLAGS.has(flagRaw) ? flagRaw : 'abnormal';
