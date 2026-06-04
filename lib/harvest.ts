@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { sql } from './db';
-import { embedQuery, embedQueryV2, vectorLiteral } from './llm';
+import { embedQuery, vectorLiteral } from './llm';
 import { rankTopic, type Ranked } from './pubmed';
 
 export type TopicRow = { id: number; topic: string; query_terms: string; date_window_years: number; max_per_run: number; seed_max: number };
@@ -18,7 +18,8 @@ async function existingPmids(pmids: string[]): Promise<Set<string>> {
   return new Set(rows.map((r) => r.pmid));
 }
 
-/** Harvest one topic: rank → dedup → dual-embed → insert verbatim abstract → log article. */
+/** Harvest one topic: rank → dedup → embed (nomic) → insert verbatim abstract → log article.
+ *  embedding_v2 (mxbai) is written by the separate v2-backfill workstream once that column exists. */
 export async function harvestTopic(t: TopicRow, maxNew: number): Promise<Stats> {
   const st: Stats = { topic: t.topic, found: 0, inserted: 0, skipped_dup: 0, rejected: 0 };
   try {
@@ -32,13 +33,11 @@ export async function harvestTopic(t: TopicRow, maxNew: number): Promise<Stats> 
       if (text.length < 120) { st.rejected++; continue; }
       const hash = sha256(text);
       const emb = vectorLiteral(await embedQuery(text));
-      let embV2: string | null = null;
-      try { embV2 = vectorLiteral(await embedQueryV2(text)); } catch { embV2 = null; } // best-effort; v2 backfills later
       const ins = await sql2(
-        `INSERT INTO mksap_chunks (source, book, chapter, section, item_number, chunk_type, text, text_hash, embedding, embedding_v2, token_count)
-         VALUES ('pubmed', $1, $2, 'abstract', $3, 'abstract', $4, $5, $6::vector, $7::vector, $8)
+        `INSERT INTO mksap_chunks (source, book, chapter, section, item_number, chunk_type, text, text_hash, embedding, token_count)
+         VALUES ('pubmed', $1, $2, 'abstract', $3, 'abstract', $4, $5, $6::vector, $7)
          ON CONFLICT (book, text_hash) DO NOTHING RETURNING id`,
-        [a.journal, a.title, a.pmid, text, hash, emb, embV2, approxTokens(text)],
+        [a.journal, a.title, a.pmid, text, hash, emb, approxTokens(text)],
       );
       if (ins.length === 0) { st.skipped_dup++; continue; }
       await sql2(
