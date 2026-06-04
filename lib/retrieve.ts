@@ -69,7 +69,7 @@ export async function retrieve(query: string, opts: RetrieveOptions = {}): Promi
     : Math.max(40, topK * 5);
 
   // ---- filter clauses ----
-  const filterClauses: string[] = [`text IS NOT NULL`];
+  const filterClauses: string[] = [`text IS NOT NULL`, `visible IS NOT FALSE`];
   const filterParams: unknown[] = [];
   let fp = 0;
   if (opts.bookFilter) { filterClauses.push(`book = $FP_${fp++}`); filterParams.push(opts.bookFilter); }
