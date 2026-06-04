@@ -5,5 +5,8 @@
   "buildCommand": "next build",
   "installCommand": "npm install",
   "git": { "deploymentEnabled": { "main": true } },
-  "crons": [{ "path": "/api/cron/harvest", "schedule": "0 6 * * *" }]
+  "crons": [
+    { "path": "/api/cron/harvest", "schedule": "0 6 * * *" },
+    { "path": "/api/cron/curator", "schedule": "0 5 * * 1" }
+  ]
 }
