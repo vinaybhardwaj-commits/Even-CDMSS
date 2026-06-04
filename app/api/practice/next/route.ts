@@ -1,3 +1,59 @@
 export const dynamic = 'force-dynamic';
+export const maxDuration = 120;
+
 import { NextResponse } from 'next/server';
-export async function POST() { return NextResponse.json({ error: 'gone — Practice retired in v0.2; will return as part of /review in v0.6' }, { status: 410 }); }
+import { sql } from '@/lib/db';
+import { llm, TEXT_MODEL } from '@/lib/llm';
+
+type SrcRow = {
+  id: number; book: string; chapter: string | null;
+  page_start: number | null; item_number: string | null; text: string;
+};
+
+// Practice: pick a random MKSAP-19 passage, generate a single-best-answer MCQ.
+// Returns { mcq, source } as practice-client expects. (Replaces v0.2 410 stub.)
+export async function POST(req: Request) {
+  try {
+    const body = await req.json().catch(() => ({} as Record<string, unknown>));
+    const book = String((body as { book?: unknown }).book ?? '').trim();
+
+    const rows = (book
+      ? await sql`SELECT id, book, chapter, page_start, item_number, text FROM mksap_chunks
+                  WHERE source = 'mksap-19' AND book = ${book} AND char_length(text) > 400
+                  ORDER BY random() LIMIT 1`
+      : await sql`SELECT id, book, chapter, page_start, item_number, text FROM mksap_chunks
+                  WHERE source = 'mksap-19' AND char_length(text) > 400
+                  ORDER BY random() LIMIT 1`) as SrcRow[];
+
+    if (!rows.length) return NextResponse.json({ error: 'no source material found' }, { status: 404 });
+    const src = rows[0];
+
+    const system =
+      'You are a medical board examiner. From the provided MKSAP excerpt, write ONE high-quality single-best-answer ' +
+      'multiple-choice question with four options (A-D), exactly one correct, and a concise rationale explaining why the ' +
+      'correct answer is right and the others are wrong. Base it strictly on the excerpt. ' +
+      'Respond ONLY with JSON of the form: ' +
+      '{"question": string, "options": {"A": string, "B": string, "C": string, "D": string}, "correct": "A"|"B"|"C"|"D", "rationale": string}.';
+    const user = `Excerpt (from ${src.book}${src.chapter ? ', ' + src.chapter : ''}):\n${src.text}`;
+
+    const res = await llm.chat.completions.create({
+      model: TEXT_MODEL,
+      messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+      temperature: 0.4,
+    });
+    let raw = (res.choices?.[0]?.message?.content ?? '').trim();
+    if (raw.startsWith('```')) raw = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+    const match = raw.match(/\{[\s\S]*\}/);
+    const mcq = JSON.parse(match ? match[0] : raw);
+
+    return NextResponse.json({
+      mcq,
+      source: {
+        id: src.id, book: src.book, chapter: src.chapter,
+        page_start: src.page_start, item_number: src.item_number, text: src.text,
+      },
+    });
+  } catch (e) {
+    return NextResponse.json({ error: (e as Error).message }, { status: 500 });
+  }
+}
