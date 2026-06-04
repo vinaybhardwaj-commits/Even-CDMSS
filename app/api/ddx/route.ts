@@ -4,50 +4,64 @@ import { retrieveMultiQuery } from '@/lib/multi-query';
 import { searchPlos, formatPlosForPrompt, type PlosHit } from '@/lib/plos';
 import { makeNdjsonStream, ndjsonHeaders } from '@/lib/stream';
 import { startTrace, finishTrace, tracedChat, logEvent, setTraceQuestionPreview, setTraceSeverity, setTraceModelSummary, setTraceFinalAnswer } from '@/lib/trace';
+import { filterByDemographics } from '@/lib/ddx-constraints';
 
 export const runtime = 'nodejs';
 export const maxDuration = 180;
 
 const DDX_MODEL = 'llama3.1:8b';
 
-const SYSTEM = `You generate a differential diagnosis as JSON. Use ONLY the excerpts below for clinical content.
+const SYSTEM = `You are an expert physician generating a differential diagnosis as JSON. Use ONLY the supplied excerpts for clinical content, and reason ONLY from the patient findings stated in the presentation.
+
+HARD RULES (a violation makes the output unsafe):
+1. DEMOGRAPHICS ARE CONSTRAINTS, NOT HINTS. Never include a diagnosis anatomically or physiologically impossible for the patient's stated sex — e.g. NO ovarian/uterine/cervical/vaginal/pregnancy/eclampsia diagnoses for a male; NO testicular/prostatic/scrotal/penile diagnoses for a female. Weight every diagnosis by age and sex prevalence; exclude diagnoses with negligible prevalence at this age unless a specific stated risk factor supports them (e.g. do not list aortic dissection in a healthy 14-year-old).
+2. GROUND EVERYTHING IN STATED FINDINGS. Do not invent or assume any symptom, sign, lab, or imaging result that is not explicitly given. Every why_consider/distinguishing_feature must reference only provided findings. If a finding is explicitly negative or normal (e.g. "no fever", "soft, non-tender abdomen"), use it to LOWER or exclude diagnoses that depend on it — never cite an absent finding as supporting evidence.
+3. INTERPRET, DON'T ANCHOR. Translate lay/patient terms into clinical possibilities (e.g. "indigestion"/epigastric discomfort in an older adult with cardiac risk factors MUST include acute coronary syndrome). Consider diagnoses across ALL relevant organ systems — do not stay inside the system implied by the chief complaint's wording. Explicitly weight risk factors and red flags: age, sex, comorbidities (diabetes, hypertension), sudden onset, diaphoresis, pallor, syncope, symptoms waking the patient from sleep, failure of symptomatic therapy.
+
+RANKING — two INDEPENDENT axes:
+- cannot_miss = ranked by CONSEQUENCE of a missed or delayed diagnosis (dangerous / time-sensitive), even when probability is LOW. Never place benign or self-limited conditions here. Worst-first. Each item's "likelihood" is its probability for THIS patient and may be low.
+- most_likely = ranked by PROBABILITY for this exact presentation.
 
 Return ONLY this JSON object, lowercase keys exactly as shown:
 {"summary":"one line","missing_info":["..."],"cannot_miss":[{"diagnosis":"name","likelihood":"high|moderate|low","why_consider":"<25 words","distinguishing_features":["<12 words each"],"investigations":["<12 words each"],"citation_ids":[1,2],"plos_citation_ids":["P1"]}],"most_likely":[...same shape...],"other":[...same shape...]}
 
-- cannot_miss: 2-3 dangerous/time-sensitive (worst-first)
-- most_likely: 2-3 by probability
-- other: 1-2 less likely
+- cannot_miss: 2-3 items (worst-first)
+- most_likely: 2-3 items (by probability)
+- other: 1-2 less likely but reasonable
 - citation_ids = 1-based numbers from the MEDICAL EXCERPTS (textbook). Cite every textbook claim.
 - plos_citation_ids = strings like "P1", "P2" from PLOS ONE ABSTRACTS, if any inform the diagnosis. May be empty array []. CRITICAL: each entry MUST be a JSON string with DOUBLE QUOTES — write ["P1","P2"] not [P1,P2]. Unquoted barewords are invalid JSON and will fail parse.
 - No prose, no markdown fences, lowercase keys.`;
 
 type Body = { age?: number | string; sex?: string; cc?: string; history?: string; exam?: string; vitals?: string; includePlos?: boolean; multiQuery?: boolean; selfCritique?: boolean };
 
-const DDX_CRITIQUE_SYSTEM = `You are a clinical auditor reviewing a draft differential diagnosis (DDx) JSON.
+const DDX_CRITIQUE_SYSTEM = `You are a clinical auditor reviewing a draft differential diagnosis (DDx) JSON for a SPECIFIC patient.
 
-Given (1) the clinical presentation, (2) the available source excerpts (textbook [n] and PLOS [P{n}]), and (3) the draft DDx JSON, identify problems.
+Given (1) the clinical presentation (note the patient's age, sex, and any negative/normal findings), (2) the available source excerpts (textbook [n] and PLOS [P{n}]), and (3) the draft DDx JSON, identify problems.
 
 Output ONLY a JSON object of this shape:
 {
-  "missing_cannot_miss": ["dangerous diagnoses that should be in cannot_miss but aren't"],
-  "likelihood_errors": ["diagnoses with wrong/implausible likelihood"],
+  "demographic_impossibility": ["diagnoses impossible for the patient's stated sex/age, e.g. ovarian pathology in a male, prostatitis in a female, aortic dissection in a young child without risk factors"],
+  "fabricated_findings": ["findings asserted anywhere in the draft that are NOT present in the clinical presentation"],
+  "ignored_negatives": ["diagnoses kept or up-ranked despite a stated negative/normal finding that argues against them"],
+  "missing_cannot_miss": ["dangerous, time-sensitive diagnoses that should be in cannot_miss but aren't (include classic atypical high-risk presentations, e.g. ACS presenting as indigestion)"],
+  "cannot_miss_misuse": ["benign/self-limited diagnoses wrongly placed in cannot_miss, or dangerous diagnoses mis-ranked vs likelihood"],
+  "likelihood_errors": ["diagnoses with wrong/implausible likelihood for this presentation"],
+  "anchoring_or_atypical_miss": ["diagnostic anchoring on the chief-complaint wording or one organ system, missing cross-system possibilities the findings support"],
   "unsupported_claims": ["claims that aren't backed by the cited excerpt"],
-  "missing_evidence": ["important excerpts the draft ignored"],
   "investigation_problems": ["wrong, missing, or low-yield investigations"],
   "citation_problems": ["wrong source attributed, missing citation_ids, etc."],
   "needs_revision": true | false,
   "overall_severity": "none" | "minor" | "moderate" | "major"
 }
 
-Empty arrays are fine. Set needs_revision=true if ANY missing_cannot_miss OR any major likelihood_errors OR any clinical_errors. If the draft is solid, return needs_revision=false. Be specific and actionable. No prose outside the JSON.`;
+Empty arrays are fine. Set needs_revision=true if ANY of demographic_impossibility, fabricated_findings, ignored_negatives, missing_cannot_miss, or cannot_miss_misuse is non-empty, OR there are major likelihood_errors. Set overall_severity to "major" if any demographic_impossibility, fabricated_findings, or missing_cannot_miss exist. Be specific and actionable. No prose outside the JSON.`;
 
 const DDX_REVISION_SYSTEM = `You are revising your earlier DDx draft based on a clinical auditor's critique.
 
 You will receive (1) the clinical presentation, (2) source excerpts, (3) the draft JSON, (4) the auditor's critique. Output the REVISED full DDx JSON using the EXACT shape required:
 {"summary":"one line","missing_info":["..."],"cannot_miss":[{"diagnosis":"name","likelihood":"high|moderate|low","why_consider":"<25 words","distinguishing_features":["<12 words each"],"investigations":["<12 words each"],"citation_ids":[1,2],"plos_citation_ids":["P1"]}],"most_likely":[...],"other":[...]}
 
-Apply every fix in the critique: add missing cannot-miss diagnoses, correct likelihood, replace unsupported claims, swap weak investigations, fix citations. No prose, no markdown fences, lowercase keys only. CRITICAL: plos_citation_ids must be quoted strings — write ["P1","P2"] not [P1,P2]. Output MUST be valid JSON.`;
+Apply every fix in the critique: REMOVE diagnoses impossible for the patient's sex/age, DELETE any fabricated findings (reason only from stated findings), remove or down-rank diagnoses contradicted by a stated negative/normal finding, ADD missing cannot-miss diagnoses (including atypical high-risk presentations), MOVE benign/self-limited conditions out of cannot_miss, correct likelihoods, broaden across organ systems where the findings support it, replace unsupported claims, swap weak investigations, fix citations. Respect patient demographics as hard constraints. No prose, no markdown fences, lowercase keys only. CRITICAL: plos_citation_ids must be quoted strings — write ["P1","P2"] not [P1,P2]. Output MUST be valid JSON.`;
 
 
 function buildPresentation(b: Body): { display: string; queryHint: string } {
@@ -55,7 +69,7 @@ function buildPresentation(b: Body): { display: string; queryHint: string } {
   const agePart = b.age ? `${b.age}` : null;
   const sexPart = b.sex && b.sex !== '?' ? `${b.sex}` : null;
   const demo = [agePart, sexPart].filter(Boolean).join(' / ');
-  if (demo) parts.push(demo);
+  if (demo) parts.push(`Patient: ${demo}`);
   if (b.cc) parts.push(`Chief complaint: ${b.cc.trim()}`);
   if (b.history) parts.push(`Key history: ${b.history.trim()}`);
   if (b.exam) parts.push(`Exam: ${b.exam.trim()}`);
@@ -170,7 +184,10 @@ export async function POST(req: NextRequest) {
 
       const contextBlock = hits.map((h, i) => `--- Excerpt ${i + 1} ---\n[${i + 1}] ${h.book}${h.chapter ? ' · ' + h.chapter : ''}${h.page_start ? ' · p.' + h.page_start : ''}\n${h.text}`).join('\n\n');
       const plosBlock = formatPlosForPrompt(plosHits);
-      const userMsg = `CLINICAL PRESENTATION:\n${display}\n\nMEDICAL EXCERPTS:\n${contextBlock || '(none)'}\n\n${plosBlock ? 'PLOS ONE ABSTRACTS:\n' + plosBlock + '\n\n' : ''}Output ONLY the JSON object now, starting with {. No prose, no markdown fences.`;
+      const sexTxt = (body.sex && body.sex !== '?') ? String(body.sex).trim() : 'not given';
+      const ageTxt = body.age ? String(body.age) : 'not given';
+      const constraintLine = `PATIENT CONSTRAINTS — apply as hard rules:\n- Sex: ${sexTxt} → exclude any diagnosis impossible for this sex. Age: ${ageTxt} → weight by age prevalence; drop negligible-prevalence diagnoses unless a stated risk factor supports them.\n- Reason ONLY from the findings stated below; do not invent findings; treat any stated negative/normal finding as ruling-down.\n- cannot_miss = by danger if missed (even at low probability; no benign conditions). most_likely = by probability.`;
+      const userMsg = `${constraintLine}\n\nCLINICAL PRESENTATION:\n${display}\n\nMEDICAL EXCERPTS:\n${contextBlock || '(none)'}\n\n${plosBlock ? 'PLOS ONE ABSTRACTS:\n' + plosBlock + '\n\n' : ''}Output ONLY the JSON object now, starting with {. No prose, no markdown fences.`;
 
       const useSelfCritique = body.selfCritique !== false;  // default true
 
@@ -187,7 +204,9 @@ export async function POST(req: NextRequest) {
       if (useSelfCritique) {
         emit({ type: 'progress', stage: 'reviewing', msg: 'Auditing DDx for missing cannot-miss, likelihood errors, unsupported claims…', ms: Date.now() - t0 });
         let critiqueJson: {
-          missing_cannot_miss?: string[]; likelihood_errors?: string[]; unsupported_claims?: string[];
+          demographic_impossibility?: string[]; fabricated_findings?: string[]; ignored_negatives?: string[];
+          missing_cannot_miss?: string[]; cannot_miss_misuse?: string[]; likelihood_errors?: string[];
+          anchoring_or_atypical_miss?: string[]; unsupported_claims?: string[];
           missing_evidence?: string[]; investigation_problems?: string[]; citation_problems?: string[];
           needs_revision?: boolean; overall_severity?: string;
         } = { needs_revision: false };
@@ -209,8 +228,13 @@ export async function POST(req: NextRequest) {
           critiqueJson = JSON.parse(critRaw);
         } catch (e) { console.warn('[ddx critique] parse failed', (e as Error).message); }
 
-        const issueCount = (critiqueJson.missing_cannot_miss?.length || 0)
+        const issueCount = (critiqueJson.demographic_impossibility?.length || 0)
+          + (critiqueJson.fabricated_findings?.length || 0)
+          + (critiqueJson.ignored_negatives?.length || 0)
+          + (critiqueJson.missing_cannot_miss?.length || 0)
+          + (critiqueJson.cannot_miss_misuse?.length || 0)
           + (critiqueJson.likelihood_errors?.length || 0)
+          + (critiqueJson.anchoring_or_atypical_miss?.length || 0)
           + (critiqueJson.unsupported_claims?.length || 0)
           + (critiqueJson.missing_evidence?.length || 0)
           + (critiqueJson.investigation_problems?.length || 0)
@@ -252,14 +276,21 @@ export async function POST(req: NextRequest) {
         summary?: string; missing_info?: string[];
         cannot_miss?: unknown[]; most_likely?: unknown[]; other?: unknown[];
       };
+      // Hard demographic guard: deterministically drop sex-impossible diagnoses
+      // (belt-and-suspenders behind the prompt rules). See lib/ddx-constraints.
+      const demoFilter = filterByDemographics(parsed, body.sex);
+      const ddx = demoFilter.filtered;
+      if (demoFilter.removed.length) {
+        await logEvent(traceId, 'demographic_filter', 'parsing', { sex: body.sex ?? null, removed: demoFilter.removed });
+      }
       emit({
         type: 'result',
         data: {
-          summary: parsed.summary ?? '',
-          missing_info: Array.isArray(parsed.missing_info) ? parsed.missing_info : [],
-          cannot_miss: Array.isArray(parsed.cannot_miss) ? parsed.cannot_miss : [],
-          most_likely: Array.isArray(parsed.most_likely) ? parsed.most_likely : [],
-          other: Array.isArray(parsed.other) ? parsed.other : [],
+          summary: ddx.summary ?? '',
+          missing_info: Array.isArray(ddx.missing_info) ? ddx.missing_info : [],
+          cannot_miss: Array.isArray(ddx.cannot_miss) ? ddx.cannot_miss : [],
+          most_likely: Array.isArray(ddx.most_likely) ? ddx.most_likely : [],
+          other: Array.isArray(ddx.other) ? ddx.other : [],
           citations,
           plos_citations: plosCitations,
           presentation: display,
@@ -267,15 +298,16 @@ export async function POST(req: NextRequest) {
       });
       // v1.7b S2: emit final_answer event + denormalize parsed DDx into traces.final_answer_text
       const finalAnswerText = [
-        parsed.summary || '',
-        ...((parsed.cannot_miss || []) as Array<{ diagnosis?: string }>).map((d) => 'Cannot-miss: ' + (d.diagnosis || '')),
-        ...((parsed.most_likely || []) as Array<{ diagnosis?: string }>).map((d) => 'Likely: ' + (d.diagnosis || '')),
-        ...((parsed.other || []) as Array<{ diagnosis?: string }>).map((d) => 'Other: ' + (d.diagnosis || '')),
+        ddx.summary || '',
+        ...((ddx.cannot_miss || []) as Array<{ diagnosis?: string }>).map((d) => 'Cannot-miss: ' + (d.diagnosis || '')),
+        ...((ddx.most_likely || []) as Array<{ diagnosis?: string }>).map((d) => 'Likely: ' + (d.diagnosis || '')),
+        ...((ddx.other || []) as Array<{ diagnosis?: string }>).map((d) => 'Other: ' + (d.diagnosis || '')),
       ].filter(Boolean).join(' | ');
       await Promise.all([
         logEvent(traceId, 'final_answer', 'done', {
           answer_text: finalAnswerText,
-          parsed_full: parsed,
+          parsed_full: ddx,
+          demographic_removed: demoFilter.removed,
           char_count: finalAnswerText.length,
           total_ms: Date.now() - t0,
         }),
