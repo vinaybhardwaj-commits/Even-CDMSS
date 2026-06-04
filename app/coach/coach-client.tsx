@@ -1,7 +1,9 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { Send, Loader2, Brain, Check, AlertCircle, X, MessageCircleQuestion, RotateCcw, BookOpen, Sparkles, FileText, Eye, Lightbulb } from 'lucide-react';
+import { MarkdownAnswer } from '@/components/MarkdownAnswer';
+import TracePanel, { TraceEvent } from '@/components/TracePanel';
 
 type Correctness = 'correct' | 'partial' | 'incorrect' | 'clarifying';
 type Turn = {
@@ -20,6 +22,10 @@ type Summary = {
   gaps: string[];
   suggested_next: string;
   accuracy: number;
+  sources_recap?: {
+    textbook: { n: number; id: number; book: string; chapter: string | null; page_start: number | null; page_end: number | null; item_number: string | null; similarity: number; preview: string }[];
+    plos: { n: number; doi: string; title: string; authors: string[]; year: number; url: string; full_url: string; preview: string }[];
+  };
 };
 
 const DIFFICULTY_COLOR: Record<Difficulty, string> = {
@@ -28,7 +34,7 @@ const DIFFICULTY_COLOR: Record<Difficulty, string> = {
   advanced: 'bg-rose-100 text-rose-900',
 };
 
-const TOPIC_CHIPS = [
+const DEFAULT_TOPIC_CHIPS = [
   'Atrial fibrillation management',
   'Workup of hyponatremia',
   'Acute pancreatitis severity',
@@ -56,6 +62,8 @@ function EvalChip({ ev }: { ev: NonNullable<Turn['evaluation']> }) {
 
 export default function CoachClient() {
   const [phase, setPhase] = useState<'start' | 'chat' | 'summary'>('start');
+  const [multiQuery, setMultiQuery] = useState(true);
+  const [selfCritique, setSelfCritique] = useState(true);
   const [startTab, setStartTab] = useState<'topic' | 'case'>('topic');
   const [topic, setTopic] = useState('');
   const [caseText, setCaseText] = useState('');
@@ -70,11 +78,26 @@ export default function CoachClient() {
   const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [difficultyFlash, setDifficultyFlash] = useState(false);
+  // v1.7b S3: per-turn traceId + end-summary traceId + chip rotation surface=coach
+  const [lastTraceId, setLastTraceId] = useState<string | null>(null);
+  const [trace, setTrace] = useState<TraceEvent[]>([]);
+  const [totalMs, setTotalMs] = useState<number | undefined>(undefined);
+  const [chips, setChips] = useState<string[]>(DEFAULT_TOPIC_CHIPS);
+  const loadChips = useCallback(async () => {
+    try {
+      const r = await fetch('/api/ask/example-questions?surface=coach&n=5');
+      if (!r.ok) return;
+      const j = await r.json();
+      const qs = (j.questions || []).map((x: { question: string }) => x.question).filter(Boolean);
+      if (qs.length) setChips(qs);
+    } catch {}
+  }, []);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (transcriptRef.current) transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
   }, [turns]);
+  useEffect(() => { loadChips(); }, [loadChips]);
 
   async function startSession(e?: React.FormEvent) {
     e?.preventDefault();
@@ -91,6 +114,7 @@ export default function CoachClient() {
           difficulty: initialDifficulty,
         }),
       });
+      const tid0 = r.headers.get('X-Trace-Id'); if (tid0) setLastTraceId(tid0);
       if (!r.ok) { setError(`${r.status}: ${(await r.text()).slice(0, 200)}`); return; }
       const d = await r.json();
       setSessionId(d.session_id);
@@ -129,6 +153,7 @@ export default function CoachClient() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: sessionId, user_message: msg, force_answer: forceAnswer }),
       });
+      const tid1 = r.headers.get('X-Trace-Id'); if (tid1) setLastTraceId(tid1);
       if (!r.ok) { setError(`${r.status}: ${(await r.text()).slice(0, 200)}`); setLoading(false); return; }
       const d = await r.json();
       // Replace optimistic user turn with the server's, append coach turn(s).
@@ -159,11 +184,13 @@ export default function CoachClient() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: sessionId }),
       });
+      const tid2 = r.headers.get('X-Trace-Id'); if (tid2) setLastTraceId(tid2);
       if (!r.ok) { setError(`${r.status}: ${(await r.text()).slice(0, 200)}`); return; }
       const d = await r.json();
       setSummary({
         summary: d.summary, concepts_mastered: d.concepts_mastered,
         gaps: d.gaps, suggested_next: d.suggested_next, accuracy: d.accuracy,
+        sources_recap: d.sources_recap,
       });
       setPhase('summary');
     } catch (e) { setError(String((e as Error).message)); }
@@ -207,13 +234,20 @@ export default function CoachClient() {
                 placeholder="Atrial fibrillation management"
                 className="mt-1 w-full rounded-lg border border-slate-300 p-2 text-sm focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
               />
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {TOPIC_CHIPS.map((t) => (
-                  <button type="button" key={t} onClick={() => setTopic(t)}
-                    className="rounded-full border border-slate-200 px-2.5 py-0.5 text-xs text-slate-600 hover:border-brand hover:text-brand">
-                    {t}
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                {chips.map((t, i) => (
+                  <button type="button" key={`${i}-${t.slice(0, 20)}`} onClick={() => setTopic(t)}
+                    className="rounded-full border border-slate-200 px-2.5 py-0.5 text-xs text-slate-600 hover:border-brand hover:text-brand"
+                    title={t}>
+                    {t.length > 54 ? t.slice(0, 51) + '…' : t}
                   </button>
                 ))}
+                <button type="button" onClick={loadChips}
+                  aria-label="Shuffle topic chips"
+                  className="rounded-full border border-slate-200 px-2 py-0.5 text-xs text-slate-500 hover:border-brand hover:text-brand"
+                  title="Show different topics">
+                  ↻
+                </button>
               </div>
             </div>
           ) : (
@@ -268,13 +302,17 @@ export default function CoachClient() {
           <h2 className="flex items-center gap-2 text-base font-semibold text-emerald-900">
             <BookOpen className="h-5 w-5" /> Session summary
           </h2>
-          <p className="mt-2 text-sm text-emerald-800">{summary.summary}</p>
+          <div className="mt-2 text-sm text-emerald-800"><MarkdownAnswer text={summary.summary} onCite={() => {}} /></div>
           <div className="mt-3 flex items-center gap-3 text-xs text-emerald-700">
             <span>Topic: <span className="font-medium">{currentTopic}</span></span>
             <span>·</span>
             <span>Difficulty: <span className="font-medium capitalize">{difficulty}</span></span>
             <span>·</span>
             <span>Accuracy: <span className="font-medium">{(summary.accuracy * 100).toFixed(0)}%</span></span>
+            {lastTraceId && (<>
+              <span>·</span>
+              <a href={`/ask/trace/${lastTraceId}`} target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">View trace ↗</a>
+            </>)}
           </div>
         </div>
 
@@ -301,6 +339,58 @@ export default function CoachClient() {
             <h3 className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Suggested next session</h3>
             <p className="mt-1 text-sm text-slate-800">{summary.suggested_next}</p>
           </div>
+        )}
+
+        {summary.sources_recap && (summary.sources_recap.textbook.length > 0 || summary.sources_recap.plos.length > 0) && (
+          <details className="rounded-xl border border-slate-200 bg-white p-4">
+            <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-wide text-slate-500 hover:text-brand">
+              Sources that grounded this session
+              <span className="ml-2 font-normal normal-case text-slate-400">
+                ({summary.sources_recap.textbook.length} textbook · {summary.sources_recap.plos.length} PLOS)
+              </span>
+            </summary>
+            {summary.sources_recap.textbook.length > 0 && (
+              <div className="mt-3">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-brand">Textbook</div>
+                <ol className="mt-1.5 space-y-1.5">
+                  {summary.sources_recap.textbook.map((c) => (
+                    <li key={`tb-${c.n}`} className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs">
+                      <div className="flex items-baseline gap-1.5">
+                        <span className="rounded bg-brand-faint px-1 py-0.5 text-[10px] font-semibold text-brand">[{c.n}]</span>
+                        <span className="truncate font-medium text-slate-800">{c.book}</span>
+                      </div>
+                      <div className="mt-0.5 text-[10px] text-slate-500">
+                        {c.chapter && <span>{c.chapter} · </span>}
+                        {c.page_start && <span>p.{c.page_start} · </span>}
+                        <span>sim {c.similarity.toFixed(2)}</span>
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            )}
+            {summary.sources_recap.plos.length > 0 && (
+              <div className="mt-3">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-amber-700">PLOS ONE primary research</div>
+                <ol className="mt-1.5 space-y-1.5">
+                  {summary.sources_recap.plos.map((p) => (
+                    <li key={`plos-${p.n}`} className="rounded-md border border-amber-200 bg-amber-50/40 px-2.5 py-1.5 text-xs">
+                      <div className="flex items-baseline gap-1.5">
+                        <span className="rounded bg-amber-100 px-1 py-0.5 text-[10px] font-semibold text-amber-800">[P{p.n}]</span>
+                        <span className="truncate font-medium text-slate-800">{p.title}</span>
+                      </div>
+                      <div className="mt-0.5 text-[10px] text-slate-500">
+                        {p.authors.length > 0 && <span>{p.authors.join(', ')}{p.authors.length === 3 ? ' et al.' : ''} · </span>}
+                        <span>PLOS ONE {p.year}</span>
+                        <span className="mx-1">·</span>
+                        <a href={p.full_url} target="_blank" rel="noopener noreferrer" className="text-amber-700 hover:underline">open ↗</a>
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            )}
+          </details>
         )}
 
         <button

@@ -1,8 +1,8 @@
 import Link from 'next/link';
-import { Pill, Activity, Beaker, Droplet, Timer } from 'lucide-react';
+import { Pill, Activity, Beaker, Droplet, Timer, Brain, Wind, ZapOff, Heart, HeartPulse, ShieldAlert, Waves, Stethoscope } from 'lucide-react';
 import HelpCard from '@/components/HelpCard';
 
-export const metadata = { title: 'Calculators · Even CDMSS' };
+export const metadata = { title: 'Calculators · Even Staff Portal' };
 
 const CALCULATORS = [
   {
@@ -44,6 +44,87 @@ const CALCULATORS = [
     desc: 'Live countdown + per-element status. Optional qwen 14b evidence sidebar cached 7 days per user. No LLM on the main path.',
     Icon: Timer,
     badge: 'Checklist',
+  },
+  // v1.8 S1 — 10 deterministic ER/ICU scoring calculators.
+  {
+    href: '/calculators/nihss',
+    title: 'NIHSS',
+    subtitle: 'NIH Stroke Scale (NINDS / AHA)',
+    desc: '11-item bedside stroke severity score (0-42). Bands: no stroke / minor / moderate / moderate-severe / severe — drives tPA candidacy and disposition.',
+    Icon: Brain,
+    badge: 'Deterministic',
+  },
+  {
+    href: '/calculators/abcd2',
+    title: 'ABCD\u00B2',
+    subtitle: 'TIA → 2-day stroke risk',
+    desc: 'Age, BP, clinical features, duration, diabetes. Three bands (low / moderate / high) drive admission vs urgent outpatient workup.',
+    Icon: Activity,
+    badge: 'Deterministic',
+  },
+  {
+    href: '/calculators/curb65',
+    title: 'CURB-65',
+    subtitle: 'Community-acquired pneumonia severity',
+    desc: 'Confusion, Urea, RR, BP, age ≥65. Maps directly to outpatient / short inpatient / hospitalize with mortality bands.',
+    Icon: Wind,
+    badge: 'Deterministic',
+  },
+  {
+    href: '/calculators/wells_dvt',
+    title: 'Wells — DVT',
+    subtitle: 'Pretest probability for deep vein thrombosis',
+    desc: 'Nine positive + one negative criterion (alt diagnosis). Three-tier band sets the D-dimer vs compression-US threshold.',
+    Icon: ZapOff,
+    badge: 'Deterministic',
+  },
+  {
+    href: '/calculators/wells_pe',
+    title: 'Wells — PE',
+    subtitle: 'Pretest probability for pulmonary embolism',
+    desc: 'Decimal weights across 7 items. Reports BOTH three-tier (low / moderate / high) AND two-tier (likely vs unlikely) bands.',
+    Icon: ZapOff,
+    badge: 'Deterministic',
+  },
+  {
+    href: '/calculators/heart',
+    title: 'HEART',
+    subtitle: 'Chest pain — 6-week MACE',
+    desc: 'History, ECG, Age, Risk factors, Troponin. 0-10 score with low / moderate / high MACE bands — discharge vs admit vs invasive.',
+    Icon: Heart,
+    badge: 'Deterministic',
+  },
+  {
+    href: '/calculators/timi',
+    title: 'TIMI',
+    subtitle: 'UA / NSTEMI 14-day MACE',
+    desc: '7 binary items, score 0-7 with per-score 14-day MACE bands from the original TIMI 11B / ESSENCE cohorts.',
+    Icon: HeartPulse,
+    badge: 'Deterministic',
+  },
+  {
+    href: '/calculators/sofa',
+    title: 'SOFA',
+    subtitle: 'Sepsis-related Organ Failure Assessment',
+    desc: '6 organ systems × 0-4 = 0-24. Mortality bands plus optional qSOFA chip — flags positive at ≥2/3 bedside criteria.',
+    Icon: ShieldAlert,
+    badge: 'Deterministic',
+  },
+  {
+    href: '/calculators/qtc',
+    title: 'QTc',
+    subtitle: 'Corrected QT — Bazett / Fridericia / Framingham',
+    desc: 'All three formulas computed in parallel. Sex-specific Bazett band; any-method >500 ms flags high TdP risk.',
+    Icon: Waves,
+    badge: 'Deterministic',
+  },
+  {
+    href: '/calculators/alvarado',
+    title: 'Alvarado',
+    subtitle: 'MANTRELS — appendicitis',
+    desc: '8 clinical / lab items (T and L worth 2 pts each). Bands map directly to discharge / observe / surgical consult / surgery.',
+    Icon: Stethoscope,
+    badge: 'Deterministic',
   },
 ] as const;
 

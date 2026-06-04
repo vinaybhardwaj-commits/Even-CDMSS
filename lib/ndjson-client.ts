@@ -5,6 +5,11 @@ export type ServerEvent =
   | { type: 'token'; content: string }
   | { type: 'result'; data: unknown }
   | { type: 'done'; ms: number }
+  | { type: 'critique'; severity: string; issue_count: number; details: Record<string, unknown> }  // v1.5
+  | { type: 'draft_complete'; chars: number }                                                          // v1.6
+  | { type: 'draft_superseded'; reason: string }                                                       // v1.6
+  | { type: 'pubchem_facts'; data: unknown }                                                           // v1.9
+  | { type: 'class_overlap'; pairs: unknown[] }                                                        // v1.9
   | { type: 'error'; message: string };
 
 export async function consumeNdjson(

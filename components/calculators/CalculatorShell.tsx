@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { CalculatorConfig, FormField, CalculatorResult } from '@/lib/calculators/types';
+import type { CalculatorConfig, FormField, CalculatorResult, LiveScoreFn } from '@/lib/calculators/types';
 
 // Tooltip cache version sentinel (PRD §3.14). Compared against server's value on app boot.
 const TOOLTIP_VERSION_LS_KEY = 'cdmss_tooltip_cache_version';
@@ -74,8 +74,8 @@ function FieldInput({
 
   return (
     <div className="space-y-1.5">
-      <label className="flex items-center gap-1.5 text-sm font-medium text-slate-700">
-        <span>{field.label}</span>
+      <div className="flex items-baseline gap-1.5">
+        <span className="text-sm font-semibold text-slate-800">{field.label}</span>
         {field.unit && <span className="text-xs text-slate-500">({field.unit})</span>}
         <button
           type="button"
@@ -91,7 +91,9 @@ function FieldInput({
             <path d="M8 7v4M8 4.5v.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
           </svg>
         </button>
-      </label>
+      </div>
+      {/* v2.0: always-visible subtitle removes the need to hover ⓘ */}
+      {field.subtitle && <div className="text-xs text-slate-500 leading-snug">{field.subtitle}</div>}
 
       {showTip && tip && (
         <div className="relative">
@@ -102,26 +104,62 @@ function FieldInput({
       )}
 
       {field.type === 'enum' && field.options ? (
-        <select
-          value={String(value ?? '')}
-          onChange={(e) => setValue(e.target.value)}
-          className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
-        >
-          <option value="">—</option>
-          {field.options.map((o) => (
-            <option key={String(o.value)} value={String(o.value)}>{o.label}</option>
-          ))}
-        </select>
+        /* v2.0 — vertical button stack with descriptive labels + per-option points chip */
+        <div className="space-y-1">
+          {field.options.map((o) => {
+            const selected = String(value ?? '') === String(o.value);
+            return (
+              <button
+                type="button"
+                key={String(o.value)}
+                onClick={() => setValue(o.value)}
+                className={`flex w-full items-start gap-2 rounded-md border px-3 py-2 text-left text-sm transition ${
+                  selected
+                    ? 'border-brand bg-brand-faint text-brand shadow-sm'
+                    : 'border-slate-200 bg-white text-slate-700 hover:border-brand/40 hover:bg-slate-50'
+                }`}
+              >
+                <span className="flex-1">
+                  <span className={selected ? 'font-semibold' : ''}>{o.label}</span>
+                  {o.description && <span className="block text-xs text-slate-500">{o.description}</span>}
+                </span>
+                {typeof o.points === 'number' && (
+                  <span className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] font-mono font-semibold ${
+                    selected ? 'bg-brand text-white' : 'bg-slate-100 text-slate-600'
+                  }`}>{o.points > 0 ? '+' : ''}{o.points}</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
       ) : field.type === 'bool' ? (
-        <div className="flex gap-3">
-          <label className="flex items-center gap-1.5 text-sm">
-            <input type="radio" checked={value === true} onChange={() => setValue(true)} className="text-brand" />
-            <span>Yes</span>
-          </label>
-          <label className="flex items-center gap-1.5 text-sm">
-            <input type="radio" checked={value === false} onChange={() => setValue(false)} className="text-brand" />
-            <span>No</span>
-          </label>
+        /* v2.0 — two-button stack (Yes/No) with optional per-option points */
+        <div className="flex gap-2">
+          {[
+            { v: true,  label: (field.options?.find(o => o.value === true)?.label) || 'Yes', pts: field.options?.find(o => o.value === true)?.points },
+            { v: false, label: (field.options?.find(o => o.value === false)?.label) || 'No',  pts: field.options?.find(o => o.value === false)?.points },
+          ].map(({ v, label, pts }) => {
+            const selected = value === v;
+            return (
+              <button
+                type="button"
+                key={String(v)}
+                onClick={() => setValue(v)}
+                className={`flex flex-1 items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm transition ${
+                  selected
+                    ? 'border-brand bg-brand-faint text-brand shadow-sm font-semibold'
+                    : 'border-slate-200 bg-white text-slate-700 hover:border-brand/40 hover:bg-slate-50'
+                }`}
+              >
+                <span>{label}</span>
+                {typeof pts === 'number' && (
+                  <span className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] font-mono font-semibold ${
+                    selected ? 'bg-brand text-white' : 'bg-slate-100 text-slate-600'
+                  }`}>{pts > 0 ? '+' : ''}{pts}</span>
+                )}
+              </button>
+            );
+          })}
         </div>
       ) : field.type === 'number' || field.type === 'integer' ? (
         <input
@@ -150,6 +188,8 @@ function FieldInput({
 
 export type CalculatorShellProps<TDeterministic = Record<string, unknown>> = {
   config: CalculatorConfig;
+  /** v2.0 — optional client-side live preview from each calc's math fn. */
+  liveScore?: LiveScoreFn;
   // Override default form rendering (rare — most calcs use the default).
   renderForm?: (props: {
     values: Record<string, unknown>;
@@ -159,7 +199,7 @@ export type CalculatorShellProps<TDeterministic = Record<string, unknown>> = {
   renderResult: (props: { result: CalculatorResult & { deterministic: TDeterministic } }) => React.ReactNode;
 };
 
-export default function CalculatorShell<T = Record<string, unknown>>({ config, renderForm, renderResult }: CalculatorShellProps<T>) {
+export default function CalculatorShell<T = Record<string, unknown>>({ config, liveScore, renderForm, renderResult }: CalculatorShellProps<T>) {
   const [values, setValues] = useState<Record<string, unknown>>(() => {
     const init: Record<string, unknown> = {};
     for (const f of config.fields) {
@@ -173,6 +213,13 @@ export default function CalculatorShell<T = Record<string, unknown>>({ config, r
   const [submitting, setSubmitting] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
   const idemKey = useRef<string>(crypto.randomUUID());
+
+  // v2.0 — live score preview computed client-side from each calc's math fn.
+  // Returns null when liveScore prop not supplied OR when inputs incomplete.
+  const livePreview = useMemo(() => {
+    if (!liveScore) return null;
+    try { return liveScore(values); } catch { return null; }
+  }, [liveScore, values]);
 
   // Tooltip cache freshness check on mount.
   useEffect(() => { ensureTooltipCacheFresh(); }, []);
@@ -297,6 +344,20 @@ export default function CalculatorShell<T = Record<string, unknown>>({ config, r
 
       {!result ? (
         <form onSubmit={handleSubmit} className="space-y-5">
+          {livePreview && (
+            <div className={`sticky top-0 z-10 -mx-4 -mt-4 mb-2 flex items-baseline justify-between gap-3 border-b px-4 py-2.5 backdrop-blur sm:mx-0 sm:rounded-t-lg sm:mt-0 ${
+              livePreview.complete
+                ? 'border-brand/30 bg-brand-faint/70 text-brand'
+                : 'border-slate-200 bg-slate-50/80 text-slate-600'
+            }`}>
+              <span className="text-sm font-medium">
+                {livePreview.complete ? 'Score' : 'Running score'}: <span className="font-mono text-base font-bold">{livePreview.score}{typeof livePreview.max === 'number' && ` / ${livePreview.max}`}</span>
+              </span>
+              {livePreview.band_label && (
+                <span className="text-xs italic">{livePreview.band_label}</span>
+              )}
+            </div>
+          )}
           {formContent}
 
           {softWarnings.length > 0 && (

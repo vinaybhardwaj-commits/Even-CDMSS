@@ -6,11 +6,12 @@ import { Info, X, ChevronDown, ChevronUp } from 'lucide-react';
 type Props = {
   storageKey: string;
   title: string;
+  body?: string;
   bullets: string[];
   defaultOpen?: boolean;
 };
 
-export default function HelpCard({ storageKey, title, bullets, defaultOpen = true }: Props) {
+export default function HelpCard({ storageKey, title, body, bullets, defaultOpen = true }: Props) {
   const [open, setOpen] = useState(defaultOpen);
   const [dismissed, setDismissed] = useState(false);
   const [hydrated, setHydrated] = useState(false);
@@ -51,9 +52,14 @@ export default function HelpCard({ storageKey, title, bullets, defaultOpen = tru
         </button>
       </button>
       {open && (
-        <ul className="ml-9 list-disc space-y-1 pb-3 pr-4 text-sky-900">
-          {bullets.map((b, i) => <li key={i}>{b}</li>)}
-        </ul>
+        <>
+          {body && (
+            <p className="px-9 pb-3 text-sky-900/90 leading-snug">{body}</p>
+          )}
+          <ul className="ml-9 list-disc space-y-1 pb-3 pr-4 text-sky-900">
+            {bullets.map((b, i) => <li key={i}>{b}</li>)}
+          </ul>
+        </>
       )}
     </div>
   );

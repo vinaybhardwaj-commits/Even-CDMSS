@@ -1,6 +1,6 @@
 import News2Calculator from '@/components/calculators/News2Calculator';
 
-export const metadata = { title: 'NEWS2 · Calculators · Even CDMSS' };
+export const metadata = { title: 'NEWS2 · Calculators · Even Staff Portal' };
 
 export default function News2Page() {
   return (

@@ -1,11 +1,11 @@
 {
-  "name": "Even CDMSS",
-  "short_name": "Even CDMSS",
-  "description": "Even CDMSS \u2014 Clinical Decision Making Support System for RMOs and physicians",
-  "start_url": "/ask",
+  "name": "CAT \u2014 Clinical Analysis Tool",
+  "short_name": "CAT",
+  "description": "Clinical Analysis Tool \u2014 MKSAP/StatPearls-grounded clinical decision support",
+  "start_url": "/",
   "display": "standalone",
-  "background_color": "#0F172A",
-  "theme_color": "#1F4E79",
+  "background_color": "#f2f4f8",
+  "theme_color": "#0055ff",
   "scope": "/",
   "orientation": "portrait",
   "icons": [

@@ -6,6 +6,10 @@ import { Activity, Pill, GraduationCap, ArrowRightCircle } from 'lucide-react';
 import CalculatorShell from './CalculatorShell';
 import type { CalculatorConfig, CalculatorResult } from '@/lib/calculators/types';
 
+// v2.0 — eGFR is mostly numeric (LLM-native interpretation), so no liveScore.
+// Two enums (sex, displayed_equation) get subtitles + per-option descriptions
+// to make the picker self-explanatory without hovering ⓘ.
+
 const EGFR_CONFIG: CalculatorConfig = {
   name: 'egfr',
   displayTitle: 'eGFR — CKD-EPI 2021 + Cockcroft-Gault',
@@ -24,6 +28,7 @@ const EGFR_CONFIG: CalculatorConfig = {
       required: true,
       hardMin: 18,
       hardMax: 110,
+      subtitle: 'Used in both CKD-EPI 2021 and Cockcroft-Gault.',
       staticTooltip: 'Age in years. Used in both CKD-EPI 2021 and Cockcroft-Gault.',
     },
     {
@@ -31,6 +36,7 @@ const EGFR_CONFIG: CalculatorConfig = {
       label: 'Sex',
       type: 'enum',
       required: true,
+      subtitle: 'Both equations apply a sex-specific coefficient.',
       options: [
         { value: 'F', label: 'Female' },
         { value: 'M', label: 'Male' },
@@ -47,6 +53,7 @@ const EGFR_CONFIG: CalculatorConfig = {
       hardMax: 25,
       softMin: 0.4,
       softMax: 15,
+      subtitle: 'Use today\'s steady-state value; if SCr is changing > 0.3 mg/dL in 48 h, this is AKI and the equations\' steady-state assumption is violated.',
       staticTooltip:
         "Most recent stable serum creatinine in mg/dL. Use today's steady-state value; if SCr is changing >0.3 mg/dL in 48 h, this is AKI and the equations' steady-state assumption is violated.",
     },
@@ -58,6 +65,7 @@ const EGFR_CONFIG: CalculatorConfig = {
       required: false,
       hardMin: 25,
       hardMax: 300,
+      subtitle: 'Required only for Cockcroft-Gault. For obese patients consider IBW or adjusted body weight.',
       staticTooltip:
         'Actual body weight in kg. Required only for Cockcroft-Gault. For obese patients, consider IBW or adjusted body weight — see your renal pharmacy reference.',
     },
@@ -67,9 +75,10 @@ const EGFR_CONFIG: CalculatorConfig = {
       type: 'enum',
       required: false,
       defaultValue: 'ckd-epi-2021',
+      subtitle: 'Both compute in parallel either way — this just picks which one shows as the headline.',
       options: [
-        { value: 'ckd-epi-2021', label: 'CKD-EPI 2021 (recommended)' },
-        { value: 'cockcroft-gault', label: 'Cockcroft-Gault' },
+        { value: 'ckd-epi-2021',   label: 'CKD-EPI 2021 (recommended)', description: 'Race-free; current KDIGO standard for CKD staging' },
+        { value: 'cockcroft-gault', label: 'Cockcroft-Gault',           description: 'Still what most drug-dosing references cite' },
       ],
       staticTooltip:
         'CKD-EPI 2021 (race-free) is the current KDIGO standard for staging. Cockcroft-Gault is still what most drug-dosing references cite — both compute in parallel either way.',
@@ -113,7 +122,6 @@ function EgfrResult({ result }: { result: CalculatorResult & { deterministic: Eg
 
   return (
     <div className="space-y-5">
-      {/* Headline numbers */}
       <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex flex-wrap items-baseline gap-x-3 gap-y-2">
           <span className="text-4xl font-bold tracking-tight text-slate-900">{primary ?? '—'}</span>
@@ -136,7 +144,6 @@ function EgfrResult({ result }: { result: CalculatorResult & { deterministic: Eg
         )}
       </div>
 
-      {/* Interpretation */}
       <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
         <div className="mb-2 flex items-center gap-2">
           <Activity className="h-4 w-4 text-brand" />
@@ -148,7 +155,6 @@ function EgfrResult({ result }: { result: CalculatorResult & { deterministic: Eg
         <div className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700">{interp}</div>
       </div>
 
-      {/* Action chips */}
       <div className="flex flex-wrap gap-2">
         <Link
           href="/drugs"
@@ -170,7 +176,6 @@ function EgfrResult({ result }: { result: CalculatorResult & { deterministic: Eg
         </Link>
       </div>
 
-      {/* Trace chip */}
       <div className="text-xs text-slate-400">
         Trace: <code className="rounded bg-slate-100 px-1.5 py-0.5">{result.trace_id}</code>
       </div>

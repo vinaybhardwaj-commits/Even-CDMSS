@@ -119,3 +119,39 @@ export async function logStreamComplete(
     ...(meta || {}),
   }, Date.now() - startMs);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v1.7 Sprint A — denormalized writers used by /ask to populate the new
+// columns on `traces` for fast list/search/filter without scanning JSONB.
+// All wrapped in try/catch so tracing never breaks the actual request.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Write the first 160 chars of the question into traces.question_preview. */
+export async function setTraceQuestionPreview(traceId: string, question: string): Promise<void> {
+  try {
+    const preview = (question || '').slice(0, 160);
+    await sqlFn(`UPDATE traces SET question_preview = $1 WHERE trace_id = $2`, [preview, traceId]);
+  } catch {}
+}
+
+/** Write the critique severity (none/minor/moderate/major) into traces.severity. */
+export async function setTraceSeverity(traceId: string, severity: string): Promise<void> {
+  try {
+    await sqlFn(`UPDATE traces SET severity = $1 WHERE trace_id = $2`, [severity, traceId]);
+  } catch {}
+}
+
+/** Write {draft, critique, revise, ...} → traces.model_summary JSONB. */
+export async function setTraceModelSummary(traceId: string, models: Record<string, string>): Promise<void> {
+  try {
+    await sqlFn(`UPDATE traces SET model_summary = $1::jsonb WHERE trace_id = $2`, [JSON.stringify(models), traceId]);
+  } catch {}
+}
+
+/** Write the assembled final answer text into traces.final_answer_text.
+ *  The search_tsv GENERATED column will recompute automatically. */
+export async function setTraceFinalAnswer(traceId: string, finalAnswer: string): Promise<void> {
+  try {
+    await sqlFn(`UPDATE traces SET final_answer_text = $1 WHERE trace_id = $2`, [finalAnswer, traceId]);
+  } catch {}
+}

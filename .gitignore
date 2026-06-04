@@ -1,8 +1,13 @@
-node_modules
-.next
-out
+# dependencies
+/node_modules
+# next.js
+/.next
+/out
+# env
+.env
 .env*.local
-.vercel
-*.tsbuildinfo
-next-env.d.ts
+# misc
 .DS_Store
+*.pem
+npm-debug.log*
+/next-env.d.ts

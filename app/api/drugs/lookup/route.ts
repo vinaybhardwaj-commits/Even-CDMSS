@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import { retrieve } from '@/lib/retrieve';
+import { enrichDrug, type PubChemFacts } from '@/lib/pubchem';
 import { llm } from '@/lib/llm';
 import { startTrace, logEvent, finishTrace, tracedChat } from '@/lib/trace';
 import { parseLooseJson, normalizeDrugName } from '@/lib/drugs';
@@ -112,6 +113,36 @@ const PHASES: Phase[] = [
   { name: 'extras',       model: DEEP_MODEL, system: PHASE3_SYSTEM, userSuffix: 'Output the formulations/interactions/pops/pearls JSON now.', maxTokens: 1500 },
 ];
 
+// v2.0.1 — self-critique pass on the pharmacology phase (default ON, killswitch via body.selfCritique).
+// FAST_MODEL audits the DEEP_MODEL's pharmacology JSON against the source excerpts; if it flags
+// issues, DEEP_MODEL revises the JSON in a second pass. Critique is intentionally scoped to the
+// pharmacology phase because it carries the highest-stakes content (mechanism, dosing, renal
+// adjustments, contraindications, AEs) — phases 1 (fast skeleton) + 3 (extras) stay single-pass
+// to keep the total query under ~8min.
+const PHARMACOLOGY_CRITIQUE_SYSTEM = `You are a clinical accuracy auditor reviewing a pharmacology JSON written by a medical study companion.
+
+Given (1) the drug name, (2) the source excerpts (cited [1]..[n]), and (3) the draft JSON, identify problems.
+
+Output ONLY this JSON, no prose:
+{
+  "unsupported_claims": ["a claim in the JSON not backed by any cited excerpt", ...],
+  "missing_critical_info": ["a clinically-important field that's empty or trivial when source excerpts cover it (e.g. missing major contraindications, omitted renal adjustment)", ...],
+  "incorrect_dosing": ["any dosing/frequency/formulation that contradicts the excerpts", ...],
+  "missing_safety_signals": ["any black-box / contraindication / major interaction visible in excerpts but missing from the JSON", ...],
+  "citation_problems": ["wrong source attributed, fabricated citation, etc.", ...],
+  "needs_revision": true | false,
+  "overall_severity": "none" | "minor" | "moderate" | "major"
+}
+
+Empty arrays are fine. Set needs_revision=true if ANY array has entries. Be specific — each item should be a concrete fix.`;
+
+const PHARMACOLOGY_REVISION_SYSTEM = `You are the medical study companion revising your own pharmacology JSON based on an auditor's critique.
+
+You receive: drug name, source excerpts (with [n] tags), your earlier draft JSON, and the auditor's critique JSON.
+
+Rewrite the JSON to fix every issue. Add missing critical info, correct dosing, add missing safety signals, fix citations. Keep the same shape as the original (same lowercase keys, same nested structure). Output ONLY the revised JSON — no prose, no markdown fences, no commentary.`;
+
+
 
 // CALC.1.3 — renal context pushed from /drugs/egfr via sessionStorage.cdmss_renal_ctx.
 // When present, Phase 2 pharm prompt receives an addendum instructing qwen to use the
@@ -154,7 +185,7 @@ function buildPhaseUserMessage(
 }
 
 export async function POST(req: NextRequest) {
-  let body: { drug?: string; renal_ctx?: RenalCtx };
+  let body: { drug?: string; renal_ctx?: RenalCtx; selfCritique?: boolean };
   try { body = await req.json(); } catch {
     return new Response(JSON.stringify({ error: 'bad json' }), { status: 400 });
   }
@@ -201,6 +232,9 @@ export async function POST(req: NextRequest) {
       // first fix the bm25_pool=0 bug (D12.2) so hybrid retrieval is actually hybrid.
       // D12.2: BM25 leg gets just the drug name (highest-IDF term). The full boilerplate
       // query AND-tokenized to zero hits across all earlier traces.
+      // v1.9: parallel PubChem enrichment. Soft-fails — never blocks retrieve.
+      const pubchemPromise = enrichDrug(normalized).catch(() => null as PubChemFacts | null);
+
       const result = await retrieve(query, { topK: 10, minSimilarity: 0.3, bm25Query: normalized });
       const hits = result.hits;
       await logEvent(traceId, 'retrieve', 'retrieving', {
@@ -220,12 +254,35 @@ export async function POST(req: NextRequest) {
       const citations = hits.map((h, i) => ({
         n: i + 1, id: h.id, book: h.book, chapter: h.chapter,
         page_start: h.page_start, page_end: h.page_end,
-        similarity: Number(h.similarity.toFixed(3)),
+        similarity: typeof h.similarity === "number" ? Number(h.similarity.toFixed(3)) : 0,
         preview: h.text.slice(0, 600),
       }));
       emit({ type: 'sources', items: citations });
 
-      const contextBlock = buildContext(hits);
+      // v1.9: await PubChem (started above, parallel with retrieve)
+      const pubchem = await pubchemPromise;
+      if (pubchem && pubchem.cid) {
+        await logEvent(traceId, 'pubchem_enrich', 'retrieving', {
+          cid: pubchem.cid,
+          atc_codes: pubchem.atc_codes,
+          synonyms_count: pubchem.synonyms.length,
+          mesh_count: pubchem.mesh_pharmacological_actions.length,
+        });
+        emit({ type: 'pubchem_facts', data: pubchem });
+        emit({ type: 'progress', stage: 'retrieving', msg: `PubChem CID ${pubchem.cid} · ${pubchem.synonyms.length} synonyms · ATC ${pubchem.atc_codes.join(', ') || '—'}`, ms: Date.now() - t0 });
+      }
+
+      // Pass PubChem facts to LLM context — augments MKSAP excerpts with identity + class data.
+      const pubchemBlock = pubchem && pubchem.cid ? (
+        `\n\n--- PUBCHEM IDENTITY (authoritative from PubChem CID ${pubchem.cid}) ---\n` +
+        `Canonical name: ${pubchem.canonical_name}\n` +
+        `Top synonyms: ${pubchem.synonyms.slice(0, 8).join(', ')}\n` +
+        (pubchem.atc_codes.length ? `ATC: ${pubchem.atc_codes.join(', ')}\n` : '') +
+        (pubchem.mesh_pharmacological_actions.length ? `MeSH actions: ${pubchem.mesh_pharmacological_actions.join(' | ')}\n` : '') +
+        (pubchem.indication ? `Indication summary: ${pubchem.indication}\n` : '')
+      ) : '';
+
+      const contextBlock = buildContext(hits) + pubchemBlock;
 
       for (const phase of PHASES) {
         const phaseStart = Date.now();
@@ -260,6 +317,74 @@ export async function POST(req: NextRequest) {
               raw_response: raw_out
             });
             throw parseErr;
+          }
+
+          // v2.0.1 — self-critique pass on the pharmacology phase only.
+          const useSelfCritique = body.selfCritique !== false; // default ON
+          if (useSelfCritique && phase.name === 'pharmacology') {
+            try {
+              emit({ type: 'progress', stage: 'reviewing', msg: `pharmacology audit: checking JSON against ${citations.length} source excerpts…`, ms: Date.now() - t0 });
+              const critStart = Date.now();
+              const critRes = await tracedChat(traceId, 'phase_pharmacology_critique', {
+                model: FAST_MODEL,
+                messages: [
+                  { role: 'system', content: PHARMACOLOGY_CRITIQUE_SYSTEM },
+                  { role: 'user', content: `Drug: ${normalized}\n\nSource excerpts:\n${contextBlock}\n\nDraft pharmacology JSON:\n${raw_out}\n\nOutput the JSON critique now.` },
+                ],
+                temperature: 0.1,
+                max_tokens: 600,
+                ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
+              });
+              let critRaw = critRes.choices?.[0]?.message?.content?.trim() || '{}';
+              if (critRaw.startsWith('\`\`\`')) critRaw = critRaw.replace(/^\`\`\`(?:json)?\s*/i, '').replace(/\`\`\`\s*$/, '').trim();
+              const ca = critRaw.indexOf('{'); const cb = critRaw.lastIndexOf('}');
+              if (ca >= 0 && cb > ca) critRaw = critRaw.slice(ca, cb + 1);
+              const critiqueJson = JSON.parse(critRaw) as {
+                unsupported_claims?: string[]; missing_critical_info?: string[];
+                incorrect_dosing?: string[]; missing_safety_signals?: string[];
+                citation_problems?: string[]; needs_revision?: boolean; overall_severity?: string;
+              };
+
+              const issueCount = (critiqueJson.unsupported_claims?.length || 0)
+                + (critiqueJson.missing_critical_info?.length || 0)
+                + (critiqueJson.incorrect_dosing?.length || 0)
+                + (critiqueJson.missing_safety_signals?.length || 0)
+                + (critiqueJson.citation_problems?.length || 0);
+              const severity = critiqueJson.overall_severity || (issueCount > 0 ? 'minor' : 'none');
+
+              await logEvent(traceId, 'critique_parsed', 'reviewing', {
+                issue_count: issueCount, severity,
+                needs_revision: critiqueJson.needs_revision, critique: critiqueJson,
+              }, Date.now() - critStart);
+
+              emit({ type: 'critique', severity, issue_count: issueCount, details: critiqueJson as unknown as Record<string, unknown> });
+
+              if (critiqueJson.needs_revision && issueCount > 0) {
+                emit({ type: 'progress', stage: 'revising', msg: `pharmacology revision: addressing ${issueCount} issue${issueCount !== 1 ? 's' : ''} flagged by audit…`, ms: Date.now() - t0 });
+                const revRes = await tracedChat(traceId, 'phase_pharmacology_revision', {
+                  model: DEEP_MODEL,
+                  messages: [
+                    { role: 'system', content: PHARMACOLOGY_REVISION_SYSTEM },
+                    { role: 'user', content: `Drug: ${normalized}\n\nSource excerpts:\n${contextBlock}\n\nEarlier draft JSON:\n${raw_out}\n\nAuditor critique JSON:\n${JSON.stringify(critiqueJson, null, 2)}\n\nOutput the revised pharmacology JSON now.` },
+                  ],
+                  temperature: 0.2,
+                  max_tokens: 2000,
+                  ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
+                });
+                const revRaw = revRes.choices?.[0]?.message?.content ?? '';
+                try {
+                  parsed = parseLooseJson(revRaw) as Record<string, unknown>;
+                  raw_out = revRaw;
+                  await logEvent(traceId, 'revision_parse_ok', 'revising', { keys: Object.keys(parsed), char_count: revRaw.length });
+                } catch (revParseErr) {
+                  await logEvent(traceId, 'revision_parse_error', 'revising', { error: String((revParseErr as Error).message), raw_response: revRaw });
+                  // Soft-fail: keep the draft if revision parse fails.
+                }
+              }
+            } catch (critErr) {
+              // Soft-fail: critique errors don't break the pipeline.
+              await logEvent(traceId, 'critique_error', 'reviewing', { error: String((critErr as Error).message) });
+            }
           }
 
           // Coerce all string-array fields (LLMs sometimes return [{name,description}] objects)

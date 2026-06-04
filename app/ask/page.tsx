@@ -1,23 +1,25 @@
 import HelpCard from '@/components/HelpCard';
 import AskClient from './ask-client';
 
-export const metadata = { title: 'Ask · Even CDMSS' };
+export const metadata = { title: 'Ask · Even Staff Portal' };
 
 export default function AskPage() {
   return (
     <div>
       <h1 className="text-2xl font-semibold text-slate-900 sm:text-3xl">Ask</h1>
       <p className="mt-1 text-sm text-slate-500">
-        Free-form clinical questions, answered from MKSAP, StatPearls, and UpToDate with inline citations.
+        Free-form clinical questions, answered from the Even Hospital Database with verifiable inline citations.
       </p>
-            <HelpCard
+      <HelpCard
         storageKey="ask"
-        title='MKSAP-grounded clinical questions'
+        title="About this clinical decision-support tool"
+        body="Even CDMSS is a clinical decision-support system: it takes your clinical question, searches a curated database of textbooks, references, and primary research, and returns a synthesized answer with verifiable citations to every claim. The value over a quick web search is that the answer is grounded in evidence we control, and a second model audits the draft for unsupported claims, missing caveats, and clinical errors before you see it. The limits to know: it does not replace clinical judgment, and citations should still be verified for high-stakes decisions."
         bullets={[
-          "Type or dictate a clinical question — works best when phrased as a real consult ('first-line for HFrEF NYHA III')",
-          'Voice input is supported in Chrome and Safari — tap the mic, speak, the text streams in',
+          "Phrase questions as you would a real consult — 'first-line for HFrEF NYHA III' works better than 'heart failure drugs'",
+          'Voice input is supported on Chrome and Safari — tap the mic, speak, the text streams in',
           'Inline citations [n] are clickable — tap to scroll to the source chunk and see the supporting text',
-          'Every query is logged to your Shift Review log automatically — no separate save step',
+          'Every query is logged automatically — no separate save step. Click \'View trace ↗\' on any answer to see exactly what the system did.',
+          'Answers take 3-5 minutes because the system runs a multi-stage retrieval + audit pipeline. The live tracker below shows what is happening at each step.',
         ]}
       />
       <div className="mt-6"><AskClient /></div>

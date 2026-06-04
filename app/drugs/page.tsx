@@ -1,7 +1,7 @@
 import HelpCard from '@/components/HelpCard';
 import DrugsClient from './drugs-client';
 
-export const metadata = { title: 'Drugs · Even CDMSS' };
+export const metadata = { title: 'Drugs · Even Staff Portal' };
 
 export default function DrugsPage() {
   return (

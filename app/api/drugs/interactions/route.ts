@@ -2,7 +2,8 @@ import { NextRequest } from 'next/server';
 import { retrieve } from '@/lib/retrieve';
 import { DRUGS_MODEL, parseLooseJson, normalizeDrugName } from '@/lib/drugs';
 import { makeNdjsonStream, ndjsonHeaders } from '@/lib/stream';
-import { startTrace, finishTrace, tracedChat } from '@/lib/trace';
+import { startTrace, finishTrace, tracedChat, logEvent } from '@/lib/trace';
+import { enrichDrug, findClassOverlap, type PubChemFacts } from '@/lib/pubchem';
 
 export const runtime = 'nodejs';
 export const maxDuration = 120;
@@ -39,6 +40,36 @@ export async function POST(req: NextRequest) {
       const normalized = await Promise.all(raw.map(normalizeDrugName));
       emit({ type: 'progress', stage: 'expanding', msg: `Checking: ${normalized.join(', ')}`, ms: Date.now() - t0 });
 
+      // v1.9: parallel PubChem enrichment for class-overlap pre-flagging.
+      // Soft-fails — empty facts means we skip class-overlap, the LLM-pairwise primary still runs.
+      const pubchemFacts: (PubChemFacts | null)[] = await Promise.all(
+        normalized.map((n) => enrichDrug(n).catch(() => null))
+      );
+      type ClassOverlapPair = {
+        a: string; b: string; cid_a: number | null; cid_b: number | null;
+        shared_atc3: string[]; shared_atc2: string[]; shared_labels: string[];
+      };
+      const classOverlapPairs: ClassOverlapPair[] = [];
+      for (let i = 0; i < pubchemFacts.length; i++) {
+        for (let j = i + 1; j < pubchemFacts.length; j++) {
+          const fa = pubchemFacts[i], fb = pubchemFacts[j];
+          if (!fa || !fb) continue;
+          const ov = findClassOverlap(fa, fb);
+          if (ov.any) {
+            classOverlapPairs.push({
+              a: normalized[i], b: normalized[j],
+              cid_a: fa.cid, cid_b: fb.cid,
+              shared_atc3: ov.shared_atc3, shared_atc2: ov.shared_atc2, shared_labels: ov.shared_labels,
+            });
+          }
+        }
+      }
+      if (classOverlapPairs.length) {
+        await logEvent(traceId, 'pubchem_class_overlap', 'retrieving', { pairs: classOverlapPairs });
+        emit({ type: 'class_overlap', pairs: classOverlapPairs });
+        emit({ type: 'progress', stage: 'retrieving', msg: `PubChem flagged ${classOverlapPairs.length} class-overlap pair(s): ${classOverlapPairs.map(p => `${p.a}↔${p.b} (${p.shared_labels.join(', ')})`).join('; ')}`, ms: Date.now() - t0 });
+      }
+
       const query = `drug-drug interactions between ${normalized.join(', ')}`;
       // D12.2: BM25 leg gets just the drug names (highest-IDF tokens).
       // The "drug-drug interactions between" framing is boilerplate that AND-fails on most chunks.
@@ -50,18 +81,26 @@ export async function POST(req: NextRequest) {
       const citations = hits.map((h, i) => ({
         n: i + 1, id: h.id, book: h.book, chapter: h.chapter,
         page_start: h.page_start, page_end: h.page_end,
-        similarity: Number(h.similarity.toFixed(3)),
+        similarity: typeof h.similarity === "number" ? Number(h.similarity.toFixed(3)) : 0,
         preview: h.text.slice(0, 600),
       }));
       emit({ type: 'sources', items: citations });
 
       const contextBlock = hits.map((h, i) => `--- Excerpt ${i + 1} ---\n[${i + 1}] ${h.book}${h.chapter ? ' · ' + h.chapter : ''}\n${h.text}`).join('\n\n');
+
+      // v1.9: append class-overlap hints (from PubChem ATC) so the LLM doesn't miss
+      // pharmacodynamic interactions the MKSAP excerpts don't explicitly cover.
+      const classOverlapHint = classOverlapPairs.length
+        ? '\n\n--- DETERMINISTIC CLASS-OVERLAP FLAGS (from PubChem ATC) ---\n'
+          + classOverlapPairs.map(p => `${p.a} ↔ ${p.b}: shared class(es) ${p.shared_labels.join(', ')} — flag as at minimum severity:"minor" with mechanism reflecting the shared pharmacological class.`).join('\n')
+        : '';
+
       emit({ type: 'progress', stage: 'generating', msg: `Analyzing pairs with ${DRUGS_MODEL}…`, ms: Date.now() - t0 });
       const r = await tracedChat(traceId, 'interactions', {
         model: DRUGS_MODEL,
         messages: [
           { role: 'system', content: SYSTEM },
-          { role: 'user', content: `Drugs to check: ${normalized.join(', ')}\n\nExcerpts:\n${contextBlock}\n\nOutput ONLY the JSON object covering all pairs now.` },
+          { role: 'user', content: `Drugs to check: ${normalized.join(', ')}\n\nExcerpts:\n${contextBlock}${classOverlapHint}\n\nOutput ONLY the JSON object covering all pairs now.` },
         ],
         temperature: 0.2,
         max_tokens: 1500,
@@ -84,7 +123,7 @@ export async function POST(req: NextRequest) {
         pairs.push(p);
       }
 
-      emit({ type: 'result', data: { input: raw, normalized, summary: parsed.summary ?? '', pairs, citations } });
+      emit({ type: 'result', data: { input: raw, normalized, summary: parsed.summary ?? '', pairs, citations, class_overlap_pairs: classOverlapPairs, pubchem_facts: pubchemFacts.map(f => f ? { cid: f.cid, canonical_name: f.canonical_name, atc_codes: f.atc_codes, url: f.url } : null) } });
       emit({ type: 'done', ms: Date.now() - t0 });
     } catch (e) {
       outcome = 'error';

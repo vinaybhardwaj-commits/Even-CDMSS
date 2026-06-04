@@ -65,6 +65,20 @@ export const TOOLTIP_FALLBACKS: Record<CalculatorName, Record<string, string>> =
     qsofa:                        'qSOFA score if already computed elsewhere in this session. Consumed for the sidebar context.',
     sofa:                         'Full SOFA score if computed.',
   },
+  // v1.8 S1 — fallbacks are minimal because the calculators ship a `staticTooltip`
+  // on every FormField; the tooltip route falls through to those whenever this map
+  // is empty. Keeping an empty per-field block satisfies the Record<CalculatorName, …>
+  // type contract without duplicating the per-field copy already in the components.
+  nihss:     {},
+  abcd2:     {},
+  curb65:    {},
+  wells_dvt: {},
+  wells_pe:  {},
+  heart:     {},
+  timi:      {},
+  sofa:      {},
+  qtc:       {},
+  alvarado:  {},
 };
 
 // Synthesis-section fallbacks (LLM-native calculators only). Used when bridge is down.

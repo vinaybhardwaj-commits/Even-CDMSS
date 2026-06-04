@@ -58,11 +58,36 @@ function repairTruncatedJson(t: string): string | null {
   return head + closeStack.reverse().join('');
 }
 
-// Normalize a free-text drug name into a canonical lookup string via fast LLM
+// Normalize a free-text drug name into a canonical lookup string.
+// v1.9b: Try PubChem first (free, deterministic, cached). If PubChem returns
+// a CID, use the first synonym as the canonical name. Only fall back to the
+// LLM if PubChem doesn't recognise the input. Saves ~500ms-1s on common
+// brand-name lookups (Glycomet → metformin, Eliquis → apixaban, etc.).
 export async function normalizeDrugName(input: string): Promise<string> {
   const trimmed = input.trim();
   if (trimmed.length === 0) return '';
   if (trimmed.length > 50) return trimmed; // Too long, skip normalization
+
+  // v1.9b: PubChem shortcut. Soft-fail to LLM if PubChem times out/errors.
+  try {
+    const { lookupByName, getSynonyms } = await import('./pubchem');
+    const cid = await lookupByName(trimmed);
+    if (cid !== null) {
+      const synonyms = await getSynonyms(cid, 5);
+      // PubChem's first non-CAS synonym is typically the canonical/INN name.
+      // Filter: prefer lowercase or capitalised short names, skip ALL-CAPS research codes.
+      const generic = synonyms.find((s) =>
+        s.length > 2 && s.length < 40 &&
+        /^[a-z]/i.test(s) &&
+        !/^[A-Z]{2,}[\s\-]?\d/.test(s) &&
+        !/imidodicarbonimidic|tetrahydropyran/.test(s.toLowerCase())
+      );
+      if (generic) return generic.toLowerCase();
+    }
+  } catch {
+    // PubChem unavailable — fall through to LLM
+  }
+
   try {
     const r = await llm.chat.completions.create({
       model: DRUGS_MODEL,

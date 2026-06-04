@@ -1,16 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { retrieve } from '@/lib/retrieve';
+import { retrieveMultiQuery } from '@/lib/multi-query';
+import { searchPlos, formatPlosForPrompt } from '@/lib/plos';
 import { sql } from '@/lib/db';
 import { COACH_MODEL, buildCoachSystemPrompt, buildRevealSystemPrompt, isRevealIntent, parseLooseJson, loadSession, computeAccuracy, Turn } from '@/lib/coach';
-import { startTrace, finishTrace, tracedChat } from '@/lib/trace';
+import { startTrace, finishTrace, tracedChat, logEvent, setTraceQuestionPreview, setTraceModelSummary, setTraceFinalAnswer } from '@/lib/trace';
 
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 const MAX_TURNS = 15; // total messages each side combined — hard cap
 
 export async function POST(req: NextRequest) {
-  let body: { session_id?: number; user_message?: string; force_answer?: boolean };
+  let body: { session_id?: number; user_message?: string; force_answer?: boolean; multiQuery?: boolean };
   try { body = await req.json(); } catch { return NextResponse.json({ error: 'bad json' }, { status: 400 }); }
   const id = Number(body.session_id);
   const msg = (body.user_message || '').trim();
@@ -35,14 +37,45 @@ export async function POST(req: NextRequest) {
     const userTurn: Turn = { role: 'user', content: userMsgForLog, timestamp: new Date().toISOString(), revealed: true };
 
     // Retrieve excerpts grounded on the topic + the previous question (richer than topic alone).
+    // v1.4 P1c: PLOS fan-out — uses just sess.topic (cleaner anchor than topic+question for PLOS).
     const retrievalQuery = `${sess.topic} ${previousQuestion}`;
     let hits: Awaited<ReturnType<typeof retrieve>>['hits'] = [];
-    try { hits = (await retrieve(retrievalQuery, { topK: 6, minSimilarity: 0.3, bm25Query: sess.topic })).hits; } catch {}
-    const contextBlock = hits.length
+    let plosHitsR: Awaited<ReturnType<typeof searchPlos>> = [];
+    try {
+      const useMultiQuery = body.multiQuery !== false;
+      const retrievePromise = useMultiQuery
+        ? retrieveMultiQuery(retrievalQuery, { topK: 6, minSimilarity: 0.3, bm25Query: sess.topic })
+        : retrieve(retrievalQuery, { topK: 6, minSimilarity: 0.3, bm25Query: sess.topic }).then((r) => ({ hits: r.hits }));
+      const [r, p] = await Promise.all([
+        retrievePromise,
+        searchPlos(sess.topic, { rows: 4, yearsBack: 5 }),
+      ]);
+      hits = r.hits;
+      plosHitsR = p;
+    } catch {}
+    const contextBlock = (hits.length
       ? hits.map((h, i) => `--- Excerpt ${i + 1} (${h.book}${h.chapter ? ' · ' + h.chapter : ''}) ---\n${h.text.slice(0, 700)}`).join('\n\n')
-      : '(no fresh excerpts retrieved)';
+      : '(no fresh excerpts retrieved)') + (plosHitsR.length ? '\n\n' + formatPlosForPrompt(plosHitsR) : '');
 
     const traceId = await startTrace('coach_reveal', { session_id: id, topic: sess.topic, difficulty: sess.difficulty, previous_question_chars: previousQuestion.length });
+
+    // v1.7b S3: forensic capture for reveal branch
+    await Promise.all([
+      logEvent(traceId, 'request_received', null, { body, ua: req.headers.get('user-agent') || '', t: new Date().toISOString(), branch: 'reveal' }),
+      setTraceQuestionPreview(traceId, `Reveal: ${previousQuestion.slice(0, 140)}`),
+      setTraceModelSummary(traceId, { reveal: COACH_MODEL }),
+      logEvent(traceId, 'retrieval_hydrated', 'retrieving', {
+        hits: hits.map((h) => ({
+          id: h.id, book: h.book, chapter: h.chapter, similarity: h.similarity, text: h.text,
+        })),
+      }),
+      logEvent(traceId, 'plos_search', 'retrieving', {
+        query: sess.topic.slice(0, 200),
+        hit_count: plosHitsR.length,
+        hits: plosHitsR.map((p) => ({ doi: p.doi, title: p.title, year: p.year, authors: p.authors, url: p.url, abstract: p.abstract })),
+      }),
+    ]);
+
     let raw = '';
     try {
       const r = await tracedChat(traceId, 'reveal', {
@@ -72,6 +105,10 @@ export async function POST(req: NextRequest) {
         [JSON.stringify(newTurns), accuracy, id]
       );
 
+      await Promise.all([
+        logEvent(traceId, 'final_answer', 'done', { answer_text: `Answer: ${answer}\n\nFollow-up: ${followUp}`, char_count: answer.length + followUp.length }),
+        setTraceFinalAnswer(traceId, `Answer: ${answer} | Follow-up: ${followUp}`),
+      ]);
       await finishTrace(traceId, 'success');
       return NextResponse.json({
         session_id: id,
@@ -126,6 +163,19 @@ export async function POST(req: NextRequest) {
   ];
 
   const traceId = await startTrace('coach_respond', { session_id: id, user_message: msg, turn_count: turnCount, difficulty: sess.difficulty });
+
+  // v1.7b S3: forensic capture for normal Socratic branch
+  await Promise.all([
+    logEvent(traceId, 'request_received', null, { body, ua: req.headers.get('user-agent') || '', t: new Date().toISOString(), branch: 'socratic' }),
+    setTraceQuestionPreview(traceId, `Turn ${turnCount}: ${msg.slice(0, 140)}`),
+    setTraceModelSummary(traceId, { turn: COACH_MODEL }),
+    logEvent(traceId, 'retrieval_hydrated', 'retrieving', {
+      hits: hits.map((h) => ({
+        id: h.id, book: h.book, chapter: h.chapter, similarity: h.similarity, text: h.text,
+      })),
+    }),
+  ]);
+
   let raw = '';
   try {
     const r = await tracedChat(traceId, 'turn', {
@@ -175,6 +225,10 @@ export async function POST(req: NextRequest) {
       [JSON.stringify(newTurns), newDifficulty, accuracy, ended_at, outcome, id]
     );
 
+    await Promise.all([
+      logEvent(traceId, 'final_answer', 'done', { answer_text: coachTurn.content, char_count: coachTurn.content.length, mastered }),
+      setTraceFinalAnswer(traceId, coachTurn.content),
+    ]);
     await finishTrace(traceId, 'success');
     return NextResponse.json({
       session_id: id,

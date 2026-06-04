@@ -1,7 +1,23 @@
 // CALC.1 — calculator type contracts. Implementation lives in components/calculators/.
 // Per PRD §5.1 + §14, every calculator uses the same shell with per-calc config.
 
-export type CalculatorName = 'egfr' | 'news2' | 'abg' | 'hyponatremia' | 'sepsis_bundle';
+export type CalculatorName =
+  | 'egfr'
+  | 'news2'
+  | 'abg'
+  | 'hyponatremia'
+  | 'sepsis_bundle'
+  // v1.8 S1 — ER/ICU deterministic scoring calculators
+  | 'nihss'
+  | 'abcd2'
+  | 'curb65'
+  | 'wells_dvt'
+  | 'wells_pe'
+  | 'heart'
+  | 'timi'
+  | 'sofa'
+  | 'qtc'
+  | 'alvarado';
 
 // One field in a calculator form.
 export type FormFieldType = 'number' | 'integer' | 'enum' | 'bool' | 'text' | 'datetime';
@@ -9,6 +25,10 @@ export type FormFieldType = 'number' | 'integer' | 'enum' | 'bool' | 'text' | 'd
 export type FormField = {
   key: string;                       // e.g. 'scr_mg_dl'
   label: string;                     // e.g. 'Serum creatinine'
+  // v2.0: always-visible secondary line under the label, e.g.
+  // 'Only assess horizontal gaze' for an enum field. Removes the
+  // need to hover the ⓘ tooltip to understand what the field is for.
+  subtitle?: string;
   type: FormFieldType;
   unit?: string;                     // 'mg/dL'
   required: boolean;
@@ -19,7 +39,11 @@ export type FormField = {
   softMin?: number;
   softMax?: number;
   // For enum / bool fields.
-  options?: Array<{ value: string | boolean; label: string }>;
+  // v2.0: each option gets an optional points value (shown as a chip next
+  // to the option label) + an optional description (renders smaller text
+  // below the label). Allows the MDCalc-style verbose UX without forcing
+  // the user to know category scores by heart.
+  options?: Array<{ value: string | boolean; label: string; points?: number; description?: string }>;
   // Static fallback tooltip (used when bridge is down). Live tooltip fetched on hover.
   staticTooltip: string;
   // Default value pre-fill (e.g. 'now' for sepsis recognition time).
@@ -44,9 +68,23 @@ export type CalculatorConfig = {
   pushesContext?: 'renal_ctx';
 };
 
+// v2.0 — live score preview prop. If supplied, the shell renders a sticky
+// "Score: X / Y · Band" chip at the top of the form that updates on every
+// input change. The function receives the current form values and returns
+// the running score; can return null when inputs are incomplete.
+export type LiveScoreFn = (values: Record<string, unknown>) => {
+  score: number;
+  max?: number;
+  band?: string;
+  band_label?: string;
+  complete: boolean;
+} | null;
+
 // Shell props — same shape for every calculator page.
 export type CalculatorShellProps = {
   config: CalculatorConfig;
+  /** v2.0 — optional client-side live preview from each calc's math fn. */
+  liveScore?: LiveScoreFn;
   // Render the inputs form. Shell wraps in <form>, handles submit + idempotency-key + sticky button.
   renderForm: (props: { values: Record<string, unknown>; setValue: (k: string, v: unknown) => void; errors: Record<string, string> }) => React.ReactNode;
   // Render the paste-mode textarea + confidence-chip flow. Optional (only when config.pasteModeEnabled).

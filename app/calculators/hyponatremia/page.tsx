@@ -1,6 +1,6 @@
 import HyponatremiaCalculator from '@/components/calculators/HyponatremiaCalculator';
 
-export const metadata = { title: 'Hyponatremia interpreter · Calculators · Even CDMSS' };
+export const metadata = { title: 'Hyponatremia interpreter · Calculators · Even Staff Portal' };
 
 export default function HyponatremiaPage() {
   return (

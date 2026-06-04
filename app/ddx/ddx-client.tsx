@@ -1,15 +1,20 @@
 'use client';
 
-import { useState, useRef, useMemo } from 'react';
+import { useState, useRef, useMemo, useCallback, useEffect } from 'react';
 import { consumeNdjson } from '@/lib/ndjson-client';
 import TracePanel, { TraceEvent } from '@/components/TracePanel';
 import { Send, Loader2, AlertTriangle, ChevronDown, ChevronUp, ClipboardList, BookOpen, Microscope } from 'lucide-react';
+import { MarkdownAnswer } from '@/components/MarkdownAnswer';
 
 type Citation = {
   n: number; id: number; book: string; chapter: string | null;
   page_start: number | null; page_end: number | null;
   item_number: string | null; chunk_type: string;
   similarity: number; preview: string;
+};
+type PlosCitation = {
+  n: number; kind: 'plos'; doi: string; title: string;
+  authors: string[]; year: number; url: string; full_url: string; preview: string;
 };
 type Dx = {
   diagnosis: string;
@@ -18,6 +23,7 @@ type Dx = {
   distinguishing_features?: string[];
   investigations?: string[];
   citation_ids?: number[];
+  plos_citation_ids?: string[];
 };
 type DdxResponse = {
   summary?: string;
@@ -26,6 +32,7 @@ type DdxResponse = {
   most_likely?: Dx[];
   other?: Dx[];
   citations?: Citation[];
+  plos_citations?: PlosCitation[];
   presentation?: string;
   duration_ms?: number;
   error?: string;
@@ -44,7 +51,7 @@ const LIKELIHOOD_COLORS: Record<string, string> = {
   low: 'bg-slate-100 text-slate-600',
 };
 
-function DxCard({ dx, idx, danger, onCite }: { dx: Dx; idx: number; danger?: boolean; onCite: (n: number) => void }) {
+function DxCard({ dx, idx, danger, onCite, onPlosCite }: { dx: Dx; idx: number; danger?: boolean; onCite: (n: number) => void; onPlosCite: (label: string) => void }) {
   const [open, setOpen] = useState(idx === 0);
   const lk = (dx.likelihood ?? 'moderate').toLowerCase();
   return (
@@ -62,11 +69,14 @@ function DxCard({ dx, idx, danger, onCite }: { dx: Dx; idx: number; danger?: boo
             <span className={`rounded-full px-2 py-0.5 font-semibold ${LIKELIHOOD_COLORS[lk] ?? LIKELIHOOD_COLORS.moderate}`}>
               {lk} likelihood
             </span>
-            {dx.citation_ids && dx.citation_ids.length > 0 && (
-              <span className="text-slate-400">
-                {dx.citation_ids.length} citation{dx.citation_ids.length !== 1 ? 's' : ''}
-              </span>
-            )}
+            {(() => {
+              const totalCites = (dx.citation_ids?.length || 0) + (dx.plos_citation_ids?.length || 0);
+              return totalCites > 0 ? (
+                <span className="text-slate-400">
+                  {totalCites} citation{totalCites !== 1 ? 's' : ''}
+                </span>
+              ) : null;
+            })()}
           </div>
         </div>
         {open ? <ChevronUp className="h-4 w-4 text-slate-400" /> : <ChevronDown className="h-4 w-4 text-slate-400" />}
@@ -74,7 +84,7 @@ function DxCard({ dx, idx, danger, onCite }: { dx: Dx; idx: number; danger?: boo
       {open && (
         <div className="space-y-3 border-t border-slate-100 px-4 py-3 text-sm">
           {dx.why_consider && (
-            <p className="leading-relaxed text-slate-700">{dx.why_consider}</p>
+            <div className="leading-relaxed text-slate-700"><MarkdownAnswer text={dx.why_consider} onCite={(n) => { const num = parseInt(String(n), 10); if (!isNaN(num)) onCite(num); }} /></div>
           )}
           {dx.distinguishing_features && dx.distinguishing_features.length > 0 && (
             <div>
@@ -98,7 +108,7 @@ function DxCard({ dx, idx, danger, onCite }: { dx: Dx; idx: number; danger?: boo
           )}
           {dx.citation_ids && dx.citation_ids.length > 0 && (
             <div className="flex flex-wrap items-center gap-1.5 pt-1">
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Sources:</span>
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Textbook:</span>
               {dx.citation_ids.map((n) => (
                 <button
                   key={n}
@@ -110,6 +120,20 @@ function DxCard({ dx, idx, danger, onCite }: { dx: Dx; idx: number; danger?: boo
               ))}
             </div>
           )}
+          {dx.plos_citation_ids && dx.plos_citation_ids.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-amber-700">PLOS:</span>
+              {dx.plos_citation_ids.map((label) => (
+                <button
+                  key={label}
+                  onClick={() => onPlosCite(label)}
+                  className="rounded-md bg-amber-100 px-1.5 py-0.5 text-[11px] font-semibold text-amber-800 hover:bg-amber-500 hover:text-white"
+                >
+                  [{label}]
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </article>
@@ -117,6 +141,9 @@ function DxCard({ dx, idx, danger, onCite }: { dx: Dx; idx: number; danger?: boo
 }
 
 export default function DdxClient() {
+  const [multiQuery, setMultiQuery] = useState(true);
+  const [selfCritique, setSelfCritique] = useState(true);
+  const [critique, setCritique] = useState<{ severity: string; issue_count: number; details: Record<string, unknown> } | null>(null);
   const [age, setAge] = useState('');
   const [sex, setSex] = useState('?');
   const [cc, setCc] = useState('');
@@ -128,11 +155,44 @@ export default function DdxClient() {
   const [error, setError] = useState<string | null>(null);
   const [highlighted, setHighlighted] = useState<number | null>(null);
   const [openCites, setOpenCites] = useState<Record<number, boolean>>({});
+  const [plosOpenCites, setPlosOpenCites] = useState<Record<string, boolean>>({});
   const [trace, setTrace] = useState<TraceEvent[]>([]);
   const [totalMs, setTotalMs] = useState<number | undefined>(undefined);
+  const [traceId, setTraceId] = useState<string | null>(null);
+  // v1.7b S2: rotating example chips with Shuffle ↻ (surface=ddx)
+  const DEFAULT_CHIPS = [
+    '62y M with sudden-onset RLQ pain, fever, anorexia x 18hr',
+    '45y F with painless rectal bleeding x 3 months, mild anaemia',
+    '72y M with sudden right hemiparesis + aphasia 90 min ago',
+  ];
+  const [chips, setChips] = useState<string[]>(DEFAULT_CHIPS);
+  const loadChips = useCallback(async () => {
+    try {
+      const r = await fetch('/api/ask/example-questions?surface=ddx&n=4');
+      if (!r.ok) return;
+      const j = await r.json();
+      const qs = (j.questions || []).map((x: { question: string }) => x.question).filter(Boolean);
+      if (qs.length) setChips(qs);
+    } catch {}
+  }, []);
+  useEffect(() => { loadChips(); }, [loadChips]);
 
   function pushTrace(stage: string, msg: string, ms?: number, done = false, error = false) {
     setTrace((prev) => {
+      // v2.0.1: collapse repeating heartbeat messages "<phase> ... (Ns on this phase)"
+      // into a single ticking line per phase. The underlying View trace ↗ keeps every
+      // heartbeat for forensic audit (server-side logEvent unchanged).
+      const HB_RE = /^(.+?) \(\d+s on this phase\)\s*$/;
+      const hbMatch = msg.match(HB_RE);
+      if (hbMatch && prev.length > 0) {
+        const key = hbMatch[1].trim();
+        const last = prev[prev.length - 1];
+        const lastHb = last.msg.match(HB_RE);
+        if (lastHb && lastHb[1].trim() === key) {
+          // Same heartbeat key — REPLACE last event in-place instead of appending.
+          return [...prev.slice(0, -1), { stage, msg, ms, done, error, ts: Date.now() }];
+        }
+      }
       const next = prev.map((p, i) => (i === prev.length - 1 && !p.done) ? { ...p, done: true } : p);
       return [...next, { stage, msg, ms, done, error, ts: Date.now() }];
     });
@@ -149,7 +209,7 @@ export default function DdxClient() {
     e?.preventDefault();
     if (!cc.trim()) { setError('Chief complaint is required'); return; }
     setError(null); setData(null); setLoading(true); setOpenCites({});
-    setTrace([]); setTotalMs(undefined);
+    setTrace([]); setTotalMs(undefined); setTraceId(null);
     const t0 = Date.now();
     try {
       const r = await fetch('/api/ddx', {
@@ -161,9 +221,10 @@ export default function DdxClient() {
           cc: cc.trim(),
           history: history.trim() || undefined,
           exam: exam.trim() || undefined,
-          vitals: vitals.trim() || undefined,
-        }),
+          vitals: vitals.trim() || undefined, multiQuery, selfCritique, includePlos: true }),
       });
+      const tid = r.headers.get('X-Trace-Id');
+      if (tid) setTraceId(tid);
       if (!r.ok) {
         const t = await r.text();
         setError(`HTTP ${r.status}: ${t.slice(0, 200)}`);
@@ -173,6 +234,7 @@ export default function DdxClient() {
       await consumeNdjson(r, (ev) => {
         if (ev.type === 'progress') pushTrace(ev.stage, ev.msg, ev.ms);
         else if (ev.type === 'sources') { /* citations come with result */ }
+        else if ((ev as { type: string }).type === 'critique') { const c = ev as unknown as { severity: string; issue_count: number; details: Record<string, unknown> }; setCritique({ severity: c.severity, issue_count: c.issue_count, details: c.details }); }
         else if (ev.type === 'result') { dRef.current = ev.data as DdxResponse; setData(dRef.current); }
         else if (ev.type === 'done') { setTotalMs(ev.ms); pushTrace('done', '', ev.ms, true); }
         else if (ev.type === 'error') { setError(ev.message); pushTrace('done', ev.message, undefined, true, true); }
@@ -205,6 +267,13 @@ export default function DdxClient() {
       document.getElementById(`ddx-cite-${n}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }, 50);
     setTimeout(() => setHighlighted((h) => (h === n ? null : h)), 2000);
+  }
+  function onPlosCite(label: string) {
+    // label is 'P1', 'P2', etc.
+    setPlosOpenCites((p) => ({ ...p, [label]: true }));
+    setTimeout(() => {
+      document.getElementById(`ddx-plos-cite-${label}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 50);
   }
 
   const cannot = data?.cannot_miss ?? [];
@@ -292,11 +361,39 @@ export default function DdxClient() {
         </div>
       </form>
 
-      <div className="mt-3 flex flex-wrap gap-2">
-        <span className="text-xs text-slate-400">Try:</span>
+      {/* v1.7b S2: rotating chips from EHRC case-mix DDx bank + Shuffle */}
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <span className="text-xs text-slate-400">Try a case:</span>
+        {chips.map((stem, i) => (
+          <button
+            key={`${i}-${stem.slice(0, 20)}`}
+            type="button"
+            onClick={() => setCc(stem)}
+            disabled={loading}
+            className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-600 hover:border-brand hover:text-brand disabled:opacity-40"
+            title={stem}
+          >
+            {stem.length > 56 ? stem.slice(0, 53) + '…' : stem}
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={loadChips}
+          disabled={loading}
+          aria-label="Shuffle case examples"
+          className="rounded-full border border-slate-200 bg-white px-2 py-1 text-xs text-slate-500 hover:border-brand hover:text-brand disabled:opacity-40"
+          title="Show different examples"
+        >
+          ↻
+        </button>
+      </div>
+      {/* Rich form-fill examples kept as a secondary row */}
+      <div className="mt-2 flex flex-wrap gap-2">
+        <span className="text-xs text-slate-400">Or a full preset:</span>
         {EXAMPLES.map((ex, i) => (
           <button
             key={i}
+            type="button"
             onClick={() => loadExample(ex)}
             disabled={loading}
             className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-600 hover:border-brand hover:text-brand disabled:opacity-40"
@@ -306,7 +403,33 @@ export default function DdxClient() {
         ))}
       </div>
 
-      {(trace.length > 0 || loading) && <div className="mt-5"><TracePanel events={trace} totalMs={totalMs} /></div>}
+      {/* v2.0.3b — pipeline toggle chips (mirrors /ask). PLOS stays hardcoded on for /ddx;
+          revisit if V wants a toggle. Chips lock during loading per v2.0.3 polish pattern. */}
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <span className="text-[11px] uppercase tracking-wider text-slate-400">Pipeline</span>
+        <button
+          type="button"
+          onClick={() => setMultiQuery((v) => !v)}
+          disabled={loading}
+          aria-pressed={multiQuery}
+          title={loading ? 'Locked while query is running' : 'Generate 4 query variants for richer recall'}
+          className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition disabled:opacity-50 disabled:cursor-not-allowed ${multiQuery ? 'border-violet-500 bg-violet-50 text-violet-700' : 'border-slate-200 bg-white text-slate-500 hover:border-violet-400'}`}
+        >
+          {multiQuery ? '✓ ' : ''}Multi-query
+        </button>
+        <button
+          type="button"
+          onClick={() => setSelfCritique((v) => !v)}
+          disabled={loading}
+          aria-pressed={selfCritique}
+          title={loading ? 'Locked while query is running' : 'Audit + revise the DDx before returning'}
+          className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition disabled:opacity-50 disabled:cursor-not-allowed ${selfCritique ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-white text-slate-500 hover:border-emerald-400'}`}
+        >
+          {selfCritique ? '✓ ' : ''}Self-critique
+        </button>
+      </div>
+
+      {(trace.length > 0 || loading) && <div className="mt-5"><TracePanel events={trace} totalMs={totalMs} traceId={traceId} surface="ddx" askChips={{ useMultiQuery: multiQuery, selfCritique, useReranker: true, useSourceWeights: true, includePlos: true }} /></div>}
 
       {error && (
         <div className="mt-6 rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">{error}</div>
@@ -343,7 +466,7 @@ export default function DdxClient() {
                 <AlertTriangle className="h-4 w-4" /> Cannot-miss · rule out first
               </h2>
               <div className="space-y-2">
-                {cannot.map((dx, i) => <DxCard key={i} dx={dx} idx={i} danger onCite={onCite} />)}
+                {cannot.map((dx, i) => <DxCard key={i} dx={dx} idx={i} danger onCite={onCite} onPlosCite={onPlosCite} />)}
               </div>
             </section>
           )}
@@ -352,7 +475,7 @@ export default function DdxClient() {
             <section>
               <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-700">Most likely</h2>
               <div className="space-y-2">
-                {likely.map((dx, i) => <DxCard key={i} dx={dx} idx={i} onCite={onCite} />)}
+                {likely.map((dx, i) => <DxCard key={i} dx={dx} idx={i} onCite={onCite} onPlosCite={onPlosCite} />)}
               </div>
             </section>
           )}
@@ -361,7 +484,7 @@ export default function DdxClient() {
             <section>
               <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">Other considerations</h2>
               <div className="space-y-2">
-                {other.map((dx, i) => <DxCard key={i} dx={dx} idx={i} onCite={onCite} />)}
+                {other.map((dx, i) => <DxCard key={i} dx={dx} idx={i} onCite={onCite} onPlosCite={onPlosCite} />)}
               </div>
             </section>
           )}
@@ -405,6 +528,46 @@ export default function DdxClient() {
                           {c.preview}…
                         </div>
                       )}
+                    </li>
+                  );
+                })}
+              </ol>
+            </section>
+          )}
+          {data?.plos_citations && data.plos_citations.length > 0 && (
+            <section className="mt-6">
+              <h2 className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-amber-700">
+                <BookOpen className="h-3.5 w-3.5" /> PLOS ONE primary research ({data.plos_citations.length})
+              </h2>
+              <ol className="space-y-2">
+                {data.plos_citations.map((p) => {
+                  const label = `P${p.n}`;
+                  const isOpen = !!plosOpenCites[label];
+                  return (
+                    <li
+                      key={label}
+                      id={`ddx-plos-cite-${label}`}
+                      className="rounded-lg border border-amber-200 bg-amber-50/30 text-sm shadow-sm"
+                    >
+                      <button
+                        onClick={() => setPlosOpenCites((prev) => ({ ...prev, [label]: !isOpen }))}
+                        className="flex w-full items-start justify-between gap-2 px-3 py-2 text-left hover:bg-amber-50/60"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-baseline gap-1.5">
+                            <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[11px] font-semibold text-amber-800">[{label}]</span>
+                            <span className="truncate font-medium text-slate-800">{p.title}</span>
+                          </div>
+                          <div className="mt-0.5 text-[11px] text-slate-500">
+                            {p.authors.length > 0 && <span>{p.authors.join(', ')}{p.authors.length === 3 ? ' et al.' : ''} · </span>}
+                            <span>PLOS ONE {p.year}</span>
+                            <span className="mx-1">·</span>
+                            <a href={p.full_url} target="_blank" rel="noopener noreferrer" className="text-amber-700 hover:underline" onClick={(e) => e.stopPropagation()}>open ↗</a>
+                          </div>
+                        </div>
+                        {isOpen ? <ChevronUp className="h-4 w-4 shrink-0 text-amber-500" /> : <ChevronDown className="h-4 w-4 shrink-0 text-amber-500" />}
+                      </button>
+                      {isOpen && <div className="border-t border-amber-200 px-3 py-2 text-[13px] leading-relaxed text-slate-700">{p.preview}…</div>}
                     </li>
                   );
                 })}
