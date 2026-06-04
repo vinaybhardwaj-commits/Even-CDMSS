@@ -6,9 +6,8 @@ export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Trace · CAT Admin' };
 
 const APP = process.env.APP_SOURCE || 'standalone';
-const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 
-type Trace = { trace_id: string; feature: string; status: string; started_at: string; total_ms: number | null; question_preview: string | null; severity: string | null; input: unknown; model_summary: unknown; final_answer_text: string | null; error_message: string | null };
+type Trace = { trace_id: string; feature: string; status: string; started_at: string; total_ms: number | null; question_preview: string | null; severity: string | null; final_answer_text: string | null; error_message: string | null };
 type Ev = { seq: number; ts: string; kind: string; stage: string | null; payload: Record<string, unknown> | null; latency_ms: number | null };
 type Hit = { n?: number; id?: number; book?: string; chapter?: string; section?: string; page_start?: number; chunk_type?: string; similarity?: number; rerank_score?: number; text?: string; doi?: string; title?: string; year?: number };
 
@@ -24,6 +23,12 @@ function asText(v: unknown): string {
   if (typeof v === 'string') return v;
   try { return JSON.stringify(v, null, 2); } catch { return String(v); }
 }
+// jsonb may arrive parsed (tagged form) or as a string; normalize to an object.
+function obj(v: unknown): Record<string, unknown> {
+  if (v && typeof v === 'object') return v as Record<string, unknown>;
+  if (typeof v === 'string') { try { return JSON.parse(v) as Record<string, unknown>; } catch { return {}; } }
+  return {};
+}
 
 export default async function TraceDetail({ params }: { params: Promise<{ traceId: string }> }) {
   const { traceId } = await params;
@@ -31,16 +36,18 @@ export default async function TraceDetail({ params }: { params: Promise<{ traceI
     return <div><h1 className="text-2xl font-semibold text-slate-900">Locked</h1><p className="mt-2 text-sm text-slate-500"><Link className="text-blue-600 underline" href="/admin/observability">Unlock the observability surface</Link> to view traces.</p></div>;
   }
 
-  const tr = (await run(`SELECT trace_id, feature, status, to_char(started_at,'YYYY-MM-DD HH24:MI:SS') started_at, total_ms, question_preview, severity, input, model_summary, final_answer_text, error_message FROM traces WHERE trace_id=$1 AND app_source=$2 LIMIT 1`, [traceId, APP]).catch(() => []))[0] as Trace | undefined;
+  const traceRows = (await sql`SELECT trace_id, feature, status, to_char(started_at,'YYYY-MM-DD HH24:MI:SS') AS started_at, total_ms, question_preview, severity, final_answer_text, error_message FROM traces WHERE trace_id = ${traceId} AND app_source = ${APP} LIMIT 1`.catch(() => [])) as Trace[];
+  const tr = traceRows[0];
   if (!tr) return <div><Link href="/admin/observability?tab=queries" className="text-sm text-blue-600">← Queries</Link><p className="mt-4 text-sm text-slate-500">Trace not found.</p></div>;
-  const events = (await run(`SELECT seq, to_char(ts,'HH24:MI:SS') ts, kind, stage, payload, latency_ms FROM trace_events WHERE trace_id=$1 ORDER BY seq`, [traceId]).catch(() => [])) as Ev[];
+  const events = (await sql`SELECT seq, to_char(ts,'HH24:MI:SS') AS ts, kind, stage, payload, latency_ms FROM trace_events WHERE trace_id = ${traceId} ORDER BY seq ASC`.catch(() => [])) as Ev[];
 
   const visible = events.filter((e) => e.kind !== 'stream_event');
   const retr = events.find((e) => e.kind === 'retrieval_hydrated');
-  const hits = ((retr?.payload?.hits as Hit[]) || []);
+  const hits = ((obj(retr?.payload).hits as Hit[]) || []);
   const plos = events.find((e) => e.kind === 'plos_search');
-  const plosHits = ((plos?.payload?.hits as Hit[]) || []);
-  const finalText = tr.final_answer_text || asText((events.find((e) => e.kind === 'final_answer')?.payload as { answer_text?: unknown })?.answer_text) || '';
+  const plosHits = ((obj(plos?.payload).hits as Hit[]) || []);
+  const finalEv = events.find((e) => e.kind === 'final_answer');
+  const finalText = tr.final_answer_text || asText(obj(finalEv?.payload).answer_text) || '';
   const citeTokens = Array.from(new Set((finalText.match(/\[(P?\d+)\]/g) || []).map((s) => s.slice(1, -1))));
 
   function sourceLabel(tok: string): string {
@@ -62,7 +69,7 @@ export default async function TraceDetail({ params }: { params: Promise<{ traceI
       <div className="mt-1 text-xs text-slate-500">
         trace {tr.trace_id} · {tr.started_at} · {tr.total_ms != null ? ms(tr.total_ms) + ' total · ' : ''}
         <span className={tr.status === 'error' ? 'text-rose-600' : tr.status === 'success' ? 'text-emerald-600' : 'text-amber-600'}>{tr.status}</span>
-        {tr.severity ? ` · severity ${tr.severity}` : ''}
+        {tr.severity ? ` · severity ${tr.severity}` : ''} · {visible.length} events
       </div>
       {tr.error_message && <div className="mt-3 rounded border border-rose-200 bg-rose-50 p-2 text-xs text-rose-700">{tr.error_message}</div>}
 
@@ -77,14 +84,16 @@ export default async function TraceDetail({ params }: { params: Promise<{ traceI
 
       <div className="mt-5 text-sm font-medium text-slate-800">Pipeline timeline</div>
       <div className="mt-2 space-y-2">
-        {visible.map((e) => <EventCard key={e.seq} e={e} />)}
+        {visible.length === 0
+          ? <div className="rounded-lg border border-dashed border-slate-300 bg-white p-6 text-center text-sm text-slate-500">No pipeline events recorded for this trace{tr.status === 'running' ? ' yet (still running).' : '.'}</div>
+          : visible.map((e) => <EventCard key={e.seq} e={e} />)}
       </div>
     </div>
   );
 }
 
 function EventCard({ e }: { e: Ev }) {
-  const p = (e.payload || {}) as Record<string, unknown>;
+  const p = obj(e.payload);
   const lat = e.latency_ms != null ? ` · ${ms(e.latency_ms)}` : '';
   const head = (label: string, extra?: string) => (
     <div className="text-[13px] font-medium text-slate-800">{label}<span className="font-normal text-slate-400"> · {e.ts}{e.stage ? ` · ${e.stage}` : ''}{lat}{extra ? ` · ${extra}` : ''}</span></div>
@@ -135,6 +144,5 @@ function EventCard({ e }: { e: Ev }) {
   if (e.kind === 'final_answer') {
     return <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">{head('Final answer', `${p.char_count ?? ''} chars`)}<Pre>{asText(p.answer_text).slice(0, 8000)}</Pre></div>;
   }
-  // generic
   return <div className="rounded-lg border border-slate-200 bg-white p-3">{head(e.kind)}<details className="mt-1"><summary className="cursor-pointer text-[11px] text-slate-500">payload</summary><Pre>{asText(p).slice(0, 3000)}</Pre></details></div>;
 }
