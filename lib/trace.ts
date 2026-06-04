@@ -25,10 +25,12 @@ export async function logEvent(
   latencyMs?: number
 ): Promise<void> {
   try {
+    // app_source is set explicitly here: the lib/db stamper cannot safely inject
+    // into this INSERT because the seq subquery in VALUES contains parentheses.
     await sqlFn(
-      `INSERT INTO trace_events (trace_id, seq, kind, stage, payload, latency_ms)
-       VALUES ($1, COALESCE((SELECT MAX(seq) + 1 FROM trace_events WHERE trace_id = $1), 1), $2, $3, $4::jsonb, $5)`,
-      [traceId, kind, stage, JSON.stringify(payload ?? null), latencyMs ?? null]
+      `INSERT INTO trace_events (trace_id, seq, kind, stage, payload, latency_ms, app_source)
+       VALUES ($1, COALESCE((SELECT MAX(seq) + 1 FROM trace_events WHERE trace_id = $1), 1), $2, $3, $4::jsonb, $5, $6)`,
+      [traceId, kind, stage, JSON.stringify(payload ?? null), latencyMs ?? null, process.env.APP_SOURCE || 'standalone']
     );
   } catch {}
 }

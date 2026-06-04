@@ -29,6 +29,11 @@ function injectAppSource(query: string, params: unknown[]): { query: string; par
   if (!m) return { query, params };
   if (!STAMP_TABLES.has(m[1].toLowerCase())) return { query, params };
   if (/\bapp_source\b/i.test(m[2])) return { query, params }; // already stamped
+  // The VALUES capture is non-greedy and stops at the first ')'. If the values
+  // contain a nested paren (a subquery or a function call like MAX()/NOW()),
+  // appending here would produce corrupt SQL. Bail and let the column DEFAULT
+  // apply — callers that need a specific app_source must include it explicitly.
+  if (m[3].includes('(')) return { query, params };
   const nums = [...m[3].matchAll(/\$(\d+)/g)].map((x) => Number(x[1]));
   const next = (nums.length ? Math.max(...nums) : 0) + 1;
   const newCols = m[2].replace(/\s*$/, '') + ', app_source';
