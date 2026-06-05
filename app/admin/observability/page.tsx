@@ -22,7 +22,10 @@ function Badge({ m }: { m: string }) {
   return <span className="rounded px-1.5 py-0.5 text-[11px]" style={{ background: c + '22', color: c }}>{m}</span>;
 }
 function timeAgo(iso: string): string {
-  const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  const t = iso ? new Date(iso).getTime() : NaN;
+  if (Number.isNaN(t)) return '—';
+  const s = Math.floor((Date.now() - t) / 1000);
+  if (s < 0) return 'just now';
   if (s < 60) return `${s}s ago`;
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
@@ -100,7 +103,7 @@ async function OverviewTab() {
   const lat = (await rowsOf<{ p50: number | null; p95: number | null }>(`SELECT percentile_cont(0.5) within group (order by total_ms)::int p50, percentile_cont(0.95) within group (order by total_ms)::int p95 FROM traces WHERE app_source=$1 AND status='success' AND total_ms IS NOT NULL AND started_at > now()-interval '7 days'`, [APP]))[0] || { p50: null, p95: null };
   const vol = await rowsOf<VolRow>(`SELECT to_char(started_at::date,'YYYY-MM-DD') d, CASE WHEN feature LIKE 'coach%' THEN 'coach' ELSE feature END module, count(*)::int n FROM traces WHERE app_source=$1 AND started_at > now()-interval '13 days' GROUP BY 1,2 ORDER BY 1`, [APP]);
   const perMod = await rowsOf<ModRow>(`SELECT CASE WHEN feature LIKE 'coach%' THEN 'coach' ELSE feature END module, count(*)::int n, percentile_cont(0.5) within group (order by total_ms)::int p50, count(*) FILTER (WHERE status='error')::int errs FROM traces WHERE app_source=$1 AND started_at > now()-interval '7 days' GROUP BY 1 ORDER BY n DESC`, [APP]);
-  const recent = await rowsOf<ListRow>(`SELECT trace_id, feature, status, to_char(started_at,'YYYY-MM-DD"T"HH24:MI:SSOF') started_at, total_ms, question_preview, severity FROM traces WHERE app_source=$1 ORDER BY started_at DESC LIMIT 8`, [APP]);
+  const recent = await rowsOf<ListRow>(`SELECT trace_id, feature, status, to_char(started_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"') started_at, total_ms, question_preview, severity FROM traces WHERE app_source=$1 ORDER BY started_at DESC LIMIT 8`, [APP]);
 
   const errRate = er.total > 0 ? ((er.errs / er.total) * 100).toFixed(1) + '%' : '0%';
 
@@ -184,7 +187,7 @@ async function QueriesTab({ sp }: { sp: { q?: string; feature?: string; status?:
   if (sp.feature) { params.push(sp.feature); where += ` AND (CASE WHEN feature LIKE 'coach%' THEN 'coach' ELSE feature END)=$${params.length}`; }
   if (sp.status) { params.push(sp.status); where += ` AND status=$${params.length}`; }
   if (sp.q) { params.push(`%${sp.q}%`); where += ` AND question_preview ILIKE $${params.length}`; }
-  const list = await rowsOf<ListRow>(`SELECT trace_id, feature, status, to_char(started_at,'YYYY-MM-DD"T"HH24:MI:SSOF') started_at, total_ms, question_preview, severity FROM traces WHERE ${where} ORDER BY started_at DESC LIMIT 100`, params);
+  const list = await rowsOf<ListRow>(`SELECT trace_id, feature, status, to_char(started_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"') started_at, total_ms, question_preview, severity FROM traces WHERE ${where} ORDER BY started_at DESC LIMIT 100`, params);
 
   return (
     <div>
