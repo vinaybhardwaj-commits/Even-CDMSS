@@ -1,15 +1,16 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { isPharmacistUnlocked } from '@/lib/pharmacist-cookie';
-import { deterministicInteractions } from '@/lib/ddi';
+import { auditInteractions, type DrugClass } from '@/lib/ddi';
+import { sql } from '@/lib/db';
 
 export const runtime = 'nodejs';
 export const maxDuration = 30;
 
-// Deterministic DDI for the audit surface: curated EHRC rules + RxLabelGuard.
-// Synchronous JSON (no streaming) so the rounds workflow gets an instant answer
-// that feeds parameter #12. The richer LLM/RAG explainer lives at
-// /api/drugs/interactions (CAT clinician surface).
+// Deterministic DDI for the audit surface: EHRC class rules + curated rules +
+// RxLabelGuard. Each drug is resolved to its formulary class so pharmacodynamic
+// duplications (e.g. two anticoagulants) are caught even when no named pair or
+// FDA label covers them. Auto-feeds parameter #12. Fast synchronous JSON.
 export async function POST(req: NextRequest) {
   if (!(await isPharmacistUnlocked())) {
     return NextResponse.json({ error: 'pharmacist auth required' }, { status: 401 });
@@ -18,10 +19,27 @@ export async function POST(req: NextRequest) {
   try { body = await req.json(); } catch { return NextResponse.json({ error: 'bad json' }, { status: 400 }); }
   const drugs = (body.drugs || []).map((s) => (s || '').trim()).filter(Boolean);
   if (drugs.length < 2) return NextResponse.json({ pairs: [] });
-  // Charts can carry ~15 drugs; cap defensively to bound pairwise + upstream calls.
   if (drugs.length > 25) return NextResponse.json({ error: 'too many drugs (max 25)' }, { status: 400 });
+
   try {
-    const pairs = await deterministicInteractions(drugs);
+    // Resolve each drug name to its EHRC formulary class (for class-based rules).
+    let items: DrugClass[];
+    try {
+      const rows = (await sql`
+        SELECT generic_canon, major_grouping, minor_grouping
+        FROM formulary
+        WHERE lower(generic_canon) = ANY(${drugs.map((d) => d.toLowerCase())}::text[])
+      `) as Array<{ generic_canon: string; major_grouping: string | null; minor_grouping: string | null }>;
+      items = drugs.map((n) => {
+        const r = rows.find((x) => (x.generic_canon || '').toLowerCase() === n.toLowerCase());
+        return { name: n, major: r?.major_grouping || '', minor: r?.minor_grouping || '' };
+      });
+    } catch {
+      // If the lookup fails, still run curated + RxLabelGuard with empty classes.
+      items = drugs.map((n) => ({ name: n, major: '', minor: '' }));
+    }
+
+    const pairs = await auditInteractions(items);
     return NextResponse.json({ pairs });
   } catch (e) {
     return NextResponse.json({ error: String((e as Error).message) }, { status: 500 });
