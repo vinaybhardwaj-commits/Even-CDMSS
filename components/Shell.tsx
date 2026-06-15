@@ -16,6 +16,9 @@ const ADMIN_NAV: [string, string][] = [
 
 export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() || '';
+  // The Clinical Pharmacist audit surface (/audit, served at medaudit.evenos.app)
+  // is a standalone, chrome-free experience — no CAT sidebar.
+  if (pathname.startsWith('/audit')) return <>{children}</>;
   const isAdmin = pathname.startsWith('/admin');
   const isObs = pathname.startsWith('/admin/observability');
   const nav = isAdmin ? ADMIN_NAV : CLINICIAN_NAV;

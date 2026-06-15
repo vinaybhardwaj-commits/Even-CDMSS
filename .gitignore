@@ -11,3 +11,7 @@
 *.pem
 npm-debug.log*
 /next-env.d.ts
+
+# icloud/fuse artifacts
+.fuse_hidden*
+**/.fuse_hidden*

@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { retrieve } from '@/lib/retrieve';
 import { DRUGS_MODEL, parseLooseJson, normalizeDrugName } from '@/lib/drugs';
+import { deterministicInteractions } from '@/lib/ddi';
 import { makeNdjsonStream, ndjsonHeaders } from '@/lib/stream';
 import { startTrace, finishTrace, tracedChat, logEvent } from '@/lib/trace';
 import { enrichDrug, findClassOverlap, type PubChemFacts } from '@/lib/pubchem';
@@ -26,7 +27,8 @@ export async function POST(req: NextRequest) {
   }
   const raw = (body.drugs || []).map((s) => (s || '').trim()).filter(Boolean);
   if (raw.length < 2) return new Response(JSON.stringify({ error: 'at least 2 drugs required' }), { status: 400 });
-  if (raw.length > 5) return new Response(JSON.stringify({ error: 'at most 5 drugs supported' }), { status: 400 });
+  // Raised from 5 → 15: a full medication chart (the audit surface) can carry ~15 drugs.
+  if (raw.length > 15) return new Response(JSON.stringify({ error: 'at most 15 drugs supported' }), { status: 400 });
 
   const { stream, emit, close } = makeNdjsonStream();
   const t0 = Date.now();
@@ -122,6 +124,21 @@ export async function POST(req: NextRequest) {
         seen.add(key);
         pairs.push(p);
       }
+
+      // EHRC deterministic leg: curated rules + RxLabelGuard (FDA SPL). Appends any
+      // pair the LLM/RAG pass didn't already cover, so CAT /drugs and the audit
+      // surface share one engine. Soft-fails (no key + no curated match = no change).
+      try {
+        const det = await deterministicInteractions(normalized);
+        for (const dp of det) {
+          const a = dp.drug_a.trim().toLowerCase();
+          const b = dp.drug_b.trim().toLowerCase();
+          const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          pairs.push({ drug_a: dp.drug_a, drug_b: dp.drug_b, severity: dp.severity, mechanism: dp.mechanism, consequence: '', management: dp.recommendation, citation_ids: [], source: dp.source });
+        }
+      } catch { /* intentional: deterministic leg is best-effort enrichment */ }
 
       emit({ type: 'result', data: { input: raw, normalized, summary: parsed.summary ?? '', pairs, citations, class_overlap_pairs: classOverlapPairs, pubchem_facts: pubchemFacts.map(f => f ? { cid: f.cid, canonical_name: f.canonical_name, atc_codes: f.atc_codes, url: f.url } : null) } });
       emit({ type: 'done', ms: Date.now() - t0 });
