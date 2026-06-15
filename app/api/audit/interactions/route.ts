@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { isPharmacistUnlocked } from '@/lib/pharmacist-cookie';
-import { auditInteractions, type DrugClass } from '@/lib/ddi';
+import { auditInteractions, mergeRank, type DrugClass } from '@/lib/ddi';
+import { referenceInteractions } from '@/lib/ddi-reference';
 import { sql } from '@/lib/db';
 
 export const runtime = 'nodejs';
@@ -39,7 +40,12 @@ export async function POST(req: NextRequest) {
       items = drugs.map((n) => ({ name: n, major: '', minor: '' }));
     }
 
-    const pairs = await auditInteractions(items);
+    // Engine = class/tag + curated + RxLabelGuard; reference = DDInter (severity-gated).
+    const [enginePairs, refPairs] = await Promise.all([
+      auditInteractions(items),
+      referenceInteractions(drugs),
+    ]);
+    const pairs = mergeRank([...enginePairs, ...refPairs]);
     return NextResponse.json({ pairs });
   } catch (e) {
     return NextResponse.json({ error: String((e as Error).message) }, { status: 500 });
