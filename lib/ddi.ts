@@ -8,6 +8,7 @@
 // Auto-feeds audit parameter #12 (drug–drug interactions).
 
 import { rxlgInteractions, type DdiPair } from './rxlabelguard';
+import { tagInteractions } from './ddi-tags';
 
 // ---- 2. curated named pairs ----
 interface Rule { a: string; b: string; severity: DdiPair['severity']; mechanism: string; recommendation: string }
@@ -107,8 +108,8 @@ export async function deterministicInteractions(drugs: string[]): Promise<DdiPai
 export async function auditInteractions(items: DrugClass[]): Promise<DdiPair[]> {
   const names = items.map((i) => i.name.trim()).filter(Boolean);
   if (names.length < 2) return [];
-  const cls = classInteractions(items);
-  const curated = curatedInteractions(names);
-  const rxlg = await rxlgInteractions(names);
+  const cls = tagInteractions(items);          // formulary-scoped high-risk mechanism rules
+  const curated = curatedInteractions(names);  // named high-risk pairs
+  const rxlg = await rxlgInteractions(names);   // FDA SPL long-tail
   return mergeRank([...cls, ...curated, ...rxlg]);
 }
