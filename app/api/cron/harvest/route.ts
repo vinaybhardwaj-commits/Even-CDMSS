@@ -21,7 +21,7 @@ export async function GET(req: NextRequest) {
   const max = req.nextUrl.searchParams.get('max');
   try {
     const result = await runHarvest({
-      maxInserts: max ? Number(max) : 30,
+      maxInserts: max ? Number(max) : 80,
       onlyTopicId: onlyTopicId ? Number(onlyTopicId) : undefined,
     });
     return NextResponse.json({ ok: true, ...result });
