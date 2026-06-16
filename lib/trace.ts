@@ -96,7 +96,16 @@ export async function tracedChat(
         // Strip Ollama-only params (Vertex rejects unknown fields) + publisher-prefix the model.
         const { options: _o, keep_alive: _k, ...rest } = params as Record<string, unknown>;
         void _o; void _k;
-        const gParams = { ...rest, model: vertexModelName(opts!.gemini as string) };
+        // Gemini 2.5 Pro is a THINKING model: max_tokens (→ maxOutputTokens) is spent
+        // on internal reasoning tokens FIRST, so the tight caps tuned for Ollama
+        // (700–1500) leave no budget for the JSON answer and it truncates mid-string.
+        // Give the content budget PLUS a generous thinking allowance.
+        const baseMax = Number((rest as { max_tokens?: number }).max_tokens) || 1024;
+        const gParams = {
+          ...rest,
+          model: vertexModelName(opts!.gemini as string),
+          max_tokens: baseMax + 8192,
+        };
         const gemini = await getGeminiChatClient();
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         result = await gemini.chat.completions.create(gParams as any);
