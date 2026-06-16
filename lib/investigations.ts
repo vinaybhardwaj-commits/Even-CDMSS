@@ -115,15 +115,33 @@ function buildPromptBlock(findings: InvestigationFinding[], raw: string): string
   ].join('\n');
 }
 
+// A bare direction/severity word carries no retrieval signal on its own
+// (e.g. "elevated", "inconclusive") — these polluted the DDx query embedding.
+const GENERIC_TERM = /^(elevated|raised|increased|decreased|reduced|low|high|positive|negative|abnormal|normal|inconclusive|indeterminate|pending|unremarkable|nonspecific|non-specific|mild|moderate|severe|slight|marked|borderline|present|absent)$/i;
+const QUALIFIER_PREFIX = /^(mildly|moderately|severely|slightly|markedly|grossly|borderline|mild|moderate|severe|slight|marked|elevated|raised|increased|decreased|reduced|low|high)\s+/i;
+
+function cleanTerm(raw: string): string {
+  let t = (raw || '').trim();
+  let prev = '';
+  // strip leading severity/direction qualifiers: "mild anemia"→"anemia", "elevated ESR"→"ESR"
+  while (t !== prev) { prev = t; t = t.replace(QUALIFIER_PREFIX, '').trim(); }
+  return t;
+}
+
+// Build SPECIFIC clinical terms from the abnormal findings to steer retrieval.
+// Skips normals and uninterpretable results, prefers the named abnormality
+// (note) over the raw test, and drops bare qualifiers that add only noise.
 function deriveAbnormalTerms(findings: InvestigationFinding[]): string[] {
   const terms: string[] = [];
   for (const f of findings) {
-    if (f.flag === 'normal') continue;
-    const term = (f.note && f.note.length >= 3) ? f.note : f.test;
-    if (term) terms.push(term);
+    if (f.flag === 'normal' || f.flag === 'indeterminate') continue;
+    for (const candidate of [f.note, f.test]) {
+      const term = cleanTerm(candidate || '');
+      if (term && term.length >= 3 && !GENERIC_TERM.test(term)) { terms.push(term); break; }
+    }
   }
   // de-dup, cap to keep the retrieval query bounded
-  return Array.from(new Set(terms.map((t) => t.trim()).filter(Boolean))).slice(0, 12);
+  return Array.from(new Set(terms.map((t) => t.trim()).filter(Boolean))).slice(0, 10);
 }
 
 /**

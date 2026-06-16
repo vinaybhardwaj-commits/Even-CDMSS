@@ -78,7 +78,11 @@ function buildPresentation(b: Body): { display: string; queryHint: string } {
   if (b.history) parts.push(`Key history: ${b.history.trim()}`);
   if (b.exam) parts.push(`Exam: ${b.exam.trim()}`);
   if (b.vitals) parts.push(`Vitals: ${b.vitals.trim()}`);
-  return { display: parts.join('\n'), queryHint: [demo, b.cc, b.history, b.exam, b.vitals].filter(Boolean).join('; ') };
+  // queryHint drives RETRIEVAL only (display drives the prompt). Keep it to the
+  // clinically discriminating text — chief complaint, history, exam morphology —
+  // and DROP demographics ("38 / F") and vitals ("normal"), which carry no useful
+  // semantic signal and drag the embedding toward the wrong neighbourhood.
+  return { display: parts.join('\n'), queryHint: [b.cc, b.history, b.exam].filter(Boolean).join('; ') };
 }
 
 function parseLooseJson(s: string): unknown {
@@ -147,9 +151,13 @@ export async function POST(req: NextRequest) {
 
       const retrievalQuery = [queryHint || display, ...investigationTerms].filter(Boolean).join('; ');
       const bm25Query = [(body.cc || '').trim(), ...investigationTerms].filter(Boolean).join(' ');
+      // Widened from 8 → 16: the differential-enumerating chunks (e.g. the
+      // "nodular masses" differential tables) and key cannot-miss diagnoses
+      // routinely sit at ranks 9–18, so topK=8 silently truncated the differential.
+      const DDX_TOP_K = 16;
       const retrievePromise = useMultiQuery
-        ? retrieveMultiQuery(retrievalQuery, { topK: 8, minSimilarity: 0.4, bm25Query })
-        : retrieve(retrievalQuery, { topK: 8, minSimilarity: 0.4, bm25Query }).then((r) => ({ hits: r.hits, variants: [retrievalQuery], perVariantCounts: [r.hits.length] }));
+        ? retrieveMultiQuery(retrievalQuery, { topK: DDX_TOP_K, minSimilarity: 0.4, bm25Query })
+        : retrieve(retrievalQuery, { topK: DDX_TOP_K, minSimilarity: 0.4, bm25Query }).then((r) => ({ hits: r.hits, variants: [retrievalQuery], perVariantCounts: [r.hits.length] }));
       const [retrieveResult, plosHits] = await Promise.all([
         retrievePromise,
         includePlos ? searchPlos(plosQuery, { rows: 5, yearsBack: 5 }) : Promise.resolve([] as PlosHit[]),
@@ -200,7 +208,9 @@ export async function POST(req: NextRequest) {
       }));
       emit({ type: 'sources', items: citations, plos: plosCitations });
 
-      const contextBlock = hits.map((h, i) => `--- Excerpt ${i + 1} ---\n[${i + 1}] ${h.book}${h.chapter ? ' · ' + h.chapter : ''}${h.page_start ? ' · p.' + h.page_start : ''}\n${h.text}`).join('\n\n');
+      // Cap each excerpt so the widened pool (16) stays within the 16k context
+      // window — overflow would silently drop the system prompt and degrade output.
+      const contextBlock = hits.map((h, i) => `--- Excerpt ${i + 1} ---\n[${i + 1}] ${h.book}${h.chapter ? ' · ' + h.chapter : ''}${h.page_start ? ' · p.' + h.page_start : ''}\n${h.text.slice(0, 1800)}`).join('\n\n');
       const plosBlock = formatPlosForPrompt(plosHits);
       const sexTxt = (body.sex && body.sex !== '?') ? String(body.sex).trim() : 'not given';
       const ageTxt = body.age ? String(body.age) : 'not given';
