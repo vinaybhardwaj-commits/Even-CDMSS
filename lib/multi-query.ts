@@ -43,7 +43,7 @@ export async function generateQueryVariants(question: string): Promise<string[]>
         { role: 'system', content: SYSTEM_VARIANTS },
         { role: 'user', content: question },
       ],
-      temperature: 0.4,
+      temperature: 0.2,  // steadier variants — 0.4 drifted (e.g. latched onto "arthropod bite" and buried the real differential)
       max_tokens: 300,
       ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
     });

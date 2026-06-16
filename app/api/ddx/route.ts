@@ -11,8 +11,8 @@ import { generateHypotheses, gatherHypothesisEvidence, formatHypothesesForPrompt
 export const runtime = 'nodejs';
 export const maxDuration = 300;  // hypothesis-first beta adds passes; Pro allows 300s. Classic still finishes ~2min.
 
-const DDX_MODEL = 'llama3.1:8b';            // critique / revise / hypotheses / investigations parse
-const DDX_DRAFT_MODEL = 'qwen2.5:14b';      // the decisive synthesis pass — stronger model weights pathognomonic findings + avoids fabricated fits better than 8b
+const DDX_MODEL = 'llama3.1:8b';            // fast pre-passes only: hypotheses + investigations parse
+const DDX_DRAFT_MODEL = 'qwen2.5:14b';      // FULL reasoning pipeline: draft + critique + revise. 8b anchored/fabricated as the drafter AND (as the reviser) rewrote good 14b drafts into garbage — keep the reasoning model consistent.
 
 const SYSTEM = `You are an expert physician generating a differential diagnosis as JSON. Use ONLY the supplied excerpts for clinical content, and reason ONLY from the patient findings stated in the presentation.
 
@@ -127,7 +127,7 @@ export async function POST(req: NextRequest) {
   await Promise.all([
     logEvent(traceId, 'request_received', null, { body, ua: req.headers.get('user-agent') || '', t: new Date().toISOString() }),
     setTraceQuestionPreview(traceId, display.replace(/\n+/g, ' • ')),
-    setTraceModelSummary(traceId, { draft: DDX_DRAFT_MODEL, critique: DDX_MODEL, revise: DDX_MODEL, embedding: 'mxbai-embed-large' }),
+    setTraceModelSummary(traceId, { draft: DDX_DRAFT_MODEL, critique: DDX_DRAFT_MODEL, revise: DDX_DRAFT_MODEL, embedding: 'mxbai-embed-large' }),
   ]);
 
   (async () => {
@@ -303,7 +303,7 @@ export async function POST(req: NextRequest) {
         } = { needs_revision: false };
         try {
           const critRes = await tracedChat(traceId, 'ddx_critique', {
-            model: DDX_MODEL,
+            model: DDX_DRAFT_MODEL,
             messages: [
               { role: 'system', content: DDX_CRITIQUE_SYSTEM },
               { role: 'user', content: `Clinical presentation:\n${displayForPrompt}\n\nSource excerpts:\n${contextBlock || '(none)'}\n${plosHits.length ? '\nPLOS abstracts:\n' + plosHits.map((p, i) => `[P${i+1}] ${p.title} (${p.year})`).join('\n') + '\n' : ''}\nDraft DDx JSON:\n${raw}\n\nOutput the JSON critique now.` },
@@ -353,7 +353,7 @@ export async function POST(req: NextRequest) {
         if (critiqueJson.needs_revision && issueCount > 0 && allowRevision) {
           emit({ type: 'progress', stage: 'revising', msg: `Revising DDx to address ${issueCount} issue${issueCount !== 1 ? 's' : ''}…`, ms: Date.now() - t0 });
           const revRes = await tracedChat(traceId, 'ddx_revision', {
-            model: DDX_MODEL,
+            model: DDX_DRAFT_MODEL,
             messages: [
               { role: 'system', content: DDX_REVISION_SYSTEM },
               { role: 'user', content: `Clinical presentation:\n${displayForPrompt}\n\nSource excerpts:\n${contextBlock || '(none)'}\n\nEarlier draft JSON:\n${raw}\n\nAuditor critique:\n${JSON.stringify(critiqueJson, null, 2)}\n\nOutput the revised JSON now.` },
