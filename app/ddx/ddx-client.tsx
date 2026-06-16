@@ -177,6 +177,7 @@ function DxCard({ dx, idx, danger, onCite, onPlosCite }: { dx: Dx; idx: number; 
 export default function DdxClient() {
   const [multiQuery, setMultiQuery] = useState(true);
   const [selfCritique, setSelfCritique] = useState(true);
+  const [hypothesisFirst, setHypothesisFirst] = useState(false);
   const [critique, setCritique] = useState<{ severity: string; issue_count: number; details: Record<string, unknown> } | null>(null);
   const [age, setAge] = useState('');
   const [sex, setSex] = useState('?');
@@ -258,7 +259,7 @@ export default function DdxClient() {
           history: history.trim() || undefined,
           exam: exam.trim() || undefined,
           vitals: vitals.trim() || undefined,
-          investigations: investigations.trim() || undefined, multiQuery, selfCritique, includePlos: true }),
+          investigations: investigations.trim() || undefined, multiQuery, selfCritique, engine: hypothesisFirst ? 'hypothesis' : 'classic', includePlos: true }),
       });
       const tid = r.headers.get('X-Trace-Id');
       if (tid) setTraceId(tid);
@@ -476,6 +477,16 @@ export default function DdxClient() {
           className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition disabled:opacity-50 disabled:cursor-not-allowed ${selfCritique ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-white text-slate-500 hover:border-emerald-400'}`}
         >
           {selfCritique ? '✓ ' : ''}Self-critique
+        </button>
+        <button
+          type="button"
+          onClick={() => setHypothesisFirst((v) => !v)}
+          disabled={loading}
+          aria-pressed={hypothesisFirst}
+          title={loading ? 'Locked while query is running' : 'Reason the differential first, then retrieve evidence per candidate diagnosis (broader, less anchored). Slower.'}
+          className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition disabled:opacity-50 disabled:cursor-not-allowed ${hypothesisFirst ? 'border-amber-500 bg-amber-50 text-amber-700' : 'border-slate-200 bg-white text-slate-500 hover:border-amber-400'}`}
+        >
+          {hypothesisFirst ? '✓ ' : ''}Hypothesis-first <span className="ml-0.5 opacity-60">beta</span>
         </button>
       </div>
 

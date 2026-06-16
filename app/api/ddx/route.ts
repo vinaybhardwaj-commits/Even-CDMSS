@@ -6,6 +6,7 @@ import { makeNdjsonStream, ndjsonHeaders } from '@/lib/stream';
 import { startTrace, finishTrace, tracedChat, logEvent, setTraceQuestionPreview, setTraceSeverity, setTraceModelSummary, setTraceFinalAnswer } from '@/lib/trace';
 import { filterByDemographics } from '@/lib/ddx-constraints';
 import { parseInvestigations, type ParsedInvestigations } from '@/lib/investigations';
+import { generateHypotheses, gatherHypothesisEvidence, formatHypothesesForPrompt, type Hypothesis } from '@/lib/ddx-hypothesis';
 
 export const runtime = 'nodejs';
 export const maxDuration = 180;
@@ -35,7 +36,7 @@ Return ONLY this JSON object, lowercase keys exactly as shown:
 - plos_citation_ids = strings like "P1", "P2" from PLOS ONE ABSTRACTS, if any inform the diagnosis. May be empty array []. CRITICAL: each entry MUST be a JSON string with DOUBLE QUOTES — write ["P1","P2"] not [P1,P2]. Unquoted barewords are invalid JSON and will fail parse.
 - No prose, no markdown fences, lowercase keys.`;
 
-type Body = { age?: number | string; sex?: string; cc?: string; history?: string; exam?: string; vitals?: string; investigations?: string; includePlos?: boolean; multiQuery?: boolean; selfCritique?: boolean };
+type Body = { age?: number | string; sex?: string; cc?: string; history?: string; exam?: string; vitals?: string; investigations?: string; includePlos?: boolean; multiQuery?: boolean; selfCritique?: boolean; engine?: 'classic' | 'hypothesis' };
 
 const DDX_CRITIQUE_SYSTEM = `You are a clinical auditor reviewing a draft differential diagnosis (DDx) JSON for a SPECIFIC patient.
 
@@ -146,6 +147,18 @@ export async function POST(req: NextRequest) {
       const displayForPrompt = investigations?.promptBlock ? `${display}\n\n${investigations.promptBlock}` : display;
       const investigationTerms = investigations?.abnormalTerms ?? [];
 
+      // Hypothesis-first engine (flag-gated; default classic so production is
+      // unchanged). When on, the model proposes a broad differential from clinical
+      // reasoning FIRST (run in parallel with the broad retrieval below), then we
+      // retrieve evidence targeted at each named candidate — so the differential's
+      // breadth is no longer capped by a single semantic search.
+      const useHypothesisFirst = body.engine === 'hypothesis'
+        || (body.engine !== 'classic' && process.env.DDX_HYPOTHESIS_FIRST === '1');
+      if (useHypothesisFirst) emit({ type: 'progress', stage: 'expanding', msg: 'Generating candidate differential from clinical reasoning…' });
+      const hypothesesPromise: Promise<Hypothesis[]> = useHypothesisFirst
+        ? generateHypotheses(displayForPrompt, { model: DDX_MODEL, traceId })
+        : Promise.resolve([]);
+
       const plosQuery = (body.cc || queryHint || display).trim();
       emit({ type: 'progress', stage: 'expanding', msg: useMultiQuery ? 'Generating query variants…' : 'Building clinical summary, expanding query…' });
 
@@ -162,7 +175,17 @@ export async function POST(req: NextRequest) {
         retrievePromise,
         includePlos ? searchPlos(plosQuery, { rows: 5, yearsBack: 5 }) : Promise.resolve([] as PlosHit[]),
       ]);
-      const hits = retrieveResult.hits;
+
+      // Resolve hypotheses (generated in parallel) and, when on, replace the broad
+      // pool with targeted per-hypothesis evidence merged with the broad pool.
+      // Fail-open: if generation produced nothing, fall back to the broad pool.
+      const hypotheses = await hypothesesPromise;
+      let hits = retrieveResult.hits;
+      if (useHypothesisFirst && hypotheses.length) {
+        emit({ type: 'progress', stage: 'retrieving', msg: `Retrieving evidence for ${hypotheses.length} candidate diagnoses…`, ms: Date.now() - t0 });
+        const ev = await gatherHypothesisEvidence(hypotheses, retrieveResult.hits, { perDxK: 3, maxTotal: 20, maxHypotheses: 10, traceId });
+        if (ev.hits.length) hits = ev.hits;
+      }
 
       // v1.7b S2: forensic capture — full chunk text + scores + PLOS abstracts
       await Promise.all([
@@ -215,7 +238,13 @@ export async function POST(req: NextRequest) {
       const sexTxt = (body.sex && body.sex !== '?') ? String(body.sex).trim() : 'not given';
       const ageTxt = body.age ? String(body.age) : 'not given';
       const constraintLine = `PATIENT CONSTRAINTS — apply as hard rules:\n- Sex: ${sexTxt} → exclude any diagnosis impossible for this sex. Age: ${ageTxt} → weight by age prevalence; drop negligible-prevalence diagnoses unless a stated risk factor supports them.\n- Reason ONLY from the findings stated below; do not invent findings; treat any stated negative/normal finding as ruling-down.${investigations ? '\n- INVESTIGATION RESULTS are supplied below — reconcile every diagnosis against them (abnormal fitting results rule a diagnosis in; normal/negative results that would be expected abnormal rule it down) and fill investigation_fit for each diagnosis. Never cite a result not in the supplied list.' : ''}\n- cannot_miss = by danger if missed (even at low probability; no benign conditions). most_likely = by probability.`;
-      const userMsg = `${constraintLine}\n\nCLINICAL PRESENTATION:\n${displayForPrompt}\n\nMEDICAL EXCERPTS:\n${contextBlock || '(none)'}\n\n${plosBlock ? 'PLOS ONE ABSTRACTS:\n' + plosBlock + '\n\n' : ''}Output ONLY the JSON object now, starting with {. No prose, no markdown fences.`;
+      // In hypothesis-first mode, hand the model the reasoned candidate list so it
+      // EVALUATES each against the evidence + findings rather than only listing what
+      // happened to be retrieved (the anchoring/omission failure mode).
+      const candidatesBlock = (useHypothesisFirst && hypotheses.length)
+        ? `CANDIDATE DIAGNOSES (proposed from clinical reasoning — evaluate EACH against the findings and the excerpts: keep those that fit, drop any the stated negatives/normals argue against, rank by the two axes below, and you MAY add a diagnosis the findings clearly support):\n${formatHypothesesForPrompt(hypotheses)}\n\n`
+        : '';
+      const userMsg = `${constraintLine}\n\nCLINICAL PRESENTATION:\n${displayForPrompt}\n\n${candidatesBlock}MEDICAL EXCERPTS:\n${contextBlock || '(none)'}\n\n${plosBlock ? 'PLOS ONE ABSTRACTS:\n' + plosBlock + '\n\n' : ''}Output ONLY the JSON object now, starting with {. No prose, no markdown fences.`;
 
       const useSelfCritique = body.selfCritique !== false;  // default true
 
