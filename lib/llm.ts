@@ -108,8 +108,11 @@ export async function chatWithFallback(params: any, geminiModel?: string): Promi
     const gemini = await getGeminiChatClient();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return await gemini.chat.completions.create(gParams as any);
-  } catch {
+  } catch (e) {
     // Never fail the request because Gemini is unavailable — use local Ollama.
+    // Log the fallback so utility-pass Mac-Mini usage is visible in runtime logs
+    // (silence here would hide e.g. Flash being unavailable in the region).
+    console.warn(`[chatWithFallback] gemini ${geminiModel} failed → ollama fallback:`, String((e as Error).message).slice(0, 200));
     return llm.chat.completions.create(params);
   }
 }
