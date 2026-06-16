@@ -214,7 +214,7 @@ export default function AuditClient() {
     <div className="ma">
       <style>{CSS}</style>
       <header className="ma-bar">
-        <div className="ma-row"><h1>Medication Chart Audit</h1><span className="ma-pharm">CLINICAL PHARMACIST</span></div>
+        <div className="ma-row"><h1>Medication Chart Audit</h1><span className="ma-pharm">CLINICAL PHARMACIST</span><a href="/audit/queries" style={{ marginLeft: 'auto', color: '#1d4ed8', fontSize: 13, fontWeight: 700, textDecoration: 'none' }}>Query log →</a></div>
         <div className="ma-sub">medaudit.evenos.app · prospective on-rounds capture · EHRC Pharmacy Formulary 2026 · allergy &amp; interaction cross-check</div>
       </header>
 

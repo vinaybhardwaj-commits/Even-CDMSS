@@ -3,6 +3,7 @@ import type { NextRequest } from 'next/server';
 import { isPharmacistUnlocked } from '@/lib/pharmacist-cookie';
 import { auditInteractions, mergeRank, type DrugClass } from '@/lib/ddi';
 import { referenceInteractions } from '@/lib/ddi-reference';
+import { logDdiQuery } from '@/lib/ddi-log';
 import { sql } from '@/lib/db';
 
 export const runtime = 'nodejs';
@@ -46,6 +47,7 @@ export async function POST(req: NextRequest) {
       referenceInteractions(drugs),
     ]);
     const pairs = mergeRank([...enginePairs, ...refPairs]);
+    await logDdiQuery(drugs, pairs); // telemetry for tuning (best-effort, no PHI)
     return NextResponse.json({ pairs });
   } catch (e) {
     return NextResponse.json({ error: String((e as Error).message) }, { status: 500 });
