@@ -19,6 +19,9 @@ const GCP_PROJECT = process.env.GCP_PROJECT || '';
 /** Default Gemini model (Vertex publisher-prefixed form is applied at call time). */
 export const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-pro';
 
+/** Cheap/fast Gemini model for the utility passes (variant-gen, reranker judge, query-expand). */
+export const GEMINI_FLASH_MODEL = process.env.GEMINI_FLASH_MODEL || 'gemini-2.5-flash';
+
 /** True only when every piece needed to call Vertex is present. */
 export function geminiConfigured(): boolean {
   return Boolean(GCP_PROJECT && process.env.GCP_SA_KEY);
@@ -65,6 +68,23 @@ export function geminiModelFor(surface: string): string | undefined {
   const all = process.env.GEMINI_ALL === '1';
   const per = process.env[`GEMINI_${surface.toUpperCase()}`] === '1';
   return all || per ? GEMINI_MODEL : undefined;
+}
+
+/**
+ * Model for the cheap utility passes (query-variant generation, reranker judge,
+ * query expansion). Routes to Gemini FLASH — fast, cheap, no need for Pro's
+ * reasoning — whenever Gemini is on for the whole app (GEMINI_ALL) or utility
+ * specifically (GEMINI_UTILITY). This is what keeps the Mac Mini out of the
+ * request path. Undefined ⇒ local Ollama (fallback). NB: embeddings still run
+ * locally on nomic — the corpus is nomic-embedded, so query embeddings must
+ * match that vector space and cannot move to Gemini.
+ */
+export function geminiUtilityModel(): string | undefined {
+  if (!geminiConfigured()) return undefined;
+  if (process.env.GEMINI_ALL === '1' || process.env.GEMINI_UTILITY === '1') {
+    return GEMINI_FLASH_MODEL;
+  }
+  return undefined;
 }
 
 /**

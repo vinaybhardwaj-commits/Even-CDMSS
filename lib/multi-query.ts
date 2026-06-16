@@ -13,7 +13,7 @@
  * the query and unioning the candidate pools catches gold the original
  * phrasing missed.
  */
-import { llm } from './llm';
+import { chatWithFallback, geminiUtilityModel } from './llm';
 import { retrieve, type RetrieveOptions, type RetrieveResult } from './retrieve';
 import type { ChunkHit } from './db';
 
@@ -37,7 +37,7 @@ Each variant should:
 
 export async function generateQueryVariants(question: string): Promise<string[]> {
   try {
-    const r = await llm.chat.completions.create({
+    const r = await chatWithFallback({
       model: VARIANT_MODEL,
       messages: [
         { role: 'system', content: SYSTEM_VARIANTS },
@@ -46,7 +46,7 @@ export async function generateQueryVariants(question: string): Promise<string[]>
       temperature: 0.2,  // steadier variants — 0.4 drifted (e.g. latched onto "arthropod bite" and buried the real differential)
       max_tokens: 300,
       ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
-    });
+    }, geminiUtilityModel());
     let txt = r.choices?.[0]?.message?.content?.trim() || '';
     // Strip markdown fences if the model added them
     if (txt.startsWith('```')) txt = txt.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();

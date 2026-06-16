@@ -1,4 +1,4 @@
-import { llm } from './llm';
+import { chatWithFallback, geminiUtilityModel } from './llm';
 
 // Use llama3.1:8b for speed — this runs on every retrieval, so we want it cheap.
 const FAST_MODEL = 'llama3.1:8b';
@@ -13,7 +13,7 @@ Return only the paragraph. No preamble, no explanation, no quotes.`;
 
 export async function expandQuery(question: string): Promise<string> {
   try {
-    const r = await llm.chat.completions.create({
+    const r = await chatWithFallback({
       model: FAST_MODEL,
       messages: [
         { role: 'system', content: SYSTEM },
@@ -22,7 +22,7 @@ export async function expandQuery(question: string): Promise<string> {
       temperature: 0.1,
       max_tokens: 200,
         ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
-      });
+      }, geminiUtilityModel());
     const txt = r.choices?.[0]?.message?.content?.trim() || '';
     // Belt + suspenders: always retrieve the ORIGINAL question's terms too, so we don't lose specificity
     return txt ? `${question}\n\n${txt}` : question;

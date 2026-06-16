@@ -21,7 +21,7 @@
  * Soft-fail: if rerank breaks for any reason, returns the input order
  * unchanged. Never blocks retrieval.
  */
-import { llm } from './llm';
+import { chatWithFallback, geminiUtilityModel } from './llm';
 
 const BACKEND = (process.env.RERANK_BACKEND || 'judge') as 'bge' | 'judge';
 const BGE_MODEL = process.env.RERANK_MODEL || 'bge-reranker-v2-m3';
@@ -106,7 +106,7 @@ async function rerankJudge<T extends RerankCandidate>(
     const userMsg = `QUESTION:\n${query}\n\nPASSAGES:\n${passagesText}\n\nReturn the JSON scoring object now.`;
 
     try {
-      const r = await llm.chat.completions.create({
+      const r = await chatWithFallback({
         model: JUDGE_MODEL,
         messages: [
           { role: 'system', content: JUDGE_SYSTEM },
@@ -115,7 +115,7 @@ async function rerankJudge<T extends RerankCandidate>(
         temperature: 0.0,
         max_tokens: 200,
         ...({ options: { num_ctx: 4096 }, keep_alive: '15m' } as Record<string, unknown>),
-      });
+      }, geminiUtilityModel());
       let txt = r.choices?.[0]?.message?.content?.trim() || '';
       if (txt.startsWith('```')) txt = txt.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
       const a = txt.indexOf('{');
