@@ -11,7 +11,8 @@ import { generateHypotheses, gatherHypothesisEvidence, formatHypothesesForPrompt
 export const runtime = 'nodejs';
 export const maxDuration = 300;  // hypothesis-first beta adds passes; Pro allows 300s. Classic still finishes ~2min.
 
-const DDX_MODEL = 'llama3.1:8b';
+const DDX_MODEL = 'llama3.1:8b';            // critique / revise / hypotheses / investigations parse
+const DDX_DRAFT_MODEL = 'qwen2.5:14b';      // the decisive synthesis pass — stronger model weights pathognomonic findings + avoids fabricated fits better than 8b
 
 const SYSTEM = `You are an expert physician generating a differential diagnosis as JSON. Use ONLY the supplied excerpts for clinical content, and reason ONLY from the patient findings stated in the presentation.
 
@@ -126,7 +127,7 @@ export async function POST(req: NextRequest) {
   await Promise.all([
     logEvent(traceId, 'request_received', null, { body, ua: req.headers.get('user-agent') || '', t: new Date().toISOString() }),
     setTraceQuestionPreview(traceId, display.replace(/\n+/g, ' • ')),
-    setTraceModelSummary(traceId, { draft: DDX_MODEL, critique: DDX_MODEL, revise: DDX_MODEL, embedding: 'mxbai-embed-large' }),
+    setTraceModelSummary(traceId, { draft: DDX_DRAFT_MODEL, critique: DDX_MODEL, revise: DDX_MODEL, embedding: 'mxbai-embed-large' }),
   ]);
 
   (async () => {
@@ -192,22 +193,24 @@ export async function POST(req: NextRequest) {
         if (ev.hits.length) hits = ev.hits;
       }
 
-      // Investigation-driven retrieval leg (BOTH engines): a SPECIFIC / pathognomonic
-      // result (e.g. "PAS-positive macrophages on duodenal biopsy" → Whipple disease)
-      // must pull its diagnosis's evidence even when the chief complaint dominates the
-      // embedding. One targeted retrieve per abnormal finding, no LLM call. Prepended so
-      // the decisive evidence sits at the front of the context.
+      // Investigation-driven retrieval leg (BOTH engines), TIGHTENED: only fire for
+      // SPECIFIC findings — pathology/imaging/micro/ECG, where a named entity like
+      // "PAS-positive macrophages" lives — NEVER plain labs (anemia/ESR/albumin pull
+      // non-specific junk that the model then turns into spurious diagnoses). Hits are
+      // relevance-gated (≥0.6) so low-similarity chunks can't leak in. Prepended so the
+      // decisive evidence sits at the front of the context.
       if (investigations && investigations.findings.length) {
+        const SPECIFIC_CATS = new Set(['imaging', 'pathology', 'micro', 'ecg']);
         const findingQueries = investigations.findings
-          .filter((f) => f.flag !== 'normal' && f.flag !== 'indeterminate')
+          .filter((f) => f.flag !== 'normal' && f.flag !== 'indeterminate' && SPECIFIC_CATS.has(f.category))
           .map((f) => [f.test, f.value, f.note].filter(Boolean).join(' ').trim())
           .filter((q) => q.length >= 4)
           .slice(0, 4);
         if (findingQueries.length) {
           emit({ type: 'progress', stage: 'retrieving', msg: 'Retrieving evidence for the supplied investigation findings…', ms: Date.now() - t0 });
           const findingHits = (await Promise.all(
-            findingQueries.map((q) => retrieve(q, { topK: 3, minSimilarity: 0.35, skipExpand: true }).then((r) => r.hits).catch(() => [])),
-          )).flat();
+            findingQueries.map((q) => retrieve(q, { topK: 3, minSimilarity: 0.55, skipExpand: true }).then((r) => r.hits).catch(() => [])),
+          )).flat().filter((h) => (h.similarity ?? 0) >= 0.6);
           if (findingHits.length) {
             const seen = new Set<number | string>();
             const merged: typeof hits = [];
@@ -281,7 +284,7 @@ export async function POST(req: NextRequest) {
 
       emit({ type: 'progress', stage: useSelfCritique ? 'drafting' : 'generating', msg: `${useSelfCritique ? 'Drafting' : 'Reasoning'} with the reasoning model…`, ms: Date.now() - t0 });
       const draftRes = await tracedChat(traceId, 'ddx_draft', {
-        model: DDX_MODEL,
+        model: DDX_DRAFT_MODEL,
         messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: userMsg }],
         temperature: 0.2,
         max_tokens: 1500,
