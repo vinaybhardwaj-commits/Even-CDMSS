@@ -4,6 +4,7 @@ import { retrieveMultiQuery } from '@/lib/multi-query';
 import { searchPlos, formatPlosForPrompt } from '@/lib/plos';
 import { sql } from '@/lib/db';
 import { COACH_MODEL, buildCoachSystemPrompt, parseLooseJson, Turn } from '@/lib/coach';
+import { geminiModelFor } from '@/lib/llm';
 import { startTrace, finishTrace, tracedChat, logEvent, setTraceQuestionPreview, setTraceModelSummary, setTraceFinalAnswer } from '@/lib/trace';
 
 export const runtime = 'nodejs';
@@ -77,7 +78,7 @@ export async function POST(req: NextRequest) {
       temperature: 0.3,
       max_tokens: 400,
       ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
-    });
+    }, { gemini: geminiModelFor('coach') });
     raw = r.choices?.[0]?.message?.content ?? '';
     const parsed = parseLooseJson(raw) as { next_turn?: { content?: string } };
     const opener = (parsed.next_turn?.content || '').trim();

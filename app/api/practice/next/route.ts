@@ -3,7 +3,7 @@ export const maxDuration = 120;
 
 import { NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
-import { llm, TEXT_MODEL } from '@/lib/llm';
+import { TEXT_MODEL, chatWithFallback, geminiModelFor } from '@/lib/llm';
 import { startTrace, logEvent, finishTrace, setTraceQuestionPreview, setTraceFinalAnswer } from '@/lib/trace';
 
 type SrcRow = {
@@ -55,11 +55,11 @@ export async function POST(req: Request) {
     await logEvent(traceId, 'llm_request', 'drafting', {
       model: TEXT_MODEL, messages: [{ role: 'system', content: system }, { role: 'user', content: user }], temperature: 0.4,
     });
-    const res = await llm.chat.completions.create({
+    const res = await chatWithFallback({
       model: TEXT_MODEL,
       messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
       temperature: 0.4,
-    });
+    }, geminiModelFor('practice'));
     let raw = (res.choices?.[0]?.message?.content ?? '').trim();
     await logEvent(traceId, 'llm_response', 'drafting', { content: raw, model: TEXT_MODEL }, Date.now() - llmStart);
     if (raw.startsWith('```')) raw = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();

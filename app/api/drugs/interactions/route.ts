@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { retrieve } from '@/lib/retrieve';
 import { DRUGS_MODEL, parseLooseJson, normalizeDrugName } from '@/lib/drugs';
+import { geminiModelFor } from '@/lib/llm';
 import { deterministicInteractions } from '@/lib/ddi';
 import { makeNdjsonStream, ndjsonHeaders } from '@/lib/stream';
 import { startTrace, finishTrace, tracedChat, logEvent } from '@/lib/trace';
@@ -107,7 +108,7 @@ export async function POST(req: NextRequest) {
         temperature: 0.2,
         max_tokens: 1500,
         ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
-      });
+      }, { gemini: geminiModelFor('drugs') });
       const llmRaw = r.choices?.[0]?.message?.content ?? '';
       emit({ type: 'progress', stage: 'parsing', msg: 'Deduplicating pairs…', ms: Date.now() - t0 });
       const parsed = parseLooseJson(llmRaw) as { summary?: string; pairs?: unknown[] };

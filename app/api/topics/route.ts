@@ -2,7 +2,7 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 180;
 
 import { retrieve } from '@/lib/retrieve';
-import { llm, TEXT_MODEL } from '@/lib/llm';
+import { TEXT_MODEL, chatWithFallback, geminiModelFor } from '@/lib/llm';
 import { startTrace, logEvent, finishTrace, logStreamComplete, setTraceQuestionPreview, setTraceFinalAnswer } from '@/lib/trace';
 
 // Topic synthesis: retrieve ~15 excerpts, then stream a cited study guide.
@@ -62,12 +62,12 @@ export async function POST(req: Request) {
         await logEvent(traceId, 'llm_request', 'drafting', {
           model: TEXT_MODEL, messages: [{ role: 'system', content: system }, { role: 'user', content: user }], temperature: 0.2, stream: true,
         });
-        const completion = await llm.chat.completions.create({
+        const completion = await chatWithFallback({
           model: TEXT_MODEL,
           messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
           temperature: 0.2,
           stream: true,
-        });
+        }, geminiModelFor('topics'));
         let full = '';
         for await (const part of completion as AsyncIterable<{ choices?: { delta?: { content?: string } }[] }>) {
           const delta = part.choices?.[0]?.delta?.content ?? '';

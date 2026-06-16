@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { retrieve } from '@/lib/retrieve';
 import { retrieveMultiQuery } from '@/lib/multi-query';
-import { TEXT_MODEL, CRITIQUE_MODEL } from '@/lib/llm';
+import { TEXT_MODEL, CRITIQUE_MODEL, geminiModelFor } from '@/lib/llm';
 import { modelLabel } from '@/lib/model-labels';
 import { searchPlos, formatPlosForPrompt, type PlosHit } from '@/lib/plos';
 import { makeNdjsonStream, ndjsonHeaders } from '@/lib/stream';
@@ -109,11 +109,15 @@ export async function POST(req: NextRequest) {
   const t0 = Date.now();
   const traceId = await startTrace('ask', { question, bookFilter: body.bookFilter, investigations: body.investigations, multiQuery: useMultiQuery, selfCritique: useSelfCritique, reranker: useReranker, sourceWeights: useSourceWeights, embeddingV2: useEmbeddingV2 });
 
+  // Hybrid backend: route the reasoning passes to Gemini when GEMINI_ALL / GEMINI_ASK
+  // is set (and Vertex configured); undefined = unchanged local Ollama path.
+  const G = geminiModelFor('ask');
+
   // v1.7 Sprint A: capture request + denormalize fast-access fields on traces row.
   await Promise.all([
     logEvent(traceId, 'request_received', null, { body, ua: req.headers.get('user-agent') || '', t: new Date().toISOString() }),
     setTraceQuestionPreview(traceId, question),
-    setTraceModelSummary(traceId, { draft: TEXT_MODEL, critique: CRITIQUE_MODEL, revise: CRITIQUE_MODEL, embedding: 'mxbai-embed-large', reranker: 'llama3.1:8b-judge' }),
+    setTraceModelSummary(traceId, { draft: G ?? TEXT_MODEL, critique: G ?? CRITIQUE_MODEL, revise: G ?? CRITIQUE_MODEL, embedding: 'mxbai-embed-large', reranker: 'llama3.1:8b-judge', provider: G ? 'gemini' : 'ollama' }),
   ]);
 
   (async () => {
@@ -135,7 +139,7 @@ export async function POST(req: NextRequest) {
       let investigations: ParsedInvestigations | null = null;
       if (body.investigations && body.investigations.trim()) {
         emit({ type: 'progress', stage: 'expanding', msg: 'Interpreting investigation results…' });
-        investigations = await parseInvestigations(body.investigations, { model: CRITIQUE_MODEL, traceId });
+        investigations = await parseInvestigations(body.investigations, { model: CRITIQUE_MODEL, traceId, gemini: G });
       }
       const questionForPrompt = investigations?.promptBlock ? `${question}\n\n${investigations.promptBlock}` : question;
       const retrievalQuery = [question, ...(investigations?.abnormalTerms ?? [])].filter(Boolean).join('; ');
@@ -238,7 +242,7 @@ export async function POST(req: NextRequest) {
           temperature: 0.2,
           stream: true,
           ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
-        });
+        }, { gemini: G });
         for await (const part of draftRes as AsyncIterable<{ choices?: { delta?: { content?: string } }[] }>) {
           const delta = part.choices?.[0]?.delta?.content ?? '';
           if (delta) {
@@ -273,7 +277,7 @@ export async function POST(req: NextRequest) {
             stream: false,
             max_tokens: 800,
             ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
-          });
+          }, { gemini: G });
           let critiqueRaw = (critiqueRes as { choices?: { message?: { content?: string } }[] }).choices?.[0]?.message?.content?.trim() || '{}';
           if (critiqueRaw.startsWith('```')) critiqueRaw = critiqueRaw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
           const a = critiqueRaw.indexOf('{'); const b = critiqueRaw.lastIndexOf('}');
@@ -327,7 +331,7 @@ export async function POST(req: NextRequest) {
             temperature: 0.2,
             stream: true,
             ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
-          });
+          }, { gemini: G });
           let fullContent = '';
           for await (const part of revRes) {
             const delta = part.choices?.[0]?.delta?.content ?? '';
@@ -359,7 +363,7 @@ export async function POST(req: NextRequest) {
           temperature: 0.2,
           stream: true,
           ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
-        });
+        }, { gemini: G });
         let fullContent = '';
         for await (const part of completion) {
           const delta = part.choices?.[0]?.delta?.content ?? '';

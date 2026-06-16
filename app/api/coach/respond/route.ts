@@ -4,6 +4,7 @@ import { retrieveMultiQuery } from '@/lib/multi-query';
 import { searchPlos, formatPlosForPrompt } from '@/lib/plos';
 import { sql } from '@/lib/db';
 import { COACH_MODEL, buildCoachSystemPrompt, buildRevealSystemPrompt, isRevealIntent, parseLooseJson, loadSession, computeAccuracy, Turn } from '@/lib/coach';
+import { geminiModelFor } from '@/lib/llm';
 import { startTrace, finishTrace, tracedChat, logEvent, setTraceQuestionPreview, setTraceModelSummary, setTraceFinalAnswer } from '@/lib/trace';
 
 export const runtime = 'nodejs';
@@ -87,7 +88,7 @@ export async function POST(req: NextRequest) {
         temperature: 0.3,
         max_tokens: 600,
         ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
-      });
+      }, { gemini: geminiModelFor('coach') });
       raw = r.choices?.[0]?.message?.content ?? '';
       const parsed = parseLooseJson(raw) as { reveal_answer?: string; next_turn?: { content?: string } };
       const answer = (parsed.reveal_answer || '').trim() || 'Sorry — I could not generate an answer this time. Try rephrasing the question or end the session.';
@@ -184,7 +185,7 @@ export async function POST(req: NextRequest) {
       temperature: 0.3,
       max_tokens: 500,
       ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
-    });
+    }, { gemini: geminiModelFor('coach') });
     raw = r.choices?.[0]?.message?.content ?? '';
     const parsed = parseLooseJson(raw) as {
       evaluation?: { correctness?: string; feedback?: string };

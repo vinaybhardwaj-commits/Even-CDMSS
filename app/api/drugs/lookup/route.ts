@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { retrieve } from '@/lib/retrieve';
 import { enrichDrug, type PubChemFacts } from '@/lib/pubchem';
-import { llm } from '@/lib/llm';
+import { llm, geminiModelFor } from '@/lib/llm';
 import { startTrace, logEvent, finishTrace, tracedChat } from '@/lib/trace';
 import { parseLooseJson, normalizeDrugName } from '@/lib/drugs';
 import { makeNdjsonStream, ndjsonHeaders } from '@/lib/stream';
@@ -305,7 +305,7 @@ export async function POST(req: NextRequest) {
             temperature: 0.2,
             max_tokens: phase.maxTokens,
         ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
-      });
+      }, { gemini: geminiModelFor('drugs') });
           raw_out = r.choices?.[0]?.message?.content ?? '';
           let parsed: Record<string, unknown>;
           try {
@@ -334,7 +334,7 @@ export async function POST(req: NextRequest) {
                 temperature: 0.1,
                 max_tokens: 600,
                 ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
-              });
+              }, { gemini: geminiModelFor('drugs') });
               let critRaw = critRes.choices?.[0]?.message?.content?.trim() || '{}';
               if (critRaw.startsWith('\`\`\`')) critRaw = critRaw.replace(/^\`\`\`(?:json)?\s*/i, '').replace(/\`\`\`\s*$/, '').trim();
               const ca = critRaw.indexOf('{'); const cb = critRaw.lastIndexOf('}');
@@ -370,7 +370,7 @@ export async function POST(req: NextRequest) {
                   temperature: 0.2,
                   max_tokens: 2000,
                   ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
-                });
+                }, { gemini: geminiModelFor('drugs') });
                 const revRaw = revRes.choices?.[0]?.message?.content ?? '';
                 try {
                   parsed = parseLooseJson(revRaw) as Record<string, unknown>;

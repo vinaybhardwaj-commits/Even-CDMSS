@@ -3,6 +3,7 @@ import { sql } from '@/lib/db';
 import { retrieve } from '@/lib/retrieve';
 import { searchPlos } from '@/lib/plos';
 import { COACH_MODEL, loadSession, computeAccuracy } from '@/lib/coach';
+import { geminiModelFor } from '@/lib/llm';
 import { startTrace, finishTrace, tracedChat, logEvent, setTraceQuestionPreview, setTraceSeverity, setTraceModelSummary, setTraceFinalAnswer } from '@/lib/trace';
 
 export const runtime = 'nodejs';
@@ -89,7 +90,7 @@ export async function POST(req: NextRequest) {
       temperature: 0.3,
       max_tokens: 400,
       ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
-    });
+    }, { gemini: geminiModelFor('coach') });
     raw = draftReq.choices?.[0]?.message?.content ?? '';
 
     if (useSelfCritique && raw.trim()) {
@@ -103,7 +104,7 @@ export async function POST(req: NextRequest) {
           temperature: 0.1,
           max_tokens: 400,
           ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
-        });
+        }, { gemini: geminiModelFor('coach') });
         let critRaw = critReq.choices?.[0]?.message?.content?.trim() || '{}';
         if (critRaw.startsWith('```')) critRaw = critRaw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
         const a = critRaw.indexOf('{'); const b = critRaw.lastIndexOf('}');
@@ -139,7 +140,7 @@ export async function POST(req: NextRequest) {
             temperature: 0.2,
             max_tokens: 400,
             ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
-          });
+          }, { gemini: geminiModelFor('coach') });
           raw = revReq.choices?.[0]?.message?.content ?? raw;
         }
       } catch (e) { console.warn('[coach end critique] failed', (e as Error).message); }

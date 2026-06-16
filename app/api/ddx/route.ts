@@ -130,7 +130,7 @@ export async function POST(req: NextRequest) {
   // unchanged local path. tracedChat falls back to the Ollama models on any error.
   const wantGemini =
     body.providerOverride === 'gemini' ||
-    (body.providerOverride !== 'ollama' && process.env.GEMINI_DDX === '1');
+    (body.providerOverride !== 'ollama' && (process.env.GEMINI_DDX === '1' || process.env.GEMINI_ALL === '1'));
   const G: string | undefined = wantGemini && geminiConfigured() ? GEMINI_MODEL : undefined;
 
   // v1.7b S2: capture request + denormalize fast-access fields on traces row.
