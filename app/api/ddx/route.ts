@@ -9,7 +9,7 @@ import { parseInvestigations, type ParsedInvestigations } from '@/lib/investigat
 import { generateHypotheses, gatherHypothesisEvidence, formatHypothesesForPrompt, type Hypothesis } from '@/lib/ddx-hypothesis';
 
 export const runtime = 'nodejs';
-export const maxDuration = 180;
+export const maxDuration = 300;  // hypothesis-first beta adds passes; Pro allows 300s. Classic still finishes ~2min.
 
 const DDX_MODEL = 'llama3.1:8b';
 
@@ -156,7 +156,7 @@ export async function POST(req: NextRequest) {
         || (body.engine !== 'classic' && process.env.DDX_HYPOTHESIS_FIRST === '1');
       if (useHypothesisFirst) emit({ type: 'progress', stage: 'expanding', msg: 'Generating candidate differential from clinical reasoning…' });
       const hypothesesPromise: Promise<Hypothesis[]> = useHypothesisFirst
-        ? generateHypotheses(displayForPrompt, { model: DDX_MODEL, traceId })
+        ? generateHypotheses(displayForPrompt, { model: DDX_MODEL, traceId, max: 8 })
         : Promise.resolve([]);
 
       const plosQuery = (body.cc || queryHint || display).trim();
@@ -168,7 +168,11 @@ export async function POST(req: NextRequest) {
       // "nodular masses" differential tables) and key cannot-miss diagnoses
       // routinely sit at ranks 9–18, so topK=8 silently truncated the differential.
       const DDX_TOP_K = 16;
-      const retrievePromise = useMultiQuery
+      // In hypothesis-first mode the per-candidate retrieval is the primary signal,
+      // so run the broad pool as a single query (skips the variant-gen LLM call) to
+      // cut Mac-Mini Ollama load. Classic keeps multi-query.
+      const broadMultiQuery = useMultiQuery && !useHypothesisFirst;
+      const retrievePromise = broadMultiQuery
         ? retrieveMultiQuery(retrievalQuery, { topK: DDX_TOP_K, minSimilarity: 0.4, bm25Query })
         : retrieve(retrievalQuery, { topK: DDX_TOP_K, minSimilarity: 0.4, bm25Query }).then((r) => ({ hits: r.hits, variants: [retrievalQuery], perVariantCounts: [r.hits.length] }));
       const [retrieveResult, plosHits] = await Promise.all([
@@ -182,8 +186,8 @@ export async function POST(req: NextRequest) {
       const hypotheses = await hypothesesPromise;
       let hits = retrieveResult.hits;
       if (useHypothesisFirst && hypotheses.length) {
-        emit({ type: 'progress', stage: 'retrieving', msg: `Retrieving evidence for ${hypotheses.length} candidate diagnoses…`, ms: Date.now() - t0 });
-        const ev = await gatherHypothesisEvidence(hypotheses, retrieveResult.hits, { perDxK: 3, maxTotal: 20, maxHypotheses: 10, traceId });
+        emit({ type: 'progress', stage: 'retrieving', msg: `Retrieving evidence for ${Math.min(hypotheses.length, 6)} candidate diagnoses…`, ms: Date.now() - t0 });
+        const ev = await gatherHypothesisEvidence(hypotheses, retrieveResult.hits, { perDxK: 2, maxTotal: 14, maxHypotheses: 6, traceId });
         if (ev.hits.length) hits = ev.hits;
       }
 
@@ -312,7 +316,11 @@ export async function POST(req: NextRequest) {
 
         emit({ type: 'critique', severity, issue_count: issueCount, details: critiqueJson });
 
-        if (critiqueJson.needs_revision && issueCount > 0) {
+        // Classic always revises when flagged. Hypothesis-first only revises on a
+        // MAJOR audit (the reasoned synthesis is already strong) — saves a whole
+        // LLM pass on the latency-heavy beta path for minor/cosmetic issues.
+        const allowRevision = !useHypothesisFirst || severity === 'major';
+        if (critiqueJson.needs_revision && issueCount > 0 && allowRevision) {
           emit({ type: 'progress', stage: 'revising', msg: `Revising DDx to address ${issueCount} issue${issueCount !== 1 ? 's' : ''}…`, ms: Date.now() - t0 });
           const revRes = await tracedChat(traceId, 'ddx_revision', {
             model: DDX_MODEL,

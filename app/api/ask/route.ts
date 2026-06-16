@@ -71,6 +71,7 @@ Output ONLY a JSON object of this exact shape:
   "clinical_errors": ["factual or reasoning error", ...],
   "citation_problems": ["wrong source attributed, missing citation, etc.", ...],
   "missing_relevant_evidence": ["important excerpt the draft ignored", ...],
+  "important_omissions": ["an important consideration, contraindication, red-flag/cannot-miss diagnosis, or caveat that a physician would expect for THIS question but the draft omitted — reason from the question itself and your own clinical knowledge, NOT only from the excerpts", ...],
   "needs_revision": true | false,
   "overall_severity": "none" | "minor" | "moderate" | "major"
 }
@@ -258,7 +259,7 @@ export async function POST(req: NextRequest) {
         const critiqueStart = Date.now();
         let critiqueJson: {
           unsupported_claims?: string[]; missing_caveats?: string[]; clinical_errors?: string[];
-          citation_problems?: string[]; missing_relevant_evidence?: string[];
+          citation_problems?: string[]; missing_relevant_evidence?: string[]; important_omissions?: string[];
           needs_revision?: boolean; overall_severity?: string;
         } = { needs_revision: false };
         try {
@@ -287,7 +288,8 @@ export async function POST(req: NextRequest) {
           + (critiqueJson.missing_caveats?.length || 0)
           + (critiqueJson.clinical_errors?.length || 0)
           + (critiqueJson.citation_problems?.length || 0)
-          + (critiqueJson.missing_relevant_evidence?.length || 0);
+          + (critiqueJson.missing_relevant_evidence?.length || 0)
+          + (critiqueJson.important_omissions?.length || 0);
 
         const severity = critiqueJson.overall_severity || (issueCount > 0 ? 'minor' : 'none');
 
