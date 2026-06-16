@@ -154,8 +154,14 @@ export async function POST(req: NextRequest) {
       // reasoning FIRST (run in parallel with the broad retrieval below), then we
       // retrieve evidence targeted at each named candidate — so the differential's
       // breadth is no longer capped by a single semantic search.
-      const useHypothesisFirst = body.engine === 'hypothesis'
-        || (body.engine !== 'classic' && process.env.DDX_HYPOTHESIS_FIRST === '1');
+      // Hypothesis-first is now the DEFAULT: it proposes diagnoses from clinical
+      // reasoning, then retrieves evidence per candidate — the only robust fix for
+      // clue-based diagnoses (e.g. cutaneous leishmaniasis from a camping/exposure
+      // history) that aren't reliably retrievable from the presentation embedding.
+      // Explicit engine:'classic' opts out; env DDX_HYPOTHESIS_FIRST='0' is a global
+      // kill switch if the heavier path causes production timeouts.
+      const useHypothesisFirst = body.engine !== 'classic'
+        && process.env.DDX_HYPOTHESIS_FIRST !== '0';
       if (useHypothesisFirst) emit({ type: 'progress', stage: 'expanding', msg: 'Generating candidate differential from clinical reasoning…' });
       const hypothesesPromise: Promise<Hypothesis[]> = useHypothesisFirst
         ? generateHypotheses(displayForPrompt, { model: DDX_MODEL, traceId, max: 8 })
