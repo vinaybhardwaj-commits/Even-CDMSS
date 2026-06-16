@@ -7,6 +7,7 @@ import { startTrace, finishTrace, tracedChat, logEvent, setTraceQuestionPreview,
 import { filterByDemographics } from '@/lib/ddx-constraints';
 import { parseInvestigations, type ParsedInvestigations } from '@/lib/investigations';
 import { generateHypotheses, gatherHypothesisEvidence, formatHypothesesForPrompt, type Hypothesis } from '@/lib/ddx-hypothesis';
+import { geminiConfigured, GEMINI_MODEL } from '@/lib/llm';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;  // hypothesis-first beta adds passes; Pro allows 300s. Classic still finishes ~2min.
@@ -38,7 +39,7 @@ Return ONLY this JSON object, lowercase keys exactly as shown:
 - plos_citation_ids = strings like "P1", "P2" from PLOS ONE ABSTRACTS, if any inform the diagnosis. May be empty array []. CRITICAL: each entry MUST be a JSON string with DOUBLE QUOTES — write ["P1","P2"] not [P1,P2]. Unquoted barewords are invalid JSON and will fail parse.
 - No prose, no markdown fences, lowercase keys.`;
 
-type Body = { age?: number | string; sex?: string; cc?: string; history?: string; exam?: string; vitals?: string; investigations?: string; includePlos?: boolean; multiQuery?: boolean; selfCritique?: boolean; engine?: 'classic' | 'hypothesis' };
+type Body = { age?: number | string; sex?: string; cc?: string; history?: string; exam?: string; vitals?: string; investigations?: string; includePlos?: boolean; multiQuery?: boolean; selfCritique?: boolean; engine?: 'classic' | 'hypothesis'; providerOverride?: 'gemini' | 'ollama' };
 
 const DDX_CRITIQUE_SYSTEM = `You are a clinical auditor reviewing a draft differential diagnosis (DDx) JSON for a SPECIFIC patient.
 
@@ -123,11 +124,20 @@ export async function POST(req: NextRequest) {
   const t0 = Date.now();
   const traceId = await startTrace('ddx', { cc: body.cc, age: body.age, sex: body.sex, history: body.history, exam: body.exam, vitals: body.vitals, investigations: body.investigations });
 
+  // Hybrid backend: route the DDx reasoning to Gemini (Vertex) when enabled.
+  // Per-request body.providerOverride (used by the A/B harness) wins; otherwise the
+  // global GEMINI_DDX flag. G = the Gemini model to use, or undefined for the
+  // unchanged local path. tracedChat falls back to the Ollama models on any error.
+  const wantGemini =
+    body.providerOverride === 'gemini' ||
+    (body.providerOverride !== 'ollama' && process.env.GEMINI_DDX === '1');
+  const G: string | undefined = wantGemini && geminiConfigured() ? GEMINI_MODEL : undefined;
+
   // v1.7b S2: capture request + denormalize fast-access fields on traces row.
   await Promise.all([
     logEvent(traceId, 'request_received', null, { body, ua: req.headers.get('user-agent') || '', t: new Date().toISOString() }),
     setTraceQuestionPreview(traceId, display.replace(/\n+/g, ' • ')),
-    setTraceModelSummary(traceId, { draft: DDX_DRAFT_MODEL, critique: DDX_DRAFT_MODEL, revise: DDX_DRAFT_MODEL, embedding: 'mxbai-embed-large' }),
+    setTraceModelSummary(traceId, { draft: G ?? DDX_DRAFT_MODEL, critique: G ?? DDX_DRAFT_MODEL, revise: G ?? DDX_DRAFT_MODEL, embedding: 'mxbai-embed-large', provider: G ? 'gemini' : 'ollama' }),
   ]);
 
   (async () => {
@@ -144,7 +154,7 @@ export async function POST(req: NextRequest) {
       let investigations: ParsedInvestigations | null = null;
       if (body.investigations && body.investigations.trim()) {
         emit({ type: 'progress', stage: 'expanding', msg: 'Interpreting investigation results…' });
-        investigations = await parseInvestigations(body.investigations, { age: body.age, sex: body.sex, model: DDX_MODEL, traceId });
+        investigations = await parseInvestigations(body.investigations, { age: body.age, sex: body.sex, model: DDX_MODEL, traceId, gemini: G });
       }
       const displayForPrompt = investigations?.promptBlock ? `${display}\n\n${investigations.promptBlock}` : display;
       const investigationTerms = investigations?.abnormalTerms ?? [];
@@ -164,7 +174,7 @@ export async function POST(req: NextRequest) {
         && process.env.DDX_HYPOTHESIS_FIRST !== '0';
       if (useHypothesisFirst) emit({ type: 'progress', stage: 'expanding', msg: 'Generating candidate differential from clinical reasoning…' });
       const hypothesesPromise: Promise<Hypothesis[]> = useHypothesisFirst
-        ? generateHypotheses(displayForPrompt, { model: DDX_MODEL, traceId, max: 8 })
+        ? generateHypotheses(displayForPrompt, { model: DDX_MODEL, traceId, max: 8, gemini: G })
         : Promise.resolve([]);
 
       const plosQuery = (body.cc || queryHint || display).trim();
@@ -295,7 +305,7 @@ export async function POST(req: NextRequest) {
         temperature: 0.2,
         max_tokens: 1500,
         ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
-      });
+      }, { gemini: G });
       let raw = draftRes.choices?.[0]?.message?.content ?? '';
 
       if (useSelfCritique) {
@@ -317,7 +327,7 @@ export async function POST(req: NextRequest) {
             temperature: 0.1,
             max_tokens: 700,
             ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
-          });
+          }, { gemini: G });
           let critRaw = critRes.choices?.[0]?.message?.content?.trim() || '{}';
           if (critRaw.startsWith('```')) critRaw = critRaw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
           const a = critRaw.indexOf('{'); const b = critRaw.lastIndexOf('}');
@@ -367,7 +377,7 @@ export async function POST(req: NextRequest) {
             temperature: 0.2,
             max_tokens: 1500,
             ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
-          });
+          }, { gemini: G });
           raw = revRes.choices?.[0]?.message?.content ?? raw;
         }
       }

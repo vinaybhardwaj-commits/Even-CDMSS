@@ -15,3 +15,4 @@ npm-debug.log*
 # icloud/fuse artifacts
 .fuse_hidden*
 **/.fuse_hidden*
+tsconfig.tsbuildinfo

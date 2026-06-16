@@ -152,7 +152,7 @@ function deriveAbnormalTerms(findings: InvestigationFinding[]): string[] {
  */
 export async function parseInvestigations(
   raw: string,
-  opts: { age?: number | string; sex?: string; model: string; traceId?: string },
+  opts: { age?: number | string; sex?: string; model: string; traceId?: string; gemini?: string },
 ): Promise<ParsedInvestigations | null> {
   const clean = (raw || '').trim();
   if (!clean) return null;
@@ -184,7 +184,7 @@ export async function parseInvestigations(
       ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
     };
     const res = opts.traceId
-      ? await tracedChat(opts.traceId, 'investigations_parse', params)
+      ? await tracedChat(opts.traceId, 'investigations_parse', params, { gemini: opts.gemini })
       : await llm.chat.completions.create(params as Parameters<typeof llm.chat.completions.create>[0]);
     content = (res as { choices?: Array<{ message?: { content?: string } }> }).choices?.[0]?.message?.content ?? '';
   } catch (e) {

@@ -55,7 +55,7 @@ function parseLooseJson(s: string): unknown {
  */
 export async function generateHypotheses(
   presentation: string,
-  opts: { model: string; traceId?: string; max?: number },
+  opts: { model: string; traceId?: string; max?: number; gemini?: string },
 ): Promise<Hypothesis[]> {
   const max = opts.max ?? 12;
   try {
@@ -68,7 +68,7 @@ export async function generateHypotheses(
       temperature: 0.3,
       max_tokens: 700,
       ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
-    });
+    }, { gemini: opts.gemini });
     const content = (res as { choices?: Array<{ message?: { content?: string } }> }).choices?.[0]?.message?.content ?? '';
     const parsed = parseLooseJson(content) as { hypotheses?: unknown };
     if (!Array.isArray(parsed.hypotheses)) return [];

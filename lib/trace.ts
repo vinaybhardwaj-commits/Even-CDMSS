@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { sql } from './db';
-import { llm } from './llm';
+import { llm, geminiConfigured, getGeminiChatClient, vertexModelName } from './llm';
 
 const sqlFn = sql as unknown as (q: string, p: unknown[]) => Promise<unknown>;
 
@@ -59,13 +59,23 @@ export async function tracedChat(
   traceId: string,
   label: string,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  params: any
+  params: any,
+  // Hybrid backend: when `gemini` names a model AND Vertex is configured, the
+  // call runs on Gemini and silently falls back to the local Ollama model in
+  // `params.model` on any error/timeout. Omit it (or leave Gemini unconfigured)
+  // and behaviour is byte-identical to the original Ollama-only path.
+  opts?: { gemini?: string },
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const t0 = Date.now();
-  // Log the request before firing
+
+  const useGemini = Boolean(opts?.gemini) && geminiConfigured();
+  const servedModel = useGemini ? (opts!.gemini as string) : (params as { model?: string }).model;
+
+  // Log the request before firing (records the model we INTEND to use)
   const requestPayload = {
-    model: (params as { model?: string }).model,
+    model: servedModel,
+    provider: useGemini ? 'gemini' : 'ollama',
     messages: (params as { messages?: unknown }).messages,
     temperature: (params as { temperature?: number }).temperature,
     max_tokens: (params as { max_tokens?: number }).max_tokens,
@@ -77,11 +87,39 @@ export async function tracedChat(
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let result: any;
+  let provider = requestPayload.provider;
+  let actualModel = servedModel;
+
   try {
-    result = await llm.chat.completions.create(params);
+    if (useGemini) {
+      try {
+        // Strip Ollama-only params (Vertex rejects unknown fields) + publisher-prefix the model.
+        const { options: _o, keep_alive: _k, ...rest } = params as Record<string, unknown>;
+        void _o; void _k;
+        const gParams = { ...rest, model: vertexModelName(opts!.gemini as string) };
+        const gemini = await getGeminiChatClient();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        result = await gemini.chat.completions.create(gParams as any);
+      } catch (ge) {
+        // Fall back to the local Ollama model — the request must never fail just
+        // because Gemini is down/slow. Record the fallback for observability.
+        await logEvent(traceId, 'provider_fallback', label, {
+          from: 'gemini', to: 'ollama',
+          intended_model: servedModel,
+          fallback_model: (params as { model?: string }).model,
+          error: String((ge as Error).message).slice(0, 500),
+        }, Date.now() - t0);
+        provider = 'ollama';
+        actualModel = (params as { model?: string }).model;
+        result = await llm.chat.completions.create(params);
+      }
+    } else {
+      result = await llm.chat.completions.create(params);
+    }
   } catch (e) {
     await logEvent(traceId, 'llm_error', label, {
-      model: requestPayload.model,
+      model: actualModel,
+      provider,
       error: String((e as Error).message),
       stack: (e as Error).stack?.slice(0, 2000),
     }, Date.now() - t0);
@@ -92,7 +130,8 @@ export async function tracedChat(
   if (!('controller' in result)) {
     const r = result as { choices?: Array<{ message?: { content?: string }; finish_reason?: string }>; usage?: unknown };
     await logEvent(traceId, 'llm_response', label, {
-      model: requestPayload.model,
+      model: actualModel,
+      provider,
       content: r.choices?.[0]?.message?.content ?? '',
       finish_reason: r.choices?.[0]?.finish_reason,
       usage: r.usage,
@@ -100,7 +139,8 @@ export async function tracedChat(
   } else {
     // For streaming, the caller will collect tokens and should call logStreamComplete after
     await logEvent(traceId, 'llm_response_stream_started', label, {
-      model: requestPayload.model,
+      model: actualModel,
+      provider,
     }, Date.now() - t0);
   }
 
