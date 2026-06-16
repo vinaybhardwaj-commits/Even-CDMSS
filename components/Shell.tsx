@@ -7,6 +7,7 @@ const CLINICIAN_NAV: [string, string][] = [
   ['/calculators', 'Calculators'], ['/coach', 'Coach'], ['/review', 'Review'],
   ['/browse', 'Browse'], ['/practice', 'Practice'],
   ['/topics', 'Topics'], ['/search', 'Search'],
+  ['/audit', 'Med Audit'],
 ];
 
 const ADMIN_NAV: [string, string][] = [
@@ -16,9 +17,8 @@ const ADMIN_NAV: [string, string][] = [
 
 export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() || '';
-  // The Clinical Pharmacist audit surface (/audit, served at medaudit.evenos.app)
-  // is a standalone, chrome-free experience — no CAT sidebar.
-  if (pathname.startsWith('/audit')) return <>{children}</>;
+  // Chrome-free is decided by HOST in app/layout.tsx (medaudit.evenos.app gets no
+  // Shell at all). On the CAT host the audit tool shows here as a normal nav item.
   const isAdmin = pathname.startsWith('/admin');
   const isObs = pathname.startsWith('/admin/observability');
   const nav = isAdmin ? ADMIN_NAV : CLINICIAN_NAV;
