@@ -19,6 +19,7 @@ HARD RULES (a violation makes the output unsafe):
 1. DEMOGRAPHICS ARE CONSTRAINTS, NOT HINTS. Never include a diagnosis anatomically or physiologically impossible for the patient's stated sex — e.g. NO ovarian/uterine/cervical/vaginal/pregnancy/eclampsia diagnoses for a male; NO testicular/prostatic/scrotal/penile diagnoses for a female. Weight every diagnosis by age and sex prevalence; exclude diagnoses with negligible prevalence at this age unless a specific stated risk factor supports them (e.g. do not list aortic dissection in a healthy 14-year-old).
 2. GROUND EVERYTHING IN STATED FINDINGS. Do not invent or assume any symptom, sign, lab, or imaging result that is not explicitly given. Every why_consider/distinguishing_feature must reference only provided findings. If a finding is explicitly negative or normal (e.g. "no fever", "soft, non-tender abdomen"), use it to LOWER or exclude diagnoses that depend on it — never cite an absent finding as supporting evidence. INVESTIGATION RESULTS, when supplied, are stated findings: reconcile every diagnosis against them — an abnormal result that fits rules a diagnosis IN, a normal/negative result that would be expected to be abnormal rules it DOWN. Never invent or assume a result that is not in the supplied investigation list.
 3. INTERPRET, DON'T ANCHOR. Translate lay/patient terms into clinical possibilities (e.g. "indigestion"/epigastric discomfort in an older adult with cardiac risk factors MUST include acute coronary syndrome). Consider diagnoses across ALL relevant organ systems — do not stay inside the system implied by the chief complaint's wording. Explicitly weight risk factors and red flags: age, sex, comorbidities (diabetes, hypertension), sudden onset, diaphoresis, pallor, syncope, symptoms waking the patient from sleep, failure of symptomatic therapy.
+4. SPECIFIC / PATHOGNOMONIC RESULTS DOMINATE. When a supplied investigation result is characteristic of or pathognomonic for a particular diagnosis (e.g. PAS-positive macrophages on small-bowel biopsy → Whipple disease; ST-elevation + raised troponin → acute coronary syndrome; anti-CCP → rheumatoid arthritis), that diagnosis MUST be a LEADING consideration — ranked high — not a low-probability afterthought. Never let a common chief-complaint pattern (e.g. chronic diarrhoea → gluten/lactose intolerance) outrank a specific result that points elsewhere. investigation_fit MUST BE TRUTHFUL: a result may support, argue against, OR be non-specific for a diagnosis — NEVER claim a result "supports" a diagnosis when that result is actually characteristic of a DIFFERENT diagnosis.
 
 RANKING — two INDEPENDENT axes:
 - cannot_miss = ranked by CONSEQUENCE of a missed or delayed diagnosis (dangerous / time-sensitive), even when probability is LOW. Never place benign or self-limited conditions here. Worst-first. Each item's "likelihood" is its probability for THIS patient and may be low.
@@ -31,7 +32,7 @@ Return ONLY this JSON object, lowercase keys exactly as shown:
 - most_likely: 2-3 items (by probability)
 - other: 1-2 less likely but reasonable
 - investigations = SUGGESTED next workup to confirm/refute this diagnosis (what to ORDER).
-- investigation_fit = ONLY when INVESTIGATION RESULTS are supplied in the presentation: one clause (<14 words) on how those already-back results support or argue against THIS diagnosis (e.g. "troponin elevated + anterior ST-elevation → supports"; "CT head normal → lowers but does not exclude"). Use "" (empty string) when no results were supplied. Do NOT restate results that were not provided.
+- investigation_fit = ONLY when INVESTIGATION RESULTS are supplied in the presentation: one TRUTHFUL clause (<14 words) on how those already-back results bear on THIS diagnosis — it may "support", "argue against", or be "non-specific" (e.g. "troponin elevated + anterior ST-elevation → supports"; "CT head normal → lowers but does not exclude"; "PAS-positive macrophages → characteristic of Whipple, not this dx"). Use "" (empty string) when no results were supplied. Do NOT restate results that were not provided, and do NOT claim a result supports this diagnosis when it is actually characteristic of a different one.
 - citation_ids = 1-based numbers from the MEDICAL EXCERPTS (textbook). Cite every textbook claim.
 - plos_citation_ids = strings like "P1", "P2" from PLOS ONE ABSTRACTS, if any inform the diagnosis. May be empty array []. CRITICAL: each entry MUST be a JSON string with DOUBLE QUOTES — write ["P1","P2"] not [P1,P2]. Unquoted barewords are invalid JSON and will fail parse.
 - No prose, no markdown fences, lowercase keys.`;
@@ -51,7 +52,7 @@ Output ONLY a JSON object of this shape:
   "cannot_miss_misuse": ["benign/self-limited diagnoses wrongly placed in cannot_miss, or dangerous diagnoses mis-ranked vs likelihood"],
   "likelihood_errors": ["diagnoses with wrong/implausible likelihood for this presentation"],
   "anchoring_or_atypical_miss": ["diagnostic anchoring on the chief-complaint wording or one organ system, missing cross-system possibilities the findings support"],
-  "investigation_misread": ["ONLY if investigation RESULTS were supplied: a diagnosis kept or up-ranked despite a supplied result that argues strongly against it; a supplied abnormal result not reflected anywhere in the DDx; or an investigation_fit clause that misstates or invents a result not in the supplied list"],
+  "investigation_misread": ["ONLY if investigation RESULTS were supplied: a result that is CHARACTERISTIC or PATHOGNOMONIC for a diagnosis which is MISSING or ranked too LOW (e.g. PAS-positive macrophages but Whipple disease absent or low-likelihood; ST-elevation but ACS not top); a diagnosis kept or up-ranked despite a supplied result that argues strongly against it; a supplied abnormal result not reflected anywhere in the DDx; an investigation_fit that claims a result SUPPORTS this diagnosis when the result is actually characteristic of a DIFFERENT diagnosis (fabricated support); or an investigation_fit that misstates or invents a result not in the supplied list"],
   "unsupported_claims": ["claims that aren't backed by the cited excerpt"],
   "investigation_problems": ["wrong, missing, or low-yield investigations"],
   "citation_problems": ["wrong source attributed, missing citation_ids, etc."],
@@ -191,6 +192,32 @@ export async function POST(req: NextRequest) {
         if (ev.hits.length) hits = ev.hits;
       }
 
+      // Investigation-driven retrieval leg (BOTH engines): a SPECIFIC / pathognomonic
+      // result (e.g. "PAS-positive macrophages on duodenal biopsy" → Whipple disease)
+      // must pull its diagnosis's evidence even when the chief complaint dominates the
+      // embedding. One targeted retrieve per abnormal finding, no LLM call. Prepended so
+      // the decisive evidence sits at the front of the context.
+      if (investigations && investigations.findings.length) {
+        const findingQueries = investigations.findings
+          .filter((f) => f.flag !== 'normal' && f.flag !== 'indeterminate')
+          .map((f) => [f.test, f.value, f.note].filter(Boolean).join(' ').trim())
+          .filter((q) => q.length >= 4)
+          .slice(0, 4);
+        if (findingQueries.length) {
+          emit({ type: 'progress', stage: 'retrieving', msg: 'Retrieving evidence for the supplied investigation findings…', ms: Date.now() - t0 });
+          const findingHits = (await Promise.all(
+            findingQueries.map((q) => retrieve(q, { topK: 3, minSimilarity: 0.35, skipExpand: true }).then((r) => r.hits).catch(() => [])),
+          )).flat();
+          if (findingHits.length) {
+            const seen = new Set<number | string>();
+            const merged: typeof hits = [];
+            for (const h of [...findingHits, ...hits]) { if (!seen.has(h.id)) { seen.add(h.id); merged.push(h); } }
+            hits = merged.slice(0, Math.max(18, hits.length));
+            await logEvent(traceId, 'investigation_retrieval', 'retrieving', { finding_queries: findingQueries, finding_hit_count: findingHits.length, merged_count: hits.length });
+          }
+        }
+      }
+
       // v1.7b S2: forensic capture — full chunk text + scores + PLOS abstracts
       await Promise.all([
         logEvent(traceId, 'retrieval_hydrated', 'retrieving', {
@@ -241,7 +268,7 @@ export async function POST(req: NextRequest) {
       const plosBlock = formatPlosForPrompt(plosHits);
       const sexTxt = (body.sex && body.sex !== '?') ? String(body.sex).trim() : 'not given';
       const ageTxt = body.age ? String(body.age) : 'not given';
-      const constraintLine = `PATIENT CONSTRAINTS — apply as hard rules:\n- Sex: ${sexTxt} → exclude any diagnosis impossible for this sex. Age: ${ageTxt} → weight by age prevalence; drop negligible-prevalence diagnoses unless a stated risk factor supports them.\n- Reason ONLY from the findings stated below; do not invent findings; treat any stated negative/normal finding as ruling-down.${investigations ? '\n- INVESTIGATION RESULTS are supplied below — reconcile every diagnosis against them (abnormal fitting results rule a diagnosis in; normal/negative results that would be expected abnormal rule it down) and fill investigation_fit for each diagnosis. Never cite a result not in the supplied list.' : ''}\n- cannot_miss = by danger if missed (even at low probability; no benign conditions). most_likely = by probability.`;
+      const constraintLine = `PATIENT CONSTRAINTS — apply as hard rules:\n- Sex: ${sexTxt} → exclude any diagnosis impossible for this sex. Age: ${ageTxt} → weight by age prevalence; drop negligible-prevalence diagnoses unless a stated risk factor supports them.\n- Reason ONLY from the findings stated below; do not invent findings; treat any stated negative/normal finding as ruling-down.${investigations ? '\n- INVESTIGATION RESULTS are supplied below — reconcile every diagnosis against them (abnormal fitting results rule a diagnosis in; normal/negative results that would be expected abnormal rule it down) and fill investigation_fit for each diagnosis. A result that is CHARACTERISTIC or PATHOGNOMONIC for a specific diagnosis makes that diagnosis a LEADING, high-ranked consideration — do NOT let the chief-complaint pattern outrank it. investigation_fit must be truthful — never claim a result supports a diagnosis it does not. Never cite a result not in the supplied list.' : ''}\n- cannot_miss = by danger if missed (even at low probability; no benign conditions). most_likely = by probability.`;
       // In hypothesis-first mode, hand the model the reasoned candidate list so it
       // EVALUATES each against the evidence + findings rather than only listing what
       // happened to be retrieved (the anchoring/omission failure mode).
