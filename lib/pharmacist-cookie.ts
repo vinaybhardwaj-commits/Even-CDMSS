@@ -1,4 +1,4 @@
-import { cookies } from 'next/headers';
+import { cookies, headers } from 'next/headers';
 import { timingSafeEqual } from 'crypto';
 
 // Fail-closed gate for the Clinical Pharmacist audit surface (medaudit.evenos.app),
@@ -24,6 +24,17 @@ export async function isPharmacistUnlocked(): Promise<boolean> {
 
 export function pharmacistTokenConfigured(): boolean {
   return !!process.env.PHARMACIST_TOKEN;
+}
+
+// Host-aware access gate for the audit surface.
+//  - medaudit.evenos.app (external, tagged x-surface=medaudit by middleware):
+//    REQUIRE the pharmacist token — it's an internet-facing standalone tool.
+//  - CAT host (even-cdmss.vercel.app): allow — CAT is itself the access boundary,
+//    so the audit tool is open to CAT clinicians like CAT's other tools.
+export async function auditAccessAllowed(): Promise<boolean> {
+  const surface = (await headers()).get('x-surface');
+  if (surface === 'medaudit') return isPharmacistUnlocked();
+  return true;
 }
 
 export function pharmacistTokenMatches(presented: string): boolean {

@@ -1,6 +1,6 @@
 import type { CSSProperties } from 'react';
 import { redirect } from 'next/navigation';
-import { isPharmacistUnlocked } from '@/lib/pharmacist-cookie';
+import { auditAccessAllowed } from '@/lib/pharmacist-cookie';
 import { sql } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
@@ -15,7 +15,7 @@ const sevColor = (s: string | null) =>
   s === 'major' || s === 'contraindicated' ? '#dc2626' : s === 'moderate' ? '#d97706' : '#64748b';
 
 export default async function QueriesPage({ searchParams }: { searchParams: Promise<{ empty?: string }> }) {
-  if (!(await isPharmacistUnlocked())) redirect('/audit/login');
+  if (!(await auditAccessAllowed())) redirect('/audit/login');
   const sp = await searchParams;
   const onlyEmpty = sp?.empty === '1';
 

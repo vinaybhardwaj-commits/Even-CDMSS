@@ -1,14 +1,14 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { sql } from '@/lib/db';
-import { isPharmacistUnlocked } from '@/lib/pharmacist-cookie';
+import { auditAccessAllowed } from '@/lib/pharmacist-cookie';
 import type { AuditPayload } from '@/lib/med-audit';
 
 export const runtime = 'nodejs';
 
 // GET: recent audits (history list for the pharmacist).
 export async function GET() {
-  if (!(await isPharmacistUnlocked())) {
+  if (!(await auditAccessAllowed())) {
     return NextResponse.json({ error: 'pharmacist auth required' }, { status: 401 });
   }
   const rows = (await sql`
@@ -26,7 +26,7 @@ export async function GET() {
 
 // POST: save a finished audit (session + drugs + findings).
 export async function POST(req: NextRequest) {
-  if (!(await isPharmacistUnlocked())) {
+  if (!(await auditAccessAllowed())) {
     return NextResponse.json({ error: 'pharmacist auth required' }, { status: 401 });
   }
   let p: AuditPayload;

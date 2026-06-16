@@ -1,13 +1,13 @@
 import { NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
-import { isPharmacistUnlocked } from '@/lib/pharmacist-cookie';
+import { auditAccessAllowed } from '@/lib/pharmacist-cookie';
 
 export const runtime = 'nodejs';
 
 // Returns formulary options for the audit picker: deduped to canonical generic,
 // grouped by audit_category, with reserve/high-alert/schedule/VED/LASA flags.
 export async function GET() {
-  if (!(await isPharmacistUnlocked())) {
+  if (!(await auditAccessAllowed())) {
     return NextResponse.json({ error: 'pharmacist auth required' }, { status: 401 });
   }
   try {

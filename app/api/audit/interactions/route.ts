@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
-import { isPharmacistUnlocked } from '@/lib/pharmacist-cookie';
+import { auditAccessAllowed } from '@/lib/pharmacist-cookie';
 import { auditInteractions, mergeRank, type DrugClass } from '@/lib/ddi';
 import { referenceInteractions } from '@/lib/ddi-reference';
 import { logDdiQuery } from '@/lib/ddi-log';
@@ -14,7 +14,7 @@ export const maxDuration = 30;
 // duplications (e.g. two anticoagulants) are caught even when no named pair or
 // FDA label covers them. Auto-feeds parameter #12. Fast synchronous JSON.
 export async function POST(req: NextRequest) {
-  if (!(await isPharmacistUnlocked())) {
+  if (!(await auditAccessAllowed())) {
     return NextResponse.json({ error: 'pharmacist auth required' }, { status: 401 });
   }
   let body: { drugs?: string[] };
