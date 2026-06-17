@@ -11,8 +11,10 @@ import { runHarvest } from '@/lib/harvest';
 // not a user gate — the admin VIEW stays open per spec.
 export async function GET(req: NextRequest) {
   const isCron = req.headers.get('x-vercel-cron') !== null;
+  const auth = req.headers.get('authorization') || '';
+  const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
   const secret = req.nextUrl.searchParams.get('secret');
-  const ok = isCron || (process.env.CRON_SECRET && secret === process.env.CRON_SECRET);
+  const ok = isCron || bearerOk || (!!process.env.CRON_SECRET && secret === process.env.CRON_SECRET);
   if (!ok) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   if (!process.env.NCBI_API_KEY) {
     // not fatal (anon 3 req/s still works) — just a heads-up in the response
