@@ -4,7 +4,7 @@ import { retrieveMultiQuery } from '@/lib/multi-query';
 import { searchPlos, formatPlosForPrompt, type PlosHit } from '@/lib/plos';
 import { makeNdjsonStream, ndjsonHeaders } from '@/lib/stream';
 import { startTrace, finishTrace, tracedChat, logEvent, setTraceQuestionPreview, setTraceSeverity, setTraceModelSummary, setTraceFinalAnswer } from '@/lib/trace';
-import { filterByDemographics } from '@/lib/ddx-constraints';
+import { filterByDemographics, crossLinkDdxBuckets } from '@/lib/ddx-constraints';
 import { parseInvestigations, type ParsedInvestigations } from '@/lib/investigations';
 import { generateHypotheses, gatherHypothesisEvidence, formatHypothesesForPrompt, type Hypothesis } from '@/lib/ddx-hypothesis';
 import { geminiConfigured, GEMINI_MODEL } from '@/lib/llm';
@@ -26,6 +26,7 @@ HARD RULES (a violation makes the output unsafe):
 RANKING — two INDEPENDENT axes:
 - cannot_miss = ranked by CONSEQUENCE of a missed or delayed diagnosis (dangerous / time-sensitive), even when probability is LOW. Never place benign or self-limited conditions here. Worst-first. Each item's "likelihood" is its probability for THIS patient and may be low.
 - most_likely = ranked by PROBABILITY for this exact presentation.
+- CROSS-LISTING: a diagnosis MAY appear on BOTH axes ONLY when it is simultaneously your leading-probability diagnosis AND dangerous to miss (e.g. a confirmed Wilson's disease). When it legitimately belongs on both, write the IDENTICAL diagnosis name in each list and keep its why_consider / distinguishing_features / citations CONSISTENT — it is ONE diagnosis viewed on two axes (the interface cross-links the two entries), not two separate diagnoses. Do NOT duplicate a diagnosis that is only dangerous-but-unlikely (cannot_miss only) or only likely-but-benign (most_likely only).
 
 Return ONLY this JSON object, lowercase keys exactly as shown:
 {"summary":"one line","missing_info":["..."],"cannot_miss":[{"diagnosis":"name","likelihood":"high|moderate|low","why_consider":"<25 words","distinguishing_features":["<12 words each"],"investigations":["<12 words each"],"investigation_fit":"","citation_ids":[1,2],"plos_citation_ids":["P1"]}],"most_likely":[...same shape...],"other":[...same shape...]}
@@ -69,7 +70,7 @@ const DDX_REVISION_SYSTEM = `You are revising your earlier DDx draft based on a 
 You will receive (1) the clinical presentation, (2) source excerpts, (3) the draft JSON, (4) the auditor's critique. Output the REVISED full DDx JSON using the EXACT shape required:
 {"summary":"one line","missing_info":["..."],"cannot_miss":[{"diagnosis":"name","likelihood":"high|moderate|low","why_consider":"<25 words","distinguishing_features":["<12 words each"],"investigations":["<12 words each"],"investigation_fit":"","citation_ids":[1,2],"plos_citation_ids":["P1"]}],"most_likely":[...],"other":[...]}
 
-Apply every fix in the critique: REMOVE diagnoses impossible for the patient's sex/age, DELETE any fabricated findings (reason only from stated findings), remove or down-rank diagnoses contradicted by a stated negative/normal finding OR by a supplied investigation result, ADD missing cannot-miss diagnoses (including atypical high-risk presentations), MOVE benign/self-limited conditions out of cannot_miss, correct likelihoods, broaden across organ systems where the findings support it, replace unsupported claims, swap weak investigations, fix citations. When investigation RESULTS were supplied, set investigation_fit on every diagnosis to a true clause about how the supplied results bear on it (and never invent a result not in the supplied list); leave investigation_fit as "" if no results were supplied. Respect patient demographics as hard constraints. No prose, no markdown fences, lowercase keys only. CRITICAL: plos_citation_ids must be quoted strings — write ["P1","P2"] not [P1,P2]. Output MUST be valid JSON.`;
+Apply every fix in the critique: REMOVE diagnoses impossible for the patient's sex/age, DELETE any fabricated findings (reason only from stated findings), remove or down-rank diagnoses contradicted by a stated negative/normal finding OR by a supplied investigation result, ADD missing cannot-miss diagnoses (including atypical high-risk presentations), MOVE benign/self-limited conditions out of cannot_miss, correct likelihoods, broaden across organ systems where the findings support it, replace unsupported claims, swap weak investigations, fix citations. When investigation RESULTS were supplied, set investigation_fit on every diagnosis to a true clause about how the supplied results bear on it (and never invent a result not in the supplied list); leave investigation_fit as "" if no results were supplied. Respect patient demographics as hard constraints. If a diagnosis legitimately belongs on BOTH the cannot_miss and most_likely axes (leading probability AND dangerous), use the IDENTICAL name and consistent rationale in both lists — it is cross-linked as one diagnosis, not duplicated. No prose, no markdown fences, lowercase keys only. CRITICAL: plos_citation_ids must be quoted strings — write ["P1","P2"] not [P1,P2]. Output MUST be valid JSON.`;
 
 
 function buildPresentation(b: Body): { display: string; queryHint: string } {
@@ -287,7 +288,7 @@ export async function POST(req: NextRequest) {
       const plosBlock = formatPlosForPrompt(plosHits);
       const sexTxt = (body.sex && body.sex !== '?') ? String(body.sex).trim() : 'not given';
       const ageTxt = body.age ? String(body.age) : 'not given';
-      const constraintLine = `PATIENT CONSTRAINTS — apply as hard rules:\n- Sex: ${sexTxt} → exclude any diagnosis impossible for this sex. Age: ${ageTxt} → weight by age prevalence; drop negligible-prevalence diagnoses unless a stated risk factor supports them.\n- Reason ONLY from the findings stated below; do not invent findings; treat any stated negative/normal finding as ruling-down.${investigations ? '\n- INVESTIGATION RESULTS are supplied below — reconcile every diagnosis against them (abnormal fitting results rule a diagnosis in; normal/negative results that would be expected abnormal rule it down) and fill investigation_fit for each diagnosis. A result that is CHARACTERISTIC or PATHOGNOMONIC for a specific diagnosis makes that diagnosis a LEADING, high-ranked consideration — do NOT let the chief-complaint pattern outrank it. investigation_fit must be truthful — never claim a result supports a diagnosis it does not. Never cite a result not in the supplied list.' : ''}\n- cannot_miss = by danger if missed (even at low probability; no benign conditions). most_likely = by probability.`;
+      const constraintLine = `PATIENT CONSTRAINTS — apply as hard rules:\n- Sex: ${sexTxt} → exclude any diagnosis impossible for this sex. Age: ${ageTxt} → weight by age prevalence; drop negligible-prevalence diagnoses unless a stated risk factor supports them.\n- Reason ONLY from the findings stated below; do not invent findings; treat any stated negative/normal finding as ruling-down.${investigations ? '\n- INVESTIGATION RESULTS are supplied below — reconcile every diagnosis against them (abnormal fitting results rule a diagnosis in; normal/negative results that would be expected abnormal rule it down) and fill investigation_fit for each diagnosis. A result that is CHARACTERISTIC or PATHOGNOMONIC for a specific diagnosis makes that diagnosis a LEADING, high-ranked consideration — do NOT let the chief-complaint pattern outrank it. investigation_fit must be truthful — never claim a result supports a diagnosis it does not. Never cite a result not in the supplied list.' : ''}\n- cannot_miss = by danger if missed (even at low probability; no benign conditions). most_likely = by probability. A diagnosis that is BOTH your leading probability AND dangerous belongs on both axes — name it identically in each (it is cross-linked as one diagnosis, not duplicated).`;
       // In hypothesis-first mode, hand the model the reasoned candidate list so it
       // EVALUATES each against the evidence + findings rather than only listing what
       // happened to be retrieved (the anchoring/omission failure mode).
@@ -391,9 +392,17 @@ export async function POST(req: NextRequest) {
       // Hard demographic guard: deterministically drop sex-impossible diagnoses
       // (belt-and-suspenders behind the prompt rules). See lib/ddx-constraints.
       const demoFilter = filterByDemographics(parsed, body.sex);
-      const ddx = demoFilter.filtered;
+      // Cross-axis guard: when a diagnosis lands in BOTH cannot_miss and most_likely
+      // (e.g. confirmed Wilson's — leading probability AND fatal if missed), flag both
+      // entries so the UI cross-links them as one diagnosis on two axes rather than
+      // two cards that look like separate, accidentally-duplicated diagnoses.
+      const crossLink = crossLinkDdxBuckets(demoFilter.filtered);
+      const ddx = crossLink.linked;
       if (demoFilter.removed.length) {
         await logEvent(traceId, 'demographic_filter', 'parsing', { sex: body.sex ?? null, removed: demoFilter.removed });
+      }
+      if (crossLink.crossListed.length) {
+        await logEvent(traceId, 'bucket_cross_link', 'parsing', { cross_listed: crossLink.crossListed });
       }
       emit({
         type: 'result',

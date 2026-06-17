@@ -25,6 +25,11 @@ type Dx = {
   investigation_fit?: string;
   citation_ids?: number[];
   plos_citation_ids?: string[];
+  // Cross-axis flags set server-side (lib/ddx-constraints crossLinkDdxBuckets) when
+  // the same diagnosis appears on BOTH axes — so we cross-link the two cards as one
+  // diagnosis viewed two ways, instead of two cards that look like separate dups.
+  also_cannot_miss?: boolean;   // on a most_likely card: also a cannot-miss
+  also_most_likely?: boolean;   // on a cannot_miss card: also the leading diagnosis
 };
 type InvestigationFinding = {
   test: string; value: string; unit?: string | null;
@@ -89,6 +94,16 @@ function DxCard({ dx, idx, danger, onCite, onPlosCite }: { dx: Dx; idx: number; 
             <span className={`rounded-full px-2 py-0.5 font-semibold ${LIKELIHOOD_COLORS[lk] ?? LIKELIHOOD_COLORS.moderate}`}>
               {lk} likelihood
             </span>
+            {dx.also_cannot_miss && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-rose-100 px-2 py-0.5 font-semibold text-rose-700" title="This is also flagged as a cannot-miss — see the Cannot-miss section.">
+                <AlertTriangle className="h-3 w-3" /> also cannot-miss
+              </span>
+            )}
+            {dx.also_most_likely && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 font-semibold text-emerald-800" title="This is also your leading diagnosis — see the Most likely section.">
+                <CheckCircle2 className="h-3 w-3" /> also most-likely
+              </span>
+            )}
             {(() => {
               const totalCites = (dx.citation_ids?.length || 0) + (dx.plos_citation_ids?.length || 0);
               return totalCites > 0 ? (

@@ -76,3 +76,62 @@ export function filterByDemographics(parsed: DdxParsed, sexRaw?: string | null):
     removed,
   };
 }
+
+// ── Cross-axis listing guard ────────────────────────────────────────────────
+// cannot_miss (ranked by danger) and most_likely (ranked by probability) are two
+// INDEPENDENT axes, so a single diagnosis can legitimately score on both — e.g. a
+// confirmed Wilson's disease is simultaneously the leading probability AND fatal if
+// missed. The defect Dr Aravind reported (16 Jun) was not the dual-listing itself
+// but that the two cards looked like two unrelated diagnoses (independently worded,
+// different citation counts), blurring "this IS the diagnosis" vs "differentials
+// still needing exclusion". Fix: deterministically DETECT a diagnosis that appears
+// on both axes and flag BOTH entries so the UI can cross-link them as ONE diagnosis
+// viewed on two axes — keeping both cards (product decision) while removing the
+// accidental-duplicate look. Belt-and-suspenders behind the prompt, exactly like
+// filterByDemographics: it fires whatever the LLM (Gemini or Ollama) emits.
+
+type DdxItemFlagged = DdxItem & { also_cannot_miss?: boolean; also_most_likely?: boolean };
+
+/** Normalise a diagnosis name for cross-axis identity matching. */
+export function normDxName(name?: string | null): string {
+  return String(name || '')
+    .toLowerCase()
+    .replace(/[’']/g, '')          // possessive: Wilson's → wilsons
+    .replace(/[^a-z0-9]+/g, ' ')   // punctuation → space
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Detect diagnoses listed on BOTH the cannot_miss and most_likely axes and flag
+ * each occurrence (`also_cannot_miss` on the most_likely card, `also_most_likely`
+ * on the cannot_miss card) so the client can render an explicit cross-reference
+ * badge instead of two cards that read as separate diagnoses. Mutates the item
+ * objects in place (they are the same references emitted to the client) and
+ * returns the (unchanged-shape) object plus the list of cross-listed diagnosis
+ * names for audit logging.
+ */
+export function crossLinkDdxBuckets(parsed: DdxParsed): { linked: DdxParsed; crossListed: string[] } {
+  const cm = Array.isArray(parsed.cannot_miss) ? parsed.cannot_miss : [];
+  const ml = Array.isArray(parsed.most_likely) ? parsed.most_likely : [];
+  if (!cm.length || !ml.length) return { linked: parsed, crossListed: [] };
+
+  const mlByName = new Map<string, DdxItemFlagged>();
+  for (const it of ml) {
+    const k = normDxName((it as DdxItem)?.diagnosis);
+    if (k && !mlByName.has(k)) mlByName.set(k, it as DdxItemFlagged);
+  }
+
+  const crossListed: string[] = [];
+  for (const it of cm) {
+    const k = normDxName((it as DdxItem)?.diagnosis);
+    if (!k) continue;
+    const partner = mlByName.get(k);
+    if (partner) {
+      (it as DdxItemFlagged).also_most_likely = true;   // cannot_miss card: "also your leading dx"
+      partner.also_cannot_miss = true;                  // most_likely card: "also a cannot-miss"
+      crossListed.push((it as DdxItem).diagnosis || k);
+    }
+  }
+  return { linked: parsed, crossListed };
+}
