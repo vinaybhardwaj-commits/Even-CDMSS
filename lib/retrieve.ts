@@ -2,6 +2,7 @@ import { sql } from './db';
 import { embedQuery, embedQueryV2, vectorLiteral, TOP_K, USE_EMBEDDING_V2 } from './llm';
 import { expandQuery } from './expand';
 import { rerank } from './rerank';
+import { computeSourceQualityWeight } from './source-quality';
 import type { ChunkHit } from './db';
 
 export type RetrieveOptions = {
@@ -173,9 +174,16 @@ export async function retrieve(query: string, opts: RetrieveOptions = {}): Promi
     const sortKey = useReranker ? 'rerank_score' : 'similarity';
     hits = hits.map((h) => {
       const raw = (h[sortKey as keyof ChunkHitWithMeta] as number) ?? 0;
-      const w = h.source_quality_weight ?? 1.0;
-      // We keep both originals for debug; the new effective score sorts.
-      return { ...h, [`${sortKey}_weighted`]: raw * w } as ChunkHitWithMeta & Record<string, number>;
+      // Compute the weight FRESH from the chunk's own fields rather than trusting
+      // the precomputed mksap_chunks.source_quality_weight column. The Jun-2026 bulk
+      // literature load (ingest_cdmss_keep.py) inserted ~2M PubMed/PMC rows WITHOUT
+      // populating that column → they COALESCE to 1.0, which would rank raw abstracts
+      // ABOVE weighted textbooks (StatPearls/UpToDate at 0.90). Computing here uses
+      // the same formula a reindex would, so unknown journals get the 0.80 default and
+      // tiny/fragment chunks get penalised — no 2M-row backfill needed. Overwrite the
+      // field so telemetry shows the weight actually applied.
+      const w = computeSourceQualityWeight({ book: h.book, source: h.source, chunk_type: h.chunk_type, token_count: h.token_count });
+      return { ...h, source_quality_weight: w, [`${sortKey}_weighted`]: raw * w } as ChunkHitWithMeta & Record<string, number>;
     });
     const k = `${sortKey}_weighted`;
     hits.sort((a, b) => ((b as unknown as Record<string, number>)[k] ?? 0) - ((a as unknown as Record<string, number>)[k] ?? 0));

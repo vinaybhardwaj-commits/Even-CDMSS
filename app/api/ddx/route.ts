@@ -192,8 +192,13 @@ export async function POST(req: NextRequest) {
       // cut Mac-Mini Ollama load. Classic keeps multi-query.
       const broadMultiQuery = useMultiQuery && !useHypothesisFirst;
       const retrievePromise = broadMultiQuery
-        ? retrieveMultiQuery(retrievalQuery, { topK: DDX_TOP_K, minSimilarity: 0.4, bm25Query })
-        : retrieve(retrievalQuery, { topK: DDX_TOP_K, minSimilarity: 0.4, bm25Query }).then((r) => ({ hits: r.hits, variants: [retrievalQuery], perVariantCounts: [r.hits.length] }));
+        // Broad pool gets BOTH source-quality weighting (free) AND the LLM reranker
+        // (Gemini Flash, ~1 parallel round-trip). Post the Jun-2026 2M-abstract load,
+        // raw similarity alone floats off-topic journal abstracts above textbooks
+        // (a JACC abstract at 0.85 over a relevant UpToDate chunk at 0.42); the reranker
+        // judges actual relevance and demotes them, the weights bias toward textbooks.
+        ? retrieveMultiQuery(retrievalQuery, { topK: DDX_TOP_K, minSimilarity: 0.4, bm25Query, useReranker: true, useSourceWeights: true })
+        : retrieve(retrievalQuery, { topK: DDX_TOP_K, minSimilarity: 0.4, bm25Query, useReranker: true, useSourceWeights: true }).then((r) => ({ hits: r.hits, variants: [retrievalQuery], perVariantCounts: [r.hits.length] }));
       const [retrieveResult, plosHits] = await Promise.all([
         retrievePromise,
         includePlos ? searchPlos(plosQuery, { rows: 5, yearsBack: 5 }) : Promise.resolve([] as PlosHit[]),
@@ -226,7 +231,7 @@ export async function POST(req: NextRequest) {
         if (findingQueries.length) {
           emit({ type: 'progress', stage: 'retrieving', msg: 'Retrieving evidence for the supplied investigation findings…', ms: Date.now() - t0 });
           const findingHits = (await Promise.all(
-            findingQueries.map((q) => retrieve(q, { topK: 3, minSimilarity: 0.55, skipExpand: true }).then((r) => r.hits).catch(() => [])),
+            findingQueries.map((q) => retrieve(q, { topK: 3, minSimilarity: 0.55, skipExpand: true, useSourceWeights: true }).then((r) => r.hits).catch(() => [])),
           )).flat().filter((h) => (h.similarity ?? 0) >= 0.6);
           if (findingHits.length) {
             const seen = new Set<number | string>();

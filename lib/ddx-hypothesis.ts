@@ -118,7 +118,7 @@ export async function gatherHypothesisEvidence(
 
   const perDxResults = await Promise.all(
     picked.map((h) =>
-      retrieve(h.dx, { topK: perDxK, minSimilarity: 0.35, skipExpand: true })
+      retrieve(h.dx, { topK: perDxK, minSimilarity: 0.35, skipExpand: true, useSourceWeights: true })
         .then((r) => ({ dx: h.dx, hits: r.hits }))
         .catch(() => ({ dx: h.dx, hits: [] as ChunkHitWithMeta[] })),
     ),
