@@ -5,6 +5,8 @@ import { searchPlos, formatPlosForPrompt, type PlosHit } from '@/lib/plos';
 import { makeNdjsonStream, ndjsonHeaders } from '@/lib/stream';
 import { startTrace, finishTrace, tracedChat, logEvent, setTraceQuestionPreview, setTraceSeverity, setTraceModelSummary, setTraceFinalAnswer } from '@/lib/trace';
 import { filterByDemographics, crossLinkDdxBuckets } from '@/lib/ddx-constraints';
+import { rerank } from '@/lib/rerank';
+import { computeSourceQualityWeight } from '@/lib/source-quality';
 import { parseInvestigations, type ParsedInvestigations } from '@/lib/investigations';
 import { generateHypotheses, gatherHypothesisEvidence, formatHypothesesForPrompt, type Hypothesis } from '@/lib/ddx-hypothesis';
 import { geminiConfigured, GEMINI_MODEL } from '@/lib/llm';
@@ -240,6 +242,40 @@ export async function POST(req: NextRequest) {
             hits = merged.slice(0, Math.max(18, hits.length));
             await logEvent(traceId, 'investigation_retrieval', 'retrieving', { finding_queries: findingQueries, finding_hit_count: findingHits.length, merged_count: hits.length });
           }
+        }
+      }
+
+      // FINAL-POOL RERANK + noise gate. The broad leg is reranked inside retrieve(),
+      // but in hypothesis-first mode (default) the final pool is dominated by the
+      // per-candidate + investigation legs (source-weighted only), which still admit
+      // high-similarity OFF-TOPIC abstracts the Jun-2026 2M-row load introduced (e.g.
+      // a cardiology / obstetrics journal on a dermatology case). One LLM-judge rerank
+      // (Gemini Flash, batched-parallel → ~1 round-trip) over the merged ~14-18 chunks
+      // scores each for actual relevance to the presentation; we sort by judge-score ×
+      // source-quality weight and DROP the clear noise (judge < 0.2 = "barely related"),
+      // always keeping ≥12 so the differential is never starved. Soft-fail: on any
+      // rerank error we keep the merged order unchanged (never blocks the differential).
+      if (hits.length > 2) {
+        try {
+          const judged = await rerank(displayForPrompt, hits.map((h) => ({ id: h.id, text: h.text })));
+          const judgeRan = judged.some((r) => r.rerank_backend !== 'none');
+          const scoreById = new Map(judged.map((r) => [r.id, r.rerank_score] as const));
+          const ranked = hits
+            .map((h) => {
+              const rs = scoreById.get(h.id) ?? 0;
+              const w = computeSourceQualityWeight({ book: h.book, source: h.source, chunk_type: h.chunk_type, token_count: h.token_count });
+              return { h: { ...h, rerank_score: rs, rerank_backend: 'judge' as const, source_quality_weight: w }, score: rs, eff: rs * w };
+            })
+            .sort((a, b) => b.eff - a.eff);
+          // Drop judge-scored noise only when the judge actually ran; keep ≥12.
+          const kept = judgeRan
+            ? ranked.filter((x, i) => i < 12 || x.score >= 0.2)
+            : ranked;
+          const before = hits.length;
+          hits = kept.map((x) => x.h);
+          await logEvent(traceId, 'final_pool_rerank', 'retrieving', { reranked: judgeRan, kept: hits.length, dropped: before - hits.length });
+        } catch (e) {
+          await logEvent(traceId, 'final_pool_rerank', 'retrieving', { reranked: false, error: String((e as Error).message) }).catch(() => {});
         }
       }
 
