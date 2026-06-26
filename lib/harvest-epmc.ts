@@ -15,7 +15,7 @@ export type TopicRow = { id: number; topic: string; query_terms: string; date_wi
 type Stats = {
   topic: string; found: number; articles: number; chunks: number;
   fulltext: number; abstract_only: number; skipped_dup: number; rejected: number;
-  oa_gated: number; ft_ok: number; error?: string;  // diagnostics: passed OA gate / full-text fetch returned XML
+  oa_gated: number; ft_ok: number; ft_debug?: string; error?: string;  // diagnostics: gate / fetch outcome
 };
 
 const sql2 = sql as unknown as (q: string, p: unknown[]) => Promise<Array<{ id?: number }>>;
@@ -67,10 +67,11 @@ export async function harvestTopicEpmc(t: TopicRow, maxArticles: number): Promis
       // Full text only for the redistributable OA subset.
       if (a.isOA && a.license && OA_LICENSE.test(a.license.trim()) && a.inEPMC && a.pmcid) {
         st.oa_gated++;
-        const xml = await fetchFullTextXML('PMC', a.pmcid);
-        if (xml) {
+        const ft = await fetchFullTextXML('PMC', a.pmcid);
+        if (!st.ft_debug) st.ft_debug = `${a.pmcid} status=${ft.status} len=${ft.len} head="${ft.head}"`;
+        if (ft.xml) {
           st.ft_ok++;
-          const chunks = chunkJatsFullText(xml, { maxTokens: 350, minTokens: 40, maxChunks: 25 });
+          const chunks = chunkJatsFullText(ft.xml, { maxTokens: 350, minTokens: 40, maxChunks: 25 });
           for (const c of chunks) {
             if (await insertChunk(a.journal, a.title, c.section, a.pmcid, 'fulltext', c.text)) wrote++;
           }

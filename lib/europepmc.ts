@@ -106,14 +106,17 @@ export async function searchTopicEpmc(
   return out;
 }
 
-/** Fetch JATS full-text XML for an OA article. Returns null if unavailable/non-OA. */
-export async function fetchFullTextXML(source: string, id: string): Promise<string | null> {
+export type FullTextResult = { xml: string | null; status: number; len: number; head: string; url: string };
+
+/** Fetch JATS full-text XML for an OA article. xml is non-null only when the
+ *  response carried a <body>. status/len/head are diagnostics. */
+export async function fetchFullTextXML(source: string, id: string): Promise<FullTextResult> {
+  const url = `${EPMC}/${source}/${id}/fullTextXML`;
   try {
-    const r = await fetch(`${EPMC}/${source}/${id}/fullTextXML`, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(25000) });
-    if (!r.ok) return null;
-    const t = await r.text();
-    return t && t.includes('<body') ? t : null;
-  } catch {
-    return null;
+    const r = await fetch(url, { headers: { 'User-Agent': UA, Accept: 'application/xml, text/xml, */*' }, signal: AbortSignal.timeout(25000) });
+    const t = r.ok ? await r.text() : '';
+    return { xml: t && t.includes('<body') ? t : null, status: r.status, len: t.length, head: t.slice(0, 160).replace(/\s+/g, ' '), url };
+  } catch (e) {
+    return { xml: null, status: -1, len: 0, head: String((e as Error).message).slice(0, 160), url };
   }
 }
