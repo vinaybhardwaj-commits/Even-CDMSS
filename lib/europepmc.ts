@@ -108,10 +108,12 @@ export async function searchTopicEpmc(
 
 export type FullTextResult = { xml: string | null; status: number; len: number; head: string; url: string };
 
-/** Fetch JATS full-text XML for an OA article. xml is non-null only when the
- *  response carried a <body>. status/len/head are diagnostics. */
-export async function fetchFullTextXML(source: string, id: string): Promise<FullTextResult> {
-  const url = `${EPMC}/${source}/${id}/fullTextXML`;
+/** Fetch JATS full-text XML for an OA article by PMCID (e.g. "PMC3257301").
+ *  Endpoint is /rest/{PMCID}/fullTextXML — the PMCID goes directly after /rest/,
+ *  NOT /rest/PMC/{PMCID}/… (that 404s). xml is non-null only when the response
+ *  carried a <body>; status/len/head are diagnostics. */
+export async function fetchFullTextXML(pmcid: string): Promise<FullTextResult> {
+  const url = `${EPMC}/${pmcid}/fullTextXML`;
   try {
     const r = await fetch(url, { headers: { 'User-Agent': UA, Accept: 'application/xml, text/xml, */*' }, signal: AbortSignal.timeout(25000) });
     const t = r.ok ? await r.text() : '';

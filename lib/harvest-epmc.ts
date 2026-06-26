@@ -67,7 +67,7 @@ export async function harvestTopicEpmc(t: TopicRow, maxArticles: number): Promis
       // Full text only for the redistributable OA subset.
       if (a.isOA && a.license && OA_LICENSE.test(a.license.trim()) && a.inEPMC && a.pmcid) {
         st.oa_gated++;
-        const ft = await fetchFullTextXML('PMC', a.pmcid);
+        const ft = await fetchFullTextXML(a.pmcid);
         if (!st.ft_debug) st.ft_debug = `${a.pmcid} status=${ft.status} len=${ft.len} head="${ft.head}"`;
         if (ft.xml) {
           st.ft_ok++;
