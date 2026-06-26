@@ -22,7 +22,7 @@ export async function GET(req: NextRequest) {
   const max = req.nextUrl.searchParams.get('max');
   try {
     const result = await runHarvestEpmc({
-      maxArticles: max ? Number(max) : 20,
+      maxArticles: max ? Number(max) : 12,  // conservative default: full-text articles are heavy (~20 chunks each); the daily cron passes no ?max
       onlyTopicId: onlyTopicId ? Number(onlyTopicId) : undefined,
       onlyTopicName: onlyTopicName || undefined,
     });

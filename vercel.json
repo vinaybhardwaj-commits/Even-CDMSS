@@ -7,6 +7,7 @@
   "git": { "deploymentEnabled": { "main": true } },
   "crons": [
     { "path": "/api/cron/harvest", "schedule": "0 * * * *" },
+    { "path": "/api/cron/harvest-epmc", "schedule": "0 3 * * *" },
     { "path": "/api/cron/curator", "schedule": "0 5 * * 1" }
   ]
 }
