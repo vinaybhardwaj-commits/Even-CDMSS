@@ -18,11 +18,13 @@ export async function GET(req: NextRequest) {
   if (!ok) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
 
   const onlyTopicId = req.nextUrl.searchParams.get('topic');
+  const onlyTopicName = req.nextUrl.searchParams.get('name');
   const max = req.nextUrl.searchParams.get('max');
   try {
     const result = await runHarvestEpmc({
       maxArticles: max ? Number(max) : 20,
       onlyTopicId: onlyTopicId ? Number(onlyTopicId) : undefined,
+      onlyTopicName: onlyTopicName || undefined,
     });
     return NextResponse.json({ ok: true, ...result });
   } catch (e) {

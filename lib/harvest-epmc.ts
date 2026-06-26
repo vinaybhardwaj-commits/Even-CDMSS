@@ -105,17 +105,27 @@ export async function harvestTopicEpmc(t: TopicRow, maxArticles: number): Promis
   return st;
 }
 
-/** Run an EPMC harvest pass over enabled topics (oldest-run first), capped by article budget. */
+/** Run an EPMC harvest pass over enabled topics (oldest-run first), capped by article budget.
+ *  Target a single topic by numeric id (onlyTopicId) or by case-insensitive name substring
+ *  (onlyTopicName) — the UI doesn't expose ids, so name targeting is the usable handle. */
 export async function runHarvestEpmc(
-  opts: { maxArticles?: number; onlyTopicId?: number; perTopic?: number } = {},
+  opts: { maxArticles?: number; onlyTopicId?: number; onlyTopicName?: string; perTopic?: number } = {},
 ): Promise<{ total: number; topics: Stats[] }> {
   const maxArticles = opts.maxArticles ?? 20;
-  const rows = await (sql as unknown as (q: string, p: unknown[]) => Promise<TopicRow[]>)(
-    opts.onlyTopicId
-      ? `SELECT id, topic, query_terms, date_window_years, max_per_run FROM ingest_topics WHERE id = $1`
-      : `SELECT id, topic, query_terms, date_window_years, max_per_run FROM ingest_topics WHERE enabled ORDER BY last_run_at ASC NULLS FIRST`,
-    opts.onlyTopicId ? [opts.onlyTopicId] : [],
-  );
+  const cols = 'id, topic, query_terms, date_window_years, max_per_run';
+  let q: string;
+  let params: unknown[];
+  if (opts.onlyTopicId) {
+    q = `SELECT ${cols} FROM ingest_topics WHERE id = $1`;
+    params = [opts.onlyTopicId];
+  } else if (opts.onlyTopicName) {
+    q = `SELECT ${cols} FROM ingest_topics WHERE enabled AND topic ILIKE $1 ORDER BY last_run_at ASC NULLS FIRST`;
+    params = [`%${opts.onlyTopicName}%`];
+  } else {
+    q = `SELECT ${cols} FROM ingest_topics WHERE enabled ORDER BY last_run_at ASC NULLS FIRST`;
+    params = [];
+  }
+  const rows = await (sql as unknown as (qq: string, p: unknown[]) => Promise<TopicRow[]>)(q, params);
   const topics: Stats[] = [];
   let budget = maxArticles;
   for (const t of rows) {
