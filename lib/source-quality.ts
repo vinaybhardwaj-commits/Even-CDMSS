@@ -58,6 +58,9 @@ const BOOK_TIERS: { match: string; tier: number }[] = [
   { match: 'medscape',    tier: 0.90 },
   { match: 'aafp',        tier: 0.90 },
   { match: 'guidelines',  tier: 0.95 },
+  // Society-endorsed appropriateness / low-value-care recommendations (Choosing Wisely
+  // module). source='choosing-wisely', book='CW-<society>' — both land in `hay`.
+  { match: 'choosing-wisely', tier: 0.95 },
   // Specialty refs (slightly above default)
   { match: 'tintinalli',  tier: 0.95 },
   { match: 'goldman',     tier: 1.00 },
@@ -82,6 +85,7 @@ function chunkTypeBonus(chunk_type: string | null): number {
   const ct = chunk_type.toLowerCase();
   if (ct === 'explanation') return 1.05;
   if (ct === 'narrative') return 1.00;
+  if (ct === 'recommendation') return 1.00; // Choosing Wisely recs are short but high-signal; don't penalize as "other"
   return 0.95;
 }
 
