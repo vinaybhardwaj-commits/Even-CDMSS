@@ -35,12 +35,15 @@ export interface ValueIntervention {
 
 /** A grounded EHRC charge-master match (real local price, not an estimate). */
 export interface TariffRef {
+  kind?: 'package' | 'investigation';
   code: string;
   item: string;
-  dept: string;
-  general: number;
-  private: number;
-  suite: number;
+  dept?: string;
+  type?: string;
+  general?: number;
+  private?: number | null;
+  suite?: number | null;
+  opd?: number | null;        // investigations carry an outpatient price
   score?: number;
 }
 

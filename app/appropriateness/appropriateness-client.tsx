@@ -372,17 +372,29 @@ function ValueCard({ iv }: { iv: ValueIntervention }) {
   );
 }
 
+function tariffLine(t: TariffRef): string {
+  const parts: string[] = [];
+  if (t.kind === 'investigation') {
+    if (t.opd != null) parts.push(`${inr(t.opd)} OPD`);
+    if (t.general != null) parts.push(`${inr(t.general)} general`);
+  } else {
+    if (t.general != null) parts.push(`${inr(t.general)} general`);
+    if (t.private != null) parts.push(`${inr(t.private)} private`);
+    if (t.suite != null) parts.push(`${inr(t.suite)} suite`);
+  }
+  return parts.join(' · ');
+}
+
 function TariffBanner({ tariffs }: { tariffs: TariffRef[] }) {
   return (
     <div className="mb-3 rounded-lg border border-teal-200 bg-teal-50 p-3">
       <div className="flex items-center gap-1 text-[11px] font-medium text-teal-800">
-        <IndianRupee className="h-3 w-3" /> EHRC charge master — cited package tariff (not an estimate)
+        <IndianRupee className="h-3 w-3" /> EHRC charge master — cited tariff (not an estimate)
       </div>
       <ul className="mt-1.5 space-y-1">
         {tariffs.map((t) => (
           <li key={t.code} className="text-[12.5px] text-teal-900">
-            <span className="font-medium">{t.item}</span> <span className="text-teal-700">({t.code})</span>:{' '}
-            {inr(t.general)} general · {inr(t.private)} private · {inr(t.suite)} suite
+            <span className="font-medium">{t.item}</span> <span className="text-teal-700">({t.code})</span>: {tariffLine(t)}
           </li>
         ))}
       </ul>
