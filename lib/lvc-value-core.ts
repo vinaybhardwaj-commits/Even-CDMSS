@@ -33,9 +33,22 @@ export interface ValueIntervention {
   estimates: string[];    // model estimates (incl. any figures) — rendered separately, clearly labeled
 }
 
+/** A grounded EHRC charge-master match (real local price, not an estimate). */
+export interface TariffRef {
+  code: string;
+  item: string;
+  dept: string;
+  general: number;
+  private: number;
+  suite: number;
+  score?: number;
+}
+
 export interface ValueAnalysis {
   interventions: ValueIntervention[];
   disclaimer: string;
+  /** EHRC package-tariff matches for the proposed order(s) — cited cost, set deterministically (not by the LLM). */
+  tariffs?: TariffRef[];
 }
 
 export const VALUE_DISCLAIMER =
@@ -84,6 +97,7 @@ Rules:
 - Be balanced and NON-DIRECTIVE. This informs shared decision-making; it is NOT a recommendation to withhold care and must never read as a denial-of-care justification.
 - Separate EVIDENCE-CITED facts (supported by the excerpts) from your own ESTIMATES. Put grounded points in "evidence" and anything you are estimating (especially cost and long-term-care figures) in "estimates".
 - You MAY give approximate cost / long-term-care figures, but every figure goes in "estimates" and must be written as an estimate (e.g. "est. ~₹X (not validated)"). Never present an estimate as evidence.
+- If an "EHRC TARIFF" is provided for the intervention, that is the AUTHORITATIVE local upfront cost. Set upfront_cost.detail to reference it as a real EHRC package price (not an estimate), and do NOT put an upfront-cost figure in "estimates" (downstream / long-term-care costs may still be estimates).
 - Rate each dimension low | moderate | high (or "unclear" if the excerpts don't support a rating).
 - "long_term_care" = ongoing needs and downstream care after the intervention (revision surgery, rehab, monitoring, device replacement, complications).
 - "what_would_change_this" = the factors that would change the value calculus (e.g. weight optimization, age, severity, failed conservative therapy, staging).

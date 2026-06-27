@@ -1,8 +1,10 @@
 'use client';
 
 import { useState } from 'react';
-import { Loader2, Flag, X, ExternalLink, Info, Scale, Lightbulb, BookOpen, AlertTriangle } from 'lucide-react';
-import { levelToScore, VALUE_DISCLAIMER, type ValueAnalysis, type ValueIntervention, type Level, type NetValue } from '@/lib/lvc-value-core';
+import { Loader2, Flag, X, ExternalLink, Info, Scale, Lightbulb, BookOpen, AlertTriangle, IndianRupee } from 'lucide-react';
+import { levelToScore, VALUE_DISCLAIMER, type ValueAnalysis, type ValueIntervention, type Level, type NetValue, type TariffRef } from '@/lib/lvc-value-core';
+
+const inr = (n: number) => '₹' + Number(n).toLocaleString('en-IN');
 
 type Region = 'US' | 'CA' | 'IN';
 type LvcFlag = {
@@ -179,6 +181,9 @@ export default function AppropriatenessClient() {
               <div className="mb-2 flex items-center gap-1.5 text-xs text-slate-500">
                 <Scale className="h-3.5 w-3.5" /> Value analysis
               </div>
+              {result.valueAnalysis.tariffs && result.valueAnalysis.tariffs.length > 0 && (
+                <TariffBanner tariffs={result.valueAnalysis.tariffs} />
+              )}
               <div className="space-y-3">
                 {result.valueAnalysis.interventions.map((iv, i) => <ValueCard key={i} iv={iv} />)}
               </div>
@@ -363,6 +368,24 @@ function ValueCard({ iv }: { iv: ValueIntervention }) {
           </ul>
         </div>
       )}
+    </div>
+  );
+}
+
+function TariffBanner({ tariffs }: { tariffs: TariffRef[] }) {
+  return (
+    <div className="mb-3 rounded-lg border border-teal-200 bg-teal-50 p-3">
+      <div className="flex items-center gap-1 text-[11px] font-medium text-teal-800">
+        <IndianRupee className="h-3 w-3" /> EHRC charge master — cited package tariff (not an estimate)
+      </div>
+      <ul className="mt-1.5 space-y-1">
+        {tariffs.map((t) => (
+          <li key={t.code} className="text-[12.5px] text-teal-900">
+            <span className="font-medium">{t.item}</span> <span className="text-teal-700">({t.code})</span>:{' '}
+            {inr(t.general)} general · {inr(t.private)} private · {inr(t.suite)} suite
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

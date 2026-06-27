@@ -14,6 +14,7 @@ import { chatWithFallback, geminiModelFor, geminiUtilityModel, TEXT_MODEL } from
 import { startTrace, logEvent, finishTrace, tracedChat } from './trace';
 import * as vcore from './lvc-value-core';
 import type { ValueAnalysis } from './lvc-value-core';
+import { matchTariffs, formatTariffForPrompt } from './charge-master';
 
 export interface ValueInput {
   scenario: string;
@@ -87,9 +88,18 @@ export async function analyzeValue(input: ValueInput, deps: Partial<ValueDeps> =
     const excerpts = await retrieveExcerpts(query);
     if (traceId) await logEvent(traceId, 'lvc_value_excerpts', null, { count: excerpts.length });
 
-    const user = vcore.buildValueUser(input, excerpts);
+    // Ground the upfront cost in the EHRC charge master (real local price, not an estimate).
+    const tariffs = input.proposedActions?.length ? matchTariffs(input.proposedActions) : [];
+    if (traceId) await logEvent(traceId, 'lvc_value_tariffs', null, { matched: tariffs.map((t) => ({ code: t.code, item: t.item, general: t.general })) });
+
+    let user = vcore.buildValueUser(input, excerpts);
+    if (tariffs.length) {
+      user += `\n\nEHRC TARIFF (authoritative local upfront cost — use this, do NOT estimate the upfront cost):\n${tariffs.map(formatTariffForPrompt).join('\n')}`;
+    }
+
     const raw = await generate(vcore.VALUE_SYSTEM, user, traceId);
     const valueAnalysis = vcore.parseValueResponse(raw);
+    if (valueAnalysis && tariffs.length) valueAnalysis.tariffs = tariffs;
 
     if (traceId) {
       await logEvent(traceId, 'lvc_value_result', null, {
