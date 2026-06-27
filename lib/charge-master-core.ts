@@ -81,7 +81,7 @@ export function matchInvestigationIn(query: string, rows: TariffRow[], opts: { m
   const qNorm = alnum(expand(query));
   const qt = tokenize(query).map(alnum).filter(Boolean);
   if (qNorm.length < 4 && qt.length < 2) return null; // too vague (e.g. "mri", "ct")
-  let best: TariffMatch | null = null;
+  const cands: TariffMatch[] = [];
   for (const r of rows) {
     const iNorm = alnum(r.item);
     if (iNorm.length < 3) continue;
@@ -89,11 +89,17 @@ export function matchInvestigationIn(query: string, rows: TariffRow[], opts: { m
     const allTokens = qt.length >= 2 && qt.every((t) => iNorm.includes(t));
     if (!contained && !allTokens) continue;
     const score = qNorm.length / iNorm.length; // closeness → favor the most specific item
-    if (score > (best?.score ?? 0)) {
-      best = { ...r, score: Number(score.toFixed(3)), matched_on: query };
-    }
+    cands.push({ ...r, score: Number(score.toFixed(3)), matched_on: query });
   }
-  return best && best.score >= min ? best : null;
+  if (cands.length === 0) return null;
+  cands.sort((a, b) => b.score - a.score);
+  if (cands[0].score < min) return null;
+  // Among near-equal matches (a generic query can hit many variants), prefer the basic/
+  // cheapest study so we don't default to a pricier variant the clinician didn't specify.
+  const top = cands[0].score;
+  const near = cands.filter((c) => top - c.score <= 0.08);
+  near.sort((a, b) => (a.opd ?? a.general ?? Infinity) - (b.opd ?? b.general ?? Infinity));
+  return near[0];
 }
 
 export function formatINR(n: number | null | undefined): string {
