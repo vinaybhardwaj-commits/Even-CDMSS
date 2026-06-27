@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { matchLowValueCare, type MatchInput } from '@/lib/lvc';
+import { analyzeValue } from '@/lib/lvc-value';
 import type { Region } from '@/lib/lvc-core';
 
 export const runtime = 'nodejs';
@@ -52,8 +53,18 @@ export async function POST(req: NextRequest) {
   };
 
   try {
-    const result = await matchLowValueCare(input);
-    return NextResponse.json({ ok: true, ...result });
+    // Flag matcher (CW seed-dependent) and value analysis (seed-independent) run in
+    // parallel. The value pass soft-fails to null internally, so it never breaks the response.
+    const [result, value] = await Promise.all([
+      matchLowValueCare(input),
+      analyzeValue({ scenario, proposedActions, patient: hasPatient ? patient : undefined }),
+    ]);
+    return NextResponse.json({
+      ok: true,
+      ...result,
+      valueAnalysis: value.valueAnalysis,
+      valueTraceId: value.traceId,
+    });
   } catch (e) {
     return NextResponse.json({ ok: false, error: String((e as Error).message) }, { status: 500 });
   }

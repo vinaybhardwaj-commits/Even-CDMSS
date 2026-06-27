@@ -1,7 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { Loader2, Flag, X, ExternalLink, Info } from 'lucide-react';
+import { Loader2, Flag, X, ExternalLink, Info, Scale, Lightbulb, BookOpen, AlertTriangle } from 'lucide-react';
+import { levelToScore, VALUE_DISCLAIMER, type ValueAnalysis, type ValueIntervention, type Level, type NetValue } from '@/lib/lvc-value-core';
 
 type Region = 'US' | 'CA' | 'IN';
 type LvcFlag = {
@@ -23,6 +24,8 @@ type MatchResult = {
   considered: number;
   empty: boolean;
   traceId?: string;
+  valueAnalysis?: ValueAnalysis | null;
+  valueTraceId?: string;
   error?: string;
 };
 
@@ -170,32 +173,52 @@ export default function AppropriatenessClient() {
       )}
 
       {result && (
-        <div className="mt-5">
-          {visibleFlags.length === 0 ? (
-            <div className="rounded-xl bg-slate-50 px-4 py-4 text-sm text-slate-600">
-              <span className="font-medium text-slate-800">No low-value-care flags identified for this scenario.</span>
-              {' '}Absence of a flag isn&apos;t an endorsement — it means nothing low-value was matched
-              {result.considered > 0 ? ` (checked ${result.considered} candidate recommendation${result.considered === 1 ? '' : 's'}).` : '.'}
+        <div className="mt-5 space-y-5">
+          {result.valueAnalysis && result.valueAnalysis.interventions.length > 0 && (
+            <div>
+              <div className="mb-2 flex items-center gap-1.5 text-xs text-slate-500">
+                <Scale className="h-3.5 w-3.5" /> Value analysis
+              </div>
+              <div className="space-y-3">
+                {result.valueAnalysis.interventions.map((iv, i) => <ValueCard key={i} iv={iv} />)}
+              </div>
+              <p className="mt-2 text-[11px] leading-relaxed text-slate-400">{result.valueAnalysis.disclaimer || VALUE_DISCLAIMER}</p>
             </div>
-          ) : (
-            <>
+          )}
+
+          {visibleFlags.length > 0 ? (
+            <div>
               <div className="mb-2 flex items-center gap-1.5 text-xs text-slate-500">
                 <Flag className="h-3.5 w-3.5" />
-                {visibleFlags.length} flag{visibleFlags.length === 1 ? '' : 's'} for this scenario
+                {visibleFlags.length} Choosing Wisely flag{visibleFlags.length === 1 ? '' : 's'}
               </div>
               <div className="space-y-3">
                 {visibleFlags.map((f) => (
                   <FlagCard key={f.id} flag={f} onDismiss={() => setDismissed((d) => ({ ...d, [f.id]: true }))} />
                 ))}
               </div>
-            </>
+            </div>
+          ) : (
+            <div className="rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
+              {result.valueAnalysis
+                ? <>No specific Choosing Wisely list match for this order — the value analysis above is the assessment.</>
+                : <><span className="font-medium text-slate-800">No low-value-care flags identified for this scenario.</span> Absence of a flag isn&apos;t an endorsement — it means nothing low-value was matched
+                    {result.considered > 0 ? ` (checked ${result.considered} candidate recommendation${result.considered === 1 ? '' : 's'}).` : '.'}</>}
+            </div>
           )}
 
-          {result.traceId && (
-            <div className="mt-3 text-xs text-slate-400">
-              <a href={`/admin/observability/${result.traceId}`} className="inline-flex items-center gap-1 hover:text-slate-600">
-                <Info className="h-3 w-3" /> View trace
-              </a>
+          {(result.valueTraceId || result.traceId) && (
+            <div className="flex gap-4 text-xs text-slate-400">
+              {result.valueTraceId && (
+                <a href={`/admin/observability/${result.valueTraceId}`} className="inline-flex items-center gap-1 hover:text-slate-600">
+                  <Info className="h-3 w-3" /> Value trace
+                </a>
+              )}
+              {result.traceId && (
+                <a href={`/admin/observability/${result.traceId}`} className="inline-flex items-center gap-1 hover:text-slate-600">
+                  <Info className="h-3 w-3" /> Flag trace
+                </a>
+              )}
             </div>
           )}
         </div>
@@ -238,6 +261,108 @@ function FlagCard({ flag, onDismiss }: { flag: LvcFlag; onDismiss: () => void })
           </a>
         )}
       </div>
+    </div>
+  );
+}
+
+const NET_BADGE: Record<NetValue, string> = {
+  'high-value': 'bg-teal-50 text-teal-800',
+  'context-dependent': 'bg-amber-50 text-amber-800',
+  'low-value': 'bg-red-50 text-red-800',
+  uncertain: 'bg-slate-100 text-slate-700',
+};
+const NET_LABEL: Record<NetValue, string> = {
+  'high-value': 'High value', 'context-dependent': 'Context-dependent', 'low-value': 'Low value', uncertain: 'Uncertain',
+};
+
+function DimBar({ label, level, tone }: { label: string; level: Level; tone: 'benefit' | 'burden' }) {
+  const score = levelToScore(level);
+  const fill = tone === 'benefit' ? 'bg-teal-500' : 'bg-amber-500';
+  return (
+    <div className="flex items-center gap-2">
+      <span className="w-28 shrink-0 text-[11px] text-slate-500">{label}</span>
+      <div className="flex gap-1">
+        {[1, 2, 3].map((n) => (
+          <span key={n} className={`h-2.5 w-7 rounded-sm ${n <= score ? fill : 'bg-slate-200'}`} />
+        ))}
+      </div>
+      <span className="text-[11px] capitalize text-slate-500">{level}</span>
+    </div>
+  );
+}
+
+function DimDetail({ label, d }: { label: string; d: { level: Level; detail: string } }) {
+  if (!d.detail) return null;
+  return <p><span className="font-medium text-slate-900">{label}:</span> {d.detail}</p>;
+}
+
+function ValueCard({ iv }: { iv: ValueIntervention }) {
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="text-sm font-medium leading-snug text-slate-900">{iv.intervention}</div>
+        <div className="flex flex-shrink-0 items-center gap-2">
+          <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${NET_BADGE[iv.net_value]}`}>{NET_LABEL[iv.net_value]}</span>
+          <span className="text-[11px] text-slate-400">conf {iv.confidence.toFixed(2)}</span>
+        </div>
+      </div>
+
+      {iv.summary && <p className="mt-2 text-[13px] leading-relaxed text-slate-700">{iv.summary}</p>}
+
+      <div className="mt-3 space-y-1.5 rounded-lg bg-slate-50 p-3">
+        <DimBar label="Long-term benefit" level={iv.long_term_benefit.level} tone="benefit" />
+        <DimBar label="Harms / risks" level={iv.harms_risks.level} tone="burden" />
+        <DimBar label="Upfront cost" level={iv.upfront_cost.level} tone="burden" />
+        <DimBar label="Long-term care" level={iv.long_term_care.level} tone="burden" />
+      </div>
+
+      <div className="mt-3 space-y-2 text-[12.5px] leading-relaxed text-slate-600">
+        <DimDetail label="Long-term benefit" d={iv.long_term_benefit} />
+        <DimDetail label="Harms / risks" d={iv.harms_risks} />
+        <DimDetail label="Upfront cost" d={iv.upfront_cost} />
+        <DimDetail label="Long-term care needs" d={iv.long_term_care} />
+      </div>
+
+      {iv.alternatives.length > 0 && (
+        <div className="mt-3">
+          <div className="text-[11px] font-medium uppercase tracking-wide text-slate-400">Alternatives</div>
+          <ul className="mt-1 space-y-1">
+            {iv.alternatives.map((a, i) => (
+              <li key={i} className="text-[12.5px] text-slate-600"><span className="font-medium text-slate-800">{a.name}</span>{a.note ? ` — ${a.note}` : ''}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {iv.what_would_change.length > 0 && (
+        <div className="mt-3 flex gap-2 rounded-lg border border-slate-100 bg-slate-50 p-2.5">
+          <Lightbulb className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-400" />
+          <div>
+            <div className="text-[11px] font-medium text-slate-500">What would change this</div>
+            <ul className="mt-0.5 list-disc pl-4 text-[12.5px] text-slate-600">
+              {iv.what_would_change.map((w, i) => <li key={i}>{w}</li>)}
+            </ul>
+          </div>
+        </div>
+      )}
+
+      {iv.evidence.length > 0 && (
+        <div className="mt-3">
+          <div className="flex items-center gap-1 text-[11px] font-medium text-slate-500"><BookOpen className="h-3 w-3" /> Evidence</div>
+          <ul className="mt-1 list-disc pl-4 text-[12px] text-slate-600">
+            {iv.evidence.map((e, i) => <li key={i}>{e}</li>)}
+          </ul>
+        </div>
+      )}
+
+      {iv.estimates.length > 0 && (
+        <div className="mt-3 rounded-lg border border-dashed border-amber-300 bg-amber-50 p-2.5">
+          <div className="flex items-center gap-1 text-[11px] font-medium text-amber-700"><AlertTriangle className="h-3 w-3" /> Model estimates — not validated</div>
+          <ul className="mt-1 list-disc pl-4 text-[12px] text-amber-900">
+            {iv.estimates.map((e, i) => <li key={i}>{e}</li>)}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
