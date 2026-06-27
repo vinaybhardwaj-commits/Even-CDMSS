@@ -7,6 +7,7 @@ const CLINICIAN_NAV: [string, string][] = [
   ['/calculators', 'Calculators'], ['/coach', 'Coach'], ['/review', 'Review'],
   ['/browse', 'Browse'], ['/practice', 'Practice'],
   ['/topics', 'Topics'], ['/search', 'Search'],
+  ['/appropriateness', 'Appropriateness'],
   ['/audit', 'Med Audit'],
 ];
 
