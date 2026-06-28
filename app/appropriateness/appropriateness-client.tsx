@@ -1,8 +1,12 @@
 'use client';
 
 import { useState } from 'react';
-import { Loader2, Flag, X, ExternalLink, Info, Scale, Lightbulb, BookOpen, AlertTriangle, IndianRupee } from 'lucide-react';
+import { Loader2, Flag, X, ExternalLink, Info, Scale, Lightbulb, BookOpen, AlertTriangle, IndianRupee, Route } from 'lucide-react';
 import { levelToScore, VALUE_DISCLAIMER, type ValueAnalysis, type ValueIntervention, type Level, type NetValue, type TariffRef } from '@/lib/lvc-value-core';
+import PathwayTrace from '@/components/PathwayTrace';
+import type { PathwaySkeleton, PathwayEnrichment, SkeletonStage } from '@/lib/pathway-core';
+
+type Mode = 'check' | 'pathway';
 
 const inr = (n: number) => '₹' + Number(n).toLocaleString('en-IN');
 
@@ -56,6 +60,7 @@ function regionToBody(mode: RegionMode): { regionFilter?: Region[]; preferRegion
 }
 
 export default function AppropriatenessClient() {
+  const [mode, setMode] = useState<Mode>('check');
   const [scenario, setScenario] = useState('');
   const [orders, setOrders] = useState('');
   const [age, setAge] = useState('');
@@ -65,6 +70,66 @@ export default function AppropriatenessClient() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<MatchResult | null>(null);
   const [dismissed, setDismissed] = useState<Record<string, boolean>>({});
+
+  // Pathway & decision mode (Flash skeleton → Pro enrich).
+  const [pwLoading, setPwLoading] = useState(false);
+  const [pwEnriching, setPwEnriching] = useState(false);
+  const [pwError, setPwError] = useState<string | null>(null);
+  const [pwSkeleton, setPwSkeleton] = useState<PathwaySkeleton | null>(null);
+  const [pwEnrichment, setPwEnrichment] = useState<PathwayEnrichment | null>(null);
+  const [pwSkeletonTraceId, setPwSkeletonTraceId] = useState<string | undefined>();
+  const [pwEnrichTraceId, setPwEnrichTraceId] = useState<string | undefined>();
+
+  function patientBody() {
+    return { age: age ? Number(age) : undefined, sex: sex || undefined };
+  }
+  function parseOrders(): string[] {
+    return orders.split(/[\n,;]+/).map((x) => x.trim()).filter(Boolean);
+  }
+
+  async function runPathway() {
+    const s = scenario.trim();
+    if (s.length < 3) { setPwError('Enter a clinical scenario.'); return; }
+    setPwLoading(true); setPwEnriching(false); setPwError(null);
+    setPwSkeleton(null); setPwEnrichment(null); setPwSkeletonTraceId(undefined); setPwEnrichTraceId(undefined);
+    try {
+      const proposedActions = parseOrders();
+      const base: Record<string, unknown> = {
+        scenario: s,
+        ...(proposedActions.length ? { proposedActions } : {}),
+        patient: patientBody(),
+      };
+      // 1) Fast skeleton — render immediately.
+      const sr = await fetch('/api/pathway/skeleton', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(base),
+      });
+      const sj = (await sr.json()) as { ok: boolean; skeleton: PathwaySkeleton | null; traceId?: string; error?: string };
+      if (!sr.ok || !sj.ok) throw new Error(sj.error || `request failed (${sr.status})`);
+      if (!sj.skeleton || sj.skeleton.stages.length === 0) {
+        setPwSkeletonTraceId(sj.traceId);
+        throw new Error('Could not derive a care path for this scenario. Try adding a bit more detail.');
+      }
+      setPwSkeleton(sj.skeleton);
+      setPwSkeletonTraceId(sj.traceId);
+      setPwLoading(false);
+
+      // 2) Enrich each node — merges in as it arrives.
+      setPwEnriching(true);
+      const er = await fetch('/api/pathway/enrich', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...base, workingDiagnosis: sj.skeleton.workingDiagnosis, stages: sj.skeleton.stages }),
+      });
+      const ej = (await er.json()) as { ok: boolean; enrichment: PathwayEnrichment | null; traceId?: string; error?: string };
+      if (er.ok && ej.ok) {
+        setPwEnrichment(ej.enrichment);
+        setPwEnrichTraceId(ej.traceId);
+      }
+    } catch (e) {
+      setPwError((e as Error).message);
+    } finally {
+      setPwLoading(false); setPwEnriching(false);
+    }
+  }
 
   async function run() {
     const s = scenario.trim();
@@ -96,6 +161,21 @@ export default function AppropriatenessClient() {
 
   return (
     <div>
+      <div className="mb-4 inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 text-sm">
+        <button
+          type="button" onClick={() => setMode('check')}
+          className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-medium ${mode === 'check' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+        >
+          <Flag className="h-3.5 w-3.5" /> Appropriateness check
+        </button>
+        <button
+          type="button" onClick={() => setMode('pathway')}
+          className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-medium ${mode === 'pathway' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+        >
+          <Route className="h-3.5 w-3.5" /> Pathway &amp; decision
+        </button>
+      </div>
+
       <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5">
         <label className="text-xs font-medium text-slate-600">Clinical scenario</label>
         <textarea
@@ -147,15 +227,30 @@ export default function AppropriatenessClient() {
         </div>
 
         <div className="mt-4 flex flex-wrap items-center gap-3">
-          <button
-            onClick={run} disabled={loading}
-            className="inline-flex items-center gap-2 rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
-            type="button"
-          >
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flag className="h-4 w-4" />}
-            {loading ? 'Checking…' : 'Check appropriateness'}
-          </button>
-          <span className="text-xs text-slate-400">Extraction → recall → applicability check; only what applies is shown.</span>
+          {mode === 'check' ? (
+            <button
+              onClick={run} disabled={loading}
+              className="inline-flex items-center gap-2 rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+              type="button"
+            >
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flag className="h-4 w-4" />}
+              {loading ? 'Checking…' : 'Check appropriateness'}
+            </button>
+          ) : (
+            <button
+              onClick={runPathway} disabled={pwLoading || pwEnriching}
+              className="inline-flex items-center gap-2 rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+              type="button"
+            >
+              {(pwLoading || pwEnriching) ? <Loader2 className="h-4 w-4 animate-spin" /> : <Route className="h-4 w-4" />}
+              {pwLoading ? 'Tracing…' : pwEnriching ? 'Enriching…' : 'Trace pathway'}
+            </button>
+          )}
+          <span className="text-xs text-slate-400">
+            {mode === 'check'
+              ? 'Extraction → recall → applicability check; only what applies is shown.'
+              : 'Detect stage → trace care path → enrich each step with evidence, value, and tariffs.'}
+          </span>
         </div>
 
         {!scenario && (
@@ -170,11 +265,33 @@ export default function AppropriatenessClient() {
         )}
       </div>
 
-      {error && (
+      {mode === 'check' && error && (
         <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
       )}
 
-      {result && (
+      {mode === 'pathway' && pwError && (
+        <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{pwError}</div>
+      )}
+
+      {mode === 'pathway' && pwLoading && !pwSkeleton && (
+        <div className="mt-4 flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-500">
+          <Loader2 className="h-4 w-4 animate-spin" /> Detecting stage and tracing the care path…
+        </div>
+      )}
+
+      {mode === 'pathway' && pwSkeleton && (
+        <div className="mt-5">
+          <PathwayTrace
+            skeleton={pwSkeleton}
+            enrichment={pwEnrichment}
+            enriching={pwEnriching}
+            skeletonTraceId={pwSkeletonTraceId}
+            enrichTraceId={pwEnrichTraceId}
+          />
+        </div>
+      )}
+
+      {mode === 'check' && result && (
         <div className="mt-5 space-y-5">
           {result.valueAnalysis && result.valueAnalysis.interventions.length > 0 && (
             <div>
