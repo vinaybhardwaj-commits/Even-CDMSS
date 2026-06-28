@@ -131,9 +131,10 @@ function caseSummaryFor(extracted: ExtractedCase): string {
   return parts.join('\n');
 }
 
-export async function analyzeCase(extracted: ExtractedCase, deps: Partial<AnalyzeDeps> = {}, opts: { trace?: boolean } = {}): Promise<AnalyzeResult> {
+export async function analyzeCase(extracted: ExtractedCase, deps: Partial<AnalyzeDeps> = {}, opts: { trace?: boolean; onProgress?: (stage: string, msg: string) => void } = {}): Promise<AnalyzeResult> {
   const doTrace = opts.trace !== false;
   const doAudit = process.env.DOC_AUDIT_AUDIT !== '0';
+  const prog = opts.onProgress ?? (() => {});
   const traceId = doTrace
     ? await startTrace('doc_audit', { docType: extracted.docType })
     : undefined;
@@ -154,6 +155,7 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
       extracted.procedure ? `planned/${extracted.procedure}` : '',
     ].filter(Boolean).join('. ');
 
+    prog('retrieving', 'Retrieving evidence from the corpus…');
     const [hits, skel] = await Promise.all([
       retrieveHits(query),
       // Idealised care-path spine (cheap Flash skeleton; untraced to keep this self-contained).
@@ -161,9 +163,11 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
     ]);
     const sources = hitsToSources(hits);
     const citedContext = buildCitedContext(hits);
+    prog('retrieving', `Retrieved ${sources.length} sources`);
     if (traceId) await logEvent(traceId, 'doc_audit_sources', null, { count: sources.length });
 
     const caseSummary = caseSummaryFor(extracted);
+    prog('analyzing', 'Auditing the case…');
     const draftRaw = await generate(core.ANALYZE_SYSTEM, core.buildAnalyzeUser(extracted, rubric.fields, citedContext, rubric.standard));
     let parsed = core.parseAnalysis(draftRaw, sources.length);
     if (!parsed) {
@@ -174,6 +178,7 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
     // ── Citation self-critique + revise ──────────────────────────────────────
     if (doAudit) {
       try {
+        prog('reviewing', 'Auditing citations…');
         const critiqueRaw = await generate(core.AUDIT_CRITIQUE_SYSTEM, core.buildAuditCritiqueUser(caseSummary, citedContext, draftRaw));
         const critique = parseCritique(critiqueRaw);
         if (traceId) await logEvent(traceId, 'doc_audit_critique', null, {
@@ -181,6 +186,7 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
           issues: critique.unsupported_evidence.length + critique.wrong_or_missing_citations.length + critique.misfiled_estimates.length + critique.missing_caveats.length,
         });
         if (critique.needs_revision) {
+          prog('revising', 'Revising to fix citations…');
           const revRaw = await generate(core.AUDIT_REVISE_SYSTEM, core.buildAuditReviseUser(caseSummary, citedContext, draftRaw, JSON.stringify(critique)));
           const revised = core.parseAnalysis(revRaw, sources.length);
           if (revised) parsed = revised;
@@ -189,6 +195,8 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
         console.warn('[doc-audit] audit loop failed (keeping draft)', (e as Error).message);
       }
     }
+
+    prog('finalizing', 'Finalizing…');
 
     // Deterministic EHRC tariff grounding on any finding that names a concrete order.
     for (const f of parsed.findings) {

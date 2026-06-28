@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { analyzeCase } from '@/lib/doc-audit';
 import { normDocType, type DocType, type ExtractedCase } from '@/lib/doc-audit-core';
+import { makeNdjsonStream, ndjsonHeaders, type Stage } from '@/lib/stream';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -54,13 +55,29 @@ export async function POST(req: NextRequest) {
     rawNotes: str(e.rawNotes).slice(0, 1000),
   };
 
-  try {
-    const { report, traceId } = await analyzeCase(extracted);
-    if (!report) {
-      return NextResponse.json({ ok: false, error: 'analysis could not be completed — please retry', traceId }, { status: 200 });
+  // Stream NDJSON progress (live pipeline bar), then a single {type:'result'} with the
+  // audit report, then {type:'done'}. PHI posture unchanged: analyzeCase keeps its
+  // untraced LLM path + redacted server trace; the stream only carries progress + report.
+  const { stream, emit, close } = makeNdjsonStream();
+  const t0 = Date.now();
+
+  (async () => {
+    try {
+      const { report, traceId } = await analyzeCase(extracted, {}, {
+        onProgress: (stage, msg) => emit({ type: 'progress', stage: stage as Stage, msg, ms: Date.now() - t0 }),
+      });
+      if (!report) {
+        emit({ type: 'result', data: { ok: false, error: 'analysis could not be completed — please retry', traceId } });
+      } else {
+        emit({ type: 'result', data: { ok: true, report, traceId } });
+      }
+      emit({ type: 'done', ms: Date.now() - t0 });
+    } catch (err) {
+      emit({ type: 'error', message: String((err as Error).message) });
+    } finally {
+      close();
     }
-    return NextResponse.json({ ok: true, report, traceId });
-  } catch (err) {
-    return NextResponse.json({ ok: false, error: String((err as Error).message) }, { status: 500 });
-  }
+  })();
+
+  return new Response(stream, { headers: ndjsonHeaders() });
 }

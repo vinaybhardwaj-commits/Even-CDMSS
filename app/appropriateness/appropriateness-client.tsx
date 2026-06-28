@@ -240,9 +240,18 @@ export default function AppropriatenessClient() {
     setCaAnalyzeLoading(true); setCaError(null);
     try {
       const r = await fetch('/api/doc-audit/analyze', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ extracted }) });
-      const j = await r.json();
-      if (!r.ok || !j.ok || !j.report) { setCaAnalyzeTraceId(j.traceId); throw new Error(j.error || `analysis failed (${r.status})`); }
-      setCaReport(j.report as AuditReport); setCaAnalyzeTraceId(j.traceId);
+      if (!r.ok) throw new Error(`analysis failed (${r.status})`);
+      let got = false;
+      await consumeNdjson(r, (ev) => {
+        if (ev.type === 'progress') pushTrace(ev.stage, ev.msg, ev.ms);
+        else if (ev.type === 'result') {
+          const d = ev.data as { ok: boolean; report: AuditReport | null; traceId?: string; error?: string };
+          if (d && d.ok && d.report) { setCaReport(d.report); setCaAnalyzeTraceId(d.traceId); got = true; }
+          else { setCaAnalyzeTraceId(d?.traceId); setCaError(d?.error || 'analysis failed'); }
+        } else if (ev.type === 'done') { setTotalMs(ev.ms); pushTrace('done', 'Pipeline complete', ev.ms, true); }
+        else if (ev.type === 'error') setCaError(ev.message);
+      });
+      if (!got) setCaError((prev) => prev ?? 'No result received.');
     } catch (e) {
       setCaError((e as Error).message);
     } finally {
@@ -254,6 +263,8 @@ export default function AppropriatenessClient() {
     if (!caPendingFile) { setCaError('Choose a document to upload.'); return; }
     setCaExtractLoading(true); setCaError(null); setCaReport(null); setCaEdit(null);
     setCaExtractTraceId(undefined); setCaAnalyzeTraceId(undefined);
+    setTraces([]); setTotalMs(undefined);
+    pushTrace('reading', 'Reading the document…');
     try {
       const r = await fetch('/api/doc-audit/extract', {
         method: 'POST', headers: { 'content-type': 'application/json' },
@@ -272,6 +283,7 @@ export default function AppropriatenessClient() {
       };
       setCaEdit(edit);
       setCaExtractLoading(false);
+      pushTrace('extracting', 'Document read');
       await analyzeExtracted(editToExtracted(edit));
     } catch (e) {
       setCaError((e as Error).message);
@@ -439,15 +451,15 @@ export default function AppropriatenessClient() {
         <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{caError}</div>
       )}
 
-      {mode === 'audit' && caExtractLoading && !caEdit && (
-        <div className="mt-4 flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-500">
-          <Loader2 className="h-4 w-4 animate-spin" /> Reading the document…
+      {mode === 'audit' && traces.length > 0 && (
+        <div className="mt-4">
+          <TracePanel events={traces} totalMs={totalMs} surface="appropriateness-audit" />
         </div>
       )}
 
       {mode === 'audit' && caEdit && (
         <div className="mt-5 space-y-5">
-          <ExtractedPanel edit={caEdit} setEdit={setCaEdit} onReanalyze={() => analyzeExtracted(editToExtracted(caEdit))} busy={caAnalyzeLoading} />
+          <ExtractedPanel edit={caEdit} setEdit={setCaEdit} onReanalyze={() => { setTraces([]); setTotalMs(undefined); analyzeExtracted(editToExtracted(caEdit)); }} busy={caAnalyzeLoading} />
           {caAnalyzeLoading && !caReport && (
             <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-500">
               <Loader2 className="h-4 w-4 animate-spin" /> Auditing the case against guidance and NABH standards…
