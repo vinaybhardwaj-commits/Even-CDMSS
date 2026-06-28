@@ -117,6 +117,7 @@ export default function AppropriatenessClient() {
     if (s.length < 3) { setPwError('Enter a clinical scenario.'); return; }
     setPwLoading(true); setPwEnriching(false); setPwError(null);
     setPwSkeleton(null); setPwEnrichment(null); setPwSources([]); setPwSkeletonTraceId(undefined); setPwEnrichTraceId(undefined);
+    setTraces([]); setTotalMs(undefined);
     try {
       const proposedActions = parseOrders();
       const base: Record<string, unknown> = {
@@ -125,6 +126,7 @@ export default function AppropriatenessClient() {
         patient: patientBody(),
       };
       // 1) Fast skeleton — render immediately.
+      pushTrace('detecting', 'Detecting stage…');
       const sr = await fetch('/api/pathway/skeleton', {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(base),
       });
@@ -137,19 +139,23 @@ export default function AppropriatenessClient() {
       setPwSkeleton(sj.skeleton);
       setPwSkeletonTraceId(sj.traceId);
       setPwLoading(false);
+      pushTrace('detecting', 'Care path ready');
 
-      // 2) Enrich each node — merges in as it arrives.
+      // 2) Enrich each node — streams progress, then merges in on the result event.
       setPwEnriching(true);
       const er = await fetch('/api/pathway/enrich', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ ...base, workingDiagnosis: sj.skeleton.workingDiagnosis, stages: sj.skeleton.stages }),
       });
-      const ej = (await er.json()) as { ok: boolean; enrichment: PathwayEnrichment | null; sources?: Source[]; traceId?: string; error?: string };
-      if (er.ok && ej.ok) {
-        setPwEnrichment(ej.enrichment);
-        setPwSources(ej.sources ?? []);
-        setPwEnrichTraceId(ej.traceId);
-      }
+      if (!er.ok) throw new Error(`enrich failed (${er.status})`);
+      await consumeNdjson(er, (ev) => {
+        if (ev.type === 'progress') pushTrace(ev.stage, ev.msg, ev.ms);
+        else if (ev.type === 'result') {
+          const d = ev.data as { ok: boolean; enrichment: PathwayEnrichment | null; sources?: Source[]; traceId?: string };
+          if (d && d.ok) { setPwEnrichment(d.enrichment); setPwSources(d.sources ?? []); setPwEnrichTraceId(d.traceId); }
+        } else if (ev.type === 'done') { setTotalMs(ev.ms); pushTrace('done', 'Pipeline complete', ev.ms, true); }
+        else if (ev.type === 'error') setPwError(ev.message);
+      });
     } catch (e) {
       setPwError((e as Error).message);
     } finally {
@@ -459,9 +465,9 @@ export default function AppropriatenessClient() {
         <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{pwError}</div>
       )}
 
-      {mode === 'pathway' && pwLoading && !pwSkeleton && (
-        <div className="mt-4 flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-500">
-          <Loader2 className="h-4 w-4 animate-spin" /> Detecting stage and tracing the care path…
+      {mode === 'pathway' && traces.length > 0 && (
+        <div className="mt-4">
+          <TracePanel events={traces} totalMs={totalMs} surface="appropriateness-pathway" />
         </div>
       )}
 

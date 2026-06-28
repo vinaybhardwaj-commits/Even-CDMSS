@@ -32,6 +32,8 @@ export interface PathwayInput {
 export interface EnrichInput extends PathwayInput {
   stages: SkeletonStage[];
   workingDiagnosis?: string | null;
+  /** Live progress callback for NDJSON streaming (stage, human message). */
+  onProgress?: (stage: string, msg: string) => void;
 }
 
 export interface SkeletonResult { skeleton: PathwaySkeleton | null; traceId?: string }
@@ -150,8 +152,10 @@ export async function enrichPathway(input: EnrichInput, deps: Partial<EnrichDeps
     ?? ((s: string, u: string, label: string) => defaultEnrichGenerate(s, u, label, traceId, label === 'pathway_enrich_critique' ? 800 : 2500));
 
   const ids = stages.map((s) => s.id);
+  const prog = input.onProgress ?? (() => {});
 
   try {
+    prog('retrieving', 'Retrieving evidence from the corpus…');
     const query = [
       input.scenario,
       input.workingDiagnosis ?? '',
@@ -161,6 +165,7 @@ export async function enrichPathway(input: EnrichInput, deps: Partial<EnrichDeps
     const hits = await retrieveHits(query);
     const sources = hitsToSources(hits);
     const citedContext = buildCitedContext(hits);
+    prog('retrieving', `Retrieved ${sources.length} sources`);
     if (traceId) await logEvent(traceId, 'pathway_sources', null, { count: sources.length, ids: sources.map((s) => ({ n: s.n, book: s.book, url: s.url })) });
 
     const user = core.buildEnrichUser(
@@ -168,12 +173,14 @@ export async function enrichPathway(input: EnrichInput, deps: Partial<EnrichDeps
       stages,
       citedContext,
     );
+    prog('enriching', 'Enriching each step…');
     const draftRaw = await generate(core.ENRICH_SYSTEM, user, 'pathway_enrich');
     let enrichment = core.parseEnrichment(draftRaw, ids, sources.length);
 
     // ── Citation self-critique + revise ──────────────────────────────────────
     if (doAudit && enrichment) {
       try {
+        prog('reviewing', 'Auditing citations…');
         const critiqueRaw = await generate(core.ENRICH_CRITIQUE_SYSTEM, core.buildEnrichCritiqueUser(input.scenario, citedContext, draftRaw), 'pathway_enrich_critique');
         const critique = parseCritique(critiqueRaw);
         if (traceId) await logEvent(traceId, 'pathway_enrich_critique', null, {
@@ -181,6 +188,7 @@ export async function enrichPathway(input: EnrichInput, deps: Partial<EnrichDeps
           issues: critique.unsupported_evidence.length + critique.wrong_or_missing_citations.length + critique.misfiled_estimates.length + critique.missing_caveats.length,
         });
         if (critique.needs_revision) {
+          prog('revising', 'Revising to fix citations…');
           const revRaw = await generate(core.ENRICH_REVISE_SYSTEM, core.buildEnrichReviseUser(input.scenario, citedContext, draftRaw, JSON.stringify(critique)), 'pathway_enrich');
           const revised = core.parseEnrichment(revRaw, ids, sources.length);
           if (revised) enrichment = revised;
@@ -189,6 +197,8 @@ export async function enrichPathway(input: EnrichInput, deps: Partial<EnrichDeps
         console.warn('[pathway] audit loop failed (keeping draft)', (e as Error).message);
       }
     }
+
+    prog('finalizing', 'Finalizing…');
 
     // Deterministic EHRC tariff grounding: for each node naming a concrete order,
     // attach the real local price (never let the LLM produce the cost figure).

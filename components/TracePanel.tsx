@@ -289,6 +289,11 @@ const STAGE_LABEL: Record<string, string> = {
   finalizing: 'Finalizing',
   parsing: 'Parsing response',
   persisting: 'Saving trace',
+  detecting: 'Detecting stage',
+  enriching: 'Enriching steps',
+  reading: 'Reading document',
+  extracting: 'Extracting case',
+  analyzing: 'Analyzing case',
   done: 'Done',
 };
 

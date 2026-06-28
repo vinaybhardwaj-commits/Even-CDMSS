@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { enrichPathway } from '@/lib/pathway';
 import { normStageKind, normStageFlag, type SkeletonStage } from '@/lib/pathway-core';
+import { makeNdjsonStream, ndjsonHeaders, type Stage } from '@/lib/stream';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -54,16 +55,29 @@ export async function POST(req: NextRequest) {
   const workingDiagnosis = typeof body.workingDiagnosis === 'string' && body.workingDiagnosis.trim()
     ? body.workingDiagnosis.trim() : null;
 
-  try {
-    const { enrichment, sources, traceId } = await enrichPathway({
-      scenario,
-      proposedActions: proposedActions && proposedActions.length ? proposedActions : undefined,
-      patient: hasPatient ? patient : undefined,
-      workingDiagnosis,
-      stages,
-    });
-    return NextResponse.json({ ok: true, enrichment, sources, traceId });
-  } catch (e) {
-    return NextResponse.json({ ok: false, error: String((e as Error).message) }, { status: 500 });
-  }
+  // Stream NDJSON progress (so the client shows the live pipeline bar), then a single
+  // {type:'result'} with the enrichment + sources, then {type:'done'}.
+  const { stream, emit, close } = makeNdjsonStream();
+  const t0 = Date.now();
+
+  (async () => {
+    try {
+      const { enrichment, sources, traceId } = await enrichPathway({
+        scenario,
+        proposedActions: proposedActions && proposedActions.length ? proposedActions : undefined,
+        patient: hasPatient ? patient : undefined,
+        workingDiagnosis,
+        stages,
+        onProgress: (stage, msg) => emit({ type: 'progress', stage: stage as Stage, msg, ms: Date.now() - t0 }),
+      });
+      emit({ type: 'result', data: { ok: true, enrichment, sources, traceId } });
+      emit({ type: 'done', ms: Date.now() - t0 });
+    } catch (e) {
+      emit({ type: 'error', message: String((e as Error).message) });
+    } finally {
+      close();
+    }
+  })();
+
+  return new Response(stream, { headers: ndjsonHeaders() });
 }
