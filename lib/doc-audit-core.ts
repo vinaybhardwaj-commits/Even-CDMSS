@@ -16,7 +16,23 @@
 
 import type { TariffRef } from './lvc-value-core';
 import type { SkeletonStage } from './pathway-core';
+import type { Source } from './citations-core';
 export type { TariffRef } from './lvc-value-core';
+export type { Source } from './citations-core';
+
+// Inlined (mirrors lib/citations-core.validateCitationIds) — see the same note in
+// pathway-core: doc-audit-core has an in-repo strip-types test, so a runtime value
+// import would need a `.ts` extension the Next build doesn't use. Keep in sync.
+function validateCitationIds(ids: unknown, max: number, cap = 8): number[] {
+  if (!Array.isArray(ids) || max < 1) return [];
+  const out: number[] = [];
+  for (const x of ids) {
+    const n = Math.round(Number(x));
+    if (Number.isFinite(n) && n >= 1 && n <= max && !out.includes(n)) out.push(n);
+    if (out.length >= cap) break;
+  }
+  return out;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -73,6 +89,7 @@ export interface AuditFinding {
   order?: string;            // concrete orderable → deterministic tariff match
   evidence: string[];
   estimates: string[];
+  citation_ids: number[];    // [n] of the surfaced Source[] that back this finding's evidence
   tariffs?: TariffRef[];     // set deterministically by the server, not the LLM
 }
 
@@ -86,6 +103,7 @@ export interface AuditReport {
   idealisedStages?: Pick<SkeletonStage, 'id' | 'kind' | 'title' | 'action' | 'flag'>[];
   diff: DiffItem[];
   suggestions: Suggestion[];
+  sources: Source[];         // corpus citations surfaced for this audit (findings cite by [n])
   disclaimer: string;
 }
 
@@ -195,20 +213,20 @@ export function parseExtraction(raw: string, docTypeHint: DocType | 'auto'): Ext
 // ANALYZE pass (Pro, grounded) — prompt + parse
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const ANALYZE_SYSTEM = `You are a clinical quality + documentation auditor for a NABH-accredited hospital. You are given (1) a DE-IDENTIFIED extracted case from a clinical document, (2) the NABH documentation rubric for that document type, and (3) EVIDENCE EXCERPTS from a medical corpus. Produce a retrospective, advisory audit. NON-DIRECTIVE and NOT a judgment of the clinician.
+export const ANALYZE_SYSTEM = `You are a clinical quality + documentation auditor for a NABH-accredited hospital. You are given (1) a DE-IDENTIFIED extracted case from a clinical document, (2) the NABH documentation rubric for that document type, and (3) NUMBERED EVIDENCE EXCERPTS [1], [2], … from a medical corpus. Produce a retrospective, advisory audit. NON-DIRECTIVE and NOT a judgment of the clinician.
 
 Do four things:
-1. COMPLETENESS — for EACH rubric field id given, decide its documentation status: "present" | "partial" | "missing" | "na" (na only where the field allows N/A and it genuinely doesn't apply). Add a short note for partial/missing.
-2. APPROPRIATENESS / LOW-VALUE — review the investigations, treatments, drugs, and procedure for over-use / low-value / questionable decisions for this case. Each finding: subject, verdict (high-value | context-dependent | low-value | uncertain), confidence, rationale, and the single concrete "order" name if it maps to an orderable test/procedure/drug (so a tariff can be attached). Ground clinical claims in the EXCERPTS — put grounded points in "evidence" and your own figures/inferences in "estimates" (every figure marked "est.").
+1. COMPLETENESS — for EACH rubric field id given, decide its documentation status: "present" | "partial" | "missing" | "na" (na only where the field allows N/A and it genuinely doesn't apply). Add a short note for partial/missing. (Completeness is judged from the document itself — no citations needed here.)
+2. APPROPRIATENESS / LOW-VALUE — review the investigations, treatments, drugs, and procedure for over-use / low-value / questionable decisions for this case. Each finding: subject, verdict (high-value | context-dependent | low-value | uncertain), confidence, rationale, the single concrete "order" name if it maps to an orderable test/procedure/drug (so a tariff can be attached), and "citation_ids": the [n] of the excerpts that actually support this finding's evidence. Ground clinical claims in the EXCERPTS — put grounded points (with citations) in "evidence" and your own figures/inferences or general-knowledge claims the excerpts don't cover in "estimates" (every figure marked "est."). Do NOT cite an excerpt that doesn't support the claim.
 3. IDEALISED COURSE — a concise narrative of how the idealised hospital course / operation / OPD encounter should have gone for this case, then a DIFF: items "done — not needed" (kind:"overuse") and "ideal — but missing" (kind:"gap").
 4. SUGGESTIONS — prioritised, concrete improvements (compliance + safety + value), priority 1 = highest.
 
-Rules: advisory only; never phrase as blocking/denying care or blaming the clinician. Separate EVIDENCE from ESTIMATES. Do not invent citations or identifiers.
+Rules: advisory only; never phrase as blocking/denying care or blaming the clinician. Separate cited EVIDENCE from ESTIMATES. Do not invent citations or identifiers.
 
 Return ONLY JSON, no prose:
-{"completeness":[{"key":"<rubric field key>","status":"present|partial|missing|na","note":"…"}],"findings":[{"subject":"…","verdict":"…","confidence":0.0-1.0,"rationale":"…","order":"… (optional)","evidence":["…"],"estimates":["…"]}],"idealised_summary":"…","diff":[{"kind":"overuse|gap","text":"…","ref":"… (optional)"}],"suggestions":[{"priority":1,"text":"…","ref":"… (optional)"}]}`;
+{"completeness":[{"key":"<rubric field key>","status":"present|partial|missing|na","note":"…"}],"findings":[{"subject":"…","verdict":"…","confidence":0.0-1.0,"rationale":"…","order":"… (optional)","evidence":["…"],"estimates":["…"],"citation_ids":[1,2]}],"idealised_summary":"…","diff":[{"kind":"overuse|gap","text":"…","ref":"… (optional)"}],"suggestions":[{"priority":1,"text":"…","ref":"… (optional)"}]}`;
 
-export function buildAnalyzeUser(ctx: ExtractedCase, fields: RubricField[], excerpts: string[], standardLabel: string): string {
+export function buildAnalyzeUser(ctx: ExtractedCase, fields: RubricField[], citedContext: string, standardLabel: string): string {
   const pt = (ctx.patient.age != null || ctx.patient.sex)
     ? `Patient: ${ctx.patient.age != null ? `${ctx.patient.age}y` : 'age unknown'}${ctx.patient.sex ? `, ${ctx.patient.sex}` : ''}\n`
     : '';
@@ -223,8 +241,8 @@ export function buildAnalyzeUser(ctx: ExtractedCase, fields: RubricField[], exce
   if (ctx.followUp) lines.push(`Follow-up: ${ctx.followUp}`);
   lines.push(`Course: ${ctx.courseSummary}`);
   const rubric = fields.map((f) => `- ${f.key} [${f.ref}${f.cond ? `, only if ${f.cond}` : ''}${f.na ? ', N/A allowed' : ''}] ${f.label}`).join('\n');
-  const ev = excerpts.length ? excerpts.map((e, i) => `[${i + 1}] ${e}`).join('\n\n') : '(no excerpts retrieved — put clinical reasoning in estimates, not evidence)';
-  return `Document type: ${ctx.docType} (${standardLabel})\n${pt}EXTRACTED CASE:\n${lines.join('\n')}\n\nNABH RUBRIC FIELDS (judge each by key):\n${rubric}\n\nEVIDENCE EXCERPTS:\n${ev}`;
+  const ev = citedContext.trim() ? citedContext.trim() : '(no excerpts retrieved — leave citation_ids empty; put clinical reasoning in estimates, not evidence)';
+  return `Document type: ${ctx.docType} (${standardLabel})\n${pt}EXTRACTED CASE:\n${lines.join('\n')}\n\nNABH RUBRIC FIELDS (judge each by key):\n${rubric}\n\nNUMBERED EVIDENCE EXCERPTS:\n${ev}`;
 }
 
 export interface ParsedAnalysis {
@@ -235,7 +253,7 @@ export interface ParsedAnalysis {
   suggestions: Suggestion[];
 }
 
-export function parseAnalysis(raw: string): ParsedAnalysis | null {
+export function parseAnalysis(raw: string, sourceCount = 0): ParsedAnalysis | null {
   const obj = extractJsonObject(raw);
   if (!obj || typeof obj !== 'object') return null;
   const o = obj as Record<string, unknown>;
@@ -263,6 +281,7 @@ export function parseAnalysis(raw: string): ParsedAnalysis | null {
         order: asStr(fo.order) || undefined,
         evidence: asStrArray(fo.evidence, 8),
         estimates: asStrArray(fo.estimates, 8),
+        citation_ids: validateCitationIds(fo.citation_ids, sourceCount),
       });
       if (findings.length >= 12) break;
     }
@@ -299,6 +318,31 @@ export function parseAnalysis(raw: string): ParsedAnalysis | null {
 
   if (completeness.length === 0 && findings.length === 0 && suggestions.length === 0) return null;
   return { completeness, findings, idealisedSummary: asStr(o.idealised_summary ?? o.idealisedSummary), diff, suggestions };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Citation self-critique + revise (mirrors the Ask surface / value / pathway modes)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const AUDIT_CRITIQUE_SYSTEM = `You are a clinical citation + accuracy auditor reviewing a retrospective case-audit produced by an AI tool. You are given the extracted case, the NUMBERED evidence excerpts [1..n], and the draft audit JSON.
+
+Find problems IN THE FINDINGS and SUGGESTIONS: "evidence" points NOT supported by their citation_ids; citation_ids that don't match the claim; figures/general-knowledge assertions mis-filed as evidence instead of estimates; an important low-value/over-use issue or safety caveat a physician would expect that the audit missed. (Do not critique the completeness list — it is judged from the document, not the corpus.)
+
+Output ONLY JSON:
+{"unsupported_evidence":["…"],"wrong_or_missing_citations":["…"],"misfiled_estimates":["…"],"missing_caveats":["…"],"needs_revision":true|false,"severity":"none|minor|moderate|major"}
+
+Empty arrays are fine. needs_revision=true if any array is non-empty.`;
+
+export const AUDIT_REVISE_SYSTEM = `You are revising your own case-audit based on a citation auditor's critique. You receive the extracted case, the NUMBERED excerpts [1..n], your earlier draft JSON, and the critique JSON.
+
+Rewrite to fix every issue: move unsupported claims out of finding "evidence" (into "estimates" if still worth saying, else drop), correct each finding's citation_ids so it cites only excerpts that truly support it, add any missing low-value/safety finding or caveat. Keep the EXACT same JSON schema as the draft (completeness, findings with citation_ids, idealised_summary, diff, suggestions). Output ONLY the corrected JSON, no prose.`;
+
+export function buildAuditCritiqueUser(caseSummary: string, citedContext: string, draftJson: string): string {
+  return `Extracted case:\n${caseSummary.trim()}\n\nNUMBERED EVIDENCE EXCERPTS:\n${citedContext.trim() || '(none)'}\n\nDraft audit JSON to audit:\n${draftJson}\n\nOutput the JSON critique now.`;
+}
+
+export function buildAuditReviseUser(caseSummary: string, citedContext: string, draftJson: string, critiqueJson: string): string {
+  return `Extracted case:\n${caseSummary.trim()}\n\nNUMBERED EVIDENCE EXCERPTS:\n${citedContext.trim() || '(none)'}\n\nEarlier draft JSON:\n${draftJson}\n\nAuditor critique JSON:\n${critiqueJson}\n\nOutput the corrected audit JSON now.`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

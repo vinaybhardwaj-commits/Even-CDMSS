@@ -23,6 +23,8 @@ import { startTrace, logEvent, finishTrace } from './trace';
 import { matchAnyTariffs } from './charge-master';
 import { generateFromDocument } from './gemini-multimodal';
 import { traceSkeleton } from './pathway';
+import { parseCritique } from './lvc-value-core';
+import { hitsToSources, buildCitedContext, type CiteHit } from './citations-core';
 import * as core from './doc-audit-core';
 import type { DocType, ExtractedCase, AuditReport, RubricField } from './doc-audit-core';
 
@@ -97,14 +99,15 @@ async function analyzeGenerate(system: string, user: string): Promise<string> {
   return r.choices?.[0]?.message?.content || '';
 }
 
-async function defaultRetrieveExcerpts(q: string): Promise<string[]> {
+async function defaultRetrieveHits(q: string): Promise<CiteHit[]> {
   try {
-    const r = await retrieve(q, { topK: 8, useSourceWeights: true, hybrid: true });
-    return r.hits.map((h) => {
-      const src = h.book || h.source || 'source';
-      const body = (h.text || '').replace(/\s+/g, ' ').trim().slice(0, 500);
-      return `(${src}) ${body}`;
-    }).filter((s) => s.length > 20);
+    // Reranker ON (matches Ask/DDx) — stronger retrieval than the old no-rerank pass.
+    const r = await retrieve(q, { topK: 8, useReranker: true, useSourceWeights: true, hybrid: true });
+    return r.hits.map((h) => ({
+      id: h.id, source: h.source, book: h.book, chapter: h.chapter, section: h.section,
+      page_start: h.page_start, page_end: h.page_end, item_number: h.item_number,
+      chunk_type: h.chunk_type, similarity: h.similarity, text: h.text,
+    }));
   } catch (e) {
     console.warn('[doc-audit] retrieve failed', (e as Error).message);
     return [];
@@ -112,17 +115,30 @@ async function defaultRetrieveExcerpts(q: string): Promise<string[]> {
 }
 
 export interface AnalyzeDeps {
-  retrieveExcerpts: (q: string) => Promise<string[]>;
+  retrieveHits: (q: string) => Promise<CiteHit[]>;
   generate: (system: string, user: string) => Promise<string>;
+}
+
+function caseSummaryFor(extracted: ExtractedCase): string {
+  const parts: string[] = [];
+  if (extracted.diagnosis) parts.push(`Dx: ${extracted.diagnosis}`);
+  if (extracted.indication) parts.push(`Indication: ${extracted.indication}`);
+  if (extracted.procedure) parts.push(`Procedure: ${extracted.procedure}`);
+  if (extracted.investigations.length) parts.push(`Ix: ${extracted.investigations.join('; ')}`);
+  if (extracted.treatments.length) parts.push(`Tx: ${extracted.treatments.join('; ')}`);
+  if (extracted.medications.length) parts.push(`Meds: ${extracted.medications.join('; ')}`);
+  parts.push(`Course: ${extracted.courseSummary}`);
+  return parts.join('\n');
 }
 
 export async function analyzeCase(extracted: ExtractedCase, deps: Partial<AnalyzeDeps> = {}, opts: { trace?: boolean } = {}): Promise<AnalyzeResult> {
   const doTrace = opts.trace !== false;
+  const doAudit = process.env.DOC_AUDIT_AUDIT !== '0';
   const traceId = doTrace
     ? await startTrace('doc_audit', { docType: extracted.docType })
     : undefined;
 
-  const retrieveExcerpts = deps.retrieveExcerpts ?? defaultRetrieveExcerpts;
+  const retrieveHits = deps.retrieveHits ?? defaultRetrieveHits;
   const generate = deps.generate ?? analyzeGenerate;
   const rubric = getRubric(extracted.docType);
 
@@ -138,18 +154,40 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
       extracted.procedure ? `planned/${extracted.procedure}` : '',
     ].filter(Boolean).join('. ');
 
-    const [excerpts, skel] = await Promise.all([
-      retrieveExcerpts(query),
+    const [hits, skel] = await Promise.all([
+      retrieveHits(query),
       // Idealised care-path spine (cheap Flash skeleton; untraced to keep this self-contained).
       traceSkeleton({ scenario: idealScenario || extracted.courseSummary, patient: extracted.patient, trace: false }).catch(() => ({ skeleton: null })),
     ]);
-    if (traceId) await logEvent(traceId, 'doc_audit_excerpts', null, { count: excerpts.length });
+    const sources = hitsToSources(hits);
+    const citedContext = buildCitedContext(hits);
+    if (traceId) await logEvent(traceId, 'doc_audit_sources', null, { count: sources.length });
 
-    const raw = await generate(core.ANALYZE_SYSTEM, core.buildAnalyzeUser(extracted, rubric.fields, excerpts, rubric.standard));
-    const parsed = core.parseAnalysis(raw);
+    const caseSummary = caseSummaryFor(extracted);
+    const draftRaw = await generate(core.ANALYZE_SYSTEM, core.buildAnalyzeUser(extracted, rubric.fields, citedContext, rubric.standard));
+    let parsed = core.parseAnalysis(draftRaw, sources.length);
     if (!parsed) {
       if (traceId) { await logEvent(traceId, 'doc_audit_result', null, { ok: false }); await finishTrace(traceId, 'partial'); }
-      return { report: null, excerptCount: excerpts.length, traceId };
+      return { report: null, excerptCount: hits.length, traceId };
+    }
+
+    // ── Citation self-critique + revise ──────────────────────────────────────
+    if (doAudit) {
+      try {
+        const critiqueRaw = await generate(core.AUDIT_CRITIQUE_SYSTEM, core.buildAuditCritiqueUser(caseSummary, citedContext, draftRaw));
+        const critique = parseCritique(critiqueRaw);
+        if (traceId) await logEvent(traceId, 'doc_audit_critique', null, {
+          severity: critique.severity, needs_revision: critique.needs_revision,
+          issues: critique.unsupported_evidence.length + critique.wrong_or_missing_citations.length + critique.misfiled_estimates.length + critique.missing_caveats.length,
+        });
+        if (critique.needs_revision) {
+          const revRaw = await generate(core.AUDIT_REVISE_SYSTEM, core.buildAuditReviseUser(caseSummary, citedContext, draftRaw, JSON.stringify(critique)));
+          const revised = core.parseAnalysis(revRaw, sources.length);
+          if (revised) parsed = revised;
+        }
+      } catch (e) {
+        console.warn('[doc-audit] audit loop failed (keeping draft)', (e as Error).message);
+      }
     }
 
     // Deterministic EHRC tariff grounding on any finding that names a concrete order.
@@ -170,6 +208,7 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
       idealisedStages,
       diff: parsed.diff,
       suggestions: parsed.suggestions,
+      sources,
       disclaimer: core.CASE_AUDIT_DISCLAIMER,
     };
 
@@ -178,14 +217,14 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
         ok: true,
         coverage: completeness.coverage,
         missingMandatory: completeness.missingMandatory.length,
-        findings: parsed.findings.map((f) => f.verdict),
+        findings: parsed.findings.map((f) => ({ verdict: f.verdict, cites: f.citation_ids })),
         diff: parsed.diff.length,
         suggestions: parsed.suggestions.length,
         tariffs: parsed.findings.filter((f) => f.tariffs?.length).length,
       });
       await finishTrace(traceId, 'success');
     }
-    return { report, excerptCount: excerpts.length, traceId };
+    return { report, excerptCount: hits.length, traceId };
   } catch (e) {
     if (traceId) await finishTrace(traceId, 'error', String((e as Error).message));
     console.warn('[doc-audit] analyzeCase failed', (e as Error).message);

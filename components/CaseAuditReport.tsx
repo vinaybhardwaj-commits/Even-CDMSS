@@ -2,9 +2,10 @@
 
 import type { ReactNode } from 'react';
 import {
-  Info, BookOpen, AlertTriangle, IndianRupee, Lightbulb, ClipboardCheck, Route,
+  Info, BookOpen, AlertTriangle, IndianRupee, Lightbulb, ClipboardCheck, Route, ExternalLink,
 } from 'lucide-react';
 import type { AuditReport, AuditFinding, FieldStatus, NetValue, TariffRef } from '@/lib/doc-audit-core';
+import { sourceLabel, type Source } from '@/lib/citations-core';
 
 const inr = (n: number) => '₹' + Number(n).toLocaleString('en-IN');
 
@@ -76,7 +77,7 @@ export default function CaseAuditReport({
         <section>
           <SectionTitle icon={<AlertTriangle className="h-3.5 w-3.5" />} text="Appropriateness & low-value decisions" />
           <div className="space-y-3">
-            {report.findings.map((f, i) => <FindingCard key={i} f={f} />)}
+            {report.findings.map((f, i) => <FindingCard key={i} f={f} sources={report.sources} />)}
           </div>
         </section>
       )}
@@ -110,6 +111,8 @@ export default function CaseAuditReport({
         </section>
       )}
 
+      {report.sources && report.sources.length > 0 && <AuditSourcesPanel sources={report.sources} />}
+
       <p className="text-[11px] leading-relaxed text-slate-400">{report.disclaimer}</p>
 
       {(extractTraceId || analyzeTraceId) && (
@@ -137,7 +140,7 @@ function SectionTitle({ icon, text }: { icon: ReactNode; text: string }) {
   return <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-slate-500">{icon} {text}</div>;
 }
 
-function FindingCard({ f }: { f: AuditFinding }) {
+function FindingCard({ f, sources }: { f: AuditFinding; sources?: Source[] }) {
   const border = f.verdict === 'low-value' ? 'border-red-200' : f.verdict === 'context-dependent' ? 'border-amber-200' : 'border-slate-200';
   return (
     <div className={`rounded-xl border ${border} bg-white p-4`}>
@@ -149,6 +152,10 @@ function FindingCard({ f }: { f: AuditFinding }) {
         </div>
       </div>
       {f.rationale && <p className="mt-2 text-[13px] leading-relaxed text-slate-700">{f.rationale}</p>}
+
+      {f.citation_ids && f.citation_ids.length > 0 && sources && sources.length > 0 && (
+        <AuditCitationChips ids={f.citation_ids} sources={sources} />
+      )}
 
       {f.tariffs && f.tariffs.length > 0 && (
         <div className="mt-2.5 rounded-lg border border-teal-200 bg-teal-50 p-2.5">
@@ -190,6 +197,49 @@ function DiffCol({ title, tone, items }: { title: string; tone: 'bad' | 'warn'; 
           {items.map((d, i) => <li key={i}>{d.text}{d.ref ? <span className="text-[11px] opacity-70"> · {d.ref}</span> : null}</li>)}
         </ul>
       )}
+    </div>
+  );
+}
+
+function AuditCitationChips({ ids, sources }: { ids: number[]; sources: Source[] }) {
+  const byN = new Map(sources.map((s) => [s.n, s]));
+  const cited = ids.map((n) => byN.get(n)).filter((s): s is Source => !!s);
+  if (cited.length === 0) return null;
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+      <span className="text-[10.5px] uppercase tracking-wide text-slate-400">Cited</span>
+      {cited.map((s) => s.url ? (
+        <a key={s.n} href={s.url} target="_blank" rel="noopener noreferrer" title={s.preview}
+          className="inline-flex items-center gap-0.5 rounded-full border border-teal-200 bg-teal-50 px-1.5 py-0.5 text-[10.5px] font-medium text-teal-800 hover:bg-teal-100">
+          [{s.n}] <ExternalLink className="h-2.5 w-2.5" />
+        </a>
+      ) : (
+        <span key={s.n} title={s.preview}
+          className="rounded-full border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10.5px] font-medium text-slate-600">[{s.n}]</span>
+      ))}
+    </div>
+  );
+}
+
+function AuditSourcesPanel({ sources }: { sources: Source[] }) {
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+      <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-slate-500">
+        <BookOpen className="h-3 w-3" /> Sources ({sources.length}) — retrieved from the CDMSS corpus
+      </div>
+      <ol className="space-y-1.5">
+        {sources.map((s) => (
+          <li key={s.n} className="text-[12px] leading-relaxed text-slate-600">
+            <span className="font-medium text-slate-700">[{s.n}]</span> {sourceLabel(s)}
+            {s.url && (
+              <a href={s.url} target="_blank" rel="noopener noreferrer" className="ml-1 inline-flex items-center gap-0.5 text-brand hover:underline">
+                PubMed <ExternalLink className="h-2.5 w-2.5" />
+              </a>
+            )}
+            {s.preview && <span className="block text-[11px] text-slate-400">{s.preview.slice(0, 160)}{s.preview.length > 160 ? '…' : ''}</span>}
+          </li>
+        ))}
+      </ol>
     </div>
   );
 }

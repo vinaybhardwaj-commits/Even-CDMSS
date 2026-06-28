@@ -64,7 +64,7 @@ test('parseAnalysis parses completeness/findings/diff/suggestions; maps diff kin
       { key: 'urgent_care_instructions', status: 'missing', note: 'no return precautions' },
     ],
     findings: [
-      { subject: 'Repeat CT abdomen', verdict: 'low-value', confidence: 0.8, rationale: 'USG was diagnostic', order: 'CT abdomen contrast', evidence: ['guideline'], estimates: ['est. ~₹6500'] },
+      { subject: 'Repeat CT abdomen', verdict: 'low-value', confidence: 0.8, rationale: 'USG was diagnostic', order: 'CT abdomen contrast', evidence: ['guideline'], estimates: ['est. ~₹6500'], citation_ids: [1, 5] },
     ],
     idealised_summary: 'early lap chole, short abx',
     diff: [
@@ -77,12 +77,14 @@ test('parseAnalysis parses completeness/findings/diff/suggestions; maps diff kin
       { priority: 1, text: 'add follow-up + red flags', ref: 'AAC.14' },
     ],
   });
-  const a = parseAnalysis(raw);
+  const a = parseAnalysis(raw, 3);
   assert.ok(a);
   assert.equal(a!.completeness.length, 2);
   assert.equal(a!.findings[0].order, 'CT abdomen contrast');
   assert.equal(a!.findings[0].evidence.length, 1);
   assert.equal(a!.findings[0].estimates.length, 1);
+  // citation_ids clamped to [1..3]: 5 dropped
+  assert.deepEqual(a!.findings[0].citation_ids, [1]);
   // 'missing thing' → gap
   assert.equal(a!.diff[2].kind, 'gap');
   // suggestions sorted by priority
