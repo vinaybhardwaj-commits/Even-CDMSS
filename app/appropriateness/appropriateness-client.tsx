@@ -90,6 +90,7 @@ export default function AppropriatenessClient() {
   const [pwError, setPwError] = useState<string | null>(null);
   const [pwSkeleton, setPwSkeleton] = useState<PathwaySkeleton | null>(null);
   const [pwEnrichment, setPwEnrichment] = useState<PathwayEnrichment | null>(null);
+  const [pwSources, setPwSources] = useState<Source[]>([]);
   const [pwSkeletonTraceId, setPwSkeletonTraceId] = useState<string | undefined>();
   const [pwEnrichTraceId, setPwEnrichTraceId] = useState<string | undefined>();
 
@@ -104,7 +105,7 @@ export default function AppropriatenessClient() {
     const s = scenario.trim();
     if (s.length < 3) { setPwError('Enter a clinical scenario.'); return; }
     setPwLoading(true); setPwEnriching(false); setPwError(null);
-    setPwSkeleton(null); setPwEnrichment(null); setPwSkeletonTraceId(undefined); setPwEnrichTraceId(undefined);
+    setPwSkeleton(null); setPwEnrichment(null); setPwSources([]); setPwSkeletonTraceId(undefined); setPwEnrichTraceId(undefined);
     try {
       const proposedActions = parseOrders();
       const base: Record<string, unknown> = {
@@ -132,9 +133,10 @@ export default function AppropriatenessClient() {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ ...base, workingDiagnosis: sj.skeleton.workingDiagnosis, stages: sj.skeleton.stages }),
       });
-      const ej = (await er.json()) as { ok: boolean; enrichment: PathwayEnrichment | null; traceId?: string; error?: string };
+      const ej = (await er.json()) as { ok: boolean; enrichment: PathwayEnrichment | null; sources?: Source[]; traceId?: string; error?: string };
       if (er.ok && ej.ok) {
         setPwEnrichment(ej.enrichment);
+        setPwSources(ej.sources ?? []);
         setPwEnrichTraceId(ej.traceId);
       }
     } catch (e) {
@@ -449,6 +451,7 @@ export default function AppropriatenessClient() {
           <PathwayTrace
             skeleton={pwSkeleton}
             enrichment={pwEnrichment}
+            sources={pwSources}
             enriching={pwEnriching}
             skeletonTraceId={pwSkeletonTraceId}
             enrichTraceId={pwEnrichTraceId}

@@ -19,6 +19,21 @@
 import type { TariffRef } from './lvc-value-core';
 export type { TariffRef } from './lvc-value-core';
 
+// NB: this mirrors lib/citations-core.validateCitationIds. It is inlined (not imported)
+// ON PURPOSE: pathway-core has an in-repo `node --experimental-strip-types` test, and a
+// runtime (value) cross-module import would need a `.ts` extension the Next build doesn't
+// use. Type-only imports are erased so they're fine; a value import is not. Keep in sync.
+function validateCitationIds(ids: unknown, max: number, cap = 8): number[] {
+  if (!Array.isArray(ids) || max < 1) return [];
+  const out: number[] = [];
+  for (const x of ids) {
+    const n = Math.round(Number(x));
+    if (Number.isFinite(n) && n >= 1 && n <= max && !out.includes(n)) out.push(n);
+    if (out.length >= cap) break;
+  }
+  return out;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -66,7 +81,7 @@ export interface EnrichedNode {
   alternatives?: { name: string; note: string }[];
   evidence: string[];    // corpus-grounded points (the "evidence" block)
   estimates: string[];   // model estimates incl. any figures — kept separate, labeled
-  citations?: string[];  // source names mentioned in the excerpts
+  citation_ids: number[]; // [n] of the surfaced Source[] that back this node's evidence
   /** EHRC charge-master matches for `order` — set DETERMINISTICALLY by the server, not the LLM. */
   tariffs?: TariffRef[];
 }
@@ -239,7 +254,7 @@ export function parseSkeleton(text: string): PathwaySkeleton | null {
 // ENRICH pass (Pro) — prompt + parse
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const ENRICH_SYSTEM = `You are a clinical pathway analyst. You are given a patient scenario, EVIDENCE EXCERPTS retrieved from a medical corpus, and a fixed ordered list of care-path STAGES (each with an id). Enrich EACH stage by its id. Do NOT add, remove, reorder, or rename stages — only enrich the ones given.
+export const ENRICH_SYSTEM = `You are a clinical pathway analyst. You are given a patient scenario, NUMBERED EVIDENCE EXCERPTS [1], [2], … retrieved from a medical corpus, and a fixed ordered list of care-path STAGES (each with an id). Enrich EACH stage by its id. Do NOT add, remove, reorder, or rename stages — only enrich the ones given.
 
 For each stage return:
 - "id": the SAME id you were given (required — omit a stage by omitting its object).
@@ -249,20 +264,21 @@ For each stage return:
 - "order": the single concrete orderable item at this step (a test/procedure/drug name, e.g. "MRI lumbar spine") if the step is an order, else omit. Keep it short and generic so it can be matched to a tariff.
 - "alternatives": optional [{ "name": "...", "note": "..." }].
 - "evidence": points SUPPORTED BY THE EXCERPTS (grounded). If the excerpts don't support a claim, do not put it here.
-- "estimates": anything you are estimating (figures, rough probabilities) — every figure written as an estimate, e.g. "est. ~₹X (not validated)". NEVER present an estimate as evidence.
+- "estimates": anything you are estimating, or asserting from general knowledge the excerpts don't cover (figures, rough probabilities) — every figure written as an estimate, e.g. "est. ~₹X (not validated)". NEVER present an estimate as evidence.
+- "citation_ids": the numbers [n] of the excerpts that actually support THIS node's evidence. Cite only excerpts that genuinely apply; leave empty if none do.
 
 Rules:
 - Balanced and NON-DIRECTIVE — this informs decision-making; it is NOT a denial-of-care justification and must never read as blocking an order.
-- Separate EVIDENCE (from excerpts) from ESTIMATES (your own). Do not invent citations.
+- Separate EVIDENCE (from excerpts, with citation_ids) from ESTIMATES (your own). Do not invent citations or cite excerpts that don't support the claim.
 - Do NOT output cost figures in "estimates" for an "order" — the system attaches the real EHRC tariff deterministically.
 
 Return ONLY JSON, no prose:
-{"nodes":[{"id":"s1","flag":"…","detail":"…","decision_criteria":"… or null","order":"… (optional)","alternatives":[{"name":"…","note":"…"}],"evidence":["…"],"estimates":["…"],"citations":["…"]}]}`;
+{"nodes":[{"id":"s1","flag":"…","detail":"…","decision_criteria":"… or null","order":"… (optional)","alternatives":[{"name":"…","note":"…"}],"evidence":["…"],"estimates":["…"],"citation_ids":[1,2]}]}`;
 
 export function buildEnrichUser(
   ctx: { scenario: string; proposedActions?: string[]; patient?: { age?: number; sex?: string }; workingDiagnosis?: string | null },
   stages: SkeletonStage[],
-  excerpts: string[],
+  citedContext: string,
 ): string {
   const pt = ctx.patient && (ctx.patient.age != null || ctx.patient.sex)
     ? `Patient: ${ctx.patient.age != null ? `${ctx.patient.age}y` : 'age unknown'}${ctx.patient.sex ? `, ${ctx.patient.sex}` : ''}\n`
@@ -270,13 +286,13 @@ export function buildEnrichUser(
   const dx = ctx.workingDiagnosis ? `Working diagnosis: ${ctx.workingDiagnosis}\n` : '';
   const orders = ctx.proposedActions && ctx.proposedActions.length ? `Proposed order(s): ${ctx.proposedActions.join('; ')}\n` : '';
   const stageList = stages.map((s) => `- ${s.id} [${s.kind}] ${s.title}: ${s.action}`).join('\n');
-  const ev = excerpts.length
-    ? excerpts.map((e, i) => `[${i + 1}] ${e}`).join('\n\n')
-    : '(no excerpts retrieved — rate conservatively; put unsupported clinical reasoning in estimates, not evidence)';
-  return `${pt}${dx}${orders}Clinical scenario:\n${ctx.scenario.trim()}\n\nSTAGES TO ENRICH (keep these ids, do not change the set):\n${stageList}\n\nEVIDENCE EXCERPTS:\n${ev}`;
+  const ev = citedContext.trim()
+    ? citedContext.trim()
+    : '(no excerpts retrieved — rate conservatively; leave citation_ids empty; put unsupported clinical reasoning in estimates, not evidence)';
+  return `${pt}${dx}${orders}Clinical scenario:\n${ctx.scenario.trim()}\n\nSTAGES TO ENRICH (keep these ids, do not change the set):\n${stageList}\n\nNUMBERED EVIDENCE EXCERPTS:\n${ev}`;
 }
 
-export function parseEnrichment(text: string, validIds?: string[]): PathwayEnrichment | null {
+export function parseEnrichment(text: string, validIds?: string[], sourceCount = 0): PathwayEnrichment | null {
   const obj = extractJsonObject(text);
   if (!obj || typeof obj !== 'object') return null;
   const rawNodes = (obj as Record<string, unknown>).nodes;
@@ -307,7 +323,7 @@ export function parseEnrichment(text: string, validIds?: string[]): PathwayEnric
       alternatives: alternatives && alternatives.length ? alternatives : undefined,
       evidence: asStrArray(o.evidence),
       estimates: asStrArray(o.estimates),
-      citations: asStrArray(o.citations, 6),
+      citation_ids: validateCitationIds(o.citation_ids, sourceCount),
     });
   }
   if (nodes.length === 0) return null;
@@ -323,7 +339,7 @@ export interface MergedStage extends SkeletonStage {
   alternatives?: { name: string; note: string }[];
   evidence?: string[];
   estimates?: string[];
-  citations?: string[];
+  citation_ids?: number[];
   tariffs?: TariffRef[];
 }
 
@@ -343,8 +359,33 @@ export function mergeStages(stages: SkeletonStage[], enrichment: PathwayEnrichme
       alternatives: e.alternatives,
       evidence: e.evidence,
       estimates: e.estimates,
-      citations: e.citations,
+      citation_ids: e.citation_ids,
       tariffs: e.tariffs,
     };
   });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Citation self-critique + revise (mirrors the Ask surface / value mode)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const ENRICH_CRITIQUE_SYSTEM = `You are a clinical citation + accuracy auditor reviewing an enriched care-path produced by an AI tool. You are given the scenario, the NUMBERED evidence excerpts [1..n], and the draft enrichment JSON (nodes[]).
+
+Find problems: node "evidence" points NOT actually supported by their citation_ids; citation_ids that don't match the claim; figures/general-knowledge assertions mis-filed as evidence instead of estimates; clinically important caveats/red-flags a physician would expect that are missing.
+
+Output ONLY JSON:
+{"unsupported_evidence":["…"],"wrong_or_missing_citations":["…"],"misfiled_estimates":["…"],"missing_caveats":["…"],"needs_revision":true|false,"severity":"none|minor|moderate|major"}
+
+Empty arrays are fine. needs_revision=true if any array is non-empty.`;
+
+export const ENRICH_REVISE_SYSTEM = `You are revising your own enriched care-path based on a citation auditor's critique. You receive the scenario, the NUMBERED excerpts [1..n], your earlier draft JSON (nodes[]), and the critique JSON.
+
+Rewrite to fix every issue: move unsupported claims out of "evidence" (into "estimates" if still worth saying, else drop), correct each node's citation_ids so it cites only excerpts that truly support it, add missing caveats. Keep the EXACT same JSON schema and the SAME node ids as the draft. Output ONLY the corrected JSON, no prose.`;
+
+export function buildEnrichCritiqueUser(scenario: string, citedContext: string, draftJson: string): string {
+  return `Scenario:\n${scenario.trim()}\n\nNUMBERED EVIDENCE EXCERPTS:\n${citedContext.trim() || '(none)'}\n\nDraft enrichment JSON to audit:\n${draftJson}\n\nOutput the JSON critique now.`;
+}
+
+export function buildEnrichReviseUser(scenario: string, citedContext: string, draftJson: string, critiqueJson: string): string {
+  return `Scenario:\n${scenario.trim()}\n\nNUMBERED EVIDENCE EXCERPTS:\n${citedContext.trim() || '(none)'}\n\nEarlier draft JSON:\n${draftJson}\n\nAuditor critique JSON:\n${critiqueJson}\n\nOutput the corrected enrichment JSON now.`;
 }

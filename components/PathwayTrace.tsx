@@ -2,12 +2,13 @@
 
 import {
   Loader2, ShieldAlert, Stethoscope, Microscope, Pill, DoorOpen, CalendarCheck,
-  GitBranch, BookOpen, AlertTriangle, IndianRupee, ArrowRightCircle, Info, Route,
+  GitBranch, BookOpen, AlertTriangle, IndianRupee, ArrowRightCircle, ExternalLink, Info, Route,
 } from 'lucide-react';
 import {
   mergeStages, PATHWAY_DISCLAIMER,
   type PathwaySkeleton, type PathwayEnrichment, type StageKind, type StageFlag, type MergedStage, type TariffRef,
 } from '@/lib/pathway-core';
+import { sourceLabel, type Source } from '@/lib/citations-core';
 
 const inr = (n: number) => '₹' + Number(n).toLocaleString('en-IN');
 
@@ -59,10 +60,11 @@ function tariffLine(t: TariffRef): string {
 }
 
 export default function PathwayTrace({
-  skeleton, enrichment, enriching, skeletonTraceId, enrichTraceId,
+  skeleton, enrichment, sources, enriching, skeletonTraceId, enrichTraceId,
 }: {
   skeleton: PathwaySkeleton;
   enrichment: PathwayEnrichment | null;
+  sources?: Source[];
   enriching: boolean;
   skeletonTraceId?: string;
   enrichTraceId?: string;
@@ -104,9 +106,11 @@ export default function PathwayTrace({
       <ol className="relative space-y-3 pl-7">
         <span className="absolute left-[11px] top-2 bottom-2 w-px bg-slate-200" aria-hidden />
         {merged.map((s, i) => (
-          <StageCard key={s.id} stage={s} index={i + 1} enriching={enriching && !s.enriched} />
+          <StageCard key={s.id} stage={s} index={i + 1} sources={sources} enriching={enriching && !s.enriched} />
         ))}
       </ol>
+
+      {sources && sources.length > 0 && <PathwaySourcesPanel sources={sources} />}
 
       <p className="text-[11px] leading-relaxed text-slate-400">{enrichment?.disclaimer || PATHWAY_DISCLAIMER}</p>
 
@@ -128,7 +132,7 @@ export default function PathwayTrace({
   );
 }
 
-function StageCard({ stage, index, enriching }: { stage: MergedStage; index: number; enriching: boolean }) {
+function StageCard({ stage, index, sources, enriching }: { stage: MergedStage; index: number; sources?: Source[]; enriching: boolean }) {
   const Icon = KIND_ICON[stage.kind] ?? Stethoscope;
   const borderTone = stage.flag === 'low-value' ? 'border-red-200' : 'border-slate-200';
   return (
@@ -194,8 +198,8 @@ function StageCard({ stage, index, enriching }: { stage: MergedStage; index: num
           </div>
         )}
 
-        {stage.citations && stage.citations.length > 0 && (
-          <div className="mt-2 text-[11px] text-slate-400">Source: {stage.citations.join(' · ')}</div>
+        {stage.citation_ids && stage.citation_ids.length > 0 && sources && sources.length > 0 && (
+          <NodeCitationChips ids={stage.citation_ids} sources={sources} />
         )}
 
         {enriching && (
@@ -205,5 +209,48 @@ function StageCard({ stage, index, enriching }: { stage: MergedStage; index: num
         )}
       </div>
     </li>
+  );
+}
+
+function NodeCitationChips({ ids, sources }: { ids: number[]; sources: Source[] }) {
+  const byN = new Map(sources.map((s) => [s.n, s]));
+  const cited = ids.map((n) => byN.get(n)).filter((s): s is Source => !!s);
+  if (cited.length === 0) return null;
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+      <span className="text-[10.5px] uppercase tracking-wide text-slate-400">Cited</span>
+      {cited.map((s) => s.url ? (
+        <a key={s.n} href={s.url} target="_blank" rel="noopener noreferrer" title={s.preview}
+          className="inline-flex items-center gap-0.5 rounded-full border border-teal-200 bg-teal-50 px-1.5 py-0.5 text-[10.5px] font-medium text-teal-800 hover:bg-teal-100">
+          [{s.n}] <ExternalLink className="h-2.5 w-2.5" />
+        </a>
+      ) : (
+        <span key={s.n} title={s.preview}
+          className="rounded-full border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10.5px] font-medium text-slate-600">[{s.n}]</span>
+      ))}
+    </div>
+  );
+}
+
+function PathwaySourcesPanel({ sources }: { sources: Source[] }) {
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+      <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-slate-500">
+        <BookOpen className="h-3 w-3" /> Sources ({sources.length}) — retrieved from the CDMSS corpus
+      </div>
+      <ol className="space-y-1.5">
+        {sources.map((s) => (
+          <li key={s.n} className="text-[12px] leading-relaxed text-slate-600">
+            <span className="font-medium text-slate-700">[{s.n}]</span> {sourceLabel(s)}
+            {s.url && (
+              <a href={s.url} target="_blank" rel="noopener noreferrer" className="ml-1 inline-flex items-center gap-0.5 text-brand hover:underline">
+                PubMed <ExternalLink className="h-2.5 w-2.5" />
+              </a>
+            )}
+            {s.preview && <span className="block text-[11px] text-slate-400">{s.preview.slice(0, 160)}{s.preview.length > 160 ? '…' : ''}</span>}
+          </li>
+        ))}
+      </ol>
+    </div>
   );
 }

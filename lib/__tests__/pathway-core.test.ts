@@ -103,18 +103,21 @@ test('parseSkeleton returns null on garbage / empty stages', () => {
 test('parseEnrichment parses, filters unknown ids, dedups, separates evidence/estimates', () => {
   const txt = JSON.stringify({
     nodes: [
-      { id: 's1', flag: 'essential', detail: 'screen', decision_criteria: 'if red flags escalate', evidence: ['NICE NG59'], estimates: [] },
+      { id: 's1', flag: 'essential', detail: 'screen', decision_criteria: 'if red flags escalate', evidence: ['NICE NG59'], estimates: [], citation_ids: [1, 4, 0] },
       { id: 's1', flag: 'routine', detail: 'dup', evidence: [], estimates: [] }, // duplicate id → dropped
       { id: 's9', flag: 'routine', detail: 'unknown id', evidence: [], estimates: [] }, // not in validIds → dropped
-      { id: 's2', flag: 'low-value', detail: 'MRI not indicated', order: 'MRI lumbar spine', evidence: ['Choosing Wisely'], estimates: ['est. ~₹X (not validated)'] },
+      { id: 's2', flag: 'low-value', detail: 'MRI not indicated', order: 'MRI lumbar spine', evidence: ['Choosing Wisely'], estimates: ['est. ~₹X (not validated)'], citation_ids: [2] },
     ],
   });
-  const enr = parseEnrichment(txt, ['s1', 's2', 's3']);
+  const enr = parseEnrichment(txt, ['s1', 's2', 's3'], 3);
   assert.ok(enr);
   assert.deepEqual(enr!.nodes.map((n) => n.id), ['s1', 's2']);
   assert.equal(enr!.nodes[1].order, 'MRI lumbar spine');
   assert.equal(enr!.nodes[1].evidence.length, 1);
   assert.equal(enr!.nodes[1].estimates.length, 1);
+  // citation_ids clamped to [1..3]: 4 and 0 dropped from s1
+  assert.deepEqual(enr!.nodes[0].citation_ids, [1]);
+  assert.deepEqual(enr!.nodes[1].citation_ids, [2]);
   assert.ok(enr!.disclaimer.length > 0);
 });
 

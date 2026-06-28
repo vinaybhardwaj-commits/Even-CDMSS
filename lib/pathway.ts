@@ -18,6 +18,8 @@ import { retrieve } from './retrieve';
 import { chatWithFallback, geminiModelFor, geminiUtilityModel, TEXT_MODEL } from './llm';
 import { startTrace, logEvent, finishTrace, tracedChat } from './trace';
 import { matchAnyTariffs } from './charge-master';
+import { hitsToSources, buildCitedContext, type CiteHit, type Source } from './citations-core';
+import { parseCritique } from './lvc-value-core';
 import * as core from './pathway-core';
 import type { PathwaySkeleton, PathwayEnrichment, SkeletonStage } from './pathway-core';
 
@@ -33,13 +35,13 @@ export interface EnrichInput extends PathwayInput {
 }
 
 export interface SkeletonResult { skeleton: PathwaySkeleton | null; traceId?: string }
-export interface EnrichResult { enrichment: PathwayEnrichment | null; excerptCount: number; traceId?: string }
+export interface EnrichResult { enrichment: PathwayEnrichment | null; sources: Source[]; excerptCount: number; traceId?: string }
 
 /** Injection seams for tests (defaults hit the real backend). */
 export interface SkeletonDeps { generate: (system: string, user: string, traceId?: string) => Promise<string> }
 export interface EnrichDeps {
-  retrieveExcerpts: (q: string) => Promise<string[]>;
-  generate: (system: string, user: string, traceId?: string) => Promise<string>;
+  retrieveHits: (q: string) => Promise<CiteHit[]>;
+  generate: (system: string, user: string, label: string) => Promise<string>;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -99,31 +101,32 @@ export async function traceSkeleton(input: PathwayInput, deps: Partial<SkeletonD
 // ENRICH (Pro)
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function defaultRetrieveExcerpts(q: string): Promise<string[]> {
+async function defaultRetrieveHits(q: string): Promise<CiteHit[]> {
   try {
-    const r = await retrieve(q, { topK: 8, useSourceWeights: true, hybrid: true });
-    return r.hits.map((h) => {
-      const src = h.book || h.source || 'source';
-      const body = (h.text || '').replace(/\s+/g, ' ').trim().slice(0, 500);
-      return `(${src}) ${body}`;
-    }).filter((s) => s.length > 20);
+    // Reranker ON (matches Ask/DDx) — stronger retrieval than the old no-rerank pass.
+    const r = await retrieve(q, { topK: 8, useReranker: true, useSourceWeights: true, hybrid: true });
+    return r.hits.map((h) => ({
+      id: h.id, source: h.source, book: h.book, chapter: h.chapter, section: h.section,
+      page_start: h.page_start, page_end: h.page_end, item_number: h.item_number,
+      chunk_type: h.chunk_type, similarity: h.similarity, text: h.text,
+    }));
   } catch (e) {
     console.warn('[pathway] retrieve failed', (e as Error).message);
     return [];
   }
 }
 
-async function defaultEnrichGenerate(system: string, user: string, traceId?: string): Promise<string> {
+async function defaultEnrichGenerate(system: string, user: string, label: string, traceId: string | undefined, maxTokens: number): Promise<string> {
   // Pro reasoning for enrichment (honours GEMINI_ALL); soft-falls to local Ollama.
   const geminiModel = geminiModelFor('pathway') ?? geminiUtilityModel();
-  const r = await llmCall(traceId, 'pathway_enrich', {
+  const r = await llmCall(traceId, label, {
     model: TEXT_MODEL,
     messages: [
       { role: 'system', content: system },
       { role: 'user', content: user },
     ],
     temperature: 0.2,
-    max_tokens: 2500,
+    max_tokens: maxTokens,
     ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
   }, geminiModel);
   return r.choices?.[0]?.message?.content || '';
@@ -131,9 +134,10 @@ async function defaultEnrichGenerate(system: string, user: string, traceId?: str
 
 export async function enrichPathway(input: EnrichInput, deps: Partial<EnrichDeps> = {}): Promise<EnrichResult> {
   const stages = (input.stages ?? []).slice(0, 8);
-  if (stages.length === 0) return { enrichment: null, excerptCount: 0 };
+  if (stages.length === 0) return { enrichment: null, sources: [], excerptCount: 0 };
 
   const doTrace = input.trace !== false;
+  const doAudit = process.env.PATHWAY_AUDIT !== '0';
   const traceId = doTrace
     ? await startTrace('pathway_enrich', {
         scenario: input.scenario.slice(0, 500), workingDiagnosis: input.workingDiagnosis,
@@ -141,8 +145,11 @@ export async function enrichPathway(input: EnrichInput, deps: Partial<EnrichDeps
       })
     : undefined;
 
-  const retrieveExcerpts = deps.retrieveExcerpts ?? defaultRetrieveExcerpts;
-  const generate = deps.generate ?? ((s: string, u: string) => defaultEnrichGenerate(s, u, traceId));
+  const retrieveHits = deps.retrieveHits ?? defaultRetrieveHits;
+  const generate = deps.generate
+    ?? ((s: string, u: string, label: string) => defaultEnrichGenerate(s, u, label, traceId, label === 'pathway_enrich_critique' ? 800 : 2500));
+
+  const ids = stages.map((s) => s.id);
 
   try {
     const query = [
@@ -151,16 +158,37 @@ export async function enrichPathway(input: EnrichInput, deps: Partial<EnrichDeps
       ...stages.map((s) => `${s.title} ${s.action}`),
       'management workup treatment indications evidence guideline',
     ].filter(Boolean).join('. ');
-    const excerpts = await retrieveExcerpts(query);
-    if (traceId) await logEvent(traceId, 'pathway_excerpts', null, { count: excerpts.length });
+    const hits = await retrieveHits(query);
+    const sources = hitsToSources(hits);
+    const citedContext = buildCitedContext(hits);
+    if (traceId) await logEvent(traceId, 'pathway_sources', null, { count: sources.length, ids: sources.map((s) => ({ n: s.n, book: s.book, url: s.url })) });
 
     const user = core.buildEnrichUser(
       { scenario: input.scenario, proposedActions: input.proposedActions, patient: input.patient, workingDiagnosis: input.workingDiagnosis },
       stages,
-      excerpts,
+      citedContext,
     );
-    const raw = await generate(core.ENRICH_SYSTEM, user, traceId);
-    const enrichment = core.parseEnrichment(raw, stages.map((s) => s.id));
+    const draftRaw = await generate(core.ENRICH_SYSTEM, user, 'pathway_enrich');
+    let enrichment = core.parseEnrichment(draftRaw, ids, sources.length);
+
+    // ── Citation self-critique + revise ──────────────────────────────────────
+    if (doAudit && enrichment) {
+      try {
+        const critiqueRaw = await generate(core.ENRICH_CRITIQUE_SYSTEM, core.buildEnrichCritiqueUser(input.scenario, citedContext, draftRaw), 'pathway_enrich_critique');
+        const critique = parseCritique(critiqueRaw);
+        if (traceId) await logEvent(traceId, 'pathway_enrich_critique', null, {
+          severity: critique.severity, needs_revision: critique.needs_revision,
+          issues: critique.unsupported_evidence.length + critique.wrong_or_missing_citations.length + critique.misfiled_estimates.length + critique.missing_caveats.length,
+        });
+        if (critique.needs_revision) {
+          const revRaw = await generate(core.ENRICH_REVISE_SYSTEM, core.buildEnrichReviseUser(input.scenario, citedContext, draftRaw, JSON.stringify(critique)), 'pathway_enrich');
+          const revised = core.parseEnrichment(revRaw, ids, sources.length);
+          if (revised) enrichment = revised;
+        }
+      } catch (e) {
+        console.warn('[pathway] audit loop failed (keeping draft)', (e as Error).message);
+      }
+    }
 
     // Deterministic EHRC tariff grounding: for each node naming a concrete order,
     // attach the real local price (never let the LLM produce the cost figure).
@@ -181,16 +209,18 @@ export async function enrichPathway(input: EnrichInput, deps: Partial<EnrichDeps
     if (traceId) {
       await logEvent(traceId, 'pathway_enrich_result', null, {
         ok: !!enrichment,
-        nodes: enrichment?.nodes.map((n) => ({ id: n.id, flag: n.flag, hasOrder: !!n.order, tariffs: n.tariffs?.length ?? 0 })) ?? [],
+        nodes: enrichment?.nodes.map((n) => ({ id: n.id, flag: n.flag, hasOrder: !!n.order, cites: n.citation_ids, tariffs: n.tariffs?.length ?? 0 })) ?? [],
       });
       await finishTrace(traceId, enrichment ? 'success' : 'partial');
     }
-    return { enrichment, excerptCount: excerpts.length, traceId };
+    return { enrichment, sources, excerptCount: hits.length, traceId };
   } catch (e) {
     if (traceId) await finishTrace(traceId, 'error', String((e as Error).message));
     console.warn('[pathway] enrichPathway failed', (e as Error).message);
-    return { enrichment: null, excerptCount: 0, traceId };
+    return { enrichment: null, sources: [], excerptCount: 0, traceId };
   }
 }
+
+export type { Source } from './citations-core';
 
 export type { PathwaySkeleton, PathwayEnrichment, SkeletonStage, EnrichedNode, MergedStage } from './pathway-core';

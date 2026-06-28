@@ -55,14 +55,14 @@ export async function POST(req: NextRequest) {
     ? body.workingDiagnosis.trim() : null;
 
   try {
-    const { enrichment, traceId } = await enrichPathway({
+    const { enrichment, sources, traceId } = await enrichPathway({
       scenario,
       proposedActions: proposedActions && proposedActions.length ? proposedActions : undefined,
       patient: hasPatient ? patient : undefined,
       workingDiagnosis,
       stages,
     });
-    return NextResponse.json({ ok: true, enrichment, traceId });
+    return NextResponse.json({ ok: true, enrichment, sources, traceId });
   } catch (e) {
     return NextResponse.json({ ok: false, error: String((e as Error).message) }, { status: 500 });
   }
