@@ -1,12 +1,23 @@
 'use client';
 
-import { useState } from 'react';
-import { Loader2, Flag, X, ExternalLink, Info, Scale, Lightbulb, BookOpen, AlertTriangle, IndianRupee, Route } from 'lucide-react';
+import { useState, type ChangeEvent, type ReactNode } from 'react';
+import { Loader2, Flag, X, ExternalLink, Info, Scale, Lightbulb, BookOpen, AlertTriangle, IndianRupee, Route, Upload, FileText, Lock, ClipboardCheck } from 'lucide-react';
 import { levelToScore, VALUE_DISCLAIMER, type ValueAnalysis, type ValueIntervention, type Level, type NetValue, type TariffRef } from '@/lib/lvc-value-core';
 import PathwayTrace from '@/components/PathwayTrace';
 import type { PathwaySkeleton, PathwayEnrichment, SkeletonStage } from '@/lib/pathway-core';
+import CaseAuditReport from '@/components/CaseAuditReport';
+import type { ExtractedCase, AuditReport, DocType } from '@/lib/doc-audit-core';
 
-type Mode = 'check' | 'pathway';
+type Mode = 'check' | 'pathway' | 'audit';
+
+type CaEdit = {
+  docType: DocType | 'auto'; detectedDocType: DocType; confidence: number;
+  age: string; sex: string; diagnosis: string; indication: string; procedure: string;
+  investigations: string; treatments: string; medications: string;
+  courseSummary: string; disposition: string; followUp: string; rawNotes: string;
+};
+
+const caInputCls = 'mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-brand focus:bg-white focus:outline-none';
 
 const inr = (n: number) => '₹' + Number(n).toLocaleString('en-IN');
 
@@ -157,6 +168,89 @@ export default function AppropriatenessClient() {
     }
   }
 
+  // ── Case audit mode (upload → multimodal extract → analyze) ──────────────────
+  const [caDocType, setCaDocType] = useState<DocType | 'auto'>('auto');
+  const [caContext, setCaContext] = useState('');
+  const [caFileName, setCaFileName] = useState('');
+  const [caPendingFile, setCaPendingFile] = useState<{ base64: string; mime: string } | null>(null);
+  const [caExtractLoading, setCaExtractLoading] = useState(false);
+  const [caAnalyzeLoading, setCaAnalyzeLoading] = useState(false);
+  const [caError, setCaError] = useState<string | null>(null);
+  const [caEdit, setCaEdit] = useState<CaEdit | null>(null);
+  const [caReport, setCaReport] = useState<AuditReport | null>(null);
+  const [caExtractTraceId, setCaExtractTraceId] = useState<string | undefined>();
+  const [caAnalyzeTraceId, setCaAnalyzeTraceId] = useState<string | undefined>();
+
+  function onPickFile(file: File | null) {
+    setCaError(null);
+    if (!file) { setCaFileName(''); setCaPendingFile(null); return; }
+    setCaFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const res = String(reader.result || '');
+      const comma = res.indexOf(',');
+      setCaPendingFile({ base64: comma >= 0 ? res.slice(comma + 1) : res, mime: file.type || 'application/octet-stream' });
+    };
+    reader.onerror = () => setCaError('Could not read that file.');
+    reader.readAsDataURL(file);
+  }
+
+  function editToExtracted(e: CaEdit): Record<string, unknown> {
+    const splitList = (s: string) => s.split(/[\n;]+/).map((x) => x.trim()).filter(Boolean);
+    return {
+      docType: e.docType === 'auto' ? e.detectedDocType : e.docType,
+      detectedDocType: e.detectedDocType, confidence: e.confidence,
+      patient: { age: e.age ? Number(e.age) : undefined, sex: e.sex || undefined },
+      diagnosis: e.diagnosis || null, indication: e.indication || null, procedure: e.procedure || null,
+      investigations: splitList(e.investigations), treatments: splitList(e.treatments), medications: splitList(e.medications),
+      courseSummary: e.courseSummary, disposition: e.disposition || null, followUp: e.followUp || null, rawNotes: e.rawNotes,
+    };
+  }
+
+  async function analyzeExtracted(extracted: Record<string, unknown>) {
+    setCaAnalyzeLoading(true); setCaError(null);
+    try {
+      const r = await fetch('/api/doc-audit/analyze', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ extracted }) });
+      const j = await r.json();
+      if (!r.ok || !j.ok || !j.report) { setCaAnalyzeTraceId(j.traceId); throw new Error(j.error || `analysis failed (${r.status})`); }
+      setCaReport(j.report as AuditReport); setCaAnalyzeTraceId(j.traceId);
+    } catch (e) {
+      setCaError((e as Error).message);
+    } finally {
+      setCaAnalyzeLoading(false);
+    }
+  }
+
+  async function runAudit() {
+    if (!caPendingFile) { setCaError('Choose a document to upload.'); return; }
+    setCaExtractLoading(true); setCaError(null); setCaReport(null); setCaEdit(null);
+    setCaExtractTraceId(undefined); setCaAnalyzeTraceId(undefined);
+    try {
+      const r = await fetch('/api/doc-audit/extract', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ base64: caPendingFile.base64, mime: caPendingFile.mime, docTypeHint: caDocType, context: caContext || undefined }),
+      });
+      const j = await r.json();
+      setCaExtractTraceId(j.traceId);
+      if (!r.ok || !j.ok || !j.extracted) throw new Error(j.error || `could not read the document (${r.status})`);
+      const ex = j.extracted as ExtractedCase;
+      const edit: CaEdit = {
+        docType: caDocType, detectedDocType: ex.detectedDocType, confidence: ex.confidence,
+        age: ex.patient.age != null ? String(ex.patient.age) : '', sex: ex.patient.sex || '',
+        diagnosis: ex.diagnosis || '', indication: ex.indication || '', procedure: ex.procedure || '',
+        investigations: ex.investigations.join('\n'), treatments: ex.treatments.join('\n'), medications: ex.medications.join('\n'),
+        courseSummary: ex.courseSummary, disposition: ex.disposition || '', followUp: ex.followUp || '', rawNotes: ex.rawNotes,
+      };
+      setCaEdit(edit);
+      setCaExtractLoading(false);
+      await analyzeExtracted(editToExtracted(edit));
+    } catch (e) {
+      setCaError((e as Error).message);
+    } finally {
+      setCaExtractLoading(false);
+    }
+  }
+
   const visibleFlags = (result?.flags ?? []).filter((f) => !dismissed[f.id]);
 
   return (
@@ -174,8 +268,15 @@ export default function AppropriatenessClient() {
         >
           <Route className="h-3.5 w-3.5" /> Pathway &amp; decision
         </button>
+        <button
+          type="button" onClick={() => setMode('audit')}
+          className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-medium ${mode === 'audit' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+        >
+          <ClipboardCheck className="h-3.5 w-3.5" /> Case audit
+        </button>
       </div>
 
+      {mode !== 'audit' && (
       <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5">
         <label className="text-xs font-medium text-slate-600">Clinical scenario</label>
         <textarea
@@ -264,6 +365,68 @@ export default function AppropriatenessClient() {
           </div>
         )}
       </div>
+      )}
+
+      {mode === 'audit' && (
+        <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5">
+          <label className="text-xs font-medium text-slate-600">Upload a clinical document</label>
+          <div className="mt-1.5 flex flex-wrap items-center gap-3">
+            <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-700 hover:bg-slate-100">
+              <Upload className="h-4 w-4" /> Choose file
+              <input type="file" accept="application/pdf,image/png,image/jpeg" className="hidden"
+                onChange={(e) => onPickFile(e.target.files?.[0] ?? null)} />
+            </label>
+            {caFileName && <span className="inline-flex items-center gap-1.5 text-sm text-slate-600"><FileText className="h-4 w-4 text-slate-400" /> {caFileName}</span>}
+          </div>
+
+          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-[1fr_2fr]">
+            <div>
+              <label className="text-xs font-medium text-slate-600">Document type</label>
+              <select value={caDocType} onChange={(e) => setCaDocType(e.target.value as DocType | 'auto')} className={caInputCls}>
+                <option value="auto">Auto-detect</option>
+                <option value="discharge_summary">Discharge summary</option>
+                <option value="ot_note">OT / operative note</option>
+                <option value="opd_rx">OPD prescription</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-600">Context <span className="text-slate-400">· optional</span></label>
+              <input value={caContext} onChange={(e) => setCaContext(e.target.value)} placeholder="anything the document doesn't state" className={caInputCls} />
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <button onClick={runAudit} disabled={caExtractLoading || caAnalyzeLoading || !caPendingFile}
+              className="inline-flex items-center gap-2 rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50" type="button">
+              {(caExtractLoading || caAnalyzeLoading) ? <Loader2 className="h-4 w-4 animate-spin" /> : <ClipboardCheck className="h-4 w-4" />}
+              {caExtractLoading ? 'Reading…' : caAnalyzeLoading ? 'Auditing…' : 'Run audit'}
+            </button>
+            <span className="inline-flex items-center gap-1 text-xs text-slate-400"><Lock className="h-3 w-3" /> Processed in-memory · the file isn&apos;t stored.</span>
+          </div>
+        </div>
+      )}
+
+      {mode === 'audit' && caError && (
+        <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{caError}</div>
+      )}
+
+      {mode === 'audit' && caExtractLoading && !caEdit && (
+        <div className="mt-4 flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-500">
+          <Loader2 className="h-4 w-4 animate-spin" /> Reading the document…
+        </div>
+      )}
+
+      {mode === 'audit' && caEdit && (
+        <div className="mt-5 space-y-5">
+          <ExtractedPanel edit={caEdit} setEdit={setCaEdit} onReanalyze={() => analyzeExtracted(editToExtracted(caEdit))} busy={caAnalyzeLoading} />
+          {caAnalyzeLoading && !caReport && (
+            <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-500">
+              <Loader2 className="h-4 w-4 animate-spin" /> Auditing the case against guidance and NABH standards…
+            </div>
+          )}
+          {caReport && <CaseAuditReport report={caReport} extractTraceId={caExtractTraceId} analyzeTraceId={caAnalyzeTraceId} />}
+        </div>
+      )}
 
       {mode === 'check' && error && (
         <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
@@ -515,6 +678,47 @@ function TariffBanner({ tariffs }: { tariffs: TariffRef[] }) {
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+function CaField({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <label className="block">
+      <span className="text-xs font-medium text-slate-600">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+const DOC_LABEL: Record<string, string> = {
+  discharge_summary: 'Discharge summary', ot_note: 'OT / operative note', opd_rx: 'OPD prescription',
+};
+
+function ExtractedPanel({ edit, setEdit, onReanalyze, busy }: { edit: CaEdit; setEdit: (e: CaEdit) => void; onReanalyze: () => void; busy: boolean }) {
+  const upd = (k: keyof CaEdit) => (e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setEdit({ ...edit, [k]: e.target.value });
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-4">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="text-xs font-medium text-slate-500">Extracted case · editable</div>
+        <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-800">{DOC_LABEL[edit.detectedDocType] ?? edit.detectedDocType} · conf {edit.confidence.toFixed(2)}</span>
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <CaField label="Diagnosis"><input value={edit.diagnosis} onChange={upd('diagnosis')} className={caInputCls} /></CaField>
+        <CaField label="Procedure"><input value={edit.procedure} onChange={upd('procedure')} className={caInputCls} /></CaField>
+        <CaField label="Investigations (one per line)"><textarea rows={3} value={edit.investigations} onChange={upd('investigations')} className={caInputCls} /></CaField>
+        <CaField label="Medications (one per line)"><textarea rows={3} value={edit.medications} onChange={upd('medications')} className={caInputCls} /></CaField>
+      </div>
+      <div className="mt-3">
+        <CaField label="Course summary"><textarea rows={2} value={edit.courseSummary} onChange={upd('courseSummary')} className={caInputCls} /></CaField>
+      </div>
+      <div className="mt-3 flex flex-wrap items-center gap-3">
+        <button onClick={onReanalyze} disabled={busy} type="button"
+          className="inline-flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ClipboardCheck className="h-4 w-4" />} Re-analyze with edits
+        </button>
+        <span className="text-xs text-slate-400">Correct any mis-read, then re-run the audit (skips re-reading the file).</span>
+      </div>
     </div>
   );
 }

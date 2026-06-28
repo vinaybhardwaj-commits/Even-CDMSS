@@ -1,0 +1,66 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { analyzeCase } from '@/lib/doc-audit';
+import { normDocType, type DocType, type ExtractedCase } from '@/lib/doc-audit-core';
+
+export const runtime = 'nodejs';
+export const maxDuration = 300;
+
+function str(v: unknown): string { return typeof v === 'string' ? v.trim() : ''; }
+function strOrNull(v: unknown): string | null { const s = str(v); return s ? s : null; }
+function strArr(v: unknown, cap = 30): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.map((x) => (typeof x === 'string' ? x.trim() : '')).filter(Boolean).slice(0, cap);
+}
+
+// POST /api/doc-audit/analyze — runs the audit on a (possibly clinician-edited) extracted case.
+// Body: { extracted: ExtractedCase }
+export async function POST(req: NextRequest) {
+  let body: Record<string, unknown>;
+  try {
+    body = (await req.json()) as Record<string, unknown>;
+  } catch {
+    return NextResponse.json({ ok: false, error: 'invalid JSON body' }, { status: 400 });
+  }
+
+  const e = (body.extracted ?? {}) as Record<string, unknown>;
+  const docType: DocType = normDocType(e.docType);
+  const p = (e.patient && typeof e.patient === 'object') ? e.patient as Record<string, unknown> : {};
+  const ageN = Number(p.age);
+  const sex = str(p.sex).toLowerCase();
+
+  const courseSummary = str(e.courseSummary);
+  const hasContent = courseSummary || str(e.diagnosis) || str(e.procedure) || strArr(e.medications).length || strArr(e.investigations).length;
+  if (!hasContent) {
+    return NextResponse.json({ ok: false, error: 'nothing to analyze — the extracted case is empty' }, { status: 400 });
+  }
+
+  const extracted: ExtractedCase = {
+    docType,
+    detectedDocType: normDocType(e.detectedDocType ?? e.docType),
+    confidence: Number.isFinite(Number(e.confidence)) ? Math.max(0, Math.min(1, Number(e.confidence))) : 0.5,
+    patient: {
+      age: Number.isFinite(ageN) && ageN > 0 && ageN < 130 ? Math.round(ageN) : undefined,
+      sex: sex ? (sex.startsWith('m') ? 'male' : sex.startsWith('f') ? 'female' : sex) : undefined,
+    },
+    diagnosis: strOrNull(e.diagnosis),
+    indication: strOrNull(e.indication),
+    procedure: strOrNull(e.procedure),
+    investigations: strArr(e.investigations),
+    treatments: strArr(e.treatments),
+    medications: strArr(e.medications),
+    courseSummary,
+    disposition: strOrNull(e.disposition),
+    followUp: strOrNull(e.followUp),
+    rawNotes: str(e.rawNotes).slice(0, 1000),
+  };
+
+  try {
+    const { report, traceId } = await analyzeCase(extracted);
+    if (!report) {
+      return NextResponse.json({ ok: false, error: 'analysis could not be completed — please retry', traceId }, { status: 200 });
+    }
+    return NextResponse.json({ ok: true, report, traceId });
+  } catch (err) {
+    return NextResponse.json({ ok: false, error: String((err as Error).message) }, { status: 500 });
+  }
+}

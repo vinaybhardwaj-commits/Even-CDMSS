@@ -8,7 +8,7 @@ export default function AppropriatenessPage() {
     <div>
       <h1 className="text-2xl font-semibold text-slate-900 sm:text-3xl">Appropriateness / Low-Value Care</h1>
       <p className="mt-1 text-sm text-slate-500">
-        Check a proposed order against Choosing Wisely and low-value-care guidance, or trace the recommended clinical pathway step by step. Advisory only — it never blocks an order.
+        Check a proposed order against low-value-care guidance, trace the recommended clinical pathway, or upload a discharge summary, OT note, or prescription for a retrospective case audit. Advisory only — it never blocks an order.
       </p>
       <HelpCard
         storageKey="appropriateness"
