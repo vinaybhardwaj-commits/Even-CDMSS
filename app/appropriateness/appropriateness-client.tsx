@@ -7,6 +7,7 @@ import PathwayTrace from '@/components/PathwayTrace';
 import type { PathwaySkeleton, PathwayEnrichment, SkeletonStage } from '@/lib/pathway-core';
 import CaseAuditReport from '@/components/CaseAuditReport';
 import type { ExtractedCase, AuditReport, DocType } from '@/lib/doc-audit-core';
+import type { Source } from '@/lib/citations-core';
 
 type Mode = 'check' | 'pathway' | 'audit';
 
@@ -42,6 +43,7 @@ type MatchResult = {
   empty: boolean;
   traceId?: string;
   valueAnalysis?: ValueAnalysis | null;
+  valueSources?: Source[];
   valueTraceId?: string;
   error?: string;
 };
@@ -465,8 +467,9 @@ export default function AppropriatenessClient() {
                 <TariffBanner tariffs={result.valueAnalysis.tariffs} />
               )}
               <div className="space-y-3">
-                {result.valueAnalysis.interventions.map((iv, i) => <ValueCard key={i} iv={iv} />)}
+                {result.valueAnalysis.interventions.map((iv, i) => <ValueCard key={i} iv={iv} sources={result.valueSources} />)}
               </div>
+              {result.valueSources && result.valueSources.length > 0 && <SourcesPanel sources={result.valueSources} />}
               <p className="mt-2 text-[11px] leading-relaxed text-slate-400">{result.valueAnalysis.disclaimer || VALUE_DISCLAIMER}</p>
             </div>
           )}
@@ -581,7 +584,7 @@ function DimDetail({ label, d }: { label: string; d: { level: Level; detail: str
   return <p><span className="font-medium text-slate-900">{label}:</span> {d.detail}</p>;
 }
 
-function ValueCard({ iv }: { iv: ValueIntervention }) {
+function ValueCard({ iv, sources }: { iv: ValueIntervention; sources?: Source[] }) {
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4">
       <div className="flex items-start justify-between gap-3">
@@ -593,6 +596,10 @@ function ValueCard({ iv }: { iv: ValueIntervention }) {
       </div>
 
       {iv.summary && <p className="mt-2 text-[13px] leading-relaxed text-slate-700">{iv.summary}</p>}
+
+      {iv.citation_ids && iv.citation_ids.length > 0 && sources && sources.length > 0 && (
+        <CitationChips ids={iv.citation_ids} sources={sources} />
+      )}
 
       <div className="mt-3 space-y-1.5 rounded-lg bg-slate-50 p-3">
         <DimBar label="Long-term benefit" level={iv.long_term_benefit.level} tone="benefit" />
@@ -719,6 +726,59 @@ function ExtractedPanel({ edit, setEdit, onReanalyze, busy }: { edit: CaEdit; se
         </button>
         <span className="text-xs text-slate-400">Correct any mis-read, then re-run the audit (skips re-reading the file).</span>
       </div>
+    </div>
+  );
+}
+
+function srcLabel(s: Source): string {
+  return [
+    s.book,
+    s.chapter || '',
+    s.page_start != null ? `p.${s.page_start}` : '',
+    (s.item_number && !s.url) ? `#${s.item_number}` : '',
+    s.url ? `PMID ${s.item_number}` : '',
+  ].filter(Boolean).join(' · ');
+}
+
+function CitationChips({ ids, sources }: { ids: number[]; sources: Source[] }) {
+  const byN = new Map(sources.map((s) => [s.n, s]));
+  const cited = ids.map((n) => byN.get(n)).filter((s): s is Source => !!s);
+  if (cited.length === 0) return null;
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+      <span className="text-[10.5px] uppercase tracking-wide text-slate-400">Cited</span>
+      {cited.map((s) => s.url ? (
+        <a key={s.n} href={s.url} target="_blank" rel="noopener noreferrer" title={s.preview}
+          className="inline-flex items-center gap-0.5 rounded-full border border-teal-200 bg-teal-50 px-1.5 py-0.5 text-[10.5px] font-medium text-teal-800 hover:bg-teal-100">
+          [{s.n}] <ExternalLink className="h-2.5 w-2.5" />
+        </a>
+      ) : (
+        <span key={s.n} title={s.preview}
+          className="rounded-full border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10.5px] font-medium text-slate-600">[{s.n}]</span>
+      ))}
+    </div>
+  );
+}
+
+function SourcesPanel({ sources }: { sources: Source[] }) {
+  return (
+    <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+      <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-slate-500">
+        <BookOpen className="h-3 w-3" /> Sources ({sources.length}) — retrieved from the CDMSS corpus
+      </div>
+      <ol className="space-y-1.5">
+        {sources.map((s) => (
+          <li key={s.n} className="text-[12px] leading-relaxed text-slate-600">
+            <span className="font-medium text-slate-700">[{s.n}]</span> {srcLabel(s)}
+            {s.url && (
+              <a href={s.url} target="_blank" rel="noopener noreferrer" className="ml-1 inline-flex items-center gap-0.5 text-brand hover:underline">
+                PubMed <ExternalLink className="h-2.5 w-2.5" />
+              </a>
+            )}
+            {s.preview && <span className="block text-[11px] text-slate-400">{s.preview.slice(0, 160)}{s.preview.length > 160 ? '…' : ''}</span>}
+          </li>
+        ))}
+      </ol>
     </div>
   );
 }

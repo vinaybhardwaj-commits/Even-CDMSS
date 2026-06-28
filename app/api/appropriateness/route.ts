@@ -63,6 +63,7 @@ export async function POST(req: NextRequest) {
       ok: true,
       ...result,
       valueAnalysis: value.valueAnalysis,
+      valueSources: value.sources,
       valueTraceId: value.traceId,
     });
   } catch (e) {

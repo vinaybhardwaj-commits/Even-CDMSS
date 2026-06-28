@@ -10,6 +10,8 @@
  * separate from evidence-cited facts. Advisory, non-directive — never gatekeeping.
  */
 
+import { validateCitationIds } from './citations-core';
+
 export type Level = 'low' | 'moderate' | 'high' | 'unclear';
 export type NetValue = 'high-value' | 'context-dependent' | 'low-value' | 'uncertain';
 
@@ -31,6 +33,7 @@ export interface ValueIntervention {
   what_would_change: string[];
   evidence: string[];     // grounded (corpus-supported) points — rendered as the "evidence" block
   estimates: string[];    // model estimates (incl. any figures) — rendered separately, clearly labeled
+  citation_ids: number[]; // [n] of the surfaced Source[] that back this intervention's evidence
 }
 
 /** A grounded EHRC charge-master match (real local price, not an estimate). */
@@ -94,23 +97,23 @@ function asDimension(v: unknown): ValueDimension {
 
 export const VALUE_SYSTEM = `You are a clinical value-of-care analyst. Given a patient and one or more PROPOSED interventions (tests, treatments, procedures), produce a balanced, structured value assessment — the value case FOR and AGAINST doing it for THIS patient.
 
-Ground clinical claims (benefit, harms, outcomes) in the EVIDENCE EXCERPTS provided. Be specific to the patient's age, comorbidities, and severity.
+You are given NUMBERED EVIDENCE EXCERPTS [1], [2], … retrieved from a medical corpus. Ground clinical claims (benefit, harms, outcomes) in those excerpts and CITE them. Be specific to the patient's age, comorbidities, and severity.
 
 Rules:
 - Be balanced and NON-DIRECTIVE. This informs shared decision-making; it is NOT a recommendation to withhold care and must never read as a denial-of-care justification.
-- Separate EVIDENCE-CITED facts (supported by the excerpts) from your own ESTIMATES. Put grounded points in "evidence" and anything you are estimating (especially cost and long-term-care figures) in "estimates".
-- You MAY give approximate cost / long-term-care figures, but every figure goes in "estimates" and must be written as an estimate (e.g. "est. ~₹X (not validated)"). Never present an estimate as evidence.
-- If an "EHRC TARIFF" is provided for the intervention, that is the AUTHORITATIVE local upfront cost. Set upfront_cost.detail to reference it as a real EHRC package price (not an estimate), and do NOT put an upfront-cost figure in "estimates" (downstream / long-term-care costs may still be estimates).
-- Rate each dimension low | moderate | high (or "unclear" if the excerpts don't support a rating).
-- "long_term_care" = ongoing needs and downstream care after the intervention (revision surgery, rehab, monitoring, device replacement, complications).
-- "what_would_change_this" = the factors that would change the value calculus (e.g. weight optimization, age, severity, failed conservative therapy, staging).
+- CITE your sources: for each intervention, put in "citation_ids" the numbers [n] of the excerpts that actually support your evidence. Every point you place in "evidence" must be supported by a cited excerpt. If an excerpt doesn't support a claim, do not cite it.
+- Separate EVIDENCE-CITED facts (supported by the excerpts) from your own ESTIMATES. Put grounded points in "evidence" (with citations) and anything you are estimating, or asserting from general knowledge the excerpts don't cover, in "estimates". Every cost / long-term-care figure goes in "estimates", written as an estimate (e.g. "est. ~₹X (not validated)"). Never present an estimate as cited evidence.
+- If the excerpts do not support a dimension, rate it "unclear" and say so — do NOT manufacture evidence.
+- If an "EHRC TARIFF" is provided for the intervention, that is the AUTHORITATIVE local upfront cost. Set upfront_cost.detail to reference it as a real EHRC package price (not an estimate), and do NOT put an upfront-cost figure in "estimates".
+- Rate each dimension low | moderate | high (or "unclear").
+- "long_term_care" = ongoing needs/downstream care after the intervention. "what_would_change_this" = factors that would change the value calculus.
 
 Return ONLY JSON, no prose:
-{"interventions":[{"intervention":"<name>","net_value":"high-value|context-dependent|low-value|uncertain","confidence":0.0-1.0,"summary":"<one-line bottom line for this patient>","long_term_benefit":{"level":"low|moderate|high|unclear","detail":"..."},"harms_risks":{"level":"...","detail":"..."},"upfront_cost":{"level":"...","detail":"..."},"long_term_care":{"level":"...","detail":"..."},"alternatives":[{"name":"...","note":"..."}],"what_would_change_this":["..."],"evidence":["<corpus-supported point>"],"estimates":["<model estimate incl. any figures, marked est.>"]}]}`;
+{"interventions":[{"intervention":"<name>","net_value":"high-value|context-dependent|low-value|uncertain","confidence":0.0-1.0,"summary":"<one-line bottom line for this patient>","long_term_benefit":{"level":"low|moderate|high|unclear","detail":"..."},"harms_risks":{"level":"...","detail":"..."},"upfront_cost":{"level":"...","detail":"..."},"long_term_care":{"level":"...","detail":"..."},"alternatives":[{"name":"...","note":"..."}],"what_would_change_this":["..."],"evidence":["<corpus-supported point>"],"estimates":["<model estimate incl. any figures, marked est.>"],"citation_ids":[1,2]}]}`;
 
 export function buildValueUser(
   ctx: { scenario: string; proposedActions?: string[]; patient?: { age?: number; sex?: string } },
-  excerpts: string[],
+  citedContext: string,
 ): string {
   const pt = ctx.patient
     ? `Patient: ${ctx.patient.age != null ? `${ctx.patient.age}y` : 'age unknown'}${ctx.patient.sex ? `, ${ctx.patient.sex}` : ''}\n`
@@ -118,10 +121,10 @@ export function buildValueUser(
   const orders = ctx.proposedActions && ctx.proposedActions.length
     ? `Proposed intervention(s): ${ctx.proposedActions.join('; ')}\n`
     : 'Proposed intervention(s): (infer the main one from the scenario)\n';
-  const ev = excerpts.length
-    ? excerpts.map((e, i) => `[${i + 1}] ${e}`).join('\n\n')
-    : '(no excerpts retrieved — rate dimensions "unclear" where you lack support, and put any clinical reasoning in estimates rather than evidence)';
-  return `${pt}${orders}Clinical scenario:\n${ctx.scenario.trim()}\n\nEVIDENCE EXCERPTS:\n${ev}`;
+  const ev = citedContext.trim()
+    ? citedContext.trim()
+    : '(no excerpts retrieved — rate dimensions "unclear" where you lack support, leave citation_ids empty, and put any clinical reasoning in estimates rather than evidence)';
+  return `${pt}${orders}Clinical scenario:\n${ctx.scenario.trim()}\n\nNUMBERED EVIDENCE EXCERPTS:\n${ev}`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -138,8 +141,8 @@ export function extractJsonObject(text: string): unknown {
   try { return JSON.parse(t.slice(a, b + 1)); } catch { return null; }
 }
 
-/** Parse the value-pass response. Returns null if nothing usable (caller renders nothing). */
-export function parseValueResponse(text: string): ValueAnalysis | null {
+/** Parse the value-pass response. `sourceCount` clamps citation_ids to [1..n]. Returns null if nothing usable. */
+export function parseValueResponse(text: string, sourceCount = 0): ValueAnalysis | null {
   const obj = extractJsonObject(text);
   if (!obj || typeof obj !== 'object') return null;
   const rawList = (obj as Record<string, unknown>).interventions;
@@ -172,8 +175,54 @@ export function parseValueResponse(text: string): ValueAnalysis | null {
       what_would_change: asStrArray(o.what_would_change_this ?? o.what_would_change),
       evidence: asStrArray(o.evidence),
       estimates: asStrArray(o.estimates),
+      citation_ids: validateCitationIds(o.citation_ids, sourceCount),
     });
   }
   if (interventions.length === 0) return null;
   return { interventions, disclaimer: VALUE_DISCLAIMER };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Citation self-critique + revise (mirrors the Ask surface's audit loop)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const VALUE_CRITIQUE_SYSTEM = `You are a clinical citation + accuracy auditor reviewing a value-of-care assessment produced by an AI tool. You are given the patient scenario, the NUMBERED evidence excerpts [1..n], and the draft assessment JSON.
+
+Find problems: claims placed in "evidence" that are NOT actually supported by the cited excerpts; citation_ids that don't match the claim; figures or general-knowledge assertions mis-filed as evidence instead of estimates; missing important caveats/harms a physician would expect.
+
+Output ONLY JSON:
+{"unsupported_evidence":["..."],"wrong_or_missing_citations":["..."],"misfiled_estimates":["..."],"missing_caveats":["..."],"needs_revision":true|false,"severity":"none|minor|moderate|major"}
+
+Empty arrays are fine. needs_revision=true if any array is non-empty.`;
+
+export const VALUE_REVISE_SYSTEM = `You are revising your own value-of-care assessment based on a citation auditor's critique. You receive the scenario, the NUMBERED excerpts [1..n], your earlier draft JSON, and the critique JSON.
+
+Rewrite the assessment to fix every issue: move unsupported claims out of "evidence" (into "estimates" if still worth saying, else drop), correct citation_ids so each intervention cites only excerpts that truly support it, add missing caveats. Keep the EXACT same JSON schema as the draft (interventions[] with the same fields incl. citation_ids). Output ONLY the corrected JSON, no prose.`;
+
+export interface ValueCritique {
+  unsupported_evidence: string[];
+  wrong_or_missing_citations: string[];
+  misfiled_estimates: string[];
+  missing_caveats: string[];
+  needs_revision: boolean;
+  severity: 'none' | 'minor' | 'moderate' | 'major';
+}
+
+export function buildCritiqueUser(scenario: string, citedContext: string, draftJson: string): string {
+  return `Scenario:\n${scenario.trim()}\n\nNUMBERED EVIDENCE EXCERPTS:\n${citedContext.trim() || '(none)'}\n\nDraft assessment JSON to audit:\n${draftJson}\n\nOutput the JSON critique now.`;
+}
+
+export function buildReviseUser(scenario: string, citedContext: string, draftJson: string, critiqueJson: string): string {
+  return `Scenario:\n${scenario.trim()}\n\nNUMBERED EVIDENCE EXCERPTS:\n${citedContext.trim() || '(none)'}\n\nEarlier draft JSON:\n${draftJson}\n\nAuditor critique JSON:\n${critiqueJson}\n\nOutput the corrected assessment JSON now.`;
+}
+
+export function parseCritique(text: string): ValueCritique {
+  const obj = extractJsonObject(text);
+  const o = (obj && typeof obj === 'object') ? obj as Record<string, unknown> : {};
+  const arr = (v: unknown) => asStrArray(v, 10);
+  const ue = arr(o.unsupported_evidence), wc = arr(o.wrong_or_missing_citations), me = arr(o.misfiled_estimates), mc = arr(o.missing_caveats);
+  const sevRaw = String(o.severity ?? '').toLowerCase().trim();
+  const severity = (['none', 'minor', 'moderate', 'major'].includes(sevRaw) ? sevRaw : (ue.length + wc.length + me.length + mc.length > 0 ? 'minor' : 'none')) as ValueCritique['severity'];
+  const needs = typeof o.needs_revision === 'boolean' ? o.needs_revision : (ue.length + wc.length + me.length + mc.length > 0);
+  return { unsupported_evidence: ue, wrong_or_missing_citations: wc, misfiled_estimates: me, missing_caveats: mc, needs_revision: needs, severity };
 }
