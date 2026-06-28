@@ -19,6 +19,9 @@ type CaEdit = {
   age: string; sex: string; diagnosis: string; indication: string; procedure: string;
   investigations: string; treatments: string; medications: string;
   courseSummary: string; disposition: string; followUp: string; rawNotes: string;
+  // Document-grounded passthroughs (not user-edited): the completeness statuses + stay facts
+  // produced by the read, carried so a Re-analyze (which skips re-reading the file) keeps them.
+  completeness?: ExtractedCase['completeness']; adminFacts?: ExtractedCase['adminFacts'];
 };
 
 const caInputCls = 'mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-brand focus:bg-white focus:outline-none';
@@ -268,6 +271,7 @@ export default function AppropriatenessClient() {
       diagnosis: e.diagnosis || null, indication: e.indication || null, procedure: e.procedure || null,
       investigations: splitList(e.investigations), treatments: splitList(e.treatments), medications: splitList(e.medications),
       courseSummary: e.courseSummary, disposition: e.disposition || null, followUp: e.followUp || null, rawNotes: e.rawNotes,
+      completeness: e.completeness ?? [], adminFacts: e.adminFacts,
     };
   }
 
@@ -317,6 +321,7 @@ export default function AppropriatenessClient() {
         diagnosis: ex.diagnosis || '', indication: ex.indication || '', procedure: ex.procedure || '',
         investigations: ex.investigations.join('\n'), treatments: ex.treatments.join('\n'), medications: ex.medications.join('\n'),
         courseSummary: ex.courseSummary, disposition: ex.disposition || '', followUp: ex.followUp || '', rawNotes: ex.rawNotes,
+        completeness: ex.completeness ?? [], adminFacts: ex.adminFacts,
       };
       setCaEdit(edit);
       setCaExtractLoading(false);

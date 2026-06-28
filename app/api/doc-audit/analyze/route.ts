@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { analyzeCase } from '@/lib/doc-audit';
-import { normDocType, type DocType, type ExtractedCase } from '@/lib/doc-audit-core';
+import { normDocType, parseStatusList, normAdminFacts, type DocType, type ExtractedCase } from '@/lib/doc-audit-core';
 import { makeNdjsonStream, ndjsonHeaders, type Stage } from '@/lib/stream';
 
 export const runtime = 'nodejs';
@@ -53,6 +53,11 @@ export async function POST(req: NextRequest) {
     disposition: strOrNull(e.disposition),
     followUp: strOrNull(e.followUp),
     rawNotes: str(e.rawNotes).slice(0, 1000),
+    // Document-grounded completeness + non-identifying stay facts: produced by the extract
+    // pass (which saw the file) and posted back here so "Re-analyze with edits" — which
+    // deliberately skips re-reading the document — keeps them instead of regressing to all-missing.
+    completeness: parseStatusList(e.completeness),
+    adminFacts: normAdminFacts(e.adminFacts),
   };
 
   // Stream NDJSON progress (live pipeline bar), then a single {type:'result'} with the

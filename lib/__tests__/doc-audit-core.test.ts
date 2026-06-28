@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import {
   normDocType, normFieldStatus, normNetValue,
   parseExtraction, parseAnalysis, assembleCompleteness,
+  parseStatusList, normAdminFacts, adminFactsLine,
   type RubricField,
 } from '../doc-audit-core.ts';
 
@@ -27,14 +28,20 @@ test('normFieldStatus + normNetValue map + default', () => {
   assert.equal(normNetValue('nonsense'), 'uncertain');
 });
 
-test('parseExtraction reads a fenced extraction, honours docTypeHint, de-id age/sex only', () => {
+test('parseExtraction reads a fenced extraction, honours docTypeHint, de-id age/sex only, + completeness/adminFacts', () => {
   const raw = '```json\n' + JSON.stringify({
     detected_doc_type: 'discharge_summary', confidence: 0.9,
     patient: { age: 54, sex: 'M' },
     diagnosis: 'acute calculous cholecystitis', procedure: 'laparoscopic cholecystectomy',
     investigations: ['USG abdomen', 'CT abdomen contrast', 'CT abdomen contrast'],
     treatments: ['IV antibiotics 6 days'], medications: ['Pantoprazole', 'Paracetamol'],
-    course_summary: 'LOS 5 days, uneventful', disposition: 'Discharged', follow_up: null, raw_notes: 'typed EMR pdf',
+    course_summary: 'uneventful', disposition: 'Discharged', follow_up: null, raw_notes: 'typed EMR pdf',
+    admin_facts: { length_of_stay_days: 5, admission_type: 'elective', care_setting: 'ward' },
+    completeness: [
+      { key: 'date_admission', status: 'present', note: '' },
+      { key: 'treating_doctor', status: 'present', note: '' },
+      { key: 'discharge_medication', status: 'missing', note: 'no dose/route/duration' },
+    ],
   }) + '\n```';
   const ec = parseExtraction(raw, 'auto');
   assert.ok(ec);
@@ -43,6 +50,13 @@ test('parseExtraction reads a fenced extraction, honours docTypeHint, de-id age/
   assert.equal(ec!.patient.sex, 'male');
   assert.equal(ec!.investigations.length, 3);
   assert.equal(ec!.procedure, 'laparoscopic cholecystectomy');
+  // completeness now comes from the document read, not the analyze pass
+  assert.equal(ec!.completeness!.length, 3);
+  assert.equal(ec!.completeness!.find((c) => c.key === 'date_admission')!.status, 'present');
+  assert.equal(ec!.completeness!.find((c) => c.key === 'discharge_medication')!.status, 'missing');
+  // admin facts captured (LOS is a duration, not a date)
+  assert.equal(ec!.adminFacts!.lengthOfStayDays, 5);
+  assert.equal(ec!.adminFacts!.admissionType, 'elective');
 });
 
 test('parseExtraction docTypeHint overrides detected', () => {
@@ -57,12 +71,8 @@ test('parseExtraction returns null when nothing was read', () => {
   assert.equal(parseExtraction(JSON.stringify({ detected_doc_type: 'opd_rx', course_summary: '', medications: [] }), 'auto'), null);
 });
 
-test('parseAnalysis parses completeness/findings/diff/suggestions; maps diff kinds; sorts suggestions', () => {
+test('parseAnalysis parses findings/diff/suggestions (no completeness); maps diff kinds; sorts suggestions', () => {
   const raw = JSON.stringify({
-    completeness: [
-      { key: 'diagnosis', status: 'present', note: '' },
-      { key: 'urgent_care_instructions', status: 'missing', note: 'no return precautions' },
-    ],
     findings: [
       { subject: 'Repeat CT abdomen', verdict: 'low-value', confidence: 0.8, rationale: 'USG was diagnostic', order: 'CT abdomen contrast', evidence: ['guideline'], estimates: ['est. ~₹6500'], citation_ids: [1, 5] },
     ],
@@ -79,7 +89,6 @@ test('parseAnalysis parses completeness/findings/diff/suggestions; maps diff kin
   });
   const a = parseAnalysis(raw, 3);
   assert.ok(a);
-  assert.equal(a!.completeness.length, 2);
   assert.equal(a!.findings[0].order, 'CT abdomen contrast');
   assert.equal(a!.findings[0].evidence.length, 1);
   assert.equal(a!.findings[0].estimates.length, 1);
@@ -90,11 +99,25 @@ test('parseAnalysis parses completeness/findings/diff/suggestions; maps diff kin
   // suggestions sorted by priority
   assert.equal(a!.suggestions[0].priority, 1);
   assert.equal(a!.suggestions[0].text, 'add follow-up + red flags');
+  // completeness is no longer part of the analyze pass
+  assert.equal((a as unknown as Record<string, unknown>).completeness, undefined);
 });
 
-test('parseAnalysis returns null on empty/garbage', () => {
+test('parseAnalysis returns null on empty/garbage; survives on idealised-only', () => {
   assert.equal(parseAnalysis('nope'), null);
-  assert.equal(parseAnalysis(JSON.stringify({ completeness: [], findings: [], suggestions: [] })), null);
+  assert.equal(parseAnalysis(JSON.stringify({ findings: [], suggestions: [] })), null);
+  // an idealised summary alone is still a usable analysis
+  assert.ok(parseAnalysis(JSON.stringify({ findings: [], suggestions: [], idealised_summary: 'x' })));
+});
+
+test('parseStatusList + normAdminFacts: status-only, day-count not dates', () => {
+  const sl = parseStatusList([{ key: 'date_admission', status: 'present' }, { status: 'present' }, { key: 'x', status: 'absent' }]);
+  assert.equal(sl.length, 2);                       // entry with no key dropped
+  assert.equal(sl[1].status, 'missing');            // 'absent' → missing
+  const af = normAdminFacts({ length_of_stay_days: 8, admission_type: 'Elective', care_setting: 'room' });
+  assert.equal(af!.lengthOfStayDays, 8);
+  assert.equal(normAdminFacts({}), undefined);      // nothing → undefined
+  assert.equal(adminFactsLine(af!), 'Stay: length of stay 8 days; Elective; room');
 });
 
 const RUBRIC: RubricField[] = [

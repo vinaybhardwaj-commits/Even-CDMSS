@@ -52,6 +52,21 @@ export interface RubricField {
   cond?: string;      // only applicable when this holds (e.g. 'implant_used=true')
 }
 
+/** Raw per-field documentation status, judged against the DOCUMENT (status-only, no values). */
+export interface RawStatus { key: string; status: FieldStatus; note: string }
+
+/**
+ * Non-identifying administrative / temporal facts, used for value reasoning
+ * (over-stay, level-of-care, antibiotic duration). DELIBERATELY contains NO dates —
+ * a stay LENGTH (a duration) is not a HIPAA identifier; admission/discharge DATES are,
+ * so the extractor reports the day-count only, never the calendar dates.
+ */
+export interface AdminFacts {
+  lengthOfStayDays: number | null;
+  admissionType: string | null;   // elective | emergency | …
+  careSetting: string | null;     // day_care | ward | room | icu | …
+}
+
 export interface ExtractedCase {
   docType: DocType;
   detectedDocType: DocType;
@@ -67,6 +82,11 @@ export interface ExtractedCase {
   disposition: string | null;
   followUp: string | null;
   rawNotes: string;              // DE-IDENTIFIED extractor notes (no name/UHID)
+  // Completeness is judged HERE, in the pass that actually sees the document, so the
+  // downstream (de-identified) analyze pass never has to guess whether a header/sign-off
+  // field is present. Status-only — never carries the field's value (PHI-safe).
+  completeness?: RawStatus[];
+  adminFacts?: AdminFacts;
 }
 
 export interface CompletenessItem {
@@ -104,6 +124,7 @@ export interface AuditReport {
   diff: DiffItem[];
   suggestions: Suggestion[];
   sources: Source[];         // corpus citations surfaced for this audit (findings cite by [n])
+  adminFacts?: AdminFacts;   // non-identifying stay facts (LOS/level-of-care) — context for the value findings
   disclaimer: string;
 }
 
@@ -147,6 +168,31 @@ function asStrArray(v: unknown, cap = 20): string[] {
 }
 function asNum01(v: unknown): number { let n = Number(v); if (!Number.isFinite(n)) n = 0; return Math.max(0, Math.min(1, n)); }
 
+/** Parse a `[{key,status,note}]` documentation-status list (used by both extract + analyze). */
+export function parseStatusList(v: unknown): RawStatus[] {
+  if (!Array.isArray(v)) return [];
+  const out: RawStatus[] = [];
+  for (const c of v) {
+    const co = (c && typeof c === 'object') ? c as Record<string, unknown> : {};
+    const key = asStr(co.key);
+    if (!key) continue;
+    out.push({ key, status: normFieldStatus(co.status), note: asStr(co.note) });
+  }
+  return out;
+}
+
+/** Parse non-identifying admin facts. Discards anything date-shaped; keeps only a day-count + labels. */
+export function normAdminFacts(v: unknown): AdminFacts | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const o = v as Record<string, unknown>;
+  const losN = Math.round(Number(o.length_of_stay_days ?? o.lengthOfStayDays));
+  const los = Number.isFinite(losN) && losN >= 0 && losN < 3650 ? losN : null;
+  const at = asStr(o.admission_type ?? o.admissionType);
+  const cs = asStr(o.care_setting ?? o.careSetting);
+  if (los === null && !at && !cs) return undefined;
+  return { lengthOfStayDays: los, admissionType: at || null, careSetting: cs || null };
+}
+
 export function extractJsonObject(text: string): unknown {
   let t = (text || '').trim();
   if (!t) return null;
@@ -161,21 +207,28 @@ export function extractJsonObject(text: string): unknown {
 // EXTRACT pass (Gemini multimodal) — prompt + parse
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const EXTRACT_SYSTEM = `You are a careful clinical-records reader. You are given a scanned or digital clinical document (a discharge summary, an OT/operative note, or an OPD prescription) and must return a STRUCTURED, DE-IDENTIFIED extraction of what it says — the actual course of care.
+export const EXTRACT_SYSTEM = `You are a careful clinical-records reader. You are given a scanned or digital clinical document (a discharge summary, an OT/operative note, or an OPD prescription) and must return a STRUCTURED, DE-IDENTIFIED extraction of what it says — the actual course of care — PLUS a documentation-completeness check.
 
-CRITICAL PRIVACY RULE: do NOT include the patient's name, UHID/hospital number, address, phone, or any direct identifier anywhere in your output. Keep age and sex only. If you transcribe notes, redact identifiers.
+CRITICAL PRIVACY RULE: do NOT include the patient's name, UHID/hospital number, address, phone, or any direct identifier anywhere in your output. Keep age and sex only. If you transcribe notes, redact identifiers. EXCEPTION: in the "completeness" check you may mark an identifier field "present" — that reports only WHETHER it is documented, never its value (e.g. mark patient_name "present" but never write the name).
 
-Read faithfully — extract only what the document actually contains; do not infer or add care that isn't documented (gaps are the point of the downstream audit).
+Read faithfully — extract only what the document actually contains; do not infer or add care that isn't documented (gaps are the point of the downstream audit). When a treatment has a duration (e.g. IV antibiotics given across several days), capture it (e.g. "IV Augmentin ~7 days") — durations matter for the value audit.
+
+COMPLETENESS CHECK: you are given a list of documentation FIELDS to check (key + where it belongs). For EACH field key decide, by reading the WHOLE document (header/letterhead, body tables, and the sign-off/footer), one status: "present" (clearly documented) | "partial" (present but incomplete, e.g. a drug with no dose/route/duration) | "missing" (not documented) | "na" (genuinely not applicable, only where allowed). Judge presence from the document itself — a header field like the admission/discharge date or treating-doctor name counts as "present" even though it is an identifier. For a signature/sign-off field, "present" means a clinician name + signature/credential actually appears. Add a SHORT note for partial/missing — and never put an identifier value in the note.
+
+ADMIN FACTS (non-identifying): set length_of_stay_days = whole days between admission and discharge when BOTH are documented, else null — output ONLY the day count, NEVER the actual dates. Set admission_type (elective/emergency/…) and care_setting (day_care/ward/room/icu/…) when stated.
 
 Return ONLY JSON, no prose:
-{"detected_doc_type":"discharge_summary|ot_note|opd_rx","confidence":0.0-1.0,"patient":{"age":<number or null>,"sex":"<m/f or null>"},"diagnosis":"… or null","indication":"… or null","procedure":"… or null (OT only)","investigations":["…"],"treatments":["…"],"medications":["…"],"course_summary":"<concise de-identified summary of the documented course>","disposition":"… or null","follow_up":"… or null","raw_notes":"<short de-identified notes on legibility/structure, NO identifiers>"}`;
+{"detected_doc_type":"discharge_summary|ot_note|opd_rx","confidence":0.0-1.0,"patient":{"age":<number or null>,"sex":"<m/f or null>"},"diagnosis":"… or null","indication":"… or null","procedure":"… or null (OT only)","investigations":["…"],"treatments":["…"],"medications":["…"],"course_summary":"<concise de-identified summary of the documented course>","disposition":"… or null","follow_up":"… or null","admin_facts":{"length_of_stay_days":<integer or null>,"admission_type":"… or null","care_setting":"… or null"},"completeness":[{"key":"<field key>","status":"present|partial|missing|na","note":"<short, NO identifier values>"}],"raw_notes":"<short de-identified notes on legibility/structure, NO identifiers>"}`;
 
-export function buildExtractUser(docTypeHint: DocType | 'auto', context?: string): string {
+export function buildExtractUser(docTypeHint: DocType | 'auto', rubricFields: RubricField[], context?: string): string {
   const hint = docTypeHint === 'auto'
     ? 'Document type: auto-detect (set detected_doc_type).'
     : `Document type (clinician-stated): ${docTypeHint}. Confirm or correct it in detected_doc_type.`;
   const ctx = context && context.trim() ? `\nClinician context: ${context.trim()}` : '';
-  return `${hint}${ctx}\n\nRead the attached document and return the structured de-identified extraction.`;
+  const rubric = rubricFields.length
+    ? `\n\nDOCUMENTATION FIELDS TO CHECK (status only — never echo a field's value):\n${rubricFields.map((f) => `- ${f.key} [${f.ref}${f.cond ? `, only if ${f.cond}` : ''}${f.na ? ', N/A allowed' : ''}] ${f.label}`).join('\n')}`
+    : '';
+  return `${hint}${ctx}${rubric}\n\nRead the attached document and return the structured de-identified extraction, the admin facts, and the completeness check.`;
 }
 
 export function parseExtraction(raw: string, docTypeHint: DocType | 'auto'): ExtractedCase | null {
@@ -206,6 +259,8 @@ export function parseExtraction(raw: string, docTypeHint: DocType | 'auto'): Ext
     disposition: asStrOrNull(o.disposition),
     followUp: asStrOrNull(o.follow_up ?? o.followUp),
     rawNotes: asStr(o.raw_notes ?? o.rawNotes),
+    completeness: parseStatusList(o.completeness),
+    adminFacts: normAdminFacts(o.admin_facts ?? o.adminFacts),
   };
 }
 
@@ -213,20 +268,19 @@ export function parseExtraction(raw: string, docTypeHint: DocType | 'auto'): Ext
 // ANALYZE pass (Pro, grounded) — prompt + parse
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const ANALYZE_SYSTEM = `You are a clinical quality + documentation auditor for a NABH-accredited hospital. You are given (1) a DE-IDENTIFIED extracted case from a clinical document, (2) the NABH documentation rubric for that document type, and (3) NUMBERED EVIDENCE EXCERPTS [1], [2], … from a medical corpus. Produce a retrospective, advisory audit. NON-DIRECTIVE and NOT a judgment of the clinician.
+export const ANALYZE_SYSTEM = `You are a clinical quality auditor for a NABH-accredited hospital. You are given (1) a DE-IDENTIFIED extracted case from a clinical document (including non-identifying STAY FACTS — length of stay in days, admission type, care setting) and (2) NUMBERED EVIDENCE EXCERPTS [1], [2], … from a medical corpus. Produce a retrospective, advisory audit. NON-DIRECTIVE and NOT a judgment of the clinician. (Documentation completeness is checked separately — do NOT assess it here.)
 
-Do four things:
-1. COMPLETENESS — for EACH rubric field id given, decide its documentation status: "present" | "partial" | "missing" | "na" (na only where the field allows N/A and it genuinely doesn't apply). Add a short note for partial/missing. (Completeness is judged from the document itself — no citations needed here.)
-2. APPROPRIATENESS / LOW-VALUE — review the investigations, treatments, drugs, and procedure for over-use / low-value / questionable decisions for this case. Each finding: subject, verdict (high-value | context-dependent | low-value | uncertain), confidence, rationale, the single concrete "order" name if it maps to an orderable test/procedure/drug (so a tariff can be attached), and "citation_ids": the [n] of the excerpts that actually support this finding's evidence. Ground clinical claims in the EXCERPTS — put grounded points (with citations) in "evidence" and your own figures/inferences or general-knowledge claims the excerpts don't cover in "estimates" (every figure marked "est."). Do NOT cite an excerpt that doesn't support the claim.
-3. IDEALISED COURSE — a concise narrative of how the idealised hospital course / operation / OPD encounter should have gone for this case, then a DIFF: items "done — not needed" (kind:"overuse") and "ideal — but missing" (kind:"gap").
-4. SUGGESTIONS — prioritised, concrete improvements (compliance + safety + value), priority 1 = highest.
+Do three things:
+1. APPROPRIATENESS / LOW-VALUE — review the investigations, treatments, drugs, and procedure for over-use / low-value / questionable decisions for this case. Consider the VALUE OF CARE INTENSITY too, using the stay facts: an inpatient admission or a multi-day length of stay for a procedure usually done as day-care, or a prolonged course of IV antibiotics for a clean/low-risk procedure, are over-use signals worth a finding. Each finding: subject, verdict (high-value | context-dependent | low-value | uncertain), confidence, rationale, the single concrete "order" name if it maps to an orderable test/procedure/drug (so a tariff can be attached), and "citation_ids": the [n] of the excerpts that actually support this finding's evidence. Ground clinical claims in the EXCERPTS — put grounded points (with citations) in "evidence" and your own figures/inferences or general-knowledge claims the excerpts don't cover in "estimates" (every figure marked "est."). Do NOT cite an excerpt that doesn't support the claim. Do NOT flag the absence of a step the document may simply not mention as if it were a care failure — frame uncertain reads as documentation gaps, not errors.
+2. IDEALISED COURSE — a concise narrative of how the idealised hospital course / operation / OPD encounter should have gone for this case, then a DIFF: items "done — not needed" (kind:"overuse") and "ideal — but missing" (kind:"gap").
+3. SUGGESTIONS — prioritised, concrete improvements (compliance + safety + value), priority 1 = highest.
 
 Rules: advisory only; never phrase as blocking/denying care or blaming the clinician. Separate cited EVIDENCE from ESTIMATES. Do not invent citations or identifiers.
 
 Return ONLY JSON, no prose:
-{"completeness":[{"key":"<rubric field key>","status":"present|partial|missing|na","note":"…"}],"findings":[{"subject":"…","verdict":"…","confidence":0.0-1.0,"rationale":"…","order":"… (optional)","evidence":["…"],"estimates":["…"],"citation_ids":[1,2]}],"idealised_summary":"…","diff":[{"kind":"overuse|gap","text":"…","ref":"… (optional)"}],"suggestions":[{"priority":1,"text":"…","ref":"… (optional)"}]}`;
+{"findings":[{"subject":"…","verdict":"…","confidence":0.0-1.0,"rationale":"…","order":"… (optional)","evidence":["…"],"estimates":["…"],"citation_ids":[1,2]}],"idealised_summary":"…","diff":[{"kind":"overuse|gap","text":"…","ref":"… (optional)"}],"suggestions":[{"priority":1,"text":"…","ref":"… (optional)"}]}`;
 
-export function buildAnalyzeUser(ctx: ExtractedCase, fields: RubricField[], citedContext: string, standardLabel: string): string {
+export function buildAnalyzeUser(ctx: ExtractedCase, citedContext: string, standardLabel: string): string {
   const pt = (ctx.patient.age != null || ctx.patient.sex)
     ? `Patient: ${ctx.patient.age != null ? `${ctx.patient.age}y` : 'age unknown'}${ctx.patient.sex ? `, ${ctx.patient.sex}` : ''}\n`
     : '';
@@ -239,14 +293,24 @@ export function buildAnalyzeUser(ctx: ExtractedCase, fields: RubricField[], cite
   if (ctx.medications.length) lines.push(`Medications: ${ctx.medications.join('; ')}`);
   if (ctx.disposition) lines.push(`Disposition: ${ctx.disposition}`);
   if (ctx.followUp) lines.push(`Follow-up: ${ctx.followUp}`);
+  const sf = adminFactsLine(ctx.adminFacts);
+  if (sf) lines.push(sf);
   lines.push(`Course: ${ctx.courseSummary}`);
-  const rubric = fields.map((f) => `- ${f.key} [${f.ref}${f.cond ? `, only if ${f.cond}` : ''}${f.na ? ', N/A allowed' : ''}] ${f.label}`).join('\n');
   const ev = citedContext.trim() ? citedContext.trim() : '(no excerpts retrieved — leave citation_ids empty; put clinical reasoning in estimates, not evidence)';
-  return `Document type: ${ctx.docType} (${standardLabel})\n${pt}EXTRACTED CASE:\n${lines.join('\n')}\n\nNABH RUBRIC FIELDS (judge each by key):\n${rubric}\n\nNUMBERED EVIDENCE EXCERPTS:\n${ev}`;
+  return `Document type: ${ctx.docType} (${standardLabel})\n${pt}EXTRACTED CASE:\n${lines.join('\n')}\n\nNUMBERED EVIDENCE EXCERPTS:\n${ev}`;
+}
+
+/** One-line render of the non-identifying stay facts (or '' if none). Shared by analyze + critique. */
+export function adminFactsLine(a?: AdminFacts): string {
+  if (!a) return '';
+  const parts: string[] = [];
+  if (a.lengthOfStayDays != null) parts.push(`length of stay ${a.lengthOfStayDays} day${a.lengthOfStayDays === 1 ? '' : 's'}`);
+  if (a.admissionType) parts.push(a.admissionType);
+  if (a.careSetting) parts.push(a.careSetting);
+  return parts.length ? `Stay: ${parts.join('; ')}` : '';
 }
 
 export interface ParsedAnalysis {
-  completeness: { key: string; status: FieldStatus; note: string }[];
   findings: AuditFinding[];
   idealisedSummary: string;
   diff: DiffItem[];
@@ -257,15 +321,6 @@ export function parseAnalysis(raw: string, sourceCount = 0): ParsedAnalysis | nu
   const obj = extractJsonObject(raw);
   if (!obj || typeof obj !== 'object') return null;
   const o = obj as Record<string, unknown>;
-
-  const completeness = Array.isArray(o.completeness)
-    ? (o.completeness as unknown[]).map((c) => {
-        const co = (c && typeof c === 'object') ? c as Record<string, unknown> : {};
-        const key = asStr(co.key);
-        if (!key) return null;
-        return { key, status: normFieldStatus(co.status), note: asStr(co.note) };
-      }).filter((x): x is { key: string; status: FieldStatus; note: string } => !!x)
-    : [];
 
   const findings: AuditFinding[] = [];
   if (Array.isArray(o.findings)) {
@@ -316,8 +371,9 @@ export function parseAnalysis(raw: string, sourceCount = 0): ParsedAnalysis | nu
     suggestions.sort((a, b) => a.priority - b.priority);
   }
 
-  if (completeness.length === 0 && findings.length === 0 && suggestions.length === 0) return null;
-  return { completeness, findings, idealisedSummary: asStr(o.idealised_summary ?? o.idealisedSummary), diff, suggestions };
+  const idealisedSummary = asStr(o.idealised_summary ?? o.idealisedSummary);
+  if (findings.length === 0 && suggestions.length === 0 && !idealisedSummary) return null;
+  return { findings, idealisedSummary, diff, suggestions };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -326,7 +382,7 @@ export function parseAnalysis(raw: string, sourceCount = 0): ParsedAnalysis | nu
 
 export const AUDIT_CRITIQUE_SYSTEM = `You are a clinical citation + accuracy auditor reviewing a retrospective case-audit produced by an AI tool. You are given the extracted case, the NUMBERED evidence excerpts [1..n], and the draft audit JSON.
 
-Find problems IN THE FINDINGS and SUGGESTIONS: "evidence" points NOT supported by their citation_ids; citation_ids that don't match the claim; figures/general-knowledge assertions mis-filed as evidence instead of estimates; an important low-value/over-use issue or safety caveat a physician would expect that the audit missed. (Do not critique the completeness list — it is judged from the document, not the corpus.)
+Find problems IN THE FINDINGS and SUGGESTIONS: "evidence" points NOT supported by their citation_ids; citation_ids that don't match the claim; figures/general-knowledge assertions mis-filed as evidence instead of estimates; an important low-value/over-use issue or safety caveat a physician would expect that the audit missed (e.g. a multi-day stay or prolonged IV antibiotics for a day-care-eligible procedure). The draft has no completeness list — documentation completeness is checked elsewhere, so do not look for it.
 
 Output ONLY JSON:
 {"unsupported_evidence":["…"],"wrong_or_missing_citations":["…"],"misfiled_estimates":["…"],"missing_caveats":["…"],"needs_revision":true|false,"severity":"none|minor|moderate|major"}

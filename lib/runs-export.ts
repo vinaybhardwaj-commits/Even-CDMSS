@@ -123,9 +123,12 @@ export function buildRunSheets(run: ExportRun): SheetDef[] {
     for (const r of citationRows(runId, mode, out.sources)) push('Citations', r);
   } else {
     const report = obj(out.report); const ex = obj(out.extracted); const comp = obj(report.completeness);
+    const af = obj(report.adminFacts ?? ex.adminFacts);
     runRow.doc_type = str((ex.docType ?? ex.detectedDocType));
     runRow.diagnosis = str(ex.diagnosis); runRow.procedure = str(ex.procedure);
     runRow.completeness_pct = comp.coverage != null ? Math.round(Number(comp.coverage) * 100) : '';
+    runRow.length_of_stay_days = af.lengthOfStayDays != null ? af.lengthOfStayDays : '';
+    runRow.admission_type = str(af.admissionType); runRow.care_setting = str(af.careSetting);
     runRow.idealised_summary = str(report.idealisedSummary); runRow.disclaimer = str(report.disclaimer);
     for (const fv of asArr(report.findings)) {
       const f = obj(fv);

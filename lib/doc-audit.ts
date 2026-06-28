@@ -34,6 +34,18 @@ function getRubric(dt: DocType): RubricEntry {
   return { label: d?.label ?? dt, standard: d?.standard ?? '', fields: (d?.fields ?? []) as RubricField[] };
 }
 
+// Fields to send into the document-read for the completeness check. For a concrete
+// doc-type hint we send that rubric; for 'auto' (type unknown until we read) we send the
+// deduped UNION of all three so a single read still covers whatever it turns out to be —
+// assembleCompleteness later keeps only the detected type's fields.
+const ALL_DOC_TYPES: DocType[] = ['discharge_summary', 'ot_note', 'opd_rx'];
+function rubricFieldsForHint(hint: DocType | 'auto'): RubricField[] {
+  if (hint !== 'auto') return getRubric(hint).fields;
+  const seen = new Set<string>(); const out: RubricField[] = [];
+  for (const dt of ALL_DOC_TYPES) for (const f of getRubric(dt).fields) if (!seen.has(f.key)) { seen.add(f.key); out.push(f); }
+  return out;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // EXTRACT (Gemini multimodal)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -55,7 +67,7 @@ export async function extractCase(input: ExtractInput): Promise<ExtractResult> {
     ? await startTrace('doc_audit_extract', { docTypeHint: input.docTypeHint, mime: input.mime, bytes: input.bytes ?? null })
     : undefined;
   try {
-    const userPrompt = core.buildExtractUser(input.docTypeHint, input.context);
+    const userPrompt = core.buildExtractUser(input.docTypeHint, rubricFieldsForHint(input.docTypeHint), input.context);
     const raw = await generateFromDocument(core.EXTRACT_SYSTEM, userPrompt, input.base64, input.mime, { maxOutputTokens: 8192 });
     const extracted = raw ? core.parseExtraction(raw, input.docTypeHint) : null;
     if (traceId) {
@@ -69,6 +81,8 @@ export async function extractCase(input: ExtractInput): Promise<ExtractResult> {
           medications: extracted.medications.length,
           hasDiagnosis: !!extracted.diagnosis,
           hasProcedure: !!extracted.procedure,
+          completenessChecked: extracted.completeness?.length ?? 0,
+          lengthOfStayDays: extracted.adminFacts?.lengthOfStayDays ?? null,
         } : null,
       });
       await finishTrace(traceId, extracted ? 'success' : 'partial');
@@ -127,6 +141,8 @@ function caseSummaryFor(extracted: ExtractedCase): string {
   if (extracted.investigations.length) parts.push(`Ix: ${extracted.investigations.join('; ')}`);
   if (extracted.treatments.length) parts.push(`Tx: ${extracted.treatments.join('; ')}`);
   if (extracted.medications.length) parts.push(`Meds: ${extracted.medications.join('; ')}`);
+  const sf = core.adminFactsLine(extracted.adminFacts);
+  if (sf) parts.push(sf);
   parts.push(`Course: ${extracted.courseSummary}`);
   return parts.join('\n');
 }
@@ -168,7 +184,7 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
 
     const caseSummary = caseSummaryFor(extracted);
     prog('analyzing', 'Auditing the case…');
-    const draftRaw = await generate(core.ANALYZE_SYSTEM, core.buildAnalyzeUser(extracted, rubric.fields, citedContext, rubric.standard));
+    const draftRaw = await generate(core.ANALYZE_SYSTEM, core.buildAnalyzeUser(extracted, citedContext, rubric.standard));
     let parsed = core.parseAnalysis(draftRaw, sources.length);
     if (!parsed) {
       if (traceId) { await logEvent(traceId, 'doc_audit_result', null, { ok: false }); await finishTrace(traceId, 'partial'); }
@@ -206,7 +222,9 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
       }
     }
 
-    const completeness = core.assembleCompleteness(parsed.completeness, rubric.fields);
+    // Completeness now comes from the pass that actually SAW the document (extract),
+    // not from the de-identified analyze pass — so header/sign-off fields aren't guessed.
+    const completeness = core.assembleCompleteness(extracted.completeness ?? [], rubric.fields);
     const idealisedStages = skel.skeleton?.stages.map((s) => ({ id: s.id, kind: s.kind, title: s.title, action: s.action, flag: s.flag }));
 
     const report: AuditReport = {
@@ -217,6 +235,7 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
       diff: parsed.diff,
       suggestions: parsed.suggestions,
       sources,
+      adminFacts: extracted.adminFacts,
       disclaimer: core.CASE_AUDIT_DISCLAIMER,
     };
 

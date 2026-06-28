@@ -61,6 +61,18 @@ export default function CaseAuditReport({
         <Metric label="Idealised vs actual" value={`${report.diff.length} gaps`} sub={`${report.diff.filter((d) => d.kind === 'overuse').length} over-use · ${report.diff.filter((d) => d.kind === 'gap').length} missed`} tone="neutral" />
       </div>
 
+      {report.adminFacts && (report.adminFacts.lengthOfStayDays != null || report.adminFacts.admissionType || report.adminFacts.careSetting) && (
+        <div className="flex flex-wrap items-center gap-2 text-[12px] text-slate-500">
+          <span className="font-medium text-slate-600">Stay facts</span>
+          {report.adminFacts.lengthOfStayDays != null && (
+            <span className="rounded-full bg-slate-100 px-2 py-0.5">Length of stay: {report.adminFacts.lengthOfStayDays} day{report.adminFacts.lengthOfStayDays === 1 ? '' : 's'}</span>
+          )}
+          {report.adminFacts.admissionType && <span className="rounded-full bg-slate-100 px-2 py-0.5 capitalize">{report.adminFacts.admissionType}</span>}
+          {report.adminFacts.careSetting && <span className="rounded-full bg-slate-100 px-2 py-0.5 capitalize">{report.adminFacts.careSetting.replace(/_/g, ' ')}</span>}
+          <span className="text-slate-400">· informs the value findings, not stored as dates</span>
+        </div>
+      )}
+
       <section>
         <SectionTitle icon={<ClipboardCheck className="h-3.5 w-3.5" />} text="Completeness audit (NABH + clinical)" />
         <div className="overflow-hidden rounded-xl border border-slate-200">
