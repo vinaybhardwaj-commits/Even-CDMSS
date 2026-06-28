@@ -32,6 +32,8 @@ export interface ValueInput {
   trace?: boolean;
   /** Citation self-critique + revise loop. Default on; env VALUE_AUDIT=0 disables. */
   audit?: boolean;
+  /** Live progress callback for NDJSON streaming (stage, human message). */
+  onProgress?: (stage: string, msg: string) => void;
 }
 
 export interface ValueResult {
@@ -91,13 +93,16 @@ export async function analyzeValue(input: ValueInput, deps: Partial<ValueDeps> =
   const retrieveHits = deps.retrieveHits ?? defaultRetrieveHits;
   const generate = deps.generate
     ?? ((s: string, u: string, label: string) => defaultGenerate(s, u, label, traceId, label === 'lvc_value_critique' ? 700 : 1500));
+  const prog = input.onProgress ?? (() => {});
 
   try {
+    prog('retrieving', 'Retrieving evidence from the corpus…');
     const query = [input.scenario, ...(input.proposedActions ?? []), 'benefits harms outcomes complications cost long-term care alternatives']
       .filter(Boolean).join('. ');
     const hits = await retrieveHits(query);
     const sources = hitsToSources(hits);
     const citedContext = buildCitedContext(hits);
+    prog('retrieving', `Retrieved ${sources.length} sources`);
     if (traceId) await logEvent(traceId, 'lvc_value_sources', null, { count: sources.length, ids: sources.map((s) => ({ n: s.n, book: s.book, url: s.url })) });
 
     // Ground the upfront cost in the EHRC charge master (real local price, not an estimate).
@@ -109,12 +114,14 @@ export async function analyzeValue(input: ValueInput, deps: Partial<ValueDeps> =
       user += `\n\nEHRC TARIFF (authoritative local upfront cost — use this, do NOT estimate the upfront cost):\n${tariffs.map(formatTariffForPrompt).join('\n')}`;
     }
 
+    prog('drafting', 'Analyzing value for this patient…');
     const draftRaw = await generate(vcore.VALUE_SYSTEM, user, 'lvc_value');
     let valueAnalysis = vcore.parseValueResponse(draftRaw, sources.length);
 
     // ── Citation self-critique + revise ──────────────────────────────────────
     if (doAudit && valueAnalysis) {
       try {
+        prog('reviewing', 'Auditing citations…');
         const critiqueRaw = await generate(vcore.VALUE_CRITIQUE_SYSTEM, vcore.buildCritiqueUser(input.scenario, citedContext, draftRaw), 'lvc_value_critique');
         const critique = vcore.parseCritique(critiqueRaw);
         if (traceId) await logEvent(traceId, 'lvc_value_critique', null, {
@@ -122,6 +129,7 @@ export async function analyzeValue(input: ValueInput, deps: Partial<ValueDeps> =
           issues: critique.unsupported_evidence.length + critique.wrong_or_missing_citations.length + critique.misfiled_estimates.length + critique.missing_caveats.length,
         });
         if (critique.needs_revision) {
+          prog('revising', 'Revising to fix citations…');
           const revRaw = await generate(vcore.VALUE_REVISE_SYSTEM, vcore.buildReviseUser(input.scenario, citedContext, draftRaw, JSON.stringify(critique)), 'lvc_value');
           const revised = vcore.parseValueResponse(revRaw, sources.length);
           if (revised) valueAnalysis = revised;   // keep the draft if the revise pass didn't parse
@@ -131,6 +139,7 @@ export async function analyzeValue(input: ValueInput, deps: Partial<ValueDeps> =
       }
     }
 
+    prog('finalizing', 'Finalizing…');
     if (valueAnalysis && tariffs.length) valueAnalysis.tariffs = tariffs;
 
     if (traceId) {

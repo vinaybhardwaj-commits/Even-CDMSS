@@ -8,6 +8,8 @@ import type { PathwaySkeleton, PathwayEnrichment, SkeletonStage } from '@/lib/pa
 import CaseAuditReport from '@/components/CaseAuditReport';
 import type { ExtractedCase, AuditReport, DocType } from '@/lib/doc-audit-core';
 import type { Source } from '@/lib/citations-core';
+import { consumeNdjson } from '@/lib/ndjson-client';
+import TracePanel, { type TraceEvent } from '@/components/TracePanel';
 
 type Mode = 'check' | 'pathway' | 'audit';
 
@@ -83,6 +85,15 @@ export default function AppropriatenessClient() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<MatchResult | null>(null);
   const [dismissed, setDismissed] = useState<Record<string, boolean>>({});
+  const [traces, setTraces] = useState<TraceEvent[]>([]);
+  const [totalMs, setTotalMs] = useState<number | undefined>();
+
+  function pushTrace(stage: string, msg: string, ms?: number, done = false, error = false) {
+    setTraces((prev) => {
+      const marked = prev.map((t) => (t.done || t.error ? t : { ...t, done: true }));
+      return [...marked, { stage, msg, ms, done, error, ts: Date.now() }];
+    });
+  }
 
   // Pathway & decision mode (Flash skeleton → Pro enrich).
   const [pwLoading, setPwLoading] = useState(false);
@@ -149,7 +160,7 @@ export default function AppropriatenessClient() {
   async function run() {
     const s = scenario.trim();
     if (s.length < 3) { setError('Enter a clinical scenario.'); return; }
-    setLoading(true); setError(null); setResult(null); setDismissed({});
+    setLoading(true); setError(null); setResult(null); setDismissed({}); setTraces([]); setTotalMs(undefined);
     try {
       const proposedActions = orders
         .split(/[\n,;]+/).map((x) => x.trim()).filter(Boolean);
@@ -162,9 +173,17 @@ export default function AppropriatenessClient() {
       const r = await fetch('/api/appropriateness', {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
       });
-      const j = (await r.json()) as MatchResult;
-      if (!r.ok || !j.ok) throw new Error(j.error || `request failed (${r.status})`);
-      setResult(j);
+      if (!r.ok) throw new Error(`request failed (${r.status})`);
+      let gotResult = false;
+      await consumeNdjson(r, (ev) => {
+        if (ev.type === 'progress') pushTrace(ev.stage, ev.msg, ev.ms);
+        else if (ev.type === 'result') {
+          const d = ev.data as MatchResult;
+          if (d && d.ok) { setResult(d); gotResult = true; } else setError(d?.error || 'analysis failed');
+        } else if (ev.type === 'done') { setTotalMs(ev.ms); pushTrace('done', 'Pipeline complete', ev.ms, true); }
+        else if (ev.type === 'error') setError(ev.message);
+      });
+      if (!gotResult) setError((prev) => prev ?? 'No result received.');
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -456,6 +475,12 @@ export default function AppropriatenessClient() {
             skeletonTraceId={pwSkeletonTraceId}
             enrichTraceId={pwEnrichTraceId}
           />
+        </div>
+      )}
+
+      {mode === 'check' && traces.length > 0 && (
+        <div className="mt-4">
+          <TracePanel events={traces} totalMs={totalMs} surface="appropriateness-value" />
         </div>
       )}
 

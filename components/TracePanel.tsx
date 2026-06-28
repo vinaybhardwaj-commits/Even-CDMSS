@@ -223,6 +223,40 @@ const DRUGS_INTERACTIONS_MILESTONES: Milestone[] = [
   { match: /^Deduplicating/i,         pct: 90 },
 ];
 
+// v2.x — /appropriateness surfaces (value · pathway · case-audit). The bar tracks
+// the same retrieve→draft→critique→revise pipeline the grounded modes run, with the
+// audit loop bands sized for its ~tripled latency. Messages match the route emits.
+const APPROPRIATENESS_VALUE_MILESTONES: Milestone[] = [
+  { match: /Retrieving evidence/i, pct: 8  },
+  { match: /Retrieved \d+/i,       pct: 28 },
+  { match: /Analyzing value/i,     pct: 42 },
+  { match: /Auditing citations/i,  pct: 70 },
+  { match: /Revising/i,            pct: 84 },
+  { match: /Finalizing/i,          pct: 95 },
+];
+
+const APPROPRIATENESS_PATHWAY_MILESTONES: Milestone[] = [
+  { match: /Detecting stage/i,     pct: 4  },
+  { match: /Care path ready/i,     pct: 16 },
+  { match: /Retrieving evidence/i, pct: 22 },
+  { match: /Retrieved \d+/i,       pct: 38 },
+  { match: /Enriching each step/i, pct: 50 },
+  { match: /Auditing citations/i,  pct: 78 },
+  { match: /Revising/i,            pct: 88 },
+  { match: /Finalizing/i,          pct: 95 },
+];
+
+const APPROPRIATENESS_AUDIT_MILESTONES: Milestone[] = [
+  { match: /Reading the document/i, pct: 5  },
+  { match: /Document read/i,        pct: 20 },
+  { match: /Retrieving evidence/i,  pct: 28 },
+  { match: /Retrieved \d+/i,        pct: 42 },
+  { match: /Auditing the case/i,    pct: 52 },
+  { match: /Auditing citations/i,   pct: 78 },
+  { match: /Revising/i,             pct: 88 },
+  { match: /Finalizing/i,           pct: 95 },
+];
+
 function milestoneFor(events: TraceEvent[], table: Milestone[]): { current: number; next: number; sinceMs: number } {
   let currentIdx = -1;
   let sinceMs = Date.now();
@@ -258,7 +292,7 @@ const STAGE_LABEL: Record<string, string> = {
   done: 'Done',
 };
 
-export default function TracePanel({ events, totalMs, traceId, surface, askChips }: { events: TraceEvent[]; totalMs?: number; traceId?: string | null; surface?: 'ask' | 'ddx' | 'coach' | 'drugs' | 'drugs-interactions'; askChips?: AskChips }) {
+export default function TracePanel({ events, totalMs, traceId, surface, askChips }: { events: TraceEvent[]; totalMs?: number; traceId?: string | null; surface?: 'ask' | 'ddx' | 'coach' | 'drugs' | 'drugs-interactions' | 'appropriateness-value' | 'appropriateness-pathway' | 'appropriateness-audit'; askChips?: AskChips }) {
   // ALL HOOKS FIRST — no early returns above this line
   const [open, setOpen] = useState(true);
   const [now, setNow] = useState(() => Date.now());
@@ -317,6 +351,9 @@ export default function TracePanel({ events, totalMs, traceId, surface, askChips
         const milestoneTable =
           surface === 'drugs' ? DRUGS_LOOKUP_MILESTONES :
           surface === 'drugs-interactions' ? DRUGS_INTERACTIONS_MILESTONES :
+          surface === 'appropriateness-value' ? APPROPRIATENESS_VALUE_MILESTONES :
+          surface === 'appropriateness-pathway' ? APPROPRIATENESS_PATHWAY_MILESTONES :
+          surface === 'appropriateness-audit' ? APPROPRIATENESS_AUDIT_MILESTONES :
           null;
 
         let pct: number;

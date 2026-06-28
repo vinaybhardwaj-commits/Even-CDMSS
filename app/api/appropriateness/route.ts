@@ -2,15 +2,17 @@ import { NextRequest, NextResponse } from 'next/server';
 import { matchLowValueCare, type MatchInput } from '@/lib/lvc';
 import { analyzeValue } from '@/lib/lvc-value';
 import type { Region } from '@/lib/lvc-core';
+import { makeNdjsonStream, ndjsonHeaders, type Stage } from '@/lib/stream';
 
 export const runtime = 'nodejs';
-export const maxDuration = 300; // Pro applicability judge over the candidate pool
+export const maxDuration = 300; // Pro applicability judge over the candidate pool + value audit loop
 
 const REGIONS = new Set(['US', 'CA', 'IN']);
 
 // POST /api/appropriateness — Appropriateness / Low-Value-Care check (CW.3).
+// Streams NDJSON progress events (so the client shows the live CDMSS pipeline bar like Ask/DDx),
+// then a single {type:'result'} carrying the flags + value analysis + sources, then {type:'done'}.
 // Body: { scenario, proposedActions?: string[], patient?: {age?, sex?}, regionFilter?: Region[], preferRegion?: Region }
-// Returns the matcher result (flags + candidates + trace id). Opt-in surface → 'surface' floor.
 export async function POST(req: NextRequest) {
   let body: Record<string, unknown>;
   try {
@@ -52,21 +54,39 @@ export async function POST(req: NextRequest) {
     preferRegion,
   };
 
-  try {
-    // Flag matcher (CW seed-dependent) and value analysis (seed-independent) run in
-    // parallel. The value pass soft-fails to null internally, so it never breaks the response.
-    const [result, value] = await Promise.all([
-      matchLowValueCare(input),
-      analyzeValue({ scenario, proposedActions, patient: hasPatient ? patient : undefined }),
-    ]);
-    return NextResponse.json({
-      ok: true,
-      ...result,
-      valueAnalysis: value.valueAnalysis,
-      valueSources: value.sources,
-      valueTraceId: value.traceId,
-    });
-  } catch (e) {
-    return NextResponse.json({ ok: false, error: String((e as Error).message) }, { status: 500 });
-  }
+  const { stream, emit, close } = makeNdjsonStream();
+  const t0 = Date.now();
+
+  (async () => {
+    try {
+      // Flag matcher (CW seed-dependent) and value analysis (seed-independent) run in
+      // parallel. The value pass drives the progress bar via onProgress; it soft-fails
+      // to null internally so it never breaks the response.
+      const [result, value] = await Promise.all([
+        matchLowValueCare(input),
+        analyzeValue({
+          scenario, proposedActions, patient: hasPatient ? patient : undefined,
+          onProgress: (stage, msg) => emit({ type: 'progress', stage: stage as Stage, msg, ms: Date.now() - t0 }),
+        }),
+      ]);
+      emit({
+        type: 'result',
+        data: {
+          ok: true,
+          ...result,
+          valueAnalysis: value.valueAnalysis,
+          valueSources: value.sources,
+          valueTraceId: value.traceId,
+        },
+      });
+      emit({ type: 'done', ms: Date.now() - t0 });
+    } catch (e) {
+      emit({ type: 'error', message: String((e as Error).message) });
+    } finally {
+      close();
+    }
+  })();
+
+  const headers = ndjsonHeaders();
+  return new Response(stream, { headers });
 }
