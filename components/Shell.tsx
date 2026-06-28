@@ -14,6 +14,7 @@ const CLINICIAN_NAV: [string, string][] = [
 const ADMIN_NAV: [string, string][] = [
   ['/admin/literature', 'Literature'],
   ['/admin/observability', 'Observability'],
+  ['/admin/appropriateness-runs', 'Appropriateness runs'],
 ];
 
 export function Shell({ children }: { children: React.ReactNode }) {
@@ -21,14 +22,14 @@ export function Shell({ children }: { children: React.ReactNode }) {
   // Chrome-free is decided by HOST in app/layout.tsx (medaudit.evenos.app gets no
   // Shell at all). On the CAT host the audit tool shows here as a normal nav item.
   const isAdmin = pathname.startsWith('/admin');
-  const isObs = pathname.startsWith('/admin/observability');
   const nav = isAdmin ? ADMIN_NAV : CLINICIAN_NAV;
+  const activeAdmin = ADMIN_NAV.find(([href]) => pathname.startsWith(href));
   return (
     <div style={{ display: 'flex', minHeight: '100vh' }}>
       <nav style={{ width: 180, borderRight: '1px solid #e5e7eb', padding: 16 }}>
         <div style={{ fontWeight: 700, marginBottom: 4 }}>CAT</div>
         <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 16 }}>
-          {isAdmin ? (isObs ? 'Admin · Observability' : 'Admin · Literature engine') : 'Clinical Analysis Tool'}
+          {isAdmin ? `Admin · ${activeAdmin ? activeAdmin[1] : 'CAT'}` : 'Clinical Analysis Tool'}
         </div>
         {nav.map(([href, label]) => (
           <Link key={href} href={href} style={{ display: 'block', padding: '6px 0' }}>
