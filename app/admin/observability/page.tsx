@@ -72,7 +72,10 @@ export default async function ObservabilityAdmin({ searchParams }: { searchParam
           <h1 className="text-2xl font-semibold text-slate-900 sm:text-3xl">Observability</h1>
           <p className="mt-1 text-sm text-slate-500">Usage, query logs and a full event-based audit trail of every module. Internal — shows raw clinical queries.</p>
         </div>
-        <form method="POST" action="/api/admin/unlock?action=logout"><button className="text-xs text-slate-400 hover:text-slate-700">Lock</button></form>
+        <div className="flex items-center gap-3 whitespace-nowrap">
+          <Link href="/admin/appropriateness-runs" className="text-xs text-slate-400 hover:text-slate-700">Appropriateness runs →</Link>
+          <form method="POST" action="/api/admin/unlock?action=logout"><button className="text-xs text-slate-400 hover:text-slate-700">Lock</button></form>
+        </div>
       </div>
       <div className="mt-6 flex gap-5 border-b border-slate-200">
         {[['overview', 'Overview'], ['queries', 'Queries']].map(([k, l]) => (

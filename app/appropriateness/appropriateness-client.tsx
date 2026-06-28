@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, type ChangeEvent, type ReactNode } from 'react';
-import { Loader2, Flag, X, ExternalLink, Info, Scale, Lightbulb, BookOpen, AlertTriangle, IndianRupee, Route, Upload, FileText, Lock, ClipboardCheck } from 'lucide-react';
+import { Loader2, Flag, X, ExternalLink, Info, Scale, Lightbulb, BookOpen, AlertTriangle, IndianRupee, Route, Upload, FileText, Lock, ClipboardCheck, Download } from 'lucide-react';
 import { levelToScore, VALUE_DISCLAIMER, type ValueAnalysis, type ValueIntervention, type Level, type NetValue, type TariffRef } from '@/lib/lvc-value-core';
 import PathwayTrace from '@/components/PathwayTrace';
 import type { PathwaySkeleton, PathwayEnrichment, SkeletonStage } from '@/lib/pathway-core';
@@ -10,6 +10,7 @@ import type { ExtractedCase, AuditReport, DocType } from '@/lib/doc-audit-core';
 import type { Source } from '@/lib/citations-core';
 import { consumeNdjson } from '@/lib/ndjson-client';
 import TracePanel, { type TraceEvent } from '@/components/TracePanel';
+import { downloadRunsExcel, type ExportRun } from '@/lib/runs-export';
 
 type Mode = 'check' | 'pathway' | 'audit';
 
@@ -87,12 +88,40 @@ export default function AppropriatenessClient() {
   const [dismissed, setDismissed] = useState<Record<string, boolean>>({});
   const [traces, setTraces] = useState<TraceEvent[]>([]);
   const [totalMs, setTotalMs] = useState<number | undefined>();
+  const [runId, setRunId] = useState<string | null>(null);
+  const [dlBusy, setDlBusy] = useState(false);
 
   function pushTrace(stage: string, msg: string, ms?: number, done = false, error = false) {
     setTraces((prev) => {
       const marked = prev.map((t) => (t.done || t.error ? t : { ...t, done: true }));
       return [...marked, { stage, msg, ms, done, error, ts: Date.now() }];
     });
+  }
+
+  // Persist a completed run for research retention (anonymous, de-identified). Fire-and-forget.
+  async function saveRunRecord(mode: 'check' | 'pathway' | 'audit', scenarioStr: string | null, docType: string | null, input: unknown, output: unknown) {
+    try {
+      const r = await fetch('/api/appropriateness/save-run', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode, scenario: scenarioStr, docType, input, output }),
+      });
+      const j = await r.json();
+      if (j && j.ok && j.runId) setRunId(j.runId);
+    } catch { /* retention is best-effort; never blocks the UX */ }
+  }
+
+  // Build + download the multi-sheet Excel for the current result.
+  async function downloadExcel(mode: 'check' | 'pathway' | 'audit', output: Record<string, unknown>, scenarioStr: string | null) {
+    setDlBusy(true);
+    try {
+      const id = runId || `local-${Date.now()}`;
+      const run: ExportRun = { id, mode, created_at: new Date().toISOString(), scenario: scenarioStr, output };
+      await downloadRunsExcel([run], `appropriateness-${mode}-${id.slice(0, 8)}.xlsx`);
+    } catch (e) {
+      setError(`Could not generate the Excel file: ${(e as Error).message}`);
+    } finally {
+      setDlBusy(false);
+    }
   }
 
   // Pathway & decision mode (Flash skeleton → Pro enrich).
@@ -117,7 +146,7 @@ export default function AppropriatenessClient() {
     if (s.length < 3) { setPwError('Enter a clinical scenario.'); return; }
     setPwLoading(true); setPwEnriching(false); setPwError(null);
     setPwSkeleton(null); setPwEnrichment(null); setPwSources([]); setPwSkeletonTraceId(undefined); setPwEnrichTraceId(undefined);
-    setTraces([]); setTotalMs(undefined);
+    setTraces([]); setTotalMs(undefined); setRunId(null);
     try {
       const proposedActions = parseOrders();
       const base: Record<string, unknown> = {
@@ -152,7 +181,10 @@ export default function AppropriatenessClient() {
         if (ev.type === 'progress') pushTrace(ev.stage, ev.msg, ev.ms);
         else if (ev.type === 'result') {
           const d = ev.data as { ok: boolean; enrichment: PathwayEnrichment | null; sources?: Source[]; traceId?: string };
-          if (d && d.ok) { setPwEnrichment(d.enrichment); setPwSources(d.sources ?? []); setPwEnrichTraceId(d.traceId); }
+          if (d && d.ok) {
+            setPwEnrichment(d.enrichment); setPwSources(d.sources ?? []); setPwEnrichTraceId(d.traceId);
+            saveRunRecord('pathway', s, null, base, { skeleton: sj.skeleton, enrichment: d.enrichment, sources: d.sources ?? [] });
+          }
         } else if (ev.type === 'done') { setTotalMs(ev.ms); pushTrace('done', 'Pipeline complete', ev.ms, true); }
         else if (ev.type === 'error') setPwError(ev.message);
       });
@@ -166,7 +198,7 @@ export default function AppropriatenessClient() {
   async function run() {
     const s = scenario.trim();
     if (s.length < 3) { setError('Enter a clinical scenario.'); return; }
-    setLoading(true); setError(null); setResult(null); setDismissed({}); setTraces([]); setTotalMs(undefined);
+    setLoading(true); setError(null); setResult(null); setDismissed({}); setTraces([]); setTotalMs(undefined); setRunId(null);
     try {
       const proposedActions = orders
         .split(/[\n,;]+/).map((x) => x.trim()).filter(Boolean);
@@ -185,7 +217,10 @@ export default function AppropriatenessClient() {
         if (ev.type === 'progress') pushTrace(ev.stage, ev.msg, ev.ms);
         else if (ev.type === 'result') {
           const d = ev.data as MatchResult;
-          if (d && d.ok) { setResult(d); gotResult = true; } else setError(d?.error || 'analysis failed');
+          if (d && d.ok) {
+            setResult(d); gotResult = true;
+            saveRunRecord('check', s, null, body, { valueAnalysis: d.valueAnalysis, valueSources: d.valueSources, flags: d.flags, candidates: d.candidates, considered: d.considered });
+          } else setError(d?.error || 'analysis failed');
         } else if (ev.type === 'done') { setTotalMs(ev.ms); pushTrace('done', 'Pipeline complete', ev.ms, true); }
         else if (ev.type === 'error') setError(ev.message);
       });
@@ -237,7 +272,7 @@ export default function AppropriatenessClient() {
   }
 
   async function analyzeExtracted(extracted: Record<string, unknown>) {
-    setCaAnalyzeLoading(true); setCaError(null);
+    setCaAnalyzeLoading(true); setCaError(null); setRunId(null);
     try {
       const r = await fetch('/api/doc-audit/analyze', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ extracted }) });
       if (!r.ok) throw new Error(`analysis failed (${r.status})`);
@@ -246,8 +281,10 @@ export default function AppropriatenessClient() {
         if (ev.type === 'progress') pushTrace(ev.stage, ev.msg, ev.ms);
         else if (ev.type === 'result') {
           const d = ev.data as { ok: boolean; report: AuditReport | null; traceId?: string; error?: string };
-          if (d && d.ok && d.report) { setCaReport(d.report); setCaAnalyzeTraceId(d.traceId); got = true; }
-          else { setCaAnalyzeTraceId(d?.traceId); setCaError(d?.error || 'analysis failed'); }
+          if (d && d.ok && d.report) {
+            setCaReport(d.report); setCaAnalyzeTraceId(d.traceId); got = true;
+            saveRunRecord('audit', null, String(extracted.docType ?? ''), extracted, { report: d.report, extracted });
+          } else { setCaAnalyzeTraceId(d?.traceId); setCaError(d?.error || 'analysis failed'); }
         } else if (ev.type === 'done') { setTotalMs(ev.ms); pushTrace('done', 'Pipeline complete', ev.ms, true); }
         else if (ev.type === 'error') setCaError(ev.message);
       });
@@ -466,6 +503,15 @@ export default function AppropriatenessClient() {
             </div>
           )}
           {caReport && <CaseAuditReport report={caReport} extractTraceId={caExtractTraceId} analyzeTraceId={caAnalyzeTraceId} />}
+          {caReport && (
+            <div className="flex items-center justify-end">
+              <button type="button" disabled={dlBusy}
+                onClick={() => downloadExcel('audit', { report: caReport, extracted: caEdit ? editToExtracted(caEdit) : null }, null)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+                {dlBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />} Download Excel
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -496,6 +542,16 @@ export default function AppropriatenessClient() {
         </div>
       )}
 
+      {mode === 'pathway' && pwEnrichment && (
+        <div className="mt-3 flex items-center justify-end">
+          <button type="button" disabled={dlBusy}
+            onClick={() => downloadExcel('pathway', { skeleton: pwSkeleton, enrichment: pwEnrichment, sources: pwSources }, scenario)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+            {dlBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />} Download Excel
+          </button>
+        </div>
+      )}
+
       {mode === 'check' && traces.length > 0 && (
         <div className="mt-4">
           <TracePanel events={traces} totalMs={totalMs} surface="appropriateness-value" />
@@ -504,6 +560,13 @@ export default function AppropriatenessClient() {
 
       {mode === 'check' && result && (
         <div className="mt-5 space-y-5">
+          <div className="flex items-center justify-end">
+            <button type="button" disabled={dlBusy}
+              onClick={() => downloadExcel('check', { valueAnalysis: result.valueAnalysis, valueSources: result.valueSources, flags: result.flags, candidates: result.candidates, considered: result.considered }, scenario)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+              {dlBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />} Download Excel
+            </button>
+          </div>
           {result.valueAnalysis && result.valueAnalysis.interventions.length > 0 && (
             <div>
               <div className="mb-2 flex items-center gap-1.5 text-xs text-slate-500">
