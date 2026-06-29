@@ -3,6 +3,7 @@ import type { NextRequest } from 'next/server';
 import { sql } from '@/lib/db';
 import { auditAccessAllowed } from '@/lib/pharmacist-cookie';
 import type { AuditPayload } from '@/lib/med-audit';
+import { startTrace, logEvent, finishTrace, setTraceQuestionPreview } from '@/lib/trace';
 
 export const runtime = 'nodejs';
 
@@ -33,8 +34,18 @@ export async function POST(req: NextRequest) {
   try { p = (await req.json()) as AuditPayload; } catch { return NextResponse.json({ error: 'bad json' }, { status: 400 }); }
   if (!p || !Array.isArray(p.drugs)) return NextResponse.json({ error: 'invalid payload' }, { status: 400 });
 
+  const m = p.meta || ({} as AuditPayload['meta']);
+  const drugCount = p.drugs.length;
+  const errorCount = p.drugs.reduce((s, d) => s + (d.findings || []).filter((f) => f.status === 'error').length, 0);
+  const naCount = p.drugs.reduce((s, d) => s + (d.findings || []).filter((f) => f.status === 'na').length, 0);
+  // Observability: capture this completed audit as a run. Non-identifying summary only —
+  // the full PHI record (UHID, drugs, findings) lives in med_audit_session/drug/finding and
+  // is referenced here by sessionId. Tracing is best-effort and never blocks the save.
+  const traceId = await startTrace('med_audit',
+    { location: m.location || null, allergies_documented: p.allergies_documented || null, drug_count: drugCount },
+    1, { surface: 'medaudit' }).catch(() => undefined as string | undefined);
+
   try {
-    const m = p.meta || ({} as AuditPayload['meta']);
     const sess = (await sql`
       INSERT INTO med_audit_session
         (uhid, auditor, audit_date, location, admission_date, consultant,
@@ -61,8 +72,14 @@ export async function POST(req: NextRequest) {
           VALUES (${drugId}, ${f.param}, ${null}, ${f.status}, ${f.status === 'error' ? (f.ncc_merp || null) : null}, ${f.note || null})`;
       }
     }
+    if (traceId) {
+      await logEvent(traceId, 'med_audit_saved', null, { sessionId, drug_count: drugCount, error_count: errorCount, na_count: naCount, allergies_documented: p.allergies_documented || null }).catch(() => {});
+      await setTraceQuestionPreview(traceId, `Medication chart audit · ${drugCount} drug(s), ${errorCount} error(s)`).catch(() => {});
+      await finishTrace(traceId, 'success').catch(() => {});
+    }
     return NextResponse.json({ ok: true, id: sessionId });
   } catch (e) {
+    if (traceId) await finishTrace(traceId, 'error', String((e as Error).message)).catch(() => {});
     return NextResponse.json({ ok: false, error: String((e as Error).message) }, { status: 500 });
   }
 }

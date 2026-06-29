@@ -115,6 +115,8 @@ const EVENT_MAP: Record<string, EventMeta> = {
   pathway_tariffs: { label: 'Pathway — EHRC tariffs matched', tone: 'cost' },
   pathway_enrich_critique: { label: 'Pathway — self-critique', tone: 'critique' },
   pathway_enrich_result: { label: 'Pathway enrichment', tone: 'result' },
+  // Medication Audit
+  med_audit_saved: { label: 'Medication audit saved', tone: 'result' },
   // Right Care — Record audit
   doc_audit_extract_result: { label: 'Document read → de-identified extract', tone: 'phi' },
   doc_audit_sources: { label: 'Audit — sources retrieved', tone: 'source' },
