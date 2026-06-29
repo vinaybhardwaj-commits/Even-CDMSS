@@ -18,8 +18,8 @@
 
 import RUBRIC_DOC from '@/data/nabh-rubric.json';
 import { retrieve } from './retrieve';
-import { chatWithFallback, geminiModelFor, geminiUtilityModel, TEXT_MODEL } from './llm';
-import { startTrace, logEvent, finishTrace } from './trace';
+import { chatWithFallback, geminiModelFor, geminiUtilityModel, TEXT_MODEL, GEMINI_MODEL } from './llm';
+import { startTrace, logEvent, finishTrace, tracedChat } from './trace';
 import { matchAnyTariffs, packageDaysFor, episodeRoomInflation } from './charge-master';
 import { generateFromDocument } from './gemini-multimodal';
 import { traceSkeleton } from './pathway';
@@ -81,7 +81,12 @@ export async function extractCase(input: ExtractInput): Promise<ExtractResult> {
     : undefined;
   try {
     const userPrompt = core.buildExtractUser(input.docTypeHint, rubricFieldsForHint(input.docTypeHint), input.context);
+    // Capture the multimodal read as an LLM call (metadata only — the document
+    // itself and its raw text are NEVER logged, per the cardinal PHI rule).
+    if (traceId) await logEvent(traceId, 'llm_request', 'doc_read', { model: GEMINI_MODEL, provider: 'vertex-multimodal', mime: input.mime, bytes: input.bytes ?? null });
+    const readT0 = Date.now();
     const raw = await generateFromDocument(core.EXTRACT_SYSTEM, userPrompt, input.base64, input.mime, { maxOutputTokens: 8192 });
+    if (traceId) await logEvent(traceId, 'llm_response', 'doc_read', { model: GEMINI_MODEL, provider: 'vertex-multimodal', char_count: (raw || '').length, ok: !!raw }, Date.now() - readT0);
     const extracted = raw ? core.parseExtraction(raw, input.docTypeHint) : null;
     if (traceId) {
       await logEvent(traceId, 'doc_audit_extract_result', null, {
@@ -123,6 +128,21 @@ async function analyzeGenerate(system: string, user: string): Promise<string> {
     max_tokens: 2800,
     ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
   }, geminiModel);
+  return r.choices?.[0]?.message?.content || '';
+}
+
+// Traced analyze generate — routes through tracedChat so the (de-identified) analyze
+// LLM calls are captured in observability with model/provider/tokens/latency + fallback
+// detection. The extract is already de-identified (name/UHID stripped) before this runs.
+async function tracedAnalyzeGenerate(traceId: string, label: string, system: string, user: string): Promise<string> {
+  const geminiModel = geminiModelFor('doc_audit') ?? geminiUtilityModel();
+  const r = await tracedChat(traceId, label, {
+    model: TEXT_MODEL,
+    messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+    temperature: 0.2,
+    max_tokens: 2800,
+    ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
+  }, { gemini: geminiModel });
   return r.choices?.[0]?.message?.content || '';
 }
 
@@ -169,7 +189,10 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
     : undefined;
 
   const retrieveHits = deps.retrieveHits ?? defaultRetrieveHits;
-  const generate = deps.generate ?? analyzeGenerate;
+  const generate: (system: string, user: string, label?: string) => Promise<string> =
+    deps.generate ?? (traceId
+      ? (s, u, label = 'doc_audit_analyze') => tracedAnalyzeGenerate(traceId, label, s, u)
+      : analyzeGenerate);
   const rubric = getRubric(extracted.docType);
 
   try {
@@ -197,7 +220,7 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
 
     const caseSummary = caseSummaryFor(extracted);
     prog('analyzing', 'Auditing the case…');
-    const draftRaw = await generate(core.ANALYZE_SYSTEM, core.buildAnalyzeUser(extracted, citedContext, rubric.standard));
+    const draftRaw = await generate(core.ANALYZE_SYSTEM, core.buildAnalyzeUser(extracted, citedContext, rubric.standard), 'doc_audit_analyze');
     let parsed = core.parseAnalysis(draftRaw, sources.length);
     if (!parsed) {
       if (traceId) { await logEvent(traceId, 'doc_audit_result', null, { ok: false }); await finishTrace(traceId, 'partial'); }
@@ -208,7 +231,7 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
     if (doAudit) {
       try {
         prog('reviewing', 'Auditing citations…');
-        const critiqueRaw = await generate(core.AUDIT_CRITIQUE_SYSTEM, core.buildAuditCritiqueUser(caseSummary, citedContext, draftRaw));
+        const critiqueRaw = await generate(core.AUDIT_CRITIQUE_SYSTEM, core.buildAuditCritiqueUser(caseSummary, citedContext, draftRaw), 'doc_audit_critique_llm');
         const critique = parseCritique(critiqueRaw);
         if (traceId) await logEvent(traceId, 'doc_audit_critique', null, {
           severity: critique.severity, needs_revision: critique.needs_revision,
@@ -216,7 +239,7 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
         });
         if (critique.needs_revision) {
           prog('revising', 'Revising to fix citations…');
-          const revRaw = await generate(core.AUDIT_REVISE_SYSTEM, core.buildAuditReviseUser(caseSummary, citedContext, draftRaw, JSON.stringify(critique)));
+          const revRaw = await generate(core.AUDIT_REVISE_SYSTEM, core.buildAuditReviseUser(caseSummary, citedContext, draftRaw, JSON.stringify(critique)), 'doc_audit_revise');
           const revised = core.parseAnalysis(revRaw, sources.length);
           if (revised) parsed = revised;
         }
