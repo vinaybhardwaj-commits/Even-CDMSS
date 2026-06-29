@@ -2,10 +2,11 @@
 
 import type { ReactNode } from 'react';
 import {
-  Info, BookOpen, AlertTriangle, IndianRupee, Lightbulb, ClipboardCheck, Route, ExternalLink,
+  Info, BookOpen, AlertTriangle, IndianRupee, Lightbulb, ClipboardCheck, Route, ExternalLink, Scale,
 } from 'lucide-react';
 import type { AuditReport, AuditFinding, FieldStatus, NetValue, TariffRef } from '@/lib/doc-audit-core';
 import { sourceLabel, type Source } from '@/lib/citations-core';
+import { DOMAIN_SHORT, type ValueScorecard, type Band } from '@/lib/value-score-core';
 
 const inr = (n: number) => '₹' + Number(n).toLocaleString('en-IN');
 
@@ -55,6 +56,8 @@ export default function CaseAuditReport({
 
   return (
     <div className="space-y-5">
+      {report.valueScore && <ValueScorecardPanel sc={report.valueScore} />}
+
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <Metric label="Completeness" value={`${Math.round(c.coverage * 100)}%`} sub={`${presentCount}/${c.items.length} fields · ${c.missingMandatory.length} mandatory gaps`} tone={c.coverage >= 0.85 ? 'good' : c.coverage >= 0.6 ? 'warn' : 'bad'} />
         <Metric label="Flagged decisions" value={String(flagged)} sub="appropriateness / low-value" tone={flagged === 0 ? 'good' : 'bad'} />
@@ -134,6 +137,90 @@ export default function CaseAuditReport({
         </div>
       )}
     </div>
+  );
+}
+
+const BAND_STYLE: Record<Band, { ring: string; text: string; bg: string; label: string }> = {
+  A: { ring: '#0d9488', text: 'text-teal-700', bg: 'bg-teal-50', label: 'Excellent value' },
+  B: { ring: '#16a34a', text: 'text-green-700', bg: 'bg-green-50', label: 'Good value' },
+  C: { ring: '#d97706', text: 'text-amber-700', bg: 'bg-amber-50', label: 'Mixed value' },
+  D: { ring: '#ea580c', text: 'text-orange-700', bg: 'bg-orange-50', label: 'Low value' },
+  E: { ring: '#dc2626', text: 'text-red-700', bg: 'bg-red-50', label: 'Poor value' },
+};
+const barColor = (s: number) => s >= 85 ? 'bg-teal-500' : s >= 70 ? 'bg-green-500' : s >= 55 ? 'bg-amber-500' : s >= 40 ? 'bg-orange-500' : 'bg-red-500';
+
+function ValueRadar({ sc }: { sc: ValueScorecard }) {
+  const size = 188, cx = size / 2, cy = size / 2, R = 66;
+  const doms = sc.domains;
+  const n = doms.length;
+  const pt = (i: number, r: number) => {
+    const a = -Math.PI / 2 + (i * 2 * Math.PI) / n;
+    return [cx + r * Math.cos(a), cy + r * Math.sin(a)] as const;
+  };
+  const ring = (frac: number) => doms.map((_, i) => pt(i, R * frac).join(',')).join(' ');
+  const shape = doms.map((d, i) => pt(i, R * Math.max(0, Math.min(100, d.score)) / 100).join(',')).join(' ');
+  return (
+    <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size} className="shrink-0">
+      {[0.25, 0.5, 0.75, 1].map((f) => (
+        <polygon key={f} points={ring(f)} fill="none" stroke="#e5e7eb" strokeWidth="1" />
+      ))}
+      {doms.map((_, i) => { const [x, y] = pt(i, R); return <line key={i} x1={cx} y1={cy} x2={x} y2={y} stroke="#e5e7eb" strokeWidth="1" />; })}
+      <polygon points={shape} fill="#0d948833" stroke="#0d9488" strokeWidth="1.5" />
+      {doms.map((d, i) => {
+        const [x, y] = pt(i, R + 13);
+        return <text key={d.domain} x={x} y={y} textAnchor="middle" dominantBaseline="middle" className="fill-slate-500" style={{ fontSize: 8.5 }}>{DOMAIN_SHORT[d.domain]}</text>;
+      })}
+    </svg>
+  );
+}
+
+function ValueScorecardPanel({ sc }: { sc: ValueScorecard }) {
+  const b = BAND_STYLE[sc.band];
+  return (
+    <section className={`rounded-xl border border-slate-200 ${b.bg} p-4`}>
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 text-xs font-medium text-slate-600">
+          <Scale className="h-3.5 w-3.5" /> Care-Value Scorecard
+        </div>
+        <span className="rounded-full bg-white/70 px-2 py-0.5 text-[10.5px] font-medium text-slate-500">
+          {sc.confidence} confidence
+        </span>
+      </div>
+
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+        <div className="flex items-center gap-4">
+          <div className="flex h-20 w-20 shrink-0 flex-col items-center justify-center rounded-full border-4 bg-white" style={{ borderColor: b.ring }}>
+            <span className={`text-2xl font-semibold leading-none ${b.text}`}>{sc.headline}</span>
+            <span className="text-[10px] text-slate-400">/ 100</span>
+          </div>
+          <div>
+            <div className={`text-lg font-semibold leading-tight ${b.text}`}>Band {sc.band}</div>
+            <div className="text-[12px] text-slate-500">{b.label}</div>
+            {sc.lowValueSpend != null && (
+              <div className="mt-1 inline-flex items-center gap-1 text-[11.5px] text-slate-600"><IndianRupee className="h-3 w-3" />{inr(sc.lowValueSpend)} identified low-value spend</div>
+            )}
+          </div>
+        </div>
+        <div className="sm:ml-auto"><ValueRadar sc={sc} /></div>
+      </div>
+
+      <div className="mt-3 grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
+        {sc.domains.map((d) => (
+          <div key={d.domain}>
+            <div className="flex items-baseline justify-between text-[12px]">
+              <span className="text-slate-700">{d.label}</span>
+              <span className="font-medium text-slate-900">{Math.round(d.score)}</span>
+            </div>
+            <div className="mt-0.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
+              <div className={`h-full rounded-full ${barColor(d.score)}`} style={{ width: `${Math.max(0, Math.min(100, d.score))}%` }} />
+            </div>
+            <div className="mt-0.5 text-[10.5px] text-slate-400">{d.basis}</div>
+          </div>
+        ))}
+      </div>
+
+      <p className="mt-3 text-[10.5px] leading-relaxed text-slate-400">{sc.caveat}</p>
+    </section>
   );
 }
 

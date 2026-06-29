@@ -27,7 +27,7 @@ export interface SheetDef { name: string; rows: Record<string, unknown>[] }
 // Stable sheet order for the workbook.
 export const SHEET_ORDER = [
   'Runs', 'Interventions', 'CW_Flags', 'PathwayStages', 'AuditFindings',
-  'Completeness', 'Diff', 'Suggestions', 'IdealisedCourse', 'ExtractedCase', 'Citations',
+  'Completeness', 'ValueScores', 'Diff', 'Suggestions', 'IdealisedCourse', 'ExtractedCase', 'Citations',
 ] as const;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -129,6 +129,15 @@ export function buildRunSheets(run: ExportRun): SheetDef[] {
     runRow.completeness_pct = comp.coverage != null ? Math.round(Number(comp.coverage) * 100) : '';
     runRow.length_of_stay_days = af.lengthOfStayDays != null ? af.lengthOfStayDays : '';
     runRow.admission_type = str(af.admissionType); runRow.care_setting = str(af.careSetting);
+    const vs = obj(report.valueScore);
+    runRow.care_value_index = vs.headline != null ? vs.headline : '';
+    runRow.care_value_band = str(vs.band);
+    runRow.value_confidence = str(vs.confidence);
+    runRow.low_value_spend = vs.lowValueSpend != null ? vs.lowValueSpend : '';
+    for (const dv of asArr(vs.domains)) {
+      const d = obj(dv);
+      push('ValueScores', { run_id: runId, domain: str(d.domain), label: str(d.label), score: d.score ?? '', weight: d.weight ?? '', signals: d.n ?? '', basis: str(d.basis) });
+    }
     runRow.idealised_summary = str(report.idealisedSummary); runRow.disclaimer = str(report.disclaimer);
     for (const fv of asArr(report.findings)) {
       const f = obj(fv);

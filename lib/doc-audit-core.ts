@@ -17,8 +17,22 @@
 import type { TariffRef } from './lvc-value-core';
 import type { SkeletonStage } from './pathway-core';
 import type { Source } from './citations-core';
+import type { ValueDomain, ValueScorecard } from './value-score-core';
 export type { TariffRef } from './lvc-value-core';
 export type { Source } from './citations-core';
+export type { ValueDomain, ValueScorecard } from './value-score-core';
+
+// Inlined value-domain normaliser (mirrors the enum in value-score-core). Inlined for the
+// same strip-types reason as validateCitationIds: doc-audit-core has an in-repo node --test,
+// so a runtime import from a sibling .ts would need an extension the Next build omits.
+const VALUE_DOMAIN_SET = new Set(['appropriateness', 'efficiency', 'safety', 'cost', 'documentation', 'patient_centred']);
+function normValueDomain(v: unknown): ValueDomain | undefined {
+  const s = String(v ?? '').toLowerCase().trim().replace(/[\s-]+/g, '_');
+  if (s === 'patient_centered' || s === 'patientcentred') return 'patient_centred';
+  if (s === 'intensity' || s === 'efficient') return 'efficiency';
+  if (s === 'appropriate' || s === 'appropriateness_of_care') return 'appropriateness';
+  return VALUE_DOMAIN_SET.has(s) ? (s as ValueDomain) : undefined;
+}
 
 // Inlined (mirrors lib/citations-core.validateCitationIds) — see the same note in
 // pathway-core: doc-audit-core has an in-repo strip-types test, so a runtime value
@@ -111,6 +125,7 @@ export interface AuditFinding {
   estimates: string[];
   citation_ids: number[];    // [n] of the surfaced Source[] that back this finding's evidence
   tariffs?: TariffRef[];     // set deterministically by the server, not the LLM
+  domain?: ValueDomain;      // which Care-Value axis this finding scores against (LLM-tagged)
 }
 
 export interface DiffItem { kind: 'overuse' | 'gap'; text: string; ref?: string }
@@ -125,6 +140,7 @@ export interface AuditReport {
   suggestions: Suggestion[];
   sources: Source[];         // corpus citations surfaced for this audit (findings cite by [n])
   adminFacts?: AdminFacts;   // non-identifying stay facts (LOS/level-of-care) — context for the value findings
+  valueScore?: ValueScorecard;  // deterministic Care-Value Scorecard (computed server-side from the findings)
   disclaimer: string;
 }
 
@@ -271,14 +287,15 @@ export function parseExtraction(raw: string, docTypeHint: DocType | 'auto'): Ext
 export const ANALYZE_SYSTEM = `You are a clinical quality auditor for a NABH-accredited hospital. You are given (1) a DE-IDENTIFIED extracted case from a clinical document (including non-identifying STAY FACTS — length of stay in days, admission type, care setting) and (2) NUMBERED EVIDENCE EXCERPTS [1], [2], … from a medical corpus. Produce a retrospective, advisory audit. NON-DIRECTIVE and NOT a judgment of the clinician. (Documentation completeness is checked separately — do NOT assess it here.)
 
 Do three things:
-1. APPROPRIATENESS / LOW-VALUE — review the investigations, treatments, drugs, and procedure for over-use / low-value / questionable decisions for this case. Consider the VALUE OF CARE INTENSITY too, using the stay facts: an inpatient admission or a multi-day length of stay for a procedure usually done as day-care, or a prolonged course of IV antibiotics for a clean/low-risk procedure, are over-use signals worth a finding. Each finding: subject, verdict (high-value | context-dependent | low-value | uncertain), confidence, rationale, the single concrete "order" name if it maps to an orderable test/procedure/drug (so a tariff can be attached), and "citation_ids": the [n] of the excerpts that actually support this finding's evidence. Ground clinical claims in the EXCERPTS — put grounded points (with citations) in "evidence" and your own figures/inferences or general-knowledge claims the excerpts don't cover in "estimates" (every figure marked "est."). Do NOT cite an excerpt that doesn't support the claim. Do NOT flag the absence of a step the document may simply not mention as if it were a care failure — frame uncertain reads as documentation gaps, not errors.
+1. APPROPRIATENESS / LOW-VALUE — review the investigations, treatments, drugs, and procedure for over-use / low-value / questionable decisions for this case. Consider the VALUE OF CARE INTENSITY too, using the stay facts: an inpatient admission or a multi-day length of stay for a procedure usually done as day-care, or a prolonged course of IV antibiotics for a clean/low-risk procedure, are over-use signals worth a finding. Each finding: subject, verdict (high-value | context-dependent | low-value | uncertain), confidence, rationale, the single concrete "order" name if it maps to an orderable test/procedure/drug (so a tariff can be attached), a "domain" tag (see below), and "citation_ids": the [n] of the excerpts that actually support this finding's evidence. Ground clinical claims in the EXCERPTS — put grounded points (with citations) in "evidence" and your own figures/inferences or general-knowledge claims the excerpts don't cover in "estimates" (every figure marked "est."). Do NOT cite an excerpt that doesn't support the claim. Do NOT flag the absence of a step the document may simply not mention as if it were a care failure — frame uncertain reads as documentation gaps, not errors.
+   DOMAIN tag — classify each finding into the value axis it concerns: "appropriateness" (right test/treatment/procedure choice), "efficiency" (right care intensity: setting, length of stay, IV-vs-oral route, treatment duration), "safety" (a safety hazard or antimicrobial-stewardship concern), or "patient_centred" (continuity / instructions / shared decision). Default to "appropriateness" if unsure.
 2. IDEALISED COURSE — a concise narrative of how the idealised hospital course / operation / OPD encounter should have gone for this case, then a DIFF: items "done — not needed" (kind:"overuse") and "ideal — but missing" (kind:"gap").
 3. SUGGESTIONS — prioritised, concrete improvements (compliance + safety + value), priority 1 = highest.
 
 Rules: advisory only; never phrase as blocking/denying care or blaming the clinician. Separate cited EVIDENCE from ESTIMATES. Do not invent citations or identifiers.
 
 Return ONLY JSON, no prose:
-{"findings":[{"subject":"…","verdict":"…","confidence":0.0-1.0,"rationale":"…","order":"… (optional)","evidence":["…"],"estimates":["…"],"citation_ids":[1,2]}],"idealised_summary":"…","diff":[{"kind":"overuse|gap","text":"…","ref":"… (optional)"}],"suggestions":[{"priority":1,"text":"…","ref":"… (optional)"}]}`;
+{"findings":[{"subject":"…","verdict":"…","confidence":0.0-1.0,"rationale":"…","order":"… (optional)","domain":"appropriateness|efficiency|safety|patient_centred","evidence":["…"],"estimates":["…"],"citation_ids":[1,2]}],"idealised_summary":"…","diff":[{"kind":"overuse|gap","text":"…","ref":"… (optional)"}],"suggestions":[{"priority":1,"text":"…","ref":"… (optional)"}]}`;
 
 export function buildAnalyzeUser(ctx: ExtractedCase, citedContext: string, standardLabel: string): string {
   const pt = (ctx.patient.age != null || ctx.patient.sex)
@@ -337,6 +354,7 @@ export function parseAnalysis(raw: string, sourceCount = 0): ParsedAnalysis | nu
         evidence: asStrArray(fo.evidence, 8),
         estimates: asStrArray(fo.estimates, 8),
         citation_ids: validateCitationIds(fo.citation_ids, sourceCount),
+        domain: normValueDomain(fo.domain),
       });
       if (findings.length >= 12) break;
     }

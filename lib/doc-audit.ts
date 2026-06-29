@@ -25,8 +25,20 @@ import { generateFromDocument } from './gemini-multimodal';
 import { traceSkeleton } from './pathway';
 import { parseCritique } from './lvc-value-core';
 import { hitsToSources, buildCitedContext, type CiteHit } from './citations-core';
+import { computeScorecard } from './value-score-core';
 import * as core from './doc-audit-core';
-import type { DocType, ExtractedCase, AuditReport, RubricField } from './doc-audit-core';
+import type { DocType, ExtractedCase, AuditReport, RubricField, TariffRef } from './doc-audit-core';
+
+/** Representative ₹ for a finding's tariffs (sum of the general/private/opd/suite price each names). */
+function repTariff(tariffs?: TariffRef[]): number | null {
+  if (!tariffs || !tariffs.length) return null;
+  let sum = 0; let any = false;
+  for (const t of tariffs) {
+    const v = t.general ?? t.private ?? t.opd ?? t.suite;
+    if (typeof v === 'number' && v > 0) { sum += v; any = true; }
+  }
+  return any ? sum : null;
+}
 
 type RubricEntry = { label: string; standard: string; fields: RubricField[] };
 function getRubric(dt: DocType): RubricEntry {
@@ -227,6 +239,18 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
     const completeness = core.assembleCompleteness(extracted.completeness ?? [], rubric.fields);
     const idealisedStages = skel.skeleton?.stages.map((s) => ({ id: s.id, kind: s.kind, title: s.title, action: s.action, flag: s.flag }));
 
+    // Deterministic Care-Value Scorecard — pure arithmetic over the (LLM-tagged) findings,
+    // the completeness coverage, the stay facts and the EHRC tariffs. Continuity = the
+    // patient-facing follow-up fields (present/na = 1, partial = 0.5).
+    const pcItems = completeness.items.filter((i) => i.section === 'followup');
+    const pcPresent = pcItems.reduce((s, i) => s + (i.status === 'present' || i.status === 'na' ? 1 : i.status === 'partial' ? 0.5 : 0), 0);
+    const valueScore = computeScorecard({
+      findings: parsed.findings.map((f) => ({ verdict: f.verdict, confidence: f.confidence, domain: f.domain, tariff: repTariff(f.tariffs) })),
+      completenessCoverage: completeness.coverage,
+      patientCentred: { present: pcPresent, total: pcItems.length },
+      adminFacts: extracted.adminFacts,
+    });
+
     const report: AuditReport = {
       completeness,
       findings: parsed.findings,
@@ -236,6 +260,7 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
       suggestions: parsed.suggestions,
       sources,
       adminFacts: extracted.adminFacts,
+      valueScore,
       disclaimer: core.CASE_AUDIT_DISCLAIMER,
     };
 
@@ -248,6 +273,7 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
         diff: parsed.diff.length,
         suggestions: parsed.suggestions.length,
         tariffs: parsed.findings.filter((f) => f.tariffs?.length).length,
+        valueIndex: valueScore.headline, valueBand: valueScore.band,
       });
       await finishTrace(traceId, 'success');
     }
