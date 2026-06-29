@@ -1,6 +1,6 @@
 import WellsPeCalculator from '@/components/calculators/WellsPeCalculator';
 
-export const metadata = { title: 'Wells PE · Calculators · Even Staff Portal' };
+export const metadata = { title: 'Wells PE · Calculators' };
 
 export default function WellsPePage() {
   return (

@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { sql } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: 'Literature engine · CAT Admin' };
+export const metadata = { title: 'Literature engine · Admin' };
 
 type Topic = { id: number; topic: string; query_terms: string; enabled: boolean; last_run_at: string | null };
 type RunRow = { id: number; kind: string; started_at: string; found: number; inserted: number; skipped_dup: number; rejected: number; topic: string | null; detail: { added?: string[] } | null };

@@ -1,6 +1,6 @@
 import EgfrCalculator from '@/components/calculators/EgfrCalculator';
 
-export const metadata = { title: 'eGFR · Calculators · Even Staff Portal' };
+export const metadata = { title: 'eGFR · Calculators' };
 
 export default function EgfrPage() {
   return (

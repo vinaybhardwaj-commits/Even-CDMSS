@@ -1,7 +1,7 @@
 import HelpCard from '@/components/HelpCard';
 import ReviewClient from './review-client';
 
-export const metadata = { title: 'Review · Even Staff Portal' };
+export const metadata = { title: 'Review' };
 
 export default function ReviewPage() {
   return (

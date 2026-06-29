@@ -1,6 +1,6 @@
 import Abcd2Calculator from '@/components/calculators/Abcd2Calculator';
 
-export const metadata = { title: 'ABCD² · Calculators · Even Staff Portal' };
+export const metadata = { title: 'ABCD² · Calculators' };
 
 export default function Abcd2Page() {
   return (

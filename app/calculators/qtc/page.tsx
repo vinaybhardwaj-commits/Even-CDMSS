@@ -1,6 +1,6 @@
 import QtcCalculator from '@/components/calculators/QtcCalculator';
 
-export const metadata = { title: 'QTc · Calculators · Even Staff Portal' };
+export const metadata = { title: 'QTc · Calculators' };
 
 export default function QtcPage() {
   return (

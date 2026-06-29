@@ -1,6 +1,6 @@
 import Curb65Calculator from '@/components/calculators/Curb65Calculator';
 
-export const metadata = { title: 'CURB-65 · Calculators · Even Staff Portal' };
+export const metadata = { title: 'CURB-65 · Calculators' };
 
 export default function Curb65Page() {
   return (

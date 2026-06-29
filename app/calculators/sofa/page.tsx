@@ -1,6 +1,6 @@
 import SofaCalculator from '@/components/calculators/SofaCalculator';
 
-export const metadata = { title: 'SOFA · Calculators · Even Staff Portal' };
+export const metadata = { title: 'SOFA · Calculators' };
 
 export default function SofaPage() {
   return (

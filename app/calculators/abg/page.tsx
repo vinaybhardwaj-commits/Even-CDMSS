@@ -1,6 +1,6 @@
 import AbgCalculator from '@/components/calculators/AbgCalculator';
 
-export const metadata = { title: 'ABG interpreter · Calculators · Even Staff Portal' };
+export const metadata = { title: 'ABG interpreter · Calculators' };
 
 export default function AbgPage() {
   return (

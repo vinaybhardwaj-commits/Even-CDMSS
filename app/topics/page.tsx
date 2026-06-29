@@ -1,7 +1,7 @@
 import HelpCard from '@/components/HelpCard';
 import TopicsClient from './topics-client';
 
-export const metadata = { title: 'Topics · CAT' };
+export const metadata = { title: 'Topics' };
 
 export default function TopicsPage() {
   return (

@@ -1,7 +1,7 @@
 import HelpCard from '@/components/HelpCard';
 import AppropriatenessClient from './appropriateness-client';
 
-export const metadata = { title: 'Appropriateness · CAT' };
+export const metadata = { title: 'Appropriateness' };
 
 export default function AppropriatenessPage() {
   return (

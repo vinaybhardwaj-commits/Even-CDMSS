@@ -1,7 +1,7 @@
 import HelpCard from '@/components/HelpCard';
 import PracticeClient from './practice-client';
 
-export const metadata = { title: 'Practice · CAT' };
+export const metadata = { title: 'Practice' };
 
 export default function PracticePage() {
   return (

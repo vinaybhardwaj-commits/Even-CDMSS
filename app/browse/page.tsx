@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { sql } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: 'Browse · CAT' };
+export const metadata = { title: 'Browse' };
 
 const NONE = '__none__';
 
@@ -22,9 +22,12 @@ type PassageRow = {
 function Header() {
   return (
     <>
-      <h1 className="text-2xl font-semibold text-slate-900 sm:text-3xl">Browse the corpus</h1>
-      <p className="mt-1 text-sm text-slate-500">
-        Walk the Even Hospital Database by book and chapter — the raw source passages that ground Ask, DDx, and the rest.
+      <Link href="/knowledge" className="mb-2 inline-flex items-center gap-1 text-[12.5px] text-slate-500 hover:text-brand">
+        ‹ Knowledge base
+      </Link>
+      <h1 className="font-serif text-[26px] font-semibold leading-tight text-slate-900 sm:text-[30px]">Browse the corpus</h1>
+      <p className="mt-1.5 text-sm text-slate-500">
+        Walk the evidence base by book and chapter — the raw source passages that ground Ask, Differential, and the rest.
       </p>
     </>
   );

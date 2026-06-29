@@ -1,6 +1,6 @@
 import AlvaradoCalculator from '@/components/calculators/AlvaradoCalculator';
 
-export const metadata = { title: 'Alvarado · Calculators · Even Staff Portal' };
+export const metadata = { title: 'Alvarado · Calculators' };
 
 export default function AlvaradoPage() {
   return (

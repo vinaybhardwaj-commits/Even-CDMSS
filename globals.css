@@ -2,28 +2,44 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── CAT "Clarity" design tokens ───────────────────────────────────────────
+   Calm light editorial: warm-neutral canvas, deep-teal accent, serif display.
+   Color names also remapped in tailwind.config.ts (slate→warm, brand→teal). */
 :root {
-  --color-bg: #f2f4f8;
-  --color-card: #fcfcfc;
-  --color-text: #1a1a2e;
-  --color-text-secondary: #4a5568;
-  --color-text-muted: #7a8599;
-  --color-border: #e2e6ec;
-  --color-brand: #0055ff;
-  --color-brand-dark: #0044cc;
-  --color-brand-faint: #e6eeff;
-  --color-navy: #002054;
-  --color-pink: #f96eb1;
+  --color-bg: #f8f7f4;
+  --color-card: #ffffff;
+  --color-text: #1a1712;
+  --color-text-secondary: #595346;
+  --color-text-muted: #78715f;
+  --color-border: #e7e3d9;
+  --color-border-strong: #d4cfc1;
+  --color-brand: #0f766e;
+  --color-brand-dark: #0b5f58;
+  --color-brand-faint: #e9f4f1;
+  --color-navy: #0a3f3a;
+  --color-accent-warm: #c2603f;
 }
 
 html, body {
   background: var(--color-bg);
   color: var(--color-text);
+  font-family: var(--font-inter), system-ui, sans-serif;
   font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-/* Pulse animation for NEW dot (preserved verbatim from static portal per locked decision #26) */
+/* Serif display for page headings — the signature of the Clarity look.
+   Applies to real heading tags; component "headings" built from spans are
+   styled explicitly with font-serif where wanted. */
+@layer base {
+  h1, h2, h3 {
+    font-family: var(--font-serif), Georgia, Cambria, serif;
+    letter-spacing: -0.01em;
+  }
+}
+
+/* Pulse animation for NEW dot (preserved per locked decision #26) */
 @keyframes new-pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.4; transform: scale(0.7); }
@@ -33,29 +49,32 @@ html, body {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #f96eb1;
+  background: var(--color-accent-warm);
   animation: new-pulse 2s ease-in-out infinite;
   flex-shrink: 0;
 }
 
-/* Card scroll fade-bottom mask per locked decision #24 (scrollable home cards) */
+/* Card scroll fade-bottom mask (locked decision #24) */
 .card-scroll {
   overflow-y: auto;
   mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
 }
 .card-scroll::-webkit-scrollbar { width: 4px; }
-.card-scroll::-webkit-scrollbar-thumb { background: rgba(0,85,255,0.18); border-radius: 2px; }
+.card-scroll::-webkit-scrollbar-thumb { background: rgba(15,118,110,0.20); border-radius: 2px; }
 
-/* Respect prefers-reduced-motion globally (§18.4) */
+/* Slim, calm scrollbars app-wide */
+* { scrollbar-width: thin; scrollbar-color: rgba(120,113,95,0.30) transparent; }
+
+/* Respect prefers-reduced-motion globally */
 @media (prefers-reduced-motion: reduce) {
   .new-dot { animation: none; opacity: 1; }
   * { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
 }
 
-/* NEW-row tint background (locked decision #26) — applied via .is-new / .is-new-row */
+/* NEW-row tint background (locked decision #26) */
 .is-new, .is-new-row {
-  background: linear-gradient(90deg, rgba(253, 232, 242, 0.55) 0%, transparent 60%);
+  background: linear-gradient(90deg, rgba(246, 236, 228, 0.7) 0%, transparent 60%);
   border-radius: 6px;
   margin: 0 -6px;
   padding-left: 6px !important;
@@ -65,5 +84,12 @@ html, body {
 /* NEW pulse killswitch — Settings · Layout (PRD §11.8) */
 .kill-new-pulse .new-dot { animation: none !important; opacity: 1 !important; }
 
-/* Safe-area inset for mobile bottom bar (iOS notch + Android nav) */
+/* Safe-area inset for mobile bottom bar */
 .safe-bottom { padding-bottom: env(safe-area-inset-bottom, 0); }
+
+/* Gentle entrance for routed content */
+@keyframes cat-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.cat-page { animation: cat-fade-in 0.22s ease-out; }

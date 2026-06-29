@@ -3,7 +3,7 @@ import { sql } from '@/lib/db';
 import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: 'Observability · CAT Admin' };
+export const metadata = { title: 'Observability · Admin' };
 
 type ListRow = { trace_id: string; feature: string; status: string; started_at: string; total_ms: number | null; question_preview: string | null; severity: string | null };
 type ModRow = { module: string; n: number; p50: number | null; errs: number };

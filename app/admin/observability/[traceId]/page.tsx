@@ -3,7 +3,7 @@ import { sql } from '@/lib/db';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: 'Trace · CAT Admin' };
+export const metadata = { title: 'Trace · Admin' };
 
 const APP = process.env.APP_SOURCE || 'standalone';
 

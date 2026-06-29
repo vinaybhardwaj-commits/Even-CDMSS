@@ -1,6 +1,6 @@
 import NihssCalculator from '@/components/calculators/NihssCalculator';
 
-export const metadata = { title: 'NIHSS · Calculators · Even Staff Portal' };
+export const metadata = { title: 'NIHSS · Calculators' };
 
 export default function NihssPage() {
   return (

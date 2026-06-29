@@ -1,6 +1,6 @@
 import TimiCalculator from '@/components/calculators/TimiCalculator';
 
-export const metadata = { title: 'TIMI · Calculators · Even Staff Portal' };
+export const metadata = { title: 'TIMI · Calculators' };
 
 export default function TimiPage() {
   return (

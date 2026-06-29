@@ -1,6 +1,6 @@
 import HeartCalculator from '@/components/calculators/HeartCalculator';
 
-export const metadata = { title: 'HEART · Calculators · Even Staff Portal' };
+export const metadata = { title: 'HEART · Calculators' };
 
 export default function HeartPage() {
   return (

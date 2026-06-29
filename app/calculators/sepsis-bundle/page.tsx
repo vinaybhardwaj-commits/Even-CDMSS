@@ -1,6 +1,6 @@
 import SepsisBundleCalculator from '@/components/calculators/SepsisBundleCalculator';
 
-export const metadata = { title: 'Sepsis 1-h bundle · Calculators · Even Staff Portal' };
+export const metadata = { title: 'Sepsis 1-h bundle · Calculators' };
 
 export default function SepsisBundlePage() {
   return (

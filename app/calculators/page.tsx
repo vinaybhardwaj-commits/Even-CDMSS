@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { Pill, Activity, Beaker, Droplet, Timer, Brain, Wind, ZapOff, Heart, HeartPulse, ShieldAlert, Waves, Stethoscope } from 'lucide-react';
 import HelpCard from '@/components/HelpCard';
 
-export const metadata = { title: 'Calculators · Even Staff Portal' };
+export const metadata = { title: 'Calculators' };
 
 const CALCULATORS = [
   {

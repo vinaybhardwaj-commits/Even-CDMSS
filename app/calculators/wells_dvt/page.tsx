@@ -1,6 +1,6 @@
 import WellsDvtCalculator from '@/components/calculators/WellsDvtCalculator';
 
-export const metadata = { title: 'Wells DVT · Calculators · Even Staff Portal' };
+export const metadata = { title: 'Wells DVT · Calculators' };
 
 export default function WellsDvtPage() {
   return (

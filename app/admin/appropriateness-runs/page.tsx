@@ -5,7 +5,7 @@ import RunsBrowser, { type RunRow } from './runs-browser';
 import type { ExportRun } from '@/lib/runs-export';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: 'Appropriateness runs · CAT Admin' };
+export const metadata = { title: 'Appropriateness runs · Admin' };
 
 const APP = process.env.APP_SOURCE || 'standalone';
 const run = sql as unknown as (q: string, p?: unknown[]) => Promise<Record<string, unknown>[]>;
