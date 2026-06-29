@@ -1,7 +1,9 @@
 import Link from 'next/link';
+import type { ReactNode } from 'react';
 import { sql } from '@/lib/db';
 import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
-import { fetchDoctorNames } from '@/lib/metabase';
+import { fetchDoctorNames, fetchOpdNoteByUid } from '@/lib/metabase';
+import { rowToOpdCase, type DeidOpdCase } from '@/lib/opd-ingest-core';
 import {
   bandColor, scoreColor, parseJson, doctorLabel, fmtIstTime, DOMAIN_ROWS, PDQI9_LABEL,
 } from '@/lib/opd-audit-ui';
@@ -26,6 +28,53 @@ function LockedMsg() {
     <div>
       <h1 className="font-serif text-[26px] font-semibold text-slate-900">OPD case audit</h1>
       <p className="mt-1.5 text-sm text-slate-500">Locked. <Link href="/admin/opd-audit" className="text-brand hover:underline">Unlock the OPD Audit surface</Link> first.</p>
+    </div>
+  );
+}
+
+// ── the actual de-identified note (fetched live from db13 by uid) ──────────────
+function NoteRow({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="border-t border-slate-50 px-3 py-2 first:border-t-0">
+      <div className="text-[10px] font-medium uppercase tracking-[0.06em] text-slate-400">{label}</div>
+      <div className="mt-0.5 text-[12px] leading-snug text-slate-700">{children}</div>
+    </div>
+  );
+}
+const none = (s: string) => <span className="text-slate-400">{s}</span>;
+
+function NotePanel({ note }: { note: DeidOpdCase | null }) {
+  if (!note) {
+    return <div className="rounded-xl border border-slate-200 bg-white p-4 text-[12px] text-slate-400">Source note unavailable — it may have been edited or removed in db13 since the audit ran.</div>;
+  }
+  return (
+    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+      <div className="border-b border-slate-100 bg-slate-50/60 px-3 py-2 text-[11.5px] font-medium text-slate-600">Documented note <span className="font-normal text-slate-400">· de-identified · what the engine read</span></div>
+      <NoteRow label="Presenting complaints">{note.presentingComplaints.length ? note.presentingComplaints.join('; ') : none('(none documented)')}</NoteRow>
+      {note.reasonForConsult ? <NoteRow label="Reason for consult">{note.reasonForConsult}</NoteRow> : null}
+      <NoteRow label="Diagnosis (ICD-10)">{note.diagnosisCodes.length ? note.diagnosisCodes.join(', ') : none('(none)')}{note.impressionCodes.length ? ` · impression ${note.impressionCodes.join(', ')}` : ''}</NoteRow>
+      {(note.history.length > 0 || note.comorbidities.length > 0) ? <NoteRow label="History / comorbidities">{[...note.history, ...note.comorbidities].join('; ')}</NoteRow> : null}
+      <NoteRow label="Allergies">{note.allergies ? note.allergies : none('(not documented)')}</NoteRow>
+      <NoteRow label={`Medications (${note.medications.length})`}>
+        {note.medications.length === 0 ? none('(none)') : (
+          <ul className="space-y-1">
+            {note.medications.map((m, i) => {
+              const dosing = [m.strength, m.dose, m.frequency, m.duration, m.route].filter(Boolean).join(' · ');
+              return (
+                <li key={i}>
+                  <span className="font-medium text-slate-800">{m.generic || m.brand}</span>
+                  {m.brand && m.generic ? <span className="text-slate-400"> ({m.brand})</span> : null}
+                  {dosing ? <span className="text-slate-500"> — {dosing}</span> : <span className="text-amber-600"> — dosing incomplete</span>}
+                  {m.instruction ? <span className="text-slate-400"> · {m.instruction}</span> : null}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </NoteRow>
+      <NoteRow label="Investigations ordered">{note.investigations.length ? note.investigations.join('; ') : none('(none)')}</NoteRow>
+      <NoteRow label="Advice">{note.advice.length ? note.advice.join('; ') : none('(none documented)')}</NoteRow>
+      <NoteRow label="Follow-up">{note.followUpType ? `${note.followUpType}${note.followUpDateSet ? ' · date set' : ' · no date'}` : none('(none)')}</NoteRow>
     </div>
   );
 }
@@ -58,9 +107,17 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
   const findings = parseJson<Finding[]>(r.findings, []);
   const pdqi = parseJson<Pdqi[]>(r.pdqi9, []);
   const suggestions = parseJson<Sugg[]>(r.suggestions, []).sort((a, b) => a.priority - b.priority);
+
   const docUid = r.doctor_uid ? String(r.doctor_uid) : null;
-  const docNames = docUid ? await fetchDoctorNames([docUid]).catch(() => ({} as Record<string, string>)) : {};
+  const uid = r.uid ? String(r.uid) : '';
+  // Doctor name + the live de-identified note, both pulled from db13 (best-effort).
+  const [docNames, noteRow] = await Promise.all([
+    docUid ? fetchDoctorNames([docUid]).catch(() => ({} as Record<string, string>)) : Promise.resolve({} as Record<string, string>),
+    uid ? fetchOpdNoteByUid(uid).catch(() => null) : Promise.resolve(null),
+  ]);
   const doctor = (docUid && docNames[docUid]) || doctorLabel(docUid);
+  const note: DeidOpdCase | null = noteRow ? rowToOpdCase(noteRow).case : null;
+
   const lowVal = findings.find((f) => f.verdict === 'low-value');
   const bottom = lowVal
     ? `${lowVal.subject} — ${lowVal.rationale}`
@@ -88,8 +145,6 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
             {r.trace_id ? <Link href={`/admin/observability/${r.trace_id}`} className="text-brand hover:underline">trace ›</Link> : null}
           </div>
         </div>
-
-        {/* domain bars */}
         <div className="grid grid-cols-1 gap-x-5 gap-y-2 px-4 py-3 sm:grid-cols-2">
           {DOMAIN_ROWS.map((d) => {
             const v = n(r[d.col]);
@@ -103,61 +158,65 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
         </div>
       </div>
 
-      {/* findings */}
-      {findings.length > 0 && (
-        <div className="mt-4">
-          <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-400">Findings</div>
-          <div className="space-y-2">
-            {findings.map((f, i) => (
-              <div key={i} className="rounded-lg border border-slate-200 bg-white p-3">
-                <div className="flex items-start gap-2">
-                  <span className="mt-0.5 h-2 w-2 shrink-0 rounded-full" style={{ background: VERDICT_COLOR[f.verdict] || '#78715f' }} />
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[12.5px] font-medium text-slate-800">{f.subject}
-                      <span className="ml-2 align-middle text-[10px] font-normal text-slate-400">{f.verdict} · {f.domain.replace('_', ' ')}{f.source === 'deterministic' ? ' · rule' : ''}</span>
+      {/* note (left) vs audit detail (right) */}
+      <div className="mt-4 grid gap-4 lg:grid-cols-2 lg:items-start">
+        <NotePanel note={note} />
+
+        <div className="space-y-4">
+          {findings.length > 0 && (
+            <div>
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-400">Findings</div>
+              <div className="space-y-2">
+                {findings.map((f, i) => (
+                  <div key={i} className="rounded-lg border border-slate-200 bg-white p-3">
+                    <div className="flex items-start gap-2">
+                      <span className="mt-0.5 h-2 w-2 shrink-0 rounded-full" style={{ background: VERDICT_COLOR[f.verdict] || '#78715f' }} />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[12.5px] font-medium text-slate-800">{f.subject}
+                          <span className="ml-2 align-middle text-[10px] font-normal text-slate-400">{f.verdict} · {f.domain.replace('_', ' ')}{f.source === 'deterministic' ? ' · rule' : ''}</span>
+                        </div>
+                        {f.rationale && <div className="mt-0.5 text-[11.5px] leading-snug text-slate-600">{f.rationale}</div>}
+                        {Array.isArray(f.evidence) && f.evidence.length > 0 && (
+                          <div className="mt-1 text-[11px] text-slate-500"><span className="text-emerald-700">Evidence:</span> {f.evidence.join('; ')}</div>
+                        )}
+                      </div>
                     </div>
-                    {f.rationale && <div className="mt-0.5 text-[11.5px] leading-snug text-slate-600">{f.rationale}</div>}
-                    {Array.isArray(f.evidence) && f.evidence.length > 0 && (
-                      <div className="mt-1 text-[11px] text-slate-500"><span className="text-emerald-700">Evidence:</span> {f.evidence.join('; ')}</div>
-                    )}
                   </div>
-                </div>
+                ))}
               </div>
-            ))}
-          </div>
-        </div>
-      )}
+            </div>
+          )}
 
-      {/* PDQI-9 */}
-      {pdqi.length > 0 && (
-        <div className="mt-4">
-          <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-400">PDQI-9 — note quality</div>
-          <div className="grid grid-cols-3 gap-2 rounded-xl border border-slate-200 bg-white p-3 sm:grid-cols-3">
-            {pdqi.map((p) => (
-              <div key={p.attr} className="flex items-center justify-between rounded bg-slate-50 px-2 py-1 text-[11px]">
-                <span className="truncate text-slate-600">{p.label || PDQI9_LABEL[p.attr] || p.attr}</span>
-                <span className="font-medium tabular-nums" style={{ color: scoreColor(((n(p.value) - 1) / 4) * 100) }}>{n(p.value)}</span>
+          {pdqi.length > 0 && (
+            <div>
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-400">PDQI-9 — note quality</div>
+              <div className="grid grid-cols-2 gap-2 rounded-xl border border-slate-200 bg-white p-3">
+                {pdqi.map((p) => (
+                  <div key={p.attr} className="flex items-center justify-between rounded bg-slate-50 px-2 py-1 text-[11px]">
+                    <span className="truncate text-slate-600">{p.label || PDQI9_LABEL[p.attr] || p.attr}</span>
+                    <span className="font-medium tabular-nums" style={{ color: scoreColor(((n(p.value) - 1) / 4) * 100) }}>{n(p.value)}</span>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-        </div>
-      )}
+            </div>
+          )}
 
-      {/* suggestions */}
-      {suggestions.length > 0 && (
-        <div className="mt-4">
-          <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-400">Suggestions</div>
-          <ol className="space-y-1.5">
-            {suggestions.map((s, i) => (
-              <li key={i} className="flex gap-2 rounded-lg border border-slate-200 bg-white p-2.5 text-[11.5px] text-slate-700">
-                <span className="font-medium text-brand">{s.priority}</span><span>{s.text}</span>
-              </li>
-            ))}
-          </ol>
+          {suggestions.length > 0 && (
+            <div>
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-400">Suggestions</div>
+              <ol className="space-y-1.5">
+                {suggestions.map((s, i) => (
+                  <li key={i} className="flex gap-2 rounded-lg border border-slate-200 bg-white p-2.5 text-[11.5px] text-slate-700">
+                    <span className="font-medium text-brand">{s.priority}</span><span>{s.text}</span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
         </div>
-      )}
+      </div>
 
-      <p className="mt-5 text-[11px] text-slate-400">Advisory note-level quality proxy — documentation, PDQI-9, appropriateness and prescribing safety as demonstrated in the note. uid <code className="rounded bg-slate-100 px-1">{String(r.uid)}</code> links back to the source encounter in db13. Not an outcomes measure; not a clinician scorecard.</p>
+      <p className="mt-5 text-[11px] text-slate-400">Advisory note-level quality proxy — documentation, PDQI-9, appropriateness and prescribing safety as demonstrated in the note. uid <code className="rounded bg-slate-100 px-1">{uid}</code> links back to the source encounter in db13. Not an outcomes measure; not a clinician scorecard.</p>
     </div>
   );
 }

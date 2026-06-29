@@ -7,6 +7,7 @@ import {
   bandColor, scoreColor, istDateRange, parseJson, doctorLabel, fmtIstTime, fmtIstDateLong,
   type Period,
 } from '@/lib/opd-audit-ui';
+import AuditTable, { type AuditRow } from './audit-table';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'OPD Audit · Admin' };
@@ -56,6 +57,23 @@ function Kpi({ label, value, sub, color }: { label: string; value: string; sub?:
 
 type DocRow = { doctor_uid: string; nnotes: number; idx: number; low_value: number; completeness: number };
 type ReviewRow = { id: string; note_date: string; doctor_uid: string | null; band: string; note_quality_index: number; findings: unknown; n_low_value: number; n_interaction_alerts: number; completeness_pct: number };
+type AllRow = { id: string; uid: string; note_date: string; doctor_uid: string | null; consult_type: string | null; prescription_type: string | null; band: string; note_quality_index: number; n_low_value: number; completeness_pct: number; findings: unknown };
+
+const TYPE_SHORT: Record<string, string> = {
+  GENERAL_PRACTITIONER: 'GP', HOSPITAL_GP: 'Hosp GP', HOSPITAL_GYNAECOLOGY_ASSESSMENT: 'Gynae',
+  HOSPITAL_GYNAECOLOGY_OBSTETRICS: 'Obs-Gyn', HOSPITAL_PAEDIATRIC: 'Paeds', HOSPITAL_GP_INVESTIGATION_REFERRAL: 'GP-Ref',
+};
+function prettyType(t: string | null): string {
+  if (!t) return 'OPD';
+  return TYPE_SHORT[t] || t.toLowerCase().replace(/_/g, ' ');
+}
+function issueFrom(findings: unknown, completenessPct: number): string {
+  const fs = parseJson<{ subject?: string; verdict?: string }[]>(findings, []);
+  const lv = fs.find((f) => f.verdict === 'low-value') || fs[0];
+  if (lv?.subject) return lv.subject;
+  if (completenessPct < 60) return 'Documentation gaps';
+  return 'Review';
+}
 
 export default async function OpdAuditAdmin({ searchParams }: { searchParams: Promise<{ day?: string; period?: string; locked?: string }> }) {
   const sp = await searchParams;
@@ -74,7 +92,7 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
   const winParams = [APP, from, to];
   const WIN = `app_source = $1 AND (note_date AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $2 AND $3`;
 
-  const [kpiR, bandsR, trendR, docsR, reviewR] = await Promise.all([
+  const [kpiR, bandsR, trendR, docsR, reviewR, allR] = await Promise.all([
     rowsOf<Record<string, unknown>>(
       `SELECT count(*)::int total, count(DISTINCT doctor_uid)::int doctors,
               round(avg(note_quality_index))::int mean_index,
@@ -100,12 +118,23 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
       `SELECT id, note_date, doctor_uid, band, note_quality_index, findings, n_low_value, n_interaction_alerts, completeness_pct
        FROM opd_note_audits WHERE ${WIN}
        ORDER BY note_quality_index ASC, n_low_value DESC LIMIT 12`, winParams),
+    rowsOf<AllRow>(
+      `SELECT id, uid, note_date, doctor_uid, consult_type, prescription_type, band, note_quality_index, n_low_value, completeness_pct, findings
+       FROM opd_note_audits WHERE ${WIN}
+       ORDER BY note_date DESC LIMIT 600`, winParams),
   ]);
 
   // Doctor names (db13 `doctors`) — render-time join; staff data, not PHI. Best-effort.
-  const docUids = Array.from(new Set(([...docsR.map((d) => d.doctor_uid), ...reviewR.map((r) => r.doctor_uid)].filter(Boolean)) as string[]));
+  const docUids = Array.from(new Set(([...docsR.map((d) => d.doctor_uid), ...reviewR.map((r) => r.doctor_uid), ...allR.map((r) => r.doctor_uid)].filter(Boolean)) as string[]));
   const names = await fetchDoctorNames(docUids).catch(() => ({} as Record<string, string>));
   const docName = (uid: string | null): string => (uid && names[uid]) || doctorLabel(uid);
+
+  const allRows: AuditRow[] = allR.map((r) => ({
+    id: String(r.id), time: fmtIstTime(r.note_date), doctor: docName(r.doctor_uid),
+    consult: prettyType(r.prescription_type || r.consult_type), uid: String(r.uid || ''),
+    band: r.band, index: n(r.note_quality_index), lowVal: n(r.n_low_value),
+    issue: issueFrom(r.findings, n(r.completeness_pct)),
+  }));
 
   const k = kpiR[0] || {};
   const total = n(k.total);
@@ -127,14 +156,6 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
         return `${x.toFixed(1)},${y.toFixed(1)}`;
       }).join(' ')
     : '';
-
-  function topIssue(r: ReviewRow): string {
-    const fs = parseJson<{ subject?: string; verdict?: string }[]>(r.findings, []);
-    const lv = fs.find((f) => f.verdict === 'low-value') || fs[0];
-    if (lv?.subject) return lv.subject;
-    if (n(r.completeness_pct) < 60) return 'Documentation gaps';
-    return 'Review';
-  }
 
   const periodLabel = period === 'day' ? fmtIstDateLong(day) : `${fmtIstDateLong(from)} → ${fmtIstDateLong(to)}`;
 
@@ -234,13 +255,16 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
                 {reviewR.map((r) => (
                   <Link key={r.id} href={`/admin/opd-audit/${r.id}`} className="flex items-center gap-2 border-b border-slate-50 px-3 py-2 text-[11.5px] hover:bg-slate-50">
                     <span className="rounded px-1.5 py-0.5 text-[10px] font-medium text-white" style={{ background: bandColor(r.band) }}>{r.band}</span>
-                    <span className="flex-1 truncate text-slate-700">{fmtIstTime(r.note_date)} · {docName(r.doctor_uid)} · {topIssue(r)}</span>
+                    <span className="flex-1 truncate text-slate-700">{fmtIstTime(r.note_date)} · {docName(r.doctor_uid)} · {issueFrom(r.findings, n(r.completeness_pct))}</span>
                     <span className="text-slate-300">›</span>
                   </Link>
                 ))}
               </div>
             </div>
           </div>
+
+          {/* browse / look up any note */}
+          <AuditTable rows={allRows} />
         </>
       )}
     </div>
