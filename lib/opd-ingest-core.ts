@@ -20,6 +20,19 @@
 export interface OpdMed {
   generic?: string; brand?: string; strength?: string; dose?: string;
   frequency?: string; duration?: string; route?: string; instruction?: string;
+  // Formulary enrichment (populated by the orchestrator from lib/formulary; optional so the
+  // pure cores never import the formulary loader). resolvedGeneric is the molecule recovered
+  // for a brand-only line; the rest is its EHRC formulary class / schedule / safety profile.
+  resolvedGeneric?: string;
+  therapeuticClass?: string;   // formulary Major Grouping
+  subClass?: string;           // formulary Minor Grouping
+  schedule?: string;           // D&C schedule: OTC | H | H1 | X | Biological
+  highAlert?: boolean;         // ISMP high-alert medication
+  lasa?: string[];             // look-alike/sound-alike confusables
+  ved?: string;                // V | E | D
+  restricted?: boolean;        // reserve/restricted antimicrobial
+  formularyMatch?: 'source-generic' | 'brand-exact' | 'embedded-generic' | 'brand-token' | 'brand-prefix' | 'none';
+  nonFormulary?: 'nutraceutical-cosmetic' | 'non-formulary';
 }
 export interface DeidOpdCase {
   consultType: string | null;
@@ -227,6 +240,24 @@ export function rowToOpdCase(row: Record<string, unknown>): { case: DeidOpdCase;
   return { case: oc, keys };
 }
 
+/** One medication line for the LLM, with formulary enrichment when present. */
+export function formatOpdMed(m: OpdMed): string {
+  const primary = m.resolvedGeneric || m.generic || m.brand || '?';
+  const hasGeneric = !!(m.resolvedGeneric || m.generic);
+  const brandPart = m.brand && hasGeneric && m.brand.toLowerCase() !== primary.toLowerCase()
+    ? ` (brand: ${m.brand})` : '';
+  const dosing = [m.strength, m.dose, m.frequency, m.duration, m.route].filter(Boolean).join(', ');
+  const tags: string[] = [];
+  if (m.therapeuticClass) tags.push(m.therapeuticClass);
+  if (m.schedule && m.schedule !== '—') tags.push(`Sch ${m.schedule}`);
+  if (m.highAlert) tags.push('HIGH-ALERT (ISMP)');
+  if (m.restricted) tags.push('reserve antimicrobial');
+  if (m.formularyMatch === 'brand-prefix') tags.push('≈approx match');
+  if (m.nonFormulary === 'nutraceutical-cosmetic') tags.push('nutraceutical/cosmetic — not a formulary drug');
+  else if (m.nonFormulary === 'non-formulary') tags.push('not in hospital formulary');
+  return `${primary}${brandPart}${dosing ? `, ${dosing}` : ''}${m.instruction ? ` (${m.instruction})` : ''}${tags.length ? ` [${tags.join('; ')}]` : ''}`;
+}
+
 /** Compact one-line-ish text summary of the de-identified case for the LLM prompt. */
 export function opdCaseText(c: DeidOpdCase): string {
   const lines: string[] = [];
@@ -240,9 +271,9 @@ export function opdCaseText(c: DeidOpdCase): string {
   if (c.history.length) lines.push(`Relevant history: ${c.history.join('; ')}`);
   if (c.comorbidities.length) lines.push(`Comorbidities: ${c.comorbidities.join('; ')}`);
   if (c.allergies) lines.push(`Allergies documented: ${c.allergies}`);
-  lines.push(`Medications (${c.medications.length}):`);
+  lines.push(`Medications (${c.medications.length})  [drug class · D&C schedule · safety tags from the EHRC formulary; "brand:" = the note gave only a proprietary name]:`);
   for (const m of c.medications) {
-    lines.push(`  - ${m.generic || m.brand || '?'}${m.strength ? ` ${m.strength}` : ''}${m.dose ? `, ${m.dose}` : ''}${m.frequency ? `, ${m.frequency}` : ''}${m.duration ? `, ${m.duration}` : ''}${m.route ? `, ${m.route}` : ''}${m.instruction ? ` (${m.instruction})` : ''}`);
+    lines.push(`  - ${formatOpdMed(m)}`);
   }
   lines.push(`Investigations ordered: ${c.investigations.length ? c.investigations.join('; ') : '(none)'}`);
   lines.push(`Advice / plan: ${c.advice.length ? c.advice.join('; ') : '(none documented)'}`);

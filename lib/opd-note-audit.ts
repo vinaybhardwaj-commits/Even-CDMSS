@@ -11,13 +11,43 @@ import { retrieve } from './retrieve';
 import { hitsToSources, buildCitedContext, type CiteHit, type Source } from './citations-core';
 import { startTrace, logEvent, finishTrace, tracedChat, setTraceQuestionPreview } from './trace';
 import { geminiModelFor, geminiUtilityModel, TEXT_MODEL } from './llm';
-import { rowToOpdCase, opdCaseText, type OpdKeys } from './opd-ingest-core';
+import { rowToOpdCase, opdCaseText, type OpdKeys, type OpdMed } from './opd-ingest-core';
 import {
   opdCompleteness, prescribingChecks, parseOpdAnalysis,
   OPD_AUDIT_SYSTEM, buildOpdAuditUser, OPD_ENGINE_VERSION,
   type OpdFinding, type OpdCompleteness, type OpdSuggestion,
 } from './opd-note-audit-core';
-import { computeOpdScore, type OpdScorecard } from './opd-note-score-core';
+import { computeOpdScore, type OpdScorecard, type NetValue } from './opd-note-score-core';
+import { enrichOpdMeds } from './formulary';
+import { tagInteractions } from './ddi-tags';
+import { curatedInteractions, mergeRank, type DrugClass } from './ddi';
+import type { DdiPair } from './rxlabelguard';
+
+// Formulary match types reliable enough to drive a deterministic safety alert (an approximate
+// brand-prefix match can drop a molecule from a combination, so it informs display only).
+const CONFIDENT_MATCH = new Set(['source-generic', 'brand-exact', 'embedded-generic', 'brand-token']);
+
+function ddiToFinding(p: DdiPair): OpdFinding {
+  const sev = p.severity;
+  const verdict: NetValue = sev === 'contraindicated' || sev === 'major' ? 'low-value' : 'context-dependent';
+  const confidence = sev === 'contraindicated' ? 0.9 : sev === 'major' ? 0.8 : sev === 'moderate' ? 0.6 : 0.4;
+  return {
+    subject: `Interaction (${sev}): ${p.drug_a} + ${p.drug_b}`,
+    verdict, confidence, domain: 'prescribing_safety',
+    rationale: `${p.mechanism} ${p.recommendation}`.trim(),
+    evidence: [], estimates: [], citation_ids: [], source: 'deterministic',
+  };
+}
+
+/** Formulary-scoped, deterministic DDIs over the CONFIDENTLY-resolved drugs on the script. */
+function ddiFindings(meds: OpdMed[]): OpdFinding[] {
+  const items: DrugClass[] = meds
+    .filter((m) => m.resolvedGeneric && m.formularyMatch && CONFIDENT_MATCH.has(m.formularyMatch))
+    .map((m) => ({ name: m.resolvedGeneric as string, major: m.therapeuticClass || '', minor: m.subClass || '' }));
+  if (items.length < 2) return [];
+  const pairs = mergeRank([...tagInteractions(items), ...curatedInteractions(items.map((i) => i.name))]);
+  return pairs.map(ddiToFinding);
+}
 
 export interface OpdNoteAudit {
   keys: OpdKeys;
@@ -67,6 +97,7 @@ export interface AuditOpdOpts { trace?: boolean }
 
 export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdOpts = {}): Promise<OpdNoteAudit> {
   const { case: oc, keys } = rowToOpdCase(row);
+  enrichOpdMeds(oc.medications);   // brand→generic + class/schedule/high-alert/LASA/VED from the formulary
   const doTrace = opts.trace !== false;
 
   // Non-identifying trace input (the uid lives only on the returned audit / the audit row).
@@ -77,13 +108,13 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
       }).catch(() => undefined as string | undefined)
     : undefined;
 
-  const det = prescribingChecks(oc);
+  const det = [...prescribingChecks(oc), ...ddiFindings(oc.medications)];
   const completeness = opdCompleteness(oc);
 
   try {
     const query = [
       ...oc.diagnosisCodes, ...oc.presentingComplaints,
-      ...oc.medications.map((m) => m.generic || m.brand || '').filter(Boolean),
+      ...oc.medications.map((m) => m.resolvedGeneric || m.generic || m.brand || '').filter(Boolean),
       'outpatient prescribing appropriateness rational therapy guideline',
     ].filter(Boolean).join('. ');
 
@@ -97,7 +128,7 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
 
     const findings: OpdFinding[] = [...det, ...(parsed?.findings ?? [])];
     const scorecard = computeOpdScore({
-      findings: findings.map((f) => ({ verdict: f.verdict, confidence: f.confidence, domain: f.domain })),
+      findings: findings.filter((f) => !f.informational).map((f) => ({ verdict: f.verdict, confidence: f.confidence, domain: f.domain })),
       completenessCoverage: completeness.coverage,
       pdqi9: parsed?.pdqi9 ?? null,
       patientCentred: completeness.patientCentred,
@@ -122,7 +153,7 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     if (traceId) await finishTrace(traceId, 'error', String((e as Error).message)).catch(() => {});
     // Even on LLM failure, return the deterministic-only audit (completeness + prescribing).
     const scorecard = computeOpdScore({
-      findings: det.map((f) => ({ verdict: f.verdict, confidence: f.confidence, domain: f.domain })),
+      findings: det.filter((f) => !f.informational).map((f) => ({ verdict: f.verdict, confidence: f.confidence, domain: f.domain })),
       completenessCoverage: completeness.coverage,
       pdqi9: null,
       patientCentred: completeness.patientCentred,

@@ -112,20 +112,28 @@ test('prescribingChecks catches incomplete dosing (deterministic)', () => {
   assert.ok(f.every((x) => x.source === 'deterministic'));
 });
 
-test('prescribingChecks catches non-generic + duplicate', () => {
+test('prescribingChecks: unverified brand, duplicate by RESOLVED generic, high-alert info (v0.4)', () => {
   const c = {
     consultType: null, reasonForConsult: null, presentingComplaints: [], diagnosisCodes: [], impressionCodes: [],
     impressions: [], history: [], comorbidities: [], investigations: [], advice: [], examination: [],
     allergies: null, followUpType: null, followUpDateSet: false,
     medications: [
-      { brand: 'Brandonly', dose: '1', frequency: '1-0-1', route: 'PO', duration: '5d' },
-      { generic: 'paracetamol', dose: '500mg', frequency: '1-1-1', route: 'PO', duration: '3d' },
-      { generic: 'paracetamol', dose: '650mg', frequency: '0-0-1', route: 'PO', duration: '3d' },
+      // brand-only, unresolved (no formulary match) → flagged as unverified
+      { brand: 'Mystery Tonic', dose: '1', frequency: '1-0-1', route: 'PO', duration: '5d' },
+      // brand-only but RESOLVED to Aspirin via the formulary…
+      { brand: 'Ecosprin', resolvedGeneric: 'Aspirin', formularyMatch: 'brand-exact' as const, schedule: 'H', dose: '75mg', frequency: '0-1-0', route: 'PO', duration: '30d' },
+      // …so it now dedupes against an aspirin written generically (the whole point of v0.4)
+      { generic: 'aspirin', dose: '150mg', frequency: '0-1-0', route: 'PO', duration: '30d' },
+      // high-alert drug → informational, non-penalising
+      { brand: 'Lonopin', resolvedGeneric: 'Enoxaparin', formularyMatch: 'brand-exact' as const, highAlert: true, schedule: 'H1', dose: '40mg', frequency: '0-0-1', route: 'SC', duration: '5d' },
     ],
   };
   const f = prescribingChecks(c);
-  assert.ok(f.some((x) => x.subject.startsWith('Non-generic')));
-  assert.ok(f.some((x) => x.subject.startsWith('Duplicate prescription: paracetamol')));
+  assert.ok(f.some((x) => x.subject.startsWith('Unverified brand: Mystery Tonic')));
+  assert.ok(f.some((x) => /^Duplicate prescription: aspirin$/i.test(x.subject)));   // resolved brand + generic deduped
+  const ha = f.find((x) => x.subject.startsWith('High-alert'));
+  assert.ok(ha && ha.informational === true && ha.confidence === 0);
+  assert.ok(f.every((x) => x.source === 'deterministic'));
 });
 
 test('parseOpdAnalysis extracts findings + PDQI-9 + suggestions and clamps citations', () => {

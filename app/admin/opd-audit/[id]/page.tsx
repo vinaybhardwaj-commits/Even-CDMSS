@@ -4,6 +4,7 @@ import { sql } from '@/lib/db';
 import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
 import { fetchDoctorNames, fetchOpdNoteByUid } from '@/lib/metabase';
 import { rowToOpdCase, type DeidOpdCase } from '@/lib/opd-ingest-core';
+import { enrichOpdMeds } from '@/lib/formulary';
 import {
   bandColor, scoreColor, parseJson, doctorLabel, fmtIstTime, DOMAIN_ROWS, PDQI9_LABEL,
 } from '@/lib/opd-audit-ui';
@@ -63,12 +64,22 @@ function NotePanel({ note, pdfUrl }: { note: DeidOpdCase | null; pdfUrl: string 
           <ul className="space-y-1">
             {note.medications.map((m, i) => {
               const dosing = [m.strength, m.dose, m.frequency, m.duration, m.route].filter(Boolean).join(' · ');
+              const primary = m.resolvedGeneric || m.generic || m.brand;
+              const showBrand = m.brand && (m.resolvedGeneric || m.generic) && m.brand.toLowerCase() !== String(primary).toLowerCase();
+              const tags: string[] = [];
+              if (m.therapeuticClass) tags.push(m.therapeuticClass);
+              if (m.schedule && m.schedule !== '—') tags.push(`Sch ${m.schedule}`);
+              if (m.formularyMatch === 'brand-prefix') tags.push('≈approx');
+              if (m.nonFormulary === 'nutraceutical-cosmetic') tags.push('nutraceutical/cosmetic');
+              else if (m.nonFormulary === 'non-formulary') tags.push('off-formulary');
               return (
                 <li key={i}>
-                  <span className="font-medium text-slate-800">{m.generic || m.brand}</span>
-                  {m.brand && m.generic ? <span className="text-slate-400"> ({m.brand})</span> : null}
+                  <span className="font-medium text-slate-800">{primary}</span>
+                  {showBrand ? <span className="text-slate-400"> ({m.brand})</span> : null}
+                  {m.highAlert ? <span className="ml-1 rounded bg-red-50 px-1 text-[9px] font-medium text-red-600">HIGH-ALERT</span> : null}
                   {dosing ? <span className="text-slate-500"> — {dosing}</span> : <span className="text-amber-600"> — dosing incomplete</span>}
                   {m.instruction ? <span className="text-slate-400"> · {m.instruction}</span> : null}
+                  {tags.length ? <span className="text-slate-400"> · {tags.join(' · ')}</span> : null}
                 </li>
               );
             })}
@@ -121,6 +132,7 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
   const doctor = (docUid && docNames[docUid]) || doctorLabel(docUid);
   const parsed = noteRow ? rowToOpdCase(noteRow) : null;
   const note: DeidOpdCase | null = parsed?.case ?? null;
+  if (note) enrichOpdMeds(note.medications);   // brand→generic + class/safety tags (same as the audit ran)
   const prescriptionUrl = parsed?.keys.prescriptionUrl ?? null;
 
   const lowVal = findings.find((f) => f.verdict === 'low-value');

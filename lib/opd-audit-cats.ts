@@ -16,7 +16,8 @@ export const CATS: CatDef[] = [
   { key: 'doc:complaint', label: 'No presenting complaint recorded',         group: 'documentation', sev: 'doc' },
   { key: 'doc:followup',  label: 'No follow-up specified',                   group: 'documentation', sev: 'doc' },
   { key: 'doc:diagnosis', label: 'No diagnosis / impression coded',          group: 'documentation', sev: 'doc' },
-  { key: 'rx:nongeneric', label: 'Non-generic (brand-name) prescribing',     group: 'prescribing',   sev: 'caution' },
+  { key: 'rx:nongeneric', label: 'Brand-name / unverifiable prescribing',    group: 'prescribing',   sev: 'caution' },
+  { key: 'rx:interaction', label: 'Drug–drug interaction',                   group: 'prescribing',   sev: 'caution' },
   { key: 'rx:duplicate',  label: 'Therapeutic duplication',                  group: 'prescribing',   sev: 'low' },
   { key: 'rx:lv_antibiotic', label: 'Low-value: antibiotic for likely-viral illness', group: 'prescribing', sev: 'low' },
   { key: 'rx:lv_supplement', label: 'Low-value: enzyme / vitamin / supplement combos', group: 'prescribing', sev: 'low' },
@@ -44,10 +45,12 @@ export function catsForRow(missing: string[] | null | undefined, findings: RowFi
   for (const f of findings || []) {
     const subj = (f.subject || '').toLowerCase();
     const txt = `${f.subject || ''} ${f.rationale || ''}`.toLowerCase();
-    if (subj.startsWith('non-generic')) set.add('rx:nongeneric');
-    else if (subj.startsWith('duplicate prescription')) set.add('rx:duplicate');
-    else if (subj.startsWith('incomplete dosing')) set.add('doc:dosing'); // fold into documentation
-    if (f.verdict === 'low-value') {
+    let primaryRx = false;
+    if (subj.startsWith('non-generic') || subj.startsWith('unverified brand')) { set.add('rx:nongeneric'); primaryRx = true; }
+    else if (subj.startsWith('interaction')) { set.add('rx:interaction'); primaryRx = true; }
+    else if (subj.startsWith('duplicate prescription')) { set.add('rx:duplicate'); primaryRx = true; }
+    else if (subj.startsWith('incomplete dosing')) { set.add('doc:dosing'); primaryRx = true; } // fold into documentation
+    if (!primaryRx && f.verdict === 'low-value') {
       if (/antibiotic|amoxicill|azithro|cefix|cefpod|ciproflox|levoflox|antimicrobial|metronidazole/.test(txt)) set.add('rx:lv_antibiotic');
       else if (/vitamin|supplement|multivit|enzyme|trypsin|chymotrypsin|serratiopep|probiotic|\btonic\b|nutraceutical|mineral|antioxidant/.test(txt)) set.add('rx:lv_supplement');
       else if (/povidone|iodine|antiseptic|betadine|chlorhexidine|caladryl|calamine/.test(txt)) set.add('rx:lv_antiseptic');

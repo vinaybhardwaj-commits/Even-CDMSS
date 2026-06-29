@@ -10,7 +10,9 @@
 import type { DeidOpdCase } from './opd-ingest-core';
 import type { NetValue, OpdFindingDomain, Pdqi9Attr } from './opd-note-score-core';
 
-export const OPD_ENGINE_VERSION = 'opd-note-audit/0.3';
+// 0.4 — formulary integration: brand→generic resolution + class/schedule/ISMP-high-alert/
+// LASA/VED enrichment + formulary-scoped DDI, so brand-only OPD lines (~36%) are recognised.
+export const OPD_ENGINE_VERSION = 'opd-note-audit/0.4';
 
 // Local copy of the PDQI-9 keys (kept in sync with opd-note-score-core) so this core has
 // no runtime cross-import and stays loadable under `node --experimental-strip-types`.
@@ -29,6 +31,7 @@ export interface OpdFinding {
   estimates: string[];
   citation_ids: number[];
   source: 'llm' | 'deterministic';
+  informational?: boolean;         // surfaced for awareness (e.g. high-alert present); never penalises the score
 }
 export interface OpdCompletenessItem { key: string; label: string; present: boolean; mandatory: boolean }
 export interface OpdCompleteness {
@@ -67,31 +70,91 @@ export function opdCompleteness(c: DeidOpdCase): OpdCompleteness {
   };
 }
 
+const dedupCI = (a: string[]): string[] => {
+  const seen = new Set<string>(); const out: string[] = [];
+  for (const x of a) { const k = x.toLowerCase(); if (x && !seen.has(k)) { seen.add(k); out.push(x); } }
+  return out;
+};
+function det(subject: string, verdict: NetValue, confidence: number, rationale: string, informational = false): OpdFinding {
+  return { subject, verdict, confidence, domain: 'prescribing_safety', rationale, evidence: [], estimates: [], citation_ids: [], source: 'deterministic', ...(informational ? { informational: true } : {}) };
+}
+
 // ── Deterministic rational-prescribing checks (from the medications array) ─────
+// Uses the formulary-RESOLVED generic where the note gave only a brand, so brand-only lines
+// finally dedupe and stop false-flagging. Formulary safety facts (ISMP high-alert, Schedule X,
+// LASA pairs, off-formulary items) surface as findings; the purely-informational ones carry
+// `informational` + confidence 0 so they inform without ever penalising the score.
 export function prescribingChecks(c: DeidOpdCase): OpdFinding[] {
   const out: OpdFinding[] = [];
-  const seen = new Map<string, number>();
+  const seen = new Map<string, { n: number; label: string }>();
+  const highAlerts: string[] = [];
+  const scheduleX: string[] = [];
+  let nNonFormularyDrug = 0;
+  let nNutraceutical = 0;
+
   for (const m of c.medications) {
-    const name = m.generic || m.brand || 'medication';
-    if (!m.generic && m.brand) {
-      out.push({ subject: `Non-generic prescription: ${m.brand}`, verdict: 'context-dependent', confidence: 0.6, domain: 'prescribing_safety',
-        rationale: 'Prescribed by brand without a generic name — NABH / rational-prescribing expects generic naming.', evidence: [], estimates: [], citation_ids: [], source: 'deterministic' });
+    const gen = m.resolvedGeneric || m.generic;
+    const name = gen || m.brand || 'medication';
+
+    // brand-only AND unresolved: the note named a proprietary product the formulary couldn't
+    // map. Flag only genuine drugs (nutraceuticals/cosmetics are rolled up informationally).
+    if (!gen) {
+      if (m.nonFormulary === 'nutraceutical-cosmetic') nNutraceutical++;
+      else {
+        nNonFormularyDrug++;
+        out.push(det(`Unverified brand: ${m.brand || 'medication'}`, 'context-dependent', 0.4,
+          'Prescribed by a brand not in the hospital formulary and not resolvable to a generic — molecule, class and interactions cannot be verified. NABH expects generic naming.'));
+      }
     }
+
     const gaps: string[] = [];
     if (!m.dose) gaps.push('dose');
     if (!m.frequency) gaps.push('frequency');
     if (!m.route) gaps.push('route');
     if (!m.duration) gaps.push('duration');
-    if (gaps.length) {
-      out.push({ subject: `Incomplete dosing: ${name}`, verdict: 'context-dependent', confidence: 0.55, domain: 'prescribing_safety',
-        rationale: `Missing ${gaps.join(', ')} — incomplete prescription.`, evidence: [], estimates: [], citation_ids: [], source: 'deterministic' });
+    if (gaps.length) out.push(det(`Incomplete dosing: ${name}`, 'context-dependent', 0.5, `Missing ${gaps.join(', ')} — incomplete prescription.`));
+
+    if (gen) { const k = gen.toLowerCase(); const p = seen.get(k); seen.set(k, { n: (p?.n || 0) + 1, label: gen }); }
+    if (gen && m.highAlert) highAlerts.push(gen);
+    if (gen && m.schedule === 'X') scheduleX.push(gen);
+  }
+
+  for (const { n, label } of seen.values()) {
+    if (n > 1) out.push(det(`Duplicate prescription: ${label}`, 'low-value', 0.7, `The same generic appears ${n} times on the prescription.`));
+  }
+
+  // LASA pair co-prescribed — a drug AND one of its look-alike/sound-alike confusables both present.
+  const names = c.medications.map((m) => (m.resolvedGeneric || m.generic || m.brand || '').toLowerCase()).filter(Boolean);
+  const lasaSeen = new Set<string>();
+  for (const m of c.medications) {
+    const self = (m.resolvedGeneric || m.generic || '').toLowerCase();
+    for (const la of m.lasa || []) {
+      const laLow = la.toLowerCase();
+      const hit = names.find((nm) => nm && nm !== self && (nm.includes(laLow) || laLow.includes(nm)));
+      if (hit && self) {
+        const key = [self, hit].sort().join('|');
+        if (!lasaSeen.has(key)) {
+          lasaSeen.add(key);
+          out.push(det(`LASA pair co-prescribed: ${m.resolvedGeneric || m.generic} & ${hit}`, 'context-dependent', 0.45,
+            'Look-alike/sound-alike drugs on the same prescription — dispensing/administration confusion risk (NABH / ISMP LASA).'));
+        }
+      }
     }
-    if (m.generic) { const k = m.generic.toLowerCase(); seen.set(k, (seen.get(k) || 0) + 1); }
   }
-  for (const [k, n] of seen) {
-    if (n > 1) out.push({ subject: `Duplicate prescription: ${k}`, verdict: 'low-value', confidence: 0.7, domain: 'prescribing_safety',
-      rationale: `The same generic appears ${n} times on the prescription.`, evidence: [], estimates: [], citation_ids: [], source: 'deterministic' });
+
+  // Informational formulary roll-ups (confidence 0 → never penalise the score).
+  if (highAlerts.length) out.push(det(`High-alert medication${highAlerts.length > 1 ? 's' : ''}: ${dedupCI(highAlerts).join(', ')}`, 'uncertain', 0,
+    'ISMP high-alert medication present — heightened harm potential if mis-prescribed/administered; confirm dose, monitoring and indication.', true));
+  if (scheduleX.length) out.push(det(`Schedule X drug: ${dedupCI(scheduleX).join(', ')}`, 'uncertain', 0,
+    'Schedule X (narcotic/psychotropic) present — requires the prescribed format and record-keeping controls under the D&C Rules.', true));
+  if (nNonFormularyDrug || nNutraceutical) {
+    const parts: string[] = [];
+    if (nNonFormularyDrug) parts.push(`${nNonFormularyDrug} not in formulary`);
+    if (nNutraceutical) parts.push(`${nNutraceutical} nutraceutical/cosmetic`);
+    out.push(det(`Off-formulary items: ${parts.join('; ')}`, 'uncertain', 0,
+      'Items prescribed outside the hospital drug formulary (retail brands / nutraceuticals / cosmetics) — informational; not assessed as formulary drugs.', true));
   }
+
   return out;
 }
 
@@ -100,7 +163,7 @@ export const OPD_AUDIT_SYSTEM = `You are a clinical quality auditor reviewing a 
 
 1) FINDINGS — appropriateness and prescribing-safety issues for THIS encounter:
    - appropriateness: low-value / inappropriate tests, treatments or referrals for the presentation.
-   - prescribing_safety: irrational or unsafe prescribing — wrong/unnecessary drug, an antibiotic for a likely-viral illness, drug–drug or drug–allergy interactions, duplications, dosing problems.
+   - prescribing_safety: irrational or unsafe prescribing — wrong/unnecessary drug, an antibiotic for a likely-viral illness, drug–drug or drug–allergy interactions, duplications, dosing problems. Each medication carries the molecule plus [drug class · D&C schedule · ISMP high-alert] resolved from the hospital formulary (the note often gives only a brand); use these to judge class duplication, interactions and high-alert handling. Items tagged "nutraceutical/cosmetic" or "not in hospital formulary" are NOT formulary drugs — do not invent drug interactions for them, but you may note non-evidence-based / cosmetic prescribing.
    Each finding: "subject", "verdict" (high-value | context-dependent | low-value | uncertain), "confidence" 0–1, "domain" ("appropriateness" | "prescribing_safety"), "rationale", "evidence" (points SUPPORTED by the excerpts), "estimates" (your own/general-knowledge points), "citation_ids" (the [n] that actually support the evidence).
    GUARD AGAINST ANCHORING: weigh PRE-TEST PROBABILITY and the dominant clinical syndrome; treat outside low-utility tests (e.g. Widal) with skepticism; do not reward a low-yield confirmatory test. Do NOT invent a diagnosis the note doesn't support.
    Do NOT penalise the mere absence of a field as a clinical error (documentation gaps are scored separately) — focus findings on the actual clinical decisions taken.
