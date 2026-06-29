@@ -3,8 +3,14 @@
 import { useState, useRef, useMemo, useCallback, useEffect } from 'react';
 import { consumeNdjson } from '@/lib/ndjson-client';
 import TracePanel, { TraceEvent } from '@/components/TracePanel';
-import { Send, Loader2, AlertTriangle, ChevronDown, ChevronUp, ClipboardList, BookOpen, Microscope, CheckCircle2, MinusCircle, FlaskConical } from 'lucide-react';
+import { Send, Loader2, AlertTriangle, ChevronDown, ChevronUp, ClipboardList, BookOpen, Microscope, CheckCircle2, MinusCircle, FlaskConical, SlidersHorizontal, RefreshCw } from 'lucide-react';
 import { MarkdownAnswer } from '@/components/MarkdownAnswer';
+
+// Unified Clarity toggle-pill style (shared look with /ask).
+function togCls(active: boolean): string {
+  return 'inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition disabled:opacity-50 disabled:cursor-not-allowed ' +
+    (active ? 'border-brand bg-brand-faint text-brand' : 'border-slate-200 bg-white text-slate-500 hover:border-brand/60 hover:text-slate-700');
+}
 
 type Citation = {
   n: number; id: number; book: string; chapter: string | null;
@@ -193,6 +199,7 @@ export default function DdxClient() {
   const [multiQuery, setMultiQuery] = useState(true);
   const [selfCritique, setSelfCritique] = useState(true);
   const [hypothesisFirst, setHypothesisFirst] = useState(true);  // default ON: reasoning-first dx proposal then per-candidate retrieval (catches clue-based dx e.g. leishmaniasis)
+  const [showSettings, setShowSettings] = useState(false);
   const [critique, setCritique] = useState<{ severity: string; issue_count: number; details: Record<string, unknown> } | null>(null);
   const [age, setAge] = useState('');
   const [sex, setSex] = useState('?');
@@ -447,10 +454,10 @@ export default function DdxClient() {
           onClick={loadChips}
           disabled={loading}
           aria-label="Shuffle case examples"
-          className="rounded-full border border-slate-200 bg-white px-2 py-1 text-xs text-slate-500 hover:border-brand hover:text-brand disabled:opacity-40"
+          className="flex items-center justify-center rounded-full border border-slate-200 bg-white p-1.5 text-slate-400 transition hover:border-brand hover:text-brand disabled:opacity-40"
           title="Show different examples"
         >
-          ↻
+          <RefreshCw className="h-3.5 w-3.5" />
         </button>
       </div>
       {/* Rich form-fill examples kept as a secondary row */}
@@ -469,40 +476,34 @@ export default function DdxClient() {
         ))}
       </div>
 
-      {/* v2.0.3b — pipeline toggle chips (mirrors /ask). PLOS stays hardcoded on for /ddx;
-          revisit if V wants a toggle. Chips lock during loading per v2.0.3 polish pattern. */}
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <span className="text-[11px] uppercase tracking-wider text-slate-400">Pipeline</span>
-        <button
-          type="button"
-          onClick={() => setMultiQuery((v) => !v)}
-          disabled={loading}
-          aria-pressed={multiQuery}
-          title={loading ? 'Locked while query is running' : 'Generate 4 query variants for richer recall'}
-          className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition disabled:opacity-50 disabled:cursor-not-allowed ${multiQuery ? 'border-violet-500 bg-violet-50 text-violet-700' : 'border-slate-200 bg-white text-slate-500 hover:border-violet-400'}`}
-        >
-          {multiQuery ? '✓ ' : ''}Multi-query
+      {/* Pipeline settings — collapsed by default; unified Clarity toggles. PLOS stays on for /ddx. */}
+      <div className="mt-3 overflow-hidden rounded-xl border border-slate-200 bg-white">
+        <button type="button" onClick={() => setShowSettings((v) => !v)} className="flex w-full items-center gap-2 px-3 py-2 text-left">
+          <SlidersHorizontal className="h-4 w-4 shrink-0 text-slate-400" />
+          <span className="text-[13px] font-medium text-slate-700">Pipeline</span>
+          {!showSettings && (
+            <span className="ml-1 hidden truncate text-[11.5px] text-slate-400 sm:inline">
+              {[multiQuery, selfCritique, hypothesisFirst].filter(Boolean).length}/3 steps on
+            </span>
+          )}
+          {showSettings ? <ChevronUp className="ml-auto h-4 w-4 shrink-0 text-slate-400" /> : <ChevronDown className="ml-auto h-4 w-4 shrink-0 text-slate-400" />}
         </button>
-        <button
-          type="button"
-          onClick={() => setSelfCritique((v) => !v)}
-          disabled={loading}
-          aria-pressed={selfCritique}
-          title={loading ? 'Locked while query is running' : 'Audit + revise the DDx before returning'}
-          className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition disabled:opacity-50 disabled:cursor-not-allowed ${selfCritique ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-white text-slate-500 hover:border-emerald-400'}`}
-        >
-          {selfCritique ? '✓ ' : ''}Self-critique
-        </button>
-        <button
-          type="button"
-          onClick={() => setHypothesisFirst((v) => !v)}
-          disabled={loading}
-          aria-pressed={hypothesisFirst}
-          title={loading ? 'Locked while query is running' : 'Reason the differential first, then retrieve evidence per candidate diagnosis (broader, less anchored). Slower.'}
-          className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition disabled:opacity-50 disabled:cursor-not-allowed ${hypothesisFirst ? 'border-amber-500 bg-amber-50 text-amber-700' : 'border-slate-200 bg-white text-slate-500 hover:border-amber-400'}`}
-        >
-          {hypothesisFirst ? '✓ ' : ''}Hypothesis-first <span className="ml-0.5 opacity-60">{hypothesisFirst ? 'default' : 'off'}</span>
-        </button>
+        {showSettings && (
+          <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 px-3 py-3">
+            <button type="button" onClick={() => setMultiQuery((v) => !v)} disabled={loading} aria-pressed={multiQuery}
+              title={loading ? 'Locked while query is running' : 'Generate 4 query variants for richer recall'} className={togCls(multiQuery)}>
+              {multiQuery ? '✓ ' : ''}Multi-query
+            </button>
+            <button type="button" onClick={() => setSelfCritique((v) => !v)} disabled={loading} aria-pressed={selfCritique}
+              title={loading ? 'Locked while query is running' : 'Audit + revise the DDx before returning'} className={togCls(selfCritique)}>
+              {selfCritique ? '✓ ' : ''}Self-critique
+            </button>
+            <button type="button" onClick={() => setHypothesisFirst((v) => !v)} disabled={loading} aria-pressed={hypothesisFirst}
+              title={loading ? 'Locked while query is running' : 'Reason the differential first, then retrieve evidence per candidate diagnosis (broader, less anchored). Slower.'} className={togCls(hypothesisFirst)}>
+              {hypothesisFirst ? '✓ ' : ''}Hypothesis-first <span className="ml-0.5 opacity-60">{hypothesisFirst ? 'default' : 'off'}</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {(trace.length > 0 || loading) && <div className="mt-5"><TracePanel events={trace} totalMs={totalMs} traceId={traceId} surface="ddx" askChips={{ useMultiQuery: multiQuery, selfCritique, useReranker: true, useSourceWeights: true, includePlos: true }} /></div>}

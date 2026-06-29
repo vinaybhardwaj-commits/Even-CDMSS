@@ -1,15 +1,16 @@
 import HelpCard from '@/components/HelpCard';
+import PageHeader from '@/components/PageHeader';
 import DdxClient from './ddx-client';
 
-export const metadata = { title: 'DDx' };
+export const metadata = { title: 'Differential' };
 
 export default function DdxPage() {
   return (
     <div>
-      <h1 className="text-2xl font-semibold text-slate-900 sm:text-3xl">Differential Diagnosis</h1>
-      <p className="mt-1 text-sm text-slate-500">
-        Structured clinical presentations turned into a cited differential from the Even Hospital Database. Cannot-miss first, then most likely, then other considerations.
-      </p>
+      <PageHeader
+        title="Differential diagnosis"
+        subtitle="Turn a structured presentation into a cited differential — cannot-miss first, then most likely, then other considerations."
+      />
       <HelpCard
         storageKey="ddx"
         title="About this differential-diagnosis tool"
