@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useState, useEffect } from 'react';
 import {
-  MessagesSquare, Network, Pill, Calculator, ClipboardCheck, FileSearch,
+  MessagesSquare, Network, Pill, Calculator, ClipboardCheck,
   ClipboardList, BookOpen, GraduationCap, Settings, Menu, X, ChevronLeft,
   type LucideIcon,
 } from 'lucide-react';
@@ -49,9 +49,8 @@ const ADMIN: NavGroup[] = [
   {
     heading: 'Admin',
     items: [
+      { href: '/admin/observability', label: 'Observability', Icon: Network, match: ['/admin/appropriateness-runs'] },
       { href: '/admin/literature', label: 'Literature', Icon: BookOpen },
-      { href: '/admin/observability', label: 'Observability', Icon: Network },
-      { href: '/admin/appropriateness-runs', label: 'Appropriateness runs', Icon: FileSearch },
     ],
   },
 ];

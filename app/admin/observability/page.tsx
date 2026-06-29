@@ -2,6 +2,8 @@ import Link from 'next/link';
 import { sql } from '@/lib/db';
 import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
 import { featureMeta, normalizeFeature, FEATURE_FILTERS } from '@/lib/observability-meta';
+import RunsBrowser, { type RunRow } from '@/app/admin/appropriateness-runs/runs-browser';
+import type { ExportRun } from '@/lib/runs-export';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Observability · Admin' };
@@ -61,27 +63,56 @@ function Locked({ configured, bad }: { configured: boolean; bad: boolean }) {
 export default async function ObservabilityAdmin({ searchParams }: { searchParams: Promise<{ tab?: string; q?: string; feature?: string; status?: string; locked?: string }> }) {
   const sp = await searchParams;
   if (!(await isAdminUnlocked())) return <Locked configured={adminTokenConfigured()} bad={sp.locked === '1'} />;
-  const tab = sp.tab === 'queries' ? 'queries' : 'overview';
+  const tab = sp.tab === 'queries' ? 'queries' : sp.tab === 'rightcare' ? 'rightcare' : 'overview';
   return (
     <div>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="font-serif text-[26px] font-semibold leading-tight text-slate-900 sm:text-[30px]">Observability</h1>
-          <p className="mt-1.5 max-w-2xl text-sm text-slate-500">Every run, captured. Usage, latency, and a full event-level audit trail of every module — internal, shows raw clinical queries.</p>
+          <p className="mt-1.5 max-w-2xl text-sm text-slate-500">One forensic surface for every run — Ask, Differential, Drugs, Calculators, Right Care, and Medication Audit. Usage, latency, and a full event-level audit trail. Internal; shows raw clinical queries.</p>
         </div>
-        <div className="flex items-center gap-3 whitespace-nowrap">
-          <Link href="/admin/appropriateness-runs" className="text-xs text-slate-400 hover:text-brand">Right Care runs →</Link>
-          <form method="POST" action="/api/admin/unlock?action=logout"><button className="text-xs text-slate-400 hover:text-brand">Lock</button></form>
-        </div>
+        <form method="POST" action="/api/admin/unlock?action=logout"><button className="whitespace-nowrap text-xs text-slate-400 hover:text-brand">Lock</button></form>
       </div>
       <div className="mt-6 flex gap-5 border-b border-slate-200">
-        {[['overview', 'Overview'], ['queries', 'Runs']].map(([k, l]) => (
+        {[['overview', 'Overview'], ['queries', 'Runs'], ['rightcare', 'Right Care runs']].map(([k, l]) => (
           <Link key={k} href={`/admin/observability?tab=${k}`} className={`-mb-px pb-2 text-sm ${tab === k ? 'border-b-2 border-brand font-medium text-slate-900' : 'text-slate-500 hover:text-slate-800'}`}>{l}</Link>
         ))}
       </div>
       <div className="mt-5">
-        {tab === 'overview' ? <OverviewTab /> : <QueriesTab sp={sp} />}
+        {tab === 'overview' ? <OverviewTab /> : tab === 'rightcare' ? <RightCareRunsTab /> : <QueriesTab sp={sp} />}
       </div>
+    </div>
+  );
+}
+
+function parseOutput(v: unknown): Record<string, unknown> {
+  if (v && typeof v === 'object') return v as Record<string, unknown>;
+  if (typeof v === 'string') { try { return JSON.parse(v) as Record<string, unknown>; } catch { return {}; } }
+  return {};
+}
+
+async function RightCareRunsTab() {
+  const rows = await rowsOf<Record<string, unknown>>(
+    `SELECT id, mode, to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"') created_at,
+            scenario, doc_type, summary, n_sources, n_findings, output
+     FROM appropriateness_runs WHERE app_source = $1 ORDER BY created_at DESC LIMIT 200`,
+    [APP],
+  );
+  const runs: RunRow[] = rows.map((r) => ({
+    id: String(r.id),
+    mode: String(r.mode) as ExportRun['mode'],
+    created_at: String(r.created_at),
+    scenario: r.scenario == null ? null : String(r.scenario),
+    docType: r.doc_type == null ? null : String(r.doc_type),
+    summary: r.summary == null ? '' : String(r.summary),
+    nSources: Number(r.n_sources ?? 0),
+    nFindings: Number(r.n_findings ?? 0),
+    output: parseOutput(r.output),
+  }));
+  return (
+    <div>
+      <p className="mb-3 text-sm text-slate-500">De-identified output retention for every Right Care run (Order check / Care pathway / Record audit). Download any run, or the whole corpus stacked, as Excel. Showing the latest {runs.length}. For the step-by-step pipeline of a run, use the <Link href="/admin/observability?tab=queries&feature=appropriateness_value" className="text-brand hover:underline">Runs</Link> tab.</p>
+      <RunsBrowser runs={runs} />
     </div>
   );
 }
