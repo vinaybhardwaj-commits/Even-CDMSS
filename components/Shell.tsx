@@ -4,7 +4,7 @@ import { usePathname } from 'next/navigation';
 import { useState, useEffect } from 'react';
 import {
   MessagesSquare, Network, Pill, Calculator, ClipboardCheck, FileSearch,
-  BookOpen, GraduationCap, Settings, Menu, X, ChevronLeft,
+  ClipboardList, BookOpen, GraduationCap, Settings, Menu, X, ChevronLeft,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -33,7 +33,7 @@ const CLINICIAN: NavGroup[] = [
   {
     heading: 'Audit',
     items: [
-      { href: '/audit', label: 'Case & bill audit', Icon: FileSearch },
+      { href: '/audit', label: 'Medication Audit', Icon: ClipboardList },
     ],
   },
   {

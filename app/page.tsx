@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import {
-  MessagesSquare, Network, Pill, Calculator, ClipboardCheck, FileSearch,
+  MessagesSquare, Network, Pill, Calculator, ClipboardCheck, ClipboardList,
   BookOpen, GraduationCap, ArrowRight,
 } from 'lucide-react';
 
@@ -11,7 +11,7 @@ const PRIMARY = [
   { href: '/drugs', label: 'Drugs', desc: 'Dosing, renal/hepatic adjustment, and interaction checks.', Icon: Pill },
   { href: '/calculators', label: 'Calculators', desc: '15 bedside scores — NEWS2, CURB-65, HEART, eGFR, and more.', Icon: Calculator },
   { href: '/appropriateness', label: 'Appropriateness', desc: 'Value check, care pathway, or retrospective case audit.', Icon: ClipboardCheck },
-  { href: '/audit', label: 'Case & bill audit', desc: 'Upload a discharge summary or bill for an NABH + value review.', Icon: FileSearch },
+  { href: '/audit', label: 'Medication Audit', desc: 'Pharmacist chart review — allergy and drug-interaction cross-check.', Icon: ClipboardList },
 ];
 
 const REFERENCE = [
