@@ -3,12 +3,13 @@ import { sql } from '@/lib/db';
 import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
 import { fetchDoctorNames } from '@/lib/metabase';
 import { bandFor } from '@/lib/opd-note-score-core';
-import { catsForRow } from '@/lib/opd-audit-cats';
+import { catsForRow, CAT_LABEL } from '@/lib/opd-audit-cats';
 import {
-  bandColor, scoreColor, istDateRange, parseJson, doctorLabel, fmtIstTime, fmtIstDateLong,
+  bandColor, scoreColor, istDateRange, parseJson, doctorLabel, fmtIstTime, fmtIstDateLong, PDQI9_LABEL,
   type Period,
 } from '@/lib/opd-audit-ui';
 import NotesExplorer, { type AuditRow } from './audit-table';
+import DomainPillars, { type DomainDatum } from './domain-pillars';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'OPD Audit · Admin' };
@@ -58,17 +59,20 @@ function issueFrom(findings: unknown, completenessPct: number): string {
   return 'Review';
 }
 
-type DocRow = { doctor_uid: string; nnotes: number; idx: number; low_value: number; completeness: number };
+type DomCols = { d_doc: number; d_nq: number; d_appr: number; d_presc: number; d_pc: number };
+type DocRow = { doctor_uid: string; nnotes: number; idx: number; low_value: number; completeness: number } & DomCols;
+type TrendRow = { d: string; idx: number; c: number } & DomCols;
 type ReviewRow = { id: string; note_date: string; doctor_uid: string | null; band: string; note_quality_index: number; findings: unknown; n_low_value: number; completeness_pct: number };
-type AllRow = { id: string; uid: string; note_date: string; doctor_uid: string | null; consult_type: string | null; prescription_type: string | null; band: string; note_quality_index: number; n_low_value: number; completeness_pct: number; findings: unknown; missing_fields: unknown };
+type AllRow = { id: string; uid: string; note_date: string; doctor_uid: string | null; consult_type: string | null; prescription_type: string | null; band: string; note_quality_index: number; n_low_value: number; completeness_pct: number; findings: unknown; missing_fields: unknown; score_documentation: number; score_note_quality: number; score_appropriateness: number; score_prescribing_safety: number; score_patient_centred: number; pdqi9: unknown };
 
-const PILLARS: { col: string; label: string; short: string }[] = [
-  { col: 'd_doc', label: 'Documentation\ncompleteness', short: 'documentation' },
-  { col: 'd_nq', label: 'Note quality\n(PDQI-9)', short: 'note quality' },
-  { col: 'd_appr', label: 'Diagnostic\nappropriateness', short: 'diagnostic appropriateness' },
-  { col: 'd_presc', label: 'Prescribing\n& safety', short: 'prescribing safety' },
-  { col: 'd_pc', label: 'Continuity /\npatient-centred', short: 'continuity' },
-];
+const PILLARS = [
+  { col: 'd_doc', key: 'documentation', dom: 'documentation', label: 'Documentation\ncompleteness', short: 'documentation', weight: 0.25, scoreCol: 'score_documentation', catPrefix: 'doc:' },
+  { col: 'd_nq', key: 'note_quality', dom: 'note_quality', label: 'Note quality\n(PDQI-9)', short: 'note quality', weight: 0.25, scoreCol: 'score_note_quality', catPrefix: '' },
+  { col: 'd_appr', key: 'appropriateness', dom: 'appropriateness', label: 'Diagnostic\nappropriateness', short: 'diagnostic appropriateness', weight: 0.20, scoreCol: 'score_appropriateness', catPrefix: '' },
+  { col: 'd_presc', key: 'prescribing_safety', dom: 'prescribing_safety', label: 'Prescribing\n& safety', short: 'prescribing safety', weight: 0.20, scoreCol: 'score_prescribing_safety', catPrefix: 'rx:' },
+  { col: 'd_pc', key: 'patient_centred', dom: 'patient_centred', label: 'Continuity /\npatient-centred', short: 'continuity', weight: 0.10, scoreCol: 'score_patient_centred', catPrefix: '' },
+] as const;
+type DomKey = (typeof PILLARS)[number]['key'];
 
 export default async function OpdAuditAdmin({ searchParams }: { searchParams: Promise<{ day?: string; period?: string; locked?: string }> }) {
   const sp = await searchParams;
@@ -93,23 +97,31 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
               round(avg(completeness_pct))::int mean_completeness,
               round(avg(score_documentation))::int d_doc, round(avg(score_note_quality))::int d_nq,
               round(avg(score_appropriateness))::int d_appr, round(avg(score_prescribing_safety))::int d_presc,
-              round(avg(score_patient_centred))::int d_pc
+              round(avg(score_patient_centred))::int d_pc,
+              count(*) FILTER (WHERE pdqi9 IS NOT NULL AND jsonb_array_length(pdqi9) > 0)::int pdqi_n
        FROM opd_note_audits WHERE ${WIN}`, winParams),
     rowsOf<{ band: string; c: number }>(`SELECT band, count(*)::int c FROM opd_note_audits WHERE ${WIN} GROUP BY band`, winParams),
-    rowsOf<{ d: string; idx: number; c: number }>(
-      `SELECT to_char((note_date AT TIME ZONE 'Asia/Kolkata')::date,'YYYY-MM-DD') d, round(avg(note_quality_index))::int idx, count(*)::int c
+    rowsOf<TrendRow>(
+      `SELECT to_char((note_date AT TIME ZONE 'Asia/Kolkata')::date,'YYYY-MM-DD') d, round(avg(note_quality_index))::int idx, count(*)::int c,
+              round(avg(score_documentation))::int d_doc, round(avg(score_note_quality))::int d_nq,
+              round(avg(score_appropriateness))::int d_appr, round(avg(score_prescribing_safety))::int d_presc,
+              round(avg(score_patient_centred))::int d_pc
        FROM opd_note_audits WHERE app_source = $1 AND (note_date AT TIME ZONE 'Asia/Kolkata')::date > $2::date - 14 AND (note_date AT TIME ZONE 'Asia/Kolkata')::date <= $2::date
        GROUP BY 1 ORDER BY 1`, [APP, to]),
     rowsOf<DocRow>(
       `SELECT doctor_uid, count(*)::int nnotes, round(avg(note_quality_index))::int idx,
-              round(100.0*avg((n_low_value>0)::int))::int low_value, round(avg(completeness_pct))::int completeness
+              round(100.0*avg((n_low_value>0)::int))::int low_value, round(avg(completeness_pct))::int completeness,
+              round(avg(score_documentation))::int d_doc, round(avg(score_note_quality))::int d_nq,
+              round(avg(score_appropriateness))::int d_appr, round(avg(score_prescribing_safety))::int d_presc,
+              round(avg(score_patient_centred))::int d_pc
        FROM opd_note_audits WHERE ${WIN} AND doctor_uid IS NOT NULL
-       GROUP BY doctor_uid ORDER BY nnotes DESC, idx ASC LIMIT 50`, winParams),
+       GROUP BY doctor_uid ORDER BY nnotes DESC, idx ASC LIMIT 60`, winParams),
     rowsOf<ReviewRow>(
       `SELECT id, note_date, doctor_uid, band, note_quality_index, findings, n_low_value, completeness_pct
        FROM opd_note_audits WHERE ${WIN} ORDER BY note_quality_index ASC, n_low_value DESC LIMIT 10`, winParams),
     rowsOf<AllRow>(
-      `SELECT id, uid, note_date, doctor_uid, consult_type, prescription_type, band, note_quality_index, n_low_value, completeness_pct, findings, missing_fields
+      `SELECT id, uid, note_date, doctor_uid, consult_type, prescription_type, band, note_quality_index, n_low_value, completeness_pct, findings, missing_fields,
+              score_documentation, score_note_quality, score_appropriateness, score_prescribing_safety, score_patient_centred, pdqi9
        FROM opd_note_audits WHERE ${WIN} ORDER BY note_date DESC LIMIT 600`, winParams),
   ]);
 
@@ -150,6 +162,74 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
     const y = tH - ((p.idx - lo) / Math.max(1, hi - lo)) * tH;
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(' ');
+
+  // ── per-domain drill-down data ──────────────────────────────────────────────
+  const catCounts = new Map<string, number>();
+  for (const r of allRows) for (const c of r.cats) catCounts.set(c, (catCounts.get(c) || 0) + 1);
+
+  const PDQI_ATTRS = ['up_to_date', 'accurate', 'thorough', 'useful', 'organized', 'comprehensible', 'succinct', 'synthesized', 'internally_consistent'];
+  const pdqiAgg: Record<string, { s: number; c: number }> = {};
+  for (const r of allR) for (const a of parseJson<{ attr: string; value: number }[]>(r.pdqi9, [])) {
+    const key = String(a.attr); if (!pdqiAgg[key]) pdqiAgg[key] = { s: 0, c: 0 };
+    pdqiAgg[key].s += Number(a.value) || 0; pdqiAgg[key].c += 1;
+  }
+  const pdqiMeans = PDQI_ATTRS.map((a) => ({ label: PDQI9_LABEL[a] || a, mean: pdqiAgg[a] ? pdqiAgg[a].s / pdqiAgg[a].c : NaN }))
+    .filter((x) => Number.isFinite(x.mean));
+
+  const apprSubj = new Map<string, number>();
+  for (const r of allR) for (const f of parseJson<{ subject?: string; verdict?: string; domain?: string }[]>(r.findings, []))
+    if (f.domain === 'appropriateness' && (f.verdict === 'low-value' || f.verdict === 'context-dependent')) { const s = (f.subject || '').trim(); if (s) apprSubj.set(s, (apprSubj.get(s) || 0) + 1); }
+  const apprDrivers = [...apprSubj.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([label, value]) => ({ label, value, pct: Math.round((value / (total || 1)) * 100) }));
+
+  const perDoctor = docsR.map((d) => ({
+    name: docName(d.doctor_uid), nnotes: n(d.nnotes),
+    scores: { documentation: n(d.d_doc), note_quality: n(d.d_nq), appropriateness: n(d.d_appr), prescribing_safety: n(d.d_presc), patient_centred: n(d.d_pc) } as Record<DomKey, number>,
+  }));
+  const domTrendCols: Record<DomKey, keyof DomCols> = { documentation: 'd_doc', note_quality: 'd_nq', appropriateness: 'd_appr', prescribing_safety: 'd_presc', patient_centred: 'd_pc' };
+
+  const domainsData: DomainDatum[] = PILLARS.map((p) => {
+    const score = n(k[p.col]);
+    const trend = trendR.map((t) => ({ d: t.d, v: n(t[domTrendCols[p.key]]) }));
+    let drivers: DomainDatum['drivers'];
+    if (p.key === 'note_quality') {
+      drivers = { kind: 'rating', items: pdqiMeans.slice().sort((a, b) => a.mean - b.mean).map((x) => ({ label: x.label, value: Math.round(x.mean * 10) / 10, pct: Math.round((x.mean / 5) * 100) })) };
+    } else if (p.key === 'appropriateness') {
+      drivers = { kind: 'count', items: apprDrivers };
+    } else if (p.key === 'patient_centred') {
+      const items = ([['doc:advice', 'Advice / safety-net not recorded'], ['doc:followup', 'Follow-up missing or no date']] as [string, string][])
+        .map(([c, label]) => ({ label, value: catCounts.get(c) || 0, pct: Math.round(((catCounts.get(c) || 0) / (total || 1)) * 100) }))
+        .filter((x) => x.value > 0).sort((a, b) => b.value - a.value);
+      drivers = { kind: 'count', items };
+    } else {
+      const items = [...catCounts.entries()].filter(([c]) => c.startsWith(p.catPrefix))
+        .map(([c, value]) => ({ label: CAT_LABEL[c] || c, value, pct: Math.round((value / (total || 1)) * 100) }))
+        .sort((a, b) => b.value - a.value);
+      drivers = { kind: 'count', items };
+    }
+    const elig = perDoctor.filter((d) => d.nnotes >= 5);
+    const sorted = elig.slice().sort((a, b) => b.scores[p.key] - a.scores[p.key]);
+    const topDoctors = sorted.slice(0, 3).map((d) => ({ name: d.name, score: d.scores[p.key], n: d.nnotes }));
+    const bottomDoctors = sorted.slice(-3).reverse().map((d) => ({ name: d.name, score: d.scores[p.key], n: d.nnotes }));
+    let best: { id: string; score: number } | null = null, worst: { id: string; score: number } | null = null;
+    for (const r of allR) { const v = n(r[p.scoreCol]); if (best === null || v > best.score) best = { id: String(r.id), score: v }; if (worst === null || v < worst.score) worst = { id: String(r.id), score: v }; }
+    let lever: string;
+    if (p.key === 'documentation' || p.key === 'prescribing_safety' || p.key === 'patient_centred') {
+      const t0 = drivers.items[0];
+      if (t0) { const lift = p.key === 'documentation' ? Math.round((t0.value / (total || 1)) * (100 / 7)) : Math.round((t0.value / (total || 1)) * 30); lever = `Fixing "${t0.label}" on the ${t0.value} note(s) affected would lift this domain ~${Math.max(1, lift)} pts.`; }
+      else lever = 'No dominant gap — this domain is healthy.';
+    } else if (p.key === 'note_quality') {
+      const lo0 = drivers.items[0];
+      lever = lo0 ? `Lowest PDQI attribute: ${lo0.label} (${lo0.value}/5) — the main drag on note quality.` : 'PDQI not assessed in this window.';
+    } else {
+      const t0 = drivers.items[0];
+      lever = t0 ? `Most common: ${t0.label} (${t0.value} note(s)).` : 'Few appropriateness issues — this domain is healthy.';
+    }
+    const coverage = p.key === 'note_quality' ? { measured: n(k.pdqi_n), total, basis: 'AI-rated' }
+      : p.key === 'appropriateness' ? { measured: total, total, basis: 'AI-judged' }
+        : p.key === 'prescribing_safety' ? { measured: total, total, basis: 'rules + AI' }
+          : { measured: total, total, basis: 'deterministic' };
+    return { key: p.key, label: p.label.replace('\n', ' '), short: p.short, score, weight: p.weight, contribPts: Math.round(score * p.weight), trend, drivers, topDoctors, bottomDoctors, best, worst, lever, coverage };
+  });
 
   const periodLabel = period === 'day' ? fmtIstDateLong(day) : `${fmtIstDateLong(from)} → ${fmtIstDateLong(to)}`;
 
@@ -219,18 +299,8 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
           {/* DOMAIN PILLARS */}
           <div className="mt-4">
             <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.05em] text-slate-400">What's driving the grade · five domains</div>
-            <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-slate-200 bg-slate-200 sm:grid-cols-5">
-              {PILLARS.map((p) => {
-                const v = n(k[p.col]);
-                return (
-                  <div key={p.col} className="bg-white px-3 py-3">
-                    <div className="min-h-[28px] whitespace-pre-line text-[10.5px] leading-tight text-slate-500">{p.label}</div>
-                    <div className="font-serif text-[22px] font-semibold" style={{ color: scoreColor(v) }}>{v}</div>
-                    <div className="mt-1.5 h-[5px] rounded bg-slate-100"><div className="h-full rounded" style={{ width: `${v}%`, background: scoreColor(v) }} /></div>
-                  </div>
-                );
-              })}
-            </div>
+            <DomainPillars data={domainsData} indexValue={meanIndex} />
+            {/* legacy short labels retained: PILLARS used for queries/summary above */}
             <div className="mt-2.5 flex flex-wrap items-center gap-x-5 gap-y-1 px-0.5 text-[12px] text-slate-500">
               <span><b className="font-serif text-[15px] text-slate-800">{total}</b> notes · <b className="font-serif text-[15px] text-slate-800">{n(k.doctors)}</b> doctors</span>
               <span><b className="font-serif text-[15px]" style={{ color: '#b45309' }}>{n(k.low_value_rate)}%</b> ≥1 low-value flag</span>
