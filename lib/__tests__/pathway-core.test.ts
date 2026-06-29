@@ -16,6 +16,26 @@ import {
   type SkeletonStage,
 } from '../pathway-core.ts';
 
+// De-anchoring guard (from Dr. Zaki's Widal/enteric-fever feedback): a low-certainty
+// or anchored diagnosis must force the DDx hand-off even if the model says needs_ddx=false.
+test('parseSkeleton forces DDx hand-off on a low-certainty / anchored diagnosis', () => {
+  const stages = '[{"kind":"diagnosis","title":"Confirm","action":"blood culture","flag":"high-value"}]';
+  const low = parseSkeleton(`{"detected_stage":"diagnosis","working_diagnosis":"Suspected enteric fever","diagnosis_certainty":"low","needs_ddx":false,"anchor_note":"Widal-anchored; roommate cluster favours gastroenteritis","summary":"x","stages":${stages}}`);
+  assert.ok(low);
+  assert.equal(low!.needsDdx, true, 'low certainty must force needsDdx');
+  assert.equal(low!.anchorNote, 'Widal-anchored; roommate cluster favours gastroenteritis');
+
+  // anchor_note present but model said moderate certainty + needs_ddx false → still force it
+  const anchored = parseSkeleton(`{"detected_stage":"diagnosis","working_diagnosis":"Typhoid","diagnosis_certainty":"moderate","needs_ddx":false,"anchor_note":"anchored on outside Widal","summary":"x","stages":${stages}}`);
+  assert.ok(anchored);
+  assert.equal(anchored!.needsDdx, true, 'anchor_note must force needsDdx');
+
+  // established, high-certainty dx with no anchoring → does NOT over-trigger the hand-off
+  const high = parseSkeleton(`{"detected_stage":"diagnosis","working_diagnosis":"STEMI","diagnosis_certainty":"high","needs_ddx":false,"anchor_note":null,"summary":"x","stages":${stages}}`);
+  assert.ok(high);
+  assert.equal(high!.needsDdx, false, 'high certainty + no anchor should not force handoff');
+});
+
 test('normStageKind maps synonyms + defaults to assessment', () => {
   assert.equal(normStageKind('workup'), 'assessment');
   assert.equal(normStageKind('Management'), 'treatment');

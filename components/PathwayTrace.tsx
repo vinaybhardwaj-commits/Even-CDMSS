@@ -86,11 +86,13 @@ export default function PathwayTrace({
         </div>
         {skeleton.summary && <p className="mt-2 text-[13px] leading-relaxed text-slate-700">{skeleton.summary}</p>}
 
-        {skeleton.needsDdx && (
+        {(skeleton.needsDdx || skeleton.anchorNote) && (
           <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
             <GitBranch className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
             <div className="text-[12.5px] leading-relaxed text-amber-900">
-              <span className="font-medium">Diagnosis not established.</span> This is a management pathway — for the differential, work it up in DDx first.{' '}
+              {skeleton.anchorNote
+                ? <><span className="font-medium">Possible anchoring — read the syndrome, not the label.</span> {skeleton.anchorNote}{' '}</>
+                : <><span className="font-medium">Diagnosis not established.</span> This is a management pathway — for the differential, work it up in DDx first.{' '}</>}
               <a href="/ddx" className="inline-flex items-center gap-1 font-medium text-amber-800 underline hover:text-amber-900">
                 Open DDx <ArrowRightCircle className="h-3.5 w-3.5" />
               </a>

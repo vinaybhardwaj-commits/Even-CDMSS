@@ -86,7 +86,10 @@ export async function traceSkeleton(input: PathwayInput, deps: Partial<SkeletonD
       await logEvent(traceId, 'pathway_skeleton_result', null, {
         ok: !!skeleton,
         detectedStage: skeleton?.detectedStage,
+        workingDiagnosis: skeleton?.workingDiagnosis ?? null,
+        diagnosisCertainty: skeleton?.diagnosisCertainty,
         needsDdx: skeleton?.needsDdx,
+        anchorNote: skeleton?.anchorNote ?? null,
         stages: skeleton?.stages.map((s) => ({ id: s.id, kind: s.kind, flag: s.flag })) ?? [],
       });
       await finishTrace(traceId, skeleton ? 'success' : 'partial');
@@ -185,7 +188,8 @@ export async function enrichPathway(input: EnrichInput, deps: Partial<EnrichDeps
         const critique = parseCritique(critiqueRaw);
         if (traceId) await logEvent(traceId, 'pathway_enrich_critique', null, {
           severity: critique.severity, needs_revision: critique.needs_revision,
-          issues: critique.unsupported_evidence.length + critique.wrong_or_missing_citations.length + critique.misfiled_estimates.length + critique.missing_caveats.length,
+          issues: critique.unsupported_evidence.length + critique.wrong_or_missing_citations.length + critique.misfiled_estimates.length + critique.missing_caveats.length + critique.anchoring.length,
+          anchoring: critique.anchoring.length,
         });
         if (critique.needs_revision) {
           prog('revising', 'Revising to fix citations…');

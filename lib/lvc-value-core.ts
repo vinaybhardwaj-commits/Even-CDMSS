@@ -101,6 +101,7 @@ You are given NUMBERED EVIDENCE EXCERPTS [1], [2], … retrieved from a medical 
 
 Rules:
 - Be balanced and NON-DIRECTIVE. This informs shared decision-making; it is NOT a recommendation to withhold care and must never read as a denial-of-care justification.
+- Weigh PRE-TEST PROBABILITY for THIS patient, and guard against anchoring. If the proposed intervention is a test with low pre-test probability or low diagnostic yield here, or a low-specificity / low-utility test (e.g. the Widal test for typhoid), reflect that in net_value (lean low-value or context-dependent) and explain it in "summary". Do NOT anchor on an outside positive low-utility result — reason from the dominant clinical syndrome and base rates (e.g. a roommate cluster of acute watery diarrhoea favours common-source gastroenteritis over enteric fever).
 - CITE your sources: for each intervention, put in "citation_ids" the numbers [n] of the excerpts that actually support your evidence. Every point you place in "evidence" must be supported by a cited excerpt. If an excerpt doesn't support a claim, do not cite it.
 - Separate EVIDENCE-CITED facts (supported by the excerpts) from your own ESTIMATES. Put grounded points in "evidence" (with citations) and anything you are estimating, or asserting from general knowledge the excerpts don't cover, in "estimates". Every cost / long-term-care figure goes in "estimates", written as an estimate (e.g. "est. ~₹X (not validated)"). Never present an estimate as cited evidence.
 - If the excerpts do not support a dimension, rate it "unclear" and say so — do NOT manufacture evidence.
@@ -204,6 +205,8 @@ export interface ValueCritique {
   wrong_or_missing_citations: string[];
   misfiled_estimates: string[];
   missing_caveats: string[];
+  /** Anchoring / base-rate / low-pre-test-probability errors (optional; used by pathway + value). */
+  anchoring: string[];
   needs_revision: boolean;
   severity: 'none' | 'minor' | 'moderate' | 'major';
 }
@@ -220,9 +223,10 @@ export function parseCritique(text: string): ValueCritique {
   const obj = extractJsonObject(text);
   const o = (obj && typeof obj === 'object') ? obj as Record<string, unknown> : {};
   const arr = (v: unknown) => asStrArray(v, 10);
-  const ue = arr(o.unsupported_evidence), wc = arr(o.wrong_or_missing_citations), me = arr(o.misfiled_estimates), mc = arr(o.missing_caveats);
+  const ue = arr(o.unsupported_evidence), wc = arr(o.wrong_or_missing_citations), me = arr(o.misfiled_estimates), mc = arr(o.missing_caveats), an = arr(o.anchoring);
+  const total = ue.length + wc.length + me.length + mc.length + an.length;
   const sevRaw = String(o.severity ?? '').toLowerCase().trim();
-  const severity = (['none', 'minor', 'moderate', 'major'].includes(sevRaw) ? sevRaw : (ue.length + wc.length + me.length + mc.length > 0 ? 'minor' : 'none')) as ValueCritique['severity'];
-  const needs = typeof o.needs_revision === 'boolean' ? o.needs_revision : (ue.length + wc.length + me.length + mc.length > 0);
-  return { unsupported_evidence: ue, wrong_or_missing_citations: wc, misfiled_estimates: me, missing_caveats: mc, needs_revision: needs, severity };
+  const severity = (['none', 'minor', 'moderate', 'major'].includes(sevRaw) ? sevRaw : (total > 0 ? 'minor' : 'none')) as ValueCritique['severity'];
+  const needs = typeof o.needs_revision === 'boolean' ? o.needs_revision : (total > 0);
+  return { unsupported_evidence: ue, wrong_or_missing_citations: wc, misfiled_estimates: me, missing_caveats: mc, anchoring: an, needs_revision: needs, severity };
 }

@@ -65,6 +65,8 @@ export interface PathwaySkeleton {
   diagnosisCertainty: Certainty;
   /** True when the diagnosis is not established → hand off to DDx rather than guess. */
   needsDdx: boolean;
+  /** Anchoring / base-rate warning + the more likely syndrome, when the stated dx is weak. */
+  anchorNote?: string | null;
   /** Prefilled scenario for the DDx deep-link (defaults to the raw scenario in the route). */
   ddxQuery?: string;
   summary: string;
@@ -185,24 +187,31 @@ export function orderAndIdStages(raw: { kind: StageKind; title: string; action: 
 // SKELETON pass (Flash) — prompt + parse
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const SKELETON_SYSTEM = `You are a clinical pathway planner. Given a patient scenario (which may be an undifferentiated presentation, a working/confirmed diagnosis, or a specific proposed order), do TWO things FAST:
+export const SKELETON_SYSTEM = `You are a clinical pathway planner. Given a patient scenario (which may be an undifferentiated presentation, a working/confirmed diagnosis, or a specific proposed order), do TWO things FAST.
+
+FIRST — reason from the SYNDROME, not the label. Guard against anchoring bias:
+- Identify the dominant clinical syndrome from the PRESENTATION itself (symptoms, timeframe, epidemiology) BEFORE accepting any diagnosis that is merely stated or implied.
+- Weigh PRE-TEST PROBABILITY and base rates. Example: a household/roommate cluster of acute watery diarrhoea over a couple of days favours a common-source viral or food-borne gastroenteritis over an uncommon systemic diagnosis.
+- Treat OUTSIDE lab results — especially low-specificity / low-utility tests (e.g. the Widal test for typhoid) — with explicit skepticism. A single positive low-utility test does NOT establish a diagnosis and must NOT anchor the pathway.
+- If the dominant syndrome conflicts with a stated/implied diagnosis, or the diagnosis rests mainly on a low-utility test, REFRAME the working diagnosis to the syndrome, set diagnosis_certainty "low", set needs_ddx true, and name the anchoring risk + the more likely syndrome in "anchor_note".
 
 1) Classify the input:
-   - "detected_stage": "presentation" (undifferentiated symptoms, no clear diagnosis) | "diagnosis" (a diagnosis is given/strongly implied) | "order" (a specific test/treatment is proposed) | "mixed".
-   - "working_diagnosis": the most likely single diagnosis you are tracing management for, or null if genuinely undifferentiated.
-   - "diagnosis_certainty": "low" | "moderate" | "high".
-   - "needs_ddx": true when the diagnosis is NOT established (undifferentiated presentation / low certainty). You are a MANAGEMENT pathway tool — when the diagnosis is unclear, set needs_ddx true and DO NOT invent a differential; the user will be handed off to the differential-diagnosis tool.
+   - "detected_stage": "presentation" (undifferentiated symptoms) | "diagnosis" (a diagnosis is established or strongly supported by the presentation) | "order" (a specific test/treatment is proposed) | "mixed".
+   - "working_diagnosis": the single diagnosis (or syndrome, if you reframed) you are tracing management for, or null if genuinely undifferentiated.
+   - "diagnosis_certainty": "low" | "moderate" | "high". Be honest — a diagnosis resting on one low-utility test, or contradicted by the dominant syndrome, is "low".
+   - "needs_ddx": true whenever the diagnosis is NOT established — undifferentiated presentation, low certainty, OR anchored on a weak/low-utility result. You are a MANAGEMENT pathway tool — when the diagnosis is unclear, set needs_ddx true and DO NOT invent a differential; the user is handed off to the differential-diagnosis tool.
+   - "anchor_note": one line naming the anchoring / base-rate risk and the more likely syndrome, or null if there is no anchoring concern.
 
 2) Produce the recommended care-path as an ORDERED list of 3–7 stages spanning the relevant part of: triage → assessment → diagnosis → treatment → disposition → followup. Each stage:
    - "kind": one of triage | assessment | diagnosis | treatment | disposition | followup
    - "title": a short label (≤ 8 words)
    - "action": one line — what to do at this step
-   - "flag": a value/appropriateness lens for this step — essential | routine | high-value | context-dependent | low-value | caution | followup. Use "low-value" for a step that is commonly done but low-value / worth questioning for this patient; "essential" for must-not-miss safety steps; "high-value" for high-benefit low-harm steps.
+   - "flag": a value/appropriateness lens for this step — essential | routine | high-value | context-dependent | low-value | caution | followup. Use "low-value" for a step that is commonly done but low-value / worth questioning for this patient — INCLUDING a confirmatory test with low pre-test probability or low diagnostic yield (do NOT flag such a test "high-value"). "essential" for must-not-miss safety steps; "high-value" for high-benefit low-harm steps.
 
 Be concise — this is the fast skeleton; detail comes later. Advisory and NON-DIRECTIVE: never phrase a step as blocking or denying care.
 
 Return ONLY JSON, no prose:
-{"detected_stage":"…","working_diagnosis":"… or null","diagnosis_certainty":"low|moderate|high","needs_ddx":true|false,"summary":"<one-line path summary>","stages":[{"kind":"…","title":"…","action":"…","flag":"…"}]}`;
+{"detected_stage":"…","working_diagnosis":"… or null","diagnosis_certainty":"low|moderate|high","needs_ddx":true|false,"anchor_note":"… or null","summary":"<one-line path summary>","stages":[{"kind":"…","title":"…","action":"…","flag":"…"}]}`;
 
 export function buildSkeletonUser(ctx: { scenario: string; proposedActions?: string[]; patient?: { age?: number; sex?: string } }): string {
   const pt = ctx.patient && (ctx.patient.age != null || ctx.patient.sex)
@@ -235,15 +244,21 @@ export function parseSkeleton(text: string): PathwaySkeleton | null {
   const workingDiagnosis = asStrOrNull(o.working_diagnosis ?? o.workingDiagnosis);
   const certainty = normCertainty(o.diagnosis_certainty ?? o.diagnosisCertainty);
   const detectedStage = normDetected(o.detected_stage ?? o.detectedStage);
-  // Respect the model, but force a DDx hand-off when it's clearly undifferentiated.
+  const anchorNote = asStrOrNull(o.anchor_note ?? o.anchorNote);
+  // Respect the model, but force a DDx hand-off whenever the diagnosis is NOT established:
+  // any low-certainty dx (incl. one anchored on a low-utility lab), an undifferentiated
+  // presentation, or an explicit anchoring warning. This de-anchors confirm-the-label pathways.
   const needsDdx = asBool(o.needs_ddx ?? o.needsDdx)
-    || (detectedStage === 'presentation' && certainty === 'low' && !workingDiagnosis);
+    || certainty === 'low'
+    || !!anchorNote
+    || (detectedStage === 'presentation' && !workingDiagnosis);
 
   return {
     detectedStage,
     workingDiagnosis,
     diagnosisCertainty: certainty,
     needsDdx,
+    anchorNote,
     ddxQuery: asStr(o.ddx_query ?? o.ddxQuery) || undefined,
     summary: asStr(o.summary),
     stages: orderAndIdStages(cleaned),
@@ -269,6 +284,7 @@ For each stage return:
 
 Rules:
 - Balanced and NON-DIRECTIVE — this informs decision-making; it is NOT a denial-of-care justification and must never read as blocking an order.
+- Weigh PRE-TEST PROBABILITY. If a step orders a confirmatory/diagnostic test whose pre-test probability or diagnostic yield is LOW for THIS presentation — or a test of poor specificity (e.g. the Widal test) — flag it "low-value" or "caution" (NOT "high-value") and say why in "detail". Do not let an outside low-utility result anchor the plan; reason from the dominant syndrome.
 - Separate EVIDENCE (from excerpts, with citation_ids) from ESTIMATES (your own). Do not invent citations or cite excerpts that don't support the claim.
 - Do NOT output cost figures in "estimates" for an "order" — the system attaches the real EHRC tariff deterministically.
 
@@ -371,16 +387,16 @@ export function mergeStages(stages: SkeletonStage[], enrichment: PathwayEnrichme
 
 export const ENRICH_CRITIQUE_SYSTEM = `You are a clinical citation + accuracy auditor reviewing an enriched care-path produced by an AI tool. You are given the scenario, the NUMBERED evidence excerpts [1..n], and the draft enrichment JSON (nodes[]).
 
-Find problems: node "evidence" points NOT actually supported by their citation_ids; citation_ids that don't match the claim; figures/general-knowledge assertions mis-filed as evidence instead of estimates; clinically important caveats/red-flags a physician would expect that are missing.
+Find problems: node "evidence" points NOT actually supported by their citation_ids; citation_ids that don't match the claim; figures/general-knowledge assertions mis-filed as evidence instead of estimates; clinically important caveats/red-flags a physician would expect that are missing; AND anchoring / base-rate errors — the path anchors on a stated or implied diagnosis the presentation does not support, or rewards a low-yield / low-specificity confirmatory test against a low pre-test probability (flag these under "anchoring").
 
 Output ONLY JSON:
-{"unsupported_evidence":["…"],"wrong_or_missing_citations":["…"],"misfiled_estimates":["…"],"missing_caveats":["…"],"needs_revision":true|false,"severity":"none|minor|moderate|major"}
+{"unsupported_evidence":["…"],"wrong_or_missing_citations":["…"],"misfiled_estimates":["…"],"missing_caveats":["…"],"anchoring":["…"],"needs_revision":true|false,"severity":"none|minor|moderate|major"}
 
 Empty arrays are fine. needs_revision=true if any array is non-empty.`;
 
 export const ENRICH_REVISE_SYSTEM = `You are revising your own enriched care-path based on a citation auditor's critique. You receive the scenario, the NUMBERED excerpts [1..n], your earlier draft JSON (nodes[]), and the critique JSON.
 
-Rewrite to fix every issue: move unsupported claims out of "evidence" (into "estimates" if still worth saying, else drop), correct each node's citation_ids so it cites only excerpts that truly support it, add missing caveats. Keep the EXACT same JSON schema and the SAME node ids as the draft. Output ONLY the corrected JSON, no prose.`;
+Rewrite to fix every issue: move unsupported claims out of "evidence" (into "estimates" if still worth saying, else drop), correct each node's citation_ids so it cites only excerpts that truly support it, add missing caveats. If the auditor flagged ANCHORING / base-rate problems, DOWNGRADE the flag of the anchored or low-yield step (e.g. high-value → low-value or caution) and rewrite its "detail" to reflect the dominant syndrome and the low pre-test probability. Keep the EXACT same JSON schema and the SAME node ids as the draft. Output ONLY the corrected JSON, no prose.`;
 
 export function buildEnrichCritiqueUser(scenario: string, citedContext: string, draftJson: string): string {
   return `Scenario:\n${scenario.trim()}\n\nNUMBERED EVIDENCE EXCERPTS:\n${citedContext.trim() || '(none)'}\n\nDraft enrichment JSON to audit:\n${draftJson}\n\nOutput the JSON critique now.`;
