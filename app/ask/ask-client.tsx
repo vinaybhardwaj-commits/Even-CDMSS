@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useMemo, useCallback, useEffect } from 'react';
-import { Mic, MicOff, Send, ChevronDown, ChevronUp, BookOpen, Loader2, Microscope } from 'lucide-react';
+import { Mic, MicOff, Send, ChevronDown, ChevronUp, BookOpen, Loader2, Microscope, RefreshCw, SlidersHorizontal } from 'lucide-react';
 import { consumeNdjson } from '@/lib/ndjson-client';
 import TracePanel, { TraceEvent } from '@/components/TracePanel';
 import { MarkdownAnswer } from '@/components/MarkdownAnswer';
@@ -49,6 +49,12 @@ function renderWithCitations(text: string, citations: Citation[], onCite: (n: nu
   return parts;
 }
 
+// Unified Clarity toggle-pill style (replaces the old rainbow per-toggle colors).
+function togCls(active: boolean): string {
+  return 'inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition disabled:opacity-50 disabled:cursor-not-allowed ' +
+    (active ? 'border-brand bg-brand-faint text-brand' : 'border-slate-200 bg-white text-slate-500 hover:border-brand/60 hover:text-slate-700');
+}
+
 export default function AskClient() {
   const [question, setQuestion] = useState('');
   const [investigations, setInvestigations] = useState('');
@@ -93,6 +99,7 @@ export default function AskClient() {
   const [useReranker, setUseReranker] = useState(true);
   const [useSourceWeights, setUseSourceWeights] = useState(true);
   const [critique, setCritique] = useState<{ severity: string; issue_count: number; details: Record<string, unknown> } | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
 
   function toggleVoice() {
     if (voiceActive) { recRef.current?.stop(); return; }
@@ -220,68 +227,60 @@ export default function AskClient() {
         </div>
       </form>
 
-      <div className="mt-3 flex flex-wrap items-center gap-2">
+      {/* Example questions */}
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-400">Try</span>
         {chips.map((ex) => (
-          <button key={ex} onClick={() => submit(ex)} disabled={loading} className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-600 hover:border-brand hover:text-brand disabled:opacity-40">{ex}</button>
+          <button key={ex} onClick={() => submit(ex)} disabled={loading} className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-600 transition hover:border-brand hover:text-brand disabled:opacity-40">{ex}</button>
         ))}
         <button onClick={loadChips} disabled={loading} title="Show 4 different example questions"
-          className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-500 hover:border-brand hover:text-brand disabled:opacity-40"
-          aria-label="Shuffle example questions">↻</button>
-        <span className="text-slate-300">|</span>
-        <span className="text-[11px] uppercase tracking-wider text-slate-400">Sources</span>
-        <span className="inline-flex items-center gap-1 rounded-full border border-brand bg-brand-faint px-2.5 py-1 text-[11px] font-medium text-brand">Even Hospital Database</span>
-        <button
-          type="button"
-          onClick={() => setIncludePlos((v) => !v)}
-          disabled={loading}
-          aria-pressed={includePlos}
-          title={loading ? 'Locked while query is running' : undefined}
-          className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition disabled:opacity-50 disabled:cursor-not-allowed ${includePlos ? 'border-amber-500 bg-amber-50 text-amber-700' : 'border-slate-200 bg-white text-slate-500 hover:border-amber-400'}`}
-        >
-          {includePlos ? '✓ ' : ''}PLOS ONE (last 5y, Medicine)
+          className="flex items-center justify-center rounded-full border border-slate-200 bg-white p-1.5 text-slate-400 transition hover:border-brand hover:text-brand disabled:opacity-40"
+          aria-label="Shuffle example questions"><RefreshCw className="h-3.5 w-3.5" /></button>
+      </div>
+
+      {/* Sources & pipeline — collapsed by default; summary shows current state */}
+      <div className="mt-3 overflow-hidden rounded-xl border border-slate-200 bg-white">
+        <button type="button" onClick={() => setShowSettings((v) => !v)} className="flex w-full items-center gap-2 px-3 py-2 text-left">
+          <SlidersHorizontal className="h-4 w-4 shrink-0 text-slate-400" />
+          <span className="text-[13px] font-medium text-slate-700">Sources &amp; pipeline</span>
+          {!showSettings && (
+            <span className="ml-1 hidden truncate text-[11.5px] text-slate-400 sm:inline">
+              Even DB{includePlos ? ' + PLOS' : ''} · {[multiQuery, selfCritique, useReranker, useSourceWeights].filter(Boolean).length}/4 pipeline steps on
+            </span>
+          )}
+          {showSettings ? <ChevronUp className="ml-auto h-4 w-4 shrink-0 text-slate-400" /> : <ChevronDown className="ml-auto h-4 w-4 shrink-0 text-slate-400" />}
         </button>
-        <span className="text-slate-300">|</span>
-        <span className="text-[11px] uppercase tracking-wider text-slate-400">Pipeline</span>
-        <button
-          type="button"
-          onClick={() => setMultiQuery((v) => !v)}
-          disabled={loading}
-          aria-pressed={multiQuery}
-          title={loading ? 'Locked while query is running' : 'Generate 4 query variants for richer recall'}
-          className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition disabled:opacity-50 disabled:cursor-not-allowed ${multiQuery ? 'border-violet-500 bg-violet-50 text-violet-700' : 'border-slate-200 bg-white text-slate-500 hover:border-violet-400'}`}
-        >
-          {multiQuery ? '✓ ' : ''}Multi-query
-        </button>
-        <button
-          type="button"
-          onClick={() => setSelfCritique((v) => !v)}
-          disabled={loading}
-          aria-pressed={selfCritique}
-          title={loading ? 'Locked while query is running' : 'Audit + revise the draft before returning'}
-          className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition disabled:opacity-50 disabled:cursor-not-allowed ${selfCritique ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-white text-slate-500 hover:border-emerald-400'}`}
-        >
-          {selfCritique ? '✓ ' : ''}Self-critique
-        </button>
-        <button
-          type="button"
-          onClick={() => setUseReranker((v) => !v)}
-          disabled={loading}
-          aria-pressed={useReranker}
-          title={loading ? 'Locked while query is running' : 'Cross-encoder rerank pool→top-K (better top results)'}
-          className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition disabled:opacity-50 disabled:cursor-not-allowed ${useReranker ? 'border-cyan-500 bg-cyan-50 text-cyan-700' : 'border-slate-200 bg-white text-slate-500 hover:border-cyan-400'}`}
-        >
-          {useReranker ? '✓ ' : ''}Reranker
-        </button>
-        <button
-          type="button"
-          onClick={() => setUseSourceWeights((v) => !v)}
-          disabled={loading}
-          aria-pressed={useSourceWeights}
-          title={loading ? 'Locked while query is running' : 'Weight chunks by book tier + chunk type + length'}
-          className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition disabled:opacity-50 disabled:cursor-not-allowed ${useSourceWeights ? 'border-rose-500 bg-rose-50 text-rose-700' : 'border-slate-200 bg-white text-slate-500 hover:border-rose-400'}`}
-        >
-          {useSourceWeights ? '✓ ' : ''}Source weights
-        </button>
+        {showSettings && (
+          <div className="space-y-3 border-t border-slate-100 px-3 py-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="w-16 shrink-0 text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-400">Sources</span>
+              <span className="inline-flex items-center gap-1 rounded-full border border-brand bg-brand-faint px-2.5 py-1 text-[11px] font-medium text-brand">Even Hospital Database</span>
+              <button type="button" onClick={() => setIncludePlos((v) => !v)} disabled={loading} aria-pressed={includePlos}
+                title={loading ? 'Locked while query is running' : 'Include recent PLOS ONE primary research'} className={togCls(includePlos)}>
+                {includePlos ? '✓ ' : ''}PLOS ONE (last 5y, Medicine)
+              </button>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="w-16 shrink-0 text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-400">Pipeline</span>
+              <button type="button" onClick={() => setMultiQuery((v) => !v)} disabled={loading} aria-pressed={multiQuery}
+                title={loading ? 'Locked while query is running' : 'Generate 4 query variants for richer recall'} className={togCls(multiQuery)}>
+                {multiQuery ? '✓ ' : ''}Multi-query
+              </button>
+              <button type="button" onClick={() => setSelfCritique((v) => !v)} disabled={loading} aria-pressed={selfCritique}
+                title={loading ? 'Locked while query is running' : 'Audit + revise the draft before returning'} className={togCls(selfCritique)}>
+                {selfCritique ? '✓ ' : ''}Self-critique
+              </button>
+              <button type="button" onClick={() => setUseReranker((v) => !v)} disabled={loading} aria-pressed={useReranker}
+                title={loading ? 'Locked while query is running' : 'Cross-encoder rerank pool→top-K (better top results)'} className={togCls(useReranker)}>
+                {useReranker ? '✓ ' : ''}Reranker
+              </button>
+              <button type="button" onClick={() => setUseSourceWeights((v) => !v)} disabled={loading} aria-pressed={useSourceWeights}
+                title={loading ? 'Locked while query is running' : 'Weight chunks by book tier + chunk type + length'} className={togCls(useSourceWeights)}>
+                {useSourceWeights ? '✓ ' : ''}Source weights
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {(trace.length > 0 || loading) && <div className="mt-5"><TracePanel events={trace} totalMs={totalMs} traceId={traceId} surface="ask" askChips={{ useMultiQuery: multiQuery, selfCritique, useReranker, useSourceWeights, includePlos }} /></div>}

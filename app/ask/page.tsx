@@ -1,4 +1,5 @@
 import HelpCard from '@/components/HelpCard';
+import PageHeader from '@/components/PageHeader';
 import AskClient from './ask-client';
 
 export const metadata = { title: 'Ask' };
@@ -6,10 +7,10 @@ export const metadata = { title: 'Ask' };
 export default function AskPage() {
   return (
     <div>
-      <h1 className="text-2xl font-semibold text-slate-900 sm:text-3xl">Ask</h1>
-      <p className="mt-1 text-sm text-slate-500">
-        Free-form clinical questions, answered from the Even Hospital Database with verifiable inline citations.
-      </p>
+      <PageHeader
+        title="Ask"
+        subtitle="Free-form clinical questions, answered from the evidence base with a verifiable inline citation behind every claim."
+      />
       <HelpCard
         storageKey="ask"
         title="About this clinical decision-support tool"
