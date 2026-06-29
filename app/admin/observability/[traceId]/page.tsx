@@ -97,7 +97,7 @@ export default async function TraceDetail({ params }: { params: Promise<{ traceI
         <Cell label="Self-critique" value={cp ? String(cp.severity ?? 'run') : '—'} sub={cp && cp.issue_count != null ? `${cp.issue_count} issue${cp.issue_count === 1 ? '' : 's'}` : undefined} valueClass={cp && cp.severity && cp.severity !== 'none' ? 'text-amber-700' : undefined} />
         {isPhi
           ? <Cell label="PHI" value="de-identified" valueClass="text-teal-700" sub="name/UHID stripped" />
-          : <Cell label={tokens > 0 ? 'Tokens' : 'Sources'} value={tokens > 0 ? tokens.toLocaleString() : String(sourceCount || '—')} />}
+          : <Cell label={tokens > 0 ? 'Tokens' : 'Retrieved'} value={tokens > 0 ? tokens.toLocaleString() : String(sourceCount || '—')} sub={tokens > 0 ? undefined : 'candidate pool'} />}
       </div>
       {hadError && <div className="mt-2 text-[11px] text-red-600">Pipeline reported an error — see the timeline below.</div>}
 

@@ -37,7 +37,20 @@ export async function POST(req: NextRequest) {
   const enrichment = o.enrichment as { nodes?: unknown[] } | undefined;
   const report = o.report as { findings?: unknown[]; completeness?: { coverage?: number }; sources?: unknown[] } | undefined;
 
-  const nSources = arr(o.valueSources).length || arr(o.sources).length || arr(report?.sources).length || 0;
+  // "Cited" = the distinct sources the output actually referenced (varies by case),
+  // NOT the fixed retrieval pool (always topK=8). Union of citation_ids across the
+  // interventions / pathway nodes / audit findings.
+  const citedIds = new Set<number>();
+  const collectCites = (items: unknown[]) => {
+    for (const it of items) {
+      const c = (it as { citation_ids?: unknown } | null)?.citation_ids;
+      if (Array.isArray(c)) for (const n of c) if (typeof n === 'number') citedIds.add(n);
+    }
+  };
+  collectCites(arr(valueAnalysis?.interventions));
+  collectCites(arr(enrichment?.nodes));
+  collectCites(arr(report?.findings));
+  const nSources = citedIds.size;
   const nFindings = arr(valueAnalysis?.interventions).length || arr(enrichment?.nodes).length || arr(report?.findings).length || 0;
 
   let summary = '';

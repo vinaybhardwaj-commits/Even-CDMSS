@@ -50,7 +50,7 @@ export default function RunsBrowser({ runs }: { runs: RunRow[] }) {
               <th className="px-3 py-2 font-medium">Mode</th>
               <th className="px-3 py-2 font-medium">Summary</th>
               <th className="px-3 py-2 text-center font-medium">Findings</th>
-              <th className="px-3 py-2 text-center font-medium">Sources</th>
+              <th className="px-3 py-2 text-center font-medium" title="Distinct sources actually cited by this run (not the retrieval pool)">Cited</th>
               <th className="px-3 py-2"></th>
             </tr>
           </thead>
