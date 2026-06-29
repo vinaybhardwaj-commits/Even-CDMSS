@@ -89,6 +89,24 @@ export async function fetchOpdNoteByUid(uid: string): Promise<Record<string, unk
   return rows[0] ?? null;
 }
 
+/** Map doctor_uid → display name (db13 `doctors.name_with_prefix`). Names are staff data,
+ *  not PHI; used to label the OPD Audit per-doctor view. Best-effort; missing uids omitted. */
+export async function fetchDoctorNames(uids: string[]): Promise<Record<string, string>> {
+  const ex = Array.from(new Set((uids || []).filter(isUid)));
+  if (!ex.length) return {};
+  const inList = ex.map((u) => `'${u}'`).join(', ');
+  const rows = await metabaseQuery(
+    `SELECT uid, name_with_prefix FROM doctors WHERE uid IN (${inList})`,
+  );
+  const map: Record<string, string> = {};
+  for (const r of rows) {
+    const u = String(r.uid || '');
+    const nm = r.name_with_prefix ? String(r.name_with_prefix).trim() : '';
+    if (u && nm) map[u] = nm;
+  }
+  return map;
+}
+
 /** YYYY-MM-DD for the IST calendar day before `now` (the default daily-audit target). */
 export function istYesterday(now: Date = new Date()): string {
   const ist = new Date(now.getTime() + 5.5 * 3600_000);

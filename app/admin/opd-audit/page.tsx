@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { sql } from '@/lib/db';
 import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
+import { fetchDoctorNames } from '@/lib/metabase';
 import { bandFor } from '@/lib/opd-note-score-core';
 import {
   bandColor, scoreColor, istDateRange, parseJson, doctorLabel, fmtIstTime, fmtIstDateLong,
@@ -100,6 +101,11 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
        FROM opd_note_audits WHERE ${WIN}
        ORDER BY note_quality_index ASC, n_low_value DESC LIMIT 12`, winParams),
   ]);
+
+  // Doctor names (db13 `doctors`) — render-time join; staff data, not PHI. Best-effort.
+  const docUids = Array.from(new Set(([...docsR.map((d) => d.doctor_uid), ...reviewR.map((r) => r.doctor_uid)].filter(Boolean)) as string[]));
+  const names = await fetchDoctorNames(docUids).catch(() => ({} as Record<string, string>));
+  const docName = (uid: string | null): string => (uid && names[uid]) || doctorLabel(uid);
 
   const k = kpiR[0] || {};
   const total = n(k.total);
@@ -212,7 +218,7 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
                   <tbody>
                     {docsR.map((d) => (
                       <tr key={d.doctor_uid} className="border-t border-slate-50">
-                        <td className="px-3 py-1.5 text-slate-700">{doctorLabel(d.doctor_uid)}</td>
+                        <td className="px-3 py-1.5 text-slate-700">{docName(d.doctor_uid)}</td>
                         <td className="px-2 py-1.5 text-right text-slate-500">{n(d.nnotes)}</td>
                         <td className="px-2 py-1.5 text-right font-medium" style={{ color: scoreColor(n(d.idx)) }}>{n(d.idx)}</td>
                         <td className="px-3 py-1.5 text-right text-slate-500">{n(d.low_value)}%</td>
@@ -228,7 +234,7 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
                 {reviewR.map((r) => (
                   <Link key={r.id} href={`/admin/opd-audit/${r.id}`} className="flex items-center gap-2 border-b border-slate-50 px-3 py-2 text-[11.5px] hover:bg-slate-50">
                     <span className="rounded px-1.5 py-0.5 text-[10px] font-medium text-white" style={{ background: bandColor(r.band) }}>{r.band}</span>
-                    <span className="flex-1 truncate text-slate-700">{fmtIstTime(r.note_date)} · {doctorLabel(r.doctor_uid)} · {topIssue(r)}</span>
+                    <span className="flex-1 truncate text-slate-700">{fmtIstTime(r.note_date)} · {docName(r.doctor_uid)} · {topIssue(r)}</span>
                     <span className="text-slate-300">›</span>
                   </Link>
                 ))}

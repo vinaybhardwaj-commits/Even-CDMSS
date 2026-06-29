@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { sql } from '@/lib/db';
 import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
+import { fetchDoctorNames } from '@/lib/metabase';
 import {
   bandColor, scoreColor, parseJson, doctorLabel, fmtIstTime, DOMAIN_ROWS, PDQI9_LABEL,
 } from '@/lib/opd-audit-ui';
@@ -57,6 +58,9 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
   const findings = parseJson<Finding[]>(r.findings, []);
   const pdqi = parseJson<Pdqi[]>(r.pdqi9, []);
   const suggestions = parseJson<Sugg[]>(r.suggestions, []).sort((a, b) => a.priority - b.priority);
+  const docUid = r.doctor_uid ? String(r.doctor_uid) : null;
+  const docNames = docUid ? await fetchDoctorNames([docUid]).catch(() => ({} as Record<string, string>)) : {};
+  const doctor = (docUid && docNames[docUid]) || doctorLabel(docUid);
   const lowVal = findings.find((f) => f.verdict === 'low-value');
   const bottom = lowVal
     ? `${lowVal.subject} — ${lowVal.rationale}`
@@ -76,7 +80,7 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
             <span className="text-[8px] text-slate-400">/100</span>
           </div>
           <div className="min-w-0 flex-1">
-            <div className="text-[14px] font-medium" style={{ color: bandColor(band) }}>Band {band} · {fmtIstTime(String(r.note_date || ''))} · {doctorLabel(r.doctor_uid as string | null)}</div>
+            <div className="text-[14px] font-medium" style={{ color: bandColor(band) }}>Band {band} · {fmtIstTime(String(r.note_date || ''))} · {doctor}</div>
             <div className="mt-0.5 text-[11.5px] leading-snug text-slate-600">{bottom}</div>
           </div>
           <div className="flex shrink-0 flex-col items-end gap-1 text-[10px] text-slate-400">
