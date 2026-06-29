@@ -7,16 +7,19 @@ import { auditOpdNote } from '@/lib/opd-note-audit';
 import { OPD_ENGINE_VERSION } from '@/lib/opd-note-audit-core';
 import { countOpdNotesForDay, fetchOpdNotesForDay, istYesterday } from '@/lib/metabase';
 import { saveOpdAudit, auditedUidsForDay, auditedCountForDay, earliestAuditedDay } from '@/lib/opd-audit-store';
+import { isAdminUnlocked } from '@/lib/admin-cookie';
 
-// Execution guard (spends LLM compute): Vercel Cron (un-spoofable x-vercel-cron) or a manual
-// trigger carrying Bearer CRON_SECRET / ?secret=CRON_SECRET. Not a view gate.
-function authed(req: NextRequest): boolean {
+// Execution guard (spends LLM compute): Vercel Cron (un-spoofable x-vercel-cron), a manual
+// trigger carrying Bearer CRON_SECRET / ?secret=CRON_SECRET, OR a logged-in admin session
+// (so the dashboard's one-click "Re-audit" button works without handling any secret).
+async function authed(req: NextRequest): Promise<boolean> {
   const isCron = req.headers.get('x-vercel-cron') !== null;
   const auth = req.headers.get('authorization') || '';
   const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
   const secret = req.nextUrl.searchParams.get('secret');
   const secretOk = !!process.env.CRON_SECRET && !!secret && secret === process.env.CRON_SECRET;
-  return isCron || bearerOk || secretOk;
+  if (isCron || bearerOk || secretOk) return true;
+  try { return await isAdminUnlocked(); } catch { return false; }
 }
 
 async function mapLimit<T, R>(items: T[], limit: number, fn: (it: T) => Promise<R>): Promise<R[]> {
@@ -68,7 +71,7 @@ async function processDay(day: string, max: number, conc: number) {
  *  ?max (12→ default 15, ≤30) · ?conc (default 5, ≤8) · ?lookback (default OPD_AUDIT_LOOKBACK or 4, ≤14).
  */
 export async function GET(req: NextRequest) {
-  if (!authed(req)) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  if (!(await authed(req))) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   const p = req.nextUrl.searchParams;
   const max = Math.max(1, Math.min(30, Number(p.get('max') || 15)));
   const conc = Math.max(1, Math.min(8, Number(p.get('conc') || 5)));

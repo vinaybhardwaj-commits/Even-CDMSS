@@ -3,7 +3,9 @@ import { sql } from '@/lib/db';
 import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
 import { fetchDoctorNames } from '@/lib/metabase';
 import { bandFor } from '@/lib/opd-note-score-core';
+import { OPD_ENGINE_VERSION } from '@/lib/opd-note-audit-core';
 import { catsForRow, CAT_LABEL } from '@/lib/opd-audit-cats';
+import ReauditControl from './reaudit-control';
 import {
   bandColor, scoreColor, istDateRange, parseJson, doctorLabel, fmtIstTime, fmtIstDateLong, PDQI9_LABEL,
   type Period,
@@ -80,12 +82,12 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
 
   const period: Period = sp.period === 'week' ? 'week' : sp.period === 'month' ? 'month' : 'day';
   const latest = await rowsOf<{ d: string }>(
-    `SELECT to_char(max((note_date AT TIME ZONE 'Asia/Kolkata')::date),'YYYY-MM-DD') d FROM opd_note_audits WHERE app_source = $1`, [APP]);
+    `SELECT to_char(max((note_date AT TIME ZONE 'Asia/Kolkata')::date),'YYYY-MM-DD') d FROM opd_note_audits WHERE app_source = $1 AND engine_version = '${OPD_ENGINE_VERSION}'`, [APP]);
   const latestDay = latest[0]?.d || new Date().toISOString().slice(0, 10);
   const day = (sp.day && /^\d{4}-\d{2}-\d{2}$/.test(sp.day)) ? sp.day : latestDay;
   const { from, to } = istDateRange(day, period);
   const winParams = [APP, from, to];
-  const WIN = `app_source = $1 AND (note_date AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $2 AND $3`;
+  const WIN = `app_source = $1 AND engine_version = '${OPD_ENGINE_VERSION}' AND (note_date AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $2 AND $3`;
 
   const [kpiR, bandsR, trendR, docsR, reviewR, allR] = await Promise.all([
     rowsOf<Record<string, unknown>>(
@@ -106,7 +108,7 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
               round(avg(score_documentation))::int d_doc, round(avg(score_note_quality))::int d_nq,
               round(avg(score_appropriateness))::int d_appr, round(avg(score_prescribing_safety))::int d_presc,
               round(avg(score_patient_centred))::int d_pc
-       FROM opd_note_audits WHERE app_source = $1 AND (note_date AT TIME ZONE 'Asia/Kolkata')::date > $2::date - 14 AND (note_date AT TIME ZONE 'Asia/Kolkata')::date <= $2::date
+       FROM opd_note_audits WHERE app_source = $1 AND engine_version = '${OPD_ENGINE_VERSION}' AND (note_date AT TIME ZONE 'Asia/Kolkata')::date > $2::date - 14 AND (note_date AT TIME ZONE 'Asia/Kolkata')::date <= $2::date
        GROUP BY 1 ORDER BY 1`, [APP, to]),
     rowsOf<DocRow>(
       `SELECT doctor_uid, count(*)::int nnotes, round(avg(note_quality_index))::int idx,
@@ -254,6 +256,7 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
             <Link href={`/admin/opd-audit?day=${addDays(day, 1)}&period=${period}`} className="px-1 hover:text-brand">›</Link>
           </span>
           {day !== latestDay && <Link href={`/admin/opd-audit?period=${period}`} className="text-xs text-brand hover:underline">latest</Link>}
+          {period === 'day' && <ReauditControl day={day} />}
           <form method="POST" action="/api/admin/unlock?action=logout"><button className="whitespace-nowrap text-xs text-slate-400 hover:text-brand">Lock</button></form>
         </div>
       </div>
