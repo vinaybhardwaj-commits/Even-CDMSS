@@ -118,6 +118,29 @@ function planAdvice(v: unknown): string[] {
   return out;
 }
 
+// ── flattened pipeline (dpipe_prescription_pipeline) readers — clean PRIMARY content ─────
+// presenting_complaint is plain text (complaint + HOPI narrative); diagnosis carries readable
+// names + icd codes; plan_of_management is the advice. Used first, with the nested/top-level
+// source fields as fallback (so the ~11% of notes the pipeline leaves empty don't regress).
+function dpipeText(v: unknown): string[] { const s = str(v); return s ? [s] : []; }
+function dpipeDx(v: unknown): { names: string[]; codes: string[] } {
+  const names: string[] = []; const codes: string[] = [];
+  for (const it of asArr(v)) {
+    const o = (it && typeof it === 'object' ? it : {}) as Record<string, unknown>;
+    const nm = strOrNull(o.diagnosis); if (nm) names.push(nm);
+    const code = strOrNull(o.icd_code); if (code) codes.push(code);
+  }
+  return { names: uniq(names), codes: uniq(codes) };
+}
+function dpipePlan(v: unknown): string[] {
+  const out: string[] = [];
+  for (const it of asArr(v)) { const o = (it && typeof it === 'object' ? it : {}) as Record<string, unknown>; out.push(...htmlToLines(o.management_plan)); }
+  return out;
+}
+function dpipeInvestigations(v: unknown): string[] {
+  return asArr(v).map((it) => { const o = (it && typeof it === 'object' ? it : {}) as Record<string, unknown>; return strOrNull(o.name) || ''; }).filter(Boolean);
+}
+
 function medsFrom(v: unknown): OpdMed[] {
   return asArr(v).map((it) => {
     const o = (it && typeof it === 'object' ? it : {}) as Record<string, unknown>;
@@ -151,15 +174,24 @@ function codesFrom(v: unknown): string[] {
 /** Map a raw prescriptions row → { case (de-identified), keys (for join-back) }. */
 export function rowToOpdCase(row: Record<string, unknown>): { case: DeidOpdCase; keys: OpdKeys } {
   const gpPc = row['general_practitioner_prescription__presenting_complaints'];
+  const dpx = dpipeDx(row.dpipe_dx);
 
   const advObj = asObj(row.general_advice);
   const topAdvice: string[] = Array.isArray(advObj)
     ? advObj.map((x) => str(x)).filter(Boolean)
     : (advObj && typeof advObj === 'object' ? Object.values(advObj as Record<string, unknown>).map(str).filter(Boolean) : textsFrom(row.general_advice, ['text', 'advice']));
-  const advice = uniq([...planAdvice(row['general_practitioner_prescription__plan_of_management']), ...gpDiagAdvice(gpPc), ...topAdvice]);
 
-  const complaints = gpComplaints(gpPc);
-  const presentingComplaints = complaints.length ? complaints : textsFrom(row.presenting_complaints, ['complaint', 'name', 'text', 'value', 'title']);
+  // CONTENT: flattened pipeline (dpipe) primary → source nested → top-level fallback.
+  const dPlan = dpipePlan(row.dpipe_pom);
+  const advice = uniq(dPlan.length ? dPlan : [...planAdvice(row['general_practitioner_prescription__plan_of_management']), ...gpDiagAdvice(gpPc), ...topAdvice]);
+
+  const dComplaints = dpipeText(row.dpipe_pc);
+  const nestedComplaints = gpComplaints(gpPc);
+  const presentingComplaints = dComplaints.length ? dComplaints
+    : (nestedComplaints.length ? nestedComplaints : textsFrom(row.presenting_complaints, ['complaint', 'name', 'text', 'value', 'title']));
+
+  const dInv = dpipeInvestigations(row.dpipe_inv);
+  const investigations = dInv.length ? dInv : investigationsFrom(row.further_investigation);
 
   const followUpDateSet = !!strOrNull(row.next_follow_up_date) || !!strOrNull(row.followup__followup_date) || !!strOrNull(row.expected_resolution_date);
 
@@ -167,13 +199,13 @@ export function rowToOpdCase(row: Record<string, unknown>): { case: DeidOpdCase;
     consultType: strOrNull(row.consult_type),
     reasonForConsult: strOrNull(row.reason_for_consultation),
     presentingComplaints,
-    diagnosisCodes: codesFrom(row.diagnosis_icd_codes),
+    diagnosisCodes: uniq([...codesFrom(row.diagnosis_icd_codes), ...dpx.codes]),
     impressionCodes: codesFrom(row.impression_icd_codes),
-    impressions: gpImpressions(gpPc),
+    impressions: dpx.names.length ? dpx.names : gpImpressions(gpPc),
     history: textsFrom(row.relevant_medical_history, ['text', 'name', 'value', 'condition']),
     comorbidities: textsFrom(row.comorbidities, ['name', 'text', 'condition', 'value']),
     medications: medsFrom(row.medications),
-    investigations: investigationsFrom(row.further_investigation),
+    investigations,
     advice,
     examination: htmlToLines(row['general_practitioner_prescription__examination']),
     allergies: strOrNull(row.patient_details__allergies),

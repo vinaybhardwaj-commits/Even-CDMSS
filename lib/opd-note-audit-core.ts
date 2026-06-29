@@ -10,7 +10,7 @@
 import type { DeidOpdCase } from './opd-ingest-core';
 import type { NetValue, OpdFindingDomain, Pdqi9Attr } from './opd-note-score-core';
 
-export const OPD_ENGINE_VERSION = 'opd-note-audit/0.2';
+export const OPD_ENGINE_VERSION = 'opd-note-audit/0.3';
 
 // Local copy of the PDQI-9 keys (kept in sync with opd-note-score-core) so this core has
 // no runtime cross-import and stays loadable under `node --experimental-strip-types`.

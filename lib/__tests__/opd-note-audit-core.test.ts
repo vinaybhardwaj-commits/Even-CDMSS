@@ -63,6 +63,34 @@ test('rowToOpdCase reads the NESTED GP fields (the extraction fix)', () => {
   assert.ok(!comp.missing.includes('Diagnosis / impression'));
 });
 
+// The hybrid source: clean content comes from the dpipe pipeline columns (dpipe_pc text,
+// dpipe_dx names+codes, dpipe_pom plan), taking precedence over the source nested fields.
+const DPIPE_ROW: Record<string, unknown> = {
+  uid: 'pq9rs7tuv', doctor_uid: 'doc9', type_of_prescription: 'GENERAL_PRACTITIONER', timestamp: '2026-06-27T05:00:00+05:30',
+  // nested source fields present but DELIBERATELY different — dpipe must win
+  general_practitioner_prescription__presenting_complaints: '[{"symptoms":"<ul><li>old nested complaint</li></ul>","diagnoses":[{"diagnosis_or_impression":"Nested DX"}]}]',
+  diagnosis_icd_codes: ['J06.9'],
+  medications: '[{"generic_name":"Paracetamol","dosage":"650mg","frequency":"1-1-1","duration":"3d","route_of_administration":"oral"}]',
+  followup__followup_type: 'FOLLOW_UP_WITH_REPORTS', prescription_url: 'https://x/y.pdf',
+  dpipe_pc: 'Chief Complaints: fever and cough since 3 days. HOPI: gradual onset, no breathlessness.',
+  dpipe_dx: '[{"icd_code":"J06.9","diagnosis":"Acute upper respiratory tract infection (URTI)"}]',
+  dpipe_pom: '[{"management_plan":"symptomatic care; review if persists"}]',
+  dpipe_inv: '[{"name":"CBC"}]',
+};
+
+test('rowToOpdCase prefers the dpipe pipeline content over the nested source fields', () => {
+  const { case: c } = rowToOpdCase(DPIPE_ROW);
+  assert.ok(c.presentingComplaints.join(' ').includes('fever and cough since 3 days'));
+  assert.ok(!c.presentingComplaints.join(' ').includes('old nested complaint')); // dpipe wins
+  assert.ok(c.impressions.includes('Acute upper respiratory tract infection (URTI)'));
+  assert.deepEqual(c.diagnosisCodes, ['J06.9']);
+  assert.ok(c.advice.some((a) => /symptomatic care/.test(a)));
+  assert.ok(c.investigations.includes('CBC'));
+  const comp = opdCompleteness(c);
+  assert.ok(!comp.missing.includes('Presenting complaint'));
+  assert.ok(!comp.missing.includes('Advice / plan'));
+});
+
 test('opdCompleteness flags the real gaps; allergy + history items removed', () => {
   const { case: c } = rowToOpdCase(ROW);
   const comp = opdCompleteness(c);

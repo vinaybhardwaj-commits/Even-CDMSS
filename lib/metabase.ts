@@ -8,30 +8,41 @@
  */
 
 const DB13 = 13;
-const TABLE = '"individuals-prescriptions"';
+const SOURCE = '"individuals-prescriptions"';
 
-// Consult types where the NABH OPD completeness checklist (complaint / history / allergy /
-// dosing / advice / follow-up) genuinely applies. Allied-health types (DIETARY / PHYSIO /
-// nutrition) are deferred until their checklists are made type-aware (PRD §11).
+// Consult types where the NABH OPD completeness checklist genuinely applies. Allied-health
+// types (DIETARY / PHYSIO / nutrition) are deferred until their checklists are type-aware.
 export const OPD_MEDICAL_TYPES = [
   'GENERAL_PRACTITIONER', 'HOSPITAL_GP', 'HOSPITAL_GYNAECOLOGY_ASSESSMENT',
   'HOSPITAL_PAEDIATRIC', 'HOSPITAL_GYNAECOLOGY_OBSTETRICS', 'HOSPITAL_GP_INVESTIGATION_REFERRAL',
 ];
 
-// Exactly the columns the ingest adapter (rowToOpdCase) reads. All exist on db13 (verified).
-const ENGINE_COLUMNS = [
+// HYBRID SOURCE (29 Jun, per Ira): the reliable type-filter, link-back keys, and the RICH
+// medications array (generic/brand/route) stay on the source `individuals-prescriptions` (ip).
+// The clean clinical CONTENT — plain-text presenting_complaint + HOPI, readable diagnosis
+// names, plan_of_management — comes from the flattened `dpipe_prescription_pipeline` joined 1:1
+// on presc_uid (DISTINCT ON latest). The source's nested fields stay as a FALLBACK so we never
+// regress the ~11% of notes the pipeline leaves empty. Driving off ip keeps doctor/keys/meds
+// exactly as before (no schema or dashboard change).
+const IP_COLS = [
   'uid', 'consult_uid', 'doctor_uid', 'kx_encounter_id', 'type_of_prescription', 'consult_type',
   'timestamp', '_create_time', 'prescription_url',
-  // canonical clinical content for medical consults lives in these nested fields
-  'general_practitioner_prescription__presenting_complaints',
-  'general_practitioner_prescription__plan_of_management',
+  'medications', 'diagnosis_icd_codes', 'impression_icd_codes', 'general_advice', 'further_investigation',
+  'general_practitioner_prescription__presenting_complaints',  // fallback complaint (nested)
+  'general_practitioner_prescription__plan_of_management',     // fallback advice (nested)
   'general_practitioner_prescription__examination',
-  // top-level (fallbacks / still-canonical: meds, dx codes, investigations, follow-up)
-  'presenting_complaints', 'diagnosis_icd_codes', 'impression_icd_codes', 'medications',
-  'further_investigation', 'general_advice', 'patient_details__allergies',
   'followup__followup_type', 'followup__followup_date', 'follow_up_type', 'next_follow_up_date',
-  'expected_resolution_date', 'relevant_medical_history', 'comorbidities', 'reason_for_consultation',
+  'expected_resolution_date', 'reason_for_consultation', 'relevant_medical_history', 'comorbidities',
 ];
+const SELECT_COLS = IP_COLS.map((c) => `ip.${c}`).join(', ')
+  + ', d.presenting_complaint AS dpipe_pc, d.diagnosis AS dpipe_dx, d.plan_of_management AS dpipe_pom, d.further_investigation AS dpipe_inv';
+
+const DPIPE_SELECT = 'presc_uid, presenting_complaint, diagnosis, plan_of_management, further_investigation';
+// dpipeWhere bounds the pipeline scan (a date range for day-fetches, a presc_uid filter for
+// uid-fetches) so we never seq-scan the whole 343k-row pipeline.
+function joinDpipe(dpipeWhere: string): string {
+  return `LEFT JOIN (SELECT DISTINCT ON (presc_uid) ${DPIPE_SELECT} FROM dpipe_prescription_pipeline WHERE ${dpipeWhere} ORDER BY presc_uid, _update_time DESC) d ON d.presc_uid = ip.uid`;
+}
 
 function base(): string {
   const u = process.env.METABASE_URL;
@@ -65,14 +76,14 @@ const isUid = (u: string) => /^[A-Za-z0-9_-]{6,64}$/.test(u);
 const isDay = (d: string) => /^\d{4}-\d{2}-\d{2}$/.test(d);
 const quotedTypes = () => OPD_MEDICAL_TYPES.map((t) => `'${t}'`).join(', ');
 // Encounters are timestamped in IST; a "day" is an Asia/Kolkata calendar day.
-const dayPredicate = (day: string) => `(timestamp AT TIME ZONE 'Asia/Kolkata')::date = '${day}'`;
+const dayPredicate = (day: string) => `(ip.timestamp AT TIME ZONE 'Asia/Kolkata')::date = '${day}'`;
 const baseWhere = (day: string) =>
-  `is_draft = false AND type_of_prescription IN (${quotedTypes()}) AND ${dayPredicate(day)}`;
+  `ip.is_draft = false AND ip.type_of_prescription IN (${quotedTypes()}) AND ${dayPredicate(day)}`;
 
 /** Count non-draft medical notes for an IST calendar day. */
 export async function countOpdNotesForDay(day: string): Promise<number> {
   if (!isDay(day)) throw new Error('bad day (YYYY-MM-DD)');
-  const rows = await metabaseQuery(`SELECT count(*)::int AS n FROM ${TABLE} WHERE ${baseWhere(day)}`);
+  const rows = await metabaseQuery(`SELECT count(*)::int AS n FROM ${SOURCE} ip WHERE ${baseWhere(day)}`);
   return Number(rows[0]?.n ?? 0);
 }
 
@@ -80,17 +91,19 @@ export async function countOpdNotesForDay(day: string): Promise<number> {
 export async function fetchOpdNotesForDay(day: string, excludeUids: string[], limit: number): Promise<Record<string, unknown>[]> {
   if (!isDay(day)) throw new Error('bad day (YYYY-MM-DD)');
   const ex = (excludeUids || []).filter(isUid);
-  const notIn = ex.length ? ` AND uid NOT IN (${ex.map((u) => `'${u}'`).join(', ')})` : '';
+  const notIn = ex.length ? ` AND ip.uid NOT IN (${ex.map((u) => `'${u}'`).join(', ')})` : '';
   const lim = Math.max(1, Math.min(50, Math.floor(limit)));
+  const join = joinDpipe(`(timestamp AT TIME ZONE 'Asia/Kolkata')::date BETWEEN '${day}'::date - 1 AND '${day}'::date + 1`);
   return metabaseQuery(
-    `SELECT ${ENGINE_COLUMNS.join(', ')} FROM ${TABLE} WHERE ${baseWhere(day)}${notIn} ORDER BY timestamp ASC LIMIT ${lim}`,
+    `SELECT ${SELECT_COLS} FROM ${SOURCE} ip ${join} WHERE ${baseWhere(day)}${notIn} ORDER BY ip.timestamp ASC LIMIT ${lim}`,
   );
 }
 
-/** Fetch a single note by uid (for spot-check / ?uid= self-fetch). */
+/** Fetch a single note by uid (for spot-check / case-view note panel). */
 export async function fetchOpdNoteByUid(uid: string): Promise<Record<string, unknown> | null> {
   if (!isUid(uid)) throw new Error('bad uid');
-  const rows = await metabaseQuery(`SELECT ${ENGINE_COLUMNS.join(', ')} FROM ${TABLE} WHERE uid = '${uid}' LIMIT 1`);
+  const join = joinDpipe(`presc_uid = '${uid}'`);
+  const rows = await metabaseQuery(`SELECT ${SELECT_COLS} FROM ${SOURCE} ip ${join} WHERE ip.uid = '${uid}' LIMIT 1`);
   return rows[0] ?? null;
 }
 
@@ -99,7 +112,8 @@ export async function fetchOpdNotesByUids(uids: string[]): Promise<Record<string
   const ex = Array.from(new Set((uids || []).filter(isUid)));
   if (!ex.length) return [];
   const inList = ex.map((u) => `'${u}'`).join(', ');
-  return metabaseQuery(`SELECT ${ENGINE_COLUMNS.join(', ')} FROM ${TABLE} WHERE uid IN (${inList})`);
+  const join = joinDpipe(`presc_uid IN (${inList})`);
+  return metabaseQuery(`SELECT ${SELECT_COLS} FROM ${SOURCE} ip ${join} WHERE ip.uid IN (${inList})`);
 }
 
 /** Map doctor_uid → display name (db13 `doctors.name_with_prefix`). Names are staff data,
