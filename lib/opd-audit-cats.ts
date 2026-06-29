@@ -11,12 +11,10 @@ export type CatSev = 'doc' | 'caution' | 'low';
 export interface CatDef { key: string; label: string; group: CatGroup; sev: CatSev }
 
 export const CATS: CatDef[] = [
-  { key: 'doc:allergy',   label: 'Allergy status not documented',            group: 'documentation', sev: 'doc' },
   { key: 'doc:dosing',    label: 'Incomplete medication dosing',             group: 'documentation', sev: 'doc' },
-  { key: 'doc:advice',    label: 'No advice / safety-net recorded',          group: 'documentation', sev: 'doc' },
+  { key: 'doc:advice',    label: 'No advice / plan recorded',                group: 'documentation', sev: 'doc' },
   { key: 'doc:complaint', label: 'No presenting complaint recorded',         group: 'documentation', sev: 'doc' },
-  { key: 'doc:followup',  label: 'Follow-up missing or without a date',      group: 'documentation', sev: 'doc' },
-  { key: 'doc:history',   label: 'No relevant history recorded',             group: 'documentation', sev: 'doc' },
+  { key: 'doc:followup',  label: 'No follow-up specified',                   group: 'documentation', sev: 'doc' },
   { key: 'doc:diagnosis', label: 'No diagnosis / impression coded',          group: 'documentation', sev: 'doc' },
   { key: 'rx:nongeneric', label: 'Non-generic (brand-name) prescribing',     group: 'prescribing',   sev: 'caution' },
   { key: 'rx:duplicate',  label: 'Therapeutic duplication',                  group: 'prescribing',   sev: 'low' },
@@ -30,12 +28,10 @@ export const CAT_LABEL: Record<string, string> = Object.fromEntries(CATS.map((c)
 export const CAT_DEF: Record<string, CatDef> = Object.fromEntries(CATS.map((c) => [c.key, c]));
 
 const MISSING_TO_CAT: Record<string, string> = {
-  'Allergy status documented': 'doc:allergy',
   'Complete medication dosing': 'doc:dosing',
-  'Advice / instructions': 'doc:advice',
+  'Advice / plan': 'doc:advice',
   'Presenting complaint': 'doc:complaint',
   'Follow-up specified': 'doc:followup',
-  'Relevant history': 'doc:history',
   'Diagnosis / impression': 'doc:diagnosis',
 };
 

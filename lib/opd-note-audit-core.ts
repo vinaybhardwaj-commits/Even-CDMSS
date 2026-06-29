@@ -10,7 +10,7 @@
 import type { DeidOpdCase } from './opd-ingest-core';
 import type { NetValue, OpdFindingDomain, Pdqi9Attr } from './opd-note-score-core';
 
-export const OPD_ENGINE_VERSION = 'opd-note-audit/0.1';
+export const OPD_ENGINE_VERSION = 'opd-note-audit/0.2';
 
 // Local copy of the PDQI-9 keys (kept in sync with opd-note-score-core) so this core has
 // no runtime cross-import and stays loadable under `node --experimental-strip-types`.
@@ -43,13 +43,14 @@ export interface OpdSuggestion { priority: number; text: string }
 export function opdCompleteness(c: DeidOpdCase): OpdCompleteness {
   const hasMeds = c.medications.length > 0;
   const dosingComplete = hasMeds && c.medications.every((m) => m.dose && m.frequency && m.route);
+  // NABH-OPD items we can actually observe in this EMR's structured data. Allergy is never
+  // stored at the prescription level (always empty) and history is folded into the presenting
+  // complaint / HPI, so both were removed (they were false-flagging ~100% of notes).
   const items: OpdCompletenessItem[] = [
     { key: 'presenting_complaint', label: 'Presenting complaint', present: c.presentingComplaints.length > 0 || !!c.reasonForConsult, mandatory: true },
-    { key: 'relevant_history', label: 'Relevant history', present: c.history.length > 0 || c.comorbidities.length > 0, mandatory: true },
-    { key: 'diagnosis', label: 'Diagnosis / impression', present: c.diagnosisCodes.length > 0 || c.impressionCodes.length > 0, mandatory: true },
-    { key: 'allergy_documented', label: 'Allergy status documented', present: !!c.allergies, mandatory: true },
+    { key: 'diagnosis', label: 'Diagnosis / impression', present: c.diagnosisCodes.length > 0 || c.impressionCodes.length > 0 || c.impressions.length > 0, mandatory: true },
     { key: 'medication_dosing', label: 'Complete medication dosing', present: hasMeds ? dosingComplete : true, mandatory: true },
-    { key: 'advice_given', label: 'Advice / instructions', present: c.advice.length > 0, mandatory: true },
+    { key: 'advice_given', label: 'Advice / plan', present: c.advice.length > 0, mandatory: true },
     { key: 'follow_up', label: 'Follow-up specified', present: !!c.followUpType, mandatory: true },
   ];
   const present = items.filter((i) => i.present).length;

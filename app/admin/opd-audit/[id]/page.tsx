@@ -43,18 +43,21 @@ function NoteRow({ label, children }: { label: string; children: ReactNode }) {
 }
 const none = (s: string) => <span className="text-slate-400">{s}</span>;
 
-function NotePanel({ note }: { note: DeidOpdCase | null }) {
+function NotePanel({ note, pdfUrl }: { note: DeidOpdCase | null; pdfUrl: string | null }) {
+  const pdfLink = pdfUrl ? <a href={pdfUrl} target="_blank" rel="noopener noreferrer" className="text-[11px] font-medium text-brand hover:underline">↓ Actual PDF</a> : null;
   if (!note) {
-    return <div className="rounded-xl border border-slate-200 bg-white p-4 text-[12px] text-slate-400">Source note unavailable — it may have been edited or removed in db13 since the audit ran.</div>;
+    return <div className="rounded-xl border border-slate-200 bg-white p-4 text-[12px] text-slate-400">Source note unavailable — it may have been edited or removed in db13 since the audit ran. {pdfLink}</div>;
   }
   return (
     <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-      <div className="border-b border-slate-100 bg-slate-50/60 px-3 py-2 text-[11.5px] font-medium text-slate-600">Documented note <span className="font-normal text-slate-400">· de-identified · what the engine read</span></div>
-      <NoteRow label="Presenting complaints">{note.presentingComplaints.length ? note.presentingComplaints.join('; ') : none('(none documented)')}</NoteRow>
+      <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50/60 px-3 py-2">
+        <span className="text-[11.5px] font-medium text-slate-600">Documented note <span className="font-normal text-slate-400">· de-identified · what the engine read</span></span>
+        {pdfLink}
+      </div>
+      <NoteRow label="Presenting complaints / history">{note.presentingComplaints.length ? note.presentingComplaints.join(' · ') : none('(none documented)')}</NoteRow>
       {note.reasonForConsult ? <NoteRow label="Reason for consult">{note.reasonForConsult}</NoteRow> : null}
-      <NoteRow label="Diagnosis (ICD-10)">{note.diagnosisCodes.length ? note.diagnosisCodes.join(', ') : none('(none)')}{note.impressionCodes.length ? ` · impression ${note.impressionCodes.join(', ')}` : ''}</NoteRow>
-      {(note.history.length > 0 || note.comorbidities.length > 0) ? <NoteRow label="History / comorbidities">{[...note.history, ...note.comorbidities].join('; ')}</NoteRow> : null}
-      <NoteRow label="Allergies">{note.allergies ? note.allergies : none('(not documented)')}</NoteRow>
+      <NoteRow label="Diagnosis (ICD-10)">{note.diagnosisCodes.length ? note.diagnosisCodes.join(', ') : none('(none)')}{note.impressions.length ? ` · ${note.impressions.join('; ')}` : (note.impressionCodes.length ? ` · impression ${note.impressionCodes.join(', ')}` : '')}</NoteRow>
+      {note.examination.length ? <NoteRow label="Examination">{note.examination.join(' · ')}</NoteRow> : null}
       <NoteRow label={`Medications (${note.medications.length})`}>
         {note.medications.length === 0 ? none('(none)') : (
           <ul className="space-y-1">
@@ -73,7 +76,7 @@ function NotePanel({ note }: { note: DeidOpdCase | null }) {
         )}
       </NoteRow>
       <NoteRow label="Investigations ordered">{note.investigations.length ? note.investigations.join('; ') : none('(none)')}</NoteRow>
-      <NoteRow label="Advice">{note.advice.length ? note.advice.join('; ') : none('(none documented)')}</NoteRow>
+      <NoteRow label="Advice / plan">{note.advice.length ? note.advice.join(' · ') : none('(none documented)')}</NoteRow>
       <NoteRow label="Follow-up">{note.followUpType ? `${note.followUpType}${note.followUpDateSet ? ' · date set' : ' · no date'}` : none('(none)')}</NoteRow>
     </div>
   );
@@ -116,7 +119,9 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
     uid ? fetchOpdNoteByUid(uid).catch(() => null) : Promise.resolve(null),
   ]);
   const doctor = (docUid && docNames[docUid]) || doctorLabel(docUid);
-  const note: DeidOpdCase | null = noteRow ? rowToOpdCase(noteRow).case : null;
+  const parsed = noteRow ? rowToOpdCase(noteRow) : null;
+  const note: DeidOpdCase | null = parsed?.case ?? null;
+  const prescriptionUrl = parsed?.keys.prescriptionUrl ?? null;
 
   const lowVal = findings.find((f) => f.verdict === 'low-value');
   const bottom = lowVal
@@ -142,6 +147,7 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
           </div>
           <div className="flex shrink-0 flex-col items-end gap-1 text-[10px] text-slate-400">
             <span className="rounded border border-slate-200 px-2 py-0.5">{String(r.prescription_type || r.consult_type || 'OPD')}</span>
+            {prescriptionUrl ? <a href={prescriptionUrl} target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">actual PDF ›</a> : null}
             {r.trace_id ? <Link href={`/admin/observability/${r.trace_id}`} className="text-brand hover:underline">trace ›</Link> : null}
           </div>
         </div>
@@ -160,7 +166,7 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
 
       {/* note (left) vs audit detail (right) */}
       <div className="mt-4 grid gap-4 lg:grid-cols-2 lg:items-start">
-        <NotePanel note={note} />
+        <NotePanel note={note} pdfUrl={prescriptionUrl} />
 
         <div className="space-y-4">
           {findings.length > 0 && (

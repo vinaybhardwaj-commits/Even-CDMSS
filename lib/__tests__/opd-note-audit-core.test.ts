@@ -28,26 +28,52 @@ test('rowToOpdCase parses stringified JSONB + separates de-identified case from 
   assert.equal(c.medications[0].generic, 'Dicyclomine+Mefenamic Acid');
   assert.deepEqual(c.diagnosisCodes, ['R10.12', 'E78.2', 'E55']);
   assert.deepEqual(c.investigations, ['USG ABDOMEN']);
-  assert.equal(c.presentingComplaints.length, 0);
-  assert.equal(c.allergies, null);
+  assert.equal(c.presentingComplaints.length, 0); // no nested + empty top-level
   assert.equal(c.followUpType, 'FOLLOW_UP_WITH_REPORTS');
   assert.equal(c.followUpDateSet, false);
   assert.equal(keys.uid, 'MqG3ihcPeU4ptLWCBiY6');
   assert.equal(keys.doctorUid, 'HalPy');
 });
 
-test('opdCompleteness flags the real-note gaps (no complaint / allergy / advice / dosing)', () => {
+// The extraction fix: medical-consult content lives in the nested GP fields, not top-level.
+const GP_ROW: Record<string, unknown> = {
+  uid: 'abc123def', doctor_uid: 'doc1', type_of_prescription: 'GENERAL_PRACTITIONER', timestamp: '2026-06-29T05:00:00+05:30',
+  presenting_complaints: '[]', relevant_medical_history: '[]', general_advice: '{}',
+  general_practitioner_prescription__presenting_complaints: '[{"symptoms":"<ul><li>cough since 3 days</li><li>mild fever</li></ul>","diagnoses":[{"icd_code":"J06.9","diagnosis_or_impression":"Acute URTI","general_advice":"steam inhalation","treatment_plan":""}]}]',
+  general_practitioner_prescription__plan_of_management: '[{"management_plan":"<p>rest and oral fluids</p>"}]',
+  general_practitioner_prescription__examination: '<p>throat congested</p>',
+  diagnosis_icd_codes: ['J06.9'], impression_icd_codes: [],
+  medications: '[{"generic_name":"Paracetamol","dosage":"650mg","frequency":"1-1-1","duration":"3d","route_of_administration":"oral"}]',
+  further_investigation: '[]', followup__followup_type: 'FOLLOW_UP_AS_NEEDED',
+  prescription_url: 'https://storage.googleapis.com/even-prod-prescription/abc_2.pdf',
+};
+
+test('rowToOpdCase reads the NESTED GP fields (the extraction fix)', () => {
+  const { case: c, keys } = rowToOpdCase(GP_ROW);
+  assert.ok(c.presentingComplaints.includes('cough since 3 days'));
+  assert.ok(c.presentingComplaints.includes('mild fever'));
+  assert.deepEqual(c.impressions, ['Acute URTI']);
+  assert.ok(c.advice.some((a) => /rest and oral fluids/.test(a)));
+  assert.ok(c.advice.some((a) => /steam inhalation/.test(a)));
+  assert.ok(c.examination.includes('throat congested'));
+  assert.equal(keys.prescriptionUrl, 'https://storage.googleapis.com/even-prod-prescription/abc_2.pdf');
+  const comp = opdCompleteness(c);
+  assert.ok(!comp.missing.includes('Presenting complaint'));
+  assert.ok(!comp.missing.includes('Advice / plan'));
+  assert.ok(!comp.missing.includes('Diagnosis / impression'));
+});
+
+test('opdCompleteness flags the real gaps; allergy + history items removed', () => {
   const { case: c } = rowToOpdCase(ROW);
   const comp = opdCompleteness(c);
   assert.ok(comp.coverage < 1);
   assert.ok(comp.missing.includes('Presenting complaint'));
-  assert.ok(comp.missing.includes('Allergy status documented'));
-  assert.ok(comp.missing.includes('Advice / instructions'));
-  // 2nd med has no route → dosing incomplete
-  assert.ok(comp.missing.includes('Complete medication dosing'));
-  // diagnosis IS present
+  assert.ok(comp.missing.includes('Advice / plan'));
+  assert.ok(comp.missing.includes('Complete medication dosing')); // 2nd med has no route
+  assert.ok(!comp.missing.includes('Allergy status documented')); // removed — never stored
+  assert.ok(!comp.missing.includes('Relevant history'));          // removed — folded into complaint
+  assert.equal(comp.items.length, 5);
   assert.equal(comp.items.find((i) => i.key === 'diagnosis')!.present, true);
-  // patient-centred: advice missing, follow-up present → 1/2
   assert.deepEqual(comp.patientCentred, { present: 1, total: 2 });
 });
 
@@ -61,7 +87,8 @@ test('prescribingChecks catches incomplete dosing (deterministic)', () => {
 test('prescribingChecks catches non-generic + duplicate', () => {
   const c = {
     consultType: null, reasonForConsult: null, presentingComplaints: [], diagnosisCodes: [], impressionCodes: [],
-    history: [], comorbidities: [], investigations: [], advice: [], allergies: null, followUpType: null, followUpDateSet: false,
+    impressions: [], history: [], comorbidities: [], investigations: [], advice: [], examination: [],
+    allergies: null, followUpType: null, followUpDateSet: false,
     medications: [
       { brand: 'Brandonly', dose: '1', frequency: '1-0-1', route: 'PO', duration: '5d' },
       { generic: 'paracetamol', dose: '500mg', frequency: '1-1-1', route: 'PO', duration: '3d' },
@@ -74,7 +101,7 @@ test('prescribingChecks catches non-generic + duplicate', () => {
 });
 
 test('parseOpdAnalysis extracts findings + PDQI-9 + suggestions and clamps citations', () => {
-  const json = `{"findings":[{"subject":"Antibiotic for viral URTI","verdict":"low-value","confidence":0.85,"domain":"prescribing_safety","rationale":"viral","evidence":["x"],"estimates":[],"citation_ids":[1,5]}],"pdqi9":{"thorough":2,"accurate":4,"bogus":9},"suggestions":[{"priority":2,"text":"add complaint"},{"priority":1,"text":"document allergy"}]}`;
+  const json = `{"findings":[{"subject":"Antibiotic for viral URTI","verdict":"low-value","confidence":0.85,"domain":"prescribing_safety","rationale":"viral","evidence":["x"],"estimates":[],"citation_ids":[1,5]}],"pdqi9":{"thorough":2,"accurate":4,"bogus":9},"suggestions":[{"priority":2,"text":"add complaint"},{"priority":1,"text":"document plan"}]}`;
   const a = parseOpdAnalysis(json, 2);
   assert.ok(a);
   assert.equal(a!.findings.length, 1);

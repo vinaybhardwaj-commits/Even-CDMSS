@@ -21,7 +21,12 @@ export const OPD_MEDICAL_TYPES = [
 // Exactly the columns the ingest adapter (rowToOpdCase) reads. All exist on db13 (verified).
 const ENGINE_COLUMNS = [
   'uid', 'consult_uid', 'doctor_uid', 'kx_encounter_id', 'type_of_prescription', 'consult_type',
-  'timestamp', '_create_time',
+  'timestamp', '_create_time', 'prescription_url',
+  // canonical clinical content for medical consults lives in these nested fields
+  'general_practitioner_prescription__presenting_complaints',
+  'general_practitioner_prescription__plan_of_management',
+  'general_practitioner_prescription__examination',
+  // top-level (fallbacks / still-canonical: meds, dx codes, investigations, follow-up)
   'presenting_complaints', 'diagnosis_icd_codes', 'impression_icd_codes', 'medications',
   'further_investigation', 'general_advice', 'patient_details__allergies',
   'followup__followup_type', 'followup__followup_date', 'follow_up_type', 'next_follow_up_date',
