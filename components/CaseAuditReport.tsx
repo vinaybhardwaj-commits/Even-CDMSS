@@ -196,8 +196,15 @@ function ValueScorecardPanel({ sc }: { sc: ValueScorecard }) {
           <div>
             <div className={`text-lg font-semibold leading-tight ${b.text}`}>Band {sc.band}</div>
             <div className="text-[12px] text-slate-500">{b.label}</div>
-            {sc.lowValueSpend != null && (
-              <div className="mt-1 inline-flex items-center gap-1 text-[11.5px] text-slate-600"><IndianRupee className="h-3 w-3" />{inr(sc.lowValueSpend)} identified low-value spend</div>
+            {(sc.lowValueSpend != null || sc.excessBedDayCost != null) && (
+              <div className="mt-1 space-y-0.5">
+                {sc.lowValueSpend != null && (
+                  <div className="inline-flex items-center gap-1 text-[11.5px] text-slate-600"><IndianRupee className="h-3 w-3" />{inr(sc.lowValueSpend)} tariffed low-value spend</div>
+                )}
+                {sc.excessBedDayCost != null && (
+                  <div className="text-[11.5px] text-amber-700">+ {inr(sc.excessBedDayCost)} {sc.costNote ? `· ${sc.costNote}` : 'est. avoidable bed-days'}</div>
+                )}
+              </div>
             )}
           </div>
         </div>

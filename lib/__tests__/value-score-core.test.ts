@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  computeScorecard, findingPenalty, bandFor, DEFAULT_WEIGHTS, DEFAULT_COST_CAP,
+  computeScorecard, findingPenalty, bandFor, DEFAULT_WEIGHTS,
   type ScoreInput,
 } from '../value-score-core.ts';
 
@@ -52,7 +52,7 @@ test('domains route by tag; cost driven by low-value tariff spend; untagged → 
     completenessCoverage: 0.78,
     patientCentred: { present: 4, total: 5 },
     adminFacts: { lengthOfStayDays: 8, admissionType: 'elective', careSetting: 'room' },
-    costCap: DEFAULT_COST_CAP,
+    costCap: 50_000,
   };
   const sc = computeScorecard(input);
   const by = (d: string) => sc.domains.find((x) => x.domain === d)!;
@@ -72,6 +72,23 @@ test('domains route by tag; cost driven by low-value tariff spend; untagged → 
   assert.equal(sc.confidence, 'high');   // 4 findings
   // headline is the weighted mean, lands mid-band
   assert.ok(sc.headline > 40 && sc.headline < 85);
+});
+
+test('estimated bed-day cost dents the cost domain even with no tariffed spend', () => {
+  const sc = computeScorecard({
+    findings: [{ verdict: 'low-value', confidence: 1, domain: 'efficiency' }],  // over-stay, no tariff
+    completenessCoverage: 0.78,
+    patientCentred: { present: 2.5, total: 4 },
+    adminFacts: { lengthOfStayDays: 8, admissionType: 'elective', careSetting: 'single room' },
+    bedDayCost: 45_500,
+    bedDayDetail: '7 excess bed-days × ₹6,500 single room (est.)',
+    // default cap 100_000
+  });
+  const cost = sc.domains.find((d) => d.domain === 'cost')!;
+  assert.equal(cost.score, 55);                 // 100 − 45.5 → 55
+  assert.equal(sc.excessBedDayCost, 45_500);
+  assert.equal(sc.lowValueSpend, null);         // no tariff-cited spend
+  assert.match(cost.basis, /est\. bed-days|excess bed-days/);
 });
 
 test('weights are configurable and normalised', () => {

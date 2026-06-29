@@ -26,6 +26,7 @@ import { traceSkeleton } from './pathway';
 import { parseCritique } from './lvc-value-core';
 import { hitsToSources, buildCitedContext, type CiteHit } from './citations-core';
 import { computeScorecard } from './value-score-core';
+import { estimateBedDayCost } from './room-rent';
 import * as core from './doc-audit-core';
 import type { DocType, ExtractedCase, AuditReport, RubricField, TariffRef } from './doc-audit-core';
 
@@ -244,11 +245,19 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
     // patient-facing follow-up fields (present/na = 1, partial = 0.5).
     const pcItems = completeness.items.filter((i) => i.section === 'followup');
     const pcPresent = pcItems.reduce((s, i) => s + (i.status === 'present' || i.status === 'na' ? 1 : i.status === 'partial' ? 0.5 : 0), 0);
+    // Only cost avoidable bed-days when the auditor itself flagged a length-of-stay / level-of-care
+    // over-use (an efficiency finding about the stay) — we never invent an over-stay.
+    const STAY_RE = /\b(stay|admission|admitted|inpatient|length of stay|los|day.?care|bed.?day|overnight|hospitali[sz])/i;
+    const overStayFlagged = parsed.findings.some((f) =>
+      f.domain === 'efficiency' && (f.verdict === 'low-value' || f.verdict === 'context-dependent') &&
+      STAY_RE.test(`${f.subject} ${f.rationale} ${f.order ?? ''}`));
+    const bedDay = estimateBedDayCost(extracted.adminFacts, overStayFlagged);
     const valueScore = computeScorecard({
       findings: parsed.findings.map((f) => ({ verdict: f.verdict, confidence: f.confidence, domain: f.domain, tariff: repTariff(f.tariffs) })),
       completenessCoverage: completeness.coverage,
       patientCentred: { present: pcPresent, total: pcItems.length },
       adminFacts: extracted.adminFacts,
+      bedDayCost: bedDay.cost, bedDayDetail: bedDay.detail || undefined,
     });
 
     const report: AuditReport = {

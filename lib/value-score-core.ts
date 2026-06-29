@@ -66,8 +66,9 @@ const PENALTY_BASE = 45;
 const SEVERITY: Record<NetValue, number> = {
   'low-value': 1.0, 'context-dependent': 0.5, uncertain: 0.2, 'high-value': 0,
 };
-// Default ₹ of identified low-value spend that drives the cost score to 0.
-export const DEFAULT_COST_CAP = 50_000;
+// Default ₹ of identified avoidable spend (tariffed low-value + estimated bed-days) that
+// drives the cost score to 0. Sized for an inpatient episode; configurable.
+export const DEFAULT_COST_CAP = 100_000;
 
 export type Band = 'A' | 'B' | 'C' | 'D' | 'E';
 export interface DomainScore {
@@ -82,7 +83,9 @@ export interface ValueScorecard {
   headline: number;     // 0..100 weighted Care-Value Index
   band: Band;
   domains: DomainScore[];
-  lowValueSpend: number | null;  // ₹ of identified low-value care (cost axis driver)
+  lowValueSpend: number | null;     // ₹ of TARIFF-cited low-value care (charge-master)
+  excessBedDayCost: number | null;  // ₹ of avoidable bed-days — a LABELLED ESTIMATE, not a tariff
+  costNote?: string;                // e.g. "7 excess bed-days × ₹6,500 single room (est.)"
   confidence: 'low' | 'moderate' | 'high';
   caveat: string;
 }
@@ -93,6 +96,8 @@ export interface ScoreInput {
   completenessCoverage: number;          // 0..1 (NABH coverage)
   patientCentred: { present: number; total: number };  // continuity completeness subset
   adminFacts?: AdminFacts;
+  bedDayCost?: number | null;            // estimated avoidable bed-day ₹ (room-rent-core), adds to cost burden
+  bedDayDetail?: string;                 // human note for the bed-day estimate
   weights?: Partial<Record<ValueDomain, number>>;
   costCap?: number;
 }
@@ -163,7 +168,16 @@ export function computeScorecard(input: ScoreInput): ValueScorecard {
   const pc = input.patientCentred || { present: 0, total: 0 };
   const pcScore = pc.total > 0 ? round((clamp(pc.present, 0, pc.total) / pc.total) * 100) : 100;
 
-  const costScore = haveTariff ? clamp(round(100 - (lowValueSpend / costCap) * 100), 0, 100) : 100;
+  // Cost burden = tariff-cited low-value spend + estimated avoidable bed-days of any
+  // flagged over-stay. The bed-day part is a labelled estimate (kept separate in the card).
+  const bedDay = Math.max(0, Number(input.bedDayCost) || 0);
+  const costBurden = lowValueSpend + bedDay;
+  const haveCost = haveTariff || bedDay > 0;
+  const costScore = haveCost ? clamp(round(100 - (costBurden / costCap) * 100), 0, 100) : 100;
+  const costParts = [
+    haveTariff ? `₹${Math.round(lowValueSpend).toLocaleString('en-IN')} tariffed low-value` : '',
+    bedDay > 0 ? (input.bedDayDetail || `₹${Math.round(bedDay).toLocaleString('en-IN')} est. bed-days`) : '',
+  ].filter(Boolean);
 
   const domains: DomainScore[] = [
     { domain: 'appropriateness', label: DOMAIN_LABEL.appropriateness, score: appr.score, weight: weights.appropriateness, n: appr.n,
@@ -172,8 +186,8 @@ export function computeScorecard(input: ScoreInput): ValueScorecard {
       basis: eff.n ? `${eff.n} intensity finding${eff.n === 1 ? '' : 's'}${input.adminFacts?.lengthOfStayDays != null ? ` · LOS ${input.adminFacts.lengthOfStayDays}d` : ''}` : (input.adminFacts?.lengthOfStayDays != null ? `LOS ${input.adminFacts.lengthOfStayDays}d, none flagged` : 'no intensity issues flagged') },
     { domain: 'safety', label: DOMAIN_LABEL.safety, score: saf.score, weight: weights.safety, n: saf.n,
       basis: saf.n ? `${saf.n} safety/stewardship finding${saf.n === 1 ? '' : 's'}` : 'no safety issues flagged' },
-    { domain: 'cost', label: DOMAIN_LABEL.cost, score: costScore, weight: weights.cost, n: haveTariff ? 1 : 0,
-      basis: haveTariff ? `₹${Math.round(lowValueSpend).toLocaleString('en-IN')} identified low-value spend` : 'no tariffed low-value spend identified' },
+    { domain: 'cost', label: DOMAIN_LABEL.cost, score: costScore, weight: weights.cost, n: haveCost ? 1 : 0,
+      basis: haveCost ? costParts.join(' + ') : 'no avoidable spend identified' },
     { domain: 'documentation', label: DOMAIN_LABEL.documentation, score: docScore, weight: weights.documentation, n: 1,
       basis: `NABH completeness ${docScore}%` },
     { domain: 'patient_centred', label: DOMAIN_LABEL.patient_centred, score: pcScore, weight: weights.patient_centred, n: pc.total,
@@ -193,6 +207,8 @@ export function computeScorecard(input: ScoreInput): ValueScorecard {
     band: bandFor(headline),
     domains,
     lowValueSpend: haveTariff ? Math.round(lowValueSpend) : null,
+    excessBedDayCost: bedDay > 0 ? Math.round(bedDay) : null,
+    costNote: bedDay > 0 ? (input.bedDayDetail || undefined) : undefined,
     confidence,
     caveat: CARE_VALUE_CAVEAT,
   };

@@ -134,6 +134,7 @@ export function buildRunSheets(run: ExportRun): SheetDef[] {
     runRow.care_value_band = str(vs.band);
     runRow.value_confidence = str(vs.confidence);
     runRow.low_value_spend = vs.lowValueSpend != null ? vs.lowValueSpend : '';
+    runRow.excess_bed_day_cost_est = vs.excessBedDayCost != null ? vs.excessBedDayCost : '';
     for (const dv of asArr(vs.domains)) {
       const d = obj(dv);
       push('ValueScores', { run_id: runId, domain: str(d.domain), label: str(d.label), score: d.score ?? '', weight: d.weight ?? '', signals: d.n ?? '', basis: str(d.basis) });

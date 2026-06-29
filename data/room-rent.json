@@ -1,0 +1,19 @@
+{
+  "_meta": {
+    "purpose": "Per-day room/bed rent by ward category, used to cost avoidable bed-days on the Care-Value Scorecard's Cost domain when an over-stay is flagged.",
+    "currency": "INR",
+    "status": "estimate",
+    "note": "PLACEHOLDER ESTIMATES (typical Bengaluru private-hospital per-day room rent). REPLACE with the actual EHRC Room-Rent / Bed-Charge card, then set status to 'tariff'. Until then, bed-day cost is surfaced as a labelled model estimate, never a cited tariff.",
+    "dayCareBenchmarkDays": 1
+  },
+  "default": { "key": "private_room", "perDay": 6500 },
+  "categories": [
+    { "key": "day_care", "label": "Day care / OPD", "perDay": 0, "aliases": ["day care", "daycare", "day-care", "opd", "ambulatory", "23 hour", "23-hour", "short stay"] },
+    { "key": "general_ward", "label": "General ward", "perDay": 2500, "aliases": ["general ward", "ward", "general", "gw", "sharing", "economy", "multi sharing", "dormitory"] },
+    { "key": "semi_private", "label": "Semi-private / twin sharing", "perDay": 4000, "aliases": ["semi private", "semi-private", "twin", "two sharing", "double", "shared room"] },
+    { "key": "private_room", "label": "Single / private room", "perDay": 6500, "aliases": ["single room", "single", "private", "private room", "deluxe single", "individual room"] },
+    { "key": "deluxe_suite", "label": "Deluxe / suite", "perDay": 12000, "aliases": ["suite", "deluxe", "luxury", "executive", "king", "vip"] },
+    { "key": "hdu", "label": "HDU / step-down", "perDay": 10000, "aliases": ["hdu", "high dependency", "step down", "step-down"] },
+    { "key": "icu", "label": "ICU", "perDay": 16000, "aliases": ["icu", "intensive care", "critical care", "ccu", "nicu", "picu", "sicu", "micu"] }
+  ]
+}
