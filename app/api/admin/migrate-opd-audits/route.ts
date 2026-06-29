@@ -50,6 +50,10 @@ export async function POST(req: NextRequest) {
     await sql`CREATE INDEX IF NOT EXISTS opd_note_audits_band_idx ON opd_note_audits (band)`;
     await sql`CREATE INDEX IF NOT EXISTS opd_note_audits_consult_type_idx ON opd_note_audits (consult_type)`;
     steps.indexes = 'ok';
+    // v0.2 — persist the specific missing NABH-OPD fields so the dashboard can show an
+    // exact documentation-gap breakdown (Top issues). Backfilled (no-LLM) for older rows.
+    await sql`ALTER TABLE opd_note_audits ADD COLUMN IF NOT EXISTS missing_fields JSONB`;
+    steps.missing_fields = 'ok';
     const cols = (await sql`SELECT count(*)::int AS n FROM information_schema.columns WHERE table_name = 'opd_note_audits'`) as Array<{ n: number }>;
     steps.columns = String(cols[0]?.n ?? 0);
     return NextResponse.json({ ok: true, steps });

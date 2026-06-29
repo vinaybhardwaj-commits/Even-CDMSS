@@ -89,6 +89,14 @@ export async function fetchOpdNoteByUid(uid: string): Promise<Record<string, unk
   return rows[0] ?? null;
 }
 
+/** Bulk fetch notes by uid (for the no-LLM completeness backfill). */
+export async function fetchOpdNotesByUids(uids: string[]): Promise<Record<string, unknown>[]> {
+  const ex = Array.from(new Set((uids || []).filter(isUid)));
+  if (!ex.length) return [];
+  const inList = ex.map((u) => `'${u}'`).join(', ');
+  return metabaseQuery(`SELECT ${ENGINE_COLUMNS.join(', ')} FROM ${TABLE} WHERE uid IN (${inList})`);
+}
+
 /** Map doctor_uid → display name (db13 `doctors.name_with_prefix`). Names are staff data,
  *  not PHI; used to label the OPD Audit per-doctor view. Best-effort; missing uids omitted. */
 export async function fetchDoctorNames(uids: string[]): Promise<Record<string, string>> {
