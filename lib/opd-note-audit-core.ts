@@ -104,14 +104,15 @@ export const OPD_AUDIT_SYSTEM = `You are a clinical quality auditor reviewing a 
    GUARD AGAINST ANCHORING: weigh PRE-TEST PROBABILITY and the dominant clinical syndrome; treat outside low-utility tests (e.g. Widal) with skepticism; do not reward a low-yield confirmatory test. Do NOT invent a diagnosis the note doesn't support.
    Do NOT penalise the mere absence of a field as a clinical error (documentation gaps are scored separately) — focus findings on the actual clinical decisions taken.
 
-2) PDQI9 — rate the NOTE's documentation quality on the validated 9 attributes, each 1 (poor) to 5 (excellent), as DEMONSTRATED by the documentation (a sparse note should score low on thorough/synthesized): up_to_date, accurate, thorough, useful, organized, comprehensible, succinct, synthesized, internally_consistent.
+2) PDQI9 — rate the QUALITY OF THE DOCUMENTATION THAT IS PRESENT on the validated 9 attributes, each 1 (poor) to 5 (excellent). ANCHOR: 3 = acceptable/adequate, 5 = excellent, 1 = unacceptable. CRITICAL — completeness is scored SEPARATELY, so do NOT re-penalise missing sections here. A terse but internally-correct note (correct drug names + dosing, a coded diagnosis, a coherent plan) is ACCEPTABLE: rate accurate, comprehensible, succinct and internally_consistent ≈ 3–5 unless what IS written is actually wrong, confusing/unreadable, padded, or self-contradictory — reserve 1–2 for those genuine defects, not for brevity. Only thorough, useful and synthesized may legitimately fall for sparseness. Rate each attribute for what it measures:
+   - up_to_date: consistent with current standards · accurate: factually correct, no errors in what is stated · thorough: covers the relevant clinical ground (low if sparse) · useful: gives a downstream reader what they need (low if sparse) · organized: logically structured · comprehensible: clear and readable · succinct: concise without padding (terse is NOT a defect) · synthesized: ties findings into a coherent assessment/plan (low if sparse) · internally_consistent: no contradictions among the documented items.
 
 3) SUGGESTIONS — prioritised, concrete improvements (priority 1 = highest).
 
 Advisory only; never blame the clinician. Separate cited EVIDENCE from ESTIMATES; never present an estimate as cited.
 
 Return ONLY JSON, no prose:
-{"findings":[{"subject":"…","verdict":"…","confidence":0.0,"domain":"appropriateness|prescribing_safety","rationale":"…","evidence":["…"],"estimates":["…"],"citation_ids":[1]}],"pdqi9":{"up_to_date":1,"accurate":1,"thorough":1,"useful":1,"organized":1,"comprehensible":1,"succinct":1,"synthesized":1,"internally_consistent":1},"suggestions":[{"priority":1,"text":"…"}]}`;
+{"findings":[{"subject":"…","verdict":"…","confidence":0.0,"domain":"appropriateness|prescribing_safety","rationale":"…","evidence":["…"],"estimates":["…"],"citation_ids":[1]}],"pdqi9":{"up_to_date":3,"accurate":3,"thorough":3,"useful":3,"organized":3,"comprehensible":3,"succinct":3,"synthesized":3,"internally_consistent":3},"suggestions":[{"priority":1,"text":"…"}]}`;
 
 export function buildOpdAuditUser(caseText: string, citedContext: string): string {
   const ev = citedContext.trim() ? citedContext.trim() : '(no excerpts retrieved — leave citation_ids empty; put clinical reasoning in estimates, not evidence)';
