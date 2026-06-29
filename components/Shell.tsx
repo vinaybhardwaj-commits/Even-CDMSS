@@ -27,7 +27,7 @@ const CLINICIAN: NavGroup[] = [
       { href: '/ddx', label: 'Differential', Icon: Network },
       { href: '/drugs', label: 'Drugs', Icon: Pill },
       { href: '/calculators', label: 'Calculators', Icon: Calculator },
-      { href: '/appropriateness', label: 'Appropriateness', Icon: ClipboardCheck },
+      { href: '/appropriateness', label: 'Right Care', Icon: ClipboardCheck },
     ],
   },
   {

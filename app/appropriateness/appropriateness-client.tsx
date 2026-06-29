@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, type ChangeEvent, type ReactNode } from 'react';
-import { Loader2, Flag, X, ExternalLink, Info, Scale, Lightbulb, BookOpen, AlertTriangle, IndianRupee, Route, Upload, FileText, Lock, ClipboardCheck, Download } from 'lucide-react';
+import { Loader2, Flag, X, ExternalLink, Info, Scale, Lightbulb, BookOpen, AlertTriangle, IndianRupee, Route, Upload, FileText, Lock, ClipboardCheck, FileSearch, Download, type LucideIcon } from 'lucide-react';
 import { levelToScore, VALUE_DISCLAIMER, type ValueAnalysis, type ValueIntervention, type Level, type NetValue, type TariffRef } from '@/lib/lvc-value-core';
 import PathwayTrace from '@/components/PathwayTrace';
 import type { PathwaySkeleton, PathwayEnrichment, SkeletonStage } from '@/lib/pathway-core';
@@ -13,6 +13,14 @@ import TracePanel, { type TraceEvent } from '@/components/TracePanel';
 import { downloadRunsExcel, type ExportRun } from '@/lib/runs-export';
 
 type Mode = 'check' | 'pathway' | 'audit';
+
+// The three Right Care modes mapped to the care timeline (before / during / after),
+// so the chooser explains itself at a glance.
+const MODE_CARDS: { mode: Mode; name: string; timing: string; useWhen: string; input: string; Icon: LucideIcon }[] = [
+  { mode: 'check',   name: 'Order check',  timing: 'Before ordering',   useWhen: 'Deciding whether a test or treatment is worth ordering.', input: 'Type a scenario',     Icon: ClipboardCheck },
+  { mode: 'pathway', name: 'Care pathway', timing: 'Planning care',     useWhen: 'Mapping the right next steps for a presentation.',        input: 'Type a presentation', Icon: Route },
+  { mode: 'audit',   name: 'Record audit', timing: 'After the episode', useWhen: 'Reviewing a finished episode for value and gaps.',        input: 'Upload a record',     Icon: FileSearch },
+];
 
 type CaEdit = {
   docType: DocType | 'auto'; detectedDocType: DocType; confidence: number;
@@ -338,25 +346,40 @@ export default function AppropriatenessClient() {
 
   return (
     <div>
-      <div className="mb-4 inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 text-sm">
-        <button
-          type="button" onClick={() => setMode('check')}
-          className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-medium ${mode === 'check' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-        >
-          <Flag className="h-3.5 w-3.5" /> Appropriateness check
-        </button>
-        <button
-          type="button" onClick={() => setMode('pathway')}
-          className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-medium ${mode === 'pathway' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-        >
-          <Route className="h-3.5 w-3.5" /> Pathway &amp; decision
-        </button>
-        <button
-          type="button" onClick={() => setMode('audit')}
-          className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-medium ${mode === 'audit' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-        >
-          <ClipboardCheck className="h-3.5 w-3.5" /> Case audit
-        </button>
+      {/* Timeline rail: before → during → after */}
+      <div className="mb-2 flex items-center gap-2">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.07em] text-slate-400">Before</span>
+        <span className="h-px flex-1 bg-slate-200" />
+        <span className="text-[10px] font-semibold uppercase tracking-[0.07em] text-slate-400">During</span>
+        <span className="h-px flex-1 bg-slate-200" />
+        <span className="text-[10px] font-semibold uppercase tracking-[0.07em] text-slate-400">After</span>
+      </div>
+      {/* Mode chooser — each card says what it's for and when to use it */}
+      <div className="mb-5 grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+        {MODE_CARDS.map((c) => {
+          const active = mode === c.mode;
+          const Icon = c.Icon;
+          return (
+            <button
+              key={c.mode}
+              type="button"
+              onClick={() => setMode(c.mode)}
+              aria-pressed={active}
+              className={'flex flex-col rounded-xl border bg-white p-3.5 text-left transition ' +
+                (active ? 'border-brand bg-brand-faint/30 ring-1 ring-brand' : 'border-slate-200 hover:border-brand/60')}
+            >
+              <div className="flex items-center justify-between">
+                <span className={'flex h-8 w-8 items-center justify-center rounded-lg ' + (active ? 'bg-brand-faint text-brand' : 'bg-slate-100 text-slate-500')}>
+                  <Icon className="h-4 w-4" />
+                </span>
+                <span className={'rounded-md px-2 py-0.5 text-[9.5px] font-semibold ' + (active ? 'bg-brand-faint text-brand' : 'bg-slate-100 text-slate-500')}>{c.timing}</span>
+              </div>
+              <span className={'mt-2.5 text-[14px] font-medium ' + (active ? 'text-brand' : 'text-slate-900')}>{c.name}</span>
+              <span className="mt-0.5 text-[12px] leading-snug text-slate-500">{c.useWhen}</span>
+              <span className="mt-2 text-[10.5px] text-slate-400">{c.input}</span>
+            </button>
+          );
+        })}
       </div>
 
       {mode !== 'audit' && (
@@ -418,7 +441,7 @@ export default function AppropriatenessClient() {
               type="button"
             >
               {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flag className="h-4 w-4" />}
-              {loading ? 'Checking…' : 'Check appropriateness'}
+              {loading ? 'Checking…' : 'Run order check'}
             </button>
           ) : (
             <button
@@ -427,7 +450,7 @@ export default function AppropriatenessClient() {
               type="button"
             >
               {(pwLoading || pwEnriching) ? <Loader2 className="h-4 w-4 animate-spin" /> : <Route className="h-4 w-4" />}
-              {pwLoading ? 'Tracing…' : pwEnriching ? 'Enriching…' : 'Trace pathway'}
+              {pwLoading ? 'Mapping…' : pwEnriching ? 'Enriching…' : 'Map the pathway'}
             </button>
           )}
           <span className="text-xs text-slate-400">
@@ -482,7 +505,7 @@ export default function AppropriatenessClient() {
             <button onClick={runAudit} disabled={caExtractLoading || caAnalyzeLoading || !caPendingFile}
               className="inline-flex items-center gap-2 rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50" type="button">
               {(caExtractLoading || caAnalyzeLoading) ? <Loader2 className="h-4 w-4 animate-spin" /> : <ClipboardCheck className="h-4 w-4" />}
-              {caExtractLoading ? 'Reading…' : caAnalyzeLoading ? 'Auditing…' : 'Run audit'}
+              {caExtractLoading ? 'Reading…' : caAnalyzeLoading ? 'Auditing…' : 'Run record audit'}
             </button>
             <span className="inline-flex items-center gap-1 text-xs text-slate-400"><Lock className="h-3 w-3" /> Processed in-memory · the file isn&apos;t stored.</span>
           </div>

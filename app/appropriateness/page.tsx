@@ -1,24 +1,26 @@
 import HelpCard from '@/components/HelpCard';
+import PageHeader from '@/components/PageHeader';
 import AppropriatenessClient from './appropriateness-client';
 
-export const metadata = { title: 'Appropriateness' };
+export const metadata = { title: 'Right Care' };
 
 export default function AppropriatenessPage() {
   return (
     <div>
-      <h1 className="text-2xl font-semibold text-slate-900 sm:text-3xl">Appropriateness / Low-Value Care</h1>
-      <p className="mt-1 text-sm text-slate-500">
-        Check a proposed order against low-value-care guidance, trace the recommended clinical pathway, or upload a discharge summary, OT note, or prescription for a retrospective case audit. Advisory only — it never blocks an order.
-      </p>
+      <PageHeader
+        eyebrow="Right Care"
+        title="Is this the right care, at the right cost?"
+        subtitle="Check an order before you place it, map a care pathway, or audit a completed record. Advisory only — it never blocks an order."
+      />
       <HelpCard
         storageKey="appropriateness"
-        title="About this tool"
-        body="Describe the patient and the order you're considering. The tool extracts the proposed tests/treatments, finds matching society 'don't do this' recommendations (Choosing Wisely USA/Canada and India's National Cancer Grid), and — crucially — checks whether each recommendation's precondition is actually met for this patient before flagging it. It cites the source for every flag and suggests what to consider instead."
+        title="About Right Care"
+        body="Right Care flags over- and under-use across the care timeline. It matches society 'don't do this' recommendations (Choosing Wisely USA/Canada and India's National Cancer Grid), checks whether each one actually applies to this patient before flagging it, and cites the source for every flag."
         bullets={[
-          "It only flags when the recommendation genuinely applies to THIS patient — a flag stays silent if the patient has the red-flag/exception that makes the test appropriate.",
-          'Every flag carries its society and a source link — verify before acting.',
-          'Absence of a flag is not an endorsement: it means nothing low-value was identified, not that the plan is optimal.',
-          'This is decision support, not a directive — it never cancels or blocks an order.',
+          'Order check — before ordering: is a proposed test or treatment worth it for this patient?',
+          'Care pathway — while planning: what are the right next steps, with value flagged along the way?',
+          'Record audit — after the episode: upload a discharge summary, OT note, or prescription for a value and completeness review.',
+          'It only flags when a recommendation genuinely applies; absence of a flag is not an endorsement. Decision support, never a directive.',
         ]}
       />
       <div className="mt-6"><AppropriatenessClient /></div>

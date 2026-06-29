@@ -10,7 +10,7 @@ const PRIMARY = [
   { href: '/ddx', label: 'Differential', desc: 'Structured presentation → cited differential, cannot-miss first.', Icon: Network },
   { href: '/drugs', label: 'Drugs', desc: 'Dosing, renal/hepatic adjustment, and interaction checks.', Icon: Pill },
   { href: '/calculators', label: 'Calculators', desc: '15 bedside scores — NEWS2, CURB-65, HEART, eGFR, and more.', Icon: Calculator },
-  { href: '/appropriateness', label: 'Appropriateness', desc: 'Value check, care pathway, or retrospective case audit.', Icon: ClipboardCheck },
+  { href: '/appropriateness', label: 'Right Care', desc: 'Order check, care pathway, or record audit — right care at the right cost.', Icon: ClipboardCheck },
   { href: '/audit', label: 'Medication Audit', desc: 'Pharmacist chart review — allergy and drug-interaction cross-check.', Icon: ClipboardList },
 ];
 
