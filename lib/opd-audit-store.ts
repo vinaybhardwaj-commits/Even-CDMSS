@@ -74,3 +74,12 @@ export async function auditedCountForDay(day: string, engineVersion: string): Pr
   )) as Array<{ n: number }>;
   return Number(rows[0]?.n ?? 0);
 }
+
+/** Earliest IST day that has any audit — the floor for the gap-fill sweep (never audit
+ *  days before the system started). Null if nothing audited yet. */
+export async function earliestAuditedDay(): Promise<string | null> {
+  const rows = (await sql(
+    `SELECT to_char(min((note_date AT TIME ZONE 'Asia/Kolkata')::date),'YYYY-MM-DD') AS d FROM opd_note_audits`,
+  )) as Array<{ d: string | null }>;
+  return rows[0]?.d ?? null;
+}

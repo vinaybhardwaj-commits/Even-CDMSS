@@ -6,10 +6,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auditOpdNote } from '@/lib/opd-note-audit';
 import { OPD_ENGINE_VERSION } from '@/lib/opd-note-audit-core';
 import { countOpdNotesForDay, fetchOpdNotesForDay, istYesterday } from '@/lib/metabase';
-import { saveOpdAudit, auditedUidsForDay } from '@/lib/opd-audit-store';
+import { saveOpdAudit, auditedUidsForDay, auditedCountForDay, earliestAuditedDay } from '@/lib/opd-audit-store';
 
-// Execution guard (this spends LLM compute): Vercel Cron (un-spoofable x-vercel-cron) or a
-// manual trigger carrying Bearer CRON_SECRET / ?secret=CRON_SECRET. Not a view gate.
+// Execution guard (spends LLM compute): Vercel Cron (un-spoofable x-vercel-cron) or a manual
+// trigger carrying Bearer CRON_SECRET / ?secret=CRON_SECRET. Not a view gate.
 function authed(req: NextRequest): boolean {
   const isCron = req.headers.get('x-vercel-cron') !== null;
   const auth = req.headers.get('authorization') || '';
@@ -19,64 +19,87 @@ function authed(req: NextRequest): boolean {
   return isCron || bearerOk || secretOk;
 }
 
-// Bounded-concurrency map (no dependency).
 async function mapLimit<T, R>(items: T[], limit: number, fn: (it: T) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length);
   let i = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(limit, items.length) }, async () => {
-      while (i < items.length) { const idx = i++; out[idx] = await fn(items[idx]); }
-    }),
-  );
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (i < items.length) { const idx = i++; out[idx] = await fn(items[idx]); }
+  }));
   return out;
 }
 
+function addDays(day: string, delta: number): string {
+  const d = new Date(day + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + delta); return d.toISOString().slice(0, 10);
+}
+
+// Audit one batch of not-yet-audited notes for a single IST day.
+async function processDay(day: string, max: number, conc: number) {
+  const total = await countOpdNotesForDay(day);
+  const already = await auditedUidsForDay(day, OPD_ENGINE_VERSION);
+  if (already.length >= total) return { day, total, audited: already.length, processed: 0, remaining: 0, done: true, results: [] as unknown[] };
+  const rows = await fetchOpdNotesForDay(day, already, max);
+  const results = await mapLimit(rows, conc, async (row) => {
+    const started = Date.now();
+    try {
+      const audit = await auditOpdNote(row);
+      const status = await saveOpdAudit(audit, { model: 'gemini-2.5-pro', latencyMs: Date.now() - started });
+      return { uid: audit.keys.uid, index: audit.scorecard.headline, band: audit.scorecard.band, status };
+    } catch (e) {
+      return { uid: String((row as Record<string, unknown>).uid || ''), error: String((e as Error).message) };
+    }
+  });
+  const inserted = results.filter((r) => 'status' in r && (r as { status?: string }).status === 'inserted').length;
+  const audited = already.length + inserted;
+  const remaining = Math.max(0, total - audited);
+  return { day, total, audited, processed: results.length, remaining, done: remaining === 0, results };
+}
+
 /**
- * Count-agnostic, resumable OPD note-quality worker.
+ * Count-agnostic, resumable, GAP-PROOF OPD note-quality worker.
  *
- * Each invocation: count the day's non-draft medical notes → read the uids already audited
- * (at this engine version) → fetch the next un-audited page (≤ `max`) → audit them with
- * bounded concurrency (`conc`) → persist each. The audit table is the watermark, so it
- * needs no count up front, is idempotent, and resumes after any crash. A windowed backstop
- * cron re-invokes until the day is drained; runs after done are cheap no-ops.
+ * Two modes:
+ *  • ?day=YYYY-MM-DD  → audit just that day (manual backfill / spot-fill).
+ *  • default (cron)   → SWEEP a lookback window ending yesterday IST, working the OLDEST
+ *    un-audited day first. So a missed night (weekend, deploy gap) is caught up automatically
+ *    on the next run, oldest-first, until the whole window is complete. The window is floored
+ *    at the earliest-ever audited day, so it never reaches back before the system launched,
+ *    and it's idempotent (uid+engine_version), so caught-up days are cheap no-ops — no re-charge.
  *
- * Query: ?day=YYYY-MM-DD (default = yesterday IST) · ?max (default 12, ≤30) · ?conc (default 4, ≤8).
+ *  ?max (12→ default 15, ≤30) · ?conc (default 5, ≤8) · ?lookback (default OPD_AUDIT_LOOKBACK or 4, ≤14).
  */
 export async function GET(req: NextRequest) {
   if (!authed(req)) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   const p = req.nextUrl.searchParams;
-  const day = p.get('day') || istYesterday();
-  const max = Math.max(1, Math.min(30, Number(p.get('max') || 12)));
-  const conc = Math.max(1, Math.min(8, Number(p.get('conc') || 4)));
+  const max = Math.max(1, Math.min(30, Number(p.get('max') || 15)));
+  const conc = Math.max(1, Math.min(8, Number(p.get('conc') || 5)));
+  const dayParam = p.get('day');
 
   try {
-    const total = await countOpdNotesForDay(day);
-    const already = await auditedUidsForDay(day, OPD_ENGINE_VERSION);
-    if (already.length >= total) {
-      return NextResponse.json({ ok: true, day, total, audited: already.length, processed: 0, remaining: 0, done: true });
+    // Manual single-day mode.
+    if (dayParam && /^\d{4}-\d{2}-\d{2}$/.test(dayParam)) {
+      const r = await processDay(dayParam, max, conc);
+      return NextResponse.json({ ok: true, mode: 'day', ...r });
     }
 
-    const rows = await fetchOpdNotesForDay(day, already, max);
-    const t0 = Date.now();
-    const results = await mapLimit(rows, conc, async (row) => {
-      const started = Date.now();
-      try {
-        const audit = await auditOpdNote(row);
-        const status = await saveOpdAudit(audit, { model: 'gemini-2.5-pro', latencyMs: Date.now() - started });
-        return { uid: audit.keys.uid, index: audit.scorecard.headline, band: audit.scorecard.band, status };
-      } catch (e) {
-        return { uid: String((row as Record<string, unknown>).uid || ''), error: String((e as Error).message) };
-      }
-    });
+    // Sweep mode: oldest incomplete day in the lookback window (floored at launch).
+    const lookback = Math.max(1, Math.min(14, Number(p.get('lookback') || process.env.OPD_AUDIT_LOOKBACK || 4)));
+    const yesterday = istYesterday();
+    const floor = (await earliestAuditedDay()) || yesterday;
+    const days: string[] = [];
+    for (let i = lookback - 1; i >= 0; i--) { const d = addDays(yesterday, -i); if (d >= floor) days.push(d); }
+    const window = { from: days[0] ?? yesterday, to: yesterday };
 
-    const inserted = results.filter((r) => 'status' in r && r.status === 'inserted').length;
-    const audited = already.length + inserted;
-    const remaining = Math.max(0, total - audited);
-    return NextResponse.json({
-      ok: true, day, total, audited, processed: results.length, remaining, done: remaining === 0,
-      took_ms: Date.now() - t0, results,
-    });
+    for (const d of days) {
+      const total = await countOpdNotesForDay(d);
+      if (total === 0) continue;
+      const auditedCount = await auditedCountForDay(d, OPD_ENGINE_VERSION);
+      if (auditedCount < total) {
+        const r = await processDay(d, max, conc);
+        return NextResponse.json({ ok: true, mode: 'sweep', window, ...r });
+      }
+    }
+    return NextResponse.json({ ok: true, mode: 'sweep', window, caughtUp: true, done: true, processed: 0 });
   } catch (e) {
-    return NextResponse.json({ ok: false, day, error: String((e as Error).message) }, { status: 500 });
+    return NextResponse.json({ ok: false, error: String((e as Error).message) }, { status: 500 });
   }
 }
