@@ -10,16 +10,16 @@
 
 import PACKAGES_DOC from '@/data/charge-master-packages.json';
 import INVESTIGATIONS_DOC from '@/data/charge-master-investigations.json';
-import { matchTariffIn, matchInvestigationIn, type TariffRow, type TariffMatch } from './charge-master-core';
+import { matchTariffIn, matchInvestigationIn, roomCategoryInflation, tierForCareSetting, type TariffRow, type TariffMatch, type InflationResult } from './charge-master-core';
 
-type RawPkg = { code: string; dept?: string; item: string; general: number; private?: number; suite?: number };
-type RawInv = { code: string; type?: string; item: string; opd?: number | null; general: number; private?: number | null; suite?: number | null };
+type RawPkg = { code: string; dept?: string; item: string; general: number; semi_private?: number | null; private?: number | null; suite?: number | null; icu?: number | null; days?: number | null };
+type RawInv = { code: string; type?: string; item: string; opd?: number | null; general: number; semi_private?: number | null; private?: number | null; suite?: number | null; icu?: number | null };
 
 const PACKAGE_ROWS: TariffRow[] = (((PACKAGES_DOC as { packages?: RawPkg[] }).packages) || [])
-  .map((r) => ({ kind: 'package' as const, code: r.code, dept: r.dept, item: r.item, general: r.general, private: r.private ?? null, suite: r.suite ?? null }));
+  .map((r) => ({ kind: 'package' as const, code: r.code, dept: r.dept, item: r.item, general: r.general, semiPrivate: r.semi_private ?? null, private: r.private ?? null, suite: r.suite ?? null, icu: r.icu ?? null, days: r.days ?? null }));
 
 const INVESTIGATION_ROWS: TariffRow[] = (((INVESTIGATIONS_DOC as { investigations?: RawInv[] }).investigations) || [])
-  .map((r) => ({ kind: 'investigation' as const, code: r.code, type: r.type, item: r.item, opd: r.opd ?? null, general: r.general, private: r.private ?? null, suite: r.suite ?? null }));
+  .map((r) => ({ kind: 'investigation' as const, code: r.code, type: r.type, item: r.item, opd: r.opd ?? null, general: r.general, semiPrivate: r.semi_private ?? null, private: r.private ?? null, suite: r.suite ?? null, icu: r.icu ?? null }));
 
 export function matchTariff(query: string): TariffMatch | null {
   return matchTariffIn(query, PACKAGE_ROWS);
@@ -39,5 +39,21 @@ export function matchAnyTariffs(queries: string[]): TariffMatch[] {
   return out;
 }
 
-export { matchTariffIn, matchInvestigationIn, normalizeTariffText, formatINR, formatTariffForPrompt } from './charge-master-core';
-export type { TariffRow, TariffMatch, TariffKind } from './charge-master-core';
+/** Room-category inflation across a whole episode's matched orders, at the patient's tier vs General. */
+export function episodeRoomInflation(queries: string[], careSetting: unknown): InflationResult {
+  const rows = matchAnyTariffs(queries);
+  return roomCategoryInflation(rows, tierForCareSetting(careSetting));
+}
+
+/** Package period (days) for the best package match of a procedure, or null. */
+export function packageDaysFor(procedure: string | null | undefined): number | null {
+  if (!procedure) return null;
+  const m = matchTariff(procedure);
+  return m && typeof m.days === 'number' && m.days > 0 ? m.days : null;
+}
+
+export {
+  matchTariffIn, matchInvestigationIn, normalizeTariffText, formatINR, formatTariffForPrompt,
+  roomCategoryInflation, tierForCareSetting, priceAtTier,
+} from './charge-master-core';
+export type { TariffRow, TariffMatch, TariffKind, TariffTier, InflationResult } from './charge-master-core';

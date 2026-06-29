@@ -17,11 +17,37 @@ export interface TariffRow {
   dept?: string;
   type?: string;
   general: number;
+  semiPrivate?: number | null;  // Semi-Pvt / twin-sharing tier
   private?: number | null;
   suite?: number | null;
-  opd?: number | null;     // investigations carry an outpatient price
+  icu?: number | null;          // ICU tier
+  opd?: number | null;          // investigations carry an outpatient price
+  days?: number | null;         // packages carry a package period (days)
 }
 export interface TariffMatch extends TariffRow { score: number; matched_on: string; }
+
+// Room/bed category → the tariff tier that applies to that admission. 'general' is the
+// lowest inpatient tier (reference for room-category inflation).
+export type TariffTier = 'opd' | 'general' | 'semiPrivate' | 'private' | 'suite' | 'icu';
+export function tierForCareSetting(careSetting: unknown): TariffTier {
+  const s = String(careSetting ?? '').toLowerCase().replace(/[_/]+/g, ' ');
+  if (/icu|intensive|critical|ccu|nicu|picu/.test(s)) return 'icu';
+  if (/suite|deluxe|luxury|executive|vip/.test(s)) return 'suite';
+  if (/twin|semi|sharing|shared|double/.test(s)) return 'semiPrivate';
+  if (/private|single|pvt|deluxe single|individual/.test(s)) return 'private';
+  if (/day.?care|opd|ambulatory|out.?patient/.test(s)) return 'opd';
+  return 'general';
+}
+/** Price for a tariff row at a given tier, falling back sensibly when a tier is absent. */
+export function priceAtTier(r: TariffRow, tier: TariffTier): number | null {
+  const order: TariffTier[] = tier === 'opd'
+    ? ['opd', 'general', 'semiPrivate', 'private', 'suite', 'icu']
+    : tier === 'icu'
+      ? ['icu', 'suite', 'private', 'semiPrivate', 'general']
+      : [tier, 'private', 'semiPrivate', 'general', 'suite', 'opd'];
+  for (const t of order) { const v = r[t]; if (typeof v === 'number' && v > 0) return v; }
+  return typeof r.general === 'number' && r.general > 0 ? r.general : null;
+}
 
 // Anatomical SIDE (right/left) is dropped; procedure LATERALITY (unilateral/bilateral) is kept.
 const STOP = new Set([
@@ -100,6 +126,22 @@ export function matchInvestigationIn(query: string, rows: TariffRow[], opts: { m
   const near = cands.filter((c) => top - c.score <= 0.08);
   near.sort((a, b) => (a.opd ?? a.general ?? Infinity) - (b.opd ?? b.general ?? Infinity));
   return near[0];
+}
+
+export interface InflationResult { atTier: number; atGeneral: number; delta: number; tier: TariffTier; n: number }
+/**
+ * Room-category cost inflation: for a set of matched tariff rows, the extra cost of having
+ * them charged at the patient's room tier vs the lowest inpatient (General) tier. This makes
+ * concrete the billing rule that "room category multiplies the whole episode". 0 at general/opd.
+ */
+export function roomCategoryInflation(rows: TariffRow[], tier: TariffTier): InflationResult {
+  if (tier === 'general' || tier === 'opd') return { atTier: 0, atGeneral: 0, delta: 0, tier, n: 0 };
+  let atTier = 0, atGeneral = 0, n = 0;
+  for (const r of rows) {
+    const a = priceAtTier(r, tier); const g = priceAtTier(r, 'general');
+    if (a != null && g != null) { atTier += a; atGeneral += g; n += 1; }
+  }
+  return { atTier, atGeneral, delta: Math.max(0, atTier - atGeneral), tier, n };
 }
 
 export function formatINR(n: number | null | undefined): string {

@@ -20,7 +20,7 @@ import RUBRIC_DOC from '@/data/nabh-rubric.json';
 import { retrieve } from './retrieve';
 import { chatWithFallback, geminiModelFor, geminiUtilityModel, TEXT_MODEL } from './llm';
 import { startTrace, logEvent, finishTrace } from './trace';
-import { matchAnyTariffs } from './charge-master';
+import { matchAnyTariffs, packageDaysFor, episodeRoomInflation } from './charge-master';
 import { generateFromDocument } from './gemini-multimodal';
 import { traceSkeleton } from './pathway';
 import { parseCritique } from './lvc-value-core';
@@ -251,13 +251,21 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
     const overStayFlagged = parsed.findings.some((f) =>
       f.domain === 'efficiency' && (f.verdict === 'low-value' || f.verdict === 'context-dependent') &&
       STAY_RE.test(`${f.subject} ${f.rationale} ${f.order ?? ''}`));
-    const bedDay = estimateBedDayCost(extracted.adminFacts, overStayFlagged);
+    // Precise over-stay: if a package matches the procedure, room rent is included within its
+    // period, so charge bed-days only BEYOND that period; else the day-care benchmark applies.
+    const packageDays = packageDaysFor(extracted.procedure);
+    const bedDay = estimateBedDayCost(extracted.adminFacts, overStayFlagged, packageDays);
+    // Room-category inflation across the whole episode's orders (informational cost signal).
+    const allOrders = [extracted.procedure ?? '', ...extracted.investigations, ...extracted.treatments, ...extracted.medications].filter(Boolean);
+    const inflation = extracted.adminFacts?.careSetting ? episodeRoomInflation(allOrders, extracted.adminFacts.careSetting) : null;
     const valueScore = computeScorecard({
       findings: parsed.findings.map((f) => ({ verdict: f.verdict, confidence: f.confidence, domain: f.domain, tariff: repTariff(f.tariffs) })),
       completenessCoverage: completeness.coverage,
       patientCentred: { present: pcPresent, total: pcItems.length },
       adminFacts: extracted.adminFacts,
       bedDayCost: bedDay.cost, bedDayDetail: bedDay.detail || undefined,
+      roomCategoryInflation: inflation && inflation.n > 0 ? inflation.delta : null,
+      roomTier: inflation && inflation.delta > 0 ? inflation.tier : undefined,
     });
 
     const report: AuditReport = {

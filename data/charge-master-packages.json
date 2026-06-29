@@ -1,1620 +1,2225 @@
 {
- "source": "EHRC Tariff 2025-26 — Package Tariff (Charge Master)",
+ "source": "EHRC Tariff List - Packages (TARIFF 2025-26), eff. 1 Jun 2025. Per-room-category package prices + package period (days). Cols Genral/Spvt/Pvt/Suite = general/semi_private/private/suite; 'Open Billing'/blank -> null.",
  "currency": "INR",
  "tiers": [
+  "icu",
   "general",
+  "semi_private",
   "private",
   "suite"
  ],
- "note": "Inpatient package prices by room tier. Days/ICU columns omitted (unreliable in source extraction).",
+ "note": "days = package period (room rent + listed services included within these days; stay beyond billed on actuals). Corrects the prior parse that mislabelled Spvt as private and Pvt as suite and dropped ICU/Spvt/days.",
  "packages": [
   {
    "code": "ENT-PKG-001",
    "dept": "ENT",
    "item": "ADENOIDECTOMY",
+   "days": 2,
+   "icu": null,
    "general": 88000,
-   "private": 98000,
-   "suite": 117600
+   "semi_private": 98000,
+   "private": 117600,
+   "suite": null
   },
   {
    "code": "ENT-PKG-002",
    "dept": "ENT",
    "item": "ADENOTONSILLECTOMY",
+   "days": 2,
+   "icu": null,
    "general": 115800,
-   "private": 125800,
-   "suite": 150960
+   "semi_private": 125800,
+   "private": 150960,
+   "suite": null
   },
   {
    "code": "ENT-PKG-003",
    "dept": "ENT",
    "item": "CORTICAL MASTOIDECTOMY WITH MYRINGOPLASTY",
+   "days": 2,
+   "icu": null,
    "general": 177000,
-   "private": 187000,
-   "suite": 224400
+   "semi_private": 187000,
+   "private": 224400,
+   "suite": null
   },
   {
    "code": "ENT-PKG-004",
    "dept": "ENT",
    "item": "FESS - BILATERAL",
+   "days": 2,
+   "icu": null,
    "general": 140800,
-   "private": 150800,
-   "suite": 180960
+   "semi_private": 150800,
+   "private": 180960,
+   "suite": null
   },
   {
    "code": "ENT-PKG-005",
    "dept": "ENT",
    "item": "FESS - UNILATERAL",
+   "days": 2,
+   "icu": null,
    "general": 98000,
-   "private": 108000,
-   "suite": 129600
+   "semi_private": 108000,
+   "private": 129600,
+   "suite": null
   },
   {
    "code": "ENT-PKG-006",
    "dept": "ENT",
    "item": "FESS WITH SEPTOPLASTY & TURBINECTOMY OR POLYPECTOMY OR CONCHOPLASTY-BILATERAL",
+   "days": 2,
+   "icu": null,
    "general": 140500,
-   "private": 150500,
-   "suite": 180600
+   "semi_private": 150500,
+   "private": 180600,
+   "suite": null
   },
   {
    "code": "ENT-PKG-007",
    "dept": "ENT",
    "item": "FESS WITH SEPTOPLASTY & TURBINECTOMY OR POLYPECTOMY/ CONCHOPLASTY-UNILATE",
+   "days": 2,
+   "icu": null,
    "general": 123000,
-   "private": 133000,
-   "suite": 159600
+   "semi_private": 133000,
+   "private": 159600,
+   "suite": null
   },
   {
    "code": "ENT-PKG-008",
    "dept": "ENT",
    "item": "MASTOIDECTOMY",
+   "days": 2,
+   "icu": null,
    "general": 122000,
-   "private": 132500,
-   "suite": 159000
+   "semi_private": 132500,
+   "private": 159000,
+   "suite": null
   },
   {
    "code": "ENT-PKG-009",
    "dept": "ENT",
    "item": "MASTOIDECTOMY & TYMPANOPLASTY",
+   "days": 2,
+   "icu": null,
    "general": 150000,
-   "private": 160500,
-   "suite": 192600
+   "semi_private": 160500,
+   "private": 192600,
+   "suite": null
   },
   {
    "code": "ENT-PKG-010",
    "dept": "ENT",
    "item": "MICROLARYNGEAL SURGERIES FOR CYSTS AND POLYPS",
+   "days": 2,
+   "icu": null,
    "general": 70000,
-   "private": 80000,
-   "suite": 96000
+   "semi_private": 80000,
+   "private": 96000,
+   "suite": null
   },
   {
    "code": "ENT-PKG-011",
    "dept": "ENT",
    "item": "MINOR PROCEDURE - LA/GA IN OT < 30 MINUTES",
+   "days": 1,
+   "icu": null,
    "general": 38500,
-   "private": 48500,
-   "suite": 58200
+   "semi_private": 48500,
+   "private": 58200,
+   "suite": null
   },
   {
    "code": "ENT-PKG-012",
    "dept": "ENT",
    "item": "MYRINGOTOMY WITH GROMMET INSERTION",
+   "days": 2,
+   "icu": null,
    "general": 53000,
-   "private": 62500,
-   "suite": 75000
+   "semi_private": 62500,
+   "private": 75000,
+   "suite": null
   },
   {
    "code": "ENT-PKG-013",
    "dept": "ENT",
    "item": "NASAL ENDOSCIPY & PROCEDURE (FB REMOVAL, PACK REMOVAL, EPISTAXIS)",
+   "days": 1,
+   "icu": null,
    "general": 53000,
-   "private": 62500,
-   "suite": 75000
+   "semi_private": 62500,
+   "private": 75000,
+   "suite": null
   },
   {
    "code": "ENT-PKG-014",
    "dept": "ENT",
    "item": "PERITONSILLAR ABSCESS DRAINAGE (DAYCARE)",
+   "days": 1,
+   "icu": null,
    "general": 53000,
-   "private": 62500,
-   "suite": 75000
+   "semi_private": 62500,
+   "private": 75000,
+   "suite": null
   },
   {
    "code": "ENT-PKG-015",
    "dept": "ENT",
    "item": "SEPTOPLASTY",
+   "days": 2,
+   "icu": null,
    "general": 77000,
-   "private": 87000,
-   "suite": 104400
+   "semi_private": 87000,
+   "private": 104400,
+   "suite": null
   },
   {
    "code": "ENT-PKG-016",
    "dept": "ENT",
    "item": "SEPTOPLASTY + TURBINOPLASTY + MINI FESS",
+   "days": 2,
+   "icu": null,
    "general": 122500,
-   "private": 132500,
-   "suite": 159000
+   "semi_private": 132500,
+   "private": 159000,
+   "suite": null
   },
   {
    "code": "ENT-PKG-017",
    "dept": "ENT",
    "item": "SEPTOPLASTY + TURBINOPLASTY BIL",
+   "days": 2,
+   "icu": null,
    "general": 92000,
-   "private": 112000,
-   "suite": 134400
+   "semi_private": 112000,
+   "private": 134400,
+   "suite": null
   },
   {
    "code": "ENT-PKG-018",
    "dept": "ENT",
    "item": "SEPTOPLASTY + TURBINOPLASTY UNI",
+   "days": 2,
+   "icu": null,
    "general": 80000,
-   "private": 90000,
-   "suite": 108000
+   "semi_private": 90000,
+   "private": 108000,
+   "suite": null
   },
   {
    "code": "ENT-PKG-019",
    "dept": "ENT",
    "item": "HEAD & NECK SURGERIES",
+   "days": 7,
+   "icu": 1,
    "general": 140000,
-   "private": 150000,
-   "suite": 180000
+   "semi_private": 150000,
+   "private": 180000,
+   "suite": null
   },
   {
    "code": "ENT-PKG-020",
    "dept": "ENT",
    "item": "COCHL EAR IMPLANT SURGERY",
+   "days": 5,
+   "icu": null,
    "general": 140000,
-   "private": 150000,
-   "suite": 180000
+   "semi_private": 150000,
+   "private": 180000,
+   "suite": null
   },
   {
    "code": "ENT-PKG-021",
    "dept": "ENT",
    "item": "DIRECT LARYNGOSCOPY",
+   "days": 1,
+   "icu": null,
    "general": 50000,
-   "private": 60000,
-   "suite": 72000
+   "semi_private": 60000,
+   "private": 72000,
+   "suite": null
   },
   {
    "code": "ENT-PKG-022",
    "dept": "ENT",
    "item": "RADICAL /MODIFIED RADICAL MASTOIDECTOMY",
+   "days": 3,
+   "icu": null,
    "general": 110000,
-   "private": 120000,
-   "suite": 155000
+   "semi_private": 120000,
+   "private": 155000,
+   "suite": null
   },
   {
    "code": "ENT-PKG-023",
    "dept": "ENT",
    "item": "HEMI PAROTIDECTOMY/HEMI THYROIDECTOMY",
+   "days": 2,
+   "icu": null,
    "general": 110000,
-   "private": 120000,
-   "suite": 155000
+   "semi_private": 120000,
+   "private": 155000,
+   "suite": null
   },
   {
    "code": "ENT-PKG-024",
    "dept": "ENT",
    "item": "TONSILLECTOMY",
+   "days": 2,
+   "icu": null,
    "general": 67000,
-   "private": 77000,
-   "suite": 92400
+   "semi_private": 77000,
+   "private": 92400,
+   "suite": null
   },
   {
    "code": "ENT-PKG-025",
    "dept": "ENT",
    "item": "TYMPANOPLASTY",
+   "days": 2,
+   "icu": null,
    "general": 98000,
-   "private": 110000,
-   "suite": 140000
+   "semi_private": 110000,
+   "private": 140000,
+   "suite": null
   },
   {
    "code": "GAS-PKG-026",
-   "dept": "GAS",
+   "dept": "GASTRO",
    "item": "CAPSULE ENDOSCOPY - PKG",
+   "days": 2,
+   "icu": null,
    "general": 85000,
-   "private": 95000,
-   "suite": 110000
+   "semi_private": 95000,
+   "private": 110000,
+   "suite": null
   },
   {
    "code": "GAS-PKG-027",
-   "dept": "GAS",
-   "item": "ERCP - DAY CARE - PKG - Gastro",
+   "dept": "GASTRO",
+   "item": "ERCP - DAY CARE - PKG",
+   "days": 2,
+   "icu": null,
    "general": 68500,
-   "private": 78500,
-   "suite": 94200
+   "semi_private": 78500,
+   "private": 94200,
+   "suite": null
   },
   {
    "code": "GAS-PKG-028",
-   "dept": "GAS",
-   "item": "ERCP-EPT /STENTING/STONE REMOVAL - MED GASTRO PKG",
+   "dept": "GASTRO",
+   "item": "ERCP-EPT /STENTING/STONE REMOVAL",
+   "days": 2,
+   "icu": null,
    "general": 76000,
-   "private": 90000,
-   "suite": 100000
+   "semi_private": 90000,
+   "private": 100000,
+   "suite": null
   },
   {
    "code": "GEN-PKG-029",
-   "dept": "GEN",
-   "item": "General Surgery",
+   "dept": "GENERAL SURGERY",
+   "item": "I & D (MINOR)",
+   "days": 1,
+   "icu": null,
    "general": 29000,
-   "private": 39000,
-   "suite": 46800
+   "semi_private": 39000,
+   "private": 46800,
+   "suite": null
   },
   {
    "code": "GEN-PKG-030",
-   "dept": "GEN",
-   "item": "General Surgery",
+   "dept": "GENERAL SURGERY",
+   "item": "I & D (MAJOR)",
+   "days": 1,
+   "icu": null,
    "general": 55000,
-   "private": 70000,
-   "suite": 80000
+   "semi_private": 70000,
+   "private": 80000,
+   "suite": null
   },
   {
    "code": "GEN-PKG-031",
-   "dept": "GEN",
-   "item": "APPENDECTOMY - LAP - GEN SUR PKG",
+   "dept": "GENERAL SURGERY",
+   "item": "APPENDECTOMY - LAP",
+   "days": 2,
+   "icu": null,
    "general": 110000,
-   "private": 125000,
-   "suite": 145000
+   "semi_private": 125000,
+   "private": 145000,
+   "suite": null
   },
   {
    "code": "GEN-PKG-032",
-   "dept": "GEN",
-   "item": "APPENDECTOMY - OPEN - GEN SUR PKG",
+   "dept": "GENERAL SURGERY",
+   "item": "APPENDECTOMY - OPEN",
+   "days": 2,
+   "icu": null,
    "general": 103000,
-   "private": 140400,
-   "suite": 135080
+   "semi_private": 140400,
+   "private": 135080,
+   "suite": null
   },
   {
    "code": "GEN-PKG-033",
-   "dept": "GEN",
-   "item": "AV FISTULA (DAY CARE) - GEN SUR PKG",
+   "dept": "GENERAL SURGERY",
+   "item": "AV FISTULA (DAY CARE)",
+   "days": 2,
+   "icu": null,
    "general": 45000,
-   "private": 55000,
-   "suite": 66000
+   "semi_private": 55000,
+   "private": 66000,
+   "suite": null
   },
   {
    "code": "GEN-PKG-034",
-   "dept": "GEN",
-   "item": "BREAST LUMPECTOMY - GEN SUR PKG",
+   "dept": "GENERAL SURGERY",
+   "item": "BREAST LUMPECTOMY",
+   "days": 2,
+   "icu": null,
    "general": 80000,
-   "private": 90000,
-   "suite": 100000
+   "semi_private": 90000,
+   "private": 100000,
+   "suite": null
   },
   {
    "code": "GEN-PKG-035",
-   "dept": "GEN",
-   "item": "CHOLECYSTECTOMY (LAP) - GEN SUR PKG",
+   "dept": "GENERAL SURGERY",
+   "item": "CHOLECYSTECTOMY (LAP)",
+   "days": 2,
+   "icu": null,
    "general": 120000,
-   "private": 130000,
-   "suite": 150000
+   "semi_private": 130000,
+   "private": 150000,
+   "suite": null
   },
   {
    "code": "GEN-PKG-036",
-   "dept": "GEN",
-   "item": "CHOLECYSTECTOMY (OPEN) - GEN SUR PKG",
+   "dept": "GENERAL SURGERY",
+   "item": "CHOLECYSTECTOMY (OPEN)",
+   "days": 3,
+   "icu": null,
    "general": 120000,
-   "private": 130000,
-   "suite": 150000
+   "semi_private": 130000,
+   "private": 150000,
+   "suite": null
   },
   {
    "code": "GEN-PKG-037",
-   "dept": "GEN",
-   "item": "CIRCUMCISION (DAY CARE) - GEN SUR PKG",
+   "dept": "GENERAL SURGERY",
+   "item": "CIRCUMCISION (DAY CARE)",
+   "days": 1,
+   "icu": null,
    "general": 38500,
-   "private": 48500,
-   "suite": 58200
+   "semi_private": 48500,
+   "private": 58200,
+   "suite": null
   },
   {
    "code": "GEN-PKG-038",
-   "dept": "GEN",
-   "item": "EXCISION OF PILONIDAL SINUS WITH FLAP COVER - GEN SUR PKG",
+   "dept": "GENERAL SURGERY",
+   "item": "EXCISION OF PILONIDAL SINUS WITH FLAP COVER",
+   "days": 2,
+   "icu": null,
    "general": 125000,
-   "private": 133000,
-   "suite": 159600
+   "semi_private": 133000,
+   "private": 159600,
+   "suite": null
   },
   {
    "code": "GEN-PKG-039",
-   "dept": "GEN",
-   "item": "EXCISION OF PILONIDAL SINUS WITH PRIMARY CLOSURE - GEN SUR PKG",
+   "dept": "GENERAL SURGERY",
+   "item": "EXCISION OF PILONIDAL SINUS WITH PRIMARY CLOSURE",
+   "days": 2,
+   "icu": null,
    "general": 87000,
-   "private": 97000,
-   "suite": 116400
+   "semi_private": 97000,
+   "private": 116400,
+   "suite": null
   },
   {
    "code": "GEN-PKG-040",
-   "dept": "GEN",
-   "item": "FISSURECTOMY AND FISSURE DILATATION - GEN SUR PKG",
+   "dept": "GENERAL SURGERY",
+   "item": "FISSURECTOMY AND FISSURE DILATATION",
+   "days": 2,
+   "icu": null,
    "general": 75000,
-   "private": 85000,
-   "suite": 102000
+   "semi_private": 85000,
+   "private": 102000,
+   "suite": null
   },
   {
    "code": "GEN-PKG-041",
-   "dept": "GEN",
-   "item": "HAEMORRHOIDECTOMY (STAPLER EXCLUDED) - GEN SUR PKG",
+   "dept": "GENERAL SURGERY",
+   "item": "HAEMORRHOIDECTOMY (STAPLER EXCLUDED)",
+   "days": 2,
+   "icu": null,
    "general": 75000,
-   "private": 85000,
-   "suite": 102000
+   "semi_private": 85000,
+   "private": 102000,
+   "suite": null
   },
   {
    "code": "GEN-PKG-042",
-   "dept": "GEN",
+   "dept": "GENERAL SURGERY",
    "item": "HAEMORRHOIDECTOMY + FISSURECTOMY (STAPLER EXCLUDED) GEN SUR PKG",
+   "days": 2,
+   "icu": null,
    "general": 123000,
-   "private": 133000,
-   "suite": 159600
+   "semi_private": 133000,
+   "private": 159600,
+   "suite": null
   },
   {
    "code": "GEN-PKG-043",
-   "dept": "GEN",
+   "dept": "GENERAL SURGERY",
    "item": "HEMITHYROIDECTOMY / THYROGLOSAL CYST / SUBMANDIBULAR / PAROTIDECTOMY",
+   "days": 2,
+   "icu": null,
    "general": 120000,
-   "private": 145000,
-   "suite": 160000
+   "semi_private": 145000,
+   "private": 160000,
+   "suite": null
   },
   {
    "code": "GEN-PKG-044",
-   "dept": "GEN",
-   "item": "HIGH END FISTULECTOMY - GEN SUR PKG",
+   "dept": "GENERAL SURGERY",
+   "item": "HIGH END FISTULECTOMY",
+   "days": 2,
+   "icu": null,
    "general": 115000,
-   "private": 125000,
-   "suite": 140600
+   "semi_private": 125000,
+   "private": 140600,
+   "suite": null
   },
   {
    "code": "GEN-PKG-045",
    "dept": "GEN",
    "item": "GASTRECTOMY",
+   "days": 2,
+   "icu": null,
    "general": 300000,
-   "private": 320000,
-   "suite": 370000
+   "semi_private": 320000,
+   "private": 370000,
+   "suite": null
   },
   {
    "code": "GEN-PKG-046",
-   "dept": "GEN",
-   "item": "HYDROCELE - GEN SUR PKG",
+   "dept": "GENERAL SURGERY",
+   "item": "HYDROCELE",
+   "days": 2,
+   "icu": null,
    "general": 79000,
-   "private": 90000,
-   "suite": 100000
+   "semi_private": 90000,
+   "private": 100000,
+   "suite": null
   },
   {
    "code": "GEN-PKG-047",
-   "dept": "GEN",
+   "dept": "GENERAL SURGERY",
    "item": "INCISIONAL HERNIOPLASTY",
+   "days": 2,
+   "icu": null,
    "general": 130000,
-   "private": 150000,
-   "suite": 180000
+   "semi_private": 150000,
+   "private": 180000,
+   "suite": null
   },
   {
    "code": "GEN-PKG-048",
-   "dept": "GEN",
+   "dept": "GENERAL SURGERY",
    "item": "INGUINAL HERNIA BILATERAL LAP",
+   "days": 2,
+   "icu": null,
    "general": 175000,
-   "private": 195000,
-   "suite": 222000
+   "semi_private": 195000,
+   "private": 222000,
+   "suite": null
   },
   {
    "code": "GEN-PKG-049",
-   "dept": "GEN",
+   "dept": "GENERAL SURGERY",
    "item": "INGUINAL HERNIA BILATERAL OPEN",
+   "days": 3,
+   "icu": null,
    "general": 130000,
-   "private": 150000,
-   "suite": 170000
+   "semi_private": 150000,
+   "private": 170000,
+   "suite": null
   },
   {
    "code": "GEN-PKG-050",
-   "dept": "GEN",
+   "dept": "GENERAL SURGERY",
    "item": "LAP HERNIA - BILATERAL (MESH EXCLUDING)",
+   "days": 3,
+   "icu": null,
    "general": 175000,
-   "private": 195000,
-   "suite": 222000
+   "semi_private": 195000,
+   "private": 222000,
+   "suite": null
   },
   {
    "code": "GEN-PKG-051",
-   "dept": "GEN",
+   "dept": "GENERAL SURGERY",
    "item": "LAP HERNIA -UNILATERAL",
+   "days": 3,
+   "icu": null,
    "general": 122000,
-   "private": 132000,
-   "suite": 160400
+   "semi_private": 132000,
+   "private": 160400,
+   "suite": null
   },
   {
    "code": "GEN-PKG-052",
-   "dept": "GEN",
+   "dept": "GENERAL SURGERY",
    "item": "LAP ADHESIOLYSIS",
+   "days": 3,
+   "icu": null,
    "general": 125000,
-   "private": 135000,
-   "suite": 155000
+   "semi_private": 135000,
+   "private": 155000,
+   "suite": null
   },
   {
    "code": "GEN-PKG-053",
-   "dept": "GEN",
+   "dept": "GENERAL SURGERY",
    "item": "OPEN HERNIA (MESH EXTRA)",
+   "days": 2,
+   "icu": null,
    "general": 95000,
-   "private": 115000,
-   "suite": 138000
+   "semi_private": 115000,
+   "private": 138000,
+   "suite": null
   },
   {
    "code": "GEN-PKG-054",
-   "dept": "GEN",
-   "item": "General Surgery",
+   "dept": "GENERAL SURGERY",
+   "item": "VENTRAL HERNIA",
+   "days": 2,
+   "icu": null,
    "general": 130000,
-   "private": 150000,
-   "suite": 180000
+   "semi_private": 150000,
+   "private": 180000,
+   "suite": null
   },
   {
    "code": "GEN-PKG-055",
-   "dept": "GEN",
+   "dept": "GENERAL SURGERY",
    "item": "DIAGNOSTIC LAPROSCOPY",
+   "days": 2,
+   "icu": null,
    "general": 75000,
-   "private": 85000,
-   "suite": 102000
+   "semi_private": 85000,
+   "private": 102000,
+   "suite": null
   },
   {
    "code": "GEN-PKG-056",
-   "dept": "GEN",
+   "dept": "GENERAL SURGERY",
    "item": "INGUINAL/ FEMORAL HERNIOPLASTY-UNILATERAL",
+   "days": 2,
+   "icu": null,
    "general": 122000,
-   "private": 132000,
-   "suite": 160400
+   "semi_private": 132000,
+   "private": 160400,
+   "suite": null
   },
   {
    "code": "GEN-PKG-058",
-   "dept": "GEN",
-   "item": "FISTULECTOMY - GEN SUR PKG",
+   "dept": "GENERAL SURGERY",
+   "item": "FISTULECTOMY",
+   "days": 2,
+   "icu": null,
    "general": 78000,
-   "private": 97000,
-   "suite": 105000
+   "semi_private": 97000,
+   "private": 105000,
+   "suite": null
   },
   {
    "code": "GEN-PKG-059",
-   "dept": "GEN",
-   "item": "MASTECTOMY(RADICAL) OR MODIFIED RADICAL MASTECTOMY - GEN SUR PKG",
+   "dept": "GENERAL SURGERY",
+   "item": "MASTECTOMY(RADICAL) OR MODIFIED RADICAL MASTECTOMY",
+   "days": 2,
+   "icu": null,
    "general": 130000,
-   "private": 145000,
-   "suite": 165000
+   "semi_private": 145000,
+   "private": 165000,
+   "suite": null
   },
   {
    "code": "GEN-PKG-060",
-   "dept": "GEN",
-   "item": "MASTECTOMY(SIMPLE) - GEN SUR PKG",
+   "dept": "GENERAL SURGERY",
+   "item": "MASTECTOMY(SIMPLE)",
+   "days": 3,
+   "icu": null,
    "general": 125000,
-   "private": 135000,
-   "suite": 150000
+   "semi_private": 135000,
+   "private": 150000,
+   "suite": null
   },
   {
    "code": "GEN-PKG-061",
-   "dept": "GEN",
-   "item": "PERIANAL ABSCESS - GEN SUR PKG",
+   "dept": "GENERAL SURGERY",
+   "item": "PERIANAL ABSCESS",
+   "days": 2,
+   "icu": null,
    "general": 58000,
-   "private": 68500,
-   "suite": 84200
+   "semi_private": 68500,
+   "private": 84200,
+   "suite": null
   },
   {
    "code": "GEN-PKG-062",
-   "dept": "GEN",
-   "item": "RESECTION AND ANASTOMOSIS OF SMALL INTESTINE (SINGLE) - GEN SUR PKG",
+   "dept": "GENERAL SURGERY",
+   "item": "RESECTION AND ANASTOMOSIS OF SMALL INTESTINE (SINGLE)",
+   "days": 2,
+   "icu": null,
    "general": 205000,
-   "private": 215000,
-   "suite": 258000
+   "semi_private": 215000,
+   "private": 258000,
+   "suite": null
   },
   {
    "code": "GEN-PKG-063",
-   "dept": "GEN",
-   "item": "RIGHT OR LEFT HEMI COLOCTOMY - GEN SUR PKG",
+   "dept": "GENERAL SURGERY",
+   "item": "RIGHT OR LEFT HEMI COLOCTOMY",
+   "days": 5,
+   "icu": 1,
    "general": 220000,
-   "private": 260000,
-   "suite": 276000
+   "semi_private": 260000,
+   "private": 276000,
+   "suite": null
   },
   {
    "code": "GEN-PKG-064",
-   "dept": "GEN",
-   "item": "THYROIDECTOMY (TOTAL/SUBTOTAL/ENUCLEATION/PARTIAL/LINGUAL/ISTH MECTOMY -GEN SUR PKG",
+   "dept": "GENERAL SURGERY",
+   "item": "THYROIDECTOMY (TOTAL/SUBTOTAL/ENUCLEATION/PARTIAL/LINGUAL/ISTH MECTOMY",
+   "days": 5,
+   "icu": 1,
    "general": 188000,
-   "private": 198000,
-   "suite": 237600
+   "semi_private": 198000,
+   "private": 237600,
+   "suite": null
   },
   {
    "code": "GEN-PKG-065",
-   "dept": "GEN",
+   "dept": "GENERAL SURGERY",
    "item": "UMBLICAL HERNIOPLASTY GEN SUR PKG",
+   "days": 3,
+   "icu": null,
    "general": 160000,
-   "private": 170000,
-   "suite": 204000
+   "semi_private": 170000,
+   "private": 204000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-066",
    "dept": "OBG",
    "item": "ABDOMINAL HYSTERECTOMY-LAVH/ TOTAL LAPAROSCOPIC HYSTERECTOMY - OBG -PKG",
+   "days": 3,
+   "icu": null,
    "general": 180000,
-   "private": 190000,
-   "suite": 228000
+   "semi_private": 190000,
+   "private": 228000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-067",
    "dept": "OBG",
    "item": "ANTERIOR + POSTERIOR REPAIR",
+   "days": 3,
+   "icu": null,
    "general": 148000,
-   "private": 158500,
-   "suite": 190200
+   "semi_private": 158500,
+   "private": 190200,
+   "suite": null
   },
   {
    "code": "OBG-PKG-068",
    "dept": "OBG",
    "item": "BARTHOLIN CYST EXCISION",
+   "days": 1,
+   "icu": null,
    "general": 68000,
-   "private": 78500,
-   "suite": 94200
+   "semi_private": 78500,
+   "private": 94200,
+   "suite": null
   },
   {
    "code": "OBG-PKG-069",
    "dept": "OBG",
    "item": "CERVICAL CERCLAGE",
+   "days": 1,
+   "icu": null,
    "general": 68000,
-   "private": 75000,
-   "suite": 90000
+   "semi_private": 75000,
+   "private": 90000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-070",
    "dept": "OBG",
    "item": "CERVICAL ENCIRCLAGE",
+   "days": 1,
+   "icu": null,
    "general": 62500,
-   "private": 72500,
-   "suite": 87000
+   "semi_private": 72500,
+   "private": 87000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-071",
    "dept": "OBG",
    "item": "COLPOSCOPY WITH CONE BIOPSY",
+   "days": 1,
+   "icu": null,
    "general": 31000,
-   "private": 41000,
-   "suite": 49200
+   "semi_private": 41000,
+   "private": 49200,
+   "suite": null
   },
   {
    "code": "OBG-PKG-072",
    "dept": "OBG",
    "item": "D & C/ MTP - 1ST TRIMESTER - OBG - PKG",
+   "days": 1,
+   "icu": null,
    "general": 35000,
-   "private": 45800,
-   "suite": 54960
+   "semi_private": 45800,
+   "private": 54960,
+   "suite": null
   },
   {
    "code": "OBG-PKG-073",
    "dept": "OBG",
    "item": "D & E / MTP - 2ND TRIMESTER - OBG - PKG",
+   "days": 1,
+   "icu": null,
    "general": 32000,
-   "private": 42500,
-   "suite": 51000
+   "semi_private": 42500,
+   "private": 51000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-074",
    "dept": "OBG",
-   "item": "Open Billing",
+   "item": "D&C (PACKAGE)",
+   "days": 1,
+   "icu": null,
    "general": 38500,
-   "private": 48900,
-   "suite": 58680
+   "semi_private": 48900,
+   "private": 58680,
+   "suite": null
   },
   {
    "code": "OBG-PKG-075",
    "dept": "OBG",
    "item": "DIAGNOSTIC HYSTEROSCOPY UNDER GA - OBG - PKG",
+   "days": 1,
+   "icu": null,
    "general": 68000,
-   "private": 78500,
-   "suite": 94200
+   "semi_private": 78500,
+   "private": 94200,
+   "suite": null
   },
   {
    "code": "OBG-PKG-076",
    "dept": "OBG",
    "item": "LAP TUBECTOMY",
+   "days": 1,
+   "icu": null,
    "general": 33000,
-   "private": 43000,
-   "suite": 48000
+   "semi_private": 43000,
+   "private": 48000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-077",
    "dept": "OBG",
    "item": "TUBECTOMY-OPEN",
+   "days": 1,
+   "icu": null,
    "general": 18000,
-   "private": 28000,
-   "suite": 33600
+   "semi_private": 28000,
+   "private": 33600,
+   "suite": null
   },
   {
    "code": "OBG-PKG-078",
    "dept": "OBG",
    "item": "DIAGNOSTIC LAPROSCOPY-WCH",
+   "days": 1,
+   "icu": null,
    "general": 25000,
-   "private": 36500,
-   "suite": 43800
+   "semi_private": 36500,
+   "private": 43800,
+   "suite": null
   },
   {
    "code": "OBG-PKG-079",
    "dept": "OBG",
    "item": "EMERGENCY - LSCS (OBG PACKAGE)",
+   "days": 3,
+   "icu": null,
    "general": 123000,
-   "private": 133000,
-   "suite": 159600
+   "semi_private": 133000,
+   "private": 159600,
+   "suite": null
   },
   {
    "code": "OBG-PKG-080",
    "dept": "OBG",
    "item": "HYSTERO LAPROSCOPY",
+   "days": 2,
+   "icu": null,
    "general": 95000,
-   "private": 105000,
-   "suite": 126000
+   "semi_private": 105000,
+   "private": 126000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-081",
    "dept": "OBG",
    "item": "HYSTEROLAPAROSCOPY +/- CPT (CHROMOPERTUBATION) +/- D&C - OBG - PKG",
+   "days": 1,
+   "icu": null,
    "general": 58000,
-   "private": 68900,
-   "suite": 82680
+   "semi_private": 68900,
+   "private": 82680,
+   "suite": null
   },
   {
    "code": "OBG-PKG-082",
    "dept": "OBG",
    "item": "HYSTEROLAPAROSCOPY WITH OVARIAN DRILLING +/- CPT (CHROMOPERTUBATION)/D&C - OBG - PKG",
+   "days": 1,
+   "icu": null,
    "general": 95000,
-   "private": 105000,
-   "suite": 126000
+   "semi_private": 105000,
+   "private": 126000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-083",
    "dept": "OBG",
    "item": "HYSTEROSCOPY + D&C + POLYPECTOMY",
+   "days": 2,
+   "icu": null,
    "general": 88000,
-   "private": 98000,
-   "suite": 117600
+   "semi_private": 98000,
+   "private": 117600,
+   "suite": null
   },
   {
    "code": "OBG-PKG-084",
    "dept": "OBG",
    "item": "HYSTEROSCOPY WITH MINOR PROCEDURE- BIOPSY/D&C/IUCD REMOVAL/ STENT REMOVAL/ESSURE STERILIZATION - OBG - PKG",
+   "days": 1,
+   "icu": null,
    "general": 55000,
-   "private": 65800,
-   "suite": 78960
+   "semi_private": 65800,
+   "private": 78960,
+   "suite": null
   },
   {
    "code": "OBG-PKG-085",
    "dept": "OBG",
    "item": "INSTRUMENTAL DELIVERY",
+   "days": 3,
+   "icu": null,
    "general": 118000,
-   "private": 128000,
-   "suite": 153600
+   "semi_private": 128000,
+   "private": 153600,
+   "suite": null
   },
   {
    "code": "OBG-PKG-086",
    "dept": "OBG",
    "item": "LAP ECTOPIC (UNRUPTURED / RUPTURED)/ LAP OVARIAN CYSTECTOMY - OBG - PKG",
+   "days": 2,
+   "icu": null,
    "general": 52500,
-   "private": 62500,
-   "suite": 75000
+   "semi_private": 62500,
+   "private": 75000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-087",
    "dept": "OBG",
    "item": "LAP ECTOPIC PREGNANCY",
+   "days": 2,
+   "icu": null,
    "general": 85000,
-   "private": 95000,
-   "suite": 114000
+   "semi_private": 95000,
+   "private": 114000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-088",
    "dept": "OBG",
    "item": "LAP OVARIAN DRILLING",
+   "days": 1,
+   "icu": null,
    "general": 62000,
-   "private": 72000,
-   "suite": 86400
+   "semi_private": 72000,
+   "private": 86400,
+   "suite": null
   },
   {
    "code": "OBG-PKG-089",
    "dept": "OBG",
    "item": "LAP TUBAL INSUFFLATION(DYE TEST)",
+   "days": 1,
+   "icu": null,
    "general": 22800,
-   "private": 32800,
-   "suite": 39360
+   "semi_private": 32800,
+   "private": 39360,
+   "suite": null
   },
   {
    "code": "OBG-PKG-090",
    "dept": "OBG",
    "item": "LAP.MYOMECTOMY",
+   "days": 3,
+   "icu": null,
    "general": 125000,
-   "private": 135800,
-   "suite": 163500
+   "semi_private": 135800,
+   "private": 163500,
+   "suite": null
   },
   {
    "code": "OBG-PKG-091",
    "dept": "OBG",
    "item": "LAP.OVARIAN CYSTECTOMY",
+   "days": 3,
+   "icu": null,
    "general": 120000,
-   "private": 125000,
-   "suite": 135000
+   "semi_private": 125000,
+   "private": 135000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-092",
    "dept": "OBG",
    "item": "LAPAROSCOPIC TUBAL LIGATION - OBG - PKG",
+   "days": 1,
+   "icu": null,
    "general": 58000,
-   "private": 68000,
-   "suite": 81600
+   "semi_private": 68000,
+   "private": 81600,
+   "suite": null
   },
   {
    "code": "OBG-PKG-093",
    "dept": "OBG",
    "item": "LAP OVARIAN CYSTECTOMY",
+   "days": 2,
+   "icu": null,
    "general": 115000,
-   "private": 125000,
-   "suite": 150000
+   "semi_private": 125000,
+   "private": 150000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-094",
    "dept": "OBG",
    "item": "LAPROSCOPIC ASSISTED VAGINAL HYSTERECTOMY (LAVH)",
+   "days": 3,
+   "icu": null,
    "general": 152500,
-   "private": 162500,
-   "suite": 195000
+   "semi_private": 162500,
+   "private": 195000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-095",
    "dept": "OBG",
    "item": "LAPROSCOPIC STERILIZATION",
+   "days": 2,
+   "icu": null,
    "general": 87000,
-   "private": 97000,
-   "suite": 116400
+   "semi_private": 97000,
+   "private": 116400,
+   "suite": null
   },
   {
    "code": "OBG-PKG-096",
    "dept": "OBG",
    "item": "LSCS (PACKAGE) - OBG - PKG",
+   "days": 3,
+   "icu": null,
    "general": 95000,
-   "private": 105000,
-   "suite": 126000
+   "semi_private": 105000,
+   "private": 126000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-097",
    "dept": "OBG",
    "item": "LSCS FOR TRIPLETS - OBG - PKG",
+   "days": 3,
+   "icu": null,
    "general": 160000,
-   "private": 170000,
-   "suite": 204000
+   "semi_private": 170000,
+   "private": 204000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-098",
    "dept": "OBG",
    "item": "LSCS WITH TUBETOMY",
+   "days": 3,
+   "icu": null,
    "general": 120000,
-   "private": 130000,
-   "suite": 156000
+   "semi_private": 130000,
+   "private": 156000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-099",
    "dept": "OBG",
    "item": "LSCS FOR TWINS - OBG - PKG",
+   "days": 0,
+   "icu": null,
    "general": 130000,
-   "private": 140000,
-   "suite": 168000
+   "semi_private": 140000,
+   "private": 168000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-100",
    "dept": "OBG",
    "item": "MINILAP/ PUERPERAL/ OPEN TUBAL LIGATION - OBG - PKG",
+   "days": 1,
+   "icu": null,
    "general": 19000,
-   "private": 29100,
-   "suite": 35000
+   "semi_private": 29100,
+   "private": 35000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-101",
    "dept": "OBG",
    "item": "MIRENA INSERTION",
+   "days": 1,
+   "icu": null,
    "general": 28000,
-   "private": 38800,
-   "suite": 46500
+   "semi_private": 38800,
+   "private": 46500,
+   "suite": null
   },
   {
    "code": "OBG-PKG-102",
    "dept": "OBG",
-   "item": "Open Billing",
+   "item": "MTP (OPD)",
+   "days": 0,
+   "icu": null,
    "general": 13000,
-   "private": 16900,
-   "suite": 20300
+   "semi_private": 16900,
+   "private": 20300,
+   "suite": null
   },
   {
    "code": "OBG-PKG-103",
    "dept": "OBG",
-   "item": "Open Billing",
+   "item": "MTP (WARD)",
+   "days": 1,
+   "icu": null,
    "general": 20000,
-   "private": 28000,
-   "suite": 33600
+   "semi_private": 28000,
+   "private": 33600,
+   "suite": null
   },
   {
    "code": "OBG-PKG-104",
    "dept": "OBG",
    "item": "MTP + TUBAL LIGATION (LAPAROSCOPIC / MINILAP) - OBG - PKG",
+   "days": 1,
+   "icu": null,
    "general": 68000,
-   "private": 78000,
-   "suite": 93600
+   "semi_private": 78000,
+   "private": 93600,
+   "suite": null
   },
   {
    "code": "OBG-PKG-105",
    "dept": "OBG",
    "item": "MTP SURGICAL PACKAGE",
+   "days": 1,
+   "icu": null,
    "general": 38000,
-   "private": 48000,
-   "suite": 57600
+   "semi_private": 48000,
+   "private": 57600,
+   "suite": null
   },
   {
    "code": "OBG-PKG-106",
    "dept": "OBG",
    "item": "MTP-1ST TRIMESTER (INWARD) UPTO 14 WOGS (INCLUDING MTP KIT EXCLUDING D &C) - OBG - PKG",
+   "days": 1,
+   "icu": null,
    "general": 38000,
-   "private": 48000,
-   "suite": 57600
+   "semi_private": 48000,
+   "private": 57600,
+   "suite": null
   },
   {
    "code": "OBG-PKG-107",
    "dept": "OBG",
    "item": "MTP-2ND TRIMESTER (INWARD) > 14 WOG (INCLUDING MTP KIT EXCLUDING D &C) -OBG - PKG",
+   "days": 1,
+   "icu": null,
    "general": 42000,
-   "private": 55000,
-   "suite": 62000
+   "semi_private": 55000,
+   "private": 62000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-108",
    "dept": "OBG",
    "item": "MYOMECTOMY - LAPAROSCOPIC - OBG - PKG",
+   "days": 2,
+   "icu": null,
    "general": 122500,
-   "private": 132500,
-   "suite": 159000
+   "semi_private": 132500,
+   "private": 159000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-109",
    "dept": "OBG",
    "item": "LAPROSCOPIC PROCEDURE",
+   "days": null,
+   "icu": null,
    "general": 155000,
-   "private": 195000,
-   "suite": 245000
+   "semi_private": 195000,
+   "private": 245000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-110",
    "dept": "OBG",
    "item": "MYOMECTOMY - OPEN - OBG - PKG",
+   "days": 2,
+   "icu": null,
    "general": 122000,
-   "private": 132500,
-   "suite": 159000
+   "semi_private": 132500,
+   "private": 159000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-111",
    "dept": "OBG",
    "item": "NON-DESCENT VAGINAL HYSTERECTOMY",
+   "days": 3,
+   "icu": null,
    "general": 178000,
-   "private": 188400,
-   "suite": 226080
+   "semi_private": 188400,
+   "private": 226080,
+   "suite": null
   },
   {
    "code": "OBG-PKG-112",
    "dept": "OBG",
    "item": "NORMAL DELIVERY - TRIPLETS - OBG - PKG",
+   "days": 3,
+   "icu": null,
    "general": 120000,
-   "private": 130000,
-   "suite": 156000
+   "semi_private": 130000,
+   "private": 156000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-113",
    "dept": "OBG",
    "item": "NORMAL DELIVERY - TWINS - OBG - PKG",
+   "days": 3,
+   "icu": null,
    "general": 100000,
-   "private": 110000,
-   "suite": 132000
+   "semi_private": 110000,
+   "private": 132000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-114",
    "dept": "OBG",
    "item": "NORMAL DELIVERY (PACKAGE) - OBG - PKG",
+   "days": 3,
+   "icu": null,
    "general": 77000,
-   "private": 87000,
-   "suite": 104400
+   "semi_private": 87000,
+   "private": 104400,
+   "suite": null
   },
   {
    "code": "OBG-PKG-115",
    "dept": "OBG",
-   "item": "POLYPECTOMY - OBG",
+   "item": "POLYPECTOMY",
+   "days": 1,
+   "icu": null,
    "general": 38500,
-   "private": 48500,
-   "suite": 58200
+   "semi_private": 48500,
+   "private": 58200,
+   "suite": null
   },
   {
    "code": "OBG-PKG-116",
    "dept": "OBG",
    "item": "SPONTANEOUS ABORTION - PACKAGE",
+   "days": 1,
+   "icu": null,
    "general": 38500,
-   "private": 48500,
-   "suite": 58200
+   "semi_private": 48500,
+   "private": 58200,
+   "suite": null
   },
   {
    "code": "OBG-PKG-117",
    "dept": "OBG",
    "item": "TAH + BILATERAL SALPINGECTOMY",
+   "days": 3,
+   "icu": null,
    "general": 165000,
-   "private": 175000,
-   "suite": 210000
+   "semi_private": 175000,
+   "private": 210000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-118",
    "dept": "OBG",
    "item": "TAH + BSO + ADHESIOLYSIS (LAP)",
+   "days": 3,
+   "icu": null,
    "general": 190000,
-   "private": 235000,
-   "suite": 285000
+   "semi_private": 235000,
+   "private": 285000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-119",
    "dept": "OBG",
    "item": "TAH + BSO + ADHESIOLYSIS (OPEN)",
+   "days": 3,
+   "icu": null,
    "general": 150000,
-   "private": 160000,
-   "suite": 192000
+   "semi_private": 160000,
+   "private": 192000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-120",
    "dept": "OBG",
    "item": "TAH +/- BILATERAL SALPINGECTOMY/SALPHINGO-OOPHERECTOMY - OBG - PKG",
+   "days": 3,
+   "icu": null,
    "general": 150000,
-   "private": 160000,
-   "suite": 192000
+   "semi_private": 160000,
+   "private": 192000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-121",
    "dept": "OBG",
    "item": "TOTAL LAPROSCOPIC HYSTERECTOMY (TLH)",
+   "days": 3,
+   "icu": null,
    "general": 160000,
-   "private": 170000,
-   "suite": 204000
+   "semi_private": 170000,
+   "private": 204000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-122",
    "dept": "OBG",
    "item": "VAGINAL HYSTERECTOMY (FOR NORMAL SIZED UTERUS) - OBG - PKG",
+   "days": 3,
+   "icu": null,
    "general": 150000,
-   "private": 160000,
-   "suite": 197000
+   "semi_private": 160000,
+   "private": 197000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-123",
    "dept": "OBG",
    "item": "VAGINAL HYSTERECTOMY + ANTERIOR AND POSTERIOR REPAIR",
+   "days": 3,
+   "icu": null,
    "general": 162000,
-   "private": 172000,
-   "suite": 206400
+   "semi_private": 172000,
+   "private": 206400,
+   "suite": null
   },
   {
    "code": "OBG-PKG-124",
    "dept": "OBG",
    "item": "VAGINAL HYSTERECTOMY + ANTERIOR AND POSTERIOR REPAIR + BSO",
+   "days": 3,
+   "icu": null,
    "general": 162000,
-   "private": 172000,
-   "suite": 206400
+   "semi_private": 172000,
+   "private": 206400,
+   "suite": null
   },
   {
    "code": "OBG-PKG-125",
    "dept": "OBG",
    "item": "VAGINAL HYSTERECTOMY FOR BULKY UTERUS/ FIBROID/ ADENOMYOTIC UTERUS -OBG - PKG",
+   "days": 3,
+   "icu": null,
    "general": 170000,
-   "private": 181000,
-   "suite": 217200
+   "semi_private": 181000,
+   "private": 217200,
+   "suite": null
   },
   {
    "code": "OBG-PKG-126",
    "dept": "OBG",
    "item": "VAGINAL HYSTERECTOMY WITH AP REPAIR - OBG - PKG",
+   "days": 3,
+   "icu": null,
    "general": 225000,
-   "private": 235000,
-   "suite": 282000
+   "semi_private": 235000,
+   "private": 282000,
+   "suite": null
   },
   {
    "code": "OBG-PKG-127",
    "dept": "OBG",
    "item": "VBAC (VAGINAL BIRTH AFTER CAESEREAN DELIVERY) - OBG - PKG",
+   "days": 3,
+   "icu": null,
    "general": 225000,
-   "private": 235000,
-   "suite": 282000
+   "semi_private": 235000,
+   "private": 282000,
+   "suite": null
   },
   {
    "code": "ORT-PKG-128",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "ARTHROSCOPY DIAGNOSTIC",
+   "days": 2,
+   "icu": null,
    "general": 110000,
-   "private": 133000,
-   "suite": 150000
+   "semi_private": 133000,
+   "private": 150000,
+   "suite": null
   },
   {
    "code": "ORT-PKG-129",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "ARTHROSOCPIC MENISECTOMY",
+   "days": 2,
+   "icu": null,
    "general": 118000,
-   "private": 140000,
-   "suite": 167000
+   "semi_private": 140000,
+   "private": 167000,
+   "suite": null
   },
   {
    "code": "ORT-PKG-130",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "ACETABULAR FRACTURE FIXATION",
+   "days": 4,
+   "icu": null,
    "general": 250000,
-   "private": 260000,
-   "suite": 312000
+   "semi_private": 260000,
+   "private": 312000,
+   "suite": null
   },
   {
    "code": "ORT-PKG-131",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "ACL & PCL RECONSTRUCTION /REPAIR",
+   "days": 3,
+   "icu": null,
    "general": 275000,
-   "private": 285000,
-   "suite": 342000
+   "semi_private": 285000,
+   "private": 342000,
+   "suite": null
   },
   {
    "code": "ORT-PKG-132",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "ACL RECONSTRUCTION /REPAIR",
+   "days": 3,
+   "icu": null,
    "general": 124000,
-   "private": 150000,
-   "suite": 170000
+   "semi_private": 150000,
+   "private": 170000,
+   "suite": null
   },
   {
    "code": "ORT-PKG-133",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "AMPUTATION ABOVE ELBOW/ KNEE",
+   "days": 3,
+   "icu": null,
    "general": 137000,
-   "private": 147800,
-   "suite": 177360
+   "semi_private": 147800,
+   "private": 177360,
+   "suite": null
   },
   {
    "code": "ORT-PKG-134",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "AMPUTATION BELOW ELBOW/ KNEE",
+   "days": 3,
+   "icu": null,
    "general": 147000,
-   "private": 157000,
-   "suite": 188400
+   "semi_private": 157000,
+   "private": 188400,
+   "suite": null
   },
   {
    "code": "ORT-PKG-135",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "AMPUTATION OF DIGIT -MULTIPLE",
+   "days": 3,
+   "icu": null,
    "general": 165000,
-   "private": 175000,
-   "suite": 210000
+   "semi_private": 175000,
+   "private": 210000,
+   "suite": null
   },
   {
    "code": "ORT-PKG-136",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "AMPUTATION OF DIGIT -SINGLE",
+   "days": 2,
+   "icu": null,
    "general": 152000,
-   "private": 162000,
-   "suite": 194400
+   "semi_private": 162000,
+   "private": 194400,
+   "suite": null
   },
   {
    "code": "ORT-PKG-137",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "ANKLE FRACTURE-ORIF/ORIF WITH SCREWS/TBW",
+   "days": 3,
+   "icu": null,
    "general": 160000,
-   "private": 170000,
-   "suite": 204000
+   "semi_private": 170000,
+   "private": 204000,
+   "suite": null
   },
   {
    "code": "ORT-PKG-138",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "ARTHRODESIS - WRIST/ANKLE SUBTALAR",
+   "days": 2,
+   "icu": null,
    "general": 115000,
-   "private": 123000,
-   "suite": 147600
+   "semi_private": 123000,
+   "private": 147600,
+   "suite": null
   },
   {
    "code": "ORT-PKG-139",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "ARTHROSCOPIC DEBRIDEMENT AND SINOVECTOMY",
+   "days": 2,
+   "icu": null,
    "general": 123000,
-   "private": 133000,
-   "suite": 159600
+   "semi_private": 133000,
+   "private": 159600,
+   "suite": null
   },
   {
    "code": "ORT-PKG-140",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "BONE GRAFTING FOR NON-UNION OF LARGE BONES",
+   "days": 2,
+   "icu": null,
    "general": 125000,
-   "private": 133000,
-   "suite": 159600
+   "semi_private": 133000,
+   "private": 159600,
+   "suite": null
   },
   {
    "code": "ORT-PKG-141",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "BONE GRAFTING FOR NON-UNION OF SMALL BONES",
+   "days": 2,
+   "icu": null,
    "general": 93000,
-   "private": 103000,
-   "suite": 123600
+   "semi_private": 103000,
+   "private": 123600,
+   "suite": null
   },
   {
    "code": "ORT-PKG-142",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "CERVICAL STABILIZATION",
+   "days": 4,
+   "icu": null,
    "general": 195000,
-   "private": 205000,
-   "suite": 246000
+   "semi_private": 205000,
+   "private": 246000,
+   "suite": null
   },
   {
    "code": "ORT-PKG-143",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "CERVICAL DECOMPRESSION",
+   "days": 3,
+   "icu": null,
    "general": 135000,
-   "private": 145000,
-   "suite": 174000
+   "semi_private": 145000,
+   "private": 174000,
+   "suite": null
   },
   {
    "code": "ORT-PKG-144",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "SPINE STABILIZATION",
+   "days": 5,
+   "icu": null,
    "general": 420000,
-   "private": 565000,
-   "suite": 615000
+   "semi_private": 565000,
+   "private": 615000,
+   "suite": null
   },
   {
    "code": "ORT-PKG-145",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "CALCANEAL FRACTURE - WITH PLATES",
+   "days": 3,
+   "icu": null,
    "general": 145000,
-   "private": 155000,
-   "suite": 186000
+   "semi_private": 155000,
+   "private": 186000,
+   "suite": null
   },
   {
    "code": "ORT-PKG-146",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "CARPEL TUNNEL RELEASE- BILATERAL",
+   "days": 1,
+   "icu": null,
    "general": 87500,
-   "private": 97500,
-   "suite": 117000
+   "semi_private": 97500,
+   "private": 117000,
+   "suite": null
   },
   {
    "code": "ORT-PKG-147",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "CARPEL TUNNEL RELEASE- UNILATERAL",
+   "days": 1,
+   "icu": null,
    "general": 68500,
-   "private": 78500,
-   "suite": 94200
+   "semi_private": 78500,
+   "private": 94200,
+   "suite": null
   },
   {
    "code": "ORT-PKG-148",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "CLOSE REDUCTION OF FRACTURES / DISLOCATIONS (DAY CARE)",
+   "days": 1,
+   "icu": null,
    "general": 38500,
-   "private": 48500,
-   "suite": 58200
+   "semi_private": 48500,
+   "private": 58200,
+   "suite": null
   },
   {
    "code": "ORT-PKG-149",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "FEMUR SHAFT FRACTURE-PROXIMAL /MIDDLE/DISTAL",
+   "days": 4,
+   "icu": null,
    "general": 190000,
-   "private": 200500,
-   "suite": 240600
+   "semi_private": 200500,
+   "private": 240600,
+   "suite": null
   },
   {
    "code": "ORT-PKG-150",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "FRACTURE NECK FEMUR",
+   "days": 4,
+   "icu": null,
    "general": 200000,
-   "private": 215000,
-   "suite": 258000
+   "semi_private": 215000,
+   "private": 258000,
+   "suite": null
   },
   {
    "code": "ORT-PKG-151",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "HAND OR FOOT FRACTURES -WITH PLATES OR SCREWS",
+   "days": 3,
+   "icu": null,
    "general": 145000,
-   "private": 152500,
-   "suite": 183000
+   "semi_private": 152500,
+   "private": 183000,
+   "suite": null
   },
   {
    "code": "ORT-PKG-152",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "HEMIARTHROPLASTY",
+   "days": 4,
+   "icu": null,
    "general": 200000,
-   "private": 210600,
-   "suite": 252720
+   "semi_private": 210600,
+   "private": 252720,
+   "suite": null
   },
   {
    "code": "ORT-PKG-153",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "IMPLANT REMOVAL OF LARGE BONES",
+   "days": 2,
+   "icu": null,
    "general": 110600,
-   "private": 120600,
-   "suite": 144720
+   "semi_private": 120600,
+   "private": 144720,
+   "suite": null
   },
   {
    "code": "ORT-PKG-154",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "IMPLANT REMOVAL OF SMALL BONES",
+   "days": 2,
+   "icu": null,
    "general": 87000,
-   "private": 98000,
-   "suite": 117600
+   "semi_private": 98000,
+   "private": 117600,
+   "suite": null
   },
   {
    "code": "ORT-PKG-155",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "IMPLANT REMOVAL OF SPINE",
+   "days": 2,
+   "icu": null,
    "general": 77000,
-   "private": 87000,
-   "suite": 104400
+   "semi_private": 87000,
+   "private": 104400,
+   "suite": null
   },
   {
    "code": "ORT-PKG-156",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "LARGE WOUND DEBRIDEMENT",
+   "days": 2,
+   "icu": null,
    "general": 49000,
-   "private": 59000,
-   "suite": 70800
+   "semi_private": 59000,
+   "private": 70800,
+   "suite": null
   },
   {
    "code": "ORT-PKG-157",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "MCL RECONSTRUCTION/REPAIR",
+   "days": 3,
+   "icu": null,
    "general": 109500,
-   "private": 209500,
-   "suite": 251400
+   "semi_private": 209500,
+   "private": 251400,
+   "suite": null
   },
   {
    "code": "ORT-PKG-158",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "OPEN REDUCTION AND INTERNAL FIAXATION -FRACTURE OF SINGLE BONE FOREARM/WRIST",
+   "days": 2,
+   "icu": null,
    "general": 128000,
-   "private": 138000,
-   "suite": 165600
+   "semi_private": 138000,
+   "private": 165600,
+   "suite": null
   },
   {
    "code": "ORT-PKG-159",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "OPEN REDUCTION AND INTERNAL FIXATION -FRACTURE OF BOTH BONES FOREARM",
+   "days": 2,
+   "icu": null,
    "general": 132000,
-   "private": 142000,
-   "suite": 170400
+   "semi_private": 142000,
+   "private": 170400,
+   "suite": null
   },
   {
    "code": "ORT-PKG-160",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "OPEN REDUCTION AND INTERNAL FIXATION OF ELBOW",
+   "days": 2,
+   "icu": null,
    "general": 115000,
-   "private": 126000,
-   "suite": 151200
+   "semi_private": 126000,
+   "private": 151200,
+   "suite": null
   },
   {
    "code": "ORT-PKG-161",
-   "dept": "ORT",
-   "item": "OPEN REDUCTION AND INTERNAL FIXATION OF SHOULDER/ HUMEROUS",
+   "dept": "ORTHOPAEDICS",
+   "item": "OPEN REDUCTION AND INTERNAL FIXATION OF SHOULDER/ HUMEROUS - ORTHOPKG",
+   "days": 2,
+   "icu": null,
    "general": 115000,
-   "private": 125000,
-   "suite": 150000
+   "semi_private": 125000,
+   "private": 150000,
+   "suite": null
   },
   {
    "code": "ORT-PKG-162",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "PELVIS FRACTURE- EXTERNAL FIXATION",
+   "days": 4,
+   "icu": null,
    "general": 165000,
-   "private": 175500,
-   "suite": 210600
+   "semi_private": 175500,
+   "private": 210600,
+   "suite": null
   },
   {
    "code": "ORT-PKG-163",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "REDUCTION OF DISLOCATION IN GA",
+   "days": 1,
+   "icu": null,
    "general": 28500,
-   "private": 38500,
-   "suite": 46200
+   "semi_private": 38500,
+   "private": 46200,
+   "suite": null
   },
   {
    "code": "ORT-PKG-164",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "SCAPHOID FRACTURE FIXATION",
+   "days": 3,
+   "icu": null,
    "general": 165000,
-   "private": 175000,
-   "suite": 210000
+   "semi_private": 175000,
+   "private": 210000,
+   "suite": null
   },
   {
    "code": "ORT-PKG-165",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "SHOULDER-ARTHROSCOPY / OPEN- SUB ACROMIAL DECOMPRESSION",
+   "days": 3,
+   "icu": null,
    "general": 223000,
-   "private": 232000,
-   "suite": 278400
+   "semi_private": 232000,
+   "private": 278400,
+   "suite": null
   },
   {
    "code": "ORT-PKG-166",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "SHOULDER-ARTHROSCOPY BANKART REPAIR",
+   "days": 3,
+   "icu": null,
    "general": 165000,
-   "private": 175000,
-   "suite": 210000
+   "semi_private": 175000,
+   "private": 210000,
+   "suite": null
   },
   {
    "code": "ORT-PKG-167",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "SMALL WOUND DEBRIDEMENT (DAY CARE)",
+   "days": 1,
+   "icu": null,
    "general": 19100,
-   "private": 29100,
-   "suite": 35000
+   "semi_private": 29100,
+   "private": 35000,
+   "suite": null
   },
   {
    "code": "ORT-PKG-168",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "TENDON REPAIR MULTIPLE",
+   "days": 2,
+   "icu": null,
    "general": 119000,
-   "private": 129000,
-   "suite": 154800
+   "semi_private": 129000,
+   "private": 154800,
+   "suite": null
   },
   {
    "code": "ORT-PKG-169",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "TENDON REPAIR SINGLE",
+   "days": 2,
+   "icu": null,
    "general": 79500,
-   "private": 89500,
-   "suite": 107400
+   "semi_private": 89500,
+   "private": 107400,
+   "suite": null
   },
   {
    "code": "ORT-PKG-170",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "TIBIA FRACTURE PROXIMAL BICONDYLAR-ORIF/ ORIF",
+   "days": 4,
+   "icu": null,
    "general": 159500,
-   "private": 169500,
-   "suite": 203400
+   "semi_private": 169500,
+   "private": 203400,
+   "suite": null
   },
   {
    "code": "ORT-PKG-171",
-   "dept": "ORT",
-   "item": "TIBIA FRACTURE PROXIMAL UNICONDYLAR/MIDDLE/DISTAL-ORIF/ ORIF",
+   "dept": "ORTHOPAEDICS",
+   "item": "TIBIA FRACTURE PROXIMAL UNICONDYLAR/MIDDLE/DISTAL-ORIF/ ORIF - ORTHOPKG",
+   "days": 4,
+   "icu": null,
    "general": 168000,
-   "private": 178000,
-   "suite": 213600
+   "semi_private": 178000,
+   "private": 213600,
+   "suite": null
   },
   {
    "code": "ORT-PKG-172",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "TOTAL HIP REPLACEMENT - PACKAGE - BILATERAL",
+   "days": 5,
+   "icu": 1,
    "general": 380000,
-   "private": 410000,
-   "suite": 492000
+   "semi_private": 410000,
+   "private": 492000,
+   "suite": null
   },
   {
    "code": "ORT-PKG-173",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "TOTAL HIP REPLACEMENT - PACKAGE - UNILATERAL",
+   "days": 5,
+   "icu": null,
    "general": 210000,
-   "private": 230000,
-   "suite": 276000
+   "semi_private": 230000,
+   "private": 276000,
+   "suite": null
   },
   {
    "code": "ORT-PKG-174",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "TOTAL KNEE REPLACEMENT - PACKAGE - BILATERAL",
+   "days": 5,
+   "icu": 1,
    "general": 380000,
-   "private": 410000,
-   "suite": 492000
+   "semi_private": 410000,
+   "private": 492000,
+   "suite": null
   },
   {
    "code": "ORT-PKG-175",
-   "dept": "ORT",
+   "dept": "ORTHOPAEDICS",
    "item": "TOTAL KNEE REPLACEMENT - PACKAGE - UNILATERAL",
+   "days": 5,
+   "icu": null,
    "general": 210000,
-   "private": 230000,
-   "suite": 276000
+   "semi_private": 230000,
+   "private": 276000,
+   "suite": null
   },
   {
    "code": "URO-PKG-176",
-   "dept": "URO",
-   "item": "Open Billing",
+   "dept": "UROLOGY",
+   "item": "HOLEP",
+   "days": 2,
+   "icu": null,
    "general": 340000,
-   "private": 430000,
-   "suite": 510000
+   "semi_private": 430000,
+   "private": 510000,
+   "suite": null
   },
   {
    "code": "URO-PKG-177",
-   "dept": "URO",
-   "item": "Open Billing",
+   "dept": "UROLOGY",
+   "item": "MOLEP",
+   "days": 2,
+   "icu": null,
    "general": 400000,
-   "private": 495000,
-   "suite": 530000
+   "semi_private": 495000,
+   "private": 530000,
+   "suite": null
   },
   {
    "code": "URO-PKG-178",
-   "dept": "URO",
+   "dept": "UROLOGY",
    "item": "A.V.FISTULA - URO - PKG",
+   "days": 1,
+   "icu": null,
    "general": 50000,
-   "private": 65000,
-   "suite": 75000
+   "semi_private": 65000,
+   "private": 75000,
+   "suite": null
   },
   {
    "code": "URO-PKG-179",
-   "dept": "URO",
+   "dept": "UROLOGY",
    "item": "CYSTOSCOPY (THERAPEUTIC)",
+   "days": 1,
+   "icu": null,
    "general": 25000,
-   "private": 35000,
-   "suite": 42000
+   "semi_private": 35000,
+   "private": 42000,
+   "suite": null
   },
   {
    "code": "URO-PKG-180",
-   "dept": "URO",
+   "dept": "UROLOGY",
    "item": "CYSTOSCOPY URS WITH DJ STENTING BILATERAL",
+   "days": 2,
+   "icu": null,
    "general": 158000,
-   "private": 168000,
-   "suite": 201600
+   "semi_private": 168000,
+   "private": 201600,
+   "suite": null
   },
   {
    "code": "URO-PKG-181",
-   "dept": "URO",
+   "dept": "UROLOGY",
    "item": "LITHOTRIPSY",
+   "days": 1,
+   "icu": null,
    "general": 95000,
-   "private": 105000,
-   "suite": 115000
+   "semi_private": 105000,
+   "private": 115000,
+   "suite": null
   },
   {
    "code": "URO-PKG-182",
-   "dept": "URO",
+   "dept": "UROLOGY",
    "item": "DJ STENTING (BILATERAL)",
+   "days": 1,
+   "icu": null,
    "general": 95000,
-   "private": 105000,
-   "suite": 126000
+   "semi_private": 105000,
+   "private": 126000,
+   "suite": null
   },
   {
    "code": "URO-PKG-183",
-   "dept": "URO",
+   "dept": "UROLOGY",
    "item": "CYSTOSOCPY WITH DJ STENTING",
+   "days": 1,
+   "icu": null,
    "general": 62000,
-   "private": 72000,
-   "suite": 86400
+   "semi_private": 72000,
+   "private": 86400,
+   "suite": null
   },
   {
    "code": "URO-PKG-184",
-   "dept": "URO",
+   "dept": "UROLOGY",
    "item": "URETHROPLASTY",
+   "days": 2,
+   "icu": null,
    "general": 145000,
-   "private": 168000,
-   "suite": 186000
+   "semi_private": 168000,
+   "private": 186000,
+   "suite": null
   },
   {
    "code": "URO-PKG-185",
-   "dept": "URO",
+   "dept": "UROLOGY",
    "item": "CYSTOSCOPY URS WITH DJ STENTING UNILATERAL",
+   "days": 2,
+   "icu": null,
    "general": 140000,
-   "private": 155000,
-   "suite": 175000
+   "semi_private": 155000,
+   "private": 175000,
+   "suite": null
   },
   {
    "code": "URO-PKG-186",
-   "dept": "URO",
+   "dept": "UROLOGY",
    "item": "CYSTOSCOPY+RIRS+DJSTENTING UNILATERAL",
+   "days": 2,
+   "icu": null,
    "general": 190000,
-   "private": 235000,
-   "suite": 290000
+   "semi_private": 235000,
+   "private": 290000,
+   "suite": null
   },
   {
    "code": "URO-PKG-187",
-   "dept": "URO",
+   "dept": "UROLOGY",
    "item": "DJSTENT REMOVAL (DAY CARE)",
+   "days": 1,
+   "icu": null,
    "general": 15500,
-   "private": 22500,
-   "suite": 29500
+   "semi_private": 22500,
+   "private": 29500,
+   "suite": null
   },
   {
    "code": "URO-PKG-188",
-   "dept": "URO",
+   "dept": "UROLOGY",
    "item": "ESWL-EXTRA CORPOREAL SHOCKWAVE LITHOTRIPSY (DAYCARE)",
+   "days": 1,
+   "icu": null,
    "general": 15000,
-   "private": 18000,
-   "suite": 21600
+   "semi_private": 18000,
+   "private": 21600,
+   "suite": null
   },
   {
    "code": "URO-PKG-189",
-   "dept": "URO",
+   "dept": "UROLOGY",
    "item": "MEATOTOMY (DAY CARE)",
+   "days": 1,
+   "icu": null,
    "general": 29300,
-   "private": 39300,
-   "suite": 47000
+   "semi_private": 39300,
+   "private": 47000,
+   "suite": null
   },
   {
    "code": "URO-PKG-190",
-   "dept": "URO",
+   "dept": "UROLOGY",
    "item": "NEPHRECTOMY (LAP)",
+   "days": 4,
+   "icu": 1,
    "general": 210000,
-   "private": 220000,
-   "suite": 264000
+   "semi_private": 220000,
+   "private": 264000,
+   "suite": null
   },
   {
    "code": "URO-PKG-191",
-   "dept": "URO",
+   "dept": "UROLOGY",
    "item": "NEPHRECTOMY (OPEN)",
+   "days": 4,
+   "icu": 1,
    "general": 210000,
-   "private": 220000,
-   "suite": 264000
+   "semi_private": 220000,
+   "private": 264000,
+   "suite": null
   },
   {
    "code": "URO-PKG-192",
-   "dept": "URO",
+   "dept": "UROLOGY",
    "item": "NEPHROLITHOTOMY / PYELOLITHOTOMY",
+   "days": 2,
+   "icu": null,
    "general": 126500,
-   "private": 136500,
-   "suite": 163800
+   "semi_private": 136500,
+   "private": 163800,
+   "suite": null
   },
   {
    "code": "URO-PKG-193",
-   "dept": "URO",
+   "dept": "UROLOGY",
    "item": "ORCHIDECTOMY-BILATERAL",
+   "days": 2,
+   "icu": null,
    "general": 100000,
-   "private": 110000,
-   "suite": 132000
+   "semi_private": 110000,
+   "private": 132000,
+   "suite": null
   },
   {
    "code": "URO-PKG-194",
-   "dept": "URO",
+   "dept": "UROLOGY",
    "item": "ORCHIDECTOMY-UNILATERAL",
+   "days": 2,
+   "icu": null,
    "general": 78500,
-   "private": 88500,
-   "suite": 107000
+   "semi_private": 88500,
+   "private": 107000,
+   "suite": null
   },
   {
    "code": "URO-PKG-195",
-   "dept": "URO",
+   "dept": "UROLOGY",
    "item": "PCNL BILATERAL",
+   "days": 3,
+   "icu": null,
    "general": 240000,
-   "private": 260000,
-   "suite": 290000
+   "semi_private": 260000,
+   "private": 290000,
+   "suite": null
   },
   {
    "code": "URO-PKG-196",
-   "dept": "URO",
+   "dept": "UROLOGY",
    "item": "PCNL -UNILATERAL",
+   "days": 3,
+   "icu": null,
    "general": 160000,
-   "private": 175000,
-   "suite": 198000
+   "semi_private": 175000,
+   "private": 198000,
+   "suite": null
   },
   {
    "code": "URO-PKG-197",
-   "dept": "URO",
+   "dept": "UROLOGY",
    "item": "PROSTAT REMOVAL- HOLMIUM/DIODE",
+   "days": 4,
+   "icu": null,
    "general": 188000,
-   "private": 198500,
-   "suite": 238200
+   "semi_private": 198500,
+   "private": 238200,
+   "suite": null
   },
   {
    "code": "URO-PKG-198",
-   "dept": "URO",
+   "dept": "UROLOGY",
    "item": "PROSTATE REMOVAL- LASER TURP",
+   "days": 4,
+   "icu": null,
    "general": 170000,
-   "private": 180000,
-   "suite": 216000
+   "semi_private": 180000,
+   "private": 216000,
+   "suite": null
   },
   {
    "code": "URO-PKG-199",
-   "dept": "URO",
+   "dept": "UROLOGY",
    "item": "PROSTATE REMOVAL- OPEN TURP",
+   "days": 4,
+   "icu": null,
    "general": 135000,
-   "private": 145000,
-   "suite": 174000
+   "semi_private": 145000,
+   "private": 174000,
+   "suite": null
   },
   {
    "code": "URO-PKG-200",
-   "dept": "URO",
+   "dept": "UROLOGY",
    "item": "URS /THEAPEUTIC",
+   "days": 1,
+   "icu": null,
    "general": 78000,
-   "private": 68000,
-   "suite": 81600
+   "semi_private": 68000,
+   "private": 81600,
+   "suite": null
   },
   {
    "code": "VAS-PKG-171",
-   "dept": "VAS",
-   "item": "VARICOSE VEINS (LASER OR RADIO FREQUENCY ABLATION) - VAS SUR PKG",
+   "dept": "VASCULAR SURGERY",
+   "item": "VARICOSE VEINS (LASER OR RADIO FREQUENCY ABLATION)",
+   "days": 2,
+   "icu": null,
    "general": 160000,
-   "private": 180000,
-   "suite": 205000
+   "semi_private": 180000,
+   "private": 205000,
+   "suite": null
   },
   {
    "code": "VAS-PKG-172",
-   "dept": "VAS",
-   "item": "VARICOSE VEINS (SURGICAL) - VAS SUR PKG",
+   "dept": "VASCULAR SURGERY",
+   "item": "VARICOSE VEINS (SURGICAL)",
+   "days": 2,
+   "icu": null,
    "general": 130000,
-   "private": 140500,
-   "suite": 168600
+   "semi_private": 140500,
+   "private": 168600,
+   "suite": null
   }
  ]
 }

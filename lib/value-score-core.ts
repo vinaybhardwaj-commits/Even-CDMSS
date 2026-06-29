@@ -84,8 +84,10 @@ export interface ValueScorecard {
   band: Band;
   domains: DomainScore[];
   lowValueSpend: number | null;     // ₹ of TARIFF-cited low-value care (charge-master)
-  excessBedDayCost: number | null;  // ₹ of avoidable bed-days — a LABELLED ESTIMATE, not a tariff
-  costNote?: string;                // e.g. "7 excess bed-days × ₹6,500 single room (est.)"
+  excessBedDayCost: number | null;  // ₹ of avoidable bed-days (tariff rate × audit-judged excess days)
+  costNote?: string;                // e.g. "7 excess bed-days × ₹8,500 private ward"
+  roomCategoryInflation: number | null;  // ₹ the episode's orders cost above General-ward rates (informational)
+  roomTier?: string;                // the patient's room tier (for the inflation note)
   confidence: 'low' | 'moderate' | 'high';
   caveat: string;
 }
@@ -98,6 +100,8 @@ export interface ScoreInput {
   adminFacts?: AdminFacts;
   bedDayCost?: number | null;            // estimated avoidable bed-day ₹ (room-rent-core), adds to cost burden
   bedDayDetail?: string;                 // human note for the bed-day estimate
+  roomCategoryInflation?: number | null; // ₹ episode orders cost above General-ward (informational, NOT in burden)
+  roomTier?: string;                     // patient's room tier label
   weights?: Partial<Record<ValueDomain, number>>;
   costCap?: number;
 }
@@ -171,12 +175,16 @@ export function computeScorecard(input: ScoreInput): ValueScorecard {
   // Cost burden = tariff-cited low-value spend + estimated avoidable bed-days of any
   // flagged over-stay. The bed-day part is a labelled estimate (kept separate in the card).
   const bedDay = Math.max(0, Number(input.bedDayCost) || 0);
+  // Room-category inflation is SURFACED, not added to the burden (a higher room may be a
+  // legitimate patient choice) — so it informs without auto-penalising the score.
+  const inflation = Math.max(0, Number(input.roomCategoryInflation) || 0);
   const costBurden = lowValueSpend + bedDay;
   const haveCost = haveTariff || bedDay > 0;
   const costScore = haveCost ? clamp(round(100 - (costBurden / costCap) * 100), 0, 100) : 100;
   const costParts = [
     haveTariff ? `₹${Math.round(lowValueSpend).toLocaleString('en-IN')} tariffed low-value` : '',
     bedDay > 0 ? (input.bedDayDetail || `₹${Math.round(bedDay).toLocaleString('en-IN')} est. bed-days`) : '',
+    inflation > 0 ? `+₹${Math.round(inflation).toLocaleString('en-IN')} vs general ward (room category)` : '',
   ].filter(Boolean);
 
   const domains: DomainScore[] = [
@@ -186,8 +194,8 @@ export function computeScorecard(input: ScoreInput): ValueScorecard {
       basis: eff.n ? `${eff.n} intensity finding${eff.n === 1 ? '' : 's'}${input.adminFacts?.lengthOfStayDays != null ? ` · LOS ${input.adminFacts.lengthOfStayDays}d` : ''}` : (input.adminFacts?.lengthOfStayDays != null ? `LOS ${input.adminFacts.lengthOfStayDays}d, none flagged` : 'no intensity issues flagged') },
     { domain: 'safety', label: DOMAIN_LABEL.safety, score: saf.score, weight: weights.safety, n: saf.n,
       basis: saf.n ? `${saf.n} safety/stewardship finding${saf.n === 1 ? '' : 's'}` : 'no safety issues flagged' },
-    { domain: 'cost', label: DOMAIN_LABEL.cost, score: costScore, weight: weights.cost, n: haveCost ? 1 : 0,
-      basis: haveCost ? costParts.join(' + ') : 'no avoidable spend identified' },
+    { domain: 'cost', label: DOMAIN_LABEL.cost, score: costScore, weight: weights.cost, n: costParts.length ? 1 : 0,
+      basis: costParts.length ? costParts.join(' + ') : 'no avoidable spend identified' },
     { domain: 'documentation', label: DOMAIN_LABEL.documentation, score: docScore, weight: weights.documentation, n: 1,
       basis: `NABH completeness ${docScore}%` },
     { domain: 'patient_centred', label: DOMAIN_LABEL.patient_centred, score: pcScore, weight: weights.patient_centred, n: pc.total,
@@ -209,6 +217,8 @@ export function computeScorecard(input: ScoreInput): ValueScorecard {
     lowValueSpend: haveTariff ? Math.round(lowValueSpend) : null,
     excessBedDayCost: bedDay > 0 ? Math.round(bedDay) : null,
     costNote: bedDay > 0 ? (input.bedDayDetail || undefined) : undefined,
+    roomCategoryInflation: inflation > 0 ? Math.round(inflation) : null,
+    roomTier: input.roomTier || undefined,
     confidence,
     caveat: CARE_VALUE_CAVEAT,
   };

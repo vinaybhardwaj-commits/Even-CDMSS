@@ -2,18 +2,28 @@
   "_meta": {
     "purpose": "Per-day room/bed rent by ward category, used to cost avoidable bed-days on the Care-Value Scorecard's Cost domain when an over-stay is flagged.",
     "currency": "INR",
-    "status": "estimate",
-    "note": "PLACEHOLDER ESTIMATES (typical Bengaluru private-hospital per-day room rent). REPLACE with the actual EHRC Room-Rent / Bed-Charge card, then set status to 'tariff'. Until then, bed-day cost is surfaced as a labelled model estimate, never a cited tariff.",
-    "dayCareBenchmarkDays": 1
+    "status": "tariff",
+    "source": "EHRC Tariff List — Room Rent (TARIFF 2025-26), effective 1 June 2025. perDay = TOTAL column (bed charges + nursing charges).",
+    "billingRules": {
+      "cycle": "24-hour cycle 00:00–23:59 from time of admission.",
+      "dischargeTime": "Official discharge by 11:00; 11:00–17:00 adds a half-day room charge; after 18:00 a full day; 0–3 h stay = half day.",
+      "dayCare": "Day care = a 4-hour slot, max 12 hours; an overnight day-care stay is billed at the relevant room category.",
+      "roomCategoryMultiplier": "Investigations, procedures, packages and consultant visits are all charged DIFFERENTIALLY by room category — a higher category inflates the whole episode, not just bed rent.",
+      "packages": "A package includes room rent, surgeon/anaesthetist/assistant fees, OT, doctor visits, medicines and consumables WITHIN the package period; any stay beyond the package period is billed separately on actuals (so only bed-days beyond the package period are avoidable extra cost)."
+    },
+    "dayCareBenchmarkDays": 1,
+    "note": "Excess avoidable bed-days are gated on an auditor-flagged length-of-stay over-use; the room rate is the EHRC tariff, the avoidable-day count is the audit's judgement."
   },
-  "default": { "key": "private_room", "perDay": 6500 },
+  "status": "tariff",
+  "default": { "key": "general_ward", "perDay": 4000 },
+  "dayCareBenchmarkDays": 1,
   "categories": [
-    { "key": "day_care", "label": "Day care / OPD", "perDay": 0, "aliases": ["day care", "daycare", "day-care", "opd", "ambulatory", "23 hour", "23-hour", "short stay"] },
-    { "key": "general_ward", "label": "General ward", "perDay": 2500, "aliases": ["general ward", "ward", "general", "gw", "sharing", "economy", "multi sharing", "dormitory"] },
-    { "key": "semi_private", "label": "Semi-private / twin sharing", "perDay": 4000, "aliases": ["semi private", "semi-private", "twin", "two sharing", "double", "shared room"] },
-    { "key": "private_room", "label": "Single / private room", "perDay": 6500, "aliases": ["single room", "single", "private", "private room", "deluxe single", "individual room"] },
-    { "key": "deluxe_suite", "label": "Deluxe / suite", "perDay": 12000, "aliases": ["suite", "deluxe", "luxury", "executive", "king", "vip"] },
-    { "key": "hdu", "label": "HDU / step-down", "perDay": 10000, "aliases": ["hdu", "high dependency", "step down", "step-down"] },
-    { "key": "icu", "label": "ICU", "perDay": 16000, "aliases": ["icu", "intensive care", "critical care", "ccu", "nicu", "picu", "sicu", "micu"] }
+    { "key": "day_care", "label": "Day care", "perDay": 2350, "aliases": ["day care", "daycare", "day-care", "opd", "ambulatory", "23 hour", "23-hour", "short stay"] },
+    { "key": "general_ward", "label": "General ward", "perDay": 4000, "aliases": ["general ward", "ward", "general", "gw", "sharing", "economy", "multi sharing", "dormitory"] },
+    { "key": "twin_sharing", "label": "Twin sharing / semi-private", "perDay": 5550, "aliases": ["twin sharing", "twin", "semi private", "semi-private", "semi pvt", "spvt", "two sharing", "double", "shared room", "sharing room"] },
+    { "key": "private_ward", "label": "Private ward / single room", "perDay": 8500, "aliases": ["private ward", "private room", "single room", "single", "private", "pvt", "individual room", "deluxe single"] },
+    { "key": "suite", "label": "Suite room", "perDay": 12050, "aliases": ["suite", "suite room", "deluxe", "luxury", "executive", "king", "vip"] },
+    { "key": "hdu", "label": "HDU", "perDay": 9850, "aliases": ["hdu", "hdu bed", "high dependency", "step down", "step-down"] },
+    { "key": "icu", "label": "ICU", "perDay": 10750, "aliases": ["icu", "icu bed", "intensive care", "critical care", "ccu", "nicu", "picu", "sicu", "micu"] }
   ]
 }

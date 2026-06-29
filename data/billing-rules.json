@@ -1,0 +1,28 @@
+{
+  "_meta": {
+    "source": "Even Hospitals Billing Manual + Tariff List - Room Rent (Billing Guidelines & Policies), TARIFF 2025-26, effective 1 June 2025.",
+    "purpose": "Deterministic billing-integrity rules for a future bill/invoice audit (new doc type). Each rule is checkable against an itemized bill; some also inform the case-audit's value reasoning.",
+    "status": "reference"
+  },
+  "rules": [
+    { "id": "consult_primary_cap", "area": "consultation", "rule": "Primary/treating consultant may charge a maximum of 2 visits per day (per consultant in individual practice, or per specialty in group practice).", "flagIf": "primary consultant billed >2 visits/day" },
+    { "id": "consult_referred_cap", "area": "consultation", "rule": "A referred consultant may charge only 1 visit/day, unless the case is declared multi-specialty clinical management with GM/CMS information.", "flagIf": "referred consultant billed >1 visit/day without multi-specialty declaration" },
+    { "id": "consult_ward_audit", "area": "consultation", "rule": "More than 4 consultations per day in the ward (or ICU) is subject to audit.", "flagIf": ">4 consults/day" },
+    { "id": "consult_followup_free", "area": "consultation", "rule": "Follow-up visits within 7 days of the initial visit are free of consultation charges.", "flagIf": "consultation charged for a follow-up within 7 days" },
+    { "id": "consult_single_disease", "area": "consultation", "rule": "If two or more consultants see the patient for a single disease, only one consultation fee is payable.", "flagIf": "multiple consult fees for one disease/specialty" },
+    { "id": "icu_consult_uniform", "area": "consultation", "rule": "Inpatient consultation fees are uniform across ICU/NICU/HDU/PICU (except wards); ICU consult includes the critical-care team, max 2 visits/day.", "flagIf": "ICU consult billed >2 visits/day" },
+    { "id": "registration_waiver", "area": "registration", "rule": "One-time registration fee; waived if already registered in another group hospital, and for health check-ups.", "flagIf": "registration charged for an already-registered or health-check patient" },
+    { "id": "room_24h_cycle", "area": "room", "rule": "Room billing is a 24-hour cycle (00:00–23:59) from admission. Discharge by 11:00; 11:00–17:00 adds half-day; after 18:00 a full day; 0–3 h stay = half day.", "flagIf": "room-days billed inconsistent with admit/discharge timestamps" },
+    { "id": "room_category_basis", "area": "room", "rule": "Charges follow the admitted bed category (or higher if upgraded/transferred). Investigations, procedures, packages and consults are all charged differentially by room category.", "flagIf": "tier charged higher than the admitted category without a documented upgrade" },
+    { "id": "icu_stepdown", "area": "room", "rule": "If stepped down from ICU after 12:00 noon, ICU charges for the full day apply.", "flagIf": "ICU full-day not applied on a post-noon step-down (or applied on a pre-noon step-down)" },
+    { "id": "daycare_window", "area": "room", "rule": "Day care = a 4-hour slot, max 12 hours; an overnight day-care stay is billed at the relevant room category.", "flagIf": "day-care billed for a >12 h or overnight stay" },
+    { "id": "package_inclusions", "area": "package", "rule": "Package covers routine related investigations, room rent, surgeon/anaesthetist/assistant fees, OT, doctor visits, medicines and consumables within the package period.", "flagIf": "an included item billed separately within the package period" },
+    { "id": "package_exclusions", "area": "package", "rule": "Excluded: pre-op profiles; high-end medicines/lasers/implants; outsourced CT/MRI/PET/Doppler/USG; dialysis/blood/IABP/ECMO; cross-referrals; any stay beyond the package period (billed on actuals).", "flagIf": "an excluded item folded into the package, or stay beyond period not billed on actuals" },
+    { "id": "package_multiple", "area": "package", "rule": "Two surgeries same sitting: higher 100% + lower 60%. Surgery+procedure same sitting: both 100%. Different regions same sitting: both 100%.", "flagIf": "multiple-package billing not following the 100/60 or 100/100 rule" },
+    { "id": "implant_no_invoice", "area": "package", "rule": "No separate invoice is issued for implants.", "flagIf": "a separate implant invoice issued" },
+    { "id": "open_billing_professional", "area": "open_billing", "rule": "Open billing: levels of surgery contain only professional surgeon fees; co-surgeon 50%, anaesthesia 30%, assistant 30%, OT 100% of surgeon fee; investigations/room/consumables/implants at actuals.", "flagIf": "professional-fee percentages deviate from 50/30/30/100" },
+    { "id": "high_risk_surcharge", "area": "surcharge", "rule": "High-risk: +15% on professional charges (surgeon+assistant+anaesthetist), only if prior consent documented; >2 procedures → 15% on total professional charges.", "flagIf": "high-risk surcharge without documented consent" },
+    { "id": "emergency_surcharge", "area": "surcharge", "rule": "Emergency (holidays, or 21:00–08:00 weekdays): +20% on surgeon/assistant/anaesthetist + 20% on OT. High-risk AND emergency: +30% on professional + OT charges; all such cases highlighted in EMRD notes and audited.", "flagIf": "emergency surcharge applied outside emergency hours/holidays" },
+    { "id": "gst_exclusive", "area": "general", "rule": "Published tariff is exclusive of GST and government levies; government-regulated tests charged per prevailing notifications.", "flagIf": "GST folded into the quoted tariff" }
+  ]
+}

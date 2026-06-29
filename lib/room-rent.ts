@@ -9,7 +9,17 @@ import type { AdminFacts } from './doc-audit-core';
 
 const TABLE = ROOM_RENT as unknown as RoomRentTable;
 
-/** Estimate the avoidable bed-day cost of an over-stay (0 unless an over-stay was flagged). */
-export function estimateBedDayCost(adminFacts: AdminFacts | undefined, overStayFlagged: boolean): BedDayCost {
-  return computeBedDayCost(adminFacts?.lengthOfStayDays ?? null, adminFacts?.careSetting ?? null, overStayFlagged, TABLE);
+/**
+ * Estimate the avoidable bed-day cost of an over-stay (0 unless an over-stay was flagged).
+ * benchmarkDays: when a matched package defines a covered period, pass it so excess = LOS −
+ * package days (room rent is included within the package); otherwise the day-care benchmark applies.
+ */
+export function estimateBedDayCost(adminFacts: AdminFacts | undefined, overStayFlagged: boolean, benchmarkDays?: number | null): BedDayCost {
+  return computeBedDayCost(
+    adminFacts?.lengthOfStayDays ?? null,
+    adminFacts?.careSetting ?? null,
+    overStayFlagged,
+    TABLE,
+    benchmarkDays != null ? benchmarkDays : undefined,
+  );
 }
