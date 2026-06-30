@@ -45,27 +45,34 @@ export async function loadRecentAuditRows(days = 90): Promise<AuditRowLite[]> {
 /** Flash-canonicalise distinct finding subjects → { subject: canonical practice label }.
  *  Batched (a handful of cheap Flash calls), soft-fails per batch so a Flash outage just falls
  *  back to deterministic-signature clustering — never breaks the mining run. */
-export async function canonicalizeSubjects(subjects: string[]): Promise<Record<string, string>> {
-  const map: Record<string, string> = {};
-  const B = 120;
-  for (let i = 0; i < subjects.length; i += B) {
-    const batch = subjects.slice(i, i + B);
-    try {
-      const r = await chatWithFallback({
-        model: TEXT_MODEL,
-        messages: [
-          { role: 'system', content: CANONICALIZE_SYSTEM },
-          { role: 'user', content: buildCanonicalizeUser(batch) },
-        ],
-        temperature: 0,
-        max_tokens: 4000,
-        ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
-      }, geminiUtilityModel());
-      Object.assign(map, parseCanonicalMap(r.choices?.[0]?.message?.content || '', batch));
-    } catch (e) {
-      console.warn('[learning] canonicalize batch failed', (e as Error).message);
-    }
+async function canonicalizeBatch(batch: string[]): Promise<Record<string, string>> {
+  try {
+    const r = await chatWithFallback({
+      model: TEXT_MODEL,
+      messages: [
+        { role: 'system', content: CANONICALIZE_SYSTEM },
+        { role: 'user', content: buildCanonicalizeUser(batch) },
+      ],
+      temperature: 0,
+      max_tokens: 4000,
+      ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
+    }, geminiUtilityModel());
+    return parseCanonicalMap(r.choices?.[0]?.message?.content || '', batch);
+  } catch (e) {
+    console.warn('[learning] canonicalize batch failed', (e as Error).message);
+    return {};
   }
+}
+
+export async function canonicalizeSubjects(subjects: string[]): Promise<Record<string, string>> {
+  const B = 100;
+  const batches: string[][] = [];
+  for (let i = 0; i < subjects.length; i += B) batches.push(subjects.slice(i, i + B));
+  // PARALLEL — a capped, bounded set of batches (see caller) so the whole run finishes well
+  // within the function limit; sequential batching risked blowing 300s on full data.
+  const parts = await Promise.all(batches.map(canonicalizeBatch));
+  const map: Record<string, string> = {};
+  for (const p of parts) Object.assign(map, p);
   return map;
 }
 
@@ -76,9 +83,12 @@ export async function mineAndSaveProposals(days = 90, thresholds: MineThresholds
   const rows = await loadRecentAuditRows(days);
 
   // LL.2: canonicalise the distinct mineable subjects so paraphrases merge before clustering.
-  const subjSet = new Set<string>();
-  for (const row of rows) for (const f of row.findings || []) if (isMineableFinding(f) && f.subject) subjSet.add(f.subject);
-  const subjects = [...subjSet];
+  // Cap to the top-N most frequent subjects (bounds the parallel Flash batches so the run finishes
+  // well within the function limit). The dropped long-tail singletons fall back to the deterministic
+  // signature in the miner — they can't form a ≥15 cluster anyway, so nothing material is lost.
+  const counts = new Map<string, number>();
+  for (const row of rows) for (const f of row.findings || []) if (isMineableFinding(f) && f.subject) counts.set(f.subject, (counts.get(f.subject) || 0) + 1);
+  const subjects = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 300).map(([s]) => s);
   const labelMap = useCanonical && subjects.length ? await canonicalizeSubjects(subjects) : {};
   const canonicalLabel = Object.keys(labelMap).length ? (s: string) => labelMap[s] || '' : undefined;
 
