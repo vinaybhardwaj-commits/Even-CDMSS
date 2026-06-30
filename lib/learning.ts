@@ -104,8 +104,9 @@ async function upsertProposal(c: {
   return res[0].inserted ? 'inserted' : 'refreshed';
 }
 
-/** Mine recent audits → upsert candidate rule proposals (proposed-only refresh; rejected/approved left alone). */
-export async function mineAndSaveProposals(days = 90, thresholds: MineThresholds = DEFAULT_THRESHOLDS, useCanonical = true): Promise<MineSummary> {
+/** Mine recent audits → upsert candidate rule proposals (proposed-only refresh; rejected/approved left alone).
+ *  gapThresholds tunes the harvest-gap floor independently (admin preview); production default 10/3. */
+export async function mineAndSaveProposals(days = 90, thresholds: MineThresholds = DEFAULT_THRESHOLDS, useCanonical = true, gapThresholds: MineThresholds = DEFAULT_GAP_THRESHOLDS): Promise<MineSummary> {
   const rows = await loadRecentAuditRows(days);
 
   // LL.2: canonicalise the distinct mineable subjects so paraphrases merge before clustering.
@@ -121,7 +122,7 @@ export async function mineAndSaveProposals(days = 90, thresholds: MineThresholds
   const cands = mineRuleCandidates(rows, thresholds, { canonicalLabel });
   // LL.4 — the SAME clustering also yields harvest-gap topics: high-volume practices the corpus
   // could not cite. They land in the same review queue; approving one only adds an ingest_topics row.
-  const gaps = mineHarvestGaps(rows, DEFAULT_GAP_THRESHOLDS, { canonicalLabel });
+  const gaps = mineHarvestGaps(rows, gapThresholds, { canonicalLabel });
   let inserted = 0; let refreshed = 0;
   for (const c of cands) {
     const r = await upsertProposal({ type: c.type, clusterKey: c.clusterKey, title: c.title, payload: c.payload, evidence: c.evidence, nSupport: c.provenance.nOccurrences, provenance: c.provenance, confidence: c.confidence, suggestedReviewer: c.suggestedReviewer });
