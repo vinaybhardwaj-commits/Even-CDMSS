@@ -67,7 +67,7 @@ export default async function LearningPage({ searchParams }: { searchParams: Pro
       <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-brand">LEARNING LOOP</div>
       <h1 className="font-serif text-[26px] font-semibold text-slate-900">Rule proposals from your audits</h1>
       <p className="mt-1 max-w-3xl text-sm text-slate-500">
-        Low-value-care patterns mined from the OPD audits, each evidence-cited, awaiting review. <span className="text-slate-600">Approving marks a rule for inclusion — it does <strong>not</strong> yet change live audits or the appropriateness engine (that wiring is a separate, tested step).</span>
+        Low-value-care patterns mined from the OPD audits, each evidence-cited, awaiting review. <span className="text-slate-600">Approving publishes the rule to the <strong>Right Care</strong> appropriateness engine (active, cited, EHRC-mined); rejecting drops it. The OPD audit scoring engine is unchanged.</span>
       </p>
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -138,7 +138,7 @@ export default async function LearningPage({ searchParams }: { searchParams: Pro
         </div>
       )}
 
-      <p className="mt-5 text-[11px] text-slate-400">Advisory. Mined from de-identified audit findings; every rule requires corpus evidence (evidence over frequency). Nothing here affects live audits until an approved rule is separately wired into the appropriateness engine.</p>
+      <p className="mt-5 text-[11px] text-slate-400">Advisory. Mined from de-identified audit findings; every rule requires corpus evidence (evidence over frequency). Approved rules become active, cited entries in the Right Care appropriateness engine; the OPD audit scoring engine is unchanged.</p>
     </div>
   );
 }

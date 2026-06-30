@@ -23,6 +23,11 @@ function asArr<T>(v: unknown): T[] {
   if (typeof v === 'string' && v.trim()) { try { const p = JSON.parse(v); return Array.isArray(p) ? p as T[] : []; } catch { return []; } }
   return [];
 }
+function asObj(v: unknown): Record<string, unknown> {
+  if (v && typeof v === 'object' && !Array.isArray(v)) return v as Record<string, unknown>;
+  if (typeof v === 'string' && v.trim()) { try { const p = JSON.parse(v); return p && typeof p === 'object' && !Array.isArray(p) ? p as Record<string, unknown> : {}; } catch { return {}; } }
+  return {};
+}
 
 /** Latest audit per note (DISTINCT ON uid) over the lookback window — avoids cross-engine-version double counting. */
 export async function loadRecentAuditRows(days = 90): Promise<AuditRowLite[]> {
@@ -112,13 +117,56 @@ export async function mineAndSaveProposals(days = 90, thresholds: MineThresholds
   return { scanned: rows.length, subjects: subjects.length, canonicalized: Object.keys(labelMap).length, candidates: cands.length, inserted, refreshed };
 }
 
-/** Approve or reject a proposal (status only — apply-to-lvc is the gated LL.2b step). */
+/** On approve of an lvc_rule: insert it into lvc_recommendations as an ACTIVE, EHRC-mined,
+ *  licence-ok rule. The existing matcher's `WHERE status='active'` recall then picks it up, so it
+ *  fires in the live Right Care surface — no change to the matcher query itself. id is derived
+ *  from the proposal id, so re-approval is idempotent. Returns the created lvc id. */
+async function applyLvcRule(proposalId: string, p: Record<string, unknown>): Promise<string> {
+  const payload = asObj(p.payload);
+  const provenance = asObj(p.provenance);
+  const evidence = asArr<{ item_number?: string; url?: string }>(p.evidence);
+  const lvcId = `ehrc-${proposalId}`;
+  const statement = String(payload.statement || p.title || '').slice(0, 600);
+  const rationale = payload.rationale ? String(payload.rationale).slice(0, 2000) : null;
+  const keywords = Array.isArray(payload.keywords) ? (payload.keywords as unknown[]).map(String) : [];
+  const actionType = String(provenance.dominantDomain) === 'prescribing_safety' ? 'medication' : 'other';
+  const ev0 = evidence[0] || {};
+  const pmid = ev0.item_number && /^\d{5,9}$/.test(String(ev0.item_number)) ? String(ev0.item_number) : null;
+  const url = ev0.url ? String(ev0.url) : null;
+  await sql`
+    INSERT INTO lvc_recommendations
+      (id, region, society, specialty, statement, precondition, action_type, consider_instead,
+       rationale, keywords, citation_doi, citation_pmid, citation_url, source_release_year,
+       status, provenance, license_status)
+    VALUES (${lvcId}, 'IN', 'EHRC', NULL, ${statement}, NULL, ${actionType}, NULL,
+       ${rationale}, ${keywords}::text[], NULL, ${pmid}, ${url}, NULL,
+       'active', 'EHRC-mined', 'ok')
+    ON CONFLICT (id) DO UPDATE SET
+      statement = EXCLUDED.statement, action_type = EXCLUDED.action_type, rationale = EXCLUDED.rationale,
+      keywords = EXCLUDED.keywords, citation_pmid = EXCLUDED.citation_pmid, citation_url = EXCLUDED.citation_url,
+      status = 'active', provenance = 'EHRC-mined', license_status = 'ok', updated_at = NOW()`;
+  return lvcId;
+}
+
+/** Approve or reject a proposal. On approve of an lvc_rule the rule is inserted into
+ *  lvc_recommendations (active → fires in Right Care); other types just mark approved for their
+ *  own later apply steps (harvest/calibration). */
 export async function reviewProposal(id: string, action: 'approve' | 'reject', reviewer: string | null, note: string | null): Promise<boolean> {
-  const status = action === 'approve' ? 'approved' : 'rejected';
+  if (action === 'reject') {
+    const rows = (await sql`
+      UPDATE learning_proposals SET status = 'rejected', reviewed_by = ${reviewer}, reviewed_at = NOW(), review_note = ${note}, updated_at = NOW()
+       WHERE id = ${id} AND app_source = ${APP} AND status = 'proposed' RETURNING id`) as Array<{ id: string }>;
+    return rows.length > 0;
+  }
+  const props = (await sql`
+    SELECT id, type, title, payload, evidence, provenance FROM learning_proposals
+     WHERE id = ${id} AND app_source = ${APP} AND status = 'proposed'`) as Array<Record<string, unknown>>;
+  if (!props.length) return false;
+  const p = props[0];
+  let appliedRef: string | null = null;
+  if (String(p.type) === 'lvc_rule') appliedRef = await applyLvcRule(id, p);
   const rows = (await sql`
-    UPDATE learning_proposals
-       SET status = ${status}, reviewed_by = ${reviewer}, reviewed_at = NOW(), review_note = ${note}, updated_at = NOW()
-     WHERE id = ${id} AND app_source = ${APP} AND status = 'proposed'
-     RETURNING id`) as Array<{ id: string }>;
+    UPDATE learning_proposals SET status = 'approved', reviewed_by = ${reviewer}, reviewed_at = NOW(), review_note = ${note}, applied_ref = ${appliedRef}, updated_at = NOW()
+     WHERE id = ${id} AND app_source = ${APP} AND status = 'proposed' RETURNING id`) as Array<{ id: string }>;
   return rows.length > 0;
 }
