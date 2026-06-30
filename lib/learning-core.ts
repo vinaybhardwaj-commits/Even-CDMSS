@@ -115,9 +115,12 @@ export function mineRuleCandidates(rows: AuditRowLite[], thresholds: MineThresho
     const sources = row.sources || [];
     const byN = new Map(sources.map((s) => [s.n, s]));
     for (const f of row.findings || []) {
-      // Only mine genuine low-value / context-dependent CLINICAL practices (not informational
-      // roll-ups, not high-value/uncertain, not deterministic dosing/formulary house-keeping).
+      // Only mine genuine low-value / context-dependent CLINICAL practices. Exclude:
+      // informational roll-ups; high-value/uncertain; and DETERMINISTIC findings (source!=='llm')
+      // — those are documentation/formulary house-keeping (incomplete dosing, unverified brand,
+      // off-formulary) or already-encoded rules (DDI, duplicate), not new low-value-care practices.
       if (f.informational) continue;
+      if (f.source !== 'llm') continue;
       if (f.verdict !== 'low-value' && f.verdict !== 'context-dependent') continue;
       if (f.domain !== 'appropriateness' && f.domain !== 'prescribing_safety') continue;
       const key = subjectSignature(f.subject);
