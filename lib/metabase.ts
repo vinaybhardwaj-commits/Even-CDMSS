@@ -134,6 +134,37 @@ export async function fetchDoctorNames(uids: string[]): Promise<Record<string, s
   return map;
 }
 
+/** Map doctor_uid → { name, speciality }, parsed from db13 `individuals-prescriptions.
+ *  doctor_name_with_speciality` ("Dr. Reshma(General Physician)"). The speciality lives in the
+ *  trailing parentheses; we take the most-frequent label per doctor. Staff data, not PHI —
+ *  used to give the stewardship view a real department dimension (the source consult_type is blank).
+ *  Best-effort; uids with no parsed speciality are omitted. */
+export async function fetchDoctorSpecialities(uids: string[]): Promise<Record<string, { name: string; speciality: string }>> {
+  const ex = Array.from(new Set((uids || []).filter(isUid)));
+  if (!ex.length) return {};
+  const inList = ex.map((u) => `'${u}'`).join(', ');
+  const rows = await metabaseQuery(
+    `SELECT doctor_uid, doctor_name_with_speciality AS label, count(*)::int AS n
+       FROM ${SOURCE}
+      WHERE doctor_uid IN (${inList}) AND doctor_name_with_speciality IS NOT NULL
+      GROUP BY doctor_uid, doctor_name_with_speciality`,
+  );
+  const best: Record<string, { label: string; n: number }> = {};
+  for (const r of rows) {
+    const u = String(r.doctor_uid || ''); if (!u) continue;
+    const label = String(r.label || ''); const cnt = Number(r.n || 0);
+    if (!best[u] || cnt > best[u].n) best[u] = { label, n: cnt };
+  }
+  const out: Record<string, { name: string; speciality: string }> = {};
+  for (const [u, b] of Object.entries(best)) {
+    const m = b.label.match(/\(([^)]*)\)\s*$/);
+    const speciality = m ? m[1].trim() : '';
+    const name = b.label.replace(/\s*\([^)]*\)\s*$/, '').trim();
+    if (speciality) out[u] = { name, speciality };
+  }
+  return out;
+}
+
 /** YYYY-MM-DD for the IST calendar day before `now` (the default daily-audit target). */
 export function istYesterday(now: Date = new Date()): string {
   const ist = new Date(now.getTime() + 5.5 * 3600_000);
