@@ -56,10 +56,14 @@ export interface HarvestGapCandidate {
   clusterKey: string;
   title: string;            // canonical clinical topic the corpus is thin on
   payload: { topic: string; query_terms: string };
-  provenance: { nOccurrences: number; nDoctors: number; depts: string[]; sampleSubjects: string[] };
+  provenance: { nOccurrences: number; nUncited: number; nDoctors: number; depts: string[]; sampleSubjects: string[] };
   confidence: number;
   suggestedReviewer: SuggestedReviewer;
 }
+// A practice is a corpus GAP when the auditor flagged it often but the corpus could rarely support
+// it. "Rarely" = at most this fraction of occurrences carried a citation; above it the corpus already
+// covers the practice well enough that harvesting more adds little.
+export const MAX_CITED_FRACTION = 0.5;
 
 export interface RuleCandidate {
   type: 'lvc_rule';
@@ -251,25 +255,27 @@ export function mineHarvestGaps(rows: AuditRowLite[], thresholds: MineThresholds
   }
   const out: HarvestGapCandidate[] = [];
   for (const c of clusters.values()) {
-    if (c.cited > 0) continue;                        // any cited occurrence → not a corpus gap
-    if (c.n < thresholds.minOccurrences) continue;
+    const uncited = c.n - c.cited;
+    const citedFrac = c.n ? c.cited / c.n : 0;
+    if (uncited < thresholds.minOccurrences) continue;   // ≥N occurrences the corpus could NOT support
     if (c.doctors.size < thresholds.minDoctors) continue;
+    if (citedFrac > MAX_CITED_FRACTION) continue;        // corpus already covers it well enough → not a gap
     const title = mode(c.labels) || mode(c.subjects);
     const query_terms = harvestQuery(title);
     if (!title || !query_terms) continue;
-    const volScore = Math.min(0.4, (c.n - thresholds.minOccurrences) / 200 + 0.1);
+    const volScore = Math.min(0.4, (uncited - thresholds.minOccurrences) / 200 + 0.1);
     const breadthScore = Math.min(0.2, c.doctors.size / 50);
     out.push({
       type: 'harvest_topic',
       clusterKey: c.key,
       title,
       payload: { topic: title, query_terms },
-      provenance: { nOccurrences: c.n, nDoctors: c.doctors.size, depts: uniqStr([...c.depts]), sampleSubjects: uniqStr(c.subjects).slice(0, 5) },
+      provenance: { nOccurrences: c.n, nUncited: uncited, nDoctors: c.doctors.size, depts: uniqStr([...c.depts]), sampleSubjects: uniqStr(c.subjects).slice(0, 5) },
       confidence: Math.round(Math.min(0.9, 0.4 + volScore + breadthScore) * 100) / 100,
       suggestedReviewer: 'owner',
     });
   }
-  return out.sort((a, b) => b.provenance.nOccurrences - a.provenance.nOccurrences || b.confidence - a.confidence);
+  return out.sort((a, b) => b.provenance.nUncited - a.provenance.nUncited || b.confidence - a.confidence);
 }
 
 /** Stable cluster key from a canonical label — collapses minor wording/case drift across runs. */

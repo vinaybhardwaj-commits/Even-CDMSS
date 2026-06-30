@@ -17,7 +17,7 @@ function parseJson<T>(v: unknown, f: T): T {
 }
 
 type Evidence = { n?: number; source?: string; book?: string; item_number?: string | null; url?: string | null; preview?: string };
-type Provenance = { nOccurrences?: number; nDoctors?: number; depts?: string[]; sampleSubjects?: string[]; dominantDomain?: string };
+type Provenance = { nOccurrences?: number; nUncited?: number; nDoctors?: number; depts?: string[]; sampleSubjects?: string[]; dominantDomain?: string };
 type Payload = { statement?: string; action_type?: string; rationale?: string; keywords?: string[]; provenance?: string; topic?: string; query_terms?: string };
 type Proposal = {
   id: string; type: string; status: string; title: string; confidence: number; n_support: number;
@@ -108,7 +108,7 @@ export default async function LearningPage({ searchParams }: { searchParams: Pro
 
               {p.type === 'harvest_topic' && p.payload.query_terms && (
                 <div className="mt-1.5 text-[11.5px] leading-snug text-slate-600">
-                  Corpus gap — no supporting citation across these encounters. Approving adds this PubMed harvest query to the literature engine:
+                  Corpus gap — supported by a citation in only <strong className="text-slate-700">{Math.max(0, (p.provenance.nOccurrences ?? 0) - (p.provenance.nUncited ?? 0))}</strong> of {p.provenance.nOccurrences ?? p.n_support} encounters. Approving adds this PubMed harvest query to the literature engine:
                   <code className="ml-1 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] text-amber-800">{p.payload.query_terms}</code>
                 </div>
               )}

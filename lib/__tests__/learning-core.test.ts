@@ -76,22 +76,27 @@ test('canonical label MERGES paraphrases that the deterministic signature would 
   assert.ok(canon[0].provenance.nOccurrences === 16 && canon[0].provenance.nDoctors === 4);
 });
 
-test('mineHarvestGaps: high-volume UNCITED practices become harvest topics; cited/sparse do not', () => {
+test('mineHarvestGaps: predominantly-UNCITED practices become harvest topics; well-cited/sparse do not', () => {
   const rows: AuditRowLite[] = [];
-  // Gap: 12 fully-uncited occurrences across 3 doctors → harvest topic
+  // (1) Gap: 12 occurrences, none cited → 12 uncited, citedFrac 0
   for (let i = 0; i < 12; i++) rows.push(row(`g${i}`, `doc${i % 3}`, [lv('Serratiopeptidase for soft-tissue swelling', false)]));
-  // Cited cluster → NOT a gap (the rule miner owns it)
-  for (let i = 0; i < 12; i++) rows.push(row(`h${i}`, `doc${i % 3}`, [lv('Antibiotic for likely viral URTI', true)]));
-  // Below the volume floor → ignored
+  // (2) Gap: 18 occurrences, only the first 4 cited (citedFrac 0.22) across 4 doctors → 14 uncited
+  for (let i = 0; i < 18; i++) rows.push(row(`m${i}`, `doc${i % 4}`, [lv('NSAID injection for non-specific low back pain', i < 4)]));
+  // (3) NOT a gap: 12 uncited but 20 cited (citedFrac 0.625 > 0.5) → corpus already covers it
+  for (let i = 0; i < 32; i++) rows.push(row(`w${i}`, `doc${i % 5}`, [lv('Antibiotic for likely viral URTI', i >= 12)]));
+  // (4) NOT a gap: only 5 uncited → below the volume floor
   for (let i = 0; i < 5; i++) rows.push(row(`s${i}`, `doc${i % 3}`, [lv('Nebulisation for simple cough', false)]));
 
   const gaps = mineHarvestGaps(rows, DEFAULT_GAP_THRESHOLDS);
-  assert.equal(gaps.length, 1, 'only the high-volume fully-uncited cluster is a gap');
-  const g = gaps[0];
+  const titles = gaps.map((g) => g.title.toLowerCase());
+  assert.equal(gaps.length, 2, 'the two predominantly-uncited clusters are gaps');
+  assert.ok(titles.some((t) => /serratiopeptidase|swelling/.test(t)));
+  assert.ok(titles.some((t) => /nsaid|back pain/.test(t)));
+  assert.ok(!titles.some((t) => /viral|urti/.test(t)), 'a well-cited practice is not a corpus gap');
+  const g = gaps[0]; // sorted by nUncited desc → the NSAID cluster (14)
   assert.equal(g.type, 'harvest_topic');
-  assert.ok(/serratiopeptidase|swelling|soft/i.test(g.clusterKey));
-  assert.ok(g.payload.query_terms.length > 0 && g.payload.query_terms.includes(' AND '), 'carries an AND-joined PubMed query');
-  assert.ok(g.provenance.nOccurrences === 12 && g.provenance.nDoctors === 3);
+  assert.ok(g.payload.query_terms.includes(' AND '), 'carries an AND-joined PubMed query');
+  assert.ok(g.provenance.nUncited >= 10 && g.provenance.nDoctors >= 3);
   assert.equal(g.suggestedReviewer, 'owner');
 });
 
