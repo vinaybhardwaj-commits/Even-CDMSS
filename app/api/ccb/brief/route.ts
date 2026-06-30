@@ -9,12 +9,14 @@ import { saveBrief, getBriefByUid } from '@/lib/ccb-store';
 import { CCB_ENGINE_VERSION } from '@/lib/ccb-brief-core';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { isCareUnlocked } from '@/lib/care-cookie';
+import { ccbApiKeyValid } from '@/lib/ccb-apikey';
+import { resolveBriefUid } from '@/lib/ccb-resolve';
 import { GEMINI_MODEL } from '@/lib/llm';
 
-// Execution guard (spends LLM compute): Vercel Cron (un-spoofable x-vercel-cron), a manual
-// trigger carrying Bearer CRON_SECRET / ?secret=CRON_SECRET, a care-manager session (the /care
-// surface), OR a logged-in admin session — so it works one-click without handling a secret.
+// Execution guard (spends LLM compute): a CCB_API_KEY (x-api-key / Bearer — the Pulse consumer
+// path), Vercel Cron, Bearer/secret CRON_SECRET, a care-manager session, OR an admin session.
 async function authed(req: NextRequest): Promise<boolean> {
+  if (ccbApiKeyValid(req)) return true;
   const isCron = req.headers.get('x-vercel-cron') !== null;
   const auth = req.headers.get('authorization') || '';
   const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
@@ -39,15 +41,23 @@ export async function GET(req: NextRequest) {
   if (!(await authed(req))) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
 
   const p = req.nextUrl.searchParams;
-  const uid = (p.get('uid') || '').trim();
-  if (!/^[A-Za-z0-9_-]{6,64}$/.test(uid)) return NextResponse.json({ error: 'bad or missing uid' }, { status: 400 });
   const fresh = p.get('fresh') === '1';
   const dry = p.get('dry') === '1';
+
+  // Resolve a presc_uid: a direct ?uid=, or the Pulse member lookup ?uhid=/?individual_uid= + ?date=.
+  const { uid, candidates } = await resolveBriefUid({
+    uid: (p.get('uid') || '').trim() || undefined,
+    uhid: (p.get('uhid') || '').trim() || undefined,
+    individualUid: (p.get('individual_uid') || '').trim() || undefined,
+    date: (p.get('date') || '').trim() || undefined,
+  });
+  if (!uid) return NextResponse.json({ error: 'no episode found — pass ?uid=, or ?uhid=/?individual_uid= with ?date=' }, { status: 404 });
+  const resolved = { presc_uid: uid, episodes_that_day: candidates.length };
 
   try {
     if (!fresh) {
       const cached = await getBriefByUid(uid, CCB_ENGINE_VERSION).catch(() => null);
-      if (cached) return NextResponse.json({ ...cached, cached: true });
+      if (cached) return NextResponse.json({ ...cached, resolved, cached: true });
     }
 
     const bundle = await assembleEpisode(uid);
@@ -57,7 +67,7 @@ export async function GET(req: NextRequest) {
     const envelope = await generateBrief(bundle);
     if (!dry) await saveBrief(envelope, bundle.keys, { model: GEMINI_MODEL, latencyMs: Date.now() - started }).catch(() => {});
 
-    return NextResponse.json(envelope);
+    return NextResponse.json({ ...envelope, resolved });
   } catch (e) {
     return NextResponse.json({ ok: false, error: String((e as Error).message) }, { status: 500 });
   }

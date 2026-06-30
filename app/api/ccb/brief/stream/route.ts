@@ -9,11 +9,14 @@ import { saveBrief, getBriefByUid } from '@/lib/ccb-store';
 import { CCB_ENGINE_VERSION } from '@/lib/ccb-brief-core';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { isCareUnlocked } from '@/lib/care-cookie';
+import { ccbApiKeyValid } from '@/lib/ccb-apikey';
+import { resolveBriefUid } from '@/lib/ccb-resolve';
 import { GEMINI_MODEL } from '@/lib/llm';
 import { makeNdjsonStream, ndjsonHeaders, type Stage } from '@/lib/stream';
 
-// Execution guard: care-manager session (the /care surface) OR admin session OR Bearer/secret CRON_SECRET.
+// Execution guard: CCB_API_KEY (Pulse), care-manager session, admin session, OR Bearer/secret CRON_SECRET.
 async function authed(req: NextRequest): Promise<boolean> {
+  if (ccbApiKeyValid(req)) return true;
   const auth = req.headers.get('authorization') || '';
   const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
   const secret = req.nextUrl.searchParams.get('secret');
@@ -33,10 +36,15 @@ export async function GET(req: NextRequest) {
   if (!(await authed(req))) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
 
   const p = req.nextUrl.searchParams;
-  const uid = (p.get('uid') || '').trim();
-  if (!/^[A-Za-z0-9_-]{6,64}$/.test(uid)) return NextResponse.json({ error: 'bad or missing uid' }, { status: 400 });
   const fresh = p.get('fresh') === '1';
   const dry = p.get('dry') === '1';
+  const { uid } = await resolveBriefUid({
+    uid: (p.get('uid') || '').trim() || undefined,
+    uhid: (p.get('uhid') || '').trim() || undefined,
+    individualUid: (p.get('individual_uid') || '').trim() || undefined,
+    date: (p.get('date') || '').trim() || undefined,
+  });
+  if (!uid) return NextResponse.json({ error: 'no episode found — pass ?uid=, or ?uhid=/?individual_uid= with ?date=' }, { status: 404 });
 
   const { stream, emit, close } = makeNdjsonStream();
   const t0 = Date.now();
