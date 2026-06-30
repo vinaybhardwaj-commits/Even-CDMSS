@@ -2,12 +2,16 @@ import { NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/admin-gate';
 import type { NextRequest } from 'next/server';
 import { sql } from '@/lib/db';
+import { isAdminUnlocked } from '@/lib/admin-cookie';
 
 export const runtime = 'nodejs';
 
 // Creates the opd_note_audits table (M2). Idempotent. Mirrors migrations/0007_opd_note_audits.sql.
+// Auth: ADMIN_TOKEN (Bearer / ?token=) OR a logged-in admin session cookie — so the migration
+// can be run one-click from the dashboard without handling the token (like the Re-audit button).
 export async function POST(req: NextRequest) {
-  const denied = requireAdmin(req); if (denied) return denied;
+  const denied = requireAdmin(req);
+  if (denied && !(await isAdminUnlocked().catch(() => false))) return denied;
   const steps: Record<string, string> = {};
   try {
     await sql`CREATE TABLE IF NOT EXISTS opd_note_audits (
@@ -54,6 +58,10 @@ export async function POST(req: NextRequest) {
     // exact documentation-gap breakdown (Top issues). Backfilled (no-LLM) for older rows.
     await sql`ALTER TABLE opd_note_audits ADD COLUMN IF NOT EXISTS missing_fields JSONB`;
     steps.missing_fields = 'ok';
+    // v0.5 — persist the numbered CDMSS corpus Sources retrieved for the audit, so the case
+    // view can show first-class citations (clickable PMID) + a Sources panel like Right Care.
+    await sql`ALTER TABLE opd_note_audits ADD COLUMN IF NOT EXISTS sources JSONB`;
+    steps.sources = 'ok';
     const cols = (await sql`SELECT count(*)::int AS n FROM information_schema.columns WHERE table_name = 'opd_note_audits'`) as Array<{ n: number }>;
     steps.columns = String(cols[0]?.n ?? 0);
     return NextResponse.json({ ok: true, steps });

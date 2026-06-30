@@ -5,6 +5,8 @@ import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
 import { fetchDoctorNames, fetchOpdNoteByUid } from '@/lib/metabase';
 import { rowToOpdCase, type DeidOpdCase } from '@/lib/opd-ingest-core';
 import { enrichOpdMeds } from '@/lib/formulary';
+import { CitationChips, SourcesPanel } from '@/components/right-care/kit';
+import type { Source } from '@/lib/citations-core';
 import {
   bandColor, scoreColor, parseJson, doctorLabel, fmtIstTime, DOMAIN_ROWS, PDQI9_LABEL,
 } from '@/lib/opd-audit-ui';
@@ -20,7 +22,7 @@ const VERDICT_COLOR: Record<string, string> = {
   'low-value': '#dc2626', 'context-dependent': '#d97706', 'high-value': '#16a34a', uncertain: '#78715f',
 };
 
-type Finding = { subject: string; verdict: string; confidence: number; domain: string; rationale: string; evidence?: string[]; estimates?: string[]; source?: string };
+type Finding = { subject: string; verdict: string; confidence: number; domain: string; rationale: string; evidence?: string[]; estimates?: string[]; source?: string; citation_ids?: number[] };
 type Pdqi = { attr: string; label?: string; value: number };
 type Sugg = { priority: number; text: string };
 
@@ -101,7 +103,7 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
     `SELECT id, uid, doctor_uid, consult_type, prescription_type, note_date, trace_id,
             note_quality_index, band, completeness_pct, n_missing_mandatory,
             score_documentation, score_note_quality, score_appropriateness, score_prescribing_safety, score_patient_centred,
-            pdqi9, findings, suggestions
+            pdqi9, findings, suggestions, sources
      FROM opd_note_audits WHERE id = $1 AND app_source = $2 LIMIT 1`,
     [id, APP],
   ).catch(() => [])) as Record<string, unknown>[];
@@ -121,6 +123,7 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
   const findings = parseJson<Finding[]>(r.findings, []);
   const pdqi = parseJson<Pdqi[]>(r.pdqi9, []);
   const suggestions = parseJson<Sugg[]>(r.suggestions, []).sort((a, b) => a.priority - b.priority);
+  const sources = parseJson<Source[]>(r.sources, []);
 
   const docUid = r.doctor_uid ? String(r.doctor_uid) : null;
   const uid = r.uid ? String(r.uid) : '';
@@ -185,22 +188,32 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
             <div>
               <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-400">Findings</div>
               <div className="space-y-2">
-                {findings.map((f, i) => (
-                  <div key={i} className="rounded-lg border border-slate-200 bg-white p-3">
-                    <div className="flex items-start gap-2">
-                      <span className="mt-0.5 h-2 w-2 shrink-0 rounded-full" style={{ background: VERDICT_COLOR[f.verdict] || '#78715f' }} />
-                      <div className="min-w-0 flex-1">
-                        <div className="text-[12.5px] font-medium text-slate-800">{f.subject}
-                          <span className="ml-2 align-middle text-[10px] font-normal text-slate-400">{f.verdict} · {f.domain.replace('_', ' ')}{f.source === 'deterministic' ? ' · rule' : ''}</span>
+                {findings.map((f, i) => {
+                  const grounded = !!(f.citation_ids && f.citation_ids.length > 0);
+                  const ground = f.source === 'deterministic'
+                    ? { label: 'Deterministic rule', cls: 'border-slate-200 bg-slate-50 text-slate-500' }
+                    : grounded
+                      ? { label: 'Grounded in CDMSS corpus', cls: 'border-teal-200 bg-teal-50 text-teal-800' }
+                      : { label: 'General clinical reasoning — not corpus-cited', cls: 'border-slate-200 bg-slate-50 text-slate-500' };
+                  return (
+                    <div key={i} className="rounded-lg border border-slate-200 bg-white p-3">
+                      <div className="flex items-start gap-2">
+                        <span className="mt-0.5 h-2 w-2 shrink-0 rounded-full" style={{ background: VERDICT_COLOR[f.verdict] || '#78715f' }} />
+                        <div className="min-w-0 flex-1">
+                          <div className="text-[12.5px] font-medium text-slate-800">{f.subject}
+                            <span className="ml-2 align-middle text-[10px] font-normal text-slate-400">{f.verdict} · {f.domain.replace('_', ' ')}</span>
+                          </div>
+                          <div className={`mt-1 inline-block rounded border px-1.5 py-0.5 text-[10px] font-medium ${ground.cls}`}>{ground.label}</div>
+                          {f.rationale && <div className="mt-1 text-[11.5px] leading-snug text-slate-600">{f.rationale}</div>}
+                          {grounded && sources.length > 0 && <CitationChips ids={f.citation_ids!} sources={sources} />}
+                          {Array.isArray(f.evidence) && f.evidence.length > 0 && (
+                            <div className="mt-1 text-[11px] text-slate-500"><span className="text-emerald-700">Evidence:</span> {f.evidence.join('; ')}</div>
+                          )}
                         </div>
-                        {f.rationale && <div className="mt-0.5 text-[11.5px] leading-snug text-slate-600">{f.rationale}</div>}
-                        {Array.isArray(f.evidence) && f.evidence.length > 0 && (
-                          <div className="mt-1 text-[11px] text-slate-500"><span className="text-emerald-700">Evidence:</span> {f.evidence.join('; ')}</div>
-                        )}
                       </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
@@ -229,6 +242,13 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
                   </li>
                 ))}
               </ol>
+            </div>
+          )}
+
+          {sources.length > 0 && (
+            <div>
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-400">Sources — retrieved from the CDMSS corpus</div>
+              <div className="rounded-xl border border-slate-200 bg-white p-3"><SourcesPanel sources={sources} /></div>
             </div>
           )}
         </div>

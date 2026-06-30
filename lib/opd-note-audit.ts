@@ -112,10 +112,15 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
   const completeness = opdCompleteness(oc);
 
   try {
+    // Richer retrieval query so the corpus is hit on the actual clinical content (readable dx
+    // names + reason + complaints + resolved molecules), not just ICD codes — improves grounding.
     const query = [
-      ...oc.diagnosisCodes, ...oc.presentingComplaints,
+      ...oc.impressions,
+      ...oc.diagnosisCodes,
+      oc.reasonForConsult || '',
+      ...oc.presentingComplaints.slice(0, 4),
       ...oc.medications.map((m) => m.resolvedGeneric || m.generic || m.brand || '').filter(Boolean),
-      'outpatient prescribing appropriateness rational therapy guideline',
+      'outpatient appropriateness rational prescribing evidence-based management guideline',
     ].filter(Boolean).join('. ');
 
     const hits = await defaultRetrieve(query);

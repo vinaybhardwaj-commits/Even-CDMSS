@@ -11,8 +11,10 @@ import type { DeidOpdCase } from './opd-ingest-core';
 import type { NetValue, OpdFindingDomain, Pdqi9Attr } from './opd-note-score-core';
 
 // 0.4 — formulary integration: brand→generic resolution + class/schedule/ISMP-high-alert/
-// LASA/VED enrichment + formulary-scoped DDI, so brand-only OPD lines (~36%) are recognised.
-export const OPD_ENGINE_VERSION = 'opd-note-audit/0.4';
+//       LASA/VED enrichment + formulary-scoped DDI, so brand-only OPD lines (~36%) are recognised.
+// 0.5 — corpus grounding made first-class: persisted CDMSS Sources, cite-or-label findings
+//       (every clinical claim cites [n] or is marked reasoning), richer retrieval query. No extra LLM calls.
+export const OPD_ENGINE_VERSION = 'opd-note-audit/0.5';
 
 // Local copy of the PDQI-9 keys (kept in sync with opd-note-score-core) so this core has
 // no runtime cross-import and stays loadable under `node --experimental-strip-types`.
@@ -165,6 +167,7 @@ export const OPD_AUDIT_SYSTEM = `You are a clinical quality auditor reviewing a 
    - appropriateness: low-value / inappropriate tests, treatments or referrals for the presentation.
    - prescribing_safety: irrational or unsafe prescribing — wrong/unnecessary drug, an antibiotic for a likely-viral illness, drug–drug or drug–allergy interactions, duplications, dosing problems. Each medication carries the molecule plus [drug class · D&C schedule · ISMP high-alert] resolved from the hospital formulary (the note often gives only a brand); use these to judge class duplication, interactions and high-alert handling. Items tagged "nutraceutical/cosmetic" or "not in hospital formulary" are NOT formulary drugs — do not invent drug interactions for them, but you may note non-evidence-based / cosmetic prescribing.
    Each finding: "subject", "verdict" (high-value | context-dependent | low-value | uncertain), "confidence" 0–1, "domain" ("appropriateness" | "prescribing_safety"), "rationale", "evidence" (points SUPPORTED by the excerpts), "estimates" (your own/general-knowledge points), "citation_ids" (the [n] that actually support the evidence).
+   CITE OR LABEL — this is critical, the audit is shown to clinical reviewers who must see what is sourced: when a numbered excerpt supports a point, put it in "evidence" and list every supporting [n] in citation_ids; if no excerpt supports the point, it MUST go in "estimates" with citation_ids empty — NEVER present an uncited claim as cited evidence. Prefer findings you can ground in the excerpts; an uncited finding is still allowed but will be shown to the reviewer as "general clinical reasoning", so reserve it for points genuinely worth raising.
    GUARD AGAINST ANCHORING: weigh PRE-TEST PROBABILITY and the dominant clinical syndrome; treat outside low-utility tests (e.g. Widal) with skepticism; do not reward a low-yield confirmatory test. Do NOT invent a diagnosis the note doesn't support.
    Do NOT penalise the mere absence of a field as a clinical error (documentation gaps are scored separately) — focus findings on the actual clinical decisions taken.
 
