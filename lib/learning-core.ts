@@ -46,6 +46,20 @@ export interface AuditRowLite {
 
 export interface MineThresholds { minOccurrences: number; minDoctors: number; requireCitation: boolean }
 export const DEFAULT_THRESHOLDS: MineThresholds = { minOccurrences: 15, minDoctors: 3, requireCitation: true };
+// Harvest-gap gate (LL.4): high-volume practices the corpus could NOT support (uncited). Lower
+// stakes than a clinical rule (it only steers what literature the harvester fetches), so a
+// modest volume floor; evidence is by definition absent (that's what makes it a gap).
+export const DEFAULT_GAP_THRESHOLDS: MineThresholds = { minOccurrences: 10, minDoctors: 3, requireCitation: false };
+
+export interface HarvestGapCandidate {
+  type: 'harvest_topic';
+  clusterKey: string;
+  title: string;            // canonical clinical topic the corpus is thin on
+  payload: { topic: string; query_terms: string };
+  provenance: { nOccurrences: number; nDoctors: number; depts: string[]; sampleSubjects: string[] };
+  confidence: number;
+  suggestedReviewer: SuggestedReviewer;
+}
 
 export interface RuleCandidate {
   type: 'lvc_rule';
@@ -202,6 +216,59 @@ export function mineRuleCandidates(rows: AuditRowLite[], thresholds: MineThresho
     });
   }
   // highest-signal first
+  return out.sort((a, b) => b.provenance.nOccurrences - a.provenance.nOccurrences || b.confidence - a.confidence);
+}
+
+/** Build a PubMed query from a canonical topic label — significant terms AND-joined. Conservative;
+ *  always human-reviewed before it is ever written to ingest_topics. */
+export function harvestQuery(title: string): string {
+  const kw = subjectKeywords(title);
+  if (kw.length >= 2) return kw.slice(0, 6).join(' AND ');
+  return (title || '').trim();
+}
+
+/** LL.4 — mine HARVEST-GAP candidates: high-volume mineable practices the corpus could NOT
+ *  support (every occurrence uncited) → proposed harvest TOPICS. Pure. Clusters exactly like
+ *  mineRuleCandidates but keeps only the fully-uncited clusters — i.e. the clusters the rule miner
+ *  rejected for lack of evidence. Any corpus support at all → it's a rule's job, not a gap. */
+export function mineHarvestGaps(rows: AuditRowLite[], thresholds: MineThresholds = DEFAULT_GAP_THRESHOLDS, opts: MineOpts = {}): HarvestGapCandidate[] {
+  const clusters = new Map<string, { key: string; subjects: string[]; labels: string[]; doctors: Set<string>; depts: Set<string>; cited: number; n: number }>();
+  for (const row of rows || []) {
+    for (const f of row.findings || []) {
+      if (!isMineableFinding(f)) continue;
+      const rawLabel = opts.canonicalLabel ? (opts.canonicalLabel(f.subject) || '') : '';
+      const key = rawLabel ? normalizeLabel(rawLabel) : subjectSignature(f.subject);
+      if (!key || key.length < 4) continue;
+      let c = clusters.get(key);
+      if (!c) { c = { key, subjects: [], labels: [], doctors: new Set(), depts: new Set(), cited: 0, n: 0 }; clusters.set(key, c); }
+      c.n += 1;
+      c.subjects.push(f.subject);
+      if (rawLabel) c.labels.push(rawLabel);
+      if (row.doctor_uid) c.doctors.add(row.doctor_uid);
+      if (row.consult_type) c.depts.add(row.consult_type);
+      if ((f.citation_ids || []).length > 0) c.cited += 1;
+    }
+  }
+  const out: HarvestGapCandidate[] = [];
+  for (const c of clusters.values()) {
+    if (c.cited > 0) continue;                        // any cited occurrence → not a corpus gap
+    if (c.n < thresholds.minOccurrences) continue;
+    if (c.doctors.size < thresholds.minDoctors) continue;
+    const title = mode(c.labels) || mode(c.subjects);
+    const query_terms = harvestQuery(title);
+    if (!title || !query_terms) continue;
+    const volScore = Math.min(0.4, (c.n - thresholds.minOccurrences) / 200 + 0.1);
+    const breadthScore = Math.min(0.2, c.doctors.size / 50);
+    out.push({
+      type: 'harvest_topic',
+      clusterKey: c.key,
+      title,
+      payload: { topic: title, query_terms },
+      provenance: { nOccurrences: c.n, nDoctors: c.doctors.size, depts: uniqStr([...c.depts]), sampleSubjects: uniqStr(c.subjects).slice(0, 5) },
+      confidence: Math.round(Math.min(0.9, 0.4 + volScore + breadthScore) * 100) / 100,
+      suggestedReviewer: 'owner',
+    });
+  }
   return out.sort((a, b) => b.provenance.nOccurrences - a.provenance.nOccurrences || b.confidence - a.confidence);
 }
 

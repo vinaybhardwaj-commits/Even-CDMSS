@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  subjectSignature, mineRuleCandidates, DEFAULT_THRESHOLDS, parseCanonicalMap,
+  subjectSignature, mineRuleCandidates, mineHarvestGaps, DEFAULT_THRESHOLDS, DEFAULT_GAP_THRESHOLDS, parseCanonicalMap,
   type AuditRowLite, type AuditFindingLite,
 } from '../learning-core.ts';
 
@@ -74,6 +74,25 @@ test('canonical label MERGES paraphrases that the deterministic signature would 
   assert.equal(canon.length, 1, 'canonical label merges all 16 into one cluster');
   assert.equal(canon[0].title, 'Antibiotic for viral upper respiratory infection');
   assert.ok(canon[0].provenance.nOccurrences === 16 && canon[0].provenance.nDoctors === 4);
+});
+
+test('mineHarvestGaps: high-volume UNCITED practices become harvest topics; cited/sparse do not', () => {
+  const rows: AuditRowLite[] = [];
+  // Gap: 12 fully-uncited occurrences across 3 doctors → harvest topic
+  for (let i = 0; i < 12; i++) rows.push(row(`g${i}`, `doc${i % 3}`, [lv('Serratiopeptidase for soft-tissue swelling', false)]));
+  // Cited cluster → NOT a gap (the rule miner owns it)
+  for (let i = 0; i < 12; i++) rows.push(row(`h${i}`, `doc${i % 3}`, [lv('Antibiotic for likely viral URTI', true)]));
+  // Below the volume floor → ignored
+  for (let i = 0; i < 5; i++) rows.push(row(`s${i}`, `doc${i % 3}`, [lv('Nebulisation for simple cough', false)]));
+
+  const gaps = mineHarvestGaps(rows, DEFAULT_GAP_THRESHOLDS);
+  assert.equal(gaps.length, 1, 'only the high-volume fully-uncited cluster is a gap');
+  const g = gaps[0];
+  assert.equal(g.type, 'harvest_topic');
+  assert.ok(/serratiopeptidase|swelling|soft/i.test(g.clusterKey));
+  assert.ok(g.payload.query_terms.length > 0 && g.payload.query_terms.includes(' AND '), 'carries an AND-joined PubMed query');
+  assert.ok(g.provenance.nOccurrences === 12 && g.provenance.nDoctors === 3);
+  assert.equal(g.suggestedReviewer, 'owner');
 });
 
 test('mineRuleCandidates: context-dependent → limit; prescribing domain → pharmacy_ams', () => {

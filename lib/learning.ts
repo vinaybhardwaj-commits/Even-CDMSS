@@ -10,7 +10,7 @@
 import { sql } from './db';
 import { chatWithFallback, geminiUtilityModel, TEXT_MODEL } from './llm';
 import {
-  mineRuleCandidates, DEFAULT_THRESHOLDS, isMineableFinding,
+  mineRuleCandidates, mineHarvestGaps, DEFAULT_THRESHOLDS, DEFAULT_GAP_THRESHOLDS, isMineableFinding,
   CANONICALIZE_SYSTEM, buildCanonicalizeUser, parseCanonicalMap,
   type AuditRowLite, type MineThresholds,
 } from './learning-core';
@@ -81,7 +81,28 @@ export async function canonicalizeSubjects(subjects: string[]): Promise<Record<s
   return map;
 }
 
-export interface MineSummary { scanned: number; subjects: number; canonicalized: number; candidates: number; inserted: number; refreshed: number }
+export interface MineSummary { scanned: number; subjects: number; canonicalized: number; candidates: number; gaps: number; inserted: number; refreshed: number }
+
+/** Upsert one candidate into the review queue (proposed-only refresh). Returns insert/refresh/null. */
+async function upsertProposal(c: {
+  type: string; clusterKey: string; title: string; payload: unknown; evidence: unknown;
+  nSupport: number; provenance: unknown; confidence: number; suggestedReviewer: string;
+}): Promise<'inserted' | 'refreshed' | null> {
+  const res = (await sql`
+    INSERT INTO learning_proposals
+      (app_source, type, status, cluster_key, title, payload, evidence, provenance, confidence, n_support, suggested_reviewer)
+    VALUES (${APP}, ${c.type}, 'proposed', ${c.clusterKey}, ${c.title},
+      ${JSON.stringify(c.payload)}::jsonb, ${JSON.stringify(c.evidence)}::jsonb, ${JSON.stringify(c.provenance)}::jsonb,
+      ${c.confidence}, ${c.nSupport}, ${c.suggestedReviewer})
+    ON CONFLICT (type, cluster_key) DO UPDATE SET
+      title = EXCLUDED.title, payload = EXCLUDED.payload, evidence = EXCLUDED.evidence,
+      provenance = EXCLUDED.provenance, confidence = EXCLUDED.confidence,
+      n_support = EXCLUDED.n_support, suggested_reviewer = EXCLUDED.suggested_reviewer, updated_at = NOW()
+      WHERE learning_proposals.status = 'proposed'
+    RETURNING (xmax = 0) AS inserted`) as Array<{ inserted: boolean }>;
+  if (!res.length) return null;
+  return res[0].inserted ? 'inserted' : 'refreshed';
+}
 
 /** Mine recent audits → upsert candidate rule proposals (proposed-only refresh; rejected/approved left alone). */
 export async function mineAndSaveProposals(days = 90, thresholds: MineThresholds = DEFAULT_THRESHOLDS, useCanonical = true): Promise<MineSummary> {
@@ -98,23 +119,19 @@ export async function mineAndSaveProposals(days = 90, thresholds: MineThresholds
   const canonicalLabel = Object.keys(labelMap).length ? (s: string) => labelMap[s] || '' : undefined;
 
   const cands = mineRuleCandidates(rows, thresholds, { canonicalLabel });
+  // LL.4 — the SAME clustering also yields harvest-gap topics: high-volume practices the corpus
+  // could not cite. They land in the same review queue; approving one only adds an ingest_topics row.
+  const gaps = mineHarvestGaps(rows, DEFAULT_GAP_THRESHOLDS, { canonicalLabel });
   let inserted = 0; let refreshed = 0;
   for (const c of cands) {
-    const res = (await sql`
-      INSERT INTO learning_proposals
-        (app_source, type, status, cluster_key, title, payload, evidence, provenance, confidence, n_support, suggested_reviewer)
-      VALUES (${APP}, ${c.type}, 'proposed', ${c.clusterKey}, ${c.title},
-        ${JSON.stringify(c.payload)}::jsonb, ${JSON.stringify(c.evidence)}::jsonb, ${JSON.stringify(c.provenance)}::jsonb,
-        ${c.confidence}, ${c.provenance.nOccurrences}, ${c.suggestedReviewer})
-      ON CONFLICT (type, cluster_key) DO UPDATE SET
-        title = EXCLUDED.title, payload = EXCLUDED.payload, evidence = EXCLUDED.evidence,
-        provenance = EXCLUDED.provenance, confidence = EXCLUDED.confidence,
-        n_support = EXCLUDED.n_support, suggested_reviewer = EXCLUDED.suggested_reviewer, updated_at = NOW()
-        WHERE learning_proposals.status = 'proposed'
-      RETURNING (xmax = 0) AS inserted`) as Array<{ inserted: boolean }>;
-    if (res.length) { if (res[0].inserted) inserted++; else refreshed++; }
+    const r = await upsertProposal({ type: c.type, clusterKey: c.clusterKey, title: c.title, payload: c.payload, evidence: c.evidence, nSupport: c.provenance.nOccurrences, provenance: c.provenance, confidence: c.confidence, suggestedReviewer: c.suggestedReviewer });
+    if (r === 'inserted') inserted++; else if (r === 'refreshed') refreshed++;
   }
-  return { scanned: rows.length, subjects: subjects.length, canonicalized: Object.keys(labelMap).length, candidates: cands.length, inserted, refreshed };
+  for (const g of gaps) {
+    const r = await upsertProposal({ type: g.type, clusterKey: g.clusterKey, title: g.title, payload: g.payload, evidence: [], nSupport: g.provenance.nOccurrences, provenance: g.provenance, confidence: g.confidence, suggestedReviewer: g.suggestedReviewer });
+    if (r === 'inserted') inserted++; else if (r === 'refreshed') refreshed++;
+  }
+  return { scanned: rows.length, subjects: subjects.length, canonicalized: Object.keys(labelMap).length, candidates: cands.length, gaps: gaps.length, inserted, refreshed };
 }
 
 /** On approve of an lvc_rule: insert it into lvc_recommendations as an ACTIVE, EHRC-mined,
@@ -148,9 +165,26 @@ async function applyLvcRule(proposalId: string, p: Record<string, unknown>): Pro
   return lvcId;
 }
 
+/** On approve of a harvest_topic (LL.4): add the topic to ingest_topics so the EXISTING harvest
+ *  cron (oldest-run-first) fetches + ingests literature for it on its next pass. We never touch the
+ *  ingestion or corpus code — only the topic list, and only after human approval. An already-present
+ *  topic is left exactly as configured (DO NOTHING) so we never re-enable or rewrite an admin's row.
+ *  Returns the topic name as the applied ref. */
+async function applyHarvestTopic(p: Record<string, unknown>): Promise<string | null> {
+  const payload = asObj(p.payload);
+  const topic = String(payload.topic || p.title || '').slice(0, 200).trim();
+  const queryTerms = String(payload.query_terms || '').slice(0, 400).trim();
+  if (!topic || !queryTerms) return null;
+  await sql`
+    INSERT INTO ingest_topics (topic, query_terms, enabled)
+    VALUES (${topic}, ${queryTerms}, true)
+    ON CONFLICT (topic) DO NOTHING`;
+  return topic;
+}
+
 /** Approve or reject a proposal. On approve of an lvc_rule the rule is inserted into
- *  lvc_recommendations (active → fires in Right Care); other types just mark approved for their
- *  own later apply steps (harvest/calibration). */
+ *  lvc_recommendations (active → fires in Right Care); a harvest_topic is added to ingest_topics;
+ *  other types just mark approved for their own later apply steps (calibration). */
 export async function reviewProposal(id: string, action: 'approve' | 'reject', reviewer: string | null, note: string | null): Promise<boolean> {
   if (action === 'reject') {
     const rows = (await sql`

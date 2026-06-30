@@ -18,7 +18,7 @@ function parseJson<T>(v: unknown, f: T): T {
 
 type Evidence = { n?: number; source?: string; book?: string; item_number?: string | null; url?: string | null; preview?: string };
 type Provenance = { nOccurrences?: number; nDoctors?: number; depts?: string[]; sampleSubjects?: string[]; dominantDomain?: string };
-type Payload = { statement?: string; action_type?: string; rationale?: string; keywords?: string[]; provenance?: string };
+type Payload = { statement?: string; action_type?: string; rationale?: string; keywords?: string[]; provenance?: string; topic?: string; query_terms?: string };
 type Proposal = {
   id: string; type: string; status: string; title: string; confidence: number; n_support: number;
   suggested_reviewer: string; reviewed_by: string | null; reviewed_at: string | null; review_note: string | null;
@@ -67,7 +67,7 @@ export default async function LearningPage({ searchParams }: { searchParams: Pro
       <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-brand">LEARNING LOOP</div>
       <h1 className="font-serif text-[26px] font-semibold text-slate-900">Rule proposals from your audits</h1>
       <p className="mt-1 max-w-3xl text-sm text-slate-500">
-        Low-value-care patterns mined from the OPD audits, each evidence-cited, awaiting review. <span className="text-slate-600">Approving publishes the rule to the <strong>Right Care</strong> appropriateness engine (active, cited, EHRC-mined); rejecting drops it. The OPD audit scoring engine is unchanged.</span>
+        Patterns mined from the OPD audits, awaiting review. <span className="text-slate-600">A <strong>low-value rule</strong> (evidence-cited) publishes on approval to the <strong>Right Care</strong> appropriateness engine (active, cited, EHRC-mined). An <strong>evidence-harvest topic</strong> — a high-volume practice the corpus could <em>not</em> cite — adds a topic to the literature harvester on approval so the corpus fills the gap. Rejecting drops it. The OPD audit scoring engine is unchanged.</span>
       </p>
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -89,7 +89,7 @@ export default async function LearningPage({ searchParams }: { searchParams: Pro
           {proposals.map((p) => (
             <div key={p.id} className="rounded-xl border border-slate-200 bg-white p-4">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">{p.type === 'lvc_rule' ? 'Low-value rule' : p.type}</span>
+                <span className="rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">{p.type === 'lvc_rule' ? 'Low-value rule' : p.type === 'harvest_topic' ? 'Evidence-harvest topic' : p.type}</span>
                 <span className="rounded border border-blue-200 bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">→ {REVIEWER_LABEL[p.suggested_reviewer] || p.suggested_reviewer}</span>
                 <span className="text-[10.5px] text-slate-400">confidence {Math.round(p.confidence * 100)}% · seen {p.n_support}×</span>
                 {p.status !== 'proposed' && (
@@ -103,6 +103,13 @@ export default async function LearningPage({ searchParams }: { searchParams: Pro
               {Array.isArray(p.payload.keywords) && p.payload.keywords.length > 0 && (
                 <div className="mt-1.5 flex flex-wrap gap-1">
                   {p.payload.keywords.slice(0, 10).map((k, i) => <span key={i} className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">{k}</span>)}
+                </div>
+              )}
+
+              {p.type === 'harvest_topic' && p.payload.query_terms && (
+                <div className="mt-1.5 text-[11.5px] leading-snug text-slate-600">
+                  Corpus gap — no supporting citation across these encounters. Approving adds this PubMed harvest query to the literature engine:
+                  <code className="ml-1 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] text-amber-800">{p.payload.query_terms}</code>
                 </div>
               )}
 
