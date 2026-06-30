@@ -81,7 +81,7 @@ export async function canonicalizeSubjects(subjects: string[]): Promise<Record<s
   return map;
 }
 
-export interface MineSummary { scanned: number; subjects: number; canonicalized: number; candidates: number; gaps: number; inserted: number; refreshed: number }
+export interface MineSummary { scanned: number; subjects: number; canonicalized: number; candidates: number; gaps: number; inserted: number; refreshed: number; healed: number }
 
 /** Upsert one candidate into the review queue (proposed-only refresh). Returns insert/refresh/null. */
 async function upsertProposal(c: {
@@ -132,7 +132,25 @@ export async function mineAndSaveProposals(days = 90, thresholds: MineThresholds
     const r = await upsertProposal({ type: g.type, clusterKey: g.clusterKey, title: g.title, payload: g.payload, evidence: [], nSupport: g.provenance.nOccurrences, provenance: g.provenance, confidence: g.confidence, suggestedReviewer: g.suggestedReviewer });
     if (r === 'inserted') inserted++; else if (r === 'refreshed') refreshed++;
   }
-  return { scanned: rows.length, subjects: subjects.length, canonicalized: Object.keys(labelMap).length, candidates: cands.length, gaps: gaps.length, inserted, refreshed };
+  const healed = await reconcileApproved();
+  return { scanned: rows.length, subjects: subjects.length, canonicalized: Object.keys(labelMap).length, candidates: cands.length, gaps: gaps.length, inserted, refreshed, healed };
+}
+
+/** Heal approved proposals whose apply step never landed (applied_ref IS NULL) — re-runs the
+ *  correct apply for each type and records the ref. Idempotent (a healed row gets a non-null ref so
+ *  it's skipped next time). A safety net against any apply hiccup; never touches proposed/rejected. */
+async function reconcileApproved(): Promise<number> {
+  const orphans = (await sql`
+    SELECT id, type, title, payload, evidence, provenance FROM learning_proposals
+     WHERE app_source = ${APP} AND status = 'approved' AND applied_ref IS NULL`) as Array<Record<string, unknown>>;
+  let healed = 0;
+  for (const p of orphans) {
+    let ref: string | null = null;
+    if (String(p.type) === 'lvc_rule') ref = await applyLvcRule(String(p.id), p);
+    else if (String(p.type) === 'harvest_topic') ref = await applyHarvestTopic(p);
+    if (ref) { await sql`UPDATE learning_proposals SET applied_ref = ${ref}, updated_at = NOW() WHERE id = ${p.id}`; healed++; }
+  }
+  return healed;
 }
 
 /** On approve of an lvc_rule: insert it into lvc_recommendations as an ACTIVE, EHRC-mined,
@@ -200,6 +218,7 @@ export async function reviewProposal(id: string, action: 'approve' | 'reject', r
   const p = props[0];
   let appliedRef: string | null = null;
   if (String(p.type) === 'lvc_rule') appliedRef = await applyLvcRule(id, p);
+  else if (String(p.type) === 'harvest_topic') appliedRef = await applyHarvestTopic(p);
   const rows = (await sql`
     UPDATE learning_proposals SET status = 'approved', reviewed_by = ${reviewer}, reviewed_at = NOW(), review_note = ${note}, applied_ref = ${appliedRef}, updated_at = NOW()
      WHERE id = ${id} AND app_source = ${APP} AND status = 'proposed' RETURNING id`) as Array<{ id: string }>;
