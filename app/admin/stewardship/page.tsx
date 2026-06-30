@@ -3,7 +3,7 @@ import { sql } from '@/lib/db';
 import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: 'Department stewardship · Admin · CAT' };
+export const metadata = { title: 'Stewardship · Admin · CAT' };
 
 const APP = process.env.APP_SOURCE || 'standalone';
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
@@ -14,36 +14,50 @@ type DeptRow = {
   avg_appr: number; avg_presc: number; avg_doc: number; avg_complete: number;
   pct_low: number; sum_low: number; sum_interactions: number;
 };
+type DoctorRow = DeptRow & { doctor_uid: string; doctor_name: string; speciality: string };
 
 const WINDOW_DAYS = 90;
 
-// Latest audit per note (DISTINCT ON uid) over the window, joined to the doctor_directory for a
-// real speciality (the source consult_type is blank), aggregated by speciality. Nested subquery
-// because Neon's HTTP driver can't GROUP BY over a DISTINCT ON in one pass. The directory is synced
-// from db13 via /api/admin/sync-doctor-directory; a missing table is caught → empty state.
+// Shared inner subquery: latest audit per note (DISTINCT ON uid) over the window. Nested because
+// Neon's HTTP driver can't GROUP BY over a DISTINCT ON in one pass. doctor_directory (synced from
+// db13 via /api/admin/sync-doctor-directory) supplies the speciality + name; a missing table is
+// caught → empty state.
+const INNER = `
+  SELECT DISTINCT ON (uid) uid, doctor_uid, note_quality_index, band,
+    score_appropriateness, score_prescribing_safety, score_documentation,
+    completeness_pct, n_low_value, n_interaction_alerts
+  FROM opd_note_audits
+  WHERE app_source = $1 AND note_date >= NOW() - ($2 || ' days')::interval
+  ORDER BY uid, audited_at DESC`;
+
+const AGG = `
+  count(*)::int AS n_notes,
+  round(avg(note_quality_index))::int AS avg_nqi,
+  round(100.0 * avg(CASE WHEN band IN ('A','B') THEN 1 ELSE 0 END))::int AS pct_ab,
+  round(avg(score_appropriateness))::int AS avg_appr,
+  round(avg(score_prescribing_safety))::int AS avg_presc,
+  round(avg(score_documentation))::int AS avg_doc,
+  round(avg(completeness_pct))::int AS avg_complete,
+  round(100.0 * avg(CASE WHEN n_low_value > 0 THEN 1 ELSE 0 END))::int AS pct_low,
+  sum(n_low_value)::int AS sum_low,
+  sum(n_interaction_alerts)::int AS sum_interactions`;
+
 const DEPT_SQL = `
-  SELECT COALESCE(NULLIF(dd.speciality, ''), 'Unspecified') AS dept,
-    count(*)::int AS n_notes,
-    round(avg(note_quality_index))::int AS avg_nqi,
-    round(100.0 * avg(CASE WHEN band IN ('A','B') THEN 1 ELSE 0 END))::int AS pct_ab,
-    round(avg(score_appropriateness))::int AS avg_appr,
-    round(avg(score_prescribing_safety))::int AS avg_presc,
-    round(avg(score_documentation))::int AS avg_doc,
-    round(avg(completeness_pct))::int AS avg_complete,
-    round(100.0 * avg(CASE WHEN n_low_value > 0 THEN 1 ELSE 0 END))::int AS pct_low,
-    sum(n_low_value)::int AS sum_low,
-    sum(n_interaction_alerts)::int AS sum_interactions
-  FROM (
-    SELECT DISTINCT ON (uid) uid, doctor_uid, note_quality_index, band,
-      score_appropriateness, score_prescribing_safety, score_documentation,
-      completeness_pct, n_low_value, n_interaction_alerts
-    FROM opd_note_audits
-    WHERE app_source = $1 AND note_date >= NOW() - ($2 || ' days')::interval
-    ORDER BY uid, audited_at DESC
-  ) t
+  SELECT COALESCE(NULLIF(dd.speciality, ''), 'Unspecified') AS dept, ${AGG}
+  FROM ( ${INNER} ) t
   LEFT JOIN doctor_directory dd ON dd.doctor_uid = t.doctor_uid
   GROUP BY 1
   ORDER BY n_notes DESC`;
+
+const DOCTOR_SQL = `
+  SELECT t.doctor_uid AS doctor_uid,
+    COALESCE(NULLIF(dd.doctor_name, ''), '(unknown)') AS doctor_name,
+    COALESCE(NULLIF(dd.speciality, ''), 'Unspecified') AS speciality, ${AGG}
+  FROM ( ${INNER} ) t
+  LEFT JOIN doctor_directory dd ON dd.doctor_uid = t.doctor_uid
+  GROUP BY t.doctor_uid, dd.doctor_name, dd.speciality
+  ORDER BY n_notes DESC
+  LIMIT 200`;
 
 const TOTAL_SQL = `
   SELECT count(*)::int AS n_notes,
@@ -52,12 +66,9 @@ const TOTAL_SQL = `
     round(100.0 * avg(CASE WHEN n_low_value > 0 THEN 1 ELSE 0 END))::int AS pct_low,
     sum(n_low_value)::int AS sum_low,
     sum(n_interaction_alerts)::int AS sum_interactions
-  FROM (
-    SELECT DISTINCT ON (uid) uid, note_quality_index, band, n_low_value, n_interaction_alerts
-    FROM opd_note_audits
-    WHERE app_source = $1 AND note_date >= NOW() - ($2 || ' days')::interval
-    ORDER BY uid, audited_at DESC
-  ) t`;
+  FROM ( SELECT DISTINCT ON (uid) uid, note_quality_index, band, n_low_value, n_interaction_alerts
+    FROM opd_note_audits WHERE app_source = $1 AND note_date >= NOW() - ($2 || ' days')::interval
+    ORDER BY uid, audited_at DESC ) t`;
 
 function scoreClass(v: number): string {
   if (v >= 80) return 'text-emerald-700';
@@ -69,11 +80,18 @@ function riskClass(pct: number): string {
   if (pct >= 20) return 'text-amber-600';
   return 'text-slate-600';
 }
+function aggRow(r: Record<string, unknown>): DeptRow {
+  return {
+    dept: String(r.dept || 'Unspecified'), n_notes: n(r.n_notes), avg_nqi: n(r.avg_nqi), pct_ab: n(r.pct_ab),
+    avg_appr: n(r.avg_appr), avg_presc: n(r.avg_presc), avg_doc: n(r.avg_doc), avg_complete: n(r.avg_complete),
+    pct_low: n(r.pct_low), sum_low: n(r.sum_low), sum_interactions: n(r.sum_interactions),
+  };
+}
 
 function Locked() {
   return (
     <div>
-      <h1 className="font-serif text-[26px] font-semibold text-slate-900">Department stewardship</h1>
+      <h1 className="font-serif text-[26px] font-semibold text-slate-900">Stewardship</h1>
       <p className="mt-1.5 text-sm text-slate-500">Locked. <Link href="/admin/opd-audit" className="text-brand hover:underline">Unlock an admin surface</Link> first.</p>
     </div>
   );
@@ -89,38 +107,74 @@ function Stat({ label, value, sub }: { label: string; value: string; sub?: strin
   );
 }
 
-export default async function StewardshipPage() {
-  if (!(await isAdminUnlocked())) { adminTokenConfigured(); return <Locked />; }
+function MetricCells({ r }: { r: DeptRow }) {
+  return (
+    <>
+      <td className="px-3 py-2.5 text-right text-slate-600">{r.n_notes.toLocaleString()}</td>
+      <td className={`px-3 py-2.5 text-right font-medium ${scoreClass(r.avg_nqi)}`}>{r.avg_nqi}</td>
+      <td className="px-3 py-2.5 text-right text-slate-600">{r.pct_ab}%</td>
+      <td className={`px-3 py-2.5 text-right ${scoreClass(r.avg_appr)}`}>{r.avg_appr}</td>
+      <td className={`px-3 py-2.5 text-right ${scoreClass(r.avg_presc)}`}>{r.avg_presc}</td>
+      <td className={`px-3 py-2.5 text-right ${scoreClass(r.avg_complete)}`}>{r.avg_complete}%</td>
+      <td className={`px-3 py-2.5 text-right ${riskClass(r.pct_low)}`}>{r.pct_low}%</td>
+      <td className={`px-3 py-2.5 text-right ${r.sum_interactions > 0 ? 'text-amber-600' : 'text-slate-400'}`}>{r.sum_interactions}</td>
+    </>
+  );
+}
 
-  const [deptRaw, totalRaw] = await Promise.all([
-    run(DEPT_SQL, [APP, String(WINDOW_DAYS)]).catch(() => []),
+const METRIC_HEADERS = (
+  <>
+    <th className="px-3 py-2.5 text-right font-medium">Notes</th>
+    <th className="px-3 py-2.5 text-right font-medium">Avg NQI</th>
+    <th className="px-3 py-2.5 text-right font-medium">% A–B</th>
+    <th className="px-3 py-2.5 text-right font-medium">Appropriate&shy;ness</th>
+    <th className="px-3 py-2.5 text-right font-medium">Prescribing safety</th>
+    <th className="px-3 py-2.5 text-right font-medium">Complete&shy;ness</th>
+    <th className="px-3 py-2.5 text-right font-medium">Low-value %</th>
+    <th className="px-3 py-2.5 text-right font-medium">Interaction alerts</th>
+  </>
+);
+
+export default async function StewardshipPage({ searchParams }: { searchParams: Promise<{ view?: string }> }) {
+  if (!(await isAdminUnlocked())) { adminTokenConfigured(); return <Locked />; }
+  const sp = await searchParams;
+  const view = sp.view === 'doctor' ? 'doctor' : 'dept';
+
+  const [breakdownRaw, totalRaw] = await Promise.all([
+    run(view === 'doctor' ? DOCTOR_SQL : DEPT_SQL, [APP, String(WINDOW_DAYS)]).catch(() => []),
     run(TOTAL_SQL, [APP, String(WINDOW_DAYS)]).catch(() => []),
   ]);
-
-  const depts: DeptRow[] = deptRaw.map((r) => ({
-    dept: String(r.dept || 'Unspecified'), n_notes: n(r.n_notes), avg_nqi: n(r.avg_nqi), pct_ab: n(r.pct_ab),
-    avg_appr: n(r.avg_appr), avg_presc: n(r.avg_presc), avg_doc: n(r.avg_doc), avg_complete: n(r.avg_complete),
-    pct_low: n(r.pct_low), sum_low: n(r.sum_low), sum_interactions: n(r.sum_interactions),
-  }));
   const t = totalRaw[0] || {};
+  const rowsCount = breakdownRaw.length;
 
   return (
     <div>
       <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-brand">STEWARDSHIP</div>
-      <h1 className="font-serif text-[26px] font-semibold text-slate-900">Department stewardship</h1>
+      <h1 className="font-serif text-[26px] font-semibold text-slate-900">{view === 'doctor' ? 'Clinician stewardship' : 'Department stewardship'}</h1>
       <p className="mt-1 max-w-3xl text-sm text-slate-500">
-        Note-quality and care-appropriateness across departments, from the daily OPD audits (last {WINDOW_DAYS} days, latest audit per note).
-        <span className="text-slate-600"> Department-level only — no individual clinicians. A process &amp; appropriateness lens, not a clinician score.</span>
+        Note-quality and care-appropriateness from the daily OPD audits (last {WINDOW_DAYS} days, latest audit per note).
+        {view === 'doctor'
+          ? <span className="text-slate-600"> Individual-level — admin-only and advisory. A process &amp; appropriateness signal, not a standalone clinician score; small-sample clinicians read noisily.</span>
+          : <span className="text-slate-600"> Department-level — a process &amp; appropriateness lens, not a clinician score.</span>}
       </p>
 
-      {depts.length === 0 ? (
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        {([['dept', 'By department'], ['doctor', 'By doctor']] as const).map(([v, label]) => (
+          <Link key={v} href={`/admin/stewardship?view=${v}`}
+            className={`rounded-full border px-2.5 py-1 text-[11.5px] ${view === v ? 'border-brand/40 bg-brand-faint text-brand' : 'border-slate-200 text-slate-500 hover:bg-slate-50'}`}>
+            {label}
+          </Link>
+        ))}
+      </div>
+
+      {rowsCount === 0 ? (
         <div className="mt-4 rounded-xl border border-slate-200 bg-white p-6 text-center text-[13px] text-slate-500">
           No audits in the window yet.
         </div>
       ) : (
         <>
           <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <Stat label="Notes audited" value={n(t.n_notes).toLocaleString()} sub={`${depts.length} departments`} />
+            <Stat label="Notes audited" value={n(t.n_notes).toLocaleString()} sub={view === 'doctor' ? `${rowsCount} clinicians` : `${rowsCount} departments`} />
             <Stat label="Avg note-quality" value={String(n(t.avg_nqi))} sub={`${n(t.pct_ab)}% in band A–B`} />
             <Stat label="Notes w/ low-value" value={`${n(t.pct_low)}%`} sub={`${n(t.sum_low).toLocaleString()} findings total`} />
             <Stat label="Interaction alerts" value={n(t.sum_interactions).toLocaleString()} sub="across audited notes" />
@@ -130,38 +184,47 @@ export default async function StewardshipPage() {
             <table className="w-full text-[12.5px]">
               <thead>
                 <tr className="border-b border-slate-200 text-left text-[10.5px] uppercase tracking-wide text-slate-400">
-                  <th className="px-3 py-2.5 font-medium">Department</th>
-                  <th className="px-3 py-2.5 text-right font-medium">Notes</th>
-                  <th className="px-3 py-2.5 text-right font-medium">Avg NQI</th>
-                  <th className="px-3 py-2.5 text-right font-medium">% A–B</th>
-                  <th className="px-3 py-2.5 text-right font-medium">Appropriate&shy;ness</th>
-                  <th className="px-3 py-2.5 text-right font-medium">Prescribing safety</th>
-                  <th className="px-3 py-2.5 text-right font-medium">Complete&shy;ness</th>
-                  <th className="px-3 py-2.5 text-right font-medium">Low-value %</th>
-                  <th className="px-3 py-2.5 text-right font-medium">Interaction alerts</th>
+                  {view === 'doctor' ? (
+                    <>
+                      <th className="px-3 py-2.5 font-medium">Clinician</th>
+                      <th className="px-3 py-2.5 font-medium">Speciality</th>
+                    </>
+                  ) : (
+                    <th className="px-3 py-2.5 font-medium">Department</th>
+                  )}
+                  {METRIC_HEADERS}
                 </tr>
               </thead>
               <tbody>
-                {depts.map((d) => (
-                  <tr key={d.dept || 'none'} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                    <td className="px-3 py-2.5 font-medium text-slate-800">{d.dept}</td>
-                    <td className="px-3 py-2.5 text-right text-slate-600">{d.n_notes.toLocaleString()}</td>
-                    <td className={`px-3 py-2.5 text-right font-medium ${scoreClass(d.avg_nqi)}`}>{d.avg_nqi}</td>
-                    <td className="px-3 py-2.5 text-right text-slate-600">{d.pct_ab}%</td>
-                    <td className={`px-3 py-2.5 text-right ${scoreClass(d.avg_appr)}`}>{d.avg_appr}</td>
-                    <td className={`px-3 py-2.5 text-right ${scoreClass(d.avg_presc)}`}>{d.avg_presc}</td>
-                    <td className={`px-3 py-2.5 text-right ${scoreClass(d.avg_complete)}`}>{d.avg_complete}%</td>
-                    <td className={`px-3 py-2.5 text-right ${riskClass(d.pct_low)}`}>{d.pct_low}%</td>
-                    <td className={`px-3 py-2.5 text-right ${d.sum_interactions > 0 ? 'text-amber-600' : 'text-slate-400'}`}>{d.sum_interactions}</td>
-                  </tr>
-                ))}
+                {view === 'doctor'
+                  ? breakdownRaw.map((raw) => {
+                      const r: DoctorRow = { ...aggRow(raw), doctor_uid: String(raw.doctor_uid || ''), doctor_name: String(raw.doctor_name || '(unknown)'), speciality: String(raw.speciality || 'Unspecified') };
+                      return (
+                        <tr key={r.doctor_uid || r.doctor_name} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
+                          <td className="px-3 py-2.5 font-medium text-slate-800">{r.doctor_name}</td>
+                          <td className="px-3 py-2.5 text-slate-500">{r.speciality}</td>
+                          <MetricCells r={r} />
+                        </tr>
+                      );
+                    })
+                  : breakdownRaw.map((raw) => {
+                      const r = aggRow(raw);
+                      return (
+                        <tr key={r.dept || 'none'} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
+                          <td className="px-3 py-2.5 font-medium text-slate-800">{r.dept}</td>
+                          <MetricCells r={r} />
+                        </tr>
+                      );
+                    })}
               </tbody>
             </table>
           </div>
 
           <p className="mt-4 text-[11px] text-slate-400">
-            Scores 0–100; green ≥80, amber 60–79, red &lt;60. Departments with few audited notes will read noisily until volume builds.
-            Aggregated from de-identified audit records; no patient or clinician identifiers shown.
+            Scores 0–100; green ≥80, amber 60–79, red &lt;60. {view === 'doctor' ? 'Clinicians' : 'Departments'} with few audited notes read noisily until volume builds.
+            {view === 'doctor'
+              ? ' Clinician names are staff data; this view is admin-only and advisory — use alongside the note-level evidence, not as a standalone score.'
+              : ' Aggregated from de-identified audit records; no patient identifiers shown.'}
           </p>
         </>
       )}
