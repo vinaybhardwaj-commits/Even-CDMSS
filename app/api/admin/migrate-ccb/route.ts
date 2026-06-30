@@ -43,6 +43,11 @@ export async function POST(req: NextRequest) {
     await sql`CREATE INDEX IF NOT EXISTS ccb_briefs_uhid_idx ON ccb_briefs (uhid)`;
     await sql`CREATE INDEX IF NOT EXISTS ccb_briefs_pitch_idx ON ccb_briefs (pitch_allowed)`;
     steps.indexes = 'ok';
+    // P2.4 — doctor dimension for the conversion funnel's by-speciality breakdown.
+    await sql`ALTER TABLE ccb_briefs ADD COLUMN IF NOT EXISTS doctor_uid TEXT`;
+    await sql`ALTER TABLE ccb_briefs ADD COLUMN IF NOT EXISTS doctor_speciality TEXT`;
+    await sql`CREATE INDEX IF NOT EXISTS ccb_briefs_speciality_idx ON ccb_briefs (doctor_speciality)`;
+    steps.doctor_dim = 'ok';
     const cols = (await sql`SELECT count(*)::int AS n FROM information_schema.columns WHERE table_name = 'ccb_briefs'`) as Array<{ n: number }>;
     steps.columns = String(cols[0]?.n ?? 0);
     return NextResponse.json({ ok: true, steps });

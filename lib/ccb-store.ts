@@ -22,8 +22,8 @@ export async function saveBrief(env: CcbEnvelope, keys: EpisodeKeys, meta: SaveB
        (presc_uid, individual_uid, uhid, kx_encounter_id, note_date, coverage,
         engine_version, priority, pitch_allowed,
         n_findings, n_cited, citation_coverage_pct, distinct_sources,
-        envelope, model, trace_id, latency_ms)
-     VALUES ($1,$2,$3,$4,$5,$6, $7,$8,$9, $10,$11,$12,$13, $14::jsonb,$15,$16,$17)
+        envelope, model, trace_id, latency_ms, doctor_uid, doctor_speciality)
+     VALUES ($1,$2,$3,$4,$5,$6, $7,$8,$9, $10,$11,$12,$13, $14::jsonb,$15,$16,$17, $18,$19)
      ON CONFLICT (presc_uid, engine_version) DO NOTHING
      RETURNING id`,
     [
@@ -31,6 +31,7 @@ export async function saveBrief(env: CcbEnvelope, keys: EpisodeKeys, meta: SaveB
       env.engine_version, env.commercial.priority, env.commercial.pitch_allowed,
       gs.findings, gs.corpus_cited, gs.citation_coverage_pct, gs.distinct_sources,
       JSON.stringify(env), meta.model ?? null, env.trace_id ?? null, meta.latencyMs ?? null,
+      keys.doctorUid, keys.doctorSpeciality,
     ],
   )) as Array<{ id: string }>;
   return rows.length ? 'inserted' : 'exists';
