@@ -8,11 +8,12 @@ import { generateBrief } from '@/lib/ccb-brief';
 import { saveBrief, getBriefByUid } from '@/lib/ccb-store';
 import { CCB_ENGINE_VERSION } from '@/lib/ccb-brief-core';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
+import { isCareUnlocked } from '@/lib/care-cookie';
 import { GEMINI_MODEL } from '@/lib/llm';
 
 // Execution guard (spends LLM compute): Vercel Cron (un-spoofable x-vercel-cron), a manual
-// trigger carrying Bearer CRON_SECRET / ?secret=CRON_SECRET, OR a logged-in admin session
-// (so it can be exercised one-click without handling a secret) — same contract as the OPD worker.
+// trigger carrying Bearer CRON_SECRET / ?secret=CRON_SECRET, a care-manager session (the /care
+// surface), OR a logged-in admin session — so it works one-click without handling a secret.
 async function authed(req: NextRequest): Promise<boolean> {
   const isCron = req.headers.get('x-vercel-cron') !== null;
   const auth = req.headers.get('authorization') || '';
@@ -20,6 +21,7 @@ async function authed(req: NextRequest): Promise<boolean> {
   const secret = req.nextUrl.searchParams.get('secret');
   const secretOk = !!process.env.CRON_SECRET && !!secret && secret === process.env.CRON_SECRET;
   if (isCron || bearerOk || secretOk) return true;
+  try { if (await isCareUnlocked()) return true; } catch { /* fall through */ }
   try { return await isAdminUnlocked(); } catch { return false; }
 }
 

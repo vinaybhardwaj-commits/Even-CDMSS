@@ -87,10 +87,15 @@ async function generate(traceId: string | undefined, label: string, system: stri
   return r.choices?.[0]?.message?.content || '';
 }
 
-export interface BriefOpts { trace?: boolean }
+export interface BriefOpts {
+  trace?: boolean;
+  /** Progress callback for the streaming surface (P2.3). Stages: reading → retrieving → generating → finalizing. */
+  onStage?: (stage: string, msg: string) => void;
+}
 
 export async function generateBrief(bundle: EpisodeBundle, opts: BriefOpts = {}): Promise<CcbEnvelope> {
   const doTrace = opts.trace !== false;
+  const prog = opts.onStage ?? (() => {});
   const traceId = doTrace
     ? await startTrace('ccb_brief', {
         coverage: bundle.coverage, nOrders: bundle.orders.length, nReports: bundle.reports.length,
@@ -100,6 +105,7 @@ export async function generateBrief(bundle: EpisodeBundle, opts: BriefOpts = {})
 
   // 1. Read result PDFs (de-identified). order_only bundles skip this.
   const toRead = bundle.reports.slice(0, MAX_REPORTS);
+  prog('reading', toRead.length ? `Reading ${toRead.length} result document(s)…` : 'No result documents — order-level brief…');
   const extracted = (await mapLimit(toRead, 3, readReport)).filter(Boolean) as ExtractedReport[];
   if (traceId) await logEvent(traceId, 'ccb_reports_read', null, { requested: toRead.length, read: extracted.length });
 
@@ -109,6 +115,7 @@ export async function generateBrief(bundle: EpisodeBundle, opts: BriefOpts = {})
 
   try {
     // 2. Retrieve corpus evidence (reranked, source-weighted — matches Ask/DDx/OPD-audit).
+    prog('retrieving', 'Retrieving evidence from the corpus…');
     let hits: CiteHit[] = [];
     let manifest: RetrievalManifest = { ran: false, queries: [query], chunks_considered: 0, reranked: false };
     try {
@@ -131,6 +138,7 @@ export async function generateBrief(bundle: EpisodeBundle, opts: BriefOpts = {})
     if (traceId) await logEvent(traceId, 'ccb_sources', null, { count: sources.length });
 
     // 3. Clinical pass (cite-or-label).
+    prog('generating', 'Building the clinical brief…');
     const clinicalRaw = await generate(traceId, 'ccb_clinical', CLINICAL_SYSTEM, buildClinicalUser(episodeText, citedContext));
     const clinical = parseClinical(clinicalRaw, sources.length);
 
@@ -138,6 +146,7 @@ export async function generateBrief(bundle: EpisodeBundle, opts: BriefOpts = {})
     const gate = pitchGate(clinical);
     let commercialGen = null as Awaited<ReturnType<typeof parseCommercial>>;
     if (gate.allowed) {
+      prog('generating', 'Preparing the consult talking points…');
       const citedFindings = clinical.filter((f) => gate.gatedOn.includes(f.id));
       const commRaw = await generate(traceId, 'ccb_commercial', COMMERCIAL_SYSTEM, buildCommercialUser(citedFindings));
       commercialGen = parseCommercial(commRaw);
@@ -145,6 +154,7 @@ export async function generateBrief(bundle: EpisodeBundle, opts: BriefOpts = {})
     const commercial = buildCommercial(bundle, gate, commercialGen);
 
     // 5. Assemble.
+    prog('finalizing', 'Finalizing…');
     const envelope = assembleEnvelope({
       traceId: traceId ?? null, bundle, clinical, commercial,
       lowValueFlags: [],            // P2: wire lib/lvc matcher; P1 surfaces cautions via clinical[]

@@ -7,7 +7,9 @@
 //   { type: 'done',     ms }
 //   { type: 'error',    message }
 
-export type Stage = 'expanding' | 'variants' | 'retrieving' | 'reranking' | 'fusing' | 'generating' | 'drafting' | 'reviewing' | 'revising' | 'finalizing' | 'parsing' | 'persisting' | 'done';
+export type Stage = 'expanding' | 'variants' | 'retrieving' | 'reranking' | 'fusing' | 'generating' | 'drafting' | 'reviewing' | 'revising' | 'finalizing' | 'parsing' | 'persisting' | 'done'
+  // CCB (care-brief) stages — the episode bundler + de-identified report read + grounding.
+  | 'fetching' | 'reading' | 'grounding';
 
 export type ProgressEvent =
   | { type: 'progress'; stage: Stage; msg: string; ms?: number }
