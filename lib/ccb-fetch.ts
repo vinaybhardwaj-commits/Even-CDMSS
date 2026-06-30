@@ -15,6 +15,7 @@
  */
 
 import { metabaseQuery } from './metabase';
+import { rowToOpdCase } from './opd-ingest-core';
 import {
   prescriptionSql, bridgeSql, ordersSql, reportsSql,
   mapPrescription, mapOrders, mapReports, buildBundle, bundleWindow,
@@ -34,7 +35,9 @@ export async function assembleEpisode(prescUid: string, opts: AssembleOpts = {})
   const prescRows = await metabaseQuery(prescriptionSql(prescUid));
   if (!prescRows.length) return null;
 
-  const { keys, prescription } = mapPrescription(prescRows[0]);
+  // Clean, de-identified content via the OPD-audit extractor (dpipe primary + HTML-stripped fallback).
+  const { case: oc } = rowToOpdCase(prescRows[0]);
+  const { keys, prescription } = mapPrescription(prescRows[0], oc);
 
   // Bridge: individual_uid → EHRC uhid (maintained FK).
   try {

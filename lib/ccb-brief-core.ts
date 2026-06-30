@@ -205,11 +205,13 @@ function medNames(meds: unknown): string[] {
 export function composeEpisodeText(bundle: EpisodeBundle, reports: ExtractedReport[]): string {
   const p = bundle.prescription;
   const lines: string[] = [];
-  if (p.presentingComplaint) lines.push(`Presenting complaint: ${p.presentingComplaint}`);
+  if (p.presentingComplaint) lines.push(`Presenting complaint / history: ${p.presentingComplaint}`);
+  if (p.diagnoses.length) lines.push(`Diagnoses: ${p.diagnoses.join('; ')}`);
   if (p.dxCodes.length) lines.push(`Diagnosis (ICD): ${p.dxCodes.join(', ')}`);
   if (p.impressionCodes.length) lines.push(`Impression (ICD): ${p.impressionCodes.join(', ')}`);
   const meds = medNames(p.meds);
   if (meds.length) lines.push(`Medications: ${meds.join(', ')}`);
+  if (p.investigations.length) lines.push(`Investigations ordered on the note: ${p.investigations.join(', ')}`);
   if (p.planOfManagement) lines.push(`Plan: ${p.planOfManagement}`);
   if (p.specialistReferral.length) lines.push(`Specialist referral on the note: ${p.specialistReferral.join(', ')}`);
   if (bundle.orders.length) {
@@ -229,7 +231,8 @@ export function retrievalQuery(bundle: EpisodeBundle, reports: ExtractedReport[]
   const p = bundle.prescription;
   return [
     p.presentingComplaint || '',
-    ...p.dxCodes, ...p.impressionCodes,
+    ...p.diagnoses, ...p.dxCodes, ...p.impressionCodes,
+    ...p.investigations.slice(0, 8),
     ...bundle.orders.map((o) => o.serviceName || '').slice(0, 8),
     ...reports.map((r) => r.impression || r.studyOrPanel || '').filter(Boolean),
     'outpatient appropriateness specialist referral surgical indication management guideline',

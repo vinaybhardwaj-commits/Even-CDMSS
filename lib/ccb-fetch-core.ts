@@ -19,7 +19,13 @@
  *
  * SECURITY: every interpolated id/date is validated (isUid/isUhid/isDay) BEFORE it reaches
  * SQL — never interpolate an unvalidated value (mirrors lib/metabase.ts).
+ *
+ * CLEAN CONTENT (v0.2): the prescription SQL hybrid-joins `dpipe_prescription_pipeline` (same as
+ * the OPD audit) and the wired layer runs the row through `rowToOpdCase` so the complaint/dx/plan
+ * reach the brief as clean plain text — not the raw HTML/JSON nested fields (which polluted retrieval).
  */
+
+import type { DeidOpdCase } from './opd-ingest-core';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -40,9 +46,10 @@ export interface EpisodePrescription {
   meds: unknown;               // raw medications (array/json) — enriched downstream
   dxCodes: string[];
   impressionCodes: string[];
-  furtherInvestigation: unknown;
-  presentingComplaint: string | null;
-  planOfManagement: string | null;
+  diagnoses: string[];         // readable diagnosis/impression names (clean, from dpipe/nested)
+  presentingComplaint: string | null;   // clean plain text (HTML stripped)
+  planOfManagement: string | null;      // clean advice / plan
+  investigations: string[];    // ordered tests (clean)
   specialistReferral: string[];   // specialist_type_uids ∪ in_house_specialist_type_uids
 }
 
@@ -102,18 +109,29 @@ export function bundleWindow(noteDay: string, back = 2, fwd = 5): { d0: string; 
 
 // ── SQL builders (validated interpolation, lib/metabase.ts style) ──────────────
 
-const PRESC_COLS = [
-  'uid', '_parent_id AS individual_uid', 'kx_encounter_id', 'doctor_uid', 'doctor_name_with_speciality',
-  'consult_uid', 'consult_type', 'type_of_prescription', 'timestamp::text AS ts', 'prescription_url',
-  'medications', 'diagnosis_icd_codes', 'impression_icd_codes', 'further_investigation', 'general_advice',
+// Hybrid SELECT (mirrors lib/metabase.ts): drive off `individuals-prescriptions` (ip) for keys +
+// rich meds + the type-specific nested fields, LEFT JOIN the clean `dpipe_prescription_pipeline`
+// (d) for plain-text complaint/dx/plan. rowToOpdCase consumes exactly these column names.
+const PRESC_IP_COLS = [
+  'uid', '_parent_id AS individual_uid', 'consult_uid', 'doctor_uid', 'doctor_name_with_speciality',
+  'kx_encounter_id', 'type_of_prescription', 'consult_type', 'timestamp::text AS ts', '_create_time', 'uploaded_at',
+  'prescription_url', 'medications', 'diagnosis_icd_codes', 'impression_icd_codes', 'general_advice',
+  'further_investigation', 'reason_for_consultation', 'relevant_medical_history', 'comorbidities',
+  'patient_details__allergies', 'presenting_complaints',
+  'general_practitioner_prescription__presenting_complaints',
+  'general_practitioner_prescription__plan_of_management',
+  'general_practitioner_prescription__examination',
+  'followup__followup_type', 'followup__followup_date', 'follow_up_type', 'next_follow_up_date', 'expected_resolution_date',
   'specialist_type_uids', 'in_house_specialist_type_uids',
-  'general_practitioner_prescription__presenting_complaints AS presenting_complaint',
-  'general_practitioner_prescription__plan_of_management AS plan_of_management',
-].join(', ');
+];
+const PRESC_SELECT = PRESC_IP_COLS.map((c) => `ip.${c}`).join(', ')
+  + ', d.presenting_complaint AS dpipe_pc, d.diagnosis AS dpipe_dx, d.plan_of_management AS dpipe_pom, d.further_investigation AS dpipe_inv';
 
 export function prescriptionSql(prescUid: string): string {
   const u = reqUid(prescUid, 'prescUid');
-  return `SELECT ${PRESC_COLS} FROM "individuals-prescriptions" WHERE uid = '${u}' LIMIT 1`;
+  const dpipe = `LEFT JOIN (SELECT DISTINCT ON (presc_uid) presc_uid, presenting_complaint, diagnosis, plan_of_management, further_investigation`
+    + ` FROM dpipe_prescription_pipeline WHERE presc_uid = '${u}' ORDER BY presc_uid, _update_time DESC) d ON d.presc_uid = ip.uid`;
+  return `SELECT ${PRESC_SELECT} FROM "individuals-prescriptions" ip ${dpipe} WHERE ip.uid = '${u}' LIMIT 1`;
 }
 
 export function bridgeSql(individualUid: string): string {
@@ -176,7 +194,12 @@ export function specialityFromLabel(label: unknown): string | null {
   return m ? m[1].trim() || null : null;
 }
 
-export function mapPrescription(row: Record<string, unknown>): { keys: EpisodeKeys; prescription: EpisodePrescription } {
+/** Clean, de-identified content extracted from the prescription row (subset of DeidOpdCase).
+ *  Supplied by the wired layer via `rowToOpdCase`; when omitted, raw row fields are used. */
+export type CleanCase = Pick<DeidOpdCase,
+  'presentingComplaints' | 'diagnosisCodes' | 'impressionCodes' | 'impressions' | 'advice' | 'investigations'>;
+
+export function mapPrescription(row: Record<string, unknown>, oc?: CleanCase): { keys: EpisodeKeys; prescription: EpisodePrescription } {
   const prescUid = reqUid(row.uid, 'prescUid');
   const individualUid = reqUid(row.individual_uid, 'individualUid');
   const keys: EpisodeKeys = {
@@ -186,18 +209,20 @@ export function mapPrescription(row: Record<string, unknown>): { keys: EpisodeKe
     kxEncounterId: str(row.kx_encounter_id),
     doctorUid: str(row.doctor_uid),
     doctorSpeciality: specialityFromLabel(row.doctor_name_with_speciality),
-    noteDate: dayOf(row.ts),
+    noteDate: dayOf(row.ts ?? row.timestamp),
     consultType: str(row.consult_type),
     prescriptionType: str(row.type_of_prescription),
   };
+  const join = (a: string[]): string | null => (a.length ? a.join('; ') : null);
   const prescription: EpisodePrescription = {
     url: str(row.prescription_url),
     meds: row.medications ?? null,
-    dxCodes: toStrArray(row.diagnosis_icd_codes),
-    impressionCodes: toStrArray(row.impression_icd_codes),
-    furtherInvestigation: row.further_investigation ?? null,
-    presentingComplaint: str(row.presenting_complaint),
-    planOfManagement: str(row.plan_of_management),
+    dxCodes: oc ? oc.diagnosisCodes : toStrArray(row.diagnosis_icd_codes),
+    impressionCodes: oc ? oc.impressionCodes : toStrArray(row.impression_icd_codes),
+    diagnoses: oc ? oc.impressions : [],
+    presentingComplaint: oc ? join(oc.presentingComplaints) : str(row.presenting_complaint),
+    planOfManagement: oc ? join(oc.advice) : str(row.plan_of_management),
+    investigations: oc ? oc.investigations : [],
     specialistReferral: Array.from(new Set([
       ...toStrArray(row.specialist_type_uids),
       ...toStrArray(row.in_house_specialist_type_uids),

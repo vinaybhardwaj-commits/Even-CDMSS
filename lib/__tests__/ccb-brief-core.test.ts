@@ -21,7 +21,7 @@ function bundle(over: Partial<EpisodePrescription> = {}, coverage: 'rich' | 'ord
   const keys: EpisodeKeys = { prescUid: 'uTAWDQinrFFW', individualUid: 'FHpN3DmRklMEbdQAr4oV', kxUhid: 'EHRC1',
     kxEncounterId: null, doctorUid: null, doctorSpeciality: null, noteDate: '2026-06-30', consultType: null, prescriptionType: null };
   const prescription: EpisodePrescription = { url: null, meds: [{ generic: 'paracetamol' }], dxCodes: ['M54.5'], impressionCodes: [],
-    furtherInvestigation: null, presentingComplaint: 'low back pain', planOfManagement: 'MRI advised', specialistReferral: [], ...over };
+    diagnoses: [], presentingComplaint: 'low back pain', planOfManagement: 'MRI advised', investigations: [], specialistReferral: [], ...over };
   return { keys, prescription, orders: [{ kind: 'radiology', serviceName: 'MRI LUMBAR SPINE', orderedBy: null, serviceDate: '2026-06-30', patientType: 'OP' }], reports: [], coverage };
 }
 
@@ -109,7 +109,7 @@ test('parseExtractedReport keeps clinical content only', () => {
 
 test('composeEpisodeText is de-identified and notes order-only coverage', () => {
   const t = composeEpisodeText(bundle({}, 'order_only'), []);
-  assert.match(t, /Presenting complaint: low back pain/);
+  assert.match(t, /Presenting complaint \/ history: low back pain/);
   assert.match(t, /Diagnosis \(ICD\): M54\.5/);
   assert.match(t, /Medications: paracetamol/);
   assert.match(t, /Tests done this episode: MRI LUMBAR SPINE/);

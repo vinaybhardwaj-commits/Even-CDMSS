@@ -38,7 +38,9 @@ test('bundleWindow is asymmetric (reports land after the visit) and crosses mont
 
 test('SQL builders target the right tables/keys and embed only validated values', () => {
   const p = prescriptionSql('uTAWDQinrFFW');
-  assert.match(p, /FROM "individuals-prescriptions" WHERE uid = 'uTAWDQinrFFW'/);
+  assert.match(p, /FROM "individuals-prescriptions" ip /);
+  assert.match(p, /WHERE ip\.uid = 'uTAWDQinrFFW'/);
+  assert.match(p, /dpipe_prescription_pipeline WHERE presc_uid = 'uTAWDQinrFFW'/);  // clean-content join
   assert.match(p, /_parent_id AS individual_uid/);
   assert.match(p, /specialist_type_uids/);
 
@@ -92,6 +94,17 @@ test('mapPrescription extracts keys + coerces array/json fields', () => {
   assert.equal(prescription.presentingComplaint, 'low back pain');
 });
 
+test('mapPrescription prefers the clean CleanCase content when supplied', () => {
+  const row: Record<string, unknown> = { uid: 'uTAWDQinrFFW', individual_uid: 'FHpN3DmRklMEbdQAr4oV', ts: '2026-06-30T00:00:00+05:30' };
+  const oc = { presentingComplaints: ['low back pain', 'radiating to leg'], diagnosisCodes: ['M54.5'],
+    impressionCodes: [], impressions: ['Lumbar radiculopathy'], advice: ['MRI advised', 'analgesia'], investigations: ['MRI LS spine'] };
+  const { prescription } = mapPrescription(row, oc);
+  assert.equal(prescription.presentingComplaint, 'low back pain; radiating to leg');  // clean, joined
+  assert.deepEqual(prescription.diagnoses, ['Lumbar radiculopathy']);
+  assert.equal(prescription.planOfManagement, 'MRI advised; analgesia');
+  assert.deepEqual(prescription.investigations, ['MRI LS spine']);
+});
+
 test('mapReports filters null urls; episodeCoverage flips on PDF presence', () => {
   const rows = [
     { kind: 'radiology', url: 'https://gcs/r.pdf', dt: '2026-06-30' },
@@ -108,8 +121,8 @@ test('buildBundle assembles + sets coverage', () => {
   const keys = { prescUid: 'uTAWDQinrFFW', individualUid: 'FHpN3DmRklMEbdQAr4oV', kxUhid: 'EHRC1',
     kxEncounterId: null, doctorUid: null, doctorSpeciality: null, noteDate: '2026-06-30',
     consultType: null, prescriptionType: null } as EpisodeKeys;
-  const presc = { url: null, meds: null, dxCodes: [], impressionCodes: [], furtherInvestigation: null,
-    presentingComplaint: null, planOfManagement: null, specialistReferral: [] } as EpisodePrescription;
+  const presc = { url: null, meds: null, dxCodes: [], impressionCodes: [], diagnoses: [],
+    presentingComplaint: null, planOfManagement: null, investigations: [], specialistReferral: [] } as EpisodePrescription;
   const orders = mapOrders([{ kind: 'lab', service_name: 'CBC', ord: 'Dr X', service_date: '2026-06-30', patient_type: 'OP' }]);
   const richer = buildBundle(keys, presc, orders, mapReports([{ kind: 'radiology', url: 'u://x', dt: '2026-06-30' }]));
   assert.equal(richer.coverage, 'rich');
