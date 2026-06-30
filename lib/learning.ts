@@ -8,8 +8,10 @@
  * mutates the live audit engine, the corpus, or lvc_recommendations.
  */
 import { sql } from './db';
+import { chatWithFallback, geminiUtilityModel, TEXT_MODEL } from './llm';
 import {
-  mineRuleCandidates, DEFAULT_THRESHOLDS,
+  mineRuleCandidates, DEFAULT_THRESHOLDS, isMineableFinding,
+  CANONICALIZE_SYSTEM, buildCanonicalizeUser, parseCanonicalMap,
   type AuditRowLite, type MineThresholds,
 } from './learning-core';
 
@@ -40,12 +42,47 @@ export async function loadRecentAuditRows(days = 90): Promise<AuditRowLite[]> {
   }));
 }
 
-export interface MineSummary { scanned: number; candidates: number; inserted: number; refreshed: number }
+/** Flash-canonicalise distinct finding subjects → { subject: canonical practice label }.
+ *  Batched (a handful of cheap Flash calls), soft-fails per batch so a Flash outage just falls
+ *  back to deterministic-signature clustering — never breaks the mining run. */
+export async function canonicalizeSubjects(subjects: string[]): Promise<Record<string, string>> {
+  const map: Record<string, string> = {};
+  const B = 120;
+  for (let i = 0; i < subjects.length; i += B) {
+    const batch = subjects.slice(i, i + B);
+    try {
+      const r = await chatWithFallback({
+        model: TEXT_MODEL,
+        messages: [
+          { role: 'system', content: CANONICALIZE_SYSTEM },
+          { role: 'user', content: buildCanonicalizeUser(batch) },
+        ],
+        temperature: 0,
+        max_tokens: 4000,
+        ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
+      }, geminiUtilityModel());
+      Object.assign(map, parseCanonicalMap(r.choices?.[0]?.message?.content || '', batch));
+    } catch (e) {
+      console.warn('[learning] canonicalize batch failed', (e as Error).message);
+    }
+  }
+  return map;
+}
+
+export interface MineSummary { scanned: number; subjects: number; canonicalized: number; candidates: number; inserted: number; refreshed: number }
 
 /** Mine recent audits → upsert candidate rule proposals (proposed-only refresh; rejected/approved left alone). */
-export async function mineAndSaveProposals(days = 90, thresholds: MineThresholds = DEFAULT_THRESHOLDS): Promise<MineSummary> {
+export async function mineAndSaveProposals(days = 90, thresholds: MineThresholds = DEFAULT_THRESHOLDS, useCanonical = true): Promise<MineSummary> {
   const rows = await loadRecentAuditRows(days);
-  const cands = mineRuleCandidates(rows, thresholds);
+
+  // LL.2: canonicalise the distinct mineable subjects so paraphrases merge before clustering.
+  const subjSet = new Set<string>();
+  for (const row of rows) for (const f of row.findings || []) if (isMineableFinding(f) && f.subject) subjSet.add(f.subject);
+  const subjects = [...subjSet];
+  const labelMap = useCanonical && subjects.length ? await canonicalizeSubjects(subjects) : {};
+  const canonicalLabel = Object.keys(labelMap).length ? (s: string) => labelMap[s] || '' : undefined;
+
+  const cands = mineRuleCandidates(rows, thresholds, { canonicalLabel });
   let inserted = 0; let refreshed = 0;
   for (const c of cands) {
     const res = (await sql`
@@ -62,7 +99,7 @@ export async function mineAndSaveProposals(days = 90, thresholds: MineThresholds
       RETURNING (xmax = 0) AS inserted`) as Array<{ inserted: boolean }>;
     if (res.length) { if (res[0].inserted) inserted++; else refreshed++; }
   }
-  return { scanned: rows.length, candidates: cands.length, inserted, refreshed };
+  return { scanned: rows.length, subjects: subjects.length, canonicalized: Object.keys(labelMap).length, candidates: cands.length, inserted, refreshed };
 }
 
 /** Approve or reject a proposal (status only — apply-to-lvc is the gated LL.2b step). */

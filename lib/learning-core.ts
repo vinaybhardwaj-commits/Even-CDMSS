@@ -97,6 +97,7 @@ function uniqStr(a: string[]): string[] { return [...new Set(a.map((x) => x.trim
 interface Cluster {
   key: string;
   subjects: string[];
+  labels: string[];
   rationales: string[];
   doctors: Set<string>;
   depts: Set<string>;
@@ -107,32 +108,44 @@ interface Cluster {
   n: number;
 }
 
-/** Mine candidate low-value-care rules from audit rows. Pure + deterministic. */
-export function mineRuleCandidates(rows: AuditRowLite[], thresholds: MineThresholds = DEFAULT_THRESHOLDS): RuleCandidate[] {
+export interface MineOpts {
+  /** Maps a finding subject → a canonical low-value-practice label (LL.2 Flash canonicalisation).
+   *  When omitted, clustering falls back to the deterministic subject signature (LL.2-v1). */
+  canonicalLabel?: (subject: string) => string;
+}
+
+/** Findings eligible for low-value-care RULE mining: LLM clinical-judgment, low-value/context-
+ *  dependent, appropriateness/prescribing. Excludes informational roll-ups + deterministic
+ *  house-keeping (dosing/brand/formulary) + already-encoded rules (DDI/duplicate). */
+export function isMineableFinding(f: AuditFindingLite): boolean {
+  if (!f || f.informational) return false;
+  if (f.source !== 'llm') return false;
+  if (f.verdict !== 'low-value' && f.verdict !== 'context-dependent') return false;
+  return f.domain === 'appropriateness' || f.domain === 'prescribing_safety';
+}
+
+/** Mine candidate low-value-care rules from audit rows. Pure. Clusters on the injected canonical
+ *  label (paraphrases merge) or, absent one, the deterministic subject signature. */
+export function mineRuleCandidates(rows: AuditRowLite[], thresholds: MineThresholds = DEFAULT_THRESHOLDS, opts: MineOpts = {}): RuleCandidate[] {
   const clusters = new Map<string, Cluster>();
 
   for (const row of rows || []) {
     const sources = row.sources || [];
     const byN = new Map(sources.map((s) => [s.n, s]));
     for (const f of row.findings || []) {
-      // Only mine genuine low-value / context-dependent CLINICAL practices. Exclude:
-      // informational roll-ups; high-value/uncertain; and DETERMINISTIC findings (source!=='llm')
-      // — those are documentation/formulary house-keeping (incomplete dosing, unverified brand,
-      // off-formulary) or already-encoded rules (DDI, duplicate), not new low-value-care practices.
-      if (f.informational) continue;
-      if (f.source !== 'llm') continue;
-      if (f.verdict !== 'low-value' && f.verdict !== 'context-dependent') continue;
-      if (f.domain !== 'appropriateness' && f.domain !== 'prescribing_safety') continue;
-      const key = subjectSignature(f.subject);
+      if (!isMineableFinding(f)) continue;
+      const rawLabel = opts.canonicalLabel ? (opts.canonicalLabel(f.subject) || '') : '';
+      const key = rawLabel ? normalizeLabel(rawLabel) : subjectSignature(f.subject);
       if (!key || key.length < 4) continue;
 
       let c = clusters.get(key);
       if (!c) {
-        c = { key, subjects: [], rationales: [], doctors: new Set(), depts: new Set(), auditIds: [], domains: {}, verdicts: {}, evidence: new Map(), n: 0 };
+        c = { key, subjects: [], labels: [], rationales: [], doctors: new Set(), depts: new Set(), auditIds: [], domains: {}, verdicts: {}, evidence: new Map(), n: 0 };
         clusters.set(key, c);
       }
       c.n += 1;
       c.subjects.push(f.subject);
+      if (rawLabel) c.labels.push(rawLabel);
       if (f.rationale) c.rationales.push(f.rationale);
       if (row.doctor_uid) c.doctors.add(row.doctor_uid);
       if (row.consult_type) c.depts.add(row.consult_type);
@@ -154,7 +167,7 @@ export function mineRuleCandidates(rows: AuditRowLite[], thresholds: MineThresho
     if (nDoctors < thresholds.minDoctors) continue;
     if (thresholds.requireCitation && !hasEvidence) continue;
 
-    const title = mode(c.subjects);
+    const title = mode(c.labels) || mode(c.subjects);
     const dominantDomain = mode(Object.entries(c.domains).flatMap(([d, n]) => Array(n).fill(d)));
     const dominantVerdict = (c.verdicts['low-value'] || 0) >= (c.verdicts['context-dependent'] || 0) ? 'low-value' : 'context-dependent';
     const action_type: RuleCandidate['payload']['action_type'] = dominantVerdict === 'low-value' ? 'avoid' : 'limit';
@@ -190,6 +203,57 @@ export function mineRuleCandidates(rows: AuditRowLite[], thresholds: MineThresho
   }
   // highest-signal first
   return out.sort((a, b) => b.provenance.nOccurrences - a.provenance.nOccurrences || b.confidence - a.confidence);
+}
+
+/** Stable cluster key from a canonical label — collapses minor wording/case drift across runs. */
+export function normalizeLabel(s: string): string {
+  return (s || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+// ── LL.2 Flash canonicalisation: map varied finding subjects → one canonical practice label ──
+export const CANONICALIZE_SYSTEM = `You group clinical-audit finding labels into canonical LOW-VALUE-CARE PRACTICES so that different wordings of the SAME underlying practice collapse to ONE label.
+
+Given a numbered list of auditor finding "subjects", output for EACH a short canonical practice label (≤ 8 words) naming the underlying practice in GENERAL terms — drug class / test / procedure + indication where relevant — so paraphrases of the same practice get the IDENTICAL label.
+
+Rules:
+- Merge paraphrases: "Antibiotic for likely viral URTI", "Cefpodoxime for acute pharyngitis (viral)", "Antibiotic for acute URI" → all "Antibiotic for viral upper respiratory infection".
+- Keep clinically distinct practices separate (different drug class, test, or indication → different label).
+- Use generic molecule/class + indication; never brand names or doses.
+- One entry per input index, covering every index exactly once.
+
+Return ONLY JSON, no prose: {"map":[{"i":1,"label":"…"},{"i":2,"label":"…"}]}`;
+
+export function buildCanonicalizeUser(subjects: string[]): string {
+  return 'FINDING SUBJECTS:\n' + subjects.map((s, i) => `${i + 1}. ${s}`).join('\n');
+}
+
+function extractJson(text: string): unknown {
+  if (!text) return null;
+  const start = text.indexOf('{');
+  if (start < 0) return null;
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) { if (esc) esc = false; else if (ch === '\\') esc = true; else if (ch === '"') inStr = false; continue; }
+    if (ch === '"') inStr = true;
+    else if (ch === '{') depth++;
+    else if (ch === '}') { if (--depth === 0) { try { return JSON.parse(text.slice(start, i + 1)); } catch { return null; } } }
+  }
+  return null;
+}
+
+/** Parse the canonicalisation response → { subject: canonicalLabel }. Unmapped subjects omitted. */
+export function parseCanonicalMap(text: string, subjects: string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  const obj = extractJson(text) as { map?: unknown } | null;
+  const arr = obj && Array.isArray(obj.map) ? obj.map : [];
+  for (const e of arr) {
+    const o = (e && typeof e === 'object' ? e : {}) as { i?: unknown; label?: unknown };
+    const idx = Math.round(Number(o.i)) - 1;
+    const label = typeof o.label === 'string' ? o.label.trim() : '';
+    if (idx >= 0 && idx < subjects.length && label) out[subjects[idx]] = label;
+  }
+  return out;
 }
 
 /** Most frequent string in an array (first-seen tiebreak). */

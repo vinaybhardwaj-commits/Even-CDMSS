@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  subjectSignature, mineRuleCandidates, DEFAULT_THRESHOLDS,
+  subjectSignature, mineRuleCandidates, DEFAULT_THRESHOLDS, parseCanonicalMap,
   type AuditRowLite, type AuditFindingLite,
 } from '../learning-core.ts';
 
@@ -45,6 +45,35 @@ test('mineRuleCandidates: passes the volume + evidence gates, excludes the rest'
   assert.ok(c.evidence.length >= 1, 'carries cited evidence');
   assert.ok(c.provenance.nOccurrences >= 15 && c.provenance.nDoctors >= 3);
   assert.equal(c.suggestedReviewer, 'dept_lead'); // appropriateness, single consult-type → dept lead
+});
+
+test('parseCanonicalMap maps indices → labels, ignores out-of-range', () => {
+  const subjects = ['Antibiotic for viral URTI', 'Cefpodoxime for acute pharyngitis', 'Lumbar X-ray for acute LBP'];
+  const text = 'noise {"map":[{"i":1,"label":"Antibiotic for viral URI"},{"i":2,"label":"Antibiotic for viral URI"},{"i":3,"label":"Imaging for acute low back pain"},{"i":9,"label":"ignored"}]} trailing';
+  const m = parseCanonicalMap(text, subjects);
+  assert.equal(m[subjects[0]], 'Antibiotic for viral URI');
+  assert.equal(m[subjects[1]], 'Antibiotic for viral URI'); // paraphrase merged to same label
+  assert.equal(m[subjects[2]], 'Imaging for acute low back pain');
+});
+
+test('canonical label MERGES paraphrases that the deterministic signature would fragment', () => {
+  // 16 genuinely distinct phrasings (different tokens) across 4 doctors → no signature cluster reaches 15.
+  const SUBS = [
+    'Antibiotic for sore throat', 'Cefpodoxime for pharyngitis', 'Azithromycin for common cold',
+    'Amoxicillin for runny nose', 'Cefixime for nasal congestion', 'Levofloxacin for cough',
+    'Cefuroxime for fever', 'Ofloxacin for rhinitis', 'Clarithromycin for sinus complaints',
+    'Doxycycline for throat pain', 'Cephalexin for sneezing', 'Augmentin for tonsil irritation',
+    'Cefdinir for upper airway symptoms', 'Roxithromycin for hoarseness', 'Faropenem for postnasal drip',
+    'Moxifloxacin for laryngeal discomfort',
+  ];
+  const rows: AuditRowLite[] = SUBS.map((s, i) => row(`x${i}`, `doc${i % 4}`, [lv(s)]));
+  const deterministic = mineRuleCandidates(rows, DEFAULT_THRESHOLDS);
+  assert.equal(deterministic.length, 0, 'fragmented subjects clear no cluster without canonicalisation');
+
+  const canon = mineRuleCandidates(rows, DEFAULT_THRESHOLDS, { canonicalLabel: () => 'Antibiotic for viral upper respiratory infection' });
+  assert.equal(canon.length, 1, 'canonical label merges all 16 into one cluster');
+  assert.equal(canon[0].title, 'Antibiotic for viral upper respiratory infection');
+  assert.ok(canon[0].provenance.nOccurrences === 16 && canon[0].provenance.nDoctors === 4);
 });
 
 test('mineRuleCandidates: context-dependent → limit; prescribing domain → pharmacy_ams', () => {
