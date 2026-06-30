@@ -4,7 +4,7 @@ import { usePathname } from 'next/navigation';
 import { useState, useEffect } from 'react';
 import {
   MessagesSquare, Network, Pill, Calculator, ClipboardCheck,
-  ClipboardList, BookOpen, GraduationCap, Settings, Menu, X, ChevronLeft, Activity,
+  ClipboardList, BookOpen, GraduationCap, Settings, Menu, X, ChevronLeft, Activity, Lightbulb,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -51,6 +51,7 @@ const ADMIN: NavGroup[] = [
     items: [
       { href: '/admin/observability', label: 'Observability', Icon: Network, match: ['/admin/appropriateness-runs'] },
       { href: '/admin/opd-audit', label: 'OPD Audit', Icon: Activity },
+      { href: '/admin/learning', label: 'Learning loop', Icon: Lightbulb },
       { href: '/admin/literature', label: 'Literature', Icon: BookOpen },
     ],
   },
