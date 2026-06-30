@@ -54,7 +54,7 @@ async function canonicalizeBatch(batch: string[]): Promise<Record<string, string
         { role: 'user', content: buildCanonicalizeUser(batch) },
       ],
       temperature: 0,
-      max_tokens: 4000,
+      max_tokens: 8000,
       ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
     }, geminiUtilityModel());
     return parseCanonicalMap(r.choices?.[0]?.message?.content || '', batch);
@@ -65,7 +65,7 @@ async function canonicalizeBatch(batch: string[]): Promise<Record<string, string
 }
 
 export async function canonicalizeSubjects(subjects: string[]): Promise<Record<string, string>> {
-  const B = 100;
+  const B = 50;
   const batches: string[][] = [];
   for (let i = 0; i < subjects.length; i += B) batches.push(subjects.slice(i, i + B));
   // PARALLEL — a capped, bounded set of batches (see caller) so the whole run finishes well
