@@ -7,6 +7,7 @@ import { rowToOpdCase, type DeidOpdCase } from '@/lib/opd-ingest-core';
 import { enrichOpdMeds } from '@/lib/formulary';
 import { CitationChips, SourcesPanel } from '@/components/right-care/kit';
 import type { Source } from '@/lib/citations-core';
+import FeedbackPanel, { type FeedbackEntry } from './feedback-panel';
 import {
   bandColor, scoreColor, parseJson, doctorLabel, fmtIstTime, DOMAIN_ROWS, PDQI9_LABEL,
 } from '@/lib/opd-audit-ui';
@@ -124,6 +125,10 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
   const pdqi = parseJson<Pdqi[]>(r.pdqi9, []);
   const suggestions = parseJson<Sugg[]>(r.suggestions, []).sort((a, b) => a.priority - b.priority);
   const sources = parseJson<Source[]>(r.sources, []);
+  const feedback = (await run(
+    `SELECT id, created_at, verdict, comment, author FROM opd_audit_feedback WHERE audit_id = $1 AND app_source = $2 ORDER BY created_at DESC`,
+    [id, APP],
+  ).catch(() => [])) as unknown as FeedbackEntry[];
 
   const docUid = r.doctor_uid ? String(r.doctor_uid) : null;
   const uid = r.uid ? String(r.uid) : '';
@@ -253,6 +258,8 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
           )}
         </div>
       </div>
+
+      <div className="mt-4"><FeedbackPanel auditId={id} uid={uid || null} initial={feedback} /></div>
 
       <p className="mt-5 text-[11px] text-slate-400">Advisory note-level quality proxy — documentation, PDQI-9, appropriateness and prescribing safety as demonstrated in the note. uid <code className="rounded bg-slate-100 px-1">{uid}</code> links back to the source encounter in db13. Not an outcomes measure; not a clinician scorecard.</p>
     </div>

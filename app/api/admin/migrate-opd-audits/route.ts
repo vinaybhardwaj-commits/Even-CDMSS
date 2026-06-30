@@ -62,6 +62,20 @@ export async function POST(req: NextRequest) {
     // view can show first-class citations (clickable PMID) + a Sources panel like Right Care.
     await sql`ALTER TABLE opd_note_audits ADD COLUMN IF NOT EXISTS sources JSONB`;
     steps.sources = 'ok';
+    // #1 — auditor/care-manager feedback on an audit, captured in the comparison screen.
+    // Anonymous by default (author optional); verdict ∈ agree|disagree|needs_action; one row per comment.
+    await sql`CREATE TABLE IF NOT EXISTS opd_audit_feedback (
+      id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      app_source  TEXT NOT NULL DEFAULT 'standalone',
+      audit_id    UUID NOT NULL,
+      uid         TEXT,
+      verdict     TEXT,
+      comment     TEXT,
+      author      TEXT
+    )`;
+    await sql`CREATE INDEX IF NOT EXISTS opd_audit_feedback_audit_idx ON opd_audit_feedback (audit_id, created_at DESC)`;
+    steps.feedback = 'ok';
     const cols = (await sql`SELECT count(*)::int AS n FROM information_schema.columns WHERE table_name = 'opd_note_audits'`) as Array<{ n: number }>;
     steps.columns = String(cols[0]?.n ?? 0);
     return NextResponse.json({ ok: true, steps });
