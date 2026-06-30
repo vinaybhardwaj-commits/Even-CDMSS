@@ -44,3 +44,24 @@ export async function getBriefByUid(prescUid: string, engineVersion: string): Pr
   )) as Array<{ envelope: CcbEnvelope }>;
   return rows[0]?.envelope ?? null;
 }
+
+/** Which of `uids` already have a brief at this engine version — the batch watermark (uid-set
+ *  based, so it's immune to note_date timezone edge-cases; never re-charges an already-briefed note). */
+export async function briefedUidsForSet(uids: string[], engineVersion: string): Promise<Set<string>> {
+  const clean = Array.from(new Set((uids || []).filter((u) => /^[A-Za-z0-9_-]{6,64}$/.test(u))));
+  if (!clean.length) return new Set();
+  const rows = (await sql(
+    `SELECT presc_uid FROM ccb_briefs WHERE engine_version = $1 AND presc_uid = ANY($2)`,
+    [engineVersion, clean],
+  )) as Array<{ presc_uid: string }>;
+  return new Set(rows.map((r) => r.presc_uid));
+}
+
+/** Earliest IST day that has any brief — the floor for the gap-fill sweep (never reach before
+ *  the system launched). Null if nothing briefed yet. Approximate floor; exactness not required. */
+export async function earliestBriefedDay(): Promise<string | null> {
+  const rows = (await sql(
+    `SELECT to_char(min((note_date AT TIME ZONE 'Asia/Kolkata')::date),'YYYY-MM-DD') AS d FROM ccb_briefs`,
+  )) as Array<{ d: string | null }>;
+  return rows[0]?.d ?? null;
+}
