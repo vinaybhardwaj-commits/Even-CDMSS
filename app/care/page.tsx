@@ -56,7 +56,7 @@ export default async function CareWorklist() {
           </thead>
           <tbody>
             {rows.length === 0 && (
-              <tr><td colSpan={7} className="px-3 py-6 text-center text-slate-400">No briefs yet. Pull a member above, or wait for the daily batch.</td></tr>
+              <tr><td colSpan={7} className="px-3 py-6 text-center text-slate-400">No briefs yet. Search a member above, or wait for the daily batch.</td></tr>
             )}
             {rows.map((r) => (
               <tr key={r.presc_uid} className={`border-t border-slate-100 hover:bg-slate-50 ${r.pitch_allowed ? 'bg-violet-50/30' : ''}`}>

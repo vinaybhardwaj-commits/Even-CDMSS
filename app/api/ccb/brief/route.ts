@@ -44,14 +44,16 @@ export async function GET(req: NextRequest) {
   const fresh = p.get('fresh') === '1';
   const dry = p.get('dry') === '1';
 
-  // Resolve a presc_uid: a direct ?uid=, or the Pulse member lookup ?uhid=/?individual_uid= + ?date=.
+  // Resolve a presc_uid: a direct ?uid=, or a Pulse member lookup ?member_id=/?uhid=/?individual_uid=
+  // (optionally scoped to ?date=, else the member's latest episode).
   const { uid, candidates } = await resolveBriefUid({
     uid: (p.get('uid') || '').trim() || undefined,
     uhid: (p.get('uhid') || '').trim() || undefined,
     individualUid: (p.get('individual_uid') || '').trim() || undefined,
+    memberId: (p.get('member_id') || '').trim() || undefined,
     date: (p.get('date') || '').trim() || undefined,
   });
-  if (!uid) return NextResponse.json({ error: 'no episode found — pass ?uid=, or ?uhid=/?individual_uid= with ?date=' }, { status: 404 });
+  if (!uid) return NextResponse.json({ error: 'no episode found — pass ?uid=, or ?member_id=/?uhid=/?individual_uid= (optionally with ?date=)' }, { status: 404 });
   const resolved = { presc_uid: uid, episodes_that_day: candidates.length };
 
   try {

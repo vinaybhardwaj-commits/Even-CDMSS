@@ -42,9 +42,10 @@ export async function GET(req: NextRequest) {
     uid: (p.get('uid') || '').trim() || undefined,
     uhid: (p.get('uhid') || '').trim() || undefined,
     individualUid: (p.get('individual_uid') || '').trim() || undefined,
+    memberId: (p.get('member_id') || '').trim() || undefined,
     date: (p.get('date') || '').trim() || undefined,
   });
-  if (!uid) return NextResponse.json({ error: 'no episode found — pass ?uid=, or ?uhid=/?individual_uid= with ?date=' }, { status: 404 });
+  if (!uid) return NextResponse.json({ error: 'no episode found — pass ?uid=, or ?member_id=/?uhid=/?individual_uid= (optionally with ?date=)' }, { status: 404 });
 
   const { stream, emit, close } = makeNdjsonStream();
   const t0 = Date.now();
