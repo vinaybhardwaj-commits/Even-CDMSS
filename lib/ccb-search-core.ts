@@ -137,6 +137,14 @@ export function individualByUidSql(uid: string): string {
   return `SELECT ${INDIVIDUAL_COLS} FROM individuals i WHERE i.uid = '${uid}' LIMIT 5`;
 }
 
+/** individuals for a set of consumer UIDs (batch identity — e.g. labelling the flagged worklist). */
+export function individualsByUidsSql(uids: string[]): string {
+  const ok = Array.from(new Set((uids || []).filter(isUid)));
+  if (!ok.length) throw new Error('no valid uid');
+  const inList = ok.map((u) => `'${u}'`).join(', ');
+  return `SELECT ${INDIVIDUAL_COLS} FROM individuals i WHERE i.uid IN (${inList}) LIMIT 100`;
+}
+
 /** individuals by exact UHID. */
 export function individualsByUhidSql(uhid: string): string {
   if (!isUhidLike(uhid)) throw new Error('bad uhid');

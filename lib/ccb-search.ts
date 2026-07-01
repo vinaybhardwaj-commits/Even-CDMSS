@@ -14,9 +14,9 @@ import { metabaseQuery, OPD_MEDICAL_TYPES } from './metabase';
 import {
   classifyQuery, planHasProbe,
   membersByMemberIdSql, individualsByMobilesSql, individualByUidSql, individualsByUhidSql,
-  individualUidByPrescSql, individualsByNameSql, membershipByMobilesSql,
+  individualUidByPrescSql, individualsByNameSql, membershipByMobilesSql, individualsByUidsSql,
   episodesByParentsSql, latestEpisodeSql,
-  mapIndividualRow, buildHits, isUid, isMobile,
+  mapIndividualRow, buildHits, fullName, computeAge, isUid, isMobile,
   type IndividualIdentity, type MemberHit,
 } from './ccb-search-core';
 
@@ -84,6 +84,24 @@ export async function bridgeMemberIdToIndividuals(memberId: string): Promise<str
     const indRows = await metabaseQuery(individualsByMobilesSql(mobiles));
     return indRows.map((r) => String(r.uid || '')).filter(isUid);
   } catch { return []; }
+}
+
+export interface MemberIdentity { individualUid: string; name: string; gender: string | null; age: number | null }
+
+/** Batch-resolve individual_uid → display identity (name/age/sex) for labelling the flagged
+ *  worklist. db13 read; best-effort (returns {} on failure so the surface degrades to uhid-only). */
+export async function resolveMemberIdentities(uids: string[]): Promise<Record<string, MemberIdentity>> {
+  const clean = Array.from(new Set((uids || []).filter(isUid)));
+  if (!clean.length) return {};
+  try {
+    const rows = await metabaseQuery(individualsByUidsSql(clean));
+    const out: Record<string, MemberIdentity> = {};
+    for (const r of rows) {
+      const id = mapIndividualRow(r);
+      if (id) out[id.uid] = { individualUid: id.uid, name: fullName(id.firstName, id.lastName, id.displayName), gender: id.gender, age: computeAge(id.dob) };
+    }
+    return out;
+  } catch { return {}; }
 }
 
 /** Latest medical OPD episode uid for a member (dateless — the CM "open latest" default). */

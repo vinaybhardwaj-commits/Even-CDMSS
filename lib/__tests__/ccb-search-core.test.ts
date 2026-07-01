@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import {
   classifyQuery, planHasProbe, normPhone, sanitizeNameToken, computeAge, fullName,
   membersByMemberIdSql, individualsByMobilesSql, individualByUidSql, individualsByUhidSql,
-  individualUidByPrescSql, individualsByNameSql, episodesByParentsSql,
+  individualUidByPrescSql, individualsByNameSql, episodesByParentsSql, individualsByUidsSql,
   mapIndividualRow, buildHits,
   type IndividualIdentity,
 } from '../ccb-search-core.ts';
@@ -89,6 +89,12 @@ test('id/phone builders reject junk and embed only validated values', () => {
   assert.match(m, /ANY\(old_membership_ids\)/);
   const ph = individualsByMobilesSql(['+919082955048']);
   assert.match(ph, /mobiles && ARRAY\['\+919082955048'\]::text\[\]/);
+});
+
+test('individualsByUidsSql batches identity by uid and validates', () => {
+  const s = individualsByUidsSql(['3cK6aGinZxFUhgF65NqM', 'bad uid', 'JLZLOuCHCDvmhcdcQj1O']);
+  assert.match(s, /FROM individuals i WHERE i\.uid IN \('3cK6aGinZxFUhgF65NqM', 'JLZLOuCHCDvmhcdcQj1O'\)/);
+  assert.throws(() => individualsByUidsSql(['bad uid']));
 });
 
 test('episodes builder targets prescriptions with validated uids + types', () => {
