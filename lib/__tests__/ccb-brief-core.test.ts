@@ -8,10 +8,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   extractJson, normalizeFinding, parseClinical, parseCommercial, parseExtractedReport,
-  pitchGate, defaultPriority, buildCommercial, groundingSummary, composeEpisodeText,
+  pitchGate, isSpecificSurgicalIndication, defaultPriority, buildCommercial, groundingSummary, composeEpisodeText,
   retrievalQuery, assembleEnvelope,
   type ClinicalFinding,
 } from '../ccb-brief-core.ts';
+
+// A pitch-worthy indication under the calibrated gate: specific claim, cited, above the conf floor.
+const SPECIFIC = "The documented obstructing ureteric calculus with hydronephrosis warrants ureteroscopic stone removal";
 import type { EpisodeBundle, EpisodeKeys, EpisodePrescription } from '../ccb-fetch-core.ts';
 
 function finding(over: Partial<ClinicalFinding>): ClinicalFinding {
@@ -51,20 +54,51 @@ test('parseClinical clamps citation ids to [1..max] and de-dupes finding ids', (
 });
 
 // ── THE WALL ───────────────────────────────────────────────────────────────────
-test('pitchGate opens ONLY on a corpus-cited surgical_indication', () => {
-  assert.deepEqual(pitchGate([finding({ id: 's', kind: 'surgical_indication', grounding: 'corpus_cited', citation_ids: [1] })]),
+test('pitchGate opens ONLY on a specific, cited, high-confidence surgical_indication', () => {
+  assert.deepEqual(
+    pitchGate([finding({ id: 's', kind: 'surgical_indication', grounding: 'corpus_cited', citation_ids: [1], claim: SPECIFIC, confidence: 0.85 })]),
     { allowed: true, gatedOn: ['s'] });
 });
 test('pitchGate stays SHUT for an uncited surgical indication', () => {
-  assert.deepEqual(pitchGate([finding({ kind: 'surgical_indication', grounding: 'general_reasoning', citation_ids: [] })]),
+  assert.deepEqual(pitchGate([finding({ kind: 'surgical_indication', grounding: 'general_reasoning', citation_ids: [], claim: SPECIFIC, confidence: 0.9 })]),
     { allowed: false, gatedOn: [] });
 });
 test('pitchGate stays SHUT for a cited NON-surgical finding', () => {
-  assert.deepEqual(pitchGate([finding({ kind: 'diagnosis', grounding: 'corpus_cited', citation_ids: [1] })]),
+  assert.deepEqual(pitchGate([finding({ kind: 'diagnosis', grounding: 'corpus_cited', citation_ids: [1], claim: SPECIFIC, confidence: 0.9 })]),
     { allowed: false, gatedOn: [] });
 });
 test('pitchGate stays SHUT with no findings', () => {
   assert.deepEqual(pitchGate([]), { allowed: false, gatedOn: [] });
+});
+
+// ── CALIBRATION: generic/conditional textbook indications must NOT open the wall ──
+test('pitchGate stays SHUT on generic/conditional textbook "indications" (the ~80% false positives)', () => {
+  const generic = [
+    'Bariatric surgery should be considered for patients with Type 2 Diabetes and a BMI of 35 or greater',
+    'A pediatric surgical referral should be considered if the patient develops abdominal distension',
+    'Surgical intervention is typically reserved for patients with progressive deformities',
+    'Surgical management is the mainstay of treatment for anorectal fistulas',
+    'Specialist intervention may be considered in cases of chronic degenerative joint disease',
+  ];
+  for (const claim of generic) {
+    assert.equal(isSpecificSurgicalIndication(claim), false, `should be generic: ${claim}`);
+    assert.equal(pitchGate([finding({ kind: 'surgical_indication', grounding: 'corpus_cited', citation_ids: [1], claim, confidence: 0.95 })]).allowed, false, claim);
+  }
+});
+test('isSpecificSurgicalIndication accepts an assertive member-specific indication', () => {
+  assert.equal(isSpecificSurgicalIndication(SPECIFIC), true);
+  assert.equal(isSpecificSurgicalIndication('Findings indicate cholecystectomy for the symptomatic gallstones documented on ultrasound'), true);
+  assert.equal(isSpecificSurgicalIndication('short'), false);   // too short to be specific
+});
+test('pitchGate enforces the confidence floor', () => {
+  const low = finding({ kind: 'surgical_indication', grounding: 'corpus_cited', citation_ids: [1], claim: SPECIFIC, confidence: 0.5 });
+  assert.equal(pitchGate([low]).allowed, false);
+  assert.equal(pitchGate([low], { minConfidence: 0.4 }).allowed, true);   // knob lowers the floor
+});
+test('pitchGate opts reproduce the OLD (pre-calibration) gate for the backtest', () => {
+  const generic = finding({ kind: 'surgical_indication', grounding: 'corpus_cited', citation_ids: [1], claim: 'Surgery should be considered if symptoms worsen', confidence: 0.6 });
+  assert.equal(pitchGate([generic]).allowed, false);                                            // NEW gate: shut
+  assert.equal(pitchGate([generic], { requireSpecific: false, minConfidence: 0 }).allowed, true); // OLD gate: open
 });
 
 test('buildCommercial: walled-off when not allowed; default priority follows referral', () => {

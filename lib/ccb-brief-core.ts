@@ -95,6 +95,12 @@ export const CLINICAL_SYSTEM =
   'Cover, where supported: an episode synthesis, the speciality to work it up with, potential diagnoses (as possibilities), ' +
   'alternative treatment lines, any low-value caution, and — ONLY if genuinely indicated — a surgical/specialist-indication finding. ' +
   'A surgical_indication finding MUST be corpus_cited (carry citation_ids); if you cannot cite it, do not emit it as surgical_indication. ' +
+  'CRITICAL: emit a surgical_indication ONLY when THIS patient\'s documented findings specifically meet the criteria for a named ' +
+  'procedure or specialist operation — state it assertively and specifically (name the procedure/operation AND the member finding ' +
+  'that indicates it). Do NOT emit generic, educational, population-level, or conditional statements as surgical_indication ' +
+  '(e.g. "surgery should be considered if…", "typically reserved for patients with…", "for patients with X, surgery should be considered", ' +
+  '"is the mainstay of treatment for…", "may be necessary in cases of…"). If the indication is only conditional or general, ' +
+  'use kind "caution" or "speciality" instead — never "surgical_indication". ' +
   'Output strict JSON: {"findings":[{"id":string,"kind":"synthesis|speciality|diagnosis|treatment_line|surgical_indication|caution",' +
   '"claim":string,"grounding":"corpus_cited|general_reasoning|deterministic_rule","citation_ids":number[],"confidence":number}]}.';
 
@@ -241,10 +247,60 @@ export function retrievalQuery(bundle: EpisodeBundle, reports: ExtractedReport[]
 
 // ── The commercial WALL (deterministic; the ethics tripwire) ───────────────────
 
-/** The pitch may fire ONLY on a corpus-CITED surgical/specialist-indication finding. */
-export function pitchGate(clinical: ClinicalFinding[]): { allowed: boolean; gatedOn: string[] } {
-  const cited = clinical.filter(
-    (f) => f.kind === 'surgical_indication' && f.grounding === 'corpus_cited' && f.citation_ids.length > 0,
+/** Minimum confidence a surgical_indication finding must carry to open the pitch. Env-tunable
+ *  so the floor can be adjusted without a code change. */
+export const PITCH_MIN_CONFIDENCE = (() => {
+  const v = Number(process.env.CCB_PITCH_MIN_CONF);
+  return Number.isFinite(v) && v >= 0 && v <= 1 ? v : 0.7;
+})();
+
+// Lexical markers that make a "surgical_indication" a GENERIC / CONDITIONAL / POPULATION-level
+// (educational textbook) statement rather than a member-specific present indication. These are the
+// dominant false-positive pattern behind the pre-calibration ~80% pitch rate ("surgery should be
+// considered if…", "typically reserved for patients with…", "is the mainstay of treatment for…").
+const GENERIC_INDICATION_PATTERNS: RegExp[] = [
+  /\bif\b/i,
+  /should\s+(be\s+considered|the\s+patient)/i,
+  /\bmay\s+(be\s+considered|be\s+necessary|be\s+required|necessitate|require|warrant)/i,
+  /\b(can|might|could|would)\s+be\s+considered/i,
+  /\bin\s+cases?\s+(of|where)\b/i,
+  /\bfor\s+patients?\s+(with|who)\b/i,
+  /\bpatients?\s+(with|who)\b.*\b(should|may|can|are\s+candidates)\b/i,
+  /\b(typically|usually|generally|often)\s+(reserved|considered|indicated|recommended)/i,
+  /\bis\s+the\s+mainstay\b/i,
+  /\bis\s+(a|an|the)\s+(treatment\s+option|option|emergent|indication)\b/i,
+  /\brepresents?\s+a\b/i,
+  /\bis\s+(defined|considered)\s+(as|an?|to\s+be)\b/i,
+  /\bwhen\s+conservative\b/i,
+];
+
+/** A surgical_indication is member-specific (pitch-worthy) only if it is assertive and NOT phrased
+ *  as a generic/conditional/population-level textbook statement. Pure + deterministic. */
+export function isSpecificSurgicalIndication(claim: string): boolean {
+  const c = (claim || '').trim();
+  if (c.length < 12) return false;
+  return !GENERIC_INDICATION_PATTERNS.some((re) => re.test(c));
+}
+
+export interface PitchGateOpts {
+  /** confidence floor for the indication finding (default PITCH_MIN_CONFIDENCE). */
+  minConfidence?: number;
+  /** require the indication to read as member-specific, not generic/conditional (default true). */
+  requireSpecific?: boolean;
+}
+
+/** The pitch may fire ONLY on a corpus-CITED surgical/specialist-indication finding that is
+ *  member-specific (not a generic/conditional textbook statement) and clears the confidence floor.
+ *  The `requireSpecific`/`minConfidence` knobs let the calibration backtest reproduce the OLD gate. */
+export function pitchGate(clinical: ClinicalFinding[], opts: PitchGateOpts = {}): { allowed: boolean; gatedOn: string[] } {
+  const minConf = opts.minConfidence ?? PITCH_MIN_CONFIDENCE;
+  const requireSpecific = opts.requireSpecific ?? true;
+  const cited = clinical.filter((f) =>
+    f.kind === 'surgical_indication' &&
+    f.grounding === 'corpus_cited' &&
+    f.citation_ids.length > 0 &&
+    f.confidence >= minConf &&
+    (!requireSpecific || isSpecificSurgicalIndication(f.claim)),
   );
   return { allowed: cited.length > 0, gatedOn: cited.map((f) => f.id) };
 }
