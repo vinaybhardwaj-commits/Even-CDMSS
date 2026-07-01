@@ -4,6 +4,8 @@ import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
 import { featureMeta, normalizeFeature, FEATURE_FILTERS } from '@/lib/observability-meta';
 import RunsBrowser, { type RunRow } from '@/app/admin/appropriateness-runs/runs-browser';
 import type { ExportRun } from '@/lib/runs-export';
+import CostTab from './cost-tab';
+import type { Scale } from '@/lib/llm-cost';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Observability · Admin' };
@@ -60,10 +62,11 @@ function Locked({ configured, bad }: { configured: boolean; bad: boolean }) {
   );
 }
 
-export default async function ObservabilityAdmin({ searchParams }: { searchParams: Promise<{ tab?: string; q?: string; feature?: string; status?: string; locked?: string }> }) {
+export default async function ObservabilityAdmin({ searchParams }: { searchParams: Promise<{ tab?: string; q?: string; feature?: string; status?: string; locked?: string; scale?: string }> }) {
   const sp = await searchParams;
   if (!(await isAdminUnlocked())) return <Locked configured={adminTokenConfigured()} bad={sp.locked === '1'} />;
-  const tab = sp.tab === 'queries' ? 'queries' : sp.tab === 'rightcare' ? 'rightcare' : 'overview';
+  const tab = sp.tab === 'queries' ? 'queries' : sp.tab === 'rightcare' ? 'rightcare' : sp.tab === 'cost' ? 'cost' : 'overview';
+  const scale: Scale = (['hour', 'day', 'week', 'month'] as const).includes(sp.scale as Scale) ? (sp.scale as Scale) : 'day';
   return (
     <div>
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -74,12 +77,12 @@ export default async function ObservabilityAdmin({ searchParams }: { searchParam
         <form method="POST" action="/api/admin/unlock?action=logout"><button className="whitespace-nowrap text-xs text-slate-400 hover:text-brand">Lock</button></form>
       </div>
       <div className="mt-6 flex gap-5 border-b border-slate-200">
-        {[['overview', 'Overview'], ['queries', 'Runs'], ['rightcare', 'Right Care runs']].map(([k, l]) => (
+        {[['overview', 'Overview'], ['queries', 'Runs'], ['rightcare', 'Right Care runs'], ['cost', 'LLM cost']].map(([k, l]) => (
           <Link key={k} href={`/admin/observability?tab=${k}`} className={`-mb-px pb-2 text-sm ${tab === k ? 'border-b-2 border-brand font-medium text-slate-900' : 'text-slate-500 hover:text-slate-800'}`}>{l}</Link>
         ))}
       </div>
       <div className="mt-5">
-        {tab === 'overview' ? <OverviewTab /> : tab === 'rightcare' ? <RightCareRunsTab /> : <QueriesTab sp={sp} />}
+        {tab === 'overview' ? <OverviewTab /> : tab === 'rightcare' ? <RightCareRunsTab /> : tab === 'cost' ? <CostTab scale={scale} /> : <QueriesTab sp={sp} />}
       </div>
     </div>
   );

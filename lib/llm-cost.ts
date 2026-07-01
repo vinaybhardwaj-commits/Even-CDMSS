@@ -1,0 +1,168 @@
+/**
+ * lib/llm-cost.ts — LLM cost tracker data layer (WIRED, Neon).
+ *
+ * Reads the tokens already logged on every Gemini call (`trace_events.kind='llm_response'`,
+ * `payload.usage.{prompt_tokens,completion_tokens}`, `payload.model`), joins to `traces.feature`,
+ * and prices them in rupees via lib/llm-cost-core + data/llm-pricing.json. Gemini-only: embeddings
+ * run on self-hosted Ollama (₹0 marginal). No new instrumentation — pure read + price. Soft-fails.
+ */
+
+import { sql } from './db';
+import pricingJson from '@/data/llm-pricing.json';
+import { costInr, perCallInr, modelLabel, type Pricing, type ModelPrice } from './llm-cost-core';
+
+const run = sql as unknown as (t: string, p?: unknown[]) => Promise<Record<string, unknown>[]>;
+const APP = process.env.APP_SOURCE || 'standalone';
+
+/** Live pricing: file rates, with fx overridable via env for quick FX updates without a code edit. */
+export const PRICING: Pricing = {
+  fxUsdInr: Number(process.env.LLM_FX_USD_INR) || (pricingJson as { fxUsdInr: number }).fxUsdInr,
+  models: (pricingJson as unknown as { models: ModelPrice[] }).models,
+  fallback: (pricingJson as unknown as { fallback: Pricing['fallback'] }).fallback,
+};
+
+// Every Gemini chat call is one `llm_response` event; usage carries the token counts.
+const FROM_WHERE =
+  `FROM trace_events e JOIN traces t ON t.trace_id = e.trace_id
+   WHERE e.kind = 'llm_response' AND e.app_source = $1 AND (e.payload->>'model') ILIKE '%gemini%'`;
+const IN_TOK = `coalesce((e.payload->'usage'->>'prompt_tokens')::int, 0)`;
+const OUT_TOK = `coalesce((e.payload->'usage'->>'completion_tokens')::int, 0)`;
+
+async function rowsOf(text: string, params: unknown[] = [APP]): Promise<Record<string, unknown>[]> {
+  try { return await run(text, params); } catch { return []; }
+}
+const n = (v: unknown) => Number(v) || 0;
+
+export type Scale = 'hour' | 'day' | 'week' | 'month';
+const SCALES: Record<Scale, { trunc: string; fmt: string; interval: string; label: string }> = {
+  hour:  { trunc: `date_trunc('hour', e.ts AT TIME ZONE 'Asia/Kolkata')`, fmt: 'MM-DD HH24:00', interval: '48 hours', label: 'Hourly · last 48h' },
+  day:   { trunc: `(e.ts AT TIME ZONE 'Asia/Kolkata')::date`,             fmt: 'YYYY-MM-DD',    interval: '31 days',  label: 'Daily · last 31d' },
+  week:  { trunc: `date_trunc('week', e.ts AT TIME ZONE 'Asia/Kolkata')`, fmt: 'YYYY-MM-DD',    interval: '12 weeks', label: 'Weekly · last 12w' },
+  month: { trunc: `date_trunc('month', e.ts AT TIME ZONE 'Asia/Kolkata')`,fmt: 'YYYY-MM',       interval: '12 months',label: 'Monthly · last 12m' },
+};
+
+export interface CostBucket { bucket: string; totalInr: number; calls: number; byLabel: Record<string, number> }
+
+/** Priced, chronologically-ordered buckets for a time scale (stacked by model label). */
+export async function costByBucket(scale: Scale): Promise<{ label: string; buckets: CostBucket[] }> {
+  const c = SCALES[scale];
+  const rows = await rowsOf(
+    `SELECT to_char(${c.trunc}, '${c.fmt}') AS bucket, e.payload->>'model' AS model,
+            (${IN_TOK} > 200000) AS hi, sum(${IN_TOK})::bigint AS in_tok, sum(${OUT_TOK})::bigint AS out_tok, count(*)::int AS calls
+     ${FROM_WHERE} AND e.ts > now() - interval '${c.interval}'
+     GROUP BY 1, 2, 3 ORDER BY 1`,
+  );
+  const map = new Map<string, CostBucket>();
+  for (const r of rows) {
+    const bucket = String(r.bucket);
+    const inr = costInr(String(r.model), n(r.in_tok), n(r.out_tok), r.hi === true, PRICING);
+    const label = modelLabel(String(r.model), PRICING);
+    const b = map.get(bucket) ?? { bucket, totalInr: 0, calls: 0, byLabel: {} };
+    b.totalInr += inr; b.calls += n(r.calls); b.byLabel[label] = (b.byLabel[label] ?? 0) + inr;
+    map.set(bucket, b);
+  }
+  return { label: c.label, buckets: Array.from(map.values()) };
+}
+
+export interface CostKpis { today: number; yesterday: number; last7: number; last30: number; spikePct: number | null; daily: { d: string; inr: number }[] }
+
+/** Headline spend (IST day buckets) + a spike % of today vs the trailing-7-day daily average. */
+export async function costKpis(): Promise<CostKpis> {
+  const rows = await rowsOf(
+    `SELECT to_char((e.ts AT TIME ZONE 'Asia/Kolkata')::date, 'YYYY-MM-DD') AS d, e.payload->>'model' AS model,
+            (${IN_TOK} > 200000) AS hi, sum(${IN_TOK})::bigint AS in_tok, sum(${OUT_TOK})::bigint AS out_tok
+     ${FROM_WHERE} AND e.ts > now() - interval '30 days' GROUP BY 1, 2, 3 ORDER BY 1`,
+  );
+  const perDay = new Map<string, number>();
+  for (const r of rows) perDay.set(String(r.d), (perDay.get(String(r.d)) ?? 0) + costInr(String(r.model), n(r.in_tok), n(r.out_tok), r.hi === true, PRICING));
+  const daily = Array.from(perDay.entries()).map(([d, inr]) => ({ d, inr })).sort((a, b) => a.d.localeCompare(b.d));
+
+  const istToday = new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10);
+  const istYest = new Date(Date.now() + 5.5 * 3600_000 - 86400_000).toISOString().slice(0, 10);
+  const today = perDay.get(istToday) ?? 0;
+  const yesterday = perDay.get(istYest) ?? 0;
+  const cutoff7 = new Date(Date.now() + 5.5 * 3600_000 - 7 * 86400_000).toISOString().slice(0, 10);
+  const cutoff30 = new Date(Date.now() + 5.5 * 3600_000 - 30 * 86400_000).toISOString().slice(0, 10);
+  const last7 = daily.filter((x) => x.d > cutoff7).reduce((s, x) => s + x.inr, 0);
+  const last30 = daily.filter((x) => x.d > cutoff30).reduce((s, x) => s + x.inr, 0);
+
+  // spike: today vs the average of the 7 full prior days (exclude today).
+  const prior = daily.filter((x) => x.d < istToday).slice(-7);
+  const avg = prior.length ? prior.reduce((s, x) => s + x.inr, 0) / prior.length : 0;
+  const spikePct = avg > 0 ? Math.round(((today - avg) / avg) * 100) : null;
+  return { today, yesterday, last7, last30, spikePct, daily };
+}
+
+export interface CostGroup { key: string; inr: number; calls: number }
+
+/** Spend by feature over the last N days (priced, top-first). */
+export async function costByFeature(days = 7): Promise<CostGroup[]> {
+  const rows = await rowsOf(
+    `SELECT t.feature AS feature, e.payload->>'model' AS model, (${IN_TOK} > 200000) AS hi,
+            sum(${IN_TOK})::bigint AS in_tok, sum(${OUT_TOK})::bigint AS out_tok, count(*)::int AS calls
+     ${FROM_WHERE} AND e.ts > now() - interval '${Math.max(1, Math.min(90, days))} days'
+     GROUP BY 1, 2, 3`,
+  );
+  const map = new Map<string, CostGroup>();
+  for (const r of rows) {
+    const key = String(r.feature || '(unknown)');
+    const g = map.get(key) ?? { key, inr: 0, calls: 0 };
+    g.inr += costInr(String(r.model), n(r.in_tok), n(r.out_tok), r.hi === true, PRICING); g.calls += n(r.calls);
+    map.set(key, g);
+  }
+  return Array.from(map.values()).sort((a, b) => b.inr - a.inr);
+}
+
+/** Spend by model over the last N days. */
+export async function costByModel(days = 7): Promise<CostGroup[]> {
+  const rows = await rowsOf(
+    `SELECT e.payload->>'model' AS model, (${IN_TOK} > 200000) AS hi,
+            sum(${IN_TOK})::bigint AS in_tok, sum(${OUT_TOK})::bigint AS out_tok, count(*)::int AS calls
+     ${FROM_WHERE} AND e.ts > now() - interval '${Math.max(1, Math.min(90, days))} days' GROUP BY 1, 2`,
+  );
+  const map = new Map<string, CostGroup>();
+  for (const r of rows) {
+    const key = modelLabel(String(r.model), PRICING);
+    const g = map.get(key) ?? { key, inr: 0, calls: 0 };
+    g.inr += costInr(String(r.model), n(r.in_tok), n(r.out_tok), r.hi === true, PRICING); g.calls += n(r.calls);
+    map.set(key, g);
+  }
+  return Array.from(map.values()).sort((a, b) => b.inr - a.inr);
+}
+
+export interface CostItem { ts: string; feature: string; traceId: string; model: string; inTok: number; outTok: number; inr: number }
+
+/** Most-recent priced calls (itemized). */
+export async function costItemized(limit = 60): Promise<CostItem[]> {
+  const lim = Math.max(1, Math.min(500, limit));
+  const rows = await rowsOf(
+    `SELECT to_char(e.ts AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI') AS ts, t.feature AS feature, t.trace_id AS trace_id,
+            e.payload->>'model' AS model, ${IN_TOK} AS in_tok, ${OUT_TOK} AS out_tok
+     ${FROM_WHERE} ORDER BY e.ts DESC LIMIT ${lim}`,
+  );
+  return rows.map((r) => ({
+    ts: String(r.ts), feature: String(r.feature || ''), traceId: String(r.trace_id || ''),
+    model: modelLabel(String(r.model), PRICING), inTok: n(r.in_tok), outTok: n(r.out_tok),
+    inr: perCallInr(String(r.model), n(r.in_tok), n(r.out_tok), PRICING),
+  }));
+}
+
+export interface DuplicateGroup { feature: string; model: string; inTok: number; outTok: number; n: number; wastedInr: number }
+
+/** Likely accidental reruns: identical (feature, model, in/out token) calls repeated in a window.
+ *  Identical token counts for the same call type ≈ the same input processed again. */
+export async function costDuplicates(hours = 24): Promise<{ groups: DuplicateGroup[]; totalWastedInr: number }> {
+  const rows = await rowsOf(
+    `SELECT t.feature AS feature, e.payload->>'model' AS model, ${IN_TOK} AS in_tok, ${OUT_TOK} AS out_tok, count(*)::int AS n
+     ${FROM_WHERE} AND e.ts > now() - interval '${Math.max(1, Math.min(720, hours))} hours' AND ${IN_TOK} > 0
+     GROUP BY 1, 2, 3, 4 HAVING count(*) > 1 ORDER BY count(*) DESC LIMIT 50`,
+  );
+  let totalWastedInr = 0;
+  const groups = rows.map((r) => {
+    const cnt = n(r.n);
+    const wastedInr = (cnt - 1) * perCallInr(String(r.model), n(r.in_tok), n(r.out_tok), PRICING);
+    totalWastedInr += wastedInr;
+    return { feature: String(r.feature || ''), model: modelLabel(String(r.model), PRICING), inTok: n(r.in_tok), outTok: n(r.out_tok), n: cnt, wastedInr };
+  }).sort((a, b) => b.wastedInr - a.wastedInr);
+  return { groups, totalWastedInr };
+}

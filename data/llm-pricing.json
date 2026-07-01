@@ -1,0 +1,9 @@
+{
+  "_note": "LLM unit pricing for the cost tracker. Prices are USD per 1M tokens (Vertex list price). fxUsdInr converts to rupees; override at runtime with env LLM_FX_USD_INR. Models are matched by the first substring found in the logged model name (order matters — put 'flash' before 'pro'). Verified 1 Jul 2026 from cloud.google.com/vertex-ai/generative-ai/pricing.",
+  "fxUsdInr": 94.7,
+  "models": [
+    { "match": "flash", "label": "Gemini 2.5 Flash", "inUsdPerM": 0.30, "outUsdPerM": 2.50 },
+    { "match": "pro", "label": "Gemini 2.5 Pro", "inUsdPerM": 1.25, "outUsdPerM": 10.0, "hiThresholdTokens": 200000, "hiInUsdPerM": 2.50, "hiOutUsdPerM": 15.0 }
+  ],
+  "fallback": { "label": "Gemini (other)", "inUsdPerM": 1.25, "outUsdPerM": 10.0 }
+}
