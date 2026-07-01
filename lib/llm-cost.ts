@@ -174,7 +174,7 @@ export async function costItemized(limit = 60): Promise<CostItem[]> {
 
 const isDay = (s?: string) => !!s && /^\d{4}-\d{2}-\d{2}$/.test(s);
 
-export interface CostLogQuery { from?: string; to?: string; feature?: string; model?: 'all' | 'pro' | 'flash'; page?: number; pageSize?: number }
+export interface CostLogQuery { from?: string; to?: string; feature?: string; model?: 'all' | 'pro' | 'flash'; ctype?: 'all' | 'text' | 'pdf-ocr'; page?: number; pageSize?: number }
 export interface CostLog {
   items: CostItem[]; total: number; totalInr: number; totalInTok: number; totalOutTok: number;
   page: number; pages: number; pageSize: number;
@@ -198,6 +198,8 @@ export async function costLog(q: CostLogQuery): Promise<CostLog> {
   if (q.feature) { params.push(q.feature); where.push(`t.feature = $${params.length}`); }
   if (q.model === 'pro') where.push(`(e.payload->>'model') ILIKE '%pro%'`);
   else if (q.model === 'flash') where.push(`(e.payload->>'model') ILIKE '%flash%'`);
+  if (q.ctype === 'pdf-ocr') where.push(IS_MM);
+  else if (q.ctype === 'text') where.push(`NOT ${IS_MM}`);
   const W = where.join(' AND ');
 
   // Filter totals (priced in JS from per model/tier sums so the config drives pricing).

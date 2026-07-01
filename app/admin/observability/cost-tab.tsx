@@ -18,6 +18,7 @@ function Kpi({ label, value, sub, danger }: { label: string; value: string; sub?
 export default async function CostTab({ sp }: { sp: Record<string, string | undefined> }) {
   const scale: Scale = (['hour', 'day', 'week', 'month'] as const).includes(sp.scale as Scale) ? (sp.scale as Scale) : 'day';
   const model = (sp.cmodel === 'pro' || sp.cmodel === 'flash') ? sp.cmodel : 'all';
+  const ctype = (sp.ctype === 'text' || sp.ctype === 'pdf-ocr') ? sp.ctype : 'all';
   const from = sp.from || undefined;
   const to = sp.to || undefined;
   const feature = sp.cfeat || undefined;
@@ -25,7 +26,7 @@ export default async function CostTab({ sp }: { sp: Record<string, string | unde
 
   const [kpis, chart, byFeat, byModel, byType, dupes, log, logFeatures] = await Promise.all([
     costKpis(), costByBucket(scale), costByFeature(7), costByModel(7), costByType(7), costDuplicates(24),
-    costLog({ from, to, feature, model, page, pageSize: 100 }), costLogFeatures(),
+    costLog({ from, to, feature, model, ctype, page, pageSize: 100 }), costLogFeatures(),
   ]);
 
   const full = chart.buckets.slice(0, -1);
@@ -38,6 +39,7 @@ export default async function CostTab({ sp }: { sp: Record<string, string | unde
     const u = new URLSearchParams({ tab: 'cost', scale });
     if (from) u.set('from', from); if (to) u.set('to', to);
     if (feature) u.set('cfeat', feature); if (model !== 'all') u.set('cmodel', model);
+    if (ctype !== 'all') u.set('ctype', ctype);
     if (p > 0) u.set('cpage', String(p));
     return `/admin/observability?${u.toString()}`;
   };
@@ -167,8 +169,13 @@ export default async function CostTab({ sp }: { sp: Record<string, string | unde
               <option value="all">All</option><option value="pro">Gemini 2.5 Pro</option><option value="flash">Gemini 2.5 Flash</option>
             </select>
           </label>
+          <label className="text-[11px] text-slate-500">Call type<br />
+            <select name="ctype" defaultValue={ctype} className="mt-0.5 rounded border border-slate-300 px-2 py-1 text-[12px]">
+              <option value="all">All</option><option value="text">Text</option><option value="pdf-ocr">PDF-OCR read</option>
+            </select>
+          </label>
           <button type="submit" className="rounded-lg bg-brand px-3 py-1.5 text-[12px] font-medium text-white hover:bg-brand-dark">Apply</button>
-          {(from || to || feature || model !== 'all') && <Link href="/admin/observability?tab=cost&scale=day" className="py-1.5 text-[12px] text-slate-500 hover:text-brand">Clear</Link>}
+          {(from || to || feature || model !== 'all' || ctype !== 'all') && <Link href="/admin/observability?tab=cost&scale=day" className="py-1.5 text-[12px] text-slate-500 hover:text-brand">Clear</Link>}
         </form>
 
         <div className="mb-2 text-[12px] text-slate-600">
