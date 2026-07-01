@@ -63,15 +63,22 @@ export async function GET(req: NextRequest) {
   let storedFlagged = 0, oldFlagged = 0, newFlagged = 0;
   const closePrescUids: string[] = [];
   const sample: { claim: string; reason: string; confidence: number }[] = [];
+  const sampleOpen: { claim: string; confidence: number }[] = [];
 
   for (const r of rows) {
     const clinical = toFindings(r.clinical);
     const stored = r.pitch_allowed === true;
     if (stored) storedFlagged++;
     const oldOpen = pitchGate(clinical, { requireSpecific: false, minConfidence: 0 }).allowed;
-    const newOpen = pitchGate(clinical, minConf != null ? { minConfidence: minConf } : {}).allowed;
+    const newGate = pitchGate(clinical, minConf != null ? { minConfidence: minConf } : {});
+    const newOpen = newGate.allowed;
     if (oldOpen) oldFlagged++;
     if (newOpen) newFlagged++;
+
+    if (newOpen && sampleOpen.length < 40) {
+      const f = clinical.find((x) => newGate.gatedOn.includes(x.id));
+      if (f) sampleOpen.push({ claim: f.claim.slice(0, 220), confidence: f.confidence });
+    }
 
     if (stored && !newOpen) {
       closePrescUids.push(String(r.presc_uid));
@@ -120,5 +127,6 @@ export async function GET(req: NextRequest) {
     applied,
     dry_run: !apply,
     sample_closed: sample,
+    sample_still_open: sampleOpen,
   });
 }
