@@ -25,6 +25,48 @@ const HOW: Record<string, string> = {
 };
 const SCALE = 'Scored 0–100 · bands A ≥85 · B ≥70 · C ≥55 · D ≥40 · E <40.';
 
+// PDQI-9 attribute help (keyed by display label). Dual-purpose by design: `def` tells the AUDITOR
+// what the attribute means, `lever` says how to raise it — phrased so it both guides feedback to the
+// doctor AND names the EMR-capture affordance for the design team (the "EMR:" cue).
+const PDQI9_HELP: Record<string, { def: string; lever: string }> = {
+  'Up-to-date': {
+    def: 'Reflects the current picture — today’s medications, latest results and status — not stale content carried forward from a past visit.',
+    lever: 'Reconcile meds & results at the visit. EMR: auto-pull the live med list + latest labs; visibly flag copied-forward text.',
+  },
+  'Accurate': {
+    def: 'Factually correct — values, medications and history match reality, with no contradictions or copy-paste errors.',
+    lever: 'Verify data before signing. EMR: pull vitals/labs from source instead of free-typing to remove transcription errors.',
+  },
+  'Thorough': {
+    def: 'Covers what’s relevant — the complaint, pertinent history, comorbidities and key positive/negative findings — not just the headline issue.',
+    lever: 'Prompt comorbidities + pertinent negatives. EMR: structured HPI / ROS / comorbidity fields rather than one free-text box.',
+  },
+  'Useful': {
+    def: 'Gives the next clinician what they need to act — a clear plan and the reasoning behind it.',
+    lever: 'Document an actionable plan + safety-net. EMR: a dedicated plan/instructions field with prompts.',
+  },
+  'Organized': {
+    def: 'Logical, consistent structure — information sits where you expect it and the note is easy to scan.',
+    lever: 'Keep to a consistent section order. EMR: enforce a SOAP-style layout; place fields in clinical order.',
+  },
+  'Comprehensible': {
+    def: 'Clear and readable to another clinician — minimal ambiguous shorthand or unexplained abbreviations.',
+    lever: 'Spell out ambiguous abbreviations. EMR: prefer structured pick-lists over free-typed shorthand.',
+  },
+  'Succinct': {
+    def: 'Concise — the clinical signal isn’t buried under boilerplate or repetition.',
+    lever: 'Trim auto-inserted boilerplate. EMR: drop default template walls-of-text; use smart, minimal defaults.',
+  },
+  'Synthesized': {
+    def: 'Pulls the data together into the clinician’s reasoning — a coherent assessment/impression, not just a list of findings.',
+    lever: 'Add an assessment linking findings → diagnosis → plan. EMR: these notes have no assessment/impression field — the single biggest capture gap.',
+  },
+  'Internally consistent': {
+    def: 'No internal contradictions — the diagnosis, medications and plan all line up with each other.',
+    lever: 'Check diagnosis ↔ drug ↔ plan alignment. EMR: cross-field checks (e.g. drug class vs diagnosis) that warn on mismatch.',
+  },
+};
+
 function Spark({ data, color }: { data: { d: string; v: number }[]; color: string }) {
   const W = 300, H = 46;
   if (data.length === 0) return <div className="text-[10.5px] text-slate-400">no history yet</div>;
@@ -67,6 +109,7 @@ function DocList({ title, rows }: { title: string; rows: { name: string; score: 
 export default function DomainPillars({ data, indexValue }: { data: DomainDatum[]; indexValue: number }) {
   const [open, setOpen] = useState<string>('');
   const [info, setInfo] = useState<{ key: string; x: number; y: number } | null>(null);
+  const [attrTip, setAttrTip] = useState<{ label: string; x: number; y: number } | null>(null);
   const D = data.find((d) => d.key === open) || null;
 
   return (
@@ -142,13 +185,18 @@ export default function DomainPillars({ data, indexValue }: { data: DomainDatum[
                 <div>
                   <div className="mb-1.5 text-[10px] font-medium uppercase tracking-[0.05em] text-slate-400">{D.drivers.kind === 'rating' ? "What's dragging it · PDQI-9 attributes (1–5)" : "What's dragging it"}</div>
                   <div className="space-y-1.5">
-                    {D.drivers.items.slice(0, 8).map((it, i) => (
-                      <div key={i} className="flex items-center gap-2 text-[11.5px]">
-                        <span className="flex-1 truncate text-slate-700">{it.label}</span>
+                    {D.drivers.items.slice(0, 8).map((it, i) => {
+                      const help = D.drivers.kind === 'rating' ? PDQI9_HELP[it.label] : undefined;
+                      return (
+                      <div key={i} className={`flex items-center gap-2 text-[11.5px] ${help ? 'cursor-help' : ''}`}
+                        onMouseEnter={help ? (e) => { const r = e.currentTarget.getBoundingClientRect(); setAttrTip({ label: it.label, x: r.left, y: r.bottom }); } : undefined}
+                        onMouseLeave={help ? () => setAttrTip(null) : undefined}>
+                        <span className={`flex-1 truncate ${help ? 'text-slate-700 underline decoration-dotted decoration-slate-300 underline-offset-2' : 'text-slate-700'}`}>{it.label}</span>
                         <span className="h-[5px] w-28 rounded bg-slate-100"><span className="block h-full rounded" style={{ width: `${it.pct}%`, background: D.drivers.kind === 'rating' ? scoreColor(it.pct) : '#d97706' }} /></span>
                         <span className="w-16 text-right tabular-nums text-slate-600">{D.drivers.kind === 'rating' ? `${it.value}/5` : `${it.value} · ${it.pct}%`}</span>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -166,6 +214,16 @@ export default function DomainPillars({ data, indexValue }: { data: DomainDatum[
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* PDQI-9 attribute hover tooltip — auditor definition + the "raise it" lever (doubles as the EMR-capture signal for design). */}
+      {attrTip && PDQI9_HELP[attrTip.label] && (
+        <div className="pointer-events-none fixed z-[60] w-[300px] rounded-lg border border-slate-200 bg-white p-3 shadow-pop"
+          style={{ left: Math.min(Math.max(12, attrTip.x), (typeof window !== 'undefined' ? window.innerWidth : 1200) - 312), top: attrTip.y + 6 }}>
+          <div className="text-[11.5px] font-semibold text-slate-800">{attrTip.label} <span className="font-normal text-slate-400">· PDQI-9</span></div>
+          <div className="mt-1 text-[11px] leading-snug text-slate-600">{PDQI9_HELP[attrTip.label].def}</div>
+          <div className="mt-2 rounded bg-brand-faint px-2 py-1.5 text-[10.5px] leading-snug text-slate-700"><b className="text-brand">Raise it · </b>{PDQI9_HELP[attrTip.label].lever}</div>
         </div>
       )}
     </>
