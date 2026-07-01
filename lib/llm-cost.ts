@@ -27,6 +27,13 @@ const FROM_WHERE =
    WHERE e.kind = 'llm_response' AND e.app_source = $1 AND (e.payload->>'model') ILIKE '%gemini%'`;
 const IN_TOK = `coalesce((e.payload->'usage'->>'prompt_tokens')::int, 0)`;
 const OUT_TOK = `coalesce((e.payload->'usage'->>'completion_tokens')::int, 0)`;
+// A multimodal (PDF/image OCR) read vs a plain text chat call — the multimodal path logs
+// provider 'vertex-multimodal' + multimodal:true. Used to break out and label PDF-OCR spend.
+const IS_MM = `((e.payload->>'provider') ILIKE '%multimodal%' OR (e.payload->>'multimodal') = 'true')`;
+
+/** Date (IST) from which multimodal PDF-OCR reads began being metered. Before this, only text calls
+ *  were counted, so the daily total steps UP here — newly-visible existing cost, not a usage spike. */
+export const MULTIMODAL_METERED_SINCE = '2026-07-01';
 
 async function rowsOf(text: string, params: unknown[] = [APP]): Promise<Record<string, unknown>[]> {
   try { return await run(text, params); } catch { return []; }
@@ -130,20 +137,38 @@ export async function costByModel(days = 7): Promise<CostGroup[]> {
   return Array.from(map.values()).sort((a, b) => b.inr - a.inr);
 }
 
-export interface CostItem { ts: string; feature: string; traceId: string; model: string; inTok: number; outTok: number; inr: number }
+export interface CostItem { ts: string; feature: string; traceId: string; model: string; inTok: number; outTok: number; inr: number; type: 'text' | 'pdf-ocr' }
+
+/** Spend split by call TYPE (text chat vs PDF-OCR multimodal read) over the last N days. */
+export async function costByType(days = 7): Promise<CostGroup[]> {
+  const rows = await rowsOf(
+    `SELECT ${IS_MM} AS mm, e.payload->>'model' AS model, (${IN_TOK} > 200000) AS hi,
+            sum(${IN_TOK})::bigint AS in_tok, sum(${OUT_TOK})::bigint AS out_tok, count(*)::int AS calls
+     ${FROM_WHERE} AND e.ts > now() - interval '${Math.max(1, Math.min(90, days))} days' GROUP BY 1, 2, 3`,
+  );
+  const map = new Map<string, CostGroup>();
+  for (const r of rows) {
+    const key = r.mm === true ? 'PDF-OCR read (multimodal)' : 'Text';
+    const g = map.get(key) ?? { key, inr: 0, calls: 0 };
+    g.inr += costInr(String(r.model), n(r.in_tok), n(r.out_tok), r.hi === true, PRICING); g.calls += n(r.calls);
+    map.set(key, g);
+  }
+  return Array.from(map.values()).sort((a, b) => b.inr - a.inr);
+}
 
 /** Most-recent priced calls (itemized). */
 export async function costItemized(limit = 60): Promise<CostItem[]> {
   const lim = Math.max(1, Math.min(500, limit));
   const rows = await rowsOf(
     `SELECT to_char(e.ts AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI') AS ts, t.feature AS feature, t.trace_id AS trace_id,
-            e.payload->>'model' AS model, ${IN_TOK} AS in_tok, ${OUT_TOK} AS out_tok
+            e.payload->>'model' AS model, ${IN_TOK} AS in_tok, ${OUT_TOK} AS out_tok, ${IS_MM} AS mm
      ${FROM_WHERE} ORDER BY e.ts DESC LIMIT ${lim}`,
   );
   return rows.map((r) => ({
     ts: String(r.ts), feature: String(r.feature || ''), traceId: String(r.trace_id || ''),
     model: modelLabel(String(r.model), PRICING), inTok: n(r.in_tok), outTok: n(r.out_tok),
     inr: perCallInr(String(r.model), n(r.in_tok), n(r.out_tok), PRICING),
+    type: r.mm === true ? 'pdf-ocr' : 'text',
   }));
 }
 
@@ -188,13 +213,14 @@ export async function costLog(q: CostLogQuery): Promise<CostLog> {
 
   const pageRows = await rowsOf(
     `SELECT to_char(e.ts AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI') AS ts, t.feature AS feature, t.trace_id AS trace_id,
-            e.payload->>'model' AS model, ${IN_TOK} AS in_tok, ${OUT_TOK} AS out_tok
+            e.payload->>'model' AS model, ${IN_TOK} AS in_tok, ${OUT_TOK} AS out_tok, ${IS_MM} AS mm
      FROM trace_events e JOIN traces t ON t.trace_id = e.trace_id WHERE ${W}
      ORDER BY e.ts DESC LIMIT ${pageSize} OFFSET ${page * pageSize}`, params);
   const items: CostItem[] = pageRows.map((r) => ({
     ts: String(r.ts), feature: String(r.feature || ''), traceId: String(r.trace_id || ''),
     model: modelLabel(String(r.model), PRICING), inTok: n(r.in_tok), outTok: n(r.out_tok),
     inr: perCallInr(String(r.model), n(r.in_tok), n(r.out_tok), PRICING),
+    type: r.mm === true ? 'pdf-ocr' : 'text',
   }));
   return { items, total, totalInr, totalInTok, totalOutTok, page, pages: Math.max(1, Math.ceil(total / pageSize)), pageSize };
 }

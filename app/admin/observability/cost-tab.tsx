@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { featureMeta } from '@/lib/observability-meta';
 import { fmtInr } from '@/lib/llm-cost-core';
-import { costKpis, costByBucket, costByFeature, costByModel, costDuplicates, costLog, costLogFeatures, type Scale } from '@/lib/llm-cost';
+import { costKpis, costByBucket, costByFeature, costByModel, costByType, costDuplicates, costLog, costLogFeatures, MULTIMODAL_METERED_SINCE, type Scale } from '@/lib/llm-cost';
 
 const SCALES: { k: Scale; l: string }[] = [{ k: 'hour', l: 'Hour' }, { k: 'day', l: 'Day' }, { k: 'week', l: 'Week' }, { k: 'month', l: 'Month' }];
 
@@ -23,8 +23,8 @@ export default async function CostTab({ sp }: { sp: Record<string, string | unde
   const feature = sp.cfeat || undefined;
   const page = Math.max(0, Number(sp.cpage) || 0);
 
-  const [kpis, chart, byFeat, byModel, dupes, log, logFeatures] = await Promise.all([
-    costKpis(), costByBucket(scale), costByFeature(7), costByModel(7), costDuplicates(24),
+  const [kpis, chart, byFeat, byModel, byType, dupes, log, logFeatures] = await Promise.all([
+    costKpis(), costByBucket(scale), costByFeature(7), costByModel(7), costByType(7), costDuplicates(24),
     costLog({ from, to, feature, model, page, pageSize: 100 }), costLogFeatures(),
   ]);
 
@@ -47,6 +47,10 @@ export default async function CostTab({ sp }: { sp: Record<string, string | unde
       <p className="mb-4 max-w-3xl text-sm text-slate-500">
         Rupee cost of every Gemini call, computed from the tokens logged on each run (Vertex list price · Pro $1.25/$10, Flash $0.30/$2.50 per 1M in/out · ₹ at {fxLabel()}). Embeddings run on self-hosted Ollama (₹0 marginal). Advisory estimate for spotting spikes and accidental reruns — reconcile against the Vertex invoice.
       </p>
+
+      <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50/60 px-3 py-2 text-[12px] leading-snug text-slate-700">
+        <b className="text-amber-700">Metering note</b> · <b>PDF-OCR reads</b> (multimodal document reads — case-audit uploads + CCB result PDFs, on Gemini 2.5 Pro, with large image-token inputs) began being metered on <b>{MULTIMODAL_METERED_SINCE}</b>. Days before then show <i>text-only</i> spend, so the step-up in the daily total from that date is <b>newly-visible existing cost, not a usage regression</b> — see the “By call type” split below and the <b>PDF-OCR</b> tag in the call log.
+      </div>
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Kpi label="Today (so far)" value={fmtInr(kpis.today)} sub={kpis.spikePct != null ? `${kpis.spikePct >= 0 ? '+' : ''}${kpis.spikePct}% vs 7-day avg` : undefined} danger={kpis.spikePct != null && kpis.spikePct >= 80} />
@@ -114,7 +118,7 @@ export default async function CostTab({ sp }: { sp: Record<string, string | unde
       )}
 
       {/* breakdowns */}
-      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+      <div className="mt-4 grid gap-4 md:grid-cols-3">
         <div className="rounded-xl border border-slate-200 bg-white p-4">
           <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.05em] text-slate-400">By feature · last 7 days</div>
           {byFeat.length === 0 ? <div className="text-[12px] text-slate-400">—</div> : byFeat.slice(0, 8).map((g) => (
@@ -127,6 +131,15 @@ export default async function CostTab({ sp }: { sp: Record<string, string | unde
         <div className="rounded-xl border border-slate-200 bg-white p-4">
           <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.05em] text-slate-400">By model · last 7 days</div>
           {byModel.length === 0 ? <div className="text-[12px] text-slate-400">—</div> : byModel.map((g) => (
+            <div key={g.key} className="flex items-center justify-between border-t border-slate-100 py-1.5 text-[12.5px] first:border-t-0">
+              <span className="text-slate-700">{g.key}</span>
+              <span className="tabular-nums text-slate-500">{fmtInr(g.inr)} · {g.calls.toLocaleString()} calls</span>
+            </div>
+          ))}
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-white p-4">
+          <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.05em] text-slate-400">By call type · last 7 days</div>
+          {byType.length === 0 ? <div className="text-[12px] text-slate-400">—</div> : byType.map((g) => (
             <div key={g.key} className="flex items-center justify-between border-t border-slate-100 py-1.5 text-[12.5px] first:border-t-0">
               <span className="text-slate-700">{g.key}</span>
               <span className="tabular-nums text-slate-500">{fmtInr(g.inr)} · {g.calls.toLocaleString()} calls</span>
@@ -173,7 +186,7 @@ export default async function CostTab({ sp }: { sp: Record<string, string | unde
               {log.items.map((it, i) => (
                 <tr key={i} className="border-t border-slate-100 hover:bg-slate-50">
                   <td className="py-1.5 pr-3 tabular-nums text-slate-500">{it.ts}</td>
-                  <td className="py-1.5 pr-3"><Link href={`/admin/observability/${it.traceId}`} className="text-slate-700 hover:text-brand">{featureMeta(it.feature).label}</Link></td>
+                  <td className="py-1.5 pr-3"><Link href={`/admin/observability/${it.traceId}`} className="text-slate-700 hover:text-brand">{featureMeta(it.feature).label}</Link>{it.type === 'pdf-ocr' && <span className="ml-1.5 rounded bg-amber-100 px-1 py-0.5 text-[9.5px] text-amber-700">PDF-OCR</span>}</td>
                   <td className="py-1.5 pr-3 text-slate-600">{it.model}</td>
                   <td className="py-1.5 pr-3 text-right tabular-nums text-slate-600">{it.inTok.toLocaleString()}</td>
                   <td className="py-1.5 pr-3 text-right tabular-nums text-slate-600">{it.outTok.toLocaleString()}</td>
