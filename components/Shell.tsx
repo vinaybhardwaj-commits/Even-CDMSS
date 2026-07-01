@@ -5,6 +5,7 @@ import { useState, useEffect } from 'react';
 import {
   MessagesSquare, Network, Pill, Calculator, ClipboardCheck,
   ClipboardList, BookOpen, GraduationCap, Settings, Menu, X, ChevronLeft, Activity, Lightbulb, BarChart3,
+  PhoneCall, Filter,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -37,6 +38,12 @@ const CLINICIAN: NavGroup[] = [
     ],
   },
   {
+    heading: 'Care management',
+    items: [
+      { href: '/care', label: 'Care Conversation Brief', Icon: PhoneCall },
+    ],
+  },
+  {
     heading: 'Reference & learning',
     items: [
       { href: '/knowledge', label: 'Knowledge base', Icon: BookOpen, match: ['/search', '/browse'] },
@@ -52,6 +59,7 @@ const ADMIN: NavGroup[] = [
       { href: '/admin/observability', label: 'Observability', Icon: Network, match: ['/admin/appropriateness-runs'] },
       { href: '/admin/opd-audit', label: 'OPD Audit', Icon: Activity },
       { href: '/admin/stewardship', label: 'Stewardship', Icon: BarChart3 },
+      { href: '/admin/ccb-funnel', label: 'Care Brief Funnel', Icon: Filter },
       { href: '/admin/learning', label: 'Learning loop', Icon: Lightbulb },
       { href: '/admin/literature', label: 'Literature', Icon: BookOpen },
     ],
