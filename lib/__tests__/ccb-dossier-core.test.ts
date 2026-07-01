@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   individualSql, episodesSql, dpipeByUidsSql, reportsSql, dischargeSql,
-  parseSpeciality, prettyPrescriptionType, mapEpisodeRow,
+  parseSpeciality, prettyPrescriptionType, mapEpisodeRow, parseDiagnosisNames, cleanComplaint,
   opdTimeline, reportTimeline, ipdTimeline, mergeTimeline, computeSnapshot, buildMember,
   type EpisodeRowLite, type TimelineItem,
 } from '../ccb-dossier-core.ts';
@@ -50,15 +50,33 @@ test('mapEpisodeRow validates + coerces', () => {
   assert.equal(e?.nMeds, 3);
 });
 
-test('opdTimeline folds clean complaint+dx into the subtitle', () => {
+test('parseDiagnosisNames extracts readable names from the dpipe JSON array', () => {
+  const raw = '[{"icd_code":"E11","diagnosis":"Type 2 diabetes mellitus ( DM )","high_risk":"No"},{"icd_code":"E78.5","diagnosis":"Dyslipidemia"}]';
+  assert.deepEqual(parseDiagnosisNames(raw), ['Type 2 diabetes mellitus ( DM )', 'Dyslipidemia']);
+  assert.deepEqual(parseDiagnosisNames('osteoarthritis'), ['osteoarthritis']);   // plain text passthrough
+  assert.deepEqual(parseDiagnosisNames(''), []);
+  assert.deepEqual(parseDiagnosisNames('[not json'), ['[not json']);            // malformed → no throw
+});
+
+test('cleanComplaint collapses whitespace and truncates', () => {
+  assert.equal(cleanComplaint('  knee   pain  '), 'knee pain');
+  assert.equal(cleanComplaint('x'.repeat(200))!.length, 140);
+  assert.equal(cleanComplaint(null), null);
+});
+
+test('opdTimeline folds clean complaint + parsed dx names into the subtitle (no raw JSON leak)', () => {
   const eps: EpisodeRowLite[] = [
     { uid: 'aaaaaa1', type: 'GENERAL_PRACTITIONER', speciality: 'Orthopedics', date: '2026-05-20', nMeds: 2 },
     { uid: 'bbbbbb2', type: 'HOSPITAL_GP', speciality: null, date: '2026-01-01', nMeds: 0 },
   ];
-  const dp = { aaaaaa1: { pc: 'knee pain', dx: 'osteoarthritis' }, bbbbbb2: { pc: null, dx: null } };
+  const dp = {
+    aaaaaa1: { pc: 'knee pain', dx: '[{"icd_code":"M17","diagnosis":"Osteoarthritis of knee"}]' },
+    bbbbbb2: { pc: null, dx: null },
+  };
   const out = opdTimeline(eps, dp);
   assert.equal(out[0].title, 'Orthopedics');
-  assert.equal(out[0].subtitle, 'knee pain → osteoarthritis');
+  assert.equal(out[0].subtitle, 'knee pain → Osteoarthritis of knee');   // parsed, not raw JSON
+  assert.equal(out[0].subtitle!.includes('icd_code'), false);
   assert.equal(out[0].refUid, 'aaaaaa1');
   assert.equal(out[1].title, 'Gp');           // speciality null → prettified type
   assert.equal(out[1].subtitle, null);

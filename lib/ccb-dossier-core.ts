@@ -183,15 +183,44 @@ export function mapEpisodeRow(r: Record<string, unknown>): EpisodeRowLite | null
   };
 }
 
-/** Build the OPD slice of the timeline, folding in clean complaint/dx by presc uid. */
+/** The dpipe `diagnosis` column is a JSON array of {diagnosis, icd_code, …} (same as the OPD
+ *  audit's dpipeDx) — extract the readable names. Falls back to a plain string if it isn't JSON. */
+export function parseDiagnosisNames(raw: string | null): string[] {
+  const s = (raw || '').trim();
+  if (!s) return [];
+  if (!(s.startsWith('[') || s.startsWith('{'))) return [s];
+  let parsed: unknown = null;
+  try { parsed = JSON.parse(s); } catch { return [s]; }
+  const list = Array.isArray(parsed) ? parsed : [parsed];
+  const names: string[] = [];
+  for (const it of list) {
+    if (it && typeof it === 'object') {
+      const nm = (it as Record<string, unknown>).diagnosis;
+      if (nm != null && String(nm).trim()) names.push(String(nm).trim());
+    } else if (typeof it === 'string' && it.trim()) {
+      names.push(it.trim());
+    }
+  }
+  return Array.from(new Set(names));
+}
+
+/** Collapse whitespace and truncate a free-text complaint for a one-line timeline subtitle. */
+export function cleanComplaint(raw: string | null, max = 140): string | null {
+  const s = (raw || '').replace(/\s+/g, ' ').trim();
+  if (!s) return null;
+  return s.length > max ? `${s.slice(0, max - 1).trimEnd()}…` : s;
+}
+
+/** Build the OPD slice of the timeline, folding in clean complaint + parsed diagnosis names. */
 export function opdTimeline(episodes: EpisodeRowLite[], dpipeByUid: Record<string, { pc: string | null; dx: string | null }>): TimelineItem[] {
   return episodes.map((e) => {
     const clean = dpipeByUid[e.uid] || { pc: null, dx: null };
-    const pc = (clean.pc || '').trim();
-    const dx = (clean.dx || '').trim();
+    const complaint = cleanComplaint(clean.pc);
+    const dxStr = parseDiagnosisNames(clean.dx).slice(0, 4).join(', ');
     let subtitle: string | null = null;
-    if (pc && dx) subtitle = `${pc} → ${dx}`;
-    else subtitle = dx || pc || null;
+    if (complaint && dxStr) subtitle = `${complaint} → ${dxStr}`;
+    else subtitle = dxStr || complaint || null;
+    if (subtitle && subtitle.length > 200) subtitle = `${subtitle.slice(0, 199).trimEnd()}…`;
     return {
       date: e.date,
       kind: 'opd' as const,
