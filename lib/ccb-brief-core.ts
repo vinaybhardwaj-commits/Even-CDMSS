@@ -259,18 +259,21 @@ export const PITCH_MIN_CONFIDENCE = (() => {
 // dominant false-positive pattern behind the pre-calibration ~80% pitch rate ("surgery should be
 // considered if…", "typically reserved for patients with…", "is the mainstay of treatment for…").
 const GENERIC_INDICATION_PATTERNS: RegExp[] = [
-  /\bif\b/i,
-  /should\s+(be\s+considered|the\s+patient)/i,
-  /\bmay\s+(be\s+considered|be\s+necessary|be\s+required|necessitate|require|warrant)/i,
-  /\b(can|might|could|would)\s+be\s+considered/i,
-  /\bin\s+cases?\s+(of|where)\b/i,
-  /\bfor\s+patients?\s+(with|who)\b/i,
+  /\bif\b/i,                                                     // any conditional
+  /\bshould\s+(be\s+considered|the\b)/i,                         // "should be considered", "should the TMT show…"
+  /\bmay\s+(be\s+(considered|necessary|required|indicated|warranted)|necessitate|require|warrant)\b/i,
+  /\b(can|might|could|would)\s+be\s+considered\b/i,
+  /\bcan\s+be\s+an?\s+indication\b/i,
+  /\b(in|for)\s+cases?\s+(of|where|involving|that)\b/i,
+  /\bfor\s+(patients?|children|women|men|adults?|people|individuals?|those)\b/i,   // population framing
   /\bpatients?\s+(with|who)\b.*\b(should|may|can|are\s+candidates)\b/i,
-  /\b(typically|usually|generally|often)\s+(reserved|considered|indicated|recommended)/i,
-  /\bis\s+the\s+mainstay\b/i,
-  /\bis\s+(a|an|the)\s+(treatment\s+option|option|emergent|indication)\b/i,
+  /\b(is|are)\s+(often|usually|frequently|commonly|typically|generally)\s+(needed|required|reserved|considered|indicated|recommended|performed|warranted)\b/i,
+  /\bis\s+reserved\s+for\b/i,
+  /\bis\s+(a|an|the)\s+(definitive|potential|primary|key|common|first[-\s]line|gold[-\s]standard|appropriate|reasonable|mainstay|treatment\s+option|option|emergent|indication)\b/i,
+  /\bis\s+the\s+most\s+common\b/i,
   /\brepresents?\s+a\b/i,
   /\bis\s+(defined|considered)\s+(as|an?|to\s+be)\b/i,
+  /\bwhen\s+\w+\s+is\s+suspected\b/i,                            // "when asthma is suspected…"
   /\bwhen\s+conservative\b/i,
 ];
 

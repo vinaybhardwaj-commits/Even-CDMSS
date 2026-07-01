@@ -89,6 +89,25 @@ test('isSpecificSurgicalIndication accepts an assertive member-specific indicati
   assert.equal(isSpecificSurgicalIndication(SPECIFIC), true);
   assert.equal(isSpecificSurgicalIndication('Findings indicate cholecystectomy for the symptomatic gallstones documented on ultrasound'), true);
   assert.equal(isSpecificSurgicalIndication('short'), false);   // too short to be specific
+  // Genuinely member-specific indications observed in the backtest — must STAY open.
+  for (const good of [
+    "The patient's report of recent, unexplained hearing loss warrants urgent referral to an ENT specialist",
+    "The patient's profile of two-vessel disease involving the proximal LAD with left ventricular dysfunction may meet guideline criteria for coronary revascularization",
+    "Referral to a nephrologist is indicated due to uncertainty about the etiology of this kidney disease",
+  ]) assert.equal(isSpecificSurgicalIndication(good), true, good);
+});
+
+test('the tightened patterns catch the residual generics seen in the backtest', () => {
+  for (const generic of [
+    'Should the TMT show signs of ischemia, cardiac catheterization is the gold standard procedure',
+    'An urgent specialist referral is indicated for patients aged 30 or older who present with a breast lump',
+    'Hysterectomy is a definitive surgical treatment for symptomatic fibroids',
+    'Surgical intervention is usually needed for women who have severe symptoms',
+    'Hospital admission may be indicated for children with acute gastroenteritis',
+    'Surgical reconstruction is often required for ACL tears',
+    'Appendicitis is the most common extrauterine condition that requires an abdominal operation',
+    'The evaluation of chronic cough, when asthma is suspected, includes spirometry',
+  ]) assert.equal(isSpecificSurgicalIndication(generic), false, generic);
 });
 test('pitchGate enforces the confidence floor', () => {
   const low = finding({ kind: 'surgical_indication', grounding: 'corpus_cited', citation_ids: [1], claim: SPECIFIC, confidence: 0.5 });
