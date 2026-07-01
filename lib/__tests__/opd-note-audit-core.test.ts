@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { rowToOpdCase } from '../opd-ingest-core.ts';
-import { opdCompleteness, prescribingChecks, parseOpdAnalysis } from '../opd-note-audit-core.ts';
+import { opdCompleteness, prescribingChecks, parseOpdAnalysis, medDoseDocumented, resolveMedRoute } from '../opd-note-audit-core.ts';
 
 // Mirrors a real GP row (medications + jsonb arrive as JSON strings via Metabase).
 const ROW: Record<string, unknown> = {
@@ -97,7 +97,7 @@ test('opdCompleteness flags the real gaps; allergy + history items removed', () 
   assert.ok(comp.coverage < 1);
   assert.ok(comp.missing.includes('Presenting complaint'));
   assert.ok(comp.missing.includes('Advice / plan'));
-  assert.ok(comp.missing.includes('Complete medication dosing')); // 2nd med has no route
+  assert.ok(!comp.missing.includes('Complete medication dosing')); // 0.5: 2nd med's blank route is inferred oral ("1 tablet") → complete, not a false gap
   assert.ok(!comp.missing.includes('Allergy status documented')); // removed — never stored
   assert.ok(!comp.missing.includes('Relevant history'));          // removed — folded into complaint
   assert.equal(comp.items.length, 5);
@@ -105,11 +105,36 @@ test('opdCompleteness flags the real gaps; allergy + history items removed', () 
   assert.deepEqual(comp.patientCentred, { present: 1, total: 2 });
 });
 
-test('prescribingChecks catches incomplete dosing (deterministic)', () => {
+test('route inference: documented → used; blank → inferred from form; no form → null (real gap)', () => {
+  assert.equal(resolveMedRoute({ generic: 'X', route: 'oral' }), 'oral');
+  assert.equal(resolveMedRoute({ brand: 'Cefix 200mg Tab', route: '' }), 'oral');
+  assert.equal(resolveMedRoute({ brand: 'Leupromak 3.75mg Inj', route: '' }), 'parenteral');
+  assert.equal(resolveMedRoute({ brand: 'Soliwax Ear Drop', route: '' }), 'otic');
+  assert.equal(resolveMedRoute({ brand: 'Augmentin', route: '' }), null); // no route, no inferable form → ambiguous
+});
+
+test('dose documented from the field, the strength field, or the strength embedded in the drug name', () => {
+  assert.equal(medDoseDocumented({ brand: 'X', dose: '1 tab' }), true);
+  assert.equal(medDoseDocumented({ brand: 'X', strength: '200mg' }), true);
+  assert.equal(medDoseDocumented({ brand: 'Cefix 200mg Tab' }), true);   // strength lives in the name
+  assert.equal(medDoseDocumented({ brand: 'Menogen Cap' }), false);      // amount documented nowhere
+});
+
+test('prescribingChecks: dosing gap only when route is truly ambiguous / amount is absent (0.5)', () => {
+  // ROW's meds are complete once the blank route is inferred (2nd med "1 tablet" → oral) → no false gap
   const { case: c } = rowToOpdCase(ROW);
-  const f = prescribingChecks(c);
-  assert.ok(f.some((x) => x.subject.startsWith('Incomplete dosing') && x.domain === 'prescribing_safety'));
-  assert.ok(f.every((x) => x.source === 'deterministic'));
+  assert.ok(!prescribingChecks(c).some((x) => x.subject.startsWith('Incomplete dosing')));
+  // A med with no route field, no inferable form, and no dose/strength anywhere → a real gap
+  const ambiguous = {
+    consultType: null, reasonForConsult: null, presentingComplaints: [], diagnosisCodes: [], impressionCodes: [],
+    impressions: [], history: [], comorbidities: [], investigations: [], advice: [], examination: [],
+    allergies: null, followUpType: null, followUpDateSet: false,
+    medications: [{ generic: 'Some Molecule', dose: '', strength: '', frequency: '', route: '', duration: '' }],
+  };
+  const inc = prescribingChecks(ambiguous).find((x) => x.subject.startsWith('Incomplete dosing'));
+  assert.ok(inc && inc.domain === 'prescribing_safety');
+  assert.match(inc!.rationale, /dose\/strength/);
+  assert.match(inc!.rationale, /route/);
 });
 
 test('prescribingChecks: unverified brand, duplicate by RESOLVED generic, high-alert info (v0.4)', () => {

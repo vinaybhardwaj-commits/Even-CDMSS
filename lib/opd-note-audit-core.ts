@@ -7,7 +7,7 @@
  * computeOpdScore lives in the server orchestrator (lib/opd-note-audit.ts).
  */
 
-import type { DeidOpdCase } from './opd-ingest-core';
+import type { DeidOpdCase, OpdMed } from './opd-ingest-core';
 import type { NetValue, OpdFindingDomain, Pdqi9Attr } from './opd-note-score-core';
 
 // 0.4 — formulary integration: brand→generic resolution + class/schedule/ISMP-high-alert/
@@ -44,10 +44,49 @@ export interface OpdCompleteness {
 }
 export interface OpdSuggestion { priority: number; text: string }
 
+// ── Dose / route resolution (0.5 calibration) ─────────────────────────────────
+// The EMR's medication fields are entered inconsistently: the strength is frequently embedded in
+// the drug NAME ("Cefix 200mg Tab", `strength` field empty ~36%) and `route_of_administration` is
+// blank ~17% but is obvious from the dosage form. Reading the fields literally false-flagged ~1/3
+// of otherwise-complete notes as "incomplete dosing". These pure helpers read what the note ACTUALLY
+// documents (field OR name OR inferred form); only a route that can be neither read nor inferred,
+// and an amount that appears nowhere, are treated as real gaps.
+const STRENGTH_RE = /\b\d+(?:\.\d+)?\s?(?:mg|mcg|µg|ug|g|ml|iu|units?|meq|lac|lakh|k)\b/i;
+
+/** Dose/amount is documented if it's in the `dosage` field, the `strength` field, or embedded in
+ *  the drug name (e.g. "Cefix 200mg Tab"). */
+export function medDoseDocumented(m: OpdMed): boolean {
+  if ((m.dose && m.dose.trim()) || (m.strength && m.strength.trim())) return true;
+  return STRENGTH_RE.test(`${m.brand || ''} ${m.generic || ''}`);
+}
+
+const ROUTE_RULES: { re: RegExp; route: string }[] = [
+  { re: /\b(inj|injection|vial|amp(?:oule)?|iv|im|s\/?c|subcut|parenteral)\b/i, route: 'parenteral' },
+  { re: /\b(inhaler|rotacap|rotahaler|respule|neb(?:uli[sz]er?|ule)?|mdi|puff|inhalation)\b/i, route: 'inhaled' },
+  { re: /\b(eye|ophthalmic|ocular)\b/i, route: 'ophthalmic' },
+  { re: /\b(ear|otic)\b/i, route: 'otic' },
+  { re: /\b(nasal|nostril|intranasal)\b/i, route: 'nasal' },
+  { re: /\b(supp(?:ository)?|rectal|per\s?rectum|pr)\b/i, route: 'rectal' },
+  { re: /\b(pessary|vaginal|per\s?vagina|pv)\b/i, route: 'vaginal' },
+  { re: /\b(cream|ointment|gel|lotion|topical|patch|transderm|ung|apply|local(?:ly)?)\b/i, route: 'topical' },
+  { re: /\b(tab(?:let)?s?|cap(?:sule)?s?|syr(?:up)?|susp(?:ension)?|solution|oral|po|sachet|powder|granule|lozenge|chewable|drops?)\b/i, route: 'oral' },
+];
+
+/** The documented route, else one inferred from the dosage form in the name/dose/instruction.
+ *  Null ONLY when the route is truly ambiguous (no field + no inferable form) — that is a real gap. */
+export function resolveMedRoute(m: OpdMed): string | null {
+  if (m.route && m.route.trim()) return m.route.trim();
+  const hay = `${m.brand || ''} ${m.generic || ''} ${m.dose || ''} ${m.instruction || ''}`;
+  for (const r of ROUTE_RULES) if (r.re.test(hay)) return r.route;
+  return null;
+}
+
 // ── Deterministic NABH-OPD completeness (from the structured row) ─────────────
 export function opdCompleteness(c: DeidOpdCase): OpdCompleteness {
   const hasMeds = c.medications.length > 0;
-  const dosingComplete = hasMeds && c.medications.every((m) => m.dose && m.frequency && m.route);
+  // Complete dosing = an amount is documented (field or in the name) + a frequency + a route that is
+  // documented OR inferable from the form. Route that can't be inferred at all remains a real gap.
+  const dosingComplete = hasMeds && c.medications.every((m) => medDoseDocumented(m) && !!m.frequency && resolveMedRoute(m) !== null);
   // NABH-OPD items we can actually observe in this EMR's structured data. Allergy is never
   // stored at the prescription level (always empty) and history is folded into the presenting
   // complaint / HPI, so both were removed (they were false-flagging ~100% of notes).
@@ -110,11 +149,11 @@ export function prescribingChecks(c: DeidOpdCase): OpdFinding[] {
     }
 
     const gaps: string[] = [];
-    if (!m.dose) gaps.push('dose');
+    if (!medDoseDocumented(m)) gaps.push('dose/strength');
     if (!m.frequency) gaps.push('frequency');
-    if (!m.route) gaps.push('route');
+    if (resolveMedRoute(m) === null) gaps.push('route');
     if (!m.duration) gaps.push('duration');
-    if (gaps.length) out.push(det(`Incomplete dosing: ${name}`, 'context-dependent', 0.5, `Missing ${gaps.join(', ')} — incomplete prescription.`));
+    if (gaps.length) out.push(det(`Incomplete dosing: ${name}`, 'context-dependent', 0.5, `Missing ${gaps.join(', ')} — incomplete prescription (strength read from the drug name and route inferred from the dosage form where possible).`));
 
     if (gen) { const k = gen.toLowerCase(); const p = seen.get(k); seen.set(k, { n: (p?.n || 0) + 1, label: gen }); }
     if (gen && m.highAlert) highAlerts.push(gen);
