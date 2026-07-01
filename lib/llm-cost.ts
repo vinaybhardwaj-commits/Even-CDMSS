@@ -147,6 +147,58 @@ export async function costItemized(limit = 60): Promise<CostItem[]> {
   }));
 }
 
+const isDay = (s?: string) => !!s && /^\d{4}-\d{2}-\d{2}$/.test(s);
+
+export interface CostLogQuery { from?: string; to?: string; feature?: string; model?: 'all' | 'pro' | 'flash'; page?: number; pageSize?: number }
+export interface CostLog {
+  items: CostItem[]; total: number; totalInr: number; totalInTok: number; totalOutTok: number;
+  page: number; pages: number; pageSize: number;
+}
+
+/** Distinct features that have Gemini calls — for the audit browser's filter dropdown. */
+export async function costLogFeatures(): Promise<string[]> {
+  const rows = await rowsOf(`SELECT DISTINCT t.feature AS feature ${FROM_WHERE} ORDER BY 1`);
+  return rows.map((r) => String(r.feature || '')).filter(Boolean);
+}
+
+/** Paginated, date/feature/model-filtered view of EVERY Gemini call (not just the latest N).
+ *  Reads trace_events (which retains all calls from day one); priced per call. */
+export async function costLog(q: CostLogQuery): Promise<CostLog> {
+  const pageSize = Math.max(10, Math.min(200, q.pageSize ?? 100));
+  const page = Math.max(0, q.page ?? 0);
+  const where = [`e.kind = 'llm_response'`, `e.app_source = $1`, `(e.payload->>'model') ILIKE '%gemini%'`];
+  const params: unknown[] = [APP];
+  if (isDay(q.from)) { params.push(q.from); where.push(`(e.ts AT TIME ZONE 'Asia/Kolkata')::date >= $${params.length}::date`); }
+  if (isDay(q.to)) { params.push(q.to); where.push(`(e.ts AT TIME ZONE 'Asia/Kolkata')::date <= $${params.length}::date`); }
+  if (q.feature) { params.push(q.feature); where.push(`t.feature = $${params.length}`); }
+  if (q.model === 'pro') where.push(`(e.payload->>'model') ILIKE '%pro%'`);
+  else if (q.model === 'flash') where.push(`(e.payload->>'model') ILIKE '%flash%'`);
+  const W = where.join(' AND ');
+
+  // Filter totals (priced in JS from per model/tier sums so the config drives pricing).
+  const agg = await rowsOf(
+    `SELECT e.payload->>'model' AS model, (${IN_TOK} > 200000) AS hi,
+            sum(${IN_TOK})::bigint AS in_tok, sum(${OUT_TOK})::bigint AS out_tok, count(*)::int AS calls
+     FROM trace_events e JOIN traces t ON t.trace_id = e.trace_id WHERE ${W} GROUP BY 1, 2`, params);
+  let total = 0, totalInr = 0, totalInTok = 0, totalOutTok = 0;
+  for (const r of agg) {
+    total += n(r.calls); totalInTok += n(r.in_tok); totalOutTok += n(r.out_tok);
+    totalInr += costInr(String(r.model), n(r.in_tok), n(r.out_tok), r.hi === true, PRICING);
+  }
+
+  const pageRows = await rowsOf(
+    `SELECT to_char(e.ts AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI') AS ts, t.feature AS feature, t.trace_id AS trace_id,
+            e.payload->>'model' AS model, ${IN_TOK} AS in_tok, ${OUT_TOK} AS out_tok
+     FROM trace_events e JOIN traces t ON t.trace_id = e.trace_id WHERE ${W}
+     ORDER BY e.ts DESC LIMIT ${pageSize} OFFSET ${page * pageSize}`, params);
+  const items: CostItem[] = pageRows.map((r) => ({
+    ts: String(r.ts), feature: String(r.feature || ''), traceId: String(r.trace_id || ''),
+    model: modelLabel(String(r.model), PRICING), inTok: n(r.in_tok), outTok: n(r.out_tok),
+    inr: perCallInr(String(r.model), n(r.in_tok), n(r.out_tok), PRICING),
+  }));
+  return { items, total, totalInr, totalInTok, totalOutTok, page, pages: Math.max(1, Math.ceil(total / pageSize)), pageSize };
+}
+
 export interface DuplicateGroup { feature: string; model: string; inTok: number; outTok: number; n: number; wastedInr: number }
 
 /** Likely accidental reruns: identical (feature, model, in/out token) calls repeated in a window.

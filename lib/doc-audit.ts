@@ -84,9 +84,9 @@ export async function extractCase(input: ExtractInput): Promise<ExtractResult> {
     // Capture the multimodal read as an LLM call (metadata only — the document
     // itself and its raw text are NEVER logged, per the cardinal PHI rule).
     if (traceId) await logEvent(traceId, 'llm_request', 'doc_read', { model: GEMINI_MODEL, provider: 'vertex-multimodal', mime: input.mime, bytes: input.bytes ?? null });
-    const readT0 = Date.now();
-    const raw = await generateFromDocument(core.EXTRACT_SYSTEM, userPrompt, input.base64, input.mime, { maxOutputTokens: 8192 });
-    if (traceId) await logEvent(traceId, 'llm_response', 'doc_read', { model: GEMINI_MODEL, provider: 'vertex-multimodal', char_count: (raw || '').length, ok: !!raw }, Date.now() - readT0);
+    // generateFromDocument self-logs the `llm_response` (with token usage) when given the traceId —
+    // do NOT also log one here, or the cost tracker would double-count this read.
+    const raw = await generateFromDocument(core.EXTRACT_SYSTEM, userPrompt, input.base64, input.mime, { maxOutputTokens: 8192, traceId, label: 'doc_read' });
     const extracted = raw ? core.parseExtraction(raw, input.docTypeHint) : null;
     if (traceId) {
       await logEvent(traceId, 'doc_audit_extract_result', null, {

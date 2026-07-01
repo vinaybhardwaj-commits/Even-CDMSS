@@ -43,7 +43,7 @@ function mimeFor(url: string, header: string | null): string {
 }
 
 /** Fetch one result PDF and read it into a de-identified ExtractedReport (null on any failure). */
-async function readReport(report: ReportDoc): Promise<ExtractedReport | null> {
+async function readReport(report: ReportDoc, traceId?: string): Promise<ExtractedReport | null> {
   try {
     const res = await fetch(report.url);
     if (!res.ok) return null;
@@ -52,8 +52,9 @@ async function readReport(report: ReportDoc): Promise<ExtractedReport | null> {
     const buf = Buffer.from(await res.arrayBuffer());
     if (buf.byteLength > MAX_PDF_BYTES) return null;
     const mime = mimeFor(report.url, res.headers.get('content-type'));
+    // Pass the traceId so the multimodal read self-logs its token usage into the cost tracker.
     const raw = await generateFromDocument(EXTRACT_SYSTEM, buildExtractUser(report.kind), buf.toString('base64'), mime, {
-      maxOutputTokens: 2048, temperature: 0.1,
+      maxOutputTokens: 2048, temperature: 0.1, traceId, label: 'ccb_report_read',
     });
     return raw ? parseExtractedReport(raw, report.kind) : null;
   } catch {
@@ -106,7 +107,7 @@ export async function generateBrief(bundle: EpisodeBundle, opts: BriefOpts = {})
   // 1. Read result PDFs (de-identified). order_only bundles skip this.
   const toRead = bundle.reports.slice(0, MAX_REPORTS);
   prog('reading', toRead.length ? `Reading ${toRead.length} result document(s)…` : 'No result documents — order-level brief…');
-  const extracted = (await mapLimit(toRead, 3, readReport)).filter(Boolean) as ExtractedReport[];
+  const extracted = (await mapLimit(toRead, 3, (r) => readReport(r, traceId))).filter(Boolean) as ExtractedReport[];
   if (traceId) await logEvent(traceId, 'ccb_reports_read', null, { requested: toRead.length, read: extracted.length });
 
   const episodeText = composeEpisodeText(bundle, extracted);

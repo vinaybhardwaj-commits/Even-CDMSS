@@ -5,7 +5,6 @@ import { featureMeta, normalizeFeature, FEATURE_FILTERS } from '@/lib/observabil
 import RunsBrowser, { type RunRow } from '@/app/admin/appropriateness-runs/runs-browser';
 import type { ExportRun } from '@/lib/runs-export';
 import CostTab from './cost-tab';
-import type { Scale } from '@/lib/llm-cost';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Observability · Admin' };
@@ -62,11 +61,10 @@ function Locked({ configured, bad }: { configured: boolean; bad: boolean }) {
   );
 }
 
-export default async function ObservabilityAdmin({ searchParams }: { searchParams: Promise<{ tab?: string; q?: string; feature?: string; status?: string; locked?: string; scale?: string }> }) {
+export default async function ObservabilityAdmin({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
   const sp = await searchParams;
   if (!(await isAdminUnlocked())) return <Locked configured={adminTokenConfigured()} bad={sp.locked === '1'} />;
   const tab = sp.tab === 'queries' ? 'queries' : sp.tab === 'rightcare' ? 'rightcare' : sp.tab === 'cost' ? 'cost' : 'overview';
-  const scale: Scale = (['hour', 'day', 'week', 'month'] as const).includes(sp.scale as Scale) ? (sp.scale as Scale) : 'day';
   return (
     <div>
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -82,7 +80,7 @@ export default async function ObservabilityAdmin({ searchParams }: { searchParam
         ))}
       </div>
       <div className="mt-5">
-        {tab === 'overview' ? <OverviewTab /> : tab === 'rightcare' ? <RightCareRunsTab /> : tab === 'cost' ? <CostTab scale={scale} /> : <QueriesTab sp={sp} />}
+        {tab === 'overview' ? <OverviewTab /> : tab === 'rightcare' ? <RightCareRunsTab /> : tab === 'cost' ? <CostTab sp={sp} /> : <QueriesTab sp={sp} />}
       </div>
     </div>
   );

@@ -14,6 +14,7 @@
 
 import { getVertexAccessToken } from './gcp-auth';
 import { GEMINI_MODEL, geminiConfigured } from './llm';
+import { logEvent } from './trace';
 
 const GCP_LOCATION = process.env.GCP_LOCATION || 'asia-south1';
 const GCP_PROJECT = process.env.GCP_PROJECT || '';
@@ -24,6 +25,11 @@ export interface MultimodalOpts {
   model?: string;
   maxOutputTokens?: number;
   temperature?: number;
+  // Cost/observability: when a traceId is given, this call self-logs an `llm_response` event with
+  // token usage (from Vertex's usageMetadata) so multimodal reads show up in the LLM cost tracker.
+  // The call is the SINGLE logger of its own llm_response — callers must not double-log it.
+  traceId?: string;
+  label?: string;
 }
 
 function vertexHost(): string {
@@ -68,6 +74,7 @@ export async function generateFromDocument(
     },
   };
 
+  const t0 = Date.now();
   try {
     const res = await fetch(url, {
       method: 'POST',
@@ -82,6 +89,7 @@ export async function generateFromDocument(
     const j = (await res.json()) as {
       candidates?: { content?: { parts?: { text?: string }[] } }[];
       promptFeedback?: { blockReason?: string };
+      usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number };
     };
     if (j.promptFeedback?.blockReason) {
       console.warn('[multimodal] blocked:', j.promptFeedback.blockReason);
@@ -89,6 +97,16 @@ export async function generateFromDocument(
     }
     const parts = j.candidates?.[0]?.content?.parts ?? [];
     const text = parts.map((p) => p?.text || '').join('').trim();
+
+    // Self-log the call for the cost tracker. usageMetadata.promptTokenCount INCLUDES the image/PDF
+    // tokens, so this captures the (Pro-priced) multimodal cost that a text-only tracer misses.
+    if (opts.traceId) {
+      const u = j.usageMetadata ?? {};
+      await logEvent(opts.traceId, 'llm_response', opts.label || 'multimodal_read', {
+        model, provider: 'vertex-multimodal', multimodal: true, char_count: text.length,
+        usage: { prompt_tokens: u.promptTokenCount ?? 0, completion_tokens: u.candidatesTokenCount ?? 0, total_tokens: u.totalTokenCount ?? 0 },
+      }, Date.now() - t0).catch(() => {});
+    }
     return text || null;
   } catch (e) {
     console.warn('[multimodal] fetch failed', (e as Error).message);
