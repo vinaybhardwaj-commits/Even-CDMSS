@@ -1,12 +1,38 @@
 import Link from 'next/link';
 import {
   MessagesSquare, Network, Pill, Calculator, ClipboardCheck, ClipboardList,
-  BookOpen, GraduationCap, ArrowRight,
+  BookOpen, GraduationCap, ArrowRight, PhoneCall, Database, Link2, RefreshCw, ShieldCheck,
 } from 'lucide-react';
+import { sql } from '@/lib/db';
 
 export const metadata = { title: 'Home' };
+// Live-ish platform numbers, ISR-cached so the landing page stays fast.
+export const revalidate = 1800;
 
-const PRIMARY = [
+const run = sql as unknown as (t: string, p?: unknown[]) => Promise<Record<string, unknown>[]>;
+
+async function getMetrics(): Promise<{ passages: number; audited: number }> {
+  try {
+    const [passages, audited] = await Promise.all([
+      run(`SELECT reltuples::bigint AS n FROM pg_class WHERE relname = 'mksap_chunks' AND relkind = 'r'`, [])
+        .then((r) => Number(r[0]?.n) || 0).catch(() => 0),
+      run(`SELECT count(*)::int AS n FROM opd_note_audits`, [])
+        .then((r) => Number(r[0]?.n) || 0).catch(() => 0),
+    ]);
+    return { passages, audited };
+  } catch {
+    // DATABASE_URL absent at build, or client construction failed — fall back to static.
+    return { passages: 0, audited: 0 };
+  }
+}
+
+function fmtCompact(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (n >= 1_000) return Math.round(n / 1_000) + 'k';
+  return String(n);
+}
+
+const CLINICIAN = [
   { href: '/ddx', label: 'Differential', desc: 'Structured presentation → cited differential, cannot-miss first.', Icon: Network },
   { href: '/drugs', label: 'Drugs', desc: 'Dosing, renal/hepatic adjustment, and interaction checks.', Icon: Pill },
   { href: '/calculators', label: 'Calculators', desc: '15 bedside scores — NEWS2, CURB-65, HEART, eGFR, and more.', Icon: Calculator },
@@ -19,16 +45,39 @@ const REFERENCE = [
   { href: '/learn', label: 'Learn', desc: 'Coaching, practice questions, topic guides, and review.', Icon: GraduationCap },
 ];
 
-export default function Home() {
+function Chip({ Icon, children }: { Icon: typeof Database; children: React.ReactNode }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-full bg-brand-faint px-3 py-1 text-[12px] text-brand">
+      <Icon className="h-3.5 w-3.5" /> {children}
+    </span>
+  );
+}
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return <div className="mb-2.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-400">{children}</div>;
+}
+
+export default async function Home() {
+  const { passages, audited } = await getMetrics();
+
   return (
     <div>
-      <div className="mb-7">
-        <h1 className="font-serif text-[30px] font-semibold leading-tight text-slate-900 sm:text-[36px]">
-          What do you want to work through?
+      {/* Hero — identity + proof + flagship */}
+      <div className="mb-5">
+        <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.09em] text-slate-400">Even · EHRC clinical intelligence</div>
+        <h1 className="max-w-3xl font-serif text-[30px] font-semibold leading-tight text-slate-900 sm:text-[36px]">
+          From the consult to the care conversation, grounded in evidence.
         </h1>
-        <p className="mt-2 max-w-2xl text-[15px] leading-relaxed text-slate-500">
-          CAT answers clinical questions from a curated evidence base, with a verifiable citation behind every claim. Advisory only — it never replaces clinical judgment.
+        <p className="mt-2.5 max-w-2xl text-[15px] leading-relaxed text-slate-500">
+          Decision support for clinicians, grounded briefs for care managers, and a continuously self-auditing quality layer — every recommendation cited to a curated medical evidence base. Advisory only; it never replaces clinical judgment.
         </p>
+      </div>
+
+      <div className="mb-7 flex flex-wrap gap-2">
+        <Chip Icon={Database}><span className="font-medium">{fmtCompact(passages || 2_230_000)}</span>&nbsp;evidence passages</Chip>
+        <Chip Icon={Link2}>Cited behind every claim</Chip>
+        <Chip Icon={RefreshCw}>{audited > 0 ? <><span className="font-medium">{audited.toLocaleString('en-IN')}</span>&nbsp;OPD notes audited</> : 'Audited nightly'}</Chip>
+        <Chip Icon={ShieldCheck}>Tokyo-resident · under BAA</Chip>
       </div>
 
       {/* Primary action: Ask */}
@@ -46,9 +95,10 @@ export default function Home() {
         </span>
       </Link>
 
-      <div className="mb-2.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-400">Decision support</div>
+      {/* For clinicians */}
+      <SectionLabel>For clinicians</SectionLabel>
       <div className="mb-9 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {PRIMARY.map(({ href, label, desc, Icon }) => (
+        {CLINICIAN.map(({ href, label, desc, Icon }) => (
           <Link
             key={href}
             href={href}
@@ -63,8 +113,30 @@ export default function Home() {
         ))}
       </div>
 
-      <div className="mb-2.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-400">Reference &amp; learning</div>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      {/* Care management — the new capability, highlighted */}
+      <SectionLabel>Care management · after the visit</SectionLabel>
+      <Link
+        href="/care"
+        className="group mb-9 flex items-center gap-4 rounded-xl border-2 border-brand bg-paper p-4 shadow-card transition hover:bg-brand-faint"
+      >
+        <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-brand-faint text-brand">
+          <PhoneCall className="h-5 w-5" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-[15px] font-medium text-slate-900 group-hover:text-brand">Care Conversation Brief</span>
+            <span className="rounded-full bg-brand-faint px-2 py-0.5 text-[10.5px] font-medium text-brand">New</span>
+          </div>
+          <div className="mt-0.5 text-[12.5px] leading-relaxed text-slate-500">
+            Grounded, cited talking points from a member’s same-day results — surface the right specialist follow-up for the post-visit call.
+          </div>
+        </div>
+        <ArrowRight className="h-4 w-4 shrink-0 text-slate-400 group-hover:text-brand" />
+      </Link>
+
+      {/* Reference & learning */}
+      <SectionLabel>Reference &amp; learning</SectionLabel>
+      <div className="mb-8 grid grid-cols-1 gap-3 sm:grid-cols-2">
         {REFERENCE.map(({ href, label, desc, Icon }) => (
           <Link
             key={href}
@@ -80,6 +152,10 @@ export default function Home() {
             </span>
           </Link>
         ))}
+      </div>
+
+      <div className="border-t border-slate-200 pt-4 text-[11.5px] leading-relaxed text-slate-400">
+        Advisory clinical decision support · every claim cited to evidence · PHI handled in-region under BAA · not a substitute for clinical judgment.
       </div>
     </div>
   );
