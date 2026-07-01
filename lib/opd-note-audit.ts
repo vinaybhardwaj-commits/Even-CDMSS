@@ -17,7 +17,7 @@ import {
   OPD_AUDIT_SYSTEM, buildOpdAuditUser, OPD_ENGINE_VERSION,
   type OpdFinding, type OpdCompleteness, type OpdSuggestion,
 } from './opd-note-audit-core';
-import { computeOpdScore, type OpdScorecard, type NetValue } from './opd-note-score-core';
+import { computeOpdScore, type OpdScorecard, type NetValue, type Pdqi9Attr } from './opd-note-score-core';
 import { enrichOpdMeds } from './formulary';
 import { tagInteractions } from './ddi-tags';
 import { curatedInteractions, mergeRank, type DrugClass } from './ddi';
@@ -93,13 +93,38 @@ async function defaultGenerate(traceId: string | undefined, system: string, user
   return r.choices?.[0]?.message?.content || '';
 }
 
-export interface AuditOpdOpts { trace?: boolean }
+/** Reuse the stored LLM half of an audit so a deterministic-only rule change (e.g. the 0.5 dosing
+ *  calibration) can refresh a stored row WITHOUT re-running retrieval/LLM. */
+export interface AuditReuse {
+  llmFindings: OpdFinding[];
+  pdqi9: Partial<Record<Pdqi9Attr, number>> | null;
+  suggestions: OpdSuggestion[];
+  sources: Source[];
+}
+export interface AuditOpdOpts { trace?: boolean; reuse?: AuditReuse }
 
 export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdOpts = {}): Promise<OpdNoteAudit> {
   const { case: oc, keys } = rowToOpdCase(row);
   enrichOpdMeds(oc.medications);   // brand→generic + class/schedule/high-alert/LASA/VED from the formulary
-  const doTrace = opts.trace !== false;
 
+  const det = [...prescribingChecks(oc), ...ddiFindings(oc.medications)];
+  const completeness = opdCompleteness(oc);
+
+  // Deterministic REUSE path (backfill): recompute the deterministic findings + completeness, KEEP
+  // the stored LLM findings + PDQI-9, re-score. No retrieval, no LLM, no trace — so a completeness/
+  // prescribing rule change refreshes stored rows at ~zero cost.
+  if (opts.reuse) {
+    const findings: OpdFinding[] = [...det, ...opts.reuse.llmFindings];
+    const scorecard = computeOpdScore({
+      findings: findings.filter((f) => !f.informational).map((f) => ({ verdict: f.verdict, confidence: f.confidence, domain: f.domain })),
+      completenessCoverage: completeness.coverage,
+      pdqi9: opts.reuse.pdqi9,
+      patientCentred: completeness.patientCentred,
+    });
+    return { keys, scorecard, completeness, findings, suggestions: opts.reuse.suggestions, sources: opts.reuse.sources, engineVersion: OPD_ENGINE_VERSION, traceId: undefined };
+  }
+
+  const doTrace = opts.trace !== false;
   // Non-identifying trace input (the uid lives only on the returned audit / the audit row).
   const traceId = doTrace
     ? await startTrace('opd_note_audit', {
@@ -107,9 +132,6 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
         nMeds: oc.medications.length, nDx: oc.diagnosisCodes.length, nInvestigations: oc.investigations.length,
       }).catch(() => undefined as string | undefined)
     : undefined;
-
-  const det = [...prescribingChecks(oc), ...ddiFindings(oc.medications)];
-  const completeness = opdCompleteness(oc);
 
   try {
     // Richer retrieval query so the corpus is hit on the actual clinical content (readable dx

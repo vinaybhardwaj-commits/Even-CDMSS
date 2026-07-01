@@ -55,6 +55,41 @@ export async function saveOpdAudit(audit: OpdNoteAudit, meta: SaveOpdAuditMeta =
   return rows.length ? 'inserted' : 'exists';
 }
 
+/** UPDATE an existing audit row in place (deterministic backfill — same engine version). Rewrites
+ *  the completeness/findings/score columns from a recomputed audit; leaves model/trace/sources as-is. */
+export async function updateOpdAudit(audit: OpdNoteAudit): Promise<'updated' | 'skipped'> {
+  const k = audit.keys;
+  if (!k.uid) return 'skipped';
+  const sc = audit.scorecard;
+  const findings = audit.findings || [];
+  const nLow = findings.filter((f) => f.verdict === 'low-value').length;
+  const nCtx = findings.filter((f) => f.verdict === 'context-dependent').length;
+  const nInteraction = findings.filter((f) => /interaction|contraindicat|\bddi\b/i.test(`${f.subject} ${f.rationale}`)).length;
+  const missing = audit.completeness?.missing ?? [];
+
+  const rows = (await sql(
+    `UPDATE opd_note_audits SET
+       note_quality_index = $2, band = $3,
+       score_documentation = $4, score_note_quality = $5, score_appropriateness = $6,
+       score_prescribing_safety = $7, score_patient_centred = $8,
+       pdqi9 = $9::jsonb, completeness_pct = $10, n_missing_mandatory = $11,
+       n_findings = $12, n_low_value = $13, n_context_dependent = $14, n_interaction_alerts = $15,
+       findings = $16::jsonb, suggestions = $17::jsonb, missing_fields = $18::jsonb
+     WHERE uid = $1 AND engine_version = $19
+     RETURNING id`,
+    [
+      k.uid, sc.headline, sc.band,
+      domainScore(audit, 'documentation'), domainScore(audit, 'note_quality'), domainScore(audit, 'appropriateness'),
+      domainScore(audit, 'prescribing_safety'), domainScore(audit, 'patient_centred'),
+      JSON.stringify(sc.pdqi9 ?? []), Math.round((audit.completeness?.coverage ?? 0) * 100), missing.length,
+      findings.length, nLow, nCtx, nInteraction,
+      JSON.stringify(findings), JSON.stringify(audit.suggestions ?? []), JSON.stringify(missing),
+      audit.engineVersion,
+    ],
+  )) as Array<{ id: string }>;
+  return rows.length ? 'updated' : 'skipped';
+}
+
 /** uids already audited (at this engine version) for an IST calendar day — the worker's exclude set. */
 export async function auditedUidsForDay(day: string, engineVersion: string): Promise<string[]> {
   const rows = (await sql(
