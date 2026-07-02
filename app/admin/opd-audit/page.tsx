@@ -5,7 +5,6 @@ import { fetchDoctorNames } from '@/lib/metabase';
 import { bandFor } from '@/lib/opd-note-score-core';
 import { OPD_ENGINE_VERSION } from '@/lib/opd-note-audit-core';
 import { catsForRow, CAT_LABEL } from '@/lib/opd-audit-cats';
-import ReauditControl from './reaudit-control';
 import {
   bandColor, scoreColor, istDateRange, parseJson, doctorLabel, fmtIstTime, fmtIstDateLong, PDQI9_LABEL,
   type Period,
@@ -256,7 +255,8 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
             <Link href={`/admin/opd-audit?day=${addDays(day, 1)}&period=${period}`} className="px-1 hover:text-brand">›</Link>
           </span>
           {day !== latestDay && <Link href={`/admin/opd-audit?period=${period}`} className="text-xs text-brand hover:underline">latest</Link>}
-          {period === 'day' && <ReauditControl day={day} />}
+          {/* Re-audit button removed 2 Jul 2026 (V) — a one-click ~₹2k LLM burn (tripped the spend-spike alert).
+              Re-audits now go through the worker endpoint with CRON_SECRET/admin token, deliberately. */}
           <form method="POST" action="/api/admin/unlock?action=logout"><button className="whitespace-nowrap text-xs text-slate-400 hover:text-brand">Lock</button></form>
         </div>
       </div>
