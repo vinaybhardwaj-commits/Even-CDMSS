@@ -265,7 +265,10 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
   const pdqi = parseJson<Pdqi[]>(r.pdqi9, []);
   const suggestions = parseJson<Sugg[]>(r.suggestions, []).sort((a, b) => a.priority - b.priority);
   const sources = parseJson<Source[]>(r.sources, []);
-  const noteDate = String(r.note_date || '');
+  // Neon may hand timestamptz back as a JS Date; normalise to ISO so the ::timestamptz casts below always parse.
+  const noteDateRaw = r.note_date instanceof Date ? r.note_date.toISOString() : String(r.note_date || '');
+  const noteDateMs = new Date(noteDateRaw).getTime();
+  const noteDate = Number.isFinite(noteDateMs) ? new Date(noteDateMs).toISOString() : noteDateRaw;
   const [feedback, prevR, nextR] = await Promise.all([
     run(`SELECT id, created_at, verdict, comment, author FROM opd_audit_feedback WHERE audit_id = $1 AND app_source = $2 ORDER BY created_at DESC`, [id, APP]).catch(() => []),
     run(
