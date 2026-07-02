@@ -134,21 +134,48 @@ function asJson(v: unknown): unknown {
 
 export interface FollowupItem { name: string; type: string | null; booked: boolean; completed: boolean; }
 
-/** post_hospital_form_info.followups → normalized items. `completed` and booking flags per real data. */
+/** post_hospital_form_info.followups → normalized items, DEDUPED by name+type (real data repeats
+ *  the same order across touchpoints). On collision the best status wins (completed > booked). */
 export function parseFollowups(v: unknown): FollowupItem[] {
   const j = asJson(v);
   if (!Array.isArray(j)) return [];
-  const out: FollowupItem[] = [];
+  const byKey = new Map<string, FollowupItem>();
   for (const it of j) {
     if (!it || typeof it !== 'object') continue;
     const o = it as Record<string, unknown>;
     const name = asStr(o.name);
     if (!name) continue;
+    const type = asStr(o.type);
     const completed = o.completed === true;
     const booked = completed || o.chart_booked_at_hospital === true || o.booked === true;
-    out.push({ name, type: asStr(o.type), booked, completed });
+    const key = `${name.toLowerCase().trim()}|${(type || '').toLowerCase()}`;
+    const prev = byKey.get(key);
+    if (prev) { prev.completed = prev.completed || completed; prev.booked = prev.booked || booked; }
+    else byKey.set(key, { name, type, booked, completed });
   }
-  return out;
+  return Array.from(byKey.values());
+}
+
+/** next_followup_data is a jsonb object: a date (several possible keys) OR a "not required" reason.
+ *  Tolerant of a raw date string, a JSON-object string, or an already-parsed object. */
+const isDateish = (s: string): boolean => /^\d{4}-\d{2}-\d{2}/.test(s);
+export function parseNextFollowup(v: unknown): { date: string | null; note: string | null } {
+  if (v == null) return { date: null, note: null };
+  let obj: unknown = v;
+  if (typeof v === 'string') {
+    const s = v.trim();
+    if (!s) return { date: null, note: null };
+    if (s.startsWith('{')) { try { obj = JSON.parse(s); } catch { return { date: null, note: null }; } }
+    else return isDateish(s) ? { date: s, note: null } : { date: null, note: s };
+  }
+  if (obj && typeof obj === 'object') {
+    const o = obj as Record<string, unknown>;
+    const date = asStr(o.date) || asStr(o.next_followup_date) || asStr(o.datetime) || asStr(o.followup_date) || asStr(o.next_followup);
+    const note = asStr(o.reason_for_no_followup);
+    const validDate = date && isDateish(date) ? date : null;
+    return { date: validDate, note: validDate ? null : (note || null) };
+  }
+  return { date: null, note: null };
 }
 
 // ── raw form row + coercion ──────────────────────────────────────────────────────
@@ -165,11 +192,13 @@ export interface HealthFormRow {
   followups: FollowupItem[];
   phPrescriptionUrl: string | null;
   phNextFollowup: string | null;
+  phNextFollowupNote: string | null;
   ihsNextFollowup: string | null;
 }
 
 export function mapFormRow(r: Record<string, unknown>): HealthFormRow {
-  const ihs = asJson(r.ihs) as Record<string, unknown> | null;
+  const ph = parseNextFollowup(r.ph_next_followup);
+  const ihs = parseNextFollowup(r.ihs);
   return {
     type: asStr(r.type),
     reason: asStr(r.reason),
@@ -182,8 +211,9 @@ export function mapFormRow(r: Record<string, unknown>): HealthFormRow {
     referralOutcome: asStr(r.referral_outcome),
     followups: parseFollowups(r.followups),
     phPrescriptionUrl: asStr(r.ph_prescription_url),
-    phNextFollowup: asStr(r.ph_next_followup) || (r.ph_next_followup && typeof r.ph_next_followup === 'object' ? asStr((r.ph_next_followup as Record<string, unknown>).date) : null),
-    ihsNextFollowup: ihs && typeof ihs === 'object' ? asStr(ihs.next_followup_date) : null,
+    phNextFollowup: ph.date,
+    phNextFollowupNote: ph.note,
+    ihsNextFollowup: ihs.date,
   };
 }
 
@@ -200,7 +230,7 @@ export interface FeverContext {
   lastFormDate: string | null; recovered: boolean | null; dispositionRecorded: boolean;
   trajectory: FeverTrajPoint[]; prescriptionUid: string | null;
 }
-export interface PosthospContext { items: FollowupItem[]; nextFollowup: string | null; prescriptionUrl: string | null; }
+export interface PosthospContext { items: FollowupItem[]; nextFollowup: string | null; nextFollowupNote: string | null; prescriptionUrl: string | null; }
 export interface AihsContext { hba1c: number | null; hba1cDate: string | null; nextFollowup: string | null; }
 
 const DANGER_SIGNS = ['vomiting', 'breathless', 'short of breath', 'shortness of breath', 'bleeding', 'rash', 'drowsy', 'altered', 'seizure', 'severe abdominal pain', 'dehydration', 'unable to eat', 'not passing urine'];
@@ -230,6 +260,7 @@ export function buildPosthospContext(rows: HealthFormRow[]): PosthospContext {
   return {
     items: latest?.followups ?? [],
     nextFollowup: latest?.phNextFollowup ?? null,
+    nextFollowupNote: latest?.phNextFollowupNote ?? null,
     prescriptionUrl: latest?.phPrescriptionUrl ?? null,
   };
 }
@@ -313,9 +344,11 @@ function posthospExpectations(p: PosthospContext, today: Date): Expectation[] {
   out.push({ id: 'counsel_purpose', label: 'Counsel on purpose', status: 'manual', detail: 'Confirm the member understands why each test/referral was ordered.' });
   const ago = daysAgo(p.nextFollowup ? p.nextFollowup.slice(0, 10) : null, today);
   out.push({
-    id: 'next_followup', label: 'Next follow-up set',
-    status: p.nextFollowup ? 'met' : (unbooked.length || pendingBooked.length) ? 'watch' : 'met',
-    detail: p.nextFollowup ? `Return ${p.nextFollowup.slice(0, 10)}${ago != null && ago > 0 ? ' (overdue)' : ''}.` : 'Set a return date while items are pending.',
+    id: 'next_followup', label: 'Next follow-up',
+    status: (p.nextFollowup || p.nextFollowupNote) ? 'met' : (unbooked.length || pendingBooked.length) ? 'watch' : 'met',
+    detail: p.nextFollowup ? `Return ${p.nextFollowup.slice(0, 10)}${ago != null && ago > 0 ? ' (overdue)' : ''}.`
+      : p.nextFollowupNote ? `No follow-up needed — ${p.nextFollowupNote.trim()}.`
+      : 'Set a return date while items are pending.',
   });
   return out;
 }

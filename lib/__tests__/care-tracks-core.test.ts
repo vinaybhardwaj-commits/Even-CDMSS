@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  trackFromReasonType, healthFormsSql, hba1cDiagnosticsSql, parseStrArray, parseFollowups,
+  trackFromReasonType, healthFormsSql, hba1cDiagnosticsSql, parseStrArray, parseFollowups, parseNextFollowup,
   mapFormRow, autoTrack, buildFeverContext, buildPosthospContext, buildAihsContext,
   evaluateExpectations, openCount, TRACKS,
   type HealthFormRow,
@@ -53,6 +53,36 @@ test('parseFollowups normalizes booked/completed from real jsonb shape', () => {
   assert.deepEqual(out[2], { name: 'KFT', type: 'TEST', booked: true, completed: false });     // booked, pending
   assert.deepEqual(parseFollowups('[{"name":"USG","type":"TEST"}]'), [{ name: 'USG', type: 'TEST', booked: false, completed: false }]);
   assert.deepEqual(parseFollowups(null), []);
+});
+
+test('parseFollowups dedupes repeated orders (best status wins)', () => {
+  const raw = [
+    { name: 'CBC', type: 'TEST' },
+    { name: 'CBC', type: 'TEST', completed: true },   // same order, later completed
+    { name: 'ECG', type: 'TEST' },
+    { name: 'ECG', type: 'TEST' },                     // pure dup
+  ];
+  const out = parseFollowups(raw);
+  assert.equal(out.length, 2);                          // deduped
+  assert.equal(out.find((i) => i.name === 'CBC')!.completed, true);
+  assert.equal(out.find((i) => i.name === 'ECG')!.booked, false);
+});
+
+test('parseNextFollowup handles date object, reason object, and bare string', () => {
+  assert.deepEqual(parseNextFollowup({ next_followup_date: '2026-07-06T10:00:00Z' }), { date: '2026-07-06T10:00:00Z', note: null });
+  assert.deepEqual(parseNextFollowup({ reason_for_no_followup: 'not required ' }), { date: null, note: 'not required ' });
+  assert.deepEqual(parseNextFollowup('2026-07-13'), { date: '2026-07-13', note: null });
+  assert.deepEqual(parseNextFollowup(null), { date: null, note: null });
+});
+
+test('posthosp: "not required" reason → next-followup met, not garbage', () => {
+  const rows = [{ type: 'CARE_REACHOUT', reason: 'POST_HOSPITAL_FOLLOWUP', form_date: '2026-06-26', followups: [{ name: 'CBC', type: 'TEST' }], ph_next_followup: { reason_for_no_followup: 'not required ' } }].map(mapFormRow);
+  const ctx = { posthosp: buildPosthospContext(rows) };
+  assert.equal(ctx.posthosp.nextFollowup, null);
+  assert.equal(ctx.posthosp.nextFollowupNote, 'not required ');
+  const nf = evaluateExpectations('posthosp', ctx, TODAY).find((e) => e.id === 'next_followup')!;
+  assert.equal(nf.status, 'met');
+  assert.match(nf.detail, /No follow-up needed — not required/);
 });
 
 // ── fixtures ──────────────────────────────────────────────────────────────────────

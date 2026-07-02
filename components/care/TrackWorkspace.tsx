@@ -15,7 +15,7 @@ interface FollowupItem { name: string; type: string | null; booked: boolean; com
 interface Assignment { id: string; individual_uid: string; track: TrackKey; status: 'active' | 'archived'; anchor_ref: string | null; opened_at: string; closed_at: string | null; close_reason: string | null }
 interface Catalog { key: TrackKey; label: string; short: string; anchor: string; deep: boolean }
 interface FeverCtx { latestDay: number | null; latestTemp: number | null; symptoms: string[]; lastFormDate: string | null; recovered: boolean | null; trajectory: { date: string | null; day: number | null; temp: number | null }[]; prescriptionUid: string | null }
-interface PosthospCtx { items: FollowupItem[]; nextFollowup: string | null; prescriptionUrl: string | null }
+interface PosthospCtx { items: FollowupItem[]; nextFollowup: string | null; nextFollowupNote: string | null; prescriptionUrl: string | null }
 interface AihsCtx { hba1c: number | null; hba1cDate: string | null; nextFollowup: string | null }
 interface Workspace {
   individual_uid: string; auto_track: TrackKey; tracks_with_forms: TrackKey[];
@@ -315,7 +315,8 @@ function PosthospPanel({ c }: { c: PosthospCtx }) {
           ))}
         </ol>
       )}
-      {c.nextFollowup && <div className="mt-2 text-[12px] text-slate-500">Next follow-up: {String(c.nextFollowup).slice(0, 10)}</div>}
+      {c.nextFollowup ? <div className="mt-2 text-[12px] text-slate-500">Next follow-up: {String(c.nextFollowup).slice(0, 10)}</div>
+        : c.nextFollowupNote ? <div className="mt-2 text-[12px] text-slate-500">No follow-up needed — {c.nextFollowupNote.trim()}</div> : null}
     </Card>
   );
 }
