@@ -192,3 +192,159 @@ export function computeGovernanceSignals(input: {
   healthy.sort((a, b) => b.mean - a.mean);
   return { signals, healthy, thresholds: t };
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v1.1b — DOMAIN-level signals (documentation completeness, prescribing safety,
+// interaction alerts; low-value HELD until LL.3 calibration). Same signal grammar,
+// different metrics: each domain declares its unit, direction and thresholds.
+// Emitted with `kind: 'domain'` (PDQI signals stay unmarked) — additive for v1.0/1.1
+// consumers. Action wording approved by V (2 Jul 2026, v1.1b draft).
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export type GovDomainKey = 'documentation_completeness' | 'prescribing_safety' | 'interaction_alerts' | 'low_value_rate';
+export type GovDomainMeta = {
+  label: string; def: string;
+  unit: 'pct' | 'score' | 'per_100_notes';
+  direction: 'lower_worse' | 'higher_worse';
+  signalAt: number; actNowAt: number; trendDelta: number; doctorAffectedAt: number;
+  systemic: string; concentrated: string;
+  held?: boolean; // excluded unless includeHeld — ships only as confidence:'estimate'
+};
+
+export const DOMAIN_GOV: Record<GovDomainKey, GovDomainMeta> = {
+  documentation_completeness: {
+    label: 'Documentation completeness',
+    def: 'Share of the NABH-OPD mandatory documentation items present on the note — measured deterministically on every note.',
+    unit: 'pct', direction: 'lower_worse', signalAt: 90, actNowAt: 75, trendDelta: 3, doctorAffectedAt: 85,
+    systemic: 'Huddle brief on this window’s top documentation gap — {top_gap} — and restate the seven NABH-OPD mandatory items as the documentation floor; re-measure next week.',
+    concentrated: 'Supportive 1:1s with {doctors} — walk two of their own notes against the NABH-OPD checklist; agree which fields they’ll close; re-check in 2 weeks.',
+  },
+  prescribing_safety: {
+    label: 'Prescribing safety',
+    def: 'Rational, safe prescribing — complete dosing, no same-class duplication, no irrational or unsafe drugs (deterministic rules + AI checks).',
+    unit: 'score', direction: 'lower_worse', signalAt: 70, actNowAt: 55, trendDelta: 5, doctorAffectedAt: 60,
+    systemic: 'Huddle brief on rational prescribing — complete dosing (dose · frequency · duration · route) and no same-class duplication; publish this window’s top prescribing gap ({top_gap}); pharmacist spot-reviews a sample next week.',
+    concentrated: 'Prescribing 1:1s with {doctors} alongside the pharmacist — review their flagged prescriptions together; agree corrections; re-audit in 2 weeks.',
+  },
+  interaction_alerts: {
+    label: 'Interaction alerts',
+    def: 'Possible drug–drug interactions flagged per 100 audited notes (deterministic DDI screen over formulary-resolved medications).',
+    unit: 'per_100_notes', direction: 'higher_worse', signalAt: 10, actNowAt: 25, trendDelta: 5, doctorAffectedAt: 25,
+    systemic: 'Circulate this window’s most frequent flagged pairs ({top_pairs}) to all OPD doctors; ask for documented justification-or-switch when co-prescribing them; re-measure next week.',
+    concentrated: 'Case-based review with {doctors} and the pharmacist — confirm true positives among their flagged prescriptions; document rationale or switch; re-check in 2 weeks.',
+  },
+  low_value_rate: {
+    label: 'Low-value care',
+    def: 'Share of notes carrying at least one low-value–care flag (Choosing-Wisely / RAND lens). CALIBRATION PENDING (LL.3) — flags over-fire; treat as an estimate.',
+    unit: 'per_100_notes', direction: 'higher_worse', signalAt: 50, actNowAt: 75, trendDelta: 5, doctorAffectedAt: 75,
+    systemic: 'Choosing-Wisely huddle on this window’s top low-value pattern ({top_pattern}), presented with the audit’s evidence citations; agree a department norm.',
+    concentrated: 'Peer-comparison conversation with {doctors} — their low-value rate vs department peers and the specific flagged orders; explore clinical rationale first. Calibration is ongoing: treat flags as prompts, not verdicts.',
+    held: true,
+  },
+};
+export const DOMAIN_GOV_ORDER: GovDomainKey[] = ['documentation_completeness', 'prescribing_safety', 'interaction_alerts', 'low_value_rate'];
+
+export type GovDomainSignal = {
+  kind: 'domain';
+  metric: GovDomainKey; label: string; definition: string;
+  value: number; unit: GovDomainMeta['unit']; n: number;
+  severity: 'act_now' | 'watch';
+  trend: 'improving' | 'worsening' | 'flat' | 'no_baseline';
+  delta: number | null;
+  scope: GovScope;
+  eligible_doctors: number;
+  affected_share: number | null;
+  affected: { uid: string; name?: string; value: number; n: number }[];
+  action: string;
+  confidence?: 'estimate'; // present on held metrics shipped early
+};
+export type GovDomainDoctorStat = { uid: string; name?: string; values: Partial<Record<GovDomainKey, { value: number; n: number }>> };
+
+/** Direction-aware "is this bad enough" comparisons. */
+const worseThan = (dir: GovDomainMeta['direction'], value: number, threshold: number) =>
+  dir === 'lower_worse' ? value < threshold : value >= threshold;
+
+/**
+ * Compute domain-level governance signals. Same scope grammar as PDQI (systemic /
+ * concentrated / mixed / insufficient_data over eligible doctors), but severity and
+ * trend respect each metric's direction. `placeholders` supplies window-derived
+ * strings for {top_gap}/{top_pairs}/{top_pattern}; missing ones get a neutral fallback.
+ */
+export function computeDomainSignals(input: {
+  domains: { key: GovDomainKey; value: number; n: number }[];
+  prior?: Partial<Record<GovDomainKey, number>>;
+  doctors?: GovDomainDoctorStat[];
+  placeholders?: Partial<Record<'top_gap_documentation' | 'top_gap_prescribing' | 'top_pairs' | 'top_pattern', string>>;
+  includeHeld?: boolean;
+  thresholds?: Partial<Pick<GovThresholds, 'doctorMinNotes' | 'systemicShare' | 'concentratedMax' | 'minEligibleDoctors'>>;
+}): { signals: GovDomainSignal[]; healthy: { metric: GovDomainKey; label: string; value: number; unit: GovDomainMeta['unit']; n: number }[] } {
+  const t = { ...GOV_DEFAULT_THRESHOLDS, ...(input.thresholds || {}) };
+  const prior = input.prior || {};
+  const doctors = input.doctors || [];
+  const ph = input.placeholders || {};
+  const signals: GovDomainSignal[] = [];
+  const healthy: { metric: GovDomainKey; label: string; value: number; unit: GovDomainMeta['unit']; n: number }[] = [];
+
+  for (const key of DOMAIN_GOV_ORDER) {
+    const meta = DOMAIN_GOV[key];
+    if (meta.held && !input.includeHeld) continue;
+    const stat = input.domains.find((d) => d.key === key);
+    if (!stat || stat.n === 0) continue;
+    const value = round1(stat.value);
+
+    if (!worseThan(meta.direction, value, meta.signalAt)) { healthy.push({ metric: key, label: meta.label, value, unit: meta.unit, n: stat.n }); continue; }
+    const severity: GovDomainSignal['severity'] = worseThan(meta.direction, value, meta.actNowAt) ? 'act_now' : 'watch';
+
+    const base = prior[key];
+    let trend: GovDomainSignal['trend'] = 'no_baseline';
+    let delta: number | null = null;
+    if (Number.isFinite(base)) {
+      delta = round1(value - (base as number));
+      const gotWorse = meta.direction === 'lower_worse' ? delta <= -meta.trendDelta : delta >= meta.trendDelta;
+      const gotBetter = meta.direction === 'lower_worse' ? delta >= meta.trendDelta : delta <= -meta.trendDelta;
+      trend = gotWorse ? 'worsening' : gotBetter ? 'improving' : 'flat';
+    }
+
+    const eligible = doctors.filter((d) => (d.values[key]?.n ?? 0) >= t.doctorMinNotes);
+    const affectedAll = eligible
+      .filter((d) => worseThan(meta.direction, d.values[key]!.value, meta.doctorAffectedAt))
+      .map((d) => ({ uid: d.uid, name: d.name, value: round1(d.values[key]!.value), n: d.values[key]!.n }))
+      .sort((a, b) => (meta.direction === 'lower_worse' ? a.value - b.value : b.value - a.value));
+
+    let scope: GovScope;
+    let share: number | null = null;
+    if (eligible.length < t.minEligibleDoctors) {
+      scope = 'insufficient_data';
+    } else {
+      share = Math.round((affectedAll.length / eligible.length) * 100) / 100;
+      scope = share >= t.systemicShare ? 'systemic'
+        : affectedAll.length > 0 && affectedAll.length <= t.concentratedMax ? 'concentrated'
+          : 'mixed';
+    }
+    const affected = affectedAll.slice(0, t.concentratedMax);
+    const fmtDocs = affected.map((d) => `${d.name || 'Dr · ' + d.uid.slice(0, 6)} (${d.value}, ${d.n} notes)`).join(', ');
+
+    const topGap = key === 'documentation_completeness' ? (ph.top_gap_documentation || 'the top gap in this window')
+      : key === 'prescribing_safety' ? (ph.top_gap_prescribing || 'the top gap in this window') : '';
+    let action = scope === 'concentrated'
+      ? meta.concentrated.replace('{doctors}', fmtDocs)
+      : scope === 'mixed'
+        ? `${meta.systemic} Start with the most affected doctors: ${affected.slice(0, 3).map((d) => `${d.name || 'Dr · ' + d.uid.slice(0, 6)} (${d.value}, ${d.n} notes)`).join(', ')}.`
+        : meta.systemic;
+    action = action
+      .replace('{top_gap}', topGap)
+      .replace('{top_pairs}', ph.top_pairs || 'the most frequent flagged pairs in this window')
+      .replace('{top_pattern}', ph.top_pattern || 'the top flagged pattern in this window');
+
+    signals.push({
+      kind: 'domain', metric: key, label: meta.label, definition: meta.def,
+      value, unit: meta.unit, n: stat.n,
+      severity, trend, delta, scope,
+      eligible_doctors: eligible.length, affected_share: share, affected, action,
+      ...(meta.held ? { confidence: 'estimate' as const } : {}),
+    });
+  }
+
+  signals.sort((a, b) => (a.severity === b.severity ? 0 : a.severity === 'act_now' ? -1 : 1));
+  return { signals, healthy };
+}
