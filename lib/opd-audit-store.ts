@@ -110,6 +110,28 @@ export async function auditedCountForDay(day: string, engineVersion: string): Pr
   return Number(rows[0]?.n ?? 0);
 }
 
+/** uids audited at ANY engine version for a day — the "already been audited at all" set. The
+ *  Gemini worker uses this so it only audits GENUINELY NEW notes (never-audited); re-audits of
+ *  already-audited notes to a newer engine are left to the free mini backfill. */
+export async function auditedUidsForDayAnyVersion(day: string): Promise<string[]> {
+  const rows = (await sql(
+    `SELECT DISTINCT uid FROM opd_note_audits
+     WHERE (note_date AT TIME ZONE 'Asia/Kolkata')::date = $1::date`,
+    [day],
+  )) as Array<{ uid: string }>;
+  return rows.map((r) => r.uid).filter(Boolean);
+}
+
+/** Count of DISTINCT notes audited at ANY engine version for a day. */
+export async function auditedCountForDayAnyVersion(day: string): Promise<number> {
+  const rows = (await sql(
+    `SELECT count(DISTINCT uid)::int AS n FROM opd_note_audits
+     WHERE (note_date AT TIME ZONE 'Asia/Kolkata')::date = $1::date`,
+    [day],
+  )) as Array<{ n: number }>;
+  return Number(rows[0]?.n ?? 0);
+}
+
 /** Earliest IST day that has any audit — the floor for the gap-fill sweep (never audit
  *  days before the system started). Null if nothing audited yet. */
 export async function earliestAuditedDay(): Promise<string | null> {

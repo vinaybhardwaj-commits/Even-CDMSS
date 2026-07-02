@@ -4,9 +4,8 @@ export const maxDuration = 300;
 
 import { NextRequest, NextResponse } from 'next/server';
 import { auditOpdNote } from '@/lib/opd-note-audit';
-import { OPD_ENGINE_VERSION } from '@/lib/opd-note-audit-core';
 import { countOpdNotesForDay, fetchOpdNotesForDay, istYesterday } from '@/lib/metabase';
-import { saveOpdAudit, auditedUidsForDay, auditedCountForDay, earliestAuditedDay } from '@/lib/opd-audit-store';
+import { saveOpdAudit, auditedUidsForDayAnyVersion, auditedCountForDayAnyVersion, earliestAuditedDay } from '@/lib/opd-audit-store';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 
 // Execution guard (spends LLM compute): Vercel Cron (un-spoofable x-vercel-cron), a manual
@@ -35,10 +34,12 @@ function addDays(day: string, delta: number): string {
   const d = new Date(day + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + delta); return d.toISOString().slice(0, 10);
 }
 
-// Audit one batch of not-yet-audited notes for a single IST day.
+// Audit one batch of NEVER-YET-AUDITED notes for a single IST day. The Gemini worker only touches
+// genuinely NEW notes (no audit at ANY engine version) — re-auditing already-audited notes to a
+// newer engine is the free mini backfill's job (V, 2 Jul: Gemini forward-only, mini for old + re-audits).
 async function processDay(day: string, max: number, conc: number) {
   const total = await countOpdNotesForDay(day);
-  const already = await auditedUidsForDay(day, OPD_ENGINE_VERSION);
+  const already = await auditedUidsForDayAnyVersion(day);
   if (already.length >= total) return { day, total, audited: already.length, processed: 0, remaining: 0, done: true, results: [] as unknown[] };
   const rows = await fetchOpdNotesForDay(day, already, max);
   const results = await mapLimit(rows, conc, async (row) => {
@@ -95,7 +96,7 @@ export async function GET(req: NextRequest) {
     for (const d of days) {
       const total = await countOpdNotesForDay(d);
       if (total === 0) continue;
-      const auditedCount = await auditedCountForDay(d, OPD_ENGINE_VERSION);
+      const auditedCount = await auditedCountForDayAnyVersion(d);
       if (auditedCount < total) {
         const r = await processDay(d, max, conc);
         return NextResponse.json({ ok: true, mode: 'sweep', window, ...r });
