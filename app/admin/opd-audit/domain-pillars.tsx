@@ -177,13 +177,13 @@ export default function DomainPillars({ data, indexValue }: { data: DomainDatum[
         </div>
       )}
 
-      {/* PDQI-9 attribute hover tooltip — auditor definition + the "raise it" lever (doubles as the EMR-capture signal for design). */}
+      {/* PDQI-9 attribute hover tooltip — auditor definition only. Governance actions live in
+          /api/governance/opd-signals (→ governance app); EMR capture cues live in the design report. */}
       {attrTip && PDQI9_HELP[attrTip.label] && (
         <div className="pointer-events-none fixed z-[60] w-[300px] rounded-lg border border-slate-200 bg-white p-3 shadow-pop"
           style={{ left: Math.min(Math.max(12, attrTip.x), (typeof window !== 'undefined' ? window.innerWidth : 1200) - 312), top: attrTip.y + 6 }}>
           <div className="text-[11.5px] font-semibold text-slate-800">{attrTip.label} <span className="font-normal text-slate-400">· PDQI-9</span></div>
           <div className="mt-1 text-[11px] leading-snug text-slate-600">{PDQI9_HELP[attrTip.label].def}</div>
-          <div className="mt-2 rounded bg-brand-faint px-2 py-1.5 text-[10.5px] leading-snug text-slate-700"><b className="text-brand">Raise it · </b>{PDQI9_HELP[attrTip.label].lever}</div>
         </div>
       )}
     </>

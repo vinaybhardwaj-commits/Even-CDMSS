@@ -178,7 +178,7 @@ function PdqiRadar({ pdqi }: { pdqi: Pdqi[] }) {
           const h = PDQI9_HELP[label];
           return (
             <circle key={a} cx={x} cy={y} r="3" fill={scoreColor(((v - 1) / 4) * 100)}>
-              <title>{`${label} · ${v}/5\n${h?.def || ''}\nRaise it: ${h?.lever || ''}`}</title>
+              <title>{`${label} · ${v}/5\n${h?.def || ''}`}</title>
             </circle>
           );
         })}
@@ -191,8 +191,7 @@ function PdqiRadar({ pdqi }: { pdqi: Pdqi[] }) {
       <div className="min-w-[180px] flex-1 text-[11.5px] leading-relaxed text-slate-600">
         <div className="text-[12.5px] font-medium text-slate-800">PDQI-9 · {(Math.round(mean * 10) / 10).toFixed(1)}/5</div>
         <div className="mt-0.5">Weakest: <span className="font-medium" style={{ color: scoreColor(((vals.get(weakest)! - 1) / 4) * 100) }}>{weakLabel} {vals.get(weakest)}/5</span>{help ? ` — ${help.def.split('—')[0].trim().toLowerCase()}` : ''}</div>
-        {help && <div className="mt-1 rounded bg-brand-faint px-2 py-1 text-[10.5px] text-slate-700"><b className="text-brand">Raise it · </b>{help.lever}</div>}
-        <div className="mt-1 text-[10px] text-slate-400">hover a vertex for the definition + lever</div>
+        <div className="mt-1 text-[10px] text-slate-400">hover a vertex for the definition</div>
       </div>
     </div>
   );
