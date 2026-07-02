@@ -45,6 +45,49 @@ export const PDQI9_LABEL: Record<string, string> = {
   synthesized: 'Synthesized', internally_consistent: 'Internally consistent',
 };
 
+// PDQI-9 attribute help (keyed by display label). Dual-purpose by design: `def` tells the AUDITOR
+// what the attribute means, `lever` says how to raise it — phrased so it both guides feedback to the
+// doctor AND names the EMR-capture affordance for the design team (the "EMR:" cue).
+// Shared by the dashboard pillars (hover tooltips) and the case-screen PDQI radar.
+export const PDQI9_HELP: Record<string, { def: string; lever: string }> = {
+  'Up-to-date': {
+    def: 'Reflects the current picture — today’s medications, latest results and status — not stale content carried forward from a past visit.',
+    lever: 'Reconcile meds & results at the visit. EMR: auto-pull the live med list + latest labs; visibly flag copied-forward text.',
+  },
+  'Accurate': {
+    def: 'Factually correct — values, medications and history match reality, with no contradictions or copy-paste errors.',
+    lever: 'Verify data before signing. EMR: pull vitals/labs from source instead of free-typing to remove transcription errors.',
+  },
+  'Thorough': {
+    def: 'Covers what’s relevant — the complaint, pertinent history, comorbidities and key positive/negative findings — not just the headline issue.',
+    lever: 'Prompt comorbidities + pertinent negatives. EMR: structured HPI / ROS / comorbidity fields rather than one free-text box.',
+  },
+  'Useful': {
+    def: 'Gives the next clinician what they need to act — a clear plan and the reasoning behind it.',
+    lever: 'Document an actionable plan + safety-net. EMR: a dedicated plan/instructions field with prompts.',
+  },
+  'Organized': {
+    def: 'Logical, consistent structure — information sits where you expect it and the note is easy to scan.',
+    lever: 'Keep to a consistent section order. EMR: enforce a SOAP-style layout; place fields in clinical order.',
+  },
+  'Comprehensible': {
+    def: 'Clear and readable to another clinician — minimal ambiguous shorthand or unexplained abbreviations.',
+    lever: 'Spell out ambiguous abbreviations. EMR: prefer structured pick-lists over free-typed shorthand.',
+  },
+  'Succinct': {
+    def: 'Concise — the clinical signal isn’t buried under boilerplate or repetition.',
+    lever: 'Trim auto-inserted boilerplate. EMR: drop default template walls-of-text; use smart, minimal defaults.',
+  },
+  'Synthesized': {
+    def: 'Pulls the data together into the clinician’s reasoning — a coherent assessment/impression, not just a list of findings.',
+    lever: 'Add an assessment linking findings → diagnosis → plan. EMR: these notes have no assessment/impression field — the single biggest capture gap.',
+  },
+  'Internally consistent': {
+    def: 'No internal contradictions — the diagnosis, medications and plan all line up with each other.',
+    lever: 'Check diagnosis ↔ drug ↔ plan alignment. EMR: cross-field checks (e.g. drug class vs diagnosis) that warn on mismatch.',
+  },
+};
+
 /** Parse a jsonb column that the driver may hand back as an object/array or a JSON string. */
 export function parseJson<T>(v: unknown, fallback: T): T {
   if (v == null) return fallback;

@@ -1,7 +1,7 @@
 'use client';
 import { useState } from 'react';
 import Link from 'next/link';
-import { scoreColor, bandColor } from '@/lib/opd-audit-ui';
+import { scoreColor, bandColor, PDQI9_HELP } from '@/lib/opd-audit-ui';
 import { bandFor } from '@/lib/opd-note-score-core';
 
 export type DomainDatum = {
@@ -25,47 +25,7 @@ const HOW: Record<string, string> = {
 };
 const SCALE = 'Scored 0–100 · bands A ≥85 · B ≥70 · C ≥55 · D ≥40 · E <40.';
 
-// PDQI-9 attribute help (keyed by display label). Dual-purpose by design: `def` tells the AUDITOR
-// what the attribute means, `lever` says how to raise it — phrased so it both guides feedback to the
-// doctor AND names the EMR-capture affordance for the design team (the "EMR:" cue).
-const PDQI9_HELP: Record<string, { def: string; lever: string }> = {
-  'Up-to-date': {
-    def: 'Reflects the current picture — today’s medications, latest results and status — not stale content carried forward from a past visit.',
-    lever: 'Reconcile meds & results at the visit. EMR: auto-pull the live med list + latest labs; visibly flag copied-forward text.',
-  },
-  'Accurate': {
-    def: 'Factually correct — values, medications and history match reality, with no contradictions or copy-paste errors.',
-    lever: 'Verify data before signing. EMR: pull vitals/labs from source instead of free-typing to remove transcription errors.',
-  },
-  'Thorough': {
-    def: 'Covers what’s relevant — the complaint, pertinent history, comorbidities and key positive/negative findings — not just the headline issue.',
-    lever: 'Prompt comorbidities + pertinent negatives. EMR: structured HPI / ROS / comorbidity fields rather than one free-text box.',
-  },
-  'Useful': {
-    def: 'Gives the next clinician what they need to act — a clear plan and the reasoning behind it.',
-    lever: 'Document an actionable plan + safety-net. EMR: a dedicated plan/instructions field with prompts.',
-  },
-  'Organized': {
-    def: 'Logical, consistent structure — information sits where you expect it and the note is easy to scan.',
-    lever: 'Keep to a consistent section order. EMR: enforce a SOAP-style layout; place fields in clinical order.',
-  },
-  'Comprehensible': {
-    def: 'Clear and readable to another clinician — minimal ambiguous shorthand or unexplained abbreviations.',
-    lever: 'Spell out ambiguous abbreviations. EMR: prefer structured pick-lists over free-typed shorthand.',
-  },
-  'Succinct': {
-    def: 'Concise — the clinical signal isn’t buried under boilerplate or repetition.',
-    lever: 'Trim auto-inserted boilerplate. EMR: drop default template walls-of-text; use smart, minimal defaults.',
-  },
-  'Synthesized': {
-    def: 'Pulls the data together into the clinician’s reasoning — a coherent assessment/impression, not just a list of findings.',
-    lever: 'Add an assessment linking findings → diagnosis → plan. EMR: these notes have no assessment/impression field — the single biggest capture gap.',
-  },
-  'Internally consistent': {
-    def: 'No internal contradictions — the diagnosis, medications and plan all line up with each other.',
-    lever: 'Check diagnosis ↔ drug ↔ plan alignment. EMR: cross-field checks (e.g. drug class vs diagnosis) that warn on mismatch.',
-  },
-};
+// PDQI-9 attribute help now lives in lib/opd-audit-ui.ts (shared with the case-screen radar).
 
 function Spark({ data, color }: { data: { d: string; v: number }[]; color: string }) {
   const W = 300, H = 46;
