@@ -27,6 +27,17 @@ export function geminiConfigured(): boolean {
   return Boolean(GCP_PROJECT && process.env.GCP_SA_KEY);
 }
 
+/**
+ * MINI-ONLY PIPELINE SWITCH (2 Jul 2026, V). `LLM_PIPELINE=mini` forces the WHOLE app
+ * back onto the Mac-mini Ollama bridge (the original architecture): geminiModelFor /
+ * geminiUtilityModel return undefined, so every call runs params.model (TEXT_MODEL /
+ * CRITIQUE_MODEL) against OLLAMA_BASE_URL. ₹0 marginal; cost tab shows no Gemini rows.
+ * UNSET in production — this is the experimentation escape hatch, flipped deliberately
+ * (env change + redeploy). Scoped per-run mini use (e.g. the OPD mini backfill) does NOT
+ * need this switch — it forces locally via opts.pipeline.
+ */
+export function miniPipeline(): boolean { return process.env.LLM_PIPELINE === 'mini'; }
+
 /** A model string targets Gemini if it names a gemini model (with or without the google/ prefix). */
 export function isGeminiModel(model: string | undefined | null): boolean {
   return !!model && /(^|\/)gemini[-.]/i.test(model);
@@ -64,6 +75,7 @@ export async function getGeminiChatClient(): Promise<OpenAI> {
  * default so production is unchanged until a flag is set.
  */
 export function geminiModelFor(surface: string): string | undefined {
+  if (miniPipeline()) return undefined; // LLM_PIPELINE=mini ⇒ everything local
   if (!geminiConfigured()) return undefined;
   const all = process.env.GEMINI_ALL === '1';
   const per = process.env[`GEMINI_${surface.toUpperCase()}`] === '1';
@@ -80,6 +92,7 @@ export function geminiModelFor(surface: string): string | undefined {
  * match that vector space and cannot move to Gemini.
  */
 export function geminiUtilityModel(): string | undefined {
+  if (miniPipeline()) return undefined; // LLM_PIPELINE=mini ⇒ everything local
   if (!geminiConfigured()) return undefined;
   if (process.env.GEMINI_ALL === '1' || process.env.GEMINI_UTILITY === '1') {
     return GEMINI_FLASH_MODEL;
@@ -118,6 +131,8 @@ export async function chatWithFallback(params: any, geminiModel?: string): Promi
 }
 
 export const TEXT_MODEL = process.env.TEXT_MODEL || 'qwen2.5:14b';
+/** Model for scoped mini-pipeline runs (OPD mini backfill etc.). Defaults to TEXT_MODEL (qwen2.5:14b). */
+export const MINI_MODEL = process.env.MINI_MODEL || TEXT_MODEL;
 export const EMBED_MODEL = process.env.EMBED_MODEL || 'nomic-embed-text';
 export const CRITIQUE_MODEL = process.env.CRITIQUE_MODEL || 'qwen2.5:7b';  // faster than 14b for audit/revise pass
 export const EMBED_MODEL_V2 = process.env.EMBED_MODEL_V2 || 'mxbai-embed-large';

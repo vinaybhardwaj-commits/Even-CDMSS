@@ -10,7 +10,7 @@
 import { retrieve } from './retrieve';
 import { hitsToSources, buildCitedContext, type CiteHit, type Source } from './citations-core';
 import { startTrace, logEvent, finishTrace, tracedChat, setTraceQuestionPreview } from './trace';
-import { geminiModelFor, geminiUtilityModel, TEXT_MODEL } from './llm';
+import { geminiModelFor, geminiUtilityModel, TEXT_MODEL, MINI_MODEL } from './llm';
 import { rowToOpdCase, opdCaseText, type OpdKeys, type OpdMed } from './opd-ingest-core';
 import {
   opdCompleteness, prescribingChecks, parseOpdAnalysis,
@@ -74,10 +74,12 @@ async function defaultRetrieve(q: string): Promise<CiteHit[]> {
   }
 }
 
-async function defaultGenerate(traceId: string | undefined, system: string, user: string): Promise<string> {
-  const geminiModel = geminiModelFor('doc_audit') ?? geminiUtilityModel();
+async function defaultGenerate(traceId: string | undefined, system: string, user: string, mini = false): Promise<string> {
+  // mini=true forces the Mac-mini Ollama bridge (no Gemini) with MINI_MODEL — the
+  // scoped mini pipeline (OPD mini backfill). Default path is byte-identical to before.
+  const geminiModel = mini ? undefined : (geminiModelFor('doc_audit') ?? geminiUtilityModel());
   const params = {
-    model: TEXT_MODEL,
+    model: mini ? MINI_MODEL : TEXT_MODEL,
     messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
     temperature: 0.2,
     max_tokens: 2200,
@@ -101,9 +103,21 @@ export interface AuditReuse {
   suggestions: OpdSuggestion[];
   sources: Source[];
 }
-export interface AuditOpdOpts { trace?: boolean; reuse?: AuditReuse }
+export interface AuditOpdOpts {
+  trace?: boolean;
+  reuse?: AuditReuse;
+  /** 'mini' = run the audit LLM pass on the Mac-mini bridge (MINI_MODEL, no Gemini) and tag
+   *  the row with the '-mini' engine version — invisible to all prod dashboards/APIs, which
+   *  filter on the exact prod engine version. Rows coexist per uid (PK uid+engine_version). */
+  pipeline?: 'mini';
+}
+
+/** Engine tag for mini-pipeline rows. Single source of truth — the backfill worker imports this. */
+export const OPD_MINI_ENGINE_VERSION = `${OPD_ENGINE_VERSION}-mini`;
 
 export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdOpts = {}): Promise<OpdNoteAudit> {
+  const mini = opts.pipeline === 'mini';
+  const engineVersion = mini ? OPD_MINI_ENGINE_VERSION : OPD_ENGINE_VERSION;
   const { case: oc, keys } = rowToOpdCase(row);
   enrichOpdMeds(oc.medications);   // brand→generic + class/schedule/high-alert/LASA/VED from the formulary
 
@@ -121,7 +135,7 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
       pdqi9: opts.reuse.pdqi9,
       patientCentred: completeness.patientCentred,
     });
-    return { keys, scorecard, completeness, findings, suggestions: opts.reuse.suggestions, sources: opts.reuse.sources, engineVersion: OPD_ENGINE_VERSION, traceId: undefined };
+    return { keys, scorecard, completeness, findings, suggestions: opts.reuse.suggestions, sources: opts.reuse.sources, engineVersion: engineVersion, traceId: undefined };
   }
 
   const doTrace = opts.trace !== false;
@@ -130,6 +144,7 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     ? await startTrace('opd_note_audit', {
         consultType: keys.consultType, prescriptionType: keys.prescriptionType,
         nMeds: oc.medications.length, nDx: oc.diagnosisCodes.length, nInvestigations: oc.investigations.length,
+        ...(mini ? { pipeline: 'mini' } : {}),
       }).catch(() => undefined as string | undefined)
     : undefined;
 
@@ -150,7 +165,7 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     const citedContext = buildCitedContext(hits);
     if (traceId) await logEvent(traceId, 'opd_audit_sources', null, { count: sources.length });
 
-    const raw = await defaultGenerate(traceId, OPD_AUDIT_SYSTEM, buildOpdAuditUser(opdCaseText(oc), citedContext));
+    const raw = await defaultGenerate(traceId, OPD_AUDIT_SYSTEM, buildOpdAuditUser(opdCaseText(oc), citedContext), mini);
     const parsed = parseOpdAnalysis(raw, sources.length);
 
     const findings: OpdFinding[] = [...det, ...(parsed?.findings ?? [])];
@@ -174,7 +189,7 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     return {
       keys, scorecard, completeness,
       findings, suggestions: parsed?.suggestions ?? [],
-      sources, engineVersion: OPD_ENGINE_VERSION, traceId,
+      sources, engineVersion: engineVersion, traceId,
     };
   } catch (e) {
     if (traceId) await finishTrace(traceId, 'error', String((e as Error).message)).catch(() => {});
@@ -185,6 +200,6 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
       pdqi9: null,
       patientCentred: completeness.patientCentred,
     });
-    return { keys, scorecard, completeness, findings: det, suggestions: [], sources: [], engineVersion: OPD_ENGINE_VERSION, traceId };
+    return { keys, scorecard, completeness, findings: det, suggestions: [], sources: [], engineVersion: engineVersion, traceId };
   }
 }
