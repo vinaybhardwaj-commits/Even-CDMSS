@@ -28,6 +28,8 @@ import { hitsToSources, buildCitedContext, type CiteHit } from './citations-core
 import { computeScorecard } from './value-score-core';
 import { estimateBedDayCost } from './room-rent';
 import * as core from './doc-audit-core';
+import * as px from './prognosis-core';
+import type { PrognosisReport } from './prognosis-core';
 import type { DocType, ExtractedCase, AuditReport, RubricField, TariffRef } from './doc-audit-core';
 
 /** Representative ₹ for a finding's tariffs (sum of the general/private/opd/suite price each names). */
@@ -180,9 +182,109 @@ function caseSummaryFor(extracted: ExtractedCase): string {
   return parts.join('\n');
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// PX — Prognosis & Safety-Netting pass (PRD v1.0). Runs IN PARALLEL with the
+// analyze chain (both consume the extract). DARK by default: fires only when
+// PROGNOSIS_AUDIT=1 (D5 — default flips to ON only at V sign-off). Soft-fail:
+// any error → undefined → the report simply has no prognosis section.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function pxCaseInput(extracted: ExtractedCase): px.PxCaseInput {
+  const patientLine = [
+    extracted.patient.age != null ? `${extracted.patient.age}y` : '',
+    extracted.patient.sex || '',
+  ].filter(Boolean).join(', ');
+  return {
+    docType: extracted.docType,
+    patientLine,
+    diagnosis: extracted.diagnosis,
+    indication: extracted.indication,
+    procedure: extracted.procedure,
+    investigations: extracted.investigations,
+    treatments: extracted.treatments,
+    medications: extracted.medications,
+    riskFactors: extracted.riskFactors ?? [],
+    courseSummary: extracted.courseSummary,
+    disposition: extracted.disposition,
+    followUp: extracted.followUp,
+    aftercareInstructions: extracted.aftercare?.instructions ?? [],
+    warningSigns: extracted.aftercare?.warning_signs ?? [],
+    followUpDetail: extracted.aftercare?.follow_up_detail ?? null,
+    adminFactsLine: core.adminFactsLine(extracted.adminFacts),
+  };
+}
+
+async function runPrognosisPass(
+  extracted: ExtractedCase,
+  caseSummary: string,
+  retrieveHits: (q: string) => Promise<CiteHit[]>,
+  generate: (system: string, user: string, label?: string) => Promise<string>,
+  traceId: string | undefined,
+  prog: (stage: string, msg: string) => void,
+): Promise<{ report: PrognosisReport; hits: CiteHit[] } | undefined> {
+  try {
+    prog('prognosis', 'Modelling foreseeable outcomes…');
+    const pxQuery = [
+      extracted.diagnosis ?? '', extracted.indication ?? '', extracted.procedure ?? '',
+      'complications incidence prognosis recurrence expected recovery postoperative care warning signs follow-up',
+    ].filter(Boolean).join('. ');
+    const hits = await retrieveHits(pxQuery);
+    const citedContext = buildCitedContext(hits);
+    const input = pxCaseInput(extracted);
+
+    const draftRaw = await generate(px.PX_SYSTEM, px.buildPxUser(input, citedContext), 'doc_audit_prognosis');
+    let parsed = px.parsePrognosis(draftRaw, hits.length);
+    if (!parsed) {
+      if (traceId) await logEvent(traceId, 'doc_audit_prognosis_result', null, { ok: false });
+      return undefined;
+    }
+
+    // Citation self-critique + revise — explicitly hunts a MISSED well-known complication.
+    try {
+      prog('prognosis', 'Auditing the foreseeability report…');
+      const critiqueRaw = await generate(px.PX_CRITIQUE_SYSTEM, px.buildPxCritiqueUser(caseSummary, citedContext, draftRaw), 'doc_audit_prognosis_critique');
+      const critique = px.parsePxCritique(critiqueRaw);
+      const needsRevision = critique.needs_revision;
+      if (traceId) await logEvent(traceId, 'doc_audit_prognosis_critique', null, {
+        needs_revision: needsRevision, severity: critique.severity,
+        missing_complications: critique.missing_complications.length,
+        issues: critique.unsupported_evidence.length + critique.unmarked_estimates.length + critique.wrong_net_status.length + critique.vague_failure_signature.length,
+      });
+      if (needsRevision) {
+        prog('prognosis', 'Revising the foreseeability report…');
+        const revRaw = await generate(px.PX_REVISE_SYSTEM, px.buildPxReviseUser(caseSummary, citedContext, draftRaw, JSON.stringify(critique)), 'doc_audit_prognosis_revise');
+        const revised = px.parsePrognosis(revRaw, hits.length);
+        if (revised) parsed = revised;
+      }
+    } catch (e) {
+      console.warn('[doc-audit] prognosis critique failed (keeping draft)', (e as Error).message);
+    }
+
+    if (traceId) {
+      // REDACTED counts only — never text (cardinal PHI rule).
+      await logEvent(traceId, 'doc_audit_prognosis_result', null, {
+        ok: true,
+        complications: parsed.complications.length,
+        safetyNetRows: parsed.safetyNet.length,
+        n_unmitigated: parsed.n_unmitigated,
+        n_partial: parsed.n_partial,
+        benefitAssessed: !!parsed.benefit,
+        expectationSetting: parsed.benefit?.documented_expectation_setting ?? null,
+        sources: hits.length,
+      });
+    }
+    return { report: parsed, hits };
+  } catch (e) {
+    console.warn('[doc-audit] prognosis pass failed (soft)', (e as Error).message);
+    if (traceId) await logEvent(traceId, 'doc_audit_prognosis_result', null, { ok: false, error: 'soft-fail' }).catch(() => {});
+    return undefined;
+  }
+}
+
 export async function analyzeCase(extracted: ExtractedCase, deps: Partial<AnalyzeDeps> = {}, opts: { trace?: boolean; onProgress?: (stage: string, msg: string) => void } = {}): Promise<AnalyzeResult> {
   const doTrace = opts.trace !== false;
   const doAudit = process.env.DOC_AUDIT_AUDIT !== '0';
+  const doPrognosis = process.env.PROGNOSIS_AUDIT === '1'; // DARK by default (PRD D5)
   const prog = opts.onProgress ?? (() => {});
   const traceId = doTrace
     ? await startTrace('doc_audit', { docType: extracted.docType })
@@ -219,6 +321,14 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
     if (traceId) await logEvent(traceId, 'doc_audit_sources', null, { count: sources.length });
 
     const caseSummary = caseSummaryFor(extracted);
+
+    // PX (PRD v1.0): kick off the prognosis pass NOW so it runs in parallel with the
+    // whole analyze→critique→revise chain (§6.2). Flag off ⇒ resolved undefined ⇒
+    // this function is byte-identical to the pre-PX behavior.
+    const pxPromise: Promise<{ report: PrognosisReport; hits: CiteHit[] } | undefined> = doPrognosis
+      ? runPrognosisPass(extracted, caseSummary, retrieveHits, generate, traceId, prog)
+      : Promise.resolve(undefined);
+
     prog('analyzing', 'Auditing the case…');
     const draftRaw = await generate(core.ANALYZE_SYSTEM, core.buildAnalyzeUser(extracted, citedContext, rubric.standard), 'doc_audit_analyze');
     let parsed = core.parseAnalysis(draftRaw, sources.length);
@@ -291,6 +401,13 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
       roomTier: inflation && inflation.delta > 0 ? inflation.tier : undefined,
     });
 
+    // PX join (R5): PX sources are appended AFTER the analyze sources into ONE shared
+    // numbering space, and every PX citation id shifts by the analyze-source count.
+    const pxResult = await pxPromise;
+    const pxSources = pxResult ? hitsToSources(pxResult.hits) : [];
+    const allSources = pxResult ? [...sources, ...pxSources] : sources;
+    const prognosis = pxResult ? px.offsetPrognosisCitations(pxResult.report, sources.length) : undefined;
+
     const report: AuditReport = {
       completeness,
       findings: parsed.findings,
@@ -298,9 +415,10 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
       idealisedStages,
       diff: parsed.diff,
       suggestions: parsed.suggestions,
-      sources,
+      sources: allSources,
       adminFacts: extracted.adminFacts,
       valueScore,
+      ...(prognosis ? { prognosis } : {}),
       disclaimer: core.CASE_AUDIT_DISCLAIMER,
     };
 
@@ -314,6 +432,7 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
         suggestions: parsed.suggestions.length,
         tariffs: parsed.findings.filter((f) => f.tariffs?.length).length,
         valueIndex: valueScore.headline, valueBand: valueScore.band,
+        ...(prognosis ? { prognosis: { complications: prognosis.complications.length, n_unmitigated: prognosis.n_unmitigated } } : {}),
       });
       await finishTrace(traceId, 'success');
     }

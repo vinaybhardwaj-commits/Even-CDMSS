@@ -154,3 +154,52 @@ test('assembleCompleteness counts partial as 0.5 and includes an applicable cond
   assert.equal(rep.mandatoryMet, 3.5);
   assert.equal(rep.coverage, Math.round((3.5 / 4) * 100) / 100);
 });
+
+// ── PX §6.3 regression pins (PRD risk R3): the extract schema change is ADDITIVE ──
+
+test('PX-R3: OLD-shape extraction (no risk_factors/aftercare) parses with every pre-existing field unchanged + safe defaults for the new keys', () => {
+  const oldShape = JSON.stringify({
+    detected_doc_type: 'discharge_summary', confidence: 0.9,
+    patient: { age: 38, sex: 'm' },
+    diagnosis: 'Grade III hemorrhoids', indication: 'Painful defecation',
+    procedure: 'Laser hemorrhoidopexy',
+    investigations: ['PAC'], treatments: ['IV Ceftum'], medications: ['Tab Ceftum 500mg'],
+    course_summary: 'Elective, uneventful.', disposition: 'Home', follow_up: 'After one week',
+    admin_facts: { length_of_stay_days: 1, admission_type: 'elective', care_setting: 'room' },
+    completeness: [{ key: 'diagnosis', status: 'present', note: '' }],
+    raw_notes: 'legible',
+  });
+  const ec = parseExtraction(oldShape, 'auto');
+  assert.ok(ec);
+  assert.equal(ec!.docType, 'discharge_summary');
+  assert.equal(ec!.confidence, 0.9);
+  assert.deepEqual(ec!.patient, { age: 38, sex: 'male' });
+  assert.equal(ec!.diagnosis, 'Grade III hemorrhoids');
+  assert.deepEqual(ec!.medications, ['Tab Ceftum 500mg']);
+  assert.equal(ec!.adminFacts!.lengthOfStayDays, 1);
+  assert.equal(ec!.completeness!.length, 1);
+  assert.equal(ec!.followUp, 'After one week');
+  // New keys: safe defaults, nothing invented.
+  assert.deepEqual(ec!.riskFactors, []);
+  assert.equal(ec!.aftercare, undefined);
+});
+
+test('PX-R3: NEW-shape extraction parses risk_factors + aftercare; empty aftercare collapses to undefined', () => {
+  const newShape = JSON.stringify({
+    detected_doc_type: 'discharge_summary', course_summary: 'x', medications: ['amox'],
+    risk_factors: ['Known allergy to Diclofenac Sodium', '', 'Diabetic'],
+    aftercare: { instructions: ['Sitz bath 1-1-1'], warning_signs: ['Fever not subsiding'], follow_up_detail: 'Follow up after one week' },
+  });
+  const ec = parseExtraction(newShape, 'auto');
+  assert.deepEqual(ec!.riskFactors, ['Known allergy to Diclofenac Sodium', 'Diabetic']);
+  assert.deepEqual(ec!.aftercare!.warning_signs, ['Fever not subsiding']);
+  assert.equal(ec!.aftercare!.follow_up_detail, 'Follow up after one week');
+
+  const emptyAftercare = JSON.stringify({
+    detected_doc_type: 'opd_rx', course_summary: 'x', medications: ['amox'],
+    aftercare: { instructions: [], warning_signs: [], follow_up_detail: null },
+  });
+  const ec2 = parseExtraction(emptyAftercare, 'auto');
+  assert.equal(ec2!.aftercare, undefined);
+  assert.deepEqual(ec2!.riskFactors, []);
+});

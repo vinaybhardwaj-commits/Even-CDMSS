@@ -123,6 +123,9 @@ const EVENT_MAP: Record<string, EventMeta> = {
   doc_audit_sources: { label: 'Audit — sources retrieved', tone: 'source' },
   doc_audit_critique: { label: 'Audit — self-critique', tone: 'critique' },
   doc_audit_result: { label: 'Audit report', tone: 'result' },
+  // Right Care — PX prognosis pass (PRD v1.0; llm labels doc_audit_prognosis / _critique / _revise ride the generic llm rows)
+  doc_audit_prognosis_critique: { label: 'Foreseeability — self-critique', tone: 'critique' },
+  doc_audit_prognosis_result: { label: 'Foreseeable outcomes & safety-netting', tone: 'result' },
 };
 
 export function eventMeta(kind: string): EventMeta {

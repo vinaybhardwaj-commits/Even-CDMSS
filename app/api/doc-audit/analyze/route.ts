@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { analyzeCase } from '@/lib/doc-audit';
-import { normDocType, parseStatusList, normAdminFacts, type DocType, type ExtractedCase } from '@/lib/doc-audit-core';
+import { normDocType, parseStatusList, normAdminFacts, parseAftercare, type DocType, type ExtractedCase } from '@/lib/doc-audit-core';
 import { makeNdjsonStream, ndjsonHeaders, type Stage } from '@/lib/stream';
 
 export const runtime = 'nodejs';
@@ -58,6 +58,10 @@ export async function POST(req: NextRequest) {
     // deliberately skips re-reading the document — keeps them instead of regressing to all-missing.
     completeness: parseStatusList(e.completeness),
     adminFacts: normAdminFacts(e.adminFacts),
+    // PX (PRD v1.0 §6.3): carry the two additive extract fields through the rebuild —
+    // without these the prognosis pass would silently see an empty plan (found in G0 review).
+    riskFactors: strArr(e.riskFactors, 12),
+    aftercare: parseAftercare(e.aftercare),
   };
 
   // Stream NDJSON progress (live pipeline bar), then a single {type:'result'} with the

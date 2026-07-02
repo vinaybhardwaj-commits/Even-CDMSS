@@ -18,6 +18,8 @@ import type { TariffRef } from './lvc-value-core';
 import type { SkeletonStage } from './pathway-core';
 import type { Source } from './citations-core';
 import type { ValueDomain, ValueScorecard } from './value-score-core';
+import type { PrognosisReport } from './prognosis-core';
+export type { PrognosisReport } from './prognosis-core';
 export type { TariffRef } from './lvc-value-core';
 export type { Source } from './citations-core';
 export type { ValueDomain, ValueScorecard } from './value-score-core';
@@ -81,6 +83,14 @@ export interface AdminFacts {
   careSetting: string | null;     // day_care | ward | room | icu | …
 }
 
+/** PX (prognosis pass): the plan's actual aftercare text, captured verbatim-ish so the
+ *  safety-net audit judges real text, not a paraphrase. De-identified like everything else. */
+export interface AftercarePlan {
+  instructions: string[];        // aftercare/wound-care/activity instructions as documented
+  warning_signs: string[];       // "when to obtain urgent care" items as documented
+  follow_up_detail: string | null; // follow-up line incl. any symptom triggers
+}
+
 export interface ExtractedCase {
   docType: DocType;
   detectedDocType: DocType;
@@ -101,6 +111,9 @@ export interface ExtractedCase {
   // field is present. Status-only — never carries the field's value (PHI-safe).
   completeness?: RawStatus[];
   adminFacts?: AdminFacts;
+  // PX additions (PRD v1.0 §6.3) — BOTH OPTIONAL; absent on pre-PX extractions.
+  riskFactors?: string[];        // stated comorbidities/allergies/risk-relevant facts (facts only, de-identified)
+  aftercare?: AftercarePlan;
 }
 
 export interface CompletenessItem {
@@ -141,6 +154,7 @@ export interface AuditReport {
   sources: Source[];         // corpus citations surfaced for this audit (findings cite by [n])
   adminFacts?: AdminFacts;   // non-identifying stay facts (LOS/level-of-care) — context for the value findings
   valueScore?: ValueScorecard;  // deterministic Care-Value Scorecard (computed server-side from the findings)
+  prognosis?: PrognosisReport;  // PX pass (PRD v1.0) — absent on old runs / when PROGNOSIS_AUDIT is off / on soft-fail
   disclaimer: string;
 }
 
@@ -233,8 +247,10 @@ COMPLETENESS CHECK: you are given a list of documentation FIELDS to check (key +
 
 ADMIN FACTS (non-identifying): set length_of_stay_days = whole days between admission and discharge when BOTH are documented, else null — output ONLY the day count, NEVER the actual dates. Set admission_type (elective/emergency/…) and care_setting (day_care/ward/room/icu/…) when stated.
 
+RISK FACTORS & AFTERCARE (both may be empty; facts only, never inferred; same NO-IDENTIFIER rule): risk_factors = comorbidities, allergies (including any allergy noted or breached during the stay), and other risk-relevant facts the document states (e.g. "known allergy to Diclofenac Sodium", "diabetic", "smoker"). aftercare = the plan's ACTUAL text, verbatim or closely paraphrased: instructions = aftercare/wound-care/activity/diet instructions given; warning_signs = the "when to obtain urgent care"-type items exactly as listed; follow_up_detail = the follow-up line including any symptom triggers it names.
+
 Return ONLY JSON, no prose:
-{"detected_doc_type":"discharge_summary|ot_note|opd_rx","confidence":0.0-1.0,"patient":{"age":<number or null>,"sex":"<m/f or null>"},"diagnosis":"… or null","indication":"… or null","procedure":"… or null (OT only)","investigations":["…"],"treatments":["…"],"medications":["…"],"course_summary":"<concise de-identified summary of the documented course>","disposition":"… or null","follow_up":"… or null","admin_facts":{"length_of_stay_days":<integer or null>,"admission_type":"… or null","care_setting":"… or null"},"completeness":[{"key":"<field key>","status":"present|partial|missing|na","note":"<short, NO identifier values>"}],"raw_notes":"<short de-identified notes on legibility/structure, NO identifiers>"}`;
+{"detected_doc_type":"discharge_summary|ot_note|opd_rx","confidence":0.0-1.0,"patient":{"age":<number or null>,"sex":"<m/f or null>"},"diagnosis":"… or null","indication":"… or null","procedure":"… or null (OT only)","investigations":["…"],"treatments":["…"],"medications":["…"],"course_summary":"<concise de-identified summary of the documented course>","disposition":"… or null","follow_up":"… or null","admin_facts":{"length_of_stay_days":<integer or null>,"admission_type":"… or null","care_setting":"… or null"},"risk_factors":["…"],"aftercare":{"instructions":["…"],"warning_signs":["…"],"follow_up_detail":"… or null"},"completeness":[{"key":"<field key>","status":"present|partial|missing|na","note":"<short, NO identifier values>"}],"raw_notes":"<short de-identified notes on legibility/structure, NO identifiers>"}`;
 
 export function buildExtractUser(docTypeHint: DocType | 'auto', rubricFields: RubricField[], context?: string): string {
   const hint = docTypeHint === 'auto'
@@ -277,7 +293,20 @@ export function parseExtraction(raw: string, docTypeHint: DocType | 'auto'): Ext
     rawNotes: asStr(o.raw_notes ?? o.rawNotes),
     completeness: parseStatusList(o.completeness),
     adminFacts: normAdminFacts(o.admin_facts ?? o.adminFacts),
+    riskFactors: asStrArray(o.risk_factors ?? o.riskFactors, 12),
+    aftercare: parseAftercare(o.aftercare),
   };
+}
+
+/** PX §6.3: parse the optional aftercare block. Absent/malformed → undefined (old-shape safe). */
+export function parseAftercare(v: unknown): AftercarePlan | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const o = v as Record<string, unknown>;
+  const instructions = asStrArray(o.instructions, 20);
+  const warning_signs = asStrArray(o.warning_signs ?? o.warningSigns, 20);
+  const follow_up_detail = asStrOrNull(o.follow_up_detail ?? o.followUpDetail);
+  if (instructions.length === 0 && warning_signs.length === 0 && !follow_up_detail) return undefined;
+  return { instructions, warning_signs, follow_up_detail };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

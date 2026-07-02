@@ -27,7 +27,7 @@ export interface SheetDef { name: string; rows: Record<string, unknown>[] }
 // Stable sheet order for the workbook.
 export const SHEET_ORDER = [
   'Runs', 'Interventions', 'CW_Flags', 'PathwayStages', 'AuditFindings',
-  'Completeness', 'ValueScores', 'Diff', 'Suggestions', 'IdealisedCourse', 'ExtractedCase', 'Citations',
+  'Completeness', 'ValueScores', 'Prognosis', 'Diff', 'Suggestions', 'IdealisedCourse', 'ExtractedCase', 'Citations',
 ] as const;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -155,6 +155,44 @@ export function buildRunSheets(run: ExportRun): SheetDef[] {
     for (const dv of asArr(report.diff)) { const d = obj(dv); push('Diff', { run_id: runId, kind: str(d.kind), text: str(d.text), ref: str(d.ref) }); }
     for (const sv of asArr(report.suggestions)) { const s = obj(sv); push('Suggestions', { run_id: runId, priority: s.priority ?? '', text: str(s.text), ref: str(s.ref) }); }
     for (const sv of asArr(report.idealisedStages)) { const s = obj(sv); push('IdealisedCourse', { run_id: runId, stage_id: str(s.id), kind: str(s.kind), title: str(s.title), action: str(s.action), flag: str(s.flag) }); }
+    // PX (PRD v1.0): additive Prognosis sheet — only present when the run carries a prognosis.
+    const pxr = obj(report.prognosis);
+    if (report.prognosis) {
+      runRow.px_version = str(pxr.version);
+      runRow.px_unmitigated = pxr.n_unmitigated ?? '';
+      runRow.px_summary = str(pxr.summary);
+      for (const cv of asArr(pxr.complications)) {
+        const cc = obj(cv);
+        push('Prognosis', {
+          run_id: runId, block: 'complication', item: str(cc.complication),
+          likelihood: str(cc.likelihood), severity: str(cc.severity), horizon: str(cc.horizon),
+          incidence_note: str(cc.incidence_note),
+          modifiers: asArr(cc.modifiers).map((m) => { const mo = obj(m); return `${str(mo.direction) === 'lowers' ? '↓' : '↑'} ${str(mo.factor)}`; }).join(' | '),
+          status: '', expected: '', found_in_document: '',
+          evidence: joinList(cc.evidence), estimates: joinList(cc.estimates), citation_ids: joinIds(cc.citation_ids), note: '',
+        });
+      }
+      const b = obj(pxr.benefit);
+      if (pxr.benefit) {
+        push('Prognosis', {
+          run_id: runId, block: 'benefit', item: str(b.intended_benefit),
+          likelihood: '', severity: '', horizon: str(b.time_to_benefit),
+          incidence_note: str(b.success_rate_note), modifiers: '',
+          status: str(b.documented_expectation_setting), expected: 'expectation-setting documented for the patient',
+          found_in_document: str(b.failure_signature),
+          evidence: joinList(b.evidence), estimates: joinList(b.estimates), citation_ids: joinIds(b.citation_ids), note: 'found_in_document column carries the failure signature for benefit rows',
+        });
+      }
+      for (const rv of asArr(pxr.safetyNet)) {
+        const rr = obj(rv);
+        push('Prognosis', {
+          run_id: runId, block: 'safety_net', item: str(rr.risk),
+          likelihood: '', severity: '', horizon: '', incidence_note: '', modifiers: '',
+          status: str(rr.status), expected: str(rr.expected_mitigation), found_in_document: str(rr.found_in_document),
+          evidence: '', estimates: '', citation_ids: '', note: str(rr.note),
+        });
+      }
+    }
     push('ExtractedCase', {
       run_id: runId, doc_type: str(ex.docType ?? ex.detectedDocType), confidence: ex.confidence ?? '',
       patient_age: obj(ex.patient).age ?? '', patient_sex: str(obj(ex.patient).sex),

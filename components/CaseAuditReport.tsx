@@ -1,9 +1,10 @@
 'use client';
 
 import {
-  Info, AlertTriangle, IndianRupee, ListChecks, ClipboardCheck, Route, Scale, BookOpen,
+  Info, AlertTriangle, IndianRupee, ListChecks, ClipboardCheck, Route, Scale, BookOpen, ShieldAlert,
 } from 'lucide-react';
-import type { AuditReport, AuditFinding, FieldStatus } from '@/lib/doc-audit-core';
+import type { AuditReport, AuditFinding, FieldStatus, PrognosisReport } from '@/lib/doc-audit-core';
+import type { PxNetStatus, PxLikelihood, PxSeverity } from '@/lib/prognosis-core';
 import type { Source } from '@/lib/citations-core';
 import { DOMAIN_SHORT, type ValueScorecard, type Band } from '@/lib/value-score-core';
 import {
@@ -111,6 +112,9 @@ export default function CaseAuditReport({
           </div>
         </section>
       )}
+
+      {/* ── PX: Foreseeable outcomes & safety-netting (PRD v1.0) — absent on old runs / flag off ── */}
+      {report.prognosis && <PrognosisSection px={report.prognosis} sources={report.sources} />}
 
       {/* ── Idealised course vs actual ── */}
       <section>
@@ -293,6 +297,112 @@ function FindingCard({ f, sources }: { f: AuditFinding; sources?: Source[] }) {
       <EvidenceList items={f.evidence} />
       <EstimatesList items={f.estimates} />
     </div>
+  );
+}
+
+// ── PX: Foreseeable outcomes & safety-netting ─────────────────────────────────
+
+const PX_STATUS_BADGE: Record<PxNetStatus, string> = {
+  mitigated: 'bg-teal-50 text-teal-800',
+  partially_mitigated: 'bg-amber-50 text-amber-800',
+  unmitigated: 'bg-red-100 text-red-800',
+  not_assessable: 'bg-slate-100 text-slate-500',
+};
+const PX_STATUS_LABEL: Record<PxNetStatus, string> = {
+  mitigated: 'Mitigated', partially_mitigated: 'Partially mitigated', unmitigated: 'Unmitigated', not_assessable: 'Not assessable',
+};
+const PX_LIKELIHOOD_BADGE: Record<PxLikelihood, string> = {
+  common: 'bg-red-50 text-red-700', uncommon: 'bg-amber-50 text-amber-800', rare: 'bg-slate-100 text-slate-500',
+};
+const PX_SEVERITY_LABEL: Record<PxSeverity, string> = { minor: 'minor', moderate: 'moderate', serious: 'serious' };
+
+function PrognosisSection({ px, sources }: { px: PrognosisReport; sources?: Source[] }) {
+  return (
+    <section className="overflow-hidden rounded-xl border border-indigo-200">
+      <div className="border-b border-indigo-100 bg-indigo-50/70 px-3.5 py-2">
+        <div className="flex items-center gap-1.5 text-[12.5px] font-medium text-indigo-900">
+          <ShieldAlert className="h-3.5 w-3.5" /> Foreseeable outcomes & safety-netting
+          {px.n_unmitigated > 0 && <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10.5px] font-semibold text-red-800">{px.n_unmitigated} unmitigated</span>}
+        </div>
+        <div className="mt-0.5 text-[11.5px] text-indigo-900/70">{px.summary}</div>
+      </div>
+      <div className="space-y-4 bg-white p-3.5">
+
+        {px.complications.length > 0 && (
+          <div>
+            <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.05em] text-slate-400">Anticipated complications · ranked by likelihood × severity</div>
+            <div className="space-y-2">
+              {px.complications.map((c, i) => (
+                <div key={i} className="rounded-lg border border-slate-200 p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[13px] font-medium text-slate-900">{c.complication}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-[10.5px] font-medium ${PX_LIKELIHOOD_BADGE[c.likelihood]}`}>{c.likelihood}</span>
+                    <span className="text-[10.5px] text-slate-400">{PX_SEVERITY_LABEL[c.severity]}{c.horizon ? ` · ${c.horizon}` : ''}</span>
+                    {c.incidence_note && <span className="text-[10.5px] text-slate-500">{c.incidence_note}</span>}
+                  </div>
+                  {c.modifiers.length > 0 && (
+                    <div className="mt-1.5 flex flex-wrap gap-1.5">
+                      {c.modifiers.map((m, j) => (
+                        <span key={j} className={`rounded-full px-2 py-0.5 text-[10.5px] ${m.direction === 'raises' ? 'bg-red-50 text-red-700' : 'bg-teal-50 text-teal-700'}`}>
+                          {m.direction === 'raises' ? '↑' : '↓'} {m.factor}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {c.citation_ids.length > 0 && sources && sources.length > 0 && <CitationChips ids={c.citation_ids} sources={sources} />}
+                  <EvidenceList items={c.evidence} />
+                  <EstimatesList items={c.estimates} />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {px.benefit && (
+          <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+            <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.05em] text-slate-400">Expected benefit — and what failure looks like</div>
+            <div className="text-[13px] leading-relaxed text-slate-700">
+              {px.benefit.intended_benefit}
+              {px.benefit.time_to_benefit ? <span className="text-slate-500"> · typically {px.benefit.time_to_benefit}</span> : null}
+              {px.benefit.success_rate_note ? <span className="text-slate-500"> · {px.benefit.success_rate_note}</span> : null}
+            </div>
+            {px.benefit.failure_signature && (
+              <div className="mt-1.5 text-[12.5px] text-slate-700"><span className="font-medium text-amber-800">Failure signature · </span>{px.benefit.failure_signature}</div>
+            )}
+            <div className="mt-1.5 text-[11.5px]">
+              <span className="text-slate-500">Recovery expectations documented for the patient: </span>
+              <span className={`rounded-full px-2 py-0.5 font-medium ${px.benefit.documented_expectation_setting === 'present' ? 'bg-teal-50 text-teal-800' : px.benefit.documented_expectation_setting === 'partial' ? 'bg-amber-50 text-amber-800' : 'bg-red-100 text-red-800'}`}>{px.benefit.documented_expectation_setting}</span>
+            </div>
+            {px.benefit.citation_ids.length > 0 && sources && sources.length > 0 && <CitationChips ids={px.benefit.citation_ids} sources={sources} />}
+            <EvidenceList items={px.benefit.evidence} />
+            <EstimatesList items={px.benefit.estimates} />
+          </div>
+        )}
+
+        {px.safetyNet.length > 0 && (
+          <div>
+            <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.05em] text-slate-400">Safety-net audit · fitness, not presence — a mitigation counts only if it matches the named risk</div>
+            <div className="overflow-hidden rounded-lg border border-slate-200">
+              {px.safetyNet.map((r, i) => (
+                <div key={i} className={`px-3 py-2.5 ${i ? 'border-t border-slate-100' : ''} ${r.status === 'unmitigated' ? 'bg-red-50/50' : ''}`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <span className="text-[13px] font-medium text-slate-900">{r.risk}</span>
+                    <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${PX_STATUS_BADGE[r.status]}`}>{PX_STATUS_LABEL[r.status]}</span>
+                  </div>
+                  <div className="mt-1 grid gap-x-6 gap-y-0.5 text-[12px] sm:grid-cols-2">
+                    <div><span className="text-slate-400">Expected: </span><span className="text-slate-600">{r.expected_mitigation}</span></div>
+                    <div><span className="text-slate-400">In document: </span><span className={r.found_in_document ? 'text-slate-600' : 'italic text-red-700'}>{r.found_in_document ?? 'nothing matching'}</span></div>
+                  </div>
+                  {r.note && <div className="mt-0.5 text-[11px] text-slate-500">{r.note}</div>}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <p className="text-[10.5px] leading-relaxed text-slate-400">{px.disclaimer}</p>
+      </div>
+    </section>
   );
 }
 
