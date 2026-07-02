@@ -82,6 +82,7 @@ async function autoTick(): Promise<Record<string, unknown>> {
   if (!windowOpen(st.window)) return { ...base, skipped: 'outside compute window (night = 00:00–05:00 IST)' };
   if (lockHeld(st.lock)) return { ...base, skipped: 'previous tick still running (soft lock)' };
   await setSetting(MB_KEYS.lock, new Date().toISOString());
+  try {
 
   // prod mode → write the plain prod engine (correct the dashboards) and sweep NEWEST-FIRST
   // (yesterday backwards) so the most-looked-at data corrects first; else isolated '-<tag>',
@@ -122,6 +123,11 @@ async function autoTick(): Promise<Record<string, unknown>> {
   };
   await setSetting(MB_KEYS.last, JSON.stringify(summary));
   return summary;
+  } finally {
+    // Release the lock at tick END so a fast (every-1–2-min) cron runs back-to-back. The lock now
+    // only guards against a genuinely-overlapping tick (still running), not the next scheduled one.
+    await setSetting(MB_KEYS.lock, '').catch(() => {});
+  }
 }
 
 export async function GET(req: NextRequest) {

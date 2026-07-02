@@ -13,6 +13,6 @@
     { "path": "/api/learning/mine", "schedule": "0 6 * * 1" },
     { "path": "/api/ccb/worker", "schedule": "*/15 18-23 * * *" },
     { "path": "/api/admin/sync-doctor-directory", "schedule": "30 4 * * 1" },
-    { "path": "/api/admin/opd-audit-mini-backfill?auto=1", "schedule": "*/5 * * * *" }
+    { "path": "/api/admin/opd-audit-mini-backfill?auto=1", "schedule": "*/2 * * * *" }
   ]
 }
