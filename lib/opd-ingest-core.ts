@@ -45,11 +45,18 @@ export interface DeidOpdCase {
   comorbidities: string[];
   medications: OpdMed[];
   investigations: string[];         // ordered tests
-  advice: string[];                 // plan of management + per-dx advice
+  advice: string[];                 // CLINICIAN plan / management only (templated leaflets excluded)
   examination: string[];            // exam findings (often sparse)
   allergies: string | null;
   followUpType: string | null;
   followUpDateSet: boolean;
+  // 0.6 — encounter context so the audit doesn't misread a teleconsult referral handoff as a
+  // definitive in-person treatment episode. Optional so existing DeidOpdCase literals stay valid.
+  patientEducation?: string[];      // auto-attached templated leaflets (self-care text, video links) — NOT clinician documentation
+  isTeleconsult?: boolean;          // remote consult → no physical examination expected
+  referrals?: string[];             // onward referrals, e.g. "In-Person Orthopedics (Even-recommended)"
+  numReferrals?: number;
+  isReferralHandoff?: boolean;      // triage/handoff (referred onward) — not definitive management
 }
 export interface OpdKeys {
   uid: string | null; consultUid: string | null; doctorUid: string | null;
@@ -120,10 +127,47 @@ function gpImpressions(v: unknown): string[] {
   for (const it of asArr(v)) { const o = (it && typeof it === 'object' ? it : {}) as Record<string, unknown>; for (const d of asArr(o.diagnoses)) { const dd = (d && typeof d === 'object' ? d : {}) as Record<string, unknown>; const name = strOrNull(dd.diagnosis_or_impression); if (name) out.push(name); } }
   return uniq(out);
 }
-function gpDiagAdvice(v: unknown): string[] {
+// The clinician's per-diagnosis treatment_plan (real documentation).
+function gpDiagTreatment(v: unknown): string[] {
   const out: string[] = [];
-  for (const it of asArr(v)) { const o = (it && typeof it === 'object' ? it : {}) as Record<string, unknown>; for (const d of asArr(o.diagnoses)) { const dd = (d && typeof d === 'object' ? d : {}) as Record<string, unknown>; out.push(...htmlToLines(dd.general_advice), ...htmlToLines(dd.treatment_plan)); } }
+  for (const it of asArr(v)) { const o = (it && typeof it === 'object' ? it : {}) as Record<string, unknown>; for (const d of asArr(o.diagnoses)) { const dd = (d && typeof d === 'object' ? d : {}) as Record<string, unknown>; out.push(...htmlToLines(dd.treatment_plan)); } }
   return out;
+}
+// The per-diagnosis general_advice — in this EMR this is an AUTO-ATTACHED templated patient leaflet
+// (generic self-care text + video links), NOT clinician-authored. Kept OUT of clinician `advice` so
+// the audit doesn't grade boilerplate as documentation quality. (0.6 bug fix — bit the Band-A lumbago
+// referral note: plan was only "Medical management" but a full NHS back-pain leaflet was being graded.)
+function gpDiagEducation(v: unknown): string[] {
+  const out: string[] = [];
+  for (const it of asArr(v)) { const o = (it && typeof it === 'object' ? it : {}) as Record<string, unknown>; for (const d of asArr(o.diagnoses)) { const dd = (d && typeof d === 'object' ? d : {}) as Record<string, unknown>; out.push(...htmlToLines(dd.general_advice)); } }
+  return out;
+}
+
+// A line is templated patient-education if it carries a self-care video / external link.
+const EDU_URL_RE = /(https?:\/\/|www\.|youtube\.com|youtu\.be)/i;
+
+// Even's GP e-consults are teleconsults by default; in-person is the referral destination.
+const GP_TELE_TYPES = new Set(['GENERAL_PRACTITIONER', 'HOSPITAL_GP', 'HOSPITAL_GP_INVESTIGATION_REFERRAL']);
+export function isTeleconsultEncounter(prescriptionType: string | null, consultType: string | null): boolean {
+  const ct = (consultType || '').toUpperCase();
+  if (/IN[_\s-]?PERSON|PHYSICAL|WALK[_\s-]?IN/.test(ct)) return false;
+  if (/TELE|VIDEO|AUDIO|CHAT|REMOTE|ONLINE/.test(ct)) return true;
+  return GP_TELE_TYPES.has((prescriptionType || '').toUpperCase());
+}
+
+/** refer_to (jsonb array) → readable onward-referral labels, e.g. "In-Person Orthopedics (Even-recommended)". */
+export function parseReferrals(v: unknown): string[] {
+  const out: string[] = [];
+  for (const it of asArr(v)) {
+    const o = (it && typeof it === 'object' ? it : {}) as Record<string, unknown>;
+    const st = (o.specialist_type && typeof o.specialist_type === 'object' ? o.specialist_type : {}) as Record<string, unknown>;
+    const name = strOrNull(st.name) || strOrNull(o.name) || 'specialist';
+    const inHouse = st.is_in_house === true || o.is_in_house === true;
+    const mode = inHouse ? 'In-house' : 'In-Person';
+    const even = o.recommended_by_even === true ? ' (Even-recommended)' : '';
+    out.push(`${mode} ${name}${even}`);
+  }
+  return uniq(out);
 }
 function planAdvice(v: unknown): string[] {
   const out: string[] = [];
@@ -195,8 +239,17 @@ export function rowToOpdCase(row: Record<string, unknown>): { case: DeidOpdCase;
     : (advObj && typeof advObj === 'object' ? Object.values(advObj as Record<string, unknown>).map(str).filter(Boolean) : textsFrom(row.general_advice, ['text', 'advice']));
 
   // CONTENT: flattened pipeline (dpipe) primary → source nested → top-level fallback.
+  // 0.6 — templated patient-education (per-dx general_advice leaflet + any line with a self-care
+  // video/link) is separated OUT of the clinician plan so it isn't graded as documentation quality.
   const dPlan = dpipePlan(row.dpipe_pom);
-  const advice = uniq(dPlan.length ? dPlan : [...planAdvice(row['general_practitioner_prescription__plan_of_management']), ...gpDiagAdvice(gpPc), ...topAdvice]);
+  const clinicianAdviceRaw = uniq(dPlan.length ? dPlan : [...planAdvice(row['general_practitioner_prescription__plan_of_management']), ...gpDiagTreatment(gpPc), ...topAdvice]);
+  const advice = clinicianAdviceRaw.filter((l) => !EDU_URL_RE.test(l));
+  const patientEducation = uniq([...gpDiagEducation(gpPc), ...clinicianAdviceRaw.filter((l) => EDU_URL_RE.test(l))]);
+  const referrals = parseReferrals(row.refer_to);
+  const numReferrals = Number(row.num_referrals) || referrals.length;
+  const followUpTypeVal = strOrNull(row.followup__followup_type) || strOrNull(row.follow_up_type);
+  const isReferralHandoff = referrals.length > 0 || numReferrals > 0 || /referral/i.test(followUpTypeVal || '');
+  const isTeleconsult = isTeleconsultEncounter(strOrNull(row.type_of_prescription), strOrNull(row.consult_type));
 
   const dComplaints = dpipeText(row.dpipe_pc);
   const nestedComplaints = gpComplaints(gpPc);
@@ -222,8 +275,13 @@ export function rowToOpdCase(row: Record<string, unknown>): { case: DeidOpdCase;
     advice,
     examination: htmlToLines(row['general_practitioner_prescription__examination']),
     allergies: strOrNull(row.patient_details__allergies),
-    followUpType: strOrNull(row.followup__followup_type) || strOrNull(row.follow_up_type),
+    followUpType: followUpTypeVal,
     followUpDateSet,
+    patientEducation,
+    isTeleconsult,
+    referrals,
+    numReferrals,
+    isReferralHandoff,
   };
 
   const keys: OpdKeys = {
@@ -262,6 +320,9 @@ export function formatOpdMed(m: OpdMed): string {
 export function opdCaseText(c: DeidOpdCase): string {
   const lines: string[] = [];
   if (c.consultType) lines.push(`Consult type: ${c.consultType}`);
+  if (c.isTeleconsult) lines.push('Encounter modality: TELECONSULT (remote) — a physical examination is not expected; its absence is not a gap.');
+  if (c.referrals && c.referrals.length) lines.push(`Referred onward to: ${c.referrals.join('; ')}`);
+  if (c.isReferralHandoff) lines.push('Disposition: REFERRAL / HANDOFF encounter — the plan is the onward referral, not definitive treatment. The absence of medications, investigations or imaging is EXPECTED for a handoff and must NOT be read as a deliberate management decision or "avoidance".');
   if (c.reasonForConsult) lines.push(`Reason for consult: ${c.reasonForConsult}`);
   lines.push(`Presenting complaints / history: ${c.presentingComplaints.length ? c.presentingComplaints.join('; ') : '(none documented)'}`);
   lines.push(`Diagnosis (ICD-10): ${c.diagnosisCodes.length ? c.diagnosisCodes.join(', ') : '(none documented)'}`);
@@ -276,7 +337,10 @@ export function opdCaseText(c: DeidOpdCase): string {
     lines.push(`  - ${formatOpdMed(m)}`);
   }
   lines.push(`Investigations ordered: ${c.investigations.length ? c.investigations.join('; ') : '(none)'}`);
-  lines.push(`Advice / plan: ${c.advice.length ? c.advice.join('; ') : '(none documented)'}`);
+  lines.push(`Clinician advice / plan: ${c.advice.length ? c.advice.join('; ') : '(none documented)'}`);
+  if (c.patientEducation && c.patientEducation.length) {
+    lines.push(`Patient-education material attached: ${c.patientEducation.length} item(s) of AUTO-GENERATED templated self-care leaflet (generic exercises / video links). This is NOT clinician-authored documentation — do NOT count it toward note thoroughness, usefulness or synthesis.`);
+  }
   lines.push(`Follow-up: ${c.followUpType || '(none)'}${c.followUpDateSet ? ' (date set)' : ' (no date)'}`);
   return lines.join('\n');
 }

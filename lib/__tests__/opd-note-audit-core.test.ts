@@ -4,7 +4,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { rowToOpdCase } from '../opd-ingest-core.ts';
+import { rowToOpdCase, opdCaseText } from '../opd-ingest-core.ts';
 import { opdCompleteness, prescribingChecks, parseOpdAnalysis, medDoseDocumented, resolveMedRoute } from '../opd-note-audit-core.ts';
 
 // Mirrors a real GP row (medications + jsonb arrive as JSON strings via Metabase).
@@ -54,7 +54,9 @@ test('rowToOpdCase reads the NESTED GP fields (the extraction fix)', () => {
   assert.ok(c.presentingComplaints.includes('mild fever'));
   assert.deepEqual(c.impressions, ['Acute URTI']);
   assert.ok(c.advice.some((a) => /rest and oral fluids/.test(a)));
-  assert.ok(c.advice.some((a) => /steam inhalation/.test(a)));
+  // 0.6: per-diagnosis general_advice is auto-templated patient education → NOT clinician advice
+  assert.ok(!c.advice.some((a) => /steam inhalation/.test(a)));
+  assert.ok((c.patientEducation || []).some((a) => /steam inhalation/.test(a)));
   assert.ok(c.examination.includes('throat congested'));
   assert.equal(keys.prescriptionUrl, 'https://storage.googleapis.com/even-prod-prescription/abc_2.pdf');
   const comp = opdCompleteness(c);
@@ -89,6 +91,54 @@ test('rowToOpdCase prefers the dpipe pipeline content over the nested source fie
   const comp = opdCompleteness(c);
   assert.ok(!comp.missing.includes('Presenting complaint'));
   assert.ok(!comp.missing.includes('Advice / plan'));
+});
+
+// 0.6 — the false Band-A: a teleconsult ORTHO REFERRAL note whose only plan was "Medical management"
+// but which carried an auto-attached NHS back-pain leaflet (exercises + YouTube). The engine must
+// (a) see the referral + teleconsult, (b) keep the leaflet OUT of clinician advice, (c) not expect a
+// physical exam on a teleconsult.
+const REFERRAL_ROW: Record<string, unknown> = {
+  uid: 'PNvdYxbYo7NMgKUY7hwN', doctor_uid: 'docS', type_of_prescription: 'GENERAL_PRACTITIONER', consult_type: null,
+  timestamp: '2026-07-02T09:00:00+05:30',
+  general_practitioner_prescription__presenting_complaints: '[{"symptoms":"<p>Complaints of pain lower back on and off for 6 days</p>","diagnoses":[{"icd_code":"M54.40","diagnosis_or_impression":"Lumbago (lower back pain)","general_advice":"<b>DO</b><ul><li>Stay as active as possible</li><li>Do regular back exercises</li><li>Basic: <a href=\\"\\">https://www.youtube.com/watch?v=VDf43fOTH1E</a></li></ul>","treatment_plan":""}]}]',
+  general_practitioner_prescription__plan_of_management: '[{"management_plan":"<p>Medical management</p>"}]',
+  general_practitioner_prescription__examination: '',
+  diagnosis_icd_codes: ['M54.40'], impression_icd_codes: [], medications: '[]', further_investigation: '[]',
+  refer_to: '[{"specialist_type":{"name":"Orthopedics","is_in_house":false,"in_house_doctor_type":"ORTHOPAEDICIAN"},"recommended_by_even":true}]',
+  num_referrals: 1,
+  followup__followup_type: 'FOLLOW_UP_WITH_REFERRAL_PRESCRIPTION', next_follow_up_date: '2026-07-09',
+  prescription_url: 'https://x/y.pdf',
+};
+
+test('0.6: referral handoff — leaflet excluded, referral + teleconsult surfaced', () => {
+  const { case: c } = rowToOpdCase(REFERRAL_ROW);
+  // clinician plan is ONLY "Medical management" — the templated leaflet is patient-education, not advice
+  assert.deepEqual(c.advice, ['Medical management']);
+  assert.ok(!c.advice.join(' ').toLowerCase().includes('youtube'));
+  assert.ok((c.patientEducation || []).join(' ').toLowerCase().includes('youtube'));
+  // referral + teleconsult context captured
+  assert.equal(c.isTeleconsult, true);
+  assert.equal(c.isReferralHandoff, true);
+  assert.equal(c.numReferrals, 1);
+  assert.ok((c.referrals || []).some((r) => /In-Person Orthopedics \(Even-recommended\)/.test(r)));
+  // the LLM prompt text must carry the framing that prevents the false "avoidance = high value" praise
+  const txt = opdCaseText(c);
+  assert.match(txt, /TELECONSULT/);
+  assert.match(txt, /REFERRAL \/ HANDOFF/);
+  assert.match(txt, /Patient-education material attached/);
+  assert.match(txt, /Clinician advice \/ plan: Medical management/);
+});
+
+test('0.6: teleconsult completeness — examination is not scored (N/A), referral counts as the plan', () => {
+  const { case: c } = rowToOpdCase(REFERRAL_ROW);
+  const comp = opdCompleteness(c);
+  assert.ok(!comp.items.some((i) => i.key === 'examination'));      // teleconsult → exam N/A
+  assert.equal(comp.items.find((i) => i.key === 'advice_given')!.present, true); // "Medical management" + referral = a plan
+  // an IN-PERSON note WOULD be scored on examination
+  const inperson = rowToOpdCase({ ...REFERRAL_ROW, consult_type: 'IN_PERSON', type_of_prescription: 'HOSPITAL_ORTHO' }).case;
+  const compIP = opdCompleteness(inperson);
+  assert.ok(compIP.items.some((i) => i.key === 'examination'));
+  assert.equal(compIP.items.find((i) => i.key === 'examination')!.present, false); // no exam recorded → real gap in-person
 });
 
 test('opdCompleteness flags the real gaps; allergy + history items removed', () => {

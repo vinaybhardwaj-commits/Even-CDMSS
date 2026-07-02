@@ -14,7 +14,12 @@ import type { NetValue, OpdFindingDomain, Pdqi9Attr } from './opd-note-score-cor
 //       LASA/VED enrichment + formulary-scoped DDI, so brand-only OPD lines (~36%) are recognised.
 // 0.5 — corpus grounding made first-class: persisted CDMSS Sources, cite-or-label findings
 //       (every clinical claim cites [n] or is marked reasoning), richer retrieval query. No extra LLM calls.
-export const OPD_ENGINE_VERSION = 'opd-note-audit/0.5';
+// 0.6 — encounter-context fix (bit a false Band-A on a teleconsult ortho REFERRAL note): the engine
+//       now ingests the onward referral + teleconsult modality, separates AUTO-ATTACHED templated
+//       patient-education leaflets from clinician documentation, and instructs the auditor not to (a)
+//       praise a handoff's missing meds/imaging as high-value "avoidance", (b) grade a templated
+//       leaflet as note thoroughness, or (c) expect a physical exam on a teleconsult.
+export const OPD_ENGINE_VERSION = 'opd-note-audit/0.6';
 
 // Local copy of the PDQI-9 keys (kept in sync with opd-note-score-core) so this core has
 // no runtime cross-import and stays loadable under `node --experimental-strip-types`.
@@ -90,13 +95,20 @@ export function opdCompleteness(c: DeidOpdCase): OpdCompleteness {
   // NABH-OPD items we can actually observe in this EMR's structured data. Allergy is never
   // stored at the prescription level (always empty) and history is folded into the presenting
   // complaint / HPI, so both were removed (they were false-flagging ~100% of notes).
+  // 0.6 — the "plan" is satisfied by a clinician plan OR an onward referral (a referral handoff's
+  // plan IS the referral). Examination is only expected for IN-PERSON encounters; for a teleconsult
+  // a physical exam is not applicable, so it is not scored (rather than silently counting as met).
+  const hasPlan = c.advice.length > 0 || (c.referrals?.length ?? 0) > 0;
+  const isTele = c.isTeleconsult === true;
   const items: OpdCompletenessItem[] = [
     { key: 'presenting_complaint', label: 'Presenting complaint', present: c.presentingComplaints.length > 0 || !!c.reasonForConsult, mandatory: true },
     { key: 'diagnosis', label: 'Diagnosis / impression', present: c.diagnosisCodes.length > 0 || c.impressionCodes.length > 0 || c.impressions.length > 0, mandatory: true },
     { key: 'medication_dosing', label: 'Complete medication dosing', present: hasMeds ? dosingComplete : true, mandatory: true },
-    { key: 'advice_given', label: 'Advice / plan', present: c.advice.length > 0, mandatory: true },
+    { key: 'advice_given', label: 'Advice / plan', present: hasPlan, mandatory: true },
     { key: 'follow_up', label: 'Follow-up specified', present: !!c.followUpType, mandatory: true },
   ];
+  // Physical examination — applicable only to in-person encounters (a teleconsult can't examine).
+  if (!isTele) items.push({ key: 'examination', label: 'Examination recorded', present: c.examination.length > 0, mandatory: true });
   const present = items.filter((i) => i.present).length;
   const coverage = items.length ? present / items.length : 1;
   const missing = items.filter((i) => !i.present).map((i) => i.label);
@@ -201,6 +213,11 @@ export function prescribingChecks(c: DeidOpdCase): OpdFinding[] {
 
 // ── LLM analyze pass (grounded) — findings + PDQI-9 + suggestions ─────────────
 export const OPD_AUDIT_SYSTEM = `You are a clinical quality auditor reviewing a SINGLE outpatient (OPD) consultation note, given a DE-IDENTIFIED structured record of the encounter and NUMBERED EVIDENCE EXCERPTS [1], [2], … from a medical corpus. Produce an advisory, NON-DIRECTIVE note-quality audit. Do THREE things.
+
+ENCOUNTER CONTEXT — read the header fields FIRST and let them frame everything:
+   - TELECONSULT: if the modality is teleconsult, a physical examination is not possible — never treat a missing examination as a gap and never lower "thorough" for it.
+   - REFERRAL / HANDOFF: if the encounter refers the patient onward (e.g. to an in-person specialist) or the disposition/follow-up is a referral, it is a TRIAGE/HANDOFF, not a definitive-management episode. The plan IS the referral. Do NOT credit the absence of medications, investigations or imaging as a deliberate "high-value" choice, "avoidance", or "prudent restraint" — that framing is a category error for a handoff and must not appear as a high-value finding. Judge only what a good handoff needs: a clear reason for referral, a working diagnosis, and safety-netting.
+   - PATIENT-EDUCATION MATERIAL: any attached templated self-care leaflet (generic exercises, video/YouTube links) is AUTO-GENERATED, not clinician-authored. Do NOT reward it in PDQI-9 thoroughness/useful/synthesized, and do not treat it as evidence of a rich plan. Grade only the clinician's own documentation.
 
 1) FINDINGS — appropriateness and prescribing-safety issues for THIS encounter:
    - appropriateness: low-value / inappropriate tests, treatments or referrals for the presentation.

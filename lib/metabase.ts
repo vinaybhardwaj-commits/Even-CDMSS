@@ -33,6 +33,7 @@ const IP_COLS = [
   'general_practitioner_prescription__examination',
   'followup__followup_type', 'followup__followup_date', 'follow_up_type', 'next_follow_up_date',
   'expected_resolution_date', 'reason_for_consultation', 'relevant_medical_history', 'comorbidities',
+  'refer_to', 'num_referrals',   // 0.6 — disposition: a referral/handoff is not a definitive-treatment episode
 ];
 const SELECT_COLS = IP_COLS.map((c) => `ip.${c}`).join(', ')
   + ', d.presenting_complaint AS dpipe_pc, d.diagnosis AS dpipe_dx, d.plan_of_management AS dpipe_pom, d.further_investigation AS dpipe_inv';
