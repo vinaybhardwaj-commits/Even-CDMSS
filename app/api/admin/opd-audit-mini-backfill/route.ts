@@ -26,11 +26,12 @@ export const maxDuration = 300;
  * Auth: Vercel cron header / Bearer|?secret=CRON_SECRET / admin session.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { auditOpdNote, OPD_MINI_ENGINE_VERSION } from '@/lib/opd-note-audit';
+import { auditOpdNote, OPD_MINI_ENGINE_VERSION, opdMiniEngine } from '@/lib/opd-note-audit';
 import { MINI_MODEL } from '@/lib/llm';
 import { countOpdNotesForDay, fetchOpdNotesForDay, istYesterday } from '@/lib/metabase';
-import { saveOpdAudit, auditedUidsForDay } from '@/lib/opd-audit-store';
+import { saveOpdAudit, auditedUidsForDay, earliestAuditedDay } from '@/lib/opd-audit-store';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
+import { readState, setSetting, windowOpen, lockHeld, prevDay, MB_KEYS } from '@/lib/mini-backfill';
 
 async function authed(req: NextRequest): Promise<boolean> {
   const isCron = req.headers.get('x-vercel-cron') !== null;
@@ -46,9 +47,90 @@ function addDays(day: string, delta: number): string {
   const d = new Date(day + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + delta); return d.toISOString().slice(0, 10);
 }
 
+/** Audit up to `n` un-mini-audited notes (engine `engineStr`) for `day`; sequential; self-timed. */
+async function processBatch(day: string, n: number, engineStr: string, tag: string | undefined) {
+  const total = await countOpdNotesForDay(day);
+  const already = await auditedUidsForDay(day, engineStr);
+  const rows = total > already.length ? await fetchOpdNotesForDay(day, already, n) : [];
+  const results: Record<string, unknown>[] = [];
+  for (const row of rows) {
+    const started = Date.now();
+    try {
+      const audit = await auditOpdNote(row, { pipeline: 'mini', engineTag: tag });
+      const status = await saveOpdAudit(audit, { model: MINI_MODEL, latencyMs: Date.now() - started });
+      results.push({ uid: audit.keys.uid, index: audit.scorecard.headline, band: audit.scorecard.band, status, ms: Date.now() - started, traceId: audit.traceId ?? null });
+    } catch (e) {
+      results.push({ uid: String((row as Record<string, unknown>).uid || ''), error: String((e as Error).message), ms: Date.now() - started });
+    }
+  }
+  const audited = already.length + results.filter((r) => r.status === 'inserted').length;
+  return { day, total, audited, processed: results.length, remaining: Math.max(0, total - audited), done: total > 0 && audited >= total, results };
+}
+
+/**
+ * AUTOPILOT tick (?auto=1 — the every-5-min cron): gated by the admin module's switches.
+ * enabled? → compute window open (night 00:00–05:00 IST, or 'always')? → soft lock free?
+ * → work the cursor day; when it completes (or has 0 notes), march the cursor BACKWARDS
+ * (bounded scan per tick) until the floor. Every tick stores a summary for the module.
+ */
+async function autoTick(): Promise<Record<string, unknown>> {
+  const st = await readState();
+  const base = { auto: true, enabled: st.enabled, window: st.window, tag: st.tag, cursor: st.cursor, floor: st.floor };
+  if (!st.enabled) return { ...base, skipped: 'paused' };
+  if (!windowOpen(st.window)) return { ...base, skipped: 'outside compute window (night = 00:00–05:00 IST)' };
+  if (lockHeld(st.lock)) return { ...base, skipped: 'previous tick still running (soft lock)' };
+  await setSetting(MB_KEYS.lock, new Date().toISOString());
+
+  const engineStr = opdMiniEngine(st.tag);
+  // Seed the cursor on first run: the day BEFORE the earliest prod (Gemini) audit — "work
+  // backwards from wherever the first opd audit was done" — else yesterday as a fallback.
+  let day = st.cursor;
+  if (!day) {
+    const earliest = await earliestAuditedDay();
+    day = earliest ? prevDay(earliest) : istYesterday();
+    await setSetting(MB_KEYS.cursor, day);
+  }
+
+  // March backwards over complete/empty days (bounded per tick to keep Metabase calls sane).
+  let hops = 0;
+  let batch: Awaited<ReturnType<typeof processBatch>> | null = null;
+  while (hops < 10) {
+    if (day < st.floor) {
+      await setSetting(MB_KEYS.enabled, '0');
+      const doneSummary = { ...base, cursor: day, finished: true, note: 'cursor passed the floor — backfill complete; autopilot paused itself' };
+      await setSetting(MB_KEYS.last, JSON.stringify({ ...doneSummary, at: new Date().toISOString() }));
+      return doneSummary;
+    }
+    batch = await processBatch(day, st.n, engineStr, st.tag);
+    if (batch.total > 0 && !batch.done) break;              // worked (or partial) — stay on this day
+    day = prevDay(day); hops++;                              // empty or completed day — step back
+    await setSetting(MB_KEYS.cursor, day);
+    if (batch.processed > 0) break;                          // we did work AND finished the day — enough for this tick
+  }
+
+  const okRuns = (batch?.results ?? []).filter((r) => !('error' in r));
+  const avgMs = okRuns.length ? Math.round(okRuns.reduce((s, r) => s + Number(r.ms), 0) / okRuns.length) : null;
+  const summary = {
+    ...base, cursor: day, engine: engineStr, model: MINI_MODEL,
+    day: batch?.day ?? day, total: batch?.total ?? 0, audited: batch?.audited ?? 0,
+    processed: batch?.processed ?? 0, remaining: batch?.remaining ?? 0,
+    throughput: avgMs ? { avg_ms_per_note: avgMs, est_notes_per_24h: Math.round(86_400_000 / avgMs) } : null,
+    at: new Date().toISOString(),
+  };
+  await setSetting(MB_KEYS.last, JSON.stringify(summary));
+  return summary;
+}
+
 export async function GET(req: NextRequest) {
   if (!(await authed(req))) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   const p = req.nextUrl.searchParams;
+
+  // Autopilot mode (cron) — everything else below is the original manual probe mode.
+  if (p.get('auto') === '1') {
+    try { return NextResponse.json({ ok: true, ...(await autoTick()) }); }
+    catch (e) { return NextResponse.json({ ok: false, error: String((e as Error).message) }, { status: 500 }); }
+  }
+
   const n = Math.max(1, Math.min(3, Number(p.get('n') || 1)));
   const scan = Math.max(1, Math.min(365, Number(p.get('scan') || 30)));
   const dayParam = p.get('day');

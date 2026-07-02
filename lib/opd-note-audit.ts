@@ -107,17 +107,25 @@ export interface AuditOpdOpts {
   trace?: boolean;
   reuse?: AuditReuse;
   /** 'mini' = run the audit LLM pass on the Mac-mini bridge (MINI_MODEL, no Gemini) and tag
-   *  the row with the '-mini' engine version — invisible to all prod dashboards/APIs, which
+   *  the row with the '-<tag>' engine version — invisible to all prod dashboards/APIs, which
    *  filter on the exact prod engine version. Rows coexist per uid (PK uid+engine_version). */
   pipeline?: 'mini';
+  /** Engine suffix for mini rows (default 'mini'). A NEW tag (e.g. 'mini2') re-audits the same
+   *  notes as a fresh run — the uid+engine PK treats it as a distinct generation. */
+  engineTag?: string;
 }
 
-/** Engine tag for mini-pipeline rows. Single source of truth — the backfill worker imports this. */
+/** Engine tag for mini-pipeline rows (default run). */
 export const OPD_MINI_ENGINE_VERSION = `${OPD_ENGINE_VERSION}-mini`;
+/** Engine string for an arbitrary mini run tag. */
+export function opdMiniEngine(tag?: string): string {
+  const t = (tag || 'mini').replace(/[^a-z0-9-]/gi, '').slice(0, 24) || 'mini';
+  return `${OPD_ENGINE_VERSION}-${t}`;
+}
 
 export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdOpts = {}): Promise<OpdNoteAudit> {
   const mini = opts.pipeline === 'mini';
-  const engineVersion = mini ? OPD_MINI_ENGINE_VERSION : OPD_ENGINE_VERSION;
+  const engineVersion = mini ? opdMiniEngine(opts.engineTag) : OPD_ENGINE_VERSION;
   const { case: oc, keys } = rowToOpdCase(row);
   enrichOpdMeds(oc.medications);   // brand→generic + class/schedule/high-alert/LASA/VED from the formulary
 
