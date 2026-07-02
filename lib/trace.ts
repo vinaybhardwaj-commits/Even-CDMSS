@@ -101,14 +101,30 @@ export async function tracedChat(
         // (700–1500) leave no budget for the JSON answer and it truncates mid-string.
         // Give the content budget PLUS a generous thinking allowance.
         const baseMax = Number((rest as { max_tokens?: number }).max_tokens) || 1024;
-        const gParams = {
+        const gParams: Record<string, unknown> = {
           ...rest,
           model: vertexModelName(opts!.gemini as string),
           max_tokens: baseMax + 8192,
         };
+        // Streaming calls otherwise carry NO token usage, so their spend is invisible to the LLM
+        // cost tracker (this is why every /ask + /ddx pass was uncounted). Ask Vertex to emit a
+        // final usage chunk. Off switch: LLM_STREAM_USAGE=0. Self-healing: if the endpoint rejects
+        // the field we retry WITHOUT it (keep Gemini) rather than cascading to the Ollama fallback.
+        const wantUsage = Boolean((rest as { stream?: boolean }).stream) && process.env.LLM_STREAM_USAGE !== '0';
+        if (wantUsage) gParams.stream_options = { include_usage: true };
         const gemini = await getGeminiChatClient();
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        result = await gemini.chat.completions.create(gParams as any);
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          result = await gemini.chat.completions.create(gParams as any);
+        } catch (soErr) {
+          if (wantUsage && gParams.stream_options) {
+            delete gParams.stream_options;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            result = await gemini.chat.completions.create(gParams as any);
+          } else {
+            throw soErr;
+          }
+        }
       } catch (ge) {
         // Fall back to the local Ollama model — the request must never fail just
         // because Gemini is down/slow. Record the fallback for observability.
@@ -146,14 +162,50 @@ export async function tracedChat(
       usage: r.usage,
     }, Date.now() - t0);
   } else {
-    // For streaming, the caller will collect tokens and should call logStreamComplete after
+    // For streaming, the caller will collect tokens and should call logStreamComplete after.
     await logEvent(traceId, 'llm_response_stream_started', label, {
       model: actualModel,
       provider,
     }, Date.now() - t0);
+    // The content events carry no usage, so wrap the stream to capture the final usage chunk
+    // (from stream_options.include_usage) and log it once the stream drains. Gemini only —
+    // this is what makes streamed spend (/ask, /ddx, /topics) visible in the cost tracker.
+    if ((params as { stream?: boolean }).stream && provider === 'gemini') {
+      result = wrapStreamUsage(result, traceId, label, actualModel, provider, t0);
+    }
   }
 
   return result;
+}
+
+// Wraps a streaming chat completion so the final `usage` chunk (requested via
+// stream_options.include_usage) is captured and logged as an `llm_stream_usage` event. Yields
+// every chunk unchanged so callers iterate exactly as before (the usage chunk has empty choices,
+// so per-token consumers skip it). The cost tracker counts this event; without it, streamed calls
+// report zero tokens and their spend is invisible.
+async function* wrapStreamUsage(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  stream: AsyncIterable<any>,
+  traceId: string,
+  label: string,
+  model: string | undefined,
+  provider: string,
+  t0: number,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): AsyncGenerator<any> {
+  let usage: unknown;
+  try {
+    for await (const chunk of stream) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const u = (chunk as any)?.usage;
+      if (u) usage = u;
+      yield chunk;
+    }
+  } finally {
+    if (usage) {
+      await logEvent(traceId, 'llm_stream_usage', label, { model, provider, usage, streamed: true }, Date.now() - t0).catch(() => {});
+    }
+  }
 }
 
 // Used by streaming endpoints to log the assembled response after consuming the stream.

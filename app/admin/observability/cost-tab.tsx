@@ -193,7 +193,9 @@ export default async function CostTab({ sp }: { sp: Record<string, string | unde
               {log.items.map((it, i) => (
                 <tr key={i} className="border-t border-slate-100 hover:bg-slate-50">
                   <td className="py-1.5 pr-3 tabular-nums text-slate-500">{it.ts}</td>
-                  <td className="py-1.5 pr-3"><Link href={`/admin/observability/${it.traceId}`} className="text-slate-700 hover:text-brand">{featureMeta(it.feature).label}</Link>{it.type === 'pdf-ocr' && <span className="ml-1.5 rounded bg-amber-100 px-1 py-0.5 text-[9.5px] text-amber-700">PDF-OCR</span>}</td>
+                  <td className="py-1.5 pr-3"><Link href={`/admin/observability/${it.traceId}`} className="text-slate-700 hover:text-brand">{featureMeta(it.feature).label}</Link>{it.type === 'pdf-ocr' && (it.inTok === 0 && it.outTok === 0
+                    ? <span className="ml-1.5 rounded bg-slate-100 px-1 py-0.5 text-[9.5px] text-slate-500" title={`Read before multimodal metering began (${MULTIMODAL_METERED_SINCE}); no token usage was logged, so its ₹ is not counted.`}>PDF-OCR · unmetered</span>
+                    : <span className="ml-1.5 rounded bg-amber-100 px-1 py-0.5 text-[9.5px] text-amber-700">PDF-OCR</span>)}</td>
                   <td className="py-1.5 pr-3 text-slate-600">{it.model}</td>
                   <td className="py-1.5 pr-3 text-right tabular-nums text-slate-600">{it.inTok.toLocaleString()}</td>
                   <td className="py-1.5 pr-3 text-right tabular-nums text-slate-600">{it.outTok.toLocaleString()}</td>

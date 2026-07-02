@@ -21,12 +21,22 @@ export const PRICING: Pricing = {
   fallback: (pricingJson as unknown as { fallback: Pricing['fallback'] }).fallback,
 };
 
-// Every Gemini chat call is one `llm_response` event; usage carries the token counts.
+// Every Gemini call logs its token usage: non-streaming as `llm_response`, streaming as
+// `llm_stream_usage` (from the final include_usage chunk — see lib/trace.ts wrapStreamUsage).
+// Both must be counted or streamed spend (/ask, /ddx, /topics) is invisible.
+const LLM_KINDS = `e.kind IN ('llm_response', 'llm_stream_usage')`;
 const FROM_WHERE =
   `FROM trace_events e JOIN traces t ON t.trace_id = e.trace_id
-   WHERE e.kind = 'llm_response' AND e.app_source = $1 AND (e.payload->>'model') ILIKE '%gemini%'`;
+   WHERE ${LLM_KINDS} AND e.app_source = $1 AND (e.payload->>'model') ILIKE '%gemini%'`;
 const IN_TOK = `coalesce((e.payload->'usage'->>'prompt_tokens')::int, 0)`;
-const OUT_TOK = `coalesce((e.payload->'usage'->>'completion_tokens')::int, 0)`;
+// Output tokens = max(completion, total − prompt). Gemini 2.5 is a THINKING model: on the native
+// path `completion_tokens` excludes the (billed) thinking tokens while `total_tokens` includes
+// them, so total − prompt recovers visible + thinking output. When total is absent this reduces to
+// completion, so it never under- or over-counts vs. the raw completion count.
+const OUT_TOK = `greatest(
+    coalesce((e.payload->'usage'->>'completion_tokens')::int, 0),
+    coalesce((e.payload->'usage'->>'total_tokens')::int, 0) - coalesce((e.payload->'usage'->>'prompt_tokens')::int, 0)
+  )`;
 // A multimodal (PDF/image OCR) read vs a plain text chat call — the multimodal path logs
 // provider 'vertex-multimodal' + multimodal:true. Used to break out and label PDF-OCR spend.
 const IS_MM = `((e.payload->>'provider') ILIKE '%multimodal%' OR (e.payload->>'multimodal') = 'true')`;
@@ -191,7 +201,7 @@ export async function costLogFeatures(): Promise<string[]> {
 export async function costLog(q: CostLogQuery): Promise<CostLog> {
   const pageSize = Math.max(10, Math.min(200, q.pageSize ?? 100));
   const page = Math.max(0, q.page ?? 0);
-  const where = [`e.kind = 'llm_response'`, `e.app_source = $1`, `(e.payload->>'model') ILIKE '%gemini%'`];
+  const where = [LLM_KINDS, `e.app_source = $1`, `(e.payload->>'model') ILIKE '%gemini%'`];
   const params: unknown[] = [APP];
   if (isDay(q.from)) { params.push(q.from); where.push(`(e.ts AT TIME ZONE 'Asia/Kolkata')::date >= $${params.length}::date`); }
   if (isDay(q.to)) { params.push(q.to); where.push(`(e.ts AT TIME ZONE 'Asia/Kolkata')::date <= $${params.length}::date`); }

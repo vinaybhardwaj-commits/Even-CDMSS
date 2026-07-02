@@ -93,6 +93,7 @@ const EVENT_MAP: Record<string, EventMeta> = {
   llm_response: { label: 'LLM response', tone: 'llm' },
   llm_response_stream_started: { label: 'LLM stream started', tone: 'llm' },
   llm_response_stream_complete: { label: 'LLM response', tone: 'llm' },
+  llm_stream_usage: { label: 'LLM stream usage', tone: 'llm' },
   provider_fallback: { label: 'Provider fallback → Ollama', tone: 'error' },
   llm_error: { label: 'LLM error', tone: 'error' },
   retrieval_hydrated: { label: 'RAG retrieval', tone: 'retrieval' },
