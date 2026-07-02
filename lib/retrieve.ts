@@ -70,7 +70,9 @@ export async function retrieve(query: string, opts: RetrieveOptions = {}): Promi
     : Math.max(40, topK * 5);
 
   // ---- filter clauses ----
-  const filterClauses: string[] = [`text IS NOT NULL`, `visible IS NOT FALSE`];
+  // QUARANTINE GUARD (lab MCP): lab-added corpus material is inert as source `labq:%` until
+  // the user activates it (→ `lab:%`). Excluded from BOTH retrieval legs, always. Constant, no param.
+  const filterClauses: string[] = [`text IS NOT NULL`, `visible IS NOT FALSE`, `source NOT LIKE 'labq:%'`];
   const filterParams: unknown[] = [];
   let fp = 0;
   if (opts.bookFilter) { filterClauses.push(`book = $FP_${fp++}`); filterParams.push(opts.bookFilter); }

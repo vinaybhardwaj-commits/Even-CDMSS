@@ -1,0 +1,145 @@
+/**
+ * lib/lab.ts — the CDMSS "Lab": experimental sandbox for the mini pipeline, driven by
+ * the remote MCP (/api/mcp). Two stores, both isolated from production:
+ *
+ *  1. lab_analyses — experimental analysis outputs (mini-pipeline runs over Metabase
+ *     artifacts or pasted text), logically namespaced by `experiment` label. NEVER
+ *     touches opd_note_audits / appropriateness_runs.
+ *
+ *  2. Corpus quarantine — new corpus material is inserted into mksap_chunks with a
+ *     `labq:<label>` source and is INERT: retrieve.ts excludes `source LIKE 'labq:%'`,
+ *     so quarantined chunks can't affect production retrieval (Ask/DDx/Right Care/audits)
+ *     until activated (labq:<label> → lab:<label>), and are fully reversible (delete by source).
+ *
+ * Hard guarantees (enforced structurally, not by convention):
+ *  - MINI ONLY: every embedding + LLM call here runs on the Mac-mini bridge (nomic /
+ *    MINI_MODEL). No function in this file can reach Gemini.
+ *  - NO ARCHITECTURE CHANGE: the MCP calls these data-in/data-out helpers; it cannot
+ *    alter prompts, engines, weights, or any prod table.
+ */
+import { createHash } from 'crypto';
+import { sql } from './db';
+import { embedQuery, vectorLiteral } from './llm';
+import { labLabel, chunkText } from './lab-core';
+export { labLabel, chunkText } from './lab-core';
+
+const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
+
+const sha256 = (s: string): string => createHash('sha256').update(s).digest('hex');
+const approxTokens = (s: string) => Math.ceil(s.length / 4);
+
+// ── migration (idempotent) ─────────────────────────────────────────────────────
+export async function ensureLabTables(): Promise<void> {
+  await run(`CREATE TABLE IF NOT EXISTS lab_analyses (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    experiment text NOT NULL,
+    kind text NOT NULL,                 -- 'opd_note' | 'text' | …
+    engine text NOT NULL,               -- the mini engine string used
+    input_ref text,                     -- metabase uid / filename / null
+    input_preview text,                 -- short, de-identified echo of what was analysed
+    output jsonb NOT NULL,              -- the full mini result (scores/findings/etc.)
+    model text,
+    latency_ms int,
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`, []);
+  await run(`CREATE INDEX IF NOT EXISTS lab_analyses_experiment_idx ON lab_analyses (experiment, created_at DESC)`, []);
+}
+
+// ── lab_analyses store ──────────────────────────────────────────────────────────
+export interface LabAnalysisRow {
+  experiment: string; kind: string; engine: string;
+  inputRef?: string | null; inputPreview?: string | null;
+  output: unknown; model?: string | null; latencyMs?: number | null;
+}
+export async function saveLabAnalysis(r: LabAnalysisRow): Promise<string> {
+  const rows = await run(
+    `INSERT INTO lab_analyses (experiment, kind, engine, input_ref, input_preview, output, model, latency_ms)
+     VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8) RETURNING id`,
+    [r.experiment, r.kind, r.engine, r.inputRef ?? null, (r.inputPreview ?? '').slice(0, 500),
+     JSON.stringify(r.output), r.model ?? null, r.latencyMs ?? null],
+  );
+  return String(rows[0]?.id ?? '');
+}
+
+export async function listLabAnalyses(experiment: string | null, limit: number): Promise<Record<string, unknown>[]> {
+  const lim = Math.max(1, Math.min(200, limit));
+  if (experiment) {
+    return run(`SELECT id, experiment, kind, engine, input_ref, input_preview, model, latency_ms, created_at
+                FROM lab_analyses WHERE experiment = $1 ORDER BY created_at DESC LIMIT ${lim}`, [experiment]);
+  }
+  return run(`SELECT experiment, count(*)::int AS runs, max(created_at) AS latest
+              FROM lab_analyses GROUP BY experiment ORDER BY latest DESC LIMIT ${lim}`, []);
+}
+
+export async function getLabAnalysis(id: string): Promise<Record<string, unknown> | null> {
+  const rows = await run(`SELECT * FROM lab_analyses WHERE id = $1 LIMIT 1`, [id]);
+  return rows[0] ?? null;
+}
+
+// ── corpus quarantine ────────────────────────────────────────────────────────────
+export interface CorpusAddInput {
+  label: string;            // → source labq:<label>
+  book: string;             // title / work name (dedup is per (book, text_hash))
+  chapter?: string;
+  section?: string;
+  chunkType?: string;       // 'note' | 'guideline' | 'abstract' | …
+  text: string;
+}
+export interface CorpusAddResult { source: string; chunks: number; inserted: number; skipped_dup: number }
+
+/** Add vetted material to the corpus, QUARANTINED (labq:<label>). Embeds on nomic (mini). */
+export async function corpusAddQuarantined(input: CorpusAddInput): Promise<CorpusAddResult> {
+  const label = labLabel(input.label);
+  const source = `labq:${label}`;
+  const chunks = chunkText(input.text);
+  let inserted = 0, skipped = 0;
+  for (const [i, text] of chunks.entries()) {
+    const hash = sha256(text);
+    const emb = vectorLiteral(await embedQuery(text)); // nomic on the mini — ₹0
+    const ins = await run(
+      `INSERT INTO mksap_chunks (source, book, chapter, section, item_number, chunk_type, text, text_hash, embedding, token_count)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::vector, $10)
+       ON CONFLICT (book, text_hash) DO NOTHING RETURNING id`,
+      [source, input.book, input.chapter ?? null, input.section ?? 'lab', String(i + 1),
+       input.chunkType ?? 'note', text, hash, emb, approxTokens(text)],
+    );
+    if (ins.length) inserted++; else skipped++;
+  }
+  return { source, chunks: chunks.length, inserted, skipped_dup: skipped };
+}
+
+/** Activate a quarantined batch → visible to production retrieval (labq:<label> → lab:<label>). */
+export async function corpusActivate(label: string): Promise<{ source: string; activated: number }> {
+  const l = labLabel(label);
+  const rows = await run(`UPDATE mksap_chunks SET source = $1 WHERE source = $2 RETURNING id`, [`lab:${l}`, `labq:${l}`]);
+  return { source: `lab:${l}`, activated: rows.length };
+}
+
+/** Delete a lab corpus batch entirely (quarantined OR active) — fully reversible cleanup. */
+export async function corpusDelete(label: string, which: 'quarantined' | 'active' | 'both' = 'both'): Promise<{ deleted: number }> {
+  const l = labLabel(label);
+  const srcs = which === 'quarantined' ? [`labq:${l}`] : which === 'active' ? [`lab:${l}`] : [`labq:${l}`, `lab:${l}`];
+  const rows = await run(`DELETE FROM mksap_chunks WHERE source = ANY($1) RETURNING id`, [srcs]);
+  return { deleted: rows.length };
+}
+
+/** All lab corpus batches with counts + status. */
+export async function corpusLabList(): Promise<Record<string, unknown>[]> {
+  return run(
+    `SELECT source, count(*)::int AS chunks, min(book) AS book,
+            CASE WHEN source LIKE 'labq:%' THEN 'quarantined' ELSE 'active' END AS status
+     FROM mksap_chunks WHERE source LIKE 'labq:%' OR source LIKE 'lab:%'
+     GROUP BY source ORDER BY status, source`, []);
+}
+
+/** Storage snapshot for the MCP (lab tables + corpus lab footprint). */
+export async function labStorage(): Promise<Record<string, unknown>> {
+  const [an, corp] = await Promise.all([
+    run(`SELECT count(*)::int AS runs, count(DISTINCT experiment)::int AS experiments FROM lab_analyses`, []).catch(() => [{}]),
+    run(`SELECT count(*)::int AS lab_chunks,
+                count(*) FILTER (WHERE source LIKE 'labq:%')::int AS quarantined,
+                count(*) FILTER (WHERE source LIKE 'lab:%')::int AS active
+         FROM mksap_chunks WHERE source LIKE 'labq:%' OR source LIKE 'lab:%'`, []).catch(() => [{}]),
+  ]);
+  return { lab_analyses: an[0] ?? {}, corpus_lab: corp[0] ?? {} };
+}
