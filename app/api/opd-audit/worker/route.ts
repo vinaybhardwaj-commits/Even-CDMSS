@@ -7,6 +7,17 @@ import { auditOpdNote } from '@/lib/opd-note-audit';
 import { countOpdNotesForDay, fetchOpdNotesForDay, istYesterday } from '@/lib/metabase';
 import { saveOpdAudit, auditedUidsForDayAnyVersion, auditedCountForDayAnyVersion, earliestAuditedDay } from '@/lib/opd-audit-store';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
+import { getSettings, setSetting } from '@/lib/mini-backfill';
+
+// FORWARD CUTOFF (V, 2 Jul): the Gemini worker only audits notes dated ON/AFTER this day — i.e.
+// genuinely NEW notes going forward. Everything before it (all history + un-audited old notes) is
+// left to the free mini backfill. Stored in app_settings; set via ?set_forward_from=YYYY-MM-DD.
+const FWD_KEY = 'opd_gemini_forward_from';
+async function forwardCutoff(): Promise<string | null> {
+  const s = await getSettings([FWD_KEY]).catch(() => ({} as Record<string, string>));
+  const v = s[FWD_KEY] || '';
+  return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null;
+}
 
 // Execution guard (spends LLM compute): Vercel Cron (un-spoofable x-vercel-cron), a manual
 // trigger carrying Bearer CRON_SECRET / ?secret=CRON_SECRET, OR a logged-in admin session
@@ -78,17 +89,32 @@ export async function GET(req: NextRequest) {
   const conc = Math.max(1, Math.min(8, Number(p.get('conc') || 5)));
   const dayParam = p.get('day');
 
+  // Admin: set / clear the forward cutoff (?set_forward_from=YYYY-MM-DD, or =off).
+  const setFwd = p.get('set_forward_from');
+  if (setFwd != null) {
+    const val = /^\d{4}-\d{2}-\d{2}$/.test(setFwd) ? setFwd : '';
+    await setSetting(FWD_KEY, val);
+    return NextResponse.json({ ok: true, forward_from: val || null });
+  }
+
   try {
+    const cutoff = await forwardCutoff();
+
     // Manual single-day mode.
     if (dayParam && /^\d{4}-\d{2}-\d{2}$/.test(dayParam)) {
+      if (cutoff && dayParam < cutoff) {
+        return NextResponse.json({ ok: true, mode: 'day', day: dayParam, skipped: `before Gemini forward cutoff ${cutoff} — history is the mini backfill's job`, processed: 0 });
+      }
       const r = await processDay(dayParam, max, conc);
       return NextResponse.json({ ok: true, mode: 'day', ...r });
     }
 
-    // Sweep mode: oldest incomplete day in the lookback window (floored at launch).
+    // Sweep mode: oldest incomplete day in the lookback window. Floor = the forward cutoff if set
+    // (Gemini forward-only), else the earliest-audited day (legacy gap-fill).
     const lookback = Math.max(1, Math.min(14, Number(p.get('lookback') || process.env.OPD_AUDIT_LOOKBACK || 4)));
     const yesterday = istYesterday();
-    const floor = (await earliestAuditedDay()) || yesterday;
+    const baseFloor = (await earliestAuditedDay()) || yesterday;
+    const floor = cutoff && cutoff > baseFloor ? cutoff : baseFloor;
     const days: string[] = [];
     for (let i = lookback - 1; i >= 0; i--) { const d = addDays(yesterday, -i); if (d >= floor) days.push(d); }
     const window = { from: days[0] ?? yesterday, to: yesterday };
