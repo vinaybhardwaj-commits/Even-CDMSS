@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import {
   normDocType, normFieldStatus, normNetValue,
   parseExtraction, parseAnalysis, assembleCompleteness,
-  parseStatusList, normAdminFacts, adminFactsLine,
+  parseStatusList, normAdminFacts, adminFactsLine, buildAnalyzeUser,
   type RubricField,
 } from '../doc-audit-core.ts';
 
@@ -182,6 +182,19 @@ test('PX-R3: OLD-shape extraction (no risk_factors/aftercare) parses with every 
   // New keys: safe defaults, nothing invented.
   assert.deepEqual(ec!.riskFactors, []);
   assert.equal(ec!.aftercare, undefined);
+});
+
+test('PX-G2 pin: buildAnalyzeUser includes stated risk factors so safety findings (e.g. allergy breaches) stay visible to the analyze pass', () => {
+  const ec = parseExtraction(JSON.stringify({
+    detected_doc_type: 'discharge_summary', course_summary: 'Elective procedure, uneventful.',
+    medications: ['Inj Dynapar 75mg'],
+    risk_factors: ['Known allergy to Diclofenac Sodium'],
+  }), 'auto')!;
+  const user = buildAnalyzeUser(ec, '[1] excerpt', 'NABH discharge summary');
+  assert.match(user, /Stated risk factors \/ allergies: Known allergy to Diclofenac Sodium/);
+  // and absent when there are none (old-shape) — no stray header
+  const old = parseExtraction(JSON.stringify({ detected_doc_type: 'discharge_summary', course_summary: 'x', medications: ['amox'] }), 'auto')!;
+  assert.doesNotMatch(buildAnalyzeUser(old, '', 'std'), /Stated risk factors/);
 });
 
 test('PX-R3: NEW-shape extraction parses risk_factors + aftercare; empty aftercare collapses to undefined', () => {

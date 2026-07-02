@@ -173,6 +173,7 @@ function caseSummaryFor(extracted: ExtractedCase): string {
   if (extracted.diagnosis) parts.push(`Dx: ${extracted.diagnosis}`);
   if (extracted.indication) parts.push(`Indication: ${extracted.indication}`);
   if (extracted.procedure) parts.push(`Procedure: ${extracted.procedure}`);
+  if (extracted.riskFactors?.length) parts.push(`Risk factors/allergies: ${extracted.riskFactors.join('; ')}`);
   if (extracted.investigations.length) parts.push(`Ix: ${extracted.investigations.join('; ')}`);
   if (extracted.treatments.length) parts.push(`Tx: ${extracted.treatments.join('; ')}`);
   if (extracted.medications.length) parts.push(`Meds: ${extracted.medications.join('; ')}`);

@@ -334,6 +334,10 @@ export function buildAnalyzeUser(ctx: ExtractedCase, citedContext: string, stand
   if (ctx.diagnosis) lines.push(`Diagnosis: ${ctx.diagnosis}`);
   if (ctx.indication) lines.push(`Indication: ${ctx.indication}`);
   if (ctx.procedure) lines.push(`Procedure: ${ctx.procedure}`);
+  // PX §6.3 follow-through (found in G2): the extractor now files allergies/comorbidities
+  // under risk_factors instead of prose — the analyze pass MUST see them or it loses
+  // safety findings (e.g. a drug given against a documented allergy).
+  if (ctx.riskFactors?.length) lines.push(`Stated risk factors / allergies: ${ctx.riskFactors.join('; ')}`);
   if (ctx.investigations.length) lines.push(`Investigations: ${ctx.investigations.join('; ')}`);
   if (ctx.treatments.length) lines.push(`Treatments: ${ctx.treatments.join('; ')}`);
   if (ctx.medications.length) lines.push(`Medications: ${ctx.medications.join('; ')}`);
