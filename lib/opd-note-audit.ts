@@ -113,6 +113,10 @@ export interface AuditOpdOpts {
   /** Engine suffix for mini rows (default 'mini'). A NEW tag (e.g. 'mini2') re-audits the same
    *  notes as a fresh run — the uid+engine PK treats it as a distinct generation. */
   engineTag?: string;
+  /** With pipeline:'mini', write the row under the PLAIN prod engine version (OPD_ENGINE_VERSION,
+   *  no '-<tag>' suffix) so it is VISIBLE on prod dashboards — the free mini model correcting the
+   *  prod scores. (V decision, 2 Jul: re-audit history on the free mini, treat 0.6 as 0.6.) */
+  prodTag?: boolean;
 }
 
 /** Engine tag for mini-pipeline rows (default run). */
@@ -125,7 +129,9 @@ export function opdMiniEngine(tag?: string): string {
 
 export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdOpts = {}): Promise<OpdNoteAudit> {
   const mini = opts.pipeline === 'mini';
-  const engineVersion = mini ? opdMiniEngine(opts.engineTag) : OPD_ENGINE_VERSION;
+  // prodTag: a mini run that writes the PLAIN prod engine version (visible on dashboards) — the free
+  // model correcting prod scores. Otherwise mini stays isolated under '-<tag>'.
+  const engineVersion = mini ? (opts.prodTag ? OPD_ENGINE_VERSION : opdMiniEngine(opts.engineTag)) : OPD_ENGINE_VERSION;
   const { case: oc, keys } = rowToOpdCase(row);
   enrichOpdMeds(oc.medications);   // brand→generic + class/schedule/high-alert/LASA/VED from the formulary
 

@@ -27,6 +27,12 @@ export async function POST(req: NextRequest) {
   if (day(body.floor)) updates.push([MB_KEYS.floor, day(body.floor)!]);
   if (typeof body.tag === 'string' && body.tag.trim()) updates.push([MB_KEYS.tag, body.tag.trim().replace(/[^a-z0-9-]/gi, '').slice(0, 24)]);
   if (typeof body.n === 'string' && /^[1-4]$/.test(body.n)) updates.push([MB_KEYS.n, body.n]);
+  // prod='1' → mini writes the PLAIN prod engine (0.6), correcting the dashboards; '0' → isolated '-<tag>'.
+  // Switching mode re-seeds the sweep (clears the cursor) unless an explicit cursor was also given.
+  if (body.prod === '1' || body.prod === '0') {
+    updates.push([MB_KEYS.prod, String(body.prod)]);
+    if (!day(body.cursor)) updates.push([MB_KEYS.cursor, '']);
+  }
   if (updates.length === 0) return NextResponse.json({ ok: false, error: 'no valid settings in body' }, { status: 400 });
 
   for (const [k, v] of updates) await setSetting(k, v);
