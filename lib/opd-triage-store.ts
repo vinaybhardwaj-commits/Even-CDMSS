@@ -82,6 +82,32 @@ export async function loadInstanceOverrides(doctorUid: string, signalType: strin
   return (rows as Record<string, unknown>[]).map(rowToDecision);
 }
 
+/** Type-scope decisions for the Tier-0 signal-health view (with doctor_uid + created_at). */
+export async function loadTypeDecisions(sinceDays = 90): Promise<{ signal_type: string; doctor_uid: string; validity: string; bug_type: string | null; routed: boolean; reason: string | null; created_at: string }[]> {
+  const rows = await run(
+    `SELECT signal_type, doctor_uid, validity, bug_type, routed, reason, created_at
+     FROM opd_audit_triage WHERE scope='type' AND created_at > now() - ($1 || ' days')::interval
+     ORDER BY created_at DESC LIMIT 10000`, [String(Math.max(1, sinceDays))]);
+  return (rows as Record<string, unknown>[]).map((r) => ({
+    signal_type: String(r.signal_type), doctor_uid: String(r.doctor_uid), validity: String(r.validity),
+    bug_type: r.bug_type == null ? null : String(r.bug_type),
+    routed: r.routed === true || r.routed === 't' || r.routed === 'true',
+    reason: r.reason == null ? null : String(r.reason),
+    created_at: r.created_at == null ? '' : new Date(String(r.created_at)).toISOString(),
+  }));
+}
+
+/** (doctor_uid) whose LATEST type decision for `signalType` is valid_signal — the protected set. */
+export async function loadValidLabelDoctors(signalType: string): Promise<string[]> {
+  const rows = await run(
+    `SELECT doctor_uid, validity FROM (
+       SELECT DISTINCT ON (doctor_uid) doctor_uid, validity
+       FROM opd_audit_triage WHERE scope='type' AND signal_type=$1
+       ORDER BY doctor_uid, created_at DESC
+     ) latest WHERE validity='valid_signal'`, [signalType]).catch(() => []);
+  return (rows as Record<string, unknown>[]).map((r) => String(r.doctor_uid));
+}
+
 /** The engineering bug feed: audit_bug decisions (spec §3.4). */
 export async function loadBugFeed(limit = 200): Promise<TriageDecisionRow[]> {
   const rows = await run(

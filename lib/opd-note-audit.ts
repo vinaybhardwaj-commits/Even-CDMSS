@@ -23,6 +23,18 @@ import { doseFindings } from './dose-limits';
 import { tagInteractions } from './ddi-tags';
 import { curatedInteractions, mergeRank, type DrugClass } from './ddi';
 import type { DdiPair } from './rxlabelguard';
+import { applySuppressions, type Suppression } from './audit-suppression-core';
+import { loadActiveSuppressions } from './audit-suppression-store';
+
+// Best-effort cache of active suppressions (Tier-1 self-heal) so the per-note audit doesn't re-read
+// the table each time. Short TTL; a fresh suppression takes effect within a minute. Empty = no-op.
+let _suppCache: { at: number; list: Suppression[] } | null = null;
+async function getActiveSuppressions(): Promise<Suppression[]> {
+  const now = Date.now();
+  if (_suppCache && now - _suppCache.at < 60_000) return _suppCache.list;
+  try { const list = await loadActiveSuppressions(); _suppCache = { at: now, list }; return list; }
+  catch { return _suppCache?.list ?? []; }
+}
 
 // Formulary match types reliable enough to drive a deterministic safety alert (an approximate
 // brand-prefix match can drop a molecule from a combination, so it informs display only).
@@ -118,6 +130,8 @@ export interface AuditOpdOpts {
    *  no '-<tag>' suffix) so it is VISIBLE on prod dashboards — the free mini model correcting the
    *  prod scores. (V decision, 2 Jul: re-audit history on the free mini, treat 0.6 as 0.6.) */
   prodTag?: boolean;
+  /** Active Tier-1 suppressions to apply (defaults to the cached active set). Pass [] to disable. */
+  suppressions?: Suppression[];
 }
 
 /** Engine tag for mini-pipeline rows (default run). */
@@ -139,13 +153,19 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
   const det = [...prescribingChecks(oc), ...doseFindings(oc.medications), ...ddiFindings(oc.medications)];
   const completeness = opdCompleteness(oc);
 
+  // Tier-1 self-heal: apply human-approved active suppressions to the final (identity-stamped)
+  // findings — drop, or downgrade to informational (out of the triage queue + score). No-op when
+  // none are active. Applied AFTER stampFindingIdentity so it matches on signal_type + subject.
+  const supps = opts.suppressions ?? await getActiveSuppressions();
+  const finalize = (fs: OpdFinding[]): OpdFinding[] => applySuppressions(stampFindingIdentity(fs), keys.doctorUid, supps).findings;
+
   // Deterministic REUSE path (backfill): recompute the deterministic findings + completeness, KEEP
   // the stored LLM findings + PDQI-9, re-score. No retrieval, no LLM, no trace — so a completeness/
   // prescribing rule change refreshes stored rows at ~zero cost.
   if (opts.reuse) {
     // stampFindingIdentity: signal_type + finding_ref on every finding (governance spec v2.0 §2);
     // deterministic, so re-stamping stored LLM findings reproduces their refs.
-    const findings: OpdFinding[] = stampFindingIdentity([...det, ...opts.reuse.llmFindings]);
+    const findings: OpdFinding[] = finalize([...det, ...opts.reuse.llmFindings]);
     const scorecard = computeOpdScore({
       findings: findings.filter((f) => !f.informational).map((f) => ({ verdict: f.verdict, confidence: f.confidence, domain: f.domain })),
       completenessCoverage: completeness.coverage,
@@ -185,7 +205,7 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     const raw = await defaultGenerate(traceId, OPD_AUDIT_SYSTEM, buildOpdAuditUser(opdCaseText(oc), citedContext), mini);
     const parsed = parseOpdAnalysis(raw, sources.length);
 
-    const findings: OpdFinding[] = stampFindingIdentity([...det, ...(parsed?.findings ?? [])]);
+    const findings: OpdFinding[] = finalize([...det, ...(parsed?.findings ?? [])]);
     const scorecard = computeOpdScore({
       findings: findings.filter((f) => !f.informational).map((f) => ({ verdict: f.verdict, confidence: f.confidence, domain: f.domain })),
       completenessCoverage: completeness.coverage,
@@ -217,6 +237,6 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
       pdqi9: null,
       patientCentred: completeness.patientCentred,
     });
-    return { keys, scorecard, completeness, findings: stampFindingIdentity(det), suggestions: [], sources: [], engineVersion: engineVersion, traceId };
+    return { keys, scorecard, completeness, findings: finalize(det), suggestions: [], sources: [], engineVersion: engineVersion, traceId };
   }
 }
