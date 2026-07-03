@@ -106,3 +106,67 @@ export function lockHeld(lockTs: string | null, now: Date = new Date()): boolean
 export function prevDay(day: string): string {
   const d = new Date(day + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10);
 }
+
+// ── Tick history (for the monitor's state timeline) ───────────────────────────
+// Every autopilot tick appends one row here — INCLUDING ticks that did no work
+// (paused / outside-window / locked). The audit rows alone can't show "paused vs
+// genuinely idle"; this table can. Small + auto-pruned (30d). No new migration
+// needed at call sites — ensureTickTable() is idempotent.
+export type MiniTickStatus = 'running' | 'paused' | 'closed_window' | 'locked' | 'finished' | 'error';
+
+export interface MiniTick {
+  ts: string;
+  status: MiniTickStatus;
+  processed: number;
+  day: string | null;
+  avg_ms: number | null;
+  note: string | null;
+}
+
+const TICKS_RETENTION_DAYS = 30;
+
+export async function ensureTickTable(): Promise<void> {
+  await run(
+    `CREATE TABLE IF NOT EXISTS mini_backfill_ticks (
+       id         BIGSERIAL PRIMARY KEY,
+       ts         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+       status     TEXT NOT NULL,
+       processed  INT NOT NULL DEFAULT 0,
+       day        DATE,
+       avg_ms     INT,
+       note       TEXT
+     )`,
+  );
+  await run(`CREATE INDEX IF NOT EXISTS mini_backfill_ticks_ts_idx ON mini_backfill_ticks (ts DESC)`).catch(() => {});
+}
+
+/** Append one tick outcome; prunes rows older than the retention window. Never throws. */
+export async function logTick(t: { status: MiniTickStatus; processed?: number; day?: string | null; avg_ms?: number | null; note?: string | null }): Promise<void> {
+  try {
+    await ensureTickTable();
+    await run(
+      `INSERT INTO mini_backfill_ticks (status, processed, day, avg_ms, note) VALUES ($1,$2,$3,$4,$5)`,
+      [t.status, t.processed ?? 0, t.day && /^\d{4}-\d{2}-\d{2}$/.test(t.day) ? t.day : null, t.avg_ms ?? null, t.note ?? null],
+    );
+    await run(`DELETE FROM mini_backfill_ticks WHERE ts < NOW() - ($1 || ' days')::interval`, [String(TICKS_RETENTION_DAYS)]).catch(() => {});
+  } catch { /* monitoring must never break the pipeline */ }
+}
+
+/** Read tick outcomes from the last `hours` (default 48), oldest→newest. */
+export async function getTicks(hours = 48): Promise<MiniTick[]> {
+  const rows = await run(
+    `SELECT ts, status, processed, day, avg_ms, note
+       FROM mini_backfill_ticks
+      WHERE ts >= NOW() - ($1 || ' hours')::interval
+      ORDER BY ts ASC`,
+    [String(Math.max(1, Math.min(720, hours)))],
+  ).catch(() => [] as Record<string, unknown>[]);
+  return rows.map((r) => ({
+    ts: String(r.ts),
+    status: String(r.status) as MiniTickStatus,
+    processed: Number(r.processed ?? 0),
+    day: r.day ? String(r.day).slice(0, 10) : null,
+    avg_ms: r.avg_ms == null ? null : Number(r.avg_ms),
+    note: r.note == null ? null : String(r.note),
+  }));
+}

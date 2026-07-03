@@ -1,0 +1,106 @@
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+
+/**
+ * GET /api/admin/mini-backfill-monitor — data for the mini-pipeline monitoring view.
+ * Admin session or ?token=ADMIN_TOKEN. Poll-friendly (the client refreshes the live parts).
+ *
+ * Returns:
+ *   kpis       — processed today / total mini rows / avg s per note / current state
+ *   throughput — notes processed per time bucket over the range (from opd_note_audits.audited_at,
+ *                model=qwen → the mini's OWN work; Gemini rows carry a gemini model and are excluded)
+ *   ticks      — per-tick state (running/paused/closed_window/locked/finished/error) for the strip
+ *   inflight   — is a tick running right now (soft lock) + which day + how long
+ *   recent     — the last N mini audits (uid, band, index, latency) for the live feed
+ *
+ * ?range = 24h | 7d | 30d | all  (default 7d) controls the throughput bucket size.
+ */
+import { NextRequest, NextResponse } from 'next/server';
+import { isAdminUnlocked } from '@/lib/admin-cookie';
+import { requireAdmin } from '@/lib/admin-gate';
+import { sql } from '@/lib/db';
+import { readState, getTicks, windowOpen, lockHeld, MB_LOCK_TTL_MS } from '@/lib/mini-backfill';
+
+const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
+const num = (v: unknown): number => Number(v ?? 0);
+
+// mini rows carry a local (qwen/ollama) model; Gemini prod rows carry a gemini model.
+const MINI_MODEL_FILTER = `(model ILIKE '%qwen%' OR model ILIKE '%ollama%' OR model ILIKE '%mini%' OR engine_version LIKE '%-mini' OR engine_version LIKE '%-lab')`;
+
+const RANGES: Record<string, { hours: number; trunc: string; bucketMin: number }> = {
+  '24h': { hours: 24, trunc: 'hour', bucketMin: 60 },
+  '7d': { hours: 24 * 7, trunc: 'hour', bucketMin: 60 },
+  '30d': { hours: 24 * 30, trunc: 'day', bucketMin: 1440 },
+  'all': { hours: 24 * 400, trunc: 'day', bucketMin: 1440 },
+};
+
+export async function GET(req: NextRequest) {
+  if (!(await isAdminUnlocked())) { const denied = requireAdmin(req); if (denied) return denied; }
+  const rangeKey = (req.nextUrl.searchParams.get('range') || '7d') in RANGES ? (req.nextUrl.searchParams.get('range') as string) : '7d';
+  const range = RANGES[rangeKey];
+
+  try {
+    const st = await readState();
+
+    const [buckets, todayRow, totalRow, recent, ticks] = await Promise.all([
+      // throughput: notes processed per bucket over the range (the mini's own audit rows)
+      run(
+        `SELECT date_trunc($2, audited_at) AS bucket, count(*)::int AS notes, round(avg(latency_ms))::int AS avg_ms
+           FROM opd_note_audits
+          WHERE audited_at >= NOW() - ($1 || ' hours')::interval AND ${MINI_MODEL_FILTER}
+          GROUP BY 1 ORDER BY 1 ASC`,
+        [String(range.hours), range.trunc],
+      ).catch(() => [] as Record<string, unknown>[]),
+      run(
+        `SELECT count(*)::int AS n, round(avg(latency_ms))::int AS avg_ms
+           FROM opd_note_audits
+          WHERE (audited_at AT TIME ZONE 'Asia/Kolkata')::date = (NOW() AT TIME ZONE 'Asia/Kolkata')::date AND ${MINI_MODEL_FILTER}`,
+      ).catch(() => [{ n: 0, avg_ms: 0 }]),
+      run(`SELECT count(*)::int AS n FROM opd_note_audits WHERE ${MINI_MODEL_FILTER}`).catch(() => [{ n: 0 }]),
+      // live feed: last 12 mini audits
+      run(
+        `SELECT uid, band, note_quality_index AS idx, latency_ms, audited_at,
+                consult_type, prescription_type
+           FROM opd_note_audits
+          WHERE ${MINI_MODEL_FILTER}
+          ORDER BY audited_at DESC LIMIT 12`,
+      ).catch(() => [] as Record<string, unknown>[]),
+      getTicks(range.hours <= 48 ? 48 : Math.min(range.hours, 24 * 30)),
+    ]);
+
+    const inflightMs = st.lock && lockHeld(st.lock) ? Date.now() - Date.parse(st.lock) : null;
+    const state: 'running' | 'paused' | 'idle_window_closed' =
+      !st.enabled ? 'paused' : windowOpen(st.window) ? 'running' : 'idle_window_closed';
+
+    return NextResponse.json({
+      ok: true,
+      range: rangeKey,
+      generatedAt: new Date().toISOString(),
+      kpis: {
+        processedToday: num(todayRow[0]?.n),
+        totalMini: num(totalRow[0]?.n),
+        avgSecPerNote: todayRow[0]?.avg_ms ? Math.round(num(todayRow[0].avg_ms) / 1000) : (st.last && (st.last as Record<string, unknown>).throughput ? Math.round(num(((st.last as Record<string, unknown>).throughput as Record<string, unknown>).avg_ms_per_note) / 1000) : null),
+        state,
+        window: st.window,
+        prod: st.prod,
+        tag: st.tag,
+        cursor: st.cursor,
+        floor: st.floor,
+      },
+      throughput: buckets.map((b) => ({ t: String(b.bucket), notes: num(b.notes), avgSec: b.avg_ms ? Math.round(num(b.avg_ms) / 1000) : null })),
+      bucketMinutes: range.bucketMin,
+      ticks: ticks.map((t) => ({ t: t.ts, status: t.status, processed: t.processed })),
+      inflight: inflightMs != null ? { active: true, day: (st.last as Record<string, unknown> | null)?.day ?? st.cursor ?? null, sinceSec: Math.round(inflightMs / 1000), ttlSec: Math.round(MB_LOCK_TTL_MS / 1000) } : { active: false },
+      recent: recent.map((r) => ({
+        uid: String(r.uid),
+        band: r.band ? String(r.band) : null,
+        idx: r.idx == null ? null : num(r.idx),
+        sec: r.latency_ms == null ? null : Math.round(num(r.latency_ms) / 1000),
+        at: String(r.audited_at),
+        kind: [r.prescription_type, r.consult_type].filter(Boolean).map(String).join(' · ') || null,
+      })),
+    });
+  } catch (e) {
+    return NextResponse.json({ ok: false, error: String((e as Error).message) }, { status: 500 });
+  }
+}

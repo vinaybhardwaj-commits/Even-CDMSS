@@ -32,7 +32,7 @@ import { MINI_MODEL } from '@/lib/llm';
 import { countOpdNotesForDay, fetchOpdNotesForDay, istYesterday } from '@/lib/metabase';
 import { saveOpdAudit, auditedUidsForDay, earliestAuditedDay } from '@/lib/opd-audit-store';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
-import { readState, setSetting, windowOpen, lockHeld, prevDay, MB_KEYS } from '@/lib/mini-backfill';
+import { readState, setSetting, windowOpen, lockHeld, prevDay, MB_KEYS, logTick } from '@/lib/mini-backfill';
 
 async function authed(req: NextRequest): Promise<boolean> {
   const isCron = req.headers.get('x-vercel-cron') !== null;
@@ -78,9 +78,9 @@ async function processBatch(day: string, n: number, engineStr: string, tag: stri
 async function autoTick(): Promise<Record<string, unknown>> {
   const st = await readState();
   const base = { auto: true, enabled: st.enabled, window: st.window, prod: st.prod, tag: st.tag, cursor: st.cursor, floor: st.floor };
-  if (!st.enabled) return { ...base, skipped: 'paused' };
-  if (!windowOpen(st.window)) return { ...base, skipped: 'outside compute window (night = 00:00–05:00 IST)' };
-  if (lockHeld(st.lock)) return { ...base, skipped: 'previous tick still running (soft lock)' };
+  if (!st.enabled) { await logTick({ status: 'paused', note: 'autopilot paused' }); return { ...base, skipped: 'paused' }; }
+  if (!windowOpen(st.window)) { await logTick({ status: 'closed_window', note: 'outside night window' }); return { ...base, skipped: 'outside compute window (night = 00:00–05:00 IST)' }; }
+  if (lockHeld(st.lock)) { await logTick({ status: 'locked', note: 'previous tick still running' }); return { ...base, skipped: 'previous tick still running (soft lock)' }; }
   await setSetting(MB_KEYS.lock, new Date().toISOString());
   try {
 
@@ -103,6 +103,7 @@ async function autoTick(): Promise<Record<string, unknown>> {
       await setSetting(MB_KEYS.enabled, '0');
       const doneSummary = { ...base, cursor: day, finished: true, note: 'cursor passed the floor — backfill complete; autopilot paused itself' };
       await setSetting(MB_KEYS.last, JSON.stringify({ ...doneSummary, at: new Date().toISOString() }));
+      await logTick({ status: 'finished', note: 'cursor passed floor — backfill complete' });
       return doneSummary;
     }
     batch = await processBatch(day, st.n, engineStr, st.tag, st.prod);
@@ -122,6 +123,12 @@ async function autoTick(): Promise<Record<string, unknown>> {
     at: new Date().toISOString(),
   };
   await setSetting(MB_KEYS.last, JSON.stringify(summary));
+  const nErr = (batch?.results ?? []).filter((r) => 'error' in r).length;
+  await logTick({
+    status: (batch?.processed ?? 0) > 0 ? 'running' : (nErr > 0 ? 'error' : 'running'),
+    processed: batch?.processed ?? 0, day: batch?.day ?? day, avg_ms: avgMs,
+    note: nErr ? `${nErr} note error(s) this tick` : null,
+  });
   return summary;
   } finally {
     // Release the lock at tick END so a fast (every-1–2-min) cron runs back-to-back. The lock now
@@ -137,7 +144,10 @@ export async function GET(req: NextRequest) {
   // Autopilot mode (cron) — everything else below is the original manual probe mode.
   if (p.get('auto') === '1') {
     try { return NextResponse.json({ ok: true, ...(await autoTick()) }); }
-    catch (e) { return NextResponse.json({ ok: false, error: String((e as Error).message) }, { status: 500 }); }
+    catch (e) {
+      await logTick({ status: 'error', note: String((e as Error).message).slice(0, 200) });
+      return NextResponse.json({ ok: false, error: String((e as Error).message) }, { status: 500 });
+    }
   }
 
   const n = Math.max(1, Math.min(3, Number(p.get('n') || 1)));

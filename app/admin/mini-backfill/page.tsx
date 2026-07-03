@@ -6,6 +6,7 @@ import { opdMiniEngine } from '@/lib/opd-note-audit';
 import { OPD_ENGINE_VERSION } from '@/lib/opd-note-audit-core';
 import { MINI_MODEL } from '@/lib/llm';
 import MiniBackfillControls from './controls';
+import MiniBackfillMonitor from './monitor';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Mini backfill · Admin' };
@@ -80,6 +81,9 @@ export default async function MiniBackfillAdmin() {
           {last?.at ? <div className="mt-0.5 text-[10.5px] text-slate-400">{String(last.at).slice(0, 16).replace('T', ' ')} UTC</div> : null}
         </div>
       </div>
+
+      {/* live monitoring — continuous throughput line + state timeline + live feed */}
+      <MiniBackfillMonitor />
 
       <div className="mt-4"><MiniBackfillControls state={{ enabled: st.enabled, window: st.window, cursor: st.cursor, floor: st.floor, tag: st.tag, n: st.n }} /></div>
 
