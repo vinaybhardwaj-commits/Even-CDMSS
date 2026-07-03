@@ -86,13 +86,37 @@ export interface OpdScoreInput {
 export interface OpdDomainScore {
   domain: OpdDomain; label: string; score: number; weight: number; n: number; basis: string;
 }
+export interface OpdFlag { key: string; label: string; detail: string; severity: 'info' | 'warn' }
 export interface OpdScorecard {
   headline: number;     // 0..100 weighted OPD Note-Quality Index
   band: Band;
   domains: OpdDomainScore[];
   pdqi9: { attr: Pdqi9Attr; label: string; value: number }[]; // per-attribute (provided only)
   confidence: 'low' | 'moderate' | 'high';
+  flags: OpdFlag[];     // advisory annotations (e.g. "fields present but content thin") — B3
   caveat: string;
+}
+
+/**
+ * B3 — the "documentation completeness ≠ clinical adequacy" flag. Fires when the NABH fields are
+ * (near-)complete but the note's PDQI thoroughness/synthesis is poor — the exact contradiction
+ * clinicians flagged (Documentation 100 while Thoroughness ≤ 2). Pure derivation from the stored
+ * doc score + PDQI rows, so the DISPLAY can compute it for existing audits with no re-audit.
+ */
+export function documentationAdequacyFlag(
+  docScore: number, pdqi9: { attr: string; value: number }[],
+): OpdFlag | null {
+  if (!(docScore >= 90)) return null;                 // only when fields are (near-)complete
+  const v = (a: string): number | null => { const r = pdqi9.find((x) => x.attr === a); return r && Number.isFinite(r.value) ? r.value : null; };
+  const thorough = v('thorough'); const synth = v('synthesized');
+  const weakest = Math.min(thorough ?? 5, synth ?? 5);
+  if (weakest > 2) return null;
+  return {
+    key: 'thin_documentation',
+    label: 'Fields present · content thin',
+    detail: 'All required NABH fields are filled, but the clinical content is sparse (low thoroughness/synthesis). A high completeness score means "nothing left blank", not "well-documented" — read it alongside Note quality.',
+    severity: 'warn',
+  };
 }
 
 export const OPD_NOTE_CAVEAT =
@@ -178,12 +202,16 @@ export function computeOpdScore(input: OpdScoreInput): OpdScorecard {
   const signal = findings.length + (pq.score == null ? 0 : 2);
   const confidence: OpdScorecard['confidence'] = signal >= 4 ? 'high' : signal >= 2 ? 'moderate' : 'low';
 
+  // B3 — advisory flags (completeness ≠ adequacy). Scores are unchanged; this reframes the reading.
+  const flags = [documentationAdequacyFlag(docScore, pq.rows)].filter((f): f is OpdFlag => f != null);
+
   return {
     headline,
     band: bandFor(headline),
     domains,
     pdqi9: pq.rows,
     confidence,
+    flags,
     caveat: OPD_NOTE_CAVEAT,
   };
 }

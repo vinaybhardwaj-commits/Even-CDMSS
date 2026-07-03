@@ -5,7 +5,7 @@ import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
 import { fetchDoctorNames, fetchOpdNoteByUid } from '@/lib/metabase';
 import { rowToOpdCase, type DeidOpdCase } from '@/lib/opd-ingest-core';
 import { enrichOpdMeds } from '@/lib/formulary';
-import { type OpdDomain } from '@/lib/opd-note-score-core';
+import { type OpdDomain, documentationAdequacyFlag } from '@/lib/opd-note-score-core';
 import { OPD_ENGINE_VERSION } from '@/lib/opd-note-audit-core';
 import { anchorFindings, anchorsByTarget, type NoteAnchor } from '@/lib/opd-case-anchor-core';
 import { CitationChips, SourcesPanel } from '@/components/right-care/kit';
@@ -299,6 +299,8 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
 
   // ── domain scores + findings grouped by domain (worst domain first) ───────────
   const scores = Object.fromEntries(DOMAINS.map((d) => [d.key, n(r[d.col])])) as Record<OpdDomain, number>;
+  // B3 — the "fields present but content thin" flag, derived from stored doc score + PDQI (no re-audit).
+  const docFlag = documentationAdequacyFlag(scores.documentation, pdqi);
   const pdqiAssessed = pdqi.length > 0;
   const domainOrder = DOMAINS.filter((d) => !(d.key === 'note_quality' && !pdqiAssessed))
     .slice().sort((a, b) => scores[a.key] - scores[b.key]).map((d) => d.key as string);
@@ -375,6 +377,11 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
                   {(cnt > 0 || isWorst) && (
                     <div className="mt-[2px] text-[9.5px]" style={{ color: isWorst ? c : '#94a3b8' }}>
                       {na ? 'not assessed' : `${cnt > 0 ? `${cnt} finding${cnt > 1 ? 's' : ''}` : ''}${isWorst ? `${cnt > 0 ? ' · ' : ''}main drag ↓` : ''}`}
+                    </div>
+                  )}
+                  {d.key === 'documentation' && docFlag && (
+                    <div className="mt-[3px] rounded bg-amber-50 px-1.5 py-1 text-[9.5px] leading-snug text-amber-700" title={docFlag.detail}>
+                      ⚠ {docFlag.label} — completeness ≠ adequacy
                     </div>
                   )}
                 </div>

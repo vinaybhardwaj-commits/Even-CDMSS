@@ -4,7 +4,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeOpdScore, OPD_DEFAULT_WEIGHTS, type OpdScoreInput } from '../opd-note-score-core.ts';
+import { computeOpdScore, OPD_DEFAULT_WEIGHTS, documentationAdequacyFlag, type OpdScoreInput } from '../opd-note-score-core.ts';
 
 const PDQI_ALL = (v: number) => ({
   up_to_date: v, accurate: v, thorough: v, useful: v, organized: v,
@@ -71,4 +71,28 @@ test('PDQI-9 partial ratings average only the provided attributes', () => {
 test('weights are sane', () => {
   const sum = Object.values(OPD_DEFAULT_WEIGHTS).reduce((a, b) => a + b, 0);
   assert.ok(Math.abs(sum - 1) < 1e-9, `weights should sum to 1, got ${sum}`);
+});
+
+// B3 — documentation "fields present but content thin" flag
+test('documentationAdequacyFlag fires only when fields (near-)complete AND thoroughness/synthesis low', () => {
+  const thin = [{ attr: 'thorough', value: 1 }, { attr: 'synthesized', value: 2 }, { attr: 'accurate', value: 4 }];
+  const rich = [{ attr: 'thorough', value: 4 }, { attr: 'synthesized', value: 4 }];
+  assert.ok(documentationAdequacyFlag(100, thin));          // doc complete + thin content → flag
+  assert.equal(documentationAdequacyFlag(100, rich), null); // doc complete + rich content → no flag
+  assert.equal(documentationAdequacyFlag(80, thin), null);  // fields not complete → no flag
+  assert.equal(documentationAdequacyFlag(100, []), null);   // no PDQI → can't judge thin → no flag
+  const f = documentationAdequacyFlag(100, thin)!;
+  assert.equal(f.key, 'thin_documentation');
+  assert.equal(f.severity, 'warn');
+});
+
+test('computeOpdScore surfaces the thin-documentation flag without changing scores', () => {
+  const input = {
+    findings: [], completenessCoverage: 1, patientCentred: { present: 2, total: 2 },
+    pdqi9: { thorough: 1, synthesized: 2, accurate: 4, up_to_date: 4, useful: 2, organized: 3, comprehensible: 3, succinct: 4, internally_consistent: 3 },
+  };
+  const sc = computeOpdScore(input as Parameters<typeof computeOpdScore>[0]);
+  assert.equal(sc.domains.find((d) => d.domain === 'documentation')!.score, 100); // score unchanged
+  assert.equal(sc.flags.length, 1);
+  assert.equal(sc.flags[0].key, 'thin_documentation');
 });
