@@ -3,101 +3,95 @@ export const runtime = 'nodejs';
 
 import Link from 'next/link';
 import { redirect, notFound } from 'next/navigation';
-import { ArrowRight } from 'lucide-react';
+import { ArrowRight, MessageSquareHeart, ClipboardCheck } from 'lucide-react';
 import { isCareUnlocked } from '@/lib/care-cookie';
 import { sql } from '@/lib/db';
 import { CCB_ENGINE_VERSION } from '@/lib/ccb-brief-core';
-import { resolveMemberIdentities } from '@/lib/ccb-search';
-import PullMember from '@/components/care/PullMember';
+import { OPD_ENGINE_VERSION } from '@/lib/opd-note-audit-core';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
+const APP = process.env.APP_SOURCE || 'standalone';
 
-type Flagged = {
-  individual_uid: string; uhid: string | null; presc_uid: string;
-  date: string | null; citation_coverage_pct: number | null; priority: string | null;
-  coverage: string | null; doctor_speciality: string | null; signal: string | null;
-};
-
-const titleCase = (s: string | null) => (s ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : '');
-const clamp = (s: string | null, n = 130) => (s && s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : (s || ''));
-
-export default async function CareLanding() {
+/**
+ * Managed Care — the chooser home for the /care surface (PRD §4). Two purpose-built sub-modules
+ * that share the care-manager auth + CAT shell: member-centric Care Conversation Briefs and
+ * doctor-centric OPD Audit Triage. Deep CCB routes stay put.
+ */
+export default async function ManagedCareHome() {
   if (process.env.CCB_ENABLED !== '1') notFound();
   if (!(await isCareUnlocked())) redirect('/care/login');
 
-  // Members flagged for a conversation: one row per member (best-grounded flagged episode), with a
-  // plain-language signal pulled from the stored brief (the cited surgical/specialist indication).
-  let rows: Flagged[] = [];
-  try {
-    rows = (await run(
-      `SELECT individual_uid, uhid, presc_uid, note_date_ist AS date, citation_coverage_pct, priority, coverage, doctor_speciality, signal
-       FROM (
-         SELECT DISTINCT ON (individual_uid)
-           individual_uid, uhid, presc_uid,
-           to_char(note_date AT TIME ZONE 'Asia/Kolkata','YYYY-MM-DD') AS note_date_ist,
-           citation_coverage_pct, priority, coverage, doctor_speciality,
-           coalesce(
-             (SELECT f->>'claim' FROM jsonb_array_elements(CASE WHEN jsonb_typeof(envelope->'clinical')='array' THEN envelope->'clinical' ELSE '[]'::jsonb END) f
-                WHERE f->>'id' IN (SELECT jsonb_array_elements_text(CASE WHEN jsonb_typeof(envelope->'commercial'->'gated_on')='array' THEN envelope->'commercial'->'gated_on' ELSE '[]'::jsonb END)) LIMIT 1),
-             (SELECT f->>'claim' FROM jsonb_array_elements(CASE WHEN jsonb_typeof(envelope->'clinical')='array' THEN envelope->'clinical' ELSE '[]'::jsonb END) f
-                WHERE f->>'kind' IN ('surgical_indication','speciality') LIMIT 1)
-           ) AS signal,
-           created_at
-         FROM ccb_briefs
-         WHERE engine_version = $1 AND pitch_allowed = true AND individual_uid IS NOT NULL
-         ORDER BY individual_uid, citation_coverage_pct DESC NULLS LAST, created_at DESC
-       ) x
-       ORDER BY citation_coverage_pct DESC NULLS LAST, note_date_ist DESC
-       LIMIT 30`,
-      [CCB_ENGINE_VERSION],
-    )) as Flagged[];
-  } catch { rows = []; }
+  // Live "needs attention" counts (best-effort; each independently soft-fails to null).
+  const [briefsR, triageR] = await Promise.all([
+    run(`SELECT count(DISTINCT individual_uid)::int n FROM ccb_briefs
+         WHERE engine_version = $1 AND pitch_allowed = true AND individual_uid IS NOT NULL`, [CCB_ENGINE_VERSION]).catch(() => []),
+    run(`SELECT count(DISTINCT doctor_uid)::int n FROM opd_note_audits
+         WHERE app_source = $1 AND engine_version = $2
+           AND (note_date AT TIME ZONE 'Asia/Kolkata')::date =
+               (SELECT max((note_date AT TIME ZONE 'Asia/Kolkata')::date) FROM opd_note_audits WHERE app_source = $1 AND engine_version = $2)`,
+      [APP, OPD_ENGINE_VERSION]).catch(() => []),
+  ]);
+  const briefsCount = Number((briefsR as Record<string, unknown>[])[0]?.n ?? 0);
+  const triageCount = Number((triageR as Record<string, unknown>[])[0]?.n ?? 0);
 
-  const identities = await resolveMemberIdentities(rows.map((r) => r.individual_uid));
+  const cards = [
+    {
+      href: '/care/briefs',
+      icon: MessageSquareHeart,
+      title: 'Care Conversation Briefs',
+      desc: 'Look up a member and prep a grounded call — or work today’s flagged list. Member-centric.',
+      count: briefsCount, countLabel: 'members flagged', tint: 'violet',
+    },
+    {
+      href: '/care/triage',
+      icon: ClipboardCheck,
+      title: 'OPD Audit Triage',
+      desc: 'Clear last night’s audit signals doctor-by-doctor: kill the noise, decide what matters, route the real ones. Doctor-centric.',
+      count: triageCount, countLabel: 'doctors audited', tint: 'sky',
+    },
+  ] as const;
+
+  const tintClasses: Record<string, { badge: string; icon: string }> = {
+    violet: { badge: 'bg-violet-100 text-violet-800', icon: 'text-violet-500' },
+    sky: { badge: 'bg-sky-100 text-sky-800', icon: 'text-sky-500' },
+  };
 
   return (
-    <div className="mx-auto max-w-4xl px-5 py-8" style={{ fontFamily: 'system-ui, sans-serif' }}>
+    <div className="mx-auto max-w-3xl px-5 py-8" style={{ fontFamily: 'system-ui, sans-serif' }}>
       <div className="flex items-center gap-2">
-        <h1 className="text-[20px] font-semibold text-slate-900">Care Conversation Brief</h1>
+        <h1 className="text-[20px] font-semibold text-slate-900">Managed Care</h1>
         <span className="rounded-full bg-teal-50 px-2 py-0.5 text-[11px] text-teal-700">Advisory · care management</span>
       </div>
-      <p className="text-[12.5px] text-slate-500">Look up a member to prep a call, or work today’s flagged list.</p>
+      <p className="mt-0.5 text-[12.5px] text-slate-500">Two rooms, one team. Pick where the work is.</p>
 
-      <div className="mt-4"><PullMember /></div>
-
-      <div className="mt-7 flex items-center justify-between">
-        <h2 className="text-[12px] font-medium uppercase tracking-wide text-slate-400">Flagged for a conversation</h2>
-        {rows.length > 0 && <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-medium text-violet-800">{rows.length}</span>}
+      <div className="mt-5 grid gap-3.5 sm:grid-cols-2">
+        {cards.map((c) => {
+          const Icon = c.icon;
+          const t = tintClasses[c.tint];
+          return (
+            <Link key={c.href} href={c.href}
+              className="group flex flex-col rounded-2xl border border-slate-200 bg-white p-4 transition hover:border-slate-300 hover:shadow-sm">
+              <div className="flex items-center justify-between">
+                <Icon className={`h-5 w-5 ${t.icon}`} />
+                {c.count > 0 && (
+                  <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${t.badge}`}>
+                    {c.count} {c.countLabel}
+                  </span>
+                )}
+              </div>
+              <div className="mt-3 flex items-center gap-1.5 text-[15px] font-semibold text-slate-900">
+                {c.title}
+                <ArrowRight className="h-3.5 w-3.5 text-slate-300 transition group-hover:translate-x-0.5 group-hover:text-slate-500" />
+              </div>
+              <p className="mt-1 text-[12.5px] leading-relaxed text-slate-500">{c.desc}</p>
+            </Link>
+          );
+        })}
       </div>
 
-      <div className="mt-2 overflow-hidden rounded-xl border border-slate-200 bg-white">
-        {rows.length === 0 ? (
-          <div className="px-3 py-8 text-center text-[13px] text-slate-400">No members flagged right now. Search a member above to open their record.</div>
-        ) : (
-          <ul>
-            {rows.map((r) => {
-              const id = identities[r.individual_uid];
-              const meta = [id?.gender ? titleCase(id.gender)[0] : null, id?.age != null ? `${id.age}` : null].filter(Boolean).join('');
-              return (
-                <li key={r.individual_uid} className="border-t border-slate-100 first:border-t-0 hover:bg-slate-50">
-                  <Link href={`/care/m/${encodeURIComponent(r.individual_uid)}`} className="flex items-center gap-3 px-3.5 py-3">
-                    <div className="w-40 shrink-0">
-                      <div className="text-[13.5px] font-medium text-slate-900">{id?.name || 'Member'}</div>
-                      <div className="text-[11.5px] text-slate-400">{[meta || null, r.uhid].filter(Boolean).join(' · ') || '—'}</div>
-                    </div>
-                    <div className="min-w-0 flex-1 text-[12.5px] text-slate-700">
-                      {clamp(r.signal) || <span className="text-slate-400">Flagged episode · {r.doctor_speciality || 'review'}</span>}
-                    </div>
-                    <div className="w-16 shrink-0 text-right text-[12.5px] text-slate-600">{r.citation_coverage_pct != null ? `${r.citation_coverage_pct}%` : '—'}</div>
-                    <ArrowRight className="h-3.5 w-3.5 shrink-0 text-slate-300" />
-                  </Link>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </div>
-      <p className="mt-2.5 text-[11.5px] text-slate-400">Advisory; not a clinician assessment. A member is flagged only on a corpus-cited surgical/specialist indication. “%” is the brief’s evidence-grounding.</p>
+      <p className="mt-5 text-[11.5px] text-slate-400">
+        Advisory throughout — never a clinician score. Audit signals are a high-sensitivity screen; nothing reaches a doctor until a care manager validates and routes it.
+      </p>
     </div>
   );
 }

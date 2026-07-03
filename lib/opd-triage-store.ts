@@ -1,0 +1,110 @@
+/**
+ * lib/opd-triage-store.ts — Care-Manager OPD Audit Triage: the decision store (Neon, WIRED).
+ *
+ * `opd_audit_triage` (governance spec v2.0 §3.1) holds append-only CM decisions — type-level batch
+ * defaults (doctor_uid, signal_type) + optional instance overrides (audit_id, finding_ref). Latest
+ * row wins; nothing is ever updated or deleted (full audit trail). The audit findings themselves
+ * live in `opd_note_audits`; this is the state WE own layered over that read (same pattern as
+ * care_track_assignments). Table created by /api/admin/migrate-opd-triage.
+ */
+
+import { randomUUID } from 'crypto';
+import { sql } from './db';
+import { validateDecision, type DecisionInput, type NormalizedDecision, type TriageDecisionRow } from './opd-triage-core';
+
+const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
+
+export async function ensureOpdTriageTable(): Promise<void> {
+  await run(`CREATE TABLE IF NOT EXISTS opd_audit_triage (
+    id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    app_source         text NOT NULL DEFAULT 'standalone',
+    scope              text NOT NULL,
+    doctor_uid         text NOT NULL,
+    signal_type        text NOT NULL,
+    audit_id           uuid,
+    finding_ref        text,
+    window_from        date,
+    window_to          date,
+    validity           text NOT NULL,
+    bug_type           text,
+    importance         text,
+    routed             boolean NOT NULL DEFAULT false,
+    response_required  text,
+    reason             text,
+    cm_user            text,
+    created_at         timestamptz NOT NULL DEFAULT now()
+  )`, []);
+  await run(`CREATE INDEX IF NOT EXISTS opd_audit_triage_type_idx     ON opd_audit_triage (doctor_uid, signal_type, created_at DESC)`, []);
+  await run(`CREATE INDEX IF NOT EXISTS opd_audit_triage_instance_idx ON opd_audit_triage (audit_id, finding_ref) WHERE scope = 'instance'`, []);
+  await run(`CREATE INDEX IF NOT EXISTS opd_audit_triage_routed_idx   ON opd_audit_triage (routed, response_required, created_at DESC)`, []);
+}
+
+function rowToDecision(r: Record<string, unknown>): TriageDecisionRow {
+  return {
+    scope: (String(r.scope) === 'instance' ? 'instance' : 'type'),
+    doctor_uid: String(r.doctor_uid),
+    signal_type: String(r.signal_type),
+    audit_id: r.audit_id == null ? null : String(r.audit_id),
+    finding_ref: r.finding_ref == null ? null : String(r.finding_ref),
+    validity: String(r.validity),
+    bug_type: r.bug_type == null ? null : String(r.bug_type),
+    importance: r.importance == null ? null : String(r.importance),
+    routed: r.routed === true || r.routed === 't' || r.routed === 'true',
+    response_required: r.response_required == null ? null : String(r.response_required),
+    reason: r.reason == null ? null : String(r.reason),
+    cm_user: r.cm_user == null ? null : String(r.cm_user),
+    created_at: r.created_at == null ? '' : new Date(String(r.created_at)).toISOString(),
+  };
+}
+
+const SELECT_COLS = `scope, doctor_uid, signal_type, audit_id::text AS audit_id, finding_ref,
+  validity, bug_type, importance, routed, response_required, reason, cm_user, created_at`;
+
+/** All triage decisions for a set of doctors (newest first) — for the queue overlay. */
+export async function loadTriageDecisions(doctorUids: string[]): Promise<TriageDecisionRow[]> {
+  const uids = [...new Set(doctorUids.filter(Boolean))];
+  if (uids.length === 0) return [];
+  const rows = await run(
+    `SELECT ${SELECT_COLS} FROM opd_audit_triage WHERE doctor_uid = ANY($1) ORDER BY created_at DESC LIMIT 5000`,
+    [uids],
+  );
+  return (rows as Record<string, unknown>[]).map(rowToDecision);
+}
+
+/** Instance-level overrides for one (doctor, signal_type) — for the drill view. */
+export async function loadInstanceOverrides(doctorUid: string, signalType: string): Promise<TriageDecisionRow[]> {
+  const rows = await run(
+    `SELECT ${SELECT_COLS} FROM opd_audit_triage
+     WHERE scope = 'instance' AND doctor_uid = $1 AND signal_type = $2 ORDER BY created_at DESC LIMIT 2000`,
+    [doctorUid, signalType],
+  );
+  return (rows as Record<string, unknown>[]).map(rowToDecision);
+}
+
+/** The engineering bug feed: audit_bug decisions (spec §3.4). */
+export async function loadBugFeed(limit = 200): Promise<TriageDecisionRow[]> {
+  const rows = await run(
+    `SELECT ${SELECT_COLS} FROM opd_audit_triage WHERE validity = 'audit_bug' ORDER BY created_at DESC LIMIT $1`,
+    [Math.max(1, Math.min(1000, limit))],
+  );
+  return (rows as Record<string, unknown>[]).map(rowToDecision);
+}
+
+/** Validate + append one decision row. Throws on invalid input (caller maps to 400). */
+export async function insertDecision(input: DecisionInput): Promise<{ id: string; decision: NormalizedDecision }> {
+  const v = validateDecision(input);
+  if (!v.ok) throw new Error(v.error);
+  const d = v.value;
+  const id = randomUUID();
+  await run(
+    `INSERT INTO opd_audit_triage
+      (id, app_source, scope, doctor_uid, signal_type, audit_id, finding_ref, window_from, window_to,
+       validity, bug_type, importance, routed, response_required, reason, cm_user)
+     VALUES ($1,'standalone',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+    [
+      id, d.scope, d.doctor_uid, d.signal_type, d.audit_id, d.finding_ref, d.window_from, d.window_to,
+      d.validity, d.bug_type, d.importance, d.routed, d.response_required, d.reason, d.cm_user,
+    ],
+  );
+  return { id, decision: d };
+}
