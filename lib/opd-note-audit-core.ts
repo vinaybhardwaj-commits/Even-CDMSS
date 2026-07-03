@@ -66,6 +66,15 @@ export const OPD_SIGNAL_TYPES: Record<string, string> = {
   schedule_x: 'Schedule X drug',
   off_formulary: 'Off-formulary items',
   antibiotic_stewardship: 'Antibiotic stewardship',
+  // Coarse LLM buckets (by domain × verdict) — a free-text appropriateness/prescribing finding
+  // that matches no precise rule batches here, so the CM sees "Low-value appropriateness ×12"
+  // rather than 12 one-off drug-named cards. finding_ref stays per-instance for drill.
+  appropriateness_low_value: 'Low-value / inappropriate care',
+  appropriateness_review: 'Appropriateness — needs review',
+  appropriateness_high_value: 'High-value care (positive)',
+  prescribing_low_value: 'Low-value / unsafe prescribing',
+  prescribing_review: 'Prescribing — needs review',
+  prescribing_high_value: 'Sound prescribing (positive)',
   appropriateness_general: 'Appropriateness (other)',
   prescribing_general: 'Prescribing safety (other)',
 };
@@ -88,18 +97,26 @@ const SIGNAL_TYPE_RULES: { re: RegExp; type: string }[] = [
   { re: /\b(?:drug[\s–-]+drug\s+)?interaction\b/, type: 'drug_interaction' },
 ];
 
-const SLUG_STOPWORDS = new Set(['the', 'a', 'an', 'of', 'for', 'in', 'on', 'to', 'with', 'and', 'or', 'is', 'are', 'was']);
+// Verdict → coarse class for the LLM buckets. High-value = positive (low triage priority).
+const VERDICT_CLASS: Record<string, 'low_value' | 'high_value' | 'review'> = {
+  'low-value': 'low_value', 'high-value': 'high_value',
+  'context-dependent': 'review', 'uncertain': 'review',
+};
 
-/** The controlled-vocab signal type for a finding subject (pure, derivable for legacy rows). */
-export function opdSignalType(subject: string, domain: OpdFindingDomain): string {
+/**
+ * The controlled-vocab signal type for a finding (pure, derivable for legacy rows).
+ * (1) precise rules (deterministic subjects + keyword LLM rules like antibiotics) win;
+ * (2) otherwise a free-text LLM finding batches into a COARSE domain×verdict bucket — this is the
+ *     fix for queue fragmentation (per-drug subjects were each becoming their own type);
+ * (3) with no verdict to class on, the domain's general bucket.
+ */
+export function opdSignalType(subject: string, domain: OpdFindingDomain, opts?: { verdict?: string }): string {
   // Match on the category part (before ':'), parentheticals stripped, lowercased.
   const prefix = (subject.split(':')[0] || '').replace(/\(.*?\)/g, ' ').trim().toLowerCase();
   for (const r of SIGNAL_TYPE_RULES) if (r.re.test(prefix)) return r.type;
-  // Slug fallback: a bounded slug of the subject's category words, so recurring LLM subjects
-  // still batch together; empty → the domain's general bucket.
-  const words = prefix.replace(/[^a-z\s]/g, ' ').split(/\s+/).filter((w) => w && !SLUG_STOPWORDS.has(w)).slice(0, 4);
-  if (words.length) return words.join('_');
-  return domain === 'prescribing_safety' ? 'prescribing_general' : 'appropriateness_general';
+  const domainKey = domain === 'prescribing_safety' ? 'prescribing' : 'appropriateness';
+  const cls = opts?.verdict ? VERDICT_CLASS[opts.verdict] : undefined;
+  return cls ? `${domainKey}_${cls}` : `${domainKey}_general`;
 }
 
 // Compact pure SHA-1 (deterministic content hash; NOT security-sensitive). Verified against the
@@ -141,7 +158,7 @@ function sha1Hex(input: string): string {
 export function stampFindingIdentity(findings: OpdFinding[]): OpdFinding[] {
   const used = new Set<string>();
   return findings.map((f) => {
-    const signal_type = opdSignalType(f.subject, f.domain);
+    const signal_type = opdSignalType(f.subject, f.domain, { verdict: f.verdict });
     const colon = f.subject.indexOf(':');
     const detail = (colon >= 0 ? f.subject.slice(colon + 1) : f.subject).trim().toLowerCase().replace(/\s+/g, ' ');
     const base = sha1Hex(`${signal_type}|${detail}`).slice(0, 12);

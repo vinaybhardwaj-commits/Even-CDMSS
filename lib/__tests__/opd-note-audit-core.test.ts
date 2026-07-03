@@ -250,12 +250,16 @@ test('opdSignalType maps every deterministic subject shape to the controlled voc
   }
 });
 
-test('opdSignalType: LLM subjects — antibiotic rule, bounded slug fallback, domain fallback', () => {
+test('opdSignalType: LLM subjects — antibiotic rule, coarse domain×verdict buckets, general fallback', () => {
   assert.equal(opdSignalType('Antibiotic for likely-viral URTI', 'prescribing_safety'), 'antibiotic_stewardship');
-  // slug fallback is bounded (≤4 words) + deterministic → recurring LLM subjects batch together
-  assert.equal(opdSignalType('Low-yield Widal test for afebrile patient', 'appropriateness'),
-    opdSignalType('low yield widal test', 'appropriateness'));
-  // empty prefix → the domain's general bucket
+  // free-text LLM findings batch into a COARSE domain×verdict bucket (the fragmentation fix) —
+  // two different low-value appropriateness subjects land in the SAME bucket
+  assert.equal(opdSignalType('Cefixime for acute pharyngitis', 'appropriateness', { verdict: 'low-value' }), 'appropriateness_low_value');
+  assert.equal(opdSignalType('Unnecessary PPI co-prescription', 'appropriateness', { verdict: 'low-value' }), 'appropriateness_low_value');
+  assert.equal(opdSignalType('Uncertain indication for MRI', 'appropriateness', { verdict: 'context-dependent' }), 'appropriateness_review');
+  assert.equal(opdSignalType('Duplicate statin risk', 'prescribing_safety', { verdict: 'low-value' }), 'prescribing_low_value');
+  assert.equal(opdSignalType('Appropriate step-down of therapy', 'prescribing_safety', { verdict: 'high-value' }), 'prescribing_high_value');
+  // no verdict to class on → the domain's general bucket
   assert.equal(opdSignalType('—', 'appropriateness'), 'appropriateness_general');
   assert.equal(opdSignalType('::', 'prescribing_safety'), 'prescribing_general');
 });
