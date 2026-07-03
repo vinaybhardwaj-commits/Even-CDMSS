@@ -336,9 +336,13 @@ export function opdCaseText(c: DeidOpdCase, opts?: { specialty?: string | null }
   if (c.history.length) lines.push(`Relevant history: ${c.history.join('; ')}`);
   if (c.comorbidities.length) lines.push(`Comorbidities: ${c.comorbidities.join('; ')}`);
   if (c.allergies) lines.push(`Allergies documented: ${c.allergies}`);
-  lines.push(`Medications (${c.medications.length})  [drug class · D&C schedule · safety tags from the EHRC formulary; "brand:" = the note gave only a proprietary name]:`);
-  for (const m of c.medications) {
-    lines.push(`  - ${formatOpdMed(m)}`);
+  if (c.medications.length === 0) {
+    lines.push('Medications (0): NONE prescribed this encounter — there is no prescription to assess for safety; do not raise a prescribing-safety finding.');
+  } else {
+    lines.push(`Medications (${c.medications.length})  [drug class · D&C schedule · safety tags from the EHRC formulary; "brand:" = the note gave only a proprietary name]:`);
+    for (const m of c.medications) {
+      lines.push(`  - ${formatOpdMed(m)}`);
+    }
   }
   lines.push(`Investigations ordered: ${c.investigations.length ? c.investigations.join('; ') : '(none)'}`);
   lines.push(`Clinician advice / plan: ${c.advice.length ? c.advice.join('; ') : '(none documented)'}`);

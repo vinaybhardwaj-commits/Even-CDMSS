@@ -176,7 +176,16 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
   // findings — drop, or downgrade to informational (out of the triage queue + score). No-op when
   // none are active. Applied AFTER stampFindingIdentity so it matches on signal_type + subject.
   const supps = opts.suppressions ?? await getActiveSuppressions();
-  const finalize = (fs: OpdFinding[]): OpdFinding[] => applySuppressions(stampFindingIdentity(fs), keys.doctorUid, supps).findings;
+  const noMeds = oc.medications.length === 0;
+  const finalize = (fs: OpdFinding[]): OpdFinding[] => {
+    let out = stampFindingIdentity(fs);
+    // B1 — nothing was prescribed this encounter → there is no prescription to fault. Deterministic
+    // prescribing checks can't fire with 0 meds, so any prescribing_safety finding here is an LLM
+    // ghost (typically read out of the patient's history). Drop it. (Interaction/duplication with a
+    // history drug is only valid when a CURRENT med exists — which requires meds.length > 0.)
+    if (noMeds) out = out.filter((f) => f.domain !== 'prescribing_safety');
+    return applySuppressions(out, keys.doctorUid, supps).findings;
+  };
 
   // Deterministic REUSE path (backfill): recompute the deterministic findings + completeness, KEEP
   // the stored LLM findings + PDQI-9, re-score. No retrieval, no LLM, no trace — so a completeness/

@@ -338,3 +338,13 @@ test('followUpDocumented + completeness: UNKNOWN/blank excluded, real dispositio
   assert.equal(opdCompleteness(withType('UNKNOWN')).patientCentred.present, 1);
   assert.equal(opdCompleteness(withType('MANDATORY_FOLLOW_UP')).patientCentred.present, 2);
 });
+
+// B1 — empty-medications case text tells the auditor there's no prescription to fault
+test('opdCaseText marks a zero-medication note explicitly (B1)', () => {
+  const { case: c } = rowToOpdCase({ uid: 'z', doctor_uid: 'd', type_of_prescription: 'GENERAL_PRACTITIONER',
+    timestamp: '2026-07-02T05:00:00+05:30', diagnosis_icd_codes: ['J06.9'], medications: '[]',
+    followup__followup_type: 'FOLLOW_UP_WITH_REPORTS' });
+  assert.equal(c.medications.length, 0);
+  assert.match(opdCaseText(c), /NONE prescribed this encounter/);
+  assert.match(opdCaseText(c), /no prescription to assess/);
+});
