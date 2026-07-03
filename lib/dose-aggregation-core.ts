@@ -139,6 +139,18 @@ export function canonicalMolecule(fragment: string, limits: DoseLimit[]): string
 // ── Per-med molecule breakdown ────────────────────────────────────────────────
 export interface MedMolecule { molecule: string; perUnitMg: number | null }
 
+/**
+ * A liquid/suspension whose strength is a CONCENTRATION ("250mg/5ml") dosed by VOLUME ("5 ml").
+ * The tablet model (per-unit strength × unit count) does not apply — computing it would badly
+ * over-estimate (250 × 5 × N). These are also predominantly paediatric (weight-based dosing,
+ * out of scope for adult ceilings), so v1 excludes them from aggregation rather than mis-flag.
+ */
+export function isVolumetric(m: OpdMed): boolean {
+  const conc = /\/\s*\d*\s*ml\b|per\s*\d*\s*ml\b|mg\s*\/\s*ml/i;   // "250mg/5ml", "mg/ml", "per 5ml"
+  const volDose = /\bml\b|\bmls\b|\bdrops?\b/i;
+  return conc.test(m.strength || '') || conc.test(m.dose || '') || volDose.test(m.dose || '');
+}
+
 /** Split a med into its molecules with aligned per-unit strengths (combos → multiple rows). */
 export function moleculesOf(m: OpdMed, limits: DoseLimit[]): MedMolecule[] {
   // Strip parenthetical strength lists BEFORE splitting on '+': the EMR sometimes writes the
@@ -176,10 +188,11 @@ export function aggregateDailyDose(meds: OpdMed[], table: DoseLimitsTable): Map<
   for (const m of meds) {
     const fp = parseFrequency(m.frequency, table.default_sos_cap_per_day);
     const u = unitsPerDose(m.dose);   // the EMR `dosage` field maps to OpdMed.dose ("1 tablet")
+    const volumetric = isVolumetric(m);   // liquid/suspension by concentration — outside the tablet model
     const label = m.brand || m.generic || m.resolvedGeneric || 'medication';
     for (const mm of moleculesOf(m, table.limits)) {
       const cur = acc.get(mm.molecule) || { molecule: mm.molecule, scheduledMgPerDay: 0, sosMaxMgPerDay: 0, products: [], hasSos: false, assumedSos: false, incomplete: false };
-      if (mm.perUnitMg == null || fp.unknown) {
+      if (mm.perUnitMg == null || fp.unknown || volumetric) {
         cur.incomplete = true;
       } else {
         cur.scheduledMgPerDay += mm.perUnitMg * u * fp.scheduled;

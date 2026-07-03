@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   parseFrequency, unitsPerDose, strengthTokenToMg, canonicalMolecule,
-  moleculesOf, aggregateDailyDose, doseAggregationFindings,
+  moleculesOf, aggregateDailyDose, doseAggregationFindings, isVolumetric,
   type DoseLimitsTable,
 } from '../dose-aggregation-core.ts';
 import type { OpdMed } from '../opd-ingest-core.ts';
@@ -142,6 +142,19 @@ test('SOS-only exceedance is a softer, lower-confidence advisory', () => {
   assert.ok(soft, 'expected an SOS-max advisory');
   assert.equal(soft!.verdict, 'context-dependent');
   assert.ok(soft!.confidence <= 0.4);
+});
+
+test('paediatric liquid/suspension (concentration strength, ml dose) is excluded — no false flag', () => {
+  // Real EMR shape: Calpol 250mg/5ml, 5 ml QID. The tablet model would compute 250*5*4 = 5000 mg;
+  // it must instead be skipped (concentration formulation, weight-based paeds dosing, out of scope).
+  assert.equal(isVolumetric({ strength: '250mg/5ml', dose: '5 ml', frequency: '1-1-1-1' }), true);
+  const meds: OpdMed[] = [
+    { generic: 'Paracetamol', brand: 'Calpol 250mg Paediatric Suspension', strength: '250mg/5ml', dose: '5 ml', frequency: '1-1-1-1' },
+  ];
+  const loads = aggregateDailyDose(meds, TABLE);
+  assert.equal(loads.get('paracetamol')!.scheduledMgPerDay, 0);   // not 5000
+  assert.equal(loads.get('paracetamol')!.incomplete, true);
+  assert.equal(doseAggregationFindings(meds, TABLE).filter((f) => !f.informational).length, 0);
 });
 
 test('same molecule in two products but within ceiling → informational only', () => {
