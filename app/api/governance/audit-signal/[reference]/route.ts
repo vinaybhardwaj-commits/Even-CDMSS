@@ -13,10 +13,11 @@ import { getByReference, listEvents, toSignalRow } from '@/lib/opd-gov-signal-st
 import { signalObject, isAuditRef } from '@/lib/opd-gov-signal-core';
 import { resolveInstances } from '@/lib/opd-gov-read';
 
-export async function GET(req: NextRequest, { params }: { params: { reference: string } }) {
+export async function GET(req: NextRequest, { params }: { params: Promise<{ reference: string }> }) {
   if (!govKeyValid(req) && !(await isAdminUnlocked())) return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
 
-  const reference = decodeURIComponent(params.reference || '');
+  const { reference: rawRef } = await params;
+  const reference = decodeURIComponent(rawRef || '');
   if (!isAuditRef(reference)) return NextResponse.json({ ok: false, error: 'bad reference' }, { status: 400 });
 
   const signal = await getByReference(reference);
