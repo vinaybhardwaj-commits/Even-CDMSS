@@ -241,7 +241,7 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
         <div>
           <div className="text-[11px] font-semibold uppercase tracking-[0.09em] text-brand">OPD Audit</div>
           <h1 className="font-serif text-[28px] font-semibold leading-tight text-slate-900 sm:text-[31px]">OPD note quality</h1>
-          <p className="mt-1 max-w-2xl text-[13.5px] text-slate-500">{periodLabel} · every non-draft medical OPD note, read by Right Care. Advisory — a process &amp; documentation proxy, not a clinician scorecard.</p>
+          <p className="mt-1 max-w-2xl text-[13.5px] text-slate-500">{periodLabel} · every non-draft medical OPD note, read by Right Care. Advisory — a process &amp; documentation proxy, not a clinician scorecard. <Link href="/admin/opd-audit/how-it-works" className="text-brand hover:underline">How the audit works →</Link></p>
         </div>
         <div className="flex items-center gap-2">
           <span className="flex overflow-hidden rounded-lg border border-slate-200">

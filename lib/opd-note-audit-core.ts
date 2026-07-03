@@ -25,7 +25,7 @@ import type { NetValue, OpdFindingDomain, Pdqi9Attr } from './opd-note-score-cor
 //       B2: follow-up counts as documented ONLY for a real disposition or an explicit date — a bare
 //       'UNKNOWN'/blank no longer earns continuity/documentation credit (the score-moving change
 //       that makes 0.7 a distinct generation). Prompt-pass fixes (B1/B5/B6) land next, still 0.7.
-export const OPD_ENGINE_VERSION = 'opd-note-audit/0.7';
+export const OPD_ENGINE_VERSION = 'opd-note-audit/0.8';
 
 // Local copy of the PDQI-9 keys (kept in sync with opd-note-score-core) so this core has
 // no runtime cross-import and stays loadable under `node --experimental-strip-types`.
@@ -256,11 +256,16 @@ export function opdCompleteness(c: DeidOpdCase): OpdCompleteness {
   ];
   // Physical examination — applicable only to in-person encounters (a teleconsult can't examine).
   if (!isTele) items.push({ key: 'examination', label: 'Examination recorded', present: c.examination.length > 0, mandatory: true });
-  const present = items.filter((i) => i.present).length;
-  const coverage = items.length ? present / items.length : 1;
+  // 0.8 — score each field ONCE. Advice + follow-up stay on the checklist (display, missing-fields,
+  // mandatory tracking) but are EXCLUDED from the Documentation coverage denominator: they are scored
+  // in the Continuity domain. Before 0.8 they counted in BOTH domains (2 of 5–6 completeness items
+  // ×0.25 weight + the whole patient_centred domain ×0.10) — a hidden double-weighting.
+  const pc = ['advice_given', 'follow_up'];
+  const docItems = items.filter((i) => !pc.includes(i.key));
+  const present = docItems.filter((i) => i.present).length;
+  const coverage = docItems.length ? present / docItems.length : 1;
   const missing = items.filter((i) => !i.present).map((i) => i.label);
   // Continuity / patient-centred subset (advice + follow-up).
-  const pc = ['advice_given', 'follow_up'];
   const pcItems = items.filter((i) => pc.includes(i.key));
   return {
     items,

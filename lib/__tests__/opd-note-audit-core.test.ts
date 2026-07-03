@@ -339,6 +339,31 @@ test('followUpDocumented + completeness: UNKNOWN/blank excluded, real dispositio
   assert.equal(opdCompleteness(withType('MANDATORY_FOLLOW_UP')).patientCentred.present, 2);
 });
 
+// 0.8 — each field scored ONCE: advice/follow-up stay on the checklist (display, missing-fields)
+// but no longer move the Documentation coverage — they are scored in the Continuity domain only.
+test('completeness coverage excludes continuity fields — scored once (0.8)', () => {
+  const base = { uid: 'x8', doctor_uid: 'd', type_of_prescription: 'GENERAL_PRACTITIONER', consult_type: 'IN_PERSON', timestamp: '2026-07-02T05:00:00+05:30',
+    presenting_complaints: '[{"complaint":"fever"}]', diagnosis_icd_codes: ['J06.9'],
+    medications: '[{"generic_name":"Paracetamol","dosage":"650mg","frequency":"1-1-1","duration":"3d","route_of_administration":"oral"}]',
+    general_practitioner_prescription__plan_of_management: '[{"management_plan":"<p>rest</p>"}]' };
+  const mk = (over: Record<string, unknown>) => rowToOpdCase({ ...base, ...over }).case;
+
+  const withFu = opdCompleteness(mk({ followup__followup_type: 'MANDATORY_FOLLOW_UP' }));
+  const noFu = opdCompleteness(mk({ followup__followup_type: 'UNKNOWN' }));
+  assert.equal(noFu.coverage, withFu.coverage);             // follow-up no longer moves Documentation
+  assert.ok(noFu.missing.includes('Follow-up specified'));  // but is still tracked as missing
+  assert.equal(noFu.patientCentred.present, 1);             // and still penalised in Continuity
+
+  const noAdvice = opdCompleteness(mk({ followup__followup_type: 'MANDATORY_FOLLOW_UP', general_practitioner_prescription__plan_of_management: '[]' }));
+  assert.equal(noAdvice.coverage, withFu.coverage);         // advice no longer moves Documentation
+  assert.equal(noAdvice.patientCentred.present, 1);
+
+  // the checklist still carries both fields for display
+  assert.equal(withFu.items.filter((i) => ['advice_given', 'follow_up'].includes(i.key)).length, 2);
+  // and the Documentation denominator is now the clinical-record core (complaint/dx/dosing/exam)
+  assert.equal(withFu.coverage, 3 / 4); // exam missing on this in-person note
+});
+
 // B1 — empty-medications case text tells the auditor there's no prescription to fault
 test('opdCaseText marks a zero-medication note explicitly (B1)', () => {
   const { case: c } = rowToOpdCase({ uid: 'z', doctor_uid: 'd', type_of_prescription: 'GENERAL_PRACTITIONER',

@@ -148,6 +148,7 @@ export default function TriageBoard() {
           <span className="rounded-full bg-sky-50 px-2 py-0.5 text-[11px] text-sky-700">Advisory · care management</span>
         </div>
         <div className="flex items-center gap-2">
+          <a href="/admin/opd-audit/how-it-works" className="text-[12.5px] text-sky-700 hover:underline">How the audit works →</a>
           <a href="/care/triage/health" className="text-[12.5px] text-sky-700 hover:underline">Signal health →</a>
           <div className="flex rounded-lg border border-slate-200 p-0.5 text-[12px]">
             {(['untriaged', 'all'] as const).map((s) => (

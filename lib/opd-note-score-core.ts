@@ -79,7 +79,7 @@ export interface OpdScoreInput {
   findings: OpdScoreFinding[];
   completenessCoverage: number;                 // 0..1 — type-aware NABH OPD completeness
   pdqi9: Partial<Record<Pdqi9Attr, number>> | null;  // each attribute 1..5; null = not assessed
-  patientCentred: { present: number; total: number }; // continuity fields (follow-up, advice, red-flags)
+  patientCentred: { present: number; total: number }; // continuity fields (advice, follow-up) — exactly the two; nothing else feeds this
   weights?: Partial<Record<OpdDomain, number>>;
 }
 
@@ -126,8 +126,9 @@ function clamp(n: number, lo: number, hi: number): number { return Math.max(lo, 
 function round(n: number): number { return Math.round(n); }
 
 // Inlined from value-score-core (keep in sync) — see import note above.
-const PENALTY_BASE = 45;
-const SEVERITY: Record<NetValue, number> = { 'low-value': 1.0, 'context-dependent': 0.5, uncertain: 0.2, 'high-value': 0 };
+// Exported so the "How the audit works" reference page renders the REAL constants (no drift).
+export const PENALTY_BASE = 45;
+export const SEVERITY: Record<NetValue, number> = { 'low-value': 1.0, 'context-dependent': 0.5, uncertain: 0.2, 'high-value': 0 };
 function findingPenalty(f: { verdict: NetValue; confidence: number }): number {
   return PENALTY_BASE * (SEVERITY[f.verdict] ?? 0.2) * clamp(Number(f.confidence) || 0, 0, 1);
 }
