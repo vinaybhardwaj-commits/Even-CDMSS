@@ -33,10 +33,11 @@ export const MB_KEYS = {
 
 export const MB_DEFAULT_FLOOR = '2024-03-25'; // first auditable db13 OPD note
 // Soft-lock crash backstop. The tick now RELEASES the lock explicitly at its end (route.ts finally),
-// so this only matters if a tick dies without releasing. Kept just above a normal tick's wall time
-// (n≤2 → ~2 min) so a crashed tick recovers within a couple of cron cycles without ever letting two
-// ticks hit the single mini at once.
-export const MB_LOCK_TTL_MS = 150 * 1000;
+// so this only matters if a tick dies without releasing. Set safely ABOVE a slow-but-healthy tick's
+// wall time (n=2 × up to ~72s/note + overhead ≈ 150s) yet under the 300s Vercel function cap, so an
+// all-day 'always'-window run never mistakes a still-running tick for a crashed one and double-fires
+// two audits at the single Mac-mini.
+export const MB_LOCK_TTL_MS = 210 * 1000;
 
 export interface MiniBackfillState {
   enabled: boolean;
