@@ -19,6 +19,7 @@ import {
 } from './opd-note-audit-core';
 import { computeOpdScore, type OpdScorecard, type NetValue, type Pdqi9Attr } from './opd-note-score-core';
 import { enrichOpdMeds } from './formulary';
+import { doseFindings } from './dose-limits';
 import { tagInteractions } from './ddi-tags';
 import { curatedInteractions, mergeRank, type DrugClass } from './ddi';
 import type { DdiPair } from './rxlabelguard';
@@ -135,7 +136,7 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
   const { case: oc, keys } = rowToOpdCase(row);
   enrichOpdMeds(oc.medications);   // brand→generic + class/schedule/high-alert/LASA/VED from the formulary
 
-  const det = [...prescribingChecks(oc), ...ddiFindings(oc.medications)];
+  const det = [...prescribingChecks(oc), ...doseFindings(oc.medications), ...ddiFindings(oc.medications)];
   const completeness = opdCompleteness(oc);
 
   // Deterministic REUSE path (backfill): recompute the deterministic findings + completeness, KEEP

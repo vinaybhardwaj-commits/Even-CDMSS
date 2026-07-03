@@ -1,0 +1,17 @@
+{
+  "version": "dose-limits/1.0",
+  "default_sos_cap_per_day": 3,
+  "note": "Adult (>=50 kg, no organ impairment) outpatient daily-dose ceilings, mg/day. Advisory only — the aggregation flag is a prompt to check the combined molecule load across co-prescribed products, not a hard contraindication. Seed set = paracetamol + the NSAIDs and decongestant stimulants that recur in Indian fever/pain combination brands. Extend as needed; molecules without a ceiling here are still aggregated but never flagged.",
+  "limits": [
+    { "molecule": "paracetamol", "aliases": ["acetaminophen", "acetaminophen/paracetamol", "paracetamol/acetaminophen"], "max_mg_per_day": 4000, "caution_mg_per_day": 3000, "caution_note": "Consider a 3 g/day ceiling in the elderly, low body weight (<50 kg), chronic alcohol use, or hepatic impairment.", "note": "Hepatotoxicity above the daily ceiling; the commonest stacking risk when a scheduled antipyretic (e.g. Dolo 650) is combined with a paracetamol-containing NSAID combo (e.g. Zerodol-SP, Sinarest)." },
+    { "molecule": "ibuprofen", "aliases": [], "max_mg_per_day": 2400, "caution_mg_per_day": 1200, "caution_note": "OTC/self-medication ceiling is 1200 mg/day; 2400 mg is the prescription maximum.", "note": "GI and renal risk; use the lowest effective dose for the shortest duration." },
+    { "molecule": "aceclofenac", "aliases": [], "max_mg_per_day": 200, "note": "100 mg twice daily is the standard maximum." },
+    { "molecule": "diclofenac", "aliases": [], "max_mg_per_day": 150, "note": "150 mg/day oral maximum; cardiovascular risk is dose-related." },
+    { "molecule": "naproxen", "aliases": [], "max_mg_per_day": 1000, "caution_mg_per_day": 1000, "note": "1000 mg/day maintenance maximum (1250 mg only for the first day of acute use)." },
+    { "molecule": "etoricoxib", "aliases": [], "max_mg_per_day": 120, "note": "120 mg/day is reserved for acute gout, short term; 90 mg/day for most other indications." },
+    { "molecule": "mefenamic acid", "aliases": ["mefenamic"], "max_mg_per_day": 1500, "note": "500 mg three times daily maximum; limit to 7 days." },
+    { "molecule": "caffeine", "aliases": [], "max_mg_per_day": 400, "note": "From combination analgesics/migraine products; excludes dietary caffeine, which adds to the total." },
+    { "molecule": "pseudoephedrine", "aliases": [], "max_mg_per_day": 240, "note": "Oral decongestant daily maximum." },
+    { "molecule": "phenylephrine", "aliases": [], "max_mg_per_day": 60, "note": "Oral decongestant daily maximum (10 mg up to 6 times/day)." }
+  ]
+}
