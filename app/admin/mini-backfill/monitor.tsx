@@ -4,11 +4,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 type Range = '24h' | '7d' | '30d' | 'all';
 type Bucket = { t: string; notes: number; avgSec: number | null };
 type Tick = { t: string; status: string; processed: number };
-type Recent = { uid: string; band: string | null; idx: number | null; sec: number | null; at: string; kind: string | null };
+type Recent = { source: 'backfill' | 'mcp'; uid: string; band: string | null; idx: number | null; sec: number | null; at: string; kind: string | null };
 type Payload = {
   ok: boolean;
-  kpis: { processedToday: number; totalMini: number; avgSecPerNote: number | null; state: string; window: string; prod: boolean; tag: string; cursor: string | null; floor: string };
+  kpis: { processedToday: number; totalMini: number; mcpToday: number; mcpTotal: number; avgSecPerNote: number | null; state: string; window: string; prod: boolean; tag: string; cursor: string | null; floor: string };
   throughput: Bucket[];
+  mcpThroughput: Bucket[];
   bucketMinutes: number;
   ticks: Tick[];
   inflight: { active: boolean; day?: string | null; sinceSec?: number; ttlSec?: number };
@@ -18,6 +19,7 @@ type Payload = {
 
 const RANGES: Range[] = ['24h', '7d', '30d', 'all'];
 const TEAL = '#1D9E75';
+const INDIGO = '#6366F1';
 const RED = '#E24B4A';
 
 function agoLabel(iso: string): string {
@@ -28,60 +30,69 @@ function agoLabel(iso: string): string {
   return `${Math.round(s / 86400)}d ago`;
 }
 
-/** Zero-fill the throughput series onto a continuous bucket axis so idle stretches read as gaps. */
-function continuousSeries(buckets: Bucket[], bucketMinutes: number, hours: number): { notes: number[]; lat: (number | null)[]; labels: string[] } {
+/** Zero-fill both series (backfill + MCP) onto one continuous bucket axis so idle reads as gaps. */
+function continuousSeries(buckets: Bucket[], mcp: Bucket[], bucketMinutes: number, hours: number): { notes: number[]; mcp: number[]; lat: (number | null)[]; labels: string[] } {
   const bucketMs = bucketMinutes * 60000;
   const now = Math.floor(Date.now() / bucketMs) * bucketMs;
   const slots = Math.min(420, Math.max(6, Math.round((hours * 3600000) / bucketMs)));
-  const byEpoch = new Map<number, Bucket>();
-  for (const b of buckets) { const e = Math.floor(Date.parse(b.t) / bucketMs) * bucketMs; byEpoch.set(e, b); }
-  const notes: number[] = [], lat: (number | null)[] = [], labels: string[] = [];
+  const mapOf = (arr: Bucket[]) => { const m = new Map<number, Bucket>(); for (const b of arr) m.set(Math.floor(Date.parse(b.t) / bucketMs) * bucketMs, b); return m; };
+  const bf = mapOf(buckets), mc = mapOf(mcp);
+  const notes: number[] = [], mcpArr: number[] = [], lat: (number | null)[] = [], labels: string[] = [];
   for (let i = slots - 1; i >= 0; i--) {
     const e = now - i * bucketMs;
-    const b = byEpoch.get(e);
+    const b = bf.get(e), m = mc.get(e);
     notes.push(b ? b.notes : 0);
-    lat.push(b ? b.avgSec : null);
+    mcpArr.push(m ? m.notes : 0);
+    lat.push(b ? b.avgSec : (m ? m.avgSec : null));
     const d = new Date(e);
     labels.push(bucketMinutes >= 1440
       ? d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })
       : d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }));
   }
-  return { notes, lat, labels };
+  return { notes, mcp: mcpArr, lat, labels };
 }
 
-function ThroughputChart({ buckets, bucketMinutes, hours }: { buckets: Bucket[]; bucketMinutes: number; hours: number }) {
-  const { notes, lat, labels } = continuousSeries(buckets, bucketMinutes, hours);
+function ThroughputChart({ buckets, mcp, bucketMinutes, hours }: { buckets: Bucket[]; mcp: Bucket[]; bucketMinutes: number; hours: number }) {
+  const s = continuousSeries(buckets, mcp, bucketMinutes, hours);
   const W = 1000, H = 200, padL = 34, padB = 18, padT = 8, padR = 30;
   const iw = W - padL - padR, ih = H - padB - padT;
-  const maxN = Math.max(1, ...notes);
-  const maxL = Math.max(1, ...lat.filter((x): x is number => x != null));
-  const n = notes.length;
+  const total = s.notes.map((v, i) => v + s.mcp[i]);          // stacked height
+  const maxN = Math.max(1, ...total);
+  const maxL = Math.max(1, ...s.lat.filter((x): x is number => x != null));
+  const n = s.notes.length;
   const x = (i: number) => padL + (n <= 1 ? 0 : (i / (n - 1)) * iw);
   const yN = (v: number) => padT + ih - (v / maxN) * ih;
   const yL = (v: number) => padT + ih - (v / maxL) * ih;
-  const areaPts = notes.map((v, i) => `${x(i).toFixed(1)},${yN(v).toFixed(1)}`).join(' ');
-  const area = `M ${padL},${(padT + ih).toFixed(1)} L ${areaPts.split(' ').join(' L ')} L ${(padL + iw).toFixed(1)},${(padT + ih).toFixed(1)} Z`;
-  const line = `M ${notes.map((v, i) => `${x(i).toFixed(1)},${yN(v).toFixed(1)}`).join(' L ')}`;
-  // latency: draw only across contiguous non-null runs
+  const bottom = (padT + ih).toFixed(1);
+  // backfill area from baseline to backfill height; MCP area stacked from backfill height to total
+  const bfArea = `M ${padL},${bottom} L ${s.notes.map((v, i) => `${x(i).toFixed(1)},${yN(v).toFixed(1)}`).join(' L ')} L ${(padL + iw).toFixed(1)},${bottom} Z`;
+  const bfLine = `M ${s.notes.map((v, i) => `${x(i).toFixed(1)},${yN(v).toFixed(1)}`).join(' L ')}`;
+  const mcpTop = total.map((v, i) => `${x(i).toFixed(1)},${yN(v).toFixed(1)}`);
+  const mcpBase = s.notes.map((v, i) => `${x(i).toFixed(1)},${yN(v).toFixed(1)}`).reverse();
+  const hasMcp = s.mcp.some((v) => v > 0);
+  const mcpArea = hasMcp ? `M ${mcpTop.join(' L ')} L ${mcpBase.join(' L ')} Z` : '';
+  const mcpLine = hasMcp ? `M ${mcpTop.join(' L ')}` : '';
   const latSegs: string[] = [];
   let cur: string[] = [];
-  lat.forEach((v, i) => { if (v == null) { if (cur.length > 1) latSegs.push('M ' + cur.join(' L ')); cur = []; } else cur.push(`${x(i).toFixed(1)},${yL(v).toFixed(1)}`); });
+  s.lat.forEach((v, i) => { if (v == null) { if (cur.length > 1) latSegs.push('M ' + cur.join(' L ')); cur = []; } else cur.push(`${x(i).toFixed(1)},${yL(v).toFixed(1)}`); });
   if (cur.length > 1) latSegs.push('M ' + cur.join(' L '));
   const tickEvery = Math.max(1, Math.ceil(n / 8));
   const gy = [0, 0.5, 1];
 
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="h-[210px] w-full" role="img" aria-label="Notes processed per bucket over time, with idle gaps shown as valleys">
+    <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="h-[210px] w-full" role="img" aria-label="Mini-pipeline utilization per bucket over time: backfill and MCP runs stacked, with idle gaps shown as valleys">
       {gy.map((g, i) => { const yy = padT + ih - g * ih; const val = Math.round(g * maxN); return (
         <g key={i}>
           <line x1={padL} y1={yy} x2={padL + iw} y2={yy} stroke="#e2e8f0" strokeWidth={1} />
           <text x={padL - 6} y={yy + 3} textAnchor="end" fontSize={9} fill="#94a3b8">{val}</text>
         </g>
       ); })}
-      <path d={area} fill={TEAL} opacity={0.12} />
-      <path d={line} fill="none" stroke={TEAL} strokeWidth={1.6} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
-      {latSegs.map((d, i) => <path key={i} d={d} fill="none" stroke="#378ADD" strokeWidth={1} strokeDasharray="3 3" opacity={0.75} vectorEffect="non-scaling-stroke" />)}
-      {labels.map((l, i) => i % tickEvery === 0 ? (
+      <path d={bfArea} fill={TEAL} opacity={0.12} />
+      {hasMcp ? <path d={mcpArea} fill={INDIGO} opacity={0.18} /> : null}
+      <path d={bfLine} fill="none" stroke={TEAL} strokeWidth={1.6} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+      {hasMcp ? <path d={mcpLine} fill="none" stroke={INDIGO} strokeWidth={1.3} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" /> : null}
+      {latSegs.map((d, i) => <path key={i} d={d} fill="none" stroke="#378ADD" strokeWidth={1} strokeDasharray="3 3" opacity={0.7} vectorEffect="non-scaling-stroke" />)}
+      {s.labels.map((l, i) => i % tickEvery === 0 ? (
         <text key={i} x={x(i)} y={H - 5} textAnchor="middle" fontSize={9} fill="#94a3b8">{l}</text>
       ) : null)}
       <text x={padL + iw + 4} y={padT + 6} fontSize={8.5} fill="#378ADD">{maxL}s</text>
@@ -170,10 +181,12 @@ export default function MiniBackfillMonitor() {
         <div className="rounded-lg bg-slate-50 p-2.5">
           <div className="text-[10.5px] text-slate-400">Processed today</div>
           <div className="mt-0.5 font-serif text-[20px] font-semibold text-slate-800">{(k?.processedToday ?? 0).toLocaleString('en-IN')}</div>
+          <div className="text-[10px]" style={{ color: INDIGO }}>+ {(k?.mcpToday ?? 0).toLocaleString('en-IN')} MCP / experiments</div>
         </div>
         <div className="rounded-lg bg-slate-50 p-2.5">
           <div className="text-[10.5px] text-slate-400">Total mini-audited</div>
           <div className="mt-0.5 font-serif text-[20px] font-semibold text-slate-800">{(k?.totalMini ?? 0).toLocaleString('en-IN')}</div>
+          <div className="text-[10px]" style={{ color: INDIGO }}>+ {(k?.mcpTotal ?? 0).toLocaleString('en-IN')} MCP total</div>
         </div>
         <div className="rounded-lg bg-slate-50 p-2.5">
           <div className="text-[10.5px] text-slate-400">Avg / note</div>
@@ -188,10 +201,11 @@ export default function MiniBackfillMonitor() {
 
       <div className="px-4 pb-1">
         <div className="mb-1 flex items-center gap-4 text-[10.5px] text-slate-500">
-          <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: TEAL }} />notes / {data && data.bucketMinutes >= 1440 ? 'day' : 'hour'}</span>
+          <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: TEAL }} />backfill / {data && data.bucketMinutes >= 1440 ? 'day' : 'hour'}</span>
+          <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: INDIGO }} />MCP / experiments</span>
           <span className="flex items-center gap-1.5"><span className="inline-block h-0.5 w-3.5" style={{ background: '#378ADD' }} />avg latency</span>
         </div>
-        {data ? <ThroughputChart buckets={data.throughput} bucketMinutes={data.bucketMinutes} hours={hours} /> : <div className="h-[210px] animate-pulse rounded bg-slate-50" />}
+        {data ? <ThroughputChart buckets={data.throughput} mcp={data.mcpThroughput} bucketMinutes={data.bucketMinutes} hours={hours} /> : <div className="h-[210px] animate-pulse rounded bg-slate-50" />}
       </div>
 
       <div className="px-4 pb-3 pt-1">
@@ -218,9 +232,10 @@ export default function MiniBackfillMonitor() {
             </div>
           ) : null}
           {(data?.recent ?? []).map((r, i) => (
-            <div key={r.uid + i} className="flex items-center gap-2.5 px-4 py-1.5">
+            <div key={r.uid + r.at + i} className="flex items-center gap-2.5 px-4 py-1.5">
               <span className={`rounded px-1.5 py-0.5 text-[11px] font-semibold ${r.band ? (BAND_CLS[r.band] || 'bg-slate-100 text-slate-500') : 'bg-slate-100 text-slate-500'}`}>{r.band ? `${r.band} · ${r.idx}` : '—'}</span>
-              <span className="flex-1 truncate text-[12.5px] text-slate-600"><code className="text-[11px]">{r.uid.slice(0, 6)}…{r.uid.slice(-3)}</code>{r.kind ? <span className="ml-1.5 text-slate-400">{r.kind}</span> : null}</span>
+              {r.source === 'mcp' ? <span className="rounded px-1 py-0.5 text-[9.5px] font-semibold" style={{ background: '#eef2ff', color: INDIGO }}>MCP</span> : null}
+              <span className="flex-1 truncate text-[12.5px] text-slate-600"><code className="text-[11px]">{r.uid.length > 10 ? `${r.uid.slice(0, 6)}…${r.uid.slice(-3)}` : r.uid}</code>{r.kind ? <span className="ml-1.5 text-slate-400">{r.kind}</span> : null}</span>
               <span className="whitespace-nowrap text-[11px] text-slate-400">{r.sec != null ? `${r.sec}s · ` : ''}{agoLabel(r.at)}</span>
             </div>
           ))}

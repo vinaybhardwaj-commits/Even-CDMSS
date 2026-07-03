@@ -42,12 +42,20 @@ export async function GET(req: NextRequest) {
   try {
     const st = await readState();
 
-    const [buckets, todayRow, totalRow, recent, ticks] = await Promise.all([
-      // throughput: notes processed per bucket over the range (the mini's own audit rows)
+    const [buckets, labBuckets, todayRow, totalRow, labTodayRow, labTotalRow, recent, labRecent, ticks] = await Promise.all([
+      // backfill throughput: autopilot mini audits per bucket (opd_note_audits)
       run(
         `SELECT date_trunc($2, audited_at) AS bucket, count(*)::int AS notes, round(avg(latency_ms))::int AS avg_ms
            FROM opd_note_audits
           WHERE audited_at >= NOW() - ($1 || ' hours')::interval AND ${MINI_MODEL_FILTER}
+          GROUP BY 1 ORDER BY 1 ASC`,
+        [String(range.hours), range.trunc],
+      ).catch(() => [] as Record<string, unknown>[]),
+      // MCP / experiment throughput: Lab-MCP + manual mini runs (lab_analyses, same single box)
+      run(
+        `SELECT date_trunc($2, created_at) AS bucket, count(*)::int AS notes, round(avg(latency_ms))::int AS avg_ms
+           FROM lab_analyses
+          WHERE created_at >= NOW() - ($1 || ' hours')::interval
           GROUP BY 1 ORDER BY 1 ASC`,
         [String(range.hours), range.trunc],
       ).catch(() => [] as Record<string, unknown>[]),
@@ -57,13 +65,23 @@ export async function GET(req: NextRequest) {
           WHERE (audited_at AT TIME ZONE 'Asia/Kolkata')::date = (NOW() AT TIME ZONE 'Asia/Kolkata')::date AND ${MINI_MODEL_FILTER}`,
       ).catch(() => [{ n: 0, avg_ms: 0 }]),
       run(`SELECT count(*)::int AS n FROM opd_note_audits WHERE ${MINI_MODEL_FILTER}`).catch(() => [{ n: 0 }]),
-      // live feed: last 12 mini audits
       run(
-        `SELECT uid, band, note_quality_index AS idx, latency_ms, audited_at,
-                consult_type, prescription_type
+        `SELECT count(*)::int AS n FROM lab_analyses
+          WHERE (created_at AT TIME ZONE 'Asia/Kolkata')::date = (NOW() AT TIME ZONE 'Asia/Kolkata')::date`,
+      ).catch(() => [{ n: 0 }]),
+      run(`SELECT count(*)::int AS n FROM lab_analyses`).catch(() => [{ n: 0 }]),
+      // live feed: last mini audits (backfill) + last MCP/lab runs, merged client-side by time
+      run(
+        `SELECT uid, band, note_quality_index AS idx, latency_ms, audited_at AS at, consult_type, prescription_type
            FROM opd_note_audits
           WHERE ${MINI_MODEL_FILTER}
           ORDER BY audited_at DESC LIMIT 12`,
+      ).catch(() => [] as Record<string, unknown>[]),
+      run(
+        `SELECT input_ref AS uid, output->>'band' AS band, (output->>'index')::int AS idx,
+                latency_ms, created_at AS at, kind, experiment
+           FROM lab_analyses
+          ORDER BY created_at DESC LIMIT 12`,
       ).catch(() => [] as Record<string, unknown>[]),
       getTicks(range.hours <= 48 ? 48 : Math.min(range.hours, 24 * 30)),
     ]);
@@ -79,6 +97,8 @@ export async function GET(req: NextRequest) {
       kpis: {
         processedToday: num(todayRow[0]?.n),
         totalMini: num(totalRow[0]?.n),
+        mcpToday: num(labTodayRow[0]?.n),
+        mcpTotal: num(labTotalRow[0]?.n),
         avgSecPerNote: todayRow[0]?.avg_ms ? Math.round(num(todayRow[0].avg_ms) / 1000) : (st.last && (st.last as Record<string, unknown>).throughput ? Math.round(num(((st.last as Record<string, unknown>).throughput as Record<string, unknown>).avg_ms_per_note) / 1000) : null),
         state,
         window: st.window,
@@ -87,18 +107,32 @@ export async function GET(req: NextRequest) {
         cursor: st.cursor,
         floor: st.floor,
       },
+      // two stacked series over the same time axis (the mini is ONE box — these together are its load)
       throughput: buckets.map((b) => ({ t: String(b.bucket), notes: num(b.notes), avgSec: b.avg_ms ? Math.round(num(b.avg_ms) / 1000) : null })),
+      mcpThroughput: labBuckets.map((b) => ({ t: String(b.bucket), notes: num(b.notes), avgSec: b.avg_ms ? Math.round(num(b.avg_ms) / 1000) : null })),
       bucketMinutes: range.bucketMin,
       ticks: ticks.map((t) => ({ t: t.ts, status: t.status, processed: t.processed })),
       inflight: inflightMs != null ? { active: true, day: (st.last as Record<string, unknown> | null)?.day ?? st.cursor ?? null, sinceSec: Math.round(inflightMs / 1000), ttlSec: Math.round(MB_LOCK_TTL_MS / 1000) } : { active: false },
-      recent: recent.map((r) => ({
-        uid: String(r.uid),
-        band: r.band ? String(r.band) : null,
-        idx: r.idx == null ? null : num(r.idx),
-        sec: r.latency_ms == null ? null : Math.round(num(r.latency_ms) / 1000),
-        at: String(r.audited_at),
-        kind: [r.prescription_type, r.consult_type].filter(Boolean).map(String).join(' · ') || null,
-      })),
+      recent: [
+        ...recent.map((r) => ({
+          source: 'backfill' as const,
+          uid: String(r.uid),
+          band: r.band ? String(r.band) : null,
+          idx: r.idx == null ? null : num(r.idx),
+          sec: r.latency_ms == null ? null : Math.round(num(r.latency_ms) / 1000),
+          at: String(r.at),
+          kind: [r.prescription_type, r.consult_type].filter(Boolean).map(String).join(' · ') || null,
+        })),
+        ...labRecent.map((r) => ({
+          source: 'mcp' as const,
+          uid: r.uid ? String(r.uid) : '(text)',
+          band: r.band ? String(r.band) : null,
+          idx: r.idx == null ? null : num(r.idx),
+          sec: r.latency_ms == null ? null : Math.round(num(r.latency_ms) / 1000),
+          at: String(r.at),
+          kind: r.experiment ? `exp: ${String(r.experiment)}` : (r.kind ? String(r.kind) : null),
+        })),
+      ].sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, 14),
     });
   } catch (e) {
     return NextResponse.json({ ok: false, error: String((e as Error).message) }, { status: 500 });
