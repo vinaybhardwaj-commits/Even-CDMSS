@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { rowToOpdCase, opdCaseText } from '../opd-ingest-core.ts';
-import { opdCompleteness, prescribingChecks, parseOpdAnalysis, medDoseDocumented, resolveMedRoute, opdSignalType, stampFindingIdentity, OPD_SIGNAL_TYPES, type OpdFinding } from '../opd-note-audit-core.ts';
+import { opdCompleteness, prescribingChecks, parseOpdAnalysis, medDoseDocumented, resolveMedRoute, opdSignalType, stampFindingIdentity, followUpDocumented, OPD_SIGNAL_TYPES, type OpdFinding } from '../opd-note-audit-core.ts';
 
 // Mirrors a real GP row (medications + jsonb arrive as JSON strings via Metabase).
 const ROW: Record<string, unknown> = {
@@ -313,4 +313,28 @@ test('opdCaseText includes the treating specialty line when provided (B4)', () =
   // no specialty → no line (backwards compatible)
   assert.ok(!/Treating clinician specialty/.test(opdCaseText(c)));
   assert.ok(!/Treating clinician specialty/.test(opdCaseText(c, { specialty: '' })));
+});
+
+// B2 — follow-up documented only for a real disposition / explicit date; UNKNOWN/blank does not count
+test('followUpDocumented + completeness: UNKNOWN/blank excluded, real dispositions count (B2)', () => {
+  const base = { uid: 'x', doctor_uid: 'd', type_of_prescription: 'GENERAL_PRACTITIONER', timestamp: '2026-07-02T05:00:00+05:30',
+    presenting_complaints: '[]', diagnosis_icd_codes: ['J06.9'],
+    medications: '[{"generic_name":"Paracetamol","dosage":"650mg","frequency":"1-1-1","duration":"3d","route_of_administration":"oral"}]',
+    general_practitioner_prescription__plan_of_management: '[{"management_plan":"<p>rest</p>"}]' };
+  const withType = (t: string | null, date?: string) => rowToOpdCase({ ...base, followup__followup_type: t, next_follow_up_date: date ?? null }).case;
+
+  assert.equal(followUpDocumented(withType('UNKNOWN')), false);
+  assert.equal(followUpDocumented(withType('')), false);
+  assert.equal(followUpDocumented(withType(null)), false);
+  assert.equal(followUpDocumented(withType('IF_REQUIRED')), true);
+  assert.equal(followUpDocumented(withType('MANDATORY_FOLLOW_UP')), true);
+  assert.equal(followUpDocumented(withType('FOLLOW_UP_WITH_REPORTS')), true);
+  assert.equal(followUpDocumented(withType('UNKNOWN', '2026-07-10')), true); // explicit date wins
+
+  // completeness reflects it: UNKNOWN → follow_up missing; MANDATORY → present
+  assert.ok(opdCompleteness(withType('UNKNOWN')).missing.includes('Follow-up specified'));
+  assert.ok(!opdCompleteness(withType('MANDATORY_FOLLOW_UP')).missing.includes('Follow-up specified'));
+  // and patient-centred continuity drops for UNKNOWN (follow_up is 1 of its 2 fields)
+  assert.equal(opdCompleteness(withType('UNKNOWN')).patientCentred.present, 1);
+  assert.equal(opdCompleteness(withType('MANDATORY_FOLLOW_UP')).patientCentred.present, 2);
 });

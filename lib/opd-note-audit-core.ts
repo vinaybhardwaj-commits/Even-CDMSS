@@ -19,7 +19,13 @@ import type { NetValue, OpdFindingDomain, Pdqi9Attr } from './opd-note-score-cor
 //       patient-education leaflets from clinician documentation, and instructs the auditor not to (a)
 //       praise a handoff's missing meds/imaging as high-value "avoidance", (b) grade a templated
 //       leaflet as note thoroughness, or (c) expect a physical exam on a teleconsult.
-export const OPD_ENGINE_VERSION = 'opd-note-audit/0.6';
+// 0.7 — clinician-feedback fix batch (prevalence-mined 3 Jul). B4: specialty-aware (the treating
+//       specialty is fed to the auditor; a specialist's focused note isn't held to GP breadth).
+//       B3: a "fields present but content thin" reframe flag (advisory; scores unchanged).
+//       B2: follow-up counts as documented ONLY for a real disposition or an explicit date — a bare
+//       'UNKNOWN'/blank no longer earns continuity/documentation credit (the score-moving change
+//       that makes 0.7 a distinct generation). Prompt-pass fixes (B1/B5/B6) land next, still 0.7.
+export const OPD_ENGINE_VERSION = 'opd-note-audit/0.7';
 
 // Local copy of the PDQI-9 keys (kept in sync with opd-note-score-core) so this core has
 // no runtime cross-import and stays loadable under `node --experimental-strip-types`.
@@ -215,6 +221,18 @@ export function resolveMedRoute(m: OpdMed): string | null {
   return null;
 }
 
+// ── Follow-up documentation (bug B2) ──────────────────────────────────────────
+// The EMR stamps a followUpType enum on nearly every note, but 'UNKNOWN' (and blank) means the
+// clinician left follow-up UNSPECIFIED — it must NOT count as a documented follow-up. Real
+// dispositions (IF_REQUIRED, MANDATORY_FOLLOW_UP, FOLLOW_UP_WITH_REPORTS, …) DO count even without a
+// date; an explicit date always counts. This is what stops Continuity = 100 on a blank follow-up.
+export function followUpDocumented(c: DeidOpdCase): boolean {
+  if (c.followUpDateSet) return true;                       // an explicit date is a documented plan
+  const t = (c.followUpType || '').trim().toUpperCase();
+  if (!t || t === 'UNKNOWN' || t === 'NONE') return false;  // blank / UNKNOWN = not specified
+  return true;                                              // any real disposition counts
+}
+
 // ── Deterministic NABH-OPD completeness (from the structured row) ─────────────
 export function opdCompleteness(c: DeidOpdCase): OpdCompleteness {
   const hasMeds = c.medications.length > 0;
@@ -234,7 +252,7 @@ export function opdCompleteness(c: DeidOpdCase): OpdCompleteness {
     { key: 'diagnosis', label: 'Diagnosis / impression', present: c.diagnosisCodes.length > 0 || c.impressionCodes.length > 0 || c.impressions.length > 0, mandatory: true },
     { key: 'medication_dosing', label: 'Complete medication dosing', present: hasMeds ? dosingComplete : true, mandatory: true },
     { key: 'advice_given', label: 'Advice / plan', present: hasPlan, mandatory: true },
-    { key: 'follow_up', label: 'Follow-up specified', present: !!c.followUpType, mandatory: true },
+    { key: 'follow_up', label: 'Follow-up specified', present: followUpDocumented(c), mandatory: true },
   ];
   // Physical examination — applicable only to in-person encounters (a teleconsult can't examine).
   if (!isTele) items.push({ key: 'examination', label: 'Examination recorded', present: c.examination.length > 0, mandatory: true });
