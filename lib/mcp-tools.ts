@@ -9,6 +9,10 @@ import { auditOpdNote, opdMiniEngine } from './opd-note-audit';
 import { OPD_AUDIT_SYSTEM, buildOpdAuditUser } from './opd-note-audit-core';
 import { MINI_MODEL, llm } from './llm';
 import { fetchOpdNoteByUid } from './metabase';
+import { sql } from './db';
+import { guardReadOnlySql } from './sql-guard-core';
+
+const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 import { readState, setSetting, MB_KEYS } from './mini-backfill';
 import {
   ensureLabTables, saveLabAnalysis, listLabAnalyses, getLabAnalysis, labLabel,
@@ -88,6 +92,19 @@ export const LAB_TOOLS = [
       },
     },
   },
+  {
+    name: 'audit_query',
+    description:
+      'Run a READ-ONLY SQL query (SELECT/WITH only) against the CDMSS audit database (Neon) — for mining bug prevalence + building golden sets. Readable tables are DE-IDENTIFIED (no PHI): opd_note_audits (per-note audit: uid, doctor_uid, note_date, note_quality_index, band, score_documentation/note_quality/appropriateness/prescribing_safety/patient_centred, pdqi9 jsonb [{attr,value}], completeness_pct, n_missing_mandatory, n_findings, n_low_value, n_interaction_alerts, findings jsonb [{subject,verdict,domain,source,informational,signal_type,finding_ref,citation_ids}], suggestions jsonb, missing_fields jsonb, engine_version), plus opd_audit_triage, opd_gov_signal(_event), doctor_directory, doctor_roster, audit_suppression, doctor_operational_metrics. Enforced: SELECT/WITH only, single statement, no writes/DDL/system-functions, LIMIT ≤ 500 (auto-added), audit-logged. Source-NOTE fields (medications count, followUpType, patient age, specialty) are NOT here — they live in db13; take the uids this returns and join them via the Metabase MCP.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sql: { type: 'string', description: 'A single SELECT/WITH query. Prefer aggregates + specific columns; findings/suggestions jsonb can be large.' },
+        limit: { type: 'number', description: 'Row cap (default & max 500).' },
+      },
+      required: ['sql'],
+    },
+  },
 ] as const;
 
 // ── dispatch ─────────────────────────────────────────────────────────────────────
@@ -99,6 +116,7 @@ export async function callLabTool(name: string, args: Record<string, unknown>): 
       case 'corpus_add': return await corpusAdd(args);
       case 'corpus_manage': return await corpusManage(args);
       case 'lab_query': return await labQuery(args);
+      case 'audit_query': return await auditQuery(args);
       default: return err(`unknown tool: ${name}`);
     }
   } catch (e) {
@@ -187,4 +205,25 @@ async function labQuery(a: Record<string, unknown>): Promise<ToolResult> {
   if (S(a.id)) { const row = await getLabAnalysis(S(a.id)); return row ? ok(row) : err('not found'); }
   const experiment = a.experiment ? labLabel(a.experiment) : null;
   return ok({ experiment, results: await listLabAnalyses(experiment, Number(a.limit) || 50) });
+}
+
+async function ensureSqlAuditLog(): Promise<void> {
+  await run(`CREATE TABLE IF NOT EXISTS lab_sql_audit (
+    id bigserial PRIMARY KEY, sql text, rows integer, ms integer, at timestamptz NOT NULL DEFAULT now()
+  )`, []);
+}
+
+/** READ-ONLY SQL over the de-identified CDMSS audit DB (guarded). For golden-set mining. */
+async function auditQuery(a: Record<string, unknown>): Promise<ToolResult> {
+  const cap = Math.max(1, Math.min(500, Number(a.limit) || 500));
+  const g = guardReadOnlySql(S(a.sql), cap);
+  if (!g.ok) return err(g.error);
+  await ensureSqlAuditLog().catch(() => {});
+  const t0 = Date.now();
+  let rows: Record<string, unknown>[];
+  try { rows = (await run(g.sql, [])) as Record<string, unknown>[]; }
+  catch (e) { return err(`query failed: ${String((e as Error).message)}`); }
+  const ms = Date.now() - t0;
+  await run(`INSERT INTO lab_sql_audit (sql, rows, ms) VALUES ($1,$2,$3)`, [g.sql.slice(0, 4000), rows.length, ms]).catch(() => {});
+  return ok({ sql: g.sql, rows: rows.length, ms, data: rows });
 }
