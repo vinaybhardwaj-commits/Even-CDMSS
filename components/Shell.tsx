@@ -40,7 +40,7 @@ const CLINICIAN: NavGroup[] = [
   {
     heading: 'Care management',
     items: [
-      { href: '/care', label: 'Care Conversation Brief', Icon: PhoneCall },
+      { href: '/care', label: 'Managed Care', Icon: PhoneCall },
     ],
   },
   {
