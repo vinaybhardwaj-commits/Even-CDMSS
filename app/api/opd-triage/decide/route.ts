@@ -29,8 +29,8 @@ export async function POST(req: NextRequest) {
   catch { return NextResponse.json({ ok: false, error: 'invalid JSON body' }, { status: 400 }); }
 
   try {
-    const { id, decision } = await insertDecision(body);
-    return NextResponse.json({ ok: true, id, decision });
+    const { id, decision, signal, signal_error } = await insertDecision(body);
+    return NextResponse.json({ ok: true, id, decision, signal: signal ?? null, ...(signal_error ? { signal_error } : {}) });
   } catch (e) {
     const msg = String((e as Error).message);
     // Validation errors from the core → 400; anything else (DB) → 500.

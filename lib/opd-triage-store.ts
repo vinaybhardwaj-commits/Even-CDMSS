@@ -11,6 +11,7 @@
 import { randomUUID } from 'crypto';
 import { sql } from './db';
 import { validateDecision, type DecisionInput, type NormalizedDecision, type TriageDecisionRow } from './opd-triage-core';
+import { mintOrUpdateSignal, withdrawSignal, type StoredSignal } from './opd-gov-signal-store';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 
@@ -90,8 +91,13 @@ export async function loadBugFeed(limit = 200): Promise<TriageDecisionRow[]> {
   return (rows as Record<string, unknown>[]).map(rowToDecision);
 }
 
-/** Validate + append one decision row. Throws on invalid input (caller maps to 400). */
-export async function insertDecision(input: DecisionInput): Promise<{ id: string; decision: NormalizedDecision }> {
+/** Validate + append one decision row, and (for a routed type decision) mint/close its governance
+ *  thread. Throws on invalid input (caller maps to 400). Mint failures are surfaced but never lose
+ *  the recorded decision (the triage row is the source of truth; the thread is derived). */
+export async function insertDecision(input: DecisionInput): Promise<{
+  id: string; decision: NormalizedDecision;
+  signal?: { reference: string; signal_id: string; status: string } | null; signal_error?: string;
+}> {
   const v = validateDecision(input);
   if (!v.ok) throw new Error(v.error);
   const d = v.value;
@@ -106,5 +112,25 @@ export async function insertDecision(input: DecisionInput): Promise<{ id: string
       d.validity, d.bug_type, d.importance, d.routed, d.response_required, d.reason, d.cm_user,
     ],
   );
-  return { id, decision: d };
+
+  // Governance thread: minted only for a TYPE-level, valid_signal decision (threads are type-level).
+  let signal: { reference: string; signal_id: string; status: string } | null = null;
+  let signal_error: string | undefined;
+  if (d.scope === 'type' && d.validity === 'valid_signal') {
+    try {
+      if (d.routed) {
+        const s: StoredSignal = await mintOrUpdateSignal({
+          doctor_uid: d.doctor_uid, signal_type: d.signal_type, importance: d.importance || 'med',
+          response_required: d.response_required || 'none', window_from: d.window_from, window_to: d.window_to,
+          source_triage_ref: id, cm_user: d.cm_user,
+        });
+        signal = { reference: s.reference, signal_id: s.signal_id, status: s.status };
+      } else {
+        // un-routed a previously-routed type → close its thread if one exists
+        await withdrawSignal(d.doctor_uid, d.signal_type, d.window_from, d.window_to, d.cm_user);
+      }
+    } catch (e) { signal_error = String((e as Error).message); }
+  }
+
+  return { id, decision: d, signal, signal_error };
 }
