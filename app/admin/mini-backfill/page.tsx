@@ -1,10 +1,9 @@
 import Link from 'next/link';
 import { sql } from '@/lib/db';
 import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
-import { readState, istHour, windowOpen } from '@/lib/mini-backfill';
+import { readState } from '@/lib/mini-backfill';
 import { opdMiniEngine } from '@/lib/opd-note-audit';
 import { OPD_ENGINE_VERSION } from '@/lib/opd-note-audit-core';
-import { MINI_MODEL } from '@/lib/llm';
 import MiniBackfillControls from './controls';
 import MiniBackfillMonitor from './monitor';
 
@@ -28,8 +27,6 @@ export default async function MiniBackfillAdmin() {
 
   const st = await readState();
   const engineStr = opdMiniEngine(st.tag);
-  const open = windowOpen(st.window);
-  const hour = istHour();
 
   const [byEngine, tableSize] = await Promise.all([
     run(`SELECT engine_version, count(*)::int AS rows,
@@ -38,54 +35,21 @@ export default async function MiniBackfillAdmin() {
          FROM opd_note_audits t GROUP BY 1 ORDER BY count(*) DESC`, []).catch(() => []),
     run(`SELECT pg_size_pretty(pg_total_relation_size('opd_note_audits')) AS total`, []).catch(() => []),
   ]);
-  const miniRows = byEngine.find((r) => String(r.engine_version) === engineStr);
-  const last = st.last as Record<string, unknown> | null;
 
   return (
     <div>
       <div className="text-[11px] font-semibold uppercase tracking-[0.09em] text-brand">Mini backfill</div>
       <h1 className="font-serif text-[28px] font-semibold leading-tight text-slate-900">Mac-mini audit backfill</h1>
-      <p className="mt-1 max-w-3xl text-[13.5px] text-slate-500">
-        Autopilot that audits db13 OPD history BACKWARDS in time on the Mac-mini bridge ({MINI_MODEL}, ₹0 marginal, zero Gemini).
-        Rows land under engine <code className="rounded bg-slate-100 px-1">{engineStr}</code> — invisible to every production surface
-        (they filter on <code className="rounded bg-slate-100 px-1">{OPD_ENGINE_VERSION}</code>), viewable individually via the case screen.
-        Research substrate: run generations over any period with new tags, compare engines per note.
+      <p className="mt-1 max-w-2xl text-[13.5px] leading-relaxed text-slate-500">
+        Re-scores your past OPD notes for free on the Mac-mini model in the background — no Gemini, no cost.
+        It works backwards through history a few notes at a time. Turn it on and leave it; watch progress in the monitor below.
       </p>
 
-      {/* status strip */}
-      <div className="mt-5 grid gap-3 sm:grid-cols-4">
-        <div className="rounded-xl border border-slate-200 bg-white p-3.5">
-          <div className="text-[10.5px] uppercase tracking-[0.05em] text-slate-400">Autopilot</div>
-          <div className={`mt-1 font-serif text-[20px] font-semibold ${st.enabled ? 'text-teal-700' : 'text-slate-400'}`}>{st.enabled ? 'Running' : 'Paused'}</div>
-          <div className="mt-0.5 text-[11px] text-slate-500">{st.window === 'night' ? `night window ${open ? 'OPEN' : 'closed'} · now ${String(hour).padStart(2, '0')}:xx IST` : 'anytime mode'}</div>
-        </div>
-        <div className="rounded-xl border border-slate-200 bg-white p-3.5">
-          <div className="text-[10.5px] uppercase tracking-[0.05em] text-slate-400">Cursor → floor</div>
-          <div className="mt-1 font-serif text-[16px] font-semibold text-slate-800">{st.cursor ?? 'auto-seeds on first tick'}</div>
-          <div className="mt-0.5 text-[11px] text-slate-500">stops at {st.floor}</div>
-        </div>
-        <div className="rounded-xl border border-slate-200 bg-white p-3.5">
-          <div className="text-[10.5px] uppercase tracking-[0.05em] text-slate-400">This run ({st.tag})</div>
-          <div className="mt-1 font-serif text-[20px] font-semibold text-slate-800">{miniRows ? n(miniRows.rows).toLocaleString('en-IN') : 0} notes</div>
-          <div className="mt-0.5 text-[11px] text-slate-500">{miniRows ? `${miniRows.size} stored` : 'no rows yet'}</div>
-        </div>
-        <div className="rounded-xl border border-slate-200 bg-white p-3.5">
-          <div className="text-[10.5px] uppercase tracking-[0.05em] text-slate-400">Last tick</div>
-          <div className="mt-1 text-[12px] leading-snug text-slate-600">
-            {last ? (
-              'skipped' in last
-                ? <span className="text-slate-400">skipped · {String(last.skipped)}</span>
-                : <>day {String(last.day ?? '—')} · {String(last.processed ?? 0)} note(s){last.throughput ? ` · ${Math.round(n((last.throughput as Record<string, unknown>).avg_ms_per_note) / 1000)}s/note` : ''}</>
-            ) : <span className="text-slate-400">no ticks yet</span>}
-          </div>
-          {last?.at ? <div className="mt-0.5 text-[10.5px] text-slate-400">{String(last.at).slice(0, 16).replace('T', ' ')} UTC</div> : null}
-        </div>
-      </div>
+      {/* controls first — start/pause + window + progress; advanced re-audit tucked away */}
+      <div className="mt-5"><MiniBackfillControls state={{ enabled: st.enabled, window: st.window, cursor: st.cursor, floor: st.floor, tag: st.tag, n: st.n }} /></div>
 
       {/* live monitoring — continuous throughput line + state timeline + live feed */}
       <MiniBackfillMonitor />
-
-      <div className="mt-4"><MiniBackfillControls state={{ enabled: st.enabled, window: st.window, cursor: st.cursor, floor: st.floor, tag: st.tag, n: st.n }} /></div>
 
       {/* storage — answers "would they take up too much space" with live numbers */}
       <div className="mt-4 overflow-hidden rounded-xl border border-slate-200 bg-white">
