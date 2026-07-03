@@ -303,3 +303,14 @@ test('stampFindingIdentity: every finding stamped non-empty (acceptance, spec §
     assert.ok(f.finding_ref && f.finding_ref.length >= 12);
   }
 });
+
+// B4 — specialty context line in the case text
+test('opdCaseText includes the treating specialty line when provided (B4)', () => {
+  const { case: c } = rowToOpdCase(GP_ROW);
+  const withSpec = opdCaseText(c, { specialty: 'Dermatologist' });
+  assert.match(withSpec, /Treating clinician specialty: Dermatologist/);
+  assert.match(withSpec, /this specialty's standards/);
+  // no specialty → no line (backwards compatible)
+  assert.ok(!/Treating clinician specialty/.test(opdCaseText(c)));
+  assert.ok(!/Treating clinician specialty/.test(opdCaseText(c, { specialty: '' })));
+});

@@ -25,6 +25,7 @@ import { curatedInteractions, mergeRank, type DrugClass } from './ddi';
 import type { DdiPair } from './rxlabelguard';
 import { applySuppressions, type Suppression } from './audit-suppression-core';
 import { loadActiveSuppressions } from './audit-suppression-store';
+import { sql } from './db';
 
 // Best-effort cache of active suppressions (Tier-1 self-heal) so the per-note audit doesn't re-read
 // the table each time. Short TTL; a fresh suppression takes effect within a minute. Empty = no-op.
@@ -34,6 +35,24 @@ async function getActiveSuppressions(): Promise<Suppression[]> {
   if (_suppCache && now - _suppCache.at < 60_000) return _suppCache.list;
   try { const list = await loadActiveSuppressions(); _suppCache = { at: now, list }; return list; }
   catch { return _suppCache?.list ?? []; }
+}
+
+// B4 — the treating clinician's real specialty (doctor_directory), so a specialist's note is judged
+// against that specialty's standards, not GP defaults. Small table → cache the whole map (60s TTL).
+const _dirRun = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
+let _specCache: { at: number; map: Record<string, string> } | null = null;
+async function doctorSpecialtyFor(doctorUid: string | null): Promise<string | null> {
+  if (!doctorUid) return null;
+  const now = Date.now();
+  if (!_specCache || now - _specCache.at >= 60_000) {
+    try {
+      const rows = await _dirRun(`SELECT doctor_uid, speciality FROM doctor_directory WHERE speciality IS NOT NULL`, []);
+      const map: Record<string, string> = {};
+      for (const r of rows) map[String(r.doctor_uid)] = String(r.speciality);
+      _specCache = { at: now, map };
+    } catch { if (!_specCache) return null; }
+  }
+  return _specCache.map[doctorUid] || null;
 }
 
 // Formulary match types reliable enough to drive a deterministic safety alert (an approximate
@@ -202,7 +221,8 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     const citedContext = buildCitedContext(hits);
     if (traceId) await logEvent(traceId, 'opd_audit_sources', null, { count: sources.length });
 
-    const raw = await defaultGenerate(traceId, OPD_AUDIT_SYSTEM, buildOpdAuditUser(opdCaseText(oc), citedContext), mini);
+    const specialty = await doctorSpecialtyFor(keys.doctorUid);
+    const raw = await defaultGenerate(traceId, OPD_AUDIT_SYSTEM, buildOpdAuditUser(opdCaseText(oc, { specialty }), citedContext), mini);
     const parsed = parseOpdAnalysis(raw, sources.length);
 
     const findings: OpdFinding[] = finalize([...det, ...(parsed?.findings ?? [])]);

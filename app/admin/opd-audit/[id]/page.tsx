@@ -283,11 +283,15 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
 
   const docUid = r.doctor_uid ? String(r.doctor_uid) : null;
   const uid = r.uid ? String(r.uid) : '';
-  const [docNames, noteRow] = await Promise.all([
+  const [docNames, noteRow, specRows] = await Promise.all([
     docUid ? fetchDoctorNames([docUid]).catch(() => ({} as Record<string, string>)) : Promise.resolve({} as Record<string, string>),
     uid ? fetchOpdNoteByUid(uid).catch(() => null) : Promise.resolve(null),
+    docUid ? run(`SELECT speciality FROM doctor_directory WHERE doctor_uid = $1 LIMIT 1`, [docUid]).catch(() => []) : Promise.resolve([]),
   ]);
   const doctor = (docUid && docNames[docUid]) || doctorLabel(docUid);
+  // B4 — show the clinician's real specialty (doctor directory) rather than the raw prescription type,
+  // which mislabels every specialist as a GP.
+  const specialty = (specRows as Record<string, unknown>[])[0]?.speciality ? String((specRows as Record<string, unknown>[])[0].speciality) : null;
   const parsed = noteRow ? rowToOpdCase(noteRow) : null;
   const note: DeidOpdCase | null = parsed?.case ?? null;
   if (note) enrichOpdMeds(note.medications);
@@ -348,7 +352,7 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
               <span className="text-[21px] font-medium leading-none" style={{ color: bandColor(band) }}>{index}</span>
             </div>
             <div className="mt-1.5 text-[12px] font-medium" style={{ color: bandColor(band) }}>Band {band} · {statusWord}</div>
-            <div className="mt-1 text-[11px] leading-snug text-slate-500">{fmtIstTime(noteDate)} · {doctor}<br /><span className="text-[10px] text-slate-400">{String(r.prescription_type || r.consult_type || 'OPD')}</span></div>
+            <div className="mt-1 text-[11px] leading-snug text-slate-500">{fmtIstTime(noteDate)} · {doctor}<br /><span className="text-[10px] text-slate-400">{specialty || String(r.prescription_type || r.consult_type || 'OPD')}</span></div>
           </div>
 
           <div className="mt-3 border-t border-slate-100 pt-2.5">

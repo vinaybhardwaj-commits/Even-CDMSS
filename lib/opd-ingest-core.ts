@@ -316,9 +316,13 @@ export function formatOpdMed(m: OpdMed): string {
   return `${primary}${brandPart}${dosing ? `, ${dosing}` : ''}${m.instruction ? ` (${m.instruction})` : ''}${tags.length ? ` [${tags.join('; ')}]` : ''}`;
 }
 
-/** Compact one-line-ish text summary of the de-identified case for the LLM prompt. */
-export function opdCaseText(c: DeidOpdCase): string {
+/** Compact one-line-ish text summary of the de-identified case for the LLM prompt.
+ *  `opts.specialty` = the treating clinician's real specialty (from the doctor directory), so the
+ *  audit judges a specialist's note against that specialty's standards, not GP defaults (bug B4). */
+export function opdCaseText(c: DeidOpdCase, opts?: { specialty?: string | null }): string {
   const lines: string[] = [];
+  const specialty = (opts?.specialty || '').trim();
+  if (specialty) lines.push(`Treating clinician specialty: ${specialty} — where relevant, judge appropriateness and prescribing against this specialty's standards; a specialist's focused note and specialty-appropriate choices are expected, not general-practice defaults.`);
   if (c.consultType) lines.push(`Consult type: ${c.consultType}`);
   if (c.isTeleconsult) lines.push('Encounter modality: TELECONSULT (remote) — a physical examination is not expected; its absence is not a gap.');
   if (c.referrals && c.referrals.length) lines.push(`Referred onward to: ${c.referrals.join('; ')}`);
