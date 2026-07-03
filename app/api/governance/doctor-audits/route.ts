@@ -15,6 +15,7 @@ import { fetchDoctorNames } from '@/lib/metabase';
 import { listSignalsForDoctor, toSignalRow } from '@/lib/opd-gov-signal-store';
 import { signalObject } from '@/lib/opd-gov-signal-core';
 import { resolveInstances, doctorAuditMetrics } from '@/lib/opd-gov-read';
+import { getOperationalBlock } from '@/lib/doctor-metrics-store';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 
@@ -28,9 +29,10 @@ export async function GET(req: NextRequest) {
   const status = sp.get('status') === 'all' ? 'all' : 'open';
   const now = new Date().toISOString();
 
-  const [signals, metrics, names, dir] = await Promise.all([
+  const [signals, metrics, operational, names, dir] = await Promise.all([
     listSignalsForDoctor(doctorUid, status),
     doctorAuditMetrics(doctorUid, days),
+    getOperationalBlock(doctorUid).catch(() => null),
     fetchDoctorNames([doctorUid]).catch(() => ({} as Record<string, string>)),
     run(`SELECT speciality FROM doctor_directory WHERE doctor_uid=$1 LIMIT 1`, [doctorUid]).catch(() => []),
   ]);
@@ -45,7 +47,9 @@ export async function GET(req: NextRequest) {
     ok: true,
     doctor: { uid: doctorUid, name: names[doctorUid] || undefined, speciality: dir[0]?.speciality ? String(dir[0].speciality) : undefined },
     window: { days },
-    metrics: { audit: metrics },
+    // Audit-led; operational folded in (null when the doctor has no matview row). EPI gates the
+    // operational block on link confidence portal-side (contract §7b.1 misattribution safeguard).
+    metrics: { audit: metrics, operational },
     signals: out,
     advisory: 'Advisory documentation & prescribing signals validated by a care manager — not a performance score.',
   });

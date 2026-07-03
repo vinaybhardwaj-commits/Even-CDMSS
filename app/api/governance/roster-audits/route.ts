@@ -14,7 +14,8 @@ import { fetchDoctorNames } from '@/lib/metabase';
 import { sql } from '@/lib/db';
 import { listSignalsRoster, toSignalRow, type StoredSignal } from '@/lib/opd-gov-signal-store';
 import { signalObject, isOverdue } from '@/lib/opd-gov-signal-core';
-import { resolveInstances } from '@/lib/opd-gov-read';
+import { resolveInstances, doctorAuditMetrics } from '@/lib/opd-gov-read';
+import { getOperationalBlocks, type OperationalBlock } from '@/lib/doctor-metrics-store';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 
@@ -43,8 +44,11 @@ export async function GET(req: NextRequest) {
   // group by doctor
   const byDoc = new Map<string, StoredSignal[]>();
   for (const s of signals) (byDoc.get(s.doctor_uid) || byDoc.set(s.doctor_uid, []).get(s.doctor_uid)!).push(s);
-  const names = await fetchDoctorNames([...byDoc.keys()]).catch(() => ({} as Record<string, string>));
-  const specRows = await run(`SELECT doctor_uid, speciality FROM doctor_directory WHERE speciality IS NOT NULL`, []).catch(() => []);
+  const [names, specRows, operationalBlocks] = await Promise.all([
+    fetchDoctorNames([...byDoc.keys()]).catch(() => ({} as Record<string, string>)),
+    run(`SELECT doctor_uid, speciality FROM doctor_directory WHERE speciality IS NOT NULL`, []).catch(() => []),
+    getOperationalBlocks([...byDoc.keys()]).catch(() => ({} as Record<string, OperationalBlock>)),
+  ]);
   const spec: Record<string, string> = {};
   for (const r of specRows as Record<string, unknown>[]) spec[String(r.doctor_uid)] = String(r.speciality);
 
@@ -59,7 +63,10 @@ export async function GET(req: NextRequest) {
       const inst = doctorUid ? await resolveInstances(s.doctor_uid, s.signal_type, s.window_from, s.window_to) : { count: null, representative: null };
       sigObjs.push(signalObject(toSignalRow(s, inst.count), inst.representative, now));
     }
-    doctors.push({ doctor_uid: uid, name: names[uid] || undefined, speciality: spec[uid] || undefined, open, overdue, awaiting_ruling: awaiting, signals: sigObjs });
+    // operational folded in (batch, cheap); audit metrics only for the focused profile view
+    const metrics: Record<string, unknown> = { operational: operationalBlocks[uid] ?? null };
+    if (doctorUid) metrics.audit = await doctorAuditMetrics(uid, Math.max(1, Math.min(120, Number(sp.get('window')) || 30)));
+    doctors.push({ doctor_uid: uid, name: names[uid] || undefined, speciality: spec[uid] || undefined, open, overdue, awaiting_ruling: awaiting, metrics, signals: sigObjs });
   }
   doctors.sort((a, b) => (b.awaiting_ruling - a.awaiting_ruling) || (b.overdue - a.overdue) || (b.open - a.open));
 
