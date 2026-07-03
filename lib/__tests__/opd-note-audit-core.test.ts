@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { rowToOpdCase, opdCaseText } from '../opd-ingest-core.ts';
-import { opdCompleteness, prescribingChecks, parseOpdAnalysis, medDoseDocumented, resolveMedRoute } from '../opd-note-audit-core.ts';
+import { opdCompleteness, prescribingChecks, parseOpdAnalysis, medDoseDocumented, resolveMedRoute, opdSignalType, stampFindingIdentity, OPD_SIGNAL_TYPES, type OpdFinding } from '../opd-note-audit-core.ts';
 
 // Mirrors a real GP row (medications + jsonb arrive as JSON strings via Metabase).
 const ROW: Record<string, unknown> = {
@@ -222,4 +222,80 @@ test('parseOpdAnalysis extracts findings + PDQI-9 + suggestions and clamps citat
   assert.equal(a!.pdqi9!.accurate, 4);
   assert.equal((a!.pdqi9 as Record<string, number>).bogus, undefined);
   assert.equal(a!.suggestions[0].priority, 1); // sorted
+});
+
+// ── Finding identity (governance spec v2.0 §2) ─────────────────────────────────
+const mkFinding = (subject: string, domain: 'appropriateness' | 'prescribing_safety' = 'prescribing_safety'): OpdFinding => ({
+  subject, verdict: 'context-dependent', confidence: 0.5, domain,
+  rationale: 'r', evidence: [], estimates: [], citation_ids: [], source: 'deterministic',
+});
+
+test('opdSignalType maps every deterministic subject shape to the controlled vocab', () => {
+  const cases: [string, string][] = [
+    ['Interaction (major): Aceclofenac + Methotrexate', 'drug_interaction'],
+    ['Incomplete dosing: Cefixime', 'incomplete_dosing'],
+    ['Duplicate prescription: aspirin', 'duplicate_prescription'],
+    ['Unverified brand: Mystery Tonic', 'unverified_brand'],
+    ['LASA pair co-prescribed: hydroxyzine & hydralazine', 'lasa_pair'],
+    ['Daily dose exceeds ceiling: paracetamol', 'dose_ceiling_exceeded'],
+    ['Daily dose may exceed ceiling if all SOS taken: paracetamol', 'dose_ceiling_sos'],
+    ['Same molecule in 3 products (within ceiling): paracetamol', 'duplicate_molecule'],
+    ['High-alert medications: Enoxaparin, Insulin', 'high_alert_medication'],
+    ['Schedule X drug: Alprazolam', 'schedule_x'],
+    ['Off-formulary items: 2 not in formulary', 'off_formulary'],
+  ];
+  for (const [subject, expected] of cases) {
+    assert.equal(opdSignalType(subject, 'prescribing_safety'), expected, subject);
+    assert.ok(OPD_SIGNAL_TYPES[expected], `${expected} in vocab`);
+  }
+});
+
+test('opdSignalType: LLM subjects — antibiotic rule, bounded slug fallback, domain fallback', () => {
+  assert.equal(opdSignalType('Antibiotic for likely-viral URTI', 'prescribing_safety'), 'antibiotic_stewardship');
+  // slug fallback is bounded (≤4 words) + deterministic → recurring LLM subjects batch together
+  assert.equal(opdSignalType('Low-yield Widal test for afebrile patient', 'appropriateness'),
+    opdSignalType('low yield widal test', 'appropriateness'));
+  // empty prefix → the domain's general bucket
+  assert.equal(opdSignalType('—', 'appropriateness'), 'appropriateness_general');
+  assert.equal(opdSignalType('::', 'prescribing_safety'), 'prescribing_general');
+});
+
+test('stampFindingIdentity: stable refs, severity-change stable, distinct details distinct', () => {
+  const [a] = stampFindingIdentity([mkFinding('Interaction (moderate): Aceclofenac + Methotrexate')]);
+  const [b] = stampFindingIdentity([mkFinding('Interaction (major): Aceclofenac + Methotrexate')]);
+  const [c] = stampFindingIdentity([mkFinding('Interaction (major): Aspirin + Warfarin')]);
+  assert.equal(a.signal_type, 'drug_interaction');
+  assert.match(a.finding_ref!, /^[0-9a-f]{12}$/);
+  assert.equal(a.finding_ref, b.finding_ref);        // severity in the prefix → same ref (stable across re-audit)
+  assert.notEqual(a.finding_ref, c.finding_ref);      // different drug pair → distinct
+  // deterministic: re-stamping reproduces the same refs regardless of array order
+  const two = stampFindingIdentity([mkFinding('Incomplete dosing: Cefixime'), mkFinding('Incomplete dosing: Azithromycin')]);
+  const twoRev = stampFindingIdentity([mkFinding('Incomplete dosing: Azithromycin'), mkFinding('Incomplete dosing: Cefixime')]);
+  assert.equal(two[0].finding_ref, twoRev[1].finding_ref);
+  assert.equal(two[1].finding_ref, twoRev[0].finding_ref);
+});
+
+test('stampFindingIdentity: within-note collision suffixes #2, #3 deterministically', () => {
+  const three = stampFindingIdentity([
+    mkFinding('Incomplete dosing: Cefixime'),
+    mkFinding('Incomplete dosing:   cefixime'),   // normalizes identical → collision
+    mkFinding('Incomplete dosing: CEFIXIME'),
+  ]);
+  const refs = three.map((f) => f.finding_ref!);
+  assert.equal(new Set(refs).size, 3);              // all unique within the note
+  assert.equal(refs[1], `${refs[0]}#2`);
+  assert.equal(refs[2], `${refs[0]}#3`);
+  assert.ok(three.every((f) => f.signal_type === 'incomplete_dosing'));
+});
+
+test('stampFindingIdentity: every finding stamped non-empty (acceptance, spec §2)', () => {
+  const batch = stampFindingIdentity([
+    mkFinding('Interaction (major): A + B'),
+    mkFinding('Some novel LLM observation about the plan', 'appropriateness'),
+    mkFinding('High-alert medication: Insulin'),
+  ]);
+  for (const f of batch) {
+    assert.ok(f.signal_type && f.signal_type.length > 0);
+    assert.ok(f.finding_ref && f.finding_ref.length >= 12);
+  }
 });

@@ -13,7 +13,7 @@ import { startTrace, logEvent, finishTrace, tracedChat, setTraceQuestionPreview 
 import { geminiModelFor, geminiUtilityModel, TEXT_MODEL, MINI_MODEL } from './llm';
 import { rowToOpdCase, opdCaseText, type OpdKeys, type OpdMed } from './opd-ingest-core';
 import {
-  opdCompleteness, prescribingChecks, parseOpdAnalysis,
+  opdCompleteness, prescribingChecks, parseOpdAnalysis, stampFindingIdentity,
   OPD_AUDIT_SYSTEM, buildOpdAuditUser, OPD_ENGINE_VERSION,
   type OpdFinding, type OpdCompleteness, type OpdSuggestion,
 } from './opd-note-audit-core';
@@ -143,7 +143,9 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
   // the stored LLM findings + PDQI-9, re-score. No retrieval, no LLM, no trace — so a completeness/
   // prescribing rule change refreshes stored rows at ~zero cost.
   if (opts.reuse) {
-    const findings: OpdFinding[] = [...det, ...opts.reuse.llmFindings];
+    // stampFindingIdentity: signal_type + finding_ref on every finding (governance spec v2.0 §2);
+    // deterministic, so re-stamping stored LLM findings reproduces their refs.
+    const findings: OpdFinding[] = stampFindingIdentity([...det, ...opts.reuse.llmFindings]);
     const scorecard = computeOpdScore({
       findings: findings.filter((f) => !f.informational).map((f) => ({ verdict: f.verdict, confidence: f.confidence, domain: f.domain })),
       completenessCoverage: completeness.coverage,
@@ -183,7 +185,7 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     const raw = await defaultGenerate(traceId, OPD_AUDIT_SYSTEM, buildOpdAuditUser(opdCaseText(oc), citedContext), mini);
     const parsed = parseOpdAnalysis(raw, sources.length);
 
-    const findings: OpdFinding[] = [...det, ...(parsed?.findings ?? [])];
+    const findings: OpdFinding[] = stampFindingIdentity([...det, ...(parsed?.findings ?? [])]);
     const scorecard = computeOpdScore({
       findings: findings.filter((f) => !f.informational).map((f) => ({ verdict: f.verdict, confidence: f.confidence, domain: f.domain })),
       completenessCoverage: completeness.coverage,
@@ -215,6 +217,6 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
       pdqi9: null,
       patientCentred: completeness.patientCentred,
     });
-    return { keys, scorecard, completeness, findings: det, suggestions: [], sources: [], engineVersion: engineVersion, traceId };
+    return { keys, scorecard, completeness, findings: stampFindingIdentity(det), suggestions: [], sources: [], engineVersion: engineVersion, traceId };
   }
 }

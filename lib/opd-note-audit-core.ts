@@ -39,7 +39,119 @@ export interface OpdFinding {
   citation_ids: number[];
   source: 'llm' | 'deterministic';
   informational?: boolean;         // surfaced for awareness (e.g. high-alert present); never penalises the score
+  // Finding identity (governance spec v2.0 §2) — stamped at assembly time by stampFindingIdentity().
+  // Optional in the type because stored history predates them; readers may re-derive with the same
+  // pure functions (deterministic), so legacy rows need no migration or forced re-audit.
+  signal_type?: string;            // coarse controlled-vocab category — the CM triage batch key
+  finding_ref?: string;            // stable per-note content hash — the instance address
 }
+// ── Finding identity — signal_type + finding_ref (governance spec v2.0 §2) ────
+// Every finding gets (a) a coarse controlled-vocab `signal_type` (the unit the care manager
+// batch-triages on: "drug interaction ×46") and (b) a `finding_ref` — a deterministic content
+// hash stable across re-audits for the same specific finding on the same note. Triage rows key
+// on (audit_id, finding_ref); CM batch decisions key on (doctor_uid, signal_type).
+// Pure + dependency-free (own SHA-1) so this file stays strip-types testable and client-safe.
+
+/** Controlled signal-type vocabulary → human label. Keep coarse: this is the CM batching unit. */
+export const OPD_SIGNAL_TYPES: Record<string, string> = {
+  drug_interaction: 'Drug interaction',
+  incomplete_dosing: 'Incomplete dosing',
+  duplicate_prescription: 'Duplicate prescription',
+  unverified_brand: 'Unverified brand',
+  lasa_pair: 'LASA pair co-prescribed',
+  dose_ceiling_exceeded: 'Daily dose exceeds ceiling',
+  dose_ceiling_sos: 'Dose may exceed ceiling if all SOS taken',
+  duplicate_molecule: 'Same molecule in multiple products',
+  high_alert_medication: 'High-alert medication',
+  schedule_x: 'Schedule X drug',
+  off_formulary: 'Off-formulary items',
+  antibiotic_stewardship: 'Antibiotic stewardship',
+  appropriateness_general: 'Appropriateness (other)',
+  prescribing_general: 'Prescribing safety (other)',
+};
+
+// Deterministic subjects match exactly by prefix; LLM subjects fall through to the keyword
+// rules, then the slug fallback. Order matters — first match wins.
+const SIGNAL_TYPE_RULES: { re: RegExp; type: string }[] = [
+  { re: /^interaction\b/, type: 'drug_interaction' },
+  { re: /^incomplete dosing\b/, type: 'incomplete_dosing' },
+  { re: /^duplicate prescription\b/, type: 'duplicate_prescription' },
+  { re: /^unverified brand\b/, type: 'unverified_brand' },
+  { re: /^lasa pair\b/, type: 'lasa_pair' },
+  { re: /^daily dose exceeds ceiling\b/, type: 'dose_ceiling_exceeded' },
+  { re: /^daily dose may exceed ceiling\b/, type: 'dose_ceiling_sos' },
+  { re: /^same molecule in \d+ products?\b/, type: 'duplicate_molecule' },
+  { re: /^high[\s-]?alert medication/, type: 'high_alert_medication' },
+  { re: /^schedule x\b/, type: 'schedule_x' },
+  { re: /^off[\s-]?formulary\b/, type: 'off_formulary' },
+  { re: /\bantibiotic|antimicrobial\b/, type: 'antibiotic_stewardship' },
+  { re: /\b(?:drug[\s–-]+drug\s+)?interaction\b/, type: 'drug_interaction' },
+];
+
+const SLUG_STOPWORDS = new Set(['the', 'a', 'an', 'of', 'for', 'in', 'on', 'to', 'with', 'and', 'or', 'is', 'are', 'was']);
+
+/** The controlled-vocab signal type for a finding subject (pure, derivable for legacy rows). */
+export function opdSignalType(subject: string, domain: OpdFindingDomain): string {
+  // Match on the category part (before ':'), parentheticals stripped, lowercased.
+  const prefix = (subject.split(':')[0] || '').replace(/\(.*?\)/g, ' ').trim().toLowerCase();
+  for (const r of SIGNAL_TYPE_RULES) if (r.re.test(prefix)) return r.type;
+  // Slug fallback: a bounded slug of the subject's category words, so recurring LLM subjects
+  // still batch together; empty → the domain's general bucket.
+  const words = prefix.replace(/[^a-z\s]/g, ' ').split(/\s+/).filter((w) => w && !SLUG_STOPWORDS.has(w)).slice(0, 4);
+  if (words.length) return words.join('_');
+  return domain === 'prescribing_safety' ? 'prescribing_general' : 'appropriateness_general';
+}
+
+// Compact pure SHA-1 (deterministic content hash; NOT security-sensitive). Verified against the
+// standard test vector in the unit tests.
+function sha1Hex(input: string): string {
+  const bytes = new TextEncoder().encode(input);
+  const ml = bytes.length;
+  const padded = new Uint8Array(Math.ceil((ml + 9) / 64) * 64);
+  padded.set(bytes);
+  padded[ml] = 0x80;
+  const dv = new DataView(padded.buffer);
+  const bitLen = ml * 8;
+  dv.setUint32(padded.length - 8, Math.floor(bitLen / 0x100000000), false);
+  dv.setUint32(padded.length - 4, bitLen >>> 0, false);
+  let h0 = 0x67452301, h1 = 0xefcdab89, h2 = 0x98badcfe, h3 = 0x10325476, h4 = 0xc3d2e1f0;
+  const w = new Uint32Array(80);
+  for (let i = 0; i < padded.length; i += 64) {
+    for (let j = 0; j < 16; j++) w[j] = dv.getUint32(i + j * 4, false);
+    for (let j = 16; j < 80; j++) { const x = w[j - 3] ^ w[j - 8] ^ w[j - 14] ^ w[j - 16]; w[j] = (x << 1) | (x >>> 31); }
+    let a = h0, b = h1, c = h2, d = h3, e = h4;
+    for (let j = 0; j < 80; j++) {
+      let f: number, k: number;
+      if (j < 20) { f = (b & c) | (~b & d); k = 0x5a827999; }
+      else if (j < 40) { f = b ^ c ^ d; k = 0x6ed9eba1; }
+      else if (j < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8f1bbcdc; }
+      else { f = b ^ c ^ d; k = 0xca62c1d6; }
+      const t = ((((a << 5) | (a >>> 27)) + f + e + k + w[j]) | 0) >>> 0;
+      e = d; d = c; c = ((b << 30) | (b >>> 2)) >>> 0; b = a; a = t;
+    }
+    h0 = (h0 + a) >>> 0; h1 = (h1 + b) >>> 0; h2 = (h2 + c) >>> 0; h3 = (h3 + d) >>> 0; h4 = (h4 + e) >>> 0;
+  }
+  return [h0, h1, h2, h3, h4].map((h) => h.toString(16).padStart(8, '0')).join('');
+}
+
+/** Stamp signal_type + finding_ref on every finding of one note (final assembly step).
+ *  finding_ref = sha1(signal_type + '|' + normalized detail-after-colon), first 12 hex chars —
+ *  stable across re-audits for the same specific finding; within-note collisions suffixed '#2'…
+ *  Deterministic: re-stamping stored findings yields identical refs. */
+export function stampFindingIdentity(findings: OpdFinding[]): OpdFinding[] {
+  const used = new Set<string>();
+  return findings.map((f) => {
+    const signal_type = opdSignalType(f.subject, f.domain);
+    const colon = f.subject.indexOf(':');
+    const detail = (colon >= 0 ? f.subject.slice(colon + 1) : f.subject).trim().toLowerCase().replace(/\s+/g, ' ');
+    const base = sha1Hex(`${signal_type}|${detail}`).slice(0, 12);
+    let ref = base;
+    for (let n = 2; used.has(ref); n++) ref = `${base}#${n}`;
+    used.add(ref);
+    return { ...f, signal_type, finding_ref: ref };
+  });
+}
+
 export interface OpdCompletenessItem { key: string; label: string; present: boolean; mandatory: boolean }
 export interface OpdCompleteness {
   items: OpdCompletenessItem[];
