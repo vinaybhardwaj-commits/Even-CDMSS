@@ -196,7 +196,11 @@ const STRENGTH_RE = /\b\d+(?:\.\d+)?\s?(?:mg|mcg|µg|ug|g|ml|iu|units?|meq|lac|l
 /** Dose/amount is documented if it's in the `dosage` field, the `strength` field, or embedded in
  *  the drug name (e.g. "Cefix 200mg Tab"). */
 export function medDoseDocumented(m: OpdMed): boolean {
-  if ((m.dose && m.dose.trim()) || (m.strength && m.strength.trim())) return true;
+  // v0.81 (BUG-0.8-01): for a parenteral/injectable med a concentration (mg/ml) in `strength` is
+  // NOT a documented dose — require an explicit dose amount. For oral/other forms, strength counts.
+  if (m.dose && m.dose.trim()) return true;                 // an explicit dose always counts
+  if (resolveMedRoute(m) === 'parenteral') return false;    // injectable w/ no dose → incomplete
+  if (m.strength && m.strength.trim()) return true;         // non-injectable: strength counts
   return STRENGTH_RE.test(`${m.brand || ''} ${m.generic || ''}`);
 }
 
@@ -228,6 +232,9 @@ export function resolveMedRoute(m: OpdMed): string | null {
 // date; an explicit date always counts. This is what stops Continuity = 100 on a blank follow-up.
 export function followUpDocumented(c: DeidOpdCase): boolean {
   if (c.followUpDateSet) return true;                       // an explicit date is a documented plan
+  // v0.81 (BUG-0.8-03): a formal onward referral is a documented care transition — it satisfies
+  // continuity even without a calendar date (previously scored as "UNKNOWN · no date" → false).
+  if ((c.referrals?.length ?? 0) > 0) return true;
   const t = (c.followUpType || '').trim().toUpperCase();
   if (!t || t === 'UNKNOWN' || t === 'NONE') return false;  // blank / UNKNOWN = not specified
   return true;                                              // any real disposition counts

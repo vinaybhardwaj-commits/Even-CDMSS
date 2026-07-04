@@ -5,6 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { rowToOpdCase, opdCaseText, isTeleconsultEncounter, hasHandsOnExam } from '../opd-ingest-core.ts';
+import { computeOpdScore } from '../opd-note-score-core.ts';
 import { opdCompleteness, prescribingChecks, parseOpdAnalysis, medDoseDocumented, resolveMedRoute, opdSignalType, stampFindingIdentity, followUpDocumented, OPD_SIGNAL_TYPES, type OpdFinding } from '../opd-note-audit-core.ts';
 
 // Mirrors a real GP row (medications + jsonb arrive as JSON strings via Metabase).
@@ -404,4 +405,33 @@ test('v0.81 BUG-0.8-04: HOSPITAL_GP in-person note IS scored on examination', ()
   const comp = opdCompleteness(c);
   assert.ok(comp.items.some((i) => i.key === 'examination')); // in-person → examination IS scored
   assert.equal(comp.items.find((i) => i.key === 'examination')!.present, false); // empty → real gap
+});
+
+// ── v0.81 BUG-0.8-05/07: domain aggregation degrades gracefully (no flat 0) ─────────────────────
+test('v0.81 BUG-0.8-05/07: stacked findings degrade gracefully, never a flat 0; single finding unchanged', () => {
+  const lv = { verdict: 'low-value' as const, confidence: 1, domain: 'appropriateness' as const };
+  const appr = (fs: any[]) => computeOpdScore({ findings: fs, completenessCoverage: 1, pdqi9: null })
+    .domains.find((d) => d.domain === 'appropriateness')!.score;
+  assert.equal(appr([lv]), 55);          // one low-value finding: unchanged vs the old additive model
+  const two = appr([lv, lv]), three = appr([lv, lv, lv]);
+  assert.ok(two < 55 && two > 0);        // ~30
+  assert.ok(three < two && three > 0);   // ~17 — NOT a flat 0 (old additive gave 0)
+});
+
+// ── v0.81 BUG-0.8-03: a formal referral satisfies follow-up / continuity ────────────────────────
+test('v0.81 BUG-0.8-03: a formal referral counts as documented follow-up', () => {
+  const withRef = rowToOpdCase({ ...ROW, followup__followup_type: 'UNKNOWN', next_follow_up_date: null,
+    refer_to: '[{"specialist_type":{"name":"Orthopedics","is_in_house":false},"recommended_by_even":true}]' }).case;
+  assert.equal(followUpDocumented(withRef), true);
+  const noRef = rowToOpdCase({ ...ROW, followup__followup_type: 'UNKNOWN', next_follow_up_date: null, refer_to: '[]' }).case;
+  assert.equal(followUpDocumented(noRef), false);
+});
+
+// ── v0.81 BUG-0.8-01: injectable with only a concentration is NOT dose-documented ───────────────
+test('v0.81 BUG-0.8-01: injectable concentration is not a dose; oral strength still counts', () => {
+  const inj: any = { generic: 'Ferric Carboxymaltose', brand: 'Orofer FCM Injection', strength: '50mg/ml', dose: '', frequency: 'STAT', route: '' };
+  assert.equal(medDoseDocumented(inj), false);                 // parenteral + no dose → incomplete
+  assert.equal(medDoseDocumented({ ...inj, dose: '500mg' }), true); // explicit total dose → documented
+  const oral: any = { generic: 'Paracetamol', brand: 'Dolo 650 Tablet', strength: '650mg', dose: '', frequency: '1-0-1', route: 'oral' };
+  assert.equal(medDoseDocumented(oral), true);                 // non-injectable: strength counts
 });

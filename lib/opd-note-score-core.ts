@@ -141,9 +141,16 @@ export function bandFor(headline: number): Band {
 }
 
 function scoreFromFindings(fs: OpdScoreFinding[]): { score: number; n: number } {
-  let pen = 0;
-  for (const f of fs) pen += findingPenalty({ verdict: f.verdict, confidence: f.confidence });
-  return { score: clamp(100 - pen, 0, 100), n: fs.length };
+  // v0.81 (BUG-0.8-05/07): combine penalties with DIMINISHING RETURNS instead of a flat additive
+  // sum — each finding removes a fraction of the REMAINING score, so a stack degrades gracefully
+  // (one low-value ≈55, two ≈30, three ≈17) rather than collapsing a domain to an unfair 0.
+  // A single finding is unchanged vs the old additive model (preserves calibration for the common case).
+  let remaining = 100;
+  for (const f of fs) {
+    const p = findingPenalty({ verdict: f.verdict, confidence: f.confidence });
+    remaining *= 1 - clamp(p, 0, 100) / 100;
+  }
+  return { score: round(clamp(remaining, 0, 100)), n: fs.length };
 }
 
 /** PDQI-9 → 0..100 (mean of provided 1–5 ratings, rescaled). Returns null if none provided. */
