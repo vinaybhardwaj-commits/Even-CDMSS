@@ -18,6 +18,7 @@ import {
   ensureLabTables, saveLabAnalysis, listLabAnalyses, getLabAnalysis, labLabel,
   corpusAddQuarantined, corpusActivate, corpusDelete, corpusLabList, labStorage,
 } from './lab';
+import { parseNdjson, reduceDdxEvents, reduceAskEvents, labSelfBaseUrl } from './lab-clinical-core';
 
 export type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
 const ok = (obj: unknown): ToolResult => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
@@ -82,6 +83,35 @@ export const LAB_TOOLS = [
     },
   },
   {
+    name: 'lab_ddx',
+    description: 'Run the REAL /api/ddx differential-diagnosis pipeline end-to-end (retrieval → hypothesis-first → draft → self-critique → revise → demographic guard) forced onto the FREE Mac-mini (Qwen/Llama, ₹0, never Gemini), and store the full result in the lab (table lab_analyses). This tests the ACTUAL production route code — for finding pipeline bugs: missing cannot-miss dx, demographic leaks, anchoring, citation/parse failures, order-sensitivity. Provide a presentation (cc required). Store many under one `experiment` label and mine them with audit_query / lab_query. NB: mini output is a cheaper brain than prod Gemini — reliable for pipeline/parse/retrieval bugs, indicative (not final) for clinical-quality claims.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        experiment: { type: 'string', description: 'Experiment label to file this under.' },
+        cc: { type: 'string', description: 'Chief complaint (required).' },
+        age: { type: 'string', description: 'Patient age, e.g. "54" or "3 months".' },
+        sex: { type: 'string', description: 'Patient sex (M/F/…), used as a hard demographic constraint.' },
+        history: { type: 'string' }, exam: { type: 'string' }, vitals: { type: 'string' },
+        investigations: { type: 'string', description: 'Free-text investigation results, if any.' },
+      },
+      required: ['experiment', 'cc'],
+    },
+  },
+  {
+    name: 'lab_ask',
+    description: 'Run the REAL /api/ask RAG pipeline end-to-end (retrieve → draft → audit → revise → cite-or-label) forced onto the FREE Mac-mini (₹0, never Gemini), and store the answer + citations in the lab (lab_analyses). Tests the actual Ask route — for finding grounding bugs: uncited claims, dead/absent citations, retrieval whiffs. Store many under one `experiment` and mine with audit_query / lab_query.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        experiment: { type: 'string', description: 'Experiment label to file this under.' },
+        question: { type: 'string', description: 'The clinical question (required).' },
+        investigations: { type: 'string', description: 'Optional investigation results to fold in.' },
+      },
+      required: ['experiment', 'question'],
+    },
+  },
+  {
     name: 'lab_query',
     description: 'Inspect the experimental lab: list experiments (no args), list runs in one experiment, fetch one run by id, or storage stats. args: experiment? | id? | stats?',
     inputSchema: {
@@ -95,7 +125,7 @@ export const LAB_TOOLS = [
   {
     name: 'audit_query',
     description:
-      'Run a READ-ONLY SQL query (SELECT/WITH only) against the CDMSS audit database (Neon) — for mining bug prevalence + building golden sets. Readable tables are DE-IDENTIFIED (no PHI): opd_note_audits (per-note audit: uid, doctor_uid, note_date, note_quality_index, band, score_documentation/note_quality/appropriateness/prescribing_safety/patient_centred, pdqi9 jsonb [{attr,value}], completeness_pct, n_missing_mandatory, n_findings, n_low_value, n_interaction_alerts, findings jsonb [{subject,verdict,domain,source,informational,signal_type,finding_ref,citation_ids}], suggestions jsonb, missing_fields jsonb, engine_version), plus opd_audit_triage, opd_gov_signal(_event), doctor_directory, doctor_roster, audit_suppression, doctor_operational_metrics. Enforced: SELECT/WITH only, single statement, no writes/DDL/system-functions, LIMIT ≤ 500 (auto-added), audit-logged. Source-NOTE fields (medications count, followUpType, patient age, specialty) are NOT here — they live in db13; take the uids this returns and join them via the Metabase MCP.',
+      'Run a READ-ONLY SQL query (SELECT/WITH only) against the CDMSS audit database (Neon) — for mining bug prevalence + building golden sets. Readable tables are DE-IDENTIFIED (no PHI): opd_note_audits (per-note audit: uid, doctor_uid, note_date, note_quality_index, band, score_documentation/note_quality/appropriateness/prescribing_safety/patient_centred, pdqi9 jsonb [{attr,value}], completeness_pct, n_missing_mandatory, n_findings, n_low_value, n_interaction_alerts, findings jsonb [{subject,verdict,domain,source,informational,signal_type,finding_ref,citation_ids}], suggestions jsonb, missing_fields jsonb, engine_version), plus opd_audit_triage, opd_gov_signal(_event), doctor_directory, doctor_roster, audit_suppression, doctor_operational_metrics, lvc_recommendations (reference), lab_analyses (your lab_ddx/lab_ask/mini_analyze runs — output jsonb), and the DE-IDENTIFIED pipeline views v_trace_summary (feature/status/severity/timings/model_summary — NO clinical text) + v_appropriateness_summary (mode/doc_type/counts). PHI-bearing raw tables (traces, trace_events, appropriateness_runs, ccb_briefs, care_track_assignments, opd_audit_feedback) are BLOCKED — use the views. Enforced: SELECT/WITH only, single statement, no writes/DDL/system-functions, blocked-relation guard, LIMIT ≤ 500 (auto-added), audit-logged. Source-NOTE fields (medications count, followUpType, patient age, specialty) live in db13 — take the uids this returns and join via the Metabase MCP.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -112,6 +142,8 @@ export async function callLabTool(name: string, args: Record<string, unknown>): 
   try {
     switch (name) {
       case 'mini_analyze': return await miniAnalyze(args);
+      case 'lab_ddx': return await labDdx(args);
+      case 'lab_ask': return await labAsk(args);
       case 'backfill_control': return await backfillControl(args);
       case 'corpus_add': return await corpusAdd(args);
       case 'corpus_manage': return await corpusManage(args);
@@ -156,6 +188,71 @@ async function miniAnalyze(a: Record<string, unknown>): Promise<ToolResult> {
   }
 
   return err('provide metabase_uid or text');
+}
+
+/** Self-fetch one of the app's own streaming clinical routes, forcing the FREE mini, and
+ *  return the raw NDJSON body. Routes are public (clinician app) → no auth header needed. */
+async function selfPostNdjson(path: string, body: Record<string, unknown>): Promise<string> {
+  const base = labSelfBaseUrl(process.env as Record<string, string | undefined>);
+  const res = await fetch(`${base}${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ...body, providerOverride: 'ollama' }),
+  });
+  if (!res.ok && res.status >= 400) {
+    const t = await res.text().catch(() => '');
+    throw new Error(`${path} → HTTP ${res.status} ${t.slice(0, 200)}`);
+  }
+  return await res.text();   // waits for the whole NDJSON stream to finish
+}
+
+async function labDdx(a: Record<string, unknown>): Promise<ToolResult> {
+  await ensureLabTables();
+  const experiment = labLabel(a.experiment);
+  const cc = S(a.cc).trim();
+  if (!cc) return err('cc (chief complaint) is required');
+  const started = Date.now();
+  const presentation = {
+    cc, age: S(a.age) || undefined, sex: S(a.sex) || undefined,
+    history: S(a.history) || undefined, exam: S(a.exam) || undefined,
+    vitals: S(a.vitals) || undefined, investigations: S(a.investigations) || undefined,
+  };
+  let raw: string;
+  try { raw = await selfPostNdjson('/api/ddx', presentation); }
+  catch (e) { return err(`ddx pipeline call failed: ${String((e as Error).message)}`); }
+  const probe = reduceDdxEvents(parseNdjson(raw));
+  const preview = [presentation.age, presentation.sex, cc].filter(Boolean).join(' / ').slice(0, 300);
+  const id = await saveLabAnalysis({
+    experiment, kind: 'ddx', engine: 'ddx-route/mini', inputRef: null, inputPreview: preview,
+    output: { presentation, ...probe }, model: MINI_MODEL, latencyMs: Date.now() - started,
+  });
+  return ok({
+    stored_id: id, experiment, kind: 'ddx', ok: probe.ok, error: probe.error,
+    cannot_miss: probe.cannot_miss, most_likely: probe.most_likely, other: probe.other,
+    n_sources: probe.n_sources, critique_severity: probe.critique_severity,
+    demographic_removed: probe.demographic_removed, ms: Date.now() - started,
+  });
+}
+
+async function labAsk(a: Record<string, unknown>): Promise<ToolResult> {
+  await ensureLabTables();
+  const experiment = labLabel(a.experiment);
+  const question = S(a.question).trim();
+  if (!question) return err('question is required');
+  const started = Date.now();
+  let raw: string;
+  try { raw = await selfPostNdjson('/api/ask', { question, investigations: S(a.investigations) || undefined }); }
+  catch (e) { return err(`ask pipeline call failed: ${String((e as Error).message)}`); }
+  const probe = reduceAskEvents(parseNdjson(raw));
+  const id = await saveLabAnalysis({
+    experiment, kind: 'ask', engine: 'ask-route/mini', inputRef: null, inputPreview: question.slice(0, 300),
+    output: { question, ...probe }, model: MINI_MODEL, latencyMs: Date.now() - started,
+  });
+  return ok({
+    stored_id: id, experiment, kind: 'ask', ok: probe.ok, error: probe.error,
+    answer_chars: probe.answer_chars, n_sources: probe.n_sources, citation_ids: probe.citation_ids,
+    uncited: probe.uncited, revised: probe.revised, ms: Date.now() - started,
+  });
 }
 
 async function backfillControl(a: Record<string, unknown>): Promise<ToolResult> {

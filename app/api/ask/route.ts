@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { retrieve } from '@/lib/retrieve';
 import { retrieveMultiQuery } from '@/lib/multi-query';
-import { TEXT_MODEL, CRITIQUE_MODEL, geminiModelFor } from '@/lib/llm';
+import { TEXT_MODEL, CRITIQUE_MODEL, geminiModelFor, geminiConfigured, GEMINI_MODEL } from '@/lib/llm';
 import { modelLabel } from '@/lib/model-labels';
 import { searchPlos, formatPlosForPrompt, type PlosHit } from '@/lib/plos';
 import { makeNdjsonStream, ndjsonHeaders } from '@/lib/stream';
@@ -91,7 +91,7 @@ You will receive:
 Rewrite the draft to fix every issue. Keep what's correct, correct what's wrong, add what's missing. Cite every clinical claim using the same [n] / [P{n}] format. Do not include any meta-commentary about the revision process — output the final clean answer the physician will read.`;
 
 export async function POST(req: NextRequest) {
-  let body: { question?: string; bookFilter?: string; investigations?: string; includePlos?: boolean; multiQuery?: boolean; selfCritique?: boolean; useReranker?: boolean; useSourceWeights?: boolean; useEmbeddingV2?: boolean };
+  let body: { question?: string; bookFilter?: string; investigations?: string; includePlos?: boolean; multiQuery?: boolean; selfCritique?: boolean; useReranker?: boolean; useSourceWeights?: boolean; useEmbeddingV2?: boolean; providerOverride?: 'gemini' | 'ollama' };
   try { body = await req.json(); } catch {
     return new Response(JSON.stringify({ error: 'invalid json' }), { status: 400 });
   }
@@ -111,7 +111,11 @@ export async function POST(req: NextRequest) {
 
   // Hybrid backend: route the reasoning passes to Gemini when GEMINI_ALL / GEMINI_ASK
   // is set (and Vertex configured); undefined = unchanged local Ollama path.
-  const G = geminiModelFor('ask');
+  // providerOverride (used by the Lab MCP free-testing harness) wins: 'ollama' forces
+  // the mini (₹0), 'gemini' forces Vertex; absent → the env default. Mirrors /api/ddx.
+  const G = body.providerOverride === 'ollama' ? undefined
+    : body.providerOverride === 'gemini' ? (geminiConfigured() ? GEMINI_MODEL : undefined)
+    : geminiModelFor('ask');
 
   // v1.7 Sprint A: capture request + denormalize fast-access fields on traces row.
   await Promise.all([
