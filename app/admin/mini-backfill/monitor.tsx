@@ -13,6 +13,7 @@ type Payload = {
   bucketMinutes: number;
   ticks: Tick[];
   inflight: { active: boolean; day?: string | null; sinceSec?: number; ttlSec?: number };
+  coverage: { engine: string; scored: number; total: number; pct: number };
   recent: Recent[];
   generatedAt: string;
 };
@@ -177,6 +178,18 @@ export default function MiniBackfillMonitor() {
         </div>
       </div>
 
+      {data?.coverage ? (
+        <div className="border-b border-slate-100 bg-slate-50/60 px-4 py-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-[12px]">
+            <span className="font-medium text-slate-700">Re-scored to <span className="font-mono text-[11px] text-slate-500">{data.coverage.engine}</span></span>
+            <span className="text-slate-500">{data.coverage.scored.toLocaleString()} / {data.coverage.total.toLocaleString()} notes · <span className="font-semibold text-slate-700">{data.coverage.pct}%</span></span>
+          </div>
+          <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
+            <div className="h-full rounded-full bg-teal-500 transition-all" style={{ width: `${Math.max(1.5, data.coverage.pct)}%` }} />
+          </div>
+          <div className="mt-1 text-[10.5px] text-slate-400">Sweeping backward · at {k?.cursor ?? '—'} → floor {k?.floor} · re-sweeps from today on each engine upgrade</div>
+        </div>
+      ) : null}
       <div className="grid gap-3 px-4 py-3 sm:grid-cols-4">
         <div className="rounded-lg bg-slate-50 p-2.5">
           <div className="text-[10.5px] text-slate-400">Processed today</div>

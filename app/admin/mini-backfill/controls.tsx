@@ -84,6 +84,7 @@ export default function MiniBackfillControls({ state }: { state: MbState }) {
         <div className="h-2 overflow-hidden rounded-full bg-slate-100">
           <div className="h-full rounded-full bg-teal-500 transition-all" style={{ width: `${Math.max(1.5, pct)}%` }} />
         </div>
+        <div className="mt-1 text-[10.5px] text-slate-400">Sweep position at page load — on each engine upgrade the sweep restarts from today. Live re-score coverage (notes now at the current engine) is in the monitor below.</div>
       </div>
 
       {/* advanced — only the controls with a real reason to change */}

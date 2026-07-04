@@ -43,7 +43,7 @@ export async function GET(req: NextRequest) {
   try {
     const st = await readState();
 
-    const [buckets, labBuckets, todayRow, totalRow, labTodayRow, labTotalRow, recent, labRecent, ticks] = await Promise.all([
+    const [buckets, labBuckets, todayRow, totalRow, labTodayRow, labTotalRow, recent, labRecent, scoredRow, totalUidRow, ticks] = await Promise.all([
       // backfill throughput: autopilot mini audits per bucket (opd_note_audits)
       run(
         `SELECT date_trunc($2, audited_at) AS bucket, count(*)::int AS notes, round(avg(latency_ms))::int AS avg_ms
@@ -84,6 +84,9 @@ export async function GET(req: NextRequest) {
            FROM lab_analyses
           ORDER BY created_at DESC LIMIT 12`,
       ).catch(() => [] as Record<string, unknown>[]),
+      // RE-SCORE COVERAGE: distinct notes now at the live prod engine vs distinct notes ever audited.
+      run(`SELECT count(DISTINCT uid)::int AS scored FROM opd_note_audits WHERE engine_version = $1`, [OPD_ENGINE_VERSION]).catch(() => [{ scored: 0 }]),
+      run(`SELECT count(DISTINCT uid)::int AS total FROM opd_note_audits`).catch(() => [{ total: 0 }]),
       getTicks(range.hours <= 48 ? 48 : Math.min(range.hours, 24 * 30)),
     ]);
 
@@ -109,6 +112,7 @@ export async function GET(req: NextRequest) {
         cursor: st.cursor,
         floor: st.floor,
       },
+      coverage: (() => { const scored = num(scoredRow[0]?.scored); const total = num(totalUidRow[0]?.total); return { engine: OPD_ENGINE_VERSION, scored, total, pct: total > 0 ? Math.round((scored / total) * 100) : 0 }; })(),
       // two stacked series over the same time axis (the mini is ONE box — these together are its load)
       throughput: buckets.map((b) => ({ t: String(b.bucket), notes: num(b.notes), avgSec: b.avg_ms ? Math.round(num(b.avg_ms) / 1000) : null })),
       mcpThroughput: labBuckets.map((b) => ({ t: String(b.bucket), notes: num(b.notes), avgSec: b.avg_ms ? Math.round(num(b.avg_ms) / 1000) : null })),
