@@ -361,8 +361,10 @@ test('completeness coverage excludes continuity fields — scored once (0.8)', (
 
   // the checklist still carries both fields for display
   assert.equal(withFu.items.filter((i) => ['advice_given', 'follow_up'].includes(i.key)).length, 2);
-  // and the Documentation denominator is now the clinical-record core (complaint/dx/dosing/exam)
-  assert.equal(withFu.coverage, 3 / 4); // exam missing on this in-person note
+  // and the Documentation denominator is the clinical-record core (complaint/dx/dosing/exam[/vitals]).
+  // v0.81.1 K: this is an in-person FEVER note, so a vitals requirement is added — exam AND vitals
+  // are both missing here, so coverage is 3/5 (was 3/4 before the presentation-aware vitals check).
+  assert.equal(withFu.coverage, 3 / 5);
 });
 
 // B1 — empty-medications case text tells the auditor there's no prescription to fault
@@ -472,4 +474,31 @@ test('v0.81.1 D (BUG-0.8-02): a nested diagnosis is not dropped when dpipe captu
   assert.ok(c.impressions.includes('Chest pain'));  // was DROPPED pre-D (dpipe-only won)
   assert.ok(c.impressions.includes('Anxiety'));
   assert.ok(c.diagnosisCodes.includes('F41'));
+});
+
+// ── v0.81.1 K (BUG-0.8-06a): presentation-required vitals ───────────────────────────────────────
+test('v0.81.1 K: in-person febrile note with no vitals gets a documentation gap; controls do not', () => {
+  // febrile, in-person, NO vitals → vitals gap, coverage < 1
+  const noVitals = rowToOpdCase({ ...ROW, type_of_prescription: 'HOSPITAL_GP',
+    general_practitioner_prescription__presenting_complaints:
+      '[{"symptoms":"<p>fever and body ache since 2 days</p>","diagnoses":[{"diagnosis_or_impression":"Acute febrile illness","icd_code":"R50.9"}]}]',
+    general_practitioner_prescription__examination: '' }).case;
+  const c1 = opdCompleteness(noVitals);
+  assert.ok(c1.items.some((i) => i.key === 'vitals' && !i.present));
+  assert.ok(c1.missing.some((m) => /Vitals/i.test(m)));
+  assert.ok(c1.coverage < 1);
+
+  // febrile WITH a temperature recorded → no vitals gap
+  const withTemp = rowToOpdCase({ ...ROW, type_of_prescription: 'HOSPITAL_GP',
+    general_practitioner_prescription__presenting_complaints:
+      '[{"symptoms":"<p>fever since 2 days</p>","diagnoses":[{"diagnosis_or_impression":"AFI","icd_code":"R50.9"}]}]',
+    general_practitioner_prescription__examination: '<p>Temp 101F, BP 120/80, pulse 88</p>' }).case;
+  assert.ok(!opdCompleteness(withTemp).items.some((i) => i.key === 'vitals' && !i.present));
+
+  // non-febrile in-person note → no vitals requirement at all
+  const nonFever = rowToOpdCase({ ...ROW, type_of_prescription: 'HOSPITAL_GP',
+    general_practitioner_prescription__presenting_complaints:
+      '[{"symptoms":"<p>knee pain</p>","diagnoses":[{"diagnosis_or_impression":"OA knee","icd_code":"M17"}]}]',
+    general_practitioner_prescription__examination: '<p>knee crepitus</p>' }).case;
+  assert.ok(!opdCompleteness(nonFever).items.some((i) => i.key === 'vitals'));
 });

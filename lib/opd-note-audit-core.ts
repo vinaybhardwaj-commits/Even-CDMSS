@@ -241,6 +241,19 @@ export function followUpDocumented(c: DeidOpdCase): boolean {
 }
 
 // ── Deterministic NABH-OPD completeness (from the structured row) ─────────────
+// v0.81.1 FIX K (BUG-0.8-06a): presentation-aware vitals. A febrile presentation needs objective
+// vitals (at least a temperature); an in-person note that documents none is a real gap (previously
+// scored 100). Conservative: any documented vital (temp/BP/pulse/'afebrile'/'vitals') counts as present,
+// and the requirement only applies IN-PERSON (a teleconsult can't take vitals).
+const NEEDS_VITALS_RE = /\b(fever|febrile|feverish|pyrexia|temperature)\b/i;
+const VITALS_DOCUMENTED_RE = /(\b\d{2,3}(?:\.\d)?\s*°?\s*[fc]\b|afebrile|\btemp\b|\bvitals?\b|\bB\.?P\b|\bpulse\b|\bSpO2\b|\bHR\b)/i;
+export function presentationNeedsVitals(c: DeidOpdCase): boolean {
+  return [...c.presentingComplaints, ...c.history, c.reasonForConsult || ''].some((t) => NEEDS_VITALS_RE.test(t || ''));
+}
+export function vitalsDocumented(c: DeidOpdCase): boolean {
+  return [...c.examination, ...c.history].some((t) => VITALS_DOCUMENTED_RE.test(t || ''));
+}
+
 export function opdCompleteness(c: DeidOpdCase): OpdCompleteness {
   const hasMeds = c.medications.length > 0;
   // Complete dosing = an amount is documented (field or in the name) + a frequency + a route that is
@@ -263,6 +276,8 @@ export function opdCompleteness(c: DeidOpdCase): OpdCompleteness {
   ];
   // Physical examination — applicable only to in-person encounters (a teleconsult can't examine).
   if (!isTele) items.push({ key: 'examination', label: 'Examination recorded', present: c.examination.length > 0, mandatory: true });
+  // v0.81.1 FIX K: presentation-required vitals (in-person febrile note must record vitals).
+  if (!isTele && presentationNeedsVitals(c)) items.push({ key: 'vitals', label: 'Vitals for the presentation (e.g. temperature for fever)', present: vitalsDocumented(c), mandatory: true });
   // 0.8 — score each field ONCE. Advice + follow-up stay on the checklist (display, missing-fields,
   // mandatory tracking) but are EXCLUDED from the Documentation coverage denominator: they are scored
   // in the Continuity domain. Before 0.8 they counted in BOTH domains (2 of 5–6 completeness items
