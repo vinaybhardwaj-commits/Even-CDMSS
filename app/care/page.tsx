@@ -89,6 +89,15 @@ export default async function ManagedCareHome() {
         })}
       </div>
 
+      {process.env.NEXT_PUBLIC_CONCORDANCE_ENABLED === '1' && (
+        <Link href="/concordance"
+          className="mt-3.5 flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-4 text-[13px] text-slate-600 transition hover:border-slate-300 hover:shadow-sm">
+          <span className="font-semibold text-slate-900">Concordance</span>
+          <span className="text-slate-400">— sanity-check a member's lab result before a call.</span>
+          <ArrowRight className="ml-auto h-3.5 w-3.5 text-slate-300" />
+        </Link>
+      )}
+
       <p className="mt-5 text-[11.5px] text-slate-400">
         Advisory throughout — never a clinician score. Audit signals are a high-sensitivity screen; nothing reaches a doctor until a care manager validates and routes it.
       </p>

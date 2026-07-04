@@ -5,7 +5,7 @@ import { useState, useEffect } from 'react';
 import {
   MessagesSquare, Network, Pill, Calculator, ClipboardCheck,
   ClipboardList, BookOpen, GraduationCap, Settings, Menu, X, ChevronLeft, Activity, Lightbulb, BarChart3,
-  PhoneCall, Filter, HardDrive,
+  PhoneCall, Filter, HardDrive, FlaskConical,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -29,6 +29,9 @@ const CLINICIAN: NavGroup[] = [
       { href: '/drugs', label: 'Drugs', Icon: Pill },
       { href: '/calculators', label: 'Calculators', Icon: Calculator },
       { href: '/appropriateness', label: 'Right Care', Icon: ClipboardCheck },
+      ...(process.env.NEXT_PUBLIC_CONCORDANCE_ENABLED === '1'
+        ? [{ href: '/concordance', label: 'Concordance', Icon: FlaskConical }]
+        : []),
     ],
   },
   {
