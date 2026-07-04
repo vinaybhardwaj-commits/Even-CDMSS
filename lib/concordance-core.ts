@@ -33,11 +33,12 @@ export interface FloorRule {
   match: string[];         // lowercase substrings that identify the analyte in result text
   direction: 'high' | 'low' | 'either';
   cannotMiss: string;      // the critical Branch-B diagnosis that must not be dismissed
+  note?: string;           // deterministic analyte-specific reasoning hint (injected into the prompt)
 }
 
 export const CANNOT_MISS_FLOOR: FloorRule[] = [
   { analyte: 'potassium', match: ['potassium', 'k '], direction: 'high', cannotMiss: 'true hyperkalemia (cardiac arrhythmia / arrest risk)' },
-  { analyte: 'calcium', match: ['calcium', 'ca '], direction: 'high', cannotMiss: 'primary hyperparathyroidism or malignancy hypercalcemia' },
+  { analyte: 'calcium', match: ['calcium', 'ca '], direction: 'high', cannotMiss: 'primary hyperparathyroidism or malignancy hypercalcemia', note: 'For calcium, ALWAYS assess albumin-corrected calcium BEFORE judging. High albumin (dehydration / hemoconcentration) or a raised total protein can elevate TOTAL calcium while the albumin-corrected (ionised) calcium is normal — that is concordant, NOT hypercalcemia. Only call it real hypercalcemia if the corrected value is genuinely high.' },
   { analyte: 'sodium', match: ['sodium', 'na '], direction: 'low', cannotMiss: 'symptomatic hyponatremia / SIADH / adrenal insufficiency' },
   { analyte: 'sodium', match: ['sodium', 'na '], direction: 'high', cannotMiss: 'significant hypernatremia / dehydration' },
   { analyte: 'wbc', match: ['wbc', 'white cell', 'leuko'], direction: 'high', cannotMiss: 'acute leukemia / leukemoid process' },
@@ -75,15 +76,22 @@ Reason in TWO branches and keep them separate:
 - BRANCH A — the result is WRONG (pre-analytic/analytic error: hemolysis, contamination, wrong tube/unit, transit, interference, line draw). If likely, verify/repeat before acting.
 - BRANCH B — the result is RIGHT and reveals something unevaluated (an unsuspected diagnosis). If plausible, do not dismiss; pursue the next step.
 
+The four verdicts mean EXACTLY:
+- concordant = the result fits this patient AND there is neither a likely pre-analytic/analytic error NOR an unevaluated/serious diagnosis to pursue → nothing to flag. NOTE: a result that "fits" a SEVERE clinical picture (e.g. a genuinely high potassium in a patient who missed dialysis) is NOT concordant — it is real and needs action, so it is discordant-likely-real.
+- discordant-likely-error = the result is probably WRONG (a plausible, analyte-appropriate pre-analytic/analytic mechanism) → verify/repeat.
+- discordant-likely-real = the result is probably TRUE and either reveals an unsuspected diagnosis OR confirms a dangerous state that needs action → pursue/treat. A dangerous but genuine result is ALWAYS discordant-likely-real, never concordant.
+- indeterminate = you cannot separate error from real without a decisive piece of information.
+
 Rules:
 1. Commit to ONE verdict. Do not output multiple verdicts.
 2. When the context strongly implies a pre-analytic error (difficult draw, tourniquet, EDTA/tube contamination, lipemia, delayed transit, biotin, line draw) AND the patient is asymptomatic with no corroborating findings, the correct verdict is usually discordant-likely-error — say so; do not hedge into "real" out of caution.
-3. ALWAYS surface a cannot-miss Branch-B cause even when Branch-A looks likely. Never let a benign/error explanation mask a serious real one.
-4. ANTI-ANCHORING: the stated context must NOT push you to dismiss a genuinely dangerous result. The same value can be an artifact in one patient and a critical real finding in another (e.g. symptoms, ECG changes, or a missed dialysis session make a high potassium real and urgent).
-5. Name the single DECISIVE GAP — the one unknown that would most change releasability — and a short VoI ledger. Surface the cheapest high-value action first (e.g. a hemolysis index on the existing sample BEFORE a re-draw).
-6. Confidence is capped by high-value unknowns. State the cap reason.
-7. Scope honesty: you reason about concordance, not analytic truth — you cannot catch a wrong result that is internally consistent and clinically plausible (e.g. a wrong-patient panel). Say so when relevant.
-8. Advisory only — a "concordant" verdict is NOT authorization to release; the clinician decides.
+3. Pre-analytic error explanations MUST be mechanistically appropriate to the specific analyte. Do NOT reflexively invoke "hemolysis" or a generic artifact. Hemolysis raises potassium, LDH, and phosphate; it does NOT meaningfully raise calcium, sodium, ALP, TSH, or ferritin. If no analyte-appropriate pre-analytic mechanism fits the result and context, Branch A is weak and the verdict should lean real.
+4. ALWAYS surface a cannot-miss Branch-B cause even when Branch-A looks likely. Never let a benign/error explanation mask a serious real one.
+5. ANTI-ANCHORING: the stated context must NOT push you to dismiss a genuinely dangerous result. The same value can be an artifact in one patient and a critical real finding in another (e.g. symptoms, ECG changes, or a missed dialysis session make a high potassium real and urgent → discordant-likely-real).
+6. Name the single DECISIVE GAP — the one unknown that would most change releasability — and a short VoI ledger. Surface the cheapest high-value action first (e.g. a hemolysis index on the existing sample BEFORE a re-draw). The decisive gap must be relevant to THIS analyte (do not propose a hemolysis index for calcium).
+7. Confidence is capped by high-value unknowns. State the cap reason.
+8. Scope honesty: you reason about concordance, not analytic truth — you cannot catch a wrong result that is internally consistent and clinically plausible (e.g. a wrong-patient panel). Say so when relevant.
+9. Advisory only — a "concordant" verdict is NOT authorization to release; the clinician decides.
 
 Output in EXACTLY this structure, one label per line:
 VERDICT: <concordant | discordant-likely-error | discordant-likely-real | indeterminate>  (exactly one)
@@ -100,7 +108,9 @@ export function buildConcordancePrompt(result: string, context: string): Prompt 
   const floorLine = floor.length
     ? `\n\nCANNOT-MISS FLOOR for this analyte (you MUST explicitly address whether each is excluded, in Branch B): ${floor.map((f) => f.cannotMiss).join('; ')}.`
     : '';
-  const user = `RESULT: ${result}\nCONTEXT: ${context}${floorLine}`;
+  const notes = floor.map((f) => f.note).filter(Boolean);
+  const notesLine = notes.length ? `\n\nANALYTE RULES (deterministic — apply before judging): ${notes.join(' ')}` : '';
+  const user = `RESULT: ${result}\nCONTEXT: ${context}${floorLine}${notesLine}`;
   return { system: SYSTEM, user };
 }
 
