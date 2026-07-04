@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import {
   MessagesSquare, Network, Pill, Calculator, ClipboardCheck, ClipboardList,
-  BookOpen, GraduationCap, ArrowRight, PhoneCall, Database, Link2, RefreshCw, ShieldCheck,
+  BookOpen, GraduationCap, ArrowRight, PhoneCall, Database, Link2, RefreshCw, ShieldCheck, FlaskConical,
 } from 'lucide-react';
 import { sql } from '@/lib/db';
 
@@ -40,6 +40,8 @@ const CLINICIAN = [
   { href: '/audit', label: 'Medication Audit', desc: 'Pharmacist chart review — allergy and drug-interaction cross-check.', Icon: ClipboardList },
 ];
 
+const CONCORDANCE_CARD = { href: '/concordance', label: 'Concordance', desc: 'Does this lab result make sense for this patient? An adaptive check before release.', Icon: FlaskConical };
+
 const REFERENCE = [
   { href: '/knowledge', label: 'Knowledge base', desc: 'Search the corpus or browse by source.', Icon: BookOpen },
   { href: '/learn', label: 'Learn', desc: 'Coaching, practice questions, topic guides, and review.', Icon: GraduationCap },
@@ -59,6 +61,7 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 
 export default async function Home() {
   const { passages, audited } = await getMetrics();
+  const clinicianCards = process.env.CONCORDANCE_ENABLED === '1' ? [...CLINICIAN, CONCORDANCE_CARD] : CLINICIAN;
 
   return (
     <div>
@@ -98,7 +101,7 @@ export default async function Home() {
       {/* For clinicians */}
       <SectionLabel>For clinicians</SectionLabel>
       <div className="mb-9 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {CLINICIAN.map(({ href, label, desc, Icon }) => (
+        {clinicianCards.map(({ href, label, desc, Icon }) => (
           <Link
             key={href}
             href={href}

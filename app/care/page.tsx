@@ -89,7 +89,7 @@ export default async function ManagedCareHome() {
         })}
       </div>
 
-      {process.env.NEXT_PUBLIC_CONCORDANCE_ENABLED === '1' && (
+      {process.env.CONCORDANCE_ENABLED === '1' && (
         <Link href="/concordance"
           className="mt-3.5 flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-4 text-[13px] text-slate-600 transition hover:border-slate-300 hover:shadow-sm">
           <span className="font-semibold text-slate-900">Concordance</span>

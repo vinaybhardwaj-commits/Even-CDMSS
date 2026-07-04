@@ -25,9 +25,10 @@ export const metadata = {
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   // medaudit.evenos.app (tagged by middleware) renders chrome-free — no CAT shell.
   const chromeFree = (await headers()).get('x-surface') === 'medaudit';
+  const concordanceEnabled = process.env.CONCORDANCE_ENABLED === '1';
   return (
     <html lang="en" className={`${inter.variable} ${serif.variable}`}>
-      <body>{chromeFree ? children : <Shell>{children}</Shell>}</body>
+      <body>{chromeFree ? children : <Shell concordanceEnabled={concordanceEnabled}>{children}</Shell>}</body>
     </html>
   );
 }

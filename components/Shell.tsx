@@ -29,9 +29,6 @@ const CLINICIAN: NavGroup[] = [
       { href: '/drugs', label: 'Drugs', Icon: Pill },
       { href: '/calculators', label: 'Calculators', Icon: Calculator },
       { href: '/appropriateness', label: 'Right Care', Icon: ClipboardCheck },
-      ...(process.env.NEXT_PUBLIC_CONCORDANCE_ENABLED === '1'
-        ? [{ href: '/concordance', label: 'Concordance', Icon: FlaskConical }]
-        : []),
     ],
   },
   {
@@ -64,9 +61,6 @@ const ADMIN: NavGroup[] = [
       { href: '/admin/mini-backfill', label: 'Mini backfill', Icon: HardDrive },
       { href: '/admin/stewardship', label: 'Stewardship', Icon: BarChart3 },
       { href: '/admin/ccb-funnel', label: 'Care Brief Funnel', Icon: Filter },
-      ...(process.env.NEXT_PUBLIC_CONCORDANCE_ENABLED === '1'
-        ? [{ href: '/admin/concordance', label: 'Concordance registry', Icon: FlaskConical }]
-        : []),
       { href: '/admin/learning', label: 'Learning loop', Icon: Lightbulb },
       { href: '/admin/literature', label: 'Literature', Icon: BookOpen },
     ],
@@ -128,10 +122,24 @@ function Brand() {
   );
 }
 
-export function Shell({ children }: { children: React.ReactNode }) {
+// Concordance nav is injected at render from the SERVER runtime flag (passed as a prop),
+// not a build-time NEXT_PUBLIC var — so it appears the moment CONCORDANCE_ENABLED is set,
+// with no rebuild needed.
+function injectConcordance(groups: NavGroup[]): NavGroup[] {
+  return groups.map((g) =>
+    g.heading === 'Decision support'
+      ? { ...g, items: [...g.items, { href: '/concordance', label: 'Concordance', Icon: FlaskConical }] }
+      : g.heading === 'Admin'
+        ? { ...g, items: [...g.items, { href: '/admin/concordance', label: 'Concordance registry', Icon: FlaskConical }] }
+        : g,
+  );
+}
+
+export function Shell({ children, concordanceEnabled = false }: { children: React.ReactNode; concordanceEnabled?: boolean }) {
   const pathname = usePathname() || '';
   const isAdmin = pathname.startsWith('/admin');
-  const groups = isAdmin ? ADMIN : CLINICIAN;
+  const base = isAdmin ? ADMIN : CLINICIAN;
+  const groups = concordanceEnabled ? injectConcordance(base) : base;
   const [drawer, setDrawer] = useState(false);
 
   // Close the mobile drawer on route change
