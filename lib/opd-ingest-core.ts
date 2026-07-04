@@ -146,13 +146,23 @@ function gpDiagEducation(v: unknown): string[] {
 // A line is templated patient-education if it carries a self-care video / external link.
 const EDU_URL_RE = /(https?:\/\/|www\.|youtube\.com|youtu\.be)/i;
 
-// Even's GP e-consults are teleconsults by default; in-person is the referral destination.
-const GP_TELE_TYPES = new Set(['GENERAL_PRACTITIONER', 'HOSPITAL_GP', 'HOSPITAL_GP_INVESTIGATION_REFERRAL']);
+// v0.81 (BUG-0.8-04): only the app-based GP e-consult defaults to teleconsult. The HOSPITAL_* types are
+// IN-HOSPITAL, IN-PERSON encounters — HOSPITAL_GP / HOSPITAL_GP_INVESTIGATION_REFERRAL were previously here
+// and mislabelled ~178 in-person hospital OPD notes as teleconsult (consult_type is null corpus-wide).
+const GP_TELE_TYPES = new Set(['GENERAL_PRACTITIONER']);
 export function isTeleconsultEncounter(prescriptionType: string | null, consultType: string | null): boolean {
   const ct = (consultType || '').toUpperCase();
   if (/IN[_\s-]?PERSON|PHYSICAL|WALK[_\s-]?IN/.test(ct)) return false;
   if (/TELE|VIDEO|AUDIO|CHAT|REMOTE|ONLINE/.test(ct)) return true;
   return GP_TELE_TYPES.has((prescriptionType || '').toUpperCase());
+}
+
+// v0.81 (BUG-0.8-04 FIX I): a documented HANDS-ON physical exam is proof of an in-person encounter
+// (you cannot palpate/percuss/auscultate over video) — used to DOWNGRADE a teleconsult classification
+// so a genuine exam is never flagged as an "impossible on teleconsult" contradiction.
+const HANDS_ON_EXAM_RE = /\b(p\s*\/?\s*a\b|per\s?abdomen|palpat|tender|percuss|auscult|hepatomegaly|splenomegaly|organomegaly|guarding|rebound|hernia|palpable|non[-\s]?tender|s1\s?s2|murmur|air\s+entry|breath\s+sounds|crepit|effusion|range\s+of\s+motion)/i;
+export function hasHandsOnExam(examination: string[]): boolean {
+  return examination.some((e) => HANDS_ON_EXAM_RE.test(e || ''));
 }
 
 /** refer_to (jsonb array) → readable onward-referral labels, e.g. "In-Person Orthopedics (Even-recommended)". */
@@ -249,7 +259,10 @@ export function rowToOpdCase(row: Record<string, unknown>): { case: DeidOpdCase;
   const numReferrals = Number(row.num_referrals) || referrals.length;
   const followUpTypeVal = strOrNull(row.followup__followup_type) || strOrNull(row.follow_up_type);
   const isReferralHandoff = referrals.length > 0 || numReferrals > 0 || /referral/i.test(followUpTypeVal || '');
-  const isTeleconsult = isTeleconsultEncounter(strOrNull(row.type_of_prescription), strOrNull(row.consult_type));
+  const examination = htmlToLines(row['general_practitioner_prescription__examination']);
+  // v0.81 FIX I: a documented hands-on exam overrides a teleconsult classification (downgrade only).
+  const isTeleconsult = isTeleconsultEncounter(strOrNull(row.type_of_prescription), strOrNull(row.consult_type))
+    && !hasHandsOnExam(examination);
 
   const dComplaints = dpipeText(row.dpipe_pc);
   const nestedComplaints = gpComplaints(gpPc);
@@ -273,7 +286,7 @@ export function rowToOpdCase(row: Record<string, unknown>): { case: DeidOpdCase;
     medications: medsFrom(row.medications),
     investigations,
     advice,
-    examination: htmlToLines(row['general_practitioner_prescription__examination']),
+    examination,
     allergies: strOrNull(row.patient_details__allergies),
     followUpType: followUpTypeVal,
     followUpDateSet,

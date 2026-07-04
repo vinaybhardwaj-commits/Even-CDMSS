@@ -4,7 +4,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { rowToOpdCase, opdCaseText } from '../opd-ingest-core.ts';
+import { rowToOpdCase, opdCaseText, isTeleconsultEncounter, hasHandsOnExam } from '../opd-ingest-core.ts';
 import { opdCompleteness, prescribingChecks, parseOpdAnalysis, medDoseDocumented, resolveMedRoute, opdSignalType, stampFindingIdentity, followUpDocumented, OPD_SIGNAL_TYPES, type OpdFinding } from '../opd-note-audit-core.ts';
 
 // Mirrors a real GP row (medications + jsonb arrive as JSON strings via Metabase).
@@ -372,4 +372,36 @@ test('opdCaseText marks a zero-medication note explicitly (B1)', () => {
   assert.equal(c.medications.length, 0);
   assert.match(opdCaseText(c), /NONE prescribed this encounter/);
   assert.match(opdCaseText(c), /no prescription to assess/);
+});
+
+// ── v0.81 BUG-0.8-04: encounter-modality classification (in-person vs teleconsult) ──────────────
+test('v0.81 BUG-0.8-04: HOSPITAL_* prescription types are IN-PERSON, not teleconsult', () => {
+  assert.equal(isTeleconsultEncounter('HOSPITAL_GP', null), false);
+  assert.equal(isTeleconsultEncounter('HOSPITAL_GP_INVESTIGATION_REFERRAL', null), false);
+  assert.equal(isTeleconsultEncounter('HOSPITAL_PAEDIATRIC', null), false);
+  assert.equal(isTeleconsultEncounter('GENERAL_PRACTITIONER', null), true); // app e-consult = teleconsult
+  // explicit consult_type still overrides in both directions
+  assert.equal(isTeleconsultEncounter('HOSPITAL_GP', 'Teleconsult'), true);
+  assert.equal(isTeleconsultEncounter('GENERAL_PRACTITIONER', 'In-Person'), false);
+});
+
+test('v0.81 FIX I: a documented hands-on exam downgrades a teleconsult classification', () => {
+  assert.equal(hasHandsOnExam(['P/A - soft, periumbilical tenderness +']), true);
+  assert.equal(hasHandsOnExam(['PA: Small umbilical Hernia']), true);
+  assert.equal(hasHandsOnExam(['throat congested']), false); // visual-only, not hands-on
+  assert.equal(hasHandsOnExam([]), false);
+  // integration: a GENERAL_PRACTITIONER row (would-be teleconsult) with a hands-on exam → in-person
+  const c = rowToOpdCase({ ...ROW, type_of_prescription: 'GENERAL_PRACTITIONER',
+    general_practitioner_prescription__examination: '<p>P/A soft, non-tender</p>' }).case;
+  assert.equal(c.isTeleconsult, false);
+  assert.ok(c.examination.length > 0);
+});
+
+test('v0.81 BUG-0.8-04: HOSPITAL_GP in-person note IS scored on examination', () => {
+  const c = rowToOpdCase({ ...ROW, type_of_prescription: 'HOSPITAL_GP',
+    general_practitioner_prescription__examination: '' }).case;
+  assert.equal(c.isTeleconsult, false);
+  const comp = opdCompleteness(c);
+  assert.ok(comp.items.some((i) => i.key === 'examination')); // in-person → examination IS scored
+  assert.equal(comp.items.find((i) => i.key === 'examination')!.present, false); // empty → real gap
 });
