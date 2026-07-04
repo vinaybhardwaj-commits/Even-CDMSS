@@ -20,6 +20,17 @@ export interface EngineChange {
 
 export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
+    engine: '0.81.0', date: '2026-07-04', scoring: true,
+    title: 'v0.81.0 — fidelity + scoring-hygiene core (Dr Zaki / Dr Aravind bug batch)',
+    points: [
+      'BUG-0.8-04 (modality): only GENERAL_PRACTITIONER defaults to teleconsult; HOSPITAL_* are in-person. HOSPITAL_GP/_INVESTIGATION_REFERRAL had mislabelled ~178 in-person hospital OPD notes as teleconsult (consult_type is null corpus-wide). Added a hands-on-exam override: a documented palpation/auscultation finding downgrades a teleconsult classification.',
+      'BUG-0.8-05/07 (aggregation): domain score now combines finding penalties with diminishing returns, not a flat additive sum — one low-value ~55 (unchanged), two ~30, three ~17 — so a stack no longer collapses a domain to an unfair 0.',
+      'BUG-0.8-03 (continuity): a formal onward referral satisfies follow-up / continuity even without a calendar date.',
+      'BUG-0.8-01 (dosing): a parenteral concentration (mg/ml) is no longer accepted as a documented dose — an injectable with no explicit amount is flagged incomplete.',
+    ],
+    why: 'System Audit Reports (Dr Zaki, Dr Aravind U) surfaced false-positive penalties (modality, flat-0 collapse, referral continuity) and a dose-masking false-negative. Deterministic + unit-tested (26/26). Prompt-level recalibration, drug-indication and absence-verification follow as v0.81.1 behind the live golden A/B.',
+  },
+  {
     engine: '0.8', date: '2026-07-03', scoring: true,
     title: 'Score each field once — Continuity / Documentation de-overlap',
     points: [
