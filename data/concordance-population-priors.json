@@ -2,7 +2,7 @@
   "meta": {
     "source": "EHRC lab stream (db13 test_values_view, ~4.8M results)",
     "mined": "2026-07-04",
-    "note": "Unstratified population distributions + abnormal base rate per in-scope analyte. Consumer/outpatient population (includes diseased patients) — these are EMPIRICAL population base rates, not clean reference ranges. Percentiles from numeric-castable values only. Age/sex stratification (P3.2b) requires a demographics join not present in this view.",
+    "note": "Unstratified population distributions + abnormal base rate per in-scope analyte. Consumer/outpatient population (includes diseased patients) — these are EMPIRICAL population base rates, not clean reference ranges. Percentiles from numeric-castable values only. P3.2b DONE (4 Jul): sex x coarse-age-band strata mined via the individuals join and encoded as STRATIFIED_PRIORS in lib/concordance-core.ts (cells with n>=100; empirical-Bayes shrinkage toward the parent below that). This JSON keeps the unstratified parents; the code const is the runtime source of truth for both.",
     "fields": "n, abnormalRate, p2_5, p50, p97_5, p99, unit"
   },
   "analytes": {

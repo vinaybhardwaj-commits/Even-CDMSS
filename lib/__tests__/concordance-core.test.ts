@@ -8,6 +8,7 @@ import {
   type NextQuestion, type InterviewState,
   extractDemographics, buildRunRecord, CONCORDANCE_ENGINE,
   populationLines, POPULATION_PRIORS,
+  coarseBand, effectivePrior, STRATIFIED_PRIORS,
 } from '../concordance-core.ts';
 
 test('branchForVerdict maps verdicts to branches', () => {
@@ -202,10 +203,41 @@ test('parseNextQuestion parses a question and detects STOP', () => {
 // ── P2 walled run record (de-id) ──
 
 test('extractDemographics reads compact and worded forms, else null', () => {
-  assert.deepEqual(extractDemographics('56F, ambulatory, asymptomatic'), { ageBand: '50-59', sex: 'F' });
-  assert.deepEqual(extractDemographics('44M routine'), { ageBand: '40-49', sex: 'M' });
-  assert.deepEqual(extractDemographics('a 72-year-old woman with a fall'), { ageBand: '70-79', sex: 'F' });
-  assert.deepEqual(extractDemographics('no demographics here'), { ageBand: null, sex: null });
+  assert.deepEqual(extractDemographics('56F, ambulatory, asymptomatic'), { age: 56, ageBand: '50-59', sex: 'F' });
+  assert.deepEqual(extractDemographics('44M routine'), { age: 44, ageBand: '40-49', sex: 'M' });
+  assert.deepEqual(extractDemographics('a 72-year-old woman with a fall'), { age: 72, ageBand: '70-79', sex: 'F' });
+  assert.deepEqual(extractDemographics('no demographics here'), { age: null, ageBand: null, sex: null });
+});
+
+test('coarseBand maps age to the mined bands', () => {
+  assert.equal(coarseBand(30), '18-39');
+  assert.equal(coarseBand(50), '40-59');
+  assert.equal(coarseBand(72), '60+');
+  assert.equal(coarseBand(null), null);
+});
+
+test('effectivePrior uses the sex cell (Hb F<M) and falls back when a cell is sparse/missing', () => {
+  const f = effectivePrior('hemoglobin', 'F', '18-39')!;
+  const m = effectivePrior('hemoglobin', 'M', '18-39')!;
+  assert.equal(f.stratum, 'F 18-39');
+  assert.ok(f.p50 < m.p50, 'female Hb median below male');           // real sex difference preserved
+  assert.ok(Math.abs(f.p50 - 12.4) < 0.5 && Math.abs(m.p50 - 15.0) < 0.5);
+  // ferritin M 60+ cell is not stored (too sparse) → parent fallback (stratum null)
+  const fer = effectivePrior('ferritin', 'M', '60+')!;
+  assert.equal(fer.stratum, null);
+  assert.equal(fer.p50, POPULATION_PRIORS.ferritin.p50);
+  // no demographics → unstratified parent
+  const none = effectivePrior('potassium', null, null)!;
+  assert.equal(none.stratum, null);
+});
+
+test('populationLines is sex-stratified when the context gives age/sex', () => {
+  const f = populationLines('Hemoglobin 11.5 g/dL', '30F')[0];
+  const m = populationLines('Hemoglobin 11.5 g/dL', '30M')[0];
+  assert.match(f, /F 18-39/);
+  assert.match(m, /M 18-39/);
+  // 11.5 is within range for a young woman but low for a young man
+  assert.match(m, /below the 2.5th percentile|low for this group/);
 });
 
 test('buildRunRecord is de-identified: analytes + verdict + counts, no raw text', () => {

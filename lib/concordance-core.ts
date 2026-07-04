@@ -104,36 +104,89 @@ const PRIOR_ALIASES: [string, string[]][] = [
   ['ft4', ['ft4', 'free t4', 'free thyroxine']],
 ];
 
-function pctDescriptor(v: number, p: PopulationPrior): string {
-  if (v > p.p99) return `far above the 99th percentile (${p.p99}) — a markedly extreme value`;
-  if (v > p.p97_5) return `above the 97.5th percentile (${p.p97_5}) — high for this population`;
-  if (v < p2_5Floor(p)) return `below the 2.5th percentile (${p.p2_5}) — low for this population`;
-  return `within the population's central 95% range (${p.p2_5}–${p.p97_5})`;
-}
-function p2_5Floor(p: PopulationPrior): number { return p.p2_5; }
+// ── Stratified priors (P3.2b) — sex × coarse age band, mined from db13 (individuals join,
+//    4 Jul 2026). Only cells with n>=100 are kept; sparser strata fall back to the
+//    unstratified parent. Cell tuple = [n, abnormalRate, p2_5, p50, p97_5]. Empirical-Bayes
+//    shrinkage toward the parent is applied at runtime (see stratifiedPrior). ──
+export type StratCell = [n: number, abn: number, p2_5: number, p50: number, p97_5: number];
+export type AgeBand = '18-39' | '40-59' | '60+';
+const STRATA_MIN_N = 100;
+const SHRINK_K = 150; // pseudocount: cell weight n/(n+k) toward its own value, else parent
 
-/** Population-plausibility context lines for each in-scope analyte named in the result text.
- *  Grounds the reasoning in real EHRC base rates. Empty when no in-scope analyte/value is found. */
-export function populationLines(result: string): string[] {
+export const STRATIFIED_PRIORS: Record<string, Partial<Record<string, StratCell>>> = {
+  potassium: { 'F|18-39':[7116,0.003,3.9,4.5,5.2],'F|40-59':[3008,0.01,3.8,4.5,5.3],'F|60+':[792,0.029,3.8,4.6,5.5],'M|18-39':[9763,0.011,3.9,4.6,5.4],'M|40-59':[2895,0.02,3.8,4.6,5.4],'M|60+':[873,0.022,3.88,4.7,5.5] },
+  sodium: { 'F|18-39':[7114,0.288,133,138,143],'F|40-59':[3009,0.218,133,139,144],'F|60+':[792,0.199,133,139,144],'M|18-39':[9756,0.16,134,139,144],'M|40-59':[2894,0.182,133,139,144],'M|60+':[873,0.254,132,138,144] },
+  calcium: { 'F|18-39':[7136,0.018,8.5,9.2,10],'F|40-59':[2990,0.027,8.4,9.2,10.1],'F|60+':[761,0.051,8.4,9.3,10.3],'M|18-39':[9770,0.02,8.7,9.4,10.2],'M|40-59':[2861,0.02,8.5,9.3,10.1],'M|60+':[809,0.023,8.4,9.2,10] },
+  hemoglobin: { 'F|18-39':[9963,0.345,9.01,12.4,14.7],'F|40-59':[3575,0.362,8.8,12.4,14.9],'F|60+':[879,0.271,9.5,12.7,15],'M|18-39':[12551,0.083,12.2,15,17.2],'M|40-59':[3470,0.128,11.1,14.7,17.1],'M|60+':[949,0.216,10.07,14.1,16.5] },
+  platelets: { 'F|18-39':[9849,0.085,122,283,458],'F|40-59':[3541,0.094,121.5,277,463],'F|60+':[876,0.065,124.88,270,416],'M|18-39':[12589,0.089,114,248,395],'M|40-59':[3464,0.104,103,244,394],'M|60+':[945,0.133,96.8,229,388] },
+  wbc: { 'F|18-39':[9553,0.128,3090,7160,11970],'F|40-59':[3439,0.114,2567,7020,11691],'F|60+':[846,0.086,2970,6775,11313],'M|18-39':[12139,0.09,3400,6800,11265],'M|40-59':[3353,0.08,2330,6720,11190],'M|60+':[910,0.085,2970,6380,11313] },
+  ferritin: { 'F|18-39':[553,0.278,4.03,15.2,82.3],'F|40-59':[106,0.368,3.94,17.4,81.1],'M|18-39':[200,0.085,7.3,62.55,228] },
+  alt: { 'F|18-39':[30724,0.164,0.6,10,61],'F|40-59':[12002,0.121,0.7,10,53],'F|60+':[3090,0.121,0.7,11,45.78],'M|18-39':[42944,0.297,0.5,14,103],'M|40-59':[11952,0.193,0.5,12,81],'M|60+':[3219,0.107,0.7,11,49.55] },
+  ast: { 'F|18-39':[30529,0.167,0.6,14,43],'F|40-59':[11958,0.134,0.7,14,44],'F|60+':[3088,0.131,0.7,15.94,41],'M|18-39':[42641,0.203,0.5,17,61],'M|40-59':[11906,0.142,0.5,16,54],'M|60+':[3219,0.103,0.7,16,40] },
+  alp: { 'F|18-39':[15179,0.054,45,76,145],'F|40-59':[5981,0.092,47.5,85,155],'F|60+':[1562,0.124,53.03,93,166],'M|18-39':[21191,0.045,47,79,136],'M|40-59':[5965,0.063,47,81,146],'M|60+':[1644,0.064,46,80,145.65] },
+  tsh: { 'F|18-39':[7496,0.302,0.64,2.9,12.08],'F|40-59':[2796,0.378,0.61,3.25,14.25],'F|60+':[742,0.317,0.8,3.4,10.31],'M|18-39':[8952,0.261,0.83,2.71,11.28],'M|40-59':[2625,0.299,0.76,2.85,12.98],'M|60+':[741,0.246,0.71,2.91,13.78] },
+  ft4: { 'F|18-39':[479,0.063,0.7,1.09,1.82],'M|18-39':[284,0.049,0.72,1.08,1.68] },
+};
+
+export function coarseBand(age: number | null): AgeBand | null {
+  if (age === null || Number.isNaN(age)) return null;
+  if (age < 40) return '18-39';
+  if (age < 60) return '40-59';
+  return '60+';
+}
+
+export interface EffectivePrior { p2_5: number; p50: number; p97_5: number; abnormalRate: number; p99?: number; unit: string; n: number; stratum: string | null; }
+
+/** The prior to reason with: the sex×age cell (empirical-Bayes shrunk toward the parent) when
+ *  it exists and is well-powered, else the unstratified parent. */
+export function effectivePrior(analyte: string, sex: 'F' | 'M' | null, band: AgeBand | null): EffectivePrior | null {
+  const parent = POPULATION_PRIORS[analyte];
+  if (!parent) return null;
+  const base: EffectivePrior = { p2_5: parent.p2_5, p50: parent.p50, p97_5: parent.p97_5, abnormalRate: parent.abnormalRate, p99: parent.p99, unit: parent.unit, n: parent.n, stratum: null };
+  if (!sex || !band) return base;
+  const cell = STRATIFIED_PRIORS[analyte]?.[`${sex}|${band}`];
+  if (!cell || cell[0] < STRATA_MIN_N) return base;
+  const [n, abn, p2_5, p50, p97_5] = cell;
+  const w = n / (n + SHRINK_K);
+  const shrink = (c: number, p: number) => Math.round((w * c + (1 - w) * p) * 100) / 100;
+  // p2.5 guard: unit-contamination artifacts sit far below the parent; floor at 40% of parent.
+  const p2_5s = Math.max(shrink(p2_5, parent.p2_5), parent.p2_5 * 0.4);
+  return { p2_5: p2_5s, p50: shrink(p50, parent.p50), p97_5: shrink(p97_5, parent.p97_5), abnormalRate: shrink(abn, parent.abnormalRate), unit: parent.unit, n, stratum: `${sex} ${band}` };
+}
+
+function pctDescriptor(v: number, p: EffectivePrior): string {
+  if (p.p99 !== undefined && v > p.p99) return `far above the 99th percentile (${p.p99}) — markedly extreme`;
+  if (v > p.p97_5 + (p.p97_5 - p.p50)) return `well above the 97.5th percentile (${p.p97_5}) — markedly high`;
+  if (v > p.p97_5) return `above the 97.5th percentile (${p.p97_5}) — high for this group`;
+  if (v < p.p2_5) return `below the 2.5th percentile (${p.p2_5}) — low for this group`;
+  return `within this group's central 95% range (${p.p2_5}–${p.p97_5})`;
+}
+
+/** Population-plausibility context for each in-scope analyte named in the result — sex×age
+ *  stratified when the context gives age/sex, else unstratified. Grounds the reasoning in real
+ *  EHRC base rates. Empty when no in-scope analyte/value is found. */
+export function populationLines(result: string, context = ''): string[] {
   const t = ` ${result.toLowerCase()} `;
+  const demo = extractDemographics(context);
+  const band = coarseBand(demo.age);
   const out: string[] = [];
   const seen = new Set<string>();
   for (const [key, aliases] of PRIOR_ALIASES) {
     if (seen.has(key)) continue;
-    const prior = POPULATION_PRIORS[key];
     for (const a of aliases) {
       const idx = t.indexOf(a);
       if (idx < 0) continue;
-      // first number appearing at/after the alias (skip the reference range in parentheses later)
-      const after = t.slice(idx);
-      const m = after.match(/([0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?)/);
+      const m = t.slice(idx).match(/([0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?)/);
       if (!m) break;
       const v = parseFloat(m[1].replace(/,/g, ''));
       if (Number.isNaN(v)) break;
+      const p = effectivePrior(key, demo.sex, band);
+      if (!p) break;
+      const who = p.stratum ? `${key} in ${p.stratum}` : `${key} (all adults)`;
       out.push(
-        `Population context for ${key} (EHRC lab stream, n=${prior.n}): median ${prior.p50} ${prior.unit}, ` +
-        `central 95% ${prior.p2_5}–${prior.p97_5}, 99th pct ${prior.p99}; flagged abnormal in ${Math.round(prior.abnormalRate * 100)}% of tests. ` +
-        `This value (${v}) is ${pctDescriptor(v, prior)}.`,
+        `Population context for ${who} (EHRC lab stream, n=${p.n}): median ${p.p50} ${p.unit}, ` +
+        `central 95% ${p.p2_5}–${p.p97_5}; flagged abnormal in ${Math.round(p.abnormalRate * 100)}% of tests. ` +
+        `This value (${v}) is ${pctDescriptor(v, p)}.`,
       );
       seen.add(key);
       break;
@@ -185,7 +238,7 @@ export function buildConcordancePrompt(result: string, context: string): Prompt 
     : '';
   const notes = floor.map((f) => f.note).filter(Boolean);
   const notesLine = notes.length ? `\n\nANALYTE RULES (deterministic — apply before judging): ${notes.join(' ')}` : '';
-  const pop = populationLines(result);
+  const pop = populationLines(result, context);
   const popLine = pop.length ? `\n\nPOPULATION CONTEXT (real EHRC base rates — informational calibration ONLY; how extreme a value is does NOT by itself decide error vs real. The clinical context and analyte-appropriate error mechanisms decide the branch. A suggestive pre-analytic story still points to error even when the value is extreme):\n- ${pop.join('\n- ')}` : '';
   const user = `RESULT: ${result}\nCONTEXT: ${context}${floorLine}${notesLine}${popLine}`;
   return { system: SYSTEM, user };
@@ -449,7 +502,7 @@ Output ONLY one cause per line, pipe-separated: the branch letter (A or B), then
 B|0.5|primary hyperparathyroidism
 A|0.2|EDTA contamination
 Give 4-8 lines. No headers, no prose.`;
-  const pop = populationLines(result);
+  const pop = populationLines(result, context);
   const popLine = pop.length ? `\nPOPULATION BASE RATES: ${pop.join(' ')}` : '';
   return { system, user: `RESULT: ${result}\nCONTEXT: ${context}${popLine}` };
 }
@@ -536,7 +589,7 @@ export interface ConcordanceRunRecord {
 }
 
 /** Coarse, de-identified demographics from the intake context (best-effort; null when unsure). */
-export function extractDemographics(context: string): { ageBand: string | null; sex: 'F' | 'M' | null } {
+export function extractDemographics(context: string): { age: number | null; ageBand: string | null; sex: 'F' | 'M' | null } {
   const compact = context.match(/\b(\d{1,3})\s*(?:-?\s*year[s-]*old\s*)?([MF])\b/i); // "56F", "44 M", "70-year-old F"
   const ageWord = context.match(/\b(\d{1,3})\s*(?:years?\b|yo\b|y\/o\b|-year-old)/i);
   const sexWord = context.match(/\b(female|woman|male|man)\b/i);
@@ -545,7 +598,7 @@ export function extractDemographics(context: string): { ageBand: string | null; 
   let sex: 'F' | 'M' | null = compact ? (compact[2].toUpperCase() as 'F' | 'M') : null;
   if (!sex && sexWord) sex = /female|woman/i.test(sexWord[1]) ? 'F' : 'M';
   const ageBand = age === null ? null : `${Math.floor(age / 10) * 10}-${Math.floor(age / 10) * 10 + 9}`;
-  return { ageBand, sex };
+  return { age, ageBand, sex };
 }
 
 /** Build the walled, de-identified run record from an interview state (or a single-shot). */
