@@ -64,6 +64,9 @@ const ADMIN: NavGroup[] = [
       { href: '/admin/mini-backfill', label: 'Mini backfill', Icon: HardDrive },
       { href: '/admin/stewardship', label: 'Stewardship', Icon: BarChart3 },
       { href: '/admin/ccb-funnel', label: 'Care Brief Funnel', Icon: Filter },
+      ...(process.env.NEXT_PUBLIC_CONCORDANCE_ENABLED === '1'
+        ? [{ href: '/admin/concordance', label: 'Concordance registry', Icon: FlaskConical }]
+        : []),
       { href: '/admin/learning', label: 'Learning loop', Icon: Lightbulb },
       { href: '/admin/literature', label: 'Literature', Icon: BookOpen },
     ],
