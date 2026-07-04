@@ -5,7 +5,6 @@
  * prompt/engine, or write a production table. Corpus writes are quarantined (labq:) by
  * construction. Consumed by app/api/mcp/route.ts (the JSON-RPC transport).
  */
-import { after } from 'next/server';
 import { auditOpdNote, opdMiniEngine } from './opd-note-audit';
 import { OPD_AUDIT_SYSTEM, buildOpdAuditUser } from './opd-note-audit-core';
 import { MINI_MODEL, llm } from './llm';
@@ -88,7 +87,7 @@ export const LAB_TOOLS = [
   },
   {
     name: 'lab_ddx',
-    description: 'ASYNC — returns a run_id immediately; poll `lab_query id=<run_id>` until output.status is done (~2–4 min on the mini; run ONE clinical probe at a time — single Mac-mini). Runs the REAL /api/ddx differential-diagnosis pipeline end-to-end (retrieval → hypothesis-first → draft → self-critique → revise → demographic guard) on the FREE mini (₹0, never Gemini), storing the full result in lab_analyses. Tests the ACTUAL production route — for pipeline bugs: missing cannot-miss dx, demographic leaks, anchoring, citation/parse failures, order-sensitivity. cc required. Store many under one `experiment` and mine with audit_query / lab_query. NB: mini = cheaper brain than prod Gemini — reliable for pipeline/parse/retrieval bugs, indicative (not final) for clinical-quality claims.',
+    description: 'Runs the REAL /api/ddx differential-diagnosis pipeline end-to-end (retrieval → hypothesis-first → draft → self-critique → revise → demographic guard) on the FREE mini (₹0, never Gemini), storing the full result in lab_analyses. Tests the ACTUAL production route — for pipeline bugs: missing cannot-miss dx, demographic leaks, anchoring, citation/parse failures. cc required. TIMING: ~2–5 min on the mini, which is longer than the MCP client waits (~180s) — so THIS CALL WILL LIKELY TIME OUT, but the run still completes + stores server-side. A `pending` row appears within ~1s and flips to done. After a timeout, POLL `lab_query experiment=<your-experiment>` (newest first) or `id=<run_id>` for output.status pending→done. Run ONE clinical probe at a time (single Mac-mini). Store many under one `experiment` and mine with audit_query / lab_query. NB: mini = cheaper brain than prod Gemini — reliable for pipeline/parse/retrieval bugs, indicative (not final) for clinical-quality claims.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -104,7 +103,7 @@ export const LAB_TOOLS = [
   },
   {
     name: 'lab_ask',
-    description: 'ASYNC — returns a run_id immediately; poll `lab_query id=<run_id>` until output.status is done (~2–4 min on the mini; ONE probe at a time). Runs the REAL /api/ask RAG pipeline (retrieve → draft → audit → revise → cite-or-label) on the FREE mini (₹0), storing the answer + citations in lab_analyses. Tests the actual Ask route — grounding bugs: uncited claims (output.uncited), dead/absent citations, retrieval whiffs. Store many under one `experiment` and mine with audit_query / lab_query.',
+    description: 'Runs the REAL /api/ask RAG pipeline (retrieve → draft → audit → revise → cite-or-label) on the FREE mini (₹0), storing the answer + citations in lab_analyses. Tests the actual Ask route — grounding bugs: uncited claims (output.uncited), dead/absent citations, retrieval whiffs. TIMING: ~2–5 min > the MCP client wait (~180s), so THIS CALL WILL LIKELY TIME OUT but the run completes + stores; a `pending` row appears within ~1s. After a timeout, POLL `lab_query experiment=<your-experiment>` or `id=<run_id>` for output.status pending→done. ONE probe at a time. Store many under one `experiment` and mine with audit_query / lab_query.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -117,7 +116,7 @@ export const LAB_TOOLS = [
   },
   {
     name: 'lab_appropriateness',
-    description: 'ASYNC — returns a run_id immediately; poll `lab_query id=<run_id>` until output.status is done (~2–4 min on the mini; ONE probe at a time). Runs the REAL /api/appropriateness Right-Care order-check (Choosing-Wisely low-value-care matcher + LLM applicability judge + value analysis) on the FREE mini (₹0). Stores which CW statements FIRED per scenario in lab_analyses — the surface for the known ~74% over-flag: build a specificity set of clearly-appropriate scenarios and mine how often a flag fires when it should not (output.n_flags / output.flag_statements). scenario required; optionally proposedActions (the specific orders), age, sex.',
+    description: 'Runs the REAL /api/appropriateness Right-Care order-check (Choosing-Wisely low-value-care matcher + LLM applicability judge + value analysis) on the FREE mini (₹0). Stores which CW statements FIRED per scenario in lab_analyses — the surface for the known ~74% over-flag: build a specificity set of clearly-appropriate scenarios and mine how often a flag fires when it should not (output.n_flags / output.flag_statements). TIMING: ~2–5 min > the MCP client wait (~180s), so THIS CALL WILL LIKELY TIME OUT but the run completes + stores; a `pending` row appears within ~1s. After a timeout, POLL `lab_query experiment=<your-experiment>` or `id=<run_id>` for output.status pending→done. ONE probe at a time. scenario required; optionally proposedActions (the specific orders), age, sex.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -131,7 +130,7 @@ export const LAB_TOOLS = [
   },
   {
     name: 'lab_pathway',
-    description: 'ASYNC — returns a run_id immediately; poll `lab_query id=<run_id>` until output.status is done (faster than the others — a single pass — but still poll; ONE probe at a time). Runs the REAL /api/pathway/skeleton care-pathway pass (stage classification + ordered care-path spine) on the FREE mini (₹0), storing the skeleton in lab_analyses. For router coverage / stage-detection bugs / dead branches. scenario required; optionally proposedActions, age, sex.',
+    description: 'Runs the REAL /api/pathway/skeleton care-pathway pass (stage classification + ordered care-path spine) on the FREE mini (₹0), storing the skeleton in lab_analyses. For router coverage / stage-detection bugs / dead branches. TIMING: a single fast pass — usually returns INLINE within the client wait (result in the response). If it does time out, a `pending` row is stored — poll `lab_query experiment=<your-experiment>` or `id=<run_id>`. ONE probe at a time. scenario required; optionally proposedActions, age, sex.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -145,7 +144,7 @@ export const LAB_TOOLS = [
   },
   {
     name: 'lab_case_audit',
-    description: 'ASYNC — returns a run_id immediately; poll `lab_query id=<run_id>` until output.status is done (~2–4 min on the mini; ONE probe at a time). Runs the REAL /api/doc-audit/analyze case-audit + prognosis on the FREE mini (₹0), storing the scored report in lab_analyses. TEXT-ONLY: pass an already-EXTRACTED case (the PDF→OCR extract leg is multimodal Vertex and cannot run on the free mini). `extracted` = an object with docType + case fields (diagnosis, procedure, indication, courseSummary, medications[], investigations[], treatments[], disposition, followUp, patient{age,sex}). For bugs in the appropriateness/foreseeability reasoning independent of OCR.',
+    description: 'Runs the REAL /api/doc-audit/analyze case-audit + prognosis on the FREE mini (₹0), storing the scored report in lab_analyses. TEXT-ONLY: pass an already-EXTRACTED case (the PDF→OCR extract leg is multimodal Vertex and cannot run on the free mini). `extracted` = an object with docType + case fields (diagnosis, procedure, indication, courseSummary, medications[], investigations[], treatments[], disposition, followUp, patient{age,sex}). For bugs in the appropriateness/foreseeability reasoning independent of OCR. TIMING: ~2–5 min > the MCP client wait (~180s), so THIS CALL WILL LIKELY TIME OUT but the run completes + stores; a `pending` row appears within ~1s. After a timeout, POLL `lab_query experiment=<your-experiment>` or `id=<run_id>` for output.status pending→done. ONE probe at a time.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -254,13 +253,19 @@ async function selfPostNdjson(path: string, body: Record<string, unknown>): Prom
 }
 
 /**
- * ASYNC lab probe: the real clinical pipelines take ~200–270s on the mini, but an MCP client
- * gives up at ~180s. So: write a `pending` lab_analyses row, run the pipeline in a post-response
- * `after()` task (kept alive by the /api/mcp function up to its 300s cap), fill the row in when
- * done, and return the run_id IMMEDIATELY. The caller polls `lab_query id=<run_id>` — output.status
- * goes pending → done | error. Runs stay one-at-a-time on the single Mac-mini regardless.
+ * Lab clinical probe runner. The real pipelines take ~200–285s on the mini — under the /api/mcp
+ * function's 300s cap but OVER an MCP client's ~180s wait. Key facts learned live:
+ *   • The Vercel function keeps running server-side to 300s even after the client gives up at 180s,
+ *     so the DB write is RELIABLE (a client timeout is cosmetic).
+ *   • `after()` is NOT reliable for this — Vercel tears the callback down long before a 285s job
+ *     finishes (verified: pipeline succeeded @285s but the after() row stayed 'pending'). So we run
+ *     the pipeline SYNCHRONOUSLY inside the request-backed function instead.
+ * Pattern: write a `pending` row FIRST (visible to a poller within ~1s), run the pipeline, then
+ * update the row to done|error. Fast probes (pathway) return inline before 180s; slow ones time the
+ * MCP client out but STILL complete + store — poll `lab_query experiment=<exp>` (newest first) or
+ * `id=<run_id>`; output.status goes pending → done. One probe at a time (single Mac-mini).
  */
-async function startAsyncLabRun(opts: {
+async function runLabProbe(opts: {
   experiment: string; kind: string; engine: string; inputPreview: string; inputRef?: string | null;
   run: () => Promise<{ output: Record<string, unknown>; summary: Record<string, unknown> }>;
 }): Promise<ToolResult> {
@@ -271,19 +276,14 @@ async function startAsyncLabRun(opts: {
     inputPreview: opts.inputPreview, model: MINI_MODEL, latencyMs: null,
     output: { status: 'pending', started_at: new Date().toISOString() },
   });
-  after(async () => {
-    try {
-      const { output } = await opts.run();
-      await updateLabAnalysis(runId, { status: 'done', ...output }, Date.now() - startedAt);
-    } catch (e) {
-      await updateLabAnalysis(runId, { status: 'error', error: String((e as Error).message) }, Date.now() - startedAt);
-    }
-  });
-  return ok({
-    run_id: runId, experiment: opts.experiment, kind: opts.kind, status: 'started',
-    poll: `lab_query id=${runId}`,
-    note: 'Runs on the free mini (~1–4 min, one at a time). Poll lab_query with this id — output.status goes pending → done. Don\'t start another clinical probe until this one is done (single mini).',
-  });
+  try {
+    const { output, summary } = await opts.run();
+    await updateLabAnalysis(runId, { status: 'done', ...output }, Date.now() - startedAt);
+    return ok({ run_id: runId, experiment: opts.experiment, kind: opts.kind, status: 'done', ...summary, ms: Date.now() - startedAt });
+  } catch (e) {
+    await updateLabAnalysis(runId, { status: 'error', error: String((e as Error).message) }, Date.now() - startedAt);
+    return err(`${opts.kind} probe failed (run_id ${runId}): ${String((e as Error).message)}`);
+  }
 }
 
 async function labDdx(a: Record<string, unknown>): Promise<ToolResult> {
@@ -295,7 +295,7 @@ async function labDdx(a: Record<string, unknown>): Promise<ToolResult> {
     history: S(a.history) || undefined, exam: S(a.exam) || undefined,
     vitals: S(a.vitals) || undefined, investigations: S(a.investigations) || undefined,
   };
-  return startAsyncLabRun({
+  return runLabProbe({
     experiment, kind: 'ddx', engine: 'ddx-route/mini',
     inputPreview: [presentation.age, presentation.sex, cc].filter(Boolean).join(' / ').slice(0, 300),
     run: async () => {
@@ -309,7 +309,7 @@ async function labAsk(a: Record<string, unknown>): Promise<ToolResult> {
   const experiment = labLabel(a.experiment);
   const question = S(a.question).trim();
   if (!question) return err('question is required');
-  return startAsyncLabRun({
+  return runLabProbe({
     experiment, kind: 'ask', engine: 'ask-route/mini', inputPreview: question.slice(0, 300),
     run: async () => {
       const probe = reduceAskEvents(parseNdjson(await selfPostNdjson('/api/ask', { question, investigations: S(a.investigations) || undefined })));
@@ -325,7 +325,7 @@ async function labAppropriateness(a: Record<string, unknown>): Promise<ToolResul
   const proposedActions = Array.isArray(a.proposedActions)
     ? (a.proposedActions as unknown[]).map((x) => S(x).trim()).filter(Boolean) : undefined;
   const patient = { age: S(a.age) || undefined, sex: S(a.sex) || undefined };
-  return startAsyncLabRun({
+  return runLabProbe({
     experiment, kind: 'appropriateness', engine: 'appropriateness-route/mini', inputPreview: scenario.slice(0, 300),
     run: async () => {
       const probe = reduceAppropriatenessEvents(parseNdjson(await selfPostNdjson('/api/appropriateness', { scenario, proposedActions, patient })));
@@ -341,7 +341,7 @@ async function labPathway(a: Record<string, unknown>): Promise<ToolResult> {
   const proposedActions = Array.isArray(a.proposedActions)
     ? (a.proposedActions as unknown[]).map((x) => S(x).trim()).filter(Boolean) : undefined;
   const patient = { age: S(a.age) || undefined, sex: S(a.sex) || undefined };
-  return startAsyncLabRun({
+  return runLabProbe({
     experiment, kind: 'pathway', engine: 'pathway-route/mini', inputPreview: scenario.slice(0, 300),
     run: async () => {
       const base = labSelfBaseUrl(process.env as Record<string, string | undefined>);
@@ -368,7 +368,7 @@ async function labCaseAudit(a: Record<string, unknown>): Promise<ToolResult> {
   const extracted = (a.extracted && typeof a.extracted === 'object') ? a.extracted as Record<string, unknown> : null;
   if (!extracted) return err('extracted (an already-extracted case object) is required — the PDF→OCR leg is multimodal and cannot run on the free mini');
   const preview = S(extracted.diagnosis) || S(extracted.procedure) || S(extracted.courseSummary) || 'case';
-  return startAsyncLabRun({
+  return runLabProbe({
     experiment, kind: 'case_audit', engine: 'doc-audit-route/mini', inputPreview: preview.slice(0, 300),
     run: async () => {
       const probe = reduceDocAuditEvents(parseNdjson(await selfPostNdjson('/api/doc-audit/analyze', { extracted })));
