@@ -432,3 +432,72 @@ const HEADERS_Q = {
   opt: /OPTIONS\s*:/i,
   conf: /CONFIDENCE\s*:/i,
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P2 — capture-and-wall run record (pure, de-identified). No identifiers, no raw
+// context/answers, no per-patient key. This is Track-2 registry material only.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const CONCORDANCE_ENGINE = 'concordance/0.2';
+
+export interface ConcordanceRunRecord {
+  analytes: string[];
+  verdict: Verdict | null;
+  branch: Branch;
+  confidence: 'low' | 'moderate' | 'high' | null;
+  askedCount: number;
+  unknownCount: number;
+  whoReport: number;
+  whoYou: number;
+  whoLab: number;
+  ageBand: string | null;
+  sex: 'F' | 'M' | null;
+  mode: 'interview' | 'single-shot';
+  engine: string;
+}
+
+/** Coarse, de-identified demographics from the intake context (best-effort; null when unsure). */
+export function extractDemographics(context: string): { ageBand: string | null; sex: 'F' | 'M' | null } {
+  const compact = context.match(/\b(\d{1,3})\s*(?:-?\s*year[s-]*old\s*)?([MF])\b/i); // "56F", "44 M", "70-year-old F"
+  const ageWord = context.match(/\b(\d{1,3})\s*(?:years?\b|yo\b|y\/o\b|-year-old)/i);
+  const sexWord = context.match(/\b(female|woman|male|man)\b/i);
+  let age: number | null = compact ? parseInt(compact[1], 10) : ageWord ? parseInt(ageWord[1], 10) : null;
+  if (age !== null && (age < 0 || age > 120)) age = null;
+  let sex: 'F' | 'M' | null = compact ? (compact[2].toUpperCase() as 'F' | 'M') : null;
+  if (!sex && sexWord) sex = /female|woman/i.test(sexWord[1]) ? 'F' : 'M';
+  const ageBand = age === null ? null : `${Math.floor(age / 10) * 10}-${Math.floor(age / 10) * 10 + 9}`;
+  return { ageBand, sex };
+}
+
+/** Build the walled, de-identified run record from an interview state (or a single-shot). */
+export function buildRunRecord(
+  result: string,
+  context: string,
+  parsed: ParsedConcordanceLike,
+  mode: 'interview' | 'single-shot',
+  interview?: InterviewState,
+): ConcordanceRunRecord {
+  const analytes = Array.from(new Set(floorFor(result).map((f) => f.analyte)));
+  const { ageBand, sex } = extractDemographics(context);
+  const turns = interview?.turns ?? [];
+  const who = { report: 0, you: 0, lab: 0 };
+  for (const t of turns) who[t.whoKnows] += 1;
+  return {
+    analytes,
+    verdict: parsed.verdict,
+    branch: parsed.verdict ? branchForVerdict(parsed.verdict) : 'none',
+    confidence: parsed.confidence,
+    askedCount: interview?.askedCount ?? 0,
+    unknownCount: interview?.openGaps.length ?? 0,
+    whoReport: who.report,
+    whoYou: who.you,
+    whoLab: who.lab,
+    ageBand,
+    sex,
+    mode,
+    engine: CONCORDANCE_ENGINE,
+  };
+}
+
+/** Minimal shape needed from a parsed verdict (ParsedConcordance satisfies this). */
+export interface ParsedConcordanceLike { verdict: Verdict | null; confidence: 'low' | 'moderate' | 'high' | null; }

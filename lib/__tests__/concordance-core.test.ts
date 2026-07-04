@@ -6,6 +6,7 @@ import {
   initInterview, normalizeBelief, topBelief, isUnknownAnswer, shouldStop,
   recordTurn, toVerdictContext, parseSeed, parseNextQuestion, DEFAULT_INTERVIEW_OPTS,
   type NextQuestion, type InterviewState,
+  extractDemographics, buildRunRecord, CONCORDANCE_ENGINE,
 } from '../concordance-core.ts';
 
 test('branchForVerdict maps verdicts to branches', () => {
@@ -170,6 +171,34 @@ test('parseNextQuestion parses a question and detects STOP', () => {
   assert.equal(q.options.length, 3);
   assert.equal(q.confidence, 0.45);
   assert.equal(parseNextQuestion('QUESTION: STOP\nCONFIDENCE: 0.8').stop, true);
+});
+
+// ── P2 walled run record (de-id) ──
+
+test('extractDemographics reads compact and worded forms, else null', () => {
+  assert.deepEqual(extractDemographics('56F, ambulatory, asymptomatic'), { ageBand: '50-59', sex: 'F' });
+  assert.deepEqual(extractDemographics('44M routine'), { ageBand: '40-49', sex: 'M' });
+  assert.deepEqual(extractDemographics('a 72-year-old woman with a fall'), { ageBand: '70-79', sex: 'F' });
+  assert.deepEqual(extractDemographics('no demographics here'), { ageBand: null, sex: null });
+});
+
+test('buildRunRecord is de-identified: analytes + verdict + counts, no raw text', () => {
+  let s: InterviewState = { ...initInterview('Calcium 11.8 mg/dL', '56F asymptomatic'), status: 'asking' };
+  s = recordTurn(s, { stop: false, question: 'Albumin raised?', whoKnows: 'report', why: 'w', options: [] }, 'normal');
+  s = recordTurn(s, { stop: false, question: 'PTH?', whoKnows: 'lab', why: 'w', options: [] }, 'I do not have this');
+  const rec = buildRunRecord('Calcium 11.8 mg/dL', '56F asymptomatic', { verdict: 'discordant-likely-real', confidence: 'moderate' }, 'interview', s);
+  assert.deepEqual(rec.analytes, ['calcium']);
+  assert.equal(rec.verdict, 'discordant-likely-real');
+  assert.equal(rec.branch, 'B');
+  assert.equal(rec.askedCount, 2);
+  assert.equal(rec.unknownCount, 1);
+  assert.equal(rec.whoReport, 1);
+  assert.equal(rec.whoLab, 1);
+  assert.equal(rec.ageBand, '50-59');
+  assert.equal(rec.sex, 'F');
+  assert.equal(rec.engine, CONCORDANCE_ENGINE);
+  // no raw context / answers on the record
+  assert.equal(Object.values(rec).some((v) => typeof v === 'string' && /asymptomatic|PTH/.test(v)), false);
 });
 
 test('summarize aggregates the bank', () => {
