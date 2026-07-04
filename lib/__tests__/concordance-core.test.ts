@@ -9,6 +9,7 @@ import {
   extractDemographics, buildRunRecord, CONCORDANCE_ENGINE,
   populationLines, POPULATION_PRIORS,
   coarseBand, effectivePrior, STRATIFIED_PRIORS,
+  inferUnit, resultHasUnit, unitAnnotations, unitContext,
 } from '../concordance-core.ts';
 
 test('branchForVerdict maps verdicts to branches', () => {
@@ -87,6 +88,34 @@ test('scoreCase: control marked discordant is over-flagged', () => {
   const s = scoreCase(exp, p);
   assert.equal(s.overFlagged, true);
   assert.equal(s.verdictMatch, false);
+});
+
+// ── Unit inference ──
+
+test('inferUnit picks the unit by magnitude and flags the ambiguous zone', () => {
+  assert.equal(inferUnit('potassium', 6.8).unit, 'mmol/L');
+  assert.equal(inferUnit('calcium', 11.8).unit, 'mg/dL');
+  assert.equal(inferUnit('calcium', 2.4).unit, 'mmol/L');
+  assert.equal(inferUnit('calcium', 4.0).ambiguous, true); // 4.0 fits both mg/dL and mmol/L
+  assert.equal(inferUnit('hemoglobin', 11.5).unit, 'g/dL');
+  assert.equal(inferUnit('hemoglobin', 115).unit, 'g/L');
+});
+
+test('resultHasUnit / unitAnnotations only annotate when no unit is typed', () => {
+  assert.equal(resultHasUnit('Calcium 11.8 mg/dL'), true);
+  assert.equal(resultHasUnit('Calcium 11.8'), false);
+  assert.equal(unitAnnotations('Calcium 11.8 mg/dL').length, 0);
+  const a = unitAnnotations('Calcium 11.8');
+  assert.equal(a.length, 1);
+  assert.equal(a[0].analyte, 'calcium');
+  assert.match(a[0].inference.unit!, /mg\/dL/);
+});
+
+test('unitContext flags ambiguity for a clarifying question, assumes otherwise', () => {
+  assert.equal(unitContext('Potassium 6.8').ambiguous, false);
+  assert.match(unitContext('Potassium 6.8').line, /mmol\/L/);
+  assert.equal(unitContext('Calcium 4.0').ambiguous, true);
+  assert.equal(unitContext('Calcium 11.8 mg/dL').line, ''); // unit given → nothing to infer
 });
 
 // ── P3.2a population priors ──

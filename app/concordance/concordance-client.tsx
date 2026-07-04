@@ -73,8 +73,9 @@ export default function ConcordanceClient() {
     return (
       <div className={card + ' p-6'}>
         <label className="block text-[13px] font-medium text-slate-700">Lab result</label>
+        <p className="mt-0.5 text-[12px] text-slate-400">Just the test name and value — units and reference range are optional; we infer them from the test and the number (and ask if it's ambiguous).</p>
         <input value={result} onChange={(e) => setResult(e.target.value)}
-          placeholder="e.g. Calcium 11.8 mg/dL (ref 8.5–10.5)"
+          placeholder="e.g. Potassium 6.8  ·  or  Calcium 11.8"
           className="mt-1.5 w-full rounded-lg border border-slate-200 px-3 py-2.5 text-[14px] outline-none focus:border-brand" />
         <label className="mt-4 block text-[13px] font-medium text-slate-700">One line of clinical context <span className="text-slate-400">(optional)</span></label>
         <input value={context} onChange={(e) => setContext(e.target.value)}

@@ -195,6 +195,80 @@ export function populationLines(result: string, context = ''): string[] {
   return out;
 }
 
+// ── Unit inference (the clinician need not type units or reference ranges) ──
+// For each in-scope analyte, the plausible value range PER unit. The magnitude of the
+// entered number picks the unit; only a narrow overlap zone is genuinely ambiguous → ask.
+interface UnitOption { unit: string; lo: number; hi: number; }
+export const ANALYTE_UNITS: Record<string, { canonical: string; options: UnitOption[] }> = {
+  potassium:  { canonical: 'mmol/L', options: [{ unit: 'mmol/L', lo: 1, hi: 10 }] },
+  sodium:     { canonical: 'mmol/L', options: [{ unit: 'mmol/L', lo: 100, hi: 180 }] },
+  calcium:    { canonical: 'mg/dL', options: [{ unit: 'mg/dL', lo: 3, hi: 20 }, { unit: 'mmol/L', lo: 0.75, hi: 5 }] },
+  hemoglobin: { canonical: 'g/dL', options: [{ unit: 'g/dL', lo: 2, hi: 25 }, { unit: 'g/L', lo: 30, hi: 250 }] },
+  platelets:  { canonical: 'x10^3/uL', options: [{ unit: 'x10^3/uL (=x10^9/L)', lo: 2, hi: 2000 }, { unit: '/uL', lo: 5000, hi: 2000000 }] },
+  wbc:        { canonical: 'cells/uL', options: [{ unit: 'x10^9/L (=x10^3/uL)', lo: 0.1, hi: 150 }, { unit: 'cells/uL', lo: 200, hi: 200000 }] },
+  ferritin:   { canonical: 'ng/mL', options: [{ unit: 'ng/mL (=ug/L)', lo: 0.5, hi: 100000 }] },
+  alt:        { canonical: 'U/L', options: [{ unit: 'U/L', lo: 1, hi: 10000 }] },
+  ast:        { canonical: 'U/L', options: [{ unit: 'U/L', lo: 1, hi: 10000 }] },
+  alp:        { canonical: 'U/L', options: [{ unit: 'U/L', lo: 5, hi: 5000 }] },
+  tsh:        { canonical: 'mIU/L', options: [{ unit: 'mIU/L (=uIU/mL)', lo: 0.001, hi: 500 }] },
+  ft4:        { canonical: 'ng/dL', options: [{ unit: 'ng/dL', lo: 0.1, hi: 8 }, { unit: 'pmol/L', lo: 2, hi: 120 }] },
+};
+
+export interface UnitInference { unit: string | null; confident: boolean; ambiguous: boolean; candidates: string[]; }
+export function inferUnit(analyte: string, value: number): UnitInference {
+  const spec = ANALYTE_UNITS[analyte];
+  if (!spec) return { unit: null, confident: false, ambiguous: false, candidates: [] };
+  const hits = spec.options.filter((o) => value >= o.lo && value <= o.hi);
+  if (hits.length === 1) return { unit: hits[0].unit, confident: true, ambiguous: false, candidates: [hits[0].unit] };
+  if (hits.length === 0) return { unit: spec.canonical, confident: false, ambiguous: false, candidates: [spec.canonical] };
+  return { unit: null, confident: false, ambiguous: true, candidates: hits.map((h) => h.unit) };
+}
+
+const UNIT_TOKENS = ['mg/dl', 'mmol/l', 'meq/l', 'g/dl', 'g/l', 'u/l', 'iu/l', 'miu/l', 'uiu/ml', 'ng/ml', 'ng/dl', 'pmol/l', 'ug/l', 'µmol', 'x10', '10^', '/ul', '/µl', 'cells', 'k/ul', 'lakh'];
+export function resultHasUnit(result: string): boolean { const t = result.toLowerCase(); return UNIT_TOKENS.some((u) => t.includes(u)); }
+
+export interface UnitAnnotation { analyte: string; value: number; inference: UnitInference; }
+/** For each in-scope analyte in the result that lacks an explicit unit, infer it from the
+ *  magnitude. Empty when units are already given or nothing in-scope is found. */
+export function unitAnnotations(result: string): UnitAnnotation[] {
+  if (resultHasUnit(result)) return [];
+  const t = ` ${result.toLowerCase()} `;
+  const out: UnitAnnotation[] = [];
+  const seen = new Set<string>();
+  for (const [key, aliases] of PRIOR_ALIASES) {
+    if (seen.has(key)) continue;
+    for (const a of aliases) {
+      const idx = t.indexOf(a);
+      if (idx < 0) continue;
+      const m = t.slice(idx).match(/([0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?)/);
+      if (!m) break;
+      const v = parseFloat(m[1].replace(/,/g, ''));
+      if (Number.isNaN(v)) break;
+      out.push({ analyte: key, value: v, inference: inferUnit(key, v) });
+      seen.add(key);
+      break;
+    }
+  }
+  return out;
+}
+
+/** Prompt fragment describing inferred/assumed units + any unit ambiguity to clarify. */
+export function unitContext(result: string): { line: string; ambiguous: boolean } {
+  const anns = unitAnnotations(result);
+  if (!anns.length) return { line: '', ambiguous: false };
+  const parts: string[] = [];
+  let ambiguous = false;
+  for (const a of anns) {
+    if (a.inference.ambiguous) {
+      ambiguous = true;
+      parts.push(`${a.analyte} ${a.value}: unit AMBIGUOUS (${a.inference.candidates.join(' or ')}) — clarify the unit before judging`);
+    } else if (a.inference.unit) {
+      parts.push(`${a.analyte} ${a.value}: no unit given, assume ${a.inference.unit}${a.inference.confident ? '' : ' (value is extreme for all known units — verify the unit and the value)'}`);
+    }
+  }
+  return { line: `UNITS (clinician did not type units; inferred from magnitude): ${parts.join('; ')}.`, ambiguous };
+}
+
 // ── Single-shot prompt builder ──
 export interface Prompt { system: string; user: string; }
 
@@ -238,9 +312,11 @@ export function buildConcordancePrompt(result: string, context: string): Prompt 
     : '';
   const notes = floor.map((f) => f.note).filter(Boolean);
   const notesLine = notes.length ? `\n\nANALYTE RULES (deterministic — apply before judging): ${notes.join(' ')}` : '';
+  const unit = unitContext(result);
+  const unitLine = unit.line ? `\n\n${unit.line}${unit.ambiguous ? ' If a unit is ambiguous, the verdict is indeterminate and the DECISIVE GAP is the unit — do not guess.' : ''}` : '';
   const pop = populationLines(result, context);
   const popLine = pop.length ? `\n\nPOPULATION CONTEXT (real EHRC base rates — informational calibration ONLY; how extreme a value is does NOT by itself decide error vs real. The clinical context and analyte-appropriate error mechanisms decide the branch. A suggestive pre-analytic story still points to error even when the value is extreme):\n- ${pop.join('\n- ')}` : '';
-  const user = `RESULT: ${result}\nCONTEXT: ${context}${floorLine}${notesLine}${popLine}`;
+  const user = `RESULT: ${result}\nCONTEXT: ${context}${unitLine}${floorLine}${notesLine}${popLine}`;
   return { system: SYSTEM, user };
 }
 
@@ -502,9 +578,11 @@ Output ONLY one cause per line, pipe-separated: the branch letter (A or B), then
 B|0.5|primary hyperparathyroidism
 A|0.2|EDTA contamination
 Give 4-8 lines. No headers, no prose.`;
+  const unit = unitContext(result);
+  const unitLine = unit.line ? `\n${unit.line}` : '';
   const pop = populationLines(result, context);
   const popLine = pop.length ? `\nPOPULATION BASE RATES: ${pop.join(' ')}` : '';
-  return { system, user: `RESULT: ${result}\nCONTEXT: ${context}${popLine}` };
+  return { system, user: `RESULT: ${result}\nCONTEXT: ${context}${unitLine}${popLine}` };
 }
 
 /** Tolerant of field order and a stray leading label (e.g. "BRANCH|B|0.4|cause"). */
@@ -541,7 +619,9 @@ WHOKNOWS: <report|you|lab>
 WHY: <one line>
 OPTIONS: <opt1 | opt2 | opt3>
 CONFIDENCE: <0-1>`;
-  return { system, user: `RESULT: ${state.result}\nCONTEXT: ${state.context0}\nCURRENT BELIEF:\n${beliefStr}\nALREADY ASKED:\n${asked}` };
+  const unit = unitContext(state.result);
+  const unitLine = unit.ambiguous ? `\nUNIT UNRESOLVED: ${unit.line} If this has not been answered yet, ask the UNIT as the next question (whoKnows: report).` : '';
+  return { system, user: `RESULT: ${state.result}\nCONTEXT: ${state.context0}${unitLine}\nCURRENT BELIEF:\n${beliefStr}\nALREADY ASKED:\n${asked}` };
 }
 
 export function parseNextQuestion(raw: string): NextQuestion {
