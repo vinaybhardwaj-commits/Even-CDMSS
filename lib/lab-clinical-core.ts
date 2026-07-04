@@ -151,6 +151,80 @@ export function reduceAskEvents(events: NdjsonEvent[]): AskProbe {
   };
 }
 
+export interface AppropriatenessProbe {
+  ok: boolean;
+  error: string | null;
+  n_flags: number;
+  flag_statements: string[];         // the CW statements that fired — the over-flag surface
+  considered: number;
+  empty: boolean;
+  value_present: boolean;            // did the LLM value pass return an analysis?
+  n_value_sources: number;
+  result: Record<string, unknown> | null;
+}
+
+/** Fold the /api/appropriateness NDJSON stream (order-check LVC) into a stored result. */
+export function reduceAppropriatenessEvents(events: NdjsonEvent[]): AppropriatenessProbe {
+  const base: AppropriatenessProbe = {
+    ok: false, error: null, n_flags: 0, flag_statements: [], considered: 0,
+    empty: false, value_present: false, n_value_sources: 0, result: null,
+  };
+  let sawDone = false;
+  for (const e of events) {
+    if (e.type === 'error') base.error = String(e.message || 'error');
+    else if (e.type === 'done') sawDone = true;
+    else if (e.type === 'result') {
+      const d = (e.data && typeof e.data === 'object' ? e.data : {}) as Record<string, unknown>;
+      base.result = d;
+      const flags = Array.isArray(d.flags) ? d.flags as Record<string, unknown>[] : [];
+      base.n_flags = flags.length;
+      base.flag_statements = flags.map((f) => String(f.statement || f.id || '').trim()).filter(Boolean);
+      base.considered = Number(d.considered || 0);
+      base.empty = d.empty === true;
+      base.value_present = d.valueAnalysis != null;
+      base.n_value_sources = Array.isArray(d.valueSources) ? (d.valueSources as unknown[]).length : 0;
+    }
+  }
+  base.ok = base.error == null && (sawDone || base.result != null);
+  return base;
+}
+
+export interface DocAuditProbe {
+  ok: boolean;
+  error: string | null;
+  report_ok: boolean;
+  headline: number | null;
+  band: string | null;
+  n_findings: number | null;
+  result: Record<string, unknown> | null;
+}
+
+/** Fold the /api/doc-audit/analyze NDJSON stream (case audit, text leg) into a stored result. */
+export function reduceDocAuditEvents(events: NdjsonEvent[]): DocAuditProbe {
+  const base: DocAuditProbe = {
+    ok: false, error: null, report_ok: false, headline: null, band: null, n_findings: null, result: null,
+  };
+  let sawDone = false;
+  for (const e of events) {
+    if (e.type === 'error') base.error = String(e.message || 'error');
+    else if (e.type === 'done') sawDone = true;
+    else if (e.type === 'result') {
+      const d = (e.data && typeof e.data === 'object' ? e.data : {}) as Record<string, unknown>;
+      base.result = d;
+      base.report_ok = d.ok === true && d.report != null;
+      const report = (d.report && typeof d.report === 'object' ? d.report : {}) as Record<string, unknown>;
+      const sc = (report.scorecard && typeof report.scorecard === 'object' ? report.scorecard : {}) as Record<string, unknown>;
+      if (typeof sc.headline === 'number') base.headline = sc.headline as number;
+      if (typeof sc.band === 'string') base.band = sc.band as string;
+      const findings = Array.isArray(report.findings) ? report.findings : null;
+      base.n_findings = findings ? findings.length : null;
+      if (d.error) base.error = base.error ?? String(d.error);
+    }
+  }
+  base.ok = base.error == null && (sawDone || base.result != null);
+  return base;
+}
+
 /** Resolve the base URL for a self-fetch to the app's own routes. */
 export function labSelfBaseUrl(env: Record<string, string | undefined>): string {
   const explicit = (env.LAB_SELF_BASE_URL || '').trim();

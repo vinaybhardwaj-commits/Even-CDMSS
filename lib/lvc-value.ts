@@ -34,6 +34,8 @@ export interface ValueInput {
   audit?: boolean;
   /** Live progress callback for NDJSON streaming (stage, human message). */
   onProgress?: (stage: string, msg: string) => void;
+  /** Lab probe: force the FREE local mini (no Gemini) for ₹0 pipeline testing. Default false. */
+  forceOllama?: boolean;
 }
 
 export interface ValueResult {
@@ -69,8 +71,8 @@ async function defaultRetrieveHits(q: string): Promise<CiteHit[]> {
   }
 }
 
-async function defaultGenerate(system: string, user: string, label: string, traceId: string | undefined, maxTokens: number): Promise<string> {
-  const geminiModel = geminiModelFor('appropriateness') ?? geminiUtilityModel();
+async function defaultGenerate(system: string, user: string, label: string, traceId: string | undefined, maxTokens: number, forceOllama = false): Promise<string> {
+  const geminiModel = forceOllama ? undefined : (geminiModelFor('appropriateness') ?? geminiUtilityModel());
   const r = await llmCall(traceId, label, {
     model: TEXT_MODEL,
     messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
@@ -92,7 +94,7 @@ export async function analyzeValue(input: ValueInput, deps: Partial<ValueDeps> =
 
   const retrieveHits = deps.retrieveHits ?? defaultRetrieveHits;
   const generate = deps.generate
-    ?? ((s: string, u: string, label: string) => defaultGenerate(s, u, label, traceId, label === 'lvc_value_critique' ? 700 : 1500));
+    ?? ((s: string, u: string, label: string) => defaultGenerate(s, u, label, traceId, label === 'lvc_value_critique' ? 700 : 1500, input.forceOllama === true));
   const prog = input.onProgress ?? (() => {});
 
   try {

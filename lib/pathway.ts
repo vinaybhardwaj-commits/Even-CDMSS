@@ -28,6 +28,8 @@ export interface PathwayInput {
   proposedActions?: string[];
   patient?: { age?: number; sex?: string };
   trace?: boolean;
+  /** Lab probe: force the FREE local mini (no Gemini) for ₹0 pipeline testing. Default false. */
+  forceOllama?: boolean;
 }
 export interface EnrichInput extends PathwayInput {
   stages: SkeletonStage[];
@@ -56,9 +58,9 @@ async function llmCall(traceId: string | undefined, label: string, params: any, 
 // SKELETON (Flash)
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function defaultSkeletonGenerate(system: string, user: string, traceId?: string): Promise<string> {
+async function defaultSkeletonGenerate(system: string, user: string, traceId?: string, forceOllama = false): Promise<string> {
   // Flash utility model (honours GEMINI_ALL / GEMINI_UTILITY); soft-falls to local Ollama.
-  const geminiModel = geminiUtilityModel();
+  const geminiModel = forceOllama ? undefined : geminiUtilityModel();
   const r = await llmCall(traceId, 'pathway_skeleton', {
     model: 'llama3.1:8b',
     messages: [
@@ -77,7 +79,7 @@ export async function traceSkeleton(input: PathwayInput, deps: Partial<SkeletonD
   const traceId = doTrace
     ? await startTrace('pathway', { scenario: input.scenario.slice(0, 500), proposedActions: input.proposedActions, patient: input.patient })
     : undefined;
-  const generate = deps.generate ?? ((s: string, u: string) => defaultSkeletonGenerate(s, u, traceId));
+  const generate = deps.generate ?? ((s: string, u: string) => defaultSkeletonGenerate(s, u, traceId, input.forceOllama === true));
   try {
     const user = core.buildSkeletonUser(input);
     const raw = await generate(core.SKELETON_SYSTEM, user, traceId);

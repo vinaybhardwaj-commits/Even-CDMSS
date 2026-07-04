@@ -121,8 +121,8 @@ export async function extractCase(input: ExtractInput): Promise<ExtractResult> {
 
 export interface AnalyzeResult { report: AuditReport | null; excerptCount: number; traceId?: string }
 
-async function analyzeGenerate(system: string, user: string): Promise<string> {
-  const geminiModel = geminiModelFor('doc_audit') ?? geminiUtilityModel();
+async function analyzeGenerate(system: string, user: string, forceOllama = false): Promise<string> {
+  const geminiModel = forceOllama ? undefined : (geminiModelFor('doc_audit') ?? geminiUtilityModel());
   const r = await chatWithFallback({
     model: TEXT_MODEL,
     messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
@@ -136,8 +136,8 @@ async function analyzeGenerate(system: string, user: string): Promise<string> {
 // Traced analyze generate — routes through tracedChat so the (de-identified) analyze
 // LLM calls are captured in observability with model/provider/tokens/latency + fallback
 // detection. The extract is already de-identified (name/UHID stripped) before this runs.
-async function tracedAnalyzeGenerate(traceId: string, label: string, system: string, user: string): Promise<string> {
-  const geminiModel = geminiModelFor('doc_audit') ?? geminiUtilityModel();
+async function tracedAnalyzeGenerate(traceId: string, label: string, system: string, user: string, forceOllama = false): Promise<string> {
+  const geminiModel = forceOllama ? undefined : (geminiModelFor('doc_audit') ?? geminiUtilityModel());
   const r = await tracedChat(traceId, label, {
     model: TEXT_MODEL,
     messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
@@ -282,7 +282,7 @@ async function runPrognosisPass(
   }
 }
 
-export async function analyzeCase(extracted: ExtractedCase, deps: Partial<AnalyzeDeps> = {}, opts: { trace?: boolean; onProgress?: (stage: string, msg: string) => void } = {}): Promise<AnalyzeResult> {
+export async function analyzeCase(extracted: ExtractedCase, deps: Partial<AnalyzeDeps> = {}, opts: { trace?: boolean; onProgress?: (stage: string, msg: string) => void; forceOllama?: boolean } = {}): Promise<AnalyzeResult> {
   const doTrace = opts.trace !== false;
   const doAudit = process.env.DOC_AUDIT_AUDIT !== '0';
   const doPrognosis = process.env.PROGNOSIS_AUDIT === '1'; // DARK by default (PRD D5)
@@ -292,10 +292,11 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
     : undefined;
 
   const retrieveHits = deps.retrieveHits ?? defaultRetrieveHits;
+  const fo = opts.forceOllama === true;   // lab probe: force the free mini through analyze + prognosis
   const generate: (system: string, user: string, label?: string) => Promise<string> =
     deps.generate ?? (traceId
-      ? (s, u, label = 'doc_audit_analyze') => tracedAnalyzeGenerate(traceId, label, s, u)
-      : analyzeGenerate);
+      ? (s, u, label = 'doc_audit_analyze') => tracedAnalyzeGenerate(traceId, label, s, u, fo)
+      : (s, u) => analyzeGenerate(s, u, fo));
   const rubric = getRubric(extracted.docType);
 
   try {

@@ -36,6 +36,7 @@ export async function POST(req: NextRequest) {
       scenario,
       proposedActions: proposedActions && proposedActions.length ? proposedActions : undefined,
       patient: hasPatient ? patient : undefined,
+      forceOllama: body.providerOverride === 'ollama',   // lab probe: free mini
     });
     return NextResponse.json({ ok: true, skeleton, traceId });
   } catch (e) {

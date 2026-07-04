@@ -52,6 +52,7 @@ export async function POST(req: NextRequest) {
     surface: 'surface',
     regionFilter: regionFilter && regionFilter.length ? regionFilter : undefined,
     preferRegion,
+    forceOllama: body.providerOverride === 'ollama',   // lab probe: whole pipeline on the free mini
   };
 
   const { stream, emit, close } = makeNdjsonStream();
@@ -66,6 +67,7 @@ export async function POST(req: NextRequest) {
         matchLowValueCare(input),
         analyzeValue({
           scenario, proposedActions, patient: hasPatient ? patient : undefined,
+          forceOllama: body.providerOverride === 'ollama',
           onProgress: (stage, msg) => emit({ type: 'progress', stage: stage as Stage, msg, ms: Date.now() - t0 }),
         }),
       ]);

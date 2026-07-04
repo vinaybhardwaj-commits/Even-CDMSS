@@ -31,6 +31,8 @@ export interface MatchInput {
   /** Restrict recall to these regions (e.g. ['IN','CA','US']). Omit = all. */
   regionFilter?: Region[];
   trace?: boolean; // default true
+  /** Lab probe: force the FREE local mini (no Gemini) for ₹0 pipeline testing. Default false. */
+  forceOllama?: boolean;
 }
 
 export interface MatchResult {
@@ -87,7 +89,7 @@ async function llmCall(traceId: string | undefined, label: string, params: any, 
   return chatWithFallback(params, geminiModel);
 }
 
-async function defaultExtract(scenario: string, traceId?: string): Promise<Candidate[]> {
+async function defaultExtract(scenario: string, traceId?: string, forceOllama = false): Promise<Candidate[]> {
   try {
     const r = await llmCall(traceId, 'lvc_extract', {
       model: 'llama3.1:8b',
@@ -98,7 +100,7 @@ async function defaultExtract(scenario: string, traceId?: string): Promise<Candi
       temperature: 0.1,
       max_tokens: 400,
       ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
-    }, geminiUtilityModel());
+    }, forceOllama ? undefined : geminiUtilityModel());
     return core.parseCandidates(r.choices?.[0]?.message?.content || '');
   } catch (e) {
     console.warn('[lvc] candidate extraction failed', (e as Error).message);
@@ -134,12 +136,14 @@ async function defaultJudge(
   recs: LvcRecommendation[],
   surface: Surface,
   traceId?: string,
+  forceOllama = false,
 ): Promise<JudgedRec[]> {
   // Opt-in surface → Pro reasoning (geminiModelFor honours GEMINI_ALL); unsolicited
   // autoflag → cheap Flash. Both soft-fall to local Ollama if Vertex is unavailable.
-  const geminiModel = surface === 'autoflag'
+  // forceOllama (lab probe) pins the whole judge to the free mini.
+  const geminiModel = forceOllama ? undefined : (surface === 'autoflag'
     ? geminiUtilityModel()
-    : (geminiModelFor('appropriateness') ?? geminiUtilityModel());
+    : (geminiModelFor('appropriateness') ?? geminiUtilityModel()));
   const fallbackModel = surface === 'autoflag' ? 'llama3.1:8b' : TEXT_MODEL;
   try {
     const r = await llmCall(traceId, 'lvc_judge', {
@@ -173,9 +177,10 @@ export async function matchLowValueCare(input: MatchInput, deps: Partial<MatchDe
       })
     : undefined;
 
-  const extract = deps.extractCandidates ?? ((s: string) => defaultExtract(s, traceId));
+  const fo = input.forceOllama === true;
+  const extract = deps.extractCandidates ?? ((s: string) => defaultExtract(s, traceId, fo));
   const recall = deps.recall ?? defaultRecall;
-  const judge = deps.judge ?? ((ctx, recs, surf) => defaultJudge(ctx, recs, surf, traceId));
+  const judge = deps.judge ?? ((ctx, recs, surf) => defaultJudge(ctx, recs, surf, traceId, fo));
 
   try {
     const candidates = input.proposedActions?.length

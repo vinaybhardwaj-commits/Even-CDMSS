@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   parseNdjson, reduceDdxEvents, reduceAskEvents, extractCitationIds, labSelfBaseUrl,
+  reduceAppropriatenessEvents, reduceDocAuditEvents,
 } from '../lab-clinical-core.ts';
 
 test('parseNdjson tolerates blank + garbled lines', () => {
@@ -75,6 +76,59 @@ test('reduceAskEvents flags a long uncited answer (cite-or-label canary)', () =>
   const p = reduceAskEvents(ev);
   assert.equal(p.uncited, true);
   assert.deepEqual(p.citation_ids, []);
+});
+
+test('reduceAppropriatenessEvents captures fired CW statements (over-flag surface)', () => {
+  const ev = parseNdjson([
+    JSON.stringify({ type: 'progress', stage: 'retrieving', msg: '…' }),
+    JSON.stringify({ type: 'result', data: {
+      ok: true, considered: 3, empty: false,
+      flags: [{ id: 'cw-1', statement: 'Avoid imaging for uncomplicated headache' }, { id: 'cw-2', statement: 'No routine preop CXR' }],
+      valueAnalysis: { netValue: 'low' }, valueSources: [{ n: 1 }, { n: 2 }],
+    } }),
+    JSON.stringify({ type: 'done', ms: 1200 }),
+  ].join('\n'));
+  const p = reduceAppropriatenessEvents(ev);
+  assert.equal(p.ok, true);
+  assert.equal(p.n_flags, 2);
+  assert.deepEqual(p.flag_statements, ['Avoid imaging for uncomplicated headache', 'No routine preop CXR']);
+  assert.equal(p.considered, 3);
+  assert.equal(p.value_present, true);
+  assert.equal(p.n_value_sources, 2);
+});
+
+test('reduceAppropriatenessEvents handles the empty (nothing-fired) case', () => {
+  const ev = parseNdjson([
+    JSON.stringify({ type: 'result', data: { ok: true, flags: [], considered: 0, empty: true, valueAnalysis: null } }),
+    JSON.stringify({ type: 'done' }),
+  ].join('\n'));
+  const p = reduceAppropriatenessEvents(ev);
+  assert.equal(p.ok, true);
+  assert.equal(p.n_flags, 0);
+  assert.equal(p.empty, true);
+  assert.equal(p.value_present, false);
+});
+
+test('reduceDocAuditEvents pulls the scorecard headline/band', () => {
+  const ev = parseNdjson([
+    JSON.stringify({ type: 'result', data: { ok: true, report: {
+      scorecard: { headline: 72, band: 'B' },
+      findings: [{ subject: 'x' }, { subject: 'y' }],
+    } } }),
+    JSON.stringify({ type: 'done' }),
+  ].join('\n'));
+  const p = reduceDocAuditEvents(ev);
+  assert.equal(p.ok, true);
+  assert.equal(p.report_ok, true);
+  assert.equal(p.headline, 72);
+  assert.equal(p.band, 'B');
+  assert.equal(p.n_findings, 2);
+});
+
+test('reduceDocAuditEvents surfaces a stream error', () => {
+  const p = reduceDocAuditEvents(parseNdjson(JSON.stringify({ type: 'error', message: 'retry' })));
+  assert.equal(p.ok, false);
+  assert.match(p.error || '', /retry/);
 });
 
 test('labSelfBaseUrl prefers explicit, then VERCEL_URL, then localhost', () => {

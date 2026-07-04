@@ -18,7 +18,10 @@ import {
   ensureLabTables, saveLabAnalysis, listLabAnalyses, getLabAnalysis, labLabel,
   corpusAddQuarantined, corpusActivate, corpusDelete, corpusLabList, labStorage,
 } from './lab';
-import { parseNdjson, reduceDdxEvents, reduceAskEvents, labSelfBaseUrl } from './lab-clinical-core';
+import {
+  parseNdjson, reduceDdxEvents, reduceAskEvents, reduceAppropriatenessEvents,
+  reduceDocAuditEvents, labSelfBaseUrl,
+} from './lab-clinical-core';
 
 export type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
 const ok = (obj: unknown): ToolResult => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
@@ -112,6 +115,46 @@ export const LAB_TOOLS = [
     },
   },
   {
+    name: 'lab_appropriateness',
+    description: 'Run the REAL /api/appropriateness Right-Care order-check (Choosing-Wisely low-value-care matcher + LLM applicability judge + value analysis) end-to-end, forced onto the FREE mini (₹0). Stores which CW statements FIRED per scenario in lab_analyses — the surface for the known ~74% over-flag: build a specificity set of clearly-appropriate scenarios and mine how often a flag fires when it should not. Provide scenario (required); optionally proposedActions (the specific orders), age, sex.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        experiment: { type: 'string', description: 'Experiment label to file this under.' },
+        scenario: { type: 'string', description: 'The clinical scenario / presentation (required).' },
+        proposedActions: { type: 'array', items: { type: 'string' }, description: 'Specific orders/tests to check (skips the extraction pass).' },
+        age: { type: 'string' }, sex: { type: 'string' },
+      },
+      required: ['experiment', 'scenario'],
+    },
+  },
+  {
+    name: 'lab_pathway',
+    description: 'Run the REAL /api/pathway/skeleton care-pathway pass (stage classification + ordered care-path spine) forced onto the FREE mini (₹0), storing the skeleton in lab_analyses. For testing router coverage / stage-detection bugs / dead branches. Provide scenario (required); optionally proposedActions, age, sex.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        experiment: { type: 'string', description: 'Experiment label to file this under.' },
+        scenario: { type: 'string', description: 'The clinical scenario (required).' },
+        proposedActions: { type: 'array', items: { type: 'string' } },
+        age: { type: 'string' }, sex: { type: 'string' },
+      },
+      required: ['experiment', 'scenario'],
+    },
+  },
+  {
+    name: 'lab_case_audit',
+    description: 'Run the REAL /api/doc-audit/analyze case-audit + prognosis on the FREE mini (₹0), storing the scored report in lab_analyses. TEXT-ONLY: you pass an already-EXTRACTED case (the PDF→OCR extract leg is multimodal Vertex and cannot run on the free mini — that leg still needs Gemini). Provide `extracted` — an object with docType and case fields (diagnosis, procedure, indication, courseSummary, medications[], investigations[], treatments[], disposition, followUp, patient{age,sex}). For finding bugs in the appropriateness/foreseeability reasoning independent of OCR.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        experiment: { type: 'string', description: 'Experiment label to file this under.' },
+        extracted: { type: 'object', description: 'An already-extracted case (ExtractedCase shape). At least one of diagnosis/procedure/courseSummary/medications/investigations must be present.' },
+      },
+      required: ['experiment', 'extracted'],
+    },
+  },
+  {
     name: 'lab_query',
     description: 'Inspect the experimental lab: list experiments (no args), list runs in one experiment, fetch one run by id, or storage stats. args: experiment? | id? | stats?',
     inputSchema: {
@@ -144,6 +187,9 @@ export async function callLabTool(name: string, args: Record<string, unknown>): 
       case 'mini_analyze': return await miniAnalyze(args);
       case 'lab_ddx': return await labDdx(args);
       case 'lab_ask': return await labAsk(args);
+      case 'lab_appropriateness': return await labAppropriateness(args);
+      case 'lab_pathway': return await labPathway(args);
+      case 'lab_case_audit': return await labCaseAudit(args);
       case 'backfill_control': return await backfillControl(args);
       case 'corpus_add': return await corpusAdd(args);
       case 'corpus_manage': return await corpusManage(args);
@@ -252,6 +298,85 @@ async function labAsk(a: Record<string, unknown>): Promise<ToolResult> {
     stored_id: id, experiment, kind: 'ask', ok: probe.ok, error: probe.error,
     answer_chars: probe.answer_chars, n_sources: probe.n_sources, citation_ids: probe.citation_ids,
     uncited: probe.uncited, revised: probe.revised, ms: Date.now() - started,
+  });
+}
+
+async function labAppropriateness(a: Record<string, unknown>): Promise<ToolResult> {
+  await ensureLabTables();
+  const experiment = labLabel(a.experiment);
+  const scenario = S(a.scenario).trim();
+  if (!scenario) return err('scenario is required');
+  const started = Date.now();
+  const proposedActions = Array.isArray(a.proposedActions)
+    ? (a.proposedActions as unknown[]).map((x) => S(x).trim()).filter(Boolean) : undefined;
+  const patient = { age: S(a.age) || undefined, sex: S(a.sex) || undefined };
+  let raw: string;
+  try { raw = await selfPostNdjson('/api/appropriateness', { scenario, proposedActions, patient }); }
+  catch (e) { return err(`appropriateness pipeline call failed: ${String((e as Error).message)}`); }
+  const probe = reduceAppropriatenessEvents(parseNdjson(raw));
+  const id = await saveLabAnalysis({
+    experiment, kind: 'appropriateness', engine: 'appropriateness-route/mini', inputRef: null,
+    inputPreview: scenario.slice(0, 300), output: { scenario, proposedActions, ...probe },
+    model: MINI_MODEL, latencyMs: Date.now() - started,
+  });
+  return ok({
+    stored_id: id, experiment, kind: 'appropriateness', ok: probe.ok, error: probe.error,
+    n_flags: probe.n_flags, flag_statements: probe.flag_statements, considered: probe.considered,
+    empty: probe.empty, value_present: probe.value_present, ms: Date.now() - started,
+  });
+}
+
+async function labPathway(a: Record<string, unknown>): Promise<ToolResult> {
+  await ensureLabTables();
+  const experiment = labLabel(a.experiment);
+  const scenario = S(a.scenario).trim();
+  if (!scenario) return err('scenario is required');
+  const started = Date.now();
+  const proposedActions = Array.isArray(a.proposedActions)
+    ? (a.proposedActions as unknown[]).map((x) => S(x).trim()).filter(Boolean) : undefined;
+  const patient = { age: S(a.age) || undefined, sex: S(a.sex) || undefined };
+  const base = labSelfBaseUrl(process.env as Record<string, string | undefined>);
+  let json: Record<string, unknown>;
+  try {
+    const res = await fetch(`${base}/api/pathway/skeleton`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ scenario, proposedActions, patient, providerOverride: 'ollama' }),
+    });
+    json = (await res.json()) as Record<string, unknown>;
+  } catch (e) { return err(`pathway pipeline call failed: ${String((e as Error).message)}`); }
+  const skeleton = (json.skeleton && typeof json.skeleton === 'object' ? json.skeleton : null) as Record<string, unknown> | null;
+  const stages = skeleton && Array.isArray(skeleton.stages) ? skeleton.stages as Record<string, unknown>[] : [];
+  const id = await saveLabAnalysis({
+    experiment, kind: 'pathway', engine: 'pathway-route/mini', inputRef: null,
+    inputPreview: scenario.slice(0, 300), output: { scenario, ...json }, model: MINI_MODEL, latencyMs: Date.now() - started,
+  });
+  return ok({
+    stored_id: id, experiment, kind: 'pathway', ok: json.ok === true && skeleton != null,
+    detected_stage: skeleton?.detectedStage ?? null, working_diagnosis: skeleton?.workingDiagnosis ?? null,
+    needs_ddx: skeleton?.needsDdx ?? null, n_stages: stages.length,
+    stage_ids: stages.map((s) => String(s.id || '')).filter(Boolean), ms: Date.now() - started,
+  });
+}
+
+async function labCaseAudit(a: Record<string, unknown>): Promise<ToolResult> {
+  await ensureLabTables();
+  const experiment = labLabel(a.experiment);
+  const extracted = (a.extracted && typeof a.extracted === 'object') ? a.extracted as Record<string, unknown> : null;
+  if (!extracted) return err('extracted (an already-extracted case object) is required — the PDF→OCR leg is multimodal and cannot run on the free mini');
+  const started = Date.now();
+  let raw: string;
+  try { raw = await selfPostNdjson('/api/doc-audit/analyze', { extracted }); }
+  catch (e) { return err(`case-audit pipeline call failed: ${String((e as Error).message)}`); }
+  const probe = reduceDocAuditEvents(parseNdjson(raw));
+  const preview = S((extracted as Record<string, unknown>).diagnosis) || S((extracted as Record<string, unknown>).procedure) || S((extracted as Record<string, unknown>).courseSummary) || 'case';
+  const id = await saveLabAnalysis({
+    experiment, kind: 'case_audit', engine: 'doc-audit-route/mini', inputRef: null,
+    inputPreview: preview.slice(0, 300), output: { extracted, ...probe }, model: MINI_MODEL, latencyMs: Date.now() - started,
+  });
+  return ok({
+    stored_id: id, experiment, kind: 'case_audit', ok: probe.ok, error: probe.error,
+    report_ok: probe.report_ok, headline: probe.headline, band: probe.band, n_findings: probe.n_findings,
+    ms: Date.now() - started,
   });
 }
 

@@ -73,6 +73,7 @@ export async function POST(req: NextRequest) {
   (async () => {
     try {
       const { report, traceId } = await analyzeCase(extracted, {}, {
+        forceOllama: body.providerOverride === 'ollama',   // lab probe: analyze + prognosis on the free mini
         onProgress: (stage, msg) => emit({ type: 'progress', stage: stage as Stage, msg, ms: Date.now() - t0 }),
       });
       if (!report) {
