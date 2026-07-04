@@ -261,3 +261,145 @@ export function summarize(scores: CaseScore[]): BankSummary {
     committedRate: scores.filter((s) => s.committedSingleVerdict).length / n,
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P1 — adaptive interview loop (pure core: state, stopping rule, prompt builders,
+// parsers, transcript→context). All LLM-touching wrappers live in concordance.ts.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type WhoKnows = 'report' | 'you' | 'lab';
+
+export interface BeliefItem { cause: string; branch: 'A' | 'B'; weight: number; }
+export interface InterviewTurn { question: string; whoKnows: WhoKnows; why: string; options: string[]; answer: string; }
+export interface OpenGap { gap: string; whoKnows: WhoKnows; voiImpact: 'high' | 'med' | 'low'; }
+
+export interface InterviewState {
+  result: string;
+  context0: string;
+  belief: BeliefItem[];
+  turns: InterviewTurn[];
+  openGaps: OpenGap[];
+  status: 'seeding' | 'asking' | 'stopped';
+  askedCount: number;
+}
+
+export interface InterviewOpts { cap: number; stopThreshold: number; }
+export const DEFAULT_INTERVIEW_OPTS: InterviewOpts = { cap: 6, stopThreshold: 0.7 };
+
+export function initInterview(result: string, context0: string): InterviewState {
+  return { result, context0, belief: [], turns: [], openGaps: [], status: 'seeding', askedCount: 0 };
+}
+
+export function normalizeBelief(items: BeliefItem[]): BeliefItem[] {
+  const sum = items.reduce((s, i) => s + (i.weight > 0 ? i.weight : 0), 0);
+  if (sum <= 0) return items.map((i) => ({ ...i, weight: items.length ? 1 / items.length : 0 }));
+  return items.map((i) => ({ ...i, weight: Math.max(i.weight, 0) / sum }));
+}
+
+export function topBelief(b: BeliefItem[]): BeliefItem | null {
+  if (!b.length) return null;
+  return [...b].sort((a, c) => c.weight - a.weight)[0];
+}
+
+/** An answer that means "I don't have this" — first-class, never stalls. */
+export function isUnknownAnswer(answer: string): boolean {
+  return /^\s*(unknown|i don'?t have|not (available|measured|known|recorded)|n\/?a|no data|don'?t know)\b/i.test(answer);
+}
+
+export interface NextQuestion { stop: boolean; question: string; whoKnows: WhoKnows; why: string; options: string[]; }
+
+/** Deterministic stop: cap reached, or the leading hypothesis clears the threshold.
+ *  (The LLM's explicit STOP token is handled by the driver; this is the safety net.) */
+export function shouldStop(state: InterviewState, opts: InterviewOpts = DEFAULT_INTERVIEW_OPTS): boolean {
+  if (state.status === 'stopped') return true;
+  if (state.askedCount >= opts.cap) return true;
+  const top = topBelief(state.belief);
+  return !!top && top.weight >= opts.stopThreshold;
+}
+
+/** Record an answered turn; an "I don't have this" answer becomes a high-VoI open gap. */
+export function recordTurn(state: InterviewState, nq: NextQuestion, answer: string, newBelief?: BeliefItem[]): InterviewState {
+  const turn: InterviewTurn = { question: nq.question, whoKnows: nq.whoKnows, why: nq.why, options: nq.options, answer };
+  const openGaps = isUnknownAnswer(answer)
+    ? [...state.openGaps, { gap: nq.question, whoKnows: nq.whoKnows, voiImpact: 'high' as const }]
+    : state.openGaps;
+  const belief = newBelief && newBelief.length ? normalizeBelief(newBelief) : state.belief;
+  return { ...state, turns: [...state.turns, turn], askedCount: state.askedCount + 1, openGaps, belief };
+}
+
+/** Transcript → the context string handed to the P0 verdict engine at stop. */
+export function toVerdictContext(state: InterviewState): string {
+  const lines: string[] = [state.context0.trim()];
+  if (state.turns.length) {
+    lines.push('', 'Interview findings:');
+    for (const t of state.turns) lines.push(`- ${t.question} -> ${t.answer}`);
+  }
+  if (state.openGaps.length) {
+    lines.push('', 'Still unknown (cap confidence accordingly):');
+    for (const g of state.openGaps) lines.push(`- ${g.gap} (ask: ${g.whoKnows})`);
+  }
+  return lines.join('\n');
+}
+
+// ── Prompt builders + parsers (pure) ──
+export function buildSeedPrompt(result: string, context: string): Prompt {
+  const floor = floorFor(result);
+  const floorLine = floor.length ? ` Ensure these cannot-miss TRUE (branch B) causes appear: ${floor.map((f) => f.cannotMiss).join('; ')}.` : '';
+  const system = `You are Concordance, seeding a cause differential for a lab result BEFORE an adaptive interview. List the most plausible causes that this result is (A) WRONG — a pre-analytic/analytic error that must be mechanistically appropriate to the analyte — or (B) RIGHT and revealing/confirming something. Assign each a prior weight 0-1 (they need not sum to 1).${floorLine}
+Output ONLY one cause per line, pipe-separated: the branch letter (A or B), then the weight, then the cause. Example:
+B|0.5|primary hyperparathyroidism
+A|0.2|EDTA contamination
+Give 4-8 lines. No headers, no prose.`;
+  return { system, user: `RESULT: ${result}\nCONTEXT: ${context}` };
+}
+
+/** Tolerant of field order and a stray leading label (e.g. "BRANCH|B|0.4|cause"). */
+export function parseSeed(raw: string): BeliefItem[] {
+  const out: BeliefItem[] = [];
+  for (const ln of raw.split('\n')) {
+    if (!ln.includes('|')) continue;
+    const parts = ln.split('|').map((s) => s.trim()).filter(Boolean);
+    const branch = parts.find((p) => /^[AB]$/i.test(p));
+    const wStr = parts.find((p) => /^[0-9]*\.?[0-9]+$/.test(p));
+    if (!branch || !wStr) continue;
+    const cause = parts
+      .filter((p) => p !== branch && p !== wStr && !/^branch$/i.test(p))
+      .sort((a, b) => b.length - a.length)[0];
+    if (!cause) continue;
+    out.push({ branch: branch.toUpperCase() as 'A' | 'B', weight: parseFloat(wStr), cause });
+  }
+  return normalizeBelief(out);
+}
+
+export function buildNextQuestionPrompt(state: InterviewState): Prompt {
+  const beliefStr = state.belief.map((b) => `${b.branch}|${b.weight.toFixed(2)}|${b.cause}`).join('\n') || '(unseeded)';
+  const asked = state.turns.map((t) => `- ${t.question} -> ${t.answer}`).join('\n') || '(none yet)';
+  const floorNote = floorFor(state.result).map((f) => f.note).filter(Boolean).join(' ');
+  const system = `You are running an ADAPTIVE clinical interview to decide whether a lab result is concordant/releasable. Choose the SINGLE next question that best DISCRIMINATES among the current candidate causes (maximise information gain) — never generic history. Do NOT re-ask anything already answered or already stated in the context.${floorNote ? ' ' + floorNote : ''}
+Tag whoKnows: report (already knowable from the report or order) | you (the clinician at the bedside) | lab (sample provenance / pre-analytic). Give a one-line why (which causes it separates) and 2-4 quick answer options.
+If the remaining uncertainty is low, OR no further question would change releasability, output the single word STOP as the QUESTION.
+Output EXACTLY, one per line:
+QUESTION: <one question, or the word STOP>
+WHOKNOWS: <report|you|lab>
+WHY: <one line>
+OPTIONS: <opt1 | opt2 | opt3>`;
+  return { system, user: `RESULT: ${state.result}\nCONTEXT: ${state.context0}\nCURRENT BELIEF:\n${beliefStr}\nALREADY ASKED:\n${asked}` };
+}
+
+export function parseNextQuestion(raw: string): NextQuestion {
+  const heads = [HEADERS_Q.q, HEADERS_Q.wk, HEADERS_Q.why, HEADERS_Q.opt];
+  const q = section(raw, HEADERS_Q.q, heads).trim();
+  if (!q || /^stop\b/i.test(q)) return { stop: true, question: '', whoKnows: 'you', why: '', options: [] };
+  const wk = section(raw, HEADERS_Q.wk, heads).toLowerCase();
+  const whoKnows: WhoKnows = wk.includes('report') ? 'report' : wk.includes('lab') ? 'lab' : 'you';
+  const why = section(raw, HEADERS_Q.why, heads).trim();
+  const options = section(raw, HEADERS_Q.opt, heads).split('|').map((s) => s.trim()).filter(Boolean).slice(0, 4);
+  return { stop: false, question: q, whoKnows, why, options };
+}
+
+const HEADERS_Q = {
+  q: /QUESTION\s*:/i,
+  wk: /WHOKNOWS\s*:/i,
+  why: /WHY\s*:/i,
+  opt: /OPTIONS\s*:/i,
+};

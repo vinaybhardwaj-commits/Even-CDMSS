@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import {
   branchForVerdict, floorFor, buildConcordancePrompt, parseConcordance,
   scoreCase, summarize, type CaseExpectation,
+  initInterview, normalizeBelief, topBelief, isUnknownAnswer, shouldStop,
+  recordTurn, toVerdictContext, parseSeed, parseNextQuestion, DEFAULT_INTERVIEW_OPTS,
+  type NextQuestion, type InterviewState,
 } from '../concordance-core.ts';
 
 test('branchForVerdict maps verdicts to branches', () => {
@@ -81,6 +84,75 @@ test('scoreCase: control marked discordant is over-flagged', () => {
   const s = scoreCase(exp, p);
   assert.equal(s.overFlagged, true);
   assert.equal(s.verdictMatch, false);
+});
+
+// ── P1 interview core ──
+
+test('normalizeBelief sums to 1 and topBelief picks the leader', () => {
+  const b = normalizeBelief([
+    { cause: 'hemolysis', branch: 'A', weight: 1 },
+    { cause: 'true hyperkalemia', branch: 'B', weight: 3 },
+  ]);
+  const sum = b.reduce((s, i) => s + i.weight, 0);
+  assert.ok(Math.abs(sum - 1) < 1e-9);
+  assert.equal(topBelief(b)!.cause, 'true hyperkalemia');
+});
+
+test('isUnknownAnswer recognises "I don\'t have this" variants', () => {
+  for (const a of ['I don\'t have this', 'Unknown', 'not measured', 'N/A', 'no data']) assert.equal(isUnknownAnswer(a), true);
+  for (const a of ['Albumin normal', '6.8']) assert.equal(isUnknownAnswer(a), false);
+});
+
+test('shouldStop fires on cap and on belief threshold', () => {
+  const base = initInterview('K 6.8', 'asx');
+  assert.equal(shouldStop({ ...base, askedCount: 6 }, DEFAULT_INTERVIEW_OPTS), true);
+  assert.equal(shouldStop({ ...base, belief: [{ cause: 'x', branch: 'B', weight: 0.8 }] }, DEFAULT_INTERVIEW_OPTS), true);
+  assert.equal(shouldStop({ ...base, askedCount: 2, belief: [{ cause: 'x', branch: 'B', weight: 0.4 }] }, DEFAULT_INTERVIEW_OPTS), false);
+});
+
+test('recordTurn logs an open gap on "I don\'t have this" and increments count', () => {
+  const nq: NextQuestion = { stop: false, question: 'Albumin?', whoKnows: 'you', why: 'w', options: ['high', 'normal'] };
+  const s0 = { ...initInterview('Ca 11.8', 'asx'), status: 'asking' as const };
+  const s1 = recordTurn(s0, nq, 'Albumin normal');
+  assert.equal(s1.askedCount, 1);
+  assert.equal(s1.openGaps.length, 0);
+  const s2 = recordTurn(s1, { ...nq, question: 'PTH?' }, 'I don\'t have this');
+  assert.equal(s2.askedCount, 2);
+  assert.equal(s2.openGaps.length, 1);
+  assert.equal(s2.openGaps[0].gap, 'PTH?');
+});
+
+test('toVerdictContext folds transcript + open gaps into the context', () => {
+  let s: InterviewState = { ...initInterview('Ca 11.8', '56F asymptomatic'), status: 'asking' };
+  s = recordTurn(s, { stop: false, question: 'Albumin raised?', whoKnows: 'you', why: 'w', options: [] }, 'normal');
+  s = recordTurn(s, { stop: false, question: 'PTH?', whoKnows: 'you', why: 'w', options: [] }, 'Unknown');
+  const ctx = toVerdictContext(s);
+  assert.match(ctx, /56F asymptomatic/);
+  assert.match(ctx, /Albumin raised\? -> normal/);
+  assert.match(ctx, /Still unknown/);
+  assert.match(ctx, /PTH\?/);
+});
+
+test('parseSeed reads branch|weight|cause lines and normalises', () => {
+  const b = parseSeed('A|0.5|hemolysis from difficult draw\nB|1.5|true hyperkalemia\ngarbage line');
+  assert.equal(b.length, 2);
+  assert.ok(Math.abs(b.reduce((s, i) => s + i.weight, 0) - 1) < 1e-9);
+  assert.equal(topBelief(b)!.branch, 'B');
+});
+
+test('parseSeed tolerates a stray leading label (BRANCH|B|0.4|cause)', () => {
+  const b = parseSeed('BRANCH|B|0.4|primary hyperparathyroidism\nBRANCH|A|0.15|EDTA contamination');
+  assert.equal(b.length, 2);
+  assert.equal(topBelief(b)!.cause, 'primary hyperparathyroidism');
+});
+
+test('parseNextQuestion parses a question and detects STOP', () => {
+  const q = parseNextQuestion('QUESTION: Is the albumin raised?\nWHOKNOWS: you\nWHY: separates hemoconcentration\nOPTIONS: high | normal | unknown');
+  assert.equal(q.stop, false);
+  assert.equal(q.whoKnows, 'you');
+  assert.match(q.question, /albumin/);
+  assert.equal(q.options.length, 3);
+  assert.equal(parseNextQuestion('QUESTION: STOP').stop, true);
 });
 
 test('summarize aggregates the bank', () => {
