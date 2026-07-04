@@ -342,7 +342,7 @@ export function opdCaseText(c: DeidOpdCase, opts?: { specialty?: string | null }
   if (c.isReferralHandoff) lines.push('Disposition: REFERRAL / HANDOFF encounter — the plan is the onward referral, not definitive treatment. The absence of medications, investigations or imaging is EXPECTED for a handoff and must NOT be read as a deliberate management decision or "avoidance".');
   if (c.reasonForConsult) lines.push(`Reason for consult: ${c.reasonForConsult}`);
   lines.push(`Presenting complaints / history: ${c.presentingComplaints.length ? c.presentingComplaints.join('; ') : '(none documented)'}`);
-  lines.push(`Diagnosis (ICD-10): ${c.diagnosisCodes.length ? c.diagnosisCodes.join(', ') : '(none documented)'}`);
+  lines.push(`Diagnosis (ICD-10): ${c.diagnosisCodes.length ? c.diagnosisCodes.join(', ') : (c.impressions.length ? '(clinical diagnosis documented as the impression below; ICD code not auto-resolved)' : '(none documented)')}`);
   if (c.impressions.length) lines.push(`Impression: ${c.impressions.join('; ')}`);
   if (c.impressionCodes.length) lines.push(`Impression (ICD-10): ${c.impressionCodes.join(', ')}`);
   if (c.examination.length) lines.push(`Examination: ${c.examination.join('; ')}`);

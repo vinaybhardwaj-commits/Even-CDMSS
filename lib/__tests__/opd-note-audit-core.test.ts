@@ -443,3 +443,21 @@ test('v0.81.1 P1: reasoning rubric judges by presentation, not sparseness', () =
   assert.match(OPD_AUDIT_SYSTEM, /THIS presentation's acuity and risk/i); // presentation-adjusted guidance present
   assert.match(OPD_AUDIT_SYSTEM, /never lower these for appropriate brevity/i);
 });
+
+// ── v0.81.1 P/O/F/N: prompt-hardening clauses + O-render ─────────────────────────────────────────
+test('v0.81.1 P/O/F/N: prompt-hardening guards are present', () => {
+  assert.match(OPD_AUDIT_SYSTEM, /UNINDICATED \/ CONTRADICTED DRUG/);          // P + L
+  assert.match(OPD_AUDIT_SYSTEM, /code AUTO-MAPPING gap, not a missing diagnosis/); // O
+  assert.match(OPD_AUDIT_SYSTEM, /VERIFY BEFORE FLAGGING AN ABSENCE/);         // F
+  assert.match(OPD_AUDIT_SYSTEM, /ONE ISSUE, ONE FINDING/);                    // N
+});
+
+test('v0.81.1 O-render: an impression without an ICD code is not shown as "(none documented)"', () => {
+  const c = rowToOpdCase({ ...ROW, diagnosis_icd_codes: [],
+    general_practitioner_prescription__presenting_complaints:
+      '[{"symptoms":"<p>neck pain</p>","diagnoses":[{"icd_code":"","diagnosis_or_impression":"Cervical Spondylosis"}]}]' }).case;
+  const txt = opdCaseText(c);
+  assert.ok(!/Diagnosis \(ICD-10\): \(none documented\)/.test(txt));   // no longer reads as absent
+  assert.match(txt, /ICD code not auto-resolved/);
+  assert.match(txt, /Cervical Spondylosis/);
+});
