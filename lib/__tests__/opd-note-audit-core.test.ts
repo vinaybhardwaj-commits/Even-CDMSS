@@ -461,3 +461,15 @@ test('v0.81.1 O-render: an impression without an ICD code is not shown as "(none
   assert.match(txt, /ICD code not auto-resolved/);
   assert.match(txt, /Cervical Spondylosis/);
 });
+
+// ── v0.81.1 D: all documented diagnoses captured (dpipe + nested merged, not either/or) ──────────
+test('v0.81.1 D (BUG-0.8-02): a nested diagnosis is not dropped when dpipe captured only one', () => {
+  const c = rowToOpdCase({ ...ROW,
+    dpipe_dx: '[{"diagnosis":"Anxiety","icd_code":"F41"}]',           // dpipe path: Anxiety only
+    diagnosis_icd_codes: [],
+    general_practitioner_prescription__presenting_complaints:
+      '[{"symptoms":"<p>chest pain</p>","diagnoses":[{"diagnosis_or_impression":"Chest pain","icd_code":""},{"diagnosis_or_impression":"Anxiety","icd_code":"F41"}]}]' }).case;
+  assert.ok(c.impressions.includes('Chest pain'));  // was DROPPED pre-D (dpipe-only won)
+  assert.ok(c.impressions.includes('Anxiety'));
+  assert.ok(c.diagnosisCodes.includes('F41'));
+});

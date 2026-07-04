@@ -127,6 +127,12 @@ function gpImpressions(v: unknown): string[] {
   for (const it of asArr(v)) { const o = (it && typeof it === 'object' ? it : {}) as Record<string, unknown>; for (const d of asArr(o.diagnoses)) { const dd = (d && typeof d === 'object' ? d : {}) as Record<string, unknown>; const name = strOrNull(dd.diagnosis_or_impression); if (name) out.push(name); } }
   return uniq(out);
 }
+// v0.81.1 FIX D: ICD codes from the SAME nested diagnoses[] array (previously only names were pulled).
+function gpDiagnosisCodes(v: unknown): string[] {
+  const out: string[] = [];
+  for (const it of asArr(v)) { const o = (it && typeof it === 'object' ? it : {}) as Record<string, unknown>; for (const d of asArr(o.diagnoses)) { const dd = (d && typeof d === 'object' ? d : {}) as Record<string, unknown>; const code = strOrNull(dd.icd_code); if (code) out.push(code); } }
+  return uniq(out);
+}
 // The clinician's per-diagnosis treatment_plan (real documentation).
 function gpDiagTreatment(v: unknown): string[] {
   const out: string[] = [];
@@ -278,9 +284,9 @@ export function rowToOpdCase(row: Record<string, unknown>): { case: DeidOpdCase;
     consultType: strOrNull(row.consult_type),
     reasonForConsult: strOrNull(row.reason_for_consultation),
     presentingComplaints,
-    diagnosisCodes: uniq([...codesFrom(row.diagnosis_icd_codes), ...dpx.codes]),
+    diagnosisCodes: uniq([...codesFrom(row.diagnosis_icd_codes), ...dpx.codes, ...gpDiagnosisCodes(gpPc)]),
     impressionCodes: codesFrom(row.impression_icd_codes),
-    impressions: dpx.names.length ? dpx.names : gpImpressions(gpPc),
+    impressions: uniq([...dpx.names, ...gpImpressions(gpPc)]),   // v0.81.1 FIX D: merge, not either/or (a nested diagnosis was dropped when dpipe captured only one)
     history: textsFrom(row.relevant_medical_history, ['text', 'name', 'value', 'condition']),
     comorbidities: textsFrom(row.comorbidities, ['name', 'text', 'condition', 'value']),
     medications: medsFrom(row.medications),
