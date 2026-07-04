@@ -20,6 +20,7 @@ import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { requireAdmin } from '@/lib/admin-gate';
 import { sql } from '@/lib/db';
 import { readState, getTicks, windowOpen, lockHeld, MB_LOCK_TTL_MS } from '@/lib/mini-backfill';
+import { OPD_ENGINE_VERSION } from '@/lib/opd-note-audit-core';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 const num = (v: unknown): number => Number(v ?? 0);
@@ -104,6 +105,7 @@ export async function GET(req: NextRequest) {
         window: st.window,
         prod: st.prod,
         tag: st.tag,
+        engine: OPD_ENGINE_VERSION,
         cursor: st.cursor,
         floor: st.floor,
       },

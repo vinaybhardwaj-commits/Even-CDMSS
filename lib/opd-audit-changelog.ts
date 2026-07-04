@@ -20,6 +20,15 @@ export interface EngineChange {
 
 export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
+    engine: null, date: '2026-07-04', scoring: false,
+    title: 'Backfill: engine-upgrade pivot + live version label',
+    points: [
+      'The prod mini-backfill now RESTARTS its backward sweep from the upgrade date whenever OPD_ENGINE_VERSION changes, so a new engine re-scores ALL history and never leaves a gap of already-audited recent days. The Gemini worker independently takes new notes forward.',
+      'Fixed the stale \'prod 0.6\' state label — it now shows the live prod engine version.',
+    ],
+    why: 'After the 0.81.x cutover the backfill cursor had already walked past the most recent days, so they would not have been re-scored to the new engine without a manual reset.',
+  },
+  {
     engine: '0.81.1', date: '2026-07-04', scoring: true,
     title: 'v0.81.1 — reasoning recalibration + prompt/extraction hardening (Zaki/Aravind bug batch, part 2)',
     points: [

@@ -7,7 +7,7 @@ type Tick = { t: string; status: string; processed: number };
 type Recent = { source: 'backfill' | 'mcp'; uid: string; band: string | null; idx: number | null; sec: number | null; at: string; kind: string | null };
 type Payload = {
   ok: boolean;
-  kpis: { processedToday: number; totalMini: number; mcpToday: number; mcpTotal: number; avgSecPerNote: number | null; state: string; window: string; prod: boolean; tag: string; cursor: string | null; floor: string };
+  kpis: { processedToday: number; totalMini: number; mcpToday: number; mcpTotal: number; avgSecPerNote: number | null; state: string; window: string; prod: boolean; tag: string; engine: string; cursor: string | null; floor: string };
   throughput: Bucket[];
   mcpThroughput: Bucket[];
   bucketMinutes: number;
@@ -195,7 +195,7 @@ export default function MiniBackfillMonitor() {
         <div className="rounded-lg bg-slate-50 p-2.5">
           <div className="text-[10.5px] text-slate-400">State</div>
           <div className={`mt-0.5 font-serif text-[16px] font-semibold ${stateCls}`}>{data ? stateLabel : '…'}</div>
-          <div className="text-[10px] text-slate-400">{k ? `${k.window} · ${k.prod ? 'prod 0.6' : k.tag}` : ''}</div>
+          <div className="text-[10px] text-slate-400">{k ? `${k.window} · ${k.prod ? `prod ${k.engine ? String(k.engine).replace('opd-note-audit/', '') : '?'}` : k.tag}` : ''}</div>
         </div>
       </div>
 

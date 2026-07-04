@@ -76,7 +76,18 @@ async function processBatch(day: string, n: number, engineStr: string, tag: stri
  * (bounded scan per tick) until the floor. Every tick stores a summary for the module.
  */
 async function autoTick(): Promise<Record<string, unknown>> {
-  const st = await readState();
+  let st = await readState();
+  // ENGINE-UPGRADE PIVOT: when the prod engine version changes, restart the BACKWARD sweep from
+  // the upgrade date (istYesterday) so the new engine re-scores ALL history and never leaves a gap
+  // of already-audited recent days. The Gemini worker independently takes new notes forward.
+  if (st.prod && st.prodVersion !== OPD_ENGINE_VERSION) {
+    const pivot = istYesterday();
+    await setSetting(MB_KEYS.cursor, pivot);
+    await setSetting(MB_KEYS.enabled, '1');
+    await setSetting(MB_KEYS.prodVersion, OPD_ENGINE_VERSION);
+    await logTick({ status: 'running', note: `engine upgrade -> ${OPD_ENGINE_VERSION}: backfill restarted from ${pivot}, sweeping backward` });
+    st = await readState();
+  }
   const base = { auto: true, enabled: st.enabled, window: st.window, prod: st.prod, tag: st.tag, cursor: st.cursor, floor: st.floor };
   if (!st.enabled) { await logTick({ status: 'paused', note: 'autopilot paused' }); return { ...base, skipped: 'paused' }; }
   if (!windowOpen(st.window)) { await logTick({ status: 'closed_window', note: 'outside night window' }); return { ...base, skipped: 'outside compute window (night = 00:00–05:00 IST)' }; }

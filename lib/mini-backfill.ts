@@ -28,7 +28,8 @@ export const MB_KEYS = {
   n: 'mini_backfill_n',
   lock: 'mini_backfill_lock',
   last: 'mini_backfill_last',
-  prod: 'mini_backfill_prod',   // '1' → write the PLAIN prod engine version (0.6), visible on dashboards
+  prod: 'mini_backfill_prod',   // '1' → write the PLAIN prod engine version, visible on dashboards
+  prodVersion: 'mini_backfill_prod_version', // last OPD_ENGINE_VERSION the prod backfill ran under (upgrade pivot)
 } as const;
 
 export const MB_DEFAULT_FLOOR = '2024-03-25'; // first auditable db13 OPD note
@@ -49,6 +50,7 @@ export interface MiniBackfillState {
   lock: string | null;
   last: Record<string, unknown> | null;
   prod: boolean;   // write plain prod engine version (correct dashboards) vs isolated '-<tag>'
+  prodVersion: string | null;   // engine version the prod backfill last ran under
 }
 
 export async function getSettings(keys: string[]): Promise<Record<string, string>> {
@@ -82,6 +84,7 @@ export async function readState(): Promise<MiniBackfillState> {
     lock: s[MB_KEYS.lock] || null,
     last,
     prod: s[MB_KEYS.prod] === '1',
+    prodVersion: s[MB_KEYS.prodVersion] || null,
   };
 }
 
