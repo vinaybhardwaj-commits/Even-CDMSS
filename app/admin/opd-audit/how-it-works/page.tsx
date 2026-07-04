@@ -115,10 +115,10 @@ export default async function HowItWorksPage() {
 
       <Section id="penalty" kicker="Scoring" title="The finding penalty model">
         <p>
-          Appropriateness and Prescribing start at 100 and lose points per finding. The LLM (or the deterministic
+          Appropriateness and Prescribing start at 100; each finding then removes a fraction of the <em>remaining</em> score (diminishing returns, since v0.81), so a stack degrades gracefully rather than collapsing a domain to 0 — a single finding scores exactly as under the old additive model. The LLM (or the deterministic
           rule) tags each finding with a verdict and a confidence (0–1):
         </p>
-        <Formula>penalty = {PENALTY_BASE} × severity(verdict) × confidence &nbsp;·&nbsp; domain score = max(0, 100 − Σ penalties)</Formula>
+        <Formula>penalty = {PENALTY_BASE} × severity(verdict) × confidence &nbsp;·&nbsp; domain score = 100 × ∏(1 − penaltyᵢ/100)</Formula>
         <table className="w-full text-left text-[13px]">
           <thead><tr className="border-b border-slate-200 text-slate-500">
             <th className="py-1.5 pr-3 font-medium">Verdict</th><th className="py-1.5 pr-3 font-medium">Severity</th><th className="py-1.5 pr-3 font-medium">Max penalty</th><th className="py-1.5 font-medium">Meaning</th>

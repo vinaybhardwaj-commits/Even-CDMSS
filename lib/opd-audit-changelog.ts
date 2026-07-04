@@ -20,6 +20,20 @@ export interface EngineChange {
 
 export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
+    engine: '0.81.1', date: '2026-07-04', scoring: true,
+    title: 'v0.81.1 — reasoning recalibration + prompt/extraction hardening (Zaki/Aravind bug batch, part 2)',
+    points: [
+      'Reasoning rubric (P1): PDQI thorough/synthesized/useful are judged against what the presentation requires, not raw sparseness — a fully and correctly addressed low-risk complaint rates 4-5; low scores are reserved for a genuine reasoning gap (missing red-flag screen/differential, or an assessment that ignores documented findings). Fixes the ~85 percent thorough/synth floor.',
+      'Drug-indication (P): systematic per-drug indication check — a drug contradicted by an explicit negative history (e.g. an antihistamine with \'No cold\') is an appropriateness low-value finding.',
+      'Coding gap (O): a diagnosis documented in words without a resolved ICD code is a code-mapping gap, not a missing diagnosis — no appropriateness penalty.',
+      'Verify-before-flagging-an-absence (F): a fact present in ANY section counts; a documented hands-on exam means in-person and is never an impossible-teleconsult contradiction.',
+      'One decision, one finding (N): duplicate findings for the same drug pair / clinical decision are consolidated.',
+      'Capture all diagnoses (D): nested + dpipe diagnosis sources are merged, so a coded diagnosis is no longer dropped when only one was extracted.',
+      'Presentation-aware vitals (K): an in-person febrile note with no documented vitals now shows a documentation gap.',
+    ],
+    why: 'System Audit Reports (Dr Zaki, Dr Aravind U): false-positive penalties (modality, coding gap, double-count) and false negatives (unindicated drug, missing vitals) plus the reasoning-score floor. Prompt/extraction fixes validated by the live Gemini golden A/B (5/6 direct + D closing the 6th); deterministic parts unit-tested (31/31).',
+  },
+  {
     engine: '0.81.0', date: '2026-07-04', scoring: true,
     title: 'v0.81.0 — fidelity + scoring-hygiene core (Dr Zaki / Dr Aravind bug batch)',
     points: [
