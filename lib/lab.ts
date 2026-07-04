@@ -76,6 +76,15 @@ export async function getLabAnalysis(id: string): Promise<Record<string, unknown
   return rows[0] ?? null;
 }
 
+/** Overwrite a run's output + latency once its async pipeline finishes (async lab probes:
+ *  a `pending` row is written first, then this fills it in from a post-response `after()` task). */
+export async function updateLabAnalysis(id: string, output: unknown, latencyMs?: number | null): Promise<void> {
+  await run(
+    `UPDATE lab_analyses SET output = $2::jsonb, latency_ms = $3 WHERE id = $1`,
+    [id, JSON.stringify(output), latencyMs ?? null],
+  );
+}
+
 // ── corpus quarantine ────────────────────────────────────────────────────────────
 export interface CorpusAddInput {
   label: string;            // → source labq:<label>

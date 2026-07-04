@@ -5,6 +5,7 @@
  * prompt/engine, or write a production table. Corpus writes are quarantined (labq:) by
  * construction. Consumed by app/api/mcp/route.ts (the JSON-RPC transport).
  */
+import { after } from 'next/server';
 import { auditOpdNote, opdMiniEngine } from './opd-note-audit';
 import { OPD_AUDIT_SYSTEM, buildOpdAuditUser } from './opd-note-audit-core';
 import { MINI_MODEL, llm } from './llm';
@@ -15,7 +16,7 @@ import { guardReadOnlySql } from './sql-guard-core';
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 import { readState, setSetting, MB_KEYS } from './mini-backfill';
 import {
-  ensureLabTables, saveLabAnalysis, listLabAnalyses, getLabAnalysis, labLabel,
+  ensureLabTables, saveLabAnalysis, updateLabAnalysis, listLabAnalyses, getLabAnalysis, labLabel,
   corpusAddQuarantined, corpusActivate, corpusDelete, corpusLabList, labStorage,
 } from './lab';
 import {
@@ -87,7 +88,7 @@ export const LAB_TOOLS = [
   },
   {
     name: 'lab_ddx',
-    description: 'Run the REAL /api/ddx differential-diagnosis pipeline end-to-end (retrieval → hypothesis-first → draft → self-critique → revise → demographic guard) forced onto the FREE Mac-mini (Qwen/Llama, ₹0, never Gemini), and store the full result in the lab (table lab_analyses). This tests the ACTUAL production route code — for finding pipeline bugs: missing cannot-miss dx, demographic leaks, anchoring, citation/parse failures, order-sensitivity. Provide a presentation (cc required). Store many under one `experiment` label and mine them with audit_query / lab_query. NB: mini output is a cheaper brain than prod Gemini — reliable for pipeline/parse/retrieval bugs, indicative (not final) for clinical-quality claims.',
+    description: 'ASYNC — returns a run_id immediately; poll `lab_query id=<run_id>` until output.status is done (~2–4 min on the mini; run ONE clinical probe at a time — single Mac-mini). Runs the REAL /api/ddx differential-diagnosis pipeline end-to-end (retrieval → hypothesis-first → draft → self-critique → revise → demographic guard) on the FREE mini (₹0, never Gemini), storing the full result in lab_analyses. Tests the ACTUAL production route — for pipeline bugs: missing cannot-miss dx, demographic leaks, anchoring, citation/parse failures, order-sensitivity. cc required. Store many under one `experiment` and mine with audit_query / lab_query. NB: mini = cheaper brain than prod Gemini — reliable for pipeline/parse/retrieval bugs, indicative (not final) for clinical-quality claims.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -103,7 +104,7 @@ export const LAB_TOOLS = [
   },
   {
     name: 'lab_ask',
-    description: 'Run the REAL /api/ask RAG pipeline end-to-end (retrieve → draft → audit → revise → cite-or-label) forced onto the FREE Mac-mini (₹0, never Gemini), and store the answer + citations in the lab (lab_analyses). Tests the actual Ask route — for finding grounding bugs: uncited claims, dead/absent citations, retrieval whiffs. Store many under one `experiment` and mine with audit_query / lab_query.',
+    description: 'ASYNC — returns a run_id immediately; poll `lab_query id=<run_id>` until output.status is done (~2–4 min on the mini; ONE probe at a time). Runs the REAL /api/ask RAG pipeline (retrieve → draft → audit → revise → cite-or-label) on the FREE mini (₹0), storing the answer + citations in lab_analyses. Tests the actual Ask route — grounding bugs: uncited claims (output.uncited), dead/absent citations, retrieval whiffs. Store many under one `experiment` and mine with audit_query / lab_query.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -116,7 +117,7 @@ export const LAB_TOOLS = [
   },
   {
     name: 'lab_appropriateness',
-    description: 'Run the REAL /api/appropriateness Right-Care order-check (Choosing-Wisely low-value-care matcher + LLM applicability judge + value analysis) end-to-end, forced onto the FREE mini (₹0). Stores which CW statements FIRED per scenario in lab_analyses — the surface for the known ~74% over-flag: build a specificity set of clearly-appropriate scenarios and mine how often a flag fires when it should not. Provide scenario (required); optionally proposedActions (the specific orders), age, sex.',
+    description: 'ASYNC — returns a run_id immediately; poll `lab_query id=<run_id>` until output.status is done (~2–4 min on the mini; ONE probe at a time). Runs the REAL /api/appropriateness Right-Care order-check (Choosing-Wisely low-value-care matcher + LLM applicability judge + value analysis) on the FREE mini (₹0). Stores which CW statements FIRED per scenario in lab_analyses — the surface for the known ~74% over-flag: build a specificity set of clearly-appropriate scenarios and mine how often a flag fires when it should not (output.n_flags / output.flag_statements). scenario required; optionally proposedActions (the specific orders), age, sex.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -130,7 +131,7 @@ export const LAB_TOOLS = [
   },
   {
     name: 'lab_pathway',
-    description: 'Run the REAL /api/pathway/skeleton care-pathway pass (stage classification + ordered care-path spine) forced onto the FREE mini (₹0), storing the skeleton in lab_analyses. For testing router coverage / stage-detection bugs / dead branches. Provide scenario (required); optionally proposedActions, age, sex.',
+    description: 'ASYNC — returns a run_id immediately; poll `lab_query id=<run_id>` until output.status is done (faster than the others — a single pass — but still poll; ONE probe at a time). Runs the REAL /api/pathway/skeleton care-pathway pass (stage classification + ordered care-path spine) on the FREE mini (₹0), storing the skeleton in lab_analyses. For router coverage / stage-detection bugs / dead branches. scenario required; optionally proposedActions, age, sex.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -144,7 +145,7 @@ export const LAB_TOOLS = [
   },
   {
     name: 'lab_case_audit',
-    description: 'Run the REAL /api/doc-audit/analyze case-audit + prognosis on the FREE mini (₹0), storing the scored report in lab_analyses. TEXT-ONLY: you pass an already-EXTRACTED case (the PDF→OCR extract leg is multimodal Vertex and cannot run on the free mini — that leg still needs Gemini). Provide `extracted` — an object with docType and case fields (diagnosis, procedure, indication, courseSummary, medications[], investigations[], treatments[], disposition, followUp, patient{age,sex}). For finding bugs in the appropriateness/foreseeability reasoning independent of OCR.',
+    description: 'ASYNC — returns a run_id immediately; poll `lab_query id=<run_id>` until output.status is done (~2–4 min on the mini; ONE probe at a time). Runs the REAL /api/doc-audit/analyze case-audit + prognosis on the FREE mini (₹0), storing the scored report in lab_analyses. TEXT-ONLY: pass an already-EXTRACTED case (the PDF→OCR extract leg is multimodal Vertex and cannot run on the free mini). `extracted` = an object with docType + case fields (diagnosis, procedure, indication, courseSummary, medications[], investigations[], treatments[], disposition, followUp, patient{age,sex}). For bugs in the appropriateness/foreseeability reasoning independent of OCR.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -156,7 +157,7 @@ export const LAB_TOOLS = [
   },
   {
     name: 'lab_query',
-    description: 'Inspect the experimental lab: list experiments (no args), list runs in one experiment, fetch one run by id, or storage stats. args: experiment? | id? | stats?',
+    description: 'Inspect the experimental lab + POLL async clinical probes (lab_ddx/lab_ask/lab_appropriateness/lab_pathway/lab_case_audit): fetch one run by id (its output.status is pending → done → error; done rows carry the full result), list runs in one experiment (experiment=…), list experiments (no args), or storage stats (stats=true). args: experiment? | id? | stats?',
     inputSchema: {
       type: 'object',
       properties: {
@@ -252,131 +253,127 @@ async function selfPostNdjson(path: string, body: Record<string, unknown>): Prom
   return await res.text();   // waits for the whole NDJSON stream to finish
 }
 
-async function labDdx(a: Record<string, unknown>): Promise<ToolResult> {
+/**
+ * ASYNC lab probe: the real clinical pipelines take ~200–270s on the mini, but an MCP client
+ * gives up at ~180s. So: write a `pending` lab_analyses row, run the pipeline in a post-response
+ * `after()` task (kept alive by the /api/mcp function up to its 300s cap), fill the row in when
+ * done, and return the run_id IMMEDIATELY. The caller polls `lab_query id=<run_id>` — output.status
+ * goes pending → done | error. Runs stay one-at-a-time on the single Mac-mini regardless.
+ */
+async function startAsyncLabRun(opts: {
+  experiment: string; kind: string; engine: string; inputPreview: string; inputRef?: string | null;
+  run: () => Promise<{ output: Record<string, unknown>; summary: Record<string, unknown> }>;
+}): Promise<ToolResult> {
   await ensureLabTables();
+  const startedAt = Date.now();
+  const runId = await saveLabAnalysis({
+    experiment: opts.experiment, kind: opts.kind, engine: opts.engine, inputRef: opts.inputRef ?? null,
+    inputPreview: opts.inputPreview, model: MINI_MODEL, latencyMs: null,
+    output: { status: 'pending', started_at: new Date().toISOString() },
+  });
+  after(async () => {
+    try {
+      const { output } = await opts.run();
+      await updateLabAnalysis(runId, { status: 'done', ...output }, Date.now() - startedAt);
+    } catch (e) {
+      await updateLabAnalysis(runId, { status: 'error', error: String((e as Error).message) }, Date.now() - startedAt);
+    }
+  });
+  return ok({
+    run_id: runId, experiment: opts.experiment, kind: opts.kind, status: 'started',
+    poll: `lab_query id=${runId}`,
+    note: 'Runs on the free mini (~1–4 min, one at a time). Poll lab_query with this id — output.status goes pending → done. Don\'t start another clinical probe until this one is done (single mini).',
+  });
+}
+
+async function labDdx(a: Record<string, unknown>): Promise<ToolResult> {
   const experiment = labLabel(a.experiment);
   const cc = S(a.cc).trim();
   if (!cc) return err('cc (chief complaint) is required');
-  const started = Date.now();
   const presentation = {
     cc, age: S(a.age) || undefined, sex: S(a.sex) || undefined,
     history: S(a.history) || undefined, exam: S(a.exam) || undefined,
     vitals: S(a.vitals) || undefined, investigations: S(a.investigations) || undefined,
   };
-  let raw: string;
-  try { raw = await selfPostNdjson('/api/ddx', presentation); }
-  catch (e) { return err(`ddx pipeline call failed: ${String((e as Error).message)}`); }
-  const probe = reduceDdxEvents(parseNdjson(raw));
-  const preview = [presentation.age, presentation.sex, cc].filter(Boolean).join(' / ').slice(0, 300);
-  const id = await saveLabAnalysis({
-    experiment, kind: 'ddx', engine: 'ddx-route/mini', inputRef: null, inputPreview: preview,
-    output: { presentation, ...probe }, model: MINI_MODEL, latencyMs: Date.now() - started,
-  });
-  return ok({
-    stored_id: id, experiment, kind: 'ddx', ok: probe.ok, error: probe.error,
-    cannot_miss: probe.cannot_miss, most_likely: probe.most_likely, other: probe.other,
-    n_sources: probe.n_sources, critique_severity: probe.critique_severity,
-    demographic_removed: probe.demographic_removed, ms: Date.now() - started,
+  return startAsyncLabRun({
+    experiment, kind: 'ddx', engine: 'ddx-route/mini',
+    inputPreview: [presentation.age, presentation.sex, cc].filter(Boolean).join(' / ').slice(0, 300),
+    run: async () => {
+      const probe = reduceDdxEvents(parseNdjson(await selfPostNdjson('/api/ddx', presentation)));
+      return { output: { presentation, ...probe }, summary: { ok: probe.ok } };
+    },
   });
 }
 
 async function labAsk(a: Record<string, unknown>): Promise<ToolResult> {
-  await ensureLabTables();
   const experiment = labLabel(a.experiment);
   const question = S(a.question).trim();
   if (!question) return err('question is required');
-  const started = Date.now();
-  let raw: string;
-  try { raw = await selfPostNdjson('/api/ask', { question, investigations: S(a.investigations) || undefined }); }
-  catch (e) { return err(`ask pipeline call failed: ${String((e as Error).message)}`); }
-  const probe = reduceAskEvents(parseNdjson(raw));
-  const id = await saveLabAnalysis({
-    experiment, kind: 'ask', engine: 'ask-route/mini', inputRef: null, inputPreview: question.slice(0, 300),
-    output: { question, ...probe }, model: MINI_MODEL, latencyMs: Date.now() - started,
-  });
-  return ok({
-    stored_id: id, experiment, kind: 'ask', ok: probe.ok, error: probe.error,
-    answer_chars: probe.answer_chars, n_sources: probe.n_sources, citation_ids: probe.citation_ids,
-    uncited: probe.uncited, revised: probe.revised, ms: Date.now() - started,
+  return startAsyncLabRun({
+    experiment, kind: 'ask', engine: 'ask-route/mini', inputPreview: question.slice(0, 300),
+    run: async () => {
+      const probe = reduceAskEvents(parseNdjson(await selfPostNdjson('/api/ask', { question, investigations: S(a.investigations) || undefined })));
+      return { output: { question, ...probe }, summary: { ok: probe.ok } };
+    },
   });
 }
 
 async function labAppropriateness(a: Record<string, unknown>): Promise<ToolResult> {
-  await ensureLabTables();
   const experiment = labLabel(a.experiment);
   const scenario = S(a.scenario).trim();
   if (!scenario) return err('scenario is required');
-  const started = Date.now();
   const proposedActions = Array.isArray(a.proposedActions)
     ? (a.proposedActions as unknown[]).map((x) => S(x).trim()).filter(Boolean) : undefined;
   const patient = { age: S(a.age) || undefined, sex: S(a.sex) || undefined };
-  let raw: string;
-  try { raw = await selfPostNdjson('/api/appropriateness', { scenario, proposedActions, patient }); }
-  catch (e) { return err(`appropriateness pipeline call failed: ${String((e as Error).message)}`); }
-  const probe = reduceAppropriatenessEvents(parseNdjson(raw));
-  const id = await saveLabAnalysis({
-    experiment, kind: 'appropriateness', engine: 'appropriateness-route/mini', inputRef: null,
-    inputPreview: scenario.slice(0, 300), output: { scenario, proposedActions, ...probe },
-    model: MINI_MODEL, latencyMs: Date.now() - started,
-  });
-  return ok({
-    stored_id: id, experiment, kind: 'appropriateness', ok: probe.ok, error: probe.error,
-    n_flags: probe.n_flags, flag_statements: probe.flag_statements, considered: probe.considered,
-    empty: probe.empty, value_present: probe.value_present, ms: Date.now() - started,
+  return startAsyncLabRun({
+    experiment, kind: 'appropriateness', engine: 'appropriateness-route/mini', inputPreview: scenario.slice(0, 300),
+    run: async () => {
+      const probe = reduceAppropriatenessEvents(parseNdjson(await selfPostNdjson('/api/appropriateness', { scenario, proposedActions, patient })));
+      return { output: { scenario, proposedActions, ...probe }, summary: { ok: probe.ok, n_flags: probe.n_flags } };
+    },
   });
 }
 
 async function labPathway(a: Record<string, unknown>): Promise<ToolResult> {
-  await ensureLabTables();
   const experiment = labLabel(a.experiment);
   const scenario = S(a.scenario).trim();
   if (!scenario) return err('scenario is required');
-  const started = Date.now();
   const proposedActions = Array.isArray(a.proposedActions)
     ? (a.proposedActions as unknown[]).map((x) => S(x).trim()).filter(Boolean) : undefined;
   const patient = { age: S(a.age) || undefined, sex: S(a.sex) || undefined };
-  const base = labSelfBaseUrl(process.env as Record<string, string | undefined>);
-  let json: Record<string, unknown>;
-  try {
-    const res = await fetch(`${base}/api/pathway/skeleton`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ scenario, proposedActions, patient, providerOverride: 'ollama' }),
-    });
-    json = (await res.json()) as Record<string, unknown>;
-  } catch (e) { return err(`pathway pipeline call failed: ${String((e as Error).message)}`); }
-  const skeleton = (json.skeleton && typeof json.skeleton === 'object' ? json.skeleton : null) as Record<string, unknown> | null;
-  const stages = skeleton && Array.isArray(skeleton.stages) ? skeleton.stages as Record<string, unknown>[] : [];
-  const id = await saveLabAnalysis({
-    experiment, kind: 'pathway', engine: 'pathway-route/mini', inputRef: null,
-    inputPreview: scenario.slice(0, 300), output: { scenario, ...json }, model: MINI_MODEL, latencyMs: Date.now() - started,
-  });
-  return ok({
-    stored_id: id, experiment, kind: 'pathway', ok: json.ok === true && skeleton != null,
-    detected_stage: skeleton?.detectedStage ?? null, working_diagnosis: skeleton?.workingDiagnosis ?? null,
-    needs_ddx: skeleton?.needsDdx ?? null, n_stages: stages.length,
-    stage_ids: stages.map((s) => String(s.id || '')).filter(Boolean), ms: Date.now() - started,
+  return startAsyncLabRun({
+    experiment, kind: 'pathway', engine: 'pathway-route/mini', inputPreview: scenario.slice(0, 300),
+    run: async () => {
+      const base = labSelfBaseUrl(process.env as Record<string, string | undefined>);
+      const res = await fetch(`${base}/api/pathway/skeleton`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ scenario, proposedActions, patient, providerOverride: 'ollama' }),
+      });
+      const json = (await res.json()) as Record<string, unknown>;
+      const skeleton = (json.skeleton && typeof json.skeleton === 'object' ? json.skeleton : null) as Record<string, unknown> | null;
+      const stages = skeleton && Array.isArray(skeleton.stages) ? skeleton.stages as Record<string, unknown>[] : [];
+      return {
+        output: { scenario, ...json },
+        summary: {
+          ok: json.ok === true && skeleton != null, detected_stage: skeleton?.detectedStage ?? null,
+          n_stages: stages.length, stage_ids: stages.map((s) => String(s.id || '')).filter(Boolean),
+        },
+      };
+    },
   });
 }
 
 async function labCaseAudit(a: Record<string, unknown>): Promise<ToolResult> {
-  await ensureLabTables();
   const experiment = labLabel(a.experiment);
   const extracted = (a.extracted && typeof a.extracted === 'object') ? a.extracted as Record<string, unknown> : null;
   if (!extracted) return err('extracted (an already-extracted case object) is required — the PDF→OCR leg is multimodal and cannot run on the free mini');
-  const started = Date.now();
-  let raw: string;
-  try { raw = await selfPostNdjson('/api/doc-audit/analyze', { extracted }); }
-  catch (e) { return err(`case-audit pipeline call failed: ${String((e as Error).message)}`); }
-  const probe = reduceDocAuditEvents(parseNdjson(raw));
-  const preview = S((extracted as Record<string, unknown>).diagnosis) || S((extracted as Record<string, unknown>).procedure) || S((extracted as Record<string, unknown>).courseSummary) || 'case';
-  const id = await saveLabAnalysis({
-    experiment, kind: 'case_audit', engine: 'doc-audit-route/mini', inputRef: null,
-    inputPreview: preview.slice(0, 300), output: { extracted, ...probe }, model: MINI_MODEL, latencyMs: Date.now() - started,
-  });
-  return ok({
-    stored_id: id, experiment, kind: 'case_audit', ok: probe.ok, error: probe.error,
-    report_ok: probe.report_ok, headline: probe.headline, band: probe.band, n_findings: probe.n_findings,
-    ms: Date.now() - started,
+  const preview = S(extracted.diagnosis) || S(extracted.procedure) || S(extracted.courseSummary) || 'case';
+  return startAsyncLabRun({
+    experiment, kind: 'case_audit', engine: 'doc-audit-route/mini', inputPreview: preview.slice(0, 300),
+    run: async () => {
+      const probe = reduceDocAuditEvents(parseNdjson(await selfPostNdjson('/api/doc-audit/analyze', { extracted })));
+      return { output: { extracted, ...probe }, summary: { ok: probe.ok, headline: probe.headline, band: probe.band } };
+    },
   });
 }
 
