@@ -71,7 +71,7 @@ export default function ConcordanceClient() {
 
   if (screen === 'intake') {
     return (
-      <div className={card + ' p-6 max-w-2xl'}>
+      <div className={card + ' p-6'}>
         <label className="block text-[13px] font-medium text-slate-700">Lab result</label>
         <input value={result} onChange={(e) => setResult(e.target.value)}
           placeholder="e.g. Calcium 11.8 mg/dL (ref 8.5–10.5)"
@@ -95,7 +95,7 @@ export default function ConcordanceClient() {
     const pct = Math.min(100, Math.round((state.askedCount / CAP) * 100));
     const top = [...state.belief].sort((a, b) => b.weight - a.weight).slice(0, 2);
     return (
-      <div className="grid gap-4 lg:grid-cols-[1fr_260px] max-w-4xl">
+      <div className="grid gap-4 lg:grid-cols-[1fr_280px]">
         <div className={card + ' p-6'}>
           <div className="mb-4 h-1 rounded-full bg-slate-100"><div className="h-1 rounded-full bg-brand" style={{ width: `${pct}%` }} /></div>
           <div className="mb-2 flex items-center gap-1.5 text-[12px] text-slate-400"><HelpCircle className="h-3.5 w-3.5" /> Why we're asking: {question.why}</div>
@@ -142,7 +142,7 @@ export default function ConcordanceClient() {
   if (screen === 'report' && parsed) {
     const v = parsed.verdict || 'indeterminate';
     return (
-      <div className="max-w-3xl">
+      <div>
         <div className={card + ' p-6'}>
           <div className="text-[12px] uppercase tracking-wide text-slate-400">Concordance verdict</div>
           <p className="mt-1 font-serif text-[26px] leading-tight text-slate-900">{VERDICT_LABEL[v] || v}</p>
