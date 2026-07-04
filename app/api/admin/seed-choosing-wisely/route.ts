@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { createHash } from 'crypto';
 import { requireAdmin } from '@/lib/admin-gate';
+import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { sql } from '@/lib/db';
 import { embedQuery, vectorLiteral } from '@/lib/llm';
 import SEED from '@/data/choosing-wisely-seed.json';
@@ -61,7 +62,9 @@ function chunkText(r: Rec): string {
 }
 
 export async function POST(req: NextRequest) {
-  const denied = requireAdmin(req); if (denied) return denied;
+  // Admin cookie (browser, same-origin) OR ?token=/Bearer ADMIN_TOKEN. Cookie path lets an
+  // already-signed-in admin trigger the load from the browser without handling the token.
+  if (!(await isAdminUnlocked())) { const denied = requireAdmin(req); if (denied) return denied; }
 
   const dryRun = req.nextUrl.searchParams.get('dry') === '1';
   const offset = Math.max(0, Number(req.nextUrl.searchParams.get('offset') || 0) | 0);
