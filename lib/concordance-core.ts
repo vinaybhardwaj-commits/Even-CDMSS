@@ -67,6 +67,81 @@ export function floorFor(resultText: string): FloorRule[] {
   return out;
 }
 
+// ── Population priors (P3.2a) — empirical base rates mined from the EHRC 4.8M lab stream
+//    (db13 test_values_view, 4 Jul 2026). Unstratified; consumer/outpatient population.
+//    Injected as population-plausibility context so Branch-A/B reasoning is grounded in real
+//    base rates. Mirror of data/concordance-population-priors.json. ──
+export interface PopulationPrior { n: number; abnormalRate: number; p2_5: number; p50: number; p97_5: number; p99: number; unit: string; }
+
+export const POPULATION_PRIORS: Record<string, PopulationPrior> = {
+  potassium:  { n: 24859,  abnormalRate: 0.011, p2_5: 3.9,  p50: 4.53, p97_5: 5.4,   p99: 5.5,   unit: 'mmol/L' },
+  sodium:     { n: 24849,  abnormalRate: 0.212, p2_5: 134,  p50: 139,  p97_5: 144,   p99: 145,   unit: 'mmol/L' },
+  calcium:    { n: 24745,  abnormalRate: 0.021, p2_5: 8.5,  p50: 9.3,  p97_5: 10.1,  p99: 10.3,  unit: 'mg/dL' },
+  hemoglobin: { n: 32078,  abnormalRate: 0.212, p2_5: 9.7,  p50: 13.7, p97_5: 16.9,  p99: 17.4,  unit: 'g/dL' },
+  platelets:  { n: 31956,  abnormalRate: 0.091, p2_5: 115,  p50: 261,  p97_5: 435,   p99: 480,   unit: 'x10^3/uL' },
+  wbc:        { n: 30905,  abnormalRate: 0.104, p2_5: 2970, p50: 6910, p97_5: 11600, p99: 12900, unit: 'cells/uL' },
+  ferritin:   { n: 930,    abnormalRate: 0.247, p2_5: 4.13, p50: 20.3, p97_5: 184.6, p99: 253.5, unit: 'ng/mL' },
+  alt:        { n: 105806, abnormalRate: 0.216, p2_5: 0.5,  p50: 11,   p97_5: 85,    p99: 117,   unit: 'U/L' },
+  ast:        { n: 105181, abnormalRate: 0.175, p2_5: 0.5,  p50: 15,   p97_5: 53,    p99: 76,    unit: 'U/L' },
+  alp:        { n: 52425,  abnormalRate: 0.059, p2_5: 47,   p50: 80,   p97_5: 155,   p99: 203,   unit: 'U/L' },
+  tsh:        { n: 23767,  abnormalRate: 0.292, p2_5: 0.74, p50: 2.86, p97_5: 12.14, p99: 21.3,  unit: 'mIU/L' },
+  ft4:        { n: 969,    abnormalRate: 0.062, p2_5: 0.7,  p50: 1.08, p97_5: 1.86,  p99: 2.17,  unit: 'ng/dL' },
+};
+
+// Analyte aliases → prior key. Multi-letter only (avoid false hits from "k"/"na"/"ca").
+const PRIOR_ALIASES: [string, string[]][] = [
+  ['potassium', ['potassium']],
+  ['sodium', ['sodium']],
+  ['calcium', ['calcium']],
+  ['hemoglobin', ['hemoglobin', 'haemoglobin', 'hgb']],
+  ['platelets', ['platelet']],
+  ['wbc', ['wbc', 'leucocyte', 'leukocyte', 'white cell', 'white blood']],
+  ['ferritin', ['ferritin']],
+  ['alt', ['alt', 'sgpt']],
+  ['ast', ['ast', 'sgot']],
+  ['alp', ['alp', 'alkaline phosphatase']],
+  ['tsh', ['tsh']],
+  ['ft4', ['ft4', 'free t4', 'free thyroxine']],
+];
+
+function pctDescriptor(v: number, p: PopulationPrior): string {
+  if (v > p.p99) return `far above the 99th percentile (${p.p99}) — a markedly extreme value`;
+  if (v > p.p97_5) return `above the 97.5th percentile (${p.p97_5}) — high for this population`;
+  if (v < p2_5Floor(p)) return `below the 2.5th percentile (${p.p2_5}) — low for this population`;
+  return `within the population's central 95% range (${p.p2_5}–${p.p97_5})`;
+}
+function p2_5Floor(p: PopulationPrior): number { return p.p2_5; }
+
+/** Population-plausibility context lines for each in-scope analyte named in the result text.
+ *  Grounds the reasoning in real EHRC base rates. Empty when no in-scope analyte/value is found. */
+export function populationLines(result: string): string[] {
+  const t = ` ${result.toLowerCase()} `;
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const [key, aliases] of PRIOR_ALIASES) {
+    if (seen.has(key)) continue;
+    const prior = POPULATION_PRIORS[key];
+    for (const a of aliases) {
+      const idx = t.indexOf(a);
+      if (idx < 0) continue;
+      // first number appearing at/after the alias (skip the reference range in parentheses later)
+      const after = t.slice(idx);
+      const m = after.match(/([0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?)/);
+      if (!m) break;
+      const v = parseFloat(m[1].replace(/,/g, ''));
+      if (Number.isNaN(v)) break;
+      out.push(
+        `Population context for ${key} (EHRC lab stream, n=${prior.n}): median ${prior.p50} ${prior.unit}, ` +
+        `central 95% ${prior.p2_5}–${prior.p97_5}, 99th pct ${prior.p99}; flagged abnormal in ${Math.round(prior.abnormalRate * 100)}% of tests. ` +
+        `This value (${v}) is ${pctDescriptor(v, prior)}.`,
+      );
+      seen.add(key);
+      break;
+    }
+  }
+  return out;
+}
+
 // ── Single-shot prompt builder ──
 export interface Prompt { system: string; user: string; }
 
@@ -110,7 +185,9 @@ export function buildConcordancePrompt(result: string, context: string): Prompt 
     : '';
   const notes = floor.map((f) => f.note).filter(Boolean);
   const notesLine = notes.length ? `\n\nANALYTE RULES (deterministic — apply before judging): ${notes.join(' ')}` : '';
-  const user = `RESULT: ${result}\nCONTEXT: ${context}${floorLine}${notesLine}`;
+  const pop = populationLines(result);
+  const popLine = pop.length ? `\n\nPOPULATION CONTEXT (real EHRC base rates — informational calibration ONLY; how extreme a value is does NOT by itself decide error vs real. The clinical context and analyte-appropriate error mechanisms decide the branch. A suggestive pre-analytic story still points to error even when the value is extreme):\n- ${pop.join('\n- ')}` : '';
+  const user = `RESULT: ${result}\nCONTEXT: ${context}${floorLine}${notesLine}${popLine}`;
   return { system: SYSTEM, user };
 }
 
@@ -372,7 +449,9 @@ Output ONLY one cause per line, pipe-separated: the branch letter (A or B), then
 B|0.5|primary hyperparathyroidism
 A|0.2|EDTA contamination
 Give 4-8 lines. No headers, no prose.`;
-  return { system, user: `RESULT: ${result}\nCONTEXT: ${context}` };
+  const pop = populationLines(result);
+  const popLine = pop.length ? `\nPOPULATION BASE RATES: ${pop.join(' ')}` : '';
+  return { system, user: `RESULT: ${result}\nCONTEXT: ${context}${popLine}` };
 }
 
 /** Tolerant of field order and a stray leading label (e.g. "BRANCH|B|0.4|cause"). */

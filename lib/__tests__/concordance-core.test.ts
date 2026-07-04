@@ -7,6 +7,7 @@ import {
   recordTurn, toVerdictContext, parseSeed, parseNextQuestion, DEFAULT_INTERVIEW_OPTS,
   type NextQuestion, type InterviewState,
   extractDemographics, buildRunRecord, CONCORDANCE_ENGINE,
+  populationLines, POPULATION_PRIORS,
 } from '../concordance-core.ts';
 
 test('branchForVerdict maps verdicts to branches', () => {
@@ -85,6 +86,31 @@ test('scoreCase: control marked discordant is over-flagged', () => {
   const s = scoreCase(exp, p);
   assert.equal(s.overFlagged, true);
   assert.equal(s.verdictMatch, false);
+});
+
+// ── P3.2a population priors ──
+
+test('populationLines flags an extreme value against real base rates', () => {
+  const k = populationLines('Potassium 6.8 mmol/L (ref 3.5-5.1)');
+  assert.equal(k.length, 1);
+  assert.match(k[0], /potassium/);
+  assert.match(k[0], /99th percentile/);
+  assert.match(k[0], /markedly extreme/);
+  assert.match(k[0], /\(6\.8\)/);
+});
+
+test('populationLines handles comma numbers and returns nothing off-scope', () => {
+  const wbc = populationLines('WBC 15,000 x10^9/L');
+  assert.equal(wbc.length, 1);
+  assert.match(wbc[0], /\(15000\)/);
+  assert.equal(populationLines('Glucose 240 mg/dL').length, 0);
+});
+
+test('POPULATION_PRIORS covers the tight analyte set', () => {
+  for (const a of ['potassium', 'sodium', 'calcium', 'hemoglobin', 'platelets', 'wbc', 'ferritin', 'alt', 'ast', 'alp', 'tsh', 'ft4']) {
+    assert.ok(POPULATION_PRIORS[a], `missing prior for ${a}`);
+    assert.ok(POPULATION_PRIORS[a].p99 > POPULATION_PRIORS[a].p50);
+  }
 });
 
 // ── P1 interview core ──
