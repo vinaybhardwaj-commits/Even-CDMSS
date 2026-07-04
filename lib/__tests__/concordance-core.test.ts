@@ -99,15 +99,31 @@ test('normalizeBelief sums to 1 and topBelief picks the leader', () => {
 });
 
 test('isUnknownAnswer recognises "I don\'t have this" variants', () => {
-  for (const a of ['I don\'t have this', 'Unknown', 'not measured', 'N/A', 'no data']) assert.equal(isUnknownAnswer(a), true);
+  for (const a of ['I don\'t have this', 'I do not have this', 'Unknown', 'not measured', 'N/A', 'no data', 'Not documented']) assert.equal(isUnknownAnswer(a), true);
   for (const a of ['Albumin normal', '6.8']) assert.equal(isUnknownAnswer(a), false);
 });
 
-test('shouldStop fires on cap and on belief threshold', () => {
+test('shouldStop fires on cap, confidence, unknown-streak, and belief threshold', () => {
   const base = initInterview('K 6.8', 'asx');
   assert.equal(shouldStop({ ...base, askedCount: 6 }, DEFAULT_INTERVIEW_OPTS), true);
+  assert.equal(shouldStop({ ...base, leadConfidence: 0.75 }, DEFAULT_INTERVIEW_OPTS), true);
+  assert.equal(shouldStop({ ...base, unknownStreak: 2 }, DEFAULT_INTERVIEW_OPTS), true);
   assert.equal(shouldStop({ ...base, belief: [{ cause: 'x', branch: 'B', weight: 0.8 }] }, DEFAULT_INTERVIEW_OPTS), true);
-  assert.equal(shouldStop({ ...base, askedCount: 2, belief: [{ cause: 'x', branch: 'B', weight: 0.4 }] }, DEFAULT_INTERVIEW_OPTS), false);
+  assert.equal(shouldStop({ ...base, askedCount: 2, unknownStreak: 1, leadConfidence: 0.4, belief: [{ cause: 'x', branch: 'B', weight: 0.4 }] }, DEFAULT_INTERVIEW_OPTS), false);
+});
+
+test('recordTurn tracks unknown streak (resets on an answer) and lifts leadConfidence', () => {
+  const nq: NextQuestion = { stop: false, question: 'q1', whoKnows: 'you', why: 'w', options: [], confidence: 0.3 };
+  let s: InterviewState = { ...initInterview('Ca 11.8', 'asx'), status: 'asking' };
+  s = recordTurn(s, nq, 'I don\'t have this');
+  assert.equal(s.unknownStreak, 1);
+  assert.equal(s.leadConfidence, 0.3);
+  s = recordTurn(s, { ...nq, question: 'q2', confidence: 0.55 }, 'Albumin normal');
+  assert.equal(s.unknownStreak, 0);
+  assert.equal(s.leadConfidence, 0.55);
+  s = recordTurn(s, { ...nq, question: 'q3' }, 'not measured');
+  s = recordTurn(s, { ...nq, question: 'q4' }, 'unknown');
+  assert.equal(s.unknownStreak, 2);
 });
 
 test('recordTurn logs an open gap on "I don\'t have this" and increments count', () => {
@@ -129,7 +145,7 @@ test('toVerdictContext folds transcript + open gaps into the context', () => {
   const ctx = toVerdictContext(s);
   assert.match(ctx, /56F asymptomatic/);
   assert.match(ctx, /Albumin raised\? -> normal/);
-  assert.match(ctx, /Still unknown/);
+  assert.match(ctx, /not available/i);
   assert.match(ctx, /PTH\?/);
 });
 
@@ -147,12 +163,13 @@ test('parseSeed tolerates a stray leading label (BRANCH|B|0.4|cause)', () => {
 });
 
 test('parseNextQuestion parses a question and detects STOP', () => {
-  const q = parseNextQuestion('QUESTION: Is the albumin raised?\nWHOKNOWS: you\nWHY: separates hemoconcentration\nOPTIONS: high | normal | unknown');
+  const q = parseNextQuestion('QUESTION: Is the albumin raised?\nWHOKNOWS: you\nWHY: separates hemoconcentration\nOPTIONS: high | normal | unknown\nCONFIDENCE: 0.45');
   assert.equal(q.stop, false);
   assert.equal(q.whoKnows, 'you');
   assert.match(q.question, /albumin/);
   assert.equal(q.options.length, 3);
-  assert.equal(parseNextQuestion('QUESTION: STOP').stop, true);
+  assert.equal(q.confidence, 0.45);
+  assert.equal(parseNextQuestion('QUESTION: STOP\nCONFIDENCE: 0.8').stop, true);
 });
 
 test('summarize aggregates the bank', () => {

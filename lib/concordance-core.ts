@@ -281,13 +281,19 @@ export interface InterviewState {
   openGaps: OpenGap[];
   status: 'seeding' | 'asking' | 'stopped';
   askedCount: number;
+  leadConfidence: number;   // confidence in the leading explanation given answers so far (0-1)
+  unknownStreak: number;    // consecutive "I don't have this" answers
 }
 
-export interface InterviewOpts { cap: number; stopThreshold: number; }
-export const DEFAULT_INTERVIEW_OPTS: InterviewOpts = { cap: 6, stopThreshold: 0.7 };
+export interface InterviewOpts {
+  cap: number;              // hard ceiling on questions
+  stopThreshold: number;    // stop once leadConfidence clears this
+  maxUnknownStreak: number; // stop when this many answers in a row are "I don't have this" (info-starved)
+}
+export const DEFAULT_INTERVIEW_OPTS: InterviewOpts = { cap: 6, stopThreshold: 0.7, maxUnknownStreak: 2 };
 
 export function initInterview(result: string, context0: string): InterviewState {
-  return { result, context0, belief: [], turns: [], openGaps: [], status: 'seeding', askedCount: 0 };
+  return { result, context0, belief: [], turns: [], openGaps: [], status: 'seeding', askedCount: 0, leadConfidence: 0, unknownStreak: 0 };
 }
 
 export function normalizeBelief(items: BeliefItem[]): BeliefItem[] {
@@ -301,41 +307,57 @@ export function topBelief(b: BeliefItem[]): BeliefItem | null {
   return [...b].sort((a, c) => c.weight - a.weight)[0];
 }
 
-/** An answer that means "I don't have this" — first-class, never stalls. */
+/** An answer that means "I don't have this" — first-class, never stalls.
+ *  Tolerant of "don't"/"do not" and "not have/known/measured/available/recorded". */
 export function isUnknownAnswer(answer: string): boolean {
-  return /^\s*(unknown|i don'?t have|not (available|measured|known|recorded)|n\/?a|no data|don'?t know)\b/i.test(answer);
+  return /^\s*(unknown|i (don'?t|do not) have|(don'?t|do not) have|not (available|measured|known|recorded|have|sure|documented)|n\/?a|no data|(don'?t|do not) know)\b/i.test(answer);
 }
 
-export interface NextQuestion { stop: boolean; question: string; whoKnows: WhoKnows; why: string; options: string[]; }
+export interface NextQuestion { stop: boolean; question: string; whoKnows: WhoKnows; why: string; options: string[]; confidence?: number; }
 
-/** Deterministic stop: cap reached, or the leading hypothesis clears the threshold.
- *  (The LLM's explicit STOP token is handled by the driver; this is the safety net.) */
+/** Deterministic stop (the economy levers): cap reached, the leading explanation clears the
+ *  confidence threshold, or the interview is info-starved (a run of "I don't have this").
+ *  The LLM's explicit STOP token is handled by the driver; this is the deterministic net. */
 export function shouldStop(state: InterviewState, opts: InterviewOpts = DEFAULT_INTERVIEW_OPTS): boolean {
   if (state.status === 'stopped') return true;
   if (state.askedCount >= opts.cap) return true;
+  if (state.leadConfidence >= opts.stopThreshold) return true;
+  if (state.unknownStreak >= opts.maxUnknownStreak) return true;
   const top = topBelief(state.belief);
   return !!top && top.weight >= opts.stopThreshold;
 }
 
-/** Record an answered turn; an "I don't have this" answer becomes a high-VoI open gap. */
+/** Record an answered turn; an "I don't have this" answer becomes a high-VoI open gap and
+ *  extends the unknown streak. The question's self-reported confidence updates leadConfidence. */
 export function recordTurn(state: InterviewState, nq: NextQuestion, answer: string, newBelief?: BeliefItem[]): InterviewState {
   const turn: InterviewTurn = { question: nq.question, whoKnows: nq.whoKnows, why: nq.why, options: nq.options, answer };
-  const openGaps = isUnknownAnswer(answer)
+  const unknown = isUnknownAnswer(answer);
+  const openGaps = unknown
     ? [...state.openGaps, { gap: nq.question, whoKnows: nq.whoKnows, voiImpact: 'high' as const }]
     : state.openGaps;
   const belief = newBelief && newBelief.length ? normalizeBelief(newBelief) : state.belief;
-  return { ...state, turns: [...state.turns, turn], askedCount: state.askedCount + 1, openGaps, belief };
+  const leadConfidence = typeof nq.confidence === 'number' && !Number.isNaN(nq.confidence) ? nq.confidence : state.leadConfidence;
+  return {
+    ...state,
+    turns: [...state.turns, turn],
+    askedCount: state.askedCount + 1,
+    openGaps,
+    belief,
+    leadConfidence,
+    unknownStreak: unknown ? state.unknownStreak + 1 : 0,
+  };
 }
 
 /** Transcript → the context string handed to the P0 verdict engine at stop. */
 export function toVerdictContext(state: InterviewState): string {
   const lines: string[] = [state.context0.trim()];
-  if (state.turns.length) {
-    lines.push('', 'Interview findings:');
-    for (const t of state.turns) lines.push(`- ${t.question} -> ${t.answer}`);
+  const answered = state.turns.filter((t) => !isUnknownAnswer(t.answer));
+  if (answered.length) {
+    lines.push('', 'Interview findings (established facts — weight these):');
+    for (const t of answered) lines.push(`- ${t.question} -> ${t.answer}`);
   }
   if (state.openGaps.length) {
-    lines.push('', 'Still unknown (cap confidence accordingly):');
+    lines.push('', 'Asked but not available. Judge on the evidence PRESENT; a suggestive established finding can justify a verdict on its own. Only cap confidence for a gap that is genuinely decision-critical and unresolved:');
     for (const g of state.openGaps) lines.push(`- ${g.gap} (ask: ${g.whoKnows})`);
   }
   return lines.join('\n');
@@ -375,26 +397,32 @@ export function buildNextQuestionPrompt(state: InterviewState): Prompt {
   const beliefStr = state.belief.map((b) => `${b.branch}|${b.weight.toFixed(2)}|${b.cause}`).join('\n') || '(unseeded)';
   const asked = state.turns.map((t) => `- ${t.question} -> ${t.answer}`).join('\n') || '(none yet)';
   const floorNote = floorFor(state.result).map((f) => f.note).filter(Boolean).join(' ');
-  const system = `You are running an ADAPTIVE clinical interview to decide whether a lab result is concordant/releasable. Choose the SINGLE next question that best DISCRIMINATES among the current candidate causes (maximise information gain) — never generic history. Do NOT re-ask anything already answered or already stated in the context.${floorNote ? ' ' + floorNote : ''}
+  const system = `You are running an ADAPTIVE clinical interview to decide whether a lab result is concordant/releasable. Choose the SINGLE next question that best DISCRIMINATES among the current candidate causes (maximise information gain) — never generic history.
+Prioritise the TOP 1-2 causes in CURRENT BELIEF: ask the question whose answer would most confirm or exclude the single most likely cause first. If the top cause is a pre-analytic error (branch A), ask the specific sample/draw question that would reveal it (e.g. was the ven-puncture difficult, is there a hemolysis/lipemia index, was the right tube used) — do not skip to rare causes while the leading one is untested.
+Do NOT re-ask anything already answered or already stated in the context, and do NOT ask a second question about a theme you already probed (sample handling / pre-analytic processing counts as ONE theme — ask it once).${floorNote ? ' ' + floorNote : ''}
 Tag whoKnows: report (already knowable from the report or order) | you (the clinician at the bedside) | lab (sample provenance / pre-analytic). Give a one-line why (which causes it separates) and 2-4 quick answer options.
-If the remaining uncertainty is low, OR no further question would change releasability, output the single word STOP as the QUESTION.
+Output the single word STOP as the QUESTION when ANY of these hold: (a) you are already confident in the leading explanation; (b) the recent answers have been "I don't have this" and another question won't change releasability — it is better to return a verdict with the open gap than to keep asking; (c) every high-value discriminator has been asked.
+Also report CONFIDENCE: your probability (0-1) in the single leading explanation GIVEN THE ANSWERS SO FAR.
 Output EXACTLY, one per line:
 QUESTION: <one question, or the word STOP>
 WHOKNOWS: <report|you|lab>
 WHY: <one line>
-OPTIONS: <opt1 | opt2 | opt3>`;
+OPTIONS: <opt1 | opt2 | opt3>
+CONFIDENCE: <0-1>`;
   return { system, user: `RESULT: ${state.result}\nCONTEXT: ${state.context0}\nCURRENT BELIEF:\n${beliefStr}\nALREADY ASKED:\n${asked}` };
 }
 
 export function parseNextQuestion(raw: string): NextQuestion {
-  const heads = [HEADERS_Q.q, HEADERS_Q.wk, HEADERS_Q.why, HEADERS_Q.opt];
+  const heads = [HEADERS_Q.q, HEADERS_Q.wk, HEADERS_Q.why, HEADERS_Q.opt, HEADERS_Q.conf];
   const q = section(raw, HEADERS_Q.q, heads).trim();
-  if (!q || /^stop\b/i.test(q)) return { stop: true, question: '', whoKnows: 'you', why: '', options: [] };
+  const confRaw = section(raw, HEADERS_Q.conf, heads).match(/[0-9]*\.?[0-9]+/);
+  const confidence = confRaw ? Math.min(1, Math.max(0, parseFloat(confRaw[0]))) : undefined;
+  if (!q || /^stop\b/i.test(q)) return { stop: true, question: '', whoKnows: 'you', why: '', options: [], confidence };
   const wk = section(raw, HEADERS_Q.wk, heads).toLowerCase();
   const whoKnows: WhoKnows = wk.includes('report') ? 'report' : wk.includes('lab') ? 'lab' : 'you';
   const why = section(raw, HEADERS_Q.why, heads).trim();
   const options = section(raw, HEADERS_Q.opt, heads).split('|').map((s) => s.trim()).filter(Boolean).slice(0, 4);
-  return { stop: false, question: q, whoKnows, why, options };
+  return { stop: false, question: q, whoKnows, why, options, confidence };
 }
 
 const HEADERS_Q = {
@@ -402,4 +430,5 @@ const HEADERS_Q = {
   wk: /WHOKNOWS\s*:/i,
   why: /WHY\s*:/i,
   opt: /OPTIONS\s*:/i,
+  conf: /CONFIDENCE\s*:/i,
 };
