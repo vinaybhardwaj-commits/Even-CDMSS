@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { rowToOpdCase, opdCaseText, isTeleconsultEncounter, hasHandsOnExam } from '../opd-ingest-core.ts';
 import { computeOpdScore } from '../opd-note-score-core.ts';
-import { opdCompleteness, prescribingChecks, parseOpdAnalysis, medDoseDocumented, resolveMedRoute, opdSignalType, stampFindingIdentity, followUpDocumented, OPD_SIGNAL_TYPES, type OpdFinding } from '../opd-note-audit-core.ts';
+import { opdCompleteness, prescribingChecks, parseOpdAnalysis, medDoseDocumented, resolveMedRoute, opdSignalType, stampFindingIdentity, followUpDocumented, OPD_SIGNAL_TYPES, OPD_AUDIT_SYSTEM, type OpdFinding } from '../opd-note-audit-core.ts';
 
 // Mirrors a real GP row (medications + jsonb arrive as JSON strings via Metabase).
 const ROW: Record<string, unknown> = {
@@ -434,4 +434,12 @@ test('v0.81 BUG-0.8-01: injectable concentration is not a dose; oral strength st
   assert.equal(medDoseDocumented({ ...inj, dose: '500mg' }), true); // explicit total dose → documented
   const oral: any = { generic: 'Paracetamol', brand: 'Dolo 650 Tablet', strength: '650mg', dose: '', frequency: '1-0-1', route: 'oral' };
   assert.equal(medDoseDocumented(oral), true);                 // non-injectable: strength counts
+});
+
+// ── v0.81.1 P1: PDQI reasoning rubric is presentation-adjusted (the 85%/73% floor fix) ──────────
+test('v0.81.1 P1: reasoning rubric judges by presentation, not sparseness', () => {
+  assert.ok(!/fall for sparseness/.test(OPD_AUDIT_SYSTEM));               // old floor clause gone
+  assert.ok(!/\(low if sparse\)/.test(OPD_AUDIT_SYSTEM));                 // per-attribute "low if sparse" gone
+  assert.match(OPD_AUDIT_SYSTEM, /THIS presentation's acuity and risk/i); // presentation-adjusted guidance present
+  assert.match(OPD_AUDIT_SYSTEM, /never lower these for appropriate brevity/i);
 });
