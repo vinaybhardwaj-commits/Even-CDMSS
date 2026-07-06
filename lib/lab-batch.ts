@@ -60,6 +60,8 @@ export async function runMiniOpdToLab(uid: string, experiment: string): Promise<
 export async function batchTick(opts: { ignoreWindow?: boolean } = {}): Promise<Record<string, unknown>> {
   const st = await readBatchState();
   const base = { enabled: st.enabled, experiment: st.experiment, window: st.window, total: st.uids.length };
+  // Prod re-score now yields to us (bounded run has priority), so we only defer to prod's transient
+  // in-flight note for ONE tick to avoid a literal concurrent mini call — not a standing yield.
   let miniBusy = false;
   try { miniBusy = lockHeld((await readMiniState()).lock); } catch { miniBusy = false; }
   const skip = batchGate({

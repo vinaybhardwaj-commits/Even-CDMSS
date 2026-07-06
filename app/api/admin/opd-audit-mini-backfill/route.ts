@@ -33,6 +33,8 @@ import { countOpdNotesForDay, fetchOpdNotesForDay, istYesterday } from '@/lib/me
 import { saveOpdAudit, auditedUidsForDay, earliestAuditedDay } from '@/lib/opd-audit-store';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { readState, setSetting, windowOpen, lockHeld, prevDay, MB_KEYS, logTick } from '@/lib/mini-backfill';
+import { getSettings } from '@/lib/mini-backfill';
+import { LB_KEYS } from '@/lib/lab-batch-core';
 
 async function authed(req: NextRequest): Promise<boolean> {
   const isCron = req.headers.get('x-vercel-cron') !== null;
@@ -89,6 +91,13 @@ async function autoTick(): Promise<Record<string, unknown>> {
     st = await readState();
   }
   const base = { auto: true, enabled: st.enabled, window: st.window, prod: st.prod, tag: st.tag, cursor: st.cursor, floor: st.floor };
+  // PRIORITY: a bounded lab eval batch preempts the unbounded history re-score. Yield the single
+  // Mac-mini while a lab batch is active (window 'always' recommended; it self-disables at remaining 0),
+  // then auto-resume the re-score on the next tick once it clears.
+  if ((await getSettings([LB_KEYS.enabled]))[LB_KEYS.enabled] === '1') {
+    await logTick({ status: 'paused', note: 'yielding to active lab eval batch (bounded run has priority)' });
+    return { ...base, skipped: 'yielding to lab eval batch' };
+  }
   if (!st.enabled) { await logTick({ status: 'paused', note: 'autopilot paused' }); return { ...base, skipped: 'paused' }; }
   if (!windowOpen(st.window)) { await logTick({ status: 'closed_window', note: 'outside night window' }); return { ...base, skipped: 'outside compute window (night = 00:00–05:00 IST)' }; }
   if (lockHeld(st.lock)) { await logTick({ status: 'locked', note: 'previous tick still running' }); return { ...base, skipped: 'previous tick still running (soft lock)' }; }
