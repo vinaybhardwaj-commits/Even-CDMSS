@@ -20,6 +20,7 @@ import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { requireAdmin } from '@/lib/admin-gate';
 import { sql } from '@/lib/db';
 import { readState, getTicks, windowOpen, lockHeld, MB_LOCK_TTL_MS } from '@/lib/mini-backfill';
+import { readBatchState, batchProgress } from '@/lib/lab-batch';
 import { OPD_ENGINE_VERSION } from '@/lib/opd-note-audit-core';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
@@ -42,6 +43,8 @@ export async function GET(req: NextRequest) {
 
   try {
     const st = await readState();
+    const lb = await readBatchState();
+    const lbProg = lb.experiment ? await batchProgress(lb.experiment, lb.uids) : { total: 0, done: 0, remaining: 0 };
 
     const [buckets, labBuckets, todayRow, totalRow, labTodayRow, labTotalRow, recent, labRecent, scoredRow, totalUidRow, ticks] = await Promise.all([
       // backfill throughput: autopilot mini audits per bucket (opd_note_audits)
@@ -113,6 +116,9 @@ export async function GET(req: NextRequest) {
         floor: st.floor,
       },
       coverage: (() => { const scored = num(scoredRow[0]?.scored); const total = num(totalUidRow[0]?.total); return { engine: OPD_ENGINE_VERSION, scored, total, pct: total > 0 ? Math.round((scored / total) * 100) : 0 }; })(),
+      labBatch: lb.experiment ? { enabled: lb.enabled, experiment: lb.experiment, kind: lb.kind, n: lb.n, window: lb.window, total: lbProg.total, done: lbProg.done, remaining: lbProg.remaining, lastError: lb.lastError } : null,
+      versionTransition: !!(st.prod && st.prodVersion && st.prodVersion !== OPD_ENGINE_VERSION),
+      prodVersion: st.prodVersion ?? null,
       // two stacked series over the same time axis (the mini is ONE box — these together are its load)
       throughput: buckets.map((b) => ({ t: String(b.bucket), notes: num(b.notes), avgSec: b.avg_ms ? Math.round(num(b.avg_ms) / 1000) : null })),
       mcpThroughput: labBuckets.map((b) => ({ t: String(b.bucket), notes: num(b.notes), avgSec: b.avg_ms ? Math.round(num(b.avg_ms) / 1000) : null })),

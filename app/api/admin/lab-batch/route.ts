@@ -52,6 +52,15 @@ export async function POST(req: NextRequest) {
   let body: Record<string, unknown> = {};
   try { body = await req.json() as Record<string, unknown>; } catch { return NextResponse.json({ error: 'invalid JSON body' }, { status: 400 }); }
 
+  // Lightweight pause/resume for the console — toggles the active job without re-seeding the cohort.
+  const action = String(body.action ?? '');
+  if (action === 'pause' || action === 'resume') {
+    await setSetting(LB_KEYS.enabled, action === 'resume' ? '1' : '0');
+    const cur = await readBatchState();
+    const p = cur.experiment ? await batchProgress(cur.experiment, cur.uids) : { total: 0, done: 0, remaining: 0 };
+    return NextResponse.json({ ok: true, action, enabled: cur.enabled, experiment: cur.experiment, ...p });
+  }
+
   const experiment = String(body.experiment ?? '').trim().replace(/[^a-z0-9_-]/gi, '').slice(0, 64);
   if (!experiment) return NextResponse.json({ error: 'experiment required (a-z0-9_-, <=64)' }, { status: 400 });
 

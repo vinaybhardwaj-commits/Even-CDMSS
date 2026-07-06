@@ -14,6 +14,9 @@ type Payload = {
   ticks: Tick[];
   inflight: { active: boolean; day?: string | null; sinceSec?: number; ttlSec?: number };
   coverage: { engine: string; scored: number; total: number; pct: number };
+  labBatch: { enabled: boolean; experiment: string; kind: string; n: number; window: string; total: number; done: number; remaining: number; lastError: string | null } | null;
+  versionTransition: boolean;
+  prodVersion: string | null;
   recent: Recent[];
   generatedAt: string;
 };
@@ -135,8 +138,74 @@ const BAND_CLS: Record<string, string> = {
   A: 'bg-teal-50 text-teal-700', B: 'bg-amber-50 text-amber-700', C: 'bg-orange-50 text-orange-700', D: 'bg-rose-50 text-rose-700', E: 'bg-rose-50 text-rose-700',
 };
 
+function MiniOwnerStrip({ data }: { data: Payload | null }) {
+  if (!data) return null;
+  const lb = data.labBatch;
+  const evalOwns = !!(lb && lb.enabled && lb.remaining > 0);
+  const inflight = data.inflight?.active;
+  let tone: string, dot: string, label: string, sub: string;
+  if (evalOwns) {
+    tone = 'border-indigo-200 bg-indigo-50/70'; dot = 'bg-indigo-500';
+    label = 'Eval batch has the mini';
+    sub = `${lb!.experiment} · ${lb!.done}/${lb!.total} done · history re-score is yielding`;
+  } else if (data.kpis?.state === 'running' && inflight) {
+    tone = 'border-teal-200 bg-teal-50/70'; dot = 'bg-teal-500 animate-pulse';
+    label = 'History re-score running'; sub = `auditing ${data.inflight.day ?? data.kpis?.cursor ?? ''} on the Mac-mini`;
+  } else if (data.kpis?.state === 'running') {
+    tone = 'border-teal-200 bg-teal-50/50'; dot = 'bg-teal-500';
+    label = 'History re-score armed'; sub = 'waiting for the next tick / compute window';
+  } else if (data.kpis?.state === 'paused') {
+    tone = 'border-slate-200 bg-slate-50'; dot = 'bg-slate-300';
+    label = 'Mac-mini idle'; sub = 'history re-score paused; no eval batch active';
+  } else {
+    tone = 'border-amber-200 bg-amber-50/60'; dot = 'bg-amber-400';
+    label = 'History re-score idle'; sub = 'outside the night compute window';
+  }
+  return (
+    <div className={`flex items-center gap-2.5 border-b px-4 py-2.5 ${tone}`}>
+      <span className={`inline-block h-2.5 w-2.5 rounded-full ${dot}`} />
+      <span className="text-[12.5px] font-semibold text-slate-800">{label}</span>
+      <span className="truncate text-[11.5px] text-slate-500">· {sub}</span>
+      <span className="ml-auto text-[10px] text-slate-400">one Mac-mini · bounded eval runs preempt the re-score</span>
+    </div>
+  );
+}
+
+function EvalBatchCard({ lb, busy, onPause, onResume }: { lb: Payload['labBatch']; busy: boolean; onPause: () => void; onResume: () => void }) {
+  if (!lb) return null;
+  const pct = lb.total > 0 ? Math.round((lb.done / lb.total) * 100) : 0;
+  return (
+    <div className="border-b border-slate-100 px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span className="rounded px-1.5 py-0.5 text-[9.5px] font-semibold" style={{ background: '#eef2ff', color: INDIGO }}>EVAL BATCH</span>
+          <span className="font-mono text-[12px] text-slate-700">{lb.experiment}</span>
+          <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${lb.enabled ? 'bg-indigo-50 text-indigo-700' : 'bg-slate-100 text-slate-500'}`}>{lb.enabled ? (lb.remaining > 0 ? 'draining' : 'complete') : 'paused'}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-[11.5px] text-slate-500">{lb.done}/{lb.total} · <span className="font-semibold text-slate-700">{pct}%</span> · {lb.remaining} left</span>
+          {lb.remaining > 0 ? (
+            <button type="button" disabled={busy} onClick={lb.enabled ? onPause : onResume}
+              className={`rounded-md border px-2.5 py-1 text-[11px] font-medium ${lb.enabled ? 'border-slate-200 text-slate-600 hover:bg-slate-50' : 'border-indigo-300 text-indigo-700 hover:bg-indigo-50'}`}>
+              {lb.enabled ? 'Pause' : 'Resume'}
+            </button>
+          ) : null}
+        </div>
+      </div>
+      <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
+        <div className="h-full rounded-full transition-all" style={{ width: `${Math.max(1.5, pct)}%`, background: INDIGO }} />
+      </div>
+      <div className="mt-1 flex items-center justify-between text-[10.5px] text-slate-400">
+        <span>free Mac-mini (qwen) · window {lb.window} · {lb.n}/tick · writes lab_analyses only</span>
+        {lb.lastError ? <span className="text-rose-500">last error: {lb.lastError.slice(0, 60)}</span> : null}
+      </div>
+    </div>
+  );
+}
+
 export default function MiniBackfillMonitor() {
   const [range, setRange] = useState<Range>('7d');
+  const [lbBusy, setLbBusy] = useState(false);
   const [data, setData] = useState<Payload | null>(null);
   const [err, setErr] = useState('');
   const rangeRef = useRef(range);
@@ -150,6 +219,12 @@ export default function MiniBackfillMonitor() {
       setErr(''); setData(j);
     } catch { setErr('offline'); }
   }, []);
+
+  const lbAction = useCallback(async (action: 'pause' | 'resume') => {
+    if (lbBusy) return; setLbBusy(true);
+    try { await fetch('/api/admin/lab-batch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action }) }); await load(); } catch { /* ignore */ }
+    setLbBusy(false);
+  }, [lbBusy, load]);
 
   useEffect(() => { load(); }, [load, range]);
   useEffect(() => { const id = setInterval(load, 5000); return () => clearInterval(id); }, [load]);
@@ -178,6 +253,8 @@ export default function MiniBackfillMonitor() {
         </div>
       </div>
 
+      <MiniOwnerStrip data={data} />
+
       {data?.coverage ? (
         <div className="border-b border-slate-100 bg-slate-50/60 px-4 py-3">
           <div className="flex flex-wrap items-center justify-between gap-2 text-[12px]">
@@ -188,8 +265,14 @@ export default function MiniBackfillMonitor() {
             <div className="h-full rounded-full bg-teal-500 transition-all" style={{ width: `${Math.max(1.5, data.coverage.pct)}%` }} />
           </div>
           <div className="mt-1 text-[10.5px] text-slate-400">Sweeping backward · at {k?.cursor ?? '—'} → floor {k?.floor} · re-sweeps from today on each engine upgrade</div>
+          {data?.versionTransition ? (
+            <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-800">
+              New engine <span className="font-mono">{data.coverage.engine}</span> shipped — the re-score restarts from today and works backward. Coverage climbs from ~0 as history is re-scored to the new engine (a reset here is a fresh version pass, not lost progress).
+            </div>
+          ) : null}
         </div>
       ) : null}
+      <EvalBatchCard lb={data?.labBatch ?? null} busy={lbBusy} onPause={() => lbAction('pause')} onResume={() => lbAction('resume')} />
       <div className="grid gap-3 px-4 py-3 sm:grid-cols-4">
         <div className="rounded-lg bg-slate-50 p-2.5">
           <div className="text-[10.5px] text-slate-400">Processed today</div>

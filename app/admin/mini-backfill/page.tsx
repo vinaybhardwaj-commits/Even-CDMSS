@@ -38,15 +38,15 @@ export default async function MiniBackfillAdmin() {
 
   return (
     <div>
-      <div className="text-[11px] font-semibold uppercase tracking-[0.09em] text-brand">Mini backfill</div>
-      <h1 className="font-serif text-[28px] font-semibold leading-tight text-slate-900">Mac-mini audit backfill</h1>
+      <div className="text-[11px] font-semibold uppercase tracking-[0.09em] text-brand">Free Mac-mini compute</div>
+      <h1 className="font-serif text-[28px] font-semibold leading-tight text-slate-900">Free Mac-mini compute</h1>
       <p className="mt-1 max-w-2xl text-[13.5px] leading-relaxed text-slate-500">
-        Re-scores your past OPD notes for free on the Mac-mini model in the background — no Gemini, no cost.
-        It works backwards through history a few notes at a time. Turn it on and leave it; watch progress in the monitor below.
+        One free Mac-mini (qwen, &#8377;0) runs two workloads: the <strong>history re-score</strong> — re-auditing past OPD notes to the current engine, backward through time — and <strong>eval batches</strong> — bounded model-comparison / bridge runs. A bounded eval batch <strong>preempts</strong> the re-score and hands the mini back when it finishes. Which one holds the mini right now is shown at the top of the monitor.
       </p>
 
-      {/* controls first — start/pause + window + progress; advanced re-audit tucked away */}
-      <div className="mt-5"><MiniBackfillControls state={{ enabled: st.enabled, window: st.window, cursor: st.cursor, floor: st.floor, tag: st.tag, n: st.n }} /></div>
+      {/* history re-score controls — start/pause + window + progress; advanced re-audit tucked away */}
+      <div className="mt-5 mb-1.5 text-[12px] font-semibold uppercase tracking-[0.06em] text-slate-500">History re-score · controls</div>
+      <div><MiniBackfillControls state={{ enabled: st.enabled, window: st.window, cursor: st.cursor, floor: st.floor, tag: st.tag, n: st.n }} /></div>
 
       {/* live monitoring — continuous throughput line + state timeline + live feed */}
       <MiniBackfillMonitor />
