@@ -14,6 +14,8 @@ import { guardReadOnlySql } from './sql-guard-core';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 import { readState, setSetting, MB_KEYS } from './mini-backfill';
+import { LB_KEYS, sanitizeUids, clampN } from './lab-batch-core';
+import { readBatchState, batchProgress, batchTick } from './lab-batch';
 import {
   ensureLabTables, saveLabAnalysis, updateLabAnalysis, listLabAnalyses, getLabAnalysis, labLabel,
   corpusAddQuarantined, corpusActivate, corpusDelete, corpusLabList, labStorage,
@@ -178,6 +180,37 @@ export const LAB_TOOLS = [
       required: ['sql'],
     },
   },
+  {
+    name: 'lab_batch_start',
+    description: 'Queue a cohort-scoped FREE-mini (qwen, INR 0) eval batch into lab_analyses (experiment-namespaced; NEVER opd_note_audits). Provide EITHER uids[] OR cohort_sql (a read-only SELECT/WITH returning a uid column). The */2 cron drains it, yielding to the prod backfill; poll lab_batch_status, nudge with lab_batch_tick, analyse with lab_query/audit_query. For model-bridge + eval sweeps at scale without firing per-note calls.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        experiment: { type: 'string', description: 'label to file runs under (a-z0-9_-).' },
+        uids: { type: 'array', items: { type: 'string' }, description: 'cohort of db13 OPD note uids (<=2000).' },
+        cohort_sql: { type: 'string', description: 'alternative to uids[]: a read-only SELECT/WITH returning a uid column.' },
+        n: { type: 'number', description: 'notes per tick (1-2; default 2).' },
+        window: { type: 'string', enum: ['night', 'always'], description: "'always' drains all day; default 'night' (00-05 IST)." },
+        kind: { type: 'string', description: 'reserved; default opd.' },
+      },
+      required: ['experiment'],
+    },
+  },
+  {
+    name: 'lab_batch_status',
+    description: 'Progress of the active lab eval batch: done/total/remaining, enabled, window, last error, last tick summary.',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'lab_batch_stop',
+    description: 'Pause the lab eval batch (state kept; lab_batch_start resumes/re-arms).',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'lab_batch_tick',
+    description: 'Synchronously drain up to n (<=2) cohort notes NOW and return - a manual nudge that ignores the night window (still yields to the prod mini-backfill + its own lock). Use for immediate progress instead of waiting for the */2 cron. ~72s/note on the mini.',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+  },
 ] as const;
 
 // ── dispatch ─────────────────────────────────────────────────────────────────────
@@ -195,6 +228,10 @@ export async function callLabTool(name: string, args: Record<string, unknown>): 
       case 'corpus_manage': return await corpusManage(args);
       case 'lab_query': return await labQuery(args);
       case 'audit_query': return await auditQuery(args);
+      case 'lab_batch_start': return await labBatchStart(args);
+      case 'lab_batch_status': return await labBatchStatus();
+      case 'lab_batch_stop': return await labBatchStop();
+      case 'lab_batch_tick': return await labBatchTick();
       default: return err(`unknown tool: ${name}`);
     }
   } catch (e) {
@@ -402,6 +439,51 @@ async function backfillControl(a: Record<string, unknown>): Promise<ToolResult> 
     return ok({ day, engine: engineStr, total, already: already.length, processed: results.length, results });
   }
   return err(`unknown action: ${action}`);
+}
+
+async function labBatchStart(a: Record<string, unknown>): Promise<ToolResult> {
+  const experiment = labLabel(a.experiment);
+  if (!experiment) return err('experiment required');
+  let uids = sanitizeUids(a.uids);
+  const cohortSql = S(a.cohort_sql).trim();
+  if (uids.length === 0 && cohortSql) {
+    const g = guardReadOnlySql(cohortSql, 2000);
+    if (!g.ok) return err(`cohort_sql: ${g.error}`);
+    let rows: Record<string, unknown>[];
+    try { rows = await run(g.sql, []); } catch (e) { return err(`cohort_sql failed: ${String((e as Error).message)}`); }
+    uids = sanitizeUids(rows.map((r) => (r.uid ?? Object.values(r)[0])));
+  }
+  if (uids.length === 0) return err('no uids - pass uids[] or a cohort_sql returning a uid column');
+  const n = clampN(a.n ?? 2);
+  const window = S(a.window) === 'always' ? 'always' : 'night';
+  const kind = (S(a.kind) || 'opd').replace(/[^a-z0-9_-]/gi, '').slice(0, 24) || 'opd';
+  await ensureLabTables();
+  await setSetting(LB_KEYS.experiment, experiment);
+  await setSetting(LB_KEYS.uids, JSON.stringify(uids));
+  await setSetting(LB_KEYS.n, String(n));
+  await setSetting(LB_KEYS.window, window);
+  await setSetting(LB_KEYS.kind, kind);
+  await setSetting(LB_KEYS.error, '');
+  await setSetting(LB_KEYS.enabled, '1');
+  const prog = await batchProgress(experiment, uids);
+  return ok({ experiment, kind, n, window, ...prog, note: 'queued - the */2 cron drains it (mini, INR 0), yielding to the prod backfill. Poll lab_batch_status; nudge with lab_batch_tick.' });
+}
+
+async function labBatchStatus(): Promise<ToolResult> {
+  const st = await readBatchState();
+  const prog = st.experiment ? await batchProgress(st.experiment, st.uids) : { total: 0, done: 0, remaining: 0 };
+  return ok({ enabled: st.enabled, experiment: st.experiment, kind: st.kind, n: st.n, window: st.window, ...prog, last_error: st.lastError, last: st.last });
+}
+
+async function labBatchStop(): Promise<ToolResult> {
+  await setSetting(LB_KEYS.enabled, '0');
+  return ok({ enabled: false, note: 'paused (state kept; lab_batch_start re-arms/resumes)' });
+}
+
+async function labBatchTick(): Promise<ToolResult> {
+  const st = await readBatchState();
+  if (!st.experiment || st.uids.length === 0) return err('no job - call lab_batch_start first');
+  return ok(await batchTick({ ignoreWindow: true }));
 }
 
 async function corpusAdd(a: Record<string, unknown>): Promise<ToolResult> {
