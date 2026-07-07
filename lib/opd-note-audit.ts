@@ -15,6 +15,7 @@ import { rowToOpdCase, opdCaseText, type OpdKeys, type OpdMed } from './opd-inge
 import {
   opdCompleteness, prescribingChecks, parseOpdAnalysis, stampFindingIdentity,
   consolidateDecisions, neutralizeMetadataFindings, resolveMedRoute,
+  NSAID_MOLECULES, MUSCLE_RELAXANT_MOLECULES, medHasMoleculeFrom,
   OPD_AUDIT_SYSTEM, buildOpdAuditUser, OPD_ENGINE_VERSION,
   type OpdFinding, type OpdCompleteness, type OpdSuggestion,
 } from './opd-note-audit-core';
@@ -81,16 +82,39 @@ function ddiToFinding(p: DdiPair, topical?: Set<string>): OpdFinding {
 
 /** Formulary-scoped, deterministic DDIs over the CONFIDENTLY-resolved drugs on the script. */
 function ddiFindings(meds: OpdMed[]): OpdFinding[] {
+  // BUG-0.8-10 (Q): include a med if it is confidently formulary-matched OR it carries an NSAID
+  // ingredient anywhere in its composition (formulary-independent) — so a combination/topical whose
+  // parsed primary is a non-NSAID (e.g. Methyl Salicylate) still counts as an NSAID for the overlap.
   const items: DrugClass[] = meds
-    .filter((m) => m.resolvedGeneric && m.formularyMatch && CONFIDENT_MATCH.has(m.formularyMatch))
-    .map((m) => ({ name: m.resolvedGeneric as string, major: m.therapeuticClass || '', minor: m.subClass || '' }));
+    .filter((m) => (m.resolvedGeneric && m.formularyMatch && CONFIDENT_MATCH.has(m.formularyMatch)) || medHasMoleculeFrom(m, NSAID_MOLECULES))
+    .map((m) => ({
+      name: m.resolvedGeneric || m.generic || m.brand || 'medication',
+      major: medHasMoleculeFrom(m, NSAID_MOLECULES) ? 'NSAID' : (m.therapeuticClass || ''),
+      minor: m.subClass || '',
+    }));
   if (items.length < 2) return [];
   // route-aware: molecules applied topically on THIS script (low systemic absorption).
   const topical = new Set(
-    meds.filter((m) => resolveMedRoute(m) === 'topical' && m.resolvedGeneric)
-        .map((m) => (m.resolvedGeneric as string).toLowerCase()));
+    meds.filter((m) => resolveMedRoute(m) === 'topical' && (m.resolvedGeneric || m.generic))
+        .map((m) => (m.resolvedGeneric || m.generic as string).toLowerCase()));
   const pairs = mergeRank([...tagInteractions(items), ...curatedInteractions(items.map((i) => i.name))]);
   return pairs.map((p) => ddiToFinding(p, topical));
+}
+
+/** BUG-0.8-11 (R): the muscle-relaxant-FDC appropriateness objection was LLM-generated, so its
+ *  presence and tier swung run-to-run on identical scripts. Determinise it into a fixed-tier
+ *  (context-dependent) advisory; the prompt tells the LLM not to raise its own volatile version,
+ *  and consolidateDecisions drops any LLM muscle-relaxant finding that slips through. */
+function muscleRelaxantFindings(meds: OpdMed[]): OpdFinding[] {
+  const mr = meds.filter((m) => medHasMoleculeFrom(m, MUSCLE_RELAXANT_MOLECULES));
+  if (!mr.length) return [];
+  const names = Array.from(new Set(mr.map((m) => m.resolvedGeneric || m.generic || m.brand || 'muscle relaxant')));
+  return [{
+    subject: 'Muscle relaxant prescribed — document the indication',
+    verdict: 'context-dependent', confidence: 0.5, domain: 'appropriateness',
+    rationale: `A muscle relaxant (${names.join(', ')}) has limited evidence as first-line therapy for most musculoskeletal pain / tendinopathy; it is reasonable when muscle spasm is documented. Fixed-tier deterministic finding (replaces the run-to-run-inconsistent LLM objection).`,
+    evidence: [], estimates: [], citation_ids: [], source: 'deterministic',
+  }];
 }
 
 export interface OpdNoteAudit {
@@ -186,7 +210,7 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
   const { case: oc, keys } = rowToOpdCase(row);
   enrichOpdMeds(oc.medications);   // brand→generic + class/schedule/high-alert/LASA/VED from the formulary
 
-  const det = [...prescribingChecks(oc), ...doseFindings(oc.medications), ...ddiFindings(oc.medications)];
+  const det = [...prescribingChecks(oc), ...doseFindings(oc.medications), ...ddiFindings(oc.medications), ...muscleRelaxantFindings(oc.medications)];
   const completeness = opdCompleteness(oc);
 
   // Tier-1 self-heal: apply human-approved active suppressions to the final (identity-stamped)

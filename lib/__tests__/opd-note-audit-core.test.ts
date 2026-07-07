@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { rowToOpdCase, opdCaseText, isTeleconsultEncounter, hasHandsOnExam } from '../opd-ingest-core.ts';
 import { computeOpdScore } from '../opd-note-score-core.ts';
-import { opdCompleteness, prescribingChecks, parseOpdAnalysis, medDoseDocumented, resolveMedRoute, opdSignalType, stampFindingIdentity, followUpDocumented, consolidateDecisions, neutralizeMetadataFindings, OPD_SIGNAL_TYPES, OPD_AUDIT_SYSTEM, type OpdFinding } from '../opd-note-audit-core.ts';
+import { opdCompleteness, prescribingChecks, parseOpdAnalysis, medDoseDocumented, resolveMedRoute, opdSignalType, stampFindingIdentity, followUpDocumented, consolidateDecisions, neutralizeMetadataFindings, medHasMoleculeFrom, NSAID_MOLECULES, MUSCLE_RELAXANT_MOLECULES, OPD_SIGNAL_TYPES, OPD_AUDIT_SYSTEM, type OpdFinding } from '../opd-note-audit-core.ts';
 
 // Mirrors a real GP row (medications + jsonb arrive as JSON strings via Metabase).
 const ROW: Record<string, unknown> = {
@@ -548,4 +548,32 @@ test('BUG-0.8-16: an "inaccurate drug class" finding is neutralised (non-scoring
   assert.equal(meta.signal_type, 'metadata_accuracy');
   const other = out.find((f) => /gastroprotection/.test(f.subject))!;
   assert.ok(!other.informational, 'genuine clinical finding untouched');
+});
+
+
+test('Q (0.8-10): an NSAID ingredient is detected inside a combination whose primary is a non-NSAID', () => {
+  // topical Volitra: the parsed primary can be Methyl Salicylate, but Diclofenac is an NSAID.
+  assert.equal(medHasMoleculeFrom({ resolvedGeneric: 'Methyl Salicylate+Diclofenac+Menthol+Linseed' }, NSAID_MOLECULES), true);
+  assert.equal(medHasMoleculeFrom({ generic: 'Aceclofenac+Paracetamol+Chlorzoxazone' }, NSAID_MOLECULES), true);
+  assert.equal(medHasMoleculeFrom({ resolvedGeneric: 'Pantoprazole' }, NSAID_MOLECULES), false);
+});
+
+test('R (0.8-11): a muscle relaxant is detected + consolidateDecisions drops the LLM version when a deterministic one exists', () => {
+  assert.equal(medHasMoleculeFrom({ resolvedGeneric: 'Etodolac+Thiocolchicoside' }, MUSCLE_RELAXANT_MOLECULES), true);
+  const fs: OpdFinding[] = [
+    { subject: 'Muscle relaxant prescribed — document the indication', verdict: 'context-dependent', confidence: 0.5, domain: 'appropriateness', rationale: 'det', evidence: [], estimates: [], citation_ids: [], source: 'deterministic' },
+    { subject: 'Indication for muscle relaxant not documented', verdict: 'low-value', confidence: 0.6, domain: 'appropriateness', rationale: 'The prescription includes Thiocolchicoside, a muscle relaxant...', evidence: [], estimates: [], citation_ids: [], source: 'llm' },
+  ];
+  const out = consolidateDecisions(fs);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].source, 'deterministic');
+});
+
+test('Part 1: an ICD/coding-completeness gap finding is neutralised to non-scoring', () => {
+  const fs: OpdFinding[] = [
+    { subject: 'Missing ICD-10 code for the documented diagnosis', verdict: 'low-value', confidence: 0.8, domain: 'appropriateness', rationale: 'The diagnosis is documented in words but no ICD-10 code is assigned.', evidence: [], estimates: [], citation_ids: [], source: 'llm' },
+  ];
+  const out = neutralizeMetadataFindings(fs);
+  assert.equal(out[0].informational, true);
+  assert.equal(out[0].signal_type, 'coding_completeness');
 });
