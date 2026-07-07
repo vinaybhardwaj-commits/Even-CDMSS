@@ -110,12 +110,17 @@ async function defaultGenerate(traceId: string | undefined, system: string, user
   // mini=true forces the Mac-mini Ollama bridge (no Gemini) with MINI_MODEL — the
   // scoped mini pipeline (OPD mini backfill). Default path is byte-identical to before.
   const geminiModel = mini ? undefined : (geminiModelFor('doc_audit') ?? geminiUtilityModel());
+  // Reasoning-class local models (DeepSeek-R1 / QwQ) emit a long <think> block before the
+  // JSON, so they need greedy decoding (eval determinism), a bigger output budget (the JSON
+  // must survive the reasoning tokens) and the full context window. Gated on the mini path +
+  // model name, so qwen2.5:14b backfill and the Gemini path are byte-for-byte unchanged.
+  const isReasoning = mini && /(?:^|[:/_-])(?:r1|qwq|deepseek-r1|reason|think)/i.test(MINI_MODEL);
   const params = {
     model: mini ? MINI_MODEL : TEXT_MODEL,
     messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-    temperature: 0.2,
-    max_tokens: 2200,
-    ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
+    temperature: isReasoning ? 0 : 0.2,
+    max_tokens: isReasoning ? 8192 : 2200,
+    ...({ options: { num_ctx: isReasoning ? 16384 : 8192 }, keep_alive: '15m' } as Record<string, unknown>),
   };
   if (traceId) {
     const r = await tracedChat(traceId, 'opd_audit_analyze', params, { gemini: geminiModel });

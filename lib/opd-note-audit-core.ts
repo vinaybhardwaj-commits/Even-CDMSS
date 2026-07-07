@@ -423,15 +423,19 @@ export function buildOpdAuditUser(caseText: string, citedContext: string): strin
 // ── parse ────────────────────────────────────────────────────────────────────
 function extractJsonObject(text: string): unknown {
   if (!text) return null;
-  const start = text.indexOf('{');
+  // Reasoning models (e.g. DeepSeek-R1) prepend a <think>…</think> block whose prose
+  // can contain braces that would derail the brace-walker. Parse only what follows the
+  // final </think>. No-op for qwen/Gemini (their content carries no </think>).
+  const body = text.includes('</think>') ? text.slice(text.lastIndexOf('</think>') + 8) : text;
+  const start = body.indexOf('{');
   if (start < 0) return null;
   let depth = 0, inStr = false, esc = false;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
+  for (let i = start; i < body.length; i++) {
+    const ch = body[i];
     if (inStr) { if (esc) esc = false; else if (ch === '\\') esc = true; else if (ch === '"') inStr = false; continue; }
     if (ch === '"') inStr = true;
     else if (ch === '{') depth++;
-    else if (ch === '}') { depth--; if (depth === 0) { try { return JSON.parse(text.slice(start, i + 1)); } catch { return null; } } }
+    else if (ch === '}') { depth--; if (depth === 0) { try { return JSON.parse(body.slice(start, i + 1)); } catch { return null; } } }
   }
   return null;
 }

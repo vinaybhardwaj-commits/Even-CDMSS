@@ -225,6 +225,18 @@ test('parseOpdAnalysis extracts findings + PDQI-9 + suggestions and clamps citat
   assert.equal(a!.suggestions[0].priority, 1); // sorted
 });
 
+test('C1: parseOpdAnalysis strips a reasoning <think> block (DeepSeek-R1) before parsing', () => {
+  // R1 prepends a think block whose prose contains braces {like this}; the parser must
+  // parse the JSON AFTER the final </think>, not the first brace inside the reasoning.
+  const raw = '<think>Let me consider {the azithromycin} and weigh options { }...</think>\n```json\n{"findings":[{"subject":"Antibiotic for viral URI","verdict":"low-value","confidence":0.9,"domain":"appropriateness","rationale":"viral","evidence":[],"estimates":["viral URI"],"citation_ids":[]}],"pdqi9":{"thorough":3},"suggestions":[{"priority":1,"text":"avoid abx"}]}\n```';
+  const a = parseOpdAnalysis(raw, 0);
+  assert.ok(a, 'should parse despite the think block + code fence');
+  assert.equal(a!.findings.length, 1);
+  assert.equal(a!.findings[0].domain, 'appropriateness');
+  assert.equal(a!.pdqi9!.thorough, 3);
+  assert.equal(a!.suggestions[0].text, 'avoid abx');
+});
+
 // ── Finding identity (governance spec v2.0 §2) ─────────────────────────────────
 const mkFinding = (subject: string, domain: 'appropriateness' | 'prescribing_safety' = 'prescribing_safety'): OpdFinding => ({
   subject, verdict: 'context-dependent', confidence: 0.5, domain,
