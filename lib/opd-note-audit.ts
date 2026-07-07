@@ -14,6 +14,7 @@ import { geminiModelFor, geminiUtilityModel, TEXT_MODEL, MINI_MODEL } from './ll
 import { rowToOpdCase, opdCaseText, type OpdKeys, type OpdMed } from './opd-ingest-core';
 import {
   opdCompleteness, prescribingChecks, parseOpdAnalysis, stampFindingIdentity,
+  consolidateDecisions, neutralizeMetadataFindings, resolveMedRoute,
   OPD_AUDIT_SYSTEM, buildOpdAuditUser, OPD_ENGINE_VERSION,
   type OpdFinding, type OpdCompleteness, type OpdSuggestion,
 } from './opd-note-audit-core';
@@ -59,14 +60,21 @@ async function doctorSpecialtyFor(doctorUid: string | null): Promise<string | nu
 // brand-prefix match can drop a molecule from a combination, so it informs display only).
 const CONFIDENT_MATCH = new Set(['source-generic', 'brand-exact', 'embedded-generic', 'brand-token']);
 
-function ddiToFinding(p: DdiPair): OpdFinding {
+function ddiToFinding(p: DdiPair, topical?: Set<string>): OpdFinding {
   const sev = p.severity;
-  const verdict: NetValue = sev === 'contraindicated' || sev === 'major' ? 'low-value' : 'context-dependent';
-  const confidence = sev === 'contraindicated' ? 0.9 : sev === 'major' ? 0.8 : sev === 'moderate' ? 0.6 : 0.4;
+  // BUG-0.8-12 route-awareness: a TOPICAL NSAID has low systemic absorption, so an "additive
+  // systemic toxicity" overlap with an oral drug is materially milder — never escalate it.
+  const involvesTopical = !!topical && (topical.has(p.drug_a.toLowerCase()) || topical.has(p.drug_b.toLowerCase()));
+  const verdict: NetValue = involvesTopical
+    ? 'context-dependent'
+    : (sev === 'contraindicated' || sev === 'major' ? 'low-value' : 'context-dependent');
+  const confidence = involvesTopical ? 0.5
+    : (sev === 'contraindicated' ? 0.9 : sev === 'major' ? 0.8 : sev === 'moderate' ? 0.6 : 0.4);
+  const topicalNote = involvesTopical ? ' A topically-applied NSAID has low systemic absorption, so the additive systemic (GI/renal) risk is minimal.' : '';
   return {
     subject: `Interaction (${sev}): ${p.drug_a} + ${p.drug_b}`,
     verdict, confidence, domain: 'prescribing_safety',
-    rationale: `${p.mechanism} ${p.recommendation}`.trim(),
+    rationale: `${p.mechanism} ${p.recommendation}${topicalNote}`.trim(),
     evidence: [], estimates: [], citation_ids: [], source: 'deterministic',
   };
 }
@@ -77,8 +85,12 @@ function ddiFindings(meds: OpdMed[]): OpdFinding[] {
     .filter((m) => m.resolvedGeneric && m.formularyMatch && CONFIDENT_MATCH.has(m.formularyMatch))
     .map((m) => ({ name: m.resolvedGeneric as string, major: m.therapeuticClass || '', minor: m.subClass || '' }));
   if (items.length < 2) return [];
+  // route-aware: molecules applied topically on THIS script (low systemic absorption).
+  const topical = new Set(
+    meds.filter((m) => resolveMedRoute(m) === 'topical' && m.resolvedGeneric)
+        .map((m) => (m.resolvedGeneric as string).toLowerCase()));
   const pairs = mergeRank([...tagInteractions(items), ...curatedInteractions(items.map((i) => i.name))]);
-  return pairs.map(ddiToFinding);
+  return pairs.map((p) => ddiToFinding(p, topical));
 }
 
 export interface OpdNoteAudit {
@@ -189,6 +201,8 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     // ghost (typically read out of the patient's history). Drop it. (Interaction/duplication with a
     // history drug is only valid when a CURRENT med exists — which requires meds.length > 0.)
     if (noMeds) out = out.filter((f) => f.domain !== 'prescribing_safety');
+    out = consolidateDecisions(out);   // BUG-0.8-12: one decision → one finding, across sources
+    out = neutralizeMetadataFindings(out);   // BUG-0.8-16: don't penalise the doctor for our metadata
     return applySuppressions(out, keys.doctorUid, supps).findings;
   };
 

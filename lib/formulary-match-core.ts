@@ -112,6 +112,12 @@ export function buildFormularyMatcher(rows: FormularyRow[]): FormularyMatcher {
   const vocab: VocabEntry[] = [];
   const vocabSeen = new Set<string>();
 
+  // BUG-0.8-15: build the generic/molecule index in TWO passes so a SINGLE-molecule (mono) row
+  // always wins its molecule key over a COMBINATION row that merely contains it. Otherwise a
+  // molecule whose first formulary occurrence (by array order) is inside a combo inherits that
+  // combo's class for ALL its mono products (Pantoprazole → the H.pylori kit's "Antibiotic";
+  // Etodolac → an Etodolac+Thiocolchicoside FDC's "Muscle relaxant").
+  // Pass 1: brands, vocab (embedded-molecule tier), and MONO generic keys.
   for (const row of rows) {
     const nb = normalizeDrugName(row.brand || '');
     if (nb) {
@@ -121,18 +127,31 @@ export function buildFormularyMatcher(rows: FormularyRow[]): FormularyMatcher {
       if (ft.length >= 4) { const arr = byFirstTok.get(ft) || []; arr.push(row); byFirstTok.set(ft, arr); }
     }
     const canon = (row.generic_canon || row.generic || '').trim();
-    if (canon) {
+    if (!canon) continue;
+    const mols = canon.split(/[+/]/);
+    // vocab: each molecule maps to ITSELF (not the combo). Order-independent (sorted later).
+    for (const mol of mols) {
+      const mnorm = normalizeDrugName(mol);
+      if (mnorm.length >= 5 && !vocabSeen.has(mnorm)) { vocabSeen.add(mnorm); vocab.push({ key: mnorm, molecule: titleCase(mol) }); }
+    }
+    // MONO row → its single-molecule generic key wins (first mono of a molecule wins; same class).
+    if (mols.length === 1) {
       const ng = normalizeDrugName(canon);
       if (ng && !byGeneric.has(ng)) byGeneric.set(ng, row);
-      // vocab for the embedded-molecule scan: each molecule maps to ITSELF (not the combo).
-      for (const mol of canon.split(/[+/]/)) {
-        const mnorm = normalizeDrugName(mol);
-        if (mnorm.length >= 5 && !vocabSeen.has(mnorm)) {
-          vocabSeen.add(mnorm); vocab.push({ key: mnorm, molecule: titleCase(mol) });
-          const ngMol = mnorm;
-          if (!byGeneric.has(ngMol)) byGeneric.set(ngMol, row);
-        }
-      }
+    }
+  }
+  // Pass 2: COMBINATION rows — full-composition key + each component molecule key, but ONLY where
+  // a mono row hasn't already claimed it, so a mono always beats a combo for a molecule key.
+  for (const row of rows) {
+    const canon = (row.generic_canon || row.generic || '').trim();
+    if (!canon) continue;
+    const mols = canon.split(/[+/]/);
+    if (mols.length === 1) continue;                          // monos handled in pass 1
+    const ng = normalizeDrugName(canon);
+    if (ng && !byGeneric.has(ng)) byGeneric.set(ng, row);     // full-composition key
+    for (const mol of mols) {
+      const mnorm = normalizeDrugName(mol);
+      if (mnorm.length >= 5 && !byGeneric.has(mnorm)) byGeneric.set(mnorm, row);  // only if no mono
     }
   }
   brandNorms.sort((a, b) => b.nb.length - a.nb.length);     // longest brand first (prefix tier)

@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { rowToOpdCase, opdCaseText, isTeleconsultEncounter, hasHandsOnExam } from '../opd-ingest-core.ts';
 import { computeOpdScore } from '../opd-note-score-core.ts';
-import { opdCompleteness, prescribingChecks, parseOpdAnalysis, medDoseDocumented, resolveMedRoute, opdSignalType, stampFindingIdentity, followUpDocumented, OPD_SIGNAL_TYPES, OPD_AUDIT_SYSTEM, type OpdFinding } from '../opd-note-audit-core.ts';
+import { opdCompleteness, prescribingChecks, parseOpdAnalysis, medDoseDocumented, resolveMedRoute, opdSignalType, stampFindingIdentity, followUpDocumented, consolidateDecisions, neutralizeMetadataFindings, OPD_SIGNAL_TYPES, OPD_AUDIT_SYSTEM, type OpdFinding } from '../opd-note-audit-core.ts';
 
 // Mirrors a real GP row (medications + jsonb arrive as JSON strings via Metabase).
 const ROW: Record<string, unknown> = {
@@ -513,4 +513,39 @@ test('v0.81.1 K: in-person febrile note with no vitals gets a documentation gap;
       '[{"symptoms":"<p>knee pain</p>","diagnoses":[{"diagnosis_or_impression":"OA knee","icd_code":"M17"}]}]',
     general_practitioner_prescription__examination: '<p>knee crepitus</p>' }).case;
   assert.ok(!opdCompleteness(nonFever).items.some((i) => i.key === 'vitals'));
+});
+
+
+test('BUG-0.8-12: consolidateDecisions merges the deterministic NSAID interaction + LLM duplication', () => {
+  const fs: OpdFinding[] = [
+    { subject: 'Interaction (moderate): Aceclofenac + Diclofenac', verdict: 'context-dependent', confidence: 0.6, domain: 'prescribing_safety', rationale: 'Two NSAIDs — additive GI and renal toxicity. Avoid concurrent NSAIDs.', evidence: [], estimates: [], citation_ids: [], source: 'deterministic' },
+    { subject: 'Therapeutic duplication with concurrent oral and topical NSAIDs', verdict: 'low-value', confidence: 0.9, domain: 'prescribing_safety', rationale: 'The patient was prescribed both an oral NSAID and a topical NSAID.', evidence: [], estimates: [], citation_ids: [], source: 'llm' },
+    { subject: 'Unindicated antihistamine', verdict: 'low-value', confidence: 0.8, domain: 'appropriateness', rationale: 'x', evidence: [], estimates: [], citation_ids: [], source: 'llm' },
+  ];
+  const out = consolidateDecisions(fs);
+  assert.equal(out.length, 2, 'the LLM NSAID duplication is dropped');
+  assert.ok(out.some((f) => f.source === 'deterministic' && /^Interaction/.test(f.subject)), 'deterministic interaction survives');
+  assert.ok(!out.some((f) => /Therapeutic duplication/.test(f.subject)), 'llm duplication removed');
+  assert.ok(out.some((f) => f.domain === 'appropriateness'), 'unrelated appropriateness finding untouched');
+});
+
+test('BUG-0.8-12: consolidateDecisions is a no-op when there is no deterministic NSAID interaction', () => {
+  const fs: OpdFinding[] = [
+    { subject: 'Therapeutic duplication with concurrent oral and topical NSAIDs', verdict: 'low-value', confidence: 0.9, domain: 'prescribing_safety', rationale: 'x', evidence: [], estimates: [], citation_ids: [], source: 'llm' },
+  ];
+  assert.equal(consolidateDecisions(fs).length, 1);
+});
+
+
+test('BUG-0.8-16: an "inaccurate drug class" finding is neutralised (non-scoring) not a clinician penalty', () => {
+  const fs: OpdFinding[] = [
+    { subject: 'Incorrect drug class documented for Pantoprazole', verdict: 'low-value', confidence: 0.9, domain: 'appropriateness', rationale: 'The medication list incorrectly classifies Pantoprazole, a PPI, as an "Antibiotic".', evidence: [], estimates: [], citation_ids: [], source: 'llm' },
+    { subject: 'Routine gastroprotection for a short NSAID course', verdict: 'low-value', confidence: 0.7, domain: 'appropriateness', rationale: 'PPI without risk factors', evidence: [], estimates: [], citation_ids: [], source: 'llm' },
+  ];
+  const out = neutralizeMetadataFindings(fs);
+  const meta = out.find((f) => /drug class/i.test(f.subject))!;
+  assert.equal(meta.informational, true, 'metadata finding is non-scoring');
+  assert.equal(meta.signal_type, 'metadata_accuracy');
+  const other = out.find((f) => /gastroprotection/.test(f.subject))!;
+  assert.ok(!other.informational, 'genuine clinical finding untouched');
 });

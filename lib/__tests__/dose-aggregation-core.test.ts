@@ -168,3 +168,12 @@ test('same molecule in two products but within ceiling → informational only', 
   assert.equal(info!.informational, true);
   assert.equal(info!.confidence, 0);
 });
+
+
+test('BUG-0.8-13: a syrup dosed "10ml (2 tsp)" is volumetric and its volume is never a tablet count', () => {
+  const med = { strength: '5mg+2mg+10mg', dose: '10ml (2 tsp)', brand: 'Ascoril D Plus Syrup', frequency: '1-0-1' } as any;
+  assert.equal(isVolumetric(med), true);
+  assert.equal(unitsPerDose('10ml (2 tsp)'), 1);
+  assert.equal(unitsPerDose('2 tsp'), 1);
+  assert.equal(unitsPerDose('2 tablet'), 2);   // real tablet counts still parse
+});

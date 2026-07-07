@@ -20,6 +20,18 @@ export interface EngineChange {
 
 export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
+    engine: '0.81.2', date: '2026-07-07', scoring: true,
+    title: 'v0.81.2 — clinician bug batch (Dr Zaki): matcher, cross-source consolidation, liquid dosing, supplement + metadata guardrails',
+    points: [
+      'BUG-0.8-15 (formulary matcher): a single molecule now wins its drug class over a combination that merely contains it (two-pass index). Fixes Pantoprazole shown as "Antibiotic" and Etodolac as "Muscle relaxant" — and any molecule whose first formulary occurrence was inside an FDC.',
+      'BUG-0.8-12 (consolidation): "one decision, one finding" is enforced in CODE, not just the prompt — a deterministic NSAID interaction and the LLM therapeutic-duplication for the same oral+topical NSAID pair merge into ONE finding (no more double penalty). DDI is route-aware: a topical NSAID is not treated as a full systemic one.',
+      'BUG-0.8-13 (liquid dosing): a syrup dosed "10ml (2 tsp)" is no longer mis-read as 10 tablets — fixed the volumetric-guard regex (matched "10 ml" but not "10ml") + tsp/cc/syrup-form detection; a volume is never a tablet count. Removes fabricated ceiling breaches (phenylephrine 150 -> 30 mg/day).',
+      'BUG-0.8-14 (supplements): nutraceuticals/supplements no longer receive an "incomplete dosing" penalty (a proprietary supplement has no meaningful strength) — fixes the same product penalised on one note and exempt on another.',
+      'BUG-0.8-16 (metadata guardrail): a finding about an "inaccurate drug class in the record" is now NON-scoring — the class tags are CDMSS own formulary metadata, so the clinician is never penalised for our data error. Prompt guard + deterministic neutralisation.',
+    ],
+    why: 'Six clinician bug reports (Dr Zaki, 5-7 Jul) on live 0.81.1 audits; three traced to one formulary-matcher bug. Full analysis in AUDIT-ENGINE-v0.81.2-UPGRADE-PRD.md Part 4.',
+  },
+  {
     engine: null, date: '2026-07-04', scoring: false,
     title: 'Backfill: engine-upgrade pivot + live version label',
     points: [

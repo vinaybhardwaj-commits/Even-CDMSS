@@ -88,3 +88,19 @@ test('unmatched returns null and classifies nutraceutical/cosmetic vs off-formul
   assert.equal(classifyUnmatched('Zoxan TZ'), 'non-formulary');
   assert.equal(M.resolve({}), null);
 });
+
+test('BUG-0.8-15: a single molecule wins its class over a combination that contains it (any array order)', () => {
+  // The antibiotic COMBO appears BEFORE the mono row (worst case for first-write-wins).
+  const rows: FormularyRow[] = [
+    { brand: 'PANTOCID HP KIT', generic_canon: 'Amoxycillin+Pantoprazole+Clarithromycin', major: 'Antibiotic', minor: 'Macrolide', schedule_dc: 'H' },
+    { brand: 'ETOVA MR', generic_canon: 'Etodolac+Thiocolchicoside', major: 'Muscle relaxant', minor: 'GABA-mimetic', schedule_dc: 'H' },
+    { brand: 'PAN 40', generic_canon: 'Pantoprazole', major: 'Antisecretory', minor: 'PPI', schedule_dc: 'H' },
+    { brand: 'ETOVA 400', generic_canon: 'Etodolac', major: 'NSAID', minor: 'Acetic acid', schedule_dc: 'H' },
+  ];
+  const M = buildFormularyMatcher(rows);
+  // mono molecules resolve to their OWN class, not the combo's
+  assert.equal(M.resolve({ generic: 'Pantoprazole' })!.major, 'Antisecretory');
+  assert.equal(M.resolve({ generic: 'Etodolac' })!.major, 'NSAID');
+  // the actual combination still resolves to the combo row
+  assert.equal(M.resolve({ generic: 'Amoxycillin+Pantoprazole+Clarithromycin' })!.major, 'Antibiotic');
+});

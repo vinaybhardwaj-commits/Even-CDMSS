@@ -100,6 +100,8 @@ export function unitsPerDose(dosage: string | undefined): number {
   if (!s) return 1;
   // A dosing grid mistakenly entered in the dosage field ("1-0-1") is not a unit count.
   if (/\d\s*-\s*\d\s*-\s*\d/.test(s)) return 1;
+  // BUG-0.8-13: a VOLUME ("10ml", "2 tsp") is not a tablet count — never read it as units.
+  if (/\d\s*mls?\b|\bcc\b|\btsp\b|teaspoons?|\bdrops?\b/i.test(s)) return 1;
   const m = s.match(/(\d+(?:\.\d+)?)/);
   const n = m ? parseFloat(m[1]) : 1;
   return n > 0 && n <= 20 ? n : 1;   // guard against stray large numbers
@@ -147,8 +149,14 @@ export interface MedMolecule { molecule: string; perUnitMg: number | null }
  */
 export function isVolumetric(m: OpdMed): boolean {
   const conc = /\/\s*\d*\s*ml\b|per\s*\d*\s*ml\b|mg\s*\/\s*ml/i;   // "250mg/5ml", "mg/ml", "per 5ml"
-  const volDose = /\bml\b|\bmls\b|\bdrops?\b/i;
-  return conc.test(m.strength || '') || conc.test(m.dose || '') || volDose.test(m.dose || '');
+  // BUG-0.8-13: the old /\bml\b/ MISSED a volume written without a space ("10ml") — \b never fires
+  // between a digit and "m" — and omitted tsp/cc, so a syrup dosed "10ml (2 tsp)" fell through to the
+  // tablet model. Match ml adjacent to a digit + tsp/teaspoon/cc, AND detect a liquid dosage form.
+  const volDose = /\d\s*mls?\b|\bmls?\b|\bcc\b|\bdrops?\b|\btsp\b|teaspoons?/i;
+  const liquidForm = /syrup|suspension|solution|\bdrops?\b|elixir|linctus|\bliquid\b/i;
+  const nameHay = `${m.brand || ''} ${m.generic || ''}`;
+  return conc.test(m.strength || '') || conc.test(m.dose || '')
+    || volDose.test(m.dose || '') || liquidForm.test(nameHay);
 }
 
 /** Split a med into its molecules with aligned per-unit strengths (combos → multiple rows). */

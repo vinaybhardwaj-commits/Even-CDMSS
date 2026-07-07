@@ -25,7 +25,7 @@ import type { NetValue, OpdFindingDomain, Pdqi9Attr } from './opd-note-score-cor
 //       B2: follow-up counts as documented ONLY for a real disposition or an explicit date — a bare
 //       'UNKNOWN'/blank no longer earns continuity/documentation credit (the score-moving change
 //       that makes 0.7 a distinct generation). Prompt-pass fixes (B1/B5/B6) land next, still 0.7.
-export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.1';
+export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.2';
 
 // Local copy of the PDQI-9 keys (kept in sync with opd-note-score-core) so this core has
 // no runtime cross-import and stays loadable under `node --experimental-strip-types`.
@@ -161,6 +161,45 @@ function sha1Hex(input: string): string {
  *  finding_ref = sha1(signal_type + '|' + normalized detail-after-colon), first 12 hex chars —
  *  stable across re-audits for the same specific finding; within-note collisions suffixed '#2'…
  *  Deterministic: re-stamping stored findings yields identical refs. */
+/** BUG-0.8-16: the bracketed drug-class tags are CDMSS's own formulary enrichment, not the
+ *  clinician's chart. When they are wrong (0.8-15) the LLM sometimes flags "the record has an
+ *  inaccurate drug class" and scores it against the DOCTOR — penalising the clinician for OUR
+ *  metadata bug. A class-label error is chart metadata, not a care decision (Part 1 rule), and
+ *  doubly so when it is our metadata. Neutralise such findings: keep them VISIBLE but make them
+ *  non-scoring (informational) and tag them `metadata_accuracy`. */
+const META_ACCURACY_RE = /(?:inaccurate|incorrect|erroneous|wrong|misclassif|misleading|data quality|error)[^.]*\bdrug class\b|\bdrug class\b[^.]*(?:inaccurate|incorrect|erroneous|wrong|misclassif|misleading|error)/i;
+export function neutralizeMetadataFindings(findings: OpdFinding[]): OpdFinding[] {
+  return findings.map((f) =>
+    (f.source === 'llm' && META_ACCURACY_RE.test(`${f.subject} ${f.rationale || ''}`))
+      ? { ...f, informational: true, signal_type: 'metadata_accuracy' }
+      : f);
+}
+
+/** BUG-0.8-12: one clinical decision → one SCORED finding, ACROSS sources. Fix N ("one issue, one
+ *  finding") was prompt-only, so it never merged a DETERMINISTIC DDI finding with the LLM's own
+ *  therapeutic-duplication finding for the same drug pair — both fired and the decision was
+ *  penalised twice. This consolidates them deterministically. v1 = concurrent-NSAID overlap
+ *  (oral+topical or oral+oral): keep the rule-based interaction finding (defensible, cited),
+ *  drop the LLM duplication that restates it. Extensible to other decision concepts. */
+const NSAID_RE = /nsaid|non[- ]?steroidal/i;
+const NSAID_DUP_RE = /duplicat|concurrent|both (?:an? )?(?:oral|nsaid)|oral and topical|two nsaid|overlap/i;
+export function consolidateDecisions(findings: OpdFinding[]): OpdFinding[] {
+  const txt = (f: OpdFinding) => `${f.subject} ${f.rationale || ''}`;
+  const detInteraction = findings.find(
+    (f) => f.source === 'deterministic' && f.domain === 'prescribing_safety'
+      && /^interaction \(/i.test(f.subject) && NSAID_RE.test(txt(f)));
+  if (!detInteraction) return findings;
+  const dropped = new Set<OpdFinding>();
+  for (const f of findings) {
+    if (f === detInteraction) continue;
+    if (f.source === 'llm' && f.domain === 'prescribing_safety'
+        && NSAID_RE.test(txt(f)) && NSAID_DUP_RE.test(txt(f))) dropped.add(f);
+  }
+  if (!dropped.size) return findings;
+  detInteraction.rationale = `${detInteraction.rationale} Concurrent-NSAID therapeutic duplication is the same clinical decision — consolidated into this finding.`.trim();
+  return findings.filter((f) => !dropped.has(f));
+}
+
 export function stampFindingIdentity(findings: OpdFinding[]): OpdFinding[] {
   const used = new Set<string>();
   return findings.map((f) => {
@@ -334,12 +373,19 @@ export function prescribingChecks(c: DeidOpdCase): OpdFinding[] {
       }
     }
 
+    // BUG-0.8-14: a nutraceutical / supplement has no clinically meaningful strength, so an
+    // "incomplete dosing" gap is a nitpick (and fired inconsistently depending on whether the
+    // EMR happened to populate a units field). They are already handled informationally as
+    // non-formulary items — exempt them from the gap finding. Real drugs keep the full check.
+    const isNutra = m.nonFormulary === 'nutraceutical-cosmetic'
+      || /nutraceutical|supplement|multivitamin|vitamin|probiotic|cosmetic/i.test(m.therapeuticClass || '')
+      || /\bsupplement\b/i.test(gen || '');
     const gaps: string[] = [];
     if (!medDoseDocumented(m)) gaps.push('dose/strength');
     if (!m.frequency) gaps.push('frequency');
     if (resolveMedRoute(m) === null) gaps.push('route');
     if (!m.duration) gaps.push('duration');
-    if (gaps.length) out.push(det(`Incomplete dosing: ${name}`, 'context-dependent', 0.5, `Missing ${gaps.join(', ')} — incomplete prescription (strength read from the drug name and route inferred from the dosage form where possible).`));
+    if (gaps.length && !isNutra) out.push(det(`Incomplete dosing: ${name}`, 'context-dependent', 0.5, `Missing ${gaps.join(', ')} — incomplete prescription (strength read from the drug name and route inferred from the dosage form where possible).`));
 
     if (gen) { const k = gen.toLowerCase(); const p = seen.get(k); seen.set(k, { n: (p?.n || 0) + 1, label: gen }); }
     if (gen && m.highAlert) highAlerts.push(gen);
@@ -396,7 +442,7 @@ ENCOUNTER CONTEXT — read the header fields FIRST and let them frame everything
 
 1) FINDINGS — appropriateness and prescribing-safety issues for THIS encounter:
    - appropriateness: low-value / inappropriate tests, treatments or referrals for the presentation. DIAGNOSIS–COMPLAINT CONCORDANCE: check the documented diagnosis actually corresponds to the presenting complaint and to what was treated; if the coded diagnosis is unrelated to why the patient came (e.g. a chronic comorbidity is coded while an acute complaint drives the visit and the medications treat that acute problem), flag the mismatch as an appropriateness/documentation finding. UNINDICATED / CONTRADICTED DRUG: check EVERY prescribed drug has a plausible indication in THIS note; a drug whose indication is absent AND is positively contradicted by the documented history (e.g. a 2nd-gen antihistamine when the history records 'No cold' / no allergic symptom) is a low-value / unindicated prescription — raise it as an APPROPRIATENESS finding (domain 'appropriateness', verdict low-value), applied CONSISTENTLY to all drugs, not just the obvious ones. DIAGNOSIS DOCUMENTED WITHOUT A CODE: a clinical diagnosis/impression stated in words (e.g. 'Cervical Spondylosis') but shown without an ICD-10 code is a code AUTO-MAPPING gap, not a missing diagnosis — the diagnosis IS documented; do NOT raise 'missing coded diagnosis' or dock appropriateness for it.
-   - prescribing_safety: irrational or unsafe prescribing — wrong/unnecessary drug, an antibiotic for a likely-viral illness, drug–drug or drug–allergy interactions, duplications, dosing problems. Each medication carries the molecule plus [drug class · D&C schedule · ISMP high-alert] resolved from the hospital formulary (the note often gives only a brand); use these to judge class duplication, interactions and high-alert handling. Items tagged "nutraceutical/cosmetic" or "not in hospital formulary" are NOT formulary drugs — do not invent drug interactions for them, but you may note non-evidence-based / cosmetic prescribing.
+   - prescribing_safety: irrational or unsafe prescribing — wrong/unnecessary drug, an antibiotic for a likely-viral illness, drug–drug or drug–allergy interactions, duplications, dosing problems. Each medication carries the molecule plus [drug class · D&C schedule · ISMP high-alert] resolved from the hospital formulary (the note often gives only a brand); use these to judge class duplication, interactions and high-alert handling. These bracketed tags are SYSTEM-DERIVED formulary metadata, NOT the clinician's documentation — NEVER raise a finding about their accuracy and NEVER penalise the clinician for a drug-class label that looks wrong (e.g. a PPI shown as "Antibiotic"): a wrong tag is a system data issue, out of scope for this clinical audit. Items tagged "nutraceutical/cosmetic" or "not in hospital formulary" are NOT formulary drugs — do not invent drug interactions for them, but you may note non-evidence-based / cosmetic prescribing.
      · SCOPE (critical): a prescribing-safety finding may ONLY concern a drug that appears in the MEDICATIONS list of THIS prescription. Drugs the patient reports in the HISTORY (e.g. "was taking X", "advised medication elsewhere") are context for detecting an interaction or duplication WITH a currently-prescribed drug — they are NEVER by themselves a prescribing fault, and you must not fault THIS clinician for a drug they did not prescribe. If the MEDICATIONS list is empty (none prescribed this encounter), there is NO prescription to assess — emit NO prescribing-safety finding at all.
      · INDICATION: if a medication's usual indication does not match the documented diagnosis, it is most likely a continuation of chronic/long-term therapy (e.g. a statin or antihypertensive on a note for an acute complaint). Report this as "indication for <drug> not documented" (a documentation gap; verdict context-dependent) — do NOT assert it is the wrong drug FOR the acute diagnosis — UNLESS the drug is genuinely harmful or contraindicated for this patient.
      · MEDICATION CHANGE: when the note stops, switches or replaces a prior medication, or a history drug overlaps/duplicates a newly-prescribed one, check that a clear stop/switch instruction is documented; a missing "stop the previous drug" instruction in that situation is a safety-relevant gap worth flagging.
