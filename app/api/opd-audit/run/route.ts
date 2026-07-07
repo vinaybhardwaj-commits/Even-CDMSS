@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/admin-gate';
 import { auditOpdNote } from '@/lib/opd-note-audit';
+import { saveOpdAudit } from '@/lib/opd-audit-store';
+import { GEMINI_MODEL } from '@/lib/llm';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -18,7 +20,11 @@ export async function GET(req: NextRequest) {
     const row = await fetchOpdNoteByUid(uid);
     if (!row) return NextResponse.json({ ok: false, error: 'note not found for that uid' }, { status: 404 });
     const audit = await auditOpdNote(row);
-    return NextResponse.json({ ok: true, audit });
+    // &save=1 persists the audit (golden-A/B tool): writes the current-engine row so a before/after
+    // comparison can be read from opd_note_audits by engine_version. Admin-gated; manual use only.
+    const saved = req.nextUrl.searchParams.get('save') === '1'
+      ? await saveOpdAudit(audit, { model: GEMINI_MODEL }) : undefined;
+    return NextResponse.json({ ok: true, saved, engineVersion: audit.engineVersion, audit });
   } catch (e) {
     return NextResponse.json({ ok: false, error: String((e as Error).message) }, { status: 500 });
   }
