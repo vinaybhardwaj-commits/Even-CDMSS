@@ -24,11 +24,20 @@ import {
   parseNdjson, reduceDdxEvents, reduceAskEvents, reduceAppropriatenessEvents,
   reduceDocAuditEvents, labSelfBaseUrl,
 } from './lab-clinical-core';
+import {
+  ADJUDICATION_DDL, buildRollupFindingSql, buildRollupFiredSql, buildRollupMissedSql,
+  buildRollupAuditSql, buildRollupReviewerSql, buildLatestLedgerSql, reduceRollup,
+  buildDetailSql, shapeDetailRow, parseAdjudicateArgs, buildAdjudicationInsert,
+  buildAdjudicationListSql, reduceLedgerList, clampLimit,
+  type FindingCountRow, type FiredRow, type MissedRow, type AuditRow as RollupAuditRow,
+  type ReviewerRow, type LedgerLatestRow, type DetailRawRow, type LedgerRow, type FeedbackScope,
+} from './opd-feedback-rollup-core';
 
 export type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
 const ok = (obj: unknown): ToolResult => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
 const err = (msg: string): ToolResult => ({ content: [{ type: 'text', text: `Error: ${msg}` }], isError: true });
 const S = (v: unknown) => (typeof v === 'string' ? v : '');
+const APP_SOURCE = process.env.APP_SOURCE || 'standalone';
 
 // ── tool schemas (advertised via tools/list) ────────────────────────────────────
 export const LAB_TOOLS = [
@@ -170,7 +179,7 @@ export const LAB_TOOLS = [
   {
     name: 'audit_query',
     description:
-      'Run a READ-ONLY SQL query (SELECT/WITH only) against the CDMSS audit database (Neon) — for mining bug prevalence + building golden sets. Readable tables are DE-IDENTIFIED (no PHI): opd_note_audits (per-note audit: uid, doctor_uid, note_date, note_quality_index, band, score_documentation/note_quality/appropriateness/prescribing_safety/patient_centred, pdqi9 jsonb [{attr,value}], completeness_pct, n_missing_mandatory, n_findings, n_low_value, n_interaction_alerts, findings jsonb [{subject,verdict,domain,source,informational,signal_type,finding_ref,citation_ids}], suggestions jsonb, missing_fields jsonb, engine_version), plus opd_audit_triage, opd_gov_signal(_event), doctor_directory, doctor_roster, audit_suppression, doctor_operational_metrics, lvc_recommendations (reference), lab_analyses (your lab_ddx/lab_ask/mini_analyze runs — output jsonb), and the DE-IDENTIFIED pipeline views v_trace_summary (feature/status/severity/timings/model_summary — NO clinical text) + v_appropriateness_summary (mode/doc_type/counts). PHI-bearing raw tables (traces, trace_events, appropriateness_runs, ccb_briefs, care_track_assignments, opd_audit_feedback) are BLOCKED — use the views. Enforced: SELECT/WITH only, single statement, no writes/DDL/system-functions, blocked-relation guard, LIMIT ≤ 500 (auto-added), audit-logged. Source-NOTE fields (medications count, followUpType, patient age, specialty) live in db13 — take the uids this returns and join via the Metabase MCP.',
+      'Run a READ-ONLY SQL query (SELECT/WITH only) against the CDMSS audit database (Neon) — for mining bug prevalence + building golden sets. Readable tables are DE-IDENTIFIED (no PHI): opd_note_audits (per-note audit: uid, doctor_uid, note_date, note_quality_index, band, score_documentation/note_quality/appropriateness/prescribing_safety/patient_centred, pdqi9 jsonb [{attr,value}], completeness_pct, n_missing_mandatory, n_findings, n_low_value, n_interaction_alerts, findings jsonb [{subject,verdict,domain,source,informational,signal_type,finding_ref,citation_ids}], suggestions jsonb, missing_fields jsonb, engine_version), plus opd_audit_triage, opd_gov_signal(_event), doctor_directory, doctor_roster, audit_suppression, doctor_operational_metrics, lvc_recommendations (reference), lab_analyses (your lab_ddx/lab_ask/mini_analyze runs — output jsonb), and the DE-IDENTIFIED pipeline views v_trace_summary (feature/status/severity/timings/model_summary — NO clinical text) + v_appropriateness_summary (mode/doc_type/counts). PHI-bearing raw tables (traces, trace_events, appropriateness_runs, ccb_briefs, care_track_assignments, opd_audit_feedback) are BLOCKED — use the views, and the feedback_* tools for opd_audit_feedback. Enforced: SELECT/WITH only, single statement, no writes/DDL/system-functions, blocked-relation guard, LIMIT ≤ 500 (auto-added), audit-logged. Source-NOTE fields (medications count, followUpType, patient age, specialty) live in db13 — take the uids this returns and join via the Metabase MCP.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -211,6 +220,52 @@ export const LAB_TOOLS = [
     description: 'Synchronously drain up to n (<=2) cohort notes NOW and return - a manual nudge that ignores the night window (still yields to the prod mini-backfill + its own lock). Use for immediate progress instead of waiting for the */2 cron. ~72s/note on the mini.',
     inputSchema: { type: 'object', properties: {}, required: [] },
   },
+  {
+    name: 'feedback_rollup',
+    description: 'OPD feedback loop — MEASURED precision from clinician triage of audit findings (opd_audit_feedback), the read path for the feedback instrumentation. Current-state = latest verdict per (audit_id, finding_ref) (earlier rows are history). Returns per (engine_version × signal_type) bucket: fired (findings that fired in opd_note_audits), triaged, coverage_pct = triaged/fired, verdict counts (tp/nitpick/false/contested), precision_strict = tp/(tp+nitpick+false) with contested EXCLUDED (a demand-side dispute, reported separately as contested_rate); plus missed-flag volume by signal_type, audit_scope { n_comments, verdict_counts, n_escalations }, reviewer tally, open_adjudications (clusters with ≥3 false+nitpick and no current non-defer ledger decision), and totals. Zero denominators → null (never NaN). Read-only, fixed parameterized SQL (NOT free SQL — opd_audit_feedback stays blocked from audit_query). Args: engine_version? (default all, grouped), signal_type?, since?/until? (ISO dates on feedback created_at).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        engine_version: { type: 'string', description: 'Filter to one engine version (default: all, grouped).' },
+        signal_type: { type: 'string', description: 'Filter to one signal_type.' },
+        since: { type: 'string', description: 'ISO date — feedback created_at ≥ this day.' },
+        until: { type: 'string', description: 'ISO date — feedback created_at ≤ this day (inclusive).' },
+      },
+    },
+  },
+  {
+    name: 'feedback_detail',
+    description: 'OPD feedback loop — the adjudication feed: individual current-state feedback rows joined to the fired finding (subject/verdict/domain/rationale, located in opd_note_audits.findings by finding_ref; null for missed/audit scope or if the ref no longer resolves, with ref_resolved=false). ⚠️ Returns clinician free-text comments verbatim — treat as potentially containing clinical details; do not paste into public docs. Read-only, fixed parameterized SQL (opd_audit_feedback stays blocked from audit_query). Args: scope? (finding|missed|audit, default finding), verdict?, signal_type?, engine_version?, uid?, history? (default false = current-state only; true also returns superseded rows flagged history=true), limit? (default 50, max 200).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        scope: { type: 'string', enum: ['finding', 'missed', 'audit'], description: 'default finding.' },
+        verdict: { type: 'string', description: 'Filter by verdict (whitelisted per scope).' },
+        signal_type: { type: 'string' },
+        engine_version: { type: 'string' },
+        uid: { type: 'string', description: 'db13 note uid.' },
+        history: { type: 'boolean', description: 'default false (current-state only).' },
+        limit: { type: 'number', description: 'default 50, max 200.' },
+      },
+    },
+  },
+  {
+    name: 'feedback_adjudicate',
+    description: 'OPD feedback loop — append-only adjudication ledger (opd_feedback_adjudications). The ONLY write tool here; it touches ONLY the ledger table, never opd_audit_feedback or any production table (the Lab MCP no-production-writes promise holds — the ledger is lab infrastructure). action=log records one cluster decision; action=list returns decisions newest-first, flagging the current status per cluster_key. decision ∈ fix (engine change owed) | suppress (down-tier/silence the check) | accept (noise tolerable, working as intended) | defer (need more labels) | monitor (no action now, keep watching). cluster_key convention <signal_type>@<engine_version> (or a bug id like 0.8-17). Table is ensured at call time (CREATE TABLE IF NOT EXISTS).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['log', 'list'] },
+        cluster_key: { type: 'string', description: 'log: required; list: optional filter.' },
+        decision: { type: 'string', enum: ['fix', 'suppress', 'accept', 'defer', 'monitor'], description: 'log: required.' },
+        rationale: { type: 'string', description: 'log: required.' },
+        prd_ref: { type: 'string', description: 'log: optional PRD/bug reference.' },
+        author: { type: 'string', description: 'log: default cowork-orchestrator.' },
+        limit: { type: 'number', description: 'list: default 50, max 200.' },
+      },
+      required: ['action'],
+    },
+  },
 ] as const;
 
 // ── dispatch ─────────────────────────────────────────────────────────────────────
@@ -232,6 +287,9 @@ export async function callLabTool(name: string, args: Record<string, unknown>): 
       case 'lab_batch_status': return await labBatchStatus();
       case 'lab_batch_stop': return await labBatchStop();
       case 'lab_batch_tick': return await labBatchTick();
+      case 'feedback_rollup': return await feedbackRollup(args);
+      case 'feedback_detail': return await feedbackDetail(args);
+      case 'feedback_adjudicate': return await feedbackAdjudicate(args);
       default: return err(`unknown tool: ${name}`);
     }
   } catch (e) {
@@ -527,4 +585,73 @@ async function auditQuery(a: Record<string, unknown>): Promise<ToolResult> {
   const ms = Date.now() - t0;
   await run(`INSERT INTO lab_sql_audit (sql, rows, ms) VALUES ($1,$2,$3)`, [g.sql.slice(0, 4000), rows.length, ms]).catch(() => {});
   return ok({ sql: g.sql, rows: rows.length, ms, data: rows });
+}
+
+// ── OPD feedback loop (PRD OPD-FEEDBACK-LOOP-MCP §4) ──────────────────────────────
+// Fixed parameterized SQL compiled in lib/opd-feedback-rollup-core.ts — NOT routed through
+// guardReadOnlySql (opd_audit_feedback stays in BLOCKED_RELATIONS; free SQL can never touch it).
+// The only write is the ledger table, ensured at call time (ensureSqlAuditLog pattern).
+async function ensureAdjudicationTable(): Promise<void> {
+  await run(ADJUDICATION_DDL, []);
+}
+
+async function feedbackRollup(a: Record<string, unknown>): Promise<ToolResult> {
+  await ensureAdjudicationTable().catch(() => {}); // the open-adjudication gate reads this table
+  const filters = {
+    appSource: APP_SOURCE,
+    engineVersion: S(a.engine_version).trim() || null,
+    since: S(a.since).trim() || null,
+    until: S(a.until).trim() || null,
+    signalType: S(a.signal_type).trim() || null,
+  };
+  const [findingQ, firedQ, missedQ, auditQ, reviewerQ, ledgerQ] = [
+    buildRollupFindingSql(filters), buildRollupFiredSql(filters), buildRollupMissedSql(filters),
+    buildRollupAuditSql(filters), buildRollupReviewerSql(filters), buildLatestLedgerSql(),
+  ];
+  const [findingRows, firedRows, missedRows, auditRows, reviewerRows, ledgerRows] = await Promise.all([
+    run(findingQ.text, findingQ.params), run(firedQ.text, firedQ.params), run(missedQ.text, missedQ.params),
+    run(auditQ.text, auditQ.params), run(reviewerQ.text, reviewerQ.params), run(ledgerQ.text, ledgerQ.params),
+  ]);
+  const rollup = reduceRollup({
+    findingRows: findingRows as unknown as FindingCountRow[],
+    firedRows: firedRows as unknown as FiredRow[],
+    missedRows: missedRows as unknown as MissedRow[],
+    auditRows: auditRows as unknown as RollupAuditRow[],
+    reviewerRows: reviewerRows as unknown as ReviewerRow[],
+    ledgerRows: ledgerRows as unknown as LedgerLatestRow[],
+  });
+  return ok({ ok: true, filters: { engine_version: filters.engineVersion, signal_type: filters.signalType, since: filters.since, until: filters.until }, ...rollup });
+}
+
+async function feedbackDetail(a: Record<string, unknown>): Promise<ToolResult> {
+  const scope = (S(a.scope).trim() || 'finding') as FeedbackScope;
+  let q;
+  try {
+    q = buildDetailSql({
+      appSource: APP_SOURCE, scope,
+      verdict: S(a.verdict).trim() || null,
+      signalType: S(a.signal_type).trim() || null,
+      engineVersion: S(a.engine_version).trim() || null,
+      uid: S(a.uid).trim() || null,
+      history: a.history === true,
+      limit: clampLimit(a.limit),
+    });
+  } catch (e) { return err(String((e as Error).message)); }
+  const rows = await run(q.text, q.params);
+  const shaped = (rows as unknown as DetailRawRow[]).map(shapeDetailRow);
+  return ok({ ok: true, scope, history: a.history === true, count: shaped.length, note: 'comments are clinician free text — do not paste into public docs', rows: shaped });
+}
+
+async function feedbackAdjudicate(a: Record<string, unknown>): Promise<ToolResult> {
+  const parsed = parseAdjudicateArgs(a);
+  if (!parsed.ok) return err(parsed.error);
+  await ensureAdjudicationTable();
+  if (parsed.action === 'log') {
+    const ins = buildAdjudicationInsert({ cluster_key: parsed.cluster_key, decision: parsed.decision, rationale: parsed.rationale, prd_ref: parsed.prd_ref, author: parsed.author });
+    const rows = await run(ins.text, ins.params);
+    return ok({ ok: true, action: 'log', logged: rows[0] ?? null });
+  }
+  const q = buildAdjudicationListSql({ cluster_key: parsed.cluster_key, limit: parsed.limit });
+  const rows = await run(q.text, q.params);
+  return ok({ ok: true, action: 'list', count: rows.length, rows: reduceLedgerList(rows as unknown as LedgerRow[]) });
 }

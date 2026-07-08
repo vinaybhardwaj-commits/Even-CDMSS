@@ -1,0 +1,409 @@
+/**
+ * Pure core for the OPD Feedback Loop MCP tools (PRD OPD-FEEDBACK-LOOP-MCP-PRD-v1.1 §3–§6).
+ * NO imports from lib/db, next/*, or any transport layer — this module only builds parameterized
+ * SQL text ($1…$n; user args are NEVER string-interpolated) and reduces raw result rows into the
+ * tool response shapes. The impure runner (lib/mcp-tools.ts) executes the SQL and calls the reducers.
+ *
+ * Semantics (normative, PRD §3):
+ *  - Current-state dedup: effective verdict of (audit_id, finding_ref) = latest created_at, tie-break
+ *    highest id. Earlier rows are history (excluded from rollups; surfaced by feedback_detail history=true).
+ *  - precision_strict = tp / (tp + nitpick + false); contested EXCLUDED (demand-side dispute).
+ *  - contested_rate = contested / triaged. Zero denominator → null (never NaN).
+ *  - coverage_pct = triaged / fired per engine_version × signal_type.
+ *  - open-adjudication: (false + nitpick) ≥ OPEN_ADJ_THRESHOLD with no current non-defer ledger decision.
+ */
+
+// ── controlled vocab ──────────────────────────────────────────────────────────
+export const FINDING_VERDICTS = ['true_positive', 'nitpick', 'false', 'contested'] as const;
+export const AUDIT_VERDICTS = ['agree', 'disagree', 'needs_action'] as const;
+export const MISSED_VERDICTS = ['missed'] as const;
+export const SCOPES = ['finding', 'missed', 'audit'] as const;
+export const DECISIONS = ['fix', 'suppress', 'accept', 'defer', 'monitor'] as const;
+
+export type FeedbackScope = (typeof SCOPES)[number];
+export type Decision = (typeof DECISIONS)[number];
+
+export const OPEN_ADJ_THRESHOLD = 3;           // ≥3 false+nitpick with no non-defer decision → open
+export const ESCALATION_MARKER = '[escalation package generated]';
+export const UNCLASSIFIED = '(unclassified)';   // label for null signal_type
+export const UNJOINED = 'unjoined';             // label for feedback whose audit_id no longer joins
+export const DETAIL_LIMIT_DEFAULT = 50;
+export const DETAIL_LIMIT_MAX = 200;
+
+// dedup ordering, documented once (used by every current-state CTE)
+export const CURRENT_STATE_ORDER = 'ORDER BY f.audit_id, f.finding_ref, f.created_at DESC, f.id DESC';
+
+/** Latest created_at (tie-break highest id) at the SQL level is expressed as DISTINCT ON + this order. */
+
+// ── small numeric helpers ─────────────────────────────────────────────────────
+const round1 = (x: number) => Math.round(x * 10) / 10;
+const round4 = (x: number) => Math.round(x * 10000) / 10000;
+/** Ratio with a zero-denominator → null guard (never NaN). PRD §3. */
+export function ratio(num: number, den: number): number | null {
+  return den > 0 ? round4(num / den) : null;
+}
+/** Percentage (one decimal) with the same zero-denominator → null guard. */
+export function pct(num: number, den: number): number | null {
+  return den > 0 ? round1((num / den) * 100) : null;
+}
+export function clampLimit(v: unknown, def = DETAIL_LIMIT_DEFAULT, min = 1, max = DETAIL_LIMIT_MAX): number {
+  const nRaw = Number(v);
+  if (!Number.isFinite(nRaw)) return def;
+  return Math.max(min, Math.min(max, Math.floor(nRaw)));
+}
+/** Convention: cluster_key for a signal_type × engine_version bucket. */
+export function clusterKey(signalType: string, engineVersion: string): string {
+  return `${signalType}@${engineVersion}`;
+}
+/** The F4 escalation marker test — the ONLY definition of "is this comment an escalation event". */
+export function isEscalationComment(comment: unknown): boolean {
+  return typeof comment === 'string' && comment.startsWith(ESCALATION_MARKER);
+}
+const nz = (v: unknown): number => { const x = Number(v); return Number.isFinite(x) ? x : 0; };
+const labelSig = (v: unknown): string => { const s = v == null ? '' : String(v).trim(); return s || UNCLASSIFIED; };
+
+// ── DDL + write SQL for the adjudication ledger (ensured at call time) ─────────
+export const ADJUDICATION_DDL = `CREATE TABLE IF NOT EXISTS opd_feedback_adjudications (
+  id bigserial PRIMARY KEY,
+  cluster_key text NOT NULL,
+  decision text NOT NULL CHECK (decision IN ('fix','suppress','accept','defer','monitor')),
+  rationale text NOT NULL,
+  prd_ref text,
+  author text,
+  created_at timestamptz NOT NULL DEFAULT now()
+)`;
+
+export type Sql = { text: string; params: unknown[] };
+
+/** Param collector: push a value, get back its $n placeholder. Keeps ordering correct + safe. */
+function pb() {
+  const params: unknown[] = [];
+  const P = (v: unknown) => { params.push(v); return `$${params.length}`; };
+  return { params, P };
+}
+
+// ── rollup SQL builders (PRD §4.1) ────────────────────────────────────────────
+export type RollupFilters = { appSource: string; engineVersion?: string | null; since?: string | null; until?: string | null; signalType?: string | null };
+
+function rangeAnd(P: (v: unknown) => string, since?: string | null, until?: string | null): string {
+  let s = '';
+  if (since) s += ` AND f.created_at >= ${P(since)}::date`;
+  if (until) s += ` AND f.created_at < (${P(until)}::date + INTERVAL '1 day')`;
+  return s;
+}
+
+/** Current-state finding verdict counts, grouped by engine_version × signal_type × verdict. */
+export function buildRollupFindingSql(o: RollupFilters): Sql {
+  const { params, P } = pb();
+  let cfWhere = `f.scope = 'finding' AND f.finding_ref IS NOT NULL AND f.app_source = ${P(o.appSource)}`;
+  cfWhere += rangeAnd(P, o.since, o.until);
+  if (o.signalType) cfWhere += ` AND f.signal_type = ${P(o.signalType)}`;
+  let outer = '';
+  if (o.engineVersion) outer = ` WHERE a.engine_version = ${P(o.engineVersion)}`;
+  const text = `WITH cf AS (
+  SELECT DISTINCT ON (f.audit_id, f.finding_ref) f.audit_id, f.finding_ref, f.signal_type, f.verdict
+  FROM opd_audit_feedback f
+  WHERE ${cfWhere}
+  ${CURRENT_STATE_ORDER}
+)
+SELECT COALESCE(a.engine_version, '${UNJOINED}') AS engine_version, cf.signal_type AS signal_type, cf.verdict AS verdict, count(*)::int AS n
+FROM cf LEFT JOIN opd_note_audits a ON a.id = cf.audit_id${outer}
+GROUP BY 1, 2, 3`;
+  return { text, params };
+}
+
+/** Fired denominator: findings elements in opd_note_audits, grouped by engine_version × signal_type. */
+export function buildRollupFiredSql(o: RollupFilters): Sql {
+  const { params, P } = pb();
+  let where = `a.app_source = ${P(o.appSource)}`;
+  if (o.engineVersion) where += ` AND a.engine_version = ${P(o.engineVersion)}`;
+  if (o.signalType) where += ` AND elem->>'signal_type' = ${P(o.signalType)}`;
+  const text = `SELECT a.engine_version AS engine_version, elem->>'signal_type' AS signal_type, count(*)::int AS fired
+FROM opd_note_audits a, jsonb_array_elements(COALESCE(a.findings, '[]'::jsonb)) elem
+WHERE ${where}
+GROUP BY 1, 2`;
+  return { text, params };
+}
+
+/** Missed flags (scope=missed, no finding_ref), grouped by engine_version × signal_type (nullable). */
+export function buildRollupMissedSql(o: RollupFilters): Sql {
+  const { params, P } = pb();
+  let where = `f.scope = 'missed' AND f.app_source = ${P(o.appSource)}`;
+  where += rangeAnd(P, o.since, o.until);
+  if (o.signalType) where += ` AND f.signal_type = ${P(o.signalType)}`;
+  const text = `WITH m AS (
+  SELECT f.audit_id, f.signal_type FROM opd_audit_feedback f WHERE ${where}
+)
+SELECT COALESCE(a.engine_version, '${UNJOINED}') AS engine_version, m.signal_type AS signal_type, count(*)::int AS n
+FROM m LEFT JOIN opd_note_audits a ON a.id = m.audit_id
+GROUP BY 1, 2`;
+  return { text, params };
+}
+
+/** Audit-scope rows (verdict + comment) for the reducer to tally (comments never leave in output). */
+export function buildRollupAuditSql(o: RollupFilters): Sql {
+  const { params, P } = pb();
+  let where = `f.scope = 'audit' AND f.app_source = ${P(o.appSource)}`;
+  where += rangeAnd(P, o.since, o.until);
+  const text = `SELECT f.verdict AS verdict, f.comment AS comment FROM opd_audit_feedback f WHERE ${where}`;
+  return { text, params };
+}
+
+/** Reviewer tally (any scope with an author) within the range. */
+export function buildRollupReviewerSql(o: RollupFilters): Sql {
+  const { params, P } = pb();
+  let where = `f.app_source = ${P(o.appSource)} AND f.author IS NOT NULL AND btrim(f.author) <> ''`;
+  where += rangeAnd(P, o.since, o.until);
+  const text = `SELECT f.author AS author, count(*)::int AS n FROM opd_audit_feedback f WHERE ${where} GROUP BY f.author ORDER BY n DESC`;
+  return { text, params };
+}
+
+/** Latest ledger decision per cluster_key (for the open-adjudication gate). */
+export function buildLatestLedgerSql(): Sql {
+  return {
+    text: `SELECT DISTINCT ON (cluster_key) cluster_key, decision FROM opd_feedback_adjudications ORDER BY cluster_key, created_at DESC, id DESC`,
+    params: [],
+  };
+}
+
+// ── rollup reducer (PRD §3 semantics live here → unit-tested) ──────────────────
+export type FindingCountRow = { engine_version: string; signal_type: string | null; verdict: string; n: number | string };
+export type FiredRow = { engine_version: string; signal_type: string | null; fired: number | string };
+export type MissedRow = { engine_version: string; signal_type: string | null; n: number | string };
+export type AuditRow = { verdict: string | null; comment: string | null };
+export type ReviewerRow = { author: string; n: number | string };
+export type LedgerLatestRow = { cluster_key: string; decision: string };
+
+export type RollupBucket = {
+  engine_version: string; signal_type: string;
+  fired: number; triaged: number; coverage_pct: number | null;
+  tp: number; nitpick: number; false: number; contested: number;
+  precision_strict: number | null; contested_rate: number | null;
+};
+
+export function reduceRollup(inputs: {
+  findingRows: FindingCountRow[]; firedRows: FiredRow[]; missedRows: MissedRow[];
+  auditRows: AuditRow[]; reviewerRows: ReviewerRow[]; ledgerRows: LedgerLatestRow[];
+}, opts: { threshold?: number } = {}): {
+  buckets: RollupBucket[];
+  missed: { signal_type: string; n: number; engine_version: string }[];
+  audit_scope: { n_comments: number; verdict_counts: Record<string, number>; n_escalations: number };
+  reviewers: { author: string; n: number }[];
+  open_adjudications: string[];
+  totals: Record<string, number | null>;
+} {
+  const threshold = opts.threshold ?? OPEN_ADJ_THRESHOLD;
+  const key = (ev: string, st: string) => `${ev} ${st}`;
+  const buckets = new Map<string, RollupBucket>();
+  const blank = (ev: string, st: string): RollupBucket => ({
+    engine_version: ev, signal_type: st, fired: 0, triaged: 0, coverage_pct: null,
+    tp: 0, nitpick: 0, false: 0, contested: 0, precision_strict: null, contested_rate: null,
+  });
+  const get = (ev: string, st: string) => {
+    const k = key(ev, st); let b = buckets.get(k); if (!b) { b = blank(ev, st); buckets.set(k, b); } return b;
+  };
+
+  // triaged verdict counts (current-state)
+  for (const r of inputs.findingRows) {
+    const b = get(String(r.engine_version), labelSig(r.signal_type));
+    const c = nz(r.n);
+    if (r.verdict === 'true_positive') b.tp += c;
+    else if (r.verdict === 'nitpick') b.nitpick += c;
+    else if (r.verdict === 'false') b.false += c;
+    else if (r.verdict === 'contested') b.contested += c;
+  }
+  // fired denominator
+  for (const r of inputs.firedRows) get(String(r.engine_version), labelSig(r.signal_type)).fired += nz(r.fired);
+
+  // finalize per-bucket derived metrics
+  const open = new Set<string>();
+  for (const b of buckets.values()) {
+    b.triaged = b.tp + b.nitpick + b.false + b.contested;
+    b.precision_strict = ratio(b.tp, b.tp + b.nitpick + b.false);
+    b.contested_rate = ratio(b.contested, b.triaged);
+    b.coverage_pct = pct(b.triaged, b.fired);
+    if (b.false + b.nitpick >= threshold) open.add(clusterKey(b.signal_type, b.engine_version));
+  }
+
+  // open-adjudication gate: keep only cluster_keys with no current non-defer decision
+  const latest = new Map<string, string>();
+  for (const r of inputs.ledgerRows) latest.set(r.cluster_key, r.decision);
+  const open_adjudications = [...open].filter((ck) => {
+    const d = latest.get(ck);
+    return d === undefined || d === 'defer';
+  }).sort();
+
+  // audit scope tally (marker + verdicts)
+  const verdict_counts: Record<string, number> = { agree: 0, disagree: 0, needs_action: 0, none: 0 };
+  let n_escalations = 0;
+  for (const r of inputs.auditRows) {
+    const v = r.verdict && verdict_counts[r.verdict] !== undefined ? r.verdict : 'none';
+    verdict_counts[v] += 1;
+    if (isEscalationComment(r.comment)) n_escalations += 1;
+  }
+
+  const missed = inputs.missedRows.map((r) => ({ signal_type: labelSig(r.signal_type), n: nz(r.n), engine_version: String(r.engine_version) }));
+  const reviewers = inputs.reviewerRows.map((r) => ({ author: String(r.author), n: nz(r.n) }));
+
+  const bucketList = [...buckets.values()].sort((a, b) => (b.triaged - a.triaged) || (b.fired - a.fired));
+  const sum = (f: (b: RollupBucket) => number) => bucketList.reduce((s, b) => s + f(b), 0);
+  const totTp = sum((b) => b.tp), totNit = sum((b) => b.nitpick), totFalse = sum((b) => b.false), totCon = sum((b) => b.contested);
+  const totTriaged = sum((b) => b.triaged), totFired = sum((b) => b.fired);
+  const totals: Record<string, number | null> = {
+    buckets: bucketList.length, fired: totFired, triaged: totTriaged,
+    tp: totTp, nitpick: totNit, false: totFalse, contested: totCon,
+    precision_strict: ratio(totTp, totTp + totNit + totFalse),
+    contested_rate: ratio(totCon, totTriaged),
+    coverage_pct: pct(totTriaged, totFired),
+    missed: missed.reduce((s, m) => s + m.n, 0),
+    n_escalations, open_adjudications: open_adjudications.length,
+  };
+
+  return { buckets: bucketList, missed, audit_scope: { n_comments: inputs.auditRows.length, verdict_counts, n_escalations }, reviewers, open_adjudications, totals };
+}
+
+// ── feedback_detail SQL (PRD §4.2) ─────────────────────────────────────────────
+export type DetailFilters = {
+  appSource: string; scope: FeedbackScope; verdict?: string | null; signalType?: string | null;
+  engineVersion?: string | null; uid?: string | null; history?: boolean; limit: number;
+};
+
+function verdictWhitelistFor(scope: FeedbackScope): readonly string[] {
+  return scope === 'finding' ? FINDING_VERDICTS : scope === 'missed' ? MISSED_VERDICTS : AUDIT_VERDICTS;
+}
+
+/** Build the detail query. Throws on a non-whitelisted scope/verdict filter (PRD §8 test 6). */
+export function buildDetailSql(o: DetailFilters): Sql {
+  if (!(SCOPES as readonly string[]).includes(o.scope)) throw new Error(`unknown scope filter: ${o.scope}`);
+  if (o.verdict && !verdictWhitelistFor(o.scope).includes(o.verdict)) {
+    throw new Error(`unknown verdict filter for scope=${o.scope}: ${o.verdict}`);
+  }
+  const limit = clampLimit(o.limit);
+  const { params, P } = pb();
+  const app = P(o.appSource);
+  const commonFilters = (fAlias: string, aAlias: string) => {
+    let s = '';
+    if (o.verdict) s += ` AND ${fAlias}.verdict = ${P(o.verdict)}`;
+    if (o.signalType) s += ` AND ${fAlias}.signal_type = ${P(o.signalType)}`;
+    if (o.uid) s += ` AND ${fAlias}.uid = ${P(o.uid)}`;
+    if (o.engineVersion) s += ` AND ${aAlias}.engine_version = ${P(o.engineVersion)}`;
+    return s;
+  };
+  const cols = `f.id AS feedback_id, f.created_at, f.scope, f.verdict, f.comment, f.author, f.uid,
+    f.audit_id, f.finding_ref, f.signal_type, a.engine_version, a.note_date, a.doctor_uid`;
+  const lat = `LEFT JOIN LATERAL (
+    SELECT elem FROM jsonb_array_elements(COALESCE(a.findings, '[]'::jsonb)) elem
+    WHERE elem->>'finding_ref' = f.finding_ref LIMIT 1
+  ) fj ON true`;
+
+  let text: string;
+  if (o.scope === 'finding') {
+    const cfApp = app; // reuse $1 (same appSource) inside the cur CTE
+    const curCte = `cur AS (
+    SELECT DISTINCT ON (f.audit_id, f.finding_ref) f.id AS cur_id
+    FROM opd_audit_feedback f
+    WHERE f.scope = 'finding' AND f.finding_ref IS NOT NULL AND f.app_source = ${cfApp}
+    ${CURRENT_STATE_ORDER}
+  )`;
+    const join = o.history ? 'LEFT JOIN cur ON cur.cur_id = f.id' : 'JOIN cur ON cur.cur_id = f.id';
+    text = `WITH ${curCte}
+SELECT ${cols}, fj.elem AS finding_raw, (cur.cur_id IS NULL) AS history
+FROM opd_audit_feedback f
+${join}
+LEFT JOIN opd_note_audits a ON a.id = f.audit_id
+${lat}
+WHERE f.scope = 'finding' AND f.finding_ref IS NOT NULL AND f.app_source = ${app}${commonFilters('f', 'a')}
+ORDER BY f.created_at DESC, f.id DESC
+LIMIT ${P(limit)}`;
+  } else {
+    const scopeP = P(o.scope);
+    text = `SELECT ${cols}, NULL::jsonb AS finding_raw, false AS history
+FROM opd_audit_feedback f
+LEFT JOIN opd_note_audits a ON a.id = f.audit_id
+WHERE f.scope = ${scopeP} AND f.app_source = ${app}${commonFilters('f', 'a')}
+ORDER BY f.created_at DESC, f.id DESC
+LIMIT ${P(limit)}`;
+  }
+  return { text, params };
+}
+
+export type DetailRawRow = {
+  feedback_id: string; created_at: string; scope: string; verdict: string | null; comment: string | null;
+  author: string | null; uid: string | null; audit_id: string; finding_ref: string | null; signal_type: string | null;
+  engine_version: string | null; note_date: string | null; doctor_uid: string | null;
+  finding_raw: unknown; history: boolean;
+};
+/** Shape a raw detail row into the tool output, resolving the finding object from finding_raw. */
+export function shapeDetailRow(r: DetailRawRow): Record<string, unknown> {
+  const fr = (r.finding_raw && typeof r.finding_raw === 'object') ? r.finding_raw as Record<string, unknown> : null;
+  const ref_resolved = r.scope === 'finding' ? fr !== null : false;
+  const finding = fr ? {
+    subject: fr.subject ?? null, verdict: fr.verdict ?? null, domain: fr.domain ?? null, rationale: fr.rationale ?? null,
+  } : null;
+  return {
+    feedback_id: r.feedback_id, created_at: r.created_at, scope: r.scope, verdict: r.verdict, comment: r.comment,
+    author: r.author, uid: r.uid, audit_id: r.audit_id, finding_ref: r.finding_ref, signal_type: r.signal_type,
+    engine_version: r.engine_version ?? null, note_date: r.note_date ?? null, doctor_uid: r.doctor_uid ?? null,
+    history: r.history === true, ref_resolved, finding,
+  };
+}
+
+// ── feedback_adjudicate (PRD §4.3) ─────────────────────────────────────────────
+export type AdjudicateParsed =
+  | { ok: true; action: 'log'; cluster_key: string; decision: Decision; rationale: string; prd_ref: string | null; author: string }
+  | { ok: true; action: 'list'; cluster_key: string | null; limit: number }
+  | { ok: false; error: string };
+
+/** Validate feedback_adjudicate args (mirrors parseFeedbackBody style; the ONLY write path). */
+export function parseAdjudicateArgs(input: unknown): AdjudicateParsed {
+  const a: Record<string, unknown> = (input && typeof input === 'object') ? input as Record<string, unknown> : {};
+  const action = String(a.action ?? '').trim();
+  if (action !== 'log' && action !== 'list') return { ok: false, error: "action must be 'log' or 'list'" };
+
+  if (action === 'list') {
+    const ck = a.cluster_key == null ? null : String(a.cluster_key).trim();
+    return { ok: true, action: 'list', cluster_key: ck && ck.length ? ck : null, limit: clampLimit(a.limit) };
+  }
+
+  const cluster_key = String(a.cluster_key ?? '').trim();
+  if (!cluster_key) return { ok: false, error: 'cluster_key is required for action=log' };
+  const decision = String(a.decision ?? '').trim();
+  if (!(DECISIONS as readonly string[]).includes(decision)) {
+    return { ok: false, error: 'decision must be one of ' + DECISIONS.join(', ') };
+  }
+  const rationale = String(a.rationale ?? '').trim();
+  if (!rationale) return { ok: false, error: 'rationale is required for action=log' };
+  const prd_ref = a.prd_ref == null ? null : (String(a.prd_ref).trim() || null);
+  const author = (a.author == null ? '' : String(a.author).trim()) || 'cowork-orchestrator';
+  return { ok: true, action: 'log', cluster_key: cluster_key.slice(0, 200), decision: decision as Decision, rationale: rationale.slice(0, 4000), prd_ref: prd_ref ? prd_ref.slice(0, 200) : null, author: author.slice(0, 120) };
+}
+
+export function buildAdjudicationInsert(v: { cluster_key: string; decision: string; rationale: string; prd_ref: string | null; author: string }): Sql {
+  return {
+    text: `INSERT INTO opd_feedback_adjudications (cluster_key, decision, rationale, prd_ref, author)
+VALUES ($1, $2, $3, $4, $5) RETURNING id, cluster_key, decision, created_at`,
+    params: [v.cluster_key, v.decision, v.rationale, v.prd_ref, v.author],
+  };
+}
+
+export function buildAdjudicationListSql(o: { cluster_key: string | null; limit: number }): Sql {
+  const { params, P } = pb();
+  const where = o.cluster_key ? ` WHERE cluster_key = ${P(o.cluster_key)}` : '';
+  const text = `SELECT id, cluster_key, decision, rationale, prd_ref, author, created_at
+FROM opd_feedback_adjudications${where}
+ORDER BY created_at DESC, id DESC
+LIMIT ${P(clampLimit(o.limit))}`;
+  return { text, params };
+}
+
+export type LedgerRow = { id: number | string; cluster_key: string; decision: string; rationale: string; prd_ref: string | null; author: string | null; created_at: string };
+/** Flag which listed rows are the current status for their cluster_key (newest per cluster_key). */
+export function reduceLedgerList(rows: LedgerRow[]): (LedgerRow & { is_current: boolean })[] {
+  const seen = new Set<string>();
+  // rows arrive newest-first; the first row per cluster_key is current
+  return rows.map((r) => {
+    const first = !seen.has(r.cluster_key);
+    if (first) seen.add(r.cluster_key);
+    return { ...r, is_current: first };
+  });
+}
