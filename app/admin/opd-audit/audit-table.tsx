@@ -7,19 +7,46 @@ import { CATS, CAT_DEF, type CatSev } from '@/lib/opd-audit-cats';
 export type AuditRow = {
   id: string; time: string; doctor: string; consult: string; uid: string;
   band: string; index: number; lowVal: number; issue: string; cats: string[];
+  doctorUid: string | null;
 };
 
 const BANDS = ['A', 'B', 'C', 'D', 'E'];
 const SEV_COLOR: Record<CatSev, string> = { doc: '#d97706', caution: '#b45309', low: '#dc2626' };
+const BULK_CAP = 50;
+
+// Download a bulk "note + audit" PDF for an explicit id set (honours the active filter). POSTs the
+// ids so any client filter (doctor / band / category / search) is respected, not just ?doctor=.
+async function downloadBulk(ids: string[], setBusy: (b: boolean) => void, setErr: (s: string) => void) {
+  if (ids.length === 0) return;
+  if (ids.length > BULK_CAP) { setErr(`${ids.length} notes selected — the PDF cap is ${BULK_CAP}. Narrow the filter.`); return; }
+  setBusy(true); setErr('');
+  try {
+    const res = await fetch('/api/opd-audit/export-pdf', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ids }),
+    });
+    if (!res.ok) { const j = await res.json().catch(() => ({})); setErr(j.error || `status ${res.status}`); setBusy(false); return; }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `opd-audits-${ids.length}-notes.pdf`;
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  } catch (e) {
+    setErr(String((e as Error).message));
+  }
+  setBusy(false);
+}
 
 // Top-issues panel (categorised, clickable) merged with the searchable all-notes table.
-// Clicking an issue filters the table; search + band + sort stack on top. All client-side
+// Clicking an issue filters the table; search + band + doctor + sort stack on top. All client-side
 // over the rows the server already fetched (≤600), so it's instant.
-export default function NotesExplorer({ rows }: { rows: AuditRow[] }) {
+export default function NotesExplorer({ rows, initialDoctorUid }: { rows: AuditRow[]; initialDoctorUid?: string }) {
   const [q, setQ] = useState('');
   const [band, setBand] = useState('');
   const [cat, setCat] = useState('');
+  const [docUid, setDocUid] = useState(initialDoctorUid || '');
   const [sort, setSort] = useState<'index' | 'time'>('index');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
 
   const tally = useMemo(() => {
     const m = new Map<string, number>();
@@ -30,15 +57,17 @@ export default function NotesExplorer({ rows }: { rows: AuditRow[] }) {
   const docIssues = issues.filter((i) => i.group === 'documentation').sort((a, b) => b.n - a.n);
   const rxIssues = issues.filter((i) => i.group === 'prescribing').sort((a, b) => b.n - a.n);
   const total = rows.length || 1;
+  const docName = useMemo(() => (docUid ? (rows.find((r) => r.doctorUid === docUid)?.doctor || 'this doctor') : ''), [rows, docUid]);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
     let r = rows;
+    if (docUid) r = r.filter((x) => x.doctorUid === docUid);
     if (cat) r = r.filter((x) => x.cats.includes(cat));
     if (band) r = r.filter((x) => x.band === band);
     if (needle) r = r.filter((x) => `${x.doctor} ${x.consult} ${x.issue} ${x.uid} ${x.band}`.toLowerCase().includes(needle));
     return [...r].sort((a, b) => (sort === 'index' ? a.index - b.index : b.time.localeCompare(a.time)));
-  }, [rows, q, band, cat, sort]);
+  }, [rows, q, band, cat, docUid, sort]);
 
   type Issue = (typeof issues)[number];
   const IssueRow = ({ i }: { i: Issue }) => {
@@ -74,7 +103,7 @@ export default function NotesExplorer({ rows }: { rows: AuditRow[] }) {
       </div>
 
       {/* NOTES */}
-      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+      <div id="notes" className="overflow-hidden rounded-xl border border-slate-200 bg-white scroll-mt-4">
         <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-3 py-2.5">
           <span className="font-serif text-[14px] font-semibold text-slate-900">All notes</span>
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search doctor, diagnosis, drug, uid…"
@@ -87,8 +116,14 @@ export default function NotesExplorer({ rows }: { rows: AuditRow[] }) {
           </span>
           <button onClick={() => setSort(sort === 'index' ? 'time' : 'index')} className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-500 hover:text-brand">sort: {sort === 'index' ? 'worst first' : 'newest'}</button>
           {cat && <button onClick={() => setCat('')} className="rounded-lg bg-brand-faint px-2 py-1 text-[11px] font-medium text-brand">✕ {CAT_DEF[cat]?.label}</button>}
+          {docUid && <button onClick={() => setDocUid('')} className="rounded-lg bg-brand-faint px-2 py-1 text-[11px] font-medium text-brand">Filtered to {docName} · clear ✕</button>}
+          <button onClick={() => downloadBulk(filtered.map((r) => r.id), setBusy, setErr)} disabled={busy || filtered.length === 0}
+            className={`rounded-lg border px-2 py-1 text-[11px] font-medium ${busy || filtered.length === 0 ? 'border-slate-200 text-slate-400' : 'border-brand/40 text-brand hover:bg-brand-faint'}`}>
+            {busy ? 'Building…' : `↓ Download all (${filtered.length}) as PDF`}
+          </button>
           <span className="ml-auto text-[11px] text-slate-400">{filtered.length} of {rows.length}</span>
         </div>
+        {err && <div className="border-b border-slate-100 bg-red-50/50 px-3 py-1.5 text-[11px] text-red-600">{err}</div>}
         <div className="max-h-[520px] overflow-y-auto">
           <table className="w-full text-[11.5px]">
             <thead className="sticky top-0 z-10 bg-white text-[10px] text-slate-400 shadow-[0_1px_0_#f1efe9]">
@@ -99,20 +134,26 @@ export default function NotesExplorer({ rows }: { rows: AuditRow[] }) {
                 <th className="px-2 py-1.5 text-center font-normal">band</th>
                 <th className="px-2 py-1.5 text-right font-normal">index</th>
                 <th className="px-3 py-1.5 text-left font-normal">top issue</th>
+                <th className="px-2 py-1.5 text-right font-normal">pdf</th>
               </tr>
             </thead>
             <tbody>
               {filtered.map((r) => (
                 <tr key={r.id} className="border-t border-slate-50 hover:bg-slate-50">
                   <td className="whitespace-nowrap px-3 py-1.5 text-slate-500"><Link href={`/admin/opd-audit/${r.id}`} className="hover:text-brand">{r.time}</Link></td>
-                  <td className="whitespace-nowrap px-2 py-1.5 text-slate-700"><Link href={`/admin/opd-audit/${r.id}`} className="hover:text-brand hover:underline">{r.doctor}</Link></td>
+                  <td className="whitespace-nowrap px-2 py-1.5 text-slate-700">
+                    {r.doctorUid
+                      ? <button onClick={() => setDocUid(r.doctorUid!)} className="text-left hover:text-brand hover:underline" title="Filter to this doctor">{r.doctor}</button>
+                      : <span>{r.doctor}</span>}
+                  </td>
                   <td className="whitespace-nowrap px-2 py-1.5 text-slate-400">{r.consult}</td>
                   <td className="px-2 py-1.5 text-center"><span className="rounded px-1.5 py-0.5 text-[10px] font-medium text-white" style={{ background: bandColor(r.band) }}>{r.band}</span></td>
                   <td className="px-2 py-1.5 text-right font-medium" style={{ color: scoreColor(r.index) }}>{r.index}</td>
                   <td className="px-3 py-1.5"><Link href={`/admin/opd-audit/${r.id}`} className="text-slate-600 hover:text-brand hover:underline">{r.issue}</Link></td>
+                  <td className="whitespace-nowrap px-2 py-1.5 text-right"><a href={`/api/opd-audit/export-pdf?id=${r.id}`} className="text-slate-400 hover:text-brand" title="Download note + audit PDF">↓</a></td>
                 </tr>
               ))}
-              {filtered.length === 0 && <tr><td colSpan={6} className="px-3 py-6 text-center text-[12px] text-slate-400">No notes match.</td></tr>}
+              {filtered.length === 0 && <tr><td colSpan={7} className="px-3 py-6 text-center text-[12px] text-slate-400">No notes match.</td></tr>}
             </tbody>
           </table>
         </div>

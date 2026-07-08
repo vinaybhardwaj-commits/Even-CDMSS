@@ -75,9 +75,10 @@ const PILLARS = [
 ] as const;
 type DomKey = (typeof PILLARS)[number]['key'];
 
-export default async function OpdAuditAdmin({ searchParams }: { searchParams: Promise<{ day?: string; period?: string; locked?: string }> }) {
+export default async function OpdAuditAdmin({ searchParams }: { searchParams: Promise<{ day?: string; period?: string; locked?: string; doctor?: string }> }) {
   const sp = await searchParams;
   if (!(await isAdminUnlocked())) return <Locked configured={adminTokenConfigured()} bad={sp.locked === '1'} />;
+  const initialDoctorUid = (sp.doctor && /^[A-Za-z0-9_-]{1,64}$/.test(sp.doctor)) ? sp.doctor : undefined;
 
   const period: Period = sp.period === 'week' ? 'week' : sp.period === 'month' ? 'month' : 'day';
   const latest = await rowsOf<{ d: string }>(
@@ -136,6 +137,7 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
     band: r.band, index: n(r.note_quality_index), lowVal: n(r.n_low_value),
     issue: issueFrom(r.findings, n(r.completeness_pct)),
     cats: catsForRow(parseJson<string[]>(r.missing_fields, []), parseJson<{ subject?: string; verdict?: string; rationale?: string }[]>(r.findings, [])),
+    doctorUid: r.doctor_uid ? String(r.doctor_uid) : null,
   }));
 
   const k = kpiR[0] || {};
@@ -241,7 +243,7 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
         <div>
           <div className="text-[11px] font-semibold uppercase tracking-[0.09em] text-brand">OPD Audit</div>
           <h1 className="font-serif text-[28px] font-semibold leading-tight text-slate-900 sm:text-[31px]">OPD note quality</h1>
-          <p className="mt-1 max-w-2xl text-[13.5px] text-slate-500">{periodLabel} · every non-draft medical OPD note, read by Right Care. Advisory — a process &amp; documentation proxy, not a clinician scorecard. <Link href="/admin/opd-audit/how-it-works" className="text-brand hover:underline">How the audit works →</Link></p>
+          <p className="mt-1 max-w-2xl text-[13.5px] text-slate-500">{periodLabel} · every non-draft medical OPD note, read by Right Care. Advisory — a process &amp; documentation proxy, not a clinician scorecard. <Link href="/admin/opd-audit/doctors" className="text-brand hover:underline">Browse by doctor →</Link> · <Link href="/admin/opd-audit/how-it-works" className="text-brand hover:underline">How the audit works →</Link></p>
         </div>
         <div className="flex items-center gap-2">
           <span className="flex overflow-hidden rounded-lg border border-slate-200">
@@ -318,7 +320,7 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
 
           {/* TOP ISSUES + browse */}
           <div className="mt-5">
-            <NotesExplorer rows={allRows} />
+            <NotesExplorer rows={allRows} initialDoctorUid={initialDoctorUid} />
           </div>
 
           {/* trend + band distribution */}
@@ -362,7 +364,11 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
                       const outlier = vol >= 10 && lv >= 85;
                       return (
                         <tr key={d.doctor_uid} className="border-t border-slate-50">
-                          <td className="px-4 py-1.5 text-slate-700">{docName(d.doctor_uid)}{outlier && <span className="ml-1.5 rounded bg-red-50 px-1 py-0.5 text-[9px] font-semibold text-red-700">outlier</span>}</td>
+                          <td className="px-4 py-1.5 text-slate-700">
+                            <Link href={`/admin/opd-audit?day=${day}&period=${period}&doctor=${d.doctor_uid}#notes`} className="hover:text-brand hover:underline" title="Filter this day's notes to this doctor">{docName(d.doctor_uid)}</Link>
+                            {outlier && <span className="ml-1.5 rounded bg-red-50 px-1 py-0.5 text-[9px] font-semibold text-red-700">outlier</span>}
+                            <Link href={`/admin/opd-audit/doctor/${d.doctor_uid}`} className="ml-1.5 text-[10px] text-slate-400 hover:text-brand" title="All audits for this doctor">history →</Link>
+                          </td>
                           <td className="px-2 py-1.5 text-right text-slate-500">{vol}</td>
                           <td className="px-2 py-1.5 text-right font-medium" style={{ color: scoreColor(n(d.idx)) }}>{n(d.idx)}</td>
                           <td className="px-4 py-1.5">
@@ -379,11 +385,16 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
               <div className="border-b border-amber-100 bg-amber-50/60 px-4 py-2.5"><span className="font-serif text-[14px] font-semibold text-amber-800">Needs review — lowest {period === 'day' ? 'today' : 'this ' + period}</span></div>
               <div>
                 {reviewR.map((r) => (
-                  <Link key={r.id} href={`/admin/opd-audit/${r.id}`} className="flex items-center gap-2 border-b border-slate-50 px-4 py-2 text-[11.5px] hover:bg-slate-50">
+                  <div key={r.id} className="flex items-center gap-1.5 border-b border-slate-50 px-4 py-2 text-[11.5px] hover:bg-slate-50">
                     <span className="rounded px-1.5 py-0.5 text-[10px] font-medium text-white" style={{ background: bandColor(r.band) }}>{r.band}</span>
-                    <span className="flex-1 truncate text-slate-700">{fmtIstTime(r.note_date)} · {docName(r.doctor_uid)} · {issueFrom(r.findings, n(r.completeness_pct))}</span>
+                    <Link href={`/admin/opd-audit/${r.id}`} className="whitespace-nowrap text-slate-500 hover:text-brand">{fmtIstTime(r.note_date)}</Link>
+                    <span className="text-slate-300">·</span>
+                    {r.doctor_uid
+                      ? <Link href={`/admin/opd-audit?day=${day}&period=${period}&doctor=${r.doctor_uid}#notes`} className="whitespace-nowrap text-slate-700 hover:text-brand hover:underline" title="Filter this day's notes to this doctor">{docName(r.doctor_uid)}</Link>
+                      : <span className="whitespace-nowrap text-slate-700">{docName(r.doctor_uid)}</span>}
+                    <Link href={`/admin/opd-audit/${r.id}`} className="flex-1 truncate text-slate-600 hover:text-brand">· {issueFrom(r.findings, n(r.completeness_pct))}</Link>
                     <span className="text-slate-300">›</span>
-                  </Link>
+                  </div>
                 ))}
               </div>
             </div>

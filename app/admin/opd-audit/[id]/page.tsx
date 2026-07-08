@@ -476,6 +476,7 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
             {prevId ? <Link href={`/admin/opd-audit/${prevId}`} className="text-brand hover:underline">‹ prev</Link> : <span className="text-slate-300">‹ prev</span>}
             <span className="flex flex-col items-center gap-0.5 text-[10px]">
               {prescriptionUrl ? <a href={prescriptionUrl} target="_blank" rel="noopener noreferrer" className="text-brand hover:underline">actual PDF</a> : null}
+              <a href={`/api/opd-audit/export-pdf?id=${id}`} className="text-brand hover:underline">note + audit PDF</a>
               {r.trace_id ? <Link href={`/admin/observability/${r.trace_id}`} className="text-slate-400 hover:text-brand">trace</Link> : null}
             </span>
             {nextId ? <Link href={`/admin/opd-audit/${nextId}`} className="text-brand hover:underline">next ›</Link> : <span className="text-slate-300">next ›</span>}

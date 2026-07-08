@@ -57,7 +57,7 @@ const ADMIN: NavGroup[] = [
     heading: 'Admin',
     items: [
       { href: '/admin/observability', label: 'Observability', Icon: Network, match: ['/admin/appropriateness-runs'] },
-      { href: '/admin/opd-audit', label: 'OPD Audit', Icon: Activity },
+      { href: '/admin/opd-audit', label: 'OPD Audit', Icon: Activity, match: ['/admin/opd-audit/doctors', '/admin/opd-audit/doctor'] },
       { href: '/admin/mini-backfill', label: 'Mini backfill', Icon: HardDrive },
       { href: '/admin/stewardship', label: 'Stewardship', Icon: BarChart3 },
       { href: '/admin/ccb-funnel', label: 'Care Brief Funnel', Icon: Filter },
