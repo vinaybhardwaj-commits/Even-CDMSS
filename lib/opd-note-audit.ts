@@ -242,11 +242,12 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
   // Right Care complexity — computed once per audit from db13 history (0.81.3). Fully guarded: a bad
   // individual_uid, a db13 error, or a 3s timeout yields a null band and NEVER blocks/fails the audit.
   const complexityFor = async (): Promise<OpdNoteAudit['complexity']> => {
-    const individualUid = row.individual_uid ? String(row.individual_uid) : '';
-    const asOf = keys.noteDate ? String(keys.noteDate) : '';
-    if (!individualUid || !asOf) return { band: null, inputs: null };
+    // The note uid resolves the patient (individual_uid) inside the fetcher — "individuals-prescriptions"
+    // has no individual_uid (live-validated 8 Jul). keys.noteDate is the as-of hint (index timestamp).
+    const noteUid = keys.uid ? String(keys.uid) : '';
+    if (!noteUid) return { band: null, inputs: null };
     try {
-      const inputs = await fetchPatientHistoryBundle(individualUid, asOf);
+      const inputs = await fetchPatientHistoryBundle(noteUid, keys.noteDate ? String(keys.noteDate) : undefined);
       return inputs ? { band: bandFor(inputs), inputs } : { band: null, inputs: null };
     } catch {
       return { band: null, inputs: null };

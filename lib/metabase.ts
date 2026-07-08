@@ -28,7 +28,6 @@ export const OPD_MEDICAL_TYPES = [
 // exactly as before (no schema or dashboard change).
 const IP_COLS = [
   'uid', 'consult_uid', 'doctor_uid', 'kx_encounter_id', 'type_of_prescription', 'consult_type',
-  'individual_uid',   // patient linkage → Right Care complexity history bundle (additive; unused by the audit body)
   'timestamp', '_create_time', 'prescription_url',
   'medications', 'diagnosis_icd_codes', 'impression_icd_codes', 'general_advice', 'further_investigation',
   'general_practitioner_prescription__presenting_complaints',  // fallback complaint (nested)
@@ -194,38 +193,50 @@ function raceTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
 }
 
 /**
- * Fetch the complexity history bundle for `individualUid` as of `asOfIso` (the index encounter
- * timestamp). Returns {chronic_codes, abnormal_labs, enc_12m, enc_24m, as_of} or null on any failure.
+ * Fetch the complexity history bundle for the note `noteUid` (as of `asOfHint`, the index encounter
+ * timestamp — resolved from db13 if omitted). Returns {chronic_codes, abnormal_labs, enc_12m, enc_24m,
+ * as_of} or null on any failure. LIVE-VALIDATED db13 shapes (Cowork, 8 Jul):
+ *   - "individuals-prescriptions" has NO individual_uid; resolve the patient from dpipe_prescription_pipeline.
+ *   - encounters/chronic come from dpipe_prescription_pipeline(+__diagnosis); labs from test_values_view.
  */
-export async function fetchPatientHistoryBundle(individualUid: string, asOfIso: string): Promise<ComplexityInputs | null> {
-  if (!isUid(individualUid)) return null;
-  const d = new Date(asOfIso);
-  if (Number.isNaN(d.getTime())) return null;
-  const asOf = d.toISOString();
-  const from12 = windowStart(asOf, 12);
-  const from24 = windowStart(asOf, 24);
-  const iu = individualUid; // isUid() restricts to [A-Za-z0-9_-] — safe to interpolate (this helper is param-less)
+export async function fetchPatientHistoryBundle(noteUid: string, asOfHint?: string): Promise<ComplexityInputs | null> {
+  if (!isUid(noteUid)) return null;
 
   // A leg resolves to null on error OR timeout (never rejects), so one bad column can't crash the audit.
   const leg = (query: string) => raceTimeout(metabaseQuery(query).catch(() => null), HISTORY_TIMEOUT_MS, null);
 
-  // Encounters: individuals-prescriptions carries individual_uid + timestamp; `< asOf` excludes the index.
+  // Resolve the patient (individual_uid) + index timestamp from the note uid — both uid and presc_uid
+  // match on dpipe_prescription_pipeline (validated). No resolution → NULL band.
+  const resolved = await leg(
+    `SELECT individual_uid, timestamp FROM dpipe_prescription_pipeline WHERE uid = '${noteUid}' OR presc_uid = '${noteUid}' LIMIT 1`);
+  if (resolved === null) return null;
+  const iu = resolved[0]?.individual_uid ? String(resolved[0].individual_uid) : '';
+  const idxTs = resolved[0]?.timestamp ? String(resolved[0].timestamp) : '';
+  const asOfRaw = (asOfHint && !Number.isNaN(new Date(asOfHint).getTime())) ? asOfHint : idxTs;
+  if (!iu || !isUid(iu) || !asOfRaw || Number.isNaN(new Date(asOfRaw).getTime())) return null;
+  const asOf = new Date(asOfRaw).toISOString();
+  const from12 = windowStart(asOf, 12);
+  const from24 = windowStart(asOf, 24);
+
+  // Encounters (12m/24m): dpipe_prescription_pipeline, non-draft, index excluded via `< asOf`.
+  // presc_is_draft IS NOT TRUE — drafts-only QA accounts exist (one had 20 draft encounters/wk).
   const encSql = `SELECT
-      count(*) FILTER (WHERE ip.timestamp >= '${from12}'::timestamptz)::int AS enc12,
-      count(*) FILTER (WHERE ip.timestamp >= '${from24}'::timestamptz)::int AS enc24
-    FROM ${SOURCE} ip
-    WHERE ip.individual_uid = '${iu}' AND ip.is_draft = false AND ip.timestamp < '${asOf}'::timestamptz`;
-  // Chronic-ONLY ICDs (12m, index excluded): flattened diagnosis child joined to its parent encounter.
+      count(*) FILTER (WHERE p.timestamp >= '${from12}'::timestamptz)::int AS enc12,
+      count(*) FILTER (WHERE p.timestamp >= '${from24}'::timestamptz)::int AS enc24
+    FROM dpipe_prescription_pipeline p
+    WHERE p.individual_uid = '${iu}' AND p.presc_is_draft IS NOT TRUE AND p.timestamp < '${asOf}'::timestamptz`;
+  // Chronic-ONLY ICDs (12m): diagnosis child joined dx._parent_id = p._id; index excluded by uid, not timestamp.
   const chronicSql = `SELECT DISTINCT dx.icd_code AS icd_code
     FROM dpipe_prescription_pipeline__diagnosis dx
-    JOIN ${SOURCE} ip ON ip.uid = dx.presc_uid
-    WHERE ip.individual_uid = '${iu}' AND dx.acute_chronic = 'CHRONIC'
-      AND ip.timestamp >= '${from12}'::timestamptz AND ip.timestamp < '${asOf}'::timestamptz`;
-  // Abnormal labs (12m): test_values_view, individual via _parent_path, precomputed abnormal flag.
+    JOIN dpipe_prescription_pipeline p ON dx._parent_id = p._id
+    WHERE p.individual_uid = '${iu}' AND dx.acute_chronic = 'CHRONIC'
+      AND p.timestamp >= '${from12}'::timestamptz AND p.timestamp < '${asOf}'::timestamptz
+      AND p.uid <> '${noteUid}'`;
+  // Abnormal labs (12m): test_values_view has NO timestamp — use _create_time; exact _parent_path match.
   const labSql = `SELECT 1 AS one
     FROM test_values_view t
-    WHERE t._parent_path LIKE '%${iu}%' AND t.investigation_is_abnormal = 'ABNORMAL'
-      AND t.timestamp >= '${from12}'::timestamptz AND t.timestamp < '${asOf}'::timestamptz`;
+    WHERE t._parent_path = '/individuals/${iu}' AND t.investigation_is_abnormal = 'ABNORMAL'
+      AND t._create_time >= '${from12}'::timestamptz AND t._create_time < '${asOf}'::timestamptz`;
 
   const [encRows, chronicRows, labRows] = await Promise.all([leg(encSql), leg(chronicSql), leg(labSql)]);
   if (encRows === null || chronicRows === null || labRows === null) return null; // any leg failed → NULL band

@@ -13,7 +13,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/admin-gate';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { sql } from '@/lib/db';
-import { fetchOpdNoteByUid, fetchPatientHistoryBundle } from '@/lib/metabase';
+import { fetchPatientHistoryBundle } from '@/lib/metabase';
 import { bandFor } from '@/lib/opd-complexity-core';
 
 export const runtime = 'nodejs';
@@ -77,10 +77,9 @@ export async function POST(req: NextRequest) {
     lastDate = r.note_date ? new Date(r.note_date).toISOString() : lastDate;
     const uid = String(r.uid || '');
     try {
-      const note = uid ? await fetchOpdNoteByUid(uid).catch(() => null) : null;
-      const iuid = note?.individual_uid ? String(note.individual_uid) : '';
-      const asOf = note?.timestamp ? String(note.timestamp) : (r.note_date ? String(r.note_date) : '');
-      const inputs = iuid && asOf ? await fetchPatientHistoryBundle(iuid, asOf) : null;
+      // The fetcher resolves the patient from the note uid (dpipe_prescription_pipeline) — no separate
+      // note fetch needed. r.note_date is the as-of hint (the stored index timestamp).
+      const inputs = uid ? await fetchPatientHistoryBundle(uid, r.note_date ? String(r.note_date) : undefined) : null;
       if (inputs) {
         await run(`UPDATE opd_note_audits SET complexity_band = $1, complexity_inputs = $2::jsonb WHERE id = $3`,
           [bandFor(inputs), JSON.stringify(inputs), r.id]).catch(() => {});
