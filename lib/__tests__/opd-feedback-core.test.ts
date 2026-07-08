@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   parseFeedbackBody, FEEDBACK_VERDICTS, FINDING_VERDICTS, AUDIT_VERDICTS, SCOPES,
+  IMPACT_TAGS, MISSED_CATEGORIES,
 } from '../opd-feedback-core.ts';
 
 const AUDIT_ID = '00000000-0000-0000-0000-000000000001';
@@ -27,7 +28,36 @@ test('verdict sets are wired by scope', () => {
   assert.deepEqual([...FEEDBACK_VERDICTS.finding].sort(), [...FINDING_VERDICTS].sort());
   assert.deepEqual([...FEEDBACK_VERDICTS.audit].sort(), [...AUDIT_VERDICTS].sort());
   assert.deepEqual([...FEEDBACK_VERDICTS.missed], ['missed']);
-  assert.deepEqual([...SCOPES], ['audit', 'finding', 'missed']);
+  assert.deepEqual([...FEEDBACK_VERDICTS.impact].sort(), [...IMPACT_TAGS].sort());
+  assert.deepEqual([...SCOPES], ['audit', 'finding', 'missed', 'impact']);
+});
+
+test('impact scope: TP-only second tap — valid tag + finding_ref required, category always null', () => {
+  for (const tag of IMPACT_TAGS) {
+    const v = ok({ auditId: AUDIT_ID, scope: 'impact', verdict: tag, finding_ref: 'deadbeef0001', signal_type: 'drug_interaction' });
+    assert.equal(v.scope, 'impact');
+    assert.equal(v.verdict, tag);
+    assert.equal(v.finding_ref, 'deadbeef0001');
+    assert.equal(v.category, null);
+  }
+  assert.match(err({ auditId: AUDIT_ID, scope: 'impact', verdict: 'true_positive', finding_ref: 'x' }), /impact tag/);
+  assert.match(err({ auditId: AUDIT_ID, scope: 'impact', verdict: 'changes_management' }), /finding_ref/);
+});
+
+test('missed scope: optional category from the whitelist; unknown category rejected', () => {
+  // no category → null (backward-compatible with the shipped missed capture)
+  assert.equal(ok({ auditId: AUDIT_ID, scope: 'missed', comment: 'BP never rechecked' }).category, null);
+  for (const cat of MISSED_CATEGORIES) {
+    const v = ok({ auditId: AUDIT_ID, scope: 'missed', comment: 'x', category: cat });
+    assert.equal(v.category, cat);
+    assert.equal(v.verdict, 'missed');
+  }
+  assert.match(err({ auditId: AUDIT_ID, scope: 'missed', comment: 'x', category: 'nonsense' }), /category must be one of/);
+});
+
+test('non-missed/impact scopes carry category=null', () => {
+  assert.equal(ok({ auditId: AUDIT_ID, comment: 'general' }).category, null);
+  assert.equal(ok({ auditId: AUDIT_ID, scope: 'finding', verdict: 'true_positive', finding_ref: 'r1' }).category, null);
 });
 
 test('bad auditId is rejected before anything else', () => {

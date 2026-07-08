@@ -10,6 +10,20 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Loader2, AlertTriangle, ChevronRight, CheckCircle2, Bug, ShieldAlert, RefreshCw } from 'lucide-react';
+import { classifyTransition, DISMISS_REASONS, RESOLUTION_OUTCOMES } from '@/lib/opd-triage-core';
+
+// Feature C (Gold-Label Review-Mode §5) — friction-capped instrumentation chips. A dismiss transition
+// (audit_bug OR valid_signal not routed) requires a REASON chip; a resolution transition (routed)
+// requires an OUTCOME chip; free text is always optional. Every applied decision also writes an
+// append-only opd_triage_events row via the decide route (born-instrumented, no behavior change).
+const DISMISS_LABELS: Record<string, string> = {
+  not_clinically_relevant: 'Not clinically relevant', already_addressed: 'Already addressed',
+  patient_constraint: 'Patient constraint', other: 'Other',
+};
+const OUTCOME_LABELS: Record<string, string> = {
+  resolved_with_doctor: 'Resolved with doctor', resolved_no_action_needed: 'No action needed',
+  unable_to_contact: 'Unable to contact', other: 'Other',
+};
 
 type Importance = 'low' | 'med' | 'high';
 type ResponseReq = 'none' | 'explanation' | 'acknowledgment' | 'recommend_privilege_review';
@@ -55,9 +69,22 @@ interface Draft {
   importance?: Importance;
   routed?: boolean;
   response_required?: ResponseReq;
+  eventChip?: string;   // Feature C: dismiss reason OR resolution outcome (required for the transition)
+  eventNote?: string;   // Feature C: optional free text
   busy?: boolean;
   done?: string; // a short receipt once applied
   error?: string;
+}
+
+/** Feature C — the transition kind (and thus which chip is required) for the current draft. Returns
+ *  null until the CM has chosen enough of the pipeline to know (validity, and route for valid signals). */
+function transitionKind(d: Draft): 'dismiss' | 'resolution' | null {
+  if (d.validity === 'audit_bug') return d.bug_type ? 'dismiss' : null;
+  if (d.validity === 'valid_signal') {
+    if (d.routed === true) return 'resolution';
+    if (d.routed === false) return 'dismiss';
+  }
+  return null;
 }
 
 // Explicit active-class map (Tailwind JIT can't see dynamically-built class names).
@@ -121,6 +148,15 @@ export default function TriageBoard() {
         ? `${String(body.importance).toUpperCase()} · routed · ${RESPONSE_LABELS[(draft.response_required || 'none') as ResponseReq]}`
         : `${String(body.importance).toUpperCase()} · not routed (logged)`;
     }
+    // Feature C: attach the instrumentation event (chip + optional note). from_status = the prior
+    // disposition of this type, if any (else 'open'). Best-effort server-side; never blocks the decision.
+    const kind = transitionKind(draft);
+    if (kind) {
+      const fromStatus = t.triage
+        ? (t.triage.validity === 'audit_bug' ? 'dismissed' : t.triage.routed ? 'routed' : 'dismissed')
+        : 'open';
+      body.event = { chip: draft.eventChip, note: (draft.eventNote || '').trim() || undefined, from_status: fromStatus };
+    }
     setDraft(key, { busy: true, error: undefined });
     try {
       const r = await fetch('/api/opd-triage/decide', {
@@ -135,6 +171,8 @@ export default function TriageBoard() {
   const canApply = (key: string): boolean => {
     const d = drafts[key];
     if (!d?.validity) return false;
+    // Feature C: the transition's chip (dismiss reason / resolution outcome) is required once known.
+    if (transitionKind(d) && !d.eventChip) return false;
     if (d.validity === 'audit_bug') return !!d.bug_type;
     if (!d.routed) return true;                    // valid + not routed (importance defaults to hint)
     return !!d.response_required;                  // routed needs a response requirement
@@ -276,6 +314,27 @@ export default function TriageBoard() {
                         )}
                       </>
                     )}
+
+                    {/* Feature C — required dismiss reason / resolution outcome chip + optional note */}
+                    {(() => {
+                      const kind = transitionKind(draft);
+                      if (!kind) return null;
+                      const chips = kind === 'dismiss' ? DISMISS_REASONS : RESOLUTION_OUTCOMES;
+                      const labels = kind === 'dismiss' ? DISMISS_LABELS : OUTCOME_LABELS;
+                      return (
+                        <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="w-16 shrink-0 text-[11px] font-medium uppercase tracking-wide text-slate-400">{kind === 'dismiss' ? 'Reason' : 'Outcome'}</span>
+                            {chips.map((c) => (
+                              <Btn key={c} active={draft.eventChip === c} tone={kind === 'dismiss' ? 'rose' : 'emerald'} onClick={() => setDraft(key, { eventChip: c })}>{labels[c]}</Btn>
+                            ))}
+                          </div>
+                          <input value={draft.eventNote || ''} onChange={(e) => setDraft(key, { eventNote: e.target.value })}
+                            placeholder="Add a note (optional)"
+                            className="mt-2 h-7 w-full rounded-md border border-slate-200 bg-white px-2.5 text-[12px] text-slate-700 outline-none focus:border-slate-300" />
+                        </div>
+                      );
+                    })()}
 
                     {draft.error && <div className="text-[11.5px] text-rose-600">{draft.error}</div>}
 

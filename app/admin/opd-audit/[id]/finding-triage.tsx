@@ -2,6 +2,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { planTap, makeAttempt, revertOnFail, savedLabel, type Attempt } from '@/lib/opd-feedback-ux-core';
+import { IMPACT_TAGS } from '@/lib/opd-feedback-core';
+
+// Review-Mode §1.2 / §3 — the TP-only optional second tap (impact tag). Posted as its own append row
+// (scope='impact') so the base verdict stays a clean true_positive; the case view and Review Mode
+// stay write-compatible. Non-blocking: a failed impact post never disturbs the verdict state machine.
+const IMPACT_LABELS: Record<string, string> = { changes_management: 'Changes management', chart_hygiene: 'Chart hygiene' };
 
 // PRD §9.1–§9.3 (strip) + OPD-FEEDBACK-UX-POLISH §1A (state machine). Per-finding "Your call" strip
 // on every finding that FIRED. Four pills; one tap = one append-row POST. Reviewer name is set once
@@ -55,6 +61,7 @@ export function FindingTriage({ auditId, findingRef, signalType, current }: {
 }) {
   const router = useRouter();
   const [selected, setSelected] = useState<string | null>(current ?? null);
+  const [impact, setImpact] = useState<string | null>(null);
   const [noteOpen, setNoteOpen] = useState(false);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
@@ -109,8 +116,25 @@ export function FindingTriage({ auditId, findingRef, signalType, current }: {
     const plan = planTap(selected, key);
     if (plan.noop) return;                 // no toggle-off: re-tapping the selected pill does nothing
     setSelected(key);                      // optimistic
+    if (key !== 'true_positive') setImpact(null); // impact is TP-only
     setNoteOpen(key === 'false' || key === 'contested');
     void post(makeAttempt(plan.prev, key, null));
+  }
+
+  async function pickImpact(tag: string) {
+    if (busy || !findingRef) return;
+    const nextTag = impact === tag ? null : tag; // toggle off locally (no retraction row; latest wins)
+    setImpact(nextTag);
+    if (!nextTag) return;
+    const author = getReviewer() || null;
+    try {
+      const r = await fetch('/api/opd-audit/feedback', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ scope: 'impact', auditId, finding_ref: findingRef, signal_type: signalType || null, verdict: tag, author }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) throw new Error(j.error || `status ${r.status}`);
+    } catch { setImpact((cur) => (cur === tag ? null : cur)); } // revert the tag on failure; non-blocking
   }
 
   function retry() {
@@ -149,6 +173,18 @@ export function FindingTriage({ auditId, findingRef, signalType, current }: {
           {!failed && savedAt && <span className="text-[10.5px] text-slate-400">{savedLabel(savedBy, savedAt)}</span>}
         </span>
       </div>
+      {selected === 'true_positive' && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.06em] text-slate-400">Impact</span>
+          {IMPACT_TAGS.map((tag) => (
+            <button key={tag} type="button" onClick={() => pickImpact(tag)} disabled={busy}
+              className={`rounded-full border px-2 py-[3px] text-[11px] font-medium ${impact === tag ? 'border-emerald-400 bg-emerald-50 text-emerald-800' : OFF}`}>
+              {IMPACT_LABELS[tag]}
+            </button>
+          ))}
+          <span className="text-[10px] text-slate-300">optional</span>
+        </div>
+      )}
       {noteOpen && selected && (
         <div className="mt-1.5 flex items-center gap-1.5">
           <input

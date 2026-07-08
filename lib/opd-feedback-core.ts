@@ -1,30 +1,43 @@
 /**
- * Pure core for OPD-audit feedback capture (PRD §4.3). No Next / no db imports so it strip-types
- * and unit-tests standalone. The route (app/api/opd-audit/feedback/route.ts) calls parseFeedbackBody
- * to validate + normalise the request body, then inserts the returned columns verbatim.
+ * Pure core for OPD-audit feedback capture (PRD §4.3 + Gold-Label Review-Mode PRD §3). No Next / no
+ * db imports so it strip-types and unit-tests standalone. The route (app/api/opd-audit/feedback/
+ * route.ts) calls parseFeedbackBody to validate + normalise the request body, then inserts the
+ * returned columns verbatim.
  *
- * Scopes (PRD §4.1):
+ * Scopes (PRD §4.1 + Review-Mode §2/§3):
  *   - 'audit'   → whole-audit reaction + general comment (legacy path; a bare comment is allowed).
  *   - 'finding' → reviewer's call on a finding that FIRED; verdict ∈ FINDING_VERDICTS, finding_ref required.
- *   - 'missed'  → a finding that SHOULD have fired but didn't; verdict='missed', comment required.
+ *   - 'impact'  → TP-only optional SECOND tap on a finding: verdict ∈ IMPACT_TAGS, finding_ref required.
+ *   - 'missed'  → a finding that SHOULD have fired but didn't; verdict='missed', comment required,
+ *                 optional `category` from MISSED_CATEGORIES.
  *
- * Append-only: one call = one row; current state = latest row per (audit_id, finding_ref).
+ * Append-only: one call = one row; current state = latest row per (audit_id, finding_ref, scope).
  */
 
 export const FINDING_VERDICTS = ['true_positive', 'nitpick', 'false', 'contested'] as const;
 export const AUDIT_VERDICTS = ['agree', 'disagree', 'needs_action'] as const;
+/** Review-Mode §1.2 — the TP-only optional second tap (`i`). One row per (finding_ref) with scope='impact'. */
+export const IMPACT_TAGS = ['changes_management', 'chart_hygiene'] as const;
+/** Review-Mode §1.6 — domain-aligned missed-finding categories (validated whitelist). */
+export const MISSED_CATEGORIES = [
+  'documentation', 'note_quality', 'appropriateness_low_value', 'prescribing_safety',
+  'continuity', 'coding', 'other',
+] as const;
 export const MISSED_VERDICT = 'missed';
-export const SCOPES = ['audit', 'finding', 'missed'] as const;
+export const SCOPES = ['audit', 'finding', 'missed', 'impact'] as const;
 
 export type FindingVerdict = (typeof FINDING_VERDICTS)[number];
 export type AuditVerdict = (typeof AUDIT_VERDICTS)[number];
+export type ImpactTag = (typeof IMPACT_TAGS)[number];
+export type MissedCategory = (typeof MISSED_CATEGORIES)[number];
 export type FeedbackScope = (typeof SCOPES)[number];
 
-/** Allowed verdict values keyed by scope (PRD §4.1 table). */
+/** Allowed verdict values keyed by scope (PRD §4.1 table + Review-Mode extensions). */
 export const FEEDBACK_VERDICTS: Record<FeedbackScope, ReadonlySet<string>> = {
   audit: new Set(AUDIT_VERDICTS),
   finding: new Set(FINDING_VERDICTS),
   missed: new Set([MISSED_VERDICT]),
+  impact: new Set(IMPACT_TAGS),
 };
 
 const AUDIT_ID_RE = /^[0-9a-f-]{36}$/i;
@@ -38,6 +51,7 @@ export type FeedbackRow = {
   author: string | null;
   finding_ref: string | null;
   signal_type: string | null;
+  category: string | null;
 };
 
 export type ParseResult =
@@ -70,23 +84,43 @@ export function parseFeedbackBody(input: unknown): ParseResult {
   const rawVerdict = str(body.verdict, 40);
   const finding_ref = str(body.finding_ref, 40);
   const signal_type = str(body.signal_type, 120);
+  const rawCategory = str(body.category, 60);
 
   if (scope === 'finding') {
     if (!rawVerdict || !FEEDBACK_VERDICTS.finding.has(rawVerdict)) {
       return { ok: false, error: 'finding verdict must be one of ' + FINDING_VERDICTS.join(', ') };
     }
     if (!finding_ref) return { ok: false, error: 'finding_ref required for scope=finding' };
-    return { ok: true, value: { auditId, scope, uid, verdict: rawVerdict, comment, author, finding_ref, signal_type } };
+    return { ok: true, value: { auditId, scope, uid, verdict: rawVerdict, comment, author, finding_ref, signal_type, category: null } };
+  }
+
+  if (scope === 'impact') {
+    // Review-Mode §1.2 — the TP-only optional second tap. Its own append-row so the base verdict
+    // stays a clean true_positive; current impact = latest scope='impact' row per finding_ref.
+    if (!rawVerdict || !FEEDBACK_VERDICTS.impact.has(rawVerdict)) {
+      return { ok: false, error: 'impact tag must be one of ' + IMPACT_TAGS.join(', ') };
+    }
+    if (!finding_ref) return { ok: false, error: 'finding_ref required for scope=impact' };
+    return { ok: true, value: { auditId, scope, uid, verdict: rawVerdict, comment, author, finding_ref, signal_type, category: null } };
   }
 
   if (scope === 'missed') {
     if (!comment) return { ok: false, error: 'comment required for scope=missed' };
+    // Optional category — validated against the whitelist when present (an unknown value is rejected,
+    // not silently dropped, so a client bug surfaces rather than mislabels supervision).
+    let category: string | null = null;
+    if (rawCategory !== null) {
+      if (!(MISSED_CATEGORIES as readonly string[]).includes(rawCategory)) {
+        return { ok: false, error: 'category must be one of ' + MISSED_CATEGORIES.join(', ') };
+      }
+      category = rawCategory;
+    }
     // verdict is fixed for missed; ignore/override whatever was sent.
-    return { ok: true, value: { auditId, scope, uid, verdict: MISSED_VERDICT, comment, author, finding_ref: null, signal_type } };
+    return { ok: true, value: { auditId, scope, uid, verdict: MISSED_VERDICT, comment, author, finding_ref: null, signal_type, category } };
   }
 
   // scope === 'audit' — legacy path. verdict optional (constrained if present); bare comment allowed.
   const verdict = rawVerdict && FEEDBACK_VERDICTS.audit.has(rawVerdict) ? rawVerdict : null;
   if (!verdict && !comment) return { ok: false, error: 'provide a verdict or a comment' };
-  return { ok: true, value: { auditId, scope, uid, verdict, comment, author, finding_ref: null, signal_type: null } };
+  return { ok: true, value: { auditId, scope, uid, verdict, comment, author, finding_ref: null, signal_type: null, category: null } };
 }

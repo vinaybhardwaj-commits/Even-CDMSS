@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { savedLabel } from '@/lib/opd-feedback-ux-core';
+import { MISSED_CATEGORIES } from '@/lib/opd-feedback-core';
 
 // PRD §9.4 (note-level "Flag something the audit missed") + OPD-FEEDBACK-UX-POLISH §1A/§3
 // (same saved/failed treatment as the pills). On success: dispatch 'opd-feedback-saved'
@@ -28,6 +29,7 @@ export function MissedFindingCapture({ auditId, initial }: { auditId: string; in
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [text, setText] = useState('');
+  const [cat, setCat] = useState<string | null>(null); // Review-Mode §1.6 optional category
   const [busy, setBusy] = useState(false);
   const [failedText, setFailedText] = useState<string | null>(null); // persistent retry payload
   const [errMsg, setErrMsg] = useState('');
@@ -40,11 +42,11 @@ export function MissedFindingCapture({ auditId, initial }: { auditId: string; in
     try {
       const r = await fetch('/api/opd-audit/feedback', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ scope: 'missed', auditId, verdict: 'missed', comment: comment.trim(), author }),
+        body: JSON.stringify({ scope: 'missed', auditId, verdict: 'missed', comment: comment.trim(), category: cat || undefined, author }),
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j.ok) throw new Error(j.error || `status ${r.status}`);
-      setText(''); setOpen(false);
+      setText(''); setCat(null); setOpen(false);
       setSavedLine(savedLabel(author, new Date()));
       try { window.dispatchEvent(new CustomEvent('opd-feedback-saved', { detail: { scope: 'missed' } })); } catch { /* ignore */ }
       router.refresh();
@@ -64,6 +66,15 @@ export function MissedFindingCapture({ auditId, initial }: { auditId: string; in
         </button>
       ) : (
         <div className="rounded-lg border border-dashed border-slate-300 bg-white p-2.5">
+          <div className="mb-1.5 flex flex-wrap gap-1">
+            {MISSED_CATEGORIES.map((c) => (
+              <button key={c} type="button" onClick={() => setCat((cur) => (cur === c ? null : c))}
+                className={`rounded-full border px-2 py-[3px] text-[10.5px] font-medium ${cat === c ? 'border-brand/50 bg-brand-faint text-brand' : 'border-slate-200 text-slate-500 hover:bg-slate-50'}`}>
+                {c}
+              </button>
+            ))}
+            <span className="self-center text-[10px] text-slate-300">category (optional)</span>
+          </div>
           <textarea
             value={text} onChange={(e) => setText(e.target.value)} autoFocus rows={2}
             placeholder="What should the audit have caught but didn't?"

@@ -30,12 +30,12 @@ export async function POST(req: NextRequest) {
 
   const parsed = parseFeedbackBody(body);
   if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
-  const { auditId, scope, uid, verdict, comment, author, finding_ref, signal_type } = parsed.value;
+  const { auditId, scope, uid, verdict, comment, author, finding_ref, signal_type, category } = parsed.value;
 
   try {
     const rows = (await sql`
-      INSERT INTO opd_audit_feedback (app_source, audit_id, scope, uid, verdict, comment, author, finding_ref, signal_type)
-      VALUES (${APP}, ${auditId}, ${scope}, ${uid}, ${verdict}, ${comment}, ${author}, ${finding_ref}, ${signal_type})
+      INSERT INTO opd_audit_feedback (app_source, audit_id, scope, uid, verdict, comment, author, finding_ref, signal_type, category)
+      VALUES (${APP}, ${auditId}, ${scope}, ${uid}, ${verdict}, ${comment}, ${author}, ${finding_ref}, ${signal_type}, ${category})
       RETURNING id, created_at`) as Array<{ id: string; created_at: string }>;
     return NextResponse.json({ ok: true, id: rows[0]?.id, created_at: rows[0]?.created_at });
   } catch (e) {

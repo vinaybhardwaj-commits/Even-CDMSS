@@ -86,6 +86,12 @@ export async function POST(req: NextRequest) {
     await sql`ALTER TABLE opd_audit_feedback ADD COLUMN IF NOT EXISTS signal_type TEXT`;
     await sql`CREATE INDEX IF NOT EXISTS opd_audit_feedback_finding_idx ON opd_audit_feedback (finding_ref, created_at DESC)`;
     steps.feedback_instrumentation = 'ok';
+    // Gold-Label Review-Mode v1.0 (§3, Feature D) — the ONE additive column this build needs.
+    // `category` carries the missed-finding category (§1.6 whitelist, validated in opd-feedback-core).
+    // Impact tags reuse (scope='impact', verdict) — no column. Run BEFORE the new route/UI deploy
+    // (an insert of `category` fails otherwise — the known column-add gotcha).
+    await sql`ALTER TABLE opd_audit_feedback ADD COLUMN IF NOT EXISTS category TEXT`;
+    steps.feedback_category = 'ok';
     // Right Care indicator v1 (RIGHT-CARE-INDICATOR-PRD §6). Additive, engine 0.81.3 is metadata-only.
     // complexity_band + complexity_inputs are computed at audit time (NULL = unbanded; backfilled by
     // /api/admin/complexity-backfill). lvc_recommendations gains category + plain_rationale (Branch 2 seeds).

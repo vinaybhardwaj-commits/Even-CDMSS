@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildQueue, validateDecision, severityOf, importanceHint,
+  classifyTransition, requireChip, buildTriageEvent, DISMISS_REASONS, RESOLUTION_OUTCOMES,
   type TriageFinding, type TriageDecisionRow,
 } from '../opd-triage-core.ts';
 
@@ -137,4 +138,37 @@ test('validateDecision: instance scope requires audit_id + finding_ref; bad enum
   assert.equal(validateDecision({ scope: 'bogus', doctor_uid: 'd', signal_type: 's', validity: 'valid_signal', importance: 'low' }).ok, false);
   assert.equal(validateDecision({ scope: 'type', doctor_uid: 'd', signal_type: 's', validity: 'nope' }).ok, false);
   assert.equal(validateDecision({ scope: 'type', doctor_uid: 'd', signal_type: 's', validity: 'valid_signal', importance: 'HIGH' }).ok, false);
+});
+
+// ── Feature C — CM instrumentation chip logic (Gold-Label Review-Mode §5) ───────
+test('classifyTransition: audit_bug & not-routed → dismiss; routed → resolution', () => {
+  assert.deepEqual(classifyTransition({ validity: 'audit_bug', routed: false }), { to_status: 'dismissed', kind: 'dismiss' });
+  assert.deepEqual(classifyTransition({ validity: 'valid_signal', routed: false }), { to_status: 'dismissed', kind: 'dismiss' });
+  assert.deepEqual(classifyTransition({ validity: 'valid_signal', routed: true }), { to_status: 'routed', kind: 'resolution' });
+});
+
+test('requireChip: dismiss/resolution require an in-vocabulary chip', () => {
+  assert.equal(requireChip('dismiss', '').ok, false);            // required
+  assert.equal(requireChip('dismiss', 'resolved_with_doctor').ok, false); // wrong vocab
+  assert.equal(requireChip('dismiss', 'patient_constraint').ok, true);
+  assert.equal(requireChip('resolution', 'unable_to_contact').ok, true);
+  assert.equal(requireChip('resolution', 'not_clinically_relevant').ok, false);
+  for (const r of DISMISS_REASONS) assert.equal(requireChip('dismiss', r).ok, true);
+  for (const o of RESOLUTION_OUTCOMES) assert.equal(requireChip('resolution', o).ok, true);
+});
+
+test('buildTriageEvent: enforces chip, free text optional, telemetry columns normalized', () => {
+  const bad = buildTriageEvent({ validity: 'audit_bug', routed: false, actor: 'V' });
+  assert.equal(bad.ok, false); // dismiss without a reason chip
+  const ok = buildTriageEvent({ validity: 'audit_bug', routed: false, chip: 'not_clinically_relevant', actor: 'V', triage_id: 't1', audit_id: 'a1' });
+  assert.ok(ok.ok);
+  if (ok.ok) {
+    assert.equal(ok.value.to_status, 'dismissed');
+    assert.equal(ok.value.reason, 'not_clinically_relevant');
+    assert.equal(ok.value.note, null);           // free text omitted → null (not required)
+    assert.equal(ok.value.app_source, 'standalone');
+  }
+  const routed = buildTriageEvent({ validity: 'valid_signal', routed: true, chip: 'resolved_with_doctor', note: 'called, agreed to stop', actor: 'Zaki' });
+  assert.ok(routed.ok);
+  if (routed.ok) { assert.equal(routed.value.to_status, 'routed'); assert.equal(routed.value.note, 'called, agreed to stop'); }
 });
