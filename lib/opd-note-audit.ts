@@ -27,6 +27,9 @@ import { curatedInteractions, mergeRank, type DrugClass } from './ddi';
 import type { DdiPair } from './rxlabelguard';
 import { applySuppressions, type Suppression } from './audit-suppression-core';
 import { loadActiveSuppressions } from './audit-suppression-store';
+import { stampLvcMetadata } from './opd-lvc-classify-core';
+import { bandFor, type ComplexityBand, type ComplexityInputs } from './opd-complexity-core';
+import { fetchPatientHistoryBundle } from './metabase';
 import { sql } from './db';
 
 // Best-effort cache of active suppressions (Tier-1 self-heal) so the per-note audit doesn't re-read
@@ -126,6 +129,9 @@ export interface OpdNoteAudit {
   sources: Source[];
   engineVersion: string;
   traceId?: string;
+  // Right Care case-mix complexity (0.81.3). Computed at audit time from db13 history; NULL band on
+  // any fetch failure (never blocks the audit). Persisted on the audit row; excluded from O/E when null.
+  complexity?: { band: ComplexityBand | null; inputs: ComplexityInputs | null } | null;
 }
 
 async function defaultRetrieve(q: string): Promise<CiteHit[]> {
@@ -227,7 +233,24 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     if (noMeds) out = out.filter((f) => f.domain !== 'prescribing_safety');
     out = consolidateDecisions(out);   // BUG-0.8-12: one decision → one finding, across sources
     out = neutralizeMetadataFindings(out);   // BUG-0.8-16: don't penalise the doctor for our metadata
+    // 0.81.3 (RIGHT-CARE §5): stamp rule_ref/lvc_category on the SURVIVING, non-informational
+    // low-value findings (after neutralisation). Additive metadata — never changes verdict/domain/score.
+    out = stampLvcMetadata(out);
     return applySuppressions(out, keys.doctorUid, supps).findings;
+  };
+
+  // Right Care complexity — computed once per audit from db13 history (0.81.3). Fully guarded: a bad
+  // individual_uid, a db13 error, or a 3s timeout yields a null band and NEVER blocks/fails the audit.
+  const complexityFor = async (): Promise<OpdNoteAudit['complexity']> => {
+    const individualUid = row.individual_uid ? String(row.individual_uid) : '';
+    const asOf = keys.noteDate ? String(keys.noteDate) : '';
+    if (!individualUid || !asOf) return { band: null, inputs: null };
+    try {
+      const inputs = await fetchPatientHistoryBundle(individualUid, asOf);
+      return inputs ? { band: bandFor(inputs), inputs } : { band: null, inputs: null };
+    } catch {
+      return { band: null, inputs: null };
+    }
   };
 
   // Deterministic REUSE path (backfill): recompute the deterministic findings + completeness, KEEP
@@ -299,6 +322,7 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
       keys, scorecard, completeness,
       findings, suggestions: parsed?.suggestions ?? [],
       sources, engineVersion: engineVersion, traceId,
+      complexity: await complexityFor(),
     };
   } catch (e) {
     if (traceId) await finishTrace(traceId, 'error', String((e as Error).message)).catch(() => {});
@@ -309,6 +333,6 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
       pdqi9: null,
       patientCentred: completeness.patientCentred,
     });
-    return { keys, scorecard, completeness, findings: finalize(det), suggestions: [], sources: [], engineVersion: engineVersion, traceId };
+    return { keys, scorecard, completeness, findings: finalize(det), suggestions: [], sources: [], engineVersion: engineVersion, traceId, complexity: await complexityFor() };
   }
 }

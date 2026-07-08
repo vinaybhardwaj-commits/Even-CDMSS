@@ -25,7 +25,7 @@ import type { NetValue, OpdFindingDomain, Pdqi9Attr } from './opd-note-score-cor
 //       B2: follow-up counts as documented ONLY for a real disposition or an explicit date — a bare
 //       'UNKNOWN'/blank no longer earns continuity/documentation credit (the score-moving change
 //       that makes 0.7 a distinct generation). Prompt-pass fixes (B1/B5/B6) land next, still 0.7.
-export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.2';
+export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.3';
 
 // Local copy of the PDQI-9 keys (kept in sync with opd-note-score-core) so this core has
 // no runtime cross-import and stays loadable under `node --experimental-strip-types`.
@@ -50,6 +50,11 @@ export interface OpdFinding {
   // pure functions (deterministic), so legacy rows need no migration or forced re-audit.
   signal_type?: string;            // coarse controlled-vocab category — the CM triage batch key
   finding_ref?: string;            // stable per-note content hash — the instance address
+  // Right Care LVC identity (engine 0.81.3, metadata-only — never feeds scoring). Stamped on
+  // low-value-verdict findings: rule_ref = lvc_recommendations id when a wired matcher knows it
+  // (null in the OPD engine — no matcher wired; read-time/backfill can attach), lvc_category coarse bucket.
+  rule_ref?: string | null;        // lvc_recommendations id, or null
+  lvc_category?: string;           // 'antibiotic' | 'imaging' | 'supplement_polypharmacy' | 'other'
 }
 // ── Finding identity — signal_type + finding_ref (governance spec v2.0 §2) ────
 // Every finding gets (a) a coarse controlled-vocab `signal_type` (the unit the care manager
@@ -233,7 +238,13 @@ export function consolidateDecisions(findings: OpdFinding[]): OpdFinding[] {
 export function stampFindingIdentity(findings: OpdFinding[]): OpdFinding[] {
   const used = new Set<string>();
   return findings.map((f) => {
-    const signal_type = opdSignalType(f.subject, f.domain, { verdict: f.verdict });
+    // Engine 0.81.3 (RIGHT-CARE §5): a low-value-verdict finding gets the unified LVC signal_type so
+    // the feedback loop / Right Care aggregates batch all low-value care together. This feeds finding_ref
+    // (a new engine version → no collision with stored 0.81.2 rows). rule_ref/lvc_category are additive
+    // and stamped by the orchestrator (stampLvcMetadata) after neutralisation — they don't affect the hash.
+    const signal_type = f.verdict === 'low-value'
+      ? 'low_value_care'
+      : opdSignalType(f.subject, f.domain, { verdict: f.verdict });
     const colon = f.subject.indexOf(':');
     const detail = (colon >= 0 ? f.subject.slice(colon + 1) : f.subject).trim().toLowerCase().replace(/\s+/g, ' ');
     const base = sha1Hex(`${signal_type}|${detail}`).slice(0, 12);

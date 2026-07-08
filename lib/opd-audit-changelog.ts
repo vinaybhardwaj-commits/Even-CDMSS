@@ -20,6 +20,17 @@ export interface EngineChange {
 
 export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
+    engine: '0.81.3', date: '2026-07-08', scoring: false,
+    title: 'v0.81.3 — Right Care LVC identity + case-mix complexity (metadata-only; scores untouched)',
+    points: [
+      'LVC identity: a finding on the low-value verdict tier now carries signal_type "low_value_care" (unifying the appropriateness/prescribing low-value buckets so the feedback loop + Right Care aggregates batch all low-value care together) plus lvc_category (antibiotic | imaging | supplement_polypharmacy | other) and rule_ref (null in the OPD engine — no lvc_recommendations matcher is wired here; the read-time classifier / backfill attach a rule id when it text-matches one of the 29 rules).',
+      'Case-mix complexity: every audit is banded (NEW_TO_US | LOW | MODERATE | HIGH) from db13 history computed STRICTLY BEFORE the index encounter — distinct chronic-only ICDs (12m), abnormal-lab burden (12m), and utilisation (12m/24m). Stored as complexity_band + complexity_inputs on the audit row. If db13 is unreachable/slow (3s cap) the band is NULL ("unbanded", excluded from any rate) and never blocks the audit; a backfill endpoint fills NULLs.',
+      'Circularity rule (first-class): no denominator input may be derivable from the prescribing behaviour under comparison in the window — hence chronic-ONLY ICDs, the index encounter excluded, and Even risk_category BANNED as an input (structural circularity — it is built largely from our own prescriptions).',
+      'SCORES UNCHANGED: no scoring rule, weight, band cut-off, or PDQI logic was touched (opd-note-score-core is byte-identical). This bump stamps metadata + adds a complexity column only. Golden A/B (3 uids, &save=0) confirms identical domain scores.',
+    ],
+    why: 'Right Care Indicator PRD v1.0 (8 Jul) — promoting per-note low-value-care detection to a defined, case-mix-fair, comparable rate on Even\'s own payer-provider books. Advisory-first, admin-gated. Companion: CASE-MIX-DENOMINATOR-DATA-HOMEWORK-8-JUL-2026 (rev 2).',
+  },
+  {
     engine: '0.81.2', date: '2026-07-07', scoring: true,
     title: 'v0.81.2 — clinician bug batch (Dr Zaki): matcher, cross-source consolidation, liquid dosing, supplement + metadata guardrails',
     points: [

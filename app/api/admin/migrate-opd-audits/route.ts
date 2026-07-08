@@ -86,6 +86,15 @@ export async function POST(req: NextRequest) {
     await sql`ALTER TABLE opd_audit_feedback ADD COLUMN IF NOT EXISTS signal_type TEXT`;
     await sql`CREATE INDEX IF NOT EXISTS opd_audit_feedback_finding_idx ON opd_audit_feedback (finding_ref, created_at DESC)`;
     steps.feedback_instrumentation = 'ok';
+    // Right Care indicator v1 (RIGHT-CARE-INDICATOR-PRD §6). Additive, engine 0.81.3 is metadata-only.
+    // complexity_band + complexity_inputs are computed at audit time (NULL = unbanded; backfilled by
+    // /api/admin/complexity-backfill). lvc_recommendations gains category + plain_rationale (Branch 2 seeds).
+    await sql`ALTER TABLE opd_note_audits ADD COLUMN IF NOT EXISTS complexity_band   TEXT`;
+    await sql`ALTER TABLE opd_note_audits ADD COLUMN IF NOT EXISTS complexity_inputs JSONB`;
+    await sql`CREATE INDEX IF NOT EXISTS opd_note_audits_complexity_idx ON opd_note_audits (complexity_band)`;
+    await sql`ALTER TABLE lvc_recommendations ADD COLUMN IF NOT EXISTS category        TEXT`;
+    await sql`ALTER TABLE lvc_recommendations ADD COLUMN IF NOT EXISTS plain_rationale TEXT`;
+    steps.right_care = 'ok';
     const cols = (await sql`SELECT count(*)::int AS n FROM information_schema.columns WHERE table_name = 'opd_note_audits'`) as Array<{ n: number }>;
     steps.columns = String(cols[0]?.n ?? 0);
     return NextResponse.json({ ok: true, steps });

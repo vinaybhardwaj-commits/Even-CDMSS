@@ -35,9 +35,11 @@ export async function saveOpdAudit(audit: OpdNoteAudit, meta: SaveOpdAuditMeta =
        score_documentation, score_note_quality, score_appropriateness, score_prescribing_safety, score_patient_centred,
        pdqi9, completeness_pct, n_missing_mandatory,
        n_findings, n_low_value, n_context_dependent, n_interaction_alerts,
-       findings, suggestions, engine_version, model, trace_id, latency_ms, missing_fields, sources)
+       findings, suggestions, engine_version, model, trace_id, latency_ms, missing_fields, sources,
+       complexity_band, complexity_inputs)
      VALUES ($1,$2,$3,$4,$5,$6,$7, $8,$9, $10,$11,$12,$13,$14,
-       $15::jsonb,$16,$17, $18,$19,$20,$21, $22::jsonb,$23::jsonb,$24,$25,$26,$27, $28::jsonb, $29::jsonb)
+       $15::jsonb,$16,$17, $18,$19,$20,$21, $22::jsonb,$23::jsonb,$24,$25,$26,$27, $28::jsonb, $29::jsonb,
+       $30, $31::jsonb)
      ON CONFLICT (uid, engine_version) DO NOTHING
      RETURNING id`,
     [
@@ -50,6 +52,7 @@ export async function saveOpdAudit(audit: OpdNoteAudit, meta: SaveOpdAuditMeta =
       JSON.stringify(findings), JSON.stringify(audit.suggestions ?? []),
       audit.engineVersion, meta.model ?? null, audit.traceId ?? null, meta.latencyMs ?? null,
       JSON.stringify(missing), JSON.stringify(audit.sources ?? []),
+      audit.complexity?.band ?? null, audit.complexity?.inputs ? JSON.stringify(audit.complexity.inputs) : null,
     ],
   )) as Array<{ id: string }>;
   return rows.length ? 'inserted' : 'exists';

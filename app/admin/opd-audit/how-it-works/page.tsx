@@ -194,6 +194,40 @@ export default async function HowItWorksPage() {
         </p>
       </Section>
 
+      <Section id="right-care" kicker="Right Care · v0.81.3" title="Low-value care as a case-mix-fair rate">
+        <p>
+          Low-value actions (Choosing Wisely / NCG rules) are already detected per note. From v0.81.3 each low-value
+          finding is stamped <code>signal_type: low_value_care</code> with a coarse <code>lvc_category</code>
+          (antibiotic · imaging · supplement / polypharmacy · other), so the same signal can be counted as a
+          <strong> rate</strong> — never a new 0–100 score (low-value findings already depress Appropriateness; a
+          parallel score would be double jeopardy). This bump is <strong>metadata-only — no score, weight or band cut-off
+          changed.</strong>
+        </p>
+        <p className="mt-2">
+          To compare doctors fairly, every audit is banded by patient <strong>complexity</strong>, computed from db13
+          history <em>strictly before</em> the index encounter:
+        </p>
+        <Formula>
+          chronic_pts = 0 | 1 | 2   for 0 | 1–2 | 3+ distinct <em>chronic-only</em> ICD codes in the prior 12m (index excluded){'\n'}
+          lab_pts     = 0 | 1       1 if ≥3 abnormal lab values in the prior 12m{'\n'}
+          util_pts    = 0 | 1       1 if ≥4 encounters in the prior 12m{'\n'}
+          band = NEW_TO_US if 0 encounters in the prior 24m; else LOW (0) · MODERATE (1–2) · HIGH (3–4)
+        </Formula>
+        <p className="mt-2">
+          <strong>Circularity rule (first-class):</strong> no denominator input may be derivable from the prescribing
+          behaviour of the doctor under comparison in the measurement window. Hence chronic-<em>only</em> ICDs (acute
+          over-coding to justify today&apos;s orders is excluded), the index encounter itself is excluded, and Even&apos;s
+          own <code>risk_category</code> is <strong>banned as an input</strong> — it is built largely from our own
+          prescriptions, so using it would launder the very behaviour the indicator measures. It is kept only as a
+          validation reference.
+        </p>
+        <p className="mt-2 text-[13px] text-slate-500">
+          If db13 is unreachable at audit time the note is left <em>unbanded</em> (excluded from any rate, shown in
+          coverage) rather than mis-banded — a backfill retries unbanded notes. Advisory throughout — a utilisation
+          pattern, not a clinician scorecard.
+        </p>
+      </Section>
+
       <section id="changelog" className="mt-8 rounded-xl border border-slate-200 bg-white p-6">
         <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Living spec</p>
         <h2 className="mt-0.5 font-serif text-[20px] font-semibold text-slate-900">Engine changelog</h2>

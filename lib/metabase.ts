@@ -7,6 +7,8 @@
  * ever SELECT); identifiers stay in db13 and on the audit row, never in the LLM payload.
  */
 
+import { windowStart, countDistinctChronicIcds, countAbnormalLabs, scalarCount, type ComplexityInputs } from './opd-complexity-core';
+
 const DB13 = 13;
 const SOURCE = '"individuals-prescriptions"';
 
@@ -26,6 +28,7 @@ export const OPD_MEDICAL_TYPES = [
 // exactly as before (no schema or dashboard change).
 const IP_COLS = [
   'uid', 'consult_uid', 'doctor_uid', 'kx_encounter_id', 'type_of_prescription', 'consult_type',
+  'individual_uid',   // patient linkage → Right Care complexity history bundle (additive; unused by the audit body)
   'timestamp', '_create_time', 'prescription_url',
   'medications', 'diagnosis_icd_codes', 'impression_icd_codes', 'general_advice', 'further_investigation',
   'general_practitioner_prescription__presenting_complaints',  // fallback complaint (nested)
@@ -175,4 +178,63 @@ export function istYesterday(now: Date = new Date()): string {
 /** YYYY-MM-DD for the current IST calendar day. */
 export function istToday(now: Date = new Date()): string {
   return new Date(now.getTime() + 5.5 * 3600_000).toISOString().slice(0, 10);
+}
+
+// ── Right Care case-mix complexity: patient history bundle (RIGHT-CARE-INDICATOR-PRD §3) ──────────
+// Reads db13 history STRICTLY BEFORE the index encounter (as-of discipline; index excluded) for one
+// patient and returns the raw counts the pure recipe (opd-complexity-core) bands. Circularity rule:
+// chronic-ONLY ICDs, index encounter excluded, risk_category never touched.
+//
+// FAIL-SAFE (hard constraint): any query error or a 3s timeout on ANY leg → returns null, so the
+// caller stores a NULL band ("unbanded") and never emits a partial/wrong band; the backfill retries.
+// Empty results (a genuinely history-free patient) are NOT failures → enc_24m=0 → NEW_TO_US.
+const HISTORY_TIMEOUT_MS = 3000;
+function raceTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([p, new Promise<T>((res) => { setTimeout(() => res(fallback), ms); })]);
+}
+
+/**
+ * Fetch the complexity history bundle for `individualUid` as of `asOfIso` (the index encounter
+ * timestamp). Returns {chronic_codes, abnormal_labs, enc_12m, enc_24m, as_of} or null on any failure.
+ */
+export async function fetchPatientHistoryBundle(individualUid: string, asOfIso: string): Promise<ComplexityInputs | null> {
+  if (!isUid(individualUid)) return null;
+  const d = new Date(asOfIso);
+  if (Number.isNaN(d.getTime())) return null;
+  const asOf = d.toISOString();
+  const from12 = windowStart(asOf, 12);
+  const from24 = windowStart(asOf, 24);
+  const iu = individualUid; // isUid() restricts to [A-Za-z0-9_-] — safe to interpolate (this helper is param-less)
+
+  // A leg resolves to null on error OR timeout (never rejects), so one bad column can't crash the audit.
+  const leg = (query: string) => raceTimeout(metabaseQuery(query).catch(() => null), HISTORY_TIMEOUT_MS, null);
+
+  // Encounters: individuals-prescriptions carries individual_uid + timestamp; `< asOf` excludes the index.
+  const encSql = `SELECT
+      count(*) FILTER (WHERE ip.timestamp >= '${from12}'::timestamptz)::int AS enc12,
+      count(*) FILTER (WHERE ip.timestamp >= '${from24}'::timestamptz)::int AS enc24
+    FROM ${SOURCE} ip
+    WHERE ip.individual_uid = '${iu}' AND ip.is_draft = false AND ip.timestamp < '${asOf}'::timestamptz`;
+  // Chronic-ONLY ICDs (12m, index excluded): flattened diagnosis child joined to its parent encounter.
+  const chronicSql = `SELECT DISTINCT dx.icd_code AS icd_code
+    FROM dpipe_prescription_pipeline__diagnosis dx
+    JOIN ${SOURCE} ip ON ip.uid = dx.presc_uid
+    WHERE ip.individual_uid = '${iu}' AND dx.acute_chronic = 'CHRONIC'
+      AND ip.timestamp >= '${from12}'::timestamptz AND ip.timestamp < '${asOf}'::timestamptz`;
+  // Abnormal labs (12m): test_values_view, individual via _parent_path, precomputed abnormal flag.
+  const labSql = `SELECT 1 AS one
+    FROM test_values_view t
+    WHERE t._parent_path LIKE '%${iu}%' AND t.investigation_is_abnormal = 'ABNORMAL'
+      AND t.timestamp >= '${from12}'::timestamptz AND t.timestamp < '${asOf}'::timestamptz`;
+
+  const [encRows, chronicRows, labRows] = await Promise.all([leg(encSql), leg(chronicSql), leg(labSql)]);
+  if (encRows === null || chronicRows === null || labRows === null) return null; // any leg failed → NULL band
+
+  return {
+    chronic_codes: countDistinctChronicIcds(chronicRows),
+    abnormal_labs: countAbnormalLabs(labRows),
+    enc_12m: scalarCount(encRows, 'enc12'),
+    enc_24m: scalarCount(encRows, 'enc24'),
+    as_of: asOf.slice(0, 10),
+  };
 }
