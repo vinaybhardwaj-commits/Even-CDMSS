@@ -76,6 +76,16 @@ export async function POST(req: NextRequest) {
     )`;
     await sql`CREATE INDEX IF NOT EXISTS opd_audit_feedback_audit_idx ON opd_audit_feedback (audit_id, created_at DESC)`;
     steps.feedback = 'ok';
+    // Feedback instrumentation v1.0 (PRD §4.2) — per-finding triage + note-level missed capture.
+    // Additive: legacy rows default to scope='audit' and read exactly as before. finding_ref is set
+    // for scope='finding'; signal_type is denormalised for batch analytics. Current state = latest
+    // row per (audit_id, finding_ref). Must run BEFORE the new route/page deploy (inserts of the new
+    // columns fail otherwise — the known column-add gotcha).
+    await sql`ALTER TABLE opd_audit_feedback ADD COLUMN IF NOT EXISTS scope       TEXT NOT NULL DEFAULT 'audit'`;
+    await sql`ALTER TABLE opd_audit_feedback ADD COLUMN IF NOT EXISTS finding_ref TEXT`;
+    await sql`ALTER TABLE opd_audit_feedback ADD COLUMN IF NOT EXISTS signal_type TEXT`;
+    await sql`CREATE INDEX IF NOT EXISTS opd_audit_feedback_finding_idx ON opd_audit_feedback (finding_ref, created_at DESC)`;
+    steps.feedback_instrumentation = 'ok';
     const cols = (await sql`SELECT count(*)::int AS n FROM information_schema.columns WHERE table_name = 'opd_note_audits'`) as Array<{ n: number }>;
     steps.columns = String(cols[0]?.n ?? 0);
     return NextResponse.json({ ok: true, steps });

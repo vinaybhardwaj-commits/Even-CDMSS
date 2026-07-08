@@ -11,6 +11,9 @@ import { anchorFindings, anchorsByTarget, type NoteAnchor } from '@/lib/opd-case
 import { CitationChips, SourcesPanel } from '@/components/right-care/kit';
 import type { Source } from '@/lib/citations-core';
 import FeedbackPanel, { type FeedbackEntry } from './feedback-panel';
+import { FindingTriage, ReviewerBar } from './finding-triage';
+import { MissedFindingCapture, type MissedEntry } from './missed-finding';
+import { EscalateButton } from './escalate-button';
 import {
   bandColor, scoreColor, parseJson, doctorLabel, fmtIstTime, PDQI9_LABEL, PDQI9_HELP,
 } from '@/lib/opd-audit-ui';
@@ -26,7 +29,7 @@ const VERDICT_COLOR: Record<string, string> = {
   'low-value': '#dc2626', 'context-dependent': '#d97706', 'high-value': '#16a34a', uncertain: '#78715f',
 };
 
-type Finding = { subject: string; verdict: string; confidence: number; domain: string; rationale: string; evidence?: string[]; estimates?: string[]; source?: string; citation_ids?: number[] };
+type Finding = { subject: string; verdict: string; confidence: number; domain: string; rationale: string; evidence?: string[]; estimates?: string[]; source?: string; citation_ids?: number[]; finding_ref?: string; signal_type?: string };
 type Pdqi = { attr: string; label?: string; value: number };
 type Sugg = { priority: number; text: string };
 
@@ -38,6 +41,62 @@ const DOMAINS: { key: OpdDomain; col: string; label: string }[] = [
   { key: 'patient_centred', col: 'score_patient_centred', label: 'Continuity' },
 ];
 const DOMAIN_LABEL: Record<string, string> = Object.fromEntries(DOMAINS.map((d) => [d.key, d.label]));
+
+// PRD §9.5 — assemble the portable "Escalate to Gemini" package. Input `note` is already
+// de-identified (DeidOpdCase), so the string carries no PHI. The consumer is the care manager's
+// own Gemini (then Claude + this repo) — free-form, no structured import.
+function buildEscalationPackage({ uid, doctor, band, index, note, findings, scores, engineVersion }: {
+  uid: string; doctor: string; band: string; index: number;
+  note: DeidOpdCase | null; findings: Finding[]; scores: Record<OpdDomain, number>; engineVersion: string;
+}): string {
+  const L: string[] = [];
+  L.push(`# OPD note — escalation for independent re-audit`);
+  L.push(``);
+  L.push(`- Encounter (de-identified): \`${uid}\``);
+  L.push(`- Reviewing clinician: ${doctor}`);
+  L.push(`- CDMSS grade: ${index} · Band ${band}`);
+  L.push(`- Engine: \`${engineVersion}\``);
+  L.push(``);
+  L.push(`## The note (de-identified — exactly what the engine read)`);
+  if (!note) {
+    L.push(`_Source note unavailable at export time._`);
+  } else {
+    const line = (label: string, val: string) => L.push(`- **${label}:** ${val || '(none)'}`);
+    line('Presenting complaints / history', note.presentingComplaints.join(' · '));
+    if (note.reasonForConsult) line('Reason for consult', note.reasonForConsult);
+    line('Examination', note.examination.join(' · '));
+    line('Diagnosis (ICD-10)', [note.diagnosisCodes.join(', '), note.impressions.join('; ') || note.impressionCodes.join(', ')].filter(Boolean).join(' · '));
+    L.push(`- **Medications (${note.medications.length}):**`);
+    for (const m of note.medications) {
+      const dosing = [m.strength, m.dose, m.frequency, m.duration, m.route].filter(Boolean).join(' · ');
+      const primary = m.resolvedGeneric || m.generic || m.brand || '(unnamed)';
+      L.push(`  - ${primary}${dosing ? ` — ${dosing}` : ''}${m.instruction ? ` · ${m.instruction}` : ''}`);
+    }
+    line('Investigations ordered', note.investigations.join(' · '));
+    line('Advice / plan', note.advice.join(' · '));
+    line('Follow-up', note.followUpType ? `${note.followUpType}${note.followUpDateSet ? ' · date set' : ' · no date'}` : '(none)');
+  }
+  L.push(``);
+  L.push(`## CDMSS domain scores`);
+  for (const d of DOMAINS) L.push(`- ${d.label}: ${scores[d.key] ?? '—'}`);
+  L.push(``);
+  L.push(`## CDMSS findings (${findings.length})`);
+  if (findings.length === 0) L.push(`_No findings fired._`);
+  findings.forEach((f, i) => {
+    L.push(`${i + 1}. **${f.subject}** — _${f.verdict}_ (${DOMAIN_LABEL[f.domain] || f.domain})`);
+    if (f.rationale) L.push(`   - ${f.rationale}`);
+  });
+  L.push(``);
+  L.push(`## Task for you (Gemini)`);
+  L.push(`Independently re-audit the OPD note above as an experienced physician. For each of the five domains`);
+  L.push(`(documentation, note quality, appropriateness, prescribing & safety, continuity):`);
+  L.push(`1. State whether you agree with the CDMSS grade and each finding above; flag any you consider **false** or a **nitpick**.`);
+  L.push(`2. List any clinically important issue the CDMSS audit **missed** (recall / false negatives).`);
+  L.push(`3. Keep it advisory and note-scoped — this is a documentation-quality proxy, not a clinician scorecard.`);
+  L.push(`Return your assessment as free text; it will be reconciled against the CDMSS audit out-of-band.`);
+  L.push(``);
+  return L.join('\n');
+}
 
 function LockedMsg() {
   return (
@@ -198,7 +257,7 @@ function PdqiRadar({ pdqi }: { pdqi: Pdqi[] }) {
 }
 
 // ── the single finding card ─────────────────────────────────────────────────────
-function FindingCard({ f, num, sources }: { f: Finding; num: number; sources: Source[] }) {
+function FindingCard({ f, num, sources, auditId, triage }: { f: Finding; num: number; sources: Source[]; auditId: string; triage: Record<string, string> }) {
   const grounded = !!(f.citation_ids && f.citation_ids.length > 0);
   const ground = f.source === 'deterministic'
     ? { label: 'Deterministic rule', cls: 'border-slate-200 bg-slate-50 text-slate-500' }
@@ -222,6 +281,7 @@ function FindingCard({ f, num, sources }: { f: Finding; num: number; sources: So
           {Array.isArray(f.evidence) && f.evidence.length > 0 && (
             <div className="mt-1 text-[11px] text-slate-500"><span className="text-emerald-700">Evidence:</span> {f.evidence.join('; ')}</div>
           )}
+          <FindingTriage auditId={auditId} findingRef={f.finding_ref} signalType={f.signal_type} current={f.finding_ref ? triage[f.finding_ref] : undefined} />
         </div>
       </div>
     </div>
@@ -263,8 +323,14 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
   const noteDateMs = new Date(noteDateRaw).getTime();
   const noteDate = Number.isFinite(noteDateMs) ? new Date(noteDateMs).toISOString() : noteDateRaw;
 
-  const [feedback, prevR, nextR] = await Promise.all([
-    run(`SELECT id, created_at, verdict, comment, author FROM opd_audit_feedback WHERE audit_id = $1 AND app_source = $2 ORDER BY created_at DESC`, [id, APP]).catch(() => []),
+  // Feedback (PRD §4.4): the audit-scope panel shows only whole-audit rows (legacy rows have a null
+  // scope and read as 'audit'); per-finding current state is the latest row per finding_ref; missed
+  // flags are their own list. All wrapped in .catch — before the migrate route adds the columns the
+  // scope-filtered reads return empty rather than 500 (the documented migrate-first sequence).
+  const [feedback, findingStateRows, missedRows, prevR, nextR] = await Promise.all([
+    run(`SELECT id, created_at, verdict, comment, author FROM opd_audit_feedback WHERE audit_id = $1 AND app_source = $2 AND (scope = 'audit' OR scope IS NULL) ORDER BY created_at DESC`, [id, APP]).catch(() => []),
+    run(`SELECT DISTINCT ON (finding_ref) finding_ref, verdict FROM opd_audit_feedback WHERE audit_id = $1 AND app_source = $2 AND scope = 'finding' AND finding_ref IS NOT NULL ORDER BY finding_ref, created_at DESC`, [id, APP]).catch(() => []),
+    run(`SELECT id, created_at, comment, author FROM opd_audit_feedback WHERE audit_id = $1 AND app_source = $2 AND scope = 'missed' ORDER BY created_at DESC`, [id, APP]).catch(() => []),
     run(
       `SELECT id FROM opd_note_audits
        WHERE app_source = $1 AND engine_version = '${OPD_ENGINE_VERSION}'
@@ -320,6 +386,18 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
     },
   );
   const grouped = anchorsByTarget(anchors);
+
+  // ── feedback read-back state (PRD §4.4 / §9) ──────────────────────────────────
+  const triage: Record<string, string> = {};
+  for (const row of findingStateRows as Record<string, unknown>[]) {
+    if (row.finding_ref && row.verdict) triage[String(row.finding_ref)] = String(row.verdict);
+  }
+  const missed = missedRows as unknown as MissedEntry[];
+
+  // Escalation package (PRD §9.5): de-identified note + CDMSS findings + domain scores +
+  // engine_version + a fixed re-audit prompt. Built here (server), handed to EscalateButton for
+  // client-side Copy / Download. No PHI: `note` is already de-identified (DeidOpdCase).
+  const escalationPackage = buildEscalationPackage({ uid, doctor, band, index, note, findings, scores, engineVersion: OPD_ENGINE_VERSION });
 
   // ── the grade story ───────────────────────────────────────────────────────────
   const ranked = DOMAINS.filter((d) => !(d.key === 'note_quality' && !pdqiAssessed))
@@ -414,7 +492,11 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
 
           {findings.length > 0 && (
             <div id="findings" className="mt-4 scroll-mt-4">
-              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-400">Findings · grouped by domain, worst first · numbered where they sit in the note</div>
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-400">Findings · grouped by domain, worst first · numbered where they sit in the note</div>
+                <EscalateButton pkg={escalationPackage} uid={uid} />
+              </div>
+              <ReviewerBar />
               {findingDomains.map((dom) => {
                 const list = findings.map((f, i) => ({ f, num: i + 1 })).filter((x) => x.f.domain === dom);
                 const v = scores[dom as OpdDomain];
@@ -423,13 +505,14 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
                     <div className="mb-1.5 flex items-baseline gap-2 text-[10.5px] font-semibold uppercase tracking-[0.06em]" style={{ color: scoreColor(v) }}>
                       {DOMAIN_LABEL[dom] || dom.replace('_', ' ')} <span className="font-normal normal-case tracking-normal text-slate-400">score {v} · {list.length} finding{list.length > 1 ? 's' : ''}</span>
                     </div>
-                    <div className="space-y-2">{list.map(({ f, num }) => <FindingCard key={num} f={f} num={num} sources={sources} />)}</div>
+                    <div className="space-y-2">{list.map(({ f, num }) => <FindingCard key={num} f={f} num={num} sources={sources} auditId={id} triage={triage} />)}</div>
                   </div>
                 );
               })}
               {otherFindings.length > 0 && (
-                <div className="space-y-2">{findings.map((f, i) => ({ f, num: i + 1 })).filter((x) => !domainOrder.includes(x.f.domain)).map(({ f, num }) => <FindingCard key={num} f={f} num={num} sources={sources} />)}</div>
+                <div className="space-y-2">{findings.map((f, i) => ({ f, num: i + 1 })).filter((x) => !domainOrder.includes(x.f.domain)).map(({ f, num }) => <FindingCard key={num} f={f} num={num} sources={sources} auditId={id} triage={triage} />)}</div>
               )}
+              <MissedFindingCapture auditId={id} initial={missed} />
             </div>
           )}
 

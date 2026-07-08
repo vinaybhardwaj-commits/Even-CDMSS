@@ -2,6 +2,11 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
+// PRD §9.6 — the coarse whole-audit agree/disagree/needs_action buttons are RETIRED (superseded by
+// the per-finding "Your call" pills). The general free-text comment box stays at the #verdict foot
+// for anything not tied to a single finding (posts scope='audit'). Legacy rows that carried a
+// verdict still read back unchanged via VERDICT_BADGE below.
+
 export type FeedbackEntry = {
   id: string;
   created_at: string;
@@ -10,11 +15,6 @@ export type FeedbackEntry = {
   author: string | null;
 };
 
-const VERDICTS: { key: string; label: string; on: string; off: string }[] = [
-  { key: 'agree',        label: 'Agree',        on: 'border-emerald-400 bg-emerald-50 text-emerald-800', off: 'border-slate-200 text-slate-500 hover:bg-slate-50' },
-  { key: 'disagree',     label: 'Disagree',     on: 'border-red-400 bg-red-50 text-red-700',              off: 'border-slate-200 text-slate-500 hover:bg-slate-50' },
-  { key: 'needs_action', label: 'Needs action', on: 'border-amber-400 bg-amber-50 text-amber-800',        off: 'border-slate-200 text-slate-500 hover:bg-slate-50' },
-];
 const VERDICT_BADGE: Record<string, { label: string; cls: string }> = {
   agree:        { label: 'Agree',        cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
   disagree:     { label: 'Disagree',     cls: 'bg-red-50 text-red-700 border-red-200' },
@@ -33,7 +33,6 @@ function rel(ts: string): string {
 
 export default function FeedbackPanel({ auditId, uid, initial }: { auditId: string; uid: string | null; initial: FeedbackEntry[] }) {
   const router = useRouter();
-  const [verdict, setVerdict] = useState<string | null>(null);
   const [comment, setComment] = useState('');
   const [author, setAuthor] = useState('');
   const [busy, setBusy] = useState(false);
@@ -41,16 +40,16 @@ export default function FeedbackPanel({ auditId, uid, initial }: { auditId: stri
 
   async function submit() {
     if (busy) return;
-    if (!verdict && !comment.trim()) { setMsg('Add a verdict or a comment.'); return; }
+    if (!comment.trim()) { setMsg('Add a comment.'); return; }
     setBusy(true); setMsg('');
     try {
       const r = await fetch('/api/opd-audit/feedback', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ auditId, uid, verdict, comment: comment.trim() || null, author: author.trim() || null }),
+        body: JSON.stringify({ scope: 'audit', auditId, uid, comment: comment.trim(), author: author.trim() || null }),
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j.ok) { setMsg('Error: ' + (j.error || `status ${r.status}`)); }
-      else { setComment(''); setVerdict(null); router.refresh(); }
+      else { setComment(''); router.refresh(); }
     } catch (e) {
       setMsg('Failed: ' + String((e as Error).message));
     }
@@ -60,16 +59,10 @@ export default function FeedbackPanel({ auditId, uid, initial }: { auditId: stri
   return (
     <div className="rounded-xl border border-slate-200 bg-slate-50/60 px-3 py-2.5">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[10.5px] font-semibold uppercase tracking-[0.06em] text-slate-400">Your verdict</span>
-        {VERDICTS.map((v) => (
-          <button key={v.key} type="button" onClick={() => setVerdict(verdict === v.key ? null : v.key)}
-            className={`rounded-lg border px-2.5 py-1 text-[11.5px] font-medium ${verdict === v.key ? v.on : v.off}`}>
-            {v.label}
-          </button>
-        ))}
+        <span className="text-[10.5px] font-semibold uppercase tracking-[0.06em] text-slate-400">General comment</span>
         <input value={comment} onChange={(e) => setComment(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
-          placeholder="What's right or wrong about this audit? Anything to action?"
+          placeholder="Anything about this audit not tied to a single finding?"
           className="h-8 min-w-[180px] flex-1 rounded-lg border border-slate-200 bg-white px-2.5 text-[12px] text-slate-700 outline-none focus:border-brand/50" />
         <input value={author} onChange={(e) => setAuthor(e.target.value)} placeholder="Name (optional)"
           className="h-8 w-32 rounded-lg border border-slate-200 bg-white px-2.5 text-[12px] text-slate-700 outline-none focus:border-brand/50" />
@@ -78,7 +71,7 @@ export default function FeedbackPanel({ auditId, uid, initial }: { auditId: stri
           {busy ? 'Saving…' : 'Save'}
         </button>
       </div>
-      <div className="mt-1 text-[10.5px] text-slate-400">Verdicts train the engine (LL.3 calibration). Anonymous unless you add a name.</div>
+      <div className="mt-1 text-[10.5px] text-slate-400">Use the per-finding “Your call” pills above for finding-specific calls. Anonymous unless you add a name.</div>
       {msg && <div className="mt-1 text-[11px] text-slate-500">{msg}</div>}
 
       {initial.length > 0 && (
