@@ -1,12 +1,13 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { planTap, makeAttempt, revertOnFail, savedLabel, type Attempt } from '@/lib/opd-feedback-ux-core';
 
-// PRD §9.1–§9.3. Per-finding "Your call" strip on every finding that FIRED. Four pills
-// (True positive · Nitpick · False · Contested); one tap = one optimistic append-row POST.
-// Reviewer name is set once (ReviewerBar, §9.2) and stored in localStorage, riding every tap
-// as `author`. False / Contested auto-expand a one-line reason (§9.3); "Add note" offers the
-// same on all four. No reload on tap; server-loaded current state pre-selects the pill on revisit.
+// PRD §9.1–§9.3 (strip) + OPD-FEEDBACK-UX-POLISH §1A (state machine). Per-finding "Your call" strip
+// on every finding that FIRED. Four pills; one tap = one append-row POST. Reviewer name is set once
+// (ReviewerBar) in localStorage and rides every tap as `author`. State machine: idle → posting
+// (pill fills + inline spinner) → saved (✓ pulse, then persistent "Saved HH:MM · name") | failed
+// (pill REVERTS + persistent "Not saved — retry" that re-posts the exact payload). No toggle-off.
 
 const REVIEWER_KEY = 'opd-reviewer';
 const REVIEWER_EVENT = 'opd-reviewer-changed';
@@ -56,44 +57,73 @@ export function FindingTriage({ auditId, findingRef, signalType, current }: {
   const [selected, setSelected] = useState<string | null>(current ?? null);
   const [noteOpen, setNoteOpen] = useState(false);
   const [note, setNote] = useState('');
-  const [savedBy, setSavedBy] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState('');
+  // saved metadata (persists across router.refresh — kept in client state, not derived from props)
+  const [savedBy, setSavedBy] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<Date | null>(null);
+  const [pulse, setPulse] = useState(false);
+  // failure (persistent until a retry succeeds)
+  const [failed, setFailed] = useState<Attempt | null>(null);
+  const [errMsg, setErrMsg] = useState('');
+  const pulseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Keep the confirmation label live if the reviewer sets/changes their name in another card.
   const [, force] = useState(0);
   useEffect(() => {
     const h = () => force((x) => x + 1);
     window.addEventListener(REVIEWER_EVENT, h);
-    return () => window.removeEventListener(REVIEWER_EVENT, h);
+    return () => { window.removeEventListener(REVIEWER_EVENT, h); if (pulseTimer.current) clearTimeout(pulseTimer.current); };
   }, []);
 
   if (!findingRef) return null; // legacy finding without identity — nothing to key on
 
-  async function post(verdict: string, comment: string | null) {
-    setBusy(true); setErr('');
-    const author = getReviewer() || null;
+  async function post(attempt: Attempt) {
+    setBusy(true); setFailed(null); setErrMsg('');
+    const author = getReviewer() || null; // re-read at post time so a mid-session name change applies
     try {
       const r = await fetch('/api/opd-audit/feedback', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ scope: 'finding', auditId, finding_ref: findingRef, signal_type: signalType || null, verdict, comment, author }),
+        body: JSON.stringify({ scope: 'finding', auditId, finding_ref: findingRef, signal_type: signalType || null, verdict: attempt.verdict, comment: attempt.comment, author }),
       });
       const j = await r.json().catch(() => ({}));
-      if (!r.ok || !j.ok) { setErr(j.error || `status ${r.status}`); }
-      else { setSavedBy(author || 'anon'); router.refresh(); }
+      if (!r.ok || !j.ok) throw new Error(j.error || `status ${r.status}`);
+      // saved: ✓ pulse (client-state, survives the refresh re-render) → persistent metadata
+      setSavedBy(author || 'anon');
+      setSavedAt(new Date());
+      setPulse(true);
+      if (pulseTimer.current) clearTimeout(pulseTimer.current);
+      pulseTimer.current = setTimeout(() => setPulse(false), 1200);
+      try { window.dispatchEvent(new CustomEvent('opd-feedback-saved', { detail: { findingRef, verdict: attempt.verdict, scope: 'finding' } })); } catch { /* ignore */ }
+      router.refresh();
     } catch (e) {
-      setErr(String((e as Error).message));
+      // failed: revert the pill to its previous state; keep a persistent retry of the exact payload
+      setSelected(revertOnFail(attempt));
+      setFailed(attempt);
+      setErrMsg(String((e as Error).message).slice(0, 60));
     }
     setBusy(false);
   }
 
   function tap(key: string) {
     if (busy) return;
-    if (selected === key) { setSelected(null); setNoteOpen(false); return; } // toggle off (local; append-only keeps last stored)
-    setSelected(key);                                                        // optimistic
-    const wantsReason = key === 'false' || key === 'contested';
-    setNoteOpen(wantsReason);
-    void post(key, null);
+    const plan = planTap(selected, key);
+    if (plan.noop) return;                 // no toggle-off: re-tapping the selected pill does nothing
+    setSelected(key);                      // optimistic
+    setNoteOpen(key === 'false' || key === 'contested');
+    void post(makeAttempt(plan.prev, key, null));
+  }
+
+  function retry() {
+    if (!failed || busy) return;
+    setSelected(failed.verdict);           // re-apply optimistic
+    setNoteOpen(failed.verdict === 'false' || failed.verdict === 'contested');
+    void post(failed);
+  }
+
+  function submitNote() {
+    if (!selected || !note.trim() || busy) return;
+    void post(makeAttempt(selected, selected, note.trim()));
+    setNote(''); setNoteOpen(false);
   }
 
   return (
@@ -102,30 +132,42 @@ export function FindingTriage({ auditId, findingRef, signalType, current }: {
         <span className="mr-0.5 text-[10px] font-semibold uppercase tracking-[0.06em] text-slate-400">Your call</span>
         {PILLS.map((p) => (
           <button key={p.key} type="button" onClick={() => tap(p.key)} title={p.tip} disabled={busy}
-            className={`rounded-full border px-2 py-[3px] text-[11px] font-medium ${selected === p.key ? p.on : OFF}`}>
+            className={`rounded-full border px-2 py-[3px] text-[11px] font-medium ${selected === p.key ? p.on : OFF} ${busy ? 'opacity-80' : ''}`}>
             {p.label}
           </button>
         ))}
-        {selected && !noteOpen && (
+        {busy && <span className="tri-spin" aria-label="saving" />}
+        {pulse && <span className="tri-pulse" aria-hidden>✓</span>}
+        {selected && !noteOpen && !busy && (
           <button type="button" onClick={() => setNoteOpen(true)} className="text-[10.5px] text-slate-400 hover:text-brand">Add note</button>
         )}
-        {savedBy && !err && <span className="ml-auto text-[10.5px] text-slate-400">Saved · {savedBy}</span>}
-        {err && <span className="ml-auto text-[10.5px] text-red-500">{err}</span>}
+        <span className="ml-auto flex items-center gap-2">
+          {failed && (
+            <button type="button" onClick={retry} className="text-[10.5px] font-semibold text-red-600 hover:underline">Not saved — retry</button>
+          )}
+          {failed && errMsg && <span className="text-[10px] text-red-400">{errMsg}</span>}
+          {!failed && savedAt && <span className="text-[10.5px] text-slate-400">{savedLabel(savedBy, savedAt)}</span>}
+        </span>
       </div>
       {noteOpen && selected && (
         <div className="mt-1.5 flex items-center gap-1.5">
           <input
             value={note} onChange={(e) => setNote(e.target.value)} autoFocus
-            onKeyDown={(e) => { if (e.key === 'Enter' && note.trim()) { void post(selected, note.trim()); setNote(''); setNoteOpen(false); } }}
-            placeholder={selected === 'false' ? 'Why is this wrong? (optional)' : selected === 'contested' ? "Why contested? (optional)" : 'Note (optional)'}
+            onKeyDown={(e) => { if (e.key === 'Enter') submitNote(); }}
+            placeholder={selected === 'false' ? 'Why is this wrong? (optional)' : selected === 'contested' ? 'Why contested? (optional)' : 'Note (optional)'}
             className="h-7 flex-1 rounded-lg border border-slate-200 bg-white px-2.5 text-[11.5px] text-slate-700 outline-none focus:border-brand/50" />
-          <button type="button" disabled={busy || !note.trim()}
-            onClick={() => { if (note.trim()) { void post(selected!, note.trim()); setNote(''); setNoteOpen(false); } }}
+          <button type="button" disabled={busy || !note.trim()} onClick={submitNote}
             className={`whitespace-nowrap rounded-lg border px-2 py-1 text-[11px] font-medium ${busy || !note.trim() ? 'border-slate-200 text-slate-400' : 'border-brand/40 text-brand hover:bg-brand-faint'}`}>
             Save note
           </button>
         </div>
       )}
+      <style jsx>{`
+        .tri-spin { width: 10px; height: 10px; border: 2px solid #cbd5e1; border-top-color: #0f766e; border-radius: 50%; display: inline-block; animation: triSpin 0.6s linear infinite; }
+        @keyframes triSpin { to { transform: rotate(360deg); } }
+        .tri-pulse { display: inline-block; font-size: 12px; line-height: 1; color: #059669; animation: triPulse 1.2s ease forwards; }
+        @keyframes triPulse { 0% { opacity: 0; transform: scale(0.6); } 25% { opacity: 1; transform: scale(1.1); } 45% { transform: scale(1); } 75% { opacity: 1; } 100% { opacity: 0; } }
+      `}</style>
     </div>
   );
 }

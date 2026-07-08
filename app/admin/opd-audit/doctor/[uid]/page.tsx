@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { sql } from '@/lib/db';
 import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
 import { fetchDoctorNames, fetchDoctorSpecialities } from '@/lib/metabase';
 import { bandFor } from '@/lib/opd-note-score-core';
@@ -12,6 +13,8 @@ import NotesExplorer, { type AuditRow } from '../../audit-table';
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'OPD Audit · Doctor' };
 
+const APP = process.env.APP_SOURCE || 'standalone';
+const runSql = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 const n = (v: unknown): number => Number(v ?? 0);
 const BANDS = ['A', 'B', 'C', 'D', 'E'];
 const BULK_CAP = 50;
@@ -70,6 +73,13 @@ export default async function DoctorDetail({ params, searchParams }: { params: P
     cats: catsForRow(parseJson<string[]>(r.missing_fields, []), parseJson<{ subject?: string; verdict?: string; rationale?: string }[]>(r.findings, [])),
     doctorUid: uid,
   }));
+
+  // Feature C (UX polish PRD §1C): finding-scope triage ticks for the audits on screen — one
+  // parameterized read-only round-trip (NOT the MCP guard path); .catch → [] degrades to no ticks.
+  const auditIds = rows.map((r) => r.id);
+  const triagedIds = auditIds.length
+    ? (await runSql(`SELECT DISTINCT audit_id FROM opd_audit_feedback WHERE scope = 'finding' AND app_source = $1 AND audit_id = ANY($2)`, [APP, auditIds]).catch(() => [])).map((x) => String(x.audit_id))
+    : [];
 
   const nAudits = stats ? n(stats.nnotes) : 0;
   const meanIndex = stats ? n(stats.mean_index) : 0;
@@ -152,7 +162,7 @@ export default async function DoctorDetail({ params, searchParams }: { params: P
 
           {/* the audit list (reuses NotesExplorer; its "Download all" honours any client filter) */}
           <div className="mt-5">
-            <NotesExplorer rows={rows} />
+            <NotesExplorer rows={rows} triagedIds={triagedIds} />
           </div>
         </>
       )}

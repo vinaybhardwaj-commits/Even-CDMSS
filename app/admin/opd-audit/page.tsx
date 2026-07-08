@@ -140,6 +140,14 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
     doctorUid: r.doctor_uid ? String(r.doctor_uid) : null,
   }));
 
+  // Feature C (UX polish PRD §1C): which of the audits on screen already carry finding-scope triage —
+  // one parameterized round-trip over the ids fetched for display. Read-only page query, NOT the MCP
+  // guard path; .catch → [] so a pre-migration DB (no scope column) degrades to no ticks.
+  const auditIds = allRows.map((r) => r.id);
+  const triagedIds = auditIds.length
+    ? (await rowsOf<{ audit_id: string }>(`SELECT DISTINCT audit_id FROM opd_audit_feedback WHERE scope = 'finding' AND app_source = $1 AND audit_id = ANY($2)`, [APP, auditIds])).map((x) => String(x.audit_id))
+    : [];
+
   const k = kpiR[0] || {};
   const total = n(k.total);
   const meanIndex = n(k.mean_index);
@@ -320,7 +328,7 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
 
           {/* TOP ISSUES + browse */}
           <div className="mt-5">
-            <NotesExplorer rows={allRows} initialDoctorUid={initialDoctorUid} />
+            <NotesExplorer rows={allRows} initialDoctorUid={initialDoctorUid} triagedIds={triagedIds} />
           </div>
 
           {/* trend + band distribution */}

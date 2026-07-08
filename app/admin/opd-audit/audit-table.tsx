@@ -39,7 +39,8 @@ async function downloadBulk(ids: string[], setBusy: (b: boolean) => void, setErr
 // Top-issues panel (categorised, clickable) merged with the searchable all-notes table.
 // Clicking an issue filters the table; search + band + doctor + sort stack on top. All client-side
 // over the rows the server already fetched (≤600), so it's instant.
-export default function NotesExplorer({ rows, initialDoctorUid }: { rows: AuditRow[]; initialDoctorUid?: string }) {
+export default function NotesExplorer({ rows, initialDoctorUid, triagedIds }: { rows: AuditRow[]; initialDoctorUid?: string; triagedIds?: string[] }) {
+  const triaged = useMemo(() => new Set(triagedIds || []), [triagedIds]);
   const [q, setQ] = useState('');
   const [band, setBand] = useState('');
   const [cat, setCat] = useState('');
@@ -149,7 +150,7 @@ export default function NotesExplorer({ rows, initialDoctorUid }: { rows: AuditR
                   <td className="whitespace-nowrap px-2 py-1.5 text-slate-400">{r.consult}</td>
                   <td className="px-2 py-1.5 text-center"><span className="rounded px-1.5 py-0.5 text-[10px] font-medium text-white" style={{ background: bandColor(r.band) }}>{r.band}</span></td>
                   <td className="px-2 py-1.5 text-right font-medium" style={{ color: scoreColor(r.index) }}>{r.index}</td>
-                  <td className="px-3 py-1.5"><Link href={`/admin/opd-audit/${r.id}`} className="text-slate-600 hover:text-brand hover:underline">{r.issue}</Link></td>
+                  <td className="px-3 py-1.5"><Link href={`/admin/opd-audit/${r.id}`} className="text-slate-600 hover:text-brand hover:underline">{r.issue}</Link>{triaged.has(r.id) && <span className="ml-1 text-emerald-600" title="has your triage">✓</span>}</td>
                   <td className="whitespace-nowrap px-2 py-1.5 text-right"><a href={`/api/opd-audit/export-pdf?id=${r.id}`} className="text-slate-400 hover:text-brand" title="Download note + audit PDF">↓</a></td>
                 </tr>
               ))}

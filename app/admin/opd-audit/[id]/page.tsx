@@ -14,6 +14,7 @@ import FeedbackPanel, { type FeedbackEntry } from './feedback-panel';
 import { FindingTriage, ReviewerBar } from './finding-triage';
 import { MissedFindingCapture, type MissedEntry } from './missed-finding';
 import { EscalateButton } from './escalate-button';
+import { TriageProgress } from './triage-progress';
 import {
   bandColor, scoreColor, parseJson, doctorLabel, fmtIstTime, PDQI9_LABEL, PDQI9_HELP,
 } from '@/lib/opd-audit-ui';
@@ -394,6 +395,11 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
   }
   const missed = missedRows as unknown as MissedEntry[];
 
+  // Feature B seed (PRD §1B): total = findings with a finding_ref (triageable); triagedRefs = those
+  // already triaged (reuse the current-state map above so live re-verdicts dedupe across the seed).
+  const triageableRefs = new Set(findings.filter((f) => f.finding_ref).map((f) => String(f.finding_ref)));
+  const triagedRefs = Object.keys(triage).filter((ref) => triageableRefs.has(ref));
+
   // Escalation package (PRD §9.5): de-identified note + CDMSS findings + domain scores +
   // engine_version + a fixed re-audit prompt. Built here (server), handed to EscalateButton for
   // client-side Copy / Download. No PHI: `note` is already de-identified (DeidOpdCase).
@@ -471,6 +477,10 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
           <nav className="border-t border-slate-100 pt-2 text-[11.5px] leading-[2.05]">
             {toc.map((t) => <a key={t.href} href={t.href} className="block text-slate-500 hover:text-brand">{t.label}</a>)}
           </nav>
+
+          {(triageableRefs.size > 0 || missed.length > 0) && (
+            <TriageProgress total={triageableRefs.size} triagedRefs={triagedRefs} missed={missed.length} />
+          )}
 
           <div className="mt-2 flex items-center justify-between border-t border-slate-100 pt-2.5 text-[11px]">
             {prevId ? <Link href={`/admin/opd-audit/${prevId}`} className="text-brand hover:underline">‹ prev</Link> : <span className="text-slate-300">‹ prev</span>}
