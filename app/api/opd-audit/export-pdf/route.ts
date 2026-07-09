@@ -11,6 +11,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
 import { requireAdmin } from '@/lib/admin-gate';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
+import { isCareUnlocked } from '@/lib/care-cookie';
 import { fetchOpdNoteByUid, fetchDoctorNames } from '@/lib/metabase';
 import { rowToOpdCase } from '@/lib/opd-ingest-core';
 import { doctorLabel } from '@/lib/opd-audit-ui';
@@ -146,7 +147,9 @@ async function handleBulk(rows: Record<string, unknown>[], filename: string): Pr
 
 export async function GET(req: NextRequest) {
   const denied = requireAdmin(req);
-  if (denied && !(await isAdminUnlocked().catch(() => false))) return denied;
+  // Review-Mode PDF-context §2.4 / decision 3 — CM access ≡ admin access for patient info (FOR NOW):
+  // the care cookie unlocks export-pdf in addition to the admin gate. A proper roles model is owed work.
+  if (denied && !(await isAdminUnlocked().catch(() => false)) && !(await isCareUnlocked().catch(() => false))) return denied;
 
   const sp = req.nextUrl.searchParams;
   const id = (sp.get('id') || '').trim();
@@ -175,7 +178,9 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const denied = requireAdmin(req);
-  if (denied && !(await isAdminUnlocked().catch(() => false))) return denied;
+  // Review-Mode PDF-context §2.4 / decision 3 — CM access ≡ admin access for patient info (FOR NOW):
+  // the care cookie unlocks export-pdf in addition to the admin gate. A proper roles model is owed work.
+  if (denied && !(await isAdminUnlocked().catch(() => false)) && !(await isCareUnlocked().catch(() => false))) return denied;
 
   let body: Record<string, unknown> = {};
   try { body = await req.json(); } catch { /* ignore */ }

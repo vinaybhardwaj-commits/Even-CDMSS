@@ -10,19 +10,26 @@
  * Keys (§1): 1 TP · 2 Nitpick · 3 False · 4 Contested · after 1: `i` cycles impact tag (TP-only) ·
  * 3/4 open the reason input (Enter saves, Esc skips) · `m` missed-finding flow for THIS NOTE
  * (category via 1–7 + text) · `s` skip (logs nothing, requeues later) · Enter next · space toggles
- * note context. Identity is roster-driven and required to start (rides every row as `author`).
+ * the prescription pane · `?` opens the reviewer guide. Identity is roster-driven and required to
+ * start (rides every row as `author`).
+ *
+ * v1.1 (PDF-context PRD): split view — original prescription PDF (db13 GCS url) in an iframe on the
+ * left (~55%, `space` toggles, default on), finding card + tools on the right; the metadata context
+ * renders inline always; a floating reviewer guide (<ReviewGuide>) owns the keyboard while open.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   planTap, makeAttempt, revertOnFail, savedLabel, type Attempt,
 } from '@/lib/opd-feedback-ux-core';
 import { IMPACT_TAGS, MISSED_CATEGORIES } from '@/lib/opd-feedback-core';
+import ReviewGuide from './review-guide';
 
 type QueueItem = {
   audit_id: string; finding_ref: string; signal_type: string; domain: string;
   subject: string; rationale: string; verdict: string; note_date: string; doctor_uid: string;
   citation_ids?: number[]; queue: 'fresh' | 'disagreement';
   disagreement_type?: string; disagreement_reason?: string;
+  uid?: string; prescription_url?: string | null;   // v1.1 PDF-context passthrough
 };
 type QueueResp = {
   ok: boolean; engine?: string; roster?: string[]; disagreement_enabled?: boolean;
@@ -71,7 +78,11 @@ export default function ReviewSession() {
   const [savedMeta, setSavedMeta] = useState<string | null>(null);
   const [failed, setFailed] = useState<Attempt | null>(null);
   const [errMsg, setErrMsg] = useState('');
-  const [noteOpen, setNoteOpen] = useState(false);
+  // v1.1 — PDF pane (default on, `space` toggles; persists across findings) + per-finding iframe error
+  const [pdfOpen, setPdfOpen] = useState(true);
+  const [pdfError, setPdfError] = useState(false);
+  // reviewer guide overlay — while open it owns the keyboard (review keys suspended in the handler below)
+  const [guideOpen, setGuideOpen] = useState(false);
 
   // reason input (3/4) + missed flow
   const [reasonOpen, setReasonOpen] = useState(false);
@@ -118,10 +129,11 @@ export default function ReviewSession() {
     void loadQueue(who);
   }
 
-  // reset per-finding state whenever the current finding changes
+  // reset per-finding state whenever the current finding changes (pdfOpen persists — it's a session
+  // preference, not per-finding; pdfError resets so a new note's iframe gets a fresh try)
   useEffect(() => {
     setSelected(null); setImpact(null); setBusy(false); setSavedMeta(null);
-    setFailed(null); setErrMsg(''); setNoteOpen(false);
+    setFailed(null); setErrMsg(''); setPdfError(false);
     setReasonOpen(false); setReasonText(''); setMissedOpen(false); setMissedCat(null); setMissedText(''); setMissedSaved(false);
   }, [idx, items]);
 
@@ -203,9 +215,13 @@ export default function ReviewSession() {
   useEffect(() => {
     if (phase !== 'reviewing') return;
     const onKey = (e: KeyboardEvent) => {
+      // The guide owns the keyboard while open — ALL review keys suspended (§2.5). The guide's own
+      // effect handles Esc-to-close; we never register a second handler for the review keys.
+      if (guideOpen) return;
       // while a text input is focused, let the input own the keys (its own handlers save/skip)
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (e.key === '?') { e.preventDefault(); setGuideOpen(true); return; } // `?` opens the guide
       if (missedOpen) {
         if (e.key >= '1' && e.key <= '7') { e.preventDefault(); setMissedCat(MISSED_CATEGORIES[Number(e.key) - 1]); }
         else if (e.key === 'Escape') { e.preventDefault(); setMissedOpen(false); }
@@ -219,13 +235,13 @@ export default function ReviewSession() {
         case 'm': case 'M': e.preventDefault(); setMissedOpen(true); setMissedCat(null); setMissedText(''); break;
         case 's': case 'S': e.preventDefault(); skip(); break;
         case 'Enter': e.preventDefault(); advance(); break;
-        case ' ': e.preventDefault(); setNoteOpen((o) => !o); break;
+        case ' ': e.preventDefault(); setPdfOpen((o) => !o); break; // v1.1: space toggles the PDF pane
         default: break;
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [phase, modalOpen, reasonOpen, missedOpen, tapVerdict, cycleImpact, skip, advance]);
+  }, [phase, guideOpen, modalOpen, reasonOpen, missedOpen, tapVerdict, cycleImpact, skip, advance]);
 
   const lpm = useMemo(() => {
     const mins = (Date.now() - sessionStart.current) / 60000;
@@ -255,7 +271,7 @@ export default function ReviewSession() {
   // ── reviewing ─────────────────────────────────────────────────────────────────
   const done = !loading && idx >= items.length;
   return (
-    <div className="mx-auto max-w-3xl px-5 py-6" style={{ fontFamily: 'system-ui, sans-serif' }}>
+    <div className="mx-auto max-w-6xl px-5 py-6" style={{ fontFamily: 'system-ui, sans-serif' }}>
       {/* rail */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2 text-[12px] text-slate-500">
         <div className="flex items-center gap-2">
@@ -282,7 +298,30 @@ export default function ReviewSession() {
           <button onClick={() => loadQueue(reviewer)} className="mt-4 rounded-lg bg-slate-800 px-4 py-2 text-[13px] font-medium text-white hover:bg-slate-900">Load more</button>
         </div>
       ) : current ? (
-        <div>
+        <div className={pdfOpen ? 'grid items-start gap-5 lg:grid-cols-[55fr_45fr]' : 'mx-auto max-w-3xl'}>
+          {/* left pane — original prescription PDF (§2.3); iframe keyed by url so same-note
+              consecutive findings do NOT reload it */}
+          {pdfOpen && (
+            <div>
+              <div className="mb-2 flex items-center justify-between gap-2 text-[11.5px] text-slate-500">
+                <span className="truncate">{current.uid ? current.uid.slice(0, 8) : '—'} · {current.note_date}</span>
+                <a href={`/api/opd-audit/export-pdf?id=${current.audit_id}`} target="_blank" rel="noopener" className="shrink-0 text-sky-700 hover:underline">Download note+audit PDF</a>
+              </div>
+              {current.prescription_url && !pdfError ? (
+                <iframe key={current.prescription_url} src={current.prescription_url} title="Original prescription"
+                  onError={() => setPdfError(true)}
+                  className="h-[75vh] w-full rounded-lg border border-slate-200 bg-white" />
+              ) : (
+                <div className="flex h-[75vh] w-full flex-col items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-center">
+                  <p className="text-[13px] text-slate-500">Original prescription unavailable</p>
+                  <a href={`/api/opd-audit/export-pdf?id=${current.audit_id}`} target="_blank" rel="noopener" className="mt-2 text-[12px] text-sky-700 hover:underline">Download note+audit PDF</a>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* right pane — the finding card + verdict/impact/missed tools (behavior unchanged) */}
+          <div>
           {/* finding card */}
           <div className="rounded-xl border border-slate-200 bg-white p-5">
             <div className="flex flex-wrap items-center gap-2 text-[11px]">
@@ -299,17 +338,12 @@ export default function ReviewSession() {
             <h2 className="mt-2 text-[16px] font-semibold leading-snug text-slate-900">{current.subject}</h2>
             {current.rationale && <p className="mt-1.5 text-[13px] leading-relaxed text-slate-600">{current.rationale}</p>}
 
-            <button onClick={() => setNoteOpen((o) => !o)} className="mt-3 text-[11.5px] text-sky-700 hover:underline">
-              {noteOpen ? '▾ Hide context' : '▸ Note context'} <span className="text-slate-400">(space)</span>
-            </button>
-            {noteOpen && (
-              <div className="mt-2 rounded-lg bg-slate-50 px-3 py-2 text-[11.5px] leading-relaxed text-slate-600">
-                <div>Doctor <span className="text-slate-500">{current.doctor_uid || '—'}</span> · signal_type <span className="text-slate-500">{current.signal_type}</span></div>
-                <div className="mt-0.5">finding_ref <code className="text-slate-400">{current.finding_ref}</code></div>
-                {current.citation_ids && current.citation_ids.length > 0 && <div className="mt-0.5">Citations: {current.citation_ids.join(', ')}</div>}
-                <div className="mt-1 text-[10.5px] text-slate-400">De-identified — the finding rationale is the context available in the queue. (Full note-text panel is a follow-up; not in this build's file contract.)</div>
-              </div>
-            )}
+            {/* metadata context — now ALWAYS inline (§2.3); the source prescription sits alongside */}
+            <div className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-[11.5px] leading-relaxed text-slate-600">
+              <div>Doctor <span className="text-slate-500">{current.doctor_uid || '—'}</span> · signal_type <span className="text-slate-500">{current.signal_type}</span></div>
+              <div className="mt-0.5">finding_ref <code className="text-slate-400">{current.finding_ref}</code></div>
+              {current.citation_ids && current.citation_ids.length > 0 && <div className="mt-0.5">Citations: {current.citation_ids.join(', ')}</div>}
+            </div>
           </div>
 
           {/* verdict strip */}
@@ -381,13 +415,17 @@ export default function ReviewSession() {
 
           {/* footer hints */}
           <div className="mt-6 flex items-center justify-between text-[11px] text-slate-400">
-            <span>1 TP · 2 Nitpick · 3 False · 4 Contested · i impact · m missed · s skip · space context</span>
+            <span>1 TP · 2 Nitpick · 3 False · 4 Contested · i impact · m missed · s skip · space prescription · ? guide</span>
             <button onClick={advance} className="rounded-lg border border-slate-200 px-3 py-1 font-medium text-slate-600 hover:border-slate-300">Next (⏎)</button>
+          </div>
           </div>
         </div>
       ) : (
         <div className="mt-20 text-center text-[13px] text-slate-400">Nothing in the queue.</div>
       )}
+
+      {/* floating reviewer guide (§2.5) — owns the keyboard while open (review keys suspended above) */}
+      <ReviewGuide open={guideOpen} onOpen={() => setGuideOpen(true)} onClose={() => setGuideOpen(false)} />
     </div>
   );
 }

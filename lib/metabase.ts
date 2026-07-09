@@ -137,6 +137,26 @@ export async function fetchDoctorNames(uids: string[]): Promise<Record<string, s
   return map;
 }
 
+/** Map note uid → prescription_url (db13 `individuals-prescriptions.prescription_url`, a GCS PDF).
+ *  MEASURED 100% coverage for non-draft OPD notes since 1 Jun 2026 (Cowork, 9 Jul). Best-effort like
+ *  fetchDoctorNames — the caller wraps with .catch so any error degrades to no-PDF (fallback pane).
+ *  Slim two-column read on purpose (Review-Mode PDF-context §2.2); never reuse fetchOpdNotesByUids. */
+export async function fetchPrescriptionUrls(uids: string[]): Promise<Record<string, string>> {
+  const ex = Array.from(new Set((uids || []).filter(isUid)));
+  if (!ex.length) return {};
+  const inList = ex.map((u) => `'${u}'`).join(', ');
+  const rows = await metabaseQuery(
+    `SELECT uid, prescription_url FROM ${SOURCE} WHERE uid IN (${inList})`,
+  );
+  const map: Record<string, string> = {};
+  for (const r of rows) {
+    const u = String(r.uid || '');
+    const url = r.prescription_url ? String(r.prescription_url).trim() : '';
+    if (u && url) map[u] = url;
+  }
+  return map;
+}
+
 /** Map doctor_uid → { name, speciality }, parsed from db13 `individuals-prescriptions.
  *  doctor_name_with_speciality` ("Dr. Reshma(General Physician)"). The speciality lives in the
  *  trailing parentheses; we take the most-frequent label per doctor. Staff data, not PHI —

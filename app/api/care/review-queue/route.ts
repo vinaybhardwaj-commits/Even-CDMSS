@@ -22,6 +22,7 @@ import { isCareUnlocked } from '@/lib/care-cookie';
 import { OPD_ENGINE_VERSION, stampFindingIdentity, type OpdFinding } from '@/lib/opd-note-audit-core';
 import { parseJson } from '@/lib/opd-audit-ui';
 import { getSettings } from '@/lib/mini-backfill';
+import { fetchPrescriptionUrls } from '@/lib/metabase';
 import {
   buildReviewQueue, itemKey, type QueueFinding, type QueueItem,
 } from '@/lib/review-queue-core';
@@ -114,6 +115,7 @@ export async function GET(req: NextRequest) {
         doctor_uid: doctor,
         citation_ids: Array.isArray(f.citation_ids) ? f.citation_ids : [],
         informational: !!f.informational,
+        uid: uid || undefined,   // note uid → PDF-context enrichment (§2.1)
       };
       fresh.push(qf);
       if (uid) {
@@ -150,6 +152,13 @@ export async function GET(req: NextRequest) {
     limit: n,
     filters: { signal_type, domain, doctor_uid, from, to },
   });
+
+  // PDF-context enrichment (§2.1): ONE db13 lookup per queue load, on the RETURNED items' distinct
+  // uids only (≤ n) — never the 200–800 scanned rows. Fail-safe: any error → prescription_url null
+  // on every item (fallback pane), never a 500.
+  const pdfUids = Array.from(new Set(items.map((i) => i.uid).filter((u): u is string => !!u)));
+  const urlMap = pdfUids.length ? await fetchPrescriptionUrls(pdfUids).catch(() => ({} as Record<string, string>)) : {};
+  for (const it of items) it.prescription_url = (it.uid && urlMap[it.uid]) || null;
 
   const labeled_today = await labeledTodayCount(reviewer);
 
@@ -211,6 +220,7 @@ async function buildDisagreements(
         note_date: slot.note_date,
         doctor_uid: slot.doctor_uid,
         informational: false,
+        uid,   // disagreement items get uid from their byUid slot key (§2.1)
         queue: 'disagreement',
         disagreement_type: d.type,
         disagreement_reason: d.reason,

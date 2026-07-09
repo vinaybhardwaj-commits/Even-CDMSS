@@ -65,6 +65,10 @@ export interface QueueFinding {
   doctor_uid: string;
   citation_ids?: number[];
   informational?: boolean;
+  // PDF-context (Review-Mode v1.1) — OPTIONAL passthrough only; no ordering/assignment logic reads
+  // these. `uid` = the note uid; `prescription_url` = its db13 GCS PDF (null when absent → fallback).
+  uid?: string;
+  prescription_url?: string | null;
 }
 
 export interface QueueItem extends QueueFinding {

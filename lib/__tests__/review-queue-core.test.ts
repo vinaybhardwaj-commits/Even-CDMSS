@@ -99,6 +99,20 @@ test('disagreement items come first, then fresh; limit respected', () => {
   assert.equal(q.filter((x) => x.finding_ref === dref).length, 1);
 });
 
+test('passthrough: optional uid + prescription_url survive buildReviewQueue onto emitted items', () => {
+  const roster = ['V']; // single-member roster owns every bucket, so any ref is assigned to V
+  const f = mkFinding({ finding_ref: 'pdfref1' });
+  f.uid = 'note-uid-123';
+  f.prescription_url = 'https://storage.googleapis.com/even-prod-prescription/note-uid-123_1.pdf';
+  const [out] = buildReviewQueue({ reviewer: 'V', roster, fresh: [f], limit: 10 });
+  assert.equal(out.uid, 'note-uid-123');
+  assert.equal(out.prescription_url, 'https://storage.googleapis.com/even-prod-prescription/note-uid-123_1.pdf');
+  // and absent optional fields stay undefined (existing constructors unaffected)
+  const plain = buildReviewQueue({ reviewer: 'V', roster, fresh: [mkFinding({ finding_ref: 'plain1' })], limit: 10 })[0];
+  assert.equal(plain.uid, undefined);
+  assert.equal(plain.prescription_url, undefined);
+});
+
 test('excludes labeled-by-this-reviewer, informational, unassigned, and filtered-out findings', () => {
   const roster = ['V', 'Zaki'];
   const mine = REFS.filter((r) => assignedToReviewer(r, 'V', roster)).slice(0, 10).map((r) => mkFinding({ finding_ref: r }));
