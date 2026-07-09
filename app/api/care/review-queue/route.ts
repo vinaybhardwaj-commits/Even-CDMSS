@@ -64,7 +64,7 @@ export async function GET(req: NextRequest) {
   const reviewer = (sp.get('reviewer') || '').trim().slice(0, 64);
   if (!reviewer) return NextResponse.json({ ok: false, error: 'reviewer required' }, { status: 400 });
 
-  const n = Math.max(1, Math.min(50, Number(sp.get('n')) || 20));
+  const n = Math.max(1, Math.min(120, Number(sp.get('n')) || 20)); // §3.3: cap 50→120 (navigator working set)
   const queue = sp.get('queue') === 'disagreement' ? 'disagreement' : sp.get('queue') === 'fresh' ? 'fresh' : 'all';
   const signal_type = (sp.get('signal_type') || '').trim() || null;
   const domain = (sp.get('domain') || '').trim() || null;

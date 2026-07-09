@@ -176,9 +176,13 @@ export default async function DeptDetail({ params }: { params: Promise<{ dept: s
               <h3 className="text-[13px] font-semibold text-slate-800">Top recurring findings</h3>
               <ul className="mt-2 space-y-1">
                 {topFindings.map((f, i) => (
-                  <li key={i} className="flex items-baseline justify-between gap-3 text-[12px]">
-                    <span className="text-slate-700">{f.subject} {f.signal_type && <span className="text-slate-400">· {f.signal_type}</span>}</span>
-                    <span className="shrink-0 tabular-nums text-slate-500">×{f.n}</span>
+                  <li key={i}>
+                    {/* drill-through (§2.1): land in the OPD Audit notes list filtered to these exact findings */}
+                    <Link href={`/admin/opd-audit?finding=${encodeURIComponent(f.subject)}&signal=${encodeURIComponent(f.signal_type)}&dept=${encodeURIComponent(dept)}#notes`}
+                      className="-mx-2 flex items-baseline justify-between gap-3 rounded-md px-2 py-0.5 text-[12px] hover:bg-slate-50">
+                      <span className="text-slate-700">{f.subject} {f.signal_type && <span className="text-slate-400">· {f.signal_type}</span>}</span>
+                      <span className="shrink-0 tabular-nums text-slate-500">×{f.n}</span>
+                    </Link>
                   </li>
                 ))}
               </ul>

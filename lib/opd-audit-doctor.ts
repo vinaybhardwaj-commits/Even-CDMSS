@@ -260,3 +260,51 @@ export async function fetchDeptTopFindings(dept: string): Promise<DeptFinding[]>
      WHERE ${DEPT_MATCH} AND COALESCE((f->>'informational')::boolean, false) = false AND COALESCE(f->>'subject', '') <> ''
      GROUP BY 1, 2 HAVING count(*) >= 3 ORDER BY n DESC LIMIT 10`, [APP, ENGINES, dept]);
 }
+
+// ── stewardship drill-through — the dept head's "which notes?" (NAVIGATOR-DRILL PRD §2.3) ──
+// EXACT same basis as fetchDeptTopFindings (WIN90 + engine FAMILY + distinctNoteSubquery + DEPT_JOIN +
+// DEPT_MATCH + non-informational) so the drill's finding count equals the stewardship ×n. Two reads
+// off one basis: (A) totals (f findings across m notes, uncapped), (B) the note list (AllRow shape,
+// newest-first, capped 600). INFERRED SQL — fully fail-safe (rowsOf → []; on error empty list + zero
+// counts, never a 500). $4 = subject (exact), $5 = signal (COALESCE-folded like stewardship).
+export interface DeptFindingNoteRow {
+  id: string; uid: string; note_date: string; doctor_uid: string | null;
+  consult_type: string | null; prescription_type: string | null; band: string;
+  note_quality_index: number; n_low_value: number; completeness_pct: number;
+  findings: unknown; missing_fields: unknown;
+}
+export interface DeptFindingNotesResult { rows: DeptFindingNoteRow[]; findings: number; notes: number; capped: boolean }
+
+export async function fetchDeptFindingNotes(dept: string, subject: string, signal: string): Promise<DeptFindingNotesResult> {
+  const params = [APP, ENGINES, dept, subject, signal];
+  const matchWhere = `${DEPT_MATCH} AND COALESCE((f->>'informational')::boolean, false) = false
+     AND f->>'subject' = $4 AND COALESCE(f->>'signal_type', '') = $5`;
+
+  // (A) totals over the full matched set (finding count f, distinct-note count m)
+  const totals = await rowsOf<{ f: number; m: number }>(
+    `SELECT count(*)::int AS f, count(DISTINCT l.id)::int AS m
+     FROM ( ${distinctNoteSubquery('id, doctor_uid, findings', ` AND ${WIN90}`)} ) l
+     ${DEPT_JOIN}
+     CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(l.findings) = 'array' THEN l.findings ELSE '[]'::jsonb END) f
+     WHERE ${matchWhere}`, params);
+  const findings = Number(totals[0]?.f || 0);
+  const notes = Number(totals[0]?.m || 0);
+
+  // (B) the note list (one row per matched note, newest-first, capped 600) in the AllRow column shape
+  const rows = await rowsOf<DeptFindingNoteRow>(
+    `SELECT id, uid, note_date, doctor_uid, consult_type, prescription_type, band,
+            note_quality_index, n_low_value, completeness_pct, findings, missing_fields
+     FROM (
+       SELECT DISTINCT ON (l.id) l.id, l.uid, l.note_date, l.doctor_uid, l.consult_type, l.prescription_type,
+              l.band, l.note_quality_index, l.n_low_value, l.completeness_pct, l.findings, l.missing_fields
+       FROM ( ${distinctNoteSubquery('id, doctor_uid, consult_type, prescription_type, band, note_quality_index, n_low_value, completeness_pct, findings, missing_fields, note_date', ` AND ${WIN90}`)} ) l
+       ${DEPT_JOIN}
+       CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(l.findings) = 'array' THEN l.findings ELSE '[]'::jsonb END) f
+       WHERE ${matchWhere}
+       ORDER BY l.id
+     ) t
+     ORDER BY note_date DESC
+     LIMIT 600`, params);
+
+  return { rows, findings, notes, capped: notes > 600 };
+}

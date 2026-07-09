@@ -22,7 +22,10 @@ import {
   planTap, makeAttempt, revertOnFail, savedLabel, type Attempt,
 } from '@/lib/opd-feedback-ux-core';
 import { IMPACT_TAGS, MISSED_CATEGORIES } from '@/lib/opd-feedback-core';
+import { itemKey } from '@/lib/review-queue-core';
+import { buildNavigator, nextUnlabeled, type ItemStatus } from '@/lib/review-navigator-core';
 import ReviewGuide from './review-guide';
+import Navigator from './navigator';
 
 type QueueItem = {
   audit_id: string; finding_ref: string; signal_type: string; domain: string;
@@ -75,6 +78,10 @@ export default function ReviewSession() {
   const [idx, setIdx] = useState(0);
   const [loading, setLoading] = useState(false);
   const [loadErr, setLoadErr] = useState<string | null>(null);
+  // navigator state (§3.2): per-item status (keyed by review-queue-core.itemKey) + the reviewer's own
+  // saved verdict per item, so revisiting a labeled item shows its saved state (append-only, unchanged).
+  const [status, setStatus] = useState<Record<string, ItemStatus>>({});
+  const [savedVerdicts, setSavedVerdicts] = useState<Record<string, string>>({});
 
   // session stats
   const [labeledToday, setLabeledToday] = useState(0);
@@ -109,6 +116,17 @@ export default function ReviewSession() {
 
   const current = items[idx] || null;
   const modalOpen = reasonOpen || missedOpen;
+  const currentKey = current ? itemKey(current) : null;
+
+  // navigator view (pure core) + jump-to-item by key
+  const nav = useMemo(() => buildNavigator(
+    items.map((it) => ({ key: itemKey(it), subject: it.subject, signal_type: it.signal_type, doctor_uid: it.doctor_uid, note_date: it.note_date, queue: it.queue })),
+    status,
+  ), [items, status]);
+  const selectByKey = useCallback((key: string) => {
+    const i = items.findIndex((it) => itemKey(it) === key);
+    if (i >= 0) setIdx(i);
+  }, [items]);
 
   // ── roster bootstrap (identity picker is required to start) ───────────────────
   useEffect(() => {
@@ -136,11 +154,12 @@ export default function ReviewSession() {
   const loadQueue = useCallback(async (who: string) => {
     setLoading(true); setLoadErr(null);
     try {
-      const r = await fetch(`/api/care/review-queue?reviewer=${encodeURIComponent(who)}&n=40`, { cache: 'no-store' });
+      const r = await fetch(`/api/care/review-queue?reviewer=${encodeURIComponent(who)}&n=120`, { cache: 'no-store' }); // §3.3 working set
       const j = (await r.json()) as QueueResp;
       if (!j.ok) throw new Error(j.error || 'failed to load queue');
       setItems(j.items || []);
       setIdx(0);
+      setStatus({}); setSavedVerdicts({});   // fresh queue → reset navigator status
       setLabeledToday(j.stats?.labeled_today ?? 0);
       setDisEnabled(!!j.disagreement_enabled);
     } catch (e) { setLoadErr(String((e as Error).message)); }
@@ -156,28 +175,30 @@ export default function ReviewSession() {
     void loadStats(who);   // refetch with ?reviewer= to get the `me` block (own week + streak)
   }
 
-  // reset per-finding state whenever the current finding changes (pdfOpen persists — it's a session
-  // preference, not per-finding; pdfError resets so a new note's iframe gets a fresh try)
+  // reset per-finding state whenever the current finding changes. `selected` is SEEDED from the saved
+  // verdict so revisiting a labeled item shows its saved state (§3.2). pdfOpen persists (session pref);
+  // pdfError resets so a new note's iframe gets a fresh try.
   useEffect(() => {
-    setSelected(null); setImpact(null); setBusy(false); setSavedMeta(null);
+    setSelected(currentKey ? (savedVerdicts[currentKey] ?? null) : null);
+    setImpact(null); setBusy(false); setSavedMeta(null);
     setFailed(null); setErrMsg(''); setPdfError(false);
     setReasonOpen(false); setReasonText(''); setMissedOpen(false); setMissedCat(null); setMissedText(''); setMissedSaved(false);
-  }, [idx, items]);
+  }, [idx, items]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Enter / auto-advance: jump to the next UNLABELED item in flattened navigator order (§3.2); when
+  // none remain the queue-clear moment shows (done, below).
   const advance = useCallback(() => {
-    setIdx((i) => (i + 1 <= items.length ? i + 1 : i));
-  }, [items.length]);
+    const next = nextUnlabeled(nav.order, status, currentKey);
+    if (next) selectByKey(next);
+  }, [nav.order, status, currentKey, selectByKey]);
 
-  // requeue-later: move current item to the end, stay at same index
+  // skip: mark 'skipped' (sinks to the end of its section via the core) + advance.
   const skip = useCallback(() => {
-    setItems((arr) => {
-      if (idx >= arr.length) return arr;
-      const copy = arr.slice();
-      const [it] = copy.splice(idx, 1);
-      copy.push(it);
-      return copy;
-    });
-  }, [idx]);
+    if (!currentKey) return;
+    setStatus((s) => ({ ...s, [currentKey]: 'skipped' }));
+    const next = nextUnlabeled(nav.order, { ...status, [currentKey]: 'skipped' }, currentKey);
+    if (next) selectByKey(next);
+  }, [currentKey, nav.order, status, selectByKey]);
 
   const savePillPost = useCallback(async (attempt: Attempt) => {
     if (!current) return;
@@ -191,6 +212,11 @@ export default function ReviewSession() {
       setSessionCount((c) => c + 1);
       setLabeledToday((c) => c + 1);
       setTeamTotal((t) => t + 1); setWeekMine((w) => w + 1); // §2.2 counted-save increment
+      // navigator: mark this item labeled + remember the verdict for revisit (§3.2). Append-only writes
+      // unchanged — this is presentation state only. Auto-advance stays on Enter (existing behavior).
+      const k = itemKey(current);
+      setStatus((s) => ({ ...s, [k]: 'labeled' }));
+      setSavedVerdicts((v) => ({ ...v, [k]: attempt.verdict }));
     } catch (e) {
       setSelected(revertOnFail(attempt));
       setFailed(attempt);
@@ -326,7 +352,8 @@ export default function ReviewSession() {
   }
 
   // ── reviewing ─────────────────────────────────────────────────────────────────
-  const done = !loading && idx >= items.length;
+  // queue-clear fires when ALL sections are exhausted — no item is still 'unlabeled' (§3.2).
+  const done = !loading && items.length > 0 && !items.some((it) => (status[itemKey(it)] ?? 'unlabeled') === 'unlabeled');
   return (
     <div className="mx-auto max-w-6xl px-5 py-6" style={{ fontFamily: 'system-ui, sans-serif' }}>
       {/* rail */}
@@ -362,9 +389,12 @@ export default function ReviewSession() {
           <button onClick={() => loadQueue(reviewer)} className="mt-4 rounded-lg bg-slate-800 px-4 py-2 text-[13px] font-medium text-white hover:bg-slate-900">Load more</button>
         </div>
       ) : current ? (
-        <div className={pdfOpen ? 'grid items-start gap-5 lg:grid-cols-[55fr_45fr]' : 'mx-auto max-w-3xl'}>
-          {/* left pane — original prescription PDF (§2.3); iframe keyed by url so same-note
-              consecutive findings do NOT reload it */}
+        <div className={`grid items-start gap-4 ${pdfOpen ? 'grid-cols-[28fr_39fr_33fr]' : 'grid-cols-[28fr_72fr]'}`}>
+          {/* left pane — finding navigator (§3.2). Mouse-first; no new keys. */}
+          <Navigator nav={nav} currentKey={currentKey} onSelect={selectByKey} />
+
+          {/* middle pane — original prescription PDF (§3.1); iframe keyed by url so same-note
+              consecutive findings do NOT reload it. `space` toggles this pane. */}
           {pdfOpen && (
             <div>
               <div className="mb-2 flex items-center justify-between gap-2 text-[11.5px] text-slate-500">

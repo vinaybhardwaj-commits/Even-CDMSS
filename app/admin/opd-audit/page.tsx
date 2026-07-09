@@ -13,7 +13,7 @@ import {
   bandColor, scoreColor, istDateRange, parseJson, doctorLabel, fmtIstTime, fmtIstDateLong, PDQI9_LABEL,
   type Period,
 } from '@/lib/opd-audit-ui';
-import { fetchRightCareDay } from '@/lib/opd-audit-doctor';
+import { fetchRightCareDay, fetchDeptFindingNotes } from '@/lib/opd-audit-doctor';
 import NotesExplorer, { type AuditRow } from './audit-table';
 import DomainPillars, { type DomainDatum } from './domain-pillars';
 import { RightCareTile } from './right-care-tile';
@@ -81,7 +81,7 @@ const PILLARS = [
 ] as const;
 type DomKey = (typeof PILLARS)[number]['key'];
 
-export default async function OpdAuditAdmin({ searchParams }: { searchParams: Promise<{ day?: string; period?: string; locked?: string; doctor?: string }> }) {
+export default async function OpdAuditAdmin({ searchParams }: { searchParams: Promise<{ day?: string; period?: string; locked?: string; doctor?: string; finding?: string; signal?: string; dept?: string }> }) {
   const sp = await searchParams;
   if (!(await isAdminUnlocked())) return <Locked configured={adminTokenConfigured()} bad={sp.locked === '1'} />;
   const initialDoctorUid = (sp.doctor && /^[A-Za-z0-9_-]{1,64}$/.test(sp.doctor)) ? sp.doctor : undefined;
@@ -137,23 +137,40 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
   // category split (was mismatched: split hardcoded today). Family-basis distinct-note LVC rate.
   const rightCareDay = await fetchRightCareDay(to).catch(() => null);
 
-  const docUids = Array.from(new Set(([...docsR.map((d) => d.doctor_uid), ...reviewR.map((r) => r.doctor_uid), ...allR.map((r) => r.doctor_uid)].filter(Boolean)) as string[]));
+  // Stewardship drill-through (NAVIGATOR-DRILL §2.2): finding+signal+dept ALL present → the notes list
+  // switches to the stewardship basis; any missing → ignored, page renders exactly as today. The
+  // KPI/trend/doctor sections above are unaffected (they read the normal window).
+  const drillSubject = (sp.finding || '').trim();
+  const drillDept = (sp.dept || '').trim();
+  const drillActive = !!drillSubject && !!drillDept && sp.signal !== undefined;   // signal may be '' (folded key)
+  const drillSignal = sp.signal ?? '';
+  const drill = drillActive ? await fetchDeptFindingNotes(drillDept, drillSubject, drillSignal).catch(() => null) : null;
+  const drillRowsRaw = drill?.rows ?? [];
+
+  const docUids = Array.from(new Set(([...docsR.map((d) => d.doctor_uid), ...reviewR.map((r) => r.doctor_uid), ...allR.map((r) => r.doctor_uid), ...drillRowsRaw.map((r) => r.doctor_uid)].filter(Boolean)) as string[]));
   const names = await fetchDoctorNames(docUids).catch(() => ({} as Record<string, string>));
   const docName = (uid: string | null): string => (uid && names[uid]) || doctorLabel(uid);
 
-  const allRows: AuditRow[] = allR.map((r) => ({
+  // one mapping for both the normal list and the drill list (identical AuditRow shape)
+  const toAuditRow = (r: {
+    id: string; note_date: string; doctor_uid: string | null; prescription_type: string | null; consult_type: string | null;
+    uid: string; band: string; note_quality_index: number; n_low_value: number; findings: unknown; completeness_pct: number; missing_fields: unknown;
+  }): AuditRow => ({
     id: String(r.id), time: fmtIstTime(r.note_date), doctor: docName(r.doctor_uid),
     consult: prettyType(r.prescription_type || r.consult_type), uid: String(r.uid || ''),
     band: r.band, index: n(r.note_quality_index), lowVal: n(r.n_low_value),
     issue: issueFrom(r.findings, n(r.completeness_pct)),
     cats: catsForRow(parseJson<string[]>(r.missing_fields, []), parseJson<{ subject?: string; verdict?: string; rationale?: string }[]>(r.findings, [])),
     doctorUid: r.doctor_uid ? String(r.doctor_uid) : null,
-  }));
+  });
+
+  const allRows: AuditRow[] = allR.map(toAuditRow);
+  const notesRows: AuditRow[] = drillActive ? drillRowsRaw.map(toAuditRow) : allRows;   // drill swaps the NOTES source only
 
   // Feature C (UX polish PRD §1C): which of the audits on screen already carry finding-scope triage —
   // one parameterized round-trip over the ids fetched for display. Read-only page query, NOT the MCP
   // guard path; .catch → [] so a pre-migration DB (no scope column) degrades to no ticks.
-  const auditIds = allRows.map((r) => r.id);
+  const auditIds = notesRows.map((r) => r.id);
   const triagedIds = auditIds.length
     ? (await rowsOf<{ audit_id: string }>(`SELECT DISTINCT audit_id FROM opd_audit_feedback WHERE scope = 'finding' AND app_source = $1 AND audit_id = ANY($2)`, [APP, auditIds])).map((x) => String(x.audit_id))
     : [];
@@ -345,7 +362,13 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
 
           {/* TOP ISSUES + browse */}
           <div className="mt-5">
-            <NotesExplorer rows={allRows} initialDoctorUid={initialDoctorUid} triagedIds={triagedIds} />
+            {drillActive && (
+              <div className="mb-3 flex flex-wrap items-center gap-x-1 gap-y-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[12px] text-slate-600">
+                <span>{`Notes with "${drillSubject}" · ${drillSignal} · ${drillDept} · last 90 days — ×${drill?.findings ?? 0} findings across ${drill?.notes ?? 0} notes${drill?.capped ? ', showing newest 600' : ''} · `}</span>
+                <Link href="/admin/opd-audit" className="text-sky-700 hover:underline">clear</Link>
+              </div>
+            )}
+            <NotesExplorer rows={notesRows} initialDoctorUid={drillActive ? undefined : initialDoctorUid} triagedIds={triagedIds} />
           </div>
 
           {/* trend + band distribution */}
