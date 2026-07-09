@@ -355,7 +355,7 @@ export default function ReviewSession() {
   // queue-clear fires when ALL sections are exhausted — no item is still 'unlabeled' (§3.2).
   const done = !loading && items.length > 0 && !items.some((it) => (status[itemKey(it)] ?? 'unlabeled') === 'unlabeled');
   return (
-    <div className="mx-auto max-w-6xl px-5 py-6" style={{ fontFamily: 'system-ui, sans-serif' }}>
+    <div className="w-full px-6 py-5" style={{ fontFamily: 'system-ui, sans-serif' }}>
       {/* rail */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2 text-[12px] text-slate-500">
         <div className="flex items-center gap-2">
@@ -389,7 +389,7 @@ export default function ReviewSession() {
           <button onClick={() => loadQueue(reviewer)} className="mt-4 rounded-lg bg-slate-800 px-4 py-2 text-[13px] font-medium text-white hover:bg-slate-900">Load more</button>
         </div>
       ) : current ? (
-        <div className={`grid items-start gap-4 ${pdfOpen ? 'grid-cols-[28fr_39fr_33fr]' : 'grid-cols-[28fr_72fr]'}`}>
+        <div className={`grid items-start gap-4 ${pdfOpen ? 'grid-cols-[320px_minmax(0,1fr)_400px]' : 'grid-cols-[320px_minmax(0,1fr)]'}`}>
           {/* left pane — finding navigator (§3.2). Mouse-first; no new keys. */}
           <Navigator nav={nav} currentKey={currentKey} onSelect={selectByKey} />
 
@@ -404,9 +404,9 @@ export default function ReviewSession() {
               {current.prescription_url && !pdfError ? (
                 <iframe key={current.prescription_url} src={current.prescription_url} title="Original prescription"
                   onError={() => setPdfError(true)}
-                  className="h-[75vh] w-full rounded-lg border border-slate-200 bg-white" />
+                  className="h-[80vh] w-full rounded-lg border border-slate-200 bg-white" />
               ) : (
-                <div className="flex h-[75vh] w-full flex-col items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-center">
+                <div className="flex h-[80vh] w-full flex-col items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-center">
                   <p className="text-[13px] text-slate-500">Original prescription unavailable</p>
                   <a href={`/api/opd-audit/export-pdf?id=${current.audit_id}`} target="_blank" rel="noopener" className="mt-2 text-[12px] text-sky-700 hover:underline">Download note+audit PDF</a>
                 </div>
