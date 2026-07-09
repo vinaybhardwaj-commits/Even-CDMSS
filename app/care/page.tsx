@@ -3,11 +3,11 @@ export const runtime = 'nodejs';
 
 import Link from 'next/link';
 import { redirect, notFound } from 'next/navigation';
-import { ArrowRight, MessageSquareHeart, ClipboardCheck } from 'lucide-react';
+import { ArrowRight, MessageSquareHeart, ClipboardCheck, ListChecks } from 'lucide-react';
 import { isCareUnlocked } from '@/lib/care-cookie';
 import { sql } from '@/lib/db';
 import { CCB_ENGINE_VERSION } from '@/lib/ccb-brief-core';
-import { OPD_ENGINE_VERSION } from '@/lib/opd-note-audit-core';
+import { OPD_ENGINE_VERSIONS_CURRENT } from '@/lib/opd-note-audit-core';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 const APP = process.env.APP_SOURCE || 'standalone';
@@ -26,10 +26,10 @@ export default async function ManagedCareHome() {
     run(`SELECT count(DISTINCT individual_uid)::int n FROM ccb_briefs
          WHERE engine_version = $1 AND pitch_allowed = true AND individual_uid IS NOT NULL`, [CCB_ENGINE_VERSION]).catch(() => []),
     run(`SELECT count(DISTINCT doctor_uid)::int n FROM opd_note_audits
-         WHERE app_source = $1 AND engine_version = $2
+         WHERE app_source = $1 AND engine_version = ANY($2)
            AND (note_date AT TIME ZONE 'Asia/Kolkata')::date =
-               (SELECT max((note_date AT TIME ZONE 'Asia/Kolkata')::date) FROM opd_note_audits WHERE app_source = $1 AND engine_version = $2)`,
-      [APP, OPD_ENGINE_VERSION]).catch(() => []),
+               (SELECT max((note_date AT TIME ZONE 'Asia/Kolkata')::date) FROM opd_note_audits WHERE app_source = $1 AND engine_version = ANY($2))`,
+      [APP, [...OPD_ENGINE_VERSIONS_CURRENT]]).catch(() => []),
   ]);
   const briefsCount = Number((briefsR as Record<string, unknown>[])[0]?.n ?? 0);
   const triageCount = Number((triageR as Record<string, unknown>[])[0]?.n ?? 0);
@@ -49,11 +49,19 @@ export default async function ManagedCareHome() {
       desc: 'Clear last night’s audit signals doctor-by-doctor: kill the noise, decide what matters, route the real ones. Doctor-centric.',
       count: triageCount, countLabel: 'doctors audited', tint: 'sky',
     },
+    {
+      href: '/care/review',
+      icon: ListChecks,
+      title: 'Review Mode',
+      desc: 'Keyboard-first gold-label triage — adjudicate audit findings fast to build the reviewed standard. Pick your reviewer identity to start.',
+      count: 0, countLabel: '', tint: 'emerald',
+    },
   ] as const;
 
   const tintClasses: Record<string, { badge: string; icon: string }> = {
     violet: { badge: 'bg-violet-100 text-violet-800', icon: 'text-violet-500' },
     sky: { badge: 'bg-sky-100 text-sky-800', icon: 'text-sky-500' },
+    emerald: { badge: 'bg-emerald-100 text-emerald-800', icon: 'text-emerald-500' },
   };
 
   return (
