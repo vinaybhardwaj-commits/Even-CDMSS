@@ -114,3 +114,106 @@ test('mineRuleCandidates: context-dependent → limit; prescribing domain → ph
   assert.ok(cands[0].payload.statement.startsWith('Limit'));
   assert.equal(cands[0].suggestedReviewer, 'pharmacy_ams');
 });
+
+// ── Reviewer-driven mining (LEARNING-LOOP-V2 §2.3) ──
+import {
+  mineMissedFlags, mineFalseClusters, truncateCard,
+  MISSED_FLAG_MIN, FALSE_CLUSTER_MIN, FALSE_CLUSTER_MIN_REVIEWERS,
+  type MissedFlagLite, type FindingLabelLite,
+} from '../learning-core.ts';
+
+const mf = (audit_id: string, comment: string, author: string, category: string | null = 'prescribing_safety'): MissedFlagLite =>
+  ({ audit_id, comment, author, category });
+
+test('truncateCard: caps + ellipsis at the 140 boundary, collapses whitespace', () => {
+  assert.equal(truncateCard('  a   b  '), 'a b');
+  const long = 'x'.repeat(200);
+  assert.equal(truncateCard(long).length, 140);
+  assert.ok(truncateCard(long).endsWith('…'));
+});
+
+test('mineMissedFlags: ≥2 same-signature flags cluster; <2 excluded', () => {
+  const flags = [
+    mf('a1', 'Missed dual H1 antihistamine duplication', 'zaki'),
+    mf('a2', 'missed the dual H1-antihistamine duplication', 'meera'),
+    mf('a3', 'A totally unrelated one-off note', 'zaki'),
+  ];
+  const out = mineMissedFlags(flags); // no isCitable → all harvest
+  assert.equal(out.length, 1);
+  assert.equal(out[0].provenance.nFlags, 2);
+  assert.deepEqual(out[0].provenance.reviewers.sort(), ['meera', 'zaki']);
+});
+
+test('mineMissedFlags: citable cluster → deterministic missed_rule draft', () => {
+  const flags = [mf('a1', 'Missed dual antihistamine duplication', 'zaki'), mf('a2', 'missed dual antihistamine duplication', 'meera')];
+  const out = mineMissedFlags(flags, { isCitable: () => true });
+  assert.equal(out.length, 1);
+  const c = out[0];
+  assert.equal(c.type, 'missed_rule');
+  if (c.type !== 'missed_rule') return;
+  assert.equal(c.payload.provenance, 'EHRC-mined');
+  assert.equal(c.payload.action_type, 'avoid');
+  assert.ok(c.payload.keywords.length > 0);
+  assert.ok(c.payload.statement.length > 0);
+  assert.equal(c.suggestedReviewer, 'pharmacy_ams'); // prescribing_safety → pharmacy_ams
+  // cards truncate reviewer free-text to 140
+  assert.ok(c.provenance.sampleComments.every((s) => s.length <= 140));
+});
+
+test('mineMissedFlags: uncitable → harvest_topic (evidence over frequency)', () => {
+  const flags = [mf('a1', 'Missed some novel emerging thing', 'zaki', 'other'), mf('a2', 'missed some novel emerging thing', 'meera', 'other')];
+  const out = mineMissedFlags(flags, { isCitable: () => false });
+  assert.equal(out[0].type, 'harvest_topic');
+  if (out[0].type !== 'harvest_topic') return;
+  assert.equal(out[0].provenance.source, 'missed_flags');
+  assert.equal(out[0].suggestedReviewer, 'owner');
+});
+
+const fl = (audit_id: string, subject: string, verdict: string, author: string, signal_type = 'low_value_care'): FindingLabelLite =>
+  ({ audit_id, finding_ref: `${audit_id}:0`, subject, signal_type, verdict, author });
+
+test('mineFalseClusters: ≥3 false/nitpick across ≥2 reviewers AND precision <0.5 → suppression', () => {
+  const labels = [
+    fl('a1', 'Vitamin D level in routine screen', 'false', 'zaki'),
+    fl('a2', 'vitamin D level routine screen', 'nitpick', 'meera'),
+    fl('a3', 'Vitamin-D level, routine screen', 'false', 'zaki'),
+  ];
+  const out = mineFalseClusters(labels);
+  assert.equal(out.length, 1);
+  const c = out[0];
+  assert.equal(c.type, 'suppression');
+  assert.equal(c.payload.action, 'downgrade');
+  assert.equal(c.payload.scope, 'all');
+  assert.equal(c.payload.signal_type, 'low_value_care');
+  assert.equal(c.provenance.nFalseNitpick, 3);
+  assert.ok(c.provenance.precision < 0.5);
+  assert.equal(c.provenance.reviewers.length, 2);
+  assert.equal(c.suggestedReviewer, 'pharmacy_ams');
+});
+
+test('mineFalseClusters: precision ≥0.5 blocks the candidate even at volume', () => {
+  const labels = [
+    fl('a1', 'Same subject phrase here', 'false', 'zaki'),
+    fl('a2', 'same subject phrase here', 'nitpick', 'meera'),
+    fl('a3', 'same subject phrase here', 'false', 'zaki'),
+    fl('a4', 'same subject phrase here', 'true_positive', 'meera'),
+    fl('a5', 'same subject phrase here', 'true_positive', 'zaki'),
+    fl('a6', 'same subject phrase here', 'true_positive', 'meera'),
+  ]; // tp=3, fn=3 → precision 0.5, NOT <0.5
+  assert.equal(mineFalseClusters(labels).length, 0);
+});
+
+test('mineFalseClusters: single-reviewer cluster blocked (needs ≥2)', () => {
+  const labels = [
+    fl('a1', 'Only zaki flagged this', 'false', 'zaki'),
+    fl('a2', 'only zaki flagged this', 'nitpick', 'zaki'),
+    fl('a3', 'only zaki flagged this', 'false', 'zaki'),
+  ];
+  assert.equal(mineFalseClusters(labels).length, 0);
+});
+
+test('gate constants pinned to §2.3 normative values', () => {
+  assert.equal(MISSED_FLAG_MIN, 2);
+  assert.equal(FALSE_CLUSTER_MIN, 3);
+  assert.equal(FALSE_CLUSTER_MIN_REVIEWERS, 2);
+});

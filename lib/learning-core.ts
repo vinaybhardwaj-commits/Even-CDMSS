@@ -278,6 +278,143 @@ export function mineHarvestGaps(rows: AuditRowLite[], thresholds: MineThresholds
   return out.sort((a, b) => b.provenance.nUncited - a.provenance.nUncited || b.confidence - a.confidence);
 }
 
+// ── Reviewer-driven mining (LEARNING-LOOP-V2 §2.3) — the other half of the loop ──
+// Pure: fed current-state feedback rows, produces the same proposal shapes the finding-miner does.
+
+export function truncateCard(s: string, n = 140): string {
+  const t = (s || '').trim().replace(/\s+/g, ' ');
+  return t.length > n ? `${t.slice(0, n - 1).trimEnd()}…` : t;
+}
+
+// --- missed-flag mining: what reviewers said the audit MISSED → rule or harvest candidates ---
+export interface MissedFlagLite { audit_id: string; category: string | null; comment: string; author: string | null }
+export interface MissedRuleCandidate {
+  type: 'missed_rule'; clusterKey: string; title: string;
+  payload: { statement: string; action_type: 'avoid'; rationale: string; keywords: string[]; provenance: 'EHRC-mined' };
+  provenance: { nFlags: number; reviewers: string[]; category: string | null; sampleComments: string[]; auditIds: string[] };
+  confidence: number; suggestedReviewer: SuggestedReviewer;
+}
+export interface MissedHarvestCandidate {
+  type: 'harvest_topic'; clusterKey: string; title: string;
+  payload: { topic: string; query_terms: string };
+  provenance: { nFlags: number; reviewers: string[]; category: string | null; sampleComments: string[]; auditIds: string[]; source: 'missed_flags' };
+  confidence: number; suggestedReviewer: SuggestedReviewer;
+}
+export type MissedCandidate = MissedRuleCandidate | MissedHarvestCandidate;
+
+export const MISSED_FLAG_MIN = 2;   // reviewer data is scarce + precious — lower than the finding-miner's 15
+export interface MissedMineOpts {
+  /** Corpus-citability decision per cluster (injected by the wired layer's retrieval; the same
+   *  "is there evidence?" gate the rule miner applies). Absent → uncitable → harvest candidate. */
+  isCitable?: (c: { title: string; keywords: string[]; category: string | null }) => boolean;
+}
+
+/** Cluster current-state missed-finding flags by (category + normalized-comment signature); ≥2 flags
+ *  gate; citable → a DETERMINISTIC missed_rule draft (statement = cleaned comment, keywords =
+ *  subjectKeywords), uncitable → a harvest_topic. Comments truncated to 140 on the card. Pure. */
+export function mineMissedFlags(flags: MissedFlagLite[], opts: MissedMineOpts = {}): MissedCandidate[] {
+  const clusters = new Map<string, { key: string; category: string | null; comments: string[]; reviewers: Set<string>; auditIds: string[]; n: number }>();
+  for (const fl of flags || []) {
+    const comment = (fl.comment || '').trim();
+    if (!comment) continue;
+    const sig = subjectSignature(comment);
+    if (!sig || sig.length < 4) continue;
+    const key = `missed:${fl.category || ''}|${sig}`;
+    let c = clusters.get(key);
+    if (!c) { c = { key, category: fl.category ?? null, comments: [], reviewers: new Set(), auditIds: [], n: 0 }; clusters.set(key, c); }
+    c.n += 1;
+    c.comments.push(comment);
+    if (fl.author) c.reviewers.add(fl.author);
+    if (c.auditIds.length < 20 && fl.audit_id) c.auditIds.push(fl.audit_id);
+  }
+  const out: MissedCandidate[] = [];
+  for (const c of clusters.values()) {
+    if (c.n < MISSED_FLAG_MIN) continue;
+    const rep = mode(c.comments) || c.comments[0] || '';
+    const title = truncateCard(rep, 80);
+    const keywords = subjectKeywords(rep);
+    const reviewers = uniqStr([...c.reviewers]);
+    const sampleComments = uniqStr(c.comments).slice(0, 3).map((s) => truncateCard(s, 140));
+    const auditIds = c.auditIds.slice(0, 8);
+    const confidence = Math.round(Math.min(0.9, 0.4 + Math.min(0.3, (c.n - MISSED_FLAG_MIN) / 20) + Math.min(0.2, reviewers.length / 10)) * 100) / 100;
+    const citable = opts.isCitable ? !!opts.isCitable({ title, keywords, category: c.category }) : false;
+    if (citable) {
+      out.push({
+        type: 'missed_rule', clusterKey: c.key, title,
+        payload: { statement: truncateCard(rep, 300), action_type: 'avoid', rationale: `Reviewers flagged this as a finding the audit missed (${c.category || 'uncategorised'}).`, keywords, provenance: 'EHRC-mined' },
+        provenance: { nFlags: c.n, reviewers, category: c.category, sampleComments, auditIds },
+        confidence, suggestedReviewer: c.category === 'prescribing_safety' ? 'pharmacy_ams' : 'owner',
+      });
+    } else {
+      out.push({
+        type: 'harvest_topic', clusterKey: c.key, title,
+        payload: { topic: title, query_terms: harvestQuery(title) },
+        provenance: { nFlags: c.n, reviewers, category: c.category, sampleComments, auditIds, source: 'missed_flags' },
+        confidence, suggestedReviewer: 'owner',
+      });
+    }
+  }
+  return out.sort((a, b) => b.provenance.nFlags - a.provenance.nFlags || b.confidence - a.confidence);
+}
+
+// --- false-cluster mining: finding classes reviewers repeatedly mark false → suppression candidates ---
+export interface FindingLabelLite { audit_id: string; finding_ref: string; subject: string; signal_type: string | null; verdict: string; author: string | null }
+export interface SuppressionCandidate {
+  type: 'suppression'; clusterKey: string; title: string;
+  payload: { signal_type: string; discriminator: string | null; match_kind: 'type_only' | 'subject_contains'; scope: 'all'; action: 'downgrade'; reason: string };
+  provenance: { nFalseNitpick: number; reviewers: string[]; precision: number; nLabeled: number; sampleSubjects: string[]; auditIds: string[] };
+  confidence: number; suggestedReviewer: SuggestedReviewer;
+}
+export const FALSE_CLUSTER_MIN = 3;             // ≥3 false+nitpick
+export const FALSE_CLUSTER_MIN_REVIEWERS = 2;   // across ≥2 reviewers
+export const FALSE_PRECISION_MAX = 0.5;         // AND labeled-precision < 0.5
+
+/** Cluster CURRENT-STATE finding labels by subject signature; a cluster becomes a suppression
+ *  candidate when ≥3 false/nitpick across ≥2 reviewers AND precision (tp/(tp+nitpick+false)) < 0.5.
+ *  Precision mirrors the rollup's open-adjudication threshold. Pure. */
+export function mineFalseClusters(labels: FindingLabelLite[]): SuppressionCandidate[] {
+  const clusters = new Map<string, { key: string; subjects: string[]; signalTypes: Record<string, number>; verdicts: Record<string, number>; fnReviewers: Set<string>; auditIds: string[] }>();
+  for (const l of labels || []) {
+    const subject = (l.subject || '').trim();
+    const sig = subjectSignature(subject);
+    if (!sig || sig.length < 4) continue;
+    let c = clusters.get(sig);
+    if (!c) { c = { key: sig, subjects: [], signalTypes: {}, verdicts: {}, fnReviewers: new Set(), auditIds: [] }; clusters.set(sig, c); }
+    c.subjects.push(subject);
+    if (l.signal_type) c.signalTypes[l.signal_type] = (c.signalTypes[l.signal_type] || 0) + 1;
+    c.verdicts[l.verdict] = (c.verdicts[l.verdict] || 0) + 1;
+    if ((l.verdict === 'false' || l.verdict === 'nitpick') && l.author) c.fnReviewers.add(l.author);
+    if (c.auditIds.length < 20 && l.audit_id) c.auditIds.push(l.audit_id);
+  }
+  const out: SuppressionCandidate[] = [];
+  for (const c of clusters.values()) {
+    const tp = c.verdicts['true_positive'] || 0;
+    const nit = c.verdicts['nitpick'] || 0;
+    const fal = c.verdicts['false'] || 0;
+    const fn = nit + fal;
+    const labeled = tp + nit + fal;
+    if (fn < FALSE_CLUSTER_MIN) continue;
+    if (c.fnReviewers.size < FALSE_CLUSTER_MIN_REVIEWERS) continue;
+    const precision = labeled > 0 ? tp / labeled : 0;
+    if (!(precision < FALSE_PRECISION_MAX)) continue;
+    const signal_type = mode(Object.entries(c.signalTypes).flatMap(([s, n]) => Array(n).fill(s)));
+    if (!signal_type) continue;
+    const title = mode(c.subjects);
+    const discriminator = subjectKeywords(title)[0] || null;
+    out.push({
+      type: 'suppression', clusterKey: `false:${c.key}`, title,
+      payload: {
+        signal_type, discriminator, match_kind: discriminator ? 'subject_contains' : 'type_only', scope: 'all', action: 'downgrade',
+        reason: `Reviewer-mined: ${fn} false/nitpick across ${c.fnReviewers.size} reviewers (precision ${precision.toFixed(2)} where labeled).`,
+      },
+      provenance: { nFalseNitpick: fn, reviewers: uniqStr([...c.fnReviewers]), precision: Math.round(precision * 100) / 100, nLabeled: labeled, sampleSubjects: uniqStr(c.subjects).slice(0, 5), auditIds: c.auditIds.slice(0, 8) },
+      confidence: Math.round(Math.min(0.9, 0.4 + Math.min(0.3, (fn - FALSE_CLUSTER_MIN) / 10) + Math.min(0.2, c.fnReviewers.size / 10)) * 100) / 100,
+      suggestedReviewer: 'pharmacy_ams',
+    });
+  }
+  return out.sort((a, b) => b.provenance.nFalseNitpick - a.provenance.nFalseNitpick || b.confidence - a.confidence);
+}
+
 /** Stable cluster key from a canonical label — collapses minor wording/case drift across runs. */
 export function normalizeLabel(s: string): string {
   return (s || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();

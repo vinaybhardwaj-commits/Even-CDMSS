@@ -21,12 +21,12 @@ export async function POST(req: NextRequest) {
   const note = body.note ? String(body.note).trim().slice(0, 2000) : null;
 
   if (!/^[0-9a-f-]{36}$/i.test(id)) return NextResponse.json({ error: 'bad id' }, { status: 400 });
-  if (action !== 'approve' && action !== 'reject') return NextResponse.json({ error: 'action must be approve|reject' }, { status: 400 });
+  if (action !== 'approve' && action !== 'reject' && action !== 'harvest') return NextResponse.json({ error: 'action must be approve|reject|harvest' }, { status: 400 });
 
   try {
-    const ok = await reviewProposal(id, action, reviewer, note);
+    const ok = await reviewProposal(id, action as 'approve' | 'reject' | 'harvest', reviewer, note);
     if (!ok) return NextResponse.json({ ok: false, error: 'not found or already reviewed' }, { status: 409 });
-    return NextResponse.json({ ok: true, id, status: action === 'approve' ? 'approved' : 'rejected' });
+    return NextResponse.json({ ok: true, id, status: action === 'reject' ? 'rejected' : 'approved' });
   } catch (e) {
     return NextResponse.json({ ok: false, error: String((e as Error).message) }, { status: 500 });
   }

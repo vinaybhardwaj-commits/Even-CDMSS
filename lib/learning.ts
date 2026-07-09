@@ -10,12 +10,24 @@
 import { sql } from './db';
 import { chatWithFallback, geminiUtilityModel, TEXT_MODEL } from './llm';
 import {
-  mineRuleCandidates, mineHarvestGaps, DEFAULT_THRESHOLDS, DEFAULT_GAP_THRESHOLDS, isMineableFinding,
+  mineRuleCandidates, mineHarvestGaps, mineMissedFlags, mineFalseClusters,
+  DEFAULT_THRESHOLDS, DEFAULT_GAP_THRESHOLDS, isMineableFinding,
   CANONICALIZE_SYSTEM, buildCanonicalizeUser, parseCanonicalMap,
-  type AuditRowLite, type MineThresholds,
+  type AuditRowLite, type MineThresholds, type MissedFlagLite, type FindingLabelLite,
 } from './learning-core';
+import { OPD_ENGINE_VERSIONS_CURRENT, OPD_ENGINE_VERSION } from './opd-note-audit-core';
+import { retrieve } from './retrieve';
+import { loadValidLabelInstances, createSuppression } from './audit-suppression-store';
+import { previewCollateral, type Suppression } from './audit-suppression-core';
+import { parseGoal, FALLBACK_ROSTER } from './review-stats-core';
+import { buildFlywheel, type FlywheelView } from './learning-flywheel-core';
+import { buildMeters, type Meter } from './model-programme-core';
 
 const APP = process.env.APP_SOURCE || 'standalone';
+const ENGINE_FAMILY = [...OPD_ENGINE_VERSIONS_CURRENT];
+// IST Monday-start week + today, as SQL fragments (mirrors review-stats istWeekStart, DB-side).
+const IST_WEEK_START = `(date_trunc('week', (now() AT TIME ZONE 'Asia/Kolkata')))::date`;
+const IST_TODAY = `((now() AT TIME ZONE 'Asia/Kolkata')::date)`;
 const sql2 = sql as unknown as (q: string, p: unknown[]) => Promise<Record<string, unknown>[]>;
 
 function asArr<T>(v: unknown): T[] {
@@ -45,6 +57,90 @@ export async function loadRecentAuditRows(days = 90): Promise<AuditRowLite[]> {
     findings: asArr(r.findings),
     sources: asArr(r.sources),
   }));
+}
+
+// ── LEARNING-LOOP-V2 §2.3 — reviewer-driven mining (the other half of the flywheel) ──
+const VERDICT_SET = ['true_positive', 'nitpick', 'false'];
+// Conservative corpus-evidence floor for promoting a missed-flag cluster to a rule DRAFT. retrieve()
+// failure OR top hit below this → uncitable → harvest_topic (evidence over frequency — the same
+// stance the finding-miner takes). Set deliberately mid-range; tune only with live data.
+const CITE_SIM_FLOOR = 0.5;
+
+/** Reviewer "missed" flags (a finding the audit should have caught) with a comment, on current-family
+ *  non-excluded audits. Fail-safe → []. */
+export async function fetchMissedFlags(): Promise<MissedFlagLite[]> {
+  const rows = await sql2(
+    `SELECT f.audit_id, f.category, f.comment, f.author
+       FROM opd_audit_feedback f
+       JOIN opd_note_audits a ON a.id = f.audit_id
+      WHERE f.app_source = $1 AND f.scope = 'missed' AND COALESCE(f.comment, '') <> ''
+        AND a.excluded_reason IS NULL AND a.engine_version = ANY($2)
+      ORDER BY f.created_at DESC
+      LIMIT 4000`,
+    [APP, ENGINE_FAMILY]).catch(() => []);
+  return rows.map((r) => ({
+    audit_id: String(r.audit_id ?? ''), category: r.category == null ? null : String(r.category),
+    comment: String(r.comment ?? ''), author: r.author == null ? null : String(r.author),
+  }));
+}
+
+/** Current-state finding labels: latest verdict per (audit_id, finding_ref), subject recovered from
+ *  the audit's findings jsonb by finding_ref, on current-family non-excluded audits. Fail-safe → []. */
+export async function fetchFindingLabels(): Promise<FindingLabelLite[]> {
+  const rows = await sql2(
+    `SELECT DISTINCT ON (f.audit_id, f.finding_ref)
+            f.audit_id, f.finding_ref, f.verdict, f.author, f.signal_type,
+            (SELECT x->>'subject' FROM jsonb_array_elements(a.findings) x
+              WHERE x->>'finding_ref' = f.finding_ref LIMIT 1) AS subject
+       FROM opd_audit_feedback f
+       JOIN opd_note_audits a ON a.id = f.audit_id
+      WHERE f.app_source = $1 AND f.scope = 'finding' AND f.finding_ref IS NOT NULL
+        AND f.verdict = ANY($2)
+        AND a.excluded_reason IS NULL AND a.engine_version = ANY($3)
+      ORDER BY f.audit_id, f.finding_ref, f.created_at DESC
+      LIMIT 8000`,
+    [APP, VERDICT_SET, ENGINE_FAMILY]).catch(() => []);
+  return rows.map((r) => ({
+    audit_id: String(r.audit_id ?? ''), finding_ref: String(r.finding_ref ?? ''),
+    subject: r.subject == null ? '' : String(r.subject),
+    signal_type: r.signal_type == null ? null : String(r.signal_type),
+    verdict: String(r.verdict ?? ''), author: r.author == null ? null : String(r.author),
+  }));
+}
+
+/** Corpus-evidence check for a missed-flag cluster (impure — keeps the pure miner deterministic; it
+ *  receives only the boolean). retrieve() failure OR top hit below the floor → uncitable → harvest. */
+async function missedClusterCitable(title: string): Promise<boolean> {
+  try {
+    const q = (title || '').trim();
+    if (!q) return false;
+    const r = await retrieve(q, { topK: 5, useReranker: true, hybrid: true });
+    return (r.hits?.[0]?.similarity ?? 0) >= CITE_SIM_FLOOR;
+  } catch { return false; }
+}
+
+/** Mine reviewer signal into the SAME proposal queue: missed flags → missed_rule / harvest_topic,
+ *  false clusters → suppression candidates. Two-pass on missed flags so citability (impure retrieve)
+ *  is decided per cluster while the miner itself stays pure. */
+async function mineAndSaveReviewerProposals(): Promise<{ missed: number; suppressions: number; inserted: number; refreshed: number }> {
+  const [flags, labels] = await Promise.all([fetchMissedFlags(), fetchFindingLabels()]);
+  let inserted = 0; let refreshed = 0;
+
+  const draft = mineMissedFlags(flags);                       // pass 1: form clusters (harvest-only)
+  const citable = new Set<string>();
+  await Promise.all(draft.map(async (c) => { if (await missedClusterCitable(c.title)) citable.add(c.title); }));
+  const missed = mineMissedFlags(flags, { isCitable: (c) => citable.has(c.title) });  // pass 2: inject
+  for (const c of missed) {
+    const r = await upsertProposal({ type: c.type, clusterKey: c.clusterKey, title: c.title, payload: c.payload, evidence: [], nSupport: c.provenance.nFlags, provenance: c.provenance, confidence: c.confidence, suggestedReviewer: c.suggestedReviewer });
+    if (r === 'inserted') inserted++; else if (r === 'refreshed') refreshed++;
+  }
+
+  const suppressions = mineFalseClusters(labels);
+  for (const s of suppressions) {
+    const r = await upsertProposal({ type: s.type, clusterKey: s.clusterKey, title: s.title, payload: s.payload, evidence: [], nSupport: s.provenance.nFalseNitpick, provenance: s.provenance, confidence: s.confidence, suggestedReviewer: s.suggestedReviewer });
+    if (r === 'inserted') inserted++; else if (r === 'refreshed') refreshed++;
+  }
+  return { missed: missed.length, suppressions: suppressions.length, inserted, refreshed };
 }
 
 /** Flash-canonicalise distinct finding subjects → { subject: canonical practice label }.
@@ -81,7 +177,7 @@ export async function canonicalizeSubjects(subjects: string[]): Promise<Record<s
   return map;
 }
 
-export interface MineSummary { scanned: number; subjects: number; canonicalized: number; candidates: number; gaps: number; inserted: number; refreshed: number; healed: number }
+export interface MineSummary { scanned: number; subjects: number; canonicalized: number; candidates: number; gaps: number; missed: number; suppressions: number; inserted: number; refreshed: number; healed: number }
 
 /** Upsert one candidate into the review queue (proposed-only refresh). Returns insert/refresh/null. */
 async function upsertProposal(c: {
@@ -132,8 +228,11 @@ export async function mineAndSaveProposals(days = 90, thresholds: MineThresholds
     const r = await upsertProposal({ type: g.type, clusterKey: g.clusterKey, title: g.title, payload: g.payload, evidence: [], nSupport: g.provenance.nOccurrences, provenance: g.provenance, confidence: g.confidence, suggestedReviewer: g.suggestedReviewer });
     if (r === 'inserted') inserted++; else if (r === 'refreshed') refreshed++;
   }
+  // §2.3 — the SAME run also mines reviewer signal (missed flags + false clusters) into the queue.
+  const rev = await mineAndSaveReviewerProposals();
+  inserted += rev.inserted; refreshed += rev.refreshed;
   const healed = await reconcileApproved();
-  return { scanned: rows.length, subjects: subjects.length, canonicalized: Object.keys(labelMap).length, candidates: cands.length, gaps: gaps.length, inserted, refreshed, healed };
+  return { scanned: rows.length, subjects: subjects.length, canonicalized: Object.keys(labelMap).length, candidates: cands.length, gaps: gaps.length, missed: rev.missed, suppressions: rev.suppressions, inserted, refreshed, healed };
 }
 
 /** Heal approved proposals whose apply step never landed (applied_ref IS NULL) — re-runs the
@@ -145,9 +244,7 @@ async function reconcileApproved(): Promise<number> {
      WHERE app_source = ${APP} AND status = 'approved' AND applied_ref IS NULL`) as Array<Record<string, unknown>>;
   let healed = 0;
   for (const p of orphans) {
-    let ref: string | null = null;
-    if (String(p.type) === 'lvc_rule') ref = await applyLvcRule(String(p.id), p);
-    else if (String(p.type) === 'harvest_topic') ref = await applyHarvestTopic(p);
+    const ref = await applyProposal(String(p.id), p);
     if (ref) { await sql`UPDATE learning_proposals SET applied_ref = ${ref}, updated_at = NOW() WHERE id = ${p.id}`; healed++; }
   }
   return healed;
@@ -165,7 +262,9 @@ async function applyLvcRule(proposalId: string, p: Record<string, unknown>): Pro
   const statement = String(payload.statement || p.title || '').slice(0, 600);
   const rationale = payload.rationale ? String(payload.rationale).slice(0, 2000) : null;
   const keywords = Array.isArray(payload.keywords) ? (payload.keywords as unknown[]).map(String) : [];
-  const actionType = String(provenance.dominantDomain) === 'prescribing_safety' ? 'medication' : 'other';
+  // lvc_rule carries provenance.dominantDomain; a reviewer-mined missed_rule carries provenance.category.
+  const domain = String(provenance.dominantDomain || provenance.category || '');
+  const actionType = domain === 'prescribing_safety' ? 'medication' : 'other';
   const ev0 = evidence[0] || {};
   const pmid = ev0.item_number && /^\d{5,9}$/.test(String(ev0.item_number)) ? String(ev0.item_number) : null;
   const url = ev0.url ? String(ev0.url) : null;
@@ -201,10 +300,44 @@ async function applyHarvestTopic(p: Record<string, unknown>): Promise<string | n
   return topic;
 }
 
-/** Approve or reject a proposal. On approve of an lvc_rule the rule is inserted into
- *  lvc_recommendations (active → fires in Right Care); a harvest_topic is added to ingest_topics;
- *  other types just mark approved for their own later apply steps (calibration). */
-export async function reviewProposal(id: string, action: 'approve' | 'reject', reviewer: string | null, note: string | null): Promise<boolean> {
+/** On approve of a suppression proposal (§2.3): re-run the DUAL-LABEL safety check at approval time
+ *  (loadValidLabelInstances → previewCollateral) and create the suppression ONLY if it removes NONE
+ *  of the CM-validated signals for its type. Unsafe → returns null; the caller refuses approval and
+ *  leaves the proposal 'proposed'. The invariant is enforced here exactly as in the manual path —
+ *  never weakened. Returns the created suppression id, or null when refused/invalid. */
+async function applySuppression(p: Record<string, unknown>): Promise<string | null> {
+  const payload = asObj(p.payload);
+  const signal_type = String(payload.signal_type || '').trim();
+  if (!signal_type) return null;
+  const discriminator = payload.discriminator == null || payload.discriminator === '' ? null : String(payload.discriminator);
+  const match_kind = payload.match_kind === 'subject_contains' && discriminator ? 'subject_contains' : 'type_only';
+  const action = payload.action === 'drop' ? 'drop' : 'downgrade';
+  const proposed: Suppression = { signal_type, discriminator, match_kind, scope: 'all', doctor_uid: null, action, active: true };
+  const validSet = await loadValidLabelInstances(signal_type).catch(() => []);
+  if (!previewCollateral(proposed, validSet).safe) return null;   // REFUSE — dual-label invariant intact
+  const row = await createSuppression({
+    signal_type, discriminator, match_kind, scope: 'all', action,
+    reason: String(payload.reason || 'EHRC reviewer-mined suppression').slice(0, 1000),
+    created_by: 'learning-loop', source_triage_ref: String(p.id).slice(0, 64),
+  });
+  return row.id;
+}
+
+/** Apply an approved proposal by type; null when the apply is refused (suppression fails the
+ *  dual-label check) or invalid. Shared by reviewProposal + reconcileApproved. */
+async function applyProposal(id: string, p: Record<string, unknown>): Promise<string | null> {
+  const t = String(p.type);
+  if (t === 'lvc_rule' || t === 'missed_rule') return applyLvcRule(id, p);
+  if (t === 'harvest_topic') return applyHarvestTopic(p);
+  if (t === 'suppression') return applySuppression(p);
+  return null;
+}
+
+/** Approve, reject, or (missed_rule only) HARVEST a proposal. approve → the type's apply step
+ *  (lvc_rule/missed_rule → lvc_recommendations; harvest_topic → ingest_topics; suppression →
+ *  dual-label-gated audit_suppression). harvest → re-route a missed_rule into a harvest_topic
+ *  instead of a rule. A suppression whose dual-label check fails is NOT approved (stays proposed). */
+export async function reviewProposal(id: string, action: 'approve' | 'reject' | 'harvest', reviewer: string | null, note: string | null): Promise<boolean> {
   if (action === 'reject') {
     const rows = (await sql`
       UPDATE learning_proposals SET status = 'rejected', reviewed_by = ${reviewer}, reviewed_at = NOW(), review_note = ${note}, updated_at = NOW()
@@ -216,11 +349,128 @@ export async function reviewProposal(id: string, action: 'approve' | 'reject', r
      WHERE id = ${id} AND app_source = ${APP} AND status = 'proposed'`) as Array<Record<string, unknown>>;
   if (!props.length) return false;
   const p = props[0];
-  let appliedRef: string | null = null;
-  if (String(p.type) === 'lvc_rule') appliedRef = await applyLvcRule(id, p);
-  else if (String(p.type) === 'harvest_topic') appliedRef = await applyHarvestTopic(p);
+
+  // harvest: a missed_rule the reviewer prefers to route to the corpus instead of publishing as a rule.
+  if (action === 'harvest') {
+    if (String(p.type) !== 'missed_rule') return false;
+    const payload = asObj(p.payload);
+    const topicP = { payload: { topic: String(p.title || '').slice(0, 200), query_terms: String((payload.keywords as unknown[] | undefined)?.join(' AND ') || p.title || '').slice(0, 400) }, title: p.title };
+    const ref = await applyHarvestTopic(topicP as unknown as Record<string, unknown>);
+    if (!ref) return false;
+    const rows = (await sql`
+      UPDATE learning_proposals SET status = 'approved', type = 'harvest_topic', reviewed_by = ${reviewer}, reviewed_at = NOW(), review_note = ${note}, applied_ref = ${ref}, updated_at = NOW()
+       WHERE id = ${id} AND app_source = ${APP} AND status = 'proposed' RETURNING id`) as Array<{ id: string }>;
+    return rows.length > 0;
+  }
+
+  const appliedRef = await applyProposal(id, p);
+  if (appliedRef === null && String(p.type) === 'suppression') {
+    // dual-label refusal — proposal stays 'proposed'; the invariant is never weakened to force it through.
+    throw new Error('dual-label unsafe: this suppression would remove CM-validated signals — not approved');
+  }
   const rows = (await sql`
     UPDATE learning_proposals SET status = 'approved', reviewed_by = ${reviewer}, reviewed_at = NOW(), review_note = ${note}, applied_ref = ${appliedRef}, updated_at = NOW()
      WHERE id = ${id} AND app_source = ${APP} AND status = 'proposed' RETURNING id`) as Array<{ id: string }>;
   return rows.length > 0;
+}
+
+// ── LEARNING-LOOP-V2 §2.1 — flywheel strip data (all fail-safe; any error → the pure builder still
+//    renders "—" for that number, never a 500). The two headline ratios are computed for the FIRST
+//    time here (attribution %, grounded %) over the distinct-note current-family 90d basis. ──
+const num = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+
+export async function fetchFlywheelData(): Promise<FlywheelView> {
+  // A — audits this week (IST Mon-start) + days elapsed into the week
+  const a = await sql2(
+    `SELECT count(*)::int AS audits_week, (${IST_TODAY} - ${IST_WEEK_START} + 1)::int AS days_elapsed
+       FROM opd_note_audits
+      WHERE app_source = $1 AND excluded_reason IS NULL AND engine_version = ANY($2)
+        AND (note_date AT TIME ZONE 'Asia/Kolkata')::date >= ${IST_WEEK_START}`,
+    [APP, ENGINE_FAMILY]).catch(() => []);
+  // B — non-informational findings surfaced this week
+  const b = await sql2(
+    `SELECT count(*)::int AS findings_week
+       FROM opd_note_audits a
+       CROSS JOIN LATERAL jsonb_array_elements(a.findings) f
+      WHERE a.app_source = $1 AND a.excluded_reason IS NULL AND a.engine_version = ANY($2)
+        AND (a.note_date AT TIME ZONE 'Asia/Kolkata')::date >= ${IST_WEEK_START}
+        AND COALESCE((f->>'informational')::boolean, false) = false`,
+    [APP, ENGINE_FAMILY]).catch(() => []);
+  // C — reviewer labels captured this week (all feedback scopes)
+  const c = await sql2(
+    `SELECT count(*)::int AS labels_week FROM opd_audit_feedback
+      WHERE app_source = $1 AND (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${IST_WEEK_START}`,
+    [APP]).catch(() => []);
+  // D — proposals approved this week, by type (rules published / topics harvested)
+  const d = await sql2(
+    `SELECT type, count(*)::int AS n FROM learning_proposals
+      WHERE app_source = $1 AND status = 'approved'
+        AND (reviewed_at AT TIME ZONE 'Asia/Kolkata')::date >= ${IST_WEEK_START}
+      GROUP BY type`,
+    [APP]).catch(() => []);
+  // E — suppressions created this week
+  const e = await sql2(
+    `SELECT count(*)::int AS n FROM audit_suppression
+      WHERE (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${IST_WEEK_START}`,
+    []).catch(() => []);
+  // F — THE TWO HEADLINE RATIOS (90d, current family, distinct latest audit per note — no double count):
+  //     attribution = LVC findings carrying a rule_ref / all LVC findings
+  //     grounded    = LLM findings with ≥1 citation / all LLM findings
+  const f = await sql2(
+    `WITH notes AS (
+        SELECT DISTINCT ON (uid) findings FROM opd_note_audits
+         WHERE app_source = $1 AND excluded_reason IS NULL AND engine_version = ANY($2)
+           AND (note_date AT TIME ZONE 'Asia/Kolkata')::date >= ${IST_TODAY} - 90
+         ORDER BY uid, audited_at DESC)
+     SELECT
+       count(*) FILTER (WHERE fi->>'signal_type' = 'low_value_care')::int AS lvc_total,
+       count(*) FILTER (WHERE fi->>'signal_type' = 'low_value_care' AND COALESCE(fi->>'rule_ref','') <> '')::int AS lvc_with_ref,
+       count(*) FILTER (WHERE fi->>'source' = 'llm')::int AS llm_total,
+       count(*) FILTER (WHERE fi->>'source' = 'llm' AND jsonb_array_length(COALESCE(fi->'citation_ids','[]'::jsonb)) > 0)::int AS llm_grounded
+       FROM notes n
+       CROSS JOIN LATERAL jsonb_array_elements(n.findings) fi
+      WHERE COALESCE((fi->>'informational')::boolean, false) = false`,
+    [APP, ENGINE_FAMILY]).catch(() => []);
+
+  const fr = f[0] || {};
+  return buildFlywheel({
+    auditsWeek: num(a[0]?.audits_week), daysElapsed: Math.max(1, num(a[0]?.days_elapsed) || 1),
+    engine: OPD_ENGINE_VERSION.replace(/^opd-note-audit\//, ''),
+    findingsWeek: num(b[0]?.findings_week), labelsWeek: num(c[0]?.labels_week),
+    approvedByType: (d as Array<Record<string, unknown>>).map((r) => ({ type: String(r.type), n: num(r.n) })),
+    suppressionsWeek: num(e[0]?.n),
+    lvcTotal: num(fr.lvc_total), lvcWithRef: num(fr.lvc_with_ref), llmTotal: num(fr.llm_total), llmGrounded: num(fr.llm_grounded),
+  });
+}
+
+// ── LEARNING-LOOP-V2 §2.4 — model-programme meters. model_v1_version absent → every model-side meter
+//    renders "armed — awaits engine freeze" (never faked); reviewer cadence always live. ──
+async function settingValue(key: string): Promise<string | null> {
+  const rows = await sql2(`SELECT value FROM app_settings WHERE key = $1`, [key]).catch(() => []);
+  const v = rows[0]?.value;
+  return v == null ? null : String(v).trim() || null;
+}
+
+export async function fetchProgrammeData(): Promise<Meter[]> {
+  const frozenRaw = await settingValue('model_v1_version');
+  // value may be a bare string or a JSON-quoted string; unwrap either → null when absent/empty.
+  let frozenVersion: string | null = null;
+  if (frozenRaw) { try { const p = JSON.parse(frozenRaw); frozenVersion = typeof p === 'string' && p.trim() ? p.trim() : (frozenRaw || null); } catch { frozenVersion = frozenRaw; } }
+
+  const goal = parseGoal(await settingValue('review_goal'));
+  let roster = FALLBACK_ROSTER.length;
+  const rr = await settingValue('review_roster');
+  if (rr) { try { const arr = JSON.parse(rr); if (Array.isArray(arr) && arr.length) roster = arr.length; } catch { /* keep fallback */ } }
+
+  const cad = await sql2(
+    `SELECT count(*)::int AS n FROM opd_audit_feedback
+      WHERE app_source = $1 AND scope = 'finding'
+        AND (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${IST_WEEK_START}`,
+    [APP]).catch(() => []);
+
+  return buildMeters({
+    frozenVersion,
+    teacherPool: 0, evalPairs: 0, panelsFilled: 0, adjudications: 0,   // model-side: armed until freeze
+    cadenceWeek: num(cad[0]?.n), cadenceTarget: goal.weekly_target, roster,
+  });
 }
