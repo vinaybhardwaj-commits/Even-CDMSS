@@ -172,8 +172,8 @@ export function Shell({ children, concordanceEnabled = false }: { children: Reac
 
   return (
     <div className="min-h-screen">
-      {/* Desktop sidebar */}
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-[230px] border-r border-slate-200 bg-paper md:block">
+      {/* Desktop sidebar — folded away in Review Mode (fullBleed); pixel-identical elsewhere */}
+      <aside className={`fixed inset-y-0 left-0 z-30 hidden w-[230px] border-r border-slate-200 bg-paper ${fullBleed ? '' : 'md:block'}`}>
         {SidebarInner}
       </aside>
 
@@ -189,9 +189,20 @@ export function Shell({ children, concordanceEnabled = false }: { children: Reac
         </button>
       </header>
 
-      {/* Mobile drawer */}
+      {/* Review Mode: a quiet floating ☰ (md+ only) reopens the module nav as the existing drawer overlay */}
+      {fullBleed && (
+        <button
+          onClick={() => setDrawer(true)}
+          aria-label="Open menu"
+          className="fixed left-3 top-3 z-40 hidden rounded-lg border border-slate-200 bg-white/90 p-2 text-slate-600 shadow-sm backdrop-blur hover:bg-white md:block"
+        >
+          <Menu className="h-5 w-5" />
+        </button>
+      )}
+
+      {/* Mobile drawer (also usable on md+ ONLY in Review Mode, where md:hidden is dropped) */}
       {drawer && (
-        <div className="fixed inset-0 z-40 md:hidden">
+        <div className={`fixed inset-0 z-40 ${fullBleed ? '' : 'md:hidden'}`}>
           <div className="absolute inset-0 bg-slate-900/30" onClick={() => setDrawer(false)} />
           <div className="absolute inset-y-0 left-0 w-[260px] bg-paper shadow-pop">
             <div className="flex justify-end p-2">
@@ -204,8 +215,8 @@ export function Shell({ children, concordanceEnabled = false }: { children: Reac
         </div>
       )}
 
-      {/* Content */}
-      <main className="md:pl-[230px]">
+      {/* Content — no sidebar gutter in Review Mode (fullBleed) so the navigator sits at the left edge */}
+      <main className={fullBleed ? 'pl-0' : 'md:pl-[230px]'}>
         <div className={fullBleed ? 'cat-page w-full' : 'cat-page mx-auto w-full max-w-5xl px-5 py-7 sm:px-8 sm:py-9'}>
           {children}
         </div>
