@@ -137,6 +137,9 @@ function injectConcordance(groups: NavGroup[]): NavGroup[] {
 
 export function Shell({ children, concordanceEnabled = false }: { children: React.ReactNode; concordanceEnabled?: boolean }) {
   const pathname = usePathname() || '';
+  // Review Mode's 3-pane surface provides its own full-bleed padding — exempt ONLY it from the
+  // shell's 1024px content cap (every other route renders pixel-identical). PRD addendum §1.1 patch 2.
+  const fullBleed = pathname === '/care/review';
   const isAdmin = pathname.startsWith('/admin');
   const base = isAdmin ? ADMIN : CLINICIAN;
   const groups = concordanceEnabled ? injectConcordance(base) : base;
@@ -203,7 +206,7 @@ export function Shell({ children, concordanceEnabled = false }: { children: Reac
 
       {/* Content */}
       <main className="md:pl-[230px]">
-        <div className="cat-page mx-auto w-full max-w-5xl px-5 py-7 sm:px-8 sm:py-9">
+        <div className={fullBleed ? 'cat-page w-full' : 'cat-page mx-auto w-full max-w-5xl px-5 py-7 sm:px-8 sm:py-9'}>
           {children}
         </div>
       </main>
