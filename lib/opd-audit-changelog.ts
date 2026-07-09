@@ -20,6 +20,16 @@ export interface EngineChange {
 
 export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
+    engine: '0.81.6', date: '2026-07-09', scoring: false,
+    title: 'v0.81.6 — Right Care matcher v3 (OR-across-keywords) (metadata-only; scores untouched)',
+    points: [
+      'LVC rule matcher v3: keywords are now treated as ALTERNATIVE trigger phrases. A KEYWORD (phrase) matches when EVERY whitespace-split token of it is a whole word in the subject+rationale; a RULE matches when ANY of its keywords matches (v2 required ALL keywords, which was wrong for the corpus — the 28 Choosing-Wisely/NCG rules author keywords as alternatives, so ALL-keywords left 744 low_value_care findings unmatchable, only the CBP phrase-token rule ever matched). Specificity: the rule whose best-matching keyword has the MOST tokens (longest matched phrase) wins; tie → rule id ASC. Whole-word matching, special-char escaping, and zero-keyword-never-match all carry over. ONE implementation shared by the engine stamp, read-time fallback, and backfill. No LLM.',
+      'Keyword DATA is corrected separately (Cowork, no code): the CBP rule is re-authored to a single phrase so it cannot over-match on bare "blood" under OR-semantics (26a), and the Choosing-Wisely keyword set is enriched behind a V precision review (26b). The lvc-ref-backfill ?restamp=1 lever re-attributes history afterwards.',
+      'SCORES UNCHANGED: opd-note-score-core is byte-identical; this bump only changes which rule_ref a low-value finding is stamped with. Golden A/B (3 uids, &save=0) confirms identical domain scores. Read family grows to {0.81.3, 0.81.4, 0.81.5, 0.81.6}.',
+    ],
+    why: 'Right Care PRD §2.4 (decisions 25–26, 9 Jul EOD) — post-0.81.5 restamp verified only 30/774 findings attributed (all CBP) because v2 ALL-keywords is incompatible with alternative-phrase keyword authoring. Measured: matcher fix alone ~4%→~7% attribution; with keyword enrichment ~20%.',
+    },
+  {
     engine: '0.81.5', date: '2026-07-09', scoring: false,
     title: 'v0.81.5 — Right Care matcher v2 (whole-word, all-keyword) + read-filter family fix (metadata-only)',
     points: [

@@ -63,37 +63,59 @@ export type LvcClassified = { is_lvc: boolean; rule_ref: string | null; lvc_cate
 const asCategory = (v: unknown): LvcCategory | null =>
   (LVC_CATEGORIES as readonly string[]).includes(String(v)) ? (v as LvcCategory) : null;
 
-/** Public matcher (0.81.4 backfill): the rule id a finding keyword-matches, or null. Same semantics
- *  as the engine stamp — subject+rationale lowercase haystack, first rule whose any-keyword hits. */
+/** Public matcher (backfill): the rule id a finding keyword-matches, or null. Same v3 semantics as the
+ *  engine stamp + read-time fallback — OR across a rule's keyword phrases, longest matched phrase wins. */
 export function matchLvcRule(f: ClassifiableFinding, rules: LvcRuleLite[]): string | null {
   const r = matchRule(f, rules);
   return r ? r.id : null;
 }
 
-// ── matcher v2 (decision 22) — ONE implementation used by the engine stamp, the read-time fallback,
-// and the backfill. A rule matches only if EVERY keyword appears as a WHOLE WORD (case-insensitive,
-// word-boundary, special chars escaped) in the subject+rationale haystack; candidates are evaluated
-// most-specific first (keyword count DESC, tie-break id ASC); rules with zero usable keywords never
-// match. Fixes the ANY-substring bug where ["complete","blood","profile"] matched "incomplete …".
+// ── matcher v3 (decision 25) — ONE implementation used by the engine stamp, the read-time fallback,
+// and the backfill. Each KEYWORD is a phrase; keywords in a rule are ALTERNATIVE triggers:
+//   · a KEYWORD matches iff EVERY whitespace-split token of it is a WHOLE WORD (case-insensitive,
+//     `\b…\b`, special chars escaped) in the subject+rationale haystack; empty keyword → false.
+//   · a RULE matches iff ANY of its keywords matches (was v2: EVERY keyword — wrong for the corpus,
+//     where CW rules list alternative trigger phrases, so ALL-keywords left 744 findings unmatchable).
+//   · specificity: across matching rules the winner is the one whose BEST-matching keyword has the MOST
+//     tokens (longest matched phrase = most specific); tie on token count → rule id ASC.
+//   · zero-keyword / empty-token rules never match. No LLM.
 function escapeRe(s: string): string { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
-/** De-duped, non-empty keywords for a rule (lowercased/trimmed). */
+/** De-duped, non-empty keyword phrases for a rule (lowercased/trimmed). */
 function ruleKeywords(r: LvcRuleLite): string[] {
   return Array.from(new Set((r.keywords || []).map((k) => String(k).toLowerCase().trim()).filter(Boolean)));
 }
-/** Every keyword present as a whole word in the haystack (case-insensitive). Empty list → false. */
-function everyKeywordWholeWord(hay: string, kws: string[]): boolean {
-  if (!kws.length) return false;
-  return kws.every((k) => new RegExp(`\\b${escapeRe(k)}\\b`, 'i').test(hay));
+/** A keyword phrase matches iff every whitespace-split token is a whole word in the haystack. */
+function keywordMatches(hay: string, keyword: string): boolean {
+  const tokens = keyword.split(/\s+/).filter(Boolean);
+  if (!tokens.length) return false;
+  return tokens.every((t) => new RegExp(`\\b${escapeRe(t)}\\b`, 'i').test(hay));
 }
-/** Match a finding to a rule (v2). Most-specific first so a precise rule beats a generic one. */
+/** Token count of a rule's BEST-matching keyword (longest matched phrase), or 0 if none match. */
+function bestMatchedTokens(hay: string, kws: string[]): number {
+  let best = 0;
+  for (const k of kws) {
+    if (keywordMatches(hay, k)) {
+      const n = k.split(/\s+/).filter(Boolean).length;
+      if (n > best) best = n;
+    }
+  }
+  return best;
+}
+/** Match a finding to a rule (v3). Longest matched phrase wins; tie → lowest id. */
 function matchRule(f: ClassifiableFinding, rules: LvcRuleLite[]): LvcRuleLite | null {
   const hay = `${f.subject || ''} ${f.rationale || ''}`;
-  const candidates = rules
-    .map((r) => ({ r, kws: ruleKeywords(r) }))
-    .filter((c) => c.kws.length > 0)
-    .sort((a, b) => (b.kws.length - a.kws.length) || (String(a.r.id) < String(b.r.id) ? -1 : String(a.r.id) > String(b.r.id) ? 1 : 0));
-  for (const c of candidates) if (everyKeywordWholeWord(hay, c.kws)) return c.r;
-  return null;
+  let winner: LvcRuleLite | null = null, winTokens = 0, winId = '';
+  for (const r of rules) {
+    const kws = ruleKeywords(r);
+    if (!kws.length) continue;
+    const tok = bestMatchedTokens(hay, kws);
+    if (tok === 0) continue;                              // no keyword of this rule matched
+    const id = String(r.id);
+    if (tok > winTokens || (tok === winTokens && (winner === null || id < winId))) {
+      winner = r; winTokens = tok; winId = id;            // longest matched phrase, tie → lowest id
+    }
+  }
+  return winner;
 }
 
 /**

@@ -86,44 +86,51 @@ test('LVC_CATEGORIES vocabulary is the four expected values', () => {
   assert.deepEqual([...LVC_CATEGORIES], ['antibiotic', 'imaging', 'supplement_polypharmacy', 'other']);
 });
 
-// ── engine matcher v2 (decision 22): EVERY keyword whole-word, most-specific first ──
+// ── engine matcher v3 (decision 25): OR across keyword phrases, AND within a phrase's tokens ──
 const lv = (subject: string, rationale = '') => ({ subject, rationale, verdict: 'low-value', confidence: 0.8, domain: 'appropriateness' });
 const stampRefs = (findings: unknown[], rules: unknown[]): Array<string | null> =>
   (stampLvcMetadata(findings as never[], rules as never[]) as Array<Record<string, unknown>>).map((f) => (f.rule_ref as string | null) ?? null);
 
-test('matcher v2: the "incomplete ≠ complete" worked example', () => {
-  const rules = [{ id: 'ehrc-cbp', keywords: ['complete', 'blood', 'profile'], category: 'other' }];
-  // must NOT match — "incomplete" contains "complete" as a substring, but not as a whole word, and no blood/profile
-  assert.deepEqual(stampRefs([lv('Incomplete medication reconciliation')], rules), [null]);
-  // must match — all three whole words present
-  assert.deepEqual(stampRefs([lv('Complete blood profile ordered', 'no anaemia symptoms documented')], rules), ['ehrc-cbp']);
+test('matcher v3: OR across keywords — alternative trigger phrases (the CW-rule fix)', () => {
+  // a keyword is a phrase; a rule matches if ANY keyword's tokens are all whole words
+  const rules = [{ id: 'cwus-aafp-002', keywords: ['antibiotics uri', 'antibiotic cold'], category: 'antibiotic' }];
+  // matches via "antibiotics uri" (both tokens whole words; "URI" satisfies whole-word "uri")
+  assert.deepEqual(stampRefs([lv('Antibiotics started for viral URI')], rules), ['cwus-aafp-002']);
+  // "URTI" is a different whole word → "uri" not satisfied; and "antibiotic cold" absent → no match (data concern, 26b)
+  assert.deepEqual(stampRefs([lv('Antibiotic for viral URTI')], rules), [null]);
 });
 
-test('matcher v2: EVERY keyword required (ALL, not ANY)', () => {
-  const rules = [{ id: 'r-abx', keywords: ['azithromycin', 'antibiotic'], category: 'antibiotic' }];
-  assert.deepEqual(stampRefs([lv('Azithromycin for viral URI')], rules), [null]); // missing "antibiotic"
-  assert.deepEqual(stampRefs([lv('Azithromycin antibiotic for viral URI')], rules), ['r-abx']);
-  // single-keyword rule still works as a whole word
-  assert.deepEqual(stampRefs([lv('MRI lumbar spine')], [{ id: 'r-mri', keywords: ['mri'], category: 'imaging' }]), ['r-mri']);
+test('matcher v3: AND within a keyword — every token must be a whole word', () => {
+  const rules = [{ id: 'r', keywords: ['antibiotics uri'], category: 'antibiotic' }];
+  assert.deepEqual(stampRefs([lv('Antibiotics for a viral URI')], rules), ['r']);   // both tokens present
+  assert.deepEqual(stampRefs([lv('Antibiotics for a sore throat')], rules), [null]); // "uri" absent
 });
 
-test('matcher v2: most-specific first (keyword count DESC, tie id ASC)', () => {
-  const generic = { id: 'z-generic', keywords: ['antibiotic'], category: 'antibiotic' };
-  const specific = { id: 'a-specific', keywords: ['azithromycin', 'antibiotic'], category: 'antibiotic' };
-  // finding satisfies BOTH → the 2-keyword rule wins despite being listed first or last
-  assert.deepEqual(stampRefs([lv('Azithromycin antibiotic for a cold')], [generic, specific]), ['a-specific']);
-  assert.deepEqual(stampRefs([lv('Azithromycin antibiotic for a cold')], [specific, generic]), ['a-specific']);
-  // tie on keyword count → lexicographically smaller id wins
-  const tieA = { id: 'a-tie', keywords: ['imaging'], category: 'imaging' };
+test('matcher v3: longest matched phrase wins; tie → lowest id', () => {
+  const short = { id: 'z-short', keywords: ['ct head'], category: 'imaging' };            // 2 tokens
+  const long = { id: 'a-long', keywords: ['ct head child head injury'], category: 'imaging' }; // 5 tokens
+  const hay = 'CT head ordered for a child with minor head injury';
+  assert.deepEqual(stampRefs([lv(hay)], [short, long]), ['a-long']);   // 5-token phrase beats 2-token
+  assert.deepEqual(stampRefs([lv(hay)], [long, short]), ['a-long']);   // order-independent
+  // tie on best-matched-token count (both 1) → lexicographically smaller id
   const tieB = { id: 'b-tie', keywords: ['imaging'], category: 'imaging' };
+  const tieA = { id: 'a-tie', keywords: ['imaging'], category: 'imaging' };
   assert.deepEqual(stampRefs([lv('Imaging without indication')], [tieB, tieA]), ['a-tie']);
 });
 
-test('matcher v2: zero-keyword rules never match; category from matched rule', () => {
+test('matcher v3: bare 1-token keyword over-matches under OR (why CBP is re-authored in data, 26a)', () => {
+  // the CBP rule as three 1-token keywords → "blood" alone matches. Not special-cased in code.
+  const cbp = [{ id: 'ehrc-cbp', keywords: ['complete', 'blood', 'profile'], category: 'other' }];
+  assert.deepEqual(stampRefs([lv('Blood culture sent')], cbp), ['ehrc-cbp']);          // over-matches on "blood"
+  // still respects whole-word: "incomplete" never satisfies "complete"
+  assert.deepEqual(stampRefs([lv('Incomplete medication reconciliation')], cbp), [null]);
+});
+
+test('matcher v3: zero-keyword / empty-token rules never match; category from matched rule', () => {
   const rules = [{ id: 'r-empty', keywords: [], category: 'imaging' }, { id: 'r-img', keywords: ['ultrasound'], category: 'imaging' }];
   const out = stampLvcMetadata([lv('Ultrasound abdomen routine')] as never[], rules as never[]) as Array<Record<string, unknown>>;
   assert.equal(out[0].rule_ref, 'r-img'); assert.equal(out[0].lvc_category, 'imaging');
-  assert.deepEqual(stampRefs([lv('Vitamin D supplement, no deficiency')], [{ id: 'r-empty', keywords: [], category: 'other' }]), [null]);
+  assert.deepEqual(stampRefs([lv('anything at all')], [{ id: 'r-blank', keywords: ['', '   '], category: 'other' }]), [null]);
 });
 
 test('stampLvcMetadata: no rules → rule_ref null; non-low-value + informational skipped; scores untouched', () => {

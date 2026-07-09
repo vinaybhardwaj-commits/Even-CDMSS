@@ -25,7 +25,7 @@ import type { NetValue, OpdFindingDomain, Pdqi9Attr } from './opd-note-score-cor
 //       B2: follow-up counts as documented ONLY for a real disposition or an explicit date — a bare
 //       'UNKNOWN'/blank no longer earns continuity/documentation credit (the score-moving change
 //       that makes 0.7 a distinct generation). Prompt-pass fixes (B1/B5/B6) land next, still 0.7.
-export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.5';
+export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.6';
 
 /**
  * Current-engine FAMILY for READ/aggregate surfaces. 0.81.3 → 0.81.4 → 0.81.5 are all score-identical
@@ -36,7 +36,7 @@ export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.5';
  * DESC, id DESC. WRITE-side targeting keeps exact OPD_ENGINE_VERSION (family there would stop history
  * re-scoring). See the patch report.
  */
-export const OPD_ENGINE_VERSIONS_CURRENT = ['opd-note-audit/0.81.3', 'opd-note-audit/0.81.4', 'opd-note-audit/0.81.5'] as const;
+export const OPD_ENGINE_VERSIONS_CURRENT = ['opd-note-audit/0.81.3', 'opd-note-audit/0.81.4', 'opd-note-audit/0.81.5', 'opd-note-audit/0.81.6'] as const;
 
 // Local copy of the PDQI-9 keys (kept in sync with opd-note-score-core) so this core has
 // no runtime cross-import and stays loadable under `node --experimental-strip-types`.

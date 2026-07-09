@@ -194,7 +194,7 @@ export default async function HowItWorksPage() {
         </p>
       </Section>
 
-      <Section id="right-care" kicker="Right Care · v0.81.5" title="Low-value care as a case-mix-fair rate">
+      <Section id="right-care" kicker="Right Care · v0.81.6" title="Low-value care as a case-mix-fair rate">
         <p>
           Low-value actions (Choosing Wisely / NCG rules) are already detected per note. From v0.81.3 each low-value
           finding is stamped <code>signal_type: low_value_care</code> with a coarse <code>lvc_category</code>
@@ -227,10 +227,12 @@ export default async function HowItWorksPage() {
           pattern, not a clinician scorecard.
         </p>
         <p className="mt-2">
-          <strong>Rule attribution (v0.81.5):</strong> at stamp time each low-value finding is keyword-matched against the
-          active <code>lvc_recommendations</code> — a rule matches only when <strong>every</strong> keyword appears as a
-          <strong> whole word</strong> (so &ldquo;incomplete&rdquo; no longer matches a &ldquo;complete&rdquo; rule), and the
-          most-specific rule (most keywords) wins — to attach <code>rule_ref</code> + the rule&apos;s category. No hit → <code>rule_ref: null</code>.
+          <strong>Rule attribution (v0.81.6):</strong> at stamp time each low-value finding is keyword-matched against the
+          active <code>lvc_recommendations</code>. Each keyword is a <em>trigger phrase</em>; a rule matches when <strong>any</strong>
+          of its keyword phrases is present, and a phrase is present only when <strong>every</strong> word of it appears as a
+          <strong> whole word</strong> (so &ldquo;incomplete&rdquo; never matches &ldquo;complete&rdquo;). The rule with the
+          <strong> longest matched phrase</strong> (most specific) wins — attaching <code>rule_ref</code> + the rule&apos;s category.
+          No hit → <code>rule_ref: null</code>.
           It is <strong>metadata only, no LLM, and never changes a score</strong>; existing low-value findings are
           re-stamped by a one-shot backfill (no re-audit). The case view shows the matched rule&apos;s plain-language
           rationale + citation on each low-value finding.
