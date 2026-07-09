@@ -9,8 +9,10 @@ import {
   bandColor, scoreColor, istDateRange, parseJson, doctorLabel, fmtIstTime, fmtIstDateLong, PDQI9_LABEL,
   type Period,
 } from '@/lib/opd-audit-ui';
+import { fetchRightCareDay } from '@/lib/opd-audit-doctor';
 import NotesExplorer, { type AuditRow } from './audit-table';
 import DomainPillars, { type DomainDatum } from './domain-pillars';
+import { RightCareTile } from './right-care-tile';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'OPD Audit · Admin' };
@@ -126,6 +128,9 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
               score_documentation, score_note_quality, score_appropriateness, score_prescribing_safety, score_patient_centred, pdqi9
        FROM opd_note_audits WHERE ${WIN} ORDER BY note_date DESC LIMIT 600`, winParams),
   ]);
+
+  // Right Care day tile (§7) — family-basis distinct-note LVC rate, robust across the 0.81.4 bump.
+  const rightCareDay = await fetchRightCareDay().catch(() => null);
 
   const docUids = Array.from(new Set(([...docsR.map((d) => d.doctor_uid), ...reviewR.map((r) => r.doctor_uid), ...allR.map((r) => r.doctor_uid)].filter(Boolean)) as string[]));
   const names = await fetchDoctorNames(docUids).catch(() => ({} as Record<string, string>));
@@ -308,6 +313,13 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
               </div>
             </div>
           </div>
+
+          {/* RIGHT CARE day tile (§7, top row) */}
+          {rightCareDay && (
+            <div className="mt-4">
+              <RightCareTile data={rightCareDay} />
+            </div>
+          )}
 
           {/* DOMAIN PILLARS */}
           <div className="mt-4">

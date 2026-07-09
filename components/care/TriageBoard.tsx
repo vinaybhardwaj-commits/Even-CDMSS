@@ -31,7 +31,19 @@ type ResponseReq = 'none' | 'explanation' | 'acknowledgment' | 'recommend_privil
 interface Representative {
   audit_id: string; finding_ref: string; subject: string; verdict: string;
   rationale: string; note_date: string; citation_ids: number[];
+  // Right Care routing context (decision 16) — display only, no O/E / doctor-comparative data here.
+  complexity_band?: string | null; complexity_inputs?: Record<string, unknown> | null; lvc_category?: string | null;
 }
+
+// Complexity band chip labels (NEW_TO_US → "New to Even" per decision 16) + tone.
+const BAND_LABEL: Record<string, string> = { NEW_TO_US: 'New to Even', LOW: 'Low complexity', MODERATE: 'Moderate complexity', HIGH: 'High complexity' };
+const BAND_TONE: Record<string, string> = {
+  NEW_TO_US: 'bg-sky-100 text-sky-700', LOW: 'bg-slate-100 text-slate-600',
+  MODERATE: 'bg-amber-100 text-amber-700', HIGH: 'bg-rose-100 text-rose-700',
+};
+const LVC_CAT_LABEL: Record<string, string> = {
+  antibiotic: 'Antibiotic', imaging: 'Imaging', supplement_polypharmacy: 'Supplement / polypharmacy', other: 'Low-value',
+};
 interface TypeDecisionState {
   validity: string; bug_type: string | null; importance: string | null;
   routed: boolean; response_required: string | null; reason: string | null; cm_user: string | null; decided_at: string;
@@ -263,12 +275,25 @@ export default function TriageBoard() {
 
                   {/* Representative instance */}
                   <div className="mt-2 rounded-lg bg-slate-50 px-3 py-2">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${verdictPill[rep.verdict] || verdictPill.uncertain}`}>{rep.verdict}</span>
                       <span className="text-[12.5px] font-medium text-slate-800">{rep.subject}</span>
+                      {/* Right Care band chip (routing context; NULL band → no chip) */}
+                      {rep.complexity_band && BAND_LABEL[rep.complexity_band] && (
+                        <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${BAND_TONE[rep.complexity_band] || 'bg-slate-100 text-slate-600'}`}>{BAND_LABEL[rep.complexity_band]}</span>
+                      )}
+                      {rep.lvc_category && (
+                        <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-700">{LVC_CAT_LABEL[rep.lvc_category] || rep.lvc_category}</span>
+                      )}
                       <span className="ml-auto text-[11px] text-slate-400">{rep.note_date} · 1 of {t.count}</span>
                     </div>
                     {rep.rationale && <p className="mt-1 text-[12px] leading-relaxed text-slate-600">{rep.rationale}</p>}
+                    {/* complexity inputs line (expanded detail; chronic ICDs / abnormal labs / 12m visits) */}
+                    {rep.complexity_inputs && (
+                      <p className="mt-1 text-[10.5px] text-slate-400">
+                        Case mix: {Number(rep.complexity_inputs.chronic_codes ?? 0)} chronic dx · {Number(rep.complexity_inputs.abnormal_labs ?? 0)} abnormal labs · {Number(rep.complexity_inputs.enc_12m ?? 0)} visits/12m
+                      </p>
+                    )}
                   </div>
 
                   {/* Decision pipeline */}

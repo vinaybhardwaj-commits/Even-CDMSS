@@ -7,8 +7,11 @@ import { bandColor, scoreColor, parseJson, doctorLabel, fmtIstTime } from '@/lib
 import { catsForRow } from '@/lib/opd-audit-cats';
 import {
   fetchDoctorStats, fetchDoctorBandDist, fetchDoctorWeeklyTrend, fetchDoctorAuditRows,
+  fetchLvcCells, readRightCareExclusions,
 } from '@/lib/opd-audit-doctor';
+import { computeDoctorOE } from '@/lib/opd-funnel-core';
 import NotesExplorer, { type AuditRow } from '../../audit-table';
+import { FunnelCard } from './funnel-card';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'OPD Audit · Doctor' };
@@ -80,6 +83,19 @@ export default async function DoctorDetail({ params, searchParams }: { params: P
   const triagedIds = auditIds.length
     ? (await runSql(`SELECT DISTINCT audit_id FROM opd_audit_feedback WHERE scope = 'finding' AND app_source = $1 AND audit_id = ANY($2)`, [APP, auditIds]).catch(() => [])).map((x) => String(x.audit_id))
     : [];
+
+  // Right Care funnel (§4/§7) — this doctor's dot vs specialty peers, case-mix adjusted. Peer grouping
+  // + this doctor's specialty both come from doctor_directory (Neon) so the group is consistent.
+  const [lvcCells, rcExclusions, dirRows] = await Promise.all([
+    fetchLvcCells(),
+    readRightCareExclusions(),
+    runSql(`SELECT doctor_uid, speciality FROM doctor_directory WHERE speciality IS NOT NULL`, []).catch(() => []),
+  ]);
+  const specMap: Record<string, string> = {};
+  for (const r of dirRows) specMap[String(r.doctor_uid)] = String(r.speciality);
+  const oeAll = computeDoctorOE(lvcCells, new Set(rcExclusions));
+  const funnelSpec = specMap[uid] || 'Unspecified';
+  const funnelPeers = oeAll.filter((d) => (specMap[d.doctor_uid] || 'Unspecified') === funnelSpec);
 
   const nAudits = stats ? n(stats.nnotes) : 0;
   const meanIndex = stats ? n(stats.mean_index) : 0;
@@ -158,6 +174,11 @@ export default async function DoctorDetail({ params, searchParams }: { params: P
                 </div>
               </div>
             </div>
+          </div>
+
+          {/* Right Care funnel (§7) */}
+          <div className="mt-5">
+            <FunnelCard doctorUid={uid} specialty={funnelSpec} peers={funnelPeers} />
           </div>
 
           {/* the audit list (reuses NotesExplorer; its "Download all" honours any client filter) */}

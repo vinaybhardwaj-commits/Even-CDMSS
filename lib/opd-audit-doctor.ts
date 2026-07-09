@@ -9,7 +9,8 @@
  * band) are fine and used as-is.
  */
 import { sql } from '@/lib/db';
-import { OPD_ENGINE_VERSION } from '@/lib/opd-note-audit-core';
+import { OPD_ENGINE_VERSION, OPD_ENGINE_VERSIONS_CURRENT } from '@/lib/opd-note-audit-core';
+import type { LvcCell } from '@/lib/opd-funnel-core';
 
 const APP = process.env.APP_SOURCE || 'standalone';
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
@@ -118,4 +119,135 @@ export async function fetchDoctorAuditRows(uid: string, from: string | null = nu
      WHERE app_source = $1 AND engine_version = '${ENG}' AND doctor_uid = $2${r.clause}
      ORDER BY note_date DESC
      LIMIT ${lim}`, [APP, uid, ...r.params]);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Right Care O/E + strata + day rate (RIGHT-CARE-INDICATOR-PRD §4 / Branch 2).
+//
+// Basis (§1, §2.2): the DISTINCT-uid latest audit at the current-engine FAMILY (0.81.3 ∪ 0.81.4 —
+// the 0.81.4 metadata bump does NOT re-audit 0.81.3, so both are "current"; see opd-note-audit-core).
+// This deliberately avoids fetchDoctorIndex's count(*) double-count. O numerator = notes with
+// n_low_value > 0 (verdict tier is the authoritative LVC signal, §8; v1 gate suppresses nothing, so
+// n_low_value>0 == "≥1 gated LVC finding"). All strings are INFERRED — fail-safe (error → []/zero).
+// ─────────────────────────────────────────────────────────────────────────────
+const ENGINES: string[] = [...OPD_ENGINE_VERSIONS_CURRENT];
+/** Distinct-note (latest per uid) subquery over the current-engine family. `extra` adds WHERE terms. */
+function distinctNoteSubquery(cols: string, extra = ''): string {
+  return `SELECT DISTINCT ON (uid) uid, ${cols}
+          FROM opd_note_audits
+          WHERE app_source = $1 AND engine_version = ANY($2) AND doctor_uid IS NOT NULL${extra}
+          ORDER BY uid, note_date DESC, id DESC`;
+}
+const WIN90 = `(note_date ${IST})::date >= (now() ${IST})::date - 90`;
+
+/** House-account / non-clinician exclusions (decision 15). app_settings JSON array; fail-safe → []. */
+export async function readRightCareExclusions(): Promise<string[]> {
+  const rows = await run(`SELECT value FROM app_settings WHERE key = 'right_care_doctor_exclusions'`, []).catch(() => []);
+  const raw = rows[0]?.value;
+  if (!raw) return [];
+  try { const j = JSON.parse(String(raw)); return Array.isArray(j) ? j.map((x) => String(x)).filter(Boolean) : []; }
+  catch { return []; }
+}
+
+/** Per-(doctor, band) LVC cells for the O/E + funnel cores. Banded only (unbanded excluded from O/E);
+ *  latest-per-uid then drop nulls, so a later unbanded re-audit doesn't hide an older banded one. */
+export async function fetchLvcCells(): Promise<LvcCell[]> {
+  const rows = await rowsOf<{ doctor_uid: string; band: string; n: number; o: number }>(
+    `SELECT doctor_uid, band, count(*)::int AS n, count(*) FILTER (WHERE nlv > 0)::int AS o
+     FROM ( ${distinctNoteSubquery('doctor_uid, complexity_band AS band, n_low_value AS nlv')} ) latest
+     WHERE band IS NOT NULL
+     GROUP BY doctor_uid, band`, [APP, ENGINES]);
+  return rows.map((r) => ({ doctor_uid: String(r.doctor_uid), band: r.band == null ? null : String(r.band), age_band: null, n: Number(r.n) || 0, o: Number(r.o) || 0 }));
+}
+
+/** Banded coverage over the distinct-note family basis: "banded n / m" (§8). Fail-safe → 0/0. */
+export async function fetchRightCareCoverage(): Promise<{ banded: number; total: number }> {
+  const rows = await rowsOf<{ banded: number; total: number }>(
+    `SELECT count(*)::int AS total, count(*) FILTER (WHERE band IS NOT NULL)::int AS banded
+     FROM ( ${distinctNoteSubquery('complexity_band AS band')} ) l`, [APP, ENGINES]);
+  return { banded: Number(rows[0]?.banded || 0), total: Number(rows[0]?.total || 0) };
+}
+
+export type RightCareDayTrend = { day: string; rate: number; n: number };
+export type RightCareCategory = { category: string; notes: number };
+export interface RightCareDay {
+  day: string; total: number; withLvc: number; rate: number;
+  mean14: number; trend: RightCareDayTrend[]; categories: RightCareCategory[];
+}
+/** Overview tile (§7): headline day LVC-note rate, 14-day trend + mean, and the headline day's
+ *  category split (distinct notes with ≥1 low-value finding of that lvc_category). Fail-safe → zeros. */
+export async function fetchRightCareDay(): Promise<RightCareDay> {
+  const empty: RightCareDay = { day: '', total: 0, withLvc: 0, rate: 0, mean14: 0, trend: [], categories: [] };
+  const trendRows = await rowsOf<{ day: string; n: number; with_lvc: number }>(
+    `SELECT day, count(*)::int AS n, count(*) FILTER (WHERE nlv > 0)::int AS with_lvc
+     FROM ( ${distinctNoteSubquery(`(note_date ${IST})::date AS day, n_low_value AS nlv`, ` AND (note_date ${IST})::date >= (now() ${IST})::date - 14`)} ) l
+     GROUP BY day ORDER BY day`, [APP, ENGINES]);
+  if (!trendRows.length) return empty;
+  const trend: RightCareDayTrend[] = trendRows.map((r) => ({ day: String(r.day), n: Number(r.n) || 0, rate: Number(r.n) > 0 ? Number(r.with_lvc) / Number(r.n) : 0 }));
+  const head = trend[trend.length - 1];
+  const mean14 = trend.reduce((a, t) => a + t.rate, 0) / trend.length;
+  const catRows = await rowsOf<{ category: string; notes: number }>(
+    `SELECT COALESCE(NULLIF(lower(f->>'lvc_category'), ''), 'other') AS category, count(DISTINCT l.uid)::int AS notes
+     FROM ( ${distinctNoteSubquery(`uid AS uid2, findings, (note_date ${IST})::date AS day`, ` AND (note_date ${IST})::date = (now() ${IST})::date`)} ) l,
+          jsonb_array_elements(CASE WHEN jsonb_typeof(l.findings) = 'array' THEN l.findings ELSE '[]'::jsonb END) f
+     WHERE f->>'verdict' = 'low-value' AND COALESCE((f->>'informational')::boolean, false) = false
+     GROUP BY 1 ORDER BY notes DESC`, [APP, ENGINES]).catch(() => []);
+  // headline day = the latest IST day present in the trend; category split is for "today" (latest day)
+  return {
+    day: head.day, total: head.n, withLvc: Math.round(head.rate * head.n), rate: head.rate,
+    mean14, trend, categories: catRows.map((r) => ({ category: String(r.category), notes: Number(r.notes) || 0 })),
+  };
+}
+
+// ── Department (specialty) detail — §7c / decision 20 (90d window, Right Care basis) ──
+const DEPT_JOIN = `LEFT JOIN doctor_directory dd ON dd.doctor_uid = l.doctor_uid`;
+const DEPT_MATCH = `COALESCE(NULLIF(dd.speciality, ''), 'Unspecified') = $3`;
+
+export interface DeptKpis { n: number; banded: number; avg_nqi: number; pct_low: number; sum_low: number }
+export async function fetchDeptKpis(dept: string): Promise<DeptKpis> {
+  const rows = await rowsOf<DeptKpis & { total: number }>(
+    `SELECT count(*)::int AS n,
+            count(*) FILTER (WHERE band IS NOT NULL)::int AS banded,
+            round(avg(nqi))::int AS avg_nqi,
+            round(100.0 * avg((nlv > 0)::int))::int AS pct_low,
+            sum(nlv)::int AS sum_low
+     FROM ( ${distinctNoteSubquery(`doctor_uid, complexity_band AS band, note_quality_index AS nqi, n_low_value AS nlv, note_date`, ` AND ${WIN90}`)} ) l
+     ${DEPT_JOIN}
+     WHERE ${DEPT_MATCH}`, [APP, ENGINES, dept]);
+  const r = rows[0];
+  return { n: Number(r?.n || 0), banded: Number(r?.banded || 0), avg_nqi: Number(r?.avg_nqi || 0), pct_low: Number(r?.pct_low || 0), sum_low: Number(r?.sum_low || 0) };
+}
+
+export type DeptWeek = { wk: string; nqi: number; lvc: number; n: number };
+export async function fetchDeptWeeklyTrend(dept: string): Promise<DeptWeek[]> {
+  return rowsOf<DeptWeek>(
+    `SELECT wk, round(avg(nqi))::int AS nqi, round(100.0 * avg((nlv > 0)::int))::int AS lvc, count(*)::int AS n
+     FROM (
+       SELECT to_char(date_trunc('week', (l.note_date ${IST}))::date, 'YYYY-MM-DD') AS wk, l.nqi, l.nlv
+       FROM ( ${distinctNoteSubquery(`doctor_uid, note_quality_index AS nqi, n_low_value AS nlv, note_date`, ` AND ${WIN90}`)} ) l
+       ${DEPT_JOIN}
+       WHERE ${DEPT_MATCH}
+     ) t GROUP BY wk ORDER BY wk`, [APP, ENGINES, dept]);
+}
+
+export async function fetchDeptCategorySplit(dept: string): Promise<RightCareCategory[]> {
+  const rows = await rowsOf<{ category: string; notes: number }>(
+    `SELECT COALESCE(NULLIF(lower(f->>'lvc_category'), ''), 'other') AS category, count(DISTINCT l.uid)::int AS notes
+     FROM ( ${distinctNoteSubquery(`doctor_uid, findings, note_date`, ` AND ${WIN90}`)} ) l
+     ${DEPT_JOIN}
+     CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(l.findings) = 'array' THEN l.findings ELSE '[]'::jsonb END) f
+     WHERE ${DEPT_MATCH} AND f->>'verdict' = 'low-value' AND COALESCE((f->>'informational')::boolean, false) = false
+     GROUP BY 1 ORDER BY notes DESC`, [APP, ENGINES, dept]);
+  return rows.map((r) => ({ category: String(r.category), notes: Number(r.notes) || 0 }));
+}
+
+export type DeptFinding = { subject: string; signal_type: string; n: number };
+export async function fetchDeptTopFindings(dept: string): Promise<DeptFinding[]> {
+  return rowsOf<DeptFinding>(
+    `SELECT f->>'subject' AS subject, COALESCE(f->>'signal_type', '') AS signal_type, count(*)::int AS n
+     FROM ( ${distinctNoteSubquery(`doctor_uid, findings, note_date`, ` AND ${WIN90}`)} ) l
+     ${DEPT_JOIN}
+     CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(l.findings) = 'array' THEN l.findings ELSE '[]'::jsonb END) f
+     WHERE ${DEPT_MATCH} AND COALESCE((f->>'informational')::boolean, false) = false AND COALESCE(f->>'subject', '') <> ''
+     GROUP BY 1, 2 HAVING count(*) >= 3 ORDER BY n DESC LIMIT 10`, [APP, ENGINES, dept]);
 }

@@ -27,7 +27,7 @@ import { curatedInteractions, mergeRank, type DrugClass } from './ddi';
 import type { DdiPair } from './rxlabelguard';
 import { applySuppressions, type Suppression } from './audit-suppression-core';
 import { loadActiveSuppressions } from './audit-suppression-store';
-import { stampLvcMetadata } from './opd-lvc-classify-core';
+import { stampLvcMetadata, type LvcRuleLite } from './opd-lvc-classify-core';
 import { bandFor, type ComplexityBand, type ComplexityInputs } from './opd-complexity-core';
 import { fetchPatientHistoryBundle } from './metabase';
 import { sql } from './db';
@@ -58,6 +58,34 @@ async function doctorSpecialtyFor(doctorUid: string | null): Promise<string | nu
     } catch { if (!_specCache) return null; }
   }
   return _specCache.map[doctorUid] || null;
+}
+
+// 0.81.4 (decision 14): the LVC keyword matcher needs the active lvc_recommendations (id, keywords,
+// category) at stamp time. The LLM prompt doesn't load them, so this is the ONE audit-path read the
+// PRD §7b authorises — cached (5m) + 2s-timeout fail-safe; no rules → stamp rule_ref:null, never block.
+let _lvcRulesCache: { at: number; rules: LvcRuleLite[] } | null = null;
+function parseKeywords(v: unknown): string[] {
+  if (Array.isArray(v)) return v.map((x) => String(x));
+  if (typeof v === 'string') {
+    try { const j = JSON.parse(v); if (Array.isArray(j)) return j.map((x) => String(x)); } catch { /* not json */ }
+    return v.split(',').map((s) => s.trim()).filter(Boolean);
+  }
+  return [];
+}
+async function getLvcRules(): Promise<LvcRuleLite[]> {
+  const now = Date.now();
+  if (_lvcRulesCache && now - _lvcRulesCache.at < 300_000) return _lvcRulesCache.rules;
+  try {
+    const rows = await Promise.race([
+      _dirRun(`SELECT id, keywords, category FROM lvc_recommendations WHERE status = 'active'`, []),
+      new Promise<Record<string, unknown>[]>((_, rej) => setTimeout(() => rej(new Error('lvc rules timeout')), 2000)),
+    ]);
+    const rules: LvcRuleLite[] = (rows as Record<string, unknown>[]).map((r) => ({
+      id: String(r.id), keywords: parseKeywords(r.keywords), category: r.category == null ? null : String(r.category),
+    }));
+    _lvcRulesCache = { at: now, rules };
+    return rules;
+  } catch { return _lvcRulesCache?.rules ?? []; }
 }
 
 // Formulary match types reliable enough to drive a deterministic safety alert (an approximate
@@ -223,6 +251,7 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
   // findings — drop, or downgrade to informational (out of the triage queue + score). No-op when
   // none are active. Applied AFTER stampFindingIdentity so it matches on signal_type + subject.
   const supps = opts.suppressions ?? await getActiveSuppressions();
+  const lvcRules = await getLvcRules();   // 0.81.4 matcher input (cached, 2s-timeout fail-safe → [])
   const noMeds = oc.medications.length === 0;
   const finalize = (fs: OpdFinding[]): OpdFinding[] => {
     let out = stampFindingIdentity(fs);
@@ -233,9 +262,10 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     if (noMeds) out = out.filter((f) => f.domain !== 'prescribing_safety');
     out = consolidateDecisions(out);   // BUG-0.8-12: one decision → one finding, across sources
     out = neutralizeMetadataFindings(out);   // BUG-0.8-16: don't penalise the doctor for our metadata
-    // 0.81.3 (RIGHT-CARE §5): stamp rule_ref/lvc_category on the SURVIVING, non-informational
-    // low-value findings (after neutralisation). Additive metadata — never changes verdict/domain/score.
-    out = stampLvcMetadata(out);
+    // 0.81.4 (RIGHT-CARE §5 / decision 14): stamp rule_ref/lvc_category on the SURVIVING,
+    // non-informational low-value findings (after neutralisation) — keyword-matched against the active
+    // lvc_recommendations. Additive metadata — never changes verdict/domain/score.
+    out = stampLvcMetadata(out, lvcRules);
     return applySuppressions(out, keys.doctorUid, supps).findings;
   };
 

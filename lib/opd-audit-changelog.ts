@@ -20,6 +20,16 @@ export interface EngineChange {
 
 export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
+    engine: '0.81.4', date: '2026-07-09', scoring: false,
+    title: 'v0.81.4 — Right Care LVC rule matcher (metadata-only; scores untouched)',
+    points: [
+      'LVC rule matcher wired into the engine: at stamp time a low-value finding is keyword-matched (deterministic containment over the active lvc_recommendations — subject+rationale haystack, first rule whose any-keyword hits wins) to stamp rule_ref:<rule id> + the rule\'s category. No matcher hit → rule_ref:null (0.81.3 behaviour). NO LLM; the single audit-path read of the rules is cached + 2s-timeout fail-safe (no rules → rule_ref:null, never blocks the audit).',
+      'Companion one-shot backfill (/api/admin/lvc-ref-backfill) re-stamps rule_ref on EXISTING stored low_value_care findings by running the same matcher over the stored findings jsonb — idempotent UPDATE, no re-audit, NO engine-version change on those rows. The read-time fallback stays for pre-0.81.3 rows.',
+      'SCORES UNCHANGED: opd-note-score-core is byte-identical; this bump adds rule_ref stamping only. Golden A/B (3 uids, &save=0) confirms identical domain scores. The current-engine READ family for Right Care aggregates is {0.81.3, 0.81.4}, so the validated 0.81.3 corpus is never orphaned by the bump.',
+    ],
+    why: 'Right Care Indicator PRD §2.2 decision 14 (9 Jul) — restores §5\'s original intent (Branch 1 shipped rule_ref:null everywhere because no matcher was wired), enabling per-rule Right Care attribution + the plain-language rule chips on the case view and the O/E stewardship surfaces.',
+  },
+  {
     engine: '0.81.3', date: '2026-07-08', scoring: false,
     title: 'v0.81.3 — Right Care LVC identity + case-mix complexity (metadata-only; scores untouched)',
     points: [

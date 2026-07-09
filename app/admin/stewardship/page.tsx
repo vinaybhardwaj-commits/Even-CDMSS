@@ -1,6 +1,8 @@
 import Link from 'next/link';
 import { sql } from '@/lib/db';
 import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
+import { fetchLvcCells, readRightCareExclusions, fetchRightCareCoverage } from '@/lib/opd-audit-doctor';
+import { computeDoctorOE, FUNNEL_MIN_N, type DoctorOE } from '@/lib/opd-funnel-core';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Stewardship · Admin · CAT' };
@@ -140,12 +142,25 @@ export default async function StewardshipPage({ searchParams }: { searchParams: 
   const sp = await searchParams;
   const view = sp.view === 'doctor' ? 'doctor' : 'dept';
 
-  const [breakdownRaw, totalRaw] = await Promise.all([
+  const [breakdownRaw, totalRaw, lvcCells, rcExclusions, rcCoverage] = await Promise.all([
     run(view === 'doctor' ? DOCTOR_SQL : DEPT_SQL, [APP, String(WINDOW_DAYS)]).catch(() => []),
     run(TOTAL_SQL, [APP, String(WINDOW_DAYS)]).catch(() => []),
+    fetchLvcCells(), readRightCareExclusions(), fetchRightCareCoverage(),
   ]);
   const t = totalRaw[0] || {};
   const rowsCount = breakdownRaw.length;
+  // Right Care "vs expected" — SAME O/E fn as the doctors index (decision 18: single implementation).
+  const exclSet = new Set(rcExclusions);
+  const oeMap = new Map<string, DoctorOE>(computeDoctorOE(lvcCells, exclSet).map((d) => [d.doctor_uid, d]));
+  const vsExpected = (uid: string): { txt: string; tone: string; title: string } => {
+    if (exclSet.has(uid)) return { txt: '—', tone: 'text-slate-300', title: 'excluded (house/non-clinician account)' };
+    const oe = oeMap.get(uid);
+    if (!oe || oe.n < FUNNEL_MIN_N) return { txt: '—', tone: 'text-slate-300', title: `building history (n<${FUNNEL_MIN_N} banded notes)` };
+    const pts = Math.round((oe.raw_rate - oe.expected_rate) * 100);
+    const txt = pts > 0 ? `+${pts}` : `${pts}`;
+    const tone = pts >= 3 ? 'text-amber-700 font-medium' : pts <= -3 ? 'text-emerald-700' : 'text-slate-500';
+    return { txt, tone, title: `observed ${Math.round(oe.raw_rate * 100)}% vs case-mix expected ${Math.round(oe.expected_rate * 100)}% (n=${oe.n} banded)` };
+  };
 
   return (
     <div>
@@ -193,6 +208,7 @@ export default async function StewardshipPage({ searchParams }: { searchParams: 
                     <th className="px-3 py-2.5 font-medium">Department</th>
                   )}
                   {METRIC_HEADERS}
+                  {view === 'doctor' && <th className="px-3 py-2.5 text-right font-medium" title="observed minus case-mix-expected LVC rate, in points">vs expected</th>}
                 </tr>
               </thead>
               <tbody>
@@ -201,9 +217,12 @@ export default async function StewardshipPage({ searchParams }: { searchParams: 
                       const r: DoctorRow = { ...aggRow(raw), doctor_uid: String(raw.doctor_uid || ''), doctor_name: String(raw.doctor_name || '(unknown)'), speciality: String(raw.speciality || 'Unspecified') };
                       return (
                         <tr key={r.doctor_uid || r.doctor_name} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                          <td className="px-3 py-2.5 font-medium text-slate-800">{r.doctor_name}</td>
+                          <td className="px-3 py-2.5 font-medium text-slate-800">
+                            {r.doctor_uid ? <Link href={`/admin/opd-audit/doctor/${r.doctor_uid}`} className="hover:text-brand hover:underline">{r.doctor_name}</Link> : r.doctor_name}
+                          </td>
                           <td className="px-3 py-2.5 text-slate-500">{r.speciality}</td>
                           <MetricCells r={r} />
+                          {(() => { const v = vsExpected(r.doctor_uid); return <td className={`px-3 py-2.5 text-right tabular-nums ${v.tone}`} title={v.title}>{v.txt}</td>; })()}
                         </tr>
                       );
                     })
@@ -211,7 +230,9 @@ export default async function StewardshipPage({ searchParams }: { searchParams: 
                       const r = aggRow(raw);
                       return (
                         <tr key={r.dept || 'none'} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                          <td className="px-3 py-2.5 font-medium text-slate-800">{r.dept}</td>
+                          <td className="px-3 py-2.5 font-medium text-slate-800">
+                            <Link href={`/admin/stewardship/dept/${encodeURIComponent(r.dept)}`} className="hover:text-brand hover:underline">{r.dept}</Link>
+                          </td>
                           <MetricCells r={r} />
                         </tr>
                       );
@@ -223,8 +244,10 @@ export default async function StewardshipPage({ searchParams }: { searchParams: 
           <p className="mt-4 text-[11px] text-slate-400">
             Scores 0–100; green ≥80, amber 60–79, red &lt;60. {view === 'doctor' ? 'Clinicians' : 'Departments'} with few audited notes read noisily until volume builds.
             {view === 'doctor'
-              ? ' Clinician names are staff data; this view is admin-only and advisory — use alongside the note-level evidence, not as a standalone score.'
+              ? ' Clinician names are staff data; this view is admin-only and advisory — use alongside the note-level evidence, not as a standalone score. “vs expected” = observed minus case-mix-expected LVC rate (points); em-dash when n<10 or excluded.'
               : ' Aggregated from de-identified audit records; no patient identifiers shown.'}
+            {' '}Right Care banded coverage {rcCoverage.banded.toLocaleString()}/{rcCoverage.total.toLocaleString()}.
+            {rcExclusions.length > 0 && ` ${rcExclusions.length} house/non-clinician account(s) excluded from vs-expected.`}
           </p>
         </>
       )}

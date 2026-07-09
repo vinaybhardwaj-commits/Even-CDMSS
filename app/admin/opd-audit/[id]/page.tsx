@@ -30,7 +30,9 @@ const VERDICT_COLOR: Record<string, string> = {
   'low-value': '#dc2626', 'context-dependent': '#d97706', 'high-value': '#16a34a', uncertain: '#78715f',
 };
 
-type Finding = { subject: string; verdict: string; confidence: number; domain: string; rationale: string; evidence?: string[]; estimates?: string[]; source?: string; citation_ids?: number[]; finding_ref?: string; signal_type?: string };
+type Finding = { subject: string; verdict: string; confidence: number; domain: string; rationale: string; evidence?: string[]; estimates?: string[]; source?: string; citation_ids?: number[]; finding_ref?: string; signal_type?: string; rule_ref?: string | null; lvc_category?: string };
+type LvcRuleInfo = { plain_rationale: string | null; citation: string | null };
+const LVC_CAT_LABEL: Record<string, string> = { antibiotic: 'Antibiotic', imaging: 'Imaging', supplement_polypharmacy: 'Supplement / polypharmacy', other: 'Low-value care' };
 type Pdqi = { attr: string; label?: string; value: number };
 type Sugg = { priority: number; text: string };
 
@@ -258,7 +260,10 @@ function PdqiRadar({ pdqi }: { pdqi: Pdqi[] }) {
 }
 
 // ── the single finding card ─────────────────────────────────────────────────────
-function FindingCard({ f, num, sources, auditId, triage }: { f: Finding; num: number; sources: Source[]; auditId: string; triage: Record<string, string> }) {
+function FindingCard({ f, num, sources, auditId, triage, ruleMap }: { f: Finding; num: number; sources: Source[]; auditId: string; triage: Record<string, string>; ruleMap: Record<string, LvcRuleInfo> }) {
+  const isLvc = f.verdict === 'low-value' || f.signal_type === 'low_value_care';
+  const rule = isLvc && f.rule_ref ? ruleMap[f.rule_ref] : null;
+  const catLabel = f.lvc_category ? (LVC_CAT_LABEL[f.lvc_category] || f.lvc_category) : 'Low-value care';
   const grounded = !!(f.citation_ids && f.citation_ids.length > 0);
   const ground = f.source === 'deterministic'
     ? { label: 'Deterministic rule', cls: 'border-slate-200 bg-slate-50 text-slate-500' }
@@ -278,6 +283,19 @@ function FindingCard({ f, num, sources, auditId, triage }: { f: Finding; num: nu
             <span className={`ml-2 inline-block rounded border px-1.5 py-0.5 align-middle text-[10px] font-medium ${ground.cls}`}>{ground.label}</span>
           </div>
           {f.rationale && <div className="mt-1 text-[11.5px] leading-snug text-slate-600">{f.rationale}</div>}
+          {/* Right Care rule chip (§7) — LVC category; expands to the rule's plain rationale + citation. */}
+          {isLvc && (
+            rule && rule.plain_rationale ? (
+              <details className="mt-1 rounded-md border border-amber-200 bg-amber-50/60 px-2 py-1">
+                <summary className="cursor-pointer text-[10.5px] font-medium text-amber-800">Right Care · {catLabel}</summary>
+                <div className="mt-1 text-[11px] leading-snug text-slate-600">{rule.plain_rationale}
+                  {rule.citation && <a href={rule.citation} target="_blank" rel="noopener" className="ml-1 text-amber-700 hover:underline">source →</a>}
+                </div>
+              </details>
+            ) : (
+              <span className="mt-1 inline-block rounded-md border border-amber-200 bg-amber-50/60 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">Right Care · {catLabel}</span>
+            )
+          )}
           {grounded && sources.length > 0 && <CitationChips ids={f.citation_ids!} sources={sources} />}
           {Array.isArray(f.evidence) && f.evidence.length > 0 && (
             <div className="mt-1 text-[11px] text-slate-500"><span className="text-emerald-700">Evidence:</span> {f.evidence.join('; ')}</div>
@@ -315,6 +333,19 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
   const index = n(r.note_quality_index);
   const band = String(r.band || '');
   const rawFindings = parseJson<Finding[]>(r.findings, []);
+  // Right Care rule metadata (§7) — plain_rationale + citation per rule_ref on this note's LVC findings.
+  const lvcRefs = Array.from(new Set(rawFindings.map((f) => f.rule_ref).filter(Boolean).map((x) => String(x))));
+  const ruleRows = lvcRefs.length
+    ? await run(`SELECT id, plain_rationale, statement, citation_pmid, citation_url FROM lvc_recommendations WHERE id = ANY($1)`, [lvcRefs]).catch(() => [])
+    : [];
+  const ruleMap: Record<string, LvcRuleInfo> = {};
+  for (const rr of ruleRows as Record<string, unknown>[]) {
+    ruleMap[String(rr.id)] = {
+      plain_rationale: rr.plain_rationale ? String(rr.plain_rationale) : (rr.statement ? String(rr.statement) : null),
+      citation: rr.citation_url ? String(rr.citation_url) : (rr.citation_pmid ? `https://pubmed.ncbi.nlm.nih.gov/${rr.citation_pmid}/` : null),
+    };
+  }
+  const nLowValue = rawFindings.filter((f) => f.verdict === 'low-value').length;
   const pdqi = parseJson<Pdqi[]>(r.pdqi9, []);
   const suggestions = parseJson<Sugg[]>(r.suggestions, []).sort((a, b) => a.priority - b.priority);
   const sources = parseJson<Source[]>(r.sources, []);
@@ -474,6 +505,12 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
             })}
           </div>
 
+          {nLowValue > 0 && (
+            <a href="#fd-appropriateness" className="mt-2 block border-t border-slate-100 pt-2 text-[11px] font-medium text-amber-700 no-underline hover:text-amber-800">
+              Right care · {nLowValue} low-value action{nLowValue > 1 ? 's' : ''}
+            </a>
+          )}
+
           <nav className="border-t border-slate-100 pt-2 text-[11.5px] leading-[2.05]">
             {toc.map((t) => <a key={t.href} href={t.href} className="block text-slate-500 hover:text-brand">{t.label}</a>)}
           </nav>
@@ -516,12 +553,18 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
                     <div className="mb-1.5 flex items-baseline gap-2 text-[10.5px] font-semibold uppercase tracking-[0.06em]" style={{ color: scoreColor(v) }}>
                       {DOMAIN_LABEL[dom] || dom.replace('_', ' ')} <span className="font-normal normal-case tracking-normal text-slate-400">score {v} · {list.length} finding{list.length > 1 ? 's' : ''}</span>
                     </div>
-                    <div className="space-y-2">{list.map(({ f, num }) => <FindingCard key={num} f={f} num={num} sources={sources} auditId={id} triage={triage} />)}</div>
+                    {/* RIGHT CARE sub-header inside the Appropriateness group (§7) */}
+                    {dom === 'appropriateness' && list.some((x) => x.f.verdict === 'low-value') && (
+                      <div className="mb-1.5 rounded-md border border-amber-200 bg-amber-50/50 px-2 py-1 text-[10.5px] font-medium text-amber-800">
+                        Right Care · {list.filter((x) => x.f.verdict === 'low-value').length} low-value action{list.filter((x) => x.f.verdict === 'low-value').length > 1 ? 's' : ''} per Choosing Wisely / NCG rules
+                      </div>
+                    )}
+                    <div className="space-y-2">{list.map(({ f, num }) => <FindingCard key={num} f={f} num={num} sources={sources} auditId={id} triage={triage} ruleMap={ruleMap} />)}</div>
                   </div>
                 );
               })}
               {otherFindings.length > 0 && (
-                <div className="space-y-2">{findings.map((f, i) => ({ f, num: i + 1 })).filter((x) => !domainOrder.includes(x.f.domain)).map(({ f, num }) => <FindingCard key={num} f={f} num={num} sources={sources} auditId={id} triage={triage} />)}</div>
+                <div className="space-y-2">{findings.map((f, i) => ({ f, num: i + 1 })).filter((x) => !domainOrder.includes(x.f.domain)).map(({ f, num }) => <FindingCard key={num} f={f} num={num} sources={sources} auditId={id} triage={triage} ruleMap={ruleMap} />)}</div>
               )}
               <MissedFindingCapture auditId={id} initial={missed} />
             </div>

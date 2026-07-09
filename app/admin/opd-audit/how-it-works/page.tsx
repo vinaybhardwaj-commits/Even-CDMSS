@@ -194,7 +194,7 @@ export default async function HowItWorksPage() {
         </p>
       </Section>
 
-      <Section id="right-care" kicker="Right Care · v0.81.3" title="Low-value care as a case-mix-fair rate">
+      <Section id="right-care" kicker="Right Care · v0.81.4" title="Low-value care as a case-mix-fair rate">
         <p>
           Low-value actions (Choosing Wisely / NCG rules) are already detected per note. From v0.81.3 each low-value
           finding is stamped <code>signal_type: low_value_care</code> with a coarse <code>lvc_category</code>
@@ -225,6 +225,21 @@ export default async function HowItWorksPage() {
           If db13 is unreachable at audit time the note is left <em>unbanded</em> (excluded from any rate, shown in
           coverage) rather than mis-banded — a backfill retries unbanded notes. Advisory throughout — a utilisation
           pattern, not a clinician scorecard.
+        </p>
+        <p className="mt-2">
+          <strong>Rule attribution (v0.81.4):</strong> at stamp time each low-value finding is keyword-matched
+          (deterministic containment over the active <code>lvc_recommendations</code> — first rule whose keyword appears
+          in the subject/rationale wins) to attach <code>rule_ref</code> + the rule&apos;s category. No hit → <code>rule_ref: null</code>.
+          It is <strong>metadata only, no LLM, and never changes a score</strong>; existing low-value findings are
+          re-stamped by a one-shot backfill (no re-audit). The case view shows the matched rule&apos;s plain-language
+          rationale + citation on each low-value finding.
+        </p>
+        <p className="mt-2">
+          <strong>Doctor comparison — O/E within specialty:</strong> a doctor&apos;s observed LVC-note rate is compared to
+          the rate <em>expected</em> from their own case-mix (Σ of each note&apos;s complexity-band stratum mean). O/E &gt; 1 =
+          more low-value care than case-mix predicts. Peers are compared within specialty on a funnel plot (95% / 99.8%
+          control limits); volumes under 10 banded notes are shown but greyed. House / non-clinician accounts are
+          excluded from every doctor-facing aggregate. Never a ranked leaderboard.
         </p>
       </Section>
 

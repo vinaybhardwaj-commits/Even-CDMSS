@@ -36,25 +36,39 @@ export type ClassifiableFinding = {
   signal_type?: string; rule_ref?: string | null; lvc_category?: string;
 };
 
+// A minimal lvc_recommendations shape for the read-time text-match fallback + engine matcher.
+export type LvcRuleLite = { id: string; keywords?: string[] | null; statement?: string | null; category?: string | null };
+
 /**
- * Engine stamp (0.81.3): add rule_ref (null) + lvc_category to every low-value, non-informational
- * finding. Applied by the orchestrator AFTER neutralizeMetadataFindings so neutralised (informational)
- * findings are skipped. Additive only — never touches verdict/confidence/domain (score invariance).
+ * Engine stamp: add rule_ref + lvc_category to every low-value, non-informational finding. Applied by
+ * the orchestrator AFTER neutralizeMetadataFindings so neutralised (informational) findings are skipped.
+ * Additive only — never touches verdict/confidence/domain (score invariance).
+ *
+ * 0.81.4 (decision 14): when `rules` are supplied, run the SAME deterministic keyword-containment
+ * matcher as the read-time fallback (first rule whose any-keyword hits the subject+rationale haystack
+ * wins) and stamp rule_ref:<id> + the rule's category when valid. No rules → rule_ref stays null
+ * (the 0.81.3 behaviour) — never blocks. NO LLM, NO scoring impact.
  */
-export function stampLvcMetadata<T extends ClassifiableFinding>(findings: T[]): T[] {
+export function stampLvcMetadata<T extends ClassifiableFinding>(findings: T[], rules: LvcRuleLite[] = []): T[] {
   return findings.map((f) => {
     if (f.informational || !isLowValueVerdict(f.verdict)) return f;
-    return { ...f, rule_ref: f.rule_ref ?? null, lvc_category: classifyLvcCategory(f.subject, f.rationale) } as T;
+    const rule = rules.length ? matchRule(f, rules) : null;
+    const cat = (rule && asCategory(rule.category)) ?? classifyLvcCategory(f.subject, f.rationale);
+    return { ...f, rule_ref: rule ? rule.id : (f.rule_ref ?? null), lvc_category: cat } as T;
   });
 }
-
-// A minimal lvc_recommendations shape for the read-time text-match fallback.
-export type LvcRuleLite = { id: string; keywords?: string[] | null; statement?: string | null; category?: string | null };
 
 export type LvcClassified = { is_lvc: boolean; rule_ref: string | null; lvc_category: LvcCategory; stamped: boolean };
 
 const asCategory = (v: unknown): LvcCategory | null =>
   (LVC_CATEGORIES as readonly string[]).includes(String(v)) ? (v as LvcCategory) : null;
+
+/** Public matcher (0.81.4 backfill): the rule id a finding keyword-matches, or null. Same semantics
+ *  as the engine stamp — subject+rationale lowercase haystack, first rule whose any-keyword hits. */
+export function matchLvcRule(f: ClassifiableFinding, rules: LvcRuleLite[]): string | null {
+  const r = matchRule(f, rules);
+  return r ? r.id : null;
+}
 
 /** Text-match a finding to a rule by keyword containment (first hit wins). */
 function matchRule(f: ClassifiableFinding, rules: LvcRuleLite[]): LvcRuleLite | null {

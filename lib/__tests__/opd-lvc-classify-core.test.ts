@@ -85,3 +85,40 @@ test('precision gate: suppress via ledger decision on lvc:<rule_ref>; default ke
 test('LVC_CATEGORIES vocabulary is the four expected values', () => {
   assert.deepEqual([...LVC_CATEGORIES], ['antibiotic', 'imaging', 'supplement_polypharmacy', 'other']);
 });
+
+// ── 0.81.4 engine matcher (decision 14): keyword-containment stamp at audit time ──
+test('stampLvcMetadata(rules): keyword match stamps rule_ref + rule category (first hit wins)', () => {
+  const rules = [
+    { id: 'rule-abx', keywords: ['azithromycin', 'antibiotic'], category: 'antibiotic' },
+    { id: 'rule-img', keywords: ['mri', 'x-ray'], category: 'imaging' },
+  ];
+  const findings = [
+    { subject: 'Azithromycin for viral URI', rationale: 'no bacterial indication', verdict: 'low-value', confidence: 0.8, domain: 'appropriateness' },
+    { subject: 'MRI lumbar spine', rationale: 'acute nonspecific low back pain', verdict: 'low-value', confidence: 0.7, domain: 'appropriateness' },
+    { subject: 'Vitamin D supplement', rationale: 'no deficiency documented', verdict: 'low-value', confidence: 0.6, domain: 'appropriateness' },
+  ];
+  const out = stampLvcMetadata(findings as never[], rules) as Array<Record<string, unknown>>;
+  assert.equal(out[0].rule_ref, 'rule-abx'); assert.equal(out[0].lvc_category, 'antibiotic');
+  assert.equal(out[1].rule_ref, 'rule-img'); assert.equal(out[1].lvc_category, 'imaging');
+  assert.equal(out[2].rule_ref, null);        // no rule matched → null, heuristic category
+  assert.equal(out[2].lvc_category, 'supplement_polypharmacy');
+  // score fields never touched
+  assert.equal(out[0].verdict, 'low-value'); assert.equal(out[0].confidence, 0.8); assert.equal(out[0].domain, 'appropriateness');
+});
+
+test('stampLvcMetadata(rules): no rules → rule_ref null (0.81.3 behaviour, never blocks)', () => {
+  const findings = [{ subject: 'Azithromycin for URI', rationale: '', verdict: 'low-value', confidence: 0.8, domain: 'appropriateness' }];
+  const out = stampLvcMetadata(findings as never[], []) as Array<Record<string, unknown>>;
+  assert.equal(out[0].rule_ref, null);
+});
+
+test('stampLvcMetadata(rules): non-low-value + informational findings are skipped', () => {
+  const rules = [{ id: 'rule-abx', keywords: ['azithromycin'], category: 'antibiotic' }];
+  const findings = [
+    { subject: 'Azithromycin', verdict: 'high-value', confidence: 0.5, domain: 'appropriateness' },
+    { subject: 'Azithromycin', verdict: 'low-value', confidence: 0.5, domain: 'appropriateness', informational: true },
+  ];
+  const out = stampLvcMetadata(findings as never[], rules) as Array<Record<string, unknown>>;
+  assert.equal(out[0].rule_ref, undefined);   // not low-value → untouched
+  assert.equal(out[1].rule_ref, undefined);   // informational → untouched
+});

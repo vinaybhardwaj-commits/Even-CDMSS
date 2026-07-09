@@ -101,6 +101,25 @@ export async function POST(req: NextRequest) {
     await sql`ALTER TABLE lvc_recommendations ADD COLUMN IF NOT EXISTS category        TEXT`;
     await sql`ALTER TABLE lvc_recommendations ADD COLUMN IF NOT EXISTS plain_rationale TEXT`;
     steps.right_care = 'ok';
+    // Right Care Branch 2 seeds (RIGHT-CARE-INDICATOR-PRD §7 / decisions 15 + plain_rationale seeding).
+    // Both idempotent + isolated (their own try) so a seed hiccup never fails the schema migration.
+    try {
+      // (15) house-account exclusion list — DO NOTHING preserves any later hand-edit by V.
+      await sql`INSERT INTO app_settings (key, value)
+                VALUES ('right_care_doctor_exclusions', '["jE0Io6Y1Nh3E7OkbxcLY"]')
+                ON CONFLICT (key) DO NOTHING`;
+      steps.rc_exclusions_seed = 'ok';
+    } catch (e) { steps.rc_exclusions_seed = `err: ${String((e as Error).message).slice(0, 80)}`; }
+    try {
+      // plain_rationale seed: one line per rule DERIVED from its own `statement` text (real content,
+      // never hallucinated), only where NULL → idempotent. V reviews/refines as a data UPDATE (§7).
+      const seeded = (await sql`
+        UPDATE lvc_recommendations
+           SET plain_rationale = left(btrim(statement), 240)
+         WHERE plain_rationale IS NULL AND statement IS NOT NULL AND btrim(statement) <> ''
+         RETURNING id`) as Array<{ id: string }>;
+      steps.plain_rationale_seed = `seeded ${seeded.length}`;
+    } catch (e) { steps.plain_rationale_seed = `err: ${String((e as Error).message).slice(0, 80)}`; }
     const cols = (await sql`SELECT count(*)::int AS n FROM information_schema.columns WHERE table_name = 'opd_note_audits'`) as Array<{ n: number }>;
     steps.columns = String(cols[0]?.n ?? 0);
     return NextResponse.json({ ok: true, steps });

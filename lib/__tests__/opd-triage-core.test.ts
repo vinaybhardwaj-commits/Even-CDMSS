@@ -172,3 +172,24 @@ test('buildTriageEvent: enforces chip, free text optional, telemetry columns nor
   assert.ok(routed.ok);
   if (routed.ok) { assert.equal(routed.value.to_status, 'routed'); assert.equal(routed.value.note, 'called, agreed to stop'); }
 });
+
+// ── Right Care routing-context passthrough (decision 16) ────────────────────────
+test('buildQueue: representative carries complexity_band/inputs + lvc_category (passthrough)', () => {
+  const findings: TriageFinding[] = [
+    f({ audit_id: 'n1', finding_ref: 'r1', complexity_band: 'HIGH',
+        complexity_inputs: { chronic_codes: 3, abnormal_labs: 5, enc_12m: 7 }, lvc_category: 'antibiotic' }),
+  ];
+  const { doctors } = buildQueue(findings, []);
+  const rep = doctors[0].types[0].representative;
+  assert.equal(rep.complexity_band, 'HIGH');
+  assert.equal(rep.lvc_category, 'antibiotic');
+  assert.equal((rep.complexity_inputs as Record<string, unknown>).enc_12m, 7);
+});
+
+test('buildQueue: missing complexity → representative fields null (no placeholder)', () => {
+  const { doctors } = buildQueue([f({ audit_id: 'n2', finding_ref: 'r9' })], []);
+  const rep = doctors[0].types[0].representative;
+  assert.equal(rep.complexity_band, null);
+  assert.equal(rep.lvc_category, null);
+  assert.equal(rep.complexity_inputs, null);
+});
