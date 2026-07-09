@@ -402,7 +402,7 @@ export default function ReviewSession() {
                 <a href={`/api/opd-audit/export-pdf?id=${current.audit_id}`} target="_blank" rel="noopener" className="shrink-0 text-sky-700 hover:underline">Download note+audit PDF</a>
               </div>
               {current.prescription_url && !pdfError ? (
-                <iframe key={current.prescription_url} src={current.prescription_url} title="Original prescription"
+                <iframe key={current.prescription_url} src={`${current.prescription_url}#navpanes=0&view=FitH`} title="Original prescription"
                   onError={() => setPdfError(true)}
                   className="h-[80vh] w-full rounded-lg border border-slate-200 bg-white" />
               ) : (
