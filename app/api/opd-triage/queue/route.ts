@@ -46,7 +46,7 @@ export async function GET(req: NextRequest) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
     const latest = await run(
       `SELECT to_char(max((note_date AT TIME ZONE 'Asia/Kolkata')::date),'YYYY-MM-DD') d
-       FROM opd_note_audits WHERE app_source = $1 AND engine_version = ANY($2)`,
+       FROM opd_note_audits WHERE app_source = $1 AND engine_version = ANY($2) AND excluded_reason IS NULL`,
       [APP, ENGINE_FAMILY]).catch(() => []);
     day = String(latest[0]?.d || new Date().toISOString().slice(0, 10));
   }
@@ -57,7 +57,7 @@ export async function GET(req: NextRequest) {
   // that predate finding identity still get signal_type + finding_ref. Engine FAMILY (0.81.3 ∪ 0.81.4)
   // so the 0.81.4 metadata bump doesn't empty the queue against the un-re-audited 0.81.3 corpus.
   const params: unknown[] = [APP, ENGINE_FAMILY, from, to];
-  let where = `app_source = $1 AND engine_version = ANY($2) AND (note_date AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $3 AND $4`;
+  let where = `app_source = $1 AND engine_version = ANY($2) AND excluded_reason IS NULL AND (note_date AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $3 AND $4`;   // Fix C
   if (doctorFilter) { params.push(doctorFilter); where += ` AND doctor_uid = $${params.length}`; }
 
   const rows = await run(

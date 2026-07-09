@@ -120,6 +120,15 @@ export async function POST(req: NextRequest) {
          RETURNING id`) as Array<{ id: string }>;
       steps.plain_rationale_seed = `seeded ${seeded.length}`;
     } catch (e) { steps.plain_rationale_seed = `err: ${String((e as Error).message).slice(0, 80)}`; }
+    // Data-Quality Fix C (decision 1): retro-flag the 166 house-account audits (KEEP + EXCLUDE) and
+    // make EVERY user-facing read filter `excluded_reason IS NULL`. Additive + idempotent.
+    await sql`ALTER TABLE opd_note_audits ADD COLUMN IF NOT EXISTS excluded_reason TEXT`;
+    const flagged = (await sql`
+      UPDATE opd_note_audits SET excluded_reason = 'house_account'
+       WHERE doctor_uid = ANY(ARRAY['jE0Io6Y1Nh3E7OkbxcLY','0bNLwwdtvCy8xw5w11VY','iyoFsE8BSNtp3wDfwyQP','Wa0ItOcg2VAOerUbwGa3','6lBF0FPc03eNhrxgrCV6','DzuoUgxvw3NXZgo3P7T2','v1OyiGME6gQpWt0nQOWm'])
+         AND excluded_reason IS NULL
+       RETURNING id`) as Array<{ id: string }>;
+    steps.excluded_reason = `flagged ${flagged.length}`;
     const cols = (await sql`SELECT count(*)::int AS n FROM information_schema.columns WHERE table_name = 'opd_note_audits'`) as Array<{ n: number }>;
     steps.columns = String(cols[0]?.n ?? 0);
     return NextResponse.json({ ok: true, steps });

@@ -54,6 +54,7 @@ export interface DeidOpdCase {
   // definitive in-person treatment episode. Optional so existing DeidOpdCase literals stay valid.
   patientEducation?: string[];      // auto-attached templated leaflets (self-care text, video links) — NOT clinician documentation
   isTeleconsult?: boolean;          // remote consult → no physical examination expected
+  consultTypes?: string[];          // db13 consult_types purpose markers (0.81.7 channel evidence)
   referrals?: string[];             // onward referrals, e.g. "In-Person Orthopedics (Even-recommended)"
   numReferrals?: number;
   isReferralHandoff?: boolean;      // triage/handoff (referred onward) — not definitive management
@@ -156,11 +157,51 @@ const EDU_URL_RE = /(https?:\/\/|www\.|youtube\.com|youtu\.be)/i;
 // IN-HOSPITAL, IN-PERSON encounters — HOSPITAL_GP / HOSPITAL_GP_INVESTIGATION_REFERRAL were previously here
 // and mislabelled ~178 in-person hospital OPD notes as teleconsult (consult_type is null corpus-wide).
 const GP_TELE_TYPES = new Set(['GENERAL_PRACTITIONER']);
-export function isTeleconsultEncounter(prescriptionType: string | null, consultType: string | null): boolean {
+/**
+ * Classify an encounter's channel (0.81.7 — DATA-QUALITY PRD Fix B). Precedence:
+ *  (1) explicit consult_type regexes (unchanged; db13's consult_type is null corpus-wide anyway);
+ *  (2) NEW db13 `consult_types` PURPOSE markers — VISITING_HOSPITAL / EMERGENCY → in-person, CHAT →
+ *      tele. In-person markers WIN over CHAT (a hospital visit with a chat follow-up purpose is an
+ *      in-person encounter), so they are checked first;
+ *  (3) fallback = the existing form-type default (GENERAL_PRACTITIONER → tele).
+ * The hands-on-exam DOWNGRADE (hasHandsOnExam) still applies AFTER this, at the call site, unchanged.
+ */
+export function isTeleconsultEncounter(prescriptionType: string | null, consultType: string | null, consultTypes: string[] | null = null): boolean {
   const ct = (consultType || '').toUpperCase();
   if (/IN[_\s-]?PERSON|PHYSICAL|WALK[_\s-]?IN/.test(ct)) return false;
   if (/TELE|VIDEO|AUDIO|CHAT|REMOTE|ONLINE/.test(ct)) return true;
+  const purposes = (consultTypes || []).map((p) => String(p).trim().toUpperCase());
+  if (purposes.some((p) => p === 'VISITING_HOSPITAL' || p === 'EMERGENCY')) return false; // in-person wins over CHAT
+  if (purposes.includes('CHAT')) return true;
   return GP_TELE_TYPES.has((prescriptionType || '').toUpperCase());
+}
+
+// Short form-type labels for the encounter chip (channel · form). Distinct from the audit-UI labels.
+const FORM_LABEL: Record<string, string> = {
+  GENERAL_PRACTITIONER: 'GP app', HOSPITAL_GP: 'Hosp GP', HOSPITAL_GP_INVESTIGATION_REFERRAL: 'Hosp GP-Ref',
+  HOSPITAL_GYNAECOLOGY_ASSESSMENT: 'Gyn', HOSPITAL_GYNAECOLOGY_OBSTETRICS: 'Obs-Gyn', HOSPITAL_PAEDIATRIC: 'Paeds',
+};
+/** Shared "type" chip helper (Fix D) — CLASSIFIED channel first, form type second: `Tele · GP app`,
+ *  `In-person · Hosp GP`. Pure + reusable client/server. consult_types is not persisted on the audit
+ *  row, so old + new rows derive channel identically from (prescription_type, consult_type). */
+export function formatEncounterChip(prescriptionType: string | null, consultType: string | null, consultTypes: string[] | null = null): string {
+  const channel = isTeleconsultEncounter(prescriptionType, consultType, consultTypes) ? 'Tele' : 'In-person';
+  const pt = (prescriptionType || '').toUpperCase();
+  const form = FORM_LABEL[pt] || (prescriptionType ? prescriptionType.toLowerCase().replace(/_/g, ' ') : 'OPD');
+  return `${channel} · ${form}`;
+}
+
+/** Parse db13 `consult_types` (text[]) into a clean string[] — tolerates a JS array, a JSON string,
+ *  or a Postgres array literal like `{VISITING_HOSPITAL,CHAT}`. Empty/unknown → []. */
+export function parseConsultTypes(v: unknown): string[] {
+  if (Array.isArray(v)) return v.map((x) => String(x).trim()).filter(Boolean);
+  if (typeof v === 'string') {
+    const s = v.trim();
+    if (!s) return [];
+    if (s.startsWith('[')) { try { const j = JSON.parse(s); if (Array.isArray(j)) return j.map((x) => String(x).trim()).filter(Boolean); } catch { /* fall through */ } }
+    return s.replace(/^\{|\}$/g, '').split(',').map((x) => x.replace(/^"|"$/g, '').trim()).filter(Boolean);
+  }
+  return [];
 }
 
 // v0.81 (BUG-0.8-04 FIX I): a documented HANDS-ON physical exam is proof of an in-person encounter
@@ -266,8 +307,9 @@ export function rowToOpdCase(row: Record<string, unknown>): { case: DeidOpdCase;
   const followUpTypeVal = strOrNull(row.followup__followup_type) || strOrNull(row.follow_up_type);
   const isReferralHandoff = referrals.length > 0 || numReferrals > 0 || /referral/i.test(followUpTypeVal || '');
   const examination = htmlToLines(row['general_practitioner_prescription__examination']);
-  // v0.81 FIX I: a documented hands-on exam overrides a teleconsult classification (downgrade only).
-  const isTeleconsult = isTeleconsultEncounter(strOrNull(row.type_of_prescription), strOrNull(row.consult_type))
+  // 0.81.7 (Fix B): consult_types purpose markers inform the channel; hands-on exam still downgrades.
+  const consultTypes = parseConsultTypes(row.consult_types);
+  const isTeleconsult = isTeleconsultEncounter(strOrNull(row.type_of_prescription), strOrNull(row.consult_type), consultTypes)
     && !hasHandsOnExam(examination);
 
   const dComplaints = dpipeText(row.dpipe_pc);
@@ -298,6 +340,7 @@ export function rowToOpdCase(row: Record<string, unknown>): { case: DeidOpdCase;
     followUpDateSet,
     patientEducation,
     isTeleconsult,
+    consultTypes,
     referrals,
     numReferrals,
     isReferralHandoff,
@@ -343,6 +386,7 @@ export function opdCaseText(c: DeidOpdCase, opts?: { specialty?: string | null }
   const specialty = (opts?.specialty || '').trim();
   if (specialty) lines.push(`Treating clinician specialty: ${specialty} — where relevant, judge appropriateness and prescribing against this specialty's standards; a specialist's focused note and specialty-appropriate choices are expected, not general-practice defaults.`);
   if (c.consultType) lines.push(`Consult type: ${c.consultType}`);
+  if (c.consultTypes && c.consultTypes.length) lines.push(`Consult purposes: ${c.consultTypes.join(', ')}`);
   if (c.isTeleconsult) lines.push('Encounter modality: TELECONSULT (remote) — a physical examination is not expected; its absence is not a gap.');
   if (c.referrals && c.referrals.length) lines.push(`Referred onward to: ${c.referrals.join('; ')}`);
   if (c.isReferralHandoff) lines.push('Disposition: REFERRAL / HANDOFF encounter — the plan is the onward referral, not definitive treatment. The absence of medications, investigations or imaging is EXPECTED for a handoff and must NOT be read as a deliberate management decision or "avoidance".');

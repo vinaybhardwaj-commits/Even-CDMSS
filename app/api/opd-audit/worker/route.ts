@@ -4,10 +4,26 @@ export const maxDuration = 300;
 
 import { NextRequest, NextResponse } from 'next/server';
 import { auditOpdNote } from '@/lib/opd-note-audit';
-import { countOpdNotesForDay, fetchOpdNotesForDay, istYesterday } from '@/lib/metabase';
-import { saveOpdAudit, auditedUidsForDayAnyVersion, auditedCountForDayAnyVersion, earliestAuditedDay } from '@/lib/opd-audit-store';
+import { countOpdNotesForDay, fetchOpdNotesForDay, fetchOpdNoteByUid, istYesterday } from '@/lib/metabase';
+import { saveOpdAudit, auditedUidsForDayAnyVersion, auditedCountForDayAnyVersion, earliestAuditedDay, deleteOpdAuditsForUid } from '@/lib/opd-audit-store';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { getSettings, setSetting } from '@/lib/mini-backfill';
+import { OPD_ENGINE_VERSION } from '@/lib/opd-note-audit-core';
+
+// Fix A (intake eligibility): house-account doctor_uids excluded from the audit corpus. Lives in
+// app_settings audit_intake_doctor_exclusions (JSON uid array); fail-safe → this seeded constant (so an
+// exclusion-list read failure NEVER silently ADMITS an excluded note). A name-rule fallback in
+// lib/metabase catches future house accounts even when absent from this list.
+const INTAKE_KEY = 'audit_intake_doctor_exclusions';
+const SEED_INTAKE_EXCLUSIONS = ['jE0Io6Y1Nh3E7OkbxcLY', '0bNLwwdtvCy8xw5w11VY', 'iyoFsE8BSNtp3wDfwyQP', 'Wa0ItOcg2VAOerUbwGa3', '6lBF0FPc03eNhrxgrCV6', 'DzuoUgxvw3NXZgo3P7T2', 'v1OyiGME6gQpWt0nQOWm'];
+async function intakeExclusions(): Promise<string[]> {
+  try {
+    const s = await getSettings([INTAKE_KEY]);
+    const raw = s[INTAKE_KEY];
+    if (raw) { const j = JSON.parse(raw); if (Array.isArray(j)) { const l = j.map((x) => String(x).trim()).filter(Boolean); if (l.length) return l; } }
+  } catch { /* fall through to the seeded constant — never admit an excluded note on a read failure */ }
+  return SEED_INTAKE_EXCLUSIONS;
+}
 
 // FORWARD CUTOFF (V, 2 Jul): the Gemini worker only audits notes dated ON/AFTER this day — i.e.
 // genuinely NEW notes going forward. Everything before it (all history + un-audited old notes) is
@@ -48,11 +64,13 @@ function addDays(day: string, delta: number): string {
 // Audit one batch of NEVER-YET-AUDITED notes for a single IST day. The Gemini worker only touches
 // genuinely NEW notes (no audit at ANY engine version) — re-auditing already-audited notes to a
 // newer engine is the free mini backfill's job (V, 2 Jul: Gemini forward-only, mini for old + re-audits).
-async function processDay(day: string, max: number, conc: number) {
-  const total = await countOpdNotesForDay(day);
+async function processDay(day: string, max: number, conc: number, exclude: string[]) {
+  const total = await countOpdNotesForDay(day, exclude);
+  // §1 exception: auditedUidsForDayAnyVersion does NOT filter excluded_reason (see the store) — excluded
+  // uids stay in the "already audited" set so they're never re-admitted.
   const already = await auditedUidsForDayAnyVersion(day);
   if (already.length >= total) return { day, total, audited: already.length, processed: 0, remaining: 0, done: true, results: [] as unknown[] };
-  const rows = await fetchOpdNotesForDay(day, already, max);
+  const rows = await fetchOpdNotesForDay(day, already, max, exclude);
   const results = await mapLimit(rows, conc, async (row) => {
     const started = Date.now();
     try {
@@ -97,15 +115,34 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: true, forward_from: val || null });
   }
 
+  // Re-audit hook (Fix B / decision 2): re-run the full Gemini audit at 0.81.7 for a CSV of uids (≤25),
+  // one current row per uid (DELETE-then-INSERT). Admin/CRON gate is the same `authed` above.
+  const reauditCsv = p.get('reaudit_uids');
+  if (reauditCsv != null) {
+    const uids = reauditCsv.split(',').map((s) => s.trim()).filter(Boolean).slice(0, 25);
+    const results = await mapLimit(uids, conc, async (uid) => {
+      try {
+        const row = await fetchOpdNoteByUid(uid);
+        if (!row) return { uid, error: 'note not found in db13' };
+        const audit = await auditOpdNote(row);           // 0.81.7 — consult_types-aware framing
+        const deleted = await deleteOpdAuditsForUid(uid); // drop ALL prior rows → single current row
+        const status = await saveOpdAudit(audit, { model: 'gemini-2.5-pro' });
+        return { uid, deleted, status, band: audit.scorecard.band, index: audit.scorecard.headline };
+      } catch (e) { return { uid, error: String((e as Error).message) }; }
+    });
+    return NextResponse.json({ ok: true, mode: 'reaudit', engine: OPD_ENGINE_VERSION, count: uids.length, results });
+  }
+
   try {
     const cutoff = await forwardCutoff();
+    const exclude = await intakeExclusions();
 
     // Manual single-day mode.
     if (dayParam && /^\d{4}-\d{2}-\d{2}$/.test(dayParam)) {
       if (cutoff && dayParam < cutoff) {
         return NextResponse.json({ ok: true, mode: 'day', day: dayParam, skipped: `before Gemini forward cutoff ${cutoff} — history is the mini backfill's job`, processed: 0 });
       }
-      const r = await processDay(dayParam, max, conc);
+      const r = await processDay(dayParam, max, conc, exclude);
       return NextResponse.json({ ok: true, mode: 'day', ...r });
     }
 
@@ -120,11 +157,11 @@ export async function GET(req: NextRequest) {
     const window = { from: days[0] ?? yesterday, to: yesterday };
 
     for (const d of days) {
-      const total = await countOpdNotesForDay(d);
+      const total = await countOpdNotesForDay(d, exclude);
       if (total === 0) continue;
       const auditedCount = await auditedCountForDayAnyVersion(d);
       if (auditedCount < total) {
-        const r = await processDay(d, max, conc);
+        const r = await processDay(d, max, conc, exclude);
         return NextResponse.json({ ok: true, mode: 'sweep', window, ...r });
       }
     }

@@ -44,7 +44,7 @@ export async function fetchDoctorIndex(): Promise<DoctorIndexRow[]> {
             round(100.0*avg((n_low_value>0)::int))::int low_value_rate,
             to_char(max((note_date ${IST})::date),'YYYY-MM-DD') last_audited
      FROM opd_note_audits
-     WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND doctor_uid IS NOT NULL
+     WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND doctor_uid IS NOT NULL AND excluded_reason IS NULL
      GROUP BY doctor_uid
      ORDER BY nnotes DESC, mean_index ASC`, [APP]);
 }
@@ -67,7 +67,7 @@ export async function fetchDoctorStats(uid: string, from: string | null = null, 
             round(avg(score_appropriateness))::int d_appr, round(avg(score_prescribing_safety))::int d_presc,
             round(avg(score_patient_centred))::int d_pc
      FROM opd_note_audits
-     WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND doctor_uid = $2${r.clause}`,
+     WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND doctor_uid = $2 AND excluded_reason IS NULL${r.clause}`,
     [APP, uid, ...r.params]);
   const row = rows[0];
   return row && Number(row.nnotes) > 0 ? row : null;
@@ -80,7 +80,7 @@ export async function fetchDoctorBandDist(uid: string, from: string | null = nul
   return rowsOf<BandRow>(
     `SELECT band, count(*)::int c
      FROM opd_note_audits
-     WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND doctor_uid = $2${r.clause}
+     WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND doctor_uid = $2 AND excluded_reason IS NULL${r.clause}
      GROUP BY band`, [APP, uid, ...r.params]);
 }
 
@@ -95,7 +95,7 @@ export async function fetchDoctorWeeklyTrend(uid: string, from: string | null = 
        SELECT to_char(date_trunc('week', (note_date ${IST}))::date,'YYYY-MM-DD') wk,
               note_quality_index idx
        FROM opd_note_audits
-       WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND doctor_uid = $2${r.clause}
+       WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND doctor_uid = $2 AND excluded_reason IS NULL${r.clause}
      ) t
      GROUP BY wk
      ORDER BY wk`, [APP, uid, ...r.params]);
@@ -119,7 +119,7 @@ export async function fetchDoctorAuditRows(uid: string, from: string | null = nu
             score_documentation, score_note_quality, score_appropriateness, score_prescribing_safety, score_patient_centred,
             findings, suggestions, missing_fields, engine_version
      FROM opd_note_audits
-     WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND doctor_uid = $2${r.clause}
+     WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND doctor_uid = $2 AND excluded_reason IS NULL${r.clause}
      ORDER BY note_date DESC
      LIMIT ${lim}`, [APP, uid, ...r.params]);
 }
@@ -138,7 +138,7 @@ const ENGINES: string[] = [...OPD_ENGINE_VERSIONS_CURRENT];
 function distinctNoteSubquery(cols: string, extra = ''): string {
   return `SELECT DISTINCT ON (uid) uid, ${cols}
           FROM opd_note_audits
-          WHERE app_source = $1 AND engine_version = ANY($2) AND doctor_uid IS NOT NULL${extra}
+          WHERE app_source = $1 AND engine_version = ANY($2) AND doctor_uid IS NOT NULL AND excluded_reason IS NULL${extra}
           ORDER BY uid, note_date DESC, id DESC`;
 }
 const WIN90 = `(note_date ${IST})::date >= (now() ${IST})::date - 90`;

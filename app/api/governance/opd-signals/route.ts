@@ -145,12 +145,12 @@ export async function GET(req: NextRequest) {
   const groupBy = sp.get('groupBy') === 'speciality' && !specialityParam;
   const includeEstimates = sp.get('includeEstimates') === '1';
 
-  const WIN = `app_source = $1 AND engine_version = '${OPD_ENGINE_VERSION}' AND (note_date AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $2 AND $3`;
+  const WIN = `app_source = $1 AND engine_version = '${OPD_ENGINE_VERSION}' AND excluded_reason IS NULL AND (note_date AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $2 AND $3`;
 
   let day = sp.get('day') || '';
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
     const latest = await run(
-      `SELECT to_char(max((note_date AT TIME ZONE 'Asia/Kolkata')::date),'YYYY-MM-DD') d FROM opd_note_audits WHERE app_source = $1 AND engine_version = '${OPD_ENGINE_VERSION}'`,
+      `SELECT to_char(max((note_date AT TIME ZONE 'Asia/Kolkata')::date),'YYYY-MM-DD') d FROM opd_note_audits WHERE app_source = $1 AND engine_version = '${OPD_ENGINE_VERSION}' AND excluded_reason IS NULL`,
       [APP]).catch(() => []);
     day = String(latest[0]?.d || new Date().toISOString().slice(0, 10));
   }

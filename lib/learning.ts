@@ -34,7 +34,7 @@ export async function loadRecentAuditRows(days = 90): Promise<AuditRowLite[]> {
   const rows = await sql2(
     `SELECT DISTINCT ON (uid) id, doctor_uid, consult_type, findings, sources
        FROM opd_note_audits
-      WHERE app_source = $1 AND note_date >= NOW() - ($2 || ' days')::interval
+      WHERE app_source = $1 AND excluded_reason IS NULL AND note_date >= NOW() - ($2 || ' days')::interval
       ORDER BY uid, audited_at DESC`,
     [APP, String(Math.max(1, Math.min(365, days)))],
   );

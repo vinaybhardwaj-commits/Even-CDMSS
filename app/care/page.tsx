@@ -28,9 +28,9 @@ export default async function ManagedCareHome() {
     run(`SELECT count(DISTINCT individual_uid)::int n FROM ccb_briefs
          WHERE engine_version = $1 AND pitch_allowed = true AND individual_uid IS NOT NULL`, [CCB_ENGINE_VERSION]).catch(() => []),
     run(`SELECT count(DISTINCT doctor_uid)::int n FROM opd_note_audits
-         WHERE app_source = $1 AND engine_version = ANY($2)
+         WHERE app_source = $1 AND engine_version = ANY($2) AND excluded_reason IS NULL
            AND (note_date AT TIME ZONE 'Asia/Kolkata')::date =
-               (SELECT max((note_date AT TIME ZONE 'Asia/Kolkata')::date) FROM opd_note_audits WHERE app_source = $1 AND engine_version = ANY($2))`,
+               (SELECT max((note_date AT TIME ZONE 'Asia/Kolkata')::date) FROM opd_note_audits WHERE app_source = $1 AND engine_version = ANY($2) AND excluded_reason IS NULL)`,
       [APP, [...OPD_ENGINE_VERSIONS_CURRENT]]).catch(() => []),
   ]);
   const briefsCount = Number((briefsR as Record<string, unknown>[])[0]?.n ?? 0);

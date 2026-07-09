@@ -115,7 +115,12 @@ export async function auditedCountForDay(day: string, engineVersion: string): Pr
 
 /** uids audited at ANY engine version for a day — the "already been audited at all" set. The
  *  Gemini worker uses this so it only audits GENUINELY NEW notes (never-audited); re-audits of
- *  already-audited notes to a newer engine are left to the free mini backfill. */
+ *  already-audited notes to a newer engine are left to the free mini backfill.
+ *
+ *  ⚠️ DATA-QUALITY §1 EXCEPTION: this read deliberately does NOT filter `excluded_reason IS NULL`.
+ *  If it did, the 166 excluded house-account audits would look un-audited → the worker would try to
+ *  re-admit them each night. Keeping them "audited" here keeps them OUT of the fetch loop. (The intake
+ *  filter also excludes them at db13-fetch time; this is belt-and-braces.) */
 export async function auditedUidsForDayAnyVersion(day: string): Promise<string[]> {
   const rows = (await sql(
     `SELECT DISTINCT uid FROM opd_note_audits
@@ -123,6 +128,15 @@ export async function auditedUidsForDayAnyVersion(day: string): Promise<string[]
     [day],
   )) as Array<{ uid: string }>;
   return rows.map((r) => r.uid).filter(Boolean);
+}
+
+/** Re-audit support (Fix B / decision 2) — delete ALL rows for a note uid so the fresh 0.81.7 audit
+ *  is the single current row (chosen mechanism: DELETE-then-INSERT — see the build report's flag).
+ *  Feedback rows live in a separate append-only table and are untouched. */
+export async function deleteOpdAuditsForUid(uid: string): Promise<number> {
+  if (!uid) return 0;
+  const rows = (await sql(`DELETE FROM opd_note_audits WHERE uid = $1 RETURNING id`, [uid])) as Array<{ id: string }>;
+  return rows.length;
 }
 
 /** Count of DISTINCT notes audited at ANY engine version for a day. */

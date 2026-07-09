@@ -126,7 +126,7 @@ async function buildForRows(rows: Record<string, unknown>[]): Promise<{ data: Au
 }
 
 async function handleSingle(id: string): Promise<NextResponse> {
-  const rows = await run(`SELECT ${AUDIT_COLS} FROM opd_note_audits WHERE id = $1 AND app_source = $2 LIMIT 1`, [id, APP]).catch(() => []);
+  const rows = await run(`SELECT ${AUDIT_COLS} FROM opd_note_audits WHERE id = $1 AND app_source = $2 AND excluded_reason IS NULL LIMIT 1`, [id, APP]).catch(() => []);
   const row = rows[0];
   if (!row) return NextResponse.json({ error: 'audit not found' }, { status: 404 });
   const items = await buildForRows([row]);
@@ -189,7 +189,7 @@ export async function POST(req: NextRequest) {
   if (ids.length > BULK_CAP) return NextResponse.json({ error: `Too many audits (${ids.length}) for one PDF — cap is ${BULK_CAP}. Narrow the selection.` }, { status: 413 });
 
   try {
-    const rows = await run(`SELECT ${AUDIT_COLS} FROM opd_note_audits WHERE id = ANY($1) AND app_source = $2 ORDER BY note_date DESC`, [ids, APP]).catch(() => []);
+    const rows = await run(`SELECT ${AUDIT_COLS} FROM opd_note_audits WHERE id = ANY($1) AND app_source = $2 AND excluded_reason IS NULL ORDER BY note_date DESC`, [ids, APP]).catch(() => []);
     return await handleBulk(rows as Record<string, unknown>[], `opd-audits-${rows.length}-notes.pdf`);
   } catch (e) {
     return NextResponse.json({ error: String((e as Error).message) }, { status: 500 });

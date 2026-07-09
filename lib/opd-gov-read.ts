@@ -33,7 +33,7 @@ export async function resolveInstances(
   doctorUid: string, signalType: string, windowFrom: string | null, windowTo: string | null,
 ): Promise<{ count: number; representative: SignalRepresentative | null; instances: Instance[] }> {
   const params: unknown[] = [APP, OPD_ENGINE_VERSION, doctorUid];
-  let where = `app_source=$1 AND engine_version=$2 AND doctor_uid=$3`;
+  let where = `app_source=$1 AND engine_version=$2 AND doctor_uid=$3 AND excluded_reason IS NULL`;   // Fix C
   if (windowFrom) { params.push(windowFrom); where += ` AND (note_date AT TIME ZONE 'Asia/Kolkata')::date >= $${params.length}`; }
   if (windowTo) { params.push(windowTo); where += ` AND (note_date AT TIME ZONE 'Asia/Kolkata')::date <= $${params.length}`; }
 
@@ -69,13 +69,13 @@ export interface AuditMetrics {
 export async function doctorAuditMetrics(doctorUid: string, days = 30): Promise<AuditMetrics> {
   const latest = await run(
     `SELECT to_char(max((note_date AT TIME ZONE 'Asia/Kolkata')::date),'YYYY-MM-DD') d
-     FROM opd_note_audits WHERE app_source=$1 AND engine_version=$2 AND doctor_uid=$3`,
+     FROM opd_note_audits WHERE app_source=$1 AND engine_version=$2 AND doctor_uid=$3 AND excluded_reason IS NULL`,
     [APP, OPD_ENGINE_VERSION, doctorUid]).catch(() => []);
   const to = String(latest[0]?.d || '');
   if (!to) return { notes_audited: 0, nqi_mean: null, band_a_pct: null, documentation_completeness: null, prescribing_safety: null, top_gap: null, as_of: null };
   const fromD = new Date(to + 'T00:00:00Z'); fromD.setUTCDate(fromD.getUTCDate() - (Math.max(1, days) - 1));
   const from = fromD.toISOString().slice(0, 10);
-  const win = `app_source=$1 AND engine_version=$2 AND doctor_uid=$3 AND (note_date AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $4 AND $5`;
+  const win = `app_source=$1 AND engine_version=$2 AND doctor_uid=$3 AND excluded_reason IS NULL AND (note_date AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $4 AND $5`;
   const p = [APP, OPD_ENGINE_VERSION, doctorUid, from, to];
 
   const [agg, gap] = await Promise.all([

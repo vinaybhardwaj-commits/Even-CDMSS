@@ -28,6 +28,7 @@ export const OPD_MEDICAL_TYPES = [
 // exactly as before (no schema or dashboard change).
 const IP_COLS = [
   'uid', 'consult_uid', 'doctor_uid', 'kx_encounter_id', 'type_of_prescription', 'consult_type',
+  'consult_types',   // 0.81.7 (Fix B) — db13 purpose markers (VISITING_HOSPITAL/EMERGENCY/CHAT) for the channel classifier
   'timestamp', '_create_time', 'prescription_url',
   'medications', 'diagnosis_icd_codes', 'impression_icd_codes', 'general_advice', 'further_investigation',
   'general_practitioner_prescription__presenting_complaints',  // fallback complaint (nested)
@@ -83,22 +84,31 @@ const dayPredicate = (day: string) => `(ip.timestamp AT TIME ZONE 'Asia/Kolkata'
 const baseWhere = (day: string) =>
   `ip.is_draft = false AND ip.type_of_prescription IN (${quotedTypes()}) AND ${dayPredicate(day)}`;
 
-/** Count non-draft medical notes for an IST calendar day. */
-export async function countOpdNotesForDay(day: string): Promise<number> {
+/** Intake eligibility (Fix A) — exclude house-account doctor_uids + any db13 label whose name-part is
+ *  exactly "Even Health" (so future house accounts are caught without a settings edit). NULL label passes. */
+function intakeExcludeClause(excludeDoctorUids: string[]): string {
+  const ex = Array.from(new Set((excludeDoctorUids || []).filter(isUid)));
+  const notIn = ex.length ? ` AND ip.doctor_uid NOT IN (${ex.map((u) => `'${u}'`).join(', ')})` : '';
+  const nameRule = ` AND (ip.doctor_name_with_speciality IS NULL OR ip.doctor_name_with_speciality NOT LIKE 'Even Health(%')`;
+  return `${notIn}${nameRule}`;
+}
+
+/** Count non-draft medical notes for an IST calendar day (eligible, house accounts excluded). */
+export async function countOpdNotesForDay(day: string, excludeDoctorUids: string[] = []): Promise<number> {
   if (!isDay(day)) throw new Error('bad day (YYYY-MM-DD)');
-  const rows = await metabaseQuery(`SELECT count(*)::int AS n FROM ${SOURCE} ip WHERE ${baseWhere(day)}`);
+  const rows = await metabaseQuery(`SELECT count(*)::int AS n FROM ${SOURCE} ip WHERE ${baseWhere(day)}${intakeExcludeClause(excludeDoctorUids)}`);
   return Number(rows[0]?.n ?? 0);
 }
 
-/** Next page of non-draft medical notes for the day, excluding already-audited uids. */
-export async function fetchOpdNotesForDay(day: string, excludeUids: string[], limit: number): Promise<Record<string, unknown>[]> {
+/** Next page of non-draft medical notes for the day, excluding already-audited uids + house accounts. */
+export async function fetchOpdNotesForDay(day: string, excludeUids: string[], limit: number, excludeDoctorUids: string[] = []): Promise<Record<string, unknown>[]> {
   if (!isDay(day)) throw new Error('bad day (YYYY-MM-DD)');
   const ex = (excludeUids || []).filter(isUid);
   const notIn = ex.length ? ` AND ip.uid NOT IN (${ex.map((u) => `'${u}'`).join(', ')})` : '';
   const lim = Math.max(1, Math.min(50, Math.floor(limit)));
   const join = joinDpipe(`(timestamp AT TIME ZONE 'Asia/Kolkata')::date BETWEEN '${day}'::date - 1 AND '${day}'::date + 1`);
   return metabaseQuery(
-    `SELECT ${SELECT_COLS} FROM ${SOURCE} ip ${join} WHERE ${baseWhere(day)}${notIn} ORDER BY ip.timestamp ASC LIMIT ${lim}`,
+    `SELECT ${SELECT_COLS} FROM ${SOURCE} ip ${join} WHERE ${baseWhere(day)}${notIn}${intakeExcludeClause(excludeDoctorUids)} ORDER BY ip.timestamp ASC LIMIT ${lim}`,
   );
 }
 
@@ -170,6 +180,7 @@ export async function fetchDoctorSpecialities(uids: string[]): Promise<Record<st
     `SELECT doctor_uid, doctor_name_with_speciality AS label, count(*)::int AS n
        FROM ${SOURCE}
       WHERE doctor_uid IN (${inList}) AND doctor_name_with_speciality IS NOT NULL
+        AND timestamp >= now() - interval '90 days'
       GROUP BY doctor_uid, doctor_name_with_speciality`,
   );
   const best: Record<string, { label: string; n: number }> = {};

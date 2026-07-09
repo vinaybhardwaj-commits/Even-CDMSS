@@ -4,6 +4,7 @@ import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
 import { fetchDoctorNames } from '@/lib/metabase';
 import { bandFor } from '@/lib/opd-note-score-core';
 import { OPD_ENGINE_VERSIONS_CURRENT } from '@/lib/opd-note-audit-core';
+import { formatEncounterChip } from '@/lib/opd-ingest-core';
 
 // Decision 21: user-facing reads filter the current-engine FAMILY (inlined ARRAY of code constants),
 // so a 0.81.x metadata bump doesn't empty the lists against the un-re-audited historical corpus.
@@ -88,12 +89,12 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
 
   const period: Period = sp.period === 'week' ? 'week' : sp.period === 'month' ? 'month' : 'day';
   const latest = await rowsOf<{ d: string }>(
-    `SELECT to_char(max((note_date AT TIME ZONE 'Asia/Kolkata')::date),'YYYY-MM-DD') d FROM opd_note_audits WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL}`, [APP]);
+    `SELECT to_char(max((note_date AT TIME ZONE 'Asia/Kolkata')::date),'YYYY-MM-DD') d FROM opd_note_audits WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND excluded_reason IS NULL`, [APP]);
   const latestDay = latest[0]?.d || new Date().toISOString().slice(0, 10);
   const day = (sp.day && /^\d{4}-\d{2}-\d{2}$/.test(sp.day)) ? sp.day : latestDay;
   const { from, to } = istDateRange(day, period);
   const winParams = [APP, from, to];
-  const WIN = `app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND (note_date AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $2 AND $3`;
+  const WIN = `app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND excluded_reason IS NULL AND (note_date AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $2 AND $3`;
 
   const [kpiR, bandsR, trendR, docsR, reviewR, allR] = await Promise.all([
     rowsOf<Record<string, unknown>>(
@@ -114,7 +115,7 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
               round(avg(score_documentation))::int d_doc, round(avg(score_note_quality))::int d_nq,
               round(avg(score_appropriateness))::int d_appr, round(avg(score_prescribing_safety))::int d_presc,
               round(avg(score_patient_centred))::int d_pc
-       FROM opd_note_audits WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND (note_date AT TIME ZONE 'Asia/Kolkata')::date > $2::date - 14 AND (note_date AT TIME ZONE 'Asia/Kolkata')::date <= $2::date
+       FROM opd_note_audits WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND excluded_reason IS NULL AND (note_date AT TIME ZONE 'Asia/Kolkata')::date > $2::date - 14 AND (note_date AT TIME ZONE 'Asia/Kolkata')::date <= $2::date
        GROUP BY 1 ORDER BY 1`, [APP, to]),
     rowsOf<DocRow>(
       `SELECT doctor_uid, count(*)::int nnotes, round(avg(note_quality_index))::int idx,
@@ -157,7 +158,7 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
     uid: string; band: string; note_quality_index: number; n_low_value: number; findings: unknown; completeness_pct: number; missing_fields: unknown;
   }): AuditRow => ({
     id: String(r.id), time: fmtIstTime(r.note_date), doctor: docName(r.doctor_uid),
-    consult: prettyType(r.prescription_type || r.consult_type), uid: String(r.uid || ''),
+    consult: formatEncounterChip(r.prescription_type, r.consult_type), uid: String(r.uid || ''),
     band: r.band, index: n(r.note_quality_index), lowVal: n(r.n_low_value),
     issue: issueFrom(r.findings, n(r.completeness_pct)),
     cats: catsForRow(parseJson<string[]>(r.missing_fields, []), parseJson<{ subject?: string; verdict?: string; rationale?: string }[]>(r.findings, [])),

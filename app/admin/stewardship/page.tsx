@@ -29,7 +29,7 @@ const INNER = `
     score_appropriateness, score_prescribing_safety, score_documentation,
     completeness_pct, n_low_value, n_interaction_alerts
   FROM opd_note_audits
-  WHERE app_source = $1 AND note_date >= NOW() - ($2 || ' days')::interval
+  WHERE app_source = $1 AND excluded_reason IS NULL AND note_date >= NOW() - ($2 || ' days')::interval
   ORDER BY uid, audited_at DESC`;
 
 const AGG = `
@@ -69,7 +69,7 @@ const TOTAL_SQL = `
     sum(n_low_value)::int AS sum_low,
     sum(n_interaction_alerts)::int AS sum_interactions
   FROM ( SELECT DISTINCT ON (uid) uid, note_quality_index, band, n_low_value, n_interaction_alerts
-    FROM opd_note_audits WHERE app_source = $1 AND note_date >= NOW() - ($2 || ' days')::interval
+    FROM opd_note_audits WHERE app_source = $1 AND excluded_reason IS NULL AND note_date >= NOW() - ($2 || ' days')::interval
     ORDER BY uid, audited_at DESC ) t`;
 
 function scoreClass(v: number): string {

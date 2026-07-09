@@ -79,7 +79,7 @@ export async function GET(req: NextRequest) {
 
   // ── read current-engine audits, newest first, bounded ─────────────────────────
   const params: unknown[] = [APP, OPD_ENGINE_VERSION];
-  let where = `app_source = $1 AND engine_version = $2`;
+  let where = `app_source = $1 AND engine_version = $2 AND excluded_reason IS NULL`;   // Fix C: keep house-account audits out of the review queue
   if (doctor_uid) { params.push(doctor_uid); where += ` AND doctor_uid = $${params.length}`; }
   if (from) { params.push(from); where += ` AND (note_date AT TIME ZONE 'Asia/Kolkata')::date >= $${params.length}`; }
   if (to) { params.push(to); where += ` AND (note_date AT TIME ZONE 'Asia/Kolkata')::date <= $${params.length}`; }
