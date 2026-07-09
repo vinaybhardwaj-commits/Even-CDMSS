@@ -17,6 +17,8 @@ const IMPACT_LABELS: Record<string, string> = { changes_management: 'Changes man
 
 const REVIEWER_KEY = 'opd-reviewer';
 const REVIEWER_EVENT = 'opd-reviewer-changed';
+// Roster identity (REVIEW-GAMIFICATION §2.5): the picker replaces free-text. Fallback mirrors the seed.
+const FALLBACK_ROSTER = ['V', 'Zaki', 'Aravind', 'Binita'];
 
 function getReviewer(): string {
   if (typeof window === 'undefined') return '';
@@ -36,22 +38,46 @@ const PILLS: Pill[] = [
 ];
 const OFF = 'border-slate-200 text-slate-500 hover:bg-slate-50';
 
-/** §9.2 — "Reviewing as ___" set-once identity. Stored in localStorage; broadcast so open cards refresh. */
+/** §2.5 — "Reviewing as" roster PICKER (no free text). Pills fed by app_settings review_roster (via
+ *  the stats route; fallback constant on error); selection stored in the SAME localStorage key +
+ *  broadcast on the SAME event, so every existing consumer keeps working. A `clear` affordance resets. */
 export function ReviewerBar() {
   const [name, setName] = useState('');
+  const [roster, setRoster] = useState<string[]>(FALLBACK_ROSTER);
   useEffect(() => { setName(getReviewer()); }, []);
-  function commit(v: string) {
-    setName(v);
-    try { window.localStorage.setItem(REVIEWER_KEY, v.trim()); } catch { /* ignore */ }
+  // reflect a pick made in another card
+  useEffect(() => {
+    const h = () => setName(getReviewer());
+    window.addEventListener(REVIEWER_EVENT, h);
+    return () => window.removeEventListener(REVIEWER_EVENT, h);
+  }, []);
+  // roster from app_settings (fail-safe → fallback constant)
+  useEffect(() => {
+    let live = true;
+    fetch('/api/care/review-stats', { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((j) => { if (live && Array.isArray(j?.roster) && j.roster.length) setRoster(j.roster.map((x: unknown) => String(x))); })
+      .catch(() => { /* keep fallback */ });
+    return () => { live = false; };
+  }, []);
+  function pick(v: string) {
+    const val = v.trim();
+    setName(val);
+    try { window.localStorage.setItem(REVIEWER_KEY, val); } catch { /* ignore */ }
     try { window.dispatchEvent(new CustomEvent(REVIEWER_EVENT)); } catch { /* ignore */ }
   }
   return (
-    <div className="mb-2 flex flex-wrap items-center gap-2">
+    <div className="mb-2 flex flex-wrap items-center gap-1.5">
       <span className="text-[11px] font-medium text-slate-500">Reviewing as</span>
-      <input
-        value={name} onChange={(e) => commit(e.target.value)} placeholder="your name"
-        className="h-7 w-40 rounded-lg border border-slate-200 bg-white px-2.5 text-[12px] text-slate-700 outline-none focus:border-brand/50" />
-      {!name.trim() && <span className="text-[10.5px] text-slate-400">Add your name so your calls are attributable.</span>}
+      {roster.map((who) => (
+        <button key={who} type="button" onClick={() => pick(who)}
+          className={`rounded-full border px-2.5 py-[3px] text-[11px] font-medium ${name === who ? 'border-brand/50 bg-brand-faint text-brand' : 'border-slate-200 text-slate-500 hover:bg-slate-50'}`}>
+          {who}
+        </button>
+      ))}
+      {name
+        ? <button type="button" onClick={() => pick('')} className="text-[10.5px] text-slate-400 hover:text-slate-600">clear</button>
+        : <span className="text-[10.5px] text-slate-400">Pick your name so your calls are attributable.</span>}
     </div>
   );
 }

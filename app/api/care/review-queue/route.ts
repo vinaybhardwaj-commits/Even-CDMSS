@@ -230,12 +230,13 @@ async function buildDisagreements(
   return out;
 }
 
-/** Today's (IST) label count for the rail. Fail-safe → 0. */
+/** Today's (IST) label count for the rail. Fail-safe → 0. Gamification §3.4: `impact` is NOT counted
+ *  (it's a second tap on an already-counted finding) so the rail agrees with the team-goal basis. */
 async function labeledTodayCount(reviewer: string): Promise<number> {
   const rows = await run(
     `SELECT count(*)::int AS n FROM opd_audit_feedback
      WHERE app_source = $1 AND author = $2
-       AND scope IN ('finding','impact','missed')
+       AND scope IN ('finding','missed')
        AND (created_at AT TIME ZONE 'Asia/Kolkata')::date = (now() AT TIME ZONE 'Asia/Kolkata')::date`,
     [APP, reviewer]).catch(() => []);
   return Number((rows[0] as Record<string, unknown>)?.n ?? 0) || 0;

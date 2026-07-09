@@ -35,6 +35,16 @@ type QueueResp = {
   ok: boolean; engine?: string; roster?: string[]; disagreement_enabled?: boolean;
   items?: QueueItem[]; stats?: { labeled_today?: number }; error?: string;
 };
+// Gamification stats (GET /api/care/review-stats) — every block is fail-safe/optional.
+type Badge = { author: string; streak?: number; agreement_pct?: number; pairs?: number };
+type StatsResp = {
+  ok: boolean; degraded?: boolean;
+  goal: { target: number; label: string; weekly_target: number };
+  roster?: string[];
+  team: { total: number; week: number };
+  badges: Badge[];
+  me?: { week: number; personal_weekly_target: number; streak: number };
+};
 
 const VERDICT_PILLS: { key: string; digit: string; label: string; on: string }[] = [
   { key: 'true_positive', digit: '1', label: 'True positive', on: 'border-emerald-400 bg-emerald-50 text-emerald-800' },
@@ -70,6 +80,11 @@ export default function ReviewSession() {
   const [labeledToday, setLabeledToday] = useState(0);
   const [sessionCount, setSessionCount] = useState(0);
   const sessionStart = useRef<number>(0);
+  // gamification (fail-safe: null → surface renders exactly as before). teamTotal/weekMine track
+  // optimistically off the same counted-save increments as labeledToday.
+  const [stats, setStats] = useState<StatsResp | null>(null);
+  const [teamTotal, setTeamTotal] = useState(0);
+  const [weekMine, setWeekMine] = useState(0);
 
   // per-finding UI state (reset on idx change)
   const [selected, setSelected] = useState<string | null>(null);
@@ -107,6 +122,17 @@ export default function ReviewSession() {
     return () => { live = false; };
   }, []);
 
+  // Gamification stats — team block + badges on the identity screen; refetched per reviewer on begin().
+  // Fully fail-safe: on any error `stats` stays null and the surface renders exactly as before.
+  const loadStats = useCallback(async (who?: string) => {
+    try {
+      const r = await fetch(`/api/care/review-stats${who ? `?reviewer=${encodeURIComponent(who)}` : ''}`, { cache: 'no-store' });
+      const j = (await r.json()) as StatsResp;
+      if (j && j.ok) { setStats(j); setTeamTotal(j.team?.total ?? 0); setWeekMine(j.me?.week ?? 0); }
+    } catch { /* leave stats as-is (identity screen renders as today) */ }
+  }, []);
+  useEffect(() => { void loadStats(); }, [loadStats]);
+
   const loadQueue = useCallback(async (who: string) => {
     setLoading(true); setLoadErr(null);
     try {
@@ -127,6 +153,7 @@ export default function ReviewSession() {
     sessionStart.current = Date.now();
     setSessionCount(0);
     void loadQueue(who);
+    void loadStats(who);   // refetch with ?reviewer= to get the `me` block (own week + streak)
   }
 
   // reset per-finding state whenever the current finding changes (pdfOpen persists — it's a session
@@ -163,6 +190,7 @@ export default function ReviewSession() {
       setSavedMeta(savedLabel(reviewer, new Date()));
       setSessionCount((c) => c + 1);
       setLabeledToday((c) => c + 1);
+      setTeamTotal((t) => t + 1); setWeekMine((w) => w + 1); // §2.2 counted-save increment
     } catch (e) {
       setSelected(revertOnFail(attempt));
       setFailed(attempt);
@@ -208,6 +236,7 @@ export default function ReviewSession() {
       await post({ scope: 'missed', auditId: current.audit_id, verdict: 'missed', comment: txt, category: missedCat || undefined, author: reviewer });
       setMissedSaved(true); setMissedOpen(false); setMissedText('');
       setSessionCount((c) => c + 1); setLabeledToday((c) => c + 1);
+      setTeamTotal((t) => t + 1); setWeekMine((w) => w + 1); // §2.2 counted-save increment
     } catch (e) { setErrMsg(String((e as Error).message).slice(0, 60)); }
   }, [current, missedText, missedCat, reviewer]);
 
@@ -254,6 +283,21 @@ export default function ReviewSession() {
       <div className="mx-auto flex min-h-[70vh] max-w-md flex-col justify-center px-6" style={{ fontFamily: 'system-ui, sans-serif' }}>
         <h1 className="text-[22px] font-semibold text-slate-900">Review Mode</h1>
         <p className="mt-1 text-[13px] text-slate-500">Keyboard-first finding triage. Pick your reviewer identity to start — it rides every label.</p>
+
+        {/* team progress block (§2.1) — omitted entirely when stats are absent (fail-safe) */}
+        {stats && (
+          <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-3">
+            <div className="flex items-baseline justify-between text-[12.5px]">
+              <span className="font-medium text-slate-700">{stats.goal.label}</span>
+              <span className="tabular-nums text-slate-600"><b className="text-slate-800">{stats.team.total}</b> / {stats.goal.target}</span>
+            </div>
+            <div className="mt-1.5 h-2 w-full overflow-hidden rounded-full bg-slate-200">
+              <div className="h-full rounded-full bg-emerald-400" style={{ width: `${Math.max(1, Math.min(100, (stats.team.total / Math.max(1, stats.goal.target)) * 100))}%` }} />
+            </div>
+            <div className="mt-1.5 text-[11px] text-slate-500">this week <b className="text-slate-700">{stats.team.week}</b> / {stats.goal.weekly_target}</div>
+          </div>
+        )}
+
         <div className="mt-5 space-y-2">
           {roster.map((who) => (
             <button key={who} onClick={() => begin(who)}
@@ -263,6 +307,19 @@ export default function ReviewSession() {
           ))}
           {roster.length === 0 && <div className="text-[12px] text-slate-400">Loading roster…</div>}
         </div>
+
+        {/* quiet badges row (§2.1) — one entry per roster member who has a streak and/or agreement */}
+        {stats && stats.badges.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[11.5px] text-slate-500">
+            {stats.badges.map((b) => (
+              <span key={b.author} className="inline-flex items-center gap-1.5">
+                <span className="font-medium text-slate-600">{b.author}</span>
+                {b.streak != null && <span className="text-amber-600">🔥 {b.streak}-day streak</span>}
+                {b.agreement_pct != null && <span className="text-sky-600">🤝 {b.agreement_pct}% agreement</span>}
+              </span>
+            ))}
+          </div>
+        )}
         <p className="mt-4 text-[11px] text-slate-400">Roster is set in app_settings <code>review_roster</code>. Disagreement queue: {disEnabled ? 'ON' : 'off (serving fresh findings)'}.</p>
       </div>
     );
@@ -282,6 +339,9 @@ export default function ReviewSession() {
           <span>Today <b className="text-slate-700">{labeledToday}</b></span>
           <span>Session <b className="text-slate-700">{sessionCount}</b></span>
           <span>{lpm}/min</span>
+          {/* gamification chips (§2.2) — team goal, and own weekly (own session only) */}
+          {stats && <span className="text-slate-400">team <b className="text-slate-600">{teamTotal}</b>/{stats.goal.target}</span>}
+          {stats?.me && <span className="text-slate-400">wk <b className="text-slate-600">{weekMine}</b>/{stats.me.personal_weekly_target}</span>}
           <span className="text-slate-400">{Math.min(idx + 1, items.length)}/{items.length}</span>
           <button onClick={() => loadQueue(reviewer)} className="rounded border border-slate-200 px-2 py-0.5 text-[11px] hover:border-slate-300">reload</button>
         </div>
@@ -294,7 +354,11 @@ export default function ReviewSession() {
       ) : done ? (
         <div className="mt-20 text-center">
           <div className="text-[15px] font-medium text-emerald-700">✓ Queue clear</div>
-          <p className="mt-1 text-[12.5px] text-slate-500">{sessionCount} labeled this session. Nice.</p>
+          <p className="mt-1 text-[12.5px] text-slate-500">
+            {stats
+              ? <>{sessionCount} labeled this session — you moved the team to {teamTotal}/{stats.goal.target}.{stats.me && stats.me.streak > 0 ? ` 🔥 ${stats.me.streak}-day streak.` : ''}</>
+              : <>{sessionCount} labeled this session. Nice.</>}
+          </p>
           <button onClick={() => loadQueue(reviewer)} className="mt-4 rounded-lg bg-slate-800 px-4 py-2 text-[13px] font-medium text-white hover:bg-slate-900">Load more</button>
         </div>
       ) : current ? (

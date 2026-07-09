@@ -8,6 +8,8 @@ import { isCareUnlocked } from '@/lib/care-cookie';
 import { sql } from '@/lib/db';
 import { CCB_ENGINE_VERSION } from '@/lib/ccb-brief-core';
 import { OPD_ENGINE_VERSIONS_CURRENT } from '@/lib/opd-note-audit-core';
+import { getSettings } from '@/lib/mini-backfill';
+import { parseGoal, computeReviewStats, FALLBACK_ROSTER, type LabelRow } from '@/lib/review-stats-core';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 const APP = process.env.APP_SOURCE || 'standalone';
@@ -33,6 +35,29 @@ export default async function ManagedCareHome() {
   ]);
   const briefsCount = Number((briefsR as Record<string, unknown>[])[0]?.n ?? 0);
   const triageCount = Number((triageR as Record<string, unknown>[])[0]?.n ?? 0);
+
+  // Review Mode team-progress strip (§2.4) — best-effort; omitted entirely on any error. Reuses the
+  // gamification core over the same counted-label rows the stats route reads (identical basis).
+  let reviewStrip: string | null = null;
+  try {
+    const s = await getSettings(['review_goal', 'review_roster']).catch(() => ({} as Record<string, string>));
+    const goal = parseGoal(s.review_goal);
+    let roster: string[] = FALLBACK_ROSTER;
+    try { const j = JSON.parse(s.review_roster || ''); if (Array.isArray(j)) { const l = j.map((x) => String(x).trim()).filter(Boolean); if (l.length) roster = l; } } catch { /* fallback */ }
+    const rows = (await run(
+      `SELECT author, scope, audit_id::text AS audit_id, finding_ref, verdict,
+              to_char((created_at AT TIME ZONE 'Asia/Kolkata')::date,'YYYY-MM-DD') AS day
+       FROM opd_audit_feedback
+       WHERE app_source = $1 AND scope IN ('finding','missed') AND author = ANY($2) AND author IS NOT NULL
+       ORDER BY created_at ASC`, [APP, roster]).catch(() => [])) as Array<Record<string, unknown>>;
+    const labelRows: LabelRow[] = rows.map((r) => ({
+      author: String(r.author), scope: String(r.scope), audit_id: r.audit_id == null ? '' : String(r.audit_id),
+      finding_ref: r.finding_ref == null ? null : String(r.finding_ref), verdict: r.verdict == null ? null : String(r.verdict), day: String(r.day || ''),
+    }));
+    const today = new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+    const st = computeReviewStats({ rows: labelRows, roster, today, goal });
+    reviewStrip = `${goal.label}: ${st.team.total}/${goal.target} · this week ${st.team.week}/${goal.weekly_target}`;
+  } catch { reviewStrip = null; }
 
   const cards = [
     {
@@ -92,6 +117,9 @@ export default async function ManagedCareHome() {
                 <ArrowRight className="h-3.5 w-3.5 text-slate-300 transition group-hover:translate-x-0.5 group-hover:text-slate-500" />
               </div>
               <p className="mt-1 text-[12.5px] leading-relaxed text-slate-500">{c.desc}</p>
+              {c.href === '/care/review' && reviewStrip && (
+                <p className="mt-1 text-[11.5px] font-medium text-emerald-700">{reviewStrip}</p>
+              )}
             </Link>
           );
         })}

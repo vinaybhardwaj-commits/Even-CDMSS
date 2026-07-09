@@ -31,10 +31,15 @@ function rel(ts: string): string {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
+// §2.5 — the roster identity picked in ReviewerBar (localStorage) rides this comment too; no free text.
+function getReviewer(): string {
+  if (typeof window === 'undefined') return '';
+  try { return (window.localStorage.getItem('opd-reviewer') || '').trim(); } catch { return ''; }
+}
+
 export default function FeedbackPanel({ auditId, uid, initial }: { auditId: string; uid: string | null; initial: FeedbackEntry[] }) {
   const router = useRouter();
   const [comment, setComment] = useState('');
-  const [author, setAuthor] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
 
@@ -45,7 +50,7 @@ export default function FeedbackPanel({ auditId, uid, initial }: { auditId: stri
     try {
       const r = await fetch('/api/opd-audit/feedback', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ scope: 'audit', auditId, uid, comment: comment.trim(), author: author.trim() || null }),
+        body: JSON.stringify({ scope: 'audit', auditId, uid, comment: comment.trim(), author: getReviewer() || null }),
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j.ok) { setMsg('Error: ' + (j.error || `status ${r.status}`)); }
@@ -64,14 +69,12 @@ export default function FeedbackPanel({ auditId, uid, initial }: { auditId: stri
           onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
           placeholder="Anything about this audit not tied to a single finding?"
           className="h-8 min-w-[180px] flex-1 rounded-lg border border-slate-200 bg-white px-2.5 text-[12px] text-slate-700 outline-none focus:border-brand/50" />
-        <input value={author} onChange={(e) => setAuthor(e.target.value)} placeholder="Name (optional)"
-          className="h-8 w-32 rounded-lg border border-slate-200 bg-white px-2.5 text-[12px] text-slate-700 outline-none focus:border-brand/50" />
         <button type="button" onClick={submit} disabled={busy}
           className={`whitespace-nowrap rounded-lg border px-3 py-1.5 text-[12px] font-medium ${busy ? 'border-slate-200 text-slate-400' : 'border-brand/40 bg-white text-brand hover:bg-brand-faint'}`}>
           {busy ? 'Saving…' : 'Save'}
         </button>
       </div>
-      <div className="mt-1 text-[10.5px] text-slate-400">Use the per-finding “Your call” pills above for finding-specific calls. Anonymous unless you add a name.</div>
+      <div className="mt-1 text-[10.5px] text-slate-400">Use the per-finding “Your call” pills above for finding-specific calls. Attributed to your picked reviewer identity above.</div>
       {msg && <div className="mt-1 text-[11px] text-slate-500">{msg}</div>}
 
       {initial.length > 0 && (
