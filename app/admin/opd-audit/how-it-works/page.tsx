@@ -82,7 +82,7 @@ export default async function HowItWorksPage() {
 
       <Section id="pipeline" kicker="Overview" title="The pipeline, end to end">
         <p>
-          Every non-draft medical OPD note is audited daily. The note is read from the EMR mirror (structured
+          Every non-draft medical OPD note from a real clinician is audited daily (house / non-clinician accounts are excluded at intake — see Eligibility below). The note is read from the EMR mirror (structured
           prescription row + the dpipe pipeline&apos;s clean complaint/diagnosis/plan), <strong>de-identified</strong>, then passes
           through two kinds of checks:
         </p>
@@ -170,6 +170,27 @@ export default async function HowItWorksPage() {
         </ul>
       </Section>
 
+      <Section id="eligibility" kicker="Mechanics · v0.81.7" title="Who gets audited — eligibility & encounter channel">
+        <p>
+          <strong>Eligibility.</strong> Every non-draft note on the six medical prescription form types is audited daily —
+          EXCEPT house / non-clinician accounts (e.g. &ldquo;Even Health&rdquo; health-check-up and underwriting memos), which are
+          excluded at intake: a configurable account list (<span className="font-mono text-[12px]">app_settings audit_intake_doctor_exclusions</span>)
+          plus an unconditional name rule, so a future house account never enters the corpus. Historical house-account audits
+          are flagged (<span className="font-mono text-[12px]">excluded_reason</span>) and hidden from every clinical surface —
+          they are not deleted, so provenance survives.
+        </p>
+        <p>
+          <strong>Encounter channel.</strong> Whether a note is judged as a teleconsult or an in-person visit (exam expectations
+          differ — a teleconsult is never faulted for no exam) is classified in strict precedence: an explicit consult-type field
+          when present → db13 purpose markers (<span className="font-mono text-[12px]">VISITING_HOSPITAL / EMERGENCY</span> → in-person,
+          winning over <span className="font-mono text-[12px]">CHAT</span>; <span className="font-mono text-[12px]">CHAT</span> → teleconsult)
+          → the prescription form-type default (app GP e-consult → teleconsult; hospital forms → in-person). A documented hands-on
+          physical exam always downgrades a teleconsult classification — you cannot palpate over video. The channel chip on the
+          notes list shows this CLASSIFICATION first and the form type second (&ldquo;In-person · Hosp GP&rdquo;) — the form label
+          is a paperwork artefact, not the clinician&apos;s identity.
+        </p>
+      </Section>
+
       <Section id="grounding" kicker="Mechanics" title="Grounding — cite-or-label">
         <p>Every LLM finding is badged with its evidential basis (0.5):</p>
         <ul className="ml-5 list-disc space-y-1">
@@ -177,7 +198,7 @@ export default async function HowItWorksPage() {
           <li><strong>General clinical reasoning</strong> — the model&apos;s judgement, explicitly labelled as uncited.</li>
           <li><strong>Deterministic rule</strong> — pure code, no model involved.</li>
         </ul>
-        <p>The audit is specialty-aware (0.7): the case is judged against the treating clinician&apos;s specialty standards from the doctor directory, not as generic GP care.</p>
+        <p>The audit is specialty-aware (0.7): the case is judged against the treating clinician&apos;s specialty standards from the doctor directory — synced daily from db13 on a 90-day modal label (0.81.7), so a recent role change converges within a day — not as generic GP care.</p>
       </Section>
 
       <Section id="versioning" kicker="Governance" title="Engine versioning — why dashboards blank after a change">
@@ -242,7 +263,7 @@ export default async function HowItWorksPage() {
           the rate <em>expected</em> from their own case-mix (Σ of each note&apos;s complexity-band stratum mean). O/E &gt; 1 =
           more low-value care than case-mix predicts. Peers are compared within specialty on a funnel plot (95% / 99.8%
           control limits); volumes under 10 banded notes are shown but greyed. House / non-clinician accounts are
-          excluded from every doctor-facing aggregate. Never a ranked leaderboard.
+          excluded at intake since 0.81.7 (and their historical audits flagged out of every surface) — not merely hidden from doctor-facing aggregates. Never a ranked leaderboard.
         </p>
       </Section>
 
