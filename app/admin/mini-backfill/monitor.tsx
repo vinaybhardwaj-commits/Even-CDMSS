@@ -171,7 +171,7 @@ function MiniOwnerStrip({ data }: { data: Payload | null }) {
   );
 }
 
-function EvalBatchCard({ lb, busy, onPause, onResume }: { lb: Payload['labBatch']; busy: boolean; onPause: () => void; onResume: () => void }) {
+function EvalBatchCard({ lb, busy, onPause, onResume, onStop }: { lb: Payload['labBatch']; busy: boolean; onPause: () => void; onResume: () => void; onStop: () => void }) {
   if (!lb) return null;
   const pct = lb.total > 0 ? Math.round((lb.done / lb.total) * 100) : 0;
   return (
@@ -190,6 +190,11 @@ function EvalBatchCard({ lb, busy, onPause, onResume }: { lb: Payload['labBatch'
               {lb.enabled ? 'Pause' : 'Resume'}
             </button>
           ) : null}
+          {/* Stop-and-clear — retire the batch (wipes cohort/progress; can't be Resumed). Always available. */}
+          <button type="button" disabled={busy} onClick={onStop}
+            className="rounded-md border border-rose-200 px-2.5 py-1 text-[11px] font-medium text-rose-600 hover:bg-rose-50">
+            Stop
+          </button>
         </div>
       </div>
       <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
@@ -220,7 +225,7 @@ export default function MiniBackfillMonitor() {
     } catch { setErr('offline'); }
   }, []);
 
-  const lbAction = useCallback(async (action: 'pause' | 'resume') => {
+  const lbAction = useCallback(async (action: 'pause' | 'resume' | 'stop') => {
     if (lbBusy) return; setLbBusy(true);
     try { await fetch('/api/admin/lab-batch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action }) }); await load(); } catch { /* ignore */ }
     setLbBusy(false);
@@ -272,7 +277,7 @@ export default function MiniBackfillMonitor() {
           ) : null}
         </div>
       ) : null}
-      <EvalBatchCard lb={data?.labBatch ?? null} busy={lbBusy} onPause={() => lbAction('pause')} onResume={() => lbAction('resume')} />
+      <EvalBatchCard lb={data?.labBatch ?? null} busy={lbBusy} onPause={() => lbAction('pause')} onResume={() => lbAction('resume')} onStop={() => lbAction('stop')} />
       <div className="grid gap-3 px-4 py-3 sm:grid-cols-4">
         <div className="rounded-lg bg-slate-50 p-2.5">
           <div className="text-[10.5px] text-slate-400">Processed today</div>

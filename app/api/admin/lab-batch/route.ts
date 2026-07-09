@@ -61,6 +61,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, action, enabled: cur.enabled, experiment: cur.experiment, ...p });
   }
 
+  // Stop-and-clear — retire a cancelled batch: wipe the cohort + progress so it stops lingering in
+  // app_settings (and can't be Resumed). Does NOT touch opd_note_audits / lab_analyses history.
+  if (action === 'stop') {
+    await setSetting(LB_KEYS.experiment, '');
+    await setSetting(LB_KEYS.uids, '[]');
+    await setSetting(LB_KEYS.enabled, '0');
+    await setSetting(LB_KEYS.error, '');
+    await setSetting(LB_KEYS.lock, '');
+    return NextResponse.json({ ok: true, action: 'stop', cleared: true });
+  }
+
   const experiment = String(body.experiment ?? '').trim().replace(/[^a-z0-9_-]/gi, '').slice(0, 64);
   if (!experiment) return NextResponse.json({ error: 'experiment required (a-z0-9_-, <=64)' }, { status: 400 });
 

@@ -116,7 +116,9 @@ export async function GET(req: NextRequest) {
         floor: st.floor,
       },
       coverage: (() => { const scored = num(scoredRow[0]?.scored); const total = num(totalUidRow[0]?.total); return { engine: OPD_ENGINE_VERSION, scored, total, pct: total > 0 ? Math.round((scored / total) * 100) : 0 }; })(),
-      labBatch: lb.experiment ? { enabled: lb.enabled, experiment: lb.experiment, kind: lb.kind, n: lb.n, window: lb.window, total: lbProg.total, done: lbProg.done, remaining: lbProg.remaining, lastError: lb.lastError } : null,
+      // Only surface an ACTIVE eval batch — a paused/cancelled batch (enabled=0) yields null so its
+      // stale experiment/uids/progress don't linger on the card (and can't offer a Resume). Stop clears it.
+      labBatch: (lb.experiment && lb.enabled) ? { enabled: lb.enabled, experiment: lb.experiment, kind: lb.kind, n: lb.n, window: lb.window, total: lbProg.total, done: lbProg.done, remaining: lbProg.remaining, lastError: lb.lastError } : null,
       versionTransition: !!(st.prod && st.prodVersion && st.prodVersion !== OPD_ENGINE_VERSION),
       prodVersion: st.prodVersion ?? null,
       // two stacked series over the same time axis (the mini is ONE box — these together are its load)
