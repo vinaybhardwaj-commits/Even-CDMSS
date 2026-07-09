@@ -3,7 +3,11 @@ import { sql } from '@/lib/db';
 import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
 import { fetchDoctorNames } from '@/lib/metabase';
 import { bandFor } from '@/lib/opd-note-score-core';
-import { OPD_ENGINE_VERSION } from '@/lib/opd-note-audit-core';
+import { OPD_ENGINE_VERSIONS_CURRENT } from '@/lib/opd-note-audit-core';
+
+// Decision 21: user-facing reads filter the current-engine FAMILY (inlined ARRAY of code constants),
+// so a 0.81.x metadata bump doesn't empty the lists against the un-re-audited historical corpus.
+const ENG_FAMILY_SQL = `ANY(ARRAY[${OPD_ENGINE_VERSIONS_CURRENT.map((v) => `'${v}'`).join(', ')}])`;
 import { catsForRow, CAT_LABEL } from '@/lib/opd-audit-cats';
 import {
   bandColor, scoreColor, istDateRange, parseJson, doctorLabel, fmtIstTime, fmtIstDateLong, PDQI9_LABEL,
@@ -84,12 +88,12 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
 
   const period: Period = sp.period === 'week' ? 'week' : sp.period === 'month' ? 'month' : 'day';
   const latest = await rowsOf<{ d: string }>(
-    `SELECT to_char(max((note_date AT TIME ZONE 'Asia/Kolkata')::date),'YYYY-MM-DD') d FROM opd_note_audits WHERE app_source = $1 AND engine_version = '${OPD_ENGINE_VERSION}'`, [APP]);
+    `SELECT to_char(max((note_date AT TIME ZONE 'Asia/Kolkata')::date),'YYYY-MM-DD') d FROM opd_note_audits WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL}`, [APP]);
   const latestDay = latest[0]?.d || new Date().toISOString().slice(0, 10);
   const day = (sp.day && /^\d{4}-\d{2}-\d{2}$/.test(sp.day)) ? sp.day : latestDay;
   const { from, to } = istDateRange(day, period);
   const winParams = [APP, from, to];
-  const WIN = `app_source = $1 AND engine_version = '${OPD_ENGINE_VERSION}' AND (note_date AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $2 AND $3`;
+  const WIN = `app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND (note_date AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $2 AND $3`;
 
   const [kpiR, bandsR, trendR, docsR, reviewR, allR] = await Promise.all([
     rowsOf<Record<string, unknown>>(
@@ -110,7 +114,7 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
               round(avg(score_documentation))::int d_doc, round(avg(score_note_quality))::int d_nq,
               round(avg(score_appropriateness))::int d_appr, round(avg(score_prescribing_safety))::int d_presc,
               round(avg(score_patient_centred))::int d_pc
-       FROM opd_note_audits WHERE app_source = $1 AND engine_version = '${OPD_ENGINE_VERSION}' AND (note_date AT TIME ZONE 'Asia/Kolkata')::date > $2::date - 14 AND (note_date AT TIME ZONE 'Asia/Kolkata')::date <= $2::date
+       FROM opd_note_audits WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND (note_date AT TIME ZONE 'Asia/Kolkata')::date > $2::date - 14 AND (note_date AT TIME ZONE 'Asia/Kolkata')::date <= $2::date
        GROUP BY 1 ORDER BY 1`, [APP, to]),
     rowsOf<DocRow>(
       `SELECT doctor_uid, count(*)::int nnotes, round(avg(note_quality_index))::int idx,
@@ -129,8 +133,9 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
        FROM opd_note_audits WHERE ${WIN} ORDER BY note_date DESC LIMIT 600`, winParams),
   ]);
 
-  // Right Care day tile (§7) — family-basis distinct-note LVC rate, robust across the 0.81.4 bump.
-  const rightCareDay = await fetchRightCareDay().catch(() => null);
+  // Right Care day tile (§7 / decision 24) — the page's selected day drives BOTH the rate and the
+  // category split (was mismatched: split hardcoded today). Family-basis distinct-note LVC rate.
+  const rightCareDay = await fetchRightCareDay(to).catch(() => null);
 
   const docUids = Array.from(new Set(([...docsR.map((d) => d.doctor_uid), ...reviewR.map((r) => r.doctor_uid), ...allR.map((r) => r.doctor_uid)].filter(Boolean)) as string[]));
   const names = await fetchDoctorNames(docUids).catch(() => ({} as Record<string, string>));

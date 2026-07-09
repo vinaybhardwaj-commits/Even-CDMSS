@@ -20,6 +20,16 @@ export interface EngineChange {
 
 export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
+    engine: '0.81.5', date: '2026-07-09', scoring: false,
+    title: 'v0.81.5 — Right Care matcher v2 (whole-word, all-keyword) + read-filter family fix (metadata-only)',
+    points: [
+      'LVC rule matcher v2: a rule matches only when EVERY keyword appears as a WHOLE WORD (case-insensitive, word-boundary; special chars escaped) in the subject+rationale — fixing the 0.81.4 ANY-substring bug where one generic rule (keywords ["complete","blood","profile"]) claimed all 112 stamps ("incomplete" contains "complete"). Candidates are evaluated most-specific first (keyword count DESC, tie id ASC); zero-keyword rules never match. ONE implementation shared by the engine stamp, the read-time fallback, and the backfill.',
+      'Read-filter FAMILY fix: the four /admin/opd-audit surfaces + lib/opd-audit-doctor.ts now read engine_version = ANY(current-engine family {0.81.3, 0.81.4, 0.81.5}) so a metadata-only bump no longer empties the doctors index / doctor / overview lists (0.81.4 emptied them). WRITE-side "already audited at current version" targeting keeps the exact OPD_ENGINE_VERSION — a family there would stop history re-scoring.',
+      'Backfill ?restamp=1: re-evaluates ALL stored low_value_care findings and OVERWRITES rule_ref with the current matcher result (including → null), so a matcher revision propagates to history; default POST keeps its NULL-only fill. SCORES UNCHANGED: opd-note-score-core is byte-identical — metadata only.',
+    ],
+    why: 'Right Care PRD §2.3 (decisions 21–24, 9 Jul) — three prod-verified defects after the 0.81.4 ship (34c3c6d): the family bump emptied the doctors index, one over-generic rule took all 112 stamps, and the day tile\'s category split hardcoded today (zeros under an 8-Jul rate).',
+  },
+  {
     engine: '0.81.4', date: '2026-07-09', scoring: false,
     title: 'v0.81.4 — Right Care LVC rule matcher (metadata-only; scores untouched)',
     points: [

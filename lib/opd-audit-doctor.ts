@@ -9,7 +9,7 @@
  * band) are fine and used as-is.
  */
 import { sql } from '@/lib/db';
-import { OPD_ENGINE_VERSION, OPD_ENGINE_VERSIONS_CURRENT } from '@/lib/opd-note-audit-core';
+import { OPD_ENGINE_VERSIONS_CURRENT } from '@/lib/opd-note-audit-core';
 import type { LvcCell } from '@/lib/opd-funnel-core';
 
 const APP = process.env.APP_SOURCE || 'standalone';
@@ -18,7 +18,10 @@ async function rowsOf<T>(text: string, params: unknown[]): Promise<T[]> {
   try { return (await run(text, params)) as T[]; } catch { return []; }
 }
 const IST = "AT TIME ZONE 'Asia/Kolkata'";
-const ENG = OPD_ENGINE_VERSION; // code constant, inlined like the overview page
+// Decision 21: user-facing READ filters use the current-engine FAMILY (inlined ARRAY literal of code
+// constants — same inline style as before, no param re-indexing). A 0.81.x metadata bump no longer
+// orphans the historical corpus from these lists.
+const ENG_FAMILY_SQL = `ANY(ARRAY[${OPD_ENGINE_VERSIONS_CURRENT.map((v) => `'${v}'`).join(', ')}])`;
 
 /** Build the optional IST date-range clause + its params, starting at $startIdx. */
 function rangeClause(from: string | null, to: string | null, startIdx: number): { clause: string; params: string[] } {
@@ -41,7 +44,7 @@ export async function fetchDoctorIndex(): Promise<DoctorIndexRow[]> {
             round(100.0*avg((n_low_value>0)::int))::int low_value_rate,
             to_char(max((note_date ${IST})::date),'YYYY-MM-DD') last_audited
      FROM opd_note_audits
-     WHERE app_source = $1 AND engine_version = '${ENG}' AND doctor_uid IS NOT NULL
+     WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND doctor_uid IS NOT NULL
      GROUP BY doctor_uid
      ORDER BY nnotes DESC, mean_index ASC`, [APP]);
 }
@@ -64,7 +67,7 @@ export async function fetchDoctorStats(uid: string, from: string | null = null, 
             round(avg(score_appropriateness))::int d_appr, round(avg(score_prescribing_safety))::int d_presc,
             round(avg(score_patient_centred))::int d_pc
      FROM opd_note_audits
-     WHERE app_source = $1 AND engine_version = '${ENG}' AND doctor_uid = $2${r.clause}`,
+     WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND doctor_uid = $2${r.clause}`,
     [APP, uid, ...r.params]);
   const row = rows[0];
   return row && Number(row.nnotes) > 0 ? row : null;
@@ -77,7 +80,7 @@ export async function fetchDoctorBandDist(uid: string, from: string | null = nul
   return rowsOf<BandRow>(
     `SELECT band, count(*)::int c
      FROM opd_note_audits
-     WHERE app_source = $1 AND engine_version = '${ENG}' AND doctor_uid = $2${r.clause}
+     WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND doctor_uid = $2${r.clause}
      GROUP BY band`, [APP, uid, ...r.params]);
 }
 
@@ -92,7 +95,7 @@ export async function fetchDoctorWeeklyTrend(uid: string, from: string | null = 
        SELECT to_char(date_trunc('week', (note_date ${IST}))::date,'YYYY-MM-DD') wk,
               note_quality_index idx
        FROM opd_note_audits
-       WHERE app_source = $1 AND engine_version = '${ENG}' AND doctor_uid = $2${r.clause}
+       WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND doctor_uid = $2${r.clause}
      ) t
      GROUP BY wk
      ORDER BY wk`, [APP, uid, ...r.params]);
@@ -116,7 +119,7 @@ export async function fetchDoctorAuditRows(uid: string, from: string | null = nu
             score_documentation, score_note_quality, score_appropriateness, score_prescribing_safety, score_patient_centred,
             findings, suggestions, missing_fields, engine_version
      FROM opd_note_audits
-     WHERE app_source = $1 AND engine_version = '${ENG}' AND doctor_uid = $2${r.clause}
+     WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND doctor_uid = $2${r.clause}
      ORDER BY note_date DESC
      LIMIT ${lim}`, [APP, uid, ...r.params]);
 }
@@ -174,27 +177,33 @@ export interface RightCareDay {
   day: string; total: number; withLvc: number; rate: number;
   mean14: number; trend: RightCareDayTrend[]; categories: RightCareCategory[];
 }
-/** Overview tile (§7): headline day LVC-note rate, 14-day trend + mean, and the headline day's
- *  category split (distinct notes with ≥1 low-value finding of that lvc_category). Fail-safe → zeros. */
-export async function fetchRightCareDay(): Promise<RightCareDay> {
-  const empty: RightCareDay = { day: '', total: 0, withLvc: 0, rate: 0, mean14: 0, trend: [], categories: [] };
+/** Overview tile (§7 + decision 24): headline day LVC-note rate, 14-day trend + mean, and the headline
+ *  day's category split. `selectedDay` (YYYY-MM-DD, the page's chosen day) drives BOTH the rate and the
+ *  category split; absent → the latest audited day. `day` is a clean ISO string (to_char) so the caption
+ *  never renders a raw JS Date. Fail-safe → zeros. */
+export async function fetchRightCareDay(selectedDay?: string | null): Promise<RightCareDay> {
+  const sel = selectedDay && /^\d{4}-\d{2}-\d{2}$/.test(selectedDay) ? selectedDay : null;
+  const empty: RightCareDay = { day: sel || '', total: 0, withLvc: 0, rate: 0, mean14: 0, trend: [], categories: [] };
   const trendRows = await rowsOf<{ day: string; n: number; with_lvc: number }>(
     `SELECT day, count(*)::int AS n, count(*) FILTER (WHERE nlv > 0)::int AS with_lvc
-     FROM ( ${distinctNoteSubquery(`(note_date ${IST})::date AS day, n_low_value AS nlv`, ` AND (note_date ${IST})::date >= (now() ${IST})::date - 14`)} ) l
-     GROUP BY day ORDER BY day`, [APP, ENGINES]);
+     FROM ( ${distinctNoteSubquery(
+       `to_char((note_date ${IST})::date,'YYYY-MM-DD') AS day, n_low_value AS nlv`,
+       ` AND (note_date ${IST})::date > COALESCE($3::date, (now() ${IST})::date) - 14 AND (note_date ${IST})::date <= COALESCE($3::date, (now() ${IST})::date)`)} ) l
+     GROUP BY day ORDER BY day`, [APP, ENGINES, sel]);
   if (!trendRows.length) return empty;
   const trend: RightCareDayTrend[] = trendRows.map((r) => ({ day: String(r.day), n: Number(r.n) || 0, rate: Number(r.n) > 0 ? Number(r.with_lvc) / Number(r.n) : 0 }));
-  const head = trend[trend.length - 1];
+  // headline day = the selected day (rate + category split share it), else the latest day present.
+  const headDay = sel || trend[trend.length - 1].day;
+  const head = trend.find((t) => t.day === headDay) || { day: headDay, n: 0, rate: 0 };
   const mean14 = trend.reduce((a, t) => a + t.rate, 0) / trend.length;
   const catRows = await rowsOf<{ category: string; notes: number }>(
     `SELECT COALESCE(NULLIF(lower(f->>'lvc_category'), ''), 'other') AS category, count(DISTINCT l.uid)::int AS notes
-     FROM ( ${distinctNoteSubquery(`uid AS uid2, findings, (note_date ${IST})::date AS day`, ` AND (note_date ${IST})::date = (now() ${IST})::date`)} ) l,
+     FROM ( ${distinctNoteSubquery(`findings`, ` AND (note_date ${IST})::date = $3::date`)} ) l,
           jsonb_array_elements(CASE WHEN jsonb_typeof(l.findings) = 'array' THEN l.findings ELSE '[]'::jsonb END) f
      WHERE f->>'verdict' = 'low-value' AND COALESCE((f->>'informational')::boolean, false) = false
-     GROUP BY 1 ORDER BY notes DESC`, [APP, ENGINES]).catch(() => []);
-  // headline day = the latest IST day present in the trend; category split is for "today" (latest day)
+     GROUP BY 1 ORDER BY notes DESC`, [APP, ENGINES, headDay]).catch(() => []);
   return {
-    day: head.day, total: head.n, withLvc: Math.round(head.rate * head.n), rate: head.rate,
+    day: headDay, total: head.n, withLvc: Math.round(head.rate * head.n), rate: head.rate,
     mean14, trend, categories: catRows.map((r) => ({ category: String(r.category), notes: Number(r.notes) || 0 })),
   };
 }

@@ -6,7 +6,11 @@ import { fetchDoctorNames, fetchOpdNoteByUid } from '@/lib/metabase';
 import { rowToOpdCase, type DeidOpdCase } from '@/lib/opd-ingest-core';
 import { enrichOpdMeds } from '@/lib/formulary';
 import { type OpdDomain, documentationAdequacyFlag } from '@/lib/opd-note-score-core';
-import { OPD_ENGINE_VERSION } from '@/lib/opd-note-audit-core';
+import { OPD_ENGINE_VERSION, OPD_ENGINE_VERSIONS_CURRENT } from '@/lib/opd-note-audit-core';
+
+// Decision 21: prev/next navigation READS the current-engine FAMILY (the escalation package below
+// keeps exact OPD_ENGINE_VERSION — that's the display/metadata stamp, not a read filter).
+const ENG_FAMILY_SQL = `ANY(ARRAY[${OPD_ENGINE_VERSIONS_CURRENT.map((v) => `'${v}'`).join(', ')}])`;
 import { anchorFindings, anchorsByTarget, type NoteAnchor } from '@/lib/opd-case-anchor-core';
 import { CitationChips, SourcesPanel } from '@/components/right-care/kit';
 import type { Source } from '@/lib/citations-core';
@@ -365,13 +369,13 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
     run(`SELECT id, created_at, comment, author FROM opd_audit_feedback WHERE audit_id = $1 AND app_source = $2 AND scope = 'missed' ORDER BY created_at DESC`, [id, APP]).catch(() => []),
     run(
       `SELECT id FROM opd_note_audits
-       WHERE app_source = $1 AND engine_version = '${OPD_ENGINE_VERSION}'
+       WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL}
          AND (note_date AT TIME ZONE 'Asia/Kolkata')::date = ($2::timestamptz AT TIME ZONE 'Asia/Kolkata')::date
          AND (note_date < $2::timestamptz OR (note_date = $2::timestamptz AND id::text < $3))
        ORDER BY note_date DESC, id DESC LIMIT 1`, [APP, noteDate, id]).catch(() => []),
     run(
       `SELECT id FROM opd_note_audits
-       WHERE app_source = $1 AND engine_version = '${OPD_ENGINE_VERSION}'
+       WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL}
          AND (note_date AT TIME ZONE 'Asia/Kolkata')::date = ($2::timestamptz AT TIME ZONE 'Asia/Kolkata')::date
          AND (note_date > $2::timestamptz OR (note_date = $2::timestamptz AND id::text > $3))
        ORDER BY note_date ASC, id ASC LIMIT 1`, [APP, noteDate, id]).catch(() => []),

@@ -86,39 +86,54 @@ test('LVC_CATEGORIES vocabulary is the four expected values', () => {
   assert.deepEqual([...LVC_CATEGORIES], ['antibiotic', 'imaging', 'supplement_polypharmacy', 'other']);
 });
 
-// ── 0.81.4 engine matcher (decision 14): keyword-containment stamp at audit time ──
-test('stampLvcMetadata(rules): keyword match stamps rule_ref + rule category (first hit wins)', () => {
-  const rules = [
-    { id: 'rule-abx', keywords: ['azithromycin', 'antibiotic'], category: 'antibiotic' },
-    { id: 'rule-img', keywords: ['mri', 'x-ray'], category: 'imaging' },
-  ];
-  const findings = [
-    { subject: 'Azithromycin for viral URI', rationale: 'no bacterial indication', verdict: 'low-value', confidence: 0.8, domain: 'appropriateness' },
-    { subject: 'MRI lumbar spine', rationale: 'acute nonspecific low back pain', verdict: 'low-value', confidence: 0.7, domain: 'appropriateness' },
-    { subject: 'Vitamin D supplement', rationale: 'no deficiency documented', verdict: 'low-value', confidence: 0.6, domain: 'appropriateness' },
-  ];
-  const out = stampLvcMetadata(findings as never[], rules) as Array<Record<string, unknown>>;
-  assert.equal(out[0].rule_ref, 'rule-abx'); assert.equal(out[0].lvc_category, 'antibiotic');
-  assert.equal(out[1].rule_ref, 'rule-img'); assert.equal(out[1].lvc_category, 'imaging');
-  assert.equal(out[2].rule_ref, null);        // no rule matched → null, heuristic category
-  assert.equal(out[2].lvc_category, 'supplement_polypharmacy');
-  // score fields never touched
-  assert.equal(out[0].verdict, 'low-value'); assert.equal(out[0].confidence, 0.8); assert.equal(out[0].domain, 'appropriateness');
+// ── engine matcher v2 (decision 22): EVERY keyword whole-word, most-specific first ──
+const lv = (subject: string, rationale = '') => ({ subject, rationale, verdict: 'low-value', confidence: 0.8, domain: 'appropriateness' });
+const stampRefs = (findings: unknown[], rules: unknown[]): Array<string | null> =>
+  (stampLvcMetadata(findings as never[], rules as never[]) as Array<Record<string, unknown>>).map((f) => (f.rule_ref as string | null) ?? null);
+
+test('matcher v2: the "incomplete ≠ complete" worked example', () => {
+  const rules = [{ id: 'ehrc-cbp', keywords: ['complete', 'blood', 'profile'], category: 'other' }];
+  // must NOT match — "incomplete" contains "complete" as a substring, but not as a whole word, and no blood/profile
+  assert.deepEqual(stampRefs([lv('Incomplete medication reconciliation')], rules), [null]);
+  // must match — all three whole words present
+  assert.deepEqual(stampRefs([lv('Complete blood profile ordered', 'no anaemia symptoms documented')], rules), ['ehrc-cbp']);
 });
 
-test('stampLvcMetadata(rules): no rules → rule_ref null (0.81.3 behaviour, never blocks)', () => {
-  const findings = [{ subject: 'Azithromycin for URI', rationale: '', verdict: 'low-value', confidence: 0.8, domain: 'appropriateness' }];
-  const out = stampLvcMetadata(findings as never[], []) as Array<Record<string, unknown>>;
-  assert.equal(out[0].rule_ref, null);
+test('matcher v2: EVERY keyword required (ALL, not ANY)', () => {
+  const rules = [{ id: 'r-abx', keywords: ['azithromycin', 'antibiotic'], category: 'antibiotic' }];
+  assert.deepEqual(stampRefs([lv('Azithromycin for viral URI')], rules), [null]); // missing "antibiotic"
+  assert.deepEqual(stampRefs([lv('Azithromycin antibiotic for viral URI')], rules), ['r-abx']);
+  // single-keyword rule still works as a whole word
+  assert.deepEqual(stampRefs([lv('MRI lumbar spine')], [{ id: 'r-mri', keywords: ['mri'], category: 'imaging' }]), ['r-mri']);
 });
 
-test('stampLvcMetadata(rules): non-low-value + informational findings are skipped', () => {
-  const rules = [{ id: 'rule-abx', keywords: ['azithromycin'], category: 'antibiotic' }];
-  const findings = [
+test('matcher v2: most-specific first (keyword count DESC, tie id ASC)', () => {
+  const generic = { id: 'z-generic', keywords: ['antibiotic'], category: 'antibiotic' };
+  const specific = { id: 'a-specific', keywords: ['azithromycin', 'antibiotic'], category: 'antibiotic' };
+  // finding satisfies BOTH → the 2-keyword rule wins despite being listed first or last
+  assert.deepEqual(stampRefs([lv('Azithromycin antibiotic for a cold')], [generic, specific]), ['a-specific']);
+  assert.deepEqual(stampRefs([lv('Azithromycin antibiotic for a cold')], [specific, generic]), ['a-specific']);
+  // tie on keyword count → lexicographically smaller id wins
+  const tieA = { id: 'a-tie', keywords: ['imaging'], category: 'imaging' };
+  const tieB = { id: 'b-tie', keywords: ['imaging'], category: 'imaging' };
+  assert.deepEqual(stampRefs([lv('Imaging without indication')], [tieB, tieA]), ['a-tie']);
+});
+
+test('matcher v2: zero-keyword rules never match; category from matched rule', () => {
+  const rules = [{ id: 'r-empty', keywords: [], category: 'imaging' }, { id: 'r-img', keywords: ['ultrasound'], category: 'imaging' }];
+  const out = stampLvcMetadata([lv('Ultrasound abdomen routine')] as never[], rules as never[]) as Array<Record<string, unknown>>;
+  assert.equal(out[0].rule_ref, 'r-img'); assert.equal(out[0].lvc_category, 'imaging');
+  assert.deepEqual(stampRefs([lv('Vitamin D supplement, no deficiency')], [{ id: 'r-empty', keywords: [], category: 'other' }]), [null]);
+});
+
+test('stampLvcMetadata: no rules → rule_ref null; non-low-value + informational skipped; scores untouched', () => {
+  assert.deepEqual(stampRefs([lv('Azithromycin antibiotic')], []), [null]);
+  const rules = [{ id: 'r-abx', keywords: ['azithromycin'], category: 'antibiotic' }];
+  const out = stampLvcMetadata([
     { subject: 'Azithromycin', verdict: 'high-value', confidence: 0.5, domain: 'appropriateness' },
     { subject: 'Azithromycin', verdict: 'low-value', confidence: 0.5, domain: 'appropriateness', informational: true },
-  ];
-  const out = stampLvcMetadata(findings as never[], rules) as Array<Record<string, unknown>>;
-  assert.equal(out[0].rule_ref, undefined);   // not low-value → untouched
-  assert.equal(out[1].rule_ref, undefined);   // informational → untouched
+  ] as never[], rules as never[]) as Array<Record<string, unknown>>;
+  assert.equal(out[0].rule_ref, undefined); assert.equal(out[1].rule_ref, undefined);
+  const scored = stampLvcMetadata([lv('Azithromycin')] as never[], rules as never[]) as Array<Record<string, unknown>>;
+  assert.equal(scored[0].verdict, 'low-value'); assert.equal(scored[0].confidence, 0.8); assert.equal(scored[0].domain, 'appropriateness');
 });

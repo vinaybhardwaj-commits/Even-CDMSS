@@ -65,31 +65,47 @@ async function status(): Promise<Record<string, unknown>> {
   return { ...(rows[0] || { lvc: 0, stamped: 0, null_ref: 0 }), cursor: await getCursor() };
 }
 
-/** Run one ≤200-row batch, oldest-first from the cursor. Idempotent: only fills rule_ref where NULL. */
-async function runBatch(): Promise<Record<string, unknown>> {
+/**
+ * Run one ≤200-row batch, oldest-first from the cursor. Two modes (decision 23):
+ *   'null'    (default POST)    — only FILL rule_ref where currently NULL (never overwrites a stamp).
+ *   'restamp' (POST ?restamp=1) — re-evaluate ALL low_value_care findings with the CURRENT matcher and
+ *                                 OVERWRITE rule_ref (including → null), fixing stale/wrong stamps.
+ * Both idempotent (the matcher is deterministic). Cursor-reset mirrors the complexity backfill; run
+ * `?reset=1` first to re-sweep the whole corpus.
+ */
+async function runBatch(mode: 'null' | 'restamp'): Promise<Record<string, unknown>> {
   const rules = await loadRules();
   const cursor = await getCursor();
+  const existsPred = mode === 'restamp'
+    ? `e->>'signal_type' = 'low_value_care'`
+    : `e->>'signal_type' = 'low_value_care' AND (e->>'rule_ref') IS NULL`;
   const rows = await run(
     `SELECT id, note_date, findings FROM opd_note_audits
      WHERE app_source = $1 AND jsonb_typeof(findings) = 'array'
        AND note_date IS NOT NULL AND note_date > $2::timestamptz
        AND EXISTS (
          SELECT 1 FROM jsonb_array_elements(findings) e
-         WHERE e->>'signal_type' = 'low_value_care' AND (e->>'rule_ref') IS NULL
+         WHERE ${existsPred}
        )
      ORDER BY note_date ASC, id ASC LIMIT ${BATCH}`, [APP, cursor]).catch(() => []) as Array<{ id: string; note_date: string; findings: unknown }>;
 
-  let processed = 0, updated = 0, stamped = 0, lastDate = cursor;
+  let processed = 0, updated = 0, stamped = 0, cleared = 0, lastDate = cursor;
   for (const r of rows) {
     processed++;
     lastDate = r.note_date ? new Date(r.note_date).toISOString() : lastDate;
     const findings = Array.isArray(r.findings) ? (r.findings as Array<Record<string, unknown>>) : [];
     let changed = false;
     const next = findings.map((f) => {
-      if (f && f.signal_type === 'low_value_care' && (f.rule_ref === null || f.rule_ref === undefined)) {
-        const ref = matchLvcRule({ subject: f.subject as string, rationale: f.rationale as string | null }, rules);
+      if (!f || f.signal_type !== 'low_value_care') return f;
+      const cur = f.rule_ref === undefined ? null : f.rule_ref;
+      if (mode === 'null' && cur !== null) return f;   // null mode never touches an existing stamp
+      const ref = matchLvcRule({ subject: f.subject as string, rationale: f.rationale as string | null }, rules); // may be null
+      if (mode === 'null') {
         if (ref) { changed = true; stamped++; return { ...f, rule_ref: ref }; }
+        return f;                                       // no match → stays null (retried on re-sweep)
       }
+      // restamp: overwrite whenever the current value differs from the fresh matcher result (incl → null)
+      if (cur !== ref) { changed = true; if (ref) stamped++; else cleared++; return { ...f, rule_ref: ref }; }
       return f;
     });
     if (changed) {
@@ -99,7 +115,7 @@ async function runBatch(): Promise<Record<string, unknown>> {
   }
   if (processed > 0) await setCursor(lastDate);
   const done = processed < BATCH;
-  return { processed, updated, stamped, done, cursor: lastDate, note: done ? 'sweep drained; POST ?reset=1 to re-sweep' : 'more remain — POST again' };
+  return { mode, processed, updated, stamped, cleared, done, cursor: lastDate, note: done ? 'sweep drained; POST ?reset=1 to re-sweep' : `more remain — POST again${mode === 'restamp' ? ' ?restamp=1' : ''}` };
 }
 
 export async function GET(req: NextRequest) {
@@ -114,6 +130,7 @@ export async function POST(req: NextRequest) {
   if (denied) return denied;
   try {
     if (req.nextUrl.searchParams.get('reset') === '1') { await setCursor(EPOCH); return NextResponse.json({ ok: true, reset: true, ...(await status()) }); }
-    return NextResponse.json({ ok: true, ...(await runBatch()) });
+    const mode = req.nextUrl.searchParams.get('restamp') === '1' ? 'restamp' : 'null';
+    return NextResponse.json({ ok: true, ...(await runBatch(mode)) });
   } catch (e) { return NextResponse.json({ ok: false, error: String((e as Error).message) }, { status: 500 }); }
 }

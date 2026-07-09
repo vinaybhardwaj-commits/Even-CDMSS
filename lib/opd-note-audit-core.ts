@@ -25,17 +25,18 @@ import type { NetValue, OpdFindingDomain, Pdqi9Attr } from './opd-note-score-cor
 //       B2: follow-up counts as documented ONLY for a real disposition or an explicit date — a bare
 //       'UNKNOWN'/blank no longer earns continuity/documentation credit (the score-moving change
 //       that makes 0.7 a distinct generation). Prompt-pass fixes (B1/B5/B6) land next, still 0.7.
-export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.4';
+export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.5';
 
 /**
- * Current-engine FAMILY for Right Care read/aggregate surfaces (0.81.4 metadata-only bump).
- * 0.81.4 is score-identical to 0.81.3 (rule_ref stamping only), and per decision 14 the existing
- * 0.81.3 corpus is NOT re-audited (its rule_ref is backfilled in place, engine_version unchanged).
- * So every Right Care rate reads BOTH versions as "current" — otherwise a hard bump would orphan the
- * validated 4,506-note corpus from the surfaces until re-audit. Newest-per-uid still wins via
- * DISTINCT ON (uid) ORDER BY note_date DESC, id DESC. See the build report's flagged decisions.
+ * Current-engine FAMILY for READ/aggregate surfaces. 0.81.3 → 0.81.4 → 0.81.5 are all score-identical
+ * (metadata-only rule_ref stamping); older rows are NOT re-audited (rule_ref is backfilled in place,
+ * engine_version unchanged — decision 14). So every user-facing READ filters `engine_version = ANY(
+ * OPD_ENGINE_VERSIONS_CURRENT)` — a hard exact-match bump orphaned the validated corpus (0.81.4 emptied
+ * the doctors index; decision 21). Newest-per-uid still wins via DISTINCT ON (uid) ORDER BY note_date
+ * DESC, id DESC. WRITE-side targeting keeps exact OPD_ENGINE_VERSION (family there would stop history
+ * re-scoring). See the patch report.
  */
-export const OPD_ENGINE_VERSIONS_CURRENT = ['opd-note-audit/0.81.3', 'opd-note-audit/0.81.4'] as const;
+export const OPD_ENGINE_VERSIONS_CURRENT = ['opd-note-audit/0.81.3', 'opd-note-audit/0.81.4', 'opd-note-audit/0.81.5'] as const;
 
 // Local copy of the PDQI-9 keys (kept in sync with opd-note-score-core) so this core has
 // no runtime cross-import and stays loadable under `node --experimental-strip-types`.

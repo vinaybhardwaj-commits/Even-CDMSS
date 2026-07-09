@@ -70,13 +70,29 @@ export function matchLvcRule(f: ClassifiableFinding, rules: LvcRuleLite[]): stri
   return r ? r.id : null;
 }
 
-/** Text-match a finding to a rule by keyword containment (first hit wins). */
+// ── matcher v2 (decision 22) — ONE implementation used by the engine stamp, the read-time fallback,
+// and the backfill. A rule matches only if EVERY keyword appears as a WHOLE WORD (case-insensitive,
+// word-boundary, special chars escaped) in the subject+rationale haystack; candidates are evaluated
+// most-specific first (keyword count DESC, tie-break id ASC); rules with zero usable keywords never
+// match. Fixes the ANY-substring bug where ["complete","blood","profile"] matched "incomplete …".
+function escapeRe(s: string): string { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+/** De-duped, non-empty keywords for a rule (lowercased/trimmed). */
+function ruleKeywords(r: LvcRuleLite): string[] {
+  return Array.from(new Set((r.keywords || []).map((k) => String(k).toLowerCase().trim()).filter(Boolean)));
+}
+/** Every keyword present as a whole word in the haystack (case-insensitive). Empty list → false. */
+function everyKeywordWholeWord(hay: string, kws: string[]): boolean {
+  if (!kws.length) return false;
+  return kws.every((k) => new RegExp(`\\b${escapeRe(k)}\\b`, 'i').test(hay));
+}
+/** Match a finding to a rule (v2). Most-specific first so a precise rule beats a generic one. */
 function matchRule(f: ClassifiableFinding, rules: LvcRuleLite[]): LvcRuleLite | null {
-  const hay = `${f.subject || ''} ${f.rationale || ''}`.toLowerCase();
-  for (const r of rules) {
-    const kws = (r.keywords || []).map((k) => String(k).toLowerCase().trim()).filter(Boolean);
-    if (kws.length && kws.some((k) => hay.includes(k))) return r;
-  }
+  const hay = `${f.subject || ''} ${f.rationale || ''}`;
+  const candidates = rules
+    .map((r) => ({ r, kws: ruleKeywords(r) }))
+    .filter((c) => c.kws.length > 0)
+    .sort((a, b) => (b.kws.length - a.kws.length) || (String(a.r.id) < String(b.r.id) ? -1 : String(a.r.id) > String(b.r.id) ? 1 : 0));
+  for (const c of candidates) if (everyKeywordWholeWord(hay, c.kws)) return c.r;
   return null;
 }
 
