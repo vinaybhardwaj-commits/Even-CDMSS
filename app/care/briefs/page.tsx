@@ -7,16 +7,14 @@ import { ArrowRight } from 'lucide-react';
 import { isCareUnlocked } from '@/lib/care-cookie';
 import { sql } from '@/lib/db';
 import { CCB_ENGINE_VERSION } from '@/lib/ccb-brief-core';
-import { resolveMemberIdentities } from '@/lib/ccb-search';
+import { resolveMemberIdentities, type MemberIdentity } from '@/lib/ccb-search';
+import { flaggedListSql, boundedRace, type Flagged } from '@/lib/ccb-worklist-core';
 import PullMember from '@/components/care/PullMember';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 
-type Flagged = {
-  individual_uid: string; uhid: string | null; presc_uid: string;
-  date: string | null; citation_coverage_pct: number | null; priority: string | null;
-  coverage: string | null; doctor_speciality: string | null; signal: string | null;
-};
+/** db13 identity is a label, not a dependency: a slow Metabase must not hold TTFB. */
+const IDENTITY_TIMEOUT_MS = 3000;
 
 const titleCase = (s: string | null) => (s ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : '');
 const clamp = (s: string | null, n = 130) => (s && s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : (s || ''));
@@ -27,33 +25,31 @@ export default async function CareLanding() {
 
   // Members flagged for a conversation: one row per member (best-grounded flagged episode), with a
   // plain-language signal pulled from the stored brief (the cited surgical/specialist indication).
+  const tNeon = Date.now();
   let rows: Flagged[] = [];
   try {
-    rows = (await run(
-      `SELECT individual_uid, uhid, presc_uid, note_date_ist AS date, citation_coverage_pct, priority, coverage, doctor_speciality, signal
-       FROM (
-         SELECT DISTINCT ON (individual_uid)
-           individual_uid, uhid, presc_uid,
-           to_char(note_date AT TIME ZONE 'Asia/Kolkata','YYYY-MM-DD') AS note_date_ist,
-           citation_coverage_pct, priority, coverage, doctor_speciality,
-           coalesce(
-             (SELECT f->>'claim' FROM jsonb_array_elements(CASE WHEN jsonb_typeof(envelope->'clinical')='array' THEN envelope->'clinical' ELSE '[]'::jsonb END) f
-                WHERE f->>'id' IN (SELECT jsonb_array_elements_text(CASE WHEN jsonb_typeof(envelope->'commercial'->'gated_on')='array' THEN envelope->'commercial'->'gated_on' ELSE '[]'::jsonb END)) LIMIT 1),
-             (SELECT f->>'claim' FROM jsonb_array_elements(CASE WHEN jsonb_typeof(envelope->'clinical')='array' THEN envelope->'clinical' ELSE '[]'::jsonb END) f
-                WHERE f->>'kind' IN ('surgical_indication','speciality') LIMIT 1)
-           ) AS signal,
-           created_at
-         FROM ccb_briefs
-         WHERE engine_version = $1 AND pitch_allowed = true AND individual_uid IS NOT NULL
-         ORDER BY individual_uid, citation_coverage_pct DESC NULLS LAST, created_at DESC
-       ) x
-       ORDER BY citation_coverage_pct DESC NULLS LAST, note_date_ist DESC
-       LIMIT 30`,
-      [CCB_ENGINE_VERSION],
-    )) as Flagged[];
+    rows = (await run(flaggedListSql(), [CCB_ENGINE_VERSION])) as Flagged[];
   } catch { rows = []; }
+  const neon_ms = Date.now() - tNeon;
 
-  const identities = await resolveMemberIdentities(rows.map((r) => r.individual_uid));
+  // Identity is a display label. resolveMemberIdentities() already fail-safes to {} on error, but
+  // it has no timeout — a stalled db13 read used to hold TTFB open indefinitely. Bound it.
+  const tIdentity = Date.now();
+  const identities = await boundedRace<Record<string, MemberIdentity>>(
+    resolveMemberIdentities(rows.map((r) => r.individual_uid)),
+    IDENTITY_TIMEOUT_MS,
+    {},
+  );
+  const identity_ms = Date.now() - tIdentity;
+
+  // Counts + milliseconds only — never member data. Grep `[ccb-briefs-timing]` in runtime logs.
+  console.log('[ccb-briefs-timing]', JSON.stringify({
+    neon_ms,
+    identity_ms,
+    rows: rows.length,
+    identities: Object.keys(identities).length,
+    deploy: process.env.VERCEL_GIT_COMMIT_SHA ?? null,
+  }));
 
   return (
     <div className="mx-auto max-w-4xl px-5 py-8" style={{ fontFamily: 'system-ui, sans-serif' }}>
