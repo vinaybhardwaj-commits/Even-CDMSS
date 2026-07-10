@@ -10,6 +10,9 @@ import { computeSourceQualityWeight } from '@/lib/source-quality';
 import { parseInvestigations, type ParsedInvestigations } from '@/lib/investigations';
 import { generateHypotheses, gatherHypothesisEvidence, formatHypothesesForPrompt, type Hypothesis } from '@/lib/ddx-hypothesis';
 import { geminiConfigured, GEMINI_MODEL } from '@/lib/llm';
+import { buildDdxClinicalState } from '@/lib/clinical-state/from-primitives';
+import { stateCounts } from '@/lib/clinical-state/schema';
+import { normalizeWithLlm, mergeLlmFindings } from '@/lib/clinical-state/extract';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;  // hypothesis-first beta adds passes; Pro allows 300s. Classic still finishes ~2min.
@@ -161,6 +164,41 @@ export async function POST(req: NextRequest) {
       }
       const displayForPrompt = investigations?.promptBlock ? `${display}\n\n${investigations.promptBlock}` : display;
       const investigationTerms = investigations?.abnormalTerms ?? [];
+
+      // Phase 1a — ClinicalState: computed + traced ALONGSIDE the pipeline. It feeds
+      // nothing (displayForPrompt untouched) and blocks nothing (fail-open). The
+      // stage-2 LLM normalisation is gated OFF by default (CLINICAL_STATE_LLM=1);
+      // default path adds zero model calls.
+      try {
+        let clinicalState = buildDdxClinicalState(body, investigations);
+        let rejectedSpans: unknown[] = [];
+        if (process.env.CLINICAL_STATE_LLM === '1') {
+          const llmPass = await normalizeWithLlm(
+            { surface: 'ddx', age: body.age, sex: body.sex, fields: { complaint: body.cc, history: body.history, exam: body.exam, vitals: body.vitals } },
+            async (system, user) => {
+              const res = await tracedChat(traceId, 'clinical_state_normalise', {
+                model: DDX_MODEL,
+                messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+                temperature: 0.1,
+                max_tokens: 900,
+                ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
+              }, { gemini: G });
+              return res.choices?.[0]?.message?.content ?? '';
+            },
+          );
+          clinicalState = mergeLlmFindings(clinicalState, llmPass);
+          rejectedSpans = llmPass.rejected;
+        }
+        await logEvent(traceId, 'clinical_state_extracted', 'expanding', {
+          ok: true,
+          counts: stateCounts(clinicalState),
+          unstable: clinicalState.instability.unstable,
+          rejected_spans: rejectedSpans,
+          state: clinicalState,
+        });
+      } catch (e) {
+        await logEvent(traceId, 'clinical_state_extracted', 'expanding', { ok: false, error: String((e as Error).message) }).catch(() => {});
+      }
 
       // Hypothesis-first engine (flag-gated; default classic so production is
       // unchanged). When on, the model proposes a broad differential from clinical
