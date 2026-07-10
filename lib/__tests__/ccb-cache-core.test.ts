@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   isSnapshotFresh, snapshotTtlHours, mapSnapshotRow, toEpochMs,
-  SNAPSHOT_TTL_H_DEFAULT,
+  SNAPSHOT_TTL_H_DEFAULT, SNAPSHOT_SCHEMA_VERSION,
 } from '../ccb-dossier-cache-core.ts';
 import { docSha } from '../ccb-extract-cache-core.ts';
 
@@ -84,7 +84,8 @@ test('toEpochMs rejects everything else', () => {
 });
 
 // ── mapSnapshotRow: a corrupt row is a MISS, never a stale-wrong serve ────────
-const bundle = { member: { uid: 'm1' }, snapshot: {}, timeline: [], latestEpisodeUid: 'e1' };
+// v2 Build B: a servable bundle must carry the current _schemaVersion stamp.
+const bundle = { member: { uid: 'm1' }, snapshot: {}, timeline: [], latestEpisodeUid: 'e1', _schemaVersion: SNAPSHOT_SCHEMA_VERSION };
 
 test('mapSnapshotRow maps a jsonb object row', () => {
   const got = mapSnapshotRow({ snapshot: bundle, refreshed_at: new Date(NOW) });
@@ -121,6 +122,37 @@ test('mapSnapshotRow returns null when refreshed_at is unreadable', () => {
 
 test('mapSnapshotRow never throws on hostile input', () => {
   assert.doesNotThrow(() => mapSnapshotRow({ snapshot: '{"a":', refreshed_at: 'x' }));
+});
+
+// ── schema-version guard (v2 Build B) ────────────────────────────────────────
+test('SNAPSHOT_SCHEMA_VERSION is 2 (v1 = P1 rows, unstamped)', () => {
+  assert.equal(SNAPSHOT_SCHEMA_VERSION, 2);
+});
+
+test('a P1 bundle (no _schemaVersion) is a MISS, so the enriched timeline appears without waiting out the TTL', () => {
+  const v1 = { member: { uid: 'm1' }, snapshot: {}, timeline: [], latestEpisodeUid: 'e1' };
+  assert.equal(mapSnapshotRow({ snapshot: v1, refreshed_at: new Date(NOW) }), null);
+});
+
+test('a bundle stamped with any other version is a MISS (older or newer)', () => {
+  for (const v of [1, 3, '2', null, undefined, 2.0001, NaN]) {
+    const b = { ...bundle, _schemaVersion: v };
+    assert.equal(mapSnapshotRow({ snapshot: b, refreshed_at: new Date(NOW) }), null, `version ${String(v)} should miss`);
+  }
+});
+
+test('a correctly stamped bundle is servable, and the stamp rides along harmlessly', () => {
+  const got = mapSnapshotRow({ snapshot: bundle, refreshed_at: new Date(NOW) });
+  assert.ok(got);
+  assert.equal((got.bundle as unknown as { _schemaVersion: number })._schemaVersion, SNAPSHOT_SCHEMA_VERSION);
+  assert.equal(got.refreshedAt, NOW);
+});
+
+test('the version guard also applies to a snapshot that arrived as a JSON string', () => {
+  const v1 = JSON.stringify({ member: {}, timeline: [] });
+  assert.equal(mapSnapshotRow({ snapshot: v1, refreshed_at: new Date(NOW) }), null);
+  const v2 = JSON.stringify(bundle);
+  assert.ok(mapSnapshotRow({ snapshot: v2, refreshed_at: new Date(NOW) }));
 });
 
 // ── docSha ────────────────────────────────────────────────────────────────────

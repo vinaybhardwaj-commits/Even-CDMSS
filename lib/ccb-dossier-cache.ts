@@ -15,7 +15,7 @@ import { sql } from './db';
 import { assembleDossier } from './ccb-dossier';
 import { boundedRace } from './ccb-worklist-core';
 import type { DossierBundle } from './ccb-dossier-core';
-import { mapSnapshotRow, type CachedSnapshot, type SnapshotRow } from './ccb-dossier-cache-core';
+import { mapSnapshotRow, SNAPSHOT_SCHEMA_VERSION, type CachedSnapshot, type SnapshotRow } from './ccb-dossier-cache-core';
 
 /** Whole-assemble budget. db13 pathology must not hold a member open past this. */
 export const REFRESH_BUDGET_MS = 12_000;
@@ -53,12 +53,15 @@ export async function refreshMemberSnapshot(individualUid: string): Promise<Doss
   if (!bundle) return null;
 
   try {
+    // Stamp the shape version into the stored JSON. The extra key rides harmlessly in the jsonb;
+    // consumers ignore it, and `mapSnapshotRow` uses it to reject bundles from another build.
+    const stored = JSON.stringify({ ...bundle, _schemaVersion: SNAPSHOT_SCHEMA_VERSION });
     await sql(
       `INSERT INTO ccb_member_snapshot (individual_uid, snapshot, source, refreshed_at)
        VALUES ($1, $2::jsonb, 'live', NOW())
        ON CONFLICT (individual_uid) DO UPDATE
          SET snapshot = EXCLUDED.snapshot, source = EXCLUDED.source, refreshed_at = NOW()`,
-      [individualUid, JSON.stringify(bundle)],
+      [individualUid, stored],
     );
   } catch {
     // Persist is best-effort. A cache we could not write is not a reason to fail the open.

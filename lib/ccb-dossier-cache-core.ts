@@ -12,6 +12,20 @@ import type { DossierBundle } from './ccb-dossier-core';
 export const SNAPSHOT_TTL_H_DEFAULT = 24;
 
 /**
+ * Shape version of the cached `DossierBundle`.
+ *
+ * Bump this whenever the bundle gains fields that the UI depends on. A stored row whose
+ * `_schemaVersion` does not match reads as a cache MISS, forcing a re-assemble on the first open —
+ * so a shape change appears immediately after deploy instead of waiting out the 24h TTL.
+ *
+ * v1 (P1) rows carry no `_schemaVersion` at all, so they read as `undefined !== 2` → miss → re-enrich.
+ *
+ *   1 — P1: member + snapshot + timeline(opd|ipd|diagnostic|radiology) + latestEpisodeUid
+ *   2 — v2 Build B: timeline gains order|surgery|hcu|event kinds and `docUrl`
+ */
+export const SNAPSHOT_SCHEMA_VERSION = 2;
+
+/**
  * Parse the TTL env. Anything non-finite, non-positive, or unparseable falls back to the default
  * rather than silently disabling the cache (TTL 0 would make every open a live assemble).
  */
@@ -46,9 +60,9 @@ export interface SnapshotRow {
 }
 
 /**
- * Map one row to a CachedSnapshot. Returns null for a missing row, an unparseable snapshot, or an
- * unreadable timestamp — every one of which the caller must treat as a cache MISS, never as a
- * stale-but-servable hit.
+ * Map one row to a CachedSnapshot. Returns null for a missing row, an unparseable snapshot, an
+ * unreadable timestamp, or a bundle written under a different `_schemaVersion` — every one of which
+ * the caller must treat as a cache MISS, never as a stale-but-servable hit.
  */
 export function mapSnapshotRow(row: SnapshotRow | undefined | null): CachedSnapshot | null {
   if (!row) return null;
@@ -58,6 +72,10 @@ export function mapSnapshotRow(row: SnapshotRow | undefined | null): CachedSnaps
     try { bundle = JSON.parse(bundle); } catch { return null; }
   }
   if (!bundle || typeof bundle !== 'object' || Array.isArray(bundle)) return null;
+
+  // Shape guard: a bundle from an older (or newer) build is not servable. Re-assemble instead.
+  const version = (bundle as { _schemaVersion?: unknown })._schemaVersion;
+  if (version !== SNAPSHOT_SCHEMA_VERSION) return null;
 
   const refreshedAt = toEpochMs(row.refreshed_at);
   if (refreshedAt === null) return null;

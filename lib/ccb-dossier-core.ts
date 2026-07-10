@@ -46,7 +46,9 @@ function fullName(first: string | null, last: string | null, display: string | n
 }
 
 // ── Types ───────────────────────────────────────────────────────────────────────
-export type TimelineKind = 'opd' | 'ipd' | 'diagnostic' | 'radiology';
+// v2 Build B added 'order' | 'surgery' | 'hcu' | 'event'. A cached snapshot written before that
+// simply carries none of them; consumers must treat an unknown kind and an absent docUrl as normal.
+export type TimelineKind = 'opd' | 'ipd' | 'diagnostic' | 'radiology' | 'order' | 'surgery' | 'hcu' | 'event';
 
 export interface TimelineItem {
   date: string | null;      // YYYY-MM-DD (IST)
@@ -54,6 +56,7 @@ export interface TimelineItem {
   title: string;            // e.g. "Orthopedics" / "IPD discharge"
   subtitle: string | null;  // e.g. "knee pain → osteoarthritis" / "MRI right knee · 5 days"
   refUid: string | null;    // presc_uid for OPD rows → opens the conversation brief
+  docUrl?: string;          // result PDF (report / HCU) — opened directly; absent when there is none
 }
 
 export interface DossierMember {
@@ -119,7 +122,8 @@ export function reportsSql(table: 'diagnostic' | 'radiology', individualUid: str
   const tbl = table === 'radiology' ? '"individuals-radiology_reports"' : '"individuals-diagnostic_reports"';
   const lim = Math.max(1, Math.min(100, Math.floor(limit)));
   const dateExpr = `left(coalesce(collection_date, created_at, uploaded_at), 10)`;
-  return `SELECT ${dateExpr} AS report_date, document_name, vendor`
+  // v2 Build B: carry the result PDF so the timeline row can open it (docUrl).
+  return `SELECT ${dateExpr} AS report_date, document_name, vendor, document_url, processed_report_url`
     + ` FROM ${tbl} WHERE _parent_id = '${individualUid}' AND is_draft = false`
     + ` ORDER BY coalesce(collection_date, created_at, uploaded_at) DESC LIMIT ${lim}`;
 }
@@ -237,13 +241,17 @@ export function reportTimeline(rows: Record<string, unknown>[], kind: 'diagnosti
     const name = asStr(r.document_name);
     const vendor = asStr(r.vendor);
     const label = (name && name.trim()) ? name.trim() : fallback;
-    return {
+    // v2 Build B: prefer the processed PDF over the raw upload.
+    const url = asStr(r.processed_report_url) ?? asStr(r.document_url);
+    const item: TimelineItem = {
       date: asStr(r.report_date),
       kind,
       title: kind === 'radiology' ? 'Radiology' : 'Diagnostic',
       subtitle: vendor ? `${label} · ${vendor}` : label,
       refUid: null,
     };
+    if (url && url.trim()) item.docUrl = url.trim();
+    return item;
   });
 }
 
