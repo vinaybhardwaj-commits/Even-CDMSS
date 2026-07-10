@@ -135,11 +135,24 @@ function injectConcordance(groups: NavGroup[]): NavGroup[] {
   );
 }
 
+/**
+ * True for the CCB split-screen brief route `/care/<presc_uid>` — and ONLY that route. Every named
+ * /care child (briefs, login, review, triage, m/<uid>, …) keeps the normal shell. Kept next to
+ * `fullBleed` so the two stay in step.
+ */
+const CARE_NAMED_CHILDREN = new Set(['briefs', 'login', 'review', 'triage', 'm']);
+function isCareBriefRoute(pathname: string): boolean {
+  const seg = pathname.match(/^\/care\/([^/]+)\/?$/)?.[1];
+  return !!seg && !CARE_NAMED_CHILDREN.has(seg);
+}
+
 export function Shell({ children, concordanceEnabled = false }: { children: React.ReactNode; concordanceEnabled?: boolean }) {
   const pathname = usePathname() || '';
   // Review Mode's 3-pane surface provides its own full-bleed padding — exempt ONLY it from the
   // shell's 1024px content cap (every other route renders pixel-identical). PRD addendum §1.1 patch 2.
-  const fullBleed = pathname === '/care/review';
+  // CCB v2 P2: the split-screen brief at /care/<presc_uid> joins it — document beside findings needs
+  // the full width, and the floating ☰ below restores the nav. Named /care children are excluded.
+  const fullBleed = pathname === '/care/review' || isCareBriefRoute(pathname);
   const isAdmin = pathname.startsWith('/admin');
   const base = isAdmin ? ADMIN : CLINICIAN;
   const groups = concordanceEnabled ? injectConcordance(base) : base;
