@@ -9,7 +9,8 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --import tsx \"lib/calculators/math/__tests__/*.test.ts\""
+    "test": "node --test --import tsx \"lib/**/__tests__/*.test.ts\"",
+    "ddx:bench": "node --import tsx scripts/ddx-p0-run.mjs"
   },
   "dependencies": {
     "@neondatabase/serverless": "^0.10.4",
