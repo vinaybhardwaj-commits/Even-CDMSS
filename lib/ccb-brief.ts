@@ -16,8 +16,9 @@
 
 import { retrieve } from './retrieve';
 import { hitsToSources, buildCitedContext, type CiteHit } from './citations-core';
-import { chatWithFallback, geminiModelFor, geminiUtilityModel, TEXT_MODEL } from './llm';
+import { chatWithFallback, geminiModelFor, geminiUtilityModel, TEXT_MODEL, GEMINI_MODEL } from './llm';
 import { generateFromDocument, SUPPORTED_DOC_MIME } from './gemini-multimodal';
+import { getExtract, putExtract } from './ccb-extract-cache';
 import { startTrace, logEvent, finishTrace, tracedChat, setTraceQuestionPreview } from './trace';
 import {
   EXTRACT_SYSTEM, buildExtractUser, parseExtractedReport,
@@ -44,6 +45,11 @@ function mimeFor(url: string, header: string | null): string {
 
 /** Fetch one result PDF and read it into a de-identified ExtractedReport (null on any failure). */
 async function readReport(report: ReportDoc, traceId?: string): Promise<ExtractedReport | null> {
+  // CCB v2 P1: a finalized document's extract is immutable. A hit skips BOTH the PDF fetch and the
+  // multimodal read, so a `fresh=1` regenerate re-reads only genuinely new documents.
+  const hit = await getExtract(report.url).catch(() => null);
+  if (hit) return hit;
+
   try {
     const res = await fetch(report.url);
     if (!res.ok) return null;
@@ -56,7 +62,9 @@ async function readReport(report: ReportDoc, traceId?: string): Promise<Extracte
     const raw = await generateFromDocument(EXTRACT_SYSTEM, buildExtractUser(report.kind), buf.toString('base64'), mime, {
       maxOutputTokens: 2048, temperature: 0.1, traceId, label: 'ccb_report_read',
     });
-    return raw ? parseExtractedReport(raw, report.kind) : null;
+    const extract = raw ? parseExtractedReport(raw, report.kind) : null;
+    if (extract) await putExtract(report.url, extract, GEMINI_MODEL).catch(() => {});
+    return extract;
   } catch {
     return null;
   }

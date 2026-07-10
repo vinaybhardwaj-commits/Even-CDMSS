@@ -6,6 +6,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { assembleEpisode } from '@/lib/ccb-fetch';
 import { generateBrief } from '@/lib/ccb-brief';
 import { saveBrief, briefedUidsForSet, earliestBriefedDay } from '@/lib/ccb-store';
+import { refreshMemberSnapshot } from '@/lib/ccb-dossier-cache';
 import { countCcbNotesForDay, fetchCcbUidsForDay } from '@/lib/ccb-detect';
 import { CCB_ENGINE_VERSION } from '@/lib/ccb-brief-core';
 import { istYesterday } from '@/lib/metabase';
@@ -45,6 +46,12 @@ async function processDay(day: string, max: number, conc: number) {
   const briefed = await briefedUidsForSet(candidates, CCB_ENGINE_VERSION);
   const todo = candidates.filter((u) => !briefed.has(u)).slice(0, max);
 
+  // CCB v2 P1 warm-up: pre-build each briefed member's snapshot so the daytime open is a cache hit.
+  // Started inside the loop (so it overlaps the next brief) but never awaited there — no brief is
+  // blocked, slowed, or failed by it. Settled once, after the loop, so the promises actually run:
+  // a floating promise would be dropped when the serverless function returns.
+  const warmups: Promise<unknown>[] = [];
+
   const results = await mapLimit(todo, conc, async (uid) => {
     const started = Date.now();
     try {
@@ -52,11 +59,17 @@ async function processDay(day: string, max: number, conc: number) {
       if (!bundle) return { uid, status: 'no_episode' };
       const env = await generateBrief(bundle, { trace: false }); // batch: keep observability quiet
       const status = await saveBrief(env, bundle.keys, { model: GEMINI_MODEL, latencyMs: Date.now() - started });
+      if (status === 'inserted' && bundle.keys.individualUid) {
+        warmups.push(refreshMemberSnapshot(bundle.keys.individualUid).catch(() => null));
+      }
       return { uid, coverage: env.episode.coverage, pitch: env.commercial.pitch_allowed, grounded: env.grounding_summary.citation_coverage_pct, status };
     } catch (e) {
       return { uid, error: String((e as Error).message) };
     }
   });
+
+  // Each warm-up is already bounded to REFRESH_BUDGET_MS and can neither throw nor alter `results`.
+  if (warmups.length) await Promise.allSettled(warmups);
 
   const inserted = results.filter((r) => 'status' in r && (r as { status?: string }).status === 'inserted').length;
   const briefedNow = briefed.size + inserted;

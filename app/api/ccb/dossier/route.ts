@@ -3,7 +3,8 @@ export const runtime = 'nodejs';
 export const maxDuration = 120;
 
 import { NextRequest, NextResponse } from 'next/server';
-import { assembleDossier } from '@/lib/ccb-dossier';
+import { getMemberSnapshot, refreshMemberSnapshot } from '@/lib/ccb-dossier-cache';
+import { isSnapshotFresh, snapshotTtlHours } from '@/lib/ccb-dossier-cache-core';
 import { bridgeMemberIdToIndividuals } from '@/lib/ccb-search';
 import { bridgeUhidToIndividual } from '@/lib/ccb-resolve';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
@@ -46,9 +47,37 @@ export async function GET(req: NextRequest) {
     }
     if (!isUid(individualUid)) return NextResponse.json({ error: 'pass ?individual_uid=, ?uhid=, or ?member_id=' }, { status: 400 });
 
-    const dossier = await assembleDossier(individualUid);
-    if (!dossier) return NextResponse.json({ error: 'member not found' }, { status: 404 });
-    return NextResponse.json({ ok: true, dossier });
+    // ── cache-first (CCB v2 P1) ────────────────────────────────────────────────
+    // The snapshot row is always read (one indexed PK lookup): `refresh=1` skips *serving* it,
+    // but we still want it in hand as the stale fallback if the live re-assemble times out.
+    const t0 = Date.now();
+    const forceRefresh = p.get('refresh') === '1';
+    const ttlH = snapshotTtlHours(process.env.CCB_SNAPSHOT_TTL_H);
+    const cached = await getMemberSnapshot(individualUid);
+
+    const done = (source: 'cache' | 'live' | 'stale', body: Record<string, unknown>, ageS: number | null) => {
+      // counts/ms only — no PHI.
+      console.log('[ccb-dossier-timing]', JSON.stringify({ source, snapshot_age_s: ageS, ms: Date.now() - t0 }));
+      return NextResponse.json(body);
+    };
+    const ageOf = (ms: number) => Math.round((Date.now() - ms) / 1000);
+
+    if (!forceRefresh && cached && isSnapshotFresh(cached.refreshedAt, ttlH, Date.now())) {
+      const ageS = ageOf(cached.refreshedAt);
+      return done('cache', { ok: true, dossier: cached.bundle, cached: true, snapshot_age_s: ageS }, ageS);
+    }
+
+    const fresh = await refreshMemberSnapshot(individualUid);
+    if (fresh) return done('live', { ok: true, dossier: fresh, cached: false }, null);
+
+    // db13 timed out or is unhealthy. A stale snapshot beats nothing.
+    if (cached) {
+      const ageS = ageOf(cached.refreshedAt);
+      return done('stale', { ok: true, dossier: cached.bundle, cached: true, stale: true, snapshot_age_s: ageS }, ageS);
+    }
+
+    // No cache and no live bundle — the pre-existing behaviour, unchanged.
+    return NextResponse.json({ error: 'member not found' }, { status: 404 });
   } catch (e) {
     return NextResponse.json({ ok: false, error: String((e as Error).message) }, { status: 500 });
   }
