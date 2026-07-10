@@ -13,7 +13,12 @@ export function MineButton() {
       const r = await fetch('/api/learning/mine?days=90', { cache: 'no-store' });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j.ok) setMsg('error: ' + (j.error || `status ${r.status}`));
-      else { setMsg(`scanned ${j.scanned} audits · ${j.candidates} finding + ${j.missed} missed + ${j.suppressions} false clusters cleared the gates · ${j.inserted} new · ${j.refreshed} refreshed`); router.refresh(); }
+      else {
+        const probes = `${j.probed ?? 0} corpus probe${(j.probed ?? 0) === 1 ? '' : 's'}${j.deferredProbes ? ` · ${j.deferredProbes} deferred to tomorrow` : ''}`;
+        const adj = (j.adjudicatedFix || j.adjudicatedSuppress) ? ` · adjudicated fix ×${j.adjudicatedFix} / suppress ×${j.adjudicatedSuppress}` : '';
+        setMsg(`scanned ${j.scanned} audits · ${j.candidates} finding + ${j.missed} missed + ${j.suppressions} false clusters cleared the gates · ${probes} · ${j.inserted} new · ${j.refreshed} refreshed${adj}`);
+        router.refresh();
+      }
     } catch (e) { setMsg('failed: ' + String((e as Error).message)); }
     setBusy(false);
   }

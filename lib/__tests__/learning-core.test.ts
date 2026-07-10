@@ -118,8 +118,9 @@ test('mineRuleCandidates: context-dependent → limit; prescribing domain → ph
 // ── Reviewer-driven mining (LEARNING-LOOP-V2 §2.3) ──
 import {
   mineMissedFlags, mineFalseClusters, truncateCard,
-  MISSED_FLAG_MIN, FALSE_CLUSTER_MIN, FALSE_CLUSTER_MIN_REVIEWERS,
-  type MissedFlagLite, type FindingLabelLite,
+  demandRankScore, coverageDeficitOf, routeAdjudication, routeAdjudications, adjudicationSignalType,
+  MISSED_HARVEST_MIN, MISSED_RULE_MIN, MAX_CITED_FRACTION, FALSE_CLUSTER_MIN, FALSE_CLUSTER_MIN_REVIEWERS,
+  type MissedFlagLite, type FindingLabelLite, type AdjudicationLite,
 } from '../learning-core.ts';
 
 const mf = (audit_id: string, comment: string, author: string, category: string | null = 'prescribing_safety'): MissedFlagLite =>
@@ -132,16 +133,18 @@ test('truncateCard: caps + ellipsis at the 140 boundary, collapses whitespace', 
   assert.ok(truncateCard(long).endsWith('…'));
 });
 
-test('mineMissedFlags: ≥2 same-signature flags cluster; <2 excluded', () => {
+test('mineMissedFlags: same-signature flags cluster; a singleton is its own cluster (≥1 harvests)', () => {
   const flags = [
     mf('a1', 'Missed dual H1 antihistamine duplication', 'zaki'),
     mf('a2', 'missed the dual H1-antihistamine duplication', 'meera'),
     mf('a3', 'A totally unrelated one-off note', 'zaki'),
   ];
-  const out = mineMissedFlags(flags); // no isCitable → all harvest
-  assert.equal(out.length, 1);
+  const out = mineMissedFlags(flags); // no coverage probe → all uncovered → all harvest
+  assert.equal(out.length, 2, 'the 2-flag cluster AND the singleton both harvest');
   assert.equal(out[0].provenance.nFlags, 2);
   assert.deepEqual(out[0].provenance.reviewers.sort(), ['meera', 'zaki']);
+  assert.equal(out[1].provenance.nFlags, 1);
+  assert.ok(out.every((c) => c.type === 'harvest_topic'));
 });
 
 test('mineMissedFlags: citable cluster → deterministic missed_rule draft', () => {
@@ -212,8 +215,208 @@ test('mineFalseClusters: single-reviewer cluster blocked (needs ≥2)', () => {
   assert.equal(mineFalseClusters(labels).length, 0);
 });
 
-test('gate constants pinned to §2.3 normative values', () => {
-  assert.equal(MISSED_FLAG_MIN, 2);
+test('gate constants pinned to normative values (§2.3 + HARVEST-DEMAND-RANK §2.3)', () => {
+  assert.equal(MISSED_HARVEST_MIN, 1);   // one clinician flag is enough to FETCH evidence…
+  assert.equal(MISSED_RULE_MIN, 2);      // …but never enough to auto-draft a firing rule
   assert.equal(FALSE_CLUSTER_MIN, 3);
   assert.equal(FALSE_CLUSTER_MIN_REVIEWERS, 2);
+  assert.equal(MAX_CITED_FRACTION, 0.5);
+});
+
+// ── HARVEST-DEMAND-RANK §2.1 — the pure scorer ──
+test('demandRankScore: zero → 0, full saturation → 100', () => {
+  assert.equal(demandRankScore({ nUncited: 0, nDoctors: 0, coverageDeficit: 0 }), 0);
+  assert.equal(demandRankScore({ nUncited: 60, nDoctors: 20, coverageDeficit: 1 }), 100);
+  assert.equal(demandRankScore({ nUncited: 600, nDoctors: 200, coverageDeficit: 1 }), 100, 'terms saturate');
+});
+
+test('demandRankScore: deficit outweighs volume outweighs breadth at equal magnitude', () => {
+  const deficitOnly = demandRankScore({ nUncited: 0, nDoctors: 0, coverageDeficit: 1 });   // 0.45
+  const volumeOnly = demandRankScore({ nUncited: 60, nDoctors: 0, coverageDeficit: 0 });   // 0.35
+  const breadthOnly = demandRankScore({ nUncited: 0, nDoctors: 20, coverageDeficit: 0 });  // 0.20
+  assert.equal(deficitOnly, 45);
+  assert.equal(volumeOnly, 35);
+  assert.equal(breadthOnly, 20);
+  assert.ok(deficitOnly > volumeOnly && volumeOnly > breadthOnly, 'rank by where the corpus is THIN');
+});
+
+test('demandRankScore: monotone non-decreasing in each term; clamps junk input', () => {
+  const base = { nUncited: 10, nDoctors: 2, coverageDeficit: 0.4 };
+  assert.ok(demandRankScore({ ...base, coverageDeficit: 0.9 }) > demandRankScore(base));
+  assert.ok(demandRankScore({ ...base, nUncited: 40 }) > demandRankScore(base));
+  assert.ok(demandRankScore({ ...base, nDoctors: 12 }) > demandRankScore(base));
+  assert.equal(demandRankScore({ nUncited: -5, nDoctors: -1, coverageDeficit: -2 }), 0);
+  assert.equal(demandRankScore({ nUncited: NaN, nDoctors: NaN, coverageDeficit: NaN }), 0);
+  assert.equal(demandRankScore({ nUncited: 60, nDoctors: 20, coverageDeficit: 5 }), 100, 'deficit clamps to 1');
+});
+
+test('coverageDeficitOf: 1 − topSim, clamped', () => {
+  assert.equal(coverageDeficitOf(0), 1);
+  assert.equal(coverageDeficitOf(0.08), 0.92);
+  assert.equal(coverageDeficitOf(1), 0);
+  assert.equal(coverageDeficitOf(1.4), 0);
+});
+
+// ── §2.2 — the finding-frequency rail gains the live probe ──
+const gapRows = (bigN = 50, bigDocs = 6): AuditRowLite[] => {
+  const rows: AuditRowLite[] = [];
+  // BIG: high uncited volume across many doctors — the cluster frequency alone would rank #1
+  for (let i = 0; i < bigN; i++) rows.push(row(`big${i}`, `doc${i % bigDocs}`, [lv('Concurrent oral and topical NSAID use', false)]));
+  // THIN: 12 uncited across 3 doctors, corpus has nothing (probe 0.0)
+  for (let i = 0; i < 12; i++) rows.push(row(`thin${i}`, `doc${i % 3}`, [lv('Acebrophylline for acute viral cough', false)]));
+  return rows;
+};
+
+test('mineHarvestGaps: back-compat — no probe injected → ranks by uncited volume, no demandRank', () => {
+  const gaps = mineHarvestGaps(gapRows(), DEFAULT_GAP_THRESHOLDS);
+  assert.equal(gaps.length, 2);
+  assert.match(gaps[0].title.toLowerCase(), /nsaid/, 'highest uncited volume first');
+  assert.equal(gaps[0].provenance.demandRank, null);
+  assert.equal(gaps[0].provenance.coverageDeficit, null);
+  assert.ok(gaps[0].confidence > 0 && gaps[0].confidence <= 0.9, 'legacy confidence retained');
+});
+
+test('mineHarvestGaps: live probe DROPS a covered topic even though citedFrac passed it', () => {
+  const gaps = mineHarvestGaps(gapRows(), DEFAULT_GAP_THRESHOLDS, {
+    coverage: (c) => (/nsaid/i.test(c.title) ? { topSim: 0.82, covered: true } : { topSim: 0.0, covered: false }),
+  });
+  assert.equal(gaps.length, 1, 'the well-covered cluster is dropped by the live gate');
+  assert.match(gaps[0].title.toLowerCase(), /acebrophylline/);
+  assert.equal(gaps[0].provenance.coverageDeficit, 1);
+  // 12 uncited, 3 doctors, deficit 1 → 0.45 + 0.35·0.2 + 0.20·0.15 = 0.55
+  assert.equal(gaps[0].provenance.demandRank, 55);
+  assert.equal(gaps[0].confidence, 0.55, 'confidence mirrors demandRank/100');
+});
+
+test('mineHarvestGaps: a low-volume/high-deficit cluster outranks a high-volume/partly-covered one', () => {
+  // Neither is dropped (both below the similarity floor), but demand-rank reverses the frequency
+  // ordering: 30 uncited at deficit 0.55 → 46; 12 uncited at deficit 1.00 → 55.
+  const gaps = mineHarvestGaps(gapRows(30, 4), DEFAULT_GAP_THRESHOLDS, {
+    coverage: (c) => (/nsaid/i.test(c.title) ? { topSim: 0.45, covered: false } : { topSim: 0.0, covered: false }),
+  });
+  assert.equal(gaps.length, 2);
+  assert.match(gaps[0].title.toLowerCase(), /acebrophylline/, 'thin corpus wins despite 12 < 30 uncited');
+  assert.equal(gaps[0].provenance.demandRank, 55);
+  assert.equal(gaps[1].provenance.demandRank, 46);
+  assert.match(gaps[1].title.toLowerCase(), /nsaid/);
+});
+
+test('mineHarvestGaps: unprobed (deferred) clusters survive, unranked — never dropped', () => {
+  const gaps = mineHarvestGaps(gapRows(), DEFAULT_GAP_THRESHOLDS, {
+    coverage: (c) => (/nsaid/i.test(c.title) ? { topSim: 0.0, covered: false } : undefined),  // thin one deferred
+  });
+  assert.equal(gaps.length, 2);
+  assert.match(gaps[0].title.toLowerCase(), /nsaid/, 'the ranked one sorts above the unranked');
+  assert.equal(gaps[1].provenance.demandRank, null, 'deferred cluster kept, awaiting tomorrow’s probe');
+});
+
+// ── §2.3 — the missed-flag rail at ≥1 ──
+test('missed rail: ONE uncovered flag yields a demand-ranked harvest candidate', () => {
+  const flags = [mf('a1', 'Missed oxymetazoline duration and rhinitis medicamentosa rebound', 'zaki')];
+  const out = mineMissedFlags(flags, { coverage: () => ({ topSim: 0.08, covered: false }) });
+  assert.equal(out.length, 1);
+  const c = out[0];
+  assert.equal(c.type, 'harvest_topic');
+  if (c.type !== 'harvest_topic') return;
+  assert.equal(c.provenance.nFlags, 1);
+  assert.equal(c.provenance.source, 'missed_flags');
+  assert.equal(c.provenance.coverageDeficit, 0.92);
+  // 1 flag, 1 reviewer, deficit 0.92 → 0.45·0.92 + 0.35·(1/60) + 0.20·(1/20) = 0.4279 → 43
+  assert.equal(c.provenance.demandRank, 43);
+  assert.equal(c.confidence, 0.43);
+});
+
+test('missed rail: ONE flag NEVER yields a rule, however well the corpus covers it', () => {
+  const flags = [mf('a1', 'Missed dual antihistamine duplication', 'zaki')];
+  const covered = mineMissedFlags(flags, { coverage: () => ({ topSim: 0.9, covered: true }) });
+  assert.equal(covered.length, 0, 'covered + 1 flag → no rule (too few flags), no harvest (corpus has it)');
+  const uncovered = mineMissedFlags(flags, { coverage: () => ({ topSim: 0.1, covered: false }) });
+  assert.equal(uncovered[0].type, 'harvest_topic');
+});
+
+test('missed rail: ≥2 flags + covered corpus → missed_rule (unchanged bar)', () => {
+  const flags = [mf('a1', 'Missed dual antihistamine duplication', 'zaki'), mf('a2', 'missed dual antihistamine duplication', 'meera')];
+  const out = mineMissedFlags(flags, { coverage: () => ({ topSim: 0.71, covered: true }) });
+  assert.equal(out.length, 1);
+  assert.equal(out[0].type, 'missed_rule');
+});
+
+// ── §2.4 — adjudication ledger routing: governance ONLY, never harvest ──
+test('routeAdjudication: suppress → vouch, fix → surfaced-only, accept/defer/monitor → no-op', () => {
+  assert.equal(routeAdjudication('suppress'), 'suppression_vouch');
+  assert.equal(routeAdjudication('fix'), 'surfaced_only');
+  for (const d of ['accept', 'defer', 'monitor', 'nonsense', '']) assert.equal(routeAdjudication(d), 'none');
+});
+
+test('adjudicationSignalType: parses the coarse <signal_type>@<engine_version> key', () => {
+  assert.equal(adjudicationSignalType('incomplete_dosing@opd-note-audit/0.81.7'), 'incomplete_dosing');
+  assert.equal(adjudicationSignalType('0.8-17'), null, 'a bug id names no signal class');
+  assert.equal(adjudicationSignalType('@x'), null);
+  assert.equal(adjudicationSignalType(''), null);
+});
+
+test('routeAdjudications: the 6 ratified decisions → 1 vouch, 5 surfaced fixes, 0 harvest', () => {
+  const rows: AdjudicationLite[] = [
+    { clusterKey: 'low_value_care@0.81.7', decision: 'fix', author: 'v', prdRef: 'PRD-A' },
+    { clusterKey: 'coding_completeness@0.81.7', decision: 'fix', author: 'v', prdRef: 'PRD-B' },
+    { clusterKey: 'appropriateness_review@0.81.7', decision: 'fix', author: 'v', prdRef: null },
+    { clusterKey: 'off_formulary@0.81.7', decision: 'fix', author: 'v', prdRef: null },
+    { clusterKey: 'unverified_brand@0.81.7', decision: 'fix', author: 'v', prdRef: null },
+    { clusterKey: 'incomplete_dosing@0.81.7', decision: 'suppress', author: 'v', prdRef: null },
+  ];
+  const g = routeAdjudications(rows);
+  assert.equal(g.nFix, 5);
+  assert.equal(g.nSuppress, 1);
+  assert.deepEqual(g.vouchedSignalTypes, ['incomplete_dosing']);
+  assert.equal(g.surfacedFixes.length, 5);
+  assert.equal(g.surfacedFixes[0].prdRef, 'PRD-A');
+  // NONE of the ledger's outputs can name a harvest topic — there is no such field, by construction.
+  assert.ok(!Object.keys(g).some((k) => /harvest/i.test(k)));
+});
+
+test('routeAdjudications: accept/defer/monitor vouch nothing and surface nothing', () => {
+  const g = routeAdjudications([
+    { clusterKey: 'a@1', decision: 'accept', author: null },
+    { clusterKey: 'b@1', decision: 'defer', author: null },
+    { clusterKey: 'c@1', decision: 'monitor', author: null },
+  ]);
+  assert.deepEqual(g, { vouchedSignalTypes: [], surfacedFixes: [], nSuppress: 0, nFix: 0 });
+});
+
+test('suppression vouch: an adjudicated suppress lets a ONE-reviewer cluster propose', () => {
+  const labels = [
+    fl('a1', 'Dosing frequency not stated for amoxicillin', 'false', 'zaki', 'incomplete_dosing'),
+    fl('a2', 'dosing frequency not stated for amoxicillin', 'nitpick', 'zaki', 'incomplete_dosing'),
+    fl('a3', 'Dosing frequency, not stated for amoxicillin', 'false', 'zaki', 'incomplete_dosing'),
+  ];
+  assert.equal(mineFalseClusters(labels).length, 0, 'without a vouch the ≥2-reviewer gate holds');
+  const out = mineFalseClusters(labels, { vouchedSignalTypes: ['incomplete_dosing'] });
+  assert.equal(out.length, 1, 'the adjudicated decision stands in for the second reviewer');
+  assert.equal(out[0].payload.signal_type, 'incomplete_dosing');
+  assert.equal(out[0].provenance.vouched, true);
+  assert.match(out[0].payload.reason, /Adjudicated suppress on incomplete_dosing/);
+});
+
+test('suppression vouch: relaxes ONLY the reviewer gate — volume + precision still bind', () => {
+  const vouched = { vouchedSignalTypes: ['incomplete_dosing'] };
+  // 2 false/nitpick (< FALSE_CLUSTER_MIN) — vouch cannot rescue it
+  assert.equal(mineFalseClusters([
+    fl('a1', 'Dosing frequency not stated here', 'false', 'zaki', 'incomplete_dosing'),
+    fl('a2', 'dosing frequency not stated here', 'false', 'zaki', 'incomplete_dosing'),
+  ], vouched).length, 0, 'volume gate still binds');
+  // 3 false/nitpick but precision 0.5 — vouch cannot rescue it
+  assert.equal(mineFalseClusters([
+    fl('b1', 'Dosing frequency not stated here', 'false', 'zaki', 'incomplete_dosing'),
+    fl('b2', 'dosing frequency not stated here', 'nitpick', 'zaki', 'incomplete_dosing'),
+    fl('b3', 'dosing frequency not stated here', 'false', 'zaki', 'incomplete_dosing'),
+    fl('b4', 'dosing frequency not stated here', 'true_positive', 'zaki', 'incomplete_dosing'),
+    fl('b5', 'dosing frequency not stated here', 'true_positive', 'zaki', 'incomplete_dosing'),
+    fl('b6', 'dosing frequency not stated here', 'true_positive', 'zaki', 'incomplete_dosing'),
+  ], vouched).length, 0, 'precision gate still binds');
+  // a vouch for a DIFFERENT signal class does not relax this one
+  assert.equal(mineFalseClusters([
+    fl('c1', 'Dosing frequency not stated here', 'false', 'zaki', 'incomplete_dosing'),
+    fl('c2', 'dosing frequency not stated here', 'nitpick', 'zaki', 'incomplete_dosing'),
+    fl('c3', 'dosing frequency not stated here', 'false', 'zaki', 'incomplete_dosing'),
+  ], { vouchedSignalTypes: ['off_formulary'] }).length, 0, 'vouch is per signal class');
 });

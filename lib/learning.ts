@@ -10,10 +10,11 @@
 import { sql } from './db';
 import { chatWithFallback, geminiUtilityModel, TEXT_MODEL } from './llm';
 import {
-  mineRuleCandidates, mineHarvestGaps, mineMissedFlags, mineFalseClusters,
+  mineRuleCandidates, mineHarvestGaps, mineMissedFlags, mineFalseClusters, routeAdjudications,
   DEFAULT_THRESHOLDS, DEFAULT_GAP_THRESHOLDS, isMineableFinding,
   CANONICALIZE_SYSTEM, buildCanonicalizeUser, parseCanonicalMap,
   type AuditRowLite, type MineThresholds, type MissedFlagLite, type FindingLabelLite,
+  type CoverageProbe, type AdjudicationLite, type AdjudicationRouting,
 } from './learning-core';
 import { OPD_ENGINE_VERSIONS_CURRENT, OPD_ENGINE_VERSION } from './opd-note-audit-core';
 import { retrieve } from './retrieve';
@@ -108,39 +109,98 @@ export async function fetchFindingLabels(): Promise<FindingLabelLite[]> {
   }));
 }
 
-/** Corpus-evidence check for a missed-flag cluster (impure — keeps the pure miner deterministic; it
- *  receives only the boolean). retrieve() failure OR top hit below the floor → uncitable → harvest. */
-async function missedClusterCitable(title: string): Promise<boolean> {
+// Bounded probe budget per rail per run (§1). retrieve() = embed + hybrid + rerank; a few dozen calls
+// sit comfortably inside the miner's existing budget (it already Flash-canonicalises 300 subjects).
+// Clusters beyond the cap are DEFERRED to the next daily run and logged — never silently dropped.
+const PROBE_CAP = 40;
+
+/** THE single live corpus probe (HARVEST-DEMAND-RANK §2.2) — one definition of the similarity floor
+ *  and one fail-safe, shared by both harvest rails. Impure; the pure miners receive only its result.
+ *  A retrieve() failure (or an empty query) is treated as UNCOVERED — deficit 1 — because the safe
+ *  error is to harvest a topic we already have, not to skip a genuine gap. Never throws. */
+async function probeCoverage(title: string): Promise<CoverageProbe> {
+  const q = (title || '').trim();
+  if (!q) return { topSim: 0, covered: false };
   try {
-    const q = (title || '').trim();
-    if (!q) return false;
     const r = await retrieve(q, { topK: 5, useReranker: true, hybrid: true });
-    return (r.hits?.[0]?.similarity ?? 0) >= CITE_SIM_FLOOR;
-  } catch { return false; }
+    const topSim = r.hits?.[0]?.similarity ?? 0;
+    return { topSim, covered: topSim >= CITE_SIM_FLOOR };
+  } catch (e) {
+    console.warn('[learning] coverage probe failed → treating as uncovered', q.slice(0, 60), (e as Error).message);
+    return { topSim: 0, covered: false };
+  }
+}
+
+/** Corpus-evidence check for a missed-flag cluster — a thin wrapper over the shared probe. */
+async function missedClusterCitable(title: string): Promise<boolean> {
+  return (await probeCoverage(title)).covered;
+}
+
+/** Current-state adjudicated decisions (latest per cluster_key) from the append-only governance
+ *  ledger. The table is lab-side (created on demand by the Lab MCP) and carries no app_source /
+ *  engine_version / excluded_reason columns — the engine version is embedded in the coarse
+ *  cluster_key `<signal_type>@<engine_version>`. Fail-safe → [] (absent table included). */
+export async function fetchAdjudicationDecisions(): Promise<AdjudicationLite[]> {
+  const rows = await sql2(
+    `SELECT DISTINCT ON (cluster_key) cluster_key, decision, author, prd_ref
+       FROM opd_feedback_adjudications
+      ORDER BY cluster_key, created_at DESC, id DESC`,
+    []).catch(() => []);
+  return rows.map((r) => ({
+    clusterKey: String(r.cluster_key ?? ''), decision: String(r.decision ?? ''),
+    author: r.author == null ? null : String(r.author),
+    prdRef: r.prd_ref == null ? null : String(r.prd_ref),
+  })).filter((r) => r.clusterKey && r.decision);
+}
+
+/** Governance readout for the console: `adjudicated: fix ×N · suppress ×N` + the owed engine PRDs. */
+export async function fetchAdjudicationGovernance(): Promise<AdjudicationRouting> {
+  return routeAdjudications(await fetchAdjudicationDecisions().catch(() => []));
+}
+
+interface ReviewerMineResult {
+  missed: number; suppressions: number; inserted: number; refreshed: number;
+  probed: number; deferredProbes: number; adjudicatedSuppress: number; adjudicatedFix: number;
 }
 
 /** Mine reviewer signal into the SAME proposal queue: missed flags → missed_rule / harvest_topic,
- *  false clusters → suppression candidates. Two-pass on missed flags so citability (impure retrieve)
- *  is decided per cluster while the miner itself stays pure. */
-async function mineAndSaveReviewerProposals(): Promise<{ missed: number; suppressions: number; inserted: number; refreshed: number }> {
-  const [flags, labels] = await Promise.all([fetchMissedFlags(), fetchFindingLabels()]);
+ *  false clusters → suppression candidates. Two-pass on missed flags so the live probe (impure
+ *  retrieve) is decided per cluster while the miner itself stays pure.
+ *
+ *  §2.4 — the adjudication ledger is read here as GOVERNANCE: a `suppress` decision vouches for its
+ *  signal class (relaxing the miner's ≥2-reviewer gate); `fix` is surfaced only; the rest no-op. The
+ *  ledger keys coarse (`<signal_type>@<engine_version>`) so it can never name a harvest topic — and
+ *  by construction NOTHING here routes a decision to harvest. */
+async function mineAndSaveReviewerProposals(): Promise<ReviewerMineResult> {
+  const [flags, labels, adjudications] = await Promise.all([fetchMissedFlags(), fetchFindingLabels(), fetchAdjudicationDecisions()]);
+  const gov = routeAdjudications(adjudications);
   let inserted = 0; let refreshed = 0;
 
-  const draft = mineMissedFlags(flags);                       // pass 1: form clusters (harvest-only)
-  const citable = new Set<string>();
-  await Promise.all(draft.map(async (c) => { if (await missedClusterCitable(c.title)) citable.add(c.title); }));
-  const missed = mineMissedFlags(flags, { isCitable: (c) => citable.has(c.title) });  // pass 2: inject
+  // pass 1: form clusters (harvest-only, unprobed) → the probe worklist, highest nFlags first.
+  const draft = mineMissedFlags(flags);
+  const worklist = draft.slice(0, PROBE_CAP);
+  const deferredProbes = Math.max(0, draft.length - worklist.length);
+  if (deferredProbes > 0) console.warn(`[learning] missed rail: ${deferredProbes} cluster(s) beyond the ${PROBE_CAP}-probe cap — deferred to the next run, not dropped`);
+  const probes = new Map<string, CoverageProbe>();
+  await Promise.all(worklist.map(async (c) => { probes.set(c.title, await probeCoverage(c.title)); }));
+
+  // pass 2: inject the probe. Unprobed (deferred) clusters get no coverage → uncovered → harvest,
+  // demand-rank null, ranked by flags as before. Nothing is lost, only unranked until tomorrow.
+  const missed = mineMissedFlags(flags, { coverage: (c) => probes.get(c.title) });
   for (const c of missed) {
     const r = await upsertProposal({ type: c.type, clusterKey: c.clusterKey, title: c.title, payload: c.payload, evidence: [], nSupport: c.provenance.nFlags, provenance: c.provenance, confidence: c.confidence, suggestedReviewer: c.suggestedReviewer });
     if (r === 'inserted') inserted++; else if (r === 'refreshed') refreshed++;
   }
 
-  const suppressions = mineFalseClusters(labels);
+  const suppressions = mineFalseClusters(labels, { vouchedSignalTypes: gov.vouchedSignalTypes });
   for (const s of suppressions) {
     const r = await upsertProposal({ type: s.type, clusterKey: s.clusterKey, title: s.title, payload: s.payload, evidence: [], nSupport: s.provenance.nFalseNitpick, provenance: s.provenance, confidence: s.confidence, suggestedReviewer: s.suggestedReviewer });
     if (r === 'inserted') inserted++; else if (r === 'refreshed') refreshed++;
   }
-  return { missed: missed.length, suppressions: suppressions.length, inserted, refreshed };
+  return {
+    missed: missed.length, suppressions: suppressions.length, inserted, refreshed,
+    probed: worklist.length, deferredProbes, adjudicatedSuppress: gov.nSuppress, adjudicatedFix: gov.nFix,
+  };
 }
 
 /** Flash-canonicalise distinct finding subjects → { subject: canonical practice label }.
@@ -177,7 +237,14 @@ export async function canonicalizeSubjects(subjects: string[]): Promise<Record<s
   return map;
 }
 
-export interface MineSummary { scanned: number; subjects: number; canonicalized: number; candidates: number; gaps: number; missed: number; suppressions: number; inserted: number; refreshed: number; healed: number }
+export interface MineSummary {
+  scanned: number; subjects: number; canonicalized: number; candidates: number; gaps: number;
+  missed: number; suppressions: number; inserted: number; refreshed: number; healed: number;
+  /** live corpus probes made this run, and clusters deferred past the per-rail cap (both rails). */
+  probed: number; deferredProbes: number;
+  /** governance readout from the adjudication ledger — never a harvest driver. */
+  adjudicatedSuppress: number; adjudicatedFix: number;
+}
 
 /** Upsert one candidate into the review queue (proposed-only refresh). Returns insert/refresh/null. */
 async function upsertProposal(c: {
@@ -218,7 +285,20 @@ export async function mineAndSaveProposals(days = 90, thresholds: MineThresholds
   const cands = mineRuleCandidates(rows, thresholds, { canonicalLabel });
   // LL.4 — the SAME clustering also yields harvest-gap topics: high-volume practices the corpus
   // could not cite. They land in the same review queue; approving one only adds an ingest_topics row.
-  const gaps = mineHarvestGaps(rows, gapThresholds, { canonicalLabel });
+  //
+  // HARVEST-DEMAND-RANK §2.2 — two-pass, mirroring the missed-flag rail. Pass 1 clusters and applies
+  // the cheap citedFrac PRE-filter; the survivors (top 40 by uncited volume) get a live corpus probe;
+  // pass 2 re-mines with the probe injected, which DROPS the topics the corpus already covers — the
+  // live gate overrides the retrospective proxy — and demand-ranks the rest.
+  const gapDraft = mineHarvestGaps(rows, gapThresholds, { canonicalLabel });
+  const gapWorklist = gapDraft.slice(0, PROBE_CAP);
+  const gapDeferred = Math.max(0, gapDraft.length - gapWorklist.length);
+  if (gapDeferred > 0) console.warn(`[learning] finding-gap rail: ${gapDeferred} cluster(s) beyond the ${PROBE_CAP}-probe cap — deferred to the next run, not dropped`);
+  const gapProbes = new Map<string, CoverageProbe>();
+  await Promise.all(gapWorklist.map(async (g) => { gapProbes.set(g.clusterKey, await probeCoverage(g.title)); }));
+  const gaps = mineHarvestGaps(rows, gapThresholds, { canonicalLabel, coverage: (c) => gapProbes.get(c.clusterKey) });
+  const gapsCovered = gapWorklist.length - gaps.filter((g) => g.provenance.demandRank != null).length;
+  if (gapsCovered > 0) console.info(`[learning] finding-gap rail: ${gapsCovered} probed cluster(s) dropped — corpus already covers them (topSim ≥ ${CITE_SIM_FLOOR})`);
   let inserted = 0; let refreshed = 0;
   for (const c of cands) {
     const r = await upsertProposal({ type: c.type, clusterKey: c.clusterKey, title: c.title, payload: c.payload, evidence: c.evidence, nSupport: c.provenance.nOccurrences, provenance: c.provenance, confidence: c.confidence, suggestedReviewer: c.suggestedReviewer });
@@ -232,7 +312,13 @@ export async function mineAndSaveProposals(days = 90, thresholds: MineThresholds
   const rev = await mineAndSaveReviewerProposals();
   inserted += rev.inserted; refreshed += rev.refreshed;
   const healed = await reconcileApproved();
-  return { scanned: rows.length, subjects: subjects.length, canonicalized: Object.keys(labelMap).length, candidates: cands.length, gaps: gaps.length, missed: rev.missed, suppressions: rev.suppressions, inserted, refreshed, healed };
+  return {
+    scanned: rows.length, subjects: subjects.length, canonicalized: Object.keys(labelMap).length,
+    candidates: cands.length, gaps: gaps.length, missed: rev.missed, suppressions: rev.suppressions,
+    inserted, refreshed, healed,
+    probed: gapWorklist.length + rev.probed, deferredProbes: gapDeferred + rev.deferredProbes,
+    adjudicatedSuppress: rev.adjudicatedSuppress, adjudicatedFix: rev.adjudicatedFix,
+  };
 }
 
 /** Heal approved proposals whose apply step never landed (applied_ref IS NULL) — re-runs the

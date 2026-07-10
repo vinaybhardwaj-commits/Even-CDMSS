@@ -1,8 +1,9 @@
 import Link from 'next/link';
 import { sql } from '@/lib/db';
 import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
-import { fetchFlywheelData, fetchProgrammeData } from '@/lib/learning';
+import { fetchFlywheelData, fetchProgrammeData, fetchAdjudicationGovernance } from '@/lib/learning';
 import { pct, type FlywheelView } from '@/lib/learning-flywheel-core';
+import type { AdjudicationRouting } from '@/lib/learning-core';
 import type { Meter } from '@/lib/model-programme-core';
 import { MineButton, ReviewButtons, MissedRuleButtons, SuppressionButtons } from './controls';
 
@@ -24,7 +25,9 @@ type Provenance = {
   nOccurrences?: number; nUncited?: number; nDoctors?: number; depts?: string[]; sampleSubjects?: string[]; dominantDomain?: string;
   // reviewer-driven origins
   nFlags?: number; reviewers?: string[]; category?: string | null; sampleComments?: string[]; source?: string;
-  nFalseNitpick?: number; precision?: number; nLabeled?: number;
+  nFalseNitpick?: number; precision?: number; nLabeled?: number; vouched?: boolean;
+  // demand-rank (HARVEST-DEMAND-RANK) — absent on rows mined before this build
+  coverageDeficit?: number | null; demandRank?: number | null;
 };
 type Payload = {
   statement?: string; action_type?: string; rationale?: string; keywords?: string[]; provenance?: string; topic?: string; query_terms?: string;
@@ -39,9 +42,105 @@ type Proposal = {
 const REVIEWER_LABEL: Record<string, string> = { pharmacy_ams: 'Pharmacy / AMS', dept_lead: 'Dept lead', owner: 'Hospital PM' };
 const STATUSES = ['proposed', 'approved', 'rejected', 'all'] as const;
 
-// A proposal is reviewer-driven (Section 2) if it came from missed flags or false clusters.
-const isMissedOrigin = (p: Proposal): boolean =>
-  p.type === 'missed_rule' || p.type === 'suppression' || (p.type === 'harvest_topic' && p.provenance.source === 'missed_flags');
+// Every harvest_topic — whichever rail mined it — lives in the demand-ranked section.
+const isHarvest = (p: Proposal): boolean => p.type === 'harvest_topic';
+// Reviewer-driven proposals that are NOT harvest topics: missed-flag rule drafts + suppressions.
+const isMissedOrigin = (p: Proposal): boolean => p.type === 'missed_rule' || p.type === 'suppression';
+
+// Demand-rank presentation. A row mined before this build carries no demandRank → "—", sorts last.
+const demandOf = (p: Proposal): number | null => (typeof p.provenance.demandRank === 'number' ? p.provenance.demandRank : null);
+const demandTier = (d: number | null): 'hi' | 'mid' | 'lo' =>
+  (d == null ? 'lo' : d >= 70 ? 'hi' : d >= 40 ? 'mid' : 'lo');
+const PILL_CLASS: Record<'hi' | 'mid' | 'lo', string> = {
+  hi: 'bg-brand-faint text-brand',
+  mid: 'bg-sky-50 text-sky-700',
+  lo: 'bg-slate-100 text-slate-500',
+};
+const METER_CLASS: Record<'hi' | 'mid' | 'lo', string> = { hi: 'bg-brand', mid: 'bg-sky-700', lo: 'bg-slate-400' };
+
+/** The uncited-volume + prescriber-breadth the demand score was computed from. The finding rail
+ *  counts uncited findings across doctors; the missed rail counts reviewer flags across reviewers. */
+function demandTerms(p: Proposal): { volume: number; breadth: number; fromMissed: boolean } {
+  const fromMissed = p.provenance.source === 'missed_flags';
+  return fromMissed
+    ? { volume: p.provenance.nFlags ?? p.n_support, breadth: (p.provenance.reviewers || []).length, fromMissed }
+    : { volume: p.provenance.nUncited ?? p.n_support, breadth: p.provenance.nDoctors ?? 0, fromMissed };
+}
+
+function OriginChip({ p }: { p: Proposal }) {
+  if (p.provenance.source === 'adjudication') return <span className="rounded-full bg-violet-50 px-2 py-0.5 text-[10.5px] font-medium text-violet-700">from your adjudication</span>;
+  if (p.provenance.source === 'missed_flags') return <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10.5px] font-medium text-amber-700">from missed flag</span>;
+  return <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10.5px] font-medium text-slate-700">from finding cluster</span>;
+}
+
+// ── Section 2: harvest topics, demand-ranked (HARVEST-DEMAND-RANK §2.5) ──
+function HarvestCard({ p }: { p: Proposal }) {
+  const rank = demandOf(p);
+  const tier = demandTier(rank);
+  const { volume, breadth, fromMissed } = demandTerms(p);
+  const deficit = typeof p.provenance.coverageDeficit === 'number' ? p.provenance.coverageDeficit : null;
+  const gapPct = deficit == null ? null : Math.round(deficit * 100);
+  const topSim = deficit == null ? null : (1 - deficit).toFixed(2);
+  const comment = (p.provenance.sampleComments || [])[0];
+
+  return (
+    <div className="flex items-start gap-4 rounded-xl border border-slate-200 bg-white p-4">
+      <div className="shrink-0">
+        <span className={`flex h-14 w-14 flex-col items-center justify-center rounded-xl text-[20px] font-bold leading-none ${PILL_CLASS[tier]}`}>
+          {rank ?? '—'}
+          <small className="mt-0.5 text-[9px] font-semibold tracking-[0.04em] opacity-80">DEMAND</small>
+        </span>
+      </div>
+
+      <div className="min-w-0 flex-1">
+        <p className="text-[14px] font-medium text-slate-900">{p.payload.topic || p.title}</p>
+        <p className="mt-0.5 text-[12px] text-slate-500">
+          {gapPct == null
+            ? <>not yet probed — ranks on volume until the next miner run</>
+            : <>corpus gap <strong className="font-semibold text-slate-700">{gapPct}%</strong></>}
+          {' · '}<strong className="font-semibold text-slate-700">×{volume}</strong> {fromMissed ? `missed flag${volume === 1 ? '' : 's'}` : `uncited finding${volume === 1 ? '' : 's'}`}
+          {' · '}<strong className="font-semibold text-slate-700">{breadth}</strong> {fromMissed ? `reviewer${breadth === 1 ? '' : 's'}` : `prescriber${breadth === 1 ? '' : 's'}`}
+        </p>
+
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          <OriginChip p={p} />
+          {p.payload.query_terms && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10.5px] font-medium text-slate-500">query: {p.payload.query_terms}</span>}
+          <StatusBadge status={p.status} />
+        </div>
+
+        <div className="mt-1.5 text-[11.5px] leading-snug text-slate-400">
+          {fromMissed && comment ? <>Reviewer flagged: “{comment}”. </> : null}
+          {!fromMissed ? <>Frequency-mined from audit findings. </> : null}
+          {topSim != null
+            ? <>Corpus probe top-hit {topSim} — {gapPct! >= 70 ? 'effectively uncovered' : 'partial coverage; harvest lifts grounding'}.</>
+            : <>Corpus not probed this run (probe budget) — deferred, never dropped.</>}
+        </div>
+
+        <div className="mt-2 h-1 overflow-hidden rounded-full bg-slate-100">
+          <div className={`h-full rounded-full ${METER_CLASS[tier]}`} style={{ width: `${gapPct ?? 0}%` }} />
+        </div>
+
+        {p.status === 'proposed' ? <ReviewButtons id={p.id} approveLabel="Approve → harvest" /> : <ReviewedLine p={p} />}
+      </div>
+    </div>
+  );
+}
+
+/** Governance readout (§2.4) — the adjudication ledger is visible but never drives harvest. */
+function Governance({ g }: { g: AdjudicationRouting }) {
+  if (g.nFix === 0 && g.nSuppress === 0) return null;
+  const refs = g.surfacedFixes.map((f) => f.prdRef).filter(Boolean) as string[];
+  return (
+    <div className="mt-3 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-[11.5px] leading-relaxed text-slate-500">
+      Adjudicated: <strong className="font-semibold text-slate-700">fix ×{g.nFix}</strong> · <strong className="font-semibold text-slate-700">suppress ×{g.nSuppress}</strong>
+      {g.vouchedSignalTypes.length > 0 && <> · vouched for suppression: {g.vouchedSignalTypes.map((s) => <code key={s} className="ml-1 rounded bg-slate-50 px-1 py-0.5 text-[10.5px] text-slate-700">{s}</code>)}</>}
+      <span className="mt-1 block text-slate-400">
+        A <strong className="font-medium text-slate-500">suppress</strong> decision vouches for its signal class here (the dual-label safety check still runs on approval); a <strong className="font-medium text-slate-500">fix</strong> decision is an engine change owed elsewhere — surfaced only, never actioned from this console.
+        {refs.length > 0 && <> Owed: {refs.join(' · ')}.</>}
+      </span>
+    </div>
+  );
+}
 
 function Locked() {
   return (
@@ -81,13 +180,6 @@ function FoundCard({ p }: { p: Proposal }) {
         </div>
       )}
 
-      {p.type === 'harvest_topic' && p.payload.query_terms && (
-        <div className="mt-1.5 text-[11.5px] leading-snug text-slate-600">
-          Corpus gap — supported by a citation in only <strong className="text-slate-700">{Math.max(0, (p.provenance.nOccurrences ?? 0) - (p.provenance.nUncited ?? 0))}</strong> of {p.provenance.nOccurrences ?? p.n_support} encounters. Approving adds this PubMed harvest query to the literature engine:
-          <code className="ml-1 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] text-amber-800">{p.payload.query_terms}</code>
-        </div>
-      )}
-
       <div className="mt-2 text-[11px] text-slate-500">
         Seen <strong className="text-slate-700">{p.provenance.nOccurrences ?? p.n_support}×</strong> across <strong className="text-slate-700">{p.provenance.nDoctors ?? 0}</strong> doctors
         {p.provenance.depts && p.provenance.depts.length > 0 ? ` · ${p.provenance.depts.join(', ')}` : ''}
@@ -111,20 +203,18 @@ function FoundCard({ p }: { p: Proposal }) {
       )}
 
       {p.status === 'proposed'
-        ? <ReviewButtons id={p.id} approveLabel={p.type === 'harvest_topic' ? 'Approve → harvester' : 'Approve → Right Care'} />
+        ? <ReviewButtons id={p.id} approveLabel="Approve → Right Care" />
         : <ReviewedLine p={p} />}
     </div>
   );
 }
 
-// ── Section 2: reviewer-driven proposals (missed flags + false clusters) ──
+// ── Section 3: reviewer-driven rule drafts + suppressions (harvest topics live in Section 2) ──
 function MissedCard({ p }: { p: Proposal }) {
   const rvs = (p.provenance.reviewers || []).join(', ');
   const chip = p.type === 'missed_rule'
     ? <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10.5px] font-medium text-emerald-800">rule candidate · from missed flags</span>
-    : p.type === 'suppression'
-      ? <span className="rounded-full bg-rose-50 px-2 py-0.5 text-[10.5px] font-medium text-rose-700">suppression candidate · from false clusters</span>
-      : <span className="rounded-full bg-sky-50 px-2 py-0.5 text-[10.5px] font-medium text-sky-700">harvest candidate · from missed flags</span>;
+    : <span className="rounded-full bg-rose-50 px-2 py-0.5 text-[10.5px] font-medium text-rose-700">suppression candidate · from false clusters</span>;
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4">
       <div className="flex flex-wrap items-center gap-2">
@@ -145,26 +235,24 @@ function MissedCard({ p }: { p: Proposal }) {
             {p.payload.discriminator ? <> · subject contains “{p.payload.discriminator}”</> : <> · whole type</>}
             {' '}· action <strong>{p.payload.action}</strong> · matches audit_suppression shape · dual-label safety invariant applies on approval.
           </span>
+          {p.provenance.vouched && (
+            <span className="mt-1 block text-slate-500">Raised on an adjudicated <strong className="text-slate-700">suppress</strong> decision for this signal class — the vouch stands in for the second reviewer at the mining gate, not at the safety gate.</span>
+          )}
         </div>
       ) : (
         <div className="mt-2 rounded-lg bg-slate-50 px-3 py-2 text-[11.5px] leading-relaxed text-slate-600">
           <strong className="text-slate-700">{p.provenance.nFlags ?? p.n_support}</strong> missed-flag{(p.provenance.nFlags ?? 1) === 1 ? '' : 's'}
           {p.provenance.category && <> (category: {p.provenance.category})</>}
           {rvs && <> · flagged by {rvs}</>}
-          {' '}· corpus check: <strong className="text-slate-700">{p.type === 'missed_rule' ? 'citable' : 'uncitable'}</strong> → {p.type === 'missed_rule' ? 'qualifies as a rule' : 'routed as a harvest gap'}
+          {' '}· corpus check: <strong className="text-slate-700">citable</strong> → qualifies as a rule
           {p.provenance.sampleComments && p.provenance.sampleComments.length > 0 && (
             <span className="mt-1 block text-slate-400">e.g. “{p.provenance.sampleComments.slice(0, 2).join('” · “')}”</span>
-          )}
-          {p.type === 'harvest_topic' && p.payload.query_terms && (
-            <span className="mt-1 block">adds harvest query <code className="rounded bg-amber-50 px-1.5 py-0.5 text-[11px] text-amber-800">{p.payload.query_terms}</code> on approval.</span>
           )}
         </div>
       )}
 
       {p.status === 'proposed'
-        ? (p.type === 'missed_rule' ? <MissedRuleButtons id={p.id} />
-          : p.type === 'suppression' ? <SuppressionButtons id={p.id} />
-            : <ReviewButtons id={p.id} approveLabel="Approve → harvester" />)
+        ? (p.type === 'missed_rule' ? <MissedRuleButtons id={p.id} /> : <SuppressionButtons id={p.id} />)
         : <ReviewedLine p={p} />}
     </div>
   );
@@ -241,13 +329,17 @@ export default async function LearningPage({ searchParams }: { searchParams: Pro
     review_note: r.review_note ? String(r.review_note) : null,
     payload: parseJson<Payload>(r.payload, {}), evidence: parseJson<Evidence[]>(r.evidence, []), provenance: parseJson<Provenance>(r.provenance, {}),
   }));
-  const found = proposals.filter((p) => !isMissedOrigin(p));
+  const found = proposals.filter((p) => !isHarvest(p) && !isMissedOrigin(p));
   const missed = proposals.filter(isMissedOrigin);
+  // Demand-rank desc; an unranked (pre-build, or deferred-probe) topic sorts last, then by volume.
+  const harvest = proposals.filter(isHarvest).sort((a, b) =>
+    (demandOf(b) ?? -1) - (demandOf(a) ?? -1) || b.n_support - a.n_support);
 
-  // Flywheel + programme are independent, fail-safe reads (any error → the pure builders render "—").
-  const [flywheel, meters] = await Promise.all([
+  // Flywheel + programme + governance are independent, fail-safe reads (any error → "—" / hidden).
+  const [flywheel, meters, governance] = await Promise.all([
     fetchFlywheelData().catch(() => null),
     fetchProgrammeData().catch(() => [] as Meter[]),
+    fetchAdjudicationGovernance().catch(() => ({ vouchedSignalTypes: [], surfacedFixes: [], nSuppress: 0, nFix: 0 } as AdjudicationRouting)),
   ]);
 
   return (
@@ -275,19 +367,37 @@ export default async function LearningPage({ searchParams }: { searchParams: Pro
         <span className="ml-auto"><MineButton /></span>
       </div>
 
-      {/* 1 · proposals from what the audits FOUND */}
-      <div className="mt-6 text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-400">1 · Proposals — from what the audits found</div>
-      <p className="mt-1 max-w-3xl text-[12px] leading-relaxed text-slate-500">Mined daily from recurring audit findings — a cluster must span ≥15 occurrences across ≥3 doctors AND carry corpus evidence before it may become a rule; high-volume patterns the corpus cannot cite become harvest topics instead.</p>
+      {/* 1 · rule proposals from what the audits FOUND */}
+      <div className="mt-6 text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-400">1 · Rule proposals — from what the audits found</div>
+      <p className="mt-1 max-w-3xl text-[12px] leading-relaxed text-slate-500">Mined daily from recurring audit findings — a cluster must span ≥15 occurrences across ≥3 doctors AND carry corpus evidence before it may become a rule. Patterns the corpus cannot cite become harvest topics instead, ranked by demand below.</p>
       {found.length === 0
-        ? <div className="mt-3 rounded-xl border border-slate-200 bg-white p-6 text-center text-[13px] text-slate-500">No {status === 'all' ? '' : status} finding-mined proposals. Click <span className="font-medium text-brand">↻ Run miner</span> to scan the last 90 days.</div>
+        ? <div className="mt-3 rounded-xl border border-slate-200 bg-white p-6 text-center text-[13px] text-slate-500">No {status === 'all' ? '' : status} finding-mined rule proposals. Click <span className="font-medium text-brand">↻ Run miner</span> to scan the last 90 days.</div>
         : <div className="mt-3 space-y-3">{found.map((p) => <FoundCard key={p.id} p={p} />)}</div>}
 
-      {/* 2 · from what the audits MISSED */}
-      <div className="mt-7 text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-400">2 · From what the audits missed — reviewer-driven</div>
-      <p className="mt-1 max-w-3xl text-[12px] leading-relaxed text-slate-500">Mined from reviewer signals — missed-finding flags become rule or harvest candidates (≥2 flags; corpus-citable decides which), and finding classes reviewers repeatedly mark false become suppression candidates (≥3 false/nitpick across ≥2 reviewers). Every reviewer tap can improve the engine.</p>
+      {/* 2 · harvest topics — demand-ranked */}
+      <div className="mt-7 flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-400">2 · Harvest topics — demand-ranked</span>
+        <span className="text-[11.5px] text-slate-400">corpus-gap probe × uncited volume × prescriber breadth · sorted by demand</span>
+      </div>
+      <p className="mt-1.5 max-w-3xl text-[12px] leading-relaxed text-slate-500">
+        Harvest topics are ranked by <em className="not-italic font-medium text-slate-600">demand</em>, not frequency: how thin the corpus actually is on the topic (measured by probing retrieval live), weighted with how many uncited findings and how many prescribers it spans. A single reviewer&apos;s missed-finding flag is enough to fetch evidence when the corpus can&apos;t already support it — a clinician telling us what&apos;s missing is the signal. Nothing publishes itself: approving a topic only adds it to the harvester&apos;s list; the audit engine is never changed from here.
+      </p>
+      <div className="mt-2 flex flex-wrap gap-x-3.5 gap-y-1 text-[11.5px] text-slate-500">
+        <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded-[3px] bg-brand-faint" /> 70–100 harvest now</span>
+        <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded-[3px] bg-sky-50" /> 40–69 queue</span>
+        <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded-[3px] bg-slate-100" /> &lt;40 low demand</span>
+      </div>
+      {harvest.length === 0
+        ? <div className="mt-3 rounded-xl border border-slate-200 bg-white p-6 text-center text-[13px] text-slate-500">No {status === 'all' ? '' : status} harvest topics. Topics the corpus already covers are dropped by the live probe — an empty list means no measured gap.</div>
+        : <div className="mt-3 space-y-3">{harvest.map((p) => <HarvestCard key={p.id} p={p} />)}</div>}
+
+      {/* 3 · from what the audits MISSED */}
+      <div className="mt-7 text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-400">3 · From what the audits missed — reviewer-driven</div>
+      <p className="mt-1 max-w-3xl text-[12px] leading-relaxed text-slate-500">Mined from reviewer signals — a missed-finding flag the corpus can already cite becomes a rule candidate (≥2 flags), and finding classes reviewers repeatedly mark false become suppression candidates (≥3 false/nitpick across ≥2 reviewers, or ≥1 where an adjudicator has vouched). Every reviewer tap can improve the engine.</p>
       {missed.length === 0
         ? <div className="mt-3 rounded-xl border border-slate-200 bg-white p-6 text-center text-[13px] text-slate-500">No {status === 'all' ? '' : status} reviewer-mined proposals yet — these appear as missed-flags and false/nitpick labels accumulate.</div>
         : <div className="mt-3 space-y-3">{missed.map((p) => <MissedCard key={p.id} p={p} />)}</div>}
+      <Governance g={governance} />
 
       {/* 5 · model programme */}
       <div className="mt-7 text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-400">Model programme — the distillation math</div>
