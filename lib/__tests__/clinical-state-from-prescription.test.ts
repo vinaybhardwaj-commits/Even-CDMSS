@@ -131,7 +131,7 @@ test('id determinism: same input → same id across calls (both assertion kinds)
 test('schema: emptyClinicalState is 1.1 with empty assertion arrays and passes the updated zod', () => {
   const s = emptyClinicalState('ddx');
   assert.equal(s.version, CLINICAL_STATE_VERSION);
-  assert.equal(s.version, 'clinical-state/1.1');
+  assert.equal(s.version, 'clinical-state/1.2');
   assert.deepEqual(s.medicationAssertions, []);
   assert.deepEqual(s.allergyAssertions, []);
   assert.doesNotThrow(() => validateClinicalState(s));

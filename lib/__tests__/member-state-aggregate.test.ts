@@ -102,9 +102,9 @@ test('inv7 / stratum13: buildMemberState does not mutate input; corrected eviden
 
 test('inv9: version + as-of metadata is mandatory and stamped', () => {
   const s = buildMemberState(member([enc('e1', '2026-03-01'), enc('e2', '2026-05-01')]), COMPUTED);
-  assert.equal(s.version, 'member-state/1.0');
+  assert.equal(s.version, 'member-state/1.1');
   assert.equal(s.normalizationVersion, 'member-norm/0.1');
-  assert.equal(s.reconciliationVersion, 'member-reconcile/0.1');
+  assert.equal(s.reconciliationVersion, 'member-reconcile/0.2');
   assert.equal(s.computedAt, COMPUTED);
   assert.equal(s.asOf, '2026-05-01');   // max encounter date
   assert.deepEqual(s.sourceEncounterRefs, ['e1', 'e2']);

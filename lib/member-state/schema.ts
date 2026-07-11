@@ -18,12 +18,13 @@
 import { z } from 'zod';
 import type {
   ConceptRef, Provenance, MedicationAssertion, AllergyAssertion,
-  MedicationStatus, AllergyStatus,
+  MedicationStatus, AllergyStatus, StopReason, ComplaintStatusAssertion, FollowUpAssertion,
 } from '../clinical-state/schema';
+import { zFollowUpAssertion } from '../clinical-state/schema';
 
-export const MEMBER_STATE_VERSION = 'member-state/1.0' as const;
+export const MEMBER_STATE_VERSION = 'member-state/1.1' as const;
 export const NORMALIZATION_VERSION = 'member-norm/0.1' as const;
-export const RECONCILIATION_VERSION = 'member-reconcile/0.1' as const;
+export const RECONCILIATION_VERSION = 'member-reconcile/0.2' as const;
 
 // ── Normalized concept (superset of the reused ConceptRef; carries the merge decision) ──
 export type NormalizationRelation = 'exact' | 'synonym' | 'broader' | 'narrower' | 'related' | 'unresolved';
@@ -34,14 +35,16 @@ export interface NormalizedConcept extends ConceptRef {
 
 // ── Immutable per-encounter evidence (the source of truth; projection is derived) ──
 export interface EncounterEvidence {
-  encounterRef: string;              // opaque (prescription uid / booking id)
+  encounterRef: string;              // opaque (prescription uid / booking id / care-call id)
   date: string;                      // ISO date, as stated
-  kind: 'opd' | 'lab';
+  kind: 'opd' | 'lab' | 'care_call'; // 1.1: care_call = the patient-reported return channel (CCB)
   problems: { conceptRaw: string; icdCode?: string | null; explicitStatus?: 'active' | 'resolved' | null; provenance: Provenance }[];
   medicationAssertions: MedicationAssertion[];
   allergyAssertions: AllergyAssertion[];
   investigations: { analyteRaw: string; value: string; unit?: string | null; abnormal?: string | null; provenance: Provenance }[];
   demographics?: { age?: number | null; sex?: 'F' | 'M' | null };
+  complaintStatuses?: ComplaintStatusAssertion[];   // 1.1 (optional) — patient-reported symptom outcome
+  followUps?: FollowUpAssertion[];                   // 1.1 (optional) — carried onto the snapshot, no overlay
 }
 
 export interface MemberEvidence {
@@ -67,7 +70,7 @@ export interface LongitudinalProblem {
   occurrences: ProblemOccurrence[];
 }
 
-export interface MedicationOccurrence { encounterRef: string; date: string; dose?: string | null; frequency?: string | null; route?: string | null; duration?: string | null; provenance: Provenance }
+export interface MedicationOccurrence { encounterRef: string; date: string; dose?: string | null; frequency?: string | null; route?: string | null; duration?: string | null; stopReason?: StopReason | null; provenance: Provenance }
 export interface LongitudinalMedication {
   normalizedConcept: NormalizedConcept;
   status: MedicationStatus;          // mostly 'prescribed'; currentness left 'unknown'
@@ -113,6 +116,7 @@ export interface MemberStateSnapshot {
   allergies: LongitudinalAllergy[];
   investigations: LongitudinalInvestigation[];
   conflicts: Discrepancy[];
+  followUps: FollowUpAssertion[];    // 1.1 — carried (deduped by id), NO care-coordination overlay (Plane 3, later)
   sourceEncounterRefs: string[];
 }
 
@@ -202,6 +206,7 @@ export const zMemberStateSnapshot = z.object({
   allergies: z.array(zLongitudinalAllergy),
   investigations: z.array(zLongitudinalInvestigation),
   conflicts: z.array(zDiscrepancy),
+  followUps: z.array(zFollowUpAssertion),
   sourceEncounterRefs: z.array(z.string()),
 }).strict();
 
@@ -224,6 +229,7 @@ export function emptyMemberStateSnapshot(computedAt: string, asOf: string): Memb
     allergies: [],
     investigations: [],
     conflicts: [],
+    followUps: [],
     sourceEncounterRefs: [],
   };
 }

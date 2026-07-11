@@ -13,7 +13,7 @@ import type { TimelineItem } from '../ccb-dossier-core';
 import type { InvestigationFinding } from '../investigations';
 import type { AdminFacts } from '../doc-audit-core';
 
-export const CLINICAL_STATE_VERSION = 'clinical-state/1.1' as const;
+export const CLINICAL_STATE_VERSION = 'clinical-state/1.2' as const;
 
 export type Surface = 'ddx' | 'note_audit' | 'doc_audit' | 'concordance' | 'appropriateness' | 'ask' | 'other';
 export type FindingStatus = 'present' | 'absent' | 'unknown' | 'historical' | 'resolved';
@@ -26,7 +26,15 @@ export interface Temporality {
   course?: string;     // "worsening", "intermittent"
 }
 
-/** Every finding knows where it came from — the span, the method, the confidence. */
+// ── Trust axis (1.2) — WHO said it + how trustworthy the channel is. Additive + OPTIONAL, so
+//    every existing Provenance stays byte-compatible. The reconciliation engine weighs
+//    patient_reported vs structured_db vs clinician_documented (e.g. patient "I stopped my statin"
+//    overrides a stale prescription default). ──
+export type Reporter = 'clinician' | 'patient_via_care_manager' | 'system' | 'unknown';
+export type Trust = 'structured_db' | 'clinician_documented' | 'patient_reported' | 'inferred';
+
+/** Every finding knows where it came from — the span, the method, the confidence, and (1.2) the
+ *  reporter + trust channel. */
 export interface Provenance {
   sourceField: string;              // e.g. 'history', 'exam', 'opd_note_audits.findings'
   rawText: string;                  // the literal source text this finding rests on
@@ -34,6 +42,8 @@ export interface Provenance {
   endOffset?: number;
   extractionMethod: ExtractionMethod;
   confidence: number;               // 0..1
+  reporter?: Reporter;              // NEW (optional) — who reported it
+  trust?: Trust;                    // NEW (optional) — the trust weight of the channel
 }
 
 // ── Typed medication & allergy assertions (1.1) — additive; the typed representation
@@ -57,8 +67,33 @@ export interface MedicationAssertion {
   route?: string | null;
   duration?: string | null;
   instruction?: string | null;
+  stopReason?: StopReason | null;  // 1.2 — populated when a patient-reported 'stopped' carries a reason
   provenance: Provenance;
   encounterRef?: string | null;   // unset in 1.1 (single-encounter); Stage 0 populates it
+}
+
+// ── Patient-reported vocabulary (1.2) — canonical enums (verbatim from the Care-Call PRD §2 so
+//    the CCB return channel IMPORTS these rather than duplicating them) + their assertion types.
+//    These are assertion TYPES consumed at the member-state layer; emptyClinicalState is unaffected. ──
+export type ComplaintStatus = 'resolved' | 'improving' | 'unchanged' | 'worse';
+export type FollowUpAction = 'committed' | 'already_done_inhouse' | 'already_done_outside' | 'declined' | 'undecided';
+export type StopReason = 'side_effect' | 'cost' | 'felt_better' | 'ran_out' | 'other';
+
+export interface ComplaintStatusAssertion {
+  id: string;
+  concept: { raw: string; normalizedConceptId?: string | null };
+  status: ComplaintStatus;
+  provenance: Provenance;
+  encounterRef?: string | null;
+}
+
+export interface FollowUpAssertion {
+  id: string;
+  subject: string;
+  action: FollowUpAction;
+  targetDate?: string | null;
+  provenance: Provenance;
+  encounterRef?: string | null;
 }
 
 export interface AllergyAssertion {
@@ -162,6 +197,8 @@ const zProvenance = z.object({
   endOffset: z.number().int().nonnegative().optional(),
   extractionMethod: z.enum(['deterministic', 'llm', 'reported']),
   confidence: z.number().min(0).max(1),
+  reporter: z.enum(['clinician', 'patient_via_care_manager', 'system', 'unknown']).optional(),   // 1.2
+  trust: z.enum(['structured_db', 'clinician_documented', 'patient_reported', 'inferred']).optional(), // 1.2
 }).strict();
 
 const zConceptRef = z.object({
@@ -181,6 +218,7 @@ const zMedicationAssertion = z.object({
   route: z.string().nullable().optional(),
   duration: z.string().nullable().optional(),
   instruction: z.string().nullable().optional(),
+  stopReason: z.enum(['side_effect', 'cost', 'felt_better', 'ran_out', 'other']).nullable().optional(),   // 1.2
   provenance: zProvenance,
   encounterRef: z.string().nullable().optional(),
 }).strict();
@@ -191,6 +229,24 @@ const zAllergyAssertion = z.object({
   status: z.enum(['reported_allergy', 'denied', 'historical', 'entered_in_error', 'unknown']),
   reaction: z.string().nullable().optional(),
   severity: z.string().nullable().optional(),
+  provenance: zProvenance,
+  encounterRef: z.string().nullable().optional(),
+}).strict();
+
+// ── Patient-reported assertion validators (1.2) — exported so member-state + the CCB thread reuse them. ──
+export const zComplaintStatusAssertion = z.object({
+  id: z.string().min(1),
+  concept: z.object({ raw: z.string(), normalizedConceptId: z.string().nullable().optional() }).strict(),
+  status: z.enum(['resolved', 'improving', 'unchanged', 'worse']),
+  provenance: zProvenance,
+  encounterRef: z.string().nullable().optional(),
+}).strict();
+
+export const zFollowUpAssertion = z.object({
+  id: z.string().min(1),
+  subject: z.string(),
+  action: z.enum(['committed', 'already_done_inhouse', 'already_done_outside', 'declined', 'undecided']),
+  targetDate: z.string().nullable().optional(),
   provenance: zProvenance,
   encounterRef: z.string().nullable().optional(),
 }).strict();

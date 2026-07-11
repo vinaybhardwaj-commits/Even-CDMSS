@@ -14,7 +14,7 @@ import type {
   LongitudinalInvestigation, InvestigationPoint, Discrepancy, EvidenceRef,
 } from './schema';
 import { MEMBER_STATE_VERSION, NORMALIZATION_VERSION, RECONCILIATION_VERSION } from './schema';
-import type { MedicationStatus, AllergyStatus } from '../clinical-state/schema';
+import type { MedicationStatus, AllergyStatus, FollowUpAssertion } from '../clinical-state/schema';
 import { normalizeConcept, groupingKey } from './normalize-core';
 
 // ── Labelled deterministic constants (heuristics, no clinical judgment) ──
@@ -59,6 +59,7 @@ export function buildMemberState(evidence: MemberEvidence, computedAt: string): 
   const allergies = buildAllergies(encounters, pushConflict);
   const investigations = buildInvestigations(encounters, pushConflict);
   detectDemographicConflict(encounters, pushConflict);
+  const followUps = buildFollowUps(encounters);   // 1.2 rule 4 — carried, deduped, NO overlay
 
   const sortedConflicts = conflicts.slice().sort((a, b) => cmpStr(a.domain, b.domain) || cmpStr(a.type, b.type) || cmpStr(a.id, b.id));
   const sourceEncounterRefs = encounters.map((e) => e.encounterRef).slice().sort(cmpStr);
@@ -75,8 +76,17 @@ export function buildMemberState(evidence: MemberEvidence, computedAt: string): 
     allergies,
     investigations,
     conflicts: sortedConflicts,
+    followUps,
     sourceEncounterRefs,
   };
+}
+
+// ── Follow-ups (1.2 rule 4) — carried onto the snapshot, deduped by id, deterministically
+//    ordered by (targetDate, id). NO care-coordination/open-loop overlay (Plane 3, later). ──
+function buildFollowUps(encounters: EncounterEvidence[]): FollowUpAssertion[] {
+  const byId = new Map<string, FollowUpAssertion>();
+  for (const e of encounters) for (const f of e.followUps || []) if (f && f.id && !byId.has(f.id)) byId.set(f.id, f);
+  return Array.from(byId.values()).sort((a, b) => cmpStr(a.targetDate ?? '', b.targetDate ?? '') || cmpStr(a.id, b.id));
 }
 
 // ── Problems (invariants 1, 5) ──────────────────────────────────────────────────
@@ -89,6 +99,19 @@ function buildProblems(encounters: EncounterEvidence[], asOf: string): Longitudi
       const status: LongitudinalStatus = p.explicitStatus === 'resolved' ? 'documented_resolved' : 'documented_active';
       const g = groups.get(key) ?? { concept, occ: [] };
       g.occ.push({ encounterRef: e.encounterRef, date: e.date, status, provenance: p.provenance });
+      groups.set(key, g);
+    }
+    // 1.2 rule 1 — patient-reported complaint status is an EXPLICIT resolution/activity signal.
+    // `resolved` → documented_resolved occurrence (the real signal replacing the silence→uncertain
+    // guess; invariant 1 intact); improving/unchanged/worse → documented_active. A complaint whose
+    // concept matches no documented problem still forms its own group (a patient-reported problem
+    // is a real problem — §2.4).
+    for (const cs of e.complaintStatuses || []) {
+      const concept = normalizeConcept(cs.concept.raw, 'problem');
+      const key = groupingKey(concept);
+      const status: LongitudinalStatus = cs.status === 'resolved' ? 'documented_resolved' : 'documented_active';
+      const g = groups.get(key) ?? { concept, occ: [] };
+      g.occ.push({ encounterRef: e.encounterRef, date: e.date, status, provenance: cs.provenance });
       groups.set(key, g);
     }
   }
@@ -146,7 +169,7 @@ function deriveCourse(datesUnsorted: string[]): ProblemCourse {
 
 // ── Medications (currentness never inferred to taking) ──────────────────────────
 function buildMedications(encounters: EncounterEvidence[], pushConflict: (d: Omit<Discrepancy, 'id'>) => void): LongitudinalMedication[] {
-  const groups = new Map<string, { concept: NormalizedConcept; occ: (MedicationOccurrence & { status: MedicationStatus })[] }>();
+  const groups = new Map<string, { concept: NormalizedConcept; occ: (MedicationOccurrence & { status: MedicationStatus; patientReported: boolean })[] }>();
   for (const e of encounters) {
     for (const m of e.medicationAssertions || []) {
       const raw = m.medicationConcept?.generic || m.medicationConcept?.brand || m.medicationConcept?.raw || '';
@@ -159,7 +182,8 @@ function buildMedications(encounters: EncounterEvidence[], pushConflict: (d: Omi
       g.occ.push({
         encounterRef: e.encounterRef, date: e.date,
         dose: m.dose ?? null, frequency: m.frequency ?? null, route: m.route ?? null, duration: m.duration ?? null,
-        provenance: m.provenance, status: m.status,
+        stopReason: m.stopReason ?? null,          // 1.2 — carried when a patient-reported 'stopped' has a reason
+        provenance: m.provenance, status: m.status, patientReported: m.provenance?.trust === 'patient_reported',
       });
       groups.set(key, g);
     }
@@ -168,8 +192,12 @@ function buildMedications(encounters: EncounterEvidence[], pushConflict: (d: Omi
   for (const [, g] of groups) {
     const occ = g.occ.slice().sort(byDateRef);
     const statuses = occ.map((o) => o.status);
-    // status = the latest occurrence's asserted status (never synthesized to 'reported_taking').
-    const status = occ[occ.length - 1].status;
+    // 1.2 rule 2 — trust-weighted currentness: a patient-reported occurrence's status (the most
+    // recent one) overrides the prescription default; ELSE fall back to the existing latest-wins
+    // behaviour (neutral when no patient-reported evidence — §2.4, and stays intact per the kickoff).
+    // Currentness is never SYNTHESIZED to 'reported_taking' — it only reflects what was asserted.
+    const patientOccs = occ.filter((o) => o.patientReported);
+    const status = patientOccs.length ? patientOccs[patientOccs.length - 1].status : occ[occ.length - 1].status;
     // status_conflict: the same drug both on (prescribed/administered/taking) and off (stopped/not_taking).
     if (statuses.some((s) => ON_MED.has(s)) && statuses.some((s) => OFF_MED.has(s))) {
       pushConflict({
@@ -182,7 +210,7 @@ function buildMedications(encounters: EncounterEvidence[], pushConflict: (d: Omi
       status,
       firstSeen: occ[0].date,
       lastSeen: occ[occ.length - 1].date,
-      occurrences: occ.map(({ status: _s, ...rest }) => rest),
+      occurrences: occ.map(({ status: _s, patientReported: _pr, ...rest }) => rest),
     });
   }
   return out.sort((a, b) => cmpStr(conceptSortKey(a.normalizedConcept), conceptSortKey(b.normalizedConcept)));
@@ -211,10 +239,13 @@ function buildAllergies(encounters: EncounterEvidence[], pushConflict: (d: Omit<
     if (hasReported) status = 'reported_allergy';         // a stated allergy dominates a denial
     else if (hasDenied) status = 'denied';
     else status = occ[occ.length - 1].status;             // e.g. historical / unknown
+    // 1.2 rule 3 — a same-substance reported/denied clash stays safety_critical (unconditional, so
+    // the invariant-6 behaviour is neutral vs 1.0); each assertion now RECORDS its trust so a
+    // patient_reported-denied vs structured_db-reported clash is legible in the Discrepancy.
     if (hasReported && hasDenied) {
       pushConflict({
         domain: 'allergy', type: 'status_conflict', severity: 'safety_critical', resolutionStatus: 'open',
-        assertions: occ.map((o): EvidenceRef => ({ encounterRef: o.encounterRef, date: o.date, detail: `${g.raw}: ${o.status}` })),
+        assertions: occ.map((o): EvidenceRef => ({ encounterRef: o.encounterRef, date: o.date, detail: `${g.raw}: ${o.status} [${o.provenance?.trust ?? 'unknown'}]` })),
       });
     }
     out.push({
