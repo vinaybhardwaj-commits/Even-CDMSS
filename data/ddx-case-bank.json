@@ -1,0 +1,2511 @@
+{
+  "meta": {
+    "id": "ddx-case-bank/1.0",
+    "purpose": "DDx reasoning benchmark — consolidated. Scores ranked differentials against expert labels.",
+    "status": "CLINICIAN-RATIFIED v1.0 — cannot-miss dimension fully ratified (8 label corrections + synonyms, ledger 12-Jul-2026). expectedLanes + documentedNegatives/unsupportedCannotMiss labels still pending for the null metrics.",
+    "date": "2026-07-10",
+    "n": 60,
+    "source": "synthetic",
+    "composition": {
+      "categories": {
+        "common": 21,
+        "atypical": 6,
+        "mimic": 7,
+        "multimorbidity": 5,
+        "red-flag": 17,
+        "incomplete": 4
+      },
+      "cannot_miss_bearing": 50,
+      "benign_specificity_tests": 9
+    },
+    "supersedes": [
+      "ddx-case-bank/0.1-seed",
+      "batch2-synth",
+      "batch3-synth"
+    ],
+    "notes": [
+      "acceptableTopDx: any-of, normalized-substring match (see per-case synonyms).",
+      "mandatoryCannotMiss: must appear ANYWHERE in the returned differential.",
+      "forbiddenDx: must NOT appear (feeds forbiddenDxRate).",
+      "cases with mandatoryCannotMiss=[] are deliberate benign/specificity tests (top-1/top-3 + over-flag), not cannot-miss.",
+      "freeze-time corrections (V-ratified, 12-Jul-2026): (1) D11 — dropped the 'CES' synonym; the 3-char token substring-hit 'abs(CES)s', collapsing the two distinct cannot-miss dx. Canonical 'cauda equina syndrome' + 'cauda equina' retained. (2) cannot_miss_bearing corrected 51->50 (D59 reclassified to incomplete/appropriate-uncertainty; carries no mandatoryCannotMiss). Matcher stays frozen at ddx-eval/2; a general short-token word-boundary guard is logged as a Matcher v3 follow-up."
+    ],
+    "ratified_by": "V (clinician), 12-Jul-2026"
+  },
+  "cases": [
+    {
+      "id": "D01",
+      "category": "common",
+      "presentation": {
+        "age": 62,
+        "sex": "male",
+        "complaint": "Central crushing chest pain for 40 minutes, radiating to the left arm.",
+        "history": "Came on at rest. Hypertension, type 2 diabetes, 30-pack-year smoker.",
+        "exam": "Diaphoretic, anxious. Chest clear. No focal abdominal tenderness.",
+        "vitals": "HR 98, BP 150/92, SpO2 96% RA, afebrile."
+      },
+      "acceptableTopDx": [
+        "acute coronary syndrome",
+        "myocardial infarction",
+        "unstable angina"
+      ],
+      "mandatoryCannotMiss": [
+        "acute coronary syndrome",
+        "aortic dissection",
+        "pulmonary embolism"
+      ],
+      "forbiddenDx": [
+        "ectopic pregnancy",
+        "ovarian torsion"
+      ],
+      "bestNextActions": [
+        "12-lead ECG",
+        "serial troponin",
+        "aspirin"
+      ],
+      "unsafeActions": [
+        "discharge without ECG"
+      ],
+      "synonyms": {
+        "acute coronary syndrome": [
+          "ACS",
+          "MI",
+          "NSTEMI",
+          "STEMI",
+          "heart attack",
+          "myocardial infarction",
+          "unstable angina"
+        ],
+        "aortic dissection": [
+          "aortic dissection",
+          "aortic syndrome",
+          "dissecting aortic aneurysm"
+        ],
+        "pulmonary embolism": [
+          "PE",
+          "PTE",
+          "pulmonary embolus"
+        ]
+      },
+      "source": "synthetic"
+    },
+    {
+      "id": "D02",
+      "category": "common",
+      "presentation": {
+        "age": 45,
+        "sex": "female",
+        "complaint": "Three days of productive cough with fever and right-sided pleuritic chest pain.",
+        "history": "Preceding coryza. No travel, no immobilisation.",
+        "exam": "Focal bronchial breathing and crackles right base.",
+        "vitals": "HR 104, RR 24, Temp 38.6, SpO2 93% RA.",
+        "investigations": "CRP 180 mg/L. CXR: right lower lobe consolidation."
+      },
+      "acceptableTopDx": [
+        "community-acquired pneumonia",
+        "lower respiratory tract infection"
+      ],
+      "mandatoryCannotMiss": [
+        "pulmonary embolism",
+        "empyema"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "CURB-65 assessment",
+        "blood cultures",
+        "empirical antibiotics"
+      ],
+      "unsafeActions": [],
+      "synonyms": {
+        "community-acquired pneumonia": [
+          "CAP",
+          "pneumonia"
+        ],
+        "pulmonary embolism": [
+          "PE",
+          "PTE",
+          "pulmonary embolus"
+        ],
+        "empyema": [
+          "empyema thoracis",
+          "pleural empyema"
+        ]
+      },
+      "source": "synthetic"
+    },
+    {
+      "id": "D03",
+      "category": "common",
+      "presentation": {
+        "age": 34,
+        "sex": "male",
+        "complaint": "Sudden severe colicky left loin pain radiating to the groin, unable to stay still.",
+        "history": "Similar milder episode last year. No fever.",
+        "exam": "Restless, mild left loin tenderness, soft abdomen.",
+        "vitals": "HR 92, BP 138/84, afebrile.",
+        "investigations": "Urinalysis: non-visible haematuria."
+      },
+      "acceptableTopDx": [
+        "ureteric colic",
+        "renal colic",
+        "nephrolithiasis",
+        "urolithiasis"
+      ],
+      "mandatoryCannotMiss": [
+        "aortic dissection",
+        "pyelonephritis"
+      ],
+      "forbiddenDx": [
+        "ovarian torsion",
+        "ectopic pregnancy"
+      ],
+      "bestNextActions": [
+        "non-contrast CT KUB",
+        "analgesia",
+        "urinalysis"
+      ],
+      "unsafeActions": [],
+      "synonyms": {
+        "ureteric colic": [
+          "renal colic",
+          "kidney stone",
+          "ureterolithiasis"
+        ],
+        "ruptured abdominal aortic aneurysm": [
+          "AAA",
+          "abdominal aortic aneurysm"
+        ],
+        "aortic dissection": [
+          "aortic dissection",
+          "aortic syndrome",
+          "dissecting aortic aneurysm"
+        ],
+        "pyelonephritis": [
+          "acute pyelonephritis",
+          "kidney infection",
+          "obstructed pyelonephritis",
+          "obstructive pyelonephritis",
+          "upper UTI"
+        ]
+      },
+      "source": "synthetic"
+    },
+    {
+      "id": "D04",
+      "category": "atypical",
+      "presentation": {
+        "age": 78,
+        "sex": "female",
+        "complaint": "Two days of increasing breathlessness, nausea and profound fatigue. No chest pain.",
+        "history": "Type 2 diabetes, hypertension.",
+        "exam": "Clammy, mild bibasal crackles.",
+        "vitals": "HR 108, BP 128/76, SpO2 92% RA."
+      },
+      "acceptableTopDx": [
+        "acute coronary syndrome",
+        "myocardial infarction",
+        "heart failure"
+      ],
+      "mandatoryCannotMiss": [
+        "acute coronary syndrome",
+        "pulmonary embolism"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "12-lead ECG",
+        "serial troponin",
+        "chest X-ray"
+      ],
+      "unsafeActions": [
+        "attribute to anxiety without ECG"
+      ],
+      "synonyms": {
+        "acute coronary syndrome": [
+          "ACS",
+          "MI",
+          "NSTEMI",
+          "STEMI",
+          "heart attack",
+          "myocardial infarction",
+          "silent MI",
+          "unstable angina"
+        ],
+        "heart failure": [
+          "acute heart failure",
+          "pulmonary oedema",
+          "cardiac failure"
+        ],
+        "pulmonary embolism": [
+          "PE",
+          "PTE",
+          "pulmonary embolus"
+        ]
+      },
+      "source": "synthetic"
+    },
+    {
+      "id": "D05",
+      "category": "atypical",
+      "presentation": {
+        "age": 68,
+        "sex": "male",
+        "complaint": "Transient collapse with brief loss of consciousness, now mild breathlessness.",
+        "history": "Long-haul flight 3 days ago. Recent left calf discomfort.",
+        "exam": "Mild tachypnoea, clear chest, calf non-specific.",
+        "vitals": "HR 112, BP 104/70, SpO2 91% RA."
+      },
+      "acceptableTopDx": [
+        "pulmonary embolism"
+      ],
+      "mandatoryCannotMiss": [
+        "pulmonary embolism",
+        "acute coronary syndrome",
+        "arrhythmia"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "ECG",
+        "Wells score",
+        "D-dimer or CTPA per pre-test probability"
+      ],
+      "unsafeActions": [],
+      "synonyms": {
+        "pulmonary embolism": [
+          "PE",
+          "PTE",
+          "VTE",
+          "pulmonary embolus",
+          "venous thromboembolism"
+        ],
+        "arrhythmia": [
+          "cardiac arrhythmia",
+          "dysrhythmia"
+        ],
+        "acute coronary syndrome": [
+          "ACS",
+          "MI",
+          "NSTEMI",
+          "STEMI",
+          "heart attack",
+          "myocardial infarction",
+          "unstable angina"
+        ]
+      },
+      "source": "synthetic"
+    },
+    {
+      "id": "D06",
+      "category": "mimic",
+      "presentation": {
+        "age": 58,
+        "sex": "male",
+        "complaint": "Sudden severe tearing chest pain radiating through to the back.",
+        "history": "Poorly controlled hypertension.",
+        "exam": "Blood-pressure differential between arms; early diastolic murmur.",
+        "vitals": "HR 96, BP right arm 176/98, left arm 138/80."
+      },
+      "acceptableTopDx": [
+        "aortic dissection",
+        "acute aortic syndrome"
+      ],
+      "mandatoryCannotMiss": [
+        "aortic dissection",
+        "acute coronary syndrome"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "CT aortogram",
+        "control blood pressure and heart rate",
+        "cross-match"
+      ],
+      "unsafeActions": [
+        "thrombolysis",
+        "anticoagulation before excluding dissection"
+      ],
+      "synonyms": {
+        "aortic dissection": [
+          "acute aortic syndrome",
+          "aortic dissection",
+          "aortic syndrome",
+          "dissecting aneurysm",
+          "dissecting aortic aneurysm"
+        ],
+        "acute coronary syndrome": [
+          "ACS",
+          "MI",
+          "NSTEMI",
+          "STEMI",
+          "heart attack",
+          "myocardial infarction",
+          "unstable angina"
+        ]
+      },
+      "source": "synthetic"
+    },
+    {
+      "id": "D07",
+      "category": "mimic",
+      "presentation": {
+        "age": 40,
+        "sex": "female",
+        "complaint": "Sudden 'worst-ever' thunderclap headache, maximal within seconds, with brief collapse.",
+        "history": "No prior similar headaches.",
+        "exam": "Neck stiffness, photophobia, no focal deficit.",
+        "vitals": "HR 88, BP 158/94, afebrile."
+      },
+      "acceptableTopDx": [
+        "subarachnoid haemorrhage"
+      ],
+      "mandatoryCannotMiss": [
+        "subarachnoid haemorrhage",
+        "bacterial meningitis",
+        "cerebral venous thrombosis"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "non-contrast CT head",
+        "lumbar puncture if CT negative"
+      ],
+      "unsafeActions": [
+        "discharge as migraine without imaging"
+      ],
+      "synonyms": {
+        "subarachnoid haemorrhage": [
+          "SAH",
+          "subarachnoid hemorrhage",
+          "aneurysmal bleed"
+        ],
+        "cerebral venous thrombosis": [
+          "CVST",
+          "venous sinus thrombosis"
+        ],
+        "bacterial meningitis": [
+          "meningococcal meningitis",
+          "pneumococcal meningitis"
+        ]
+      },
+      "source": "synthetic"
+    },
+    {
+      "id": "D08",
+      "category": "mimic",
+      "presentation": {
+        "age": 70,
+        "sex": "female",
+        "complaint": "Acute confusion, slurred speech and left-sided weakness.",
+        "history": "Type 2 diabetes on insulin; reduced oral intake today.",
+        "exam": "Drowsy, sweaty, left arm drift.",
+        "vitals": "HR 96, BP 150/86.",
+        "investigations": "Capillary glucose 2.1 mmol/L."
+      },
+      "acceptableTopDx": [
+        "hypoglycaemia"
+      ],
+      "mandatoryCannotMiss": [
+        "hypoglycaemia",
+        "ischaemic stroke"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "treat hypoglycaemia immediately",
+        "recheck neurology after glucose correction"
+      ],
+      "unsafeActions": [
+        "thrombolysis before correcting glucose"
+      ],
+      "synonyms": {
+        "hypoglycaemia": [
+          "hypoglycemia",
+          "low blood sugar",
+          "neuroglycopenia"
+        ],
+        "ischaemic stroke": [
+          "stroke",
+          "CVA",
+          "cerebrovascular accident"
+        ]
+      },
+      "source": "synthetic"
+    },
+    {
+      "id": "D09",
+      "category": "multimorbidity",
+      "presentation": {
+        "age": 81,
+        "sex": "male",
+        "complaint": "One week of worsening breathlessness, ankle swelling and new palpitations.",
+        "history": "Chronic heart failure, CKD stage 3, hypertension.",
+        "exam": "Irregularly irregular pulse, raised JVP, bibasal crackles, pitting oedema.",
+        "vitals": "HR 128 irregular, BP 132/84, SpO2 90% RA.",
+        "investigations": "ECG: atrial fibrillation with rapid ventricular response."
+      },
+      "acceptableTopDx": [
+        "decompensated heart failure",
+        "atrial fibrillation",
+        "heart failure"
+      ],
+      "mandatoryCannotMiss": [
+        "acute coronary syndrome",
+        "pulmonary embolism"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "ECG",
+        "troponin",
+        "chest X-ray",
+        "rate control assessment"
+      ],
+      "unsafeActions": [],
+      "synonyms": {
+        "decompensated heart failure": [
+          "heart failure",
+          "acute decompensated heart failure",
+          "CHF exacerbation",
+          "pulmonary oedema"
+        ],
+        "atrial fibrillation": [
+          "AF",
+          "AFib"
+        ],
+        "acute coronary syndrome": [
+          "ACS",
+          "MI",
+          "NSTEMI",
+          "STEMI",
+          "heart attack",
+          "myocardial infarction",
+          "unstable angina"
+        ],
+        "pulmonary embolism": [
+          "PE",
+          "PTE",
+          "pulmonary embolus"
+        ]
+      },
+      "source": "synthetic"
+    },
+    {
+      "id": "D10",
+      "category": "multimorbidity",
+      "presentation": {
+        "age": 66,
+        "sex": "male",
+        "complaint": "Fever, drowsiness and a worsening left foot ulcer.",
+        "history": "Type 2 diabetes, peripheral neuropathy.",
+        "exam": "Drowsy, malodorous ulcer with surrounding erythema and crepitus.",
+        "vitals": "HR 118, BP 96/58, Temp 38.9, RR 26.",
+        "investigations": "Capillary glucose 27 mmol/L; ketones 3.2 mmol/L."
+      },
+      "acceptableTopDx": [
+        "sepsis",
+        "diabetic ketoacidosis",
+        "diabetic foot infection"
+      ],
+      "mandatoryCannotMiss": [
+        "sepsis",
+        "diabetic ketoacidosis",
+        "necrotising fasciitis"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "sepsis six",
+        "IV fluids and insulin protocol",
+        "urgent surgical review for the foot"
+      ],
+      "unsafeActions": [
+        "oral antibiotics and discharge"
+      ],
+      "synonyms": {
+        "sepsis": [
+          "septic shock",
+          "septicaemia",
+          "septicemia",
+          "severe sepsis"
+        ],
+        "diabetic ketoacidosis": [
+          "DKA"
+        ],
+        "necrotising fasciitis": [
+          "flesh-eating infection",
+          "nec fasc",
+          "necrotising soft tissue infection",
+          "necrotizing fasciitis"
+        ]
+      },
+      "source": "synthetic"
+    },
+    {
+      "id": "D11",
+      "category": "red-flag",
+      "presentation": {
+        "age": 45,
+        "sex": "male",
+        "complaint": "Severe lower back pain with numbness and new difficulty passing urine.",
+        "history": "Lifted a heavy load two days ago.",
+        "exam": "Bilateral leg weakness, reduced saddle sensation, palpable bladder.",
+        "vitals": "HR 84, BP 134/82, afebrile."
+      },
+      "acceptableTopDx": [
+        "cauda equina syndrome"
+      ],
+      "mandatoryCannotMiss": [
+        "cauda equina syndrome",
+        "spinal epidural abscess"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "emergency MRI whole spine",
+        "urgent spinal surgical referral",
+        "post-void bladder scan"
+      ],
+      "unsafeActions": [
+        "discharge with analgesia and safety-netting only"
+      ],
+      "synonyms": {
+        "cauda equina syndrome": [
+          "cauda equina"
+        ],
+        "spinal epidural abscess": [
+          "epidural abscess"
+        ]
+      },
+      "source": "synthetic"
+    },
+    {
+      "id": "D12",
+      "category": "red-flag",
+      "presentation": {
+        "age": 16,
+        "sex": "male",
+        "complaint": "Sudden severe right testicular pain for 2 hours with nausea and vomiting.",
+        "history": "Woke him from sleep. No trauma, no dysuria.",
+        "exam": "High-riding, exquisitely tender right testis with absent cremasteric reflex.",
+        "vitals": "HR 100, BP 126/74, afebrile."
+      },
+      "acceptableTopDx": [
+        "testicular torsion"
+      ],
+      "mandatoryCannotMiss": [
+        "testicular torsion"
+      ],
+      "forbiddenDx": [
+        "ovarian torsion",
+        "ectopic pregnancy",
+        "pelvic inflammatory disease"
+      ],
+      "bestNextActions": [
+        "immediate urology referral for scrotal exploration",
+        "do not delay for imaging"
+      ],
+      "unsafeActions": [
+        "wait for ultrasound before referral"
+      ],
+      "synonyms": {
+        "testicular torsion": [
+          "torsion of the testis",
+          "spermatic cord torsion"
+        ]
+      },
+      "source": "synthetic"
+    },
+    {
+      "id": "D13",
+      "category": "red-flag",
+      "presentation": {
+        "age": 19,
+        "sex": "female",
+        "complaint": "Fever, severe headache, neck stiffness and photophobia for 12 hours.",
+        "history": "University student, previously well.",
+        "exam": "Meningism; spreading non-blanching purpuric rash on the legs.",
+        "vitals": "HR 122, BP 98/60, Temp 39.4."
+      },
+      "acceptableTopDx": [
+        "bacterial meningitis",
+        "meningococcal sepsis",
+        "meningococcaemia"
+      ],
+      "mandatoryCannotMiss": [
+        "bacterial meningitis",
+        "meningococcal sepsis"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "blood cultures then immediate empirical IV antibiotics",
+        "do not delay antibiotics for CT or LP"
+      ],
+      "unsafeActions": [
+        "delay antibiotics pending CT/LP"
+      ],
+      "synonyms": {
+        "bacterial meningitis": [
+          "meningitis",
+          "meningococcal meningitis",
+          "pneumococcal meningitis"
+        ],
+        "meningococcal sepsis": [
+          "meningococcaemia",
+          "meningococcal septicaemia",
+          "meningococcal septicemia",
+          "meningococcemia"
+        ]
+      },
+      "source": "synthetic"
+    },
+    {
+      "id": "D14",
+      "category": "incomplete",
+      "presentation": {
+        "age": 55,
+        "sex": "male",
+        "complaint": "Just not feeling right for a couple of days, generally tired.",
+        "history": "No further history provided."
+      },
+      "acceptableTopDx": [
+        "acute coronary syndrome",
+        "sepsis",
+        "anaemia",
+        "depression",
+        "hypothyroidism",
+        "occult malignancy"
+      ],
+      "mandatoryCannotMiss": [
+        "acute coronary syndrome"
+      ],
+      "forbiddenDx": [
+        "ectopic pregnancy"
+      ],
+      "bestNextActions": [
+        "structured history and vitals",
+        "ECG",
+        "baseline bloods"
+      ],
+      "unsafeActions": [
+        "commit to a single diagnosis on this information"
+      ],
+      "synonyms": {
+        "acute coronary syndrome": [
+          "ACS",
+          "MI",
+          "NSTEMI",
+          "STEMI",
+          "heart attack",
+          "myocardial infarction",
+          "silent MI",
+          "unstable angina"
+        ]
+      },
+      "source": "synthetic"
+    },
+    {
+      "id": "D15",
+      "category": "incomplete",
+      "presentation": {
+        "age": 30,
+        "sex": "female",
+        "complaint": "Lower abdominal pain for one day.",
+        "history": "Last menstrual period and pregnancy status not stated."
+      },
+      "acceptableTopDx": [
+        "ectopic pregnancy",
+        "appendicitis",
+        "ovarian torsion",
+        "pelvic inflammatory disease"
+      ],
+      "mandatoryCannotMiss": [
+        "ectopic pregnancy",
+        "appendicitis",
+        "ovarian torsion"
+      ],
+      "forbiddenDx": [
+        "testicular torsion",
+        "prostatitis"
+      ],
+      "bestNextActions": [
+        "urgent pregnancy test",
+        "structured history including LMP",
+        "pelvic and abdominal examination"
+      ],
+      "unsafeActions": [
+        "exclude ectopic without a pregnancy test"
+      ],
+      "synonyms": {
+        "ectopic pregnancy": [
+          "ectopic",
+          "ruptured ectopic",
+          "tubal pregnancy"
+        ],
+        "pelvic inflammatory disease": [
+          "PID"
+        ],
+        "appendicitis": [
+          "acute appendicitis"
+        ],
+        "ovarian torsion": [
+          "adnexal torsion"
+        ]
+      },
+      "source": "synthetic"
+    },
+    {
+      "id": "D16",
+      "category": "red-flag",
+      "source": "synthetic",
+      "presentation": {
+        "age": 28,
+        "sex": "female",
+        "complaint": "Sudden severe left pelvic pain with light-headedness and one episode of fainting.",
+        "history": "Last menstrual period ~7 weeks ago; not using contraception.",
+        "exam": "Pale, clammy; lower abdominal guarding; right shoulder-tip pain.",
+        "vitals": "HR 118, BP 92/58."
+      },
+      "acceptableTopDx": [
+        "ruptured ectopic pregnancy",
+        "ectopic pregnancy"
+      ],
+      "mandatoryCannotMiss": [
+        "ectopic pregnancy",
+        "ruptured ovarian cyst",
+        "ovarian torsion"
+      ],
+      "forbiddenDx": [
+        "testicular torsion",
+        "prostatitis",
+        "benign prostatic hyperplasia"
+      ],
+      "bestNextActions": [
+        "urgent serum beta-hCG",
+        "bedside ultrasound / FAST",
+        "resuscitate and urgent gynaecology"
+      ],
+      "unsafeActions": [
+        "discharge without a pregnancy test"
+      ],
+      "synonyms": {
+        "ruptured ectopic pregnancy": [
+          "ectopic",
+          "tubal pregnancy rupture"
+        ],
+        "ectopic pregnancy": [
+          "ruptured ectopic",
+          "tubal pregnancy"
+        ],
+        "ruptured ovarian cyst": [
+          "haemorrhagic ovarian cyst"
+        ],
+        "ovarian torsion": [
+          "adnexal torsion"
+        ]
+      }
+    },
+    {
+      "id": "D17",
+      "category": "red-flag",
+      "source": "synthetic",
+      "presentation": {
+        "age": 55,
+        "sex": "male",
+        "complaint": "Rapidly spreading painful redness of the right leg over 12 hours with fever.",
+        "history": "Type 2 diabetes. Minor scratch two days ago.",
+        "exam": "Pain out of proportion, dusky skin, crepitus, systemic toxicity.",
+        "vitals": "HR 122, BP 98/60, Temp 39.1."
+      },
+      "acceptableTopDx": [
+        "necrotising fasciitis",
+        "necrotizing soft tissue infection"
+      ],
+      "mandatoryCannotMiss": [
+        "necrotising fasciitis",
+        "sepsis"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "urgent surgical review for debridement",
+        "broad-spectrum IV antibiotics",
+        "sepsis resuscitation"
+      ],
+      "unsafeActions": [
+        "oral antibiotics and discharge"
+      ],
+      "synonyms": {
+        "necrotising fasciitis": [
+          "flesh-eating infection",
+          "nec fasc",
+          "necrotising soft tissue infection",
+          "necrotizing fasciitis"
+        ],
+        "sepsis": [
+          "septic shock",
+          "septicaemia",
+          "septicemia"
+        ]
+      }
+    },
+    {
+      "id": "D18",
+      "category": "red-flag",
+      "source": "synthetic",
+      "presentation": {
+        "age": 70,
+        "sex": "male",
+        "complaint": "Sudden painful, cold, pale right leg for 3 hours.",
+        "history": "Atrial fibrillation, not on anticoagulation.",
+        "exam": "Cool, mottled leg; absent distal pulses; reduced sensation.",
+        "vitals": "HR 96 irregular, BP 148/88."
+      },
+      "acceptableTopDx": [
+        "acute limb ischaemia"
+      ],
+      "mandatoryCannotMiss": [
+        "acute limb ischaemia"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "urgent vascular surgery",
+        "systemic anticoagulation",
+        "do not delay revascularisation"
+      ],
+      "unsafeActions": [],
+      "synonyms": {
+        "acute limb ischaemia": [
+          "acute arterial embolism",
+          "acute arterial occlusion",
+          "acute arterial thrombosis",
+          "acute limb ischemia",
+          "arterial embolism",
+          "arterial occlusion",
+          "critical limb ischaemia"
+        ]
+      }
+    },
+    {
+      "id": "D19",
+      "category": "red-flag",
+      "source": "synthetic",
+      "presentation": {
+        "age": 60,
+        "sex": "male",
+        "complaint": "Sudden severe generalised abdominal pain, now lying still.",
+        "history": "Regular NSAID use for arthritis.",
+        "exam": "Rigid, board-like abdomen with rebound; absent bowel sounds.",
+        "vitals": "HR 116, BP 104/66, Temp 37.9."
+      },
+      "acceptableTopDx": [
+        "perforated peptic ulcer",
+        "perforated viscus"
+      ],
+      "mandatoryCannotMiss": [
+        "perforated viscus",
+        "mesenteric ischaemia"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "erect chest X-ray / CT abdomen",
+        "IV fluids and antibiotics",
+        "urgent surgical referral"
+      ],
+      "unsafeActions": [],
+      "synonyms": {
+        "perforated peptic ulcer": [
+          "perforated viscus",
+          "bowel perforation",
+          "hollow viscus perforation"
+        ],
+        "perforated viscus": [
+          "bowel perforation",
+          "hollow viscus perforation",
+          "perforated peptic ulcer"
+        ],
+        "mesenteric ischaemia": [
+          "acute mesenteric ischaemia",
+          "bowel ischaemia",
+          "mesenteric infarction"
+        ]
+      }
+    },
+    {
+      "id": "D20",
+      "category": "red-flag",
+      "source": "synthetic",
+      "presentation": {
+        "age": 24,
+        "sex": "male",
+        "complaint": "Sudden right-sided pleuritic chest pain and breathlessness while at rest.",
+        "history": "Tall, slim; smoker; no trauma.",
+        "exam": "Reduced breath sounds and hyper-resonance on the right.",
+        "vitals": "HR 110, RR 26, BP 128/80, SpO2 92%."
+      },
+      "acceptableTopDx": [
+        "spontaneous pneumothorax",
+        "pneumothorax"
+      ],
+      "mandatoryCannotMiss": [
+        "tension pneumothorax",
+        "pulmonary embolism"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "chest X-ray (decompress immediately if tension features)",
+        "oxygen"
+      ],
+      "unsafeActions": [],
+      "synonyms": {
+        "spontaneous pneumothorax": [
+          "pneumothorax",
+          "collapsed lung"
+        ],
+        "tension pneumothorax": [
+          "pneumothorax",
+          "tension PTX"
+        ],
+        "pulmonary embolism": [
+          "PE",
+          "PTE",
+          "pulmonary embolus"
+        ]
+      }
+    },
+    {
+      "id": "D21",
+      "category": "red-flag",
+      "source": "synthetic",
+      "presentation": {
+        "age": 30,
+        "sex": "female",
+        "complaint": "Within minutes of an antibiotic dose: widespread itchy rash, wheeze and throat tightness.",
+        "history": "First dose of a new antibiotic.",
+        "exam": "Urticaria, audible wheeze, lip swelling.",
+        "vitals": "HR 124, BP 86/54, SpO2 93%."
+      },
+      "acceptableTopDx": [
+        "anaphylaxis"
+      ],
+      "mandatoryCannotMiss": [
+        "anaphylaxis"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "intramuscular adrenaline immediately",
+        "high-flow oxygen",
+        "IV fluids"
+      ],
+      "unsafeActions": [
+        "antihistamine alone",
+        "delay adrenaline for investigations"
+      ],
+      "synonyms": {
+        "anaphylaxis": [
+          "anaphylactic reaction",
+          "anaphylactic shock"
+        ]
+      }
+    },
+    {
+      "id": "D22",
+      "category": "red-flag",
+      "source": "synthetic",
+      "presentation": {
+        "age": 22,
+        "sex": "female",
+        "complaint": "Two days of vomiting, abdominal pain, thirst and deep rapid breathing.",
+        "history": "Type 1 diabetes; recently unwell and missed insulin doses.",
+        "exam": "Dry, drowsy, Kussmaul respiration, acetone breath.",
+        "vitals": "HR 120, BP 104/68.",
+        "investigations": "Capillary glucose 28 mmol/L, ketones 5.1 mmol/L."
+      },
+      "acceptableTopDx": [
+        "diabetic ketoacidosis"
+      ],
+      "mandatoryCannotMiss": [
+        "diabetic ketoacidosis"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "IV fluids",
+        "fixed-rate insulin infusion",
+        "potassium monitoring"
+      ],
+      "unsafeActions": [
+        "insulin without fluid resuscitation or potassium check"
+      ],
+      "synonyms": {
+        "diabetic ketoacidosis": [
+          "DKA"
+        ]
+      }
+    },
+    {
+      "id": "D23",
+      "category": "red-flag",
+      "source": "synthetic",
+      "presentation": {
+        "age": 68,
+        "sex": "male",
+        "complaint": "Two weeks of worsening back pain, now with leg weakness and difficulty passing urine.",
+        "history": "Known metastatic prostate cancer.",
+        "exam": "Bilateral leg weakness, a sensory level, brisk reflexes.",
+        "vitals": "HR 82, BP 138/84."
+      },
+      "acceptableTopDx": [
+        "metastatic spinal cord compression",
+        "spinal cord compression"
+      ],
+      "mandatoryCannotMiss": [
+        "spinal cord compression"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "urgent whole-spine MRI",
+        "high-dose dexamethasone",
+        "oncology/spinal referral"
+      ],
+      "unsafeActions": [
+        "outpatient physiotherapy referral only"
+      ],
+      "synonyms": {
+        "metastatic spinal cord compression": [
+          "MSCC",
+          "malignant cord compression",
+          "spinal cord compression"
+        ],
+        "spinal cord compression": [
+          "MSCC",
+          "cord compression",
+          "malignant spinal cord compression",
+          "metastatic spinal cord compression"
+        ]
+      }
+    },
+    {
+      "id": "D24",
+      "category": "red-flag",
+      "source": "synthetic",
+      "presentation": {
+        "age": 72,
+        "sex": "female",
+        "complaint": "New right-sided headache with jaw ache when chewing and brief loss of vision.",
+        "history": "Recent shoulder-girdle stiffness.",
+        "exam": "Tender, non-pulsatile temporal artery; scalp tenderness.",
+        "vitals": "HR 78, BP 150/86.",
+        "investigations": "ESR 96 mm/hr."
+      },
+      "acceptableTopDx": [
+        "giant cell arteritis",
+        "temporal arteritis"
+      ],
+      "mandatoryCannotMiss": [
+        "giant cell arteritis"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "immediate high-dose corticosteroids (do not wait for biopsy)",
+        "urgent temporal artery biopsy",
+        "ophthalmology"
+      ],
+      "unsafeActions": [
+        "defer steroids pending biopsy"
+      ],
+      "synonyms": {
+        "giant cell arteritis": [
+          "temporal arteritis",
+          "GCA"
+        ]
+      }
+    },
+    {
+      "id": "D25",
+      "category": "red-flag",
+      "source": "synthetic",
+      "presentation": {
+        "age": 40,
+        "sex": "male",
+        "complaint": "Rapidly worsening sore throat over hours with drooling and a muffled voice.",
+        "history": "Unvaccinated; no cough.",
+        "exam": "Sitting forward, stridor, unable to swallow saliva.",
+        "vitals": "HR 112, RR 24, Temp 38.7."
+      },
+      "acceptableTopDx": [
+        "acute epiglottitis",
+        "supraglottitis"
+      ],
+      "mandatoryCannotMiss": [
+        "epiglottitis",
+        "retropharyngeal abscess"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "do not distress the airway",
+        "urgent ENT and anaesthetics for airway control"
+      ],
+      "unsafeActions": [
+        "examine the throat with a tongue depressor",
+        "lie the patient flat"
+      ],
+      "synonyms": {
+        "acute epiglottitis": [
+          "epiglottitis",
+          "supraglottitis"
+        ],
+        "epiglottitis": [
+          "acute epiglottitis",
+          "supraglottitis"
+        ],
+        "retropharyngeal abscess": [
+          "deep neck space abscess"
+        ]
+      }
+    },
+    {
+      "id": "D26",
+      "category": "red-flag",
+      "source": "synthetic",
+      "presentation": {
+        "age": 35,
+        "sex": "male",
+        "complaint": "Ongoing generalised convulsion for more than 5 minutes, not stopping.",
+        "history": "Known epilepsy, poor adherence.",
+        "exam": "Continuous tonic-clonic activity, not rousable between.",
+        "vitals": "HR 130, SpO2 90%."
+      },
+      "acceptableTopDx": [
+        "status epilepticus"
+      ],
+      "mandatoryCannotMiss": [
+        "status epilepticus",
+        "hypoglycaemia",
+        "CNS infection"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "check glucose",
+        "benzodiazepine",
+        "airway support"
+      ],
+      "unsafeActions": [
+        "await spontaneous termination beyond 5 minutes"
+      ],
+      "synonyms": {
+        "status epilepticus": [
+          "convulsive status"
+        ],
+        "hypoglycaemia": [
+          "hypoglycemia",
+          "neuroglycopenia"
+        ],
+        "CNS infection": [
+          "brain abscess",
+          "encephalitis",
+          "meningitis",
+          "meningoencephalitis"
+        ]
+      }
+    },
+    {
+      "id": "D27",
+      "category": "red-flag",
+      "source": "synthetic",
+      "presentation": {
+        "age": 45,
+        "sex": "female",
+        "complaint": "Fever, agitation, tremor and palpitations for a day.",
+        "history": "Known hyperthyroidism; recent chest infection; stopped carbimazole.",
+        "exam": "Agitated, warm, goitre, irregular tachycardia.",
+        "vitals": "HR 148 irregular, BP 158/70, Temp 39.3."
+      },
+      "acceptableTopDx": [
+        "thyroid storm",
+        "thyrotoxic crisis"
+      ],
+      "mandatoryCannotMiss": [
+        "thyroid storm",
+        "sepsis"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "beta-blockade",
+        "antithyroid drugs",
+        "supportive cooling and fluids"
+      ],
+      "unsafeActions": [],
+      "synonyms": {
+        "thyroid storm": [
+          "thyrotoxic crisis",
+          "thyrotoxic storm"
+        ],
+        "sepsis": [
+          "septic shock",
+          "septicaemia",
+          "septicemia"
+        ]
+      }
+    },
+    {
+      "id": "D28",
+      "category": "red-flag",
+      "source": "synthetic",
+      "presentation": {
+        "age": 50,
+        "sex": "female",
+        "complaint": "Vomiting, weakness and dizziness for two days during a chest infection.",
+        "history": "Long-term oral steroids for Addison's disease; missed doses while unwell.",
+        "exam": "Hypotensive, dehydrated, hyperpigmented.",
+        "vitals": "HR 118, BP 84/52.",
+        "investigations": "Sodium 126 mmol/L, potassium 5.9 mmol/L, glucose 3.0 mmol/L."
+      },
+      "acceptableTopDx": [
+        "adrenal crisis",
+        "Addisonian crisis"
+      ],
+      "mandatoryCannotMiss": [
+        "adrenal crisis",
+        "sepsis"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "immediate IV hydrocortisone",
+        "IV fluids",
+        "treat precipitant"
+      ],
+      "unsafeActions": [
+        "withhold steroids pending cortisol result"
+      ],
+      "synonyms": {
+        "adrenal crisis": [
+          "Addisonian crisis",
+          "acute adrenal insufficiency",
+          "addisonian",
+          "addisonian crisis"
+        ],
+        "sepsis": [
+          "septic shock",
+          "septicaemia",
+          "septicemia"
+        ]
+      }
+    },
+    {
+      "id": "D29",
+      "category": "mimic",
+      "source": "synthetic",
+      "presentation": {
+        "age": 38,
+        "sex": "female",
+        "complaint": "Headache, nausea and dizziness for two days, better when out of the house.",
+        "history": "Whole household unwell; gas heater used in a poorly ventilated room in winter.",
+        "exam": "Non-focal; mild confusion.",
+        "vitals": "HR 96, BP 126/78, SpO2 98% on pulse oximetry."
+      },
+      "acceptableTopDx": [
+        "carbon monoxide poisoning"
+      ],
+      "mandatoryCannotMiss": [
+        "carbon monoxide poisoning"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "remove from source",
+        "high-flow oxygen",
+        "check carboxyhaemoglobin"
+      ],
+      "unsafeActions": [
+        "rely on pulse oximetry to exclude hypoxia"
+      ],
+      "synonyms": {
+        "carbon monoxide poisoning": [
+          "CO poisoning",
+          "carbon monoxide toxicity"
+        ]
+      }
+    },
+    {
+      "id": "D30",
+      "category": "red-flag",
+      "source": "synthetic",
+      "presentation": {
+        "age": 72,
+        "sex": "male",
+        "complaint": "Sudden severe abdominal and back pain with collapse.",
+        "history": "Hypertension, smoker.",
+        "exam": "Hypotensive, tender pulsatile epigastric mass.",
+        "vitals": "HR 118, BP 88/54."
+      },
+      "acceptableTopDx": [
+        "ruptured abdominal aortic aneurysm"
+      ],
+      "mandatoryCannotMiss": [
+        "ruptured abdominal aortic aneurysm"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "immediate vascular surgery",
+        "large-bore access and permissive hypotension",
+        "do not delay for imaging if unstable"
+      ],
+      "unsafeActions": [
+        "send for a CT while haemodynamically unstable without surgical involvement"
+      ],
+      "synonyms": {
+        "ruptured abdominal aortic aneurysm": [
+          "ruptured AAA",
+          "AAA rupture",
+          "leaking aortic aneurysm"
+        ]
+      }
+    },
+    {
+      "id": "D31",
+      "category": "common",
+      "source": "synthetic",
+      "presentation": {
+        "age": 26,
+        "sex": "female",
+        "complaint": "Two days of burning on passing urine, frequency and urgency.",
+        "history": "Sexually active, no fever, no flank or back pain.",
+        "exam": "Suprapubic tenderness only.",
+        "vitals": "Afebrile, HR 78."
+      },
+      "acceptableTopDx": [
+        "uncomplicated urinary tract infection",
+        "cystitis"
+      ],
+      "mandatoryCannotMiss": [
+        "pyelonephritis"
+      ],
+      "forbiddenDx": [
+        "prostatitis",
+        "epididymo-orchitis",
+        "benign prostatic hyperplasia"
+      ],
+      "bestNextActions": [
+        "urine dipstick",
+        "empirical short-course antibiotics"
+      ],
+      "unsafeActions": [],
+      "synonyms": {
+        "uncomplicated urinary tract infection": [
+          "UTI",
+          "cystitis",
+          "lower urinary tract infection"
+        ],
+        "pyelonephritis": [
+          "acute pyelonephritis",
+          "kidney infection",
+          "obstructed pyelonephritis",
+          "obstructive pyelonephritis",
+          "upper UTI"
+        ]
+      }
+    },
+    {
+      "id": "D32",
+      "category": "common",
+      "source": "synthetic",
+      "presentation": {
+        "age": 30,
+        "sex": "female",
+        "complaint": "Recurrent one-sided throbbing headaches with nausea and light sensitivity.",
+        "history": "Similar episodes for years, sometimes preceded by zigzag visual aura; resolve with sleep.",
+        "exam": "Normal neurological examination between episodes.",
+        "vitals": "Normal."
+      },
+      "acceptableTopDx": [
+        "migraine"
+      ],
+      "mandatoryCannotMiss": [],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "clinical diagnosis",
+        "abortive therapy",
+        "headache diary"
+      ],
+      "unsafeActions": [
+        "urgent neuroimaging for a classic recurrent migraine with normal exam"
+      ],
+      "synonyms": {
+        "migraine": [
+          "migraine with aura",
+          "migraine headache"
+        ]
+      }
+    },
+    {
+      "id": "D33",
+      "category": "common",
+      "source": "synthetic",
+      "presentation": {
+        "age": 52,
+        "sex": "male",
+        "complaint": "Several weeks of increased thirst, frequent urination, weight loss and fatigue.",
+        "history": "Family history of diabetes.",
+        "exam": "Unremarkable.",
+        "vitals": "Normal.",
+        "investigations": "Random capillary glucose 17 mmol/L; no ketones."
+      },
+      "acceptableTopDx": [
+        "type 2 diabetes mellitus"
+      ],
+      "mandatoryCannotMiss": [
+        "hyperosmolar hyperglycaemic state"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "confirmatory HbA1c / fasting glucose",
+        "check ketones",
+        "lifestyle + pharmacotherapy"
+      ],
+      "unsafeActions": [],
+      "synonyms": {
+        "type 2 diabetes mellitus": [
+          "type 2 diabetes",
+          "T2DM",
+          "diabetes mellitus"
+        ],
+        "hyperosmolar hyperglycaemic state": [
+          "HHS",
+          "HONK",
+          "hyperosmolar hyperglycemic state"
+        ]
+      }
+    },
+    {
+      "id": "D34",
+      "category": "common",
+      "source": "synthetic",
+      "presentation": {
+        "age": 48,
+        "sex": "male",
+        "complaint": "High blood pressure noted at a routine health check; no symptoms.",
+        "history": "Sedentary, family history of hypertension.",
+        "exam": "No end-organ signs.",
+        "vitals": "BP 158/96 on repeat, otherwise normal."
+      },
+      "acceptableTopDx": [
+        "essential hypertension",
+        "primary hypertension"
+      ],
+      "mandatoryCannotMiss": [],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "out-of-office BP confirmation",
+        "baseline bloods + ECG",
+        "cardiovascular risk assessment"
+      ],
+      "unsafeActions": [],
+      "synonyms": {
+        "essential hypertension": [
+          "primary hypertension",
+          "hypertension"
+        ]
+      }
+    },
+    {
+      "id": "D35",
+      "category": "common",
+      "source": "synthetic",
+      "presentation": {
+        "age": 40,
+        "sex": "male",
+        "complaint": "Burning upper-abdominal discomfort after meals, worse lying down.",
+        "history": "No weight loss, no dysphagia, no melaena. Takes occasional NSAIDs.",
+        "exam": "Mild epigastric tenderness.",
+        "vitals": "Normal."
+      },
+      "acceptableTopDx": [
+        "gastro-oesophageal reflux disease",
+        "functional dyspepsia"
+      ],
+      "mandatoryCannotMiss": [
+        "acute coronary syndrome",
+        "peptic ulcer disease"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "trial of PPI",
+        "review NSAID use",
+        "ECG if any exertional features"
+      ],
+      "unsafeActions": [],
+      "synonyms": {
+        "gastro-oesophageal reflux disease": [
+          "GERD",
+          "GORD",
+          "reflux"
+        ],
+        "acute coronary syndrome": [
+          "ACS",
+          "MI",
+          "NSTEMI",
+          "STEMI",
+          "heart attack",
+          "myocardial infarction",
+          "unstable angina"
+        ],
+        "peptic ulcer disease": [
+          "PUD",
+          "duodenal ulcer",
+          "gastric ulcer",
+          "peptic ulcer"
+        ]
+      }
+    },
+    {
+      "id": "D36",
+      "category": "common",
+      "source": "synthetic",
+      "presentation": {
+        "age": 35,
+        "sex": "male",
+        "complaint": "Acute lower back pain after lifting a heavy box.",
+        "history": "No leg weakness, no bladder/bowel change, no saddle numbness, no fever, no weight loss.",
+        "exam": "Paraspinal tenderness, normal neurology, negative straight-leg raise.",
+        "vitals": "Afebrile."
+      },
+      "acceptableTopDx": [
+        "mechanical low back pain",
+        "lumbar strain"
+      ],
+      "mandatoryCannotMiss": [],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "reassurance + analgesia + stay active",
+        "safety-net for red flags"
+      ],
+      "unsafeActions": [
+        "early MRI for uncomplicated mechanical back pain"
+      ],
+      "synonyms": {
+        "mechanical low back pain": [
+          "musculoskeletal back pain",
+          "lumbar strain",
+          "non-specific low back pain"
+        ]
+      }
+    },
+    {
+      "id": "D37",
+      "category": "common",
+      "source": "synthetic",
+      "presentation": {
+        "age": 24,
+        "sex": "female",
+        "complaint": "Recurrent sneezing, clear runny nose and itchy watery eyes each spring.",
+        "history": "Personal history of eczema.",
+        "exam": "Pale, boggy nasal mucosa.",
+        "vitals": "Normal."
+      },
+      "acceptableTopDx": [
+        "allergic rhinitis"
+      ],
+      "mandatoryCannotMiss": [],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "antihistamine / intranasal steroid",
+        "allergen avoidance"
+      ],
+      "unsafeActions": [],
+      "synonyms": {
+        "allergic rhinitis": [
+          "hay fever",
+          "seasonal rhinitis"
+        ]
+      }
+    },
+    {
+      "id": "D38",
+      "category": "common",
+      "source": "synthetic",
+      "presentation": {
+        "age": 34,
+        "sex": "female",
+        "complaint": "Progressive fatigue and breathlessness on exertion.",
+        "history": "Heavy menstrual periods.",
+        "exam": "Conjunctival pallor, koilonychia.",
+        "vitals": "HR 92.",
+        "investigations": "Hb 8.4 g/dL, low ferritin, microcytic indices."
+      },
+      "acceptableTopDx": [
+        "iron deficiency anaemia"
+      ],
+      "mandatoryCannotMiss": [],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "identify source (menorrhagia)",
+        "iron replacement",
+        "recheck response"
+      ],
+      "unsafeActions": [],
+      "synonyms": {
+        "iron deficiency anaemia": [
+          "iron deficiency anemia",
+          "IDA",
+          "microcytic anaemia"
+        ]
+      }
+    },
+    {
+      "id": "D39",
+      "category": "common",
+      "source": "synthetic",
+      "presentation": {
+        "age": 45,
+        "sex": "female",
+        "complaint": "Months of fatigue, weight gain, cold intolerance and constipation.",
+        "history": "Dry skin, hair thinning.",
+        "exam": "Bradycardia, delayed reflex relaxation.",
+        "vitals": "HR 56.",
+        "investigations": "TSH markedly elevated, low free T4."
+      },
+      "acceptableTopDx": [
+        "hypothyroidism",
+        "primary hypothyroidism"
+      ],
+      "mandatoryCannotMiss": [],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "levothyroxine",
+        "recheck TFTs after titration"
+      ],
+      "unsafeActions": [],
+      "synonyms": {
+        "hypothyroidism": [
+          "primary hypothyroidism",
+          "underactive thyroid"
+        ]
+      }
+    },
+    {
+      "id": "D40",
+      "category": "common",
+      "source": "synthetic",
+      "presentation": {
+        "age": 55,
+        "sex": "male",
+        "complaint": "One day of a warm, red, tender, swollen right lower leg with fever.",
+        "history": "Small skin break last week.",
+        "exam": "Well-demarcated erythema, warmth, no crepitus, calf soft.",
+        "vitals": "Temp 38.2, HR 96."
+      },
+      "acceptableTopDx": [
+        "cellulitis"
+      ],
+      "mandatoryCannotMiss": [
+        "deep vein thrombosis",
+        "necrotising fasciitis"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "mark the border",
+        "antibiotics",
+        "reassess for necrotising features"
+      ],
+      "unsafeActions": [],
+      "synonyms": {
+        "cellulitis": [
+          "skin and soft tissue infection"
+        ],
+        "deep vein thrombosis": [
+          "DVT"
+        ],
+        "necrotising fasciitis": [
+          "flesh-eating infection",
+          "nec fasc"
+        ]
+      }
+    },
+    {
+      "id": "D41",
+      "category": "common",
+      "source": "synthetic",
+      "presentation": {
+        "age": 4,
+        "sex": "male",
+        "complaint": "One day of ear pain, fever and irritability; tugging at the right ear.",
+        "history": "Recent cold.",
+        "exam": "Bulging, erythematous, immobile right tympanic membrane; no post-auricular swelling.",
+        "vitals": "Temp 38.5."
+      },
+      "acceptableTopDx": [
+        "acute otitis media"
+      ],
+      "mandatoryCannotMiss": [
+        "mastoiditis"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "analgesia",
+        "antibiotics per age/severity",
+        "safety-net for mastoiditis"
+      ],
+      "unsafeActions": [],
+      "synonyms": {
+        "acute otitis media": [
+          "AOM",
+          "middle ear infection"
+        ],
+        "mastoiditis": [
+          "acute mastoiditis"
+        ]
+      }
+    },
+    {
+      "id": "D42",
+      "category": "common",
+      "source": "synthetic",
+      "presentation": {
+        "age": 28,
+        "sex": "male",
+        "complaint": "One red eye with sticky discharge.",
+        "history": "A contact has the same. No pain, no visual change, no photophobia.",
+        "exam": "Diffuse conjunctival injection, reactive pupil, clear cornea.",
+        "vitals": "Normal."
+      },
+      "acceptableTopDx": [
+        "conjunctivitis",
+        "infective conjunctivitis"
+      ],
+      "mandatoryCannotMiss": [],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "hygiene advice",
+        "check for red-flags (pain/visual loss/photophobia)"
+      ],
+      "unsafeActions": [
+        "topical steroids without excluding herpetic keratitis"
+      ],
+      "synonyms": {
+        "conjunctivitis": [
+          "pink eye",
+          "infective conjunctivitis"
+        ],
+        "acute angle-closure glaucoma": [
+          "angle closure glaucoma"
+        ]
+      },
+      "conditionalCannotMiss": {
+        "keratitis": "if contact-lens wearer"
+      }
+    },
+    {
+      "id": "D43",
+      "category": "common",
+      "source": "synthetic",
+      "presentation": {
+        "age": 50,
+        "sex": "male",
+        "complaint": "Sudden severe pain, redness and swelling of the base of the big toe overnight.",
+        "history": "Recent alcohol binge; previous similar episode.",
+        "exam": "Exquisitely tender, red, swollen first MTP joint.",
+        "vitals": "Afebrile."
+      },
+      "acceptableTopDx": [
+        "gout",
+        "acute gouty arthritis"
+      ],
+      "mandatoryCannotMiss": [
+        "septic arthritis"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "consider joint aspiration to exclude sepsis",
+        "NSAID/colchicine"
+      ],
+      "unsafeActions": [],
+      "synonyms": {
+        "gout": [
+          "acute gouty arthritis",
+          "crystal arthropathy"
+        ],
+        "septic arthritis": [
+          "joint sepsis"
+        ]
+      }
+    },
+    {
+      "id": "D44",
+      "category": "common",
+      "source": "synthetic",
+      "presentation": {
+        "age": 22,
+        "sex": "female",
+        "complaint": "Two days of wheeze, cough and breathlessness after a cold.",
+        "history": "Known asthma; using reliever more often.",
+        "exam": "Bilateral expiratory wheeze, speaking in sentences.",
+        "vitals": "RR 22, SpO2 96%, HR 96."
+      },
+      "acceptableTopDx": [
+        "asthma exacerbation"
+      ],
+      "mandatoryCannotMiss": [
+        "pulmonary embolism"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "bronchodilators",
+        "steroids",
+        "assess severity (PEF, sats)"
+      ],
+      "unsafeActions": [],
+      "synonyms": {
+        "asthma exacerbation": [
+          "acute asthma",
+          "asthma attack"
+        ],
+        "pulmonary embolism": [
+          "PE",
+          "PTE",
+          "pulmonary embolus"
+        ]
+      }
+    },
+    {
+      "id": "D45",
+      "category": "common",
+      "source": "synthetic",
+      "presentation": {
+        "age": 30,
+        "sex": "male",
+        "complaint": "One day of vomiting, watery diarrhoea and crampy abdominal pain.",
+        "history": "Several colleagues unwell after a shared meal.",
+        "exam": "Diffuse mild tenderness, no guarding, no localised RLQ signs.",
+        "vitals": "HR 92, afebrile."
+      },
+      "acceptableTopDx": [
+        "viral gastroenteritis",
+        "infective gastroenteritis"
+      ],
+      "mandatoryCannotMiss": [
+        "appendicitis"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "oral rehydration",
+        "reassess for localising/surgical signs"
+      ],
+      "unsafeActions": [],
+      "synonyms": {
+        "viral gastroenteritis": [
+          "gastroenteritis",
+          "infective gastroenteritis",
+          "food poisoning"
+        ],
+        "appendicitis": [
+          "acute appendicitis"
+        ]
+      }
+    },
+    {
+      "id": "D46",
+      "category": "common",
+      "source": "synthetic",
+      "presentation": {
+        "age": 34,
+        "sex": "female",
+        "complaint": "Several weeks of low mood, loss of interest, poor sleep, low energy and appetite.",
+        "history": "Recent life stressor; no psychotic features stated.",
+        "exam": "Low affect, no acute distress.",
+        "vitals": "Normal."
+      },
+      "acceptableTopDx": [
+        "major depressive disorder",
+        "depression"
+      ],
+      "mandatoryCannotMiss": [],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "risk assessment including self-harm",
+        "screen organic mimics (TFT, anaemia)",
+        "offer treatment options"
+      ],
+      "unsafeActions": [],
+      "synonyms": {
+        "major depressive disorder": [
+          "depression",
+          "MDD",
+          "depressive episode"
+        ]
+      }
+    },
+    {
+      "id": "D47",
+      "category": "common",
+      "source": "synthetic",
+      "presentation": {
+        "age": 55,
+        "sex": "female",
+        "complaint": "Brief spinning episodes triggered by rolling over in bed.",
+        "history": "Each lasts under a minute; no hearing loss, no other neurology.",
+        "exam": "Positive Dix-Hallpike with transient rotatory nystagmus; normal cranial nerves and gait.",
+        "vitals": "Normal."
+      },
+      "acceptableTopDx": [
+        "benign paroxysmal positional vertigo"
+      ],
+      "mandatoryCannotMiss": [
+        "posterior circulation stroke"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "Epley manoeuvre",
+        "reassess for central features"
+      ],
+      "unsafeActions": [],
+      "synonyms": {
+        "benign paroxysmal positional vertigo": [
+          "BPPV",
+          "positional vertigo"
+        ],
+        "posterior circulation stroke": [
+          "brainstem",
+          "brainstem stroke",
+          "central positional vertigo",
+          "cerebellar",
+          "cerebellar infarct",
+          "cerebellar stroke",
+          "vertebrobasilar TIA",
+          "vertebrobasilar stroke"
+        ]
+      }
+    },
+    {
+      "id": "D48",
+      "category": "common",
+      "source": "synthetic",
+      "presentation": {
+        "age": 40,
+        "sex": "male",
+        "complaint": "A week of cough productive of clear sputum following a cold.",
+        "history": "No breathlessness, no chest pain.",
+        "exam": "Chest clear, no focal signs.",
+        "vitals": "Afebrile, SpO2 98%, RR 16."
+      },
+      "acceptableTopDx": [
+        "acute bronchitis"
+      ],
+      "mandatoryCannotMiss": [
+        "pneumonia"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "symptomatic care",
+        "safety-net; antibiotics not routinely indicated"
+      ],
+      "unsafeActions": [
+        "routine antibiotics for uncomplicated acute bronchitis"
+      ],
+      "synonyms": {
+        "acute bronchitis": [
+          "chest infection",
+          "tracheobronchitis"
+        ],
+        "pneumonia": [
+          "CAP",
+          "community-acquired pneumonia",
+          "lobar pneumonia"
+        ]
+      }
+    },
+    {
+      "id": "D49",
+      "category": "atypical",
+      "source": "synthetic",
+      "presentation": {
+        "age": 25,
+        "sex": "male",
+        "complaint": "A day of vague periumbilical pain now settling in the right lower abdomen, with anorexia.",
+        "history": "Some loose stools; low-grade fever.",
+        "exam": "Right iliac fossa tenderness with guarding.",
+        "vitals": "Temp 37.8, HR 96."
+      },
+      "acceptableTopDx": [
+        "appendicitis",
+        "acute appendicitis"
+      ],
+      "mandatoryCannotMiss": [
+        "appendicitis"
+      ],
+      "forbiddenDx": [
+        "ectopic pregnancy",
+        "ovarian torsion"
+      ],
+      "bestNextActions": [
+        "surgical review",
+        "bloods + imaging",
+        "keep nil by mouth"
+      ],
+      "unsafeActions": [],
+      "synonyms": {
+        "appendicitis": [
+          "acute appendicitis"
+        ]
+      }
+    },
+    {
+      "id": "D50",
+      "category": "atypical",
+      "source": "synthetic",
+      "presentation": {
+        "age": 72,
+        "sex": "female",
+        "complaint": "Family reports months of low mood, slowed thinking and forgetfulness.",
+        "history": "Weight gain, constipation, cold intolerance.",
+        "exam": "Psychomotor slowing, dry skin, delayed reflexes.",
+        "vitals": "HR 58.",
+        "investigations": "TSH very high."
+      },
+      "acceptableTopDx": [
+        "hypothyroidism",
+        "depression"
+      ],
+      "mandatoryCannotMiss": [],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "treat hypothyroidism",
+        "reassess cognition/mood after correction",
+        "screen reversible dementia mimics"
+      ],
+      "unsafeActions": [
+        "label as irreversible dementia without excluding hypothyroidism"
+      ],
+      "synonyms": {
+        "hypothyroidism": [
+          "underactive thyroid"
+        ],
+        "depression": [
+          "late-life depression"
+        ]
+      }
+    },
+    {
+      "id": "D51",
+      "category": "atypical",
+      "source": "synthetic",
+      "presentation": {
+        "age": 80,
+        "sex": "female",
+        "complaint": "Two days of increasing confusion and reduced intake.",
+        "history": "No specific urinary symptoms reported.",
+        "exam": "Disoriented, dry, mild suprapubic discomfort.",
+        "vitals": "Temp 37.9, HR 104, BP 108/66.",
+        "investigations": "Urinalysis: nitrites and leucocytes positive."
+      },
+      "acceptableTopDx": [
+        "urinary tract infection",
+        "urosepsis",
+        "pyelonephritis"
+      ],
+      "mandatoryCannotMiss": [
+        "sepsis"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "septic screen incl. cultures",
+        "fluids",
+        "treat source; reassess for other delirium causes"
+      ],
+      "unsafeActions": [
+        "attribute delirium to age without a septic screen"
+      ],
+      "synonyms": {
+        "urinary tract infection": [
+          "UTI",
+          "urosepsis"
+        ],
+        "sepsis": [
+          "sepsis syndrome",
+          "septic shock",
+          "septicaemia",
+          "septicemia"
+        ]
+      }
+    },
+    {
+      "id": "D52",
+      "category": "atypical",
+      "source": "synthetic",
+      "presentation": {
+        "age": 38,
+        "sex": "male",
+        "complaint": "Over a month of cough, low-grade evening fevers, night sweats and weight loss.",
+        "history": "Lives in a crowded household; endemic-TB region.",
+        "exam": "Mild crackles right upper zone.",
+        "vitals": "Temp 37.6.",
+        "investigations": "CXR: right upper-lobe patchy opacity."
+      },
+      "acceptableTopDx": [
+        "pulmonary tuberculosis"
+      ],
+      "mandatoryCannotMiss": [
+        "tuberculosis",
+        "lung malignancy"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "sputum for AFB/GeneXpert",
+        "isolate as needed",
+        "notify per local pathway"
+      ],
+      "unsafeActions": [
+        "treat as simple pneumonia and discharge without TB workup in an endemic setting"
+      ],
+      "synonyms": {
+        "pulmonary tuberculosis": [
+          "TB",
+          "pulmonary TB",
+          "tuberculosis"
+        ],
+        "tuberculosis": [
+          "TB",
+          "pulmonary tuberculosis"
+        ],
+        "lung malignancy": [
+          "bronchogenic carcinoma",
+          "lung cancer",
+          "lung carcinoma"
+        ]
+      }
+    },
+    {
+      "id": "D53",
+      "category": "mimic",
+      "source": "synthetic",
+      "presentation": {
+        "age": 48,
+        "sex": "female",
+        "complaint": "Pleuritic right chest pain and breathlessness with a mild fever.",
+        "history": "On the combined oral contraceptive pill; recent long car journey.",
+        "exam": "Mild tachycardia, clear chest, no consolidation.",
+        "vitals": "HR 108, RR 22, SpO2 93%, Temp 37.6."
+      },
+      "acceptableTopDx": [
+        "pulmonary embolism"
+      ],
+      "mandatoryCannotMiss": [
+        "pulmonary embolism",
+        "pneumonia"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "Wells score",
+        "D-dimer or CTPA per pre-test probability",
+        "ECG"
+      ],
+      "unsafeActions": [
+        "anchor on pneumonia and miss the VTE risk factors"
+      ],
+      "synonyms": {
+        "pulmonary embolism": [
+          "PE",
+          "PTE",
+          "VTE",
+          "pulmonary embolus"
+        ],
+        "pneumonia": [
+          "CAP",
+          "community-acquired pneumonia",
+          "lobar pneumonia"
+        ]
+      }
+    },
+    {
+      "id": "D54",
+      "category": "mimic",
+      "source": "synthetic",
+      "presentation": {
+        "age": 60,
+        "sex": "male",
+        "complaint": "Three days of a burning, band-like pain across the left chest wall.",
+        "history": "No exertional relation; pain is superficial and sensitive to touch.",
+        "exam": "Hyperaesthesia over a single dermatome; faint early vesicles appearing.",
+        "vitals": "Normal."
+      },
+      "acceptableTopDx": [
+        "herpes zoster",
+        "shingles"
+      ],
+      "mandatoryCannotMiss": [
+        "acute coronary syndrome"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "examine the dermatome for rash",
+        "antivirals if within window",
+        "analgesia"
+      ],
+      "unsafeActions": [],
+      "synonyms": {
+        "herpes zoster": [
+          "shingles",
+          "zoster"
+        ],
+        "acute coronary syndrome": [
+          "ACS",
+          "MI",
+          "NSTEMI",
+          "STEMI",
+          "heart attack",
+          "myocardial infarction",
+          "unstable angina"
+        ]
+      }
+    },
+    {
+      "id": "D55",
+      "category": "mimic",
+      "source": "synthetic",
+      "presentation": {
+        "age": 58,
+        "sex": "female",
+        "complaint": "Weeks of constipation, low mood, excessive thirst and vague aches.",
+        "history": "Also frequent urination and fatigue.",
+        "exam": "Non-specific.",
+        "vitals": "Normal.",
+        "investigations": "Corrected calcium 3.1 mmol/L."
+      },
+      "acceptableTopDx": [
+        "hypercalcaemia",
+        "primary hyperparathyroidism"
+      ],
+      "mandatoryCannotMiss": [
+        "malignancy"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "PTH level",
+        "screen for malignancy",
+        "hydrate; treat cause"
+      ],
+      "unsafeActions": [
+        "treat as primary depression without checking calcium"
+      ],
+      "synonyms": {
+        "hypercalcaemia": [
+          "hypercalcemia",
+          "high calcium"
+        ],
+        "primary hyperparathyroidism": [
+          "hyperparathyroidism"
+        ],
+        "malignancy": [
+          "cancer",
+          "carcinoma",
+          "neoplasm"
+        ]
+      }
+    },
+    {
+      "id": "D56",
+      "category": "multimorbidity",
+      "source": "synthetic",
+      "presentation": {
+        "age": 74,
+        "sex": "male",
+        "complaint": "A week of worsening breathlessness with both wheeze and ankle swelling.",
+        "history": "Long-standing COPD (smoker) and known ischaemic heart disease.",
+        "exam": "Wheeze plus bibasal crackles and pitting oedema.",
+        "vitals": "RR 24, SpO2 90%, HR 98."
+      },
+      "acceptableTopDx": [
+        "COPD exacerbation",
+        "heart failure",
+        "decompensated heart failure"
+      ],
+      "mandatoryCannotMiss": [
+        "acute coronary syndrome",
+        "pulmonary embolism"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "ECG + troponin",
+        "chest X-ray + BNP",
+        "treat both processes as indicated"
+      ],
+      "unsafeActions": [],
+      "synonyms": {
+        "COPD exacerbation": [
+          "AECOPD",
+          "infective exacerbation of COPD"
+        ],
+        "heart failure": [
+          "decompensated heart failure",
+          "CHF"
+        ],
+        "acute coronary syndrome": [
+          "ACS",
+          "MI",
+          "NSTEMI",
+          "STEMI",
+          "heart attack",
+          "myocardial infarction",
+          "unstable angina"
+        ],
+        "pulmonary embolism": [
+          "PE",
+          "PTE",
+          "pulmonary embolus"
+        ]
+      }
+    },
+    {
+      "id": "D57",
+      "category": "multimorbidity",
+      "source": "synthetic",
+      "presentation": {
+        "age": 78,
+        "sex": "female",
+        "complaint": "Recurrent dizziness on standing and two recent falls.",
+        "history": "On an ACE inhibitor, a diuretic and a new alpha-blocker; eating less recently.",
+        "exam": "Postural drop in blood pressure; otherwise non-focal.",
+        "vitals": "Lying BP 138/80, standing 108/64 with symptoms."
+      },
+      "acceptableTopDx": [
+        "orthostatic hypotension",
+        "medication-induced orthostatic hypotension"
+      ],
+      "mandatoryCannotMiss": [],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "medication review / deprescribe",
+        "assess hydration",
+        "screen arrhythmia and anaemia"
+      ],
+      "unsafeActions": [
+        "add another antihypertensive without a medication review"
+      ],
+      "synonyms": {
+        "orthostatic hypotension": [
+          "postural hypotension",
+          "medication-induced hypotension"
+        ]
+      }
+    },
+    {
+      "id": "D58",
+      "category": "multimorbidity",
+      "source": "synthetic",
+      "presentation": {
+        "age": 66,
+        "sex": "male",
+        "complaint": "Fatigue and general malaise.",
+        "history": "Known chronic kidney disease stage 4; on an ACE inhibitor and a potassium-sparing diuretic.",
+        "exam": "Non-specific.",
+        "vitals": "HR 58.",
+        "investigations": "Potassium 6.4 mmol/L, eGFR 22."
+      },
+      "acceptableTopDx": [
+        "hyperkalaemia",
+        "CKD-related metabolic disturbance"
+      ],
+      "mandatoryCannotMiss": [
+        "hyperkalaemia"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "urgent ECG",
+        "treat hyperkalaemia",
+        "review offending medications"
+      ],
+      "unsafeActions": [
+        "repeat the bloods later without an ECG"
+      ],
+      "synonyms": {
+        "hyperkalaemia": [
+          "hyperkalemia",
+          "high potassium"
+        ]
+      }
+    },
+    {
+      "id": "D59",
+      "category": "incomplete",
+      "source": "synthetic",
+      "presentation": {
+        "age": 40,
+        "sex": "male",
+        "complaint": "Fever.",
+        "history": "No localising features, duration or travel history provided."
+      },
+      "acceptableTopDx": [
+        "undifferentiated febrile illness",
+        "viral infection",
+        "malaria",
+        "dengue",
+        "typhoid"
+      ],
+      "mandatoryCannotMiss": [
+        "sepsis"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "structured history incl. travel/exposure",
+        "vitals + focused exam",
+        "malaria smear/RDT and dengue testing in an endemic area"
+      ],
+      "unsafeActions": [
+        "commit to a viral label without a source or a septic screen"
+      ],
+      "synonyms": {
+        "undifferentiated febrile illness": [
+          "acute febrile illness",
+          "fever of unknown source"
+        ],
+        "sepsis": [
+          "septic shock",
+          "septicaemia",
+          "septicemia"
+        ]
+      },
+      "scoringMode": "incomplete-uncertainty"
+    },
+    {
+      "id": "D60",
+      "category": "incomplete",
+      "source": "synthetic",
+      "presentation": {
+        "age": 50,
+        "sex": "male",
+        "complaint": "Chest pain.",
+        "history": "No character, timing, risk factors or associated symptoms provided; no vitals available."
+      },
+      "acceptableTopDx": [
+        "acute coronary syndrome",
+        "stable angina",
+        "musculoskeletal chest pain",
+        "gastro-oesophageal reflux disease"
+      ],
+      "mandatoryCannotMiss": [
+        "acute coronary syndrome",
+        "aortic dissection",
+        "pulmonary embolism"
+      ],
+      "forbiddenDx": [],
+      "bestNextActions": [
+        "obtain vitals and an ECG",
+        "characterise the pain and risk factors",
+        "cannot exclude ACS on this information"
+      ],
+      "unsafeActions": [
+        "reassure and discharge without an ECG or further history"
+      ],
+      "synonyms": {
+        "acute coronary syndrome": [
+          "ACS",
+          "MI",
+          "NSTEMI",
+          "STEMI",
+          "heart attack",
+          "myocardial infarction",
+          "unstable angina"
+        ],
+        "aortic dissection": [
+          "aortic dissection",
+          "aortic syndrome",
+          "dissecting aortic aneurysm"
+        ],
+        "pulmonary embolism": [
+          "PE",
+          "PTE",
+          "pulmonary embolus"
+        ]
+      }
+    }
+  ]
+}
