@@ -86,6 +86,15 @@ export function allEntries(r: DdxResult): Array<DdxEntry & { axis: DdxAxis }> {
  *  Containment is unchanged — synonyms (Track B) carry the rest; over-matching is the risk. */
 export const MATCHER_VERSION = 'ddx-eval/2';
 
+/** The FROZEN evaluator pair (Phase 2a freeze, 12-Jul-2026). Every downstream DDx run
+ *  measures against this exact (matcher, bank) pair; `freezeGuard` fails a run whose
+ *  versions drift from it (the runner arms this via DDX_EVAL_FROZEN). Bumping either is a
+ *  conscious re-freeze — e.g. bank v1.1 will add expectedLanes / documentedNegatives /
+ *  unsupportedCannotMiss for the currently-null metrics, and a future short-token
+ *  word-boundary guard would ship as Matcher v3 (logged follow-up, not in this freeze). */
+export const FROZEN_MATCHER = MATCHER_VERSION;        // 'ddx-eval/2'
+export const FROZEN_BANK = 'ddx-case-bank/1.0';
+
 /** Fold British spelling to American so the two variants match. Applied INSIDE norm, after
  *  punctuation/whitespace normalisation, so it sees plain lowercased words. The fold is
  *  applied to BOTH sides of every comparison, so it can only ever make equal words equal —

@@ -17,7 +17,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { scoreDdxCase, summarizeDdx, freezeGuard, MATCHER_VERSION } from '../lib/ddx-eval-core.ts';
+import { scoreDdxCase, summarizeDdx, freezeGuard, FROZEN_MATCHER, FROZEN_BANK } from '../lib/ddx-eval-core.ts';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(__dir, '..');
@@ -151,24 +151,27 @@ const main = async () => {
   }, null, 2));
   console.log(`\nWrote ${OUT}`);
 
-  // Freeze guard (Phase 2a A6): DORMANT by default. Once labels are ratified and a frozen
-  // evaluator is pinned, set DDX_EVAL_FROZEN=1 with DDX_FROZEN_MATCHER / DDX_FROZEN_BANK;
-  // a run whose matcher/bank versions don't equal the pinned pair then exits non-zero — the
-  // numbers are only comparable within one frozen (matcher, bank) pair.
+  // Freeze guard (Phase 2a): DORMANT by default. Set DDX_EVAL_FROZEN=1 to enforce the pinned
+  // pair (FROZEN_MATCHER='ddx-eval/2', FROZEN_BANK='ddx-case-bank/1.0'); a run whose matcher
+  // or bank version drifts from it then exits 3 — the numbers are only comparable within one
+  // frozen (matcher, bank) pair. Env DDX_FROZEN_MATCHER/DDX_FROZEN_BANK override the pins for
+  // a future re-freeze without a code edit.
   const freeze = freezeGuard(summary, {
     frozen: process.env.DDX_EVAL_FROZEN === '1',
-    matcher: process.env.DDX_FROZEN_MATCHER || MATCHER_VERSION,
-    bank: process.env.DDX_FROZEN_BANK || undefined,
+    matcher: process.env.DDX_FROZEN_MATCHER || FROZEN_MATCHER,
+    bank: process.env.DDX_FROZEN_BANK || FROZEN_BANK,
   });
   if (!freeze.ok) { console.error(`\n${freeze.message}`); process.exit(3); }
 
-  // Soft gate (§5): report-only until the bank reaches n≈40–80. When V sets
-  // DDX_BENCH_HARD_GATE=1 AND supplies a frozen baseline via DDX_BASELINE_CANNOT_MISS
-  // (e.g. 0.8), a cannotMissRecall drop below it fails the run. Dormant otherwise.
+  // Hard gate (Phase 2a F5): the 60-case v1.0 bank IS the cannot-miss regression corpus.
+  // DORMANT by default; arm with DDX_BENCH_HARD_GATE=1. The floor is cannotMissRecall ≥ 0.90
+  // — the frozen baseline (0.92 case-level) minus a ~1-case/≈50 (≈0.02) temperature-0.2
+  // run-to-run noise margin — and defaults to 0.90 when DDX_BASELINE_CANNOT_MISS is unset.
+  // (CI live-bench arming stays deferred pending V's CI-provider + deployment-URL confirm.)
   if (process.env.DDX_BENCH_HARD_GATE === '1') {
-    const floor = parseFloat(process.env.DDX_BASELINE_CANNOT_MISS || 'NaN');
+    const floor = parseFloat(process.env.DDX_BASELINE_CANNOT_MISS || '0.90');
     if (Number.isFinite(floor) && summary.cannotMissRecall < floor) {
-      console.error(`\nHARD GATE: cannot-miss recall ${pct(summary.cannotMissRecall)} < frozen baseline ${pct(floor)}`);
+      console.error(`\nHARD GATE: cannot-miss recall ${pct(summary.cannotMissRecall)} < floor ${pct(floor)}`);
       process.exit(2);
     }
   }

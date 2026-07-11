@@ -1,12 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync, mkdtempSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   matchDx, rankedDifferential, allEntries, suspectedFabricatedFindings,
   scoreDdxCase, summarizeDdx, caseHarm, HARM_WEIGHTS,
-  MATCHER_VERSION, scoreFromResultsJson, freezeGuard,
+  MATCHER_VERSION, FROZEN_MATCHER, FROZEN_BANK, scoreFromResultsJson, freezeGuard,
   type DdxCase, type DdxResult, type DdxCaseScore,
 } from '../ddx-eval-core.ts';
 
@@ -391,6 +392,45 @@ test('A5 scoreFromResultsJson: re-scores a saved results file with no network', 
   assert.equal(summary.bankVersion, 'ddx-case-bank/0.2'); // derived from wrapper meta
   assert.equal(summary.matcherVersion, 'ddx-eval/2');
   assert.equal(summary.latencyP50Ms, 80000);        // nearest-rank P50 of [80000,120000]
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+//  Phase 2a FREEZE — frozen pair pins + collision guard over the committed v1.0 bank
+// ══════════════════════════════════════════════════════════════════════════════════════
+
+const BANK_PATH = resolve(dirname(fileURLToPath(import.meta.url)), '../../data/ddx-case-bank.json');
+const loadBank = (): { meta?: { id?: string }; cases: DdxCase[] } => {
+  const raw = JSON.parse(readFileSync(BANK_PATH, 'utf8'));
+  return Array.isArray(raw) ? { cases: raw } : raw;
+};
+
+test('FREEZE: pinned pair is ddx-eval/2 + ddx-case-bank/1.0 and matches the committed bank', () => {
+  assert.equal(FROZEN_MATCHER, 'ddx-eval/2');
+  assert.equal(FROZEN_MATCHER, MATCHER_VERSION);   // matcher pin tracks the live matcher version
+  assert.equal(FROZEN_BANK, 'ddx-case-bank/1.0');
+  assert.equal(loadBank().meta?.id, FROZEN_BANK);  // the tracked bank IS the frozen bank
+});
+
+// F3 · Collision guard. Within a single case, mandatoryCannotMiss is a CONJUNCTION — each
+// dx must be independently covered — so no two of a case's cannot-miss diagnoses may match
+// each other (via matchDx + that case's synonyms, either direction). A collision means one
+// engine dx would falsely credit two required dx (e.g. the pre-freeze 'CES' ⊂ 'abscess' in
+// D11). Fails loudly listing every offending pair; does NOT auto-resolve.
+test('F3 collision guard: no two cannot-miss dx in any case collapse under matcher + synonyms', () => {
+  const { cases } = loadBank();
+  const collisions: string[] = [];
+  for (const c of cases) {
+    const cm = c.mandatoryCannotMiss ?? [];
+    const syn = c.synonyms ?? {};
+    for (let i = 0; i < cm.length; i++) {
+      for (let j = i + 1; j < cm.length; j++) {
+        if (matchDx(cm[j], cm[i], syn[cm[i]]) || matchDx(cm[i], cm[j], syn[cm[j]])) {
+          collisions.push(`${c.id}: "${cm[i]}" <=> "${cm[j]}"`);
+        }
+      }
+    }
+  }
+  assert.deepEqual(collisions, [], `cannot-miss collisions found:\n  ${collisions.join('\n  ')}`);
 });
 
 // ── Regression: existing 7 metrics unchanged in value on an unchanged input ──
