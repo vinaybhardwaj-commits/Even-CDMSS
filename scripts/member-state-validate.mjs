@@ -16,6 +16,7 @@
 import { performance } from 'node:perf_hooks';
 import { GOLD_SEED } from '../lib/member-state/validation/gold-seed.ts';
 import { scoreCase, aggregate } from '../lib/member-state/validation/score-core.ts';
+import { BASELINE, checkBaseline } from '../lib/member-state/validation/baseline.ts';
 import { buildMemberState } from '../lib/member-state/aggregate-core.ts';
 import { assembleEvidence } from '../lib/member-state/assemble-core.ts';
 
@@ -54,7 +55,22 @@ function runSeed() {
   console.log('\n  RATIFICATION WORKLIST (accuracy disagreements + open questions — NOT gate failures):');
   if (worklist.length) worklist.forEach((w) => console.log('    ' + w)); else console.log('    (none)');
   console.log(`\n  SEED BLOCK: ${hardFail ? 'HARD FAIL' : 'PASS (all invariant gates hold on the frozen core; accuracy items are ratification input)'}`);
-  return hardFail;
+  return { hardFail, agg };
+}
+
+// ── Frozen baseline check (member-state-baseline/1.0) — floor-vs-actual; --baseline exits on breach ──
+function checkFrozenBaseline(agg, enforce) {
+  const breaches = checkBaseline(agg);
+  console.log(`\n── Frozen baseline ${BASELINE.version} (pins ${Object.values(BASELINE.frozenPins).join(' · ')}) ──`);
+  const f2b = (x) => (x == null ? 'n/a' : x.toFixed(2));
+  console.log(`  HARD  retention ${f2b(agg.sourceEventRetention)}/1.0 · provenance ${f2b(agg.provenanceRetention)}/1.0 · trust ${f2b(agg.trustProvenanceRetention)}/1.0 · incorrect-res ${agg.incorrectResolutions}/0 · invariant-viol ${agg.invariantViolations}/0`);
+  console.log(`  GATED false-merge ${agg.falseMerges}/0 · conflict-recall ${f2b(agg.conflictRecall)}/1.0`);
+  console.log(`  FLOOR problem-status ${f2b(agg.problemStatusAccuracy)}/≥0.90 · problem-course ${f2b(agg.problemCourseAccuracy)}/≥0.90 · med-currentness ${f2b(agg.medCurrentnessAccuracy)}/≥0.90`);
+  console.log(`  REPORTED false-split ${agg.falseSplits} (tolerated)`);
+  if (breaches.length) { console.log('  BASELINE BREACHES:'); breaches.forEach((b) => console.log('    ✗ ' + b)); }
+  else console.log(`  BASELINE: PASS (all floors clear)`);
+  if (enforce && breaches.length) { console.error(`\n--baseline: ${breaches.length} floor breach(es) — FAIL.`); process.exit(1); }
+  return breaches.length;
 }
 
 // ══ Block 2 — wider unlabelled db13 shadow (DB) ══
@@ -129,7 +145,9 @@ async function runShadow() {
 }
 
 const main = async () => {
-  const hardFail = runSeed();
+  const enforceBaseline = process.argv.includes('--baseline');
+  const { hardFail, agg } = runSeed();
+  checkFrozenBaseline(agg, enforceBaseline);   // prints floor-vs-actual; --baseline exits 1 on breach
   await runShadow();
   if (hardFail) { console.error('\nSEED HARD FAIL — see violations above.'); process.exit(1); }
   console.log('\n(validation harness complete; writes nothing)');

@@ -1,16 +1,25 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { GOLD_SEED } from '../member-state/validation/gold-seed';
+import { GOLD_SEED, MEMBER_BANK_VERSION } from '../member-state/validation/gold-seed';
 import { scoreCase, aggregate } from '../member-state/validation/score-core';
+import { BASELINE, checkBaseline, MEMBER_STATE_BASELINE } from '../member-state/validation/baseline';
 import { buildMemberState } from '../member-state/aggregate-core';
 
 const COMPUTED = '2026-07-01T00:00:00.000Z';
 const byId = Object.fromEntries(GOLD_SEED.map((c) => [c.expected.caseId, c]));
 const run = (id: string) => { const c = byId[id]; const built = buildMemberState(c.evidence, COMPUTED); return { c, built, score: scoreCase(c.expected, built, c.evidence) }; };
 
-test('gold seed has 20 strata; each ships ratified:false (UNFROZEN)', () => {
+test('gold seed is FROZEN: 20 strata, every case ratified:true, member-bank/1.0', () => {
   assert.equal(GOLD_SEED.length, 20);
-  assert.ok(GOLD_SEED.every((c) => c.expected.ratified === false));
+  assert.ok(GOLD_SEED.every((c) => c.expected.ratified === true));
+  assert.equal(MEMBER_BANK_VERSION, 'member-bank/1.0');
+});
+
+test('frozen baseline member-state-baseline/1.0: the seed clears every floor (no breaches)', () => {
+  assert.equal(MEMBER_STATE_BASELINE, 'member-state-baseline/1.0');
+  const agg = aggregate(GOLD_SEED.map((c) => scoreCase(c.expected, buildMemberState(c.evidence, COMPUTED), c.evidence)));
+  assert.deepEqual(checkBaseline(agg), []);   // GATED + FLOORED + HARD all clear
+  assert.equal(BASELINE.frozenPins.reconcile, 'member-reconcile/0.3');
 });
 
 test('HARD gates hold for EVERY case: retention/provenance/trust 100%, incorrect-resolution 0', () => {
