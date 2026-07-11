@@ -11,8 +11,9 @@ import { parseInvestigations, type ParsedInvestigations } from '@/lib/investigat
 import { generateHypotheses, gatherHypothesisEvidence, formatHypothesesForPrompt, type Hypothesis } from '@/lib/ddx-hypothesis';
 import { geminiConfigured, GEMINI_MODEL } from '@/lib/llm';
 import { buildDdxClinicalState } from '@/lib/clinical-state/from-primitives';
-import { stateCounts } from '@/lib/clinical-state/schema';
+import { stateCounts, type ClinicalState } from '@/lib/clinical-state/schema';
 import { normalizeWithLlm, mergeLlmFindings } from '@/lib/clinical-state/extract';
+import { clinicalStateResultField } from '@/lib/clinical-state/ui-view';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;  // hypothesis-first beta adds passes; Pro allows 300s. Classic still finishes ~2min.
@@ -169,6 +170,11 @@ export async function POST(req: NextRequest) {
       // nothing (displayForPrompt untouched) and blocks nothing (fail-open). The
       // stage-2 LLM normalisation is gated OFF by default (CLINICAL_STATE_LLM=1);
       // default path adds zero model calls.
+      // Build 1c: the built state is captured here for the OPTIONAL additive response field
+      // (gated by CLINICAL_STATE_UI, default off — see the emit below). Capture only; the
+      // differential path is untouched.
+      let clinicalStateForUi: ClinicalState | null = null;
+      let rejectedSpanCount = 0;
       try {
         let clinicalState = buildDdxClinicalState(body, investigations);
         let rejectedSpans: unknown[] = [];
@@ -189,6 +195,8 @@ export async function POST(req: NextRequest) {
           clinicalState = mergeLlmFindings(clinicalState, llmPass);
           rejectedSpans = llmPass.rejected;
         }
+        clinicalStateForUi = clinicalState;       // 1c: capture for the optional response field
+        rejectedSpanCount = rejectedSpans.length;
         await logEvent(traceId, 'clinical_state_extracted', 'expanding', {
           ok: true,
           counts: stateCounts(clinicalState),
@@ -495,6 +503,9 @@ export async function POST(req: NextRequest) {
           plos_citations: plosCitations,
           presentation: display,
           investigations: investigations ? { findings: investigations.findings, summary: investigations.summary, structured: investigations.structured } : undefined,
+          // Build 1c: additive, flag-gated (CLINICAL_STATE_UI). Off (default) → {} → response
+          // byte-identical to today. Never affects the differential above.
+          ...clinicalStateResultField(clinicalStateForUi, rejectedSpanCount, process.env.CLINICAL_STATE_UI === '1'),
         },
       });
       // v1.7b S2: emit final_answer event + denormalize parsed DDx into traces.final_answer_text

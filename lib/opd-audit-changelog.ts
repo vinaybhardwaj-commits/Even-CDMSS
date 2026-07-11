@@ -21,6 +21,15 @@ export interface EngineChange {
 export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
     engine: null, date: '2026-07-12', scoring: false,
+    title: 'DDx surface (not OPD audit) — ClinicalState clinician render (Build 1c): additive /api/ddx field, flag-gated, differential-neutral',
+    points: [
+      'app/api/ddx/route.ts returns an ADDITIVE clinicalState field on the result ONLY when CLINICAL_STATE_UI=1 (default OFF). Off → the response is byte-identical to before (spreading {} adds nothing; asserted by a unit test). The field is a trimmed projection of the already-computed, already-traced ClinicalState (findings by present/absent/unknown, instability, investigations, temporality, provenance, counts, rejected_spans) — nothing is recomputed.',
+      'The /ddx client renders a read-only "Clinical State" panel beside/above the differential (never replacing it) when that field is present. ZERO change to differential generation, ordering, prompts, retrieval, ddx-hypothesis/ddx-constraints, the self-critique loop, or the clinical_state_extracted trace insert. Logged here per the changelog discipline because it touches the /api/ddx response shape — though it is a DDx-surface change, not an OPD note-audit engine change (opd-note-audit-core / opd-note-score-core are untouched).',
+    ],
+    why: 'DDx Reasoning V2 UI/UX Build 1c — surface the reasoning substrate (the ClinicalState proven live in shadow) to clinicians, behind a default-off flag so the default-on product decision stays a later, conscious flip.',
+  },
+  {
+    engine: null, date: '2026-07-12', scoring: false,
     title: 'ClinicalState shadow adoption (Platform B1) — dormant, output-neutral instrumentation',
     points: [
       'A flag-gated shadow hook at the persist seam (lib/opd-audit-store.ts saveOpdAudit, AFTER the INSERT): when CLINICAL_STATE_AUDIT_SHADOW=1 it round-trips the persisted findings through the canonical ClinicalState model (lib/clinical-state) and traces a fidelity event (kind clinical_state_audit_shadow: {roundtrip_ok, lossy_fields, counts}). DEFAULT OFF — zero added work, and byte-identical persisted output when off. The shadow computation is pure and non-mutating (operates on a JSON clone), fail-open (any throw is caught), and read-only w.r.t. the audit, so it can never affect findings / note_quality_index / PDQI-9 / suggestions / completeness. No opd-note-audit-core or opd-note-score-core change.',

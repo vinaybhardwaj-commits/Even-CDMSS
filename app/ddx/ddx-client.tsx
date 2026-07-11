@@ -5,6 +5,7 @@ import { consumeNdjson } from '@/lib/ndjson-client';
 import TracePanel, { TraceEvent } from '@/components/TracePanel';
 import { Send, Loader2, AlertTriangle, ChevronDown, ChevronUp, ClipboardList, BookOpen, Microscope, CheckCircle2, MinusCircle, FlaskConical, SlidersHorizontal, RefreshCw } from 'lucide-react';
 import { MarkdownAnswer } from '@/components/MarkdownAnswer';
+import type { ClinicalStateUiView } from '@/lib/clinical-state/ui-view';
 
 // Unified Clarity toggle-pill style (shared look with /ask).
 function togCls(active: boolean): string {
@@ -56,6 +57,9 @@ type DdxResponse = {
   duration_ms?: number;
   error?: string;
   detail?: string;
+  // Build 1c — additive, present only when CLINICAL_STATE_UI=1 server-side. Absent by default
+  // → the panel below does not render → /ddx is unchanged.
+  clinicalState?: ClinicalStateUiView;
 };
 
 const FLAG_STYLE: Record<string, string> = {
@@ -192,6 +196,96 @@ function DxCard({ dx, idx, danger, onCite, onPlosCite }: { dx: Dx; idx: number; 
         </div>
       )}
     </article>
+  );
+}
+
+// ── Build 1c · ClinicalState clinician-facing panel ──
+// Pure consumer of the additive `clinicalState` field (present only when CLINICAL_STATE_UI=1
+// server-side). Renders beside/above the differential — never replaces it.
+function CsFinding({ f, status }: { f: ClinicalStateUiView['positives'][number]; status: 'present' | 'absent' | 'unknown' }) {
+  const styles = {
+    present: 'border-brand/30 bg-brand-faint text-brand-dark',
+    absent: 'border-rose-200 bg-rose-50 text-rose-600',
+    unknown: 'border-slate-200 bg-slate-100 text-slate-500',
+  }[status];
+  const p = f.provenance;
+  const temp = f.temporality?.duration || f.temporality?.onset;
+  const hasTip = status !== 'unknown' && !!p?.rawText;
+  return (
+    <span className={`group relative mb-1.5 mr-1.5 inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[12.5px] ${styles} ${hasTip ? 'cursor-help' : ''}`}>
+      <span className={status === 'absent' ? 'line-through decoration-rose-300' : ''}>{f.concept}</span>
+      {temp && <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10.5px] text-indigo-700">{temp}</span>}
+      {status !== 'unknown' && p?.sourceField && <span className="text-[10px] opacity-60">{p.sourceField}</span>}
+      {hasTip && (
+        <span className="pointer-events-none absolute bottom-full left-0 z-10 mb-1 hidden w-52 rounded-lg bg-slate-900 px-2.5 py-2 text-left text-[11px] font-normal normal-case leading-snug text-slate-100 group-hover:block">
+          <b className="text-brand-light">rawText:</b> &ldquo;{p.rawText}&rdquo;<br />
+          <b className="text-brand-light">source:</b> {p.sourceField} · conf {p.confidence?.toFixed(2)} · {p.extractionMethod}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function CsGroup({ label, dot, items, status }: { label: string; dot: string; items: ClinicalStateUiView['positives']; status: 'present' | 'absent' | 'unknown' }) {
+  const labCls = { present: 'text-brand-dark', absent: 'text-rose-700', unknown: 'text-slate-400' }[status];
+  return (
+    <div className="mb-3">
+      <div className={`mb-1.5 flex items-center gap-1.5 text-[10.5px] font-bold uppercase tracking-wide ${labCls}`}>
+        <span className={`h-2 w-2 rounded-full ${dot}`} /> {label}
+      </div>
+      <div>{items.map((f) => <CsFinding key={f.id} f={f} status={status} />)}</div>
+    </div>
+  );
+}
+
+function ClinicalStatePanel({ state }: { state: ClinicalStateUiView }) {
+  const d = state.demographics;
+  const demo = [d.age != null ? `${d.age}` : null, d.sex ?? d.sexRaw ?? null].filter(Boolean).join(' / ') + (d.ageBand ? ` · band ${d.ageBand}` : '');
+  const inst = state.instability;
+  return (
+    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+      <div className="flex items-center gap-2.5 border-b border-slate-200 px-4 py-3">
+        <span className="text-sm font-semibold text-slate-800">Clinical State</span>
+        {demo.trim() && <span className="text-[12px] text-slate-500">{demo}</span>}
+        <span className="ml-auto rounded-full bg-brand-faint px-2.5 py-0.5 text-[11px] font-semibold text-brand-dark">reasoning substrate</span>
+      </div>
+      {inst.unstable ? (
+        <div className="flex flex-wrap items-center gap-2 bg-rose-50 px-4 py-2 text-[12.5px] font-semibold text-rose-700">
+          <AlertTriangle className="h-4 w-4 shrink-0" /> UNSTABLE
+          <span className="font-medium text-rose-500">{inst.reasons.join(' · ')}</span>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 bg-emerald-50 px-4 py-2 text-[12.5px] font-medium text-emerald-700">
+          <CheckCircle2 className="h-4 w-4 shrink-0" /> Stable — no instability criteria met
+        </div>
+      )}
+      <div className="px-4 py-3">
+        {state.positives.length > 0 && <CsGroup label="Present" dot="bg-brand" items={state.positives} status="present" />}
+        {state.negatives.length > 0 && <CsGroup label="Absent — ruled out by stated negatives" dot="bg-rose-500" items={state.negatives} status="absent" />}
+        {state.unknowns.length > 0 && <CsGroup label="Not assessed" dot="bg-slate-400" items={state.unknowns} status="unknown" />}
+        {state.investigations.length > 0 && (
+          <div className="mt-1">
+            <div className="mb-1.5 text-[10.5px] font-bold uppercase tracking-wide text-slate-500">Investigations</div>
+            <table className="w-full text-[12px]">
+              <tbody>
+                {state.investigations.map((iv, i) => (
+                  <tr key={i} className="border-b border-slate-100 last:border-0">
+                    <td className="py-1.5 pr-2 font-medium text-slate-700">{iv.test}</td>
+                    <td className="py-1.5 pr-2 text-slate-600">{iv.value}{iv.unit ? ` ${iv.unit}` : ''}</td>
+                    <td className="py-1.5">{iv.flag && iv.flag !== 'normal' && iv.flag !== 'indeterminate' && (
+                      <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${FLAG_STYLE[iv.flag] ?? FLAG_STYLE.abnormal}`}>{(FLAG_LABEL[iv.flag] ?? iv.flag).toUpperCase()}</span>
+                    )}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <div className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 px-2.5 py-1 text-[11.5px] font-semibold text-emerald-700">
+          <CheckCircle2 className="h-3.5 w-3.5" /> No fabrication · rejected_spans: {state.rejectedSpans}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -521,6 +615,9 @@ export default function DdxClient() {
 
       {data && !loading && (
         <div className="mt-6 space-y-6">
+          {/* Build 1c — ClinicalState panel: renders only when the server included the additive
+              clinicalState field (CLINICAL_STATE_UI=1). Absent by default → /ddx unchanged. */}
+          {data.clinicalState && <ClinicalStatePanel state={data.clinicalState} />}
           {data.investigations && data.investigations.findings.length > 0 && (
             <div className="rounded-xl border border-slate-200 bg-white p-4">
               <h2 className="mb-2 flex flex-wrap items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
