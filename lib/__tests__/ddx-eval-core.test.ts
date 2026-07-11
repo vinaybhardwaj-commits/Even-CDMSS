@@ -105,6 +105,25 @@ test('matchDx: negatives — unrelated diagnoses and short-token false hits reje
   assert.equal(matchDx('anything', ''), false);
 });
 
+// ── Matcher v3 · boundary-anchored containment (short-token mid-word collision guard) ──
+test('matchDx v3: INTERIOR mid-word hit rejected, but boundary-anchored matches preserved', () => {
+  // Reject: the pre-freeze D11 collision — the 3-char "CES" (cauda equina syndrome) raw-
+  // substring-hit INTERIOR to "ab·ces·s", collapsing two distinct cannot-miss dx. Neither a
+  // prefix nor a suffix of "abscess" → rejected under v3.
+  assert.equal(matchDx('abscess', 'cauda equina syndrome', ['CES']), false); // CES buried in abscess
+  assert.equal(matchDx('abscess', 'CES'), false);                            // direct: ces ⊄ abscess
+  assert.equal(matchDx('cauda equina syndrome', 'CES', ['cauda equina syndrome']), true); // real synonym matches
+
+  // Preserve: morphological medical compounds where the clinical root is a prefix/suffix.
+  // This is the D51 regression the pure whole-token variant would have introduced: the engine
+  // answered "Urosepsis" for a case whose cannot-miss is "sepsis" — urosepsis IS sepsis.
+  assert.equal(matchDx('Urosepsis', 'sepsis'), true);                 // suffix morpheme (uro·SEPSIS)
+  assert.equal(matchDx('pyelonephritis', 'nephritis'), true);         // suffix morpheme
+  // Preserve: whole-token phrase matches.
+  assert.equal(matchDx('viral conjunctivitis', 'conjunctivitis'), true);
+  assert.equal(matchDx('acute bacterial meningitis', 'meningitis'), true);
+});
+
 // ── shape helpers ──
 
 test('rankedDifferential is most_likely order; allEntries spans the three axes', () => {
@@ -218,7 +237,7 @@ test('summarizeDdx: no case specifies cannot-miss → recall defaults to 1; empt
 // ── A1 · Matcher v2 (British↔American spelling fold) ──
 
 test('A1 matcher v2: British↔American spelling variants now match', () => {
-  assert.equal(MATCHER_VERSION, 'ddx-eval/2');
+  assert.equal(MATCHER_VERSION, 'ddx-eval/3');
   for (const [a, b] of [
     ['ischaemia', 'ischemia'],
     ['haemorrhage', 'hemorrhage'],
@@ -350,7 +369,7 @@ test('A4 latency: nearest-rank P50/P90 from supplied ms; null when none', () => 
 
 test('A6 version stamping: summary carries matcher + bank versions', () => {
   const sum = summarizeDdx([mkScore({ id: 'A' })], { bankVersion: 'ddx-case-bank/0.2' });
-  assert.equal(sum.matcherVersion, 'ddx-eval/2');
+  assert.equal(sum.matcherVersion, 'ddx-eval/3');
   assert.equal(sum.bankVersion, 'ddx-case-bank/0.2');
   assert.equal(summarizeDdx([mkScore({ id: 'A' })]).bankVersion, 'unknown');
 });
@@ -358,8 +377,8 @@ test('A6 version stamping: summary carries matcher + bank versions', () => {
 test('A6 freeze guard: dormant passes; active passes on match, fails on mismatch', () => {
   const sum = summarizeDdx([mkScore({ id: 'A' })], { bankVersion: 'ddx-case-bank/1.0' });
   assert.equal(freezeGuard(sum, { frozen: false }).ok, true); // dormant
-  assert.equal(freezeGuard(sum, { frozen: true, matcher: 'ddx-eval/2', bank: 'ddx-case-bank/1.0' }).ok, true);
-  const bad = freezeGuard(sum, { frozen: true, matcher: 'ddx-eval/2', bank: 'ddx-case-bank/0.9' });
+  assert.equal(freezeGuard(sum, { frozen: true, matcher: 'ddx-eval/3', bank: 'ddx-case-bank/1.0' }).ok, true);
+  const bad = freezeGuard(sum, { frozen: true, matcher: 'ddx-eval/3', bank: 'ddx-case-bank/0.9' });
   assert.equal(bad.ok, false);
   assert.ok(bad.message.includes('FROZEN-MISMATCH'));
   const badMatcher = freezeGuard(sum, { frozen: true, matcher: 'ddx-eval/1' });
@@ -390,7 +409,7 @@ test('A5 scoreFromResultsJson: re-scores a saved results file with no network', 
   assert.equal(summary.top1Accuracy, 0.5);          // clean hits, dirty misses
   assert.equal(summary.cannotMissRecall, 0.5);      // clean covered, dirty missed
   assert.equal(summary.bankVersion, 'ddx-case-bank/0.2'); // derived from wrapper meta
-  assert.equal(summary.matcherVersion, 'ddx-eval/2');
+  assert.equal(summary.matcherVersion, 'ddx-eval/3');
   assert.equal(summary.latencyP50Ms, 80000);        // nearest-rank P50 of [80000,120000]
 });
 
@@ -404,8 +423,8 @@ const loadBank = (): { meta?: { id?: string }; cases: DdxCase[] } => {
   return Array.isArray(raw) ? { cases: raw } : raw;
 };
 
-test('FREEZE: pinned pair is ddx-eval/2 + ddx-case-bank/1.0 and matches the committed bank', () => {
-  assert.equal(FROZEN_MATCHER, 'ddx-eval/2');
+test('FREEZE: pinned pair is ddx-eval/3 + ddx-case-bank/1.0 and matches the committed bank', () => {
+  assert.equal(FROZEN_MATCHER, 'ddx-eval/3');
   assert.equal(FROZEN_MATCHER, MATCHER_VERSION);   // matcher pin tracks the live matcher version
   assert.equal(FROZEN_BANK, 'ddx-case-bank/1.0');
   assert.equal(loadBank().meta?.id, FROZEN_BANK);  // the tracked bank IS the frozen bank

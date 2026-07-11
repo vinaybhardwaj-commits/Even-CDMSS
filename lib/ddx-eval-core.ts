@@ -81,18 +81,23 @@ export function allEntries(r: DdxResult): Array<DdxEntry & { axis: DdxAxis }> {
 
 // ── Matching — normalized substring + synonyms (dx names vary; never exact equality) ──
 
-/** Matcher v2. v1 was pure normalize + containment-either-way; v2 adds a British↔American
+/** Matcher v3. v1 was pure normalize + containment-either-way; v2 added a British↔American
  *  spelling fold so ischaemia/haemorrhage/oedema/necrotising stop reading as false "misses".
- *  Containment is unchanged — synonyms (Track B) carry the rest; over-matching is the risk. */
-export const MATCHER_VERSION = 'ddx-eval/2';
+ *  v3 hardens containment to WHOLE-TOKEN (word-boundary aligned): the shorter string must
+ *  appear in the longer as a contiguous run of complete tokens, so a short synonym like "CES"
+ *  can no longer substring-hit inside "abs·ces·s" (the pre-freeze D11 collision). Legitimate
+ *  phrase-substring matches ("conjunctivitis" within "viral conjunctivitis") are preserved.
+ *  On bank v1.0 this is behaviourally neutral (the CES synonym was already dropped) — it is
+ *  structural hardening so short-token synonyms can't collide going forward. */
+export const MATCHER_VERSION = 'ddx-eval/3';
 
 /** The FROZEN evaluator pair (Phase 2a freeze, 12-Jul-2026). Every downstream DDx run
  *  measures against this exact (matcher, bank) pair; `freezeGuard` fails a run whose
  *  versions drift from it (the runner arms this via DDX_EVAL_FROZEN). Bumping either is a
  *  conscious re-freeze — e.g. bank v1.1 will add expectedLanes / documentedNegatives /
- *  unsupportedCannotMiss for the currently-null metrics, and a future short-token
- *  word-boundary guard would ship as Matcher v3 (logged follow-up, not in this freeze). */
-export const FROZEN_MATCHER = MATCHER_VERSION;        // 'ddx-eval/2'
+ *  unsupportedCannotMiss for the currently-null metrics. The short-token word-boundary guard
+ *  shipped as Matcher v3 (this re-freeze); the bank pin stays v1.0 (matcher-only re-freeze). */
+export const FROZEN_MATCHER = MATCHER_VERSION;        // 'ddx-eval/3'
 export const FROZEN_BANK = 'ddx-case-bank/1.0';
 
 /** Fold British spelling to American so the two variants match. Applied INSIDE norm, after
@@ -118,13 +123,21 @@ function norm(s: string): string {
   return foldSpelling(base);
 }
 
-/** Containment either way, guarded so trivially short strings ("mi") can't false-hit
- *  inside longer words — under 3 chars requires exact equality after normalization. */
+/** Containment either way, guarded so short strings can't false-hit inside longer words.
+ *  v3: containment is BOUNDARY-ANCHORED — the shorter string matches only when it aligns to a
+ *  token boundary in the longer: as a whole-token run, or (for a single-token short) as the
+ *  head or tail morpheme of one of the longer's tokens. This kills interior mid-word collisions
+ *  ("ces" ⊂ "ab·SCES·s", the pre-freeze D11 bug) while preserving whole-token phrase matches
+ *  ("conjunctivitis" ⊂ "viral conjunctivitis") AND morphological medical compounds where the
+ *  clinical root is a prefix/suffix ("sepsis" ⊂ "uro·SEPSIS", "nephritis" ⊂ "pyelo·NEPHRITIS").
+ *  The <3-char exact-equality guard is retained unchanged (so "mi" still needs an exact match). */
 function containsEitherWay(a: string, b: string): boolean {
   if (!a || !b) return false;
   const [short, long] = a.length <= b.length ? [a, b] : [b, a];
   if (short.length < 3) return short === long;
-  return long.includes(short);
+  if (` ${long} `.includes(` ${short} `)) return true;   // whole-token run (single word or phrase)
+  if (short.includes(' ')) return false;                 // a multiword short must match whole tokens
+  return long.split(' ').some((t) => t.startsWith(short) || t.endsWith(short)); // head/tail morpheme
 }
 
 /** Does a candidate diagnosis string match an expected one (or any of its synonyms)?

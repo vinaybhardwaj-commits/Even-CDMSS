@@ -1,0 +1,116 @@
+{
+  "version": "clinical-state-extraction-eval/2",
+  "bank": "ddx-case-bank/1.0",
+  "generated": "2026-07-11T11:09:00.228Z",
+  "rescored_from": "data/ddx-eval/extraction-raw-outputs-v1.json (no model calls)",
+  "supersedes": "extraction-scorecard-v1.json",
+  "matcher_change": "eval/2: conceptsMatch adds an ADDITIVE vitals-granularity fold — the extractor names vitals canonically and splits BP into systolic/diastolic (\"heart rate\", \"systolic bp\") while the gold labels them by abbreviation+value with BP combined (\"HR 98\", \"BP 150/92\"); both fold to a canonical vital key so vitals compare like-for-like. Conservative: qualitative-augmented vitals (\"HR 128 irregular\") are left to substring matching. No change to lib/clinical-state/extract (the live extractor).",
+  "judgeModel": "google/gemini-2.5-pro",
+  "extractModel": "google/gemini-2.5-pro",
+  "n": 60,
+  "paths": {
+    "deterministic": {
+      "path": "deterministic",
+      "n": 60,
+      "guard": {
+        "noFabRate": 1,
+        "provenanceValidRate": 1,
+        "statusValidRate": 1,
+        "meanRejectedSpans": 0,
+        "totalFabricated": 0,
+        "casesWithFabrication": 0
+      },
+      "judge": {
+        "recall": 0.38683333333333336,
+        "statusAccuracy": 0.9484166666666668,
+        "noFabrication": 0.9796666666666667,
+        "provenanceAccuracy": 0.9270833333333331,
+        "calibrated": true
+      },
+      "meanFindings": 10.333333333333334,
+      "meanAsserted": 3.9833333333333334,
+      "meanUnknowns": 6.35
+    },
+    "llm": {
+      "path": "llm",
+      "n": 60,
+      "guard": {
+        "noFabRate": 1,
+        "provenanceValidRate": 1,
+        "statusValidRate": 1,
+        "meanRejectedSpans": 0.23333333333333334,
+        "totalFabricated": 0,
+        "casesWithFabrication": 0
+      },
+      "judge": {
+        "recall": 0.8554999999999997,
+        "statusAccuracy": 0.9698333333333332,
+        "noFabrication": 0.9913333333333333,
+        "provenanceAccuracy": 0.9733333333333332,
+        "calibrated": true
+      },
+      "meanFindings": 17.1,
+      "meanAsserted": 10.833333333333334,
+      "meanUnknowns": 6.266666666666667
+    }
+  },
+  "headToHead": {
+    "deltaJudgeRecall": 0.46866666666666634,
+    "deltaJudgeStatusAccuracy": 0.021416666666666417,
+    "deltaJudgeNoFabrication": 0.011666666666666603,
+    "deltaJudgeProvenance": 0.04625000000000001,
+    "deltaGuardNoFabRate": 0,
+    "deltaMeanAsserted": 6.8500000000000005,
+    "deltaMeanUnknowns": -0.08333333333333304
+  },
+  "contradictionPreservation": "N/A — corpus contains no contradiction cases",
+  "promotion": {
+    "armed": false,
+    "gateMetric": "judge.recall",
+    "detBaseline": 0.38683333333333336,
+    "llmBaseline": 0.8554999999999997,
+    "noiseMargin": 0.03,
+    "proposedFloor": 0.42,
+    "rationale": "Promote LLM path only when judge recall ≥ det baseline (0.39) + noise margin (0.03) = 0.42. Current LLM recall 0.86 ⇒ would clear. NOT ENFORCED (D4); numbers are judge-provisional until calibrated (H4)."
+  },
+  "calibration": {
+    "status": "complete",
+    "goldSeedPath": "data/ddx-eval/ddx-extraction-gold-seed-v1.json",
+    "extractorVsGold": [
+      {
+        "path": "deterministic",
+        "recall": 0.7424242424242424,
+        "statusAccuracy": 0.9659863945578231,
+        "noFabRate": 0.7580645161290323,
+        "nGold": 198,
+        "nMatched": 147
+      },
+      {
+        "path": "llm",
+        "recall": 0.9040404040404041,
+        "statusAccuracy": 0.9720670391061452,
+        "noFabRate": 0.6375,
+        "nGold": 198,
+        "nMatched": 179
+      }
+    ],
+    "judgeVsGold": {
+      "nSeedCases": 16,
+      "dimensionMae": {
+        "recall": 0.1485050794793442,
+        "statusAccuracy": 0.02280235389610389,
+        "noFabrication": 0.013749999999999998,
+        "provenanceAccuracy": 0.03187500000000001
+      },
+      "overallMae": 0.05423310834386202,
+      "agreement": 0.945766891656138,
+      "verdict": "trustworthy",
+      "threshold": 0.85
+    }
+  },
+  "notes": [
+    "GUARD metrics (noFab/provenance/status) are deterministic and trusted. JUDGE dimensions are CALIBRATED vs the gold seed (agreement cleared the floor — trustworthy).",
+    "eval/2 re-score: vitals-granularity fold corrects the gold-anchored recall artifact flagged in the B2 build report; LLM-path advantage direction re-confirmed below.",
+    "data/ddx-eval/** is answer-bearing and kept OUT of the retrieval corpus (imported only by the scorer + admin dashboard)."
+  ]
+}

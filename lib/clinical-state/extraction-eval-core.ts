@@ -16,7 +16,7 @@
 import type { ClinicalState, ClinicalFinding, FindingStatus } from './schema';
 import { FROZEN_BANK } from '../ddx-eval-core';
 
-export const EXTRACTION_EVAL_VERSION = 'clinical-state-extraction-eval/1' as const;
+export const EXTRACTION_EVAL_VERSION = 'clinical-state-extraction-eval/2' as const;
 /** The bank these stems come from — pinned to the same frozen bank the DDx referee uses. */
 export const EXTRACTION_BANK = FROZEN_BANK; // 'ddx-case-bank/1.0'
 
@@ -35,12 +35,41 @@ function normConcept(s: string): string {
   return (s || '').toLowerCase().normalize('NFKD').replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
 }
 
+/** Canonical vital-sign key for a concept, or null if it is not a PURE quantitative vital.
+ *  eval/2: folds the abbreviation-vs-name + value + BP-split granularity mismatch between the
+ *  extractor (canonical names, BP split into systolic/diastolic — "heart rate", "systolic bp")
+ *  and the gold labels (abbreviation+value, BP combined — "HR 98", "BP 150/92") to one key, so
+ *  the recall matcher compares vitals like-for-like. Deliberately CONSERVATIVE: only a concept
+ *  that reduces to a bare vital name after stripping the numeric value + units maps — a concept
+ *  carrying a qualitative descriptor ("HR 128 irregular", "irregularly irregular pulse",
+ *  "mild tachycardia (HR 108)") is NOT folded and is left to substring matching, unchanged. */
+const VITAL_KEYS: ReadonlyArray<readonly [string, ReadonlySet<string>]> = [
+  ['heart rate', new Set(['hr', 'heart rate', 'pulse', 'pulse rate'])],
+  ['blood pressure', new Set(['bp', 'blood pressure', 'systolic bp', 'diastolic bp', 'systolic blood pressure', 'diastolic blood pressure', 'systolic', 'diastolic'])],
+  ['oxygen saturation', new Set(['spo2', 'sao2', 'o2 sat', 'o2 saturation', 'oxygen saturation', 'sats', 'saturation'])],
+  ['respiratory rate', new Set(['rr', 'resp rate', 'respiratory rate', 'respiration rate'])],
+  ['temperature', new Set(['temp', 'temperature'])],
+];
+function canonicalVital(concept: string): string | null {
+  const stripped = normConcept(concept)
+    .replace(/\b\d+(\.\d+)?\b/g, ' ')                                        // drop values: "hr 98" → "hr"
+    .replace(/\b(mmhg|bpm|kpa|c|f|celsius|fahrenheit|percent|pct)\b/g, ' ')  // drop units
+    .replace(/\s+/g, ' ').trim();
+  if (!stripped) return null;
+  for (const [key, names] of VITAL_KEYS) if (names.has(stripped)) return key;
+  return null;
+}
+
 /** Two normalized concepts "match" when either is a token-safe substring of the other
  *  (mirrors the DDx matcher's any-of substring rule; deliberately lenient for recall). */
 function conceptsMatch(a: string, b: string): boolean {
   const x = normConcept(a); const y = normConcept(b);
   if (!x || !y) return false;
   if (x === y) return true;
+  // Vitals granularity fold (eval/2, ADDITIVE — only ever ADDS a match, never removes one):
+  // "HR 98" ↔ "heart rate", "BP 150/92" ↔ "systolic bp"/"diastolic bp". Compared like-for-like.
+  const va = canonicalVital(a);
+  if (va && va === canonicalVital(b)) return true;
   const [short, long] = x.length <= y.length ? [x, y] : [y, x];
   // word-boundary guard so 'ces' does not hit 'abscess' (the D11 lesson).
   return new RegExp(`(?:^|\\s)${short.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\s|$)`).test(long);

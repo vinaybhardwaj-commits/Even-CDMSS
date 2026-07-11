@@ -1,11 +1,20 @@
 {
-  "title": "DDx Reasoning V2 — FROZEN baseline (Phase 2a freeze)",
+  "title": "DDx Reasoning V2 — FROZEN baseline (Matcher v3 re-freeze)",
   "frozen_pair": {
-    "matcher": "ddx-eval/2",
+    "matcher": "ddx-eval/3",
     "bank": "ddx-case-bank/1.0"
   },
   "scored_offline_from": "the two 10-Jul provisional baseline result JSONs (same prod passes)",
   "note": "Provisional gate-baseline on 60 synthetic cases; label-driven metrics null until bank v1.1. gate floor cannotMissRecall>=0.90.",
+  "refreeze": {
+    "from": "ddx-eval/2",
+    "to": "ddx-eval/3",
+    "date": "2026-07-11",
+    "matcher_change": "containsEitherWay hardened to BOUNDARY-ANCHORED containment: a shorter term matches only when aligned to a token boundary (whole-token run, or head/tail morpheme of a compound token) — never buried mid-word. Bank pin unchanged (matcher-only re-freeze).",
+    "kills": "interior mid-word collisions such as the pre-freeze D11 'CES' ⊂ 'ab·ces·s'.",
+    "regression_gate": "Both source result JSONs re-scored through ddx-eval/3: all 7 stable metrics + cannot-miss-missed sets BYTE-IDENTICAL to the ddx-eval/2 baseline in both runs.",
+    "finding_surfaced": "A pure whole-token variant (rejected) would have introduced a real regression: D51 (cannot-miss 'sepsis') answered 'Urosepsis' — urosepsis IS sepsis, a suffix morpheme. Boundary-anchored preserves this legitimate match while still rejecting the interior 'ces' collision, hence the clean re-freeze."
+  },
   "runs": {
     "run1": {
       "source_results": "ddx-p0-results-20260711-010009.json",
@@ -23,7 +32,7 @@
         "cannotMissOverFlagRate": null,
         "latencyP50Ms": 131726,
         "latencyP90Ms": 176613,
-        "matcherVersion": "ddx-eval/2",
+        "matcherVersion": "ddx-eval/3",
         "bankVersion": "ddx-case-bank/1.0"
       },
       "cannot_miss_missed": [
@@ -49,7 +58,7 @@
         "cannotMissOverFlagRate": null,
         "latencyP50Ms": 136543,
         "latencyP90Ms": 175597,
-        "matcherVersion": "ddx-eval/2",
+        "matcherVersion": "ddx-eval/3",
         "bankVersion": "ddx-case-bank/1.0"
       },
       "cannot_miss_missed": [

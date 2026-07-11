@@ -154,6 +154,33 @@ test('scoreExtractorVsGold: recall/status matched; word-boundary match avoids ce
   assert.equal(scoreExtractorVsGold('llm', new Map([['D01', s2]]), g2).nMatched, 0);
 });
 
+test('scoreExtractorVsGold: vitals granularity fold — HR/BP names+split match gold abbrev+value', () => {
+  // Gold labels vitals by abbreviation+value with BP combined; the extractor uses canonical
+  // names and splits BP into systolic/diastolic. eval/2 folds them to a canonical key so each
+  // gold vital is credited. Without the fold, only concepts sharing a token (spo2) would match.
+  const s = emptyClinicalState('ddx');
+  s.positives.push(mk('heart rate', 'present', 'vitals', 'HR 98'));
+  s.positives.push(mk('systolic bp', 'present', 'vitals', 'BP 150/92'));
+  s.positives.push(mk('diastolic bp', 'present', 'vitals', 'BP 150/92'));
+  s.positives.push(mk('spo2', 'present', 'vitals', 'SpO2 96%'));
+  const gold: GoldSeed = { version: 'v', cases: [{ caseId: 'D01', findings: [
+    { concept: 'HR 98', status: 'present' },
+    { concept: 'BP 150/92', status: 'present' },
+    { concept: 'SpO2 96%', status: 'present' },
+  ] }] };
+  const r = scoreExtractorVsGold('deterministic', new Map([['D01', s]]), gold);
+  assert.equal(r.nGold, 3);
+  assert.equal(r.nMatched, 3);          // all three vitals credited (HR, BP, SpO2)
+  assert.equal(r.recall, 1);
+  // fold is conservative: a qualitative-augmented vital is NOT force-matched to a bare value
+  const s2 = emptyClinicalState('ddx');
+  s2.positives.push(mk('heart rate', 'present', 'vitals', 'HR 128'));
+  const g2: GoldSeed = { version: 'v', cases: [{ caseId: 'D01', findings: [
+    { concept: 'irregularly irregular pulse', status: 'present' }, // rhythm descriptor, not a bare vital
+  ] }] };
+  assert.equal(scoreExtractorVsGold('llm', new Map([['D01', s2]]), g2).nMatched, 0);
+});
+
 test('calibrateJudge: low MAE ⇒ trustworthy; high MAE ⇒ retune', () => {
   const truth = new Map<string, JudgeDimensionScores>([['D01', { recall: 0.67, statusAccuracy: 1, noFabrication: 1, provenanceAccuracy: 0.95 }]]);
   const close = new Map<string, JudgeResult>([['D01', judgeFixture(0.65)]]); // judgeFixture status .9 noFab 1 prov .95
