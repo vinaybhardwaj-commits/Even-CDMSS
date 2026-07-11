@@ -20,6 +20,15 @@ export interface EngineChange {
 
 export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
+    engine: null, date: '2026-07-12', scoring: false,
+    title: 'ClinicalState shadow adoption (Platform B1) — dormant, output-neutral instrumentation',
+    points: [
+      'A flag-gated shadow hook at the persist seam (lib/opd-audit-store.ts saveOpdAudit, AFTER the INSERT): when CLINICAL_STATE_AUDIT_SHADOW=1 it round-trips the persisted findings through the canonical ClinicalState model (lib/clinical-state) and traces a fidelity event (kind clinical_state_audit_shadow: {roundtrip_ok, lossy_fields, counts}). DEFAULT OFF — zero added work, and byte-identical persisted output when off. The shadow computation is pure and non-mutating (operates on a JSON clone), fail-open (any throw is caught), and read-only w.r.t. the audit, so it can never affect findings / note_quality_index / PDQI-9 / suggestions / completeness. No opd-note-audit-core or opd-note-score-core change.',
+      'Fidelity shakedown (read-only harness scripts/clinical-state-audit-shadow.mjs, 12 Jul): 11,438 findings across 5,000 real audits spanning 16 engine versions (0.1→0.81.7) round-trip BYTE-LOSSLESS (100.0%), zero lossy fields — the canonical model losslessly represents real note-audit output; nothing blocks it becoming canonical for this surface on fidelity grounds.',
+    ],
+    why: 'ClinicalState Platform B1 — first increment of making ClinicalState the canonical CDMSS patient model. Shadow-only: prove lossless representation of real production audit output and install the dormant hook without touching the live engine.',
+  },
+  {
     engine: '0.81.7', date: '2026-07-09', scoring: false,
     title: 'v0.81.7 — Data-quality: intake eligibility + consult-channel classifier + daily specialty sync (inputs corrected; scores untouched)',
     points: [

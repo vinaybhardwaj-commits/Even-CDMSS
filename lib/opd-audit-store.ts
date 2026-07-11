@@ -9,6 +9,8 @@
 import { sql } from './db';
 import type { OpdNoteAudit } from './opd-note-audit';
 import type { OpdDomain } from './opd-note-score-core';
+import { logEvent } from './trace';
+import { auditShadowReport } from './clinical-state/audit-shadow-core';
 
 function domainScore(audit: OpdNoteAudit, key: OpdDomain): number | null {
   const d = audit.scorecard.domains.find((x) => x.domain === key);
@@ -16,6 +18,23 @@ function domainScore(audit: OpdNoteAudit, key: OpdDomain): number | null {
 }
 
 export interface SaveOpdAuditMeta { model?: string | null; latencyMs?: number | null }
+
+/**
+ * ClinicalState shadow (Platform B1) — DORMANT by default. Flag-gated, read-only w.r.t. the
+ * audit, fail-open. When CLINICAL_STATE_AUDIT_SHADOW=1, round-trips the persisted findings
+ * through the canonical model and traces the fidelity; when off (default) it is zero work and
+ * the persisted audit output is byte-identical. Modelled on the DDx 1a in-pipeline pattern.
+ * auditShadowReport never mutates `findings` (works on a JSON clone), so this can never affect
+ * what was written above. Called AFTER the INSERT so it is provably out of the persist path.
+ */
+async function runAuditShadow(audit: OpdNoteAudit, findings: OpdNoteAudit['findings']): Promise<void> {
+  if (process.env.CLINICAL_STATE_AUDIT_SHADOW !== '1' || !audit.traceId) return;
+  try {
+    await logEvent(audit.traceId, 'clinical_state_audit_shadow', 'expanding', auditShadowReport(findings ?? []));
+  } catch (e) {
+    try { await logEvent(audit.traceId, 'clinical_state_audit_shadow', 'expanding', { ok: false, error: String((e as Error)?.message ?? e) }); } catch { /* fail-open */ }
+  }
+}
 
 /** Insert one audit. Returns 'inserted' | 'exists' (already audited at this engine version) | 'skipped' (no uid). */
 export async function saveOpdAudit(audit: OpdNoteAudit, meta: SaveOpdAuditMeta = {}): Promise<'inserted' | 'exists' | 'skipped'> {
@@ -55,6 +74,7 @@ export async function saveOpdAudit(audit: OpdNoteAudit, meta: SaveOpdAuditMeta =
       audit.complexity?.band ?? null, audit.complexity?.inputs ? JSON.stringify(audit.complexity.inputs) : null,
     ],
   )) as Array<{ id: string }>;
+  await runAuditShadow(audit, findings); // B1 shadow — dormant unless CLINICAL_STATE_AUDIT_SHADOW=1; read-only, fail-open
   return rows.length ? 'inserted' : 'exists';
 }
 
