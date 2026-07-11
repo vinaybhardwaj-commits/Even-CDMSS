@@ -1,0 +1,329 @@
+{
+  "meta": {
+    "id": "ddx-extraction-gold-seed/1.0",
+    "purpose": "Hand-labelled gold ClinicalState for the B2 extraction-quality harness — calibrates the LLM-judge and scores extractor recall/status/provenance. Reference = clinical truth (not span-matching).",
+    "corpus": "ddx-case-bank/1.0 stems (16-case seed subset)",
+    "date": "2026-07-11",
+    "labelled_by": "Cowork proposed, V (clinician) signed off",
+    "rubric": {
+      "normals_as_negatives": true,
+      "note_normals": "Explicit normal exam findings become ABSENT (e.g. 'chest clear' -> adventitious sounds absent; 'soft abdomen' -> peritonism absent; 'unremarkable/normal' -> relevant abnormalities absent).",
+      "inferred_present": true,
+      "note_inferred": "Where objective signs unambiguously imply a symptom, gold marks it present with inferred:true (e.g. RR24+SpO2 low+consolidation -> breathlessness present).",
+      "risk_factors_lane": "Comorbidities/risk factors -> riskFactors; drug therapy -> medications; exposures (sick contact, travel, immobilisation, COCP) -> exposures with present/absent status.",
+      "unknown": "Fixed critical-concept checklist [fever, chest pain, breathlessness, syncope, vomiting, weight loss, bleeding] minus any present/absent.",
+      "instability": "Clinical (not numeric-only). Numeric triggers SBP<90 / HR outside 40-130 / SpO2<92 / RR>28; PLUS reduced conscious level flagged where present. Where no vitals -> assessed:false.",
+      "investigations": "Own lane with abnormal flags (critical/high/low/abnormal).",
+      "missingCriticalData": "Case-specific data the stem explicitly says is absent/not provided."
+    }
+  },
+  "cases": [
+    {
+      "id": "D01",
+      "present": [
+        {"concept": "chest pain", "attributes": ["central", "crushing", "radiates to left arm"], "temporality": "40 min", "onset": "at rest", "provenance": "complaint"},
+        {"concept": "diaphoretic", "provenance": "exam"},
+        {"concept": "anxious", "provenance": "exam"},
+        {"concept": "HR 98", "provenance": "vitals"},
+        {"concept": "BP 150/92", "provenance": "vitals"},
+        {"concept": "SpO2 96%", "provenance": "vitals"}
+      ],
+      "riskFactors": ["hypertension", "type 2 diabetes", "30-pack-year smoker"],
+      "absent": [
+        {"concept": "fever", "provenance": "afebrile"},
+        {"concept": "focal abdominal tenderness", "provenance": "no focal abdominal tenderness"},
+        {"concept": "adventitious lung sounds", "provenance": "chest clear"}
+      ],
+      "unknown": ["breathlessness", "syncope", "vomiting", "weight loss", "bleeding"],
+      "instability": {"unstable": false, "reasons": [], "assessed": true},
+      "investigations": []
+    },
+    {
+      "id": "D02",
+      "present": [
+        {"concept": "productive cough", "temporality": "3 days", "provenance": "complaint"},
+        {"concept": "fever", "provenance": "complaint + Temp 38.6"},
+        {"concept": "right pleuritic chest pain", "provenance": "complaint"},
+        {"concept": "preceding coryza", "provenance": "history"},
+        {"concept": "focal bronchial breathing", "provenance": "exam"},
+        {"concept": "crackles right base", "provenance": "exam"},
+        {"concept": "breathlessness", "inferred": true, "provenance": "inferred: RR 24 + SpO2 93% + lobar consolidation"},
+        {"concept": "HR 104", "provenance": "vitals"},
+        {"concept": "RR 24", "provenance": "vitals"},
+        {"concept": "Temp 38.6", "provenance": "vitals"},
+        {"concept": "SpO2 93%", "provenance": "vitals"}
+      ],
+      "riskFactors": [],
+      "exposures": [
+        {"concept": "recent travel", "status": "absent", "provenance": "no travel"},
+        {"concept": "immobilisation", "status": "absent", "provenance": "no immobilisation"}
+      ],
+      "absent": [],
+      "unknown": ["syncope", "vomiting", "weight loss", "bleeding"],
+      "instability": {"unstable": false, "reasons": [], "assessed": true},
+      "investigations": [
+        {"test": "CRP", "value": "180 mg/L", "flag": "high"},
+        {"test": "CXR", "value": "right lower lobe consolidation", "flag": "abnormal"}
+      ]
+    },
+    {
+      "id": "D03",
+      "present": [
+        {"concept": "left loin pain", "attributes": ["sudden", "severe", "colicky", "radiates to groin"], "provenance": "complaint"},
+        {"concept": "motor restlessness", "provenance": "unable to stay still / restless"},
+        {"concept": "left loin tenderness", "attributes": ["mild"], "provenance": "exam"},
+        {"concept": "HR 92", "provenance": "vitals"},
+        {"concept": "BP 138/84", "provenance": "vitals"}
+      ],
+      "riskFactors": ["prior similar (milder) episode last year"],
+      "absent": [
+        {"concept": "fever", "provenance": "no fever + afebrile"},
+        {"concept": "peritonism", "provenance": "soft abdomen"}
+      ],
+      "unknown": ["chest pain", "breathlessness", "syncope", "vomiting", "weight loss", "bleeding"],
+      "instability": {"unstable": false, "reasons": [], "assessed": true},
+      "investigations": [
+        {"test": "urinalysis", "value": "non-visible (microscopic) haematuria", "flag": "abnormal"}
+      ]
+    },
+    {
+      "id": "D04",
+      "present": [
+        {"concept": "breathlessness", "temporality": "2 days", "attributes": ["increasing"], "provenance": "complaint"},
+        {"concept": "nausea", "provenance": "complaint"},
+        {"concept": "profound fatigue", "provenance": "complaint"},
+        {"concept": "clammy", "provenance": "exam"},
+        {"concept": "bibasal crackles", "attributes": ["mild"], "provenance": "exam"},
+        {"concept": "HR 108", "provenance": "vitals"},
+        {"concept": "BP 128/76", "provenance": "vitals"},
+        {"concept": "SpO2 92%", "provenance": "vitals"}
+      ],
+      "riskFactors": ["type 2 diabetes", "hypertension"],
+      "absent": [
+        {"concept": "chest pain", "provenance": "no chest pain"}
+      ],
+      "unknown": ["fever", "syncope", "vomiting", "weight loss", "bleeding"],
+      "instability": {"unstable": false, "reasons": [], "assessed": true, "note": "SpO2 92 is at threshold, not <92"},
+      "investigations": []
+    },
+    {
+      "id": "D09",
+      "present": [
+        {"concept": "breathlessness", "temporality": "1 week", "attributes": ["worsening"], "provenance": "complaint"},
+        {"concept": "ankle swelling", "provenance": "complaint"},
+        {"concept": "palpitations", "attributes": ["new"], "provenance": "complaint"},
+        {"concept": "irregularly irregular pulse", "provenance": "exam"},
+        {"concept": "raised JVP", "provenance": "exam"},
+        {"concept": "bibasal crackles", "provenance": "exam"},
+        {"concept": "pitting oedema", "provenance": "exam"},
+        {"concept": "HR 128 irregular", "provenance": "vitals"},
+        {"concept": "BP 132/84", "provenance": "vitals"},
+        {"concept": "SpO2 90%", "provenance": "vitals"}
+      ],
+      "riskFactors": ["chronic heart failure", "CKD stage 3", "hypertension"],
+      "absent": [],
+      "unknown": ["fever", "chest pain", "syncope", "vomiting", "weight loss", "bleeding"],
+      "instability": {"unstable": true, "reasons": ["SpO2 90% < 92"], "assessed": true},
+      "investigations": [
+        {"test": "ECG", "value": "atrial fibrillation with rapid ventricular response", "flag": "abnormal"}
+      ]
+    },
+    {
+      "id": "D14",
+      "present": [
+        {"concept": "malaise / not feeling right", "temporality": "couple of days", "provenance": "complaint"},
+        {"concept": "fatigue", "provenance": "generally tired"}
+      ],
+      "riskFactors": [],
+      "absent": [],
+      "unknown": ["fever", "chest pain", "breathlessness", "syncope", "vomiting", "weight loss", "bleeding"],
+      "instability": {"unstable": false, "reasons": [], "assessed": false, "note": "no vitals provided"},
+      "investigations": [],
+      "missingCriticalData": ["vitals", "focused history", "examination", "localising features"]
+    },
+    {
+      "id": "D15",
+      "present": [
+        {"concept": "lower abdominal pain", "temporality": "1 day", "provenance": "complaint"}
+      ],
+      "riskFactors": [],
+      "absent": [],
+      "unknown": ["fever", "chest pain", "breathlessness", "syncope", "vomiting", "weight loss", "bleeding"],
+      "instability": {"unstable": false, "reasons": [], "assessed": false, "note": "no vitals provided"},
+      "investigations": [],
+      "missingCriticalData": ["LMP / pregnancy status (explicitly not stated — ectopic cannot be excluded)", "vitals", "examination"]
+    },
+    {
+      "id": "D22",
+      "present": [
+        {"concept": "vomiting", "temporality": "2 days", "provenance": "complaint"},
+        {"concept": "abdominal pain", "provenance": "complaint"},
+        {"concept": "thirst / polydipsia", "provenance": "complaint"},
+        {"concept": "deep rapid breathing / Kussmaul respiration", "provenance": "complaint + exam"},
+        {"concept": "dry / dehydrated", "provenance": "exam"},
+        {"concept": "drowsy / reduced conscious level", "provenance": "exam"},
+        {"concept": "acetone breath", "provenance": "exam"},
+        {"concept": "HR 120", "provenance": "vitals"},
+        {"concept": "BP 104/68", "provenance": "vitals"}
+      ],
+      "riskFactors": ["type 1 diabetes", "missed insulin doses", "recently unwell"],
+      "absent": [],
+      "unknown": ["fever", "chest pain", "syncope", "weight loss", "bleeding"],
+      "instability": {"unstable": true, "reasons": ["reduced conscious level (drowsy) in DKA — clinical, non-numeric"], "assessed": true, "note": "numeric vitals alone do not trip; GCS-based clinical instability"},
+      "investigations": [
+        {"test": "capillary glucose", "value": "28 mmol/L", "flag": "critical"},
+        {"test": "ketones", "value": "5.1 mmol/L", "flag": "critical"}
+      ]
+    },
+    {
+      "id": "D31",
+      "present": [
+        {"concept": "dysuria", "temporality": "2 days", "provenance": "burning on passing urine"},
+        {"concept": "urinary frequency", "provenance": "complaint"},
+        {"concept": "urinary urgency", "provenance": "complaint"},
+        {"concept": "suprapubic tenderness", "provenance": "exam"},
+        {"concept": "HR 78", "provenance": "vitals"}
+      ],
+      "riskFactors": [],
+      "exposures": [{"concept": "sexually active", "status": "present", "provenance": "history"}],
+      "absent": [
+        {"concept": "fever", "provenance": "no fever + afebrile"},
+        {"concept": "flank pain", "provenance": "no flank or back pain"},
+        {"concept": "back pain", "provenance": "no flank or back pain"}
+      ],
+      "unknown": ["chest pain", "breathlessness", "syncope", "vomiting", "weight loss", "bleeding"],
+      "instability": {"unstable": false, "reasons": [], "assessed": true, "note": "no BP given; afebrile, HR 78, no red flags"},
+      "investigations": []
+    },
+    {
+      "id": "D33",
+      "present": [
+        {"concept": "polydipsia / increased thirst", "temporality": "several weeks", "provenance": "complaint"},
+        {"concept": "polyuria / frequent urination", "provenance": "complaint"},
+        {"concept": "weight loss", "provenance": "complaint"},
+        {"concept": "fatigue", "provenance": "complaint"}
+      ],
+      "riskFactors": ["family history of diabetes"],
+      "absent": [
+        {"concept": "ketosis", "provenance": "no ketones"},
+        {"concept": "abnormal examination findings", "provenance": "unremarkable"}
+      ],
+      "unknown": ["fever", "chest pain", "breathlessness", "syncope", "vomiting", "bleeding"],
+      "instability": {"unstable": false, "reasons": [], "assessed": true, "note": "vitals normal"},
+      "investigations": [
+        {"test": "random capillary glucose", "value": "17 mmol/L", "flag": "high"},
+        {"test": "ketones", "value": "none / negative", "flag": "normal"}
+      ]
+    },
+    {
+      "id": "D42",
+      "present": [
+        {"concept": "red eye", "attributes": ["unilateral"], "provenance": "complaint"},
+        {"concept": "sticky / purulent discharge", "provenance": "complaint"},
+        {"concept": "diffuse conjunctival injection", "provenance": "exam"}
+      ],
+      "riskFactors": [],
+      "exposures": [{"concept": "sick contact (same illness)", "status": "present", "provenance": "a contact has the same"}],
+      "absent": [
+        {"concept": "eye pain", "provenance": "no pain"},
+        {"concept": "visual change", "provenance": "no visual change"},
+        {"concept": "photophobia", "provenance": "no photophobia"},
+        {"concept": "corneal involvement", "provenance": "clear cornea"},
+        {"concept": "pupillary defect", "provenance": "reactive pupil"}
+      ],
+      "unknown": ["fever", "chest pain", "breathlessness", "syncope", "vomiting", "weight loss", "bleeding"],
+      "instability": {"unstable": false, "reasons": [], "assessed": true, "note": "vitals normal"},
+      "investigations": []
+    },
+    {
+      "id": "D50",
+      "present": [
+        {"concept": "low mood", "temporality": "months", "provenance": "complaint"},
+        {"concept": "slowed thinking / cognitive slowing", "provenance": "complaint"},
+        {"concept": "forgetfulness / memory impairment", "provenance": "complaint"},
+        {"concept": "weight gain", "provenance": "history"},
+        {"concept": "constipation", "provenance": "history"},
+        {"concept": "cold intolerance", "provenance": "history"},
+        {"concept": "psychomotor slowing", "provenance": "exam"},
+        {"concept": "dry skin", "provenance": "exam"},
+        {"concept": "delayed reflexes (delayed relaxation)", "provenance": "exam"},
+        {"concept": "HR 58 (bradycardia)", "provenance": "vitals"}
+      ],
+      "riskFactors": [],
+      "absent": [
+        {"concept": "weight loss", "provenance": "weight gain stated (opposite)"}
+      ],
+      "unknown": ["fever", "chest pain", "breathlessness", "syncope", "vomiting", "bleeding"],
+      "instability": {"unstable": false, "reasons": [], "assessed": true, "note": "HR 58 within 40-130"},
+      "investigations": [
+        {"test": "TSH", "value": "very high", "flag": "abnormal"}
+      ]
+    },
+    {
+      "id": "D53",
+      "present": [
+        {"concept": "right pleuritic chest pain", "provenance": "complaint"},
+        {"concept": "breathlessness", "provenance": "complaint"},
+        {"concept": "mild fever", "provenance": "complaint + Temp 37.6"},
+        {"concept": "mild tachycardia (HR 108)", "provenance": "exam + vitals"},
+        {"concept": "RR 22", "provenance": "vitals"},
+        {"concept": "SpO2 93%", "provenance": "vitals"}
+      ],
+      "riskFactors": [],
+      "exposures": [
+        {"concept": "combined oral contraceptive pill", "status": "present", "provenance": "history"},
+        {"concept": "recent long car journey / immobilisation", "status": "present", "provenance": "history"}
+      ],
+      "absent": [
+        {"concept": "consolidation", "provenance": "no consolidation"},
+        {"concept": "adventitious lung sounds", "provenance": "clear chest"}
+      ],
+      "unknown": ["syncope", "vomiting", "weight loss", "bleeding"],
+      "instability": {"unstable": false, "reasons": [], "assessed": true, "note": "HR 108 <130, RR 22 <28, SpO2 93 >92"},
+      "investigations": []
+    },
+    {
+      "id": "D58",
+      "present": [
+        {"concept": "fatigue", "provenance": "complaint"},
+        {"concept": "general malaise", "provenance": "complaint"},
+        {"concept": "HR 58 (bradycardia)", "provenance": "vitals"}
+      ],
+      "riskFactors": ["CKD stage 4"],
+      "medications": ["ACE inhibitor", "potassium-sparing diuretic"],
+      "absent": [
+        {"concept": "specific examination abnormalities", "provenance": "non-specific"}
+      ],
+      "unknown": ["fever", "chest pain", "breathlessness", "syncope", "vomiting", "weight loss", "bleeding"],
+      "instability": {"unstable": false, "reasons": [], "assessed": true, "note": "vital instability not met; danger is the critical hyperkalaemia (investigations)"},
+      "investigations": [
+        {"test": "potassium", "value": "6.4 mmol/L", "flag": "critical"},
+        {"test": "eGFR", "value": "22", "flag": "low"}
+      ]
+    },
+    {
+      "id": "D59",
+      "present": [
+        {"concept": "fever", "provenance": "complaint"}
+      ],
+      "riskFactors": [],
+      "absent": [],
+      "unknown": ["chest pain", "breathlessness", "syncope", "vomiting", "weight loss", "bleeding"],
+      "instability": {"unstable": false, "reasons": [], "assessed": false, "note": "no vitals provided"},
+      "investigations": [],
+      "missingCriticalData": ["localising features", "duration", "travel / exposure history", "vitals", "examination"]
+    },
+    {
+      "id": "D60",
+      "present": [
+        {"concept": "chest pain", "provenance": "complaint"}
+      ],
+      "riskFactors": [],
+      "absent": [],
+      "unknown": ["fever", "breathlessness", "syncope", "vomiting", "weight loss", "bleeding"],
+      "instability": {"unstable": false, "reasons": [], "assessed": false, "note": "no vitals provided"},
+      "investigations": [],
+      "missingCriticalData": ["character", "timing / onset", "risk factors", "associated symptoms", "vitals", "examination"]
+    }
+  ]
+}
