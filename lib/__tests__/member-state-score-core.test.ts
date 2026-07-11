@@ -44,8 +44,8 @@ test('conflictRecall [1,1] on a seeded allergy conflict', () => {
 });
 
 test('problemCourseAgree [1,1] on a correctly-scored course', () => {
-  const ev = member([enc('e1', '2024-01-01', { problems: [prob('hypertension')] }), enc('e2', '2024-10-01', { problems: [prob('hypertension')] })]);   // gap>180 → recurrent
-  const s = scoreCase(exp({ problems: [{ concept: 'hypertension', count: 1, course: 'recurrent' }] }), buildMemberState(ev, COMPUTED), ev);
+  const ev = member([enc('e1', '2024-01-01', { problems: [prob('migraine')] }), enc('e2', '2024-10-01', { problems: [prob('migraine')] })]);   // episodic, gap>180 → recurrent
+  const s = scoreCase(exp({ problems: [{ concept: 'migraine', count: 1, course: 'recurrent' }] }), buildMemberState(ev, COMPUTED), ev);
   assert.deepEqual(s.problemCourseAgree, [1, 1]);
 });
 

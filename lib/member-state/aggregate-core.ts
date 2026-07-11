@@ -13,13 +13,42 @@ import type {
   LongitudinalMedication, MedicationOccurrence, LongitudinalAllergy, AllergyOccurrence,
   LongitudinalInvestigation, InvestigationPoint, Discrepancy, EvidenceRef,
 } from './schema';
-import { MEMBER_STATE_VERSION, NORMALIZATION_VERSION, RECONCILIATION_VERSION } from './schema';
+import { MEMBER_STATE_VERSION, NORMALIZATION_VERSION } from './schema';
 import type { MedicationStatus, AllergyStatus, FollowUpAssertion } from '../clinical-state/schema';
-import { normalizeConcept, groupingKey } from './normalize-core';
+import { normalizeConcept, normalizeRaw, groupingKey } from './normalize-core';
+
+// member-reconcile/0.3 (Stage-1 ratified pre-freeze fix, R1+R2). Defined here because schema.ts is
+// frozen this phase: its RECONCILIATION_VERSION export ('member-reconcile/0.2') is superseded by
+// this constant, which the engine now stamps onto the snapshot. (Flagged in the build report.)
+export const MEMBER_RECONCILE_VERSION = 'member-reconcile/0.3' as const;
 
 // ── Labelled deterministic constants (heuristics, no clinical judgment) ──
 const RECURRENCE_GAP_DAYS = 180;   // a silent gap > this between touches → recurrent
 const PERSISTENT_SPAN_DAYS = 365;  // touches spanning > this (no big gap) → persistent
+
+// R1 (V-ratified) — a versioned chronicity dictionary. A chronic concept re-documented across ≥2
+// encounters ⇒ 'persistent' regardless of gap length (a yearly-documented chronic is persistent,
+// not recurrent). Episodic concepts keep the present-gap-present ⇒ recurrent logic. Clinician-
+// reviewed seed list (part of member-reconcile/0.3); grows with the terminology service.
+const CHRONIC_CONCEPT_IDS: ReadonlySet<string> = new Set([
+  'local:diabetes-mellitus', 'local:type-2-diabetes', 'local:hypertension', 'local:ckd',
+  'local:hypothyroidism', 'local:ihd', 'local:asthma',
+]);
+const CHRONIC_ICD_ROOTS: ReadonlySet<string> = new Set([
+  'e10', 'e11',                        // diabetes mellitus
+  'i10', 'i11', 'i12', 'i13', 'i15',   // hypertension / hypertensive disease
+  'n18',                               // chronic kidney disease
+  'e78',                               // dyslipidaemia
+  'e03',                               // hypothyroidism
+  'j44', 'j45',                        // COPD / asthma
+  'g40',                               // epilepsy
+  'i20', 'i25',                        // angina / chronic ischaemic heart disease (CAD) — acute MI (i21/i22) excluded
+]);
+function isChronicConcept(nc: NormalizedConcept): boolean {
+  if (nc.normalizedConceptId && CHRONIC_CONCEPT_IDS.has(nc.normalizedConceptId)) return true;
+  const root = normalizeRaw(nc.raw).split(' ')[0];   // ICD code root, e.g. 'e11', 'e78' (from 'E78.5')
+  return CHRONIC_ICD_ROOTS.has(root);
+}
 
 // ── Pure date helpers (deterministic: pure functions of the passed-in ISO strings) ──
 function parseDay(iso: string): number { const t = Date.parse(iso); return Number.isNaN(t) ? NaN : Math.floor(t / 86400000); }
@@ -67,7 +96,7 @@ export function buildMemberState(evidence: MemberEvidence, computedAt: string): 
   return {
     version: MEMBER_STATE_VERSION,
     normalizationVersion: NORMALIZATION_VERSION,
-    reconciliationVersion: RECONCILIATION_VERSION,
+    reconciliationVersion: MEMBER_RECONCILE_VERSION,
     computedAt,
     asOf,
     sourceWatermarks: { ...(evidence.sourceWatermarks || {}) },
@@ -128,7 +157,7 @@ function buildProblems(encounters: EncounterEvidence[], asOf: string): Longitudi
     else if (last.date === asOf) latestDocumentedStatus = 'documented_active';
     else latestDocumentedStatus = 'uncertain_current_status';
 
-    const course = deriveCourse(occ.map((o) => o.date));
+    const course = deriveCourse(occ.map((o) => o.date), g.concept);
     const daysSince = daysBetween(last.date, asOf);
     const touch = Math.min(1, 0.6 + 0.1 * (n - 1));
     let currentStatusConfidence: number;
@@ -157,9 +186,12 @@ function problemKey(p: LongitudinalProblem): string {
   return `${p.normalizedConcept.normalizedConceptId ?? p.normalizedConcept.raw.toLowerCase()}|${p.firstDocumentedAt}`;
 }
 
-function deriveCourse(datesUnsorted: string[]): ProblemCourse {
+function deriveCourse(datesUnsorted: string[], concept: NormalizedConcept): ProblemCourse {
   const dates = datesUnsorted.slice().sort(cmpStr);
   if (dates.length <= 1) return 'single_episode';
+  // R1 — a chronic concept re-documented across ≥2 encounters is persistent regardless of gaps
+  // (yearly-documented chronic ≠ recurrent). Episodic concepts fall through to the gap logic.
+  if (isChronicConcept(concept)) return 'persistent';
   let maxGap = 0;
   for (let i = 1; i < dates.length; i++) maxGap = Math.max(maxGap, daysBetween(dates[i - 1], dates[i]));
   if (maxGap > RECURRENCE_GAP_DAYS) return 'recurrent';
@@ -198,8 +230,22 @@ function buildMedications(encounters: EncounterEvidence[], pushConflict: (d: Omi
     // Currentness is never SYNTHESIZED to 'reported_taking' — it only reflects what was asserted.
     const patientOccs = occ.filter((o) => o.patientReported);
     const status = patientOccs.length ? patientOccs[patientOccs.length - 1].status : occ[occ.length - 1].status;
-    // status_conflict: the same drug both on (prescribed/administered/taking) and off (stopped/not_taking).
-    if (statuses.some((s) => ON_MED.has(s)) && statuses.some((s) => OFF_MED.has(s))) {
+    // R2 (V-ratified) — a patient-reported stop FOLLOWED BY a later fresh prescription: currentness
+    // stays 'stopped' (above; a re-script never synthesizes taking) AND the re-prescription surfaces
+    // as a temporal_conflict carrying both events + both provenances, for the CM verify-loop to close.
+    // This supersedes the generic on/off status_conflict for the same drug (no double-flagging).
+    const patientStop = [...occ].reverse().find((o) => o.patientReported && OFF_MED.has(o.status));
+    const laterRx = patientStop ? occ.find((o) => o.status === 'prescribed' && o.date > patientStop.date) : undefined;
+    if (patientStop && laterRx) {
+      pushConflict({
+        domain: 'medication', type: 'temporal_conflict', severity: 'review', resolutionStatus: 'open',
+        assertions: [
+          { encounterRef: patientStop.encounterRef, date: patientStop.date, detail: `${g.concept.raw}: patient-reported ${patientStop.status} [${patientStop.provenance?.trust ?? 'unknown'}]` },
+          { encounterRef: laterRx.encounterRef, date: laterRx.date, detail: `${g.concept.raw}: prescribed [${laterRx.provenance?.trust ?? 'unknown'}] — verify` },
+        ],
+      });
+    } else if (statuses.some((s) => ON_MED.has(s)) && statuses.some((s) => OFF_MED.has(s))) {
+      // status_conflict: the same drug both on (prescribed/administered/taking) and off (stopped/not_taking).
       pushConflict({
         domain: 'medication', type: 'status_conflict', severity: 'review', resolutionStatus: 'open',
         assertions: occ.map((o): EvidenceRef => ({ encounterRef: o.encounterRef, date: o.date, detail: `${g.concept.raw}: ${o.status}` })),

@@ -74,16 +74,20 @@ test('S20: neutrality — zero patient-reported → empty followUps + 1.0 status
 });
 
 // ── Accuracy dimensions (scored, never gated) ──
-test('S2: recurrent course scored (agreement recorded)', () => { const { score } = run('S2'); assert.equal(score.problemCourseAgree[1], 1); });
+test('S1: chronic re-documented across years → persistent (R1 chronicity fix)', () => { const { built, score } = run('S1'); assert.equal(built.problems[0].course, 'persistent'); assert.deepEqual(score.problemCourseAgree, [1, 1]); });
+test('S2: episodic present-gap-present → recurrent (unchanged by R1)', () => { const { built, score } = run('S2'); assert.equal(built.problems[0].course, 'recurrent'); assert.deepEqual(score.problemCourseAgree, [1, 1]); });
 test('S7: explicit stopped reflected in status', () => assert.equal(run('S7').built.medications[0].status, 'stopped'));
 
-// ── Stratum 19 — the OPEN question: capture + flag, never gate ──
-test('S19: core keeps stopped after a re-prescription; expected is TBD (ratification input)', () => {
-  const { c, built } = run('S19');
-  assert.equal(built.medications[0].status, 'stopped');   // captured actual
-  assert.ok(c.expected.tbd && c.expected.tbd.length > 0);  // flagged as the open question
-  assert.equal(c.expected.class, 'accuracy');
-  assert.equal(c.expected.ratified, false);
+// ── Stratum 19 — RATIFIED (R2): keeps stopped + surfaces a temporal_conflict ──
+test('S19: keeps stopped after a re-prescription + one medication/temporal_conflict/review (both trusts)', () => {
+  const { built } = run('S19');
+  assert.equal(built.medications[0].status, 'stopped');
+  const c = built.conflicts.filter((x) => x.domain === 'medication');
+  assert.equal(c.length, 1);
+  assert.equal(c[0].type, 'temporal_conflict');
+  const d = c[0].assertions.map((a) => a.detail).join(' | ');
+  assert.match(d, /patient_reported/);
+  assert.match(d, /structured_db/);
 });
 
 // ── Stratum 13 — evidence immutability + recompute ──

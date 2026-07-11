@@ -104,7 +104,7 @@ test('inv9: version + as-of metadata is mandatory and stamped', () => {
   const s = buildMemberState(member([enc('e1', '2026-03-01'), enc('e2', '2026-05-01')]), COMPUTED);
   assert.equal(s.version, 'member-state/1.1');
   assert.equal(s.normalizationVersion, 'member-norm/0.1');
-  assert.equal(s.reconciliationVersion, 'member-reconcile/0.2');
+  assert.equal(s.reconciliationVersion, 'member-reconcile/0.3');
   assert.equal(s.computedAt, COMPUTED);
   assert.equal(s.asOf, '2026-05-01');   // max encounter date
   assert.deepEqual(s.sourceEncounterRefs, ['e1', 'e2']);
@@ -126,12 +126,57 @@ test('stratum1: persistent chronic (multi-touch, span>1yr, no long gap) → pers
   assert.equal(htn.latestDocumentedStatus, 'documented_active');   // last touch == asOf
 });
 
-test('stratum2: recurrent (present → long gap → present) → recurrent', () => {
+test('stratum2: recurrent (present → long gap → present) → recurrent [EPISODIC concept]', () => {
+  // R1: an EPISODIC concept (not in the chronic dictionary) keeps the present-gap-present → recurrent
+  // logic. (Chronic concepts like hypertension are now 'persistent' regardless of gap — see below.)
   const s = buildMemberState(member([
-    enc('e1', '2024-01-01', { problems: [problem('hypertension')] }),
-    enc('e2', '2024-10-01', { problems: [problem('hypertension')] }),   // gap ~274d > 180
+    enc('e1', '2024-01-01', { problems: [problem('migraine')] }),
+    enc('e2', '2024-10-01', { problems: [problem('migraine')] }),   // gap ~274d > 180
   ]), COMPUTED);
-  assert.equal(findP(s, 'local:hypertension')!.course, 'recurrent');
+  assert.equal(s.problems.find((p) => p.normalizedConcept.raw === 'migraine')!.course, 'recurrent');
+});
+
+// ── member-reconcile/0.3 (R1 chronicity + R2 re-prescription conflict) ──
+test('R1: a chronic concept re-documented ≥2× is persistent regardless of gap length', () => {
+  const s = buildMemberState(member([
+    enc('e1', '2022-01-01', { problems: [problem('hypertension')] }),
+    enc('e2', '2024-06-01', { problems: [problem('hypertension')] }),   // ~2.4y gap — would be 'recurrent' pre-R1
+  ]), COMPUTED);
+  assert.equal(findP(s, 'local:hypertension')!.course, 'persistent');
+  // also via an ICD code root (E11 diabetes, unresolved concept but a chronic root)
+  const s2 = buildMemberState(member([enc('a', '2023-01-01', { problems: [problem('E11')] }), enc('b', '2025-06-01', { problems: [problem('E11')] })]), COMPUTED);
+  assert.equal(s2.problems.find((p) => p.normalizedConcept.raw === 'E11')!.course, 'persistent');
+});
+
+test('R1 guard: an episodic concept with dense touches within a year is NOT forced persistent', () => {
+  const s = buildMemberState(member([enc('e1', '2024-01-01', { problems: [problem('migraine')] }), enc('e2', '2024-03-01', { problems: [problem('migraine')] })]), COMPUTED);
+  assert.equal(s.problems.find((p) => p.normalizedConcept.raw === 'migraine')!.course, 'uncertain');   // no chronic, no >180 gap, span<365
+});
+
+test('R2: patient-reported stop then a LATER prescription → status stopped + one medication/temporal_conflict/review (both provenances)', () => {
+  const patientStop: MedicationAssertion = { id: 'ms', medicationConcept: { raw: 'amlodipine', generic: 'amlodipine' }, status: 'stopped', provenance: { sourceField: 'care_call', rawText: 'stopped it', extractionMethod: 'reported', confidence: 0.7, reporter: 'patient_via_care_manager', trust: 'patient_reported' } };
+  const rx: MedicationAssertion = { id: 'mp', medicationConcept: { raw: 'amlodipine', generic: 'amlodipine' }, status: 'prescribed', provenance: { sourceField: 'db', rawText: 'rx', extractionMethod: 'reported', confidence: 0.9, trust: 'structured_db' } };
+  const s = buildMemberState(member([
+    enc('cc', '2025-05-01', { kind: 'care_call', medicationAssertions: [patientStop] }),
+    enc('e2', '2025-06-01', { medicationAssertions: [rx] }),
+  ]), COMPUTED);
+  assert.equal(s.medications[0].status, 'stopped');   // re-script never synthesizes taking
+  const conflicts = s.conflicts.filter((c) => c.domain === 'medication');
+  assert.equal(conflicts.length, 1);                  // exactly one — temporal supersedes the generic status_conflict
+  assert.equal(conflicts[0].type, 'temporal_conflict');
+  assert.equal(conflicts[0].severity, 'review');
+  const detail = conflicts[0].assertions.map((a) => a.detail).join(' | ');
+  assert.match(detail, /patient_reported/);
+  assert.match(detail, /structured_db/);
+});
+
+test('R2 guard: prescribe THEN patient-reported stop (no re-script) stays a status_conflict, not temporal', () => {
+  const rx: MedicationAssertion = { id: 'p', medicationConcept: { raw: 'metformin', generic: 'metformin' }, status: 'prescribed', provenance: { sourceField: 'db', rawText: 'x', extractionMethod: 'reported', confidence: 0.9, trust: 'structured_db' } };
+  const stop: MedicationAssertion = { id: 's', medicationConcept: { raw: 'metformin', generic: 'metformin' }, status: 'stopped', provenance: { sourceField: 'care_call', rawText: 'x', extractionMethod: 'reported', confidence: 0.7, reporter: 'patient_via_care_manager', trust: 'patient_reported' } };
+  const s = buildMemberState(member([enc('e1', '2025-01-01', { medicationAssertions: [rx] }), enc('cc', '2025-05-01', { kind: 'care_call', medicationAssertions: [stop] })]), COMPUTED);
+  const c = s.conflicts.filter((x) => x.domain === 'medication');
+  assert.equal(c.length, 1);
+  assert.equal(c[0].type, 'status_conflict');
 });
 
 test('stratum6: medication prescribed → status prescribed, currentness never inferred to taking', () => {

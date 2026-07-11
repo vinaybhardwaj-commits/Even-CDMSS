@@ -110,9 +110,10 @@ export const GOLD_SEED: GoldCase[] = [
   { evidence: member('S18', [enc('s18cc1', '2025-04-01', { kind: 'care_call', followUps: [followUp('f1', 'committed', '2025-07-01'), followUp('f2', 'declined', null)] }), enc('s18cc2', '2025-05-01', { kind: 'care_call', followUps: [followUp('f1', 'committed', '2025-07-01')] })]),
     expected: { caseId: 'S18', stratum: 18, class: 'invariant', followUpsCount: 2, ratified: false } },
 
-  // 19 — THE OPEN QUESTION (TBD): patient stop then a fresh prescription. Core keeps 'stopped'.
+  // 19 — RATIFIED (R2): patient-reported stop then a fresh prescription → status stays 'stopped'
+  //   AND a medication/temporal_conflict/review surfaces the re-prescription (never a silent taking).
   { evidence: member('S19', [enc('s19cc', '2025-05-01', { kind: 'care_call', medicationAssertions: [med('amlodipine', 'stopped', true)] }), enc('s19e2', '2025-06-01', { medicationAssertions: [med('amlodipine', 'prescribed')] })]),
-    expected: { caseId: 'S19', stratum: 19, class: 'accuracy', tbd: 'Re-prescription after a patient-reported stop: does a later script reset currentness? Core currently keeps stopped (patient-reported wins). V decides at ratification.', ratified: false } },
+    expected: { caseId: 'S19', stratum: 19, class: 'accuracy', medications: [{ concept: 'amlodipine', status: 'stopped' }], conflicts: [{ domain: 'medication', type: 'temporal_conflict', severity: 'review' }], ratified: false } },
 
   // 20 — neutrality: zero patient-reported evidence → 1.0 behaviour + empty followUps
   { evidence: member('S20', [enc('s20e1', '2025-05-01', { problems: [problem('I10')], medicationAssertions: [med('metformin', 'prescribed')], allergyAssertions: [allergy('penicillin', 'reported_allergy')] })]),
