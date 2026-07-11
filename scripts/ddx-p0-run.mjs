@@ -17,7 +17,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { scoreDdxCase, summarizeDdx } from '../lib/ddx-eval-core.ts';
+import { scoreDdxCase, summarizeDdx, freezeGuard, MATCHER_VERSION } from '../lib/ddx-eval-core.ts';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(__dir, '..');
@@ -97,6 +97,7 @@ const main = async () => {
   const raw = JSON.parse(await readFile(BANK, 'utf8'));
   let cases = Array.isArray(raw) ? raw : raw.cases; // tolerate {cases:[…]} wrapping
   if (!Array.isArray(cases)) throw new Error(`${BANK} is not an array of cases`);
+  const bankVersion = (Array.isArray(raw) ? undefined : raw.version || raw.meta?.id || raw.meta?.version) || 'unknown';
   if (ONLY.length) cases = cases.filter((c) => ONLY.includes(c.id));
   if (!cases.length) { console.error('No cases to run.'); process.exit(1); }
 
@@ -124,15 +125,22 @@ const main = async () => {
 
   const scored = rows.filter((r) => r.score).map((r) => r.score);
   const errored = rows.filter((r) => r.error);
-  const summary = summarizeDdx(scored);
+  const latenciesMs = rows.filter((r) => typeof r.ms === 'number').map((r) => r.ms);
+  const summary = summarizeDdx(scored, { latenciesMs, bankVersion });
 
+  const opt = (x, f = pct) => (x === null || x === undefined ? 'n/a (no labels)' : f(x));
   console.log(`\n── DdxBankSummary (${summary.n} scored, ${errored.length} errored) ──`);
+  console.log(`matcher / bank      ${summary.matcherVersion} / ${summary.bankVersion}`);
   console.log(`top-1 accuracy      ${pct(summary.top1Accuracy)}`);
   console.log(`top-3 recall        ${pct(summary.top3Recall)}`);
   console.log(`cannot-miss recall  ${pct(summary.cannotMissRecall)}`);
   console.log(`forbidden-dx rate   ${pct(summary.forbiddenDxRate)}`);
   console.log(`unsafe-action rate  ${pct(summary.unsafeActionRate)}`);
   console.log(`fabricated (heur.)  ${pct(summary.fabricatedFindingRate)}`);
+  console.log(`lane coverage       ${opt(summary.laneCoverageRate)}`);
+  console.log(`negative-misuse     ${opt(summary.negativeMisuseRate)}`);
+  console.log(`cannot-miss overflg ${opt(summary.cannotMissOverFlagRate)}`);
+  console.log(`latency p50 / p90   ${opt(summary.latencyP50Ms, (x) => `${(x / 1000).toFixed(0)}s`)} / ${opt(summary.latencyP90Ms, (x) => `${(x / 1000).toFixed(0)}s`)}`);
   console.log(`harm-weighted error ${summary.harmWeightedError.toFixed(2)} per case`);
 
   const runid = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+$/, '').replace('T', '-');
@@ -142,6 +150,17 @@ const main = async () => {
     summary, rows,
   }, null, 2));
   console.log(`\nWrote ${OUT}`);
+
+  // Freeze guard (Phase 2a A6): DORMANT by default. Once labels are ratified and a frozen
+  // evaluator is pinned, set DDX_EVAL_FROZEN=1 with DDX_FROZEN_MATCHER / DDX_FROZEN_BANK;
+  // a run whose matcher/bank versions don't equal the pinned pair then exits non-zero — the
+  // numbers are only comparable within one frozen (matcher, bank) pair.
+  const freeze = freezeGuard(summary, {
+    frozen: process.env.DDX_EVAL_FROZEN === '1',
+    matcher: process.env.DDX_FROZEN_MATCHER || MATCHER_VERSION,
+    bank: process.env.DDX_FROZEN_BANK || undefined,
+  });
+  if (!freeze.ok) { console.error(`\n${freeze.message}`); process.exit(3); }
 
   // Soft gate (§5): report-only until the bank reaches n≈40–80. When V sets
   // DDX_BENCH_HARD_GATE=1 AND supplies a frozen baseline via DDX_BASELINE_CANNOT_MISS

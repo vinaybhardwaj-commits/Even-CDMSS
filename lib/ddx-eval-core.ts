@@ -4,6 +4,10 @@
 // presentations is run against the live /api/ddx by scripts/ddx-p0-run.mjs and
 // scored here. This file judges the engine; it must never share code with it.
 
+// The ONLY I/O this module performs: scoreFromResultsJson reads a saved results file
+// (Phase 2a A5, offline re-score). No network, no ./db, no ./llm — anywhere.
+import { readFileSync } from 'node:fs';
+
 // ── Case bank schema (data/ddx-case-bank.json is an array of DdxCase) ──
 
 export type DdxCategory = 'common' | 'atypical' | 'mimic' | 'multimorbidity' | 'red-flag' | 'incomplete';
@@ -30,6 +34,11 @@ export interface DdxCase {
   bestNextActions?: string[];          // reserved — /api/ddx emits per-dx workup, no unified plan yet
   unsafeActions?: string[];            // must NOT appear in any suggested workup
   synonyms?: Record<string, string[]>; // per-case dx synonyms, keyed by the expected-dx string
+
+  // ── Phase 2a optional labels (metrics skip cleanly when a label is absent) ──
+  expectedLanes?: Record<string, string[]>; // A2: parallel-differential lanes, e.g. {vascular:[…], infectious:[…]}. A lane is covered if ≥1 of its dx matches any engine entry.
+  documentedNegatives?: string[];      // A3: findings the stem documents as ABSENT; a dx asserting one is negative-misuse.
+  unsupportedCannotMiss?: string[];    // A3: dx that must NOT be surfaced as cannot-miss for this stem (over-flag).
 }
 
 // ── Engine output shape (the `data` of the final {type:'result'} NDJSON line) ──
@@ -72,13 +81,32 @@ export function allEntries(r: DdxResult): Array<DdxEntry & { axis: DdxAxis }> {
 
 // ── Matching — normalized substring + synonyms (dx names vary; never exact equality) ──
 
-function norm(s: string): string {
+/** Matcher v2. v1 was pure normalize + containment-either-way; v2 adds a British↔American
+ *  spelling fold so ischaemia/haemorrhage/oedema/necrotising stop reading as false "misses".
+ *  Containment is unchanged — synonyms (Track B) carry the rest; over-matching is the risk. */
+export const MATCHER_VERSION = 'ddx-eval/2';
+
+/** Fold British spelling to American so the two variants match. Applied INSIDE norm, after
+ *  punctuation/whitespace normalisation, so it sees plain lowercased words. The fold is
+ *  applied to BOTH sides of every comparison, so it can only ever make equal words equal —
+ *  it never collapses two genuinely distinct diagnoses (that would need a real-word clash,
+ *  which these narrow suffix/diphthong rules don't create). */
+function foldSpelling(s: string): string {
   return s
+    .replace(/ae/g, 'e')                        // ischaemia→ischemia, haemorrhage→hemorrhage, anaemia→anemia
+    .replace(/oe/g, 'e')                        // oedema→edema, oesophageal→esophageal, diarrhoea→diarrhea
+    .replace(/is(e|ed|es|ing|ation|er)\b/g, 'iz$1') // necrotising→necrotizing, organisation→organization
+    .replace(/our\b/g, 'or');                   // tumour→tumor, colour→color, behaviour→behavior
+}
+
+function norm(s: string): string {
+  const base = s
     .toLowerCase()
     .normalize('NFKD')
     .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+  return foldSpelling(base);
 }
 
 /** Containment either way, guarded so trivially short strings ("mi") can't false-hit
@@ -148,6 +176,9 @@ export interface DdxCaseScore {
   forbiddenPresent: boolean;           // any forbiddenDx present on any axis
   unsafeActionPresent: boolean;        // any unsafeActions in the suggested workup
   fabricatedFindingSuspected: boolean; // heuristic v1 (see suspectedFabricatedFindings)
+  laneCoverage: { covered: number; total: number } | null; // A2; null if no expectedLanes
+  negativeMisuse: boolean | null;      // A3; null if no documentedNegatives
+  cannotMissOverFlag: boolean | null;  // A3; null if no unsupportedCannotMiss
   notes: string[];
 }
 
@@ -197,6 +228,43 @@ export function scoreDdxCase(c: DdxCase, result: DdxResult): DdxCaseScore {
   const fabricated = suspectedFabricatedFindings(result, c.presentation);
   if (fabricated.length) notes.push(`fabricated-finding suspected (heuristic): ${fabricated.join(', ')}`);
 
+  // A2 — parallel-differential lane coverage. A lane counts as covered if ANY of its
+  // listed diagnoses matches any engine entry on any axis (v2 matcher). Skipped (null)
+  // for cases with no expectedLanes, so the metric averages only over cases that define it.
+  let laneCoverage: { covered: number; total: number } | null = null;
+  if (c.expectedLanes && Object.keys(c.expectedLanes).length) {
+    const lanes = Object.entries(c.expectedLanes);
+    const covered = lanes.filter(([, dxs]) => dxs.some((dx) => anyEntryMatches(everything, dx, syn[dx]))).length;
+    laneCoverage = { covered, total: lanes.length };
+    if (covered < lanes.length) {
+      const missed = lanes.filter(([, dxs]) => !dxs.some((dx) => anyEntryMatches(everything, dx, syn[dx]))).map(([k]) => k);
+      notes.push(`lanes uncovered: ${missed.join(', ')}`);
+    }
+  }
+
+  // A3 — negative misuse: a cannot_miss/most_likely diagnosis whose name or why_consider
+  // asserts a finding the stem documented as ABSENT. Best-effort v1 (substring, so it can
+  // trip on a rationale that mentions the negative to dismiss it — documented, non-gating).
+  let negativeMisuse: boolean | null = null;
+  if (c.documentedNegatives?.length) {
+    const consideredText = norm(
+      [...(result.cannot_miss ?? []), ...(result.most_likely ?? [])]
+        .map((e) => `${e.diagnosis ?? ''} ${e.why_consider ?? ''}`)
+        .join(' '),
+    );
+    const misusedNegatives = c.documentedNegatives.filter((neg) => consideredText.includes(norm(neg)));
+    negativeMisuse = misusedNegatives.length > 0;
+    if (misusedNegatives.length) notes.push(`negative-misuse (asserts documented-negative): ${misusedNegatives.join('; ')}`);
+  }
+
+  // A3 — cannot-miss over-flag: the engine surfaced a dx this stem says should NOT be flagged.
+  let cannotMissOverFlag: boolean | null = null;
+  if (c.unsupportedCannotMiss?.length) {
+    const overFlagged = c.unsupportedCannotMiss.filter((u) => anyEntryMatches(everything, u, syn[u]));
+    cannotMissOverFlag = overFlagged.length > 0;
+    if (overFlagged.length) notes.push(`cannot-miss over-flag (unsupported surfaced): ${overFlagged.join('; ')}`);
+  }
+
   return {
     id: c.id,
     top1Hit,
@@ -205,6 +273,9 @@ export function scoreDdxCase(c: DdxCase, result: DdxResult): DdxCaseScore {
     forbiddenPresent: forbiddenHits.length > 0,
     unsafeActionPresent: unsafeHits.length > 0,
     fabricatedFindingSuspected: fabricated.length > 0,
+    laneCoverage,
+    negativeMisuse,
+    cannotMissOverFlag,
     notes,
   };
 }
@@ -220,11 +291,46 @@ export interface DdxBankSummary {
   unsafeActionRate: number;
   fabricatedFindingRate: number;
   harmWeightedError: number;           // mean caseHarm per case (see HARM_WEIGHTS)
+  // ── Phase 2a additions — null when no case in the bank carries the enabling label ──
+  laneCoverageRate: number | null;        // A2: mean per-case (covered lanes / expected lanes)
+  negativeMisuseRate: number | null;      // A3: fraction of documented-negative cases with a misuse
+  cannotMissOverFlagRate: number | null;  // A3: fraction of over-flag-labelled cases that over-flagged
+  latencyP50Ms: number | null;            // A4: from per-row ms (nearest-rank); null if none supplied
+  latencyP90Ms: number | null;            // A4
+  // ── Version pinning (A6) — stamped so a run/CI can compare against a frozen pair ──
+  matcherVersion: string;                 // always MATCHER_VERSION
+  bankVersion: string;                    // supplied by caller; 'unknown' if not
 }
 
-export function summarizeDdx(scores: DdxCaseScore[]): DdxBankSummary {
+/** Nearest-rank percentile over a pre-sorted ascending array. */
+function percentile(sortedAsc: number[], p: number): number | null {
+  if (!sortedAsc.length) return null;
+  const idx = Math.min(sortedAsc.length - 1, Math.max(0, Math.ceil(p * sortedAsc.length) - 1));
+  return sortedAsc[idx];
+}
+
+export interface SummarizeOpts {
+  latenciesMs?: number[];  // per-case round-trip ms (A4). Order irrelevant — sorted here.
+  bankVersion?: string;    // A6 version stamp; defaults to 'unknown'.
+}
+
+export function summarizeDdx(scores: DdxCaseScore[], opts?: SummarizeOpts): DdxBankSummary {
   const n = scores.length || 1;
   const cmScored = scores.filter((s) => s.cannotMissCovered !== null);
+
+  const laneScored = scores.filter((s) => s.laneCoverage);
+  const laneCoverageRate = laneScored.length
+    ? laneScored.reduce((a, s) => a + s.laneCoverage!.covered / s.laneCoverage!.total, 0) / laneScored.length
+    : null;
+
+  const negScored = scores.filter((s) => s.negativeMisuse !== null);
+  const negativeMisuseRate = negScored.length ? negScored.filter((s) => s.negativeMisuse).length / negScored.length : null;
+
+  const ovScored = scores.filter((s) => s.cannotMissOverFlag !== null);
+  const cannotMissOverFlagRate = ovScored.length ? ovScored.filter((s) => s.cannotMissOverFlag).length / ovScored.length : null;
+
+  const lat = (opts?.latenciesMs ?? []).filter((x) => Number.isFinite(x)).slice().sort((a, b) => a - b);
+
   return {
     n: scores.length,
     top1Accuracy: scores.filter((s) => s.top1Hit).length / n,
@@ -234,5 +340,81 @@ export function summarizeDdx(scores: DdxCaseScore[]): DdxBankSummary {
     unsafeActionRate: scores.filter((s) => s.unsafeActionPresent).length / n,
     fabricatedFindingRate: scores.filter((s) => s.fabricatedFindingSuspected).length / n,
     harmWeightedError: scores.reduce((sum, s) => sum + caseHarm(s), 0) / n,
+    laneCoverageRate,
+    negativeMisuseRate,
+    cannotMissOverFlagRate,
+    latencyP50Ms: percentile(lat, 0.5),
+    latencyP90Ms: percentile(lat, 0.9),
+    matcherVersion: MATCHER_VERSION,
+    bankVersion: opts?.bankVersion ?? 'unknown',
   };
+}
+
+// ── A5 · Offline re-score ──
+// Recompute a full DdxBankSummary from a saved ddx-p0-results-*.json with the CURRENT
+// matcher/metrics — no network, no engine call. Each results row carries {id, result, ms};
+// the bank supplies the expectations, matched by id. `bank` may be a bare DdxCase[] or the
+// {meta,cases} wrapper the runner loads (so bankVersion can be derived from meta.id).
+
+type BankInput = DdxCase[] | { cases: DdxCase[]; version?: string; meta?: { id?: string; version?: string } };
+
+function unwrapBank(bank: BankInput): { cases: DdxCase[]; version: string } {
+  if (Array.isArray(bank)) return { cases: bank, version: 'unknown' };
+  return { cases: bank.cases ?? [], version: bank.version ?? bank.meta?.id ?? bank.meta?.version ?? 'unknown' };
+}
+
+export interface OfflineRescore {
+  summary: DdxBankSummary;
+  scores: DdxCaseScore[];
+  unmatchedIds: string[];  // result rows whose id has no case in the bank
+  erroredIds: string[];    // result rows that carried an error / no result (skipped)
+}
+
+export function scoreFromResultsJson(resultsPath: string, bank: BankInput): OfflineRescore {
+  const parsed = JSON.parse(readFileSync(resultsPath, 'utf8'));
+  const rows: Array<{ id: string; result?: DdxResult; ms?: number; error?: string }> = parsed.rows ?? [];
+  const { cases, version } = unwrapBank(bank);
+  const byId = new Map(cases.map((c) => [c.id, c]));
+
+  const scores: DdxCaseScore[] = [];
+  const latenciesMs: number[] = [];
+  const unmatchedIds: string[] = [];
+  const erroredIds: string[] = [];
+
+  for (const row of rows) {
+    if (row.error || !row.result) { erroredIds.push(row.id); continue; }
+    const c = byId.get(row.id);
+    if (!c) { unmatchedIds.push(row.id); continue; }
+    scores.push(scoreDdxCase(c, row.result));
+    if (typeof row.ms === 'number') latenciesMs.push(row.ms);
+  }
+
+  return { summary: summarizeDdx(scores, { latenciesMs, bankVersion: version }), scores, unmatchedIds, erroredIds };
+}
+
+// ── A6 · Freeze guard ──
+// Once labels are ratified, a frozen (matcher, bank) pair is pinned. When the guard is
+// active, a run whose versions don't equal the pinned pair must fail — the numbers are
+// only comparable within one frozen evaluator. Dormant unless `frozen` is set (the runner
+// reads DDX_EVAL_FROZEN); pure, so it is unit-tested without touching env.
+
+export interface FreezeSpec {
+  frozen: boolean;    // gate — false = dormant no-op
+  matcher?: string;   // pinned matcher version (e.g. 'ddx-eval/2'); unset = don't check
+  bank?: string;      // pinned bank version (e.g. 'ddx-case-bank/1.0'); unset = don't check
+}
+
+export interface FreezeVerdict {
+  ok: boolean;
+  message: string;
+}
+
+export function freezeGuard(summary: DdxBankSummary, spec: FreezeSpec): FreezeVerdict {
+  if (!spec.frozen) return { ok: true, message: 'freeze guard dormant (DDX_EVAL_FROZEN unset)' };
+  const problems: string[] = [];
+  if (spec.matcher && summary.matcherVersion !== spec.matcher) problems.push(`matcher ${summary.matcherVersion} ≠ frozen ${spec.matcher}`);
+  if (spec.bank && summary.bankVersion !== spec.bank) problems.push(`bank ${summary.bankVersion} ≠ frozen ${spec.bank}`);
+  return problems.length
+    ? { ok: false, message: `FROZEN-MISMATCH: ${problems.join('; ')}` }
+    : { ok: true, message: `frozen versions match (matcher=${summary.matcherVersion}, bank=${summary.bankVersion})` };
 }
