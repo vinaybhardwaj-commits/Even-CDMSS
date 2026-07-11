@@ -30,11 +30,15 @@ const sampleMembersSql = (limit) =>
       AND EXISTS (SELECT 1 FROM test_values_view t WHERE t._parent_id = p._parent_id)
     LIMIT ${Math.max(1, Math.min(500, Math.floor(limit)))}`;
 
-/** One member's OPD prescription rows (meds jsonb, allergies, dx codes, demographics, date). */
+/** One member's OPD prescription rows (meds jsonb, allergies, dx codes, date). Only columns that
+ *  EXIST on "individuals-prescriptions" (age/gender/diagnosis live on dpipe_prescription_pipeline,
+ *  NOT this table) — so OPD demographics stay undefined and the demographic-conflict Discrepancy
+ *  is dormant for Stage 0 (acceptable). A future patch can JOIN dpipe_prescription_pipeline on
+ *  presc uid for age/gender if we want it. */
 const prescriptionsSql = (uid) => {
   if (!isUid(uid)) throw new Error('bad individual uid');
-  return `SELECT uid, patient_details__allergies, diagnosis_icd_codes, impression_icd_codes, diagnosis,
-                 age, gender, to_jsonb(medications) AS medications,
+  return `SELECT uid, patient_details__allergies, diagnosis_icd_codes, impression_icd_codes,
+                 to_jsonb(medications) AS medications,
                  to_char(timestamp AT TIME ZONE 'Asia/Kolkata','YYYY-MM-DD') AS visit_date
             FROM "individuals-prescriptions"
            WHERE _parent_id = '${uid}' AND is_draft = false

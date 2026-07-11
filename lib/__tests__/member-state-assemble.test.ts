@@ -66,6 +66,20 @@ test('assembleEvidence: identifier-free — no name/mobile/dob leaks into eviden
   for (const pii of ['Jane', 'Doe', '9999999999', '1964-01-01']) assert.ok(!json.includes(pii), `PII leak: ${pii}`);
 });
 
+test('assembleEvidence: diagnosis_icd_codes bare-string arrays — empty elements/arrays skipped', () => {
+  const problems = (dx: unknown) =>
+    assembleEvidence({ ...base, prescriptionRows: [{ uid: 'u1', diagnosis_icd_codes: dx, impression_icd_codes: [] }], labRows: [] })
+      .encounters[0].problems;
+  assert.equal(problems(['']).length, 0);                       // empty-string element → 0 problems
+  assert.equal(problems(['  ']).length, 0);                     // whitespace-only → 0
+  assert.equal(problems([]).length, 0);                         // empty array → 0
+  const one = problems(['N77.1']);
+  assert.equal(one.length, 1);
+  assert.equal(one[0].icdCode, 'N77.1');
+  assert.equal(problems(['L82.1', 'L68.0']).length, 2);         // two codes → 2 problems
+  assert.equal(problems(['L82.1', '', 'L68.0']).length, 2);     // empties dropped, real codes kept
+});
+
 test('assembleEvidence: malformed / missing rows degrade to empty, never throw', () => {
   assert.doesNotThrow(() => assembleEvidence({ ...base, prescriptionRows: 'garbage' as unknown as [], labRows: null as unknown as [] }));
   const ev = assembleEvidence({ ...base, prescriptionRows: [{ no_uid: true }, RX_ROW], labRows: [{ junk: 1 }] });

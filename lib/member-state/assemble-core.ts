@@ -37,6 +37,8 @@ function parseIcdList(v: unknown): { code: string | null; text: string }[] {
   const out: { code: string | null; text: string }[] = [];
   for (const el of arr) {
     if (el == null) continue;
+    // db13 diagnosis_icd_codes are jsonb arrays of BARE code strings and include empty-string
+    // elements ([""]) — a problem is created ONLY for a non-empty (non-whitespace) code.
     if (typeof el === 'string') { const t = el.trim(); if (t) out.push({ code: t, text: t }); continue; }
     if (typeof el === 'object') {
       const o = el as Record<string, unknown>;

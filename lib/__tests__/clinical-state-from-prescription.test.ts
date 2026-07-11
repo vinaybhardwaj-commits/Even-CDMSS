@@ -72,6 +72,16 @@ test('allergyTextToAssertions: NKA notations → one denied; empty → []; subst
   assert.equal(allergyTextToAssertions('"No"')[0].status, 'denied');   // quote-insensitive
 });
 
+test('allergyTextToAssertions: "NK" (not-known) → denied; substantive text containing nk is NOT swept', () => {
+  const nk = allergyTextToAssertions('NK');
+  assert.equal(nk.length, 1);
+  assert.equal(nk[0].status, 'denied');
+  assert.equal(nk[0].substance.normalized, 'no known allergy');
+  assert.equal(allergyTextToAssertions(' nk ')[0].status, 'denied');            // whitespace-insensitive
+  // a real substance whose text merely CONTAINS "nk" must stay reported (whole-string match only)
+  assert.equal(allergyTextToAssertions('NK reaction to penicillin')[0].status, 'reported_allergy');
+});
+
 test('allergyTextToAssertions: substantive text → one reported_allergy, raw preserved, reaction null', () => {
   const p = allergyTextToAssertions('Penicillin – rash');
   assert.equal(p.length, 1);

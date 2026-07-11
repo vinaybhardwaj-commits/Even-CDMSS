@@ -73,7 +73,7 @@ export function medicationLineToAssertion(line: Record<string, unknown>): Medica
 
 // NKA / "no known allergy" notations (case/quote/space-insensitive) → a `denied` fact.
 const NKA_NOTATIONS: ReadonlySet<string> = new Set([
-  'no', 'nil', 'none', 'nka', 'nkda',
+  'no', 'nil', 'none', 'nka', 'nkda', 'nk',   // 'nk' = not-known (frequent db13 notation)
   'no known allergies', 'no known drug allergies', 'not known',
   'na', 'n/a', 'none known', 'nil known',
 ]);
