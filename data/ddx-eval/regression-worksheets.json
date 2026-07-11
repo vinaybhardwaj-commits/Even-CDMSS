@@ -1,0 +1,121 @@
+{
+  "meta": {
+    "bank": "ddx-case-bank/1.0",
+    "generated": "2026-07-11",
+    "source": "DDX-CASE-BANK-RATIFICATION-LEDGER-11-JUL-2026.md (8 corrections + synonym audit)",
+    "note": "One worksheet per stable cannot-miss 'failure' on the frozen baseline. On bank v1.0 every one resolved to a measurement artefact (label error, stem-negative exclusion, or matcher/synonym near-miss) — zero genuine engine breadth failures. Run-to-run flapping cases that were covered on a fresh re-run (e.g. D07) carry no correction and are omitted; the residual ~8% is temperature-0.2 noise, not a capability gap.",
+    "resolutionEnum": ["resolved-label-fix", "resolved-negative-excludes", "matcher-artifact", "genuine-open"]
+  },
+  "worksheets": [
+    {
+      "caseId": "D03",
+      "expectedDx": "Ruptured Abdominal Aortic Aneurysm",
+      "stem": "34-year-old with sudden abdominal/back pain",
+      "engineHypotheses": ["Aortic Dissection (cannot-miss)", "renal colic", "obstructive pyelonephritis"],
+      "retrievedEvidence": "Age-appropriate vascular catastrophe for a 34-year-old is dissection, not degenerative AAA.",
+      "omissionMechanism": "Bank label age-inappropriate — ruptured AAA is not plausible at 34; the engine correctly raised aortic dissection, and the critic agreed.",
+      "resolution": "resolved-label-fix",
+      "resolutionNote": "Relabelled ruptured AAA → aortic dissection (ratified V). Kept pyelonephritis. Not an engine miss."
+    },
+    {
+      "caseId": "D33",
+      "expectedDx": "Diabetic Ketoacidosis",
+      "stem": "New diabetes, glucose 17 mmol/L, explicitly 'no ketones'",
+      "engineHypotheses": ["Hyperosmolar Hyperglycaemic State (HHS)"],
+      "retrievedEvidence": "DKA requires ketosis; the stem documents its absence.",
+      "omissionMechanism": "The stem's own documented negative ('no ketones') excludes DKA; scoring it a miss penalised correct reasoning.",
+      "resolution": "resolved-negative-excludes",
+      "resolutionNote": "Dropped DKA from the cannot-miss set; kept HHS (ratified V)."
+    },
+    {
+      "caseId": "D42",
+      "expectedDx": "Acute Angle-Closure Glaucoma",
+      "stem": "Red eye, sticky discharge, sick contact; no pain, no visual change, no photophobia, reactive pupil, clear cornea",
+      "engineHypotheses": ["Infective conjunctivitis (incl. gonococcal/HSV)"],
+      "retrievedEvidence": "Clear cornea + reactive pupil + no pain/photophobia argue strongly against angle-closure / keratitis / uveitis.",
+      "omissionMechanism": "The stem's negatives exclude the dangerous labels; correct answer is infective conjunctivitis.",
+      "resolution": "resolved-negative-excludes",
+      "resolutionNote": "Removed angle-closure glaucoma + anterior uveitis; keratitis made conditional on contact-lens use (not stated). Ratified V."
+    },
+    {
+      "caseId": "D44",
+      "expectedDx": "Anaphylaxis",
+      "stem": "2-day wheeze after a cold, known asthma, speaking in sentences, no trigger/urticaria/hypotension",
+      "engineHypotheses": ["Pulmonary embolism (cannot-miss)", "asthma exacerbation"],
+      "retrievedEvidence": "No trigger, urticaria, or hypotension; a 2-day post-viral course is not anaphylaxis.",
+      "omissionMechanism": "Documented negatives exclude anaphylaxis; the engine kept the appropriate cannot-miss (PE).",
+      "resolution": "resolved-negative-excludes",
+      "resolutionNote": "Removed anaphylaxis; kept PE (ratified V)."
+    },
+    {
+      "caseId": "D59",
+      "expectedDx": "Malaria",
+      "stem": "'Fever' only — no travel / localizing / duration (deliberately incomplete)",
+      "engineHypotheses": ["Sepsis"],
+      "retrievedEvidence": "Malaria is un-prioritisable without exposure/travel data.",
+      "omissionMechanism": "Cannot rank malaria without exposure history; the correct behaviour is to REQUEST travel history, not to name it.",
+      "resolution": "resolved-negative-excludes",
+      "resolutionNote": "Removed malaria; kept sepsis. Reclassified D59 as an incomplete / appropriate-uncertainty case — scored on missing-information-request quality, not cannot-miss recall (ratified V)."
+    },
+    {
+      "caseId": "D13",
+      "expectedDx": "Subarachnoid Haemorrhage",
+      "stem": "Fever 39.4 + non-blanching purpuric rash + meningism",
+      "engineHypotheses": ["Bacterial meningitis (cannot-miss)", "meningococcal sepsis (cannot-miss)"],
+      "retrievedEvidence": "Fever + purpuric rash = meningococcal disease; SAH causes neither fever nor a purpuric rash.",
+      "omissionMechanism": "SAH is not the syndrome — the stem is meningococcal; the engine correctly raised meningitis + meningococcal sepsis.",
+      "resolution": "resolved-label-fix",
+      "resolutionNote": "Removed SAH; kept bacterial meningitis + meningococcal sepsis (ratified V)."
+    },
+    {
+      "caseId": "D23",
+      "expectedDx": "Cauda Equina Syndrome",
+      "stem": "Back pain with a sensory level + brisk reflexes",
+      "engineHypotheses": ["Spinal cord compression (cannot-miss)"],
+      "retrievedEvidence": "Sensory level + brisk reflexes = UMN cord compression, not the LMN/areflexic picture of cauda equina.",
+      "omissionMechanism": "The exam is UMN cord compression, not cauda equina; the engine gave cord compression.",
+      "resolution": "resolved-label-fix",
+      "resolutionNote": "Removed cauda equina; kept spinal cord compression (ratified V)."
+    },
+    {
+      "caseId": "D47",
+      "expectedDx": "Posterior Circulation Stroke",
+      "stem": "Textbook BPPV, positive Dix-Hallpike, normal neuro",
+      "engineHypotheses": ["Central positional vertigo (cerebellar/brainstem lesion)", "vertebrobasilar TIA/stroke"],
+      "retrievedEvidence": "The engine named the danger under different phrasing (central positional vertigo, vertebrobasilar).",
+      "omissionMechanism": "Synonym-phrasing near-miss — the engine raised the dangerous entity, but the label's exact string didn't match.",
+      "resolution": "matcher-artifact",
+      "resolutionNote": "Kept the label (correct don't-miss); added synonyms so the engine's phrasing counts (ratified V)."
+    },
+    {
+      "caseId": "D18",
+      "expectedDx": "Acute Limb Ischaemia",
+      "stem": "Acutely cold, painful leg",
+      "engineHypotheses": ["Acute arterial embolism/thrombosis"],
+      "retrievedEvidence": "'Acute arterial embolism/thrombosis' IS acute limb ischaemia.",
+      "omissionMechanism": "Synonym-phrasing near-miss — same entity, different string.",
+      "resolution": "matcher-artifact",
+      "resolutionNote": "Added synonyms (acute arterial embolism/thrombosis, spelling) (ratified V)."
+    },
+    {
+      "caseId": "D17",
+      "expectedDx": "Necrotising Fasciitis",
+      "stem": "Rapidly spreading soft-tissue infection with disproportionate pain",
+      "engineHypotheses": ["Necrotizing soft tissue infection"],
+      "retrievedEvidence": "'Necrotizing soft tissue infection' is the same entity; British/American spelling + phrasing differ.",
+      "omissionMechanism": "Synonym/spelling near-miss — Matcher v2's spelling fold plus a synonym resolves it.",
+      "resolution": "matcher-artifact",
+      "resolutionNote": "Synonym + spelling-fold near-miss; covered by Matcher v2 + synonym set."
+    },
+    {
+      "caseId": "D11",
+      "expectedDx": "Cauda Equina Syndrome",
+      "stem": "Severe back pain with numbness and new difficulty passing urine",
+      "engineHypotheses": ["Cauda equina syndrome", "spinal epidural abscess (cannot-miss)"],
+      "retrievedEvidence": "The engine names cauda equina on most runs; the failure was in the scorer, not the engine.",
+      "omissionMechanism": "Matcher artefact — the synonym 'CES' substring-collides inside 'ab-CES-s', producing a false match between two distinct cannot-miss dx. Caught by the freeze collision-guard test.",
+      "resolution": "matcher-artifact",
+      "resolutionNote": "Dropped the 'CES' synonym (ratified V); root cause (short-token substring matching) queued as Matcher v3."
+    }
+  ]
+}

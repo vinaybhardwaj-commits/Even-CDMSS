@@ -1,0 +1,62 @@
+{
+  "title": "DDx Reasoning V2 — FROZEN baseline (Phase 2a freeze)",
+  "frozen_pair": {
+    "matcher": "ddx-eval/2",
+    "bank": "ddx-case-bank/1.0"
+  },
+  "scored_offline_from": "the two 10-Jul provisional baseline result JSONs (same prod passes)",
+  "note": "Provisional gate-baseline on 60 synthetic cases; label-driven metrics null until bank v1.1. gate floor cannotMissRecall>=0.90.",
+  "runs": {
+    "run1": {
+      "source_results": "ddx-p0-results-20260711-010009.json",
+      "summary": {
+        "n": 60,
+        "top1Accuracy": 0.8833333333333333,
+        "top3Recall": 0.9166666666666666,
+        "cannotMissRecall": 0.92,
+        "forbiddenDxRate": 0,
+        "unsafeActionRate": 0,
+        "fabricatedFindingRate": 0.55,
+        "harmWeightedError": 1.6833333333333333,
+        "laneCoverageRate": null,
+        "negativeMisuseRate": null,
+        "cannotMissOverFlagRate": null,
+        "latencyP50Ms": 131726,
+        "latencyP90Ms": 176613,
+        "matcherVersion": "ddx-eval/2",
+        "bankVersion": "ddx-case-bank/1.0"
+      },
+      "cannot_miss_missed": [
+        "D03",
+        "D07",
+        "D11",
+        "D33"
+      ]
+    },
+    "run2": {
+      "source_results": "ddx-p0-results-20260711-021056.json",
+      "summary": {
+        "n": 60,
+        "top1Accuracy": 0.8833333333333333,
+        "top3Recall": 0.95,
+        "cannotMissRecall": 0.94,
+        "forbiddenDxRate": 0,
+        "unsafeActionRate": 0,
+        "fabricatedFindingRate": 0.48333333333333334,
+        "harmWeightedError": 1.35,
+        "laneCoverageRate": null,
+        "negativeMisuseRate": null,
+        "cannotMissOverFlagRate": null,
+        "latencyP50Ms": 136543,
+        "latencyP90Ms": 175597,
+        "matcherVersion": "ddx-eval/2",
+        "bankVersion": "ddx-case-bank/1.0"
+      },
+      "cannot_miss_missed": [
+        "D03",
+        "D13",
+        "D17"
+      ]
+    }
+  }
+}
