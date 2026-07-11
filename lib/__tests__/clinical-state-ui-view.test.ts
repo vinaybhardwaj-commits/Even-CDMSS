@@ -46,7 +46,7 @@ test('clinicalStateResultField: flag ON attaches the trimmed view', () => {
   const field = clinicalStateResultField(state, 2, true);
   assert.ok(field.clinicalState, 'clinicalState present when enabled');
   const v = field.clinicalState!;
-  assert.equal(v.version, 'clinical-state/1.0');
+  assert.equal(v.version, 'clinical-state/1.1');
   assert.equal(v.positives.length, 1);
   assert.equal(v.negatives.length, 1);
   assert.equal(v.unknowns.length, 1);

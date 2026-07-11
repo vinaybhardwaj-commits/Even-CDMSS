@@ -13,7 +13,7 @@ import type { TimelineItem } from '../ccb-dossier-core';
 import type { InvestigationFinding } from '../investigations';
 import type { AdminFacts } from '../doc-audit-core';
 
-export const CLINICAL_STATE_VERSION = 'clinical-state/1.0' as const;
+export const CLINICAL_STATE_VERSION = 'clinical-state/1.1' as const;
 
 export type Surface = 'ddx' | 'note_audit' | 'doc_audit' | 'concordance' | 'appropriateness' | 'ask' | 'other';
 export type FindingStatus = 'present' | 'absent' | 'unknown' | 'historical' | 'resolved';
@@ -34,6 +34,41 @@ export interface Provenance {
   endOffset?: number;
   extractionMethod: ExtractionMethod;
   confidence: number;               // 0..1
+}
+
+// ── Typed medication & allergy assertions (1.1) — additive; the typed representation
+//    MemberState (Stage 0) reconciles across encounters. A prescription is not proof the
+//    patient is taking it, so status is a first-class field; `medications: string[]` stays. ──
+
+export type MedicationStatus = 'prescribed' | 'reported_taking' | 'administered' | 'stopped' | 'not_taking' | 'unknown';
+export type AllergyStatus = 'reported_allergy' | 'denied' | 'historical' | 'entered_in_error' | 'unknown';
+
+/** Lightweight concept reference — brand/generic as the source carries them.
+ *  `normalizedConceptId` is reserved (null) for the Stage-0 NormalizedConcept service. */
+export interface ConceptRef { raw: string; brand?: string; generic?: string; normalizedConceptId?: string | null }
+
+export interface MedicationAssertion {
+  id: string;
+  medicationConcept: ConceptRef;
+  status: MedicationStatus;
+  dose?: string | null;
+  strength?: string | null;
+  frequency?: string | null;      // as stated, e.g. "1-0-1"
+  route?: string | null;
+  duration?: string | null;
+  instruction?: string | null;
+  provenance: Provenance;
+  encounterRef?: string | null;   // unset in 1.1 (single-encounter); Stage 0 populates it
+}
+
+export interface AllergyAssertion {
+  id: string;
+  substance: { raw: string; normalized?: string | null };
+  status: AllergyStatus;
+  reaction?: string | null;
+  severity?: string | null;
+  provenance: Provenance;
+  encounterRef?: string | null;
 }
 
 /** Audit extension — carries BOTH audit engines' vocabularies verbatim (never collapsed):
@@ -101,6 +136,8 @@ export interface ClinicalState {
   procedures?: string[];
   disposition?: string | null;
   instability: Instability;
+  medicationAssertions: MedicationAssertion[];
+  allergyAssertions: AllergyAssertion[];
   missingCriticalData: string[];
   adminFacts?: AdminFacts;
   /** Per-surface passthrough for narrative/administrative fields the clinical core
@@ -125,6 +162,37 @@ const zProvenance = z.object({
   endOffset: z.number().int().nonnegative().optional(),
   extractionMethod: z.enum(['deterministic', 'llm', 'reported']),
   confidence: z.number().min(0).max(1),
+}).strict();
+
+const zConceptRef = z.object({
+  raw: z.string(),
+  brand: z.string().optional(),
+  generic: z.string().optional(),
+  normalizedConceptId: z.string().nullable().optional(),
+}).strict();
+
+const zMedicationAssertion = z.object({
+  id: z.string().min(1),
+  medicationConcept: zConceptRef,
+  status: z.enum(['prescribed', 'reported_taking', 'administered', 'stopped', 'not_taking', 'unknown']),
+  dose: z.string().nullable().optional(),
+  strength: z.string().nullable().optional(),
+  frequency: z.string().nullable().optional(),
+  route: z.string().nullable().optional(),
+  duration: z.string().nullable().optional(),
+  instruction: z.string().nullable().optional(),
+  provenance: zProvenance,
+  encounterRef: z.string().nullable().optional(),
+}).strict();
+
+const zAllergyAssertion = z.object({
+  id: z.string().min(1),
+  substance: z.object({ raw: z.string(), normalized: z.string().nullable().optional() }).strict(),
+  status: z.enum(['reported_allergy', 'denied', 'historical', 'entered_in_error', 'unknown']),
+  reaction: z.string().nullable().optional(),
+  severity: z.string().nullable().optional(),
+  provenance: zProvenance,
+  encounterRef: z.string().nullable().optional(),
 }).strict();
 
 const zAuditExt = z.object({
@@ -207,6 +275,8 @@ export const zClinicalState = z.object({
     assessedInputs: z.array(z.string()),
     missingInputs: z.array(z.string()),
   }).strict(),
+  medicationAssertions: z.array(zMedicationAssertion),
+  allergyAssertions: z.array(zAllergyAssertion),
   missingCriticalData: z.array(z.string()),
   adminFacts: zAdminFacts.optional(),
   surfaceExtras: z.record(z.unknown()).optional(),
@@ -232,6 +302,8 @@ export function emptyClinicalState(surface: Surface): ClinicalState {
     medications: [],
     investigations: [],
     instability: { unstable: false, reasons: [], assessment: 'not_assessable', assessedInputs: [], missingInputs: ['BP', 'HR', 'SpO₂', 'RR', 'T'] },
+    medicationAssertions: [],
+    allergyAssertions: [],
     missingCriticalData: [],
   };
 }

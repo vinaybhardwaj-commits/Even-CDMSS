@@ -16,7 +16,7 @@ const FINDING: ClinicalFinding = {
 test('emptyClinicalState validates and carries the version literal', () => {
   const s = emptyClinicalState('ddx');
   assert.equal(s.version, CLINICAL_STATE_VERSION);
-  assert.equal(s.version, 'clinical-state/1.0');
+  assert.equal(s.version, 'clinical-state/1.1');
   assert.deepEqual(validateClinicalState(s), s);
 });
 
