@@ -3,7 +3,7 @@
 import { useState, useRef, useMemo, useCallback, useEffect } from 'react';
 import { consumeNdjson } from '@/lib/ndjson-client';
 import TracePanel, { TraceEvent } from '@/components/TracePanel';
-import { Send, Loader2, AlertTriangle, ChevronDown, ChevronUp, ClipboardList, BookOpen, Microscope, CheckCircle2, MinusCircle, FlaskConical, SlidersHorizontal, RefreshCw } from 'lucide-react';
+import { Send, Loader2, AlertTriangle, ChevronDown, ChevronUp, ClipboardList, BookOpen, Microscope, CheckCircle2, MinusCircle, FlaskConical, SlidersHorizontal, RefreshCw, HelpCircle } from 'lucide-react';
 import { MarkdownAnswer } from '@/components/MarkdownAnswer';
 import type { ClinicalStateUiView } from '@/lib/clinical-state/ui-view';
 
@@ -249,19 +249,31 @@ function ClinicalStatePanel({ state }: { state: ClinicalStateUiView }) {
         {demo.trim() && <span className="text-[12px] text-slate-500">{demo}</span>}
         <span className="ml-auto rounded-full bg-brand-faint px-2.5 py-0.5 text-[11px] font-semibold text-brand-dark">reasoning substrate</span>
       </div>
-      {inst.unstable ? (
+      {inst.assessment === 'unstable' && (
         <div className="flex flex-wrap items-center gap-2 bg-rose-50 px-4 py-2 text-[12.5px] font-semibold text-rose-700">
-          <AlertTriangle className="h-4 w-4 shrink-0" /> UNSTABLE
+          <AlertTriangle className="h-4 w-4 shrink-0" /> Potential instability detected
           <span className="font-medium text-rose-500">{inst.reasons.join(' · ')}</span>
         </div>
-      ) : (
-        <div className="flex items-center gap-2 bg-emerald-50 px-4 py-2 text-[12.5px] font-medium text-emerald-700">
-          <CheckCircle2 className="h-4 w-4 shrink-0" /> Stable — no instability criteria met
+      )}
+      {inst.assessment === 'no_instability_detected' && (
+        <div className="flex flex-wrap items-center gap-2 bg-emerald-50 px-4 py-2 text-[12.5px] font-medium text-emerald-700">
+          <CheckCircle2 className="h-4 w-4 shrink-0" /> <span className="font-semibold">No instability criteria detected in supplied data</span>
+          {inst.assessedInputs.length > 0 && (
+            <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700">assessed: {inst.assessedInputs.join(' · ')}</span>
+          )}
+        </div>
+      )}
+      {inst.assessment === 'not_assessable' && (
+        <div className="flex flex-wrap items-center gap-2 bg-amber-50 px-4 py-2 text-[12.5px] font-medium text-amber-700">
+          <HelpCircle className="h-4 w-4 shrink-0" /> <span className="font-semibold">Instability not assessable from supplied data</span>
+          {inst.missingInputs.length > 0 && (
+            <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[11px] font-medium text-amber-700">missing: {inst.missingInputs.join(' · ')}</span>
+          )}
         </div>
       )}
       <div className="px-4 py-3">
         {state.positives.length > 0 && <CsGroup label="Present" dot="bg-brand" items={state.positives} status="present" />}
-        {state.negatives.length > 0 && <CsGroup label="Absent — ruled out by stated negatives" dot="bg-rose-500" items={state.negatives} status="absent" />}
+        {state.negatives.length > 0 && <CsGroup label="Explicitly absent in the supplied record" dot="bg-rose-500" items={state.negatives} status="absent" />}
         {state.unknowns.length > 0 && <CsGroup label="Not assessed" dot="bg-slate-400" items={state.unknowns} status="unknown" />}
         {state.investigations.length > 0 && (
           <div className="mt-1">
@@ -282,7 +294,7 @@ function ClinicalStatePanel({ state }: { state: ClinicalStateUiView }) {
           </div>
         )}
         <div className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 px-2.5 py-1 text-[11.5px] font-semibold text-emerald-700">
-          <CheckCircle2 className="h-3.5 w-3.5" /> No fabrication · rejected_spans: {state.rejectedSpans}
+          <CheckCircle2 className="h-3.5 w-3.5" /> All extracted findings are source-linked · {state.rejectedSpans} unverified spans
         </div>
       </div>
     </div>

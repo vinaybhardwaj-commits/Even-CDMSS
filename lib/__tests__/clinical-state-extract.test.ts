@@ -4,7 +4,7 @@ import {
   deterministicExtract, normalizeWithLlm, mergeLlmFindings, type ExtractInput,
 } from '../clinical-state/extract';
 import { buildDdxClinicalState, applyParsedInvestigations, floorRulesFor, priorFor } from '../clinical-state/from-primitives';
-import { validateClinicalState } from '../clinical-state/schema';
+import { validateClinicalState, emptyClinicalState } from '../clinical-state/schema';
 import type { ParsedInvestigations } from '../investigations';
 
 const INPUT: ExtractInput = {
@@ -64,6 +64,57 @@ test('vitals: parsed reads + instability from adult thresholds', () => {
 
   const calm = deterministicExtract({ ...INPUT, fields: { ...INPUT.fields, vitals: 'BP 118/76, HR 72, SpO2 99%' } });
   assert.equal(calm.instability.unstable, false);
+});
+
+// ── Three-state instability (UI-integrity fix): assessment + assessed/missing channels ──
+
+test('instability three-state: no vitals → not_assessable, all 5 channels missing', () => {
+  const s = deterministicExtract({ ...INPUT, fields: { ...INPUT.fields, vitals: '' } });
+  assert.equal(s.instability.assessment, 'not_assessable');
+  assert.equal(s.instability.unstable, false);
+  assert.deepEqual(s.instability.assessedInputs, []);
+  assert.deepEqual(s.instability.missingInputs, ['BP', 'HR', 'SpO₂', 'RR', 'T']);
+});
+
+test('instability three-state: full normal vitals → no_instability_detected, all 5 assessed', () => {
+  const s = deterministicExtract({ ...INPUT, fields: { ...INPUT.fields, vitals: 'BP 120/80 HR 80 SpO2 98 RR 16 Temp 37' } });
+  assert.equal(s.instability.assessment, 'no_instability_detected');
+  assert.equal(s.instability.unstable, false);
+  assert.deepEqual(s.instability.reasons, []);
+  assert.deepEqual(s.instability.assessedInputs, ['BP', 'HR', 'SpO₂', 'RR', 'T']);
+  assert.deepEqual(s.instability.missingInputs, []);
+});
+
+test('instability three-state: partial vitals (temperature only) → assessed [T], rest missing', () => {
+  // "Temp 37" (not bare "T 37") is the token parseVitals actually reads — parser LOGIC unchanged;
+  // the display label for the temperature channel is 'T' per spec.
+  const s = deterministicExtract({ ...INPUT, fields: { ...INPUT.fields, vitals: 'Temp 37' } });
+  assert.equal(s.instability.assessment, 'no_instability_detected');
+  assert.deepEqual(s.instability.assessedInputs, ['T']);
+  assert.deepEqual(s.instability.missingInputs, ['BP', 'HR', 'SpO₂', 'RR']);
+});
+
+test('instability three-state: breach → unstable, reasons byte-identical to unchanged logic', () => {
+  const s = deterministicExtract({ ...INPUT, fields: { ...INPUT.fields, vitals: 'BP 82/50' } });
+  assert.equal(s.instability.assessment, 'unstable');
+  assert.equal(s.instability.unstable, true);
+  assert.deepEqual(s.instability.reasons, ['SBP 82 < 90']);          // instabilityReasons unchanged
+  assert.deepEqual(s.instability.assessedInputs, ['BP']);
+  // the original full-INPUT breach still yields exactly today's reason set
+  const full = deterministicExtract(INPUT);                          // vitals 'BP 82/50, HR 134, SpO2 90%'
+  assert.deepEqual(full.instability.reasons, ['SBP 82 < 90', 'HR 134 outside 40-130', 'SpO2 90% < 92%']);
+});
+
+test('instability invariant: unstable === (assessment === "unstable"); emptyClinicalState passes updated zod', () => {
+  for (const vitals of ['', 'Temp 37', 'BP 120/80 HR 80 SpO2 98 RR 16 Temp 37', 'BP 82/50', 'BP 82/50, HR 134, SpO2 90%']) {
+    const s = deterministicExtract({ ...INPUT, fields: { ...INPUT.fields, vitals } });
+    assert.equal(s.instability.unstable, s.instability.assessment === 'unstable', `vitals="${vitals}"`);
+  }
+  // emptyClinicalState default satisfies the updated .strict() validator (new required fields present)
+  assert.doesNotThrow(() => validateClinicalState(emptyClinicalState('ddx')));
+  const def = emptyClinicalState('ddx').instability;
+  assert.equal(def.assessment, 'not_assessable');
+  assert.deepEqual(def.missingInputs, ['BP', 'HR', 'SpO₂', 'RR', 'T']);
 });
 
 // ── Stage 2 — LLM normalisation with span verification (fake chat, no network) ──

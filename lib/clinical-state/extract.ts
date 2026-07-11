@@ -11,7 +11,7 @@
 // never silently kept (anti-fabrication at the schema boundary).
 
 import {
-  type ClinicalState, type ClinicalFinding, type Surface, type Temporality,
+  type ClinicalState, type ClinicalFinding, type Surface, type Temporality, type Instability,
   emptyClinicalState, mkFindingId,
 } from './schema';
 import { extractDemographics } from '../concordance-core';
@@ -135,7 +135,18 @@ export function deterministicExtract(input: ExtractInput, opts?: { criticalConce
         state.positives.push(finding(r.name, 'present', name, r.rawText, 'deterministic', 0.9, { value: String(r.value) }));
       }
       const reasons = instabilityReasons(reads);
-      if (reasons.length) state.instability = { unstable: true, reasons };
+      // Three-state instability (assembly only — parseVitals/instabilityReasons LOGIC unchanged):
+      // itemise which instability-relevant channels parsed, as display labels. BP is assessed
+      // iff a 'systolic bp' read parsed (diastolic has no threshold, not a separate channel).
+      const CHANNELS: ReadonlyArray<readonly [string, string]> = [
+        ['systolic bp', 'BP'], ['heart rate', 'HR'], ['spo2', 'SpO₂'], ['respiratory rate', 'RR'], ['temperature', 'T'],
+      ];
+      const present = new Set(reads.map((r) => r.name));
+      const assessedInputs = CHANNELS.filter(([n]) => present.has(n)).map(([, label]) => label);
+      const missingInputs = CHANNELS.filter(([n]) => !present.has(n)).map(([, label]) => label);
+      const assessment: Instability['assessment'] =
+        reasons.length ? 'unstable' : assessedInputs.length ? 'no_instability_detected' : 'not_assessable';
+      state.instability = { unstable: assessment === 'unstable', reasons, assessment, assessedInputs, missingInputs };
     }
   }
 

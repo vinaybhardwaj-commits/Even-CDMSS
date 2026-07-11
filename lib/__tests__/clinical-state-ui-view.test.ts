@@ -6,7 +6,7 @@ import { emptyClinicalState, mkFindingId, type ClinicalState } from '../clinical
 function fixture(): ClinicalState {
   const s = emptyClinicalState('ddx');
   s.demographics = { age: 70, ageBand: '70-79', sex: 'M', sexRaw: 'male' };
-  s.instability = { unstable: true, reasons: ['SBP 82 < 90', 'HR 134 > 130'] };
+  s.instability = { unstable: true, reasons: ['SBP 82 < 90', 'HR 134 > 130'], assessment: 'unstable', assessedInputs: ['BP', 'HR'], missingInputs: ['SpO₂', 'RR', 'T'] };
   s.positives.push({
     id: mkFindingId('abdominal pain', 'complaint', 'present'),
     concept: 'abdominal pain', status: 'present',

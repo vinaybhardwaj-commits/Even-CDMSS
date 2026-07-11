@@ -64,7 +64,7 @@ test('formatClinicalState renders every populated section, skips empty ones', ()
   s.negatives.push({ ...FINDING, id: 'cf-2', concept: 'chest pain', status: 'absent' });
   s.unknowns.push({ ...FINDING, id: 'cf-3', concept: 'weight loss', status: 'unknown' });
   s.investigations.push({ test: 'Hb', value: '9.1', unit: 'g/dL', flag: 'low', category: 'lab', note: null });
-  s.instability = { unstable: true, reasons: ['SBP 82 < 90'] };
+  s.instability = { unstable: true, reasons: ['SBP 82 < 90'], assessment: 'unstable', assessedInputs: ['BP'], missingInputs: ['HR', 'SpO₂', 'RR', 'T'] };
   const out = formatClinicalState(s);
   assert.match(out, /Patient: 62y \/ M/);
   assert.match(out, /Findings \(stated\): fever \(for 3 days\)/);

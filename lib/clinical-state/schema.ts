@@ -79,8 +79,11 @@ export interface Demographics {
 }
 
 export interface Instability {
-  unstable: boolean;
-  reasons: string[];         // e.g. "SBP 82 < 90"
+  unstable: boolean;                 // retained; === (assessment === 'unstable')
+  reasons: string[];                 // e.g. "SBP 82 < 90"; unchanged semantics
+  assessment: 'unstable' | 'no_instability_detected' | 'not_assessable';
+  assessedInputs: string[];          // display channels present, e.g. ['BP','HR','SpO₂','RR','T']
+  missingInputs: string[];           // display channels absent
 }
 
 export interface ClinicalState {
@@ -197,7 +200,13 @@ export const zClinicalState = z.object({
   investigations: z.array(zInvestigationFinding),
   procedures: z.array(z.string()).optional(),
   disposition: z.string().nullable().optional(),
-  instability: z.object({ unstable: z.boolean(), reasons: z.array(z.string()) }).strict(),
+  instability: z.object({
+    unstable: z.boolean(),
+    reasons: z.array(z.string()),
+    assessment: z.enum(['unstable', 'no_instability_detected', 'not_assessable']),
+    assessedInputs: z.array(z.string()),
+    missingInputs: z.array(z.string()),
+  }).strict(),
   missingCriticalData: z.array(z.string()),
   adminFacts: zAdminFacts.optional(),
   surfaceExtras: z.record(z.unknown()).optional(),
@@ -222,7 +231,7 @@ export function emptyClinicalState(surface: Surface): ClinicalState {
     exposures: [],
     medications: [],
     investigations: [],
-    instability: { unstable: false, reasons: [] },
+    instability: { unstable: false, reasons: [], assessment: 'not_assessable', assessedInputs: [], missingInputs: ['BP', 'HR', 'SpO₂', 'RR', 'T'] },
     missingCriticalData: [],
   };
 }
