@@ -13,12 +13,13 @@
 // (4) the coarse regex-family → catalog-pack/archetype bridge is not given by the docs → REGEX_FAMILY_PACK.
 
 export const PROM_CATALOG_VERSION = 'prom-catalog/0.1' as const;
-export const HS_SETS_VERSION = 'hs-sets/0.1' as const;
+export const HS_SETS_VERSION = 'hs-sets/0.2' as const;
 
 // The 5 ratified shared scales + the bespoke house option-sets (flagged) needed to encode items verbatim.
 export type Scale =
   | 'S5-SEV' | 'S5-FRQ' | 'S5-CMP' | 'NRS-11' | 'YN'
   | 'FUNC4' | 'NOCT5' | 'DIET4' | 'SUPPORT3' | 'WALK5' | 'SIT4' | 'ACT3'
+  | 'WORK4' | 'EAT4' | 'OPEN4'    // hs-sets/0.2 (Phase 2a) bespoke house option-sets
   | 'WHODAS5' | 'EXP4'    // 0.2a-2 content encoding: WHODAS-12 response scale + house-PREM experience scale
   // 2b validated-instrument response scales:
   | 'KOOS5' | 'NOSE5' | 'IPSS6' | 'IPSS_NOCT' | 'IPSS_QOL' | 'NYHA4' | 'RMDQ_TICK'
@@ -71,6 +72,10 @@ export const SHARED_SCALES: Record<Scale, string[]> = {
   'WALK5': ['unlimited', '~1km', '~500m', '~100m', 'room-only'],
   'SIT4': ['>1h', '~30min', '~10min', 'barely'],
   'ACT3': ['fully', 'avoiding heavy', 'avoiding all'],
+  // hs-sets/0.2 (Phase 2a) bespoke house option-sets (verbatim):
+  'WORK4': ['fully', 'avoiding some', 'avoiding most', 'not yet'],
+  'EAT4': ['fully able', 'mostly', 'soft foods only', 'liquids only'],
+  'OPEN4': ['fully', 'mildly limited', 'moderately limited', 'severely limited'],
   // 0.2a-2 content encoding (verbatim from the two source files):
   'WHODAS5': ['None', 'Mild', 'Moderate', 'Severe', 'Extreme or cannot do'],   // WHODAS-12 recode None=0…Extreme=4
   'EXP4': ['no', 'partly', 'mostly', 'yes, fully'],                            // house PREM experience, 0–3, higher = better
@@ -207,6 +212,67 @@ export const HOUSE_SETS: Record<string, InstrumentDef> = {
     houseItem('he1', 'Pain at repair site at rest / on coughing or lifting', 'NRS-11'),
     houseItem('he2', 'Any bulge reappeared?', 'YN', 'E5'),
     houseItem('he3', 'Back to lifting normal weights?', 'ACT3'),
+  ]),
+  // ── hs-sets/0.2 (Phase 2a) — 6 house fallback sets, VERBATIM from CDMSS-PROMS-HOUSE-ITEM-SETS-2A-v0 ──
+  'hs-wrist': houseSet('hs-wrist', 'HS-WRIST — hand & wrist fallback', [
+    houseItem('hw1', 'Wrist or hand pain at rest today', 'NRS-11'),
+    houseItem('hw2', 'Wrist or hand pain when you use the hand — gripping, twisting a key or lid', 'NRS-11'),
+    houseItem('hw3', 'Stiffness — how much does limited wrist/finger movement bother you?', 'S5-SEV'),
+    houseItem('hw4', 'Grip strength for everyday tasks (opening a jar, carrying a bag) compared with before', 'S5-CMP'),
+    houseItem('hw5', 'Fine tasks — buttons, holding a phone, writing', 'FUNC4'),
+    houseItem('hw6', 'Back to your usual work or household tasks with that hand?', 'WORK4'),
+    houseItem('hw7', 'New numbness or pins-and-needles, or the hand/fingers looking pale, blue, very swollen, or very tight?', 'YN', 'E5'),
+  ]),
+  'hs-fibroid': houseSet('hs-fibroid', 'HS-FIBROID — uterine fibroid / post-myomectomy fallback', [
+    houseItem('hf1', 'Menstrual bleeding compared with before treatment', 'S5-CMP'),
+    houseItem('hf2', 'Passing large clots or flooding (soaking through protection)', 'S5-FRQ', 'E4'),
+    houseItem('hf3', 'Pelvic heaviness, fullness, or a feeling of pressure low down', 'S5-SEV'),
+    houseItem('hf4', 'Passing urine more often or more urgently because of pelvic pressure', 'S5-FRQ'),
+    houseItem('hf5', 'Lower-abdomen or period pain', 'NRS-11'),
+    houseItem('hf6', 'Tiredness or low energy affecting your day', 'S5-SEV'),
+    houseItem('hf7', 'The main symptom that led to treatment — how is it now?', 'S5-CMP'),
+    houseItem('hf8', 'Very heavy bleeding (soaking a pad within an hour), fever, or severe worsening pain?', 'YN', 'E5'),
+  ]),
+  'hs-endo': houseSet('hs-endo', 'HS-ENDO — endometriosis fallback', [
+    houseItem('en1', 'Pelvic or period pain over the past week', 'NRS-11'),
+    houseItem('en2', 'Pain with periods compared with before treatment', 'S5-CMP'),
+    houseItem('en3', 'Pain during or after sex', 'S5-FRQ'),
+    houseItem('en4', 'Pain opening bowels or passing urine, especially around your period', 'S5-FRQ'),
+    houseItem('en5', 'How often has the pain stopped you doing daily activities or work?', 'S5-FRQ'),
+    houseItem('en6', 'How much has the condition worn you down or made you feel out of control of it?', 'S5-SEV'),
+    houseItem('en7', 'The main symptom that led to treatment — how is it now?', 'S5-CMP'),
+    houseItem('en8', 'Fever, worsening abdominal pain, wound discharge, or inability to pass urine?', 'YN', 'E5'),
+  ]),
+  'hs-prolapse': houseSet('hs-prolapse', 'HS-PROLAPSE — pelvic organ prolapse fallback', [
+    houseItem('pl1', 'A sensation of a bulge or something coming down in the vagina', 'S5-FRQ'),
+    houseItem('pl2', 'Heaviness or dragging in the pelvis, worse by the end of the day', 'S5-SEV'),
+    houseItem('pl3', 'Needing to push the bulge up, or press, to start or finish passing urine or stool', 'S5-FRQ'),
+    houseItem('pl4', "Bladder: leaking urine with a cough, laugh, or exercise, or a sudden urge you can't hold", 'S5-FRQ'),
+    houseItem('pl5', "Bladder: a feeling that you don't empty fully", 'S5-FRQ'),
+    houseItem('pl6', 'Bowel: straining, hard stools, or a feeling of incomplete emptying', 'S5-FRQ'),
+    houseItem('pl7', "Bowel: leaking stool or wind you can't control", 'S5-FRQ', 'E5'),
+    houseItem('pl8', 'The main symptom that led to treatment — how is it now?', 'S5-CMP'),
+    houseItem('pl9', 'Inability to pass urine, heavy vaginal bleeding, fever, or new severe pain?', 'YN', 'E5'),
+  ]),
+  'hs-varicose': houseSet('hs-varicose', 'HS-VARICOSE — varicose veins fallback', [
+    houseItem('vv1', 'Aching, heaviness, or throbbing in the leg', 'S5-FRQ'),
+    houseItem('vv2', 'Ankle or leg swelling by the end of the day', 'S5-SEV'),
+    houseItem('vv3', 'Itching, or changes in skin colour or texture over the veins', 'S5-FRQ'),
+    houseItem('vv4', 'Any skin breakdown or ulcer near the ankle?', 'YN', 'E5'),
+    houseItem('vv5', 'How much does the appearance of the veins bother you?', 'S5-SEV'),
+    houseItem('vv6', 'Do the leg symptoms limit standing, walking, or work?', 'S5-SEV'),
+    houseItem('vv7', 'The main symptom that led to treatment — how is it now?', 'S5-CMP'),
+    houseItem('vv8', 'Calf pain, swelling, or redness; breathlessness; wound bleeding; or fever?', 'YN', 'always'),
+  ]),
+  'hs-dental': houseSet('hs-dental', 'HS-DENTAL — dental / oral & maxillofacial fallback', [
+    houseItem('dn1', 'Pain in the mouth, teeth, or jaw', 'NRS-11'),
+    houseItem('dn2', 'Difficulty chewing or eating the foods you want', 'EAT4'),
+    houseItem('dn3', 'Trouble speaking clearly because of your mouth or jaw', 'S5-FRQ'),
+    houseItem('dn4', 'Feeling self-conscious or bothered by the appearance of your mouth, teeth, or jaw', 'S5-SEV'),
+    houseItem('dn5', 'Have mouth or jaw problems made you avoid certain foods or social situations?', 'S5-FRQ'),
+    houseItem('dn6', 'Mouth opening — able to open your mouth normally?', 'OPEN4'),
+    houseItem('dn7', 'The main problem that led to treatment — how is it now?', 'S5-CMP'),
+    houseItem('dn8', "Bleeding that won't stop, spreading facial swelling, difficulty breathing or swallowing, or fever?", 'YN', 'always'),
   ]),
 };
 
@@ -363,7 +429,7 @@ export const FAMILY_PACKS: FamilyPack[] = [
   { family: 'hip_arthroplasty', archetype: 'LONG_ARC', primary: 'hoos_jr', fallback: null, lic: 'F' },
   { family: 'knee_arthroscopy_acl', archetype: 'LONG_ARC', primary: 'koos', fallback: null, lic: 'F' },
   { family: 'shoulder', archetype: 'LONG_ARC', primary: 'spadi', fallback: 'hs-shoulder', lic: 'F' },
-  { family: 'hand_wrist', archetype: 'STANDARD', primary: 'prwe', fallback: null, lic: 'Pv' },
+  { family: 'hand_wrist', archetype: 'STANDARD', primary: 'prwe', fallback: 'hs-wrist', lic: 'Pv' },   // 2a: Pv-unconfirmed → hs-wrist
   { family: 'foot_ankle', archetype: 'STANDARD', primary: 'faam', fallback: null, lic: 'F' },
   { family: 'fracture_trauma', archetype: 'STANDARD', primary: null, fallback: null, lic: null },
   { family: 'lumbar_spine', archetype: 'LONG_ARC', primary: 'rmdq', fallback: 'hs-lumbar', lic: 'F' },
@@ -379,10 +445,10 @@ export const FAMILY_PACKS: FamilyPack[] = [
   { family: 'urinary_stones', archetype: 'STANDARD', primary: 'hs-stone', fallback: null, lic: 'house' },
   { family: 'scrotal', archetype: 'DAYCARE', primary: null, fallback: null, lic: null },
   { family: 'hysterectomy', archetype: 'STANDARD', primary: 'hs-gyn', fallback: null, lic: 'house' },
-  { family: 'fibroids_myomectomy', archetype: 'STANDARD', primary: 'ufsqol', fallback: null, lic: 'Pv' },
-  { family: 'endometriosis', archetype: 'STANDARD', primary: 'ehp5', fallback: null, lic: 'Pv' },
+  { family: 'fibroids_myomectomy', archetype: 'STANDARD', primary: 'ufsqol', fallback: 'hs-fibroid', lic: 'Pv' },   // 2a: Pv-unconfirmed → hs-fibroid
+  { family: 'endometriosis', archetype: 'STANDARD', primary: 'ehp5', fallback: 'hs-endo', lic: 'Pv' },   // 2a: Pv-unconfirmed → hs-endo
   { family: 'hysteroscopy_mirena', archetype: 'SCOPE', primary: null, fallback: null, lic: null },
-  { family: 'prolapse', archetype: 'STANDARD', primary: 'pfdi20', fallback: null, lic: 'Pv' },
+  { family: 'prolapse', archetype: 'STANDARD', primary: 'pfdi20', fallback: 'hs-prolapse', lic: 'Pv' },   // 2a: Pv-unconfirmed → hs-prolapse
   { family: 'septoplasty_turbinoplasty', archetype: 'STANDARD', primary: 'nose', fallback: null, lic: 'F' },
   { family: 'fess_sinus', archetype: 'STANDARD', primary: 'snot22', fallback: 'hs-sinus', lic: 'Pv' },
   { family: 'tonsillectomy', archetype: 'DAYCARE', primary: 'hs-tonsil', fallback: null, lic: 'house' },
@@ -394,13 +460,13 @@ export const FAMILY_PACKS: FamilyPack[] = [
   { family: 'breast', archetype: 'STANDARD', primary: null, fallback: null, lic: null },
   { family: 'thyroid', archetype: 'STANDARD', primary: 'hs-thyroid', fallback: null, lic: 'house' },
   { family: 'bariatric', archetype: 'LONG_ARC', primary: null, fallback: null, lic: null },
-  { family: 'varicose_veins', archetype: 'STANDARD', primary: 'avvq', fallback: null, lic: 'Pv' },
+  { family: 'varicose_veins', archetype: 'STANDARD', primary: 'avvq', fallback: 'hs-varicose', lic: 'Pv' },   // 2a: Pv-unconfirmed → hs-varicose
   { family: 'cardiac', archetype: 'LONG_ARC', primary: 'nyha', fallback: null, lic: null },
   { family: 'thoracic', archetype: 'ONCO_MAJOR', primary: null, fallback: null, lic: null },
   { family: 'cranial_neuro', archetype: 'LONG_ARC', primary: null, fallback: null, lic: null },
   { family: 'paediatric_surgery', archetype: 'STANDARD', primary: 'whodas_proxy', fallback: null, lic: 'Pv' },
   { family: 'obstetric_csection', archetype: 'STANDARD', primary: 'hs-csection', fallback: null, lic: 'house' },
-  { family: 'dental_maxillofacial', archetype: 'DAYCARE', primary: 'ohip14', fallback: null, lic: 'house' },   // 2b: OHIP-14 licensed — corrected F→house (not encoded; stays null)
+  { family: 'dental_maxillofacial', archetype: 'DAYCARE', primary: 'ohip14', fallback: 'hs-dental', lic: 'Pv' },   // 2a: fallback → hs-dental; lic corrected house→Pv so the Pv-fallback rule fires (OHIP-14 aspirational primary stays until ever licensed)
   { family: 'plastics_scars', archetype: 'STANDARD', primary: null, fallback: null, lic: null },
   { family: 'onco_resections', archetype: 'ONCO_MAJOR', primary: null, fallback: null, lic: null },
 ];

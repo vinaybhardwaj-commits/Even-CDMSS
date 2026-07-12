@@ -12,7 +12,7 @@ import {
 // ── versions ──
 test('versions', () => {
   assert.equal(PROM_CATALOG_VERSION, 'prom-catalog/0.1');
-  assert.equal(HS_SETS_VERSION, 'hs-sets/0.1');
+  assert.equal(HS_SETS_VERSION, 'hs-sets/0.2');
   assert.equal(PROM_SCHED_VERSION, 'prom-sched/0.1');
   assert.equal(PROM_SCORING_VERSION, 'prom-scoring/0.1');
 });
@@ -352,7 +352,61 @@ test('2b catalog integrity: scales present, item counts, scales resolve, 2 lic c
   assert.equal(SHARED_SCALES['NYHA4'].length, 4);
   // the 2 sweep lic corrections
   assert.equal(FAMILY_PACKS.find((p) => p.family === 'cervical_spine')!.lic, 'F');
-  assert.equal(FAMILY_PACKS.find((p) => p.family === 'dental_maxillofacial')!.lic, 'house');
+  // dental_maxillofacial lic corrected house→Pv in Phase 2a so the Pv-fallback rule fires (→ hs-dental).
+  assert.equal(FAMILY_PACKS.find((p) => p.family === 'dental_maxillofacial')!.lic, 'Pv');
+});
+
+// ── Phase-2a house fallback sets (hs-sets/0.2): 6 families → 6 verbatim house sets ──
+// (family, hs-set id, primary that must NOT be selected pre-sweep)
+const HS2A: [string, string, string][] = [
+  ['hand_wrist', 'hs-wrist', 'prwe'],
+  ['fibroids_myomectomy', 'hs-fibroid', 'ufsqol'],
+  ['endometriosis', 'hs-endo', 'ehp5'],
+  ['prolapse', 'hs-prolapse', 'pfdi20'],
+  ['varicose_veins', 'hs-varicose', 'avvq'],
+  ['dental_maxillofacial', 'hs-dental', 'ohip14'],
+];
+
+test('2a selection: each Pv family selects its hs-set fallback (not the unconfirmed primary)', () => {
+  for (const [family, hs, primary] of HS2A) {
+    const ids = new Set(instrumentsDue(family, BASE, '2026-02-04').map((d) => d.instrumentId));
+    assert.ok(ids.has(hs), `${family} should schedule ${hs}`);
+    assert.ok(!ids.has(primary), `${family} should NOT schedule the unconfirmed primary ${primary}`);
+    assert.ok(instrumentById(hs), `${hs} unresolved`);
+  }
+});
+
+test('2a scoring: complete house set → numeric sum (scale house); partial → honest null', () => {
+  for (const [, hs] of HS2A) {
+    const items = instrumentById(hs)!.items;
+    // every item at option index 1 (valid for all scales incl. YN len-2, NRS-11) → sum = item count.
+    const full = items.map((it) => ({ itemId: it.id, value: SHARED_SCALES[it.scale as keyof typeof SHARED_SCALES][1] }));
+    const r = scoreInstrument(hs, full);
+    assert.equal(r.scale, 'house');
+    assert.equal(r.score, items.length, `${hs} complete sum`);
+    assert.equal(scoreInstrument(hs, full.slice(1)).score, null, `${hs} partial → null`);
+  }
+});
+
+test('2a escalation: red-flag responses fire the expected code', () => {
+  assert.ok(scoreInstrument('hs-varicose', [{ itemId: 'vv8', value: 'yes' }]).escalations.includes('E5'));   // always → E5
+  assert.ok(scoreInstrument('hs-dental', [{ itemId: 'dn8', value: 'yes' }]).escalations.includes('E5'));      // airway always → E5
+  assert.ok(scoreInstrument('hs-prolapse', [{ itemId: 'pl7', value: 'always' }]).escalations.includes('E5')); // S5-FRQ 'always' (idx4) → E5
+  assert.ok(scoreInstrument('hs-fibroid', [{ itemId: 'hf2', value: 'often' }]).escalations.includes('E4'));   // S5-FRQ 'often' (idx3) → E4
+  assert.ok(scoreInstrument('hs-fibroid', [{ itemId: 'hf8', value: 'yes' }]).escalations.includes('E5'));     // YN yes → E5
+  assert.ok(scoreInstrument('hs-wrist', [{ itemId: 'hw7', value: 'yes' }]).escalations.includes('E5'));       // YN yes → E5
+});
+
+test('2a integrity: 3 new scales verbatim; every hs-set option value resolves in SHARED_SCALES', () => {
+  assert.deepEqual(SHARED_SCALES['WORK4'], ['fully', 'avoiding some', 'avoiding most', 'not yet']);
+  assert.deepEqual(SHARED_SCALES['EAT4'], ['fully able', 'mostly', 'soft foods only', 'liquids only']);
+  assert.deepEqual(SHARED_SCALES['OPEN4'], ['fully', 'mildly limited', 'moderately limited', 'severely limited']);
+  for (const [, hs] of HS2A) {
+    const def = instrumentById(hs)!;
+    assert.equal(def.kind, 'house');
+    assert.ok(def.items.length > 0, `${hs} has items`);
+    for (const it of def.items) assert.ok(it.scale in SHARED_SCALES, `${hs}.${it.id} scale ${it.scale} not in SHARED_SCALES`);
+  }
 });
 
 // ── determinism ──
