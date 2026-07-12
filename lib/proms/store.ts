@@ -33,7 +33,7 @@ export async function migrateProms(): Promise<Record<string, string>> {
     series_id         text,
     individual_uid    text NOT NULL,
     instrument_id     text NOT NULL,
-    window            text,
+    "window"           text,
     administered_at   timestamptz NOT NULL DEFAULT now(),
     raw               jsonb NOT NULL,
     score             numeric,
@@ -83,7 +83,7 @@ export async function savePromResponse(input: {
   }
   const scored = scoreInstrument(input.instrument_id, input.raw || []);
   const administeredAt = input.administered_at || new Date().toISOString();   // the STORE stamps admin time (not the frozen core)
-  await sql`INSERT INTO prom_responses (id, series_id, individual_uid, instrument_id, window, administered_at, raw, score, score_scale, escalations, instrument_version, scoring_version, adhoc_set_ref, cm_ref)
+  await sql`INSERT INTO prom_responses (id, series_id, individual_uid, instrument_id, "window", administered_at, raw, score, score_scale, escalations, instrument_version, scoring_version, adhoc_set_ref, cm_ref)
     VALUES (${input.id}, ${input.series_id}, ${input.individual_uid}, ${input.instrument_id}, ${input.window}, ${administeredAt},
             ${JSON.stringify(input.raw || [])}, ${scored.score}, ${scored.scale}, ${scored.escalations},
             ${PROM_CATALOG_VERSION}, ${scored.version}, ${input.adhoc_set_ref ?? null}, ${input.cm_ref ?? null})
@@ -102,7 +102,7 @@ export async function seriesForMember(individualUid: string): Promise<Row | null
 /** All stored responses for a member (newest first). Soft-fails to []. */
 export async function responsesForMember(individualUid: string, limit = 200): Promise<Row[]> {
   try {
-    return await q(sql`SELECT instrument_id, window, administered_at, score, score_scale, escalations
+    return await q(sql`SELECT instrument_id, "window", administered_at, score, score_scale, escalations
       FROM prom_responses WHERE individual_uid = ${individualUid} ORDER BY administered_at DESC LIMIT ${limit}`);
   } catch { return []; }
 }
@@ -112,7 +112,7 @@ export async function responsesForMember(individualUid: string, limit = 200): Pr
  *  never sinks a snapshot build. Folded into getMemberSnapshot behind PROMS_ENABLED (mirrors Care-Call). */
 export async function promEncountersForMember(individualUid: string): Promise<EncounterEvidence[]> {
   try {
-    const rows = await q(sql`SELECT instrument_id, window, administered_at, score, score_scale, escalations
+    const rows = await q(sql`SELECT instrument_id, "window", administered_at, score, score_scale, escalations
       FROM prom_responses WHERE individual_uid = ${individualUid} AND score IS NOT NULL
       ORDER BY administered_at DESC LIMIT 500`);
     const byDay = new Map<string, PromScore[]>();
