@@ -19,7 +19,11 @@ export const HS_SETS_VERSION = 'hs-sets/0.1' as const;
 export type Scale =
   | 'S5-SEV' | 'S5-FRQ' | 'S5-CMP' | 'NRS-11' | 'YN'
   | 'FUNC4' | 'NOCT5' | 'DIET4' | 'SUPPORT3' | 'WALK5' | 'SIT4' | 'ACT3'
-  | 'WHODAS5' | 'EXP4';   // 0.2a-2 content encoding: WHODAS-12 response scale + house-PREM experience scale
+  | 'WHODAS5' | 'EXP4'    // 0.2a-2 content encoding: WHODAS-12 response scale + house-PREM experience scale
+  // 2b validated-instrument response scales:
+  | 'KOOS5' | 'NOSE5' | 'IPSS6' | 'IPSS_NOCT' | 'IPSS_QOL' | 'NYHA4' | 'RMDQ_TICK'
+  // NDI = 10 sections, each with its own bespoke 6-statement option list (per PRD §1: do NOT force a shared scale):
+  | 'NDI_S1' | 'NDI_S2' | 'NDI_S3' | 'NDI_S4' | 'NDI_S5' | 'NDI_S6' | 'NDI_S7' | 'NDI_S8' | 'NDI_S9' | 'NDI_S10';
 export type Archetype = 'SCOPE' | 'DAYCARE' | 'STANDARD' | 'LONG_ARC' | 'ONCO_MAJOR';
 export type Window = 'baseline' | 'd72h' | 'w2' | 'w6' | 'm3' | 'm6' | 'm12';
 
@@ -70,6 +74,25 @@ export const SHARED_SCALES: Record<Scale, string[]> = {
   // 0.2a-2 content encoding (verbatim from the two source files):
   'WHODAS5': ['None', 'Mild', 'Moderate', 'Severe', 'Extreme or cannot do'],   // WHODAS-12 recode None=0…Extreme=4
   'EXP4': ['no', 'partly', 'mostly', 'yes, fully'],                            // house PREM experience, 0–3, higher = better
+  // 2b validated-instrument scales (verbatim from the freeze record / encode PRD §1):
+  'KOOS5': ['None', 'Mild', 'Moderate', 'Severe', 'Extreme'],                  // koos_jr, hoos_jr (0–4)
+  'NOSE5': ['Not a Problem', 'Very Mild Problem', 'Moderate Problem', 'Fairly Bad Problem', 'Severe Problem'],   // nose (0–4)
+  'IPSS6': ['Not at all', 'Less than 1 time in 5', 'Less than half the time', 'About half the time', 'More than half the time', 'Almost always'],   // IPSS Q1–Q6 (0–5)
+  'IPSS_NOCT': ['None', '1 time', '2 times', '3 times', '4 times', '5 or more times'],   // IPSS Q7 nocturia (0–5)
+  'IPSS_QOL': ['Delighted', 'Pleased', 'Mostly satisfied', 'Mixed (about equally satisfied and dissatisfied)', 'Mostly dissatisfied', 'Unhappy', 'Terrible'],   // IPSS QoL (0–6, scored separately)
+  'NYHA4': ['Class I', 'Class II', 'Class III', 'Class IV'],                    // NYHA functional class (1–4)
+  'RMDQ_TICK': ['Does not apply', 'Applies to me today'],                       // RMDQ per-sentence tick (index 1 = ticked)
+  // NDI — 10 sections, each 6 statements VERBATIM (Vernon & Mior 1991; index 0 top → 5 bottom):
+  'NDI_S1': ['I have no pain at the moment', 'The pain is very mild at the moment', 'The pain is moderate at the moment', 'The pain is fairly severe at the moment', 'The pain is very severe at the moment', 'The pain is the worst pain imaginable at the moment'],
+  'NDI_S2': ['I can look after myself normally without causing extra pain', 'I can look after myself normally, but it causes extra pain', 'It is painful to look after myself and I am slow and careful', 'I need some help but manage most of my personal care', 'I need help every day in most aspects of self-care', 'I do not get dressed; I wash with difficulty and stay in bed'],
+  'NDI_S3': ['I can lift heavy weights without extra pain', 'I can lift heavy weights, but it gives me extra pain', 'Pain prevents me from lifting heavy weights off the floor, but I can manage if they are conveniently positioned (like on a table)', 'Pain prevents me from lifting heavy weights, but I can manage light-to-medium weights if they are conveniently positioned', 'I can lift very light weights', 'I cannot lift or carry anything at all'],
+  'NDI_S4': ['I can read as much as I want with no neck pain', 'I can read as much as I want with slight neck pain', 'I can read as much as I want with moderate neck pain', "I can't read as much as I want because of moderate neck pain", 'I can hardly read at all because of severe pain in my neck', 'I cannot read at all'],
+  'NDI_S5': ['I have no headaches at all', 'I have slight headaches that come infrequently', 'I have moderate headaches that come infrequently', 'I have moderate headaches that come frequently', 'I have severe headaches that come frequently', 'I have headaches almost all of the time'],
+  'NDI_S6': ['I can concentrate fully when I want with no difficulty', 'I can concentrate fully when I want to with slight difficulty', 'I have a fair degree of difficulty concentrating when I want to', 'I have a lot of difficulty concentrating when I want to', 'I have a great deal of difficulty concentrating when I want to', 'I cannot concentrate at all'],
+  'NDI_S7': ['I can do as much work as I want', 'I can only do my usual work, but no more', 'I can do most of my usual work, but no more', 'I cannot do my usual work', 'I can hardly do any work at all', 'I cannot do any work at all'],
+  'NDI_S8': ['I can drive my car without any neck pain', 'I can drive my car as long as I want with slight neck pain', 'I can drive my car as long as I want with moderate neck pain', "I can't drive my car as long as I want because of moderate neck pain", 'I can hardly drive at all because of severe neck pain', "I can't drive my car at all"],
+  'NDI_S9': ['I have no trouble sleeping', 'My sleep is slightly disturbed (less than 1 hour sleepless)', 'My sleep is mildly disturbed (1 to 2 hours sleepless)', 'My sleep is moderately disturbed (2 to 3 hours sleepless)', 'My sleep is greatly disturbed (3 to 5 hours sleepless)', 'My sleep is completely disturbed (5 to 7 hours sleepless)'],
+  'NDI_S10': ['I am able to engage in all my recreation activities with no neck pain', 'I am able to engage in all my recreation activities with some neck pain', 'I am able to engage in most, but not all, of my usual recreation activities because of neck pain', 'I am able to engage in a few of my usual recreation activities because of neck pain', 'I can hardly do any recreation activities because of neck pain', "I can't do any recreation activities at all because of neck pain"],
 };
 
 const houseItem = (id: string, text: string, scale: Scale, escalation: string | null = null): Item => ({ id, text, scale, escalation });
@@ -190,29 +213,140 @@ export const HOUSE_SETS: Record<string, InstrumentDef> = {
 // ── Validated instruments referenced by the packs — METADATA rows only (text at 0.2a-2). ──
 const validated = (id: string, label: string, licence: 'F' | 'Pv', itemCount: number | null = null): InstrumentDef =>
   ({ id, label, kind: 'validated', scale: 'validated', items: [], itemCount, scoring: { method: 'ref', note: 'item text + scoring rule from the official source at 0.2a-2' }, licence });
+// Phase-2b filled validated instruments — verbatim items + explicit scoreInstrument branches (schedule-core).
+const validatedFull = (id: string, label: string, licence: 'F' | 'Pv', scaleDesc: string, items: Item[], note: string): InstrumentDef =>
+  ({ id, label, kind: 'validated', scale: scaleDesc, items, itemCount: items.length, scoring: { method: 'ref', note }, licence });
+const vItem = (id: string, text: string, scale: Scale): Item => ({ id, text, scale, escalation: null });
+
+// KOOS, JR. © Hospital for Special Surgery. Free w/ attribution. Items verbatim (printed codes S1/P1..A2),
+// all on KOOS5 (None…Extreme). Src: hss.edu KOOS-JR scoring PDF (2017). Score = raw 0–28 → interval table.
+const KOOS_JR_ITEMS: Item[] = [
+  vItem('koos_jr_s1', 'How severe is your knee stiffness after first wakening in the morning?', 'KOOS5'),
+  vItem('koos_jr_p1', 'Twisting/pivoting on your knee', 'KOOS5'),
+  vItem('koos_jr_p2', 'Straightening knee fully', 'KOOS5'),
+  vItem('koos_jr_p3', 'Going up or down stairs', 'KOOS5'),
+  vItem('koos_jr_p4', 'Standing upright', 'KOOS5'),
+  vItem('koos_jr_a1', 'Rising from sitting', 'KOOS5'),
+  vItem('koos_jr_a2', 'Bending to the floor/pick up an object', 'KOOS5'),
+];
+// HOOS, JR. © Hospital for Special Surgery. Free w/ attribution. 6 items on KOOS5. Src: hss.edu HOOS-JR PDF (2017).
+const HOOS_JR_ITEMS: Item[] = [
+  vItem('hoos_jr_p1', 'Going up or down stairs', 'KOOS5'),
+  vItem('hoos_jr_p2', 'Walking on an uneven surface', 'KOOS5'),
+  vItem('hoos_jr_a1', 'Rising from sitting', 'KOOS5'),
+  vItem('hoos_jr_a2', 'Bending to the floor/pick up an object', 'KOOS5'),
+  vItem('hoos_jr_a3', 'Lying in bed (turning over, maintaining hip position)', 'KOOS5'),
+  vItem('hoos_jr_a4', 'Sitting', 'KOOS5'),
+];
+// SPADI © Roach KE et al., Arthritis Care Res 1991;4(4):143–149. Free, cite authors. 5 pain + 8 disability
+// on the 0–10 NRS. Pain stem: "How severe is your pain?" (0 no pain … 10 worst imaginable). Disability stem:
+// "How much difficulty do you have?" (0 no difficulty … 10 so difficult it requires help).
+const SPADI_ITEMS: Item[] = [
+  vItem('spadi_p1', 'At its worst?', 'NRS-11'),
+  vItem('spadi_p2', 'When lying on the involved side?', 'NRS-11'),
+  vItem('spadi_p3', 'When reaching for something on a high shelf?', 'NRS-11'),
+  vItem('spadi_p4', 'When attempting to touch the back of your neck?', 'NRS-11'),
+  vItem('spadi_p5', 'When pushing with the involved arm?', 'NRS-11'),
+  vItem('spadi_d1', 'Washing your hair?', 'NRS-11'),
+  vItem('spadi_d2', 'Washing your back?', 'NRS-11'),
+  vItem('spadi_d3', 'Putting on an undershirt or pullover sweater?', 'NRS-11'),
+  vItem('spadi_d4', 'Putting on a shirt that buttons down the front?', 'NRS-11'),
+  vItem('spadi_d5', 'Putting on your pants?', 'NRS-11'),
+  vItem('spadi_d6', 'Placing an object on a high shelf?', 'NRS-11'),
+  vItem('spadi_d7', 'Carrying a heavy object of 10 pounds?', 'NRS-11'),
+  vItem('spadi_d8', 'Removing something from your back pocket?', 'NRS-11'),
+];
+// RMDQ — Roland & Morris, Spine 1983;8:141–144. PUBLIC DOMAIN ("No permission is required…"). 24 sentences,
+// original 1983 order (item 9 "then" preserved as printed), each tick on RMDQ_TICK. Src: rmdq.org.
+const RMDQ_ITEMS: Item[] = [
+  vItem('rmdq_1', 'I stay at home most of the time because of my back.', 'RMDQ_TICK'),
+  vItem('rmdq_2', 'I change position frequently to try and get my back comfortable.', 'RMDQ_TICK'),
+  vItem('rmdq_3', 'I walk more slowly than usual because of my back.', 'RMDQ_TICK'),
+  vItem('rmdq_4', 'Because of my back I am not doing any of the jobs that I usually do around the house.', 'RMDQ_TICK'),
+  vItem('rmdq_5', 'Because of my back, I use a handrail to get upstairs.', 'RMDQ_TICK'),
+  vItem('rmdq_6', 'Because of my back, I lie down to rest more often.', 'RMDQ_TICK'),
+  vItem('rmdq_7', 'Because of my back, I have to hold on to something to get out of an easy chair.', 'RMDQ_TICK'),
+  vItem('rmdq_8', 'Because of my back, I try to get other people to do things for me.', 'RMDQ_TICK'),
+  vItem('rmdq_9', 'I get dressed more slowly then usual because of my back.', 'RMDQ_TICK'),
+  vItem('rmdq_10', 'I only stand for short periods of time because of my back.', 'RMDQ_TICK'),
+  vItem('rmdq_11', 'Because of my back, I try not to bend or kneel down.', 'RMDQ_TICK'),
+  vItem('rmdq_12', 'I find it difficult to get out of a chair because of my back.', 'RMDQ_TICK'),
+  vItem('rmdq_13', 'My back is painful almost all the time.', 'RMDQ_TICK'),
+  vItem('rmdq_14', 'I find it difficult to turn over in bed because of my back.', 'RMDQ_TICK'),
+  vItem('rmdq_15', 'My appetite is not very good because of my back pain.', 'RMDQ_TICK'),
+  vItem('rmdq_16', 'I have trouble putting on my socks (or stockings) because of the pain in my back.', 'RMDQ_TICK'),
+  vItem('rmdq_17', 'I only walk short distances because of my back.', 'RMDQ_TICK'),
+  vItem('rmdq_18', 'I sleep less well because of my back.', 'RMDQ_TICK'),
+  vItem('rmdq_19', 'Because of my back pain, I get dressed with help from someone else.', 'RMDQ_TICK'),
+  vItem('rmdq_20', 'I sit down for most of the day because of my back.', 'RMDQ_TICK'),
+  vItem('rmdq_21', 'I avoid heavy jobs around the house because of my back.', 'RMDQ_TICK'),
+  vItem('rmdq_22', 'Because of my back pain, I am more irritable and bad tempered with people than usual.', 'RMDQ_TICK'),
+  vItem('rmdq_23', 'Because of my back, I go upstairs more slowly than usual.', 'RMDQ_TICK'),
+  vItem('rmdq_24', 'I stay in bed most of the time because of my back.', 'RMDQ_TICK'),
+];
+// NDI — Vernon & Mior, J Manipulative Physiol Ther 1991;14:409–415. Free clinical/research use w/ attribution.
+// 10 sections; each item's 6 statements live in its bespoke NDI_Sx scale (options index 0–5). Src: WCB Saskatchewan.
+const NDI_ITEMS: Item[] = [
+  vItem('ndi_s1', 'Pain intensity', 'NDI_S1'),
+  vItem('ndi_s2', 'Personal care (washing, dressing, etc.)', 'NDI_S2'),
+  vItem('ndi_s3', 'Lifting', 'NDI_S3'),
+  vItem('ndi_s4', 'Reading', 'NDI_S4'),
+  vItem('ndi_s5', 'Headaches', 'NDI_S5'),
+  vItem('ndi_s6', 'Concentration', 'NDI_S6'),
+  vItem('ndi_s7', 'Work', 'NDI_S7'),
+  vItem('ndi_s8', 'Driving', 'NDI_S8'),
+  vItem('ndi_s9', 'Sleeping', 'NDI_S9'),
+  vItem('ndi_s10', 'Recreation', 'NDI_S10'),
+];
+// IPSS / AUA-SI — Barry et al., J Urol 1992;148:1549–1557. Free, cite AUA. Original "Over the past month…"
+// wording (V-ratified). Q1–Q6 on IPSS6, Q7 (nocturia) on IPSS_NOCT, QoL on IPSS_QOL (scored separately).
+const IPSS_ITEMS: Item[] = [
+  vItem('ipss_q1', 'Over the past month, how often have you had a sensation of not emptying your bladder completely after you finished urinating?', 'IPSS6'),
+  vItem('ipss_q2', 'Over the past month, how often have you had to urinate again less than two hours after you finished urinating?', 'IPSS6'),
+  vItem('ipss_q3', 'Over the past month, how often have you found you stopped and started again several times when you urinated?', 'IPSS6'),
+  vItem('ipss_q4', 'Over the past month, how often have you found it difficult to postpone urination?', 'IPSS6'),
+  vItem('ipss_q5', 'Over the past month, how often have you had a weak urinary stream?', 'IPSS6'),
+  vItem('ipss_q6', 'Over the past month, how often have you had to push or strain to begin urination?', 'IPSS6'),
+  vItem('ipss_q7', 'Over the past month, how many times did you most typically get up to urinate from the time you went to bed at night until the time you got up in the morning?', 'IPSS_NOCT'),
+  vItem('ipss_qol', 'If you were to spend the rest of your life with your urinary condition just the way it is now, how would you feel about that?', 'IPSS_QOL'),
+];
+// NOSE — Stewart MG et al., Otolaryngol Head Neck Surg 2004;130(2):157–163. © AAO-HNS, free w/ attribution.
+// Stem: "Over the past ONE month, how much of a problem were the following conditions for you?" 5 items on NOSE5.
+const NOSE_ITEMS: Item[] = [
+  vItem('nose_1', 'Nasal congestion or stuffiness', 'NOSE5'),
+  vItem('nose_2', 'Nasal blockage or obstruction', 'NOSE5'),
+  vItem('nose_3', 'Trouble breathing through my nose', 'NOSE5'),
+  vItem('nose_4', 'Trouble sleeping', 'NOSE5'),
+  vItem('nose_5', 'Unable to get enough air through my nose during exercise or exertion', 'NOSE5'),
+];
+// NYHA Functional Classification, per AHA. Public domain. Clinician-assigned single class I–IV on NYHA4.
+const NYHA_ITEMS: Item[] = [
+  vItem('nyha_class', 'NYHA functional class (clinician-assigned)', 'NYHA4'),
+];
+
 export const VALIDATED_INSTRUMENTS: Record<string, InstrumentDef> = {
-  koos_jr: validated('koos_jr', 'KOOS-JR', 'F'),
-  hoos_jr: validated('hoos_jr', 'HOOS-JR', 'F'),
-  koos: validated('koos', 'KOOS', 'F'),
+  koos_jr: validatedFull('koos_jr', 'KOOS-JR', 'F', 'koos-jr', KOOS_JR_ITEMS, 'KOOS, JR. © HSS; free w/ attribution. Raw sum 0–28 → interval 0–100 (higher=better).'),
+  hoos_jr: validatedFull('hoos_jr', 'HOOS-JR', 'F', 'hoos-jr', HOOS_JR_ITEMS, 'HOOS, JR. © HSS; free w/ attribution. Raw sum 0–24 → interval 0–100 (higher=better).'),
+  koos: validated('koos', 'KOOS', 'F'),   // KOOS-full (ACL) NOT sourced this build — items null (follow-up)
   tegner: validated('tegner', 'Tegner', 'F'),
-  spadi: validated('spadi', 'SPADI', 'F'),
+  spadi: validatedFull('spadi', 'SPADI', 'F', 'spadi', SPADI_ITEMS, 'SPADI (Roach 1991); free, cite authors. Total = (Σ13 / 130) × 100, 0–100 (higher=worse).'),
   prwe: validated('prwe', 'PRWE', 'Pv'),
   faam: validated('faam', 'FAAM', 'F'),
-  rmdq: validated('rmdq', 'RMDQ', 'F'),
+  rmdq: validatedFull('rmdq', 'RMDQ', 'F', 'rmdq', RMDQ_ITEMS, 'RMDQ (Roland & Morris 1983); public domain. Score = count of ticks 0–24 (higher=worse).'),
   odi: validated('odi', 'ODI', 'Pv'),
-  ndi: validated('ndi', 'NDI', 'Pv'),
+  ndi: validatedFull('ndi', 'NDI', 'F', 'ndi', NDI_ITEMS, 'NDI (Vernon & Mior 1991); free w/ attribution. Sum 10 sections 0–50 (higher=worse; ×2 = %).'),
   wexner: validated('wexner', 'Wexner', 'F'),
   eurahs: validated('eurahs', 'EuraHS-QoL', 'Pv'),
-  ipss: validated('ipss', 'IPSS', 'F'),
+  ipss: validatedFull('ipss', 'IPSS', 'F', 'ipss', IPSS_ITEMS, 'IPSS / AUA-SI (Barry 1992); free, cite AUA. ΣQ1–Q7 0–35 (higher=worse); QoL stored separately.'),
   ufsqol: validated('ufsqol', 'UFS-QoL', 'Pv'),
   ehp5: validated('ehp5', 'EHP-5', 'Pv'),
   pfdi20: validated('pfdi20', 'PFDI-20', 'Pv'),
-  nose: validated('nose', 'NOSE', 'F'),
+  nose: validatedFull('nose', 'NOSE', 'F', 'nose', NOSE_ITEMS, 'NOSE (Stewart 2004); © AAO-HNS, free w/ attribution. Sum 0–20 × 5 = 0–100 (higher=worse).'),
   snot22: validated('snot22', 'SNOT-22', 'Pv'),
   catquest9sf: validated('catquest9sf', 'Catquest-9SF', 'Pv'),
   avvq: validated('avvq', 'AVVQ', 'Pv'),
-  nyha: validated('nyha', 'NYHA (clinician-reported)', 'F'),
-  ohip14: validated('ohip14', 'OHIP-14', 'F', 14),
+  nyha: validatedFull('nyha', 'NYHA (clinician-reported)', 'F', 'nyha', NYHA_ITEMS, 'NYHA class per AHA; public domain. Score = class index+1 (1–4, higher=worse).'),
+  ohip14: validated('ohip14', 'OHIP-14', 'F', 14),   // licensed — stays null until a Phase-2a dental house set (lic corrected to 'house' on the pack)
   whodas_proxy: validated('whodas_proxy', 'WHODAS-proxy', 'Pv'),
 };
 
@@ -233,7 +367,7 @@ export const FAMILY_PACKS: FamilyPack[] = [
   { family: 'foot_ankle', archetype: 'STANDARD', primary: 'faam', fallback: null, lic: 'F' },
   { family: 'fracture_trauma', archetype: 'STANDARD', primary: null, fallback: null, lic: null },
   { family: 'lumbar_spine', archetype: 'LONG_ARC', primary: 'rmdq', fallback: 'hs-lumbar', lic: 'F' },
-  { family: 'cervical_spine', archetype: 'LONG_ARC', primary: 'ndi', fallback: null, lic: 'Pv' },
+  { family: 'cervical_spine', archetype: 'LONG_ARC', primary: 'ndi', fallback: null, lic: 'F' },   // 2b: NDI is free/public-domain — corrected Pv→F
   // 4.2 High-volume observed families
   { family: 'proctology', archetype: 'DAYCARE', primary: 'hs-procto', fallback: 'wexner', lic: 'F' },
   { family: 'cholecystectomy', archetype: 'STANDARD', primary: 'hs-gi', fallback: null, lic: 'house' },
@@ -266,7 +400,7 @@ export const FAMILY_PACKS: FamilyPack[] = [
   { family: 'cranial_neuro', archetype: 'LONG_ARC', primary: null, fallback: null, lic: null },
   { family: 'paediatric_surgery', archetype: 'STANDARD', primary: 'whodas_proxy', fallback: null, lic: 'Pv' },
   { family: 'obstetric_csection', archetype: 'STANDARD', primary: 'hs-csection', fallback: null, lic: 'house' },
-  { family: 'dental_maxillofacial', archetype: 'DAYCARE', primary: 'ohip14', fallback: null, lic: 'F' },
+  { family: 'dental_maxillofacial', archetype: 'DAYCARE', primary: 'ohip14', fallback: null, lic: 'house' },   // 2b: OHIP-14 licensed — corrected F→house (not encoded; stays null)
   { family: 'plastics_scars', archetype: 'STANDARD', primary: null, fallback: null, lic: null },
   { family: 'onco_resections', archetype: 'ONCO_MAJOR', primary: null, fallback: null, lic: null },
 ];

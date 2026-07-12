@@ -193,8 +193,9 @@ test('scoreInstrument: ⚠ items emit the escalation code', () => {
   assert.ok(!scoreInstrument('hs-wound', [{ itemId: 'w1', value: 'yes' }, { itemId: 'w2', value: 'no' }, { itemId: 'w3', value: 'no' }, { itemId: 'w4', value: 'no' }]).escalations.includes('E2'));
 });
 
-test('scoreInstrument: validated instrument → honest null (rule not encoded until 0.2a-2)', () => {
-  const r = scoreInstrument('koos_jr', []);
+test('scoreInstrument: still-unfilled validated instrument → honest null (rule not encoded yet)', () => {
+  // koos_jr/hoos_jr/… are now scored (Phase 2b); the KOOS-full (koos) + Pv instruments remain null.
+  const r = scoreInstrument('koos', []);
   assert.equal(r.score, null);
   assert.equal(r.scale, 'validated');
 });
@@ -287,6 +288,71 @@ test('integrity: every house item scale has response options; whodas12 now carri
   // 0.2a-2: whodas12 item text is now encoded verbatim (12 items on WHODAS5).
   assert.equal(instrumentById('whodas12')!.items.length, 12);
   assert.equal(instrumentById('whodas12')!.itemCount, 12);
+});
+
+// ── Phase-2b validated instruments: verbatim items + scoring ──
+// Build a full response set for an instrument by picking each item's option at a chosen index.
+const atIndex = (id: string, k: number) => {
+  const def = instrumentById(id)!;
+  return def.items.map((it) => ({ itemId: it.id, value: SHARED_SCALES[it.scale as keyof typeof SHARED_SCALES][k] }));
+};
+
+test('2b scoring: koos_jr / hoos_jr interval-table lookup (higher = better)', () => {
+  assert.equal(scoreInstrument('koos_jr', atIndex('koos_jr', 0)).score, 100.000);   // all 'None' → raw 0
+  assert.equal(scoreInstrument('koos_jr', atIndex('koos_jr', 2)).score, 52.465);    // all 'Moderate' → raw 14
+  assert.equal(scoreInstrument('koos_jr', atIndex('koos_jr', 0)).scale, 'koos-jr');
+  assert.equal(scoreInstrument('hoos_jr', atIndex('hoos_jr', 0)).score, 100.000);   // all 'None' → raw 0
+  assert.equal(scoreInstrument('hoos_jr', atIndex('hoos_jr', 4)).score, 0.000);     // all 'Extreme' → raw 24
+});
+
+test('2b scoring: spadi total %, ndi sum, nose ×5, ipss qol-excluded, nyha class, rmdq count', () => {
+  // spadi all '5' (NRS-11 index 5) → Σ=65 → round(65/130×100)=50, higher=worse.
+  assert.equal(scoreInstrument('spadi', atIndex('spadi', 5)).score, 50);
+  // ndi all index-2 → Σ=20 (0–50), higher=worse.
+  assert.equal(scoreInstrument('ndi', atIndex('ndi', 2)).score, 20);
+  // nose all 'Severe Problem' (index 4) → raw 20 × 5 = 100 (NOT ×20).
+  assert.equal(scoreInstrument('nose', atIndex('nose', 4)).score, 100);
+  // ipss all symptom items at index 5 → ΣQ1–Q7 = 35; qol answer present but excluded.
+  const ipss = scoreInstrument('ipss', atIndex('ipss', 5));
+  assert.equal(ipss.score, 35);
+  assert.equal(ipss.scale, 'ipss');
+  // nyha 'Class III' → class index+1 = 3.
+  assert.equal(scoreInstrument('nyha', [{ itemId: 'nyha_class', value: 'Class III' }]).score, 3);
+  // rmdq: exactly 3 sentences ticked → 3 (no partial-null).
+  assert.equal(scoreInstrument('rmdq', [
+    { itemId: 'rmdq_1', value: 'Applies to me today' },
+    { itemId: 'rmdq_5', value: 'Applies to me today' },
+    { itemId: 'rmdq_20', value: 'Applies to me today' },
+  ]).score, 3);
+  assert.equal(scoreInstrument('rmdq', []).score, 0);   // no ticks → 0, not null
+});
+
+test('2b scoring: partial responses → null (koos_jr/hoos_jr/spadi/ndi/ipss/nose/nyha)', () => {
+  assert.equal(scoreInstrument('koos_jr', atIndex('koos_jr', 0).slice(1)).score, null);   // 6/7 answered
+  assert.equal(scoreInstrument('hoos_jr', atIndex('hoos_jr', 0).slice(1)).score, null);
+  assert.equal(scoreInstrument('spadi', atIndex('spadi', 5).slice(1)).score, null);
+  assert.equal(scoreInstrument('ndi', atIndex('ndi', 2).slice(1)).score, null);
+  assert.equal(scoreInstrument('ipss', atIndex('ipss', 5).slice(1)).score, null);         // missing a symptom item
+  assert.equal(scoreInstrument('nose', atIndex('nose', 4).slice(1)).score, null);
+  assert.equal(scoreInstrument('nyha', []).score, null);
+});
+
+test('2b catalog integrity: scales present, item counts, scales resolve, 2 lic corrections', () => {
+  for (const s of ['KOOS5', 'NOSE5', 'IPSS6', 'IPSS_NOCT', 'IPSS_QOL', 'NYHA4', 'RMDQ_TICK'] as const) {
+    assert.ok(Array.isArray(SHARED_SCALES[s]) && SHARED_SCALES[s].length > 0, `scale ${s} missing`);
+  }
+  const counts: Record<string, number> = { koos_jr: 7, hoos_jr: 6, spadi: 13, rmdq: 24, ndi: 10, ipss: 8, nose: 5, nyha: 1 };
+  for (const [id, n] of Object.entries(counts)) {
+    const def = instrumentById(id)!;
+    assert.equal(def.items.length, n, `${id} item count`);
+    for (const it of def.items) assert.ok(it.scale in SHARED_SCALES, `${id}.${it.id} scale ${it.scale} not in SHARED_SCALES`);
+  }
+  // NDI options are exactly 6 per section; NYHA4 has 4 classes.
+  for (let i = 1; i <= 10; i++) assert.equal(SHARED_SCALES[`NDI_S${i}` as keyof typeof SHARED_SCALES].length, 6);
+  assert.equal(SHARED_SCALES['NYHA4'].length, 4);
+  // the 2 sweep lic corrections
+  assert.equal(FAMILY_PACKS.find((p) => p.family === 'cervical_spine')!.lic, 'F');
+  assert.equal(FAMILY_PACKS.find((p) => p.family === 'dental_maxillofacial')!.lic, 'house');
 });
 
 // ── determinism ──

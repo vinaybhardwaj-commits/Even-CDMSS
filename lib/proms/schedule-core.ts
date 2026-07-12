@@ -170,6 +170,32 @@ function whodasIndex(value: string): number {
   return WHODAS_SCALE.findIndex((a) => v.startsWith(a));   // tolerate "extreme or cannot do"
 }
 
+// ── Phase-2b validated interval tables (verbatim from the freeze record; raw sum index → 0–100). ──
+// KOOS, JR. © HSS — raw 0–28 → interval (higher = BETTER).
+const KOOS_JR_INTERVAL = [
+  100.000, 91.975, 84.600, 79.914, 76.332, 73.342, 70.704, 68.284, 65.994, 63.776,
+  61.583, 59.381, 57.140, 54.840, 52.465, 50.012, 47.487, 44.905, 42.281, 39.625,
+  36.931, 34.174, 31.307, 28.251, 24.875, 20.941, 15.939, 8.291, 0.000,
+] as const;
+// HOOS, JR. © HSS — raw 0–24 → interval (higher = BETTER).
+const HOOS_JR_INTERVAL = [
+  100.000, 92.340, 85.257, 80.550, 76.776, 73.472, 70.426, 67.516, 64.664, 61.815,
+  58.930, 55.985, 52.965, 49.858, 46.652, 43.335, 39.902, 36.363, 32.735, 29.009,
+  25.103, 20.805, 15.633, 8.104, 0.000,
+] as const;
+
+/** Sum option indices across the given items; null if ANY is unanswered/unmappable (partial → null). */
+function sumItemIndices(items: { id: string; scale: string }[], byId: Map<string, string>): number | null {
+  let sum = 0;
+  for (const it of items) {
+    const v = byId.has(it.id) ? byId.get(it.id) : null;
+    const idx = v == null ? null : optionIndex(it.scale, String(v));
+    if (idx == null) return null;
+    sum += idx;
+  }
+  return sum;
+}
+
 export function scoreInstrument(instrumentId: string, responses: ItemResponse[]): { score: number | null; scale: string; version: string; escalations: string[] } {
   const def = instrumentById(instrumentId);
   const byId = new Map((responses || []).map((r) => [r.itemId, r.value]));
@@ -188,6 +214,49 @@ export function scoreInstrument(instrumentId: string, responses: ItemResponse[])
     const idxs = expIds.map((id) => (byId.has(id) ? optionIndex('EXP4', String(byId.get(id))) : null));
     const complete = idxs.every((i) => i != null);
     return { score: complete ? idxs.reduce((a, b) => (a as number) + (b as number), 0) as number : null, scale: 'prem-experience', version: PROM_SCORING_VERSION, escalations: [] };
+  }
+  // ── Phase-2b validated instruments (explicit branches; verbatim items live in catalog.ts) ──
+  const vItems = def ? def.items : [];
+  // KOOS-JR / HOOS-JR: raw sum → interval-table lookup (higher = better). Any item unanswered → null.
+  if (instrumentId === 'koos_jr' || instrumentId === 'hoos_jr') {
+    const table = instrumentId === 'koos_jr' ? KOOS_JR_INTERVAL : HOOS_JR_INTERVAL;
+    const need = instrumentId === 'koos_jr' ? 7 : 6;
+    const raw = vItems.length === need ? sumItemIndices(vItems, byId) : null;
+    const score = raw != null && raw >= 0 && raw < table.length ? table[raw] : null;
+    return { score, scale: instrumentId === 'koos_jr' ? 'koos-jr' : 'hoos-jr', version: PROM_SCORING_VERSION, escalations: [] };
+  }
+  // SPADI: total = round((Σ13 / 130) × 100), 0–100, higher = worse. Any of 13 unanswered → null.
+  if (instrumentId === 'spadi') {
+    const sum = vItems.length === 13 ? sumItemIndices(vItems, byId) : null;
+    return { score: sum == null ? null : Math.round((sum / 130) * 100), scale: 'spadi', version: PROM_SCORING_VERSION, escalations: [] };
+  }
+  // RMDQ: count of ticked sentences ('Applies to me today' = index 1) → 0–24, higher = worse. No partial-null.
+  if (instrumentId === 'rmdq') {
+    let count = 0;
+    for (const it of vItems) if (optionIndex(it.scale, String(byId.get(it.id) ?? '')) === 1) count++;
+    return { score: count, scale: 'rmdq', version: PROM_SCORING_VERSION, escalations: [] };
+  }
+  // NDI: sum 10 section indices (0–5) → 0–50, higher = worse. Any of 10 unanswered → null.
+  if (instrumentId === 'ndi') {
+    const sum = vItems.length === 10 ? sumItemIndices(vItems, byId) : null;
+    return { score: sum, scale: 'ndi', version: PROM_SCORING_VERSION, escalations: [] };
+  }
+  // IPSS: ΣQ1–Q7 (0–35), higher = worse. ipss_qol (0–6) NOT summed — surfaced separately (like prem8). q-partial → null.
+  if (instrumentId === 'ipss') {
+    const symptomItems = vItems.filter((it) => it.id !== 'ipss_qol');
+    const sum = symptomItems.length === 7 ? sumItemIndices(symptomItems, byId) : null;
+    return { score: sum, scale: 'ipss', version: PROM_SCORING_VERSION, escalations: [] };
+  }
+  // NOSE: raw sum (0–20) × 5 = 0–100, higher = worse (×5 per Cowork fix, NOT ×20). Partial → null.
+  if (instrumentId === 'nose') {
+    const raw = vItems.length === 5 ? sumItemIndices(vItems, byId) : null;
+    return { score: raw == null ? null : raw * 5, scale: 'nose', version: PROM_SCORING_VERSION, escalations: [] };
+  }
+  // NYHA: single item; score = selected class index+1 (Class I→1 … Class IV→4), higher = worse. Unanswered → null.
+  if (instrumentId === 'nyha') {
+    const it = vItems[0];
+    const idx = it ? optionIndex(it.scale, String(byId.get(it.id) ?? '')) : null;
+    return { score: idx == null ? null : idx + 1, scale: 'nyha', version: PROM_SCORING_VERSION, escalations: [] };
   }
   if (!def || def.kind === 'validated') {
     // validated scoring rule is entered with the item text at 0.2a-2 → honest null now.
