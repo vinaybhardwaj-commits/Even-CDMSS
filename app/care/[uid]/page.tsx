@@ -16,5 +16,7 @@ export default async function CareBriefPage({ params }: { params: Promise<{ uid:
   const { uid } = await params;
   if (!/^[A-Za-z0-9_-]{6,64}$/.test(uid)) notFound();
 
-  return <CareBriefSplit uid={uid} />;
+  // MEMBER_STATE_UI read SERVER-side and passed as a boolean prop (the repo has no client env-flag
+  // convention — no NEXT_PUBLIC_). Off (default) ⇒ the call surface is byte-identical.
+  return <CareBriefSplit uid={uid} memberStateUi={process.env.MEMBER_STATE_UI === '1'} />;
 }

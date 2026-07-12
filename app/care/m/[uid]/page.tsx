@@ -7,6 +7,7 @@ import { ArrowLeft } from 'lucide-react';
 import { isCareUnlocked } from '@/lib/care-cookie';
 import MemberDossier from '@/components/care/MemberDossier';
 import TrackWorkspace from '@/components/care/TrackWorkspace';
+import MemberStatePanel from '@/components/care/MemberStatePanel';
 
 // Whole-person member view: search lands here (holistic record) → the per-visit conversation
 // brief is one section within it. DARK behind CCB_ENABLED; care-manager session required.
@@ -22,6 +23,7 @@ export default async function MemberDossierPage({ params }: { params: Promise<{ 
         <ArrowLeft className="h-3.5 w-3.5" /> Worklist
       </Link>
       <MemberDossier individualUid={uid} />
+      {process.env.MEMBER_STATE_UI === '1' && <MemberStatePanel individualUid={uid} />}
       <TrackWorkspace individualUid={uid} />
     </div>
   );
