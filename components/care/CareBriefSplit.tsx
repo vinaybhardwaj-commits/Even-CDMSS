@@ -21,6 +21,7 @@ import { ArrowLeft, FileText, Loader2 } from 'lucide-react';
 import CareBriefClient from './CareBriefClient';
 import MemberStateCallContext from './MemberStateCallContext';
 import CallPanel from './CallPanel';
+import type { MemberVitals } from '@/lib/member-state/vitals-read';
 
 interface EpisodeDoc {
   kind: string;
@@ -95,7 +96,7 @@ function EncounterPaper({ enc, noteDate }: { enc: Encounter | null; noteDate: st
   );
 }
 
-export default function CareBriefSplit({ uid, memberStateUi = false, careCallUi = false }: { uid: string; memberStateUi?: boolean; careCallUi?: boolean }) {
+export default function CareBriefSplit({ uid, memberStateUi = false, careCallUi = false, vitals }: { uid: string; memberStateUi?: boolean; careCallUi?: boolean; vitals?: MemberVitals }) {
   const [docs, setDocs] = useState<EpisodeDoc[] | null>(null);
   const [encounter, setEncounter] = useState<Encounter | null>(null);
   const [member, setMember] = useState<Member | null>(null);
@@ -201,7 +202,7 @@ export default function CareBriefSplit({ uid, memberStateUi = false, careCallUi 
         {/* ── RIGHT: the brief, unchanged ─────────────────────────────────── */}
         <div className="min-h-0 flex-1 overflow-auto bg-white">
           <div className="mx-auto max-w-3xl px-5 py-6">
-            {memberStateUi && <MemberStateCallContext prescUid={uid} />}
+            {memberStateUi && <MemberStateCallContext prescUid={uid} vitals={vitals} encounter={encounter} />}
             <CareBriefClient uid={uid} />
             {careCallUi && <CallPanel prescUid={uid} />}
           </div>
