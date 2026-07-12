@@ -49,11 +49,14 @@ function statusTone(status: string, latestStatusAt: string): StateTone {
     case 'documented_active': return { label: 'Active', tone: 'active' };
     case 'documented_resolved': return { label: 'Resolved', tone: 'ok' };
     case 'historical': return { label: 'Historical', tone: 'muted' };
-    default: return { label: `Uncertain — last documented ${latestStatusAt}`, tone: 'uncertain' };
+    default: return { label: `Uncertain — last documented ${dayOnly(latestStatusAt)}`, tone: 'uncertain' };
   }
 }
 function toNum(v: string): number | null { const n = Number(String(v).replace(/[^0-9.\-]/g, '')); return Number.isFinite(n) ? n : null; }
 function isAbnormal(v: string | null | undefined): boolean { return /^(true|t|1|yes|y|abnormal|high|low|h|l)$/i.test(String(v ?? '').trim()); }
+/** Render a date-only YYYY-MM-DD (db13 test_date is a timestamp). Idempotent for already-day strings.
+ *  Presentation-only — the snapshot value stays raw. */
+const dayOnly = (s: string): string => (typeof s === 'string' ? s.slice(0, 10) : s);
 
 export function presentMemberState(snap: MemberStateSnapshot): MemberStateView {
   const problems: ProblemView[] = snap.problems.map((p) => ({
@@ -62,7 +65,7 @@ export function presentMemberState(snap: MemberStateSnapshot): MemberStateView {
     course: COURSE[p.course] ?? { label: p.course, tone: 'muted' },
     status: statusTone(p.latestDocumentedStatus, p.latestStatusAt),
     confidencePct: Math.round((p.currentStatusConfidence ?? 0) * 100),
-    first: p.firstDocumentedAt, last: p.lastDocumentedAt, occurrences: p.occurrences.length,
+    first: dayOnly(p.firstDocumentedAt), last: dayOnly(p.lastDocumentedAt), occurrences: p.occurrences.length,
   }));
 
   const medications: MedicationView[] = snap.medications.map((m) => {
@@ -71,7 +74,7 @@ export function presentMemberState(snap: MemberStateSnapshot): MemberStateView {
       concept: m.normalizedConcept.raw,
       currentness: MED_CURRENTNESS[m.status] ?? { label: m.status, tone: 'muted' },
       caption: m.status === 'prescribed' ? 'prescribed — not confirmed taken' : null,
-      first: m.firstSeen, last: m.lastSeen, latestDose: latest?.dose ?? null, occurrences: m.occurrences.length,
+      first: dayOnly(m.firstSeen), last: dayOnly(m.lastSeen), latestDose: latest?.dose ?? null, occurrences: m.occurrences.length,
     };
   });
 
@@ -85,7 +88,7 @@ export function presentMemberState(snap: MemberStateSnapshot): MemberStateView {
   }));
 
   const investigations: SeriesView[] = snap.investigations.map((iv) => {
-    const points = iv.series.map((pt) => ({ date: pt.date, value: pt.value, abnormal: isAbnormal(pt.abnormal) }));
+    const points = iv.series.map((pt) => ({ date: dayOnly(pt.date), value: pt.value, abnormal: isAbnormal(pt.abnormal) }));
     let direction: SeriesView['direction'] = null;
     if (iv.series.length >= 2) {
       const a = toNum(iv.series[iv.series.length - 2].value), b = toNum(iv.series[iv.series.length - 1].value);

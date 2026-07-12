@@ -12,8 +12,12 @@ import type { CareCallOutcome } from '../care-call-core';
 
 export function careCallOutcomeToEncounter(o: CareCallOutcome): EncounterEvidence {
   try {
+    // A care call is a FRESH patient observation — date it at called_at (fall back to note_date).
+    // (Dating it at the episode note_date backdated the report and could fire a spurious
+    // medication/temporal_conflict against a later prescription.)
+    const callDate = o.called_at && String(o.called_at).trim() ? String(o.called_at).slice(0, 10) : '';
     const noteDate = o.note_date && String(o.note_date).trim() ? String(o.note_date).slice(0, 10) : '';
-    const date = noteDate || (o.called_at ? String(o.called_at).slice(0, 10) : '');
+    const date = callDate || noteDate;
     const d = o.derived || ({} as CareCallOutcome['derived']);
     return {
       encounterRef: String(o.id),

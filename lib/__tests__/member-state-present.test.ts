@@ -96,6 +96,23 @@ test('counts reflect the view arrays', () => {
   assert.equal(VIEW.counts.conflicts, VIEW.conflicts.length);
 });
 
+test('Patch A: view dates render as YYYY-MM-DD (dayOnly, idempotent on already-day strings)', () => {
+  const ev: MemberEvidence = {
+    memberRef: 'M2', sourceWatermarks: {}, generatedAt: COMPUTED,
+    encounters: [
+      enc('e1', '2023-12-29T00:00:00+05:30', { problems: [prob('hypertension')], investigations: [inv('creatinine', '1.0', 'mg/dL')] }),
+      enc('e2', '2024-06-01', { investigations: [inv('creatinine', '1.2', 'mg/dL')] }),   // already a day string
+    ],
+  };
+  const v = presentMemberState(buildMemberState(ev, COMPUTED));
+  const creat = v.investigations.find((i) => i.analyte === 'creatinine')!;
+  assert.deepEqual(creat.points.map((p) => p.date), ['2023-12-29', '2024-06-01']);   // timestamp trimmed, day passthrough
+  const htn = v.problems.find((p) => p.concept === 'hypertension')!;
+  assert.equal(htn.first, '2023-12-29');                                 // ProblemView first trimmed
+  // an omitted problem's "Uncertain — last documented {date}" label is also day-only
+  assert.match(htn.status.label, /2023-12-29$/);
+});
+
 test('presentMemberState is deterministic (twice → deep-equal)', () => {
   const snap = buildMemberState(EVIDENCE, COMPUTED);
   assert.deepEqual(presentMemberState(snap), presentMemberState(snap));

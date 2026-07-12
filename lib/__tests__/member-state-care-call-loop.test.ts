@@ -41,6 +41,11 @@ test('careCallOutcomeToEncounter: complaint resolved → complaintStatuses; empt
   assert.deepEqual(empty.medicationAssertions, []);
 });
 
+test('Patch B: care-call encounter dated at called_at (fresh observation), not the episode note_date', () => {
+  const o: CareCallOutcome = { ...outcome('cc-date', '2025-01-01', [resp({ family: 'MED_STATUS', state: 'answered', subject: 'metformin', answer: 'stopped' })]), called_at: '2026-07-12T09:00:00Z' };
+  assert.equal(careCallOutcomeToEncounter(o).date, '2026-07-12');   // called_at preferred over note_date 2025-01-01
+});
+
 // ── THE CLOSURE PROOF (pure, no DB): the loop closes through the FROZEN core ──
 const dbProv: Provenance = { sourceField: 'individuals-prescriptions.medications', rawText: 'x', extractionMethod: 'reported', confidence: 0.95, trust: 'structured_db' };
 const opdMed = (id: string): MedicationAssertion => ({ id, medicationConcept: { raw: 'metformin', generic: 'metformin' }, status: 'prescribed', provenance: dbProv });
