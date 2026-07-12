@@ -62,6 +62,21 @@ interface QueueResp {
   doctors_total: number; doctors: DoctorGroup[]; error?: string;
 }
 
+// ── Stage 3 — the Longitudinal label-only lane (view models from GET /api/opd-triage/longitudinal-lane) ──
+interface LaneGateVM {
+  labelled: number; fpRate: number; threshold: number; minLabelled: number;
+  status: 'eligible' | 'collecting' | 'failing'; eligible: boolean;
+}
+interface LaneInstanceVM { audit_id: string; finding_ref: string; subject: string; rationale: string; note_date: string; cited: string | null }
+interface LaneTypeVM {
+  signal_type: string; label: string; count: number; notes: number; doctor_uid: string;
+  gate: LaneGateVM | null; triage: TypeDecisionState | null; instances: LaneInstanceVM[];
+}
+interface LaneResp {
+  ok: boolean; enabled: boolean; window: { from: string; to: string; days: number };
+  counts: { types: number; instances: number }; types: LaneTypeVM[]; error?: string;
+}
+
 const verdictPill: Record<string, string> = {
   'low-value': 'bg-rose-100 text-rose-700', 'context-dependent': 'bg-amber-100 text-amber-700',
   'high-value': 'bg-emerald-100 text-emerald-700', 'uncertain': 'bg-slate-100 text-slate-600',
@@ -121,6 +136,10 @@ export default function TriageBoard() {
   const [statusFilter, setStatusFilter] = useState<'untriaged' | 'all'>('untriaged');
   const [selected, setSelected] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
+  // Stage 3 — the label-only lane. `lane` toggles the two tabs; the tabs render ONLY when the lane is
+  // enabled (dark ship) so the board is byte-identical to today while OPD_LONGITUDINAL_ENABLED is off.
+  const [lane, setLane] = useState<'action' | 'longitudinal'>('action');
+  const [laneData, setLaneData] = useState<LaneResp | null>(null);
 
   const load = useCallback(async (status: 'untriaged' | 'all') => {
     setLoading(true); setErr(null);
@@ -134,7 +153,17 @@ export default function TriageBoard() {
     finally { setLoading(false); }
   }, []);
 
+  const loadLane = useCallback(async () => {
+    try {
+      const r = await fetch('/api/opd-triage/longitudinal-lane', { cache: 'no-store' });
+      const j = (await r.json()) as LaneResp;
+      setLaneData(j.ok ? j : null);
+    } catch { setLaneData(null); }
+  }, []);
+
   useEffect(() => { load(statusFilter); }, [load, statusFilter]);
+  useEffect(() => { loadLane(); }, [loadLane]);
+  const laneEnabled = !!laneData?.enabled;
 
   const doctor = useMemo(() => data?.doctors.find((d) => d.doctor_uid === selected) ?? null, [data, selected]);
 
@@ -208,11 +237,40 @@ export default function TriageBoard() {
               </button>
             ))}
           </div>
-          <button onClick={() => load(statusFilter)} className="rounded-lg border border-slate-200 p-1.5 text-slate-500 hover:border-slate-300" title="Refresh">
+          <button onClick={() => { load(statusFilter); loadLane(); }} className="rounded-lg border border-slate-200 p-1.5 text-slate-500 hover:border-slate-300" title="Refresh">
             <RefreshCw className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>
+
+      {/* Stage 3 — two lanes. Rendered ONLY when the longitudinal lane is enabled, so the board is
+          byte-identical to today while the flag is off. Action queue (routable) | Longitudinal (label-only). */}
+      {laneEnabled && (
+        <div className="mt-3 flex gap-1.5 border-b border-slate-200">
+          {([
+            ['action', 'Action queue', data ? data.doctors.reduce((n, d) => n + d.instances, 0) : 0, 'routable'],
+            ['longitudinal', 'Longitudinal · labelling', laneData?.counts.instances ?? 0, 'informational'],
+          ] as const).map(([id, label, count, kind]) => {
+            const on = lane === id;
+            const tone = id === 'longitudinal' ? 'border-indigo-500 text-indigo-700' : 'border-sky-600 text-sky-700';
+            const badge = on
+              ? (id === 'longitudinal' ? 'bg-indigo-50 text-indigo-700' : 'bg-sky-50 text-sky-700')
+              : 'bg-slate-100 text-slate-500';
+            return (
+              <button key={id} onClick={() => setLane(id as 'action' | 'longitudinal')}
+                className={`flex items-center gap-2 border-b-2 px-3.5 py-2 text-[13px] font-semibold transition ${on ? tone : 'border-transparent text-slate-400 hover:text-slate-600'}`}>
+                {label}
+                <span className={`rounded-full px-2 py-0.5 text-[10.5px] font-bold ${badge}`}>{count} {kind}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {laneEnabled && lane === 'longitudinal' ? (
+        <LongitudinalLane data={laneData} onDecided={loadLane} />
+      ) : (
+      <>
       {data && (
         <p className="mt-0.5 text-[12.5px] text-slate-500">
           Window {data.window.from}{data.window.to !== data.window.from ? ` → ${data.window.to}` : ''} · {data.doctors_total} doctor(s) audited · {data.doctors.length} with {statusFilter === 'untriaged' ? 'open' : ''} signals
@@ -382,6 +440,189 @@ export default function TriageBoard() {
           </section>
         </div>
       )}
+      </>
+      )}
+    </div>
+  );
+}
+
+// ── Stage 3 — the Longitudinal label-only lane (normative mockup: CDMSS-STAGE3-MOCKUP-TRIAGE-LABEL-ONLY).
+// Corpus-wide informational findings grouped by signal_type. The CM's ONLY decision is a validity label
+// (valid_signal | audit_bug) — no route, no response. The label is what earns the type promotion; the gate
+// meter reads the same signal-health FP-rate. Writes via the shared POST /api/opd-triage/decide (routed:false).
+type LaneValidity = 'valid_signal' | 'audit_bug';
+interface LaneDraft { validity?: LaneValidity; importance?: Importance; busy?: boolean; done?: string; error?: string }
+
+const GATE_PILL: Record<string, string> = {
+  eligible: 'bg-emerald-50 text-emerald-700 border border-emerald-200',
+  collecting: 'bg-indigo-50 text-indigo-700 border border-indigo-200',
+  failing: 'bg-rose-50 text-rose-700 border border-rose-200',
+};
+const GATE_BAR: Record<string, string> = { eligible: 'bg-emerald-500', collecting: 'bg-indigo-500', failing: 'bg-rose-500' };
+const GATE_LABEL: Record<string, string> = { eligible: 'Eligible to promote', collecting: 'Collecting labels', failing: 'Failing gate' };
+
+function GateMeter({ gate }: { gate: LaneGateVM | null }) {
+  const status = gate?.status ?? 'collecting';
+  const labelled = gate?.labelled ?? 0;
+  const min = gate?.minLabelled ?? 50;
+  const fpPct = Math.round((gate?.fpRate ?? 0) * 100);
+  const barW = status === 'collecting' ? Math.min(100, Math.round((labelled / Math.max(1, min)) * 100)) : 100;
+  const right = status === 'collecting' ? `need ≥${min}` : 'gate <20%';
+  const foot = status === 'eligible' ? `${labelled} / ${min} labelled · corpus-wide`
+    : status === 'failing' ? `${labelled} / ${min} labelled · too noisy to promote`
+    : `${labelled} / ${min} labelled`;
+  return (
+    <div className="ml-auto min-w-[260px]">
+      <div className="mb-1 flex items-center justify-end gap-2 text-[12px] text-slate-500">
+        <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${GATE_PILL[status]}`}>{GATE_LABEL[status]}</span>
+        <b className="text-slate-800">FP-rate {fpPct}%</b> · {right}
+      </div>
+      <div className="h-2 overflow-hidden rounded-md bg-slate-100">
+        <div className={`h-full rounded-md ${GATE_BAR[status]}`} style={{ width: `${barW}%` }} />
+      </div>
+      <div className="mt-1 text-right text-[11.5px] text-slate-400">{foot}</div>
+    </div>
+  );
+}
+
+function LongitudinalLane({ data, onDecided }: { data: LaneResp | null; onDecided: () => void }) {
+  const [drafts, setDrafts] = useState<Record<string, LaneDraft>>({});
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const set = (k: string, patch: LaneDraft) => setDrafts((d) => ({ ...d, [k]: { ...d[k], ...patch } }));
+
+  if (!data) return <div className="mt-16 text-center text-[13px] text-slate-400">Longitudinal lane unavailable.</div>;
+  const types = data.types;
+
+  async function label(t: LaneTypeVM, validity: LaneValidity, importance?: Importance) {
+    const k = t.signal_type;
+    if (!t.doctor_uid) { set(k, { error: 'no doctor context to record the label' }); return; }
+    const draft = drafts[k] || {};
+    const imp = importance || draft.importance || 'med';
+    const body: Record<string, unknown> = {
+      scope: 'type', doctor_uid: t.doctor_uid, signal_type: t.signal_type,
+      window_from: data!.window.from, window_to: data!.window.to, validity, routed: false,
+    };
+    // The shipped validator requires a bug_type for audit_bug and an importance for valid_signal, even
+    // for a label-only decision. Longitudinal audit-bugs are prompt/logic issues → process_bug; importance
+    // defaults to Medium (the mockup's shown default). routed:false keeps it out of the doctor-facing lane.
+    let receipt = '';
+    if (validity === 'audit_bug') { body.bug_type = 'process_bug'; receipt = 'Audit bug — logged (informational)'; }
+    else { body.importance = imp; receipt = `Valid signal · ${imp} — logged (no route)`; }
+    set(k, { validity, importance: validity === 'valid_signal' ? imp : undefined, busy: true, error: undefined });
+    try {
+      const r = await fetch('/api/opd-triage/decide', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || 'label failed');
+      set(k, { busy: false, done: receipt });
+      onDecided();
+    } catch (e) { set(k, { busy: false, error: String((e as Error).message) }); }
+  }
+
+  return (
+    <div className="mt-4">
+      <div className="rounded-xl border border-indigo-100 bg-indigo-50/60 px-4 py-3 text-[13px] text-indigo-900/80">
+        <b className="text-indigo-700">Label-only lane.</b> These are informational, context-aware findings — they don’t route to a doctor and don’t touch the score. Your <b>validity label</b> is what earns each type promotion to the scored plane: a type becomes eligible once its false-positive rate is <b>under 20% over at least 50 labelled instances</b>. No route or response needed.
+      </div>
+      <div className="mt-2 flex flex-wrap gap-4 text-[11.5px] text-slate-500">
+        <span className="flex items-center gap-1.5"><i className="inline-block h-2 w-5 rounded bg-emerald-500" /> eligible to promote</span>
+        <span className="flex items-center gap-1.5"><i className="inline-block h-2 w-5 rounded bg-indigo-500" /> collecting labels</span>
+        <span className="flex items-center gap-1.5"><i className="inline-block h-2 w-5 rounded bg-rose-500" /> failing the gate</span>
+      </div>
+
+      {types.length === 0 ? (
+        <div className="mt-14 text-center text-[13px] text-slate-400">No longitudinal findings in this window yet.</div>
+      ) : (
+        <div className="mt-4 space-y-4">
+          {types.map((t) => {
+            const draft = drafts[t.signal_type] || {};
+            const current = draft.validity || t.triage?.validity;                 // draft wins; else the stored label
+            const showImportance = current === 'valid_signal';
+            const rep = t.instances[0];
+            const isOpen = !!expanded[t.signal_type];
+            const failing = t.gate?.status === 'failing';
+            return (
+              <div key={t.signal_type} className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                <div className="flex flex-wrap items-center gap-3 border-b border-slate-100 px-4 py-3.5">
+                  <span className="rounded-md border border-indigo-200 bg-indigo-50 px-2 py-0.5 font-mono text-[12px] font-bold text-indigo-700">{t.signal_type}</span>
+                  <div>
+                    <div className="text-[14px] font-semibold text-slate-900">{t.label}</div>
+                    <div className="text-[12px] text-slate-500">{t.count} instance{t.count === 1 ? '' : 's'} this window · {t.gate?.labelled ?? 0} labelled all-time</div>
+                  </div>
+                  <GateMeter gate={t.gate} />
+                </div>
+
+                {failing && (
+                  <div className="border-b border-slate-100 bg-rose-50 px-4 py-3 text-[12.5px] text-rose-800">
+                    <b className="text-rose-700">Not eligible.</b> Care managers marked {Math.round((t.gate?.fpRate ?? 0) * 100)}% of these an audit bug — above the 20% ceiling. This type stays informational and does <b>not</b> move to scoring; the gate is protecting doctors from a noisy signal. Send it to the <a href="/care/triage/health" className="underline">signal-health panel</a> for a prompt/logic review before it can qualify.
+                  </div>
+                )}
+
+                {rep && (
+                  <div className="px-4 py-3.5">
+                    <div className="text-[13.5px] text-slate-800">{rep.subject}</div>
+                    {rep.rationale && <p className="mt-0.5 text-[12.5px] leading-relaxed text-slate-600">{rep.rationale}</p>}
+                    <div className="mt-1.5 text-[12px] text-slate-500">
+                      note {rep.note_date}{rep.cited ? <> · cited <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11.5px] text-slate-600">{rep.cited.replace(/^Cited:\s*/i, '')}</code></> : null}
+                    </div>
+
+                    {/* Label-only decision — no route, no response. */}
+                    <div className="mt-3 flex flex-wrap items-center gap-2.5">
+                      <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Validity</span>
+                      <button disabled={draft.busy || !t.doctor_uid} onClick={() => label(t, 'valid_signal')}
+                        className={`rounded-lg border px-3 py-1 text-[12.5px] font-semibold transition ${current === 'valid_signal' ? 'border-emerald-500 bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200' : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'}`}>
+                        Valid signal
+                      </button>
+                      <button disabled={draft.busy || !t.doctor_uid} onClick={() => label(t, 'audit_bug')}
+                        className={`inline-flex items-center gap-1 rounded-lg border px-3 py-1 text-[12.5px] font-semibold transition ${current === 'audit_bug' ? 'border-rose-400 bg-rose-50 text-rose-700 ring-1 ring-rose-200' : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'}`}>
+                        <Bug className="h-3 w-3" /> Audit bug
+                      </button>
+                      {showImportance && (
+                        <label className="ml-1 flex items-center gap-1.5 text-[12px] text-slate-500">
+                          importance
+                          <select value={draft.importance || 'med'} disabled={draft.busy}
+                            onChange={(e) => label(t, 'valid_signal', e.target.value as Importance)}
+                            className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[12px] text-slate-700 outline-none focus:border-slate-300">
+                            <option value="low">Low</option><option value="med">Medium</option><option value="high">High</option>
+                          </select>
+                        </label>
+                      )}
+                      <span className="ml-auto text-[11.5px] italic text-slate-400">
+                        {draft.busy ? <span className="inline-flex items-center gap-1 not-italic"><Loader2 className="h-3 w-3 animate-spin" /> saving…</span>
+                          : draft.done ? <span className="not-italic text-emerald-600">✓ {draft.done}</span>
+                          : 'no route · no response — informational'}
+                      </span>
+                    </div>
+                    {draft.error && <div className="mt-1 text-[11.5px] text-rose-600">{draft.error}</div>}
+                  </div>
+                )}
+
+                {t.count > 1 && (
+                  <div className="border-t border-slate-100">
+                    <button onClick={() => setExpanded((x) => ({ ...x, [t.signal_type]: !isOpen }))}
+                      className="w-full px-4 py-2.5 text-left text-[12.5px] font-semibold text-indigo-700 hover:bg-indigo-50/40">
+                      {isOpen ? '− Hide the other instances' : `+ ${t.count - 1} more instance${t.count - 1 === 1 ? '' : 's'} in this window →`}
+                    </button>
+                    {isOpen && (
+                      <div className="space-y-2 px-4 pb-3.5">
+                        {t.instances.slice(1).map((i) => (
+                          <div key={i.finding_ref} className="rounded-lg bg-slate-50 px-3 py-2">
+                            <div className="text-[12.5px] text-slate-700">{i.subject}</div>
+                            <div className="text-[11.5px] text-slate-500">note {i.note_date}{i.cited ? ` · ${i.cited.replace(/^Cited:\s*/i, '')}` : ''}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <p className="mt-5 border-t border-slate-100 pt-3.5 text-[11.5px] text-slate-500">
+        The promotion gate reads from the <a href="/care/triage/health" className="text-indigo-700 underline">signal-health panel</a> — the same FP-rate machinery already tracking scored signals. Promoting an eligible type to the scored plane is a deliberate versioned step (a 0.9 addendum), never automatic. The Action-queue lane (routable signals → governance threads) is unchanged by Stage 3.
+      </p>
     </div>
   );
 }
