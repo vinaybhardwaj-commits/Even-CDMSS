@@ -4,7 +4,7 @@
 
 import {
   ARCHETYPE_WINDOWS, PREM_POINTS, FAMILY_PACKS, FAMILY_REGEX, REGEX_FAMILY_PACK, SHARED_SCALES,
-  instrumentById, type Archetype, type Window,
+  instrumentById, type Archetype, type Item, type Window,
 } from './catalog';
 
 export const PROM_SCHED_VERSION = 'prom-sched/0.1' as const;
@@ -196,6 +196,28 @@ function sumItemIndices(items: { id: string; scale: string }[], byId: Map<string
   return sum;
 }
 
+/** The frozen house-scoring kernel (extracted verbatim from the 0.2 house branch, behaviour-preserving):
+ *  Σ optionIndex over ALL items; complete-gate (every item answered) else null; ⚠ escalations via the
+ *  shared triggers() ('always'→E5, the 'E2-with-item-3' wound special, else the code verbatim, deduped).
+ *  The SINGLE source of truth for scoring house sets (scoreInstrument) AND adhoc sets (scoreAdhocSet). */
+export function scoreHouseItems(items: Item[], byId: Map<string, string>): { score: number | null; escalations: string[] } {
+  let sum = 0;
+  const escalations: string[] = [];
+  for (const it of items) {
+    const v = byId.get(it.id);
+    if (v == null) continue;
+    const idx = optionIndex(it.scale, v);
+    if (idx != null) sum += idx;
+    if (it.escalation && triggers(it.scale, v)) {
+      if (it.escalation === 'always') escalations.push('E5');
+      else if (it.escalation === 'E2-with-item-3') { const fever = items.find((x) => x.scale === 'YN' && /fever/i.test(x.text || '')); if (fever && (byId.get(fever.id) || '').trim() === 'yes') escalations.push('E2'); }
+      else escalations.push(it.escalation);
+    }
+  }
+  const complete = items.every((it) => byId.has(it.id));
+  return { score: complete ? sum : null, escalations: Array.from(new Set(escalations)) };
+}
+
 export function scoreInstrument(instrumentId: string, responses: ItemResponse[]): { score: number | null; scale: string; version: string; escalations: string[] } {
   const def = instrumentById(instrumentId);
   const byId = new Map((responses || []).map((r) => [r.itemId, r.value]));
@@ -262,21 +284,8 @@ export function scoreInstrument(instrumentId: string, responses: ItemResponse[])
     // validated scoring rule is entered with the item text at 0.2a-2 → honest null now.
     return { score: null, scale: def ? def.scale : 'unknown', version: PROM_SCORING_VERSION, escalations: [] };
   }
-  // house: simple sum of option indices; partial (any item unanswered) → honest null.
-  let sum = 0; let answered = 0;
-  const escalations: string[] = [];
-  for (const it of def.items) {
-    const v = byId.get(it.id);
-    if (v == null) continue;
-    answered++;
-    const idx = optionIndex(it.scale, v);
-    if (idx != null) sum += idx;
-    if (it.escalation && triggers(it.scale, v)) {
-      if (it.escalation === 'always') escalations.push('E5');
-      else if (it.escalation === 'E2-with-item-3') { const fever = def.items.find((x) => x.scale === 'YN' && /fever/i.test(x.text || '')); if (fever && (byId.get(fever.id) || '').trim() === 'yes') escalations.push('E2'); }
-      else escalations.push(it.escalation);
-    }
-  }
-  const complete = def.items.every((it) => byId.has(it.id));
-  return { score: complete ? sum : null, scale: 'house', version: PROM_SCORING_VERSION, escalations: Array.from(new Set(escalations)) };
+  // house: simple sum of option indices; partial (any item unanswered) → honest null. Delegates to the
+  // shared scoreHouseItems kernel (single source of truth for house + adhoc sets) — identical output.
+  const { score, escalations } = scoreHouseItems(def.items, byId);
+  return { score, scale: 'house', version: PROM_SCORING_VERSION, escalations };
 }
