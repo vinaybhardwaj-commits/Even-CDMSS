@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   classifyFamily, archetypeFor, instrumentsDue, scoreInstrument,
-  PROM_SCHED_VERSION, PROM_SCORING_VERSION, type SeriesInput,
+  PROM_SCHED_VERSION, PROM_SCORING_VERSION, UID_FAMILY_MAP, type SeriesInput,
 } from '../proms/schedule-core';
 import {
   FAMILY_PACKS, HOUSE_SETS, CORE, SHARED_SCALES, ARCHETYPE_WINDOWS, PREM_POINTS,
@@ -84,6 +84,40 @@ test('classifyFamily: the universal_core catch-all is never returned as a family
   assert.ok(!FAMILY_REGEX.slice(0, -1).some((r) => r.family === 'universal_core'));
   assert.equal(FAMILY_REGEX[FAMILY_REGEX.length - 1].family, 'universal_core');
   assert.equal(classifyFamily({ procedureName: 'something with no keyword xyz' }), 'unknown');
+});
+
+// ── UID_FAMILY_MAP v1.0 (ratified 12 Jul): uid-map is the precision layer, consulted before regex ──
+test('UID_FAMILY_MAP: sample uid→family for the 5 ratified representatives', () => {
+  assert.equal(classifyFamily({ surgeryTypeUid: 'dYxdgQW7eEujVtI2uKiS' }), 'knee_arthroplasty');
+  assert.equal(classifyFamily({ surgeryTypeUid: 'PoWNdt84bEjKfnKkwYBl' }), 'knee_arthroscopy_acl');
+  assert.equal(classifyFamily({ surgeryTypeUid: 'gA0XoYna4sy8JSiDgtwt' }), 'proctology');
+  assert.equal(classifyFamily({ surgeryTypeUid: 'SgKRBQaHVOGWtxeElbW9' }), 'excluded');
+  assert.equal(classifyFamily({ surgeryTypeUid: 'tXRcDLD8FHZ7wM4cRR3a' }), 'facial_ent');
+});
+
+test('UID_FAMILY_MAP: uid-map beats the procedure_name regex (precedence)', () => {
+  // ACL uid present → knee_arthroscopy_acl, NOT what the free-text regex would return for the name.
+  assert.equal(classifyFamily({ procedureName: 'ACL Reconstruction' }), 'plastics');   // regex-only (misroute)
+  assert.equal(classifyFamily({ surgeryTypeUid: 'PoWNdt84bEjKfnKkwYBl', procedureName: 'ACL Reconstruction' }), 'knee_arthroscopy_acl');
+  // pilonidal-sinus uid → proctology even though the name regex would hit fess_sinus.
+  assert.equal(classifyFamily({ surgeryTypeUid: 'gA0XoYna4sy8JSiDgtwt', procedureName: 'Laser pilonidal sinus ablation' }), 'proctology');
+});
+
+test('UID_FAMILY_MAP: facial_ent resolves to STANDARD + CORE+PREM only (null primary/fallback, no crash)', () => {
+  assert.equal(archetypeFor('facial_ent'), 'STANDARD');
+  const series: SeriesInput = { anchorDate: '2026-01-01', plannedSurgeryDate: '2026-01-10', dischargeDate: '2026-02-01' };
+  const ids = new Set(instrumentsDue('facial_ent', series, '2026-02-04').map((d) => d.instrumentId));
+  // exactly the 3 CORE instruments + the PREM module — no pack add-on (primary/fallback both null).
+  assert.deepEqual([...ids].sort(), ['hs-return-to-function', 'pain_nrs', 'prem', 'whodas12']);
+});
+
+test('UID_FAMILY_MAP: every mapped value except "excluded" is a real FAMILY_PACKS family', () => {
+  const packFamilies = new Set(FAMILY_PACKS.map((p) => p.family));
+  for (const fam of Object.values(UID_FAMILY_MAP)) {
+    if (fam === 'excluded') continue;
+    assert.ok(packFamilies.has(fam), `mapped family "${fam}" missing from FAMILY_PACKS`);
+  }
+  assert.equal(Object.keys(UID_FAMILY_MAP).length, 31);
 });
 
 // ── archetypeFor ──

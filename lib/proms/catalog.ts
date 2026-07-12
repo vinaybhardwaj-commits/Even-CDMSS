@@ -252,6 +252,8 @@ export const FAMILY_PACKS: FamilyPack[] = [
   { family: 'septoplasty_turbinoplasty', archetype: 'STANDARD', primary: 'nose', fallback: null, lic: 'F' },
   { family: 'fess_sinus', archetype: 'STANDARD', primary: 'snot22', fallback: 'hs-sinus', lic: 'Pv' },
   { family: 'tonsillectomy', archetype: 'DAYCARE', primary: 'hs-tonsil', fallback: null, lic: 'house' },
+  // facial/ENT (UID-map rider 1, 12 Jul) — nasal-fracture & kin; no pack yet → CORE+PREM safe floor.
+  { family: 'facial_ent', archetype: 'STANDARD', primary: null, fallback: null, lic: null },
   { family: 'diagnostic_endoscopy', archetype: 'SCOPE', primary: null, fallback: null, lic: null },
   // 4.3 Anticipated / dormant
   { family: 'cataract', archetype: 'DAYCARE', primary: 'catquest9sf', fallback: 'hs-visual', lic: 'Pv' },

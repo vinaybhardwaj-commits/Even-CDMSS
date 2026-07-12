@@ -111,6 +111,7 @@ export async function fetchSurgicalSeries(individualUid: string, now: string): P
     const dischargeDate = dischargeRows.length ? day(dischargeRows[0].discharge_date_time) : null;
 
     const family = classifyFamily({ surgeryTypeUid, procedureName });
+    if (family === 'excluded') return null;   // reserved sentinel (e.g. kidney biopsy) → no series, panel hides
     const archetype = archetypeFor(family);
     const due = instrumentsDue(family, {
       anchorDate,

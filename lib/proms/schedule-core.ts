@@ -10,9 +10,43 @@ import {
 export const PROM_SCHED_VERSION = 'prom-sched/0.1' as const;
 export const PROM_SCORING_VERSION = 'prom-scoring/0.1' as const;
 
-// The surgeries.uid → family map is an unratified open item (catalog §10) — currently empty, so
-// classification relies on the regex map v1 (feasibility §3: ~52% via regex). Extensible.
-export const UID_FAMILY_MAP: Record<string, string> = {};
+// The surgery_type_uid → family map — RATIFIED v1.0 (12 Jul 2026), 31 live db13 types. Consulted
+// BEFORE the regex (precision layer: only ever adds accuracy; unmapped types still fall to regex).
+// 'excluded' is a reserved sentinel (kidney biopsy → no series; fetchSurgicalSeries clean-exits).
+// Amend in CDMSS-PROMS-UID-FAMILY-MAP-RATIFIED-v1.0, not here.
+export const UID_FAMILY_MAP: Record<string, string> = {
+  K6fs7LCiWZ3gb3DWetCT: 'circumcision_adult',        // Stapler circumcission under GA (typo defeats regex)
+  GSiIiRM0A7CaDtMM0nCH: 'circumcision_adult',        // Stapler circumcission under RA (typo)
+  dYxdgQW7eEujVtI2uKiS: 'knee_arthroplasty',         // TKR – Bilateral (regex MISS → core-only)
+  FSNrDBSwyPEhIfCOK4OY: 'knee_arthroplasty',         // TKR – Unilateral (regex MISS)
+  AWTrcA8jVcNoVZCedXud: 'knee_arthroplasty',         // Total Knee Replacement (regex MISS)
+  fxg6LQ1SvZW2RlrDb97x: 'knee_arthroplasty',         // TKR – Bilateral (regex MISS)
+  '53mudO2js6vFiQ1ywLj9': 'knee_arthroplasty',       // TKR Megaprosthesis (regex → ortho_spine/lumbar)
+  PoWNdt84bEjKfnKkwYBl: 'knee_arthroscopy_acl',      // ACL Reconstruction (regex → plastics)
+  n4UBaBCM3tohm1YBWL9n: 'shoulder',                  // Rotator Cuff Repair (regex → ortho_spine/lumbar)
+  '3HjShOGLMffpLVPJ41Dv': 'fracture_trauma',         // ORIF (regex → ortho_spine/lumbar)
+  GI6MUeHU7vEagIBht0ia: 'hernia',                    // Incisional Hernia Mesh Repair
+  u0K69frzJJqKUVd4swIs: 'hernia',                    // Umbilical Hernia Mesh Repair
+  TSLKD4dco6guKBkGKcSr: 'hernia',                    // Umbilical Hernia Mesh Repair Under LA
+  '5RPxu2PYOGSn9V5OYXs7': 'cholecystectomy',         // Laparoscopic Cholecystectomy
+  sbpgJJL7gh8pUylwvhIM: 'proctology',                // LASER ASSISTED FISTULA ABLATION
+  TWfI62wLoNENHXsKisDm: 'proctology',                // Laser Fistulectomy (regex MISS: /fistula/≠fistulectomy)
+  XrucVpM4ApUGQwMCh5v7: 'proctology',                // EUA + Laser Hemorrhoidopexy
+  yeDsHfLjs1dsuuVgR1xd: 'proctology',                // Laser Haemorrhoidectomy
+  SnoBMj7fmjo5TF2lBzbU: 'proctology',                // Fistulotomy (regex MISS)
+  gA0XoYna4sy8JSiDgtwt: 'proctology',                // Laser pilonidal sinus ablation (regex → fess_sinus!)
+  mJKYit6R43Ta8dlNtRQT: 'scrotal',                   // Hydrocele Unilateral
+  b0QTU34tvuJsE8g6ZzuV: 'urinary_stones',            // RIRS Unilateral (regex MISS)
+  yOtncTFbysIAiQNl3EAL: 'hysteroscopy_mirena',       // Hysteroscopic Polypectomy (regex MISS)
+  pmCwGAH3VRSZ1LSK3rgh: 'septoplasty_turbinoplasty', // Septoplasty
+  Z0xYkybao6zSP5mqOmtG: 'varicose_veins',            // Varicose Veins (Surgical)
+  lKHiO6rfQhWrlypPIvOB: 'minor_excisions',           // Debridement
+  v0UG7DvId8yChyxVO1sg: 'minor_excisions',           // Wide Local Excision [RATIFIED]
+  extQZCtK0D68D4pbVcsY: 'obstetric_csection',        // LSCS
+  bYRTqDaeWGWib6n0qwOJ: 'obstetric_csection',        // Normal Delivery (Package) [RATIFIED]
+  tXRcDLD8FHZ7wM4cRR3a: 'facial_ent',                // Nasal Bone Fracture Reduction [NEW family]
+  SgKRBQaHVOGWtxeElbW9: 'excluded',                  // Kidney Biopsy – USG Guided [EXCLUDED — no series]
+};
 
 /** uid-map THEN name-regex map v1 (first match) → family | 'unknown' (Decision E). Caller applies
  *  NULLIF (empty-string-for-null); this is also defensive about ''/whitespace. */
