@@ -192,10 +192,10 @@ export function computeCareGaps(invests: LongitudinalInvestigation[], meds: Long
     const analyteId = canonicalAnalyte(iv.normalizedAnalyte.raw);
     const num = toNum(latest.value);
     const banded = analyteId && num !== null ? bandValue(analyteId, num, iv.unit ?? latest.unit, null) : null;
-    // abnormal-latest = a mapped-range abnormal band, OR (safety net) source-flagged with no range.
-    let band: Band | null = banded && ABNORMAL_BANDS.includes(banded.band) ? banded.band : null;
-    if (band === null && !banded && sourceAbnormal(latest)) band = 'abnormal';
-    if (band === null) continue;                                     // in-range (or normal) → no gap
+    // Gaps require a MAPPED-RANGE abnormal band (a real clinical threshold). Source-flagged-only
+    // ('abnormal') items are surfaced in the labs list but NOT promoted to a care gap (patch 2).
+    const band: Band | null = banded && ABNORMAL_BANDS.includes(banded.band) ? banded.band : null;
+    if (band === null) continue;                                     // unbanded → labs list only, not a gap
     const age = monthsAgo(latest.date, now);
     if (age === null || age < GAP_MIN_MONTHS) continue;               // recent enough → not a gap
     // on-treatment (deficiency being replaced) → the "despite replacement" variant.
@@ -351,7 +351,7 @@ export function buildAttentionFlags(snap: MemberStateSnapshot, labs: FlaggedLab[
   // (b) abnormal-unactioned labs (critical band, or abnormal with a matching care gap).
   const gapAnalytes = new Set(gaps.map((g) => g.analyteId));
   for (const l of labs) {
-    if (!l.abnormal) continue;
+    if (!l.abnormal || l.band === 'abnormal') continue;   // safety-net (source-flagged, unbanded) → labs list only, never an attention flag
     const isCritical = l.band === 'critical';
     const hasGap = gapAnalytes.has(l.analyteId);
     if (!isCritical && !hasGap) continue;

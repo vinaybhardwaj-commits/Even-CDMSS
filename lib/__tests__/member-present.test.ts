@@ -196,13 +196,19 @@ test('patch/1: real Vit D (8.01 ng/mL) surfaces in labs, gaps AND attention', ()
   assert.ok(flags.some((f) => f.kind === 'abnormal_lab' && f.severity === 'safety' && /vitamin d/i.test(f.text)));
 });
 
-test('patch/2: source-abnormal safety net — no range row but lab-flagged → surfaced band "abnormal"', () => {
+test('patch/2: safety-net item is SURFACED (labs) but NOT PROMOTED (no gap, no attention flag)', () => {
   const iv = [invest('Non-HDL Cholesterol', 'mg/dL', [{ date: '2023-12-01', value: '160', abnormal: 'ABNORMAL' }])];
   const labs = flagAbnormalLabs(iv, null);
+  // still surfaced in the labs list (nothing hidden)
   assert.equal(labs.surfaced.length, 1);
   assert.equal(labs.surfaced[0].band, 'abnormal');
   assert.equal(labs.surfaced[0].abnormal, true);
   assert.equal(labs.surfaced[0].refText, 'flagged by lab');   // NO invented severity
+  // patch 2: source-flagged-only, no range → NOT a care gap, NOT an attention flag
+  assert.equal(computeCareGaps(iv, [], NOW).length, 0);
+  const snap = { conflicts: [] } as unknown as MemberStateSnapshot;
+  const flags = buildAttentionFlags(snap, labs.surfaced, computeCareGaps(iv, [], NOW));
+  assert.equal(flags.filter((f) => f.kind === 'abnormal_lab').length, 0);
 });
 
 test('patch/2: latest source-NORMAL + no range → NOT surfaced (nothing over-flagged)', () => {
