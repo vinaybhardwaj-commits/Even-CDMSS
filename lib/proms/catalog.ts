@@ -248,8 +248,28 @@ export const FAMILY_PACKS: FamilyPack[] = [
   { family: 'onco_resections', archetype: 'ONCO_MAJOR', primary: null, fallback: null, lic: null },
 ];
 
-// feasibility §4b — family regex map v1. ORDER = first-match-wins (as listed). Coarse keys.
+// feasibility §4b — family regex map. ORDER = first-match-wins (as listed). Coarse keys.
+// v1.1 coverage extension (12 Jul): the specific-first block below is PREPENDED so the main
+// surgical families reach their EXISTING FAMILY_PACKS packs (no measurement change, no bridge).
+// It also fixes the cholecystectomy misroute (cholecyst wins before minor_excision_wound's `cyst`)
+// and puts bph_turp_laser + urinary_stones before the coarse `urology` pattern.
 export const FAMILY_REGEX: { family: string; re: RegExp }[] = [
+  // ── regex-map v1.1 — main-family coverage (prepended; specific-first) ──
+  { family: 'cholecystectomy',           re: /cholecyst|gall.?bladder/i },                                   // BEFORE minor_excision_wound (cyst)
+  { family: 'proctology',                re: /h(a)?emorrhoid|\bpile|fissure|fistula|sphincterotomy|hemorrhoidopexy/i },
+  { family: 'hernia',                    re: /hernia|hernioplasty|herniorrhaph/i },
+  { family: 'appendicectomy_emergency',  re: /appendic|appendectomy/i },
+  { family: 'hysterectomy',              re: /hysterectomy/i },
+  { family: 'fibroids_myomectomy',       re: /myomectomy|fibroid/i },
+  { family: 'tonsillectomy',             re: /tonsil|adenoid/i },
+  { family: 'bph_turp_laser',            re: /\bturp\b|prostatectomy|\bbph\b|holep|thulep|greenlight/i },      // BEFORE urology
+  { family: 'urinary_stones',            re: /ureteroscop|\burs\b|pcnl|lithotrip|renal stone|ureteric stone|urolith|dj stent/i }, // BEFORE urology
+  { family: 'septoplasty_turbinoplasty', re: /septoplasty|turbinoplast/i },
+  { family: 'fess_sinus',                re: /\bfess\b|functional endoscopic|sinus|nasal polyp/i },
+  { family: 'cataract',                  re: /cataract|phaco/i },
+  { family: 'circumcision_adult',        re: /circumcision/i },
+  { family: 'scrotal',                   re: /varicocele|hydrocele|orchidopexy|orchidectomy|scrotal/i },
+  // ── existing coarse "168 other" tail (v1) — unchanged, universal_core last ──
   { family: 'ortho_spine', re: /laminectomy|orif|open reduction|implant removal|mua|syndesmosis|rotat(or|er) cuff|megaprosthesis/i },
   { family: 'thyroid', re: /thyroidectomy|thyroid/i },
   { family: 'obstetric', re: /lscs|caesar|c-section|delivery|mtp|tubectomy/i },

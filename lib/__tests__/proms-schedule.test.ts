@@ -26,19 +26,58 @@ test('classifyFamily: each regex family (order = first-match-wins)', () => {
   assert.equal(classifyFamily({ procedureName: 'EVLT varicose veins' }), 'vascular');
   assert.equal(classifyFamily({ procedureName: 'liposuction' }), 'plastics');
   assert.equal(classifyFamily({ procedureName: 'sebaceous cyst excision' }), 'minor_excision_wound');
-  assert.equal(classifyFamily({ procedureName: 'DJ stent removal' }), 'urology');
+  assert.equal(classifyFamily({ procedureName: 'meatotomy' }), 'urology');   // v1.1: DJ-stent/holep now route to stones/bph — coarse urology still catches urethra/meatotomy
   assert.equal(classifyFamily({ procedureName: 'grommet insertion' }), 'ent');
   assert.equal(classifyFamily({ procedureName: 'mastectomy' }), 'breast');
   assert.equal(classifyFamily({ procedureName: 'liver transplant' }), 'rare_major');
 });
 
 test('classifyFamily: no regex match → unknown (core+PREM); NULLIF empties handled', () => {
-  assert.equal(classifyFamily({ procedureName: 'appendicectomy' }), 'unknown');    // not in regex v1 → core+PREM
-  // NB: 'cholecystectomy' matches the 'cyst' pattern (a known regex-v1 false-positive; CM skips — flagged)
-  assert.equal(classifyFamily({ procedureName: 'cholecystectomy' }), 'minor_excision_wound');
+  // v1.1: appendicectomy + cholecystectomy are now COVERED (asserted in the v1.1 block below); a
+  // truly-unknown name still falls through to core+PREM.
+  assert.equal(classifyFamily({ procedureName: 'excision of lump nos xyz' }), 'minor_excision_wound');
+  assert.equal(classifyFamily({ procedureName: 'something with no keyword zzz' }), 'unknown');
   assert.equal(classifyFamily({ surgeryTypeUid: '', procedureName: '' }), 'unknown');
   assert.equal(classifyFamily({ surgeryTypeUid: '   ', procedureName: 'ORIF' }), 'ortho_spine');   // empty uid → regex
   assert.equal(classifyFamily({}), 'unknown');
+});
+
+// ── classifyFamily: v1.1 main-family coverage (prepended, specific-first) ──
+test('classifyFamily v1.1: main surgical families reach their existing packs', () => {
+  // proctology (real db names)
+  assert.equal(classifyFamily({ procedureName: 'Laser Haemorrhoidectomy' }), 'proctology');
+  assert.equal(classifyFamily({ procedureName: 'Fissure in Ano' }), 'proctology');
+  assert.equal(classifyFamily({ procedureName: 'LASER ASSISTED FISTULA ABLATION' }), 'proctology');
+  assert.equal(classifyFamily({ procedureName: 'EUA+ LASER HEMORRHOIDOPEXY' }), 'proctology');
+  // cholecystectomy — the misroute is fixed (specific-first beats minor_excision_wound's `cyst`)
+  assert.equal(classifyFamily({ procedureName: 'Cholecystectomy (Lap)' }), 'cholecystectomy');
+  assert.notEqual(classifyFamily({ procedureName: 'Cholecystectomy (Lap)' }), 'minor_excision_wound');
+  // hysterectomy / hernia / appendicectomy
+  assert.equal(classifyFamily({ procedureName: 'Hysterectomy' }), 'hysterectomy');
+  assert.equal(classifyFamily({ procedureName: 'Inguinal hernia' }), 'hernia');
+  assert.equal(classifyFamily({ procedureName: 'Umbilical Hernia Mesh Repair' }), 'hernia');
+  assert.equal(classifyFamily({ procedureName: 'appendicectomy' }), 'appendicectomy_emergency');
+  // urology split: BPH/TURP + stones win before the coarse `urology` (stent/holep) pattern
+  assert.equal(classifyFamily({ procedureName: 'TURP' }), 'bph_turp_laser');
+  assert.equal(classifyFamily({ procedureName: 'PCNL for renal stone' }), 'urinary_stones');
+  assert.equal(classifyFamily({ procedureName: 'DJ stent removal' }), 'urinary_stones');   // was 'urology' in v1 — now stones
+  // ENT / eye / other
+  assert.equal(classifyFamily({ procedureName: 'Tonsillectomy' }), 'tonsillectomy');
+  assert.equal(classifyFamily({ procedureName: 'FESS' }), 'fess_sinus');
+  assert.equal(classifyFamily({ procedureName: 'Phacoemulsification cataract surgery' }), 'cataract');
+  assert.equal(classifyFamily({ procedureName: 'Hydrocele repair' }), 'scrotal');
+  assert.equal(classifyFamily({ procedureName: 'Myomectomy' }), 'fibroids_myomectomy');
+});
+
+test('classifyFamily v1.1: existing coarse families unregressed', () => {
+  assert.equal(classifyFamily({ procedureName: 'ORIF of femur' }), 'ortho_spine');
+  assert.equal(classifyFamily({ procedureName: 'Total Thyroidectomy' }), 'thyroid');
+  assert.equal(classifyFamily({ procedureName: 'something nonsense xyz' }), 'unknown');
+});
+
+test('classifyFamily v1.1: proctology routes to its house pack end-to-end', () => {
+  const due = instrumentsDue('proctology', BASE, '2026-02-04');
+  assert.ok(new Set(due.map((d) => d.instrumentId)).has('hs-procto'));
 });
 
 test('classifyFamily: the universal_core catch-all is never returned as a family', () => {
