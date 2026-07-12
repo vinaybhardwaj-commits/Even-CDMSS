@@ -10,20 +10,73 @@
  *     (cluster_key convention lvc:<rule_ref>). v1 default: nothing suppressed → all 29 count.
  */
 
-export const LVC_CATEGORIES = ['antibiotic', 'imaging', 'supplement_polypharmacy', 'other'] as const;
+// 0.81.8 Part B — the taxonomy now sub-tags the residual `other` bucket. The 3 base categories keep their
+// authoritative early-returns; the 8 overuse sub-tags (priority order) split what used to be `other`; an
+// omission-type finding stays `other` (Decision 7 drops safety_netting_gap / dx_complaint_mismatch). All
+// metadata — never touches verdict/domain/score. `other` stays last so it remains the catch-all.
+export const LVC_BASE_CATEGORIES = ['antibiotic', 'imaging', 'supplement_polypharmacy'] as const;
+export const LVC_OVERUSE_TAGS = [
+  'therapeutic_duplication', 'systemic_steroid', 'gi_ppi_prokinetic', 'antihistamine_allergy',
+  'nsaid_analgesic', 'cough_cold_fdc', 'cough_expectorant', 'unindicated_investigation',
+] as const;
+export const LVC_CATEGORIES = [...LVC_BASE_CATEGORIES, ...LVC_OVERUSE_TAGS, 'other'] as const;
 export type LvcCategory = (typeof LVC_CATEGORIES)[number];
+
+/** Shared human labels for every category (Decision 10) — every UI surface + MCP enum reads THIS so no
+ *  surface renders a raw slug. Kept here (the pure core) so it has no runtime dependency. */
+export const LVC_CATEGORY_LABELS: Record<string, string> = {
+  antibiotic: 'Antibiotic',
+  imaging: 'Imaging',
+  supplement_polypharmacy: 'Supplement / polypharmacy',
+  therapeutic_duplication: 'Therapeutic duplication',
+  systemic_steroid: 'Systemic steroid',
+  gi_ppi_prokinetic: 'GI acid-suppressant / prokinetic',
+  antihistamine_allergy: 'Antihistamine / anti-allergy',
+  nsaid_analgesic: 'NSAID / analgesic',
+  cough_cold_fdc: 'Cough-cold combination',
+  cough_expectorant: 'Cough expectorant / mucolytic',
+  unindicated_investigation: 'Unindicated investigation',
+  other: 'Other low-value',
+};
 
 // Category heuristic (kept deliberately small; the engine stamp + the read-time fallback share it).
 const ANTIBIOTIC_RE = /\bantibiotic|antimicrobial|amoxicillin|amoxyclav|azithromycin|cefixime|cefpodoxime|cefuroxime|ceftriaxone|ciprofloxacin|levofloxacin|ofloxacin|doxycycline|metronidazole|clarithromycin|augmentin|penicillin|cephalosporin|fluoroquinolone|nitrofurantoin\b/i;
 const IMAGING_RE = /\b(x-?ray|radiograph|ct scan|\bct\b|mri|ultrasound|\busg\b|sonograph|imaging|neuroimaging|\bscan\b)\b/i;
 const SUPPLEMENT_RE = /\b(supplement|multivitamin|nutraceutical|polypharmac|\bvitamin\b|\btonic\b|probiotic|nutritional|antioxidant|enzyme preparation)\b/i;
 
-/** Classify an LVC finding into a coarse category from its text (antibiotic | imaging | supplement_polypharmacy | other). */
+// 0.81.8 overuse sub-tags (only applied to what would otherwise be `other`).
+// Omission-type findings (a missing safety-net, a dx/complaint mismatch, an undocumented X) are NOT overuse
+// — they stay `other` so the 8 tags stay a clean "too much treatment" taxonomy (Decision 7).
+const OMISSION_RE = /\b(missing|absent|not documented|undocumented|no follow[- ]?up|safety[- ]?net|failed to|should have|lack(?:s|ing)?|omitted|without documenting|no mention|mismatch|discrepan|not (?:specified|mentioned|recorded))\b/i;
+const THERAP_DUP_RE = /\b(duplicat|same class|two .*same|therapeutic duplication|overlapping therap|concurrent .*same)\b/i;
+const STEROID_RE = /\b(prednisolone|prednisone|methylprednisolone|dexamethasone|betamethasone|deflazacort|systemic steroid|oral steroid|corticosteroid)\b/i;
+const GI_PPI_RE = /\b(omeprazole|pantoprazole|esomeprazole|rabeprazole|lansoprazole|dexlansoprazole|\bppi\b|proton pump|domperidone|metoclopramide|itopride|levosulpiride|prokinetic|antacid|acid suppress)\b/i;
+const ANTIHISTAMINE_RE = /\b(cetirizine|levocetirizine|loratadine|desloratadine|fexofenadine|chlorpheniramine|chlorphenamine|hydroxyzine|bilastine|ebastine|pheniramine|antihistamine|montelukast|anti[- ]?allerg)\b/i;
+const NSAID_ANALGESIC_RE = /\b(nsaid|diclofenac|aceclofenac|ibuprofen|naproxen|paracetamol|acetaminophen|analgesic|nimesulide|etoricoxib|ketorolac|mefenamic|tramadol|non[- ]?steroidal)\b/i;
+const COUGH_COLD_FDC_RE = /\b(cough (?:and|&|\/|-) ?cold|cold fdc|cough[- ]cold|phenylephrine|pseudoephedrine|combination cough|multi[- ]?ingredient cough|cough syrup .*(?:antihistamine|decongestant))\b/i;
+const COUGH_EXPECTORANT_RE = /\b(expectorant|mucolytic|ambroxol|bromhexine|guaifenesin|guaiphenesin|acebrophylline|terbutaline syrup|antitussive|dextromethorphan|codeine (?:linctus|syrup))\b/i;
+const UNINDICATED_INVEST_RE = /\b(unindicated|unnecessary|not indicated|low[- ]yield|routine)\b[^.]*\b(test|investigation|panel|profile|screen|serolog|assay|blood work)|\b(test|investigation|panel|profile|serolog|assay)\b[^.]*\b(unindicated|unnecessary|not indicated|low[- ]yield)\b/i;
+
+/**
+ * Classify an LVC finding into a category from its text. 0.81.8: the 3 base categories (authoritative
+ * early-returns) are unchanged; below them the residual `other` is split into 8 overuse sub-tags by priority
+ * order, unless the finding is an omission (→ stays `other`). Metadata only.
+ */
 export function classifyLvcCategory(subject: string | undefined, rationale?: string | null): LvcCategory {
   const hay = `${subject || ''} ${rationale || ''}`.toLowerCase();
   if (ANTIBIOTIC_RE.test(hay)) return 'antibiotic';
   if (IMAGING_RE.test(hay)) return 'imaging';
   if (SUPPLEMENT_RE.test(hay)) return 'supplement_polypharmacy';
+  // residual `other` → overuse sub-tags (Part B). Omission-type findings are not overuse.
+  if (OMISSION_RE.test(hay)) return 'other';
+  if (THERAP_DUP_RE.test(hay)) return 'therapeutic_duplication';
+  if (STEROID_RE.test(hay)) return 'systemic_steroid';
+  if (GI_PPI_RE.test(hay)) return 'gi_ppi_prokinetic';
+  if (ANTIHISTAMINE_RE.test(hay)) return 'antihistamine_allergy';
+  if (NSAID_ANALGESIC_RE.test(hay)) return 'nsaid_analgesic';
+  if (COUGH_COLD_FDC_RE.test(hay)) return 'cough_cold_fdc';
+  if (COUGH_EXPECTORANT_RE.test(hay)) return 'cough_expectorant';
+  if (UNINDICATED_INVEST_RE.test(hay)) return 'unindicated_investigation';
   return 'other';
 }
 

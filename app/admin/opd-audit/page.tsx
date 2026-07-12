@@ -80,6 +80,17 @@ function contextIndicator(v: unknown): string | null {
   const c = block?.contextMeta?.confidence;
   return c === 'established' || c === 'thin' || c === 'none' ? c : null;
 }
+// 0.81.8 Part C — the frequent-flier signals off the SAME stored longitudinal block (no new SQL):
+// prior-encounter count + longitudinal-finding count. Null when the note has no block yet.
+function longEncounters(v: unknown): number | null {
+  const b = parseJson<{ contextMeta?: { encounters?: number } } | null>(v, null);
+  const e = b?.contextMeta?.encounters;
+  return typeof e === 'number' ? e : null;
+}
+function longFindingCount(v: unknown): number | null {
+  const b = parseJson<{ findings?: unknown[] } | null>(v, null);
+  return Array.isArray(b?.findings) ? b!.findings!.length : null;
+}
 
 const PILLARS = [
   { col: 'd_doc', key: 'documentation', dom: 'documentation', label: 'Documentation\ncompleteness', short: 'documentation', weight: 0.25, scoreCol: 'score_documentation', catPrefix: 'doc:' },
@@ -172,6 +183,8 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
     cats: catsForRow(parseJson<string[]>(r.missing_fields, []), parseJson<{ subject?: string; verdict?: string; rationale?: string }[]>(r.findings, [])),
     doctorUid: r.doctor_uid ? String(r.doctor_uid) : null,
     context: contextIndicator(r.longitudinal),
+    encounters: longEncounters(r.longitudinal),          // Part C — prior encounters
+    longFindings: longFindingCount(r.longitudinal),      // Part C — longitudinal findings on this note
   });
 
   const allRows: AuditRow[] = allR.map(toAuditRow);

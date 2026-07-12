@@ -25,7 +25,17 @@ import type { NetValue, OpdFindingDomain, Pdqi9Attr } from './opd-note-score-cor
 //       B2: follow-up counts as documented ONLY for a real disposition or an explicit date — a bare
 //       'UNKNOWN'/blank no longer earns continuity/documentation credit (the score-moving change
 //       that makes 0.7 a distinct generation). Prompt-pass fixes (B1/B5/B6) land next, still 0.7.
-export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.7';
+// 0.81.8 — Dr Zaki 10-bug batch (first scoring change since 0.81.2). Unified 6/7/9: `unverified_brand`
+//       → informational (non-scoring), `incomplete_dosing` exempt for off-formulary cosmetics/supplements/
+//       unresolved-proprietary (a RESOLVED drug missing its dose still scores), consolidated so one
+//       unresolved line never stacks both. Bug 2: institutional health-check screening no longer penalised.
+//       Bug 4: the consult date (noteDate) is surfaced in opdCaseText with a historical-date guard. Bug 10:
+//       niche pre-analytic omissions (biotin before a thyroid panel) → informational. Bugs 1/3/8 are
+//       deterministic (orchestrator): xanthine/acebrophylline + antihistamine+montelukast for acute URTI,
+//       nasal-decongestant >5-day cap, route/formulation-aware duplication. Bug 5: hyoscine/dicyclomine
+//       reclassed Antispasmodic/anticholinergic in the formulary (DDI-invariant). LVC `other` sub-cat +
+//       frequent-flier list surfacing + 30-day longitudinal backfill ride in the same build (non-scoring).
+export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.8';
 
 /**
  * Current-engine FAMILY for READ/aggregate surfaces. 0.81.3 → 0.81.4 → 0.81.5 are all score-identical
@@ -36,7 +46,7 @@ export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.7';
  * DESC, id DESC. WRITE-side targeting keeps exact OPD_ENGINE_VERSION (family there would stop history
  * re-scoring). See the patch report.
  */
-export const OPD_ENGINE_VERSIONS_CURRENT = ['opd-note-audit/0.81.3', 'opd-note-audit/0.81.4', 'opd-note-audit/0.81.5', 'opd-note-audit/0.81.6', 'opd-note-audit/0.81.7'] as const;
+export const OPD_ENGINE_VERSIONS_CURRENT = ['opd-note-audit/0.81.3', 'opd-note-audit/0.81.4', 'opd-note-audit/0.81.5', 'opd-note-audit/0.81.6', 'opd-note-audit/0.81.7', 'opd-note-audit/0.81.8'] as const;
 
 // Local copy of the PDQI-9 keys (kept in sync with opd-note-score-core) so this core has
 // no runtime cross-import and stays loadable under `node --experimental-strip-types`.
@@ -204,6 +214,10 @@ export function medHasMoleculeFrom(m: { resolvedGeneric?: string; generic?: stri
  *  non-scoring (informational) and tag them `metadata_accuracy`. */
 const META_ACCURACY_RE = /(?:inaccurate|incorrect|erroneous|wrong|misclassif|misleading|data quality|error)[^.]*\bdrug class\b|\bdrug class\b[^.]*(?:inaccurate|incorrect|erroneous|wrong|misclassif|misleading|error)/i;
 const CODING_GAP_RE = /(?:missing|absent|no|add|assign|map|include)[^.]*\bicd(?:[- ]?10)?\b|\bicd(?:[- ]?10)?\b[^.]*(?:code|mapping|missing|absent)|coding (?:gap|completeness|error|omission)|\bcode (?:is )?(?:not )?(?:documented|assigned|mapped|present)|should be coded|uncoded diagnosis/i;
+// BUG-0.81.8-10 (Decision 3): a niche PRE-ANALYTIC interference omission (biotin before a thyroid/troponin
+// immunoassay, etc.) is not a note-quality gap — reserve appropriateness penalties for a documented risk
+// lacking a safeguard. Surface it for awareness, never dock the score.
+const PRETEST_NICHE_RE = /biotin[^.]*(?:thyroid|tsh|troponin|assay|immunoassay|interfere)|(?:thyroid|tsh|troponin)[^.]*biotin[^.]*(?:interfere|hold|stop|cease)|biotin interference|hold biotin|(?:fasting|water deprivation) (?:not|un)(?:documented|mentioned|specified)/i;
 export function neutralizeMetadataFindings(findings: OpdFinding[]): OpdFinding[] {
   return findings.map((f) => {
     if (f.source !== 'llm') return f;
@@ -212,8 +226,37 @@ export function neutralizeMetadataFindings(findings: OpdFinding[]): OpdFinding[]
     if (META_ACCURACY_RE.test(hay)) return { ...f, informational: true, signal_type: 'metadata_accuracy' };
     // Part 1: a pure ICD/coding-completeness gap is chart metadata, not a care decision → non-scoring.
     if (CODING_GAP_RE.test(hay)) return { ...f, informational: true, signal_type: 'coding_completeness' };
+    // BUG-0.81.8-10: niche pre-analytic keyword omission → informational (only for an appropriateness
+    // over-flag; a genuine prescribing-safety issue that happens to mention these words is untouched).
+    if (f.domain === 'appropriateness' && PRETEST_NICHE_RE.test(hay)) return { ...f, informational: true, signal_type: 'pretest_niche' };
     return f;
   });
+}
+
+// BUG-0.81.8-2 (Decision 4): an institutional health-check / screening PACKAGE prescribes a fixed protocol
+// panel — flagging its included investigations as "unindicated / low-value" penalises the clinician for the
+// package design, not a care decision. When the encounter is a health-check package, neutralise appropriateness
+// low-value/context findings that critique the screening tests. Context-gated (the allow-list), so a normal
+// consult's genuine over-investigation finding is untouched. Pure: the boolean is computed by the caller.
+const SCREENING_FINDING_RE = /\b(screen(?:ing)?|health\s?check|preventive|routine|wellness|check[\s-]?up|panel|profile|package)\b/i;
+export function neutralizeScreeningContext(findings: OpdFinding[], isHealthCheckEncounter: boolean): OpdFinding[] {
+  if (!isHealthCheckEncounter) return findings;
+  return findings.map((f) => {
+    if (f.source !== 'llm' || f.informational) return f;
+    if (f.domain === 'appropriateness' && (f.verdict === 'low-value' || f.verdict === 'context-dependent')
+        && SCREENING_FINDING_RE.test(`${f.subject} ${f.rationale || ''}`)) {
+      return { ...f, informational: true, signal_type: 'screening_context' };
+    }
+    return f;
+  });
+}
+
+/** BUG-0.81.8-2: is this encounter an institutional health-check / preventive-screening package? Reads the
+ *  reason/consult-type/complaints allow-list. Pure (no side effects). */
+const HEALTHCHECK_CTX_RE = /\b(health\s?check|master health|preventive health|preventive (?:screen|checkup)|wellness (?:package|checkup|profile)|annual health|executive (?:health|checkup)|screening package|whole body checkup|full body checkup|health package)\b/i;
+export function isHealthCheckEncounter(c: DeidOpdCase): boolean {
+  const hay = [c.reasonForConsult || '', c.consultType || '', ...(c.consultTypes || []), ...c.presentingComplaints, ...c.impressions].join(' ');
+  return HEALTHCHECK_CTX_RE.test(hay);
 }
 
 /** BUG-0.8-12: one clinical decision → one SCORED finding, ACROSS sources. Fix N ("one issue, one
@@ -408,6 +451,10 @@ function det(subject: string, verdict: NetValue, confidence: number, rationale: 
 // finally dedupe and stop false-flagging. Formulary safety facts (ISMP high-alert, Schedule X,
 // LASA pairs, off-formulary items) surface as findings; the purely-informational ones carry
 // `informational` + confidence 0 so they inform without ever penalising the score.
+// BUG-0.81.8-7: off-formulary cosmetics carry no clinically meaningful "dose", so an incomplete-dosing
+// gap on them is a false positive. Name heuristic for cosmetic/derm OTC lines (Decision 1 list).
+const COSMETIC_NAME_RE = /\b(moisturi[sz]er|sunscreen|sun\s?block|face\s?wash|cleansing bar|cleanser|emollient|serum|shampoo|soap|lotion base|lip balm|body wash|scrub|toner)\b/i;
+
 export function prescribingChecks(c: DeidOpdCase): OpdFinding[] {
   const out: OpdFinding[] = [];
   const seen = new Map<string, { n: number; label: string }>();
@@ -426,24 +473,30 @@ export function prescribingChecks(c: DeidOpdCase): OpdFinding[] {
       if (m.nonFormulary === 'nutraceutical-cosmetic') nNutraceutical++;
       else {
         nNonFormularyDrug++;
-        out.push(det(`Unverified brand: ${m.brand || 'medication'}`, 'context-dependent', 0.4,
-          'Prescribed by a brand not in the hospital formulary and not resolvable to a generic — molecule, class and interactions cannot be verified. NABH expects generic naming.'));
+        // BUG-0.81.8-9 (unified 6/7/9): "unverified brand" is a formulary-coverage limitation on OUR side,
+        // not a clinician prescribing error — the LLM routinely resolves the molecule the formulary couldn't.
+        // Keep it VISIBLE for awareness but non-scoring (informational), so it stops penalising ~172 notes.
+        out.push(det(`Unverified brand: ${m.brand || 'medication'}`, 'context-dependent', 0,
+          'Prescribed by a brand not in the hospital formulary and not resolvable to a generic by our matcher — molecule, class and interactions could not be auto-verified (a coverage limitation, not necessarily a prescribing error). NABH expects generic naming.', true));
       }
     }
 
-    // BUG-0.8-14: a nutraceutical / supplement has no clinically meaningful strength, so an
-    // "incomplete dosing" gap is a nitpick (and fired inconsistently depending on whether the
-    // EMR happened to populate a units field). They are already handled informationally as
-    // non-formulary items — exempt them from the gap finding. Real drugs keep the full check.
-    const isNutra = m.nonFormulary === 'nutraceutical-cosmetic'
+    // BUG-0.8-14 + 0.81.8 unified 6/7/9: exempt "incomplete dosing" for off-formulary cosmetics/
+    // supplements/unresolved-proprietary lines — a nutraceutical/cosmetic has no clinically meaningful
+    // "dose", and an UNRESOLVED brand (no `gen`) can't be assessed for dosing at all AND is already
+    // surfaced as an unverified/off-formulary item, so faulting its dose double-stacks the same one line
+    // (Decision 1 consolidation). A RESOLVED real drug missing its dose STILL scores (the check below).
+    const isDoseExempt = !gen                                                  // unresolved proprietary → can't assess; already surfaced
+      || m.nonFormulary === 'nutraceutical-cosmetic'
       || /nutraceutical|supplement|multivitamin|vitamin|probiotic|cosmetic/i.test(m.therapeuticClass || '')
-      || /\bsupplement\b/i.test(gen || '');
+      || /\bsupplement\b/i.test(gen || '')
+      || COSMETIC_NAME_RE.test(`${m.brand || ''} ${gen || ''}`);               // off-formulary cosmetic by name (Bug 7)
     const gaps: string[] = [];
     if (!medDoseDocumented(m)) gaps.push('dose/strength');
     if (!m.frequency) gaps.push('frequency');
     if (resolveMedRoute(m) === null) gaps.push('route');
     if (!m.duration) gaps.push('duration');
-    if (gaps.length && !isNutra) out.push(det(`Incomplete dosing: ${name}`, 'context-dependent', 0.5, `Missing ${gaps.join(', ')} — incomplete prescription (strength read from the drug name and route inferred from the dosage form where possible).`));
+    if (gaps.length && !isDoseExempt) out.push(det(`Incomplete dosing: ${name}`, 'context-dependent', 0.5, `Missing ${gaps.join(', ')} — incomplete prescription (strength read from the drug name and route inferred from the dosage form where possible).`));
 
     if (gen) { const k = gen.toLowerCase(); const p = seen.get(k); seen.set(k, { n: (p?.n || 0) + 1, label: gen }); }
     if (gen && m.highAlert) highAlerts.push(gen);
@@ -499,7 +552,7 @@ ENCOUNTER CONTEXT — read the header fields FIRST and let them frame everything
    - PATIENT-EDUCATION MATERIAL: any attached templated self-care leaflet (generic exercises, video/YouTube links) is AUTO-GENERATED, not clinician-authored. Do NOT reward it in PDQI-9 thoroughness/useful/synthesized, and do not treat it as evidence of a rich plan. Grade only the clinician's own documentation.
 
 1) FINDINGS — appropriateness and prescribing-safety issues for THIS encounter:
-   - appropriateness: low-value / inappropriate tests, treatments or referrals for the presentation. DIAGNOSIS–COMPLAINT CONCORDANCE: check the documented diagnosis actually corresponds to the presenting complaint and to what was treated; if the coded diagnosis is unrelated to why the patient came (e.g. a chronic comorbidity is coded while an acute complaint drives the visit and the medications treat that acute problem), flag the mismatch as an appropriateness/documentation finding. UNINDICATED / CONTRADICTED DRUG: check EVERY prescribed drug has a plausible indication in THIS note; a drug whose indication is absent AND is positively contradicted by the documented history (e.g. a 2nd-gen antihistamine when the history records 'No cold' / no allergic symptom) is a low-value / unindicated prescription — raise it as an APPROPRIATENESS finding (domain 'appropriateness', verdict low-value), applied CONSISTENTLY to all drugs, not just the obvious ones. MUSCLE RELAXANTS: do NOT raise a separate finding about a muscle relaxant's indication or rationality (e.g. a chlorzoxazone/thiocolchicoside FDC) — the engine handles it deterministically and consistently; put your appropriateness attention elsewhere. DIAGNOSIS DOCUMENTED WITHOUT A CODE: a clinical diagnosis/impression stated in words (e.g. 'Cervical Spondylosis') but shown without an ICD-10 code is a code AUTO-MAPPING gap, not a missing diagnosis — the diagnosis IS documented; do NOT raise 'missing coded diagnosis' or dock appropriateness for it.
+   - appropriateness: low-value / inappropriate tests, treatments or referrals for the presentation. DIAGNOSIS–COMPLAINT CONCORDANCE: check the documented diagnosis actually corresponds to the presenting complaint and to what was treated; if the coded diagnosis is unrelated to why the patient came (e.g. a chronic comorbidity is coded while an acute complaint drives the visit and the medications treat that acute problem), flag the mismatch as an appropriateness/documentation finding. UNINDICATED / CONTRADICTED DRUG: check EVERY prescribed drug has a plausible indication in THIS note; a drug whose indication is absent AND is positively contradicted by the documented history (e.g. a 2nd-gen antihistamine when the history records 'No cold' / no allergic symptom) is a low-value / unindicated prescription — raise it as an APPROPRIATENESS finding (domain 'appropriateness', verdict low-value), applied CONSISTENTLY to all drugs, not just the obvious ones. MUSCLE RELAXANTS: do NOT raise a separate finding about a muscle relaxant's indication or rationality (e.g. a chlorzoxazone/thiocolchicoside FDC) — the engine handles it deterministically and consistently; put your appropriateness attention elsewhere. DIAGNOSIS DOCUMENTED WITHOUT A CODE: a clinical diagnosis/impression stated in words (e.g. 'Cervical Spondylosis') but shown without an ICD-10 code is a code AUTO-MAPPING gap, not a missing diagnosis — the diagnosis IS documented; do NOT raise 'missing coded diagnosis' or dock appropriateness for it. DOCUMENTED-RISK-WITHOUT-SAFEGUARD ONLY: reserve an appropriateness penalty for a risk THIS note actually documents that lacks its safeguard — do NOT dock for a niche pre-analytic / preparatory keyword the note simply doesn't mention (e.g. holding biotin before a thyroid/troponin immunoassay, a fasting/water-deprivation instruction before a test): that is an over-flag, not a note-quality gap — at most note it for awareness. INSTITUTIONAL HEALTH-CHECK PACKAGE: if the encounter is a preventive health-check / screening PACKAGE, its protocol panel of investigations is by design — do NOT flag the package's included tests as individually "unindicated / low-value".
    - prescribing_safety: irrational or unsafe prescribing — wrong/unnecessary drug, an antibiotic for a likely-viral illness, drug–drug or drug–allergy interactions, duplications, dosing problems. Each medication carries the molecule plus [drug class · D&C schedule · ISMP high-alert] resolved from the hospital formulary (the note often gives only a brand); use these to judge class duplication, interactions and high-alert handling. These bracketed tags are SYSTEM-DERIVED formulary metadata, NOT the clinician's documentation — NEVER raise a finding about their accuracy and NEVER penalise the clinician for a drug-class label that looks wrong (e.g. a PPI shown as "Antibiotic"): a wrong tag is a system data issue, out of scope for this clinical audit. Items tagged "nutraceutical/cosmetic" or "not in hospital formulary" are NOT formulary drugs — do not invent drug interactions for them, but you may note non-evidence-based / cosmetic prescribing.
      · SCOPE (critical): a prescribing-safety finding may ONLY concern a drug that appears in the MEDICATIONS list of THIS prescription. Drugs the patient reports in the HISTORY (e.g. "was taking X", "advised medication elsewhere") are context for detecting an interaction or duplication WITH a currently-prescribed drug — they are NEVER by themselves a prescribing fault, and you must not fault THIS clinician for a drug they did not prescribe. If the MEDICATIONS list is empty (none prescribed this encounter), there is NO prescription to assess — emit NO prescribing-safety finding at all.
      · INDICATION: if a medication's usual indication does not match the documented diagnosis, it is most likely a continuation of chronic/long-term therapy (e.g. a statin or antihypertensive on a note for an acute complaint). Report this as "indication for <drug> not documented" (a documentation gap; verdict context-dependent) — do NOT assert it is the wrong drug FOR the acute diagnosis — UNLESS the drug is genuinely harmful or contraindicated for this patient.

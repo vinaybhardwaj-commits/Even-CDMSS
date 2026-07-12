@@ -16,6 +16,7 @@
     { "path": "/api/admin/refresh-doctor-metrics", "schedule": "0 4 * * *" },
     { "path": "/api/admin/opd-audit-mini-backfill?auto=1", "schedule": "*/2 * * * *" },
     { "path": "/api/admin/lab-batch?auto=1", "schedule": "*/2 * * * *" },
-    { "path": "/api/admin/complexity-backfill?auto=1", "schedule": "*/2 * * * *" }
+    { "path": "/api/admin/complexity-backfill?auto=1", "schedule": "*/2 * * * *" },
+    { "path": "/api/admin/opd-audit/longitudinal-replay?auto=1", "schedule": "*/10 * * * *" }
   ]
 }

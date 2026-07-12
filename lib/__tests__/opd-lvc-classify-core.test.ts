@@ -82,8 +82,13 @@ test('precision gate: suppress via ledger decision on lvc:<rule_ref>; default ke
   assert.deepEqual(applyGate(rows, new Set<string>()), rows);
 });
 
-test('LVC_CATEGORIES vocabulary is the four expected values', () => {
-  assert.deepEqual([...LVC_CATEGORIES], ['antibiotic', 'imaging', 'supplement_polypharmacy', 'other']);
+test('LVC_CATEGORIES vocabulary — 3 base + 8 overuse sub-tags + other (0.81.8 Part B)', () => {
+  assert.deepEqual([...LVC_CATEGORIES], [
+    'antibiotic', 'imaging', 'supplement_polypharmacy',
+    'therapeutic_duplication', 'systemic_steroid', 'gi_ppi_prokinetic', 'antihistamine_allergy',
+    'nsaid_analgesic', 'cough_cold_fdc', 'cough_expectorant', 'unindicated_investigation',
+    'other',
+  ]);
 });
 
 // ── engine matcher v3 (decision 25): OR across keyword phrases, AND within a phrase's tokens ──

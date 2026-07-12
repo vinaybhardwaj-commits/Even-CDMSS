@@ -6,10 +6,12 @@
  */
 import type { RightCareDay } from '@/lib/opd-audit-doctor';
 import { fmtIstDateLong } from '@/lib/opd-audit-ui';
+import { LVC_CATEGORY_LABELS } from '@/lib/opd-lvc-classify-core';
 
 const pct = (x: number): string => `${Math.round(x * 100)}%`;
+// 0.81.8 Decision 10 — shared labels so the new overuse sub-tags render (local short overrides retained).
 const CAT_LABEL: Record<string, string> = {
-  antibiotic: 'Antibiotic', imaging: 'Imaging', supplement_polypharmacy: 'Supplement', other: 'Other',
+  ...LVC_CATEGORY_LABELS, supplement_polypharmacy: 'Supplement', other: 'Other',
 };
 
 /** amber = elevated utilization, emerald = low, neutral otherwise (advisory bands, not a scorecard). */

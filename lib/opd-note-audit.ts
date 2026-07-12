@@ -11,10 +11,11 @@ import { retrieve } from './retrieve';
 import { hitsToSources, buildCitedContext, type CiteHit, type Source } from './citations-core';
 import { startTrace, logEvent, finishTrace, tracedChat, setTraceQuestionPreview } from './trace';
 import { geminiModelFor, geminiUtilityModel, TEXT_MODEL, MINI_MODEL } from './llm';
-import { rowToOpdCase, opdCaseText, type OpdKeys, type OpdMed } from './opd-ingest-core';
+import { rowToOpdCase, opdCaseText, type OpdKeys, type OpdMed, type DeidOpdCase } from './opd-ingest-core';
 import {
   opdCompleteness, prescribingChecks, parseOpdAnalysis, stampFindingIdentity,
   consolidateDecisions, neutralizeMetadataFindings, resolveMedRoute,
+  neutralizeScreeningContext, isHealthCheckEncounter,
   NSAID_MOLECULES, MUSCLE_RELAXANT_MOLECULES, medHasMoleculeFrom,
   OPD_AUDIT_SYSTEM, buildOpdAuditUser, OPD_ENGINE_VERSION,
   type OpdFinding, type OpdCompleteness, type OpdSuggestion,
@@ -149,6 +150,104 @@ function muscleRelaxantFindings(meds: OpdMed[]): OpdFinding[] {
   }];
 }
 
+// ── 0.81.8 bug 1 — unindicated bronchodilator / antihistamine+montelukast for an ACUTE URTI ───────────
+// Deterministic appropriateness backstop, context-GUARDED: fires only for a clear acute upper-respiratory
+// presentation and NEVER for a chronic-airways patient (J40–J47 / asthma / COPD), where a xanthine or a
+// montelukast is legitimate maintenance. A miss the LLM made inconsistently → determinised (↓appropriateness).
+const XANTHINE_MOLECULES = ['theophylline', 'doxophylline', 'doxofylline', 'acebrophylline', 'bamifylline', 'etofylline', 'aminophylline', 'choline theophyllinate', 'deriphyllin'];
+const ANTIHISTAMINE_MOLECULES = ['cetirizine', 'levocetirizine', 'loratadine', 'desloratadine', 'fexofenadine', 'chlorpheniramine', 'chlorphenamine', 'hydroxyzine', 'bilastine', 'ebastine', 'pheniramine', 'promethazine', 'cinnarizine', 'ketotifen'];
+const ACUTE_URTI_RE = /\b(urti|upper respiratory|common cold|coryza|nasopharyngitis|rhinitis|rhinorrho?ea|running nose|sore throat|throat pain|pharyngitis|tonsillitis|viral fever|viral (?:uri|illness)|cough and cold|acute (?:cough|cold))\b/i;
+const ACUTE_URTI_ICD = /^J0[0-6]|^J1[01]/i;
+const CHRONIC_RESP_RE = /\b(asthma|copd|chronic obstructive|chronic bronchitis|emphysema|bronchiectasis|interstitial lung|reactive airway|\bild\b)\b/i;
+const CHRONIC_RESP_ICD = /^J4[0-7]/i;
+const uniq = (a: string[]): string[] => Array.from(new Set(a));
+
+function detAppr(subject: string, confidence: number, rationale: string): OpdFinding {
+  return { subject, verdict: 'low-value', confidence, domain: 'appropriateness', rationale, evidence: [], estimates: [], citation_ids: [], source: 'deterministic' };
+}
+
+export function unindicatedRespFindings(oc: DeidOpdCase): OpdFinding[] {
+  const hay = [oc.reasonForConsult || '', ...oc.presentingComplaints, ...oc.impressions, ...oc.history].join(' ');
+  const codes = [...oc.diagnosisCodes, ...oc.impressionCodes].map((c) => c.trim());
+  const isAcuteUrti = ACUTE_URTI_RE.test(hay) || codes.some((c) => ACUTE_URTI_ICD.test(c));
+  const isChronicResp = CHRONIC_RESP_RE.test(hay) || codes.some((c) => CHRONIC_RESP_ICD.test(c));
+  if (!isAcuteUrti || isChronicResp) return [];                          // context guard (Decision 4)
+  const out: OpdFinding[] = [];
+  const xanthines = oc.medications.filter((m) => medHasMoleculeFrom(m, XANTHINE_MOLECULES));
+  if (xanthines.length) {
+    const names = uniq(xanthines.map((m) => m.resolvedGeneric || m.generic || m.brand || 'xanthine bronchodilator'));
+    out.push(detAppr(`Bronchodilator/mucolytic not indicated for an acute URTI: ${names.join(', ')}`, 0.6,
+      'A xanthine / acebrophylline-type bronchodilator-mucolytic has no established role in an uncomplicated acute upper-respiratory infection (a self-limiting viral illness) — reserve it for obstructive airways disease. Deterministic appropriateness backstop; a chronic-airways context (asthma/COPD, J40–J47) is excluded.'));
+  }
+  const hasAntihistamine = oc.medications.some((m) => medHasMoleculeFrom(m, ANTIHISTAMINE_MOLECULES));
+  const hasMontelukast = oc.medications.some((m) => medHasMoleculeFrom(m, ['montelukast']));
+  if (hasAntihistamine && hasMontelukast) {
+    out.push(detAppr('Antihistamine + montelukast co-prescribed for a viral URTI', 0.55,
+      'A leukotriene antagonist (montelukast) added to an antihistamine for an acute viral upper-respiratory illness is not evidence-based — montelukast is an asthma/allergic-rhinitis maintenance drug, not an acute-URTI treatment. Excluded when a chronic-airways / allergic-rhinitis context is documented.'));
+  }
+  return out;
+}
+
+// ── 0.81.8 bug 3 — topical nasal decongestant used >5 days (rhinitis medicamentosa) ───────────────────
+// Ingredient-level (catches FDCs / brand-only lines via the resolved composition); duration parsed from the
+// med line. >5 days of an imidazoline nasal decongestant risks rebound congestion (↓prescribing_safety).
+const NASAL_DECONGESTANT_MOLECULES = ['oxymetazoline', 'xylometazoline', 'naphazoline', 'xylometazolin', 'oxymetazolin'];
+function parseDurationDays(s?: string): number | null {
+  if (!s) return null;
+  const str = s.toLowerCase();
+  let m = str.match(/(\d+)\s*(?:days?|d)\b/); if (m) return Number(m[1]);
+  m = str.match(/(\d+)\s*(?:weeks?|wks?|w)\b/); if (m) return Number(m[1]) * 7;
+  m = str.match(/(\d+)\s*(?:months?|mos?)\b/); if (m) return Number(m[1]) * 30;
+  return null;
+}
+export function decongestantDurationFindings(meds: OpdMed[]): OpdFinding[] {
+  const out: OpdFinding[] = [];
+  for (const m of meds) {
+    if (!medHasMoleculeFrom(m, NASAL_DECONGESTANT_MOLECULES)) continue;
+    const days = parseDurationDays(m.duration);
+    if (days !== null && days > 5) {
+      const name = m.resolvedGeneric || m.generic || m.brand || 'topical nasal decongestant';
+      out.push({
+        subject: `Topical nasal decongestant prescribed for ${days} days: ${name}`,
+        verdict: 'low-value', confidence: 0.7, domain: 'prescribing_safety',
+        rationale: `An imidazoline nasal decongestant (${name}) used for ${days} days exceeds the 3–5 day cap — prolonged use causes rebound congestion (rhinitis medicamentosa). Ingredient-level deterministic check.`,
+        evidence: [], estimates: [], citation_ids: [], source: 'deterministic',
+      });
+    }
+  }
+  return out;
+}
+
+// ── 0.81.8 bug 8 — route/formulation-aware duplication ───────────────────────────────────────────────
+// Two products sharing a molecule are NOT a therapeutic duplicate when they are applied differently: a
+// wash-off cleanser + a leave-on gel (e.g. benzoyl peroxide face wash + gel), or a topical + a systemic
+// form. Drop the deterministic duplicate finding in those cases (the co-prescription is intentional).
+const WASHOFF_RE = /\b(face\s?wash|cleanser|cleansing bar|shampoo|\bsoap\b|body wash|\bwash\b)\b/i;
+const LEAVEON_RE = /\b(cream|ointment|\bgel\b|lotion|serum|emollient|paste|patch|\bung\b)\b/i;
+function applicationForm(m: OpdMed): 'washoff' | 'leaveon' | null {
+  const hay = `${m.brand || ''} ${m.generic || ''} ${m.instruction || ''} ${m.dose || ''}`;
+  if (WASHOFF_RE.test(hay)) return 'washoff';
+  if (LEAVEON_RE.test(hay)) return 'leaveon';
+  return null;
+}
+export function dedupeRouteAware(findings: OpdFinding[], meds: OpdMed[]): OpdFinding[] {
+  const molOf = (m: OpdMed) => (m.resolvedGeneric || m.generic || '').toLowerCase();
+  return findings.filter((f) => {
+    if (f.source !== 'deterministic') return true;
+    let mol: string | null = null;
+    if (/^duplicate prescription:/i.test(f.subject)) mol = f.subject.replace(/^duplicate prescription:\s*/i, '').trim().toLowerCase();
+    else if (/^same molecule in \d+ products?/i.test(f.subject)) { const c = f.subject.lastIndexOf(':'); mol = c >= 0 ? f.subject.slice(c + 1).trim().toLowerCase() : null; }
+    if (!mol) return true;
+    const sharing = meds.filter((m) => { const g = molOf(m); if (!g) return false; return g === mol || g.split(/[+/,]/).map((t) => t.trim()).includes(mol); });
+    if (sharing.length < 2) return true;                                  // can't resolve the products → keep the finding
+    const routes = new Set(sharing.map((m) => resolveMedRoute(m) || 'unknown'));
+    if (routes.has('topical') && (routes.has('oral') || routes.has('parenteral'))) return false;   // topical + systemic → intentional
+    const forms = new Set(sharing.map(applicationForm).filter(Boolean));
+    if (forms.has('washoff') && forms.has('leaveon')) return false;       // wash-off + leave-on → not a duplicate
+    return true;
+  });
+}
+
 export interface OpdNoteAudit {
   keys: OpdKeys;
   scorecard: OpdScorecard;
@@ -253,8 +352,10 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
   const { case: oc, keys } = rowToOpdCase(row);
   enrichOpdMeds(oc.medications);   // brand→generic + class/schedule/high-alert/LASA/VED from the formulary
 
-  const det = [...prescribingChecks(oc), ...doseFindings(oc.medications), ...ddiFindings(oc.medications), ...muscleRelaxantFindings(oc.medications)];
+  const det = [...prescribingChecks(oc), ...doseFindings(oc.medications), ...ddiFindings(oc.medications), ...muscleRelaxantFindings(oc.medications),
+    ...unindicatedRespFindings(oc), ...decongestantDurationFindings(oc.medications)];   // 0.81.8 bugs 1, 3
   const completeness = opdCompleteness(oc);
+  const healthCheck = isHealthCheckEncounter(oc);   // 0.81.8 bug 2 — institutional screening context
 
   // Tier-1 self-heal: apply human-approved active suppressions to the final (identity-stamped)
   // findings — drop, or downgrade to informational (out of the triage queue + score). No-op when
@@ -269,8 +370,10 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     // ghost (typically read out of the patient's history). Drop it. (Interaction/duplication with a
     // history drug is only valid when a CURRENT med exists — which requires meds.length > 0.)
     if (noMeds) out = out.filter((f) => f.domain !== 'prescribing_safety');
+    out = dedupeRouteAware(out, oc.medications);   // 0.81.8 bug 8: wash-off + leave-on / topical + systemic is not a duplicate
     out = consolidateDecisions(out);   // BUG-0.8-12: one decision → one finding, across sources
     out = neutralizeMetadataFindings(out);   // BUG-0.8-16: don't penalise the doctor for our metadata
+    out = neutralizeScreeningContext(out, healthCheck);   // 0.81.8 bug 2: don't penalise a health-check package's protocol panel
     // 0.81.4 (RIGHT-CARE §5 / decision 14): stamp rule_ref/lvc_category on the SURVIVING,
     // non-informational low-value findings (after neutralisation) — keyword-matched against the active
     // lvc_recommendations. Additive metadata — never changes verdict/domain/score.

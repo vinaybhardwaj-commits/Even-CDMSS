@@ -54,6 +54,7 @@ export interface DeidOpdCase {
   // definitive in-person treatment episode. Optional so existing DeidOpdCase literals stay valid.
   patientEducation?: string[];      // auto-attached templated leaflets (self-care text, video links) — NOT clinician documentation
   isTeleconsult?: boolean;          // remote consult → no physical examination expected
+  noteDate?: string | null;         // 0.81.8 bug 4 — the consult date (ISO), surfaced in opdCaseText as "today"
   consultTypes?: string[];          // db13 consult_types purpose markers (0.81.7 channel evidence)
   referrals?: string[];             // onward referrals, e.g. "In-Person Orthopedics (Even-recommended)"
   numReferrals?: number;
@@ -340,6 +341,7 @@ export function rowToOpdCase(row: Record<string, unknown>): { case: DeidOpdCase;
     followUpDateSet,
     patientEducation,
     isTeleconsult,
+    noteDate: strOrNull(row.timestamp) || strOrNull(row._create_time) || strOrNull(row.uploaded_at),   // 0.81.8 bug 4
     consultTypes,
     referrals,
     numReferrals,
@@ -384,6 +386,10 @@ export function formatOpdMed(m: OpdMed): string {
 export function opdCaseText(c: DeidOpdCase, opts?: { specialty?: string | null }): string {
   const lines: string[] = [];
   const specialty = (opts?.specialty || '').trim();
+  // BUG-0.81.8-4 (Decision 8): anchor the consult date so the auditor treats THIS encounter as "today" and
+  // reads any other date in the narrative as historical. One line, added identically to the base-LLM and the
+  // Stage-3 longitudinal digest (the only intended diff on the longitudinal plane).
+  if (c.noteDate) lines.push(`Consultation date (the encounter being audited): ${String(c.noteDate).slice(0, 10)} — this is "today" for this note. Any OTHER date appearing in the narrative (history, prior results, past visits) is HISTORICAL context that predates this consult; never read a narrative date as the consult/appointment date or fault the note for a date that is merely older than today.`);
   if (specialty) lines.push(`Treating clinician specialty: ${specialty} — where relevant, judge appropriateness and prescribing against this specialty's standards; a specialist's focused note and specialty-appropriate choices are expected, not general-practice defaults.`);
   if (c.consultType) lines.push(`Consult type: ${c.consultType}`);
   if (c.consultTypes && c.consultTypes.length) lines.push(`Consult purposes: ${c.consultTypes.join(', ')}`);

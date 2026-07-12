@@ -3,13 +3,19 @@ import { useState, useMemo } from 'react';
 import Link from 'next/link';
 import { bandColor, scoreColor } from '@/lib/opd-audit-ui';
 import { CATS, CAT_DEF, type CatSev } from '@/lib/opd-audit-cats';
+import { frequentFlierCmp, SORT_NEXT, SORT_LABEL, type SortMode } from '@/lib/opd-audit-context-sort';
 
 export type AuditRow = {
   id: string; time: string; doctor: string; consult: string; uid: string;
   band: string; index: number; lowVal: number; issue: string; cats: string[];
   doctorUid: string | null;
   context?: string | null;   // Stage 3 (D5c) — established | thin | none | null (no longitudinal block)
+  encounters?: number | null;   // 0.81.8 Part C — prior encounters (from the longitudinal block)
+  longFindings?: number | null; // 0.81.8 Part C — longitudinal findings on this note
 };
+
+// 0.81.8 Part C — the frequent-flier sort + its 3-state cycle live in the pure lib/opd-audit-context-sort
+// (so the comparator is unit-tested); the table just consumes them. Default sort unchanged (worst first).
 
 // Advisory (slate/indigo) context indicator — deliberately NOT the scored-band palette.
 const CONTEXT_STYLE: Record<string, { label: string; color: string; bg: string }> = {
@@ -53,7 +59,7 @@ export default function NotesExplorer({ rows, initialDoctorUid, triagedIds }: { 
   const [band, setBand] = useState('');
   const [cat, setCat] = useState('');
   const [docUid, setDocUid] = useState(initialDoctorUid || '');
-  const [sort, setSort] = useState<'index' | 'time'>('index');
+  const [sort, setSort] = useState<SortMode>('index');   // default unchanged (worst first)
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
@@ -75,7 +81,10 @@ export default function NotesExplorer({ rows, initialDoctorUid, triagedIds }: { 
     if (cat) r = r.filter((x) => x.cats.includes(cat));
     if (band) r = r.filter((x) => x.band === band);
     if (needle) r = r.filter((x) => `${x.doctor} ${x.consult} ${x.issue} ${x.uid} ${x.band}`.toLowerCase().includes(needle));
-    return [...r].sort((a, b) => (sort === 'index' ? a.index - b.index : b.time.localeCompare(a.time)));
+    return [...r].sort((a, b) => (
+      sort === 'index' ? a.index - b.index
+      : sort === 'time' ? b.time.localeCompare(a.time)
+      : frequentFlierCmp(a, b)));
   }, [rows, q, band, cat, docUid, sort]);
 
   type Issue = (typeof issues)[number];
@@ -123,7 +132,7 @@ export default function NotesExplorer({ rows, initialDoctorUid, triagedIds }: { 
               <button key={b} onClick={() => setBand(band === b ? '' : b)} className={`px-2 py-1 ${band === b ? 'text-white' : 'bg-white text-slate-500 hover:bg-slate-50'}`} style={band === b ? { background: bandColor(b) } : undefined}>{b}</button>
             ))}
           </span>
-          <button onClick={() => setSort(sort === 'index' ? 'time' : 'index')} className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-500 hover:text-brand">sort: {sort === 'index' ? 'worst first' : 'newest'}</button>
+          <button onClick={() => setSort(SORT_NEXT[sort])} className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-500 hover:text-brand" title="Cycle: worst first → newest → frequent flier (longitudinal context)">sort: {SORT_LABEL[sort]}</button>
           {cat && <button onClick={() => setCat('')} className="rounded-lg bg-brand-faint px-2 py-1 text-[11px] font-medium text-brand">✕ {CAT_DEF[cat]?.label}</button>}
           {docUid && <button onClick={() => setDocUid('')} className="rounded-lg bg-brand-faint px-2 py-1 text-[11px] font-medium text-brand">Filtered to {docName} · clear ✕</button>}
           <button onClick={() => downloadBulk(filtered.map((r) => r.id), setBusy, setErr)} disabled={busy || filtered.length === 0}
@@ -149,7 +158,8 @@ export default function NotesExplorer({ rows, initialDoctorUid, triagedIds }: { 
             </thead>
             <tbody>
               {filtered.map((r) => (
-                <tr key={r.id} className="border-t border-slate-50 hover:bg-slate-50">
+                <tr key={r.id} className="border-t border-slate-50 hover:bg-slate-50"
+                  style={r.context && CONTEXT_STYLE[r.context] ? { borderLeft: `3px solid ${CONTEXT_STYLE[r.context].color}` } : undefined}>
                   <td className="whitespace-nowrap px-3 py-1.5 text-slate-500"><Link href={`/admin/opd-audit/${r.id}`} className="hover:text-brand">{r.time}</Link></td>
                   <td className="whitespace-nowrap px-2 py-1.5 text-slate-700">
                     {r.doctorUid
@@ -162,7 +172,10 @@ export default function NotesExplorer({ rows, initialDoctorUid, triagedIds }: { 
                   <td className="px-3 py-1.5"><Link href={`/admin/opd-audit/${r.id}`} className="text-slate-600 hover:text-brand hover:underline">{r.issue}</Link>{triaged.has(r.id) && <span className="ml-1 text-emerald-600" title="has your triage">✓</span>}</td>
                   <td className="px-2 py-1.5 text-center">
                     {r.context && CONTEXT_STYLE[r.context]
-                      ? <span className="rounded px-1.5 py-0.5 text-[10px] font-medium" style={{ color: CONTEXT_STYLE[r.context].color, background: CONTEXT_STYLE[r.context].bg }} title="Longitudinal context depth (informational)">{CONTEXT_STYLE[r.context].label}</span>
+                      ? <span className="inline-flex flex-col items-center gap-0.5" title="Longitudinal context depth + frequent-flier signal (informational)">
+                          <span className="rounded px-1.5 py-0.5 text-[10px] font-medium" style={{ color: CONTEXT_STYLE[r.context].color, background: CONTEXT_STYLE[r.context].bg }}>{CONTEXT_STYLE[r.context].label}</span>
+                          <span className="text-[9px] text-slate-400">{r.encounters || 0} prior{r.longFindings ? ` · ${r.longFindings} find` : ''}</span>
+                        </span>
                       : <span className="text-slate-300">—</span>}
                   </td>
                   <td className="whitespace-nowrap px-2 py-1.5 text-right"><a href={`/api/opd-audit/export-pdf?id=${r.id}`} className="text-slate-400 hover:text-brand" title="Download note + audit PDF">↓</a></td>

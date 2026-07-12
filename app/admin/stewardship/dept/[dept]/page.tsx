@@ -14,6 +14,7 @@ import {
   fetchLvcCells, readRightCareExclusions,
 } from '@/lib/opd-audit-doctor';
 import { computeDoctorOE, FUNNEL_MIN_N, type DoctorOE } from '@/lib/opd-funnel-core';
+import { LVC_CATEGORY_LABELS } from '@/lib/opd-lvc-classify-core';
 import { FunnelCard } from '../../../opd-audit/doctor/[uid]/funnel-card';
 
 export const dynamic = 'force-dynamic';
@@ -21,7 +22,8 @@ export const metadata = { title: 'Stewardship · Department · Admin' };
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 const pct = (x: number): string => `${Math.round(x * 100)}%`;
-const CAT_LABEL: Record<string, string> = { antibiotic: 'Antibiotic', imaging: 'Imaging', supplement_polypharmacy: 'Supplement / polypharmacy', other: 'Other' };
+// 0.81.8 Decision 10 — shared category labels (local 'other' override kept) so new overuse sub-tags render.
+const CAT_LABEL: Record<string, string> = { ...LVC_CATEGORY_LABELS, other: 'Other' };
 
 function Locked() {
   return (

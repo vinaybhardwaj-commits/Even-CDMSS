@@ -16,7 +16,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/admin-gate';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { sql } from '@/lib/db';
-import { matchLvcRule, type LvcRuleLite } from '@/lib/opd-lvc-classify-core';
+import { matchLvcRule, classifyLvcCategory, LVC_CATEGORIES, type LvcRuleLite } from '@/lib/opd-lvc-classify-core';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -62,7 +62,16 @@ async function status(): Promise<Record<string, unknown>> {
      FROM opd_note_audits a
      CROSS JOIN LATERAL jsonb_array_elements(a.findings) e
      WHERE a.app_source = $1 AND jsonb_typeof(a.findings) = 'array'`, [APP]).catch(() => []);
-  return { ...(rows[0] || { lvc: 0, stamped: 0, null_ref: 0 }), cursor: await getCursor() };
+  // 0.81.8 Part B — the lvc_category distribution (report-back: prove the sub-tags populated post-restamp).
+  const dist = await run(
+    `SELECT coalesce(e->>'lvc_category','(unstamped)') AS category, count(*)::int AS n
+     FROM opd_note_audits a
+     CROSS JOIN LATERAL jsonb_array_elements(a.findings) e
+     WHERE a.app_source = $1 AND jsonb_typeof(a.findings) = 'array' AND e->>'signal_type' = 'low_value_care'
+     GROUP BY 1 ORDER BY n DESC`, [APP]).catch(() => []);
+  const categoryDist: Record<string, number> = {};
+  for (const r of dist as Array<{ category: string; n: number }>) categoryDist[String(r.category)] = Number(r.n);
+  return { ...(rows[0] || { lvc: 0, stamped: 0, null_ref: 0 }), categoryDist, cursor: await getCursor() };
 }
 
 /**
@@ -89,7 +98,8 @@ async function runBatch(mode: 'null' | 'restamp'): Promise<Record<string, unknow
        )
      ORDER BY note_date ASC, id ASC LIMIT ${BATCH}`, [APP, cursor]).catch(() => []) as Array<{ id: string; note_date: string; findings: unknown }>;
 
-  let processed = 0, updated = 0, stamped = 0, cleared = 0, lastDate = cursor;
+  const asCat = (v: unknown): string | null => (LVC_CATEGORIES as readonly string[]).includes(String(v)) ? String(v) : null;
+  let processed = 0, updated = 0, stamped = 0, cleared = 0, recat = 0, lastDate = cursor;
   for (const r of rows) {
     processed++;
     lastDate = r.note_date ? new Date(r.note_date).toISOString() : lastDate;
@@ -104,8 +114,18 @@ async function runBatch(mode: 'null' | 'restamp'): Promise<Record<string, unknow
         if (ref) { changed = true; stamped++; return { ...f, rule_ref: ref }; }
         return f;                                       // no match → stays null (retried on re-sweep)
       }
-      // restamp: overwrite whenever the current value differs from the fresh matcher result (incl → null)
-      if (cur !== ref) { changed = true; if (ref) stamped++; else cleared++; return { ...f, rule_ref: ref }; }
+      // restamp (0.81.8 Part B): recompute BOTH rule_ref AND lvc_category with the current matcher/classifier
+      // (the sub-tag taxonomy expanded, so a stored 'other' may now resolve to a specific overuse tag).
+      const rule = ref ? rules.find((x) => x.id === ref) : null;
+      const cat = (rule && asCat(rule.category)) ?? classifyLvcCategory(f.subject as string, f.rationale as string | null);
+      const curCat = (f.lvc_category as string | undefined) ?? null;
+      const refChanged = cur !== ref, catChanged = curCat !== cat;
+      if (refChanged || catChanged) {
+        changed = true;
+        if (refChanged) { if (ref) stamped++; else cleared++; }
+        if (catChanged) recat++;
+        return { ...f, rule_ref: ref, lvc_category: cat };
+      }
       return f;
     });
     if (changed) {
@@ -115,7 +135,7 @@ async function runBatch(mode: 'null' | 'restamp'): Promise<Record<string, unknow
   }
   if (processed > 0) await setCursor(lastDate);
   const done = processed < BATCH;
-  return { mode, processed, updated, stamped, cleared, done, cursor: lastDate, note: done ? 'sweep drained; POST ?reset=1 to re-sweep' : `more remain — POST again${mode === 'restamp' ? ' ?restamp=1' : ''}` };
+  return { mode, processed, updated, stamped, cleared, recat, done, cursor: lastDate, note: done ? 'sweep drained; POST ?reset=1 to re-sweep' : `more remain — POST again${mode === 'restamp' ? ' ?restamp=1' : ''}` };
 }
 
 export async function GET(req: NextRequest) {

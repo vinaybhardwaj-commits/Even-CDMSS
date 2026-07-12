@@ -9,6 +9,7 @@ import { individualUidForPresc, getMemberSnapshotAsOf } from '@/lib/member-state
 import { presentMemberState, type MemberStateView } from '@/lib/member-state/present-core';
 import { type OpdDomain, documentationAdequacyFlag } from '@/lib/opd-note-score-core';
 import { OPD_ENGINE_VERSION, OPD_ENGINE_VERSIONS_CURRENT } from '@/lib/opd-note-audit-core';
+import { LVC_CATEGORY_LABELS } from '@/lib/opd-lvc-classify-core';
 
 // Decision 21: prev/next navigation READS the current-engine FAMILY (the escalation package below
 // keeps exact OPD_ENGINE_VERSION — that's the display/metadata stamp, not a read filter).
@@ -38,7 +39,8 @@ const VERDICT_COLOR: Record<string, string> = {
 
 type Finding = { subject: string; verdict: string; confidence: number; domain: string; rationale: string; evidence?: string[]; estimates?: string[]; source?: string; citation_ids?: number[]; finding_ref?: string; signal_type?: string; rule_ref?: string | null; lvc_category?: string };
 type LvcRuleInfo = { plain_rationale: string | null; citation: string | null };
-const LVC_CAT_LABEL: Record<string, string> = { antibiotic: 'Antibiotic', imaging: 'Imaging', supplement_polypharmacy: 'Supplement / polypharmacy', other: 'Low-value care' };
+// 0.81.8 Decision 10 — shared category labels (local 'other' override kept) so new overuse sub-tags render.
+const LVC_CAT_LABEL: Record<string, string> = { ...LVC_CATEGORY_LABELS, other: 'Low-value care' };
 type Pdqi = { attr: string; label?: string; value: number };
 type Sugg = { priority: number; text: string };
 
