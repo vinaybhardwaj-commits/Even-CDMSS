@@ -65,5 +65,9 @@ export const ADHOC_GEN_PROMPT = [
   '- Return each chosen id with a one-line rationale for why it fits this procedure.',
   '- If nothing in the bank fits, return an empty selection (the system falls back to the core set).',
   '',
-  'Output: a list of { id, rationale } — ids only, drawn verbatim from the bank.',
+  'Respond with ONLY a JSON object of this exact shape (no prose, no markdown):',
+  '{ "selection": [ { "id": "<a bank id>", "rationale": "<one short line>" } ], "gaps": [ "<a clinically-relevant concern this procedure has that NO bank item covers>" ] }',
+  '- "selection": your chosen bank ids (≤6), each with a one-line rationale. Ids MUST be copied verbatim from the bank.',
+  '- "gaps": short phrases for anything important this procedure needs that the bank cannot cover (may be empty []).',
+  '- If nothing in the bank fits, return { "selection": [], "gaps": [ ... ] } and the system falls back to the core set.',
 ].join('\n');

@@ -74,7 +74,6 @@ export async function generateAdhocSet(
     ],
     temperature: 0,
     max_tokens: 1200,
-    response_format: { type: 'json_object' },
   };
 
   const traceId = await startTrace('proms_adhoc_gen', { seriesId, procedure }).catch(() => undefined);
