@@ -10,6 +10,7 @@ import type {
   ProblemCourse, NormalizedConcept,
 } from '../member-state/schema';
 import type { Provenance } from '../clinical-state/schema';
+import { canonicalAnalyte, bandValue } from '../member-state/lab-reference-ranges';
 
 const NOW = '2026-07-12T00:00:00.000Z';
 const prov = (): Provenance => ({ sourceField: 'dx', rawText: 'x', extractionMethod: 'reported', confidence: 0.9, trust: 'structured_db' });
@@ -24,8 +25,8 @@ function prob(raw: string, last: string, opts: { occ?: number; course?: ProblemC
     course: opts.course ?? 'single_episode', currentStatusConfidence: 0.5, occurrences,
   };
 }
-function invest(raw: string, unit: string | null, pts: { date: string; value: string }[]): LongitudinalInvestigation {
-  return { normalizedAnalyte: nc(raw), unit, series: pts.map((p, i) => ({ encounterRef: `e${i}`, date: p.date, value: p.value, unit, abnormal: null, provenance: prov() })) };
+function invest(raw: string, unit: string | null, pts: { date: string; value: string; abnormal?: string | null }[]): LongitudinalInvestigation {
+  return { normalizedAnalyte: nc(raw), unit, series: pts.map((p, i) => ({ encounterRef: `e${i}`, date: p.date, value: p.value, unit, abnormal: p.abnormal ?? null, provenance: prov() })) };
 }
 function medi(raw: string): LongitudinalMedication {
   return { normalizedConcept: nc(raw), status: 'prescribed', firstSeen: '2024-01-01', lastSeen: '2024-01-01', occurrences: [{ encounterRef: 'e0', date: '2024-01-01', provenance: prov() }] };
@@ -166,6 +167,60 @@ test('buildAttentionFlags: medication conflict + critical lab surface as flags',
   assert.ok(flags.some((f) => f.kind === 'med_conflict'));
   assert.ok(flags.some((f) => f.kind === 'abnormal_lab' && f.severity === 'safety'));
   assert.equal(flags[0].severity, 'safety');   // safety-first ordering
+});
+
+// ── PATCH: abnormal-lab completeness (real db strings) ──
+test('patch/1: canonicalAnalyte tolerant match — real Vit D db name → severe band', () => {
+  // exact-lookup MISS on the parenthetical db name, tolerant retry strips "(...)" → maps.
+  assert.equal(canonicalAnalyte('Vitamin D (25 OH Cholecalciferol)'), 'vitamin_d_25oh');
+  assert.equal(canonicalAnalyte('Vitamin D (25-OH)'), 'vitamin_d_25oh');   // exact alias still works
+  const banded = bandValue('vitamin_d_25oh', 8.01, 'ng/mL', null);
+  assert.equal(banded!.band, 'critical');
+});
+
+test('patch/1: real Vit D (8.01 ng/mL) surfaces in labs, gaps AND attention', () => {
+  const meds = [medi('Cholecalciferol (Vitamin D)')];
+  const iv = [invest('Vitamin D (25 OH Cholecalciferol)', 'ng/mL', [{ date: '2023-12-01', value: '8.01', abnormal: 'ABNORMAL' }])];
+  const labs = flagAbnormalLabs(iv, null);
+  const vd = labs.surfaced.find((l) => /vitamin d/i.test(l.analyte))!;
+  assert.equal(vd.band, 'critical');
+  assert.equal(vd.abnormal, true);
+
+  const gaps = computeCareGaps(iv, meds, NOW);
+  assert.equal(gaps.length, 1);
+  assert.equal(gaps[0].onTreatment, true);
+  assert.equal(gaps[0].severity, 'safety');
+
+  const snap = { conflicts: [] } as unknown as MemberStateSnapshot;
+  const flags = buildAttentionFlags(snap, labs.surfaced, gaps);
+  assert.ok(flags.some((f) => f.kind === 'abnormal_lab' && f.severity === 'safety' && /vitamin d/i.test(f.text)));
+});
+
+test('patch/2: source-abnormal safety net — no range row but lab-flagged → surfaced band "abnormal"', () => {
+  const iv = [invest('Non-HDL Cholesterol', 'mg/dL', [{ date: '2023-12-01', value: '160', abnormal: 'ABNORMAL' }])];
+  const labs = flagAbnormalLabs(iv, null);
+  assert.equal(labs.surfaced.length, 1);
+  assert.equal(labs.surfaced[0].band, 'abnormal');
+  assert.equal(labs.surfaced[0].abnormal, true);
+  assert.equal(labs.surfaced[0].refText, 'flagged by lab');   // NO invented severity
+});
+
+test('patch/2: latest source-NORMAL + no range → NOT surfaced (nothing over-flagged)', () => {
+  const iv = [invest('Some Unmapped Panel', 'mg/dL', [{ date: '2023-12-01', value: '5', abnormal: 'NORMAL' }])];
+  const labs = flagAbnormalLabs(iv, null);
+  assert.equal(labs.surfaced.length, 0);
+  assert.equal(labs.normalCount, 1);
+});
+
+test('patch/3: trend de-clutter — stable repeats collapse, differing values surface', () => {
+  const stable = flagAbnormalLabs([invest('SGPT', 'U/L', [{ date: '2025-01-01', value: '30' }, { date: '2026-01-01', value: '30' }])], null);
+  assert.equal(stable.surfaced.length, 0);
+  assert.equal(stable.normalCount, 1);
+
+  const differ = flagAbnormalLabs([invest('SGPT', 'U/L', [{ date: '2025-01-01', value: '30' }, { date: '2026-01-01', value: '34' }])], null);
+  assert.equal(differ.surfaced.length, 1);
+  assert.equal(differ.surfaced[0].surfacedReason, 'trend');
+  assert.equal(differ.surfaced[0].abnormal, false);
 });
 
 // ── determinism ──

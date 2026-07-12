@@ -56,7 +56,8 @@ const LEVEL: Record<string, string> = {
   GOOD: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
 };
 const BAND_TEXT: Record<string, string> = {
-  critical: 'text-rose-700', high: 'text-orange-700', low: 'text-amber-700', borderline: 'text-amber-700', normal: 'text-slate-500',
+  critical: 'text-rose-700', high: 'text-orange-700', low: 'text-amber-700', borderline: 'text-amber-700',
+  abnormal: 'text-amber-700', normal: 'text-slate-500',   // 'abnormal' = source-flagged, no invented severity
 };
 const TIER_LABEL: Record<ProblemTier, string> = { active: 'Active / recent', background: 'Background', historical: 'Historical / incidental' };
 const TIER_TAG: Record<ProblemTier, string> = { active: 'bg-teal-50 text-teal-700', background: 'bg-slate-100 text-slate-600', historical: 'bg-slate-50 text-slate-400' };

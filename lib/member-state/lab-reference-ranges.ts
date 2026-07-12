@@ -8,7 +8,9 @@
 // Total-chol 202 → borderline; HbA1c 5.1 / TSH 2.29 / Hb 12.5 / creat 0.6 / TG 105 / HDL 52 → in range).
 
 export type Sex = 'F' | 'M' | null;
-export type Band = 'critical' | 'high' | 'borderline' | 'low' | 'normal';
+// 'abnormal' = source-flagged abnormal (test_values_view.investigation_is_abnormal) with NO mapped
+// range row — surfaced honestly with no invented severity (patch: abnormal-lab completeness).
+export type Band = 'critical' | 'high' | 'borderline' | 'low' | 'abnormal' | 'normal';
 
 export interface RangeRow {
   analyte: string;                 // canonical analyte id
@@ -27,9 +29,12 @@ export const ANALYTE_ALIASES: Record<string, string> = {
   'vitamin d': 'vitamin_d_25oh',
   'vitamin d (25-oh)': 'vitamin_d_25oh',
   'vitamin d 25-oh': 'vitamin_d_25oh',
+  'vitamin d (25 oh cholecalciferol)': 'vitamin_d_25oh',   // observed real db name
   '25-oh vitamin d': 'vitamin_d_25oh',
   '25 hydroxy vitamin d': 'vitamin_d_25oh',
   'vit d': 'vitamin_d_25oh',
+  'non hdl cholesterol': 'non_hdl_cholesterol',             // observed; no range row → safety net surfaces
+  'non-hdl cholesterol': 'non_hdl_cholesterol',
   'vitamin b12': 'vitamin_b12',
   'vitamin b-12': 'vitamin_b12',
   'vit b12': 'vitamin_b12',
@@ -69,10 +74,16 @@ export function normalizeUnit(u: string | null | undefined): string {
     .replace(/\s+/g, '');
 }
 
-/** Canonicalise a raw analyte name to its reference id, or '' if unknown. */
+/** Canonicalise a raw analyte name to its reference id, or '' if unknown. Tolerant: on an exact-lookup
+ *  miss, strips ONE trailing parenthetical group and retries once — so "vitamin d (25 oh cholecalciferol)"
+ *  → "vitamin d" → vitamin_d_25oh. Deterministic. */
 export function canonicalAnalyte(raw: string | null | undefined): string {
-  const key = String(raw ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
-  return ANALYTE_ALIASES[key] ?? '';
+  const norm = (s: string): string => s.trim().toLowerCase().replace(/\s+/g, ' ');
+  const key = norm(String(raw ?? ''));
+  if (ANALYTE_ALIASES[key]) return ANALYTE_ALIASES[key];
+  const stripped = norm(key.replace(/\s*\([^)]*\)\s*$/, ''));   // drop a trailing "(...)" qualifier
+  if (stripped && stripped !== key && ANALYTE_ALIASES[stripped]) return ANALYTE_ALIASES[stripped];
+  return '';
 }
 
 // Cut-points define bands for [previous, upTo). Order matters (ascending). Bands not in a row are 'normal'.

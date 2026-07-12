@@ -112,7 +112,21 @@ export interface FlaggedLab {
   unit: string | null; band: Band; refText: string; abnormal: boolean;
   direction: 'up' | 'down' | 'flat' | null; readings: number; date: string; surfacedReason: 'flagged' | 'trend';
 }
-const ABNORMAL_BANDS: Band[] = ['critical', 'high', 'borderline', 'low'];
+const ABNORMAL_BANDS: Band[] = ['critical', 'high', 'borderline', 'low', 'abnormal'];
+
+/** Source lab flag on a series point (test_values_view.investigation_is_abnormal). Abnormal when
+ *  present and not 'NORMAL' (case-insensitive). The snapshot already carries this — the range table
+ *  is a refinement on top, never the sole gate. */
+function sourceAbnormal(point: { abnormal?: string | null }): boolean {
+  const f = String(point.abnormal ?? '').trim();
+  return f.length > 0 && f.toUpperCase() !== 'NORMAL';
+}
+/** Do the series values differ across readings? (numeric where all parse, else raw strings.) */
+function seriesDiffers(series: { value: string }[]): boolean {
+  const nums = series.map((s) => toNum(s.value));
+  if (nums.every((n) => n !== null)) return new Set(nums).size > 1;
+  return new Set(series.map((s) => String(s.value).trim())).size > 1;
+}
 
 export function flagAbnormalLabs(invests: LongitudinalInvestigation[], sex: Sex):
   { surfaced: FlaggedLab[]; normalCount: number } {
@@ -126,18 +140,26 @@ export function flagAbnormalLabs(invests: LongitudinalInvestigation[], sex: Sex)
     const num = toNum(latest.value);
     // Unit-aware banding — bandValue returns null unless the analyte maps AND the unit matches a row.
     const banded = analyteId && num !== null ? bandValue(analyteId, num, iv.unit ?? latest.unit, sex) : null;
-    const abnormal = !!banded && ABNORMAL_BANDS.includes(banded.band);
+    let band: Band = banded?.band ?? 'normal';
+    let refText = banded?.refText ?? '';
+    let abnormal = !!banded && ABNORMAL_BANDS.includes(banded.band);
+    // SAFETY NET: no mapped range row, but the lab itself flagged the latest reading → surface it
+    // honestly with band 'abnormal' and no invented severity. Nothing source-flagged is ever hidden.
+    if (!banded && sourceAbnormal(latest)) { abnormal = true; band = 'abnormal'; refText = 'flagged by lab'; }
     const multi = series.length >= 2;
     let direction: FlaggedLab['direction'] = null;
     if (multi) {
       const a = toNum(series[series.length - 2].value), b = num;
       if (a !== null && b !== null) direction = b > a ? 'up' : b < a ? 'down' : 'flat';
     }
-    if (abnormal || multi) {
+    // Abnormals always surface; a NON-abnormal multi-reading surfaces only if its values differ
+    // (a real trend) — identical stable repeats stay collapsed (trend de-clutter).
+    const trendSurface = multi && !abnormal && seriesDiffers(series);
+    if (abnormal || trendSurface) {
       surfaced.push({
         analyteId: analyteId || iv.normalizedAnalyte.raw, analyte: iv.normalizedAnalyte.raw,
         latestValue: latest.value, latestNum: num, unit: iv.unit ?? latest.unit ?? null,
-        band: banded?.band ?? 'normal', refText: banded?.refText ?? '', abnormal,
+        band, refText, abnormal,
         direction, readings: series.length, date: dayOnly(latest.date),
         surfacedReason: abnormal ? 'flagged' : 'trend',
       });
@@ -146,7 +168,7 @@ export function flagAbnormalLabs(invests: LongitudinalInvestigation[], sex: Sex)
     }
   }
   // most-clinically-significant first: abnormal before trend-only, then worse band, then most recent.
-  const rank: Record<Band, number> = { critical: 0, high: 1, low: 2, borderline: 3, normal: 4 };
+  const rank: Record<Band, number> = { critical: 0, high: 1, low: 2, borderline: 3, abnormal: 4, normal: 5 };
   surfaced.sort((x, y) =>
     (Number(y.abnormal) - Number(x.abnormal)) ||
     (rank[x.band] - rank[y.band]) ||
@@ -170,18 +192,21 @@ export function computeCareGaps(invests: LongitudinalInvestigation[], meds: Long
     const analyteId = canonicalAnalyte(iv.normalizedAnalyte.raw);
     const num = toNum(latest.value);
     const banded = analyteId && num !== null ? bandValue(analyteId, num, iv.unit ?? latest.unit, null) : null;
-    if (!banded || !ABNORMAL_BANDS.includes(banded.band)) continue;   // only abnormal-latest analytes
+    // abnormal-latest = a mapped-range abnormal band, OR (safety net) source-flagged with no range.
+    let band: Band | null = banded && ABNORMAL_BANDS.includes(banded.band) ? banded.band : null;
+    if (band === null && !banded && sourceAbnormal(latest)) band = 'abnormal';
+    if (band === null) continue;                                     // in-range (or normal) → no gap
     const age = monthsAgo(latest.date, now);
     if (age === null || age < GAP_MIN_MONTHS) continue;               // recent enough → not a gap
     // on-treatment (deficiency being replaced) → the "despite replacement" variant.
     const onTx = /vitamin_d|vitamin_b12|haemoglobin/.test(analyteId)
       && /vitamin d|cholecalciferol|b12|folic|folinext|mecobalamin|iron|ferrous/.test(medBlob);
-    const worst = banded.band === 'critical';
+    const worst = band === 'critical';
     gaps.push({
       analyteId: analyteId || iv.normalizedAnalyte.raw, analyte: iv.normalizedAnalyte.raw,
       detail: onTx
-        ? `${banded.band === 'critical' ? 'severely ' : ''}abnormal (${latest.value})${iv.unit ? ' ' + iv.unit : ''} — on treatment, no repeat level in ${fmtAge(age)}`
-        : `${banded.band === 'critical' ? 'severely ' : ''}abnormal (${latest.value})${iv.unit ? ' ' + iv.unit : ''} — not rechecked in ${fmtAge(age)}`,
+        ? `${band === 'critical' ? 'severely ' : ''}abnormal (${latest.value})${iv.unit ? ' ' + iv.unit : ''} — on treatment, no repeat level in ${fmtAge(age)}`
+        : `${band === 'critical' ? 'severely ' : ''}abnormal (${latest.value})${iv.unit ? ' ' + iv.unit : ''} — not rechecked in ${fmtAge(age)}`,
       since: dayOnly(latest.date), ageMonths: Math.round(age), onTreatment: onTx,
       severity: worst ? 'safety' : 'review',
     });
@@ -345,7 +370,7 @@ export function buildAttentionFlags(snap: MemberStateSnapshot, labs: FlaggedLab[
   return flags.sort((a, b) => (a.severity === b.severity ? 0 : a.severity === 'safety' ? -1 : 1));
 }
 function bandWord(b: Band): string {
-  return b === 'critical' ? 'severely abnormal' : b === 'high' ? 'high' : b === 'low' ? 'low' : b === 'borderline' ? 'borderline' : 'normal';
+  return b === 'critical' ? 'severely abnormal' : b === 'high' ? 'high' : b === 'low' ? 'low' : b === 'borderline' ? 'borderline' : b === 'abnormal' ? 'abnormal' : 'normal';
 }
 
 // ── problem descriptor (corroboration line for the tiered rows) ──────────────────
