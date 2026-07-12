@@ -11,10 +11,21 @@
 import { metabaseQuery } from '../metabase';
 import { classifyFamily, archetypeFor, instrumentsDue, type DueInstrument } from './schedule-core';
 import type { Archetype } from './catalog';
+import { getAdhocSetForSeries } from './adhoc-store';
+import { compileItemBank, bankById } from './item-bank-core';
 
 const isUid = (u: string) => /^[A-Za-z0-9_-]{6,64}$/.test(u);
 const day = (v: unknown): string | null => { const s = v == null ? '' : String(v).trim(); return s ? s.slice(0, 10) : null; };
 const str = (v: unknown): string | null => { const s = v == null ? '' : String(v).trim(); return s || null; };
+
+export interface AdhocSetView {
+  id: string; status: 'draft' | 'frozen'; genVersion: string | null;
+  items: { id: string; text: string | null; scale: string; sourceSet: string; escalation: string | null; rationale: string | null }[];
+}
+export interface Tier3State {
+  available: boolean;                 // unmapped family + no set yet → the CM may generate one
+  set: AdhocSetView | null;           // the current draft (reviewable) or frozen (administered) set
+}
 
 export interface SurgicalSeries {
   individualUid: string;
@@ -28,6 +39,7 @@ export interface SurgicalSeries {
   dischargeDate: string | null;
   anchorDate: string;
   due: DueInstrument[];
+  tier3?: Tier3State | null;          // Tier-3 (0.2b-2): present only for unmapped families with TIER3_ENABLED
 }
 
 // ── VERBATIM SQL (PRD §2). individualUid is isUid-guarded before interpolation. ──
@@ -120,8 +132,27 @@ export async function fetchSurgicalSeries(individualUid: string, now: string): P
       cancelled: false,
     }, now);
 
-    return { individualUid, source, procedureName, surgeryTypeUid, family, archetype, status, plannedDate, dischargeDate, anchorDate, due };
+    // Tier-3 (0.2b-2): unmapped family + flag on → attach the adhoc state (existing set to review/administer,
+    // or `available` so the panel offers "generate"). Mapped families are UNCHANGED (T2). Off ⇒ undefined.
+    let tier3: Tier3State | undefined;
+    if (family === 'unknown' && process.env.TIER3_ENABLED === '1') {
+      const set = await getAdhocSetForSeries(`psr:${individualUid}`);   // soft-fails to null (never throws)
+      tier3 = { available: !set, set: set ? resolveAdhocSetView(set) : null };
+    }
+
+    return { individualUid, source, procedureName, surgeryTypeUid, family, archetype, status, plannedDate, dischargeDate, anchorDate, due, tier3 };
   } catch {
     return null;   // fail-safe — the panel hides, never a 500
   }
+}
+
+/** Resolve a stored adhoc set's item ids → bank items (verbatim text/scale/sourceSet) for the panel.
+ *  Rationale is not persisted, so it reads null on reload (present only right after generation). */
+function resolveAdhocSetView(set: { id: string; status: 'draft' | 'frozen'; gen_version: string | null; item_ids: string[] }): AdhocSetView {
+  const byId = bankById(compileItemBank());
+  const items = set.item_ids
+    .map((id) => byId.get(id))
+    .filter((b): b is NonNullable<typeof b> => !!b)
+    .map((b) => ({ id: b.id, text: b.text, scale: b.scale as string, sourceSet: b.sourceSet, escalation: b.escalation, rationale: null }));
+  return { id: set.id, status: set.status, genVersion: set.gen_version, items };
 }

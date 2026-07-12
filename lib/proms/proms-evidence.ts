@@ -17,6 +17,8 @@ export interface PromScore {
   score: number | null;            // null = incomplete/unscored (dropped from the fold)
   scale: string;
   escalations: string[];
+  adhocSetRef?: string | null;     // Tier-3 (0.2b-2): keys the folded series by the patient-series-unique
+                                   // adhoc set → valid within-patient trend, structurally never pooled.
 }
 
 const promProvenance = (instrumentId: string): Provenance => ({
@@ -44,7 +46,9 @@ export function promResponsesToEncounter(scored: PromScore[]): EncounterEvidence
     medicationAssertions: [],
     allergyAssertions: [],
     investigations: withScore.map((s) => ({
-      analyteRaw: `prom:${s.instrumentId}`,
+      // Tier-3 adhoc administrations key by their patient-series-unique ref (never cross-patient); every
+      // other instrument keys by its shared catalog id (trends across patients on the same instrument).
+      analyteRaw: s.adhocSetRef ? `prom:adhoc:${s.adhocSetRef}` : `prom:${s.instrumentId}`,
       value: String(s.score),
       unit: s.scale || null,
       abnormal: null,

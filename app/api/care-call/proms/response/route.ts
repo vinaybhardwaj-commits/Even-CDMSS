@@ -38,7 +38,10 @@ export async function POST(req: NextRequest) {
   if (!id || !isUid(individual_uid) || !instrument_id || !window) {
     return NextResponse.json({ error: 'id, individual_uid, instrument_id, window required' }, { status: 400 });
   }
-  if (!instrumentById(instrument_id)) return NextResponse.json({ error: 'unknown instrument_id' }, { status: 400 });
+  // Tier-3 (0.2b-2): an adhoc administration's instrument_id is the adhoc set ref (not a catalog id);
+  // it's scored via scoreAdhocSet in the store. Only require a known catalog id for non-adhoc rows.
+  const adhocRef = body.adhoc_set_ref ? String(body.adhoc_set_ref).trim() : '';
+  if (!adhocRef && !instrumentById(instrument_id)) return NextResponse.json({ error: 'unknown instrument_id' }, { status: 400 });
   const raw: ItemResponse[] = Array.isArray(body.raw)
     ? (body.raw as unknown[]).filter((r): r is ItemResponse => !!r && typeof (r as ItemResponse).itemId === 'string' && typeof (r as ItemResponse).value === 'string')
     : [];

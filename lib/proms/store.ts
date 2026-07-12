@@ -6,9 +6,12 @@
 
 import { sql } from '../db';
 import type { EncounterEvidence } from '../member-state/schema';
-import { scoreInstrument, type ItemResponse } from './schedule-core';
+import { scoreInstrument, PROM_SCORING_VERSION, type ItemResponse } from './schedule-core';
 import { PROM_CATALOG_VERSION } from './catalog';
 import { promResponsesToEncounter, type PromScore } from './proms-evidence';
+import { scoreAdhocSet } from './adhoc-core';
+import { compileItemBank, bankById, type BankItem } from './item-bank-core';
+import { getAdhocSet, freezeAdhocSet } from './adhoc-store';
 
 type Row = Record<string, unknown>;
 const q = async (p: Promise<unknown>): Promise<Row[]> => (await p) as unknown as Row[];
@@ -71,6 +74,17 @@ export async function ensureSeries(s: {
 
 const escArray = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : []);
 
+/** Tier-3 (0.2b-2): score an adhoc administration via the shipped scoreAdhocSet (delegates to the frozen
+ *  scoreHouseItems kernel). Resolves the set's item ids → bank items in stored order. Missing set → honest
+ *  null (never wrong data). */
+async function scoreAdhocResponse(adhocSetRef: string, raw: ItemResponse[]): Promise<{ score: number | null; scale: string; version: string; escalations: string[] }> {
+  const set = await getAdhocSet(adhocSetRef);
+  if (!set || !set.item_ids.length) return { score: null, scale: 'house', version: PROM_SCORING_VERSION, escalations: [] };
+  const byId = bankById(compileItemBank());
+  const items = set.item_ids.map((id) => byId.get(id)).filter((b): b is BankItem => !!b);
+  return scoreAdhocSet({ items }, raw);
+}
+
 /** Insert one administration. Scores SERVER-SIDE via scoreInstrument (never trusts the client).
  *  Idempotent on id. Immutable raw. */
 export async function savePromResponse(input: {
@@ -81,13 +95,18 @@ export async function savePromResponse(input: {
   if (existing.length) {
     return { id: String(existing[0].id), score: existing[0].score == null ? null : Number(existing[0].score), score_scale: String(existing[0].score_scale ?? ''), escalations: escArray(existing[0].escalations) };
   }
-  const scored = scoreInstrument(input.instrument_id, input.raw || []);
+  // Tier-3 adhoc administration scores via scoreAdhocSet; every other instrument via scoreInstrument.
+  const scored = input.adhoc_set_ref
+    ? await scoreAdhocResponse(input.adhoc_set_ref, input.raw || [])
+    : scoreInstrument(input.instrument_id, input.raw || []);
   const administeredAt = input.administered_at || new Date().toISOString();   // the STORE stamps admin time (not the frozen core)
   await sql`INSERT INTO prom_responses (id, series_id, individual_uid, instrument_id, "window", administered_at, raw, score, score_scale, escalations, instrument_version, scoring_version, adhoc_set_ref, cm_ref)
     VALUES (${input.id}, ${input.series_id}, ${input.individual_uid}, ${input.instrument_id}, ${input.window}, ${administeredAt},
             ${JSON.stringify(input.raw || [])}, ${scored.score}, ${scored.scale}, ${scored.escalations},
             ${PROM_CATALOG_VERSION}, ${scored.version}, ${input.adhoc_set_ref ?? null}, ${input.cm_ref ?? null})
     ON CONFLICT (id) DO NOTHING`;
+  // First administration of an adhoc set atomically freezes it (T4) — idempotent, best-effort.
+  if (input.adhoc_set_ref) await freezeAdhocSet(input.adhoc_set_ref);
   return { id: input.id, score: scored.score, score_scale: scored.scale, escalations: scored.escalations };
 }
 
@@ -112,7 +131,7 @@ export async function responsesForMember(individualUid: string, limit = 200): Pr
  *  never sinks a snapshot build. Folded into getMemberSnapshot behind PROMS_ENABLED (mirrors Care-Call). */
 export async function promEncountersForMember(individualUid: string): Promise<EncounterEvidence[]> {
   try {
-    const rows = await q(sql`SELECT instrument_id, "window", administered_at, score, score_scale, escalations
+    const rows = await q(sql`SELECT instrument_id, "window", administered_at, score, score_scale, escalations, adhoc_set_ref
       FROM prom_responses WHERE individual_uid = ${individualUid} AND score IS NOT NULL
       ORDER BY administered_at DESC LIMIT 500`);
     const byDay = new Map<string, PromScore[]>();
@@ -122,6 +141,7 @@ export async function promEncountersForMember(individualUid: string): Promise<En
       const ps: PromScore = {
         instrumentId: String(r.instrument_id), window: String(r.window ?? ''), administeredAt: d,
         score: r.score == null ? null : Number(r.score), scale: String(r.score_scale ?? ''), escalations: escArray(r.escalations),
+        adhocSetRef: r.adhoc_set_ref == null ? null : String(r.adhoc_set_ref),   // Tier-3 fold key
       };
       const arr = byDay.get(d) ?? []; arr.push(ps); byDay.set(d, arr);
     }
