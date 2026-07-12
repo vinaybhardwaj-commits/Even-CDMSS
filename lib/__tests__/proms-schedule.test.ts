@@ -6,7 +6,7 @@ import {
 } from '../proms/schedule-core';
 import {
   FAMILY_PACKS, HOUSE_SETS, CORE, SHARED_SCALES, ARCHETYPE_WINDOWS, PREM_POINTS,
-  instrumentById, FAMILY_REGEX, PROM_CATALOG_VERSION, HS_SETS_VERSION,
+  instrumentById, FAMILY_REGEX, PROM_CATALOG_VERSION, HS_SETS_VERSION, PREM_MODULE, PREM_SERVICE_FLAG,
 } from '../proms/catalog';
 
 // ── versions ──
@@ -165,24 +165,66 @@ test('scoreInstrument: validated instrument → honest null (rule not encoded un
   assert.equal(r.scale, 'validated');
 });
 
-// ── WHODAS-12 simple scoring (0.2a-2): sum of the 12 item scores (0..4 on None…Extreme) ──
-const whodas = (values: string[]) => scoreInstrument('whodas12', values.map((v, i) => ({ itemId: `d${i + 1}`, value: v })));
-test('scoreInstrument: WHODAS-12 simple sum — complete set of 12 → sum of option indices', () => {
-  const allNone = whodas(Array(12).fill('none'));
+// ── WHODAS-12 simple scoring (0.2a-2): sum of the 12 item scores (0..4 on WHODAS5 None…Extreme) ──
+const whodas = (values: string[]) => scoreInstrument('whodas12', values.map((v, i) => ({ itemId: `whodas_s${i + 1}`, value: v })));
+test('scoreInstrument: WHODAS-12 simple sum — full 12-item set on WHODAS5 → 0–48', () => {
+  const allNone = whodas(Array(12).fill('None'));
   assert.equal(allNone.score, 0);
-  assert.equal(allNone.scale, 'WHODAS-12 simple sum');
+  assert.equal(allNone.scale, 'whodas12-simple');
   assert.equal(allNone.version, 'prom-scoring/0.1');
-  const allExtreme = whodas(Array(12).fill('extreme'));
+  const allExtreme = whodas(Array(12).fill('Extreme or cannot do'));
   assert.equal(allExtreme.score, 48);   // 12 × 4
-  const mixed = whodas(['none', 'mild', 'moderate', 'severe', 'extreme', 'none', 'mild', 'moderate', 'severe', 'extreme', 'mild', 'moderate']);
+  const mixed = whodas(['None', 'Mild', 'Moderate', 'Severe', 'Extreme or cannot do', 'None', 'Mild', 'Moderate', 'Severe', 'Extreme or cannot do', 'Mild', 'Moderate']);
   assert.equal(mixed.score, 0 + 1 + 2 + 3 + 4 + 0 + 1 + 2 + 3 + 4 + 1 + 2);   // = 23
 });
 
-test('scoreInstrument: WHODAS-12 — incomplete (<12 mapped) → honest null; "extreme or cannot do" maps to 4', () => {
-  assert.equal(whodas(Array(11).fill('none')).score, null);          // 11 items → incomplete
+test('scoreInstrument: WHODAS-12 — incomplete (<12 mapped) → honest null', () => {
+  assert.equal(whodas(Array(11).fill('None')).score, null);          // 11 items → incomplete
   assert.equal(whodas(Array(12).fill('unknownword')).score, null);   // none map → incomplete
-  const cannot = whodas([...Array(11).fill('none'), 'extreme or cannot do']);
-  assert.equal(cannot.score, 4);   // 11×0 + 4
+});
+
+test('catalog: whodas12 has exactly 12 items, each on WHODAS5', () => {
+  const def = instrumentById('whodas12')!;
+  assert.equal(def.items.length, 12);
+  assert.equal(def.itemCount, 12);
+  assert.ok(def.items.every((it) => it.scale === 'WHODAS5'));
+  assert.equal(def.items[0].id, 'whodas_s1');
+  assert.equal(def.items[11].id, 'whodas_s12');
+});
+
+// ── house PREM module scoring (0.2a-2): experience sum of prem1..prem7 (item 8 excluded) ──
+const premResp = (vals: Record<string, string>) => scoreInstrument('prem', Object.entries(vals).map(([itemId, value]) => ({ itemId, value })));
+test('scoreInstrument: PREM experience sum of items 1–7 (EXP4 0–3); item 8 excluded; 0–21', () => {
+  const full = premResp({
+    prem1: 'yes, fully', prem2: 'mostly', prem3: 'yes, fully', prem4: 'partly',
+    prem5: 'mostly', prem6: 'no', prem7: 'yes, fully', prem8: '9',
+  });
+  // 3 + 2 + 3 + 1 + 2 + 0 + 3 = 14 (prem8=9 NOT summed)
+  assert.equal(full.score, 14);
+  assert.equal(full.scale, 'prem-experience');
+  assert.deepEqual(full.escalations, []);
+  const allBest = premResp({ prem1: 'yes, fully', prem2: 'yes, fully', prem3: 'yes, fully', prem4: 'yes, fully', prem5: 'yes, fully', prem6: 'yes, fully', prem7: 'yes, fully', prem8: '10' });
+  assert.equal(allBest.score, 21);   // 7 × 3, higher = better
+});
+
+test('scoreInstrument: PREM partial (an EXP4 item missing) → honest null', () => {
+  const partial = premResp({ prem1: 'yes, fully', prem2: 'mostly', prem3: 'yes, fully', prem4: 'partly', prem5: 'mostly', prem6: 'no', prem8: '9' });   // prem7 missing
+  assert.equal(partial.score, null);
+});
+
+test('catalog: PREM_MODULE has 8 items (prem1..prem7 EXP4, prem8 NRS-11); service flag present', () => {
+  assert.equal(PREM_MODULE.items.length, 8);
+  assert.equal(PREM_MODULE.itemCount, 8);
+  for (let i = 1; i <= 7; i++) assert.equal(PREM_MODULE.items.find((it) => it.id === `prem${i}`)!.scale, 'EXP4');
+  assert.equal(PREM_MODULE.items.find((it) => it.id === 'prem8')!.scale, 'NRS-11');
+  assert.equal(PREM_SERVICE_FLAG.kind, 'service_recovery');
+});
+
+test('catalog: WHODAS5 + EXP4 registered in SHARED_SCALES; every WHODAS/PREM item scale resolves', () => {
+  assert.deepEqual(SHARED_SCALES['WHODAS5'], ['None', 'Mild', 'Moderate', 'Severe', 'Extreme or cannot do']);
+  assert.deepEqual(SHARED_SCALES['EXP4'], ['no', 'partly', 'mostly', 'yes, fully']);
+  for (const it of instrumentById('whodas12')!.items) assert.ok(it.scale in SHARED_SCALES);
+  for (const it of PREM_MODULE.items) assert.ok(it.scale in SHARED_SCALES);
 });
 
 // ── catalog integrity ──
@@ -206,9 +248,10 @@ test('integrity: ARCHETYPE_WINDOWS + PREM_POINTS complete for all 5 archetypes',
   }
 });
 
-test('integrity: every house item scale has response options; validated instruments have items:[]', () => {
+test('integrity: every house item scale has response options; whodas12 now carries its 12 items', () => {
   for (const def of Object.values(HOUSE_SETS)) { assert.equal(def.kind, 'house'); assert.ok(def.items.length > 0); }
-  assert.equal(instrumentById('whodas12')!.items.length, 0);
+  // 0.2a-2: whodas12 item text is now encoded verbatim (12 items on WHODAS5).
+  assert.equal(instrumentById('whodas12')!.items.length, 12);
   assert.equal(instrumentById('whodas12')!.itemCount, 12);
 });
 

@@ -126,8 +126,8 @@ function triggers(scale: string, value: string): boolean {
 }
 
 // WHODAS 2.0 (12-item, interviewer version) response scale — None/Mild/Moderate/Severe/Extreme
-// (-or-cannot-do). Anchors given VERBATIM in the wired PRD §7 (not invented). The item TEXT is
-// WHO-copyrighted and entered separately at 0.2a-2 from the official source — this is scoring only.
+// (-or-cannot-do), coded 0..4. Item text is encoded verbatim in catalog.ts (WHODAS5); this recode is
+// case/label-tolerant so both the chip label ('Extreme or cannot do') and a bare 'extreme' map to 4.
 const WHODAS_SCALE = ['none', 'mild', 'moderate', 'severe', 'extreme'];
 function whodasIndex(value: string): number {
   const v = String(value ?? '').trim().toLowerCase();
@@ -139,12 +139,21 @@ function whodasIndex(value: string): number {
 export function scoreInstrument(instrumentId: string, responses: ItemResponse[]): { score: number | null; scale: string; version: string; escalations: string[] } {
   const def = instrumentById(instrumentId);
   const byId = new Map((responses || []).map((r) => [r.itemId, r.value]));
-  // WHODAS-12 SIMPLE scoring (WHO): sum of the 12 item scores (each 0..4 on the None…Extreme scale).
-  // Complete set (all 12 mapped) required → else honest null. Item text stays WHO-sourced/pending.
+  // WHODAS-12 SIMPLE scoring (WHO): sum of the 12 item scores (each 0..4 on the None…Extreme scale)
+  // → 0–48 (higher = greater difficulty). Complete set (all 12 mapped) required → else honest null.
   if (instrumentId === 'whodas12') {
     const scores = (responses || []).map((r) => whodasIndex(r.value)).filter((i) => i >= 0);
     const complete = scores.length === 12;
-    return { score: complete ? scores.reduce((a, b) => a + b, 0) : null, scale: 'WHODAS-12 simple sum', version: PROM_SCORING_VERSION, escalations: [] };
+    return { score: complete ? scores.reduce((a, b) => a + b, 0) : null, scale: 'whodas12-simple', version: PROM_SCORING_VERSION, escalations: [] };
+  }
+  // House PREM experience score = sum of prem1..prem7 (EXP4 0–3) → 0–21, higher = BETTER (reversed vs
+  // symptom sets). prem8 (overall NRS) is NOT summed — surfaced separately by the caller. Partial (any
+  // 1–7 unanswered/unmapped) → null. No clinical ⚠ (the service flag is evaluated by the wired layer).
+  if (instrumentId === 'prem') {
+    const expIds = ['prem1', 'prem2', 'prem3', 'prem4', 'prem5', 'prem6', 'prem7'];
+    const idxs = expIds.map((id) => (byId.has(id) ? optionIndex('EXP4', String(byId.get(id))) : null));
+    const complete = idxs.every((i) => i != null);
+    return { score: complete ? idxs.reduce((a, b) => (a as number) + (b as number), 0) as number : null, scale: 'prem-experience', version: PROM_SCORING_VERSION, escalations: [] };
   }
   if (!def || def.kind === 'validated') {
     // validated scoring rule is entered with the item text at 0.2a-2 → honest null now.

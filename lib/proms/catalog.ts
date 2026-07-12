@@ -18,7 +18,8 @@ export const HS_SETS_VERSION = 'hs-sets/0.1' as const;
 // The 5 ratified shared scales + the bespoke house option-sets (flagged) needed to encode items verbatim.
 export type Scale =
   | 'S5-SEV' | 'S5-FRQ' | 'S5-CMP' | 'NRS-11' | 'YN'
-  | 'FUNC4' | 'NOCT5' | 'DIET4' | 'SUPPORT3' | 'WALK5' | 'SIT4' | 'ACT3';
+  | 'FUNC4' | 'NOCT5' | 'DIET4' | 'SUPPORT3' | 'WALK5' | 'SIT4' | 'ACT3'
+  | 'WHODAS5' | 'EXP4';   // 0.2a-2 content encoding: WHODAS-12 response scale + house-PREM experience scale
 export type Archetype = 'SCOPE' | 'DAYCARE' | 'STANDARD' | 'LONG_ARC' | 'ONCO_MAJOR';
 export type Window = 'baseline' | 'd72h' | 'w2' | 'w6' | 'm3' | 'm6' | 'm12';
 
@@ -66,6 +67,9 @@ export const SHARED_SCALES: Record<Scale, string[]> = {
   'WALK5': ['unlimited', '~1km', '~500m', '~100m', 'room-only'],
   'SIT4': ['>1h', '~30min', '~10min', 'barely'],
   'ACT3': ['fully', 'avoiding heavy', 'avoiding all'],
+  // 0.2a-2 content encoding (verbatim from the two source files):
+  'WHODAS5': ['None', 'Mild', 'Moderate', 'Severe', 'Extreme or cannot do'],   // WHODAS-12 recode None=0…Extreme=4
+  'EXP4': ['no', 'partly', 'mostly', 'yes, fully'],                            // house PREM experience, 0–3, higher = better
 };
 
 const houseItem = (id: string, text: string, scale: Scale, escalation: string | null = null): Item => ({ id, text, scale, escalation });
@@ -73,8 +77,25 @@ const houseSet = (id: string, label: string, items: Item[]): InstrumentDef => ({
 
 // ── Universal CORE stack (§catalog 2) ──
 const RETURN_TO_FUNCTION = houseItem('rtf', 'Compared with before surgery, your ability to do daily activities is:', 'S5-CMP');
+// WHODAS 2.0 © World Health Organization. Used with attribution; unmodified. 12-item interviewer-
+// administered version. Item text below is VERBATIM from the official WHO PDF (encoded 0.2a-2). Stem
+// (read once): "In the past 30 days, how much difficulty did you have in:" — every item on WHODAS5.
+const WHODAS12_ITEMS: Item[] = [
+  { id: 'whodas_s1', text: 'Standing for long periods such as 30 minutes?', scale: 'WHODAS5', escalation: null },
+  { id: 'whodas_s2', text: 'Taking care of your household responsibilities?', scale: 'WHODAS5', escalation: null },
+  { id: 'whodas_s3', text: 'Learning a new task, for example, learning how to get to a new place?', scale: 'WHODAS5', escalation: null },
+  { id: 'whodas_s4', text: 'How much of a problem did you have joining in community activities (for example, festivities, religious or other activities) in the same way as anyone else can?', scale: 'WHODAS5', escalation: null },
+  { id: 'whodas_s5', text: 'How much have you been emotionally affected by your health problems?', scale: 'WHODAS5', escalation: null },
+  { id: 'whodas_s6', text: 'Concentrating on doing something for ten minutes?', scale: 'WHODAS5', escalation: null },
+  { id: 'whodas_s7', text: 'Walking a long distance such as a kilometre [or equivalent]?', scale: 'WHODAS5', escalation: null },
+  { id: 'whodas_s8', text: 'Washing your whole body?', scale: 'WHODAS5', escalation: null },
+  { id: 'whodas_s9', text: 'Getting dressed?', scale: 'WHODAS5', escalation: null },
+  { id: 'whodas_s10', text: 'Dealing with people you do not know?', scale: 'WHODAS5', escalation: null },
+  { id: 'whodas_s11', text: 'Maintaining a friendship?', scale: 'WHODAS5', escalation: null },
+  { id: 'whodas_s12', text: 'Your day-to-day work/school?', scale: 'WHODAS5', escalation: null },
+];
 export const CORE: InstrumentDef[] = [
-  { id: 'whodas12', label: 'WHODAS 2.0 (12-item)', kind: 'validated', scale: 'WHODAS 5pt (none…extreme)', items: [], itemCount: 12, scoring: { method: 'ref', note: 'WHO scoring; free, unmodified with attribution; item text at 0.2a-2' }, licence: 'F' },
+  { id: 'whodas12', label: 'WHODAS 2.0 (12-item)', kind: 'validated', scale: 'WHODAS5', items: WHODAS12_ITEMS, itemCount: 12, scoring: { method: 'ref', note: 'WHODAS 2.0 © WHO; used with attribution, unmodified; 12-item interviewer version. Simple score = sum(0..4)→0–48.' }, licence: 'F' },
   { id: 'pain_nrs', label: 'Pain NRS', kind: 'validated', scale: 'NRS-11', items: [], itemCount: 1, scoring: { method: 'ref', range: [0, 10], note: 'public domain' }, licence: 'F' },
   houseSet('hs-return-to-function', 'Return-to-function (house)', [RETURN_TO_FUNCTION]),
 ];
@@ -195,9 +216,9 @@ export const VALIDATED_INSTRUMENTS: Record<string, InstrumentDef> = {
   whodas_proxy: validated('whodas_proxy', 'WHODAS-proxy', 'Pv'),
 };
 
-/** Resolve an instrument id to its def (CORE ∪ HOUSE_SETS ∪ VALIDATED). null if unknown. */
+/** Resolve an instrument id to its def (CORE ∪ HOUSE_SETS ∪ VALIDATED ∪ the PREM module). null if unknown. */
 export function instrumentById(id: string): InstrumentDef | null {
-  return CORE.find((i) => i.id === id) ?? HOUSE_SETS[id] ?? VALIDATED_INSTRUMENTS[id] ?? null;
+  return CORE.find((i) => i.id === id) ?? HOUSE_SETS[id] ?? VALIDATED_INSTRUMENTS[id] ?? (id === PREM_MODULE.id ? PREM_MODULE : null);
 }
 
 export interface FamilyPack { family: string; archetype: Archetype; primary: string | null; fallback: string | null; lic: 'F' | 'Pv' | 'house' | null }
@@ -301,11 +322,27 @@ export const REGEX_FAMILY_PACK: Record<string, string> = {
 
 // §5 House PREM module — 8 items, PREM-1@72h/PREM-2@close. ⚠ item text is "unchanged from v0" and NOT
 // present in the provided frozen docs → text=null (entered verbatim at 0.2a-2, like validated items).
+// House PREM module (8 items) — VERBATIM from the ratified draft (CDMSS-PROMS-HOUSE-PREM-MODULE-DRAFT-v1,
+// approved 12 Jul). Items 1–7 on EXP4 (0–3, higher = better); item 8 overall NRS-11. House measure —
+// within-hospital trend only, never externally benchmarked. Experience score = sum(prem1..prem7)→0–21.
 export const PREM_MODULE: InstrumentDef = {
   id: 'prem', label: 'House PREM module', kind: 'house', scale: 'house',
-  items: Array.from({ length: 8 }, (_, i) => ({ id: `prem${i + 1}`, text: null, scale: 'S5-SEV' as Scale })),
-  itemCount: 8, scoring: { method: 'sum', note: 'PREM-1@72h, PREM-2@close; item text pending (v0 wording not in provided docs)' }, licence: 'house',
+  items: [
+    { id: 'prem1', text: 'Before your surgery, did the team explain clearly what would happen and what to expect?', scale: 'EXP4', escalation: null },
+    { id: 'prem2', text: 'During your care, did the doctors and nurses listen to you and answer your questions?', scale: 'EXP4', escalation: null },
+    { id: 'prem3', text: 'Were you treated with respect and dignity by the care team?', scale: 'EXP4', escalation: null },
+    { id: 'prem4', text: 'Were you as involved as you wanted to be in decisions about your care?', scale: 'EXP4', escalation: null },
+    { id: 'prem5', text: 'Was your pain and discomfort managed as well as you expected?', scale: 'EXP4', escalation: null },
+    { id: 'prem6', text: 'When you left, did you clearly understand how to look after yourself at home — medicines, wound care, warning signs, and follow-up?', scale: 'EXP4', escalation: null },
+    { id: 'prem7', text: 'Since your surgery, when you needed help or had a question, could you reach the care team easily?', scale: 'EXP4', escalation: null },
+    { id: 'prem8', text: 'Overall, how would you rate your surgical care experience? (0 = very poor, 10 = excellent)', scale: 'NRS-11', escalation: null },
+  ],
+  itemCount: 8, scoring: { method: 'sum', note: 'PREM-1@72h, PREM-2@close; experience sum(prem1..prem7)→0–21 (higher=better); prem8 overall NRS surfaced separately' }, licence: 'house',
 };
+
+// Service-recovery soft flag (NOT a clinical E-code) — the wired layer routes it to the care-team
+// feedback list, never the clinical daily list. Ratified as drafted (12 Jul). Data only.
+export const PREM_SERVICE_FLAG = { rule: 'overall (prem8) ≤ 3 OR any of prem1..prem7 = "no"', kind: 'service_recovery' } as const;
 
 // house-sets §escalation-map — E1–E5 (verbatim).
 export const ESCALATION: { code: string; rule: string }[] = [
