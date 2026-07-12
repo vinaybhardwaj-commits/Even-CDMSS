@@ -51,6 +51,10 @@ function hostOf(url: string): string {
   try { return new URL(url).host; } catch { return 'source'; }
 }
 
+/** PDF open-parameters so the browser viewer hides its thumbnail rail + toolbar and fits width
+ *  (continuous, single-column, page-by-page scroll). Applied to the iframe SRC only — frameSrc stays raw. */
+const pdfSrc = (u: string) => (u.includes('#') ? u : `${u}#toolbar=0&navpanes=0&view=FitH`);
+
 /** The parsed encounter note, rendered as the mockup's "paper" sheet (order-only fallback). */
 function EncounterPaper({ enc, noteDate }: { enc: Encounter | null; noteDate: string | null }) {
   const Field = ({ label, value }: { label: string; value: string }) =>
@@ -177,7 +181,7 @@ export default function CareBriefSplit({ uid, memberStateUi = false, careCallUi 
             {frameSrc ? (
               <iframe
                 key={frameSrc}
-                src={frameSrc}
+                src={pdfSrc(frameSrc)}
                 title={current?.label || 'Source document'}
                 className="h-full w-full rounded-sm border-0 bg-white shadow-[0_6px_24px_rgba(0,0,0,.35)]"
               />
