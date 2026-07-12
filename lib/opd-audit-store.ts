@@ -11,6 +11,7 @@ import type { OpdNoteAudit } from './opd-note-audit';
 import type { OpdDomain } from './opd-note-score-core';
 import { logEvent } from './trace';
 import { auditShadowReport } from './clinical-state/audit-shadow-core';
+import { runLongitudinalPass } from './opd-longitudinal';   // Stage 3 — dark unless OPD_LONGITUDINAL_ENABLED=1
 
 function domainScore(audit: OpdNoteAudit, key: OpdDomain): number | null {
   const d = audit.scorecard.domains.find((x) => x.domain === key);
@@ -75,6 +76,10 @@ export async function saveOpdAudit(audit: OpdNoteAudit, meta: SaveOpdAuditMeta =
     ],
   )) as Array<{ id: string }>;
   await runAuditShadow(audit, findings); // B1 shadow — dormant unless CLINICAL_STATE_AUDIT_SHADOW=1; read-only, fail-open
+  // Stage 3 longitudinal pass (opd-longitudinal/0.1) — AFTER the INSERT, flag-gated + fail-open, so it can
+  // never affect the base row. Only for a fresh insert (idempotent worker re-runs never re-charge it; the
+  // replay endpoint recomputes on demand). Dark unless OPD_LONGITUDINAL_ENABLED=1.
+  if (rows.length) await runLongitudinalPass(audit).catch(() => { /* fail-open — base audit already persisted */ });
   return rows.length ? 'inserted' : 'exists';
 }
 

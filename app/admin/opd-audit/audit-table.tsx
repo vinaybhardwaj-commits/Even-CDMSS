@@ -8,6 +8,14 @@ export type AuditRow = {
   id: string; time: string; doctor: string; consult: string; uid: string;
   band: string; index: number; lowVal: number; issue: string; cats: string[];
   doctorUid: string | null;
+  context?: string | null;   // Stage 3 (D5c) — established | thin | none | null (no longitudinal block)
+};
+
+// Advisory (slate/indigo) context indicator — deliberately NOT the scored-band palette.
+const CONTEXT_STYLE: Record<string, { label: string; color: string; bg: string }> = {
+  established: { label: 'established', color: '#4b57a6', bg: '#f4f5fb' },
+  thin: { label: 'thin', color: '#8a6d3b', bg: '#fdf9ef' },
+  none: { label: 'none', color: '#94a3b8', bg: '#f4f5f7' },
 };
 
 const BANDS = ['A', 'B', 'C', 'D', 'E'];
@@ -135,6 +143,7 @@ export default function NotesExplorer({ rows, initialDoctorUid, triagedIds }: { 
                 <th className="px-2 py-1.5 text-center font-normal">band</th>
                 <th className="px-2 py-1.5 text-right font-normal">index</th>
                 <th className="px-3 py-1.5 text-left font-normal">top issue</th>
+                <th className="px-2 py-1.5 text-center font-normal">context</th>
                 <th className="px-2 py-1.5 text-right font-normal">pdf</th>
               </tr>
             </thead>
@@ -151,10 +160,15 @@ export default function NotesExplorer({ rows, initialDoctorUid, triagedIds }: { 
                   <td className="px-2 py-1.5 text-center"><span className="rounded px-1.5 py-0.5 text-[10px] font-medium text-white" style={{ background: bandColor(r.band) }}>{r.band}</span></td>
                   <td className="px-2 py-1.5 text-right font-medium" style={{ color: scoreColor(r.index) }}>{r.index}</td>
                   <td className="px-3 py-1.5"><Link href={`/admin/opd-audit/${r.id}`} className="text-slate-600 hover:text-brand hover:underline">{r.issue}</Link>{triaged.has(r.id) && <span className="ml-1 text-emerald-600" title="has your triage">✓</span>}</td>
+                  <td className="px-2 py-1.5 text-center">
+                    {r.context && CONTEXT_STYLE[r.context]
+                      ? <span className="rounded px-1.5 py-0.5 text-[10px] font-medium" style={{ color: CONTEXT_STYLE[r.context].color, background: CONTEXT_STYLE[r.context].bg }} title="Longitudinal context depth (informational)">{CONTEXT_STYLE[r.context].label}</span>
+                      : <span className="text-slate-300">—</span>}
+                  </td>
                   <td className="whitespace-nowrap px-2 py-1.5 text-right"><a href={`/api/opd-audit/export-pdf?id=${r.id}`} className="text-slate-400 hover:text-brand" title="Download note + audit PDF">↓</a></td>
                 </tr>
               ))}
-              {filtered.length === 0 && <tr><td colSpan={7} className="px-3 py-6 text-center text-[12px] text-slate-400">No notes match.</td></tr>}
+              {filtered.length === 0 && <tr><td colSpan={8} className="px-3 py-6 text-center text-[12px] text-slate-400">No notes match.</td></tr>}
             </tbody>
           </table>
         </div>

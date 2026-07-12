@@ -71,7 +71,15 @@ type DomCols = { d_doc: number; d_nq: number; d_appr: number; d_presc: number; d
 type DocRow = { doctor_uid: string; nnotes: number; idx: number; low_value: number; completeness: number } & DomCols;
 type TrendRow = { d: string; idx: number; c: number } & DomCols;
 type ReviewRow = { id: string; note_date: string; doctor_uid: string | null; band: string; note_quality_index: number; findings: unknown; n_low_value: number; completeness_pct: number };
-type AllRow = { id: string; uid: string; note_date: string; doctor_uid: string | null; consult_type: string | null; prescription_type: string | null; band: string; note_quality_index: number; n_low_value: number; completeness_pct: number; findings: unknown; missing_fields: unknown; score_documentation: number; score_note_quality: number; score_appropriateness: number; score_prescribing_safety: number; score_patient_centred: number; pdqi9: unknown };
+type AllRow = { id: string; uid: string; note_date: string; doctor_uid: string | null; consult_type: string | null; prescription_type: string | null; band: string; note_quality_index: number; n_low_value: number; completeness_pct: number; findings: unknown; missing_fields: unknown; score_documentation: number; score_note_quality: number; score_appropriateness: number; score_prescribing_safety: number; score_patient_centred: number; pdqi9: unknown; longitudinal: unknown };
+
+// Stage 3 (D5c) — the audit-list "context" indicator: established | thin | none, from the stored
+// longitudinal contextMeta.confidence (null when the note has no longitudinal block yet).
+function contextIndicator(v: unknown): string | null {
+  const block = parseJson<{ contextMeta?: { confidence?: string } } | null>(v, null);
+  const c = block?.contextMeta?.confidence;
+  return c === 'established' || c === 'thin' || c === 'none' ? c : null;
+}
 
 const PILLARS = [
   { col: 'd_doc', key: 'documentation', dom: 'documentation', label: 'Documentation\ncompleteness', short: 'documentation', weight: 0.25, scoreCol: 'score_documentation', catPrefix: 'doc:' },
@@ -130,7 +138,7 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
        FROM opd_note_audits WHERE ${WIN} ORDER BY note_quality_index ASC, n_low_value DESC LIMIT 10`, winParams),
     rowsOf<AllRow>(
       `SELECT id, uid, note_date, doctor_uid, consult_type, prescription_type, band, note_quality_index, n_low_value, completeness_pct, findings, missing_fields,
-              score_documentation, score_note_quality, score_appropriateness, score_prescribing_safety, score_patient_centred, pdqi9
+              score_documentation, score_note_quality, score_appropriateness, score_prescribing_safety, score_patient_centred, pdqi9, longitudinal
        FROM opd_note_audits WHERE ${WIN} ORDER BY note_date DESC LIMIT 600`, winParams),
   ]);
 
@@ -155,7 +163,7 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
   // one mapping for both the normal list and the drill list (identical AuditRow shape)
   const toAuditRow = (r: {
     id: string; note_date: string; doctor_uid: string | null; prescription_type: string | null; consult_type: string | null;
-    uid: string; band: string; note_quality_index: number; n_low_value: number; findings: unknown; completeness_pct: number; missing_fields: unknown;
+    uid: string; band: string; note_quality_index: number; n_low_value: number; findings: unknown; completeness_pct: number; missing_fields: unknown; longitudinal?: unknown;
   }): AuditRow => ({
     id: String(r.id), time: fmtIstTime(r.note_date), doctor: docName(r.doctor_uid),
     consult: formatEncounterChip(r.prescription_type, r.consult_type), uid: String(r.uid || ''),
@@ -163,6 +171,7 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
     issue: issueFrom(r.findings, n(r.completeness_pct)),
     cats: catsForRow(parseJson<string[]>(r.missing_fields, []), parseJson<{ subject?: string; verdict?: string; rationale?: string }[]>(r.findings, [])),
     doctorUid: r.doctor_uid ? String(r.doctor_uid) : null,
+    context: contextIndicator(r.longitudinal),
   });
 
   const allRows: AuditRow[] = allR.map(toAuditRow);

@@ -99,6 +99,12 @@ export const OPD_SIGNAL_TYPES: Record<string, string> = {
   prescribing_high_value: 'Sound prescribing (positive)',
   appropriateness_general: 'Appropriateness (other)',
   prescribing_general: 'Prescribing safety (other)',
+  // Stage 3 longitudinal (opd-longitudinal/0.1) — informational, never-scored (D4). Label-only triage lane.
+  longitudinal_repeat_test: 'Redundant repeat test',
+  longitudinal_med_reconciliation: 'Medication reconciliation',
+  longitudinal_missed_followup: 'Unaddressed follow-up',
+  longitudinal_continuity: 'Continuity of care',
+  longitudinal_contradiction: 'Note contradicts the record',
 };
 
 // Deterministic subjects match exactly by prefix; LLM subjects fall through to the keyword

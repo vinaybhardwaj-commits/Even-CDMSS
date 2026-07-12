@@ -5,6 +5,8 @@ import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
 import { fetchDoctorNames, fetchOpdNoteByUid } from '@/lib/metabase';
 import { rowToOpdCase, type DeidOpdCase } from '@/lib/opd-ingest-core';
 import { enrichOpdMeds } from '@/lib/formulary';
+import { individualUidForPresc, getMemberSnapshotAsOf } from '@/lib/member-state/member-state';
+import { presentMemberState, type MemberStateView } from '@/lib/member-state/present-core';
 import { type OpdDomain, documentationAdequacyFlag } from '@/lib/opd-note-score-core';
 import { OPD_ENGINE_VERSION, OPD_ENGINE_VERSIONS_CURRENT } from '@/lib/opd-note-audit-core';
 
@@ -39,6 +41,125 @@ type LvcRuleInfo = { plain_rationale: string | null; citation: string | null };
 const LVC_CAT_LABEL: Record<string, string> = { antibiotic: 'Antibiotic', imaging: 'Imaging', supplement_polypharmacy: 'Supplement / polypharmacy', other: 'Low-value care' };
 type Pdqi = { attr: string; label?: string; value: number };
 type Sugg = { priority: number; text: string };
+
+// ── Stage 3 (opd-longitudinal/0.1) — the advisory Longitudinal panel (normative mockup) ──────────────
+type LongFinding = { subject: string; rationale: string; evidence?: string[]; source?: string; signal_type?: string; informational?: boolean };
+type LongitudinalBlockView = {
+  version: string; asOf: string;
+  contextMeta: { encounters: number; confidence: string; excluded_reason: string | null };
+  findings: LongFinding[];
+};
+// Advisory plane palette — calm slate/indigo, DELIBERATELY NOT the scored-band colours (never shared).
+const ADV = { ink: '#4b57a6', bg: '#f4f5fb', line: '#d6daf0', soft: '#eceef8', warn: '#b25e09', warnLine: '#e9d7a6' };
+const EXCLUDED_COPY: Record<string, string> = {
+  no_prior_history: 'No prior history before this visit — not applicable. Thin / first-visit charts are never penalised.',
+  member_unresolved: 'Member could not be resolved from this note — longitudinal context is unavailable here.',
+  context_fetch_failed: 'Prior context could not be fetched — the base audit is unaffected.',
+  low_confidence_state: 'Picture confidence too thin for the judged dimensions; deterministic checks still ran.',
+  llm_failed: 'The judged dimensions were unavailable; deterministic findings still stand.',
+};
+
+function LongitudinalPanel({ block, view }: { block: LongitudinalBlockView; view: MemberStateView | null }) {
+  const meta = block.contextMeta;
+  const findings = block.findings || [];
+  const confLabel = meta.confidence === 'established' ? 'Established picture' : meta.confidence === 'thin' ? 'Thin picture' : 'No prior picture';
+  return (
+    <div id="longitudinal" className="mt-3 scroll-mt-4 rounded-xl border bg-white" style={{ borderColor: ADV.line, boxShadow: `0 0 0 3px ${ADV.soft} inset` }}>
+      <div className="px-5 py-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2 text-[15px] font-bold" style={{ color: ADV.ink }}>
+            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: ADV.ink }} />
+            Longitudinal context — the chart before the visit
+          </div>
+          <span className="rounded-full border px-2.5 py-0.5 text-[11px] font-bold" style={{ color: ADV.ink, background: ADV.bg, borderColor: ADV.line }}>
+            Informational · does not affect the score
+          </span>
+        </div>
+        <p className="mt-1.5 text-[12.5px] text-slate-500">
+          MemberState reconstructed <b className="text-slate-800">as of {block.asOf}</b> (the encounter date). Only evidence dated <b>before</b> that day counts; this visit&apos;s own orders are excluded — the doctor is judged only on what was knowable going in.
+        </p>
+
+        {meta.excluded_reason && !findings.length && (
+          <div className="mt-3 rounded-lg border px-3 py-2 text-[12.5px]" style={{ borderColor: ADV.line, background: ADV.bg, color: '#3d4470' }}>
+            {EXCLUDED_COPY[meta.excluded_reason] || 'Longitudinal pass degraded — base audit unaffected.'}
+          </div>
+        )}
+
+        {view && (
+          <div className="mt-4 overflow-hidden rounded-lg border" style={{ borderColor: ADV.line, background: ADV.bg }}>
+            <div className="flex flex-wrap items-center gap-2.5 border-b px-3.5 py-2.5" style={{ borderColor: ADV.line }}>
+              <span className="rounded-full border bg-white px-2.5 py-0.5 text-[12px] font-bold" style={{ color: ADV.ink, borderColor: ADV.line }}>{confLabel}</span>
+              <span className="text-[12.5px] text-slate-500">{meta.encounters} prior encounter{meta.encounters === 1 ? '' : 's'} · confidence {meta.confidence}</span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2">
+              <ChartCell label="Active problems">
+                {view.problems.slice(0, 4).map((p, i) => <Pill key={i}>{p.label}{p.code ? <Mono> {p.code}</Mono> : null}</Pill>)}
+                {!view.problems.length && <Muted>none documented</Muted>}
+              </ChartCell>
+              <ChartCell label="Active medications">
+                {view.medications.slice(0, 4).map((m, i) => <Pill key={i} strike={m.currentness.tone === 'stopped'}>{m.concept}{m.currentness.tone === 'stopped' ? <Mono> stopped</Mono> : null}</Pill>)}
+                {!view.medications.length && <Muted>none documented</Muted>}
+              </ChartCell>
+              <ChartCell label="Attention">
+                {view.attentionFlags.slice(0, 2).map((a, i) => <Pill key={i} attn>{a.text}</Pill>)}
+                {!view.attentionFlags.length && <Muted>nothing flagged</Muted>}
+              </ChartCell>
+              <ChartCell label="Recent labs">
+                {view.flaggedLabs.surfaced.slice(0, 3).map((l, i) => <Pill key={i}>{l.analyte} {l.latestValue}{l.unit ? ' ' + l.unit : ''} · {l.band}<Mono> {l.date}</Mono></Pill>)}
+                {!view.flaggedLabs.surfaced.length && <Muted>no abnormal labs</Muted>}
+              </ChartCell>
+            </div>
+          </div>
+        )}
+
+        {findings.length > 0 && (
+          <div className="mt-5">
+            <div className="mb-2.5 flex items-center justify-between">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-400">Longitudinal findings</div>
+              <span className="text-[12px] text-slate-500">{findings.length} finding{findings.length === 1 ? '' : 's'} · all informational</span>
+            </div>
+            {findings.map((f, i) => {
+              const rule = f.source !== 'llm';
+              return (
+                <div key={i} className="mb-2.5 rounded-lg border bg-white px-3.5 py-3" style={{ borderColor: '#e4e7ec', borderLeft: `3px solid ${ADV.ink}` }}>
+                  <div className="mb-1.5 flex flex-wrap items-center gap-2">
+                    <span className="rounded border px-2 py-0.5 font-mono text-[11px] font-bold" style={{ color: ADV.ink, background: ADV.bg, borderColor: ADV.line }}>{f.signal_type}</span>
+                    <span className="rounded px-1.5 py-0.5 text-[10.5px] font-bold uppercase tracking-[0.04em]" style={rule ? { color: '#3a4a7a', background: '#eef1fb', border: '1px solid #d6daf0' } : { color: '#5a4a86', background: '#f3eefb', border: '1px solid #e2d6f0' }}>{rule ? 'Rule' : 'Judged'}</span>
+                    <span className="ml-auto text-[10.5px] font-bold" style={{ color: ADV.ink }}>Informational</span>
+                  </div>
+                  <div className="text-[13.5px] text-slate-800">{f.rationale}</div>
+                  {f.evidence?.[0] && <div className="mt-2 border-t border-dashed pt-2 text-[12px] text-slate-500" style={{ borderColor: '#e4e7ec' }}>{f.evidence[0]}</div>}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <div className="mt-2 border-t pt-3 text-[11.5px] leading-relaxed text-slate-500" style={{ borderColor: '#eef0f3' }}>
+          No-hindsight rule: a lab resulting after {block.asOf}, or ordered at this visit, can never appear here or count against the note. Thin / first-visit charts show &ldquo;no prior history — not applicable,&rdquo; never a penalty. This panel is advisory — Care Managers validity-label these findings in triage; a type only affects the score after it clears the promotion gate (a future 0.9 step).
+        </div>
+      </div>
+    </div>
+  );
+}
+function ChartCell({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="border-t px-3.5 py-3 sm:odd:border-r" style={{ borderColor: ADV.line }}>
+      <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.03em] text-slate-400">{label}</div>
+      {children}
+    </div>
+  );
+}
+function Pill({ children, strike, attn }: { children: ReactNode; strike?: boolean; attn?: boolean }) {
+  return (
+    <span className="mb-1.5 mr-1.5 inline-block rounded-md border bg-white px-2 py-1 text-[12.5px]"
+      style={{ borderColor: attn ? ADV.warnLine : ADV.line, background: attn ? '#fdf9ef' : '#fff', textDecoration: strike ? 'line-through' : 'none', color: strike ? '#667085' : '#1a1d23' }}>
+      {children}
+    </span>
+  );
+}
+function Mono({ children }: { children: ReactNode }) { return <span className="font-mono text-[11px] text-slate-400">{children}</span>; }
+function Muted({ children }: { children: ReactNode }) { return <span className="text-[12px] italic text-slate-400">{children}</span>; }
 
 const DOMAINS: { key: OpdDomain; col: string; label: string }[] = [
   { key: 'documentation', col: 'score_documentation', label: 'Documentation' },
@@ -319,7 +440,7 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
     `SELECT id, uid, doctor_uid, consult_type, prescription_type, note_date, trace_id,
             note_quality_index, band, completeness_pct, n_missing_mandatory,
             score_documentation, score_note_quality, score_appropriateness, score_prescribing_safety, score_patient_centred,
-            pdqi9, findings, suggestions, sources
+            pdqi9, findings, suggestions, sources, longitudinal
      FROM opd_note_audits WHERE id = $1 AND app_source = $2 LIMIT 1`,
     [id, APP],
   ).catch(() => [])) as Record<string, unknown>[];
@@ -450,9 +571,24 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
     : `Graded ${band} mainly on ${worst.label.toLowerCase()} (${worst.score})${lowVal ? ` — ${lowVal.subject.toLowerCase()}` : ''}${second && second.score < 55 ? `, with ${second.label.toLowerCase()} (${second.score}) close behind` : ''}; ${best.label.toLowerCase()} held up (${best.score}).`;
   const statusWord = index >= 70 ? 'on track' : index >= 55 ? 'watch' : 'needs attention';
 
+  // Stage 3 (opd-longitudinal/0.1) — the stored longitudinal block + a live as-of chart-read for the
+  // panel (reuse present-core; recomputed at render because the block stores findings, not the view).
+  const longitudinal = parseJson<LongitudinalBlockView | null>(r.longitudinal, null);
+  let longitudinalView: MemberStateView | null = null;
+  if (process.env.OPD_LONGITUDINAL_ENABLED === '1' && longitudinal && uid) {
+    try {
+      const indUid = await individualUidForPresc(uid);
+      if (indUid) {
+        const snap = await getMemberSnapshotAsOf(indUid, longitudinal.asOf, new Date().toISOString(), uid);
+        if (snap) longitudinalView = presentMemberState(snap);
+      }
+    } catch { /* chart-read is best-effort; the stored findings still render */ }
+  }
+
   // TOC sections that actually exist on this page.
   const toc: { href: string; label: string }[] = [
     { href: '#note', label: 'The note' },
+    ...(longitudinal ? [{ href: '#longitudinal', label: 'Longitudinal' }] : []),
     ...(findings.length ? [{ href: '#findings', label: `Findings · ${findings.length}` }] : []),
     ...(pdqiAssessed ? [{ href: '#pdqi', label: 'PDQI-9 radar' }] : []),
     ...(suggestions.length ? [{ href: '#suggestions', label: `Suggestions · ${suggestions.length}` }] : []),
@@ -537,6 +673,8 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
         {/* ── main column: story → note → findings → radar → suggestions → sources → verdict ── */}
         <div className="mt-4 min-w-0 lg:mt-0">
           <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-[12.5px] leading-relaxed text-slate-700">{story}</div>
+
+          {longitudinal && <LongitudinalPanel block={longitudinal} view={longitudinalView} />}
 
           <div id="note" className="mt-3 scroll-mt-4">
             <NotePanel note={note} pdfUrl={prescriptionUrl} grouped={grouped} findings={findings} />

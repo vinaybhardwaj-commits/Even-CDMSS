@@ -31,6 +31,7 @@ import { stampLvcMetadata, type LvcRuleLite } from './opd-lvc-classify-core';
 import { bandFor, type ComplexityBand, type ComplexityInputs } from './opd-complexity-core';
 import { fetchPatientHistoryBundle } from './metabase';
 import { sql } from './db';
+import { buildLongitudinalInput, type LongitudinalNoteInput } from './opd-longitudinal-core';   // Stage 3 (opd-longitudinal/0.1)
 
 // Best-effort cache of active suppressions (Tier-1 self-heal) so the per-note audit doesn't re-read
 // the table each time. Short TTL; a fresh suppression takes effect within a minute. Empty = no-op.
@@ -160,6 +161,11 @@ export interface OpdNoteAudit {
   // Right Care case-mix complexity (0.81.3). Computed at audit time from db13 history; NULL band on
   // any fetch failure (never blocks the audit). Persisted on the audit row; excluded from O/E when null.
   complexity?: { band: ComplexityBand | null; inputs: ComplexityInputs | null } | null;
+  // Stage 3 (opd-longitudinal/0.1) — the de-identified note projection the post-persistence longitudinal
+  // pass consumes. NOT persisted by saveOpdAudit (ignored by its fixed column list); attached only when
+  // OPD_LONGITUDINAL_ENABLED=1 (or opts.longitudinal for replay) and never for the mini pipeline, so
+  // flag-off the returned audit is byte-identical to today.
+  longitudinalInput?: LongitudinalNoteInput | null;
 }
 
 async function defaultRetrieve(q: string): Promise<CiteHit[]> {
@@ -226,6 +232,9 @@ export interface AuditOpdOpts {
   prodTag?: boolean;
   /** Active Tier-1 suppressions to apply (defaults to the cached active set). Pass [] to disable. */
   suppressions?: Suppression[];
+  /** Stage 3 — force-attach the de-identified longitudinal note projection regardless of the env flag
+   *  (the replay endpoint sets this so it can recompute a note's longitudinal block on demand). */
+  longitudinal?: boolean;
 }
 
 /** Engine tag for mini-pipeline rows (default run). */
@@ -349,11 +358,19 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
       await finishTrace(traceId, 'success');
     }
 
+    // Stage 3 — attach the de-identified projection the post-persistence longitudinal pass consumes.
+    // Pure extraction (no I/O, no LLM), so it never blocks or delays base persistence; gated so flag-off
+    // (and every mini row) is byte-identical to today.
+    const longitudinalInput = ((process.env.OPD_LONGITUDINAL_ENABLED === '1' || opts.longitudinal) && !mini)
+      ? buildLongitudinalInput(oc, keys, engineVersion, opdCaseText(oc, { specialty }))
+      : null;
+
     return {
       keys, scorecard, completeness,
       findings, suggestions: parsed?.suggestions ?? [],
       sources, engineVersion: engineVersion, traceId,
       complexity: await complexityFor(),
+      longitudinalInput,
     };
   } catch (e) {
     if (traceId) await finishTrace(traceId, 'error', String((e as Error).message)).catch(() => {});

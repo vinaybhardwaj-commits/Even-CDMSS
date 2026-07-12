@@ -12,6 +12,7 @@ import { assembleEvidence } from './assemble-core';    // FROZEN — value impor
 import { buildMemberState } from './aggregate-core';    // FROZEN — value import
 import { careCallEncountersForMember } from '../care-call-store';   // Amendment B — the write-back loop
 import { promEncountersForMember } from '../proms/store';           // PROMs 0.2a-2 — scores → spine fold
+import { applyAsOfCut } from '../opd-longitudinal-core';            // Stage 3 — the D2 knowability cut (pure)
 import type { MemberStateSnapshot } from './schema';
 
 // ── SQL identical to scripts/member-state-shadow.mjs — KEEP IN SYNC. (shadow.mjs is FROZEN;
@@ -78,6 +79,41 @@ export async function getMemberSnapshot(individualUid: string, computedAt: strin
   const evidence = { ...base, encounters: [...base.encounters, ...careCall, ...proms] };
   if (!evidence.encounters.length) return null;
   return buildMemberState(evidence, computedAt);
+}
+
+/**
+ * Stage 3 (opd-longitudinal/0.1) — MemberState AS OF a visit date. IDENTICAL to getMemberSnapshot (same
+ * FROZEN SQL strings, same care-call + PROM folds) except the folded evidence is filtered by the D2
+ * knowability rule (`date < asOfDate`, and the audited encounterRef always dropped) BEFORE the frozen
+ * buildMemberState runs — the core derives its own asOf from the filtered rows, so no core change and the
+ * SQL-parity test stays green. Returns null when NOTHING survives the cut (resolved-but-no-prior-history).
+ *
+ * DELIBERATE difference from the sibling: the core presc/labs fetch is NOT soft-caught here — a real db13
+ * failure PROPAGATES so the longitudinal caller can distinguish `context_fetch_failed` from
+ * `no_prior_history` (PRD §7). The optional care-call/PROM folds keep their soft-fail (enrichment only).
+ */
+export async function getMemberSnapshotAsOf(
+  individualUid: string, asOfDate: string, computedAt: string, auditedEncounterRef?: string | null,
+): Promise<MemberStateSnapshot | null> {
+  if (!isUid(individualUid)) return null;
+  const [presc, labs] = await Promise.all([
+    metabaseQuery(prescriptionsSql(individualUid)),   // NOT soft-caught — a real fetch failure must surface
+    metabaseQuery(labsSql(individualUid)),
+  ]);
+  const base = assembleEvidence({
+    memberRef: individualUid, generatedAt: computedAt, sourceWatermarks: { db13: computedAt },
+    prescriptionRows: presc, labRows: labs,
+  });
+  const careCall = process.env.CARE_CALL_ENABLED === '1'
+    ? await careCallEncountersForMember(individualUid).catch(() => [] as typeof base.encounters)
+    : [];
+  const proms = process.env.PROMS_ENABLED === '1'
+    ? await promEncountersForMember(individualUid).catch(() => [] as typeof base.encounters)
+    : [];
+  const folded = [...base.encounters, ...careCall, ...proms];
+  const encounters = applyAsOfCut(folded, asOfDate, auditedEncounterRef);   // D2 cut (strict prior-day + self-exclusion)
+  if (!encounters.length) return null;                                       // no prior history after the cut
+  return buildMemberState({ ...base, encounters }, computedAt);
 }
 
 // Exported for the SQL-parity guard test (pins these to shadow.mjs's exact strings).
