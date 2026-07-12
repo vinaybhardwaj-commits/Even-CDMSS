@@ -10,6 +10,7 @@ import { CCB_ENGINE_VERSION } from '@/lib/ccb-brief-core';
 import { OPD_ENGINE_VERSIONS_CURRENT } from '@/lib/opd-note-audit-core';
 import { getSettings } from '@/lib/mini-backfill';
 import { parseGoal, computeReviewStats, FALLBACK_ROSTER, type LabelRow } from '@/lib/review-stats-core';
+import EscalationsToday from '@/components/care/EscalationsToday';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 const APP = process.env.APP_SOURCE || 'standalone';
@@ -124,6 +125,9 @@ export default async function ManagedCareHome() {
           );
         })}
       </div>
+
+      {/* Care-Call escalations (DARK behind CARE_CALL_ENABLED; the card self-gates + soft-fails). */}
+      <EscalationsToday />
 
       {process.env.CONCORDANCE_ENABLED === '1' && (
         <Link href="/concordance"

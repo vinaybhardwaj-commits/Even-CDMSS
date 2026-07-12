@@ -10,6 +10,7 @@ import { metabaseQuery } from '../metabase';
 import { isUid } from '../ccb-dossier-core';
 import { assembleEvidence } from './assemble-core';    // FROZEN — value import (first consumer)
 import { buildMemberState } from './aggregate-core';    // FROZEN — value import
+import { careCallEncountersForMember } from '../care-call-store';   // Amendment B — the write-back loop
 import type { MemberStateSnapshot } from './schema';
 
 // ── SQL identical to scripts/member-state-shadow.mjs — KEEP IN SYNC. (shadow.mjs is FROZEN;
@@ -57,10 +58,17 @@ export async function getMemberSnapshot(individualUid: string, computedAt: strin
     metabaseQuery(prescriptionsSql(individualUid)).catch(() => [] as Record<string, unknown>[]),
     metabaseQuery(labsSql(individualUid)).catch(() => [] as Record<string, unknown>[]),
   ]);
-  const evidence = assembleEvidence({
+  const base = assembleEvidence({
     memberRef: individualUid, generatedAt: computedAt, sourceWatermarks: { db13: computedAt },
     prescriptionRows: presc, labRows: labs,
   });
+  // AMENDMENT B (the write-back loop) — fold the member's care-call outcomes in as `care_call`
+  // encounters, ONLY when CARE_CALL_ENABLED=1. Flag off ⇒ byte-identical to Phase 1. The FROZEN
+  // buildMemberState then reconciles them by the Stage-1-validated 1.2 rules. Soft-fails to [].
+  const careCall = process.env.CARE_CALL_ENABLED === '1'
+    ? await careCallEncountersForMember(individualUid).catch(() => [] as typeof base.encounters)
+    : [];
+  const evidence = { ...base, encounters: [...base.encounters, ...careCall] };
   if (!evidence.encounters.length) return null;
   return buildMemberState(evidence, computedAt);
 }
