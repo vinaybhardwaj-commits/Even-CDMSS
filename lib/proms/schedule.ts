@@ -47,11 +47,11 @@ WHERE dp.individual_uid = '${uid}' AND pm.requires_surgery_or_procedure = true
 ORDER BY p.uploaded_at DESC`;
 
 export const dischargeSql = (uid: string): string =>
-  `SELECT b.admission_date, b.discharge_date
+  `SELECT b.admission_date_time, b.discharge_date_time
 FROM individuals i
-JOIN kx_billing_records b ON b.kx_uhid = i.kx_uhid
-WHERE i._doc_id = '${uid}' AND b.discharge_date IS NOT NULL
-ORDER BY b.discharge_date DESC LIMIT 1`;
+JOIN kx_billing_records b ON b.uhid = i.kx_uhid
+WHERE i._doc_id = '${uid}' AND b.discharge_date_time IS NOT NULL
+ORDER BY b.discharge_date_time DESC LIMIT 1`;
 
 /** Pull the procedure name out of the plan-of-management jsonb recommendation (best-effort). */
 function flagProcedureName(row: Record<string, unknown>): string | null {
@@ -108,7 +108,7 @@ export async function fetchSurgicalSeries(individualUid: string, now: string): P
 
     // Discharge anchor (INFERRED shape) — fail-safe to null → falls back to plannedDate (Decision D).
     const dischargeRows = await metabaseQuery(dischargeSql(individualUid)).catch(() => [] as Record<string, unknown>[]);
-    const dischargeDate = dischargeRows.length ? day(dischargeRows[0].discharge_date) : null;
+    const dischargeDate = dischargeRows.length ? day(dischargeRows[0].discharge_date_time) : null;
 
     const family = classifyFamily({ surgeryTypeUid, procedureName });
     const archetype = archetypeFor(family);
