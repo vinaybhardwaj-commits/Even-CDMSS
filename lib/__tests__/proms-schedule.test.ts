@@ -165,6 +165,26 @@ test('scoreInstrument: validated instrument → honest null (rule not encoded un
   assert.equal(r.scale, 'validated');
 });
 
+// ── WHODAS-12 simple scoring (0.2a-2): sum of the 12 item scores (0..4 on None…Extreme) ──
+const whodas = (values: string[]) => scoreInstrument('whodas12', values.map((v, i) => ({ itemId: `d${i + 1}`, value: v })));
+test('scoreInstrument: WHODAS-12 simple sum — complete set of 12 → sum of option indices', () => {
+  const allNone = whodas(Array(12).fill('none'));
+  assert.equal(allNone.score, 0);
+  assert.equal(allNone.scale, 'WHODAS-12 simple sum');
+  assert.equal(allNone.version, 'prom-scoring/0.1');
+  const allExtreme = whodas(Array(12).fill('extreme'));
+  assert.equal(allExtreme.score, 48);   // 12 × 4
+  const mixed = whodas(['none', 'mild', 'moderate', 'severe', 'extreme', 'none', 'mild', 'moderate', 'severe', 'extreme', 'mild', 'moderate']);
+  assert.equal(mixed.score, 0 + 1 + 2 + 3 + 4 + 0 + 1 + 2 + 3 + 4 + 1 + 2);   // = 23
+});
+
+test('scoreInstrument: WHODAS-12 — incomplete (<12 mapped) → honest null; "extreme or cannot do" maps to 4', () => {
+  assert.equal(whodas(Array(11).fill('none')).score, null);          // 11 items → incomplete
+  assert.equal(whodas(Array(12).fill('unknownword')).score, null);   // none map → incomplete
+  const cannot = whodas([...Array(11).fill('none'), 'extreme or cannot do']);
+  assert.equal(cannot.score, 4);   // 11×0 + 4
+});
+
 // ── catalog integrity ──
 test('integrity: every FamilyPack primary/fallback resolves to a known instrument', () => {
   for (const p of FAMILY_PACKS) {

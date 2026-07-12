@@ -11,6 +11,7 @@ import { isUid } from '../ccb-dossier-core';
 import { assembleEvidence } from './assemble-core';    // FROZEN — value import (first consumer)
 import { buildMemberState } from './aggregate-core';    // FROZEN — value import
 import { careCallEncountersForMember } from '../care-call-store';   // Amendment B — the write-back loop
+import { promEncountersForMember } from '../proms/store';           // PROMs 0.2a-2 — scores → spine fold
 import type { MemberStateSnapshot } from './schema';
 
 // ── SQL identical to scripts/member-state-shadow.mjs — KEEP IN SYNC. (shadow.mjs is FROZEN;
@@ -68,7 +69,13 @@ export async function getMemberSnapshot(individualUid: string, computedAt: strin
   const careCall = process.env.CARE_CALL_ENABLED === '1'
     ? await careCallEncountersForMember(individualUid).catch(() => [] as typeof base.encounters)
     : [];
-  const evidence = { ...base, encounters: [...base.encounters, ...careCall] };
+  // PROMs 0.2a-2 (Decision E) — fold the member's scored PROM administrations as `care_call`
+  // encounters when PROMS_ENABLED. Flag off ⇒ byte-identical to before. Soft-fails to []. The FROZEN
+  // buildMemberState then trends the scores as LongitudinalInvestigation series; the core is untouched.
+  const proms = process.env.PROMS_ENABLED === '1'
+    ? await promEncountersForMember(individualUid).catch(() => [] as typeof base.encounters)
+    : [];
+  const evidence = { ...base, encounters: [...base.encounters, ...careCall, ...proms] };
   if (!evidence.encounters.length) return null;
   return buildMemberState(evidence, computedAt);
 }

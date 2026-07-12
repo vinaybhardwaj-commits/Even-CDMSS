@@ -125,9 +125,27 @@ function triggers(scale: string, value: string): boolean {
   }
 }
 
+// WHODAS 2.0 (12-item, interviewer version) response scale — None/Mild/Moderate/Severe/Extreme
+// (-or-cannot-do). Anchors given VERBATIM in the wired PRD §7 (not invented). The item TEXT is
+// WHO-copyrighted and entered separately at 0.2a-2 from the official source — this is scoring only.
+const WHODAS_SCALE = ['none', 'mild', 'moderate', 'severe', 'extreme'];
+function whodasIndex(value: string): number {
+  const v = String(value ?? '').trim().toLowerCase();
+  const exact = WHODAS_SCALE.indexOf(v);
+  if (exact >= 0) return exact;
+  return WHODAS_SCALE.findIndex((a) => v.startsWith(a));   // tolerate "extreme or cannot do"
+}
+
 export function scoreInstrument(instrumentId: string, responses: ItemResponse[]): { score: number | null; scale: string; version: string; escalations: string[] } {
   const def = instrumentById(instrumentId);
   const byId = new Map((responses || []).map((r) => [r.itemId, r.value]));
+  // WHODAS-12 SIMPLE scoring (WHO): sum of the 12 item scores (each 0..4 on the None…Extreme scale).
+  // Complete set (all 12 mapped) required → else honest null. Item text stays WHO-sourced/pending.
+  if (instrumentId === 'whodas12') {
+    const scores = (responses || []).map((r) => whodasIndex(r.value)).filter((i) => i >= 0);
+    const complete = scores.length === 12;
+    return { score: complete ? scores.reduce((a, b) => a + b, 0) : null, scale: 'WHODAS-12 simple sum', version: PROM_SCORING_VERSION, escalations: [] };
+  }
   if (!def || def.kind === 'validated') {
     // validated scoring rule is entered with the item text at 0.2a-2 → honest null now.
     return { score: null, scale: def ? def.scale : 'unknown', version: PROM_SCORING_VERSION, escalations: [] };

@@ -8,6 +8,7 @@ import { isCareUnlocked } from '@/lib/care-cookie';
 import MemberDossier from '@/components/care/MemberDossier';
 import TrackWorkspace from '@/components/care/TrackWorkspace';
 import MemberStatePanel from '@/components/care/MemberStatePanel';
+import PromsPanel from '@/components/care/PromsPanel';
 import { readMemberVitals } from '@/lib/member-state/vitals-read';
 
 // Whole-person member view: search lands here (holistic record) → the per-visit conversation
@@ -31,6 +32,7 @@ export default async function MemberDossierPage({ params }: { params: Promise<{ 
       </Link>
       <MemberDossier individualUid={uid} />
       {process.env.MEMBER_STATE_UI === '1' && <MemberStatePanel individualUid={uid} vitals={memberVitals} />}
+      {process.env.PROMS_ENABLED === '1' && <PromsPanel individualUid={uid} />}
       <TrackWorkspace individualUid={uid} />
     </div>
   );
