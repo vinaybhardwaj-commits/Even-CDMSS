@@ -326,7 +326,11 @@ Rules: advisory only; never phrase as blocking/denying care or blaming the clini
 Return ONLY JSON, no prose:
 {"findings":[{"subject":"…","verdict":"…","confidence":0.0-1.0,"rationale":"…","order":"… (optional)","domain":"appropriateness|efficiency|safety|patient_centred","evidence":["…"],"estimates":["…"],"citation_ids":[1,2]}],"idealised_summary":"…","diff":[{"kind":"overuse|gap","text":"…","ref":"… (optional)"}],"suggestions":[{"priority":1,"text":"…","ref":"… (optional)"}]}`;
 
-export function buildAnalyzeUser(ctx: ExtractedCase, citedContext: string, standardLabel: string): string {
+// Slice 2 (Right Care × ClinicalState): `clinicalStateText` is the pre-composed PATIENT
+// PICTURE block. OPTIONAL and additive — omitted/empty → byte-identical to the ungrounded
+// Slice-1 prompt (unit-asserted). Near-redundant here (the case is already structured);
+// wired for cross-mode consistency behind the same flag.
+export function buildAnalyzeUser(ctx: ExtractedCase, citedContext: string, standardLabel: string, clinicalStateText?: string): string {
   const pt = (ctx.patient.age != null || ctx.patient.sex)
     ? `Patient: ${ctx.patient.age != null ? `${ctx.patient.age}y` : 'age unknown'}${ctx.patient.sex ? `, ${ctx.patient.sex}` : ''}\n`
     : '';
@@ -347,7 +351,8 @@ export function buildAnalyzeUser(ctx: ExtractedCase, citedContext: string, stand
   if (sf) lines.push(sf);
   lines.push(`Course: ${ctx.courseSummary}`);
   const ev = citedContext.trim() ? citedContext.trim() : '(no excerpts retrieved — leave citation_ids empty; put clinical reasoning in estimates, not evidence)';
-  return `Document type: ${ctx.docType} (${standardLabel})\n${pt}EXTRACTED CASE:\n${lines.join('\n')}\n\nNUMBERED EVIDENCE EXCERPTS:\n${ev}`;
+  const picture = clinicalStateText && clinicalStateText.trim() ? `\n\n${clinicalStateText.trim()}` : '';
+  return `Document type: ${ctx.docType} (${standardLabel})\n${pt}EXTRACTED CASE:\n${lines.join('\n')}${picture}\n\nNUMBERED EVIDENCE EXCERPTS:\n${ev}`;
 }
 
 /** One-line render of the non-identifying stay facts (or '' if none). Shared by analyze + critique. */

@@ -25,6 +25,10 @@ export interface MatchInput {
   /** If given, used directly as the candidate orders (skips the Flash extraction pass). */
   proposedActions?: string[];
   patient?: { age?: number; sex?: string };
+  /** Slice 2 (Right Care × ClinicalState): the pre-composed PATIENT PICTURE block, threaded
+   *  into the applicability judge's prompt. OPTIONAL — omitted (the default, and always when
+   *  RIGHT_CARE_CLINICAL_STATE_GROUND is off) → every prompt is byte-identical to Slice 1. */
+  clinicalStateText?: string;
   /** 'surface' = opt-in /appropriateness (default); 'autoflag' = unsolicited DDx/Ask advisory. */
   surface?: Surface;
   preferRegion?: Region;
@@ -49,7 +53,7 @@ export interface MatchDeps {
   extractCandidates: (scenario: string) => Promise<Candidate[]>;
   recall: (input: MatchInput, candidates: Candidate[]) => Promise<LvcRecommendation[]>;
   judge: (
-    ctx: { scenario: string; patient?: { age?: number; sex?: string } },
+    ctx: { scenario: string; patient?: { age?: number; sex?: string }; clinicalStateText?: string },
     recs: LvcRecommendation[],
     surface: Surface,
   ) => Promise<JudgedRec[]>;
@@ -132,7 +136,7 @@ async function defaultRecall(input: MatchInput, candidates: Candidate[]): Promis
 }
 
 async function defaultJudge(
-  ctx: { scenario: string; patient?: { age?: number; sex?: string } },
+  ctx: { scenario: string; patient?: { age?: number; sex?: string }; clinicalStateText?: string },
   recs: LvcRecommendation[],
   surface: Surface,
   traceId?: string,
@@ -150,7 +154,7 @@ async function defaultJudge(
       model: fallbackModel,
       messages: [
         { role: 'system', content: core.JUDGE_SYSTEM },
-        { role: 'user', content: core.buildJudgeUser(ctx, recs) },
+        { role: 'user', content: core.buildJudgeUser(ctx, recs, ctx.clinicalStateText) },
       ],
       temperature: 0.1,
       max_tokens: 900,
@@ -201,7 +205,7 @@ export async function matchLowValueCare(input: MatchInput, deps: Partial<MatchDe
       return { flags: [], candidates, considered: 0, surface, traceId, empty: true };
     }
 
-    const judged = await judge({ scenario: input.scenario, patient: input.patient }, recs, surface);
+    const judged = await judge({ scenario: input.scenario, patient: input.patient, clinicalStateText: input.clinicalStateText }, recs, surface);
     if (traceId) {
       await logEvent(traceId, 'lvc_judge_verdicts', null, {
         verdicts: judged.map((j) => ({ id: j.rec.id, verdict: j.verdict, confidence: j.confidence })),

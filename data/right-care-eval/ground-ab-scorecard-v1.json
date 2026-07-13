@@ -1,0 +1,2721 @@
+{
+  "version": "right-care-ground-eval/1.0",
+  "bank": "right-care-eval/1.0",
+  "generated": "2026-07-13T16:33:28.194Z",
+  "judgeModel": "gemini-2.5-pro",
+  "scorecards": {
+    "check": {
+      "mode": "check",
+      "n": 8,
+      "improvements": 0,
+      "neutrals": 7,
+      "regressions": 1,
+      "safetyViolations": [],
+      "changedRate": 0.125,
+      "noise": {
+        "nPairs": 8,
+        "changedRate": 0.25
+      },
+      "clearsNoise": false,
+      "gate": "NO_SIGNAL"
+    },
+    "pathway": {
+      "mode": "pathway",
+      "n": 6,
+      "improvements": 4,
+      "neutrals": 0,
+      "regressions": 2,
+      "safetyViolations": [],
+      "changedRate": 1,
+      "noise": {
+        "nPairs": 3,
+        "changedRate": 1
+      },
+      "clearsNoise": false,
+      "gate": "NO_SIGNAL"
+    },
+    "audit": {
+      "mode": "audit",
+      "n": 4,
+      "improvements": 3,
+      "neutrals": 1,
+      "regressions": 0,
+      "safetyViolations": [],
+      "changedRate": 1,
+      "noise": {
+        "nPairs": 2,
+        "changedRate": 0.5
+      },
+      "clearsNoise": true,
+      "gate": "PASS"
+    }
+  },
+  "checkFlagDiffs": [
+    {
+      "caseId": "C01",
+      "added": [],
+      "removed": [],
+      "kept": [
+        "cwus-aafp-001"
+      ],
+      "offN": 1,
+      "onN": 1
+    },
+    {
+      "caseId": "C02",
+      "added": [],
+      "removed": [],
+      "kept": [],
+      "offN": 0,
+      "onN": 0
+    },
+    {
+      "caseId": "C03",
+      "added": [],
+      "removed": [],
+      "kept": [
+        "cwus-aafp-002",
+        "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
+        "ehrc-1c5340d3-cf20-4810-a2ae-bd528d056a28",
+        "ehrc-2b42c495-61d4-49d5-9e2c-8d58b5045e6d",
+        "ehrc-4fd1cb48-938b-4f11-b828-0ced7767b809",
+        "ehrc-7ac10177-dc6f-4d8a-9f52-ed2fc39f3fa2",
+        "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
+        "ehrc-f283f2c4-7739-46e2-b5c8-997d89a79f5c",
+        "ehrc-f4fb811c-7e57-440a-bf0d-3386d0f3dcbb"
+      ],
+      "offN": 9,
+      "onN": 9
+    },
+    {
+      "caseId": "C04",
+      "added": [],
+      "removed": [],
+      "kept": [],
+      "offN": 0,
+      "onN": 0
+    },
+    {
+      "caseId": "C05",
+      "added": [],
+      "removed": [],
+      "kept": [
+        "cwus-acr-001"
+      ],
+      "offN": 1,
+      "onN": 1
+    },
+    {
+      "caseId": "C06",
+      "added": [],
+      "removed": [],
+      "kept": [
+        "cwus-acc-001",
+        "cwus-acp-001"
+      ],
+      "offN": 2,
+      "onN": 2
+    },
+    {
+      "caseId": "C07",
+      "added": [
+        "cwus-acc-001"
+      ],
+      "removed": [],
+      "kept": [
+        "cwus-asa-001",
+        "ehrc-0baa7e11-877f-43d2-809d-e7d1ade35322",
+        "ehrc-7ffc130c-81ad-4254-a81d-13944ed3c682"
+      ],
+      "offN": 3,
+      "onN": 4
+    },
+    {
+      "caseId": "C08",
+      "added": [],
+      "removed": [],
+      "kept": [
+        "ehrc-05d3716b-d61c-4324-86ba-1a7f5be7a738",
+        "ehrc-60cbb099-3ef7-4006-af3f-9b38d6d675e4"
+      ],
+      "offN": 2,
+      "onN": 2
+    }
+  ],
+  "pairs": [
+    {
+      "caseId": "C01",
+      "mode": "check",
+      "kind": "ab",
+      "verdict": {
+        "overall": "neutral",
+        "changes": [
+          {
+            "item": "Rationale for cwus-aafp-001",
+            "direction": "neutral",
+            "note": "The rationale is rephrased but conveys the exact same clinical reasoning and justification for the flag."
+          }
+        ],
+        "safety": [],
+        "note": "Both outputs correctly flag the low-value MRI for acute low back pain with identical clinical reasoning, differing only in minor wording."
+      }
+    },
+    {
+      "caseId": "C01",
+      "mode": "check",
+      "kind": "noise",
+      "verdict": {
+        "overall": "neutral",
+        "changes": [],
+        "safety": [],
+        "note": "The outputs are identical."
+      }
+    },
+    {
+      "caseId": "C02",
+      "mode": "check",
+      "kind": "ab",
+      "verdict": {
+        "overall": "neutral",
+        "changes": [],
+        "safety": [],
+        "note": "Both outputs are identical and correctly do not flag the MRI, which is appropriate given the patient's red flags (history of cancer, weight loss, nocturnal pain)."
+      }
+    },
+    {
+      "caseId": "C02",
+      "mode": "check",
+      "kind": "noise",
+      "verdict": {
+        "overall": "neutral",
+        "changes": [
+          {
+            "item": "No flags raised for appropriate MRI",
+            "direction": "neutral",
+            "note": "Both outputs correctly identified that the MRI was indicated due to red flags (history of cancer, weight loss, night pain) and therefore did not flag it as low-value care."
+          }
+        ],
+        "safety": [],
+        "note": "The outputs are identical and both correctly determined that the MRI was appropriate given the patient's red flags for malignancy."
+      }
+    },
+    {
+      "caseId": "C03",
+      "mode": "check",
+      "kind": "ab",
+      "verdict": {
+        "overall": "neutral",
+        "changes": [
+          {
+            "item": "Wording of `why` clauses",
+            "direction": "neutral",
+            "note": "Output B has minor, clinically insignificant wording changes in the rationale for several flags, with no change in clinical meaning."
+          }
+        ],
+        "safety": [],
+        "note": "Both outputs correctly flag the inappropriate antibiotic prescription but also raise the same set of spurious flags for medications that were not ordered, making them clinically equivalent."
+      }
+    },
+    {
+      "caseId": "C03",
+      "mode": "check",
+      "kind": "noise",
+      "verdict": {
+        "overall": "neutral",
+        "changes": [
+          {
+            "item": "ehrc-2b42c495-61d4-49d5-9e2c-8d58b5045e6d 'why' text",
+            "direction": "neutral",
+            "note": "The rationale changed from 'lack of benefit' to 'limited evidence of benefit', which is a minor and clinically equivalent wording change."
+          },
+          {
+            "item": "ehrc-f283f2c4-7739-46e2-b5c8-997d89a79f5c 'why' text",
+            "direction": "neutral",
+            "note": "The rationale changed from 'ineffective' to 'not indicated', which are clinically synonymous in this context."
+          }
+        ],
+        "safety": [],
+        "note": "Output B is clinically equivalent to A, with only minor, inconsequential wording changes in the rationales for the flags."
+      }
+    },
+    {
+      "caseId": "C04",
+      "mode": "check",
+      "kind": "ab",
+      "verdict": {
+        "overall": "neutral",
+        "changes": [],
+        "safety": [],
+        "note": "Both outputs are identical and fail to flag the low-value CT head and carotid doppler orders for uncomplicated syncope."
+      }
+    },
+    {
+      "caseId": "C04",
+      "mode": "check",
+      "kind": "noise",
+      "verdict": {
+        "overall": "neutral",
+        "changes": [],
+        "safety": [],
+        "note": "Both outputs are identical and both fail to flag the low-value CT head and carotid doppler orders for this case of uncomplicated syncope."
+      }
+    },
+    {
+      "caseId": "C05",
+      "mode": "check",
+      "kind": "ab",
+      "verdict": {
+        "overall": "neutral",
+        "changes": [
+          {
+            "item": "Wording of 'why' for cwus-acr-001",
+            "direction": "neutral",
+            "note": "The explanation for the flag is rephrased but conveys the exact same clinical reasoning and cites the same patient data."
+          }
+        ],
+        "safety": [],
+        "note": "Both outputs correctly flag the unnecessary MRI for stable migraine, with only minor, clinically insignificant wording differences in the explanation."
+      }
+    },
+    {
+      "caseId": "C05",
+      "mode": "check",
+      "kind": "noise",
+      "verdict": {
+        "overall": "neutral",
+        "changes": [
+          {
+            "item": "Wording of the 'why' clause for flag cwus-acr-001",
+            "direction": "neutral",
+            "note": "The rationale is rephrased but the clinical substance is identical."
+          }
+        ],
+        "safety": [],
+        "note": "The outputs are clinically identical, correctly flagging the MRI as low-value with only minor, inconsequential wording differences in the rationale."
+      }
+    },
+    {
+      "caseId": "C06",
+      "mode": "check",
+      "kind": "ab",
+      "verdict": {
+        "overall": "neutral",
+        "changes": [
+          {
+            "item": "Rationales for flags",
+            "direction": "neutral",
+            "note": "The rationales for both flags are slightly rephrased but are clinically identical in substance."
+          }
+        ],
+        "safety": [],
+        "note": "Both outputs are clinically equivalent, correctly flagging the screening ECG with only minor, inconsequential wording differences in the rationales."
+      }
+    },
+    {
+      "caseId": "C06",
+      "mode": "check",
+      "kind": "noise",
+      "verdict": {
+        "overall": "neutral",
+        "changes": [
+          {
+            "item": "Wording of 'why' clauses",
+            "direction": "neutral",
+            "note": "The explanations for both flags have minor wording differences that do not alter the clinical meaning or applicability."
+          }
+        ],
+        "safety": [],
+        "note": "Both outputs are clinically equivalent, raising the same correct flag for the ECG and the same spurious flag for stress testing, with only minor wording differences."
+      }
+    },
+    {
+      "caseId": "C07",
+      "mode": "check",
+      "kind": "ab",
+      "verdict": {
+        "overall": "regression",
+        "changes": [
+          {
+            "item": "Addition of spurious flag for stress cardiac imaging/coronary angiography",
+            "direction": "regression",
+            "note": "Output B adds a new flag (cwus-acc-001) for tests that were not ordered, increasing the number of irrelevant alerts compared to A."
+          }
+        ],
+        "safety": [],
+        "note": "Output B is a regression because it adds a new spurious flag for tests that were not ordered, making it less specific to the case than A."
+      }
+    },
+    {
+      "caseId": "C07",
+      "mode": "check",
+      "kind": "noise",
+      "verdict": {
+        "overall": "improvement",
+        "changes": [
+          {
+            "item": "ehrc-0baa7e11-877f-43d2-809d-e7d1ade35322",
+            "direction": "improvement",
+            "note": "Output B correctly removed a redundant and spurious flag for a 'Complete Blood Profile', which was not ordered in the case."
+          }
+        ],
+        "safety": [],
+        "note": "Output B is an improvement because it removes a redundant and spurious flag from A, reducing noise while retaining the key correct advice about avoiding routine pre-operative testing."
+      }
+    },
+    {
+      "caseId": "C08",
+      "mode": "check",
+      "kind": "ab",
+      "verdict": {
+        "overall": "neutral",
+        "changes": [
+          {
+            "item": "Wording of 'why' for both flags",
+            "direction": "neutral",
+            "note": "Output B uses the more specific term 'uncomplicated cystitis' instead of 'uncomplicated urinary tract infection', but this is a clinically equivalent statement in this context."
+          }
+        ],
+        "safety": [],
+        "note": "Both outputs correctly flag the unindicated ultrasound with clinically equivalent reasoning; the change in terminology from 'UTI' to 'cystitis' is not a substantive clinical difference."
+      }
+    },
+    {
+      "caseId": "C08",
+      "mode": "check",
+      "kind": "noise",
+      "verdict": {
+        "overall": "regression",
+        "changes": [
+          {
+            "item": "Rationale for 'Unindicated abdominal ultrasound'",
+            "direction": "regression",
+            "note": "Output A's rationale is more specific and educational, correctly linking the decision to the absence of signs of upper tract involvement (like flank pain), whereas B's rationale is more generic."
+          }
+        ],
+        "safety": [],
+        "note": "B is a regression because its clinical rationale is less specific and therefore less educational than A's, particularly by omitting the explicit link between deferring the ultrasound and the absence of signs of upper tract involvement."
+      }
+    },
+    {
+      "caseId": "P01",
+      "mode": "pathway",
+      "kind": "ab",
+      "verdict": {
+        "overall": "improvement",
+        "changes": [
+          {
+            "item": "Inclusion of non-pharmacologic treatment",
+            "direction": "improvement",
+            "note": "B adds a recommendation for superficial heat, a standard non-pharmacologic treatment option that A omitted."
+          },
+          {
+            "item": "Specific recommendation against acetaminophen",
+            "direction": "improvement",
+            "note": "B correctly advises against acetaminophen based on evidence of ineffectiveness for acute low back pain, a specific and valuable clinical point not made by A."
+          },
+          {
+            "item": "Addition of a formal discharge plan stage",
+            "direction": "improvement",
+            "note": "B includes a stage for creating a written self-care plan, which is a best-practice step for improving patient education and adherence."
+          },
+          {
+            "item": "Low-value care flag for imaging",
+            "direction": "neutral",
+            "note": "A had a dedicated stage to 'Avoid routine imaging', while B integrated this point into the 'assessment' stage; both effectively convey the same crucial advice."
+          }
+        ],
+        "safety": [],
+        "note": "B is an improvement because it adds specific, evidence-based therapeutic recommendations (heat, no acetaminophen) and a best-practice process step (written discharge plan) that were absent in A."
+      }
+    },
+    {
+      "caseId": "P01",
+      "mode": "pathway",
+      "kind": "noise",
+      "verdict": {
+        "overall": "regression",
+        "changes": [
+          {
+            "item": "Pain management advice",
+            "direction": "improvement",
+            "note": "B correctly adds the specific, evidence-based recommendation that acetaminophen is ineffective for acute low back pain."
+          },
+          {
+            "item": "Follow-up timeframe",
+            "direction": "improvement",
+            "note": "B provides a more standard and appropriate follow-up window of 2-4 weeks, compared to A's slightly long 4-6 weeks."
+          },
+          {
+            "item": "Low-value care flag for imaging",
+            "direction": "regression",
+            "note": "B removes the dedicated 'low-value' flag for avoiding imaging, burying this key concept within patient education instead of highlighting it as a specific action to avoid."
+          }
+        ],
+        "safety": [
+          {
+            "class": "catch_suppressed",
+            "item": "Avoid routine imaging",
+            "note": "A correctly flagged 'Avoid routine imaging' as low-value care for this patient, but B removed this explicit flag, weakening a key safety and quality message."
+          }
+        ],
+        "note": "Although B improves the pain management advice and follow-up timeline, it is an overall regression because it removes the explicit and important low-value care flag for avoiding imaging, which constitutes a suppressed catch."
+      }
+    },
+    {
+      "caseId": "P02",
+      "mode": "pathway",
+      "kind": "ab",
+      "verdict": {
+        "overall": "regression",
+        "changes": [
+          {
+            "item": "Initial assessment criteria",
+            "direction": "improvement",
+            "note": "B is more comprehensive by explicitly listing additional complicating factors to rule out, such as recurrent UTIs, immunocompromise, and recent instrumentation."
+          },
+          {
+            "item": "Guidance on Urinalysis",
+            "direction": "improvement",
+            "note": "B provides more nuanced guidance, correctly stating that given the >90% pre-test probability, proceeding directly to empiric treatment without a dipstick is a common and reasonable strategy."
+          },
+          {
+            "item": "Symptomatic Relief",
+            "direction": "regression",
+            "note": "B demotes symptomatic relief with phenazopyridine to a single sentence, losing A's dedicated step and the important patient counseling points about urine discoloration and duration of use."
+          }
+        ],
+        "safety": [],
+        "note": "B is a regression because it loses a dedicated and detailed step for symptomatic relief, omitting important patient counseling points that were correctly included in A."
+      }
+    },
+    {
+      "caseId": "P03",
+      "mode": "pathway",
+      "kind": "ab",
+      "verdict": {
+        "overall": "improvement",
+        "changes": [
+          {
+            "item": "Inclusion of a dedicated step to search for the precipitating cause of DKA.",
+            "direction": "improvement",
+            "note": "B correctly adds an explicit step to find the DKA trigger, which is a key part of the workup that A only mentioned in passing during follow-up."
+          },
+          {
+            "item": "Disposition to an appropriate level of care (ICU/HDU).",
+            "direction": "improvement",
+            "note": "B correctly identifies the need for ICU/HDU admission for this hemodynamically unstable patient, a critical disposition and safety step that A completely missed."
+          },
+          {
+            "item": "Detail on transitioning from IV to subcutaneous insulin.",
+            "direction": "regression",
+            "note": "A provided a specific, detailed stage for transitioning to subcutaneous insulin, whereas B omits this specific step, making A's plan for the resolution phase clearer."
+          }
+        ],
+        "safety": [],
+        "note": "B is a significant improvement because it correctly includes the critical disposition to an ICU/HDU for this unstable patient and adds a key step to search for the DKA precipitant, both of which A missed."
+      }
+    },
+    {
+      "caseId": "P03",
+      "mode": "pathway",
+      "kind": "noise",
+      "verdict": {
+        "overall": "regression",
+        "changes": [
+          {
+            "item": "Sequencing of insulin and potassium management",
+            "direction": "regression",
+            "note": "B orders an IV insulin infusion before explicitly detailing the management of potassium, unlike A which correctly states to check potassium first and hold insulin if it is low."
+          },
+          {
+            "item": "Disposition planning",
+            "direction": "improvement",
+            "note": "B correctly adds the immediate disposition step of admitting the patient to the ICU, which is a key part of the initial plan that A omits."
+          }
+        ],
+        "safety": [
+          {
+            "class": "catch_suppressed",
+            "item": "The explicit instruction to check potassium before starting insulin and to hold insulin if K+ is < 3.3 mEq/L.",
+            "note": "A correctly states to check potassium before starting insulin and hold the infusion if K+ is <3.3 mEq/L. B omits this critical safety check, ordering insulin in step 3 and only discussing potassium monitoring in step 4, which could lead to life-threatening hypokalemia if followed sequentially."
+          }
+        ],
+        "note": "B is a significant regression because it removes a critical safety check present in A (holding insulin for low potassium), creating a risk of life-threatening arrhythmia; this major safety flaw far outweighs the minor improvement of adding an ICU admission step."
+      }
+    },
+    {
+      "caseId": "P04",
+      "mode": "pathway",
+      "kind": "ab",
+      "verdict": {
+        "overall": "regression",
+        "changes": [
+          {
+            "item": "Baseline laboratory workup",
+            "direction": "regression",
+            "note": "B recommends a Basic Metabolic Panel and omits a lipid panel, whereas A correctly recommends a more complete workup with a Comprehensive Metabolic Panel and a Lipid Panel, which are standard of care at diagnosis."
+          },
+          {
+            "item": "Follow-up and referral plan",
+            "direction": "regression",
+            "note": "B provides generic long-term follow-up advice, while A correctly specifies the crucial immediate referrals for ophthalmology, a registered dietitian, and a diabetes education program."
+          },
+          {
+            "item": "Pharmacotherapy recommendation",
+            "direction": "regression",
+            "note": "A's recommendation to 'consider' metformin with a 'caution' flag due to the possibility of LADA is more clinically nuanced and thoughtful than B's more direct recommendation to 'initiate empiric' therapy."
+          }
+        ],
+        "safety": [],
+        "note": "B is a regression because it recommends a less complete initial lab workup, omits critical initial referrals, and provides a less nuanced recommendation for starting medication compared to A."
+      }
+    },
+    {
+      "caseId": "P05",
+      "mode": "pathway",
+      "kind": "ab",
+      "verdict": {
+        "overall": "improvement",
+        "changes": [
+          {
+            "item": "Symptomatic Care",
+            "direction": "improvement",
+            "note": "B adds a specific and appropriate recommendation for analgesia/antipyretics to address the patient's fever and pleuritic pain, which A omitted."
+          },
+          {
+            "item": "Lab Ordering",
+            "direction": "regression",
+            "note": "B recommends a CBC by default, whereas A correctly identified that routine labs are of low utility and not mandatory for this low-risk outpatient."
+          },
+          {
+            "item": "Disposition Detail",
+            "direction": "improvement",
+            "note": "B adds useful clinical nuance to the disposition decision by considering the patient's social support and access to care."
+          }
+        ],
+        "safety": [],
+        "note": "B is a net improvement because it adds a clinically important step for symptomatic care, although its recommendation for routine lab work is less value-conscious than A's."
+      }
+    },
+    {
+      "caseId": "P06",
+      "mode": "pathway",
+      "kind": "ab",
+      "verdict": {
+        "overall": "improvement",
+        "changes": [
+          {
+            "item": "Broad Initial Lab Workup",
+            "direction": "improvement",
+            "note": "B more completely specifies the initial lab orders (CMP, CBC, Blood Culture) in the structured `order` field, whereas A only listed Blood Culture."
+          }
+        ],
+        "safety": [],
+        "note": "B is a minor improvement as it more completely specifies the appropriate initial lab panel in the structured order field, while maintaining the same correct clinical logic as A."
+      }
+    },
+    {
+      "caseId": "P06",
+      "mode": "pathway",
+      "kind": "noise",
+      "verdict": {
+        "overall": "regression",
+        "changes": [
+          {
+            "item": "Initial Workup Recommendations",
+            "direction": "improvement",
+            "note": "B correctly adds malaria smears to the initial workup, a key differential for undifferentiated fever that A missed."
+          },
+          {
+            "item": "Prospective Guidance",
+            "direction": "improvement",
+            "note": "B helpfully adds a specific stage for re-evaluation at 48-72 hours, which provides better long-term guidance than A."
+          },
+          {
+            "item": "Guidance on Empiric Antibiotics",
+            "direction": "regression",
+            "note": "B omits A's crucial and correct advice to withhold empiric antibiotics in this stable patient, a key principle of antimicrobial stewardship."
+          },
+          {
+            "item": "Warning on Widal Test",
+            "direction": "regression",
+            "note": "A's use of a dedicated 'caution' stage to warn against relying on the Widal test is much more effective than B's buried sentence."
+          }
+        ],
+        "safety": [
+          {
+            "class": "catch_suppressed",
+            "item": "Withholding empiric antibiotics",
+            "note": "B fails to include A's correct and high-value recommendation to withhold empiric antibiotics in this stable patient, which is a key aspect of antimicrobial stewardship in this scenario."
+          }
+        ],
+        "note": "Although B adds malaria smears to the workup, it is a regression because it omits A's critical recommendation to withhold empiric antibiotics in this stable patient, which constitutes a suppressed safety/stewardship catch."
+      }
+    },
+    {
+      "caseId": "A01",
+      "mode": "audit",
+      "kind": "ab",
+      "verdict": {
+        "overall": "neutral",
+        "changes": [
+          {
+            "item": "Suggestions for antibiotic alternatives",
+            "direction": "improvement",
+            "note": "Output B provides specific examples of appropriate antibiotic regimens (e.g., ampicillin-sulbactam), which is slightly more actionable than A's general recommendation."
+          },
+          {
+            "item": "Core findings and rationales",
+            "direction": "neutral",
+            "note": "Both outputs correctly identify the same four issues (antibiotic spectrum, antibiotic duration, length of stay, and CT use) with virtually identical rationales and verdicts."
+          }
+        ],
+        "safety": [],
+        "note": "The outputs are clinically equivalent, identifying the same key issues with identical verdicts; B offers slightly more specific antibiotic suggestions, but this minor change does not make it materially better."
+      }
+    },
+    {
+      "caseId": "A01",
+      "mode": "audit",
+      "kind": "noise",
+      "verdict": {
+        "overall": "neutral",
+        "changes": [
+          {
+            "item": "Order of findings",
+            "direction": "neutral",
+            "note": "The order of the findings was changed, but all four core issues were identified by both outputs."
+          },
+          {
+            "item": "Verdict for 'Use of CT abdomen with contrast'",
+            "direction": "neutral",
+            "note": "Output A rated this 'context-dependent' while B rated it 'low-value'; both rationales are clinically sound and substantively identical, making this a minor difference in framing."
+          }
+        ],
+        "safety": [],
+        "note": "Both outputs correctly identified the same four valid low-value care issues (antibiotic spectrum, antibiotic duration, length of stay, and CT use) with equivalent clinical reasoning."
+      }
+    },
+    {
+      "caseId": "A02",
+      "mode": "audit",
+      "kind": "ab",
+      "verdict": {
+        "overall": "improvement",
+        "changes": [
+          {
+            "item": "Verdict for Complete Blood Count (CBC)",
+            "direction": "improvement",
+            "note": "B's verdict of 'context-dependent' is more nuanced and clinically accurate than A's blanket 'low-value', acknowledging potential indications while correctly noting their absence here."
+          },
+          {
+            "item": "Findings on antibiotic prescription",
+            "direction": "neutral",
+            "note": "B combines A's two separate findings on antibiotic use (inappropriate for viral Dx, wrong choice of agent) into a single, comprehensive point, which is a clinically equivalent change in presentation."
+          }
+        ],
+        "safety": [],
+        "note": "B is an improvement because its assessment of the CBC is more clinically nuanced and accurate, while maintaining all of A's correct catches."
+      }
+    },
+    {
+      "caseId": "A03",
+      "mode": "audit",
+      "kind": "ab",
+      "verdict": {
+        "overall": "improvement",
+        "changes": [
+          {
+            "item": "Verdict on admission labs (CBC, Blood Group)",
+            "direction": "improvement",
+            "note": "B correctly identifies these standard safety labs as 'high-value', whereas A provided a confusing and unhelpful 'uncertain' verdict despite a rationale that supported their use."
+          },
+          {
+            "item": "Verdict on postpartum supplementation",
+            "direction": "improvement",
+            "note": "B correctly identifies standard postpartum supplementation as 'high-value', replacing A's contradictory 'uncertain' verdict."
+          },
+          {
+            "item": "Identification of high-value care",
+            "direction": "improvement",
+            "note": "B adds new, correct findings identifying Active Management of Third Stage of Labor (AMTSL) as high-value, which A missed."
+          },
+          {
+            "item": "Analysis of length of stay",
+            "direction": "improvement",
+            "note": "B adds a new, nuanced, and appropriate finding on the 2-day length of stay as a 'context-dependent' efficiency consideration, which is a valid point for an audit tool."
+          }
+        ],
+        "safety": [],
+        "note": "B is a significant improvement as it replaces A's confusing 'uncertain' verdicts with clear, correct 'high-value' judgments and adds new, relevant findings on both high-value care and efficiency."
+      }
+    },
+    {
+      "caseId": "A03",
+      "mode": "audit",
+      "kind": "noise",
+      "verdict": {
+        "overall": "improvement",
+        "changes": [
+          {
+            "item": "Reclassification of admission labs from 'uncertain' to 'high-value'",
+            "direction": "improvement",
+            "note": "B correctly identifies standard safety and public health labs as high-value, which is more accurate than A's weak 'uncertain' verdict."
+          },
+          {
+            "item": "Reclassification of postpartum supplements from 'uncertain' to 'high-value'",
+            "direction": "improvement",
+            "note": "B correctly identifies standard postpartum supplementation as high-value care, an improvement on A's non-committal 'uncertain' verdict."
+          },
+          {
+            "item": "New finding on length of stay",
+            "direction": "improvement",
+            "note": "B adds a new, nuanced finding about the potential for a shorter, more efficient length of stay in this low-risk case, which A missed."
+          },
+          {
+            "item": "New finding on Active Management of Third Stage of Labour (AMTSL)",
+            "direction": "improvement",
+            "note": "B correctly identifies AMTSL as a critical, high-value safety intervention, a key aspect of care that A missed entirely."
+          }
+        ],
+        "safety": [],
+        "note": "B is a substantial improvement as it correctly identifies standard care items as high-value (unlike A's weak 'uncertain' verdicts) and adds two new, important findings regarding efficiency (length of stay) and safety (AMTSL)."
+      }
+    },
+    {
+      "caseId": "A04",
+      "mode": "audit",
+      "kind": "ab",
+      "verdict": {
+        "overall": "improvement",
+        "changes": [
+          {
+            "item": "Identification of high-value care",
+            "direction": "improvement",
+            "note": "B correctly identifies and reinforces several high-value aspects of care (antibiotic prophylaxis, day-care setting, procedure choice) which A completely missed, providing a more balanced audit."
+          },
+          {
+            "item": "Analysis of anaesthesia-related risk",
+            "direction": "improvement",
+            "note": "B's finding on the discharge protocol after spinal anaesthesia is more specific and actionable, focusing on the critical safety check of voiding, whereas A's critique of the choice of anaesthesia itself is more general."
+          }
+        ],
+        "safety": [],
+        "note": "B is a clear improvement as it provides a more balanced audit by identifying high-value care, and its critique of the anaesthesia pathway is more specific and actionable than A's."
+      }
+    }
+  ],
+  "arms": [
+    {
+      "id": "C01",
+      "arm": "off",
+      "view": {
+        "flags": [
+          {
+            "id": "cwus-aafp-001",
+            "statement": "Don't do imaging for low back pain within the first six weeks unless red flags are present.",
+            "why": "The patient has acute low back pain for less than six weeks with no red flags, making imaging low-value.",
+            "confidence": 1
+          }
+        ],
+        "considered": 16
+      }
+    },
+    {
+      "id": "C01",
+      "arm": "on",
+      "view": {
+        "flags": [
+          {
+            "id": "cwus-aafp-001",
+            "statement": "Don't do imaging for low back pain within the first six weeks unless red flags are present.",
+            "why": "The patient has acute low back pain of less than six weeks duration with no red flags, meeting the recommendation's precondition for avoiding imaging.",
+            "confidence": 1
+          }
+        ],
+        "considered": 16
+      }
+    },
+    {
+      "id": "C01",
+      "arm": "off2",
+      "view": {
+        "flags": [
+          {
+            "id": "cwus-aafp-001",
+            "statement": "Don't do imaging for low back pain within the first six weeks unless red flags are present.",
+            "why": "The patient has acute low back pain for less than six weeks with no red flags, making imaging low-value.",
+            "confidence": 1
+          }
+        ],
+        "considered": 16
+      }
+    },
+    {
+      "id": "C02",
+      "arm": "off",
+      "view": {
+        "flags": [],
+        "considered": 11
+      }
+    },
+    {
+      "id": "C02",
+      "arm": "on",
+      "view": {
+        "flags": [],
+        "considered": 11
+      }
+    },
+    {
+      "id": "C02",
+      "arm": "off2",
+      "view": {
+        "flags": [],
+        "considered": 11
+      }
+    },
+    {
+      "id": "C03",
+      "arm": "off",
+      "view": {
+        "flags": [
+          {
+            "id": "ehrc-2b42c495-61d4-49d5-9e2c-8d58b5045e6d",
+            "statement": "Avoid: Antihistamine for viral upper respiratory infection",
+            "why": "The patient has a viral upper respiratory infection, the condition for which antihistamines are not recommended due to lack of benefit.",
+            "confidence": 1
+          },
+          {
+            "id": "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
+            "statement": "Avoid: Unindicated antibiotic prescription",
+            "why": "The patient has a viral upper respiratory infection, for which antibiotics are not indicated.",
+            "confidence": 1
+          },
+          {
+            "id": "ehrc-4fd1cb48-938b-4f11-b828-0ced7767b809",
+            "statement": "Avoid: Levocetirizine+Montelukast for viral URTI",
+            "why": "The patient has a viral upper respiratory tract infection, the condition for which this combination medication is not recommended.",
+            "confidence": 1
+          },
+          {
+            "id": "ehrc-f283f2c4-7739-46e2-b5c8-997d89a79f5c",
+            "statement": "Avoid: Antibiotic for viral upper respiratory infection",
+            "why": "The patient has a diagnosed viral upper respiratory infection, for which antibiotics are ineffective.",
+            "confidence": 1
+          },
+          {
+            "id": "ehrc-f4fb811c-7e57-440a-bf0d-3386d0f3dcbb",
+            "statement": "Avoid: Antibiotic for viral infection",
+            "why": "The patient has a viral infection, and antibiotics are not effective against viruses.",
+            "confidence": 1
+          },
+          {
+            "id": "ehrc-7ac10177-dc6f-4d8a-9f52-ed2fc39f3fa2",
+            "statement": "Avoid: Antibiotic for viral respiratory infection",
+            "why": "The patient has a viral respiratory infection, for which antibiotics are not indicated.",
+            "confidence": 1
+          },
+          {
+            "id": "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
+            "statement": "Avoid: Unindicated antibiotic",
+            "why": "The patient's condition is a viral upper respiratory infection, which is not an indication for antibiotics.",
+            "confidence": 1
+          },
+          {
+            "id": "ehrc-1c5340d3-cf20-4810-a2ae-bd528d056a28",
+            "statement": "Avoid: Cold/cough medication for viral URI",
+            "why": "The patient has a viral upper respiratory infection, a condition for which many over-the-counter cold/cough medications have limited evidence of efficacy.",
+            "confidence": 1
+          },
+          {
+            "id": "cwus-aafp-002",
+            "statement": "Don't routinely prescribe antibiotics for uncomplicated upper respiratory infections or mild acute rhinosinusitis.",
+            "why": "The patient has an uncomplicated viral upper respiratory infection of 3 days duration, which meets the precondition for avoiding antibiotics.",
+            "confidence": 1
+          }
+        ],
+        "considered": 21
+      }
+    },
+    {
+      "id": "C03",
+      "arm": "on",
+      "view": {
+        "flags": [
+          {
+            "id": "ehrc-2b42c495-61d4-49d5-9e2c-8d58b5045e6d",
+            "statement": "Avoid: Antihistamine for viral upper respiratory infection",
+            "why": "The patient has a viral upper respiratory infection, a condition for which antihistamines are generally not recommended due to limited efficacy.",
+            "confidence": 1
+          },
+          {
+            "id": "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
+            "statement": "Avoid: Unindicated antibiotic prescription",
+            "why": "The patient has a viral upper respiratory infection, which is not an indication for antibiotics.",
+            "confidence": 1
+          },
+          {
+            "id": "ehrc-4fd1cb48-938b-4f11-b828-0ced7767b809",
+            "statement": "Avoid: Levocetirizine+Montelukast for viral URTI",
+            "why": "The patient has a viral upper respiratory tract infection, for which the combination of Levocetirizine and Montelukast is not indicated.",
+            "confidence": 1
+          },
+          {
+            "id": "ehrc-f283f2c4-7739-46e2-b5c8-997d89a79f5c",
+            "statement": "Avoid: Antibiotic for viral upper respiratory infection",
+            "why": "The patient has a diagnosed viral upper respiratory infection, for which antibiotics are ineffective.",
+            "confidence": 1
+          },
+          {
+            "id": "ehrc-f4fb811c-7e57-440a-bf0d-3386d0f3dcbb",
+            "statement": "Avoid: Antibiotic for viral infection",
+            "why": "The patient has an acute viral upper respiratory infection, and antibiotics are not effective against viruses.",
+            "confidence": 1
+          },
+          {
+            "id": "ehrc-7ac10177-dc6f-4d8a-9f52-ed2fc39f3fa2",
+            "statement": "Avoid: Antibiotic for viral respiratory infection",
+            "why": "The patient has a viral respiratory infection, for which antibiotics are not indicated.",
+            "confidence": 1
+          },
+          {
+            "id": "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
+            "statement": "Avoid: Unindicated antibiotic",
+            "why": "The patient's diagnosis of a viral upper respiratory infection is not an indication for antibiotics.",
+            "confidence": 1
+          },
+          {
+            "id": "ehrc-1c5340d3-cf20-4810-a2ae-bd528d056a28",
+            "statement": "Avoid: Cold/cough medication for viral URI",
+            "why": "The patient has a viral URI, for which over-the-counter cold and cough medications have limited evidence of benefit.",
+            "confidence": 1
+          },
+          {
+            "id": "cwus-aafp-002",
+            "statement": "Don't routinely prescribe antibiotics for uncomplicated upper respiratory infections or mild acute rhinosinusitis.",
+            "why": "The patient has an uncomplicated viral upper respiratory infection of 3 days duration, which meets the precondition for avoiding antibiotics.",
+            "confidence": 1
+          }
+        ],
+        "considered": 20
+      }
+    },
+    {
+      "id": "C03",
+      "arm": "off2",
+      "view": {
+        "flags": [
+          {
+            "id": "ehrc-2b42c495-61d4-49d5-9e2c-8d58b5045e6d",
+            "statement": "Avoid: Antihistamine for viral upper respiratory infection",
+            "why": "The patient has a viral upper respiratory infection, for which antihistamines have limited evidence of benefit.",
+            "confidence": 1
+          },
+          {
+            "id": "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
+            "statement": "Avoid: Unindicated antibiotic prescription",
+            "why": "The patient has a viral upper respiratory infection, which is not an indication for antibiotics.",
+            "confidence": 1
+          },
+          {
+            "id": "ehrc-4fd1cb48-938b-4f11-b828-0ced7767b809",
+            "statement": "Avoid: Levocetirizine+Montelukast for viral URTI",
+            "why": "The patient has a viral upper respiratory tract infection, for which the combination of Levocetirizine and Montelukast is not indicated.",
+            "confidence": 1
+          },
+          {
+            "id": "ehrc-f283f2c4-7739-46e2-b5c8-997d89a79f5c",
+            "statement": "Avoid: Antibiotic for viral upper respiratory infection",
+            "why": "The patient has a viral upper respiratory infection, for which antibiotics are not indicated.",
+            "confidence": 1
+          },
+          {
+            "id": "ehrc-f4fb811c-7e57-440a-bf0d-3386d0f3dcbb",
+            "statement": "Avoid: Antibiotic for viral infection",
+            "why": "The patient has a diagnosed viral infection, for which antibiotics are ineffective.",
+            "confidence": 1
+          },
+          {
+            "id": "ehrc-7ac10177-dc6f-4d8a-9f52-ed2fc39f3fa2",
+            "statement": "Avoid: Antibiotic for viral respiratory infection",
+            "why": "The patient has a viral respiratory infection, for which antibiotics are not indicated.",
+            "confidence": 1
+          },
+          {
+            "id": "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
+            "statement": "Avoid: Unindicated antibiotic",
+            "why": "The patient has a viral upper respiratory infection, making an antibiotic prescription unindicated.",
+            "confidence": 1
+          },
+          {
+            "id": "ehrc-1c5340d3-cf20-4810-a2ae-bd528d056a28",
+            "statement": "Avoid: Cold/cough medication for viral URI",
+            "why": "The patient has a viral URI, for which many over-the-counter cold and cough medications have limited evidence of benefit.",
+            "confidence": 1
+          },
+          {
+            "id": "cwus-aafp-002",
+            "statement": "Don't routinely prescribe antibiotics for uncomplicated upper respiratory infections or mild acute rhinosinusitis.",
+            "why": "The patient has an uncomplicated upper respiratory infection of 3 days duration, which meets the precondition for avoiding antibiotics.",
+            "confidence": 1
+          }
+        ],
+        "considered": 21
+      }
+    },
+    {
+      "id": "C04",
+      "arm": "off",
+      "view": {
+        "flags": [],
+        "considered": 12
+      }
+    },
+    {
+      "id": "C04",
+      "arm": "on",
+      "view": {
+        "flags": [],
+        "considered": 12
+      }
+    },
+    {
+      "id": "C04",
+      "arm": "off2",
+      "view": {
+        "flags": [],
+        "considered": 12
+      }
+    },
+    {
+      "id": "C05",
+      "arm": "off",
+      "view": {
+        "flags": [
+          {
+            "id": "cwus-acr-001",
+            "statement": "Don't perform neuroimaging (CT or MRI) for patients with stable headaches that meet criteria for migraine.",
+            "why": "The patient has recurrent headaches with a stable pattern typical of migraine for 5 years, a normal neurological exam, and no red flags.",
+            "confidence": 1
+          }
+        ],
+        "considered": 12
+      }
+    },
+    {
+      "id": "C05",
+      "arm": "on",
+      "view": {
+        "flags": [
+          {
+            "id": "cwus-acr-001",
+            "statement": "Don't perform neuroimaging (CT or MRI) for patients with stable headaches that meet criteria for migraine.",
+            "why": "The patient has a stable 5-year history of typical migraines with a normal neurological exam and no red flags, meeting the recommendation's precondition.",
+            "confidence": 1
+          }
+        ],
+        "considered": 12
+      }
+    },
+    {
+      "id": "C05",
+      "arm": "off2",
+      "view": {
+        "flags": [
+          {
+            "id": "cwus-acr-001",
+            "statement": "Don't perform neuroimaging (CT or MRI) for patients with stable headaches that meet criteria for migraine.",
+            "why": "The patient has a long-standing, stable pattern of headaches that meet migraine criteria, with a normal neurological exam and no red flags.",
+            "confidence": 1
+          }
+        ],
+        "considered": 12
+      }
+    },
+    {
+      "id": "C06",
+      "arm": "off",
+      "view": {
+        "flags": [
+          {
+            "id": "cwus-acp-001",
+            "statement": "Don't obtain screening resting or exercise electrocardiograms in asymptomatic adults at low risk for coronary heart disease.",
+            "why": "The patient is an asymptomatic 45-year-old female at low risk for coronary heart disease, for whom screening ECG is not indicated.",
+            "confidence": 1
+          },
+          {
+            "id": "cwus-acc-001",
+            "statement": "Don't perform stress cardiac imaging or coronary angiography in patients without cardiac symptoms unless high-risk markers are present.",
+            "why": "The patient is asymptomatic and at low risk for coronary artery disease, making screening with stress imaging or angiography inappropriate.",
+            "confidence": 1
+          }
+        ],
+        "considered": 19
+      }
+    },
+    {
+      "id": "C06",
+      "arm": "on",
+      "view": {
+        "flags": [
+          {
+            "id": "cwus-acp-001",
+            "statement": "Don't obtain screening resting or exercise electrocardiograms in asymptomatic adults at low risk for coronary heart disease.",
+            "why": "The patient is an asymptomatic 45-year-old female at low risk for coronary heart disease, making a screening ECG low-value.",
+            "confidence": 1
+          },
+          {
+            "id": "cwus-acc-001",
+            "statement": "Don't perform stress cardiac imaging or coronary angiography in patients without cardiac symptoms unless high-risk markers are present.",
+            "why": "The patient is asymptomatic and at low risk for coronary artery disease, making screening stress cardiac imaging inappropriate.",
+            "confidence": 1
+          }
+        ],
+        "considered": 19
+      }
+    },
+    {
+      "id": "C06",
+      "arm": "off2",
+      "view": {
+        "flags": [
+          {
+            "id": "cwus-acp-001",
+            "statement": "Don't obtain screening resting or exercise electrocardiograms in asymptomatic adults at low risk for coronary heart disease.",
+            "why": "The patient is an asymptomatic 45-year-old woman at low risk for coronary heart disease, making a screening ECG inappropriate.",
+            "confidence": 1
+          },
+          {
+            "id": "cwus-acc-001",
+            "statement": "Don't perform stress cardiac imaging or coronary angiography in patients without cardiac symptoms unless high-risk markers are present.",
+            "why": "The patient is asymptomatic with no cardiac symptoms and is at low risk for coronary disease, so screening with stress imaging or angiography is not indicated.",
+            "confidence": 1
+          }
+        ],
+        "considered": 19
+      }
+    },
+    {
+      "id": "C07",
+      "arm": "off",
+      "view": {
+        "flags": [
+          {
+            "id": "ehrc-0baa7e11-877f-43d2-809d-e7d1ade35322",
+            "statement": "Avoid: Complete Blood Profile testing",
+            "why": "For an asymptomatic patient undergoing low-risk cataract surgery, a routine complete blood profile is considered a low-value test.",
+            "confidence": 1
+          },
+          {
+            "id": "ehrc-7ffc130c-81ad-4254-a81d-13944ed3c682",
+            "statement": "Avoid: Unindicated complete blood profile",
+            "why": "For an asymptomatic patient undergoing low-risk cataract surgery, a routine complete blood profile is not indicated.",
+            "confidence": 1
+          },
+          {
+            "id": "cwus-asa-001",
+            "statement": "Don't obtain routine preoperative chest radiographs, ECGs, or laboratory tests in asymptomatic patients undergoing low-risk surgery.",
+            "why": "The patient is asymptomatic and undergoing low-risk cataract surgery, which meets the recommendation's precondition for avoiding routine preoperative testing.",
+            "confidence": 1
+          }
+        ],
+        "considered": 17
+      }
+    },
+    {
+      "id": "C07",
+      "arm": "on",
+      "view": {
+        "flags": [
+          {
+            "id": "ehrc-0baa7e11-877f-43d2-809d-e7d1ade35322",
+            "statement": "Avoid: Complete Blood Profile testing",
+            "why": "The patient is asymptomatic and undergoing a low-risk procedure (cataract surgery), making a routine complete blood profile unnecessary.",
+            "confidence": 1
+          },
+          {
+            "id": "ehrc-7ffc130c-81ad-4254-a81d-13944ed3c682",
+            "statement": "Avoid: Unindicated complete blood profile",
+            "why": "The patient is asymptomatic and undergoing a low-risk procedure (cataract surgery), so a routine complete blood profile is not indicated.",
+            "confidence": 1
+          },
+          {
+            "id": "cwus-asa-001",
+            "statement": "Don't obtain routine preoperative chest radiographs, ECGs, or laboratory tests in asymptomatic patients undergoing low-risk surgery.",
+            "why": "The patient is asymptomatic and undergoing low-risk cataract surgery, making routine preoperative laboratory tests unnecessary.",
+            "confidence": 1
+          },
+          {
+            "id": "cwus-acc-001",
+            "statement": "Don't perform stress cardiac imaging or coronary angiography in patients without cardiac symptoms unless high-risk markers are present.",
+            "why": "The patient is asymptomatic with good exercise tolerance, so preoperative stress cardiac imaging is not indicated before this low-risk surgery.",
+            "confidence": 1
+          }
+        ],
+        "considered": 17
+      }
+    },
+    {
+      "id": "C07",
+      "arm": "off2",
+      "view": {
+        "flags": [
+          {
+            "id": "ehrc-7ffc130c-81ad-4254-a81d-13944ed3c682",
+            "statement": "Avoid: Unindicated complete blood profile",
+            "why": "The patient is asymptomatic with good exercise tolerance undergoing low-risk surgery, so a routine complete blood profile is likely unindicated.",
+            "confidence": 1
+          },
+          {
+            "id": "cwus-asa-001",
+            "statement": "Don't obtain routine preoperative chest radiographs, ECGs, or laboratory tests in asymptomatic patients undergoing low-risk surgery.",
+            "why": "The patient is asymptomatic and undergoing low-risk cataract surgery, meeting the criteria to avoid routine preoperative testing.",
+            "confidence": 1
+          }
+        ],
+        "considered": 17
+      }
+    },
+    {
+      "id": "C08",
+      "arm": "off",
+      "view": {
+        "flags": [
+          {
+            "id": "ehrc-60cbb099-3ef7-4006-af3f-9b38d6d675e4",
+            "statement": "Avoid: Unindicated abdominal/pelvic ultrasound",
+            "why": "The patient has classic symptoms of a first-time, uncomplicated urinary tract infection, for which pelvic ultrasound is not indicated.",
+            "confidence": 1
+          },
+          {
+            "id": "ehrc-05d3716b-d61c-4324-86ba-1a7f5be7a738",
+            "statement": "Avoid: Unindicated abdominal ultrasound",
+            "why": "The patient has symptoms of a simple, uncomplicated urinary tract infection without signs of upper tract involvement (like flank pain), so an abdominal ultrasound is not indicated.",
+            "confidence": 1
+          }
+        ],
+        "considered": 15
+      }
+    },
+    {
+      "id": "C08",
+      "arm": "on",
+      "view": {
+        "flags": [
+          {
+            "id": "ehrc-60cbb099-3ef7-4006-af3f-9b38d6d675e4",
+            "statement": "Avoid: Unindicated abdominal/pelvic ultrasound",
+            "why": "The patient has a first episode of uncomplicated cystitis, for which pelvic ultrasound is not indicated.",
+            "confidence": 1
+          },
+          {
+            "id": "ehrc-05d3716b-d61c-4324-86ba-1a7f5be7a738",
+            "statement": "Avoid: Unindicated abdominal ultrasound",
+            "why": "The patient presents with a first episode of uncomplicated cystitis without signs of upper tract involvement, making abdominal ultrasound unindicated.",
+            "confidence": 1
+          }
+        ],
+        "considered": 15
+      }
+    },
+    {
+      "id": "C08",
+      "arm": "off2",
+      "view": {
+        "flags": [
+          {
+            "id": "ehrc-60cbb099-3ef7-4006-af3f-9b38d6d675e4",
+            "statement": "Avoid: Unindicated abdominal/pelvic ultrasound",
+            "why": "The patient has a first episode of uncomplicated cystitis, for which pelvic ultrasound is not indicated.",
+            "confidence": 1
+          },
+          {
+            "id": "ehrc-05d3716b-d61c-4324-86ba-1a7f5be7a738",
+            "statement": "Avoid: Unindicated abdominal ultrasound",
+            "why": "The patient has a first episode of uncomplicated cystitis, for which abdominal ultrasound is not indicated.",
+            "confidence": 1
+          }
+        ],
+        "considered": 15
+      }
+    },
+    {
+      "id": "P01",
+      "arm": "off",
+      "view": {
+        "workingDiagnosis": "Acute mechanical lower back pain",
+        "needsDdx": false,
+        "stages": [
+          {
+            "kind": "triage",
+            "title": "Rule out emergent causes",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "detail": "For this 36-year-old male, rapidly screen for red flags like cauda equina syndrome, fracture, infection, or malignancy. Although his history is low-risk (no trauma, fever, weight loss, or neurological symptoms), a structured screen is mandatory for safety."
+          },
+          {
+            "kind": "assessment",
+            "title": "Confirm mechanical back pain",
+            "flag": "high-value",
+            "enrichedFlag": "essential",
+            "detail": "Confirm a diagnosis of nonspecific mechanical back pain through a detailed history of the pain's onset (lifting a heavy box), character, and aggravating/alleviating factors. A focused physical exam, including range of motion and palpation, will help confirm a mechanical origin."
+          },
+          {
+            "kind": "diagnosis",
+            "title": "Avoid routine imaging",
+            "flag": "low-value",
+            "enrichedFlag": "high-value",
+            "detail": "For this 36-year-old with acute mechanical back pain and no red flags, imaging (X-ray, MRI) is not indicated. It does not improve outcomes, adds cost and radiation exposure, and can lead to unnecessary anxiety and follow-up for incidental findings."
+          },
+          {
+            "kind": "treatment",
+            "title": "Pain relief & activity advice",
+            "flag": "high-value",
+            "enrichedFlag": "routine",
+            "order": "NSAID",
+            "detail": "Recommend a short course of a non-steroidal anti-inflammatory drug (NSAID) for pain control, after confirming no contraindications (e.g., renal insufficiency, history of peptic ulcer disease/GI bleed, heart failure). Advise the patient to stay active as tolerated and avoid prolonged bed rest, as this is crucial for recovery."
+          },
+          {
+            "kind": "treatment",
+            "title": "Education & self-management",
+            "flag": "high-value",
+            "enrichedFlag": "high-value",
+            "detail": "Reassure the patient that his pain is mechanical, not serious, and has a very high likelihood of resolving on its own. Explain why imaging is not needed now and emphasize that staying active is a first-line treatment for a faster recovery."
+          },
+          {
+            "kind": "followup",
+            "title": "Monitor & re-evaluate",
+            "flag": "routine",
+            "enrichedFlag": "followup",
+            "detail": "Advise the patient to seek re-evaluation if the pain significantly worsens, if new \"red flag\" symptoms develop (e.g., leg weakness, numbness in the groin, urinary problems), or if there is no meaningful improvement after 4-6 weeks of conservative care."
+          }
+        ]
+      }
+    },
+    {
+      "id": "P01",
+      "arm": "on",
+      "view": {
+        "workingDiagnosis": "Acute Mechanical Lower Back Pain",
+        "needsDdx": false,
+        "stages": [
+          {
+            "kind": "triage",
+            "title": "Initial Pain & Safety Assessment",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "detail": "Assess the patient's pain level and systematically screen for \"red flags\" like cauda equina syndrome (saddle anesthesia, urinary retention), fracture (significant trauma), or infection (fever). For this 36-year-old patient with a clear mechanical trigger and no reported red flags, the pre-test probability of a serious underlying condition is very low."
+          },
+          {
+            "kind": "assessment",
+            "title": "Confirm Mechanical Back Pain",
+            "flag": "high-value",
+            "enrichedFlag": "essential",
+            "detail": "Perform a focused history and physical examination to confirm the diagnosis of mechanical back pain. The patient's history of pain onset after lifting a heavy box is highly suggestive. The exam should confirm localized lumbar tenderness and a normal neurological screen (strength, sensation, reflexes), making imaging unnecessary at this stage."
+          },
+          {
+            "kind": "treatment",
+            "title": "Acute Pain Management",
+            "flag": "high-value",
+            "enrichedFlag": "high-value",
+            "order": "NSAID",
+            "detail": "Recommend non-pharmacologic measures like superficial heat and continuing normal activities as tolerated. For medication, advise a short course of a nonsteroidal anti-inflammatory drug (NSAID) at the lowest effective dose, checking for contraindications (e.g., renal disease, GI bleed history, cardiovascular risk) before prescribing. Acetaminophen is not recommended as it has been shown to be ineffective for acute low back pain."
+          },
+          {
+            "kind": "treatment",
+            "title": "Patient Education & Reassurance",
+            "flag": "high-value",
+            "enrichedFlag": "high-value",
+            "detail": "Reassure the patient that acute mechanical back pain is very common, has an excellent prognosis, and is typically self-limiting. Emphasize that avoiding prolonged bed rest and maintaining normal daily activities as much as possible is a key part of treatment and speeds recovery."
+          },
+          {
+            "kind": "disposition",
+            "title": "Discharge with Self-Care Plan",
+            "flag": "routine",
+            "enrichedFlag": "routine",
+            "detail": "Discharge the patient with a clear, written self-care plan. This should summarize the pain management strategy (e.g., NSAIDs, heat), activity modification advice (stay active, avoid bed rest), and information on the expected recovery timeline."
+          },
+          {
+            "kind": "followup",
+            "title": "Follow-up & Red Flag Advice",
+            "flag": "routine",
+            "enrichedFlag": "essential",
+            "detail": "Advise the patient to seek follow-up if the pain does not improve as expected or persists beyond the typical acute phase, or to return immediately if any \"red flag\" symptoms develop (e.g., leg weakness, numbness in the groin/saddle area, loss of bladder/bowel control, fever). This ensures timely re-evaluation for persistent symptoms or a more serious condition."
+          }
+        ]
+      }
+    },
+    {
+      "id": "P01",
+      "arm": "off2",
+      "view": {
+        "workingDiagnosis": "Acute mechanical lower back pain",
+        "needsDdx": false,
+        "stages": [
+          {
+            "kind": "triage",
+            "title": "Rule Out Red Flags",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "detail": "Systematically screen for red flags indicating serious spinal pathology. For this 36-year-old male with a clear mechanical trigger and no concerning symptoms, the pre-test probability of a serious condition is very low."
+          },
+          {
+            "kind": "assessment",
+            "title": "Confirm Mechanical Back Pain",
+            "flag": "routine",
+            "enrichedFlag": "routine",
+            "detail": "Confirm the diagnosis of acute mechanical back pain through a focused history and physical exam. The patient's report of onset after lifting a heavy box is a classic presentation for mechanical strain."
+          },
+          {
+            "kind": "treatment",
+            "title": "Initial Pain Management",
+            "flag": "high-value",
+            "enrichedFlag": "high-value",
+            "order": "NSAID",
+            "detail": "Recommend a short course of a non-steroidal anti-inflammatory drug (NSAID) for pain relief, used at the lowest effective dose. Acetaminophen is not recommended as it has been shown to be ineffective for acute low back pain."
+          },
+          {
+            "kind": "treatment",
+            "title": "Activity & Self-Care Advice",
+            "flag": "high-value",
+            "enrichedFlag": "high-value",
+            "detail": "Strongly encourage the patient to continue with his normal daily activities as much as pain allows and to avoid prolonged bed rest, which can be detrimental. Activity should be gradually increased as tolerated."
+          },
+          {
+            "kind": "treatment",
+            "title": "Patient Education",
+            "flag": "high-value",
+            "enrichedFlag": "high-value",
+            "detail": "Reassure the patient about the benign nature of his condition and the excellent prognosis for recovery within a few weeks. Explain that imaging is not indicated at this stage as it would not change management and has a low diagnostic yield."
+          },
+          {
+            "kind": "followup",
+            "title": "Reassess if Not Improving",
+            "flag": "routine",
+            "enrichedFlag": "followup",
+            "detail": "Advise the patient to return for re-evaluation if the pain has not significantly improved in 2-4 weeks, if it worsens, or if any new red flag symptoms develop (e.g., leg weakness, numbness, bowel/bladder changes)."
+          }
+        ]
+      }
+    },
+    {
+      "id": "P02",
+      "arm": "off",
+      "view": {
+        "workingDiagnosis": "Uncomplicated Cystitis",
+        "needsDdx": false,
+        "stages": [
+          {
+            "kind": "assessment",
+            "title": "Clinical Assessment",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "detail": "Confirm the patient's history to classify the UTI as uncomplicated. This involves verifying she is non-pregnant, afebrile, and has no flank pain (suggesting pyelonephritis) or vaginal discharge (suggesting vaginitis). This classification is crucial as it guides the extent of investigation and treatment duration for this 26-year-old female."
+          },
+          {
+            "kind": "diagnosis",
+            "title": "Urinalysis",
+            "flag": "high-value",
+            "enrichedFlag": "routine",
+            "order": "Urinalysis, dipstick",
+            "detail": "Perform a urine dipstick to check for leukocyte esterase and nitrites, which support a UTI diagnosis. While a positive result increases the likelihood of a UTI, a negative result in a patient with classic symptoms does not rule it out. Given the high pre-test probability in this patient, empiric treatment is reasonable even with a negative dipstick."
+          },
+          {
+            "kind": "treatment",
+            "title": "Empiric Antibiotic Therapy",
+            "flag": "high-value",
+            "enrichedFlag": "high-value",
+            "order": "Oral antibiotic for uncomplicated cystitis",
+            "detail": "Prescribe a short course of empiric oral antibiotics appropriate for uncomplicated cystitis. The choice should be individualized based on local resistance patterns, cost, and patient factors. For this patient, a first-line option is nitrofurantoin."
+          },
+          {
+            "kind": "treatment",
+            "title": "Symptomatic Relief",
+            "flag": "routine",
+            "enrichedFlag": "context-dependent",
+            "order": "Phenazopyridine",
+            "detail": "If dysuria is severe, consider prescribing phenazopyridine for 1-2 days for rapid pain relief while the antibiotic takes effect. Advise the patient that this medication does not treat the infection, will discolor her urine (orange/blue), and should not be used for more than 48 hours."
+          },
+          {
+            "kind": "disposition",
+            "title": "Patient Education & Discharge",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "detail": "Educate the patient on the importance of completing the full course of antibiotics. Explain the expected timeline for symptom improvement, which is typically within 48-72 hours. Clearly state the 'red flag' symptoms that warrant an immediate return, such as fever, flank pain, or worsening symptoms."
+          },
+          {
+            "kind": "followup",
+            "title": "Follow-up if Symptoms Persist",
+            "flag": "routine",
+            "enrichedFlag": "followup",
+            "order": "Urine culture and sensitivity",
+            "detail": "Instruct the patient to seek follow-up care if her urinary symptoms do not improve within 48-72 hours or if they worsen. At that point, a urine culture would be strongly recommended to identify the causative organism and its antibiotic sensitivities, which would guide a change in therapy."
+          }
+        ]
+      }
+    },
+    {
+      "id": "P02",
+      "arm": "on",
+      "view": {
+        "workingDiagnosis": "Uncomplicated Cystitis",
+        "needsDdx": false,
+        "stages": [
+          {
+            "kind": "triage",
+            "title": "Rule out complicated UTI/pyelonephritis",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "detail": "Based on the patient's history, confirm the absence of complicating factors. This 26-year-old female is not pregnant and reports no flank pain; it is important to also confirm no history of recurrent UTIs, immunocompromise, recent instrumentation, or recent antibiotic use to firmly classify this as an uncomplicated UTI."
+          },
+          {
+            "kind": "assessment",
+            "title": "Confirm classic cystitis symptoms",
+            "flag": "routine",
+            "enrichedFlag": "essential",
+            "detail": "Confirm the patient's primary symptoms of dysuria, frequency, and urgency. Crucially, verify the absence of vaginal discharge or irritation to differentiate from vaginitis or STIs, which can present with similar symptoms."
+          },
+          {
+            "kind": "diagnosis",
+            "title": "Urinalysis (dipstick)",
+            "flag": "high-value",
+            "enrichedFlag": "context-dependent",
+            "order": "Urinalysis, dipstick",
+            "detail": "A urine dipstick can support the diagnosis by detecting leukocyte esterase and nitrites. However, given the >90% pre-test probability in this patient with classic symptoms and no vaginal discharge, proceeding directly to empiric treatment without testing is a reasonable and common strategy."
+          },
+          {
+            "kind": "treatment",
+            "title": "Empiric antibiotics",
+            "flag": "high-value",
+            "enrichedFlag": "high-value",
+            "order": "Empiric antibiotics for UTI",
+            "detail": "For this 26-year-old with confirmed uncomplicated cystitis, prescribe a short course of an appropriate first-line antibiotic. The choice should be guided by local resistance patterns, patient allergies, and cost."
+          },
+          {
+            "kind": "disposition",
+            "title": "Patient education & safety netting",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "detail": "Advise the patient on managing symptoms and the importance of completing the antibiotic course. Inform her to seek re-evaluation if symptoms do not improve in 48-72 hours, or if she develops fever, chills, or flank pain. Symptomatic relief with phenazopyridine is an option but does not treat the infection."
+          },
+          {
+            "kind": "followup",
+            "title": "Re-evaluation if no improvement",
+            "flag": "routine",
+            "enrichedFlag": "followup",
+            "order": "Urine culture and sensitivity",
+            "detail": "If the patient's symptoms persist or worsen after 2-3 days of antibiotic therapy, a re-evaluation is necessary. This should include obtaining a urine culture to identify the causative organism and its antibiotic sensitivities, as treatment failure may indicate a resistant pathogen."
+          }
+        ]
+      }
+    },
+    {
+      "id": "P03",
+      "arm": "off",
+      "view": {
+        "workingDiagnosis": "Diabetic Ketoacidosis (DKA)",
+        "needsDdx": false,
+        "stages": [
+          {
+            "kind": "triage",
+            "title": "Rapid Clinical Assessment & Vitals",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "order": "Establish IV access",
+            "detail": "This patient is tachycardic (118 bpm), hypotensive (96/60 mmHg), and tachypneic (RR 28), indicating significant distress. Immediate assessment of airway, breathing, circulation (ABCs), and neurological status is critical. Securing two large-bore IV lines is a priority for subsequent fluid and insulin administration."
+          },
+          {
+            "kind": "diagnosis",
+            "title": "Confirm DKA & Severity",
+            "flag": "essential",
+            "enrichedFlag": "high-value",
+            "order": "DKA laboratory panel",
+            "detail": "For this 22-year-old with classic signs and a history of type 1 diabetes, lab tests are needed to confirm DKA and determine its severity. This includes point-of-care glucose, blood ketones, a venous/arterial blood gas for pH and bicarbonate, and an electrolyte panel to calculate the anion gap and check potassium levels before starting insulin."
+          },
+          {
+            "kind": "treatment",
+            "title": "Fluid Resuscitation",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "order": "IV fluids, 0.9% NaCl",
+            "detail": "The patient's hypotension and tachycardia indicate profound dehydration, which is a hallmark of DKA. Initial, rapid fluid resuscitation with an isotonic crystalloid like 0.9% NaCl is the first therapeutic priority to restore circulatory volume, improve renal perfusion, and begin lowering the glucose concentration."
+          },
+          {
+            "kind": "treatment",
+            "title": "Insulin & Electrolyte Management",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "order": "Insulin, regular, IV infusion",
+            "detail": "After starting fluids, an IV insulin infusion is necessary to inhibit further ketone production and correct hyperglycemia. It is critical to check the serum potassium level before starting insulin; if it is below 3.3 mEq/L, insulin must be held and potassium repleted first. If K+ is between 3.3 and ~5.2 mEq/L and urine output is established, begin potassium supplementation in the IV fluids to prevent iatrogenic hypokalemia as insulin drives potassium into cells."
+          },
+          {
+            "kind": "treatment",
+            "title": "Continuous Monitoring & Adjustment",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "order": "Hourly glucose monitoring",
+            "detail": "DKA is a dynamic metabolic state requiring frequent monitoring to guide therapy and avoid complications. This includes hourly glucose checks and electrolyte/VBG monitoring every 2 hours initially. The insulin rate should be titrated to lower glucose steadily (not precipitously) to reduce the risk of cerebral edema, a known risk in young patients. The fluid composition will also need to be adjusted as glucose levels fall."
+          },
+          {
+            "kind": "disposition",
+            "title": "Transition to Subcutaneous Insulin",
+            "flag": "high-value",
+            "enrichedFlag": "routine",
+            "order": "Insulin, long-acting, subcutaneous",
+            "detail": "Once the patient's metabolic acidosis has resolved (anion gap closed, bicarbonate normalized) and she is able to eat, she can be transitioned from IV insulin to her home subcutaneous regimen. Overlapping the IV infusion with the first subcutaneous dose is critical to prevent a rebound into ketosis."
+          },
+          {
+            "kind": "followup",
+            "title": "Education & Prevention",
+            "flag": "high-value",
+            "enrichedFlag": "high-value",
+            "order": "Diabetes education",
+            "detail": "This DKA episode indicates a gap in this young patient's diabetes self-management. Education on sick-day rules, the importance of never omitting insulin, and when to monitor for ketones is crucial for preventing recurrence. A follow-up appointment with her endocrinologist should be arranged to review her regimen and address the precipitating cause of this admission."
+          }
+        ]
+      }
+    },
+    {
+      "id": "P03",
+      "arm": "on",
+      "view": {
+        "workingDiagnosis": "Diabetic Ketoacidosis (DKA)",
+        "needsDdx": false,
+        "stages": [
+          {
+            "kind": "triage",
+            "title": "Rapid ABCs & Resuscitation",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "order": "Isotonic saline IV bolus",
+            "detail": "This 22-year-old patient is tachycardic (HR 118) and hypotensive (BP 96/60), indicating significant volume depletion from osmotic diuresis and vomiting. Immediate, aggressive IV fluid resuscitation is critical to restore intravascular volume, stabilize hemodynamics, and improve organ perfusion."
+          },
+          {
+            "kind": "assessment",
+            "title": "Confirm DKA & Severity",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "order": "DKA laboratory panel",
+            "detail": "While the clinical picture is highly suggestive of DKA, laboratory confirmation is mandatory to confirm the diagnosis and assess its severity. This will establish the baseline degree of acidosis, anion gap, and electrolyte abnormalities. It is important to assess for ketoacidosis regardless of the presenting blood glucose, as euglycemic DKA (glucose <250 mg/dL) can occur, particularly in patients taking SGLT-2 inhibitors."
+          },
+          {
+            "kind": "diagnosis",
+            "title": "Search for DKA Precipitant",
+            "flag": "high-value",
+            "enrichedFlag": "high-value",
+            "detail": "Identifying the trigger for DKA in this patient with known type 1 diabetes is crucial for management and preventing recurrence. The most common causes are infection or insulin omission; a thorough history, physical exam, and basic screening tests (e.g., urinalysis, chest x-ray if respiratory symptoms worsen) are warranted."
+          },
+          {
+            "kind": "treatment",
+            "title": "Initiate DKA Protocol",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "order": "Insulin regular IV infusion",
+            "detail": "After initial fluid resuscitation, a continuous intravenous insulin infusion is the definitive treatment to suppress ketone production, correct acidosis, and gradually lower blood glucose. It is critical to check the initial potassium level before starting insulin, as insulin will shift potassium into cells, potentially causing life-threatening hypokalemia. If potassium replacement is required, it should only be initiated after adequate urine output is confirmed."
+          },
+          {
+            "kind": "treatment",
+            "title": "Ongoing Monitoring & Titration",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "detail": "DKA is a dynamic metabolic state requiring frequent reassessment to ensure safe and effective resolution. For this young patient, hourly glucose monitoring and electrolyte checks every 2-4 hours are necessary to titrate the insulin infusion and adjust IV fluids, preventing overly rapid correction which can increase the risk of complications like cerebral edema."
+          },
+          {
+            "kind": "disposition",
+            "title": "ICU/HDU Admission & Education",
+            "flag": "essential",
+            "enrichedFlag": "high-value",
+            "order": "Admission to Intensive Care Unit",
+            "detail": "Given the patient's hemodynamic instability and the need for intensive monitoring and therapy adjustments, admission to an ICU or HDU is warranted for safety. Once the acute episode is resolving, providing structured education on sick-day management and insulin adherence is a critical intervention to empower the patient and reduce the risk of future DKA episodes."
+          }
+        ]
+      }
+    },
+    {
+      "id": "P03",
+      "arm": "off2",
+      "view": {
+        "workingDiagnosis": "Diabetic Ketoacidosis (DKA)",
+        "needsDdx": false,
+        "stages": [
+          {
+            "kind": "triage",
+            "title": "Immediate Resuscitation & Access",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "order": "Establish large-bore IV access",
+            "detail": "This patient is tachycardic, hypotensive, and tachypneic, indicating severe dehydration and circulatory compromise. The immediate priority is to stabilize her by securing the airway and breathing (A, B) and establishing at least one, preferably two, large-bore IVs for rapid fluid resuscitation (C). Care must be taken to avoid overly rapid correction of osmolality, as this increases the risk of cerebral edema, especially in young patients."
+          },
+          {
+            "kind": "diagnosis",
+            "title": "Confirm DKA & Severity",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "order": "Comprehensive metabolic panel with ABG/VBG",
+            "detail": "To confirm the working diagnosis and assess severity, immediate laboratory tests are required. The diagnosis of DKA rests on the triad of hyperglycemia, ketonemia, and metabolic acidosis. A blood gas analysis is crucial to determine the pH and anion gap, which guides the intensity of treatment."
+          },
+          {
+            "kind": "treatment",
+            "title": "Begin Fluid & Insulin Therapy",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "order": "IV insulin infusion",
+            "detail": "After obtaining initial labs and starting fluid resuscitation, begin an IV insulin infusion to inhibit ketone production and correct hyperglycemia. The rate of glucose correction must be controlled; if glucose decreases faster than 50-75 mg/dL/hr, the insulin drip rate should be halved to mitigate the risk of cerebral edema."
+          },
+          {
+            "kind": "treatment",
+            "title": "Monitor & Correct Electrolytes",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "order": "Serum electrolytes",
+            "detail": "Insulin therapy drives potassium into cells, risking life-threatening hypokalemia even if initial levels are normal. Monitor electrolytes, especially potassium, every 2 hours initially. Proactively add potassium to IV fluids once urine output is confirmed and serum potassium is within the normal range to prevent a precipitous drop."
+          },
+          {
+            "kind": "disposition",
+            "title": "Admit to Appropriate Unit",
+            "flag": "essential",
+            "enrichedFlag": "high-value",
+            "order": "Admission to ICU",
+            "detail": "This patient's hemodynamic instability (hypotension, tachycardia) and the need for frequent monitoring (hourly glucose, 2-hourly electrolytes) and an IV insulin infusion necessitate admission to a high-acuity setting like an ICU or a specialized step-down unit."
+          },
+          {
+            "kind": "followup",
+            "title": "Address Precipitant & Educate",
+            "flag": "high-value",
+            "enrichedFlag": "followup",
+            "order": "Diabetic educator consult",
+            "detail": "Once the acute metabolic crisis is resolving, it is critical to investigate the precipitating cause, such as infection or insulin omission. Provide education on sick-day rules, including how to monitor glucose and ketones and the importance of never stopping insulin, to prevent recurrence."
+          }
+        ]
+      }
+    },
+    {
+      "id": "P04",
+      "arm": "off",
+      "view": {
+        "workingDiagnosis": "Diabetes Mellitus (newly diagnosed)",
+        "needsDdx": false,
+        "stages": [
+          {
+            "kind": "triage",
+            "title": "Assess for acute complications",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "order": "Urine ketones",
+            "detail": "Given the patient's random glucose of 262 mg/dL and classic hyperglycemic symptoms, a focused assessment for diabetic ketoacidosis (DKA) or hyperosmolar hyperglycemic state (HHS) is critical. Although the patient is alert and has no vomiting, ruling out these acute complications is the first priority to ensure he is stable for outpatient management."
+          },
+          {
+            "kind": "assessment",
+            "title": "Comprehensive history & physical",
+            "flag": "high-value",
+            "enrichedFlag": "essential",
+            "detail": "A comprehensive history and physical exam is necessary to establish a baseline, identify risk factors, and screen for existing complications. For this 52-year-old patient, this helps differentiate type 1 from type 2 diabetes and informs the initial treatment plan. Key components include family history, lifestyle assessment, and a physical exam focusing on BP, BMI, and a baseline foot, eye, and neurological evaluation."
+          },
+          {
+            "kind": "diagnosis",
+            "title": "Confirm diagnosis & baseline labs",
+            "flag": "high-value",
+            "enrichedFlag": "high-value",
+            "order": "Diabetes diagnostic and baseline panel (HbA1c, CMP, Lipid Panel, Urinalysis)",
+            "detail": "Although the patient's random glucose of 262 mg/dL with classic symptoms is diagnostic of diabetes, baseline laboratory tests are crucial. An HbA1c can confirm the diagnosis and quantify the average glycemic level over the past 3 months, guiding treatment intensity. Other baseline labs are also indicated for management planning."
+          },
+          {
+            "kind": "treatment",
+            "title": "Initiate patient education & lifestyle",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "detail": "Foundational diabetes self-management education (DSME) is a cornerstone of care and should begin immediately. For this newly diagnosed 52-year-old, this includes explaining the diagnosis, the importance of diet and physical activity, and how to perform self-monitoring of blood glucose (SMBG). This empowers the patient to take an active role in his care from the outset."
+          },
+          {
+            "kind": "treatment",
+            "title": "Consider initial pharmacotherapy",
+            "flag": "high-value",
+            "enrichedFlag": "caution",
+            "order": "Metformin",
+            "detail": "If Type 2 diabetes is diagnosed, metformin is the standard first-line agent. However, given the significant weight loss, adult-onset Type 1 diabetes (LADA) must be considered. Starting metformin assumes a diagnosis of T2D and should be done with caution. If LADA is suspected, or if the patient fails to respond, insulin therapy is required and autoantibody testing should be considered."
+          },
+          {
+            "kind": "followup",
+            "title": "Schedule follow-up & referrals",
+            "flag": "routine",
+            "enrichedFlag": "essential",
+            "detail": "Establishing a follow-up plan is critical for this newly diagnosed patient. A follow-up appointment should be scheduled in the near term to review lab results, assess the response to initial therapy, and adjust the care plan. Referrals to an ophthalmologist for a baseline dilated eye exam, a registered dietitian, and a diabetes education program are standard of care."
+          }
+        ]
+      }
+    },
+    {
+      "id": "P04",
+      "arm": "on",
+      "view": {
+        "workingDiagnosis": "Diabetes Mellitus",
+        "needsDdx": false,
+        "stages": [
+          {
+            "kind": "assessment",
+            "title": "Confirm Diagnosis & Assess Acuity",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "order": "HbA1c, Basic Metabolic Panel, Urinalysis with ketones",
+            "detail": "This patient's random glucose of 262 mg/dL with classic symptoms is diagnostic of diabetes. Baseline tests are crucial. Obtain an HbA1c to establish the degree of chronic hyperglycemia and a basic metabolic panel to assess renal function and electrolytes. A urine ketone check is prudent as the glucose is >240 mg/dL. While Type 2 diabetes is most likely, Type 1 diabetes can present in adults (LADA), sometimes initially misdiagnosed as T2D, especially with significant weight loss. The initial workup should help clarify the diagnosis."
+          },
+          {
+            "kind": "assessment",
+            "title": "Comprehensive Diabetes Evaluation",
+            "flag": "high-value",
+            "enrichedFlag": "essential",
+            "detail": "Perform a complete medical evaluation to establish a baseline and screen for pre-existing complications, which are common in newly diagnosed middle-aged adults. This includes a detailed history of risk factors and a physical exam focusing on blood pressure, BMI, and a thorough foot and cardiovascular assessment. This evaluation helps classify the diabetes and informs the long-term management plan."
+          },
+          {
+            "kind": "treatment",
+            "title": "Lifestyle & Medication Initiation",
+            "flag": "high-value",
+            "enrichedFlag": "routine",
+            "order": "Metformin",
+            "detail": "Initiate empiric pharmacotherapy while awaiting further diagnostic clarification. For presumed Type 2 diabetes in a patient who is alert and not ketotic, metformin is the appropriate first-line agent. Start at a low dose and titrate up. Concurrently, provide counseling on lifestyle modifications, including diet and exercise, which are foundational to diabetes management."
+          },
+          {
+            "kind": "treatment",
+            "title": "Patient Education",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "order": "Diabetes self-management education",
+            "detail": "Provide comprehensive education on diabetes, medication adherence, and self-monitoring of blood glucose. Although the risk of hypoglycemia with metformin alone is low, it is a crucial safety principle to educate all patients on how to recognize and treat it (blood glucose <70 mg/dL), as therapy may intensify in the future. This empowers the patient for safe self-management."
+          },
+          {
+            "kind": "disposition",
+            "title": "Outpatient Management Plan",
+            "flag": "routine",
+            "enrichedFlag": "routine",
+            "detail": "Establish a clear outpatient plan to ensure continuity of care. This includes providing prescriptions for metformin and a blood glucose monitor, scheduling a follow-up appointment to review progress and lab results, and giving clear contact information for questions or urgent concerns."
+          },
+          {
+            "kind": "followup",
+            "title": "Ongoing Monitoring & Adjustment",
+            "flag": "essential",
+            "enrichedFlag": "followup",
+            "detail": "Plan for long-term, regular monitoring to adjust therapy and screen for diabetes-related complications. Proactive screening is essential to prevent or delay long-term complications. This involves assessing for microvascular (retinopathy, nephropathy, neuropathy) and macrovascular (CHD, cerebrovascular disease, PAD) issues. A regular foot exam is a key component of this screening."
+          }
+        ]
+      }
+    },
+    {
+      "id": "P05",
+      "arm": "off",
+      "view": {
+        "workingDiagnosis": "Community-Acquired Pneumonia (CAP)",
+        "needsDdx": true,
+        "stages": [
+          {
+            "kind": "triage",
+            "title": "Initial Vitals & Stability",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "detail": "The patient's initial vital signs (HR 96, RR 20, SpO2 96%) and clear mental status are reassuring and do not suggest immediate instability or severe sepsis. This initial assessment confirms she is stable for a standard diagnostic workup."
+          },
+          {
+            "kind": "assessment",
+            "title": "Clinical History & Exam",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "detail": "A focused history should confirm the patient's symptoms (3-day productive cough, fever, pleuritic pain) and screen for risk factors like smoking or comorbidities. The physical exam should seek signs of lung consolidation (e.g., crackles, egophony) to increase clinical suspicion for pneumonia."
+          },
+          {
+            "kind": "diagnosis",
+            "title": "Chest X-ray",
+            "flag": "high-value",
+            "enrichedFlag": "high-value",
+            "order": "Chest X-ray, PA and lateral",
+            "detail": "For this 45-year-old patient with a classic triad of fever, cough, and pleuritic chest pain, a chest X-ray is the definitive next step. It is required to confirm the diagnosis by identifying an infiltrate and can also reveal complications like a pleural effusion."
+          },
+          {
+            "kind": "diagnosis",
+            "title": "Basic Labs (if indicated)",
+            "flag": "context-dependent",
+            "enrichedFlag": "context-dependent",
+            "detail": "As this 45-year-old patient is stable, has no significant comorbidities, and is likely to be managed as an outpatient (CURB-65 score of 0), routine blood work is not mandatory. Labs like CBC and CRP are of low-to-moderate utility here and would not change the initial treatment plan, though they may be considered to establish a baseline."
+          },
+          {
+            "kind": "treatment",
+            "title": "Empiric Antibiotics",
+            "flag": "high-value",
+            "enrichedFlag": "essential",
+            "order": "Empiric oral antibiotics for CAP",
+            "detail": "Initiate empiric oral antibiotics promptly. For a healthy outpatient with no comorbidities, recommended first-line agents are amoxicillin or doxycycline. Crucially, macrolide monotherapy (e.g., azithromycin) is no longer recommended in most regions due to high rates of pneumococcal resistance (>25%). Combination therapy is generally reserved for patients with comorbidities."
+          },
+          {
+            "kind": "disposition",
+            "title": "Admission Decision (CURB-65)",
+            "flag": "essential",
+            "enrichedFlag": "high-value",
+            "detail": "A formal severity assessment using the CURB-65 score is recommended. This patient's score is 0 (Age <65, no Confusion, RR <30, normal BP), indicating a very low risk of mortality and making her an excellent candidate for outpatient management."
+          },
+          {
+            "kind": "followup",
+            "title": "Outpatient Follow-up",
+            "flag": "routine",
+            "enrichedFlag": "followup",
+            "detail": "Since the patient will be managed as an outpatient, arranging clear follow-up is critical for safety. She should be advised to seek re-evaluation if her symptoms do not begin to improve within 48-72 hours, and a scheduled phone call or clinic visit is recommended to monitor progress."
+          }
+        ]
+      }
+    },
+    {
+      "id": "P05",
+      "arm": "on",
+      "view": {
+        "workingDiagnosis": "Community-Acquired Pneumonia (CAP)",
+        "needsDdx": true,
+        "stages": [
+          {
+            "kind": "triage",
+            "title": "Rapid Severity Assessment",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "detail": "Calculate the CURB-65 score to formally stratify severity. For this 45-year-old patient with no confusion, a respiratory rate of 20, and normal blood pressure, the score is 0 (assuming a normal urea level), indicating a low mortality risk."
+          },
+          {
+            "kind": "assessment",
+            "title": "Clinical Evaluation & Labs",
+            "flag": "routine",
+            "enrichedFlag": "routine",
+            "order": "Complete Blood Count (CBC)",
+            "detail": "Perform a complete history and physical examination, with particular attention to lung auscultation for signs of consolidation (e.g., rales, bronchial breathing) or effusion. Given the low severity score, inflammatory markers like CRP or procalcitonin are of low yield and may not be necessary unless the diagnosis is uncertain."
+          },
+          {
+            "kind": "diagnosis",
+            "title": "Confirm Pneumonia",
+            "flag": "high-value",
+            "enrichedFlag": "high-value",
+            "order": "Chest X-ray (PA and lateral)",
+            "detail": "A chest radiograph is the key diagnostic step to confirm the presence of a new infiltrate, establishing the diagnosis of pneumonia. It also helps to exclude other causes of the patient's symptoms and identify complications such as a significant pleural effusion."
+          },
+          {
+            "kind": "treatment",
+            "title": "Empiric Antibiotic Therapy",
+            "flag": "high-value",
+            "enrichedFlag": "essential",
+            "order": "Doxycycline",
+            "detail": "For a low-risk outpatient with CAP, initiate empiric antibiotic therapy. Treatment should cover Streptococcus pneumoniae and atypical pathogens. Due to increasing macrolide resistance in S. pneumoniae, doxycycline or amoxicillin are often preferred first-line agents over macrolide monotherapy."
+          },
+          {
+            "kind": "treatment",
+            "title": "Symptomatic Care & Monitoring",
+            "flag": "routine",
+            "enrichedFlag": "routine",
+            "order": "Analgesia/Antipyretics (e.g., Paracetamol)",
+            "detail": "Address the patient's fever and right-sided pleuritic chest pain."
+          },
+          {
+            "kind": "disposition",
+            "title": "Determine Admission Status",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "detail": "Based on the low-risk features (CURB-65 score 0, SpO2 96% on room air, no significant comorbidities mentioned), this patient is a suitable candidate for outpatient management. This decision assumes the patient has reliable access to medications and follow-up, and good social support."
+          },
+          {
+            "kind": "followup",
+            "title": "Outpatient Follow-up",
+            "flag": "routine",
+            "enrichedFlag": "followup",
+            "detail": "Provide clear instructions on medication adherence and 'safety netting' advice, including warning signs that should prompt an urgent re-evaluation (e.g., worsening shortness of breath, confusion, high fever). Arrange for a follow-up review, either by phone or in person, within 48-72 hours to ensure a positive clinical response."
+          }
+        ]
+      }
+    },
+    {
+      "id": "P06",
+      "arm": "off",
+      "view": {
+        "workingDiagnosis": "Acute Febrile Illness (Undifferentiated)",
+        "needsDdx": true,
+        "stages": [
+          {
+            "kind": "triage",
+            "title": "Assess Stability & Red Flags",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "detail": "Immediately confirm the patient's reported hemodynamic stability by assessing vital signs (BP, HR, RR, SpO2, temperature) and mental status. Although the patient is young and currently stable, acute febrile illnesses can decompensate, and this rapid check rules out immediate life-threats like sepsis or shock."
+          },
+          {
+            "kind": "assessment",
+            "title": "Comprehensive History & Exam",
+            "flag": "high-value",
+            "enrichedFlag": "essential",
+            "detail": "Perform a detailed history and physical exam to build a broad differential for this undifferentiated fever. Key historical points include travel, food/water sources (typhoid), animal/water exposures (leptospirosis), and exposure to mites/ticks (scrub typhus, rickettsial diseases). The exam should meticulously search for subtle findings like a faint rash (rose spots), hepatosplenomegaly, eschar, or lymphadenopathy."
+          },
+          {
+            "kind": "diagnosis",
+            "title": "Initial Broad Etiology Workup",
+            "flag": "high-value",
+            "enrichedFlag": "routine",
+            "order": "Blood culture",
+            "detail": "As part of a standard workup for undifferentiated fever in an endemic setting, obtain baseline labs. This should include a blood culture before any antibiotics are given. While blood culture is the reference standard for typhoid, remember that clinical suspicion is unreliable; in one study, only 4% of suspected cases were culture-positive. The primary goal of testing is to investigate a broad differential, not just to confirm typhoid. Also include CBC, LFTs, and RFTs."
+          },
+          {
+            "kind": "diagnosis",
+            "title": "Address Widal Test Context",
+            "flag": "caution",
+            "enrichedFlag": "caution",
+            "detail": "Acknowledge the outside positive Widal test but do not use it to confirm a diagnosis of acute typhoid. This test is known to be unreliable, with low sensitivity and specificity. A single positive result is non-diagnostic; a true positive requires demonstrating a four-fold rise in antibody titers between acute and convalescent samples."
+          },
+          {
+            "kind": "treatment",
+            "title": "Symptomatic Care & Monitoring",
+            "flag": "routine",
+            "enrichedFlag": "routine",
+            "order": "Paracetamol",
+            "detail": "Provide symptomatic treatment with antipyretics (e.g., paracetamol) and ensure adequate oral hydration while awaiting diagnostic results. Given the patient's stability and the unreliability of the Widal test, it is prudent to withhold empiric antibiotics pending results of the blood culture and clinical evolution, to avoid unnecessary antibiotic use."
+          },
+          {
+            "kind": "disposition",
+            "title": "Disposition & Follow-up Plan",
+            "flag": "routine",
+            "enrichedFlag": "context-dependent",
+            "detail": "As this 29-year-old is haemodynamically stable with no red flags, outpatient management is appropriate. Provide clear instructions to return immediately for worsening symptoms like severe abdominal pain, confusion, or inability to keep fluids down. Schedule a follow-up appointment in 24-48 hours to review initial lab results and reassess his condition."
+          }
+        ]
+      }
+    },
+    {
+      "id": "P06",
+      "arm": "on",
+      "view": {
+        "workingDiagnosis": "Acute Febrile Illness (AFI)",
+        "needsDdx": true,
+        "stages": [
+          {
+            "kind": "triage",
+            "title": "Initial Clinical Assessment",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "detail": "Confirm the patient's hemodynamic stability and perform a rapid assessment to screen for any red flags of severe illness, such as signs of sepsis or altered mental status. As the patient is currently stable, this serves as a baseline for ongoing monitoring."
+          },
+          {
+            "kind": "assessment",
+            "title": "Comprehensive History & Physical Exam",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "detail": "Obtain a detailed history focusing on travel, food and water sources, sick contacts, and other exposures to help narrow the broad differential of a non-localizing fever. A thorough physical exam is required to search for subtle clues like relative bradycardia, faint rash (rose spots), or hepatosplenomegaly that might suggest enteric fever."
+          },
+          {
+            "kind": "diagnosis",
+            "title": "Broad Initial Lab Workup",
+            "flag": "high-value",
+            "enrichedFlag": "high-value",
+            "order": "Comprehensive Metabolic Panel, Complete Blood Count, Blood Culture",
+            "detail": "For a 5-day undifferentiated fever, a broad laboratory screen is indicated to assess for organ dysfunction and identify common etiologies. Blood cultures are the most critical test at this stage and should be drawn before any antibiotics are administered, as they are the gold standard for diagnosing typhoid fever."
+          },
+          {
+            "kind": "diagnosis",
+            "title": "Targeted Infectious Disease Workup",
+            "flag": "context-dependent",
+            "enrichedFlag": "caution",
+            "detail": "The provided positive Widal test should be interpreted with extreme caution. The Widal test is widely known to be neither sensitive nor specific, especially as a single measurement in an endemic area, and can lead to misdiagnosis. A definitive diagnosis relies on blood culture."
+          },
+          {
+            "kind": "treatment",
+            "title": "Symptomatic Management",
+            "flag": "routine",
+            "enrichedFlag": "routine",
+            "order": "Paracetamol",
+            "detail": "Provide symptomatic relief with antipyretics and ensure the patient maintains adequate oral hydration. Given the patient is stable and the diagnosis is unconfirmed, empiric antibiotics should be withheld to avoid confounding blood culture results and contributing to antimicrobial resistance."
+          },
+          {
+            "kind": "disposition",
+            "title": "Disposition & Follow-up Plan",
+            "flag": "routine",
+            "enrichedFlag": "essential",
+            "detail": "As the patient is a young adult who is hemodynamically stable with no signs of severe illness, management in an outpatient setting is appropriate. Arrange for a definitive follow-up appointment within 24-48 hours to review initial lab results, reassess his clinical condition, and escalate care if necessary."
+          }
+        ]
+      }
+    },
+    {
+      "id": "P06",
+      "arm": "off2",
+      "view": {
+        "workingDiagnosis": "Acute Febrile Illness / Fever of Unknown Origin",
+        "needsDdx": true,
+        "stages": [
+          {
+            "kind": "triage",
+            "title": "Assess Stability & Red Flags",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "detail": "Although the patient is reported as stable, this must be confirmed immediately upon presentation. A rapid assessment of vital signs (temperature, heart rate, blood pressure, respiratory rate, oxygen saturation), mental status, and hydration is critical to rule out sepsis or shock, which require immediate intervention."
+          },
+          {
+            "kind": "assessment",
+            "title": "Comprehensive Hx & Px",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "detail": "For this 29-year-old with a non-localizing fever, a detailed history is crucial to narrow the differential diagnosis. Key areas include travel, animal/tick exposures, sick contacts, food/water sources, and vaccination history. A thorough physical exam should search for subtle clues like rash, eschars, lymphadenopathy, or hepatosplenomegaly."
+          },
+          {
+            "kind": "diagnosis",
+            "title": "Initial Febrile Illness Workup",
+            "flag": "high-value",
+            "enrichedFlag": "high-value",
+            "order": "Febrile illness panel, Malaria smears (thick and thin)",
+            "detail": "Perform a standard febrile workup including a complete blood count, liver and renal function tests, and urinalysis. Crucially, obtain malaria smears (thick and thin) and at least two sets of blood cultures before any antibiotics are given, as blood culture is the gold standard for diagnosing bacteremia, including typhoid. The outside positive Widal test should be considered unreliable and not used for clinical decision-making."
+          },
+          {
+            "kind": "diagnosis",
+            "title": "Re-evaluate & Further Ddx",
+            "flag": "context-dependent",
+            "enrichedFlag": "context-dependent",
+            "detail": "If the patient remains febrile without a diagnosis after 48-72 hours, re-evaluate based on the clinical course and initial results. Further investigation, guided by any new clues from the history or exam, may include imaging (chest X-ray, abdominal ultrasound) or targeted serologies for less common causes like rickettsial diseases or dengue."
+          },
+          {
+            "kind": "treatment",
+            "title": "Symptomatic Care",
+            "flag": "routine",
+            "enrichedFlag": "routine",
+            "order": "Paracetamol",
+            "detail": "While awaiting diagnostic results, provide supportive care to manage symptoms. This includes antipyretics (e.g., paracetamol) to control fever and ensuring the patient maintains adequate oral or intravenous hydration."
+          },
+          {
+            "kind": "disposition",
+            "title": "Discharge/Admission Decision",
+            "flag": "essential",
+            "enrichedFlag": "essential",
+            "detail": "The decision to admit or discharge this 29-year-old depends on his clinical stability, ability to tolerate oral intake, and initial test results. As he is currently stable, he may be managed as an outpatient with reliable follow-up. Admission is required if he becomes unstable, dehydrated, develops altered mental status, or has significant lab abnormalities."
+          },
+          {
+            "kind": "followup",
+            "title": "Outpatient Follow-up",
+            "flag": "routine",
+            "enrichedFlag": "followup",
+            "order": "Follow-up appointment",
+            "detail": "If discharged, close outpatient follow-up is essential. Schedule a re-evaluation in 24-48 hours to review initial culture results, assess the clinical course, and ensure no deterioration. Provide clear return precautions for worsening fever, new rash, confusion, or inability to tolerate oral fluids."
+          }
+        ]
+      }
+    },
+    {
+      "id": "A01",
+      "arm": "off",
+      "view": {
+        "findings": [
+          {
+            "subject": "Inadequate antibiotic spectrum",
+            "verdict": "low-value",
+            "domain": "safety",
+            "rationale": "The patient was treated with ceftriaxone alone. Guidelines for acute cholecystitis recommend broad-spectrum antibiotics covering both gram-negative and anaerobic organisms. Ceftriaxone lacks significant anaerobic coverage, representing a deviation from evidence-based recommendations that could increase the risk of treatment failure."
+          },
+          {
+            "subject": "Prolonged post-operative IV antibiotic therapy",
+            "verdict": "low-value",
+            "domain": "safety",
+            "rationale": "The patient received a 5-day course of IV ceftriaxone for an 'uneventful' laparoscopic cholecystectomy, equating to approximately 3 days of post-operative therapy. While pre-operative antibiotics are standard for acute cholecystitis, evidence supporting the extension of antibiotics for several days post-operatively is lacking, especially when the source of infection has been removed. This practice may increase the risk of antimicrobial resistance, side effects, and healthcare costs without clear benefit."
+          },
+          {
+            "subject": "Prolonged length of stay",
+            "verdict": "low-value",
+            "domain": "efficiency",
+            "rationale": "A 5-day inpatient stay for an uneventful laparoscopic cholecystectomy is longer than typically expected. With surgery on day 2 and discharge on day 5, the post-operative stay was 3 days. This prolonged stay appears to have been driven by the administration of IV antibiotics rather than a clinical requirement for extended observation, representing an inefficient use of hospital resources."
+          },
+          {
+            "subject": "Use of CT abdomen with contrast",
+            "verdict": "context-dependent",
+            "domain": "appropriateness",
+            "rationale": "A CT scan was performed in addition to an ultrasound. While CT is a valid diagnostic tool, ultrasound is the primary and often sufficient imaging modality for acute cholecystitis. Without a documented reason for the CT (e.g., inconclusive ultrasound, suspicion of complications like perforation), it may represent a redundant test, adding cost and radiation exposure."
+          }
+        ],
+        "diff": [
+          {
+            "kind": "overuse",
+            "text": "Chosen antibiotic (Ceftriaxone) lacked recommended anaerobic coverage."
+          },
+          {
+            "kind": "overuse",
+            "text": "Prolonged 3-day course of post-operative IV antibiotics."
+          },
+          {
+            "kind": "overuse",
+            "text": "Excessive length of stay (5 days total)."
+          },
+          {
+            "kind": "overuse",
+            "text": "CT abdomen with contrast, potentially redundant after ultrasound."
+          }
+        ],
+        "suggestions": [
+          "As part of the antimicrobial stewardship program, review and update antibiotic guidelines for acute cholecystitis to ensure recommended regimens include both gram-negative and anaerobic coverage, as per evidence-based standards.",
+          "Develop a clinical pathway for laparoscopic cholecystectomy that includes criteria for discontinuing post-operative antibiotics within 24 hours for uncomplicated cases and targets a post-operative length of stay of 1-2 days.",
+          "Review and reinforce imaging guidelines for RUQ pain, clarifying the primary role of ultrasound and specifying indications for escalation to CT to avoid redundant testing."
+        ]
+      }
+    },
+    {
+      "id": "A01",
+      "arm": "on",
+      "view": {
+        "findings": [
+          {
+            "subject": "Inadequate antibiotic spectrum",
+            "verdict": "low-value",
+            "domain": "safety",
+            "rationale": "The patient was treated with ceftriaxone monotherapy. Guidelines for acute cholecystitis recommend broad-spectrum coverage for both gram-negative and anaerobic organisms. Ceftriaxone alone does not provide adequate anaerobic coverage, representing a potential patient safety issue due to risk of treatment failure."
+          },
+          {
+            "subject": "Prolonged postoperative IV antibiotic therapy",
+            "verdict": "low-value",
+            "domain": "safety",
+            "rationale": "The patient received a 5-day course of IV ceftriaxone for acute cholecystitis, continuing for approximately 3 days after an uneventful laparoscopic cholecystectomy. The surgery itself provides definitive source control. The need for extended antibiotic therapy after surgery for mild or moderate cholecystitis is not established and represents a potential overuse, contributing to antimicrobial resistance and increased cost."
+          },
+          {
+            "subject": "Extended length of stay",
+            "verdict": "low-value",
+            "domain": "efficiency",
+            "rationale": "A 5-day inpatient stay for an uneventful laparoscopic cholecystectomy is longer than typical. The prolonged stay appears to be driven by the decision to complete a 5-day course of IV antibiotics, rather than clinical instability. This represents an inefficient use of inpatient resources."
+          },
+          {
+            "subject": "CT abdomen with contrast",
+            "verdict": "context-dependent",
+            "domain": "appropriateness",
+            "rationale": "The patient underwent both an ultrasound (USG) and a CT scan. While CT is a valid imaging modality for cholecystitis, USG is typically the first-line and often sufficient investigation. The use of a CT scan may be appropriate if the USG was inconclusive or if there was a high suspicion of complications (e.g., perforation, abscess). However, without the USG findings, it is uncertain if the CT scan was necessary or represented a redundant investigation, adding cost and radiation exposure."
+          }
+        ],
+        "diff": [
+          {
+            "kind": "gap",
+            "text": "Use of ceftriaxone monotherapy, which lacks the recommended anaerobic coverage."
+          },
+          {
+            "kind": "overuse",
+            "text": "Prolonged 5-day course of IV antibiotics, continuing for 3 days after source control was achieved."
+          },
+          {
+            "kind": "overuse",
+            "text": "Extended hospital stay of 5 days for an uneventful procedure."
+          },
+          {
+            "kind": "overuse",
+            "text": "CT abdomen with contrast, which may have been redundant if ultrasound was diagnostic (context-dependent)."
+          },
+          {
+            "kind": "gap",
+            "text": "Discontinuation of antibiotics within 24 hours post-operatively following successful source control."
+          }
+        ],
+        "suggestions": [
+          "Ensure antibiotic selection for acute cholecystitis includes both gram-negative and anaerobic coverage as per guidelines (e.g., ampicillin-sulbactam, or a cephalosporin plus metronidazole).",
+          "Consider developing a clinical pathway for acute cholecystitis that specifies antibiotic duration. For uncomplicated cases undergoing laparoscopic cholecystectomy, recommend discontinuing antibiotics within 24 hours of surgery to promote antimicrobial stewardship.",
+          "Establish and promote standardized discharge criteria for post-laparoscopic cholecystectomy patients to optimize length of stay and avoid extended hospitalization solely for IV therapy in stable patients.",
+          "Reinforce institutional imaging guidelines for suspected biliary disease, emphasizing ultrasound as the primary modality and clarifying indications for second-line imaging like CT to avoid redundant testing."
+        ]
+      }
+    },
+    {
+      "id": "A01",
+      "arm": "off2",
+      "view": {
+        "findings": [
+          {
+            "subject": "CT abdomen with contrast",
+            "verdict": "low-value",
+            "domain": "appropriateness",
+            "rationale": "The patient was diagnosed with acute calculous cholecystitis, and an ultrasound (USG) was performed. USG is the primary and recommended initial imaging modality. A CT scan is generally reserved for cases where the diagnosis is uncertain after USG or when complications like perforation or abscess are suspected. The case notes describe an 'uneventful' course, suggesting no such complexity was present, making the CT scan a potentially unnecessary investigation that adds cost and radiation exposure."
+          },
+          {
+            "subject": "Antibiotic choice (lack of anaerobic coverage)",
+            "verdict": "low-value",
+            "domain": "safety",
+            "rationale": "The patient received ceftriaxone monotherapy for acute cholecystitis. Evidence-based guidelines recommend coverage for both gram-negative and anaerobic organisms due to the typical bacteriology of biliary infections. Ceftriaxone alone provides inadequate anaerobic coverage, which is a safety concern as it could lead to treatment failure."
+          },
+          {
+            "subject": "Duration of post-operative IV antibiotics",
+            "verdict": "low-value",
+            "domain": "safety",
+            "rationale": "The patient received a 5-day course of IV ceftriaxone for an 'uneventful' laparoscopic cholecystectomy. This implies approximately 3 days of post-operative IV antibiotics. For a clean-contaminated procedure without evidence of perforation or severe infection, guidelines typically recommend a single pre-operative dose or cessation of antibiotics within 24 hours post-surgery. A prolonged course increases cost, risk of side effects, and promotes antimicrobial resistance."
+          },
+          {
+            "subject": "Length of stay",
+            "verdict": "low-value",
+            "domain": "efficiency",
+            "rationale": "A 5-day inpatient stay for an uneventful laparoscopic cholecystectomy is excessive. The prolonged stay appears to be driven by the decision to continue IV antibiotics. Laparoscopic surgery is preferred specifically for its shorter recovery time, and patients are often discharged within 1-2 days post-operatively. This extended stay represents an inefficient use of hospital resources."
+          }
+        ],
+        "diff": [
+          {
+            "kind": "overuse",
+            "text": "CT abdomen with contrast as a routine diagnostic test."
+          },
+          {
+            "kind": "overuse",
+            "text": "Anaerobic antibiotic coverage for acute cholecystitis."
+          },
+          {
+            "kind": "overuse",
+            "text": "Prolonged (3-day) course of post-operative IV antibiotics for an uncomplicated procedure."
+          },
+          {
+            "kind": "overuse",
+            "text": "Extended hospital stay (5 days total) for an uneventful laparoscopic cholecystectomy."
+          }
+        ],
+        "suggestions": [
+          "Update antibiotic protocols for acute cholecystitis to ensure routine coverage for both gram-negative and anaerobic organisms, as per evidence-based guidelines.",
+          "Develop and implement a clinical pathway for acute cholecystitis that includes criteria for antibiotic stewardship, recommending discontinuation of antibiotics within 24 hours post-operatively for uncomplicated laparoscopic cholecystectomy.",
+          "Establish clear institutional guidelines for imaging in suspected cholecystitis, reinforcing ultrasound as the primary modality and reserving CT scans for cases with equivocal findings or suspected complications.",
+          "Promote early discharge protocols for post-laparoscopic cholecystectomy patients, targeting a 1-2 day post-operative length of stay for uncomplicated cases to improve hospital efficiency and resource utilisation."
+        ]
+      }
+    },
+    {
+      "id": "A02",
+      "arm": "off",
+      "view": {
+        "findings": [
+          {
+            "subject": "Antibiotic prescription for a viral diagnosis",
+            "verdict": "low-value",
+            "domain": "safety",
+            "rationale": "The patient was diagnosed with 'Acute viral pharyngitis'. Prescribing an antibiotic for a condition explicitly identified as viral is contrary to evidence-based guidelines. This practice is ineffective for the patient and contributes to the public health problem of antimicrobial resistance."
+          },
+          {
+            "subject": "Choice of antibiotic for pharyngitis",
+            "verdict": "low-value",
+            "domain": "appropriateness",
+            "rationale": "Even if a bacterial (Group A Streptococcus) cause was suspected, azithromycin is not the recommended first-line therapy. Penicillin or amoxicillin are the drugs of choice due to consistent effectiveness. Macrolide resistance is a documented and growing concern, making agents like azithromycin a suboptimal choice unless there is a confirmed penicillin allergy."
+          },
+          {
+            "subject": "Widal test for acute pharyngitis",
+            "verdict": "low-value",
+            "domain": "appropriateness",
+            "rationale": "The patient's clinical presentation of sore throat and low-grade fever is characteristic of acute pharyngitis. The Widal test is used to diagnose enteric fever (typhoid), a clinically distinct syndrome. Ordering this test for a primary complaint of sore throat, in the absence of any documented signs or symptoms suggesting enteric fever, represents diagnostic over-investigation with a very low pre-test probability of a positive result."
+          },
+          {
+            "subject": "Complete Blood Count (CBC) for uncomplicated pharyngitis",
+            "verdict": "low-value",
+            "domain": "appropriateness",
+            "rationale": "For a young adult with a clear clinical picture of uncomplicated viral pharyngitis, a CBC is a low-yield investigation. It is unlikely to provide information that would alter the management plan, which is primarily symptomatic relief. Clinical decision rules are more effective than a CBC for guiding the need for further testing (e.g., for Streptococcus)."
+          },
+          {
+            "subject": "Prescription of multivitamin syrup",
+            "verdict": "low-value",
+            "domain": "appropriateness",
+            "rationale": "There is no evidence to support the use of multivitamin supplements in the management of an acute, self-limiting illness like viral pharyngitis in a presumably non-deficient patient. This adds unnecessary cost without proven clinical benefit. The standard of care is conservative, symptomatic treatment."
+          }
+        ],
+        "diff": [
+          {
+            "kind": "overuse",
+            "text": "Prescription of azithromycin for a viral diagnosis."
+          },
+          {
+            "kind": "overuse",
+            "text": "Use of a non-first-line antibiotic (azithromycin) for pharyngitis."
+          },
+          {
+            "kind": "overuse",
+            "text": "Ordering a Widal test for a presentation of sore throat."
+          },
+          {
+            "kind": "overuse",
+            "text": "Ordering a CBC for uncomplicated viral pharyngitis."
+          },
+          {
+            "kind": "overuse",
+            "text": "Prescription of a multivitamin syrup without a specific indication."
+          }
+        ],
+        "suggestions": [
+          "Consider developing and disseminating a clinical pathway for acute pharyngitis that emphasizes using clinical scoring (e.g., Centor criteria) to stratify risk and guide management, explicitly discouraging antibiotics for low-risk/viral presentations.",
+          "Reinforce antimicrobial stewardship guidelines promoting penicillin/amoxicillin as first-line therapy for suspected/confirmed streptococcal pharyngitis and reserving macrolides for documented penicillin allergies.",
+          "Provide educational resources on high-value testing for common ambulatory presentations, discouraging the use of low-yield tests like Widal for non-specific fever or non-enteric syndromes.",
+          "Promote rational prescribing by encouraging a focus on evidence-based symptomatic treatments and avoiding non-beneficial additions like multivitamins for acute self-limiting illnesses."
+        ]
+      }
+    },
+    {
+      "id": "A02",
+      "arm": "on",
+      "view": {
+        "findings": [
+          {
+            "subject": "Prescription of Azithromycin for 'Acute Viral Pharyngitis'",
+            "verdict": "low-value",
+            "domain": "safety",
+            "rationale": "The documented diagnosis is 'Acute viral pharyngitis,' for which antibiotics are ineffective and not indicated. This prescription represents unnecessary antibiotic use, which drives antimicrobial resistance and exposes the patient to potential side effects without clinical benefit. Furthermore, even if a bacterial (Group A Streptococcus) cause was suspected, penicillin or amoxicillin are the recommended first-line agents. While macrolides like azithromycin are reserved for patients with a significant penicillin allergy, there was no indication for any antibiotic in this case."
+          },
+          {
+            "subject": "Widal test for acute pharyngitis",
+            "verdict": "low-value",
+            "domain": "appropriateness",
+            "rationale": "The Widal test is used to diagnose enteric fever (typhoid), a systemic illness for which acute sore throat is not the primary presenting symptom. Ordering this test for a patient with a 2-day history of sore throat and low-grade fever is clinically inappropriate. The relevant diagnostic pathway for pharyngitis involves distinguishing viral from bacterial (specifically Group A Streptococcus) causes."
+          },
+          {
+            "subject": "Prescription of multivitamin syrup",
+            "verdict": "low-value",
+            "domain": "appropriateness",
+            "rationale": "There is no evidence to support the use of multivitamin supplements in the management of acute viral pharyngitis in a non-deficient patient. Recommended management is focused on symptomatic relief (analgesia, hydration, rest). This prescription adds cost without proven benefit."
+          },
+          {
+            "subject": "Complete Blood Count (CBC) for uncomplicated pharyngitis",
+            "verdict": "context-dependent",
+            "domain": "appropriateness",
+            "rationale": "For an uncomplicated case of acute pharyngitis in a young adult, a CBC is often of low utility as it does not reliably distinguish viral from bacterial causes and does not typically alter management, which is based on clinical assessment. While a CBC could be indicated if atypical features were present (e.g., suspicion of infectious mononucleosis), none are documented here."
+          }
+        ],
+        "diff": [
+          {
+            "kind": "overuse",
+            "text": "Prescription of Azithromycin"
+          },
+          {
+            "kind": "overuse",
+            "text": "Order for Widal test"
+          },
+          {
+            "kind": "overuse",
+            "text": "Order for Complete Blood Count (CBC)"
+          },
+          {
+            "kind": "overuse",
+            "text": "Prescription of multivitamin syrup"
+          },
+          {
+            "kind": "gap",
+            "text": "Specific patient education on symptomatic management and red flag symptoms for return."
+          }
+        ],
+        "suggestions": [
+          "Develop and implement an antimicrobial stewardship-focused clinical pathway for acute pharyngitis. The pathway should guide clinicians to: 1) Use clinical criteria to differentiate likely viral vs. bacterial cases. 2) Default to symptomatic management for viral presentations. 3) If bacterial pharyngitis is indicated, use first-line narrow-spectrum antibiotics (Penicillin/Amoxicillin), reserving macrolides for documented penicillin allergy.",
+          "Provide education on diagnostic stewardship, discouraging the use of low-yield screening tests like the Widal test for clinical syndromes where it has no utility (e.g., acute pharyngitis).",
+          "Promote the use of standardized patient information for common conditions like viral pharyngitis, detailing symptomatic relief measures, the expected natural course of the illness, and specific red-flag symptoms warranting a return visit."
+        ]
+      }
+    },
+    {
+      "id": "A03",
+      "arm": "off",
+      "view": {
+        "findings": [
+          {
+            "subject": "Routine admission labs (CBC, Blood Group) for low-risk delivery",
+            "verdict": "uncertain",
+            "domain": "safety",
+            "rationale": "Although the patient was low-risk for postpartum hemorrhage (PPH) with no documented risk factors, PPH can be sudden and unpredictable. Obtaining a 'type and screen' on admission is a critical safety measure to prevent life-threatening delays in providing compatible blood if catastrophic hemorrhage occurs. The practice of obtaining a complete blood count and blood type on admission is common and represents a standard of care where the benefit of risk mitigation outweighs the cost of the test in a low-risk patient."
+          },
+          {
+            "subject": "Postpartum supplementation with Iron-Folic Acid and Calcium",
+            "verdict": "uncertain",
+            "domain": "appropriateness",
+            "rationale": "Postpartum supplementation with iron, folic acid, and calcium is a standard practice to replete maternal stores depleted during pregnancy and delivery. Multiple sources indicate these supplements are a routine component of antenatal and postnatal care."
+          }
+        ],
+        "diff": [],
+        "suggestions": []
+      }
+    },
+    {
+      "id": "A03",
+      "arm": "on",
+      "view": {
+        "findings": [
+          {
+            "subject": "2-day inpatient stay for uncomplicated vaginal delivery",
+            "verdict": "context-dependent",
+            "domain": "efficiency",
+            "rationale": "A 2-day stay for an uncomplicated vaginal delivery, while common practice in many Indian hospitals, may represent a minor inefficiency if mother and baby were clinically stable for an earlier discharge. International trends often favour discharge within 24 hours for low-risk, uncomplicated cases with adequate home support. This finding is not a critique of the care provided but highlights a potential area for efficiency gain, balancing hospital policy, patient preference, and medical stability."
+          },
+          {
+            "subject": "Admission laboratory screening (CBC, Blood Group, HIV/HBsAg)",
+            "verdict": "high-value",
+            "domain": "appropriateness",
+            "rationale": "This panel of tests is a fundamental and appropriate safety measure for any patient admitted in labor. It establishes a hematological baseline (CBC), ensures preparedness for potential hemorrhage (Blood Group), and screens for significant vertically transmissible infections (HIV/HBsAg), aligning with standard obstetric protocols."
+          },
+          {
+            "subject": "Active management of third stage of labor (AMTSL)",
+            "verdict": "high-value",
+            "domain": "safety",
+            "rationale": "AMTSL is a critical, evidence-based intervention that is proven to significantly reduce the incidence of postpartum hemorrhage (PPH), a leading cause of maternal mortality. Its routine use in all deliveries is a cornerstone of safe obstetric care."
+          },
+          {
+            "subject": "Discharge prescription of iron, folic acid, and calcium",
+            "verdict": "high-value",
+            "domain": "appropriateness",
+            "rationale": "Continuing supplementation with iron, folic acid, and calcium into the postpartum period is standard practice. This helps to replete maternal stores depleted during pregnancy and blood loss at delivery, thereby preventing postpartum anemia and supporting the nutritional demands of lactation."
+          }
+        ],
+        "diff": [
+          {
+            "kind": "overuse",
+            "text": "A 2-day hospital stay may have been longer than strictly necessary if clinical stability for discharge was achieved earlier."
+          },
+          {
+            "kind": "gap",
+            "text": "No gaps in essential care identified from the provided summary."
+          }
+        ],
+        "suggestions": [
+          "Consider developing or refining a clinical pathway for uncomplicated vaginal delivery that includes clear, criteria-based guidelines for discharge (e.g., at 24 hours), to potentially improve resource efficiency while ensuring patient safety and readiness for discharge."
+        ]
+      }
+    },
+    {
+      "id": "A03",
+      "arm": "off2",
+      "view": {
+        "findings": [
+          {
+            "subject": "2-day inpatient stay for uncomplicated vaginal delivery",
+            "verdict": "context-dependent",
+            "domain": "efficiency",
+            "rationale": "A 48-hour stay is a widely accepted standard for postpartum observation of mother and baby after a normal vaginal delivery, allowing for monitoring of key outcomes (e.g., hemorrhage, infection, neonatal jaundice) and establishment of feeding. However, this represents a higher intensity of care than may be necessary for all patients. For carefully selected, low-risk individuals (e.g., multiparous, no complications, good home support), a shorter stay (<24 hours) can be a safe and more efficient alternative, reducing hospital resource use. As this case was uncomplicated, it falls into a category where length of stay could potentially be optimized."
+          },
+          {
+            "subject": "Admission laboratory testing (CBC, Blood Group, HIV/HBsAg)",
+            "verdict": "high-value",
+            "domain": "appropriateness",
+            "rationale": "The admission labs are appropriate and align with standard guidelines for laboring patients. A complete blood count and blood typing are essential for readiness in case of hemorrhage. Screening for HIV and Hepatitis B is a key public health measure, often performed universally on admission for delivery."
+          },
+          {
+            "subject": "Active Management of Third Stage of Labour (AMTSL)",
+            "verdict": "high-value",
+            "domain": "safety",
+            "rationale": "The use of AMTSL is a critical, evidence-based intervention to prevent postpartum hemorrhage, a major cause of maternal morbidity and mortality. It is the standard of care for all vaginal deliveries."
+          },
+          {
+            "subject": "Postpartum iron, folic acid, and calcium supplementation",
+            "verdict": "high-value",
+            "domain": "patient_centred",
+            "rationale": "Prescribing iron, folic acid, and calcium supplements at discharge is appropriate. Standard antenatal care involves supplementation with these nutrients to prevent and treat deficiencies. Continuing iron postpartum helps replete stores lost during delivery, and calcium is important, particularly for breastfeeding mothers. This represents good continuity of care from the antenatal period."
+          }
+        ],
+        "diff": [
+          {
+            "kind": "overuse",
+            "text": "A 2-day inpatient stay, while a common standard, may represent a higher intensity of care than needed. For an uncomplicated case like this, a shorter stay (<24 hours) could be a safe, efficient alternative if the patient meets low-risk criteria."
+          },
+          {
+            "kind": "gap",
+            "text": "No care gaps are evident from the provided summary. The documented care aligns with standard protocols for an uncomplicated delivery."
+          }
+        ],
+        "suggestions": [
+          "Consider developing and implementing a clinical pathway for early postpartum discharge (<24 hours). This pathway should define clear eligibility criteria for low-risk patients (e.g., multiparity, uncomplicated delivery, stable vitals, established infant feeding, adequate home support) to safely optimize length of stay and improve resource efficiency."
+        ]
+      }
+    },
+    {
+      "id": "A04",
+      "arm": "off",
+      "view": {
+        "findings": [
+          {
+            "subject": "Routine pre-operative Complete Blood Count (CBC)",
+            "verdict": "low-value",
+            "domain": "appropriateness",
+            "rationale": "For a planned elective, day-care procedure in a healthy, asymptomatic patient, a routine CBC is of low clinical utility. The pre-test probability of finding a result that would justifiably alter anaesthetic or surgical management for an open hernia repair is extremely low. Such testing adds to cost and can lead to further unnecessary investigation of incidental findings, without improving patient outcomes for this procedure."
+          },
+          {
+            "subject": "Routine pre-operative screening for viral markers",
+            "verdict": "low-value",
+            "domain": "appropriateness",
+            "rationale": "Pre-operative screening for viral markers (e.g., HBsAg, anti-HCV, HIV) in an asymptomatic patient without risk factors has minimal impact on the clinical management of an elective hernia repair. Standard infection control through universal precautions should be applied to all patients, rendering the test results redundant for procedural safety. The primary value of such testing is for public health or occupational health, not for direct patient benefit in this context."
+          },
+          {
+            "subject": "Choice of Anaesthesia for Day-Care Procedure",
+            "verdict": "uncertain",
+            "domain": "safety",
+            "rationale": "Spinal anaesthesia was used for this day-care procedure. While effective and uneventful in this case, it carries a higher risk of side effects that can delay discharge, such as post-operative urinary retention or prolonged motor block, compared to local anaesthesia with sedation. For day-case surgery where predictable, rapid recovery is paramount, local anaesthesia is often preferred to minimize the risk of unplanned admission."
+          }
+        ],
+        "diff": [
+          {
+            "kind": "overuse",
+            "text": "Routine pre-operative Complete Blood Count (CBC) performed without a specific clinical indication."
+          },
+          {
+            "kind": "overuse",
+            "text": "Routine pre-operative screening for viral markers performed without specific risk factors."
+          },
+          {
+            "kind": "overuse",
+            "text": "Spinal anaesthesia was used for a day-care procedure; while successful here, it carries a higher risk of delayed discharge compared to local anaesthesia, which is often preferred for day-case settings."
+          }
+        ],
+        "suggestions": [
+          "Develop and implement a protocol for selective, indication-based pre-operative testing for elective, low-risk surgeries like hernioplasty, discouraging routine screening CBC and viral markers in asymptomatic, healthy patients. This can be supported through CPOE (Computerized Physician Order Entry) alerts or clinical pathway checklists.",
+          "To enhance antimicrobial stewardship, refine surgical prophylaxis guidelines for hernioplasty to recommend specific, narrow-spectrum agents (e.g., first-generation cephalosporins or β‐lactam/β‐lactamase inhibitors) as per evidence, which shows they are effective in reducing SSI rates [7].",
+          "Consider developing guidelines that favour local anaesthesia with sedation over spinal anaesthesia for routine day-care inguinal hernia repairs to improve the predictability of same-day discharge and reduce the risk of unplanned admissions."
+        ]
+      }
+    },
+    {
+      "id": "A04",
+      "arm": "on",
+      "view": {
+        "findings": [
+          {
+            "subject": "Routine pre-operative blood investigations (CBC, Viral Markers)",
+            "verdict": "low-value",
+            "domain": "appropriateness",
+            "rationale": "Routine pre-operative testing for young, otherwise healthy patients undergoing low-risk elective surgery is generally not indicated. The patient is 45 years old with no documented co-morbidities, undergoing an elective day-care procedure. Such tests have a low probability of detecting an abnormality that would alter perioperative management but add to patient costs and can lead to cascades of further unnecessary investigation. The practice of routine viral marker screening is also of questionable utility, as universal precautions should be applied for all patients regardless of status."
+          },
+          {
+            "subject": "Single-dose pre-incision antibiotic prophylaxis",
+            "verdict": "high-value",
+            "domain": "safety",
+            "rationale": "Although inguinal hernia repair is a 'clean' procedure, the use of prosthetic mesh is associated with a higher-than-expected surgical site infection (SSI) rate. Evidence from systematic reviews confirms that antibiotic prophylaxis significantly reduces SSI rates in mesh hernioplasty, making it a high-value intervention for patient safety."
+          },
+          {
+            "subject": "Use of day-care setting for hernia repair",
+            "verdict": "high-value",
+            "domain": "efficiency",
+            "rationale": "Performing elective inguinal hernia repair as a day-care procedure is an efficient and appropriate model of care for suitable patients. It meets the general criteria for day-case surgery (e.g., duration less than 120 minutes, low risk of major bleeding or uncontrollable pain), reduces hospital resource utilization, and is often preferred by patients, without compromising safety."
+          },
+          {
+            "subject": "Choice of procedure (Open mesh hernioplasty)",
+            "verdict": "high-value",
+            "domain": "appropriateness",
+            "rationale": "The choice of an open repair with prosthetic mesh is a standard of care for inguinal hernias. The use of mesh has become routine because it provides a clear reduction in recurrence rates compared to non-mesh repairs and is a reliable, cost-effective technique."
+          },
+          {
+            "subject": "Discharge Protocol after Spinal Anaesthesia",
+            "verdict": "uncertain",
+            "domain": "safety",
+            "rationale": "While the use of spinal anaesthesia facilitates day-care surgery, it carries a known risk of post-operative urinary retention (POUR). This is a common reason for unplanned admission after day-care procedures. Safe discharge requires confirmation that the patient has successfully voided, which is a critical safety and efficiency checkpoint for this pathway that was not explicitly documented in the summary."
+          }
+        ],
+        "diff": [
+          {
+            "kind": "overuse",
+            "text": "Routine pre-operative Complete Blood Count and Viral Markers in a healthy, low-risk patient."
+          }
+        ],
+        "suggestions": [
+          "Consider developing and implementing a protocol for selective, risk-stratified pre-operative testing for elective surgical patients. This could help discourage routine testing (e.g., CBC, viral markers) in healthy, asymptomatic individuals (e.g., ASA I-II) undergoing low-to-intermediate risk surgery.",
+          "Continue and reinforce the high-value practice of single-dose antibiotic prophylaxis for all open mesh hernia repairs, as this is strongly supported by evidence for reducing surgical site infections.",
+          "Ensure a formal protocol is in place to check for and document a successful trial of void before discharging any patient who has received spinal anaesthesia in a day-care setting, to mitigate the risk of post-operative urinary retention.",
+          "Continue to promote and audit the use of day-care pathways for suitable procedures like elective inguinal hernia repair to maintain high levels of hospital efficiency and patient satisfaction."
+        ]
+      }
+    }
+  ],
+  "bankNotes": {
+    "C01": "Explicit negatives satisfy the imaging-avoidance precondition — grounding should firm \"applies\".",
+    "C02": "SAFETY SENTINEL: red flags present → MRI appropriate; grounding must NOT flip this to low-value.",
+    "C03": "Classic antibiotics-for-URTI; explicit negatives should firm \"applies\".",
+    "C04": "Simple faint with explicit negatives — neuro/carotid imaging is the canonical low-value pair.",
+    "C05": "Typical migraine, normal exam — imaging low-value; negatives are decisive.",
+    "C06": "Asymptomatic screening battery — grounding supplies the \"asymptomatic, low-risk\" structure.",
+    "C07": "Pre-op testing before cataract surgery — low-value; comorbidity is stated and controlled.",
+    "C08": "Uncomplicated cystitis — imaging low-value; the explicit negatives rule out complicated UTI.",
+    "P01": "Grounded negatives should keep imaging out of the early path (low-value/context-dependent).",
+    "P02": "Uncomplicated UTI pathway — short empiric course, no imaging; negatives are the discriminator.",
+    "P03": "SAFETY SENTINEL: DKA — instability in the picture; essential steps must stay essential.",
+    "P04": "New T2DM workup — structured findings + explicit negatives should keep the path outpatient.",
+    "P05": "CAP with reassuring vitals — grounding should support outpatient-severity framing.",
+    "P06": "Anchoring trap — the picture marks what is genuinely unknown; the path must not confirm-the-label.",
+    "A01": "Over-use signals present (CT on top of USG, 5-day stay + prolonged IV abx for a clean lap chole).",
+    "A02": "Low-value everywhere (antibiotics + Widal + multivitamins for viral pharyngitis).",
+    "A03": "REGRESSION SENTINEL: appropriate routine care — grounding must not invent findings.",
+    "A04": "REGRESSION SENTINEL: done right (day-care, single-dose prophylaxis) — expect neutral."
+  }
+}

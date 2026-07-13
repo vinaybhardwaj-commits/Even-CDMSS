@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { enrichPathway } from '@/lib/pathway';
 import { normStageKind, normStageFlag, type SkeletonStage } from '@/lib/pathway-core';
 import { makeNdjsonStream, ndjsonHeaders, type Stage } from '@/lib/stream';
+import { rightCareGroundingEnabled, buildRightCareState, rightCareExtractInput, patientPictureBlock } from '@/lib/right-care-state';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -62,12 +63,24 @@ export async function POST(req: NextRequest) {
 
   (async () => {
     try {
+      // Slice 2 (RIGHT_CARE_CLINICAL_STATE_GROUND): the picture goes into BOTH pathway
+      // passes — the enrich request is separate from the skeleton one, so this route
+      // rebuilds the state from its own scenario (deterministic, identical builder).
+      // Flag off → inert; fail-open → ungrounded enrich.
+      let clinicalStateText: string | undefined;
+      if (rightCareGroundingEnabled()) {
+        const built = await buildRightCareState(
+          rightCareExtractInput('pathway', { scenario, age: patient.age, sex: patient.sex }));
+        if (built) clinicalStateText = patientPictureBlock(built.state);
+      }
+
       const { enrichment, sources, traceId } = await enrichPathway({
         scenario,
         proposedActions: proposedActions && proposedActions.length ? proposedActions : undefined,
         patient: hasPatient ? patient : undefined,
         workingDiagnosis,
         stages,
+        ...(clinicalStateText ? { clinicalStateText } : {}),
         onProgress: (stage, msg) => emit({ type: 'progress', stage: stage as Stage, msg, ms: Date.now() - t0 }),
       });
       emit({ type: 'result', data: { ok: true, enrichment, sources, traceId } });

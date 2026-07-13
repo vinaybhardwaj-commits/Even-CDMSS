@@ -314,7 +314,9 @@ async function runPrognosisPass(
   }
 }
 
-export async function analyzeCase(extracted: ExtractedCase, deps: Partial<AnalyzeDeps> = {}, opts: { trace?: boolean; onProgress?: (stage: string, msg: string) => void; forceOllama?: boolean } = {}): Promise<AnalyzeResult> {
+// Slice 2: opts.clinicalStateText threads the optional PATIENT PICTURE block into the
+// analyze prompt only (critique/revise unchanged). Omitted → byte-identical to Slice 1.
+export async function analyzeCase(extracted: ExtractedCase, deps: Partial<AnalyzeDeps> = {}, opts: { trace?: boolean; onProgress?: (stage: string, msg: string) => void; forceOllama?: boolean; clinicalStateText?: string } = {}): Promise<AnalyzeResult> {
   const doTrace = opts.trace !== false;
   const doAudit = process.env.DOC_AUDIT_AUDIT !== '0';
   const doPrognosis = process.env.PROGNOSIS_AUDIT === '1'; // DARK by default (PRD D5)
@@ -364,7 +366,7 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
       : Promise.resolve(undefined);
 
     prog('analyzing', 'Auditing the case…');
-    const draftRaw = await generate(core.ANALYZE_SYSTEM, core.buildAnalyzeUser(extracted, citedContext, rubric.standard), 'doc_audit_analyze');
+    const draftRaw = await generate(core.ANALYZE_SYSTEM, core.buildAnalyzeUser(extracted, citedContext, rubric.standard, opts.clinicalStateText), 'doc_audit_analyze');
     let parsed = core.parseAnalysis(draftRaw, sources.length);
     if (!parsed) {
       if (traceId) { await logEvent(traceId, 'doc_audit_result', null, { ok: false }); await finishTrace(traceId, 'partial'); }

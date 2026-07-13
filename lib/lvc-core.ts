@@ -226,18 +226,25 @@ Be conservative: if the patient has any feature that is an exception to the reco
 Return ONLY a JSON array, one object per recommendation, no prose:
 [{"id":"<rec id>","verdict":"applies|does_not_apply|insufficient_info","confidence":0.0-1.0,"why":"<one sentence specific to this patient>","consider_instead":"<short alternative or null>"}]`;
 
+// Slice 2 (Right Care × ClinicalState): `clinicalStateText` is the pre-composed PATIENT
+// PICTURE block (see lib/right-care-state.ts patientPictureBlock). OPTIONAL and additive —
+// omitted/empty → the returned prompt is byte-identical to the ungrounded Slice-1 prompt
+// (unit-asserted). The block sits between the scenario and the candidate list so the judge
+// decides "does this APPLY to THIS patient" against the structured negatives/unknowns.
 export function buildJudgeUser(
   ctx: { scenario: string; patient?: { age?: number; sex?: string } },
   recs: LvcRecommendation[],
+  clinicalStateText?: string,
 ): string {
   const pt = ctx.patient
     ? `Patient: ${ctx.patient.age != null ? `${ctx.patient.age}y` : 'age unknown'}${ctx.patient.sex ? `, ${ctx.patient.sex}` : ''}\n`
     : '';
+  const picture = clinicalStateText && clinicalStateText.trim() ? `\n${clinicalStateText.trim()}\n` : '';
   const list = recs
     .map((r, i) =>
       `${i + 1}. id=${r.id} [${r.region}/${r.society}]\n   STATEMENT: ${r.statement}\n   PRECONDITION: ${r.precondition || '(none stated)'}`)
     .join('\n');
-  return `${pt}Clinical scenario / proposed plan:\n${ctx.scenario.trim()}\n\nCandidate recommendations to judge:\n${list}`;
+  return `${pt}Clinical scenario / proposed plan:\n${ctx.scenario.trim()}\n${picture}\nCandidate recommendations to judge:\n${list}`;
 }
 
 const VERDICTS = new Set<Verdict>(['applies', 'does_not_apply', 'insufficient_info']);

@@ -23,6 +23,17 @@ export interface EngineChange {
 export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
     engine: null, date: '2026-07-13', scoring: false,
+    plain: 'Right Care can now reason FROM the structured clinical picture it builds — shipped dark behind a flag, gated by a per-mode golden A/B and V ratification before anything flips on',
+    title: 'Right Care × ClinicalState Slice 2 (not OPD audit) — ground the reasoning in the state; ships flag-OFF behind RIGHT_CARE_CLINICAL_STATE_GROUND; golden A/B harness (right-care-eval/1.0) gates the flip',
+    points: [
+      'GROUNDING (output-changing, hence dark): when RIGHT_CARE_CLINICAL_STATE_GROUND=1 (requires the master flag) each mode builds its ClinicalState BEFORE the reasoning pass and injects formatClinicalState as a delimited PATIENT PICTURE block — Order check into the applicability judge (MatchInput.clinicalStateText → buildJudgeUser), Care pathway into BOTH passes (buildSkeletonUser + buildEnrichUser), Record audit into buildAnalyzeUser (near-redundant by design — the pass already sees the structured case). Every param is optional: omitted → prompts byte-identical to Slice 1 (unit-asserted per builder). Picture rules baked in: "Not mentioned" is genuinely unknown, never assume; never introduce a finding the picture doesn\'t state. No output-shape change — result contracts, UI, save-run, and the Slice-1 persistence untouched.',
+      'GOLDEN A/B (the ratification gate): frozen bank right-care-eval/1.0 (8 check / 6 pathway / 4 audit cases, incl. safety + regression sentinels; ddx-case-bank/1.0 stems reused where they fit) in the new pure lib/right-care-ground-eval-core.ts — pair-judge prompts/parser with three gating SAFETY classes (appropriate order flipped low-value · real catch suppressed · finding hallucinated from the picture), deterministic check flag-diff, per-mode scorecards with an OFF-vs-OFF noise floor (extraction-eval-core referee pattern, injected judge). Runner scripts/right-care-ground-ab.mjs (manual, credentialed, never CI) writes data/right-care-eval/ground-ab-scorecard-v1.json.',
+      'ROLLOUT: ships with the flag OFF in prod; V ratifies per mode off the delta report — Order check + Care pathway first; Record audit only on a real, safe gain (expected ≈ zero delta), else left grounded-off. Any safety-class regression → that mode\'s flag stays OFF.',
+    ],
+    why: 'Slice 1 proved Right Care can construct the state but deliberately fed none of it back (DDx Phase-1a). Grounding the judge/skeleton/enrich prompts in explicit negatives and unknowns is where the value is (the modes reason over raw prose today) — but it perturbs output, so it ships dark behind its own flag with a frozen A/B + zero-safety-regression gate. Slice 2 kickoff v1.1-FINAL (V, 13 Jul 2026).',
+  },
+  {
+    engine: null, date: '2026-07-13', scoring: false,
     plain: 'Right Care now builds a structured clinical picture for every check, pathway, and record audit — and saves audited records for later linking to a member\'s history',
     title: 'Right Care × ClinicalState Slice 1 (not OPD audit) — construct · surface · persist across Order check / Care pathway / Record audit; advisory plane, additive + fail-open, dark behind RIGHT_CARE_CLINICAL_STATE',
     points: [

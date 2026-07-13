@@ -122,4 +122,5 @@ export const UNREGISTERED: string[] = [
   'opd-note-audit-core',    // the OPD audit engine (opd-note-audit/0.81.8)
   'prognosis-core',         // prognosis engine (prognosis/0.1)
   'proms',                  // PROMs catalog/scheduling/scoring
+  'right-care-ground-eval-core', // Slice-2 grounding A/B referee (right-care-eval/1.0)
 ];

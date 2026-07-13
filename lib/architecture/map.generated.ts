@@ -595,6 +595,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "right-care-ground-eval-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "right-care-state",
     "plane": "unregistered"
   },
@@ -2887,6 +2891,21 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "right-care-ground-eval-core",
+    "to": "doc-audit-core",
+    "kind": "type"
+  },
+  {
+    "from": "right-care-ground-eval-core",
+    "to": "lvc-core",
+    "kind": "type"
+  },
+  {
+    "from": "right-care-ground-eval-core",
+    "to": "pathway-core",
+    "kind": "type"
+  },
+  {
     "from": "right-care-state",
     "to": "appropriateness-runs",
     "kind": "type"
@@ -3092,6 +3111,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "RIGHT_CARE_GROUND_EVAL_VERSION",
+    "value": "right-care-ground-eval/1.0",
+    "file": "lib/right-care-ground-eval-core.ts",
+    "derived": false
+  },
+  {
     "constName": "SNAPSHOT_SCHEMA_VERSION",
     "value": "2",
     "file": "lib/ccb-dossier-cache-core.ts",
@@ -3101,8 +3126,8 @@ export const VERSION_REGISTRY: VersionRow[] = [
 
 export const COVERAGE = {
   "registered": 9,
-  "unregistered": 11,
-  "total": 20,
+  "unregistered": 12,
+  "total": 21,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
@@ -3114,7 +3139,8 @@ export const COVERAGE = {
     "opd-note-audit",
     "opd-note-audit-core",
     "prognosis-core",
-    "proms"
+    "proms",
+    "right-care-ground-eval-core"
   ]
 } as const;
 

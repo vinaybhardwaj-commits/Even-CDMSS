@@ -27,6 +27,10 @@ export interface PathwayInput {
   scenario: string;
   proposedActions?: string[];
   patient?: { age?: number; sex?: string };
+  /** Slice 2 (Right Care × ClinicalState): the pre-composed PATIENT PICTURE block, threaded
+   *  into BOTH pathway prompts (skeleton + enrich). OPTIONAL — omitted (the default, and
+   *  always when RIGHT_CARE_CLINICAL_STATE_GROUND is off) → prompts byte-identical to Slice 1. */
+  clinicalStateText?: string;
   trace?: boolean;
   /** Lab probe: force the FREE local mini (no Gemini) for ₹0 pipeline testing. Default false. */
   forceOllama?: boolean;
@@ -174,7 +178,7 @@ export async function enrichPathway(input: EnrichInput, deps: Partial<EnrichDeps
     if (traceId) await logEvent(traceId, 'pathway_sources', null, { count: sources.length, ids: sources.map((s) => ({ n: s.n, book: s.book, url: s.url })) });
 
     const user = core.buildEnrichUser(
-      { scenario: input.scenario, proposedActions: input.proposedActions, patient: input.patient, workingDiagnosis: input.workingDiagnosis },
+      { scenario: input.scenario, proposedActions: input.proposedActions, patient: input.patient, workingDiagnosis: input.workingDiagnosis, clinicalStateText: input.clinicalStateText },
       stages,
       citedContext,
     );

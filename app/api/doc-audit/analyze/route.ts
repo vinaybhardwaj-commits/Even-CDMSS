@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { analyzeCase } from '@/lib/doc-audit';
 import { normDocType, parseStatusList, normAdminFacts, parseAftercare, type DocType, type ExtractedCase } from '@/lib/doc-audit-core';
 import { makeNdjsonStream, ndjsonHeaders, type Stage } from '@/lib/stream';
-import { rightCareStateEnabled } from '@/lib/right-care-state';
+import { rightCareStateEnabled, rightCareGroundingEnabled, patientPictureBlock } from '@/lib/right-care-state';
 import { extractedCaseToState } from '@/lib/clinical-state/to-audit-family';
 import { clinicalStateResultField } from '@/lib/clinical-state/ui-view';
 import { stateCounts, type ClinicalState } from '@/lib/clinical-state/schema';
@@ -77,9 +77,20 @@ export async function POST(req: NextRequest) {
 
   (async () => {
     try {
+      // Slice 2 (RIGHT_CARE_CLINICAL_STATE_GROUND): adapt the case to a state BEFORE the
+      // analyze pass and inject the PATIENT PICTURE into its prompt. Near-redundant here —
+      // the analyze pass already reasons over the structured ExtractedCase the state is
+      // derived from — wired for cross-mode consistency; the A/B expects ≈ zero delta.
+      // Flag off (the shipped default) → inert: build order and prompt exactly Slice 1.
+      let state: ClinicalState | null = null;
+      if (rightCareGroundingEnabled()) {
+        try { state = extractedCaseToState(extracted); } catch { state = null; }
+      }
+
       const { report, traceId } = await analyzeCase(extracted, {}, {
         forceOllama: body.providerOverride === 'ollama',   // lab probe: analyze + prognosis on the free mini
         onProgress: (stage, msg) => emit({ type: 'progress', stage: stage as Stage, msg, ms: Date.now() - t0 }),
+        ...(state ? { clinicalStateText: patientPictureBlock(state) } : {}),
       });
 
       // Right Care × ClinicalState Slice 1: adapt the ALREADY-EXTRACTED, de-identified case to
@@ -87,12 +98,12 @@ export async function POST(req: NextRequest) {
       // carries COUNTS ONLY — the doc-audit trace's cardinal redaction rule (never the extracted
       // case) outranks the DDx pattern of logging the full state; the state itself persists in
       // appropriateness_runs.clinical_state instead (Part C).
-      let state: ClinicalState | null = null;
       if (rightCareStateEnabled()) {
         try {
-          state = extractedCaseToState(extracted);
+          const grounded = !!state;   // Slice 2 pre-built it before the analyze pass
+          if (!state) state = extractedCaseToState(extracted);
           if (traceId) {
-            await logEvent(traceId, 'clinical_state_extracted', null, { ok: true, counts: stateCounts(state) }).catch(() => {});
+            await logEvent(traceId, 'clinical_state_extracted', null, { ok: true, grounded, counts: stateCounts(state) }).catch(() => {});
           }
         } catch { state = null; }
       }

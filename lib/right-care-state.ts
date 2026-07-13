@@ -13,12 +13,31 @@
 import { deterministicExtract, normalizeWithLlm, mergeLlmFindings, type ChatFn, type ExtractInput } from './clinical-state/extract';
 import { extractedCaseToState } from './clinical-state/to-audit-family';
 import { validateClinicalState, type ClinicalState } from './clinical-state/schema';
+import { formatClinicalState } from './clinical-state/format';
 import type { ExtractedCase } from './doc-audit-core';
 import type { RunMode } from './appropriateness-runs';
 
 /** Master gate for the whole feature (Part D). Default OFF → every touched route is unchanged. */
 export function rightCareStateEnabled(): boolean {
   return process.env.RIGHT_CARE_CLINICAL_STATE === '1';
+}
+
+/** Slice 2 gate — ground the reasoning in the state. REQUIRES the master flag (the state must
+ *  be built to inject it). Default OFF; ships OFF; flips per mode only after the golden A/B +
+ *  V ratification. When off, build order and every prompt are unchanged from Slice 1. */
+export function rightCareGroundingEnabled(): boolean {
+  return rightCareStateEnabled() && process.env.RIGHT_CARE_CLINICAL_STATE_GROUND === '1';
+}
+
+/** The PATIENT PICTURE block injected into a mode's reasoning prompt (Slice 2). One composer
+ *  so every mode ships the identical delimiters + rules: "Not mentioned" is genuinely unknown
+ *  (never assume), and the model must not introduce a finding the picture doesn't state. */
+export function patientPictureBlock(state: ClinicalState): string {
+  return [
+    'PATIENT PICTURE (structured, machine-extracted from the input above — authoritative for what is stated, negative, and not mentioned):',
+    formatClinicalState(state),
+    'Picture rules: treat every "Not mentioned" item as genuinely unknown — never assume it either way; do not introduce any finding this picture does not state.',
+  ].join('\n');
 }
 
 export interface BuiltState { state: ClinicalState; rejectedSpans: number }

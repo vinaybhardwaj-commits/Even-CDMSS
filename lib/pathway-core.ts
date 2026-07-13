@@ -213,14 +213,18 @@ Be concise — this is the fast skeleton; detail comes later. Advisory and NON-D
 Return ONLY JSON, no prose:
 {"detected_stage":"…","working_diagnosis":"… or null","diagnosis_certainty":"low|moderate|high","needs_ddx":true|false,"anchor_note":"… or null","summary":"<one-line path summary>","stages":[{"kind":"…","title":"…","action":"…","flag":"…"}]}`;
 
-export function buildSkeletonUser(ctx: { scenario: string; proposedActions?: string[]; patient?: { age?: number; sex?: string } }): string {
+// Slice 2 (Right Care × ClinicalState): `clinicalStateText` is the pre-composed PATIENT
+// PICTURE block. OPTIONAL and additive — omitted/empty → byte-identical to the ungrounded
+// Slice-1 prompt (unit-asserted).
+export function buildSkeletonUser(ctx: { scenario: string; proposedActions?: string[]; patient?: { age?: number; sex?: string }; clinicalStateText?: string }): string {
   const pt = ctx.patient && (ctx.patient.age != null || ctx.patient.sex)
     ? `Patient: ${ctx.patient.age != null ? `${ctx.patient.age}y` : 'age unknown'}${ctx.patient.sex ? `, ${ctx.patient.sex}` : ''}\n`
     : '';
   const orders = ctx.proposedActions && ctx.proposedActions.length
     ? `Proposed order(s): ${ctx.proposedActions.join('; ')}\n`
     : '';
-  return `${pt}${orders}Clinical scenario:\n${ctx.scenario.trim()}`;
+  const picture = ctx.clinicalStateText && ctx.clinicalStateText.trim() ? `\n\n${ctx.clinicalStateText.trim()}` : '';
+  return `${pt}${orders}Clinical scenario:\n${ctx.scenario.trim()}${picture}`;
 }
 
 export function parseSkeleton(text: string): PathwaySkeleton | null {
@@ -291,8 +295,10 @@ Rules:
 Return ONLY JSON, no prose:
 {"nodes":[{"id":"s1","flag":"…","detail":"…","decision_criteria":"… or null","order":"… (optional)","alternatives":[{"name":"…","note":"…"}],"evidence":["…"],"estimates":["…"],"citation_ids":[1,2]}]}`;
 
+// Slice 2: same optional PATIENT PICTURE contract as buildSkeletonUser — both pathway
+// passes see the picture when grounding is on; neither prompt changes when it is off.
 export function buildEnrichUser(
-  ctx: { scenario: string; proposedActions?: string[]; patient?: { age?: number; sex?: string }; workingDiagnosis?: string | null },
+  ctx: { scenario: string; proposedActions?: string[]; patient?: { age?: number; sex?: string }; workingDiagnosis?: string | null; clinicalStateText?: string },
   stages: SkeletonStage[],
   citedContext: string,
 ): string {
@@ -301,11 +307,12 @@ export function buildEnrichUser(
     : '';
   const dx = ctx.workingDiagnosis ? `Working diagnosis: ${ctx.workingDiagnosis}\n` : '';
   const orders = ctx.proposedActions && ctx.proposedActions.length ? `Proposed order(s): ${ctx.proposedActions.join('; ')}\n` : '';
+  const picture = ctx.clinicalStateText && ctx.clinicalStateText.trim() ? `\n\n${ctx.clinicalStateText.trim()}` : '';
   const stageList = stages.map((s) => `- ${s.id} [${s.kind}] ${s.title}: ${s.action}`).join('\n');
   const ev = citedContext.trim()
     ? citedContext.trim()
     : '(no excerpts retrieved — rate conservatively; leave citation_ids empty; put unsupported clinical reasoning in estimates, not evidence)';
-  return `${pt}${dx}${orders}Clinical scenario:\n${ctx.scenario.trim()}\n\nSTAGES TO ENRICH (keep these ids, do not change the set):\n${stageList}\n\nNUMBERED EVIDENCE EXCERPTS:\n${ev}`;
+  return `${pt}${dx}${orders}Clinical scenario:\n${ctx.scenario.trim()}${picture}\n\nSTAGES TO ENRICH (keep these ids, do not change the set):\n${stageList}\n\nNUMBERED EVIDENCE EXCERPTS:\n${ev}`;
 }
 
 export function parseEnrichment(text: string, validIds?: string[], sourceCount = 0): PathwayEnrichment | null {

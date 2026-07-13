@@ -3,7 +3,7 @@ import { matchLowValueCare, type MatchInput } from '@/lib/lvc';
 import { analyzeValue } from '@/lib/lvc-value';
 import type { Region } from '@/lib/lvc-core';
 import { makeNdjsonStream, ndjsonHeaders, type Stage } from '@/lib/stream';
-import { rightCareStateEnabled, buildRightCareState, rightCareExtractInput } from '@/lib/right-care-state';
+import { rightCareStateEnabled, rightCareGroundingEnabled, buildRightCareState, rightCareExtractInput, patientPictureBlock } from '@/lib/right-care-state';
 import { clinicalStateResultField } from '@/lib/clinical-state/ui-view';
 import { stateCounts } from '@/lib/clinical-state/schema';
 import { logEvent, tracedChat } from '@/lib/trace';
@@ -69,6 +69,19 @@ export async function POST(req: NextRequest) {
       // Flag matcher (CW seed-dependent) and value analysis (seed-independent) run in
       // parallel. The value pass drives the progress bar via onProgress; it soft-fails
       // to null internally so it never breaks the response.
+      // Slice 2 (RIGHT_CARE_CLINICAL_STATE_GROUND, requires the master flag): build the state
+      // BEFORE the pipeline and inject the PATIENT PICTURE into the applicability judge via
+      // MatchInput.clinicalStateText — so "does this APPLY to THIS patient" is decided against
+      // the structured negatives/unknowns. Deterministic stage only (no trace exists yet).
+      // Flag off (the shipped default) → this block is inert: build order and every prompt are
+      // exactly Slice 1. Fail-open: a build failure just runs the check ungrounded.
+      let built: Awaited<ReturnType<typeof buildRightCareState>> = null;
+      if (rightCareGroundingEnabled()) {
+        built = await buildRightCareState(
+          rightCareExtractInput('check', { scenario, proposedActions, age: patient.age, sex: patient.sex }));
+        if (built) input.clinicalStateText = patientPictureBlock(built.state);
+      }
+
       const [result, value] = await Promise.all([
         matchLowValueCare(input),
         analyzeValue({
@@ -80,28 +93,31 @@ export async function POST(req: NextRequest) {
 
       // Right Care × ClinicalState Slice 1 (mirrors DDx Phase-1a): construct the state from
       // the PROVIDED input alongside the pipeline — it feeds nothing (the check above ran on
-      // the raw input) and blocks nothing (fail-open; flags off → this whole block is inert
-      // and the result payload is byte-identical). Traced on the mode's existing value trace.
-      let built: Awaited<ReturnType<typeof buildRightCareState>> = null;
+      // the raw input, unless Slice-2 grounding pre-built it) and blocks nothing (fail-open;
+      // flags off → this whole block is inert and the result payload is byte-identical).
+      // Traced on the mode's existing value trace.
       if (rightCareStateEnabled()) {
         try {
-          const chat: ChatFn | undefined = value.traceId
-            ? async (system, user) => {
-                const r = await tracedChat(value.traceId!, 'clinical_state_normalise', {
-                  model: TEXT_MODEL,
-                  messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-                  temperature: 0.1,
-                  max_tokens: 900,
-                  ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
-                }, { gemini: geminiUtilityModel() });
-                return r.choices?.[0]?.message?.content ?? '';
-              }
-            : undefined;
-          built = await buildRightCareState(
-            rightCareExtractInput('check', { scenario, proposedActions, age: patient.age, sex: patient.sex }), chat);
+          const grounded = !!built;   // Slice 2 pre-built it before the pipeline
+          if (!built) {
+            const chat: ChatFn | undefined = value.traceId
+              ? async (system, user) => {
+                  const r = await tracedChat(value.traceId!, 'clinical_state_normalise', {
+                    model: TEXT_MODEL,
+                    messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+                    temperature: 0.1,
+                    max_tokens: 900,
+                    ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
+                  }, { gemini: geminiUtilityModel() });
+                  return r.choices?.[0]?.message?.content ?? '';
+                }
+              : undefined;
+            built = await buildRightCareState(
+              rightCareExtractInput('check', { scenario, proposedActions, age: patient.age, sex: patient.sex }), chat);
+          }
           if (built && value.traceId) {
             await logEvent(value.traceId, 'clinical_state_extracted', null, {
-              ok: true, counts: stateCounts(built.state), unstable: built.state.instability.unstable, state: built.state,
+              ok: true, grounded, counts: stateCounts(built.state), unstable: built.state.instability.unstable, state: built.state,
             }).catch(() => {});
           }
         } catch { built = null; }
