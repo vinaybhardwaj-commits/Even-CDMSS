@@ -571,6 +571,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "record-audit-link-store",
+    "plane": "unregistered"
+  },
+  {
     "id": "rerank",
     "plane": "unregistered"
   },
@@ -588,6 +592,10 @@ export const MAP_MODULES: MapModule[] = [
   },
   {
     "id": "review-stats-core",
+    "plane": "unregistered"
+  },
+  {
+    "id": "right-care-state",
     "plane": "unregistered"
   },
   {
@@ -956,6 +964,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "clinical-state",
+    "kind": "type"
+  },
+  {
+    "from": "app/api",
+    "to": "clinical-state",
     "kind": "value"
   },
   {
@@ -1290,6 +1303,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/api",
+    "to": "record-audit-link-store",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
     "to": "rerank",
     "kind": "value"
   },
@@ -1306,6 +1324,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "review-stats-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "right-care-state",
     "kind": "value"
   },
   {
@@ -1340,6 +1363,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/appropriateness",
+    "to": "clinical-state",
+    "kind": "type"
+  },
+  {
+    "from": "app/appropriateness",
     "to": "doc-audit-core",
     "kind": "type"
   },
@@ -1356,6 +1384,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/appropriateness",
     "to": "pathway-core",
+    "kind": "type"
+  },
+  {
+    "from": "app/appropriateness",
+    "to": "record-audit-link-store",
     "kind": "type"
   },
   {
@@ -1471,6 +1504,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/drugs",
     "to": "ndjson-client",
+    "kind": "value"
+  },
+  {
+    "from": "appropriateness-runs",
+    "to": "clinical-state",
     "kind": "value"
   },
   {
@@ -1946,6 +1984,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "doc-audit",
     "to": "prognosis-core",
+    "kind": "value"
+  },
+  {
+    "from": "doc-audit",
+    "to": "record-audit-link-store",
     "kind": "value"
   },
   {
@@ -2799,6 +2842,11 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "record-audit-link-store",
+    "to": "db",
+    "kind": "value"
+  },
+  {
     "from": "rerank",
     "to": "llm",
     "kind": "value"
@@ -2837,6 +2885,21 @@ export const MAP_EDGES: MapEdge[] = [
     "from": "review-stats-core",
     "to": "review-queue-core",
     "kind": "value"
+  },
+  {
+    "from": "right-care-state",
+    "to": "appropriateness-runs",
+    "kind": "type"
+  },
+  {
+    "from": "right-care-state",
+    "to": "clinical-state",
+    "kind": "value"
+  },
+  {
+    "from": "right-care-state",
+    "to": "doc-audit-core",
+    "kind": "type"
   },
   {
     "from": "room-rent",

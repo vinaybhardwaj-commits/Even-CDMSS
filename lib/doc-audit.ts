@@ -27,6 +27,7 @@ import { parseCritique } from './lvc-value-core';
 import { hitsToSources, buildCitedContext, type CiteHit } from './citations-core';
 import { computeScorecard } from './value-score-core';
 import { estimateBedDayCost } from './room-rent';
+import { parseMemberLink, type MemberLink } from './record-audit-link-store';
 import * as core from './doc-audit-core';
 import * as px from './prognosis-core';
 import type { PrognosisReport } from './prognosis-core';
@@ -112,6 +113,37 @@ export async function extractCase(input: ExtractInput): Promise<ExtractResult> {
     if (traceId) await finishTrace(traceId, 'error', String((e as Error).message));
     console.warn('[doc-audit] extractCase failed', (e as Error).message);
     return { extracted: null, traceId };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IDENTITY-ONLY linkage pass (Right Care × ClinicalState Slice 1, Part C).
+// A SEPARATE document read whose sole output is the member linkage key
+// {uhid?, mrn?, name?, dob?} — it never writes into ExtractedCase, ClinicalState,
+// or the AuditReport, and it is deliberately UNTRACED (identity is never logged;
+// the content pass's redacted-trace posture is unchanged). Called by the extract
+// route only when RIGHT_CARE_CLINICAL_STATE=1 + RECORD_AUDIT_LINK=1. Soft-fails
+// to null — linkage is best-effort and never blocks the audit.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const IDENTITY_SYSTEM = `You extract PATIENT IDENTITY FIELDS ONLY from a medical document, for record linkage.
+Return ONLY JSON: {"uhid": string|null, "mrn": string|null, "name": string|null, "dob": string|null}
+- uhid/mrn: the hospital's patient identifiers exactly as printed (UHID, MRN, IP/OP no., patient ID).
+- name: the patient's full name as printed. dob: date of birth as printed.
+- null for anything not present. Do NOT return diagnoses, medications, or any clinical content.`;
+
+export async function extractMemberIdentity(input: { base64: string; mime: string }): Promise<MemberLink | null> {
+  try {
+    const raw = await generateFromDocument(IDENTITY_SYSTEM, 'Extract the patient identity fields.', input.base64, input.mime, { maxOutputTokens: 300 });
+    if (!raw) return null;
+    let t = raw.trim();
+    if (t.startsWith('```')) t = t.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+    const a = t.indexOf('{'); const b = t.lastIndexOf('}');
+    if (a < 0 || b <= a) return null;
+    return parseMemberLink(JSON.parse(t.slice(a, b + 1)));
+  } catch (e) {
+    console.warn('[doc-audit] extractMemberIdentity failed (soft)', (e as Error).message);
+    return null;
   }
 }
 

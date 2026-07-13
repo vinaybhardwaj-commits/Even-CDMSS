@@ -6,6 +6,9 @@ import { levelToScore, VALUE_DISCLAIMER, type ValueAnalysis, type ValueIntervent
 import PathwayTrace from '@/components/PathwayTrace';
 import type { PathwaySkeleton, PathwayEnrichment, SkeletonStage } from '@/lib/pathway-core';
 import CaseAuditReport from '@/components/CaseAuditReport';
+import ClinicalStatePanel from '@/components/ClinicalStatePanel';
+import type { ClinicalStateUiView } from '@/lib/clinical-state/ui-view';
+import type { MemberLink } from '@/lib/record-audit-link-store';
 import type { ExtractedCase, AuditReport, DocType } from '@/lib/doc-audit-core';
 import type { Source } from '@/lib/citations-core';
 import { consumeNdjson } from '@/lib/ndjson-client';
@@ -62,6 +65,9 @@ type MatchResult = {
   valueAnalysis?: ValueAnalysis | null;
   valueSources?: Source[];
   valueTraceId?: string;
+  // Right Care × ClinicalState Slice 1 — additive, present only when CLINICAL_STATE_UI=1
+  // server-side. Absent by default → the panel does not render → the page is unchanged.
+  clinicalState?: ClinicalStateUiView;
   error?: string;
 };
 
@@ -113,11 +119,14 @@ export default function AppropriatenessClient() {
   }
 
   // Persist a completed run for research retention (anonymous, de-identified). Fire-and-forget.
-  async function saveRunRecord(mode: 'check' | 'pathway' | 'audit', scenarioStr: string | null, docType: string | null, input: unknown, output: unknown) {
+  // memberLink (audit only, Right Care × ClinicalState Slice 1): the linkage key the extract
+  // route's identity-only pass returned — forwarded verbatim so save-run can store it in the
+  // SEPARATE record_audit_member_links table. Never merged into input/output.
+  async function saveRunRecord(mode: 'check' | 'pathway' | 'audit', scenarioStr: string | null, docType: string | null, input: unknown, output: unknown, memberLink?: MemberLink | null) {
     try {
       const r = await fetch('/api/appropriateness/save-run', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ mode, scenario: scenarioStr, docType, input, output }),
+        body: JSON.stringify({ mode, scenario: scenarioStr, docType, input, output, ...(memberLink ? { memberLink } : {}) }),
       });
       const j = await r.json();
       if (j && j.ok && j.runId) setRunId(j.runId);
@@ -147,6 +156,8 @@ export default function AppropriatenessClient() {
   const [pwSources, setPwSources] = useState<Source[]>([]);
   const [pwSkeletonTraceId, setPwSkeletonTraceId] = useState<string | undefined>();
   const [pwEnrichTraceId, setPwEnrichTraceId] = useState<string | undefined>();
+  // Right Care × ClinicalState Slice 1 — additive panels (absent unless CLINICAL_STATE_UI=1).
+  const [pwClinicalState, setPwClinicalState] = useState<ClinicalStateUiView | null>(null);
 
   function patientBody() {
     return { age: age ? Number(age) : undefined, sex: sex || undefined };
@@ -160,6 +171,7 @@ export default function AppropriatenessClient() {
     if (s.length < 3) { setPwError('Enter a clinical scenario.'); return; }
     setPwLoading(true); setPwEnriching(false); setPwError(null);
     setPwSkeleton(null); setPwEnrichment(null); setPwSources([]); setPwSkeletonTraceId(undefined); setPwEnrichTraceId(undefined);
+    setPwClinicalState(null);
     setTraces([]); setTotalMs(undefined); setRunId(null);
     try {
       const proposedActions = parseOrders();
@@ -173,7 +185,7 @@ export default function AppropriatenessClient() {
       const sr = await fetch('/api/pathway/skeleton', {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(base),
       });
-      const sj = (await sr.json()) as { ok: boolean; skeleton: PathwaySkeleton | null; traceId?: string; error?: string };
+      const sj = (await sr.json()) as { ok: boolean; skeleton: PathwaySkeleton | null; traceId?: string; clinicalState?: ClinicalStateUiView; error?: string };
       if (!sr.ok || !sj.ok) throw new Error(sj.error || `request failed (${sr.status})`);
       if (!sj.skeleton || sj.skeleton.stages.length === 0) {
         setPwSkeletonTraceId(sj.traceId);
@@ -181,6 +193,7 @@ export default function AppropriatenessClient() {
       }
       setPwSkeleton(sj.skeleton);
       setPwSkeletonTraceId(sj.traceId);
+      if (sj.clinicalState) setPwClinicalState(sj.clinicalState);
       setPwLoading(false);
       pushTrace('detecting', 'Care path ready');
 
@@ -258,6 +271,11 @@ export default function AppropriatenessClient() {
   const [caReport, setCaReport] = useState<AuditReport | null>(null);
   const [caExtractTraceId, setCaExtractTraceId] = useState<string | undefined>();
   const [caAnalyzeTraceId, setCaAnalyzeTraceId] = useState<string | undefined>();
+  // Right Care × ClinicalState Slice 1: the additive state panel (CLINICAL_STATE_UI=1) and the
+  // member linkage key from the extract route's identity-only pass (RECORD_AUDIT_LINK=1) — held
+  // apart from the de-identified case and forwarded only to save-run.
+  const [caClinicalState, setCaClinicalState] = useState<ClinicalStateUiView | null>(null);
+  const [caMemberLink, setCaMemberLink] = useState<MemberLink | null>(null);
 
   function onPickFile(file: File | null) {
     setCaError(null);
@@ -287,7 +305,9 @@ export default function AppropriatenessClient() {
     };
   }
 
-  async function analyzeExtracted(extracted: Record<string, unknown>) {
+  // memberLink is threaded explicitly because runAudit calls this right after setCaMemberLink —
+  // the closure would still see the previous render's value. Re-analyze passes the held state.
+  async function analyzeExtracted(extracted: Record<string, unknown>, memberLink: MemberLink | null = caMemberLink) {
     setCaAnalyzeLoading(true); setCaError(null); setRunId(null);
     try {
       const r = await fetch('/api/doc-audit/analyze', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ extracted }) });
@@ -296,10 +316,11 @@ export default function AppropriatenessClient() {
       await consumeNdjson(r, (ev) => {
         if (ev.type === 'progress') pushTrace(ev.stage, ev.msg, ev.ms);
         else if (ev.type === 'result') {
-          const d = ev.data as { ok: boolean; report: AuditReport | null; traceId?: string; error?: string };
+          const d = ev.data as { ok: boolean; report: AuditReport | null; traceId?: string; clinicalState?: ClinicalStateUiView; error?: string };
           if (d && d.ok && d.report) {
             setCaReport(d.report); setCaAnalyzeTraceId(d.traceId); got = true;
-            saveRunRecord('audit', null, String(extracted.docType ?? ''), extracted, { report: d.report, extracted });
+            if (d.clinicalState) setCaClinicalState(d.clinicalState);
+            saveRunRecord('audit', null, String(extracted.docType ?? ''), extracted, { report: d.report, extracted }, memberLink);
           } else { setCaAnalyzeTraceId(d?.traceId); setCaError(d?.error || 'analysis failed'); }
         } else if (ev.type === 'done') { setTotalMs(ev.ms); pushTrace('done', 'Pipeline complete', ev.ms, true); }
         else if (ev.type === 'error') setCaError(ev.message);
@@ -316,6 +337,7 @@ export default function AppropriatenessClient() {
     if (!caPendingFile) { setCaError('Choose a document to upload.'); return; }
     setCaExtractLoading(true); setCaError(null); setCaReport(null); setCaEdit(null);
     setCaExtractTraceId(undefined); setCaAnalyzeTraceId(undefined);
+    setCaClinicalState(null); setCaMemberLink(null);
     setTraces([]); setTotalMs(undefined);
     pushTrace('reading', 'Reading the document…');
     try {
@@ -326,6 +348,8 @@ export default function AppropriatenessClient() {
       const j = await r.json();
       setCaExtractTraceId(j.traceId);
       if (!r.ok || !j.ok || !j.extracted) throw new Error(j.error || `could not read the document (${r.status})`);
+      const link = (j.memberLink ?? null) as MemberLink | null;
+      setCaMemberLink(link);
       const ex = j.extracted as ExtractedCase;
       const edit: CaEdit = {
         docType: caDocType, detectedDocType: ex.detectedDocType, confidence: ex.confidence,
@@ -339,7 +363,7 @@ export default function AppropriatenessClient() {
       setCaEdit(edit);
       setCaExtractLoading(false);
       pushTrace('extracting', 'Document read');
-      await analyzeExtracted(editToExtracted(edit));
+      await analyzeExtracted(editToExtracted(edit), link);
     } catch (e) {
       setCaError((e as Error).message);
     } finally {
@@ -535,6 +559,8 @@ export default function AppropriatenessClient() {
               <Loader2 className="h-4 w-4 animate-spin" /> Auditing the case against guidance and NABH standards…
             </div>
           )}
+          {/* Right Care × ClinicalState Slice 1 — additive panel; absent unless CLINICAL_STATE_UI=1. */}
+          {caClinicalState && <div className="mb-4"><ClinicalStatePanel state={caClinicalState} /></div>}
           {caReport && <CaseAuditReport report={caReport} extractTraceId={caExtractTraceId} analyzeTraceId={caAnalyzeTraceId} />}
           {caReport && (
             <div className="flex items-center justify-end">
@@ -560,6 +586,11 @@ export default function AppropriatenessClient() {
         <div className="mt-4">
           <TracePanel events={traces} totalMs={totalMs} surface="appropriateness-pathway" />
         </div>
+      )}
+
+      {/* Right Care × ClinicalState Slice 1 — additive panel; absent unless CLINICAL_STATE_UI=1. */}
+      {mode === 'pathway' && pwClinicalState && (
+        <div className="mt-4"><ClinicalStatePanel state={pwClinicalState} /></div>
       )}
 
       {mode === 'pathway' && pwSkeleton && (
@@ -593,6 +624,8 @@ export default function AppropriatenessClient() {
 
       {mode === 'check' && result && (
         <div className="mt-5 space-y-5">
+          {/* Right Care × ClinicalState Slice 1 — additive panel; absent unless CLINICAL_STATE_UI=1. */}
+          {result.clinicalState && <ClinicalStatePanel state={result.clinicalState} />}
           <div className="flex items-center justify-end">
             <button type="button" disabled={dlBusy}
               onClick={() => downloadExcel('check', { valueAnalysis: result.valueAnalysis, valueSources: result.valueSources, flags: result.flags, candidates: result.candidates, considered: result.considered }, scenario)}

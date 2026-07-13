@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { extractCase } from '@/lib/doc-audit';
+import { extractCase, extractMemberIdentity } from '@/lib/doc-audit';
 import { normDocType, type DocType } from '@/lib/doc-audit-core';
 import { SUPPORTED_DOC_MIME } from '@/lib/gemini-multimodal';
+import { recordAuditLinkEnabled, type MemberLink } from '@/lib/record-audit-link-store';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -41,11 +42,21 @@ export async function POST(req: NextRequest) {
   const bytes = Math.floor((base64.length * 3) / 4);
 
   try {
-    const { extracted, traceId } = await extractCase({ base64, mime, docTypeHint, context, bytes });
+    // Right Care × ClinicalState Slice 1, Part C — member linkage. The identity-only pass runs
+    // IN PARALLEL with the de-identified content read, only when BOTH flags are on
+    // (RIGHT_CARE_CLINICAL_STATE + RECORD_AUDIT_LINK). Its sole output is the linkage key
+    // {uhid?, mrn?, name?, dob?}, returned as a SEPARATE response field the client forwards to
+    // save-run — it never enters ExtractedCase, and it is never traced. Soft-fails to null.
+    const [{ extracted, traceId }, memberLink] = await Promise.all([
+      extractCase({ base64, mime, docTypeHint, context, bytes }),
+      recordAuditLinkEnabled()
+        ? extractMemberIdentity({ base64, mime })
+        : Promise.resolve<MemberLink | null>(null),
+    ]);
     if (!extracted) {
       return NextResponse.json({ ok: false, error: 'could not read the document — try a clearer scan or a different file', traceId }, { status: 200 });
     }
-    return NextResponse.json({ ok: true, extracted, traceId });
+    return NextResponse.json({ ok: true, extracted, traceId, ...(memberLink ? { memberLink } : {}) });
   } catch (e) {
     return NextResponse.json({ ok: false, error: String((e as Error).message) }, { status: 500 });
   }

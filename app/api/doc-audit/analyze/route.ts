@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { analyzeCase } from '@/lib/doc-audit';
 import { normDocType, parseStatusList, normAdminFacts, parseAftercare, type DocType, type ExtractedCase } from '@/lib/doc-audit-core';
 import { makeNdjsonStream, ndjsonHeaders, type Stage } from '@/lib/stream';
+import { rightCareStateEnabled } from '@/lib/right-care-state';
+import { extractedCaseToState } from '@/lib/clinical-state/to-audit-family';
+import { clinicalStateResultField } from '@/lib/clinical-state/ui-view';
+import { stateCounts, type ClinicalState } from '@/lib/clinical-state/schema';
+import { logEvent } from '@/lib/trace';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -76,10 +81,29 @@ export async function POST(req: NextRequest) {
         forceOllama: body.providerOverride === 'ollama',   // lab probe: analyze + prognosis on the free mini
         onProgress: (stage, msg) => emit({ type: 'progress', stage: stage as Stage, msg, ms: Date.now() - t0 }),
       });
+
+      // Right Care × ClinicalState Slice 1: adapt the ALREADY-EXTRACTED, de-identified case to
+      // a ClinicalState (no new extraction pass). Fail-open + inert with the flag off. Trace
+      // carries COUNTS ONLY — the doc-audit trace's cardinal redaction rule (never the extracted
+      // case) outranks the DDx pattern of logging the full state; the state itself persists in
+      // appropriateness_runs.clinical_state instead (Part C).
+      let state: ClinicalState | null = null;
+      if (rightCareStateEnabled()) {
+        try {
+          state = extractedCaseToState(extracted);
+          if (traceId) {
+            await logEvent(traceId, 'clinical_state_extracted', null, { ok: true, counts: stateCounts(state) }).catch(() => {});
+          }
+        } catch { state = null; }
+      }
+
       if (!report) {
         emit({ type: 'result', data: { ok: false, error: 'analysis could not be completed — please retry', traceId } });
       } else {
-        emit({ type: 'result', data: { ok: true, report, traceId } });
+        emit({ type: 'result', data: {
+          ok: true, report, traceId,
+          ...clinicalStateResultField(state, 0, process.env.CLINICAL_STATE_UI === '1'),
+        } });
       }
       emit({ type: 'done', ms: Date.now() - t0 });
     } catch (err) {

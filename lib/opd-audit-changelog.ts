@@ -23,6 +23,17 @@ export interface EngineChange {
 export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
     engine: null, date: '2026-07-13', scoring: false,
+    plain: 'Right Care now builds a structured clinical picture for every check, pathway, and record audit — and saves audited records for later linking to a member\'s history',
+    title: 'Right Care × ClinicalState Slice 1 (not OPD audit) — construct · surface · persist across Order check / Care pathway / Record audit; advisory plane, additive + fail-open, dark behind RIGHT_CARE_CLINICAL_STATE',
+    points: [
+      'CONSTRUCT (DDx Phase-1a model): each mode builds a ClinicalState (clinical-state/1.2) from the PROVIDED input only — Order check + Care pathway via the pure deterministicExtract on surface \'appropriateness\' (optional CLINICAL_STATE_LLM span-verified enrichment on the mode\'s existing trace), Record audit by adapting the already-extracted de-identified case via extractedCaseToState (no new extraction pass). No member identity in any state; fail-open — a construction error leaves the mode\'s output unchanged; the state feeds NOTHING back into reasoning (grounding is Slice 2, parked behind a golden A/B per mode).',
+      'SURFACE + PERSIST: the DDx ClinicalStatePanel moved verbatim to components/ClinicalStatePanel.tsx and renders in all three modes behind CLINICAL_STATE_UI (additive response field; off → byte-identical payload). Migration 0011: appropriateness_runs grows nullable clinical_state/clinical_state_version — save-run reconstructs the state SERVER-SIDE from the run\'s own de-identified input (never trusts a client blob); the doc-audit trace keeps its cardinal redaction rule (counts only, never the state).',
+      'MEMBER LINKAGE (Record audit only, double-gated RECORD_AUDIT_LINK): a dedicated identity-ONLY document pass (untraced, separate from the de-identified content read) captures {uhid, mrn, name, dob} for linkage, stored in the new physically separate record_audit_member_links table (run_id FK, resolved_individual_uid NULL until the downstream identity bridge) — identity lives alongside, never inside, the clinical record; ExtractedCase/AuditReport/ClinicalState de-identification unchanged.',
+    ],
+    why: 'The Surface union declared \'appropriateness\'/\'doc_audit\' from day one but Right Care never constructed a state, so its outputs couldn\'t be compared, surfaced, or linked like every other surface\'s. Right Care × ClinicalState PRD (V, 13 Jul 2026): construct-from-input on the DDx model, member identity only at Record audit and only from the document, persisted with a separated linkage key.',
+  },
+  {
+    engine: null, date: '2026-07-13', scoring: false,
     plain: 'Every diagnosis code now shows its medical name — powered by the full 98k-code ICD dictionary instead of a 100-code list',
     title: 'ICD Master Slice 1 — labels from the source of truth (icd-master/1.0 snapshot; display + LLM-digest label quality only)',
     points: [

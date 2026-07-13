@@ -3,6 +3,12 @@ import { matchLowValueCare, type MatchInput } from '@/lib/lvc';
 import { analyzeValue } from '@/lib/lvc-value';
 import type { Region } from '@/lib/lvc-core';
 import { makeNdjsonStream, ndjsonHeaders, type Stage } from '@/lib/stream';
+import { rightCareStateEnabled, buildRightCareState, rightCareExtractInput } from '@/lib/right-care-state';
+import { clinicalStateResultField } from '@/lib/clinical-state/ui-view';
+import { stateCounts } from '@/lib/clinical-state/schema';
+import { logEvent, tracedChat } from '@/lib/trace';
+import { geminiUtilityModel, TEXT_MODEL } from '@/lib/llm';
+import type { ChatFn } from '@/lib/clinical-state/extract';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300; // Pro applicability judge over the candidate pool + value audit loop
@@ -71,6 +77,36 @@ export async function POST(req: NextRequest) {
           onProgress: (stage, msg) => emit({ type: 'progress', stage: stage as Stage, msg, ms: Date.now() - t0 }),
         }),
       ]);
+
+      // Right Care × ClinicalState Slice 1 (mirrors DDx Phase-1a): construct the state from
+      // the PROVIDED input alongside the pipeline — it feeds nothing (the check above ran on
+      // the raw input) and blocks nothing (fail-open; flags off → this whole block is inert
+      // and the result payload is byte-identical). Traced on the mode's existing value trace.
+      let built: Awaited<ReturnType<typeof buildRightCareState>> = null;
+      if (rightCareStateEnabled()) {
+        try {
+          const chat: ChatFn | undefined = value.traceId
+            ? async (system, user) => {
+                const r = await tracedChat(value.traceId!, 'clinical_state_normalise', {
+                  model: TEXT_MODEL,
+                  messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+                  temperature: 0.1,
+                  max_tokens: 900,
+                  ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
+                }, { gemini: geminiUtilityModel() });
+                return r.choices?.[0]?.message?.content ?? '';
+              }
+            : undefined;
+          built = await buildRightCareState(
+            rightCareExtractInput('check', { scenario, proposedActions, age: patient.age, sex: patient.sex }), chat);
+          if (built && value.traceId) {
+            await logEvent(value.traceId, 'clinical_state_extracted', null, {
+              ok: true, counts: stateCounts(built.state), unstable: built.state.instability.unstable, state: built.state,
+            }).catch(() => {});
+          }
+        } catch { built = null; }
+      }
+
       emit({
         type: 'result',
         data: {
@@ -79,6 +115,7 @@ export async function POST(req: NextRequest) {
           valueAnalysis: value.valueAnalysis,
           valueSources: value.sources,
           valueTraceId: value.traceId,
+          ...clinicalStateResultField(built?.state, built?.rejectedSpans ?? 0, process.env.CLINICAL_STATE_UI === '1'),
         },
       });
       emit({ type: 'done', ms: Date.now() - t0 });
