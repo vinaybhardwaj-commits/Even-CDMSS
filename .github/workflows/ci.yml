@@ -25,7 +25,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 22 (not the ddx-benchmark idiom's 20): `node --test` only glob-expands its
+          # "lib/**/__tests__/*.test.ts" pattern from Node 21+, and 22 LTS matches the
+          # local dev environment (v22.20). Deviation from the PRD's "node-version 20" —
+          # flagged in the Slice 1 build report.
+          node-version: 22
           cache: npm
       - run: npm ci
       - name: architecture boundaries
