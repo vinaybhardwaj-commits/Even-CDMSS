@@ -30,6 +30,12 @@ jobs:
       - run: npm ci
       - name: architecture boundaries
         run: npm run architecture:check
+      # next-env.d.ts is gitignored (repo policy); `next dev/build` regenerates it locally.
+      # Without it, tsc lacks Next's type-reference chain (styled-jsx's `jsx` prop, route types)
+      # and reports errors that don't exist in any real environment — regenerate it here.
+      - name: regenerate next type refs
+        run: |
+          printf '/// <reference types="next" />\n/// <reference types="next/image-types/global" />\n' > next-env.d.ts
       - name: typecheck (full repo)
         run: npm run typecheck
       - name: tests
