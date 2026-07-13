@@ -4,7 +4,7 @@ import { isCareUnlocked } from '@/lib/care-cookie';
 import { OPD_ENGINE_VERSION } from '@/lib/opd-note-audit-core';
 import {
   OPD_DEFAULT_WEIGHTS, PDQI9_ATTRS, PDQI9_LABEL,
-  SEVERITY, OPD_NOTE_CAVEAT, bandFor, type Band, type OpdDomain, type NetValue,
+  SEVERITY, bandFor, type Band, type OpdDomain, type NetValue,
 } from '@/lib/opd-note-score-core';
 import { DOSE_LIMITS_VERSION } from '@/lib/dose-limits';
 import { OPD_AUDIT_CHANGELOG, type EngineChange } from '@/lib/opd-audit-changelog';
@@ -482,9 +482,6 @@ export default async function HowItWorksPage() {
           </section>
 
           <p className="note" style={{ marginTop: 22 }}>
-            Posture: advisory, encounter-level — never a clinician scorecard. {OPD_NOTE_CAVEAT}
-          </p>
-          <p className="note" style={{ marginTop: 10 }}>
             Every number on this page is imported from the live scoring code, so it cannot drift from what the audit
             actually does. <Link href="/admin/opd-audit" className="inl">Back to the OPD Audit dashboard</Link>
           </p>
