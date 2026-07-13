@@ -187,7 +187,12 @@ export function normFieldStatus(v: unknown): FieldStatus {
 
 export function normNetValue(v: unknown): NetValue {
   const s = String(v ?? '').toLowerCase().trim().replace(/\s+/g, '-');
-  return NET_VALUES.has(s as NetValue) ? (s as NetValue) : 'uncertain';
+  if (NET_VALUES.has(s as NetValue)) return s as NetValue;
+  // Right-Care fixes PRD Fix A: the fallback stays (contract unchanged) but is now VISIBLE —
+  // an unparseable verdict is a parse hiccup, and it must not silently masquerade as the
+  // clinical judgment 'uncertain'.
+  console.warn(`[doc-audit-core] normNetValue: unparseable verdict ${JSON.stringify(v)} → 'uncertain' (parse fallback, not a clinical judgment)`);
+  return 'uncertain';
 }
 
 function asStr(v: unknown): string { return typeof v === 'string' ? v.trim() : ''; }
@@ -318,13 +323,14 @@ export const ANALYZE_SYSTEM = `You are a clinical quality auditor for a NABH-acc
 Do three things:
 1. APPROPRIATENESS / LOW-VALUE — review the investigations, treatments, drugs, and procedure for over-use / low-value / questionable decisions for this case. Consider the VALUE OF CARE INTENSITY too, using the stay facts: an inpatient admission or a multi-day length of stay for a procedure usually done as day-care, or a prolonged course of IV antibiotics for a clean/low-risk procedure, are over-use signals worth a finding. Each finding: subject, verdict (high-value | context-dependent | low-value | uncertain), confidence, rationale, the single concrete "order" name if it maps to an orderable test/procedure/drug (so a tariff can be attached), a "domain" tag (see below), and "citation_ids": the [n] of the excerpts that actually support this finding's evidence. Ground clinical claims in the EXCERPTS — put grounded points (with citations) in "evidence" and your own figures/inferences or general-knowledge claims the excerpts don't cover in "estimates" (every figure marked "est."). Do NOT cite an excerpt that doesn't support the claim. Do NOT flag the absence of a step the document may simply not mention as if it were a care failure — frame uncertain reads as documentation gaps, not errors. Flag DIAGNOSTIC ANCHORING and base-rate neglect: a diagnosis or confirmatory test that rests mainly on a low-utility / low-specificity result (e.g. a positive Widal test) against a low pre-test probability, when the dominant clinical syndrome points elsewhere, is a low-value / over-use signal worth a finding.
    DOMAIN tag — classify each finding into the value axis it concerns: "appropriateness" (right test/treatment/procedure choice), "efficiency" (right care intensity: setting, length of stay, IV-vs-oral route, treatment duration), "safety" (a safety hazard or antimicrobial-stewardship concern), or "patient_centred" (continuity / instructions / shared decision). Default to "appropriateness" if unsure.
+   VERDICT DISCIPLINE — "verdict" MUST be exactly one of high-value | context-dependent | low-value | uncertain; never any other word (not "caveat", "safety", "informational" — a safety concern is a finding with domain "safety" and one of the four verdicts). Use "uncertain" ONLY for genuine clinical equipoise where the evidence is mixed FOR THIS case. Standard, guideline-concordant care (routine safety labs, standard prophylaxis/supplementation, standard peri-operative steps) is "high-value" — state it confidently, do not hedge to "uncertain". An advisory caveat about care that was itself appropriate is "high-value" (or omit it); a counselling / monitoring / documentation reminder that does not assess the value of an order belongs in "suggestions", NOT in "findings". If a finding isn't worth raising, omit it rather than marking it "uncertain".
 2. IDEALISED COURSE — a concise narrative of how the idealised hospital course / operation / OPD encounter should have gone for this case, then a DIFF: items "done — not needed" (kind:"overuse") and "ideal — but missing" (kind:"gap").
 3. SUGGESTIONS — prioritised, concrete improvements (compliance + safety + value), priority 1 = highest.
 
 Rules: advisory only; never phrase as blocking/denying care or blaming the clinician. Separate cited EVIDENCE from ESTIMATES. Do not invent citations or identifiers.
 
 Return ONLY JSON, no prose:
-{"findings":[{"subject":"…","verdict":"…","confidence":0.0-1.0,"rationale":"…","order":"… (optional)","domain":"appropriateness|efficiency|safety|patient_centred","evidence":["…"],"estimates":["…"],"citation_ids":[1,2]}],"idealised_summary":"…","diff":[{"kind":"overuse|gap","text":"…","ref":"… (optional)"}],"suggestions":[{"priority":1,"text":"…","ref":"… (optional)"}]}`;
+{"findings":[{"subject":"…","verdict":"high-value|context-dependent|low-value|uncertain","confidence":0.0-1.0,"rationale":"…","order":"… (optional)","domain":"appropriateness|efficiency|safety|patient_centred","evidence":["…"],"estimates":["…"],"citation_ids":[1,2]}],"idealised_summary":"…","diff":[{"kind":"overuse|gap","text":"…","ref":"… (optional)"}],"suggestions":[{"priority":1,"text":"…","ref":"… (optional)"}]}`;
 
 // Slice 2 (Right Care × ClinicalState): `clinicalStateText` is the pre-composed PATIENT
 // PICTURE block. OPTIONAL and additive — omitted/empty → byte-identical to the ungrounded

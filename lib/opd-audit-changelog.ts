@@ -22,6 +22,17 @@ export interface EngineChange {
 
 export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
+    engine: null, date: '2026-07-14', scoring: false,
+    plain: 'Two Right Care fixes: record audits stop hedging plainly-correct care as "uncertain", and Order check now catches unnecessary brain/carotid imaging for a simple faint',
+    title: 'Right Care fixes (not OPD audit) — audit "uncertain"-verdict discipline (prompt + visible parse fallback) + the syncope-imaging catalog gap (cwus-aan-001, cwus-ahaacchrs-001); gold-anchored, live (no flag)',
+    points: [
+      'Fix A (Record audit): ANALYZE_SYSTEM gains VERDICT DISCIPLINE — verdict MUST be one of the four enum values (the live gate caught the model emitting "caveat"/"safety" as verdicts); "uncertain" is ONLY for genuine equipoise; standard guideline-concordant care is "high-value", stated confidently; counselling/monitoring reminders belong in suggestions, not findings; the enum is pinned in the JSON schema line. normNetValue keeps its fallback (contract unchanged) but now console.warns when it fires, so a parse hiccup can never silently masquerade as a clinical judgment. Gold gate: A03 (normal delivery — the Slice-2 A/B defect case) zero "uncertain" across 8 re-rolls; A01/A02 low-value catches intact in every roll; A04 residual = ~1-in-3 rolls the model still invents an advisory finding with a non-enum verdict (visible in the new log) — flagged for V (verdict-level retry or a ratified fallback policy would close it).',
+      'Fix B (Order check): the C04 miss was a CATALOG hole, not recall code — lvc_recommendations had no syncope-imaging items. Added two curated recs via the established seed path (data/choosing-wisely-seed.json → admin seed loader, upserted + embedded): cwus-aan-001 (AAN Choosing Wisely — no carotid imaging for simple syncope without neurologic symptoms) and cwus-ahaacchrs-001 (2017 ACC/AHA/HRS guideline-derived — no head CT for syncope with normal neuro exam and no head trauma; DOI 10.1016/j.jacc.2017.03.003). Wording/attribution per the kickoff drafts, flagged for V ratification. Gold gate: C04 now flags exactly the two new recs ("does_not_apply" judged correctly off the stated negatives elsewhere); the new ids appear in NO other check bank case; C02 (red-flag MRI sentinel) still fires nothing.',
+      'Systematic catalog-coverage audit explicitly parked as its own program (Order check is catalog-bound; syncope was one confirmed hole).',
+    ],
+    why: 'The Slice-2 golden A/B returned NO_SIGNAL on grounding but surfaced these two grounding-independent defects with known-correct answers — so they ship live with gold-anchored verification (target cases reach the known-correct output + regression guards), not a pairwise A/B. Right-Care fixes PRD (V, 13 Jul 2026).',
+  },
+  {
     engine: null, date: '2026-07-13', scoring: false,
     plain: 'Right Care can now reason FROM the structured clinical picture it builds — shipped dark behind a flag, gated by a per-mode golden A/B and V ratification before anything flips on',
     title: 'Right Care × ClinicalState Slice 2 (not OPD audit) — ground the reasoning in the state; ships flag-OFF behind RIGHT_CARE_CLINICAL_STATE_GROUND; golden A/B harness (right-care-eval/1.0) gates the flip',
