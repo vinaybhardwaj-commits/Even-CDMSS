@@ -645,6 +645,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/admin",
+    "to": "architecture",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
     "to": "care-cookie",
     "kind": "value"
   },

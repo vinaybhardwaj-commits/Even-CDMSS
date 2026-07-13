@@ -26,7 +26,8 @@ export type Lifecycle = 'implemented' | 'integrated' | 'validated' | 'released';
 
 export interface ModuleManifest {
   id: string;                  // stable slug, e.g. 'member-state'
-  title: string;               // plain-language name
+  title: string;               // the PLAIN name (v2 mockup card copy) — what /admin/architecture renders
+  blurb: string;               // one-line plain description (v2 mockup card copy) — ditto
   plane: Plane;
   paths: string[];             // globs the module owns (matched by the coverage rule)
   owner?: string;              // engineering owner — unassigned in Stage 1
@@ -41,7 +42,8 @@ export interface ModuleManifest {
 export const MODULE_MANIFESTS: ModuleManifest[] = [
   {
     id: 'clinical-state',
-    title: 'Clinical state (per-encounter patient model)',
+    title: 'Reading a single visit',
+    blurb: 'Turns one consultation note into a structured picture — the complaint, the diagnosis, the medicines prescribed.',
     plane: 'pure-core',
     paths: ['lib/clinical-state/**'],
     lifecycle: 'integrated', // live consumers (DDx surface, care pages); audit-shadow adoption staged behind a default-off flag
@@ -49,7 +51,8 @@ export const MODULE_MANIFESTS: ModuleManifest[] = [
   },
   {
     id: 'member-state',
-    title: 'Member state (Plane-1 longitudinal spine)',
+    title: 'The patient’s record over time',
+    blurb: 'Pulls together everything known about a patient across their visits — problems, medicines, labs — as it stood on any given day.',
     plane: 'spine',
     paths: ['lib/member-state/**'],
     lifecycle: 'integrated', // live on care surfaces + CCB; frozen fidelity baseline exists (member-bank/1.0), staged rollout continues
@@ -57,14 +60,19 @@ export const MODULE_MANIFESTS: ModuleManifest[] = [
   },
   {
     id: 'opd-note-score-core',
-    title: 'OPD note score arithmetic',
+    title: 'The scoring engine',
+    blurb: 'Turns the quality findings on a note into the 0–100 grade. This is the one and only place the score is worked out.',
     plane: 'score-arithmetic',
     paths: ['lib/opd-note-score-core.ts'],
     lifecycle: 'released', // in production at opd-note-audit/0.81.8, drives the live dashboards
+    // the score arithmetic ships under the audit engine's version — its changes are the
+    // `scoring: true` entries in OPD_AUDIT_CHANGELOG, stamped with OPD_ENGINE_VERSION
+    versionConst: 'OPD_ENGINE_VERSION',
   },
   {
     id: 'opd-longitudinal',
-    title: 'OPD longitudinal advisory lane',
+    title: 'History-based observations',
+    blurb: 'Looks across a patient’s past visits for things like a repeated test or a medicine that needs reconciling. Shown for information only — it never changes the score.',
     plane: 'advisory',
     paths: ['lib/opd-longitudinal*'],
     lifecycle: 'integrated', // wired post-INSERT + admin surfaces; 30-day backfill dark behind OPD_LONGITUDINAL_ENABLED
@@ -72,21 +80,24 @@ export const MODULE_MANIFESTS: ModuleManifest[] = [
   },
   {
     id: 'opd-triage-core',
-    title: 'OPD triage lane primitives (label-only)',
+    title: 'The review-queue helper',
+    blurb: 'Sorts and labels notes for the care-manager review queue — for example, surfacing patients with the most history first. Informational only.',
     plane: 'advisory',
     paths: ['lib/opd-triage-core.ts'],
     lifecycle: 'integrated', // consumed by the live triage queue/decide routes
   },
   {
     id: 'as-of-core',
-    title: 'As-of temporal cut (pure leaf primitive)',
+    title: 'The “as of this date” helper',
+    blurb: 'A small building block that reconstructs what was known about a patient on a particular day — so the record is always read as it stood at the time of the visit.',
     plane: 'pure-core',
     paths: ['lib/as-of-core.ts'],
     lifecycle: 'integrated', // relocated in Slice 1 Part A; in the live member-state path
   },
   {
     id: 'architecture',
-    title: 'Architecture governance data (manifests + generated map)',
+    title: 'This map’s own tooling',
+    blurb: 'The behind-the-scenes tooling that keeps this very page accurate and up to date on every change.',
     plane: 'infra',
     paths: ['lib/architecture/**'],
     lifecycle: 'integrated', // consumed by architecture:check and the CI staleness gate from day one

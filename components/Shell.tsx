@@ -5,7 +5,7 @@ import { useState, useEffect } from 'react';
 import {
   MessagesSquare, Network, Pill, Calculator, ClipboardCheck,
   ClipboardList, BookOpen, GraduationCap, Settings, Menu, X, ChevronLeft, Activity, Lightbulb, BarChart3,
-  PhoneCall, Filter, HardDrive, FlaskConical,
+  PhoneCall, Filter, HardDrive, FlaskConical, Map,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -63,6 +63,14 @@ const ADMIN: NavGroup[] = [
       { href: '/admin/ccb-funnel', label: 'Care Brief Funnel', Icon: Filter },
       { href: '/admin/learning', label: 'Learning loop', Icon: Lightbulb },
       { href: '/admin/literature', label: 'Literature', Icon: BookOpen },
+    ],
+  },
+  // The zoomed-out view of the whole system — its own quiet group at the foot of the
+  // admin nav, below the day-to-day tools (System Map nav-placement mockup, 13 Jul 2026).
+  {
+    heading: 'Platform',
+    items: [
+      { href: '/admin/architecture', label: 'System Map', Icon: Map },
     ],
   },
 ];
