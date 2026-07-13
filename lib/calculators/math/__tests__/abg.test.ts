@@ -56,10 +56,7 @@ test('ABG: albumin correction applied below 4.0', () => {
   assert.equal(r.anion_gap.state, 'high');
 });
 
-// QUARANTINED (Architecture Governance Slice 1, 13 Jul 2026): pre-existing deterministic failure —
-// the implementation bands P/F 200 as 'mild', this test expects 'moderate' (Berlin boundary dispute).
-// Adjudicating implementation-vs-expectation is a CLINICAL call owed to V, not a CI call. Un-skip after ruling.
-test('ABG: P/F ratio Berlin ARDS bands', { skip: 'quarantined pending V ruling on the Berlin P/F=200 boundary (see comment)' }, () => {
+test('ABG: P/F ratio Berlin ARDS bands', () => {
   const moderate = interpretAbg({ pH: 7.40, paco2: 40, hco3: 24, pao2: 100, fio2: 0.5 });
   assert.equal(moderate.oxygenation.pf_ratio, 200);
   assert.equal(moderate.oxygenation.pf_band, 'moderate');

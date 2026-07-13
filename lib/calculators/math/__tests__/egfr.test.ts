@@ -25,10 +25,9 @@ for (const c of CKDEPI_CASES) {
 
 // Cockcroft-Gault spot checks.
 const CG_CASES: { name: string; inputs: Parameters<typeof cockcroftGault>[0]; expectRange: [number, number]; skip?: string }[] = [
-  // QUARANTINED (Architecture Governance Slice 1, 13 Jul 2026): pre-existing deterministic failure —
-  // the computed CG for this fixture falls outside [115,130] (range-vs-implementation dispute).
-  // A clinical call owed to V, not a CI call. Drop `skip` after ruling.
-  { name: 'young healthy F, SCr 0.7, 60 kg',   inputs: { age: 32, sex: 'F' as const, scr_mg_dl: 0.7, weight_kg: 60 }, expectRange: [115, 130], skip: 'quarantined pending V ruling on the CG fixture range (see comment)' },
+  // Fixture corrected 13 Jul 2026 (V ruling): the old [115,130] range forgot the ×0.85 female
+  // factor — standard CG for this case = 109.3 mL/min. The implementation was always correct.
+  { name: 'young healthy F, SCr 0.7, 60 kg',   inputs: { age: 32, sex: 'F' as const, scr_mg_dl: 0.7, weight_kg: 60 }, expectRange: [105, 115] },
   { name: 'older M, SCr 1.8, 78 kg',           inputs: { age: 68, sex: 'M' as const, scr_mg_dl: 1.8, weight_kg: 78 }, expectRange: [40, 50] },
   { name: 'elderly F low weight, SCr 4.2, 52', inputs: { age: 75, sex: 'F' as const, scr_mg_dl: 4.2, weight_kg: 52 }, expectRange: [8, 14] },
 ];

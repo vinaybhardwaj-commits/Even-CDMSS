@@ -2,11 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { interpretHyponatremia } from '../hyponatremia';
 
-// Classic SIADH (PRD §11)
-// QUARANTINED (Architecture Governance Slice 1, 13 Jul 2026): pre-existing deterministic failure —
-// implementation-vs-expectation dispute on this fixture (severity/ceiling). A clinical call owed
-// to V, not a CI call. Un-skip after ruling.
-test('Hyponatremia: classic SIADH (euvolemic, U-Na high, U-osm concentrated, on SSRI)', { skip: 'quarantined pending V ruling on the SIADH fixture (see comment)' }, () => {
+// Classic SIADH (PRD §11). Fixture corrected 13 Jul 2026 (V ruling): Na 128 is 'moderate' under
+// the biochemical classification (moderate = 125–129) — exactly what the implementation returns.
+test('Hyponatremia: classic SIADH (euvolemic, U-Na high, U-osm concentrated, on SSRI)', () => {
   const r = interpretHyponatremia({
     na: 128, serum_osm: 268, glucose: 105,
     urine_na: 45, urine_osm: 380, volume_status: 'euvolemic',
@@ -15,7 +13,7 @@ test('Hyponatremia: classic SIADH (euvolemic, U-Na high, U-osm concentrated, on 
   assert.equal(r.tonicity, 'hypotonic');
   assert.equal(r.pseudohyponatremia_flag, false);
   assert.equal(r.ods_risk, false);
-  assert.equal(r.severity_label, 'mild');
+  assert.equal(r.severity_label, 'moderate');
   assert.equal(r.correction_ceiling_24h_meq_l, 8);
 });
 

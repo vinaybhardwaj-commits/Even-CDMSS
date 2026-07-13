@@ -17,6 +17,10 @@ if these numbers don't move, governance gets **simplified**, not expanded.*
 - **CI enforcement:** `.github/workflows/ci.yml` — the repo's first general gate
   (architecture:check + typecheck + full test suite, all hard, on every push/PR to main).
 
+> **Quarantine resolution (13 Jul 2026, V ruling):** the 3 calculator quarantines shipped with
+> Slice 1 are resolved — ABG Berlin P/F boundary fixed in the *implementation* (inclusive-high);
+> Cockcroft-Gault and SIADH fixed in the *tests* (wrong fixtures). Suite runs 0-skipped.
+
 ## The two motivating incidents (the "before" examples)
 
 1. **The `applyAsOfCut` smudge** — the longitudinal spine quietly took a value import from the

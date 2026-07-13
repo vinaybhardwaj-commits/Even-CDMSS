@@ -233,8 +233,9 @@ function computeOxygenation(pao2?: number, fio2?: number, paco2?: number) {
 
   if (pao2 !== undefined && fio2 !== undefined && fio2 > 0) {
     pfRatio = Math.round(pao2 / fio2);
-    // Berlin ARDS thresholds:
-    pfBand = pfRatio >= 300 ? 'normal' : pfRatio >= 200 ? 'mild' : pfRatio >= 100 ? 'moderate' : 'severe';
+    // Berlin ARDS thresholds (inclusive-high boundaries: mild 200<P/F≤300, moderate 100<P/F≤200,
+    // severe ≤100 — V ruling 13 Jul 2026; only the two inner boundaries are strict-greater):
+    pfBand = pfRatio >= 300 ? 'normal' : pfRatio > 200 ? 'mild' : pfRatio > 100 ? 'moderate' : 'severe';
 
     if (paco2 !== undefined) {
       const pao2Alveolar = (fio2 * 713) - (paco2 / 0.8);
