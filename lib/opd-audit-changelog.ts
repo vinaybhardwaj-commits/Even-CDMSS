@@ -16,11 +16,14 @@ export interface EngineChange {
   title: string;
   points: string[];          // what changed, concretely
   why: string;               // the trigger — clinician feedback, mined prevalence, V ruling
+  plain?: string;            // plain-language headline for the in-product timeline/changelog
+                             // (clinician-readable); the detailed title/points/why sit below it.
 }
 
 export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
     engine: '0.81.8', date: '2026-07-12', scoring: true,
+    plain: 'Fixes 10 issues from Dr Zaki\'s review, adds low-value-care sub-types, sorts the note list by patients with the most history, and fills in 30 days of history',
     title: 'Dr Zaki 10-bug batch (first scoring change since 0.81.2) + LVC `other` sub-categorisation + frequent-flier list surfacing + 30-day longitudinal backfill',
     points: [
       'UNIFIED 6/7/9 (the biggest lever, ~172 notes re-rate upward): `unverified_brand` is now INFORMATIONAL (a formulary-coverage limitation on our side, not a prescribing error — the LLM routinely resolves the molecule); `incomplete_dosing` is EXEMPT for off-formulary cosmetics/supplements/unresolved-proprietary (a cosmetic name heuristic + the unresolved-line guard) so one unresolved line never stacks both findings — a RESOLVED drug missing its dose STILL scores. All in prescribingChecks (opd-note-audit-core).',
@@ -34,6 +37,7 @@ export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
     engine: null, date: '2026-07-12', scoring: false,
     title: 'PROMs 0.2a-2 (not OPD audit) — wired surgical-recovery tracker: detection (db13) · store (Neon) · scores→spine fold · PromsPanel, behind PROMS_ENABLED',
+    plain: 'Separate feature (patient-history record / questionnaires / differential-diagnosis) — logged here for the record; not an audit-engine change',
     points: [
       'DETECTION lib/proms/schedule.ts (fetchSurgicalSeries, wired, fail-safe): two independent db13 entry points merged member-keyed — surgery_cases booking (NULLIF empties; latest non-cancelled; every-cancelled → clean exit) + the plan-of-management surgical-recommendation flag join (jsonb .surgery_or_procedure.name) — then classifyFamily (regex v1.1) → archetypeFor → instrumentsDue over the FROZEN catalog/compiler. Post-op windows anchor on the kx_billing discharge date via kx_uhid, falling back to planned_surgery_date (Decision D). Every db13 query is INFERRED (no live DB in-build), FAIL-SAFE (error → null, panel hides, never a 500), and listed verbatim in the build report; surgery_cases + the flag join are MEASURED recipes, the kx_billing/kx_uhid discharge SHAPE is inferred (Cowork validates live).',
       'STORE lib/proms/store.ts (Neon, pattern-matched to care-call-store): prom_series (one active series/member) + prom_responses (immutable raw + server-computed score/scale/escalations + versions + adhoc_set_ref); migrateProms() additive+idempotent (run after deploy); savePromResponse scores SERVER-SIDE via scoreInstrument (never trusts the client). SPINE FOLD (Decision E): pure lib/proms/proms-evidence.ts promResponsesToEncounter → one care_call EncounterEvidence per administration day, each scored instrument a dated InvestigationPoint (analyte prom:<id>, reporter patient_via_care_manager, trust patient_reported); getMemberSnapshot folds them when PROMS_ENABLED — additive, mirrors the Care-Call write-back loop. buildMemberState + the FROZEN MemberState core + the MemberStateSnapshot shape are byte-identical (scores ride the existing investigation series).',
@@ -44,6 +48,7 @@ export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
     engine: null, date: '2026-07-12', scoring: false,
     title: 'MemberState Stage 1 Phase 2 (not OPD audit) — ratified fix member-reconcile/0.3 + FROZEN fidelity baseline (member-bank/1.0 + member-state-baseline/1.0)',
+    plain: 'Separate feature (patient-history record / questionnaires / differential-diagnosis) — logged here for the record; not an audit-engine change',
     points: [
       'member-reconcile/0.3 (the ONE V-ratified pre-freeze core edit, aggregate-core.ts): R1 — a versioned chronicity dictionary in deriveCourse so a CHRONIC concept re-documented across ≥2 encounters is `persistent` regardless of gap length (a yearly-documented chronic is persistent, not recurrent); episodic concepts keep present-gap-present ⇒ recurrent. R2 — a patient-reported `stopped` followed by a LATER fresh prescription keeps currentness `stopped` (a re-script never synthesizes taking) AND surfaces the re-prescription as a medication/temporal_conflict/review carrying both events + both provenances (for the Care-Call verify-loop), superseding the generic on/off status_conflict for that drug. MEMBER_RECONCILE_VERSION 0.2→0.3 (defined in aggregate-core; schema.ts frozen this phase, its RECONCILIATION_VERSION export superseded).',
       'FREEZE (no behaviour change): gold-seed.ts every case ratified:true, stamped member-bank/1.0; new baseline.ts = member-state-baseline/1.0 with the R4 floors — GATED false-merge=0 + conflict-recall=1.0; FLOORED ≥0.90 problem-status/course/med-currentness; HARD retention/provenance/trust-provenance=1.0, incorrect-resolution=0, invariants, reproducibility. The validate harness gains --baseline (exits 1 on any floor breach). Seed on the ratified core: ALL floors clear — course-accuracy 1.00, conflict-recall 1.00, worklist empty. This is the DDx-evaluator discipline applied to the patient record: freeze the test + thresholds; no consumer moves until it holds.',
@@ -54,6 +59,7 @@ export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
     engine: null, date: '2026-07-12', scoring: false,
     title: 'MemberState Stage 1 Phase 1 (not OPD audit) — validation infra (scoring core + gold seed + harness), frozen core UNTOUCHED, baseline UNFROZEN',
+    plain: 'Separate feature (patient-history record / questionnaires / differential-diagnosis) — logged here for the record; not an audit-engine change',
     points: [
       'New pure lib/member-state/validation/**: score-core.ts (member-eval/0.1) — a MECHANICAL, deterministic comparator (structural concept/status/enum/discrepancy comparison; no DB/llm/inference/thresholds; scoreCase twice → deep-equal) returning a per-case CaseScore + a Part-C aggregate; gold-seed.ts — 20 de-identified synthetic strata (the validation contract\'s 14 + 6 patient-reported/trust from clinical-state/1.2), each MemberEvidence + ExpectedLabel, class invariant|accuracy, shipped ratified:false (UNFROZEN — no baseline/floor file; that is Phase 2 after V ratifies). New scripts/member-state-validate.mjs — labelled-seed scoring (no DB, hard-fails on any invariant violation / retention<100% / trust-provenance<100% / incorrect-resolution>0) + the Stage-0 mechanical db13 shadow re-listing the three SQL strings VERBATIM (keep-in-sync note; member-state-shadow.mjs untouched). ~30 tests.',
       'Seed result on the frozen core (0148b76): all HARD gates hold — source-event / provenance / trust-provenance retention 100%, incorrect-resolution 0, invariant-violations 0, false-merge 0, conflict-recall 1.00 (incl. the allergy trust-conflict). Two RATIFICATION-WORKLIST items for V (accuracy, NOT failures): (1) course — a yearly-documented chronic scores `recurrent` under the frozen gap>180d heuristic where the stratum intends `persistent` (candidate core-fix vs label-correction, the classic measurement-artifact question); (2) stratum 19 [TBD] — after a patient-reported `stopped`, a later fresh prescription: the core keeps `stopped` (patient-reported wins); does a re-script reset currentness? V decides. Per contract §1.C, problem-status/course/med-currentness are ACCURACY metrics (scored, never gated); only the safety metrics gate.',
@@ -64,6 +70,7 @@ export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
     engine: null, date: '2026-07-12', scoring: false,
     title: 'ClinicalState 1.2 + MemberState 1.1 (not OPD audit) — patient-reported vocabulary + provenance trust axis + spine consumption, wired to nothing',
+    plain: 'Separate feature (patient-history record / questionnaires / differential-diagnosis) — logged here for the record; not an audit-engine change',
     points: [
       'clinical-state/1.1→1.2 (schema.ts, additive): Provenance gains OPTIONAL reporter (clinician|patient_via_care_manager|system|unknown) + trust (structured_db|clinician_documented|patient_reported|inferred) — every existing provenance still validates. New canonical patient-reported vocabulary (verbatim from the Care-Call PRD §2 so the CCB return channel IMPORTS rather than duplicates): ComplaintStatus + ComplaintStatusAssertion, FollowUpAction + FollowUpAssertion, StopReason + MedicationAssertion.stopReason. zod extended (two optional Provenance enums; two exported assertion validators). emptyClinicalState unchanged (these are assertion types consumed at the member-state layer).',
       'member-state/1.0→1.1, member-reconcile/0.1→0.2 (schema.ts + aggregate-core.ts, additive): EncounterEvidence.kind gains care_call and optional complaintStatuses[]/followUps[]; MemberStateSnapshot gains followUps[]. buildMemberState ADDS four trust-aware consumption rules — (1) a ComplaintStatusAssertion resolved contributes a documented_resolved problem occurrence (explicit resolution replacing the silence→uncertain guess; invariant 1 intact), improving/unchanged/worse→active; (2) trust-weighted medication currentness — the most-recent patient_reported occurrence overrides the prescription default, else the existing latest-wins fallback (neutral when no patient-reported evidence), currentness never synthesized to reported_taking; (3) allergy reported/denied clash stays a safety_critical status_conflict (unconditional, back-compat) now recording each occurrence trust; (4) FollowUpAssertions carried onto snapshot.followUps (deduped by id, date-sorted) with NO care-coordination/open-loop overlay (Plane 3, later). Fully deterministic; NEUTRAL — no patient-reported evidence → identical to member-state/1.0 output plus empty followUps.',
@@ -74,6 +81,7 @@ export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
     engine: null, date: '2026-07-12', scoring: false,
     title: 'MemberState Stage 0 (not OPD audit) — pure Plane-1 longitudinal aggregation core + read-only shadow, wired to nothing',
+    plain: 'Separate feature (patient-history record / questionnaires / differential-diagnosis) — logged here for the record; not an audit-engine change',
     points: [
       'New pure lib/member-state/** (member-state/1.0, normalization member-norm/0.1, reconciliation member-reconcile/0.1): schema.ts (MemberEvidence → MemberStateSnapshot: LongitudinalProblem/Medication/Allergy/Investigation + typed Discrepancy, zod, emptyMemberStateSnapshot); normalize-core.ts (a tiny CONSERVATIVE seed dictionary — exact/synonym only; broader/narrower NEVER auto-merged, e.g. diabetes ≠ type-2-diabetes, "rule out PE" ≠ PE; no hit → unresolved; matcher is a candidate signal only); aggregate-core.ts (buildMemberState — groups by normalized concept, derives problem status/course with the fact/inference split, reconciles allergies/meds/investigations, emits typed conflicts, never resolves); assemble-core.ts (already-fetched db13 individuals-prescriptions + labs rows → immutable identifier-free MemberEvidence, reuses from-prescription; fail-safe). Enforces the Stage-0/1 validation-contract invariants BY CONSTRUCTION: no resolution from silence, no cross-member merge, no concept merge without a versioned decision, total provenance, conflicts never discarded, reproducible (no Date.now/random — computedAt/asOf passed in), unresolved is valid data. ~38 unit tests over the 10 invariants + 14 strata (synthetic evidence) + normalize + real-shape db13 assemble fixtures.',
       'New read-only scripts/member-state-shadow.mjs (the audit-shadow precedent): reads a db13 member sample, assembles → builds → reports mechanical fidelity (source-event + provenance retention, reproducibility, merge-safety proxy, counts). WRITES NOTHING; fail-safe (a fetch error skips the member). CONSUMED BY NO LIVE ENGINE, no route, no UI, no flag — Stage 0 has no live surface (Managed Care = Stage 2, OPD Audit = Stage 3; open-loops/Plane-3 and trend/velocity are out of scope). No migration. Zero change to lib/clinical-state/** (type-only reuse), the DDx eval/matcher/extraction-eval cores, app/**, /api/ddx, retrieval, or prompts. Logged here per the changelog discipline, same reasoning as the ClinicalState-family entries below; this is a new pure infrastructure core, not an OPD note-audit engine change.',
@@ -83,6 +91,7 @@ export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
     engine: null, date: '2026-07-12', scoring: false,
     title: 'ClinicalState 1.1 (not OPD audit) — typed medication & allergy assertions: additive schema + pure db13 mapper, wired to nothing',
+    plain: 'Separate feature (patient-history record / questionnaires / differential-diagnosis) — logged here for the record; not an audit-engine change',
     points: [
       'ClinicalState schema (lib/clinical-state/schema.ts) bumps clinical-state/1.0 → 1.1 and gains two ADDITIVE top-level fields: medicationAssertions[] (MedicationAssertion: status prescribed|reported_taking|administered|stopped|not_taking|unknown, medicationConcept {raw,brand,generic,normalizedConceptId:null}, dose/strength/frequency/route/duration/instruction, provenance, encounterRef) and allergyAssertions[] (AllergyAssertion: status reported_allergy|denied|historical|entered_in_error|unknown, substance {raw,normalized}, reaction/severity, provenance, encounterRef). Both default to [] in emptyClinicalState and the .strict() zod validator. The existing medications:string[] / riskFactors / findings / instability are UNCHANGED and byte-identical (medications is kept independent, not derived from the assertions — neutrality first).',
       'New PURE mapper lib/clinical-state/from-prescription.ts (no db/llm/io, type-only imports; the from-primitives/to-audit-family pattern) maps db13 individuals-prescriptions jsonb → typed assertions: each med line → a prescribed assertion (skip when brand+generic both empty; empty sub-fields → null; ids deterministic djb2 of concept|status); allergy free text → NKA notations ("No"/"nil"/"nka"/… case/quote/space-insensitive) → one denied fact, substantive text → one reported_allergy, null/empty → NO assertion (absence ≠ denied). Fail-safe: malformed input degrades to empty, never throws. CONSUMED BY NO LIVE ENGINE in 1.1 — Stage 0 (MemberState) wires it and fills encounterRef + normalizedConceptId. The /ddx extract path, the LLM extraction prompt, format.ts, ui-view.ts, and the panel are UNTOUCHED (no free-text med/allergy extraction, no UI render in 1.1). No migration (ClinicalState is computed/traced, not persisted). Logged here per the changelog discipline, same reasoning as the ClinicalState-family entries below; this is a schema/mapper change, not an OPD note-audit engine change.',
@@ -92,6 +101,7 @@ export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
     engine: null, date: '2026-07-12', scoring: false,
     title: 'DDx surface (not OPD audit) — ClinicalState panel UI-integrity fixes: three-state instability + two copy corrections (advisory, differential-neutral)',
+    plain: 'Separate feature (patient-history record / questionnaires / differential-diagnosis) — logged here for the record; not an audit-engine change',
     points: [
       'Instability becomes THREE-STATE on the /ddx ClinicalState panel (was two-state "unstable | stable"). Instability now carries assessment ∈ {unstable, no_instability_detected, not_assessable} plus assessedInputs[]/missingInputs[] (the 5 instability-relevant vital channels present/absent as display labels BP·HR·SpO₂·RR·T), derived deterministically in the extract.ts vitals branch. unstable/reasons are RETAINED and kept in sync (unstable === assessment==="unstable"); parseVitals + instabilityReasons thresholds/logic are UNCHANGED — only the assembly of the instability object changed. Fixes the overclaim where a note with NO vitals supplied rendered identically to one with genuinely normal vitals ("Stable — no instability criteria met"); no-vitals now renders amber "Instability not assessable from supplied data" with the missing channels itemised. Partial vitals (≥1 parsed read) = assessed (no_instability_detected). emptyClinicalState default is not_assessable / all 5 missing.',
       'Two copy corrections narrowing claims to what the system proves: the source-linkage badge "No fabrication · rejected_spans: N" → "All extracted findings are source-linked · N unverified spans"; the Absent-group heading "Absent — ruled out by stated negatives" → "Explicitly absent in the supplied record". Additive lucide-react HelpCircle icon for the amber not_assessable state. ZERO change to the /api/ddx differential, ordering, prompts, retrieval, the clinical_state_extracted trace, or lib/clinical-state/format.ts (the held D2 prompt formatter). Additive schema fields (required in the zod .strict() validator); no version bump, no migration — ClinicalState is computed/traced, not a persisted validated record. Logged here per the changelog discipline (same reasoning as the Build 1c entry below); this is a DDx-surface change, not an OPD note-audit engine change (opd-note-audit-core / opd-note-score-core untouched).',
@@ -101,6 +111,7 @@ export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
     engine: null, date: '2026-07-12', scoring: false,
     title: 'DDx surface (not OPD audit) — ClinicalState clinician render (Build 1c): additive /api/ddx field, flag-gated, differential-neutral',
+    plain: 'Separate feature (patient-history record / questionnaires / differential-diagnosis) — logged here for the record; not an audit-engine change',
     points: [
       'app/api/ddx/route.ts returns an ADDITIVE clinicalState field on the result ONLY when CLINICAL_STATE_UI=1 (default OFF). Off → the response is byte-identical to before (spreading {} adds nothing; asserted by a unit test). The field is a trimmed projection of the already-computed, already-traced ClinicalState (findings by present/absent/unknown, instability, investigations, temporality, provenance, counts, rejected_spans) — nothing is recomputed.',
       'The /ddx client renders a read-only "Clinical State" panel beside/above the differential (never replacing it) when that field is present. ZERO change to differential generation, ordering, prompts, retrieval, ddx-hypothesis/ddx-constraints, the self-critique loop, or the clinical_state_extracted trace insert. Logged here per the changelog discipline because it touches the /api/ddx response shape — though it is a DDx-surface change, not an OPD note-audit engine change (opd-note-audit-core / opd-note-score-core are untouched).',
@@ -110,6 +121,7 @@ export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
     engine: null, date: '2026-07-12', scoring: false,
     title: 'ClinicalState shadow adoption (Platform B1) — dormant, output-neutral instrumentation',
+    plain: 'Separate feature (patient-history record / questionnaires / differential-diagnosis) — logged here for the record; not an audit-engine change',
     points: [
       'A flag-gated shadow hook at the persist seam (lib/opd-audit-store.ts saveOpdAudit, AFTER the INSERT): when CLINICAL_STATE_AUDIT_SHADOW=1 it round-trips the persisted findings through the canonical ClinicalState model (lib/clinical-state) and traces a fidelity event (kind clinical_state_audit_shadow: {roundtrip_ok, lossy_fields, counts}). DEFAULT OFF — zero added work, and byte-identical persisted output when off. The shadow computation is pure and non-mutating (operates on a JSON clone), fail-open (any throw is caught), and read-only w.r.t. the audit, so it can never affect findings / note_quality_index / PDQI-9 / suggestions / completeness. No opd-note-audit-core or opd-note-score-core change.',
       'Fidelity shakedown (read-only harness scripts/clinical-state-audit-shadow.mjs, 12 Jul): 11,438 findings across 5,000 real audits spanning 16 engine versions (0.1→0.81.7) round-trip BYTE-LOSSLESS (100.0%), zero lossy fields — the canonical model losslessly represents real note-audit output; nothing blocks it becoming canonical for this surface on fidelity grounds.',
@@ -118,6 +130,7 @@ export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   },
   {
     engine: '0.81.7', date: '2026-07-09', scoring: false,
+    plain: 'Data quality — who gets audited, phone-vs-in-person detection, daily specialty updates',
     title: 'v0.81.7 — Data-quality: intake eligibility + consult-channel classifier + daily specialty sync (inputs corrected; scores untouched)',
     points: [
       'Intake eligibility: the daily worker no longer admits house-account artefacts. The db13 fetch excludes a configurable doctor_uid list (app_settings audit_intake_doctor_exclusions, seeded with the 7 measured "Even Health" accounts) PLUS an unconditional name-rule (doctor_name_with_speciality NOT LIKE \'Even Health(%\'), so a future house account is caught with no settings edit. Retroactively, opd_note_audits gains excluded_reason: 167 existing house-account audits (health-check-up / underwriting memos — one was flagged by a reviewer in Review Mode, which is how the bug surfaced) are flagged \'house_account\' and EVERY clinical read surface filters them out (stewardship, Right Care, doctor pages, review queue, triage, governance feeds, exports, learning miner). The worker\'s already-audited watermark deliberately IGNORES the flag so an excluded uid can never be re-admitted as "new".',
@@ -129,6 +142,7 @@ export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   },
   {
     engine: '0.81.6', date: '2026-07-09', scoring: false,
+    plain: 'Better matching of low-value-care guidelines',
     title: 'v0.81.6 — Right Care matcher v3 (OR-across-keywords) (metadata-only; scores untouched)',
     points: [
       'LVC rule matcher v3: keywords are now treated as ALTERNATIVE trigger phrases. A KEYWORD (phrase) matches when EVERY whitespace-split token of it is a whole word in the subject+rationale; a RULE matches when ANY of its keywords matches (v2 required ALL keywords, which was wrong for the corpus — the 28 Choosing-Wisely/NCG rules author keywords as alternatives, so ALL-keywords left 744 low_value_care findings unmatchable, only the CBP phrase-token rule ever matched). Specificity: the rule whose best-matching keyword has the MOST tokens (longest matched phrase) wins; tie → rule id ASC. Whole-word matching, special-char escaping, and zero-keyword-never-match all carry over. ONE implementation shared by the engine stamp, read-time fallback, and backfill. No LLM.',
@@ -139,6 +153,7 @@ export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
     },
   {
     engine: '0.81.5', date: '2026-07-09', scoring: false,
+    plain: 'More precise low-value-care matching, plus a dashboard fix',
     title: 'v0.81.5 — Right Care matcher v2 (whole-word, all-keyword) + read-filter family fix (metadata-only)',
     points: [
       'LVC rule matcher v2: a rule matches only when EVERY keyword appears as a WHOLE WORD (case-insensitive, word-boundary; special chars escaped) in the subject+rationale — fixing the 0.81.4 ANY-substring bug where one generic rule (keywords ["complete","blood","profile"]) claimed all 112 stamps ("incomplete" contains "complete"). Candidates are evaluated most-specific first (keyword count DESC, tie id ASC); zero-keyword rules never match. ONE implementation shared by the engine stamp, the read-time fallback, and the backfill.',
@@ -149,6 +164,7 @@ export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   },
   {
     engine: '0.81.4', date: '2026-07-09', scoring: false,
+    plain: 'Links each low-value finding to the specific guideline it relates to',
     title: 'v0.81.4 — Right Care LVC rule matcher (metadata-only; scores untouched)',
     points: [
       'LVC rule matcher wired into the engine: at stamp time a low-value finding is keyword-matched (deterministic containment over the active lvc_recommendations — subject+rationale haystack, first rule whose any-keyword hits wins) to stamp rule_ref:<rule id> + the rule\'s category. No matcher hit → rule_ref:null (0.81.3 behaviour). NO LLM; the single audit-path read of the rules is cached + 2s-timeout fail-safe (no rules → rule_ref:null, never blocks the audit).',
@@ -159,6 +175,7 @@ export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   },
   {
     engine: '0.81.3', date: '2026-07-08', scoring: false,
+    plain: 'Low-value-care tracking, plus grading patients by complexity for fair comparison',
     title: 'v0.81.3 — Right Care LVC identity + case-mix complexity (metadata-only; scores untouched)',
     points: [
       'LVC identity: a finding on the low-value verdict tier now carries signal_type "low_value_care" (unifying the appropriateness/prescribing low-value buckets so the feedback loop + Right Care aggregates batch all low-value care together) plus lvc_category (antibiotic | imaging | supplement_polypharmacy | other) and rule_ref (null in the OPD engine — no lvc_recommendations matcher is wired here; the read-time classifier / backfill attach a rule id when it text-matches one of the 29 rules).',
@@ -170,6 +187,7 @@ export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   },
   {
     engine: '0.81.2', date: '2026-07-07', scoring: true,
+    plain: 'Fixes from Dr Zaki\'s review: merged duplicate warnings, syrup dosing, supplement/label safeguards',
     title: 'v0.81.2 — clinician bug batch (Dr Zaki): matcher, cross-source consolidation, liquid dosing, supplement + metadata guardrails',
     points: [
       'BUG-0.8-15 (formulary matcher): a single molecule now wins its drug class over a combination that merely contains it (two-pass index). Fixes Pantoprazole shown as "Antibiotic" and Etodolac as "Muscle relaxant" — and any molecule whose first formulary occurrence was inside an FDC.',
@@ -186,6 +204,7 @@ export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
     engine: null, date: '2026-07-04', scoring: false,
     title: 'Backfill: engine-upgrade pivot + live version label',
+    plain: 'Background re-audit restarts cleanly after a version change',
     points: [
       'The prod mini-backfill now RESTARTS its backward sweep from the upgrade date whenever OPD_ENGINE_VERSION changes, so a new engine re-scores ALL history and never leaves a gap of already-audited recent days. The Gemini worker independently takes new notes forward.',
       'Fixed the stale \'prod 0.6\' state label — it now shows the live prod engine version.',
@@ -194,6 +213,7 @@ export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   },
   {
     engine: '0.81.1', date: '2026-07-04', scoring: true,
+    plain: 'Better clinical reasoning and more reliable reading of notes (Zaki/Aravind fixes, part 2)',
     title: 'v0.81.1 — reasoning recalibration + prompt/extraction hardening (Zaki/Aravind bug batch, part 2)',
     points: [
       'Reasoning rubric (P1): PDQI thorough/synthesized/useful are judged against what the presentation requires, not raw sparseness — a fully and correctly addressed low-risk complaint rates 4-5; low scores are reserved for a genuine reasoning gap (missing red-flag screen/differential, or an assessment that ignores documented findings). Fixes the ~85 percent thorough/synth floor.',
@@ -208,6 +228,7 @@ export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   },
   {
     engine: '0.81.0', date: '2026-07-04', scoring: true,
+    plain: 'Accuracy and fair-scoring fixes (Dr Zaki / Dr Aravind review)',
     title: 'v0.81.0 — fidelity + scoring-hygiene core (Dr Zaki / Dr Aravind bug batch)',
     points: [
       'BUG-0.8-04 (modality): only GENERAL_PRACTITIONER defaults to teleconsult; HOSPITAL_* are in-person. HOSPITAL_GP/_INVESTIGATION_REFERRAL had mislabelled ~178 in-person hospital OPD notes as teleconsult (consult_type is null corpus-wide). Added a hands-on-exam override: a documented palpation/auscultation finding downgrades a teleconsult classification.',
@@ -219,6 +240,7 @@ export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   },
   {
     engine: '0.8', date: '2026-07-03', scoring: true,
+    plain: 'Stopped double-counting advice and follow-up across two areas',
     title: 'Score each field once — Continuity / Documentation de-overlap',
     points: [
       'Advice + follow-up are EXCLUDED from the Documentation coverage denominator; they remain on the completeness checklist (display, missing-fields, mandatory tracking) but are scored only in the Continuity domain (weight 0.10).',
@@ -229,6 +251,7 @@ export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   },
   {
     engine: '0.7', date: '2026-07-03', scoring: true,
+    plain: 'Fixes from clinician feedback, checked across 934 notes',
     title: 'Clinician-feedback fix batch (#cdss_feedback, prevalence-mined over 934 notes)',
     points: [
       'B2 (the bump): a blank/UNKNOWN follow-up type no longer counts as a documented follow-up — only a real disposition (IF_REQUIRED, MANDATORY_FOLLOW_UP, …) or an explicit date does. ~26% of notes were being credited.',
@@ -241,6 +264,7 @@ export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
     engine: null, date: '2026-07-03', scoring: false,
     title: 'Molecule-level daily-dose aggregation',
+    plain: 'Adds up a drug\'s daily dose across combination products',
     points: [
       'Total daily dose per MOLECULE aggregated across combination products (paracetamol in Dolo + a cold combo), OD/BD/TDS/SOS parsing, checked against per-molecule ceilings in data/dose-limits.json.',
       'Volumetric/liquid formulations (mg/ml, ml dosing — paediatric syrups) excluded from the adult tablet-ceiling model.',
@@ -249,6 +273,7 @@ export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   },
   {
     engine: '0.6', date: '2026-07-02', scoring: true,
+    plain: 'Understands teleconsults and referrals',
     title: 'Encounter context — teleconsult + referral aware',
     points: [
       'Referral and teleconsult encounters ingested as first-class context; an onward referral satisfies the plan item (a handoff\'s plan IS the referral).',
@@ -260,6 +285,7 @@ export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
     engine: null, date: '2026-07-01', scoring: true,
     title: 'Dosing-completeness calibration (deterministic backfill, no LLM)',
+    plain: 'Fewer false \'incomplete dosing\' flags — reads the note more carefully',
     points: [
       'A dose counts as documented if it is in the dose field, the strength field, OR embedded in the drug name ("Cefix 200mg Tab" — the strength field is empty on ~36% of lines).',
       'Route read from the field OR inferred from the dosage form (tab→oral, inj→parenteral, …); null only when truly ambiguous. Blank-but-inferable routes (~17%) no longer flag.',
@@ -269,6 +295,7 @@ export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   },
   {
     engine: '0.5', date: '2026-06-30', scoring: true,
+    plain: 'Every finding now backed by a reference or clearly labelled as reasoning',
     title: 'First-class corpus grounding — cite-or-label',
     points: [
       'Every LLM finding is badged: Grounded in CDMSS corpus (CITED [n] chips) vs General clinical reasoning vs Deterministic rule; retrieval hits persisted as sources jsonb with PubMed links.',
@@ -278,6 +305,7 @@ export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   },
   {
     engine: '0.4', date: '2026-06-30', scoring: true,
+    plain: 'Looks up the generic drug from the brand name',
     title: 'Formulary-aware — brand→generic resolution',
     points: [
       'Tiered brand→generic matcher over the 2,174-row hospital formulary; ~90% of med lines now resolve to a molecule (was 64%).',
@@ -288,6 +316,7 @@ export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   },
   {
     engine: '0.3', date: '2026-06-29', scoring: true,
+    plain: 'Cleaner reading of the complaint, diagnosis and plan',
     title: 'Hybrid dpipe source',
     points: [
       'Clean presenting complaint (text + HOPI), diagnosis names+codes and plan pulled from the dpipe prescription pipeline (99.8% complete); the source row\'s nested fields became the fallback.',
@@ -296,6 +325,7 @@ export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   },
   {
     engine: '0.2', date: '2026-06-29', scoring: true,
+    plain: 'Fix to how notes are read',
     title: 'Extraction fix',
     points: [
       'Nested general_practitioner_prescription__* fields read correctly; dashboards filter to the current engine version.',
@@ -304,6 +334,7 @@ export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   },
   {
     engine: '0.1', date: '2026-06-29', scoring: true,
+    plain: 'First version',
     title: 'First engine',
     points: [
       'The 5-domain OPD Note-Quality score: deterministic NABH completeness + LLM findings (appropriateness / prescribing) + PDQI-9 note-quality rating + the shared penalty/band model. Daily worker over db13 + /admin/opd-audit dashboard.',
