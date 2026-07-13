@@ -12,7 +12,7 @@ import { assembleEvidence } from './assemble-core';    // FROZEN — value impor
 import { buildMemberState } from './aggregate-core';    // FROZEN — value import
 import { careCallEncountersForMember } from '../care-call-store';   // Amendment B — the write-back loop
 import { promEncountersForMember } from '../proms/store';           // PROMs 0.2a-2 — scores → spine fold
-import { applyAsOfCut } from '../opd-longitudinal-core';            // Stage 3 — the D2 knowability cut (pure)
+import { applyAsOfCut } from '../as-of-core';                        // Stage 3 — the D2 knowability cut (pure)
 import type { MemberStateSnapshot } from './schema';
 
 // ── SQL identical to scripts/member-state-shadow.mjs — KEEP IN SYNC. (shadow.mjs is FROZEN;

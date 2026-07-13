@@ -9,6 +9,7 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
+    "architecture:check": "node --import tsx scripts/architecture-check.mjs",
     "test": "node --test --import tsx \"lib/**/__tests__/*.test.ts\"",
     "ddx:bench": "node --import tsx scripts/ddx-p0-run.mjs"
   },

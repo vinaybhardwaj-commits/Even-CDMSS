@@ -49,21 +49,8 @@ export const RETEST_INTERVAL_DAYS: Record<string, number> = {
   vitamin_b12: 90,           // Vitamin B12
 };
 
-// ── D2 knowability cut (PRD §2, the normative rule) ─────────────────────────────────────────────────
-/** STRICT PRIOR-DAY: keep evidence dated strictly before the visit day (ISO YYYY-MM-DD string compare),
- *  and always drop the audited encounter's own ref. Applies IDENTICALLY to opd/lab/care_call+PROM folds. */
-export function applyAsOfCut<T extends { encounterRef: string; date: string }>(
-  encounters: T[], asOfDate: string, auditedEncounterRef?: string | null,
-): T[] {
-  const cut = String(asOfDate).slice(0, 10);
-  const audited = auditedEncounterRef ? String(auditedEncounterRef) : '';
-  return (encounters || []).filter((e) => {
-    const d = String(e.date).slice(0, 10);
-    if (!d || !(d < cut)) return false;                   // strict prior-day only (same-day excluded)
-    if (audited && e.encounterRef === audited) return false;   // the audited note never counts against itself
-    return true;
-  });
-}
+// ── D2 knowability cut — applyAsOfCut lives in lib/as-of-core.ts (pure temporal module; moved
+//    there in Architecture Governance Slice 1 Part A so the spine never imports this file). ─────────
 
 // ── Note projection carried from auditOpdNote → the longitudinal pass (de-identified) ────────────────
 export interface LongitudinalNoteInput {

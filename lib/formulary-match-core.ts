@@ -27,7 +27,7 @@
 
 export interface FormularyRow {
   brand: string;
-  generic: string;
+  generic?: string;        // optional — every read is guarded (generic_canon || generic || '')
   generic_canon: string;
   major?: string;
   minor?: string;
@@ -192,7 +192,7 @@ export function buildFormularyMatcher(rows: FormularyRow[]): FormularyMatcher {
 
       // 2) exact normalised brand.
       const exact = byBrand.get(nb);
-      if (exact) return rowToMatch(exact, exact.generic_canon || exact.generic, 'brand-exact', true);
+      if (exact) return rowToMatch(exact, exact.generic_canon || exact.generic || '', 'brand-exact', true);
 
       // 3) embedded molecule name (verbatim in the brand string).
       const low = ` ${nb} `;
@@ -208,7 +208,7 @@ export function buildFormularyMatcher(rows: FormularyRow[]): FormularyMatcher {
           const canons = new Set(fam.map((r) => (r.generic_canon || r.generic || '').trim().toLowerCase()).filter(Boolean));
           if (canons.size === 1) {
             const row = fam[0];
-            return rowToMatch(row, row.generic_canon || row.generic, 'brand-token', true);
+            return rowToMatch(row, row.generic_canon || row.generic || '', 'brand-token', true);
           }
         }
       }
@@ -216,7 +216,7 @@ export function buildFormularyMatcher(rows: FormularyRow[]): FormularyMatcher {
       // 5) longest formulary brand that prefixes (or is contained in) the text — APPROX.
       for (const { nb: fnb, row } of brandNorms) {
         if (fnb.length >= 4 && (nb === fnb || nb.startsWith(`${fnb} `) || ` ${nb} `.includes(` ${fnb} `))) {
-          return rowToMatch(row, row.generic_canon || row.generic, 'brand-prefix', false);
+          return rowToMatch(row, row.generic_canon || row.generic || '', 'brand-prefix', false);
         }
       }
 

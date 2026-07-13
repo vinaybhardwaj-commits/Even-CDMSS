@@ -424,7 +424,7 @@ test('v0.81 BUG-0.8-04: HOSPITAL_GP in-person note IS scored on examination', ()
 // ── v0.81 BUG-0.8-05/07: domain aggregation degrades gracefully (no flat 0) ─────────────────────
 test('v0.81 BUG-0.8-05/07: stacked findings degrade gracefully, never a flat 0; single finding unchanged', () => {
   const lv = { verdict: 'low-value' as const, confidence: 1, domain: 'appropriateness' as const };
-  const appr = (fs: any[]) => computeOpdScore({ findings: fs, completenessCoverage: 1, pdqi9: null })
+  const appr = (fs: any[]) => computeOpdScore({ findings: fs, completenessCoverage: 1, pdqi9: null, patientCentred: { present: 0, total: 0 } })
     .domains.find((d) => d.domain === 'appropriateness')!.score;
   assert.equal(appr([lv]), 55);          // one low-value finding: unchanged vs the old additive model
   const two = appr([lv, lv]), three = appr([lv, lv, lv]);
