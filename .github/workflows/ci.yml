@@ -1,12 +1,15 @@
 # CI — the repo's FIRST general enforcement gate (Architecture Governance Slice 1, Part D).
 # Distinct from the report-only ddx-benchmark.yml: every step here is a HARD gate.
 #
-#   1. architecture:check — the four import-boundary rules (scripts/architecture-check.mjs;
-#      declarative config, reads source as text). Known-green since Slice 1 Part A.
-#   2. typecheck — full-repo `tsc --noEmit`. Vercel's `next build` typechecks only the app
+#   1. architecture:check — the four import-boundary rules + the manifest-coverage rule
+#      (scripts/architecture-check.mjs; declarative config, reads source as text).
+#   2. architecture map staleness (System Map Stage 1, Part 4) — regenerate
+#      lib/architecture/map.generated.ts and hard-fail on any diff: the committed map must
+#      always match what the code actually is (generated-not-authored, made enforceable).
+#   3. typecheck — full-repo `tsc --noEmit`. Vercel's `next build` typechecks only the app
 #      graph, so this is the first thing anywhere that gates the WHOLE repo (tests included);
 #      Slice 1 Part 0 greened the 5 baseline errors to make this a straight hard gate.
-#   3. test — the full lib suite (incl. the 5 clinical-semantics tests).
+#   4. test — the full lib suite (incl. the 5 clinical-semantics tests + the map-gen tests).
 #
 # Pure static + unit verification: no secrets, no network calls beyond npm ci, no admin token.
 
@@ -34,6 +37,8 @@ jobs:
       - run: npm ci
       - name: architecture boundaries
         run: npm run architecture:check
+      - name: architecture map is current
+        run: npm run architecture:map && git diff --exit-code lib/architecture/map.generated.ts
       # next-env.d.ts is gitignored (repo policy); `next dev/build` regenerates it locally.
       # Without it, tsc lacks Next's type-reference chain (styled-jsx's `jsx` prop, route types)
       # and reports errors that don't exist in any real environment — regenerate it here.

@@ -15,16 +15,21 @@
  *   valueOnly   — true ⇒ `import type { … }` and all-`type` specifier imports are ALLOWED;
  *                 only VALUE imports violate (rule 3's type-sharing line). false ⇒ any import form.
  * Adding a rule later is a one-entry change. See docs/architecture/INVENTORY.md for the map.
+ *
+ * Stage 1 (System Map): the scan mechanics live in scripts/lib/import-scan.mjs (shared with the
+ * map generator — one scan implementation); RULES + evaluation stay here. A COVERAGE rule rides
+ * along: every top-level lib/ subsystem must be in MODULE_MANIFESTS or UNREGISTERED. Execution
+ * is main-guarded so the generator can import RULES without running the check.
  */
 
-import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, dirname, relative, resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+import { ROOT, globToRegExp, walk, extractImports, normaliseSpec, listSubsystems, isRegistered } from './lib/import-scan.mjs';
+import { MODULE_MANIFESTS, UNREGISTERED } from '../lib/architecture/manifests.ts';
 
 // ── the four boundary rules (Slice 1) ────────────────────────────────────────────────────────────
-const RULES = [
+export const RULES = [
   {
     id: 1,
     name: 'pure clinical cores must not reach up into the app',
@@ -60,101 +65,65 @@ const RULES = [
   },
 ];
 
-// ── glob → RegExp ('**' spans segments, '*' within one) ─────────────────────────────────────────
-function globToRegExp(glob) {
-  let re = '';
-  for (let i = 0; i < glob.length; i++) {
-    const c = glob[i];
-    if (c === '*') {
-      if (glob[i + 1] === '*') { re += '.*'; i++; } else re += '[^/]*';
-    } else if ('.+^${}()|[]\\'.includes(c)) re += `\\${c}`;
-    else re += c;
-  }
-  return new RegExp(`^${re}$`);
-}
+// ── run (main-guarded: `npm run architecture:check` executes; importing RULES does not) ──────────
+const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+  const allFiles = walk(join(ROOT, 'lib')).concat(walk(join(ROOT, 'scripts')));
+  const violations = [];
+  const evaluated = [];
 
-// ── repo walk (source files only; skip node_modules/.next/tests' fixtures stay in scope) ─────────
-function walk(dir, out = []) {
-  for (const name of readdirSync(dir)) {
-    if (name === 'node_modules' || name === '.next' || name === '.git') continue;
-    const p = join(dir, name);
-    const st = statSync(p);
-    if (st.isDirectory()) walk(p, out);
-    else if (/\.(ts|tsx|mts|js|mjs)$/.test(name)) out.push(relative(ROOT, p));
-  }
-  return out;
-}
-
-// ── import extraction (text-level, multiline-tolerant) ───────────────────────────────────────────
-// Captures: static `import … from '…'`, bare `import '…'`, `export … from '…'`,
-// dynamic `import('…')`, and `require('…')`. Records whether the form is type-only.
-const IMPORT_RE = /\bimport\s+type\s+[^'"]*?from\s*['"]([^'"]+)['"]|\bimport\s+([^'"]*?)\s*from\s*['"]([^'"]+)['"]|\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)|\bexport\s+type\s+[^'"]*?from\s*['"]([^'"]+)['"]|\bexport\s+[^'"]*?from\s*['"]([^'"]+)['"]|\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)|\bimport\s*['"]([^'"]+)['"]/g;
-
-function extractImports(text) {
-  const found = [];
-  for (const m of text.matchAll(IMPORT_RE)) {
-    const spec = m[1] ?? m[3] ?? m[4] ?? m[5] ?? m[6] ?? m[7] ?? m[8];
-    if (!spec) continue;
-    let typeOnly = false;
-    if (m[1] !== undefined || m[5] !== undefined) typeOnly = true;           // import type / export type … from
-    else if (m[3] !== undefined) {
-      // `import <clause> from '…'` — type-only when EVERY named specifier carries `type`
-      const clause = (m[2] || '').trim();
-      const inner = clause.startsWith('{') ? clause.replace(/^\{|\}$/g, '') : null;
-      if (inner !== null && inner.trim().length > 0) {
-        typeOnly = inner.split(',').map((s) => s.trim()).filter(Boolean)
-          .every((s) => /^type\s/.test(s));
-      }
-    }
-    const line = text.slice(0, m.index).split('\n').length;
-    found.push({ spec, typeOnly, line });
-  }
-  return found;
-}
-
-// ── specifier → normalised repo-relative module path (no extension) ──────────────────────────────
-function normaliseSpec(spec, fromFile) {
-  let p = null;
-  if (spec.startsWith('@/')) p = spec.slice(2);
-  else if (spec.startsWith('.')) p = relative(ROOT, resolve(ROOT, dirname(fromFile), spec));
-  else return { path: spec, external: true };                  // bare package — external
-  return { path: p.replace(/\.(ts|tsx|mts|js|mjs)$/, ''), external: false };
-}
-
-// ── run ───────────────────────────────────────────────────────────────────────────────────────────
-const allFiles = walk(join(ROOT, 'lib')).concat(walk(join(ROOT, 'scripts')));
-const violations = [];
-const evaluated = [];
-
-for (const rule of RULES) {
-  const matchers = rule.sourceGlobs.map(globToRegExp);
-  const files = allFiles.filter((f) => matchers.some((rx) => rx.test(f)));
-  let ruleViolations = 0;
-  for (const file of files) {
-    const text = readFileSync(join(ROOT, file), 'utf8');
-    for (const imp of extractImports(text)) {
-      const { path: target, external } = normaliseSpec(imp.spec, file);
-      // externals only matter for rules that pattern-match bare names (rule 4's /prediction/)
-      const testable = external ? rule.forbid.filter((rx) => rx.source.includes('prediction')) : rule.forbid;
-      if (rule.valueOnly && imp.typeOnly) continue;             // rule 3's `import type` allowance
-      for (const rx of testable) {
-        if (rx.test(target)) {
-          ruleViolations++;
-          violations.push(`${file}:${imp.line} — rule ${rule.id} — ${rule.valueOnly ? 'value ' : ''}import of '${imp.spec}' crosses "${rule.name}"`);
+  for (const rule of RULES) {
+    const matchers = rule.sourceGlobs.map(globToRegExp);
+    const files = allFiles.filter((f) => matchers.some((rx) => rx.test(f)));
+    let ruleViolations = 0;
+    for (const file of files) {
+      const text = readFileSync(join(ROOT, file), 'utf8');
+      for (const imp of extractImports(text)) {
+        const { path: target, external } = normaliseSpec(imp.spec, file);
+        // externals only matter for rules that pattern-match bare names (rule 4's /prediction/)
+        const testable = external ? rule.forbid.filter((rx) => rx.source.includes('prediction')) : rule.forbid;
+        if (rule.valueOnly && imp.typeOnly) continue;             // rule 3's `import type` allowance
+        for (const rx of testable) {
+          if (rx.test(target)) {
+            ruleViolations++;
+            violations.push(`${file}:${imp.line} — rule ${rule.id} — ${rule.valueOnly ? 'value ' : ''}import of '${imp.spec}' crosses "${rule.name}"`);
+          }
         }
       }
     }
+    evaluated.push({ id: rule.id, name: rule.name, files: files.length, violations: ruleViolations });
   }
-  evaluated.push({ id: rule.id, name: rule.name, files: files.length, violations: ruleViolations });
-}
 
-for (const r of evaluated) {
-  const status = r.violations === 0 ? 'GREEN' : `RED (${r.violations})`;
-  console.log(`rule ${r.id} · ${status} · ${r.files} files scanned · ${r.name}`);
+  for (const r of evaluated) {
+    const status = r.violations === 0 ? 'GREEN' : `RED (${r.violations})`;
+    console.log(`rule ${r.id} · ${status} · ${r.files} files scanned · ${r.name}`);
+  }
+
+  // ── coverage rule (Stage 1): every lib/ subsystem has a manifest or is explicitly unregistered.
+  // "Subsystem" is defined in listSubsystems (import-scan.mjs). Also fails on a STALE
+  // UNREGISTERED entry (listed but manifest-covered, or naming no current subsystem) so the
+  // honest-gap list can't rot in either direction.
+  const ruleGlobs = RULES.flatMap((r) => r.sourceGlobs);
+  const subsystems = listSubsystems({ manifests: MODULE_MANIFESTS, ruleGlobs });
+  const coverageViolations = [];
+  for (const s of subsystems) {
+    const registered = isRegistered(s, MODULE_MANIFESTS);
+    const listed = UNREGISTERED.includes(s.id);
+    if (!registered && !listed) coverageViolations.push(`unregistered subsystem: ${s.id} — add a manifest or list it in UNREGISTERED`);
+    if (registered && listed) coverageViolations.push(`stale UNREGISTERED entry: ${s.id} is manifest-covered — remove it from UNREGISTERED`);
+  }
+  for (const u of UNREGISTERED) {
+    if (!subsystems.some((s) => s.id === u)) coverageViolations.push(`stale UNREGISTERED entry: ${u} names no current lib/ subsystem`);
+  }
+  const registeredCount = subsystems.filter((s) => isRegistered(s, MODULE_MANIFESTS)).length;
+  const covStatus = coverageViolations.length === 0 ? 'GREEN' : `RED (${coverageViolations.length})`;
+  console.log(`coverage · ${covStatus} · ${subsystems.length} subsystems · ${registeredCount} registered, ${subsystems.length - registeredCount} explicitly unregistered`);
+  violations.push(...coverageViolations);
+
+  if (violations.length) {
+    console.error('\nBOUNDARY VIOLATIONS:');
+    for (const v of violations) console.error(`  ${v}`);
+    process.exit(1);
+  }
+  console.log(`\narchitecture:check — all ${RULES.length} rules + coverage green.`);
 }
-if (violations.length) {
-  console.error('\nBOUNDARY VIOLATIONS:');
-  for (const v of violations) console.error(`  ${v}`);
-  process.exit(1);
-}
-console.log(`\narchitecture:check — all ${RULES.length} rules green.`);
