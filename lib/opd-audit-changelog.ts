@@ -22,6 +22,17 @@ export interface EngineChange {
 
 export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
+    engine: null, date: '2026-07-13', scoring: false,
+    plain: 'Every diagnosis code now shows its medical name — powered by the full 98k-code ICD dictionary instead of a 100-code list',
+    title: 'ICD Master Slice 1 — labels from the source of truth (icd-master/1.0 snapshot; display + LLM-digest label quality only)',
+    points: [
+      'Snapshotted the db13 icd_code master (98,571 unique ICD-10-CM codes with sentence-cased short_desc) into the committed, generated artifact lib/member-state/icd-master.generated.ts via scripts/icd-master-gen.mjs (npm run icd:master — manual, credentialed; CI never talks to db13; codes added to db13 after the snapshot degrade to the neutral fallback, never a wrong label).',
+      'Resolver layering in icd-labels.ts, same exported API and the same V-ratified Decision-D order: record\'s own display text → curated ICD_LABEL_OVERRIDES (the former 100-code map — clinician phrasing wins) → ICD_MASTER exact code, then the bare 3-char category as an exact master key only → code + "(unmapped ICD-10 code)". Never a guess, never a truncation to a non-existent parent.',
+      'Raises MemberState/ClinicalState problem-list and OPD-audit longitudinal-panel label quality AND the LLM-digest input quality (the digest previously read "(unmapped ICD-10 code)" for most coded diagnoses); ≥99.5% of live coded diagnosis volume now resolves to a real label. duration/is_high_risk ship in the artifact as the slice-2 payload (chronicity/complexity adoption deliberately parked behind golden A/B + clinician ratification).',
+    ],
+    why: 'MemberState surfaces rendered most diagnoses as "<code> (unmapped ICD-10 code)" because the bundled map hardcoded 100 labels while db13 already held the 98k-code master at 99.7% measured coverage of the 352k live coded diagnoses. ICD Master Slice 1 PRD (V, 13 Jul 2026); labels-only by decision.',
+  },
+  {
     engine: '0.81.8', date: '2026-07-12', scoring: true,
     plain: 'Fixes 10 issues from Dr Zaki\'s review, adds low-value-care sub-types, sorts the note list by patients with the most history, and fills in 30 days of history',
     title: 'Dr Zaki 10-bug batch (first scoring change since 0.81.2) + LVC `other` sub-categorisation + frequent-flier list surfacing + 30-day longitudinal backfill',

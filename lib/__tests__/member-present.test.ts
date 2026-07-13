@@ -43,11 +43,13 @@ test('resolveProblemLabel: map hit, source-text preference, unknown → neutral'
   const human = resolveProblemLabel({ raw: 'Bacterial vaginosis' });
   assert.equal(human.label, 'Bacterial vaginosis');
   assert.equal(human.unmapped, false);
-  // unknown but code-shaped → code + neutral, unmapped flagged (never blank, never a guess)
-  const unk = resolveProblemLabel({ raw: 'X99.9' });
+  // unknown but code-shaped → code + neutral, unmapped flagged (never blank, never a guess).
+  // (Sentinel moved off X99.9 when the 98k icd-master landed: X99 is a real master category,
+  // so X99.9 now correctly labels via the exact-category fallback. A10 has no master row.)
+  const unk = resolveProblemLabel({ raw: 'A10.9' });
   assert.equal(unk.unmapped, true);
-  assert.match(unk.label, /X99\.9/);
-  assert.equal(unk.code, 'X99.9');
+  assert.match(unk.label, /A10\.9/);
+  assert.equal(unk.code, 'A10.9');
 });
 
 // ── classifyProblemTier (Decision E) ──

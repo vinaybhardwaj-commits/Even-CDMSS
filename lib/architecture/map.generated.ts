@@ -2909,6 +2909,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "ICD_MASTER_VERSION",
+    "value": "icd-master/1.0",
+    "file": "lib/member-state/icd-master.generated.ts",
+    "derived": false
+  },
+  {
     "constName": "MATCHER_VERSION",
     "value": "ddx-eval/3",
     "file": "lib/ddx-eval-core.ts",

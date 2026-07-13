@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "architecture:check": "node --import tsx scripts/architecture-check.mjs",
     "architecture:map": "node --import tsx scripts/architecture-map-gen.mjs",
+    "icd:master": "node --env-file=.env.local --import tsx scripts/icd-master-gen.mjs",
     "test": "node --test --import tsx \"lib/**/__tests__/*.test.ts\"",
     "ddx:bench": "node --import tsx scripts/ddx-p0-run.mjs"
   },

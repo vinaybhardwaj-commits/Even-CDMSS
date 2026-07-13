@@ -4,13 +4,20 @@
 //
 // Decision D: prefer the source diagnosis DISPLAY TEXT if the record already carries it (i.e. the
 // snapshot concept.raw is human text, not a code); else the bundled map; else code + neutral label.
+// The V-ratified ORDER is unchanged by ICD Master Slice 1 — only the "bundled map" layer got
+// deeper: curated overrides first, then the full 98k-code db13 snapshot (icd-master.generated).
 // Unknown code → the code itself renders with a neutral "(unmapped ICD-10 code)" descriptor —
-// never a blank, never a guess. English short labels; adult general-practice / OPD coverage.
+// never a blank, never a guess.
+//
+// The master import is DATA ONLY (a generated const in this same module family) — no I/O, purity
+// and boundary rule 1 preserved. Server-side only: the artifact is multi-MB.
 
-/** Canonical ICD-10 short labels. Keys are dotted, upper-case (e.g. "E55.9"). Covers the codes
- *  observed in the OPD dx data (incl. every code in the approved mockups) plus common GP codes.
- *  Extend freely — a miss degrades gracefully to code + neutral label, never to a wrong label. */
-export const ICD_LABELS: Record<string, string> = {
+import { ICD_MASTER } from './icd-master.generated';
+
+/** Curated overrides — clinician-preferred phrasing that WINS over the master's short_desc.
+ *  Keys are dotted, upper-case (e.g. "E55.9"). Extend only when the master's own wording reads
+ *  badly in the product; everything else should fall through to ICD_MASTER. */
+export const ICD_LABEL_OVERRIDES: Record<string, string> = {
   // ── Endocrine / metabolic / nutrition (E) ──
   'E03.9': 'Hypothyroidism',
   'E04.9': 'Goitre',
@@ -148,9 +155,23 @@ export function isIncidentalIcd(code: string | null | undefined): boolean {
 
 export interface ResolvedLabel { label: string; code: string | null; unmapped: boolean }
 
+/** The layered label lookup: overrides → master, on the exact code first, then (dotted codes
+ *  only) the bare 3-char category — but ONLY as an exact master/override key (the master ships
+ *  real category rows like "E11"). Never a guess, never a truncation to a non-existent parent. */
+function lookupLabel(code: string): string | null {
+  const candidates = [code];
+  const dot = code.indexOf('.');
+  if (dot > 0) candidates.push(code.slice(0, dot));
+  for (const c of candidates) {
+    const hit = ICD_LABEL_OVERRIDES[c] ?? ICD_MASTER[c];
+    if (hit) return hit;
+  }
+  return null;
+}
+
 /** Resolve a problem to a readable label (Decision D). A readable label ALWAYS renders.
  *  - source display text present (raw is human text, not a code) → use it verbatim.
- *  - raw / normalizedConceptId is an ICD code → map it; miss → code + neutral (`unmapped`).
+ *  - raw / normalizedConceptId is an ICD code → overrides → master → code + neutral (`unmapped`).
  *  Deterministic; pure. */
 export function resolveProblemLabel(problem: { raw: string; normalizedConceptId?: string | null }): ResolvedLabel {
   const raw = String(problem.raw ?? '').trim();
@@ -161,10 +182,10 @@ export function resolveProblemLabel(problem: { raw: string; normalizedConceptId?
   if (raw && !rawCode) {
     return { label: raw, code: idCode || null, unmapped: false };
   }
-  // raw (or the concept id) is a code → the bundled map is the guaranteed path.
+  // raw (or the concept id) is a code → the bundled layers are the guaranteed path.
   const code = rawCode || idCode;
   if (code) {
-    const mapped = ICD_LABELS[code];
+    const mapped = lookupLabel(code);
     if (mapped) return { label: mapped, code, unmapped: false };
     return { label: `${code} (unmapped ICD-10 code)`, code, unmapped: true };
   }
