@@ -5,6 +5,8 @@ import { featureMeta, normalizeFeature, FEATURE_FILTERS } from '@/lib/observabil
 import RunsBrowser, { type RunRow } from '@/app/admin/appropriateness-runs/runs-browser';
 import type { ExportRun } from '@/lib/runs-export';
 import CostTab from './cost-tab';
+import ReasoningTab from './reasoning-tab';
+import { shortPromptRef } from '@/lib/reasoning/registry-core';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Observability · Admin' };
@@ -64,7 +66,7 @@ function Locked({ configured, bad }: { configured: boolean; bad: boolean }) {
 export default async function ObservabilityAdmin({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
   const sp = await searchParams;
   if (!(await isAdminUnlocked())) return <Locked configured={adminTokenConfigured()} bad={sp.locked === '1'} />;
-  const tab = sp.tab === 'queries' ? 'queries' : sp.tab === 'rightcare' ? 'rightcare' : sp.tab === 'cost' ? 'cost' : 'overview';
+  const tab = sp.tab === 'queries' ? 'queries' : sp.tab === 'reasoning' ? 'reasoning' : sp.tab === 'rightcare' ? 'rightcare' : sp.tab === 'cost' ? 'cost' : 'overview';
   return (
     <div>
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -79,12 +81,12 @@ export default async function ObservabilityAdmin({ searchParams }: { searchParam
         </div>
       </div>
       <div className="mt-6 flex gap-5 border-b border-slate-200">
-        {[['overview', 'Overview'], ['queries', 'Runs'], ['rightcare', 'Right Care runs'], ['cost', 'LLM cost']].map(([k, l]) => (
+        {[['overview', 'Overview'], ['queries', 'Runs'], ['reasoning', 'Reasoning'], ['rightcare', 'Right Care runs'], ['cost', 'LLM cost']].map(([k, l]) => (
           <Link key={k} href={`/admin/observability?tab=${k}`} className={`-mb-px pb-2 text-sm ${tab === k ? 'border-b-2 border-brand font-medium text-slate-900' : 'text-slate-500 hover:text-slate-800'}`}>{l}</Link>
         ))}
       </div>
       <div className="mt-5">
-        {tab === 'overview' ? <OverviewTab /> : tab === 'rightcare' ? <RightCareRunsTab /> : tab === 'cost' ? <CostTab sp={sp} /> : <QueriesTab sp={sp} />}
+        {tab === 'overview' ? <OverviewTab /> : tab === 'reasoning' ? <ReasoningTab /> : tab === 'rightcare' ? <RightCareRunsTab /> : tab === 'cost' ? <CostTab sp={sp} /> : <QueriesTab sp={sp} />}
       </div>
     </div>
   );
@@ -238,13 +240,32 @@ function featureWhere(val: string, params: unknown[]): string {
   return `feature = $${params.length}`;
 }
 
-async function QueriesTab({ sp }: { sp: { q?: string; feature?: string; status?: string } }) {
+async function QueriesTab({ sp }: { sp: { q?: string; feature?: string; status?: string; pver?: string } }) {
   const params: unknown[] = [APP];
   let where = `app_source=$1`;
   if (sp.feature) where += ` AND ${featureWhere(sp.feature, params)}`;
   if (sp.status) { params.push(sp.status); where += ` AND status=$${params.length}`; }
   if (sp.q) { params.push(`%${sp.q}%`); where += ` AND question_preview ILIKE $${params.length}`; }
+  // Stage 2: prompt filter over traces.prompt_ids (Stage-1 column). Only added when the user
+  // picks one, so pre-migration the default list query is untouched.
+  if (sp.pver) { params.push(sp.pver); where += ` AND prompt_ids ? $${params.length}`; }
   const list = await rowsOf<ListRow>(`SELECT trace_id, feature, status, to_char(started_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"') started_at, total_ms, question_preview, severity FROM traces WHERE ${where} ORDER BY started_at DESC LIMIT 100`, params);
+
+  // Stage 2 (INFERRED, soft): prompt·version per listed run + the filter's option list — both
+  // read the Stage-1 prompt_ids column in SEPARATE queries so a pre-migration DB degrades these
+  // to '—'/an empty dropdown while the run list itself stays intact. rowsOf swallows the error.
+  const ids = list.map((r) => r.trace_id);
+  const pidRows = ids.length
+    ? await rowsOf<{ trace_id: string; prompt_ids: unknown }>(`SELECT trace_id, prompt_ids FROM traces WHERE trace_id = ANY($1) AND prompt_ids IS NOT NULL`, [ids])
+    : [];
+  const promptsByTrace = new Map<string, string[]>();
+  for (const r of pidRows) {
+    const arr = Array.isArray(r.prompt_ids) ? (r.prompt_ids as unknown[]).map(String) : [];
+    if (arr.length) promptsByTrace.set(r.trace_id, arr);
+  }
+  const pverOptions = (await rowsOf<{ pid: string }>(
+    `SELECT DISTINCT jsonb_array_elements_text(prompt_ids) AS pid FROM traces WHERE app_source=$1 AND prompt_ids IS NOT NULL ORDER BY 1 LIMIT 50`, [APP],
+  )).map((r) => String(r.pid));
 
   const groups = Array.from(new Set(FEATURE_FILTERS.map((f) => f.group)));
 
@@ -268,22 +289,36 @@ async function QueriesTab({ sp }: { sp: { q?: string; feature?: string; status?:
             <option value="">all</option><option value="success">success</option><option value="error">error</option><option value="running">running</option>
           </select>
         </div>
+        {pverOptions.length > 0 && (
+          <div><label className="block text-[11px] text-slate-500">Prompt</label>
+            <select name="pver" defaultValue={sp.pver || ''} className="rounded-lg border border-slate-300 px-2 py-1 text-sm">
+              <option value="">any</option>
+              {pverOptions.map((p) => <option key={p} value={p}>{shortPromptRef(p)}</option>)}
+            </select>
+          </div>
+        )}
         <button className="rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-dark">Filter</button>
         <Link href="/admin/observability?tab=queries" className="px-2 py-1.5 text-sm text-slate-500 hover:text-brand">Reset</Link>
       </form>
 
       {list.length === 0 ? <div className="rounded-xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500">No matching runs.</div> : (
         <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-          <div className="flex px-3 py-2 text-xs text-slate-500"><span className="w-20">when</span><span className="w-44">module</span><span className="flex-1">query</span><span className="w-20 text-right">latency</span><span className="w-20 text-right">status</span></div>
-          {list.map((r) => (
+          <div className="flex px-3 py-2 text-xs text-slate-500"><span className="w-20">when</span><span className="w-44">module</span><span className="flex-1">query</span><span className="hidden w-44 text-right sm:block">prompt</span><span className="w-20 text-right">latency</span><span className="w-20 text-right">status</span></div>
+          {list.map((r) => {
+            const prompts = promptsByTrace.get(r.trace_id) ?? [];
+            return (
             <Link key={r.trace_id} href={`/admin/observability/${r.trace_id}`} className="flex items-center border-t border-slate-100 px-3 py-2 text-sm hover:bg-slate-50">
               <span className="w-20 text-xs text-slate-500">{timeAgo(r.started_at)}</span>
               <span className="w-44 shrink-0"><Badge feature={r.feature} /></span>
               <span className="min-w-0 flex-1 truncate text-slate-700">{r.question_preview || '(no preview)'}</span>
+              <span className="hidden w-44 shrink-0 truncate text-right font-mono text-[11px] text-slate-500 sm:block" title={prompts.join(', ')}>
+                {prompts.length === 0 ? '—' : prompts.length === 1 ? shortPromptRef(prompts[0]) : `${shortPromptRef(prompts[0])} +${prompts.length - 1}`}
+              </span>
               <span className="w-20 text-right text-xs text-slate-500">{ms(r.total_ms)}</span>
               <span className="w-20 text-right text-xs">{r.status === 'error' ? <span className="text-red-600">error</span> : r.status === 'running' ? <span className="text-amber-600">running</span> : <span className="text-teal-600">success</span>}</span>
             </Link>
-          ))}
+            );
+          })}
         </div>
       )}
       <p className="mt-2 text-xs text-slate-400">Showing latest {list.length} (max 100). Click a row for the full pipeline audit trail.</p>

@@ -14,6 +14,8 @@
 import GENERATED from '../../data/reasoning-registry/prompts.generated.json';
 import { PROMPT_MANIFESTS, type Maturity } from './manifest';
 
+export type { Maturity } from './manifest';
+
 export interface GeneratedPrompt {
   id: string;
   const: string;
@@ -149,6 +151,197 @@ export function renderRegistryExport(): RegistryExport {
   for (const b of payload.user_message_builders) assertKeys(b, BUILDER_KEYS, 'builder');
   return payload;
 }
+
+// ── Stage 2 — pure UI formatters (server components render these; no DB here) ───────────────────
+
+/** 'NAME=value' version hint → 'value'; 'unversioned (git-tracked)' → 'unversioned'. */
+export function shortVersion(hint: string): string {
+  if (!hint) return '—';
+  const eq = hint.indexOf('=');
+  if (eq > 0) return hint.slice(eq + 1);
+  return hint.startsWith('unversioned') ? 'unversioned' : hint;
+}
+
+/** Compact prompt ref for table cells: 'lvc-core/JUDGE_SYSTEM' → 'lvc-core/judge'. */
+export function shortPromptRef(id: string): string {
+  const slash = id.indexOf('/');
+  if (slash < 0) return id;
+  const file = id.slice(0, slash);
+  const c = id.slice(slash + 1).replace(/_SYSTEM$/, '').toLowerCase();
+  return `${file}/${c || 'system'}`;
+}
+
+export interface RegistryTabRow {
+  id: string; shortId: string; version: string; sha12: string; feature: string; group: string;
+  rubricId: string | null; schemaId: string | null; owner: string | null; clinicianApprover: string | null;
+  maturity: Maturity; chars: number; lines: number; text: string;
+}
+
+/** The Reasoning-tab registry view: one display row per prompt, generated + manifest merged. */
+export function registryTabRows(): RegistryTabRow[] {
+  return renderRegistryExport().prompts.map((p) => ({
+    id: p.id, shortId: shortPromptRef(p.id), version: shortVersion(p.version_hint), sha12: p.sha12,
+    feature: p.feature, group: p.group, rubricId: p.rubricId, schemaId: p.schemaId,
+    owner: p.owner, clinicianApprover: p.clinicianApprover, maturity: p.maturity,
+    chars: p.chars, lines: p.lines, text: p.text,
+  }));
+}
+
+/** Raw envelope row as read from trace_events (every field nullable — pre-Stage-1 rows). */
+export interface EnvelopeEventRow {
+  seq?: number | null; stage?: string | null;
+  prompt_id?: string | null; prompt_version?: string | null; prompt_hash?: string | null;
+  rubric_versions?: unknown; output_schema_version?: string | null;
+  call_model?: string | null; call_provider?: string | null; gen_params?: unknown;
+  tokens_in?: number | null; tokens_out?: number | null; latency_ms?: number | null;
+}
+
+export interface FingerprintRow {
+  promptId: string; shortId: string; version: string; sha12: string;
+  rubrics: string[]; schema: string | null; model: string | null; provider: string | null;
+  temperature: string | null; maxTokens: string | null;
+}
+
+function asObj(v: unknown): Record<string, unknown> {
+  if (v && typeof v === 'object') return v as Record<string, unknown>;
+  if (typeof v === 'string') { try { return JSON.parse(v) as Record<string, unknown>; } catch { return {}; } }
+  return {};
+}
+
+/** Distinct fingerprints in a trace, from raw envelope rows. NULL-tolerant by contract:
+ *  pre-Stage-1 rows (no prompt_id) are skipped, never a throw; empty in → empty out. */
+export function fingerprintRows(rows: EnvelopeEventRow[]): FingerprintRow[] {
+  const out = new Map<string, FingerprintRow>();
+  for (const r of rows ?? []) {
+    const id = r?.prompt_id;
+    if (!id) continue;
+    const gp = asObj(r.gen_params);
+    const existing = out.get(id);
+    const row: FingerprintRow = existing ?? {
+      promptId: id, shortId: shortPromptRef(id),
+      version: shortVersion(String(r.prompt_version ?? '')),
+      sha12: String(r.prompt_hash ?? '').slice(0, 12) || '—',
+      rubrics: Object.keys(asObj(r.rubric_versions)),
+      schema: r.output_schema_version ?? null,
+      model: null, provider: null, temperature: null, maxTokens: null,
+    };
+    if (r.call_model) row.model = String(r.call_model);
+    if (r.call_provider) row.provider = String(r.call_provider);
+    if (gp.temperature != null) row.temperature = String(gp.temperature);
+    if (gp.max_tokens != null) row.maxTokens = Number(gp.max_tokens).toLocaleString();
+    out.set(id, row);
+  }
+  return [...out.values()];
+}
+
+export interface StageRollupRow {
+  stage: string; promptShortId: string | null; model: string | null;
+  tokensIn: number | null; tokensOut: number | null; latencyMs: number | null;
+}
+
+/** Per-stage LLM rollup: one row per response-bearing event (tokens present). NULL-tolerant. */
+export function stageRollupRows(rows: EnvelopeEventRow[]): StageRollupRow[] {
+  return (rows ?? [])
+    .filter((r) => r && (r.tokens_in != null || r.tokens_out != null))
+    .map((r) => ({
+      stage: String(r.stage ?? '—'),
+      promptShortId: r.prompt_id ? shortPromptRef(r.prompt_id) : null,
+      model: r.call_model ? String(r.call_model) : null,
+      tokensIn: r.tokens_in ?? null,
+      tokensOut: r.tokens_out ?? null,
+      latencyMs: r.latency_ms ?? null,
+    }));
+}
+
+export interface PromptVersionCostRow { promptId: string; promptVersion: string; model: string; hi: boolean; inTok: number; outTok: number; calls: number }
+export interface PromptVersionCostGroup { key: string; label: string; inr: number; calls: number }
+
+/** Pure by-prompt-version cost aggregation (the 4th cost breakdown). `price` is injected so
+ *  the pricing config stays in lib/llm-cost — this only groups and sums. */
+export function groupPromptVersionCost(
+  rows: PromptVersionCostRow[],
+  price: (model: string, inTok: number, outTok: number, hi: boolean) => number,
+): PromptVersionCostGroup[] {
+  const map = new Map<string, PromptVersionCostGroup>();
+  for (const r of rows ?? []) {
+    if (!r?.promptId) continue;
+    const key = `${r.promptId} · ${shortVersion(r.promptVersion || '')}`;
+    const g = map.get(key) ?? { key, label: `${shortPromptRef(r.promptId)} · ${shortVersion(r.promptVersion || '')}`, inr: 0, calls: 0 };
+    g.inr += price(r.model, r.inTok, r.outTok, r.hi);
+    g.calls += r.calls;
+    map.set(key, g);
+  }
+  return [...map.values()].sort((a, b) => b.inr - a.inr);
+}
+
+export interface VersionFirstSeen { promptId: string; promptVersion: string; firstSeenMs: number }
+export interface VersionChange { promptId: string; shortId: string; fromVersion: string; toVersion: string; firstSeenMs: number }
+
+/** Prompt-version rollouts inside the watch window: a prompt whose NEWEST version first
+ *  appeared after `cutoffMs` while an older version existed before it. Feeds the
+ *  regression-watch attribution line. Pure; empty/NULL-tolerant. */
+export function promptVersionChanges(rows: VersionFirstSeen[], cutoffMs: number): VersionChange[] {
+  const byPrompt = new Map<string, VersionFirstSeen[]>();
+  for (const r of rows ?? []) {
+    if (!r?.promptId || !Number.isFinite(r.firstSeenMs)) continue;
+    const list = byPrompt.get(r.promptId) ?? [];
+    list.push(r);
+    byPrompt.set(r.promptId, list);
+  }
+  const out: VersionChange[] = [];
+  for (const [promptId, list] of byPrompt) {
+    if (list.length < 2) continue;
+    const sorted = [...list].sort((a, b) => a.firstSeenMs - b.firstSeenMs);
+    const newest = sorted[sorted.length - 1];
+    if (newest.firstSeenMs >= cutoffMs) {
+      out.push({
+        promptId, shortId: shortPromptRef(promptId),
+        fromVersion: shortVersion(sorted[sorted.length - 2].promptVersion),
+        toVersion: shortVersion(newest.promptVersion),
+        firstSeenMs: newest.firstSeenMs,
+      });
+    }
+  }
+  return out.sort((a, b) => b.firstSeenMs - a.firstSeenMs);
+}
+
+/**
+ * Governed-layer coverage SNAPSHOT rendered by the Reasoning tab. The live scan
+ * (scripts/reasoning-governance-check.mjs) reads the source tree, which does not exist in
+ * the deployed serverless bundle — so the tab renders this committed snapshot, and
+ * lib/__tests__/reasoning-ui-core.test.ts diffs it against the LIVE scan in CI: any new
+ * direct call site fails the build until this snapshot (and the tab) is updated.
+ * Captured at Stage 1 (98a58c0). Stage 4 drives directSites to 0 and flips the CI gate.
+ */
+export const GOVERNANCE_SNAPSHOT = {
+  capturedAt: '98a58c0 (Stage 1)',
+  directSites: 21,
+  directFiles: 20,
+  concordanceRefs: 13,
+  taggedPromptRefs: 10,   // Right Care family (Stage 1)
+  ungovernedFiles: [
+    'app/api/calculators/tooltip/route.ts',
+    'app/api/practice/next/route.ts',
+    'app/api/topics/route.ts',
+    'lib/ccb-brief.ts',
+    'lib/concordance.ts',
+    'lib/curator.ts',
+    'lib/doc-audit.ts',
+    'lib/drugs.ts',
+    'lib/expand.ts',
+    'lib/investigations.ts',
+    'lib/learning.ts',
+    'lib/lvc-value.ts',
+    'lib/lvc.ts',
+    'lib/mcp-tools.ts',
+    'lib/multi-query.ts',
+    'lib/opd-longitudinal.ts',
+    'lib/opd-note-audit.ts',
+    'lib/pathway.ts',
+    'lib/proms/adhoc.ts',
+    'lib/rerank.ts',
+  ],
+};
 
 // ── HTML rendering for ?format=html (pure string; self-contained, no scripts) ──────────────────
 function esc(s: string): string {

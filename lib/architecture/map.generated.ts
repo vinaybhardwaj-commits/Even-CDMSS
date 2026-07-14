@@ -826,6 +826,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/admin",
+    "to": "reasoning",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
     "to": "runs-export",
     "kind": "type"
   },

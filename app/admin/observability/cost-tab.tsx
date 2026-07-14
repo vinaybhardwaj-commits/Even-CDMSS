@@ -1,7 +1,59 @@
 import Link from 'next/link';
+import { sql } from '@/lib/db';
 import { featureMeta } from '@/lib/observability-meta';
-import { fmtInr } from '@/lib/llm-cost-core';
-import { costKpis, costByBucket, costByFeature, costByModel, costByType, costDuplicates, costLog, costLogFeatures, MULTIMODAL_METERED_SINCE, type Scale } from '@/lib/llm-cost';
+import { fmtInr, costInr } from '@/lib/llm-cost-core';
+import { costKpis, costByBucket, costByFeature, costByModel, costByType, costDuplicates, costLog, costLogFeatures, MULTIMODAL_METERED_SINCE, PRICING, type Scale } from '@/lib/llm-cost';
+import { groupPromptVersionCost, promptVersionChanges, type PromptVersionCostRow, type PromptVersionCostGroup, type VersionChange } from '@/lib/reasoning/registry-core';
+
+const APP = process.env.APP_SOURCE || 'standalone';
+const runQ = sql as unknown as (t: string, p?: unknown[]) => Promise<Record<string, unknown>[]>;
+
+// ── Stage 2: by-prompt-version spend (the 4th breakdown) + rollout attribution ──────────────────
+// INFERRED reads of the Stage-1 envelope columns (0012), in their own soft queries: pre-migration
+// they throw → catch → the card renders '—' and the attribution line stays absent. Never a 500.
+// The token expressions mirror lib/llm-cost.ts (IN_TOK/OUT_TOK) — kept verbatim so pricing agrees.
+const PV_IN_TOK = `coalesce((e.payload->'usage'->>'prompt_tokens')::int, 0)`;
+const PV_OUT_TOK = `greatest(
+    coalesce((e.payload->'usage'->>'completion_tokens')::int, 0),
+    coalesce((e.payload->'usage'->>'total_tokens')::int, 0) - coalesce((e.payload->'usage'->>'prompt_tokens')::int, 0)
+  )`;
+
+async function costByPromptVersion(days = 7): Promise<PromptVersionCostGroup[]> {
+  try {
+    const rows = await runQ(
+      `SELECT e.prompt_id, e.prompt_version, e.payload->>'model' AS model, (${PV_IN_TOK} > 200000) AS hi,
+              sum(${PV_IN_TOK})::bigint AS in_tok, sum(${PV_OUT_TOK})::bigint AS out_tok, count(*)::int AS calls
+       FROM trace_events e
+       WHERE e.kind IN ('llm_response', 'llm_stream_usage') AND e.app_source = $1
+         AND (e.payload->>'model') ILIKE '%gemini%' AND e.prompt_id IS NOT NULL
+         AND e.ts > now() - interval '${Math.max(1, Math.min(90, days))} days'
+       GROUP BY 1, 2, 3, 4`,
+      [APP],
+    );
+    const shaped: PromptVersionCostRow[] = rows.map((r) => ({
+      promptId: String(r.prompt_id), promptVersion: String(r.prompt_version ?? ''),
+      model: String(r.model), hi: r.hi === true,
+      inTok: Number(r.in_tok) || 0, outTok: Number(r.out_tok) || 0, calls: Number(r.calls) || 0,
+    }));
+    return groupPromptVersionCost(shaped, (model, inTok, outTok, hi) => costInr(model, inTok, outTok, hi, PRICING));
+  } catch { return []; }
+}
+
+async function recentVersionChanges(hours = 48): Promise<VersionChange[]> {
+  try {
+    const rows = await runQ(
+      `SELECT prompt_id, prompt_version, (extract(epoch FROM min(ts)) * 1000)::bigint AS first_seen_ms
+       FROM trace_events
+       WHERE app_source = $1 AND prompt_id IS NOT NULL AND prompt_version IS NOT NULL
+       GROUP BY 1, 2`,
+      [APP],
+    );
+    return promptVersionChanges(
+      rows.map((r) => ({ promptId: String(r.prompt_id), promptVersion: String(r.prompt_version), firstSeenMs: Number(r.first_seen_ms) })),
+      Date.now() - hours * 3600_000,
+    );
+  } catch { return []; }
+}
 
 const SCALES: { k: Scale; l: string }[] = [{ k: 'hour', l: 'Hour' }, { k: 'day', l: 'Day' }, { k: 'week', l: 'Week' }, { k: 'month', l: 'Month' }];
 
@@ -24,9 +76,10 @@ export default async function CostTab({ sp }: { sp: Record<string, string | unde
   const feature = sp.cfeat || undefined;
   const page = Math.max(0, Number(sp.cpage) || 0);
 
-  const [kpis, chart, byFeat, byModel, byType, dupes, log, logFeatures] = await Promise.all([
+  const [kpis, chart, byFeat, byModel, byType, dupes, log, logFeatures, byPromptVer, verChanges] = await Promise.all([
     costKpis(), costByBucket(scale), costByFeature(7), costByModel(7), costByType(7), costDuplicates(24),
     costLog({ from, to, feature, model, ctype, page, pageSize: 100 }), costLogFeatures(),
+    costByPromptVersion(7), recentVersionChanges(48),
   ]);
 
   const full = chart.buckets.slice(0, -1);
@@ -94,13 +147,18 @@ export default async function CostTab({ sp }: { sp: Record<string, string | unde
         )}
       </div>
 
-      {/* regression watch */}
-      {(dupes.groups.length > 0 || (kpis.spikePct != null && kpis.spikePct >= 80)) && (
+      {/* regression watch — now prompt-version aware (Stage 2) */}
+      {(dupes.groups.length > 0 || (kpis.spikePct != null && kpis.spikePct >= 80) || verChanges.length > 0) && (
         <div className="mt-4 rounded-xl border border-red-200 bg-red-50/60 p-4">
           <div className="text-sm font-medium text-red-700">Regression watch</div>
           <ul className="mt-1.5 space-y-1 text-[12.5px] text-slate-700">
             {kpis.spikePct != null && kpis.spikePct >= 80 && (
               <li>Today's spend is <b>{kpis.spikePct >= 0 ? '+' : ''}{kpis.spikePct}%</b> vs the 7-day daily average ({fmtInr(kpis.today)} vs ~{fmtInr(kpis.last7 / 7)}/day).</li>
+            )}
+            {verChanges.length > 0 && (
+              <li className="text-indigo-700">
+                <b>Attribution:</b> prompt-version rollout{verChanges.length > 1 ? 's' : ''} in the last 48h — {verChanges.slice(0, 3).map((c) => `${c.shortId} ${c.fromVersion}→${c.toVersion}`).join(' · ')}. If a cost step-up starts here, it likely tracks the rollout, not a leak (check the by-prompt-version card below).
+              </li>
             )}
             {dupes.groups.length > 0 && (
               <li><b>~{fmtInr(dupes.totalWastedInr)}</b> likely wasted in the last 24h on {dupes.groups.length} set(s) of identical repeated calls (same feature + token counts):</li>
@@ -119,8 +177,8 @@ export default async function CostTab({ sp }: { sp: Record<string, string | unde
         </div>
       )}
 
-      {/* breakdowns */}
-      <div className="mt-4 grid gap-4 md:grid-cols-3">
+      {/* breakdowns — existing 3 + the by-prompt-version 4th (Stage 2) */}
+      <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-xl border border-slate-200 bg-white p-4">
           <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.05em] text-slate-400">By feature · last 7 days</div>
           {byFeat.length === 0 ? <div className="text-[12px] text-slate-400">—</div> : byFeat.slice(0, 8).map((g) => (
@@ -144,6 +202,15 @@ export default async function CostTab({ sp }: { sp: Record<string, string | unde
           {byType.length === 0 ? <div className="text-[12px] text-slate-400">—</div> : byType.map((g) => (
             <div key={g.key} className="flex items-center justify-between border-t border-slate-100 py-1.5 text-[12.5px] first:border-t-0">
               <span className="text-slate-700">{g.key}</span>
+              <span className="tabular-nums text-slate-500">{fmtInr(g.inr)} · {g.calls.toLocaleString()} calls</span>
+            </div>
+          ))}
+        </div>
+        <div className="rounded-xl border border-indigo-200 bg-indigo-50/40 p-4">
+          <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.05em] text-indigo-500">By prompt version · last 7 days</div>
+          {byPromptVer.length === 0 ? <div className="text-[12px] text-slate-400">— (populates once migration 0012 + tagged runs exist)</div> : byPromptVer.slice(0, 8).map((g) => (
+            <div key={g.key} className="flex items-center justify-between border-t border-indigo-100 py-1.5 text-[12.5px] first:border-t-0">
+              <span className="font-mono text-[11.5px] text-slate-700">{g.label}</span>
               <span className="tabular-nums text-slate-500">{fmtInr(g.inr)} · {g.calls.toLocaleString()} calls</span>
             </div>
           ))}

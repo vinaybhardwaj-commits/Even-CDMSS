@@ -3,13 +3,14 @@ import type { ReactNode } from 'react';
 import { sql } from '@/lib/db';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { featureMeta, eventMeta, type EventTone } from '@/lib/observability-meta';
+import { fingerprintRows, stageRollupRows, type EnvelopeEventRow } from '@/lib/reasoning/registry-core';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Trace · Admin' };
 
 const APP = process.env.APP_SOURCE || 'standalone';
 
-type Trace = { trace_id: string; feature: string; status: string; started_at: string; total_ms: number | null; question_preview: string | null; severity: string | null; final_answer_text: string | null; error_message: string | null };
+type Trace = { trace_id: string; feature: string; status: string; started_at: string; total_ms: number | null; question_preview: string | null; severity: string | null; final_answer_text: string | null; error_message: string | null; model_summary: unknown };
 type Ev = { seq: number; ts: string; kind: string; stage: string | null; payload: Record<string, unknown> | null; latency_ms: number | null };
 type Hit = { n?: number; id?: number; book?: string; chapter?: string; section?: string; page_start?: number; chunk_type?: string; similarity?: number; rerank_score?: number; text?: string; doi?: string; title?: string; year?: number };
 
@@ -41,10 +42,19 @@ export default async function TraceDetail({ params }: { params: Promise<{ traceI
     return <div><h1 className="font-serif text-2xl font-semibold text-slate-900">Locked</h1><p className="mt-2 text-sm text-slate-500"><Link className="text-brand underline" href="/admin/observability">Unlock the observability surface</Link> to view traces.</p></div>;
   }
 
-  const traceRows = (await sql`SELECT trace_id, feature, status, to_char(started_at,'YYYY-MM-DD HH24:MI:SS') AS started_at, total_ms, question_preview, severity, final_answer_text, error_message FROM traces WHERE trace_id = ${traceId} AND app_source = ${APP} LIMIT 1`.catch(() => [])) as Trace[];
+  const traceRows = (await sql`SELECT trace_id, feature, status, to_char(started_at,'YYYY-MM-DD HH24:MI:SS') AS started_at, total_ms, question_preview, severity, final_answer_text, error_message, model_summary FROM traces WHERE trace_id = ${traceId} AND app_source = ${APP} LIMIT 1`.catch(() => [])) as Trace[];
   const tr = traceRows[0];
   if (!tr) return <div><Link href="/admin/observability?tab=queries" className="text-sm text-brand">← Runs</Link><p className="mt-4 text-sm text-slate-500">Trace not found.</p></div>;
   const events = (await sql`SELECT seq, to_char(ts,'HH24:MI:SS') AS ts, kind, stage, payload, latency_ms FROM trace_events WHERE trace_id = ${traceId} ORDER BY seq ASC`.catch(() => [])) as Ev[];
+
+  // ── Reasoning fingerprint (Stage 2) — INFERRED read of the Stage-1 envelope columns, in a
+  // SEPARATE soft query: pre-migration (or on pre-Stage-1 rows) it fails/returns nothing and
+  // the panels simply don't render; the main trace view above is never at risk.
+  const envRows = (await sql`SELECT seq, stage, prompt_id, prompt_version, prompt_hash, rubric_versions, output_schema_version, call_model, call_provider, gen_params, tokens_in, tokens_out, latency_ms FROM trace_events WHERE trace_id = ${traceId} AND (prompt_id IS NOT NULL OR call_model IS NOT NULL) ORDER BY seq ASC`.catch(() => [])) as EnvelopeEventRow[];
+  const fps = fingerprintRows(envRows);
+  const rollup = stageRollupRows(envRows);
+  const modelSummary = obj(tr.model_summary);
+  const modelSummaryEntries = Object.entries(modelSummary).filter(([, v]) => typeof v === 'string') as Array<[string, string]>;
 
   const fm = featureMeta(tr.feature);
   const visible = events.filter((e) => e.kind !== 'stream_event');
@@ -100,6 +110,60 @@ export default async function TraceDetail({ params }: { params: Promise<{ traceI
           : <Cell label={tokens > 0 ? 'Tokens' : 'Retrieved'} value={tokens > 0 ? tokens.toLocaleString() : String(sourceCount || '—')} sub={tokens > 0 ? undefined : 'candidate pool'} />}
       </div>
       {hadError && <div className="mt-2 text-[11px] text-red-600">Pipeline reported an error — see the timeline below.</div>}
+
+      {/* ── Reasoning fingerprint (Stage 2) — from the Stage-1 envelope columns ── */}
+      {fps.length > 0 && (
+        <div className="mt-4 rounded-xl border border-indigo-200 bg-indigo-50/40 p-3">
+          <div className="mb-2 text-[13px] font-medium text-slate-800">Reasoning fingerprint</div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {fps.map((f) => (
+              <div key={f.promptId} className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-indigo-100 bg-indigo-100 sm:grid-cols-4">
+                <Cell label="prompt" value={f.shortId} valueClass="font-mono text-[12px] normal-case text-slate-900" sub={f.version} />
+                <Cell label="prompt hash" value={f.sha12 + '…'} valueClass="font-mono text-[12px] normal-case text-slate-700" />
+                <Cell label="rubric" value={f.rubrics.length ? f.rubrics.join(', ') : '—'} valueClass="text-[12px] normal-case text-slate-700" sub={f.schema ? `schema ${f.schema}` : undefined} />
+                <Cell label="model" value={f.model ?? '—'} valueClass="text-[12px] normal-case text-slate-700" sub={[f.provider, f.temperature != null ? `temp ${f.temperature}` : null, f.maxTokens != null ? `max ${f.maxTokens}` : null].filter(Boolean).join(' · ') || undefined} />
+              </div>
+            ))}
+          </div>
+          <div className="mt-1.5 text-[10.5px] text-slate-400">Promoted from payload JSONB to queryable columns (migration 0012) — stamped from the prompt registry at the tracedChat choke point.</div>
+        </div>
+      )}
+
+      {/* ── Per-stage LLM rollup (Stage 2) ── */}
+      {rollup.length > 0 && (
+        <div className="mt-4 rounded-xl border border-slate-200 bg-white p-3">
+          <div className="mb-2 text-[13px] font-medium text-slate-800">LLM calls — per-stage rollup ({rollup.length})</div>
+          <table className="w-full text-left text-[12px]">
+            <thead className="text-[10.5px] uppercase tracking-wide text-slate-400">
+              <tr><th className="py-1 pr-3 font-medium">stage</th><th className="py-1 pr-3 font-medium">prompt</th><th className="py-1 pr-3 font-medium">model</th><th className="py-1 pr-3 text-right font-medium">tok in</th><th className="py-1 pr-3 text-right font-medium">tok out</th><th className="py-1 text-right font-medium">latency</th></tr>
+            </thead>
+            <tbody>
+              {rollup.map((r, i) => (
+                <tr key={i} className="border-t border-slate-100">
+                  <td className="py-1 pr-3 text-slate-700">{r.stage}</td>
+                  <td className="py-1 pr-3 font-mono text-[11px] text-slate-600">{r.promptShortId ?? '—'}</td>
+                  <td className="py-1 pr-3 text-slate-600">{r.model ?? '—'}</td>
+                  <td className="py-1 pr-3 text-right tabular-nums text-slate-600">{r.tokensIn?.toLocaleString() ?? '—'}</td>
+                  <td className="py-1 pr-3 text-right tabular-nums text-slate-600">{r.tokensOut?.toLocaleString() ?? '—'}</td>
+                  <td className="py-1 text-right tabular-nums text-slate-500">{r.latencyMs != null ? ms(r.latencyMs) : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* ── Model summary (Stage 2) — the previously-unrendered traces.model_summary ── */}
+      {modelSummaryEntries.length > 0 && (
+        <div className="mt-4 rounded-xl border border-slate-200 bg-white p-3">
+          <div className="mb-1.5 text-[13px] font-medium text-slate-800">Model summary</div>
+          <div className="flex flex-wrap gap-1.5">
+            {modelSummaryEntries.map(([k, v]) => (
+              <span key={k} className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-600"><span className="text-slate-400">{k}</span> → {v}</span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {citeTokens.length > 0 && (
         <div className="mt-4 rounded-xl border border-slate-200 bg-white p-3">
