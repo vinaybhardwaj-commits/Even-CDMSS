@@ -16,7 +16,7 @@
 
 import { retrieve } from './retrieve';
 import { chatWithFallback, geminiModelFor, geminiUtilityModel, TEXT_MODEL } from './llm';
-import { startTrace, logEvent, finishTrace, tracedChat } from './trace';
+import { startTrace, logEvent, finishTrace, tracedChat, withTrace } from './trace';
 import { matchAnyTariffs } from './charge-master';
 import { hitsToSources, buildCitedContext, type CiteHit, type Source } from './citations-core';
 import { parseCritique } from './lvc-value-core';
@@ -45,16 +45,17 @@ export interface EnrichInput extends PathwayInput {
 export interface SkeletonResult { skeleton: PathwaySkeleton | null; traceId?: string }
 export interface EnrichResult { enrichment: PathwayEnrichment | null; sources: Source[]; excerptCount: number; traceId?: string }
 
-/** Injection seams for tests (defaults hit the real backend). */
+/** Injection seams for tests (defaults hit the real backend). promptRef (Stage 1) is the
+ *  Stage-0 registry id of the system prompt — an additive envelope tag, never the prompt. */
 export interface SkeletonDeps { generate: (system: string, user: string, traceId?: string) => Promise<string> }
 export interface EnrichDeps {
   retrieveHits: (q: string) => Promise<CiteHit[]>;
-  generate: (system: string, user: string, label: string) => Promise<string>;
+  generate: (system: string, user: string, label: string, promptRef?: string) => Promise<string>;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function llmCall(traceId: string | undefined, label: string, params: any, geminiModel?: string): Promise<any> {
-  if (traceId) return tracedChat(traceId, label, params, { gemini: geminiModel });
+async function llmCall(traceId: string | undefined, label: string, params: any, geminiModel?: string, promptRef?: string): Promise<any> {
+  if (traceId) return tracedChat(traceId, label, params, { gemini: geminiModel, promptRef });
   return chatWithFallback(params, geminiModel);
 }
 
@@ -74,15 +75,16 @@ async function defaultSkeletonGenerate(system: string, user: string, traceId?: s
     temperature: 0.2,
     max_tokens: 800,
     ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
-  }, geminiModel);
+  }, geminiModel, 'pathway-core/SKELETON_SYSTEM');
   return r.choices?.[0]?.message?.content || '';
 }
 
 export async function traceSkeleton(input: PathwayInput, deps: Partial<SkeletonDeps> = {}): Promise<SkeletonResult> {
   const doTrace = input.trace !== false;
-  const traceId = doTrace
-    ? await startTrace('pathway', { scenario: input.scenario.slice(0, 500), proposedActions: input.proposedActions, patient: input.patient })
-    : undefined;
+
+  // Stage 1 (guaranteed finalize): status-guarded withTrace closes any trace left 'running';
+  // the explicit finishTrace calls below still set the real statuses first (behaviour unchanged).
+  const run = async (traceId?: string): Promise<SkeletonResult> => {
   const generate = deps.generate ?? ((s: string, u: string) => defaultSkeletonGenerate(s, u, traceId, input.forceOllama === true));
   try {
     const user = core.buildSkeletonUser(input);
@@ -106,6 +108,13 @@ export async function traceSkeleton(input: PathwayInput, deps: Partial<SkeletonD
     console.warn('[pathway] traceSkeleton failed', (e as Error).message);
     return { skeleton: null, traceId };
   }
+
+  };
+
+  if (!doTrace) return run(undefined);
+  return withTrace('pathway', {
+    scenario: input.scenario.slice(0, 500), proposedActions: input.proposedActions, patient: input.patient,
+  }, run);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -127,7 +136,7 @@ async function defaultRetrieveHits(q: string): Promise<CiteHit[]> {
   }
 }
 
-async function defaultEnrichGenerate(system: string, user: string, label: string, traceId: string | undefined, maxTokens: number): Promise<string> {
+async function defaultEnrichGenerate(system: string, user: string, label: string, traceId: string | undefined, maxTokens: number, promptRef?: string): Promise<string> {
   // Pro reasoning for enrichment (honours GEMINI_ALL); soft-falls to local Ollama.
   const geminiModel = geminiModelFor('pathway') ?? geminiUtilityModel();
   const r = await llmCall(traceId, label, {
@@ -139,7 +148,7 @@ async function defaultEnrichGenerate(system: string, user: string, label: string
     temperature: 0.2,
     max_tokens: maxTokens,
     ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
-  }, geminiModel);
+  }, geminiModel, promptRef);
   return r.choices?.[0]?.message?.content || '';
 }
 
@@ -158,7 +167,7 @@ export async function enrichPathway(input: EnrichInput, deps: Partial<EnrichDeps
 
   const retrieveHits = deps.retrieveHits ?? defaultRetrieveHits;
   const generate = deps.generate
-    ?? ((s: string, u: string, label: string) => defaultEnrichGenerate(s, u, label, traceId, label === 'pathway_enrich_critique' ? 800 : 2500));
+    ?? ((s: string, u: string, label: string, promptRef?: string) => defaultEnrichGenerate(s, u, label, traceId, label === 'pathway_enrich_critique' ? 800 : 2500, promptRef));
 
   const ids = stages.map((s) => s.id);
   const prog = input.onProgress ?? (() => {});
@@ -183,14 +192,14 @@ export async function enrichPathway(input: EnrichInput, deps: Partial<EnrichDeps
       citedContext,
     );
     prog('enriching', 'Enriching each step…');
-    const draftRaw = await generate(core.ENRICH_SYSTEM, user, 'pathway_enrich');
+    const draftRaw = await generate(core.ENRICH_SYSTEM, user, 'pathway_enrich', 'pathway-core/ENRICH_SYSTEM');
     let enrichment = core.parseEnrichment(draftRaw, ids, sources.length);
 
     // ── Citation self-critique + revise ──────────────────────────────────────
     if (doAudit && enrichment) {
       try {
         prog('reviewing', 'Auditing citations…');
-        const critiqueRaw = await generate(core.ENRICH_CRITIQUE_SYSTEM, core.buildEnrichCritiqueUser(input.scenario, citedContext, draftRaw), 'pathway_enrich_critique');
+        const critiqueRaw = await generate(core.ENRICH_CRITIQUE_SYSTEM, core.buildEnrichCritiqueUser(input.scenario, citedContext, draftRaw), 'pathway_enrich_critique', 'pathway-core/ENRICH_CRITIQUE_SYSTEM');
         const critique = parseCritique(critiqueRaw);
         if (traceId) await logEvent(traceId, 'pathway_enrich_critique', null, {
           severity: critique.severity, needs_revision: critique.needs_revision,
@@ -199,7 +208,7 @@ export async function enrichPathway(input: EnrichInput, deps: Partial<EnrichDeps
         });
         if (critique.needs_revision) {
           prog('revising', 'Revising to fix citations…');
-          const revRaw = await generate(core.ENRICH_REVISE_SYSTEM, core.buildEnrichReviseUser(input.scenario, citedContext, draftRaw, JSON.stringify(critique)), 'pathway_enrich');
+          const revRaw = await generate(core.ENRICH_REVISE_SYSTEM, core.buildEnrichReviseUser(input.scenario, citedContext, draftRaw, JSON.stringify(critique)), 'pathway_enrich', 'pathway-core/ENRICH_REVISE_SYSTEM');
           const revised = core.parseEnrichment(revRaw, ids, sources.length);
           if (revised) enrichment = revised;
         }

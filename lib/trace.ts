@@ -1,8 +1,59 @@
 import { randomUUID } from 'crypto';
 import { sql } from './db';
 import { llm, geminiConfigured, getGeminiChatClient, vertexModelName } from './llm';
+import { promptFingerprint } from './reasoning/registry-core';
 
 const sqlFn = sql as unknown as (q: string, p: unknown[]) => Promise<unknown>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Invocation envelope (Reasoning Observability Stage 1) — the per-call reasoning
+// fingerprint promoted from payload JSONB into queryable trace_events columns.
+// Stamped from the Stage-0 registry via promptFingerprint (the single source —
+// a hash is never hardcoded at a call site). Every write degrades to a no-op if
+// the 0012 migration hasn't run: the base event INSERT is unchanged and the
+// envelope lands in a separate guarded UPDATE.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface TraceEnvelope {
+  prompt_id: string | null;
+  prompt_version: string | null;
+  prompt_hash: string | null;
+  rubric_versions: Record<string, string> | null;
+  output_schema_version: string | null;
+  call_model: string | null;
+  call_provider: string | null;
+  gen_params: Record<string, unknown> | null;
+  tokens_in: number | null;
+  tokens_out: number | null;
+}
+
+/** Build the envelope columns for one LLM call. promptRef unset (or unknown to the
+ *  registry) ⇒ fingerprint columns stay null and only the call facts are written. */
+export function buildEnvelope(
+  promptRef: string | undefined,
+  call: { model?: string | null; provider?: string | null; genParams?: Record<string, unknown> | null; tokensIn?: number | null; tokensOut?: number | null },
+): TraceEnvelope {
+  const fp = promptRef ? promptFingerprint(promptRef) : null;
+  return {
+    prompt_id: fp?.id ?? null,
+    prompt_version: fp?.version ?? null,
+    prompt_hash: fp?.hash ?? null,
+    rubric_versions: fp && Object.keys(fp.rubricVersions).length ? fp.rubricVersions : null,
+    output_schema_version: fp?.schemaId ?? null,
+    call_model: call.model ?? null,
+    call_provider: call.provider ?? null,
+    gen_params: call.genParams ?? null,
+    tokens_in: call.tokensIn ?? null,
+    tokens_out: call.tokensOut ?? null,
+  };
+}
+
+// Exported so the envelope test can pin the exact column set to the 0012 migration.
+export const ENVELOPE_UPDATE_SQL =
+  `UPDATE trace_events SET prompt_id = $1, prompt_version = $2, prompt_hash = $3,
+   rubric_versions = $4::jsonb, output_schema_version = $5, call_model = $6,
+   call_provider = $7, gen_params = $8::jsonb, tokens_in = $9, tokens_out = $10
+   WHERE trace_id = $11 AND seq = $12`;
 
 export async function startTrace(feature: string, input: unknown, userId: number = 1, meta?: unknown): Promise<string> {
   const traceId = randomUUID();
@@ -22,16 +73,34 @@ export async function logEvent(
   kind: string,
   stage: string | null,
   payload: unknown,
-  latencyMs?: number
+  latencyMs?: number,
+  envelope?: TraceEnvelope
 ): Promise<void> {
   try {
     // app_source is set explicitly here: the lib/db stamper cannot safely inject
     // into this INSERT because the seq subquery in VALUES contains parentheses.
-    await sqlFn(
+    const rows = (await sqlFn(
       `INSERT INTO trace_events (trace_id, seq, kind, stage, payload, latency_ms, app_source)
-       VALUES ($1, COALESCE((SELECT MAX(seq) + 1 FROM trace_events WHERE trace_id = $1), 1), $2, $3, $4::jsonb, $5, $6)`,
+       VALUES ($1, COALESCE((SELECT MAX(seq) + 1 FROM trace_events WHERE trace_id = $1), 1), $2, $3, $4::jsonb, $5, $6)
+       RETURNING seq`,
       [traceId, kind, stage, JSON.stringify(payload ?? null), latencyMs ?? null, process.env.APP_SOURCE || 'standalone']
-    );
+    )) as Array<{ seq?: number }>;
+    // Envelope columns ride a SEPARATE guarded UPDATE (never the INSERT): before the 0012
+    // migration this update fails and is swallowed while the base event row stays intact.
+    if (envelope) {
+      const seq = rows?.[0]?.seq;
+      if (seq != null) {
+        try {
+          await sqlFn(ENVELOPE_UPDATE_SQL, [
+            envelope.prompt_id, envelope.prompt_version, envelope.prompt_hash,
+            envelope.rubric_versions ? JSON.stringify(envelope.rubric_versions) : null,
+            envelope.output_schema_version, envelope.call_model, envelope.call_provider,
+            envelope.gen_params ? JSON.stringify(envelope.gen_params) : null,
+            envelope.tokens_in, envelope.tokens_out, traceId, seq,
+          ]);
+        } catch {}
+      }
+    }
   } catch {}
 }
 
@@ -64,7 +133,10 @@ export async function tracedChat(
   // call runs on Gemini and silently falls back to the local Ollama model in
   // `params.model` on any error/timeout. Omit it (or leave Gemini unconfigured)
   // and behaviour is byte-identical to the original Ollama-only path.
-  opts?: { gemini?: string },
+  // promptRef (Stage 1): a Stage-0 registry id — resolves version+hash via
+  // promptFingerprint and stamps the envelope columns on this call's events.
+  // Unset ⇒ only the call facts (model/provider/gen_params/tokens) are written.
+  opts?: { gemini?: string; promptRef?: string },
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const t0 = Date.now();
@@ -83,7 +155,16 @@ export async function tracedChat(
     options: (params as Record<string, unknown>).options,
     keep_alive: (params as Record<string, unknown>).keep_alive,
   };
-  await logEvent(traceId, 'llm_request', label, requestPayload);
+  const genParams: Record<string, unknown> = {
+    temperature: requestPayload.temperature ?? null,
+    max_tokens: requestPayload.max_tokens ?? null,
+    stream: requestPayload.stream,
+  };
+  const promptRef = opts?.promptRef;
+  await logEvent(traceId, 'llm_request', label, requestPayload, undefined,
+    buildEnvelope(promptRef, { model: servedModel, provider: requestPayload.provider, genParams }));
+  // Roll the registry id into traces.prompt_ids (only ids the registry actually knows).
+  if (promptRef && promptFingerprint(promptRef)) await setTracePromptIds(traceId, [promptRef]);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let result: any;
@@ -147,31 +228,37 @@ export async function tracedChat(
       provider,
       error: String((e as Error).message),
       stack: (e as Error).stack?.slice(0, 2000),
-    }, Date.now() - t0);
+    }, Date.now() - t0,
+      buildEnvelope(promptRef, { model: actualModel, provider, genParams }));
     throw e;
   }
 
   // For non-streaming responses, log the full content + usage
   if (!('controller' in result)) {
-    const r = result as { choices?: Array<{ message?: { content?: string }; finish_reason?: string }>; usage?: unknown };
+    const r = result as { choices?: Array<{ message?: { content?: string }; finish_reason?: string }>; usage?: { prompt_tokens?: number; completion_tokens?: number } };
     await logEvent(traceId, 'llm_response', label, {
       model: actualModel,
       provider,
       content: r.choices?.[0]?.message?.content ?? '',
       finish_reason: r.choices?.[0]?.finish_reason,
       usage: r.usage,
-    }, Date.now() - t0);
+    }, Date.now() - t0,
+      buildEnvelope(promptRef, {
+        model: actualModel, provider, genParams,
+        tokensIn: r.usage?.prompt_tokens ?? null, tokensOut: r.usage?.completion_tokens ?? null,
+      }));
   } else {
     // For streaming, the caller will collect tokens and should call logStreamComplete after.
     await logEvent(traceId, 'llm_response_stream_started', label, {
       model: actualModel,
       provider,
-    }, Date.now() - t0);
+    }, Date.now() - t0,
+      buildEnvelope(promptRef, { model: actualModel, provider, genParams }));
     // The content events carry no usage, so wrap the stream to capture the final usage chunk
     // (from stream_options.include_usage) and log it once the stream drains. Gemini only —
     // this is what makes streamed spend (/ask, /ddx, /topics) visible in the cost tracker.
     if ((params as { stream?: boolean }).stream && provider === 'gemini') {
-      result = wrapStreamUsage(result, traceId, label, actualModel, provider, t0);
+      result = wrapStreamUsage(result, traceId, label, actualModel, provider, t0, promptRef, genParams);
     }
   }
 
@@ -191,6 +278,8 @@ async function* wrapStreamUsage(
   model: string | undefined,
   provider: string,
   t0: number,
+  promptRef?: string,
+  genParams?: Record<string, unknown>,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): AsyncGenerator<any> {
   let usage: unknown;
@@ -203,7 +292,12 @@ async function* wrapStreamUsage(
     }
   } finally {
     if (usage) {
-      await logEvent(traceId, 'llm_stream_usage', label, { model, provider, usage, streamed: true }, Date.now() - t0).catch(() => {});
+      const u = usage as { prompt_tokens?: number; completion_tokens?: number };
+      await logEvent(traceId, 'llm_stream_usage', label, { model, provider, usage, streamed: true }, Date.now() - t0,
+        buildEnvelope(promptRef, {
+          model: model ?? null, provider, genParams: genParams ?? null,
+          tokensIn: u.prompt_tokens ?? null, tokensOut: u.completion_tokens ?? null,
+        })).catch(() => {});
     }
   }
 }
@@ -257,4 +351,71 @@ export async function setTraceFinalAnswer(traceId: string, finalAnswer: string):
   try {
     await sqlFn(`UPDATE traces SET final_answer_text = $1 WHERE trace_id = $2`, [finalAnswer, traceId]);
   } catch {}
+}
+
+/** Roll registry prompt ids into traces.prompt_ids (deduped append — an id already in the
+ *  array is skipped). Stage 1 denormalized writer; degrades to no-op before migration 0012. */
+export async function setTracePromptIds(traceId: string, promptIds: string[]): Promise<void> {
+  try {
+    for (const id of promptIds) {
+      await sqlFn(
+        `UPDATE traces SET prompt_ids = COALESCE(prompt_ids, '[]'::jsonb) || to_jsonb($1::text)
+         WHERE trace_id = $2 AND NOT (COALESCE(prompt_ids, '[]'::jsonb) ? $1)`,
+        [id, traceId]
+      );
+    }
+  } catch {}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Guaranteed finalize (Stage 1) — closes the `running`-trace leak.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** finishTrace, but ONLY if the trace is still 'running' — never overwrites a status the
+ *  pipeline already set (so withTrace's safety net can't turn a 'partial' into 'success'). */
+export async function finishTraceIfRunning(
+  traceId: string,
+  status: 'success' | 'error' | 'partial',
+  errorMessage?: string
+): Promise<void> {
+  try {
+    await sqlFn(
+      `UPDATE traces SET finished_at = NOW(), status = $1, error_message = $2,
+       total_ms = EXTRACT(EPOCH FROM (NOW() - started_at)) * 1000
+       WHERE trace_id = $3 AND status = 'running'`,
+      [status, errorMessage ?? null, traceId]
+    );
+  } catch {}
+}
+
+/** Injection seam for unit tests (repo idiom — mirrors MatchDeps/SkeletonDeps). */
+export interface WithTraceDeps {
+  start?: (feature: string, input: unknown) => Promise<string>;
+  finish?: (traceId: string, status: 'success' | 'error', errorMessage?: string) => Promise<void>;
+}
+
+/**
+ * Run fn under a trace with GUARANTEED finalization: the finalizer runs exactly once, in
+ * finally, on success AND on throw (rethrown unchanged). The finalizer is status-guarded
+ * (finishTraceIfRunning), so a pipeline that already finished its own trace — including
+ * with 'error' or 'partial' — is untouched; only a trace left 'running' gets closed.
+ */
+export async function withTrace<T>(
+  feature: string,
+  input: unknown,
+  fn: (traceId: string) => Promise<T>,
+  deps: WithTraceDeps = {},
+): Promise<T> {
+  const start = deps.start ?? startTrace;
+  const finish = deps.finish ?? finishTraceIfRunning;
+  const traceId = await start(feature, input);
+  let error: unknown = null;
+  try {
+    return await fn(traceId);
+  } catch (e) {
+    error = e;
+    throw e;
+  } finally {
+    await finish(traceId, error ? 'error' : 'success', error ? String((error as Error).message) : undefined);
+  }
 }

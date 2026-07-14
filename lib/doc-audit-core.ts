@@ -378,6 +378,28 @@ export interface ParsedAnalysis {
   suggestions: Suggestion[];
 }
 
+/**
+ * A04 instrumentation (Reasoning Observability Stage 1, DA04=a): count the finding verdicts
+ * the model emitted OUTSIDE the enum — the ones normNetValue launders to 'uncertain'. Pure
+ * counter over the raw analyze output; mirrors parseAnalysis's normalisation exactly and
+ * changes nothing about parsing. 0 on unparseable output (that's a parse failure, not a
+ * verdict-discipline signal).
+ */
+export function countNonEnumVerdicts(raw: string): number {
+  const obj = extractJsonObject(raw);
+  if (!obj || typeof obj !== 'object') return 0;
+  const o = obj as Record<string, unknown>;
+  if (!Array.isArray(o.findings)) return 0;
+  let n = 0;
+  for (const f of o.findings as unknown[]) {
+    const fo = (f && typeof f === 'object') ? f as Record<string, unknown> : {};
+    if (!asStr(fo.subject)) continue;   // parseAnalysis skips subject-less findings — mirror it
+    const s = String(fo.verdict ?? '').toLowerCase().trim().replace(/\s+/g, '-');
+    if (!NET_VALUES.has(s as NetValue)) n++;
+  }
+  return n;
+}
+
 export function parseAnalysis(raw: string, sourceCount = 0): ParsedAnalysis | null {
   const obj = extractJsonObject(raw);
   if (!obj || typeof obj !== 'object') return null;

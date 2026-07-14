@@ -2950,6 +2950,11 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "trace",
+    "to": "reasoning",
+    "kind": "value"
+  },
+  {
     "from": "value-score-core",
     "to": "doc-audit-core",
     "kind": "type"

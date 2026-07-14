@@ -16,7 +16,7 @@
 import { sql } from './db';
 import { retrieve } from './retrieve';
 import { chatWithFallback, geminiUtilityModel, geminiModelFor, TEXT_MODEL } from './llm';
-import { startTrace, logEvent, finishTrace, tracedChat } from './trace';
+import { logEvent, finishTrace, tracedChat, withTrace } from './trace';
 import * as core from './lvc-core';
 import type { Candidate, JudgedRec, LvcFlag, LvcRecommendation, Region, Surface } from './lvc-core';
 
@@ -87,9 +87,11 @@ function rowToRec(r: Record<string, unknown>): LvcRecommendation {
 }
 
 // One LLM helper: trace it when we have a traceId, else fall back to the plain wrapper.
+// promptRef (Stage 1): the Stage-0 registry id of the system prompt this call runs —
+// an additive tag stamped onto the trace envelope; never alters the prompt itself.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function llmCall(traceId: string | undefined, label: string, params: any, geminiModel?: string): Promise<any> {
-  if (traceId) return tracedChat(traceId, label, params, { gemini: geminiModel });
+async function llmCall(traceId: string | undefined, label: string, params: any, geminiModel?: string, promptRef?: string): Promise<any> {
+  if (traceId) return tracedChat(traceId, label, params, { gemini: geminiModel, promptRef });
   return chatWithFallback(params, geminiModel);
 }
 
@@ -104,7 +106,7 @@ async function defaultExtract(scenario: string, traceId?: string, forceOllama = 
       temperature: 0.1,
       max_tokens: 400,
       ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
-    }, forceOllama ? undefined : geminiUtilityModel());
+    }, forceOllama ? undefined : geminiUtilityModel(), 'lvc-core/CANDIDATE_SYSTEM');
     return core.parseCandidates(r.choices?.[0]?.message?.content || '');
   } catch (e) {
     console.warn('[lvc] candidate extraction failed', (e as Error).message);
@@ -159,7 +161,7 @@ async function defaultJudge(
       temperature: 0.1,
       max_tokens: 900,
       ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
-    }, geminiModel);
+    }, geminiModel, 'lvc-core/JUDGE_SYSTEM');
     return core.parseJudgeResponse(r.choices?.[0]?.message?.content || '', recs);
   } catch (e) {
     console.warn('[lvc] judge failed', (e as Error).message);
@@ -175,11 +177,11 @@ async function defaultJudge(
 export async function matchLowValueCare(input: MatchInput, deps: Partial<MatchDeps> = {}): Promise<MatchResult> {
   const surface: Surface = input.surface ?? 'surface';
   const doTrace = input.trace !== false;
-  const traceId = doTrace
-    ? await startTrace('appropriateness', {
-        scenario: input.scenario.slice(0, 500), surface, patient: input.patient, regionFilter: input.regionFilter,
-      })
-    : undefined;
+
+  // Stage 1 (guaranteed finalize): the pipeline runs under withTrace, whose status-guarded
+  // finally closes any trace left 'running' — the explicit finishTrace calls below keep
+  // setting the real statuses first, so behaviour is unchanged on every existing path.
+  const run = async (traceId?: string): Promise<MatchResult> => {
 
   const fo = input.forceOllama === true;
   const extract = deps.extractCandidates ?? ((s: string) => defaultExtract(s, traceId, fo));
@@ -226,6 +228,13 @@ export async function matchLowValueCare(input: MatchInput, deps: Partial<MatchDe
     }
     throw e;
   }
+
+  };
+
+  if (!doTrace) return run(undefined);
+  return withTrace('appropriateness', {
+    scenario: input.scenario.slice(0, 500), surface, patient: input.patient, regionFilter: input.regionFilter,
+  }, run);
 }
 
 export type { LvcFlag, Candidate } from './lvc-core';

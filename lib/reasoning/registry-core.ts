@@ -77,6 +77,37 @@ export function manifestFor(id: string): Pick<RegistryPrompt, 'maturity' | 'owne
   };
 }
 
+// ── invocation-envelope fingerprint (Stage 1) ───────────────────────────────────────────────────
+
+export interface PromptFingerprint {
+  id: string;
+  version: string;                          // the registry version hint (e.g. 'OPD_ENGINE_VERSION=…' | 'unversioned (git-tracked)')
+  hash: string;                             // sha256 of the exact prompt text (from the generated registry — never recomputed here)
+  schemaId: string | null;                  // from the sidecar manifest (none registered yet)
+  rubricIds: string[];                      // linked rubric ids from the sidecar manifest
+  rubricVersions: Record<string, string>;   // rubricId → registry version string (→ trace_events.rubric_versions)
+}
+
+/**
+ * Resolve a registry id to its invocation-envelope fingerprint — the SINGLE source
+ * tracedChat stamps from (a hash is never hardcoded at a call site). Pure: reads the
+ * committed generated registry + sidecar manifest only. Unknown id → null, never a throw
+ * (an untagged or mistagged call degrades to model/token columns only).
+ */
+export function promptFingerprint(id: string): PromptFingerprint | null {
+  const gen = GENERATED as unknown as { prompts: GeneratedPrompt[]; rubrics: GeneratedRubric[] };
+  const p = gen.prompts.find((x) => x.id === id);
+  if (!p) return null;
+  const m = manifestFor(id);
+  const rubricIds = m.rubricId ? [m.rubricId] : [];
+  const rubricVersions: Record<string, string> = {};
+  for (const rid of rubricIds) {
+    const r = gen.rubrics.find((x) => x.id === rid);
+    if (r?.version) rubricVersions[rid] = r.version;
+  }
+  return { id: p.id, version: p.version_hint, hash: p.sha256, schemaId: m.schemaId, rubricIds, rubricVersions };
+}
+
 // ── research-only key allowlists (structural enforcement) ───────────────────────────────────────
 const PROMPT_KEYS = new Set(['id', 'const', 'feature', 'group', 'file', 'kind', 'version_hint',
   'sha256', 'sha12', 'chars', 'lines', 'text', 'maturity', 'owner', 'clinicianApprover', 'rubricId', 'schemaId']);

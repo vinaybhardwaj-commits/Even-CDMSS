@@ -19,7 +19,7 @@
 import RUBRIC_DOC from '@/data/nabh-rubric.json';
 import { retrieve } from './retrieve';
 import { chatWithFallback, geminiModelFor, geminiUtilityModel, TEXT_MODEL, GEMINI_MODEL } from './llm';
-import { startTrace, logEvent, finishTrace, tracedChat } from './trace';
+import { startTrace, logEvent, finishTrace, tracedChat, withTrace, buildEnvelope, setTracePromptIds } from './trace';
 import { matchAnyTariffs, packageDaysFor, episodeRoomInflation } from './charge-master';
 import { generateFromDocument } from './gemini-multimodal';
 import { traceSkeleton } from './pathway';
@@ -78,15 +78,23 @@ export interface ExtractResult { extracted: ExtractedCase | null; traceId?: stri
 
 export async function extractCase(input: ExtractInput): Promise<ExtractResult> {
   const doTrace = input.trace !== false;
-  // REDACTED trace input — no document, no identifiers.
-  const traceId = doTrace
-    ? await startTrace('doc_audit_extract', { docTypeHint: input.docTypeHint, mime: input.mime, bytes: input.bytes ?? null })
-    : undefined;
+
+  // Stage 1 (guaranteed finalize): status-guarded withTrace closes any trace left 'running';
+  // the explicit finishTrace calls below still set the real statuses first (behaviour unchanged).
+  const run = async (traceId?: string): Promise<ExtractResult> => {
   try {
     const userPrompt = core.buildExtractUser(input.docTypeHint, rubricFieldsForHint(input.docTypeHint), input.context);
     // Capture the multimodal read as an LLM call (metadata only — the document
     // itself and its raw text are NEVER logged, per the cardinal PHI rule).
-    if (traceId) await logEvent(traceId, 'llm_request', 'doc_read', { model: GEMINI_MODEL, provider: 'vertex-multimodal', mime: input.mime, bytes: input.bytes ?? null });
+    // Stage 1: the extract prompt's registry fingerprint rides the envelope columns —
+    // the multimodal path doesn't go through tracedChat, so it is stamped here.
+    if (traceId) {
+      await logEvent(traceId, 'llm_request', 'doc_read',
+        { model: GEMINI_MODEL, provider: 'vertex-multimodal', mime: input.mime, bytes: input.bytes ?? null },
+        undefined,
+        buildEnvelope('doc-audit-core/EXTRACT_SYSTEM', { model: GEMINI_MODEL, provider: 'vertex-multimodal' }));
+      await setTracePromptIds(traceId, ['doc-audit-core/EXTRACT_SYSTEM']);
+    }
     // generateFromDocument self-logs the `llm_response` (with token usage) when given the traceId —
     // do NOT also log one here, or the cost tracker would double-count this read.
     const raw = await generateFromDocument(core.EXTRACT_SYSTEM, userPrompt, input.base64, input.mime, { maxOutputTokens: 8192, traceId, label: 'doc_read' });
@@ -114,6 +122,12 @@ export async function extractCase(input: ExtractInput): Promise<ExtractResult> {
     console.warn('[doc-audit] extractCase failed', (e as Error).message);
     return { extracted: null, traceId };
   }
+
+  };
+
+  if (!doTrace) return run(undefined);
+  // REDACTED trace input — no document, no identifiers.
+  return withTrace('doc_audit_extract', { docTypeHint: input.docTypeHint, mime: input.mime, bytes: input.bytes ?? null }, run);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -168,7 +182,7 @@ async function analyzeGenerate(system: string, user: string, forceOllama = false
 // Traced analyze generate — routes through tracedChat so the (de-identified) analyze
 // LLM calls are captured in observability with model/provider/tokens/latency + fallback
 // detection. The extract is already de-identified (name/UHID stripped) before this runs.
-async function tracedAnalyzeGenerate(traceId: string, label: string, system: string, user: string, forceOllama = false): Promise<string> {
+async function tracedAnalyzeGenerate(traceId: string, label: string, system: string, user: string, forceOllama = false, promptRef?: string): Promise<string> {
   const geminiModel = forceOllama ? undefined : (geminiModelFor('doc_audit') ?? geminiUtilityModel());
   const r = await tracedChat(traceId, label, {
     model: TEXT_MODEL,
@@ -176,9 +190,18 @@ async function tracedAnalyzeGenerate(traceId: string, label: string, system: str
     temperature: 0.2,
     max_tokens: 2800,
     ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
-  }, { gemini: geminiModel });
+  }, { gemini: geminiModel, promptRef });
   return r.choices?.[0]?.message?.content || '';
 }
+
+// Stage 1: analyze-family label → Stage-0 registry id (envelope tags only — the prompts
+// themselves are untouched). Prognosis labels are deliberately absent (Stage-4 breadth):
+// their calls keep writing model/token facts only.
+const ANALYZE_PROMPT_REFS: Record<string, string> = {
+  doc_audit_analyze: 'doc-audit-core/ANALYZE_SYSTEM',
+  doc_audit_critique_llm: 'doc-audit-core/AUDIT_CRITIQUE_SYSTEM',
+  doc_audit_revise: 'doc-audit-core/AUDIT_REVISE_SYSTEM',
+};
 
 async function defaultRetrieveHits(q: string): Promise<CiteHit[]> {
   try {
@@ -329,7 +352,7 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
   const fo = opts.forceOllama === true;   // lab probe: force the free mini through analyze + prognosis
   const generate: (system: string, user: string, label?: string) => Promise<string> =
     deps.generate ?? (traceId
-      ? (s, u, label = 'doc_audit_analyze') => tracedAnalyzeGenerate(traceId, label, s, u, fo)
+      ? (s, u, label = 'doc_audit_analyze') => tracedAnalyzeGenerate(traceId, label, s, u, fo, ANALYZE_PROMPT_REFS[label])
       : (s, u) => analyzeGenerate(s, u, fo));
   const rubric = getRubric(extracted.docType);
 
@@ -368,6 +391,11 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
     prog('analyzing', 'Auditing the case…');
     const draftRaw = await generate(core.ANALYZE_SYSTEM, core.buildAnalyzeUser(extracted, citedContext, rubric.standard, opts.clinicalStateText), 'doc_audit_analyze');
     let parsed = core.parseAnalysis(draftRaw, sources.length);
+    // A04 instrumentation (DA04=a): COUNT the verdicts the model emitted outside the enum
+    // (parseAnalysis launders them to 'uncertain'; the prompt is NOT edited). Accrues in
+    // prod logs so V can decide the residual on real data.
+    const nonEnumDraft = core.countNonEnumVerdicts(draftRaw);
+    let nonEnumRevise = 0;
     if (!parsed) {
       if (traceId) { await logEvent(traceId, 'doc_audit_result', null, { ok: false }); await finishTrace(traceId, 'partial'); }
       return { report: null, excerptCount: hits.length, traceId };
@@ -388,10 +416,19 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
           const revRaw = await generate(core.AUDIT_REVISE_SYSTEM, core.buildAuditReviseUser(caseSummary, citedContext, draftRaw, JSON.stringify(critique)), 'doc_audit_revise');
           const revised = core.parseAnalysis(revRaw, sources.length);
           if (revised) parsed = revised;
+          nonEnumRevise = core.countNonEnumVerdicts(revRaw);
         }
       } catch (e) {
         console.warn('[doc-audit] audit loop failed (keeping draft)', (e as Error).message);
       }
+    }
+
+    // A04 (DA04=a): the verdict-discipline counter — logged on EVERY analyze run (zeros
+    // included, so the non-enum rate is measurable, not just the incidents).
+    if (traceId) {
+      await logEvent(traceId, 'doc_audit_verdict_discipline', null, {
+        non_enum_draft: nonEnumDraft, non_enum_revise: nonEnumRevise, total: nonEnumDraft + nonEnumRevise,
+      });
     }
 
     prog('finalizing', 'Finalizing…');
@@ -467,6 +504,7 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
         diff: parsed.diff.length,
         suggestions: parsed.suggestions.length,
         tariffs: parsed.findings.filter((f) => f.tariffs?.length).length,
+        non_enum_verdicts: nonEnumDraft + nonEnumRevise,
         valueIndex: valueScore.headline, valueBand: valueScore.band,
         ...(prognosis ? { prognosis: { complications: prognosis.complications.length, n_unmitigated: prognosis.n_unmitigated } } : {}),
       });
