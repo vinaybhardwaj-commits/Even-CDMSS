@@ -7,7 +7,12 @@
  * STRUCTURAL-FIRST (mirrors lib/architecture/manifests.ts): `owner` and `clinicianApprover`
  * are deliberately unassigned today — the export renders them as honest blanks, never guessed
  * names. Every prompt starts at 'draft' at best; 'review'/'mature' are earned through the
- * maturity ladder (gold-gated from Stage 3).
+ * maturity ladder.
+ *
+ * MATURITY GATE (Stage 3, CI-enforced): an entry may claim 'mature' ONLY if its prompt has a
+ * committed gold outcome that clears the 0.90 floor ON THE LIVE PROMPT BYTES — see
+ * maturityGateViolations() in ./outcome-core.ts and lib/__tests__/reasoning-outcome.test.ts.
+ * Verticals without a gold stay ≤ 'review'.
  *
  * COVERAGE (enforced by lib/__tests__/reasoning-registry.test.ts): every generated prompt id
  * must appear here (PROMPT_MANIFESTS) or in UNREGISTERED_PROMPTS below. A new prompt const

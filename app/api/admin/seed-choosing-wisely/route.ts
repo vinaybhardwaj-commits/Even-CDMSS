@@ -57,7 +57,10 @@ function chunkText(r: Rec): string {
   if (r.precondition?.trim()) parts.push(`Setting: ${r.precondition.trim()}`);
   if (r.rationale?.trim()) parts.push(`Why: ${r.rationale.trim()}`);
   if (r.consider_instead?.trim()) parts.push(`Consider instead: ${r.consider_instead.trim()}`);
-  parts.push(`Source: ${r.society} (Choosing Wisely, ${r.region}, ${r.source_release_year}).`);
+  // Provenance rider (Reasoning Observability Stage 3): guideline-derived rows (e.g.
+  // cwus-ahaacchrs-001, per their seed `notes`) are NOT ABIM Choosing Wisely list items —
+  // label them honestly instead of the fixed suffix. scoring:false; takes effect on re-seed.
+  parts.push(`Source: ${r.society} (${/guideline-derived/i.test(r.notes ?? '') ? 'guideline-derived' : 'Choosing Wisely'}, ${r.region}, ${r.source_release_year}).`);
   return parts.join('\n');
 }
 
