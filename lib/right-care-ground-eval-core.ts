@@ -11,6 +11,7 @@
 // pairs are judged identically — their change rate is the noise floor an ON-vs-OFF delta must
 // clear to count as signal.
 
+import { z } from 'zod';
 import type { LvcFlag } from './lvc-core';
 import type { PathwaySkeleton, PathwayEnrichment } from './pathway-core';
 import type { ExtractedCase, AuditReport } from './doc-audit-core';
@@ -313,6 +314,102 @@ export interface ModeScorecard {
   noise: { nPairs: number; changedRate: number } | null;  // OFF-vs-OFF floor (null = not run)
   clearsNoise: boolean | null;                  // changedRate > noise.changedRate + margin
   gate: 'PASS' | 'FAIL_SAFETY' | 'NO_SIGNAL';
+}
+
+// ── Score-against-gold for Order check (the harness-gold upgrade, 13-Jul-2026 kickoff) ──────
+// Order check has a ratified answer key (right-care-check-gold/1.0: 18 recs × positive /
+// near-miss), so its scoring is DETERMINISTIC: compare the fired rec-id set to mustFire /
+// mustNotFire. No judge, zero judge noise. Pathway/audit stay on the pairwise path above
+// until they get gold.
+
+export const RIGHT_CARE_CHECK_GOLD_VERSION = 'right-care-check-gold/1.0' as const;   // FROZEN
+
+const zCheckGoldCase = z.object({
+  id: z.string().min(1),
+  mode: z.literal('check'),
+  polarity: z.enum(['positive', 'near_miss']),
+  sourceRec: z.string().min(1),
+  society: z.string(),
+  domain: z.string(),
+  patient: z.object({ age: z.number().optional(), sex: z.string().optional() }).passthrough(),
+  scenario: z.string().min(10),
+  proposedActions: z.array(z.string().min(1)).min(1),
+  gold: z.object({ mustFire: z.array(z.string()), mustNotFire: z.array(z.string()) }).strict(),
+  note: z.string().optional(),
+}).passthrough();
+
+const zCheckGold = z.object({
+  version: z.literal(RIGHT_CARE_CHECK_GOLD_VERSION),
+  status: z.literal('ratified'),
+  cases: z.array(zCheckGoldCase).min(1),
+}).passthrough();
+
+export type CheckGoldCase = z.infer<typeof zCheckGoldCase>;
+
+/** Validate the committed gold artifact (throws on drift — the version + ratified status are
+ *  part of the freeze; a case must carry a target on the side its polarity claims). */
+export function loadCheckGold(raw: unknown): { version: string; cases: CheckGoldCase[] } {
+  const g = zCheckGold.parse(raw);
+  const ids = new Set<string>();
+  for (const c of g.cases) {
+    if (ids.has(c.id)) throw new Error(`duplicate gold case id ${c.id}`);
+    ids.add(c.id);
+    if (c.polarity === 'positive' && c.gold.mustFire.length === 0) throw new Error(`${c.id}: positive case with empty mustFire`);
+    if (c.polarity === 'near_miss' && c.gold.mustNotFire.length === 0) throw new Error(`${c.id}: near_miss case with empty mustNotFire`);
+  }
+  return { version: g.version, cases: g.cases };
+}
+
+/** Per-case deterministic score. PER-TARGET-REC, not exact-set-match: only the gold's target
+ *  ids are judged — a positive case may legitimately fire other recs, a near-miss may fire
+ *  other applicable recs. */
+export interface CheckGoldScore { recallHits: string[]; recallMisses: string[]; falsePositives: string[] }
+export function scoreCheckAgainstGold(
+  firedRecIds: string[], gold: { mustFire: string[]; mustNotFire: string[] },
+): CheckGoldScore {
+  const fired = new Set(firedRecIds);
+  return {
+    recallHits: gold.mustFire.filter((id) => fired.has(id)),
+    recallMisses: gold.mustFire.filter((id) => !fired.has(id)),
+    falsePositives: gold.mustNotFire.filter((id) => fired.has(id)),
+  };
+}
+
+/** Aggregate one repeat's per-case scores into the run metrics. Rows carry the case's
+ *  mustNotFire TARGET count alongside its score, because the scorer records only violations
+ *  and specificity must be counted over targets. Deterministic given the fired sets:
+ *  recall over mustFire targets, specificity over near-miss targets, precision / F1 over
+ *  target-rec decisions (TP = mustFire fired, FP = mustNotFire fired). */
+export interface CheckGoldMetrics {
+  nCases: number;
+  nMustFire: number;        // total mustFire targets (the positives)
+  nMustNotFire: number;     // total mustNotFire targets (the near-misses)
+  hits: number;
+  misses: number;
+  falsePositives: number;
+  recall: number;           // hits / nMustFire
+  specificity: number;      // 1 − falsePositives / nMustNotFire
+  precision: number | null; // hits / (hits + falsePositives); null when nothing fired on-target
+  f1: number | null;
+}
+export function aggregateCheckGold(
+  rows: Array<{ score: CheckGoldScore; mustNotFireTargets: number }>,
+): CheckGoldMetrics {
+  const hits = rows.reduce((a, r) => a + r.score.recallHits.length, 0);
+  const misses = rows.reduce((a, r) => a + r.score.recallMisses.length, 0);
+  const fps = rows.reduce((a, r) => a + r.score.falsePositives.length, 0);
+  const nMustFire = hits + misses;
+  const nMustNotFire = rows.reduce((a, r) => a + r.mustNotFireTargets, 0);
+  const precision = hits + fps > 0 ? hits / (hits + fps) : null;
+  const recall = nMustFire ? hits / nMustFire : 0;
+  const f1 = precision != null && precision + recall > 0 ? (2 * precision * recall) / (precision + recall) : null;
+  return {
+    nCases: rows.length, nMustFire, nMustNotFire,
+    hits, misses, falsePositives: fps,
+    recall,
+    specificity: nMustNotFire ? 1 - fps / nMustNotFire : 1,
+    precision, f1,
+  };
 }
 
 const changed = (p: CasePair): boolean =>

@@ -23,6 +23,17 @@ export interface EngineChange {
 export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
     engine: null, date: '2026-07-14', scoring: false,
+    plain: 'Right Care now has its first hard quality number: Order check scores 100% recall / 100% precision / F1 1.00 against a 36-case ratified gold set — and grounding is proven safe (no measurable loss above the noise floor)',
+    title: 'Right Care eval harness — deterministic score-against-gold for Order check (right-care-check-gold/1.0, 36 cases, K=5 repeats); Right Care\'s first precision/recall/F1 baseline + the clean grounding metric for check',
+    points: [
+      'GOLD + SCORER (pure, deterministic, unit-tested): committed data/right-care-eval/check-gold-1.0.json verbatim — right-care-check-gold/1.0, status ratified, 36 cases = 18 catalog recs × {positive, near_miss}, every target cross-checked against the live CW seed catalog. New in lib/right-care-ground-eval-core.ts: zod loader loadCheckGold (rejects version/status drift, empty mustFire on a positive, duplicate ids), scoreCheckAgainstGold(firedRecIds, gold) → {recallHits, recallMisses, falsePositives} scored PER-TARGET-REC (not exact-set-match — non-target firings are neither hits nor FPs), and aggregateCheckGold → recall / specificity / precision / F1 with null-safety when nothing fires on-target. Four tests in lib/__tests__/right-care-check-gold.test.ts (frozen-artifact + catalog-consistency, drift rejection, per-target scoring, hand-computed aggregate).',
+      'RUNNER (manual, credentialed, never CI): scripts/right-care-ground-ab.mjs gains --gold baseline|ab [--repeats K] — runs the real Order-check pipeline over all 36 gold × K repeats × arm(s), scores each roll against gold, and reports per-arm mean±std as the noise floor plus a per-case pass/fail table, miss list, flaky list, and false-positive list. Writes data/right-care-eval/check-gold-scorecard-v1.json.',
+      'BASELINE (K=5, 360 pipeline runs, 0 failures): Order check UNGROUNDED = recall 100.0% ±0.0 · specificity 100.0% ±0.0 · precision 100.0% ±0.0 · F1 100.0% ±0.0 — zero misses, zero flaky, zero false-positives across all 36 gold. GROUNDED = recall 97.8% ±2.7 · F1 98.9% ±1.4; Δrecall −2.2pp sits inside the ±2.7pp noise floor and specificity/precision are unchanged → grounding shows NO measurable degradation on check (safe to flip once V ratifies). This is Right Care\'s first quality measurement; the eval core is registered in architecture UNREGISTERED.',
+    ],
+    why: 'The Slice-2 pairwise A/B on check/pathway returned NO_SIGNAL under a 100% OFF-vs-OFF jitter floor — judge-pairwise scoring was too noisy to ratify a flip. A deterministic score-against-gold (known-correct target recs, no judge) gives check a real precision/recall/F1 and a clean grounding delta. Pathway/audit stay on the pairwise path until they get gold banks of their own. Right Care eval-harness gold-upgrade kickoff (V, 13 Jul 2026).',
+  },
+  {
+    engine: null, date: '2026-07-14', scoring: false,
     plain: 'Two Right Care fixes: record audits stop hedging plainly-correct care as "uncertain", and Order check now catches unnecessary brain/carotid imaging for a simple faint',
     title: 'Right Care fixes (not OPD audit) — audit "uncertain"-verdict discipline (prompt + visible parse fallback) + the syncope-imaging catalog gap (cwus-aan-001, cwus-ahaacchrs-001); gold-anchored, live (no flag)',
     points: [

@@ -6,10 +6,17 @@
 // repeat pairs on a subset give the noise floor. Writes the scorecard JSON + prints the
 // per-mode delta report for V's ratification.
 //
-// Run: node --env-file=.env.local --import tsx scripts/right-care-ground-ab.mjs [outfile]
-// Cost: ~49 pipeline arms + ~31 Flash/Pro judge calls. Manual, credentialed — never in CI.
+// Run (pairwise, legacy): node --env-file=.env.local --import tsx scripts/right-care-ground-ab.mjs [outfile]
+// Run (GOLD, Order check): … right-care-ground-ab.mjs --gold baseline|ab [--repeats K] [--out path]
+//   --gold baseline → ungrounded only, 36×K runs → Order check's precision/recall/F1 vs the
+//     ratified right-care-check-gold/1.0 (deterministic scoring, NO judge).
+//   --gold ab       → both arms (grounded = the PATIENT PICTURE passed explicitly — exactly
+//     what RIGHT_CARE_CLINICAL_STATE_GROUND gates in the route), 36×K×2 runs; the K-repeat
+//     variance of each arm is the noise floor a grounding delta must clear.
+// Cost: pairwise ~49 arms + ~31 judge calls; gold ab at K=5 = 360 pipeline runs. Manual,
+// credentialed — never in CI.
 
-import { writeFileSync, mkdirSync } from 'fs';
+import { writeFileSync, mkdirSync, readFileSync } from 'fs';
 import { matchLowValueCare } from '../lib/lvc.ts';
 import { traceSkeleton, enrichPathway } from '../lib/pathway.ts';
 import { analyzeCase } from '../lib/doc-audit.ts';
@@ -20,9 +27,16 @@ import {
   GROUND_BANK, RIGHT_CARE_EVAL_BANK, RIGHT_CARE_GROUND_EVAL_VERSION,
   checkView, pathwayView, auditView, diffCheckFlags,
   PAIR_JUDGE_SYSTEM, buildPairJudgeUser, parsePairJudgeResponse, summarizeMode,
+  RIGHT_CARE_CHECK_GOLD_VERSION, loadCheckGold, scoreCheckAgainstGold, aggregateCheckGold,
 } from '../lib/right-care-ground-eval-core.ts';
 
-const OUT = process.argv[2] || 'data/right-care-eval/ground-ab-scorecard-v1.json';
+const argv = process.argv.slice(2);
+const argOf = (name) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : undefined; };
+const GOLD_MODE = argOf('--gold');                       // 'baseline' | 'ab' | undefined (legacy pairwise)
+const REPEATS = Math.max(1, Number(argOf('--repeats') ?? 5) | 0);
+const OUT = argOf('--out') || (GOLD_MODE
+  ? 'data/right-care-eval/check-gold-scorecard-v1.json'
+  : (argv.find((a) => !a.startsWith('--')) || 'data/right-care-eval/ground-ab-scorecard-v1.json'));
 // OFF-vs-OFF noise subset (13 repeat arms) — includes both safety sentinels.
 const NOISE_IDS = new Set(['C01', 'C02', 'C03', 'C04', 'C05', 'C06', 'C07', 'C08', 'P01', 'P03', 'P06', 'A01', 'A03']);
 
@@ -107,6 +121,104 @@ async function pool(items, width, fn) {
     }
   }));
   return out;
+}
+
+// ── GOLD MODE (Order check, deterministic score-against-gold; no judge) ─────────────────────
+if (GOLD_MODE) {
+  if (!['baseline', 'ab'].includes(GOLD_MODE)) { console.error(`--gold must be baseline|ab, got ${GOLD_MODE}`); process.exit(2); }
+  const gold = loadCheckGold(JSON.parse(readFileSync('data/right-care-eval/check-gold-1.0.json', 'utf8')));
+  const arms = GOLD_MODE === 'ab' ? ['off', 'on'] : ['off'];
+  console.log(`right-care check gold · ${RIGHT_CARE_CHECK_GOLD_VERSION} · ${gold.cases.length} cases · K=${REPEATS} · arms=[${arms.join(',')}] · ${gold.cases.length * REPEATS * arms.length} pipeline runs`);
+
+  const jobs = [];
+  for (const c of gold.cases) for (const arm of arms) for (let k = 1; k <= REPEATS; k++) jobs.push({ c, arm, k });
+  const tg = Date.now();
+  const runs = await pool(jobs, 4, async ({ c, arm, k }) => {
+    try {
+      const view = await runCheck(c, arm === 'on');
+      const fired = view.flags.map((f) => f.id);
+      const score = scoreCheckAgainstGold(fired, c.gold);
+      return { id: c.id, arm, k, fired, score };
+    } catch (e) {
+      console.warn(`  ${c.id} ${arm} k${k} FAILED: ${e.message}`);
+      return { id: c.id, arm, k, error: String(e.message) };
+    }
+  });
+  console.log(`runs done in ${((Date.now() - tg) / 60000).toFixed(1)} min · failures: ${runs.filter((r) => r.error).length}`);
+
+  const byCase = Object.fromEntries(gold.cases.map((c) => [c.id, c]));
+  const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
+  const std = (xs) => { const m = mean(xs); return Math.sqrt(mean(xs.map((x) => (x - m) * (x - m)))); };
+
+  // Per-arm metrics: one CheckGoldMetrics per repeat, then mean ± std across the K repeats —
+  // the std IS the properly-measured noise floor.
+  const armStats = {};
+  for (const arm of arms) {
+    const perRepeat = [];
+    for (let k = 1; k <= REPEATS; k++) {
+      const rows = runs.filter((r) => r.arm === arm && r.k === k && !r.error)
+        .map((r) => ({ score: r.score, mustNotFireTargets: byCase[r.id].gold.mustNotFire.length }));
+      perRepeat.push(aggregateCheckGold(rows));
+    }
+    const stat = (f) => { const xs = perRepeat.map((m) => f(m) ?? 0); return { mean: mean(xs), std: std(xs), perRepeat: xs }; };
+    armStats[arm] = {
+      recall: stat((m) => m.recall),
+      specificity: stat((m) => m.specificity),
+      precision: stat((m) => m.precision),
+      f1: stat((m) => m.f1),
+      perRepeat,
+    };
+  }
+
+  // Per-case table: how often the TARGET decision was right/wrong across the K repeats.
+  const caseTable = gold.cases.map((c) => {
+    const row = { id: c.id, polarity: c.polarity, target: c.sourceRec, domain: c.domain };
+    for (const arm of arms) {
+      const rs = runs.filter((r) => r.arm === arm && r.id === c.id && !r.error);
+      const targetFired = rs.filter((r) => (c.polarity === 'positive' ? r.score.recallHits.length > 0 : r.score.falsePositives.length > 0)).length;
+      // positive: targetFired = hits (want K/K) · near_miss: targetFired = violations (want 0/K)
+      row[arm] = { n: rs.length, targetFired };
+    }
+    return row;
+  });
+  const offMisses = caseTable.filter((r) => r.polarity === 'positive' && r.off.targetFired === 0);
+  const offFlaky = caseTable.filter((r) => r.polarity === 'positive' && r.off.targetFired > 0 && r.off.targetFired < r.off.n);
+  const offFps = caseTable.filter((r) => r.polarity === 'near_miss' && r.off.targetFired > 0);
+
+  const artifact = {
+    version: 'right-care-check-gold-scorecard/1',
+    gold: RIGHT_CARE_CHECK_GOLD_VERSION,
+    mode: GOLD_MODE,
+    repeats: REPEATS,
+    generated: new Date().toISOString(),
+    armStats,
+    caseTable,
+    missList: offMisses.map((r) => r.id),
+    flakyList: offFlaky.map((r) => ({ id: r.id, fired: `${r.off.targetFired}/${r.off.n}` })),
+    falsePositiveList: offFps.map((r) => ({ id: r.id, violations: `${r.off.targetFired}/${r.off.n}` })),
+    runs: runs.map((r) => ({ id: r.id, arm: r.arm, k: r.k, ...(r.error ? { error: r.error } : { fired: r.fired }) })),
+  };
+  mkdirSync(OUT.split('/').slice(0, -1).join('/'), { recursive: true });
+  writeFileSync(OUT, JSON.stringify(artifact, null, 2));
+
+  const fmt = (s) => `${(s.mean * 100).toFixed(1)}% ±${(s.std * 100).toFixed(1)}`;
+  console.log(`\n== ORDER CHECK vs GOLD (${RIGHT_CARE_CHECK_GOLD_VERSION}, K=${REPEATS}) ==`);
+  for (const arm of arms) {
+    const s = armStats[arm];
+    console.log(`${arm === 'off' ? 'ungrounded' : 'grounded  '}: recall ${fmt(s.recall)} · specificity ${fmt(s.specificity)} · precision ${fmt(s.precision)} · F1 ${fmt(s.f1)}`);
+  }
+  if (arms.length === 2) {
+    for (const m of ['recall', 'specificity', 'precision', 'f1']) {
+      const d = armStats.on[m].mean - armStats.off[m].mean;
+      const floor = Math.max(armStats.off[m].std, armStats.on[m].std);
+      console.log(`Δ ${m}: ${(d * 100).toFixed(1)}pp (floor ±${(floor * 100).toFixed(1)}pp) → ${Math.abs(d) > floor ? 'CLEARS' : 'within noise'}`);
+    }
+  }
+  console.log(`\nMISSES (positive, never fired, ungrounded): ${offMisses.map((r) => r.id).join(', ') || 'none'}`);
+  console.log(`FLAKY (positive, fired some repeats): ${offFlaky.map((r) => `${r.id}(${r.off.targetFired}/${r.off.n})`).join(', ') || 'none'}`);
+  console.log(`FALSE-POSITIVES (near-miss over-fired): ${offFps.map((r) => `${r.id}(${r.off.targetFired}/${r.off.n})`).join(', ') || 'none'}`);
+  console.log(`\nwrote ${OUT}`);
+  process.exit(0);
 }
 
 const t0 = Date.now();

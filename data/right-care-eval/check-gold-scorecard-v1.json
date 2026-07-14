@@ -1,0 +1,3359 @@
+{
+  "version": "right-care-check-gold-scorecard/1",
+  "gold": "right-care-check-gold/1.0",
+  "mode": "ab",
+  "repeats": 5,
+  "generated": "2026-07-14T00:26:47.639Z",
+  "armStats": {
+    "off": {
+      "recall": {
+        "mean": 1,
+        "std": 0,
+        "perRepeat": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "specificity": {
+        "mean": 1,
+        "std": 0,
+        "perRepeat": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "precision": {
+        "mean": 1,
+        "std": 0,
+        "perRepeat": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "f1": {
+        "mean": 1,
+        "std": 0,
+        "perRepeat": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "perRepeat": [
+        {
+          "nCases": 36,
+          "nMustFire": 18,
+          "nMustNotFire": 18,
+          "hits": 18,
+          "misses": 0,
+          "falsePositives": 0,
+          "recall": 1,
+          "specificity": 1,
+          "precision": 1,
+          "f1": 1
+        },
+        {
+          "nCases": 36,
+          "nMustFire": 18,
+          "nMustNotFire": 18,
+          "hits": 18,
+          "misses": 0,
+          "falsePositives": 0,
+          "recall": 1,
+          "specificity": 1,
+          "precision": 1,
+          "f1": 1
+        },
+        {
+          "nCases": 36,
+          "nMustFire": 18,
+          "nMustNotFire": 18,
+          "hits": 18,
+          "misses": 0,
+          "falsePositives": 0,
+          "recall": 1,
+          "specificity": 1,
+          "precision": 1,
+          "f1": 1
+        },
+        {
+          "nCases": 36,
+          "nMustFire": 18,
+          "nMustNotFire": 18,
+          "hits": 18,
+          "misses": 0,
+          "falsePositives": 0,
+          "recall": 1,
+          "specificity": 1,
+          "precision": 1,
+          "f1": 1
+        },
+        {
+          "nCases": 36,
+          "nMustFire": 18,
+          "nMustNotFire": 18,
+          "hits": 18,
+          "misses": 0,
+          "falsePositives": 0,
+          "recall": 1,
+          "specificity": 1,
+          "precision": 1,
+          "f1": 1
+        }
+      ]
+    },
+    "on": {
+      "recall": {
+        "mean": 0.9777777777777779,
+        "std": 0.02721655269759088,
+        "perRepeat": [
+          0.9444444444444444,
+          0.9444444444444444,
+          1,
+          1,
+          1
+        ]
+      },
+      "specificity": {
+        "mean": 1,
+        "std": 0,
+        "perRepeat": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "precision": {
+        "mean": 1,
+        "std": 0,
+        "perRepeat": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "f1": {
+        "mean": 0.9885714285714287,
+        "std": 0.013997084244475308,
+        "perRepeat": [
+          0.9714285714285714,
+          0.9714285714285714,
+          1,
+          1,
+          1
+        ]
+      },
+      "perRepeat": [
+        {
+          "nCases": 36,
+          "nMustFire": 18,
+          "nMustNotFire": 18,
+          "hits": 17,
+          "misses": 1,
+          "falsePositives": 0,
+          "recall": 0.9444444444444444,
+          "specificity": 1,
+          "precision": 1,
+          "f1": 0.9714285714285714
+        },
+        {
+          "nCases": 36,
+          "nMustFire": 18,
+          "nMustNotFire": 18,
+          "hits": 17,
+          "misses": 1,
+          "falsePositives": 0,
+          "recall": 0.9444444444444444,
+          "specificity": 1,
+          "precision": 1,
+          "f1": 0.9714285714285714
+        },
+        {
+          "nCases": 36,
+          "nMustFire": 18,
+          "nMustNotFire": 18,
+          "hits": 18,
+          "misses": 0,
+          "falsePositives": 0,
+          "recall": 1,
+          "specificity": 1,
+          "precision": 1,
+          "f1": 1
+        },
+        {
+          "nCases": 36,
+          "nMustFire": 18,
+          "nMustNotFire": 18,
+          "hits": 18,
+          "misses": 0,
+          "falsePositives": 0,
+          "recall": 1,
+          "specificity": 1,
+          "precision": 1,
+          "f1": 1
+        },
+        {
+          "nCases": 36,
+          "nMustFire": 18,
+          "nMustNotFire": 18,
+          "hits": 18,
+          "misses": 0,
+          "falsePositives": 0,
+          "recall": 1,
+          "specificity": 1,
+          "precision": 1,
+          "f1": 1
+        }
+      ]
+    }
+  },
+  "caseTable": [
+    {
+      "id": "GC-aabb-001-pos",
+      "polarity": "positive",
+      "target": "cwus-aabb-001",
+      "domain": "RBC transfusion",
+      "off": {
+        "n": 5,
+        "targetFired": 5
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 5
+      }
+    },
+    {
+      "id": "GC-aabb-001-neg",
+      "polarity": "near_miss",
+      "target": "cwus-aabb-001",
+      "domain": "RBC transfusion",
+      "off": {
+        "n": 5,
+        "targetFired": 0
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 0
+      }
+    },
+    {
+      "id": "GC-aace-001-pos",
+      "polarity": "positive",
+      "target": "cwus-aace-001",
+      "domain": "Thyroid US",
+      "off": {
+        "n": 5,
+        "targetFired": 5
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 5
+      }
+    },
+    {
+      "id": "GC-aace-001-neg",
+      "polarity": "near_miss",
+      "target": "cwus-aace-001",
+      "domain": "Thyroid US",
+      "off": {
+        "n": 5,
+        "targetFired": 0
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 0
+      }
+    },
+    {
+      "id": "GC-aafp-001-pos",
+      "polarity": "positive",
+      "target": "cwus-aafp-001",
+      "domain": "Imaging for acute LBP",
+      "off": {
+        "n": 5,
+        "targetFired": 5
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 3
+      }
+    },
+    {
+      "id": "GC-aafp-001-neg",
+      "polarity": "near_miss",
+      "target": "cwus-aafp-001",
+      "domain": "Imaging for acute LBP",
+      "off": {
+        "n": 5,
+        "targetFired": 0
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 0
+      }
+    },
+    {
+      "id": "GC-aafp-002-pos",
+      "polarity": "positive",
+      "target": "cwus-aafp-002",
+      "domain": "Antibiotics for URI",
+      "off": {
+        "n": 5,
+        "targetFired": 5
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 5
+      }
+    },
+    {
+      "id": "GC-aafp-002-neg",
+      "polarity": "near_miss",
+      "target": "cwus-aafp-002",
+      "domain": "Antibiotics for URI",
+      "off": {
+        "n": 5,
+        "targetFired": 0
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 0
+      }
+    },
+    {
+      "id": "GC-aafp-003-pos",
+      "polarity": "positive",
+      "target": "cwus-aafp-003",
+      "domain": "PSA screening",
+      "off": {
+        "n": 5,
+        "targetFired": 5
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 5
+      }
+    },
+    {
+      "id": "GC-aafp-003-neg",
+      "polarity": "near_miss",
+      "target": "cwus-aafp-003",
+      "domain": "PSA screening",
+      "off": {
+        "n": 5,
+        "targetFired": 0
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 0
+      }
+    },
+    {
+      "id": "GC-aafp-004-pos",
+      "polarity": "positive",
+      "target": "cwus-aafp-004",
+      "domain": "DEXA screening",
+      "off": {
+        "n": 5,
+        "targetFired": 5
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 5
+      }
+    },
+    {
+      "id": "GC-aafp-004-neg",
+      "polarity": "near_miss",
+      "target": "cwus-aafp-004",
+      "domain": "DEXA screening",
+      "off": {
+        "n": 5,
+        "targetFired": 0
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 0
+      }
+    },
+    {
+      "id": "GC-aap-001-pos",
+      "polarity": "positive",
+      "target": "cwus-aap-001",
+      "domain": "CT in pediatric head injury",
+      "off": {
+        "n": 5,
+        "targetFired": 5
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 5
+      }
+    },
+    {
+      "id": "GC-aap-001-neg",
+      "polarity": "near_miss",
+      "target": "cwus-aap-001",
+      "domain": "CT in pediatric head injury",
+      "off": {
+        "n": 5,
+        "targetFired": 0
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 0
+      }
+    },
+    {
+      "id": "GC-acc-001-pos",
+      "polarity": "positive",
+      "target": "cwus-acc-001",
+      "domain": "Stress imaging / angiography",
+      "off": {
+        "n": 5,
+        "targetFired": 5
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 5
+      }
+    },
+    {
+      "id": "GC-acc-001-neg",
+      "polarity": "near_miss",
+      "target": "cwus-acc-001",
+      "domain": "Stress imaging / angiography",
+      "off": {
+        "n": 5,
+        "targetFired": 0
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 0
+      }
+    },
+    {
+      "id": "GC-acep-001-pos",
+      "polarity": "positive",
+      "target": "cwus-acep-001",
+      "domain": "CT head adult minor injury",
+      "off": {
+        "n": 5,
+        "targetFired": 5
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 5
+      }
+    },
+    {
+      "id": "GC-acep-001-neg",
+      "polarity": "near_miss",
+      "target": "cwus-acep-001",
+      "domain": "CT head adult minor injury",
+      "off": {
+        "n": 5,
+        "targetFired": 0
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 0
+      }
+    },
+    {
+      "id": "GC-acp-001-pos",
+      "polarity": "positive",
+      "target": "cwus-acp-001",
+      "domain": "Screening ECG",
+      "off": {
+        "n": 5,
+        "targetFired": 5
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 5
+      }
+    },
+    {
+      "id": "GC-acp-001-neg",
+      "polarity": "near_miss",
+      "target": "cwus-acp-001",
+      "domain": "Screening ECG",
+      "off": {
+        "n": 5,
+        "targetFired": 0
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 0
+      }
+    },
+    {
+      "id": "GC-acr-001-pos",
+      "polarity": "positive",
+      "target": "cwus-acr-001",
+      "domain": "Neuroimaging for migraine",
+      "off": {
+        "n": 5,
+        "targetFired": 5
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 5
+      }
+    },
+    {
+      "id": "GC-acr-001-neg",
+      "polarity": "near_miss",
+      "target": "cwus-acr-001",
+      "domain": "Neuroimaging for migraine",
+      "off": {
+        "n": 5,
+        "targetFired": 0
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 0
+      }
+    },
+    {
+      "id": "GC-aga-001-pos",
+      "polarity": "positive",
+      "target": "cwus-aga-001",
+      "domain": "Repeat colonoscopy interval",
+      "off": {
+        "n": 5,
+        "targetFired": 5
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 5
+      }
+    },
+    {
+      "id": "GC-aga-001-neg",
+      "polarity": "near_miss",
+      "target": "cwus-aga-001",
+      "domain": "Repeat colonoscopy interval",
+      "off": {
+        "n": 5,
+        "targetFired": 0
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 0
+      }
+    },
+    {
+      "id": "GC-ags-001-pos",
+      "polarity": "positive",
+      "target": "cwus-ags-001",
+      "domain": "Benzodiazepines in older adults",
+      "off": {
+        "n": 5,
+        "targetFired": 5
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 5
+      }
+    },
+    {
+      "id": "GC-ags-001-neg",
+      "polarity": "near_miss",
+      "target": "cwus-ags-001",
+      "domain": "Benzodiazepines in older adults",
+      "off": {
+        "n": 5,
+        "targetFired": 0
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 0
+      }
+    },
+    {
+      "id": "GC-asa-001-pos",
+      "polarity": "positive",
+      "target": "cwus-asa-001",
+      "domain": "Routine preop testing",
+      "off": {
+        "n": 5,
+        "targetFired": 5
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 5
+      }
+    },
+    {
+      "id": "GC-asa-001-neg",
+      "polarity": "near_miss",
+      "target": "cwus-asa-001",
+      "domain": "Routine preop testing",
+      "off": {
+        "n": 5,
+        "targetFired": 0
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 0
+      }
+    },
+    {
+      "id": "GC-asco-001-pos",
+      "polarity": "positive",
+      "target": "cwus-asco-001",
+      "domain": "Staging imaging early cancer",
+      "off": {
+        "n": 5,
+        "targetFired": 5
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 5
+      }
+    },
+    {
+      "id": "GC-asco-001-neg",
+      "polarity": "near_miss",
+      "target": "cwus-asco-001",
+      "domain": "Staging imaging early cancer",
+      "off": {
+        "n": 5,
+        "targetFired": 0
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 0
+      }
+    },
+    {
+      "id": "GC-idsa-001-pos",
+      "polarity": "positive",
+      "target": "cwus-idsa-001",
+      "domain": "Asymptomatic bacteriuria",
+      "off": {
+        "n": 5,
+        "targetFired": 5
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 5
+      }
+    },
+    {
+      "id": "GC-idsa-001-neg",
+      "polarity": "near_miss",
+      "target": "cwus-idsa-001",
+      "domain": "Asymptomatic bacteriuria",
+      "off": {
+        "n": 5,
+        "targetFired": 0
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 0
+      }
+    },
+    {
+      "id": "GC-schm-001-pos",
+      "polarity": "positive",
+      "target": "cwus-schm-001",
+      "domain": "Stress ulcer prophylaxis",
+      "off": {
+        "n": 5,
+        "targetFired": 5
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 5
+      }
+    },
+    {
+      "id": "GC-schm-001-neg",
+      "polarity": "near_miss",
+      "target": "cwus-schm-001",
+      "domain": "Stress ulcer prophylaxis",
+      "off": {
+        "n": 5,
+        "targetFired": 0
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 0
+      }
+    },
+    {
+      "id": "GC-schm-002-pos",
+      "polarity": "positive",
+      "target": "cwus-schm-002",
+      "domain": "Repetitive daily labs",
+      "off": {
+        "n": 5,
+        "targetFired": 5
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 5
+      }
+    },
+    {
+      "id": "GC-schm-002-neg",
+      "polarity": "near_miss",
+      "target": "cwus-schm-002",
+      "domain": "Repetitive daily labs",
+      "off": {
+        "n": 5,
+        "targetFired": 0
+      },
+      "on": {
+        "n": 5,
+        "targetFired": 0
+      }
+    }
+  ],
+  "missList": [],
+  "flakyList": [],
+  "falsePositiveList": [],
+  "runs": [
+    {
+      "id": "GC-aabb-001-pos",
+      "arm": "off",
+      "k": 1,
+      "fired": [
+        "cwus-aabb-001"
+      ]
+    },
+    {
+      "id": "GC-aabb-001-pos",
+      "arm": "off",
+      "k": 2,
+      "fired": [
+        "cwus-aabb-001"
+      ]
+    },
+    {
+      "id": "GC-aabb-001-pos",
+      "arm": "off",
+      "k": 3,
+      "fired": [
+        "cwus-aabb-001"
+      ]
+    },
+    {
+      "id": "GC-aabb-001-pos",
+      "arm": "off",
+      "k": 4,
+      "fired": [
+        "cwus-aabb-001"
+      ]
+    },
+    {
+      "id": "GC-aabb-001-pos",
+      "arm": "off",
+      "k": 5,
+      "fired": [
+        "cwus-aabb-001"
+      ]
+    },
+    {
+      "id": "GC-aabb-001-pos",
+      "arm": "on",
+      "k": 1,
+      "fired": [
+        "cwus-aabb-001"
+      ]
+    },
+    {
+      "id": "GC-aabb-001-pos",
+      "arm": "on",
+      "k": 2,
+      "fired": [
+        "cwus-aabb-001"
+      ]
+    },
+    {
+      "id": "GC-aabb-001-pos",
+      "arm": "on",
+      "k": 3,
+      "fired": [
+        "cwus-aabb-001"
+      ]
+    },
+    {
+      "id": "GC-aabb-001-pos",
+      "arm": "on",
+      "k": 4,
+      "fired": [
+        "cwus-aabb-001"
+      ]
+    },
+    {
+      "id": "GC-aabb-001-pos",
+      "arm": "on",
+      "k": 5,
+      "fired": [
+        "cwus-aabb-001"
+      ]
+    },
+    {
+      "id": "GC-aabb-001-neg",
+      "arm": "off",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-aabb-001-neg",
+      "arm": "off",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-aabb-001-neg",
+      "arm": "off",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-aabb-001-neg",
+      "arm": "off",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-aabb-001-neg",
+      "arm": "off",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-aabb-001-neg",
+      "arm": "on",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-aabb-001-neg",
+      "arm": "on",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-aabb-001-neg",
+      "arm": "on",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-aabb-001-neg",
+      "arm": "on",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-aabb-001-neg",
+      "arm": "on",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-aace-001-pos",
+      "arm": "off",
+      "k": 1,
+      "fired": [
+        "cwus-aace-001"
+      ]
+    },
+    {
+      "id": "GC-aace-001-pos",
+      "arm": "off",
+      "k": 2,
+      "fired": [
+        "cwus-aace-001"
+      ]
+    },
+    {
+      "id": "GC-aace-001-pos",
+      "arm": "off",
+      "k": 3,
+      "fired": [
+        "cwus-aace-001"
+      ]
+    },
+    {
+      "id": "GC-aace-001-pos",
+      "arm": "off",
+      "k": 4,
+      "fired": [
+        "cwus-aace-001"
+      ]
+    },
+    {
+      "id": "GC-aace-001-pos",
+      "arm": "off",
+      "k": 5,
+      "fired": [
+        "cwus-aace-001"
+      ]
+    },
+    {
+      "id": "GC-aace-001-pos",
+      "arm": "on",
+      "k": 1,
+      "fired": [
+        "cwus-aace-001"
+      ]
+    },
+    {
+      "id": "GC-aace-001-pos",
+      "arm": "on",
+      "k": 2,
+      "fired": [
+        "cwus-aace-001"
+      ]
+    },
+    {
+      "id": "GC-aace-001-pos",
+      "arm": "on",
+      "k": 3,
+      "fired": [
+        "cwus-aace-001"
+      ]
+    },
+    {
+      "id": "GC-aace-001-pos",
+      "arm": "on",
+      "k": 4,
+      "fired": [
+        "cwus-aace-001"
+      ]
+    },
+    {
+      "id": "GC-aace-001-pos",
+      "arm": "on",
+      "k": 5,
+      "fired": [
+        "cwus-aace-001"
+      ]
+    },
+    {
+      "id": "GC-aace-001-neg",
+      "arm": "off",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-aace-001-neg",
+      "arm": "off",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-aace-001-neg",
+      "arm": "off",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-aace-001-neg",
+      "arm": "off",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-aace-001-neg",
+      "arm": "off",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-aace-001-neg",
+      "arm": "on",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-aace-001-neg",
+      "arm": "on",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-aace-001-neg",
+      "arm": "on",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-aace-001-neg",
+      "arm": "on",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-aace-001-neg",
+      "arm": "on",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-001-pos",
+      "arm": "off",
+      "k": 1,
+      "fired": [
+        "cwus-aafp-001"
+      ]
+    },
+    {
+      "id": "GC-aafp-001-pos",
+      "arm": "off",
+      "k": 2,
+      "fired": [
+        "cwus-aafp-001"
+      ]
+    },
+    {
+      "id": "GC-aafp-001-pos",
+      "arm": "off",
+      "k": 3,
+      "fired": [
+        "cwus-aafp-001"
+      ]
+    },
+    {
+      "id": "GC-aafp-001-pos",
+      "arm": "off",
+      "k": 4,
+      "fired": [
+        "cwus-aafp-001"
+      ]
+    },
+    {
+      "id": "GC-aafp-001-pos",
+      "arm": "off",
+      "k": 5,
+      "fired": [
+        "cwus-aafp-001"
+      ]
+    },
+    {
+      "id": "GC-aafp-001-pos",
+      "arm": "on",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-001-pos",
+      "arm": "on",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-001-pos",
+      "arm": "on",
+      "k": 3,
+      "fired": [
+        "cwus-aafp-001"
+      ]
+    },
+    {
+      "id": "GC-aafp-001-pos",
+      "arm": "on",
+      "k": 4,
+      "fired": [
+        "cwus-aafp-001"
+      ]
+    },
+    {
+      "id": "GC-aafp-001-pos",
+      "arm": "on",
+      "k": 5,
+      "fired": [
+        "cwus-aafp-001"
+      ]
+    },
+    {
+      "id": "GC-aafp-001-neg",
+      "arm": "off",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-001-neg",
+      "arm": "off",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-001-neg",
+      "arm": "off",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-001-neg",
+      "arm": "off",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-001-neg",
+      "arm": "off",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-001-neg",
+      "arm": "on",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-001-neg",
+      "arm": "on",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-001-neg",
+      "arm": "on",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-001-neg",
+      "arm": "on",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-001-neg",
+      "arm": "on",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-002-pos",
+      "arm": "off",
+      "k": 1,
+      "fired": [
+        "ehrc-2b42c495-61d4-49d5-9e2c-8d58b5045e6d",
+        "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
+        "ehrc-4fd1cb48-938b-4f11-b828-0ced7767b809",
+        "ehrc-f283f2c4-7739-46e2-b5c8-997d89a79f5c",
+        "ehrc-f4fb811c-7e57-440a-bf0d-3386d0f3dcbb",
+        "ehrc-7ac10177-dc6f-4d8a-9f52-ed2fc39f3fa2",
+        "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
+        "ehrc-1c5340d3-cf20-4810-a2ae-bd528d056a28",
+        "cwus-aafp-002"
+      ]
+    },
+    {
+      "id": "GC-aafp-002-pos",
+      "arm": "off",
+      "k": 2,
+      "fired": [
+        "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
+        "ehrc-f283f2c4-7739-46e2-b5c8-997d89a79f5c",
+        "ehrc-f4fb811c-7e57-440a-bf0d-3386d0f3dcbb",
+        "ehrc-7ac10177-dc6f-4d8a-9f52-ed2fc39f3fa2",
+        "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
+        "cwus-aafp-002"
+      ]
+    },
+    {
+      "id": "GC-aafp-002-pos",
+      "arm": "off",
+      "k": 3,
+      "fired": [
+        "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
+        "ehrc-f283f2c4-7739-46e2-b5c8-997d89a79f5c",
+        "ehrc-f4fb811c-7e57-440a-bf0d-3386d0f3dcbb",
+        "ehrc-7ac10177-dc6f-4d8a-9f52-ed2fc39f3fa2",
+        "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
+        "cwus-aafp-002"
+      ]
+    },
+    {
+      "id": "GC-aafp-002-pos",
+      "arm": "off",
+      "k": 4,
+      "fired": [
+        "ehrc-2b42c495-61d4-49d5-9e2c-8d58b5045e6d",
+        "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
+        "ehrc-4fd1cb48-938b-4f11-b828-0ced7767b809",
+        "ehrc-f283f2c4-7739-46e2-b5c8-997d89a79f5c",
+        "ehrc-f4fb811c-7e57-440a-bf0d-3386d0f3dcbb",
+        "ehrc-7ac10177-dc6f-4d8a-9f52-ed2fc39f3fa2",
+        "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
+        "ehrc-1c5340d3-cf20-4810-a2ae-bd528d056a28",
+        "cwus-aafp-002"
+      ]
+    },
+    {
+      "id": "GC-aafp-002-pos",
+      "arm": "off",
+      "k": 5,
+      "fired": [
+        "ehrc-2b42c495-61d4-49d5-9e2c-8d58b5045e6d",
+        "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
+        "ehrc-4fd1cb48-938b-4f11-b828-0ced7767b809",
+        "ehrc-f283f2c4-7739-46e2-b5c8-997d89a79f5c",
+        "ehrc-f4fb811c-7e57-440a-bf0d-3386d0f3dcbb",
+        "ehrc-7ac10177-dc6f-4d8a-9f52-ed2fc39f3fa2",
+        "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
+        "ehrc-1c5340d3-cf20-4810-a2ae-bd528d056a28",
+        "cwus-aafp-002"
+      ]
+    },
+    {
+      "id": "GC-aafp-002-pos",
+      "arm": "on",
+      "k": 1,
+      "fired": [
+        "ehrc-2b42c495-61d4-49d5-9e2c-8d58b5045e6d",
+        "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
+        "ehrc-4fd1cb48-938b-4f11-b828-0ced7767b809",
+        "ehrc-f283f2c4-7739-46e2-b5c8-997d89a79f5c",
+        "ehrc-f4fb811c-7e57-440a-bf0d-3386d0f3dcbb",
+        "ehrc-7ac10177-dc6f-4d8a-9f52-ed2fc39f3fa2",
+        "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
+        "ehrc-1c5340d3-cf20-4810-a2ae-bd528d056a28",
+        "cwus-aafp-002"
+      ]
+    },
+    {
+      "id": "GC-aafp-002-pos",
+      "arm": "on",
+      "k": 2,
+      "fired": [
+        "ehrc-2b42c495-61d4-49d5-9e2c-8d58b5045e6d",
+        "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
+        "ehrc-4fd1cb48-938b-4f11-b828-0ced7767b809",
+        "ehrc-f283f2c4-7739-46e2-b5c8-997d89a79f5c",
+        "ehrc-f4fb811c-7e57-440a-bf0d-3386d0f3dcbb",
+        "ehrc-7ac10177-dc6f-4d8a-9f52-ed2fc39f3fa2",
+        "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
+        "ehrc-1c5340d3-cf20-4810-a2ae-bd528d056a28",
+        "cwus-aafp-002"
+      ]
+    },
+    {
+      "id": "GC-aafp-002-pos",
+      "arm": "on",
+      "k": 3,
+      "fired": [
+        "ehrc-2b42c495-61d4-49d5-9e2c-8d58b5045e6d",
+        "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
+        "ehrc-4fd1cb48-938b-4f11-b828-0ced7767b809",
+        "ehrc-f283f2c4-7739-46e2-b5c8-997d89a79f5c",
+        "ehrc-f4fb811c-7e57-440a-bf0d-3386d0f3dcbb",
+        "ehrc-7ac10177-dc6f-4d8a-9f52-ed2fc39f3fa2",
+        "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
+        "ehrc-1c5340d3-cf20-4810-a2ae-bd528d056a28",
+        "cwus-aafp-002"
+      ]
+    },
+    {
+      "id": "GC-aafp-002-pos",
+      "arm": "on",
+      "k": 4,
+      "fired": [
+        "ehrc-2b42c495-61d4-49d5-9e2c-8d58b5045e6d",
+        "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
+        "ehrc-4fd1cb48-938b-4f11-b828-0ced7767b809",
+        "ehrc-f283f2c4-7739-46e2-b5c8-997d89a79f5c",
+        "ehrc-f4fb811c-7e57-440a-bf0d-3386d0f3dcbb",
+        "ehrc-7ac10177-dc6f-4d8a-9f52-ed2fc39f3fa2",
+        "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
+        "ehrc-1c5340d3-cf20-4810-a2ae-bd528d056a28",
+        "cwus-aafp-002"
+      ]
+    },
+    {
+      "id": "GC-aafp-002-pos",
+      "arm": "on",
+      "k": 5,
+      "fired": [
+        "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
+        "ehrc-f283f2c4-7739-46e2-b5c8-997d89a79f5c",
+        "ehrc-f4fb811c-7e57-440a-bf0d-3386d0f3dcbb",
+        "ehrc-7ac10177-dc6f-4d8a-9f52-ed2fc39f3fa2",
+        "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
+        "cwus-aafp-002"
+      ]
+    },
+    {
+      "id": "GC-aafp-002-neg",
+      "arm": "off",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-002-neg",
+      "arm": "off",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-002-neg",
+      "arm": "off",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-002-neg",
+      "arm": "off",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-002-neg",
+      "arm": "off",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-002-neg",
+      "arm": "on",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-002-neg",
+      "arm": "on",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-002-neg",
+      "arm": "on",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-002-neg",
+      "arm": "on",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-002-neg",
+      "arm": "on",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-003-pos",
+      "arm": "off",
+      "k": 1,
+      "fired": [
+        "cwus-aafp-003"
+      ]
+    },
+    {
+      "id": "GC-aafp-003-pos",
+      "arm": "off",
+      "k": 2,
+      "fired": [
+        "cwus-aafp-003"
+      ]
+    },
+    {
+      "id": "GC-aafp-003-pos",
+      "arm": "off",
+      "k": 3,
+      "fired": [
+        "cwus-aafp-003"
+      ]
+    },
+    {
+      "id": "GC-aafp-003-pos",
+      "arm": "off",
+      "k": 4,
+      "fired": [
+        "cwus-aafp-003"
+      ]
+    },
+    {
+      "id": "GC-aafp-003-pos",
+      "arm": "off",
+      "k": 5,
+      "fired": [
+        "cwus-aafp-003"
+      ]
+    },
+    {
+      "id": "GC-aafp-003-pos",
+      "arm": "on",
+      "k": 1,
+      "fired": [
+        "cwus-aafp-003"
+      ]
+    },
+    {
+      "id": "GC-aafp-003-pos",
+      "arm": "on",
+      "k": 2,
+      "fired": [
+        "cwus-aafp-003"
+      ]
+    },
+    {
+      "id": "GC-aafp-003-pos",
+      "arm": "on",
+      "k": 3,
+      "fired": [
+        "cwus-aafp-003"
+      ]
+    },
+    {
+      "id": "GC-aafp-003-pos",
+      "arm": "on",
+      "k": 4,
+      "fired": [
+        "cwus-aafp-003"
+      ]
+    },
+    {
+      "id": "GC-aafp-003-pos",
+      "arm": "on",
+      "k": 5,
+      "fired": [
+        "cwus-aafp-003"
+      ]
+    },
+    {
+      "id": "GC-aafp-003-neg",
+      "arm": "off",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-003-neg",
+      "arm": "off",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-003-neg",
+      "arm": "off",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-003-neg",
+      "arm": "off",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-003-neg",
+      "arm": "off",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-003-neg",
+      "arm": "on",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-003-neg",
+      "arm": "on",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-003-neg",
+      "arm": "on",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-003-neg",
+      "arm": "on",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-003-neg",
+      "arm": "on",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-004-pos",
+      "arm": "off",
+      "k": 1,
+      "fired": [
+        "cwus-aafp-004"
+      ]
+    },
+    {
+      "id": "GC-aafp-004-pos",
+      "arm": "off",
+      "k": 2,
+      "fired": [
+        "cwus-aafp-004"
+      ]
+    },
+    {
+      "id": "GC-aafp-004-pos",
+      "arm": "off",
+      "k": 3,
+      "fired": [
+        "cwus-aafp-004"
+      ]
+    },
+    {
+      "id": "GC-aafp-004-pos",
+      "arm": "off",
+      "k": 4,
+      "fired": [
+        "cwus-aafp-004"
+      ]
+    },
+    {
+      "id": "GC-aafp-004-pos",
+      "arm": "off",
+      "k": 5,
+      "fired": [
+        "cwus-aafp-004"
+      ]
+    },
+    {
+      "id": "GC-aafp-004-pos",
+      "arm": "on",
+      "k": 1,
+      "fired": [
+        "cwus-aafp-004"
+      ]
+    },
+    {
+      "id": "GC-aafp-004-pos",
+      "arm": "on",
+      "k": 2,
+      "fired": [
+        "cwus-aafp-004"
+      ]
+    },
+    {
+      "id": "GC-aafp-004-pos",
+      "arm": "on",
+      "k": 3,
+      "fired": [
+        "cwus-aafp-004"
+      ]
+    },
+    {
+      "id": "GC-aafp-004-pos",
+      "arm": "on",
+      "k": 4,
+      "fired": [
+        "cwus-aafp-004"
+      ]
+    },
+    {
+      "id": "GC-aafp-004-pos",
+      "arm": "on",
+      "k": 5,
+      "fired": [
+        "cwus-aafp-004"
+      ]
+    },
+    {
+      "id": "GC-aafp-004-neg",
+      "arm": "off",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-004-neg",
+      "arm": "off",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-004-neg",
+      "arm": "off",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-004-neg",
+      "arm": "off",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-004-neg",
+      "arm": "off",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-004-neg",
+      "arm": "on",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-004-neg",
+      "arm": "on",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-004-neg",
+      "arm": "on",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-004-neg",
+      "arm": "on",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-aafp-004-neg",
+      "arm": "on",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-aap-001-pos",
+      "arm": "off",
+      "k": 1,
+      "fired": [
+        "cwus-aap-001"
+      ]
+    },
+    {
+      "id": "GC-aap-001-pos",
+      "arm": "off",
+      "k": 2,
+      "fired": [
+        "cwus-aap-001"
+      ]
+    },
+    {
+      "id": "GC-aap-001-pos",
+      "arm": "off",
+      "k": 3,
+      "fired": [
+        "cwus-aap-001"
+      ]
+    },
+    {
+      "id": "GC-aap-001-pos",
+      "arm": "off",
+      "k": 4,
+      "fired": [
+        "cwus-aap-001"
+      ]
+    },
+    {
+      "id": "GC-aap-001-pos",
+      "arm": "off",
+      "k": 5,
+      "fired": [
+        "cwus-aap-001"
+      ]
+    },
+    {
+      "id": "GC-aap-001-pos",
+      "arm": "on",
+      "k": 1,
+      "fired": [
+        "cwus-aap-001"
+      ]
+    },
+    {
+      "id": "GC-aap-001-pos",
+      "arm": "on",
+      "k": 2,
+      "fired": [
+        "cwus-aap-001"
+      ]
+    },
+    {
+      "id": "GC-aap-001-pos",
+      "arm": "on",
+      "k": 3,
+      "fired": [
+        "cwus-aap-001"
+      ]
+    },
+    {
+      "id": "GC-aap-001-pos",
+      "arm": "on",
+      "k": 4,
+      "fired": [
+        "cwus-aap-001"
+      ]
+    },
+    {
+      "id": "GC-aap-001-pos",
+      "arm": "on",
+      "k": 5,
+      "fired": [
+        "cwus-aap-001"
+      ]
+    },
+    {
+      "id": "GC-aap-001-neg",
+      "arm": "off",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-aap-001-neg",
+      "arm": "off",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-aap-001-neg",
+      "arm": "off",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-aap-001-neg",
+      "arm": "off",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-aap-001-neg",
+      "arm": "off",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-aap-001-neg",
+      "arm": "on",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-aap-001-neg",
+      "arm": "on",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-aap-001-neg",
+      "arm": "on",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-aap-001-neg",
+      "arm": "on",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-aap-001-neg",
+      "arm": "on",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-acc-001-pos",
+      "arm": "off",
+      "k": 1,
+      "fired": [
+        "cwus-acc-001",
+        "cwus-acp-001"
+      ]
+    },
+    {
+      "id": "GC-acc-001-pos",
+      "arm": "off",
+      "k": 2,
+      "fired": [
+        "cwus-acc-001",
+        "cwus-acp-001"
+      ]
+    },
+    {
+      "id": "GC-acc-001-pos",
+      "arm": "off",
+      "k": 3,
+      "fired": [
+        "cwus-acc-001",
+        "cwus-acp-001"
+      ]
+    },
+    {
+      "id": "GC-acc-001-pos",
+      "arm": "off",
+      "k": 4,
+      "fired": [
+        "cwus-acc-001",
+        "cwus-acp-001"
+      ]
+    },
+    {
+      "id": "GC-acc-001-pos",
+      "arm": "off",
+      "k": 5,
+      "fired": [
+        "cwus-acc-001",
+        "cwus-acp-001"
+      ]
+    },
+    {
+      "id": "GC-acc-001-pos",
+      "arm": "on",
+      "k": 1,
+      "fired": [
+        "cwus-acc-001",
+        "cwus-acp-001"
+      ]
+    },
+    {
+      "id": "GC-acc-001-pos",
+      "arm": "on",
+      "k": 2,
+      "fired": [
+        "cwus-acc-001",
+        "cwus-acp-001"
+      ]
+    },
+    {
+      "id": "GC-acc-001-pos",
+      "arm": "on",
+      "k": 3,
+      "fired": [
+        "cwus-acc-001",
+        "cwus-acp-001"
+      ]
+    },
+    {
+      "id": "GC-acc-001-pos",
+      "arm": "on",
+      "k": 4,
+      "fired": [
+        "cwus-acc-001",
+        "cwus-acp-001"
+      ]
+    },
+    {
+      "id": "GC-acc-001-pos",
+      "arm": "on",
+      "k": 5,
+      "fired": [
+        "cwus-acc-001",
+        "cwus-acp-001"
+      ]
+    },
+    {
+      "id": "GC-acc-001-neg",
+      "arm": "off",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-acc-001-neg",
+      "arm": "off",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-acc-001-neg",
+      "arm": "off",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-acc-001-neg",
+      "arm": "off",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-acc-001-neg",
+      "arm": "off",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-acc-001-neg",
+      "arm": "on",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-acc-001-neg",
+      "arm": "on",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-acc-001-neg",
+      "arm": "on",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-acc-001-neg",
+      "arm": "on",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-acc-001-neg",
+      "arm": "on",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-acep-001-pos",
+      "arm": "off",
+      "k": 1,
+      "fired": [
+        "cwus-acep-001"
+      ]
+    },
+    {
+      "id": "GC-acep-001-pos",
+      "arm": "off",
+      "k": 2,
+      "fired": [
+        "cwus-acep-001"
+      ]
+    },
+    {
+      "id": "GC-acep-001-pos",
+      "arm": "off",
+      "k": 3,
+      "fired": [
+        "cwus-acep-001"
+      ]
+    },
+    {
+      "id": "GC-acep-001-pos",
+      "arm": "off",
+      "k": 4,
+      "fired": [
+        "cwus-acep-001"
+      ]
+    },
+    {
+      "id": "GC-acep-001-pos",
+      "arm": "off",
+      "k": 5,
+      "fired": [
+        "cwus-acep-001"
+      ]
+    },
+    {
+      "id": "GC-acep-001-pos",
+      "arm": "on",
+      "k": 1,
+      "fired": [
+        "cwus-acep-001"
+      ]
+    },
+    {
+      "id": "GC-acep-001-pos",
+      "arm": "on",
+      "k": 2,
+      "fired": [
+        "cwus-acep-001"
+      ]
+    },
+    {
+      "id": "GC-acep-001-pos",
+      "arm": "on",
+      "k": 3,
+      "fired": [
+        "cwus-acep-001"
+      ]
+    },
+    {
+      "id": "GC-acep-001-pos",
+      "arm": "on",
+      "k": 4,
+      "fired": [
+        "cwus-acep-001"
+      ]
+    },
+    {
+      "id": "GC-acep-001-pos",
+      "arm": "on",
+      "k": 5,
+      "fired": [
+        "cwus-acep-001"
+      ]
+    },
+    {
+      "id": "GC-acep-001-neg",
+      "arm": "off",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-acep-001-neg",
+      "arm": "off",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-acep-001-neg",
+      "arm": "off",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-acep-001-neg",
+      "arm": "off",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-acep-001-neg",
+      "arm": "off",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-acep-001-neg",
+      "arm": "on",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-acep-001-neg",
+      "arm": "on",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-acep-001-neg",
+      "arm": "on",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-acep-001-neg",
+      "arm": "on",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-acep-001-neg",
+      "arm": "on",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-acp-001-pos",
+      "arm": "off",
+      "k": 1,
+      "fired": [
+        "cwus-acp-001"
+      ]
+    },
+    {
+      "id": "GC-acp-001-pos",
+      "arm": "off",
+      "k": 2,
+      "fired": [
+        "cwus-acp-001"
+      ]
+    },
+    {
+      "id": "GC-acp-001-pos",
+      "arm": "off",
+      "k": 3,
+      "fired": [
+        "cwus-acp-001"
+      ]
+    },
+    {
+      "id": "GC-acp-001-pos",
+      "arm": "off",
+      "k": 4,
+      "fired": [
+        "cwus-acp-001"
+      ]
+    },
+    {
+      "id": "GC-acp-001-pos",
+      "arm": "off",
+      "k": 5,
+      "fired": [
+        "cwus-acp-001"
+      ]
+    },
+    {
+      "id": "GC-acp-001-pos",
+      "arm": "on",
+      "k": 1,
+      "fired": [
+        "cwus-acp-001"
+      ]
+    },
+    {
+      "id": "GC-acp-001-pos",
+      "arm": "on",
+      "k": 2,
+      "fired": [
+        "cwus-acp-001"
+      ]
+    },
+    {
+      "id": "GC-acp-001-pos",
+      "arm": "on",
+      "k": 3,
+      "fired": [
+        "cwus-acp-001"
+      ]
+    },
+    {
+      "id": "GC-acp-001-pos",
+      "arm": "on",
+      "k": 4,
+      "fired": [
+        "cwus-acp-001"
+      ]
+    },
+    {
+      "id": "GC-acp-001-pos",
+      "arm": "on",
+      "k": 5,
+      "fired": [
+        "cwus-acp-001"
+      ]
+    },
+    {
+      "id": "GC-acp-001-neg",
+      "arm": "off",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-acp-001-neg",
+      "arm": "off",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-acp-001-neg",
+      "arm": "off",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-acp-001-neg",
+      "arm": "off",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-acp-001-neg",
+      "arm": "off",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-acp-001-neg",
+      "arm": "on",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-acp-001-neg",
+      "arm": "on",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-acp-001-neg",
+      "arm": "on",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-acp-001-neg",
+      "arm": "on",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-acp-001-neg",
+      "arm": "on",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-acr-001-pos",
+      "arm": "off",
+      "k": 1,
+      "fired": [
+        "cwus-acr-001"
+      ]
+    },
+    {
+      "id": "GC-acr-001-pos",
+      "arm": "off",
+      "k": 2,
+      "fired": [
+        "cwus-acr-001"
+      ]
+    },
+    {
+      "id": "GC-acr-001-pos",
+      "arm": "off",
+      "k": 3,
+      "fired": [
+        "cwus-acr-001"
+      ]
+    },
+    {
+      "id": "GC-acr-001-pos",
+      "arm": "off",
+      "k": 4,
+      "fired": [
+        "cwus-acr-001"
+      ]
+    },
+    {
+      "id": "GC-acr-001-pos",
+      "arm": "off",
+      "k": 5,
+      "fired": [
+        "cwus-acr-001"
+      ]
+    },
+    {
+      "id": "GC-acr-001-pos",
+      "arm": "on",
+      "k": 1,
+      "fired": [
+        "cwus-acr-001"
+      ]
+    },
+    {
+      "id": "GC-acr-001-pos",
+      "arm": "on",
+      "k": 2,
+      "fired": [
+        "cwus-acr-001"
+      ]
+    },
+    {
+      "id": "GC-acr-001-pos",
+      "arm": "on",
+      "k": 3,
+      "fired": [
+        "cwus-acr-001"
+      ]
+    },
+    {
+      "id": "GC-acr-001-pos",
+      "arm": "on",
+      "k": 4,
+      "fired": [
+        "cwus-acr-001"
+      ]
+    },
+    {
+      "id": "GC-acr-001-pos",
+      "arm": "on",
+      "k": 5,
+      "fired": [
+        "cwus-acr-001"
+      ]
+    },
+    {
+      "id": "GC-acr-001-neg",
+      "arm": "off",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-acr-001-neg",
+      "arm": "off",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-acr-001-neg",
+      "arm": "off",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-acr-001-neg",
+      "arm": "off",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-acr-001-neg",
+      "arm": "off",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-acr-001-neg",
+      "arm": "on",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-acr-001-neg",
+      "arm": "on",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-acr-001-neg",
+      "arm": "on",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-acr-001-neg",
+      "arm": "on",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-acr-001-neg",
+      "arm": "on",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-aga-001-pos",
+      "arm": "off",
+      "k": 1,
+      "fired": [
+        "cwus-aga-001"
+      ]
+    },
+    {
+      "id": "GC-aga-001-pos",
+      "arm": "off",
+      "k": 2,
+      "fired": [
+        "cwus-aga-001"
+      ]
+    },
+    {
+      "id": "GC-aga-001-pos",
+      "arm": "off",
+      "k": 3,
+      "fired": [
+        "cwus-aga-001",
+        "cwus-asa-001"
+      ]
+    },
+    {
+      "id": "GC-aga-001-pos",
+      "arm": "off",
+      "k": 4,
+      "fired": [
+        "cwus-aga-001"
+      ]
+    },
+    {
+      "id": "GC-aga-001-pos",
+      "arm": "off",
+      "k": 5,
+      "fired": [
+        "cwus-aga-001"
+      ]
+    },
+    {
+      "id": "GC-aga-001-pos",
+      "arm": "on",
+      "k": 1,
+      "fired": [
+        "cwus-aga-001"
+      ]
+    },
+    {
+      "id": "GC-aga-001-pos",
+      "arm": "on",
+      "k": 2,
+      "fired": [
+        "cwus-aga-001"
+      ]
+    },
+    {
+      "id": "GC-aga-001-pos",
+      "arm": "on",
+      "k": 3,
+      "fired": [
+        "cwus-asa-001",
+        "cwus-aga-001"
+      ]
+    },
+    {
+      "id": "GC-aga-001-pos",
+      "arm": "on",
+      "k": 4,
+      "fired": [
+        "cwus-aga-001"
+      ]
+    },
+    {
+      "id": "GC-aga-001-pos",
+      "arm": "on",
+      "k": 5,
+      "fired": [
+        "cwus-aga-001"
+      ]
+    },
+    {
+      "id": "GC-aga-001-neg",
+      "arm": "off",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-aga-001-neg",
+      "arm": "off",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-aga-001-neg",
+      "arm": "off",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-aga-001-neg",
+      "arm": "off",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-aga-001-neg",
+      "arm": "off",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-aga-001-neg",
+      "arm": "on",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-aga-001-neg",
+      "arm": "on",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-aga-001-neg",
+      "arm": "on",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-aga-001-neg",
+      "arm": "on",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-aga-001-neg",
+      "arm": "on",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-ags-001-pos",
+      "arm": "off",
+      "k": 1,
+      "fired": [
+        "cwus-ags-001"
+      ]
+    },
+    {
+      "id": "GC-ags-001-pos",
+      "arm": "off",
+      "k": 2,
+      "fired": [
+        "cwus-ags-001"
+      ]
+    },
+    {
+      "id": "GC-ags-001-pos",
+      "arm": "off",
+      "k": 3,
+      "fired": [
+        "cwus-ags-001"
+      ]
+    },
+    {
+      "id": "GC-ags-001-pos",
+      "arm": "off",
+      "k": 4,
+      "fired": [
+        "cwus-ags-001"
+      ]
+    },
+    {
+      "id": "GC-ags-001-pos",
+      "arm": "off",
+      "k": 5,
+      "fired": [
+        "cwus-ags-001"
+      ]
+    },
+    {
+      "id": "GC-ags-001-pos",
+      "arm": "on",
+      "k": 1,
+      "fired": [
+        "cwus-ags-001"
+      ]
+    },
+    {
+      "id": "GC-ags-001-pos",
+      "arm": "on",
+      "k": 2,
+      "fired": [
+        "cwus-ags-001"
+      ]
+    },
+    {
+      "id": "GC-ags-001-pos",
+      "arm": "on",
+      "k": 3,
+      "fired": [
+        "cwus-ags-001"
+      ]
+    },
+    {
+      "id": "GC-ags-001-pos",
+      "arm": "on",
+      "k": 4,
+      "fired": [
+        "cwus-ags-001"
+      ]
+    },
+    {
+      "id": "GC-ags-001-pos",
+      "arm": "on",
+      "k": 5,
+      "fired": [
+        "cwus-ags-001"
+      ]
+    },
+    {
+      "id": "GC-ags-001-neg",
+      "arm": "off",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-ags-001-neg",
+      "arm": "off",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-ags-001-neg",
+      "arm": "off",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-ags-001-neg",
+      "arm": "off",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-ags-001-neg",
+      "arm": "off",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-ags-001-neg",
+      "arm": "on",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-ags-001-neg",
+      "arm": "on",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-ags-001-neg",
+      "arm": "on",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-ags-001-neg",
+      "arm": "on",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-ags-001-neg",
+      "arm": "on",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-asa-001-pos",
+      "arm": "off",
+      "k": 1,
+      "fired": [
+        "cwus-asa-001",
+        "cwus-acp-001"
+      ]
+    },
+    {
+      "id": "GC-asa-001-pos",
+      "arm": "off",
+      "k": 2,
+      "fired": [
+        "cwus-asa-001"
+      ]
+    },
+    {
+      "id": "GC-asa-001-pos",
+      "arm": "off",
+      "k": 3,
+      "fired": [
+        "cwus-asa-001"
+      ]
+    },
+    {
+      "id": "GC-asa-001-pos",
+      "arm": "off",
+      "k": 4,
+      "fired": [
+        "cwus-asa-001"
+      ]
+    },
+    {
+      "id": "GC-asa-001-pos",
+      "arm": "off",
+      "k": 5,
+      "fired": [
+        "cwus-asa-001"
+      ]
+    },
+    {
+      "id": "GC-asa-001-pos",
+      "arm": "on",
+      "k": 1,
+      "fired": [
+        "cwus-asa-001"
+      ]
+    },
+    {
+      "id": "GC-asa-001-pos",
+      "arm": "on",
+      "k": 2,
+      "fired": [
+        "cwus-asa-001"
+      ]
+    },
+    {
+      "id": "GC-asa-001-pos",
+      "arm": "on",
+      "k": 3,
+      "fired": [
+        "cwus-asa-001",
+        "cwus-acp-001"
+      ]
+    },
+    {
+      "id": "GC-asa-001-pos",
+      "arm": "on",
+      "k": 4,
+      "fired": [
+        "cwus-asa-001",
+        "cwus-acp-001"
+      ]
+    },
+    {
+      "id": "GC-asa-001-pos",
+      "arm": "on",
+      "k": 5,
+      "fired": [
+        "cwus-asa-001",
+        "cwus-acp-001"
+      ]
+    },
+    {
+      "id": "GC-asa-001-neg",
+      "arm": "off",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-asa-001-neg",
+      "arm": "off",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-asa-001-neg",
+      "arm": "off",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-asa-001-neg",
+      "arm": "off",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-asa-001-neg",
+      "arm": "off",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-asa-001-neg",
+      "arm": "on",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-asa-001-neg",
+      "arm": "on",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-asa-001-neg",
+      "arm": "on",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-asa-001-neg",
+      "arm": "on",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-asa-001-neg",
+      "arm": "on",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-asco-001-pos",
+      "arm": "off",
+      "k": 1,
+      "fired": [
+        "cwus-asco-001"
+      ]
+    },
+    {
+      "id": "GC-asco-001-pos",
+      "arm": "off",
+      "k": 2,
+      "fired": [
+        "cwus-asco-001"
+      ]
+    },
+    {
+      "id": "GC-asco-001-pos",
+      "arm": "off",
+      "k": 3,
+      "fired": [
+        "cwus-asco-001"
+      ]
+    },
+    {
+      "id": "GC-asco-001-pos",
+      "arm": "off",
+      "k": 4,
+      "fired": [
+        "cwus-asco-001"
+      ]
+    },
+    {
+      "id": "GC-asco-001-pos",
+      "arm": "off",
+      "k": 5,
+      "fired": [
+        "cwus-asco-001"
+      ]
+    },
+    {
+      "id": "GC-asco-001-pos",
+      "arm": "on",
+      "k": 1,
+      "fired": [
+        "cwus-asco-001"
+      ]
+    },
+    {
+      "id": "GC-asco-001-pos",
+      "arm": "on",
+      "k": 2,
+      "fired": [
+        "cwus-asco-001"
+      ]
+    },
+    {
+      "id": "GC-asco-001-pos",
+      "arm": "on",
+      "k": 3,
+      "fired": [
+        "cwus-asco-001"
+      ]
+    },
+    {
+      "id": "GC-asco-001-pos",
+      "arm": "on",
+      "k": 4,
+      "fired": [
+        "cwus-asco-001"
+      ]
+    },
+    {
+      "id": "GC-asco-001-pos",
+      "arm": "on",
+      "k": 5,
+      "fired": [
+        "cwus-asco-001"
+      ]
+    },
+    {
+      "id": "GC-asco-001-neg",
+      "arm": "off",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-asco-001-neg",
+      "arm": "off",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-asco-001-neg",
+      "arm": "off",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-asco-001-neg",
+      "arm": "off",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-asco-001-neg",
+      "arm": "off",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-asco-001-neg",
+      "arm": "on",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-asco-001-neg",
+      "arm": "on",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-asco-001-neg",
+      "arm": "on",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-asco-001-neg",
+      "arm": "on",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-asco-001-neg",
+      "arm": "on",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-idsa-001-pos",
+      "arm": "off",
+      "k": 1,
+      "fired": [
+        "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
+        "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
+        "cwus-idsa-001"
+      ]
+    },
+    {
+      "id": "GC-idsa-001-pos",
+      "arm": "off",
+      "k": 2,
+      "fired": [
+        "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
+        "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
+        "cwus-idsa-001"
+      ]
+    },
+    {
+      "id": "GC-idsa-001-pos",
+      "arm": "off",
+      "k": 3,
+      "fired": [
+        "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
+        "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
+        "cwus-idsa-001"
+      ]
+    },
+    {
+      "id": "GC-idsa-001-pos",
+      "arm": "off",
+      "k": 4,
+      "fired": [
+        "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
+        "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
+        "cwus-idsa-001"
+      ]
+    },
+    {
+      "id": "GC-idsa-001-pos",
+      "arm": "off",
+      "k": 5,
+      "fired": [
+        "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
+        "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
+        "cwus-idsa-001"
+      ]
+    },
+    {
+      "id": "GC-idsa-001-pos",
+      "arm": "on",
+      "k": 1,
+      "fired": [
+        "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
+        "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
+        "cwus-idsa-001"
+      ]
+    },
+    {
+      "id": "GC-idsa-001-pos",
+      "arm": "on",
+      "k": 2,
+      "fired": [
+        "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
+        "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
+        "cwus-idsa-001"
+      ]
+    },
+    {
+      "id": "GC-idsa-001-pos",
+      "arm": "on",
+      "k": 3,
+      "fired": [
+        "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
+        "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
+        "cwus-idsa-001"
+      ]
+    },
+    {
+      "id": "GC-idsa-001-pos",
+      "arm": "on",
+      "k": 4,
+      "fired": [
+        "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
+        "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
+        "cwus-idsa-001"
+      ]
+    },
+    {
+      "id": "GC-idsa-001-pos",
+      "arm": "on",
+      "k": 5,
+      "fired": [
+        "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
+        "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
+        "cwus-idsa-001"
+      ]
+    },
+    {
+      "id": "GC-idsa-001-neg",
+      "arm": "off",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-idsa-001-neg",
+      "arm": "off",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-idsa-001-neg",
+      "arm": "off",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-idsa-001-neg",
+      "arm": "off",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-idsa-001-neg",
+      "arm": "off",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-idsa-001-neg",
+      "arm": "on",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-idsa-001-neg",
+      "arm": "on",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-idsa-001-neg",
+      "arm": "on",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-idsa-001-neg",
+      "arm": "on",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-idsa-001-neg",
+      "arm": "on",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-schm-001-pos",
+      "arm": "off",
+      "k": 1,
+      "fired": [
+        "cwus-schm-001"
+      ]
+    },
+    {
+      "id": "GC-schm-001-pos",
+      "arm": "off",
+      "k": 2,
+      "fired": [
+        "cwus-schm-001"
+      ]
+    },
+    {
+      "id": "GC-schm-001-pos",
+      "arm": "off",
+      "k": 3,
+      "fired": [
+        "cwus-schm-001"
+      ]
+    },
+    {
+      "id": "GC-schm-001-pos",
+      "arm": "off",
+      "k": 4,
+      "fired": [
+        "cwus-schm-001"
+      ]
+    },
+    {
+      "id": "GC-schm-001-pos",
+      "arm": "off",
+      "k": 5,
+      "fired": [
+        "cwus-schm-001"
+      ]
+    },
+    {
+      "id": "GC-schm-001-pos",
+      "arm": "on",
+      "k": 1,
+      "fired": [
+        "cwus-schm-001"
+      ]
+    },
+    {
+      "id": "GC-schm-001-pos",
+      "arm": "on",
+      "k": 2,
+      "fired": [
+        "cwus-schm-001"
+      ]
+    },
+    {
+      "id": "GC-schm-001-pos",
+      "arm": "on",
+      "k": 3,
+      "fired": [
+        "cwus-schm-001"
+      ]
+    },
+    {
+      "id": "GC-schm-001-pos",
+      "arm": "on",
+      "k": 4,
+      "fired": [
+        "cwus-schm-001"
+      ]
+    },
+    {
+      "id": "GC-schm-001-pos",
+      "arm": "on",
+      "k": 5,
+      "fired": [
+        "cwus-schm-001"
+      ]
+    },
+    {
+      "id": "GC-schm-001-neg",
+      "arm": "off",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-schm-001-neg",
+      "arm": "off",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-schm-001-neg",
+      "arm": "off",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-schm-001-neg",
+      "arm": "off",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-schm-001-neg",
+      "arm": "off",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-schm-001-neg",
+      "arm": "on",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-schm-001-neg",
+      "arm": "on",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-schm-001-neg",
+      "arm": "on",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-schm-001-neg",
+      "arm": "on",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-schm-001-neg",
+      "arm": "on",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-schm-002-pos",
+      "arm": "off",
+      "k": 1,
+      "fired": [
+        "cwus-schm-002"
+      ]
+    },
+    {
+      "id": "GC-schm-002-pos",
+      "arm": "off",
+      "k": 2,
+      "fired": [
+        "cwus-schm-002"
+      ]
+    },
+    {
+      "id": "GC-schm-002-pos",
+      "arm": "off",
+      "k": 3,
+      "fired": [
+        "cwus-schm-002"
+      ]
+    },
+    {
+      "id": "GC-schm-002-pos",
+      "arm": "off",
+      "k": 4,
+      "fired": [
+        "cwus-schm-002"
+      ]
+    },
+    {
+      "id": "GC-schm-002-pos",
+      "arm": "off",
+      "k": 5,
+      "fired": [
+        "cwus-schm-002"
+      ]
+    },
+    {
+      "id": "GC-schm-002-pos",
+      "arm": "on",
+      "k": 1,
+      "fired": [
+        "cwus-schm-002"
+      ]
+    },
+    {
+      "id": "GC-schm-002-pos",
+      "arm": "on",
+      "k": 2,
+      "fired": [
+        "cwus-schm-002"
+      ]
+    },
+    {
+      "id": "GC-schm-002-pos",
+      "arm": "on",
+      "k": 3,
+      "fired": [
+        "cwus-schm-002"
+      ]
+    },
+    {
+      "id": "GC-schm-002-pos",
+      "arm": "on",
+      "k": 4,
+      "fired": [
+        "cwus-schm-002"
+      ]
+    },
+    {
+      "id": "GC-schm-002-pos",
+      "arm": "on",
+      "k": 5,
+      "fired": [
+        "cwus-schm-002"
+      ]
+    },
+    {
+      "id": "GC-schm-002-neg",
+      "arm": "off",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-schm-002-neg",
+      "arm": "off",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-schm-002-neg",
+      "arm": "off",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-schm-002-neg",
+      "arm": "off",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-schm-002-neg",
+      "arm": "off",
+      "k": 5,
+      "fired": []
+    },
+    {
+      "id": "GC-schm-002-neg",
+      "arm": "on",
+      "k": 1,
+      "fired": []
+    },
+    {
+      "id": "GC-schm-002-neg",
+      "arm": "on",
+      "k": 2,
+      "fired": []
+    },
+    {
+      "id": "GC-schm-002-neg",
+      "arm": "on",
+      "k": 3,
+      "fired": []
+    },
+    {
+      "id": "GC-schm-002-neg",
+      "arm": "on",
+      "k": 4,
+      "fired": []
+    },
+    {
+      "id": "GC-schm-002-neg",
+      "arm": "on",
+      "k": 5,
+      "fired": []
+    }
+  ]
+}

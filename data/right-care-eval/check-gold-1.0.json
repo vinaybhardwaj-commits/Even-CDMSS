@@ -1,0 +1,857 @@
+{
+ "version": "right-care-check-gold/1.0",
+ "generated_note": "RATIFIED by V, 13 Jul 2026. 18 curated Choosing-Wisely recs \u2192 36 cases (positive + near-miss). Frozen; bump = conscious re-freeze.",
+ "source": "lvc_recommendations (cwus-*, active)",
+ "n_cases": 36,
+ "n_recs": 18,
+ "cases": [
+  {
+   "id": "GC-aabb-001-pos",
+   "mode": "check",
+   "polarity": "positive",
+   "sourceRec": "cwus-aabb-001",
+   "society": "AABB",
+   "domain": "RBC transfusion",
+   "patient": {
+    "age": 68,
+    "sex": "M"
+   },
+   "scenario": "68M inpatient, hemodynamically stable, no active bleeding. Hb 7.6 g/dL, asymptomatic (no chest pain, no dyspnoea). Team considering 1 unit packed red cells because 'Hb is under 8'.",
+   "proposedActions": [
+    "Packed red cell transfusion"
+   ],
+   "gold": {
+    "mustFire": [
+     "cwus-aabb-001"
+    ],
+    "mustNotFire": []
+   },
+   "note": "Restrictive threshold met, no symptoms/bleeding/instability \u2192 transfusion is low-value."
+  },
+  {
+   "id": "GC-aabb-001-neg",
+   "mode": "check",
+   "polarity": "near_miss",
+   "sourceRec": "cwus-aabb-001",
+   "society": "AABB",
+   "domain": "RBC transfusion",
+   "patient": {
+    "age": 68,
+    "sex": "M"
+   },
+   "scenario": "68M with active upper-GI bleed (melena, ongoing haematemesis), Hb 6.8 g/dL, HR 118, BP 88/54. Transfusion being arranged.",
+   "proposedActions": [
+    "Packed red cell transfusion"
+   ],
+   "gold": {
+    "mustFire": [],
+    "mustNotFire": [
+     "cwus-aabb-001"
+    ]
+   },
+   "note": "Active bleeding + instability \u2192 transfusion appropriate; must not flag."
+  },
+  {
+   "id": "GC-aace-001-pos",
+   "mode": "check",
+   "polarity": "positive",
+   "sourceRec": "cwus-aace-001",
+   "society": "AACE",
+   "domain": "Thyroid US",
+   "patient": {
+    "age": 40,
+    "sex": "F"
+   },
+   "scenario": "40F with newly abnormal thyroid function tests (high TSH). Thyroid not enlarged, no palpable nodule. Thyroid ultrasound ordered.",
+   "proposedActions": [
+    "Thyroid ultrasound"
+   ],
+   "gold": {
+    "mustFire": [
+     "cwus-aace-001"
+    ],
+    "mustNotFire": []
+   },
+   "note": "Abnormal TFTs, no palpable abnormality \u2192 US is low-value."
+  },
+  {
+   "id": "GC-aace-001-neg",
+   "mode": "check",
+   "polarity": "near_miss",
+   "sourceRec": "cwus-aace-001",
+   "society": "AACE",
+   "domain": "Thyroid US",
+   "patient": {
+    "age": 40,
+    "sex": "F"
+   },
+   "scenario": "40F with abnormal TFTs and a firm 2 cm palpable right thyroid nodule. Thyroid ultrasound ordered.",
+   "proposedActions": [
+    "Thyroid ultrasound"
+   ],
+   "gold": {
+    "mustFire": [],
+    "mustNotFire": [
+     "cwus-aace-001"
+    ]
+   },
+   "note": "Palpable nodule \u2192 US appropriate; must not flag."
+  },
+  {
+   "id": "GC-aafp-001-pos",
+   "mode": "check",
+   "polarity": "positive",
+   "sourceRec": "cwus-aafp-001",
+   "society": "AAFP",
+   "domain": "Imaging for acute LBP",
+   "patient": {
+    "age": 34,
+    "sex": "M"
+   },
+   "scenario": "34M with 4 days of mechanical low back pain after lifting. No trauma, no neurological deficit, no cancer history, no weight loss, no fever. Requesting MRI lumbar spine.",
+   "proposedActions": [
+    "MRI lumbar spine"
+   ],
+   "gold": {
+    "mustFire": [
+     "cwus-aafp-001"
+    ],
+    "mustNotFire": []
+   },
+   "note": "Acute LBP <6wk, no red flags \u2192 imaging low-value."
+  },
+  {
+   "id": "GC-aafp-001-neg",
+   "mode": "check",
+   "polarity": "near_miss",
+   "sourceRec": "cwus-aafp-001",
+   "society": "AAFP",
+   "domain": "Imaging for acute LBP",
+   "patient": {
+    "age": 61,
+    "sex": "M"
+   },
+   "scenario": "61M with 5 weeks of low back pain, history of prostate cancer, 6 kg unexplained weight loss. MRI lumbar spine ordered.",
+   "proposedActions": [
+    "MRI lumbar spine"
+   ],
+   "gold": {
+    "mustFire": [],
+    "mustNotFire": [
+     "cwus-aafp-001"
+    ]
+   },
+   "note": "Red flags (cancer history, weight loss) \u2192 imaging appropriate; must not flag."
+  },
+  {
+   "id": "GC-aafp-002-pos",
+   "mode": "check",
+   "polarity": "positive",
+   "sourceRec": "cwus-aafp-002",
+   "society": "AAFP",
+   "domain": "Antibiotics for URI",
+   "patient": {
+    "age": 30,
+    "sex": "F"
+   },
+   "scenario": "30F with 3 days of nasal congestion, sore throat, and cough. Mild symptoms, afebrile, clinically a viral URI. Amoxicillin prescribed.",
+   "proposedActions": [
+    "Amoxicillin",
+    "Antibiotics"
+   ],
+   "gold": {
+    "mustFire": [
+     "cwus-aafp-002"
+    ],
+    "mustNotFire": []
+   },
+   "note": "Uncomplicated viral URI \u2192 antibiotics low-value."
+  },
+  {
+   "id": "GC-aafp-002-neg",
+   "mode": "check",
+   "polarity": "near_miss",
+   "sourceRec": "cwus-aafp-002",
+   "society": "AAFP",
+   "domain": "Antibiotics for URI",
+   "patient": {
+    "age": 30,
+    "sex": "F"
+   },
+   "scenario": "30F with 12 days of rhinosinusitis symptoms that initially improved then worsened, now with high fever and purulent discharge ('double-sickening'). Amoxicillin-clavulanate prescribed.",
+   "proposedActions": [
+    "Amoxicillin-clavulanate",
+    "Antibiotics"
+   ],
+   "gold": {
+    "mustFire": [],
+    "mustNotFire": [
+     "cwus-aafp-002"
+    ]
+   },
+   "note": "Persistent/worsening bacterial sinusitis \u2192 antibiotics appropriate; must not flag."
+  },
+  {
+   "id": "GC-aafp-003-pos",
+   "mode": "check",
+   "polarity": "positive",
+   "sourceRec": "cwus-aafp-003",
+   "society": "AAFP",
+   "domain": "PSA screening",
+   "patient": {
+    "age": 50,
+    "sex": "M"
+   },
+   "scenario": "50M asymptomatic, average risk, routine health check. PSA test ordered with no documented discussion of risks/benefits.",
+   "proposedActions": [
+    "PSA",
+    "Prostate specific antigen"
+   ],
+   "gold": {
+    "mustFire": [
+     "cwus-aafp-003"
+    ],
+    "mustNotFire": []
+   },
+   "note": "Screening PSA without shared decision-making \u2192 low-value."
+  },
+  {
+   "id": "GC-aafp-003-neg",
+   "mode": "check",
+   "polarity": "near_miss",
+   "sourceRec": "cwus-aafp-003",
+   "society": "AAFP",
+   "domain": "PSA screening",
+   "patient": {
+    "age": 64,
+    "sex": "M"
+   },
+   "scenario": "64M with new obstructive urinary symptoms and a hard irregular nodule on rectal examination. PSA ordered as part of the diagnostic work-up.",
+   "proposedActions": [
+    "PSA"
+   ],
+   "gold": {
+    "mustFire": [],
+    "mustNotFire": [
+     "cwus-aafp-003"
+    ]
+   },
+   "note": "Symptomatic/diagnostic (not screening) \u2192 appropriate; must not flag."
+  },
+  {
+   "id": "GC-aafp-004-pos",
+   "mode": "check",
+   "polarity": "positive",
+   "sourceRec": "cwus-aafp-004",
+   "society": "AAFP",
+   "domain": "DEXA screening",
+   "patient": {
+    "age": 52,
+    "sex": "F"
+   },
+   "scenario": "52F, no osteoporosis risk factors, routine visit. DEXA bone-density scan ordered.",
+   "proposedActions": [
+    "DEXA scan",
+    "Bone density scan"
+   ],
+   "gold": {
+    "mustFire": [
+     "cwus-aafp-004"
+    ],
+    "mustNotFire": []
+   },
+   "note": "Woman <65, no risk factors \u2192 DEXA screening low-value."
+  },
+  {
+   "id": "GC-aafp-004-neg",
+   "mode": "check",
+   "polarity": "near_miss",
+   "sourceRec": "cwus-aafp-004",
+   "society": "AAFP",
+   "domain": "DEXA screening",
+   "patient": {
+    "age": 52,
+    "sex": "F"
+   },
+   "scenario": "52F on chronic oral glucocorticoids for autoimmune disease. DEXA bone-density scan ordered.",
+   "proposedActions": [
+    "DEXA scan"
+   ],
+   "gold": {
+    "mustFire": [],
+    "mustNotFire": [
+     "cwus-aafp-004"
+    ]
+   },
+   "note": "Steroid use is an osteoporosis risk factor \u2192 DEXA appropriate; must not flag."
+  },
+  {
+   "id": "GC-aap-001-pos",
+   "mode": "check",
+   "polarity": "positive",
+   "sourceRec": "cwus-aap-001",
+   "society": "AAP",
+   "domain": "CT in pediatric head injury",
+   "patient": {
+    "age": 6,
+    "sex": "M"
+   },
+   "scenario": "6-year-old with a minor head bump, GCS 15, no loss of consciousness, no vomiting, playing normally \u2014 low-risk by PECARN. CT head ordered.",
+   "proposedActions": [
+    "CT head"
+   ],
+   "gold": {
+    "mustFire": [
+     "cwus-aap-001"
+    ],
+    "mustNotFire": []
+   },
+   "note": "Low-risk pediatric minor head injury \u2192 CT low-value."
+  },
+  {
+   "id": "GC-aap-001-neg",
+   "mode": "check",
+   "polarity": "near_miss",
+   "sourceRec": "cwus-aap-001",
+   "society": "AAP",
+   "domain": "CT in pediatric head injury",
+   "patient": {
+    "age": 6,
+    "sex": "M"
+   },
+   "scenario": "6-year-old with head injury: brief loss of consciousness, two episodes of vomiting, GCS 14, scalp haematoma. CT head ordered.",
+   "proposedActions": [
+    "CT head"
+   ],
+   "gold": {
+    "mustFire": [],
+    "mustNotFire": [
+     "cwus-aap-001"
+    ]
+   },
+   "note": "Not low-risk by PECARN \u2192 CT appropriate; must not flag."
+  },
+  {
+   "id": "GC-acc-001-pos",
+   "mode": "check",
+   "polarity": "positive",
+   "sourceRec": "cwus-acc-001",
+   "society": "ACC",
+   "domain": "Stress imaging / angiography",
+   "patient": {
+    "age": 50,
+    "sex": "M"
+   },
+   "scenario": "50M, no cardiac symptoms, low CAD risk, requesting a 'cardiac check-up'. Stress echocardiogram ordered.",
+   "proposedActions": [
+    "Stress echocardiogram"
+   ],
+   "gold": {
+    "mustFire": [
+     "cwus-acc-001"
+    ],
+    "mustNotFire": []
+   },
+   "note": "Asymptomatic, low-risk, no high-risk markers \u2192 screening stress imaging low-value."
+  },
+  {
+   "id": "GC-acc-001-neg",
+   "mode": "check",
+   "polarity": "near_miss",
+   "sourceRec": "cwus-acc-001",
+   "society": "ACC",
+   "domain": "Stress imaging / angiography",
+   "patient": {
+    "age": 58,
+    "sex": "M"
+   },
+   "scenario": "58M with exertional chest tightness and dyspnoea over 3 weeks. Stress echocardiogram ordered.",
+   "proposedActions": [
+    "Stress echocardiogram"
+   ],
+   "gold": {
+    "mustFire": [],
+    "mustNotFire": [
+     "cwus-acc-001"
+    ]
+   },
+   "note": "Symptomatic \u2192 stress imaging appropriate; must not flag."
+  },
+  {
+   "id": "GC-acep-001-pos",
+   "mode": "check",
+   "polarity": "positive",
+   "sourceRec": "cwus-acep-001",
+   "society": "ACEP",
+   "domain": "CT head adult minor injury",
+   "patient": {
+    "age": 30,
+    "sex": "M"
+   },
+   "scenario": "30M with minor head injury, GCS 15, no vomiting, no dangerous mechanism, no anticoagulation \u2014 low-risk by the Canadian CT Head Rule. CT head ordered.",
+   "proposedActions": [
+    "CT head"
+   ],
+   "gold": {
+    "mustFire": [
+     "cwus-acep-001"
+    ],
+    "mustNotFire": []
+   },
+   "note": "Low-risk adult minor head injury \u2192 CT low-value."
+  },
+  {
+   "id": "GC-acep-001-neg",
+   "mode": "check",
+   "polarity": "near_miss",
+   "sourceRec": "cwus-acep-001",
+   "society": "ACEP",
+   "domain": "CT head adult minor injury",
+   "patient": {
+    "age": 30,
+    "sex": "M"
+   },
+   "scenario": "30M with minor head injury who takes warfarin (INR therapeutic). CT head ordered.",
+   "proposedActions": [
+    "CT head"
+   ],
+   "gold": {
+    "mustFire": [],
+    "mustNotFire": [
+     "cwus-acep-001"
+    ]
+   },
+   "note": "Anticoagulation is a high-risk criterion \u2192 CT appropriate; must not flag."
+  },
+  {
+   "id": "GC-acp-001-pos",
+   "mode": "check",
+   "polarity": "positive",
+   "sourceRec": "cwus-acp-001",
+   "society": "ACP",
+   "domain": "Screening ECG",
+   "patient": {
+    "age": 45,
+    "sex": "F"
+   },
+   "scenario": "45F asymptomatic, low coronary-heart-disease risk, routine annual physical. Resting screening ECG ordered.",
+   "proposedActions": [
+    "Screening ECG",
+    "Resting ECG"
+   ],
+   "gold": {
+    "mustFire": [
+     "cwus-acp-001"
+    ],
+    "mustNotFire": []
+   },
+   "note": "Asymptomatic low-risk screening ECG \u2192 low-value."
+  },
+  {
+   "id": "GC-acp-001-neg",
+   "mode": "check",
+   "polarity": "near_miss",
+   "sourceRec": "cwus-acp-001",
+   "society": "ACP",
+   "domain": "Screening ECG",
+   "patient": {
+    "age": 45,
+    "sex": "F"
+   },
+   "scenario": "45F with new palpitations and one episode of exertional presyncope. Resting ECG ordered.",
+   "proposedActions": [
+    "Resting ECG"
+   ],
+   "gold": {
+    "mustFire": [],
+    "mustNotFire": [
+     "cwus-acp-001"
+    ]
+   },
+   "note": "Symptomatic \u2192 ECG appropriate; must not flag."
+  },
+  {
+   "id": "GC-acr-001-pos",
+   "mode": "check",
+   "polarity": "positive",
+   "sourceRec": "cwus-acr-001",
+   "society": "ACR",
+   "domain": "Neuroimaging for migraine",
+   "patient": {
+    "age": 32,
+    "sex": "F"
+   },
+   "scenario": "32F with recurrent headaches meeting migraine criteria, stable pattern for years, normal neurological exam, no red flags. MRI brain requested.",
+   "proposedActions": [
+    "MRI brain",
+    "Neuroimaging"
+   ],
+   "gold": {
+    "mustFire": [
+     "cwus-acr-001"
+    ],
+    "mustNotFire": []
+   },
+   "note": "Stable migraine, normal exam, no red flags \u2192 neuroimaging low-value."
+  },
+  {
+   "id": "GC-acr-001-neg",
+   "mode": "check",
+   "polarity": "near_miss",
+   "sourceRec": "cwus-acr-001",
+   "society": "ACR",
+   "domain": "Neuroimaging for migraine",
+   "patient": {
+    "age": 32,
+    "sex": "F"
+   },
+   "scenario": "32F with a new thunderclap headache reaching maximum intensity in seconds, plus new left-arm weakness. CT/MRI brain ordered.",
+   "proposedActions": [
+    "CT head",
+    "MRI brain"
+   ],
+   "gold": {
+    "mustFire": [],
+    "mustNotFire": [
+     "cwus-acr-001"
+    ]
+   },
+   "note": "Thunderclap + focal deficit (red flags) \u2192 neuroimaging appropriate; must not flag."
+  },
+  {
+   "id": "GC-aga-001-pos",
+   "mode": "check",
+   "polarity": "positive",
+   "sourceRec": "cwus-aga-001",
+   "society": "AGA",
+   "domain": "Repeat colonoscopy interval",
+   "patient": {
+    "age": 55,
+    "sex": "M"
+   },
+   "scenario": "55M average risk, high-quality normal colonoscopy 4 years ago, no symptoms. Repeat screening colonoscopy scheduled.",
+   "proposedActions": [
+    "Colonoscopy"
+   ],
+   "gold": {
+    "mustFire": [
+     "cwus-aga-001"
+    ],
+    "mustNotFire": []
+   },
+   "note": "Normal colonoscopy <10y ago, average risk \u2192 repeat low-value."
+  },
+  {
+   "id": "GC-aga-001-neg",
+   "mode": "check",
+   "polarity": "near_miss",
+   "sourceRec": "cwus-aga-001",
+   "society": "AGA",
+   "domain": "Repeat colonoscopy interval",
+   "patient": {
+    "age": 55,
+    "sex": "M"
+   },
+   "scenario": "55M with a normal colonoscopy 4 years ago who now has new rectal bleeding and iron-deficiency anaemia. Colonoscopy ordered.",
+   "proposedActions": [
+    "Colonoscopy"
+   ],
+   "gold": {
+    "mustFire": [],
+    "mustNotFire": [
+     "cwus-aga-001"
+    ]
+   },
+   "note": "New symptoms \u2192 diagnostic colonoscopy appropriate; must not flag."
+  },
+  {
+   "id": "GC-ags-001-pos",
+   "mode": "check",
+   "polarity": "positive",
+   "sourceRec": "cwus-ags-001",
+   "society": "AGS",
+   "domain": "Benzodiazepines in older adults",
+   "patient": {
+    "age": 78,
+    "sex": "F"
+   },
+   "scenario": "78F with insomnia. No non-pharmacological measures tried. Zolpidem prescribed as first-line.",
+   "proposedActions": [
+    "Zolpidem",
+    "Sedative-hypnotic"
+   ],
+   "gold": {
+    "mustFire": [
+     "cwus-ags-001"
+    ],
+    "mustNotFire": []
+   },
+   "note": "Sedative-hypnotic first-line for insomnia in an older adult \u2192 low-value/harmful."
+  },
+  {
+   "id": "GC-ags-001-neg",
+   "mode": "check",
+   "polarity": "near_miss",
+   "sourceRec": "cwus-ags-001",
+   "society": "AGS",
+   "domain": "Benzodiazepines in older adults",
+   "patient": {
+    "age": 78,
+    "sex": "F"
+   },
+   "scenario": "78F admitted with alcohol-withdrawal syndrome (tremor, autonomic instability, CIWA elevated). Lorazepam prescribed per withdrawal protocol.",
+   "proposedActions": [
+    "Lorazepam",
+    "Benzodiazepine"
+   ],
+   "gold": {
+    "mustFire": [],
+    "mustNotFire": [
+     "cwus-ags-001"
+    ]
+   },
+   "note": "Benzodiazepine is first-line for alcohol withdrawal \u2192 appropriate; must not flag."
+  },
+  {
+   "id": "GC-asa-001-pos",
+   "mode": "check",
+   "polarity": "positive",
+   "sourceRec": "cwus-asa-001",
+   "society": "ASA",
+   "domain": "Routine preop testing",
+   "patient": {
+    "age": 45,
+    "sex": "F"
+   },
+   "scenario": "45F, healthy, no cardiopulmonary disease, scheduled for minor day-care surgery (excision of a skin lesion). Routine preoperative chest X-ray, ECG, and labs ordered.",
+   "proposedActions": [
+    "Preoperative chest X-ray",
+    "Preoperative ECG",
+    "Preoperative labs"
+   ],
+   "gold": {
+    "mustFire": [
+     "cwus-asa-001"
+    ],
+    "mustNotFire": []
+   },
+   "note": "Asymptomatic, low-risk surgery \u2192 routine preop testing low-value."
+  },
+  {
+   "id": "GC-asa-001-neg",
+   "mode": "check",
+   "polarity": "near_miss",
+   "sourceRec": "cwus-asa-001",
+   "society": "ASA",
+   "domain": "Routine preop testing",
+   "patient": {
+    "age": 72,
+    "sex": "M"
+   },
+   "scenario": "72M with symptomatic ischaemic heart disease and dyspnoea scheduled for major intra-abdominal surgery. Preoperative ECG and labs ordered.",
+   "proposedActions": [
+    "Preoperative ECG",
+    "Preoperative labs"
+   ],
+   "gold": {
+    "mustFire": [],
+    "mustNotFire": [
+     "cwus-asa-001"
+    ]
+   },
+   "note": "Cardiac disease + major surgery \u2192 preop testing appropriate; must not flag."
+  },
+  {
+   "id": "GC-asco-001-pos",
+   "mode": "check",
+   "polarity": "positive",
+   "sourceRec": "cwus-asco-001",
+   "society": "ASCO",
+   "domain": "Staging imaging early cancer",
+   "patient": {
+    "age": 54,
+    "sex": "F"
+   },
+   "scenario": "54F with newly diagnosed T1N0 low-risk breast cancer, asymptomatic. PET-CT and radionuclide bone scan ordered for staging.",
+   "proposedActions": [
+    "PET-CT",
+    "Bone scan",
+    "Staging imaging"
+   ],
+   "gold": {
+    "mustFire": [
+     "cwus-asco-001"
+    ],
+    "mustNotFire": []
+   },
+   "note": "Early low-risk cancer, asymptomatic \u2192 advanced staging imaging low-value."
+  },
+  {
+   "id": "GC-asco-001-neg",
+   "mode": "check",
+   "polarity": "near_miss",
+   "sourceRec": "cwus-asco-001",
+   "society": "ASCO",
+   "domain": "Staging imaging early cancer",
+   "patient": {
+    "age": 54,
+    "sex": "F"
+   },
+   "scenario": "54F with newly diagnosed breast cancer plus new focal bone pain and a pathological-feeling rib. Bone scan ordered.",
+   "proposedActions": [
+    "Bone scan"
+   ],
+   "gold": {
+    "mustFire": [],
+    "mustNotFire": [
+     "cwus-asco-001"
+    ]
+   },
+   "note": "Symptoms suggesting metastasis \u2192 staging imaging appropriate; must not flag."
+  },
+  {
+   "id": "GC-idsa-001-pos",
+   "mode": "check",
+   "polarity": "positive",
+   "sourceRec": "cwus-idsa-001",
+   "society": "IDSA",
+   "domain": "Asymptomatic bacteriuria",
+   "patient": {
+    "age": 70,
+    "sex": "F"
+   },
+   "scenario": "70F with a positive urine culture found on routine testing. No dysuria, frequency, urgency, or fever. Not pregnant. Nitrofurantoin prescribed.",
+   "proposedActions": [
+    "Nitrofurantoin",
+    "Antibiotics"
+   ],
+   "gold": {
+    "mustFire": [
+     "cwus-idsa-001"
+    ],
+    "mustNotFire": []
+   },
+   "note": "Asymptomatic bacteriuria (non-pregnant) \u2192 antibiotics low-value."
+  },
+  {
+   "id": "GC-idsa-001-neg",
+   "mode": "check",
+   "polarity": "near_miss",
+   "sourceRec": "cwus-idsa-001",
+   "society": "IDSA",
+   "domain": "Asymptomatic bacteriuria",
+   "patient": {
+    "age": 29,
+    "sex": "F"
+   },
+   "scenario": "29F, 20 weeks pregnant, with asymptomatic bacteriuria on routine screening culture. Antibiotics prescribed.",
+   "proposedActions": [
+    "Antibiotics"
+   ],
+   "gold": {
+    "mustFire": [],
+    "mustNotFire": [
+     "cwus-idsa-001"
+    ]
+   },
+   "note": "Pregnancy is an explicit exception \u2014 treat ASB \u2192 appropriate; must not flag."
+  },
+  {
+   "id": "GC-schm-001-pos",
+   "mode": "check",
+   "polarity": "positive",
+   "sourceRec": "cwus-schm-001",
+   "society": "SHM",
+   "domain": "Stress ulcer prophylaxis",
+   "patient": {
+    "age": 55,
+    "sex": "M"
+   },
+   "scenario": "55M admitted to a general medical ward for cellulitis. No mechanical ventilation, no coagulopathy, no GI-bleed history. Pantoprazole started as stress-ulcer prophylaxis.",
+   "proposedActions": [
+    "Pantoprazole",
+    "Stress ulcer prophylaxis"
+   ],
+   "gold": {
+    "mustFire": [
+     "cwus-schm-001"
+    ],
+    "mustNotFire": []
+   },
+   "note": "Non-ICU medical inpatient without high-risk features \u2192 SUP low-value."
+  },
+  {
+   "id": "GC-schm-001-neg",
+   "mode": "check",
+   "polarity": "near_miss",
+   "sourceRec": "cwus-schm-001",
+   "society": "SHM",
+   "domain": "Stress ulcer prophylaxis",
+   "patient": {
+    "age": 55,
+    "sex": "M"
+   },
+   "scenario": "55M in the ICU on mechanical ventilation with coagulopathy (platelets 40k, INR 2.1). Pantoprazole started as stress-ulcer prophylaxis.",
+   "proposedActions": [
+    "Pantoprazole"
+   ],
+   "gold": {
+    "mustFire": [],
+    "mustNotFire": [
+     "cwus-schm-001"
+    ]
+   },
+   "note": "High-risk (ventilation + coagulopathy) \u2192 SUP appropriate; must not flag."
+  },
+  {
+   "id": "GC-schm-002-pos",
+   "mode": "check",
+   "polarity": "positive",
+   "sourceRec": "cwus-schm-002",
+   "society": "SHM",
+   "domain": "Repetitive daily labs",
+   "patient": {
+    "age": 60,
+    "sex": "F"
+   },
+   "scenario": "60F, hospital day 4, clinically stable with stable labs. Daily CBC and chemistry panel ordered by routine.",
+   "proposedActions": [
+    "Daily CBC",
+    "Daily chemistry panel"
+   ],
+   "gold": {
+    "mustFire": [
+     "cwus-schm-002"
+    ],
+    "mustNotFire": []
+   },
+   "note": "Clinically and biochemically stable \u2192 routine daily labs low-value."
+  },
+  {
+   "id": "GC-schm-002-neg",
+   "mode": "check",
+   "polarity": "near_miss",
+   "sourceRec": "cwus-schm-002",
+   "society": "SHM",
+   "domain": "Repetitive daily labs",
+   "patient": {
+    "age": 60,
+    "sex": "F"
+   },
+   "scenario": "60F with an active GI bleed and evolving acute kidney injury; haemoglobin and creatinine being followed to guide management. Daily CBC and chemistry ordered.",
+   "proposedActions": [
+    "Daily CBC",
+    "Daily chemistry panel"
+   ],
+   "gold": {
+    "mustFire": [],
+    "mustNotFire": [
+     "cwus-schm-002"
+    ]
+   },
+   "note": "Labs answer a specific clinical question (unstable) \u2192 appropriate; must not flag."
+  }
+ ],
+ "status": "ratified",
+ "ratified_date": "2026-07-13"
+}
