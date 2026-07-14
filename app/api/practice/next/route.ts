@@ -3,8 +3,8 @@ export const maxDuration = 120;
 
 import { NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
-import { TEXT_MODEL, chatWithFallback, geminiModelFor } from '@/lib/llm';
-import { startTrace, logEvent, finishTrace, setTraceQuestionPreview, setTraceFinalAnswer } from '@/lib/trace';
+import { TEXT_MODEL, geminiModelFor } from '@/lib/llm';
+import { startTrace, logEvent, finishTrace, tracedChat, setTraceQuestionPreview, setTraceFinalAnswer } from '@/lib/trace';
 
 type SrcRow = {
   id: number; book: string; chapter: string | null;
@@ -51,17 +51,15 @@ export async function POST(req: Request) {
       '{"question": string, "options": {"A": string, "B": string, "C": string, "D": string}, "correct": "A"|"B"|"C"|"D", "rationale": string}.';
     const user = `Excerpt (from ${src.book}${src.chapter ? ', ' + src.chapter : ''}):\n${src.text}`;
 
-    const llmStart = Date.now();
-    await logEvent(traceId, 'llm_request', 'drafting', {
-      model: TEXT_MODEL, messages: [{ role: 'system', content: system }, { role: 'user', content: user }], temperature: 0.4,
-    });
-    const res = await chatWithFallback({
+    // Governed envelope (Stage 4): tracedChat logs its own llm_request/llm_response on the
+    // 'drafting' stage (richer — real served model, provider, usage), replacing the manual
+    // pair that assumed TEXT_MODEL even when Gemini served the call.
+    const res = await tracedChat(traceId, 'drafting', {
       model: TEXT_MODEL,
       messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
       temperature: 0.4,
-    }, geminiModelFor('practice'));
+    }, { gemini: geminiModelFor('practice') });
     let raw = (res.choices?.[0]?.message?.content ?? '').trim();
-    await logEvent(traceId, 'llm_response', 'drafting', { content: raw, model: TEXT_MODEL }, Date.now() - llmStart);
     if (raw.startsWith('```')) raw = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
     const match = raw.match(/\{[\s\S]*\}/);
     const mcq = JSON.parse(match ? match[0] : raw);

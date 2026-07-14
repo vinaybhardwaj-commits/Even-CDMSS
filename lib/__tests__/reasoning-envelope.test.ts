@@ -129,14 +129,20 @@ test('migration 0012 is additive + idempotent and covers every normative column'
   assert.match(sqlText, /CREATE INDEX IF NOT EXISTS .* ON trace_events \(prompt_id, prompt_version\)/, 'the (prompt_id, prompt_version) index');
 });
 
-test('governance check flags a known direct call and the concordance parallel store — WARN list is real', async () => {
+test('governance gate (Stage 4): the repo scan is CLEAN; synthetic direct calls are flagged', async () => {
   const gov = await import(GOV_SPECIFIER);
-  const { sites, stores } = gov.scanUngoverned();
-  assert.ok(sites.length > 0, 'ungoverned sites are reported');
-  assert.ok(sites.some((s: { file: string }) => s.file === 'lib/expand.ts'), 'flags the known lib/expand.ts direct call');
-  assert.ok(stores.some((s: { file: string; pattern: string }) => s.pattern === 'concordance_runs' && s.file.startsWith('lib/concordance')), 'flags the concordance_runs parallel store');
-  // The governed layer itself is never listed.
-  assert.ok(!sites.some((s: { file: string }) => s.file === 'lib/trace.ts' || s.file === 'lib/llm.ts'));
+  const { sites, stores, foldViolations } = gov.scanUngoverned();
+  assert.equal(sites.length, 0, 'ZERO ungoverned model calls (Stage 4 migrated every direct site)');
+  assert.deepEqual(foldViolations, [], 'the concordance→traces fold holds');
+  assert.ok(stores.some((s: { file: string; pattern: string }) => s.pattern === 'concordance_runs'), 'concordance refs still listed (info — its own surface remains)');
+  // A synthetic offender is caught per pattern; the governed layer itself is exempt.
+  const synth = gov.scanSource('lib/synthetic.ts', [
+    'const a = await chatWithFallback(params, gemini);',
+    'const b = await llm.chat.completions.create(params);',
+    'const c = await getGeminiChatClient();',
+  ].join('\n'));
+  assert.equal(synth.sites.length, 3, 'each direct-call pattern flags');
+  assert.equal(gov.scanSource('lib/trace.ts', 'chatWithFallback(params)').sites.length, 0, 'governed layer exempt');
 });
 
 test('every Right Care promptRef tag resolves to a REAL registry id', () => {

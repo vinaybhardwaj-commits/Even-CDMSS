@@ -18,8 +18,8 @@
 
 import RUBRIC_DOC from '@/data/nabh-rubric.json';
 import { retrieve } from './retrieve';
-import { chatWithFallback, geminiModelFor, geminiUtilityModel, TEXT_MODEL, GEMINI_MODEL } from './llm';
-import { startTrace, logEvent, finishTrace, tracedChat, withTrace, buildEnvelope, setTracePromptIds } from './trace';
+import { geminiModelFor, geminiUtilityModel, TEXT_MODEL, GEMINI_MODEL } from './llm';
+import { startTrace, logEvent, finishTrace, tracedChat, governedChat, withTrace, buildEnvelope, setTracePromptIds } from './trace';
 import { matchAnyTariffs, packageDaysFor, episodeRoomInflation } from './charge-master';
 import { generateFromDocument } from './gemini-multimodal';
 import { traceSkeleton } from './pathway';
@@ -169,13 +169,15 @@ export interface AnalyzeResult { report: AuditReport | null; excerptCount: numbe
 
 async function analyzeGenerate(system: string, user: string, forceOllama = false): Promise<string> {
   const geminiModel = forceOllama ? undefined : (geminiModelFor('doc_audit') ?? geminiUtilityModel());
-  const r = await chatWithFallback({
+  // Governed envelope (Stage 4): this is the trace-less analyze path (opts.trace === false),
+  // so governedChat takes the plain hybrid branch — byte-identical to the old direct call.
+  const r = await governedChat(undefined, 'doc_audit_analyze', {
     model: TEXT_MODEL,
     messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
     temperature: 0.2,
     max_tokens: 2800,
     ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
-  }, geminiModel);
+  }, { gemini: geminiModel });
   return r.choices?.[0]?.message?.content || '';
 }
 

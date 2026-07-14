@@ -2,8 +2,8 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 180;
 
 import { retrieve } from '@/lib/retrieve';
-import { TEXT_MODEL, chatWithFallback, geminiModelFor } from '@/lib/llm';
-import { startTrace, logEvent, finishTrace, logStreamComplete, setTraceQuestionPreview, setTraceFinalAnswer } from '@/lib/trace';
+import { TEXT_MODEL, geminiModelFor } from '@/lib/llm';
+import { startTrace, logEvent, finishTrace, tracedChat, logStreamComplete, setTraceQuestionPreview, setTraceFinalAnswer } from '@/lib/trace';
 
 // Topic synthesis: retrieve ~15 excerpts, then stream a cited study guide.
 // Wire format: a JSON citations header, the delimiter "\n\n---STREAM---\n",
@@ -59,15 +59,15 @@ export async function POST(req: Request) {
           return;
         }
         const llmStart = Date.now();
-        await logEvent(traceId, 'llm_request', 'drafting', {
-          model: TEXT_MODEL, messages: [{ role: 'system', content: system }, { role: 'user', content: user }], temperature: 0.2, stream: true,
-        });
-        const completion = await chatWithFallback({
+        // Governed envelope (Stage 4): tracedChat logs its own llm_request (+ stream-started
+        // and the usage chunk on Gemini), replacing the manual llm_request that assumed
+        // TEXT_MODEL even when Gemini served the stream.
+        const completion = await tracedChat(traceId, 'drafting', {
           model: TEXT_MODEL,
           messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
           temperature: 0.2,
           stream: true,
-        }, geminiModelFor('topics'));
+        }, { gemini: geminiModelFor('topics') });
         let full = '';
         for await (const part of completion as AsyncIterable<{ choices?: { delta?: { content?: string } }[] }>) {
           const delta = part.choices?.[0]?.delta?.content ?? '';

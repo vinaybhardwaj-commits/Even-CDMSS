@@ -311,36 +311,19 @@ export function promptVersionChanges(rows: VersionFirstSeen[], cutoffMs: number)
  * the deployed serverless bundle — so the tab renders this committed snapshot, and
  * lib/__tests__/reasoning-ui-core.test.ts diffs it against the LIVE scan in CI: any new
  * direct call site fails the build until this snapshot (and the tab) is updated.
- * Captured at Stage 1 (98a58c0). Stage 4 drives directSites to 0 and flips the CI gate.
+ * Stage 4: every direct site migrated through the governed layer; the scan is a HARD CI
+ * gate (exit 1) and this snapshot's zeros are what it enforces. The concordance runs table
+ * remains as the feature's own result store, mirrored into `traces` (no longer blind).
+ * (Human wording here on purpose — the literal table name would count as a reference in
+ * the scan's parallel-store pattern.)
  */
 export const GOVERNANCE_SNAPSHOT = {
-  capturedAt: '98a58c0 (Stage 1)',
-  directSites: 21,
-  directFiles: 20,
-  concordanceRefs: 13,
-  taggedPromptRefs: 10,   // Right Care family (Stage 1)
-  ungovernedFiles: [
-    'app/api/calculators/tooltip/route.ts',
-    'app/api/practice/next/route.ts',
-    'app/api/topics/route.ts',
-    'lib/ccb-brief.ts',
-    'lib/concordance.ts',
-    'lib/curator.ts',
-    'lib/doc-audit.ts',
-    'lib/drugs.ts',
-    'lib/expand.ts',
-    'lib/investigations.ts',
-    'lib/learning.ts',
-    'lib/lvc-value.ts',
-    'lib/lvc.ts',
-    'lib/mcp-tools.ts',
-    'lib/multi-query.ts',
-    'lib/opd-longitudinal.ts',
-    'lib/opd-note-audit.ts',
-    'lib/pathway.ts',
-    'lib/proms/adhoc.ts',
-    'lib/rerank.ts',
-  ],
+  capturedAt: 'Stage 4',
+  directSites: 0,
+  directFiles: 0,
+  concordanceRefs: 15,
+  taggedPromptRefs: 10,   // Right Care family wrappers (lvc/pathway/doc-audit)
+  ungovernedFiles: [] as string[],
 };
 
 // ── HTML rendering for ?format=html (pure string; self-contained, no scripts) ──────────────────

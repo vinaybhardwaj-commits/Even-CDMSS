@@ -9,7 +9,7 @@
 
 import { retrieve } from './retrieve';
 import { hitsToSources, buildCitedContext, type CiteHit, type Source } from './citations-core';
-import { startTrace, logEvent, finishTrace, tracedChat, setTraceQuestionPreview } from './trace';
+import { startTrace, logEvent, finishTrace, governedChat, setTraceQuestionPreview } from './trace';
 import { geminiModelFor, geminiUtilityModel, TEXT_MODEL, MINI_MODEL } from './llm';
 import { rowToOpdCase, opdCaseText, type OpdKeys, type OpdMed, type DeidOpdCase } from './opd-ingest-core';
 import {
@@ -297,13 +297,9 @@ async function defaultGenerate(traceId: string | undefined, system: string, user
     max_tokens: isReasoning ? 8192 : 2200,
     ...({ options: { num_ctx: isReasoning ? 16384 : 8192 }, keep_alive: '15m' } as Record<string, unknown>),
   };
-  if (traceId) {
-    const r = await tracedChat(traceId, 'opd_audit_analyze', params, { gemini: geminiModel });
-    return r.choices?.[0]?.message?.content || '';
-  }
-  // untraced fallback
-  const { chatWithFallback } = await import('./llm');
-  const r = await chatWithFallback(params, geminiModel);
+  // Governed envelope (Stage 4): OPD-audit vertical fingerprint — the system prompt here is
+  // always OPD_AUDIT_SYSTEM (see the single call site).
+  const r = await governedChat(traceId, 'opd_audit_analyze', params, { gemini: geminiModel, promptRef: 'opd-note-audit-core/OPD_AUDIT_SYSTEM' });
   return r.choices?.[0]?.message?.content || '';
 }
 

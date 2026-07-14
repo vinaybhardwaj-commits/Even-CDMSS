@@ -4,7 +4,7 @@
 // is the safety gate; the result persists as a draft. Traced through lib/llm (utility tier), soft-fails
 // to null so the route falls back to core+PREM. No new model/provider, no new dep.
 
-import { startTrace, tracedChat, finishTrace, logEvent } from '../trace';
+import { startTrace, governedChat, finishTrace, logEvent } from '../trace';
 import { geminiUtilityModel, geminiModelFor, TEXT_MODEL } from '../llm';
 import { compileItemBank, bankById, type BankItem } from './item-bank-core';
 import { validateAdhocSelection, ADHOC_GEN_PROMPT, ADHOC_GEN_VERSION, ADHOC_MAX_ITEMS } from './adhoc-core';
@@ -79,14 +79,10 @@ export async function generateAdhocSet(
   const traceId = await startTrace('proms_adhoc_gen', { seriesId, procedure }).catch(() => undefined);
   let content = '';
   try {
-    if (traceId) {
-      const r = await tracedChat(traceId, 'proms_adhoc_gen', params, { gemini: geminiModel });
-      content = r?.choices?.[0]?.message?.content || '';
-    } else {
-      const { chatWithFallback } = await import('../llm');
-      const r = await chatWithFallback(params, geminiModel);
-      content = r?.choices?.[0]?.message?.content || '';
-    }
+    // Governed envelope (Stage 4). No promptRef: ADHOC_GEN_PROMPT is array-joined, not a
+    // registry-extractable template-literal const.
+    const r = await governedChat(traceId, 'proms_adhoc_gen', params, { gemini: geminiModel });
+    content = r?.choices?.[0]?.message?.content || '';
   } catch {
     if (traceId) await finishTrace(traceId, 'error').catch(() => {});
     return null;                                  // model unavailable → soft-fail to core+PREM

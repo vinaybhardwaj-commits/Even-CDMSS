@@ -68,7 +68,7 @@ export async function generateHypotheses(
       temperature: 0.3,
       max_tokens: 700,
       ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
-    }, { gemini: opts.gemini });
+    }, { gemini: opts.gemini, promptRef: 'ddx-hypothesis/HYPO_SYSTEM' });
     const content = (res as { choices?: Array<{ message?: { content?: string } }> }).choices?.[0]?.message?.content ?? '';
     const parsed = parseLooseJson(content) as { hypotheses?: unknown };
     if (!Array.isArray(parsed.hypotheses)) return [];

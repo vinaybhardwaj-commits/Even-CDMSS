@@ -18,8 +18,8 @@
  */
 
 import { retrieve } from './retrieve';
-import { chatWithFallback, geminiModelFor, geminiUtilityModel, TEXT_MODEL } from './llm';
-import { startTrace, logEvent, finishTrace, tracedChat } from './trace';
+import { geminiModelFor, geminiUtilityModel, TEXT_MODEL } from './llm';
+import { startTrace, logEvent, finishTrace, governedChat } from './trace';
 import * as vcore from './lvc-value-core';
 import type { ValueAnalysis } from './lvc-value-core';
 import { matchAnyTariffs, formatTariffForPrompt } from './charge-master';
@@ -45,16 +45,16 @@ export interface ValueResult {
   traceId?: string;
 }
 
-/** Injection seam for tests. */
+/** Injection seam for tests. promptRef (Stage 4) is the Stage-0 registry id of the system
+ *  prompt — an additive envelope tag, never the prompt itself. */
 export interface ValueDeps {
   retrieveHits: (q: string) => Promise<CiteHit[]>;
-  generate: (system: string, user: string, label: string) => Promise<string>;
+  generate: (system: string, user: string, label: string, promptRef?: string) => Promise<string>;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function llmCall(traceId: string | undefined, label: string, params: any, geminiModel?: string): Promise<any> {
-  if (traceId) return tracedChat(traceId, label, params, { gemini: geminiModel });
-  return chatWithFallback(params, geminiModel);
+async function llmCall(traceId: string | undefined, label: string, params: any, geminiModel?: string, promptRef?: string): Promise<any> {
+  return governedChat(traceId, label, params, { gemini: geminiModel, promptRef });
 }
 
 async function defaultRetrieveHits(q: string): Promise<CiteHit[]> {
@@ -71,7 +71,7 @@ async function defaultRetrieveHits(q: string): Promise<CiteHit[]> {
   }
 }
 
-async function defaultGenerate(system: string, user: string, label: string, traceId: string | undefined, maxTokens: number, forceOllama = false): Promise<string> {
+async function defaultGenerate(system: string, user: string, label: string, traceId: string | undefined, maxTokens: number, forceOllama = false, promptRef?: string): Promise<string> {
   const geminiModel = forceOllama ? undefined : (geminiModelFor('appropriateness') ?? geminiUtilityModel());
   const r = await llmCall(traceId, label, {
     model: TEXT_MODEL,
@@ -79,7 +79,7 @@ async function defaultGenerate(system: string, user: string, label: string, trac
     temperature: 0.2,
     max_tokens: maxTokens,
     ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
-  }, geminiModel);
+  }, geminiModel, promptRef);
   return r.choices?.[0]?.message?.content || '';
 }
 
@@ -94,7 +94,7 @@ export async function analyzeValue(input: ValueInput, deps: Partial<ValueDeps> =
 
   const retrieveHits = deps.retrieveHits ?? defaultRetrieveHits;
   const generate = deps.generate
-    ?? ((s: string, u: string, label: string) => defaultGenerate(s, u, label, traceId, label === 'lvc_value_critique' ? 700 : 1500, input.forceOllama === true));
+    ?? ((s: string, u: string, label: string, promptRef?: string) => defaultGenerate(s, u, label, traceId, label === 'lvc_value_critique' ? 700 : 1500, input.forceOllama === true, promptRef));
   const prog = input.onProgress ?? (() => {});
 
   try {
@@ -117,14 +117,14 @@ export async function analyzeValue(input: ValueInput, deps: Partial<ValueDeps> =
     }
 
     prog('drafting', 'Analyzing value for this patient…');
-    const draftRaw = await generate(vcore.VALUE_SYSTEM, user, 'lvc_value');
+    const draftRaw = await generate(vcore.VALUE_SYSTEM, user, 'lvc_value', 'lvc-value-core/VALUE_SYSTEM');
     let valueAnalysis = vcore.parseValueResponse(draftRaw, sources.length);
 
     // ── Citation self-critique + revise ──────────────────────────────────────
     if (doAudit && valueAnalysis) {
       try {
         prog('reviewing', 'Auditing citations…');
-        const critiqueRaw = await generate(vcore.VALUE_CRITIQUE_SYSTEM, vcore.buildCritiqueUser(input.scenario, citedContext, draftRaw), 'lvc_value_critique');
+        const critiqueRaw = await generate(vcore.VALUE_CRITIQUE_SYSTEM, vcore.buildCritiqueUser(input.scenario, citedContext, draftRaw), 'lvc_value_critique', 'lvc-value-core/VALUE_CRITIQUE_SYSTEM');
         const critique = vcore.parseCritique(critiqueRaw);
         if (traceId) await logEvent(traceId, 'lvc_value_critique', null, {
           severity: critique.severity, needs_revision: critique.needs_revision,
@@ -132,7 +132,7 @@ export async function analyzeValue(input: ValueInput, deps: Partial<ValueDeps> =
         });
         if (critique.needs_revision) {
           prog('revising', 'Revising to fix citations…');
-          const revRaw = await generate(vcore.VALUE_REVISE_SYSTEM, vcore.buildReviseUser(input.scenario, citedContext, draftRaw, JSON.stringify(critique)), 'lvc_value');
+          const revRaw = await generate(vcore.VALUE_REVISE_SYSTEM, vcore.buildReviseUser(input.scenario, citedContext, draftRaw, JSON.stringify(critique)), 'lvc_value', 'lvc-value-core/VALUE_REVISE_SYSTEM');
           const revised = vcore.parseValueResponse(revRaw, sources.length);
           if (revised) valueAnalysis = revised;   // keep the draft if the revise pass didn't parse
         }

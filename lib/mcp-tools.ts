@@ -7,7 +7,8 @@
  */
 import { auditOpdNote, opdMiniEngine } from './opd-note-audit';
 import { OPD_AUDIT_SYSTEM, buildOpdAuditUser } from './opd-note-audit-core';
-import { MINI_MODEL, llm } from './llm';
+import { MINI_MODEL } from './llm';
+import { governedChat } from './trace';
 import { fetchOpdNoteByUid } from './metabase';
 import { sql } from './db';
 import { guardReadOnlySql } from './sql-guard-core';
@@ -316,12 +317,13 @@ async function miniAnalyze(a: Record<string, unknown>): Promise<ToolResult> {
   if (text) {
     // Text mode: run the OPD audit SYSTEM prompt on the mini over the pasted note (no retrieval
     // grounding — this is an experimental raw pass; structured uid mode is the grounded one).
-    const r = await llm.chat.completions.create({
+    // Governed envelope (Stage 4): traceless + no gemini → byte-identical local call.
+    const r = await governedChat(undefined, 'mcp_mini_analyze', {
       model: MINI_MODEL,
       messages: [{ role: 'system', content: OPD_AUDIT_SYSTEM }, { role: 'user', content: buildOpdAuditUser(text, '(no corpus excerpts — experimental raw pass)') }],
       temperature: 0.2, max_tokens: 2200,
       ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
-    });
+    }, { promptRef: 'opd-note-audit-core/OPD_AUDIT_SYSTEM' });
     const raw = r.choices?.[0]?.message?.content || '';
     const output = { raw, note: 'text mode = ungrounded raw mini pass; use metabase_uid for the full grounded audit' };
     const id = await saveLabAnalysis({ experiment, kind: 'text', engine: `${opdMiniEngine('lab')}-textraw`, inputRef: null, inputPreview: text.slice(0, 300), output, model: MINI_MODEL, latencyMs: Date.now() - started });

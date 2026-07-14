@@ -1,5 +1,6 @@
 import { sql } from './db';
-import { llm, TEXT_MODEL } from './llm';
+import { TEXT_MODEL } from './llm';
+import { governedChat } from './trace';
 
 // Curator: mine recent clinician queries → propose NEW high-demand harvest topics.
 // PHI-safe: queries go only to the LOCAL Ollama (same as every Ask request); the
@@ -37,7 +38,9 @@ export async function runCurator(opts: { days?: number; cap?: number } = {}): Pr
       'If nothing genuinely new is warranted, return {"topics":[]}.';
     const user = `Already covered:\n${existingNames.map((n) => '- ' + n).join('\n')}\n\nRecent clinician queries:\n${sample}`;
 
-    const res = await llm.chat.completions.create({
+    // Governed envelope (Stage 4): traceless + no gemini → byte-identical local call.
+    // Inline curator prompt is not a Stage-0 registry asset (operational, not clinical).
+    const res = await governedChat(undefined, 'curator_topics', {
       model: TEXT_MODEL,
       messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
       temperature: 0.3,

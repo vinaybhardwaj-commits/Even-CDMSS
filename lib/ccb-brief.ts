@@ -16,10 +16,10 @@
 
 import { retrieve } from './retrieve';
 import { hitsToSources, buildCitedContext, type CiteHit } from './citations-core';
-import { chatWithFallback, geminiModelFor, geminiUtilityModel, TEXT_MODEL, GEMINI_MODEL } from './llm';
+import { geminiModelFor, geminiUtilityModel, TEXT_MODEL, GEMINI_MODEL } from './llm';
 import { generateFromDocument, SUPPORTED_DOC_MIME } from './gemini-multimodal';
 import { getExtract, putExtract } from './ccb-extract-cache';
-import { startTrace, logEvent, finishTrace, tracedChat, setTraceQuestionPreview } from './trace';
+import { startTrace, logEvent, finishTrace, governedChat, setTraceQuestionPreview } from './trace';
 import {
   EXTRACT_SYSTEM, buildExtractUser, parseExtractedReport,
   CLINICAL_SYSTEM, buildClinicalUser, parseClinical,
@@ -88,11 +88,10 @@ async function generate(traceId: string | undefined, label: string, system: stri
     max_tokens: 2200,
     ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
   };
-  if (traceId) {
-    const r = await tracedChat(traceId, label, params, { gemini: geminiModel });
-    return r.choices?.[0]?.message?.content || '';
-  }
-  const r = await chatWithFallback(params, geminiModel);
+  // Governed envelope (Stage 4). No promptRef: the ccb-brief-core prompts (CLINICAL_SYSTEM /
+  // COMMERCIAL_SYSTEM) are array-joined, not registry-extractable template literals —
+  // Managed Care fingerprints land once those consts are registry-shaped (Stage-0 rule).
+  const r = await governedChat(traceId, label, params, { gemini: geminiModel });
   return r.choices?.[0]?.message?.content || '';
 }
 

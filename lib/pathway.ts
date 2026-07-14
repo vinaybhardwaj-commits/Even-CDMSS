@@ -15,8 +15,8 @@
  */
 
 import { retrieve } from './retrieve';
-import { chatWithFallback, geminiModelFor, geminiUtilityModel, TEXT_MODEL } from './llm';
-import { startTrace, logEvent, finishTrace, tracedChat, withTrace } from './trace';
+import { geminiModelFor, geminiUtilityModel, TEXT_MODEL } from './llm';
+import { startTrace, logEvent, finishTrace, governedChat, withTrace } from './trace';
 import { matchAnyTariffs } from './charge-master';
 import { hitsToSources, buildCitedContext, type CiteHit, type Source } from './citations-core';
 import { parseCritique } from './lvc-value-core';
@@ -55,8 +55,7 @@ export interface EnrichDeps {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function llmCall(traceId: string | undefined, label: string, params: any, geminiModel?: string, promptRef?: string): Promise<any> {
-  if (traceId) return tracedChat(traceId, label, params, { gemini: geminiModel, promptRef });
-  return chatWithFallback(params, geminiModel);
+  return governedChat(traceId, label, params, { gemini: geminiModel, promptRef });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

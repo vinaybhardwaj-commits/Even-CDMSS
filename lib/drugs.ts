@@ -1,4 +1,4 @@
-import { llm } from './llm';
+import { governedChat } from './trace';
 
 export const DRUGS_MODEL = 'llama3.1:8b';
 
@@ -89,7 +89,8 @@ export async function normalizeDrugName(input: string): Promise<string> {
   }
 
   try {
-    const r = await llm.chat.completions.create({
+    // Governed envelope (Stage 4): traceless + no gemini → byte-identical local call.
+    const r = await governedChat(undefined, 'drugs_normalize', {
       model: DRUGS_MODEL,
       messages: [
         { role: 'system', content: 'Return the generic (INN) name of the drug, lowercase, one word or hyphenated. If a brand is given, return the generic. If misspelled, correct it. If not a drug, return the input unchanged. Output ONLY the name, no quotes, no explanation.' },

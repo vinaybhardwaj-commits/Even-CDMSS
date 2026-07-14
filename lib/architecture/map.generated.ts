@@ -1880,6 +1880,11 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "concordance",
+    "to": "trace",
+    "kind": "value"
+  },
+  {
     "from": "concordance-store",
     "to": "concordance-core",
     "kind": "type"
@@ -1897,6 +1902,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "curator",
     "to": "llm",
+    "kind": "value"
+  },
+  {
+    "from": "curator",
+    "to": "trace",
     "kind": "value"
   },
   {
@@ -2111,17 +2121,22 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "drugs",
-    "to": "llm",
+    "to": "pubchem",
     "kind": "value"
   },
   {
     "from": "drugs",
-    "to": "pubchem",
+    "to": "trace",
     "kind": "value"
   },
   {
     "from": "expand",
     "to": "llm",
+    "kind": "value"
+  },
+  {
+    "from": "expand",
+    "to": "trace",
     "kind": "value"
   },
   {
@@ -2181,11 +2196,6 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "harvest-epmc",
-    "to": "llm",
-    "kind": "value"
-  },
-  {
-    "from": "investigations",
     "to": "llm",
     "kind": "value"
   },
@@ -2292,6 +2302,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "learning",
     "to": "review-stats-core",
+    "kind": "value"
+  },
+  {
+    "from": "learning",
+    "to": "trace",
     "kind": "value"
   },
   {
@@ -2455,6 +2470,11 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "mcp-tools",
+    "to": "trace",
+    "kind": "value"
+  },
+  {
     "from": "member-state",
     "to": "as-of-core",
     "kind": "value"
@@ -2517,6 +2537,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "multi-query",
     "to": "retrieve",
+    "kind": "value"
+  },
+  {
+    "from": "multi-query",
+    "to": "trace",
     "kind": "value"
   },
   {
@@ -2867,6 +2892,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "rerank",
     "to": "llm",
+    "kind": "value"
+  },
+  {
+    "from": "rerank",
+    "to": "trace",
     "kind": "value"
   },
   {

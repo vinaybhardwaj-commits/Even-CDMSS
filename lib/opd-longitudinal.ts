@@ -15,7 +15,7 @@ import { individualUidForPresc, getMemberSnapshotAsOf } from './member-state/mem
 import { presentMemberState } from './member-state/present-core';
 import { loadActiveSuppressions } from './audit-suppression-store';
 import { applySuppressions } from './audit-suppression-core';
-import { startTrace, tracedChat, finishTrace, logEvent } from './trace';
+import { startTrace, governedChat, finishTrace, logEvent } from './trace';
 import { geminiModelFor, geminiUtilityModel, TEXT_MODEL } from './llm';
 import type { OpdNoteAudit } from './opd-note-audit';
 import {
@@ -35,12 +35,9 @@ async function judgeContinuity(system: string, user: string, traceId?: string): 
     temperature: 0,
     max_tokens: 1400,
   };
-  if (traceId) {
-    const r = await tracedChat(traceId, 'opd_longitudinal_judge', params, { gemini: geminiModel });
-    return r?.choices?.[0]?.message?.content || '';
-  }
-  const { chatWithFallback } = await import('./llm');
-  const r = await chatWithFallback(params, geminiModel);
+  // Governed envelope (Stage 4). No promptRef: LONGITUDINAL_LLM_SYSTEM is array-joined, not a
+  // registry-extractable template-literal const (registering it is a Stage-0 rule change).
+  const r = await governedChat(traceId, 'opd_longitudinal_judge', params, { gemini: geminiModel });
   return r?.choices?.[0]?.message?.content || '';
 }
 

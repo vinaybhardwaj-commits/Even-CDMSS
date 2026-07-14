@@ -8,7 +8,8 @@
  * mutates the live audit engine, the corpus, or lvc_recommendations.
  */
 import { sql } from './db';
-import { chatWithFallback, geminiUtilityModel, TEXT_MODEL } from './llm';
+import { geminiUtilityModel, TEXT_MODEL } from './llm';
+import { governedChat } from './trace';
 import {
   mineRuleCandidates, mineHarvestGaps, mineMissedFlags, mineFalseClusters, routeAdjudications,
   DEFAULT_THRESHOLDS, DEFAULT_GAP_THRESHOLDS, isMineableFinding,
@@ -208,7 +209,8 @@ async function mineAndSaveReviewerProposals(): Promise<ReviewerMineResult> {
  *  back to deterministic-signature clustering — never breaks the mining run. */
 async function canonicalizeBatch(batch: string[]): Promise<Record<string, string>> {
   try {
-    const r = await chatWithFallback({
+    // Governed envelope (Stage 4): the traceless mining run behaves exactly as before.
+    const r = await governedChat(undefined, 'learning_canonicalize', {
       model: TEXT_MODEL,
       messages: [
         { role: 'system', content: CANONICALIZE_SYSTEM },
@@ -217,7 +219,7 @@ async function canonicalizeBatch(batch: string[]): Promise<Record<string, string
       temperature: 0,
       max_tokens: 8000,
       ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
-    }, geminiUtilityModel());
+    }, { gemini: geminiUtilityModel(), promptRef: 'learning-core/CANONICALIZE_SYSTEM' });
     return parseCanonicalMap(r.choices?.[0]?.message?.content || '', batch);
   } catch (e) {
     console.warn('[learning] canonicalize batch failed', (e as Error).message);

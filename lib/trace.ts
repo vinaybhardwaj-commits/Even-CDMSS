@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { sql } from './db';
-import { llm, geminiConfigured, getGeminiChatClient, vertexModelName } from './llm';
+import { llm, geminiConfigured, getGeminiChatClient, vertexModelName, chatWithFallback } from './llm';
 import { promptFingerprint } from './reasoning/registry-core';
 
 const sqlFn = sql as unknown as (q: string, p: unknown[]) => Promise<unknown>;
@@ -365,6 +365,27 @@ export async function setTracePromptIds(traceId: string, promptIds: string[]): P
       );
     }
   } catch {}
+}
+
+/**
+ * The governed model-call entry for feature code (Stage 4). Traced → tracedChat (envelope
+ * stamped when promptRef is set); traceless → the plain hybrid fallback, whose ONLY
+ * sanctioned call site is here inside the governed layer. Transport is byte-identical to
+ * the two paths it unifies (same param handling, same Gemini→Ollama fallback), so routing
+ * a call through here never changes its output. scripts/reasoning-governance-check.mjs
+ * hard-fails any model call that bypasses this layer.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function governedChat(
+  traceId: string | undefined,
+  label: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  params: any,
+  opts?: { gemini?: string; promptRef?: string },
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Promise<any> {
+  if (traceId) return tracedChat(traceId, label, params, opts);
+  return chatWithFallback(params, opts?.gemini);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

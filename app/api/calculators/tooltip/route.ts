@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { llm } from '@/lib/llm';
+import { governedChat } from '@/lib/trace';
 import { TOOLTIP_FALLBACKS } from '@/lib/calculators/static-fallbacks';
 import type { CalculatorName } from '@/lib/calculators/types';
 
@@ -29,7 +29,8 @@ export async function GET(req: NextRequest) {
     const user = `Calculator: ${calc}\nField: ${field}\nStatic fallback for reference: "${fallback}"\n\nWrite a tighter, more clinically useful tooltip. Keep it 2-3 sentences.`;
 
     const resp = await Promise.race([
-      llm.chat.completions.create({
+      // Governed envelope (Stage 4): traceless + no gemini → byte-identical local call.
+      governedChat(undefined, 'calc_tooltip', {
         model: 'llama3.1:8b',
         messages: [
           { role: 'system', content: sys },

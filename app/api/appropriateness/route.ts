@@ -108,7 +108,7 @@ export async function POST(req: NextRequest) {
                     temperature: 0.1,
                     max_tokens: 900,
                     ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
-                  }, { gemini: geminiUtilityModel() });
+                  }, { gemini: geminiUtilityModel(), promptRef: 'extract/NORMALISE_SYSTEM' });
                   return r.choices?.[0]?.message?.content ?? '';
                 }
               : undefined;

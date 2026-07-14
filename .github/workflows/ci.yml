@@ -43,10 +43,10 @@ jobs:
       # regenerate and hard-fail on any diff, exactly like the architecture map gate above.
       - name: reasoning registry is current
         run: npm run reasoning:registry && git diff --exit-code data/reasoning-registry/prompts.generated.json
-      # Reasoning Observability Stage 1 — governed-layer reporter. WARN ONLY (always exit 0):
-      # it lists the model calls that bypass tracedChat + the concordance parallel store.
-      # Flips to a hard gate in Stage 4 once those sites are migrated (PRD D3).
-      - name: reasoning governance (WARN this stage)
+      # Reasoning Observability Stage 4 — governed-layer HARD GATE (exit 1): no model call
+      # may bypass tracedChat/governedChat, and the concordance fold must hold. Every direct
+      # site was migrated in Stage 4; a new one fails CI here.
+      - name: reasoning governance
         run: npm run reasoning:governance
       # next-env.d.ts is gitignored (repo policy); `next dev/build` regenerates it locally.
       # Without it, tsc lacks Next's type-reference chain (styled-jsx's `jsx` prop, route types)

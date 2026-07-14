@@ -74,20 +74,22 @@ export default async function ReasoningTab() {
         <div className="text-sm font-medium text-slate-800">Governed reasoning layer — coverage</div>
         <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <Kpi label="Prompts in the registry" value={String(rows.length)} sub={`${registered} manifest-registered · sha256-hashed`} />
-          <Kpi label="Envelope-tagged (Stage 1)" value={String(g.taggedPromptRefs)} sub="Right Care family · promptRef → fingerprint columns" />
-          <Kpi label="Direct (ungoverned) calls" value={`${g.directSites} sites`} sub={`${g.directFiles} files · Stage-4 migration worklist`} danger />
-          {/* Human label on purpose: the literal table name here would count as a 14th
+          <Kpi label="Envelope-tagged prompts" value={String(g.taggedPromptRefs)} sub="Right Care wrappers · + DDx / ClinicalState / OPD-audit tags" />
+          <Kpi label="Direct (ungoverned) calls" value={`${g.directSites} sites`} sub="every model call routes via the governed layer" danger={g.directSites > 0} />
+          {/* Human label on purpose: the literal table name here would count as an extra
               reference in the governance scan's parallel-store pattern. */}
-          <Kpi label="Parallel trace store" value="1" sub={`concordance runs store · ${g.concordanceRefs} refs`} danger />
+          <Kpi label="Blind parallel stores" value="0" sub={`concordance runs folded into traces · ${g.concordanceRefs} refs remain (its own surface)`} />
         </div>
-        <details className="mt-3">
-          <summary className="cursor-pointer text-[12px] text-slate-500 hover:text-slate-700">Ungoverned files ({g.directFiles})</summary>
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {g.ungovernedFiles.map((f) => <span key={f} className="rounded bg-white px-1.5 py-0.5 font-mono text-[10.5px] text-slate-600">{f}</span>)}
-          </div>
-        </details>
+        {g.ungovernedFiles.length > 0 && (
+          <details className="mt-3">
+            <summary className="cursor-pointer text-[12px] text-slate-500 hover:text-slate-700">Ungoverned files ({g.directFiles})</summary>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {g.ungovernedFiles.map((f) => <span key={f} className="rounded bg-white px-1.5 py-0.5 font-mono text-[10.5px] text-slate-600">{f}</span>)}
+            </div>
+          </details>
+        )}
         <p className="mt-3 text-[11.5px] text-slate-500">
-          CI rule (WARN today, hard-fail in Stage 4, mirrors <span className="font-mono">architecture:check</span>): <b>no direct model calls outside the governed layer</b>. Snapshot at {g.capturedAt}; the test suite diffs it against the live <span className="font-mono">reasoning:governance</span> scan, so it cannot silently rot.
+          CI rule (HARD gate since Stage 4, mirrors <span className="font-mono">architecture:check</span>): <b>no direct model calls outside the governed layer</b> — <span className="font-mono">reasoning:governance</span> exits 1 on any new one. Snapshot at {g.capturedAt}; the test suite diffs it against the live scan, so it cannot silently rot. Prompt-drift teeth live in the registry staleness gate (any prompt-text change re-hashes and diffs the committed artifact).
         </p>
       </div>
 

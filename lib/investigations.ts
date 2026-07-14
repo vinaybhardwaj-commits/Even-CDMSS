@@ -14,8 +14,7 @@
 //     rely on a non-null result whenever the raw input is non-empty.
 //   • Reuses the calling surface's already-warm Ollama model (no new cold-load).
 // ─────────────────────────────────────────────────────────────────────────────
-import { llm } from './llm';
-import { tracedChat, logEvent } from './trace';
+import { governedChat, logEvent } from './trace';
 
 export type InvestigationFlag = 'low' | 'normal' | 'high' | 'critical' | 'abnormal' | 'indeterminate';
 export type InvestigationCategory = 'lab' | 'imaging' | 'ecg' | 'micro' | 'pathology' | 'vital' | 'other';
@@ -183,9 +182,12 @@ export async function parseInvestigations(
       max_tokens: 900,
       ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
     };
-    const res = opts.traceId
-      ? await tracedChat(opts.traceId, 'investigations_parse', params, { gemini: opts.gemini })
-      : await llm.chat.completions.create(params as Parameters<typeof llm.chat.completions.create>[0]);
+    // Governed envelope (Stage 4). Traceless callers historically ran LOCAL-ONLY (no gemini)
+    // — preserved exactly by withholding the gemini opt when there is no trace.
+    const res = await governedChat(opts.traceId, 'investigations_parse', params, {
+      gemini: opts.traceId ? opts.gemini : undefined,
+      promptRef: 'investigations/PARSE_SYSTEM',
+    });
     content = (res as { choices?: Array<{ message?: { content?: string } }> }).choices?.[0]?.message?.content ?? '';
   } catch (e) {
     if (opts.traceId) await logEvent(opts.traceId, 'investigations_parsed', 'investigations', { raw: bounded, ok: false, error: String((e as Error).message) });

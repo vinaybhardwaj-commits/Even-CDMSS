@@ -1,17 +1,28 @@
 #!/usr/bin/env node
 /**
- * scripts/reasoning-governance-check.mjs — the governed-layer reporter (Reasoning
- * Observability Stage 1). Run: `npm run reasoning:governance`.
+ * scripts/reasoning-governance-check.mjs — the governed-layer HARD GATE (Reasoning
+ * Observability Stage 4; WARN-only in Stage 1). Run: `npm run reasoning:governance`.
  *
  * READS SOURCE AS TEXT (mirrors scripts/architecture-check.mjs — declarative config,
- * main-guarded, exported for tests). Lists every model call that BYPASSES the governed
- * envelope (lib/trace.ts tracedChat over lib/llm.ts routing) plus the concordance_runs
- * parallel store that is invisible to `traces`.
+ * main-guarded, exported for tests). EXIT 1 on any model call that bypasses the governed
+ * envelope (lib/trace.ts tracedChat/governedChat over lib/llm.ts routing) — Stage 4
+ * migrated every direct site, so the expected count is ZERO and any new one fails CI.
  *
- * ⚠️ WARN ONLY THIS STAGE (PRD D3): the check prints the ungoverned sites and EXITS 0 —
- * it becomes a hard gate (exit 1) only in Stage 4, after those sites are migrated
- * through tracedChat. Scope: lib/ + app/ (runtime surface); scripts/ are offline
- * harnesses and __tests__ are fixtures — both out of scope.
+ * Division of teeth (the PRD's four hard-fail conditions):
+ *   · direct model call outside the governed layer  → THIS script, exit 1.
+ *   · prompt changed without a version bump / hash mismatch → the `reasoning registry is
+ *     current` CI staleness gate (the registry re-derives every sha256 from source; any
+ *     text change diffs the committed artifact), plus tracedChat resolving hashes from the
+ *     registry at call time (a stamped hash can never disagree with the registry by
+ *     construction).
+ *   · unregistered reasoning asset → the registry generator's inclusion rule + the
+ *     manifest coverage test (lib/__tests__/reasoning-registry.test.ts, both directions).
+ *
+ * concordance_runs (INFO): folded into `traces` in Stage 4 — every verdict/interview run
+ * creates a first-class trace via the governed layer; the table remains as the feature's
+ * own result store, no longer a BLIND parallel store. This script asserts the fold holds
+ * (lib/concordance.ts must route through the governed layer) and lists the refs as info.
+ * Scope: lib/ + app/ (runtime surface); scripts/ are offline harnesses, __tests__ fixtures.
  */
 
 import { readFileSync } from 'node:fs';
@@ -30,53 +41,73 @@ export const DIRECT_CALL_PATTERNS = [
   { id: 'getGeminiChatClient', rx: /\bgetGeminiChatClient\s*\(/ },
 ];
 
-/** Run stores parallel to `traces` (results invisible to the trace spine). */
+/** Run stores parallel to `traces` — folded (mirrored) stores are INFO, not failures. */
 export const PARALLEL_STORE_PATTERNS = [
-  { id: 'concordance_runs', rx: /\bconcordance_runs\b/ },
+  { id: 'concordance_runs', rx: /\bconcordance_runs\b/, foldedBy: 'lib/concordance.ts' },
 ];
 
-// ── the scan (exported for lib/__tests__/reasoning-envelope.test.ts) ─────────────────────────────
-export function scanUngoverned() {
-  const files = walk(join(ROOT, 'lib'))
-    .concat(walk(join(ROOT, 'app')))
-    .filter((f) => /\.(ts|tsx)$/.test(f) && !f.includes('__tests__'));
-
-  const sites = [];   // { file, line, pattern }
-  const stores = [];  // { file, line, pattern }
-  for (const file of files) {
-    const governed = GOVERNED_FILES.has(file);
-    const lines = readFileSync(join(ROOT, file), 'utf8').split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      if (!governed) {
-        for (const p of DIRECT_CALL_PATTERNS) {
-          if (p.rx.test(lines[i])) sites.push({ file, line: i + 1, pattern: p.id });
-        }
+/** Per-file scan (exported so tests can feed synthetic sources). */
+export function scanSource(file, text) {
+  const sites = [];
+  const stores = [];
+  const governed = GOVERNED_FILES.has(file);
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (!governed) {
+      for (const p of DIRECT_CALL_PATTERNS) {
+        if (p.rx.test(lines[i])) sites.push({ file, line: i + 1, pattern: p.id });
       }
-      for (const p of PARALLEL_STORE_PATTERNS) {
-        if (p.rx.test(lines[i])) stores.push({ file, line: i + 1, pattern: p.id });
-      }
+    }
+    for (const p of PARALLEL_STORE_PATTERNS) {
+      if (p.rx.test(lines[i])) stores.push({ file, line: i + 1, pattern: p.id });
     }
   }
   return { sites, stores };
 }
 
+// ── the repo scan (exported for lib/__tests__) ───────────────────────────────────────────────────
+export function scanUngoverned() {
+  const files = walk(join(ROOT, 'lib'))
+    .concat(walk(join(ROOT, 'app')))
+    .filter((f) => /\.(ts|tsx)$/.test(f) && !f.includes('__tests__'));
+
+  const sites = [];
+  const stores = [];
+  for (const file of files) {
+    const r = scanSource(file, readFileSync(join(ROOT, file), 'utf8'));
+    sites.push(...r.sites);
+    stores.push(...r.stores);
+  }
+
+  // Fold assertions: each parallel store's folding module must route via the governed layer.
+  const foldViolations = [];
+  for (const p of PARALLEL_STORE_PATTERNS) {
+    if (!p.foldedBy) continue;
+    let text = '';
+    try { text = readFileSync(join(ROOT, p.foldedBy), 'utf8'); } catch { /* missing file → violation below */ }
+    if (!/\b(governedChat|tracedChat)\b/.test(text)) {
+      foldViolations.push(`${p.id}: ${p.foldedBy} no longer routes through the governed layer (governedChat/tracedChat) — the ${p.id} store would be blind again`);
+    }
+  }
+  return { sites, stores, foldViolations };
+}
+
 // ── run (main-guarded) ───────────────────────────────────────────────────────────────────────────
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
-  const { sites, stores } = scanUngoverned();
-  const byFile = new Map();
-  for (const s of sites) {
-    if (!byFile.has(s.file)) byFile.set(s.file, []);
-    byFile.get(s.file).push(s);
-  }
+  const { sites, stores, foldViolations } = scanUngoverned();
 
-  console.log(`reasoning governance — WARN mode (Stage 1; hard-fail arrives in Stage 4)\n`);
-  console.log(`ungoverned model calls (bypass tracedChat): ${sites.length} sites in ${byFile.size} files`);
-  for (const [file, list] of [...byFile.entries()].sort()) {
-    for (const s of list) console.log(`  WARN ${file}:${s.line} — direct ${s.pattern}`);
+  console.log(`reasoning governance — HARD GATE (Stage 4): no direct model calls outside the governed layer\n`);
+  console.log(`ungoverned model calls (bypass tracedChat/governedChat): ${sites.length}`);
+  for (const s of sites) console.log(`  FAIL ${s.file}:${s.line} — direct ${s.pattern}`);
+  console.log(`\nparallel run stores: ${stores.length} references (INFO — folded into traces since Stage 4)`);
+  for (const s of stores) console.log(`  info ${s.file}:${s.line} — ${s.pattern}`);
+  for (const v of foldViolations) console.error(`  FAIL ${v}`);
+
+  if (sites.length || foldViolations.length) {
+    console.error(`\nreasoning:governance — RED: ${sites.length + foldViolations.length} violation(s). Route the call through governedChat/tracedChat (lib/trace.ts) with a promptRef.`);
+    process.exit(1);
   }
-  console.log(`\nparallel run stores (invisible to traces): ${stores.length} references`);
-  for (const s of stores) console.log(`  WARN ${s.file}:${s.line} — ${s.pattern}`);
-  console.log(`\nreasoning:governance — reported ${sites.length + stores.length} warnings; exit 0 (WARN-only this stage).`);
+  console.log(`\nreasoning:governance — GREEN: 0 ungoverned model calls; parallel stores folded.`);
   process.exit(0);
 }

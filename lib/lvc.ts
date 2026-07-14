@@ -15,8 +15,8 @@
 
 import { sql } from './db';
 import { retrieve } from './retrieve';
-import { chatWithFallback, geminiUtilityModel, geminiModelFor, TEXT_MODEL } from './llm';
-import { logEvent, finishTrace, tracedChat, withTrace } from './trace';
+import { geminiUtilityModel, geminiModelFor, TEXT_MODEL } from './llm';
+import { logEvent, finishTrace, governedChat, withTrace } from './trace';
 import * as core from './lvc-core';
 import type { Candidate, JudgedRec, LvcFlag, LvcRecommendation, Region, Surface } from './lvc-core';
 
@@ -91,8 +91,7 @@ function rowToRec(r: Record<string, unknown>): LvcRecommendation {
 // an additive tag stamped onto the trace envelope; never alters the prompt itself.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function llmCall(traceId: string | undefined, label: string, params: any, geminiModel?: string, promptRef?: string): Promise<any> {
-  if (traceId) return tracedChat(traceId, label, params, { gemini: geminiModel, promptRef });
-  return chatWithFallback(params, geminiModel);
+  return governedChat(traceId, label, params, { gemini: geminiModel, promptRef });
 }
 
 async function defaultExtract(scenario: string, traceId?: string, forceOllama = false): Promise<Candidate[]> {
