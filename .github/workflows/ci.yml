@@ -39,6 +39,10 @@ jobs:
         run: npm run architecture:check
       - name: architecture map is current
         run: npm run architecture:map && git diff --exit-code lib/architecture/map.generated.ts
+      # Reasoning Observability Stage 0 — the prompt registry is generated-not-authored:
+      # regenerate and hard-fail on any diff, exactly like the architecture map gate above.
+      - name: reasoning registry is current
+        run: npm run reasoning:registry && git diff --exit-code data/reasoning-registry/prompts.generated.json
       # next-env.d.ts is gitignored (repo policy); `next dev/build` regenerates it locally.
       # Without it, tsc lacks Next's type-reference chain (styled-jsx's `jsx` prop, route types)
       # and reports errors that don't exist in any real environment — regenerate it here.

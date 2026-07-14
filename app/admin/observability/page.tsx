@@ -72,7 +72,11 @@ export default async function ObservabilityAdmin({ searchParams }: { searchParam
           <h1 className="font-serif text-[26px] font-semibold leading-tight text-slate-900 sm:text-[30px]">Observability</h1>
           <p className="mt-1.5 max-w-2xl text-sm text-slate-500">One forensic surface for every run — Ask, Differential, Drugs, Calculators, Right Care, and Medication Audit. Usage, latency, and a full event-level audit trail. Internal; shows raw clinical queries.</p>
         </div>
-        <form method="POST" action="/api/admin/unlock?action=logout"><button className="whitespace-nowrap text-xs text-slate-400 hover:text-brand">Lock</button></form>
+        <div className="flex items-center gap-4">
+          {/* Reasoning Observability Stage 0: the research export (prompts + rubrics, no clinical data) */}
+          <a href="/api/admin/reasoning-registry?format=json" className="whitespace-nowrap text-xs text-slate-400 hover:text-brand">Download reasoning registry</a>
+          <form method="POST" action="/api/admin/unlock?action=logout"><button className="whitespace-nowrap text-xs text-slate-400 hover:text-brand">Lock</button></form>
+        </div>
       </div>
       <div className="mt-6 flex gap-5 border-b border-slate-200">
         {[['overview', 'Overview'], ['queries', 'Runs'], ['rightcare', 'Right Care runs'], ['cost', 'LLM cost']].map(([k, l]) => (

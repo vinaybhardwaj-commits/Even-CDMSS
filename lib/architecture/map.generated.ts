@@ -571,6 +571,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "reasoning",
+    "plane": "unregistered"
+  },
+  {
     "id": "record-audit-link-store",
     "plane": "unregistered"
   },
@@ -1303,6 +1307,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "pubchem",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "reasoning",
     "kind": "value"
   },
   {
@@ -3132,8 +3141,8 @@ export const VERSION_REGISTRY: VersionRow[] = [
 
 export const COVERAGE = {
   "registered": 9,
-  "unregistered": 12,
-  "total": 21,
+  "unregistered": 13,
+  "total": 22,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
@@ -3146,6 +3155,7 @@ export const COVERAGE = {
     "opd-note-audit-core",
     "prognosis-core",
     "proms",
+    "reasoning",
     "right-care-ground-eval-core"
   ]
 } as const;

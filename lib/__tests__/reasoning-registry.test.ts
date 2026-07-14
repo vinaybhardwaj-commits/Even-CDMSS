@@ -1,0 +1,109 @@
+// lib/__tests__/reasoning-registry.test.ts — Reasoning Observability Stage 0 tests:
+// generator determinism / committed-artifact currency / hash validity / PHI-exclusion /
+// manifest merge / rubric inclusion / count invariant. Run: npm test.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { renderRegistryExport, renderRegistryHtml, manifestFor } from '../reasoning/registry-core';
+import { PROMPT_MANIFESTS, UNREGISTERED_PROMPTS } from '../reasoning/manifest';
+import GENERATED from '../../data/reasoning-registry/prompts.generated.json';
+
+// The generator is an untyped .mjs script; resolve it at runtime (tsx) so tsc doesn't chase it.
+const GEN_SPECIFIER = ['..', '..', 'scripts', 'reasoning-registry-gen.mjs'].join('/');
+
+test('registry generation is deterministic and the committed artifact is current', async () => {
+  const { buildRegistryJson } = await import(GEN_SPECIFIER);
+  const first = buildRegistryJson();
+  const second = buildRegistryJson();
+  assert.equal(first, second, 'two runs must be byte-identical (the CI staleness gate depends on this)');
+  assert.ok(!/generated|source_commit|timestamp/.test(Object.keys(JSON.parse(first)).join(' ')),
+    'no time- or commit-dependent top-level field may be emitted');
+  // npm test runs from the repo root
+  const committed = readFileSync('data/reasoning-registry/prompts.generated.json', 'utf8');
+  assert.equal(first, committed, 'committed prompts.generated.json is stale — run `npm run reasoning:registry`');
+});
+
+test('every extracted prompt has non-empty text and a valid sha256 of exactly that text', () => {
+  const gen = GENERATED as { prompts: Array<{ id: string; text: string; sha256: string; sha12: string; chars: number; lines: number }> };
+  assert.ok(gen.prompts.length > 0);
+  for (const p of gen.prompts) {
+    assert.ok(p.text.trim().length > 0, `${p.id} has empty text`);
+    assert.match(p.sha256, /^[0-9a-f]{64}$/, `${p.id} sha256 malformed`);
+    const recomputed = createHash('sha256').update(p.text, 'utf8').digest('hex');
+    assert.equal(p.sha256, recomputed, `${p.id} sha256 does not hash its own text`);
+    assert.equal(p.sha12, p.sha256.slice(0, 12));
+    assert.equal(p.chars, p.text.length);
+    assert.equal(p.lines, p.text.split('\n').length);
+  }
+});
+
+test('the research export contains prompt/rubric/metadata keys ONLY — no clinical/patient/trace content', () => {
+  const x = renderRegistryExport();
+  // any key resembling run/clinical/patient/trace content fails the export
+  const FORBIDDEN = /(patient|phi\b|trace|uhid|mrn|dob|diagnos|complaint|medication|symptom|input|output|answer|response|payload|run_id|member|episode|encounter)/i;
+  const walk = (v: unknown, path: string): void => {
+    if (Array.isArray(v)) { v.forEach((e, i) => walk(e, `${path}[${i}]`)); return; }
+    if (v && typeof v === 'object') {
+      for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+        assert.ok(!FORBIDDEN.test(k), `forbidden key "${k}" at ${path} — the research export must carry no clinical/patient/trace fields`);
+        walk(val, `${path}.${k}`);
+      }
+    }
+  };
+  walk(x, '$');
+  // and the HTML rendering serves the same payload, nothing extra
+  const html = renderRegistryHtml(x);
+  assert.ok(html.includes('CDMSS reasoning registry') && html.includes(x.prompts[0].id));
+});
+
+test('manifest merge: registered id gets its metadata; unknown id → unregistered, never a throw', () => {
+  const registered = manifestFor('opd-note-audit-core/OPD_AUDIT_SYSTEM');
+  assert.equal(registered.maturity, 'draft');
+  assert.equal(registered.rubricId, 'PDQI-9 reasoning rubric');
+  assert.equal(registered.owner, null, 'owner is an honest blank, not a guessed name');
+  const unknown = manifestFor('no-such-file/NO_SUCH_SYSTEM');
+  assert.deepEqual(unknown, { maturity: 'unregistered', owner: null, clinicianApprover: null, rubricId: null, schemaId: null });
+  // coverage: every generated id is either registered or on the honest gap list — and no stale entries
+  const genIds = new Set((GENERATED as { prompts: Array<{ id: string }> }).prompts.map((p) => p.id));
+  const listed = new Set([...PROMPT_MANIFESTS.map((m) => m.id), ...UNREGISTERED_PROMPTS]);
+  for (const id of genIds) assert.ok(listed.has(id), `${id} is in the generated registry but neither registered nor on UNREGISTERED_PROMPTS`);
+  for (const id of listed) assert.ok(genIds.has(id), `${id} is listed in the manifest but no longer in the generated registry (stale entry)`);
+  // every registered rubricId must resolve to a real rubric
+  const rubricIds = new Set((GENERATED as { rubrics: Array<{ id: string }> }).rubrics.map((r) => r.id));
+  for (const m of PROMPT_MANIFESTS) {
+    if (m.rubricId) assert.ok(rubricIds.has(m.rubricId), `${m.id} links rubric "${m.rubricId}", which is not in the registry`);
+  }
+});
+
+test('rubric inclusion: nabh/6e external-json + the five embedded-in-prompt rubrics', () => {
+  const rubrics = (GENERATED as { rubrics: Array<{ id: string; kind: string; sha256?: string; embedded_in?: string }> }).rubrics;
+  const nabh = rubrics.find((r) => r.id === 'nabh/6e');
+  assert.ok(nabh, 'nabh/6e missing');
+  assert.equal(nabh!.kind, 'external-json');
+  assert.match(nabh!.sha256!, /^[0-9a-f]{64}$/);
+  const embedded = rubrics.filter((r) => r.kind === 'embedded-in-prompt');
+  assert.equal(embedded.length, 5);
+  const genIds = new Set((GENERATED as { prompts: Array<{ id: string }> }).prompts.map((p) => p.id));
+  for (const r of embedded) {
+    const hostId = r.embedded_in!.replace(/\.ts\//, '/');
+    assert.ok(genIds.has(hostId), `${r.id} embedded_in ${r.embedded_in} does not resolve to an extracted prompt`);
+  }
+});
+
+test('count invariant: counts match the committed artifact contents (27 prompts / 6 rubrics / 29 builders)', () => {
+  const gen = GENERATED as {
+    counts: { prompts: number; rubrics: number; user_message_builders: number; features: number };
+    prompts: Array<{ feature: string }>; rubrics: unknown[]; user_message_builders: unknown[];
+  };
+  assert.equal(gen.counts.prompts, gen.prompts.length);
+  assert.equal(gen.counts.rubrics, gen.rubrics.length);
+  assert.equal(gen.counts.user_message_builders, gen.user_message_builders.length);
+  assert.equal(gen.counts.features, new Set(gen.prompts.map((p) => p.feature)).size);
+  // the ratified Stage-0 baseline (CDMSS-REASONING-CONFIG-EXPORT-14-JUL-2026): a change here is
+  // a REAL change to the reasoning surface — bump knowingly, in the same commit as the prompt
+  assert.equal(gen.counts.prompts, 27);
+  assert.equal(gen.counts.rubrics, 6);
+  assert.equal(gen.counts.user_message_builders, 29);
+  assert.equal(gen.counts.features, 16);
+});
