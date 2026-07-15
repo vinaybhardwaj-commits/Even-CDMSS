@@ -9,6 +9,7 @@ import {
   RIGHT_CARE_CHECK_GOLD_2_VERSION, loadCheckGold2, splitCheckGold2, checkGold2CatalogGaps,
 } from '../right-care-ground-eval-core';
 import GOLD from '../../data/right-care-eval/check-gold-1.0.json';
+import GOLD2 from '../../data/right-care-eval/check-gold-2.0.json';
 import SEED from '../../data/choosing-wisely-seed.json';
 
 test('the committed gold artifact is frozen, ratified, and catalog-consistent', () => {
@@ -41,8 +42,30 @@ test('loadCheckGold rejects drift: wrong version, unratified, polarity/target mi
   assert.throws(() => loadCheckGold(dup), /duplicate/);
 });
 
-// ── check-gold/2.0 (15-Jul-2026 kickoff) — SYNTHETIC structural fixtures only; the ratified
-// clinical artifact is delivered by V, never authored here. ─────────────────────────────────
+// ── check-gold/2.0 (15-Jul-2026 kickoff) — the committed ratified artifact pins in CI, and
+// the loader/split/gap tests below use SYNTHETIC structural fixtures only; the clinical
+// artifact is delivered by V (pre-bound against the seed catalog), never authored here. ─────
+
+test('the committed 2.0 artifact is frozen, ratified, family-split, and catalog-consistent', () => {
+  const g = loadCheckGold2(GOLD2);
+  assert.equal(g.version, RIGHT_CARE_CHECK_GOLD_2_VERSION);
+  assert.equal(g.cases.length, 23);
+  const fam = (f: string) => g.cases.filter((c) => c.family === f).length;
+  assert.equal(fam('P'), 8);
+  assert.equal(fam('N'), 7);
+  assert.equal(fam('C'), 4);
+  assert.equal(fam('L'), 4);
+  const { floor, annex } = splitCheckGold2(g.cases);
+  assert.equal(floor.length, 19, 'scored floor = P + N + C');
+  assert.equal(annex.length, 4, 'annex = L, never folded into the floor');
+  // every BOUND target must be a real catalog rec; unbound sides are legitimate catalog gaps
+  const catalogIds = new Set((SEED as { recommendations: Array<{ id: string }> }).recommendations.map((r) => r.id));
+  for (const c of g.cases) {
+    for (const id of [...c.gold.mustFire, ...c.gold.mustNotFire]) {
+      assert.ok(catalogIds.has(id), `${c.id} binds ${id}, which is not in the CW seed catalog`);
+    }
+  }
+});
 
 const g2Case = (over: Record<string, unknown> = {}) => ({
   id: 'T-P-01', mode: 'check', family: 'P', polarity: 'positive',

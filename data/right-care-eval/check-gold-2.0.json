@@ -1,0 +1,205 @@
+{
+  "version": "right-care-check-gold/2.0",
+  "status": "ratified",
+  "frozen": "2026-07-15",
+  "ratified_by": "V (sole clinical reference standard)",
+  "provenance": "Real de-identified db13 OPD encounters, Jul 2026. Real clinical values; identifiers stripped.",
+  "purpose": "Discriminating (non-saturated) replacement for the canonical check-gold/1.0. Real messy notes where appropriateness is arguable.",
+  "scoring": {
+    "scored_families": ["P", "N", "C"],
+    "annex_families": ["L"],
+    "note": "P/N/C form the primary floor. L is scored SEPARATELY as a headroom annex (Order-check cannot see member history today, so L mustFire is expected to MISS note-only)."
+  },
+  "catalog_binding": {
+    "bound_against": "data/choosing-wisely-seed.json (30 recs; id space cwus-*/cwin-*)",
+    "bound_by": "orchestrator, validated against the live seed (15 Jul 2026)",
+    "finding": "Only 3 of 8 P-positive cases map to a catalog rec (all cwus-aafp-002, viral URI). 5 P-positives + 3 C cases are CATALOG GAPS (no matching rec) — the dominant recall ceiling. Near-miss guards bound: cwus-aafp-002 (antibiotic over-flag), cwus-aafp-001 (acute-LBP over-flag), cwus-acc-001 (cardiac-imaging over-flag).",
+    "gap_cases": ["RC-P-02","RC-P-03","RC-P-05","RC-P-06","RC-P-07","RC-C-02","RC-C-03","RC-C-04","RC-L-01","RC-L-02","RC-L-03"]
+  },
+  "cases": [
+    {
+      "id": "RC-P-01", "mode": "check", "family": "P", "polarity": "positive", "patient": {"age": 48, "sex": "F"},
+      "scenario": "Cold and sore throat for 2 days. No fever. Generalised weakness. Clinically a viral upper respiratory infection.",
+      "proposedActions": ["Azithromycin 500 mg PO once daily x5 days"],
+      "gold": {"mustFire": ["cwus-aafp-002"], "mustNotFire": []},
+      "expected": "flag", "clinicalTarget": "antibiotics for uncomplicated viral URI", "sourceRecHint": "cwus-aafp-002"
+    },
+    {
+      "id": "RC-P-02", "mode": "check", "family": "P", "polarity": "positive", "patient": {"age": 34, "sex": "F"},
+      "scenario": "Nauseating feeling and loose stools for 5 days. No fever, no blood in stool, no abdominal pain.",
+      "proposedActions": ["Ofloxacin + Ornidazole PO x5 days"],
+      "gold": {"mustFire": [], "mustNotFire": []},
+      "expected": "flag", "clinicalTarget": "antibiotics for acute non-dysenteric gastroenteritis", "sourceRecHint": "",
+      "note": "CATALOG GAP — no acute-gastroenteritis antibiotic rec in the seed."
+    },
+    {
+      "id": "RC-P-03", "mode": "check", "family": "P", "polarity": "positive", "patient": {"age": 37, "sex": "M"},
+      "scenario": "High-grade fever (up to 101F) for 2 days with mild headache and malaise. No localising source documented on history or exam.",
+      "proposedActions": ["Amoxicillin-clavulanate 625 mg PO"],
+      "gold": {"mustFire": [], "mustNotFire": []},
+      "expected": "flag", "clinicalTarget": "empiric antibiotics for acute undifferentiated fever without a source", "sourceRecHint": "",
+      "note": "CATALOG GAP — no undifferentiated-fever antibiotic rec."
+    },
+    {
+      "id": "RC-P-04", "mode": "check", "family": "P", "polarity": "positive", "patient": {"age": 34, "sex": "M"},
+      "scenario": "Throat pain for 3-4 days, occasional fever. Exam: throat congested, no exudate; systemic exam normal. No Centor features documented.",
+      "proposedActions": ["Cefixime 200 mg PO x5 days"],
+      "gold": {"mustFire": ["cwus-aafp-002"], "mustNotFire": []},
+      "expected": "flag", "clinicalTarget": "antibiotics for viral pharyngitis (URI) without strep confirmation", "sourceRecHint": "cwus-aafp-002",
+      "note": "Bound to the viral-URI rec; pharyngitis is upper-respiratory. Soft binding — the judge decides applies."
+    },
+    {
+      "id": "RC-P-05", "mode": "check", "family": "P", "polarity": "positive", "patient": {"age": 28, "sex": "F"},
+      "scenario": "Acne for a few weeks, few papules. Mild inflammatory acne.",
+      "proposedActions": ["Azithromycin pulse (oral) x3 weeks"],
+      "gold": {"mustFire": [], "mustNotFire": []},
+      "expected": "flag", "clinicalTarget": "systemic antibiotic for mild acne", "sourceRecHint": "",
+      "note": "CATALOG GAP — no acne rec."
+    },
+    {
+      "id": "RC-P-06", "mode": "check", "family": "P", "polarity": "positive", "patient": {"age": 30, "sex": "F"},
+      "scenario": "Knee pain 3 months, no trauma. Exam: crepitus positive, medial and lateral joint-line tenderness. No weight-bearing X-ray done.",
+      "proposedActions": ["MRI knee"],
+      "gold": {"mustFire": [], "mustNotFire": []},
+      "expected": "flag", "clinicalTarget": "MRI for a degenerative knee before weight-bearing X-ray", "sourceRecHint": "",
+      "note": "CATALOG GAP — no knee-MRI/OA rec."
+    },
+    {
+      "id": "RC-P-07", "mode": "check", "family": "P", "polarity": "positive", "patient": {"age": 39, "sex": "M"},
+      "scenario": "Low back pain on and off for 2 years, intermittent tingling. No neurological deficit, no red flags (no cancer, weight loss, fever, trauma, or progressive deficit).",
+      "proposedActions": ["MRI lumbar spine"],
+      "gold": {"mustFire": [], "mustNotFire": []},
+      "expected": "flag", "clinicalTarget": "imaging for chronic low back pain without red flags", "sourceRecHint": "",
+      "note": "CATALOG GAP — seed rec cwus-aafp-001 is ACUTE LBP <6wk only; chronic LBP is uncovered."
+    },
+    {
+      "id": "RC-P-08", "mode": "check", "family": "P", "polarity": "positive", "patient": {"age": 26, "sex": "F"},
+      "scenario": "Throat pain, hoarseness, and nasal congestion for 1 week; symptomatic treatment taken, still symptomatic. Voice rest advised. Viral laryngitis.",
+      "proposedActions": ["Cefuroxime 500 mg PO x5 days"],
+      "gold": {"mustFire": ["cwus-aafp-002"], "mustNotFire": []},
+      "expected": "flag", "clinicalTarget": "antibiotics for viral laryngitis / URI (nasal congestion present)", "sourceRecHint": "cwus-aafp-002"
+    },
+
+    {
+      "id": "RC-N-01", "mode": "check", "family": "N", "polarity": "near_miss", "patient": {"age": 57, "sex": "M"},
+      "scenario": "Post-operative day 17 after ankle deformity surgery. Wound site: discharge present, foul-smelling. CRP 20.8, ESR 40, Hb 9.6. Culture/sensitivity sent.",
+      "proposedActions": ["Amoxicillin-clavulanate injection"],
+      "gold": {"mustFire": [], "mustNotFire": ["cwus-aafp-002"]},
+      "expected": "must_not_flag", "clinicalTarget": "antibiotic appropriate — surgical-site infection", "sourceRecHint": "cwus-aafp-002"
+    },
+    {
+      "id": "RC-N-02", "mode": "check", "family": "N", "polarity": "near_miss", "patient": {"age": 29, "sex": "F"},
+      "scenario": "Mastalgia for 1 week. USG breast: mastitis with abscess; small fibroadenoma.",
+      "proposedActions": ["Amoxicillin-clavulanate PO"],
+      "gold": {"mustFire": [], "mustNotFire": ["cwus-aafp-002"]},
+      "expected": "must_not_flag", "clinicalTarget": "antibiotic appropriate — breast abscess/mastitis", "sourceRecHint": "cwus-aafp-002"
+    },
+    {
+      "id": "RC-N-03", "mode": "check", "family": "N", "polarity": "near_miss", "patient": {"age": 23, "sex": "M"},
+      "scenario": "Moderate inflammatory acne, ongoing, with post-inflammatory hyperpigmentation.",
+      "proposedActions": ["Doxycycline PO x21 days"],
+      "gold": {"mustFire": [], "mustNotFire": []},
+      "expected": "must_not_flag", "clinicalTarget": "oral antibiotic appropriate for moderate acne", "sourceRecHint": "",
+      "note": "No acne rec in seed; trivial guard (nothing to over-fire)."
+    },
+    {
+      "id": "RC-N-04", "mode": "check", "family": "N", "polarity": "near_miss", "patient": {"age": 71, "sex": "F"},
+      "scenario": "Atypical chest pain. Hypertension. Newly-detected diabetes. ECG: deep T-wave inversions in precordial leads. ECHO: LVH, normal LV function.",
+      "proposedActions": ["CT coronary angiography"],
+      "gold": {"mustFire": [], "mustNotFire": ["cwus-acc-001"]},
+      "expected": "must_not_flag", "clinicalTarget": "coronary imaging appropriate — symptomatic with abnormal ECG (not the asymptomatic-low-risk rec)", "sourceRecHint": "cwus-acc-001"
+    },
+    {
+      "id": "RC-N-05", "mode": "check", "family": "N", "polarity": "near_miss", "patient": {"age": 29, "sex": "M"},
+      "scenario": "Low back ache for 1 month radiating to both lower limbs. Lumbar radiculopathy.",
+      "proposedActions": ["MRI lumbar spine with sacroiliac joints, with contrast"],
+      "gold": {"mustFire": [], "mustNotFire": ["cwus-aafp-001"]},
+      "expected": "must_not_flag", "clinicalTarget": "imaging appropriate — radiculopathy is the red-flag exception to the acute-LBP rec", "sourceRecHint": "cwus-aafp-001"
+    },
+    {
+      "id": "RC-N-06", "mode": "check", "family": "N", "polarity": "near_miss", "patient": {"age": 42, "sex": "M"},
+      "scenario": "Knee pain 1 week, no trauma. Exam: medial joint-line tenderness; McMurray positive for medial meniscus; Lachman and anterior drawer negative.",
+      "proposedActions": ["MRI knee"],
+      "gold": {"mustFire": [], "mustNotFire": []},
+      "expected": "must_not_flag", "clinicalTarget": "MRI appropriate — positive provocative test", "sourceRecHint": "",
+      "note": "No knee rec in seed; trivial guard."
+    },
+    {
+      "id": "RC-N-07", "mode": "check", "family": "N", "polarity": "near_miss", "patient": {"age": 34, "sex": "F"},
+      "scenario": "Ankle pain 2 months, regular sports activity. Exam: anterior drawer positive, diffuse swelling, multi-ligament tenderness. ROM normal, no neurovascular deficit.",
+      "proposedActions": ["MRI ankle"],
+      "gold": {"mustFire": [], "mustNotFire": []},
+      "expected": "must_not_flag", "clinicalTarget": "MRI reasonable — chronic instability with positive drawer", "sourceRecHint": "",
+      "note": "No ankle rec in seed; trivial guard. V-delegated softest N-lock."
+    },
+
+    {
+      "id": "RC-C-01", "mode": "check", "family": "C", "polarity": "near_miss", "patient": {"age": 36, "sex": "M"},
+      "scenario": "Asymptomatic. Dyslipidemia 2.5 years; was on rosuvastatin, stopped 1 month ago. Non-smoker. Family history: hypertension and diabetes. Exercises regularly. Recent labs: HbA1c 5.8, FBS 88.7, Total cholesterol 260, TG 177, HDL 75.8.",
+      "proposedActions": ["CT coronary calcium score"],
+      "gold": {"mustFire": [], "mustNotFire": ["cwus-acc-001"]},
+      "expected": "must_not_flag", "clinicalTarget": "CAC for risk refinement is guideline-supported (2018 ACC/AHA) — must not be flagged as low-value cardiac imaging", "sourceRecHint": "cwus-acc-001",
+      "note": "Deliberate 'looks low-value but is appropriate' near-miss against the asymptomatic-cardiac-imaging rec."
+    },
+    {
+      "id": "RC-C-02", "mode": "check", "family": "C", "polarity": "positive", "patient": {"age": 69, "sex": "M"},
+      "scenario": "Bilateral calf pain 2 months, no trauma. Venous doppler normal. Vascular surgeon and spine surgeon both reviewed - nil intervention. No neurogenic claudication documented.",
+      "proposedActions": ["MRI whole-spine screening"],
+      "gold": {"mustFire": [], "mustNotFire": []},
+      "expected": "flag", "clinicalTarget": "over-imaging after normal doppler and specialist clearance", "sourceRecHint": "",
+      "note": "CATALOG GAP — no whole-spine over-imaging rec."
+    },
+    {
+      "id": "RC-C-03", "mode": "check", "family": "C", "polarity": "positive", "patient": {"age": 27, "sex": "M"},
+      "scenario": "On-and-off fever and cold for 7-8 days. CXR: prominent bronchovascular markings (no consolidation). ECHO normal.",
+      "proposedActions": ["Levofloxacin PO"],
+      "gold": {"mustFire": [], "mustNotFire": []},
+      "expected": "flag", "clinicalTarget": "reserve fluoroquinolone for a non-pneumonia respiratory picture", "sourceRecHint": "",
+      "note": "CATALOG GAP — URI rec is <7d viral URI/sinusitis; this is an 8-day LRTI-adjacent picture. V-delegated soft lock."
+    },
+    {
+      "id": "RC-C-04", "mode": "check", "family": "C", "polarity": "positive", "patient": {"age": 14, "sex": "F"},
+      "scenario": "Knee pain 1 day after taekwondo, heard a pop. Exam: no effusion; Lachman, anterior drawer, and SLR all negative.",
+      "proposedActions": ["MRI knee"],
+      "gold": {"mustFire": [], "mustNotFire": []},
+      "expected": "flag", "clinicalTarget": "premature MRI for acute knee with a negative exam", "sourceRecHint": "",
+      "note": "CATALOG GAP — no knee rec. V-delegated soft lock."
+    },
+
+    {
+      "id": "RC-L-01", "mode": "check", "family": "L", "annex": true, "polarity": "positive", "patient": {"age": 36, "sex": "M"},
+      "scenario": "Encounter orders repeat labs. The note itself contains no lab history.",
+      "proposedActions": ["HbA1c", "Lipid Profile"],
+      "memberHistory": "4 months ago: HbA1c 5.1% (normal); full lipid panel normal (LDL 70, Total chol 159). Non-diabetic.",
+      "gold": {"mustFire": [], "mustNotFire": []},
+      "expected": "flag", "clinicalTarget": "repeat HbA1c in a non-diabetic with a recent normal result", "sourceRecHint": "",
+      "note": "Annex; not solvable note-only; CATALOG GAP (no outpatient repeat-lab rec). Same real member as RC-C-01."
+    },
+    {
+      "id": "RC-L-02", "mode": "check", "family": "L", "annex": true, "polarity": "positive", "patient": {"age": 36, "sex": "M"},
+      "scenario": "Encounter orders repeat labs. The note itself contains no lab history.",
+      "proposedActions": ["HbA1c", "Lipid Profile"],
+      "memberHistory": "3.5 months ago: HbA1c 5.7% (prediabetes); serial near-normal lipids over the prior year.",
+      "gold": {"mustFire": [], "mustNotFire": []},
+      "expected": "flag", "clinicalTarget": "HbA1c ordered more often than annual in prediabetes", "sourceRecHint": "",
+      "note": "Annex; CATALOG GAP."
+    },
+    {
+      "id": "RC-L-03", "mode": "check", "family": "L", "annex": true, "polarity": "positive", "patient": {"age": 22, "sex": "F"},
+      "scenario": "Encounter orders repeat labs. The note itself contains no lab history.",
+      "proposedActions": ["HbA1c", "Thyroid profile"],
+      "memberHistory": "3 months ago: HbA1c 5.2% (normal), serial normal; TSH normal.",
+      "gold": {"mustFire": [], "mustNotFire": []},
+      "expected": "flag", "clinicalTarget": "repeat HbA1c in a non-diabetic with a recent normal result", "sourceRecHint": "",
+      "note": "Annex; CATALOG GAP."
+    },
+    {
+      "id": "RC-L-04", "mode": "check", "family": "L", "annex": true, "polarity": "near_miss", "patient": {"age": 45, "sex": "M"},
+      "scenario": "Encounter orders a follow-up thyroid test. The note itself contains no lab history.",
+      "proposedActions": ["Free Thyroid Profile (follow-up)"],
+      "memberHistory": "6 months ago: TSH 4.2 (mildly abnormal).",
+      "gold": {"mustFire": [], "mustNotFire": []},
+      "expected": "must_not_flag", "clinicalTarget": "recheck of a prior abnormal TSH is appropriate — the annex control", "sourceRecHint": ""
+    }
+  ]
+}
