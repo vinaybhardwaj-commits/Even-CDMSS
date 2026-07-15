@@ -122,18 +122,25 @@ export async function escalationsToday(): Promise<{ individual_uid: string; pres
   } catch { return []; }
 }
 
-/** Admin recompute — re-derive `derived` + escalation from the immutable raw `responses`, stamp the
- *  current mapper version. NEVER modifies `responses`. Returns the count updated. */
-export async function recomputeOutcomes(limit = 500): Promise<number> {
-  const rows = await q(sql`SELECT id, payload FROM care_call_outcomes ORDER BY called_at DESC LIMIT ${limit}`);
+/** Admin recompute — re-derive `derived` + escalation from the immutable raw `responses`.
+ *  NEVER modifies `responses`. Returns the count updated.
+ *  K1.1 (Inquiry PRD addendum B1 item 4): each row's ask_set_version is PRESERVED — which
+ *  generation SERVED the call is a historical fact, not a mapper property (prefer the row's
+ *  column, then the payload's, ASK_SET_VERSION only when both are absent).
+ *  `deps.db` is an injection seam for unit tests (repo idiom — mirrors inquiry-store). */
+type SqlTag = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown>;
+export async function recomputeOutcomes(limit = 500, deps: { db?: SqlTag } = {}): Promise<number> {
+  const db = deps.db ?? (sql as unknown as SqlTag);
+  const rows = await q(db`SELECT id, ask_set_version, payload FROM care_call_outcomes ORDER BY called_at DESC LIMIT ${limit}`);
   let n = 0;
   for (const r of rows) {
     const p = (typeof r.payload === 'string' ? JSON.parse(r.payload) : r.payload) as CareCallOutcome;
     const responses = Array.isArray(p?.responses) ? p.responses : [];
     const derived = deriveAssertions(responses);
     const esc = escalationFlag(responses);
-    const next: CareCallOutcome = { ...p, derived, flags: { escalation: esc }, ask_set_version: ASK_SET_VERSION };
-    await sql`UPDATE care_call_outcomes SET payload = ${JSON.stringify(next)}, escalation = ${!!esc}, ask_set_version = ${ASK_SET_VERSION} WHERE id = ${String(r.id)}`;
+    const version = (r.ask_set_version ? String(r.ask_set_version) : '') || p?.ask_set_version || ASK_SET_VERSION;
+    const next: CareCallOutcome = { ...p, derived, flags: { escalation: esc }, ask_set_version: version };
+    await db`UPDATE care_call_outcomes SET payload = ${JSON.stringify(next)}, escalation = ${!!esc}, ask_set_version = ${version} WHERE id = ${String(r.id)}`;
     n++;
   }
   return n;

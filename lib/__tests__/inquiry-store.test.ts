@@ -40,3 +40,32 @@ test('reads soft-fail to empty when the table is missing / DB is down', async ()
   assert.deepEqual(await asksetsForPresc('presc123', 20, { db }), []);
   assert.deepEqual(await servedVersionsForPresc('presc123', 5, { db }), []);
 });
+
+test('K1.1: recomputeOutcomes preserves each row\'s served ask_set_version (ask-set/0.2 survives)', async () => {
+  const { recomputeOutcomes } = await import('../care-call-store');
+  const outcome = (version: string | undefined) => ({
+    id: 'o1', presc_uid: 'presc123', individual_uid: 'indiv123', attempt: 1, called_at: '2026-07-15T00:00:00.000Z',
+    disposition: 'connected', engine_version: 'care-call/0.1', ask_set_version: version,
+    responses: [], derived: { medications: [], allergies: [], complaints: [], followUps: [] }, flags: { escalation: null },
+  });
+  const updates: unknown[][] = [];
+  const mkDb = (rows: Record<string, unknown>[]) => (async (strings: TemplateStringsArray, ...vals: unknown[]) => {
+    if (strings.join('$').includes('SELECT')) return rows;
+    updates.push(vals);   // [payloadJson, escalation, ask_set_version, id]
+    return [];
+  }) as never;
+
+  // an ask-set/0.2-served outcome keeps its version through recompute (column + payload)
+  const n = await recomputeOutcomes(500, { db: mkDb([{ id: 'o1', ask_set_version: 'ask-set/0.2', payload: outcome('ask-set/0.2') }]) });
+  assert.equal(n, 1);
+  assert.equal(updates[0][2], 'ask-set/0.2', 'column keeps the served version');
+  assert.equal((JSON.parse(String(updates[0][0])) as { ask_set_version: string }).ask_set_version, 'ask-set/0.2', 'payload keeps the served version');
+
+  // column absent → payload's version wins; both absent → ASK_SET_VERSION fallback
+  updates.length = 0;
+  await recomputeOutcomes(500, { db: mkDb([{ id: 'o1', ask_set_version: null, payload: outcome('ask-set/0.2') }]) });
+  assert.equal(updates[0][2], 'ask-set/0.2');
+  updates.length = 0;
+  await recomputeOutcomes(500, { db: mkDb([{ id: 'o1', ask_set_version: null, payload: outcome(undefined) }]) });
+  assert.equal(updates[0][2], 'ask-set/0.1');
+});
