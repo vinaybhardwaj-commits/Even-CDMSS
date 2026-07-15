@@ -23,12 +23,13 @@ test('scorer is deterministic and the metric arithmetic is exact', () => {
   assert.equal(a.rightFirst, true);
   assert.equal(a.familyLegal, true);
   const agg = aggregateScores([
-    { caseId: 'x', rightFirst: true, familyLegal: true, askCount: 4, genericCount: 1, fallback: false },
-    { caseId: 'y', rightFirst: false, familyLegal: true, askCount: 4, genericCount: 0, fallback: true },
+    { caseId: 'x', rightFirst: true, familyLegal: true, slotAppropriate: true, askCount: 4, genericCount: 1, fallback: false },
+    { caseId: 'y', rightFirst: false, familyLegal: true, slotAppropriate: false, askCount: 4, genericCount: 0, fallback: true },
   ]);
   assert.equal(agg.runs, 2);
   assert.equal(agg.rightFirstRate, 0.5);
   assert.equal(agg.familyLegalityRate, 1);
+  assert.equal(agg.slotAppropriateRate, 0.5);
   assert.equal(agg.genericRate, 0.125);
   assert.equal(agg.fallbackRate, 0.5);
   // matching primitives
@@ -36,6 +37,39 @@ test('scorer is deterministic and the metric arithmetic is exact', () => {
   assert.equal(subjectMatches('Telmisartan', 'Atorvastatin'), false);
   assert.ok(isGenericQuestion({ subject: 'knee pain', question: 'How are you doing overall?' }));
   assert.equal(isGenericQuestion({ subject: 'knee pain', question: 'How is the knee pain today?' }), false);
+});
+
+test('A1 split: family-legality is vocabulary-only; legalSlots23 lands in slotAppropriate, not the gate', () => {
+  const goldCase = {
+    id: 'SPLIT1',
+    fixture: { episode: {}, snapshot: null, now: '2026-07-15T00:00:00.000Z', keys: { presc_uid: 'p1234567', individual_uid: 'i1234567' } },
+    expected: {
+      first: { family: 'MED_STATUS' as const, subject: 'Metformin' },
+      legalSlots23: [{ family: 'COMPLAINT_STATUS' as const, subject: 'cough' }],
+    },
+  };
+  const first = { id: 'MED_STATUS:metformin', family: 'MED_STATUS' as const, subject: 'Metformin', question: 'Doctor prescribed Metformin — are you taking it?' };
+  // slot 2 is a LEGAL family (OUTSIDE_RECORDS) but OUTSIDE the allow-list → gate passes, slot check reports false
+  const outsideAllowList = scoreCase(goldCase, {
+    asks: [first, { id: 'OUTSIDE_RECORDS:x', family: 'OUTSIDE_RECORDS' as const, subject: '', question: 'Do you have that report?' }],
+    source: 'inquiry',
+  });
+  assert.equal(outsideAllowList.familyLegal, true, 'legal vocabulary ⇒ the gate passes');
+  assert.equal(outsideAllowList.slotAppropriate, false, 'outside legalSlots23 ⇒ reported, not gated');
+  // an out-of-band family fails the GATE regardless of the allow-list
+  const illegalFamily = scoreCase(goldCase, {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    asks: [first, { id: 'FREE_TEXT:x', family: 'FREE_TEXT' as any, subject: '', question: 'Anything else?' }],
+    source: 'inquiry',
+  });
+  assert.equal(illegalFamily.familyLegal, false, 'out-of-band family breaks the safety gate');
+  // slot check within the allow-list reports true
+  const inAllowList = scoreCase(goldCase, {
+    asks: [first, { id: 'COMPLAINT_STATUS:cough', family: 'COMPLAINT_STATUS' as const, subject: 'cough', question: 'You came in for cough — how is it now?' }],
+    source: 'inquiry',
+  });
+  assert.equal(inAllowList.familyLegal, true);
+  assert.equal(inAllowList.slotAppropriate, true);
 });
 
 test('baseline harness runs on the shipped RATIFIED bank (deterministic arm, no LLM)', () => {

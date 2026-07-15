@@ -70,7 +70,7 @@ async function runArm(arm) {
       }
       const s = scoreCase(c, served);
       scores.push(s);
-      console.log(`  [${arm} k=${k + 1}] ${c.id} first=${s.rightFirst ? 'RIGHT' : 'wrong'} legal=${s.familyLegal} generic=${s.genericCount}/${s.askCount}${s.fallback ? ' FALLBACK' : ''}`);
+      console.log(`  [${arm} k=${k + 1}] ${c.id} first=${s.rightFirst ? 'RIGHT' : 'wrong'} legal=${s.familyLegal} slotOK=${s.slotAppropriate} generic=${s.genericCount}/${s.askCount}${s.fallback ? ' FALLBACK' : ''}`);
     }
   }
   return { scores, aggregate: aggregateScores(scores) };
@@ -99,8 +99,8 @@ if (RUN_INQUIRY) {
 
 console.log('\n── aggregates ──');
 for (const [arm, a] of Object.entries(scorecard.arms)) {
-  console.log(`${arm}: right-first ${(a.rightFirstRate * 100).toFixed(1)}% · family-legality ${(a.familyLegalityRate * 100).toFixed(1)}% · generic ${(a.genericRate * 100).toFixed(1)}% · fallback ${(a.fallbackRate * 100).toFixed(1)}% (${a.runs} runs)`);
-  if (a.familyLegalityRate < 1) console.error(`  ⚠️ ${arm}: family-legality below 100% — gate FAIL`);
+  console.log(`${arm}: right-first ${(a.rightFirstRate * 100).toFixed(1)}% · family-legality ${(a.familyLegalityRate * 100).toFixed(1)}% · slot-appropriate ${(a.slotAppropriateRate * 100).toFixed(1)}% · generic ${(a.genericRate * 100).toFixed(1)}% · fallback ${(a.fallbackRate * 100).toFixed(1)}% (${a.runs} runs)`);
+  if (a.familyLegalityRate < 1) console.error(`  ⚠️ ${arm}: family-legality below 100% — gate FAIL (vocabulary safety property, A1 ruling)`);
 }
 
 mkdirSync(dirname(OUT), { recursive: true });

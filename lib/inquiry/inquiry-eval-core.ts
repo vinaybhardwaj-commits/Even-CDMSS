@@ -69,12 +69,14 @@ export function isGenericQuestion(ask: Pick<AskItem, 'subject' | 'question'>, fo
   return !toks.some((t) => q.includes(t));
 }
 
-// ── per-case scoring (PRD §12: right-first-question · family-legality (must be 100%) · generic · fallback) ──
+// ── per-case scoring (PRD §12 + addendum A1 metric ruling: family-legality is the SAFETY gate
+// (vocabulary-only, must be 100%); slot-appropriateness (legalSlots23) is REPORTED, not a gate) ──
 export interface ServedResult { asks: Pick<AskItem, 'id' | 'family' | 'subject' | 'question'>[]; source?: string }
 export interface CaseScore {
   caseId: string;
   rightFirst: boolean;      // slot-1 family+subject match
-  familyLegal: boolean;     // every family legal AND slots 2–3 within the case's legal set (when given)
+  familyLegal: boolean;     // THE GATE: every served ask's family ∈ the 5 legal families — nothing else
+  slotAppropriate: boolean; // REPORTED: slots 2–3 fall inside the case's legalSlots23 allow-list (when given)
   askCount: number;
   genericCount: number;
   fallback: boolean;        // served via deterministic_fallback
@@ -85,18 +87,22 @@ export function scoreCase(c: GoldCase, served: ServedResult): CaseScore {
   const first = asks[0];
   const rightFirst = !!first && first.family === c.expected.first.family && subjectMatches(c.expected.first.subject, first.subject);
 
-  let familyLegal = asks.every((a) => FAMILIES.has(a.family));
+  // A1 ruling: legality = vocabulary ONLY — an out-of-band family would break capture (D10).
+  const familyLegal = asks.every((a) => FAMILIES.has(a.family));
+
+  // The former slots-2/3 allow-list check, MOVED here verbatim and non-gating. Absent/empty ⇒ true.
+  let slotAppropriate = true;
   const legal = c.expected.legalSlots23;
-  if (familyLegal && legal && legal.length) {
+  if (legal && legal.length) {
     for (const a of asks.slice(1, 3)) {
       const ok = legal.some((l) => l.family === a.family && (l.subject === undefined || subjectMatches(l.subject, a.subject)));
-      if (!ok) { familyLegal = false; break; }
+      if (!ok) { slotAppropriate = false; break; }
     }
   }
 
   const genericCount = asks.filter((a) => isGenericQuestion(a, c.expected.forbiddenGeneric ?? [])).length;
   return {
-    caseId: c.id, rightFirst, familyLegal,
+    caseId: c.id, rightFirst, familyLegal, slotAppropriate,
     askCount: asks.length, genericCount,
     fallback: served.source === 'deterministic_fallback',
   };
@@ -105,21 +111,23 @@ export function scoreCase(c: GoldCase, served: ServedResult): CaseScore {
 // ── aggregation over cases × repeats ──
 export interface BenchAggregate {
   runs: number;
-  rightFirstRate: number;    // 0..1
-  familyLegalityRate: number; // must be 1.0 to clear the gate
-  genericRate: number;       // generic asks / total asks
-  fallbackRate: number;      // fallback runs / total runs
+  rightFirstRate: number;      // 0..1
+  familyLegalityRate: number;  // must be 1.0 to clear the gate (vocabulary-only, A1 ruling)
+  slotAppropriateRate: number; // reported, NOT a gate (legalSlots23 allow-list)
+  genericRate: number;         // generic asks / total asks
+  fallbackRate: number;        // fallback runs / total runs
 }
 
 export function aggregateScores(scores: CaseScore[]): BenchAggregate {
   const runs = scores.length;
-  if (!runs) return { runs: 0, rightFirstRate: 0, familyLegalityRate: 0, genericRate: 0, fallbackRate: 0 };
+  if (!runs) return { runs: 0, rightFirstRate: 0, familyLegalityRate: 0, slotAppropriateRate: 0, genericRate: 0, fallbackRate: 0 };
   const asks = scores.reduce((n, s) => n + s.askCount, 0);
   const generics = scores.reduce((n, s) => n + s.genericCount, 0);
   return {
     runs,
     rightFirstRate: scores.filter((s) => s.rightFirst).length / runs,
     familyLegalityRate: scores.filter((s) => s.familyLegal).length / runs,
+    slotAppropriateRate: scores.filter((s) => s.slotAppropriate).length / runs,
     genericRate: asks ? generics / asks : 0,
     fallbackRate: scores.filter((s) => s.fallback).length / runs,
   };
