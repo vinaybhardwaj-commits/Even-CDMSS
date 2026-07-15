@@ -97,7 +97,7 @@ test('same-id candidates merge (allergy unknown merges into the baseline allergy
   assert.deepEqual(allergy[0].unknownIds, [u.id]);
 });
 
-test('validateSelection (B6 numbers): out-of-range / non-integer n rejected; duplicate rejected; ≤3 picks', () => {
+test('validateSelection (B6 numbers, B7 phrase-all): out-of-range / non-integer n rejected; duplicate rejected; NO pick cap', () => {
   const cands = candidatesFromUnknowns([unk({ kind: 'unknown_finding', subject: 'knee pain' })], mkCase(), KEYS);
   const id = 'COMPLAINT_STATUS:knee-pain';
   const n = nOf(cands, id);
@@ -111,8 +111,9 @@ test('validateSelection (B6 numbers): out-of-range / non-integer n rejected; dup
   const valid = validateSelection(picks, cands);
   assert.equal(valid.length, 1);
   assert.equal(valid[0].ask.id, id, 'n resolves to the candidate at position n-1');
-  const many: SelectionPick[] = cands.slice(0, 4).map((c, i) => ({ n: i + 1, question: c.question }));
-  assert.ok(validateSelection(many.concat(many), cands).length <= 3, 'never more than 3 picks');
+  // B7: the ≤3 pick cap is GONE — every distinct valid phrasing is kept (dedupe still holds)
+  const many: SelectionPick[] = cands.map((c, i) => ({ n: i + 1, question: c.question }));
+  assert.equal(validateSelection(many.concat(many), cands).length, cands.length, 'phrase-all: one phrasing per candidate, duplicates still deduped');
   // literal position check: n is 1-based, so n=2 resolves to candidates[1]
   const v2 = validateSelection([{ n: 2, question: cands[1].question }], cands);
   assert.equal(v2.length, 1);
@@ -351,6 +352,42 @@ test('runInquirySelection happy path: validated picks served as ask-set/0.2 with
   assert.deepEqual(meta.unknownIds, [u.id]);
   assert.equal(meta.why, 'stale critical result');
   assert.ok(r.candidateCount >= 2);
+});
+
+test('B7 phrase-all: with a phrasing for EVERY candidate, all 5 ladder-served asks carry Gemini phrasing (no skeleton)', async () => {
+  // >5 candidates so the ladder must choose which 5 serve — the regression: an un-selected
+  // served ask used to fall to raw skeleton text (the ugly live slot-1 FOLLOWUP).
+  const episode = mkCase({
+    medications: [{ generic: 'Insulin glargine', highAlert: true }, { generic: 'Amlodipine' }],
+    presentingComplaints: ['dizziness', 'headache'],
+    allergies: null,
+    advice: ['Review in 2 weeks'],
+  });
+  const unknowns = [
+    unk({ kind: 'care_gap', subject: 'Vitamin D', detail: 'severely abnormal (8) ng/ml — not rechecked in 1.1y' }),
+    unk({ kind: 'unknown_finding', subject: 'night sweats' }),
+  ];
+  const cands = candidatesFromUnknowns(unknowns, episode, KEYS);
+  assert.ok(cands.length > 5, 'fixture yields more candidates than served slots');
+  const gemini = (c: CandidateAsk) => `${c.subject || 'those records'} — checking in warmly, how is it going?`;
+  const raw = JSON.stringify({ picks: cands.map((c, i) => ({ n: i + 1, question: gemini(c), why: `phrased #${i + 1}` })) });
+  const r = await runInquirySelection(episode, KEYS, unknowns, { generate: async () => raw });
+  assert.equal(r.source, 'inquiry');
+  assert.equal(r.asks.length, 5, 'cap-5 unchanged');
+  assert.equal(r.asks[0].meta?.highAlert, true, 'high-alert-first unchanged (ladder owns order)');
+  for (const a of r.asks) {
+    const c = cands.find((x) => x.id === a.id)!;
+    assert.equal(a.question, gemini(c), `${a.id}: served with Gemini phrasing, not skeleton`);
+  }
+  // slot order is STILL the ladder's, byte-unchanged vs an empty-picks assembly
+  const ladderOnly = assembleInquiryAskSet(episode, KEYS, cands, []);
+  assert.deepEqual(r.asks.map((a) => a.id), ladderOnly.asks.map((a) => a.id), 'which-5 and order identical — B7 changes phrasing coverage only');
+  // partial-coverage safety: drop one served candidate's phrasing → that ask falls to skeleton
+  const servedIds = r.asks.map((a) => a.id);
+  const partial = JSON.stringify({ picks: cands.map((c, i) => ({ n: i + 1, question: gemini(c) })).filter((_, i) => cands[i].id !== servedIds[2]) });
+  const r2 = await runInquirySelection(episode, KEYS, unknowns, { generate: async () => partial });
+  const unphrased = r2.asks.find((a) => a.id === servedIds[2])!;
+  assert.equal(unphrased.question, cands.find((c) => c.id === servedIds[2])!.question, 'missing phrasing falls back to the skeleton, ask still served');
 });
 
 test('parseSelection tolerates prose around the JSON and rejects malformed shapes', () => {

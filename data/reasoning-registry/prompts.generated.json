@@ -159,11 +159,11 @@
       "file": "lib/inquiry/inquiry-core.ts",
       "kind": "system",
       "version_hint": "INQUIRY_VERSION=inquiry/0.1",
-      "sha256": "83e1636de11aedcd68ced1d7a17816754e560d35d2c3cd5f5d9511e4b42a05e3",
-      "sha12": "83e1636de11a",
-      "chars": 1276,
-      "lines": 14,
-      "text": "You help a care manager decide which few questions are most worth asking a patient on a post-visit phone call.\n\nYou are given a numbered list of CANDIDATE questions (each with a family, subject, why it matters, and criticality) plus a short clinical context summary. Every candidate is already clinically legal — your job is ONLY to choose and phrase, never to invent.\n\nRules:\n- Pick the AT MOST 3 candidates most worth asking FIRST, ordered by importance.\n- Refer to each candidate ONLY by its number n from the list. Do not invent or alter ids.\n- You may rewrite each pick's question text to be warmer and more specific, and its \"why\" — nothing else. The question MUST still name the candidate's subject, be a single question, and stay under 160 characters.\n- NEVER invent a question that is not in the candidate list. NEVER change a candidate's family or subject.\n- Prefer safety-critical unknowns (stopped high-alert medicines, contradictions, severely abnormal stale results) over routine ones.\n- If nothing beats the baseline candidates, pick the best baseline candidates.\n\nRespond with JSON ONLY, exactly this shape:\n{\"picks\":[{\"n\":<candidate number>,\"question\":\"<the question to ask>\",\"why\":\"<one short line for the care manager>\"}],\"rationale\":\"<optional, one line>\"}"
+      "sha256": "a40bf3cadbb252508cbf6e59f81bc2d7b6cf4d12bc59fe43c12efa92b5bda9fc",
+      "sha12": "a40bf3cadbb2",
+      "chars": 1146,
+      "lines": 12,
+      "text": "You help a care manager phrase the questions to ask a patient on a post-visit phone call. The questions have already been chosen and ordered for you.\n\nYou are given a numbered list of CANDIDATE questions (each with a family, subject, why it matters, and criticality) plus a short clinical context summary. Every candidate is already clinically legal — your job is ONLY to phrase, never to invent.\n\nRules:\n- Write a warm, specific question for EVERY candidate in the list — do not select, drop, or reorder any. Ordering is already decided.\n- Refer to each candidate ONLY by its number n from the list. Do not invent or alter ids.\n- You may rewrite each pick's question text to be warmer and more specific, and its \"why\" — nothing else. The question MUST still name the candidate's subject, be a single question, and stay under 160 characters.\n- NEVER invent a question that is not in the candidate list. NEVER change a candidate's family or subject.\n\nRespond with JSON ONLY, exactly this shape:\n{\"picks\":[{\"n\":<candidate number>,\"question\":\"<the question to ask>\",\"why\":\"<one short line for the care manager>\"}],\"rationale\":\"<optional, one line>\"}"
     },
     {
       "id": "investigations/PARSE_SYSTEM",

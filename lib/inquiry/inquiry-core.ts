@@ -22,17 +22,15 @@ export const INQUIRY_VERSION = 'inquiry/0.1' as const;
 export const INQUIRY_ASK_SET_VERSION = 'ask-set/0.2' as const;
 
 // ── the registered standing prompt (Stage-0 registry extracts *_SYSTEM template literals) ──
-export const INQUIRY_SELECT_SYSTEM = `You help a care manager decide which few questions are most worth asking a patient on a post-visit phone call.
+export const INQUIRY_SELECT_SYSTEM = `You help a care manager phrase the questions to ask a patient on a post-visit phone call. The questions have already been chosen and ordered for you.
 
-You are given a numbered list of CANDIDATE questions (each with a family, subject, why it matters, and criticality) plus a short clinical context summary. Every candidate is already clinically legal — your job is ONLY to choose and phrase, never to invent.
+You are given a numbered list of CANDIDATE questions (each with a family, subject, why it matters, and criticality) plus a short clinical context summary. Every candidate is already clinically legal — your job is ONLY to phrase, never to invent.
 
 Rules:
-- Pick the AT MOST 3 candidates most worth asking FIRST, ordered by importance.
+- Write a warm, specific question for EVERY candidate in the list — do not select, drop, or reorder any. Ordering is already decided.
 - Refer to each candidate ONLY by its number n from the list. Do not invent or alter ids.
 - You may rewrite each pick's question text to be warmer and more specific, and its "why" — nothing else. The question MUST still name the candidate's subject, be a single question, and stay under 160 characters.
 - NEVER invent a question that is not in the candidate list. NEVER change a candidate's family or subject.
-- Prefer safety-critical unknowns (stopped high-alert medicines, contradictions, severely abnormal stale results) over routine ones.
-- If nothing beats the baseline candidates, pick the best baseline candidates.
 
 Respond with JSON ONLY, exactly this shape:
 {"picks":[{"n":<candidate number>,"question":"<the question to ask>","why":"<one short line for the care manager>"}],"rationale":"<optional, one line>"}`;
@@ -152,7 +150,7 @@ export function buildInquirySelectUser(candidates: CandidateAsk[], contextSummar
   // B6: the NUMBER is the pick handle — no id token in the line (Gemini mangled echoed slugs).
   const lines = candidates.map((c, i) =>
     `${i + 1}. family=${c.family} · subject=${c.subject || '(none)'} · high-alert=${c.meta?.highAlert ? 'yes' : 'no'} · why=${clip(c.why, 120)} · question="${c.question}"`);
-  return `CONTEXT (de-identified):\n${contextSummary || '(no additional context)'}\n\nCANDIDATES:\n${lines.join('\n')}\n\nPick at most 3, JSON only.`;
+  return `CONTEXT (de-identified):\n${contextSummary || '(no additional context)'}\n\nCANDIDATES:\n${lines.join('\n')}\n\nPhrase every candidate, JSON only.`;
 }
 
 /** Parse the model output → picks, or null on any structural failure (⇒ retry/fallback). */
@@ -179,17 +177,18 @@ export function parseSelection(raw: string): SelectionPick[] | null {
 }
 
 /**
- * Deterministic validation (§6, B6 number-based): every pick resolves by NUMBER (1-based list
- * position) to a candidate — out-of-range / non-integer n is rejected; ≤3 picks; no duplicate
+ * Deterministic validation (§6, B6 number-based, B7 phrase-all): every pick resolves by NUMBER
+ * (1-based list position) to a candidate — out-of-range / non-integer n is rejected; no duplicate
  * candidates; question non-empty and ≤160 chars (else the pick is rejected); family/subject/id/
  * meta ALWAYS come from the candidate — Gemini may rewrite `question` and `why` only; a generic
- * question (no subject token) is replaced by the candidate's skeleton phrasing.
+ * question (no subject token) is replaced by the candidate's skeleton phrasing. B7: NO pick cap —
+ * Gemini phrases EVERY candidate so each ladder-served ask has a phrasing; assembleInquiryAskSet
+ * caps the SERVED set at 5, so no double-cap is needed here.
  */
 export function validateSelection(picks: SelectionPick[], candidates: CandidateAsk[]): { ask: AskItem; meta: AskMetaItem }[] {
   const seen = new Set<string>();
   const valid: { ask: AskItem; meta: AskMetaItem }[] = [];
   for (const p of picks ?? []) {
-    if (valid.length >= 3) break;
     const c = Number.isInteger(p.n) && p.n >= 1 && p.n <= candidates.length ? candidates[p.n - 1] : undefined;
     if (!c || seen.has(c.id)) continue;                       // out-of-range n or duplicate candidate → rejected
     const q = String(p.question ?? '').trim();
