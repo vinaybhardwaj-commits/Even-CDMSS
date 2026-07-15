@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import {
   candidatesFromUnknowns, droppedUnknowns, validateSelection, parseSelection,
   assembleInquiryAskSet, fallbackAskSet, runInquirySelection, questionMentionsSubject,
-  INQUIRY_VERSION, INQUIRY_ASK_SET_VERSION, INQUIRY_SELECT_SYSTEM,
+  priorityRank, INQUIRY_VERSION, INQUIRY_ASK_SET_VERSION, INQUIRY_SELECT_SYSTEM,
   type CandidateAsk, type SelectionPick,
 } from '../inquiry/inquiry-core';
 import { buildAskSet, ASK_SET_VERSION } from '../care-call-core';
@@ -134,7 +134,7 @@ test('validateSelection: a generic question (no subject token) is replaced by th
   assert.equal(questionMentionsSubject('migraine headaches', 'And how are you feeling overall?'), false);
 });
 
-test('assembly: every high-alert MED_STATUS ask is ALWAYS first, regardless of picks', () => {
+test('assembly: every high-alert MED_STATUS ask is ALWAYS first (ladder rank 0), regardless of picks', () => {
   const episode = mkCase({
     medications: [{ generic: 'Insulin glargine', highAlert: true }, { generic: 'Telmisartan' }],
     presentingComplaints: ['dizziness'],
@@ -147,7 +147,51 @@ test('assembly: every high-alert MED_STATUS ask is ALWAYS first, regardless of p
   assert.equal(out.ask_set_version, 'ask-set/0.2');
   assert.equal(out.asks[0].family, 'MED_STATUS');
   assert.equal(out.asks[0].meta?.highAlert, true);
-  assert.equal(out.asks[1].id, 'COMPLAINT_STATUS:blurred-vision');   // then the picks, in order
+  // K2: the LADDER owns order — the routine med (rank 4) precedes the complaints (rank 5);
+  // the Gemini pick keeps its PHRASING but does not jump the queue.
+  assert.equal(out.asks[1].id, 'MED_STATUS:telmisartan');
+  const picked = out.asks.find((a) => a.id === 'COMPLAINT_STATUS:blurred-vision')!;
+  assert.ok(picked, 'ladder-served pick present');
+  assert.equal(picked.question, 'Any blurred vision since the visit?', 'Gemini phrasing used');
+});
+
+test('K2 ladder: rungs serve in order 0<1<2<3<4<5<6<7 regardless of the pick order fed in', () => {
+  const episode = mkCase({
+    medications: [{ generic: 'Insulin glargine', highAlert: true }, { generic: 'Amlodipine' }],
+    presentingComplaints: ['dizziness'],
+    allergies: null,
+    advice: ['Review in 2 weeks'],
+  });
+  const unknowns = [
+    unk({ kind: 'med_contradiction', subject: 'Atorvastatin' }),
+    unk({ kind: 'care_gap', subject: 'Vitamin D', detail: 'severely abnormal (8) ng/ml — not rechecked in 1.1y' }),
+  ];
+  const cands = candidatesFromUnknowns(unknowns, episode, KEYS);
+  assert.equal(priorityRank(cands.find((c) => c.id === 'MED_STATUS:insulin-glargine')!), 0);
+  assert.equal(priorityRank(cands.find((c) => c.id === 'MED_STATUS:atorvastatin')!), 1);
+  assert.equal(priorityRank(cands.find((c) => c.id === 'FOLLOWUP_ACTION:vitamin-d')!), 2);
+  assert.equal(priorityRank(cands.find((c) => c.family === 'FOLLOWUP_ACTION' && /Review in 2 weeks/.test(c.subject))!), 3);
+  assert.equal(priorityRank(cands.find((c) => c.id === 'MED_STATUS:amlodipine')!), 4);
+  assert.equal(priorityRank(cands.find((c) => c.family === 'COMPLAINT_STATUS')!), 5);
+  assert.equal(priorityRank(cands.find((c) => c.family === 'ALLERGY_CONFIRM')!), 6);
+  // OUTSIDE_RECORDS fell off buildAskSet's cap in this fixture — rank asserted on a literal
+  assert.equal(priorityRank({ id: 'OUTSIDE_RECORDS:x', family: 'OUTSIDE_RECORDS', subject: '', question: 'q', unknownIds: [], why: 'baseline', sourceKinds: [] }), 7);
+  // feed picks in REVERSED priority order — served order must still be the ladder's
+  const picks = validateSelection([
+    { id: 'COMPLAINT_STATUS:dizziness', question: 'How is the dizziness now?' },
+    { id: 'FOLLOWUP_ACTION:vitamin-d', question: 'Your Vitamin D was very low — book a repeat test?' },
+    { id: 'MED_STATUS:atorvastatin', question: 'You had stopped Atorvastatin — taking it now?' },
+  ], cands);
+  const out = assembleInquiryAskSet(episode, KEYS, cands, picks);
+  assert.deepEqual(out.asks.map((a) => a.id), [
+    'MED_STATUS:insulin-glargine',       // 0 high-alert
+    'MED_STATUS:atorvastatin',           // 1 contradiction
+    'FOLLOWUP_ACTION:vitamin-d',         // 2 care-gap follow-up
+    cands.find((c) => priorityRank(c) === 3)!.id,   // 3 routine follow-up
+    'MED_STATUS:amlodipine',             // 4 routine med
+  ]);
+  // a low-ranked Gemini pick (the complaint) did NOT become slot-1 — and fell off the top 5
+  assert.ok(out.overflow.some((o) => o.family === 'COMPLAINT_STATUS' && o.subject === 'dizziness'));
 });
 
 test('assembly: total cap stays 5 and the overflow list is preserved', () => {
@@ -171,44 +215,65 @@ test('assembly: total cap stays 5 and the overflow list is preserved', () => {
   assert.equal(out.asks[0].meta?.highAlert, true);
   assert.equal(out.asks[1].meta?.highAlert, true);
   assert.ok(out.overflow.length >= 1, 'overflow preserved');
-  assert.ok(out.overflow.some((o) => o.family === 'FOLLOWUP_ACTION'), 'unserved deterministic asks recorded in overflow');
+  // K2 ladder: both follow-ups (care-gap rank 2, baseline rank 3) now outrank complaints (5) —
+  // the unserved complaints/allergy/outside land in overflow instead.
+  assert.ok(out.overflow.some((o) => o.family === 'COMPLAINT_STATUS'), 'unserved lower-rung asks recorded in overflow');
   const ids = new Set(out.asks.map((a) => a.id));
   assert.equal(ids.size, 5, 'no duplicate served asks');
 });
 
-test('fallback byte-identity: zero valid picks ⇒ buildAskSet verbatim as ask-set/0.1', async () => {
+test('K2: zero-valid-picks (parsed) is NOT a fallback — ladder assembles with skeleton phrasing, source inquiry', async () => {
   const episode = mkCase({ medications: [{ generic: 'Metformin', highAlert: false }], presentingComplaints: ['cough'], allergies: null });
   const base = buildAskSet(episode, KEYS);
-  // zero valid picks via assembly
+  // parsed-but-empty picks array via assembly
   const cands = candidatesFromUnknowns([], episode, KEYS);
   const out = assembleInquiryAskSet(episode, KEYS, cands, []);
-  assert.equal(out.source, 'deterministic_fallback');
-  assert.equal(out.ask_set_version, 'ask-set/0.1');
-  assert.deepEqual(out.asks, base.asks);         // byte-identity of the served set
-  assert.deepEqual(out.overflow, base.overflow);
-  // and via the full runner with a model that returns only foreign ids
-  const r = await runInquirySelection(episode, KEYS, [], {
-    generate: async () => '{"picks":[{"id":"MED_STATUS:never-served","question":"Are you taking the never-served medicine?"}]}',
-  });
-  assert.equal(r.source, 'deterministic_fallback');
-  assert.deepEqual(r.asks, base.asks);
-  assert.deepEqual(r.overflow, base.overflow);
+  assert.equal(out.source, 'inquiry');
+  assert.equal(out.ask_set_version, 'ask-set/0.2');
+  assert.deepEqual(out.asks.map((a) => a.id).sort(), base.asks.map((a) => a.id).sort(), 'baseline-only candidates ⇒ same served asks, ladder-ordered');
+  for (const a of out.asks) {
+    assert.equal(a.question, base.asks.find((b) => b.id === a.id)!.question, `${a.id}: skeleton phrasing`);
+  }
+  // via the full runner: parsed-empty and parsed-with-only-foreign-ids both keep the member asks
+  const u = unk({ kind: 'care_gap', subject: 'Vitamin D', detail: 'severely abnormal (8) ng/ml — not rechecked in 1.1y' });
+  for (const raw of ['{"picks":[]}', '{"picks":[{"id":"MED_STATUS:never-served","question":"Are you taking the never-served medicine?"}]}']) {
+    const r = await runInquirySelection(episode, KEYS, [u], { generate: async () => raw });
+    assert.equal(r.source, 'inquiry', `${raw}: parsed ⇒ not a fallback`);
+    assert.equal(r.ask_set_version, 'ask-set/0.2');
+    assert.ok(r.asks.some((a) => a.id === 'FOLLOWUP_ACTION:vitamin-d'), 'member-derived ask kept via the ladder');
+  }
 });
 
-test('runInquirySelection: generate throw / invalid JSON / timeout all degrade to the fallback', async () => {
+test('K2: transport failure retries ONCE, then falls back byte-identical to buildAskSet', async () => {
   const episode = mkCase({ medications: [{ generic: 'Amlodipine' }] });
   const base = buildAskSet(episode, KEYS);
-  const check = (r: { asks: unknown; source: string; ask_set_version: string }) => {
+  const checkFallback = (r: { asks: unknown; overflow: unknown; source: string; ask_set_version: string }) => {
     assert.equal(r.source, 'deterministic_fallback');
     assert.equal(r.ask_set_version, 'ask-set/0.1');
-    assert.deepEqual(r.asks, base.asks);
+    assert.deepEqual(r.asks, base.asks);           // byte-identity of the served set
+    assert.deepEqual(r.overflow, base.overflow);
   };
-  check(await runInquirySelection(episode, KEYS, [], { generate: async () => { throw new Error('gemini down'); } }));
-  check(await runInquirySelection(episode, KEYS, [], { generate: async () => 'sorry, I cannot produce JSON today' }));
-  check(await runInquirySelection(episode, KEYS, [], {
+  // throw twice → fallback, exactly 2 attempts
+  let calls = 0;
+  checkFallback(await runInquirySelection(episode, KEYS, [], { generate: async () => { calls++; throw new Error('gemini down'); } }));
+  assert.equal(calls, 2, 'one retry before fallback');
+  // unparseable twice → fallback, exactly 2 attempts
+  calls = 0;
+  checkFallback(await runInquirySelection(episode, KEYS, [], { generate: async () => { calls++; return 'sorry, I cannot produce JSON today'; } }));
+  assert.equal(calls, 2);
+  // timeout twice → fallback
+  checkFallback(await runInquirySelection(episode, KEYS, [], {
     generate: () => new Promise((res) => setTimeout(() => res('{"picks":[]}'), 80)),
     timeoutMs: 10,
   }));
+  // transient hiccup: fail once, succeed on the retry → served as inquiry, NOT a fallback
+  calls = 0;
+  const recovered = await runInquirySelection(episode, KEYS, [], {
+    generate: async () => { calls++; if (calls === 1) throw new Error('blip'); return '{"picks":[]}'; },
+  });
+  assert.equal(calls, 2);
+  assert.equal(recovered.source, 'inquiry');
+  assert.equal(recovered.ask_set_version, 'ask-set/0.2');
 });
 
 test('runInquirySelection happy path: validated picks served as ask-set/0.2 with askMeta derivation', async () => {

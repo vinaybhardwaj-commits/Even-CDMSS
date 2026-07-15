@@ -36,7 +36,13 @@ Respond with JSON ONLY, exactly this shape:
 {"picks":[{"id":"<candidate id>","question":"<the question to ask>","why":"<one short line for the care manager>"}],"rationale":"<optional, one line>"}`;
 
 // ── shapes ──
-export interface CandidateAsk extends AskItem { unknownIds: string[]; why: string }
+export interface CandidateAsk extends AskItem {
+  unknownIds: string[];
+  why: string;
+  /** K2 (B4): the UnknownKinds that produced this candidate — drives priorityRank. Baseline
+   *  candidates carry []; a merge (same deterministic id) unions the kinds. */
+  sourceKinds?: UnknownKind[];
+}
 export interface SelectionPick { id: string; question: string; why?: string }
 export interface AskMetaItem { askId: string; unknownIds: string[]; why: string }
 export interface InquiryAskSet {
@@ -83,6 +89,7 @@ export function candidatesFromUnknowns(unknowns: UnknownItem[], episode: DeidOpd
     const existing = byId.get(c.id);
     if (existing) {  // same deterministic id → merge derivation, keep the first phrasing
       existing.unknownIds = [...new Set([...existing.unknownIds, ...c.unknownIds])];
+      existing.sourceKinds = [...new Set([...(existing.sourceKinds ?? []), ...(c.sourceKinds ?? [])])];
       if (existing.why === 'baseline' && c.why !== 'baseline') existing.why = c.why;
       return;
     }
@@ -90,7 +97,7 @@ export function candidatesFromUnknowns(unknowns: UnknownItem[], episode: DeidOpd
     out.push(c);
   };
 
-  for (const a of buildAskSet(episode, keys).asks) add({ ...a, unknownIds: [], why: 'baseline' });
+  for (const a of buildAskSet(episode, keys).asks) add({ ...a, unknownIds: [], why: 'baseline', sourceKinds: [] });
 
   for (const u of unknowns) {
     const sk = SKELETONS[u.kind]?.(u) ?? null;
@@ -103,9 +110,27 @@ export function candidatesFromUnknowns(unknowns: UnknownItem[], episode: DeidOpd
       question: sk.question,
       unknownIds: [u.id],
       why: u.detail,
+      sourceKinds: [u.kind],
     });
   }
   return out;
+}
+
+/**
+ * K2 (B4 ruling): the deterministic clinical PRIORITY LADDER — lower = earlier. The ladder
+ * owns slot ORDER (Gemini phrases only, never sets slot-1). Ties within a rung stay stable
+ * by the candidate's original order, which preserves baseline note order.
+ */
+export function priorityRank(c: CandidateAsk): number {
+  const kinds = c.sourceKinds ?? [];
+  if (c.family === 'MED_STATUS' && c.meta?.highAlert === true) return 0;   // high-alert med — invariant slot-1
+  if (c.family === 'MED_STATUS' && kinds.includes('med_contradiction')) return 1;
+  if (c.family === 'FOLLOWUP_ACTION' && kinds.includes('care_gap')) return 2;
+  if (c.family === 'FOLLOWUP_ACTION') return 3;                            // episode follow-up-open / baseline
+  if (c.family === 'MED_STATUS') return 4;                                 // routine med
+  if (c.family === 'COMPLAINT_STATUS') return 5;
+  if (c.family === 'ALLERGY_CONFIRM') return 6;
+  return 7;                                                                // OUTSIDE_RECORDS
 }
 
 /** Unknowns that produced no candidate — persisted as `dropped` (PRD §5/§8). */
@@ -181,32 +206,33 @@ export function fallbackAskSet(episode: DeidOpdCase, keys: AskKeys): InquiryAskS
 }
 
 /**
- * Assembly (§6) — the ask-set/0.1 §3.3 hard guarantees preserved: every high-alert MED_STATUS
- * ask is ALWAYS included first regardless of Gemini's picks; then the validated picks in order;
- * then deterministic follow-up/allergy asks if slots remain; total cap stays 5; everything else
- * → overflow. Zero valid picks ⇒ deterministic fallback verbatim.
+ * Assembly — K2 (B4 ruling): the deterministic priority LADDER owns slot order. Candidates are
+ * served in (priorityRank, original-order) order, capped at 5; high-alert MED_STATUS is rank 0,
+ * so the ask-set/0.1 "high-alert always first" invariant holds by construction. Gemini's picks
+ * control PHRASING (question + why) only: a ladder-served candidate Gemini didn't pick is served
+ * with its skeleton phrasing; a Gemini pick ranked below the top 5 does not jump the queue.
+ * Everything unserved → overflow. Zero valid picks is NOT a fallback (transport failure is —
+ * see runInquirySelection).
  */
 export function assembleInquiryAskSet(
   episode: DeidOpdCase, keys: AskKeys,
   candidates: CandidateAsk[], validPicks: { ask: AskItem; meta: AskMetaItem }[],
 ): InquiryAskSet {
-  if (!validPicks.length) return fallbackAskSet(episode, keys);
-  const base = buildAskSet(episode, keys);
-  const metaFor = new Map(validPicks.map((v) => [v.ask.id, v.meta]));
-  const candById = new Map(candidates.map((c) => [c.id, c]));
+  const pickById = new Map(validPicks.map((v) => [v.ask.id, v]));
+  const ranked = candidates
+    .map((c, i) => ({ c, i }))
+    .sort((a, b) => priorityRank(a.c) - priorityRank(b.c) || a.i - b.i);
 
   const asks: AskItem[] = [];
+  const askMeta: AskMetaItem[] = [];
   const included = new Set<string>();
-  const take = (a: AskItem) => {
-    if (asks.length >= 5 || included.has(a.id)) return;
-    included.add(a.id);
-    asks.push(a);
-  };
-
-  for (const a of base.asks) if (a.meta?.highAlert) take(a);            // 1. high-alert MED_STATUS, always first
-  for (const v of validPicks) take(v.ask);                               // 2. validated picks, in order
-  for (const a of base.asks) {                                           // 3. deterministic follow-up/allergy if room
-    if (a.family === 'FOLLOWUP_ACTION' || a.family === 'ALLERGY_CONFIRM') take(a);
+  for (const { c } of ranked) {
+    if (asks.length >= 5) break;
+    if (included.has(c.id)) continue;
+    included.add(c.id);
+    const pick = pickById.get(c.id);   // Gemini phrasing when picked; candidate skeleton otherwise
+    asks.push(pick ? pick.ask : { id: c.id, family: c.family, subject: c.subject, question: c.question, meta: c.meta });
+    askMeta.push(pick ? pick.meta : { askId: c.id, unknownIds: c.unknownIds, why: c.why });
   }
 
   const overflow: OverflowItem[] = [];
@@ -217,13 +243,8 @@ export function assembleInquiryAskSet(
     overflowSeen.add(k);
     overflow.push({ family, subject });
   };
-  for (const a of base.asks) spill(a.family, a.subject);
-  for (const o of base.overflow) spill(o.family, o.subject);
-  for (const c of candidates) spill(c.family, c.subject);
-
-  const askMeta: AskMetaItem[] = asks.map((a) =>
-    metaFor.get(a.id)
-    ?? { askId: a.id, unknownIds: candById.get(a.id)?.unknownIds ?? [], why: candById.get(a.id)?.why ?? 'baseline' });
+  for (const { c } of ranked) spill(c.family, c.subject);                   // unserved candidates, ladder order
+  for (const o of buildAskSet(episode, keys).overflow) spill(o.family, o.subject);   // the frozen floor's own overflow
 
   return { asks, overflow, ask_set_version: INQUIRY_ASK_SET_VERSION, source: 'inquiry', askMeta };
 }
@@ -246,9 +267,14 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 }
 
 /**
- * The full selection: candidates → one governed call → parse → validate → assemble.
- * NEVER throws: any failure (generate throw, timeout, invalid JSON, zero valid picks)
- * returns buildAskSet verbatim as ask-set/0.1 with source 'deterministic_fallback'.
+ * The full selection: candidates → one governed call (ONE retry on transport failure) →
+ * parse → validate → ladder assembly. NEVER throws.
+ * K2 (B4 ruling) failure semantics:
+ *   · transport failure (generate throw / timeout / unparseable output) → RETRY ONCE with the
+ *     same inputs; a second transport failure ⇒ buildAskSet verbatim (ask-set/0.1,
+ *     source 'deterministic_fallback') — transient Gemini hiccups stop counting as fallbacks;
+ *   · a PARSED response (any picks array, even empty / zero-valid) is NOT a failure — the
+ *     deterministic ladder assembles with skeleton phrasing (member asks are kept, source 'inquiry').
  */
 export async function runInquirySelection(
   episode: DeidOpdCase, keys: AskKeys, unknowns: UnknownItem[], deps: InquirySelectDeps,
@@ -256,15 +282,18 @@ export async function runInquirySelection(
   const candidates = candidatesFromUnknowns(unknowns, episode, keys);
   const dropped = droppedUnknowns(unknowns, candidates);
   const decorate = (s: InquiryAskSet) => ({ ...s, candidateCount: candidates.length, dropped });
-  try {
-    const raw = await withTimeout(
-      deps.generate(INQUIRY_SELECT_SYSTEM, buildInquirySelectUser(candidates, deps.contextSummary ?? '')),
-      deps.timeoutMs ?? 20_000,
-    );
-    const picks = parseSelection(raw);
-    if (!picks) return decorate(fallbackAskSet(episode, keys));
-    return decorate(assembleInquiryAskSet(episode, keys, candidates, validateSelection(picks, candidates)));
-  } catch {
-    return decorate(fallbackAskSet(episode, keys));
+
+  const user = buildInquirySelectUser(candidates, deps.contextSummary ?? '');
+  const attempt = async (): Promise<SelectionPick[] | null> => {
+    const raw = await withTimeout(deps.generate(INQUIRY_SELECT_SYSTEM, user), deps.timeoutMs ?? 20_000);
+    return parseSelection(raw);
+  };
+
+  let picks: SelectionPick[] | null = null;
+  try { picks = await attempt(); } catch { picks = null; }
+  if (picks === null) {
+    try { picks = await attempt(); } catch { picks = null; }   // one retry, same inputs
   }
+  if (picks === null) return decorate(fallbackAskSet(episode, keys));
+  return decorate(assembleInquiryAskSet(episode, keys, candidates, validateSelection(picks, candidates)));
 }
