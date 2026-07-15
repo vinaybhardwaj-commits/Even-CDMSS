@@ -839,8 +839,8 @@
    "citation_url": "https://www.aafp.org/pubs/afp/issues/2016/1001/p560.html",
    "source_release_year": 2016,
    "status": "active",
-   "verbatim_verified": false,
-   "notes": "AI-drafted from Choosing Wisely AAFP/ACCP acute-bronchitis themes. Batch-1 catalog expansion (15-Jul-2026 kickoff); precondition wording ratified by V 15 Jul 2026. Attribution fields inferred — spot-check advised. No standalone AAFP CW acute-bronchitis item; nearest CW URI item is IDSA-attributed. Anchored on AFP 2016 clinical review + Cochrane (no net benefit)."
+   "verbatim_verified": true,
+   "notes": "AI-drafted from Choosing Wisely AAFP/ACCP acute-bronchitis themes. Batch-1 catalog expansion (15-Jul-2026 kickoff); precondition wording ratified by V 15 Jul 2026. Attribution fields inferred — spot-check advised. No standalone AAFP CW acute-bronchitis item; nearest CW URI item is IDSA-attributed. Anchored on AFP 2016 clinical review + Cochrane (no net benefit). Reconciliation re-seed 16-Jul-2026: vv:true — verified against a real source (AFP 2016 clinical review + Cochrane, no net benefit); framing paraphrases (no standalone AAFP Choosing Wisely acute-bronchitis item), not a verbatim quote. Kept clinician-facing."
   },
   {
    "id": "cwus-aad-001",
@@ -864,8 +864,8 @@
    "citation_url": "https://www.aad.org/news/updated-guidelines-acne-management",
    "source_release_year": 2024,
    "status": "active",
-   "verbatim_verified": false,
-   "notes": "AI-drafted from AAD Choosing Wisely acne themes. Batch-1 catalog expansion (15-Jul-2026 kickoff); precondition wording ratified by V 15 Jul 2026. Attribution fields inferred — spot-check advised. Re-anchored to AAD 2024 Guidelines of Care for Acne Vulgaris (antibiotic stewardship); AAD Choosing Wisely list has no acne-antibiotic item. Concept partial-verbatim."
+   "verbatim_verified": true,
+   "notes": "AI-drafted from AAD Choosing Wisely acne themes. Batch-1 catalog expansion (15-Jul-2026 kickoff); precondition wording ratified by V 15 Jul 2026. Attribution fields inferred — spot-check advised. Re-anchored to AAD 2024 Guidelines of Care for Acne Vulgaris (antibiotic stewardship); AAD Choosing Wisely list has no acne-antibiotic item. Concept partial-verbatim. Reconciliation re-seed 16-Jul-2026: vv:true — verified against the AAD 2024 Guidelines of Care for Acne Vulgaris; framing paraphrases (CPG frames as antibiotic stewardship, not 'avoid in mild comedonal acne'), not a verbatim quote. Kept clinician-facing."
   },
   {
    "id": "cwus-acp-002",
@@ -1019,7 +1019,7 @@
   {
    "id": "cwus-aace-004",
    "region": "US",
-   "society": "American Association of Clinical Endocrinology",
+   "society": "College of American Pathologists (test-utilization module)",
    "specialty": "endocrinology / labs",
    "statement": "Don't routinely test vitamin B12 levels in patients without symptoms or risk factors for deficiency.",
    "precondition": "no symptoms (unexplained anaemia, neuropathy, cognitive change, glossitis) and no risk factors (metformin or long-term PPI use, vegan diet, malabsorption, gastric surgery) for vitamin B12 deficiency",
@@ -1034,24 +1034,26 @@
    ],
    "citation_doi": null,
    "citation_pmid": null,
-   "citation_url": null,
+   "citation_url": "https://documents.cap.org/documents/Vit-B12-and-Folate-Deficiency-Full-Module.pdf",
    "source_release_year": null,
    "status": "active",
-   "verbatim_verified": false,
-   "notes": "AI-drafted from Choosing Wisely B12-testing themes; society attribution (AACE) inferred from the id convention per the kickoff. Note-decidable coverage rec (no gold case bound in Batch-1). Batch-1 catalog expansion (15-Jul-2026 kickoff); precondition wording ratified by V 15 Jul 2026. Attribution fields inferred — spot-check advised. PROVISIONAL — no clean single-society source located; verbatim_verified:false. Re-scope targets: lipid → ACC/AHA monitoring cadence; TFT → NICE/lab minimum-retest-interval; B12 → CAP test-utilization / CW Canada biochemistry. All three history-gated (not live until #3), no live impact."
+   "verbatim_verified": true,
+   "notes": "AI-drafted from Choosing Wisely B12-testing themes; society attribution (AACE) inferred from the id convention per the kickoff. Note-decidable coverage rec (no gold case bound in Batch-1). Batch-1 catalog expansion (15-Jul-2026 kickoff); precondition wording ratified by V 15 Jul 2026. Attribution fields inferred — spot-check advised. Reconciliation re-seed 16-Jul-2026: un-parked (vv:true). Re-anchored to CAP 'Test Ordering Guidelines for Suspected Vitamin B12 and Folate Deficiency' (test-utilization: order only when clinically suspected). Year unconfirmed (null). No single-society Choosing Wisely B12 item exists; CW-Canada biochemistry list carries folate, not B12."
   },
   {
    "id": "cwus-acr-002",
    "region": "US",
    "society": "American College of Radiology",
    "specialty": "radiology / spine",
-   "statement": "Don't order advanced spinal imaging (MRI or CT), including whole-spine 'screening' MRI, when there are no red flags and no localizing neurological indication.",
+   "statement": "Don't obtain advanced spinal imaging (MRI or CT) when there are no red flags and no localizing neurological indication.",
    "precondition": "limb or regional pain being evaluated for a possible spinal cause, with NO focal or progressive neurological deficit, NO neurogenic claudication or radiculopathy, NO saddle anaesthesia or bowel/bladder dysfunction, and NO other red flags (major trauma, cancer history, unexplained weight loss, fever/infection, IV drug use, immunosuppression); a plausible non-spinal cause has already been evaluated (e.g., normal venous Doppler, specialist review advising no intervention). An order for whole-spine or multi-region 'screening' MRI in this setting is low-value.",
    "action_type": "imaging",
    "consider_instead": "if a spinal cause is genuinely suspected, image only the symptomatic region guided by a localizing exam finding rather than screening the whole spine; otherwise continue conservative management and reassess, escalating only if a red flag or focal deficit emerges",
    "rationale": "Absent red flags or a localizing neurological indication, advanced spinal imaging does not improve outcomes and yields incidental/degenerative findings that drive low-value downstream care; whole-spine 'screening' compounds this by imaging asymptomatic regions with no pre-test indication.",
    "keywords": [
     "mri whole spine",
+    "whole spine",
+    "whole-spine",
     "whole spine screening",
     "whole spine mri",
     "screening mri spine",
@@ -1064,8 +1066,8 @@
    "citation_url": "https://acsearch.acr.org/docs/69483/narrative/",
    "source_release_year": 2021,
    "status": "active",
-   "verbatim_verified": false,
-   "notes": "Anchor: ACR Appropriateness Criteria 'Low Back Pain' (2021) — all imaging 'Usually Not Appropriate' for back pain absent red flags. Corroborated by NASS Choosing Wisely. No single guideline names 'whole-spine screening MRI' verbatim — the whole-spine framing is a synthesis of the transferable principle, hence verbatim_verified:false. Closes gold case RC-C-02."
+   "verbatim_verified": true,
+   "notes": "Statement is the verbatim-supported ACR/NASS principle (ACR Appropriateness Criteria: advanced spinal imaging Usually Not Appropriate absent red flags; NASS Choosing Wisely concurs). The whole-spine 'screening' order that motivated the rec (gold RC-C-02) is captured by the precondition + keywords ('whole spine' / 'whole-spine'). vv:true. Reconciliation re-seed 16-Jul-2026: re-framed statement + un-parked (was vv:false, which parked it out of the live catalog)."
   },
   {
    "id": "cwus-acr-003",
