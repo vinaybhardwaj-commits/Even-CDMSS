@@ -360,6 +360,77 @@ export function loadCheckGold(raw: unknown): { version: string; cases: CheckGold
   return { version: g.version, cases: g.cases };
 }
 
+// ── check-gold/2.0 — the discriminating real-case gold (15-Jul-2026 kickoff). ADDITIVE:
+// 1.0 and its loader stay untouched as the regression suite. 2.0 cases carry ratified
+// clinical verdicts (expected / clinicalTarget / sourceRecHint) delivered with EMPTY
+// mustFire/mustNotFire; rec-id binding fills them against the live lvc_recommendations
+// catalog. An UNBOUND target side is LEGAL — it is a catalog-coverage gap, reported as
+// such, never papered over. Families: P/N/C form the scored floor; L is a separate annex
+// run note-only (Order-check has no member-history injection today), whose mustFire recs
+// are EXPECTED to miss — the annex output is the headroom count, not a floor metric. ─────
+
+export const RIGHT_CARE_CHECK_GOLD_2_VERSION = 'right-care-check-gold/2.0' as const;   // FROZEN
+
+export type CheckGold2Family = 'P' | 'N' | 'C' | 'L';
+
+const zCheckGold2Case = zCheckGoldCase.omit({ sourceRec: true, society: true, domain: true }).extend({
+  family: z.enum(['P', 'N', 'C', 'L']),
+  /** Ratified clinical verdict for the case (V's ruling — prose, never machine-derived). */
+  expected: z.string().min(1),
+  /** What should (not) fire, clinically — the binding step maps this to catalog rec ids. */
+  clinicalTarget: z.string().min(1),
+  /** Curator's hint for binding; may name no catalog rec (→ catalog gap). */
+  sourceRecHint: z.string(),
+  /** Filled at binding when a catalog rec matches; absent on catalog gaps. */
+  sourceRec: z.string().min(1).optional(),
+  society: z.string().optional(),
+  domain: z.string().optional(),
+  /** L only — the annex marker + the member history the note does NOT contain. */
+  annex: z.boolean().optional(),
+  memberHistory: z.unknown().optional(),
+});
+
+const zCheckGold2 = z.object({
+  version: z.literal(RIGHT_CARE_CHECK_GOLD_2_VERSION),
+  status: z.literal('ratified'),
+  cases: z.array(zCheckGold2Case).min(1),
+}).passthrough();
+
+export type CheckGold2Case = z.infer<typeof zCheckGold2Case>;
+
+/** Validate the committed 2.0 artifact. Unlike 1.0, an empty target side is LEGAL (delivered
+ *  pre-binding, or a catalog gap after binding) — but annex/memberHistory must stay L-only,
+ *  and every case must carry the ratified verdict fields. Throws on drift. */
+export function loadCheckGold2(raw: unknown): { version: string; cases: CheckGold2Case[] } {
+  const g = zCheckGold2.parse(raw);
+  const ids = new Set<string>();
+  for (const c of g.cases) {
+    if (ids.has(c.id)) throw new Error(`duplicate gold case id ${c.id}`);
+    ids.add(c.id);
+    if (c.family !== 'L' && (c.annex || c.memberHistory !== undefined)) {
+      throw new Error(`${c.id}: annex/memberHistory on non-L family ${c.family}`);
+    }
+    if (c.family === 'L' && c.annex !== true) throw new Error(`${c.id}: L-family case must set annex:true`);
+  }
+  return { version: g.version, cases: g.cases };
+}
+
+/** The family/annex split: P/N/C are the scored floor (D6 metrics); L is the note-only annex,
+ *  scored separately and NEVER folded into the floor. */
+export function splitCheckGold2(cases: CheckGold2Case[]): { floor: CheckGold2Case[]; annex: CheckGold2Case[] } {
+  return { floor: cases.filter((c) => c.family !== 'L'), annex: cases.filter((c) => c.family === 'L') };
+}
+
+/** Catalog gaps: cases whose polarity-side target list is still empty after binding — a
+ *  positive with no mustFire is a GUARANTEED recall miss attributed to catalog coverage
+ *  (`catalog_gap:true` in the scorecard), not judge failure; a near-miss with no mustNotFire
+ *  simply cannot be over-flag-tested. */
+export function checkGold2CatalogGaps(cases: CheckGold2Case[]): Array<{ id: string; family: CheckGold2Family; polarity: 'positive' | 'near_miss'; sourceRecHint: string }> {
+  return cases
+    .filter((c) => (c.polarity === 'positive' ? c.gold.mustFire.length === 0 : c.gold.mustNotFire.length === 0))
+    .map((c) => ({ id: c.id, family: c.family, polarity: c.polarity, sourceRecHint: c.sourceRecHint }));
+}
+
 /** Per-case deterministic score. PER-TARGET-REC, not exact-set-match: only the gold's target
  *  ids are judged — a positive case may legitimately fire other recs, a near-miss may fire
  *  other applicable recs. */

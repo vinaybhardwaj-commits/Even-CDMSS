@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   RIGHT_CARE_CHECK_GOLD_VERSION, loadCheckGold, scoreCheckAgainstGold, aggregateCheckGold,
+  RIGHT_CARE_CHECK_GOLD_2_VERSION, loadCheckGold2, splitCheckGold2, checkGold2CatalogGaps,
 } from '../right-care-ground-eval-core';
 import GOLD from '../../data/right-care-eval/check-gold-1.0.json';
 import SEED from '../../data/choosing-wisely-seed.json';
@@ -38,6 +39,72 @@ test('loadCheckGold rejects drift: wrong version, unratified, polarity/target mi
   const dup = JSON.parse(JSON.stringify(GOLD));
   dup.cases[1].id = dup.cases[0].id;
   assert.throws(() => loadCheckGold(dup), /duplicate/);
+});
+
+// ── check-gold/2.0 (15-Jul-2026 kickoff) — SYNTHETIC structural fixtures only; the ratified
+// clinical artifact is delivered by V, never authored here. ─────────────────────────────────
+
+const g2Case = (over: Record<string, unknown> = {}) => ({
+  id: 'T-P-01', mode: 'check', family: 'P', polarity: 'positive',
+  expected: 'synthetic ratified verdict for loader shape tests',
+  clinicalTarget: 'synthetic target description',
+  sourceRecHint: 'synthetic-hint',
+  patient: { age: 50, sex: 'F' },
+  scenario: 'synthetic scenario for loader shape tests only',
+  proposedActions: ['synthetic action'],
+  gold: { mustFire: [], mustNotFire: [] },
+  ...over,
+});
+const g2 = (cases: Array<Record<string, unknown>>) => ({
+  version: RIGHT_CARE_CHECK_GOLD_2_VERSION, status: 'ratified', cases,
+});
+
+test('loadCheckGold2: accepts the delivered shape — empty targets legal, L carries annex/memberHistory', () => {
+  const loaded = loadCheckGold2(g2([
+    g2Case(),                                                                           // unbound positive = legal (pre-binding / catalog gap)
+    g2Case({ id: 'T-N-01', family: 'N', polarity: 'near_miss', gold: { mustFire: [], mustNotFire: ['x-1'] } }),
+    g2Case({ id: 'T-C-01', family: 'C', gold: { mustFire: ['x-2'], mustNotFire: [] }, sourceRec: 'x-2' }),
+    g2Case({ id: 'T-L-01', family: 'L', annex: true, memberHistory: { priorTests: ['synthetic'] } }),
+  ]));
+  assert.equal(loaded.version, RIGHT_CARE_CHECK_GOLD_2_VERSION);
+  assert.equal(loaded.cases.length, 4);
+});
+
+test('loadCheckGold2 rejects drift: version, status, dup ids, missing verdict fields, annex misuse', () => {
+  assert.throws(() => loadCheckGold2({ ...g2([g2Case()]), version: RIGHT_CARE_CHECK_GOLD_VERSION }));
+  assert.throws(() => loadCheckGold2({ ...g2([g2Case()]), status: 'draft' }));
+  assert.throws(() => loadCheckGold2(g2([g2Case(), g2Case()])), /duplicate/);
+  assert.throws(() => loadCheckGold2(g2([g2Case({ expected: undefined })])));
+  assert.throws(() => loadCheckGold2(g2([g2Case({ clinicalTarget: undefined })])));
+  assert.throws(() => loadCheckGold2(g2([g2Case({ family: undefined })])));
+  // annex/memberHistory are L-only; an L case must be marked annex:true
+  assert.throws(() => loadCheckGold2(g2([g2Case({ annex: true })])), /annex/);
+  assert.throws(() => loadCheckGold2(g2([g2Case({ memberHistory: {} })])), /annex/);
+  assert.throws(() => loadCheckGold2(g2([g2Case({ id: 'T-L-02', family: 'L' })])), /annex:true/);
+});
+
+test('splitCheckGold2: P/N/C form the scored floor, L is the annex — never folded together', () => {
+  const loaded = loadCheckGold2(g2([
+    g2Case(),
+    g2Case({ id: 'T-N-01', family: 'N', polarity: 'near_miss' }),
+    g2Case({ id: 'T-C-01', family: 'C' }),
+    g2Case({ id: 'T-L-01', family: 'L', annex: true }),
+  ]));
+  const { floor, annex } = splitCheckGold2(loaded.cases);
+  assert.deepEqual(floor.map((c) => c.id), ['T-P-01', 'T-N-01', 'T-C-01']);
+  assert.deepEqual(annex.map((c) => c.id), ['T-L-01']);
+});
+
+test('checkGold2CatalogGaps: unbound polarity-side targets are flagged, bound ones are not', () => {
+  const loaded = loadCheckGold2(g2([
+    g2Case(),                                                                           // positive, mustFire empty → gap
+    g2Case({ id: 'T-P-02', gold: { mustFire: ['x-1'], mustNotFire: [] }, sourceRec: 'x-1' }),  // bound → no gap
+    g2Case({ id: 'T-N-01', family: 'N', polarity: 'near_miss' }),                       // near-miss, mustNotFire empty → gap
+    g2Case({ id: 'T-N-02', family: 'N', polarity: 'near_miss', gold: { mustFire: [], mustNotFire: ['x-2'] } }),
+  ]));
+  const gaps = checkGold2CatalogGaps(loaded.cases);
+  assert.deepEqual(gaps.map((x) => x.id), ['T-P-01', 'T-N-01']);
+  assert.deepEqual(gaps.map((x) => x.polarity), ['positive', 'near_miss']);
 });
 
 test('scoreCheckAgainstGold: per-target-rec, deterministic, ignores non-target firings', () => {

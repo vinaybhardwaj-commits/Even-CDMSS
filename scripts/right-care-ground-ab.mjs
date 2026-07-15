@@ -13,8 +13,15 @@
 //   --gold ab       → both arms (grounded = the PATIENT PICTURE passed explicitly — exactly
 //     what RIGHT_CARE_CLINICAL_STATE_GROUND gates in the route), 36×K×2 runs; the K-repeat
 //     variance of each arm is the noise floor a grounding delta must clear.
-// Cost: pairwise ~49 arms + ~31 judge calls; gold ab at K=5 = 360 pipeline runs. Manual,
-// credentialed — never in CI.
+//   --gold 2.0      → the DISCRIMINATING real-case gold (right-care-check-gold/2.0,
+//     15-Jul-2026 kickoff): P/N/C scored floor runs BOTH arms ×K (D3 headline = the
+//     grounded-vs-ungrounded delta vs the K-repeat noise floor); L annex runs NOTE-ONLY ×K
+//     (D4 — no member-history injection exists; its mustFire recs are EXPECTED to miss; the
+//     annex reports the sanity check + the missed-repeat headroom count, never folded into
+//     the floor). Unbound positives score as guaranteed recall misses tagged catalog_gap.
+//     Writes data/right-care-eval/check-gold-2.0-scorecard.json.
+// Cost: pairwise ~49 arms + ~31 judge calls; gold ab at K=5 = 360 pipeline runs; gold 2.0 at
+// K=5 = 19×5×2 + 4×5 = 210 pipeline runs. Manual, credentialed — never in CI.
 
 import { writeFileSync, mkdirSync, readFileSync } from 'fs';
 import { matchLowValueCare } from '../lib/lvc.ts';
@@ -28,15 +35,18 @@ import {
   checkView, pathwayView, auditView, diffCheckFlags,
   PAIR_JUDGE_SYSTEM, buildPairJudgeUser, parsePairJudgeResponse, summarizeMode,
   RIGHT_CARE_CHECK_GOLD_VERSION, loadCheckGold, scoreCheckAgainstGold, aggregateCheckGold,
+  RIGHT_CARE_CHECK_GOLD_2_VERSION, loadCheckGold2, splitCheckGold2, checkGold2CatalogGaps,
 } from '../lib/right-care-ground-eval-core.ts';
 
 const argv = process.argv.slice(2);
 const argOf = (name) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : undefined; };
 const GOLD_MODE = argOf('--gold');                       // 'baseline' | 'ab' | undefined (legacy pairwise)
 const REPEATS = Math.max(1, Number(argOf('--repeats') ?? 5) | 0);
-const OUT = argOf('--out') || (GOLD_MODE
-  ? 'data/right-care-eval/check-gold-scorecard-v1.json'
-  : (argv.find((a) => !a.startsWith('--')) || 'data/right-care-eval/ground-ab-scorecard-v1.json'));
+const OUT = argOf('--out') || (GOLD_MODE === '2.0'
+  ? 'data/right-care-eval/check-gold-2.0-scorecard.json'
+  : GOLD_MODE
+    ? 'data/right-care-eval/check-gold-scorecard-v1.json'
+    : (argv.find((a) => !a.startsWith('--')) || 'data/right-care-eval/ground-ab-scorecard-v1.json'));
 // OFF-vs-OFF noise subset (13 repeat arms) — includes both safety sentinels.
 const NOISE_IDS = new Set(['C01', 'C02', 'C03', 'C04', 'C05', 'C06', 'C07', 'C08', 'P01', 'P03', 'P06', 'A01', 'A03']);
 
@@ -125,13 +135,27 @@ async function pool(items, width, fn) {
 
 // ── GOLD MODE (Order check, deterministic score-against-gold; no judge) ─────────────────────
 if (GOLD_MODE) {
-  if (!['baseline', 'ab'].includes(GOLD_MODE)) { console.error(`--gold must be baseline|ab, got ${GOLD_MODE}`); process.exit(2); }
-  const gold = loadCheckGold(JSON.parse(readFileSync('data/right-care-eval/check-gold-1.0.json', 'utf8')));
-  const arms = GOLD_MODE === 'ab' ? ['off', 'on'] : ['off'];
-  console.log(`right-care check gold · ${RIGHT_CARE_CHECK_GOLD_VERSION} · ${gold.cases.length} cases · K=${REPEATS} · arms=[${arms.join(',')}] · ${gold.cases.length * REPEATS * arms.length} pipeline runs`);
+  if (!['baseline', 'ab', '2.0'].includes(GOLD_MODE)) { console.error(`--gold must be baseline|ab|2.0, got ${GOLD_MODE}`); process.exit(2); }
+  const IS_2 = GOLD_MODE === '2.0';
+  const GOLD_VERSION = IS_2 ? RIGHT_CARE_CHECK_GOLD_2_VERSION : RIGHT_CARE_CHECK_GOLD_VERSION;
+  const gold = IS_2
+    ? loadCheckGold2(JSON.parse(readFileSync('data/right-care-eval/check-gold-2.0.json', 'utf8')))
+    : loadCheckGold(JSON.parse(readFileSync('data/right-care-eval/check-gold-1.0.json', 'utf8')));
+  // 2.0: P/N/C = the scored floor; L = the note-only annex, scored separately (D4).
+  const { floor: floorCases, annex: annexCases } = IS_2 ? splitCheckGold2(gold.cases) : { floor: gold.cases, annex: [] };
+  const catalogGaps = IS_2 ? checkGold2CatalogGaps(gold.cases) : [];
+  const gapIds = new Set(catalogGaps.map((g) => g.id));
+  const gapPositives = new Set(catalogGaps.filter((g) => g.polarity === 'positive').map((g) => g.id));
+  // D3: the 2.0 floor always runs BOTH arms — the headline IS the grounded-vs-ungrounded delta.
+  const arms = (GOLD_MODE === 'ab' || IS_2) ? ['off', 'on'] : ['off'];
+  console.log(`right-care check gold · ${GOLD_VERSION} · floor ${floorCases.length}${annexCases.length ? ` + annex ${annexCases.length}` : ''} cases · K=${REPEATS} · arms=[${arms.join(',')}] · ${floorCases.length * REPEATS * arms.length + annexCases.length * REPEATS} pipeline runs`);
+  if (catalogGaps.length) console.log(`catalog gaps (unbound targets): ${catalogGaps.map((g) => `${g.id}(${g.polarity})`).join(', ')}`);
 
   const jobs = [];
-  for (const c of gold.cases) for (const arm of arms) for (let k = 1; k <= REPEATS; k++) jobs.push({ c, arm, k });
+  for (const c of floorCases) for (const arm of arms) for (let k = 1; k <= REPEATS; k++) jobs.push({ c, arm, k });
+  // D4: the L annex runs NOTE-ONLY — Order-check has no member-history injection today, so its
+  // grounded arm would be a lie; the annex measures what note-only CANNOT see.
+  for (const c of annexCases) for (let k = 1; k <= REPEATS; k++) jobs.push({ c, arm: 'note_only', k });
   const tg = Date.now();
   const runs = await pool(jobs, 4, async ({ c, arm, k }) => {
     try {
@@ -157,7 +181,12 @@ if (GOLD_MODE) {
     const perRepeat = [];
     for (let k = 1; k <= REPEATS; k++) {
       const rows = runs.filter((r) => r.arm === arm && r.k === k && !r.error)
-        .map((r) => ({ score: r.score, mustNotFireTargets: byCase[r.id].gold.mustNotFire.length }));
+        .map((r) => ({
+          // §6 (2.0): an UNBOUND positive is a guaranteed recall miss attributed to catalog
+          // coverage — fed to the UNCHANGED aggregator as a synthetic always-missed target.
+          score: gapPositives.has(r.id) ? { recallHits: [], recallMisses: [`unbound:${r.id}`], falsePositives: [] } : r.score,
+          mustNotFireTargets: byCase[r.id].gold.mustNotFire.length,
+        }));
       perRepeat.push(aggregateCheckGold(rows));
     }
     const stat = (f) => { const xs = perRepeat.map((m) => f(m) ?? 0); return { mean: mean(xs), std: std(xs), perRepeat: xs }; };
@@ -171,8 +200,11 @@ if (GOLD_MODE) {
   }
 
   // Per-case table: how often the TARGET decision was right/wrong across the K repeats.
-  const caseTable = gold.cases.map((c) => {
-    const row = { id: c.id, polarity: c.polarity, target: c.sourceRec, domain: c.domain };
+  const caseTable = floorCases.map((c) => {
+    const row = {
+      id: c.id, polarity: c.polarity, target: c.sourceRec ?? c.sourceRecHint ?? null, domain: c.domain ?? null,
+      ...(IS_2 ? { family: c.family, catalog_gap: gapIds.has(c.id) } : {}),
+    };
     for (const arm of arms) {
       const rs = runs.filter((r) => r.arm === arm && r.id === c.id && !r.error);
       const targetFired = rs.filter((r) => (c.polarity === 'positive' ? r.score.recallHits.length > 0 : r.score.falsePositives.length > 0)).length;
@@ -185,9 +217,33 @@ if (GOLD_MODE) {
   const offFlaky = caseTable.filter((r) => r.polarity === 'positive' && r.off.targetFired > 0 && r.off.targetFired < r.off.n);
   const offFps = caseTable.filter((r) => r.polarity === 'near_miss' && r.off.targetFired > 0);
 
+  // 2.0 L-annex mini-scorecard (D4) — note-only, NEVER folded into the floor metrics.
+  // (a) sanity: an L positive's member-history rec must NOT fire from the note alone;
+  // (b) headroom: missed low-value repeats = bound-and-never-fired + unbound-by-construction.
+  let annexReport = null;
+  if (IS_2 && annexCases.length) {
+    const annexTable = annexCases.map((c) => {
+      const rs = runs.filter((r) => r.arm === 'note_only' && r.id === c.id && !r.error);
+      const bound = c.polarity === 'positive' ? c.gold.mustFire.length > 0 : c.gold.mustNotFire.length > 0;
+      const targetFired = rs.filter((r) => (c.polarity === 'positive' ? r.score.recallHits.length > 0 : r.score.falsePositives.length > 0)).length;
+      return { id: c.id, polarity: c.polarity, bound, catalog_gap: !bound, n: rs.length, targetFired, fired: rs.map((r) => r.fired) };
+    });
+    const sanityViolations = annexTable.filter((r) => r.polarity === 'positive' && r.bound && r.targetFired > 0)
+      .map((r) => ({ id: r.id, fired: `${r.targetFired}/${r.n}` }));
+    const missedRepeats = annexTable.filter((r) => r.polarity === 'positive' && (r.catalog_gap || r.targetFired === 0));
+    annexReport = {
+      n: annexTable.length,
+      table: annexTable,
+      missedRepeatCount: missedRepeats.length,
+      missedRepeatIds: missedRepeats.map((r) => r.id),
+      sanityViolations,
+      nearMissClean: annexTable.filter((r) => r.polarity === 'near_miss' && r.targetFired === 0).map((r) => r.id),
+    };
+  }
+
   const artifact = {
-    version: 'right-care-check-gold-scorecard/1',
-    gold: RIGHT_CARE_CHECK_GOLD_VERSION,
+    version: IS_2 ? 'right-care-check-gold-scorecard/2' : 'right-care-check-gold-scorecard/1',
+    gold: GOLD_VERSION,
     mode: GOLD_MODE,
     repeats: REPEATS,
     generated: new Date().toISOString(),
@@ -196,13 +252,14 @@ if (GOLD_MODE) {
     missList: offMisses.map((r) => r.id),
     flakyList: offFlaky.map((r) => ({ id: r.id, fired: `${r.off.targetFired}/${r.off.n}` })),
     falsePositiveList: offFps.map((r) => ({ id: r.id, violations: `${r.off.targetFired}/${r.off.n}` })),
+    ...(IS_2 ? { catalogGaps, annex: annexReport } : {}),
     runs: runs.map((r) => ({ id: r.id, arm: r.arm, k: r.k, ...(r.error ? { error: r.error } : { fired: r.fired }) })),
   };
   mkdirSync(OUT.split('/').slice(0, -1).join('/'), { recursive: true });
   writeFileSync(OUT, JSON.stringify(artifact, null, 2));
 
   const fmt = (s) => `${(s.mean * 100).toFixed(1)}% ±${(s.std * 100).toFixed(1)}`;
-  console.log(`\n== ORDER CHECK vs GOLD (${RIGHT_CARE_CHECK_GOLD_VERSION}, K=${REPEATS}) ==`);
+  console.log(`\n== ORDER CHECK vs GOLD (${GOLD_VERSION}, K=${REPEATS}${IS_2 ? ', P/N/C floor' : ''}) ==`);
   for (const arm of arms) {
     const s = armStats[arm];
     console.log(`${arm === 'off' ? 'ungrounded' : 'grounded  '}: recall ${fmt(s.recall)} · specificity ${fmt(s.specificity)} · precision ${fmt(s.precision)} · F1 ${fmt(s.f1)}`);
@@ -217,6 +274,14 @@ if (GOLD_MODE) {
   console.log(`\nMISSES (positive, never fired, ungrounded): ${offMisses.map((r) => r.id).join(', ') || 'none'}`);
   console.log(`FLAKY (positive, fired some repeats): ${offFlaky.map((r) => `${r.id}(${r.off.targetFired}/${r.off.n})`).join(', ') || 'none'}`);
   console.log(`FALSE-POSITIVES (near-miss over-fired): ${offFps.map((r) => `${r.id}(${r.off.targetFired}/${r.off.n})`).join(', ') || 'none'}`);
+  if (annexReport) {
+    console.log(`\n== L ANNEX (note-only, K=${REPEATS}) — separate from the floor ==`);
+    for (const r of annexReport.table) {
+      console.log(`  ${r.id} ${r.polarity}${r.catalog_gap ? ' [catalog gap]' : ''}: target fired ${r.targetFired}/${r.n}${r.polarity === 'positive' ? ' (expected 0 — invisible note-only)' : ' (expected 0 — appropriate)'}`);
+    }
+    console.log(`missed low-value repeats (headroom count): ${annexReport.missedRepeatCount} — ${annexReport.missedRepeatIds.join(', ') || 'none'}`);
+    console.log(`sanity violations (note-alone fired a member-history rec): ${annexReport.sanityViolations.map((s) => `${s.id}(${s.fired})`).join(', ') || 'none'}`);
+  }
   console.log(`\nwrote ${OUT}`);
   process.exit(0);
 }

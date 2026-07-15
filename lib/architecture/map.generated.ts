@@ -3228,6 +3228,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "RIGHT_CARE_CHECK_GOLD_2_VERSION",
+    "value": "right-care-check-gold/2.0",
+    "file": "lib/right-care-ground-eval-core.ts",
+    "derived": false
+  },
+  {
     "constName": "RIGHT_CARE_CHECK_GOLD_VERSION",
     "value": "right-care-check-gold/1.0",
     "file": "lib/right-care-ground-eval-core.ts",
