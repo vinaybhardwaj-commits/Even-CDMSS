@@ -1,43 +1,47 @@
 {
   "version": "inquiry-gold/1.0",
-  "status": "SCHEMA + PLACEHOLDER FIXTURES ONLY — real gold cases are authored by the orchestrator from de-identified db13 members/episodes and ratified by V (Inquiry PRD §12, D13). The bank version freezes on ratification; no floor may be set from placeholder cases.",
-  "schema_note": {
-    "case": {
-      "id": "stable case id",
-      "placeholder": "true while the case is a worked fixture, absent/false once ratified gold",
-      "note": "free-text provenance of the case",
-      "fixture.episode": "DeidOpdCase-shaped input (lib/opd-ingest-core), frozen in this file",
-      "fixture.snapshot": "MemberStateSnapshot-shaped evidence (lib/member-state/schema) or null for episode-only cases",
-      "fixture.now": "the deterministic `now` passed to deriveUnknowns (never the wall clock)",
-      "fixture.keys": "AskKeys { presc_uid, individual_uid, uhid, note_date } — synthetic, never real identifiers",
-      "expected.first": "the expected FIRST ask as { family, subject } (subject matched by ≥4-char token overlap)",
-      "expected.legalSlots23": "legal set for slots 2–3: [{ family, subject? }] — an ask in slots 2–3 outside this set fails family-legality; absent ⇒ any legal family",
-      "expected.forbiddenGeneric": "marker phrases whose presence flags a question as generic"
-    },
-    "metrics": "right-first-question rate · family-legality rate (must be 100%) · generic rate · fallback rate (lib/inquiry/inquiry-eval-core.ts, inquiry-eval/1.0)",
-    "target_size": "20-30 ratified cases: high-alert med, care gap, contradiction, follow-up open, allergy blank, plus >=5 nothing-worth-asking-beyond-baseline negatives"
-  },
+  "status": "RATIFIED DRAFT (V, 15 Jul 2026) — real de-identified db13 material; synthetic keys; NO identifiers. Freeze on bench run + floor set (PRD addendum A1).",
+  "provenance": "Authored by orchestrator from db13 (Metabase) mined 15 Jul 2026; categories + first-asks ratified by V. Clinical values real, member/prescription identifiers synthetic.",
+  "eval": "right-first-question · family-legality (must be 100%) · generic rate · fallback rate (lib/inquiry/inquiry-eval-core.ts, inquiry-eval/1.0)",
   "cases": [
     {
-      "id": "PL01",
-      "placeholder": true,
-      "note": "WORKED FIXTURE (not clinical gold) — episode-only: a high-alert medicine must be asked about first; allergy field blank.",
+      "id": "A1",
+      "note": "T1DM basal-bolus insulin, HbA1c 9.1% (real Jun-2026); allergy blank",
       "fixture": {
         "episode": {
           "consultType": null,
           "reasonForConsult": null,
-          "presentingComplaints": ["persistent headache"],
+          "presentingComplaints": [
+            "routine diabetes review, on insulin"
+          ],
           "diagnosisCodes": [],
           "impressionCodes": [],
           "impressions": [],
           "history": [],
           "comorbidities": [],
           "medications": [
-            { "generic": "Insulin glargine", "brand": "Lantus", "strength": "100 IU/ml", "dose": "10 units", "frequency": "at night", "highAlert": true },
-            { "generic": "Telmisartan", "brand": "Telma", "strength": "40", "dose": "1 tab", "frequency": "1-0-0" }
+            {
+              "generic": "Insulin Glargine",
+              "brand": "Lantus",
+              "strength": "100 IU/ml",
+              "dose": "8 units",
+              "frequency": "OD at night",
+              "highAlert": true
+            },
+            {
+              "generic": "Insulin Aspart",
+              "brand": "Novorapid",
+              "strength": "100 IU/ml",
+              "dose": "per scale",
+              "frequency": "TDS",
+              "highAlert": true
+            }
           ],
           "investigations": [],
-          "advice": [],
+          "advice": [
+            "Share GRBS readings to adjust insulin",
+            "Repeat fasting blood glucose"
+          ],
           "examination": [],
           "allergies": null,
           "followUpType": null,
@@ -46,40 +50,305 @@
         },
         "snapshot": null,
         "now": "2026-07-15T00:00:00.000Z",
-        "keys": { "presc_uid": "goldpresc01", "individual_uid": "goldindiv01", "uhid": null, "note_date": "2026-07-01" }
+        "keys": {
+          "presc_uid": "goldpresc01",
+          "individual_uid": "goldindiv01",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
       },
       "expected": {
-        "first": { "family": "MED_STATUS", "subject": "Insulin glargine" },
+        "first": {
+          "family": "MED_STATUS",
+          "subject": "Insulin Glargine"
+        },
         "legalSlots23": [
-          { "family": "MED_STATUS", "subject": "Telmisartan" },
-          { "family": "COMPLAINT_STATUS", "subject": "persistent headache" },
-          { "family": "ALLERGY_CONFIRM" },
-          { "family": "OUTSIDE_RECORDS" }
+          {
+            "family": "MED_STATUS",
+            "subject": "Insulin Aspart"
+          },
+          {
+            "family": "FOLLOWUP_ACTION",
+            "subject": "fasting blood glucose"
+          },
+          {
+            "family": "ALLERGY_CONFIRM"
+          },
+          {
+            "family": "OUTSIDE_RECORDS"
+          }
         ],
-        "forbiddenGeneric": ["how are you feeling in general", "any other problems"]
+        "forbiddenGeneric": [
+          "how are you feeling in general",
+          "any other problems",
+          "anything else",
+          "how is everything"
+        ]
       }
     },
     {
-      "id": "PL02",
-      "placeholder": true,
-      "note": "WORKED FIXTURE (not clinical gold) — episode + member snapshot: a patient-reported stop contradiction and a stale severely-abnormal Vitamin D; the contradiction outranks the routine follow-up.",
+      "id": "A2",
+      "note": "T2DM, new Lantus added, HbA1c 10% FBS 281 PPBS 409 (real); allergy blank",
       "fixture": {
         "episode": {
           "consultType": null,
           "reasonForConsult": null,
-          "presentingComplaints": ["fatigue"],
+          "presentingComplaints": [
+            "k/c/o Type 2 DM, uncontrolled sugars"
+          ],
           "diagnosisCodes": [],
           "impressionCodes": [],
           "impressions": [],
           "history": [],
           "comorbidities": [],
           "medications": [
-            { "generic": "Atorvastatin", "brand": "Atorva", "strength": "20", "dose": "1 tab", "frequency": "0-0-1" }
+            {
+              "generic": "Empagliflozin",
+              "brand": "Gibtulio",
+              "strength": "10mg",
+              "dose": "1 tab",
+              "frequency": "1-0-0"
+            },
+            {
+              "generic": "Insulin Glargine",
+              "brand": "Lantus",
+              "strength": "100 IU/ml",
+              "dose": "6 units",
+              "frequency": "at night",
+              "highAlert": true
+            }
           ],
           "investigations": [],
-          "advice": ["Repeat lipid profile after 3 months"],
+          "advice": [
+            "Recheck fasting and post-prandial glucose"
+          ],
           "examination": [],
-          "allergies": "nil",
+          "allergies": null,
+          "followUpType": null,
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": null,
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": {
+          "presc_uid": "goldpresc02",
+          "individual_uid": "goldindiv02",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
+      },
+      "expected": {
+        "first": {
+          "family": "MED_STATUS",
+          "subject": "Insulin Glargine"
+        },
+        "legalSlots23": [
+          {
+            "family": "FOLLOWUP_ACTION",
+            "subject": "glucose"
+          },
+          {
+            "family": "MED_STATUS",
+            "subject": "Empagliflozin"
+          },
+          {
+            "family": "ALLERGY_CONFIRM"
+          },
+          {
+            "family": "OUTSIDE_RECORDS"
+          }
+        ],
+        "forbiddenGeneric": [
+          "how are you feeling in general",
+          "any other problems",
+          "anything else",
+          "how is everything"
+        ]
+      }
+    },
+    {
+      "id": "A3",
+      "note": "T2DM/HTN/IHD on oral steroids, insulin optimisation (real Jul-2026); allergy blank",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": [
+            "routine consult, DM/HTN/IHD, on oral steroids for retinal changes"
+          ],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [
+            {
+              "generic": "Insulin Glargine",
+              "brand": "Basalog",
+              "strength": "100 IU/ml",
+              "dose": "10 units",
+              "frequency": "at night",
+              "highAlert": true
+            },
+            {
+              "generic": "Telmisartan",
+              "brand": "Telma",
+              "strength": "40mg",
+              "dose": "1 tab",
+              "frequency": "1-0-0"
+            }
+          ],
+          "investigations": [],
+          "advice": [
+            "Optimise existing insulin"
+          ],
+          "examination": [],
+          "allergies": null,
+          "followUpType": null,
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": null,
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": {
+          "presc_uid": "goldpresc03",
+          "individual_uid": "goldindiv03",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
+      },
+      "expected": {
+        "first": {
+          "family": "MED_STATUS",
+          "subject": "Insulin Glargine"
+        },
+        "legalSlots23": [
+          {
+            "family": "MED_STATUS",
+            "subject": "Telmisartan"
+          },
+          {
+            "family": "ALLERGY_CONFIRM"
+          },
+          {
+            "family": "OUTSIDE_RECORDS"
+          }
+        ],
+        "forbiddenGeneric": [
+          "how are you feeling in general",
+          "any other problems",
+          "anything else",
+          "how is everything"
+        ]
+      }
+    },
+    {
+      "id": "A4",
+      "note": "AF on oral anticoagulant, routine review; allergy blank",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": [
+            "k/c/o atrial fibrillation, on blood thinner"
+          ],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [
+            {
+              "generic": "Apixaban",
+              "brand": "Eliquis",
+              "strength": "5mg",
+              "dose": "1 tab",
+              "frequency": "1-0-1",
+              "highAlert": true
+            },
+            {
+              "generic": "Metoprolol",
+              "brand": "Metpure XL",
+              "strength": "25mg",
+              "dose": "1 tab",
+              "frequency": "1-0-0"
+            }
+          ],
+          "investigations": [],
+          "advice": [
+            "Continue anticoagulation"
+          ],
+          "examination": [],
+          "allergies": null,
+          "followUpType": null,
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": null,
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": {
+          "presc_uid": "goldpresc04",
+          "individual_uid": "goldindiv04",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
+      },
+      "expected": {
+        "first": {
+          "family": "MED_STATUS",
+          "subject": "Apixaban"
+        },
+        "legalSlots23": [
+          {
+            "family": "MED_STATUS",
+            "subject": "Metoprolol"
+          },
+          {
+            "family": "ALLERGY_CONFIRM"
+          },
+          {
+            "family": "OUTSIDE_RECORDS"
+          }
+        ],
+        "forbiddenGeneric": [
+          "how are you feeling in general",
+          "any other problems",
+          "anything else",
+          "how is everything"
+        ]
+      }
+    },
+    {
+      "id": "B1",
+      "note": "T1DM on insulin; abnormal HbA1c from Dec-2024 (~18mo stale) — high-alert first, care-gap slot2 (real member had stale abnormal glucose; HbA1c used as the banded analogue)",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": [
+            "routine diabetes review"
+          ],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [
+            {
+              "generic": "Insulin Glargine",
+              "brand": "Lantus",
+              "strength": "100 IU/ml",
+              "dose": "8 units",
+              "frequency": "at night",
+              "highAlert": true
+            }
+          ],
+          "investigations": [],
+          "advice": [
+            "Share GRBS readings"
+          ],
+          "examination": [],
+          "allergies": null,
           "followUpType": null,
           "followUpDateSet": false,
           "noteDate": "2026-07-01"
@@ -94,55 +363,2238 @@
           "problems": [],
           "medications": [
             {
-              "normalizedConcept": { "raw": "Atorvastatin", "relation": "exact", "normalizerVersion": "member-normalize/0.2" },
-              "status": "stopped",
-              "firstSeen": "2026-01-10",
-              "lastSeen": "2026-06-20",
+              "normalizedConcept": {
+                "raw": "Insulin Glargine",
+                "relation": "exact",
+                "normalizerVersion": "member-normalize/0.2"
+              },
+              "status": "reported_taking",
+              "firstSeen": "2024-06-01",
+              "lastSeen": "2026-06-22",
               "occurrences": [
-                { "encounterRef": "enc-rx-1", "date": "2026-01-10", "provenance": { "sourceField": "medications", "rawText": "Atorvastatin 20", "extractionMethod": "deterministic", "confidence": 1 } },
-                { "encounterRef": "enc-cc-1", "date": "2026-06-20", "provenance": { "sourceField": "care_call_outcomes", "rawText": "stopped", "extractionMethod": "reported", "confidence": 0.9 } }
+                {
+                  "encounterRef": "enc-rx-1",
+                  "date": "2024-06-01",
+                  "provenance": {
+                    "sourceField": "medications",
+                    "rawText": "Insulin Glargine (prescribed)",
+                    "extractionMethod": "deterministic",
+                    "confidence": 1
+                  }
+                }
               ]
             }
           ],
           "allergies": [],
           "investigations": [
             {
-              "normalizedAnalyte": { "raw": "Vitamin D", "relation": "exact", "normalizerVersion": "member-normalize/0.2" },
-              "unit": "ng/ml",
+              "normalizedAnalyte": {
+                "raw": "Glycosylated Haemoglobin (HbA1c)",
+                "relation": "exact",
+                "normalizerVersion": "member-normalize/0.2"
+              },
+              "unit": "%",
               "series": [
-                { "encounterRef": "enc-lab-1", "date": "2025-06-01", "value": "8", "unit": "ng/ml", "abnormal": "LOW", "provenance": { "sourceField": "test_values_view", "rawText": "8", "extractionMethod": "deterministic", "confidence": 1 } }
+                {
+                  "encounterRef": "enc-lab-1",
+                  "date": "2024-12-26",
+                  "value": "9.2",
+                  "unit": "%",
+                  "abnormal": "HIGH",
+                  "provenance": {
+                    "sourceField": "test_values_view",
+                    "rawText": "9.2",
+                    "extractionMethod": "deterministic",
+                    "confidence": 1
+                  }
+                }
               ]
             }
           ],
+          "conflicts": [],
+          "followUps": [],
+          "sourceEncounterRefs": [
+            "enc-rx-1",
+            "enc-lab-1",
+            "enc-cc-1"
+          ]
+        },
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": {
+          "presc_uid": "goldpresc05",
+          "individual_uid": "goldindiv05",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
+      },
+      "expected": {
+        "first": {
+          "family": "MED_STATUS",
+          "subject": "Insulin Glargine"
+        },
+        "legalSlots23": [
+          {
+            "family": "FOLLOWUP_ACTION",
+            "subject": "glucose"
+          },
+          {
+            "family": "FOLLOWUP_ACTION",
+            "subject": "post prandial"
+          },
+          {
+            "family": "OUTSIDE_RECORDS"
+          }
+        ],
+        "forbiddenGeneric": [
+          "how are you feeling in general",
+          "any other problems",
+          "anything else",
+          "how is everything"
+        ]
+      }
+    },
+    {
+      "id": "B2",
+      "note": "T2DM new agent + all-abnormal panel (real); newly-added agent first per ruling",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": [
+            "k/c/o Type 2 DM, uncontrolled"
+          ],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [
+            {
+              "generic": "Dapagliflozin",
+              "brand": "Forxiga",
+              "strength": "10mg",
+              "dose": "1 tab",
+              "frequency": "1-0-0"
+            },
+            {
+              "generic": "Metformin",
+              "brand": "Glycomet",
+              "strength": "500mg",
+              "dose": "1 tab",
+              "frequency": "1-0-1"
+            }
+          ],
+          "investigations": [],
+          "advice": [
+            "Start Tab Dapagliflozin 10mg OD (new)",
+            "Recheck HbA1c in 3 months"
+          ],
+          "examination": [],
+          "allergies": null,
+          "followUpType": null,
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": {
+          "version": "member-state/1.1",
+          "normalizationVersion": "member-normalize/0.2",
+          "reconciliationVersion": "member-reconcile/0.3",
+          "computedAt": "2026-07-15T00:00:00.000Z",
+          "asOf": "2026-07-01",
+          "sourceWatermarks": {},
+          "problems": [],
+          "medications": [
+            {
+              "normalizedConcept": {
+                "raw": "Metformin",
+                "relation": "exact",
+                "normalizerVersion": "member-normalize/0.2"
+              },
+              "status": "reported_taking",
+              "firstSeen": "2025-06-01",
+              "lastSeen": "2026-06-21",
+              "occurrences": [
+                {
+                  "encounterRef": "enc-rx-1",
+                  "date": "2025-06-01",
+                  "provenance": {
+                    "sourceField": "medications",
+                    "rawText": "Metformin (prescribed)",
+                    "extractionMethod": "deterministic",
+                    "confidence": 1
+                  }
+                }
+              ]
+            }
+          ],
+          "allergies": [],
+          "investigations": [
+            {
+              "normalizedAnalyte": {
+                "raw": "Glycosylated Haemoglobin (HbA1c)",
+                "relation": "exact",
+                "normalizerVersion": "member-normalize/0.2"
+              },
+              "unit": "%",
+              "series": [
+                {
+                  "encounterRef": "enc-lab-1",
+                  "date": "2025-11-20",
+                  "value": "10.0",
+                  "unit": "%",
+                  "abnormal": "HIGH",
+                  "provenance": {
+                    "sourceField": "test_values_view",
+                    "rawText": "10.0",
+                    "extractionMethod": "deterministic",
+                    "confidence": 1
+                  }
+                }
+              ]
+            }
+          ],
+          "conflicts": [],
+          "followUps": [],
+          "sourceEncounterRefs": [
+            "enc-rx-1",
+            "enc-lab-1",
+            "enc-cc-1"
+          ]
+        },
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": {
+          "presc_uid": "goldpresc06",
+          "individual_uid": "goldindiv06",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
+      },
+      "expected": {
+        "first": {
+          "family": "MED_STATUS",
+          "subject": "Dapagliflozin"
+        },
+        "legalSlots23": [
+          {
+            "family": "FOLLOWUP_ACTION",
+            "subject": "hba1c"
+          },
+          {
+            "family": "MED_STATUS",
+            "subject": "Metformin"
+          },
+          {
+            "family": "COMPLAINT_STATUS",
+            "subject": "uncontrolled"
+          }
+        ],
+        "forbiddenGeneric": [
+          "how are you feeling in general",
+          "any other problems",
+          "anything else",
+          "how is everything"
+        ]
+      }
+    },
+    {
+      "id": "B3",
+      "note": "Vitamin D 8.36 severe-low from Dec-2025 (~7mo), NO high-alert — care-gap wins slot 1",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": [
+            "generalised fatigue, body ache"
+          ],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [
+            {
+              "generic": "Cholecalciferol",
+              "brand": "Uprise D3",
+              "strength": "60000 IU",
+              "dose": "1 sachet",
+              "frequency": "weekly"
+            }
+          ],
+          "investigations": [],
+          "advice": [],
+          "examination": [],
+          "allergies": null,
+          "followUpType": null,
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": {
+          "version": "member-state/1.1",
+          "normalizationVersion": "member-normalize/0.2",
+          "reconciliationVersion": "member-reconcile/0.3",
+          "computedAt": "2026-07-15T00:00:00.000Z",
+          "asOf": "2026-07-01",
+          "sourceWatermarks": {},
+          "problems": [],
+          "medications": [
+            {
+              "normalizedConcept": {
+                "raw": "Cholecalciferol",
+                "relation": "exact",
+                "normalizerVersion": "member-normalize/0.2"
+              },
+              "status": "reported_taking",
+              "firstSeen": "2025-06-01",
+              "lastSeen": "2026-06-01",
+              "occurrences": [
+                {
+                  "encounterRef": "enc-rx-1",
+                  "date": "2025-06-01",
+                  "provenance": {
+                    "sourceField": "medications",
+                    "rawText": "Cholecalciferol (prescribed)",
+                    "extractionMethod": "deterministic",
+                    "confidence": 1
+                  }
+                }
+              ]
+            }
+          ],
+          "allergies": [],
+          "investigations": [
+            {
+              "normalizedAnalyte": {
+                "raw": "Vitamin D",
+                "relation": "exact",
+                "normalizerVersion": "member-normalize/0.2"
+              },
+              "unit": "ng/ml",
+              "series": [
+                {
+                  "encounterRef": "enc-lab-1",
+                  "date": "2025-12-15",
+                  "value": "8.36",
+                  "unit": "ng/ml",
+                  "abnormal": "LOW",
+                  "provenance": {
+                    "sourceField": "test_values_view",
+                    "rawText": "8.36",
+                    "extractionMethod": "deterministic",
+                    "confidence": 1
+                  }
+                }
+              ]
+            }
+          ],
+          "conflicts": [],
+          "followUps": [],
+          "sourceEncounterRefs": [
+            "enc-rx-1",
+            "enc-lab-1",
+            "enc-cc-1"
+          ]
+        },
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": {
+          "presc_uid": "goldpresc07",
+          "individual_uid": "goldindiv07",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
+      },
+      "expected": {
+        "first": {
+          "family": "FOLLOWUP_ACTION",
+          "subject": "vitamin d"
+        },
+        "legalSlots23": [
+          {
+            "family": "MED_STATUS",
+            "subject": "Cholecalciferol"
+          },
+          {
+            "family": "COMPLAINT_STATUS",
+            "subject": "fatigue"
+          },
+          {
+            "family": "OUTSIDE_RECORDS"
+          }
+        ],
+        "forbiddenGeneric": [
+          "how are you feeling in general",
+          "any other problems",
+          "anything else",
+          "how is everything"
+        ]
+      }
+    },
+    {
+      "id": "B4",
+      "note": "Vitamin B12 188 low from Dec-2025 (~7mo), NO high-alert — care-gap wins slot 1",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": [
+            "tingling feet, tiredness"
+          ],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [
+            {
+              "generic": "Methylcobalamin",
+              "brand": "Nurokind",
+              "strength": "1500mcg",
+              "dose": "1 tab",
+              "frequency": "1-0-0"
+            }
+          ],
+          "investigations": [],
+          "advice": [],
+          "examination": [],
+          "allergies": null,
+          "followUpType": null,
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": {
+          "version": "member-state/1.1",
+          "normalizationVersion": "member-normalize/0.2",
+          "reconciliationVersion": "member-reconcile/0.3",
+          "computedAt": "2026-07-15T00:00:00.000Z",
+          "asOf": "2026-07-01",
+          "sourceWatermarks": {},
+          "problems": [],
+          "medications": [
+            {
+              "normalizedConcept": {
+                "raw": "Methylcobalamin",
+                "relation": "exact",
+                "normalizerVersion": "member-normalize/0.2"
+              },
+              "status": "reported_taking",
+              "firstSeen": "2025-06-01",
+              "lastSeen": "2026-06-01",
+              "occurrences": [
+                {
+                  "encounterRef": "enc-rx-1",
+                  "date": "2025-06-01",
+                  "provenance": {
+                    "sourceField": "medications",
+                    "rawText": "Methylcobalamin (prescribed)",
+                    "extractionMethod": "deterministic",
+                    "confidence": 1
+                  }
+                }
+              ]
+            }
+          ],
+          "allergies": [],
+          "investigations": [
+            {
+              "normalizedAnalyte": {
+                "raw": "Vitamin B12",
+                "relation": "exact",
+                "normalizerVersion": "member-normalize/0.2"
+              },
+              "unit": "pg/ml",
+              "series": [
+                {
+                  "encounterRef": "enc-lab-1",
+                  "date": "2025-12-15",
+                  "value": "188",
+                  "unit": "pg/ml",
+                  "abnormal": "LOW",
+                  "provenance": {
+                    "sourceField": "test_values_view",
+                    "rawText": "188",
+                    "extractionMethod": "deterministic",
+                    "confidence": 1
+                  }
+                }
+              ]
+            }
+          ],
+          "conflicts": [],
+          "followUps": [],
+          "sourceEncounterRefs": [
+            "enc-rx-1",
+            "enc-lab-1",
+            "enc-cc-1"
+          ]
+        },
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": {
+          "presc_uid": "goldpresc08",
+          "individual_uid": "goldindiv08",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
+      },
+      "expected": {
+        "first": {
+          "family": "FOLLOWUP_ACTION",
+          "subject": "vitamin b12"
+        },
+        "legalSlots23": [
+          {
+            "family": "MED_STATUS",
+            "subject": "Methylcobalamin"
+          },
+          {
+            "family": "COMPLAINT_STATUS",
+            "subject": "tingling"
+          },
+          {
+            "family": "OUTSIDE_RECORDS"
+          }
+        ],
+        "forbiddenGeneric": [
+          "how are you feeling in general",
+          "any other problems",
+          "anything else",
+          "how is everything"
+        ]
+      }
+    },
+    {
+      "id": "C1",
+      "note": "Statin re-prescribed after patient-reported stop (myalgia) — contradiction wins slot 1",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": [
+            "dyslipidemia review, Total Chol 227"
+          ],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [
+            {
+              "generic": "Atorvastatin",
+              "brand": "Atorva",
+              "strength": "20mg",
+              "dose": "1 tab",
+              "frequency": "0-0-1"
+            }
+          ],
+          "investigations": [],
+          "advice": [
+            "Repeat lipid profile after 3 months"
+          ],
+          "examination": [],
+          "allergies": null,
+          "followUpType": null,
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": {
+          "version": "member-state/1.1",
+          "normalizationVersion": "member-normalize/0.2",
+          "reconciliationVersion": "member-reconcile/0.3",
+          "computedAt": "2026-07-15T00:00:00.000Z",
+          "asOf": "2026-07-01",
+          "sourceWatermarks": {},
+          "problems": [],
+          "medications": [
+            {
+              "normalizedConcept": {
+                "raw": "Atorvastatin",
+                "relation": "exact",
+                "normalizerVersion": "member-normalize/0.2"
+              },
+              "status": "stopped",
+              "firstSeen": "2026-01-10",
+              "lastSeen": "2026-06-20",
+              "occurrences": [
+                {
+                  "encounterRef": "enc-rx-1",
+                  "date": "2026-01-10",
+                  "provenance": {
+                    "sourceField": "medications",
+                    "rawText": "Atorvastatin (prescribed)",
+                    "extractionMethod": "deterministic",
+                    "confidence": 1
+                  }
+                },
+                {
+                  "encounterRef": "enc-cc-1",
+                  "date": "2026-06-20",
+                  "provenance": {
+                    "sourceField": "care_call_outcomes",
+                    "rawText": "stopped",
+                    "extractionMethod": "reported",
+                    "confidence": 0.9,
+                    "reporter": "patient_via_care_manager",
+                    "trust": "patient_reported"
+                  }
+                }
+              ]
+            }
+          ],
+          "allergies": [],
+          "investigations": [],
           "conflicts": [
             {
               "id": "dx-med-atorvastatin-1",
               "domain": "medication",
               "type": "status_conflict",
               "assertions": [
-                { "encounterRef": "enc-rx-1", "date": "2026-01-10", "detail": "Atorvastatin: prescribed" },
-                { "encounterRef": "enc-cc-1", "date": "2026-06-20", "detail": "Atorvastatin: stopped" }
+                {
+                  "encounterRef": "enc-rx-1",
+                  "date": "2026-01-10",
+                  "detail": "Atorvastatin: prescribed"
+                },
+                {
+                  "encounterRef": "enc-cc-1",
+                  "date": "2026-06-20",
+                  "detail": "Atorvastatin: stopped"
+                }
               ],
               "severity": "review",
               "resolutionStatus": "open"
             }
           ],
           "followUps": [],
-          "sourceEncounterRefs": ["enc-rx-1", "enc-cc-1", "enc-lab-1"]
+          "sourceEncounterRefs": [
+            "enc-rx-1",
+            "enc-lab-1",
+            "enc-cc-1"
+          ]
         },
         "now": "2026-07-15T00:00:00.000Z",
-        "keys": { "presc_uid": "goldpresc02", "individual_uid": "goldindiv02", "uhid": null, "note_date": "2026-07-01" }
+        "keys": {
+          "presc_uid": "goldpresc09",
+          "individual_uid": "goldindiv09",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
       },
       "expected": {
-        "first": { "family": "MED_STATUS", "subject": "Atorvastatin" },
+        "first": {
+          "family": "MED_STATUS",
+          "subject": "Atorvastatin"
+        },
         "legalSlots23": [
-          { "family": "MED_STATUS", "subject": "Atorvastatin" },
-          { "family": "FOLLOWUP_ACTION", "subject": "Repeat lipid profile after 3 months" },
-          { "family": "FOLLOWUP_ACTION", "subject": "Vitamin D" },
-          { "family": "COMPLAINT_STATUS", "subject": "fatigue" },
-          { "family": "OUTSIDE_RECORDS" }
+          {
+            "family": "FOLLOWUP_ACTION",
+            "subject": "lipid"
+          },
+          {
+            "family": "OUTSIDE_RECORDS"
+          }
         ],
-        "forbiddenGeneric": ["how are you feeling in general", "any other problems"]
+        "forbiddenGeneric": [
+          "how are you feeling in general",
+          "any other problems",
+          "anything else",
+          "how is everything"
+        ]
+      }
+    },
+    {
+      "id": "C2",
+      "note": "Antihypertensive patient-reported not-taking, re-prescribed — contradiction first",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": [
+            "hypertension review"
+          ],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [
+            {
+              "generic": "Telmisartan",
+              "brand": "Telma",
+              "strength": "40mg",
+              "dose": "1 tab",
+              "frequency": "1-0-0"
+            }
+          ],
+          "investigations": [],
+          "advice": [
+            "BP monitoring"
+          ],
+          "examination": [],
+          "allergies": null,
+          "followUpType": null,
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": {
+          "version": "member-state/1.1",
+          "normalizationVersion": "member-normalize/0.2",
+          "reconciliationVersion": "member-reconcile/0.3",
+          "computedAt": "2026-07-15T00:00:00.000Z",
+          "asOf": "2026-07-01",
+          "sourceWatermarks": {},
+          "problems": [],
+          "medications": [
+            {
+              "normalizedConcept": {
+                "raw": "Telmisartan",
+                "relation": "exact",
+                "normalizerVersion": "member-normalize/0.2"
+              },
+              "status": "not_taking",
+              "firstSeen": "2026-02-01",
+              "lastSeen": "2026-06-10",
+              "occurrences": [
+                {
+                  "encounterRef": "enc-rx-1",
+                  "date": "2026-02-01",
+                  "provenance": {
+                    "sourceField": "medications",
+                    "rawText": "Telmisartan (prescribed)",
+                    "extractionMethod": "deterministic",
+                    "confidence": 1
+                  }
+                },
+                {
+                  "encounterRef": "enc-cc-1",
+                  "date": "2026-06-10",
+                  "provenance": {
+                    "sourceField": "care_call_outcomes",
+                    "rawText": "not_taking",
+                    "extractionMethod": "reported",
+                    "confidence": 0.9,
+                    "reporter": "patient_via_care_manager",
+                    "trust": "patient_reported"
+                  }
+                }
+              ]
+            }
+          ],
+          "allergies": [],
+          "investigations": [],
+          "conflicts": [],
+          "followUps": [],
+          "sourceEncounterRefs": [
+            "enc-rx-1",
+            "enc-lab-1",
+            "enc-cc-1"
+          ]
+        },
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": {
+          "presc_uid": "goldpresc10",
+          "individual_uid": "goldindiv10",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
+      },
+      "expected": {
+        "first": {
+          "family": "MED_STATUS",
+          "subject": "Telmisartan"
+        },
+        "legalSlots23": [
+          {
+            "family": "COMPLAINT_STATUS",
+            "subject": "hypertension"
+          },
+          {
+            "family": "OUTSIDE_RECORDS"
+          }
+        ],
+        "forbiddenGeneric": [
+          "how are you feeling in general",
+          "any other problems",
+          "anything else",
+          "how is everything"
+        ]
+      }
+    },
+    {
+      "id": "C3",
+      "note": "Metformin status unknown at latest evidence — contradiction surfaces",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": [
+            "diabetes review"
+          ],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [
+            {
+              "generic": "Metformin",
+              "brand": "Glycomet",
+              "strength": "500mg",
+              "dose": "1 tab",
+              "frequency": "1-0-1"
+            }
+          ],
+          "investigations": [],
+          "advice": [],
+          "examination": [],
+          "allergies": null,
+          "followUpType": null,
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": {
+          "version": "member-state/1.1",
+          "normalizationVersion": "member-normalize/0.2",
+          "reconciliationVersion": "member-reconcile/0.3",
+          "computedAt": "2026-07-15T00:00:00.000Z",
+          "asOf": "2026-07-01",
+          "sourceWatermarks": {},
+          "problems": [],
+          "medications": [
+            {
+              "normalizedConcept": {
+                "raw": "Metformin",
+                "relation": "exact",
+                "normalizerVersion": "member-normalize/0.2"
+              },
+              "status": "unknown",
+              "firstSeen": "2026-01-15",
+              "lastSeen": "2026-05-15",
+              "occurrences": [
+                {
+                  "encounterRef": "enc-rx-1",
+                  "date": "2026-01-15",
+                  "provenance": {
+                    "sourceField": "medications",
+                    "rawText": "Metformin (prescribed)",
+                    "extractionMethod": "deterministic",
+                    "confidence": 1
+                  }
+                },
+                {
+                  "encounterRef": "enc-cc-1",
+                  "date": "2026-05-15",
+                  "provenance": {
+                    "sourceField": "care_call_outcomes",
+                    "rawText": "unknown",
+                    "extractionMethod": "reported",
+                    "confidence": 0.9,
+                    "reporter": "patient_via_care_manager",
+                    "trust": "patient_reported"
+                  }
+                }
+              ]
+            }
+          ],
+          "allergies": [],
+          "investigations": [],
+          "conflicts": [],
+          "followUps": [],
+          "sourceEncounterRefs": [
+            "enc-rx-1",
+            "enc-lab-1",
+            "enc-cc-1"
+          ]
+        },
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": {
+          "presc_uid": "goldpresc11",
+          "individual_uid": "goldindiv11",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
+      },
+      "expected": {
+        "first": {
+          "family": "MED_STATUS",
+          "subject": "Metformin"
+        },
+        "legalSlots23": [
+          {
+            "family": "COMPLAINT_STATUS",
+            "subject": "diabetes"
+          },
+          {
+            "family": "OUTSIDE_RECORDS"
+          }
+        ],
+        "forbiddenGeneric": [
+          "how are you feeling in general",
+          "any other problems",
+          "anything else",
+          "how is everything"
+        ]
+      }
+    },
+    {
+      "id": "D1",
+      "note": "Repeat lipid profile advised in 3 months, no booking",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": [
+            "dyslipidemia review"
+          ],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [
+            {
+              "generic": "Rosuvastatin",
+              "brand": "Rosuvas",
+              "strength": "10mg",
+              "dose": "1 tab",
+              "frequency": "0-0-1"
+            }
+          ],
+          "investigations": [],
+          "advice": [
+            "Repeat lipid profile after 3 months"
+          ],
+          "examination": [],
+          "allergies": null,
+          "followUpType": null,
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": {
+          "version": "member-state/1.1",
+          "normalizationVersion": "member-normalize/0.2",
+          "reconciliationVersion": "member-reconcile/0.3",
+          "computedAt": "2026-07-15T00:00:00.000Z",
+          "asOf": "2026-07-01",
+          "sourceWatermarks": {},
+          "problems": [],
+          "medications": [],
+          "allergies": [],
+          "investigations": [],
+          "conflicts": [],
+          "followUps": [],
+          "sourceEncounterRefs": [
+            "enc-rx-1",
+            "enc-lab-1",
+            "enc-cc-1"
+          ]
+        },
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": {
+          "presc_uid": "goldpresc12",
+          "individual_uid": "goldindiv12",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
+      },
+      "expected": {
+        "first": {
+          "family": "FOLLOWUP_ACTION",
+          "subject": "lipid profile"
+        },
+        "legalSlots23": [
+          {
+            "family": "MED_STATUS",
+            "subject": "Rosuvastatin"
+          },
+          {
+            "family": "OUTSIDE_RECORDS"
+          }
+        ],
+        "forbiddenGeneric": [
+          "how are you feeling in general",
+          "any other problems",
+          "anything else",
+          "how is everything"
+        ]
+      }
+    },
+    {
+      "id": "D2",
+      "note": "Recommended HbA1c on note, not yet done",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": [
+            "diabetes review"
+          ],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [
+            {
+              "generic": "Vildagliptin+Metformin",
+              "brand": "Vildapride M",
+              "strength": "50/500",
+              "dose": "1 tab",
+              "frequency": "1-0-1"
+            }
+          ],
+          "investigations": [
+            {
+              "test": "Glycosylated Haemoglobin (Hba1C)",
+              "recommended": true
+            }
+          ],
+          "advice": [],
+          "examination": [],
+          "allergies": null,
+          "followUpType": "review",
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": {
+          "version": "member-state/1.1",
+          "normalizationVersion": "member-normalize/0.2",
+          "reconciliationVersion": "member-reconcile/0.3",
+          "computedAt": "2026-07-15T00:00:00.000Z",
+          "asOf": "2026-07-01",
+          "sourceWatermarks": {},
+          "problems": [],
+          "medications": [],
+          "allergies": [],
+          "investigations": [],
+          "conflicts": [],
+          "followUps": [],
+          "sourceEncounterRefs": [
+            "enc-rx-1",
+            "enc-lab-1",
+            "enc-cc-1"
+          ]
+        },
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": {
+          "presc_uid": "goldpresc13",
+          "individual_uid": "goldindiv13",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
+      },
+      "expected": {
+        "first": {
+          "family": "FOLLOWUP_ACTION",
+          "subject": "hba1c"
+        },
+        "legalSlots23": [
+          {
+            "family": "MED_STATUS",
+            "subject": "Vildagliptin"
+          },
+          {
+            "family": "OUTSIDE_RECORDS"
+          }
+        ],
+        "forbiddenGeneric": [
+          "how are you feeling in general"
+        ]
+      }
+    },
+    {
+      "id": "D3",
+      "note": "Advised review after 2 weeks, no date set",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": [
+            "hypertension, dose changed"
+          ],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [
+            {
+              "generic": "Amlodipine",
+              "brand": "Amlong",
+              "strength": "5mg",
+              "dose": "1 tab",
+              "frequency": "1-0-0"
+            }
+          ],
+          "investigations": [],
+          "advice": [
+            "Review after 2 weeks with BP chart"
+          ],
+          "examination": [],
+          "allergies": null,
+          "followUpType": null,
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": {
+          "version": "member-state/1.1",
+          "normalizationVersion": "member-normalize/0.2",
+          "reconciliationVersion": "member-reconcile/0.3",
+          "computedAt": "2026-07-15T00:00:00.000Z",
+          "asOf": "2026-07-01",
+          "sourceWatermarks": {},
+          "problems": [],
+          "medications": [],
+          "allergies": [],
+          "investigations": [],
+          "conflicts": [],
+          "followUps": [],
+          "sourceEncounterRefs": [
+            "enc-rx-1",
+            "enc-lab-1",
+            "enc-cc-1"
+          ]
+        },
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": {
+          "presc_uid": "goldpresc14",
+          "individual_uid": "goldindiv14",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
+      },
+      "expected": {
+        "first": {
+          "family": "FOLLOWUP_ACTION",
+          "subject": "review"
+        },
+        "legalSlots23": [
+          {
+            "family": "MED_STATUS",
+            "subject": "Amlodipine"
+          },
+          {
+            "family": "COMPLAINT_STATUS",
+            "subject": "hypertension"
+          },
+          {
+            "family": "OUTSIDE_RECORDS"
+          }
+        ],
+        "forbiddenGeneric": [
+          "how are you feeling in general",
+          "any other problems",
+          "anything else",
+          "how is everything"
+        ]
+      }
+    },
+    {
+      "id": "E1",
+      "note": "Diabetes review, allergy blank — med leads, allergy is late filler NOT first",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": [
+            "diabetes review"
+          ],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [
+            {
+              "generic": "Glimepiride+Metformin",
+              "brand": "Glucoryl M",
+              "strength": "1/500",
+              "dose": "1 tab",
+              "frequency": "1-0-1"
+            }
+          ],
+          "investigations": [],
+          "advice": [],
+          "examination": [],
+          "allergies": null,
+          "followUpType": null,
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": {
+          "version": "member-state/1.1",
+          "normalizationVersion": "member-normalize/0.2",
+          "reconciliationVersion": "member-reconcile/0.3",
+          "computedAt": "2026-07-15T00:00:00.000Z",
+          "asOf": "2026-07-01",
+          "sourceWatermarks": {},
+          "problems": [],
+          "medications": [],
+          "allergies": [],
+          "investigations": [],
+          "conflicts": [],
+          "followUps": [],
+          "sourceEncounterRefs": [
+            "enc-rx-1",
+            "enc-lab-1",
+            "enc-cc-1"
+          ]
+        },
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": {
+          "presc_uid": "goldpresc15",
+          "individual_uid": "goldindiv15",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
+      },
+      "expected": {
+        "first": {
+          "family": "MED_STATUS",
+          "subject": "Glimepiride"
+        },
+        "legalSlots23": [
+          {
+            "family": "COMPLAINT_STATUS",
+            "subject": "diabetes"
+          },
+          {
+            "family": "ALLERGY_CONFIRM"
+          },
+          {
+            "family": "OUTSIDE_RECORDS"
+          }
+        ],
+        "forbiddenGeneric": [
+          "allergies first",
+          "how are you feeling in general",
+          "any other problems",
+          "anything else",
+          "how is everything"
+        ]
+      }
+    },
+    {
+      "id": "E2",
+      "note": "Hypertension review, allergy blank — med leads",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": [
+            "hypertension review"
+          ],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [
+            {
+              "generic": "Losartan",
+              "brand": "Losar",
+              "strength": "50mg",
+              "dose": "1 tab",
+              "frequency": "1-0-0"
+            }
+          ],
+          "investigations": [],
+          "advice": [],
+          "examination": [],
+          "allergies": null,
+          "followUpType": null,
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": {
+          "version": "member-state/1.1",
+          "normalizationVersion": "member-normalize/0.2",
+          "reconciliationVersion": "member-reconcile/0.3",
+          "computedAt": "2026-07-15T00:00:00.000Z",
+          "asOf": "2026-07-01",
+          "sourceWatermarks": {},
+          "problems": [],
+          "medications": [],
+          "allergies": [],
+          "investigations": [],
+          "conflicts": [],
+          "followUps": [],
+          "sourceEncounterRefs": [
+            "enc-rx-1",
+            "enc-lab-1",
+            "enc-cc-1"
+          ]
+        },
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": {
+          "presc_uid": "goldpresc16",
+          "individual_uid": "goldindiv16",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
+      },
+      "expected": {
+        "first": {
+          "family": "MED_STATUS",
+          "subject": "Losartan"
+        },
+        "legalSlots23": [
+          {
+            "family": "COMPLAINT_STATUS",
+            "subject": "hypertension"
+          },
+          {
+            "family": "ALLERGY_CONFIRM"
+          },
+          {
+            "family": "OUTSIDE_RECORDS"
+          }
+        ],
+        "forbiddenGeneric": [
+          "allergies first",
+          "how are you feeling in general",
+          "any other problems",
+          "anything else",
+          "how is everything"
+        ]
+      }
+    },
+    {
+      "id": "F1",
+      "note": "NEGATIVE — acute self-limiting; no member unknowns; complaint leads: fever with chills and non-productive cough, 3 days",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": [
+            "fever with chills and non-productive cough, 3 days"
+          ],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [],
+          "investigations": [],
+          "advice": [],
+          "examination": [],
+          "allergies": "No known drug allergy",
+          "followUpType": null,
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": null,
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": {
+          "presc_uid": "goldpresc17",
+          "individual_uid": "goldindiv17",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
+      },
+      "expected": {
+        "first": {
+          "family": "COMPLAINT_STATUS",
+          "subject": "fever"
+        },
+        "legalSlots23": [
+          {
+            "family": "OUTSIDE_RECORDS"
+          }
+        ],
+        "forbiddenGeneric": [
+          "how are you feeling in general",
+          "any other problems",
+          "anything else",
+          "how is everything",
+          "care gap",
+          "repeat test",
+          "stopped medicine"
+        ]
+      }
+    },
+    {
+      "id": "F2",
+      "note": "NEGATIVE — acute self-limiting; no member unknowns; complaint leads: mild sore throat with rhinorrhoea since yesterday",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": [
+            "mild sore throat with rhinorrhoea since yesterday"
+          ],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [],
+          "investigations": [],
+          "advice": [],
+          "examination": [],
+          "allergies": "No known drug allergy",
+          "followUpType": null,
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": null,
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": {
+          "presc_uid": "goldpresc18",
+          "individual_uid": "goldindiv18",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
+      },
+      "expected": {
+        "first": {
+          "family": "COMPLAINT_STATUS",
+          "subject": "sore throat"
+        },
+        "legalSlots23": [
+          {
+            "family": "OUTSIDE_RECORDS"
+          }
+        ],
+        "forbiddenGeneric": [
+          "how are you feeling in general",
+          "any other problems",
+          "anything else",
+          "how is everything",
+          "care gap",
+          "repeat test",
+          "stopped medicine"
+        ]
+      }
+    },
+    {
+      "id": "F3",
+      "note": "NEGATIVE — acute self-limiting; no member unknowns; complaint leads: loose stools since morning, better after probiotic",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": [
+            "loose stools since morning, better after probiotic"
+          ],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [],
+          "investigations": [],
+          "advice": [],
+          "examination": [],
+          "allergies": "No known drug allergy",
+          "followUpType": null,
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": null,
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": {
+          "presc_uid": "goldpresc19",
+          "individual_uid": "goldindiv19",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
+      },
+      "expected": {
+        "first": {
+          "family": "COMPLAINT_STATUS",
+          "subject": "loose stools"
+        },
+        "legalSlots23": [
+          {
+            "family": "OUTSIDE_RECORDS"
+          }
+        ],
+        "forbiddenGeneric": [
+          "how are you feeling in general",
+          "any other problems",
+          "anything else",
+          "how is everything",
+          "care gap",
+          "repeat test",
+          "stopped medicine"
+        ]
+      }
+    },
+    {
+      "id": "F4",
+      "note": "NEGATIVE — acute self-limiting; no member unknowns; complaint leads: right ankle twist 15 days ago, X-ray normal, on conservative care",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": [
+            "right ankle twist 15 days ago, X-ray normal, on conservative care"
+          ],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [],
+          "investigations": [],
+          "advice": [],
+          "examination": [],
+          "allergies": "No known drug allergy",
+          "followUpType": null,
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": null,
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": {
+          "presc_uid": "goldpresc20",
+          "individual_uid": "goldindiv20",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
+      },
+      "expected": {
+        "first": {
+          "family": "COMPLAINT_STATUS",
+          "subject": "ankle"
+        },
+        "legalSlots23": [
+          {
+            "family": "OUTSIDE_RECORDS"
+          }
+        ],
+        "forbiddenGeneric": [
+          "how are you feeling in general",
+          "any other problems",
+          "anything else",
+          "how is everything",
+          "care gap",
+          "repeat test",
+          "stopped medicine"
+        ]
+      }
+    },
+    {
+      "id": "F5",
+      "note": "NEGATIVE — acute self-limiting; no member unknowns; complaint leads: vomiting and abdominal pain since 1 day",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": [
+            "vomiting and abdominal pain since 1 day"
+          ],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [],
+          "investigations": [],
+          "advice": [],
+          "examination": [],
+          "allergies": "No known drug allergy",
+          "followUpType": null,
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": null,
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": {
+          "presc_uid": "goldpresc21",
+          "individual_uid": "goldindiv21",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
+      },
+      "expected": {
+        "first": {
+          "family": "COMPLAINT_STATUS",
+          "subject": "vomiting"
+        },
+        "legalSlots23": [
+          {
+            "family": "OUTSIDE_RECORDS"
+          }
+        ],
+        "forbiddenGeneric": [
+          "how are you feeling in general",
+          "any other problems",
+          "anything else",
+          "how is everything",
+          "care gap",
+          "repeat test",
+          "stopped medicine"
+        ]
+      }
+    },
+    {
+      "id": "F6",
+      "note": "NEGATIVE — acute self-limiting; no member unknowns; complaint leads: multiple joint pains, fever from 5 days back",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": [
+            "multiple joint pains, fever from 5 days back"
+          ],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [],
+          "investigations": [],
+          "advice": [],
+          "examination": [],
+          "allergies": "No known drug allergy",
+          "followUpType": null,
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": null,
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": {
+          "presc_uid": "goldpresc22",
+          "individual_uid": "goldindiv22",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
+      },
+      "expected": {
+        "first": {
+          "family": "COMPLAINT_STATUS",
+          "subject": "joint pain"
+        },
+        "legalSlots23": [
+          {
+            "family": "OUTSIDE_RECORDS"
+          }
+        ],
+        "forbiddenGeneric": [
+          "how are you feeling in general",
+          "any other problems",
+          "anything else",
+          "how is everything",
+          "care gap",
+          "repeat test",
+          "stopped medicine"
+        ]
+      }
+    },
+    {
+      "id": "F7",
+      "note": "NEGATIVE — acute self-limiting; no member unknowns; complaint leads: cold and cough since 2 days, no fever, no comorbidities",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": [
+            "cold and cough since 2 days, no fever, no comorbidities"
+          ],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [],
+          "investigations": [],
+          "advice": [],
+          "examination": [],
+          "allergies": "No known drug allergy",
+          "followUpType": null,
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": null,
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": {
+          "presc_uid": "goldpresc23",
+          "individual_uid": "goldindiv23",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
+      },
+      "expected": {
+        "first": {
+          "family": "COMPLAINT_STATUS",
+          "subject": "cold and cough"
+        },
+        "legalSlots23": [
+          {
+            "family": "OUTSIDE_RECORDS"
+          }
+        ],
+        "forbiddenGeneric": [
+          "how are you feeling in general",
+          "any other problems",
+          "anything else",
+          "how is everything",
+          "care gap",
+          "repeat test",
+          "stopped medicine"
+        ]
+      }
+    },
+    {
+      "id": "F8",
+      "note": "NEGATIVE — acute self-limiting; no member unknowns; complaint leads: giddiness since 2-3 days",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": [
+            "giddiness since 2-3 days"
+          ],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [],
+          "investigations": [],
+          "advice": [],
+          "examination": [],
+          "allergies": "No known drug allergy",
+          "followUpType": null,
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": null,
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": {
+          "presc_uid": "goldpresc24",
+          "individual_uid": "goldindiv24",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
+      },
+      "expected": {
+        "first": {
+          "family": "COMPLAINT_STATUS",
+          "subject": "giddiness"
+        },
+        "legalSlots23": [
+          {
+            "family": "OUTSIDE_RECORDS"
+          }
+        ],
+        "forbiddenGeneric": [
+          "how are you feeling in general",
+          "any other problems",
+          "anything else",
+          "how is everything",
+          "care gap",
+          "repeat test",
+          "stopped medicine"
+        ]
+      }
+    },
+    {
+      "id": "F9",
+      "note": "NEGATIVE — acute self-limiting; no member unknowns; complaint leads: burning micturition since 2 days",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": [
+            "burning micturition since 2 days"
+          ],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [],
+          "investigations": [],
+          "advice": [],
+          "examination": [],
+          "allergies": "No known drug allergy",
+          "followUpType": null,
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": null,
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": {
+          "presc_uid": "goldpresc25",
+          "individual_uid": "goldindiv25",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
+      },
+      "expected": {
+        "first": {
+          "family": "COMPLAINT_STATUS",
+          "subject": "burning micturition"
+        },
+        "legalSlots23": [
+          {
+            "family": "OUTSIDE_RECORDS"
+          }
+        ],
+        "forbiddenGeneric": [
+          "how are you feeling in general",
+          "any other problems",
+          "anything else",
+          "how is everything",
+          "care gap",
+          "repeat test",
+          "stopped medicine"
+        ]
+      }
+    },
+    {
+      "id": "F10",
+      "note": "NEGATIVE — acute self-limiting; no member unknowns; complaint leads: dental pain, lower molar, since 3 days",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": [
+            "dental pain, lower molar, since 3 days"
+          ],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [],
+          "investigations": [],
+          "advice": [],
+          "examination": [],
+          "allergies": "No known drug allergy",
+          "followUpType": null,
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": null,
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": {
+          "presc_uid": "goldpresc26",
+          "individual_uid": "goldindiv26",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
+      },
+      "expected": {
+        "first": {
+          "family": "COMPLAINT_STATUS",
+          "subject": "dental pain"
+        },
+        "legalSlots23": [
+          {
+            "family": "OUTSIDE_RECORDS"
+          }
+        ],
+        "forbiddenGeneric": [
+          "how are you feeling in general",
+          "any other problems",
+          "anything else",
+          "how is everything",
+          "care gap",
+          "repeat test",
+          "stopped medicine"
+        ]
+      }
+    },
+    {
+      "id": "G1",
+      "note": "Snapshot present, HbA1c normal & recent — no care gap; complaint leads",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": [
+            "routine diabetes review, feels well"
+          ],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [],
+          "investigations": [],
+          "advice": [],
+          "examination": [],
+          "allergies": "None known",
+          "followUpType": null,
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": {
+          "version": "member-state/1.1",
+          "normalizationVersion": "member-normalize/0.2",
+          "reconciliationVersion": "member-reconcile/0.3",
+          "computedAt": "2026-07-15T00:00:00.000Z",
+          "asOf": "2026-07-01",
+          "sourceWatermarks": {},
+          "problems": [],
+          "medications": [
+            {
+              "normalizedConcept": {
+                "raw": "Metformin",
+                "relation": "exact",
+                "normalizerVersion": "member-normalize/0.2"
+              },
+              "status": "reported_taking",
+              "firstSeen": "2025-06-01",
+              "lastSeen": "2026-06-01",
+              "occurrences": [
+                {
+                  "encounterRef": "enc-rx-1",
+                  "date": "2025-06-01",
+                  "provenance": {
+                    "sourceField": "medications",
+                    "rawText": "Metformin (prescribed)",
+                    "extractionMethod": "deterministic",
+                    "confidence": 1
+                  }
+                }
+              ]
+            }
+          ],
+          "allergies": [],
+          "investigations": [
+            {
+              "normalizedAnalyte": {
+                "raw": "Glycosylated Haemoglobin (HbA1c)",
+                "relation": "exact",
+                "normalizerVersion": "member-normalize/0.2"
+              },
+              "unit": "%",
+              "series": [
+                {
+                  "encounterRef": "enc-lab-1",
+                  "date": "2026-06-20",
+                  "value": "5.4",
+                  "unit": "%",
+                  "abnormal": "NORMAL",
+                  "provenance": {
+                    "sourceField": "test_values_view",
+                    "rawText": "5.4",
+                    "extractionMethod": "deterministic",
+                    "confidence": 1
+                  }
+                }
+              ]
+            }
+          ],
+          "conflicts": [],
+          "followUps": [],
+          "sourceEncounterRefs": [
+            "enc-rx-1",
+            "enc-lab-1",
+            "enc-cc-1"
+          ]
+        },
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": {
+          "presc_uid": "goldpresc27",
+          "individual_uid": "goldindiv27",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
+      },
+      "expected": {
+        "first": {
+          "family": "COMPLAINT_STATUS",
+          "subject": "diabetes review"
+        },
+        "legalSlots23": [
+          {
+            "family": "OUTSIDE_RECORDS"
+          }
+        ],
+        "forbiddenGeneric": [
+          "how are you feeling in general",
+          "any other problems",
+          "anything else",
+          "how is everything",
+          "care gap",
+          "repeat test"
+        ]
+      }
+    },
+    {
+      "id": "G2",
+      "note": "Snapshot present, recent normal vitamin D — no gap",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": [
+            "follow-up, doing well"
+          ],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [],
+          "investigations": [],
+          "advice": [],
+          "examination": [],
+          "allergies": "None known",
+          "followUpType": null,
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": {
+          "version": "member-state/1.1",
+          "normalizationVersion": "member-normalize/0.2",
+          "reconciliationVersion": "member-reconcile/0.3",
+          "computedAt": "2026-07-15T00:00:00.000Z",
+          "asOf": "2026-07-01",
+          "sourceWatermarks": {},
+          "problems": [],
+          "medications": [],
+          "allergies": [],
+          "investigations": [
+            {
+              "normalizedAnalyte": {
+                "raw": "Vitamin D",
+                "relation": "exact",
+                "normalizerVersion": "member-normalize/0.2"
+              },
+              "unit": "ng/ml",
+              "series": [
+                {
+                  "encounterRef": "enc-lab-1",
+                  "date": "2026-06-10",
+                  "value": "42",
+                  "unit": "ng/ml",
+                  "abnormal": "NORMAL",
+                  "provenance": {
+                    "sourceField": "test_values_view",
+                    "rawText": "42",
+                    "extractionMethod": "deterministic",
+                    "confidence": 1
+                  }
+                }
+              ]
+            }
+          ],
+          "conflicts": [],
+          "followUps": [],
+          "sourceEncounterRefs": [
+            "enc-rx-1",
+            "enc-lab-1",
+            "enc-cc-1"
+          ]
+        },
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": {
+          "presc_uid": "goldpresc28",
+          "individual_uid": "goldindiv28",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
+      },
+      "expected": {
+        "first": {
+          "family": "COMPLAINT_STATUS",
+          "subject": "follow-up"
+        },
+        "legalSlots23": [
+          {
+            "family": "OUTSIDE_RECORDS"
+          }
+        ],
+        "forbiddenGeneric": [
+          "how are you feeling in general",
+          "any other problems",
+          "anything else",
+          "how is everything",
+          "care gap",
+          "vitamin d"
+        ]
+      }
+    },
+    {
+      "id": "G3",
+      "note": "Snapshot present, meds all reported_taking, labs normal — nothing to ask",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": [
+            "hypertension review, controlled"
+          ],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [],
+          "investigations": [],
+          "advice": [],
+          "examination": [],
+          "allergies": "None known",
+          "followUpType": null,
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": {
+          "version": "member-state/1.1",
+          "normalizationVersion": "member-normalize/0.2",
+          "reconciliationVersion": "member-reconcile/0.3",
+          "computedAt": "2026-07-15T00:00:00.000Z",
+          "asOf": "2026-07-01",
+          "sourceWatermarks": {},
+          "problems": [],
+          "medications": [
+            {
+              "normalizedConcept": {
+                "raw": "Amlodipine",
+                "relation": "exact",
+                "normalizerVersion": "member-normalize/0.2"
+              },
+              "status": "reported_taking",
+              "firstSeen": "2025-06-01",
+              "lastSeen": "2026-06-01",
+              "occurrences": [
+                {
+                  "encounterRef": "enc-rx-1",
+                  "date": "2025-06-01",
+                  "provenance": {
+                    "sourceField": "medications",
+                    "rawText": "Amlodipine (prescribed)",
+                    "extractionMethod": "deterministic",
+                    "confidence": 1
+                  }
+                }
+              ]
+            }
+          ],
+          "allergies": [],
+          "investigations": [],
+          "conflicts": [],
+          "followUps": [],
+          "sourceEncounterRefs": [
+            "enc-rx-1",
+            "enc-lab-1",
+            "enc-cc-1"
+          ]
+        },
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": {
+          "presc_uid": "goldpresc29",
+          "individual_uid": "goldindiv29",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
+      },
+      "expected": {
+        "first": {
+          "family": "COMPLAINT_STATUS",
+          "subject": "hypertension"
+        },
+        "legalSlots23": [
+          {
+            "family": "OUTSIDE_RECORDS"
+          }
+        ],
+        "forbiddenGeneric": [
+          "how are you feeling in general",
+          "any other problems",
+          "anything else",
+          "how is everything",
+          "stopped",
+          "contradiction"
+        ]
+      }
+    },
+    {
+      "id": "G4",
+      "note": "Snapshot present, single stale but WITHIN-6-month abnormal — under gap threshold, no gap",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": [
+            "thyroid review"
+          ],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [],
+          "investigations": [],
+          "advice": [],
+          "examination": [],
+          "allergies": "None known",
+          "followUpType": null,
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": {
+          "version": "member-state/1.1",
+          "normalizationVersion": "member-normalize/0.2",
+          "reconciliationVersion": "member-reconcile/0.3",
+          "computedAt": "2026-07-15T00:00:00.000Z",
+          "asOf": "2026-07-01",
+          "sourceWatermarks": {},
+          "problems": [],
+          "medications": [],
+          "allergies": [],
+          "investigations": [
+            {
+              "normalizedAnalyte": {
+                "raw": "Thyroid Stimulating Hormone (TSH)",
+                "relation": "exact",
+                "normalizerVersion": "member-normalize/0.2"
+              },
+              "unit": "uIU/ml",
+              "series": [
+                {
+                  "encounterRef": "enc-lab-1",
+                  "date": "2026-04-01",
+                  "value": "5.2",
+                  "unit": "uIU/ml",
+                  "abnormal": "HIGH",
+                  "provenance": {
+                    "sourceField": "test_values_view",
+                    "rawText": "5.2",
+                    "extractionMethod": "deterministic",
+                    "confidence": 1
+                  }
+                }
+              ]
+            }
+          ],
+          "conflicts": [],
+          "followUps": [],
+          "sourceEncounterRefs": [
+            "enc-rx-1",
+            "enc-lab-1",
+            "enc-cc-1"
+          ]
+        },
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": {
+          "presc_uid": "goldpresc30",
+          "individual_uid": "goldindiv30",
+          "uhid": null,
+          "note_date": "2026-07-01"
+        }
+      },
+      "expected": {
+        "first": {
+          "family": "COMPLAINT_STATUS",
+          "subject": "thyroid review"
+        },
+        "legalSlots23": [
+          {
+            "family": "OUTSIDE_RECORDS"
+          }
+        ],
+        "forbiddenGeneric": [
+          "how are you feeling in general",
+          "any other problems",
+          "anything else",
+          "how is everything",
+          "care gap",
+          "repeat"
+        ]
       }
     }
   ]

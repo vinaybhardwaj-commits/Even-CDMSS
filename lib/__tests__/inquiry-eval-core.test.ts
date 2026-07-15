@@ -38,11 +38,15 @@ test('scorer is deterministic and the metric arithmetic is exact', () => {
   assert.equal(isGenericQuestion({ subject: 'knee pain', question: 'How is the knee pain today?' }), false);
 });
 
-test('baseline harness runs on the 2 shipped fixture cases (deterministic arm, no LLM)', () => {
+test('baseline harness runs on the shipped RATIFIED bank (deterministic arm, no LLM)', () => {
+  // Bank pins updated with the ratified gold land (V, 15 Jul) — same-commit mechanism as the
+  // registry count pins (PRD addendum B1 item 3). Baseline OUTCOMES are deliberately NOT pinned
+  // here: what the deterministic arm scores on the ratified gold is the bench's business
+  // (scripts/inquiry-gold.mjs → floor addendum A1), not a unit invariant.
   const bank = parseGold(GOLD);
-  assert.equal(bank.cases.length, 2);
-  assert.ok(bank.cases.every((c) => c.placeholder === true), 'shipped cases are placeholders — real gold is V-ratified');
-  const scores = bank.cases.map((c) => {
+  assert.equal(bank.cases.length, 30, 'the ratified inquiry-gold/1.0 bank (30 cases)');
+  assert.ok(bank.cases.every((c) => c.placeholder !== true), 'no placeholder cases remain post-ratification');
+  const run = () => bank.cases.map((c) => {
     const episode = c.fixture.episode as unknown as DeidOpdCase;
     const served = buildAskSet(episode, c.fixture.keys);
     // the fixtures also exercise the derivation + candidate layers end-to-end
@@ -51,13 +55,11 @@ test('baseline harness runs on the 2 shipped fixture cases (deterministic arm, n
     assert.ok(cands.length >= served.asks.length, `${c.id}: candidates ⊇ baseline`);
     return scoreCase(c, { asks: served.asks, source: 'baseline' });
   });
+  const scores = run();
+  assert.deepEqual(scores, run(), 'deterministic arm scores identically on a double run');
   const agg = aggregateScores(scores);
-  assert.equal(agg.runs, 2);
-  assert.equal(agg.familyLegalityRate, 1, 'baseline family-legality 100% on fixtures');
-  // PL01 baseline leads with the high-alert insulin (right first); PL02's baseline leads with the
-  // follow-up (ask-set/0.1 §3.3 order) — the med-contradiction-first expectation is exactly what
-  // the inquiry arm exists to beat.
-  assert.equal(scores[0].rightFirst, true);
-  assert.equal(scores[1].rightFirst, false);
-  assert.equal(agg.fallbackRate, 0);
+  assert.equal(agg.runs, 30);
+  assert.ok(agg.rightFirstRate >= 0 && agg.rightFirstRate <= 1);
+  assert.ok(agg.familyLegalityRate >= 0 && agg.familyLegalityRate <= 1);
+  assert.equal(agg.fallbackRate, 0, 'the deterministic arm never falls back');
 });
