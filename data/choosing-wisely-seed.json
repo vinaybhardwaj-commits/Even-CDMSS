@@ -757,8 +757,8 @@
    ],
    "citation_doi": null,
    "citation_pmid": null,
-   "citation_url": "https://www.icmr.gov.in/",
-   "source_release_year": 2019,
+   "citation_url": "https://amrtg.icmr.org.in/chapter5-acute-diarrhea-treatment.html",
+   "source_release_year": 2022,
    "status": "active",
    "verbatim_verified": true,
    "notes": "Guideline-derived (ICMR Treatment Guidelines for Antimicrobial Use in Common Syndromes 2019; IDSA/ACG acute-diarrhoea themes), not an ABIM Choosing Wisely list item. Batch-1 catalog expansion (15-Jul-2026 kickoff); precondition wording ratified by V 15 Jul 2026. Statement/rationale/keywords AI-drafted; attribution fields inferred — spot-check advised."
@@ -783,8 +783,8 @@
    ],
    "citation_doi": null,
    "citation_pmid": null,
-   "citation_url": "https://www.icmr.gov.in/",
-   "source_release_year": 2019,
+   "citation_url": "https://amrtg.icmr.org.in/chapter2-management-principles-empiric-therapy.html",
+   "source_release_year": 2022,
    "status": "active",
    "verbatim_verified": true,
    "notes": "Guideline-derived (ICMR Treatment Guidelines for Antimicrobial Use in Common Syndromes 2019; WHO AWaRe), not an ABIM Choosing Wisely list item. Batch-1 catalog expansion (15-Jul-2026 kickoff); precondition wording ratified by V 15 Jul 2026. Statement/rationale/keywords AI-drafted; attribution fields inferred — spot-check advised."
@@ -809,7 +809,7 @@
    ],
    "citation_doi": null,
    "citation_pmid": null,
-   "citation_url": "https://www.choosingwisely.org/clinician-lists/",
+   "citation_url": "https://www.idsociety.org/practice-guideline/streptococcal-pharyngitis/",
    "source_release_year": 2012,
    "status": "active",
    "verbatim_verified": true,
@@ -836,11 +836,11 @@
    ],
    "citation_doi": null,
    "citation_pmid": null,
-   "citation_url": "https://www.choosingwisely.org/clinician-lists/",
-   "source_release_year": 2012,
+   "citation_url": "https://www.aafp.org/pubs/afp/issues/2016/1001/p560.html",
+   "source_release_year": 2016,
    "status": "active",
-   "verbatim_verified": true,
-   "notes": "AI-drafted from Choosing Wisely AAFP/ACCP acute-bronchitis themes. Batch-1 catalog expansion (15-Jul-2026 kickoff); precondition wording ratified by V 15 Jul 2026. Attribution fields inferred — spot-check advised."
+   "verbatim_verified": false,
+   "notes": "AI-drafted from Choosing Wisely AAFP/ACCP acute-bronchitis themes. Batch-1 catalog expansion (15-Jul-2026 kickoff); precondition wording ratified by V 15 Jul 2026. Attribution fields inferred — spot-check advised. No standalone AAFP CW acute-bronchitis item; nearest CW URI item is IDSA-attributed. Anchored on AFP 2016 clinical review + Cochrane (no net benefit)."
   },
   {
    "id": "cwus-aad-001",
@@ -861,11 +861,11 @@
    ],
    "citation_doi": null,
    "citation_pmid": null,
-   "citation_url": "https://www.choosingwisely.org/clinician-lists/",
-   "source_release_year": 2015,
+   "citation_url": "https://www.aad.org/news/updated-guidelines-acne-management",
+   "source_release_year": 2024,
    "status": "active",
-   "verbatim_verified": true,
-   "notes": "AI-drafted from AAD Choosing Wisely acne themes. Batch-1 catalog expansion (15-Jul-2026 kickoff); precondition wording ratified by V 15 Jul 2026. Attribution fields inferred — spot-check advised."
+   "verbatim_verified": false,
+   "notes": "AI-drafted from AAD Choosing Wisely acne themes. Batch-1 catalog expansion (15-Jul-2026 kickoff); precondition wording ratified by V 15 Jul 2026. Attribution fields inferred — spot-check advised. Re-anchored to AAD 2024 Guidelines of Care for Acne Vulgaris (antibiotic stewardship); AAD Choosing Wisely list has no acne-antibiotic item. Concept partial-verbatim."
   },
   {
    "id": "cwus-acp-002",
@@ -887,16 +887,16 @@
    ],
    "citation_doi": null,
    "citation_pmid": null,
-   "citation_url": "https://www.choosingwisely.org/clinician-lists/",
-   "source_release_year": 2012,
+   "citation_url": "https://www.acponline.org/acp-newsroom/american-college-of-physicians-issues-advice-for-high-valuehealth-care-for-diagnostic-imaging-for",
+   "source_release_year": 2011,
    "status": "active",
    "verbatim_verified": true,
-   "notes": "AI-drafted from ACP / Choosing Wisely AAFP-ACR low-back-imaging themes; complements cwus-aafp-001, which covers ACUTE (<6wk) low back pain only. Batch-1 catalog expansion (15-Jul-2026 kickoff); precondition wording ratified by V 15 Jul 2026. Attribution fields inferred — spot-check advised."
+   "notes": "AI-drafted from ACP / Choosing Wisely AAFP-ACR low-back-imaging themes; complements cwus-aafp-001, which covers ACUTE (<6wk) low back pain only. Batch-1 catalog expansion (15-Jul-2026 kickoff); precondition wording ratified by V 15 Jul 2026. Attribution fields inferred — spot-check advised. ACP High-Value Care imaging advice (2011); addresses non-specific/acute LBP — this rec's 'chronic + failed conservative care' precondition is additive beyond the source (flagged; precondition unchanged)."
   },
   {
    "id": "cwus-aaos-001",
    "region": "US",
-   "society": "American Academy of Orthopaedic Surgeons",
+   "society": "Arthroscopy Association of Canada (Choosing Wisely Canada)",
    "specialty": "orthopaedics / imaging",
    "statement": "Don't order MRI of the knee for atraumatic knee pain with a degenerative clinical picture before weight-bearing radiographs.",
    "precondition": "atraumatic knee pain with a degenerative picture (crepitus, chronicity, age-consistent osteoarthritis features) and no weight-bearing X-ray yet performed; does not apply when examination suggests internal derangement (e.g. positive McMurray or Lachman) or acute trauma",
@@ -912,16 +912,16 @@
    ],
    "citation_doi": null,
    "citation_pmid": null,
-   "citation_url": "https://www.choosingwisely.org/clinician-lists/",
-   "source_release_year": 2013,
+   "citation_url": "https://choosingwiselycanada.org/recommendation/orthopaedics/",
+   "source_release_year": 2024,
    "status": "active",
    "verbatim_verified": true,
-   "notes": "AI-drafted from AAOS / Choosing Wisely degenerative-knee imaging themes. Batch-1 catalog expansion (15-Jul-2026 kickoff); precondition wording ratified by V 15 Jul 2026. Attribution fields inferred — spot-check advised."
+   "notes": "AI-drafted from AAOS / Choosing Wisely degenerative-knee imaging themes. Batch-1 catalog expansion (15-Jul-2026 kickoff); precondition wording ratified by V 15 Jul 2026. Attribution fields inferred — spot-check advised. Re-attributed to Choosing Wisely Canada / Arthroscopy Assoc. of Canada (2024, OA-context); no US AAOS Choosing Wisely knee-imaging item exists. id prefix 'aaos' is legacy — kept as stable key. AAOS AUC is a US alternative anchor if preferred."
   },
   {
    "id": "cwus-sgim-001",
    "region": "US",
-   "society": "Society of General Internal Medicine",
+   "society": "American Society for Clinical Laboratory Science / ASCP (Choosing Wisely)",
    "specialty": "primary care / endocrinology / labs",
    "statement": "Don't repeat HbA1c testing sooner than the guideline interval when a recent result exists (every 3 years if normal; annually if stable prediabetes).",
    "precondition": "a recent HbA1c result exists (normal within the last 3 years, or stable prediabetes within the last year) and a repeat is ordered sooner than the guideline interval without a change in clinical status or therapy",
@@ -936,11 +936,11 @@
    ],
    "citation_doi": null,
    "citation_pmid": null,
-   "citation_url": "https://www.choosingwisely.org/clinician-lists/",
-   "source_release_year": 2017,
+   "citation_url": "https://www.aafp.org/pubs/afp/collections/choosing-wisely/525.html",
+   "source_release_year": null,
    "status": "active",
    "verbatim_verified": true,
-   "notes": "AI-drafted from ADA screening-interval guidance / Choosing Wisely SGIM themes. HISTORY-GATED: cannot fire from a single note without member lab history; seeded for the member-history substrate slice. Batch-1 catalog expansion (15-Jul-2026 kickoff); precondition wording ratified by V 15 Jul 2026. Attribution fields inferred — spot-check advised."
+   "notes": "AI-drafted from ADA screening-interval guidance / Choosing Wisely SGIM themes. Re-attributed to ASCLS/ASCP Choosing Wisely (via AAFP mirror; page shows no year). Precondition cites ADA screening intervals but this item is about monitoring cadence (>=3 months) — precondition text left unchanged, flagged for a later clinical refinement. HISTORY-GATED: cannot fire from a single note without member lab history; seeded for the member-history substrate slice. Batch-1 catalog expansion (15-Jul-2026 kickoff); precondition wording ratified by V 15 Jul 2026. Attribution fields inferred — spot-check advised."
   },
   {
    "id": "cwus-aace-002",
@@ -961,11 +961,11 @@
    ],
    "citation_doi": null,
    "citation_pmid": null,
-   "citation_url": "https://www.choosingwisely.org/clinician-lists/",
-   "source_release_year": 2013,
+   "citation_url": null,
+   "source_release_year": null,
    "status": "active",
-   "verbatim_verified": true,
-   "notes": "AI-drafted from AACE / Choosing Wisely thyroid-testing themes. HISTORY-GATED: cannot fire from a single note without member lab history; seeded for the member-history substrate slice. Batch-1 catalog expansion (15-Jul-2026 kickoff); precondition wording ratified by V 15 Jul 2026. Attribution fields inferred — spot-check advised."
+   "verbatim_verified": false,
+   "notes": "AI-drafted from AACE / Choosing Wisely thyroid-testing themes. PROVISIONAL — no clean single-society source located; verbatim_verified:false. Re-scope targets: lipid → ACC/AHA monitoring cadence; TFT → NICE/lab minimum-retest-interval; B12 → CAP test-utilization / CW Canada biochemistry. All three history-gated (not live until #3), no live impact. HISTORY-GATED: cannot fire from a single note without member lab history; seeded for the member-history substrate slice. Batch-1 catalog expansion (15-Jul-2026 kickoff); precondition wording ratified by V 15 Jul 2026. Attribution fields inferred — spot-check advised."
   },
   {
    "id": "cwus-sgim-002",
@@ -985,16 +985,16 @@
    ],
    "citation_doi": null,
    "citation_pmid": null,
-   "citation_url": "https://www.choosingwisely.org/clinician-lists/",
-   "source_release_year": 2017,
+   "citation_url": null,
+   "source_release_year": null,
    "status": "active",
-   "verbatim_verified": true,
-   "notes": "AI-drafted from Choosing Wisely SGIM lipid-testing themes. HISTORY-GATED: cannot fire from a single note without member lab history; seeded for the member-history substrate slice. Batch-1 catalog expansion (15-Jul-2026 kickoff); precondition wording ratified by V 15 Jul 2026. Attribution fields inferred — spot-check advised."
+   "verbatim_verified": false,
+   "notes": "AI-drafted from Choosing Wisely SGIM lipid-testing themes. PROVISIONAL — no clean single-society source located; verbatim_verified:false. Re-scope targets: lipid → ACC/AHA monitoring cadence; TFT → NICE/lab minimum-retest-interval; B12 → CAP test-utilization / CW Canada biochemistry. All three history-gated (not live until #3), no live impact. HISTORY-GATED: cannot fire from a single note without member lab history; seeded for the member-history substrate slice. Batch-1 catalog expansion (15-Jul-2026 kickoff); precondition wording ratified by V 15 Jul 2026. Attribution fields inferred — spot-check advised."
   },
   {
    "id": "cwus-aace-003",
    "region": "US",
-   "society": "American Association of Clinical Endocrinology",
+   "society": "Endocrine Society",
    "specialty": "endocrinology / labs",
    "statement": "Don't routinely test vitamin D levels (25-hydroxyvitamin D) in asymptomatic adults without a specific risk factor or indication.",
    "precondition": "asymptomatic adult with no specific risk factor or indication for vitamin D deficiency (e.g. malabsorption, chronic kidney disease, osteoporosis or fragility fracture, medications affecting vitamin D metabolism)",
@@ -1010,11 +1010,11 @@
    ],
    "citation_doi": null,
    "citation_pmid": null,
-   "citation_url": "https://www.choosingwisely.org/clinician-lists/",
-   "source_release_year": 2013,
+   "citation_url": "https://www.endocrine.org/news-and-advocacy/news-room/2024/endocrine-society-recommends-healthy-adults-take-the-recommended-daily-allowance-of-vitamin-d",
+   "source_release_year": 2024,
    "status": "active",
    "verbatim_verified": true,
-   "notes": "AI-drafted from AACE / Endocrine Society / Choosing Wisely vitamin-D screening themes. Note-decidable coverage rec (no gold case bound in Batch-1). Batch-1 catalog expansion (15-Jul-2026 kickoff); precondition wording ratified by V 15 Jul 2026. Attribution fields inferred — spot-check advised."
+   "notes": "AI-drafted from AACE / Endocrine Society / Choosing Wisely vitamin-D screening themes. Note-decidable coverage rec (no gold case bound in Batch-1). Batch-1 catalog expansion (15-Jul-2026 kickoff); precondition wording ratified by V 15 Jul 2026. Attribution fields inferred — spot-check advised. Re-anchored to Endocrine Society 2024 Vitamin D CPG ('suggest against routine 25(OH)D testing'). The AACE 2013 CW item concerns 1,25-dihydroxyvitamin D — a different test."
   },
   {
    "id": "cwus-aace-004",
@@ -1034,11 +1034,65 @@
    ],
    "citation_doi": null,
    "citation_pmid": null,
-   "citation_url": "https://www.choosingwisely.org/clinician-lists/",
-   "source_release_year": 2013,
+   "citation_url": null,
+   "source_release_year": null,
+   "status": "active",
+   "verbatim_verified": false,
+   "notes": "AI-drafted from Choosing Wisely B12-testing themes; society attribution (AACE) inferred from the id convention per the kickoff. Note-decidable coverage rec (no gold case bound in Batch-1). Batch-1 catalog expansion (15-Jul-2026 kickoff); precondition wording ratified by V 15 Jul 2026. Attribution fields inferred — spot-check advised. PROVISIONAL — no clean single-society source located; verbatim_verified:false. Re-scope targets: lipid → ACC/AHA monitoring cadence; TFT → NICE/lab minimum-retest-interval; B12 → CAP test-utilization / CW Canada biochemistry. All three history-gated (not live until #3), no live impact."
+  },
+  {
+   "id": "cwus-acr-002",
+   "region": "US",
+   "society": "American College of Radiology",
+   "specialty": "radiology / spine",
+   "statement": "Don't order advanced spinal imaging (MRI or CT), including whole-spine 'screening' MRI, when there are no red flags and no localizing neurological indication.",
+   "precondition": "limb or regional pain being evaluated for a possible spinal cause, with NO focal or progressive neurological deficit, NO neurogenic claudication or radiculopathy, NO saddle anaesthesia or bowel/bladder dysfunction, and NO other red flags (major trauma, cancer history, unexplained weight loss, fever/infection, IV drug use, immunosuppression); a plausible non-spinal cause has already been evaluated (e.g., normal venous Doppler, specialist review advising no intervention). An order for whole-spine or multi-region 'screening' MRI in this setting is low-value.",
+   "action_type": "imaging",
+   "consider_instead": "if a spinal cause is genuinely suspected, image only the symptomatic region guided by a localizing exam finding rather than screening the whole spine; otherwise continue conservative management and reassess, escalating only if a red flag or focal deficit emerges",
+   "rationale": "Absent red flags or a localizing neurological indication, advanced spinal imaging does not improve outcomes and yields incidental/degenerative findings that drive low-value downstream care; whole-spine 'screening' compounds this by imaging asymptomatic regions with no pre-test indication.",
+   "keywords": [
+    "mri whole spine",
+    "whole spine screening",
+    "whole spine mri",
+    "screening mri spine",
+    "pan-spine mri",
+    "mri cervical dorsal lumbar spine",
+    "advanced spinal imaging"
+   ],
+   "citation_doi": null,
+   "citation_pmid": null,
+   "citation_url": "https://acsearch.acr.org/docs/69483/narrative/",
+   "source_release_year": 2021,
+   "status": "active",
+   "verbatim_verified": false,
+   "notes": "Anchor: ACR Appropriateness Criteria 'Low Back Pain' (2021) — all imaging 'Usually Not Appropriate' for back pain absent red flags. Corroborated by NASS Choosing Wisely. No single guideline names 'whole-spine screening MRI' verbatim — the whole-spine framing is a synthesis of the transferable principle, hence verbatim_verified:false. Closes gold case RC-C-02."
+  },
+  {
+   "id": "cwus-acr-003",
+   "region": "US",
+   "society": "American College of Radiology",
+   "specialty": "radiology / orthopaedics / sports medicine",
+   "statement": "Don't order knee MRI as the first study for an acute knee injury; obtain weight-bearing radiographs first and reserve MRI for a suspicious exam or negative radiographs with continued suspicion of internal derangement.",
+   "precondition": "acute knee injury (within ~1-2 days) where the exam does NOT suggest significant internal derangement or fracture — no effusion/haemarthrosis, negative ligamentous and meniscal special tests (e.g., Lachman, anterior drawer negative), able to bear weight, no Ottawa Knee Rule positive findings — and radiographs have not yet been obtained. An order for knee MRI on day 1 in this low-suspicion setting is low-value.",
+   "action_type": "imaging",
+   "consider_instead": "apply the Ottawa Knee Rule and obtain weight-bearing radiographs first; manage conservatively with short-interval reassessment; reserve MRI for negative radiographs with continued suspicion of occult fracture / internal derangement, or a significant effusion or positive ligament exam",
+   "rationale": "Day-1 MRI for an acute knee with a benign exam rarely changes early management, yields incidental findings, and strains access; radiographs are first-line and MRI adds value chiefly after negative radiographs or with a significant effusion / positive exam.",
+   "keywords": [
+    "mri knee",
+    "knee mri",
+    "mri knee joint",
+    "mri left knee",
+    "mri right knee",
+    "acute knee mri",
+    "knee injury mri"
+   ],
+   "citation_doi": null,
+   "citation_pmid": null,
+   "citation_url": "https://acsearch.acr.org/docs/69419/narrative/",
+   "source_release_year": 2019,
    "status": "active",
    "verbatim_verified": true,
-   "notes": "AI-drafted from Choosing Wisely B12-testing themes; society attribution (AACE) inferred from the id convention per the kickoff. Note-decidable coverage rec (no gold case bound in Batch-1). Batch-1 catalog expansion (15-Jul-2026 kickoff); precondition wording ratified by V 15 Jul 2026. Attribution fields inferred — spot-check advised."
+   "notes": "Anchor: ACR Appropriateness Criteria 'Acute Trauma to the Knee' (Revised 2019) — radiographs 'usually the initial imaging modality'; MRI 'Usually Appropriate' when radiographs negative but occult fracture / internal derangement suspected. Precondition carves out effusion / positive exam where a skeletally immature knee (gold case is 14F) would warrant earlier imaging. Closes gold case RC-C-04."
   }
  ]
 }

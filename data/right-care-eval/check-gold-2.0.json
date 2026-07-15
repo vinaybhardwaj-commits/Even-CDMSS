@@ -145,7 +145,7 @@
       "id": "RC-C-02", "mode": "check", "family": "C", "polarity": "positive", "patient": {"age": 69, "sex": "M"},
       "scenario": "Bilateral calf pain 2 months, no trauma. Venous doppler normal. Vascular surgeon and spine surgeon both reviewed - nil intervention. No neurogenic claudication documented.",
       "proposedActions": ["MRI whole-spine screening"],
-      "gold": {"mustFire": [], "mustNotFire": []},
+      "gold": {"mustFire": ["cwus-acr-002"], "mustNotFire": []},
       "expected": "flag", "clinicalTarget": "over-imaging after normal doppler and specialist clearance", "sourceRecHint": "",
       "note": "CATALOG GAP — no whole-spine over-imaging rec."
     },
@@ -161,7 +161,7 @@
       "id": "RC-C-04", "mode": "check", "family": "C", "polarity": "positive", "patient": {"age": 14, "sex": "F"},
       "scenario": "Knee pain 1 day after taekwondo, heard a pop. Exam: no effusion; Lachman, anterior drawer, and SLR all negative.",
       "proposedActions": ["MRI knee"],
-      "gold": {"mustFire": [], "mustNotFire": []},
+      "gold": {"mustFire": ["cwus-acr-003"], "mustNotFire": []},
       "expected": "flag", "clinicalTarget": "premature MRI for acute knee with a negative exam", "sourceRecHint": "",
       "note": "CATALOG GAP — no knee rec. V-delegated soft lock."
     },
