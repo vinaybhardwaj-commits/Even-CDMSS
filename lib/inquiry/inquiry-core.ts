@@ -5,8 +5,9 @@
 // ask-set/0.1 §3.3 (high-alert first, cap 5, overflow preserved) survives verbatim.
 //
 // PURE: no LLM client, no I/O — the governed call is injected (deps.generate), so the route
-// wires governedChat and the bench script wires its own arm. Any failure (throw, timeout,
-// invalid JSON, zero valid picks) ⇒ buildAskSet verbatim (ask-set/0.1, deterministic_fallback).
+// wires governedChat and the bench script wires its own arm. Transport failure (throw, timeout,
+// unparseable output) retries once, then ⇒ buildAskSet verbatim (ask-set/0.1,
+// deterministic_fallback); a PARSED response — even zero valid picks — ladder-assembles (K2).
 //
 // Import discipline (architecture rule 5): intra-inquiry references are 'import type' only; the
 // sole value dependency is the frozen care-call floor (not a scored core). slug is deliberately
@@ -23,17 +24,18 @@ export const INQUIRY_ASK_SET_VERSION = 'ask-set/0.2' as const;
 // ── the registered standing prompt (Stage-0 registry extracts *_SYSTEM template literals) ──
 export const INQUIRY_SELECT_SYSTEM = `You help a care manager decide which few questions are most worth asking a patient on a post-visit phone call.
 
-You are given a numbered list of CANDIDATE questions (each with an id, family, subject, why it matters, and criticality) plus a short clinical context summary. Every candidate is already clinically legal — your job is ONLY to choose and phrase, never to invent.
+You are given a numbered list of CANDIDATE questions (each with a family, subject, why it matters, and criticality) plus a short clinical context summary. Every candidate is already clinically legal — your job is ONLY to choose and phrase, never to invent.
 
 Rules:
 - Pick the AT MOST 3 candidates most worth asking FIRST, ordered by importance.
+- Refer to each candidate ONLY by its number n from the list. Do not invent or alter ids.
 - You may rewrite each pick's question text to be warmer and more specific, and its "why" — nothing else. The question MUST still name the candidate's subject, be a single question, and stay under 160 characters.
-- NEVER invent a question that is not in the candidate list. NEVER change a candidate's family, subject or id.
+- NEVER invent a question that is not in the candidate list. NEVER change a candidate's family or subject.
 - Prefer safety-critical unknowns (stopped high-alert medicines, contradictions, severely abnormal stale results) over routine ones.
 - If nothing beats the baseline candidates, pick the best baseline candidates.
 
 Respond with JSON ONLY, exactly this shape:
-{"picks":[{"id":"<candidate id>","question":"<the question to ask>","why":"<one short line for the care manager>"}],"rationale":"<optional, one line>"}`;
+{"picks":[{"n":<candidate number>,"question":"<the question to ask>","why":"<one short line for the care manager>"}],"rationale":"<optional, one line>"}`;
 
 // ── shapes ──
 export interface CandidateAsk extends AskItem {
@@ -43,7 +45,9 @@ export interface CandidateAsk extends AskItem {
    *  candidates carry []; a merge (same deterministic id) unions the kinds. */
   sourceKinds?: UnknownKind[];
 }
-export interface SelectionPick { id: string; question: string; why?: string }
+/** B6: picks are NUMBER-based (1-based candidate list position) — real Gemini truncated/mangled
+ *  echoed slug ids, silently discarding perfect picks; the list is already numbered in the prompt. */
+export interface SelectionPick { n: number; question: string; why?: string }
 export interface AskMetaItem { askId: string; unknownIds: string[]; why: string }
 export interface InquiryAskSet {
   asks: AskItem[];
@@ -145,24 +149,28 @@ export function droppedUnknowns(unknowns: UnknownItem[], candidates: CandidateAs
 /** User-message builder for the governed call (registered by the Stage-0 builder scan).
  *  Clinical content only — uid/uhid/patient identity NEVER enter the prompt (PRD §17). */
 export function buildInquirySelectUser(candidates: CandidateAsk[], contextSummary: string): string {
+  // B6: the NUMBER is the pick handle — no id token in the line (Gemini mangled echoed slugs).
   const lines = candidates.map((c, i) =>
-    `${i + 1}. id=${c.id} · family=${c.family} · subject=${c.subject || '(none)'} · high-alert=${c.meta?.highAlert ? 'yes' : 'no'} · why=${clip(c.why, 120)} · question="${c.question}"`);
+    `${i + 1}. family=${c.family} · subject=${c.subject || '(none)'} · high-alert=${c.meta?.highAlert ? 'yes' : 'no'} · why=${clip(c.why, 120)} · question="${c.question}"`);
   return `CONTEXT (de-identified):\n${contextSummary || '(no additional context)'}\n\nCANDIDATES:\n${lines.join('\n')}\n\nPick at most 3, JSON only.`;
 }
 
-/** Parse the model output → picks, or null on any structural failure (⇒ fallback). */
+/** Parse the model output → picks, or null on any structural failure (⇒ retry/fallback). */
 export function parseSelection(raw: string): SelectionPick[] | null {
   try {
-    const m = String(raw ?? '').match(/\{[\s\S]*\}/);
+    // B6: Gemini wraps clean JSON in markdown code fences — strip them before extracting.
+    let s = String(raw ?? '').trim();
+    s = s.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+    const m = s.match(/\{[\s\S]*\}/);
     if (!m) return null;
     const j = JSON.parse(m[0]) as { picks?: unknown };
     if (!Array.isArray(j.picks)) return null;
     const picks: SelectionPick[] = [];
     for (const p of j.picks) {
       if (!p || typeof p !== 'object') return null;
-      const { id, question, why } = p as Record<string, unknown>;
-      if (typeof id !== 'string' || typeof question !== 'string') return null;
-      picks.push({ id, question, why: typeof why === 'string' ? why : undefined });
+      const { n, question, why } = p as Record<string, unknown>;
+      if (typeof n !== 'number' || typeof question !== 'string') return null;
+      picks.push({ n, question, why: typeof why === 'string' ? why : undefined });
     }
     return picks;
   } catch {
@@ -171,23 +179,23 @@ export function parseSelection(raw: string): SelectionPick[] | null {
 }
 
 /**
- * Deterministic validation (§6): every pick id ∈ candidates; ≤3 picks; no duplicate ids;
- * question non-empty and ≤160 chars (else the pick is rejected); family/subject/id ALWAYS come
- * from the candidate — Gemini may rewrite `question` and `why` only; a generic question (no
- * subject token) is replaced by the candidate's skeleton phrasing.
+ * Deterministic validation (§6, B6 number-based): every pick resolves by NUMBER (1-based list
+ * position) to a candidate — out-of-range / non-integer n is rejected; ≤3 picks; no duplicate
+ * candidates; question non-empty and ≤160 chars (else the pick is rejected); family/subject/id/
+ * meta ALWAYS come from the candidate — Gemini may rewrite `question` and `why` only; a generic
+ * question (no subject token) is replaced by the candidate's skeleton phrasing.
  */
 export function validateSelection(picks: SelectionPick[], candidates: CandidateAsk[]): { ask: AskItem; meta: AskMetaItem }[] {
-  const byId = new Map(candidates.map((c) => [c.id, c]));
   const seen = new Set<string>();
   const valid: { ask: AskItem; meta: AskMetaItem }[] = [];
   for (const p of picks ?? []) {
     if (valid.length >= 3) break;
-    const c = byId.get(p.id);
-    if (!c || seen.has(p.id)) continue;                       // foreign or duplicate id → rejected
+    const c = Number.isInteger(p.n) && p.n >= 1 && p.n <= candidates.length ? candidates[p.n - 1] : undefined;
+    if (!c || seen.has(c.id)) continue;                       // out-of-range n or duplicate candidate → rejected
     const q = String(p.question ?? '').trim();
     if (!q || q.length > 160) continue;                       // over-length / empty → rejected
     const question = questionMentionsSubject(c.subject, q) ? q : c.question;   // generic → skeleton
-    seen.add(p.id);
+    seen.add(c.id);
     valid.push({
       ask: { id: c.id, family: c.family, subject: c.subject, question, meta: c.meta },
       meta: { askId: c.id, unknownIds: c.unknownIds, why: (p.why ?? '').trim() || c.why },

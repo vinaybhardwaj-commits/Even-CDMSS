@@ -24,6 +24,13 @@ function mkCase(over: Partial<DeidOpdCase> = {}): DeidOpdCase {
   };
 }
 
+/** 1-based candidate number for an id — picks are NUMBER-based since B6. */
+const nOf = (cands: CandidateAsk[], id: string): number => {
+  const i = cands.findIndex((c) => c.id === id);
+  assert.ok(i >= 0, `candidate ${id} present`);
+  return i + 1;
+};
+
 const unk = (o: Partial<UnknownItem> & { kind: UnknownItem['kind']; subject: string }): UnknownItem => ({
   id: `unk-${o.kind}:${o.subject.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
   detail: o.detail ?? `${o.subject} detail`, criticality: o.criticality ?? 'review',
@@ -90,19 +97,26 @@ test('same-id candidates merge (allergy unknown merges into the baseline allergy
   assert.deepEqual(allergy[0].unknownIds, [u.id]);
 });
 
-test('validateSelection: foreign id rejected; duplicate rejected; ≤3 picks', () => {
+test('validateSelection (B6 numbers): out-of-range / non-integer n rejected; duplicate rejected; ≤3 picks', () => {
   const cands = candidatesFromUnknowns([unk({ kind: 'unknown_finding', subject: 'knee pain' })], mkCase(), KEYS);
   const id = 'COMPLAINT_STATUS:knee-pain';
+  const n = nOf(cands, id);
   const picks: SelectionPick[] = [
-    { id: 'MED_STATUS:not-a-candidate', question: 'Are you taking not-a-candidate medicine?' },
-    { id, question: 'How is the knee pain today?' },
-    { id, question: 'Duplicate — how is the knee pain?' },
+    { n: 0, question: 'Zero is out of range (1-based)?' },
+    { n: 99, question: 'Ninety-nine is out of range?' },
+    { n: 1.5, question: 'A fractional number is rejected?' },
+    { n, question: 'How is the knee pain today?' },
+    { n, question: 'Duplicate — how is the knee pain?' },
   ];
   const valid = validateSelection(picks, cands);
   assert.equal(valid.length, 1);
-  assert.equal(valid[0].ask.id, id);
-  const many: SelectionPick[] = cands.slice(0, 4).map((c) => ({ id: c.id, question: c.question }));
+  assert.equal(valid[0].ask.id, id, 'n resolves to the candidate at position n-1');
+  const many: SelectionPick[] = cands.slice(0, 4).map((c, i) => ({ n: i + 1, question: c.question }));
   assert.ok(validateSelection(many.concat(many), cands).length <= 3, 'never more than 3 picks');
+  // literal position check: n is 1-based, so n=2 resolves to candidates[1]
+  const v2 = validateSelection([{ n: 2, question: cands[1].question }], cands);
+  assert.equal(v2.length, 1);
+  assert.equal(v2[0].ask.id, cands[1].id, 'n=2 → candidates[1]');
 });
 
 test('validateSelection: rewritten family/subject never survive — candidate fields win', () => {
@@ -110,7 +124,7 @@ test('validateSelection: rewritten family/subject never survive — candidate fi
   const cands = candidatesFromUnknowns([u], mkCase(), KEYS);
   const c = cands.find((x) => x.family === 'MED_STATUS')!;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const evil: any = { id: c.id, family: 'OUTSIDE_RECORDS', subject: 'something else', question: 'Are you still taking Atorvastatin these days?' };
+  const evil: any = { n: nOf(cands, c.id), family: 'OUTSIDE_RECORDS', subject: 'something else', question: 'Are you still taking Atorvastatin these days?' };
   const valid = validateSelection([evil], cands);
   assert.equal(valid.length, 1);
   assert.equal(valid[0].ask.family, 'MED_STATUS');
@@ -119,16 +133,15 @@ test('validateSelection: rewritten family/subject never survive — candidate fi
 
 test('validateSelection: over-length and empty questions are rejected', () => {
   const cands = candidatesFromUnknowns([unk({ kind: 'unknown_finding', subject: 'back pain' })], mkCase(), KEYS);
-  const id = 'COMPLAINT_STATUS:back-pain';
-  assert.equal(validateSelection([{ id, question: 'x'.repeat(161) }], cands).length, 0);
-  assert.equal(validateSelection([{ id, question: '   ' }], cands).length, 0);
-  assert.equal(validateSelection([{ id, question: 'How is your back pain now?' }], cands).length, 1);
+  const n = nOf(cands, 'COMPLAINT_STATUS:back-pain');
+  assert.equal(validateSelection([{ n, question: 'x'.repeat(161) }], cands).length, 0);
+  assert.equal(validateSelection([{ n, question: '   ' }], cands).length, 0);
+  assert.equal(validateSelection([{ n, question: 'How is your back pain now?' }], cands).length, 1);
 });
 
 test('validateSelection: a generic question (no subject token) is replaced by the candidate skeleton', () => {
   const cands = candidatesFromUnknowns([unk({ kind: 'unknown_finding', subject: 'migraine headaches' })], mkCase(), KEYS);
-  const id = 'COMPLAINT_STATUS:migraine-headaches';
-  const valid = validateSelection([{ id, question: 'And how are you feeling overall?' }], cands);
+  const valid = validateSelection([{ n: nOf(cands, 'COMPLAINT_STATUS:migraine-headaches'), question: 'And how are you feeling overall?' }], cands);
   assert.equal(valid.length, 1);
   assert.equal(valid[0].ask.question, 'How is migraine headaches now?');   // skeleton restored
   assert.equal(questionMentionsSubject('migraine headaches', 'And how are you feeling overall?'), false);
@@ -141,7 +154,7 @@ test('assembly: every high-alert MED_STATUS ask is ALWAYS first (ladder rank 0),
   });
   const u = unk({ kind: 'unknown_finding', subject: 'blurred vision' });
   const cands = candidatesFromUnknowns([u], episode, KEYS);
-  const pick = validateSelection([{ id: 'COMPLAINT_STATUS:blurred-vision', question: 'Any blurred vision since the visit?' }], cands);
+  const pick = validateSelection([{ n: nOf(cands, 'COMPLAINT_STATUS:blurred-vision'), question: 'Any blurred vision since the visit?' }], cands);
   const out = assembleInquiryAskSet(episode, KEYS, cands, pick);
   assert.equal(out.source, 'inquiry');
   assert.equal(out.ask_set_version, 'ask-set/0.2');
@@ -178,9 +191,9 @@ test('K2 ladder (B5 ranks): rungs serve in order 0<1<3<4<5<6<7<8 regardless of t
   assert.equal(priorityRank({ id: 'OUTSIDE_RECORDS:x', family: 'OUTSIDE_RECORDS', subject: '', question: 'q', unknownIds: [], why: 'baseline', sourceKinds: [] }), 8);
   // feed picks in REVERSED priority order — served order must still be the ladder's
   const picks = validateSelection([
-    { id: 'COMPLAINT_STATUS:dizziness', question: 'How is the dizziness now?' },
-    { id: 'FOLLOWUP_ACTION:vitamin-d', question: 'Your Vitamin D was very low — book a repeat test?' },
-    { id: 'MED_STATUS:atorvastatin', question: 'You had stopped Atorvastatin — taking it now?' },
+    { n: nOf(cands, 'COMPLAINT_STATUS:dizziness'), question: 'How is the dizziness now?' },
+    { n: nOf(cands, 'FOLLOWUP_ACTION:vitamin-d'), question: 'Your Vitamin D was very low — book a repeat test?' },
+    { n: nOf(cands, 'MED_STATUS:atorvastatin'), question: 'You had stopped Atorvastatin — taking it now?' },
   ], cands);
   const out = assembleInquiryAskSet(episode, KEYS, cands, picks);
   assert.deepEqual(out.asks.map((a) => a.id), [
@@ -252,9 +265,9 @@ test('assembly: total cap stays 5 and the overflow list is preserved', () => {
   const unknowns = [unk({ kind: 'unknown_finding', subject: 'night sweats' }), unk({ kind: 'unknown_finding', subject: 'blurred vision' }), unk({ kind: 'care_gap', subject: 'HbA1c', detail: 'abnormal (9.1) % — not rechecked in 8mo' })];
   const cands = candidatesFromUnknowns(unknowns, episode, KEYS);
   const picks = validateSelection([
-    { id: 'COMPLAINT_STATUS:night-sweats', question: 'Any night sweats still?' },
-    { id: 'COMPLAINT_STATUS:blurred-vision', question: 'Any blurred vision since the visit?' },
-    { id: 'FOLLOWUP_ACTION:hba1c', question: 'Your HbA1c needs a repeat — shall I book it?' },
+    { n: nOf(cands, 'COMPLAINT_STATUS:night-sweats'), question: 'Any night sweats still?' },
+    { n: nOf(cands, 'COMPLAINT_STATUS:blurred-vision'), question: 'Any blurred vision since the visit?' },
+    { n: nOf(cands, 'FOLLOWUP_ACTION:hba1c'), question: 'Your HbA1c needs a repeat — shall I book it?' },
   ], cands);
   const out = assembleInquiryAskSet(episode, KEYS, cands, picks);
   assert.equal(out.asks.length, 5, 'total cap stays 5');
@@ -280,9 +293,9 @@ test('K2: zero-valid-picks (parsed) is NOT a fallback — ladder assembles with 
   for (const a of out.asks) {
     assert.equal(a.question, base.asks.find((b) => b.id === a.id)!.question, `${a.id}: skeleton phrasing`);
   }
-  // via the full runner: parsed-empty and parsed-with-only-foreign-ids both keep the member asks
+  // via the full runner: parsed-empty and parsed-with-only-out-of-range-numbers both keep the member asks
   const u = unk({ kind: 'care_gap', subject: 'Vitamin D', detail: 'severely abnormal (8) ng/ml — not rechecked in 1.1y' });
-  for (const raw of ['{"picks":[]}', '{"picks":[{"id":"MED_STATUS:never-served","question":"Are you taking the never-served medicine?"}]}']) {
+  for (const raw of ['{"picks":[]}', '{"picks":[{"n":99,"question":"Are you taking the never-served medicine?"}]}']) {
     const r = await runInquirySelection(episode, KEYS, [u], { generate: async () => raw });
     assert.equal(r.source, 'inquiry', `${raw}: parsed ⇒ not a fallback`);
     assert.equal(r.ask_set_version, 'ask-set/0.2');
@@ -325,8 +338,9 @@ test('K2: transport failure retries ONCE, then falls back byte-identical to buil
 test('runInquirySelection happy path: validated picks served as ask-set/0.2 with askMeta derivation', async () => {
   const episode = mkCase({ medications: [{ generic: 'Insulin glargine', highAlert: true }], allergies: null });
   const u = unk({ kind: 'care_gap', subject: 'Vitamin D', detail: 'severely abnormal (8) ng/ml — not rechecked in 1.1y', criticality: 'safety' });
+  const n = nOf(candidatesFromUnknowns([u], episode, KEYS), 'FOLLOWUP_ACTION:vitamin-d');
   const r = await runInquirySelection(episode, KEYS, [u], {
-    generate: async () => JSON.stringify({ picks: [{ id: 'FOLLOWUP_ACTION:vitamin-d', question: 'Your Vitamin D was very low — shall I book a repeat test?', why: 'stale critical result' }] }),
+    generate: async () => JSON.stringify({ picks: [{ n, question: 'Your Vitamin D was very low — shall I book a repeat test?', why: 'stale critical result' }] }),
   });
   assert.equal(r.source, 'inquiry');
   assert.equal(r.ask_set_version, 'ask-set/0.2');
@@ -340,10 +354,41 @@ test('runInquirySelection happy path: validated picks served as ask-set/0.2 with
 });
 
 test('parseSelection tolerates prose around the JSON and rejects malformed shapes', () => {
-  assert.ok(parseSelection('Here you go:\n{"picks":[{"id":"a","question":"q"}]}\nthanks'));
+  assert.ok(parseSelection('Here you go:\n{"picks":[{"n":1,"question":"q"}]}\nthanks'));
   assert.equal(parseSelection('no json here'), null);
   assert.equal(parseSelection('{"picks":"nope"}'), null);
-  assert.equal(parseSelection('{"picks":[{"id":1,"question":"q"}]}'), null);
+  // a pick missing a numeric n, or with a non-string question, is a structural failure
+  assert.equal(parseSelection('{"picks":[{"id":"MED_STATUS:x","question":"q"}]}'), null);
+  assert.equal(parseSelection('{"picks":[{"n":"1","question":"q"}]}'), null);
+  assert.equal(parseSelection('{"picks":[{"n":1,"question":42}]}'), null);
+});
+
+test('B6: parseSelection strips markdown code fences (the live-prod fallback root cause)', () => {
+  // the real trace shape: a perfect answer wrapped in ```json … ``` fences
+  const fenced = '```json\n{"picks":[{"n":1,"question":"Doctor started Lantus recently — have you begun the injections?","why":"newly added insulin"}],"rationale":"new drug first"}\n```';
+  const picks = parseSelection(fenced)!;
+  assert.ok(picks, 'fenced JSON parses');
+  assert.equal(picks.length, 1);
+  assert.equal(picks[0].n, 1);
+  assert.match(picks[0].question, /Lantus/);
+  // bare (unfenced) JSON stays back-compatible; a bare ``` fence (no language tag) also parses
+  assert.ok(parseSelection('{"picks":[{"n":2,"question":"q"}]}'));
+  assert.ok(parseSelection('```\n{"picks":[{"n":2,"question":"q"}]}\n```'));
+});
+
+test('B6 end-to-end: a fenced, number-based Gemini response serves source inquiry with Gemini phrasing', async () => {
+  const episode = mkCase({ medications: [{ generic: 'Insulin glargine', brand: 'Lantus', highAlert: true }], allergies: null });
+  const cands = candidatesFromUnknowns([], episode, KEYS);
+  const n = nOf(cands, cands.find((c) => c.meta?.highAlert)!.id);
+  const r = await runInquirySelection(episode, KEYS, [], {
+    generate: async () => '```json\n{"picks":[{"n":' + n + ',"question":"Doctor started Insulin glargine (Lantus) — have you begun the injections?","why":"newly added insulin"}]}\n```',
+  });
+  assert.equal(r.source, 'inquiry', 'fenced response is NOT a fallback');
+  assert.equal(r.ask_set_version, 'ask-set/0.2');
+  assert.equal(r.asks[0].meta?.highAlert, true, 'ladder still owns slot order');
+  assert.equal(r.asks[0].question, 'Doctor started Insulin glargine (Lantus) — have you begun the injections?', "Gemini's phrasing survives parse + number-map");
+  const meta = r.askMeta.find((m) => m.askId === r.asks[0].id)!;
+  assert.equal(meta.why, 'newly added insulin');
 });
 
 test('fallbackAskSet is buildAskSet verbatim (deep-equal asks + overflow)', () => {

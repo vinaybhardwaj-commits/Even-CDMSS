@@ -12,7 +12,7 @@ import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { isCareUnlocked } from '@/lib/care-cookie';
 import { ccbApiKeyValid } from '@/lib/ccb-apikey';
 import { withTrace, governedChat } from '@/lib/trace';
-import { GEMINI_MODEL, TEXT_MODEL } from '@/lib/llm';
+import { GEMINI_FLASH_MODEL, TEXT_MODEL } from '@/lib/llm';
 import { individualUidForPresc, getMemberSnapshot } from '@/lib/member-state/member-state';
 import { deriveUnknowns, type UnknownItem } from '@/lib/inquiry/unknowns-core';
 import { runInquirySelection, INQUIRY_VERSION, type InquiryAskSet } from '@/lib/inquiry/inquiry-core';
@@ -65,7 +65,9 @@ async function serveInquiry(oc: DeidOpdCase, askKeys: AskKeys): Promise<InquiryA
           messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
           temperature: 0.2,
           max_tokens: 900,
-        }, { gemini: GEMINI_MODEL, promptRef: 'inquiry-core/INQUIRY_SELECT_SYSTEM' });
+        // B6: Flash, not Pro — select-and-phrase is light (the clinical ordering is the
+        // deterministic ladder); Pro's "thinking" overran the 20s cap on the first live serve.
+        }, { gemini: GEMINI_FLASH_MODEL, promptRef: 'inquiry-core/INQUIRY_SELECT_SYSTEM' });
         return r?.choices?.[0]?.message?.content ?? '';
       },
     });
