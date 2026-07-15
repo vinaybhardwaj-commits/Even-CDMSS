@@ -11,7 +11,7 @@ import {
   type CandidateAsk, type SelectionPick,
 } from '../inquiry/inquiry-core';
 import { buildAskSet, ASK_SET_VERSION } from '../care-call-core';
-import type { UnknownItem } from '../inquiry/unknowns-core';
+import { deriveUnknowns, type UnknownItem } from '../inquiry/unknowns-core';
 import type { DeidOpdCase } from '../opd-ingest-core';
 
 const KEYS = { presc_uid: 'presc123', individual_uid: 'indiv123', uhid: null, note_date: '2026-07-09' };
@@ -147,7 +147,7 @@ test('assembly: every high-alert MED_STATUS ask is ALWAYS first (ladder rank 0),
   assert.equal(out.ask_set_version, 'ask-set/0.2');
   assert.equal(out.asks[0].family, 'MED_STATUS');
   assert.equal(out.asks[0].meta?.highAlert, true);
-  // K2: the LADDER owns order — the routine med (rank 4) precedes the complaints (rank 5);
+  // K2: the LADDER owns order — the routine med (rank 5) precedes the complaints (rank 6);
   // the Gemini pick keeps its PHRASING but does not jump the queue.
   assert.equal(out.asks[1].id, 'MED_STATUS:telmisartan');
   const picked = out.asks.find((a) => a.id === 'COMPLAINT_STATUS:blurred-vision')!;
@@ -155,7 +155,7 @@ test('assembly: every high-alert MED_STATUS ask is ALWAYS first (ladder rank 0),
   assert.equal(picked.question, 'Any blurred vision since the visit?', 'Gemini phrasing used');
 });
 
-test('K2 ladder: rungs serve in order 0<1<2<3<4<5<6<7 regardless of the pick order fed in', () => {
+test('K2 ladder (B5 ranks): rungs serve in order 0<1<3<4<5<6<7<8 regardless of the pick order fed in', () => {
   const episode = mkCase({
     medications: [{ generic: 'Insulin glargine', highAlert: true }, { generic: 'Amlodipine' }],
     presentingComplaints: ['dizziness'],
@@ -169,13 +169,13 @@ test('K2 ladder: rungs serve in order 0<1<2<3<4<5<6<7 regardless of the pick ord
   const cands = candidatesFromUnknowns(unknowns, episode, KEYS);
   assert.equal(priorityRank(cands.find((c) => c.id === 'MED_STATUS:insulin-glargine')!), 0);
   assert.equal(priorityRank(cands.find((c) => c.id === 'MED_STATUS:atorvastatin')!), 1);
-  assert.equal(priorityRank(cands.find((c) => c.id === 'FOLLOWUP_ACTION:vitamin-d')!), 2);
-  assert.equal(priorityRank(cands.find((c) => c.family === 'FOLLOWUP_ACTION' && /Review in 2 weeks/.test(c.subject))!), 3);
-  assert.equal(priorityRank(cands.find((c) => c.id === 'MED_STATUS:amlodipine')!), 4);
-  assert.equal(priorityRank(cands.find((c) => c.family === 'COMPLAINT_STATUS')!), 5);
-  assert.equal(priorityRank(cands.find((c) => c.family === 'ALLERGY_CONFIRM')!), 6);
+  assert.equal(priorityRank(cands.find((c) => c.id === 'FOLLOWUP_ACTION:vitamin-d')!), 3);
+  assert.equal(priorityRank(cands.find((c) => c.family === 'FOLLOWUP_ACTION' && /Review in 2 weeks/.test(c.subject))!), 4);
+  assert.equal(priorityRank(cands.find((c) => c.id === 'MED_STATUS:amlodipine')!), 5);
+  assert.equal(priorityRank(cands.find((c) => c.family === 'COMPLAINT_STATUS')!), 6);
+  assert.equal(priorityRank(cands.find((c) => c.family === 'ALLERGY_CONFIRM')!), 7);
   // OUTSIDE_RECORDS fell off buildAskSet's cap in this fixture — rank asserted on a literal
-  assert.equal(priorityRank({ id: 'OUTSIDE_RECORDS:x', family: 'OUTSIDE_RECORDS', subject: '', question: 'q', unknownIds: [], why: 'baseline', sourceKinds: [] }), 7);
+  assert.equal(priorityRank({ id: 'OUTSIDE_RECORDS:x', family: 'OUTSIDE_RECORDS', subject: '', question: 'q', unknownIds: [], why: 'baseline', sourceKinds: [] }), 8);
   // feed picks in REVERSED priority order — served order must still be the ladder's
   const picks = validateSelection([
     { id: 'COMPLAINT_STATUS:dizziness', question: 'How is the dizziness now?' },
@@ -186,12 +186,58 @@ test('K2 ladder: rungs serve in order 0<1<2<3<4<5<6<7 regardless of the pick ord
   assert.deepEqual(out.asks.map((a) => a.id), [
     'MED_STATUS:insulin-glargine',       // 0 high-alert
     'MED_STATUS:atorvastatin',           // 1 contradiction
-    'FOLLOWUP_ACTION:vitamin-d',         // 2 care-gap follow-up
-    cands.find((c) => priorityRank(c) === 3)!.id,   // 3 routine follow-up
-    'MED_STATUS:amlodipine',             // 4 routine med
+    'FOLLOWUP_ACTION:vitamin-d',         // 3 care-gap follow-up
+    cands.find((c) => priorityRank(c) === 4)!.id,   // 4 routine follow-up
+    'MED_STATUS:amlodipine',             // 5 routine med
   ]);
   // a low-ranked Gemini pick (the complaint) did NOT become slot-1 — and fell off the top 5
   assert.ok(out.overflow.some((o) => o.family === 'COMPLAINT_STATUS' && o.subject === 'dizziness'));
+});
+
+test('B5 new-med rung: a med absent from a NON-EMPTY snapshot ranks 2 and leads over a care-gap; empty/absent snapshot stays routine 5', () => {
+  const NOW = '2026-07-15T00:00:00.000Z';
+  const episode = mkCase({
+    medications: [
+      { generic: 'Dapagliflozin', brand: 'Forxiga', strength: '10mg' },   // just started — NOT in prior records
+      { generic: 'Metformin', brand: 'Glycomet', strength: '500mg' },     // long-standing — in prior records
+    ],
+  });
+  const snapshot = {
+    version: 'member-state/1.1', computedAt: NOW, asOf: '2026-07-01', sourceWatermarks: {},
+    problems: [], allergies: [], conflicts: [], followUps: [], sourceEncounterRefs: [],
+    medications: [{
+      normalizedConcept: { raw: 'Metformin', relation: 'exact', normalizerVersion: 'member-normalize/0.2' },
+      status: 'prescribed', firstSeen: '2026-01-01', lastSeen: '2026-06-15', occurrences: [],
+    }],
+    investigations: [{
+      normalizedAnalyte: { raw: 'HbA1c', relation: 'exact', normalizerVersion: 'member-normalize/0.2' },
+      unit: '%',
+      series: [{ encounterRef: 'lab1', date: '2025-10-01', value: '9.1', unit: '%', abnormal: 'HIGH', provenance: { sourceField: 'x', rawText: 'x', extractionMethod: 'deterministic', confidence: 1 } }],
+    }],
+  };
+  const unknowns = deriveUnknowns({ episode, snapshot: snapshot as never, now: NOW });
+  const cands = candidatesFromUnknowns(unknowns, episode, KEYS);
+  // the new_medication unknown MERGED into the baseline med candidate (same deterministic id)
+  const dapa = cands.find((c) => c.id === 'MED_STATUS:dapagliflozin-forxiga-10mg')!;
+  assert.ok(dapa, 'merged candidate exists under the buildAskSet med-label id');
+  assert.ok(dapa.sourceKinds?.includes('new_medication'), 'baseline candidate gained the new_medication kind');
+  assert.equal(priorityRank(dapa), 2, 'newly-started med is rank 2');
+  const metf = cands.find((c) => c.id === 'MED_STATUS:metformin-glycomet-500mg')!;
+  assert.equal(priorityRank(metf), 5, 'a med present in prior records stays routine');
+  const gap = cands.find((c) => c.family === 'FOLLOWUP_ACTION' && c.sourceKinds?.includes('care_gap'))!;
+  assert.ok(gap, 'stale abnormal HbA1c derives a care-gap follow-up');
+  assert.equal(priorityRank(gap), 3);
+  // assembled: new med leads, the care-gap keeps slot 2 (the B2 ruling shape)
+  const out = assembleInquiryAskSet(episode, KEYS, cands, []);
+  assert.equal(out.asks[0].id, 'MED_STATUS:dapagliflozin-forxiga-10mg');
+  assert.equal(out.asks[1].id, gap.id);
+  // EMPTY snapshot med list / absent snapshot ⇒ no new_medication ⇒ the same med stays rank 5
+  for (const snap of [{ ...snapshot, medications: [], investigations: [] }, null]) {
+    const c2 = candidatesFromUnknowns(deriveUnknowns({ episode, snapshot: snap as never, now: NOW }), episode, KEYS);
+    const d2 = c2.find((c) => c.id === 'MED_STATUS:dapagliflozin-forxiga-10mg')!;
+    assert.equal(d2.sourceKinds?.includes('new_medication'), false, 'thin evidence never flags "new"');
+    assert.equal(priorityRank(d2), 5);
+  }
 });
 
 test('assembly: total cap stays 5 and the overflow list is preserved', () => {
@@ -215,7 +261,7 @@ test('assembly: total cap stays 5 and the overflow list is preserved', () => {
   assert.equal(out.asks[0].meta?.highAlert, true);
   assert.equal(out.asks[1].meta?.highAlert, true);
   assert.ok(out.overflow.length >= 1, 'overflow preserved');
-  // K2 ladder: both follow-ups (care-gap rank 2, baseline rank 3) now outrank complaints (5) —
+  // K2 ladder: both follow-ups (care-gap rank 3, baseline rank 4) now outrank complaints (6) —
   // the unserved complaints/allergy/outside land in overflow instead.
   assert.ok(out.overflow.some((o) => o.family === 'COMPLAINT_STATUS'), 'unserved lower-rung asks recorded in overflow');
   const ids = new Set(out.asks.map((a) => a.id));

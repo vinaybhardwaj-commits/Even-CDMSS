@@ -69,6 +69,7 @@ export function questionMentionsSubject(subject: string, question: string): bool
 // ── §5 candidate generation (pure) ──
 const SKELETONS: Partial<Record<UnknownKind, (u: UnknownItem) => { family: AskItem['family']; question: string } | null>> = {
   med_contradiction: (u) => ({ family: 'MED_STATUS', question: clip(`Last time you said you'd stopped ${u.subject} — how is it now, are you taking it?`, 160) }),
+  new_medication: (u) => ({ family: 'MED_STATUS', question: clip(`Doctor started ${u.subject} recently — have you begun taking it?`, 160) }),
   unknown_finding: (u) => ({ family: 'COMPLAINT_STATUS', question: clip(`How is ${u.subject} now?`, 160) }),
   missing_critical: (u) => ({ family: 'COMPLAINT_STATUS', question: clip(`How is ${u.subject} now?`, 160) }),
   care_gap: (u) => ({ family: 'FOLLOWUP_ACTION', question: clip(`Your ${u.subject} was ${clip(u.detail, 60)} — shall I help you book a repeat test?`, 160) }),
@@ -117,20 +118,22 @@ export function candidatesFromUnknowns(unknowns: UnknownItem[], episode: DeidOpd
 }
 
 /**
- * K2 (B4 ruling): the deterministic clinical PRIORITY LADDER — lower = earlier. The ladder
- * owns slot ORDER (Gemini phrases only, never sets slot-1). Ties within a rung stay stable
- * by the candidate's original order, which preserves baseline note order.
+ * K2 (B4 ruling) + B5 rung insert: the deterministic clinical PRIORITY LADDER — lower = earlier.
+ * The ladder owns slot ORDER (Gemini phrases only, never sets slot-1). Ties within a rung stay
+ * stable by the candidate's original order, which preserves baseline note order.
  */
 export function priorityRank(c: CandidateAsk): number {
   const kinds = c.sourceKinds ?? [];
   if (c.family === 'MED_STATUS' && c.meta?.highAlert === true) return 0;   // high-alert med — invariant slot-1
+  // contradiction outranks new-by-construction: a contradicted med was seen before, so not new
   if (c.family === 'MED_STATUS' && kinds.includes('med_contradiction')) return 1;
-  if (c.family === 'FOLLOWUP_ACTION' && kinds.includes('care_gap')) return 2;
-  if (c.family === 'FOLLOWUP_ACTION') return 3;                            // episode follow-up-open / baseline
-  if (c.family === 'MED_STATUS') return 4;                                 // routine med
-  if (c.family === 'COMPLAINT_STATUS') return 5;
-  if (c.family === 'ALLERGY_CONFIRM') return 6;
-  return 7;                                                                // OUTSIDE_RECORDS
+  if (c.family === 'MED_STATUS' && kinds.includes('new_medication')) return 2;   // B5: just-started med — confirm uptake
+  if (c.family === 'FOLLOWUP_ACTION' && kinds.includes('care_gap')) return 3;
+  if (c.family === 'FOLLOWUP_ACTION') return 4;                            // episode follow-up-open / baseline
+  if (c.family === 'MED_STATUS') return 5;                                 // routine med
+  if (c.family === 'COMPLAINT_STATUS') return 6;
+  if (c.family === 'ALLERGY_CONFIRM') return 7;
+  return 8;                                                                // OUTSIDE_RECORDS
 }
 
 /** Unknowns that produced no candidate — persisted as `dropped` (PRD §5/§8). */

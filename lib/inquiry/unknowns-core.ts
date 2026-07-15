@@ -4,13 +4,16 @@
 // No LLM, no I/O, no Date.now (`now` is PASSED IN). Identical inputs ⇒ identical output order.
 //
 // Import discipline (architecture rule 5): VALUE imports are limited to the spine read layer
-// (present-augment) and the frozen care-call floor — never a scored core. Intra-inquiry imports
-// are type-only throughout lib/inquiry (rule 5 is a valueOnly rule over both directions).
+// (present-augment), the member-state normalizer (normalize-core — not a scored core; B5 keys
+// new_medication the same way member-reconcile keys meds) and the frozen care-call floor — never
+// a scored core. Intra-inquiry imports are type-only throughout lib/inquiry (rule 5 is a
+// valueOnly rule over both directions).
 
 import type { ClinicalState } from '../clinical-state/schema';
 import type { MemberStateSnapshot } from '../member-state/schema';
 import type { DeidOpdCase, OpdMed } from '../opd-ingest-core';
 import { computeCareGaps } from '../member-state/present-augment';
+import { normalizeConcept, groupingKey } from '../member-state/normalize-core';
 import { followUpSubjects } from '../care-call-core';
 
 export type UnknownKind =
@@ -18,6 +21,7 @@ export type UnknownKind =
   | 'missing_critical'     // clinicalState.missingCriticalData[] strings
   | 'instability_input'    // clinicalState.instability.missingInputs (vitals channels)
   | 'med_contradiction'    // prescribed vs patient-reported stopped/not_taking/unknown, unresolved at latest evidence
+  | 'new_medication'       // episode med ABSENT from a non-empty snapshot's prior meds (B5 — uptake unconfirmed)
   | 'care_gap'             // computeCareGaps output (abnormal + stale)
   | 'followup_open'        // followUpSubjects()-style open follow-up with no committed action
   | 'allergy_unconfirmed'; // allergy field blank on the note (mirrors ask-set/0.1 trigger)
@@ -70,8 +74,14 @@ function isHighAlertSubject(subject: string, episode: DeidOpdCase | null | undef
   return false;
 }
 
-const medRaw = (m: OpdMed): string => [m.generic, m.brand].filter(Boolean).join(' ');
-void medRaw; // (kept for symmetry with isHighAlertSubject; label assembly lives there)
+// Deliberately identical to care-call-core's medLabel (not exported there; the frozen floor is
+// never edited) so a new_medication subject slugs to the SAME `MED_STATUS:${slug(label)}` id as
+// buildAskSet's med ask — candidatesFromUnknowns then MERGES them instead of serving duplicates.
+const medLabel = (m: OpdMed): string => {
+  const g = (m.generic || '').trim(); const b = (m.brand || '').trim(); const s = (m.strength || '').trim();
+  const brandPart = b ? ` (${b}${s ? ` ${s}` : ''})` : (s ? ` (${s})` : '');
+  return `${g || b || 'medication'}${g ? brandPart : ''}`.trim();
+};
 
 /**
  * Pure derivation: state(s) → UnknownItem[] (Inquiry PRD §4). Mapping is total and
@@ -157,6 +167,34 @@ export function deriveUnknowns(input: DeriveUnknownsInput): UnknownItem[] {
           : [`member:medication:${slug(subject)}`],
         stateRef: memberRef,
       });
+    }
+    // new_medication (B5 ruling): an episode med ABSENT from the snapshot's prior meds — the
+    // doctor just started it, so confirming uptake gets its own ladder rung. DETERMINISTIC and
+    // member-derived: keyed via normalizeConcept→groupingKey, the same keying member-reconcile
+    // uses — never note-text parsing. ONLY against a NON-EMPTY prior med list (a thin/empty
+    // snapshot cannot tell "new" from "unknown" → derive nothing, episode-only degradation).
+    const priorMeds = snapshot.medications ?? [];
+    if (priorMeds.length && episode) {
+      const priorKeys = new Set<string>();
+      for (const m of priorMeds) {
+        if (m.normalizedConcept) priorKeys.add(groupingKey(m.normalizedConcept));
+        const raw = m.normalizedConcept?.raw || '';
+        // re-key the raw too: normalizer-version drift in a stored concept must never flag "new"
+        if (raw) priorKeys.add(groupingKey(normalizeConcept(raw, 'medication')));
+      }
+      for (const m of episode.medications ?? []) {
+        if (m.highAlert) continue;                        // high-alert wins rank 0 anyway — no redundant unknown
+        const raw = (m.generic || m.brand || '').trim();  // aggregate-core's keying precedence
+        if (!raw || priorKeys.has(groupingKey(normalizeConcept(raw, 'medication')))) continue;
+        const subject = medLabel(m);
+        push({
+          kind: 'new_medication', subject,
+          detail: `doctor started ${subject} — not in prior records`,
+          criticality: 'review',
+          sourceRefs: [`episode:medication:${slug(subject)}`],
+          stateRef: memberRef,
+        });
+      }
     }
     // care_gap: the spine read layer's own arithmetic — detail carried VERBATIM.
     for (const g of computeCareGaps(snapshot.investigations ?? [], snapshot.medications ?? [], input.now)) {

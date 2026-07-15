@@ -389,7 +389,7 @@
           "investigations": [
             {
               "normalizedAnalyte": {
-                "raw": "Glycosylated Haemoglobin (HbA1c)",
+                "raw": "HbA1c",
                 "relation": "exact",
                 "normalizerVersion": "member-normalize/0.2"
               },
@@ -435,11 +435,11 @@
         "legalSlots23": [
           {
             "family": "FOLLOWUP_ACTION",
-            "subject": "glucose"
+            "subject": "hba1c"
           },
           {
             "family": "FOLLOWUP_ACTION",
-            "subject": "post prandial"
+            "subject": "glucose"
           },
           {
             "family": "OUTSIDE_RECORDS"
@@ -486,8 +486,8 @@
           ],
           "investigations": [],
           "advice": [
-            "Start Tab Dapagliflozin 10mg OD (new)",
-            "Recheck HbA1c in 3 months"
+            "Continue Metformin; add Dapagliflozin",
+            "Recheck HbA1c"
           ],
           "examination": [],
           "allergies": null,
@@ -531,7 +531,7 @@
           "investigations": [
             {
               "normalizedAnalyte": {
-                "raw": "Glycosylated Haemoglobin (HbA1c)",
+                "raw": "HbA1c",
                 "relation": "exact",
                 "normalizerVersion": "member-normalize/0.2"
               },
@@ -1317,7 +1317,7 @@
     },
     {
       "id": "D2",
-      "note": "Recommended HbA1c on note, not yet done",
+      "note": "HbA1c repeat advised in 3 months, not yet booked",
       "fixture": {
         "episode": {
           "consultType": null,
@@ -1339,16 +1339,13 @@
               "frequency": "1-0-1"
             }
           ],
-          "investigations": [
-            {
-              "test": "Glycosylated Haemoglobin (Hba1C)",
-              "recommended": true
-            }
+          "investigations": [],
+          "advice": [
+            "Repeat HbA1c after 3 months"
           ],
-          "advice": [],
           "examination": [],
           "allergies": null,
-          "followUpType": "review",
+          "followUpType": null,
           "followUpDateSet": false,
           "noteDate": "2026-07-01"
         },

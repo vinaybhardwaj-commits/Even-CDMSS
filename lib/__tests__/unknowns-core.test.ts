@@ -99,6 +99,52 @@ test('med_contradiction also derives from reconciled status stopped/not_taking/u
   assert.ok(mc.sourceRefs.length >= 1);
 });
 
+test('new_medication (B5): derives ONLY for meds absent from a NON-EMPTY snapshot med list', () => {
+  const episode = mkCase({
+    medications: [
+      { generic: 'Dapagliflozin', brand: 'Forxiga', strength: '10mg' },
+      { generic: 'Metformin', brand: 'Glycomet', strength: '500mg' },
+    ],
+  });
+  const snap = mkSnapshot({
+    medications: [{
+      normalizedConcept: { raw: 'Metformin', relation: 'exact', normalizerVersion: 'member-normalize/0.2' },
+      status: 'prescribed', firstSeen: '2026-01-01', lastSeen: '2026-06-15',
+      occurrences: [{ encounterRef: 'e1', date: '2026-06-15', provenance: PROV }],
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any],
+  });
+  const items = deriveUnknowns({ episode, snapshot: snap, now: NOW });
+  const nm = items.filter((i) => i.kind === 'new_medication');
+  assert.equal(nm.length, 1, 'only the med absent from prior records flags');
+  // subject is the buildAskSet med LABEL — the candidate id must merge with the baseline med ask
+  assert.equal(nm[0].subject, 'Dapagliflozin (Forxiga 10mg)');
+  assert.equal(nm[0].detail, 'doctor started Dapagliflozin (Forxiga 10mg) — not in prior records');
+  assert.equal(nm[0].criticality, 'review');
+  assert.deepEqual(nm[0].sourceRefs, ['episode:medication:dapagliflozin-forxiga-10mg']);
+  assert.equal(nm[0].stateRef.kind, 'member');
+  // EMPTY snapshot med list ⇒ cannot tell "new" from "unknown" ⇒ nothing derives
+  const empty = deriveUnknowns({ episode, snapshot: mkSnapshot(), now: NOW });
+  assert.equal(empty.some((i) => i.kind === 'new_medication'), false);
+  // snapshot absent ⇒ member-derived kinds absent (D14)
+  const absent = deriveUnknowns({ episode, snapshot: null, now: NOW });
+  assert.equal(absent.some((i) => i.kind === 'new_medication'), false);
+});
+
+test('new_medication (B5): a high-alert episode med is skipped (it wins rank 0 anyway)', () => {
+  const episode = mkCase({ medications: [{ generic: 'Insulin glargine', brand: 'Lantus', highAlert: true }] });
+  const snap = mkSnapshot({
+    medications: [{
+      normalizedConcept: { raw: 'Metformin', relation: 'exact', normalizerVersion: 'member-normalize/0.2' },
+      status: 'prescribed', firstSeen: '2026-01-01', lastSeen: '2026-06-15',
+      occurrences: [{ encounterRef: 'e1', date: '2026-06-15', provenance: PROV }],
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any],
+  });
+  const items = deriveUnknowns({ episode, snapshot: snap, now: NOW });
+  assert.equal(items.some((i) => i.kind === 'new_medication'), false);
+});
+
 test('care_gap derives from a stale mapped-range abnormal (detail verbatim, severity mapped)', () => {
   const snap = mkSnapshot({
     investigations: [{
