@@ -327,6 +327,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "inquiry",
+    "plane": "advisory"
+  },
+  {
     "id": "investigations",
     "plane": "unregistered"
   },
@@ -1092,6 +1096,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "harvest-epmc",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "inquiry",
     "kind": "value"
   },
   {
@@ -2200,6 +2209,41 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "inquiry",
+    "to": "care-call-core",
+    "kind": "type"
+  },
+  {
+    "from": "inquiry",
+    "to": "care-call-core",
+    "kind": "value"
+  },
+  {
+    "from": "inquiry",
+    "to": "clinical-state",
+    "kind": "type"
+  },
+  {
+    "from": "inquiry",
+    "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "inquiry",
+    "to": "member-state",
+    "kind": "type"
+  },
+  {
+    "from": "inquiry",
+    "to": "member-state",
+    "kind": "value"
+  },
+  {
+    "from": "inquiry",
+    "to": "opd-ingest-core",
+    "kind": "type"
+  },
+  {
     "from": "investigations",
     "to": "trace",
     "kind": "value"
@@ -3046,6 +3090,30 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "INQUIRY_ASK_SET_VERSION",
+    "value": "ask-set/0.2",
+    "file": "lib/inquiry/inquiry-core.ts",
+    "derived": false
+  },
+  {
+    "constName": "INQUIRY_EVAL_VERSION",
+    "value": "inquiry-eval/1.0",
+    "file": "lib/inquiry/inquiry-eval-core.ts",
+    "derived": false
+  },
+  {
+    "constName": "INQUIRY_GOLD_VERSION",
+    "value": "inquiry-gold/1.0",
+    "file": "lib/inquiry/inquiry-eval-core.ts",
+    "derived": false
+  },
+  {
+    "constName": "INQUIRY_VERSION",
+    "value": "inquiry/0.1",
+    "file": "lib/inquiry/inquiry-core.ts",
+    "derived": false
+  },
+  {
     "constName": "MATCHER_VERSION",
     "value": "ddx-eval/3",
     "file": "lib/ddx-eval-core.ts",
@@ -3180,16 +3248,18 @@ export const VERSION_REGISTRY: VersionRow[] = [
 ];
 
 export const COVERAGE = {
-  "registered": 9,
-  "unregistered": 13,
-  "total": 22,
+  "registered": 10,
+  "unregistered": 15,
+  "total": 25,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
     "ccb-brief-core",
     "ccb-dossier-cache-core",
     "ddx-eval-core",
+    "doc-audit-core",
     "dose-limits",
+    "formulary-match-core",
     "mcp-server",
     "opd-note-audit",
     "opd-note-audit-core",
@@ -3233,6 +3303,17 @@ export const MAP_RULES: MapRule[] = [
     "sourceGlobs": [
       "lib/member-state/**",
       "lib/clinical-state/**"
+    ]
+  },
+  {
+    "id": 5,
+    "name": "inquiry (advisory) and the scored cores never value-import each other",
+    "sourceGlobs": [
+      "lib/inquiry/**",
+      "lib/opd-note-audit-core.ts",
+      "lib/opd-note-score-core.ts",
+      "lib/doc-audit-core.ts",
+      "lib/formulary-match-core.ts"
     ]
   }
 ];

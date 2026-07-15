@@ -63,6 +63,23 @@ export const RULES = [
     forbid: [/prediction/],
     valueOnly: false,
   },
+  {
+    id: 5,
+    // Inquiry K1 (both directions in ONE valueOnly rule): lib/inquiry/** must not value-import a
+    // scored core, and the scored cores must never value-import lib/inquiry/**. `import type` is
+    // allowed on both sides (which also keeps intra-inquiry type-only imports and the scored
+    // cores' existing type-only cross-imports legal — see the module headers in lib/inquiry/).
+    name: 'inquiry (advisory) and the scored cores never value-import each other',
+    sourceGlobs: ['lib/inquiry/**', 'lib/opd-note-audit-core.ts', 'lib/opd-note-score-core.ts', 'lib/doc-audit-core.ts', 'lib/formulary-match-core.ts'],
+    forbid: [
+      /(^|\/)opd-note-audit-core$/,
+      /(^|\/)opd-note-score-core$/,
+      /(^|\/)doc-audit-core$/,
+      /(^|\/)formulary-match-core$/,
+      /(^|\/)inquiry\//,
+    ],
+    valueOnly: true,
+  },
 ];
 
 // ── run (main-guarded: `npm run architecture:check` executes; importing RULES does not) ──────────

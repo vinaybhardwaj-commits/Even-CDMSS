@@ -5,6 +5,7 @@ export const maxDuration = 60;
 import { NextRequest, NextResponse } from 'next/server';
 import { validateOutcome, type AskResponse } from '@/lib/care-call-core';
 import { saveOutcome } from '@/lib/care-call-store';
+import { servedVersionsForPresc } from '@/lib/inquiry/inquiry-store';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { isCareUnlocked } from '@/lib/care-cookie';
 import { ccbApiKeyValid } from '@/lib/ccb-apikey';
@@ -37,11 +38,22 @@ export async function POST(req: NextRequest) {
   const v = validateOutcome({ disposition: body.disposition, responses }, served);
   if (!v.ok) return NextResponse.json({ error: v.reason }, { status: 400 });
 
+  // Inquiry K1 (additive): the client-echoed ask_set_version is passed through ONLY after
+  // validating it against the persisted served sets for this episode (inquiry_asksets).
+  // Unknown/absent/unvalidatable ⇒ default (ASK_SET_VERSION) — reads soft-fail to [].
+  let askSetVersion: string | undefined;
+  const echoed = typeof body.ask_set_version === 'string' ? body.ask_set_version.trim() : '';
+  if (echoed) {
+    const served = await servedVersionsForPresc(presc_uid).catch(() => [] as string[]);
+    if (served.includes(echoed)) askSetVersion = echoed;
+  }
+
   try {
     const res = await saveOutcome({
       id, presc_uid, individual_uid,
       uhid: body.uhid ? String(body.uhid) : null, note_date: body.note_date ? String(body.note_date) : null,
       disposition: body.disposition as never, responses, cm_ref: body.cm_ref ? String(body.cm_ref) : null,
+      ask_set_version: askSetVersion,
     });
     return NextResponse.json({ ok: true, ...res });
   } catch (e) {

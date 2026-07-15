@@ -95,6 +95,15 @@ export const MODULE_MANIFESTS: ModuleManifest[] = [
     lifecycle: 'integrated', // relocated in Slice 1 Part A; in the live member-state path
   },
   {
+    id: 'inquiry',
+    title: 'What to ask next',
+    blurb: 'Turns what is still unknown about a patient into the few questions most worth asking on the next call. Advisory only — it never scores, and any failure falls back to the plain deterministic ask-set.',
+    plane: 'advisory',
+    paths: ['lib/inquiry/**'],
+    lifecycle: 'implemented', // K1: cores + bench + serving path, dark behind INQUIRY_ENABLED (bench gate D13)
+    versionConst: 'INQUIRY_VERSION',
+  },
+  {
     id: 'architecture',
     title: 'This map’s own tooling',
     blurb: 'The behind-the-scenes tooling that keeps this very page accurate and up to date on every change.',
@@ -116,7 +125,9 @@ export const UNREGISTERED: string[] = [
   'ccb-brief-core',         // care-brief engine (care-brief/0.1)
   'ccb-dossier-cache-core', // dossier snapshot cache (schema v2)
   'ddx-eval-core',          // DDx frozen evaluator (ddx-eval/3, ddx-case-bank/1.0)
+  'doc-audit-core',         // Right Care record-audit engine (named by rule 5's scored-core globs)
   'dose-limits',            // dose-limits reference table
+  'formulary-match-core',   // formulary matcher (named by rule 5's scored-core globs)
   'mcp-server',             // MCP protocol surface
   'opd-note-audit',         // audit engine wrapper (mini engine)
   'opd-note-audit-core',    // the OPD audit engine (opd-note-audit/0.81.8)

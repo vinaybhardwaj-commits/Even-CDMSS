@@ -5,10 +5,10 @@
   "scope_note": "Reasoning configuration ONLY — standing prompt system-instructions and rubrics. Contains NO clinical data, NO patient text, NO run outputs, NO retrieved passages, NO PHI. Every entry carries a sha256 content hash for reproducibility. Text may contain ${...} template slots (variable inputs), which are part of the instruction scaffold, not data.",
   "coverage_note": "Standing prompt consts + rubrics extracted from lib/. A few prompts are assembled inline inside route handlers (ask, topics, calculators/tooltip) rather than as named consts and are not captured here — this is exactly the gap the prompt registry closes.",
   "counts": {
-    "prompts": 27,
+    "prompts": 28,
     "rubrics": 6,
-    "user_message_builders": 29,
-    "features": 16
+    "user_message_builders": 30,
+    "features": 17
   },
   "prompts": [
     {
@@ -150,6 +150,20 @@
       "chars": 1356,
       "lines": 14,
       "text": "You are a meticulous clinical-informatics referee. You are given (A) a clinical presentation as named fields and (B) a machine-extracted ClinicalState (a list of findings, each present/absent/unknown with the source substring it rests on).\n\nGrade the extraction on FOUR dimensions, each a 0.0–1.0 score:\n1. \"recall\": did it capture the findings, stated negatives, and expected not-mentioned items the presentation actually contains? Missing a clearly-stated finding lowers this.\n2. \"statusAccuracy\": are present/absent/unknown correct? A stated negative marked present, or an asserted finding marked absent, lowers this.\n3. \"noFabrication\": did it AVOID inventing findings not supported by the text? Any finding not grounded in the presentation lowers this. (unknown/not-mentioned checklist items are NOT fabrications.)\n4. \"provenanceAccuracy\": does each finding's source substring actually support the stated concept and status?\n\nAlso return, per finding you were given, a verdict, and list clearly-stated findings the extraction MISSED.\n\nReturn ONLY JSON:\n{\"dimensions\":{\"recall\":0.0,\"statusAccuracy\":0.0,\"noFabrication\":0.0,\"provenanceAccuracy\":0.0},\n \"findings\":[{\"concept\":\"…\",\"status\":\"present|absent|unknown\",\"verdict\":\"ok|wrong-status|fabricated|imprecise-span\",\"note\":\"…\"}],\n \"missed\":[\"<clearly-stated finding the extraction failed to capture>\"]}"
+    },
+    {
+      "id": "inquiry-core/INQUIRY_SELECT_SYSTEM",
+      "const": "INQUIRY_SELECT_SYSTEM",
+      "feature": "inquiry-core",
+      "group": "System",
+      "file": "lib/inquiry/inquiry-core.ts",
+      "kind": "system",
+      "version_hint": "INQUIRY_VERSION=inquiry/0.1",
+      "sha256": "e69ff6468a71ee02c1c64b718c50857da8cc8ceca6496a0741f63f5d35112695",
+      "sha12": "e69ff6468a71",
+      "chars": 1194,
+      "lines": 13,
+      "text": "You help a care manager decide which few questions are most worth asking a patient on a post-visit phone call.\n\nYou are given a numbered list of CANDIDATE questions (each with an id, family, subject, why it matters, and criticality) plus a short clinical context summary. Every candidate is already clinically legal — your job is ONLY to choose and phrase, never to invent.\n\nRules:\n- Pick the AT MOST 3 candidates most worth asking FIRST, ordered by importance.\n- You may rewrite each pick's question text to be warmer and more specific, and its \"why\" — nothing else. The question MUST still name the candidate's subject, be a single question, and stay under 160 characters.\n- NEVER invent a question that is not in the candidate list. NEVER change a candidate's family, subject or id.\n- Prefer safety-critical unknowns (stopped high-alert medicines, contradictions, severely abnormal stale results) over routine ones.\n- If nothing beats the baseline candidates, pick the best baseline candidates.\n\nRespond with JSON ONLY, exactly this shape:\n{\"picks\":[{\"id\":\"<candidate id>\",\"question\":\"<the question to ask>\",\"why\":\"<one short line for the care manager>\"}],\"rationale\":\"<optional, one line>\"}"
     },
     {
       "id": "investigations/PARSE_SYSTEM",
@@ -514,6 +528,11 @@
       "fn": "buildExtractUser",
       "file": "lib/doc-audit-core.ts",
       "feature": "Right Care · Record audit"
+    },
+    {
+      "fn": "buildInquirySelectUser",
+      "file": "lib/inquiry/inquiry-core.ts",
+      "feature": "inquiry-core"
     },
     {
       "fn": "buildCanonicalizeUser",

@@ -48,6 +48,9 @@ const rowToOutcome = (r: Record<string, unknown>): CareCallOutcome => {
 export async function saveOutcome(input: {
   id: string; presc_uid: string; individual_uid: string; uhid?: string | null; note_date?: string | null;
   called_at?: string; disposition: CareCallOutcome['disposition']; responses: AskResponse[]; cm_ref?: string | null;
+  // Inquiry K1 (additive): which ask-set generation served the call ('ask-set/0.2' when the
+  // inquiry path built it). Default stays ASK_SET_VERSION — existing callers are unchanged.
+  ask_set_version?: string;
 }): Promise<{ id: string; attempt: number }> {
   // idempotent: an existing id returns as-is.
   const existing = await q(sql`SELECT id, attempt FROM care_call_outcomes WHERE id = ${input.id} LIMIT 1`);
@@ -56,17 +59,18 @@ export async function saveOutcome(input: {
   const derived = deriveAssertions(input.responses);
   const esc = escalationFlag(input.responses);
   const calledAt = input.called_at || new Date().toISOString();   // the STORE stamps call time (not the frozen core)
+  const askSetVersion = input.ask_set_version || ASK_SET_VERSION;
 
   for (let tries = 0; tries < 3; tries++) {
     const cnt = await q(sql`SELECT count(*)::int AS n FROM care_call_outcomes WHERE presc_uid = ${input.presc_uid}`);
     const attempt = Number(cnt[0]?.n ?? 0) + 1 + tries;
     const payload: CareCallOutcome = {
       id: input.id, presc_uid: input.presc_uid, individual_uid: input.individual_uid, uhid: input.uhid ?? null, note_date: input.note_date ?? null,
-      attempt, called_at: calledAt, disposition: input.disposition, engine_version: CARE_CALL_ENGINE, ask_set_version: ASK_SET_VERSION,
+      attempt, called_at: calledAt, disposition: input.disposition, engine_version: CARE_CALL_ENGINE, ask_set_version: askSetVersion,
       responses: input.responses, derived, flags: { escalation: esc }, cm_ref: input.cm_ref ?? null,
     };
     const ins = await q(sql`INSERT INTO care_call_outcomes (id, presc_uid, individual_uid, uhid, note_date, attempt, called_at, disposition, engine_version, ask_set_version, payload, escalation, cm_ref)
-      VALUES (${input.id}, ${input.presc_uid}, ${input.individual_uid}, ${input.uhid ?? null}, ${input.note_date ?? null}, ${attempt}, ${calledAt}, ${input.disposition}, ${CARE_CALL_ENGINE}, ${ASK_SET_VERSION}, ${JSON.stringify(payload)}, ${!!esc}, ${input.cm_ref ?? null})
+      VALUES (${input.id}, ${input.presc_uid}, ${input.individual_uid}, ${input.uhid ?? null}, ${input.note_date ?? null}, ${attempt}, ${calledAt}, ${input.disposition}, ${CARE_CALL_ENGINE}, ${askSetVersion}, ${JSON.stringify(payload)}, ${!!esc}, ${input.cm_ref ?? null})
       ON CONFLICT (presc_uid, attempt) DO NOTHING RETURNING id, attempt`);
     if (ins.length) return { id: String(ins[0].id), attempt: Number(ins[0].attempt) };
     // lost the (presc_uid, attempt) race — but the id may now exist (a duplicate submit)

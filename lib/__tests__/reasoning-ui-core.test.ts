@@ -32,7 +32,7 @@ const FORBIDDEN = /(patient|phi\b|uhid|mrn|dob|diagnos|complaint|medication|symp
 
 test('registryTabRows maps generated + manifest correctly', () => {
   const rows = registryTabRows();
-  assert.equal(rows.length, 27, 'one row per registry prompt');
+  assert.equal(rows.length, 28, 'one row per registry prompt');   // +1: inquiry-core/INQUIRY_SELECT_SYSTEM (K1)
   const judge = rows.find((r) => r.id === 'lvc-core/JUDGE_SYSTEM')!;
   assert.ok(judge, 'known prompt present');
   assert.equal(judge.maturity, 'draft', 'manifest maturity merged');

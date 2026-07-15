@@ -59,6 +59,7 @@ export const UNREGISTERED_PROMPTS: string[] = [
   'expand/SYSTEM',
   'extract/NORMALISE_SYSTEM',
   'extraction-eval-core/JUDGE_SYSTEM',
+  'inquiry-core/INQUIRY_SELECT_SYSTEM',
   'investigations/PARSE_SYSTEM',
   'learning-core/CANONICALIZE_SYSTEM',
   'lvc-core/CANDIDATE_SYSTEM',

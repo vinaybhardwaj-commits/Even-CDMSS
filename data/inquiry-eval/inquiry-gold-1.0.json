@@ -1,0 +1,149 @@
+{
+  "version": "inquiry-gold/1.0",
+  "status": "SCHEMA + PLACEHOLDER FIXTURES ONLY — real gold cases are authored by the orchestrator from de-identified db13 members/episodes and ratified by V (Inquiry PRD §12, D13). The bank version freezes on ratification; no floor may be set from placeholder cases.",
+  "schema_note": {
+    "case": {
+      "id": "stable case id",
+      "placeholder": "true while the case is a worked fixture, absent/false once ratified gold",
+      "note": "free-text provenance of the case",
+      "fixture.episode": "DeidOpdCase-shaped input (lib/opd-ingest-core), frozen in this file",
+      "fixture.snapshot": "MemberStateSnapshot-shaped evidence (lib/member-state/schema) or null for episode-only cases",
+      "fixture.now": "the deterministic `now` passed to deriveUnknowns (never the wall clock)",
+      "fixture.keys": "AskKeys { presc_uid, individual_uid, uhid, note_date } — synthetic, never real identifiers",
+      "expected.first": "the expected FIRST ask as { family, subject } (subject matched by ≥4-char token overlap)",
+      "expected.legalSlots23": "legal set for slots 2–3: [{ family, subject? }] — an ask in slots 2–3 outside this set fails family-legality; absent ⇒ any legal family",
+      "expected.forbiddenGeneric": "marker phrases whose presence flags a question as generic"
+    },
+    "metrics": "right-first-question rate · family-legality rate (must be 100%) · generic rate · fallback rate (lib/inquiry/inquiry-eval-core.ts, inquiry-eval/1.0)",
+    "target_size": "20-30 ratified cases: high-alert med, care gap, contradiction, follow-up open, allergy blank, plus >=5 nothing-worth-asking-beyond-baseline negatives"
+  },
+  "cases": [
+    {
+      "id": "PL01",
+      "placeholder": true,
+      "note": "WORKED FIXTURE (not clinical gold) — episode-only: a high-alert medicine must be asked about first; allergy field blank.",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": ["persistent headache"],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [
+            { "generic": "Insulin glargine", "brand": "Lantus", "strength": "100 IU/ml", "dose": "10 units", "frequency": "at night", "highAlert": true },
+            { "generic": "Telmisartan", "brand": "Telma", "strength": "40", "dose": "1 tab", "frequency": "1-0-0" }
+          ],
+          "investigations": [],
+          "advice": [],
+          "examination": [],
+          "allergies": null,
+          "followUpType": null,
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": null,
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": { "presc_uid": "goldpresc01", "individual_uid": "goldindiv01", "uhid": null, "note_date": "2026-07-01" }
+      },
+      "expected": {
+        "first": { "family": "MED_STATUS", "subject": "Insulin glargine" },
+        "legalSlots23": [
+          { "family": "MED_STATUS", "subject": "Telmisartan" },
+          { "family": "COMPLAINT_STATUS", "subject": "persistent headache" },
+          { "family": "ALLERGY_CONFIRM" },
+          { "family": "OUTSIDE_RECORDS" }
+        ],
+        "forbiddenGeneric": ["how are you feeling in general", "any other problems"]
+      }
+    },
+    {
+      "id": "PL02",
+      "placeholder": true,
+      "note": "WORKED FIXTURE (not clinical gold) — episode + member snapshot: a patient-reported stop contradiction and a stale severely-abnormal Vitamin D; the contradiction outranks the routine follow-up.",
+      "fixture": {
+        "episode": {
+          "consultType": null,
+          "reasonForConsult": null,
+          "presentingComplaints": ["fatigue"],
+          "diagnosisCodes": [],
+          "impressionCodes": [],
+          "impressions": [],
+          "history": [],
+          "comorbidities": [],
+          "medications": [
+            { "generic": "Atorvastatin", "brand": "Atorva", "strength": "20", "dose": "1 tab", "frequency": "0-0-1" }
+          ],
+          "investigations": [],
+          "advice": ["Repeat lipid profile after 3 months"],
+          "examination": [],
+          "allergies": "nil",
+          "followUpType": null,
+          "followUpDateSet": false,
+          "noteDate": "2026-07-01"
+        },
+        "snapshot": {
+          "version": "member-state/1.1",
+          "normalizationVersion": "member-normalize/0.2",
+          "reconciliationVersion": "member-reconcile/0.3",
+          "computedAt": "2026-07-15T00:00:00.000Z",
+          "asOf": "2026-07-01",
+          "sourceWatermarks": {},
+          "problems": [],
+          "medications": [
+            {
+              "normalizedConcept": { "raw": "Atorvastatin", "relation": "exact", "normalizerVersion": "member-normalize/0.2" },
+              "status": "stopped",
+              "firstSeen": "2026-01-10",
+              "lastSeen": "2026-06-20",
+              "occurrences": [
+                { "encounterRef": "enc-rx-1", "date": "2026-01-10", "provenance": { "sourceField": "medications", "rawText": "Atorvastatin 20", "extractionMethod": "deterministic", "confidence": 1 } },
+                { "encounterRef": "enc-cc-1", "date": "2026-06-20", "provenance": { "sourceField": "care_call_outcomes", "rawText": "stopped", "extractionMethod": "reported", "confidence": 0.9 } }
+              ]
+            }
+          ],
+          "allergies": [],
+          "investigations": [
+            {
+              "normalizedAnalyte": { "raw": "Vitamin D", "relation": "exact", "normalizerVersion": "member-normalize/0.2" },
+              "unit": "ng/ml",
+              "series": [
+                { "encounterRef": "enc-lab-1", "date": "2025-06-01", "value": "8", "unit": "ng/ml", "abnormal": "LOW", "provenance": { "sourceField": "test_values_view", "rawText": "8", "extractionMethod": "deterministic", "confidence": 1 } }
+              ]
+            }
+          ],
+          "conflicts": [
+            {
+              "id": "dx-med-atorvastatin-1",
+              "domain": "medication",
+              "type": "status_conflict",
+              "assertions": [
+                { "encounterRef": "enc-rx-1", "date": "2026-01-10", "detail": "Atorvastatin: prescribed" },
+                { "encounterRef": "enc-cc-1", "date": "2026-06-20", "detail": "Atorvastatin: stopped" }
+              ],
+              "severity": "review",
+              "resolutionStatus": "open"
+            }
+          ],
+          "followUps": [],
+          "sourceEncounterRefs": ["enc-rx-1", "enc-cc-1", "enc-lab-1"]
+        },
+        "now": "2026-07-15T00:00:00.000Z",
+        "keys": { "presc_uid": "goldpresc02", "individual_uid": "goldindiv02", "uhid": null, "note_date": "2026-07-01" }
+      },
+      "expected": {
+        "first": { "family": "MED_STATUS", "subject": "Atorvastatin" },
+        "legalSlots23": [
+          { "family": "MED_STATUS", "subject": "Atorvastatin" },
+          { "family": "FOLLOWUP_ACTION", "subject": "Repeat lipid profile after 3 months" },
+          { "family": "FOLLOWUP_ACTION", "subject": "Vitamin D" },
+          { "family": "COMPLAINT_STATUS", "subject": "fatigue" },
+          { "family": "OUTSIDE_RECORDS" }
+        ],
+        "forbiddenGeneric": ["how are you feeling in general", "any other problems"]
+      }
+    }
+  ]
+}
