@@ -48,12 +48,13 @@ test('outcomeForPrompt maps the committed scorecard to the right prompt version/
   assert.equal(o!.repeats, 5);
   const base = o!.arms.find((a) => a.arm === 'ungrounded')!;
   const grounded = o!.arms.find((a) => a.arm === 'grounded')!;
-  // The kickoff's headline numbers, straight off the committed artifact:
+  // Headline numbers straight off the committed artifact. Re-measured 16-Jul-2026 on the
+  // calibrated JUDGE_SYSTEM: grounded 1.0 recall improved 97.8% → 100% (non-regressed).
   assert.equal(base.recall.mean, 1, 'ungrounded recall 100%');
   assert.equal(base.f1.mean, 1);
   assert.equal(base.specificity.mean, 1);
-  assert.equal(grounded.recall.mean, sc.armStats.on.recall.mean, 'grounded recall 97.8%');
-  assert.ok(Math.abs(grounded.recall.mean - 0.9777777777777779) < 1e-12);
+  assert.equal(grounded.recall.mean, sc.armStats.on.recall.mean, 'grounded recall 100%');
+  assert.equal(grounded.recall.mean, 1);
   assert.equal(grounded.f1.mean, sc.armStats.on.f1.mean);
   // ₹/p50 are honest nulls — the harness never recorded them.
   assert.equal(o!.rupeesPerRun, null);
@@ -129,6 +130,6 @@ test('determinism + evidence currency', () => {
   assert.deepEqual(outcomeForPrompt('lvc-core/JUDGE_SYSTEM'), outcomeForPrompt('lvc-core/JUDGE_SYSTEM'));
   assert.equal(allOutcomes().length, 1, 'Order check is the only gold-backed vertical today');
   const o = outcomeForPrompt('lvc-core/JUDGE_SYSTEM')!;
-  assert.equal(o.measuredHash, promptFingerprint('lvc-core/JUDGE_SYSTEM')!.hash, 'prompt bytes unchanged since b628e15');
+  assert.equal(o.measuredHash, promptFingerprint('lvc-core/JUDGE_SYSTEM')!.hash, 'prompt bytes unchanged since the 16-Jul-2026 calibration re-pin');
   assert.equal(o.current, true);
 });

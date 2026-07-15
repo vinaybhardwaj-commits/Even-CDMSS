@@ -3,7 +3,7 @@
   "gold": "right-care-check-gold/1.0",
   "mode": "ab",
   "repeats": 5,
-  "generated": "2026-07-14T00:26:47.639Z",
+  "generated": "2026-07-15T17:16:42.554Z",
   "armStats": {
     "off": {
       "recall": {
@@ -115,11 +115,11 @@
     },
     "on": {
       "recall": {
-        "mean": 0.9777777777777779,
-        "std": 0.02721655269759088,
+        "mean": 1,
+        "std": 0,
         "perRepeat": [
-          0.9444444444444444,
-          0.9444444444444444,
+          1,
+          1,
           1,
           1,
           1
@@ -148,11 +148,11 @@
         ]
       },
       "f1": {
-        "mean": 0.9885714285714287,
-        "std": 0.013997084244475308,
+        "mean": 1,
+        "std": 0,
         "perRepeat": [
-          0.9714285714285714,
-          0.9714285714285714,
+          1,
+          1,
           1,
           1,
           1
@@ -163,25 +163,25 @@
           "nCases": 36,
           "nMustFire": 18,
           "nMustNotFire": 18,
-          "hits": 17,
-          "misses": 1,
+          "hits": 18,
+          "misses": 0,
           "falsePositives": 0,
-          "recall": 0.9444444444444444,
+          "recall": 1,
           "specificity": 1,
           "precision": 1,
-          "f1": 0.9714285714285714
+          "f1": 1
         },
         {
           "nCases": 36,
           "nMustFire": 18,
           "nMustNotFire": 18,
-          "hits": 17,
-          "misses": 1,
+          "hits": 18,
+          "misses": 0,
           "falsePositives": 0,
-          "recall": 0.9444444444444444,
+          "recall": 1,
           "specificity": 1,
           "precision": 1,
-          "f1": 0.9714285714285714
+          "f1": 1
         },
         {
           "nCases": 36,
@@ -290,7 +290,7 @@
       },
       "on": {
         "n": 5,
-        "targetFired": 3
+        "targetFired": 5
       }
     },
     {
@@ -1056,13 +1056,17 @@
       "id": "GC-aafp-001-pos",
       "arm": "on",
       "k": 1,
-      "fired": []
+      "fired": [
+        "cwus-aafp-001"
+      ]
     },
     {
       "id": "GC-aafp-001-pos",
       "arm": "on",
       "k": 2,
-      "fired": []
+      "fired": [
+        "cwus-aafp-001"
+      ]
     },
     {
       "id": "GC-aafp-001-pos",
@@ -1153,15 +1157,14 @@
       "arm": "off",
       "k": 1,
       "fired": [
-        "ehrc-2b42c495-61d4-49d5-9e2c-8d58b5045e6d",
         "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
-        "ehrc-4fd1cb48-938b-4f11-b828-0ced7767b809",
         "ehrc-f283f2c4-7739-46e2-b5c8-997d89a79f5c",
         "ehrc-f4fb811c-7e57-440a-bf0d-3386d0f3dcbb",
         "ehrc-7ac10177-dc6f-4d8a-9f52-ed2fc39f3fa2",
         "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
-        "ehrc-1c5340d3-cf20-4810-a2ae-bd528d056a28",
-        "cwus-aafp-002"
+        "cwus-idsa-002",
+        "cwus-aafp-002",
+        "cwus-aafp-005"
       ]
     },
     {
@@ -1174,7 +1177,9 @@
         "ehrc-f4fb811c-7e57-440a-bf0d-3386d0f3dcbb",
         "ehrc-7ac10177-dc6f-4d8a-9f52-ed2fc39f3fa2",
         "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
-        "cwus-aafp-002"
+        "cwus-idsa-002",
+        "cwus-aafp-002",
+        "cwus-aafp-005"
       ]
     },
     {
@@ -1187,7 +1192,9 @@
         "ehrc-f4fb811c-7e57-440a-bf0d-3386d0f3dcbb",
         "ehrc-7ac10177-dc6f-4d8a-9f52-ed2fc39f3fa2",
         "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
-        "cwus-aafp-002"
+        "cwus-idsa-002",
+        "cwus-aafp-002",
+        "cwus-aafp-005"
       ]
     },
     {
@@ -1195,15 +1202,14 @@
       "arm": "off",
       "k": 4,
       "fired": [
-        "ehrc-2b42c495-61d4-49d5-9e2c-8d58b5045e6d",
         "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
-        "ehrc-4fd1cb48-938b-4f11-b828-0ced7767b809",
         "ehrc-f283f2c4-7739-46e2-b5c8-997d89a79f5c",
         "ehrc-f4fb811c-7e57-440a-bf0d-3386d0f3dcbb",
         "ehrc-7ac10177-dc6f-4d8a-9f52-ed2fc39f3fa2",
         "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
-        "ehrc-1c5340d3-cf20-4810-a2ae-bd528d056a28",
-        "cwus-aafp-002"
+        "cwus-idsa-002",
+        "cwus-aafp-002",
+        "cwus-aafp-005"
       ]
     },
     {
@@ -1211,15 +1217,14 @@
       "arm": "off",
       "k": 5,
       "fired": [
-        "ehrc-2b42c495-61d4-49d5-9e2c-8d58b5045e6d",
         "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
-        "ehrc-4fd1cb48-938b-4f11-b828-0ced7767b809",
         "ehrc-f283f2c4-7739-46e2-b5c8-997d89a79f5c",
         "ehrc-f4fb811c-7e57-440a-bf0d-3386d0f3dcbb",
         "ehrc-7ac10177-dc6f-4d8a-9f52-ed2fc39f3fa2",
         "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
-        "ehrc-1c5340d3-cf20-4810-a2ae-bd528d056a28",
-        "cwus-aafp-002"
+        "cwus-idsa-002",
+        "cwus-aafp-002",
+        "cwus-aafp-005"
       ]
     },
     {
@@ -1227,15 +1232,14 @@
       "arm": "on",
       "k": 1,
       "fired": [
-        "ehrc-2b42c495-61d4-49d5-9e2c-8d58b5045e6d",
         "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
-        "ehrc-4fd1cb48-938b-4f11-b828-0ced7767b809",
         "ehrc-f283f2c4-7739-46e2-b5c8-997d89a79f5c",
         "ehrc-f4fb811c-7e57-440a-bf0d-3386d0f3dcbb",
         "ehrc-7ac10177-dc6f-4d8a-9f52-ed2fc39f3fa2",
         "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
-        "ehrc-1c5340d3-cf20-4810-a2ae-bd528d056a28",
-        "cwus-aafp-002"
+        "cwus-idsa-002",
+        "cwus-aafp-002",
+        "cwus-aafp-005"
       ]
     },
     {
@@ -1243,15 +1247,14 @@
       "arm": "on",
       "k": 2,
       "fired": [
-        "ehrc-2b42c495-61d4-49d5-9e2c-8d58b5045e6d",
         "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
-        "ehrc-4fd1cb48-938b-4f11-b828-0ced7767b809",
         "ehrc-f283f2c4-7739-46e2-b5c8-997d89a79f5c",
         "ehrc-f4fb811c-7e57-440a-bf0d-3386d0f3dcbb",
         "ehrc-7ac10177-dc6f-4d8a-9f52-ed2fc39f3fa2",
         "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
-        "ehrc-1c5340d3-cf20-4810-a2ae-bd528d056a28",
-        "cwus-aafp-002"
+        "cwus-idsa-002",
+        "cwus-aafp-002",
+        "cwus-aafp-005"
       ]
     },
     {
@@ -1259,15 +1262,14 @@
       "arm": "on",
       "k": 3,
       "fired": [
-        "ehrc-2b42c495-61d4-49d5-9e2c-8d58b5045e6d",
         "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
-        "ehrc-4fd1cb48-938b-4f11-b828-0ced7767b809",
         "ehrc-f283f2c4-7739-46e2-b5c8-997d89a79f5c",
         "ehrc-f4fb811c-7e57-440a-bf0d-3386d0f3dcbb",
         "ehrc-7ac10177-dc6f-4d8a-9f52-ed2fc39f3fa2",
         "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
-        "ehrc-1c5340d3-cf20-4810-a2ae-bd528d056a28",
-        "cwus-aafp-002"
+        "cwus-idsa-002",
+        "cwus-aafp-002",
+        "cwus-aafp-005"
       ]
     },
     {
@@ -1275,15 +1277,14 @@
       "arm": "on",
       "k": 4,
       "fired": [
-        "ehrc-2b42c495-61d4-49d5-9e2c-8d58b5045e6d",
         "ehrc-e7724b30-d58c-441f-9080-a0f6f1329b48",
-        "ehrc-4fd1cb48-938b-4f11-b828-0ced7767b809",
         "ehrc-f283f2c4-7739-46e2-b5c8-997d89a79f5c",
         "ehrc-f4fb811c-7e57-440a-bf0d-3386d0f3dcbb",
         "ehrc-7ac10177-dc6f-4d8a-9f52-ed2fc39f3fa2",
         "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
-        "ehrc-1c5340d3-cf20-4810-a2ae-bd528d056a28",
-        "cwus-aafp-002"
+        "cwus-idsa-002",
+        "cwus-aafp-002",
+        "cwus-aafp-005"
       ]
     },
     {
@@ -1296,7 +1297,9 @@
         "ehrc-f4fb811c-7e57-440a-bf0d-3386d0f3dcbb",
         "ehrc-7ac10177-dc6f-4d8a-9f52-ed2fc39f3fa2",
         "ehrc-06e581ae-0a42-47c7-af1e-b99cac562638",
-        "cwus-aafp-002"
+        "cwus-idsa-002",
+        "cwus-aafp-002",
+        "cwus-aafp-005"
       ]
     },
     {
@@ -1856,8 +1859,7 @@
       "arm": "on",
       "k": 4,
       "fired": [
-        "cwus-acc-001",
-        "cwus-acp-001"
+        "cwus-acc-001"
       ]
     },
     {
@@ -2183,7 +2185,9 @@
       "id": "GC-acp-001-neg",
       "arm": "on",
       "k": 1,
-      "fired": []
+      "fired": [
+        "cwus-ahaacchrs-001"
+      ]
     },
     {
       "id": "GC-acp-001-neg",
@@ -2201,13 +2205,17 @@
       "id": "GC-acp-001-neg",
       "arm": "on",
       "k": 4,
-      "fired": []
+      "fired": [
+        "cwus-ahaacchrs-001"
+      ]
     },
     {
       "id": "GC-acp-001-neg",
       "arm": "on",
       "k": 5,
-      "fired": []
+      "fired": [
+        "cwus-ahaacchrs-001"
+      ]
     },
     {
       "id": "GC-acr-001-pos",
@@ -2370,8 +2378,7 @@
       "arm": "off",
       "k": 3,
       "fired": [
-        "cwus-aga-001",
-        "cwus-asa-001"
+        "cwus-aga-001"
       ]
     },
     {
@@ -2411,7 +2418,6 @@
       "arm": "on",
       "k": 3,
       "fired": [
-        "cwus-asa-001",
         "cwus-aga-001"
       ]
     },
@@ -2459,13 +2465,17 @@
       "id": "GC-aga-001-neg",
       "arm": "off",
       "k": 5,
-      "fired": []
+      "fired": [
+        "cwus-aace-004"
+      ]
     },
     {
       "id": "GC-aga-001-neg",
       "arm": "on",
       "k": 1,
-      "fired": []
+      "fired": [
+        "cwus-aace-004"
+      ]
     },
     {
       "id": "GC-aga-001-neg",
@@ -2645,7 +2655,8 @@
       "arm": "off",
       "k": 2,
       "fired": [
-        "cwus-asa-001"
+        "cwus-asa-001",
+        "cwus-acp-001"
       ]
     },
     {
@@ -2653,7 +2664,8 @@
       "arm": "off",
       "k": 3,
       "fired": [
-        "cwus-asa-001"
+        "cwus-asa-001",
+        "cwus-acp-001"
       ]
     },
     {
@@ -2661,7 +2673,8 @@
       "arm": "off",
       "k": 4,
       "fired": [
-        "cwus-asa-001"
+        "cwus-asa-001",
+        "cwus-acp-001"
       ]
     },
     {
@@ -2669,7 +2682,8 @@
       "arm": "off",
       "k": 5,
       "fired": [
-        "cwus-asa-001"
+        "cwus-asa-001",
+        "cwus-acp-001"
       ]
     },
     {
@@ -2677,7 +2691,8 @@
       "arm": "on",
       "k": 1,
       "fired": [
-        "cwus-asa-001"
+        "cwus-asa-001",
+        "cwus-acp-001"
       ]
     },
     {
@@ -2685,7 +2700,8 @@
       "arm": "on",
       "k": 2,
       "fired": [
-        "cwus-asa-001"
+        "cwus-asa-001",
+        "cwus-acp-001"
       ]
     },
     {
@@ -2702,8 +2718,7 @@
       "arm": "on",
       "k": 4,
       "fired": [
-        "cwus-asa-001",
-        "cwus-acp-001"
+        "cwus-asa-001"
       ]
     },
     {

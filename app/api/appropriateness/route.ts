@@ -75,8 +75,14 @@ export async function POST(req: NextRequest) {
       // the structured negatives/unknowns. Deterministic stage only (no trace exists yet).
       // Flag off (the shipped default) → this block is inert: build order and every prompt are
       // exactly Slice 1. Fail-open: a build failure just runs the check ungrounded.
+      // Order-check grounding gate (additive; JUDGE_SYSTEM calibration kickoff, 15-Jul-2026):
+      // grounding fires iff the master + Slice-2 flags are on AND RIGHT_CARE_GROUND_ORDERCHECK !== '0'.
+      // Unset → undefined !== '0' → true, so behaviour is byte-identical to today (still gated by
+      // the two existing flags, both default off). '=0' disables grounding for Order-check ONLY —
+      // pathway/audit read their own state and are untouched.
+      const orderCheckGrounded = rightCareGroundingEnabled() && process.env.RIGHT_CARE_GROUND_ORDERCHECK !== '0';
       let built: Awaited<ReturnType<typeof buildRightCareState>> = null;
-      if (rightCareGroundingEnabled()) {
+      if (orderCheckGrounded) {
         built = await buildRightCareState(
           rightCareExtractInput('check', { scenario, proposedActions, age: patient.age, sex: patient.sex }));
         if (built) input.clinicalStateText = patientPictureBlock(built.state);

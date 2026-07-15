@@ -62,11 +62,13 @@ const sc = CHECK_SCORECARD as unknown as RawScorecard;
 
 const stat = (s: RawStat): OutcomeStat => ({ mean: s.mean, std: s.std });
 
-/** sha256 of lvc-core/JUDGE_SYSTEM at b628e15, when check-gold-scorecard-v1 was measured.
+/** sha256 of lvc-core/JUDGE_SYSTEM as measured — re-pinned 16-Jul-2026 for the JUDGE_SYSTEM
+ *  calibration (absence-defined preconditions + chronicity + named-exclusions rules); the 1.0
+ *  governance gold was re-run on these bytes (check-gold-scorecard-v1, both arms 100%).
  *  Deliberately pinned (not resolved from the live registry): the metrics belong to these
  *  exact prompt bytes; `current` compares against today's registry hash. */
-const CHECK_MEASURED_HASH = 'e5a53d1aed4087584184fe5e2131d70433cc482b9d3c28649ac7a34a108c1d0d';
-const CHECK_MEASURED_AT = 'b628e15';
+const CHECK_MEASURED_HASH = '12ca534cb6de8e5a5ce0aad4655a4a55f177cc22d415de2b4e3e1e7dd736411a';
+const CHECK_MEASURED_AT = 'judge-cal-16jul2026';
 
 function checkOutcome(): PromptOutcome {
   const live = promptFingerprint('lvc-core/JUDGE_SYSTEM');
