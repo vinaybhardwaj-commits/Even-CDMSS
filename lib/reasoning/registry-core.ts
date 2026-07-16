@@ -12,9 +12,15 @@
  */
 
 import GENERATED from '../../data/reasoning-registry/prompts.generated.json';
-import { PROMPT_MANIFESTS, type Maturity } from './manifest';
+import { PROMPT_MANIFESTS, ENGINE_MANIFESTS, type Maturity, type EngineManifest } from './manifest';
 
-export type { Maturity } from './manifest';
+export type { Maturity, EngineManifest } from './manifest';
+
+/** Engine lookup (additive, IPD M1): resolve an engine_version string — base or a declared
+ *  variant (e.g. '-mini') — to its EngineManifest. Unknown id → null, never a throw. */
+export function engineManifestFor(engineVersion: string): EngineManifest | null {
+  return ENGINE_MANIFESTS.find((e) => e.id === engineVersion || (e.variants ?? []).includes(engineVersion)) ?? null;
+}
 
 export interface GeneratedPrompt {
   id: string;

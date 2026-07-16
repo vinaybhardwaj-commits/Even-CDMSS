@@ -335,6 +335,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "ipd-audit",
+    "plane": "audit-engine"
+  },
+  {
     "id": "jats-chunk",
     "plane": "unregistered"
   },
@@ -2249,6 +2253,11 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "ipd-audit",
+    "to": "db",
+    "kind": "value"
+  },
+  {
     "from": "lab",
     "to": "db",
     "kind": "value"
@@ -3114,6 +3123,18 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "IPD_ENGINE_VERSION",
+    "value": "ipd-discharge-audit/0.1",
+    "file": "lib/ipd-audit/store.ts",
+    "derived": false
+  },
+  {
+    "constName": "IPD_MINI_ENGINE_VERSION",
+    "value": "`${IPD_ENGINE_VERSION}-mini`",
+    "file": "lib/ipd-audit/store.ts",
+    "derived": true
+  },
+  {
     "constName": "MATCHER_VERSION",
     "value": "ddx-eval/3",
     "file": "lib/ddx-eval-core.ts",
@@ -3254,9 +3275,9 @@ export const VERSION_REGISTRY: VersionRow[] = [
 ];
 
 export const COVERAGE = {
-  "registered": 10,
+  "registered": 11,
   "unregistered": 15,
-  "total": 25,
+  "total": 26,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
@@ -3320,6 +3341,14 @@ export const MAP_RULES: MapRule[] = [
       "lib/opd-note-score-core.ts",
       "lib/doc-audit-core.ts",
       "lib/formulary-match-core.ts"
+    ]
+  },
+  {
+    "id": 6,
+    "name": "the spine must not value-import the IPD audit module",
+    "sourceGlobs": [
+      "lib/member-state/**",
+      "lib/clinical-state/**"
     ]
   }
 ];

@@ -80,6 +80,16 @@ export const RULES = [
     ],
     valueOnly: true,
   },
+  {
+    id: 6,
+    // IPD tripwire (IPD Discharge Audit M1): the frozen spine must never grow a value-import of
+    // the IPD audit module — guards the v2 admission-evidence adapter boundary before it exists.
+    // (The reverse direction — ipd-audit reading the spine's contract — is deliberately allowed.)
+    name: 'the spine must not value-import the IPD audit module',
+    sourceGlobs: ['lib/member-state/**', 'lib/clinical-state/**'],
+    forbid: [/(^|\/)ipd-audit\//],
+    valueOnly: true,
+  },
 ];
 
 // ── run (main-guarded: `npm run architecture:check` executes; importing RULES does not) ──────────

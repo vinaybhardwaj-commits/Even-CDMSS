@@ -46,6 +46,37 @@ export const PROMPT_MANIFESTS: PromptManifest[] = [
 ];
 
 /**
+ * ENGINE registrations (additive, IPD Discharge Audit M1): engines that REUSE registered
+ * prompts rather than defining new ones. The prompt registry above stays prompt-keyed and
+ * generated-not-authored; this block records the engine-version → prompt linkage so a
+ * composed engine (its version string is what lands in the audit table's engine_version)
+ * is a declared fact, not tribal knowledge. Coverage tests do not scan this list — an
+ * engine entry never satisfies (or breaks) prompt coverage.
+ */
+export interface EngineManifest {
+  id: string;              // the engine_version string persisted on audit rows
+  variants?: string[];     // e.g. the '-mini' Ollama/Qwen backfill twin
+  owner?: string;
+  prompts: string[];       // registered/generated prompt ids the engine invokes (reused, not new)
+  note?: string;
+}
+
+export const ENGINE_MANIFESTS: EngineManifest[] = [
+  {
+    id: 'ipd-discharge-audit/0.1',
+    variants: ['ipd-discharge-audit/0.1-mini'],
+    owner: 'V',
+    prompts: [
+      'doc-audit-core/EXTRACT_SYSTEM',
+      'doc-audit-core/ANALYZE_SYSTEM',
+      'doc-audit-core/AUDIT_CRITIQUE_SYSTEM',
+      'doc-audit-core/AUDIT_REVISE_SYSTEM',
+    ],
+    note: 'IPD discharge-summary audit — no new prompts; calls the shipped doc-audit engine + value-score-core.',
+  },
+];
+
+/**
  * The honest gap list: generated prompt ids with NO manifest entry yet. Every one renders as
  * 'unregistered' in the export — never hidden. Registering one means writing its PromptManifest
  * above and deleting it from this list (the coverage test fails on stale entries either way).

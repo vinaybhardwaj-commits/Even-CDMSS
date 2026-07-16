@@ -104,6 +104,15 @@ export const MODULE_MANIFESTS: ModuleManifest[] = [
     versionConst: 'INQUIRY_VERSION',
   },
   {
+    id: 'ipd-audit',
+    title: 'IPD discharge audit',
+    blurb: 'Audits every inpatient discharge summary — completeness, low-value care, and the Care-Value scorecard — by calling the shipped record-audit engine; stores the result de-identified with link-back keys.',
+    plane: 'audit-engine',
+    paths: ['lib/ipd-audit/**'],
+    lifecycle: 'implemented', // M1 foundation: table + store + registration; worker/surface land next slice
+    versionConst: 'IPD_ENGINE_VERSION',
+  },
+  {
     id: 'architecture',
     title: 'This map’s own tooling',
     blurb: 'The behind-the-scenes tooling that keeps this very page accurate and up to date on every change.',
