@@ -9,7 +9,7 @@ import { bandColor, istDateRange, fmtIstDateLong, type Period } from '@/lib/opd-
 import { bandFor, DOMAIN_LABEL, DEFAULT_WEIGHTS, VALUE_DOMAINS } from '@/lib/value-score-core';
 import { IPD_ENGINE_VERSION } from '@/lib/ipd-audit/store';
 import { dischargeDocDensity, namesForIpUids } from '@/lib/ipd-audit/db13';
-import { Locked, IpdTabs, PipelineStrip, addDays, todayIst } from './ui';
+import { Locked, IpdTabs, PipelineStrip, BandChip, addDays, todayIst } from './ui';
 
 export const dynamic = 'force-dynamic';
 
@@ -162,7 +162,7 @@ export default async function IpdAuditOverview({ searchParams }: { searchParams:
                     {names[String(r.ip_uid ?? '')]?.uhid && <span className="ml-1.5 text-[11px] text-slate-400">{names[String(r.ip_uid ?? '')]!.uhid}</span>}
                   </td>
                   <td className="px-2 py-2 text-slate-600">{String(r.speciality ?? '—')}</td>
-                  <td className="px-2 py-2"><span className="rounded-md px-1.5 py-0.5 text-[11px] font-semibold text-white" style={{ background: bandColor(String(r.band)) }}>{String(r.band)} · {Number(r.care_value_index)}</span></td>
+                  <td className="px-2 py-2"><BandChip band={String(r.band)} cvi={Number(r.care_value_index)} /></td>
                   <td className="px-2 py-2 text-slate-600">{Number(r.n_low_value)} LV · {Number(r.n_context_dependent)} CD</td>
                   <td className="px-2 py-2 text-slate-600">{r.completeness_pct == null ? '—' : `${Number(r.completeness_pct)}%`}</td>
                   <td className="px-2 py-2 text-slate-500">{String(r.audited)}</td>

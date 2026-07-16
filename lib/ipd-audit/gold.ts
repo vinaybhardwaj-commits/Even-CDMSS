@@ -19,10 +19,15 @@
 
 import { createHash } from 'crypto';
 
-export const IPD_AUDIT_GOLD_VERSION = 'ipd-audit-gold/1.0';
+// 1.1 (S4 decision, option b — V, 16-Jul-2026): the per-case CVI/band point values are
+// replaced by their K=5 DISTRIBUTION (modal band + band range + CVI mean/range) — S4 measured
+// the single-shot points as non-reproducible (1/25 band-stable; 6/25 gold CVIs outside their
+// own K=5 range). Ratified verdicts/findings/completeness byte-preserved from 1.0. The
+// measurement framing is ±1-tier band match + completeness + low-value THEME agreement.
+export const IPD_AUDIT_GOLD_VERSION = 'ipd-audit-gold/1.1';
 
 /** The governance pin — sha256 of JSON.stringify(gold.cases). Re-pinning requires V. */
-export const IPD_AUDIT_GOLD_SHA256 = '9e5c371ab9173e94e8831e1d613c0a244ac47c6540fbdb4bdaf8468fa761093c';
+export const IPD_AUDIT_GOLD_SHA256 = '389ce62b7371ece8703b7c0aa18e5b5c1d5553498fd68c165b3abd8e904d3eb3';
 
 export interface IpdGoldFinding {
   subject: string;
@@ -41,8 +46,12 @@ export interface IpdGoldCase {
   speciality: string;
   month: string;              // YYYY-MM
   los_days: number | null;
-  cvi: number;
-  band: string;
+  // 1.1: the band/CVI as a K=5 DISTRIBUTION, never a point value
+  band_modal: string;         // mode of the 5-run bands — the ±1-tier reference
+  band_range: string;         // distinct bands observed, best→worst span (e.g. 'B–C')
+  cvi_mean: number;           // mean of the 5 runs (not median — raw draws not retained in the S4 pack)
+  cvi_range: [number, number];
+  k: number;                  // 5
   completeness_pct: number;
   missing_mandatory: string[];
   findings: IpdGoldFinding[];
@@ -82,9 +91,12 @@ export function loadIpdAuditGold(raw: unknown): IpdAuditGold {
   if (sha !== g.content_sha256) throw new Error(`gold content drifted: sha ${sha.slice(0, 12)}… ≠ in-file ${String(g.content_sha256).slice(0, 12)}…`);
   if (sha !== IPD_AUDIT_GOLD_SHA256) throw new Error(`gold content ≠ the pinned governance hash — re-ratification required`);
   const seen = new Set<string>();
+  const BANDS = new Set(['A', 'B', 'C', 'D', 'E']);
   for (const c of g.cases) {
     if (!c.id || seen.has(c.id)) throw new Error(`duplicate/missing case id ${c.id}`);
     seen.add(c.id);
+    if (!BANDS.has(c.band_modal)) throw new Error(`${c.id}: band_modal '${c.band_modal}' outside A–E`);
+    if (c.k !== 5 || !Array.isArray(c.cvi_range) || c.cvi_range.length !== 2) throw new Error(`${c.id}: malformed K=5 distribution block`);
     for (const f of c.findings) {
       if (!VERDICTS.has(f.verdict)) throw new Error(`${c.id}: verdict '${f.verdict}' outside the enum`);
     }

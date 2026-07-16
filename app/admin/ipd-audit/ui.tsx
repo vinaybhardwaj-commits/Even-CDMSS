@@ -1,6 +1,23 @@
 // Shared server-safe chrome for the IPD Discharge Audit surface (S3): the unlock wall,
-// the sub-tab row, small formatters. No 'use client' — everything here renders on the server.
+// the sub-tab row, the uncertainty-marked band chip, small formatters. No 'use client' —
+// everything here renders on the server.
 import Link from 'next/link';
+import { bandColor } from '@/lib/opd-audit-ui';
+
+/**
+ * The HONEST band chip (S4 decision, option b): a single-run band is one noisy draw —
+ * S4 measured ±1-band noise (1/25 band-stable at K=5) — so every per-row band carries an
+ * explicit "±1 · provisional" marker. When a row someday has K runs (S5/S6), pass `range`
+ * (e.g. "B–C") and the marker shows the observed range instead.
+ */
+export function BandChip({ band, cvi, range }: { band: string; cvi: number; range?: string | null }) {
+  return (
+    <span className="inline-flex items-center gap-1" title={range ? `observed band range ${range} across repeats` : 'single-run estimate; ±1 band noise (S4-measured)'}>
+      <span className="rounded-md px-1.5 py-0.5 text-[11px] font-semibold text-white" style={{ background: bandColor(band) }}>{band} · {cvi}</span>
+      <span className="text-[9.5px] font-medium text-slate-400">{range ? range : '±1 · provisional'}</span>
+    </span>
+  );
+}
 
 /** The admin unlock wall (mirrors the OPD-audit inline Locked idiom). */
 export function Locked({ configured, bad }: { configured: boolean; bad?: boolean }) {

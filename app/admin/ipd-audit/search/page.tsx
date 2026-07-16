@@ -5,9 +5,9 @@
 import Link from 'next/link';
 import { sql } from '@/lib/db';
 import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
-import { bandColor } from '@/lib/opd-audit-ui';
+
 import { searchIpdAdmissions } from '@/lib/ipd-audit/db13';
-import { Locked, IpdTabs } from '../ui';
+import { Locked, IpdTabs, BandChip } from '../ui';
 import AuditNowButton from '../audit-now-button';
 
 export const dynamic = 'force-dynamic';
@@ -66,7 +66,7 @@ export default async function IpdAuditSearch({ searchParams }: { searchParams: P
                       <td className="px-2 py-2 text-slate-600">{h.losDays == null ? '—' : `${h.losDays}d`}</td>
                       <td className="px-2 py-2">{h.pdfUrl ? <a href={h.pdfUrl} target="_blank" className="text-brand hover:underline">PDF ↗</a> : <span className="text-slate-400">not filed</span>}</td>
                       <td className="px-2 py-2">
-                        {a ? <Link href={`/admin/ipd-audit/${a.id}`} className="rounded-md px-1.5 py-0.5 text-[11px] font-semibold text-white" style={{ background: bandColor(a.band) }}>{a.band} · {a.cvi}</Link>
+                        {a ? <Link href={`/admin/ipd-audit/${a.id}`} className="hover:opacity-80"><BandChip band={a.band} cvi={a.cvi} /></Link>
                           : h.documentId ? <AuditNowButton documentId={h.documentId} />
                           : <span className="text-[11px] text-slate-400">—</span>}
                       </td>

@@ -1,14 +1,14 @@
 {
-  "version": "ipd-audit-gold/1.0",
+  "version": "ipd-audit-gold/1.1",
   "status": "ratified",
-  "role_note": "ROLE: this gold is the engine's V-ratified OUTPUT, frozen. It measures reproducibility, cross-model (Gemini<->Qwen) parity, and version-bump regression - NOT absolute accuracy against an independent standard. That is its designed purpose for v1. The recurring completeness gaps ('Date of discharge', 'Date & time of signature') were V-confirmed as REAL systemic documentation gaps, not extraction artifacts - the completeness metric has no false-positive floor to correct.",
+  "role_note": "ROLE: this gold is the engine's V-ratified OUTPUT, frozen. It measures reproducibility, cross-model (Gemini<->Qwen) parity, and version-bump regression - NOT absolute accuracy against an independent standard. That is its designed purpose for v1. The recurring completeness gaps ('Date of discharge', 'Date & time of signature') were V-confirmed as REAL systemic documentation gaps, not extraction artifacts - the completeness metric has no false-positive floor to correct. 1.1 RE-DERIVATION (S4 decision, option b): the per-case CVI/band is replaced by its K=5 DISTRIBUTION (modal band, band range, CVI mean + range) - S4 measured the single-shot point values as non-reproducible (1/25 band-stable; 6/25 gold CVIs outside their own K=5 range). Ratified verdicts/findings/completeness are byte-preserved from 1.0. Measurement framing: +/-1-tier band match + completeness + low-value THEME agreement; exact-CVI/exact-band are retired as targets. cvi_mean (not median) is carried: the S4 pack retained aggregates, not raw draws.",
   "validator": "V",
   "ratified_at": "2026-07-16",
-  "basis": "single-validator, all-accepted",
+  "basis": "K=5 modal band + range, re-confirmed by V 16 Jul",
   "engine_version": "ipd-discharge-audit/0.1",
   "model": "gemini-2.5-pro",
   "n": 25,
-  "content_sha256": "9e5c371ab9173e94e8831e1d613c0a244ac47c6540fbdb4bdaf8468fa761093c",
+  "content_sha256": "389ce62b7371ece8703b7c0aa18e5b5c1d5553498fd68c165b3abd8e904d3eb3",
   "privacy": "De-identified: link-back keys (ip_uid, document_id) as the re-identification path only — resolvable solely via db13/the access-controlled surface (source_pdf_url deliberately NOT committed: public repo + publicly-readable bucket); no names/UHID. Findings text is the de-identified engine output.",
   "cases": [
     {
@@ -18,8 +18,6 @@
       "speciality": "Ear Nose and Throat",
       "month": "2025-10",
       "los_days": 1,
-      "cvi": 56,
-      "band": "C",
       "completeness_pct": 80,
       "missing_mandatory": [
         "Date of discharge",
@@ -69,7 +67,15 @@
           "domain": "appropriateness",
           "rationale": "The patient underwent turbinoplasty concurrently with septoplasty. Evidence from a large trial suggests that adding turbinate surgery does not provide additional improvement over septoplasty alone for nasal obstruction. While the decision was left to surgeon discretion in the trial and results may not be generalisable to all techniques, its routine addition is not supported by this evidence."
         }
-      ]
+      ],
+      "band_modal": "C",
+      "band_range": "C–D",
+      "cvi_mean": 57.6,
+      "cvi_range": [
+        46,
+        64
+      ],
+      "k": 5
     },
     {
       "id": "IPD-G-02",
@@ -78,8 +84,6 @@
       "speciality": "Ear Nose and Throat",
       "month": "2026-04",
       "los_days": 1,
-      "cvi": 55,
-      "band": "C",
       "completeness_pct": 85,
       "missing_mandatory": [
         "Date of discharge",
@@ -128,7 +132,15 @@
           "domain": "safety",
           "rationale": "Routine administration of a Tetanus Toxoid injection is not indicated for an elective, clean-contaminated surgical procedure like tonsillectomy. This represents unnecessary medication administration without a clear benefit, exposing the patient to potential minor side effects."
         }
-      ]
+      ],
+      "band_modal": "C",
+      "band_range": "B–C",
+      "cvi_mean": 64.8,
+      "cvi_range": [
+        57,
+        74
+      ],
+      "k": 5
     },
     {
       "id": "IPD-G-03",
@@ -137,8 +149,6 @@
       "speciality": "Emergency Medicine",
       "month": "2025-10",
       "los_days": 0,
-      "cvi": 79,
-      "band": "B",
       "completeness_pct": 85,
       "missing_mandatory": [
         "Date of discharge",
@@ -163,7 +173,15 @@
           "domain": "safety",
           "rationale": "The patient sustained abrasions from a fall on the road, which is a tetanus-prone wound. Administering a Tetanus Toxoid injection is the standard of care to prevent tetanus, consistent with best practices for wound management."
         }
-      ]
+      ],
+      "band_modal": "B",
+      "band_range": "A–C",
+      "cvi_mean": 80,
+      "cvi_range": [
+        69,
+        85
+      ],
+      "k": 5
     },
     {
       "id": "IPD-G-04",
@@ -172,8 +190,6 @@
       "speciality": "Emergency Medicine",
       "month": "2026-01",
       "los_days": 1,
-      "cvi": 84,
-      "band": "B",
       "completeness_pct": 83,
       "missing_mandatory": [
         "Date of discharge",
@@ -211,7 +227,15 @@
           "domain": "safety",
           "rationale": "The case is diagnosed as 'Grade 1/2 External Haemorrhoids', but this is clinically inconsistent. The grading system (I-IV), the primary symptom of painless bright red bleeding, and the proctoscopy findings of congested cushions are all characteristic of internal hemorrhoids. While the management provided was appropriate for the patient's actual clinical presentation (internal hemorrhoids), the inaccurate diagnostic label is a documentation error that could cause confusion in future care."
         }
-      ]
+      ],
+      "band_modal": "A",
+      "band_range": "A–C",
+      "cvi_mean": 78.6,
+      "cvi_range": [
+        59,
+        86
+      ],
+      "k": 5
     },
     {
       "id": "IPD-G-05",
@@ -220,8 +244,6 @@
       "speciality": "Emergency Medicine",
       "month": "2026-06",
       "los_days": 0,
-      "cvi": 70,
-      "band": "B",
       "completeness_pct": 55,
       "missing_mandatory": [
         "Significant findings",
@@ -257,7 +279,15 @@
           "domain": "appropriateness",
           "rationale": "Paracetamol is the recommended first-line agent for symptomatic relief of fever and pain in undifferentiated febrile illnesses. Its use is appropriate and aligns with best practices for managing conditions like suspected Chikungunya."
         }
-      ]
+      ],
+      "band_modal": "C",
+      "band_range": "B–C",
+      "cvi_mean": 64.6,
+      "cvi_range": [
+        56,
+        76
+      ],
+      "k": 5
     },
     {
       "id": "IPD-G-06",
@@ -266,8 +296,6 @@
       "speciality": "General Surgery",
       "month": "2025-08",
       "los_days": 1,
-      "cvi": 55,
-      "band": "C",
       "completeness_pct": 83,
       "missing_mandatory": [
         "Date of discharge",
@@ -316,7 +344,15 @@
           "domain": "efficiency",
           "rationale": "Given the excision of a large number (35) of lipomas across multiple body regions, the use of General Anesthesia was appropriate for patient safety, comfort, and surgical efficiency. A short, 1-day inpatient admission for post-operative observation is a reasonable and efficient use of resources for a procedure of this magnitude."
         }
-      ]
+      ],
+      "band_modal": "C",
+      "band_range": "C–D",
+      "cvi_mean": 59.8,
+      "cvi_range": [
+        52,
+        65
+      ],
+      "k": 5
     },
     {
       "id": "IPD-G-07",
@@ -325,8 +361,6 @@
       "speciality": "General Surgery",
       "month": "2025-09",
       "los_days": 5,
-      "cvi": 62,
-      "band": "C",
       "completeness_pct": 85,
       "missing_mandatory": [
         "Date of discharge",
@@ -376,7 +410,15 @@
           "domain": "safety",
           "rationale": "Prescribing Tab Faronem (Faropenem), an oral carbapenem-class antibiotic, upon discharge is inappropriate and represents continued antibiotic overuse. After a course of IV Meropenem for a weakly supported bacterial pneumonia, stepping down to another carbapenem is not justified, especially with normal inflammatory markers. A narrower-spectrum antibiotic would have been sufficient and more aligned with antimicrobial stewardship principles."
         }
-      ]
+      ],
+      "band_modal": "B",
+      "band_range": "B–C",
+      "cvi_mean": 75.4,
+      "cvi_range": [
+        68,
+        81
+      ],
+      "k": 5
     },
     {
       "id": "IPD-G-08",
@@ -385,8 +427,6 @@
       "speciality": "General Surgery",
       "month": "2025-11",
       "los_days": 1,
-      "cvi": 85,
-      "band": "A",
       "completeness_pct": 78,
       "missing_mandatory": [
         "Date of discharge",
@@ -425,7 +465,15 @@
           "domain": "efficiency",
           "rationale": "The use of laser for sphincterotomy and hemorrhoidopexy is a valid technique. However, there is a lack of high-quality evidence to suggest it offers superior long-term outcomes (e.g., healing, recurrence, incontinence rates) or less pain compared to conventional surgical methods like scalpel or electrocautery. The choice of 'laser' may represent surgeon preference or a marketing advantage rather than a clinically proven benefit over established, less costly techniques."
         }
-      ]
+      ],
+      "band_modal": "C",
+      "band_range": "B–C",
+      "cvi_mean": 60.4,
+      "cvi_range": [
+        56,
+        71
+      ],
+      "k": 5
     },
     {
       "id": "IPD-G-09",
@@ -434,8 +482,6 @@
       "speciality": "General Surgery",
       "month": "2026-01",
       "los_days": 5,
-      "cvi": 66,
-      "band": "C",
       "completeness_pct": 80,
       "missing_mandatory": [
         "Date of discharge",
@@ -479,7 +525,15 @@
           "domain": "safety",
           "rationale": "The patient has a 3-year history of chronic cough, a significant risk factor for increased intra-abdominal pressure and subsequent hernia recurrence. The case record does not show any plan to investigate or manage this cough post-operatively, which is a missed opportunity to protect the long-term integrity of the hernia repair."
         }
-      ]
+      ],
+      "band_modal": "C",
+      "band_range": "B–C",
+      "cvi_mean": 68.8,
+      "cvi_range": [
+        64,
+        75
+      ],
+      "k": 5
     },
     {
       "id": "IPD-G-10",
@@ -488,8 +542,6 @@
       "speciality": "General Surgery",
       "month": "2026-02",
       "los_days": 2,
-      "cvi": 61,
-      "band": "C",
       "completeness_pct": 85,
       "missing_mandatory": [
         "Date of discharge"
@@ -531,7 +583,15 @@
           "domain": "efficiency",
           "rationale": "The patient was managed as an inpatient. For a patient with no co-morbidities, this procedure could potentially be performed in a day-care or 23-hour admission setting. An inpatient stay beyond 24 hours for an uneventful recovery may represent an inefficient use of hospital resources. However, the need for adequate pain control post-sphincterotomy can justify an overnight stay."
         }
-      ]
+      ],
+      "band_modal": "C",
+      "band_range": "B–C",
+      "cvi_mean": 69.8,
+      "cvi_range": [
+        61,
+        83
+      ],
+      "k": 5
     },
     {
       "id": "IPD-G-11",
@@ -540,8 +600,6 @@
       "speciality": "General Surgery",
       "month": "2026-03",
       "los_days": 1,
-      "cvi": 67,
-      "band": "C",
       "completeness_pct": 85,
       "missing_mandatory": [
         "Date of discharge",
@@ -584,7 +642,15 @@
           "domain": "efficiency",
           "rationale": "A one-day post-operative stay for a laparoscopic hernia repair is efficient and aligns with modern standards of care and enhanced recovery protocols. While some cases may be suitable for day-care, an overnight admission is reasonable, particularly given the use of general anesthesia and the patient's comorbidities."
         }
-      ]
+      ],
+      "band_modal": "C",
+      "band_range": "C–D",
+      "cvi_mean": 58.2,
+      "cvi_range": [
+        45,
+        68
+      ],
+      "k": 5
     },
     {
       "id": "IPD-G-12",
@@ -593,8 +659,6 @@
       "speciality": "General Surgery",
       "month": "2026-04",
       "los_days": 2,
-      "cvi": 69,
-      "band": "C",
       "completeness_pct": 80,
       "missing_mandatory": [
         "Date of discharge",
@@ -644,7 +708,15 @@
           "domain": "appropriateness",
           "rationale": "The patient had an intra-operative finding of a fistula at the 6 o'clock position. Fistula-in-ano does not typically resolve with medical therapy and requires surgical intervention for definitive treatment. Therefore, performing a surgical procedure (Laser assisted Fistula Ablation) was appropriate and necessary."
         }
-      ]
+      ],
+      "band_modal": "C",
+      "band_range": "B–D",
+      "cvi_mean": 63.8,
+      "cvi_range": [
+        51,
+        79
+      ],
+      "k": 5
     },
     {
       "id": "IPD-G-13",
@@ -653,8 +725,6 @@
       "speciality": "General Surgery",
       "month": "2026-06",
       "los_days": 1,
-      "cvi": 70,
-      "band": "B",
       "completeness_pct": 85,
       "missing_mandatory": [
         "Date of discharge",
@@ -697,7 +767,15 @@
           "domain": "appropriateness",
           "rationale": "The patient was discharged on a 3-day course of Tranexamic acid (Tab PAUSE). While post-operative bleeding is a known complication, it is infrequent, with one large study reporting only 4 out of 616 patients (0.65%) requiring readmission for bleeding. Routine prophylactic use in an uncomplicated case where the post-operative course was 'uneventful' is not standard practice and represents low-value care. Its use should be reserved for cases with active or high risk of bleeding."
         }
-      ]
+      ],
+      "band_modal": "C",
+      "band_range": "B–C",
+      "cvi_mean": 65.6,
+      "cvi_range": [
+        60,
+        73
+      ],
+      "k": 5
     },
     {
       "id": "IPD-G-14",
@@ -706,8 +784,6 @@
       "speciality": "General Surgery",
       "month": "2026-07",
       "los_days": 10,
-      "cvi": 61,
-      "band": "C",
       "completeness_pct": 85,
       "missing_mandatory": [
         "Date of discharge",
@@ -756,7 +832,15 @@
           "domain": "patient_centred",
           "rationale": "The patient was discharged with a surgical drain in place. While the decision to place and retain a drain is based on intra-operative findings and surgeon judgment, discharging a patient with a drain increases the risk of retrograde infection, requires significant patient education, and can be a source of anxiety. The alternative is a potentially longer stay to allow for drain removal in-hospital. The value is dependent on a well-structured process for patient education and timely follow-up for removal."
         }
-      ]
+      ],
+      "band_modal": "C",
+      "band_range": "B–D",
+      "cvi_mean": 65.6,
+      "cvi_range": [
+        51,
+        78
+      ],
+      "k": 5
     },
     {
       "id": "IPD-G-15",
@@ -765,8 +849,6 @@
       "speciality": "Internal Medicine",
       "month": "2025-11",
       "los_days": 5,
-      "cvi": 69,
-      "band": "C",
       "completeness_pct": 73,
       "missing_mandatory": [
         "Date of discharge",
@@ -805,7 +887,15 @@
           "domain": "appropriateness",
           "rationale": "The administration of IV fluids was appropriate and necessary for managing dehydration secondary to vomiting. The use of paracetamol (Dolo) for symptomatic relief of fever is also standard practice."
         }
-      ]
+      ],
+      "band_modal": "C",
+      "band_range": "B–C",
+      "cvi_mean": 67.8,
+      "cvi_range": [
+        59,
+        77
+      ],
+      "k": 5
     },
     {
       "id": "IPD-G-16",
@@ -814,8 +904,6 @@
       "speciality": "Internal Medicine",
       "month": "2026-06",
       "los_days": 6,
-      "cvi": 48,
-      "band": "D",
       "completeness_pct": 88,
       "missing_mandatory": [
         "Date & time of signature"
@@ -857,7 +945,15 @@
           "domain": "safety",
           "rationale": "Administering influenza and pneumococcal vaccines is an important preventive measure. While hospital discharge presents a key opportunity, vaccination is often deferred until recovery from an acute illness to ensure an optimal immune response and to avoid confusion between vaccine side effects and symptoms of the underlying disease. The decision is context-dependent, as some guidelines support vaccination if the patient is afebrile and improving."
         }
-      ]
+      ],
+      "band_modal": "D",
+      "band_range": "C–D",
+      "cvi_mean": 52.6,
+      "cvi_range": [
+        42,
+        68
+      ],
+      "k": 5
     },
     {
       "id": "IPD-G-17",
@@ -866,8 +962,6 @@
       "speciality": "Obstetrics and gynecology",
       "month": "2026-03",
       "los_days": 3,
-      "cvi": 87,
-      "band": "A",
       "completeness_pct": 88,
       "missing_mandatory": [
         "Date of discharge",
@@ -892,7 +986,15 @@
           "domain": "appropriateness",
           "rationale": "The prescription of Ibuprofen for pain relief after a normal delivery with an episiotomy is standard, appropriate, and high-value care for managing postpartum pain."
         }
-      ]
+      ],
+      "band_modal": "A",
+      "band_range": "A",
+      "cvi_mean": 89.6,
+      "cvi_range": [
+        87,
+        92
+      ],
+      "k": 5
     },
     {
       "id": "IPD-G-18",
@@ -901,8 +1003,6 @@
       "speciality": "Obstetrics and gynecology",
       "month": "2026-07",
       "los_days": 3,
-      "cvi": 48,
-      "band": "D",
       "completeness_pct": 88,
       "missing_mandatory": [
         "Investigation results",
@@ -957,7 +1057,15 @@
           "domain": "appropriateness",
           "rationale": "This audit's findings must be interpreted in light of the significant intra-operative complexity noted in the case summary: 'dense adhesions in the anterior abdominal wall were noted and released, and the bladder was found to be pulled up'. This complication increases surgical risk and can justify more conservative post-operative management (e.g., extended observation, delayed oral intake) than would be appropriate for a truly uncomplicated procedure. This context moderates some of the 'low-value' assessments of post-operative care."
         }
-      ]
+      ],
+      "band_modal": "C",
+      "band_range": "C–D",
+      "cvi_mean": 57.2,
+      "cvi_range": [
+        51,
+        67
+      ],
+      "k": 5
     },
     {
       "id": "IPD-G-19",
@@ -966,8 +1074,6 @@
       "speciality": "Orthopedics",
       "month": "2025-11",
       "los_days": 2,
-      "cvi": 79,
-      "band": "B",
       "completeness_pct": 83,
       "missing_mandatory": [
         "Date of discharge",
@@ -992,7 +1098,15 @@
           "domain": "efficiency",
           "rationale": "The use of a day care setting for a minimally invasive injection procedure represents efficient use of hospital resources, avoiding an unnecessary inpatient admission. The prescription of paracetamol (Dolo), a gentle pain reliever, for post-procedure pain is consistent with conservative management principles for osteoarthritis."
         }
-      ]
+      ],
+      "band_modal": "A",
+      "band_range": "A–B",
+      "cvi_mean": 84.2,
+      "cvi_range": [
+        80,
+        86
+      ],
+      "k": 5
     },
     {
       "id": "IPD-G-20",
@@ -1001,8 +1115,6 @@
       "speciality": "Orthopedics",
       "month": "2026-04",
       "los_days": 3,
-      "cvi": 59,
-      "band": "C",
       "completeness_pct": 85,
       "missing_mandatory": [
         "Investigation results",
@@ -1039,7 +1151,15 @@
           "domain": "appropriateness",
           "rationale": "The administration of IV antipyretics was documented, but the post-operative course was described as 'uneventful' with 'stable vitals'. This suggests the medication was likely given prophylactically or on a routine schedule rather than for a documented fever, which is a low-value practice."
         }
-      ]
+      ],
+      "band_modal": "D",
+      "band_range": "B–D",
+      "cvi_mean": 56,
+      "cvi_range": [
+        50,
+        73
+      ],
+      "k": 5
     },
     {
       "id": "IPD-G-21",
@@ -1048,8 +1168,6 @@
       "speciality": "Orthopedics",
       "month": "2026-06",
       "los_days": 2,
-      "cvi": 69,
-      "band": "C",
       "completeness_pct": 98,
       "missing_mandatory": [],
       "findings": [
@@ -1095,7 +1213,15 @@
           "domain": "efficiency",
           "rationale": "A 2-day inpatient stay for a major tendon reconstruction involving an autograft is an efficient use of resources. This duration is appropriate for managing initial post-operative pain with IV analgesia, monitoring the surgical site, and initiating VTE prophylaxis and rehabilitation before ensuring a safe discharge."
         }
-      ]
+      ],
+      "band_modal": "C",
+      "band_range": "B–D",
+      "cvi_mean": 63.6,
+      "cvi_range": [
+        54,
+        73
+      ],
+      "k": 5
     },
     {
       "id": "IPD-G-22",
@@ -1104,8 +1230,6 @@
       "speciality": "Pediatrics",
       "month": "2026-02",
       "los_days": 3,
-      "cvi": 92,
-      "band": "A",
       "completeness_pct": 88,
       "missing_mandatory": [
         "Date of discharge"
@@ -1153,7 +1277,15 @@
           "domain": "safety",
           "rationale": "The record does not document specific discharge counseling provided to the parents regarding how to monitor for worsening jaundice (e.g., checking skin in natural light, assessing feeding and activity) and when to seek urgent medical care. For an infant discharged in the high-intermediate risk zone for hyperbilirubinemia, this counseling is a critical safety net to prevent progression to severe jaundice."
         }
-      ]
+      ],
+      "band_modal": "B",
+      "band_range": "A–B",
+      "cvi_mean": 85,
+      "cvi_range": [
+        80,
+        93
+      ],
+      "k": 5
     },
     {
       "id": "IPD-G-23",
@@ -1162,8 +1294,6 @@
       "speciality": "Pediatrics",
       "month": "2026-07",
       "los_days": 1,
-      "cvi": 83,
-      "band": "B",
       "completeness_pct": 80,
       "missing_mandatory": [
         "Date & time of signature"
@@ -1211,7 +1341,15 @@
           "domain": "patient_centred",
           "rationale": "Supplementing breast milk with 'top feeds' (formula) can be medically necessary for late-preterm infants (36w5d) who may have feeding difficulties, or for managing hypoglycemia or significant weight loss. However, routine supplementation can interfere with establishing exclusive breastfeeding. The value of this decision depends on the specific clinical indication, which is not documented."
         }
-      ]
+      ],
+      "band_modal": "A",
+      "band_range": "A–B",
+      "cvi_mean": 85.4,
+      "cvi_range": [
+        76,
+        90
+      ],
+      "k": 5
     },
     {
       "id": "IPD-G-24",
@@ -1220,8 +1358,6 @@
       "speciality": "Urology",
       "month": "2025-12",
       "los_days": 4,
-      "cvi": 62,
-      "band": "C",
       "completeness_pct": 83,
       "missing_mandatory": [
         "Date of discharge",
@@ -1270,7 +1406,15 @@
           "domain": "safety",
           "rationale": "The patient was prescribed Nicorandil ('TAB NIKORAN'), an anti-anginal medication. However, the provided diagnoses do not include coronary artery disease or angina. Continuing a medication without a clear, documented indication is a potential medication safety issue, increasing pill burden and risk of side effects unnecessarily."
         }
-      ]
+      ],
+      "band_modal": "C",
+      "band_range": "A–D",
+      "cvi_mean": 67,
+      "cvi_range": [
+        49,
+        90
+      ],
+      "k": 5
     },
     {
       "id": "IPD-G-25",
@@ -1279,8 +1423,6 @@
       "speciality": "Urology",
       "month": "2026-06",
       "los_days": 0,
-      "cvi": 81,
-      "band": "B",
       "completeness_pct": 80,
       "missing_mandatory": [
         "Date of discharge",
@@ -1306,7 +1448,15 @@
           "domain": "appropriateness",
           "rationale": "The administration of an IV Proton Pump Inhibitor (PPI) is not indicated for a young, healthy patient undergoing a short, minimally invasive procedure (cystoscopy) under local anesthesia. Stress ulcer prophylaxis is not required in this low-risk setting. This represents a medication administration without a clear clinical indication, contributing to unnecessary cost."
         }
-      ]
+      ],
+      "band_modal": "B",
+      "band_range": "B–C",
+      "cvi_mean": 72.8,
+      "cvi_range": [
+        61,
+        80
+      ],
+      "k": 5
     }
   ]
 }

@@ -7,9 +7,10 @@
 import Link from 'next/link';
 import { sql } from '@/lib/db';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
-import { bandColor } from '@/lib/opd-audit-ui';
+
 import type { AuditReport, AuditFinding } from '@/lib/doc-audit-core';
 import { fetchIpdDoc, fetchIpdAdmissionHeader } from '@/lib/ipd-audit/db13';
+import { BandChip } from '../ui';
 import ReportWithTriage from './report-with-triage';
 
 export const dynamic = 'force-dynamic';
@@ -68,7 +69,7 @@ export default async function IpdAuditReport({ params }: { params: Promise<{ id:
         </div>
         <div className="flex items-center gap-2">
           <span className="rounded-md bg-slate-800 px-2 py-0.5 text-[10.5px] font-semibold text-white" title="Identifiers joined from db13 at read time; never stored with the audit">Access-controlled · PHI read-time</span>
-          <span className="rounded-md px-2 py-0.5 text-[11px] font-semibold text-white" style={{ background: bandColor(band) }}>{band} · {Number(r.care_value_index)}</span>
+          <BandChip band={band} cvi={Number(r.care_value_index)} />
           {pdfUrl && <a href={pdfUrl} target="_blank" className="text-xs text-brand hover:underline">Discharge PDF ↗</a>}
           <a href={`${exportBase}&mode=report`} className="text-xs text-brand hover:underline">Audit report ↓</a>
           <a href={`${exportBase}&mode=combined`} className="text-xs text-brand hover:underline">Combined ↓</a>
@@ -88,17 +89,40 @@ export default async function IpdAuditReport({ params }: { params: Promise<{ id:
         {/* RIGHT — findings */}
         <div className="min-h-0 flex-1 overflow-auto bg-white">
           <div className="mx-auto max-w-3xl px-5 py-6">
-            {/* slim Low-Value Care summary — the adjudicable finding list itself lives ONCE,
-                inside CaseAuditReport below (every finding carries the triage strip) */}
-            <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-4 py-2.5">
-              <span className="text-[13px] font-semibold text-slate-800">Low-Value Care check</span>
-              <span className="text-[11px] text-slate-500">
-                {lvcFindings.length === 0 ? 'no low-value / context-dependent findings' : `${lvcFindings.length} of ${findings.length} findings low-value / context-dependent`} · runs on every summary · adjudicate each below
-              </span>
+            {/* PRIMARY SIGNALS (S4 decision, option b): completeness + the low-value THEMES lead
+                the hierarchy — S4 measured them stable; the CVI/band is a noisy single-run draw
+                and is demoted to the uncertainty-marked chip in the corner bar. The adjudicable
+                finding list itself lives ONCE, inside CaseAuditReport below. */}
+            <div className="rounded-xl border border-slate-200 bg-white">
+              <div className="border-b border-slate-100 px-4 py-2.5 text-[13px] font-semibold text-slate-800">Primary signals</div>
+              <div className="flex flex-wrap items-baseline gap-x-2 px-4 py-2.5">
+                <span className="text-[12px] font-semibold text-slate-600">Documentation completeness</span>
+                <span className="font-serif text-[22px] font-semibold leading-none text-slate-900">{r.completeness_pct == null ? '—' : `${Number(r.completeness_pct)}%`}</span>
+                {report?.completeness?.missingMandatory?.length ? (
+                  <span className="text-[11px] text-slate-500">missing: {report.completeness.missingMandatory.join('; ')}</span>
+                ) : <span className="text-[11px] text-slate-500">no mandatory gaps</span>}
+              </div>
+              <div className="border-t border-slate-100 px-4 py-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[12px] font-semibold text-slate-600">Low-Value Care check</span>
+                  <span className="text-[11px] text-slate-500">runs on every summary · adjudicate each finding below</span>
+                </div>
+                {lvcFindings.length === 0 ? (
+                  <div className="mt-1 text-[12px] text-slate-500">no low-value / context-dependent findings</div>
+                ) : (
+                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                    {lvcFindings.map((f) => (
+                      <span key={f.subject} className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${f.verdict === 'low-value' ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>{f.subject}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
 
-            {/* the shipped Case-Audit renderer — ONE finding list, every finding adjudicable */}
-            <div className="mt-5">
+            {/* the shipped Case-Audit renderer — ONE finding list, every finding adjudicable.
+                The Care-Value Index it opens with is a single-run estimate (±1 band noise). */}
+            <div className="mt-2 text-right text-[10.5px] text-slate-400">Care-Value Index below is a single-run estimate — ±1 band noise (S4-measured)</div>
+            <div className="mt-1">
               {report ? (
                 <ReportWithTriage report={report} auditId={id} triaged={triaged} analyzeTraceId={r.trace_id ? String(r.trace_id) : undefined} />
               ) : (

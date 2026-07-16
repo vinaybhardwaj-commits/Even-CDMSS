@@ -5,9 +5,9 @@
 import Link from 'next/link';
 import { sql } from '@/lib/db';
 import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
-import { bandColor, fmtIstDateLong } from '@/lib/opd-audit-ui';
+import { fmtIstDateLong } from '@/lib/opd-audit-ui';
 import { dischargeDocDensity, dischargeDocsForDay } from '@/lib/ipd-audit/db13';
-import { Locked, IpdTabs, todayIst } from '../ui';
+import { Locked, IpdTabs, BandChip, todayIst } from '../ui';
 import AuditNowButton from '../audit-now-button';
 
 export const dynamic = 'force-dynamic';
@@ -115,7 +115,7 @@ export default async function IpdAuditCalendar({ searchParams }: { searchParams:
                       {d.uhid && <span className="ml-1.5 text-[11px] text-slate-400">{d.uhid}</span>}
                       <span className="ml-2 text-slate-500">{d.patientName ? `${d.ipUid ?? ''} · ` : ''}{d.speciality ?? '—'}{d.losDays != null ? ` · LOS ${d.losDays}d` : ''}{d.dischargeType ? ` · ${d.dischargeType}` : ''}</span>
                     </span>
-                    {a ? <Link href={`/admin/ipd-audit/${a.id}`} className="rounded-md px-1.5 py-0.5 text-[11px] font-semibold text-white" style={{ background: bandColor(a.band) }}>{a.band} · {a.cvi}</Link>
+                    {a ? <Link href={`/admin/ipd-audit/${a.id}`} className="hover:opacity-80"><BandChip band={a.band} cvi={a.cvi} /></Link>
                       : <AuditNowButton documentId={d.documentId} />}
                   </li>
                 );

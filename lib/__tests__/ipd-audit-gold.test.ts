@@ -23,6 +23,23 @@ test('the committed gold artifact is frozen, ratified, and hash-pinned', () => {
   assert.ok(new Set(g.cases.map((c) => c.month)).size >= 6, 'spread across months');
 });
 
+test('1.1 distribution block: every case carries the K=5 modal band + ranges; the S4 drift cases landed as ratified', () => {
+  const g = loadIpdAuditGold(GOLD);
+  for (const c of g.cases) {
+    assert.ok(/^[A-E]$/.test(c.band_modal), `${c.id} band_modal`);
+    assert.ok(/^[A-E](–[A-E])?$/.test(c.band_range), `${c.id} band_range shape`);
+    assert.equal(c.k, 5);
+    assert.ok(c.cvi_range[0] <= c.cvi_mean && c.cvi_mean <= c.cvi_range[1], `${c.id} mean inside range`);
+    assert.ok(!('cvi' in c) && !('band' in c), `${c.id} carries no point cvi/band`);
+  }
+  // the decision doc's named drift cases (S4, V-ratified)
+  const by = Object.fromEntries(g.cases.map((c) => [c.id, c]));
+  assert.equal(by['IPD-G-08'].band_modal, 'C');
+  assert.equal(by['IPD-G-18'].band_modal, 'C');
+  assert.equal(by['IPD-G-16'].band_modal, 'D');
+  assert.equal(by['IPD-G-17'].band_modal, 'A');
+});
+
 test('the gold is de-identified: no UHID / phone / honorific-name patterns anywhere', () => {
   const txt = JSON.stringify((GOLD as { cases: unknown[] }).cases);
   assert.ok(!/UHID[-\s]?\d/i.test(txt), 'no UHID');
@@ -42,7 +59,7 @@ test('the gold is de-identified: no UHID / phone / honorific-name patterns anywh
 test('loadIpdAuditGold rejects drift: edited case, wrong version/status, dup id, bad verdict', () => {
   const clone = () => JSON.parse(JSON.stringify(GOLD)) as Record<string, unknown> & { cases: Array<Record<string, unknown>> };
   const edited = clone();
-  (edited.cases[0] as { cvi: number }).cvi = 99;                       // content edit → hash mismatch
+  (edited.cases[0] as { cvi_mean: number }).cvi_mean = 99;             // content edit → hash mismatch
   assert.throws(() => loadIpdAuditGold(edited), /drifted/);
   assert.throws(() => loadIpdAuditGold({ ...clone(), version: 'ipd-audit-gold/2.0' }), /version/);
   assert.throws(() => loadIpdAuditGold({ ...clone(), status: 'draft' }), /ratified/);
