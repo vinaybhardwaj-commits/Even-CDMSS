@@ -47,6 +47,11 @@ test('flag-off byte-identical: every grounded builder without the param equals S
   assert.equal(judgeOff,
     `Patient: 34y, M\nClinical scenario / proposed plan:\nlow back pain, no red flags\n\nCandidate recommendations to judge:\n` +
     `1. id=IN-001 [IN/Soc]\n   STATEMENT: Do not image low back pain within 6 weeks without red flags.\n   PRECONDITION: No red flags`);
+  // Fix-3 ordered-action param (RIGHT_CARE_JUDGE_SEES_ACTION): absent / empty / whitespace-only
+  // renders NOTHING → byte-identical to Slice 1 (the flag-off neutrality contract).
+  assert.equal(judgeOff, buildJudgeUser(ctx, [REC], undefined, undefined));
+  assert.equal(judgeOff, buildJudgeUser(ctx, [REC], undefined, []));
+  assert.equal(judgeOff, buildJudgeUser(ctx, [REC], undefined, ['   ', '']));
 
   const skelOff = buildSkeletonUser({ scenario: 'sc', patient: { age: 34 } });
   assert.equal(skelOff, buildSkeletonUser({ scenario: 'sc', patient: { age: 34 }, clinicalStateText: undefined }));
@@ -67,6 +72,15 @@ test('grounded: the picture lands between the input and the downstream sections,
   assert.ok(judgeOn.includes(PICTURE));
   assert.ok(judgeOn.indexOf(PICTURE) > judgeOn.indexOf('Clinical scenario / proposed plan:'));
   assert.ok(judgeOn.indexOf(PICTURE) < judgeOn.indexOf('Candidate recommendations to judge:'));
+
+  // Fix-3: the ORDERED ACTION(S) section lands between the input/picture and the candidate list,
+  // carries each action verbatim, and drops whitespace-only entries.
+  const judgeAct = buildJudgeUser(ctx, [REC], PICTURE, ['CT coronary calcium score', '  ']);
+  assert.ok(judgeAct.includes('ORDERED ACTION(S) UNDER REVIEW'));
+  assert.ok(judgeAct.includes('- CT coronary calcium score'));
+  assert.ok(!judgeAct.includes('-   \n'), 'whitespace-only action dropped');
+  assert.ok(judgeAct.indexOf('ORDERED ACTION(S) UNDER REVIEW') > judgeAct.indexOf(PICTURE));
+  assert.ok(judgeAct.indexOf('ORDERED ACTION(S) UNDER REVIEW') < judgeAct.indexOf('Candidate recommendations to judge:'));
 
   const skelOn = buildSkeletonUser({ scenario: 'sc', clinicalStateText: PICTURE });
   assert.ok(skelOn.endsWith(PICTURE));

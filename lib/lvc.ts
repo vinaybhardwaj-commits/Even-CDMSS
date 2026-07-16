@@ -53,10 +53,19 @@ export interface MatchDeps {
   extractCandidates: (scenario: string) => Promise<Candidate[]>;
   recall: (input: MatchInput, candidates: Candidate[]) => Promise<LvcRecommendation[]>;
   judge: (
-    ctx: { scenario: string; patient?: { age?: number; sex?: string }; clinicalStateText?: string },
+    ctx: { scenario: string; patient?: { age?: number; sex?: string }; clinicalStateText?: string; orderedActions?: string[] },
     recs: LvcRecommendation[],
     surface: Surface,
   ) => Promise<JudgedRec[]>;
+}
+
+/** Fix-3 flag (RIGHT_CARE_JUDGE_SEES_ACTION): surface the ordered action to the appropriateness
+ *  judge so it can honour precondition carve-outs (the dormant NAMED EXCLUSIONS rule). Mirrors the
+ *  RIGHT_CARE_CLINICAL_STATE_GROUND opt-in shape. Unset / '' / '0' → OFF (byte-identical to today);
+ *  any other value → ON. Ships default-OFF; the flip is gated on a credentialed bench, not the merge. */
+function judgeSeesActionEnabled(): boolean {
+  const v = process.env.RIGHT_CARE_JUDGE_SEES_ACTION;
+  return !!v && v !== '0';
 }
 
 const sql2 = sql as unknown as (q: string, p: unknown[]) => Promise<Record<string, unknown>[]>;
@@ -137,7 +146,7 @@ async function defaultRecall(input: MatchInput, candidates: Candidate[]): Promis
 }
 
 async function defaultJudge(
-  ctx: { scenario: string; patient?: { age?: number; sex?: string }; clinicalStateText?: string },
+  ctx: { scenario: string; patient?: { age?: number; sex?: string }; clinicalStateText?: string; orderedActions?: string[] },
   recs: LvcRecommendation[],
   surface: Surface,
   traceId?: string,
@@ -155,7 +164,7 @@ async function defaultJudge(
       model: fallbackModel,
       messages: [
         { role: 'system', content: core.JUDGE_SYSTEM },
-        { role: 'user', content: core.buildJudgeUser(ctx, recs, ctx.clinicalStateText) },
+        { role: 'user', content: core.buildJudgeUser(ctx, recs, ctx.clinicalStateText, ctx.orderedActions) },
       ],
       temperature: 0.1,
       max_tokens: 900,
@@ -206,7 +215,15 @@ export async function matchLowValueCare(input: MatchInput, deps: Partial<MatchDe
       return { flags: [], candidates, considered: 0, surface, traceId, empty: true };
     }
 
-    const judged = await judge({ scenario: input.scenario, patient: input.patient, clinicalStateText: input.clinicalStateText }, recs, surface);
+    // Fix-3 (gated): when RIGHT_CARE_JUDGE_SEES_ACTION is on, surface the ordered actions — the
+    // SAME `candidates` already used to select recs, never a re-extraction — to the judge so it can
+    // honour precondition carve-outs. Flag off OR no candidates → pass the exact Slice-1 ctx (three
+    // keys), so the judge(...) call and its user message are byte-identical to today. Fail-safe: a
+    // problem here degrades to the no-action path, never a wrong verdict.
+    const judgeCtx: { scenario: string; patient?: { age?: number; sex?: string }; clinicalStateText?: string; orderedActions?: string[] } =
+      { scenario: input.scenario, patient: input.patient, clinicalStateText: input.clinicalStateText };
+    if (judgeSeesActionEnabled() && candidates.length) judgeCtx.orderedActions = candidates.map((c) => c.name);
+    const judged = await judge(judgeCtx, recs, surface);
     if (traceId) {
       await logEvent(traceId, 'lvc_judge_verdicts', null, {
         verdicts: judged.map((j) => ({ id: j.rec.id, verdict: j.verdict, confidence: j.confidence })),

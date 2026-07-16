@@ -249,16 +249,26 @@ export function buildJudgeUser(
   ctx: { scenario: string; patient?: { age?: number; sex?: string } },
   recs: LvcRecommendation[],
   clinicalStateText?: string,
+  orderedActions?: string[],
 ): string {
   const pt = ctx.patient
     ? `Patient: ${ctx.patient.age != null ? `${ctx.patient.age}y` : 'age unknown'}${ctx.patient.sex ? `, ${ctx.patient.sex}` : ''}\n`
     : '';
   const picture = clinicalStateText && clinicalStateText.trim() ? `\n${clinicalStateText.trim()}\n` : '';
+  // ORDERED ACTION(S) UNDER REVIEW (gated on RIGHT_CARE_JUDGE_SEES_ACTION in lib/lvc.ts): the
+  // specific test/treatment this plan ordered, surfaced so the judge matches it against each rec's
+  // precondition carve-outs — this is what activates the dormant NAMED EXCLUSIONS rule in
+  // JUDGE_SYSTEM. Absent/empty (flag off) → renders NOTHING → byte-identical to the ungrounded
+  // Slice-1 prompt (unit-asserted). Defensive: whitespace-only entries drop; all-empty → no section.
+  const acts = (orderedActions ?? []).map((a) => (a ?? '').trim()).filter(Boolean);
+  const actions = acts.length
+    ? `\nORDERED ACTION(S) UNDER REVIEW (the specific test/treatment this plan actually ordered — judge each recommendation against THIS action, and apply any precondition carve-out that names it):\n${acts.map((a) => `- ${a}`).join('\n')}\n`
+    : '';
   const list = recs
     .map((r, i) =>
       `${i + 1}. id=${r.id} [${r.region}/${r.society}]\n   STATEMENT: ${r.statement}\n   PRECONDITION: ${r.precondition || '(none stated)'}`)
     .join('\n');
-  return `${pt}Clinical scenario / proposed plan:\n${ctx.scenario.trim()}\n${picture}\nCandidate recommendations to judge:\n${list}`;
+  return `${pt}Clinical scenario / proposed plan:\n${ctx.scenario.trim()}\n${picture}${actions}\nCandidate recommendations to judge:\n${list}`;
 }
 
 const VERDICTS = new Set<Verdict>(['applies', 'does_not_apply', 'insufficient_info']);
