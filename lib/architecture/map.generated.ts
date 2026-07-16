@@ -699,12 +699,22 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/admin",
+    "to": "doc-audit-core",
+    "kind": "type"
+  },
+  {
+    "from": "app/admin",
     "to": "dose-limits",
     "kind": "value"
   },
   {
     "from": "app/admin",
     "to": "formulary",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
+    "to": "ipd-audit",
     "kind": "value"
   },
   {
@@ -845,6 +855,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/admin",
     "to": "runs-export",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
+    "to": "value-score-core",
     "kind": "value"
   },
   {
@@ -1084,6 +1099,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/api",
+    "to": "gcp-auth",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
     "to": "gemini-multimodal",
     "kind": "value"
   },
@@ -1110,6 +1130,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "investigations",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "ipd-audit",
     "kind": "value"
   },
   {
@@ -2258,6 +2283,21 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "ipd-audit",
+    "to": "doc-audit-core",
+    "kind": "type"
+  },
+  {
+    "from": "ipd-audit",
+    "to": "metabase",
+    "kind": "value"
+  },
+  {
+    "from": "ipd-audit",
+    "to": "value-score-core",
+    "kind": "type"
+  },
+  {
     "from": "lab",
     "to": "db",
     "kind": "value"
@@ -3120,6 +3160,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "constName": "INQUIRY_VERSION",
     "value": "inquiry/0.1",
     "file": "lib/inquiry/inquiry-core.ts",
+    "derived": false
+  },
+  {
+    "constName": "IPD_AUDIT_GOLD_VERSION",
+    "value": "ipd-audit-gold/1.0",
+    "file": "lib/ipd-audit/gold.ts",
     "derived": false
   },
   {

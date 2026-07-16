@@ -5,7 +5,7 @@ import { useState, useEffect } from 'react';
 import {
   MessagesSquare, Network, Pill, Calculator, ClipboardCheck,
   ClipboardList, BookOpen, GraduationCap, Settings, Menu, X, ChevronLeft, Activity, Lightbulb, BarChart3,
-  PhoneCall, Filter, HardDrive, FlaskConical, Map,
+  PhoneCall, Filter, HardDrive, FlaskConical, Map, FileText,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -58,6 +58,7 @@ const ADMIN: NavGroup[] = [
     items: [
       { href: '/admin/observability', label: 'Observability', Icon: Network, match: ['/admin/appropriateness-runs'] },
       { href: '/admin/opd-audit', label: 'OPD Audit', Icon: Activity, match: ['/admin/opd-audit/doctors', '/admin/opd-audit/doctor'] },
+      { href: '/admin/ipd-audit', label: 'IPD Discharge Audit', Icon: FileText, match: ['/admin/ipd-audit/search', '/admin/ipd-audit/calendar'] },
       { href: '/admin/mini-backfill', label: 'Mini backfill', Icon: HardDrive },
       { href: '/admin/stewardship', label: 'Stewardship', Icon: BarChart3 },
       { href: '/admin/ccb-funnel', label: 'Care Brief Funnel', Icon: Filter },
@@ -154,13 +155,21 @@ function isCareBriefRoute(pathname: string): boolean {
   return !!seg && !CARE_NAMED_CHILDREN.has(seg);
 }
 
+/** The IPD audit REPORT route `/admin/ipd-audit/<id>` — and only it — joins the full-bleed set
+ *  (PDF beside findings needs the width). The named children (search, calendar) keep the shell. */
+const IPD_NAMED_CHILDREN = new Set(['search', 'calendar']);
+function isIpdAuditReportRoute(pathname: string): boolean {
+  const seg = pathname.match(/^\/admin\/ipd-audit\/([^/]+)\/?$/)?.[1];
+  return !!seg && !IPD_NAMED_CHILDREN.has(seg);
+}
+
 export function Shell({ children, concordanceEnabled = false }: { children: React.ReactNode; concordanceEnabled?: boolean }) {
   const pathname = usePathname() || '';
   // Review Mode's 3-pane surface provides its own full-bleed padding — exempt ONLY it from the
   // shell's 1024px content cap (every other route renders pixel-identical). PRD addendum §1.1 patch 2.
   // CCB v2 P2: the split-screen brief at /care/<presc_uid> joins it — document beside findings needs
   // the full width, and the floating ☰ below restores the nav. Named /care children are excluded.
-  const fullBleed = pathname === '/care/review' || isCareBriefRoute(pathname);
+  const fullBleed = pathname === '/care/review' || isCareBriefRoute(pathname) || isIpdAuditReportRoute(pathname);
   const isAdmin = pathname.startsWith('/admin');
   const base = isAdmin ? ADMIN : CLINICIAN;
   const groups = concordanceEnabled ? injectConcordance(base) : base;

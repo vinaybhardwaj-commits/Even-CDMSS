@@ -42,6 +42,7 @@ export interface IpdAuditRow {
   nContextDependent?: number;
   findings?: unknown;
   suggestions?: unknown;
+  report?: unknown;                  // FULL de-identified AuditReport (0014) — powers the report page render
   billedTotal?: number | null;       // M3 billing join; null until then
   // provenance
   engineVersion?: string;            // defaults IPD_ENGINE_VERSION
@@ -59,9 +60,9 @@ export async function saveIpdAudit(row: IpdAuditRow): Promise<'inserted' | 'upda
        care_value_index, band,
        score_appropriateness, score_efficiency, score_safety, score_cost, score_documentation, score_patient_centred,
        completeness_pct, n_findings, n_low_value, n_context_dependent,
-       findings, suggestions, billed_total, engine_version, model, trace_id)
+       findings, suggestions, report, billed_total, engine_version, model, trace_id)
      VALUES ($1,$2,$3,$4,$5,$6,$7, $8,$9, $10,$11,$12,$13,$14,$15,
-       $16,$17,$18,$19, $20::jsonb,$21::jsonb,$22,$23,$24,$25)
+       $16,$17,$18,$19, $20::jsonb,$21::jsonb,$22::jsonb,$23,$24,$25,$26)
      ON CONFLICT (document_id, engine_version) DO UPDATE SET
        ip_uid = EXCLUDED.ip_uid, member_id = EXCLUDED.member_id, speciality = EXCLUDED.speciality,
        discharge_type = EXCLUDED.discharge_type, los_days = EXCLUDED.los_days, discharged_at = EXCLUDED.discharged_at,
@@ -71,7 +72,7 @@ export async function saveIpdAudit(row: IpdAuditRow): Promise<'inserted' | 'upda
        score_documentation = EXCLUDED.score_documentation, score_patient_centred = EXCLUDED.score_patient_centred,
        completeness_pct = EXCLUDED.completeness_pct, n_findings = EXCLUDED.n_findings,
        n_low_value = EXCLUDED.n_low_value, n_context_dependent = EXCLUDED.n_context_dependent,
-       findings = EXCLUDED.findings, suggestions = EXCLUDED.suggestions,
+       findings = EXCLUDED.findings, suggestions = EXCLUDED.suggestions, report = EXCLUDED.report,
        billed_total = EXCLUDED.billed_total, model = EXCLUDED.model, trace_id = EXCLUDED.trace_id,
        audited_at = NOW()
      RETURNING (xmax = 0) AS inserted`,
@@ -83,6 +84,7 @@ export async function saveIpdAudit(row: IpdAuditRow): Promise<'inserted' | 'upda
       row.scoreCost ?? null, row.scoreDocumentation ?? null, row.scorePatientCentred ?? null,
       row.completenessPct ?? null, row.nFindings ?? 0, row.nLowValue ?? 0, row.nContextDependent ?? 0,
       JSON.stringify(row.findings ?? []), JSON.stringify(row.suggestions ?? []),
+      row.report != null ? JSON.stringify(row.report) : null,
       row.billedTotal ?? null, engine, row.model ?? null, row.traceId ?? null,
     ],
   )) as Array<{ inserted: boolean }>;
