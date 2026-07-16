@@ -31,11 +31,15 @@ const BAND_STYLE: Record<Band, { ring: string; text: string; bg: string; label: 
 const barColor = (s: number) => s >= 85 ? 'bg-teal-500' : s >= 70 ? 'bg-green-500' : s >= 55 ? 'bg-amber-500' : s >= 40 ? 'bg-orange-500' : 'bg-red-500';
 
 export default function CaseAuditReport({
-  report, extractTraceId, analyzeTraceId,
+  report, extractTraceId, analyzeTraceId, findingActions,
 }: {
   report: AuditReport;
   extractTraceId?: string;
   analyzeTraceId?: string;
+  /** OPTIONAL per-finding action slot (IPD adjudication). Rendered at the foot of each
+   *  FindingCard when provided; when absent the component is byte-identical for every
+   *  existing caller (Case-Audit Mode 3 etc.). */
+  findingActions?: (f: AuditFinding, i: number) => React.ReactNode;
 }) {
   const c = report.completeness;
   const sc = report.valueScore;
@@ -108,7 +112,7 @@ export default function CaseAuditReport({
         <section>
           <SectionTitle icon={<AlertTriangle className="h-3.5 w-3.5" />} text="Appropriateness & low-value decisions" />
           <div className="space-y-3">
-            {report.findings.map((f, i) => <FindingCard key={i} f={f} sources={report.sources} />)}
+            {report.findings.map((f, i) => <FindingCard key={i} f={f} sources={report.sources} actions={findingActions?.(f, i)} />)}
           </div>
         </section>
       )}
@@ -280,7 +284,7 @@ function BreakdownPanel({ sc }: { sc: ValueScorecard }) {
   );
 }
 
-function FindingCard({ f, sources }: { f: AuditFinding; sources?: Source[] }) {
+function FindingCard({ f, sources, actions }: { f: AuditFinding; sources?: Source[]; actions?: React.ReactNode }) {
   const border = f.verdict === 'low-value' ? 'border-l-red-500' : f.verdict === 'context-dependent' ? 'border-l-amber-500' : 'border-l-slate-300';
   return (
     <div className={`rounded-r-xl border border-l-[3px] border-slate-200 bg-white p-4 ${border}`}>
@@ -296,6 +300,7 @@ function FindingCard({ f, sources }: { f: AuditFinding; sources?: Source[] }) {
       {f.tariffs && f.tariffs.length > 0 && <TariffBlock tariffs={f.tariffs} />}
       <EvidenceList items={f.evidence} />
       <EstimatesList items={f.estimates} />
+      {actions}
     </div>
   );
 }

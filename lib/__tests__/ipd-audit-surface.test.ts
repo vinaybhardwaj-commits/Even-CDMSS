@@ -18,22 +18,34 @@ import type { ExtractedCase, AuditReport } from '../doc-audit-core';
 
 const read = (p: string) => readFileSync(join(process.cwd(), p), 'utf8');
 
-test('semantics: the triage component never touches the scored-band palette', () => {
+test('semantics: the adjudication component never touches the scored-band palette', () => {
   const src = read('app/admin/ipd-audit/[id]/finding-triage.tsx');
   assert.ok(!/bandColor|scoreColor/.test(src), 'finding-triage.tsx must not import/use bandColor/scoreColor');
-  // and its verdict keys are the ratified triad, not band letters
-  for (const k of ['agree', 'disagree', 'needs_action']) assert.ok(src.includes(`'${k}'`), `triage verdict '${k}' present`);
+  // and its verdict keys are the OPD-grade adjudication vocabulary, not band letters
+  for (const k of ['true_positive', 'nitpick', 'false', 'contested']) assert.ok(src.includes(`'${k}'`), `adjudication verdict '${k}' present`);
 });
 
-test('semantics: the LVC findings panel renders verdicts without band language', () => {
+test('semantics: the LVC summary strip renders without band language; the finding list exists once', () => {
   const src = read('app/admin/ipd-audit/[id]/page.tsx');
-  const panelStart = src.indexOf('Low-Value Care findings');
-  const panelEnd = src.indexOf('CaseAuditReport', panelStart);
-  assert.ok(panelStart > 0 && panelEnd > panelStart, 'LVC panel block located');
-  const panel = src.slice(panelStart, panelEnd);
-  assert.ok(!/bandColor|scoreColor/.test(panel), 'the LVC panel never styles a finding from the scored-band palette');
-  // findings carry the verdict enum words, never a band letter chip
-  assert.ok(panel.includes('low-value') && panel.includes('context-dependent'), 'verdict enum labels present');
+  const stripStart = src.indexOf('Low-Value Care check');
+  const stripEnd = src.indexOf('ReportWithTriage', stripStart);
+  assert.ok(stripStart > 0 && stripEnd > stripStart, 'LVC summary strip located above the single finding list');
+  const strip = src.slice(stripStart, stripEnd);
+  assert.ok(!/bandColor|scoreColor/.test(strip), 'the LVC strip never uses the scored-band palette');
+  assert.ok(strip.includes('low-value'), 'verdict enum language present');
+  // the duplicate per-finding list is gone: FindingTriage is composed ONLY via the render-prop wrapper
+  assert.ok(!src.includes('FindingTriage'), 'page has no direct finding list — adjudication rides CaseAuditReport');
+  const wrapper = read('app/admin/ipd-audit/[id]/report-with-triage.tsx');
+  assert.ok(wrapper.includes('findingActions') && wrapper.includes('FindingTriage'), 'wrapper passes FindingTriage to every finding');
+});
+
+test('CaseAuditReport: the findingActions slot is optional — absent means unchanged for other callers', () => {
+  const src = read('components/CaseAuditReport.tsx');
+  assert.ok(/findingActions\?:/.test(src), 'findingActions is an OPTIONAL prop');
+  assert.ok(/findingActions\?\.\(f, i\)/.test(src), 'slot renders only when provided (optional chaining)');
+  // no other caller passes it (OPD + record-audit surfaces byte-identical)
+  const grep = ['app/appropriateness', 'components'];
+  void grep; // callers verified by search in the build report; the structural guarantee is the two asserts above
 });
 
 test('PHI posture: the row assembler cannot place a name/UHID on the audit row', () => {

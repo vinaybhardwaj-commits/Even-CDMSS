@@ -9,9 +9,8 @@ import { sql } from '@/lib/db';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { bandColor } from '@/lib/opd-audit-ui';
 import type { AuditReport, AuditFinding } from '@/lib/doc-audit-core';
-import CaseAuditReport from '@/components/CaseAuditReport';
 import { fetchIpdDoc, fetchIpdAdmissionHeader } from '@/lib/ipd-audit/db13';
-import FindingTriage from './finding-triage';
+import ReportWithTriage from './report-with-triage';
 
 export const dynamic = 'force-dynamic';
 
@@ -45,7 +44,7 @@ export default async function IpdAuditReport({ params }: { params: Promise<{ id:
       [id],
     ) as unknown as Promise<Array<{ finding_ref: string; verdict: string }>>,
   ]);
-  const triaged = new Map(feedback.map((f) => [f.finding_ref, f.verdict]));
+  const triaged = Object.fromEntries(feedback.map((f) => [f.finding_ref, f.verdict]));
 
   const report = (typeof r.report === 'string' ? JSON.parse(r.report) : r.report) as AuditReport | null;
   const findings = (report?.findings ?? (typeof r.findings === 'string' ? JSON.parse(String(r.findings)) : r.findings) ?? []) as AuditFinding[];
@@ -89,37 +88,19 @@ export default async function IpdAuditReport({ params }: { params: Promise<{ id:
         {/* RIGHT — findings */}
         <div className="min-h-0 flex-1 overflow-auto bg-white">
           <div className="mx-auto max-w-3xl px-5 py-6">
-            {/* first-class Low-Value Care panel + triage */}
-            <div className="rounded-xl border border-slate-200 bg-white">
-              <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
-                <span className="text-[13px] font-semibold text-slate-800">Low-Value Care findings</span>
-                <span className="text-[11px] text-slate-500">{lvcFindings.length} of {findings.length} findings · runs on every summary</span>
-              </div>
-              {lvcFindings.length === 0 ? (
-                <div className="px-4 py-5 text-center text-sm text-slate-500">No low-value or context-dependent findings on this summary.</div>
-              ) : (
-                <ul className="divide-y divide-slate-100">
-                  {lvcFindings.map((f) => (
-                    <li key={f.subject} className="px-4 py-3">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <span className="text-[13px] font-semibold text-slate-800">{f.subject}</span>
-                        <FindingTriage auditId={id} findingRef={f.subject} initial={triaged.get(f.subject)} />
-                      </div>
-                      <div className="mt-0.5 text-[11px] text-slate-500">
-                        <span className={`mr-1.5 rounded px-1.5 py-0.5 font-semibold ${f.verdict === 'low-value' ? 'bg-rose-50 text-rose-700' : 'bg-amber-50 text-amber-700'}`}>{f.verdict}</span>
-                        {f.domain && <span className="mr-1.5 text-slate-400">{f.domain}</span>}
-                        {f.rationale}
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
+            {/* slim Low-Value Care summary — the adjudicable finding list itself lives ONCE,
+                inside CaseAuditReport below (every finding carries the triage strip) */}
+            <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-4 py-2.5">
+              <span className="text-[13px] font-semibold text-slate-800">Low-Value Care check</span>
+              <span className="text-[11px] text-slate-500">
+                {lvcFindings.length === 0 ? 'no low-value / context-dependent findings' : `${lvcFindings.length} of ${findings.length} findings low-value / context-dependent`} · runs on every summary · adjudicate each below
+              </span>
             </div>
 
-            {/* the shipped Case-Audit renderer over the persisted de-identified report */}
+            {/* the shipped Case-Audit renderer — ONE finding list, every finding adjudicable */}
             <div className="mt-5">
               {report ? (
-                <CaseAuditReport report={report} analyzeTraceId={r.trace_id ? String(r.trace_id) : undefined} />
+                <ReportWithTriage report={report} auditId={id} triaged={triaged} analyzeTraceId={r.trace_id ? String(r.trace_id) : undefined} />
               ) : (
                 <div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-500">
                   This row predates the full-report column (0014) — re-run “Audit now” on the document to render the complete report.

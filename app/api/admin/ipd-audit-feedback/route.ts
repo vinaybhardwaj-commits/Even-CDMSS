@@ -6,11 +6,13 @@ import { sql } from '@/lib/db';
 
 export const runtime = 'nodejs';
 
-const VERDICTS = new Set(['agree', 'disagree', 'needs_action']);
+// OPD-grade adjudication vocabulary (S3.2 fix): TP/Nitpick/False/Contested is the signal S4
+// measurement needs — engine precision + noise-vs-edge-case separation. The launch triad
+// (agree/disagree/needs_action) stays accepted for any rows written before the fix.
+const VERDICTS = new Set(['true_positive', 'nitpick', 'false', 'contested', 'agree', 'disagree', 'needs_action']);
 
-// POST /api/admin/ipd-audit-feedback — per-finding clinician triage (Agree / Disagree /
-// Needs action) on an IPD audit. Append-only (latest row per finding wins on read).
-// Body: { auditId, findingRef?, verdict, note? }.
+// POST /api/admin/ipd-audit-feedback — per-finding clinician adjudication on an IPD audit.
+// Append-only (latest row per finding wins on read). Body: { auditId, findingRef?, verdict, note? }.
 export async function POST(req: NextRequest) {
   const denied = requireAdmin(req);
   if (denied && !(await isAdminUnlocked().catch(() => false))) return denied;
@@ -24,7 +26,7 @@ export async function POST(req: NextRequest) {
   const findingRef = typeof body.findingRef === 'string' ? body.findingRef.trim().slice(0, 300) : null;
   const note = typeof body.note === 'string' ? body.note.trim().slice(0, 2000) : null;
   if (!/^[0-9a-f-]{36}$/i.test(auditId)) return NextResponse.json({ ok: false, error: 'bad auditId' }, { status: 400 });
-  if (!VERDICTS.has(verdict)) return NextResponse.json({ ok: false, error: 'verdict must be agree | disagree | needs_action' }, { status: 400 });
+  if (!VERDICTS.has(verdict)) return NextResponse.json({ ok: false, error: 'verdict must be true_positive | nitpick | false | contested' }, { status: 400 });
 
   try {
     await sql(

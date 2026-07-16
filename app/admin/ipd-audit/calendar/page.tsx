@@ -111,8 +111,9 @@ export default async function IpdAuditCalendar({ searchParams }: { searchParams:
                 return (
                   <li key={d.documentId} className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 text-[12.5px]">
                     <span>
-                      <span className="font-semibold text-slate-800">{d.ipUid ?? d.documentId.slice(0, 10)}</span>
-                      <span className="ml-2 text-slate-500">{d.speciality ?? '—'}{d.losDays != null ? ` · LOS ${d.losDays}d` : ''}{d.dischargeType ? ` · ${d.dischargeType}` : ''}</span>
+                      <span className="font-semibold text-slate-800">{d.patientName ?? d.ipUid ?? d.documentId.slice(0, 10)}</span>
+                      {d.uhid && <span className="ml-1.5 text-[11px] text-slate-400">{d.uhid}</span>}
+                      <span className="ml-2 text-slate-500">{d.patientName ? `${d.ipUid ?? ''} · ` : ''}{d.speciality ?? '—'}{d.losDays != null ? ` · LOS ${d.losDays}d` : ''}{d.dischargeType ? ` · ${d.dischargeType}` : ''}</span>
                     </span>
                     {a ? <Link href={`/admin/ipd-audit/${a.id}`} className="rounded-md px-1.5 py-0.5 text-[11px] font-semibold text-white" style={{ background: bandColor(a.band) }}>{a.band} · {a.cvi}</Link>
                       : <AuditNowButton documentId={d.documentId} />}

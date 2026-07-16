@@ -155,10 +155,13 @@ export async function dischargeDocDensity(fromDay: string, toDay: string): Promi
   return out;
 }
 
-/** The discharge-summary docs for ONE IST day (the calendar's day rail). */
+/** The discharge-summary docs for ONE IST day (the calendar's day rail).
+ *  patientName/uhid are read-time PHI for the access-controlled rail — never persisted. */
 export interface IpdDayDoc {
   documentId: string;
   ipUid: string | null;
+  patientName: string | null;   // PHI — render-only
+  uhid: string | null;          // PHI — render-only
   speciality: string | null;
   dischargeType: string | null;
   losDays: number | null;
@@ -168,6 +171,7 @@ export async function dischargeDocsForDay(day: string, limit = 60): Promise<IpdD
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Error('bad day');
   const rows = await metabaseQuery(
     `SELECT m._doc_id AS document_id, m.additional_metadata__booking_id AS ip_uid,
+            k.patient_name, k.uhid,
             k.treating_doctor_speciality AS speciality, k.discharge_type,
             greatest(0, (k.discharge_date_time::date - k.admission_date_time::date))::int AS los_days
      FROM ${DOCS} m
@@ -181,8 +185,26 @@ export async function dischargeDocsForDay(day: string, limit = 60): Promise<IpdD
   return rows.map((r) => ({
     documentId: String(r.document_id),
     ipUid: s(r.ip_uid),
+    patientName: s(r.patient_name),
+    uhid: s(r.uhid),
     speciality: s(r.speciality),
     dischargeType: s(r.discharge_type),
     losDays: r.los_days == null ? null : Number(r.los_days),
   }));
+}
+
+/** Batched name/UHID resolution for a set of ip_uids (ONE query — the Overview recent-audits
+ *  join). Read-time PHI for the access-controlled surface; never persisted. */
+export async function namesForIpUids(ipUids: string[]): Promise<Record<string, { patientName: string | null; uhid: string | null }>> {
+  const ids = Array.from(new Set(ipUids.filter((u) => u && isIpUid(u))));
+  if (!ids.length) return {};
+  const list = ids.map((u) => `'${esc(u)}'`).join(', ');
+  const rows = await metabaseQuery(
+    `SELECT DISTINCT ON (ipd_no) ipd_no, patient_name, uhid FROM kx_discharge_summary_records
+     WHERE ipd_no IN (${list})
+     ORDER BY ipd_no, (status='Final') DESC, discharge_date_time DESC NULLS LAST`);
+  const s = (v: unknown) => (v == null || v === '' ? null : String(v));
+  const out: Record<string, { patientName: string | null; uhid: string | null }> = {};
+  for (const r of rows) out[String(r.ipd_no)] = { patientName: s(r.patient_name), uhid: s(r.uhid) };
+  return out;
 }
