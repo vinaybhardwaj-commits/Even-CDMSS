@@ -16,3 +16,18 @@ npm-debug.log*
 .fuse_hidden*
 **/.fuse_hidden*
 tsconfig.tsbuildinfo
+.vercel
+.env*
+
+# local result packs / study artifacts / dumps — NEVER commit (public repo; may carry
+# de-identified-but-clinical extracts + link-back keys). Committed data lives in data/ and does
+# NOT match these (e.g. data/ipd-audit-gold.json, data/llm-pricing.json are safe).
+.study-tb/
+OPD-Audit-v0.5-dump*
+*-export-*.csv
+consensus-gold-*.json
+ipd-audit-s4-*.json
+ipd-batch-*.json
+*.cache.json
+run1-results.json
+real-order-probe-*.json

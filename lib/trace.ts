@@ -119,6 +119,28 @@ export async function finishTrace(
   } catch {}
 }
 
+/**
+ * STUDY FLAG — DEFAULT-OFF. `LLM_THINKING_BUDGET=<n>` caps the reasoning ("thinking") tokens
+ * Gemini 2.5 spends per call, for the thinkingBudget cost study (17 Jul 2026). Unset / 0 / junk
+ * ⇒ returns undefined and tracedChat is BYTE-IDENTICAL to the uncapped shipped path. The shipped
+ * production default is UNCAPPED; this exists so an arm can be driven per-process (the same
+ * pattern the Flash study used for GEMINI_MODEL) without touching the engine or any prompt.
+ *
+ * Mechanism (SL0-verified against Vertex's OpenAI-compat endpoint, 17 Jul 2026): the ONLY form
+ * this endpoint honors is a top-level `google.thinking_config.thinking_budget`. Both
+ * `generationConfig.thinkingConfig` and `extra_body.generationConfig.thinkingConfig` are
+ * SILENTLY IGNORED — the request succeeds and reasoning is unchanged, which is precisely how a
+ * cap that does nothing would look. Verified by dose-response, not by the call not erroring:
+ * budget 128/512/1024/2048 → 75/431/678/1509 actual reasoning tokens.
+ *
+ * NB gemini-2.5-pro REJECTS thinking_budget=0 (HTTP 400) — Pro cannot have thinking disabled;
+ * 128 is its floor. -1 means "dynamic" (i.e. uncapped), so it is deliberately not accepted here.
+ */
+export function geminiThinkingBudget(): number | undefined {
+  const raw = Number(process.env.LLM_THINKING_BUDGET);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : undefined;
+}
+
 // Wraps llm.chat.completions.create with automatic event logging.
 // Logs: model, full prompt (messages), full response content, token usage, finish_reason, latency.
 // Returns the original response so callers can use it normally.
@@ -156,10 +178,15 @@ export async function tracedChat(
     options: (params as Record<string, unknown>).options,
     keep_alive: (params as Record<string, unknown>).keep_alive,
   };
+  // Default-off (see geminiThinkingBudget): undefined unless an arm sets LLM_THINKING_BUDGET.
+  const thinkingBudget = useGemini ? geminiThinkingBudget() : undefined;
   const genParams: Record<string, unknown> = {
     temperature: requestPayload.temperature ?? null,
     max_tokens: requestPayload.max_tokens ?? null,
     stream: requestPayload.stream,
+    // Only present when capped, so an uncapped call's gen_params is unchanged — and a capped
+    // run is never mistakable for a shipped-default one when read back off the trace.
+    ...(thinkingBudget ? { thinking_budget: thinkingBudget } : {}),
   };
   const promptRef = opts?.promptRef;
   await logEvent(traceId, 'llm_request', label, requestPayload, undefined,
@@ -194,6 +221,8 @@ export async function tracedChat(
         // the field we retry WITHOUT it (keep Gemini) rather than cascading to the Ollama fallback.
         const wantUsage = Boolean((rest as { stream?: boolean }).stream) && process.env.LLM_STREAM_USAGE !== '0';
         if (wantUsage) gParams.stream_options = { include_usage: true };
+        // Study arm only — absent on the shipped uncapped default.
+        if (thinkingBudget) gParams.google = { thinking_config: { thinking_budget: thinkingBudget } };
         const gemini = await getGeminiChatClient();
         try {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any

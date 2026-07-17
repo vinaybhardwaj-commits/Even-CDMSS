@@ -18,9 +18,13 @@
 // Numbers are REPORTED, never self-certified — V reads the true theme number.
 
 import { readFileSync, writeFileSync, existsSync } from 'fs';
-import { createHash } from 'crypto';
-import { chatWithFallback, geminiUtilityModel, TEXT_MODEL, embedQuery } from '../lib/llm.ts';
+import { embedQuery } from '../lib/llm.ts';
 import { loadIpdAuditGold } from '../lib/ipd-audit/gold.ts';
+// The judge matcher now lives in ONE place (lib/ipd-audit/theme-match) so the consensus-gold
+// harness reuses the exact S4.1 matcher, not a copy. keyOf + JUDGE_SYSTEM + judgeMap are the
+// verbatim originals; this script's behaviour and its cache file are unchanged (proven byte-
+// identical by re-running with the existing cache).
+import { keyOf, judgeMap as semanticJudgeMap } from './lib/theme-match.mjs';
 import GOLD from '../data/ipd-audit-gold.json' with { type: 'json' };
 
 const argv = process.argv.slice(2);
@@ -36,34 +40,9 @@ if (!pack.perCase?.[0]?.raw_runs) { console.error(`${PACK} has no raw_runs — n
 const CACHE_PATH = `${OUT}.cache.json`;
 const cache = existsSync(CACHE_PATH) ? JSON.parse(readFileSync(CACHE_PATH, 'utf8')) : { judge: {}, emb: {} };
 const saveCache = () => writeFileSync(CACHE_PATH, JSON.stringify(cache));
-const keyOf = (s) => createHash('sha256').update(s, 'utf8').digest('hex').slice(0, 24);
 
-const JUDGE_SYSTEM = `You judge whether two short clinical-audit finding titles describe the SAME clinical concern about the same episode. Paraphrase, word order, abbreviation (IV/intravenous), and generic-vs-specific phrasing of the SAME concern all count as a match. Different concerns (e.g. antibiotic DURATION vs antibiotic CHOICE; a stay-length concern vs a drug-interaction concern) do NOT match.
-You are given GOLD themes (numbered) and RUN findings (lettered) from the same case. For EACH run finding output the number of the gold theme it expresses, or null if none.
-Return ONLY JSON: {"map":{"A":1,"B":null,...}}`;
-
-async function judgeCase(goldThemes, runSubjects) {
-  const key = keyOf(JSON.stringify([goldThemes, runSubjects]));
-  if (cache.judge[key]) return cache.judge[key];
-  const letters = runSubjects.map((_, i) => String.fromCharCode(65 + (i % 26)) + (i >= 26 ? Math.floor(i / 26) : ''));
-  const user = `GOLD themes:\n${goldThemes.map((t, i) => `${i + 1}. ${t}`).join('\n')}\n\nRUN findings:\n${runSubjects.map((s, i) => `${letters[i]}. ${s}`).join('\n')}\n\nOutput the JSON map now.`;
-  const res = await chatWithFallback({
-    model: TEXT_MODEL,
-    messages: [{ role: 'system', content: JUDGE_SYSTEM }, { role: 'user', content: user }],
-    temperature: 0, max_tokens: 800,
-  }, geminiUtilityModel());
-  const raw = res?.choices?.[0]?.message?.content ?? '';
-  const a = raw.indexOf('{'); const b = raw.lastIndexOf('}');
-  const parsed = JSON.parse(raw.slice(a, b + 1));
-  const map = {};
-  runSubjects.forEach((s, i) => {
-    const v = parsed.map?.[letters[i]];
-    const n = Number(v);
-    map[s] = Number.isFinite(n) && n >= 1 && n <= goldThemes.length ? n - 1 : null;
-  });
-  cache.judge[key] = map; saveCache();
-  return map;
-}
+// judgeCase = the shared judgeMap bound to THIS script's cache (goldThemes as the reference set).
+const judgeCase = (goldThemes, runSubjects) => semanticJudgeMap(goldThemes, runSubjects, cache, saveCache);
 
 async function embed(text) {
   const key = keyOf(text);
