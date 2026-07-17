@@ -423,6 +423,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "spine"
   },
   {
+    "id": "member-state-adapters",
+    "plane": "pure-core"
+  },
+  {
     "id": "metabase",
     "plane": "unregistered"
   },
@@ -2677,6 +2681,26 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "member-state-adapters",
+    "to": "clinical-state",
+    "kind": "type"
+  },
+  {
+    "from": "member-state-adapters",
+    "to": "episode-state",
+    "kind": "type"
+  },
+  {
+    "from": "member-state-adapters",
+    "to": "member-state",
+    "kind": "type"
+  },
+  {
+    "from": "member-state-adapters",
+    "to": "member-state",
+    "kind": "value"
+  },
+  {
     "from": "metabase",
     "to": "opd-complexity-core",
     "kind": "value"
@@ -3401,9 +3425,9 @@ export const VERSION_REGISTRY: VersionRow[] = [
 ];
 
 export const COVERAGE = {
-  "registered": 12,
+  "registered": 13,
   "unregistered": 15,
-  "total": 27,
+  "total": 28,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
@@ -3480,6 +3504,14 @@ export const MAP_RULES: MapRule[] = [
   {
     "id": 7,
     "name": "the frozen spine must not import EpisodeState",
+    "sourceGlobs": [
+      "lib/member-state/**",
+      "lib/clinical-state/**"
+    ]
+  },
+  {
+    "id": 8,
+    "name": "the frozen spine must not import the admission adapter",
     "sourceGlobs": [
       "lib/member-state/**",
       "lib/clinical-state/**"

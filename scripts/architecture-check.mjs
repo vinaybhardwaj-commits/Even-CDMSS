@@ -101,6 +101,17 @@ export const RULES = [
     forbid: [/(^|\/)episode-state\//],
     valueOnly: true,
   },
+  {
+    id: 8,
+    // Admission-adapter tripwire (MemberState adapter #5 SL1): the admission adapter COMPOSES the
+    // frozen spine from outside (it calls assembleEvidence + reads the spine's types). The frozen
+    // spine must NEVER import the adapter back — that would fold the compose-outside primitive into
+    // the V-ratified core and break the freeze. One-way, mirrors rule 7.
+    name: 'the frozen spine must not import the admission adapter',
+    sourceGlobs: ['lib/member-state/**', 'lib/clinical-state/**'],
+    forbid: [/(^|\/)member-state-adapters\//],
+    valueOnly: true,
+  },
 ];
 
 // ── run (main-guarded: `npm run architecture:check` executes; importing RULES does not) ──────────

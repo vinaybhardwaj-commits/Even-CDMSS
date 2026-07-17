@@ -122,6 +122,14 @@ export const MODULE_MANIFESTS: ModuleManifest[] = [
     versionConst: 'EPISODE_STATE_VERSION',
   },
   {
+    id: 'member-state-adapters',
+    title: 'Feeding an admission into the record',
+    blurb: 'Turns a discharge into one more encounter in the patient’s longitudinal record — composing the frozen spine from outside, never editing it. Behind a flag until proven.',
+    plane: 'pure-core',
+    paths: ['lib/member-state-adapters/**'],
+    lifecycle: 'implemented', // SL1: compose-outside adapter + tripwire, behind a flag; no-regression proof (SL2) + surface (SL3) later
+  },
+  {
     id: 'architecture',
     title: 'This map’s own tooling',
     blurb: 'The behind-the-scenes tooling that keeps this very page accurate and up to date on every change.',
