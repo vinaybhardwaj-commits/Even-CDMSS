@@ -115,6 +115,30 @@ test('(3) the IPD extract call passes traceId — without it the read self-logs 
   assert.ok(/traceId/.test(call![0]), 'the extract read is traced (else it is invisible on EVERY ₹ surface)');
 });
 
+test('the historic backfill touches ONLY the four cost columns, and never re-derives the rule', () => {
+  // The one-shot that brought historic columns up to the payload's truth (16,129 rows). Its blast
+  // radius is the thing worth locking: the fingerprint columns belong to the caller that owns the
+  // prompt, and a backfill inferring them would be corruption, not cleanup.
+  const src = read('scripts/cost-column-backfill.mjs');
+  const update = src.slice(src.indexOf('UPDATE trace_events e SET'), src.indexOf('WHERE e.id = v.id'));
+  assert.ok(update.length > 0, 'the backfill UPDATE located');
+
+  for (const col of ['prompt_id', 'prompt_version', 'prompt_hash', 'rubric_versions', 'output_schema_version', 'gen_params']) {
+    assert.ok(!update.includes(col), `the backfill must never write the fingerprint column '${col}'`);
+  }
+  for (const col of ['tokens_in', 'tokens_out', 'call_model', 'call_provider']) {
+    assert.ok(update.includes(col), `the backfill writes the cost column '${col}'`);
+  }
+  // the shared rule, not a SQL re-derivation — one statement of the formula, per language
+  assert.ok(/billableOutputTokens\(usage\)/.test(src), 'tokens_out comes from the shared helper');
+  assert.ok(!/greatest\(/i.test(update), 'the formula is not re-derived inside the UPDATE');
+  // a value the owning caller already stamped is never clobbered
+  assert.ok(/call_model = COALESCE\(e\.call_model, v\.model\)/.test(update), 'call_model only fills NULLs');
+  assert.ok(/call_provider = COALESCE\(e\.call_provider, v\.provider\)/.test(update), 'call_provider only fills NULLs');
+  // idempotency: values are recomputed from the payload, never read back from the column
+  assert.ok(/payload->'usage' IS NOT NULL/.test(src), 'rows without payload.usage are excluded (no invented zeros)');
+});
+
 test('the column path and the payload path state the SAME rule (they must never drift)', () => {
   // The dashboard's SQL was already correct and is deliberately NOT changed. This pins it: if
   // someone simplifies OUT_TOK to completion_tokens, or drops the greatest(), this fails.
