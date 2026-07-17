@@ -287,6 +287,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "episode-state",
+    "plane": "pure-core"
+  },
+  {
     "id": "europepmc",
     "plane": "unregistered"
   },
@@ -2173,6 +2177,11 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "episode-state",
+    "to": "doc-audit-core",
+    "kind": "type"
+  },
+  {
     "from": "expand",
     "to": "llm",
     "kind": "value"
@@ -3156,6 +3165,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": true
   },
   {
+    "constName": "EPISODE_STATE_VERSION",
+    "value": "episode-state/0.1",
+    "file": "lib/episode-state/schema.ts",
+    "derived": false
+  },
+  {
     "constName": "EXTRACTION_EVAL_VERSION",
     "value": "clinical-state-extraction-eval/2",
     "file": "lib/clinical-state/extraction-eval-core.ts",
@@ -3356,9 +3371,9 @@ export const VERSION_REGISTRY: VersionRow[] = [
 ];
 
 export const COVERAGE = {
-  "registered": 11,
+  "registered": 12,
   "unregistered": 15,
-  "total": 26,
+  "total": 27,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
@@ -3427,6 +3442,14 @@ export const MAP_RULES: MapRule[] = [
   {
     "id": 6,
     "name": "the spine must not value-import the IPD audit module",
+    "sourceGlobs": [
+      "lib/member-state/**",
+      "lib/clinical-state/**"
+    ]
+  },
+  {
+    "id": 7,
+    "name": "the frozen spine must not import EpisodeState",
     "sourceGlobs": [
       "lib/member-state/**",
       "lib/clinical-state/**"

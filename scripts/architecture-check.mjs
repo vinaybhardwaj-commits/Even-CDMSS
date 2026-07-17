@@ -90,6 +90,17 @@ export const RULES = [
     forbid: [/(^|\/)ipd-audit\//],
     valueOnly: true,
   },
+  {
+    id: 7,
+    // EpisodeState tripwire (EpisodeState #4 SL1): EpisodeState is a NEW frozen-adjacent projection.
+    // The frozen spine must never grow an import of it — mirrors rule 6, guarding the boundary
+    // BEFORE any adapter exists. EpisodeState may read the frozen cores' contracts/types only
+    // (the reverse direction is deliberately allowed), so the guard is one-way: spine → episode.
+    name: 'the frozen spine must not import EpisodeState',
+    sourceGlobs: ['lib/member-state/**', 'lib/clinical-state/**'],
+    forbid: [/(^|\/)episode-state\//],
+    valueOnly: true,
+  },
 ];
 
 // ── run (main-guarded: `npm run architecture:check` executes; importing RULES does not) ──────────

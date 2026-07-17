@@ -113,6 +113,15 @@ export const MODULE_MANIFESTS: ModuleManifest[] = [
     versionConst: 'IPD_ENGINE_VERSION',
   },
   {
+    id: 'episode-state',
+    title: 'One admission, start to finish',
+    blurb: 'Brackets a single hospital stay as documented facts — admission, the in-hospital course, discharge — with every fact traceable to its source. Facts only: no scores, no predictions.',
+    plane: 'pure-core',
+    paths: ['lib/episode-state/**'],
+    lifecycle: 'implemented', // SL1: schema + intra-phase builder; pre/post + persistence + surface land later
+    versionConst: 'EPISODE_STATE_VERSION',
+  },
+  {
     id: 'architecture',
     title: 'This map’s own tooling',
     blurb: 'The behind-the-scenes tooling that keeps this very page accurate and up to date on every change.',
