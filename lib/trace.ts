@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { sql } from './db';
 import { llm, geminiConfigured, getGeminiChatClient, vertexModelName, chatWithFallback } from './llm';
 import { promptFingerprint } from './reasoning/registry-core';
+import { billableOutputTokens } from './llm-cost-core';
 
 const sqlFn = sql as unknown as (q: string, p: unknown[]) => Promise<unknown>;
 
@@ -235,17 +236,20 @@ export async function tracedChat(
 
   // For non-streaming responses, log the full content + usage
   if (!('controller' in result)) {
-    const r = result as { choices?: Array<{ message?: { content?: string }; finish_reason?: string }>; usage?: { prompt_tokens?: number; completion_tokens?: number } };
+    const r = result as { choices?: Array<{ message?: { content?: string }; finish_reason?: string }>; usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } };
     await logEvent(traceId, 'llm_response', label, {
       model: actualModel,
       provider,
       content: r.choices?.[0]?.message?.content ?? '',
       finish_reason: r.choices?.[0]?.finish_reason,
-      usage: r.usage,
+      usage: r.usage,          // payload UNCHANGED — the $ dashboard reads this and is already correct
     }, Date.now() - t0,
       buildEnvelope(promptRef, {
         model: actualModel, provider, genParams,
-        tokensIn: r.usage?.prompt_tokens ?? null, tokensOut: r.usage?.completion_tokens ?? null,
+        // tokens_out is REASONING-INCLUSIVE (total − prompt), matching the OUT_TOK the dashboard
+        // already prices from the payload. Previously this column recorded completion_tokens
+        // alone, so any column-based reader under-counted output ~47% (measured).
+        tokensIn: r.usage?.prompt_tokens ?? null, tokensOut: r.usage ? billableOutputTokens(r.usage) : null,
       }));
   } else {
     // For streaming, the caller will collect tokens and should call logStreamComplete after.
@@ -292,11 +296,12 @@ async function* wrapStreamUsage(
     }
   } finally {
     if (usage) {
-      const u = usage as { prompt_tokens?: number; completion_tokens?: number };
+      const u = usage as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
       await logEvent(traceId, 'llm_stream_usage', label, { model, provider, usage, streamed: true }, Date.now() - t0,
         buildEnvelope(promptRef, {
           model: model ?? null, provider, genParams: genParams ?? null,
-          tokensIn: u.prompt_tokens ?? null, tokensOut: u.completion_tokens ?? null,
+          // reasoning-inclusive, same rule as the non-streaming path above
+          tokensIn: u.prompt_tokens ?? null, tokensOut: billableOutputTokens(u),
         })).catch(() => {});
     }
   }

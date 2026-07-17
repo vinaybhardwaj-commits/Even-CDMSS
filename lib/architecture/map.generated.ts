@@ -2204,6 +2204,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "gemini-multimodal",
+    "to": "llm-cost-core",
+    "kind": "value"
+  },
+  {
+    "from": "gemini-multimodal",
     "to": "trace",
     "kind": "value"
   },
@@ -3100,6 +3105,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "trace",
     "to": "llm",
+    "kind": "value"
+  },
+  {
+    "from": "trace",
+    "to": "llm-cost-core",
     "kind": "value"
   },
   {

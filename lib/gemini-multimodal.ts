@@ -14,7 +14,8 @@
 
 import { getVertexAccessToken } from './gcp-auth';
 import { GEMINI_MODEL, geminiConfigured } from './llm';
-import { logEvent } from './trace';
+import { logEvent, buildEnvelope } from './trace';
+import { billableOutputTokens } from './llm-cost-core';
 
 const GCP_LOCATION = process.env.GCP_LOCATION || 'asia-south1';
 const GCP_PROJECT = process.env.GCP_PROJECT || '';
@@ -89,7 +90,9 @@ export async function generateFromDocument(
     const j = (await res.json()) as {
       candidates?: { content?: { parts?: { text?: string }[] } }[];
       promptFeedback?: { blockReason?: string };
-      usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number };
+      // thoughtsTokenCount: Gemini 2.5 returns the thinking-token count here when the model
+      // reasons. It is billed at the OUTPUT rate but is NOT in candidatesTokenCount.
+      usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number; thoughtsTokenCount?: number };
     };
     if (j.promptFeedback?.blockReason) {
       console.warn('[multimodal] blocked:', j.promptFeedback.blockReason);
@@ -100,12 +103,34 @@ export async function generateFromDocument(
 
     // Self-log the call for the cost tracker. usageMetadata.promptTokenCount INCLUDES the image/PDF
     // tokens, so this captures the (Pro-priced) multimodal cost that a text-only tracer misses.
+    //
+    // ONE event, two readers — and this stays exactly ONE logEvent (callers must never also log
+    // this call, or the read would be double-counted):
+    //   • payload.usage — UNCHANGED. The $ dashboard (lib/llm-cost.ts) reads it and was already
+    //     billing-accurate; touching it would risk breaking a correct surface.
+    //   • the ENVELOPE columns — NEW. Previously this call passed no envelope, so call_model /
+    //     tokens_in / tokens_out were NULL on every PDF read and any column-based reader priced
+    //     the entire multimodal read at ₹0 (measured: ₹10.54 vs the dashboard's ₹31.97 on the
+    //     same doc — the gap that made S6 report ₹11.30/doc). tokens_out is reasoning-inclusive.
+    // No promptRef is passed: this transport is generic (doc-audit, ccb-brief), so the caller owns
+    // the prompt fingerprint — the fingerprint columns stay null here and only the call facts land.
     if (opts.traceId) {
       const u = j.usageMetadata ?? {};
+      const usage = {
+        prompt_tokens: u.promptTokenCount ?? 0,
+        completion_tokens: u.candidatesTokenCount ?? 0,
+        total_tokens: u.totalTokenCount ?? 0,
+      };
       await logEvent(opts.traceId, 'llm_response', opts.label || 'multimodal_read', {
         model, provider: 'vertex-multimodal', multimodal: true, char_count: text.length,
-        usage: { prompt_tokens: u.promptTokenCount ?? 0, completion_tokens: u.candidatesTokenCount ?? 0, total_tokens: u.totalTokenCount ?? 0 },
-      }, Date.now() - t0).catch(() => {});
+        usage,
+        // additive sibling of `usage` (never inside it — the dashboard's reader stays untouched)
+        thoughts_tokens: u.thoughtsTokenCount ?? null,
+      }, Date.now() - t0,
+        buildEnvelope(undefined, {
+          model, provider: 'vertex-multimodal',
+          tokensIn: usage.prompt_tokens, tokensOut: billableOutputTokens(usage),
+        })).catch(() => {});
     }
     return text || null;
   } catch (e) {

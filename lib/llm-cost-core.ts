@@ -26,6 +26,33 @@ export interface Pricing {
   fallback: Omit<ModelPrice, 'match'>;
 }
 
+/**
+ * BILLABLE OUTPUT TOKENS — the one definition, shared by every writer and reader of a token count.
+ *
+ * Gemini 2.5 is a THINKING model: it bills reasoning ("thoughts") tokens at the OUTPUT rate, but
+ * `completion_tokens` EXCLUDES them while `total_tokens` includes them. Measured on a real analyze
+ * call: total 9,639 = prompt 4,489 + completion 2,716 + reasoning 2,434 — so counting `completion`
+ * alone drops ~47% of billable output, and output is ~93% of the ₹ (Pro output is $10/M vs $1.25/M
+ * in). That understatement is exactly what made S6 report ₹11.30/doc for a ₹34/doc pipeline.
+ *
+ * `total − prompt` recovers visible + thinking output. When `total` is absent (non-thinking models,
+ * or a provider that omits it) this reduces to `completion`, so it never under- or over-counts.
+ *
+ * This mirrors, in TypeScript, the `OUT_TOK` SQL in lib/llm-cost.ts — which was already correct.
+ * The rule now has ONE statement per language, and lib/__tests__/cost-accuracy.test.ts pins them
+ * to each other so the column path and the payload path can never drift apart again.
+ */
+export function billableOutputTokens(u: {
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
+  total_tokens?: number | null;
+} | null | undefined): number {
+  const prompt = Number(u?.prompt_tokens) || 0;
+  const completion = Number(u?.completion_tokens) || 0;
+  const total = Number(u?.total_tokens) || 0;
+  return Math.max(completion, total - prompt, 0);
+}
+
 /** The price row whose `match` substring appears in the model name (else the fallback). */
 export function priceFor(model: string, pricing: Pricing): Omit<ModelPrice, 'match'> {
   const m = (model || '').toLowerCase();
