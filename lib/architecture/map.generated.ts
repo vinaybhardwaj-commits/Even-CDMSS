@@ -2178,6 +2178,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "episode-state",
+    "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "episode-state",
     "to": "doc-audit-core",
     "kind": "type"
   },
@@ -2310,6 +2315,11 @@ export const MAP_EDGES: MapEdge[] = [
     "from": "ipd-audit",
     "to": "doc-audit-core",
     "kind": "type"
+  },
+  {
+    "from": "ipd-audit",
+    "to": "episode-state",
+    "kind": "value"
   },
   {
     "from": "ipd-audit",

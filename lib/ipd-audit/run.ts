@@ -15,7 +15,8 @@ import { extractCase, analyzeCase } from '../doc-audit';
 import { GEMINI_MODEL, MINI_MODEL } from '../llm';
 import { getVertexAccessToken } from '../gcp-auth';
 import { fetchIpdAdmissionHeader } from './db13';
-import { fetchBilledTotal } from './billing';
+import { fetchBilledTotal, fetchBillingEnvelope } from './billing';
+import { persistEpisodeState } from './episode-adapter';
 import { buildIpdAuditRow } from './assemble';
 import { saveIpdAudit, IPD_ENGINE_VERSION, IPD_MINI_ENGINE_VERSION } from './store';
 
@@ -99,6 +100,14 @@ export async function runIpdAudit(input: IpdRunInput, opts: { mini?: boolean } =
       traceId: traceId ?? null,
     }, extracted, report);
     const status = await saveIpdAudit(row);
+
+    // EpisodeState (#4 SL2) — build + persist the phased episode object, ADDITIVE + BEST-EFFORT.
+    // The audit is already saved above; persistEpisodeState never throws, so this cannot turn a
+    // successful audit into a failure. The billing envelope is fetched here (best-effort) for the
+    // ₹ fact; a billing outage just yields a null netTotal. Forward-only — no backfill.
+    const billing = input.ipUid ? await fetchBillingEnvelope(input.ipUid).catch(() => null) : null;
+    await persistEpisodeState(input.documentId, extracted, header, billing);
+
     return {
       documentId: input.documentId, ip_uid: row.ipUid, status,
       band: row.band, cvi: row.careValueIndex, nFindings: row.nFindings, nLowValue: row.nLowValue,

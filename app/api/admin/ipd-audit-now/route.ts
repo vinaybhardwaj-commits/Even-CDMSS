@@ -6,9 +6,10 @@ import { extractCase, analyzeCase } from '@/lib/doc-audit';
 import { GEMINI_MODEL } from '@/lib/llm';
 import { getVertexAccessToken } from '@/lib/gcp-auth';
 import { fetchIpdDoc, fetchIpdAdmissionHeader } from '@/lib/ipd-audit/db13';
-import { fetchBilledTotal } from '@/lib/ipd-audit/billing';
+import { fetchBilledTotal, fetchBillingEnvelope } from '@/lib/ipd-audit/billing';
 import { buildIpdAuditRow } from '@/lib/ipd-audit/assemble';
 import { saveIpdAudit, IPD_ENGINE_VERSION } from '@/lib/ipd-audit/store';
+import { persistEpisodeState } from '@/lib/ipd-audit/episode-adapter';
 import { sql } from '@/lib/db';
 
 export const runtime = 'nodejs';
@@ -70,6 +71,10 @@ export async function POST(req: NextRequest) {
     }, extracted, report);
     const saved = await saveIpdAudit(row);
 
+    // EpisodeState (#4 SL2) — additive + best-effort; never throws, never affects the audit above.
+    const billing = doc.ipUid ? await fetchBillingEnvelope(doc.ipUid).catch(() => null) : null;
+    const episode = await persistEpisodeState(doc.documentId, extracted, header, billing);
+
     const idRows = (await sql(
       `SELECT id FROM ipd_discharge_audits WHERE document_id = $1 AND engine_version = $2 LIMIT 1`,
       [doc.documentId, IPD_ENGINE_VERSION],
@@ -79,6 +84,7 @@ export async function POST(req: NextRequest) {
       ok: true, saved, id: idRows[0]?.id ?? null,
       careValueIndex: row.careValueIndex, band: row.band,
       nFindings: row.nFindings, nLowValue: row.nLowValue,
+      episodeState: episode ? { status: episode.status, episodeRef: episode.episodeRef } : null,
       extractTraceId, analyzeTraceId,
     });
   } catch (e) {
