@@ -31,3 +31,4 @@ ipd-batch-*.json
 *.cache.json
 run1-results.json
 real-order-probe-*.json
+episode-recon-*.json
