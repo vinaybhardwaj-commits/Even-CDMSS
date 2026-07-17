@@ -12,7 +12,13 @@ import { readState, miniAuditedCount, windowOpen, lockHeld, setSetting, IB_KEYS,
 import { MINI_MODEL } from '@/lib/llm';
 
 /**
- * S6 — the IPD Mini/Qwen backfill (K=1, isolated, ₹0 on analyze). Mirrors
+ * ⚠️ RETIRED FOR QWEN/MINI (V, 17-Jul-2026) — default-off, NO cron drives it. The Mini premise
+ * failed measurement (303s/doc over the 300s cap; not ₹0 since the PDF extract is Gemini
+ * regardless; and Qwen rubber-stamps at 0.1 low-value findings/doc vs Gemini's 2.8). The route
+ * stays because the chain is model-agnostic — a future backfill flips one flag — but enabling it
+ * on Qwen would fill the surface with rubber-stamp A rows. See lib/ipd-audit/backfill.ts.
+ *
+ * S6 — the IPD backfill autopilot (K=1, isolated engine version). Mirrors
  * /api/admin/opd-audit-mini-backfill: an autopilot tick (?auto=1, cron) gated by app_settings
  * switches + a soft lock, walking the discharge backlog OLDEST-FIRST.
  *

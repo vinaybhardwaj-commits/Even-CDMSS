@@ -37,6 +37,10 @@ export interface IpdRunResult {
   latencyMs?: number;
   error?: string;
   skip?: 'no-pdf' | 'unreadable';
+  // BOTH trace ids — the extract (Gemini multimodal, the PDF read) and the analyze chain are
+  // separate traces, so real per-doc cost needs both. The row persists only the analyze trace.
+  extractTraceId?: string | null;
+  analyzeTraceId?: string | null;
 }
 
 /** Fetch the PDF: plain URL first (bucket is publicly readable — flagged to infra), Bearer fallback. */
@@ -61,15 +65,15 @@ export async function runIpdAudit(input: IpdRunInput, opts: { mini?: boolean } =
   try {
     if (!input.pdfUrl) return { documentId: input.documentId, skip: 'no-pdf' };
     const buf = await fetchPdf(input.pdfUrl);
-    const { extracted } = await extractCase({
+    const { extracted, traceId: extractTraceId } = await extractCase({
       base64: buf.toString('base64'), mime: 'application/pdf',
       docTypeHint: 'discharge_summary', bytes: buf.length,
     });
-    if (!extracted) return { documentId: input.documentId, skip: 'unreadable' };
+    if (!extracted) return { documentId: input.documentId, skip: 'unreadable', extractTraceId };
 
     // mini → analyze on the free Mac-mini (Qwen); extract stays Gemini-multimodal (reads the PDF)
     const { report, traceId } = await analyzeCase(extracted, {}, mini ? { forceOllama: true } : {});
-    if (!report?.valueScore) return { documentId: input.documentId, skip: 'unreadable' };
+    if (!report?.valueScore) return { documentId: input.documentId, skip: 'unreadable', extractTraceId, analyzeTraceId: traceId };
 
     const header = input.ipUid ? await fetchIpdAdmissionHeader(input.ipUid).catch(() => null) : null;
     const row = buildIpdAuditRow({
@@ -88,7 +92,7 @@ export async function runIpdAudit(input: IpdRunInput, opts: { mini?: boolean } =
     return {
       documentId: input.documentId, ip_uid: row.ipUid, status,
       band: row.band, cvi: row.careValueIndex, nFindings: row.nFindings, nLowValue: row.nLowValue,
-      latencyMs: Date.now() - t0,
+      latencyMs: Date.now() - t0, extractTraceId, analyzeTraceId: traceId,
     };
   } catch (e) {
     return { documentId: input.documentId, error: String((e as Error).message), latencyMs: Date.now() - t0 };

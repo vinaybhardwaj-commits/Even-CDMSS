@@ -1,5 +1,12 @@
 /**
- * lib/ipd-audit/backfill.ts — the S6 IPD Mini/Qwen backfill state machine. Mirrors
+ * ⚠️ RETIRED FOR QWEN/MINI (V, 17-Jul-2026). The Mini premise died on measurement: 303s/doc
+ * (over the routes' 300s cap), NOT ₹0 (IPD reads a PDF, so the extract pass is Gemini-multimodal
+ * regardless), and — decisively — Qwen rubber-stamps: 0.1 low-value findings/doc vs Gemini's 2.8,
+ * 9/10 docs graded A. The machinery below stays because it is MODEL-AGNOSTIC (runIpdAudit takes
+ * one flag), but it ships DEFAULT-OFF and no cron drives it; any future backfill must first pick
+ * a model that measurably finds low-value care. See the S6-revised build report.
+ *
+ * lib/ipd-audit/backfill.ts — the S6 IPD backfill state machine. Mirrors
  * lib/mini-backfill.ts's shape (app_settings-backed switches + soft lock + tick log), with the
  * IPD difference that the backlog is walked DOC-oldest-first (a flat ~1,637-doc corpus), not
  * day-cursor-first — so the cursor is a processed-count, and the exclude set is the audit table
