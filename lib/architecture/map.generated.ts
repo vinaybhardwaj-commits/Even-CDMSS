@@ -2334,6 +2334,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "ipd-audit",
     "to": "episode-state",
+    "kind": "type"
+  },
+  {
+    "from": "ipd-audit",
+    "to": "episode-state",
     "kind": "value"
   },
   {
@@ -3191,7 +3196,7 @@ export const VERSION_REGISTRY: VersionRow[] = [
   },
   {
     "constName": "EPISODE_STATE_VERSION",
-    "value": "episode-state/0.1",
+    "value": "episode-state/0.2",
     "file": "lib/episode-state/schema.ts",
     "derived": false
   },

@@ -11,6 +11,7 @@ import type { IpdAdmissionHeader } from './db13';
 import type { BillingEnvelope } from './billing';
 import { buildEpisodeState, type KxEnvelope } from '../episode-state/build-intra';
 import { saveEpisodeState } from '../episode-state/store';
+import { resolveOpdLinkage } from './episode-opd-adapter';
 
 /**
  * PURE PHI-drop mapper: IpdAdmissionHeader + BillingEnvelope → the de-identified KxEnvelope.
@@ -38,7 +39,7 @@ export function toKxEnvelope(header: IpdAdmissionHeader | null, billing: Billing
   };
 }
 
-export interface EpisodePersistResult { status: 'inserted' | 'updated' | 'skipped'; episodeRef: string }
+export interface EpisodePersistResult { status: 'inserted' | 'updated' | 'skipped'; episodeRef: string; opdLinked: boolean; opdEncounters: number }
 
 /**
  * Build + persist the EpisodeState for one audited discharge. NEVER THROWS — any failure (db13,
@@ -51,9 +52,12 @@ export async function persistEpisodeState(
 ): Promise<EpisodePersistResult | null> {
   try {
     const kx = toKxEnvelope(header, billing);
-    const state = buildEpisodeState(extracted, kx);
+    // SL4: OPD pre/post linkage — best-effort, self-contained (resolveOpdLinkage never throws and
+    // returns an empty linkage for the ~50% unlinked tail). An empty linkage ⇒ empty pre/post.
+    const opd = await resolveOpdLinkage(header, kx?.admitDate ?? null, kx?.dischargeDate ?? null);
+    const state = buildEpisodeState(extracted, kx, opd.linkage);
     const status = await saveEpisodeState(documentId, state);
-    return { status, episodeRef: state.episodeRef };
+    return { status, episodeRef: state.episodeRef, opdLinked: opd.linked, opdEncounters: opd.encountersPre + opd.encountersPost };
   } catch (e) {
     console.warn('[episode-state] persist failed (non-fatal, audit unaffected):', String((e as Error).message).slice(0, 200));
     return null;

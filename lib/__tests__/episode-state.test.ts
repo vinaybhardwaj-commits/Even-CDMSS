@@ -37,9 +37,9 @@ const KX: KxEnvelope = {
   losDays: 5, netTotal: 48250,
 };
 
-test('(1) SCHEMA: the built object validates as episode-state/0.1; pre/post typed-but-empty', () => {
-  const s = buildEpisodeState(EXTRACT, KX);
-  assert.equal(s.version, 'episode-state/0.1');
+test('(1) SCHEMA: the built object validates as the current version; pre/post empty without OPD', () => {
+  const s = buildEpisodeState(EXTRACT, KX);   // no OPD linkage ⇒ pre/post stay empty
+  assert.equal(s.version, EPISODE_STATE_VERSION);
   assert.doesNotThrow(() => validateEpisodeState(s), 'validates against the zod schema');
   // intra populated…
   assert.equal(s.intra.diagnosis?.value, 'Community-acquired pneumonia, right lower lobe');

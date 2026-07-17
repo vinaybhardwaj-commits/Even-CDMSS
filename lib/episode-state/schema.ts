@@ -16,7 +16,9 @@
 
 import { z } from 'zod';
 
-export const EPISODE_STATE_VERSION = 'episode-state/0.1' as const;
+// 0.2 (SL4): pre/post phases are now populated from the OPD-linkage adapter. Forward-only — 0.2
+// writes a new row keyed by (document_id, version); 0.1 rows are untouched.
+export const EPISODE_STATE_VERSION = 'episode-state/0.2' as const;
 
 /** How a fact reached the projection. The SL1 builder is PURE and runs no model, so every fact is
  *  either deterministically copied from the doc-audit extract ('deterministic') or read from the kx

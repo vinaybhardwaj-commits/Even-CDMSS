@@ -56,16 +56,25 @@ function FactGroup({ label, facts }: { label: string; facts: EpisodeFact[] }) {
   );
 }
 
-function Phase({ label, active, children }: { label: string; active: boolean; children?: React.ReactNode }) {
+function Phase({ label, active, empty, children }: { label: string; active: boolean; empty?: string; children?: React.ReactNode }) {
   return (
     <div className={`flex-1 rounded-lg border px-3 py-2 ${active ? 'border-teal-200 bg-white' : 'border-dashed border-slate-200 bg-slate-50/60'}`}>
       <div className="flex items-center gap-1.5">
         <span className={`h-1.5 w-1.5 rounded-full ${active ? 'bg-teal-500' : 'bg-slate-300'}`} />
         <span className={`text-[11px] font-semibold uppercase tracking-[0.05em] ${active ? 'text-teal-700' : 'text-slate-400'}`}>{label}</span>
       </div>
-      {active ? children : <div className="mt-1 text-[11px] italic text-slate-400">not yet linked · v1.1</div>}
+      {active ? children : <div className="mt-1 text-[11px] italic text-slate-400">{empty ?? 'no OPD history linked'}</div>}
     </div>
   );
+}
+
+function PhaseFacts({ groups }: { groups: Array<{ label: string; facts: EpisodeFact[] }> }) {
+  return <>{groups.filter((g) => g.facts.length).map((g) => (
+    <div key={g.label} className="mt-1.5">
+      <div className="text-[10px] font-semibold uppercase tracking-[0.05em] text-slate-400">{g.label}</div>
+      <div className="mt-0.5 flex flex-wrap gap-1">{g.facts.map((f, i) => <FactChip key={i} f={f} />)}</div>
+    </div>
+  ))}</>;
 }
 
 export function NoEpisode() {
@@ -83,6 +92,8 @@ export default function EpisodeCourse({ state }: { state: EpisodeState }) {
   const a = i.admission;
   const events = admissionTimeline(state);
   const demo = [state.demographics.age != null ? `${state.demographics.age}y` : null, state.demographics.sex].filter(Boolean).join(' ');
+  const preActive = !!(state.pre.presentingComplaints.length || state.pre.priorConditions.length || state.pre.homeMedications.length);
+  const postActive = !!(state.post.followUpPlan.length || state.post.dischargeMedications.length || state.post.warningSigns.length);
 
   return (
     <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-4">
@@ -97,7 +108,13 @@ export default function EpisodeCourse({ state }: { state: EpisodeState }) {
 
       {/* pre → intra → post bracket; only intra populated at v0.1 */}
       <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-        <Phase label="Pre-admission" active={false} />
+        <Phase label="Pre-admission" active={preActive} empty="no OPD history before admission">
+          <PhaseFacts groups={[
+            { label: 'Presenting', facts: state.pre.presentingComplaints },
+            { label: 'Prior conditions', facts: state.pre.priorConditions },
+            { label: 'Prior OPD meds', facts: state.pre.homeMedications },
+          ]} />
+        </Phase>
         <Phase label="In-hospital" active>
           {a.speciality || a.lengthOfStayDays ? (
             <div className="mt-1 flex flex-wrap gap-1.5">
@@ -110,7 +127,13 @@ export default function EpisodeCourse({ state }: { state: EpisodeState }) {
             </div>
           ) : null}
         </Phase>
-        <Phase label="Post-discharge" active={false} />
+        <Phase label="Post-discharge" active={postActive} empty="no OPD follow-up after discharge">
+          <PhaseFacts groups={[
+            { label: 'OPD follow-up', facts: state.post.followUpPlan },
+            { label: 'Discharge meds', facts: state.post.dischargeMedications },
+            { label: 'Warning signs', facts: state.post.warningSigns },
+          ]} />
+        </Phase>
       </div>
 
       {/* the in-hospital course */}

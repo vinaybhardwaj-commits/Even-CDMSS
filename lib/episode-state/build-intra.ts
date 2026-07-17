@@ -30,6 +30,15 @@ export interface KxEnvelope {
   netTotal: number | null;      // ₹ — sum(net_amt), refunds already netted
 }
 
+/** The DE-IDENTIFIED OPD linkage the pre/post phases are built from (SL4). Produced by the
+ *  consumer-side OPD adapter, which resolves the member and drops PHI — only STRUCTURED clinical
+ *  values reach here (ICD codes, drug names, dates). Free-text OPD narrative is deliberately NOT
+ *  projected. `pre` = encounters before admission; `post` = encounters after discharge. */
+export interface OpdLinkage {
+  pre: { conditions: string[]; medications: string[] };   // ICD codes · drug names (pre-admission OPD)
+  post: { followUps: string[] };                           // "YYYY-MM-DD · ICD" (post-discharge OPD)
+}
+
 /** Resolve a provenance.sourceField key back to its source text — the single place the
  *  sourceField vocabulary is defined, so the no-fabrication guard and any later verifier read the
  *  SAME mapping. Scalars stringify; arrays join with '\n' (so a per-element rawText is a substring
@@ -84,7 +93,7 @@ function normSex(raw: string | undefined): 'F' | 'M' | null {
  * Assemble the intra-phase EpisodeState. pre/post are typed-but-empty (SL4). Every fact traces to a
  * verbatim substring of the extract or the kx envelope; nothing is scored, predicted, or invented.
  */
-export function buildEpisodeState(extract: ExtractedCase, kx: KxEnvelope | null): EpisodeState {
+export function buildEpisodeState(extract: ExtractedCase, kx: KxEnvelope | null, opd: OpdLinkage | null = null): EpisodeState {
   const intra = emptyIntra();
 
   // ── admission facts: prefer the extract's adminFacts, fall back to the kx envelope ──
@@ -124,13 +133,29 @@ export function buildEpisodeState(extract: ExtractedCase, kx: KxEnvelope | null)
     sexRaw: extract.patient?.sex ?? null,
   };
 
+  // ── pre / post phases (SL4) — populated ONLY from the de-identified OPD linkage; empty when the
+  //    admission has no OPD history (the unlinked tail), never fabricated. 'reported' facts: each
+  //    fact's rawText IS the reported structured value (mkFact verifies it against itself). ──
+  const R2: ExtractionMethod = 'reported';
+  const pre = emptyPre();
+  const post = emptyPost();
+  if (opd) {
+    const reported = (sourceField: string, xs: string[]) =>
+      cleanList(xs).map((x) => mkFact(sourceField, x, R2, 1)).filter((f): f is EpisodeFact => f != null);
+    pre.priorConditions = reported('opd.pre.condition', opd.pre.conditions);
+    pre.homeMedications = reported('opd.pre.medication', opd.pre.medications);
+    // pre.presentingComplaints stays empty — free-text OPD complaints are not projected (PHI safety).
+    post.followUpPlan = reported('opd.post.followUp', opd.post.followUps);
+    // post.dischargeMedications / warningSigns stay empty — not OPD-sourced facts.
+  }
+
   return {
     version: EPISODE_STATE_VERSION,
     episodeRef: kx?.episodeRef ?? '',
     demographics,
-    pre: emptyPre(),
+    pre,
     intra,
-    post: emptyPost(),
+    post,
   };
 }
 
@@ -151,7 +176,10 @@ export function fabricationViolations(state: EpisodeState, extract: ExtractedCas
 
   const bad: Array<{ sourceField: string; rawText: string }> = [];
   for (const f of facts) {
-    const source = resolveSource(f.provenance.sourceField, extract, kx);
+    // extract/kx facts verify against their real source; a 'reported' OPD fact's source IS its own
+    // reported value (mkFact already verified the substring at build time) — resolveSource returns
+    // '' for those, so fall back to the fact's value as its witness.
+    const source = resolveSource(f.provenance.sourceField, extract, kx) || f.value;
     if (!source.includes(f.provenance.rawText)) bad.push({ sourceField: f.provenance.sourceField, rawText: f.provenance.rawText });
   }
   return bad;

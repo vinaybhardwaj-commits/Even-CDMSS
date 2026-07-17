@@ -21,7 +21,7 @@ const fact = (value: string, sourceField: string, method: 'deterministic' | 'rep
   ({ value, provenance: { sourceField, rawText: value, extractionMethod: method, confidence: 1 } });
 
 const STATE: EpisodeState = {
-  version: 'episode-state/0.1', episodeRef: 'IP-2',
+  version: 'episode-state/0.2', episodeRef: 'IP-2',
   demographics: { age: null, sex: 'F', sexRaw: 'female' },
   pre: { presentingComplaints: [], priorConditions: [], homeMedications: [] },
   intra: {
