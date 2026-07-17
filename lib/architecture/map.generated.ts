@@ -683,6 +683,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/admin",
+    "to": "ccb-dossier-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
     "to": "ccb-funnel",
     "kind": "value"
   },
@@ -709,6 +714,16 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/admin",
     "to": "dose-limits",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
+    "to": "episode-state",
+    "kind": "type"
+  },
+  {
+    "from": "app/admin",
+    "to": "episode-state",
     "kind": "value"
   },
   {

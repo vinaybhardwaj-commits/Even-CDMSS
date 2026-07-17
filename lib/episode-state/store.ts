@@ -26,4 +26,17 @@ export async function saveEpisodeState(documentId: string, state: EpisodeState):
   return rows.length ? (rows[0].inserted ? 'inserted' : 'updated') : 'skipped';
 }
 
+/** Read the persisted EpisodeState for a document (the current schema version). Read-only — no
+ *  build, no re-extract. Returns null when no row exists (the caller renders nothing). */
+export async function fetchEpisodeState(documentId: string, version: string = EPISODE_STATE_VERSION): Promise<EpisodeState | null> {
+  if (!documentId) return null;
+  const rows = (await sql(
+    `SELECT state FROM episode_states WHERE document_id = $1 AND version = $2 LIMIT 1`,
+    [documentId, version],
+  )) as Array<{ state: unknown }>;
+  const raw = rows[0]?.state;
+  if (raw == null) return null;
+  return (typeof raw === 'string' ? JSON.parse(raw) : raw) as EpisodeState;
+}
+
 export { EPISODE_STATE_VERSION };

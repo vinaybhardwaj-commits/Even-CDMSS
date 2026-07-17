@@ -14,6 +14,8 @@ import { fetchBillingEnvelope, reconcile, documentedFrom, peerBandForSpeciality 
 import { BandChip } from '../ui';
 import ReportWithTriage from './report-with-triage';
 import BillingPanel, { NoEnvelope } from './billing-panel';
+import EpisodeCourse from './episode-course';
+import { fetchEpisodeState } from '@/lib/episode-state/store';
 
 export const dynamic = 'force-dynamic';
 
@@ -67,6 +69,10 @@ export default async function IpdAuditReport({ params }: { params: Promise<{ id:
   const recon = envelope
     ? reconcile(envelope.categories, documentedFrom(report), findings, envelope.pharmacyItems, envelope.pharmacyClasses)
     : null;
+
+  // EpisodeState (#4 SL3) — READ-ONLY render of the persisted phased course. Best-effort: a read
+  // failure or an un-built admission just hides the element, never affects the audit above.
+  const episode = await fetchEpisodeState(documentId).catch(() => null);
 
   return (
     <div className="flex h-screen flex-col">
@@ -148,6 +154,9 @@ export default async function IpdAuditReport({ params }: { params: Promise<{ id:
 
             {/* billing panel — S7 */}
             {envelope && recon ? <BillingPanel envelope={envelope} recon={recon} peer={peer} /> : <NoEnvelope />}
+
+            {/* EpisodeState phased course — #4 SL3 (facts-only, read from episode_states; hidden when un-built) */}
+            {episode && <EpisodeCourse state={episode} />}
 
             <div className="mt-5 flex flex-wrap items-center gap-3 text-[11px] text-slate-400">
               <span>engine {String(r.engine_version)}</span>
