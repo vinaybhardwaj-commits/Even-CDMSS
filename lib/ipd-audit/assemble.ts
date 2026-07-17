@@ -23,6 +23,7 @@ export interface IpdAuditMeta {
   dischargeType?: string | null;
   losDays?: number | null;
   dischargedAt?: string | null;   // ISO timestamp
+  billedTotal?: number | null;    // S7 — the db13 billing envelope's ₹ scalar; null = no linked bill
   engineVersion?: string;
   model?: string | null;
   traceId?: string | null;
@@ -46,6 +47,7 @@ export function buildIpdAuditRow(meta: IpdAuditMeta, extracted: ExtractedCase, r
     dischargeType: meta.dischargeType ?? null,
     losDays: meta.losDays ?? extracted.adminFacts?.lengthOfStayDays ?? null,
     dischargedAt: meta.dischargedAt ?? null,
+    billedTotal: meta.billedTotal ?? null,
     careValueIndex: Math.round(vs.headline),
     band: vs.band,
     scoreAppropriateness: domainScore(report, 'appropriateness'),

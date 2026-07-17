@@ -6,6 +6,7 @@ import { extractCase, analyzeCase } from '@/lib/doc-audit';
 import { GEMINI_MODEL } from '@/lib/llm';
 import { getVertexAccessToken } from '@/lib/gcp-auth';
 import { fetchIpdDoc, fetchIpdAdmissionHeader } from '@/lib/ipd-audit/db13';
+import { fetchBilledTotal } from '@/lib/ipd-audit/billing';
 import { buildIpdAuditRow } from '@/lib/ipd-audit/assemble';
 import { saveIpdAudit, IPD_ENGINE_VERSION } from '@/lib/ipd-audit/store';
 import { sql } from '@/lib/db';
@@ -32,6 +33,8 @@ export async function POST(req: NextRequest) {
     const doc = await fetchIpdDoc(documentId);
     if (!doc?.pdfUrl) return NextResponse.json({ ok: false, error: 'document not found or has no PDF' }, { status: 404 });
     const header = doc.ipUid ? await fetchIpdAdmissionHeader(doc.ipUid) : null;
+    // S7: the billed ₹ scalar, best-effort — no linked bill (~8%) is a normal null, not a failure.
+    const billedTotal = doc.ipUid ? await fetchBilledTotal(doc.ipUid).catch(() => null) : null;
 
     // GCS fetch: plain URL first (bucket is publicly readable today — flagged to infra),
     // service-account Bearer as the durable path.
@@ -60,6 +63,7 @@ export async function POST(req: NextRequest) {
       dischargeType: header?.dischargeType ?? null,
       losDays: header?.losDays ?? null,
       dischargedAt: header?.dischargeDate ? `${header.dischargeDate}T00:00:00+05:30` : null,
+      billedTotal,
       engineVersion: IPD_ENGINE_VERSION,
       model: GEMINI_MODEL,
       traceId: analyzeTraceId ?? null,

@@ -8,10 +8,12 @@ import Link from 'next/link';
 import { sql } from '@/lib/db';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 
-import type { AuditReport, AuditFinding } from '@/lib/doc-audit-core';
+import type { AuditReport, AuditFinding, ExtractedCase } from '@/lib/doc-audit-core';
 import { fetchIpdDoc, fetchIpdAdmissionHeader } from '@/lib/ipd-audit/db13';
+import { fetchBillingEnvelope, reconcile, documentedFrom, peerBandForSpeciality } from '@/lib/ipd-audit/billing';
 import { BandChip } from '../ui';
 import ReportWithTriage from './report-with-triage';
+import BillingPanel, { NoEnvelope } from './billing-panel';
 
 export const dynamic = 'force-dynamic';
 
@@ -53,6 +55,18 @@ export default async function IpdAuditReport({ params }: { params: Promise<{ id:
   const band = String(r.band);
   const pdfUrl = doc?.pdfUrl ?? null;
   const exportBase = `/api/admin/ipd-audit-export?id=${id}`;
+
+  // S7 — the billing envelope: a read-time db13 join like the PHI header, never persisted beyond
+  // the billed_total scalar. Both reads are best-effort: a billing outage costs us the ₹ panel,
+  // never the audit above it.
+  const speciality = header?.speciality ?? (r.speciality ? String(r.speciality) : null);
+  const [envelope, peer] = await Promise.all([
+    ipUid ? fetchBillingEnvelope(ipUid).catch(() => null) : Promise.resolve(null),
+    peerBandForSpeciality(speciality).catch(() => null),
+  ]);
+  const recon = envelope
+    ? reconcile(envelope.categories, documentedFrom(report), findings, envelope.pharmacyItems, envelope.pharmacyClasses)
+    : null;
 
   return (
     <div className="flex h-screen flex-col">
@@ -132,10 +146,8 @@ export default async function IpdAuditReport({ params }: { params: Promise<{ id:
               )}
             </div>
 
-            {/* billing panel slot — S7 */}
-            <div className="mt-5 rounded-xl border border-dashed border-slate-200 bg-slate-50/50 px-4 py-3 text-[12px] text-slate-400">
-              Billing envelope &amp; documented-vs-billed reconciliation — lands in S7 (kx_billing_records join).
-            </div>
+            {/* billing panel — S7 */}
+            {envelope && recon ? <BillingPanel envelope={envelope} recon={recon} peer={peer} /> : <NoEnvelope />}
 
             <div className="mt-5 flex flex-wrap items-center gap-3 text-[11px] text-slate-400">
               <span>engine {String(r.engine_version)}</span>

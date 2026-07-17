@@ -60,7 +60,7 @@ export const PIPELINE_STAGES = [
   { n: 3, label: 'Low-Value Care', note: 'every summary, intrinsic' },
   { n: 4, label: 'Idealised course', note: 'diff vs actual' },
   { n: 5, label: 'Care-Value score', note: 'deterministic, 6 domains' },
-  { n: 6, label: 'Billing envelope', note: 'S7 — not yet wired' },
+  { n: 6, label: 'Billing envelope', note: 'db13 join · coarse recon' },
   { n: 7, label: 'Persist', note: 'de-identified + link-back keys' },
 ] as const;
 

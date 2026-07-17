@@ -15,6 +15,7 @@ import { extractCase, analyzeCase } from '../doc-audit';
 import { GEMINI_MODEL, MINI_MODEL } from '../llm';
 import { getVertexAccessToken } from '../gcp-auth';
 import { fetchIpdAdmissionHeader } from './db13';
+import { fetchBilledTotal } from './billing';
 import { buildIpdAuditRow } from './assemble';
 import { saveIpdAudit, IPD_ENGINE_VERSION, IPD_MINI_ENGINE_VERSION } from './store';
 
@@ -75,7 +76,15 @@ export async function runIpdAudit(input: IpdRunInput, opts: { mini?: boolean } =
     const { report, traceId } = await analyzeCase(extracted, {}, mini ? { forceOllama: true } : {});
     if (!report?.valueScore) return { documentId: input.documentId, skip: 'unreadable', extractTraceId, analyzeTraceId: traceId };
 
-    const header = input.ipUid ? await fetchIpdAdmissionHeader(input.ipUid).catch(() => null) : null;
+    // S7: the admission envelope + its billed ₹ scalar, both read-time db13 joins. billed_total is
+    // best-effort — a billing outage must never cost us the audit, and ~8% of admissions have no
+    // linked bill at all, so null is a normal value here, not a failure.
+    const [header, billedTotal] = input.ipUid
+      ? await Promise.all([
+          fetchIpdAdmissionHeader(input.ipUid).catch(() => null),
+          fetchBilledTotal(input.ipUid).catch(() => null),
+        ])
+      : [null, null];
     const row = buildIpdAuditRow({
       documentId: input.documentId,
       ipUid: input.ipUid ?? null,
@@ -84,6 +93,7 @@ export async function runIpdAudit(input: IpdRunInput, opts: { mini?: boolean } =
       dischargeType: header?.dischargeType ?? null,
       losDays: header?.losDays ?? null,
       dischargedAt: header?.dischargeDate ? `${header.dischargeDate}T00:00:00+05:30` : null,
+      billedTotal,
       engineVersion: mini ? IPD_MINI_ENGINE_VERSION : IPD_ENGINE_VERSION,
       model: mini ? MINI_MODEL : GEMINI_MODEL,
       traceId: traceId ?? null,

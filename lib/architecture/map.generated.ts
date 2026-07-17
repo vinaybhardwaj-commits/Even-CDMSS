@@ -715,6 +715,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/admin",
     "to": "ipd-audit",
+    "kind": "type"
+  },
+  {
+    "from": "app/admin",
+    "to": "ipd-audit",
     "kind": "value"
   },
   {
