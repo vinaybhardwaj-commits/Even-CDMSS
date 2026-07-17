@@ -112,6 +112,20 @@ export async function auditedDocIdsForDay(day: string, engineVersion: string = I
   return rows.map((r) => r.document_id).filter(Boolean);
 }
 
+/** document_ids audited at ANY engine version — the "already audited at all" set.
+ *  Both S5 and S6 exclude on this: the Gemini worker only ever audits GENUINELY NEW docs, and
+ *  the Mini backfill never re-audits what prod already has (the OPD division of labour). */
+export async function auditedDocIdsAnyVersion(): Promise<string[]> {
+  const rows = (await sql(`SELECT DISTINCT document_id FROM ipd_discharge_audits`)) as Array<{ document_id: string }>;
+  return rows.map((r) => r.document_id).filter(Boolean);
+}
+
+/** Count audited (any engine version) — the backfill's progress numerator. */
+export async function auditedCountAnyVersion(): Promise<number> {
+  const rows = (await sql(`SELECT count(DISTINCT document_id)::int AS n FROM ipd_discharge_audits`)) as Array<{ n: number }>;
+  return Number(rows[0]?.n ?? 0);
+}
+
 /** Earliest IST day (by discharge date) that has any audit — the floor for the gap-fill sweep.
  *  Null if nothing audited yet. */
 export async function earliestAuditedDay(): Promise<string | null> {

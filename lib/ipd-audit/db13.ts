@@ -193,6 +193,75 @@ export async function dischargeDocsForDay(day: string, limit = 60): Promise<IpdD
   }));
 }
 
+// ── intake (S5 worker + S6 backfill) ────────────────────────────────────────────────────────────
+// The audit corpus: DISCHARGE_SUMMARY docs with a real .pdf, not yet ingested. "Day" = the IST
+// discharge date where the kx admission joins, else the filed (upload) date — the same coalesce
+// the calendar renders, so what the worker audits is what the surface shows.
+const DAY_EXPR = `to_char(coalesce(k.discharge_date_time, m.upload_timestamp::timestamptz) AT TIME ZONE 'Asia/Kolkata','YYYY-MM-DD')`;
+const KX_JOIN = `LEFT JOIN (SELECT DISTINCT ON (ipd_no) ipd_no, discharge_date_time FROM kx_discharge_summary_records
+                 ORDER BY ipd_no, (status='Final') DESC, discharge_date_time DESC NULLS LAST) k
+                 ON k.ipd_no = m.additional_metadata__booking_id`;
+const CORPUS_WHERE = `m.${CLS} AND m.document__upload_uri ILIKE '%.pdf' AND m.document__is_ingested IS NULL`;
+
+export interface IpdIntakeDoc {
+  documentId: string;
+  ipUid: string | null;
+  memberId: string | null;
+  pdfUrl: string;
+  day: string;
+}
+
+const toIntake = (rows: Record<string, unknown>[]): IpdIntakeDoc[] => rows.map((r) => ({
+  documentId: String(r.document_id),
+  ipUid: r.ip_uid == null || r.ip_uid === '' ? null : String(r.ip_uid),
+  memberId: r.member_id == null ? null : String(r.member_id),
+  pdfUrl: String(r.pdf_url),
+  day: String(r.day),
+}));
+
+/** Count discharge summaries filed/discharged on an IST day (the worker's denominator). */
+export async function countDischargeDocsForDay(day: string): Promise<number> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Error('bad day');
+  const rows = await metabaseQuery(
+    `SELECT count(*)::int AS n FROM ${DOCS} m ${KX_JOIN} WHERE ${CORPUS_WHERE} AND ${DAY_EXPR} = '${day}'`);
+  return Number(rows[0]?.n ?? 0);
+}
+
+/** Next page of discharge summaries for an IST day, excluding already-audited document_ids. */
+export async function fetchDischargeDocsForDay(day: string, excludeDocIds: string[], limit: number): Promise<IpdIntakeDoc[]> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Error('bad day');
+  const ex = Array.from(new Set(excludeDocIds.filter(isDocId)));
+  const notIn = ex.length ? ` AND m._doc_id NOT IN (${ex.map((d) => `'${esc(d)}'`).join(', ')})` : '';
+  const lim = Math.max(1, Math.min(50, Math.floor(limit)));
+  const rows = await metabaseQuery(
+    `SELECT m._doc_id AS document_id, m._parent_doc_id AS member_id, m.additional_metadata__booking_id AS ip_uid,
+            m.document__upload_uri AS pdf_url, ${DAY_EXPR} AS day
+     FROM ${DOCS} m ${KX_JOIN}
+     WHERE ${CORPUS_WHERE} AND ${DAY_EXPR} = '${day}'${notIn}
+     ORDER BY m.upload_timestamp::timestamptz ASC LIMIT ${lim}`);
+  return toIntake(rows);
+}
+
+/** The whole audit corpus size (the backfill's denominator). */
+export async function countDischargeCorpus(): Promise<number> {
+  const rows = await metabaseQuery(`SELECT count(*)::int AS n FROM ${DOCS} m WHERE ${CORPUS_WHERE}`);
+  return Number(rows[0]?.n ?? 0);
+}
+
+/** OLDEST-FIRST backlog page for the S6 backfill, excluding already-audited document_ids. */
+export async function fetchBacklogDocs(excludeDocIds: string[], limit: number): Promise<IpdIntakeDoc[]> {
+  const ex = Array.from(new Set(excludeDocIds.filter(isDocId)));
+  const notIn = ex.length ? ` AND m._doc_id NOT IN (${ex.map((d) => `'${esc(d)}'`).join(', ')})` : '';
+  const lim = Math.max(1, Math.min(20, Math.floor(limit)));
+  const rows = await metabaseQuery(
+    `SELECT m._doc_id AS document_id, m._parent_doc_id AS member_id, m.additional_metadata__booking_id AS ip_uid,
+            m.document__upload_uri AS pdf_url, ${DAY_EXPR} AS day
+     FROM ${DOCS} m ${KX_JOIN}
+     WHERE ${CORPUS_WHERE}${notIn}
+     ORDER BY coalesce(k.discharge_date_time, m.upload_timestamp::timestamptz) ASC LIMIT ${lim}`);
+  return toIntake(rows);
+}
+
 /** Batched name/UHID resolution for a set of ip_uids (ONE query — the Overview recent-audits
  *  join). Read-time PHI for the access-controlled surface; never persisted. */
 export async function namesForIpUids(ipUids: string[]): Promise<Record<string, { patientName: string | null; uhid: string | null }>> {

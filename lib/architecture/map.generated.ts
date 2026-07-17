@@ -2284,12 +2284,32 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "ipd-audit",
+    "to": "doc-audit",
+    "kind": "value"
+  },
+  {
+    "from": "ipd-audit",
     "to": "doc-audit-core",
     "kind": "type"
   },
   {
     "from": "ipd-audit",
+    "to": "gcp-auth",
+    "kind": "value"
+  },
+  {
+    "from": "ipd-audit",
+    "to": "llm",
+    "kind": "value"
+  },
+  {
+    "from": "ipd-audit",
     "to": "metabase",
+    "kind": "value"
+  },
+  {
+    "from": "ipd-audit",
+    "to": "mini-backfill",
     "kind": "value"
   },
   {
