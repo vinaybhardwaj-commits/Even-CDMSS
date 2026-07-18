@@ -32,6 +32,8 @@ ipd-batch-*.json
 run1-results.json
 real-order-probe-*.json
 episode-recon-*.json
+# the frozen recon-fidelity gold IS committed (SL5b), like data/ipd-audit-gold.json
+!data/episode-recon-gold.json
 
 # --- housekeeping 18 Jul 2026: strays, local settings, data packs, CC build reports ---
 # local PHI-dump helper (runs locally where PHI access is sanctioned; infra URLs inside)

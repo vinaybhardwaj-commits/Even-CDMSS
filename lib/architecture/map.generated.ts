@@ -3254,6 +3254,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": true
   },
   {
+    "constName": "EPISODE_RECON_GOLD_VERSION",
+    "value": "episode-recon-gold/1.0",
+    "file": "lib/episode-state/recon-gold.ts",
+    "derived": false
+  },
+  {
     "constName": "EPISODE_STATE_VERSION",
     "value": "episode-state/0.2",
     "file": "lib/episode-state/schema.ts",

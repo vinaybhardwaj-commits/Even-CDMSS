@@ -1,0 +1,275 @@
+{
+  "version": "episode-recon-gold/1.0",
+  "status": "ratified",
+  "validator": "V",
+  "ratified_at": "2026-07-18",
+  "builder_version": "episode-state/0.2",
+  "role_note": "EpisodeState (#4) SL5b — the reconstruction-fidelity gold: V's per-(case,phase) ratings of whether the assembled EpisodeState faithfully represents the documented discharge course (faithful / missed_material_fact / mis_phased / over_included). A PARTIAL stratified sample (V stopped intentionally at ~half); computed over EXACTLY V's genuine verdicts, nothing backfilled (CC's SL5a build-time test posts on IP-100 pre/intra were excluded). Builder-fidelity — a bench SEPARATE from consensus-gold (ipd-audit-gold) and the OPD link rate. Single-validator (V); hash-pinned + drift-tested.",
+  "n_cases": 24,
+  "n_phases": 70,
+  "content_sha256": "cfa86d3c3e50515ed1e49c0fbfeef4fee221709bc5456b7d2380d1f05a12ff3e",
+  "cases": [
+    {
+      "ip_uid": "ADM2627/000592",
+      "document_id": "mvbGmJpuEsIUmgYohLi7",
+      "speciality": "Internal Medicine",
+      "linkage": "linked",
+      "phases": {
+        "pre": "faithful",
+        "intra": "faithful",
+        "post": "faithful"
+      }
+    },
+    {
+      "ip_uid": "ER-493",
+      "document_id": "AmPQPO2uzKJYJ8920mWs",
+      "speciality": "Emergency Medicine",
+      "linkage": "linked",
+      "phases": {
+        "pre": "faithful",
+        "intra": "faithful",
+        "post": "faithful"
+      }
+    },
+    {
+      "ip_uid": "IP-100",
+      "document_id": "kWuSMu2b7fA36cPl5PEY",
+      "speciality": "Orthopedics",
+      "linkage": "linked",
+      "phases": {
+        "post": "faithful"
+      }
+    },
+    {
+      "ip_uid": "IP-1114",
+      "document_id": "Jf0Vu7OuER3J9YRNk7fz",
+      "speciality": "General Surgery",
+      "linkage": "linked",
+      "phases": {
+        "pre": "faithful",
+        "intra": "faithful",
+        "post": "faithful"
+      }
+    },
+    {
+      "ip_uid": "IP-1217",
+      "document_id": "zeN5E8YXbgnGJVa8JQ2g",
+      "speciality": "Orthopedics",
+      "linkage": "intra-only",
+      "phases": {
+        "pre": "faithful",
+        "intra": "faithful",
+        "post": "faithful"
+      }
+    },
+    {
+      "ip_uid": "IP-1244",
+      "document_id": "yMjgeITfn4mV9OH1VUuu",
+      "speciality": "General Surgery",
+      "linkage": "intra-only",
+      "phases": {
+        "pre": "faithful",
+        "intra": "faithful",
+        "post": "faithful"
+      }
+    },
+    {
+      "ip_uid": "IP-1245",
+      "document_id": "JOgKcQBtjp2YgxlTVD1q",
+      "speciality": "Obstetrics and gynecology",
+      "linkage": "intra-only",
+      "phases": {
+        "pre": "faithful",
+        "intra": "faithful",
+        "post": "faithful"
+      }
+    },
+    {
+      "ip_uid": "IP-1246",
+      "document_id": "u46ZqPwq4QK9ZMFHU8Kr",
+      "speciality": "Orthopedics",
+      "linkage": "intra-only",
+      "phases": {
+        "pre": "faithful",
+        "intra": "faithful",
+        "post": "faithful"
+      }
+    },
+    {
+      "ip_uid": "IP-1248",
+      "document_id": "trqAmcODmb49EueyqJ8E",
+      "speciality": "General Surgery",
+      "linkage": "intra-only",
+      "phases": {
+        "pre": "faithful",
+        "intra": "faithful",
+        "post": "faithful"
+      }
+    },
+    {
+      "ip_uid": "IP-1249",
+      "document_id": "3E1vKTrbhJTYqRLyn49q",
+      "speciality": "Orthopedics",
+      "linkage": "intra-only",
+      "phases": {
+        "pre": "faithful",
+        "intra": "faithful",
+        "post": "faithful"
+      }
+    },
+    {
+      "ip_uid": "IP-1250",
+      "document_id": "IXgbH1vleYQyLKRsXARj",
+      "speciality": "Urology",
+      "linkage": "intra-only",
+      "phases": {
+        "pre": "faithful",
+        "intra": "faithful",
+        "post": "faithful"
+      }
+    },
+    {
+      "ip_uid": "IP-1252",
+      "document_id": "iCBptyMacZc1QGs4cLEd",
+      "speciality": "Urology",
+      "linkage": "intra-only",
+      "phases": {
+        "pre": "faithful",
+        "intra": "faithful",
+        "post": "faithful"
+      }
+    },
+    {
+      "ip_uid": "IP-1253",
+      "document_id": "wHB9XLXDyjNkHberyZ4A",
+      "speciality": "Orthopedics",
+      "linkage": "intra-only",
+      "phases": {
+        "pre": "faithful",
+        "intra": "faithful",
+        "post": "faithful"
+      }
+    },
+    {
+      "ip_uid": "IP-1255",
+      "document_id": "7RzPTnrfEOWzZ54r7wB7",
+      "speciality": "Orthopedics",
+      "linkage": "intra-only",
+      "phases": {
+        "pre": "faithful",
+        "intra": "faithful",
+        "post": "faithful"
+      }
+    },
+    {
+      "ip_uid": "IP-1257",
+      "document_id": "A1GO1Q2hwArlaceg68kT",
+      "speciality": "General Surgery",
+      "linkage": "linked",
+      "phases": {
+        "pre": "faithful",
+        "intra": "faithful",
+        "post": "faithful"
+      }
+    },
+    {
+      "ip_uid": "IP-1260",
+      "document_id": "of5EzNMAONNI9uKtrFYq",
+      "speciality": "General Surgery",
+      "linkage": "linked",
+      "phases": {
+        "pre": "faithful",
+        "intra": "faithful",
+        "post": "faithful"
+      }
+    },
+    {
+      "ip_uid": "IP-1264",
+      "document_id": "PsgGvOA0N4laLKvAqCXK",
+      "speciality": "Urology",
+      "linkage": "intra-only",
+      "phases": {
+        "pre": "faithful",
+        "intra": "faithful",
+        "post": "faithful"
+      }
+    },
+    {
+      "ip_uid": "IP-137",
+      "document_id": "fAeA6pU4AmxW7EDYSarL",
+      "speciality": "Ear Nose and Throat",
+      "linkage": "linked",
+      "phases": {
+        "pre": "faithful",
+        "intra": "faithful",
+        "post": "faithful"
+      }
+    },
+    {
+      "ip_uid": "IP-779",
+      "document_id": "auvGAgV4FWHaqdhlZECZ",
+      "speciality": "Oncology",
+      "linkage": "intra-only",
+      "phases": {
+        "pre": "faithful",
+        "intra": "faithful",
+        "post": "faithful"
+      }
+    },
+    {
+      "ip_uid": "IPNO-168",
+      "document_id": "cMY8GXQQDkbd5BtvB1kW",
+      "speciality": "Neurosurgery",
+      "linkage": "intra-only",
+      "phases": {
+        "pre": "faithful",
+        "intra": "faithful",
+        "post": "faithful"
+      }
+    },
+    {
+      "ip_uid": "IPNO-170",
+      "document_id": "oHnbSodzWceE9nMXtZ71",
+      "speciality": "Obstetrics and gynecology",
+      "linkage": "linked",
+      "phases": {
+        "pre": "faithful",
+        "intra": "faithful",
+        "post": "faithful"
+      }
+    },
+    {
+      "ip_uid": "IPNO-186",
+      "document_id": "kZtIP9HPHKE6Tlo2vIT4",
+      "speciality": "Orthopedics",
+      "linkage": "intra-only",
+      "phases": {
+        "pre": "faithful",
+        "intra": "faithful",
+        "post": "faithful"
+      }
+    },
+    {
+      "ip_uid": "IPNO-193",
+      "document_id": "ovFP3CyMNsB8OFH9HYQz",
+      "speciality": "General Surgery",
+      "linkage": "linked",
+      "phases": {
+        "pre": "faithful",
+        "intra": "faithful",
+        "post": "faithful"
+      }
+    },
+    {
+      "ip_uid": "IPNO-201",
+      "document_id": "a5eG2E1LkpJLg1s4H2Ot",
+      "speciality": "Neurology",
+      "linkage": "intra-only",
+      "phases": {
+        "pre": "faithful",
+        "intra": "faithful",
+        "post": "faithful"
+      }
+    }
+  ]
+}
