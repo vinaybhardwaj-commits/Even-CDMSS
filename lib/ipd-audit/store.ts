@@ -12,7 +12,10 @@
 
 import { sql } from '../db';
 
-export const IPD_ENGINE_VERSION = 'ipd-discharge-audit/0.1';
+// 0.2 (IPD citation fix, PRD CDMSS-IPD-CITATION-FIX-18-JUL-2026): per-finding evidence
+// enrichment + re-cite against the enriched pool. Distinguishes fixed rows from the 0.1
+// baseline the PR0 benchmark measured (citation-support 0.05). Engine behaviour change.
+export const IPD_ENGINE_VERSION = 'ipd-discharge-audit/0.2';
 /** Mini/Qwen backfill rows — same engine, model-swapped; invisible to prod reads. */
 export const IPD_MINI_ENGINE_VERSION = `${IPD_ENGINE_VERSION}-mini`;
 

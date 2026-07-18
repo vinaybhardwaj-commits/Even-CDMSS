@@ -8,8 +8,12 @@ import {
   normDocType, normFieldStatus, normNetValue,
   parseExtraction, parseAnalysis, assembleCompleteness,
   parseStatusList, normAdminFacts, adminFactsLine, buildAnalyzeUser,
+  enrichQueryForFinding, unionEnrichedHits, AUDIT_REVISE_SYSTEM,
   type RubricField,
 } from '../doc-audit-core.ts';
+import type { CiteHit } from '../citations-core.ts';
+
+const hit = (id: number, text = `chunk ${id}`): CiteHit => ({ id, text, source: 'mksap', book: 'MKSAP', chapter: null, page_start: null, page_end: null, item_number: null, similarity: 0.5 });
 
 test('normDocType maps synonyms + defaults to discharge_summary', () => {
   assert.equal(normDocType('OT'), 'ot_note');
@@ -215,4 +219,57 @@ test('PX-R3: NEW-shape extraction parses risk_factors + aftercare; empty afterca
   const ec2 = parseExtraction(emptyAftercare, 'auto');
   assert.equal(ec2!.aftercare, undefined);
   assert.deepEqual(ec2!.riskFactors, []);
+});
+
+// ── IPD citation fix: per-finding enrichment helpers ────────────────────────
+
+test('enrichQueryForFinding joins subject + evidence + rationale, trims blanks, length-bounds', () => {
+  assert.equal(
+    enrichQueryForFinding({ subject: 'Widal test', evidence: ['low specificity', ''], rationale: 'anchoring on a low-utility result' }),
+    'Widal test. low specificity. anchoring on a low-utility result',
+  );
+  // missing/empty fields collapse cleanly
+  assert.equal(enrichQueryForFinding({ subject: 'IV antibiotics', evidence: [], rationale: '' }), 'IV antibiotics');
+  // bounded to 500 chars
+  assert.ok(enrichQueryForFinding({ subject: 'x'.repeat(400), evidence: ['y'.repeat(400)], rationale: 'z'.repeat(400) }).length <= 500);
+});
+
+test('unionEnrichedHits keeps base as an identity prefix, dedupes by id, appends net-new, respects cap', () => {
+  const base = [hit(1), hit(2), hit(3)];
+  const enrichment = [
+    [hit(2), hit(9)],   // 2 is a dup of base → dropped; 9 is net-new
+    [hit(9), hit(10)],  // 9 already seen → dropped; 10 net-new
+  ];
+  const out = unionEnrichedHits(base, enrichment, 20);
+  // base stays first, in order, at the SAME indices → draft [1..3] survive unchanged
+  assert.deepEqual(out.slice(0, 3).map((h) => h.id), [1, 2, 3]);
+  // net-new appended in first-seen order, no duplicates
+  assert.deepEqual(out.map((h) => h.id), [1, 2, 3, 9, 10]);
+
+  // cap bounds only the appended net-new; base is always retained in full
+  const capped = unionEnrichedHits([hit(1), hit(2)], [[hit(3), hit(4), hit(5)]], 3);
+  assert.deepEqual(capped.map((h) => h.id), [1, 2, 3]);
+
+  // no enrichment → identity (byte-identical pool)
+  assert.deepEqual(unionEnrichedHits(base, [], 20).map((h) => h.id), [1, 2, 3]);
+  // malformed groups / hits are skipped, not thrown
+  assert.deepEqual(unionEnrichedHits(base, [undefined as unknown as CiteHit[], [undefined as unknown as CiteHit]], 20).map((h) => h.id), [1, 2, 3]);
+});
+
+test('unionEnrichedHits keys by String(id) — DB returns bigint chunk ids as STRINGS (regression)', () => {
+  // The Neon driver hands back bigint ids as strings; a typeof===number guard would empty the pool.
+  const strBase = [{ ...hit(0), id: '35856' as unknown as number }, { ...hit(0), id: '8786' as unknown as number }];
+  const strEnrich = [[{ ...hit(0), id: '8786' as unknown as number }, { ...hit(0), id: '157222' as unknown as number }]];
+  const out = unionEnrichedHits(strBase, strEnrich, 20);
+  assert.deepEqual(out.map((h) => String(h.id)), ['35856', '8786', '157222']);  // base kept, dup dropped, net-new appended
+  assert.equal(out.length, 3);
+  // mixed number/string ids dedupe consistently (String('8786') === String(8786))
+  const mixed = unionEnrichedHits([hit(8786)], [[{ ...hit(0), id: '8786' as unknown as number }]], 20);
+  assert.equal(mixed.length, 1);
+});
+
+test('SL2: AUDIT_REVISE_SYSTEM carries the empty-citation→estimates discipline for the enriched pool', () => {
+  assert.match(AUDIT_REVISE_SYSTEM, /leave that finding's "citation_ids" EMPTY/);
+  assert.match(AUDIT_REVISE_SYSTEM, /never attach a merely same-topic/i);
+  assert.match(AUDIT_REVISE_SYSTEM, /BROADER than the draft/);
 });

@@ -205,23 +205,46 @@ const ANALYZE_PROMPT_REFS: Record<string, string> = {
   doc_audit_revise: 'doc-audit-core/AUDIT_REVISE_SYSTEM',
 };
 
+function hitsFrom(r: Awaited<ReturnType<typeof retrieve>>): CiteHit[] {
+  return r.hits.map((h) => ({
+    id: h.id, source: h.source, book: h.book, chapter: h.chapter, section: h.section,
+    page_start: h.page_start, page_end: h.page_end, item_number: h.item_number,
+    chunk_type: h.chunk_type, similarity: h.similarity, text: h.text,
+  }));
+}
+
 async function defaultRetrieveHits(q: string): Promise<CiteHit[]> {
   try {
     // Reranker ON (matches Ask/DDx) — stronger retrieval than the old no-rerank pass.
-    const r = await retrieve(q, { topK: 8, useReranker: true, useSourceWeights: true, hybrid: true });
-    return r.hits.map((h) => ({
-      id: h.id, source: h.source, book: h.book, chapter: h.chapter, section: h.section,
-      page_start: h.page_start, page_end: h.page_end, item_number: h.item_number,
-      chunk_type: h.chunk_type, similarity: h.similarity, text: h.text,
-    }));
+    return hitsFrom(await retrieve(q, { topK: 8, useReranker: true, useSourceWeights: true, hybrid: true }));
   } catch (e) {
     console.warn('[doc-audit] retrieve failed', (e as Error).message);
     return [];
   }
 }
 
+// IPD citation fix (PRD CDMSS-IPD-CITATION-FIX): per-finding enrichment retrieval. Deliberately
+// LIGHT and LOCAL — reranker OFF + skip-expand — because under GEMINI_ALL the expand rewrite and
+// the rerank judge both route to paid Gemini Flash, whereas embeddings + BM25 + RRF + source
+// weights are local/DB. So enriching per finding adds ZERO net-new paid inference (Gate 4) and
+// stays sub-second parallelised across findings (Gate 5). Small topK — we want each finding's
+// OWN best few chunks, not another broad pool.
+async function defaultEnrichHits(q: string): Promise<CiteHit[]> {
+  try {
+    return hitsFrom(await retrieve(q, { topK: 4, useReranker: false, useSourceWeights: true, hybrid: true, skipExpand: true }));
+  } catch (e) {
+    console.warn('[doc-audit] enrich retrieve failed', (e as Error).message);
+    return [];
+  }
+}
+
+/** Cap on the unified analyze pool after per-finding enrichment (base 8 kept in full; bounds the
+ *  net-new chunks appended). Keeps the revise context — and its token cost — bounded. */
+const ENRICH_POOL_CAP = 20;
+
 export interface AnalyzeDeps {
   retrieveHits: (q: string) => Promise<CiteHit[]>;
+  enrichHits: (q: string) => Promise<CiteHit[]>;
   generate: (system: string, user: string) => Promise<string>;
 }
 
@@ -403,21 +426,57 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
       return { report: null, excerptCount: hits.length, traceId };
     }
 
-    // ── Citation self-critique + revise ──────────────────────────────────────
+    // ── SL1: per-finding evidence enrichment ─────────────────────────────────
+    // The pooled retrieval above is ONE centroid query for the whole audit; on a multi-problem
+    // discharge summary its hits can't back every finding. Retrieve per finding (light + local),
+    // then fold into ONE numbering space keeping the pooled hits as an identity prefix so the
+    // draft's [1..k] survive unchanged. The critique/revise pass below then re-cites against this
+    // enriched pool. Best-effort: any failure keeps the pooled sources (byte-identical to before).
+    let poolSources = sources;
+    let poolContext = citedContext;
+    const enrichHits = deps.enrichHits ?? defaultEnrichHits;
+    try {
+      const enrichGroups = await Promise.all(
+        parsed.findings
+          .map((f) => core.enrichQueryForFinding(f))
+          .filter(Boolean)
+          .map((q) => enrichHits(q).catch(() => [] as CiteHit[])),
+      );
+      const unioned = core.unionEnrichedHits(hits, enrichGroups, ENRICH_POOL_CAP);
+      if (unioned.length > hits.length) {
+        poolSources = hitsToSources(unioned, unioned.length);
+        poolContext = buildCitedContext(unioned, unioned.length);
+        prog('retrieving', `Enriched evidence pool to ${poolSources.length} sources`);
+        if (traceId) await logEvent(traceId, 'doc_audit_enrichment', null, {
+          base: hits.length, enriched: unioned.length, added: unioned.length - hits.length,
+        });
+      }
+    } catch (e) {
+      console.warn('[doc-audit] enrichment failed (keeping pooled sources)', (e as Error).message);
+    }
+    const enrichedAdded = poolSources.length > sources.length;
+
+    // ── SL2: citation self-critique + RE-CITE against the enriched pool ──────
+    // `finalAnalyzeSources` is what `parsed` actually cites against: the draft cites [1..sources];
+    // only a successful revise (which sees the enriched pool) promotes it to the enriched set.
+    let finalAnalyzeSources = sources;
     if (doAudit) {
       try {
         prog('reviewing', 'Auditing citations…');
-        const critiqueRaw = await generate(core.AUDIT_CRITIQUE_SYSTEM, core.buildAuditCritiqueUser(caseSummary, citedContext, draftRaw), 'doc_audit_critique_llm');
+        const critiqueRaw = await generate(core.AUDIT_CRITIQUE_SYSTEM, core.buildAuditCritiqueUser(caseSummary, poolContext, draftRaw), 'doc_audit_critique_llm');
         const critique = parseCritique(critiqueRaw);
         if (traceId) await logEvent(traceId, 'doc_audit_critique', null, {
           severity: critique.severity, needs_revision: critique.needs_revision,
           issues: critique.unsupported_evidence.length + critique.wrong_or_missing_citations.length + critique.misfiled_estimates.length + critique.missing_caveats.length,
         });
-        if (critique.needs_revision) {
+        // Re-cite whenever the critique asks OR enrichment surfaced evidence the draft never saw:
+        // the draft's citations were formed against the pooled pool only, so new per-finding
+        // excerpts must get a chance to be cited (and unsupportable claims dropped to estimates).
+        if (critique.needs_revision || enrichedAdded) {
           prog('revising', 'Revising to fix citations…');
-          const revRaw = await generate(core.AUDIT_REVISE_SYSTEM, core.buildAuditReviseUser(caseSummary, citedContext, draftRaw, JSON.stringify(critique)), 'doc_audit_revise');
-          const revised = core.parseAnalysis(revRaw, sources.length);
-          if (revised) parsed = revised;
+          const revRaw = await generate(core.AUDIT_REVISE_SYSTEM, core.buildAuditReviseUser(caseSummary, poolContext, draftRaw, JSON.stringify(critique)), 'doc_audit_revise');
+          const revised = core.parseAnalysis(revRaw, poolSources.length);
+          if (revised) { parsed = revised; finalAnalyzeSources = poolSources; }
           nonEnumRevise = core.countNonEnumVerdicts(revRaw);
         }
       } catch (e) {
@@ -480,8 +539,8 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
     // numbering space, and every PX citation id shifts by the analyze-source count.
     const pxResult = await pxPromise;
     const pxSources = pxResult ? hitsToSources(pxResult.hits) : [];
-    const allSources = pxResult ? [...sources, ...pxSources] : sources;
-    const prognosis = pxResult ? px.offsetPrognosisCitations(pxResult.report, sources.length) : undefined;
+    const allSources = pxResult ? [...finalAnalyzeSources, ...pxSources] : finalAnalyzeSources;
+    const prognosis = pxResult ? px.offsetPrognosisCitations(pxResult.report, finalAnalyzeSources.length) : undefined;
 
     const report: AuditReport = {
       completeness,

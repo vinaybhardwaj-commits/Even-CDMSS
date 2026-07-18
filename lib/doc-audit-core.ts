@@ -16,7 +16,7 @@
 
 import type { TariffRef } from './lvc-value-core';
 import type { SkeletonStage } from './pathway-core';
-import type { Source } from './citations-core';
+import type { Source, CiteHit } from './citations-core';
 import type { ValueDomain, ValueScorecard } from './value-score-core';
 import type { PrognosisReport } from './prognosis-core';
 export type { PrognosisReport } from './prognosis-core';
@@ -475,6 +475,10 @@ Empty arrays are fine. needs_revision=true if any array is non-empty.`;
 
 export const AUDIT_REVISE_SYSTEM = `You are revising your own case-audit based on a citation auditor's critique. You receive the extracted case, the NUMBERED excerpts [1..n], your earlier draft JSON, and the critique JSON.
 
+The NUMBERED excerpts may now be BROADER than the draft was written against — evidence was retrieved per finding, so an excerpt that truly backs a claim may appear here even if the draft never cited it. Re-cite every finding against THIS full excerpt set.
+
+CITATION DISCIPLINE (decisive): a finding may cite an excerpt ONLY when that excerpt's text actually supports the claim carrying the citation. If NO excerpt supports a claim, leave that finding's "citation_ids" EMPTY and move the unsupported point into "estimates" (marked "est.") — never attach a merely same-topic or adjacent excerpt to make a claim look grounded. An empty citation_ids with the reasoning in estimates is the CORRECT output for a claim the corpus does not cover.
+
 Rewrite to fix every issue: move unsupported claims out of finding "evidence" (into "estimates" if still worth saying, else drop), correct each finding's citation_ids so it cites only excerpts that truly support it, add any missing low-value/safety finding or caveat. Keep the EXACT same JSON schema as the draft (completeness, findings with citation_ids, idealised_summary, diff, suggestions). Output ONLY the corrected JSON, no prose.`;
 
 export function buildAuditCritiqueUser(caseSummary: string, citedContext: string, draftJson: string): string {
@@ -483,6 +487,57 @@ export function buildAuditCritiqueUser(caseSummary: string, citedContext: string
 
 export function buildAuditReviseUser(caseSummary: string, citedContext: string, draftJson: string, critiqueJson: string): string {
   return `Extracted case:\n${caseSummary.trim()}\n\nNUMBERED EVIDENCE EXCERPTS:\n${citedContext.trim() || '(none)'}\n\nEarlier draft JSON:\n${draftJson}\n\nAuditor critique JSON:\n${critiqueJson}\n\nOutput the corrected audit JSON now.`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-finding evidence enrichment (IPD citation fix, PRD CDMSS-IPD-CITATION-FIX)
+//
+// The analyze pass runs ONE pooled document-level retrieval; on a multi-problem discharge
+// summary those 8 hits are a centroid smear that can't back every finding (measured: IPD
+// citation-support 0.05 vs OPD 0.74 — the defect scales with document breadth). These PURE
+// helpers let the orchestrator retrieve PER FINDING and fold the hits into ONE shared
+// numbering space so the re-cite pass has the right evidence to attach. Retrieval itself is
+// done by the wired layer (local, reranker-off) — this core only builds queries and unions.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Build the enrichment retrieval query for one finding: its subject + its grounded evidence
+ * points + its rationale (the claim text), joined and length-bounded. Pure string assembly.
+ */
+export function enrichQueryForFinding(f: Pick<AuditFinding, 'subject' | 'evidence' | 'rationale'>): string {
+  return [f.subject, ...(Array.isArray(f.evidence) ? f.evidence : []), f.rationale ?? '']
+    .map((s) => String(s ?? '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join('. ')
+    .slice(0, 500);
+}
+
+/**
+ * Fold per-finding enrichment hits into the document-level pool as ONE numbering space.
+ *
+ * The base pool is kept as an IDENTITY PREFIX — base[i] stays at index i — so a draft citation
+ * [1..base.length] still points to the SAME chunk after enrichment and needs no remap; enrichment
+ * only APPENDS previously-unseen chunks. Dedupe is by chunk id across base + every enrichment group.
+ * Deterministic: base order first, then the enrichment groups in the order given. Caps total at `cap`
+ * (base is always retained in full; the cap bounds only how many net-new chunks are appended).
+ */
+export function unionEnrichedHits(base: CiteHit[], enrichment: CiteHit[][], cap = 20): CiteHit[] {
+  const out: CiteHit[] = [];
+  const seen = new Set<string>();
+  // Key by String(id): the DB layer (Neon) returns bigint chunk ids as STRINGS, not numbers, so a
+  // `typeof id === 'number'` guard would reject every hit and empty the pool. Accept number|string.
+  const add = (h: CiteHit | undefined): boolean => {
+    if (h == null) return false;
+    const key = String(h.id ?? '');
+    if (!key || seen.has(key)) return false;
+    seen.add(key); out.push(h); return true;
+  };
+  for (const h of base) add(h);                       // identity prefix — always kept
+  for (const group of enrichment) {
+    if (!Array.isArray(group)) continue;
+    for (const h of group) { if (out.length >= cap) return out; add(h); }
+  }
+  return out;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

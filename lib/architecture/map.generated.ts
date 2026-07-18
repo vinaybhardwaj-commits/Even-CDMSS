@@ -3335,7 +3335,7 @@ export const VERSION_REGISTRY: VersionRow[] = [
   },
   {
     "constName": "IPD_ENGINE_VERSION",
-    "value": "ipd-discharge-audit/0.1",
+    "value": "ipd-discharge-audit/0.2",
     "file": "lib/ipd-audit/store.ts",
     "derived": false
   },

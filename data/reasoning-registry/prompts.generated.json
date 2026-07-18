@@ -75,11 +75,11 @@
       "file": "lib/doc-audit-core.ts",
       "kind": "system",
       "version_hint": "unversioned (git-tracked)",
-      "sha256": "c6dfd26226309b12bb1b84f3208e0a89ada7c00710b0d292b6e11ad4483aa945",
-      "sha12": "c6dfd2622630",
-      "chars": 624,
-      "lines": 3,
-      "text": "You are revising your own case-audit based on a citation auditor's critique. You receive the extracted case, the NUMBERED excerpts [1..n], your earlier draft JSON, and the critique JSON.\n\nRewrite to fix every issue: move unsupported claims out of finding \"evidence\" (into \"estimates\" if still worth saying, else drop), correct each finding's citation_ids so it cites only excerpts that truly support it, add any missing low-value/safety finding or caveat. Keep the EXACT same JSON schema as the draft (completeness, findings with citation_ids, idealised_summary, diff, suggestions). Output ONLY the corrected JSON, no prose."
+      "sha256": "97fe25e18344c6ce91a3b78801c5cc9695136dd4790fd68cc918e6864e244795",
+      "sha12": "97fe25e18344",
+      "chars": 1364,
+      "lines": 7,
+      "text": "You are revising your own case-audit based on a citation auditor's critique. You receive the extracted case, the NUMBERED excerpts [1..n], your earlier draft JSON, and the critique JSON.\n\nThe NUMBERED excerpts may now be BROADER than the draft was written against — evidence was retrieved per finding, so an excerpt that truly backs a claim may appear here even if the draft never cited it. Re-cite every finding against THIS full excerpt set.\n\nCITATION DISCIPLINE (decisive): a finding may cite an excerpt ONLY when that excerpt's text actually supports the claim carrying the citation. If NO excerpt supports a claim, leave that finding's \"citation_ids\" EMPTY and move the unsupported point into \"estimates\" (marked \"est.\") — never attach a merely same-topic or adjacent excerpt to make a claim look grounded. An empty citation_ids with the reasoning in estimates is the CORRECT output for a claim the corpus does not cover.\n\nRewrite to fix every issue: move unsupported claims out of finding \"evidence\" (into \"estimates\" if still worth saying, else drop), correct each finding's citation_ids so it cites only excerpts that truly support it, add any missing low-value/safety finding or caveat. Keep the EXACT same JSON schema as the draft (completeness, findings with citation_ids, idealised_summary, diff, suggestions). Output ONLY the corrected JSON, no prose."
     },
     {
       "id": "doc-audit-core/EXTRACT_SYSTEM",
