@@ -139,6 +139,15 @@ export const MODULE_MANIFESTS: ModuleManifest[] = [
     versionConst: 'ADJUDICATION_LEDGER_VERSION',
   },
   {
+    id: 'corpus-eval',
+    title: 'Does the corpus actually help?',
+    blurb: 'Measurement-only baseline (Brainstem PR 0): scores whether a cited source truly supports the claim it backs, and where retrieval is too thin to cite. Read-only; never changes what users see.',
+    plane: 'advisory',
+    paths: ['lib/corpus-eval/**'],
+    lifecycle: 'implemented', // PR 0 baseline: pure verifier core + governed Pro call; scripts assemble/score/report
+    versionConst: 'CORPUS_EVAL_VERSION',
+  },
+  {
     id: 'architecture',
     title: 'This map’s own tooling',
     blurb: 'The behind-the-scenes tooling that keeps this very page accurate and up to date on every change.',

@@ -43,6 +43,10 @@ export const PROMPT_MANIFESTS: PromptManifest[] = [
   { id: 'opd-note-audit-core/OPD_AUDIT_SYSTEM', maturity: 'draft', rubricId: 'PDQI-9 reasoning rubric' },
   { id: 'pathway-core/ENRICH_SYSTEM', maturity: 'draft', rubricId: 'evidence-hierarchy' },
   { id: 'rerank/JUDGE_SYSTEM', maturity: 'draft', rubricId: '0–10 scoring rubric' },
+  // Brainstem PR 0 baseline verifier — the standalone citation-support judge, seeded from
+  // AUDIT_REVISE's support discipline (embedded in the prompt, like the others). Measurement-only
+  // (corpus-eval/1.0), Pro-tier. rubricId left blank — no separate rubric doc to link.
+  { id: 'verify-core/VERIFY_SYSTEM', maturity: 'draft' },
 ];
 
 /**

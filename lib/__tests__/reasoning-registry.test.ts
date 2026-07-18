@@ -91,7 +91,7 @@ test('rubric inclusion: nabh/6e external-json + the five embedded-in-prompt rubr
   }
 });
 
-test('count invariant: counts match the committed artifact contents (28 prompts / 6 rubrics / 30 builders)', () => {
+test('count invariant: counts match the committed artifact contents (29 prompts / 6 rubrics / 31 builders)', () => {
   const gen = GENERATED as {
     counts: { prompts: number; rubrics: number; user_message_builders: number; features: number };
     prompts: Array<{ feature: string }>; rubrics: unknown[]; user_message_builders: unknown[];
@@ -103,8 +103,9 @@ test('count invariant: counts match the committed artifact contents (28 prompts 
   // the ratified Stage-0 baseline (CDMSS-REASONING-CONFIG-EXPORT-14-JUL-2026): a change here is
   // a REAL change to the reasoning surface — bump knowingly, in the same commit as the prompt.
   // Inquiry K1 adds inquiry-core/INQUIRY_SELECT_SYSTEM + buildInquirySelectUser (27→28, 29→30).
-  assert.equal(gen.counts.prompts, 28);
+  // Brainstem PR 0 adds verify-core/VERIFY_SYSTEM + buildVerifyUser (28→29, 30→31, +1 feature).
+  assert.equal(gen.counts.prompts, 29);
   assert.equal(gen.counts.rubrics, 6);
-  assert.equal(gen.counts.user_message_builders, 30);
-  assert.equal(gen.counts.features, 17);
+  assert.equal(gen.counts.user_message_builders, 31);
+  assert.equal(gen.counts.features, 18);
 });

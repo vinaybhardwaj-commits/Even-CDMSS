@@ -223,6 +223,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "corpus-eval",
+    "plane": "advisory"
+  },
+  {
     "id": "curator",
     "plane": "unregistered"
   },
@@ -1990,6 +1994,16 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "corpus-eval",
+    "to": "llm",
+    "kind": "value"
+  },
+  {
+    "from": "corpus-eval",
+    "to": "trace",
+    "kind": "value"
+  },
+  {
     "from": "curator",
     "to": "db",
     "kind": "value"
@@ -3248,6 +3262,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "CORPUS_EVAL_VERSION",
+    "value": "corpus-eval/1.0",
+    "file": "lib/corpus-eval/verify-core.ts",
+    "derived": false
+  },
+  {
     "constName": "DOSE_LIMITS_VERSION",
     "value": "TABLE.version",
     "file": "lib/dose-limits.ts",
@@ -3466,9 +3486,9 @@ export const VERSION_REGISTRY: VersionRow[] = [
 ];
 
 export const COVERAGE = {
-  "registered": 14,
+  "registered": 15,
   "unregistered": 15,
-  "total": 29,
+  "total": 30,
   "unregisteredIds": [
     "calculators",
     "care-call-core",

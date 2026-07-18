@@ -58,3 +58,6 @@ ipd-audit-flash-tiering-study.md
 ipd-audit-thinkingbudget-study.md
 ipd-audit-s4-k5-v2.md
 ipd-audit-s4-theme-rescore*.md
+
+# Brainstem PR 0 local eval pack (de-identified clinical excerpts + link-back keys) — never commit
+.corpus-eval/
