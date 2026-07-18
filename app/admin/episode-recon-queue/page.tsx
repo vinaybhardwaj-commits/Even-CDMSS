@@ -92,10 +92,10 @@ export default async function EpisodeReconQueue() {
               </div>
               <div className="flex flex-col gap-3 lg:flex-row">
                 {/* SOURCE — the discharge PDF, read-time (PHI stays here, never in the bench) */}
-                <div className="min-h-[420px] flex-1 overflow-hidden rounded-xl border border-slate-200 bg-[#525659]">
+                <div className="h-[78vh] flex-1 overflow-hidden rounded-xl border border-slate-200 bg-[#525659] lg:sticky lg:top-4 lg:self-start">
                   {doc?.pdfUrl
-                    ? <iframe src={pdfSrc(doc.pdfUrl)} title={`source ${c.ipUid}`} loading="lazy" className="h-[440px] w-full" />
-                    : <div className="p-6 text-[12.5px] text-slate-300">Source PDF unavailable (read-time).</div>}
+                    ? <iframe src={pdfSrc(doc.pdfUrl)} title={`source ${c.ipUid}`} loading="lazy" className="h-full w-full" />
+                    : <div className="flex h-full items-center justify-center p-6 text-[12.5px] text-slate-300">Source PDF unavailable (read-time).</div>}
                 </div>
                 {/* ASSEMBLED — the persisted EpisodeState (read-only) */}
                 <div className="flex-1">
