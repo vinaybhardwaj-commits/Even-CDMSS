@@ -130,6 +130,15 @@ export const MODULE_MANIFESTS: ModuleManifest[] = [
     lifecycle: 'implemented', // SL1: compose-outside adapter + tripwire, behind a flag; no-regression proof (SL2) + surface (SL3) later
   },
   {
+    id: 'adjudication-ledger',
+    title: 'Every human call, in one place',
+    blurb: 'Federates every human adjudication across the audit surfaces into one read-time stream — what the AI proposed and what a reviewer decided — for precision and fidelity rollups. Advisory only: never a per-reviewer scorecard.',
+    plane: 'advisory',
+    paths: ['lib/adjudication-ledger/**'],
+    lifecycle: 'implemented', // federate-at-read + Observability surface + rollups; human stores only, no migration
+    versionConst: 'ADJUDICATION_LEDGER_VERSION',
+  },
+  {
     id: 'architecture',
     title: 'This map’s own tooling',
     blurb: 'The behind-the-scenes tooling that keeps this very page accurate and up to date on every change.',

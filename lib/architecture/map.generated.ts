@@ -11,6 +11,10 @@ export interface MapRule { id: number; name: string; sourceGlobs: string[]; }
 
 export const MAP_MODULES: MapModule[] = [
   {
+    "id": "adjudication-ledger",
+    "plane": "advisory"
+  },
+  {
     "id": "admin-cookie",
     "plane": "unregistered"
   },
@@ -666,8 +670,23 @@ export const MAP_MODULES: MapModule[] = [
 
 export const MAP_EDGES: MapEdge[] = [
   {
+    "from": "adjudication-ledger",
+    "to": "db",
+    "kind": "value"
+  },
+  {
     "from": "app",
     "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
+    "to": "adjudication-ledger",
+    "kind": "type"
+  },
+  {
+    "from": "app/admin",
+    "to": "adjudication-ledger",
     "kind": "value"
   },
   {
@@ -3205,6 +3224,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "ADJUDICATION_LEDGER_VERSION",
+    "value": "adjudication-ledger/1.0",
+    "file": "lib/adjudication-ledger/core.ts",
+    "derived": false
+  },
+  {
     "constName": "ASK_SET_VERSION",
     "value": "ask-set/0.1",
     "file": "lib/care-call-core.ts",
@@ -3435,9 +3460,9 @@ export const VERSION_REGISTRY: VersionRow[] = [
 ];
 
 export const COVERAGE = {
-  "registered": 13,
+  "registered": 14,
   "unregistered": 15,
-  "total": 28,
+  "total": 29,
   "unregisteredIds": [
     "calculators",
     "care-call-core",

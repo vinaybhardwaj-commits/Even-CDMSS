@@ -76,6 +76,8 @@ export default async function ObservabilityAdmin({ searchParams }: { searchParam
         </div>
         <div className="flex items-center gap-4">
           {/* Reasoning Observability Stage 0: the research export (prompts + rubrics, no clinical data) */}
+          <Link href="/admin/observability/adjudications" className="whitespace-nowrap text-xs font-medium text-brand hover:underline">Adjudication Ledger →</Link>
+          <Link href="/admin/observability/reconstruction-fidelity" className="whitespace-nowrap text-xs font-medium text-brand hover:underline">Reconstruction Fidelity →</Link>
           <a href="/api/admin/reasoning-registry?format=json" className="whitespace-nowrap text-xs text-slate-400 hover:text-brand">Download reasoning registry</a>
           <form method="POST" action="/api/admin/unlock?action=logout"><button className="whitespace-nowrap text-xs text-slate-400 hover:text-brand">Lock</button></form>
         </div>
