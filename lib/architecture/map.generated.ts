@@ -777,6 +777,16 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/admin",
+    "to": "member-state-adapters",
+    "kind": "type"
+  },
+  {
+    "from": "app/admin",
+    "to": "member-state-adapters",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
     "to": "metabase",
     "kind": "value"
   },

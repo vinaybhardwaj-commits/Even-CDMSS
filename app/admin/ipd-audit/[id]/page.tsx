@@ -16,6 +16,10 @@ import ReportWithTriage from './report-with-triage';
 import BillingPanel, { NoEnvelope } from './billing-panel';
 import EpisodeCourse from './episode-course';
 import { fetchEpisodeState } from '@/lib/episode-state/store';
+import MedRecPanel from './med-rec-panel';
+import { fetchMemberOpdRows } from '@/lib/ipd-audit/member-opd-fetch';
+import { computeMedRecView } from '@/lib/member-state-adapters/med-rec-view';
+import { admissionAdapterEnabled } from '@/lib/member-state-adapters/discharge-evidence';
 
 export const dynamic = 'force-dynamic';
 
@@ -73,6 +77,31 @@ export default async function IpdAuditReport({ params }: { params: Promise<{ id:
   // EpisodeState (#4 SL3) — READ-ONLY render of the persisted phased course. Best-effort: a read
   // failure or an un-built admission just hides the element, never affects the audit above.
   const episode = await fetchEpisodeState(documentId).catch(() => null);
+
+  // Medication reconciliation (admission) — #5 SL3. The ONE flag (MEMBERSTATE_ADMISSION_ADAPTER)
+  // gates BOTH the compose path AND this surface: with it off, medRec stays null and production is
+  // byte-unchanged. Read-time only (no new persisted artifact); best-effort — an OPD-fetch miss
+  // degrades to the admission-list-only banner, never breaks the report. Med-rec ONLY (Gate D scope).
+  let medRec = null;
+  if (admissionAdapterEnabled() && episode) {
+    const admitDate = episode.intra.admission.admitDate?.value ?? null;
+    const opd = await fetchMemberOpdRows(header?.uhid ?? null, admitDate).catch(() => null);
+    const computedAt = String(r.audited_at ?? episode.intra.admission.dischargeDate?.value ?? '');
+    try {
+      medRec = computeMedRecView(
+        {
+          memberRef: opd?.memberRef ?? '',
+          generatedAt: computedAt,
+          computedAt,
+          linked: opd?.linked ?? false,
+          prescriptionRows: opd?.prescriptionRows ?? [],
+          labRows: opd?.labRows ?? [],
+        },
+        episode,
+      );
+    } catch { medRec = null; }   // best-effort: a compose/reconcile failure never breaks the report
+
+  }
 
   return (
     <div className="flex h-screen flex-col">
@@ -157,6 +186,10 @@ export default async function IpdAuditReport({ params }: { params: Promise<{ id:
 
             {/* EpisodeState phased course — #4 SL3 (facts-only, read from episode_states; hidden when un-built) */}
             {episode && <EpisodeCourse state={episode} />}
+
+            {/* Medication reconciliation (admission) — #5 SL3 (behind MEMBERSTATE_ADMISSION_ADAPTER;
+                null ⇒ flag off ⇒ nothing rendered ⇒ production unchanged) */}
+            {medRec && <MedRecPanel view={medRec} />}
 
             <div className="mt-5 flex flex-wrap items-center gap-3 text-[11px] text-slate-400">
               <span>engine {String(r.engine_version)}</span>
