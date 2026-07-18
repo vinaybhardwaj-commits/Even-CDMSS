@@ -32,3 +32,27 @@ ipd-batch-*.json
 run1-results.json
 real-order-probe-*.json
 episode-recon-*.json
+
+# --- housekeeping 18 Jul 2026: strays, local settings, data packs, CC build reports ---
+# local PHI-dump helper (runs locally where PHI access is sanctioned; infra URLs inside)
+opd_audit_cohort_dump.py
+# local editor/agent settings
+.claude/settings.local.json
+# stray iCloud-synced nested copy that leaked into the tree
+/Daily Dash EHRC/
+# eval / sample / mini-pipeline result packs (may carry clinical extracts)
+/data/inquiry-eval/
+ipd-audit-m0-sample-pack.*
+ipd-mini-stage1.json
+# CC build-report markdown (de-identified clinical finding text) — kickoffs/PRDs (CDMSS-*.md) stay untracked, NOT ignored
+adjudication-ledger*.md
+consensus-gold-2.0.md
+consensus-gold-harness.md
+cost-column-backfill.md
+cost-tracker-accuracy-fix.md
+episode-state-sl*.md
+memberstate-adapter-sl*.md
+ipd-audit-flash-tiering-study.md
+ipd-audit-thinkingbudget-study.md
+ipd-audit-s4-k5-v2.md
+ipd-audit-s4-theme-rescore*.md
