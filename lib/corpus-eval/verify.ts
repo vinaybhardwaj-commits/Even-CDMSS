@@ -10,11 +10,13 @@
 // trace_events for its OWN eval calls (the standard governed-call side effect), never a served output.
 
 import { startTrace, tracedChat } from '../trace';
-import { GEMINI_MODEL } from '../llm';
+import { GEMINI_MODEL, isGeminiModel } from '../llm';
 import { VERIFY_SYSTEM, buildVerifyUser, parseVerdict, type SourceMeta, type VerifyResult } from './verify-core';
 
 export interface VerifyUsage { prompt_tokens: number; completion_tokens: number; total_tokens: number; ms: number; provider: string; model: string }
-export interface VerifyOutcome extends VerifyResult { usage: VerifyUsage }
+/** fellBack=true ⇒ tracedChat served this from the Ollama fallback, not Gemini Pro. Such a verdict is
+ *  FORCED to not_assessable (a local model must never silently enter the Pro baseline) and surfaced. */
+export interface VerifyOutcome extends VerifyResult { usage: VerifyUsage; fellBack: boolean }
 
 const PROMPT_REF = 'verify-core/VERIFY_SYSTEM';
 
@@ -50,20 +52,26 @@ export async function verifyClaim(
     const choice = res?.choices?.[0];
     const content: string | null = choice?.message?.content ?? null;
     const u = res?.usage ?? {};
-    const parsed = parseVerdict(content);
-    return {
-      ...parsed,
-      usage: {
-        prompt_tokens: Number(u.prompt_tokens ?? 0),
-        completion_tokens: Number(u.completion_tokens ?? 0),
-        total_tokens: Number(u.total_tokens ?? 0),
-        ms: Date.now() - t0,
-        provider: 'gemini',
-        model: proModel,
-      },
+    // Fallback integrity guard: tracedChat silently degrades to the local Ollama model on a Gemini
+    // error/rate-limit. The served model comes back on the response; if it is NOT a Gemini model, a
+    // local model produced this verdict — EXCLUDE it (force not_assessable) and flag it, so a
+    // rate-limit can never quietly swap a weak local judge into the Pro baseline.
+    const servedModel = String(res?.model ?? '');
+    const fellBack = servedModel !== '' && !isGeminiModel(servedModel);
+    const usage = {
+      prompt_tokens: Number(u.prompt_tokens ?? 0),
+      completion_tokens: Number(u.completion_tokens ?? 0),
+      total_tokens: Number(u.total_tokens ?? 0),
+      ms: Date.now() - t0,
+      provider: fellBack ? 'ollama' : 'gemini',
+      model: servedModel || proModel,
     };
+    if (fellBack) {
+      return { verdict: 'not_assessable', supportingSpan: null, why: `excluded: Ollama fallback (${servedModel}) — not the Pro verifier`, usage, fellBack: true };
+    }
+    return { ...parseVerdict(content), usage, fellBack: false };
   } catch (e) {
     // fail-safe — a failed verify is not_assessable, never a crash and never a guessed support
-    return { verdict: 'not_assessable', supportingSpan: null, why: `verify error: ${String((e as Error).message).slice(0, 120)}`, usage: emptyUsage('gemini', proModel) };
+    return { verdict: 'not_assessable', supportingSpan: null, why: `verify error: ${String((e as Error).message).slice(0, 120)}`, usage: emptyUsage('gemini', proModel), fellBack: false };
   }
 }
