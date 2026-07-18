@@ -3268,7 +3268,7 @@ export const VERSION_REGISTRY: VersionRow[] = [
   },
   {
     "constName": "IPD_AUDIT_GOLD_VERSION",
-    "value": "ipd-audit-gold/1.1",
+    "value": "ipd-audit-gold/2.0",
     "file": "lib/ipd-audit/gold.ts",
     "derived": false
   },

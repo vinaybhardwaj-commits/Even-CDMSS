@@ -19,15 +19,18 @@
 
 import { createHash } from 'crypto';
 
-// 1.1 (S4 decision, option b — V, 16-Jul-2026): the per-case CVI/band point values are
-// replaced by their K=5 DISTRIBUTION (modal band + band range + CVI mean/range) — S4 measured
-// the single-shot points as non-reproducible (1/25 band-stable; 6/25 gold CVIs outside their
-// own K=5 range). Ratified verdicts/findings/completeness byte-preserved from 1.0. The
-// measurement framing is ±1-tier band match + completeness + low-value THEME agreement.
-export const IPD_AUDIT_GOLD_VERSION = 'ipd-audit-gold/1.1';
+// 2.0 (consensus-gold #7 — V, 18-Jul-2026, MAJOR: the reference's CONTENT changed): the
+// low-value-care THEME set is re-adjudicated against the engine's K=5 union — 195 candidates
+// V-rated tp/valid_extra/false/nitpick/contested. tp+valid_extra are the MATERIAL themes
+// (findings); nitpick moves to a separate minor_findings tier (excluded from material
+// recall/precision); false dropped; contested excluded. This removes the single-shot thinness
+// bias that made 1.1's recall/precision (0.57/0.61) under-count the engine. The K=5 band/CVI
+// DISTRIBUTION (1.1, S4 option b) and the high-value/uncertain findings are byte-preserved.
+// (2 of the 195 verdicts were CC's SL2 verification posts, user-authorised to treat as ratified.)
+export const IPD_AUDIT_GOLD_VERSION = 'ipd-audit-gold/2.0';
 
 /** The governance pin — sha256 of JSON.stringify(gold.cases). Re-pinning requires V. */
-export const IPD_AUDIT_GOLD_SHA256 = '389ce62b7371ece8703b7c0aa18e5b5c1d5553498fd68c165b3abd8e904d3eb3';
+export const IPD_AUDIT_GOLD_SHA256 = '9020a78a76cdda6d0046752f149e182e6cd02dc8a3645bedcf903dac57777e9f';
 
 export interface IpdGoldFinding {
   subject: string;
@@ -55,6 +58,10 @@ export interface IpdGoldCase {
   completeness_pct: number;
   missing_mandatory: string[];
   findings: IpdGoldFinding[];
+  // 2.0: the nitpick tier — V-ratified as REAL but trivial (low-value noise). Deliberately
+  // SEPARATE from `findings` so it never inflates the material recall/precision set. Optional
+  // (absent/[] on cases with no nitpick).
+  minor_findings?: IpdGoldFinding[];
 }
 
 export interface IpdAuditGold {
@@ -99,6 +106,9 @@ export function loadIpdAuditGold(raw: unknown): IpdAuditGold {
     if (c.k !== 5 || !Array.isArray(c.cvi_range) || c.cvi_range.length !== 2) throw new Error(`${c.id}: malformed K=5 distribution block`);
     for (const f of c.findings) {
       if (!VERDICTS.has(f.verdict)) throw new Error(`${c.id}: verdict '${f.verdict}' outside the enum`);
+    }
+    for (const f of c.minor_findings ?? []) {
+      if (!VERDICTS.has(f.verdict)) throw new Error(`${c.id}: minor verdict '${f.verdict}' outside the enum`);
     }
   }
   return g;

@@ -1,14 +1,14 @@
 {
-  "version": "ipd-audit-gold/1.1",
+  "version": "ipd-audit-gold/2.0",
   "status": "ratified",
-  "role_note": "ROLE: this gold is the engine's V-ratified OUTPUT, frozen. It measures reproducibility, cross-model (Gemini<->Qwen) parity, and version-bump regression - NOT absolute accuracy against an independent standard. That is its designed purpose for v1. The recurring completeness gaps ('Date of discharge', 'Date & time of signature') were V-confirmed as REAL systemic documentation gaps, not extraction artifacts - the completeness metric has no false-positive floor to correct. 1.1 RE-DERIVATION (S4 decision, option b): the per-case CVI/band is replaced by its K=5 DISTRIBUTION (modal band, band range, CVI mean + range) - S4 measured the single-shot point values as non-reproducible (1/25 band-stable; 6/25 gold CVIs outside their own K=5 range). Ratified verdicts/findings/completeness are byte-preserved from 1.0. Measurement framing: +/-1-tier band match + completeness + low-value THEME agreement; exact-CVI/exact-band are retired as targets. cvi_mean (not median) is carried: the S4 pack retained aggregates, not raw draws.",
+  "role_note": "ROLE: this gold is the engine's V-ratified OUTPUT, frozen. It measures reproducibility, cross-model (Gemini<->Qwen) parity, and version-bump regression - NOT absolute accuracy against an independent standard. That is its designed purpose for v1. The recurring completeness gaps ('Date of discharge', 'Date & time of signature') were V-confirmed as REAL systemic documentation gaps, not extraction artifacts - the completeness metric has no false-positive floor to correct. 1.1 RE-DERIVATION (S4 decision, option b): the per-case CVI/band is replaced by its K=5 DISTRIBUTION (modal band, band range, CVI mean + range) - S4 measured the single-shot point values as non-reproducible (1/25 band-stable; 6/25 gold CVIs outside their own K=5 range). Ratified verdicts/findings/completeness are byte-preserved from 1.0. Measurement framing: +/-1-tier band match + completeness + low-value THEME agreement; exact-CVI/exact-band are retired as targets. cvi_mean (not median) is carried: the S4 pack retained aggregates, not raw draws. 2.0 (consensus-gold #7, V-ratified 18 Jul 2026): the low-value-care THEME set is re-adjudicated against the engine's K=5 union — 195 candidates rated tp/valid_extra/false/nitpick/contested. tp+valid_extra kept as MATERIAL themes; nitpick moved to a separate minor_findings tier (excluded from material recall/precision); false dropped; contested excluded+logged. This removes the single-shot thinness bias in recall/precision. Band/CVI distribution + high-value/uncertain findings byte-preserved from 1.1.",
   "validator": "V",
-  "ratified_at": "2026-07-16",
-  "basis": "K=5 modal band + range, re-confirmed by V 16 Jul",
+  "ratified_at": "2026-07-18",
+  "basis": "consensus-gold/2.0 union of 195 candidates across 25 cases, V-ratified 18 Jul 2026; band/CVI K=5 distribution carried from 1.1.",
   "engine_version": "ipd-discharge-audit/0.1",
   "model": "gemini-2.5-pro",
   "n": 25,
-  "content_sha256": "389ce62b7371ece8703b7c0aa18e5b5c1d5553498fd68c165b3abd8e904d3eb3",
+  "content_sha256": "9020a78a76cdda6d0046752f149e182e6cd02dc8a3645bedcf903dac57777e9f",
   "privacy": "De-identified: link-back keys (ip_uid, document_id) as the re-identification path only — resolvable solely via db13/the access-controlled surface (source_pdf_url deliberately NOT committed: public repo + publicly-readable bucket); no names/UHID. Findings text is the de-identified engine output.",
   "cases": [
     {
@@ -32,6 +32,12 @@
           "rationale": "The patient presented with significant and symptomatic nasal airway obstruction due to a deviated septum, which is the primary indication for septoplasty. The procedure is considered superior to medical management for this condition."
         },
         {
+          "subject": "Pre-operative evaluation for Obstructive Sleep Apnea (OSA)",
+          "verdict": "uncertain",
+          "domain": "safety",
+          "rationale": "The patient's history of mouth breathing, frequent awakening, and disturbed sleep is highly suggestive of OSA. Proceeding with general anesthesia without a formal risk assessment for OSA can increase peri-operative airway risks. The documentation does not show evidence of such an evaluation, representing a potential gap in care and safety."
+        },
+        {
           "subject": "Pre-operative Thyroid and Uric Acid testing",
           "verdict": "low-value",
           "domain": "appropriateness",
@@ -50,17 +56,55 @@
           "rationale": "A 2-week course of a topical decongestant (xylometazoline) carries a high risk of inducing rhinitis medicamentosa (rebound congestion). The recommended duration of use is typically limited to 3-5 days to avoid this complication."
         },
         {
-          "subject": "Pre-operative evaluation for Obstructive Sleep Apnea (OSA)",
-          "verdict": "uncertain",
-          "domain": "safety",
-          "rationale": "The patient's history of mouth breathing, frequent awakening, and disturbed sleep is highly suggestive of OSA. Proceeding with general anesthesia without a formal risk assessment for OSA can increase peri-operative airway risks. The documentation does not show evidence of such an evaluation, representing a potential gap in care and safety."
-        },
-        {
           "subject": "Inpatient admission for septoplasty",
           "verdict": "context-dependent",
           "domain": "efficiency",
           "rationale": "Uncomplicated septoplasty is frequently performed as a day-care procedure. An overnight admission increases care intensity and cost. While it may have been justified by the patient's asthma, travel distance, or surgeon's discretion, it represents a potential area for efficiency improvement for the general patient population."
         },
+        {
+          "subject": "Consideration of Obstructive Sleep Apnea (OSA)",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, valid_extra); added in 2.0. Surfaced in 3/5 runs."
+        },
+        {
+          "subject": "Pre-operative Thyroid Function Tests",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, valid_extra); added in 2.0. Surfaced in 2/5 runs."
+        },
+        {
+          "subject": "Routine Pre-operative Blood Tests",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Post-operative Systemic Antibiotics",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, valid_extra); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Omission of Post-operative Nasal Steroid Spray",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Post-operative Follow-up Schedule",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Pre-operative Asthma Assessment",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        }
+      ],
+      "minor_findings": [
         {
           "subject": "Concurrent Turbinoplasty",
           "verdict": "low-value",
@@ -97,6 +141,12 @@
           "rationale": "The procedure was indicated for a combination of recurrent tonsillitis and obstructive symptoms (adenoid hypertrophy, snoring). While the documented frequency of infections (5-6 episodes/year) is on the borderline of formal criteria without knowing the duration, the presence of obstructive symptoms provides a strong, independent indication for surgery. The combination of these factors makes the intervention appropriate for improving quality of life."
         },
         {
+          "subject": "Pre-operative PONV Prophylaxis",
+          "verdict": "high-value",
+          "domain": "safety",
+          "rationale": "Administering an anti-emetic (Ondansetron) pre-operatively is a high-value intervention to prevent post-operative nausea and vomiting (PONV). Preventing PONV is critical for patient comfort, reducing the risk of dehydration, and enabling an early return to oral intake, which facilitates a smoother recovery and timely discharge."
+        },
+        {
           "subject": "Care Setting (Inpatient Admission)",
           "verdict": "low-value",
           "domain": "efficiency",
@@ -121,18 +171,31 @@
           "rationale": "Routine pre-operative administration of a proton-pump inhibitor (pantoprazole) is not indicated for a short, elective procedure in a patient with no stated comorbidities or history of acid-peptic disease. This constitutes medication use without a clear clinical benefit or risk-reduction rationale."
         },
         {
-          "subject": "Pre-operative PONV Prophylaxis",
-          "verdict": "high-value",
-          "domain": "safety",
-          "rationale": "Administering an anti-emetic (Ondansetron) pre-operatively is a high-value intervention to prevent post-operative nausea and vomiting (PONV). Preventing PONV is critical for patient comfort, reducing the risk of dehydration, and enabling an early return to oral intake, which facilitates a smoother recovery and timely discharge."
-        },
-        {
           "subject": "Pre-operative Tetanus Prophylaxis",
           "verdict": "low-value",
           "domain": "safety",
           "rationale": "Routine administration of a Tetanus Toxoid injection is not indicated for an elective, clean-contaminated surgical procedure like tonsillectomy. This represents unnecessary medication administration without a clear benefit, exposing the patient to potential minor side effects."
+        },
+        {
+          "subject": "Indication for Adeno-tonsillectomy",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 3/5 runs."
+        },
+        {
+          "subject": "Post-discharge Follow-up Plan",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Use of NSAID for post-operative pain",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
         }
       ],
+      "minor_findings": [],
       "band_modal": "C",
       "band_range": "B–C",
       "cvi_mean": 64.8,
@@ -156,6 +219,12 @@
       ],
       "findings": [
         {
+          "subject": "Tetanus Toxoid administration",
+          "verdict": "high-value",
+          "domain": "safety",
+          "rationale": "The patient sustained abrasions from a fall on the road, which is a tetanus-prone wound. Administering a Tetanus Toxoid injection is the standard of care to prevent tetanus, consistent with best practices for wound management."
+        },
+        {
           "subject": "eFAST scan for minor trauma",
           "verdict": "low-value",
           "domain": "appropriateness",
@@ -168,12 +237,25 @@
           "rationale": "The patient was administered an injectable analgesic for pain from minor superficial abrasions. Given the nature of the injuries and the patient's fitness for immediate discharge, oral analgesics would have been a more appropriate, less invasive, and more cost-effective choice. Parenteral administration should generally be reserved for severe pain or when the oral route is not feasible."
         },
         {
-          "subject": "Tetanus Toxoid administration",
-          "verdict": "high-value",
-          "domain": "safety",
-          "rationale": "The patient sustained abrasions from a fall on the road, which is a tetanus-prone wound. Administering a Tetanus Toxoid injection is the standard of care to prevent tetanus, consistent with best practices for wound management."
+          "subject": "Route of administration for analgesia",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 4/5 runs."
+        },
+        {
+          "subject": "Use of eFAST Scan",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Discharge Counseling",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
         }
       ],
+      "minor_findings": [],
       "band_modal": "B",
       "band_range": "A–C",
       "cvi_mean": 80,
@@ -198,12 +280,6 @@
       ],
       "findings": [
         {
-          "subject": "Use of Tranexamic Acid (Trenaxa)",
-          "verdict": "low-value",
-          "domain": "appropriateness",
-          "rationale": "The patient presented with minor, self-limited bleeding (2 episodes) which had ceased prior to evaluation. Proctoscopy confirmed no active bleeding. The use of a systemic antifibrinolytic agent like tranexamic acid is not indicated for uncomplicated, non-active hemorrhoidal bleeding. Conservative measures are the standard of care. This represents unnecessary medication exposure and cost for a self-limiting condition."
-        },
-        {
           "subject": "Prescription of Stool Softener (Lactulose)",
           "verdict": "high-value",
           "domain": "appropriateness",
@@ -226,8 +302,33 @@
           "verdict": "uncertain",
           "domain": "safety",
           "rationale": "The case is diagnosed as 'Grade 1/2 External Haemorrhoids', but this is clinically inconsistent. The grading system (I-IV), the primary symptom of painless bright red bleeding, and the proctoscopy findings of congested cushions are all characteristic of internal hemorrhoids. While the management provided was appropriate for the patient's actual clinical presentation (internal hemorrhoids), the inaccurate diagnostic label is a documentation error that could cause confusion in future care."
+        },
+        {
+          "subject": "Use of Tranexamic Acid (Trenaxa)",
+          "verdict": "low-value",
+          "domain": "appropriateness",
+          "rationale": "The patient presented with minor, self-limited bleeding (2 episodes) which had ceased prior to evaluation. Proctoscopy confirmed no active bleeding. The use of a systemic antifibrinolytic agent like tranexamic acid is not indicated for uncomplicated, non-active hemorrhoidal bleeding. Conservative measures are the standard of care. This represents unnecessary medication exposure and cost for a self-limiting condition."
+        },
+        {
+          "subject": "Incomplete diagnostic workup for new-onset rectal bleeding",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 2/5 runs."
+        },
+        {
+          "subject": "Use of Topical Nifedipine (Anobliss Ointment)",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Care Setting (Emergency Room)",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
         }
       ],
+      "minor_findings": [],
       "band_modal": "A",
       "band_range": "A–C",
       "cvi_mean": 78.6,
@@ -256,6 +357,12 @@
       ],
       "findings": [
         {
+          "subject": "Use of Paracetamol for fever",
+          "verdict": "high-value",
+          "domain": "appropriateness",
+          "rationale": "Paracetamol is the recommended first-line agent for symptomatic relief of fever and pain in undifferentiated febrile illnesses. Its use is appropriate and aligns with best practices for managing conditions like suspected Chikungunya."
+        },
+        {
           "subject": "Empirical broad-spectrum IV antibiotic therapy for undifferentiated fever",
           "verdict": "low-value",
           "domain": "safety",
@@ -274,12 +381,25 @@
           "rationale": "A daily PPI was prescribed, likely to mitigate gastric risk from the SOS NSAID (Naxdom). For a short course of as-needed NSAID use in a 51-year-old patient with no documented history of peptic ulcer disease or other high-risk factors, routine PPI prophylaxis is generally not indicated and represents low-value care."
         },
         {
-          "subject": "Use of Paracetamol for fever",
-          "verdict": "high-value",
-          "domain": "appropriateness",
-          "rationale": "Paracetamol is the recommended first-line agent for symptomatic relief of fever and pain in undifferentiated febrile illnesses. Its use is appropriate and aligns with best practices for managing conditions like suspected Chikungunya."
+          "subject": "Outpatient Parenteral Antibiotic Therapy (OPAT) for a non-severe presentation",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Empirical Outpatient Intravenous Antibiotic Therapy",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Outpatient Parenteral Antibiotic Therapy (OPAT) Plan",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
         }
       ],
+      "minor_findings": [],
       "band_modal": "C",
       "band_range": "B–C",
       "cvi_mean": 64.6,
@@ -303,6 +423,24 @@
       ],
       "findings": [
         {
+          "subject": "Histopathological Examination of Specimens",
+          "verdict": "high-value",
+          "domain": "safety",
+          "rationale": "While not explicitly mentioned as done in the extract, sending all excised tissue for histopathology is a critical, high-value step. It is essential to confirm the benign diagnosis of lipoma and definitively rule out differential diagnoses, including rare but important conditions like atypical lipomatous tumors (ALT) or liposarcomas, which can mimic benign lipomas clinically."
+        },
+        {
+          "subject": "Pre-operative Imaging",
+          "verdict": "high-value",
+          "domain": "appropriateness",
+          "rationale": "For multiple lipomas presenting with an atypical feature like 'severe pain', pre-operative imaging is a high-value investigation. Ultrasonography is recommended as a first step to confirm the fatty nature of the tumors and assess their characteristics before an extensive surgical procedure. This aids in surgical planning and helps in differentiating from other pathologies."
+        },
+        {
+          "subject": "Choice of Anesthesia and Care Setting",
+          "verdict": "high-value",
+          "domain": "efficiency",
+          "rationale": "Given the excision of a large number (35) of lipomas across multiple body regions, the use of General Anesthesia was appropriate for patient safety, comfort, and surgical efficiency. A short, 1-day inpatient admission for post-operative observation is a reasonable and efficient use of resources for a procedure of this magnitude."
+        },
+        {
           "subject": "Post-operative Antibiotic Course",
           "verdict": "low-value",
           "domain": "safety",
@@ -321,30 +459,37 @@
           "rationale": "There is no clear clinical indication for prescribing a vitamin B-complex supplement following routine elective surgery in a patient without a documented deficiency, specific dietary restrictions, or relevant conditions like alcoholism. This represents a non-evidence-based addition to the treatment plan."
         },
         {
-          "subject": "Histopathological Examination of Specimens",
-          "verdict": "high-value",
-          "domain": "safety",
-          "rationale": "While not explicitly mentioned as done in the extract, sending all excised tissue for histopathology is a critical, high-value step. It is essential to confirm the benign diagnosis of lipoma and definitively rule out differential diagnoses, including rare but important conditions like atypical lipomatous tumors (ALT) or liposarcomas, which can mimic benign lipomas clinically."
-        },
-        {
-          "subject": "Pre-operative Imaging",
-          "verdict": "high-value",
-          "domain": "appropriateness",
-          "rationale": "For multiple lipomas presenting with an atypical feature like 'severe pain', pre-operative imaging is a high-value investigation. Ultrasonography is recommended as a first step to confirm the fatty nature of the tumors and assess their characteristics before an extensive surgical procedure. This aids in surgical planning and helps in differentiating from other pathologies."
-        },
-        {
           "subject": "Evaluation for Underlying Syndromic Cause",
           "verdict": "low-value",
           "domain": "safety",
           "rationale": "The presentation with multiple (35) painful lipomas is a strong indicator for considering an underlying syndrome, such as Dercum's disease (adiposis dolorosa) or Familial Multiple Lipomatosis. The case documentation lacks any mention of this consideration, which represents a missed opportunity for a more comprehensive diagnosis, patient counseling, and management of potential associated symptoms."
         },
         {
-          "subject": "Choice of Anesthesia and Care Setting",
-          "verdict": "high-value",
-          "domain": "efficiency",
-          "rationale": "Given the excision of a large number (35) of lipomas across multiple body regions, the use of General Anesthesia was appropriate for patient safety, comfort, and surgical efficiency. A short, 1-day inpatient admission for post-operative observation is a reasonable and efficient use of resources for a procedure of this magnitude."
+          "subject": "Pre-operative evaluation of painful soft tissue masses",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 4/5 runs."
+        },
+        {
+          "subject": "Routine prescription of PPI and vitamin supplements",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 2/5 runs."
+        },
+        {
+          "subject": "Ancillary Post-operative Medications",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Post-operative Observation and Discharge Timing",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
         }
       ],
+      "minor_findings": [],
       "band_modal": "C",
       "band_range": "C–D",
       "cvi_mean": 59.8,
@@ -409,8 +554,39 @@
           "verdict": "low-value",
           "domain": "safety",
           "rationale": "Prescribing Tab Faronem (Faropenem), an oral carbapenem-class antibiotic, upon discharge is inappropriate and represents continued antibiotic overuse. After a course of IV Meropenem for a weakly supported bacterial pneumonia, stepping down to another carbapenem is not justified, especially with normal inflammatory markers. A narrower-spectrum antibiotic would have been sufficient and more aligned with antimicrobial stewardship principles."
+        },
+        {
+          "subject": "Total duration of antibiotic therapy (7 days)",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 3/5 runs."
+        },
+        {
+          "subject": "Management of Hyponatremia",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Use of Carbapenem Antibiotics (Meropenem, Faropenem)",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 2/5 runs."
+        },
+        {
+          "subject": "Lack of Urine Culture",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Placement of Indwelling Urinary Catheter",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
         }
       ],
+      "minor_findings": [],
       "band_modal": "B",
       "band_range": "B–C",
       "cvi_mean": 75.4,
@@ -436,12 +612,6 @@
       ],
       "findings": [
         {
-          "subject": "Surgical Management of Grade II/III Hemorrhoids",
-          "verdict": "context-dependent",
-          "domain": "appropriateness",
-          "rationale": "The primary driver for the patient's symptoms (pain) appears to be the chronic fissure, as pain is not a typical symptom of uncomplicated hemorrhoids. While surgical management of Grade II/III hemorrhoids is sometimes indicated, evidence suggests it is typically reserved for cases refractory to medical or office-based procedures like banding, or for severe symptoms like profuse bleeding. The documentation does not specify if less invasive options were trialed and failed, or the severity of bleeding. Addressing the hemorrhoids surgically at the same time as the necessary sphincterotomy for the fissure can be an efficient approach, but the indication for the hemorrhoidopexy itself as a primary measure is not fully supported without this context."
-        },
-        {
           "subject": "Surgical Management of Chronic Fissure in Ano",
           "verdict": "high-value",
           "domain": "appropriateness",
@@ -460,12 +630,61 @@
           "rationale": "The patient underwent a combination of three procedures under spinal anesthesia. This level of surgical intervention, combined with the need for post-operative monitoring for pain, bleeding, and urinary retention (a common side effect of spinal anesthesia and anorectal surgery), justifies an elective inpatient admission over a day-care setting for patient safety and comfort."
         },
         {
+          "subject": "Surgical Management of Grade II/III Hemorrhoids",
+          "verdict": "context-dependent",
+          "domain": "appropriateness",
+          "rationale": "The primary driver for the patient's symptoms (pain) appears to be the chronic fissure, as pain is not a typical symptom of uncomplicated hemorrhoids. While surgical management of Grade II/III hemorrhoids is sometimes indicated, evidence suggests it is typically reserved for cases refractory to medical or office-based procedures like banding, or for severe symptoms like profuse bleeding. The documentation does not specify if less invasive options were trialed and failed, or the severity of bleeding. Addressing the hemorrhoids surgically at the same time as the necessary sphincterotomy for the fissure can be an efficient approach, but the indication for the hemorrhoidopexy itself as a primary measure is not fully supported without this context."
+        },
+        {
           "subject": "Choice of Laser Technology",
           "verdict": "low-value",
           "domain": "efficiency",
           "rationale": "The use of laser for sphincterotomy and hemorrhoidopexy is a valid technique. However, there is a lack of high-quality evidence to suggest it offers superior long-term outcomes (e.g., healing, recurrence, incontinence rates) or less pain compared to conventional surgical methods like scalpel or electrocautery. The choice of 'laser' may represent surgeon preference or a marketing advantage rather than a clinically proven benefit over established, less costly techniques."
+        },
+        {
+          "subject": "Post-operative antibiotic course",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 5/5 runs."
+        },
+        {
+          "subject": "Vitamin B-Complex Supplementation",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 5/5 runs."
+        },
+        {
+          "subject": "Routine gastroprotection with PPI",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 2/5 runs."
+        },
+        {
+          "subject": "Veno-active drug for hemorrhoids",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 2/5 runs."
+        },
+        {
+          "subject": "Surgical intervention for chronic anal fissure",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 3/5 runs."
+        },
+        {
+          "subject": "Follow-up on rectal polyp histopathology",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Care Setting: Inpatient Admission",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
         }
       ],
+      "minor_findings": [],
       "band_modal": "C",
       "band_range": "B–C",
       "cvi_mean": 60.4,
@@ -496,6 +715,18 @@
           "rationale": "The choice of a Transabdominal Preperitoneal (TAPP) repair is highly appropriate for a pantaloon hernia. This minimally invasive technique is well-suited to address both the direct and indirect components of the hernia while offering established patient benefits over open repair."
         },
         {
+          "subject": "Gastroprotection and Bowel Management",
+          "verdict": "high-value",
+          "domain": "safety",
+          "rationale": "The prescription of a laxative (Lactulose) is appropriate to prevent post-operative constipation and straining, which could compromise the hernia repair. The proton-pump inhibitor (Esomeprazole) provides necessary gastroprotection, as the patient is taking an NSAID (Diclofenac) and restarting Aspirin, a combination that increases the risk of gastric irritation."
+        },
+        {
+          "subject": "Management of Chronic Cough",
+          "verdict": "uncertain",
+          "domain": "safety",
+          "rationale": "The patient has a 3-year history of chronic cough, a significant risk factor for increased intra-abdominal pressure and subsequent hernia recurrence. The case record does not show any plan to investigate or manage this cough post-operatively, which is a missed opportunity to protect the long-term integrity of the hernia repair."
+        },
+        {
           "subject": "Length of Stay (3 days)",
           "verdict": "low-value",
           "domain": "efficiency",
@@ -514,18 +745,43 @@
           "rationale": "The prescription of two different enzyme preparations (Serratiopeptidase in Emanzen D and Trypsin-Chymotrypsin in Chymoral Forte) lacks a strong evidence base for efficacy in post-operative recovery. International guidelines for hernia repair do not include these agents. Their use represents polypharmacy and adds unnecessary cost, while the patient's analgesic needs are already addressed by the diclofenac component."
         },
         {
-          "subject": "Gastroprotection and Bowel Management",
-          "verdict": "high-value",
-          "domain": "safety",
-          "rationale": "The prescription of a laxative (Lactulose) is appropriate to prevent post-operative constipation and straining, which could compromise the hernia repair. The proton-pump inhibitor (Esomeprazole) provides necessary gastroprotection, as the patient is taking an NSAID (Diclofenac) and restarting Aspirin, a combination that increases the risk of gastric irritation."
+          "subject": "Concurrent NSAID and Aspirin Use",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 2/5 runs."
+        },
+        {
+          "subject": "Inpatient Admission for TAPP Repair",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Care setting (Inpatient admission)",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
         },
         {
           "subject": "Management of Chronic Cough",
-          "verdict": "uncertain",
-          "domain": "safety",
-          "rationale": "The patient has a 3-year history of chronic cough, a significant risk factor for increased intra-abdominal pressure and subsequent hernia recurrence. The case record does not show any plan to investigate or manage this cough post-operatively, which is a missed opportunity to protect the long-term integrity of the hernia repair."
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 3/5 runs."
+        },
+        {
+          "subject": "Peri-operative Aspirin Management",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Use of Domperidone for gastroprotection",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
         }
       ],
+      "minor_findings": [],
       "band_modal": "C",
       "band_range": "B–C",
       "cvi_mean": 68.8,
@@ -582,8 +838,45 @@
           "verdict": "context-dependent",
           "domain": "efficiency",
           "rationale": "The patient was managed as an inpatient. For a patient with no co-morbidities, this procedure could potentially be performed in a day-care or 23-hour admission setting. An inpatient stay beyond 24 hours for an uneventful recovery may represent an inefficient use of hospital resources. However, the need for adequate pain control post-sphincterotomy can justify an overnight stay."
+        },
+        {
+          "subject": "Prescription of a Combination Drug with an Agent of Unproven Efficacy",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Antimicrobial Therapy",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Pre-operative Malignancy Screen",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Inpatient Admission for Haemorrhoidopexy",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 2/5 runs."
+        },
+        {
+          "subject": "Risk of Incontinence with Sphincterotomy",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Omission of Non-Pharmacological Advice",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
         }
       ],
+      "minor_findings": [],
       "band_modal": "C",
       "band_range": "B–C",
       "cvi_mean": 69.8,
@@ -613,6 +906,12 @@
           "rationale": "The patient presented with two hernia defects (3x3cm and 2x2cm). The choice of a laparoscopic approach is well-justified for multiple defects. The use of mesh is the standard of care for defects of this size to minimize recurrence. The IPOM (Intraperitoneal Onlay Mesh) technique with adhesionolysis for intra-operatively found adhesions is a standard and appropriate surgical strategy."
         },
         {
+          "subject": "Length of Stay",
+          "verdict": "high-value",
+          "domain": "efficiency",
+          "rationale": "A one-day post-operative stay for a laparoscopic hernia repair is efficient and aligns with modern standards of care and enhanced recovery protocols. While some cases may be suitable for day-care, an overnight admission is reasonable, particularly given the use of general anesthesia and the patient's comorbidities."
+        },
+        {
           "subject": "Peri-operative IV Antibiotic Choice and Duration",
           "verdict": "low-value",
           "domain": "safety",
@@ -637,12 +936,37 @@
           "rationale": "The patient received nebulized Duolin and Budecort. The case summary provides no indication for this therapy, such as a history of asthma/COPD or a documented peri-operative event like bronchospasm. Without a stated indication, this appears to be a low-value intervention. However, it may have been appropriate for a transient, undocumented clinical event."
         },
         {
-          "subject": "Length of Stay",
-          "verdict": "high-value",
-          "domain": "efficiency",
-          "rationale": "A one-day post-operative stay for a laparoscopic hernia repair is efficient and aligns with modern standards of care and enhanced recovery protocols. While some cases may be suitable for day-care, an overnight admission is reasonable, particularly given the use of general anesthesia and the patient's comorbidities."
+          "subject": "Proton-pump inhibitor (PPI) overuse",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 2/5 runs."
+        },
+        {
+          "subject": "Risk of paracetamol overdose from discharge prescription",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 4/5 runs."
+        },
+        {
+          "subject": "Discharge with SpO2 91%",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 3/5 runs."
+        },
+        {
+          "subject": "Inpatient admission (1-day stay)",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 3/5 runs."
+        },
+        {
+          "subject": "Discharge Anti-inflammatory Medication",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
         }
       ],
+      "minor_findings": [],
       "band_modal": "C",
       "band_range": "C–D",
       "cvi_mean": 58.2,
@@ -666,6 +990,24 @@
         "Date & time of signature"
       ],
       "findings": [
+        {
+          "subject": "Pre-operative Cardiac Evaluation",
+          "verdict": "high-value",
+          "domain": "safety",
+          "rationale": "Obtaining a pre-operative cardiology opinion for a patient with a history of PTCA and hypertension is a critical and appropriate safety measure to assess and mitigate peri-operative cardiac risk before proceeding with general anesthesia."
+        },
+        {
+          "subject": "Post-operative Conservative Medical Therapy",
+          "verdict": "high-value",
+          "domain": "appropriateness",
+          "rationale": "The discharge prescription included a laxative (Syp Cremaffin) and a phlebotonic (Tab Daflon). This is appropriate, standard-of-care management to prevent constipation-related strain and support healing after surgery for hemorrhoids and fissure."
+        },
+        {
+          "subject": "Surgical Intervention for Fistula-in-Ano",
+          "verdict": "high-value",
+          "domain": "appropriateness",
+          "rationale": "The patient had an intra-operative finding of a fistula at the 6 o'clock position. Fistula-in-ano does not typically resolve with medical therapy and requires surgical intervention for definitive treatment. Therefore, performing a surgical procedure (Laser assisted Fistula Ablation) was appropriate and necessary."
+        },
         {
           "subject": "Concurrent Sphincterotomy for Acute Fissure",
           "verdict": "context-dependent",
@@ -691,24 +1033,43 @@
           "rationale": "The patient was continued on multiple IV medications (antibiotics, PPI, anti-emetic, analgesic) throughout the post-operative period, despite being stable and tolerating oral intake at discharge. An earlier switch from IV to an oral route would have been more efficient, less costly, and would have reduced risks associated with IV access."
         },
         {
-          "subject": "Pre-operative Cardiac Evaluation",
-          "verdict": "high-value",
-          "domain": "safety",
-          "rationale": "Obtaining a pre-operative cardiology opinion for a patient with a history of PTCA and hypertension is a critical and appropriate safety measure to assess and mitigate peri-operative cardiac risk before proceeding with general anesthesia."
+          "subject": "Post-operative Antibiotic Regimen (IV and Oral)",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 4/5 runs."
         },
         {
-          "subject": "Post-operative Conservative Medical Therapy",
-          "verdict": "high-value",
-          "domain": "appropriateness",
-          "rationale": "The discharge prescription included a laxative (Syp Cremaffin) and a phlebotonic (Tab Daflon). This is appropriate, standard-of-care management to prevent constipation-related strain and support healing after surgery for hemorrhoids and fissure."
+          "subject": "Surgical Haemorrhoidopexy for Grade II/III Hemorrhoids",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 3/5 runs."
         },
         {
-          "subject": "Surgical Intervention for Fistula-in-Ano",
-          "verdict": "high-value",
-          "domain": "appropriateness",
-          "rationale": "The patient had an intra-operative finding of a fistula at the 6 o'clock position. Fistula-in-ano does not typically resolve with medical therapy and requires surgical intervention for definitive treatment. Therefore, performing a surgical procedure (Laser assisted Fistula Ablation) was appropriate and necessary."
+          "subject": "Mismatch between Diagnosis and Procedure",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Discharge Analgesic Prescription",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 2/5 runs."
+        },
+        {
+          "subject": "Post-operative Antiplatelet Re-initiation",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 2/5 runs."
+        },
+        {
+          "subject": "Surgical Management as First-line Therapy",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 2/5 runs."
         }
       ],
+      "minor_findings": [],
       "band_modal": "C",
       "band_range": "B–D",
       "cvi_mean": 63.8,
@@ -766,8 +1127,33 @@
           "verdict": "low-value",
           "domain": "appropriateness",
           "rationale": "The patient was discharged on a 3-day course of Tranexamic acid (Tab PAUSE). While post-operative bleeding is a known complication, it is infrequent, with one large study reporting only 4 out of 616 patients (0.65%) requiring readmission for bleeding. Routine prophylactic use in an uncomplicated case where the post-operative course was 'uneventful' is not standard practice and represents low-value care. Its use should be reserved for cases with active or high risk of bleeding."
+        },
+        {
+          "subject": "Conflicting Polypharmacy: Hemostatic and Pro-hemorrhagic Agents",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Pre-operative investigation for rectal bleeding",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Topical therapy for anal fissure",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Peri-operative IV Proton Pump Inhibitor (PPI)",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
         }
       ],
+      "minor_findings": [],
       "band_modal": "C",
       "band_range": "B–C",
       "cvi_mean": 65.6,
@@ -791,6 +1177,18 @@
       ],
       "findings": [
         {
+          "subject": "Bariatric Surgery for Morbid Obesity",
+          "verdict": "high-value",
+          "domain": "appropriateness",
+          "rationale": "The patient, diagnosed with morbid obesity and hypertension, underwent a sleeve gastrectomy. This is an appropriate and guideline-concordant intervention. Bariatric surgery is recommended for patients with a BMI ≥ 35 kg/m² and obesity-related comorbidities like hypertension, and is associated with improved health outcomes and reduced mortality."
+        },
+        {
+          "subject": "Post-operative Nutritional Supplementation",
+          "verdict": "high-value",
+          "domain": "appropriateness",
+          "rationale": "The patient was discharged with a multivitamin (Tab A2Z) and calcium (Tab Shelcal). This is a critical component of post-bariatric care, as surgery can lead to significant and potentially severe micronutrient deficiencies. Prophylactic supplementation is the standard of care."
+        },
+        {
           "subject": "Post-operative and Discharge Antibiotics",
           "verdict": "low-value",
           "domain": "safety",
@@ -809,18 +1207,6 @@
           "rationale": "The patient had an uneventful post-operative course but was admitted to the ICU for one day for observation. While appropriate for high-risk patients (e.g., severe OSA, significant cardiac comorbidity, intra-operative complications), routine ICU admission for all sleeve gastrectomy patients represents a high level of care intensity and cost. For stable patients, monitoring on a standard surgical or step-down ward is often sufficient and more resource-efficient."
         },
         {
-          "subject": "Bariatric Surgery for Morbid Obesity",
-          "verdict": "high-value",
-          "domain": "appropriateness",
-          "rationale": "The patient, diagnosed with morbid obesity and hypertension, underwent a sleeve gastrectomy. This is an appropriate and guideline-concordant intervention. Bariatric surgery is recommended for patients with a BMI ≥ 35 kg/m² and obesity-related comorbidities like hypertension, and is associated with improved health outcomes and reduced mortality."
-        },
-        {
-          "subject": "Post-operative Nutritional Supplementation",
-          "verdict": "high-value",
-          "domain": "appropriateness",
-          "rationale": "The patient was discharged with a multivitamin (Tab A2Z) and calcium (Tab Shelcal). This is a critical component of post-bariatric care, as surgery can lead to significant and potentially severe micronutrient deficiencies. Prophylactic supplementation is the standard of care."
-        },
-        {
           "subject": "Routine Pre-operative Tetanus Toxoid (TT) Injection",
           "verdict": "low-value",
           "domain": "appropriateness",
@@ -831,8 +1217,33 @@
           "verdict": "context-dependent",
           "domain": "patient_centred",
           "rationale": "The patient was discharged with a surgical drain in place. While the decision to place and retain a drain is based on intra-operative findings and surgeon judgment, discharging a patient with a drain increases the risk of retrograde infection, requires significant patient education, and can be a source of anxiety. The alternative is a potentially longer stay to allow for drain removal in-hospital. The value is dependent on a well-structured process for patient education and timely follow-up for removal."
+        },
+        {
+          "subject": "Deferred repair of umbilical hernia",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 2/5 runs."
+        },
+        {
+          "subject": "Length of Stay",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 3/5 runs."
+        },
+        {
+          "subject": "Surgical Indication vs. Presenting Complaint",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Post-operative Pain Management",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
         }
       ],
+      "minor_findings": [],
       "band_modal": "C",
       "band_range": "B–D",
       "cvi_mean": 65.6,
@@ -858,6 +1269,12 @@
       ],
       "findings": [
         {
+          "subject": "Supportive Care (IV Fluids and Antipyretics)",
+          "verdict": "high-value",
+          "domain": "appropriateness",
+          "rationale": "The administration of IV fluids was appropriate and necessary for managing dehydration secondary to vomiting. The use of paracetamol (Dolo) for symptomatic relief of fever is also standard practice."
+        },
+        {
           "subject": "Inpatient Admission for Febrile Illness",
           "verdict": "context-dependent",
           "domain": "efficiency",
@@ -882,12 +1299,19 @@
           "rationale": "The patient was prescribed Pantoprazole 40mg. Routine co-prescription of PPIs with short, uncomplicated courses of antibiotics like cephalosporins is generally not indicated. While the patient had vomiting as a presenting symptom of her illness, a PPI is not the primary treatment for this; an antiemetic is. Prophylactic PPI use in this context adds to polypharmacy and cost without clear benefit."
         },
         {
-          "subject": "Supportive Care (IV Fluids and Antipyretics)",
-          "verdict": "high-value",
-          "domain": "appropriateness",
-          "rationale": "The administration of IV fluids was appropriate and necessary for managing dehydration secondary to vomiting. The use of paracetamol (Dolo) for symptomatic relief of fever is also standard practice."
+          "subject": "Antibiotic Coverage for a Concurrent URI Diagnosis",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Diagnosis of Urinary Tract Infection (UTI)",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
         }
       ],
+      "minor_findings": [],
       "band_modal": "C",
       "band_range": "B–C",
       "cvi_mean": 67.8,
@@ -909,6 +1333,12 @@
         "Date & time of signature"
       ],
       "findings": [
+        {
+          "subject": "Empirical antibiotic choice for hospitalized CAP",
+          "verdict": "high-value",
+          "domain": "appropriateness",
+          "rationale": "The initial empirical regimen of IV Ceftriaxone plus a macrolide (Clarithromycin) is a standard, guideline-concordant choice for a patient hospitalized with community-acquired pneumonia. This combination provides appropriate coverage for both typical and atypical respiratory pathogens."
+        },
         {
           "subject": "Use of HRCT Chest as first-line imaging for uncomplicated Community-Acquired Pneumonia (CAP)",
           "verdict": "low-value",
@@ -934,18 +1364,25 @@
           "rationale": "The patient was discharged on two broad-spectrum antibiotics (Cefixime/Clavulanate and Clarithromycin) after receiving a 6-day course of IV ceftriaxone. Given the negative sputum culture and clinical improvement, this dual coverage is redundant and represents significant antibiotic overuse. De-escalation to a single, narrower-spectrum oral agent was indicated. This regimen unnecessarily increases the patient's risk of adverse effects, including C. difficile infection, and contributes to the development of antimicrobial resistance."
         },
         {
-          "subject": "Empirical antibiotic choice for hospitalized CAP",
-          "verdict": "high-value",
-          "domain": "appropriateness",
-          "rationale": "The initial empirical regimen of IV Ceftriaxone plus a macrolide (Clarithromycin) is a standard, guideline-concordant choice for a patient hospitalized with community-acquired pneumonia. This combination provides appropriate coverage for both typical and atypical respiratory pathogens."
-        },
-        {
           "subject": "Administration of vaccines during acute illness",
           "verdict": "context-dependent",
           "domain": "safety",
           "rationale": "Administering influenza and pneumococcal vaccines is an important preventive measure. While hospital discharge presents a key opportunity, vaccination is often deferred until recovery from an acute illness to ensure an optimal immune response and to avoid confusion between vaccine side effects and symptoms of the underlying disease. The decision is context-dependent, as some guidelines support vaccination if the patient is afebrile and improving."
+        },
+        {
+          "subject": "Microbiological Workup (Sputum Culture)",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Use of Propranolol (Lanol ER)",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
         }
       ],
+      "minor_findings": [],
       "band_modal": "D",
       "band_range": "C–D",
       "cvi_mean": 52.6,
@@ -975,18 +1412,37 @@
           "rationale": "The patient was appropriately treated with UDCA for Intrahepatic Cholestasis of Pregnancy (IHCP) from the time of diagnosis. This is the standard of care, shown to alleviate symptoms, improve biochemical markers, and reduce adverse perinatal outcomes."
         },
         {
+          "subject": "Postpartum analgesia with Ibuprofen",
+          "verdict": "high-value",
+          "domain": "appropriateness",
+          "rationale": "The prescription of Ibuprofen for pain relief after a normal delivery with an episiotomy is standard, appropriate, and high-value care for managing postpartum pain."
+        },
+        {
           "subject": "Elective Induction of Labour at 38+5 weeks for Mild IHCP",
           "verdict": "low-value",
           "domain": "appropriateness",
           "rationale": "The decision to induce labour was based on a diagnosis of IHCP, but the patient's bile acid level at admission was 10 µmol/L, classifying it as mild IHCP. Strong evidence for early term delivery to prevent stillbirth exists primarily for severe IHCP (bile acids ≥40 µmol/L). While decisions on delivery timing often consider peak bile acid levels during pregnancy (which were not documented in the provided record), the available evidence at the time of admission did not support an urgent need for delivery. For mild cases, expectant management is a valid alternative, and induction may represent an unnecessary intervention."
         },
         {
-          "subject": "Postpartum analgesia with Ibuprofen",
-          "verdict": "high-value",
-          "domain": "appropriateness",
-          "rationale": "The prescription of Ibuprofen for pain relief after a normal delivery with an episiotomy is standard, appropriate, and high-value care for managing postpartum pain."
+          "subject": "Medio-lateral episiotomy",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 2/5 runs."
+        },
+        {
+          "subject": "Ursodeoxycholic acid (UDCA) for IHCP",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Neonatal Risk Assessment (Consanguinity)",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 2/5 runs."
         }
       ],
+      "minor_findings": [],
       "band_modal": "A",
       "band_range": "A",
       "cvi_mean": 89.6,
@@ -1009,6 +1465,12 @@
         "Date & time of signature"
       ],
       "findings": [
+        {
+          "subject": "Core Procedure and Multimodal Analgesia",
+          "verdict": "high-value",
+          "domain": "appropriateness",
+          "rationale": "The patient underwent a planned caesarean section for a standard indication (previous LSCS). The post-operative pain management plan correctly utilized a multimodal approach, combining Paracetamol (IV then oral), an NSAID (diclofenac suppository), and a rescue opioid (Tramadol). This is the standard of care for effective post-operative analgesia while minimizing opioid consumption."
+        },
         {
           "subject": "Extended Post-Operative Antibiotic Course",
           "verdict": "low-value",
@@ -1046,18 +1508,49 @@
           "rationale": "While a 3-day hospital stay is longer than the 24-48 hour target in some Enhanced Recovery After Surgery (ERAS) pathways, the decision was reasonable in this case. The surgery was complicated by dense adhesions and bladder dissection, which justifies a more cautious post-operative observation period. The finding is classified as 'context-dependent' to highlight that while a 3-day stay is appropriate for this complex case, it should not be the default for uncomplicated elective C-sections."
         },
         {
-          "subject": "Core Procedure and Multimodal Analgesia",
-          "verdict": "high-value",
-          "domain": "appropriateness",
-          "rationale": "The patient underwent a planned caesarean section for a standard indication (previous LSCS). The post-operative pain management plan correctly utilized a multimodal approach, combining Paracetamol (IV then oral), an NSAID (diclofenac suppository), and a rescue opioid (Tramadol). This is the standard of care for effective post-operative analgesia while minimizing opioid consumption."
-        },
-        {
           "subject": "Caveat: Intra-operative Complexity",
           "verdict": "context-dependent",
           "domain": "appropriateness",
           "rationale": "This audit's findings must be interpreted in light of the significant intra-operative complexity noted in the case summary: 'dense adhesions in the anterior abdominal wall were noted and released, and the bladder was found to be pulled up'. This complication increases surgical risk and can justify more conservative post-operative management (e.g., extended observation, delayed oral intake) than would be appropriate for a truly uncomplicated procedure. This context moderates some of the 'low-value' assessments of post-operative care."
+        },
+        {
+          "subject": "Use of Serratiopeptidase",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 2/5 runs."
+        },
+        {
+          "subject": "Post-operative Antibiotic Course",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Post-operative Proton-Pump Inhibitor (PPI)",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Venous Thromboembolism (VTE) Prophylaxis",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 2/5 runs."
+        },
+        {
+          "subject": "Uterine Closure Method",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Timing of elective repeat caesarean section",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
         }
       ],
+      "minor_findings": [],
       "band_modal": "C",
       "band_range": "C–D",
       "cvi_mean": 57.2,
@@ -1081,6 +1574,12 @@
       ],
       "findings": [
         {
+          "subject": "Care Setting and Post-procedure Analgesia",
+          "verdict": "high-value",
+          "domain": "efficiency",
+          "rationale": "The use of a day care setting for a minimally invasive injection procedure represents efficient use of hospital resources, avoiding an unnecessary inpatient admission. The prescription of paracetamol (Dolo), a gentle pain reliever, for post-procedure pain is consistent with conservative management principles for osteoarthritis."
+        },
+        {
           "subject": "Use of Platelet-Rich Plasma (PRP) for Grade II Knee Osteoarthritis",
           "verdict": "low-value",
           "domain": "appropriateness",
@@ -1093,12 +1592,25 @@
           "rationale": "Guidelines strongly recommend non-pharmacological interventions like weight loss and exercise as initial, highly effective treatments for knee osteoarthritis. The case summary does not specify if these foundational therapies were attempted and failed prior to proceeding with PRP, which is an invasive, investigational treatment. While this may be a documentation omission, proceeding to an invasive procedure without exhausting first-line conservative options would represent a deviation from evidence-based care pathways."
         },
         {
-          "subject": "Care Setting and Post-procedure Analgesia",
-          "verdict": "high-value",
-          "domain": "efficiency",
-          "rationale": "The use of a day care setting for a minimally invasive injection procedure represents efficient use of hospital resources, avoiding an unnecessary inpatient admission. The prescription of paracetamol (Dolo), a gentle pain reliever, for post-procedure pain is consistent with conservative management principles for osteoarthritis."
+          "subject": "Bilateral Intra-articular Platelet-Rich Plasma (PRP) Infiltration",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 2/5 runs."
+        },
+        {
+          "subject": "Post-Procedure Rehabilitation Protocol",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Interpretation of Post-Procedural Outcome",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
         }
       ],
+      "minor_findings": [],
       "band_modal": "A",
       "band_range": "A–B",
       "cvi_mean": 84.2,
@@ -1150,8 +1662,27 @@
           "verdict": "low-value",
           "domain": "appropriateness",
           "rationale": "The administration of IV antipyretics was documented, but the post-operative course was described as 'uneventful' with 'stable vitals'. This suggests the medication was likely given prophylactically or on a routine schedule rather than for a documented fever, which is a low-value practice."
+        },
+        {
+          "subject": "Post-operative pain management regimen",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 2/5 runs."
+        },
+        {
+          "subject": "Discharge Follow-up Planning",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Pre-operative Delay and Monitoring",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
         }
       ],
+      "minor_findings": [],
       "band_modal": "D",
       "band_range": "B–D",
       "cvi_mean": 56,
@@ -1178,6 +1709,24 @@
           "rationale": "The patient presented with a 2-month-old Achilles tendon rupture, which is considered a chronic or late presentation. In such cases, direct end-to-end repair is often not feasible due to tendon retraction and scarring. The use of a tendon graft is the standard and appropriate technique for reconstruction."
         },
         {
+          "subject": "Venous Thromboembolism (VTE) Prophylaxis",
+          "verdict": "high-value",
+          "domain": "safety",
+          "rationale": "Major lower limb surgery with subsequent immobilization confers a high risk of VTE. The protocol of using inpatient prophylaxis (Enoxaparin) followed by extended outpatient prophylaxis with an oral anticoagulant (Rivaroxaban) is consistent with evidence-based guidelines and represents a critical safety measure."
+        },
+        {
+          "subject": "Histopathological Examination of Excised Mass",
+          "verdict": "high-value",
+          "domain": "safety",
+          "rationale": "Sending any excised tissue for histopathology is a fundamental principle of surgical safety. Although the calcified mass was likely related to chronic tendinopathy, this step provides a definitive diagnosis and is essential to rule out rarer pathologies, such as a soft tissue neoplasm."
+        },
+        {
+          "subject": "Length of Stay",
+          "verdict": "high-value",
+          "domain": "efficiency",
+          "rationale": "A 2-day inpatient stay for a major tendon reconstruction involving an autograft is an efficient use of resources. This duration is appropriate for managing initial post-operative pain with IV analgesia, monitoring the surgical site, and initiating VTE prophylaxis and rehabilitation before ensuring a safe discharge."
+        },
+        {
           "subject": "Perioperative Antibiotic Regimen",
           "verdict": "low-value",
           "domain": "safety",
@@ -1196,24 +1745,43 @@
           "rationale": "The patient was discharged with multiple nutritional supplements (Vitamin C, B-complex with Zinc, Methylcobalamin, and Iron syrup) without a documented deficiency. There is no strong evidence supporting the routine use of these supplements to improve outcomes after tendon repair in a non-deficient patient. This practice constitutes polypharmacy, increases patient cost, and complicates the medication regimen without clear clinical benefit."
         },
         {
-          "subject": "Venous Thromboembolism (VTE) Prophylaxis",
-          "verdict": "high-value",
-          "domain": "safety",
-          "rationale": "Major lower limb surgery with subsequent immobilization confers a high risk of VTE. The protocol of using inpatient prophylaxis (Enoxaparin) followed by extended outpatient prophylaxis with an oral anticoagulant (Rivaroxaban) is consistent with evidence-based guidelines and represents a critical safety measure."
+          "subject": "Lack of Documented Post-operative Rehabilitation Protocol",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 2/5 runs."
         },
         {
-          "subject": "Histopathological Examination of Excised Mass",
-          "verdict": "high-value",
-          "domain": "safety",
-          "rationale": "Sending any excised tissue for histopathology is a fundamental principle of surgical safety. Although the calcified mass was likely related to chronic tendinopathy, this step provides a definitive diagnosis and is essential to rule out rarer pathologies, such as a soft tissue neoplasm."
+          "subject": "High-Risk Medication Combination on Discharge",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 2/5 runs."
         },
         {
-          "subject": "Length of Stay",
-          "verdict": "high-value",
-          "domain": "efficiency",
-          "rationale": "A 2-day inpatient stay for a major tendon reconstruction involving an autograft is an efficient use of resources. This duration is appropriate for managing initial post-operative pain with IV analgesia, monitoring the surgical site, and initiating VTE prophylaxis and rehabilitation before ensuring a safe discharge."
+          "subject": "Stress Ulcer Prophylaxis",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Duration of IV Therapy",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 2/5 runs."
+        },
+        {
+          "subject": "Potential Medication Error (Rivaroxaban Dose)",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Lack of Documented Histopathology Follow-up Plan",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
         }
       ],
+      "minor_findings": [],
       "band_modal": "C",
       "band_range": "B–D",
       "cvi_mean": 63.6,
@@ -1248,12 +1816,6 @@
           "rationale": "Checking for maternal-infant blood group incompatibility is a standard and appropriate risk stratification measure for neonatal hyperbilirubinemia, particularly as the mother's blood group was O. The tests correctly ruled out ABO incompatibility as a contributing factor, as the baby was also O-positive with a negative DCT."
         },
         {
-          "subject": "Supplementation with Top Feeds",
-          "verdict": "context-dependent",
-          "domain": "patient_centred",
-          "rationale": "While exclusive breastfeeding is the goal, supplementation can be appropriate to prevent complications like excessive weight loss or dehydration, which can exacerbate jaundice. The infant's bilirubin was in the high-intermediate risk zone. The value of this intervention depends on the undocumented clinical assessment of breastfeeding effectiveness (e.g., latch quality, milk transfer). The infant's weight loss was within normal limits."
-        },
-        {
           "subject": "Length of Stay (2 days)",
           "verdict": "high-value",
           "domain": "efficiency",
@@ -1276,8 +1838,39 @@
           "verdict": "uncertain",
           "domain": "safety",
           "rationale": "The record does not document specific discharge counseling provided to the parents regarding how to monitor for worsening jaundice (e.g., checking skin in natural light, assessing feeding and activity) and when to seek urgent medical care. For an infant discharged in the high-intermediate risk zone for hyperbilirubinemia, this counseling is a critical safety net to prevent progression to severe jaundice."
+        },
+        {
+          "subject": "Supplementation with Top Feeds",
+          "verdict": "context-dependent",
+          "domain": "patient_centred",
+          "rationale": "While exclusive breastfeeding is the goal, supplementation can be appropriate to prevent complications like excessive weight loss or dehydration, which can exacerbate jaundice. The infant's bilirubin was in the high-intermediate risk zone. The value of this intervention depends on the undocumented clinical assessment of breastfeeding effectiveness (e.g., latch quality, milk transfer). The infant's weight loss was within normal limits."
+        },
+        {
+          "subject": "Discharge Follow-up Planning",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 2/5 runs."
+        },
+        {
+          "subject": "Newborn Screening (Guthrie Test) Timing",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Bilirubin screening via serum test",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Blood Grouping and Direct Coombs Test (DCT)",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
         }
       ],
+      "minor_findings": [],
       "band_modal": "B",
       "band_range": "A–B",
       "cvi_mean": 85,
@@ -1318,16 +1911,16 @@
           "rationale": "Performing a bilirubin screen before discharge is the standard of care to identify neonates at risk for developing severe hyperbilirubinemia. This is especially critical for infants discharged before 48 hours of life."
         },
         {
-          "subject": "Follow-up Plan for Hyperbilirubinemia Risk",
-          "verdict": "low-value",
-          "domain": "safety",
-          "rationale": "The value and safety of the follow-up plan are undermined by a critical ambiguity in the record. The case notes 'length of stay 1 day' and '2-day-old female neonate', making the infant's age at discharge (and at the time of the bilirubin test) unclear. If the infant was ~24 hours old, a bilirubin of 7.43 mg/dL is high-risk (>95th percentile), and a 48-hour follow-up would be dangerously delayed (a 24-hour follow-up would be indicated). If the infant was ~48 hours old, the level is high-intermediate risk, and a 48-hour follow-up is appropriate. This documentation gap makes it impossible to confirm the safety of the plan. The infant's late-preterm status (36w5d) is also an independent risk factor that warrants a more conservative approach."
-        },
-        {
           "subject": "Neonatal Prophylaxis and Immunization",
           "verdict": "high-value",
           "domain": "safety",
           "rationale": "Administration of prophylactic Vitamin K and birth doses of Hepatitis B, BCG, and OPV vaccines is in line with national and international guidelines for newborn care. This is a high-value intervention for preventing serious diseases."
+        },
+        {
+          "subject": "Follow-up Plan for Hyperbilirubinemia Risk",
+          "verdict": "low-value",
+          "domain": "safety",
+          "rationale": "The value and safety of the follow-up plan are undermined by a critical ambiguity in the record. The case notes 'length of stay 1 day' and '2-day-old female neonate', making the infant's age at discharge (and at the time of the bilirubin test) unclear. If the infant was ~24 hours old, a bilirubin of 7.43 mg/dL is high-risk (>95th percentile), and a 48-hour follow-up would be dangerously delayed (a 24-hour follow-up would be indicated). If the infant was ~48 hours old, the level is high-intermediate risk, and a 48-hour follow-up is appropriate. This documentation gap makes it impossible to confirm the safety of the plan. The infant's late-preterm status (36w5d) is also an independent risk factor that warrants a more conservative approach."
         },
         {
           "subject": "Glucose Screening (GRBS)",
@@ -1340,8 +1933,33 @@
           "verdict": "context-dependent",
           "domain": "patient_centred",
           "rationale": "Supplementing breast milk with 'top feeds' (formula) can be medically necessary for late-preterm infants (36w5d) who may have feeding difficulties, or for managing hypoglycemia or significant weight loss. However, routine supplementation can interfere with establishing exclusive breastfeeding. The value of this decision depends on the specific clinical indication, which is not documented."
+        },
+        {
+          "subject": "Use of Single Room for routine neonatal care",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Length of Stay (1 Day)",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 4/5 runs."
+        },
+        {
+          "subject": "Management of Neonatal Hyperglycemia",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Sepsis Workup (CBC, CRP)",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
         }
       ],
+      "minor_findings": [],
       "band_modal": "A",
       "band_range": "A–B",
       "cvi_mean": 85.4,
@@ -1371,16 +1989,16 @@
           "rationale": "The patient presented with a necrotising soft tissue infection and an exposed, fractured calcaneum, consistent with a limb-threatening diabetic foot infection with osteomyelitis. Aggressive surgical debridement to remove non-viable tissue and bone, followed by the application of Negative Pressure Wound Therapy (VAC), is the standard of care. This approach effectively controls the source of infection and prepares the wound bed for healing, aligning with best practices to prevent major amputation."
         },
         {
-          "subject": "Use of Intravenous Colistin",
-          "verdict": "context-dependent",
-          "domain": "safety",
-          "rationale": "Colistin is a last-resort antibiotic typically reserved for documented multi-drug resistant (MDR) gram-negative infections due to its significant potential for nephrotoxicity and neurotoxicity. Its use is context-dependent. If based on prior culture data showing an MDR organism, its use could be appropriate. However, if used empirically without such data or a high index of suspicion based on local antibiograms, it represents a significant antimicrobial stewardship concern. The ideal approach is to tailor antibiotics to culture and sensitivity results."
-        },
-        {
           "subject": "Combined Surgical Procedures in a Single Admission",
           "verdict": "high-value",
           "domain": "efficiency",
           "rationale": "The patient required inpatient admission for the severe diabetic foot infection. Performing the hysteroscopy and D&C for the separate issue of postmenopausal bleeding during the same admission is an efficient model of care. This strategy avoids a second admission, a second anesthetic exposure, and reduces the overall cost and duration of hospitalization for the patient."
+        },
+        {
+          "subject": "Use of Intravenous Colistin",
+          "verdict": "context-dependent",
+          "domain": "safety",
+          "rationale": "Colistin is a last-resort antibiotic typically reserved for documented multi-drug resistant (MDR) gram-negative infections due to its significant potential for nephrotoxicity and neurotoxicity. Its use is context-dependent. If based on prior culture data showing an MDR organism, its use could be appropriate. However, if used empirically without such data or a high index of suspicion based on local antibiograms, it represents a significant antimicrobial stewardship concern. The ideal approach is to tailor antibiotics to culture and sensitivity results."
         },
         {
           "subject": "Prescription of Two Gastroprotective Agents",
@@ -1405,8 +2023,33 @@
           "verdict": "context-dependent",
           "domain": "safety",
           "rationale": "The patient was prescribed Nicorandil ('TAB NIKORAN'), an anti-anginal medication. However, the provided diagnoses do not include coronary artery disease or angina. Continuing a medication without a clear, documented indication is a potential medication safety issue, increasing pill burden and risk of side effects unnecessarily."
+        },
+        {
+          "subject": "Simultaneous Infected and Clean Surgical Procedures",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 4/5 runs."
+        },
+        {
+          "subject": "Delayed Initiation of Anemia Treatment",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 3/5 runs."
+        },
+        {
+          "subject": "Duration of Antibiotic Therapy",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 5/5 runs."
+        },
+        {
+          "subject": "Pre-procedural Vascular Assessment",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
         }
       ],
+      "minor_findings": [],
       "band_modal": "C",
       "band_range": "A–D",
       "cvi_mean": 67,
@@ -1447,8 +2090,21 @@
           "verdict": "low-value",
           "domain": "appropriateness",
           "rationale": "The administration of an IV Proton Pump Inhibitor (PPI) is not indicated for a young, healthy patient undergoing a short, minimally invasive procedure (cystoscopy) under local anesthesia. Stress ulcer prophylaxis is not required in this low-risk setting. This represents a medication administration without a clear clinical indication, contributing to unnecessary cost."
+        },
+        {
+          "subject": "Choice of Antibiotic Agent",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 1/5 runs."
+        },
+        {
+          "subject": "Peri-procedural PPI Administration",
+          "verdict": "low-value",
+          "domain": null,
+          "rationale": "V-ratified engine-surfaced finding (consensus-gold union, tp); added in 2.0. Surfaced in 2/5 runs."
         }
       ],
+      "minor_findings": [],
       "band_modal": "B",
       "band_range": "B–C",
       "cvi_mean": 72.8,
