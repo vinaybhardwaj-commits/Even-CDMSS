@@ -454,7 +454,6 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
     } catch (e) {
       console.warn('[doc-audit] enrichment failed (keeping pooled sources)', (e as Error).message);
     }
-    const enrichedAdded = poolSources.length > sources.length;
 
     // ── SL2: citation self-critique + RE-CITE against the enriched pool ──────
     // `finalAnalyzeSources` is what `parsed` actually cites against: the draft cites [1..sources];
@@ -469,10 +468,11 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
           severity: critique.severity, needs_revision: critique.needs_revision,
           issues: critique.unsupported_evidence.length + critique.wrong_or_missing_citations.length + critique.misfiled_estimates.length + critique.missing_caveats.length,
         });
-        // Re-cite whenever the critique asks OR enrichment surfaced evidence the draft never saw:
-        // the draft's citations were formed against the pooled pool only, so new per-finding
-        // excerpts must get a chance to be cited (and unsupportable claims dropped to estimates).
-        if (critique.needs_revision || enrichedAdded) {
+        // Critique-gated re-cite (PRD SL2): revise only when the critique — which now reads the
+        // ENRICHED numbered context — asks for it. The enriched pool still reaches every doc via
+        // that critique; forcing a revise on every enriched doc inflated findings without lifting
+        // support (paired-60: +122% findings, gold precision 0.92→0.72), so it is not forced.
+        if (critique.needs_revision) {
           prog('revising', 'Revising to fix citations…');
           const revRaw = await generate(core.AUDIT_REVISE_SYSTEM, core.buildAuditReviseUser(caseSummary, poolContext, draftRaw, JSON.stringify(critique)), 'doc_audit_revise');
           const revised = core.parseAnalysis(revRaw, poolSources.length);
