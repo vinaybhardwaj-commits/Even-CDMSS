@@ -18,7 +18,8 @@
 
 import RUBRIC_DOC from '@/data/nabh-rubric.json';
 import { retrieve } from './retrieve';
-import { geminiModelFor, geminiUtilityModel, TEXT_MODEL, GEMINI_MODEL } from './llm';
+import { geminiModelFor, geminiUtilityModel, TEXT_MODEL, GEMINI_MODEL, isGeminiModel } from './llm';
+import { VERIFY_SYSTEM, buildVerifyUser, parseVerdict, type SourceMeta } from './corpus-eval/verify-core';
 import { startTrace, logEvent, finishTrace, tracedChat, governedChat, withTrace, buildEnvelope, setTracePromptIds } from './trace';
 import { matchAnyTariffs, packageDaysFor, episodeRoomInflation } from './charge-master';
 import { generateFromDocument } from './gemini-multimodal';
@@ -242,6 +243,74 @@ async function defaultEnrichHits(q: string): Promise<CiteHit[]> {
  *  net-new chunks appended). Keeps the revise context — and its token cost — bounded. */
 const ENRICH_POOL_CAP = 20;
 
+// ── Brainstem PR5: in-engine per-citation gate (dark behind DOC_AUDIT_CITE_GATE) ────────────────
+// Reuses the PR0 verifier's PROMPT (verify-core/VERIFY_SYSTEM) as a cheap FLASH critic: judge each
+// (finding, cited source) on the excerpt alone and drop citations the critic calls not_supported/
+// contradicts (direct + partial are kept — PR5 §4). Governed via the engine's own tracedChat, so it
+// rides the audit trace — never a raw model call. Fail-safe: any error, or a silent Ollama fallback
+// (served model is not a Gemini model), yields KEEP — a critic outage must never strip a citation.
+
+async function verifyCitation(
+  claim: string,
+  excerpt: { text: string; meta: SourceMeta },
+  flashModel: string | undefined,
+  traceId: string | undefined,
+): Promise<'drop' | 'keep'> {
+  try {
+    const params = {
+      model: 'llama3.1:8b',   // Ollama fallback per the tracedChat contract
+      messages: [
+        { role: 'system' as const, content: VERIFY_SYSTEM },
+        { role: 'user' as const, content: buildVerifyUser(claim, [excerpt]) },
+      ],
+      temperature: 0,
+      max_tokens: 300,
+      response_format: { type: 'json_object' as const },
+    };
+    const opts = { gemini: flashModel, promptRef: 'verify-core/VERIFY_SYSTEM' };
+    const res = traceId
+      ? await tracedChat(traceId, 'doc_audit_cite_gate', params, opts)
+      : await governedChat(undefined, 'doc_audit_cite_gate', params, opts);
+    const served = String(res?.model ?? '');
+    if (served && !isGeminiModel(served)) return 'keep';   // Ollama fallback — cannot trust the critic
+    const verdict = parseVerdict(res?.choices?.[0]?.message?.content ?? null).verdict;
+    return (verdict === 'not_supported' || verdict === 'contradicts') ? 'drop' : 'keep';
+  } catch {
+    return 'keep';   // fail-safe — a failed critic never strips a citation
+  }
+}
+
+interface CiteGateResult { findings: core.AuditFinding[]; nVerified: number; nDropped: number; nRelabeled: number }
+
+/** Verify every (finding, cited source) pair with the Flash critic (in parallel), then apply the
+ *  pure drop/relabel via core.applyCitationGate. Claim = the finding's grounded evidence (the same
+ *  text the PR0 verifier scores), so the in-engine drop and the offline Pro re-measure judge the
+ *  same unit — the re-measure stays non-circular (Flash drops here; Pro judges the survivors). */
+async function runCitationGate(
+  findings: core.AuditFinding[],
+  finalHits: CiteHit[],
+  traceId: string | undefined,
+  forceOllama: boolean,
+): Promise<CiteGateResult> {
+  const flashModel = forceOllama ? undefined : geminiUtilityModel();
+  const tasks: Array<{ fi: number; cid: number; claim: string; excerpt: { text: string; meta: SourceMeta } }> = [];
+  findings.forEach((f, fi) => {
+    const claim = (f.evidence ?? []).join(' ').replace(/\s+/g, ' ').trim();
+    if (!claim || !f.citation_ids?.length) return;
+    for (const cid of f.citation_ids) {
+      const h = finalHits[cid - 1];
+      if (!h) continue;
+      tasks.push({ fi, cid, claim, excerpt: { text: h.text, meta: { book: h.book, chapter: h.chapter, source: h.source, page_start: h.page_start, item_number: h.item_number } } });
+    }
+  });
+  if (!tasks.length) return { findings, nVerified: 0, nDropped: 0, nRelabeled: 0 };
+  const decisions = await Promise.all(tasks.map((t) => verifyCitation(t.claim, t.excerpt, flashModel, traceId)));
+  const dropPairs: Array<[number, number]> = [];
+  tasks.forEach((t, i) => { if (decisions[i] === 'drop') dropPairs.push([t.fi, t.cid]); });
+  const { findings: gated, nDropped, nRelabeled } = core.applyCitationGate(findings, dropPairs);
+  return { findings: gated, nVerified: tasks.length, nDropped, nRelabeled };
+}
+
 export interface AnalyzeDeps {
   retrieveHits: (q: string) => Promise<CiteHit[]>;
   enrichHits: (q: string) => Promise<CiteHit[]>;
@@ -368,6 +437,7 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
   const doTrace = opts.trace !== false;
   const doAudit = process.env.DOC_AUDIT_AUDIT !== '0';
   const doPrognosis = process.env.PROGNOSIS_AUDIT === '1'; // DARK by default (PRD D5)
+  const doCiteGate = process.env.DOC_AUDIT_CITE_GATE === '1'; // Brainstem PR5 — DARK by default
   const prog = opts.onProgress ?? (() => {});
   const traceId = doTrace
     ? await startTrace('doc_audit', { docType: extracted.docType })
@@ -434,6 +504,7 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
     // enriched pool. Best-effort: any failure keeps the pooled sources (byte-identical to before).
     let poolSources = sources;
     let poolContext = citedContext;
+    let poolHits = hits;               // full-text hits backing poolSources (for the PR5 citation gate)
     const enrichHits = deps.enrichHits ?? defaultEnrichHits;
     try {
       const enrichGroups = await Promise.all(
@@ -446,6 +517,7 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
       if (unioned.length > hits.length) {
         poolSources = hitsToSources(unioned, unioned.length);
         poolContext = buildCitedContext(unioned, unioned.length);
+        poolHits = unioned;
         prog('retrieving', `Enriched evidence pool to ${poolSources.length} sources`);
         if (traceId) await logEvent(traceId, 'doc_audit_enrichment', null, {
           base: hits.length, enriched: unioned.length, added: unioned.length - hits.length,
@@ -459,6 +531,7 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
     // `finalAnalyzeSources` is what `parsed` actually cites against: the draft cites [1..sources];
     // only a successful revise (which sees the enriched pool) promotes it to the enriched set.
     let finalAnalyzeSources = sources;
+    let finalHits = hits;             // full-text hits aligned with finalAnalyzeSources[n] (PR5 gate)
     if (doAudit) {
       try {
         prog('reviewing', 'Auditing citations…');
@@ -476,11 +549,26 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
           prog('revising', 'Revising to fix citations…');
           const revRaw = await generate(core.AUDIT_REVISE_SYSTEM, core.buildAuditReviseUser(caseSummary, poolContext, draftRaw, JSON.stringify(critique)), 'doc_audit_revise');
           const revised = core.parseAnalysis(revRaw, poolSources.length);
-          if (revised) { parsed = revised; finalAnalyzeSources = poolSources; }
+          if (revised) { parsed = revised; finalAnalyzeSources = poolSources; finalHits = poolHits; }
           nonEnumRevise = core.countNonEnumVerdicts(revRaw);
         }
       } catch (e) {
         console.warn('[doc-audit] audit loop failed (keeping draft)', (e as Error).message);
+      }
+    }
+
+    // ── Brainstem PR5: dark in-engine citation gate (DOC_AUDIT_CITE_GATE, default off) ──────────
+    // Verify each surviving (finding, citation) with the Flash critic and drop the ones it calls
+    // not_supported/contradicts (relabel a finding's evidence→estimates when it loses all cites).
+    // Off ⇒ byte-identical to above. Best-effort: a gate failure keeps the findings unchanged.
+    if (doCiteGate) {
+      try {
+        prog('reviewing', 'Verifying citations…');
+        const gate = await runCitationGate(parsed.findings, finalHits, traceId, fo);
+        parsed.findings = gate.findings;
+        if (traceId) await logEvent(traceId, 'doc_audit_cite_gate', null, { verified: gate.nVerified, dropped: gate.nDropped, relabeled: gate.nRelabeled });
+      } catch (e) {
+        console.warn('[doc-audit] cite-gate failed (keeping citations)', (e as Error).message);
       }
     }
 

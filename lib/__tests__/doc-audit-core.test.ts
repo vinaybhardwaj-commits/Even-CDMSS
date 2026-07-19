@@ -9,7 +9,8 @@ import {
   parseExtraction, parseAnalysis, assembleCompleteness,
   parseStatusList, normAdminFacts, adminFactsLine, buildAnalyzeUser,
   enrichQueryForFinding, unionEnrichedHits, AUDIT_REVISE_SYSTEM,
-  type RubricField,
+  applyCitationGate,
+  type RubricField, type AuditFinding,
 } from '../doc-audit-core.ts';
 import type { CiteHit } from '../citations-core.ts';
 
@@ -272,4 +273,47 @@ test('SL2: AUDIT_REVISE_SYSTEM carries the empty-citation→estimates discipline
   assert.match(AUDIT_REVISE_SYSTEM, /leave that finding's "citation_ids" EMPTY/);
   assert.match(AUDIT_REVISE_SYSTEM, /never attach a merely same-topic/i);
   assert.match(AUDIT_REVISE_SYSTEM, /BROADER than the draft/);
+});
+
+// ── PR5: in-engine citation gate (pure drop/relabel) ────────────────────────
+
+const finding = (over: Partial<AuditFinding> = {}): AuditFinding => ({
+  subject: 'x', verdict: 'low-value', confidence: 0.5, rationale: 'r',
+  evidence: ['grounded point A', 'grounded point B'], estimates: ['est. figure'],
+  citation_ids: [1, 2], ...over,
+});
+
+test('applyCitationGate: partial drop keeps evidence + surviving citations', () => {
+  const out = applyCitationGate([finding({ citation_ids: [1, 2, 3] })], [[0, 2]]);
+  assert.deepEqual(out.findings[0].citation_ids, [1, 3]);
+  assert.deepEqual(out.findings[0].evidence, ['grounded point A', 'grounded point B']);   // intact
+  assert.deepEqual(out.findings[0].estimates, ['est. figure']);
+  assert.equal(out.nDropped, 1); assert.equal(out.nRelabeled, 0);
+});
+
+test('applyCitationGate: dropping ALL citations relabels evidence→estimates (cite-or-label)', () => {
+  const out = applyCitationGate([finding({ citation_ids: [1, 2] })], [[0, 1], [0, 2]]);
+  assert.deepEqual(out.findings[0].citation_ids, []);
+  assert.deepEqual(out.findings[0].evidence, []);
+  assert.deepEqual(out.findings[0].estimates, ['est. figure', 'grounded point A', 'grounded point B']);
+  assert.equal(out.nDropped, 2); assert.equal(out.nRelabeled, 1);
+});
+
+test('applyCitationGate: no drops → untouched; multi-finding indices are respected', () => {
+  const findings = [finding(), finding({ subject: 'y', citation_ids: [5] })];
+  const noop = applyCitationGate(findings, []);
+  assert.deepEqual(noop.findings, findings);
+  assert.equal(noop.nDropped, 0); assert.equal(noop.nRelabeled, 0);
+  // only finding index 1 targeted
+  const out = applyCitationGate(findings, [[1, 5]]);
+  assert.deepEqual(out.findings[0].citation_ids, [1, 2]);   // untouched
+  assert.deepEqual(out.findings[1].citation_ids, []);
+  assert.equal(out.nRelabeled, 1);   // finding y had evidence
+});
+
+test('applyCitationGate: emptying a finding with NO evidence drops cites without relabel', () => {
+  const out = applyCitationGate([finding({ evidence: [], citation_ids: [1] })], [[0, 1]]);
+  assert.deepEqual(out.findings[0].citation_ids, []);
+  assert.deepEqual(out.findings[0].estimates, ['est. figure']);   // nothing moved
+  assert.equal(out.nRelabeled, 0);
 });

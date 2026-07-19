@@ -328,7 +328,7 @@ export const GOVERNANCE_SNAPSHOT = {
   directSites: 0,
   directFiles: 0,
   concordanceRefs: 15,
-  taggedPromptRefs: 10,   // Right Care family wrappers (lvc/pathway/doc-audit)
+  taggedPromptRefs: 11,   // Right Care family wrappers (lvc/pathway/doc-audit) + PR5 cite-gate (verify-core/VERIFY_SYSTEM)
   ungovernedFiles: [] as string[],
 };
 

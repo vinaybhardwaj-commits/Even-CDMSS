@@ -2085,6 +2085,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "doc-audit",
+    "to": "corpus-eval",
+    "kind": "value"
+  },
+  {
+    "from": "doc-audit",
     "to": "doc-audit-core",
     "kind": "type"
   },

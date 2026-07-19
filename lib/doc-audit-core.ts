@@ -541,6 +541,46 @@ export function unionEnrichedHits(base: CiteHit[], enrichment: CiteHit[][], cap 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// In-engine citation gate (Brainstem PR5, dark behind DOC_AUDIT_CITE_GATE)
+//
+// The wired layer verifies each (finding, cited source) with the PR0 Flash critic and passes the
+// (findingIndex, citationId) pairs that the critic judged UNsupported (not_supported / contradicts).
+// This PURE function applies the gate: strip those citation ids, and when a finding loses ALL of its
+// citations, relabel its now-ungrounded `evidence` into `estimates` (cite-or-label — an evidence
+// point with no surviving citation is a model assertion, not corpus-grounded). direct/partial/
+// not_assessable are kept upstream, so this only ever removes ids the critic actively rejected.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function applyCitationGate(
+  findings: AuditFinding[],
+  dropPairs: Array<[number, number]>,
+): { findings: AuditFinding[]; nDropped: number; nRelabeled: number } {
+  const dropsByFinding = new Map<number, Set<number>>();
+  for (const [fi, cid] of dropPairs) {
+    if (!dropsByFinding.has(fi)) dropsByFinding.set(fi, new Set());
+    dropsByFinding.get(fi)!.add(cid);
+  }
+  let nDropped = 0, nRelabeled = 0;
+  const out = findings.map((f, fi) => {
+    const drops = dropsByFinding.get(fi);
+    if (!drops || !drops.size) return f;
+    const kept = f.citation_ids.filter((c) => !drops.has(c));
+    const removed = f.citation_ids.length - kept.length;
+    if (removed === 0) return f;
+    nDropped += removed;
+    // All citations rejected AND the finding had grounded evidence → its evidence is no longer
+    // corpus-backed: move it to estimates (verbatim), empty citations. A PARTIAL drop keeps the
+    // evidence with its surviving citations (citation_ids are finding-level, not per-evidence-point).
+    if (kept.length === 0 && f.citation_ids.length > 0 && f.evidence.length > 0) {
+      nRelabeled++;
+      return { ...f, citation_ids: [], evidence: [], estimates: [...f.estimates, ...f.evidence] };
+    }
+    return { ...f, citation_ids: kept };
+  });
+  return { findings: out, nDropped, nRelabeled };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Deterministic completeness scoring (merge LLM statuses with the rubric)
 // ─────────────────────────────────────────────────────────────────────────────
 
