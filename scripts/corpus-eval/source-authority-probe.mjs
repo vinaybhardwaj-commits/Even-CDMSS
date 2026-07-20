@@ -37,7 +37,7 @@ function tierOf(source, book) {
   const s = String(source ?? '').toLowerCase();
   const b = String(book ?? '');
   if (s === 'choosing-wisely' || s === 'guidelines') return 'A';                 // society/appropriateness authority (active)
-  if (s === 'labq:bookshelf') return TIER_A_BOOKS.test(b) ? 'A' : 'C';           // EPR-3/JNC/USPSTF = A; Endotext = C
+  if (s === 'labq:bookshelf' || s === 'bookshelf') return TIER_A_BOOKS.test(b) ? 'A' : 'C';  // activated or quarantined: EPR-3/JNC/USPSTF = A; Endotext = C
   if (s === 'mksap-19' || s === 'textbook' || TIER_B.test(b)) return 'B';        // board-review / specialty textbooks
   if (s === 'statpearls' || s === 'uptodate' || s === 'medscape' || s === 'aafp') return 'C';
   return 'D';                                                                     // pubmed / europepmc / openfda / unknown
