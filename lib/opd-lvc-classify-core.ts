@@ -116,8 +116,9 @@ export type LvcClassified = { is_lvc: boolean; rule_ref: string | null; lvc_cate
 const asCategory = (v: unknown): LvcCategory | null =>
   (LVC_CATEGORIES as readonly string[]).includes(String(v)) ? (v as LvcCategory) : null;
 
-/** Public matcher (backfill): the rule id a finding keyword-matches, or null. Same v3 semantics as the
- *  engine stamp + read-time fallback — OR across a rule's keyword phrases, longest matched phrase wins. */
+/** Public matcher (backfill): the rule id a finding keyword-matches, or null. Same v3.1 semantics as the
+ *  engine stamp + read-time fallback — OR across a rule's keyword phrases, longest matched phrase wins
+ *  when it wins ALONE; a tie at the top specificity yields null. */
 export function matchLvcRule(f: ClassifiableFinding, rules: LvcRuleLite[]): string | null {
   const r = matchRule(f, rules);
   return r ? r.id : null;
@@ -130,7 +131,8 @@ export function matchLvcRule(f: ClassifiableFinding, rules: LvcRuleLite[]): stri
 //   · a RULE matches iff ANY of its keywords matches (was v2: EVERY keyword — wrong for the corpus,
 //     where CW rules list alternative trigger phrases, so ALL-keywords left 744 findings unmatchable).
 //   · specificity: across matching rules the winner is the one whose BEST-matching keyword has the MOST
-//     tokens (longest matched phrase = most specific); tie on token count → rule id ASC.
+//     tokens (longest matched phrase = most specific); a TIE at the top token count → null (v3.1,
+//     rule-attribution fix D1/D2 — ambiguity is never broken by rule id; a lone match still wins).
 //   · zero-keyword / empty-token rules never match. No LLM.
 function escapeRe(s: string): string { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 /** De-duped, non-empty keyword phrases for a rule (lowercased/trimmed). */
@@ -154,21 +156,22 @@ function bestMatchedTokens(hay: string, kws: string[]): number {
   }
   return best;
 }
-/** Match a finding to a rule (v3). Longest matched phrase wins; tie → lowest id. */
+/** Match a finding to a rule (v3.1). Longest matched phrase wins ONLY when it wins alone: a genuine
+ *  tie between rules at the top specificity — at any token count — yields null (rule-attribution fix
+ *  D1/D2: an ambiguous attribution is a guess, and the old lowest-id-ASC tiebreak made one rule a
+ *  catch-all). A single rule matching alone, even on a 1-token keyword, still wins outright. */
 function matchRule(f: ClassifiableFinding, rules: LvcRuleLite[]): LvcRuleLite | null {
   const hay = `${f.subject || ''} ${f.rationale || ''}`;
-  let winner: LvcRuleLite | null = null, winTokens = 0, winId = '';
+  let winner: LvcRuleLite | null = null, winTokens = 0, tied = false;
   for (const r of rules) {
     const kws = ruleKeywords(r);
     if (!kws.length) continue;
     const tok = bestMatchedTokens(hay, kws);
     if (tok === 0) continue;                              // no keyword of this rule matched
-    const id = String(r.id);
-    if (tok > winTokens || (tok === winTokens && (winner === null || id < winId))) {
-      winner = r; winTokens = tok; winId = id;            // longest matched phrase, tie → lowest id
-    }
+    if (tok > winTokens) { winner = r; winTokens = tok; tied = false; }
+    else if (tok === winTokens) tied = true;              // ≥2 rules at the best specificity → ambiguous
   }
-  return winner;
+  return tied ? null : winner;
 }
 
 /**

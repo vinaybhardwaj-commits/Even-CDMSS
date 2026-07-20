@@ -111,16 +111,24 @@ test('matcher v3: AND within a keyword — every token must be a whole word', ()
   assert.deepEqual(stampRefs([lv('Antibiotics for a sore throat')], rules), [null]); // "uri" absent
 });
 
-test('matcher v3: longest matched phrase wins; tie → lowest id', () => {
+test('matcher v3.1: longest matched phrase wins when it wins alone; any top-specificity tie → null', () => {
   const short = { id: 'z-short', keywords: ['ct head'], category: 'imaging' };            // 2 tokens
   const long = { id: 'a-long', keywords: ['ct head child head injury'], category: 'imaging' }; // 5 tokens
   const hay = 'CT head ordered for a child with minor head injury';
   assert.deepEqual(stampRefs([lv(hay)], [short, long]), ['a-long']);   // 5-token phrase beats 2-token
   assert.deepEqual(stampRefs([lv(hay)], [long, short]), ['a-long']);   // order-independent
-  // tie on best-matched-token count (both 1) → lexicographically smaller id
+  // tie on best-matched-token count (both 1) → AMBIGUOUS → null (D1/D2: the lowest-id-ASC tiebreak
+  // let one rule win essentially every 1-token tie; a guess a clinician cannot defend is worse than none)
   const tieB = { id: 'b-tie', keywords: ['imaging'], category: 'imaging' };
   const tieA = { id: 'a-tie', keywords: ['imaging'], category: 'imaging' };
-  assert.deepEqual(stampRefs([lv('Imaging without indication')], [tieB, tieA]), ['a-tie']);
+  assert.deepEqual(stampRefs([lv('Imaging without indication')], [tieB, tieA]), [null]);
+  // ties yield null at HIGHER specificity too — removing the tiebreak is not 1-token-specific (D2)
+  const tie2a = { id: 'a-2tok', keywords: ['ct head'], category: 'imaging' };
+  const tie2b = { id: 'b-2tok', keywords: ['head ct'], category: 'imaging' };
+  assert.deepEqual(stampRefs([lv('CT head without red flags')], [tie2a, tie2b]), [null]);
+  // a single rule matching ALONE on a 1-token keyword still wins outright (serratiopeptidase guarantee)
+  const lone = { id: 'r-serra', keywords: ['serratiopeptidase'], category: 'other' };
+  assert.deepEqual(stampRefs([lv('Serratiopeptidase prescribed post-op')], [lone, tieA]), ['r-serra']);
 });
 
 test('matcher v3: bare 1-token keyword over-matches under OR (why CBP is re-authored in data, 26a)', () => {
