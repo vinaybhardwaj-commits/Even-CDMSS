@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { sql } from './db';
-import { llm, geminiConfigured, getGeminiChatClient, vertexModelName, chatWithFallback } from './llm';
+import { llm, geminiConfigured, getGeminiChatClient, vertexModelName, chatWithFallback, openrouterConfigured, openrouterChatClient } from './llm';
 import { promptFingerprint } from './reasoning/registry-core';
 import { billableOutputTokens } from './llm-cost-core';
 
@@ -159,18 +159,21 @@ export async function tracedChat(
   // promptRef (Stage 1): a Stage-0 registry id — resolves version+hash via
   // promptFingerprint and stamps the envelope columns on this call's events.
   // Unset ⇒ only the call facts (model/provider/gen_params/tokens) are written.
-  opts?: { gemini?: string; promptRef?: string },
+  opts?: { gemini?: string; openrouter?: string; promptRef?: string },
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const t0 = Date.now();
 
-  const useGemini = Boolean(opts?.gemini) && geminiConfigured();
-  const servedModel = useGemini ? (opts!.gemini as string) : (params as { model?: string }).model;
+  // Provider precedence: OpenRouter (explicit slug) → Vertex Gemini → local Ollama. Each keeps the
+  // local Ollama model in params.model as its on-error fallback.
+  const useOpenRouter = Boolean(opts?.openrouter) && openrouterConfigured();
+  const useGemini = !useOpenRouter && Boolean(opts?.gemini) && geminiConfigured();
+  const servedModel = useOpenRouter ? (opts!.openrouter as string) : useGemini ? (opts!.gemini as string) : (params as { model?: string }).model;
 
   // Log the request before firing (records the model we INTEND to use)
   const requestPayload = {
     model: servedModel,
-    provider: useGemini ? 'gemini' : 'ollama',
+    provider: useOpenRouter ? 'openrouter' : useGemini ? 'gemini' : 'ollama',
     messages: (params as { messages?: unknown }).messages,
     temperature: (params as { temperature?: number }).temperature,
     max_tokens: (params as { max_tokens?: number }).max_tokens,
@@ -200,7 +203,33 @@ export async function tracedChat(
   let actualModel = servedModel;
 
   try {
-    if (useGemini) {
+    if (useOpenRouter) {
+      try {
+        // Strip Ollama-only params; run NON-THINKING (reasoning off) — the critic wants a bounded
+        // JSON verdict, and Qwen3 otherwise spends the token budget on reasoning and returns no
+        // content. A caller may override by putting its own `reasoning` in params.
+        const { options: _o, keep_alive: _k, ...rest } = params as Record<string, unknown>;
+        void _o; void _k;
+        const orParams: Record<string, unknown> = {
+          ...rest,
+          model: opts!.openrouter as string,
+          ...(('reasoning' in (rest as Record<string, unknown>)) ? {} : { reasoning: { enabled: false } }),
+        };
+        const client = openrouterChatClient();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        result = await client.chat.completions.create(orParams as any);
+      } catch (oe) {
+        await logEvent(traceId, 'provider_fallback', label, {
+          from: 'openrouter', to: 'ollama',
+          intended_model: servedModel,
+          fallback_model: (params as { model?: string }).model,
+          error: String((oe as Error).message).slice(0, 500),
+        }, Date.now() - t0);
+        provider = 'ollama';
+        actualModel = (params as { model?: string }).model;
+        result = await llm.chat.completions.create(params);
+      }
+    } else if (useGemini) {
       try {
         // Strip Ollama-only params (Vertex rejects unknown fields) + publisher-prefix the model.
         const { options: _o, keep_alive: _k, ...rest } = params as Record<string, unknown>;
@@ -415,11 +444,11 @@ export async function governedChat(
   label: string,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   params: any,
-  opts?: { gemini?: string; promptRef?: string },
+  opts?: { gemini?: string; openrouter?: string; promptRef?: string },
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   if (traceId) return tracedChat(traceId, label, params, opts);
-  return chatWithFallback(params, opts?.gemini);
+  return chatWithFallback(params, opts?.gemini, opts?.openrouter);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -43,6 +43,37 @@ export function isGeminiModel(model: string | undefined | null): boolean {
   return !!model && /(^|\/)gemini[-.]/i.test(model);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// OpenRouter — third provider (OpenAI-compatible), added for the citation critic
+// (provider-migration PR). A call opts into it via tracedChat's `openrouter` model
+// slug; the local Ollama default + Vertex Gemini paths are unchanged, and embeddings
+// stay on the mini (nomic). Fallback on error is still the local Ollama model.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** True when OpenRouter can be called (key present, and not forced onto the mini pipeline). */
+export function openrouterConfigured(): boolean {
+  return Boolean(process.env.OPENROUTER_API_KEY) && !miniPipeline();
+}
+
+/** OpenAI-SDK client bound to OpenRouter. Cheap to construct; the key rides the Authorization header. */
+export function openrouterChatClient(): OpenAI {
+  return new OpenAI({ baseURL: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1', apiKey: process.env.OPENROUTER_API_KEY });
+}
+
+/**
+ * Does the SERVED model match the INTENDED one, tolerating provider prefixes/suffixes?
+ * `google/gemini-2.5-pro` ≡ `gemini-2.5-pro`; `qwen/qwen3-32b` ≡ `qwen3-32b`. Used by the
+ * fallback-integrity guard to tell a genuine served verdict from a silent drop to the local
+ * Ollama model — replacing the old "served is not Gemini ⇒ fallback" test, which would reject
+ * every legitimate OpenRouter (Qwen) verdict.
+ */
+export function modelsAgree(served: string | null | undefined, intended: string | null | undefined): boolean {
+  const norm = (s: string | null | undefined) => String(s ?? '').toLowerCase().trim().replace(/^[a-z0-9._-]+\//, '');
+  const a = norm(served), b = norm(intended);
+  if (!a || !b) return false;
+  return a === b || a.includes(b) || b.includes(a);
+}
+
 function vertexBaseURL(): string {
   // The "global" location uses the un-prefixed host; regional uses {loc}-aiplatform.
   const host =
@@ -109,7 +140,21 @@ export function geminiUtilityModel(): string | undefined {
  * no geminiModel it is byte-identical to `llm.chat.completions.create(params)`.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function chatWithFallback(params: any, geminiModel?: string): Promise<any> {
+export async function chatWithFallback(params: any, geminiModel?: string, openrouterModel?: string): Promise<any> {
+  // OpenRouter takes precedence when an explicit slug is given (the citation critic). Non-thinking by
+  // default (bounded verdict); falls back to the local Ollama model in params.model on any error.
+  if (openrouterModel && openrouterConfigured()) {
+    try {
+      const { options: _o, keep_alive: _k, ...rest } = params as Record<string, unknown>;
+      void _o; void _k;
+      const orParams = { ...rest, model: openrouterModel, ...(('reasoning' in (rest as Record<string, unknown>)) ? {} : { reasoning: { enabled: false } }) };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return await openrouterChatClient().chat.completions.create(orParams as any);
+    } catch (e) {
+      console.warn(`[chatWithFallback] openrouter ${openrouterModel} failed → ollama fallback:`, String((e as Error).message).slice(0, 200));
+      return llm.chat.completions.create(params);
+    }
+  }
   if (!geminiModel || !geminiConfigured()) {
     return llm.chat.completions.create(params);
   }

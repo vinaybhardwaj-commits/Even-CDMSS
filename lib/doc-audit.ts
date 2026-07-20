@@ -18,7 +18,7 @@
 
 import RUBRIC_DOC from '@/data/nabh-rubric.json';
 import { retrieve } from './retrieve';
-import { geminiModelFor, geminiUtilityModel, TEXT_MODEL, GEMINI_MODEL, isGeminiModel } from './llm';
+import { geminiModelFor, geminiUtilityModel, TEXT_MODEL, GEMINI_MODEL, modelsAgree } from './llm';
 import { VERIFY_SYSTEM, buildVerifyUser, parseVerdict, type SourceMeta } from './corpus-eval/verify-core';
 import { startTrace, logEvent, finishTrace, tracedChat, governedChat, withTrace, buildEnvelope, setTracePromptIds } from './trace';
 import { matchAnyTariffs, packageDaysFor, episodeRoomInflation } from './charge-master';
@@ -244,16 +244,29 @@ async function defaultEnrichHits(q: string): Promise<CiteHit[]> {
 const ENRICH_POOL_CAP = 20;
 
 // ── Brainstem PR5: in-engine per-citation gate (dark behind DOC_AUDIT_CITE_GATE) ────────────────
-// Reuses the PR0 verifier's PROMPT (verify-core/VERIFY_SYSTEM) as a cheap FLASH critic: judge each
+// Reuses the PR0 verifier's PROMPT (verify-core/VERIFY_SYSTEM) as a cheap critic: judge each
 // (finding, cited source) on the excerpt alone and drop citations the critic calls not_supported/
 // contradicts (direct + partial are kept — PR5 §4). Governed via the engine's own tracedChat, so it
-// rides the audit trace — never a raw model call. Fail-safe: any error, or a silent Ollama fallback
-// (served model is not a Gemini model), yields KEEP — a critic outage must never strip a citation.
+// rides the audit trace — never a raw model call. The critic MODEL is config-selected (CITE_GATE_MODEL):
+// default Gemini Flash utility; an OpenRouter slug (contains '/') routes to OpenRouter (Qwen). Fail-safe:
+// any error, or a silent fallback to the local Ollama model (served ≠ intended), yields KEEP — a critic
+// outage must never strip a citation.
+
+/** The critic's provider route from CITE_GATE_MODEL. Unset ⇒ Gemini Flash (unchanged). A slug with a
+ *  '/' (e.g. `qwen/qwen3-32b`) ⇒ OpenRouter; any other value ⇒ that explicit Gemini model. The lab
+ *  mini path (forceOllama) runs the local model in params.model. */
+function citeGateRoute(forceOllama: boolean): { gemini?: string; openrouter?: string } {
+  if (forceOllama) return {};
+  const m = process.env.CITE_GATE_MODEL?.trim();
+  if (!m) return { gemini: geminiUtilityModel() };
+  if (m.includes('/')) return { openrouter: m };
+  return { gemini: m };
+}
 
 async function verifyCitation(
   claim: string,
   excerpt: { text: string; meta: SourceMeta },
-  flashModel: string | undefined,
+  route: { gemini?: string; openrouter?: string },
   traceId: string | undefined,
 ): Promise<'drop' | 'keep'> {
   try {
@@ -267,12 +280,13 @@ async function verifyCitation(
       max_tokens: 300,
       response_format: { type: 'json_object' as const },
     };
-    const opts = { gemini: flashModel, promptRef: 'verify-core/VERIFY_SYSTEM' };
+    const opts = { ...route, promptRef: 'verify-core/VERIFY_SYSTEM' };
     const res = traceId
       ? await tracedChat(traceId, 'doc_audit_cite_gate', params, opts)
       : await governedChat(undefined, 'doc_audit_cite_gate', params, opts);
     const served = String(res?.model ?? '');
-    if (served && !isGeminiModel(served)) return 'keep';   // Ollama fallback — cannot trust the critic
+    const intended = route.openrouter || route.gemini || params.model;
+    if (served && !modelsAgree(served, intended)) return 'keep';   // local fallback — cannot trust the critic
     const verdict = parseVerdict(res?.choices?.[0]?.message?.content ?? null).verdict;
     return (verdict === 'not_supported' || verdict === 'contradicts') ? 'drop' : 'keep';
   } catch {
@@ -292,7 +306,7 @@ async function runCitationGate(
   traceId: string | undefined,
   forceOllama: boolean,
 ): Promise<CiteGateResult> {
-  const flashModel = forceOllama ? undefined : geminiUtilityModel();
+  const route = citeGateRoute(forceOllama);
   const tasks: Array<{ fi: number; cid: number; claim: string; excerpt: { text: string; meta: SourceMeta } }> = [];
   findings.forEach((f, fi) => {
     const claim = (f.evidence ?? []).join(' ').replace(/\s+/g, ' ').trim();
@@ -304,7 +318,7 @@ async function runCitationGate(
     }
   });
   if (!tasks.length) return { findings, nVerified: 0, nDropped: 0, nRelabeled: 0 };
-  const decisions = await Promise.all(tasks.map((t) => verifyCitation(t.claim, t.excerpt, flashModel, traceId)));
+  const decisions = await Promise.all(tasks.map((t) => verifyCitation(t.claim, t.excerpt, route, traceId)));
   const dropPairs: Array<[number, number]> = [];
   tasks.forEach((t, i) => { if (decisions[i] === 'drop') dropPairs.push([t.fi, t.cid]); });
   const { findings: gated, nDropped, nRelabeled } = core.applyCitationGate(findings, dropPairs);

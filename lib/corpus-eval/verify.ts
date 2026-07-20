@@ -10,12 +10,14 @@
 // trace_events for its OWN eval calls (the standard governed-call side effect), never a served output.
 
 import { startTrace, tracedChat } from '../trace';
-import { GEMINI_MODEL, isGeminiModel } from '../llm';
+import { GEMINI_MODEL, modelsAgree } from '../llm';
 import { VERIFY_SYSTEM, buildVerifyUser, parseVerdict, type SourceMeta, type VerifyResult } from './verify-core';
 
 export interface VerifyUsage { prompt_tokens: number; completion_tokens: number; total_tokens: number; ms: number; provider: string; model: string }
-/** fellBack=true ⇒ tracedChat served this from the Ollama fallback, not Gemini Pro. Such a verdict is
- *  FORCED to not_assessable (a local model must never silently enter the Pro baseline) and surfaced. */
+/** fellBack=true ⇒ tracedChat served this from the local Ollama FALLBACK rather than the intended
+ *  model (Gemini Pro, or an OpenRouter candidate under the κ probe). Such a verdict is FORCED to
+ *  not_assessable and surfaced — a local model must never silently enter the gold judgment. NB a
+ *  legitimate OpenRouter verdict is NOT a fallback (the served slug matches the intended one). */
 export interface VerifyOutcome extends VerifyResult { usage: VerifyUsage; fellBack: boolean }
 
 const PROMPT_REF = 'verify-core/VERIFY_SYSTEM';
@@ -27,18 +29,21 @@ const PROMPT_REF = 'verify-core/VERIFY_SYSTEM';
 export async function verifyClaim(
   claim: string,
   excerpts: Array<{ text: string; meta: SourceMeta }>,
-  opts: { model?: string } = {},
+  opts: { model?: string; openrouter?: string } = {},
 ): Promise<VerifyOutcome> {
   const t0 = Date.now();
+  // Route: an OpenRouter slug (κ probe / migrated critic) → OpenRouter; else Gemini (`model` or the
+  // Pro default). `intended` is what we asked for — the fallback guard compares the SERVED model to it.
+  const intended = opts.openrouter || opts.model || GEMINI_MODEL;
+  const route = opts.openrouter ? { openrouter: opts.openrouter, promptRef: PROMPT_REF } : { gemini: opts.model || GEMINI_MODEL, promptRef: PROMPT_REF };
   const emptyUsage = (provider: string, model: string): VerifyUsage => ({ prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, ms: Date.now() - t0, provider, model });
-  const proModel = opts.model || GEMINI_MODEL;   // 'gemini-2.5-pro'
   try {
     const traceId = await startTrace('corpus_eval_verify', { promptRef: PROMPT_REF }, 1, { feature: 'corpus-eval' });
     const res = await tracedChat(
       traceId,
       'corpus_eval_verify',
       {
-        model: 'llama3.1:8b',                  // Ollama fallback if Gemini errors (tracedChat contract)
+        model: 'llama3.1:8b',                  // Ollama fallback if the intended provider errors (tracedChat contract)
         messages: [
           { role: 'system', content: VERIFY_SYSTEM },
           { role: 'user', content: buildVerifyUser(claim, excerpts) },
@@ -47,31 +52,32 @@ export async function verifyClaim(
         max_tokens: 700,
         response_format: { type: 'json_object' },
       },
-      { gemini: proModel, promptRef: PROMPT_REF },
+      route,
     );
     const choice = res?.choices?.[0];
     const content: string | null = choice?.message?.content ?? null;
     const u = res?.usage ?? {};
-    // Fallback integrity guard: tracedChat silently degrades to the local Ollama model on a Gemini
-    // error/rate-limit. The served model comes back on the response; if it is NOT a Gemini model, a
-    // local model produced this verdict — EXCLUDE it (force not_assessable) and flag it, so a
-    // rate-limit can never quietly swap a weak local judge into the Pro baseline.
+    // Fallback-integrity guard (generalized): tracedChat silently degrades to the local Ollama model
+    // on a provider error/rate-limit. Compare the SERVED model to the INTENDED one — a mismatch means
+    // the local model produced this verdict, so EXCLUDE it (force not_assessable). A genuine OpenRouter
+    // (Qwen) verdict has served == intended and is KEPT — the old "not Gemini ⇒ fallback" test would
+    // have discarded every Qwen verdict.
     const servedModel = String(res?.model ?? '');
-    const fellBack = servedModel !== '' && !isGeminiModel(servedModel);
+    const fellBack = servedModel !== '' && !modelsAgree(servedModel, intended);
     const usage = {
       prompt_tokens: Number(u.prompt_tokens ?? 0),
       completion_tokens: Number(u.completion_tokens ?? 0),
       total_tokens: Number(u.total_tokens ?? 0),
       ms: Date.now() - t0,
-      provider: fellBack ? 'ollama' : 'gemini',
-      model: servedModel || proModel,
+      provider: fellBack ? 'ollama' : (opts.openrouter ? 'openrouter' : 'gemini'),
+      model: servedModel || intended,
     };
     if (fellBack) {
-      return { verdict: 'not_assessable', supportingSpan: null, why: `excluded: Ollama fallback (${servedModel}) — not the Pro verifier`, usage, fellBack: true };
+      return { verdict: 'not_assessable', supportingSpan: null, why: `excluded: local fallback (${servedModel}) — not the intended verifier (${intended})`, usage, fellBack: true };
     }
     return { ...parseVerdict(content), usage, fellBack: false };
   } catch (e) {
     // fail-safe — a failed verify is not_assessable, never a crash and never a guessed support
-    return { verdict: 'not_assessable', supportingSpan: null, why: `verify error: ${String((e as Error).message).slice(0, 120)}`, usage: emptyUsage('gemini', proModel), fellBack: false };
+    return { verdict: 'not_assessable', supportingSpan: null, why: `verify error: ${String((e as Error).message).slice(0, 120)}`, usage: emptyUsage(opts.openrouter ? 'openrouter' : 'gemini', intended), fellBack: false };
   }
 }
