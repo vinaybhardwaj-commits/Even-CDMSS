@@ -25,9 +25,13 @@ export const PRICING: Pricing = {
 // `llm_stream_usage` (from the final include_usage chunk — see lib/trace.ts wrapStreamUsage).
 // Both must be counted or streamed spend (/ask, /ddx, /topics) is invisible.
 const LLM_KINDS = `e.kind IN ('llm_response', 'llm_stream_usage')`;
+// Priced providers: Vertex Gemini + OpenRouter Qwen (the migrated citation critic). A model that is
+// neither is not a paid call we meter (local Ollama). Broadened from gemini-only so Qwen spend is
+// visible in the cost tab (provider migration §4).
+const PRICED_MODEL = `((e.payload->>'model') ILIKE '%gemini%' OR (e.payload->>'model') ILIKE '%qwen%')`;
 const FROM_WHERE =
   `FROM trace_events e JOIN traces t ON t.trace_id = e.trace_id
-   WHERE ${LLM_KINDS} AND e.app_source = $1 AND (e.payload->>'model') ILIKE '%gemini%'`;
+   WHERE ${LLM_KINDS} AND e.app_source = $1 AND ${PRICED_MODEL}`;
 const IN_TOK = `coalesce((e.payload->'usage'->>'prompt_tokens')::int, 0)`;
 // Output tokens = max(completion, total − prompt). Gemini 2.5 is a THINKING model: on the native
 // path `completion_tokens` excludes the (billed) thinking tokens while `total_tokens` includes
@@ -201,7 +205,7 @@ export async function costLogFeatures(): Promise<string[]> {
 export async function costLog(q: CostLogQuery): Promise<CostLog> {
   const pageSize = Math.max(10, Math.min(200, q.pageSize ?? 100));
   const page = Math.max(0, q.page ?? 0);
-  const where = [LLM_KINDS, `e.app_source = $1`, `(e.payload->>'model') ILIKE '%gemini%'`];
+  const where = [LLM_KINDS, `e.app_source = $1`, PRICED_MODEL];
   const params: unknown[] = [APP];
   if (isDay(q.from)) { params.push(q.from); where.push(`(e.ts AT TIME ZONE 'Asia/Kolkata')::date >= $${params.length}::date`); }
   if (isDay(q.to)) { params.push(q.to); where.push(`(e.ts AT TIME ZONE 'Asia/Kolkata')::date <= $${params.length}::date`); }
