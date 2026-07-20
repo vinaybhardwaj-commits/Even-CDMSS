@@ -29,13 +29,17 @@ const PROMPT_REF = 'verify-core/VERIFY_SYSTEM';
 export async function verifyClaim(
   claim: string,
   excerpts: Array<{ text: string; meta: SourceMeta }>,
-  opts: { model?: string; openrouter?: string } = {},
+  opts: { model?: string; openrouter?: string; reasoning?: boolean | Record<string, unknown>; maxTokens?: number } = {},
 ): Promise<VerifyOutcome> {
   const t0 = Date.now();
   // Route: an OpenRouter slug (κ probe / migrated critic) → OpenRouter; else Gemini (`model` or the
   // Pro default). `intended` is what we asked for — the fallback guard compares the SERVED model to it.
   const intended = opts.openrouter || opts.model || GEMINI_MODEL;
   const route = opts.openrouter ? { openrouter: opts.openrouter, promptRef: PROMPT_REF } : { gemini: opts.model || GEMINI_MODEL, promptRef: PROMPT_REF };
+  // Probe knobs (default-off, back-compat): `reasoning` flips an OpenRouter candidate into THINKING
+  // mode (billed as output tokens); `maxTokens` widens the budget so reasoning does not starve the
+  // JSON verdict and return empty content. The shipped critic path passes neither → unchanged.
+  const maxTokens = opts.maxTokens ?? 700;
   const emptyUsage = (provider: string, model: string): VerifyUsage => ({ prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, ms: Date.now() - t0, provider, model });
   try {
     const traceId = await startTrace('corpus_eval_verify', { promptRef: PROMPT_REF }, 1, { feature: 'corpus-eval' });
@@ -49,8 +53,9 @@ export async function verifyClaim(
           { role: 'user', content: buildVerifyUser(claim, excerpts) },
         ],
         temperature: 0,
-        max_tokens: 700,
+        max_tokens: maxTokens,
         response_format: { type: 'json_object' },
+        ...(opts.reasoning ? { reasoning: opts.reasoning === true ? { enabled: true } : opts.reasoning } : {}),
       },
       route,
     );
