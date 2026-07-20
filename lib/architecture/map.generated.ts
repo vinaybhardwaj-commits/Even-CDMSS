@@ -83,6 +83,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "bookshelf",
+    "plane": "unregistered"
+  },
+  {
     "id": "calculators",
     "plane": "unregistered"
   },
@@ -220,6 +224,14 @@ export const MAP_MODULES: MapModule[] = [
   },
   {
     "id": "concordance-store",
+    "plane": "unregistered"
+  },
+  {
+    "id": "corpus-connector",
+    "plane": "unregistered"
+  },
+  {
+    "id": "corpus-connector-core",
     "plane": "unregistered"
   },
   {
@@ -1659,6 +1671,16 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "bookshelf",
+    "to": "corpus-connector-core",
+    "kind": "value"
+  },
+  {
+    "from": "bookshelf",
+    "to": "jats-chunk",
+    "kind": "value"
+  },
+  {
     "from": "care-call-core",
     "to": "clinical-state",
     "kind": "type"
@@ -1991,6 +2013,21 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "concordance-store",
     "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "corpus-connector",
+    "to": "corpus-connector-core",
+    "kind": "type"
+  },
+  {
+    "from": "corpus-connector",
+    "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "corpus-connector",
+    "to": "llm",
     "kind": "value"
   },
   {

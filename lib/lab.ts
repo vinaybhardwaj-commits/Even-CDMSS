@@ -117,11 +117,16 @@ export async function corpusAddQuarantined(input: CorpusAddInput): Promise<Corpu
   return { source, chunks: chunks.length, inserted, skipped_dup: skipped };
 }
 
-/** Activate a quarantined batch → visible to production retrieval (labq:<label> → lab:<label>). */
-export async function corpusActivate(label: string): Promise<{ source: string; activated: number }> {
+/** Activate a quarantined batch → visible to production retrieval.
+ *  Default target is `lab:<label>` (generic Lab material). A connector may pass `targetSource` to
+ *  activate to a FIRST-CLASS source name (e.g. 'bookshelf') so citations render with a real handler
+ *  instead of a generic `lab:` chip — the corpus-connector activation path (GC-CX SL1). The target
+ *  is slug-sanitised the same way labels are, so it can never collide with the `labq:`/`lab:` guards. */
+export async function corpusActivate(label: string, targetSource?: string): Promise<{ source: string; activated: number }> {
   const l = labLabel(label);
-  const rows = await run(`UPDATE mksap_chunks SET source = $1 WHERE source = $2 RETURNING id`, [`lab:${l}`, `labq:${l}`]);
-  return { source: `lab:${l}`, activated: rows.length };
+  const target = targetSource ? labLabel(targetSource) : `lab:${l}`;
+  const rows = await run(`UPDATE mksap_chunks SET source = $1 WHERE source = $2 RETURNING id`, [target, `labq:${l}`]);
+  return { source: target, activated: rows.length };
 }
 
 /** Delete a lab corpus batch entirely (quarantined OR active) — fully reversible cleanup. */

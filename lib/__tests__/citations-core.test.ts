@@ -58,3 +58,24 @@ test('usedSources filters to cited n only', () => {
   assert.equal(used.length, 1);
   assert.equal(used[0].n, 2);
 });
+
+// ── Bookshelf (GC-CX SL3) ──────────────────────────────────────────────────────────
+test('sourceUrl derives a live NBK link for Bookshelf, not PubMed', () => {
+  assert.equal(sourceUrl('bookshelf', 'NBK278943'), 'https://www.ncbi.nlm.nih.gov/books/NBK278943/');
+  assert.equal(sourceUrl('bookshelf', 'nbk7232'), 'https://www.ncbi.nlm.nih.gov/books/NBK7232/');   // case-normalised
+  assert.equal(sourceUrl('bookshelf', '30857957'), null);   // a bare number is not an NBK id
+  assert.equal(sourceUrl('europepmc', 'NBK278943'), null);  // NBK id only links under the bookshelf source
+});
+
+test('a Bookshelf citation renders with a working NBK link + NBK label (not PMID)', () => {
+  const hit: CiteHit = {
+    id: 7, source: 'bookshelf', book: 'Endotext', chapter: 'Thyroid Disease',
+    page_start: null, item_number: 'NBK278943', similarity: 0.77,
+    text: 'Subclinical hypothyroidism is defined biochemically by a raised TSH with a normal free T4.',
+  };
+  const [s] = hitsToSources([hit]);
+  assert.equal(s.url, 'https://www.ncbi.nlm.nih.gov/books/NBK278943/');
+  const label = sourceLabel(s);
+  assert.ok(label.includes('Endotext') && label.includes('NBK278943'));
+  assert.ok(!label.includes('PMID'));   // must not mislabel a book as a journal PMID
+});

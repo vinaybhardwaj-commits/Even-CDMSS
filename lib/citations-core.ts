@@ -46,10 +46,16 @@ export interface Source {
 // Textbook/curated sources never get a PubMed link even if item_number is numeric.
 const TEXTBOOK_SOURCES = new Set(['statpearls', 'uptodate', 'mksap', 'mksap-19', 'textbook', 'choosing-wisely', 'openfda']);
 
-/** Derive a PubMed URL when the chunk is a journal article (PMID lives in item_number). */
+/** Derive a source URL: an NCBI Bookshelf page for Bookshelf monographs (NBK id in item_number), or
+ *  a PubMed link when the chunk is a journal article (PMID in item_number). */
 export function sourceUrl(source: string | null | undefined, item_number: string | null | undefined): string | null {
   const it = String(item_number ?? '').trim();
   const src = String(source ?? '').toLowerCase().trim();
+  // Bookshelf: item_number is the NBK id → the monograph's canonical NCBI page. Terminal — a
+  // Bookshelf chunk never resolves to a PubMed link even if its item id happens to be numeric.
+  if (src === 'bookshelf') {
+    return /^nbk\d+$/i.test(it) ? `https://www.ncbi.nlm.nih.gov/books/${it.toUpperCase()}/` : null;
+  }
   // PMIDs are 5–9 digit ints; MKSAP item numbers are 1–3 digits → the length gate disambiguates.
   if (/^\d{5,9}$/.test(it) && !TEXTBOOK_SOURCES.has(src)) {
     return `https://pubmed.ncbi.nlm.nih.gov/${it}/`;
@@ -80,8 +86,9 @@ export function sourceLabel(s: Pick<Source, 'book' | 'chapter' | 'page_start' | 
     s.book,
     s.chapter || '',
     s.page_start != null ? `p.${s.page_start}` : '',
-    s.item_number && !s.url ? `#${s.item_number}` : '',     // show item id only when it isn't already the PMID link
-    s.url ? `PMID ${s.item_number}` : '',
+    s.item_number && !s.url ? `#${s.item_number}` : '',     // show item id only when it isn't already a link
+    s.url && s.url.includes('/books/') ? String(s.item_number) : '',  // Bookshelf: NBK id is the label
+    s.url && s.url.includes('pubmed') ? `PMID ${s.item_number}` : '',
   ].filter(Boolean).join(' · ');
 }
 
