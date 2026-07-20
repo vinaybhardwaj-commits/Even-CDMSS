@@ -24,6 +24,7 @@ const LITARCH = 'https://ftp.ncbi.nlm.nih.gov/pub/litarch';
 const MANIFEST_URL = `${LITARCH}/file_list.csv`;
 const UA = 'Even-CDMSS/0.2 (+vinay.bhardwaj@even.in)';
 const MAX_CHUNKS_PER_NXML = 30;         // token-capped section chunks per chapter file
+const MAX_CHUNKS_PER_BOOK = 800;        // fair-share cap so a large book (Endotext) can't starve the rest
 
 /** Best-effort chapter (book-part) title from a BITS NXML. Falls back to the book title. */
 function chapterTitle(nxml: string, fallback: string): string {
@@ -62,12 +63,20 @@ async function fetchBookChunks(book: OaBook, budget: number): Promise<ConnectorC
     }
   });
 
+  const src = Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]);
   const gunzip = zlib.createGunzip();
-  Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]).pipe(gunzip);
+  src.pipe(gunzip);
   await new Promise<void>((resolve, reject) => {
-    gunzip.on('data', (c: Buffer) => { try { reader.push(c); } catch (e) { reject(e as Error); } });
-    gunzip.on('end', () => resolve());
-    gunzip.on('error', (e) => reject(e));
+    let done = false;
+    const finish = () => { if (done) return; done = true; src.destroy(); gunzip.destroy(); resolve(); };
+    gunzip.on('data', (c: Buffer) => {
+      if (done) return;
+      try { reader.push(c); if (chunks.length >= budget) finish(); }   // budget hit → stop downloading the rest
+      catch (e) { done = true; src.destroy(); gunzip.destroy(); reject(e as Error); }
+    });
+    gunzip.on('end', () => finish());
+    gunzip.on('error', (e) => { if (done) return; done = true; reject(e); });
+    src.on('error', (e) => { if (done) return; done = true; reject(e); });
   });
   return chunks;
 }
@@ -105,7 +114,7 @@ export function bookshelfConnector(seed = BOOKSHELF_SEED): CorpusConnector & {
     async fetchChunks(item: ConnectorItem, budget: number): Promise<ConnectorChunk[]> {
       const book = selected.find((b) => b.nbk.toUpperCase() === item.key.toUpperCase());
       if (!book) return [];
-      return fetchBookChunks(book, Math.max(1, budget));
+      return fetchBookChunks(book, Math.max(1, Math.min(budget, MAX_CHUNKS_PER_BOOK)));
     },
   };
 }
