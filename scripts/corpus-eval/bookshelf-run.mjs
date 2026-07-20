@@ -114,6 +114,34 @@ async function quality() {
   console.log(JSON.stringify(report, null, 2));
 }
 
-const table = { manifest, ingest, storage, quality };
+/** Relevance/junk spot-check: the top labq:bookshelf hit for a fixed on-topic probe set (the PRD's
+ *  ~10-retrieval relevance check). Independent of whether Bookshelf beats the existing corpus. */
+async function spotcheck() {
+  const subs = [
+    'MODY genetic diabetes subtypes', 'insulin secretion beta cell physiology',
+    'asthma severity classification and stepwise therapy', 'peak flow monitoring asthma action plan',
+    'hypertension lifestyle modification DASH diet', 'thiazide diuretics blood pressure treatment',
+    'preventive services screening adults', 'thyroid nodule evaluation',
+    'adrenal insufficiency diagnosis', 'subclinical hypothyroidism TSH',
+  ];
+  const rows = [];
+  let weak = 0;
+  for (const s of subs) {
+    const vlit = vectorLiteral(await embedQuery(s));
+    const r = await run(
+      `SELECT book, chapter, item_number, 1 - (embedding <=> $1::vector) AS sim, left(text,150) AS t
+       FROM mksap_chunks WHERE source = '${QSOURCE}' ORDER BY embedding <=> $1::vector LIMIT 1`, [vlit]);
+    const h = r[0]; if (!h) continue;
+    if (h.sim < 0.55) weak++;
+    rows.push({ subject: s, sim: +h.sim.toFixed(3), book: h.book, chapter: h.chapter, nbk: h.item_number,
+      url: `https://www.ncbi.nlm.nih.gov/books/${h.item_number}/`, preview: h.t.replace(/\s+/g, ' ').trim() });
+  }
+  const out = { n: rows.length, weak_lt_0_55: weak, rows };
+  writeFileSync(`${OUT}-spotcheck.json`, JSON.stringify(out, null, 2));
+  for (const r of rows) console.log(`sim=${r.sim}  ${r.book.slice(0, 24)} › ${(r.chapter || '').slice(0, 40)}\n  ${r.subject}\n  ${r.url}\n  ${r.preview}\n`);
+  console.log(`weak(<0.55): ${weak}/${rows.length}`);
+}
+
+const table = { manifest, ingest, storage, quality, spotcheck };
 if (!table[cmd]) { console.error(`usage: bookshelf-run.mjs <manifest|ingest|storage|quality> [flags]`); process.exit(1); }
 table[cmd]().then(() => process.exit(0)).catch((e) => { console.error(`${cmd} failed:`, e); process.exit(1); });
