@@ -166,6 +166,7 @@ export const MODULE_MANIFESTS: ModuleManifest[] = [
 export const UNREGISTERED: string[] = [
   'calculators',            // clinical calculators (ABG, eGFR, hyponatremia, …)
   'care-call-core',         // care-call engine (ask-set/0.1, care-call/0.1)
+  'cdsco-banned-fdc',       // CDSCO banned-FDC seed check (cdsco-banned-fdc/0.0, dormant stage 1)
   'ccb-brief-core',         // care-brief engine (care-brief/0.1)
   'ccb-dossier-cache-core', // dossier snapshot cache (schema v2)
   'ddx-eval-core',          // DDx frozen evaluator (ddx-eval/3, ddx-case-bank/1.0)

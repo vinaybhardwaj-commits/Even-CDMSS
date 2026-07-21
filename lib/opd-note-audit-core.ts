@@ -97,6 +97,7 @@ export const OPD_SIGNAL_TYPES: Record<string, string> = {
   high_alert_medication: 'High-alert medication',
   schedule_x: 'Schedule X drug',
   off_formulary: 'Off-formulary items',
+  banned_fdc: 'Banned fixed-dose combination',
   antibiotic_stewardship: 'Antibiotic stewardship',
   // Coarse LLM buckets (by domain × verdict) — a free-text appropriateness/prescribing finding
   // that matches no precise rule batches here, so the CM sees "Low-value appropriateness ×12"
@@ -131,6 +132,7 @@ const SIGNAL_TYPE_RULES: { re: RegExp; type: string }[] = [
   { re: /^high[\s-]?alert medication/, type: 'high_alert_medication' },
   { re: /^schedule x\b/, type: 'schedule_x' },
   { re: /^off[\s-]?formulary\b/, type: 'off_formulary' },
+  { re: /^banned fixed-dose combination/i, type: 'banned_fdc' },
   { re: /\bantibiotic|antimicrobial\b/, type: 'antibiotic_stewardship' },
   { re: /\b(?:drug[\s–-]+drug\s+)?interaction\b/, type: 'drug_interaction' },
 ];
@@ -295,6 +297,11 @@ export function consolidateDecisions(findings: OpdFinding[]): OpdFinding[] {
   return dropped.size ? findings.filter((f) => !dropped.has(f)) : findings;
 }
 
+// CDSCO banned-FDC subjects keep their OWN signal_type (C4): low_value_care is not on the quieting
+// severity floor, so collapsing a banned-FDC finding into it would make a legal prohibition
+// quietable. The prefix is the det-subject convention (`Banned fixed-dose combination: <composition>`).
+export const BANNED_FDC_SUBJECT_RE = /^banned fixed-dose combination/i;
+
 export function stampFindingIdentity(findings: OpdFinding[]): OpdFinding[] {
   const used = new Set<string>();
   return findings.map((f) => {
@@ -302,7 +309,10 @@ export function stampFindingIdentity(findings: OpdFinding[]): OpdFinding[] {
     // the feedback loop / Right Care aggregates batch all low-value care together. This feeds finding_ref
     // (a new engine version → no collision with stored 0.81.2 rows). rule_ref/lvc_category are additive
     // and stamped by the orchestrator (stampLvcMetadata) after neutralisation — they don't affect the hash.
-    const signal_type = f.verdict === 'low-value'
+    // CDSCO banned-FDC exception (C4): the maximally-penalised regulatory finding keeps banned_fdc
+    // (via SIGNAL_TYPE_RULES) so it stays on the quieting severity floor; every OTHER low-value
+    // subject still collapses to low_value_care.
+    const signal_type = (f.verdict === 'low-value' && !BANNED_FDC_SUBJECT_RE.test(f.subject))
       ? 'low_value_care'
       : opdSignalType(f.subject, f.domain, { verdict: f.verdict });
     const colon = f.subject.indexOf(':');

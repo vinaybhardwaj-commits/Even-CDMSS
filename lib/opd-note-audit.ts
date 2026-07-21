@@ -30,6 +30,7 @@ import { applySuppressions, applyDemotes, type Suppression } from './audit-suppr
 import { loadActiveSuppressions, loadQuietingConfig } from './audit-suppression-store';
 import { stampLvcMetadata, type LvcRuleLite } from './opd-lvc-classify-core';
 import { bandFor, type ComplexityBand, type ComplexityInputs } from './opd-complexity-core';
+import { bannedFdcFindings } from './cdsco-banned-fdc';
 import { fetchPatientHistoryBundle } from './metabase';
 import { sql } from './db';
 import { buildLongitudinalInput, type LongitudinalNoteInput } from './opd-longitudinal-core';   // Stage 3 (opd-longitudinal/0.1)
@@ -376,7 +377,8 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
   enrichOpdMeds(oc.medications);   // brand→generic + class/schedule/high-alert/LASA/VED from the formulary
 
   const det = [...prescribingChecks(oc), ...doseFindings(oc.medications), ...ddiFindings(oc.medications), ...muscleRelaxantFindings(oc.medications),
-    ...unindicatedRespFindings(oc), ...decongestantDurationFindings(oc.medications)];   // 0.81.8 bugs 1, 3
+    ...unindicatedRespFindings(oc), ...decongestantDurationFindings(oc.medications),   // 0.81.8 bugs 1, 3
+    ...bannedFdcFindings(oc.medications)];   // CDSCO banned-FDC (C1; DORMANT — seed ships with zero entries, stage 2 populates + bumps)
   const completeness = opdCompleteness(oc);
   const healthCheck = isHealthCheckEncounter(oc);   // 0.81.8 bug 2 — institutional screening context
 

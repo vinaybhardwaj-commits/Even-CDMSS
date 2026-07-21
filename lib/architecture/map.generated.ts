@@ -195,6 +195,14 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "cdsco-banned-fdc",
+    "plane": "unregistered"
+  },
+  {
+    "id": "cdsco-banned-fdc-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "charge-master",
     "plane": "unregistered"
   },
@@ -1941,6 +1949,31 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "type"
   },
   {
+    "from": "cdsco-banned-fdc",
+    "to": "cdsco-banned-fdc-core",
+    "kind": "value"
+  },
+  {
+    "from": "cdsco-banned-fdc",
+    "to": "opd-ingest-core",
+    "kind": "type"
+  },
+  {
+    "from": "cdsco-banned-fdc",
+    "to": "opd-note-audit-core",
+    "kind": "type"
+  },
+  {
+    "from": "cdsco-banned-fdc-core",
+    "to": "opd-ingest-core",
+    "kind": "type"
+  },
+  {
+    "from": "cdsco-banned-fdc-core",
+    "to": "opd-note-audit-core",
+    "kind": "value"
+  },
+  {
     "from": "charge-master",
     "to": "charge-master-core",
     "kind": "type"
@@ -2962,6 +2995,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "opd-note-audit",
+    "to": "cdsco-banned-fdc",
+    "kind": "value"
+  },
+  {
+    "from": "opd-note-audit",
     "to": "citations-core",
     "kind": "value"
   },
@@ -3298,6 +3336,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "CDSCO_BANNED_FDC_VERSION",
+    "value": "TABLE.version",
+    "file": "lib/cdsco-banned-fdc.ts",
+    "derived": true
+  },
+  {
     "constName": "CLINICAL_STATE_VERSION",
     "value": "clinical-state/1.2",
     "file": "lib/clinical-state/schema.ts",
@@ -3529,13 +3573,14 @@ export const VERSION_REGISTRY: VersionRow[] = [
 
 export const COVERAGE = {
   "registered": 15,
-  "unregistered": 15,
-  "total": 30,
+  "unregistered": 16,
+  "total": 31,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
     "ccb-brief-core",
     "ccb-dossier-cache-core",
+    "cdsco-banned-fdc",
     "ddx-eval-core",
     "doc-audit-core",
     "dose-limits",

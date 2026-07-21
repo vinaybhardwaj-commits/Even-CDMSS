@@ -51,6 +51,7 @@ export const SAFETY_SIGNAL_TYPES: readonly string[] = [
   'lasa_pair',               // look-alike / sound-alike
   'duplicate_molecule',      // same molecule in N products — overdose route
   'duplicate_prescription',
+  'banned_fdc',              // CDSCO-banned FDC (C4) — a Section-26A legal prohibition is never quietable
 ] as const;
 export function isSafetySignalType(t: string | undefined): boolean {
   return !!t && (SAFETY_SIGNAL_TYPES as string[]).includes(t);

@@ -1,0 +1,7 @@
+{
+  "version": "cdsco-banned-fdc/0.0",
+  "compiled_on": null,
+  "reviewed_by": null,
+  "note": "STAGE-1 DORMANT SKELETON (PRD CDMSS-CDSCO-BANNED-FDC C9): zero entries, so the banned-FDC check can never fire and scores are unchanged. Entries are compiled from Indian government gazette notifications (Section 26A, Drugs and Cosmetics Act 1940) and MUST be pharmacist-reviewed before ingest (C3) — never authored by a builder. Stage 2 populates the reviewed seed, runs the §5 dry run, bumps the engine, and sets version 1.0 with compiled_on + reviewed_by filled.",
+  "entries": []
+}
