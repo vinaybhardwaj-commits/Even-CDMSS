@@ -17,6 +17,7 @@ const ENG_FAMILY_SQL = `ANY(ARRAY[${OPD_ENGINE_VERSIONS_CURRENT.map((v) => `'${v
 import { anchorFindings, anchorsByTarget, type NoteAnchor } from '@/lib/opd-case-anchor-core';
 import { CitationChips, SourcesPanel } from '@/components/right-care/kit';
 import type { Source } from '@/lib/citations-core';
+import { citationResolves, groundingKind, GROUNDING_PRESENTATION } from '@/lib/provenance-tier-core';
 import FeedbackPanel, { type FeedbackEntry } from './feedback-panel';
 import { FindingTriage, ReviewerBar } from './finding-triage';
 import { MissedFindingCapture, type MissedEntry } from './missed-finding';
@@ -38,7 +39,7 @@ const VERDICT_COLOR: Record<string, string> = {
 };
 
 type Finding = { subject: string; verdict: string; confidence: number; domain: string; rationale: string; evidence?: string[]; estimates?: string[]; source?: string; citation_ids?: number[]; finding_ref?: string; signal_type?: string; rule_ref?: string | null; lvc_category?: string; informational?: boolean; quieted_by?: string | null };
-type LvcRuleInfo = { plain_rationale: string | null; citation: string | null };
+type LvcRuleInfo = { plain_rationale: string | null; citation: string | null; resolves: boolean };
 // 0.81.8 Decision 10 — shared category labels (local 'other' override kept) so new overuse sub-tags render.
 const LVC_CAT_LABEL: Record<string, string> = { ...LVC_CATEGORY_LABELS, other: 'Low-value care' };
 type Pdqi = { attr: string; label?: string; value: number };
@@ -392,11 +393,14 @@ function FindingCard({ f, num, sources, auditId, triage, ruleMap }: { f: Finding
   const rule = isLvc && f.rule_ref ? ruleMap[f.rule_ref] : null;
   const catLabel = f.lvc_category ? (LVC_CAT_LABEL[f.lvc_category] || f.lvc_category) : 'Low-value care';
   const grounded = !!(f.citation_ids && f.citation_ids.length > 0);
-  const ground = f.source === 'deterministic'
-    ? { label: 'Deterministic rule', cls: 'border-slate-200 bg-slate-50 text-slate-500' }
-    : grounded
-      ? { label: 'Grounded in CDMSS corpus', cls: 'border-teal-200 bg-teal-50 text-teal-800' }
-      : { label: 'General clinical reasoning — not corpus-cited', cls: 'border-slate-200 bg-slate-50 text-slate-500' };
+  // L8 (V-approved wording): certainty of mechanism and externality of source raise visual weight;
+  // internal self-reference does not. Kind comes from the shared core (provenance-tier-core).
+  const gk = groundingKind(f, !!rule?.resolves);
+  const gp = GROUNDING_PRESENTATION[gk];
+  const ground = {
+    label: gp.label,
+    cls: gp.elevated ? 'border-teal-200 bg-teal-50 text-teal-800' : 'border-slate-200 bg-slate-50 text-slate-500',
+  };
   const tone = chipTone(f);
   const cardCls = tone === 'red' ? 'border-red-200 bg-red-50/50' : tone === 'amber' ? 'border-amber-200 bg-amber-50/40' : 'border-slate-200 bg-white';
   return (
@@ -423,7 +427,9 @@ function FindingCard({ f, num, sources, auditId, triage, ruleMap }: { f: Finding
               <details className="mt-1 rounded-md border border-amber-200 bg-amber-50/60 px-2 py-1">
                 <summary className="cursor-pointer text-[10.5px] font-medium text-amber-800">Right Care · {catLabel}</summary>
                 <div className="mt-1 text-[11px] leading-snug text-slate-600">{rule.plain_rationale}
-                  {rule.citation && <a href={rule.citation} target="_blank" rel="noopener" className="ml-1 text-amber-700 hover:underline">source →</a>}
+                  {/* L9: the link renders ONLY when the citation resolves to a specific
+                      recommendation — a generic catalog root shows the plain rationale, no link. */}
+                  {rule.resolves && rule.citation && <a href={rule.citation} target="_blank" rel="noopener" className="ml-1 text-amber-700 hover:underline">source →</a>}
                 </div>
               </details>
             ) : (
@@ -470,13 +476,21 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
   // Right Care rule metadata (§7) — plain_rationale + citation per rule_ref on this note's LVC findings.
   const lvcRefs = Array.from(new Set(rawFindings.map((f) => f.rule_ref).filter(Boolean).map((x) => String(x))));
   const ruleRows = lvcRefs.length
-    ? await run(`SELECT id, plain_rationale, statement, citation_pmid, citation_url FROM lvc_recommendations WHERE id = ANY($1)`, [lvcRefs]).catch(() => [])
+    ? await run(`SELECT id, plain_rationale, statement, citation_doi, citation_pmid, citation_url FROM lvc_recommendations WHERE id = ANY($1)`, [lvcRefs]).catch(() => [])
     : [];
   const ruleMap: Record<string, LvcRuleInfo> = {};
   for (const rr of ruleRows as Record<string, unknown>[]) {
+    // L7 — the ONE resolvability predicate (provenance-tier-core), computed once per rule here and
+    // consumed by both the grounding label and the source-link gate below. Never reimplemented.
+    const resolves = citationResolves({
+      citation_doi: rr.citation_doi == null ? null : String(rr.citation_doi),
+      citation_pmid: rr.citation_pmid == null ? null : String(rr.citation_pmid),
+      citation_url: rr.citation_url == null ? null : String(rr.citation_url),
+    });
     ruleMap[String(rr.id)] = {
       plain_rationale: rr.plain_rationale ? String(rr.plain_rationale) : (rr.statement ? String(rr.statement) : null),
       citation: rr.citation_url ? String(rr.citation_url) : (rr.citation_pmid ? `https://pubmed.ncbi.nlm.nih.gov/${rr.citation_pmid}/` : null),
+      resolves,
     };
   }
   const nLowValue = rawFindings.filter((f) => f.verdict === 'low-value').length;

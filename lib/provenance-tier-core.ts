@@ -1,0 +1,144 @@
+/**
+ * lib/provenance-tier-core.ts — provenance tier classifier (PURE). PRD CDMSS-PROVENANCE-TIER-LEDGER
+ * (L1–L9). No db / Next imports; loads under strip-types for unit tests.
+ *
+ * The tier is a READ-TIME LENS over a stored finding (L1) — never stamped, so history reclassifies
+ * the moment a catalog lands or a citation is attached. The mapping is DETERMINISTIC over
+ * signal_type + verdict + source + the attributed rule's citation fields (L3 — no LLM anywhere:
+ * using an LLM to judge whether an LLM's finding is sourceable is the banned circularity).
+ *
+ * THE RESOLVABILITY PREDICATE (L7) is the correctness crux, shared by the ledger classifier AND the
+ * finding-card UI so they can never disagree about what counts as cited. A citation resolves iff it
+ * has a DOI, a PMID, or a URL that points beyond a known-generic root to a specific recommendation.
+ * The 44 society rules all carry `choosingwisely.org/clinician-lists/` — a redirect to a homepage —
+ * and MUST classify as non-resolving (a dead generic link is internal consensus wearing a badge).
+ */
+
+// ── The six tiers (L2) ────────────────────────────────────────────────────────
+export const PROVENANCE_TIERS = [
+  'deterministic',            // backed by a rule/check with a RESOLVABLE external citation
+  'category_authority',       // society/guideline citation at category level (see note below)
+  'internal_consensus',       // attributed to a self-mined rule; no external source
+  'uncited_deterministic',    // deterministic in-code check, no citation attached
+  'unattributed_sourceable',  // no rule matched, but the finding type is codifiable
+  'inherent_judgment',        // LLM clinical judgement no catalog can cite — the structural floor
+] as const;
+export type ProvenanceTier = (typeof PROVENANCE_TIERS)[number];
+
+// NOTE (flagged in the build report): `category_authority` is defined by the PRD's tier table (§2)
+// but UNREACHABLE under the §3 classification rules as settled — a resolving citation maps to
+// `deterministic` and a non-resolving one to `internal_consensus`, so nothing currently lands here.
+// It is kept in the enum so the ledger shows an honest zero rather than hiding the tier.
+
+export const PROVENANCE_TIER_LABELS: Record<ProvenanceTier, string> = {
+  deterministic: 'Deterministic — resolvable external citation',
+  category_authority: 'Category authority — society citation at category level',
+  internal_consensus: 'Internal consensus — self-mined rule, no external source',
+  uncited_deterministic: 'Deterministic check — no citation attached',
+  unattributed_sourceable: 'Unattributed — sourceable (a catalog entry could exist)',
+  inherent_judgment: 'Inherent clinical judgement — cannot be cited by any catalog',
+};
+
+// ── The resolvability predicate (L7) ──────────────────────────────────────────
+export interface RuleCitationFields {
+  citation_doi?: string | null;
+  citation_pmid?: string | null;
+  citation_url?: string | null;
+}
+
+/** Known-generic roots: URLs that identify a CATALOG, not a recommendation. Normalised form
+ *  (lowercase, no protocol, no www., no trailing slash). A citation equal to one of these — or to a
+ *  bare domain — does not resolve. Extend as generic roots are discovered; never remove. */
+export const GENERIC_CITATION_ROOTS: readonly string[] = [
+  'choosingwisely.org/clinician-lists',   // all 44 society rules; redirects to a homepage
+  'choosingwisely.org',
+  'choosingwiselycanada.org',
+  'cdsco.gov.in',
+  'pubmed.ncbi.nlm.nih.gov',              // bare PubMed root (a /<pmid> path DOES resolve)
+  'doi.org',                              // bare DOI resolver root (a /10.x path DOES resolve)
+] as const;
+
+/** Normalise a URL for root comparison: lowercase, strip protocol + www. + query/hash + trailing /. */
+function normalizeUrl(u: string): string {
+  return String(u).trim().toLowerCase()
+    .replace(/^https?:\/\//, '').replace(/^www\./, '')
+    .replace(/[?#].*$/, '').replace(/\/+$/, '');
+}
+
+/** Does this URL point to a SPECIFIC recommendation (a path beyond a known-generic root)? */
+export function urlResolves(url: string | null | undefined): boolean {
+  if (!url || !String(url).trim()) return false;
+  const norm = normalizeUrl(String(url));
+  if (!norm || !norm.includes('/')) return false;                       // bare domain → generic
+  if ((GENERIC_CITATION_ROOTS as string[]).includes(norm)) return false; // exactly a known-generic root
+  return true;                                                           // has a path beyond the roots
+}
+
+/** L7 — the ONE shared predicate: DOI, PMID, or an instance-specific URL. */
+export function citationResolves(c: RuleCitationFields | null | undefined): boolean {
+  if (!c) return false;
+  if (c.citation_doi && String(c.citation_doi).trim()) return true;
+  if (c.citation_pmid && String(c.citation_pmid).trim()) return true;
+  return urlResolves(c.citation_url);
+}
+
+// ── The judgement family (§3 rule 4) ──────────────────────────────────────────
+// appropriateness_* + prescribing_review + longitudinal_* per the settled decisions. The PRD also
+// says "documentation/reasoning signals": no additional non-informational signal_type in the
+// current vocabulary answers that description (flagged in the build report), so the family is
+// exactly these patterns today. prescribing_general / prescribing_high_value deliberately fall
+// through to rule 5 (unattributed_sourceable) — the bias must run AGAINST flattering the floor.
+const JUDGEMENT_FAMILY_RE = /^(appropriateness_|longitudinal_)/;
+const JUDGEMENT_FAMILY_EXACT = new Set(['prescribing_review']);
+export function isJudgementSignalType(t: string | undefined): boolean {
+  return !!t && (JUDGEMENT_FAMILY_RE.test(t) || JUDGEMENT_FAMILY_EXACT.has(t));
+}
+
+// ── The classifier (§3, first match wins) ─────────────────────────────────────
+export interface TierableFinding {
+  verdict?: string;
+  source?: string;                 // 'llm' | 'deterministic'
+  signal_type?: string;
+  rule_ref?: string | null;
+}
+
+/**
+ * Classify one finding. `rule` = the attributed lvc_recommendations row's citation fields (the
+ * caller resolves rule_ref → row; pure core does no IO). rule_ref present but the row missing
+ * (deleted rule / lookup failure) classifies as internal_consensus — attribution to a rule whose
+ * external source cannot be shown earns no external credit (conservative, same direction as rule 5).
+ */
+export function classifyProvenanceTier(f: TierableFinding, rule?: RuleCitationFields | null): ProvenanceTier {
+  if (f.rule_ref) {
+    return citationResolves(rule) ? 'deterministic' : 'internal_consensus';       // §3.1
+  }
+  if (f.source === 'deterministic') return 'uncited_deterministic';               // §3.2 (no backing table supplies a citation today)
+  if (f.verdict === 'low-value') return 'unattributed_sourceable';                // §3.3
+  if (isJudgementSignalType(f.signal_type)) return 'inherent_judgment';           // §3.4
+  return 'unattributed_sourceable';                                               // §3.5 — default to SOURCEABLE, never to inherent
+}
+
+// ── Finding-card grounding (L8/L9) — shared so the UI and ledger cannot disagree ──
+export type GroundingKind = 'deterministic_rule' | 'external_source' | 'internal_corpus' | 'no_source';
+
+/** V-approved labels (L8, verbatim) + tone. Elevation = certainty of mechanism or externality of
+ *  source; internal self-reference is never elevated. */
+export const GROUNDING_PRESENTATION: Record<GroundingKind, { label: string; elevated: boolean }> = {
+  deterministic_rule: { label: 'Deterministic rule', elevated: true },
+  external_source: { label: 'External source', elevated: true },
+  internal_corpus: { label: 'Internal corpus reference', elevated: false },
+  no_source: { label: 'Clinical reasoning — no source', elevated: false },
+};
+
+/** Grounding kind for one finding card. Precedence: mechanism certainty → external source →
+ *  internal corpus match → nothing. `ruleResolves` is the L7 predicate's verdict on the finding's
+ *  attributed rule (computed ONCE by the caller via citationResolves — never reimplemented). */
+export function groundingKind(
+  f: { source?: string; citation_ids?: number[] },
+  ruleResolves: boolean,
+): GroundingKind {
+  if (f.source === 'deterministic') return 'deterministic_rule';
+  if (ruleResolves) return 'external_source';
+  if (Array.isArray(f.citation_ids) && f.citation_ids.length > 0) return 'internal_corpus';
+  return 'no_source';
+}

@@ -607,6 +607,14 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "provenance-tier",
+    "plane": "unregistered"
+  },
+  {
+    "id": "provenance-tier-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "pubchem",
     "plane": "unregistered"
   },
@@ -921,6 +929,16 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/admin",
     "to": "opd-note-score-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
+    "to": "provenance-tier",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
+    "to": "provenance-tier-core",
     "kind": "value"
   },
   {
@@ -1426,6 +1444,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "proms",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "provenance-tier",
     "kind": "value"
   },
   {
@@ -3191,6 +3214,16 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "proms",
     "to": "trace",
+    "kind": "value"
+  },
+  {
+    "from": "provenance-tier",
+    "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "provenance-tier",
+    "to": "provenance-tier-core",
     "kind": "value"
   },
   {
