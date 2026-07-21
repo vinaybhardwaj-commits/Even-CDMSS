@@ -26,8 +26,8 @@ import { doseFindings } from './dose-limits';
 import { tagInteractions } from './ddi-tags';
 import { curatedInteractions, mergeRank, type DrugClass } from './ddi';
 import type { DdiPair } from './rxlabelguard';
-import { applySuppressions, type Suppression } from './audit-suppression-core';
-import { loadActiveSuppressions } from './audit-suppression-store';
+import { applySuppressions, applyDemotes, type Suppression } from './audit-suppression-core';
+import { loadActiveSuppressions, loadQuietingConfig } from './audit-suppression-store';
 import { stampLvcMetadata, type LvcRuleLite } from './opd-lvc-classify-core';
 import { bandFor, type ComplexityBand, type ComplexityInputs } from './opd-complexity-core';
 import { fetchPatientHistoryBundle } from './metabase';
@@ -42,6 +42,28 @@ async function getActiveSuppressions(): Promise<Suppression[]> {
   if (_suppCache && now - _suppCache.at < 60_000) return _suppCache.list;
   try { const list = await loadActiveSuppressions(); _suppCache = { at: now, list }; return list; }
   catch { return _suppCache?.list ?? []; }
+}
+
+// Quieting (demote) config — PRD CDMSS-QUIETING-DEMOTE-SYSTEM. Same discipline as getLvcRules:
+// 5-min cache + 2s-timeout race. FAIL-SAFE IS LOAD-BEARING (PRD §4): any error ⇒ { rules: [], gen: 0 }
+// — the audit scores UN-quieted with gen 0 and a logged warning; quieting config can never block,
+// fail, or over-quiet an audit.
+export interface QuietingConfig { rules: Suppression[]; gen: number }
+let _quietCache: { at: number; cfg: QuietingConfig } | null = null;
+async function getQuietingConfig(): Promise<QuietingConfig> {
+  const now = Date.now();
+  if (_quietCache && now - _quietCache.at < 300_000) return _quietCache.cfg;
+  try {
+    const cfg = await Promise.race([
+      loadQuietingConfig(),
+      new Promise<QuietingConfig>((_, rej) => setTimeout(() => rej(new Error('quieting config timeout')), 2000)),
+    ]);
+    _quietCache = { at: now, cfg };
+    return cfg;
+  } catch (e) {
+    console.warn('[opd-audit] quieting config unavailable — scoring un-quieted at gen 0', (e as Error).message);
+    return _quietCache?.cfg ?? { rules: [], gen: 0 };
+  }
 }
 
 // B4 — the treating clinician's real specialty (doctor_directory), so a specialist's note is judged
@@ -257,6 +279,9 @@ export interface OpdNoteAudit {
   sources: Source[];
   engineVersion: string;
   traceId?: string;
+  /** Quieting policy generation this audit was scored under (Q1). 0 = no quieting policy (also the
+   *  fail-safe when config is unreachable). Persisted on the audit row (quieting_gen). */
+  quietingGen?: number;
   // Right Care case-mix complexity (0.81.3). Computed at audit time from db13 history; NULL band on
   // any fetch failure (never blocks the audit). Persisted on the audit row; excluded from O/E when null.
   complexity?: { band: ComplexityBand | null; inputs: ComplexityInputs | null } | null;
@@ -327,6 +352,8 @@ export interface AuditOpdOpts {
   prodTag?: boolean;
   /** Active Tier-1 suppressions to apply (defaults to the cached active set). Pass [] to disable. */
   suppressions?: Suppression[];
+  /** Quieting config override (tests / replay). Omitted → cached store read with gen-0 fail-safe. */
+  quieting?: QuietingConfig;
   /** Stage 3 — force-attach the de-identified longitudinal note projection regardless of the env flag
    *  (the replay endpoint sets this so it can recompute a note's longitudinal block on demand). */
   longitudinal?: boolean;
@@ -358,6 +385,8 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
   // none are active. Applied AFTER stampFindingIdentity so it matches on signal_type + subject.
   const supps = opts.suppressions ?? await getActiveSuppressions();
   const lvcRules = await getLvcRules();   // 0.81.4 matcher input (cached, 2s-timeout fail-safe → [])
+  // Quieting config (demote rules + policy gen) — fail-safe to { rules: [], gen: 0 } (never blocks).
+  const quietCfg = opts.quieting ?? await getQuietingConfig();
   const noMeds = oc.medications.length === 0;
   const finalize = (fs: OpdFinding[]): OpdFinding[] => {
     let out = stampFindingIdentity(fs);
@@ -374,7 +403,12 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     // non-informational low-value findings (after neutralisation) — keyword-matched against the active
     // lvc_recommendations. Additive metadata — never changes verdict/domain/score.
     out = stampLvcMetadata(out, lvcRules);
-    return applySuppressions(out, keys.doctorUid, supps).findings;
+    out = applySuppressions(out, keys.doctorUid, supps).findings;
+    // QUIETING SEAM (PRD Q1 — the one engine touch-point): active demote rules mark matching
+    // findings informational + quieted_by, via the exact mechanism scoring already excludes
+    // upstream (findings.filter(f => !f.informational) below). Safety signal types are skipped
+    // in applyDemotes regardless of rules (engine-side half of the severity floor).
+    return applyDemotes(out, keys.doctorUid, quietCfg.rules).findings;
   };
 
   // Right Care complexity — computed once per audit from db13 history (0.81.3). Fully guarded: a bad
@@ -405,7 +439,7 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
       pdqi9: opts.reuse.pdqi9,
       patientCentred: completeness.patientCentred,
     });
-    return { keys, scorecard, completeness, findings, suggestions: opts.reuse.suggestions, sources: opts.reuse.sources, engineVersion: engineVersion, traceId: undefined };
+    return { keys, scorecard, completeness, findings, suggestions: opts.reuse.suggestions, sources: opts.reuse.sources, engineVersion: engineVersion, traceId: undefined, quietingGen: quietCfg.gen };
   }
 
   const doTrace = opts.trace !== false;
@@ -468,6 +502,7 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
       keys, scorecard, completeness,
       findings, suggestions: parsed?.suggestions ?? [],
       sources, engineVersion: engineVersion, traceId,
+      quietingGen: quietCfg.gen,
       complexity: await complexityFor(),
       longitudinalInput,
     };
@@ -480,6 +515,6 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
       pdqi9: null,
       patientCentred: completeness.patientCentred,
     });
-    return { keys, scorecard, completeness, findings: finalize(det), suggestions: [], sources: [], engineVersion: engineVersion, traceId, complexity: await complexityFor() };
+    return { keys, scorecard, completeness, findings: finalize(det), suggestions: [], sources: [], engineVersion: engineVersion, traceId, complexity: await complexityFor(), quietingGen: quietCfg.gen };
   }
 }

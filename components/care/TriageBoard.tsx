@@ -9,8 +9,9 @@
  * Reads GET /api/opd-triage/queue, writes POST /api/opd-triage/decide. Advisory framing throughout.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Loader2, AlertTriangle, ChevronRight, CheckCircle2, Bug, ShieldAlert, RefreshCw } from 'lucide-react';
+import { Loader2, AlertTriangle, ChevronRight, CheckCircle2, Bug, ShieldAlert, RefreshCw, BellOff } from 'lucide-react';
 import { classifyTransition, DISMISS_REASONS, RESOLUTION_OUTCOMES } from '@/lib/opd-triage-core';
+import { isSafetySignalType } from '@/lib/audit-suppression-core';
 
 // Feature C (Gold-Label Review-Mode §5) — friction-capped instrumentation chips. A dismiss transition
 // (audit_bug OR valid_signal not routed) requires a REASON chip; a resolution transition (routed)
@@ -52,7 +53,25 @@ interface TypeGroup {
   signal_type: string; label: string; count: number; notes: number;
   severity_weight: number; importance_hint: Importance; concentrated: boolean; noisiest: boolean;
   representative: Representative; triage: TypeDecisionState | null;
+  quieted_count?: number; quieted_rule?: string | null; quieted_only?: boolean;
 }
+
+// ── Quieting (demote) — PRD CDMSS-QUIETING-DEMOTE-SYSTEM ─────────────────────
+interface QuietingRule {
+  id: string; signal_type: string; discriminator: string | null; match_kind: string;
+  action: string; status?: string; active: boolean; reason: string | null; created_by: string | null;
+  approved_by: string | null; approved_at: string | null; created_at: string;
+}
+interface QuietingResp {
+  ok: boolean; suppressions: QuietingRule[]; current_gen: number; is_admin: boolean;
+  quieted_volume_30d?: { quieted: number; low_value: number };
+}
+/** Per-card quiet-proposal draft. */
+interface QuietDraft {
+  open?: boolean; scope?: 'category' | 'subject'; pattern?: string; reason?: string; proposer?: string;
+  busy?: boolean; done?: string; error?: string;
+}
+const ruleShort = (id: string | null | undefined) => (id ? id.slice(0, 8) : '?');
 interface DoctorGroup {
   doctor_uid: string; name?: string; speciality?: string;
   notes: number; instances: number; untriaged_types: number; max_importance_hint: Importance; types: TypeGroup[];
@@ -138,13 +157,17 @@ export default function TriageBoard() {
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   // Stage 3 — the label-only lane. `lane` toggles the two tabs; the tabs render ONLY when the lane is
   // enabled (dark ship) so the board is byte-identical to today while OPD_LONGITUDINAL_ENABLED is off.
-  const [lane, setLane] = useState<'action' | 'longitudinal'>('action');
+  const [lane, setLane] = useState<'action' | 'longitudinal' | 'quieting'>('action');
   const [laneData, setLaneData] = useState<LaneResp | null>(null);
+  // Quieting: policy state (rules + gen + is_admin), per-card proposal drafts, filter toggle.
+  const [quieting, setQuieting] = useState<QuietingResp | null>(null);
+  const [quietDrafts, setQuietDrafts] = useState<Record<string, QuietDraft>>({});
+  const [showQuieted, setShowQuieted] = useState(false);
 
-  const load = useCallback(async (status: 'untriaged' | 'all') => {
+  const load = useCallback(async (status: 'untriaged' | 'all', quieted: boolean) => {
     setLoading(true); setErr(null);
     try {
-      const r = await fetch(`/api/opd-triage/queue?status=${status}`, { cache: 'no-store' });
+      const r = await fetch(`/api/opd-triage/queue?status=${status}${quieted ? '&quieted=1' : ''}`, { cache: 'no-store' });
       const j = (await r.json()) as QueueResp;
       if (!j.ok) throw new Error(j.error || 'failed to load queue');
       setData(j);
@@ -161,9 +184,19 @@ export default function TriageBoard() {
     } catch { setLaneData(null); }
   }, []);
 
-  useEffect(() => { load(statusFilter); }, [load, statusFilter]);
+  const loadQuieting = useCallback(async () => {
+    try {
+      const r = await fetch('/api/opd-triage/suppressions', { cache: 'no-store' });
+      const j = (await r.json()) as QuietingResp;
+      setQuieting(j.ok ? j : null);
+    } catch { setQuieting(null); }
+  }, []);
+
+  useEffect(() => { load(statusFilter, showQuieted); }, [load, statusFilter, showQuieted]);
   useEffect(() => { loadLane(); }, [loadLane]);
+  useEffect(() => { loadQuieting(); }, [loadQuieting]);
   const laneEnabled = !!laneData?.enabled;
+  const quietingGen = quieting?.current_gen ?? 0;
 
   const doctor = useMemo(() => data?.doctors.find((d) => d.doctor_uid === selected) ?? null, [data, selected]);
 
@@ -225,10 +258,23 @@ export default function TriageBoard() {
         <div className="flex items-center gap-2">
           <h1 className="text-[20px] font-semibold text-slate-900">OPD Audit Triage</h1>
           <span className="rounded-full bg-sky-50 px-2 py-0.5 text-[11px] text-sky-700">Advisory · care management</span>
+          {/* Quieting policy-generation chip (Q4) — hidden at gen 0 */}
+          {quietingGen > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700" title="Findings matching an active quieting rule are informational: recorded and visible here, but out of doctor scores and doctor-facing display.">
+              <BellOff className="h-3 w-3" /> quieting policy · gen {quietingGen}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <a href="/admin/opd-audit/how-it-works" className="text-[12.5px] text-sky-700 hover:underline">How the audit works →</a>
           <a href="/care/triage/health" className="text-[12.5px] text-sky-700 hover:underline">Signal health →</a>
+          {/* Quieting filter toggle (default off): reveal quieted findings as passive badge-only cards */}
+          <button onClick={() => setShowQuieted((v) => !v)}
+            className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[12px] font-medium transition ${
+              showQuieted ? 'border-violet-300 bg-violet-50 text-violet-700' : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300'}`}
+            title="Show findings quieted by an active rule (they never score and never route)">
+            <BellOff className="h-3 w-3" /> {showQuieted ? 'Hiding nothing' : 'Show quieted'}
+          </button>
           <div className="flex rounded-lg border border-slate-200 p-0.5 text-[12px]">
             {(['untriaged', 'all'] as const).map((s) => (
               <button key={s} onClick={() => setStatusFilter(s)}
@@ -237,37 +283,38 @@ export default function TriageBoard() {
               </button>
             ))}
           </div>
-          <button onClick={() => { load(statusFilter); loadLane(); }} className="rounded-lg border border-slate-200 p-1.5 text-slate-500 hover:border-slate-300" title="Refresh">
+          <button onClick={() => { load(statusFilter, showQuieted); loadLane(); loadQuieting(); }} className="rounded-lg border border-slate-200 p-1.5 text-slate-500 hover:border-slate-300" title="Refresh">
             <RefreshCw className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>
 
-      {/* Stage 3 — two lanes. Rendered ONLY when the longitudinal lane is enabled, so the board is
-          byte-identical to today while the flag is off. Action queue (routable) | Longitudinal (label-only). */}
-      {laneEnabled && (
-        <div className="mt-3 flex gap-1.5 border-b border-slate-200">
-          {([
-            ['action', 'Action queue', data ? data.doctors.reduce((n, d) => n + d.instances, 0) : 0, 'routable'],
-            ['longitudinal', 'Longitudinal · labelling', laneData?.counts.instances ?? 0, 'informational'],
-          ] as const).map(([id, label, count, kind]) => {
-            const on = lane === id;
-            const tone = id === 'longitudinal' ? 'border-indigo-500 text-indigo-700' : 'border-sky-600 text-sky-700';
-            const badge = on
-              ? (id === 'longitudinal' ? 'bg-indigo-50 text-indigo-700' : 'bg-sky-50 text-sky-700')
-              : 'bg-slate-100 text-slate-500';
-            return (
-              <button key={id} onClick={() => setLane(id as 'action' | 'longitudinal')}
-                className={`flex items-center gap-2 border-b-2 px-3.5 py-2 text-[13px] font-semibold transition ${on ? tone : 'border-transparent text-slate-400 hover:text-slate-600'}`}>
-                {label}
-                <span className={`rounded-full px-2 py-0.5 text-[10.5px] font-bold ${badge}`}>{count} {kind}</span>
-              </button>
-            );
-          })}
-        </div>
-      )}
+      {/* Lanes: Action queue (routable) | Longitudinal (label-only; renders only when its dark-ship
+          flag is on) | Quieting (Q4 — proposed/active/retired demote rules). */}
+      <div className="mt-3 flex gap-1.5 border-b border-slate-200">
+        {([
+          ['action', 'Action queue', data ? data.doctors.reduce((n, d) => n + d.instances, 0) : 0, 'routable'],
+          ...(laneEnabled ? [['longitudinal', 'Longitudinal · labelling', laneData?.counts.instances ?? 0, 'informational'] as const] : []),
+          ['quieting', 'Quieting', quieting ? quieting.suppressions.filter((s) => s.action === 'demote').length : 0, 'rules'],
+        ] as ReadonlyArray<readonly [string, string, number, string]>).map(([id, label, count, kind]) => {
+          const on = lane === id;
+          const tone = id === 'longitudinal' ? 'border-indigo-500 text-indigo-700' : id === 'quieting' ? 'border-violet-500 text-violet-700' : 'border-sky-600 text-sky-700';
+          const badge = on
+            ? (id === 'longitudinal' ? 'bg-indigo-50 text-indigo-700' : id === 'quieting' ? 'bg-violet-50 text-violet-700' : 'bg-sky-50 text-sky-700')
+            : 'bg-slate-100 text-slate-500';
+          return (
+            <button key={id} onClick={() => setLane(id as 'action' | 'longitudinal' | 'quieting')}
+              className={`flex items-center gap-2 border-b-2 px-3.5 py-2 text-[13px] font-semibold transition ${on ? tone : 'border-transparent text-slate-400 hover:text-slate-600'}`}>
+              {label}
+              <span className={`rounded-full px-2 py-0.5 text-[10.5px] font-bold ${badge}`}>{count} {kind}</span>
+            </button>
+          );
+        })}
+      </div>
 
-      {laneEnabled && lane === 'longitudinal' ? (
+      {lane === 'quieting' ? (
+        <QuietingTab data={quieting} onChanged={loadQuieting} />
+      ) : laneEnabled && lane === 'longitudinal' ? (
         <LongitudinalLane data={laneData} onDecided={loadLane} />
       ) : (
       <>
@@ -315,12 +362,34 @@ export default function TriageBoard() {
                   </div>
                 );
               }
+              // Quieting: a fully-quieted type renders as a passive card — visible, badged, no
+              // decision pipeline (its findings are informational and score nothing).
+              if (t.quieted_only) {
+                return (
+                  <div key={key} className="rounded-xl border border-violet-100 bg-violet-50/40 p-4">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <BellOff className="h-3.5 w-3.5 text-violet-500" />
+                      <span className="text-[14px] font-semibold text-slate-700">{t.label}</span>
+                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">×{t.count}</span>
+                      <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold text-violet-700">quieted · rule {ruleShort(t.quieted_rule)}</span>
+                      <span className="ml-auto text-[11px] text-slate-400">{rep.note_date}</span>
+                    </div>
+                    <div className="mt-2 rounded-lg bg-white/70 px-3 py-2">
+                      <span className="text-[12.5px] text-slate-600">{rep.subject}</span>
+                      <p className="mt-1 text-[11px] text-slate-400">Recorded and counted in analytics; out of the doctor’s score and doctor-facing display. Retire the rule on the Quieting tab to restore scoring for future audits.</p>
+                    </div>
+                  </div>
+                );
+              }
               const existing = t.triage;
               return (
                 <div key={key} className="rounded-xl border border-slate-200 bg-white p-4">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-[14px] font-semibold text-slate-900">{t.label}</span>
                     <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">×{t.count}</span>
+                    {(t.quieted_count ?? 0) > 0 && (
+                      <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold text-violet-700">+{t.quieted_count} quieted · rule {ruleShort(t.quieted_rule)}</span>
+                    )}
                     {t.noisiest && <span className="rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-semibold text-orange-700">loudest</span>}
                     {t.concentrated && <span className="rounded-full bg-purple-100 px-2 py-0.5 text-[10px] font-semibold text-purple-700">concentrated</span>}
                     <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${impPill[t.importance_hint]}`}>hint: {t.importance_hint}</span>
@@ -429,7 +498,69 @@ export default function TriageBoard() {
                         {draft.validity === 'audit_bug' ? `Junk all ${t.count}` : `Apply to all ${t.count}`}
                       </button>
                       <span className="text-[11px] text-slate-400">Batches the decision across all {t.count} instance(s)</span>
+                      {/* Quieting (Q4/Q5): named care proposal → admin activation. Safety types are
+                          structurally un-quietable — the button is disabled with the reason shown
+                          (and the core + store both enforce the floor server-side regardless). */}
+                      {isSafetySignalType(t.signal_type) ? (
+                        <span className="ml-auto inline-flex items-center gap-1 text-[11px] text-slate-400" title="Deterministic patient-safety signals cannot be quieted — the severity floor is enforced in the engine, not just here.">
+                          <BellOff className="h-3 w-3" /> safety signal — can’t quiet
+                        </span>
+                      ) : (
+                        <button onClick={() => setQuietDrafts((qd) => ({ ...qd, [key]: { ...qd[key], open: !qd[key]?.open, scope: qd[key]?.scope ?? (rep.lvc_category ? 'category' : 'subject') } }))}
+                          className="ml-auto inline-flex items-center gap-1 rounded-lg border border-violet-200 bg-white px-2 py-1 text-[11.5px] font-medium text-violet-700 transition hover:bg-violet-50">
+                          <BellOff className="h-3 w-3" /> Quiet this signal type
+                        </button>
+                      )}
                     </div>
+
+                    {/* Quiet proposal form (care session): scope + mandatory reason + named proposer */}
+                    {quietDrafts[key]?.open && !isSafetySignalType(t.signal_type) && (() => {
+                      const qd = quietDrafts[key] || {};
+                      const setQd = (patch: QuietDraft) => setQuietDrafts((all) => ({ ...all, [key]: { ...all[key], ...patch } }));
+                      if (qd.done) return <div className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-[12px] text-violet-800">{qd.done}</div>;
+                      const canSubmit = !!(qd.reason || '').trim() && !!(qd.proposer || '').trim() && (qd.scope === 'category' ? !!rep.lvc_category : !!(qd.pattern || rep.subject));
+                      const submit = async () => {
+                        setQd({ busy: true, error: undefined });
+                        try {
+                          const body = {
+                            op: 'propose-demote', signal_type: t.signal_type,
+                            match_kind: qd.scope === 'category' ? 'lvc_category' : 'subject_contains',
+                            discriminator: qd.scope === 'category' ? rep.lvc_category : (qd.pattern || rep.subject),
+                            reason: (qd.reason || '').trim(), created_by: (qd.proposer || '').trim(),
+                            source_triage_ref: rep.audit_id,
+                          };
+                          const r = await fetch('/api/opd-triage/suppressions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+                          const j = await r.json();
+                          if (!j.ok) throw new Error(j.error || 'proposal failed');
+                          setQd({ busy: false, done: 'Quiet proposal recorded — pending administrator activation (Quieting tab).' });
+                        } catch (e) { setQd({ busy: false, error: String((e as Error).message) }); }
+                      };
+                      return (
+                        <div className="rounded-lg border border-violet-200 bg-violet-50/50 p-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="w-16 shrink-0 text-[11px] font-medium uppercase tracking-wide text-violet-500">Scope</span>
+                            {rep.lvc_category && <Btn active={qd.scope === 'category'} tone="purple" onClick={() => setQd({ scope: 'category' })}>Category: {LVC_CAT_LABEL[rep.lvc_category] || rep.lvc_category}</Btn>}
+                            <Btn active={qd.scope === 'subject'} tone="purple" onClick={() => setQd({ scope: 'subject' })}>Subject pattern</Btn>
+                          </div>
+                          {qd.scope === 'subject' && (
+                            <input value={qd.pattern ?? rep.subject} onChange={(e) => setQd({ pattern: e.target.value })}
+                              className="mt-2 h-7 w-full rounded-md border border-violet-200 bg-white px-2.5 text-[12px] text-slate-700 outline-none focus:border-violet-300" placeholder="Subject contains…" />
+                          )}
+                          <input value={qd.reason || ''} onChange={(e) => setQd({ reason: e.target.value })}
+                            className="mt-2 h-7 w-full rounded-md border border-violet-200 bg-white px-2.5 text-[12px] text-slate-700 outline-none focus:border-violet-300" placeholder="Reason (required) — e.g. commonplace in Indian practice per governance ruling" />
+                          <input value={qd.proposer || ''} onChange={(e) => setQd({ proposer: e.target.value })}
+                            className="mt-2 h-7 w-full rounded-md border border-violet-200 bg-white px-2.5 text-[12px] text-slate-700 outline-none focus:border-violet-300" placeholder="Your name (required — recorded as the proposer)" />
+                          {qd.error && <div className="mt-1.5 text-[11.5px] text-rose-600">{qd.error}</div>}
+                          <div className="mt-2 flex items-center gap-2">
+                            <button disabled={!canSubmit || qd.busy} onClick={submit}
+                              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-medium text-white transition ${canSubmit && !qd.busy ? 'bg-violet-600 hover:bg-violet-700' : 'cursor-not-allowed bg-slate-300'}`}>
+                              {qd.busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <BellOff className="h-3 w-3" />} Propose quieting
+                            </button>
+                            <span className="text-[11px] text-violet-500">Scores nothing until an administrator activates it.</span>
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
               );
@@ -623,6 +754,107 @@ function LongitudinalLane({ data, onDecided }: { data: LaneResp | null; onDecide
       <p className="mt-5 border-t border-slate-100 pt-3.5 text-[11.5px] text-slate-500">
         The promotion gate reads from the <a href="/care/triage/health" className="text-indigo-700 underline">signal-health panel</a> — the same FP-rate machinery already tracking scored signals. Promoting an eligible type to the scored plane is a deliberate versioned step (a 0.9 addendum), never automatic. The Action-queue lane (routable signals → governance threads) is unchanged by Stage 3.
       </p>
+    </div>
+  );
+}
+
+// ── Quieting tab (PRD CDMSS-QUIETING-DEMOTE-SYSTEM Q4/Q5) ─────────────────────
+// Proposed + active + retired demote rules with full provenance (proposer, reason, dates) and a live
+// 30-day dry-run count per rule. Activate/retire render ONLY under the admin surface (is_admin from
+// the server); the endpoints enforce admin regardless of what this client shows.
+function QuietingTab({ data, onChanged }: { data: QuietingResp | null; onChanged: () => void }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [counts, setCounts] = useState<Record<string, number | null>>({});
+
+  const rules = (data?.suppressions || []).filter((s) => s.action === 'demote');
+  const order: Record<string, number> = { proposed: 0, active: 1, retired: 2 };
+  rules.sort((a, b) => (order[a.status || 'retired'] - order[b.status || 'retired']) || (a.created_at < b.created_at ? 1 : -1));
+
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      for (const r of rules) {
+        if (counts[r.id] !== undefined) continue;
+        try {
+          const resp = await fetch('/api/admin/quieting-dryrun', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ signal_type: r.signal_type, match_kind: r.match_kind, discriminator: r.discriminator }),
+          });
+          const j = await resp.json();
+          if (!dead) setCounts((c) => ({ ...c, [r.id]: j.ok ? Number(j.would_quiet) : null }));
+        } catch { if (!dead) setCounts((c) => ({ ...c, [r.id]: null })); }
+      }
+    })();
+    return () => { dead = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
+
+  async function act(id: string, op: 'approve-demote' | 'retire-demote') {
+    setBusy(id); setErr(null);
+    try {
+      const r = await fetch('/api/opd-triage/suppressions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ op, id }) });
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || `${op} failed`);
+      onChanged();
+    } catch (e) { setErr(String((e as Error).message)); }
+    finally { setBusy(null); }
+  }
+
+  const pill: Record<string, string> = {
+    proposed: 'bg-amber-100 text-amber-700', active: 'bg-violet-100 text-violet-700', retired: 'bg-slate-100 text-slate-500',
+  };
+  const vol = data?.quieted_volume_30d;
+
+  return (
+    <div className="mt-4">
+      <div className="rounded-xl border border-violet-100 bg-violet-50/60 px-4 py-3 text-[13px] text-violet-900/80">
+        <b className="text-violet-700">Quieting = routing and scoring policy, never the record.</b> A quieted finding is still generated, stored and counted in care/admin/analytics surfaces — it stops affecting the doctor’s score and doctor-facing display. A named care manager proposes with a reason; the <b>administrator role</b> activates; every activation increments the policy generation stamped on each audit row. Deterministic safety signals cannot be quieted.
+        {vol && <span className="ml-1 text-violet-700">Last 30 days: <b>{vol.quieted}</b> quieted finding(s) vs {vol.low_value} low-value flagged.</span>}
+      </div>
+
+      {err && <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[12.5px] text-rose-700">{err}</div>}
+
+      <div className="mt-4 space-y-2.5">
+        {rules.length === 0 && (
+          <div className="rounded-xl border border-slate-200 bg-white px-4 py-8 text-center text-[13px] text-slate-400">
+            No quieting rules yet. Propose one from a finding card on the Action queue.
+          </div>
+        )}
+        {rules.map((r) => (
+          <div key={r.id} className="rounded-xl border border-slate-200 bg-white p-3.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${pill[r.status || 'retired']}`}>{r.status || 'retired'}</span>
+              <span className="text-[13px] font-semibold text-slate-800">{r.signal_type}</span>
+              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">
+                {r.match_kind === 'lvc_category' ? `category = ${r.discriminator}` : r.match_kind === 'subject_contains' ? `subject ∋ “${r.discriminator}”` : 'whole type'}
+              </span>
+              <span className="rounded-full bg-violet-50 px-2 py-0.5 text-[10.5px] text-violet-700">
+                {counts[r.id] === undefined ? 'counting…' : counts[r.id] === null ? 'count unavailable' : `would have quieted ${counts[r.id]} finding(s) · 30d`}
+              </span>
+              <span className="ml-auto text-[11px] text-slate-400">rule {r.id.slice(0, 8)}</span>
+            </div>
+            <div className="mt-1.5 text-[12px] text-slate-600">{r.reason || <i>no reason recorded</i>}</div>
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
+              <span>proposed by <b className="text-slate-600">{r.created_by || 'unknown'}</b> · {r.created_at.slice(0, 10)}</span>
+              {r.approved_at && <span>· activated by <b className="text-slate-600">{r.approved_by}</b> (role) · {r.approved_at.slice(0, 10)}</span>}
+              {data?.is_admin && r.status === 'proposed' && (
+                <button disabled={busy === r.id} onClick={() => act(r.id, 'approve-demote')}
+                  className="ml-auto rounded-lg bg-violet-600 px-2.5 py-1 text-[11.5px] font-medium text-white transition hover:bg-violet-700 disabled:bg-slate-300">
+                  {busy === r.id ? 'Activating…' : 'Activate (admin)'}
+                </button>
+              )}
+              {data?.is_admin && r.status === 'active' && (
+                <button disabled={busy === r.id} onClick={() => act(r.id, 'retire-demote')}
+                  className="ml-auto rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-[11.5px] font-medium text-slate-600 transition hover:bg-slate-50 disabled:opacity-50">
+                  {busy === r.id ? 'Retiring…' : 'Retire (admin)'}
+                </button>
+              )}
+              {!data?.is_admin && r.status === 'proposed' && <span className="ml-auto italic">awaiting administrator activation</span>}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

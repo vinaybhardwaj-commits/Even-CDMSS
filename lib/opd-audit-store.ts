@@ -37,6 +37,23 @@ async function runAuditShadow(audit: OpdNoteAudit, findings: OpdNoteAudit['findi
   }
 }
 
+// Quieting choreography tolerance: the code deploys BEFORE the migration adds
+// opd_note_audits.quieting_gen, so the writers probe for the column (cached) and only include it
+// once it exists. Fail-safe: probe error ⇒ treat as absent (the stamp is dropped, never the audit).
+let _qgenCol: { at: number; present: boolean } | null = null;
+async function quietingGenColumnExists(): Promise<boolean> {
+  const now = Date.now();
+  if (_qgenCol && now - _qgenCol.at < 300_000 && _qgenCol.present) return true;
+  if (_qgenCol && now - _qgenCol.at < 60_000) return _qgenCol.present;   // re-probe absent faster post-migration
+  try {
+    const rows = (await sql(
+      `SELECT 1 AS ok FROM information_schema.columns WHERE table_name = 'opd_note_audits' AND column_name = 'quieting_gen'`,
+    )) as Array<{ ok: number }>;
+    _qgenCol = { at: now, present: rows.length > 0 };
+  } catch { _qgenCol = { at: now, present: false }; }
+  return _qgenCol.present;
+}
+
 /** Insert one audit. Returns 'inserted' | 'exists' (already audited at this engine version) | 'skipped' (no uid). */
 export async function saveOpdAudit(audit: OpdNoteAudit, meta: SaveOpdAuditMeta = {}): Promise<'inserted' | 'exists' | 'skipped'> {
   const k = audit.keys;
@@ -47,6 +64,7 @@ export async function saveOpdAudit(audit: OpdNoteAudit, meta: SaveOpdAuditMeta =
   const nCtx = findings.filter((f) => f.verdict === 'context-dependent').length;
   const nInteraction = findings.filter((f) => /interaction|contraindicat|\bddi\b/i.test(`${f.subject} ${f.rationale}`)).length;
   const missing = audit.completeness?.missing ?? [];
+  const withGen = await quietingGenColumnExists();
 
   const rows = (await sql(
     `INSERT INTO opd_note_audits
@@ -56,10 +74,10 @@ export async function saveOpdAudit(audit: OpdNoteAudit, meta: SaveOpdAuditMeta =
        pdqi9, completeness_pct, n_missing_mandatory,
        n_findings, n_low_value, n_context_dependent, n_interaction_alerts,
        findings, suggestions, engine_version, model, trace_id, latency_ms, missing_fields, sources,
-       complexity_band, complexity_inputs)
+       complexity_band, complexity_inputs${withGen ? ', quieting_gen' : ''})
      VALUES ($1,$2,$3,$4,$5,$6,$7, $8,$9, $10,$11,$12,$13,$14,
        $15::jsonb,$16,$17, $18,$19,$20,$21, $22::jsonb,$23::jsonb,$24,$25,$26,$27, $28::jsonb, $29::jsonb,
-       $30, $31::jsonb)
+       $30, $31::jsonb${withGen ? ', $32' : ''})
      ON CONFLICT (uid, engine_version) DO NOTHING
      RETURNING id`,
     [
@@ -73,6 +91,7 @@ export async function saveOpdAudit(audit: OpdNoteAudit, meta: SaveOpdAuditMeta =
       audit.engineVersion, meta.model ?? null, audit.traceId ?? null, meta.latencyMs ?? null,
       JSON.stringify(missing), JSON.stringify(audit.sources ?? []),
       audit.complexity?.band ?? null, audit.complexity?.inputs ? JSON.stringify(audit.complexity.inputs) : null,
+      ...(withGen ? [audit.quietingGen ?? 0] : []),
     ],
   )) as Array<{ id: string }>;
   await runAuditShadow(audit, findings); // B1 shadow — dormant unless CLINICAL_STATE_AUDIT_SHADOW=1; read-only, fail-open
@@ -94,6 +113,7 @@ export async function updateOpdAudit(audit: OpdNoteAudit): Promise<'updated' | '
   const nCtx = findings.filter((f) => f.verdict === 'context-dependent').length;
   const nInteraction = findings.filter((f) => /interaction|contraindicat|\bddi\b/i.test(`${f.subject} ${f.rationale}`)).length;
   const missing = audit.completeness?.missing ?? [];
+  const withGen = await quietingGenColumnExists();
 
   const rows = (await sql(
     `UPDATE opd_note_audits SET
@@ -102,7 +122,7 @@ export async function updateOpdAudit(audit: OpdNoteAudit): Promise<'updated' | '
        score_prescribing_safety = $7, score_patient_centred = $8,
        pdqi9 = $9::jsonb, completeness_pct = $10, n_missing_mandatory = $11,
        n_findings = $12, n_low_value = $13, n_context_dependent = $14, n_interaction_alerts = $15,
-       findings = $16::jsonb, suggestions = $17::jsonb, missing_fields = $18::jsonb
+       findings = $16::jsonb, suggestions = $17::jsonb, missing_fields = $18::jsonb${withGen ? ', quieting_gen = $20' : ''}
      WHERE uid = $1 AND engine_version = $19
      RETURNING id`,
     [
@@ -113,6 +133,7 @@ export async function updateOpdAudit(audit: OpdNoteAudit): Promise<'updated' | '
       findings.length, nLow, nCtx, nInteraction,
       JSON.stringify(findings), JSON.stringify(audit.suggestions ?? []), JSON.stringify(missing),
       audit.engineVersion,
+      ...(withGen ? [audit.quietingGen ?? 0] : []),
     ],
   )) as Array<{ id: string }>;
   return rows.length ? 'updated' : 'skipped';

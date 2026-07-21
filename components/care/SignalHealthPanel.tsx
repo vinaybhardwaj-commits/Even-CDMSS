@@ -28,6 +28,9 @@ export default function SignalHealthPanel() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [form, setForm] = useState<{ signal_type: string; label: string } | null>(null);
+  // Quieting-volume guard (PRD §10): if active demote rules ever silence a majority of low-value
+  // findings, the audit has been configured into silence — the number must be VISIBLE here.
+  const [quietVol, setQuietVol] = useState<{ quieted: number; low_value: number; gen: number } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true); setErr(null);
@@ -36,6 +39,10 @@ export default function SignalHealthPanel() {
       if (!j.ok) throw new Error(j.error || 'failed');
       setHealth(j.health || []); setSupps(j.suppressions || []);
     } catch (e) { setErr(String((e as Error).message)); } finally { setLoading(false); }
+    try {
+      const q = await fetch('/api/opd-triage/suppressions', { cache: 'no-store' }).then((r) => r.json());
+      if (q.ok && q.quieted_volume_30d) setQuietVol({ ...q.quieted_volume_30d, gen: q.current_gen ?? 0 });
+    } catch { /* volume line is best-effort */ }
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -57,6 +64,16 @@ export default function SignalHealthPanel() {
         </div>
       </div>
       <p className="mt-0.5 text-[12.5px] text-slate-500">Validated false-positive rates per signal type, from care-manager triage. A suppression may only remove flagged FPs if it removes no validated signal.</p>
+      {quietVol && quietVol.gen > 0 && (
+        <div className={`mt-2 rounded-lg border px-3 py-2 text-[12.5px] ${
+          quietVol.low_value > 0 && quietVol.quieted / Math.max(1, quietVol.low_value) > 0.5
+            ? 'border-amber-300 bg-amber-50 text-amber-800' : 'border-violet-200 bg-violet-50/60 text-violet-800'}`}>
+          Quieting volume (30d): <b>{quietVol.quieted}</b> finding(s) quieted vs {quietVol.low_value} low-value flagged · policy gen {quietVol.gen}.
+          {quietVol.low_value > 0 && quietVol.quieted / Math.max(1, quietVol.low_value) > 0.5 && (
+            <b> Majority of low-value findings are being quieted — the audit is approaching configured silence; review the active rules.</b>
+          )}
+        </div>
+      )}
 
       {loading ? (
         <div className="mt-16 flex justify-center text-slate-400"><Loader2 className="h-5 w-5 animate-spin" /></div>

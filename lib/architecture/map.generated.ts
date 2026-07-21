@@ -1648,7 +1648,7 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "audit-suppression-store",
     "to": "audit-suppression-core",
-    "kind": "type"
+    "kind": "value"
   },
   {
     "from": "audit-suppression-store",

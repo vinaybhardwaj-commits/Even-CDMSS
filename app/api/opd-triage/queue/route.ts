@@ -41,6 +41,7 @@ export async function GET(req: NextRequest) {
   const status = sp.get('status') === 'all' ? 'all' : 'untriaged';
   const doctorFilter = (sp.get('doctor_uid') || '').trim();
   const days = Math.max(1, Math.min(7, Number(sp.get('days')) || 1));
+  const includeQuieted = sp.get('quieted') === '1';   // CM filter toggle (default off)
 
   let day = sp.get('day') || '';
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
@@ -84,6 +85,7 @@ export async function GET(req: NextRequest) {
         informational: f.informational, citation_ids: f.citation_ids,
         complexity_band: band, complexity_inputs: inputs,
         lvc_category: (f as { lvc_category?: string }).lvc_category ?? null,
+        quieted_by: (f as { quieted_by?: string | null }).quieted_by ?? null,
       });
     }
   }
@@ -97,7 +99,7 @@ export async function GET(req: NextRequest) {
   const specialities: Record<string, string> = {};
   for (const r of dirRows as Record<string, unknown>[]) specialities[String(r.doctor_uid)] = String(r.speciality);
 
-  const { doctors } = buildQueue(findings, decisions, { names, specialities, status });
+  const { doctors } = buildQueue(findings, decisions, { names, specialities, status, includeQuieted });
 
   return NextResponse.json({
     ok: true,

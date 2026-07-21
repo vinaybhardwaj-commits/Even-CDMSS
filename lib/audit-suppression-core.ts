@@ -11,19 +11,21 @@
  * Pure → unit-testable.
  */
 
-export type SuppressionAction = 'drop' | 'downgrade';
-export type SuppressionMatch = 'type_only' | 'subject_contains';
+export type SuppressionAction = 'drop' | 'downgrade' | 'demote';
+export type SuppressionMatch = 'type_only' | 'subject_contains' | 'lvc_category';
 export type SuppressionScope = 'all' | 'doctor';
+export type SuppressionStatus = 'proposed' | 'active' | 'retired';
 
 export interface Suppression {
   id?: string;
   signal_type: string;
-  discriminator: string | null;     // narrowing substring (subject_contains); null = whole type
+  discriminator: string | null;     // narrowing: substring (subject_contains) or exact category (lvc_category); null = whole type
   match_kind: SuppressionMatch;
   scope: SuppressionScope;
   doctor_uid: string | null;        // when scope='doctor'
   action: SuppressionAction;
   active: boolean;
+  status?: SuppressionStatus;       // quieting workflow (Q5); legacy drop/downgrade rows key on `active` alone
 }
 
 export interface SuppressibleFinding {
@@ -31,6 +33,27 @@ export interface SuppressibleFinding {
   subject: string;
   finding_ref?: string;
   informational?: boolean;
+  lvc_category?: string;            // quieting: lvc_category match kind reads this (stamped by stampLvcMetadata)
+}
+
+// ── Quieting severity floor (PRD §2.3) ─────────────────────────────────────────
+// The deterministic patient-safety signal types configuration can NEVER quiet — enumerated from
+// SIGNAL_TYPE_RULES in lib/opd-note-audit-core.ts (the deterministic prescribing-safety checks whose
+// miss is a harm risk, not a documentation/formulary nit). Enforced twice: the store refuses to
+// WRITE a demote rule scoped to any of these, and applyDemotes SKIPS such findings regardless of
+// what the rules table says.
+export const SAFETY_SIGNAL_TYPES: readonly string[] = [
+  'drug_interaction',        // DDI (deterministic + LLM-keyword routed)
+  'high_alert_medication',
+  'dose_ceiling_exceeded',   // dose-limit breach
+  'dose_ceiling_sos',        // dose-limit breach contingent on SOS dosing
+  'schedule_x',
+  'lasa_pair',               // look-alike / sound-alike
+  'duplicate_molecule',      // same molecule in N products — overdose route
+  'duplicate_prescription',
+] as const;
+export function isSafetySignalType(t: string | undefined): boolean {
+  return !!t && (SAFETY_SIGNAL_TYPES as string[]).includes(t);
 }
 
 /** Does this finding (for this doctor) match the suppression? */
@@ -40,6 +63,11 @@ export function findingMatchesSuppression(f: SuppressibleFinding, doctorUid: str
   if (s.scope === 'doctor' && s.doctor_uid && s.doctor_uid !== doctorUid) return false;
   if (s.match_kind === 'subject_contains' && s.discriminator) {
     return f.subject.toLowerCase().includes(s.discriminator.toLowerCase());
+  }
+  if (s.match_kind === 'lvc_category') {
+    // exact category match, case-insensitive; a rule with no category can never match
+    if (!s.discriminator) return false;
+    return (f.lvc_category || '').toLowerCase() === s.discriminator.toLowerCase();
   }
   return true; // type_only, or no discriminator
 }
@@ -70,6 +98,43 @@ export function applySuppressions<T extends SuppressibleFinding>(
     kept.push({ ...f, informational: true });       // downgrade — kept for awareness, out of queue/score
   }
   return { findings: kept, suppressed };
+}
+
+// ── Quieting (demote) — PRD CDMSS-QUIETING-DEMOTE-SYSTEM Q1 ───────────────────
+export interface DemoteOutcome<T> {
+  findings: T[];
+  quieted: { finding_ref: string | undefined; signal_type: string | undefined; rule_id: string | undefined }[];
+}
+
+/**
+ * Apply ACTIVE demote rules to one note's finalised findings (the quieting seam, called immediately
+ * before scoring). A matching finding becomes `informational: true` + `quieted_by: <rule_id>` —
+ * stored intact, out of the score and doctor-facing display via the existing informational
+ * mechanism. Already-informational findings are left alone (nothing to quiet). SAFETY FLOOR,
+ * engine-side half: findings whose signal_type is in SAFETY_SIGNAL_TYPES are skipped regardless of
+ * what the rules table says (the store-side half refuses to write such rules at all).
+ * First matching rule wins. Pure; never throws.
+ */
+export function applyDemotes<T extends SuppressibleFinding>(
+  findings: T[], doctorUid: string | null, rules: Suppression[],
+): DemoteOutcome<T> {
+  const active = rules.filter((r) => r.action === 'demote' && r.active && (r.status === undefined || r.status === 'active'));
+  if (active.length === 0) return { findings, quieted: [] };
+  const out: T[] = [];
+  const quieted: DemoteOutcome<T>['quieted'] = [];
+  for (const f of findings) {
+    if (f.informational || isSafetySignalType(f.signal_type)) { out.push(f); continue; }
+    const hit = active.find((r) => findingMatchesSuppression(f, doctorUid, r));
+    if (!hit) { out.push(f); continue; }
+    quieted.push({ finding_ref: f.finding_ref, signal_type: f.signal_type, rule_id: hit.id });
+    out.push({ ...f, informational: true, quieted_by: hit.id ?? null });
+  }
+  return { findings: out, quieted };
+}
+
+/** Store-side half of the severity floor: is this rule one the store must refuse to write? */
+export function demoteRuleViolatesSeverityFloor(rule: Pick<Suppression, 'action' | 'signal_type'>): boolean {
+  return rule.action === 'demote' && isSafetySignalType(rule.signal_type);
 }
 
 // ── Dual-label safety (PRD §7.2) ──────────────────────────────────────────────

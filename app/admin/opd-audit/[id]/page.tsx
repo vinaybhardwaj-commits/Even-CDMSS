@@ -37,7 +37,7 @@ const VERDICT_COLOR: Record<string, string> = {
   'low-value': '#dc2626', 'context-dependent': '#d97706', 'high-value': '#16a34a', uncertain: '#78715f',
 };
 
-type Finding = { subject: string; verdict: string; confidence: number; domain: string; rationale: string; evidence?: string[]; estimates?: string[]; source?: string; citation_ids?: number[]; finding_ref?: string; signal_type?: string; rule_ref?: string | null; lvc_category?: string };
+type Finding = { subject: string; verdict: string; confidence: number; domain: string; rationale: string; evidence?: string[]; estimates?: string[]; source?: string; citation_ids?: number[]; finding_ref?: string; signal_type?: string; rule_ref?: string | null; lvc_category?: string; informational?: boolean; quieted_by?: string | null };
 type LvcRuleInfo = { plain_rationale: string | null; citation: string | null };
 // 0.81.8 Decision 10 — shared category labels (local 'other' override kept) so new overuse sub-tags render.
 const LVC_CAT_LABEL: Record<string, string> = { ...LVC_CATEGORY_LABELS, other: 'Low-value care' };
@@ -408,6 +408,13 @@ function FindingCard({ f, num, sources, auditId, triage, ruleMap }: { f: Finding
           <div className="text-[12.5px] font-medium text-slate-800">{f.subject}
             <span className="ml-2 align-middle text-[10px] font-normal" style={{ color: VERDICT_COLOR[f.verdict] || '#78715f' }}>{f.verdict}</span>
             <span className={`ml-2 inline-block rounded border px-1.5 py-0.5 align-middle text-[10px] font-medium ${ground.cls}`}>{ground.label}</span>
+            {/* Quieting badge — admin views stay UNFILTERED; the badge discloses zero score effect */}
+            {f.quieted_by && (
+              <span className="ml-2 inline-block rounded border border-violet-200 bg-violet-50 px-1.5 py-0.5 align-middle text-[10px] font-medium text-violet-700"
+                title="Quieted by an active demote rule: recorded and routed to care/admin/analytics, but informational — no score contribution, absent from doctor-facing display.">
+                quieted · rule {String(f.quieted_by).slice(0, 8)}
+              </span>
+            )}
           </div>
           {f.rationale && <div className="mt-1 text-[11.5px] leading-snug text-slate-600">{f.rationale}</div>}
           {/* Right Care rule chip (§7) — LVC category; expands to the rule's plain rationale + citation. */}

@@ -92,6 +92,9 @@ export interface TriageFinding {
   complexity_band?: string | null;         // NEW_TO_US | LOW | MODERATE | HIGH | null
   complexity_inputs?: Record<string, unknown> | null;   // {chronic_codes, abnormal_labs, enc_12m, ...}
   lvc_category?: string | null;            // antibiotic | imaging | supplement_polypharmacy | other
+  // Quieting (demote) passthrough — set when the engine quieted this finding (informational:true +
+  // quieted_by:<rule_id>). Display/badging only; never affects ranking or the scored queue.
+  quieted_by?: string | null;
 }
 
 export interface TriageDecisionRow {
@@ -139,6 +142,11 @@ export interface TypeGroup {
   representative: TriageRepresentative;
   triage: TypeDecisionState | null; // current type-level decision, else null (untriaged)
   rank: number;
+  // Quieting (demote): present only when buildQueue ran with includeQuieted (the CM's filter toggle,
+  // default off). quieted_only groups render as passive cards (no decision pipeline — nothing scores).
+  quieted_count?: number;
+  quieted_rule?: string | null;    // rule id of the first quieted finding (badge: "quieted · rule N")
+  quieted_only?: boolean;
 }
 export interface DoctorGroup {
   doctor_uid: string;
@@ -201,6 +209,9 @@ export interface BuildQueueOpts {
   specialities?: Record<string, string>;
   /** 'untriaged' (default) hides types already decided; 'all' keeps them (collapsed receipts). */
   status?: 'untriaged' | 'all';
+  /** Quieting filter toggle (default false): surface quieted (informational + quieted_by) findings
+   *  as passive, badge-only groups/counts. Never changes the scored queue's grouping or ranking. */
+  includeQuieted?: boolean;
 }
 
 /**
@@ -221,8 +232,17 @@ export function buildQueue(
 
   // doctor_uid → signal_type → findings
   const byDoc = new Map<string, Map<string, TriageFinding[]>>();
+  // Quieting toggle: doctor_uid → signal_type → QUIETED findings (informational + quieted_by).
+  // Collected only when includeQuieted; other informational findings stay invisible as always.
+  const byDocQuieted = new Map<string, Map<string, TriageFinding[]>>();
   for (const f of findings) {
-    if (f.informational) continue;
+    if (f.informational) {
+      if (opts.includeQuieted && f.quieted_by && f.doctor_uid) {
+        const q = byDocQuieted.get(f.doctor_uid) || byDocQuieted.set(f.doctor_uid, new Map()).get(f.doctor_uid)!;
+        (q.get(f.signal_type) || q.set(f.signal_type, []).get(f.signal_type)!).push(f);
+      }
+      continue;
+    }
     if (!f.doctor_uid) continue;
     const byType = byDoc.get(f.doctor_uid) || byDoc.set(f.doctor_uid, new Map()).get(f.doctor_uid)!;
     (byType.get(f.signal_type) || byType.set(f.signal_type, []).get(f.signal_type)!).push(f);
@@ -261,6 +281,31 @@ export function buildQueue(
         triage: decision ? toState(decision) : null,
         rank: weight * 1000 + fs.length,
       });
+    }
+
+    // Quieting toggle: overlay quieted counts on existing groups; types where EVERY finding was
+    // quieted become passive quieted_only cards (no decision pipeline — they score nothing).
+    const quietedTypes = byDocQuieted.get(doctor_uid);
+    if (opts.includeQuieted && quietedTypes) {
+      for (const [signal_type, qfs] of quietedTypes.entries()) {
+        const existing = types.find((t) => t.signal_type === signal_type);
+        if (existing) { existing.quieted_count = qfs.length; existing.quieted_rule = qfs[0].quieted_by ?? null; continue; }
+        const rep = qfs[0];
+        types.push({
+          signal_type, label: labelFor(signal_type, rep.subject), count: qfs.length,
+          notes: new Set(qfs.map((f) => f.audit_id)).size,
+          severity_weight: 1, importance_hint: 'low', concentrated: false, noisiest: false,
+          routable: false,
+          representative: {
+            audit_id: rep.audit_id, finding_ref: rep.finding_ref, subject: rep.subject,
+            verdict: rep.verdict, rationale: rep.rationale, note_date: day(rep.note_date),
+            citation_ids: rep.citation_ids ?? [],
+            complexity_band: rep.complexity_band ?? null, complexity_inputs: rep.complexity_inputs ?? null, lvc_category: rep.lvc_category ?? null,
+          },
+          triage: null, rank: 0,
+          quieted_count: qfs.length, quieted_rule: rep.quieted_by ?? null, quieted_only: true,
+        });
+      }
     }
 
     // rank types: severity × frequency (rank desc), untriaged first within equal rank
