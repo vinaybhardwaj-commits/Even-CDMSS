@@ -29,6 +29,10 @@ export type RetrieveOptions = {
   /** Lab measurement only: include ONE named quarantined batch (label without the `labq:` prefix).
    *  Omitted ⇒ today's behaviour exactly. Never set by production callers. */
   includeQuarantined?: string;
+
+  /** Lab measurement only: force per-stage diagnostics (vector_rank/bm25_rank/rrf_score/final_rank)
+   *  onto the returned hits even without includeQuarantined (R-5). Never set by production callers. */
+  withDiagnostics?: boolean;
 };
 
 export type ChunkHitWithMeta = ChunkHit & {
@@ -59,8 +63,33 @@ export type RetrieveResult = {
   };
 };
 
-// Reciprocal Rank Fusion
-const RRF_K = 60;
+// Reciprocal Rank Fusion. Exported so multi-query fusion reuses the SAME constant (do not redeclare).
+export const RRF_K = 60;
+
+// ── R-6 guard: USE_EMBEDDING_V2 latent failure ───────────────────────────────────
+// USE_EMBEDDING_V2 is hardcoded false and no `embedding_v2` column exists. If that flag is ever
+// flipped while the column is absent, the vector leg's SQL throws and is swallowed by the leg's
+// `.catch(() => [])`, serving a SILENTLY-EMPTY vector leg. This guard makes that failure LOUD.
+export class EmbeddingV2ColumnMissingError extends Error {
+  constructor() {
+    super('retrieve: USE_EMBEDDING_V2 is enabled but mksap_chunks.embedding_v2 is absent — refusing to query a silently-empty vector leg (R-6)');
+    this.name = 'EmbeddingV2ColumnMissingError';
+  }
+}
+
+/** Pure decision half of the R-6 guard (unit-testable). Throws iff v2 is requested but the column is absent. */
+export function assertEmbeddingV2Available(useV2: boolean, columnExists: boolean): void {
+  if (useV2 && !columnExists) throw new EmbeddingV2ColumnMissingError();
+}
+
+/** Column-existence probe for the R-6 guard. INFERRED SQL — reported verbatim for orchestrator validation. */
+async function embeddingV2ColumnExists(): Promise<boolean> {
+  const rows = await (sql as unknown as (q: string, p: unknown[]) => Promise<unknown[]>)(
+    `SELECT 1 FROM information_schema.columns WHERE table_name = 'mksap_chunks' AND column_name = 'embedding_v2' LIMIT 1`,
+    [],
+  );
+  return rows.length > 0;
+}
 
 // ── quarantine filter seam (pure, unit-testable) ─────────────────────────────────
 // The three constant guards, plus the opt-in structural filters (book/chunk_type/source).
@@ -128,6 +157,10 @@ export async function retrieve(query: string, opts: RetrieveOptions = {}): Promi
   const useReranker = opts.useReranker === true;
   const useSourceWeights = opts.useSourceWeights === true;
   const embCol = useV2 ? 'embedding_v2' : 'embedding';
+
+  // R-6 guard: fires ONLY if the hardcoded-false USE_EMBEDDING_V2 flag is ever flipped without the
+  // column present — a loud named error instead of a silently-empty vector leg. No-op in production.
+  if (useV2) assertEmbeddingV2Available(true, await embeddingV2ColumnExists());
 
   const expanded = opts.skipExpand ? query : await expandQuery(query);
   const vec = useV2 ? await embedQueryV2(expanded) : await embedQuery(expanded);
@@ -270,8 +303,9 @@ export async function retrieve(query: string, opts: RetrieveOptions = {}): Promi
   hits = hits.slice(0, topK);
 
   // ---- Per-stage diagnostics (lab measurement path ONLY) ----
-  // Added strictly when includeQuarantined is set, so production result shapes stay untouched (§3.2).
-  if (opts.includeQuarantined) {
+  // Added when the lab explicitly asks (includeQuarantined OR withDiagnostics, R-5), so production
+  // result shapes stay untouched — no production caller sets either flag.
+  if (opts.includeQuarantined || opts.withDiagnostics) {
     hits = hits.map((h, i) => ({
       ...h,
       vector_rank: vecRankById.has(h.id) ? (vecRankById.get(h.id) as number) : null,

@@ -13,6 +13,7 @@ import { fetchOpdNoteByUid } from './metabase';
 import { sql } from './db';
 import { guardReadOnlySql } from './sql-guard-core';
 import { retrieve, clampLabRetrieveTopK } from './retrieve';
+import { retrieveMultiQuery } from './multi-query';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 import { readState, setSetting, MB_KEYS } from './mini-backfill';
@@ -100,7 +101,7 @@ export const LAB_TOOLS = [
   },
   {
     name: 'lab_retrieve',
-    description: 'MEASUREMENT SEAM (read-only): run the REAL production retrieve() at served-k through the shipped path (query expansion → nomic embed → vector + BM25 legs → RRF fusion → cross-encoder rerank → source-quality weighting) and return the served hits WITH FULL TEXT and per-stage scores. Diagnoses what retrieval actually serves for a clinical question: which chunks, from which sources, at what vector_rank/bm25_rank/rrf_score/rerank_score/source_quality_weight. useReranker + useSourceWeights default TRUE (every production caller sets them true). includeQuarantined names ONE quarantined batch (e.g. guidelines-lvc-22jul) to fold in for A/B measurement — that batch ONLY, bound + slugged, never widened; omit it for the exact production condition. topK clamped ≤ 20 (measurement scope, not a bulk export). NB: returns licensed corpus text — do not paste into public docs. No model generation, ₹0-ish (one embed + optional rerank).',
+    description: 'MEASUREMENT SEAM (read-only): run the REAL production retrieve() at served-k through the shipped path (query expansion → nomic embed → vector + BM25 legs → RRF fusion → cross-encoder rerank → source-quality weighting) and return the served hits WITH FULL TEXT and per-stage scores. Diagnoses what retrieval actually serves for a clinical question: which chunks, from which sources, at what vector_rank/bm25_rank/rrf_score/rerank_score/source_quality_weight. useReranker + useSourceWeights default TRUE (every production caller sets them true). multiQuery=true routes through retrieveMultiQuery (the condition Ask/DDx run — variant fan-out fused by RRF, then one rerank over the union) and adds variant_ranks per hit; default false. skipExpand=true holds the query fixed so multi- vs single-query arms are identical. includeQuarantined names ONE quarantined batch (e.g. guidelines-lvc-22jul) to fold in for A/B measurement — that batch ONLY, bound + slugged, never widened; omit it for the exact production condition. topK clamped ≤ 20 (measurement scope, not a bulk export). NB: returns licensed corpus text — do not paste into public docs. No model generation.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -110,6 +111,8 @@ export const LAB_TOOLS = [
         useReranker: { type: 'boolean', description: 'Cross-encoder rerank (default true).' },
         useSourceWeights: { type: 'boolean', description: 'Source-quality weighting (default true).' },
         hybrid: { type: 'boolean', description: 'Run the BM25 leg alongside vector (default true).' },
+        multiQuery: { type: 'boolean', description: 'Route through retrieveMultiQuery — the multi-variant fusion Ask/DDx run (default false).' },
+        skipExpand: { type: 'boolean', description: 'Skip query expansion so single- vs multi-query arms are held identical (default false).' },
       },
       required: ['query'],
     },
@@ -579,8 +582,9 @@ async function corpusManage(a: Record<string, unknown>): Promise<ToolResult> {
   return err(`unknown action: ${action}`);
 }
 
-/** Measurement seam: run production retrieve() and return served hits + per-stage scores + full text.
- *  Read-only; no model generation. Defaults useReranker/useSourceWeights TRUE (the production config). */
+/** Measurement seam: run production retrieve() (or the multi-query fusion Ask/DDx use) and return
+ *  served hits + per-stage scores + full text. Read-only; no model generation. Defaults
+ *  useReranker/useSourceWeights TRUE (the production config); diagnostics always populated (R-5). */
 async function labRetrieve(a: Record<string, unknown>): Promise<ToolResult> {
   const query = S(a.query).trim();
   if (!query) return err('query is required');
@@ -589,7 +593,31 @@ async function labRetrieve(a: Record<string, unknown>): Promise<ToolResult> {
   const useReranker = a.useReranker === undefined ? true : a.useReranker === true;
   const useSourceWeights = a.useSourceWeights === undefined ? true : a.useSourceWeights === true;
   const hybrid = a.hybrid === undefined ? true : a.hybrid === true;
-  const res = await retrieve(query, { topK, includeQuarantined, useReranker, useSourceWeights, hybrid });
+  const multiQuery = a.multiQuery === true;
+  const skipExpand = a.skipExpand === true;
+
+  if (multiQuery) {
+    const res = await retrieveMultiQuery(query, { topK, includeQuarantined, useReranker, useSourceWeights, hybrid, skipExpand });
+    const hits = res.hits.map((h, i) => {
+      // rerank_score/source_quality_weight are present at runtime but off the exported MultiQueryHit
+      // type (see multi-query.ts) — read them via a narrow cast.
+      const hx = h as typeof h & { rerank_score?: number; source_quality_weight?: number };
+      return {
+        final_rank: i + 1,
+        id: h.id, source: h.source, book: h.book, chapter: h.chapter, section: h.section, item_number: h.item_number,
+        similarity: h.similarity,
+        vector_rank: null, bm25_rank: null, rrf_score: h.rrf_score ?? null, variant_ranks: h.variant_ranks ?? null,
+        source_quality_weight: hx.source_quality_weight ?? null, rerank_score: hx.rerank_score ?? null,
+        text: h.text,
+      };
+    });
+    return ok({
+      query, mode: 'multi_query', includeQuarantined: includeQuarantined ?? null, topK, count: hits.length,
+      variants: res.variants, perVariantCounts: res.perVariantCounts, hits,
+    });
+  }
+
+  const res = await retrieve(query, { topK, includeQuarantined, useReranker, useSourceWeights, hybrid, skipExpand, withDiagnostics: true });
   const hits = res.hits.map((h, i) => ({
     final_rank: h.final_rank ?? i + 1,
     id: h.id, source: h.source, book: h.book, chapter: h.chapter, section: h.section, item_number: h.item_number,
@@ -599,7 +627,7 @@ async function labRetrieve(a: Record<string, unknown>): Promise<ToolResult> {
     text: h.text,
   }));
   return ok({
-    query, expandedQuery: res.expandedQuery, includeQuarantined: includeQuarantined ?? null,
+    query, mode: 'single_query', expandedQuery: res.expandedQuery, includeQuarantined: includeQuarantined ?? null,
     topK, count: hits.length, meta: res.meta, hits,
   });
 }

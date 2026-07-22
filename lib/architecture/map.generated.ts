@@ -2763,6 +2763,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "mcp-tools",
+    "to": "multi-query",
+    "kind": "value"
+  },
+  {
+    "from": "mcp-tools",
     "to": "opd-audit-store",
     "kind": "value"
   },
@@ -2878,7 +2883,17 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "multi-query",
+    "to": "rerank",
+    "kind": "value"
+  },
+  {
+    "from": "multi-query",
     "to": "retrieve",
+    "kind": "value"
+  },
+  {
+    "from": "multi-query",
+    "to": "source-quality",
     "kind": "value"
   },
   {
