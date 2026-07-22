@@ -96,6 +96,14 @@ export interface CorpusAddInput {
 }
 export interface CorpusAddResult { source: string; chunks: number; inserted: number; skipped_dup: number }
 
+/** Quarantine INSERT — D5 defence-in-depth: quarantined rows are `visible = false` so that even if
+ *  the source guard were ever bypassed, the row stays invisible until activation flips it true.
+ *  Exported so the SQL is unit-testable (§7 test 5) without a live DB. */
+export const CORPUS_QUARANTINE_INSERT_SQL =
+  `INSERT INTO mksap_chunks (source, book, chapter, section, item_number, chunk_type, text, text_hash, embedding, token_count, visible)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::vector, $10, false)
+       ON CONFLICT (book, text_hash) DO NOTHING RETURNING id`;
+
 /** Add vetted material to the corpus, QUARANTINED (labq:<label>). Embeds on nomic (mini). */
 export async function corpusAddQuarantined(input: CorpusAddInput): Promise<CorpusAddResult> {
   const label = labLabel(input.label);
@@ -106,9 +114,7 @@ export async function corpusAddQuarantined(input: CorpusAddInput): Promise<Corpu
     const hash = sha256(text);
     const emb = vectorLiteral(await embedQuery(text)); // nomic on the mini — ₹0
     const ins = await run(
-      `INSERT INTO mksap_chunks (source, book, chapter, section, item_number, chunk_type, text, text_hash, embedding, token_count)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::vector, $10)
-       ON CONFLICT (book, text_hash) DO NOTHING RETURNING id`,
+      CORPUS_QUARANTINE_INSERT_SQL,
       [source, input.book, input.chapter ?? null, input.section ?? 'lab', String(i + 1),
        input.chunkType ?? 'note', text, hash, emb, approxTokens(text)],
     );
@@ -122,10 +128,13 @@ export async function corpusAddQuarantined(input: CorpusAddInput): Promise<Corpu
  *  activate to a FIRST-CLASS source name (e.g. 'bookshelf') so citations render with a real handler
  *  instead of a generic `lab:` chip — the corpus-connector activation path (GC-CX SL1). The target
  *  is slug-sanitised the same way labels are, so it can never collide with the `labq:`/`lab:` guards. */
+export const CORPUS_ACTIVATE_SQL = `UPDATE mksap_chunks SET source = $1, visible = true WHERE source = $2 RETURNING id`;
 export async function corpusActivate(label: string, targetSource?: string): Promise<{ source: string; activated: number }> {
   const l = labLabel(label);
   const target = targetSource ? labLabel(targetSource) : `lab:${l}`;
-  const rows = await run(`UPDATE mksap_chunks SET source = $1 WHERE source = $2 RETURNING id`, [target, `labq:${l}`]);
+  // D5: activation must ALSO flip `visible = true`. Quarantine sets rows invisible (see
+  // CORPUS_QUARANTINE_INSERT_SQL); flipping only `source` would activate into invisibility.
+  const rows = await run(CORPUS_ACTIVATE_SQL, [target, `labq:${l}`]);
   return { source: target, activated: rows.length };
 }
 

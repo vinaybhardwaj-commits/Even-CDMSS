@@ -12,6 +12,7 @@ import { governedChat } from './trace';
 import { fetchOpdNoteByUid } from './metabase';
 import { sql } from './db';
 import { guardReadOnlySql } from './sql-guard-core';
+import { retrieve, clampLabRetrieveTopK } from './retrieve';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 import { readState, setSetting, MB_KEYS } from './mini-backfill';
@@ -95,6 +96,22 @@ export const LAB_TOOLS = [
         which: { type: 'string', enum: ['quarantined', 'active', 'both'], description: 'delete scope (default both).' },
       },
       required: ['action'],
+    },
+  },
+  {
+    name: 'lab_retrieve',
+    description: 'MEASUREMENT SEAM (read-only): run the REAL production retrieve() at served-k through the shipped path (query expansion → nomic embed → vector + BM25 legs → RRF fusion → cross-encoder rerank → source-quality weighting) and return the served hits WITH FULL TEXT and per-stage scores. Diagnoses what retrieval actually serves for a clinical question: which chunks, from which sources, at what vector_rank/bm25_rank/rrf_score/rerank_score/source_quality_weight. useReranker + useSourceWeights default TRUE (every production caller sets them true). includeQuarantined names ONE quarantined batch (e.g. guidelines-lvc-22jul) to fold in for A/B measurement — that batch ONLY, bound + slugged, never widened; omit it for the exact production condition. topK clamped ≤ 20 (measurement scope, not a bulk export). NB: returns licensed corpus text — do not paste into public docs. No model generation, ₹0-ish (one embed + optional rerank).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'The clinical question, exactly as served (required).' },
+        topK: { type: 'number', description: 'Hits to return (default 8 = served k; max 20).' },
+        includeQuarantined: { type: 'string', description: "One quarantined batch label to fold in (e.g. 'guidelines-lvc-22jul'). Omit for the exact production condition." },
+        useReranker: { type: 'boolean', description: 'Cross-encoder rerank (default true).' },
+        useSourceWeights: { type: 'boolean', description: 'Source-quality weighting (default true).' },
+        hybrid: { type: 'boolean', description: 'Run the BM25 leg alongside vector (default true).' },
+      },
+      required: ['query'],
     },
   },
   {
@@ -282,6 +299,7 @@ export async function callLabTool(name: string, args: Record<string, unknown>): 
       case 'backfill_control': return await backfillControl(args);
       case 'corpus_add': return await corpusAdd(args);
       case 'corpus_manage': return await corpusManage(args);
+      case 'lab_retrieve': return await labRetrieve(args);
       case 'lab_query': return await labQuery(args);
       case 'audit_query': return await auditQuery(args);
       case 'lab_batch_start': return await labBatchStart(args);
@@ -559,6 +577,31 @@ async function corpusManage(a: Record<string, unknown>): Promise<ToolResult> {
   if (action === 'activate') { if (!S(a.label)) return err('activate needs label'); return ok({ ...(await corpusActivate(S(a.label))), note: 'now LIVE in production retrieval (Ask/DDx/Right Care/audits)' }); }
   if (action === 'delete') { if (!S(a.label)) return err('delete needs label'); const which = (['quarantined', 'active', 'both'] as const).includes(a.which as never) ? a.which as 'quarantined' | 'active' | 'both' : 'both'; return ok(await corpusDelete(S(a.label), which)); }
   return err(`unknown action: ${action}`);
+}
+
+/** Measurement seam: run production retrieve() and return served hits + per-stage scores + full text.
+ *  Read-only; no model generation. Defaults useReranker/useSourceWeights TRUE (the production config). */
+async function labRetrieve(a: Record<string, unknown>): Promise<ToolResult> {
+  const query = S(a.query).trim();
+  if (!query) return err('query is required');
+  const topK = clampLabRetrieveTopK(a.topK);
+  const includeQuarantined = S(a.includeQuarantined).trim() || undefined;
+  const useReranker = a.useReranker === undefined ? true : a.useReranker === true;
+  const useSourceWeights = a.useSourceWeights === undefined ? true : a.useSourceWeights === true;
+  const hybrid = a.hybrid === undefined ? true : a.hybrid === true;
+  const res = await retrieve(query, { topK, includeQuarantined, useReranker, useSourceWeights, hybrid });
+  const hits = res.hits.map((h, i) => ({
+    final_rank: h.final_rank ?? i + 1,
+    id: h.id, source: h.source, book: h.book, chapter: h.chapter, section: h.section, item_number: h.item_number,
+    similarity: h.similarity,
+    vector_rank: h.vector_rank ?? null, bm25_rank: h.bm25_rank ?? null, rrf_score: h.rrf_score ?? null,
+    source_quality_weight: h.source_quality_weight ?? null, rerank_score: h.rerank_score ?? null,
+    text: h.text,
+  }));
+  return ok({
+    query, expandedQuery: res.expandedQuery, includeQuarantined: includeQuarantined ?? null,
+    topK, count: hits.length, meta: res.meta, hits,
+  });
 }
 
 async function labQuery(a: Record<string, unknown>): Promise<ToolResult> {

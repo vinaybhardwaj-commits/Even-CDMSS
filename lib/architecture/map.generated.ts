@@ -2783,6 +2783,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "mcp-tools",
+    "to": "retrieve",
+    "kind": "value"
+  },
+  {
+    "from": "mcp-tools",
     "to": "sql-guard-core",
     "kind": "value"
   },
@@ -3279,6 +3284,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "retrieve",
     "to": "expand",
+    "kind": "value"
+  },
+  {
+    "from": "retrieve",
+    "to": "lab-core",
     "kind": "value"
   },
   {

@@ -3,6 +3,7 @@ import { embedQuery, embedQueryV2, vectorLiteral, TOP_K, USE_EMBEDDING_V2 } from
 import { expandQuery } from './expand';
 import { rerank } from './rerank';
 import { computeSourceQualityWeight } from './source-quality';
+import { labLabel } from './lab-core';
 import type { ChunkHit } from './db';
 
 export type RetrieveOptions = {
@@ -24,12 +25,23 @@ export type RetrieveOptions = {
 
   /** v1.6: multiply final score by source_quality_weight per chunk. */
   useSourceWeights?: boolean;
+
+  /** Lab measurement only: include ONE named quarantined batch (label without the `labq:` prefix).
+   *  Omitted ⇒ today's behaviour exactly. Never set by production callers. */
+  includeQuarantined?: string;
 };
 
 export type ChunkHitWithMeta = ChunkHit & {
   source_quality_weight?: number;
   rerank_score?: number;
   rerank_backend?: 'bge' | 'judge' | 'none';
+
+  // Per-stage diagnostics — populated ONLY on the lab measurement path (includeQuarantined set),
+  // so production result shapes are untouched. See §3.2 of the lab-retrieve-seam PRD.
+  vector_rank?: number | null;   // rank in the vector leg, null if absent
+  bm25_rank?: number | null;     // rank in the BM25 leg, null if absent
+  rrf_score?: number;            // fused RRF score
+  final_rank?: number;           // 1-based position in the returned list
 };
 
 export type RetrieveResult = {
@@ -49,6 +61,64 @@ export type RetrieveResult = {
 
 // Reciprocal Rank Fusion
 const RRF_K = 60;
+
+// ── quarantine filter seam (pure, unit-testable) ─────────────────────────────────
+// The three constant guards, plus the opt-in structural filters (book/chunk_type/source).
+// Clauses carry `$FP_n` placeholders that each leg remaps to its own positional base.
+export type FilterClauseOpts = {
+  includeQuarantined?: string;   // lab-only: relax the quarantine guards for ONE named batch
+  bookFilter?: string;
+  chunkType?: string;
+  source?: string;
+};
+
+/**
+ * Build the retrieval WHERE-filter clause array and its bound params, in order.
+ *
+ * INVARIANT (load-bearing): with `includeQuarantined` omitted/empty the returned clauses are
+ * EXACTLY `['text IS NOT NULL', 'visible IS NOT FALSE', "source NOT LIKE 'labq:%'"]` (plus any
+ * structural filters) and no quarantine param is added — so the SQL retrieve() emits is
+ * byte-identical to production for every real caller.
+ *
+ * When set, BOTH quarantine guards relax for that ONE label via a BOUND parameter (`labq:<slug>`),
+ * never interpolated. The label is slugged with the shared `labLabel` helper, so a hostile value
+ * can never widen the filter beyond a single batch.
+ */
+export function buildFilterClauses(opts: FilterClauseOpts): { clauses: string[]; params: unknown[] } {
+  const clauses: string[] = [`text IS NOT NULL`, `visible IS NOT FALSE`, `source NOT LIKE 'labq:%'`];
+  const params: unknown[] = [];
+  let fp = 0;
+
+  // Fail-safe (PRD §8.1): only a NON-blank label relaxes the guard. Empty/whitespace ⇒ fall through
+  // to today's exact behaviour rather than let labLabel('   ') → 'default' silently widen the filter.
+  const raw = (opts.includeQuarantined ?? '').trim();
+  const label = raw ? labLabel(raw) : '';
+  if (label) {
+    const idx = fp++;                       // this batch's param slot ($FP_idx), reused in BOTH relaxed clauses
+    params.push(`labq:${label}`);
+    clauses[1] = `(visible IS NOT FALSE OR source = $FP_${idx})`;
+    clauses[2] = `(source NOT LIKE 'labq:%' OR source = $FP_${idx})`;
+  }
+
+  if (opts.bookFilter) { clauses.push(`book = $FP_${fp++}`); params.push(opts.bookFilter); }
+  if (opts.chunkType)  { clauses.push(`chunk_type = $FP_${fp++}`); params.push(opts.chunkType); }
+  if (opts.source)     { clauses.push(`source = $FP_${fp++}`); params.push(opts.source); }
+
+  return { clauses, params };
+}
+
+/** Remap `$FP_n` placeholders to real positional params for one leg. `base` = the position of the
+ *  first filter param (vector leg = 3, BM25 leg = 2). Pure string transform. */
+export function renderFilterSql(clauses: string[], base: number): string {
+  return clauses.map((c) => c.replace(/\$FP_(\d+)/g, (_m, n) => `$${base + Number(n)}`)).join(' AND ');
+}
+
+/** Clamp a lab_retrieve topK request to [1, 20], defaulting to the served k (8). Pure. */
+export function clampLabRetrieveTopK(v: unknown): number {
+  const n = Math.floor(Number(v));
+  if (!Number.isFinite(n) || n <= 0) return 8;
+  return Math.min(20, n);
+}
 
 export async function retrieve(query: string, opts: RetrieveOptions = {}): Promise<RetrieveResult> {
   const topK = opts.topK ?? TOP_K;
@@ -71,16 +141,18 @@ export async function retrieve(query: string, opts: RetrieveOptions = {}): Promi
 
   // ---- filter clauses ----
   // QUARANTINE GUARD (lab MCP): lab-added corpus material is inert as source `labq:%` until
-  // the user activates it (→ `lab:%`). Excluded from BOTH retrieval legs, always. Constant, no param.
-  const filterClauses: string[] = [`text IS NOT NULL`, `visible IS NOT FALSE`, `source NOT LIKE 'labq:%'`];
-  const filterParams: unknown[] = [];
-  let fp = 0;
-  if (opts.bookFilter) { filterClauses.push(`book = $FP_${fp++}`); filterParams.push(opts.bookFilter); }
-  if (opts.chunkType)  { filterClauses.push(`chunk_type = $FP_${fp++}`); filterParams.push(opts.chunkType); }
-  if (opts.source)     { filterClauses.push(`source = $FP_${fp++}`); filterParams.push(opts.source); }
+  // the user activates it (→ `lab:%`). Excluded from BOTH retrieval legs, always. The lab
+  // measurement seam (opts.includeQuarantined, never set in production) relaxes both guards for
+  // ONE named batch via a bound param — see buildFilterClauses. Omitted ⇒ byte-identical SQL.
+  const { clauses: filterClauses, params: filterParams } = buildFilterClauses({
+    includeQuarantined: opts.includeQuarantined,
+    bookFilter: opts.bookFilter,
+    chunkType: opts.chunkType,
+    source: opts.source,
+  });
 
   // ---- Vector leg ----
-  const vecFilterSQL = filterClauses.map((c) => c.replace(/\$FP_(\d+)/g, (_m, n) => `$${3 + Number(n)}`)).join(' AND ');
+  const vecFilterSQL = renderFilterSql(filterClauses, 3);
   const vecSQL = `
     SELECT id, ROW_NUMBER() OVER (ORDER BY ${embCol} <=> $1::vector) AS rank
     FROM mksap_chunks
@@ -94,7 +166,7 @@ export async function retrieve(query: string, opts: RetrieveOptions = {}): Promi
 
   // ---- BM25 leg ----
   const bm25Query = (opts.bm25Query ?? query).trim();
-  const bm25FilterSQL = filterClauses.map((c) => c.replace(/\$FP_(\d+)/g, (_m, n) => `$${2 + Number(n)}`)).join(' AND ');
+  const bm25FilterSQL = renderFilterSql(filterClauses, 2);
   const bm25SQL = `
     SELECT id, ROW_NUMBER() OVER (ORDER BY ts_rank_cd(text_tsv, plainto_tsquery('english', $1)) DESC) AS rank
     FROM mksap_chunks
@@ -114,8 +186,11 @@ export async function retrieve(query: string, opts: RetrieveOptions = {}): Promi
 
   // ---- RRF fusion ----
   const score: Map<number, number> = new Map();
-  for (const r of vecRows) score.set(r.id, (score.get(r.id) ?? 0) + 1 / (RRF_K + Number(r.rank)));
-  for (const r of bm25Rows) score.set(r.id, (score.get(r.id) ?? 0) + 1 / (RRF_K + Number(r.rank)));
+  // Per-leg ranks — captured here so the lab path (§3.2) can expose them without a second pass.
+  const vecRankById = new Map<number, number>();
+  const bm25RankById = new Map<number, number>();
+  for (const r of vecRows) { score.set(r.id, (score.get(r.id) ?? 0) + 1 / (RRF_K + Number(r.rank))); vecRankById.set(r.id, Number(r.rank)); }
+  for (const r of bm25Rows) { score.set(r.id, (score.get(r.id) ?? 0) + 1 / (RRF_K + Number(r.rank))); bm25RankById.set(r.id, Number(r.rank)); }
 
   // When reranker is on we hand it a wider pool (top K*3, capped at 30).
   // When off we trim to topK directly here.
@@ -193,6 +268,18 @@ export async function retrieve(query: string, opts: RetrieveOptions = {}): Promi
 
   // Trim to final topK
   hits = hits.slice(0, topK);
+
+  // ---- Per-stage diagnostics (lab measurement path ONLY) ----
+  // Added strictly when includeQuarantined is set, so production result shapes stay untouched (§3.2).
+  if (opts.includeQuarantined) {
+    hits = hits.map((h, i) => ({
+      ...h,
+      vector_rank: vecRankById.has(h.id) ? (vecRankById.get(h.id) as number) : null,
+      bm25_rank: bm25RankById.has(h.id) ? (bm25RankById.get(h.id) as number) : null,
+      rrf_score: score.get(h.id) ?? 0,
+      final_rank: i + 1,
+    }));
+  }
 
   return {
     hits,
