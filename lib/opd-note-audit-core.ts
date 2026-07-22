@@ -9,6 +9,7 @@
 
 import type { DeidOpdCase, OpdMed } from './opd-ingest-core';
 import type { NetValue, OpdFindingDomain, Pdqi9Attr } from './opd-note-score-core';
+import type { FindingProvenance } from './provenance-tier-core';
 
 // 0.4 — formulary integration: brand→generic resolution + class/schedule/ISMP-high-alert/
 //       LASA/VED enrichment + formulary-scoped DDI, so brand-only OPD lines (~36%) are recognised.
@@ -35,7 +36,7 @@ import type { NetValue, OpdFindingDomain, Pdqi9Attr } from './opd-note-score-cor
 //       nasal-decongestant >5-day cap, route/formulation-aware duplication. Bug 5: hyoscine/dicyclomine
 //       reclassed Antispasmodic/anticholinergic in the formulary (DDI-invariant). LVC `other` sub-cat +
 //       frequent-flier list surfacing + 30-day longitudinal backfill ride in the same build (non-scoring).
-export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.8';
+export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.9';
 
 /**
  * Current-engine FAMILY for READ/aggregate surfaces. 0.81.3 → 0.81.4 → 0.81.5 are all score-identical
@@ -46,7 +47,7 @@ export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.8';
  * DESC, id DESC. WRITE-side targeting keeps exact OPD_ENGINE_VERSION (family there would stop history
  * re-scoring). See the patch report.
  */
-export const OPD_ENGINE_VERSIONS_CURRENT = ['opd-note-audit/0.81.3', 'opd-note-audit/0.81.4', 'opd-note-audit/0.81.5', 'opd-note-audit/0.81.6', 'opd-note-audit/0.81.7', 'opd-note-audit/0.81.8'] as const;
+export const OPD_ENGINE_VERSIONS_CURRENT = ['opd-note-audit/0.81.3', 'opd-note-audit/0.81.4', 'opd-note-audit/0.81.5', 'opd-note-audit/0.81.6', 'opd-note-audit/0.81.7', 'opd-note-audit/0.81.8', 'opd-note-audit/0.81.9'] as const;
 
 // Local copy of the PDQI-9 keys (kept in sync with opd-note-score-core) so this core has
 // no runtime cross-import and stays loadable under `node --experimental-strip-types`.
@@ -76,6 +77,11 @@ export interface OpdFinding {
   // (null in the OPD engine — no matcher wired; read-time/backfill can attach), lvc_category coarse bucket.
   rule_ref?: string | null;        // lvc_recommendations id, or null
   lvc_category?: string;           // 'antibiotic' | 'imaging' | 'supplement_polypharmacy' | 'other'
+  // Deterministic-tier provenance (opd-note-audit/0.81.9, PRD CDMSS-DETERMINISTIC-CITATIONS §7).
+  // A deterministic check (dose ceiling, DDI mechanism, ISMP high-alert) carries its resolved corpus
+  // citation OR an explicit llm mark. Additive metadata — NEVER feeds scoring (citations do not enter
+  // note_quality_index) and NOT part of finding_ref (the hash is signal_type|subject-detail only).
+  provenance?: FindingProvenance | null;
 }
 // ── Finding identity — signal_type + finding_ref (governance spec v2.0 §2) ────
 // Every finding gets (a) a coarse controlled-vocab `signal_type` (the unit the care manager
@@ -456,6 +462,24 @@ function det(subject: string, verdict: NetValue, confidence: number, rationale: 
   return { subject, verdict, confidence, domain: 'prescribing_safety', rationale, evidence: [], estimates: [], citation_ids: [], source: 'deterministic', ...(informational ? { informational: true } : {}) };
 }
 
+// Deterministic-Citations (PRD §5.3/§11.1, V-signed-off 22 Jul): ISMP high-alert provenance for the
+// combined high-alert roll-up. The OPD population is dominated by oral hypoglycemics + insulin +
+// oral methotrexate — all named classes on the ISMP Community/Ambulatory list. Mifepristone/
+// Misoprostol are local additions (llm). Everything else (Tacrolimus, oral MgSO4, theophylline,
+// colchicine, the glucosamine/multivitamin defects) carries NO provenance and stays uncited pending
+// pharmacy or the separate defect build. NO corpus retrieval — a direct reference to the named list.
+const ISMP_COMMUNITY_LIST = 'ISMP High-Alert Medications in Community/Ambulatory Care Settings (2021)';
+const ISMP_COMMUNITY_RE = /glimepiride|gliclazide|glipizide|glibenclamide|glyburide|\binsulin\b|methotrexate/i;
+const ISMP_LOCAL_ADDITION_RE = /mifepristone|misoprostol/i;
+function highAlertProvenance(genericNames: string[]): FindingProvenance | undefined {
+  const joined = genericNames.join(' ').toLowerCase();
+  if (ISMP_COMMUNITY_RE.test(joined)) {
+    return { citation: { source: 'ismp', book: ISMP_COMMUNITY_LIST, chapter: 'Specific medications', section: 'Insulin / oral hypoglycemics / oral methotrexate', page_start: null, page_end: null }, derivation: 'external' };
+  }
+  if (ISMP_LOCAL_ADDITION_RE.test(joined)) return { citation: null, derivation: 'llm' };
+  return undefined;   // pending pharmacy / defect → stays uncited_deterministic
+}
+
 // ── Deterministic rational-prescribing checks (from the medications array) ─────
 // Uses the formulary-RESOLVED generic where the note gave only a brand, so brand-only lines
 // finally dedupe and stop false-flagging. Formulary safety facts (ISMP high-alert, Schedule X,
@@ -537,8 +561,8 @@ export function prescribingChecks(c: DeidOpdCase): OpdFinding[] {
   }
 
   // Informational formulary roll-ups (confidence 0 → never penalise the score).
-  if (highAlerts.length) out.push(det(`High-alert medication${highAlerts.length > 1 ? 's' : ''}: ${dedupCI(highAlerts).join(', ')}`, 'uncertain', 0,
-    'ISMP high-alert medication present — heightened harm potential if mis-prescribed/administered; confirm dose, monitoring and indication.', true));
+  if (highAlerts.length) { const haProv = highAlertProvenance(highAlerts); out.push({ ...det(`High-alert medication${highAlerts.length > 1 ? 's' : ''}: ${dedupCI(highAlerts).join(', ')}`, 'uncertain', 0,
+    'ISMP high-alert medication present — heightened harm potential if mis-prescribed/administered; confirm dose, monitoring and indication.', true), ...(haProv ? { provenance: haProv } : {}) }); }
   if (scheduleX.length) out.push(det(`Schedule X drug: ${dedupCI(scheduleX).join(', ')}`, 'uncertain', 0,
     'Schedule X (narcotic/psychotropic) present — requires the prescribed format and record-keeping controls under the D&C Rules.', true));
   if (nNonFormularyDrug || nNutraceutical) {

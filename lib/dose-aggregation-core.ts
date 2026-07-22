@@ -22,6 +22,14 @@
 
 import type { OpdMed } from './opd-ingest-core';
 import type { OpdFinding } from './opd-note-audit-core';
+import type { CorpusCitation, FindingProvenance } from './provenance-tier-core';
+
+/** Provenance for a dose finding, from its DoseLimit entry (Deterministic-Citations §7). */
+function doseProvenance(lim: DoseLimit): FindingProvenance | undefined {
+  if (lim.derivation === 'external') return { citation: lim.citation ?? null, derivation: 'external' };
+  if (lim.derivation === 'llm') return { citation: null, derivation: 'llm' };
+  return undefined;   // no provenance set → finding stays uncited_deterministic (unchanged behaviour)
+}
 
 // ── Injected ceilings table (shape of data/dose-limits.json) ──────────────────
 export interface DoseLimit {
@@ -31,6 +39,10 @@ export interface DoseLimit {
   caution_mg_per_day?: number;
   caution_note?: string;
   note?: string;
+  // Deterministic-Citations (dose-limits/1.1): provenance of the ceiling threshold, attached to the
+  // emitted finding. 'external' carries a resolved corpus citation; 'llm' is internally-derived.
+  derivation?: 'external' | 'llm';
+  citation?: CorpusCitation | null;
 }
 export interface DoseLimitsTable {
   version: string;
@@ -241,26 +253,27 @@ export function doseAggregationFindings(meds: OpdMed[], table: DoseLimitsTable):
     const ceiling = lim.max_mg_per_day;
     const prods = load.products.join(' + ');
 
+    const prov = doseProvenance(lim);   // corpus citation / llm mark for this molecule's ceiling
     if (sched > ceiling) {
       // Hard: the fixed daily schedule alone exceeds the ceiling.
       const conf = load.incomplete ? 0.6 : 0.85;
       const stack = nProducts > 1 ? ` combined across ${nProducts} products (${prods})` : ` (${prods})`;
-      out.push(det(
+      out.push({ ...det(
         `Daily dose exceeds ceiling: ${lim.molecule}`,
         'low-value', conf,
         `Scheduled ${lim.molecule} totals ~${round(sched)} mg/day${stack}, above the ${ceiling} mg/day adult ceiling.` +
         (lim.caution_mg_per_day && lim.caution_note ? ` ${lim.caution_note}` : '') +
         (lim.note ? ` ${lim.note}` : '') +
         (load.incomplete ? ' (One contributing product had an unclear strength or frequency — verify the total.)' : ''),
-      ));
+      ), ...(prov ? { provenance: prov } : {}) });
     } else if (load.hasSos && sosMax > ceiling && nProducts >= 1) {
       // Soft: only exceeds if every as-needed dose is taken on top of the schedule.
-      out.push(det(
+      out.push({ ...det(
         `Daily dose may exceed ceiling if all SOS taken: ${lim.molecule}`,
         'context-dependent', load.assumedSos ? 0.3 : 0.4,
         `${lim.molecule} could reach ~${round(sosMax)} mg/day if every as-needed dose is taken${nProducts > 1 ? ` across ${nProducts} products (${prods})` : ` (${prods})`}, above the ${ceiling} mg/day ceiling — as-needed is a ceiling, not a fixed dose, so this is advisory.` +
         (load.assumedSos ? ' (No explicit SOS cap documented; a default ceiling was assumed — specify a maximum frequency.)' : ''),
-      ));
+      ), ...(prov ? { provenance: prov } : {}) });
     } else if (nProducts > 1 && sched > 0) {
       // Informational: same molecule in multiple products but within the ceiling — worth awareness,
       // does not penalise (confidence 0, informational).

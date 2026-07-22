@@ -23,7 +23,8 @@ import {
 import { computeOpdScore, type OpdScorecard, type NetValue, type Pdqi9Attr } from './opd-note-score-core';
 import { enrichOpdMeds } from './formulary';
 import { doseFindings } from './dose-limits';
-import { tagInteractions } from './ddi-tags';
+import { tagInteractions, DDI_MECHANISM_CITATIONS } from './ddi-tags';
+import type { FindingProvenance } from './provenance-tier-core';
 import { curatedInteractions, mergeRank, type DrugClass } from './ddi';
 import type { DdiPair } from './rxlabelguard';
 import { applySuppressions, applyDemotes, type Suppression } from './audit-suppression-core';
@@ -128,11 +129,17 @@ function ddiToFinding(p: DdiPair, topical?: Set<string>): OpdFinding {
   const confidence = involvesTopical ? 0.5
     : (sev === 'contraindicated' ? 0.9 : sev === 'major' ? 0.8 : sev === 'moderate' ? 0.6 : 0.4);
   const topicalNote = involvesTopical ? ' A topically-applied NSAID has low systemic absorption, so the additive systemic (GI/renal) risk is minimal.' : '';
+  // Deterministic-Citations (§7 / V3): the MECHANISM is corpus-verified where the rule is a
+  // Stage-1-verified class rule; severity is never cited. A mechanism not in the map (curated pair)
+  // is marked internally-derived. Additive metadata — never enters scoring.
+  const cite = DDI_MECHANISM_CITATIONS[p.mechanism];
+  const provenance: FindingProvenance = cite ? { citation: cite, derivation: 'external' } : { citation: null, derivation: 'llm' };
   return {
     subject: `Interaction (${sev}): ${p.drug_a} + ${p.drug_b}`,
     verdict, confidence, domain: 'prescribing_safety',
     rationale: `${p.mechanism} ${p.recommendation}${topicalNote}`.trim(),
     evidence: [], estimates: [], citation_ids: [], source: 'deterministic',
+    provenance,
   };
 }
 

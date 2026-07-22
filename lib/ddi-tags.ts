@@ -71,6 +71,34 @@ export const TAG_RULES: TagRule[] = [
   { a: 'insulin', b: 'sulfonylurea', severity: 'moderate', mechanism: 'Insulin + sulfonylurea — additive hypoglycaemia risk.', rec: 'Monitor blood glucose closely.' },
 ];
 
+// Deterministic-Citations (PRD §5.6, V-signed-off 22 Jul): the corpus source that verified each
+// class-rule MECHANISM (Stage 1 retrieve-and-verify; VERIFY_SYSTEM/Gemini Pro; 19/19 supported).
+// Keyed by the exact TAG_RULES mechanism string. SEVERITY is deliberately NOT cited (V3 — Stockley's/
+// Lexicomp/Micromedex grade differently; asserting one as ours is misattribution). A DDI finding
+// whose mechanism is NOT in this map (e.g. a curated pair) carries derivation 'llm', not a citation.
+import type { CorpusCitation } from './provenance-tier-core';
+export const DDI_MECHANISM_CITATIONS: Record<string, CorpusCitation> = {
+  'Two anticoagulants — duplicate/additive anticoagulation, high bleeding risk.': { source: 'uptodate', book: 'UpToDate', chapter: 'Anticoagulant drug interactions', section: 'Content', page_start: null, page_end: null },
+  'Anticoagulant + antiplatelet — additive bleeding risk.': { source: 'statpearls', book: 'StatPearls', chapter: 'Antiplatelet Medications', section: 'Adverse Effects', page_start: null, page_end: null },
+  'Anticoagulant + NSAID — increased bleeding risk.': { source: 'openfda', book: 'OpenFDA-Drug-Labels', chapter: 'anticoagulant', section: 'Drug Interactions', page_start: null, page_end: null },
+  'Dual antiplatelet therapy — increased bleeding risk.': { source: 'pubmed', book: 'Lit-J-Stroke', chapter: null, section: null, page_start: null, page_end: null },
+  'Antiplatelet + NSAID — increased GI bleeding risk.': { source: 'pubmed', book: 'Lit-Stroke-Vasc-Neurol', chapter: null, section: null, page_start: null, page_end: null },
+  'Two NSAIDs — additive GI and renal toxicity.': { source: 'pubmed', book: 'Lit-BMJ-Open', chapter: null, section: null, page_start: null, page_end: null },
+  'Two QT-prolonging drugs — additive QT prolongation, risk of torsades de pointes.': { source: 'openfda', book: 'OpenFDA-Drug-Labels', chapter: 'qt-prolonging', section: 'Warnings', page_start: null, page_end: null },
+  'Two serotonergic drugs — serotonin syndrome risk.': { source: 'statpearls', book: 'StatPearls', chapter: 'Serotonin Syndrome', section: 'Etiology', page_start: null, page_end: null },
+  'Two nephrotoxic agents — additive nephrotoxicity.': { source: 'pubmed', book: 'Lit-Kidney-Int-Rep', chapter: null, section: null, page_start: null, page_end: null },
+  'Two CNS depressants — additive sedation and respiratory depression.': { source: 'openfda', book: 'OpenFDA-Drug-Labels', chapter: 'cns-depressant', section: 'Warnings', page_start: null, page_end: null },
+  'ACE-I/ARB + potassium-sparing diuretic — hyperkalaemia risk.': { source: 'openfda', book: 'OpenFDA-Drug-Labels', chapter: 'ace-inhibitor', section: 'Drug Interactions', page_start: null, page_end: null },
+  'ACE-I/ARB + potassium supplement — hyperkalaemia risk.': { source: 'openfda', book: 'OpenFDA-Drug-Labels', chapter: 'ace-inhibitor', section: 'Drug Interactions', page_start: null, page_end: null },
+  'Aminoglycoside + loop diuretic — additive oto- and nephrotoxicity.': { source: 'openfda', book: 'OpenFDA-Drug-Labels', chapter: 'aminoglycoside', section: 'Warnings', page_start: null, page_end: null },
+  'Statin + macrolide — raised statin levels, rhabdomyolysis risk.': { source: 'openfda', book: 'OpenFDA-Drug-Labels', chapter: 'statin', section: 'Drug Interactions', page_start: null, page_end: null },
+  'Statin + azole antifungal — raised statin levels, rhabdomyolysis risk.': { source: 'openfda', book: 'OpenFDA-Drug-Labels', chapter: 'statin', section: 'Drug Interactions', page_start: null, page_end: null },
+  'NSAID + ACE-I/ARB — reduced renal perfusion, AKI risk (worse if also on a diuretic — “triple whammy”).': { source: 'pubmed', book: 'Lit-BMJ', chapter: null, section: null, page_start: null, page_end: null },
+  'Methotrexate + NSAID — reduced methotrexate clearance, toxicity risk.': { source: 'openfda', book: 'OpenFDA-Drug-Labels', chapter: 'methotrexate', section: 'Drug Interactions', page_start: null, page_end: null },
+  'Two sulfonylureas — additive hypoglycaemia.': { source: 'statpearls', book: 'StatPearls', chapter: 'Sulfonylureas', section: 'Adverse Effects', page_start: null, page_end: null },
+  'Insulin + sulfonylurea — additive hypoglycaemia risk.': { source: 'pubmed', book: 'Lit-Diabetes-Care', chapter: null, section: null, page_start: null, page_end: null },
+};
+
 const SEV: Record<string, number> = { contraindicated: 5, major: 4, moderate: 3, minor: 2, unknown: 1, none: 0 };
 
 // One DdiPair per interacting drug pair, carrying the highest-severity mechanism.

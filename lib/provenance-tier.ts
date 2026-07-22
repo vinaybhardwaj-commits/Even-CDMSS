@@ -12,11 +12,21 @@
 import { sql } from './db';
 import {
   classifyProvenanceTier, citationResolves, PROVENANCE_TIERS,
-  type ProvenanceTier, type RuleCitationFields,
+  type ProvenanceTier, type RuleCitationFields, type FindingProvenance,
 } from './provenance-tier-core';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 const APP = process.env.APP_SOURCE || 'standalone';
+
+/** Reconstruct the minimal FindingProvenance the classifier needs from the SQL-projected columns
+ *  (prov_source / prov_book / prov_chapter / prov_derivation). null when the finding has none. */
+function provenanceFromRow(c: Record<string, unknown>): FindingProvenance | null {
+  const deriv = c.prov_derivation == null ? null : String(c.prov_derivation);
+  const src = c.prov_source == null ? null : String(c.prov_source);
+  if (!deriv && !src) return null;
+  const citation = src ? { source: src, book: c.prov_book == null ? null : String(c.prov_book), chapter: c.prov_chapter == null ? null : String(c.prov_chapter) } : null;
+  return { citation, derivation: deriv === 'llm' ? 'llm' : 'external' };
+}
 
 export interface TierPartition {
   engine_version: string;
@@ -69,11 +79,15 @@ export async function loadTierLedger(): Promise<TierPartition[]> {
       `SELECT engine_version, coalesce(quieting_gen, 0)::int AS gen,
               f->>'rule_ref' AS rule_ref, f->>'source' AS source,
               f->>'verdict' AS verdict, f->>'signal_type' AS signal_type,
+              f->'provenance'->'citation'->>'source' AS prov_source,
+              f->'provenance'->'citation'->>'book' AS prov_book,
+              f->'provenance'->'citation'->>'chapter' AS prov_chapter,
+              f->'provenance'->>'derivation' AS prov_derivation,
               count(*)::int AS n
        FROM opd_note_audits, jsonb_array_elements(findings) f
        WHERE app_source = $1 AND engine_version LIKE 'opd-note-audit/%'
          AND (f->>'informational') IS DISTINCT FROM 'true'
-       GROUP BY 1, 2, 3, 4, 5, 6`, [APP]);
+       GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10`, [APP]);
 
     const ruleIds = [...new Set(combos.map((c) => (c.rule_ref == null ? '' : String(c.rule_ref))).filter(Boolean))];
     const rules = await fetchRuleCitations(ruleIds);
@@ -95,6 +109,7 @@ export async function loadTierLedger(): Promise<TierPartition[]> {
           source: c.source == null ? undefined : String(c.source),
           verdict: c.verdict == null ? undefined : String(c.verdict),
           signal_type: c.signal_type == null ? undefined : String(c.signal_type),
+          provenance: provenanceFromRow(c),
         },
         rule_ref ? rules.get(rule_ref) ?? null : null,
       );
@@ -148,7 +163,11 @@ export async function tierExamples(engineVersion: string, perTier = 5): Promise<
   try {
     const rows = await run(
       `SELECT f->>'subject' AS subject, f->>'rule_ref' AS rule_ref, f->>'source' AS source,
-              f->>'verdict' AS verdict, f->>'signal_type' AS signal_type
+              f->>'verdict' AS verdict, f->>'signal_type' AS signal_type,
+              f->'provenance'->'citation'->>'source' AS prov_source,
+              f->'provenance'->'citation'->>'book' AS prov_book,
+              f->'provenance'->'citation'->>'chapter' AS prov_chapter,
+              f->'provenance'->>'derivation' AS prov_derivation
        FROM opd_note_audits, jsonb_array_elements(findings) f
        WHERE app_source = $1 AND engine_version = $2
          AND (f->>'informational') IS DISTINCT FROM 'true'
@@ -158,7 +177,7 @@ export async function tierExamples(engineVersion: string, perTier = 5): Promise<
     for (const r of rows) {
       const rule_ref = r.rule_ref == null ? null : String(r.rule_ref);
       const tier = classifyProvenanceTier(
-        { rule_ref, source: r.source == null ? undefined : String(r.source), verdict: r.verdict == null ? undefined : String(r.verdict), signal_type: r.signal_type == null ? undefined : String(r.signal_type) },
+        { rule_ref, source: r.source == null ? undefined : String(r.source), verdict: r.verdict == null ? undefined : String(r.verdict), signal_type: r.signal_type == null ? undefined : String(r.signal_type), provenance: provenanceFromRow(r) },
         rule_ref ? rules.get(rule_ref) ?? null : null,
       );
       if (out[tier].length < perTier) out[tier].push({ subject: String(r.subject || '').slice(0, 110), signal_type: r.signal_type == null ? null : String(r.signal_type), rule_ref });

@@ -2148,6 +2148,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "ddi-tags",
+    "to": "provenance-tier-core",
+    "kind": "type"
+  },
+  {
+    "from": "ddi-tags",
     "to": "rxlabelguard",
     "kind": "type"
   },
@@ -2309,6 +2314,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "dose-aggregation-core",
     "to": "opd-note-audit-core",
+    "kind": "type"
+  },
+  {
+    "from": "dose-aggregation-core",
+    "to": "provenance-tier-core",
     "kind": "type"
   },
   {
@@ -3093,6 +3103,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "opd-note-audit",
+    "to": "provenance-tier-core",
+    "kind": "type"
+  },
+  {
+    "from": "opd-note-audit",
     "to": "retrieve",
     "kind": "value"
   },
@@ -3114,6 +3129,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "opd-note-audit-core",
     "to": "opd-note-score-core",
+    "kind": "type"
+  },
+  {
+    "from": "opd-note-audit-core",
+    "to": "provenance-tier-core",
     "kind": "type"
   },
   {
@@ -3520,13 +3540,13 @@ export const VERSION_REGISTRY: VersionRow[] = [
   },
   {
     "constName": "OPD_ENGINE_VERSION",
-    "value": "opd-note-audit/0.81.8",
+    "value": "opd-note-audit/0.81.9",
     "file": "lib/opd-note-audit-core.ts",
     "derived": false
   },
   {
     "constName": "OPD_ENGINE_VERSIONS_CURRENT",
-    "value": "['opd-note-audit/0.81.3', 'opd-note-audit/0.81.4', 'opd-note-audit/0.81.5', 'opd-note-audit/0.81.6', 'opd-note-audit/0.81.7', 'opd-note-audit/0.81.8']",
+    "value": "['opd-note-audit/0.81.3', 'opd-note-audit/0.81.4', 'opd-note-audit/0.81.5', 'opd-note-audit/0.81.6', 'opd-note-audit/0.81.7', 'opd-note-audit/0.81.8', 'opd-note-audit/0.81.9']",
     "file": "lib/opd-note-audit-core.ts",
     "derived": true
   },

@@ -14,12 +14,14 @@
  * and MUST classify as non-resolving (a dead generic link is internal consensus wearing a badge).
  */
 
-// ── The six tiers (L2) ────────────────────────────────────────────────────────
+// ── The tiers (L2 + PRD CDMSS-DETERMINISTIC-CITATIONS V1/V2) ──────────────────
 export const PROVENANCE_TIERS = [
   'deterministic',            // backed by a rule/check with a RESOLVABLE external citation
   'category_authority',       // society/guideline citation at category level (see note below)
-  'internal_consensus',       // attributed to a self-mined rule; no external source
-  'uncited_deterministic',    // deterministic in-code check, no citation attached
+  'internal_consensus',       // attributed to a self-mined rule OR a deterministic check marked llm
+  'uncited_deterministic',    // deterministic in-code check, no citation and not marked — a shrinking residue
+  'deterministic_completeness', // a documentation-completeness check (incomplete_dosing) — no external authority exists (V1)
+  'deterministic_logical',    // logic-derived (duplicate_molecule/prescription) — evidence is the prescription itself (V2)
   'unattributed_sourceable',  // no rule matched, but the finding type is codifiable
   'inherent_judgment',        // LLM clinical judgement no catalog can cite — the structural floor
 ] as const;
@@ -33,8 +35,10 @@ export type ProvenanceTier = (typeof PROVENANCE_TIERS)[number];
 export const PROVENANCE_TIER_LABELS: Record<ProvenanceTier, string> = {
   deterministic: 'Deterministic — resolvable external citation',
   category_authority: 'Category authority — society citation at category level',
-  internal_consensus: 'Internal consensus — self-mined rule, no external source',
+  internal_consensus: 'Internal consensus — self-mined rule / marked internally-derived',
   uncited_deterministic: 'Deterministic check — no citation attached',
+  deterministic_completeness: 'Deterministic completeness check — no external authority exists',
+  deterministic_logical: 'Deterministic logical check — evidence is the prescription itself',
   unattributed_sourceable: 'Unattributed — sourceable (a catalog entry could exist)',
   inherent_judgment: 'Inherent clinical judgement — cannot be cited by any catalog',
 };
@@ -82,6 +86,44 @@ export function citationResolves(c: RuleCitationFields | null | undefined): bool
   return urlResolves(c.citation_url);
 }
 
+// ── Corpus citations on deterministic findings (PRD CDMSS-DETERMINISTIC-CITATIONS §4/§7) ──────────
+// A deterministic check (dose ceiling, DDI mechanism, ISMP high-alert) can carry a resolved corpus
+// citation to the UNDERLYING published authority (OpenFDA drug label, StatPearls chapter, UpToDate
+// topic, PubMed literature) — never to "corpus chunk #N". Shape mirrors mksap_chunks locators.
+export interface CorpusCitation {
+  source: string;                    // openfda | statpearls | uptodate | pubmed | <textbook> …
+  book?: string | null;
+  chapter?: string | null;
+  section?: string | null;
+  page_start?: number | null;        // NULL is valid for OpenFDA labels (unpaginated) — §4
+  page_end?: number | null;
+  note?: string | null;
+  low_confidence?: boolean;          // e.g. etoricoxib — flagged for human eyeballing before trust
+}
+
+/** derivation on a deterministic check's finding: `external` carries a resolved corpus citation;
+ *  `llm` is explicitly internally-derived (no corpus verification) per V's §2 ruling. */
+export interface FindingProvenance {
+  citation?: CorpusCitation | null;
+  derivation: 'external' | 'llm';
+}
+
+// Recognised external published authorities. Corpus retrieval sources (openfda/statpearls/…) plus
+// named lists that resolve WITHOUT a chunk (ISMP high-alert / confused-drug-names; CDSCO gazette).
+const EXTERNAL_CORPUS_SOURCES = ['openfda', 'statpearls', 'uptodate', 'pubmed', 'europepmc', 'mksap', 'harrison', 'cecil', 'goldman', 'bookshelf', 'textbook', 'choosing-wisely', 'guidelines', 'ismp', 'cdsco', 'gazette'];
+
+/** Does a deterministic finding's corpus citation resolve to a real external authority? A recognised
+ *  external source + any locator (book/chapter/section). OpenFDA label shape with NULL pages resolves
+ *  (§4: label + drug + section is a real reference, just not a page). */
+export function corpusCitationResolves(c: CorpusCitation | null | undefined): boolean {
+  if (!c || !c.source) return false;
+  const s = String(c.source).toLowerCase();
+  if (s === 'deterministic' || s.startsWith('labq:') || s.startsWith('lab:')) return false;
+  const known = s.startsWith('lit') || EXTERNAL_CORPUS_SOURCES.some((k) => s.includes(k));
+  const hasLocator = !!(c.book || c.chapter || c.section);
+  return known && hasLocator;
+}
+
 // ── The judgement family (§3 rule 4) ──────────────────────────────────────────
 // appropriateness_* + prescribing_review + longitudinal_* per the settled decisions. The PRD also
 // says "documentation/reasoning signals": no additional non-informational signal_type in the
@@ -100,6 +142,7 @@ export interface TierableFinding {
   source?: string;                 // 'llm' | 'deterministic'
   signal_type?: string;
   rule_ref?: string | null;
+  provenance?: FindingProvenance | null;   // deterministic checks carry their own corpus citation / llm mark
 }
 
 /**
@@ -112,7 +155,19 @@ export function classifyProvenanceTier(f: TierableFinding, rule?: RuleCitationFi
   if (f.rule_ref) {
     return citationResolves(rule) ? 'deterministic' : 'internal_consensus';       // §3.1
   }
-  if (f.source === 'deterministic') return 'uncited_deterministic';               // §3.2 (no backing table supplies a citation today)
+  if (f.source === 'deterministic') {
+    // Deterministic-Citations V1/V2 — non-citable deterministic classes routed by signal_type, so
+    // they no longer sit in `uncited_deterministic` pretending a source could exist.
+    if (f.signal_type === 'incomplete_dosing') return 'deterministic_completeness';           // V1 — a documentation gap; no authority cites "you didn't write the dose"
+    if (f.signal_type === 'duplicate_molecule' || f.signal_type === 'duplicate_prescription') return 'deterministic_logical'; // V2 — evidence is the prescription itself
+    // §7.3 — the finding's OWN corpus citation (dose ceilings, DDI mechanisms, ISMP high-alert):
+    // a resolving citation → deterministic; an explicit llm mark → internal_consensus.
+    if (f.provenance) {
+      if (corpusCitationResolves(f.provenance.citation)) return 'deterministic';
+      if (f.provenance.derivation === 'llm') return 'internal_consensus';
+    }
+    return 'uncited_deterministic';   // residue: defects + not-yet-adjudicated checks (e.g. lasa_pair, pending high-alert)
+  }
   if (f.verdict === 'low-value') return 'unattributed_sourceable';                // §3.3
   if (isJudgementSignalType(f.signal_type)) return 'inherent_judgment';           // §3.4
   return 'unattributed_sourceable';                                               // §3.5 — default to SOURCEABLE, never to inherent

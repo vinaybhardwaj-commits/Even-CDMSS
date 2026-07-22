@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   citationResolves, urlResolves, classifyProvenanceTier, groundingKind, isJudgementSignalType,
-  GROUNDING_PRESENTATION, PROVENANCE_TIERS,
+  corpusCitationResolves, GROUNDING_PRESENTATION, PROVENANCE_TIERS, type CorpusCitation,
 } from '../provenance-tier-core';
 
 // ── L7 — the resolvability predicate ─────────────────────────────────────────
@@ -68,7 +68,7 @@ test('rule 5 direction: unknowns default to SOURCEABLE, never to inherent (the b
   for (const t of ['prescribing_general', 'prescribing_high_value', 'antibiotic_stewardship', undefined]) {
     assert.equal(classifyProvenanceTier({ verdict: 'context-dependent', source: 'llm', signal_type: t }), 'unattributed_sourceable', String(t));
   }
-  assert.equal(PROVENANCE_TIERS.length, 6);
+  assert.equal(PROVENANCE_TIERS.length, 8);   // 6 original + deterministic_completeness + deterministic_logical (V1/V2)
 });
 
 // ── L8/L9 — grounding presentation ───────────────────────────────────────────
@@ -81,4 +81,46 @@ test('grounding: precedence + V-approved labels verbatim; internal corpus is nev
   assert.deepEqual(GROUNDING_PRESENTATION.external_source, { label: 'External source', elevated: true });
   assert.deepEqual(GROUNDING_PRESENTATION.internal_corpus, { label: 'Internal corpus reference', elevated: false });
   assert.deepEqual(GROUNDING_PRESENTATION.no_source, { label: 'Clinical reasoning — no source', elevated: false });
+});
+
+// ── Deterministic-Citations (PRD CDMSS-DETERMINISTIC-CITATIONS, Stage 3) ──────
+test('corpusCitationResolves: OpenFDA null-page label resolves (§4); StatPearls/UpToDate/PubMed resolve', () => {
+  assert.equal(corpusCitationResolves({ source: 'openfda', book: 'OpenFDA-Drug-Labels', chapter: 'ibuprofen', section: 'Dosage', page_start: null, page_end: null }), true);
+  assert.equal(corpusCitationResolves({ source: 'statpearls', book: 'StatPearls', chapter: 'Caffeine' }), true);
+  assert.equal(corpusCitationResolves({ source: 'uptodate', book: 'UpToDate', chapter: 'Phenylephrine' }), true);
+  assert.equal(corpusCitationResolves({ source: 'pubmed', book: 'Lit-Diabetes-Care' }), true);
+  assert.equal(corpusCitationResolves({ source: 'ismp', book: 'ISMP High-Alert Medications in Community/Ambulatory Care Settings (2021)' }), true);
+});
+test('corpusCitationResolves: self-reference / empty / no-locator does NOT resolve', () => {
+  assert.equal(corpusCitationResolves(null), false);
+  assert.equal(corpusCitationResolves({ source: 'deterministic' } as CorpusCitation), false);
+  assert.equal(corpusCitationResolves({ source: 'labq:bookshelf', book: 'X' }), false);
+  assert.equal(corpusCitationResolves({ source: 'openfda' }), false);   // no locator (book/chapter/section)
+  assert.equal(corpusCitationResolves({ source: 'randomthing', book: 'X' }), false);   // unknown source
+});
+
+test('deterministic finding with a resolving corpus citation → deterministic', () => {
+  assert.equal(classifyProvenanceTier({ source: 'deterministic', signal_type: 'dose_ceiling_sos', verdict: 'context-dependent', provenance: { citation: { source: 'openfda', book: 'OpenFDA-Drug-Labels', chapter: 'naproxen' }, derivation: 'external' } }), 'deterministic');
+  assert.equal(classifyProvenanceTier({ source: 'deterministic', signal_type: 'drug_interaction', verdict: 'low-value', provenance: { citation: { source: 'statpearls', book: 'StatPearls' }, derivation: 'external' } }), 'deterministic');
+});
+test('deterministic finding marked llm → internal_consensus', () => {
+  assert.equal(classifyProvenanceTier({ source: 'deterministic', signal_type: 'dose_ceiling_exceeded', verdict: 'low-value', provenance: { citation: null, derivation: 'llm' } }), 'internal_consensus');
+});
+test('V1/V2: incomplete_dosing → deterministic_completeness; duplicate_* → deterministic_logical', () => {
+  assert.equal(classifyProvenanceTier({ source: 'deterministic', signal_type: 'incomplete_dosing', verdict: 'context-dependent' }), 'deterministic_completeness');
+  assert.equal(classifyProvenanceTier({ source: 'deterministic', signal_type: 'duplicate_molecule', verdict: 'uncertain' }), 'deterministic_logical');
+  assert.equal(classifyProvenanceTier({ source: 'deterministic', signal_type: 'duplicate_prescription', verdict: 'low-value' }), 'deterministic_logical');
+});
+test('§3.3 unreachability: an in-scope deterministic signal type that carries provenance is NEVER uncited_deterministic', () => {
+  for (const st of ['drug_interaction', 'dose_ceiling_sos', 'dose_ceiling_exceeded']) {
+    const ext = classifyProvenanceTier({ source: 'deterministic', signal_type: st, verdict: 'low-value', provenance: { citation: { source: 'openfda', book: 'OpenFDA-Drug-Labels', chapter: 'x' }, derivation: 'external' } });
+    const llm = classifyProvenanceTier({ source: 'deterministic', signal_type: st, verdict: 'low-value', provenance: { citation: null, derivation: 'llm' } });
+    assert.notEqual(ext, 'uncited_deterministic', `${st} external`);
+    assert.notEqual(llm, 'uncited_deterministic', `${st} llm`);
+    assert.equal(ext, 'deterministic', st);
+    assert.equal(llm, 'internal_consensus', st);
+  }
+  // the residue is honest: a deterministic finding with NO provenance (lasa_pair, pending high-alert) STAYS uncited
+  assert.equal(classifyProvenanceTier({ source: 'deterministic', signal_type: 'lasa_pair', verdict: 'context-dependent' }), 'uncited_deterministic');
+  assert.equal(PROVENANCE_TIERS.length, 8);
 });

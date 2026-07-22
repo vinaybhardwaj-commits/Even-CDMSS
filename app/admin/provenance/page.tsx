@@ -17,6 +17,8 @@ const TIER_TONE: Record<ProvenanceTier, string> = {
   category_authority: 'bg-sky-50 text-sky-800',
   internal_consensus: 'bg-amber-50 text-amber-800',
   uncited_deterministic: 'bg-slate-100 text-slate-700',
+  deterministic_completeness: 'bg-cyan-50 text-cyan-800',
+  deterministic_logical: 'bg-cyan-50 text-cyan-800',
   unattributed_sourceable: 'bg-violet-50 text-violet-800',
   inherent_judgment: 'bg-slate-50 text-slate-500',
 };
