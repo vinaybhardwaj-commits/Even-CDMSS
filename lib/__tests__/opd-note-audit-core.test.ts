@@ -308,6 +308,37 @@ test('0.81.11: form/dosageForm are inert — prescribingChecks output is byte-id
   assert.deepEqual(prescribingChecks(withForm), prescribingChecks(without));
 });
 
+// ── Matcher-Scoping Audit Stage 2 (0.81.12): lasa_pair DELETED + molecule-subset duplication ──
+const mkMedCase = (ms: unknown[]) => ({ medications: ms } as unknown as Parameters<typeof prescribingChecks>[0]);
+
+test('0.81.12 CANARY: guideline-recommended vaccine co-administration produces NO finding (LASA deleted)', () => {
+  // The 4 vaccine-co-admin notes LASA used to penalise. Even with the (misnamed) lasa column populated,
+  // no LASA finding fires, and two different vaccines are not a duplication. This must never regress.
+  const fs = prescribingChecks(mkMedCase([
+    { generic: 'Pneumococcal Polysaccharide Vaccine', resolvedGeneric: 'Pneumococcal Polysaccharide Vaccine', lasa: ['Influenza Vaccine'] },
+    { generic: 'Influenza Vaccine', resolvedGeneric: 'Influenza Vaccine', lasa: ['Pneumococcal Polysaccharide Vaccine'] },
+  ]));
+  assert.equal(fs.filter((f) => /^LASA pair/.test(f.subject)).length, 0, 'LASA check is deleted — no name-confusion finding');
+  assert.equal(fs.filter((f) => /^Duplicate prescription/.test(f.subject)).length, 0, 'two different vaccines are not a duplication');
+});
+
+test('0.81.12 (Stage 2a): the SCORING molecule-subset dedup is NOT present — a mono+FDC produces no new penalty', () => {
+  // The subset-dedup was rejected at dry run (fired 82×, paracetamol-dominated, collided with the
+  // informational duplicate_molecule policy). A mono inside a co-prescribed FDC must NOT be flagged as a
+  // scoring duplicate here — the within-ceiling duplication stays the dose-aggregation informational
+  // roll-up. A dose-gated replacement is Stage 2b (separate dry run).
+  const fs = prescribingChecks(mkMedCase([
+    { generic: 'Metformin', resolvedGeneric: 'Metformin' },
+    { generic: 'Glimepiride+Metformin', resolvedGeneric: 'Glimepiride+Metformin' },
+  ]));
+  assert.equal(fs.filter((f) => /^Duplicate prescription/.test(f.subject)).length, 0, 'no scoring subset-dup in Stage 2a');
+  // exact same generic twice still fires the original (unchanged) path
+  const exact = prescribingChecks(mkMedCase([
+    { generic: 'Amlodipine', resolvedGeneric: 'Amlodipine' }, { generic: 'Amlodipine', resolvedGeneric: 'Amlodipine' },
+  ]));
+  assert.ok(exact.find((f) => /^Duplicate prescription: Amlodipine/.test(f.subject)), 'exact-generic duplicate still fires');
+});
+
 // ── Signal-Type Collapse fix (0.81.10, PRD CDMSS-SIGNAL-TYPE-COLLAPSE §5.1 / S3) ──
 test('0.81.10: a low-value deterministic finding RETAINS its specific signal_type (no collapse to low_value_care)', () => {
   const lv = (subject: string, domain: 'prescribing_safety' | 'appropriateness' = 'prescribing_safety', source: 'deterministic' | 'llm' = 'deterministic'): OpdFinding =>

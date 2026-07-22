@@ -36,7 +36,7 @@ import type { FindingProvenance } from './provenance-tier-core';
 //       nasal-decongestant >5-day cap, route/formulation-aware duplication. Bug 5: hyoscine/dicyclomine
 //       reclassed Antispasmodic/anticholinergic in the formulary (DDI-invariant). LVC `other` sub-cat +
 //       frequent-flier list surfacing + 30-day longitudinal backfill ride in the same build (non-scoring).
-export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.11';
+export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.12';
 
 /**
  * Current-engine FAMILY for READ/aggregate surfaces. 0.81.3 → 0.81.4 → 0.81.5 are all score-identical
@@ -47,7 +47,7 @@ export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.11';
  * DESC, id DESC. WRITE-side targeting keeps exact OPD_ENGINE_VERSION (family there would stop history
  * re-scoring). See the patch report.
  */
-export const OPD_ENGINE_VERSIONS_CURRENT = ['opd-note-audit/0.81.3', 'opd-note-audit/0.81.4', 'opd-note-audit/0.81.5', 'opd-note-audit/0.81.6', 'opd-note-audit/0.81.7', 'opd-note-audit/0.81.8', 'opd-note-audit/0.81.9', 'opd-note-audit/0.81.10', 'opd-note-audit/0.81.11'] as const;
+export const OPD_ENGINE_VERSIONS_CURRENT = ['opd-note-audit/0.81.3', 'opd-note-audit/0.81.4', 'opd-note-audit/0.81.5', 'opd-note-audit/0.81.6', 'opd-note-audit/0.81.7', 'opd-note-audit/0.81.8', 'opd-note-audit/0.81.9', 'opd-note-audit/0.81.10', 'opd-note-audit/0.81.11', 'opd-note-audit/0.81.12'] as const;
 
 // Local copy of the PDQI-9 keys (kept in sync with opd-note-score-core) so this core has
 // no runtime cross-import and stays loadable under `node --experimental-strip-types`.
@@ -550,24 +550,15 @@ export function prescribingChecks(c: DeidOpdCase): OpdFinding[] {
     if (n > 1) out.push(det(`Duplicate prescription: ${label}`, 'low-value', 0.7, `The same generic appears ${n} times on the prescription.`));
   }
 
-  // LASA pair co-prescribed — a drug AND one of its look-alike/sound-alike confusables both present.
-  const names = c.medications.map((m) => (m.resolvedGeneric || m.generic || m.brand || '').toLowerCase()).filter(Boolean);
-  const lasaSeen = new Set<string>();
-  for (const m of c.medications) {
-    const self = (m.resolvedGeneric || m.generic || '').toLowerCase();
-    for (const la of m.lasa || []) {
-      const laLow = la.toLowerCase();
-      const hit = names.find((nm) => nm && nm !== self && (nm.includes(laLow) || laLow.includes(nm)));
-      if (hit && self) {
-        const key = [self, hit].sort().join('|');
-        if (!lasaSeen.has(key)) {
-          lasaSeen.add(key);
-          out.push(det(`LASA pair co-prescribed: ${m.resolvedGeneric || m.generic} & ${hit}`, 'context-dependent', 0.45,
-            'Look-alike/sound-alike drugs on the same prescription — dispensing/administration confusion risk (NABH / ISMP LASA).'));
-        }
-      }
-    }
-  }
+  // NOTE: the lasa_pair check was DELETED here (0.81.12, Matcher-Scoping Audit Stage 2a, §6c). 0/88 live
+  // findings were genuine look-alike/sound-alike name confusables — the formulary `lasa` column encodes
+  // same-class therapeutic ALTERNATIVES, and LASA is a *dispensing* risk not observable in a prescribing
+  // note. Do NOT reinstate it. The ~5 real duplications it accidentally caught (mono + FDC containing that
+  // mono) remain visible via the dose-aggregation "same molecule in N products" roll-up (informational).
+  // A SCORING molecule-subset duplicate check was trialled and REJECTED at dry run (Stage 2, 23 Jul): it
+  // fired 82× (paracetamol-dominated common combinations), collided with dose-aggregation's deliberate
+  // informational-within-ceiling policy, and moved 70 notes down. Any replacement is Stage 2b (dose-gated)
+  // and must clear its own dry run — see CDMSS-MATCHER-STAGE2-DRYRUN-REPORT.
 
   // Informational formulary roll-ups (confidence 0 → never penalise the score).
   if (highAlerts.length) { const haProv = highAlertProvenance(highAlerts); out.push({ ...det(`High-alert medication${highAlerts.length > 1 ? 's' : ''}: ${dedupCI(highAlerts).join(', ')}`, 'uncertain', 0,
