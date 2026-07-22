@@ -2878,6 +2878,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "multi-query",
+    "to": "expand",
+    "kind": "value"
+  },
+  {
+    "from": "multi-query",
     "to": "llm",
     "kind": "value"
   },

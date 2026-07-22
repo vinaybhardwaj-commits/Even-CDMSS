@@ -612,8 +612,8 @@ async function labRetrieve(a: Record<string, unknown>): Promise<ToolResult> {
       };
     });
     return ok({
-      query, mode: 'multi_query', includeQuarantined: includeQuarantined ?? null, topK, count: hits.length,
-      variants: res.variants, perVariantCounts: res.perVariantCounts, hits,
+      query, mode: 'multi_query', expandedQuery: res.expandedQuery, includeQuarantined: includeQuarantined ?? null,
+      topK, count: hits.length, variants: res.variants, perVariantCounts: res.perVariantCounts, hits,
     });
   }
 

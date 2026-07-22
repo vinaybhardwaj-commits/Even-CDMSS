@@ -24,6 +24,7 @@ test('RRF fusion: a chunk ranked #1 by two variants beats a chunk ranked #1 by o
   const A = chunk(1, { similarity: 0.60 });
   const B = chunk(2, { similarity: 0.99 });
   const res = await retrieveMultiQuery('orig', { topK: 5, useReranker: false, useSourceWeights: false }, {
+    expandFn: async (q) => q,
     variantsFn: async () => ['v1', 'v2'],
     retrieveFn: retrieveStub({ orig: [B], v1: [A], v2: [A] }),
   });
@@ -42,6 +43,7 @@ test('RRF fusion: a chunk ranked #1 by two variants beats a chunk ranked #1 by o
 test('rerank runs once over the fused pool against the original question — never a variant', async () => {
   const calls: { query: string; n: number }[] = [];
   const res = await retrieveMultiQuery('the original question', { topK: 5, useReranker: true, useSourceWeights: false }, {
+    expandFn: async (q) => q,
     variantsFn: async () => ['variant one', 'variant two'],
     retrieveFn: retrieveStub({ 'the original question': [chunk(1)], 'variant one': [chunk(2)], 'variant two': [chunk(3)] }),
     rerankFn: (async (query: string, cands: { __orig: unknown }[]) => {
@@ -59,6 +61,7 @@ test('source weighting: a guidelines (0.95) chunk outranks an unknown-journal (0
   const guideline = chunk(1, { book: 'ACC/AHA guidelines', similarity: 0.5 });   // bookTier 'guidelines' → 0.95
   const unknown = chunk(2, { book: 'Some Unknown Journal', similarity: 0.5 });    // unknown-book default → 0.80
   const res = await retrieveMultiQuery('q', { topK: 5, useReranker: true, useSourceWeights: true }, {
+    expandFn: async (q) => q,
     variantsFn: async () => ['v1'],
     retrieveFn: retrieveStub({ q: [unknown], v1: [guideline] }),
     // equal rerank score for both, so ordering is decided purely by source weight
@@ -75,6 +78,7 @@ test('per-variant retrieve() runs with useReranker/useSourceWeights false; fusio
   const perVariantOpts: Record<string, unknown>[] = [];
   let rerankCalls = 0;
   await retrieveMultiQuery('orig', { topK: 5, useReranker: true, useSourceWeights: true }, {
+    expandFn: async (q) => q,
     variantsFn: async () => ['v1', 'v2'],
     retrieveFn: (async (q: string, o: Record<string, unknown>) => {
       perVariantOpts.push(o);
@@ -94,6 +98,7 @@ test('per-variant retrieve() runs with useReranker/useSourceWeights false; fusio
 // ── Test 5 — variant-generation failure ⇒ original query alone, no throw ──
 test('variant generation returning nothing falls back to the original query alone, no throw', async () => {
   const res = await retrieveMultiQuery('lone question', { topK: 5, useReranker: false, useSourceWeights: false }, {
+    expandFn: async (q) => q,
     variantsFn: async () => [],   // present .catch() behaviour: failure ⇒ []
     retrieveFn: retrieveStub({ 'lone question': [chunk(1), chunk(2)] }),
   });
@@ -106,6 +111,7 @@ test('variant generation returning nothing falls back to the original query alon
 // ── Test 6 — diagnostics populate without includeQuarantined (the lab_retrieve multiQuery arm) ──
 test('multi-query hits always carry rrf_score + variant_ranks — no includeQuarantined needed', async () => {
   const res = await retrieveMultiQuery('q', { topK: 5, useReranker: false, useSourceWeights: false }, {
+    expandFn: async (q) => q,
     variantsFn: async () => ['v1'],
     retrieveFn: retrieveStub({ q: [chunk(1)], v1: [chunk(1), chunk(2)] }),
   });

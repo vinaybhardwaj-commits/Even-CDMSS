@@ -19,6 +19,7 @@ import { geminiUtilityModel } from './llm';
 import { governedChat } from './trace';
 import { retrieve, RRF_K, type RetrieveOptions, type RetrieveResult } from './retrieve';
 import { rerank } from './rerank';
+import { expandQuery } from './expand';
 import { computeSourceQualityWeight } from './source-quality';
 import type { ChunkHit } from './db';
 
@@ -92,8 +93,9 @@ type FusionHit = ChunkHit & {
 
 export type MultiRetrieveResult = {
   hits: MultiQueryHit[];
-  variants: string[];   // the variants we actually ran (incl. original at index 0)
+  variants: string[];   // the queries we actually ran (index 0 = original arm's query, 1..N = variants)
   perVariantCounts: number[];
+  expandedQuery: string;   // R-8: the text the ORIGINAL arm retrieved on (expanded, or the raw question if expansion is off)
 };
 
 /**
@@ -112,6 +114,7 @@ export type MultiQueryDeps = {
   retrieveFn?: typeof retrieve;
   rerankFn?: typeof rerank;
   variantsFn?: (question: string) => Promise<string[]>;
+  expandFn?: typeof expandQuery;
 };
 
 export async function retrieveMultiQuery(
@@ -122,19 +125,30 @@ export async function retrieveMultiQuery(
   const retrieveFn = deps.retrieveFn ?? retrieve;
   const rerankFn = deps.rerankFn ?? rerank;
   const variantsFn = deps.variantsFn ?? generateQueryVariants;
+  const expandFn = deps.expandFn ?? expandQuery;
 
   const topK = opts.topK ?? 8;
   // Fusion-level stage flags (mirror retrieve.ts). The per-variant calls force these OFF.
   const useReranker = opts.useReranker === true;
   const useSourceWeights = opts.useSourceWeights === true;
 
+  // R-8: restore query expansion. Read `skipExpand` EXPLICITLY (D3) — NOT hardcoded — so a caller can
+  // turn expansion off. Expand ONCE, on the ORIGINAL question; mirrors retrieve.ts:53-64's single-query
+  // handling. expandQuery fails open (returns the original question on any error, never throws).
+  const expandedQuery = opts.skipExpand ? question : await expandFn(question);
+
   // Per-variant pool — keep it moderate; we fuse and trim at the end.
   const perVariantK = Math.max(topK, 6);
+  // Variants are generated from the ORIGINAL question, never the expanded paragraph (which is prose,
+  // not a question — reformulating it would drift).
   const variants = await variantsFn(question);
-  // Always include the original — it's the source of truth. index 0 = original, 1..N = variants.
-  const allQueries = [question, ...variants];
+  // index 0 = the ORIGINAL arm, retrieving on the EXPANDED text; 1..N = variants on raw variant text.
+  const allQueries = [expandedQuery, ...variants];
 
   const results = await Promise.all(
+    // Every arm hands retrieve() its FINAL text — the original arm's is already expanded, the variants
+    // are deliberately raw — so the per-call skipExpand is true for all of them (no double-expansion).
+    // The caller-facing expansion switch is handled ONCE above via `expandedQuery`, not here.
     allQueries.map((q) =>
       retrieveFn(q, { ...opts, topK: perVariantK, skipExpand: true, useReranker: false, useSourceWeights: false })
         .catch((e) => {
@@ -195,5 +209,6 @@ export async function retrieveMultiQuery(
     hits: fused.slice(0, topK),
     variants: allQueries,
     perVariantCounts: results.map((r) => r.hits.length),
+    expandedQuery,
   };
 }
