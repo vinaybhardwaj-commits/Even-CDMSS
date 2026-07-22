@@ -18,6 +18,7 @@ import type { OpdMed } from './opd-ingest-core';
 type RawFormularyRow = {
   brand?: string; generic?: string; generic_canon?: string; major?: string; minor?: string;
   schedule_dc?: string; high_risk?: boolean; lasa?: string; ved?: string; restricted?: boolean;
+  form?: string;   // 0.81.11 — carried through so matchers can become form-aware (Stage 1: plumbed, unread)
 };
 
 const ROWS: FormularyRow[] = ((FORMULARY as unknown as RawFormularyRow[]) || []).map((r) => ({
@@ -31,6 +32,7 @@ const ROWS: FormularyRow[] = ((FORMULARY as unknown as RawFormularyRow[]) || [])
   lasa: r.lasa || undefined,
   ved: r.ved || undefined,
   restricted: !!r.restricted,
+  form: r.form || undefined,   // 0.81.11 — no longer dropped at the projection (Matcher-Scoping Audit §2.2)
 }));
 
 const MATCHER = buildFormularyMatcher(ROWS);
@@ -54,6 +56,8 @@ export function enrichOpdMeds(meds: OpdMed[]): void {
       m.lasa = match.lasa.length ? match.lasa : undefined;
       m.ved = match.ved;
       m.restricted = match.restricted;
+      m.form = match.form;                 // 0.81.11 — raw dosage form (Stage 1: available, unread by matchers)
+      m.dosageForm = match.dosageForm;     // parsed coarse form
       m.formularyMatch = match.matchType;
     } else {
       m.formularyMatch = 'none';

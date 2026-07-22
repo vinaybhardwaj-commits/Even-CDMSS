@@ -33,9 +33,42 @@ export interface FormularyRow {
   minor?: string;
   schedule_dc?: string;   // OTC | H | H1 | X | Biological | —
   high_risk?: boolean;    // ISMP high-alert
-  lasa?: string;          // free-text list of confusable alternates
+  // ⚠️ AUDIT NOTE (Matcher-Scoping Audit, 23 Jul 2026): this `lasa` column does NOT contain
+  // look-alike/sound-alike NAME confusables. Measured: 1,752/2,174 rows carry a value, and the values
+  // are SAME-CLASS THERAPEUTIC ALTERNATIVES (Minoxidil→Finasteride, thiopentone→Propofol/Ketamine),
+  // not confusable names. The `lasa_pair` check that read this as a LASA list was DELETED (0.81.12) —
+  // 0/88 live findings were genuine confusables. Kept here because the column may seed a future
+  // therapeutic-duplication / class-overlap check. Do NOT rebuild a "LASA" check on this data.
+  lasa?: string;          // MISNAMED: same-class therapeutic alternatives, NOT name confusables (see note)
   ved?: string;           // V | E | D
   restricted?: boolean;
+  form?: string;          // raw dosage form, e.g. "Tablet 10 MG", "Syrup 100 ML", "Capsule ." (0.81.11)
+}
+
+// ── Dosage-form normalisation (0.81.11, Matcher-Scoping Audit Stage 1) ─────────
+// The raw formulary `form` embeds strength + junk ("Tablet 10 MG", "Capsule .", "Syrup 100 ML").
+// This pure normaliser parses it to a coarse controlled vocabulary that every later matcher can gate
+// on (route/form-awareness), WITHOUT discarding the raw string. Stage 1 populates both; NO matcher
+// reads either yet (score-invariant). Order matters: form words that embed shorter ones (rotaCAP,
+// eye DROPs) are matched by their most specific rule first.
+export type DosageForm =
+  | 'tablet' | 'capsule' | 'syrup' | 'injection' | 'topical' | 'drops' | 'inhaler' | 'other';
+
+const DOSAGE_FORM_RULES: { re: RegExp; form: DosageForm }[] = [
+  { re: /\b(inhaler|rotacap|rotahaler|respule|smartule|sustule|mdi|puff|inhalation|nebul)/i, form: 'inhaler' },
+  { re: /\b(drops?|eye|ear|ophthalmic|otic)\b/i, form: 'drops' },   // "drops" plural must match (Stage-1 distribution fix)
+  { re: /\b(inj(?:ection)?|vial|amp(?:oule)?|prefilled|parenteral|infusion|\bdrip\b)\b/i, form: 'injection' },   // infusion/drip = IV
+  { re: /\b(cream|ointment|oint|\bgel\b|lotion|paste|topical|apply|application|liniment|emollient|balm|patch|transderm)\b/i, form: 'topical' },
+  { re: /\b(syrup|syp|syr|suspension|susp|solution|soln|elixir|liquid|drink)\b/i, form: 'syrup' },
+  { re: /\b(cap(?:sule)?s?|softgel|softgelatin)\b/i, form: 'capsule' },
+  { re: /\b(tab(?:let)?s?|caplet|dispersible|chewable)\b/i, form: 'tablet' },
+];
+
+/** Parse a raw formulary form string → coarse DosageForm. Junk/empty → 'other'. Pure. */
+export function normalizeDosageForm(raw: string | undefined | null): DosageForm {
+  const s = (raw || '').toLowerCase();
+  for (const r of DOSAGE_FORM_RULES) if (r.re.test(s)) return r.form;
+  return 'other';   // kit, powder, sachet, spray, suppository, pessary, mouthwash, lozenge, "." , empty
 }
 
 export type FormularyMatchType =
@@ -50,6 +83,8 @@ export interface FormularyMatch {
   lasa: string[];
   ved?: string;
   restricted: boolean;
+  form?: string;          // raw dosage form from the formulary row (0.81.11 — plumbed, read by nothing yet)
+  dosageForm?: DosageForm; // parsed coarse form (0.81.11)
   matchType: FormularyMatchType;
   confident: boolean;     // true → may drive deterministic DDI / high-alert findings
 }
@@ -167,6 +202,8 @@ export function buildFormularyMatcher(rows: FormularyRow[]): FormularyMatcher {
       lasa: splitLasa(row?.lasa),
       ved: row?.ved || undefined,
       restricted: !!row?.restricted,
+      form: row?.form || undefined,                   // 0.81.11 — plumbed through, consumed by nothing yet
+      dosageForm: normalizeDosageForm(row?.form),
       matchType,
       confident,
     };

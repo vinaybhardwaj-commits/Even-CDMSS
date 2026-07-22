@@ -5,8 +5,34 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  normalizeDrugName, buildFormularyMatcher, classifyUnmatched, type FormularyRow,
+  normalizeDrugName, buildFormularyMatcher, classifyUnmatched, normalizeDosageForm, type FormularyRow,
 } from '../formulary-match-core.ts';
+
+// ── Dosage-form normaliser (0.81.11, Matcher-Scoping Audit Stage 1) ──
+test('normalizeDosageForm: parses raw formulary form (strength/junk stripped) to the coarse vocabulary', () => {
+  assert.equal(normalizeDosageForm('Tablet 10 MG'), 'tablet');
+  assert.equal(normalizeDosageForm('Capsule .'), 'capsule');
+  assert.equal(normalizeDosageForm('Syrup 100 ML'), 'syrup');
+  assert.equal(normalizeDosageForm('Suspension'), 'syrup');
+  assert.equal(normalizeDosageForm('Injection'), 'injection');
+  assert.equal(normalizeDosageForm('Vial 1 GM'), 'injection');
+  assert.equal(normalizeDosageForm('Cream 20 GM'), 'topical');
+  assert.equal(normalizeDosageForm('Ointment'), 'topical');
+  assert.equal(normalizeDosageForm('Eye Drops'), 'drops');
+  assert.equal(normalizeDosageForm('Ear/Eye Drop'), 'drops');
+  assert.equal(normalizeDosageForm('Drops 10 ML'), 'drops');   // plural, no eye/ear keyword (Stage-1 fix)
+  assert.equal(normalizeDosageForm('Infusion 500 ML'), 'injection');   // IV infusion → injection (Stage-1 fix)
+  // most-specific rule wins: a rotacap is an inhaler, not a capsule
+  assert.equal(normalizeDosageForm('Rotacaps 250 MCG'), 'inhaler');
+  assert.equal(normalizeDosageForm('Respule'), 'inhaler');
+  assert.equal(normalizeDosageForm('Inhaler'), 'inhaler');
+  // junk / unmapped → other (never throws)
+  assert.equal(normalizeDosageForm('.'), 'other');
+  assert.equal(normalizeDosageForm(''), 'other');
+  assert.equal(normalizeDosageForm(undefined), 'other');
+  assert.equal(normalizeDosageForm('Sachet'), 'other');
+  assert.equal(normalizeDosageForm('Kit'), 'other');
+});
 
 const ROWS: FormularyRow[] = [
   { brand: 'ECOSPRIN', generic: 'Aspirin', generic_canon: 'Aspirin', major: 'Antiplatelet', schedule_dc: 'H', lasa: 'Clopidogrel', ved: 'E' },

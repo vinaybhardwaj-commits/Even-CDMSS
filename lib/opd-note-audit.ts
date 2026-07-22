@@ -144,7 +144,7 @@ function ddiToFinding(p: DdiPair, topical?: Set<string>): OpdFinding {
 }
 
 /** Formulary-scoped, deterministic DDIs over the CONFIDENTLY-resolved drugs on the script. */
-function ddiFindings(meds: OpdMed[]): OpdFinding[] {
+export function ddiFindings(meds: OpdMed[]): OpdFinding[] {
   // BUG-0.8-10 (Q): include a med if it is confidently formulary-matched OR it carries an NSAID
   // ingredient anywhere in its composition (formulary-independent) — so a combination/topical whose
   // parsed primary is a non-NSAID (e.g. Methyl Salicylate) still counts as an NSAID for the overlap.

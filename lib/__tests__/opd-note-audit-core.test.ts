@@ -292,6 +292,22 @@ test('stampFindingIdentity: stable refs, severity-change stable, distinct detail
   assert.equal(two[1].finding_ref, twoRev[0].finding_ref);
 });
 
+// ── Form plumbing (0.81.11, Matcher-Scoping Audit Stage 1) — SCORE-INVARIANCE guard ──
+// Populating form/dosageForm on a med must NOT change any deterministic finding: no matcher reads
+// them in Stage 1. If a later fix starts consuming form and forgets its dry-run gate, this fails.
+test('0.81.11: form/dosageForm are inert — prescribingChecks output is byte-identical with them present vs absent', () => {
+  const meds = [
+    { generic: 'Metformin', resolvedGeneric: 'Metformin', frequency: 'BD', dose: '500 mg', duration: '30 days' },
+    { generic: 'Metformin', resolvedGeneric: 'Metformin', frequency: 'OD', dose: '500 mg', duration: '30 days' }, // duplicate
+    { generic: 'Insulin', resolvedGeneric: 'Insulin', highAlert: true, frequency: 'OD', dose: '10 units', duration: '30 days' },
+    { generic: 'Warfarin', resolvedGeneric: 'Warfarin', schedule: 'H1', frequency: 'OD', dose: '5 mg', lasa: ['Warfarin'], duration: '30 days' },
+  ];
+  const mkCase = (ms: unknown[]) => ({ medications: ms } as unknown as Parameters<typeof prescribingChecks>[0]);
+  const withForm = mkCase(meds.map((m) => ({ ...m, form: 'Tablet 10 MG', dosageForm: 'tablet' })));
+  const without = mkCase(meds.map((m) => ({ ...m })));
+  assert.deepEqual(prescribingChecks(withForm), prescribingChecks(without));
+});
+
 // ── Signal-Type Collapse fix (0.81.10, PRD CDMSS-SIGNAL-TYPE-COLLAPSE §5.1 / S3) ──
 test('0.81.10: a low-value deterministic finding RETAINS its specific signal_type (no collapse to low_value_care)', () => {
   const lv = (subject: string, domain: 'prescribing_safety' | 'appropriateness' = 'prescribing_safety', source: 'deterministic' | 'llm' = 'deterministic'): OpdFinding =>

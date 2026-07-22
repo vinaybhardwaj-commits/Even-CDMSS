@@ -17,6 +17,8 @@
  * url are returned SEPARATELY and never sent to the model.
  */
 
+import type { DosageForm } from './formulary-match-core';   // type-only — keeps this core pure (no cycle: formulary-match-core imports nothing)
+
 export interface OpdMed {
   generic?: string; brand?: string; strength?: string; dose?: string;
   frequency?: string; duration?: string; route?: string; instruction?: string;
@@ -31,6 +33,12 @@ export interface OpdMed {
   lasa?: string[];             // look-alike/sound-alike confusables
   ved?: string;                // V | E | D
   restricted?: boolean;        // reserve/restricted antimicrobial
+  // 0.81.11 (Matcher-Scoping Audit Stage 1): the formulary dosage form, finally plumbed through the
+  // enrichment (it used to be dropped at the FormularyRow projection). `form` is the raw string,
+  // `dosageForm` the parsed coarse vocabulary. Populated for form-awareness in LATER fixes; NO matcher
+  // reads either in Stage 1 (score-invariant).
+  form?: string;
+  dosageForm?: DosageForm;
   formularyMatch?: 'source-generic' | 'brand-exact' | 'embedded-generic' | 'brand-token' | 'brand-prefix' | 'none';
   nonFormulary?: 'nutraceutical-cosmetic' | 'non-formulary';
 }
