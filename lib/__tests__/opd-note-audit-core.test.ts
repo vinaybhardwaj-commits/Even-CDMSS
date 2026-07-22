@@ -292,6 +292,24 @@ test('stampFindingIdentity: stable refs, severity-change stable, distinct detail
   assert.equal(two[1].finding_ref, twoRev[0].finding_ref);
 });
 
+// ── Signal-Type Collapse fix (0.81.10, PRD CDMSS-SIGNAL-TYPE-COLLAPSE §5.1 / S3) ──
+test('0.81.10: a low-value deterministic finding RETAINS its specific signal_type (no collapse to low_value_care)', () => {
+  const lv = (subject: string, domain: 'prescribing_safety' | 'appropriateness' = 'prescribing_safety', source: 'deterministic' | 'llm' = 'deterministic'): OpdFinding =>
+    ({ subject, verdict: 'low-value', confidence: 0.8, domain, rationale: '', evidence: [], estimates: [], citation_ids: [], source });
+  // the three re-homed clusters keep their own type (→ they inherit their 0.81.9 tier/citation)
+  assert.equal(stampFindingIdentity([lv('Interaction (major): A + B')])[0].signal_type, 'drug_interaction');
+  assert.equal(stampFindingIdentity([lv('Daily dose exceeds ceiling: Paracetamol')])[0].signal_type, 'dose_ceiling_exceeded');
+  assert.equal(stampFindingIdentity([lv('Duplicate prescription: Pantoprazole')])[0].signal_type, 'duplicate_prescription');
+  // a GENERIC free-text low-value finding still collapses to the unified LVC bucket (unchanged)
+  assert.equal(stampFindingIdentity([lv('Unindicated multivitamin, no indication', 'appropriateness')])[0].signal_type, 'low_value_care');
+  assert.equal(stampFindingIdentity([lv('Azithromycin for a viral URTI', 'appropriateness', 'llm')])[0].signal_type, 'low_value_care');
+});
+
+test('0.81.10: the muscle-relaxant documentation subject maps to signal_type muscle_relaxant_indication', () => {
+  assert.equal(opdSignalType('Muscle relaxant prescribed — document the indication', 'appropriateness', { verdict: 'context-dependent' }), 'muscle_relaxant_indication');
+  assert.equal(OPD_SIGNAL_TYPES.muscle_relaxant_indication, 'Muscle relaxant — document the indication');
+});
+
 test('stampFindingIdentity: within-note collision suffixes #2, #3 deterministically', () => {
   const three = stampFindingIdentity([
     mkFinding('Incomplete dosing: Cefixime'),

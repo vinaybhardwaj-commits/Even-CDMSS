@@ -36,7 +36,7 @@ import type { FindingProvenance } from './provenance-tier-core';
 //       nasal-decongestant >5-day cap, route/formulation-aware duplication. Bug 5: hyoscine/dicyclomine
 //       reclassed Antispasmodic/anticholinergic in the formulary (DDI-invariant). LVC `other` sub-cat +
 //       frequent-flier list surfacing + 30-day longitudinal backfill ride in the same build (non-scoring).
-export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.9';
+export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.10';
 
 /**
  * Current-engine FAMILY for READ/aggregate surfaces. 0.81.3 → 0.81.4 → 0.81.5 are all score-identical
@@ -47,7 +47,7 @@ export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.9';
  * DESC, id DESC. WRITE-side targeting keeps exact OPD_ENGINE_VERSION (family there would stop history
  * re-scoring). See the patch report.
  */
-export const OPD_ENGINE_VERSIONS_CURRENT = ['opd-note-audit/0.81.3', 'opd-note-audit/0.81.4', 'opd-note-audit/0.81.5', 'opd-note-audit/0.81.6', 'opd-note-audit/0.81.7', 'opd-note-audit/0.81.8', 'opd-note-audit/0.81.9'] as const;
+export const OPD_ENGINE_VERSIONS_CURRENT = ['opd-note-audit/0.81.3', 'opd-note-audit/0.81.4', 'opd-note-audit/0.81.5', 'opd-note-audit/0.81.6', 'opd-note-audit/0.81.7', 'opd-note-audit/0.81.8', 'opd-note-audit/0.81.9', 'opd-note-audit/0.81.10'] as const;
 
 // Local copy of the PDQI-9 keys (kept in sync with opd-note-score-core) so this core has
 // no runtime cross-import and stays loadable under `node --experimental-strip-types`.
@@ -99,6 +99,10 @@ export const OPD_SIGNAL_TYPES: Record<string, string> = {
   lasa_pair: 'LASA pair co-prescribed',
   dose_ceiling_exceeded: 'Daily dose exceeds ceiling',
   dose_ceiling_sos: 'Dose may exceed ceiling if all SOS taken',
+  // 0.81.10 (SIGNAL-TYPE-COLLAPSE S1): the muscle-relaxant "document the indication" prompt is a
+  // documentation-completeness nudge, not a care-quality judgement — surfaced, non-scoring
+  // (informational), and classified deterministic_completeness like incomplete_dosing.
+  muscle_relaxant_indication: 'Muscle relaxant — document the indication',
   duplicate_molecule: 'Same molecule in multiple products',
   high_alert_medication: 'High-alert medication',
   schedule_x: 'Schedule X drug',
@@ -134,6 +138,7 @@ const SIGNAL_TYPE_RULES: { re: RegExp; type: string }[] = [
   { re: /^lasa pair\b/, type: 'lasa_pair' },
   { re: /^daily dose exceeds ceiling\b/, type: 'dose_ceiling_exceeded' },
   { re: /^daily dose may exceed ceiling\b/, type: 'dose_ceiling_sos' },
+  { re: /^muscle relaxant prescribed\b/, type: 'muscle_relaxant_indication' },
   { re: /^same molecule in \d+ products?\b/, type: 'duplicate_molecule' },
   { re: /^high[\s-]?alert medication/, type: 'high_alert_medication' },
   { re: /^schedule x\b/, type: 'schedule_x' },
@@ -303,24 +308,28 @@ export function consolidateDecisions(findings: OpdFinding[]): OpdFinding[] {
   return dropped.size ? findings.filter((f) => !dropped.has(f)) : findings;
 }
 
-// CDSCO banned-FDC subjects keep their OWN signal_type (C4): low_value_care is not on the quieting
-// severity floor, so collapsing a banned-FDC finding into it would make a legal prohibition
-// quietable. The prefix is the det-subject convention (`Banned fixed-dose combination: <composition>`).
-export const BANNED_FDC_SUBJECT_RE = /^banned fixed-dose combination/i;
+// Engine 0.81.10 (SIGNAL-TYPE-COLLAPSE §5.1): the low-value collapse now flattens ONLY the generic
+// domain×verdict LVC buckets — a specific deterministic/keyword type is RETAINED. The banned_fdc
+// special case (C4) is absorbed into this general rule: 'banned_fdc' is not a generic bucket, so it is
+// kept without a named exception. These are exactly the two signal types opdSignalType produces for a
+// low-value finding that matched NO precise SIGNAL_TYPE_RULES (see VERDICT_CLASS → `${domain}_low_value`).
+const GENERIC_LVC_BUCKETS = new Set(['appropriateness_low_value', 'prescribing_low_value']);
 
 export function stampFindingIdentity(findings: OpdFinding[]): OpdFinding[] {
   const used = new Set<string>();
   return findings.map((f) => {
-    // Engine 0.81.3 (RIGHT-CARE §5): a low-value-verdict finding gets the unified LVC signal_type so
-    // the feedback loop / Right Care aggregates batch all low-value care together. This feeds finding_ref
-    // (a new engine version → no collision with stored 0.81.2 rows). rule_ref/lvc_category are additive
-    // and stamped by the orchestrator (stampLvcMetadata) after neutralisation — they don't affect the hash.
-    // CDSCO banned-FDC exception (C4): the maximally-penalised regulatory finding keeps banned_fdc
-    // (via SIGNAL_TYPE_RULES) so it stays on the quieting severity floor; every OTHER low-value
-    // subject still collapses to low_value_care.
-    const signal_type = (f.verdict === 'low-value' && !BANNED_FDC_SUBJECT_RE.test(f.subject))
+    // Engine 0.81.3 (RIGHT-CARE §5) batched all low-value care under one signal_type for CM triage.
+    // 0.81.10 (SIGNAL-TYPE-COLLAPSE) GENERALISES the exception: compute the finding's specific type
+    // first, and collapse to the unified low_value_care bucket ONLY when that type is itself a generic
+    // domain×verdict LVC bucket (a free-text LLM low-value finding). A precise deterministic/keyword type
+    // — drug_interaction, dose_ceiling_exceeded, duplicate_prescription, banned_fdc, … — is RETAINED so it
+    // keeps its identity, provenance tier and (0.81.9) citation instead of being flattened. This fixes the
+    // mechanism (three checks' worth of findings were silently losing their type) rather than adding a
+    // second special case beside the banned_fdc patch. Score-invariant: signal_type never feeds scoring.
+    const specific = opdSignalType(f.subject, f.domain, { verdict: f.verdict });
+    const signal_type = (f.verdict === 'low-value' && GENERIC_LVC_BUCKETS.has(specific))
       ? 'low_value_care'
-      : opdSignalType(f.subject, f.domain, { verdict: f.verdict });
+      : specific;
     const colon = f.subject.indexOf(':');
     const detail = (colon >= 0 ? f.subject.slice(colon + 1) : f.subject).trim().toLowerCase().replace(/\s+/g, ' ');
     const base = sha1Hex(`${signal_type}|${detail}`).slice(0, 12);

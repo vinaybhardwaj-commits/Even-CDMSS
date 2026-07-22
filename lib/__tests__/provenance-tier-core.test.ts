@@ -106,6 +106,9 @@ test('deterministic finding with a resolving corpus citation → deterministic',
 test('deterministic finding marked llm → internal_consensus', () => {
   assert.equal(classifyProvenanceTier({ source: 'deterministic', signal_type: 'dose_ceiling_exceeded', verdict: 'low-value', provenance: { citation: null, derivation: 'llm' } }), 'internal_consensus');
 });
+test('S1 (0.81.10): muscle_relaxant_indication → deterministic_completeness (documentation prompt, same class as incomplete_dosing)', () => {
+  assert.equal(classifyProvenanceTier({ source: 'deterministic', signal_type: 'muscle_relaxant_indication', verdict: 'context-dependent' }), 'deterministic_completeness');
+});
 test('V1/V2: incomplete_dosing → deterministic_completeness; duplicate_* → deterministic_logical', () => {
   assert.equal(classifyProvenanceTier({ source: 'deterministic', signal_type: 'incomplete_dosing', verdict: 'context-dependent' }), 'deterministic_completeness');
   assert.equal(classifyProvenanceTier({ source: 'deterministic', signal_type: 'duplicate_molecule', verdict: 'uncertain' }), 'deterministic_logical');

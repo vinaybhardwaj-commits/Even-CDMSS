@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { bannedFdcFindings, normalizeMoleculeSet, type BannedFdcTable } from '../cdsco-banned-fdc-core';
 import { bannedFdcFindings as loaderFindings, CDSCO_BANNED_FDC_VERSION } from '../cdsco-banned-fdc';
-import { stampFindingIdentity, BANNED_FDC_SUBJECT_RE, OPD_SIGNAL_TYPES, type OpdFinding } from '../opd-note-audit-core';
+import { stampFindingIdentity, OPD_SIGNAL_TYPES, type OpdFinding } from '../opd-note-audit-core';
 import { applyDemotes, demoteRuleViolatesSeverityFloor, isSafetySignalType, type Suppression } from '../audit-suppression-core';
 import type { OpdMed } from '../opd-ingest-core';
 
@@ -82,17 +82,20 @@ const lv = (subject: string): OpdFinding => ({
   rationale: 'r', evidence: [], estimates: [], citation_ids: [], source: 'deterministic',
 });
 
-test('stampFindingIdentity: banned-FDC subject keeps banned_fdc; EVERY other low-value collapses to low_value_care', () => {
+test('stampFindingIdentity: banned-FDC keeps banned_fdc (C4 protection holds under the 0.81.10 generalisation)', () => {
   const [fdc] = stampFindingIdentity([lv('Banned fixed-dose combination: mol-a + mol-b')]);
-  assert.equal(fdc.signal_type, 'banned_fdc');
-  assert.ok(BANNED_FDC_SUBJECT_RE.test(fdc.subject));
+  assert.equal(fdc.signal_type, 'banned_fdc');   // banned_fdc is not a generic LVC bucket → retained without a named exception
   assert.equal(OPD_SIGNAL_TYPES.banned_fdc, 'Banned fixed-dose combination');
-  // regression guard: the C4 carve-out is surgical — other low-value subjects still batch as LVC,
-  // including ones that would hit a SIGNAL_TYPE_RULES prefix if the verdict collapse didn't win
-  for (const s of ['Unindicated vitamin D test', 'Interaction: a + b', 'Perioperative PPI without indication', 'Daily dose exceeds ceiling: x']) {
+  // 0.81.10 (SIGNAL-TYPE-COLLAPSE): a GENERIC free-text LLM low-value finding still batches as
+  // low_value_care (opdSignalType → `${domain}_low_value`, a generic bucket).
+  for (const s of ['Unindicated vitamin D test', 'Perioperative PPI without indication']) {
     const [f] = stampFindingIdentity([lv(s)]);
     assert.equal(f.signal_type, 'low_value_care', s);
   }
+  // …but a SPECIFIC deterministic type now RETAINS its own signal_type instead of collapsing — the fix.
+  assert.equal(stampFindingIdentity([lv('Interaction (major): a + b')])[0].signal_type, 'drug_interaction');
+  assert.equal(stampFindingIdentity([lv('Daily dose exceeds ceiling: x')])[0].signal_type, 'dose_ceiling_exceeded');
+  assert.equal(stampFindingIdentity([lv('Duplicate prescription: x')])[0].signal_type, 'duplicate_prescription');
 });
 
 // ── C4 — quieting severity floor, both halves ─────────────────────────────────

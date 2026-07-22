@@ -24,6 +24,31 @@ test('a complete, high-quality note scores in band A', () => {
   assert.equal(sc.confidence, 'moderate');
 });
 
+// ── CANARY (0.81.10, PRD CDMSS-SIGNAL-TYPE-COLLAPSE S3) — PERMANENT regression guard ──
+// The triple-QT note 8e2e997d (domperidone + fluconazole + ofloxacin, all QT-prolongers) must keep
+// its prescribing-safety penalty. If a future change makes major interactions stop penalising, this
+// fails. The three interactions score prescribing_safety to 26/100 (100 × 0.64³), NOT 100/100.
+test('CANARY: three co-prescribed major interactions score prescribing safety 26/100, never 100', () => {
+  const interaction = { verdict: 'low-value' as const, confidence: 0.8, domain: 'prescribing_safety' as const };
+  const sc = computeOpdScore({
+    findings: [interaction, interaction, interaction],
+    completenessCoverage: 1, pdqi9: PDQI_ALL(5), patientCentred: { present: 3, total: 3 },
+  });
+  const presc = sc.domains.find((d) => d.domain === 'prescribing_safety')!.score;
+  assert.equal(presc, 26, 'the QT-prolongation cluster must remain penalised — a major interaction is a real safety signal');
+  assert.notEqual(presc, 100);
+});
+
+test('0.81.10: an informational finding (the retired muscle-relaxant prompt) does NOT enter the score', () => {
+  // the engine feeds computeOpdScore `findings.filter(f => !f.informational)`; this pins that an
+  // informational appropriateness finding leaves the appropriateness domain unpenalised.
+  const scored = [{ subject: 'x', verdict: 'context-dependent', confidence: 0.5, domain: 'appropriateness', informational: true }]
+    .filter((f) => !f.informational)
+    .map((f) => ({ verdict: f.verdict as 'context-dependent', confidence: f.confidence, domain: f.domain as 'appropriateness' }));
+  const sc = computeOpdScore({ findings: scored, completenessCoverage: 1, pdqi9: PDQI_ALL(5), patientCentred: { present: 3, total: 3 } });
+  assert.equal(sc.domains.find((d) => d.domain === 'appropriateness')!.score, 100); // nothing scored → no penalty
+});
+
 test('a poor note (gaps + low-value order + prescribing issue + weak PDQI) scores low', () => {
   const input: OpdScoreInput = {
     findings: [

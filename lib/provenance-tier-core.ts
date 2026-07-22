@@ -158,7 +158,7 @@ export function classifyProvenanceTier(f: TierableFinding, rule?: RuleCitationFi
   if (f.source === 'deterministic') {
     // Deterministic-Citations V1/V2 — non-citable deterministic classes routed by signal_type, so
     // they no longer sit in `uncited_deterministic` pretending a source could exist.
-    if (f.signal_type === 'incomplete_dosing') return 'deterministic_completeness';           // V1 — a documentation gap; no authority cites "you didn't write the dose"
+    if (f.signal_type === 'incomplete_dosing' || f.signal_type === 'muscle_relaxant_indication') return 'deterministic_completeness'; // V1 + S1 — a documentation-completeness prompt; no authority cites "you didn't write the dose / indication"
     if (f.signal_type === 'duplicate_molecule' || f.signal_type === 'duplicate_prescription') return 'deterministic_logical'; // V2 — evidence is the prescription itself
     // §7.3 — the finding's OWN corpus citation (dose ceilings, DDI mechanisms, ISMP high-alert):
     // a resolving citation → deterministic; an explicit llm mark → internal_consensus.

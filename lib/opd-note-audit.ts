@@ -168,7 +168,7 @@ function ddiFindings(meds: OpdMed[]): OpdFinding[] {
  *  presence and tier swung run-to-run on identical scripts. Determinise it into a fixed-tier
  *  (context-dependent) advisory; the prompt tells the LLM not to raise its own volatile version,
  *  and consolidateDecisions drops any LLM muscle-relaxant finding that slips through. */
-function muscleRelaxantFindings(meds: OpdMed[]): OpdFinding[] {
+export function muscleRelaxantFindings(meds: OpdMed[]): OpdFinding[] {
   const mr = meds.filter((m) => medHasMoleculeFrom(m, MUSCLE_RELAXANT_MOLECULES));
   if (!mr.length) return [];
   const names = Array.from(new Set(mr.map((m) => m.resolvedGeneric || m.generic || m.brand || 'muscle relaxant')));
@@ -177,6 +177,10 @@ function muscleRelaxantFindings(meds: OpdMed[]): OpdFinding[] {
     verdict: 'context-dependent', confidence: 0.5, domain: 'appropriateness',
     rationale: `A muscle relaxant (${names.join(', ')}) has limited evidence as first-line therapy for most musculoskeletal pain / tendinopathy; it is reasonable when muscle spasm is documented. Fixed-tier deterministic finding (replaces the run-to-run-inconsistent LLM objection).`,
     evidence: [], estimates: [], citation_ids: [], source: 'deterministic',
+    // 0.81.10 (SIGNAL-TYPE-COLLAPSE S1): this is a documentation-completeness PROMPT, not a
+    // care-quality judgement. Surfaced but NON-SCORING (informational) — it must not penalise the
+    // note-quality index — and classified deterministic_completeness (signal_type muscle_relaxant_indication).
+    informational: true,
   }];
 }
 

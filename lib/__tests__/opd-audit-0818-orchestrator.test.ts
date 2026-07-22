@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { unindicatedRespFindings, decongestantDurationFindings, dedupeRouteAware } from '@/lib/opd-note-audit';
+import { unindicatedRespFindings, decongestantDurationFindings, dedupeRouteAware, muscleRelaxantFindings } from '@/lib/opd-note-audit';
 import { opdCaseText, type DeidOpdCase, type OpdMed } from '@/lib/opd-ingest-core';
 import type { OpdFinding } from '@/lib/opd-note-audit-core';
 
@@ -13,6 +13,19 @@ function mkCase(p: Partial<DeidOpdCase> = {}): DeidOpdCase {
 }
 const det = (subject: string, source: 'deterministic' | 'llm' = 'deterministic'): OpdFinding =>
   ({ subject, verdict: 'low-value', confidence: 0.7, domain: 'prescribing_safety', rationale: '', evidence: [], estimates: [], citation_ids: [], source });
+
+// ── 0.81.10 (SIGNAL-TYPE-COLLAPSE S1) — the muscle-relaxant prompt is an informational, non-scoring
+//    documentation nudge (it must be excluded from the note-quality index) ──
+test('0.81.10 S1: the muscle-relaxant finding is emitted informational (surfaced, out of the score)', () => {
+  const fs = muscleRelaxantFindings([{ generic: 'Chlorzoxazone', brand: 'CHLORZOX' } as OpdMed]);
+  assert.equal(fs.length, 1);
+  assert.equal(fs[0].subject, 'Muscle relaxant prescribed — document the indication');
+  assert.equal(fs[0].domain, 'appropriateness');
+  assert.equal(fs[0].informational, true);            // NON-scoring — the whole point of S1
+  assert.equal(fs[0].source, 'deterministic');
+  // no muscle relaxant on the line → no finding
+  assert.equal(muscleRelaxantFindings([{ generic: 'Amlodipine' } as OpdMed]).length, 0);
+});
 
 // ── bug 1 — unindicated bronchodilator / antihistamine+montelukast for an acute URTI ─────
 test('bug 1: xanthine for an acute URTI fires (context-guarded)', () => {
