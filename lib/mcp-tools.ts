@@ -233,6 +233,7 @@ export const LAB_TOOLS = [
         evalNormativeLeg: { type: 'boolean', description: 'R-11 Phase-2 eval: force the normative retrieval leg ON for every note in this batch (default false ⇒ today\'s gate). Lab-only; writes lab_analyses only.' },
         evalModel: { type: 'string', description: 'R-11 Phase-2 eval: route audit generation to this OpenRouter model id (e.g. google/gemini-3.1-flash-lite) at temperature 0. Absent ⇒ free mini. Needs OPENROUTER_API_KEY in env. Eval batches drain concurrently (50/tick, pool below) and skip the mini-yield; mini batches stay n≤2 serial.' },
         evalConcurrency: { type: 'number', description: 'Eval batches only: audits in flight per tick (default 10, max 25 — OpenRouter rate-limit safety). Ignored for mini batches.' },
+        evalNormativeChannel: { type: 'boolean', description: 'R-11 fix candidate: ADDITIVE normative channel — the 8 literature excerpts stay byte-identical and CW statements are appended as a separate citable [9+] block (no eviction). Independent of evalNormativeLeg (the harmful union). Default false.' },
       },
       required: ['experiment'],
     },
@@ -554,6 +555,7 @@ async function labBatchStart(a: Record<string, unknown>): Promise<ToolResult> {
   const evalNormativeLeg = a.evalNormativeLeg === true;
   const evalModel = S(a.evalModel).trim().slice(0, 128);
   const evalConcurrency = clampEvalConcurrency(a.evalConcurrency);
+  const evalNormativeChannel = a.evalNormativeChannel === true;
   await ensureLabTables();
   await setSetting(LB_KEYS.experiment, experiment);
   await setSetting(LB_KEYS.uids, JSON.stringify(uids));
@@ -563,10 +565,11 @@ async function labBatchStart(a: Record<string, unknown>): Promise<ToolResult> {
   await setSetting(LB_KEYS.evalNormativeLeg, evalNormativeLeg ? '1' : '0');
   await setSetting(LB_KEYS.evalModel, evalModel);
   await setSetting(LB_KEYS.evalConcurrency, String(evalConcurrency));
+  await setSetting(LB_KEYS.evalNormativeChannel, evalNormativeChannel ? '1' : '0');
   await setSetting(LB_KEYS.error, '');
   await setSetting(LB_KEYS.enabled, '1');
   const prog = await batchProgress(experiment, uids);
-  return ok({ experiment, kind, n, window, evalNormativeLeg, evalModel: evalModel || null, ...(evalModel ? { evalConcurrency } : {}), ...prog, note: evalModel ? 'queued - eval batch: drains 50/tick with a bounded pool via OpenRouter, skips the mini-yield. Poll lab_batch_status; nudge with lab_batch_tick. Writes lab_analyses ONLY.' : 'queued - the */2 cron drains it (mini, INR 0), yielding to the prod backfill. Poll lab_batch_status; nudge with lab_batch_tick. Writes lab_analyses ONLY.' });
+  return ok({ experiment, kind, n, window, evalNormativeLeg, evalNormativeChannel, evalModel: evalModel || null, ...(evalModel ? { evalConcurrency } : {}), ...prog, note: evalModel ? 'queued - eval batch: drains 50/tick with a bounded pool via OpenRouter, skips the mini-yield. Poll lab_batch_status; nudge with lab_batch_tick. Writes lab_analyses ONLY.' : 'queued - the */2 cron drains it (mini, INR 0), yielding to the prod backfill. Poll lab_batch_status; nudge with lab_batch_tick. Writes lab_analyses ONLY.' });
 }
 
 async function labBatchStatus(): Promise<ToolResult> {

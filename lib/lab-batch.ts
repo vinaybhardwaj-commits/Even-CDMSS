@@ -39,7 +39,7 @@ export async function batchProgress(experiment: string, cohort: string[]): Promi
 }
 
 /** Lab eval config for a batch (R-11 Stage 2 Phase 2). Absent ⇒ today's mini/leg-off behaviour. */
-export interface LabEvalConfig { evalNormativeLeg?: boolean; evalModel?: string }
+export interface LabEvalConfig { evalNormativeLeg?: boolean; evalModel?: string; evalNormativeChannel?: boolean }
 
 /** The shared per-note primitive: audit one db13 uid → lab_analyses. Writes ONLY lab_analyses (via
  *  saveLabAnalysis); auditOpdNote is pure compute and never writes opd_note_audits. `evalCfg` (Phase 2)
@@ -51,12 +51,13 @@ export async function runMiniOpdToLab(uid: string, experiment: string, evalCfg: 
   const audit = await auditOpdNote(row, {
     pipeline: 'mini', engineTag: 'lab', trace: false,
     evalNormativeLeg: evalCfg.evalNormativeLeg, evalModel: evalCfg.evalModel,
+    evalNormativeChannel: evalCfg.evalNormativeChannel,
   });
   const output = {
     index: audit.scorecard.headline, band: audit.scorecard.band, scorecard: audit.scorecard,
     completeness: audit.completeness, findings: audit.findings, suggestions: audit.suggestions,
-    // Phase-2 provenance stamp so band-migration analysis can split arms by (model × normativeLeg).
-    eval: { model: evalCfg.evalModel ?? null, normativeLeg: evalCfg.evalNormativeLeg === true },
+    // Phase-2 provenance stamp so band-migration analysis can split arms by (model × leg × channel).
+    eval: { model: evalCfg.evalModel ?? null, normativeLeg: evalCfg.evalNormativeLeg === true, normativeChannel: evalCfg.evalNormativeChannel === true },
   };
   const id = await saveLabAnalysis({
     experiment, kind: 'opd_note', engine: audit.engineVersion, inputRef: uid,
@@ -102,7 +103,7 @@ export async function batchTick(opts: { ignoreWindow?: boolean } = {}): Promise<
     }
     const priorDone = st.uids.length - todo.length;
     const slice = todo.slice(0, plan.sliceSize);
-    const evalCfg = { evalNormativeLeg: st.evalNormativeLeg, evalModel: st.evalModel ?? undefined };
+    const evalCfg = { evalNormativeLeg: st.evalNormativeLeg, evalModel: st.evalModel ?? undefined, evalNormativeChannel: st.evalNormativeChannel };
     // One note → one result row; errors captured per-note (never thrown out of the drain).
     const drainOne = async (uid: string): Promise<Record<string, unknown>> => {
       const t0 = Date.now();

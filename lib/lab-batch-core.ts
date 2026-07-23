@@ -17,6 +17,7 @@ export const LB_KEYS = {
   evalNormativeLeg: 'lab_batch_eval_normative_leg',  // '1' ⇒ force the R-11 leg on for this eval batch
   evalModel: 'lab_batch_eval_model',                 // OpenRouter model id for eval generation ('' ⇒ mini)
   evalConcurrency: 'lab_batch_eval_concurrency',     // eval drain pool size (clamped 1..EVAL_CONCURRENCY_MAX)
+  evalNormativeChannel: 'lab_batch_eval_normative_channel',  // '1' ⇒ ADDITIVE CW channel (R-11 fix candidate)
 } as const;
 
 export const LB_LOCK_TTL_MS = 210 * 1000;   // matches the mini-backfill soft-lock TTL (< 300s Vercel cap)
@@ -74,6 +75,7 @@ export interface LabBatchState {
   evalNormativeLeg: boolean;     // lab eval: force the R-11 normative leg on
   evalModel: string | null;      // lab eval: OpenRouter model id (null ⇒ mini generation, today's path)
   evalConcurrency: number;       // lab eval: drain pool size (default EVAL_CONCURRENCY_DEFAULT)
+  evalNormativeChannel: boolean; // lab eval: ADDITIVE CW channel (independent of the leg)
 }
 
 export function clampN(v: unknown): number {
@@ -123,6 +125,7 @@ export function parseBatchState(s: Record<string, string>): LabBatchState {
     evalNormativeLeg: s[LB_KEYS.evalNormativeLeg] === '1',   // absent ⇒ false ⇒ today's behaviour
     evalModel: s[LB_KEYS.evalModel] ? s[LB_KEYS.evalModel] : null,
     evalConcurrency: clampEvalConcurrency(s[LB_KEYS.evalConcurrency]),
+    evalNormativeChannel: s[LB_KEYS.evalNormativeChannel] === '1',   // absent ⇒ false ⇒ today's assembly
   };
 }
 

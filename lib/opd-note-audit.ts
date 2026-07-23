@@ -7,7 +7,7 @@
  * Soft-fails. The full PHI record stays in db13; only de-identified content reaches the LLM.
  */
 
-import { retrieve, type RetrieveOptions } from './retrieve';
+import { retrieve, resolveNormativeSources, type RetrieveOptions } from './retrieve';
 import { hitsToSources, buildCitedContext, type CiteHit, type Source } from './citations-core';
 import { startTrace, logEvent, finishTrace, governedChat, setTraceQuestionPreview } from './trace';
 import { geminiModelFor, geminiUtilityModel, TEXT_MODEL, MINI_MODEL } from './llm';
@@ -332,6 +332,75 @@ async function defaultRetrieve(q: string, mini = false, evalNormativeLeg?: boole
   }
 }
 
+// ── R-11 fix candidate: ADDITIVE normative channel (LAB EVAL ONLY) ────────────────
+// Phase 2 proved the normative LEG (union) is harmful on the scoring path: ~4 CW chunks evict the
+// literature excerpts the audit substantiates low-value findings with (S1 low-value 67→7, NQI +15).
+// The CHANNEL keeps the 8 literature excerpts BYTE-IDENTICAL and appends the CW statements as a
+// separate labelled block [9+] the model can cite — additive, never by eviction.
+
+/** Statements the channel appends (kept small; the block adds context, it must not crowd it). */
+export const NORMATIVE_CHANNEL_K = 4;
+
+/** The channel's standalone CW-only retrieve opts — the shipped restrictSources shape (source =
+ *  ANY(normativeSources), min-sim floor via retrieve's default, LIMIT K). skipExpand: the note query
+ *  is already a keyword bundle and the lit retrieve pays the expansion; the CW search is exact +
+ *  deterministic (matches the REV-5 measurement rig). Pure — exported for tests. */
+export function normativeChannelOpts(env: Record<string, string | undefined> = process.env): RetrieveOptions {
+  return {
+    topK: NORMATIVE_CHANNEL_K,
+    restrictSources: resolveNormativeSources(undefined, env.NORMATIVE_LEG_SOURCES),
+    useReranker: false, useSourceWeights: false, hybrid: false, skipExpand: true,
+  };
+}
+
+/** Standalone normative retrieve for the channel. Fail-safe: any error ⇒ [] (the audit proceeds on
+ *  literature alone — the channel can only ADD, never degrade). */
+async function normativeChannelRetrieve(q: string): Promise<CiteHit[]> {
+  try {
+    const r = await retrieve(q, normativeChannelOpts());
+    return r.hits.map((h) => ({
+      id: h.id, source: h.source, book: h.book, chapter: h.chapter, section: h.section,
+      page_start: h.page_start, page_end: h.page_end, item_number: h.item_number,
+      chunk_type: h.chunk_type, similarity: h.similarity, text: h.text,
+    }));
+  } catch (e) {
+    console.warn('[opd-audit] normative channel retrieve failed', (e as Error).message);
+    return [];
+  }
+}
+
+/** The additive block's framing. Lives in the USER-message context only — OPD_AUDIT_SYSTEM is frozen. */
+export const NORMATIVE_CHANNEL_HEADER =
+  'NORMATIVE REFERENCES — professional-society recommendations (Choosing Wisely / guidelines). ' +
+  'Advisory "avoid/don\'t" statements to CITE when a finding matches. They ADD to the evidence above ' +
+  'and do not replace it. Do NOT withhold or downgrade a finding because a normative reference is ' +
+  'terse or because guidance exists.';
+
+/** Render the normative block, numbering continuing from the literature excerpts. Pure. */
+export function buildNormativeBlock(normHits: CiteHit[], startN: number, perChunkChars = 700): string {
+  if (!normHits.length) return '';
+  const lines = normHits.map((h, i) => {
+    const society = String(h.book ?? h.source ?? 'guideline').trim() || 'guideline';
+    const body = String(h.text ?? '').replace(/\s+/g, ' ').trim().slice(0, perChunkChars);
+    return `[${startN + i}] ${body} — ${society}`;
+  });
+  return `${NORMATIVE_CHANNEL_HEADER}\n${lines.join('\n')}`;
+}
+
+/** Assemble the audit context. No normative hits ⇒ EXACTLY today's assembly (byte-identical).
+ *  With normative hits ⇒ literature [1..n] UNCHANGED, then the labelled block [n+1..] appended, and
+ *  the sources list extended so citation_ids into the block resolve for display. Pure. */
+export function assembleAuditContext(litHits: CiteHit[], normHits: CiteHit[]): { sources: Source[]; citedContext: string } {
+  if (!normHits.length) {
+    return { sources: hitsToSources(litHits), citedContext: buildCitedContext(litHits) };
+  }
+  const litN = Math.min(litHits.length, 8);   // buildCitedContext/hitsToSources cap the lit block at 8
+  return {
+    sources: hitsToSources([...litHits.slice(0, litN), ...normHits], litN + normHits.length),
+    citedContext: `${buildCitedContext(litHits)}\n\n${buildNormativeBlock(normHits, litN + 1)}`,
+  };
+}
+
 /** EVAL-ONLY (lab): the OpenRouter chat body. temperature 0 (greedy) so a leg-off vs leg-on arm
  *  differs ONLY by retrieved context, not sampling. Pure — exported for tests. */
 export function buildOpenRouterBody(model: string, system: string, user: string): Record<string, unknown> {
@@ -437,6 +506,10 @@ export interface AuditOpdOpts {
   evalNormativeLeg?: boolean;
   /** LAB EVAL ONLY: route audit generation to this OpenRouter model id. Absent ⇒ Gemini/mini as today. */
   evalModel?: string;
+  /** LAB EVAL ONLY (R-11 fix candidate): ADDITIVE normative channel — the 8 literature excerpts stay
+   *  byte-identical and the CW statements are appended as a separate citable block [9+]. Independent
+   *  of evalNormativeLeg (the harmful union); absent ⇒ today's context assembly exactly. */
+  evalNormativeChannel?: boolean;
 }
 
 /** Engine tag for mini-pipeline rows (default run). */
@@ -546,8 +619,11 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     ].filter(Boolean).join('. ');
 
     const hits = await defaultRetrieve(query, mini, opts.evalNormativeLeg);
-    const sources = hitsToSources(hits);
-    const citedContext = buildCitedContext(hits);
+    // R-11 additive channel (lab eval only): a SEPARATE CW-only retrieve appended as [9+] — the 8
+    // literature excerpts above are untouched. No channel ⇒ assembleAuditContext is byte-identical
+    // to the previous hitsToSources(hits) + buildCitedContext(hits).
+    const normHits = opts.evalNormativeChannel === true ? await normativeChannelRetrieve(query) : [];
+    const { sources, citedContext } = assembleAuditContext(hits, normHits);
     if (traceId) await logEvent(traceId, 'opd_audit_sources', null, { count: sources.length });
 
     const specialty = await doctorSpecialtyFor(keys.doctorUid);
