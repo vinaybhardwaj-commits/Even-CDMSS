@@ -4,9 +4,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  cwCategoryFor, cwCandidateAccepted, guidelineCandidateAccepted, hitToSource, mergeNormativeCitations,
+  cwCategoryFor, cwCandidateAccepted, guidelineCandidateAccepted, evenCandidateAccepted,
+  hitToSource, mergeNormativeCitations, citationTierRank,
   attachNormativeCitations, isGroundableFinding, citationKey,
-  NORMATIVE_TAU, CW_ID_CATEGORY, CW_STATEMENTS, type NormativeHit,
+  NORMATIVE_TAU, EVEN_SOURCE, CW_ID_CATEGORY, CW_STATEMENTS, type NormativeHit, type EvenCategoryLookup,
 } from '../normative-grounding-core.ts';
 import { groundFinding } from '../normative-grounding.ts';
 import type { RetrieveResult, RetrieveOptions } from '../retrieve.ts';
@@ -125,6 +126,50 @@ test('groundFinding grounds nothing on cross-category CW / below-τ guideline, a
   // a retrieve throw ⇒ empty, never throws
   const soft = await groundFinding({ subject: 'x', lvc_category: 'antibiotic', verdict: 'low-value' }, { retrieveFn: (async () => { throw new Error('db down'); }) as never });
   assert.deepEqual(soft.citations, []);
+});
+
+// ── the EVEN leg (CDMSS-EVEN-LVC-ADJUDICATION §4) ──
+const evenHit = (item: string, sim: number): NormativeHit => ({ id: 3, source: EVEN_SOURCE, book: 'Even Adjudicated LVC', item_number: item, similarity: sim, text: `Even assertion ${item}` });
+// a lookup for an ACTIVE library: elv-antibiotic-001 → antibiotic
+const evenLookup: EvenCategoryLookup = (it) => (String(it) === 'elv-antibiotic-001' ? 'antibiotic' : null);
+
+test('even gate: accept iff cosine ≥ τ AND the dynamic lookup category == finding.lvc_category', () => {
+  assert.equal(evenCandidateAccepted('antibiotic', evenHit('elv-antibiotic-001', 0.82), evenLookup), true);
+  assert.equal(evenCandidateAccepted('antibiotic', evenHit('elv-antibiotic-001', 0.60), evenLookup), false, 'below τ ⇒ reject');
+  assert.equal(evenCandidateAccepted('imaging', evenHit('elv-antibiotic-001', 0.95), evenLookup), false, 'cross-category ⇒ reject');
+  assert.equal(evenCandidateAccepted('antibiotic', evenHit('elv-antibiotic-999', 0.95), evenLookup), false, 'unknown id (retired/absent) ⇒ null ⇒ reject');
+});
+
+test('citation ordering: external legs first, even-lvc LAST; dedup by (source,item_number)', () => {
+  const cw = hitToSource(cwHit('cwus-aafp-002', 0.85), 0);
+  const gl = hitToSource(glHit(0.80), 0);
+  const ev = hitToSource(evenHit('elv-antibiotic-001', 0.83), 0);
+  // pass even FIRST — the stable tier sort must still push it last
+  assert.deepEqual(mergeNormativeCitations([ev, cw, gl]).map(citationKey),
+    ['choosing-wisely#cwus-aafp-002', 'lab:guidelines-icmr-amr-2019#icmr-amr-2019#p45', 'even-lvc#elv-antibiotic-001']);
+  assert.equal(citationTierRank(EVEN_SOURCE), 1);
+  assert.equal(citationTierRank('choosing-wisely'), 0);
+  // same (source,item_number) twice ⇒ collapses (the nit)
+  assert.deepEqual(mergeNormativeCitations([ev, { ...ev, n: 9 }]).length, 1);
+});
+
+test('groundFinding runs the even leg ONLY with a lookup; attaches it last, inert without a lookup', async () => {
+  const rf = (async (_q: string, opts: RetrieveOptions) => asResult(
+    opts.source === 'choosing-wisely' ? [cwHit('cwus-aafp-002', 0.86)]
+      : opts.source === EVEN_SOURCE ? [evenHit('elv-antibiotic-001', 0.84)]
+        : [glHit(0.79)])) as never;
+  // with a lookup ⇒ all three legs; even is last in citations
+  const g = await groundFinding(antibioticF, { retrieveFn: rf, evenCategoryLookup: evenLookup });
+  assert.equal(g.even?.item_number, 'elv-antibiotic-001');
+  assert.equal(g.citations.length, 3);
+  assert.equal(citationKey(g.citations[2]), 'even-lvc#elv-antibiotic-001', 'even-lvc renders last');
+  // NO lookup ⇒ even leg inert (no retrieve, no citation), default byte-identical to cw+guideline
+  const seen: string[] = [];
+  const rf2 = (async (_q: string, opts: RetrieveOptions) => { seen.push(String(opts.source ?? 'restrict')); return asResult(opts.source === 'choosing-wisely' ? [cwHit('cwus-aafp-002', 0.86)] : [glHit(0.79)]); }) as never;
+  const g2 = await groundFinding(antibioticF, { retrieveFn: rf2 });   // default legs='all' but no lookup
+  assert.equal(g2.even, null, 'no lookup ⇒ even leg inert');
+  assert.equal(g2.citations.length, 2);
+  assert.ok(!seen.includes(EVEN_SOURCE), 'the even retrieve was NOT invoked without a lookup');
 });
 
 // ── selection controls (legs / categories / tau) — must NOT change the match/gate math ──

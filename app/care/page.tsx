@@ -3,7 +3,7 @@ export const runtime = 'nodejs';
 
 import Link from 'next/link';
 import { redirect, notFound } from 'next/navigation';
-import { ArrowRight, MessageSquareHeart, ClipboardCheck, ListChecks } from 'lucide-react';
+import { ArrowRight, MessageSquareHeart, ClipboardCheck, ListChecks, ShieldCheck } from 'lucide-react';
 import { isCareUnlocked } from '@/lib/care-cookie';
 import { sql } from '@/lib/db';
 import { CCB_ENGINE_VERSION } from '@/lib/ccb-brief-core';
@@ -36,6 +36,15 @@ export default async function ManagedCareHome() {
   ]);
   const briefsCount = Number((briefsR as Record<string, unknown>[])[0]?.n ?? 0);
   const triageCount = Number((triageR as Record<string, unknown>[])[0]?.n ?? 0);
+
+  // Even Adjudicated LVC (CDMSS-EVEN-LVC-ADJUDICATION §7) — 4th card, behind LVC_ADJUDICATION_ENABLED.
+  // Badge = pending-candidate count; best-effort (the table may not exist pre-migration → 0).
+  const lvcEnabled = process.env.LVC_ADJUDICATION_ENABLED === '1';
+  let lvcCount = 0;
+  if (lvcEnabled) {
+    const lvcR = await run(`SELECT count(*)::int n FROM even_lvc_assertions WHERE status = 'pending'`).catch(() => []);
+    lvcCount = Number((lvcR as Record<string, unknown>[])[0]?.n ?? 0);
+  }
 
   // Review Mode team-progress strip (§2.4) — best-effort; omitted entirely on any error. Reuses the
   // gamification core over the same counted-label rows the stats route reads (identical basis).
@@ -82,12 +91,20 @@ export default async function ManagedCareHome() {
       desc: 'Keyboard-first gold-label triage — adjudicate audit findings fast to build the reviewed standard. Pick your reviewer identity to start.',
       count: 0, countLabel: '', tint: 'emerald',
     },
-  ] as const;
+    ...(lvcEnabled ? [{
+      href: '/care/lvc',
+      icon: ShieldCheck,
+      title: 'Even Adjudicated LVC',
+      desc: 'Ratify the low-value-care patterns Even’s own audits surface — then ground future audits against them. Advisory until you validate.',
+      count: lvcCount, countLabel: 'pending', tint: 'amber',
+    }] : []),
+  ];
 
   const tintClasses: Record<string, { badge: string; icon: string }> = {
     violet: { badge: 'bg-violet-100 text-violet-800', icon: 'text-violet-500' },
     sky: { badge: 'bg-sky-100 text-sky-800', icon: 'text-sky-500' },
     emerald: { badge: 'bg-emerald-100 text-emerald-800', icon: 'text-emerald-500' },
+    amber: { badge: 'bg-amber-100 text-amber-800', icon: 'text-amber-500' },
   };
 
   return (

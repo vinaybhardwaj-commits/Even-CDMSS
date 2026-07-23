@@ -87,6 +87,10 @@ export function hitsToSources(hits: CiteHit[], cap = 8): Source[] {
 export const SOURCE_DISPLAY_LABELS: Record<string, string> = {
   'lab:guidelines-even-protocols': 'Even Guidelines',
   'lab:guidelines-icmr-amr-2019': 'ICMR Guidelines',
+  // CDMSS-EVEN-LVC-ADJUDICATION §4 — physician-ratified internal LVC assertions. Non-`labq:`, so a
+  // chunk carries this key the moment it is embedded on ratify; the tier (internal_consensus, below
+  // external) is rendered from lib/provenance-tier-core.citationSourceTier, never as a guideline.
+  'even-lvc': 'Even Adjudicated LVC',
 };
 
 /** Short human label for a source chip / list row. A source-keyed display override wins; otherwise

@@ -17,6 +17,11 @@ export const NORMATIVE_TAU = 0.70;
 /** The activated guideline sources the guideline leg searches (labq: never — quarantined stays inert). */
 export const GUIDELINE_SOURCES = ['lab:guidelines-even-protocols', 'lab:guidelines-icmr-amr-2019'] as const;
 export const CW_SOURCE = 'choosing-wisely';
+/** The Even-adjudicated-LVC assertion source (CDMSS-EVEN-LVC-ADJUDICATION §4). NON-`labq:` so it
+ *  passes the retrieve quarantine guard; retired/hidden assertions set their chunk `visible=false`.
+ *  The `even` leg is category-gated like CW, but its id→category map is DYNAMIC (loaded from
+ *  even_lvc_assertions at query time) rather than the static CW_STATEMENTS map. */
+export const EVEN_SOURCE = 'even-lvc';
 
 /** The CW category map (CDMSS-CW-CATEGORY-MAP, 55 statements). id → lvc_category. The GATE reads this:
  *  a CW candidate grounds a finding ONLY if its statement's category equals the finding's lvc_category. */
@@ -114,6 +119,26 @@ export function guidelineCandidateAccepted(hit: NormativeHit, tau = NORMATIVE_TA
   return Number.isFinite(sim) && sim >= tau;
 }
 
+/** A lookup `item_number → lvc_category` for ACTIVE/CONTESTED Even assertions. The caller loads it
+ *  from `even_lvc_assertions WHERE status IN ('active','contested')`; unknown ids return null. */
+export type EvenCategoryLookup = (itemNumber: string | null | undefined) => string | null;
+
+/** Even gate: accept the top-1 `even-lvc` candidate iff cosine ≥ τ AND the assertion's category
+ *  (from the dynamic lookup, keyed by item_number = assertion id) equals the finding's lvc_category.
+ *  Structurally identical to the CW gate — only the map is dynamic (DB) rather than static. An id the
+ *  lookup doesn't know (retired/rejected/absent) ⇒ null ⇒ reject (so a hidden assertion never grounds). */
+export function evenCandidateAccepted(
+  findingCategory: string | null | undefined,
+  hit: NormativeHit,
+  evenCategoryLookup: EvenCategoryLookup,
+  tau = NORMATIVE_TAU,
+): boolean {
+  const sim = Number(hit?.similarity);
+  if (!Number.isFinite(sim) || sim < tau) return false;
+  const cat = evenCategoryLookup(hit.item_number);
+  return cat != null && cat === String(findingCategory ?? '').trim();
+}
+
 /** Map a normative retrieve() hit → a client-facing Source (the numbered citation). `n` is assigned by
  *  the caller (append position in the note's sources array). url derives from sourceUrl (null for the
  *  internal guideline anchors — honest, no fake DOI/PMID); the display name renders via SOURCE_DISPLAY_LABELS
@@ -142,8 +167,16 @@ export function citationKey(s: Pick<Source, 'source' | 'item_number' | 'url' | '
   return `${s.source ?? ''}#id:${s.id}`;
 }
 
-/** Merge the (≤1 CW) + (≤1 guideline) accepted citations, dropping any already present (dedupe by
- *  citationKey against `existing`). Preserves order [cw, guideline]. Pure. */
+/** Provenance-tier rank for citation ordering (CDMSS-EVEN-LVC §4 / decision 6): external sources
+ *  render FIRST, the Even internal-consensus assertion LAST. Higher rank sorts later. Pure. */
+export function citationTierRank(source: string | null | undefined): number {
+  return String(source ?? '').trim() === EVEN_SOURCE ? 1 : 0;   // even-lvc last; all external tie at 0
+}
+
+/** Merge the (≤1 CW) + (≤1 guideline) + (≤1 even) accepted citations, dropping any already present
+ *  (dedupe by citationKey = (source, item_number) against `existing` AND within the batch — the
+ *  double-citation nit). Orders external-first / even-lvc last via a STABLE tier sort, so CW and
+ *  guideline keep their relative order and the internal-consensus assertion always trails. Pure. */
 export function mergeNormativeCitations(candidates: (Source | null)[], existing: Source[] = []): Source[] {
   const seen = new Set(existing.map(citationKey));
   const out: Source[] = [];
@@ -154,7 +187,8 @@ export function mergeNormativeCitations(candidates: (Source | null)[], existing:
     seen.add(k);
     out.push(c);
   }
-  return out;
+  // Stable sort by tier rank (external 0 before even-lvc 1); ties preserve insertion order.
+  return out.map((c, i) => ({ c, i })).sort((a, b) => citationTierRank(a.c.source) - citationTierRank(b.c.source) || a.i - b.i).map((x) => x.c);
 }
 
 /** Whether a finding is an eligible grounding target: a low-value verdict (metadata-only; verdict is

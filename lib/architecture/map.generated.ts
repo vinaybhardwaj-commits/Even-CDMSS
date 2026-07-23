@@ -323,6 +323,14 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "even-lvc",
+    "plane": "unregistered"
+  },
+  {
+    "id": "even-lvc-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "expand",
     "plane": "unregistered"
   },
@@ -1196,6 +1204,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "drugs",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "even-lvc",
     "kind": "value"
   },
   {
@@ -2367,6 +2380,36 @@ export const MAP_EDGES: MapEdge[] = [
     "from": "episode-state",
     "to": "doc-audit-core",
     "kind": "type"
+  },
+  {
+    "from": "even-lvc",
+    "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "even-lvc",
+    "to": "even-lvc-core",
+    "kind": "value"
+  },
+  {
+    "from": "even-lvc",
+    "to": "llm",
+    "kind": "value"
+  },
+  {
+    "from": "even-lvc",
+    "to": "normative-grounding-core",
+    "kind": "value"
+  },
+  {
+    "from": "even-lvc",
+    "to": "opd-note-audit-core",
+    "kind": "value"
+  },
+  {
+    "from": "even-lvc",
+    "to": "trace",
+    "kind": "value"
   },
   {
     "from": "expand",

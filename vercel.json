@@ -18,6 +18,7 @@
     { "path": "/api/admin/opd-audit-mini-backfill?auto=1", "schedule": "*/2 * * * *" },
     { "path": "/api/admin/lab-batch?auto=1", "schedule": "*/2 * * * *" },
     { "path": "/api/admin/complexity-backfill?auto=1", "schedule": "*/2 * * * *" },
-    { "path": "/api/admin/opd-audit/longitudinal-replay?auto=1", "schedule": "*/10 * * * *" }
+    { "path": "/api/admin/opd-audit/longitudinal-replay?auto=1", "schedule": "*/10 * * * *" },
+    { "path": "/api/care/lvc/generate?auto=1", "schedule": "0 6 * * *" }
   ]
 }

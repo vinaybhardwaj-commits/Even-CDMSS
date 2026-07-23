@@ -9,24 +9,32 @@
 import { retrieve, type RetrieveOptions } from './retrieve';
 import type { Source } from './citations-core';
 import {
-  CW_SOURCE, GUIDELINE_SOURCES, NORMATIVE_TAU,
-  cwCandidateAccepted, guidelineCandidateAccepted, hitToSource, mergeNormativeCitations,
-  type NormativeHit,
+  CW_SOURCE, GUIDELINE_SOURCES, EVEN_SOURCE, NORMATIVE_TAU,
+  cwCandidateAccepted, guidelineCandidateAccepted, evenCandidateAccepted,
+  hitToSource, mergeNormativeCitations,
+  type NormativeHit, type EvenCategoryLookup,
 } from './normative-grounding-core';
 
 export type GroundingFinding = { subject?: string; rationale?: string | null; lvc_category?: string; verdict?: string; informational?: boolean };
-export type GroundingResult = { cw: Source | null; guideline: Source | null; citations: Source[] };
-export type GroundingDeps = { retrieveFn?: typeof retrieve };
+export type GroundingResult = { cw: Source | null; guideline: Source | null; even: Source | null; citations: Source[] };
+/** `evenCategoryLookup` (optional): the id→category map for ACTIVE/CONTESTED Even assertions. The
+ *  even leg runs ONLY when it is supplied (so absent a live library the leg is fully inert — no
+ *  retrieve, no citation — and default behaviour stays byte-identical). */
+export type GroundingDeps = { retrieveFn?: typeof retrieve; evenCategoryLookup?: EvenCategoryLookup };
 /** Selection controls (backfill/inspection ONLY — they never change the match/gate MATH):
- *  - legs: which leg(s) to run ('both' default). - categories: if set, ground ONLY findings whose
- *  lvc_category is in the list ([]/undefined = all). - tau: cosine threshold (default NORMATIVE_TAU).
+ *  - legs: which leg(s) to run. `'both'` = cw+guideline (legacy); `'all'` = cw+guideline+even;
+ *    DEFAULT (unset) = `'all'` (the even leg is inert unless an evenCategoryLookup is supplied AND
+ *    active even-lvc chunks exist, so this is score-invariant until the first ratification).
+ *  - categories: if set, ground ONLY findings whose lvc_category is in the list ([]/undefined = all).
+ *  - tau: cosine threshold (default NORMATIVE_TAU).
  *  Defaults reproduce today's behaviour byte-identically. */
-export type GroundingOptions = { legs?: 'cw' | 'guideline' | 'both'; categories?: string[]; tau?: number };
+export type GroundingOptions = { legs?: 'cw' | 'guideline' | 'even' | 'both' | 'all'; categories?: string[]; tau?: number };
 
 /** Deterministic retrieval config: vector cosine only — no expansion, no reranker, no BM25, no source
  *  weighting. So hits[0].similarity is the raw cosine the gate reads, and the match is reproducible. */
 const CW_OPTS: RetrieveOptions = { source: CW_SOURCE, topK: 1, skipExpand: true, useReranker: false, useSourceWeights: false, hybrid: false };
 const GUIDELINE_OPTS: RetrieveOptions = { restrictSources: [...GUIDELINE_SOURCES], topK: 1, skipExpand: true, useReranker: false, useSourceWeights: false, hybrid: false };
+const EVEN_OPTS: RetrieveOptions = { source: EVEN_SOURCE, topK: 1, skipExpand: true, useReranker: false, useSourceWeights: false, hybrid: false };
 
 /** Ground ONE finding against CW (category-gated) + the guideline sources (τ-gated). Returns the
  *  accepted citations (n=0 placeholder — the backfill assigns the real append index). Soft-fail.
@@ -35,9 +43,15 @@ const GUIDELINE_OPTS: RetrieveOptions = { restrictSources: [...GUIDELINE_SOURCES
 export async function groundFinding(finding: GroundingFinding, deps: GroundingDeps = {}, options: GroundingOptions = {}): Promise<GroundingResult> {
   const retrieveFn = deps.retrieveFn ?? retrieve;
   const tau = options.tau ?? NORMATIVE_TAU;
-  const legs = options.legs ?? 'both';
+  const legs = options.legs ?? 'all';
   const cats = options.categories;
-  const empty: GroundingResult = { cw: null, guideline: null, citations: [] };
+  const empty: GroundingResult = { cw: null, guideline: null, even: null, citations: [] };
+
+  const runCw = legs === 'cw' || legs === 'both' || legs === 'all';
+  const runGuideline = legs === 'guideline' || legs === 'both' || legs === 'all';
+  // The even leg runs ONLY when explicitly selected (or default/all) AND a lookup is supplied — so
+  // without a live assertion library it is fully inert (no retrieve), keeping default byte-identical.
+  const runEven = (legs === 'even' || legs === 'all') && !!deps.evenCategoryLookup;
 
   // Category selection (backfill only): if a list is given, ground ONLY those lvc_categories.
   if (cats && cats.length && !cats.includes(String(finding.lvc_category ?? ''))) return empty;
@@ -47,8 +61,9 @@ export async function groundFinding(finding: GroundingFinding, deps: GroundingDe
 
   let cw: Source | null = null;
   let guideline: Source | null = null;
+  let even: Source | null = null;
 
-  if (legs === 'cw' || legs === 'both') {
+  if (runCw) {
     try {
       const r = await retrieveFn(q, CW_OPTS);
       const top = r.hits?.[0] as NormativeHit | undefined;
@@ -56,7 +71,7 @@ export async function groundFinding(finding: GroundingFinding, deps: GroundingDe
     } catch (e) { console.warn('[normative-grounding] CW leg failed', (e as Error).message); }
   }
 
-  if (legs === 'guideline' || legs === 'both') {
+  if (runGuideline) {
     try {
       const r = await retrieveFn(q, GUIDELINE_OPTS);
       const top = r.hits?.[0] as NormativeHit | undefined;
@@ -64,5 +79,13 @@ export async function groundFinding(finding: GroundingFinding, deps: GroundingDe
     } catch (e) { console.warn('[normative-grounding] guideline leg failed', (e as Error).message); }
   }
 
-  return { cw, guideline, citations: mergeNormativeCitations([cw, guideline]) };
+  if (runEven) {
+    try {
+      const r = await retrieveFn(q, EVEN_OPTS);
+      const top = r.hits?.[0] as NormativeHit | undefined;
+      if (top && evenCandidateAccepted(finding.lvc_category, top, deps.evenCategoryLookup!, tau)) even = hitToSource(top, 0);
+    } catch (e) { console.warn('[normative-grounding] even leg failed', (e as Error).message); }
+  }
+
+  return { cw, guideline, even, citations: mergeNormativeCitations([cw, guideline, even]) };
 }

@@ -173,6 +173,20 @@ export function classifyProvenanceTier(f: TierableFinding, rule?: RuleCitationFi
   return 'unattributed_sourceable';                                               // §3.5 — default to SOURCEABLE, never to inherent
 }
 
+// ── Citation-source provenance tier (CDMSS-EVEN-LVC-ADJUDICATION §4) ───────────
+// A source-string → tier lens for an ATTACHED normative citation (distinct from classifyProvenanceTier,
+// which classifies a FINDING). Used to render + order the honest provenance label on the Even leg's
+// "Even Adjudicated LVC" citation. `even-lvc` is INTERNAL consensus — deliberately BELOW external
+// evidence — and is NOT added to EXTERNAL_CORPUS_SOURCES (a self-mined assertion earns no external
+// credit). Unknown sources return null (caller falls back to its existing book-driven label). Pure.
+export const EVEN_LVC_SOURCE = 'even-lvc';
+const CITATION_SOURCE_TIERS: Record<string, { tier: ProvenanceTier; label: string }> = {
+  'even-lvc': { tier: 'internal_consensus', label: 'Even Adjudicated LVC (physician-ratified)' },
+};
+export function citationSourceTier(source: string | null | undefined): { tier: ProvenanceTier; label: string } | null {
+  return CITATION_SOURCE_TIERS[String(source ?? '').trim()] ?? null;
+}
+
 // ── Finding-card grounding (L8/L9) — shared so the UI and ledger cannot disagree ──
 export type GroundingKind = 'deterministic_rule' | 'external_source' | 'internal_corpus' | 'no_source';
 
