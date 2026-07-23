@@ -14,6 +14,8 @@ export const LB_KEYS = {
   lock: 'lab_batch_lock',            // soft-lock ISO ts
   last: 'lab_batch_last',            // last tick summary json
   error: 'lab_batch_last_error',     // last per-note error string
+  evalNormativeLeg: 'lab_batch_eval_normative_leg',  // '1' ⇒ force the R-11 leg on for this eval batch
+  evalModel: 'lab_batch_eval_model',                 // OpenRouter model id for eval generation ('' ⇒ mini)
 } as const;
 
 export const LB_LOCK_TTL_MS = 210 * 1000;   // matches the mini-backfill soft-lock TTL (< 300s Vercel cap)
@@ -30,6 +32,8 @@ export interface LabBatchState {
   lock: string | null;
   last: Record<string, unknown> | null;
   lastError: string | null;
+  evalNormativeLeg: boolean;     // lab eval: force the R-11 normative leg on
+  evalModel: string | null;      // lab eval: OpenRouter model id (null ⇒ mini generation, today's path)
 }
 
 export function clampN(v: unknown): number {
@@ -76,6 +80,8 @@ export function parseBatchState(s: Record<string, string>): LabBatchState {
     lock: s[LB_KEYS.lock] || null,
     last,
     lastError: s[LB_KEYS.error] || null,
+    evalNormativeLeg: s[LB_KEYS.evalNormativeLeg] === '1',   // absent ⇒ false ⇒ today's behaviour
+    evalModel: s[LB_KEYS.evalModel] ? s[LB_KEYS.evalModel] : null,
   };
 }
 

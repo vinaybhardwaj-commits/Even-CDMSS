@@ -230,6 +230,8 @@ export const LAB_TOOLS = [
         n: { type: 'number', description: 'notes per tick (1-2; default 2).' },
         window: { type: 'string', enum: ['night', 'always'], description: "'always' drains all day; default 'night' (00-05 IST)." },
         kind: { type: 'string', description: 'reserved; default opd.' },
+        evalNormativeLeg: { type: 'boolean', description: 'R-11 Phase-2 eval: force the normative retrieval leg ON for every note in this batch (default false ⇒ today\'s gate). Lab-only; writes lab_analyses only.' },
+        evalModel: { type: 'string', description: 'R-11 Phase-2 eval: route audit generation to this OpenRouter model id (e.g. google/gemini-3.1-flash-lite) at temperature 0. Absent ⇒ free mini. Needs OPENROUTER_API_KEY in env.' },
       },
       required: ['experiment'],
     },
@@ -546,16 +548,22 @@ async function labBatchStart(a: Record<string, unknown>): Promise<ToolResult> {
   const n = clampN(a.n ?? 2);
   const window = S(a.window) === 'always' ? 'always' : 'night';
   const kind = (S(a.kind) || 'opd').replace(/[^a-z0-9_-]/gi, '').slice(0, 24) || 'opd';
+  // R-11 Stage 2 Phase 2 eval config (lab-only): force the normative leg on and/or route generation to
+  // an OpenRouter model. Absent ⇒ '0'/'' ⇒ the batch behaves exactly as today (mini path, leg off).
+  const evalNormativeLeg = a.evalNormativeLeg === true;
+  const evalModel = S(a.evalModel).trim().slice(0, 128);
   await ensureLabTables();
   await setSetting(LB_KEYS.experiment, experiment);
   await setSetting(LB_KEYS.uids, JSON.stringify(uids));
   await setSetting(LB_KEYS.n, String(n));
   await setSetting(LB_KEYS.window, window);
   await setSetting(LB_KEYS.kind, kind);
+  await setSetting(LB_KEYS.evalNormativeLeg, evalNormativeLeg ? '1' : '0');
+  await setSetting(LB_KEYS.evalModel, evalModel);
   await setSetting(LB_KEYS.error, '');
   await setSetting(LB_KEYS.enabled, '1');
   const prog = await batchProgress(experiment, uids);
-  return ok({ experiment, kind, n, window, ...prog, note: 'queued - the */2 cron drains it (mini, INR 0), yielding to the prod backfill. Poll lab_batch_status; nudge with lab_batch_tick.' });
+  return ok({ experiment, kind, n, window, evalNormativeLeg, evalModel: evalModel || null, ...prog, note: 'queued - the */2 cron drains it, yielding to the prod backfill. Poll lab_batch_status; nudge with lab_batch_tick. Writes lab_analyses ONLY.' });
 }
 
 async function labBatchStatus(): Promise<ToolResult> {

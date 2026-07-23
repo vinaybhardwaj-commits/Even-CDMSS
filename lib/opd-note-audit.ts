@@ -311,14 +311,16 @@ export interface OpdNoteAudit {
  * note_quality_index can move. The flag is off in every environment until Phase 0/2 clear it.
  * Pure (env injectable) so the flag-off byte-identity is unit-testable without a DB.
  */
-export function opdRetrieveOpts(mini: boolean, env: Record<string, string | undefined> = process.env): RetrieveOptions {
-  const useNormativeLeg = env.OPD_NORMATIVE_LEG_ENABLED === '1' && !mini;
+export function opdRetrieveOpts(mini: boolean, env: Record<string, string | undefined> = process.env, evalNormativeLeg?: boolean): RetrieveOptions {
+  // Lab eval override (Phase 2): evalNormativeLeg forces the leg ON regardless of env/mini. Absent/false
+  // ⇒ today's gate exactly (env==='1' && !mini), so with NO eval config the opts are byte-identical.
+  const useNormativeLeg = evalNormativeLeg === true || (env.OPD_NORMATIVE_LEG_ENABLED === '1' && !mini);
   return { topK: 8, useReranker: true, useSourceWeights: true, hybrid: true, ...(useNormativeLeg ? { useNormativeLeg: true } : {}) };
 }
 
-async function defaultRetrieve(q: string, mini = false): Promise<CiteHit[]> {
+async function defaultRetrieve(q: string, mini = false, evalNormativeLeg?: boolean): Promise<CiteHit[]> {
   try {
-    const r = await retrieve(q, opdRetrieveOpts(mini));
+    const r = await retrieve(q, opdRetrieveOpts(mini, process.env, evalNormativeLeg));
     return r.hits.map((h) => ({
       id: h.id, source: h.source, book: h.book, chapter: h.chapter, section: h.section,
       page_start: h.page_start, page_end: h.page_end, item_number: h.item_number,
@@ -330,7 +332,32 @@ async function defaultRetrieve(q: string, mini = false): Promise<CiteHit[]> {
   }
 }
 
-async function defaultGenerate(traceId: string | undefined, system: string, user: string, mini = false): Promise<string> {
+/** EVAL-ONLY (lab): the OpenRouter chat body. temperature 0 (greedy) so a leg-off vs leg-on arm
+ *  differs ONLY by retrieved context, not sampling. Pure — exported for tests. */
+export function buildOpenRouterBody(model: string, system: string, user: string): Record<string, unknown> {
+  return { model, messages: [{ role: 'system', content: system }, { role: 'user', content: user }], temperature: 0 };
+}
+
+/** EVAL-ONLY (lab): generate one audit via OpenRouter's OpenAI-compatible endpoint. Any model id is
+ *  accepted (the orchestrator passes it). Key from env OPENROUTER_API_KEY. Direct fetch — no new dep;
+ *  this is the lab dry-run path and NEVER production generation. fetchImpl injectable for tests. */
+export async function openRouterGenerate(model: string, system: string, user: string, fetchImpl: typeof fetch = fetch): Promise<string> {
+  const key = process.env.OPENROUTER_API_KEY;
+  if (!key) throw new Error('OPENROUTER_API_KEY is not set — required for eval generation (evalModel)');
+  const res = await fetchImpl('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+    body: JSON.stringify(buildOpenRouterBody(model, system, user)),
+  });
+  if (!res.ok) throw new Error(`OpenRouter HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`);
+  const j = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+  return j.choices?.[0]?.message?.content || '';
+}
+
+async function defaultGenerate(traceId: string | undefined, system: string, user: string, mini = false, evalModel?: string): Promise<string> {
+  // EVAL-ONLY (lab): route to OpenRouter when an eval model is named. evalModel unset ⇒ the Gemini/mini
+  // path below is byte-identical to today (no production audit ever passes evalModel).
+  if (evalModel) return openRouterGenerate(evalModel, system, user);
   // mini=true forces the Mac-mini Ollama bridge (no Gemini) with MINI_MODEL — the
   // scoped mini pipeline (OPD mini backfill). Default path is byte-identical to before.
   const geminiModel = mini ? undefined : (geminiModelFor('doc_audit') ?? geminiUtilityModel());
@@ -381,6 +408,11 @@ export interface AuditOpdOpts {
   /** Stage 3 — force-attach the de-identified longitudinal note projection regardless of the env flag
    *  (the replay endpoint sets this so it can recompute a note's longitudinal block on demand). */
   longitudinal?: boolean;
+  /** LAB EVAL ONLY (R-11 Stage 2, Phase 2): force the normative retrieval leg ON regardless of env/mini.
+   *  Absent ⇒ today's gate exactly. Set only by the lab eval batch; never by any production caller. */
+  evalNormativeLeg?: boolean;
+  /** LAB EVAL ONLY: route audit generation to this OpenRouter model id. Absent ⇒ Gemini/mini as today. */
+  evalModel?: string;
 }
 
 /** Engine tag for mini-pipeline rows (default run). */
@@ -489,13 +521,13 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
       'outpatient appropriateness rational prescribing evidence-based management guideline',
     ].filter(Boolean).join('. ');
 
-    const hits = await defaultRetrieve(query, mini);
+    const hits = await defaultRetrieve(query, mini, opts.evalNormativeLeg);
     const sources = hitsToSources(hits);
     const citedContext = buildCitedContext(hits);
     if (traceId) await logEvent(traceId, 'opd_audit_sources', null, { count: sources.length });
 
     const specialty = await doctorSpecialtyFor(keys.doctorUid);
-    const raw = await defaultGenerate(traceId, OPD_AUDIT_SYSTEM, buildOpdAuditUser(opdCaseText(oc, { specialty }), citedContext), mini);
+    const raw = await defaultGenerate(traceId, OPD_AUDIT_SYSTEM, buildOpdAuditUser(opdCaseText(oc, { specialty }), citedContext), mini, opts.evalModel);
     const parsed = parseOpdAnalysis(raw, sources.length);
 
     const findings: OpdFinding[] = finalize([...det, ...(parsed?.findings ?? [])]);

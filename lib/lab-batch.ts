@@ -38,19 +38,29 @@ export async function batchProgress(experiment: string, cohort: string[]): Promi
   return { total: cohort.length, done: doneInCohort, remaining: Math.max(0, cohort.length - doneInCohort) };
 }
 
-/** The shared per-note primitive: audit one db13 uid on the FREE mini → lab_analyses. */
-export async function runMiniOpdToLab(uid: string, experiment: string): Promise<{ id: string; band: string; index: number; findings: number; engine: string }> {
+/** Lab eval config for a batch (R-11 Stage 2 Phase 2). Absent ⇒ today's mini/leg-off behaviour. */
+export interface LabEvalConfig { evalNormativeLeg?: boolean; evalModel?: string }
+
+/** The shared per-note primitive: audit one db13 uid → lab_analyses. Writes ONLY lab_analyses (via
+ *  saveLabAnalysis); auditOpdNote is pure compute and never writes opd_note_audits. `evalCfg` (Phase 2)
+ *  forces the R-11 normative leg on and/or routes generation to an OpenRouter model — absent ⇒ mini. */
+export async function runMiniOpdToLab(uid: string, experiment: string, evalCfg: LabEvalConfig = {}): Promise<{ id: string; band: string; index: number; findings: number; engine: string }> {
   const row = await fetchOpdNoteByUid(uid);
   if (!row) throw new Error(`no db13 OPD note for uid ${uid}`);
   const started = Date.now();
-  const audit = await auditOpdNote(row, { pipeline: 'mini', engineTag: 'lab', trace: false });
+  const audit = await auditOpdNote(row, {
+    pipeline: 'mini', engineTag: 'lab', trace: false,
+    evalNormativeLeg: evalCfg.evalNormativeLeg, evalModel: evalCfg.evalModel,
+  });
   const output = {
     index: audit.scorecard.headline, band: audit.scorecard.band, scorecard: audit.scorecard,
     completeness: audit.completeness, findings: audit.findings, suggestions: audit.suggestions,
+    // Phase-2 provenance stamp so band-migration analysis can split arms by (model × normativeLeg).
+    eval: { model: evalCfg.evalModel ?? null, normativeLeg: evalCfg.evalNormativeLeg === true },
   };
   const id = await saveLabAnalysis({
     experiment, kind: 'opd_note', engine: audit.engineVersion, inputRef: uid,
-    inputPreview: `uid ${uid}`, output, model: MINI_MODEL, latencyMs: Date.now() - started,
+    inputPreview: `uid ${uid}`, output, model: evalCfg.evalModel || MINI_MODEL, latencyMs: Date.now() - started,
   });
   return { id, band: audit.scorecard.band, index: audit.scorecard.headline, findings: audit.findings.length, engine: audit.engineVersion };
 }
@@ -90,7 +100,7 @@ export async function batchTick(opts: { ignoreWindow?: boolean } = {}): Promise<
     for (const uid of slice) {
       const t0 = Date.now();
       try {
-        const r = await runMiniOpdToLab(uid, experiment);
+        const r = await runMiniOpdToLab(uid, experiment, { evalNormativeLeg: st.evalNormativeLeg, evalModel: st.evalModel ?? undefined });
         results.push({ uid, band: r.band, index: r.index, findings: r.findings, ms: Date.now() - t0 });
       } catch (e) {
         const msg = String((e as Error).message);
