@@ -245,7 +245,7 @@ export async function POST(req: NextRequest) {
         // raw similarity alone floats off-topic journal abstracts above textbooks
         // (a JACC abstract at 0.85 over a relevant UpToDate chunk at 0.42); the reranker
         // judges actual relevance and demotes them, the weights bias toward textbooks.
-        ? retrieveMultiQuery(retrievalQuery, { topK: DDX_TOP_K, minSimilarity: 0.4, bm25Query, useReranker: true, useSourceWeights: true })
+        ? retrieveMultiQuery(retrievalQuery, { topK: DDX_TOP_K, minSimilarity: 0.4, bm25Query, useReranker: true, useSourceWeights: true, useNormativeLeg: true })
         : retrieve(retrievalQuery, { topK: DDX_TOP_K, minSimilarity: 0.4, bm25Query, useReranker: true, useSourceWeights: true }).then((r) => ({ hits: r.hits, variants: [retrievalQuery], perVariantCounts: [r.hits.length] }));
       const [retrieveResult, plosHits] = await Promise.all([
         retrievePromise,

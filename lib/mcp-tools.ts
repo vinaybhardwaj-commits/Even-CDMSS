@@ -119,6 +119,8 @@ export const LAB_TOOLS = [
         rerankBackend: { type: 'string', enum: ['default', 'bge', 'judge'], description: "Rerank backend for this call. 'default' (or omitted) = production default (env-driven, 'judge'). 'bge' = the DETERMINISTIC cross-encoder ruler (bge-reranker-v2-m3, must be pulled on the mini — errors loud if absent, never falls back). 'judge' = the LLM judge. Lab-only; production reranker is unchanged." },
         scoresOnly: { type: 'boolean', description: 'When true, trim each hit to ids + scores (no chunk text, no variant query bodies) — the context-cheap payload for the Stage-2 A/B. Keeps expandedQuery + meta. Default false.' },
         restrictSources: { type: 'array', items: { type: 'string' }, description: "Restrict BOTH retrieval legs to source = ANY(these) — a dedicated normative-source leg (e.g. ['choosing-wisely','labq:guidelines-lvc-22jul']). A NAMED labq: source is admitted through the quarantine guard; un-named ones stay excluded. Omitted/empty ⇒ unrestricted. Lab-only." },
+        useNormativeLeg: { type: 'boolean', description: "R-11: add a THIRD vector leg restricted to the normative sources (default ['choosing-wisely']), unioned into the RRF pool so a terse normative statement earns a pool seat instead of being outranked. Off by default. This is the production leg's behaviour — measure it here before/after." },
+        normativeSources: { type: 'array', items: { type: 'string' }, description: "Source allowlist for the normative leg (default ['choosing-wisely']; the lab may name a labq:/lab: source to measure it). N_norm from env NORMATIVE_LEG_K (default 5)." },
       },
       required: ['query'],
     },
@@ -613,10 +615,16 @@ async function labRetrieve(a: Record<string, unknown>): Promise<ToolResult> {
     ? a.restrictSources.filter((x): x is string => typeof x === 'string' && x.trim().length > 0).map((x) => x.trim())
     : [];
   const restrictSources = restrictList.length ? restrictList : undefined;
+  // R-11: normative leg measurement.
+  const useNormativeLeg = a.useNormativeLeg === true;
+  const normList = Array.isArray(a.normativeSources)
+    ? a.normativeSources.filter((x): x is string => typeof x === 'string' && x.trim().length > 0).map((x) => x.trim())
+    : [];
+  const normativeSources = normList.length ? normList : undefined;
 
   try {
     if (multiQuery) {
-      const res = await retrieveMultiQuery(query, { topK, includeQuarantined, useReranker, useSourceWeights, hybrid, skipExpand, bm25Mode, rerankBackend, restrictSources });
+      const res = await retrieveMultiQuery(query, { topK, includeQuarantined, useReranker, useSourceWeights, hybrid, skipExpand, bm25Mode, rerankBackend, restrictSources, useNormativeLeg, normativeSources });
       const full = res.hits.map((h, i) => {
         // rerank_score/backend/source_quality_weight/bm25 provenance are present at runtime but off the
         // exported MultiQueryHit type (see multi-query.ts) — read them via a narrow cast.
@@ -644,12 +652,12 @@ async function labRetrieve(a: Record<string, unknown>): Promise<ToolResult> {
       });
     }
 
-    const res = await retrieve(query, { topK, includeQuarantined, useReranker, useSourceWeights, hybrid, skipExpand, withDiagnostics: true, bm25Mode, rerankBackend, restrictSources });
+    const res = await retrieve(query, { topK, includeQuarantined, useReranker, useSourceWeights, hybrid, skipExpand, withDiagnostics: true, bm25Mode, rerankBackend, restrictSources, useNormativeLeg, normativeSources });
     const full = res.hits.map((h, i) => ({
       final_rank: h.final_rank ?? i + 1,
       id: h.id, source: h.source, book: h.book, chapter: h.chapter, section: h.section, item_number: h.item_number,
       similarity: h.similarity,
-      vector_rank: h.vector_rank ?? null, bm25_rank: h.bm25_rank ?? null, bm25_variant_ranks: null, rrf_score: h.rrf_score ?? null,
+      vector_rank: h.vector_rank ?? null, bm25_rank: h.bm25_rank ?? null, bm25_variant_ranks: null, normative_rank: h.normative_rank ?? null, rrf_score: h.rrf_score ?? null,
       source_quality_weight: h.source_quality_weight ?? null, rerank_score: h.rerank_score ?? null, rerank_backend: h.rerank_backend ?? null,
       text: h.text,
     }));
@@ -672,7 +680,7 @@ export function pickScoreFields(h: Record<string, unknown>): Record<string, unkn
   return {
     final_rank: h.final_rank ?? null, id: h.id, source: h.source, book: h.book, chapter: h.chapter, item_number: h.item_number,
     similarity: h.similarity, vector_rank: h.vector_rank ?? null, bm25_rank: h.bm25_rank ?? null,
-    bm25_variant_ranks: h.bm25_variant_ranks ?? null, rrf_score: h.rrf_score ?? null,
+    bm25_variant_ranks: h.bm25_variant_ranks ?? null, normative_rank: h.normative_rank ?? null, rrf_score: h.rrf_score ?? null,
     rerank_score: h.rerank_score ?? null, rerank_backend: h.rerank_backend ?? null,
     source_quality_weight: h.source_quality_weight ?? null,
   };

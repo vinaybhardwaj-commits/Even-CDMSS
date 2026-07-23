@@ -28,6 +28,16 @@ export type RetrieveOptions = {
    *  Never set by a production caller. */
   rerankBackend?: 'bge' | 'judge';
 
+  /** R-11: opt-in NORMATIVE retrieval leg. When true, a third vector leg restricted to the
+   *  normative sources (default ['choosing-wisely'], see normativeSources) joins the RRF union,
+   *  so a terse normative statement competes for a pool seat instead of being outranked by dense
+   *  literature. OFF by default ⇒ SQL + fusion byte-identical. Enabled only on NON-scoring surfaces
+   *  (Stage 1); the audit citation path never sets it. */
+  useNormativeLeg?: boolean;
+  /** R-11: the source allowlist for the normative leg (default ['choosing-wisely']; never labq:% by
+   *  default). Bound as an array param via the shipped restrictSources shape. */
+  normativeSources?: string[];
+
   /** v1.6: multiply final score by source_quality_weight per chunk. */
   useSourceWeights?: boolean;
 
@@ -60,6 +70,7 @@ export type ChunkHitWithMeta = ChunkHit & {
   // so production result shapes are untouched. See §3.2 of the lab-retrieve-seam PRD.
   vector_rank?: number | null;   // rank in the vector leg, null if absent
   bm25_rank?: number | null;     // rank in the BM25 leg, null if absent
+  normative_rank?: number | null;// rank in the normative leg (R-11), null if absent / leg off
   rrf_score?: number;            // fused RRF score
   final_rank?: number;           // 1-based position in the returned list
 };
@@ -81,6 +92,10 @@ export type RetrieveResult = {
     bm25_mode?: 'discriminating';
     bm25_tsquery?: string;                                          // the OR-joined discriminating tsquery actually run
     bm25_terms?: { lexeme: string; df: number; kept: boolean }[];  // per-lexeme DF estimate + keep decision
+
+    // R-11 normative leg — present only when useNormativeLeg is set.
+    normative_pool?: number;         // rows the normative leg contributed to the union
+    normative_sources?: string[];    // the source allowlist actually used
   };
 };
 
@@ -280,6 +295,42 @@ export function dfEstimateSql(): string {
   return `EXPLAIN (FORMAT JSON) SELECT 1 FROM mksap_chunks WHERE text_tsv @@ to_tsquery('english', $1)`;
 }
 
+// ── normative retrieval leg (R-11) ───────────────────────────────────────────────
+/** Production-visible normative sources the leg reads by default. Quarantined labq:% is NEVER here. */
+export const DEFAULT_NORMATIVE_SOURCES = ['choosing-wisely'];
+
+/** Resolve the normative-leg source allowlist. An explicit list (lab measurement) is used as-is —
+ *  that is the "name it to include it" affordance, and it may name an activated lab: (or, for the
+ *  lab, a labq:) source. The DEFAULT is choosing-wisely plus any env-configured ACTIVATED lab:
+ *  sources, with labq:% stripped so quarantined content is never served by default. Pure. */
+export function resolveNormativeSources(explicit: string[] | undefined, env: string | undefined): string[] {
+  const clean = (arr: string[]) => arr.filter((s): s is string => typeof s === 'string' && s.trim().length > 0).map((s) => s.trim());
+  if (explicit && clean(explicit).length) return clean(explicit);
+  const envSrcs = clean((env ?? '').split(',')).filter((s) => !s.startsWith('labq:'));   // never quarantined by default
+  return [...DEFAULT_NORMATIVE_SOURCES, ...envSrcs];
+}
+
+/** N_norm — how many normative candidates the leg contributes. From env NORMATIVE_LEG_K, default 5. Pure. */
+export function normativeLegK(rawEnv: string | undefined): number {
+  const n = Number(rawEnv);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 5;
+}
+
+/** The normative leg SQL — the SAME vector query as the main leg, filtered to the normative sources
+ *  (via the shipped source = ANY($n) shape) and capped at N_norm. $1 = vlit, $2 = minSim, $3+ = the
+ *  bound source array. INFERRED, reported verbatim for validation. Pure. */
+export function normativeVectorSql(embCol: string, normFilterSQL: string, limit: number): string {
+  return `
+    SELECT id, ROW_NUMBER() OVER (ORDER BY ${embCol} <=> $1::vector) AS rank
+    FROM mksap_chunks
+    WHERE 1 - (${embCol} <=> $1::vector) > $2
+      AND ${embCol} IS NOT NULL
+      AND ${normFilterSQL}
+    ORDER BY ${embCol} <=> $1::vector
+    LIMIT ${limit}
+  `;
+}
+
 export type Bm25DiscriminatingPlan = {
   tsquery: string;                                           // OR-joined kept lexemes ('' ⇒ no leg)
   terms: { lexeme: string; df: number; kept: boolean }[];    // per-lexeme DF estimate + keep decision
@@ -389,11 +440,28 @@ export async function retrieve(query: string, opts: RetrieveOptions = {}): Promi
     bm25Params = [bm25Query, ...filterParams];
   }
 
+  // ---- Normative leg (R-11) — dormant, opt-in; the SAME vector query restricted to the normative
+  // sources, LIMIT N_norm, unioned into the RRF pool. OFF ⇒ no query emitted, fusion byte-identical.
+  const useNormativeLeg = opts.useNormativeLeg === true;
+  let normSQL = '';
+  let normParamsFull: unknown[] = [];
+  let normativeSources: string[] = [];
+  if (useNormativeLeg) {
+    normativeSources = resolveNormativeSources(opts.normativeSources, process.env.NORMATIVE_LEG_SOURCES);
+    const nNorm = normativeLegK(process.env.NORMATIVE_LEG_K);
+    // Reuse the shipped restrictSources → source = ANY($n) filter (do NOT invent a new one).
+    const { clauses: normClauses, params: normFilterParams } = buildFilterClauses({ restrictSources: normativeSources });
+    normSQL = normativeVectorSql(embCol, renderFilterSql(normClauses, 3), nNorm);
+    normParamsFull = [vlit, minSim, ...normFilterParams];
+  }
+
   type RankRow = { id: number; rank: number };
   const sqlFn = sql as unknown as (q: string, p: unknown[]) => Promise<RankRow[]>;
-  const [vecRows, bm25Rows] = await Promise.all([
+  const [vecRows, bm25Rows, normRows] = await Promise.all([
     sqlFn(vecSQL, vecParams).catch(() => [] as RankRow[]),
     (hybrid && bm25Enabled) ? sqlFn(bm25SQL, bm25Params).catch(() => [] as RankRow[]) : Promise.resolve([] as RankRow[]),
+    // Fail-safe: a normative-leg error degrades to no added rows; it never throws and never blocks the others.
+    useNormativeLeg ? sqlFn(normSQL, normParamsFull).catch(() => [] as RankRow[]) : Promise.resolve([] as RankRow[]),
   ]);
 
   // ---- RRF fusion ----
@@ -401,8 +469,11 @@ export async function retrieve(query: string, opts: RetrieveOptions = {}): Promi
   // Per-leg ranks — captured here so the lab path (§3.2) can expose them without a second pass.
   const vecRankById = new Map<number, number>();
   const bm25RankById = new Map<number, number>();
+  const normRankById = new Map<number, number>();
   for (const r of vecRows) { score.set(r.id, (score.get(r.id) ?? 0) + 1 / (RRF_K + Number(r.rank))); vecRankById.set(r.id, Number(r.rank)); }
   for (const r of bm25Rows) { score.set(r.id, (score.get(r.id) ?? 0) + 1 / (RRF_K + Number(r.rank))); bm25RankById.set(r.id, Number(r.rank)); }
+  // Normative leg unions into the SAME RRF pool. Empty when off ⇒ this loop is a no-op ⇒ byte-identical fusion.
+  for (const r of normRows) { score.set(r.id, (score.get(r.id) ?? 0) + 1 / (RRF_K + Number(r.rank))); normRankById.set(r.id, Number(r.rank)); }
 
   // When reranker is on we hand it a wider pool (top K*3, capped at 30).
   // When off we trim to topK directly here.
@@ -418,6 +489,7 @@ export async function retrieve(query: string, opts: RetrieveOptions = {}): Promi
       bm25_query: bm25Query, pool_size: 0, reranked: false, source_weighted: false,
       embedding_column: embCol as 'embedding' | 'embedding_v2',
       ...(bm25Disc ? { bm25_mode: 'discriminating' as const, bm25_tsquery: bm25Disc.tsquery, bm25_terms: bm25Disc.terms } : {}),
+      ...(useNormativeLeg ? { normative_pool: normRows.length, normative_sources: normativeSources } : {}),
     } };
   }
 
@@ -490,6 +562,7 @@ export async function retrieve(query: string, opts: RetrieveOptions = {}): Promi
       ...h,
       vector_rank: vecRankById.has(h.id) ? (vecRankById.get(h.id) as number) : null,
       bm25_rank: bm25RankById.has(h.id) ? (bm25RankById.get(h.id) as number) : null,
+      normative_rank: normRankById.has(h.id) ? (normRankById.get(h.id) as number) : null,
       rrf_score: score.get(h.id) ?? 0,
       final_rank: i + 1,
     }));
@@ -508,6 +581,7 @@ export async function retrieve(query: string, opts: RetrieveOptions = {}): Promi
       source_weighted: useSourceWeights,
       embedding_column: embCol as 'embedding' | 'embedding_v2',
       ...(bm25Disc ? { bm25_mode: 'discriminating' as const, bm25_tsquery: bm25Disc.tsquery, bm25_terms: bm25Disc.terms } : {}),
+      ...(useNormativeLeg ? { normative_pool: normRows.length, normative_sources: normativeSources } : {}),
     },
   };
 }

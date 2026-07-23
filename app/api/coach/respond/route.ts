@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
     try {
       const useMultiQuery = body.multiQuery !== false;
       const retrievePromise = useMultiQuery
-        ? retrieveMultiQuery(retrievalQuery, { topK: 6, minSimilarity: 0.3, bm25Query: sess.topic })
+        ? retrieveMultiQuery(retrievalQuery, { topK: 6, minSimilarity: 0.3, bm25Query: sess.topic, useNormativeLeg: true })
         : retrieve(retrievalQuery, { topK: 6, minSimilarity: 0.3, bm25Query: sess.topic }).then((r) => ({ hits: r.hits }));
       const [r, p] = await Promise.all([
         retrievePromise,

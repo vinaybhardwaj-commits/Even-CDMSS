@@ -153,6 +153,7 @@ export async function POST(req: NextRequest) {
         topK: 8,
         useReranker,
         useSourceWeights,
+        useNormativeLeg: true,   // R-11 Stage 1: non-scoring surface — normative statements earn a pool seat
         ...(useEmbeddingV2 !== undefined ? { useEmbeddingV2 } : {}),
       };
       const retrievalPromise = useMultiQuery
