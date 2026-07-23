@@ -445,13 +445,17 @@ function opdCompletenessObstetric(c: DeidOpdCase): OpdCompleteness {
   const dosingComplete = hasMeds && c.medications.every((m) => obstetricDosingComplete(m));
   const secondOrThird = o.trimester === 2 || o.trimester === 3;
   const fetalOk = secondOrThird ? (o.sfhDocumented || o.fhrDocumented || o.presentationDocumented) : true;
-  const vitalsOk = bpDocumented(c) && o.weightDocumented && fetalOk;
+  // §11 / decision 3-bis: db13 obstetric rows carry NO structured BP (0/45 live), so BP is credited when
+  // it appears in the narrative but is NEVER mandatory/failing. Maternal weight is the always-required
+  // obstetric vital; fetal params stay trimester-conditional (T2/3 ⇒ ≥1 of SFH/FHR/presentation).
+  const bp = bpDocumented(c);
+  const vitalsOk = o.weightDocumented && fetalOk;
   const items: OpdCompletenessItem[] = [
     { key: 'ga_pog', label: 'Gestational age / POG', present: o.gaDocumented, mandatory: true },
     { key: 'lmp_edd', label: 'LMP and/or EDD', present: o.lmpOrEddDocumented, mandatory: true },
     { key: 'gravidity_parity', label: 'Gravidity & parity', present: o.gravidityParityDocumented, mandatory: true },
     { key: 'presenting_complaint', label: 'Presenting complaint / symptoms', present: c.presentingComplaints.length > 0 || !!c.reasonForConsult, mandatory: true },
-    { key: 'obstetric_vitals', label: `Obstetric exam / vitals (BP + weight${secondOrThird ? ' + fetal SFH/FHR/presentation' : ''})`, present: vitalsOk, mandatory: true },
+    { key: 'obstetric_vitals', label: `Obstetric exam / vitals (weight${secondOrThird ? ' + fetal SFH/FHR/presentation' : ''}${bp ? ' · BP recorded' : ''})`, present: vitalsOk, mandatory: true },
     { key: 'medication_dosing', label: 'Complete medication dosing', present: hasMeds ? dosingComplete : true, mandatory: true },
     { key: 'investigations', label: 'Investigations ordered/reviewed or nil', present: c.investigations.length > 0, mandatory: true },
     { key: 'follow_up', label: 'Follow-up specified', present: followUpDocumented(c), mandatory: true },

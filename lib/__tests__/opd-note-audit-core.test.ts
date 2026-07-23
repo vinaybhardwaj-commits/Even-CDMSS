@@ -727,8 +727,26 @@ test('obstetric mandatory set: SFH/FHR/presentation required only in the 2nd/3rd
   assert.equal(t3.items.find((i) => i.key === 'obstetric_vitals')!.present, false, 'T3 with no fetal params ⇒ vitals gap');
   assert.match(t3.items.find((i) => i.key === 'obstetric_vitals')!.label, /fetal/);
   const t1 = opdCompleteness(obsCase({ obstetric: { ...noFetal, trimester: 1 } }));
-  assert.equal(t1.items.find((i) => i.key === 'obstetric_vitals')!.present, true, 'T1 with BP+weight ⇒ vitals met (fetal not required)');
+  assert.equal(t1.items.find((i) => i.key === 'obstetric_vitals')!.present, true, 'T1 with weight ⇒ vitals met (fetal not required)');
   assert.ok(!/fetal/.test(t1.items.find((i) => i.key === 'obstetric_vitals')!.label));
+});
+
+// §11 / decision 3-bis: BP is absent from every db13 obstetric row, so it must NEVER fail the note;
+// maternal weight is the always-required obstetric vital.
+test('obstetric vitals: BP never mandatory (credited if present); weight is the required vital', () => {
+  const meta = { trimester: 1, gaDocumented: true, lmpOrEddDocumented: true, gravidityParityDocumented: true, weightDocumented: true, sfhDocumented: false, fhrDocumented: false, presentationDocumented: false };
+  // NO BP anywhere in the narrative, weight documented ⇒ vitals still MET (the fairness fix)
+  const noBp = opdCompleteness(obsCase({ examination: ['Weight 62 kg'], presentingComplaints: ['amenorrhoea'], history: [], obstetric: meta }));
+  const vNoBp = noBp.items.find((i) => i.key === 'obstetric_vitals')!;
+  assert.equal(vNoBp.present, true, 'BP absent does not fail the vitals item');
+  assert.ok(!/BP recorded/.test(vNoBp.label), 'no BP credit when BP absent');
+  assert.ok(!noBp.missing.includes(vNoBp.label));
+  // BP present ⇒ credited in the label but still not required
+  const withBp = opdCompleteness(obsCase({ examination: ['BP 110/70 mmHg', 'Weight 62 kg'], presentingComplaints: ['amenorrhoea'], history: [], obstetric: meta }));
+  assert.match(withBp.items.find((i) => i.key === 'obstetric_vitals')!.label, /BP recorded/);
+  // weight ABSENT ⇒ vitals FAIL even with BP present (weight is the required obstetric vital)
+  const noWeight = opdCompleteness(obsCase({ examination: ['BP 110/70 mmHg'], presentingComplaints: ['amenorrhoea'], history: [], obstetric: { ...meta, weightDocumented: false } }));
+  assert.equal(noWeight.items.find((i) => i.key === 'obstetric_vitals')!.present, false, 'no maternal weight ⇒ vitals gap');
 });
 
 test('obstetric mandatory set: rich note near-complete; follow-up scored in Continuity not Documentation', () => {
