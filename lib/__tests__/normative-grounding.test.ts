@@ -127,6 +127,59 @@ test('groundFinding grounds nothing on cross-category CW / below-τ guideline, a
   assert.deepEqual(soft.citations, []);
 });
 
+// ── selection controls (legs / categories / tau) — must NOT change the match/gate math ──
+// a retrieveFn where BOTH legs would pass by default (antibiotic finding), recording which legs it ran
+const bothPass = (seen: string[]) => (async (_q: string, opts: RetrieveOptions) => {
+  if (opts.source === 'choosing-wisely') { seen.push('cw'); return asResult([cwHit('cwus-aafp-002', 0.86)]); }
+  seen.push('guideline'); return asResult([glHit(0.79)]);
+}) as never;
+const antibioticF = { subject: 'Antibiotic for viral URI', rationale: 'no bacterial indication', lvc_category: 'antibiotic', verdict: 'low-value' };
+
+test('--legs cw runs ONLY the CW leg (guideline omitted, guideline retrieve not even called)', async () => {
+  const seen: string[] = [];
+  const g = await groundFinding(antibioticF, { retrieveFn: bothPass(seen) }, { legs: 'cw' });
+  assert.equal(g.cw?.item_number, 'cwus-aafp-002');
+  assert.equal(g.guideline, null, 'no guideline citation');
+  assert.deepEqual(seen, ['cw'], 'the guideline retrieve was not invoked');
+});
+
+test('--legs guideline runs ONLY the guideline leg (CW omitted)', async () => {
+  const seen: string[] = [];
+  const g = await groundFinding(antibioticF, { retrieveFn: bothPass(seen) }, { legs: 'guideline' });
+  assert.equal(g.cw, null, 'no CW citation');
+  assert.equal(g.guideline?.source, 'lab:guidelines-icmr-amr-2019');
+  assert.deepEqual(seen, ['guideline']);
+});
+
+test('--categories filters eligibility: a finding whose lvc_category is not listed grounds nothing', async () => {
+  const seen: string[] = [];
+  // finding is antibiotic but categories = [imaging] ⇒ skipped entirely (no retrieve at all)
+  const g = await groundFinding(antibioticF, { retrieveFn: bothPass(seen) }, { categories: ['imaging'] });
+  assert.deepEqual(g.citations, []);
+  assert.deepEqual(seen, [], 'ineligible category ⇒ no retrieve invoked');
+  // listed category ⇒ grounds normally
+  const g2 = await groundFinding(antibioticF, { retrieveFn: bothPass([]) }, { categories: ['antibiotic', 'imaging'] });
+  assert.equal(g2.citations.length, 2);
+});
+
+test('--tau raises/lowers acceptance (same match math, different threshold)', async () => {
+  const rf = (async (_q: string, opts: RetrieveOptions) => asResult(opts.source === 'choosing-wisely' ? [cwHit('cwus-aafp-002', 0.72)] : [glHit(0.72)])) as never;
+  const loose = await groundFinding(antibioticF, { retrieveFn: rf }, { tau: 0.70 });
+  assert.equal(loose.citations.length, 2, '0.72 ≥ 0.70 ⇒ both accepted');
+  const strict = await groundFinding(antibioticF, { retrieveFn: rf }, { tau: 0.80 });
+  assert.deepEqual(strict.citations, [], '0.72 < 0.80 ⇒ both rejected');
+});
+
+test('DEFAULT options reproduce today\'s behaviour byte-identically (regression guard)', async () => {
+  const rf = () => (async (_q: string, opts: RetrieveOptions) => asResult(opts.source === 'choosing-wisely' ? [cwHit('cwus-aafp-002', 0.86)] : [glHit(0.79)])) as never;
+  const bare = await groundFinding(antibioticF, { retrieveFn: rf() });                                   // no options arg
+  const empty = await groundFinding(antibioticF, { retrieveFn: rf() }, {});                              // {} options
+  const explicit = await groundFinding(antibioticF, { retrieveFn: rf() }, { legs: 'both', tau: NORMATIVE_TAU, categories: undefined });
+  assert.deepEqual(bare, empty);
+  assert.deepEqual(bare, explicit);
+  assert.equal(bare.citations.length, 2);
+});
+
 // ── map integrity ──
 test('CW category map: every id maps to a known lvc_category; the strong categories are covered', () => {
   assert.ok(CW_STATEMENTS.length >= 44, `expected ~55 statements, got ${CW_STATEMENTS.length}`);
