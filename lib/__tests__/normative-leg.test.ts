@@ -11,14 +11,17 @@ import {
 import type { RetrieveResult } from '../retrieve.ts';
 
 // ── Test 3 — default normativeSources = ['choosing-wisely']; labq:% never included by default ──
-test('resolveNormativeSources defaults to choosing-wisely and never includes labq:% by default', () => {
-  assert.deepEqual(resolveNormativeSources(undefined, undefined), ['choosing-wisely']);
-  assert.deepEqual(DEFAULT_NORMATIVE_SOURCES, ['choosing-wisely']);
+test('resolveNormativeSources defaults to choosing-wisely + the two activated guideline keys; never labq:% by default', () => {
+  // default now includes the Even/ICMR activated (lab:) keys — inert until activation (23 Jul allowlist)
+  const DEF = ['choosing-wisely', 'lab:guidelines-even-protocols', 'lab:guidelines-icmr-amr-2019'];
+  assert.deepEqual(resolveNormativeSources(undefined, undefined), DEF);
+  assert.deepEqual(DEFAULT_NORMATIVE_SOURCES, DEF);
+  assert.equal(DEFAULT_NORMATIVE_SOURCES[0], 'choosing-wisely', 'choosing-wisely stays first, unchanged');
   // env may add ACTIVATED lab: sources, but quarantined labq: is stripped
-  assert.deepEqual(resolveNormativeSources(undefined, 'lab:guidelines-hf, labq:secret-batch'), ['choosing-wisely', 'lab:guidelines-hf']);
+  assert.deepEqual(resolveNormativeSources(undefined, 'lab:guidelines-hf, labq:secret-batch'), [...DEF, 'lab:guidelines-hf']);
   // an EXPLICIT list (lab measurement) is honoured as-is — the "name it to include it" affordance
   assert.deepEqual(resolveNormativeSources(['labq:guidelines-lvc-22jul'], undefined), ['labq:guidelines-lvc-22jul']);
-  assert.deepEqual(resolveNormativeSources([], 'lab:x'), ['choosing-wisely', 'lab:x']);   // empty explicit ⇒ default+env
+  assert.deepEqual(resolveNormativeSources([], 'lab:x'), [...DEF, 'lab:x']);   // empty explicit ⇒ default+env
 });
 
 // ── Test 6 — N_norm reads env, defaults 5 ──

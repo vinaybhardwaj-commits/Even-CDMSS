@@ -47,7 +47,7 @@ test('normativeChannelOpts: standalone CW-only search — restrictSources, topK 
   const opts = normativeChannelOpts({});
   assert.equal(opts.topK, NORMATIVE_CHANNEL_K);
   assert.equal(NORMATIVE_CHANNEL_K, 4);
-  assert.deepEqual(opts.restrictSources, ['choosing-wisely']);
+  assert.deepEqual(opts.restrictSources, ['choosing-wisely', 'lab:guidelines-even-protocols', 'lab:guidelines-icmr-amr-2019']);
   assert.ok(!('useNormativeLeg' in opts), 'the channel is NOT the leg — no union flag');
   assert.equal(opts.useReranker, false);
   assert.equal(opts.skipExpand, true);

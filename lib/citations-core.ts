@@ -80,10 +80,21 @@ export function hitsToSources(hits: CiteHit[], cap = 8): Source[] {
   }));
 }
 
-/** Short human label for a source chip / list row. */
-export function sourceLabel(s: Pick<Source, 'book' | 'chapter' | 'page_start' | 'item_number' | 'url'>): string {
+/** Per-source display-name overrides for the citation chip / list. Absent ⇒ the chunk's `book` is
+ *  used (the default, book-driven mechanism — unchanged for every other source). Keyed on the
+ *  ACTIVATED source key (lab:…); while a source is quarantined (labq:…) NO chunk carries the lab: key,
+ *  so these entries are completely inert until corpus_manage activate flips labq:→lab:. */
+export const SOURCE_DISPLAY_LABELS: Record<string, string> = {
+  'lab:guidelines-even-protocols': 'Even Guidelines',
+  'lab:guidelines-icmr-amr-2019': 'ICMR Guidelines',
+};
+
+/** Short human label for a source chip / list row. A source-keyed display override wins; otherwise
+ *  the label leads with `book` exactly as before (fail-safe: unknown/absent source ⇒ book). */
+export function sourceLabel(s: Pick<Source, 'source' | 'book' | 'chapter' | 'page_start' | 'item_number' | 'url'>): string {
+  const display = SOURCE_DISPLAY_LABELS[String(s.source ?? '').trim()] ?? s.book;
   return [
-    s.book,
+    display,
     s.chapter || '',
     s.page_start != null ? `p.${s.page_start}` : '',
     s.item_number && !s.url ? `#${s.item_number}` : '',     // show item id only when it isn't already a link

@@ -297,7 +297,10 @@ export function dfEstimateSql(): string {
 
 // ── normative retrieval leg (R-11) ───────────────────────────────────────────────
 /** Production-visible normative sources the leg reads by default. Quarantined labq:% is NEVER here. */
-export const DEFAULT_NORMATIVE_SOURCES = ['choosing-wisely'];
+// The two guideline sources use their ACTIVATED (lab:) keys. While they remain quarantined (labq:…)
+// these keys match ZERO rows, so the leg's `source = ANY(...)` returns exactly the choosing-wisely
+// set — byte-identical to before. They go live only when V runs corpus_manage activate (labq:→lab:).
+export const DEFAULT_NORMATIVE_SOURCES = ['choosing-wisely', 'lab:guidelines-even-protocols', 'lab:guidelines-icmr-amr-2019'];
 
 /** Resolve the normative-leg source allowlist. An explicit list (lab measurement) is used as-is —
  *  that is the "name it to include it" affordance, and it may name an activated lab: (or, for the
