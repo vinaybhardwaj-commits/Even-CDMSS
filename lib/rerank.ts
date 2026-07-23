@@ -1,34 +1,40 @@
 /**
- * v1.6 P3: Cross-encoder reranker bridge.
+ * v1.6 P3 (R-10 hardened): Cross-encoder reranker bridge.
  *
- * Reorders a candidate pool by query-document relevance using a stronger
- * scoring model than bi-encoder similarity. Typical impact: top-8 quality
- * lifts dramatically because the cross-encoder sees query + doc together
- * rather than projecting them into independent vectors first.
+ * Reorders a candidate pool by query-document relevance using a stronger scoring model than
+ * bi-encoder similarity. Two backends, picked by RERANK_BACKEND env (default 'judge'):
+ *   'judge'  : LLM-as-judge (llama3.1:8b), a strict 0-10 rubric, batched, via the GOVERNED layer.
+ *              Works out of the box; the production default.
+ *   'cohere' : OpenRouter Cohere rerank-v3.5 — a real deterministic cross-encoder. Reachable only via
+ *              an explicit rerankBackend:'cohere' call (lab) or a future env flip. relevance_score is
+ *              already [0,1] (NOT sigmoided). An explicit request is STRICT: the backend is health-
+ *              probed for DISCRIMINATION first, and any failure throws a typed error — never a silent
+ *              fallback (the dead ollama cross-encoder ruler's silent-no-op is exactly what this replaces).
  *
- * Two backends, picked by RERANK_BACKEND env:
- *   'bge'    : Native cross-encoder (bge-reranker-v2-m3) via Ollama's
- *              REST /api/embeddings endpoint, which the bge-reranker
- *              community models on Ollama use for a query+passage logit.
- *              FASTER (~50ms/pair) but requires `ollama pull` for the
- *              model on the Mac Mini.
- *   'judge'  : LLM-as-judge using llama3.1:8b with a strict 0-10 scoring
- *              prompt, batched. Works out of the box (model already
- *              loaded), but slower (~200-400ms per batch of 5).
- *
- * Default backend = 'judge' (zero-extra-install), override via env.
- *
- * Soft-fail: if rerank breaks for any reason, returns the input order
- * unchanged. Never blocks retrieval.
+ * Soft-fail: a GENERIC error on the default path returns input order unchanged (never blocks
+ * retrieval). A TYPED RerankBackendError always propagates — thrown, never swallowed.
  */
 import { geminiUtilityModel } from './llm';
 import { governedChat } from './trace';
 
-const BACKEND = (process.env.RERANK_BACKEND || 'judge') as 'bge' | 'judge';
-const BGE_MODEL = process.env.RERANK_MODEL || 'bge-reranker-v2-m3';
+const BACKEND = (process.env.RERANK_BACKEND || 'judge') as 'judge' | 'cohere';
 const JUDGE_MODEL = process.env.RERANK_JUDGE_MODEL || 'llama3.1:8b';
 const JUDGE_BATCH = 5;  // 5 candidates per LLM call
 const MAX_SNIPPET_CHARS = 600;
+
+// Cohere rerank-api backend (OpenRouter). No new npm dep — raw fetch (D3: not a governed-chat site).
+const RERANK_API_MODEL = process.env.RERANK_API_MODEL || 'cohere/rerank-v3.5';
+const RERANK_API_URL = process.env.RERANK_API_URL || 'https://openrouter.ai/api/v1/rerank';
+
+// Discrimination thresholds on the backend's normalized [0,1] score (D7; env-tunable).
+export const RERANK_HEALTH_MIN_REL = Number(process.env.RERANK_HEALTH_MIN_REL) || 0.40;
+export const RERANK_HEALTH_MIN_MARGIN = Number(process.env.RERANK_HEALTH_MIN_MARGIN) || 0.15;
+const RERANK_HEALTH_TTL_MS = 10 * 60 * 1000;   // D6: first-use, memoized per (backend,model), 10-min TTL
+
+// Canonical probe fixtures (D4/§2.2).
+export const PROBE_QUERY = 'lumbar imaging for acute low back pain';
+export const PROBE_RELEVANT = 'Routine lumbar imaging is not recommended for acute nonspecific low back pain without red flags.';
+export const PROBE_IRRELEVANT = 'Montelukast is a leukotriene receptor antagonist used for asthma and allergic rhinitis.';
 
 export type RerankCandidate = {
   id: number | string;
@@ -39,50 +45,111 @@ export type RerankCandidate = {
 
 export type RerankResult<T extends RerankCandidate> = T & {
   rerank_score: number;        // higher = more relevant
-  rerank_backend: 'bge' | 'judge' | 'none';
+  rerank_backend: 'judge' | 'cohere' | 'none';
 };
 
-/** Thrown when a caller EXPLICITLY requests the `bge` backend (the deterministic ruler) but the
- *  cross-encoder model is not pulled on the mini. D3 of the BM25-A/B build: fail LOUD rather than
- *  silently fall back to the non-deterministic judge, which would corrupt the pre-registered metric. */
-export class RerankBackendUnavailableError extends Error {
-  constructor(model: string) {
-    super(`rerank backend 'bge' unavailable: model '${model}' is not pulled on the mini — pull it before using rerankBackend:'bge'; there is NO fallback (a judge fallback would reintroduce the non-determinism the bge ruler exists to remove)`);
-    this.name = 'RerankBackendUnavailableError';
-  }
+/* ─────────────────────────────  error taxonomy (§2.1)  ───────────────────────────── */
+/** Base for the three typed rerank-backend failures. Caught as a family by callers (mcp-tools);
+ *  always thrown, never swallowed, never a silent fallback (preserves the D3 discipline). */
+export class RerankBackendError extends Error {}
+/** Network error / no base URL / no API key. */
+export class RerankBackendUnreachable extends RerankBackendError {
+  constructor(backend: string, model: string, why: string) { super(`rerank backend '${backend}' unreachable (${model}): ${why}`); this.name = 'RerankBackendUnreachable'; }
+}
+/** Endpoint or model absent (e.g. 404). */
+export class RerankBackendMissing extends RerankBackendError {
+  constructor(backend: string, model: string, why: string) { super(`rerank backend '${backend}' missing (${model}): ${why}`); this.name = 'RerankBackendMissing'; }
+}
+/** Reachable but fails the discrimination probe (returns a number but does not rank). */
+export class RerankBackendUnhealthy extends RerankBackendError {
+  constructor(backend: string, model: string, why: string) { super(`rerank backend '${backend}' failed the discrimination probe (${model}): ${why}`); this.name = 'RerankBackendUnhealthy'; }
 }
 
 /** Resolve the effective backend for a call: an explicit per-call override wins, else the env default.
  *  Pure — this IS the routing decision. */
-export function resolveRerankBackend(backend: 'bge' | 'judge' | undefined, envBackend: 'bge' | 'judge' = BACKEND): 'bge' | 'judge' {
+export function resolveRerankBackend(backend: 'judge' | 'cohere' | undefined, envBackend: 'judge' | 'cohere' = BACKEND): 'judge' | 'cohere' {
   return backend ?? envBackend;
 }
 
-/** Probe whether the bge model is pulled on the mini (Ollama /api/show → 200 present, 404 absent).
- *  Throws RerankBackendUnavailableError on absent / unreachable / no-base. `fetchImpl` is injectable for tests. */
-export async function assertBgeAvailable(
-  baseUrl: string | undefined = process.env.OLLAMA_BASE_URL,
-  fetchImpl: typeof fetch = fetch,
-): Promise<void> {
-  if (!baseUrl) throw new RerankBackendUnavailableError(BGE_MODEL);
+/* ─────────────────────────────  Cohere rerank-api backend (§3.1)  ───────────────────────────── */
+
+/** One OpenRouter Cohere /rerank call → relevance scores index-aligned to `documents`. Throws the
+ *  typed errors on unreachable/missing (never soft-fails to 0). Shared by rerankCohere + the probe.
+ *  Request:  { model, query, documents: [<text…>] }
+ *  Response: { results: [{ index, relevance_score∈[0,1] }], usage } — mapped back by index. */
+async function cohereRelevanceScores(query: string, documents: string[], fetchImpl: typeof fetch = fetch): Promise<number[]> {
+  const key = process.env.OPENROUTER_API_KEY;
+  if (!key) throw new RerankBackendUnreachable('cohere', RERANK_API_MODEL, 'OPENROUTER_API_KEY not set');
   let res: Response;
   try {
-    res = await fetchImpl(`${baseUrl}/api/show`, {
+    res = await fetchImpl(RERANK_API_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: BGE_MODEL }),
-      signal: AbortSignal.timeout(5000),
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify({ model: RERANK_API_MODEL, query, documents: documents.map((d) => String(d ?? '').slice(0, MAX_SNIPPET_CHARS)) }),
+      signal: AbortSignal.timeout(10000),
     });
-  } catch {
-    throw new RerankBackendUnavailableError(BGE_MODEL);   // unreachable / timeout ⇒ unavailable
+  } catch (e) {
+    throw new RerankBackendUnreachable('cohere', RERANK_API_MODEL, String((e as Error).message).slice(0, 140));
   }
-  if (!res.ok) throw new RerankBackendUnavailableError(BGE_MODEL);   // 404 ⇒ not pulled
+  if (res.status === 404) throw new RerankBackendMissing('cohere', RERANK_API_MODEL, 'endpoint or model 404');
+  if (!res.ok) throw new RerankBackendUnreachable('cohere', RERANK_API_MODEL, `HTTP ${res.status}`);
+  let j: { results?: { index: number; relevance_score: number }[] };
+  try { j = await res.json() as typeof j; }
+  catch (e) { throw new RerankBackendUnreachable('cohere', RERANK_API_MODEL, `bad JSON: ${String((e as Error).message).slice(0, 80)}`); }
+  const scores = new Array(documents.length).fill(Number.NaN);
+  for (const r of j.results ?? []) {
+    if (typeof r?.index === 'number' && r.index >= 0 && r.index < documents.length) scores[r.index] = r.relevance_score;
+  }
+  return scores;
 }
+
+export async function rerankCohere<T extends RerankCandidate>(query: string, candidates: T[], fetchImpl: typeof fetch = fetch): Promise<RerankResult<T>[]> {
+  const scores = await cohereRelevanceScores(query, candidates.map((c) => c.text || ''), fetchImpl);
+  const paired = candidates.map((c, i) => ({
+    ...c,
+    rerank_score: Number.isFinite(scores[i]) ? scores[i] : 0,   // relevance_score used directly — NO sigmoid
+    rerank_backend: 'cohere' as const,
+  }));
+  paired.sort((a, b) => b.rerank_score - a.rerank_score);
+  return paired;
+}
+
+/* ─────────────────────────────  functional health probe (§2.2)  ───────────────────────────── */
+
+const healthCache = new Map<string, number>();   // key `${backend}:${model}` → last-pass epoch ms
+/** Test-only: clear the memoized health results. */
+export function _resetRerankHealth(): void { healthCache.clear(); }
+
+/**
+ * Assert the backend DISCRIMINATES (not just that a number came back): score the canonical
+ * (relevant, irrelevant) pair via the backend's own path and require rel ≥ MIN_REL AND
+ * rel − irr ≥ MIN_MARGIN (D7). Memoized per (backend, model) for 10 min; a thrown result is not
+ * cached, so it re-probes next time. Injectable fetchImpl + clock for tests.
+ */
+export async function assertRerankBackendHealthy(
+  backend: 'cohere',
+  opts: { fetchImpl?: typeof fetch; now?: () => number } = {},
+): Promise<void> {
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const now = opts.now ?? Date.now;
+  const model = RERANK_API_MODEL;
+  const cacheKey = `${backend}:${model}`;
+  const last = healthCache.get(cacheKey);
+  if (last != null && now() - last < RERANK_HEALTH_TTL_MS) return;   // memoized within TTL
+
+  const [rel, irr] = await cohereRelevanceScores(PROBE_QUERY, [PROBE_RELEVANT, PROBE_IRRELEVANT], fetchImpl);
+  if (!Number.isFinite(rel) || !Number.isFinite(irr)) throw new RerankBackendUnhealthy(backend, model, `non-finite probe scores (rel=${rel}, irr=${irr})`);
+  if (!(rel >= RERANK_HEALTH_MIN_REL)) throw new RerankBackendUnhealthy(backend, model, `rel ${rel} < min ${RERANK_HEALTH_MIN_REL}`);
+  if (!(rel - irr >= RERANK_HEALTH_MIN_MARGIN)) throw new RerankBackendUnhealthy(backend, model, `margin ${(rel - irr).toFixed(3)} < min ${RERANK_HEALTH_MIN_MARGIN}`);
+  healthCache.set(cacheKey, now());
+}
+
+/* ─────────────────────────────  dispatch (§3.2)  ───────────────────────────── */
 
 /** Injectable collaborators — for tests ONLY. Production/real callers pass nothing. */
 export type RerankDeps = {
-  checkBgeAvailable?: () => Promise<void>;
-  bgeFn?: <U extends RerankCandidate>(q: string, c: U[]) => Promise<RerankResult<U>[]>;
+  checkHealthy?: (backend: 'cohere', opts?: { fetchImpl?: typeof fetch; now?: () => number }) => Promise<void>;
+  cohereFn?: <U extends RerankCandidate>(q: string, c: U[]) => Promise<RerankResult<U>[]>;
   judgeFn?: <U extends RerankCandidate>(q: string, c: U[]) => Promise<RerankResult<U>[]>;
 };
 
@@ -90,15 +157,15 @@ export type RerankDeps = {
  * Rerank candidates against the query. Returns a NEW array sorted by rerank_score descending.
  * Input array is not mutated.
  *
- * `backend` (optional) overrides the env-driven default for THIS call only — no behaviour change
- * unless a caller passes it. When `backend === 'bge'` is EXPLICITLY requested, the model's presence
- * is preflighted and a RerankBackendUnavailableError propagates if it is absent (D3, never a silent
- * judge fallback). Transient failures still soft-fall-back to input order, as before.
+ * `backend` (optional) overrides the env default for THIS call only — no behaviour change unless a
+ * caller passes it. An EXPLICIT 'cohere' request is STRICT: the backend is health-probed first, and a
+ * typed RerankBackendError propagates on any failure (never a silent judge/input-order fallback).
+ * Only GENERIC (non-typed) errors soft-fall to input order.
  */
 export async function rerank<T extends RerankCandidate>(
   query: string,
   candidates: T[],
-  backend?: 'bge' | 'judge',
+  backend?: 'judge' | 'cohere',
   deps: RerankDeps = {},
 ): Promise<RerankResult<T>[]> {
   if (candidates.length === 0) return [];
@@ -108,19 +175,19 @@ export async function rerank<T extends RerankCandidate>(
   }
 
   const chosen = resolveRerankBackend(backend);
-  const strict = backend === 'bge';   // only an EXPLICIT bge request fails loud on unavailability
-  const bgeFn = deps.bgeFn ?? rerankBge;
+  const strict = backend === 'cohere';   // only an EXPLICIT cohere request fails loud on unhealth
+  const cohereFn = deps.cohereFn ?? rerankCohere;
   const judgeFn = deps.judgeFn ?? rerankJudge;
-  const checkBge = deps.checkBgeAvailable ?? assertBgeAvailable;
+  const checkHealthy = deps.checkHealthy ?? assertRerankBackendHealthy;
 
   try {
-    if (chosen === 'bge') {
-      if (strict) await checkBge();
-      return await bgeFn(query, candidates);
+    if (chosen === 'cohere') {
+      if (strict) await checkHealthy('cohere');
+      return await cohereFn(query, candidates);
     }
     return await judgeFn(query, candidates);
   } catch (e) {
-    if (e instanceof RerankBackendUnavailableError) throw e;   // D3: propagate, never swallow, never fall back
+    if (e instanceof RerankBackendError) throw e;   // typed backend errors: propagate, never swallow, never fall back
     console.warn('[rerank] backend failed, returning input order', (e as Error).message);
     return candidates.map((c, i) => ({
       ...c,
@@ -203,55 +270,6 @@ async function rerankJudge<T extends RerankCandidate>(
     ...c,
     rerank_score: scores[i],
     rerank_backend: 'judge' as const,
-  }));
-  paired.sort((a, b) => b.rerank_score - a.rerank_score);
-  return paired;
-}
-
-/* ─────────────────────────────  BGE cross-encoder backend  ───────────────────────────── */
-
-async function rerankBge<T extends RerankCandidate>(
-  query: string,
-  candidates: T[],
-): Promise<RerankResult<T>[]> {
-  const base = process.env.OLLAMA_BASE_URL;
-  if (!base) throw new Error('OLLAMA_BASE_URL not set');
-
-  // bge-reranker community Ollama wrappers typically expose a score per call
-  // via /api/generate with a query+passage prompt. We send each (q,d) pair
-  // and parse a single float. Done in parallel.
-  const scores = await Promise.all(candidates.map(async (c) => {
-    const passage = (c.text || '').slice(0, MAX_SNIPPET_CHARS);
-    const prompt = `${query}\n${passage}`;
-    try {
-      const r = await fetch(`${base}/api/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: BGE_MODEL,
-          prompt,
-          stream: false,
-          options: { num_predict: 8, temperature: 0 },
-          keep_alive: '15m',
-        }),
-        signal: AbortSignal.timeout(5000),
-      });
-      if (!r.ok) throw new Error(`bge HTTP ${r.status}`);
-      const j = await r.json() as { response?: string };
-      const m = (j.response || '').match(/-?\d+(\.\d+)?/);
-      if (!m) return 0;
-      const n = Number(m[0]);
-      // bge-reranker raw logits are roughly [-5, +5]. Squash to [0, 1] with sigmoid.
-      return 1 / (1 + Math.exp(-n));
-    } catch {
-      return 0;
-    }
-  }));
-
-  const paired = candidates.map((c, i) => ({
-    ...c,
-    rerank_score: scores[i],
-    rerank_backend: 'bge' as const,
   }));
   paired.sort((a, b) => b.rerank_score - a.rerank_score);
   return paired;

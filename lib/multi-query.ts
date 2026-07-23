@@ -90,7 +90,7 @@ type FusionHit = ChunkHit & {
   bm25_variant_ranks: (number | null)[];   // each variant's BM25-leg rank for this chunk, index-aligned to `variants` (null if it did not arrive via that variant's BM25 leg)
   bm25_rank: number | null;                 // convenience scalar: best (min) non-null across bm25_variant_ranks, null if never via BM25
   rerank_score?: number;
-  rerank_backend?: 'bge' | 'judge' | 'none';
+  rerank_backend?: 'judge' | 'cohere' | 'none';   // matches RerankResult exactly (type-only widening)
   source_quality_weight?: number;
 };
 

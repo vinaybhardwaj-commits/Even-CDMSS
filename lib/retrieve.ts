@@ -23,10 +23,10 @@ export type RetrieveOptions = {
   /** v1.6: enable cross-encoder reranker on the candidate pool. */
   useReranker?: boolean;
 
-  /** Lab measurement only: override the rerank backend for this call ('bge' = deterministic
-   *  cross-encoder ruler; 'judge' = LLM judge). Omitted ⇒ the env default (production stays 'judge').
-   *  Never set by a production caller. */
-  rerankBackend?: 'bge' | 'judge';
+  /** Lab measurement only: override the rerank backend for this call ('cohere' = deterministic
+   *  OpenRouter Cohere rerank-v3.5 ruler, health-probed; 'judge' = LLM judge). Omitted ⇒ the env
+   *  default (production stays 'judge'). Never set by a production caller. */
+  rerankBackend?: 'judge' | 'cohere';
 
   /** R-11: opt-in NORMATIVE retrieval leg. When true, a third vector leg restricted to the
    *  normative sources (default ['choosing-wisely'], see normativeSources) joins the RRF union,
@@ -64,7 +64,7 @@ export type RetrieveOptions = {
 export type ChunkHitWithMeta = ChunkHit & {
   source_quality_weight?: number;
   rerank_score?: number;
-  rerank_backend?: 'bge' | 'judge' | 'none';
+  rerank_backend?: 'judge' | 'cohere' | 'none';
 
   // Per-stage diagnostics — populated ONLY on the lab measurement path (includeQuarantined set),
   // so production result shapes are untouched. See §3.2 of the lab-retrieve-seam PRD.

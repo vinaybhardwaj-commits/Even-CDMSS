@@ -14,7 +14,7 @@ import { sql } from './db';
 import { guardReadOnlySql } from './sql-guard-core';
 import { retrieve, clampLabRetrieveTopK, BM25_DEFAULT_DFMAX } from './retrieve';
 import { retrieveMultiQuery } from './multi-query';
-import { RerankBackendUnavailableError } from './rerank';
+import { RerankBackendError } from './rerank';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 import { readState, setSetting, MB_KEYS } from './mini-backfill';
@@ -116,7 +116,7 @@ export const LAB_TOOLS = [
         skipExpand: { type: 'boolean', description: 'Skip query expansion so single- vs multi-query arms are held identical (default false).' },
         bm25Mode: { type: 'string', enum: ['off', 'discriminating'], description: "BM25 leg mode (default 'off' = today's plainto-AND). 'discriminating' keeps only low-DF (rare) lexemes, OR-joins them, caps the scan — the R-2 measurement leg. Lab-only; production is always 'off'." },
         dfMax: { type: 'number', description: `Discriminating mode only: keep lexemes whose corpus document frequency (planner estimate) is ≤ this (default ${BM25_DEFAULT_DFMAX}). Sweep it for the Stage-2 A/B.` },
-        rerankBackend: { type: 'string', enum: ['default', 'bge', 'judge'], description: "Rerank backend for this call. 'default' (or omitted) = production default (env-driven, 'judge'). 'bge' = the DETERMINISTIC cross-encoder ruler (bge-reranker-v2-m3, must be pulled on the mini — errors loud if absent, never falls back). 'judge' = the LLM judge. Lab-only; production reranker is unchanged." },
+        rerankBackend: { type: 'string', enum: ['default', 'judge', 'cohere'], description: "Rerank backend for this call. 'default' (or omitted) = production default (env-driven, 'judge'). 'judge' = the LLM judge. 'cohere' = the DETERMINISTIC OpenRouter Cohere rerank-v3.5 ruler — health-probed for discrimination first, and errors loud (typed) if unreachable/missing/unhealthy, never falls back. Lab-only; production reranker is unchanged." },
         scoresOnly: { type: 'boolean', description: 'When true, trim each hit to ids + scores (no chunk text, no variant query bodies) — the context-cheap payload for the Stage-2 A/B. Keeps expandedQuery + meta. Default false.' },
         restrictSources: { type: 'array', items: { type: 'string' }, description: "Restrict BOTH retrieval legs to source = ANY(these) — a dedicated normative-source leg (e.g. ['choosing-wisely','labq:guidelines-lvc-22jul']). A NAMED labq: source is admitted through the quarantine guard; un-named ones stay excluded. Omitted/empty ⇒ unrestricted. Lab-only." },
         useNormativeLeg: { type: 'boolean', description: "R-11: add a THIRD vector leg restricted to the normative sources (default ['choosing-wisely']), unioned into the RRF pool so a terse normative statement earns a pool seat instead of being outranked. Off by default. This is the production leg's behaviour — measure it here before/after." },
@@ -622,7 +622,7 @@ async function labRetrieve(a: Record<string, unknown>): Promise<ToolResult> {
   const bm25Mode = S(a.bm25Mode) === 'discriminating' ? { strategy: 'discriminating' as const, dfMax } : undefined;
   // R-10: deterministic rerank ruler for the A/B. 'default'/omitted ⇒ env default (production 'judge').
   const rb = S(a.rerankBackend);
-  const rerankBackend = rb === 'bge' ? 'bge' : rb === 'judge' ? 'judge' : undefined;
+  const rerankBackend = rb === 'cohere' ? 'cohere' : rb === 'judge' ? 'judge' : undefined;
   const scoresOnly = a.scoresOnly === true;
   // Normative-source leg measurement: restrict both legs to these exact sources (labq: admitted if named).
   const restrictList = Array.isArray(a.restrictSources)
@@ -683,8 +683,9 @@ async function labRetrieve(a: Record<string, unknown>): Promise<ToolResult> {
       meta: res.meta, hits,
     });
   } catch (e) {
-    // D3: a requested-but-unavailable bge ruler fails LOUD — surfaced named, never a silent judge fallback.
-    if (e instanceof RerankBackendUnavailableError) return err(`${e.name}: ${e.message}`);
+    // D3: a requested cohere ruler that is unreachable/missing/unhealthy fails LOUD — surfaced named
+    // (RerankBackendUnreachable/Missing/Unhealthy, all RerankBackendError), never a silent fallback.
+    if (e instanceof RerankBackendError) return err(`${e.name}: ${e.message}`);
     throw e;
   }
 }
