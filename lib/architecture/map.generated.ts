@@ -2788,6 +2788,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "mcp-tools",
+    "to": "rerank",
+    "kind": "value"
+  },
+  {
+    "from": "mcp-tools",
     "to": "retrieve",
     "kind": "value"
   },

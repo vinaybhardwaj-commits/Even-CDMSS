@@ -197,7 +197,7 @@ export async function retrieveMultiQuery(
 
   // ---- Single cross-encoder rerank over the fused pool, against the ORIGINAL question ----
   if (useReranker && fused.length > 1) {
-    const reranked = await rerankFn(question, fused.map((h) => ({ id: h.id, text: h.text, __orig: h })));
+    const reranked = await rerankFn(question, fused.map((h) => ({ id: h.id, text: h.text, __orig: h })), opts.rerankBackend);
     fused = reranked.map((r) => {
       const orig = (r as unknown as { __orig: FusionHit }).__orig;
       return { ...orig, rerank_score: r.rerank_score, rerank_backend: r.rerank_backend };

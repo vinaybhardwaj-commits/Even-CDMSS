@@ -23,6 +23,11 @@ export type RetrieveOptions = {
   /** v1.6: enable cross-encoder reranker on the candidate pool. */
   useReranker?: boolean;
 
+  /** Lab measurement only: override the rerank backend for this call ('bge' = deterministic
+   *  cross-encoder ruler; 'judge' = LLM judge). Omitted ⇒ the env default (production stays 'judge').
+   *  Never set by a production caller. */
+  rerankBackend?: 'bge' | 'judge';
+
   /** v1.6: multiply final score by source_quality_weight per chunk. */
   useSourceWeights?: boolean;
 
@@ -414,7 +419,7 @@ export async function retrieve(query: string, opts: RetrieveOptions = {}): Promi
       id: h.id,
       text: h.text,
       __orig: h,
-    })));
+    })), opts.rerankBackend);
     hits = reranked.map((r) => {
       const orig = (r as unknown as { __orig: ChunkHitWithMeta }).__orig;
       return {

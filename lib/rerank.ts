@@ -42,13 +42,64 @@ export type RerankResult<T extends RerankCandidate> = T & {
   rerank_backend: 'bge' | 'judge' | 'none';
 };
 
+/** Thrown when a caller EXPLICITLY requests the `bge` backend (the deterministic ruler) but the
+ *  cross-encoder model is not pulled on the mini. D3 of the BM25-A/B build: fail LOUD rather than
+ *  silently fall back to the non-deterministic judge, which would corrupt the pre-registered metric. */
+export class RerankBackendUnavailableError extends Error {
+  constructor(model: string) {
+    super(`rerank backend 'bge' unavailable: model '${model}' is not pulled on the mini — pull it before using rerankBackend:'bge'; there is NO fallback (a judge fallback would reintroduce the non-determinism the bge ruler exists to remove)`);
+    this.name = 'RerankBackendUnavailableError';
+  }
+}
+
+/** Resolve the effective backend for a call: an explicit per-call override wins, else the env default.
+ *  Pure — this IS the routing decision. */
+export function resolveRerankBackend(backend: 'bge' | 'judge' | undefined, envBackend: 'bge' | 'judge' = BACKEND): 'bge' | 'judge' {
+  return backend ?? envBackend;
+}
+
+/** Probe whether the bge model is pulled on the mini (Ollama /api/show → 200 present, 404 absent).
+ *  Throws RerankBackendUnavailableError on absent / unreachable / no-base. `fetchImpl` is injectable for tests. */
+export async function assertBgeAvailable(
+  baseUrl: string | undefined = process.env.OLLAMA_BASE_URL,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  if (!baseUrl) throw new RerankBackendUnavailableError(BGE_MODEL);
+  let res: Response;
+  try {
+    res = await fetchImpl(`${baseUrl}/api/show`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: BGE_MODEL }),
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch {
+    throw new RerankBackendUnavailableError(BGE_MODEL);   // unreachable / timeout ⇒ unavailable
+  }
+  if (!res.ok) throw new RerankBackendUnavailableError(BGE_MODEL);   // 404 ⇒ not pulled
+}
+
+/** Injectable collaborators — for tests ONLY. Production/real callers pass nothing. */
+export type RerankDeps = {
+  checkBgeAvailable?: () => Promise<void>;
+  bgeFn?: <U extends RerankCandidate>(q: string, c: U[]) => Promise<RerankResult<U>[]>;
+  judgeFn?: <U extends RerankCandidate>(q: string, c: U[]) => Promise<RerankResult<U>[]>;
+};
+
 /**
- * Rerank candidates against the query. Returns a NEW array sorted by
- * rerank_score descending. Input array is not mutated.
+ * Rerank candidates against the query. Returns a NEW array sorted by rerank_score descending.
+ * Input array is not mutated.
+ *
+ * `backend` (optional) overrides the env-driven default for THIS call only — no behaviour change
+ * unless a caller passes it. When `backend === 'bge'` is EXPLICITLY requested, the model's presence
+ * is preflighted and a RerankBackendUnavailableError propagates if it is absent (D3, never a silent
+ * judge fallback). Transient failures still soft-fall-back to input order, as before.
  */
 export async function rerank<T extends RerankCandidate>(
   query: string,
   candidates: T[],
+  backend?: 'bge' | 'judge',
+  deps: RerankDeps = {},
 ): Promise<RerankResult<T>[]> {
   if (candidates.length === 0) return [];
   // Single candidate — no reorder needed
@@ -56,10 +107,20 @@ export async function rerank<T extends RerankCandidate>(
     return [{ ...candidates[0], rerank_score: 1.0, rerank_backend: 'none' }];
   }
 
+  const chosen = resolveRerankBackend(backend);
+  const strict = backend === 'bge';   // only an EXPLICIT bge request fails loud on unavailability
+  const bgeFn = deps.bgeFn ?? rerankBge;
+  const judgeFn = deps.judgeFn ?? rerankJudge;
+  const checkBge = deps.checkBgeAvailable ?? assertBgeAvailable;
+
   try {
-    if (BACKEND === 'bge') return await rerankBge(query, candidates);
-    return await rerankJudge(query, candidates);
+    if (chosen === 'bge') {
+      if (strict) await checkBge();
+      return await bgeFn(query, candidates);
+    }
+    return await judgeFn(query, candidates);
   } catch (e) {
+    if (e instanceof RerankBackendUnavailableError) throw e;   // D3: propagate, never swallow, never fall back
     console.warn('[rerank] backend failed, returning input order', (e as Error).message);
     return candidates.map((c, i) => ({
       ...c,

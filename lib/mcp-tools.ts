@@ -14,6 +14,7 @@ import { sql } from './db';
 import { guardReadOnlySql } from './sql-guard-core';
 import { retrieve, clampLabRetrieveTopK, BM25_DEFAULT_DFMAX } from './retrieve';
 import { retrieveMultiQuery } from './multi-query';
+import { RerankBackendUnavailableError } from './rerank';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 import { readState, setSetting, MB_KEYS } from './mini-backfill';
@@ -115,6 +116,8 @@ export const LAB_TOOLS = [
         skipExpand: { type: 'boolean', description: 'Skip query expansion so single- vs multi-query arms are held identical (default false).' },
         bm25Mode: { type: 'string', enum: ['off', 'discriminating'], description: "BM25 leg mode (default 'off' = today's plainto-AND). 'discriminating' keeps only low-DF (rare) lexemes, OR-joins them, caps the scan — the R-2 measurement leg. Lab-only; production is always 'off'." },
         dfMax: { type: 'number', description: `Discriminating mode only: keep lexemes whose corpus document frequency (planner estimate) is ≤ this (default ${BM25_DEFAULT_DFMAX}). Sweep it for the Stage-2 A/B.` },
+        rerankBackend: { type: 'string', enum: ['default', 'bge', 'judge'], description: "Rerank backend for this call. 'default' (or omitted) = production default (env-driven, 'judge'). 'bge' = the DETERMINISTIC cross-encoder ruler (bge-reranker-v2-m3, must be pulled on the mini — errors loud if absent, never falls back). 'judge' = the LLM judge. Lab-only; production reranker is unchanged." },
+        scoresOnly: { type: 'boolean', description: 'When true, trim each hit to ids + scores (no chunk text, no variant query bodies) — the context-cheap payload for the Stage-2 A/B. Keeps expandedQuery + meta. Default false.' },
       },
       required: ['query'],
     },
@@ -600,46 +603,71 @@ async function labRetrieve(a: Record<string, unknown>): Promise<ToolResult> {
   // R-2 Stage 1: lab-only discriminating BM25 leg. 'off' (default) ⇒ today's production behaviour.
   const dfMax = Number.isFinite(Number(a.dfMax)) && Number(a.dfMax) > 0 ? Math.floor(Number(a.dfMax)) : BM25_DEFAULT_DFMAX;
   const bm25Mode = S(a.bm25Mode) === 'discriminating' ? { strategy: 'discriminating' as const, dfMax } : undefined;
+  // R-10: deterministic rerank ruler for the A/B. 'default'/omitted ⇒ env default (production 'judge').
+  const rb = S(a.rerankBackend);
+  const rerankBackend = rb === 'bge' ? 'bge' : rb === 'judge' ? 'judge' : undefined;
+  const scoresOnly = a.scoresOnly === true;
 
-  if (multiQuery) {
-    const res = await retrieveMultiQuery(query, { topK, includeQuarantined, useReranker, useSourceWeights, hybrid, skipExpand, bm25Mode });
-    const hits = res.hits.map((h, i) => {
-      // rerank_score/source_quality_weight/bm25 provenance are present at runtime but off the exported
-      // MultiQueryHit type (see multi-query.ts) — read them via a narrow cast.
-      const hx = h as typeof h & { rerank_score?: number; source_quality_weight?: number; bm25_rank?: number | null; bm25_variant_ranks?: (number | null)[] };
-      return {
-        final_rank: i + 1,
-        id: h.id, source: h.source, book: h.book, chapter: h.chapter, section: h.section, item_number: h.item_number,
-        similarity: h.similarity,
-        vector_rank: null, bm25_rank: hx.bm25_rank ?? null, bm25_variant_ranks: hx.bm25_variant_ranks ?? null,
-        rrf_score: h.rrf_score ?? null, variant_ranks: h.variant_ranks ?? null,
-        source_quality_weight: hx.source_quality_weight ?? null, rerank_score: hx.rerank_score ?? null,
-        text: h.text,
-      };
-    });
+  try {
+    if (multiQuery) {
+      const res = await retrieveMultiQuery(query, { topK, includeQuarantined, useReranker, useSourceWeights, hybrid, skipExpand, bm25Mode, rerankBackend });
+      const full = res.hits.map((h, i) => {
+        // rerank_score/backend/source_quality_weight/bm25 provenance are present at runtime but off the
+        // exported MultiQueryHit type (see multi-query.ts) — read them via a narrow cast.
+        const hx = h as typeof h & { rerank_score?: number; rerank_backend?: string; source_quality_weight?: number; bm25_rank?: number | null; bm25_variant_ranks?: (number | null)[] };
+        return {
+          final_rank: i + 1,
+          id: h.id, source: h.source, book: h.book, chapter: h.chapter, section: h.section, item_number: h.item_number,
+          similarity: h.similarity,
+          vector_rank: null, bm25_rank: hx.bm25_rank ?? null, bm25_variant_ranks: hx.bm25_variant_ranks ?? null,
+          rrf_score: h.rrf_score ?? null, variant_ranks: h.variant_ranks ?? null,
+          source_quality_weight: hx.source_quality_weight ?? null, rerank_score: hx.rerank_score ?? null,
+          rerank_backend: hx.rerank_backend ?? null,
+          text: h.text,
+        };
+      });
+      const hits = scoresOnly ? full.map(pickScoreFields) : full;
+      return ok({
+        query, mode: 'multi_query', expandedQuery: res.expandedQuery, includeQuarantined: includeQuarantined ?? null,
+        topK, count: hits.length, bm25Mode: bm25Mode ? 'discriminating' : 'off', rerankBackend: rerankBackend ?? 'default', scoresOnly,
+        perVariantCounts: res.perVariantCounts,
+        // scoresOnly drops the variant query bodies (large: the expanded paragraph + variant texts).
+        ...(scoresOnly ? {} : { variants: res.variants }),
+        hits,
+      });
+    }
+
+    const res = await retrieve(query, { topK, includeQuarantined, useReranker, useSourceWeights, hybrid, skipExpand, withDiagnostics: true, bm25Mode, rerankBackend });
+    const full = res.hits.map((h, i) => ({
+      final_rank: h.final_rank ?? i + 1,
+      id: h.id, source: h.source, book: h.book, chapter: h.chapter, section: h.section, item_number: h.item_number,
+      similarity: h.similarity,
+      vector_rank: h.vector_rank ?? null, bm25_rank: h.bm25_rank ?? null, bm25_variant_ranks: null, rrf_score: h.rrf_score ?? null,
+      source_quality_weight: h.source_quality_weight ?? null, rerank_score: h.rerank_score ?? null, rerank_backend: h.rerank_backend ?? null,
+      text: h.text,
+    }));
+    const hits = scoresOnly ? full.map(pickScoreFields) : full;
     return ok({
-      query, mode: 'multi_query', expandedQuery: res.expandedQuery, includeQuarantined: includeQuarantined ?? null,
-      topK, count: hits.length, bm25Mode: bm25Mode ? 'discriminating' : 'off',
-      // bm25_rank IS now attributed through fusion (best rank across variants; bm25_variant_ranks holds
-      // the per-variant detail). The discriminating tsquery/DF report still lives per-variant and is not
-      // aggregated here — use mode=single_query to inspect the DF cut for a given query.
-      variants: res.variants, perVariantCounts: res.perVariantCounts, hits,
+      query, mode: 'single_query', expandedQuery: res.expandedQuery, includeQuarantined: includeQuarantined ?? null,
+      topK, count: hits.length, bm25Mode: bm25Mode ? 'discriminating' : 'off', rerankBackend: rerankBackend ?? 'default', scoresOnly,
+      meta: res.meta, hits,
     });
+  } catch (e) {
+    // D3: a requested-but-unavailable bge ruler fails LOUD — surfaced named, never a silent judge fallback.
+    if (e instanceof RerankBackendUnavailableError) return err(`${e.name}: ${e.message}`);
+    throw e;
   }
+}
 
-  const res = await retrieve(query, { topK, includeQuarantined, useReranker, useSourceWeights, hybrid, skipExpand, withDiagnostics: true, bm25Mode });
-  const hits = res.hits.map((h, i) => ({
-    final_rank: h.final_rank ?? i + 1,
-    id: h.id, source: h.source, book: h.book, chapter: h.chapter, section: h.section, item_number: h.item_number,
-    similarity: h.similarity,
-    vector_rank: h.vector_rank ?? null, bm25_rank: h.bm25_rank ?? null, rrf_score: h.rrf_score ?? null,
-    source_quality_weight: h.source_quality_weight ?? null, rerank_score: h.rerank_score ?? null,
-    text: h.text,
-  }));
-  return ok({
-    query, mode: 'single_query', expandedQuery: res.expandedQuery, includeQuarantined: includeQuarantined ?? null,
-    topK, count: hits.length, bm25Mode: bm25Mode ? 'discriminating' : 'off', meta: res.meta, hits,
-  });
+/** scoresOnly payload trim (§D2): ids + scores, NO chunk text/section. Pure — exported for tests. */
+export function pickScoreFields(h: Record<string, unknown>): Record<string, unknown> {
+  return {
+    final_rank: h.final_rank ?? null, id: h.id, source: h.source, book: h.book, chapter: h.chapter, item_number: h.item_number,
+    similarity: h.similarity, vector_rank: h.vector_rank ?? null, bm25_rank: h.bm25_rank ?? null,
+    bm25_variant_ranks: h.bm25_variant_ranks ?? null, rrf_score: h.rrf_score ?? null,
+    rerank_score: h.rerank_score ?? null, rerank_backend: h.rerank_backend ?? null,
+    source_quality_weight: h.source_quality_weight ?? null,
+  };
 }
 
 async function labQuery(a: Record<string, unknown>): Promise<ToolResult> {
