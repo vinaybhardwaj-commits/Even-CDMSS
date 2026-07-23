@@ -19,7 +19,12 @@
 // ── constants (PRD §2, §5, §6) — env overrides applied in the impure layer ──────
 export const EVEN_ARTIFACT_TYPE = 'opd_note';
 export const EVEN_GEN_MODEL_DEFAULT = 'moonshotai/kimi-k3';
-export const LVC_GEN_MIN_FREQ = 20;         // a subject-cluster must recur ≥20× to feed generation
+// Digest grain (PRD §1.1 — evidence-driven fix). LVC volume is FRAGMENTED across many distinct subject
+// phrasings, so qualification is at the CATEGORY grain, not the exact-subject grain, over all lvc-tagged
+// engine history. (The old subject-level floor `LVC_GEN_MIN_FREQ=20` cleared ~1 cluster against live data.)
+export const LVC_GEN_CAT_MIN = 50;          // a lvc_category qualifies iff its TOTAL low-value findings ≥ 50
+export const LVC_GEN_TOPK = 80;             // max exemplar subjects passed per qualifying category (top count first)
+export const LVC_GEN_SUBJECT_MIN = 2;       // drop pure singletons (count < 2) as noise BEFORE topK
 export const LVC_GEN_MAX_CANDIDATES = 25;   // per-run insert cap
 export const LVC_CONTEST_FLAG = 5;          // ≥5 contests ⇒ active flips to 'contested' (still grounds)
 export const EVEN_DEDUP_COSINE = 0.90;      // same-category near-dup threshold for generation dedup
@@ -36,7 +41,7 @@ export type AssertionStatus = 'pending' | 'active' | 'contested' | 'retired' | '
 /** One aggregated, DE-IDENTIFIED finding-cluster row (the ONLY fields that may feed generation). */
 export interface DigestRow { lvc_category: string; subject: string; n: number }
 export interface DigestExemplar { subject: string; count: number }
-export interface DigestCluster { lvc_category: string; subjects: DigestExemplar[] }
+export interface DigestCluster { lvc_category: string; subjects: DigestExemplar[]; total: number }
 
 /** Normalise a finding subject for clustering/dedup: lowercase, collapse whitespace, trim, drop a
  *  trailing period. Deterministic + pure. */
@@ -45,13 +50,21 @@ export function normalizeSubject(s: string | null | undefined): string {
 }
 
 /**
- * Build the generation digest from aggregated rows. Keeps ONLY clusters with count ≥ minFreq, groups
- * by lvc_category, and — the de-identification guarantee — emits ONLY {subject, count}. Any extra
- * field on an input row (a stray doctor_uid/uid/note text) is structurally dropped: we read exactly
- * three properties. Subjects are re-normalised + merged (so casing variants collapse) and sorted by
- * count desc. Empty categories are omitted. Pure.
+ * Build the generation digest from aggregated rows (PRD §1.1 — CATEGORY-grain qualification). Groups
+ * by lvc_category, sums count per normalized subject, and:
+ *  - drops a category entirely if its TOTAL low-value findings (Σ over ALL its subjects) < catMin;
+ *  - within a qualifying category, drops pure singletons (count < subjectMin), then keeps the top `topK`
+ *    subjects by count (tie-break subject asc).
+ * Emits `{ lvc_category, subjects: [{subject,count}], total }` where `total` is the full category sum
+ * (pre-singleton-cut) — the volume signal Kimi abstracts over. De-identification guarantee: only
+ * {subject, count} + the aggregate total are emitted; any extra input-row field (doctor_uid/uid/note
+ * text) is structurally dropped (we read exactly {lvc_category, subject, n}). Clusters sorted by
+ * category asc. Pure.
  */
-export function buildDigest(rows: DigestRow[], minFreq: number = LVC_GEN_MIN_FREQ): DigestCluster[] {
+export function buildDigest(
+  rows: DigestRow[],
+  { catMin = LVC_GEN_CAT_MIN, topK = LVC_GEN_TOPK, subjectMin = LVC_GEN_SUBJECT_MIN }: { catMin?: number; topK?: number; subjectMin?: number } = {},
+): DigestCluster[] {
   const byCat = new Map<string, Map<string, number>>();
   for (const r of rows) {
     const cat = String(r?.lvc_category ?? '').trim();
@@ -64,11 +77,14 @@ export function buildDigest(rows: DigestRow[], minFreq: number = LVC_GEN_MIN_FRE
   }
   const out: DigestCluster[] = [];
   for (const [lvc_category, m] of byCat) {
+    const total = [...m.values()].reduce((a, b) => a + b, 0);   // full category volume (pre-singleton-cut)
+    if (total < catMin) continue;                                // category-grain qualification
     const subjects = [...m.entries()]
-      .filter(([, count]) => count >= minFreq)
+      .filter(([, count]) => count >= subjectMin)                // drop singletons as noise
       .map(([subject, count]) => ({ subject, count }))
-      .sort((a, b) => b.count - a.count || a.subject.localeCompare(b.subject));
-    if (subjects.length) out.push({ lvc_category, subjects });
+      .sort((a, b) => b.count - a.count || a.subject.localeCompare(b.subject))
+      .slice(0, topK);                                           // top-K exemplars by count
+    if (subjects.length) out.push({ lvc_category, subjects, total });
   }
   return out.sort((a, b) => a.lvc_category.localeCompare(b.lvc_category));
 }
@@ -94,8 +110,9 @@ export const EVEN_GEN_SYSTEM = [
  *  (Named OUTSIDE the `build*Prompt` registry-builder convention on purpose — see EVEN_GEN_SYSTEM note.) */
 export function evenGenUserMessage(clusters: DigestCluster[], maxCandidates: number = LVC_GEN_MAX_CANDIDATES): string {
   const body = clusters.map((c) => {
-    const lines = c.subjects.slice(0, 20).map((s) => `    - ${s.subject} (seen ${s.count}×)`).join('\n');
-    return `  category: ${c.lvc_category}\n${lines}`;
+    // ≤40 exemplars per category in the prompt (bounded size; the cluster already holds ≤LVC_GEN_TOPK).
+    const lines = c.subjects.slice(0, 40).map((s) => `    - ${s.subject} (seen ${s.count}×)`).join('\n');
+    return `  category: ${c.lvc_category} — ${c.total} low-value findings total\n${lines}`;   // §1.1: pass the category total
   }).join('\n');
   return [
     `Propose up to ${maxCandidates} candidate LVC assertions across these categories.`,

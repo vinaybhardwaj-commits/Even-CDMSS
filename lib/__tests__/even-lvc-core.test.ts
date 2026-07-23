@@ -7,31 +7,57 @@ import {
   buildDigest, normalizeSubject, evenGenUserMessage, parseCandidatesJson, dedupeCandidates,
   isDuplicateCandidate, maxOrdinalForCategory, nextAssertionId, assignAssertionIds,
   computeOwnCases, rollupContests, evenChunkSection, normalizeAssertionText,
-  LVC_GEN_MIN_FREQ, LVC_CONTEST_FLAG, EVEN_DEDUP_COSINE,
+  LVC_GEN_CAT_MIN, LVC_GEN_TOPK, LVC_GEN_SUBJECT_MIN, LVC_CONTEST_FLAG, EVEN_DEDUP_COSINE,
   type DigestRow, type GenCandidate, type ExistingAssertion,
 } from '../even-lvc-core.ts';
 
-// ── (1) digest builder: MIN_FREQ + de-identification ───────────────────────────
-test('buildDigest keeps only clusters ≥ MIN_FREQ, groups by category, emits ONLY {subject,count}', () => {
+// ── (1) digest builder: CATEGORY-grain qualification + topK + singleton-drop + de-identification (§1.1) ──
+test('buildDigest qualifies at the CATEGORY grain (≥ CAT_MIN total), drops singletons, emits ONLY {subject,count} + total', () => {
   // rows carry stray PHI-ish fields that MUST NOT survive into the digest
   const rows = [
     { lvc_category: 'antibiotic', subject: 'Azithromycin for viral URI', n: 40, doctor_uid: 'DOC1', uid: 'note-123', patient_name: 'X' },
     { lvc_category: 'antibiotic', subject: 'azithromycin for viral uri.', n: 5 },   // casing/punct variant → merges to 45
-    { lvc_category: 'imaging', subject: 'MRI for acute low back pain', n: 19 },      // below floor → dropped
-    { lvc_category: 'supplement_polypharmacy', subject: 'Multivitamin for fatigue', n: 30 },
+    { lvc_category: 'antibiotic', subject: 'Amoxicillin for cold', n: 8 },
+    { lvc_category: 'antibiotic', subject: 'one-off brand xyz', n: 1 },             // singleton → dropped from subjects (kept in total)
+    { lvc_category: 'imaging', subject: 'MRI for acute low back pain', n: 30 },      // category total 30 < 50 → dropped
   ] as unknown as DigestRow[];
-  const digest = buildDigest(rows, LVC_GEN_MIN_FREQ);
+  const digest = buildDigest(rows);   // defaults: catMin 50, topK 80, subjectMin 2
 
   const abx = digest.find((c) => c.lvc_category === 'antibiotic');
-  assert.ok(abx, 'antibiotic cluster present');
+  assert.ok(abx, 'antibiotic qualifies (total ≥ CAT_MIN)');
+  assert.equal(abx!.total, 54, 'total = full category sum incl. the singleton (45+8+1)');
+  assert.deepEqual(abx!.subjects.map((s) => s.subject), ['azithromycin for viral uri', 'amoxicillin for cold'], 'singleton dropped; ordered by count desc');
   assert.equal(abx!.subjects[0].count, 45, 'casing/punct variants merge (40+5)');
   // de-identification: each exemplar has EXACTLY subject + count, nothing else
   for (const s of abx!.subjects) assert.deepEqual(Object.keys(s).sort(), ['count', 'subject']);
   assert.ok(!JSON.stringify(digest).includes('DOC1'), 'no doctor_uid leaks');
   assert.ok(!JSON.stringify(digest).includes('note-123'), 'no note uid leaks');
   assert.ok(!JSON.stringify(digest).includes('patient_name'), 'no PHI field leaks');
-  assert.equal(digest.find((c) => c.lvc_category === 'imaging'), undefined, 'below-floor category omitted entirely');
-  assert.ok(digest.find((c) => c.lvc_category === 'supplement_polypharmacy'), 'the Indian-gap category is included');
+  assert.equal(digest.find((c) => c.lvc_category === 'imaging'), undefined, 'below-CAT_MIN category dropped entirely');
+});
+
+test('buildDigest: a FRAGMENTED category qualifies on TOTAL even when no single subject hits the old ≥20 floor (§1.1 core fix)', () => {
+  // 30 distinct phrasings, each count 2 → total 60 ≥ CAT_MIN; NO subject reaches the retired subject-floor
+  const fragmented = Array.from({ length: 30 }, (_, i) => ({ lvc_category: 'antihistamine_allergy', subject: `allergy phrasing ${i}`, n: 2 })) as unknown as DigestRow[];
+  const digest = buildDigest(fragmented);
+  const cat = digest.find((c) => c.lvc_category === 'antihistamine_allergy');
+  assert.ok(cat, 'fragmented category qualifies on its total (the whole point of the fix)');
+  assert.equal(cat!.total, 60);
+  assert.equal(cat!.subjects.length, 30, 'all non-singleton subjects kept (≤ TOPK)');
+  assert.ok(LVC_GEN_CAT_MIN === 50 && LVC_GEN_TOPK === 80 && LVC_GEN_SUBJECT_MIN === 2, 'constants wired');
+});
+
+test('buildDigest: topK truncates to the highest-count exemplars', () => {
+  const rows = [
+    { lvc_category: 'supplement_polypharmacy', subject: 'Multivitamin for fatigue', n: 20 },
+    { lvc_category: 'supplement_polypharmacy', subject: 'Vitamin D for tiredness', n: 15 },
+    { lvc_category: 'supplement_polypharmacy', subject: 'B12 for weakness', n: 10 },
+    { lvc_category: 'supplement_polypharmacy', subject: 'a singleton', n: 1 },
+  ] as unknown as DigestRow[];
+  const d = buildDigest(rows, { catMin: 40, topK: 2 });   // total 46 ≥ 40 ⇒ qualifies; keep top 2
+  assert.equal(d.length, 1);
+  assert.equal(d[0].total, 46, 'total includes the singleton');
+  assert.deepEqual(d[0].subjects.map((s) => s.subject), ['multivitamin for fatigue', 'vitamin d for tiredness'], 'top 2 by count, singleton excluded');
 });
 
 test('normalizeSubject collapses casing/whitespace/trailing period', () => {
@@ -138,9 +164,10 @@ test('parseCandidatesJson: tolerant of fences/prose/object-wrap; drops malformed
   assert.deepEqual(parseCandidatesJson('{"candidates":[{"lvc_category":"imaging","assertion_text":"Z"}]}').map((c) => c.lvc_category), ['imaging'], 'object-wrapped array accepted');
 });
 
-test('evenGenUserMessage only references shown categories/subjects', () => {
-  const prompt = evenGenUserMessage([{ lvc_category: 'antibiotic', subjects: [{ subject: 'azithromycin for viral uri', count: 45 }] }], 25);
+test('evenGenUserMessage only references shown categories/subjects + surfaces the category total (§1.1)', () => {
+  const prompt = evenGenUserMessage([{ lvc_category: 'antibiotic', subjects: [{ subject: 'azithromycin for viral uri', count: 45 }], total: 53 }], 25);
   assert.match(prompt, /category: antibiotic/);
+  assert.match(prompt, /53 low-value findings total/);
   assert.match(prompt, /azithromycin for viral uri \(seen 45×\)/);
   assert.match(prompt, /up to 25 candidate/);
 });

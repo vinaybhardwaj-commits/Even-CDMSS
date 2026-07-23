@@ -25,7 +25,7 @@ import { EVEN_SOURCE, type EvenCategoryLookup } from './normative-grounding-core
 import {
   buildDigest, evenGenUserMessage, EVEN_GEN_SYSTEM, parseCandidatesJson, dedupeCandidates,
   assignAssertionIds, computeOwnCases, rollupContests, evenChunkSection, normalizeSubject,
-  EVEN_GEN_MODEL_DEFAULT, EVEN_CHUNK_BOOK, LVC_GEN_MIN_FREQ, LVC_GEN_MAX_CANDIDATES, LVC_CONTEST_FLAG,
+  EVEN_GEN_MODEL_DEFAULT, EVEN_CHUNK_BOOK, LVC_GEN_SUBJECT_MIN, LVC_GEN_MAX_CANDIDATES, LVC_CONTEST_FLAG,
   type DigestRow, type ExistingAssertion, type AssertionStatus, type GenCandidate,
 } from './even-lvc-core';
 
@@ -35,7 +35,6 @@ const ENGINES = [...OPD_ENGINE_VERSIONS_CURRENT];
 
 // env-resolved knobs (defaults from the pure core)
 const GEN_MODEL = process.env.LVC_GEN_MODEL || EVEN_GEN_MODEL_DEFAULT;
-const MIN_FREQ = Math.max(1, parseInt(process.env.LVC_GEN_MIN_FREQ || String(LVC_GEN_MIN_FREQ), 10) || LVC_GEN_MIN_FREQ);
 const MAX_CANDIDATES = Math.max(1, parseInt(process.env.LVC_GEN_MAX_CANDIDATES || String(LVC_GEN_MAX_CANDIDATES), 10) || LVC_GEN_MAX_CANDIDATES);
 const CONTEST_FLAG = Math.max(1, parseInt(process.env.LVC_CONTEST_FLAG || String(LVC_CONTEST_FLAG), 10) || LVC_CONTEST_FLAG);
 
@@ -50,21 +49,26 @@ export interface EvenAssertionRow {
 }
 
 // ── INFERRED SQL (validate verbatim against live Neon) ──────────────────────────
+// PRD §1.1 — span ALL lvc-tagged engine history (NO engine_version predicate; pre-0.81.8 rows are
+// null-category and self-exclude via the lvc_category-not-null filter). The floor here strips only
+// singletons ($2 = LVC_GEN_SUBJECT_MIN); category-grain qualification (≥ LVC_GEN_CAT_MIN) + topK live
+// in buildDigest. Fail-safe: a query error returns a logged no-op run (see runGeneration).
 const DIGEST_SQL = `SELECT f->>'lvc_category' AS lvc_category, lower(btrim(f->>'subject')) AS subject, count(*)::int AS n
   FROM opd_note_audits a, jsonb_array_elements(a.findings) f
-  WHERE a.app_source = $1 AND a.engine_version = ANY($2) AND a.excluded_reason IS NULL
+  WHERE a.app_source = $1 AND a.excluded_reason IS NULL
     AND f->>'verdict' = 'low-value'
     AND coalesce((f->>'informational')::boolean, false) = false
     AND f->>'subject' IS NOT NULL AND btrim(f->>'subject') <> ''
     AND f->>'lvc_category' IS NOT NULL
   GROUP BY 1, 2
-  HAVING count(*) >= $3`;
+  HAVING count(*) >= $2`;
 
+// own_cases computed across the SAME full history (no engine_version predicate). $2=lvc_category, $3=subjects.
 const OWN_CASES_DOCTORS_SQL = `SELECT DISTINCT a.doctor_uid
   FROM opd_note_audits a, jsonb_array_elements(a.findings) f
-  WHERE a.app_source = $1 AND a.engine_version = ANY($2) AND a.excluded_reason IS NULL
-    AND f->>'verdict' = 'low-value' AND f->>'lvc_category' = $3
-    AND lower(btrim(f->>'subject')) = ANY($4) AND a.doctor_uid IS NOT NULL`;
+  WHERE a.app_source = $1 AND a.excluded_reason IS NULL
+    AND f->>'verdict' = 'low-value' AND f->>'lvc_category' = $2
+    AND lower(btrim(f->>'subject')) = ANY($3) AND a.doctor_uid IS NOT NULL`;
 
 const EMBED_INSERT_SQL = `INSERT INTO mksap_chunks (source, book, chapter, section, item_number, chunk_type, text, text_hash, embedding, token_count)
   VALUES ('even-lvc', $1, $2, $3, $4, 'assertion', $5, $6, $7::vector, $8)
@@ -124,10 +128,10 @@ export async function runGeneration(opts: { trigger: 'manual' | 'cron'; auto?: b
   // 1) de-identified digest
   let digestRows: DigestRow[];
   try {
-    const rows = await run(DIGEST_SQL, [APP, ENGINES, MIN_FREQ]);
+    const rows = await run(DIGEST_SQL, [APP, LVC_GEN_SUBJECT_MIN]);
     digestRows = rows.map((r) => ({ lvc_category: String(r.lvc_category ?? ''), subject: String(r.subject ?? ''), n: Number(r.n) || 0 }));
   } catch (e) { return fail(`digest query failed: ${String((e as Error).message).slice(0, 160)}`); }
-  const clusters = buildDigest(digestRows, MIN_FREQ);
+  const clusters = buildDigest(digestRows);   // category-grain qualification + topK (PRD §1.1 defaults)
   if (!clusters.length) return done(0);
   const allowedCategories = clusters.map((c) => c.lvc_category);
 
@@ -225,7 +229,7 @@ export async function ratifyAssertion(input: { id: string; ratified_by: string; 
     const supporting = Array.isArray(row.supporting) ? row.supporting : JSON.parse((row.supporting as unknown as string) || '[]');
     const subjects = (supporting as Array<{ subject?: string }>).map((s) => normalizeSubject(s?.subject)).filter(Boolean);
     if (subjects.length) {
-      const docs = await run(OWN_CASES_DOCTORS_SQL, [APP, ENGINES, row.lvc_category, subjects]);
+      const docs = await run(OWN_CASES_DOCTORS_SQL, [APP, row.lvc_category, subjects]);
       ownCases = computeOwnCases(ratified_by, docs.map((d) => String(d.doctor_uid ?? '')));
     }
   } catch { ownCases = false; }
