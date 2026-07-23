@@ -82,10 +82,13 @@ export type MultiQueryHit = ChunkHit & {
   variant_ranks?: (number | null)[];  // 1-based rank per variant, index-aligned to `variants` (null if absent)
 };
 
-// Internal working type — the full per-hit diagnostic surface produced by fusion (§2.2).
+// Internal working type — the full per-hit diagnostic surface produced by fusion (§2.2). Kept off the
+// exported MultiQueryHit (read via cast in the lab handler) for the same app/api reason as rerank_score.
 type FusionHit = ChunkHit & {
   rrf_score: number;
   variant_ranks: (number | null)[];
+  bm25_variant_ranks: (number | null)[];   // each variant's BM25-leg rank for this chunk, index-aligned to `variants` (null if it did not arrive via that variant's BM25 leg)
+  bm25_rank: number | null;                 // convenience scalar: best (min) non-null across bm25_variant_ranks, null if never via BM25
   rerank_score?: number;
   rerank_backend?: 'bge' | 'judge' | 'none';
   source_quality_weight?: number;
@@ -149,8 +152,11 @@ export async function retrieveMultiQuery(
     // Every arm hands retrieve() its FINAL text — the original arm's is already expanded, the variants
     // are deliberately raw — so the per-call skipExpand is true for all of them (no double-expansion).
     // The caller-facing expansion switch is handled ONCE above via `expandedQuery`, not here.
+    // withDiagnostics: true makes each variant's retrieve() stamp per-hit bm25_rank (its own BM25-leg
+    // rank) — provenance ONLY, it changes nothing retrieved or ranked. Fusion reads it below so a
+    // chunk that arrived via a LATER variant's BM25 leg keeps its attribution.
     allQueries.map((q) =>
-      retrieveFn(q, { ...opts, topK: perVariantK, skipExpand: true, useReranker: false, useSourceWeights: false })
+      retrieveFn(q, { ...opts, topK: perVariantK, skipExpand: true, useReranker: false, useSourceWeights: false, withDiagnostics: true })
         .catch((e) => {
           console.warn('[multi-query] variant retrieve failed', q.slice(0, 60), (e as Error).message);
           return { hits: [], expandedQuery: q } as RetrieveResult;
@@ -169,12 +175,19 @@ export async function retrieveMultiQuery(
       const rank = i + 1;
       let acc = byId.get(h.id);
       if (!acc) {
-        acc = { ...(h as ChunkHit), rrf_score: 0, variant_ranks: new Array(nQ).fill(null) };
+        acc = { ...(h as ChunkHit), rrf_score: 0, variant_ranks: new Array(nQ).fill(null), bm25_variant_ranks: new Array(nQ).fill(null), bm25_rank: null };
         byId.set(h.id, acc);
       }
       acc.variant_ranks[v] = rank;
+      // Preserve THIS variant's BM25-leg provenance — the previous code kept only the first sighting.
+      acc.bm25_variant_ranks[v] = h.bm25_rank ?? null;
       acc.rrf_score += 1 / (RRF_K + rank);
     }
+  }
+  // Convenience scalar: the best (min) BM25 rank across all variants — what Stage 2 attribution reads.
+  for (const acc of byId.values()) {
+    const seen = acc.bm25_variant_ranks.filter((x): x is number => x != null);
+    acc.bm25_rank = seen.length ? Math.min(...seen) : null;
   }
 
   // Fused pool sorted by RRF descending, trimmed to the rerank pool (mirrors retrieve.ts:122).

@@ -604,14 +604,15 @@ async function labRetrieve(a: Record<string, unknown>): Promise<ToolResult> {
   if (multiQuery) {
     const res = await retrieveMultiQuery(query, { topK, includeQuarantined, useReranker, useSourceWeights, hybrid, skipExpand, bm25Mode });
     const hits = res.hits.map((h, i) => {
-      // rerank_score/source_quality_weight are present at runtime but off the exported MultiQueryHit
-      // type (see multi-query.ts) — read them via a narrow cast.
-      const hx = h as typeof h & { rerank_score?: number; source_quality_weight?: number };
+      // rerank_score/source_quality_weight/bm25 provenance are present at runtime but off the exported
+      // MultiQueryHit type (see multi-query.ts) — read them via a narrow cast.
+      const hx = h as typeof h & { rerank_score?: number; source_quality_weight?: number; bm25_rank?: number | null; bm25_variant_ranks?: (number | null)[] };
       return {
         final_rank: i + 1,
         id: h.id, source: h.source, book: h.book, chapter: h.chapter, section: h.section, item_number: h.item_number,
         similarity: h.similarity,
-        vector_rank: null, bm25_rank: null, rrf_score: h.rrf_score ?? null, variant_ranks: h.variant_ranks ?? null,
+        vector_rank: null, bm25_rank: hx.bm25_rank ?? null, bm25_variant_ranks: hx.bm25_variant_ranks ?? null,
+        rrf_score: h.rrf_score ?? null, variant_ranks: h.variant_ranks ?? null,
         source_quality_weight: hx.source_quality_weight ?? null, rerank_score: hx.rerank_score ?? null,
         text: h.text,
       };
@@ -619,9 +620,9 @@ async function labRetrieve(a: Record<string, unknown>): Promise<ToolResult> {
     return ok({
       query, mode: 'multi_query', expandedQuery: res.expandedQuery, includeQuarantined: includeQuarantined ?? null,
       topK, count: hits.length, bm25Mode: bm25Mode ? 'discriminating' : 'off',
-      // NOTE: bm25_rank + the discriminating tsquery/DF report are NOT available in multi_query mode
-      // (they live inside each per-variant retrieve() and fusion does not propagate them; multi-query.ts
-      // is out of scope for this build). Use mode=single_query for per-hit BM25 attribution + the DF report.
+      // bm25_rank IS now attributed through fusion (best rank across variants; bm25_variant_ranks holds
+      // the per-variant detail). The discriminating tsquery/DF report still lives per-variant and is not
+      // aggregated here — use mode=single_query to inspect the DF cut for a given query.
       variants: res.variants, perVariantCounts: res.perVariantCounts, hits,
     });
   }
