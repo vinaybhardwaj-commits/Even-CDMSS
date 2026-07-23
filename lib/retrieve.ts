@@ -35,6 +35,12 @@ export type RetrieveOptions = {
    *  Omitted ⇒ today's behaviour exactly. Never set by production callers. */
   includeQuarantined?: string;
 
+  /** Lab measurement only: restrict BOTH legs to `source = ANY(these)` — a dedicated normative-source
+   *  leg (e.g. ['choosing-wisely','labq:guidelines-lvc-22jul']). NAMED labq: sources are admitted
+   *  through the quarantine guard; un-named ones stay excluded. Omitted/empty ⇒ today's behaviour,
+   *  byte-identical. Never set by production callers. */
+  restrictSources?: string[];
+
   /** Lab measurement only: force per-stage diagnostics (vector_rank/bm25_rank/rrf_score/final_rank)
    *  onto the returned hits even without includeQuarantined (R-5). Never set by production callers. */
   withDiagnostics?: boolean;
@@ -111,6 +117,7 @@ async function embeddingV2ColumnExists(): Promise<boolean> {
 // Clauses carry `$FP_n` placeholders that each leg remaps to its own positional base.
 export type FilterClauseOpts = {
   includeQuarantined?: string;   // lab-only: relax the quarantine guards for ONE named batch
+  restrictSources?: string[];    // lab-only: restrict BOTH legs to source = ANY(these) — admits NAMED labq: sources
   bookFilter?: string;
   chunkType?: string;
   source?: string;
@@ -133,20 +140,38 @@ export function buildFilterClauses(opts: FilterClauseOpts): { clauses: string[];
   const params: unknown[] = [];
   let fp = 0;
 
-  // Fail-safe (PRD §8.1): only a NON-blank label relaxes the guard. Empty/whitespace ⇒ fall through
-  // to today's exact behaviour rather than let labLabel('   ') → 'default' silently widen the filter.
-  const raw = (opts.includeQuarantined ?? '').trim();
-  const label = raw ? labLabel(raw) : '';
-  if (label) {
-    const idx = fp++;                       // this batch's param slot ($FP_idx), reused in BOTH relaxed clauses
-    params.push(`labq:${label}`);
-    clauses[1] = `(visible IS NOT FALSE OR source = $FP_${idx})`;
-    clauses[2] = `(source NOT LIKE 'labq:%' OR source = $FP_${idx})`;
+  // Fail-safe: only genuine non-blank string sources restrict. An empty/all-blank array ⇒ fall
+  // through to today's behaviour (never an empty-everything filter).
+  const restrict = Array.isArray(opts.restrictSources)
+    ? opts.restrictSources.filter((s): s is string => typeof s === 'string' && s.trim().length > 0).map((s) => s.trim())
+    : [];
+
+  if (restrict.length) {
+    // Lab-only multi-source restrict: BOTH legs match ONLY the named sources, via one BOUND array
+    // param (never interpolated). A NAMED labq: source is admitted (source = ANY includes it, and the
+    // visible guard is relaxed the same way includeQuarantined relaxes it); an UN-named labq: source
+    // is not in the array, so `source = ANY(...)` excludes it — same "name it to include it" model.
+    const idx = fp++;
+    params.push(restrict);
+    clauses[1] = `(visible IS NOT FALSE OR source = ANY($FP_${idx}))`;
+    clauses[2] = `source = ANY($FP_${idx})`;
+  } else {
+    // Fail-safe (PRD §8.1): only a NON-blank label relaxes the guard. Empty/whitespace ⇒ fall through
+    // to today's exact behaviour rather than let labLabel('   ') → 'default' silently widen the filter.
+    const raw = (opts.includeQuarantined ?? '').trim();
+    const label = raw ? labLabel(raw) : '';
+    if (label) {
+      const idx = fp++;                       // this batch's param slot ($FP_idx), reused in BOTH relaxed clauses
+      params.push(`labq:${label}`);
+      clauses[1] = `(visible IS NOT FALSE OR source = $FP_${idx})`;
+      clauses[2] = `(source NOT LIKE 'labq:%' OR source = $FP_${idx})`;
+    }
   }
 
   if (opts.bookFilter) { clauses.push(`book = $FP_${fp++}`); params.push(opts.bookFilter); }
   if (opts.chunkType)  { clauses.push(`chunk_type = $FP_${fp++}`); params.push(opts.chunkType); }
-  if (opts.source)     { clauses.push(`source = $FP_${fp++}`); params.push(opts.source); }
+  // The single-source filter is redundant with (and would conflict with) a multi-source restrict.
+  if (opts.source && !restrict.length) { clauses.push(`source = $FP_${fp++}`); params.push(opts.source); }
 
   return { clauses, params };
 }
@@ -319,6 +344,7 @@ export async function retrieve(query: string, opts: RetrieveOptions = {}): Promi
   // ONE named batch via a bound param — see buildFilterClauses. Omitted ⇒ byte-identical SQL.
   const { clauses: filterClauses, params: filterParams } = buildFilterClauses({
     includeQuarantined: opts.includeQuarantined,
+    restrictSources: opts.restrictSources,
     bookFilter: opts.bookFilter,
     chunkType: opts.chunkType,
     source: opts.source,

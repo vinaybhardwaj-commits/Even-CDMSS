@@ -118,6 +118,7 @@ export const LAB_TOOLS = [
         dfMax: { type: 'number', description: `Discriminating mode only: keep lexemes whose corpus document frequency (planner estimate) is ≤ this (default ${BM25_DEFAULT_DFMAX}). Sweep it for the Stage-2 A/B.` },
         rerankBackend: { type: 'string', enum: ['default', 'bge', 'judge'], description: "Rerank backend for this call. 'default' (or omitted) = production default (env-driven, 'judge'). 'bge' = the DETERMINISTIC cross-encoder ruler (bge-reranker-v2-m3, must be pulled on the mini — errors loud if absent, never falls back). 'judge' = the LLM judge. Lab-only; production reranker is unchanged." },
         scoresOnly: { type: 'boolean', description: 'When true, trim each hit to ids + scores (no chunk text, no variant query bodies) — the context-cheap payload for the Stage-2 A/B. Keeps expandedQuery + meta. Default false.' },
+        restrictSources: { type: 'array', items: { type: 'string' }, description: "Restrict BOTH retrieval legs to source = ANY(these) — a dedicated normative-source leg (e.g. ['choosing-wisely','labq:guidelines-lvc-22jul']). A NAMED labq: source is admitted through the quarantine guard; un-named ones stay excluded. Omitted/empty ⇒ unrestricted. Lab-only." },
       },
       required: ['query'],
     },
@@ -607,10 +608,15 @@ async function labRetrieve(a: Record<string, unknown>): Promise<ToolResult> {
   const rb = S(a.rerankBackend);
   const rerankBackend = rb === 'bge' ? 'bge' : rb === 'judge' ? 'judge' : undefined;
   const scoresOnly = a.scoresOnly === true;
+  // Normative-source leg measurement: restrict both legs to these exact sources (labq: admitted if named).
+  const restrictList = Array.isArray(a.restrictSources)
+    ? a.restrictSources.filter((x): x is string => typeof x === 'string' && x.trim().length > 0).map((x) => x.trim())
+    : [];
+  const restrictSources = restrictList.length ? restrictList : undefined;
 
   try {
     if (multiQuery) {
-      const res = await retrieveMultiQuery(query, { topK, includeQuarantined, useReranker, useSourceWeights, hybrid, skipExpand, bm25Mode, rerankBackend });
+      const res = await retrieveMultiQuery(query, { topK, includeQuarantined, useReranker, useSourceWeights, hybrid, skipExpand, bm25Mode, rerankBackend, restrictSources });
       const full = res.hits.map((h, i) => {
         // rerank_score/backend/source_quality_weight/bm25 provenance are present at runtime but off the
         // exported MultiQueryHit type (see multi-query.ts) — read them via a narrow cast.
@@ -629,6 +635,7 @@ async function labRetrieve(a: Record<string, unknown>): Promise<ToolResult> {
       const hits = scoresOnly ? full.map(pickScoreFields) : full;
       return ok({
         query, mode: 'multi_query', expandedQuery: res.expandedQuery, includeQuarantined: includeQuarantined ?? null,
+        restrictSources: restrictSources ?? null,
         topK, count: hits.length, bm25Mode: bm25Mode ? 'discriminating' : 'off', rerankBackend: rerankBackend ?? 'default', scoresOnly,
         perVariantCounts: res.perVariantCounts,
         // scoresOnly drops the variant query bodies (large: the expanded paragraph + variant texts).
@@ -637,7 +644,7 @@ async function labRetrieve(a: Record<string, unknown>): Promise<ToolResult> {
       });
     }
 
-    const res = await retrieve(query, { topK, includeQuarantined, useReranker, useSourceWeights, hybrid, skipExpand, withDiagnostics: true, bm25Mode, rerankBackend });
+    const res = await retrieve(query, { topK, includeQuarantined, useReranker, useSourceWeights, hybrid, skipExpand, withDiagnostics: true, bm25Mode, rerankBackend, restrictSources });
     const full = res.hits.map((h, i) => ({
       final_rank: h.final_rank ?? i + 1,
       id: h.id, source: h.source, book: h.book, chapter: h.chapter, section: h.section, item_number: h.item_number,
@@ -649,6 +656,7 @@ async function labRetrieve(a: Record<string, unknown>): Promise<ToolResult> {
     const hits = scoresOnly ? full.map(pickScoreFields) : full;
     return ok({
       query, mode: 'single_query', expandedQuery: res.expandedQuery, includeQuarantined: includeQuarantined ?? null,
+      restrictSources: restrictSources ?? null,
       topK, count: hits.length, bm25Mode: bm25Mode ? 'discriminating' : 'off', rerankBackend: rerankBackend ?? 'default', scoresOnly,
       meta: res.meta, hits,
     });
