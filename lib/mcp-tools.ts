@@ -12,7 +12,7 @@ import { governedChat } from './trace';
 import { fetchOpdNoteByUid } from './metabase';
 import { sql } from './db';
 import { guardReadOnlySql } from './sql-guard-core';
-import { retrieve, clampLabRetrieveTopK } from './retrieve';
+import { retrieve, clampLabRetrieveTopK, BM25_DEFAULT_DFMAX } from './retrieve';
 import { retrieveMultiQuery } from './multi-query';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
@@ -113,6 +113,8 @@ export const LAB_TOOLS = [
         hybrid: { type: 'boolean', description: 'Run the BM25 leg alongside vector (default true).' },
         multiQuery: { type: 'boolean', description: 'Route through retrieveMultiQuery — the multi-variant fusion Ask/DDx run (default false).' },
         skipExpand: { type: 'boolean', description: 'Skip query expansion so single- vs multi-query arms are held identical (default false).' },
+        bm25Mode: { type: 'string', enum: ['off', 'discriminating'], description: "BM25 leg mode (default 'off' = today's plainto-AND). 'discriminating' keeps only low-DF (rare) lexemes, OR-joins them, caps the scan — the R-2 measurement leg. Lab-only; production is always 'off'." },
+        dfMax: { type: 'number', description: `Discriminating mode only: keep lexemes whose corpus document frequency (planner estimate) is ≤ this (default ${BM25_DEFAULT_DFMAX}). Sweep it for the Stage-2 A/B.` },
       },
       required: ['query'],
     },
@@ -595,9 +597,12 @@ async function labRetrieve(a: Record<string, unknown>): Promise<ToolResult> {
   const hybrid = a.hybrid === undefined ? true : a.hybrid === true;
   const multiQuery = a.multiQuery === true;
   const skipExpand = a.skipExpand === true;
+  // R-2 Stage 1: lab-only discriminating BM25 leg. 'off' (default) ⇒ today's production behaviour.
+  const dfMax = Number.isFinite(Number(a.dfMax)) && Number(a.dfMax) > 0 ? Math.floor(Number(a.dfMax)) : BM25_DEFAULT_DFMAX;
+  const bm25Mode = S(a.bm25Mode) === 'discriminating' ? { strategy: 'discriminating' as const, dfMax } : undefined;
 
   if (multiQuery) {
-    const res = await retrieveMultiQuery(query, { topK, includeQuarantined, useReranker, useSourceWeights, hybrid, skipExpand });
+    const res = await retrieveMultiQuery(query, { topK, includeQuarantined, useReranker, useSourceWeights, hybrid, skipExpand, bm25Mode });
     const hits = res.hits.map((h, i) => {
       // rerank_score/source_quality_weight are present at runtime but off the exported MultiQueryHit
       // type (see multi-query.ts) — read them via a narrow cast.
@@ -613,11 +618,15 @@ async function labRetrieve(a: Record<string, unknown>): Promise<ToolResult> {
     });
     return ok({
       query, mode: 'multi_query', expandedQuery: res.expandedQuery, includeQuarantined: includeQuarantined ?? null,
-      topK, count: hits.length, variants: res.variants, perVariantCounts: res.perVariantCounts, hits,
+      topK, count: hits.length, bm25Mode: bm25Mode ? 'discriminating' : 'off',
+      // NOTE: bm25_rank + the discriminating tsquery/DF report are NOT available in multi_query mode
+      // (they live inside each per-variant retrieve() and fusion does not propagate them; multi-query.ts
+      // is out of scope for this build). Use mode=single_query for per-hit BM25 attribution + the DF report.
+      variants: res.variants, perVariantCounts: res.perVariantCounts, hits,
     });
   }
 
-  const res = await retrieve(query, { topK, includeQuarantined, useReranker, useSourceWeights, hybrid, skipExpand, withDiagnostics: true });
+  const res = await retrieve(query, { topK, includeQuarantined, useReranker, useSourceWeights, hybrid, skipExpand, withDiagnostics: true, bm25Mode });
   const hits = res.hits.map((h, i) => ({
     final_rank: h.final_rank ?? i + 1,
     id: h.id, source: h.source, book: h.book, chapter: h.chapter, section: h.section, item_number: h.item_number,
@@ -628,7 +637,7 @@ async function labRetrieve(a: Record<string, unknown>): Promise<ToolResult> {
   }));
   return ok({
     query, mode: 'single_query', expandedQuery: res.expandedQuery, includeQuarantined: includeQuarantined ?? null,
-    topK, count: hits.length, meta: res.meta, hits,
+    topK, count: hits.length, bm25Mode: bm25Mode ? 'discriminating' : 'off', meta: res.meta, hits,
   });
 }
 

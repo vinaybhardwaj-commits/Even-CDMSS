@@ -33,6 +33,11 @@ export type RetrieveOptions = {
   /** Lab measurement only: force per-stage diagnostics (vector_rank/bm25_rank/rrf_score/final_rank)
    *  onto the returned hits even without includeQuarantined (R-5). Never set by production callers. */
   withDiagnostics?: boolean;
+
+  /** Lab measurement only (R-2 Stage 1). When set, the BM25 leg keeps only lexemes whose corpus
+   *  document frequency (planner estimate) is ≤ dfMax, OR-joins them, and caps the ranked scan.
+   *  Omitted ⇒ today's plainto-AND behaviour, byte-identical. NEVER set by a production caller. */
+  bm25Mode?: { strategy: 'discriminating'; dfMax: number };
 };
 
 export type ChunkHitWithMeta = ChunkHit & {
@@ -60,6 +65,11 @@ export type RetrieveResult = {
     reranked?: boolean;
     source_weighted?: boolean;
     embedding_column?: 'embedding' | 'embedding_v2';
+
+    // Lab-only BM25 discriminating-mode diagnostics (R-2 Stage 1) — present only when bm25Mode is set.
+    bm25_mode?: 'discriminating';
+    bm25_tsquery?: string;                                          // the OR-joined discriminating tsquery actually run
+    bm25_terms?: { lexeme: string; df: number; kept: boolean }[];  // per-lexeme DF estimate + keep decision
   };
 };
 
@@ -149,6 +159,131 @@ export function clampLabRetrieveTopK(v: unknown): number {
   return Math.min(20, n);
 }
 
+// ── BM25 leg builders (R-2 Stage 1 — lab measurement only) ───────────────────────
+// The naive OR-of-all-terms scores millions of rows and takes >180s (measured). The discriminating
+// leg keeps only low-DF (rare, discriminating) lexemes and caps the ranked candidate set. All the
+// SQL here is INFERRED against the live corpus schema and reported verbatim for validation.
+
+/** Cap on the ranked candidate set for the discriminating leg — ts_rank_cd never scores more than
+ *  this many rows, so the leg cannot time out. Measured: OR-all-11-terms capped here = ~5s, vs >180s uncapped. */
+export const BM25_DISCRIMINATING_CAP = 5000;
+
+/** Default dfMax the lab tool uses when the caller gives none: the rare-term planner floor is ~11,204
+ *  (0.5% default selectivity) and the lowest common stem measured is ~46,685, so 30,000 cleanly
+ *  separates them. Stage 2 sweeps this (D2); it is not a tuned production constant. */
+export const BM25_DEFAULT_DFMAX = 30000;
+
+/** Lexemes that are safe to OR into a to_tsquery — alphanumeric stems only. Hyphenated/compound
+ *  stems (e.g. `co-prescrib`) are dropped to avoid tsquery syntax errors; they decompose into
+ *  common parts (`co`, `prescrib`) the DF cut drops anyway. */
+const SAFE_LEXEME_RE = /^[a-z0-9]+$/i;
+
+/** Parse a tsquery `::text` (e.g. `'antihistamin' & 'montelukast' & 'co-prescrib'`) into bare lexemes. Pure. */
+export function parseTsqueryLexemes(tsqueryText: string): string[] {
+  if (!tsqueryText) return [];
+  return tsqueryText
+    .split(/\s*[&|]\s*/)
+    .map((t) => t.trim().replace(/^!+/, '').replace(/^\(+/, '').replace(/\)+$/, ''))
+    .map((t) => t.replace(/^'(.*)'(?::[*\d]+)?$/, '$1'))   // strip quotes + any weight/prefix marker
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+
+/** Keep the DISCRIMINATING lexemes: DF ≤ dfMax AND safe-to-OR (alphanumeric). Deduped, lowercased. Pure. */
+export function selectDiscriminatingLexemes(terms: { lexeme: string; df: number }[], dfMax: number): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const { lexeme, df } of terms) {
+    if (!(df <= dfMax)) continue;                 // too common (or unknown df) — drop
+    if (!SAFE_LEXEME_RE.test(lexeme)) continue;   // non-alphanumeric stem — drop (tsquery-syntax safety)
+    const lx = lexeme.toLowerCase();
+    if (seen.has(lx)) continue;
+    seen.add(lx);
+    out.push(lx);
+  }
+  return out;
+}
+
+/** OR-join lexemes into a to_tsquery input string (`'a | b'`). Empty ⇒ '' (⇒ no BM25 leg). Pure. */
+export function orJoinLexemes(lexemes: string[]): string {
+  return lexemes.join(' | ');
+}
+
+/** DEFAULT (production) BM25 SQL — byte-identical to today's inline template. Pure. */
+export function defaultBm25Sql(bm25FilterSQL: string, pool: number): string {
+  return `
+    SELECT id, ROW_NUMBER() OVER (ORDER BY ts_rank_cd(text_tsv, plainto_tsquery('english', $1)) DESC) AS rank
+    FROM mksap_chunks
+    WHERE text_tsv @@ plainto_tsquery('english', $1)
+      AND ${bm25FilterSQL}
+    ORDER BY ts_rank_cd(text_tsv, plainto_tsquery('english', $1)) DESC
+    LIMIT ${pool}
+  `;
+}
+
+/** DISCRIMINATING BM25 SQL — caps the candidate set BEFORE ranking (LIMIT on a pre-ranked CTE) so
+ *  ts_rank_cd cannot score more than `capN` rows. $1 = the OR-joined discriminating tsquery. Pure. */
+export function discriminatingBm25Sql(bm25FilterSQL: string, pool: number, capN: number): string {
+  return `
+    WITH cand AS (
+      SELECT id, text_tsv
+      FROM mksap_chunks
+      WHERE text_tsv @@ to_tsquery('english', $1)
+        AND ${bm25FilterSQL}
+      LIMIT ${capN}
+    )
+    SELECT id, ROW_NUMBER() OVER (ORDER BY ts_rank_cd(text_tsv, to_tsquery('english', $1)) DESC) AS rank
+    FROM cand
+    ORDER BY ts_rank_cd(text_tsv, to_tsquery('english', $1)) DESC
+    LIMIT ${pool}
+  `;
+}
+
+/** The plainto-lexeme extraction SQL — INFERRED, reported verbatim. $1 = the BM25 query text. */
+export function plaintoLexemesSql(): string {
+  return `SELECT plainto_tsquery('english', $1)::text AS q`;
+}
+
+/** The BOUNDED DF-estimate SQL (D6): the PLANNER'S row estimate via EXPLAIN — no execution, no scan,
+ *  no COUNT over 2.2M rows. $1 = a single lexeme. INFERRED, reported verbatim. */
+export function dfEstimateSql(): string {
+  return `EXPLAIN (FORMAT JSON) SELECT 1 FROM mksap_chunks WHERE text_tsv @@ to_tsquery('english', $1)`;
+}
+
+export type Bm25DiscriminatingPlan = {
+  tsquery: string;                                           // OR-joined kept lexemes ('' ⇒ no leg)
+  terms: { lexeme: string; df: number; kept: boolean }[];    // per-lexeme DF estimate + keep decision
+};
+
+/**
+ * Build the discriminating BM25 tsquery + per-term DF report for `bm25Query`. FAIL-SAFE: any error
+ * (DB, parse, unexpected shape) ⇒ null, so the caller degrades to an EMPTY BM25 leg — never a
+ * timeout, never wrong data. Uses the bounded planner-estimate DF (D6), one EXPLAIN per lexeme.
+ */
+async function buildDiscriminatingBm25(bm25Query: string, dfMax: number): Promise<Bm25DiscriminatingPlan | null> {
+  try {
+    const sqlText = sql as unknown as (q: string, p: unknown[]) => Promise<Record<string, unknown>[]>;
+    const lexRows = await sqlText(plaintoLexemesSql(), [bm25Query]);
+    const lexemes = parseTsqueryLexemes(String(lexRows?.[0]?.q ?? ''));
+    if (!lexemes.length) return null;
+    const dfs = await Promise.all(lexemes.map(async (lexeme) => {
+      try {
+        const r = await sqlText(dfEstimateSql(), [lexeme]);
+        const plan = (r?.[0]?.['QUERY PLAN'] as { Plan?: { 'Plan Rows'?: number } }[] | undefined)?.[0]?.Plan;
+        const est = Number(plan?.['Plan Rows']);
+        return { lexeme, df: Number.isFinite(est) ? est : Number.POSITIVE_INFINITY };
+      } catch {
+        return { lexeme, df: Number.POSITIVE_INFINITY };   // unknown ⇒ treat as common ⇒ dropped
+      }
+    }));
+    const kept = new Set(selectDiscriminatingLexemes(dfs, dfMax));
+    const terms = dfs.map((d) => ({ lexeme: d.lexeme, df: d.df, kept: kept.has(d.lexeme.toLowerCase()) }));
+    return { tsquery: orJoinLexemes([...kept]), terms };
+  } catch {
+    return null;
+  }
+}
+
 export async function retrieve(query: string, opts: RetrieveOptions = {}): Promise<RetrieveResult> {
   const topK = opts.topK ?? TOP_K;
   const minSim = opts.minSimilarity ?? 0.3;
@@ -200,21 +335,34 @@ export async function retrieve(query: string, opts: RetrieveOptions = {}): Promi
   // ---- BM25 leg ----
   const bm25Query = (opts.bm25Query ?? query).trim();
   const bm25FilterSQL = renderFilterSql(filterClauses, 2);
-  const bm25SQL = `
-    SELECT id, ROW_NUMBER() OVER (ORDER BY ts_rank_cd(text_tsv, plainto_tsquery('english', $1)) DESC) AS rank
-    FROM mksap_chunks
-    WHERE text_tsv @@ plainto_tsquery('english', $1)
-      AND ${bm25FilterSQL}
-    ORDER BY ts_rank_cd(text_tsv, plainto_tsquery('english', $1)) DESC
-    LIMIT ${POOL}
-  `;
-  const bm25Params = [bm25Query, ...filterParams];
+
+  // DEFAULT (production): plainto-AND, byte-identical to today. LAB-ONLY discriminating mode swaps in
+  // a DF-cut OR-of-rare-terms leg with a capped scan — never set by any production caller (§3).
+  let bm25SQL: string;
+  let bm25Params: unknown[];
+  let bm25Enabled = true;
+  let bm25Disc: Bm25DiscriminatingPlan | null = null;
+  if (opts.bm25Mode?.strategy === 'discriminating') {
+    bm25Disc = await buildDiscriminatingBm25(bm25Query, opts.bm25Mode.dfMax);
+    if (bm25Disc && bm25Disc.tsquery) {
+      bm25SQL = discriminatingBm25Sql(bm25FilterSQL, POOL, BM25_DISCRIMINATING_CAP);
+      bm25Params = [bm25Disc.tsquery, ...filterParams];
+    } else {
+      // no discriminating terms survived the DF cut ⇒ EMPTY BM25 leg (never a timeout, never a throw).
+      bm25SQL = '';
+      bm25Params = [];
+      bm25Enabled = false;
+    }
+  } else {
+    bm25SQL = defaultBm25Sql(bm25FilterSQL, POOL);
+    bm25Params = [bm25Query, ...filterParams];
+  }
 
   type RankRow = { id: number; rank: number };
   const sqlFn = sql as unknown as (q: string, p: unknown[]) => Promise<RankRow[]>;
   const [vecRows, bm25Rows] = await Promise.all([
     sqlFn(vecSQL, vecParams).catch(() => [] as RankRow[]),
-    hybrid ? sqlFn(bm25SQL, bm25Params).catch(() => [] as RankRow[]) : Promise.resolve([] as RankRow[]),
+    (hybrid && bm25Enabled) ? sqlFn(bm25SQL, bm25Params).catch(() => [] as RankRow[]) : Promise.resolve([] as RankRow[]),
   ]);
 
   // ---- RRF fusion ----
@@ -238,6 +386,7 @@ export async function retrieve(query: string, opts: RetrieveOptions = {}): Promi
       vector_pool: vecRows.length, bm25_pool: bm25Rows.length, fused: 0,
       bm25_query: bm25Query, pool_size: 0, reranked: false, source_weighted: false,
       embedding_column: embCol as 'embedding' | 'embedding_v2',
+      ...(bm25Disc ? { bm25_mode: 'discriminating' as const, bm25_tsquery: bm25Disc.tsquery, bm25_terms: bm25Disc.terms } : {}),
     } };
   }
 
@@ -327,6 +476,7 @@ export async function retrieve(query: string, opts: RetrieveOptions = {}): Promi
       reranked: useReranker,
       source_weighted: useSourceWeights,
       embedding_column: embCol as 'embedding' | 'embedding_v2',
+      ...(bm25Disc ? { bm25_mode: 'discriminating' as const, bm25_tsquery: bm25Disc.tsquery, bm25_terms: bm25Disc.terms } : {}),
     },
   };
 }
