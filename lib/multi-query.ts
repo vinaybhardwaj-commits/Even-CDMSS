@@ -19,7 +19,7 @@ import { geminiUtilityModel } from './llm';
 import { governedChat } from './trace';
 import { retrieve, RRF_K, type RetrieveOptions, type RetrieveResult } from './retrieve';
 import { rerank } from './rerank';
-import { expandQuery } from './expand';
+import { expandQuery, RETRIEVAL_LLM_SEED } from './expand';
 import { computeSourceQualityWeight } from './source-quality';
 import type { ChunkHit } from './db';
 
@@ -51,9 +51,9 @@ export async function generateQueryVariants(question: string): Promise<string[]>
         { role: 'system', content: SYSTEM_VARIANTS },
         { role: 'user', content: question },
       ],
-      temperature: 0.2,  // steadier variants — 0.4 drifted (e.g. latched onto "arthropod bite" and buried the real differential)
+      temperature: 0,  // deterministic variants (was 0.2 sampled) — removes run-to-run pool churn; seed belt-and-suspenders
       max_tokens: 300,
-      ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
+      ...({ options: { num_ctx: 8192, seed: RETRIEVAL_LLM_SEED }, keep_alive: '15m' } as Record<string, unknown>),
     }, { gemini: geminiUtilityModel() });
     let txt = r.choices?.[0]?.message?.content?.trim() || '';
     // Strip markdown fences if the model added them
