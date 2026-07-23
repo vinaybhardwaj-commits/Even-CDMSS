@@ -483,6 +483,14 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "normative-grounding",
+    "plane": "unregistered"
+  },
+  {
+    "id": "normative-grounding-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "observability-meta",
     "plane": "unregistered"
   },
@@ -2918,6 +2926,26 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "multi-query",
     "to": "trace",
+    "kind": "value"
+  },
+  {
+    "from": "normative-grounding",
+    "to": "citations-core",
+    "kind": "type"
+  },
+  {
+    "from": "normative-grounding",
+    "to": "normative-grounding-core",
+    "kind": "value"
+  },
+  {
+    "from": "normative-grounding",
+    "to": "retrieve",
+    "kind": "value"
+  },
+  {
+    "from": "normative-grounding-core",
+    "to": "citations-core",
     "kind": "value"
   },
   {
