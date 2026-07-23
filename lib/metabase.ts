@@ -38,8 +38,23 @@ const IP_COLS = [
   'expected_resolution_date', 'reason_for_consultation', 'relevant_medical_history', 'comorbidities',
   'refer_to', 'num_referrals',   // 0.6 — disposition: a referral/handoff is not a definitive-treatment episode
 ];
-const SELECT_COLS = IP_COLS.map((c) => `ip.${c}`).join(', ')
-  + ', d.presenting_complaint AS dpipe_pc, d.diagnosis AS dpipe_dx, d.plan_of_management AS dpipe_pom, d.further_investigation AS dpipe_inv';
+// Obstetric-template adapter (CDMSS-OBGYN-TEMPLATE-EXTRACTION-FIX §9): the obstetric block lives in
+// columns the GP projection never selected. Added to the projection ONLY when OBSTETRIC_EXTRACTION_ENABLED
+// is on, so the default SELECT (and every GP/other fetch) is byte-identical — a wrong inferred column
+// name cannot break the standard audit path; the orchestrator validates these live before enabling.
+const OBSTETRIC_IP_COLS = [
+  'visit_notes',
+  'gynae_patient_history__menstrual_history__last_menstrual_period',
+  'gynae_patient_history__obstetric_history__gravidity',
+  'gynae_patient_history__obstetric_history__parity',
+];
+function ipCols(): string[] {
+  return process.env.OBSTETRIC_EXTRACTION_ENABLED === '1' ? [...IP_COLS, ...OBSTETRIC_IP_COLS] : IP_COLS;
+}
+function selectCols(): string {
+  return ipCols().map((c) => `ip.${c}`).join(', ')
+    + ', d.presenting_complaint AS dpipe_pc, d.diagnosis AS dpipe_dx, d.plan_of_management AS dpipe_pom, d.further_investigation AS dpipe_inv';
+}
 
 const DPIPE_SELECT = 'presc_uid, presenting_complaint, diagnosis, plan_of_management, further_investigation';
 // dpipeWhere bounds the pipeline scan (a date range for day-fetches, a presc_uid filter for
@@ -108,7 +123,7 @@ export async function fetchOpdNotesForDay(day: string, excludeUids: string[], li
   const lim = Math.max(1, Math.min(50, Math.floor(limit)));
   const join = joinDpipe(`(timestamp AT TIME ZONE 'Asia/Kolkata')::date BETWEEN '${day}'::date - 1 AND '${day}'::date + 1`);
   return metabaseQuery(
-    `SELECT ${SELECT_COLS} FROM ${SOURCE} ip ${join} WHERE ${baseWhere(day)}${notIn}${intakeExcludeClause(excludeDoctorUids)} ORDER BY ip.timestamp ASC LIMIT ${lim}`,
+    `SELECT ${selectCols()} FROM ${SOURCE} ip ${join} WHERE ${baseWhere(day)}${notIn}${intakeExcludeClause(excludeDoctorUids)} ORDER BY ip.timestamp ASC LIMIT ${lim}`,
   );
 }
 
@@ -116,7 +131,7 @@ export async function fetchOpdNotesForDay(day: string, excludeUids: string[], li
 export async function fetchOpdNoteByUid(uid: string): Promise<Record<string, unknown> | null> {
   if (!isUid(uid)) throw new Error('bad uid');
   const join = joinDpipe(`presc_uid = '${uid}'`);
-  const rows = await metabaseQuery(`SELECT ${SELECT_COLS} FROM ${SOURCE} ip ${join} WHERE ip.uid = '${uid}' LIMIT 1`);
+  const rows = await metabaseQuery(`SELECT ${selectCols()} FROM ${SOURCE} ip ${join} WHERE ip.uid = '${uid}' LIMIT 1`);
   return rows[0] ?? null;
 }
 
@@ -126,7 +141,7 @@ export async function fetchOpdNotesByUids(uids: string[]): Promise<Record<string
   if (!ex.length) return [];
   const inList = ex.map((u) => `'${u}'`).join(', ');
   const join = joinDpipe(`presc_uid IN (${inList})`);
-  return metabaseQuery(`SELECT ${SELECT_COLS} FROM ${SOURCE} ip ${join} WHERE ip.uid IN (${inList})`);
+  return metabaseQuery(`SELECT ${selectCols()} FROM ${SOURCE} ip ${join} WHERE ip.uid IN (${inList})`);
 }
 
 /** Map doctor_uid → display name (db13 `doctors.name_with_prefix`). Names are staff data,

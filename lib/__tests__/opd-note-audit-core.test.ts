@@ -6,7 +6,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { rowToOpdCase, opdCaseText, isTeleconsultEncounter, hasHandsOnExam } from '../opd-ingest-core.ts';
 import { computeOpdScore } from '../opd-note-score-core.ts';
-import { opdCompleteness, prescribingChecks, parseOpdAnalysis, medDoseDocumented, resolveMedRoute, opdSignalType, stampFindingIdentity, followUpDocumented, consolidateDecisions, neutralizeMetadataFindings, medHasMoleculeFrom, NSAID_MOLECULES, MUSCLE_RELAXANT_MOLECULES, OPD_SIGNAL_TYPES, OPD_AUDIT_SYSTEM, type OpdFinding } from '../opd-note-audit-core.ts';
+import { opdCompleteness, prescribingChecks, parseOpdAnalysis, medDoseDocumented, resolveMedRoute, opdSignalType, stampFindingIdentity, followUpDocumented, consolidateDecisions, neutralizeMetadataFindings, medHasMoleculeFrom, bpDocumented, obstetricDosingComplete, NSAID_MOLECULES, MUSCLE_RELAXANT_MOLECULES, OPD_SIGNAL_TYPES, OPD_AUDIT_SYSTEM, type OpdFinding } from '../opd-note-audit-core.ts';
+import type { DeidOpdCase } from '../opd-ingest-core.ts';
 
 // Mirrors a real GP row (medications + jsonb arrive as JSON strings via Metabase).
 const ROW: Record<string, unknown> = {
@@ -641,4 +642,114 @@ test('Part 1: an ICD/coding-completeness gap finding is neutralised to non-scori
   const out = neutralizeMetadataFindings(fs);
   assert.equal(out[0].informational, true);
   assert.equal(out[0].signal_type, 'coding_completeness');
+});
+
+// ── Obstetric-template extraction adapter (CDMSS-OBGYN-TEMPLATE-EXTRACTION-FIX) ───────────────────
+const OBS_ROW: Record<string, unknown> = {
+  uid: 'obs1234567', doctor_uid: 'docR', type_of_prescription: 'HOSPITAL_GYNAECOLOGY_OBSTETRICS',
+  timestamp: '2026-07-20T05:00:00+05:30', prescription_url: 'https://x/y.pdf',
+  visit_notes: JSON.stringify([
+    // an older, carried-over visit that must be IGNORED by current-visit selection
+    { show_in_prescription: false, is_carried_over: true, date_of_visit: '2026-06-01', symptoms_notes: '<p>old carried-over note</p>' },
+    // the current visit (show_in_prescription = true)
+    { show_in_prescription: true, is_carried_over: false, date_of_visit: '2026-07-20', trimester_at_visit: '3',
+      gestational_age_at_visit: '31w', patient_weight_kgs: '62', symphysis_fundal_height_cm: '30',
+      fetal_heart_rate_bpm: '142', fetal_presentation: 'Cephalic', amniotic_fluid_index_cm: '12', estimated_fetal_weight_g: '1800',
+      symptoms_notes: '<p>H/O amenorrhoea. BP 110/70 mmHg, no pedal edema.</p>' },
+  ]),
+  gynae_patient_history__menstrual_history__last_menstrual_period: '2025-12-10',
+  gynae_patient_history__obstetric_history__gravidity: '2',
+  gynae_patient_history__obstetric_history__parity: '1',
+  medications: JSON.stringify([
+    { brand_name: 'Femzact', dosage: '1-0-1', frequency: '', duration: '', route_of_administration: 'oral' },
+    { brand_name: 'Gravipro', generic_name: 'Progesterone', dosage: '1', frequency: '0-0-1', duration: '8w', route_of_administration: 'oral' },
+  ]),
+  further_investigation: JSON.stringify([{ name: 'CBC' }, { name: 'GCT' }, { name: 'USG' }]),
+  followup__followup_type: 'MANDATORY_FOLLOW_UP', followup__followup_date: '2026-08-03',
+};
+
+test('obstetric adapter (flag ON): populates canonical fields from the obstetric template + current-visit selection', () => {
+  process.env.OBSTETRIC_EXTRACTION_ENABLED = '1';
+  try {
+    const { case: c } = rowToOpdCase(OBS_ROW);
+    assert.equal(c.isObstetric, true);
+    assert.ok(c.presentingComplaints.join(' ').toLowerCase().includes('amenorrhoea'), 'complaint from symptoms_notes');
+    assert.ok(!c.presentingComplaints.join(' ').includes('old carried-over'), 'current-visit selection ignored the carried-over element');
+    assert.ok(c.examination.some((e) => /SFH 30 cm/.test(e)), 'fetal measures rendered into examination');
+    assert.ok([...c.examination, ...c.presentingComplaints].some((t) => /BP 110\/70/.test(t)), 'BP present in narrative');
+    assert.ok(c.impressions.some((i) => /POG 31w/.test(i)), 'assessment = gestational status');
+    assert.ok(c.impressions.some((i) => /G2 P1/.test(i)), 'gravidity/parity in assessment');
+    assert.equal(c.medications.length, 2);
+    assert.ok(c.investigations.includes('CBC'));
+    assert.equal(c.obstetric?.trimester, 3);
+    assert.equal(c.obstetric?.gaDocumented, true);
+    assert.equal(c.obstetric?.lmpOrEddDocumented, true);
+    assert.equal(c.obstetric?.gravidityParityDocumented, true);
+    assert.equal(c.obstetric?.weightDocumented, true);
+    assert.equal(c.obstetric?.sfhDocumented, true);
+
+    const comp = opdCompleteness(c);
+    assert.ok(comp.items.some((i) => i.key === 'ga_pog'), 'obstetric mandatory set is used');
+    assert.ok(!comp.missing.includes('Complete medication dosing'), '1-0-1 schedule counts as valid dosing (blank frequency)');
+    assert.ok(comp.coverage > 0.8, `a rich antenatal note must score near-complete, got ${comp.coverage}`);
+    // the auditor prompt gets the obstetric encounter context (no ICD-diagnosis fault)
+    assert.match(opdCaseText(c), /ANTENATAL \/ OBSTETRIC/);
+  } finally { delete process.env.OBSTETRIC_EXTRACTION_ENABLED; }
+});
+
+test('obstetric adapter (flag OFF): the obstetric note audits via the GP path, byte-identical (no isObstetric)', () => {
+  delete process.env.OBSTETRIC_EXTRACTION_ENABLED;
+  const { case: c } = rowToOpdCase(OBS_ROW);
+  assert.equal(c.isObstetric, undefined);
+  assert.equal(c.obstetric, undefined);
+  assert.equal(c.presentingComplaints.length, 0, 'GP mapping reads nothing from the obstetric block (the current bug, unchanged)');
+  const comp = opdCompleteness(c);
+  assert.ok(comp.items.every((i) => i.key !== 'ga_pog'), 'GP checklist, not the obstetric set');
+  assert.ok(!opdCaseText(c).includes('ANTENATAL / OBSTETRIC'));
+});
+
+// direct-case helpers for the mandatory-set logic (no env / no row needed)
+function obsCase(over: Partial<DeidOpdCase>): DeidOpdCase {
+  return {
+    consultType: null, reasonForConsult: null, presentingComplaints: ['H/O amenorrhoea'],
+    diagnosisCodes: [], impressionCodes: [], impressions: ['POG 31w'], history: [], comorbidities: [],
+    medications: [{ brand: 'Femzact', dose: '1-0-1', route: 'oral' }], investigations: ['CBC'], advice: [],
+    examination: ['BP 110/70 mmHg', 'Weight 62 kg', 'SFH 30 cm'], allergies: null,
+    followUpType: 'MANDATORY_FOLLOW_UP', followUpDateSet: true, isObstetric: true,
+    obstetric: { trimester: 3, gaDocumented: true, lmpOrEddDocumented: true, gravidityParityDocumented: true, weightDocumented: true, sfhDocumented: true, fhrDocumented: true, presentationDocumented: true },
+    ...over,
+  };
+}
+
+test('obstetric mandatory set: SFH/FHR/presentation required only in the 2nd/3rd trimester', () => {
+  const noFetal = { trimester: 3, gaDocumented: true, lmpOrEddDocumented: true, gravidityParityDocumented: true, weightDocumented: true, sfhDocumented: false, fhrDocumented: false, presentationDocumented: false };
+  const t3 = opdCompleteness(obsCase({ obstetric: { ...noFetal, trimester: 3 } }));
+  assert.equal(t3.items.find((i) => i.key === 'obstetric_vitals')!.present, false, 'T3 with no fetal params ⇒ vitals gap');
+  assert.match(t3.items.find((i) => i.key === 'obstetric_vitals')!.label, /fetal/);
+  const t1 = opdCompleteness(obsCase({ obstetric: { ...noFetal, trimester: 1 } }));
+  assert.equal(t1.items.find((i) => i.key === 'obstetric_vitals')!.present, true, 'T1 with BP+weight ⇒ vitals met (fetal not required)');
+  assert.ok(!/fetal/.test(t1.items.find((i) => i.key === 'obstetric_vitals')!.label));
+});
+
+test('obstetric mandatory set: rich note near-complete; follow-up scored in Continuity not Documentation', () => {
+  const comp = opdCompleteness(obsCase({}));
+  assert.deepEqual(comp.missing, [], 'a fully-documented antenatal note has no gaps');
+  assert.equal(comp.coverage, 1);
+  assert.equal(comp.patientCentred.total, 1, 'follow-up is the Continuity subset');
+  assert.equal(comp.patientCentred.present, 1);
+  const keys = comp.items.map((i) => i.key);
+  assert.deepEqual(keys, ['ga_pog', 'lmp_edd', 'gravidity_parity', 'presenting_complaint', 'obstetric_vitals', 'medication_dosing', 'investigations', 'follow_up']);
+});
+
+test('obstetricDosingComplete: a 1-0-1 schedule counts even with a blank frequency field', () => {
+  assert.equal(obstetricDosingComplete({ brand: 'Femzact', dose: '1-0-1', frequency: '', route: 'oral' }), true);
+  assert.equal(obstetricDosingComplete({ brand: 'Gravipro', dose: '1', frequency: '0-0-1', route: 'oral' }), true);
+  assert.equal(obstetricDosingComplete({ generic: 'amoxicillin', dose: '500mg', frequency: '1-1-1', route: 'oral' }), true);
+  assert.equal(obstetricDosingComplete({ brand: 'Mystery', dose: '', frequency: '', route: 'oral' }), false, 'no amount + no frequency ⇒ incomplete');
+});
+
+test('bpDocumented reads BP from the obstetric narrative (no structured BP column in db13, §9)', () => {
+  assert.equal(bpDocumented(obsCase({ examination: ['BP 110/70 mmHg'], presentingComplaints: [], history: [] })), true);
+  assert.equal(bpDocumented(obsCase({ examination: ['blood pressure 120/80'], presentingComplaints: [], history: [] })), true);
+  assert.equal(bpDocumented(obsCase({ examination: ['fundal height 30cm'], presentingComplaints: ['amenorrhoea'], history: [] })), false);
 });

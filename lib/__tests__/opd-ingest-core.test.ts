@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   isTeleconsultEncounter, hasHandsOnExam, formatEncounterChip, parseConsultTypes,
+  currentVisitNote, parseTrimester,
 } from '../opd-ingest-core.ts';
 
 // the call-site combination (rowToOpdCase): classify, then downgrade tele→in-person on a hands-on exam
@@ -65,4 +66,35 @@ test('parseConsultTypes: JS array / JSON string / PG array literal / empty → c
   assert.deepEqual(parseConsultTypes(null), []);
   assert.deepEqual(parseConsultTypes(''), []);
   assert.deepEqual(parseConsultTypes(42), []);
+});
+
+// ── Obstetric-template adapter: current-visit selection + trimester resolution (pure) ────────────
+test('currentVisitNote: prefers show_in_prescription; falls back to latest non-carried date_of_visit', () => {
+  const notes = [
+    { show_in_prescription: false, is_carried_over: true, date_of_visit: '2026-06-01', symptoms_notes: 'old' },
+    { show_in_prescription: true, is_carried_over: false, date_of_visit: '2026-07-20', symptoms_notes: 'current' },
+    { show_in_prescription: false, is_carried_over: false, date_of_visit: '2026-07-25', symptoms_notes: 'newer but not shown' },
+  ];
+  assert.equal(currentVisitNote(notes)?.symptoms_notes, 'current', 'show_in_prescription wins');
+  // no show flag → latest non-carried date_of_visit
+  const noShow = notes.map((n) => ({ ...n, show_in_prescription: false }));
+  assert.equal(currentVisitNote(noShow)?.symptoms_notes, 'newer but not shown');
+  // all carried-over → falls back to the whole pool's latest
+  const allCarried = [{ is_carried_over: true, date_of_visit: '2026-06-01', symptoms_notes: 'a' }, { is_carried_over: true, date_of_visit: '2026-06-05', symptoms_notes: 'b' }];
+  assert.equal(currentVisitNote(allCarried)?.symptoms_notes, 'b');
+  // tolerates a stringified array + empty
+  assert.equal(currentVisitNote(JSON.stringify(notes))?.symptoms_notes, 'current');
+  assert.equal(currentVisitNote([]), null);
+  assert.equal(currentVisitNote(null), null);
+});
+
+test('parseTrimester: numeric / worded / derived-from-GA-weeks; null when unparseable', () => {
+  assert.equal(parseTrimester({ trimester_at_visit: '3' }), 3);
+  assert.equal(parseTrimester({ trimester_at_visit: 'SECOND' }), 2);
+  assert.equal(parseTrimester({ trimester_at_visit: '', gestational_age_at_visit: '31w' }), 3);
+  assert.equal(parseTrimester({ gestational_age_at_visit: '8 weeks' }), 1);
+  assert.equal(parseTrimester({ gestational_age_at_visit: '20+4' }), 2);
+  assert.equal(parseTrimester({ gestational_age_at_visit: '19' }), 2);   // bare weeks
+  assert.equal(parseTrimester({}), null);
+  assert.equal(parseTrimester({ gestational_age_at_visit: 'n/a' }), null);
 });

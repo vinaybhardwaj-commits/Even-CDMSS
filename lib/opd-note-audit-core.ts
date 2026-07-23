@@ -419,7 +419,57 @@ export function vitalsDocumented(c: DeidOpdCase): boolean {
   return [...c.examination, ...c.history].some((t) => VITALS_DOCUMENTED_RE.test(t || ''));
 }
 
+// ── Obstetric-template completeness (CDMSS-OBGYN-TEMPLATE-EXTRACTION-FIX §8 decision 3) ─────────────
+// db13's obstetric visit_notes has NO structured BP field (§9), so blood pressure is detected from the
+// symptoms/examination narrative (best-effort; flagged for a live-confirmed BP column). Matches "BP",
+// "blood pressure", or a "120/80" reading.
+const BP_DOCUMENTED_RE = /\bB\.?\s?P\.?\b|blood\s*pressure|\b\d{2,3}\s*\/\s*\d{2,3}\b/i;
+export function bpDocumented(c: DeidOpdCase): boolean {
+  return [...c.examination, ...c.presentingComplaints, ...c.history].some((t) => BP_DOCUMENTED_RE.test(t || ''));
+}
+// An Indian "1-0-1 / 0-0-1 / 1-1-1" dosing schedule encodes frequency even when the `frequency` field
+// is blank (§9). Used ONLY on the obstetric dosing check — GP behaviour is untouched.
+const DOSE_SCHEDULE_RE = /(?:^|[^\d])[0-9½x]\s*[-–]\s*[0-9½x]\s*[-–]\s*[0-9½x](?:[^\d]|$)/i;
+/** Obstetric dosing complete: amount documented + (a frequency field OR a schedule) + a resolvable route. */
+export function obstetricDosingComplete(m: OpdMed): boolean {
+  const hasFreq = !!(m.frequency && m.frequency.trim()) || DOSE_SCHEDULE_RE.test(`${m.dose || ''} ${m.frequency || ''} ${m.instruction || ''}`);
+  return medDoseDocumented(m) && hasFreq && resolveMedRoute(m) !== null;
+}
+
+/** Obstetric-aware mandatory-field set (§8 decision 3). 8 fields; SFH/FHR/presentation folded into the
+ *  exam/vitals field and required only in the 2nd/3rd trimester. Same OpdCompleteness shape; follow-up is
+ *  the Continuity (patient-centred) subset, mirroring the GP path. Pure. */
+function opdCompletenessObstetric(c: DeidOpdCase): OpdCompleteness {
+  const o = c.obstetric!;
+  const hasMeds = c.medications.length > 0;
+  const dosingComplete = hasMeds && c.medications.every((m) => obstetricDosingComplete(m));
+  const secondOrThird = o.trimester === 2 || o.trimester === 3;
+  const fetalOk = secondOrThird ? (o.sfhDocumented || o.fhrDocumented || o.presentationDocumented) : true;
+  const vitalsOk = bpDocumented(c) && o.weightDocumented && fetalOk;
+  const items: OpdCompletenessItem[] = [
+    { key: 'ga_pog', label: 'Gestational age / POG', present: o.gaDocumented, mandatory: true },
+    { key: 'lmp_edd', label: 'LMP and/or EDD', present: o.lmpOrEddDocumented, mandatory: true },
+    { key: 'gravidity_parity', label: 'Gravidity & parity', present: o.gravidityParityDocumented, mandatory: true },
+    { key: 'presenting_complaint', label: 'Presenting complaint / symptoms', present: c.presentingComplaints.length > 0 || !!c.reasonForConsult, mandatory: true },
+    { key: 'obstetric_vitals', label: `Obstetric exam / vitals (BP + weight${secondOrThird ? ' + fetal SFH/FHR/presentation' : ''})`, present: vitalsOk, mandatory: true },
+    { key: 'medication_dosing', label: 'Complete medication dosing', present: hasMeds ? dosingComplete : true, mandatory: true },
+    { key: 'investigations', label: 'Investigations ordered/reviewed or nil', present: c.investigations.length > 0, mandatory: true },
+    { key: 'follow_up', label: 'Follow-up specified', present: followUpDocumented(c), mandatory: true },
+  ];
+  // Follow-up is scored in the Continuity domain, not Documentation coverage — mirror the GP path.
+  const pc = ['follow_up'];
+  const docItems = items.filter((i) => !pc.includes(i.key));
+  const coverage = docItems.length ? docItems.filter((i) => i.present).length / docItems.length : 1;
+  const missing = items.filter((i) => !i.present).map((i) => i.label);
+  const pcItems = items.filter((i) => pc.includes(i.key));
+  return { items, coverage, missing, patientCentred: { present: pcItems.filter((i) => i.present).length, total: pcItems.length } };
+}
+
 export function opdCompleteness(c: DeidOpdCase): OpdCompleteness {
+  // Obstetric-template notes use the obstetric-aware mandatory set (§8 decision 3). `isObstetric` is set
+  // by rowToOpdCase ONLY when the OBSTETRIC_EXTRACTION_ENABLED flag is on, so with the flag off this
+  // branch is never taken and every GP/other note is byte-identical to today.
+  if (c.isObstetric && c.obstetric) return opdCompletenessObstetric(c);
   const hasMeds = c.medications.length > 0;
   // Complete dosing = an amount is documented (field or in the name) + a frequency + a route that is
   // documented OR inferable from the form. Route that can't be inferred at all remains a real gap.

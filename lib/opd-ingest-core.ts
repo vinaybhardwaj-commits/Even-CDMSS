@@ -67,6 +67,23 @@ export interface DeidOpdCase {
   referrals?: string[];             // onward referrals, e.g. "In-Person Orthopedics (Even-recommended)"
   numReferrals?: number;
   isReferralHandoff?: boolean;      // triage/handoff (referred onward) — not definitive management
+  // Obstetric-template adapter (CDMSS-OBGYN-TEMPLATE-EXTRACTION-FIX §4) — set ONLY when the flag is on
+  // AND the note is on the HOSPITAL_GYNAECOLOGY_OBSTETRICS template. Optional so every existing literal
+  // stays valid; when unset the note audits exactly as today.
+  isObstetric?: boolean;
+  obstetric?: ObstetricMeta;
+}
+/** Structured obstetric signals for the trimester-aware mandatory-field set (§8 decision 3). Every
+ *  field is a documented/absent flag except `trimester` (1|2|3|null). Pure — populated in rowToOpdCase. */
+export interface ObstetricMeta {
+  trimester: number | null;             // 1 | 2 | 3 (from trimester_at_visit, else derived from GA weeks)
+  gaDocumented: boolean;                // gestational age / POG present (GA text or a resolved trimester)
+  lmpOrEddDocumented: boolean;          // LMP present (EDD column unconfirmed in §9 — see report flag)
+  gravidityParityDocumented: boolean;   // obstetric history block populated (gravidity)
+  weightDocumented: boolean;            // maternal weight (visit_notes.patient_weight_kgs)
+  sfhDocumented: boolean;               // symphysis-fundal height
+  fhrDocumented: boolean;               // fetal heart rate
+  presentationDocumented: boolean;      // fetal presentation
 }
 export interface OpdKeys {
   uid: string | null; consultUid: string | null; doctorUid: string | null;
@@ -294,6 +311,86 @@ function codesFrom(v: unknown): string[] {
   return asArr(v).map((x) => str(x)).filter(Boolean);
 }
 
+// ── obstetric-template adapter (CDMSS-OBGYN-TEMPLATE-EXTRACTION-FIX) ──────────────
+export const OBSTETRIC_TYPE = 'HOSPITAL_GYNAECOLOGY_OBSTETRICS';
+/** Feature flag — the obstetric adapter ships OFF; the metabase projection widening + this mapping both
+ *  gate on it, so with the flag off ingestion is byte-identical to today. */
+export function obstetricExtractionEnabled(): boolean { return process.env.OBSTETRIC_EXTRACTION_ENABLED === '1'; }
+
+/** The "current visit" of an obstetric prescription's visit_notes[] (§4): the element with
+ *  show_in_prescription === true; fallback = the latest date_of_visit that is NOT is_carried_over. */
+export function currentVisitNote(visitNotes: unknown): Record<string, unknown> | null {
+  const arr = asArr(visitNotes).filter((x): x is Record<string, unknown> => !!x && typeof x === 'object');
+  if (!arr.length) return null;
+  const shown = arr.find((v) => v.show_in_prescription === true || v.show_in_prescription === 'true');
+  if (shown) return shown;
+  const notCarried = arr.filter((v) => v.is_carried_over !== true && v.is_carried_over !== 'true');
+  const pool = notCarried.length ? notCarried : arr;
+  return pool.slice().sort((a, b) => str(b.date_of_visit).localeCompare(str(a.date_of_visit)))[0] ?? null;
+}
+
+/** Trimester (1|2|3) from `trimester_at_visit` (numeric or FIRST/SECOND/THIRD), else derived from GA
+ *  weeks in `gestational_age_at_visit` (<14 → 1, 14–27 → 2, ≥28 → 3). Null when nothing is parseable. */
+export function parseTrimester(cv: Record<string, unknown>): number | null {
+  const raw = str(cv.trimester_at_visit);
+  const n = parseInt(raw, 10);
+  if (n === 1 || n === 2 || n === 3) return n;
+  if (/\bfirst\b|1st/i.test(raw)) return 1;
+  if (/\bsecond\b|2nd/i.test(raw)) return 2;
+  if (/\bthird\b|3rd/i.test(raw)) return 3;
+  const ga = str(cv.gestational_age_at_visit);
+  const wk = ga.match(/(\d{1,2})\s*(?:w|week|\+|\/)/i) || ga.match(/^\s*(\d{1,2})\b/);
+  if (wk) { const w = parseInt(wk[1], 10); if (w >= 4 && w <= 45) { if (w < 14) return 1; if (w < 28) return 2; return 3; } }
+  return null;
+}
+
+/** Augment a base case with obstetric-template content (§4 step 2). Fills the canonical fields the GP
+ *  mapping left empty (complaint/exam/assessment) from visit_notes + the gynae history block, and sets
+ *  the ObstetricMeta for the mandatory-field set. Pure; never throws to the caller (caller wraps). */
+function augmentObstetric(oc: DeidOpdCase, row: Record<string, unknown>): void {
+  const cv = currentVisitNote(row.visit_notes);
+  const symptomLines = cv ? htmlToLines(cv.symptoms_notes) : [];
+  const trimester = cv ? parseTrimester(cv) : null;
+  const gaRaw = cv ? strOrNull(cv.gestational_age_at_visit) : null;
+  const weight = cv ? strOrNull(cv.patient_weight_kgs) : null;
+  const sfh = cv ? strOrNull(cv.symphysis_fundal_height_cm) : null;
+  const fhr = cv ? strOrNull(cv.fetal_heart_rate_bpm) : null;
+  const presentation = cv ? strOrNull(cv.fetal_presentation) : null;
+  const afi = cv ? strOrNull(cv.amniotic_fluid_index_cm) : null;
+  const efw = cv ? strOrNull(cv.estimated_fetal_weight_g) : null;
+  const lmp = strOrNull(row['gynae_patient_history__menstrual_history__last_menstrual_period']);
+  const gravidity = strOrNull(row['gynae_patient_history__obstetric_history__gravidity']);
+  const parity = strOrNull(row['gynae_patient_history__obstetric_history__parity']);
+
+  const examBits = [
+    gaRaw ? `POG ${gaRaw}` : (trimester ? `Trimester ${trimester}` : ''),
+    weight ? `Weight ${weight} kg` : '', sfh ? `SFH ${sfh} cm` : '', fhr ? `FHR ${fhr} bpm` : '',
+    presentation ? `Presentation ${presentation}` : '', afi ? `AFI ${afi} cm` : '', efw ? `EFW ${efw} g` : '',
+  ].filter(Boolean);
+  const assessmentBits = [
+    gaRaw ? `POG ${gaRaw}` : (trimester ? `Trimester ${trimester}` : ''),
+    (gravidity || parity) ? `Obstetric formula ${[gravidity && `G${gravidity}`, parity && `P${parity}`].filter(Boolean).join(' ')}` : '',
+    lmp ? `LMP ${lmp}` : '',
+  ].filter(Boolean);
+
+  // AUGMENT (never overwrite real GP content on a mixed note): symptoms_notes → complaint AND exam narrative.
+  if (symptomLines.length) oc.presentingComplaints = uniq([...oc.presentingComplaints, ...symptomLines]);
+  if (symptomLines.length || examBits.length) oc.examination = uniq([...oc.examination, ...symptomLines, ...examBits]);
+  if (assessmentBits.length) oc.impressions = uniq([...oc.impressions, ...assessmentBits]);
+
+  oc.isObstetric = true;
+  oc.obstetric = {
+    trimester,
+    gaDocumented: !!gaRaw || trimester != null,
+    lmpOrEddDocumented: !!lmp,
+    gravidityParityDocumented: !!gravidity,
+    weightDocumented: !!weight,
+    sfhDocumented: !!sfh,
+    fhrDocumented: !!fhr,
+    presentationDocumented: !!presentation,
+  };
+}
+
 /** Map a raw prescriptions row → { case (de-identified), keys (for join-back) }. */
 export function rowToOpdCase(row: Record<string, unknown>): { case: DeidOpdCase; keys: OpdKeys } {
   const gpPc = row['general_practitioner_prescription__presenting_complaints'];
@@ -356,6 +453,13 @@ export function rowToOpdCase(row: Record<string, unknown>): { case: DeidOpdCase;
     isReferralHandoff,
   };
 
+  // Obstetric-template adapter (§4): when enabled + on the obstetric template, fill the canonical fields
+  // the GP mapping left empty from the obstetric block. Fail-safe: any error leaves the GP-mapped case
+  // exactly as-is (never a crash, never wrong data).
+  if (obstetricExtractionEnabled() && strOrNull(row.type_of_prescription) === OBSTETRIC_TYPE) {
+    try { augmentObstetric(oc, row); } catch { /* degrade to current behaviour */ }
+  }
+
   const keys: OpdKeys = {
     uid: strOrNull(row.uid) || strOrNull(row._id),
     consultUid: strOrNull(row.consult_uid),
@@ -404,6 +508,7 @@ export function opdCaseText(c: DeidOpdCase, opts?: { specialty?: string | null }
   if (c.isTeleconsult) lines.push('Encounter modality: TELECONSULT (remote) — a physical examination is not expected; its absence is not a gap.');
   if (c.referrals && c.referrals.length) lines.push(`Referred onward to: ${c.referrals.join('; ')}`);
   if (c.isReferralHandoff) lines.push('Disposition: REFERRAL / HANDOFF encounter — the plan is the onward referral, not definitive treatment. The absence of medications, investigations or imaging is EXPECTED for a handoff and must NOT be read as a deliberate management decision or "avoidance".');
+  if (c.isObstetric) lines.push('Encounter: ANTENATAL / OBSTETRIC visit on the hospital obstetric template — the "assessment" is the gestational status (period of gestation / trimester, gravidity–parity), NOT an ICD-coded disease; do NOT fault the absence of an ICD diagnosis code. "Examination" here is the obstetric exam (fundal height, fetal heart, presentation, maternal weight/BP) as appropriate to the trimester.');
   if (c.reasonForConsult) lines.push(`Reason for consult: ${c.reasonForConsult}`);
   lines.push(`Presenting complaints / history: ${c.presentingComplaints.length ? c.presentingComplaints.join('; ') : '(none documented)'}`);
   lines.push(`Diagnosis (ICD-10): ${c.diagnosisCodes.length ? c.diagnosisCodes.join(', ') : (c.impressions.length ? '(clinical diagnosis documented as the impression below; ICD code not auto-resolved)' : '(none documented)')}`);
