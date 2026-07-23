@@ -7,7 +7,7 @@
  * Soft-fails. The full PHI record stays in db13; only de-identified content reaches the LLM.
  */
 
-import { retrieve } from './retrieve';
+import { retrieve, type RetrieveOptions } from './retrieve';
 import { hitsToSources, buildCitedContext, type CiteHit, type Source } from './citations-core';
 import { startTrace, logEvent, finishTrace, governedChat, setTraceQuestionPreview } from './trace';
 import { geminiModelFor, geminiUtilityModel, TEXT_MODEL, MINI_MODEL } from './llm';
@@ -304,9 +304,21 @@ export interface OpdNoteAudit {
   longitudinalInput?: LongitudinalNoteInput | null;
 }
 
-async function defaultRetrieve(q: string): Promise<CiteHit[]> {
+/**
+ * The retrieve() opts for the OPD audit citation retrieval. R-11 Stage 2 (DORMANT): the normative
+ * leg is added ONLY when OPD_NORMATIVE_LEG_ENABLED === '1' AND this is not the mini path — otherwise
+ * the `useNormativeLeg` key is ABSENT, so the opts are byte-identical to today and no stored
+ * note_quality_index can move. The flag is off in every environment until Phase 0/2 clear it.
+ * Pure (env injectable) so the flag-off byte-identity is unit-testable without a DB.
+ */
+export function opdRetrieveOpts(mini: boolean, env: Record<string, string | undefined> = process.env): RetrieveOptions {
+  const useNormativeLeg = env.OPD_NORMATIVE_LEG_ENABLED === '1' && !mini;
+  return { topK: 8, useReranker: true, useSourceWeights: true, hybrid: true, ...(useNormativeLeg ? { useNormativeLeg: true } : {}) };
+}
+
+async function defaultRetrieve(q: string, mini = false): Promise<CiteHit[]> {
   try {
-    const r = await retrieve(q, { topK: 8, useReranker: true, useSourceWeights: true, hybrid: true });
+    const r = await retrieve(q, opdRetrieveOpts(mini));
     return r.hits.map((h) => ({
       id: h.id, source: h.source, book: h.book, chapter: h.chapter, section: h.section,
       page_start: h.page_start, page_end: h.page_end, item_number: h.item_number,
@@ -477,7 +489,7 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
       'outpatient appropriateness rational prescribing evidence-based management guideline',
     ].filter(Boolean).join('. ');
 
-    const hits = await defaultRetrieve(query);
+    const hits = await defaultRetrieve(query, mini);
     const sources = hitsToSources(hits);
     const citedContext = buildCitedContext(hits);
     if (traceId) await logEvent(traceId, 'opd_audit_sources', null, { count: sources.length });
