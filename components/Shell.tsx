@@ -5,7 +5,7 @@ import { useState, useEffect } from 'react';
 import {
   MessagesSquare, Network, Pill, Calculator, ClipboardCheck,
   ClipboardList, BookOpen, GraduationCap, Settings, Menu, X, ChevronLeft, Activity, Lightbulb, BarChart3,
-  PhoneCall, Filter, HardDrive, FlaskConical, Map, FileText,
+  PhoneCall, Filter, HardDrive, FlaskConical, Map, FileText, Radar,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -59,11 +59,18 @@ const ADMIN: NavGroup[] = [
       { href: '/admin/observability', label: 'Observability', Icon: Network, match: ['/admin/appropriateness-runs'] },
       { href: '/admin/opd-audit', label: 'OPD Audit', Icon: Activity, match: ['/admin/opd-audit/doctors', '/admin/opd-audit/doctor'] },
       { href: '/admin/ipd-audit', label: 'IPD Discharge Audit', Icon: FileText, match: ['/admin/ipd-audit/search', '/admin/ipd-audit/calendar'] },
-      { href: '/admin/mini-backfill', label: 'Mini backfill', Icon: HardDrive },
       { href: '/admin/stewardship', label: 'Stewardship', Icon: BarChart3 },
       { href: '/admin/ccb-funnel', label: 'Care Brief Funnel', Icon: Filter },
       { href: '/admin/learning', label: 'Learning loop', Icon: Lightbulb },
       { href: '/admin/literature', label: 'Literature', Icon: BookOpen },
+    ],
+  },
+  // Backfill Workers — the two standing history/grounding workers as one group (Phase 2.2).
+  {
+    heading: 'Backfill Workers',
+    items: [
+      { href: '/admin/mini-backfill', label: 'Qwen re-score', Icon: HardDrive },
+      { href: '/admin/lvc-ground', label: 'Grounding worker', Icon: Radar },
     ],
   },
   // The zoomed-out view of the whole system — its own quiet group at the foot of the

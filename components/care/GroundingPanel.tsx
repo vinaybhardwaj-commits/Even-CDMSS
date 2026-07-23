@@ -1,13 +1,16 @@
 'use client';
 
 /**
- * Even-LVC grounding worker status panel (CDMSS-EVEN-LVC-GROUNDING-WORKER §7) — rendered by LvcBoard on
- * /care/lvc. Compact day-to-day view: state badge, drain progress bar, four counters, a recent-tick
- * feed (incl. epoch-bump context), Pause/Resume, and a deeper-logs pointer. Polls the status endpoint
- * every ~15s while open. Every field soft-fails; the panel never blocks the library above it.
+ * Even-LVC grounding worker status panel (CDMSS-EVEN-LVC-GROUNDING-WORKER §7 + Phase 2.2 heartbeat) —
+ * rendered by LvcBoard on /care/lvc, ABOVE the library. State badge (pulsing dot while draining), a
+ * "live" pill, drain bar, four counters (Citations-added flashes when a new tick lands), a live
+ * "last tick Xs ago" + "next tick ~mm:ss" clock (updates every 1s, independent of the 10s poll), a
+ * recent-tick feed, Pause/Resume, and a deeper-logs pointer. Soft-fails: a failed poll keeps the last
+ * good state + shows "reconnecting…" rather than blanking.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Activity, Pause, Play, Gauge } from 'lucide-react';
+import { formatAgo, nextTickInSec } from '@/lib/even-ground-core';
 
 type Tick = { ts: string; status: string; processed: number; citations_added: number; epoch: number | null; note: string | null };
 type Status = {
@@ -24,26 +27,77 @@ const STATE_STYLE: Record<string, { dot: string; text: string; label: string }> 
 };
 const num = (v: number | null | undefined) => (v == null ? '—' : v.toLocaleString());
 const shortTs = (ts: string) => ts.replace('T', ' ').slice(5, 16);
+const mmss = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+
+/** State dot — pulses (Tailwind animate-ping overlay) ONLY while draining; steady otherwise. */
+export function StateDot({ state, size = 'h-2 w-2' }: { state: string; size?: string }) {
+  const dot = (STATE_STYLE[state] ?? STATE_STYLE.idle).dot;
+  return (
+    <span className={`relative flex ${size}`}>
+      {state === 'draining' && <span className={`absolute inline-flex h-full w-full animate-ping rounded-full ${dot} opacity-75`} />}
+      <span className={`relative inline-flex rounded-full ${size} ${dot}`} />
+    </span>
+  );
+}
+
+/** "live / reconnecting" pill signalling the view auto-refreshes. */
+export function LivePill({ reconnecting }: { reconnecting: boolean }) {
+  if (reconnecting) return <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-400">reconnecting…</span>;
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500">
+      <span className="relative flex h-1.5 w-1.5">
+        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+        <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
+      </span>
+      live
+    </span>
+  );
+}
 
 export default function GroundingPanel() {
   const [st, setSt] = useState<Status | null>(null);
-  const [err, setErr] = useState(false);
+  const [hardErr, setHardErr] = useState(false);      // never got a good response
+  const [reconnecting, setReconnecting] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [nowMs, setNowMs] = useState(() => 0);        // client clock (set on mount to avoid SSR mismatch)
+  const [flash, setFlash] = useState(false);
+  const lastTs = useRef<string | null>(null);
 
   const load = useCallback(async () => {
     try {
       const r = await fetch('/api/care/lvc/ground-status');
       const j = (await r.json()) as Status;
-      if (!r.ok || !j.ok) { setErr(true); return; }
-      setSt(j); setErr(false);
-    } catch { setErr(true); }
+      if (!r.ok || !j.ok) { setReconnecting(true); return; }
+      setSt(j); setReconnecting(false); setHardErr(false);
+    } catch { setReconnecting(true); }
   }, []);
 
+  // 10s poll
   useEffect(() => {
-    void load();
-    const t = setInterval(() => void load(), 15000);
+    void load().then(() => setHardErr((h) => (st ? false : h)));
+    const t = setInterval(() => void load(), 10000);
     return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [load]);
+
+  // 1s client clock — moves "ago" / countdown between polls
+  useEffect(() => {
+    setNowMs(Date.now());
+    const t = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  // new-tick flash on the Citations counter
+  useEffect(() => {
+    const ts = st?.last_tick?.ts ?? null;
+    if (ts && lastTs.current && ts !== lastTs.current) {
+      setFlash(true);
+      const t = setTimeout(() => setFlash(false), 1000);
+      lastTs.current = ts;
+      return () => clearTimeout(t);
+    }
+    lastTs.current = ts;
+  }, [st?.last_tick?.ts]);
 
   const togglePause = async () => {
     if (!st) return;
@@ -54,19 +108,22 @@ export default function GroundingPanel() {
     } catch { /* soft */ } finally { setBusy(false); }
   };
 
-  if (err && !st) return null;   // endpoint unreachable / disabled surface ⇒ render nothing (fail-safe)
+  if (hardErr && !st) return null;   // never reached the endpoint (disabled surface) ⇒ render nothing
   const style = STATE_STYLE[st?.state ?? 'idle'] ?? STATE_STYLE.idle;
   const pct = st?.drain_pct ?? null;
+  const ago = st?.last_tick && nowMs ? formatAgo(st.last_tick.ts, nowMs) : '—';
+  const nextIn = nowMs ? nextTickInSec(nowMs, 10) : null;
 
   return (
-    <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-4">
+    <section className="mt-4 rounded-2xl border border-slate-200 bg-white p-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Activity className="h-4 w-4 text-slate-400" />
           <h2 className="text-[14px] font-semibold text-slate-800">Grounding worker</h2>
           <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium ${style.text}`}>
-            <span className={`h-1.5 w-1.5 rounded-full ${style.dot}`} />{style.label}
+            <StateDot state={st?.state ?? 'idle'} size="h-1.5 w-1.5" />{style.label}
           </span>
+          {st && st.state !== 'disabled' && <LivePill reconnecting={reconnecting} />}
         </div>
         {st && st.state !== 'disabled' && (
           <button onClick={togglePause} disabled={busy}
@@ -90,9 +147,9 @@ export default function GroundingPanel() {
       {/* four counters */}
       <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
         <Counter label="Notes grounded" value={`${num(st?.grounded_at_epoch)} / ${num(st?.total_lv_notes)}`} />
-        <Counter label="Citations added" value={num(st?.citations_added_total)} />
+        <Counter label="Citations added" value={num(st?.citations_added_total)} flash={flash} />
         <Counter label="Active assertions" value={num(st?.active_assertions)} />
-        <Counter label="Last tick" value={st?.last_tick ? shortTs(st.last_tick.ts) : '—'} />
+        <Counter label="Last tick" value={ago} sub={nextIn != null ? `next ~${mmss(nextIn)}` : undefined} />
       </div>
 
       {/* recent tick feed */}
@@ -116,11 +173,12 @@ export default function GroundingPanel() {
   );
 }
 
-function Counter({ label, value }: { label: string; value: string }) {
+function Counter({ label, value, sub, flash }: { label: string; value: string; sub?: string; flash?: boolean }) {
   return (
-    <div className="rounded-xl bg-slate-50 px-3 py-2">
+    <div className={`rounded-xl px-3 py-2 transition-colors duration-700 ${flash ? 'bg-emerald-100 ring-1 ring-emerald-300' : 'bg-slate-50'}`}>
       <div className="text-[11px] text-slate-400">{label}</div>
       <div className="mt-0.5 text-[13.5px] font-semibold tabular-nums text-slate-800">{value}</div>
+      {sub && <div className="text-[10px] tabular-nums text-slate-400">{sub}</div>}
     </div>
   );
 }

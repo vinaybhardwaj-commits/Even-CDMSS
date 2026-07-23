@@ -151,3 +151,33 @@ export function drainEtaMinutes(remainingNotes: number | null, notesPerTick: num
   if (!notesPerTick || notesPerTick <= 0) return null;
   return Math.ceil(remainingNotes / notesPerTick) * cadenceMin;
 }
+
+// ── live-heartbeat time helpers (PRD Phase 2.2 — pure, client-clock driven) ───────
+/** Compact "time since" label for a tick timestamp, driven by a client clock (updated every 1s so it
+ *  visibly moves between polls). The status endpoint emits `to_char(ts,'YYYY-MM-DD"T"HH24:MI:SS')` with
+ *  NO timezone — Postgres/Neon store UTC, so a bare ISO is treated as UTC (a 'Z' is appended when absent).
+ *  Future/负 deltas clamp to 0s. A malformed/absent timestamp ⇒ '—'. Pure. */
+export function formatAgo(tsISO: string | null | undefined, nowMs: number): string {
+  const raw = String(tsISO ?? '').trim();
+  if (!raw) return '—';
+  const iso = /[zZ]|[+-]\d\d:?\d\d$/.test(raw) ? raw : `${raw}Z`;   // assume UTC when no tz present
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return '—';
+  const s = Math.max(0, Math.round((nowMs - t) / 1000));
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+/** Seconds until the next wall-clock cron boundary (default every 10 min, UTC — Vercel cron runs UTC,
+ *  and the epoch aligns to 10-min boundaries). Result is in (0, everyMin*60]: exactly ON a boundary
+ *  returns a full period (it just fired). An estimate — the panel labels it "~". Pure. */
+export function nextTickInSec(nowMs: number, everyMin = 10): number {
+  const period = Math.max(1, Math.round(everyMin)) * 60 * 1000;
+  const rem = ((nowMs % period) + period) % period;
+  const untilMs = rem === 0 ? period : period - rem;
+  return Math.ceil(untilMs / 1000);
+}

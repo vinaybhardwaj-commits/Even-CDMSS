@@ -143,6 +143,9 @@ export default function LvcBoard() {
       {err && <p className="mt-3 text-[12px] text-red-600">{err}</p>}
       {loading && !board && <p className="mt-6 text-[13px] text-slate-400">Loading…</p>}
 
+      {/* Grounding worker status (EVEN-LVC-GROUNDING §7) — ABOVE the library, right under Generate. */}
+      <GroundingPanel />
+
       {/* ── Pending queue ── */}
       <section className="mt-6">
         <h2 className="flex items-center gap-2 text-[14px] font-semibold text-slate-800"><Stamp className="h-4 w-4 text-slate-400" />Pending ratification <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">{pendingCount}</span></h2>
@@ -227,9 +230,6 @@ export default function LvcBoard() {
           </div>
         </section>
       )}
-
-      {/* Grounding worker status (EVEN-LVC-GROUNDING §7) — additive; self-gates + soft-fails. */}
-      <GroundingPanel />
 
       <p className="mt-8 text-[11.5px] text-slate-400">Post-hoc grounding only — assertions never enter an audit prompt or any scorer. They attach an inline citation on matching low-value findings, ranked below external evidence.</p>
     </div>

@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
 import { loadGroundStatusRaw, loadTicks, EG_BATCH, EG_CRON_MIN } from '@/lib/even-ground';
 import { buildGroundStatus } from '@/lib/even-ground-core';
-import LvcGroundMonitor from './monitor';
+import GroundingLive from './live';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'LVC grounding · Admin' };
@@ -33,7 +33,7 @@ export default async function LvcGroundAdmin() {
         {!enabled && <span className="ml-1 font-medium text-amber-700">Disabled — set LVC_GROUND_ENABLED=1 (+ CCB_ENABLED=1) to run.</span>}
       </p>
 
-      <LvcGroundMonitor initialStatus={status} initialTicks={ticks} batch={EG_BATCH} cadenceMin={EG_CRON_MIN} />
+      <GroundingLive initialStatus={status} initialTicks={ticks} batch={EG_BATCH} cadenceMin={EG_CRON_MIN} />
     </div>
   );
 }

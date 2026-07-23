@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import {
   findingKey, subjectHash, isNoteStale, stripRetiredEvenCitations,
   deriveGroundState, drainPct, drainEtaMinutes, buildGroundStatus,
+  formatAgo, nextTickInSec,
   type CitedFinding, type CitedSource, type GroundStatusRaw,
 } from '../even-ground-core.ts';
 
@@ -113,6 +114,30 @@ test('buildGroundStatus shapes the payload + derives state/drain_pct', () => {
   assert.equal(s.grounded_at_epoch, 40);
   assert.equal(s.citations_added_total, 88);
   assert.equal(s.last_tick?.citations_added, 12);
+});
+
+// ── (6) live-heartbeat time helpers (Phase 2.2) ─────────────────────────────────
+test('formatAgo: seconds / minutes / hours / days; UTC-assumed; malformed ⇒ —', () => {
+  const now = Date.parse('2026-07-23T12:00:00Z');
+  assert.equal(formatAgo('2026-07-23T11:59:55', now), '5s ago', 'bare ISO treated as UTC');
+  assert.equal(formatAgo('2026-07-23T11:59:55Z', now), '5s ago', 'explicit Z same');
+  assert.equal(formatAgo('2026-07-23T11:57:00Z', now), '3m ago');
+  assert.equal(formatAgo('2026-07-23T09:00:00Z', now), '3h ago');
+  assert.equal(formatAgo('2026-07-21T12:00:00Z', now), '2d ago');
+  assert.equal(formatAgo('2026-07-23T12:00:30Z', now), '0s ago', 'future clamps to 0s');
+  assert.equal(formatAgo('not-a-date', now), '—');
+  assert.equal(formatAgo(null, now), '—');
+  assert.equal(formatAgo('', now), '—');
+});
+
+test('nextTickInSec: (0, everyMin*60]; wraps at the boundary', () => {
+  const at = (iso: string) => nextTickInSec(Date.parse(iso), 10);
+  assert.equal(at('2026-07-23T12:00:00Z'), 600, 'exactly on a 10-min boundary ⇒ full period (just fired)');
+  assert.equal(at('2026-07-23T12:09:59Z'), 1, '1s before the next boundary');
+  assert.equal(at('2026-07-23T12:05:00Z'), 300, 'halfway');
+  const v = at('2026-07-23T12:03:21Z');
+  assert.ok(v > 0 && v <= 600, `in range (0,600], got ${v}`);
+  assert.equal(nextTickInSec(Date.parse('2026-07-23T12:05:00Z'), 5), 300, 'period respects everyMin=5');
 });
 
 // ── (5) SCORE-INVARIANCE: the display filter touches ONLY citation_ids + sources ──
