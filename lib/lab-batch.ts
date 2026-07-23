@@ -15,7 +15,7 @@ import { MINI_MODEL } from './llm';
 import { fetchOpdNoteByUid } from './metabase';
 import { saveLabAnalysis } from './lab';
 import { getSettings, setSetting, windowOpen, lockHeld, readState as readMiniState } from './mini-backfill';
-import { LB_KEYS, type LabBatchState, parseBatchState, remainingUids, batchGate } from './lab-batch-core';
+import { LB_KEYS, type LabBatchState, parseBatchState, remainingUids, batchGate, drainPlan, boundedPool } from './lab-batch-core';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 
@@ -70,10 +70,16 @@ export async function runMiniOpdToLab(uid: string, experiment: string, evalCfg: 
 export async function batchTick(opts: { ignoreWindow?: boolean } = {}): Promise<Record<string, unknown>> {
   const st = await readBatchState();
   const base = { enabled: st.enabled, experiment: st.experiment, window: st.window, total: st.uids.length };
+  // Eval batches (evalModel set → OpenRouter, hosted+concurrent) fan out and skip the mini-yield —
+  // that lock only protects the single mini GPU, which the eval path never touches. Mini batches
+  // (no evalModel) keep the legacy plan EXACTLY: n≤2, serial, mini-yield honoured.
+  const plan = drainPlan(st);
   // Prod re-score now yields to us (bounded run has priority), so we only defer to prod's transient
   // in-flight note for ONE tick to avoid a literal concurrent mini call — not a standing yield.
   let miniBusy = false;
-  try { miniBusy = lockHeld((await readMiniState()).lock); } catch { miniBusy = false; }
+  if (plan.useMiniYield) {
+    try { miniBusy = lockHeld((await readMiniState()).lock); } catch { miniBusy = false; }
+  }
   const skip = batchGate({
     enabled: st.enabled,
     hasJob: !!st.experiment && st.uids.length > 0,
@@ -95,23 +101,34 @@ export async function batchTick(opts: { ignoreWindow?: boolean } = {}): Promise<
       return summary;
     }
     const priorDone = st.uids.length - todo.length;
-    const slice = todo.slice(0, st.n);
-    const results: Record<string, unknown>[] = [];
-    for (const uid of slice) {
+    const slice = todo.slice(0, plan.sliceSize);
+    const evalCfg = { evalNormativeLeg: st.evalNormativeLeg, evalModel: st.evalModel ?? undefined };
+    // One note → one result row; errors captured per-note (never thrown out of the drain).
+    const drainOne = async (uid: string): Promise<Record<string, unknown>> => {
       const t0 = Date.now();
       try {
-        const r = await runMiniOpdToLab(uid, experiment, { evalNormativeLeg: st.evalNormativeLeg, evalModel: st.evalModel ?? undefined });
-        results.push({ uid, band: r.band, index: r.index, findings: r.findings, ms: Date.now() - t0 });
+        const r = await runMiniOpdToLab(uid, experiment, evalCfg);
+        return { uid, band: r.band, index: r.index, findings: r.findings, ms: Date.now() - t0 };
       } catch (e) {
         const msg = String((e as Error).message);
-        results.push({ uid, error: msg, ms: Date.now() - t0 });
         await setSetting(LB_KEYS.error, `${uid}: ${msg}`.slice(0, 300)).catch(() => {});
+        return { uid, error: msg, ms: Date.now() - t0 };
       }
+    };
+    let results: Record<string, unknown>[];
+    if (plan.evalMode) {
+      // OpenRouter path: bounded fan-out — never more than plan.concurrency audits in flight.
+      results = await boundedPool(slice, plan.concurrency, drainOne);
+    } else {
+      // Mini path: strictly serial, exactly as before (single GPU).
+      results = [];
+      for (const uid of slice) results.push(await drainOne(uid));
     }
     const okNow = results.filter((r) => !('error' in r)).length;
     const doneNow = priorDone + okNow;
     const summary = {
-      ...base, experiment, model: MINI_MODEL, processed: results.length,
+      ...base, experiment, model: st.evalModel || MINI_MODEL, processed: results.length,
+      ...(plan.evalMode ? { evalConcurrency: plan.concurrency } : {}),
       done: doneNow, remaining: Math.max(0, st.uids.length - doneNow), results, at: new Date().toISOString(),
     };
     await setSetting(LB_KEYS.last, JSON.stringify(summary));

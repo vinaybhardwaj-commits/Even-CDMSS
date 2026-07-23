@@ -16,11 +16,50 @@ export const LB_KEYS = {
   error: 'lab_batch_last_error',     // last per-note error string
   evalNormativeLeg: 'lab_batch_eval_normative_leg',  // '1' ⇒ force the R-11 leg on for this eval batch
   evalModel: 'lab_batch_eval_model',                 // OpenRouter model id for eval generation ('' ⇒ mini)
+  evalConcurrency: 'lab_batch_eval_concurrency',     // eval drain pool size (clamped 1..EVAL_CONCURRENCY_MAX)
 } as const;
 
 export const LB_LOCK_TTL_MS = 210 * 1000;   // matches the mini-backfill soft-lock TTL (< 300s Vercel cap)
 export const LB_MAX_COHORT = 2000;
 export const LB_MAX_N = 2;                   // ~72s/note on the mini × 2 ≈ 150s < 300s cap
+
+// ── eval-drain constants (R-11 Phase 2, OpenRouter path ONLY — the mini caps above are untouched) ──
+export const EVAL_TICK_MAX = 50;             // uids per tick when evalModel is set (hosted, no mini GPU)
+export const EVAL_CONCURRENCY_DEFAULT = 10;  // audits in flight (OpenRouter rate-limit safety)
+export const EVAL_CONCURRENCY_MAX = 25;
+
+export function clampEvalConcurrency(v: unknown): number {
+  const n = Math.floor(Number(v));
+  if (!Number.isFinite(n) || n < 1) return EVAL_CONCURRENCY_DEFAULT;
+  return Math.min(EVAL_CONCURRENCY_MAX, n);
+}
+
+/** Pure drain decision: how a tick drains, given the batch state. Mini (no evalModel) keeps the
+ *  legacy shape EXACTLY — n≤2, serial, mini-yield honoured. Eval (evalModel set) fans out. */
+export function drainPlan(st: { evalModel: string | null; evalConcurrency?: number; n: number }): {
+  evalMode: boolean; sliceSize: number; concurrency: number; useMiniYield: boolean;
+} {
+  if (st.evalModel) {
+    return { evalMode: true, sliceSize: EVAL_TICK_MAX, concurrency: clampEvalConcurrency(st.evalConcurrency), useMiniYield: false };
+  }
+  return { evalMode: false, sliceSize: st.n, concurrency: 1, useMiniYield: true };
+}
+
+/** Bounded-concurrency pool over native promises (no dep). At most `limit` tasks in flight; results
+ *  index-aligned to items. `fn` must not throw for per-item error capture — wrap inside the caller. */
+export async function boundedPool<T, R>(items: T[], limit: number, fn: (item: T, idx: number) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
 
 export interface LabBatchState {
   enabled: boolean;
@@ -34,6 +73,7 @@ export interface LabBatchState {
   lastError: string | null;
   evalNormativeLeg: boolean;     // lab eval: force the R-11 normative leg on
   evalModel: string | null;      // lab eval: OpenRouter model id (null ⇒ mini generation, today's path)
+  evalConcurrency: number;       // lab eval: drain pool size (default EVAL_CONCURRENCY_DEFAULT)
 }
 
 export function clampN(v: unknown): number {
@@ -82,6 +122,7 @@ export function parseBatchState(s: Record<string, string>): LabBatchState {
     lastError: s[LB_KEYS.error] || null,
     evalNormativeLeg: s[LB_KEYS.evalNormativeLeg] === '1',   // absent ⇒ false ⇒ today's behaviour
     evalModel: s[LB_KEYS.evalModel] ? s[LB_KEYS.evalModel] : null,
+    evalConcurrency: clampEvalConcurrency(s[LB_KEYS.evalConcurrency]),
   };
 }
 

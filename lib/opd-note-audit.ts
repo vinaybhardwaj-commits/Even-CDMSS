@@ -338,20 +338,44 @@ export function buildOpenRouterBody(model: string, system: string, user: string)
   return { model, messages: [{ role: 'system', content: system }, { role: 'user', content: user }], temperature: 0 };
 }
 
+/** Bounded retry for the eval path: 3 tries total, retrying ONLY transient statuses (429/5xx) with
+ *  jittered exponential backoff (~0.5s/1s/2s × [0.5,1.5)). A non-transient status or the final
+ *  failure throws loudly — never a silent fallback. */
+export const OPENROUTER_MAX_TRIES = 3;
+export function openRouterRetryable(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+export function openRouterBackoffMs(attempt: number, rand: () => number = Math.random): number {
+  return Math.round(500 * 2 ** (attempt - 1) * (0.5 + rand()));   // attempt 1 → ~250-750ms, 2 → ~500-1500ms
+}
+
 /** EVAL-ONLY (lab): generate one audit via OpenRouter's OpenAI-compatible endpoint. Any model id is
  *  accepted (the orchestrator passes it). Key from env OPENROUTER_API_KEY. Direct fetch — no new dep;
- *  this is the lab dry-run path and NEVER production generation. fetchImpl injectable for tests. */
-export async function openRouterGenerate(model: string, system: string, user: string, fetchImpl: typeof fetch = fetch): Promise<string> {
+ *  this is the lab dry-run path and NEVER production generation. Transient 429/5xx are retried
+ *  (bounded, jittered); ultimate failure throws. fetchImpl/sleepFn injectable for tests. */
+export async function openRouterGenerate(
+  model: string, system: string, user: string,
+  fetchImpl: typeof fetch = fetch,
+  sleepFn: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+): Promise<string> {
   const key = process.env.OPENROUTER_API_KEY;
   if (!key) throw new Error('OPENROUTER_API_KEY is not set — required for eval generation (evalModel)');
-  const res = await fetchImpl('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-    body: JSON.stringify(buildOpenRouterBody(model, system, user)),
-  });
-  if (!res.ok) throw new Error(`OpenRouter HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`);
-  const j = (await res.json()) as { choices?: { message?: { content?: string } }[] };
-  return j.choices?.[0]?.message?.content || '';
+  let lastErr: Error = new Error('OpenRouter: no attempt made');
+  for (let attempt = 1; attempt <= OPENROUTER_MAX_TRIES; attempt++) {
+    const res = await fetchImpl('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify(buildOpenRouterBody(model, system, user)),
+    });
+    if (res.ok) {
+      const j = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+      return j.choices?.[0]?.message?.content || '';
+    }
+    lastErr = new Error(`OpenRouter HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`);
+    if (!openRouterRetryable(res.status) || attempt === OPENROUTER_MAX_TRIES) throw lastErr;
+    await sleepFn(openRouterBackoffMs(attempt));
+  }
+  throw lastErr;
 }
 
 async function defaultGenerate(traceId: string | undefined, system: string, user: string, mini = false, evalModel?: string): Promise<string> {
