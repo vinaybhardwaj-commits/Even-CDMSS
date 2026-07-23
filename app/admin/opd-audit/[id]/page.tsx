@@ -17,6 +17,7 @@ const ENG_FAMILY_SQL = `ANY(ARRAY[${OPD_ENGINE_VERSIONS_CURRENT.map((v) => `'${v
 import { anchorFindings, anchorsByTarget, type NoteAnchor } from '@/lib/opd-case-anchor-core';
 import { CitationChips, SourcesPanel } from '@/components/right-care/kit';
 import type { Source } from '@/lib/citations-core';
+import { stripRetiredEvenCitations } from '@/lib/even-ground-core';
 import { citationResolves, groundingKind, GROUNDING_PRESENTATION } from '@/lib/provenance-tier-core';
 import FeedbackPanel, { type FeedbackEntry } from './feedback-panel';
 import { FindingTriage, ReviewerBar } from './finding-triage';
@@ -497,6 +498,11 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
   const pdqi = parseJson<Pdqi[]>(r.pdqi9, []);
   const suggestions = parseJson<Sugg[]>(r.suggestions, []).sort((a, b) => a.priority - b.priority);
   const sources = parseJson<Source[]>(r.sources, []);
+  // Retire display-filter (EVEN-LVC-GROUNDING §6, Phase 2.1): hide citations of RETIRED even-lvc
+  // assertions from this view (display-only; stored citation_ids/sources are NOT rewritten). Best-effort
+  // — soft-fails to [] so the page never breaks; empty (the current 0-retired state) ⇒ byte-identical.
+  const retiredEvenIds = (await run(`SELECT id FROM even_lvc_assertions WHERE status = 'retired'`, []).catch(() => []))
+    .map((rr) => String((rr as Record<string, unknown>).id));
 
   // Neon may hand timestamptz back as a JS Date; normalise to ISO so the ::timestamptz casts below always parse.
   const noteDateRaw = r.note_date instanceof Date ? r.note_date.toISOString() : String(r.note_date || '');
@@ -552,6 +558,11 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
     .slice().sort((a, b) => scores[a.key] - scores[b.key]).map((d) => d.key as string);
   const groupRank = (dom: string) => { const i = domainOrder.indexOf(dom); return i === -1 ? 99 : i; };
   const findings = rawFindings.slice().sort((a, b) => groupRank(a.domain) - groupRank(b.domain));
+  // Apply the retire filter to the render pair only (order + count preserved — only citation_ids /
+  // source numbering change). Empty retired set ⇒ the original arrays, byte-identical to today.
+  const { findings: renderFindings, sources: renderSources } = retiredEvenIds.length
+    ? stripRetiredEvenCitations(findings, sources, retiredEvenIds)
+    : { findings, sources };
   const findingDomains = domainOrder.filter((d) => findings.some((f) => f.domain === d));
   const otherFindings = findings.filter((f) => !domainOrder.includes(f.domain));
   const countByDomain: Record<string, number> = {};
@@ -711,7 +722,7 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
               </div>
               <ReviewerBar />
               {findingDomains.map((dom) => {
-                const list = findings.map((f, i) => ({ f, num: i + 1 })).filter((x) => x.f.domain === dom);
+                const list = renderFindings.map((f, i) => ({ f, num: i + 1 })).filter((x) => x.f.domain === dom);
                 const v = scores[dom as OpdDomain];
                 return (
                   <div key={dom} id={`fd-${dom}`} className="mb-3 scroll-mt-4">
@@ -724,12 +735,12 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
                         Right Care · {list.filter((x) => x.f.verdict === 'low-value').length} low-value action{list.filter((x) => x.f.verdict === 'low-value').length > 1 ? 's' : ''} per Choosing Wisely / NCG rules
                       </div>
                     )}
-                    <div className="space-y-2">{list.map(({ f, num }) => <FindingCard key={num} f={f} num={num} sources={sources} auditId={id} triage={triage} ruleMap={ruleMap} />)}</div>
+                    <div className="space-y-2">{list.map(({ f, num }) => <FindingCard key={num} f={f} num={num} sources={renderSources} auditId={id} triage={triage} ruleMap={ruleMap} />)}</div>
                   </div>
                 );
               })}
               {otherFindings.length > 0 && (
-                <div className="space-y-2">{findings.map((f, i) => ({ f, num: i + 1 })).filter((x) => !domainOrder.includes(x.f.domain)).map(({ f, num }) => <FindingCard key={num} f={f} num={num} sources={sources} auditId={id} triage={triage} ruleMap={ruleMap} />)}</div>
+                <div className="space-y-2">{renderFindings.map((f, i) => ({ f, num: i + 1 })).filter((x) => !domainOrder.includes(x.f.domain)).map(({ f, num }) => <FindingCard key={num} f={f} num={num} sources={renderSources} auditId={id} triage={triage} ruleMap={ruleMap} />)}</div>
               )}
               <MissedFindingCapture auditId={id} initial={missed} />
             </div>
@@ -757,7 +768,7 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
           {sources.length > 0 && (
             <details id="sources" className="group mt-4 scroll-mt-4 rounded-xl border border-slate-200 bg-white">
               <summary className="cursor-pointer select-none px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-400 hover:text-slate-600">Sources · retrieved from the CDMSS corpus · {sources.length}</summary>
-              <div className="px-4 pb-3"><SourcesPanel sources={sources} /></div>
+              <div className="px-4 pb-3"><SourcesPanel sources={renderSources} /></div>
             </details>
           )}
 
