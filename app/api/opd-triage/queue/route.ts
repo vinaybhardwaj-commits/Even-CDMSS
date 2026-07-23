@@ -21,6 +21,8 @@ import { fetchDoctorNames } from '@/lib/metabase';
 import { parseJson } from '@/lib/opd-audit-ui';
 import { buildQueue, type TriageFinding } from '@/lib/opd-triage-core';
 import { loadTriageDecisions } from '@/lib/opd-triage-store';
+import { stripRetiredEvenCitations } from '@/lib/even-ground-core';
+import type { Source } from '@/lib/citations-core';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 const APP = process.env.APP_SOURCE || 'standalone';
@@ -61,9 +63,15 @@ export async function GET(req: NextRequest) {
   let where = `app_source = $1 AND engine_version = ANY($2) AND excluded_reason IS NULL AND (note_date AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $3 AND $4`;   // Fix C
   if (doctorFilter) { params.push(doctorFilter); where += ` AND doctor_uid = $${params.length}`; }
 
+  // Retire display-filter (EVEN-LVC-GROUNDING §6): hide citations of retired assertions. Load the
+  // (usually empty) retired-id set once; when empty we don't even SELECT sources — byte-identical.
+  const retiredEvenIds = (await run(`SELECT id FROM even_lvc_assertions WHERE status = 'retired'`, []).catch(() => []))
+    .map((r) => String((r as Record<string, unknown>).id));
+  const srcCol = retiredEvenIds.length ? ', sources' : '';
+
   const rows = await run(
     `SELECT id::text AS id, doctor_uid, to_char(note_date AT TIME ZONE 'Asia/Kolkata','YYYY-MM-DD') AS note_date,
-            findings, complexity_band, complexity_inputs
+            findings, complexity_band, complexity_inputs${srcCol}
      FROM opd_note_audits WHERE ${where} LIMIT 8000`, params).catch(() => []);
 
   const findings: TriageFinding[] = [];
@@ -73,7 +81,10 @@ export async function GET(req: NextRequest) {
     const note_date = String(r.note_date || day);
     if (!doctor_uid) continue;
     const raw = parseJson<OpdFinding[]>(r.findings, []);
-    const stamped = stampFindingIdentity(raw);
+    let stamped = stampFindingIdentity(raw);
+    if (retiredEvenIds.length) {
+      stamped = stripRetiredEvenCitations(stamped, parseJson<Source[]>(r.sources, []), retiredEvenIds).findings;
+    }
     // Right Care routing context (decision 16) — per-note band/inputs + per-finding lvc_category.
     const band = r.complexity_band == null ? null : String(r.complexity_band);
     const inputs = r.complexity_inputs == null ? null : parseJson<Record<string, unknown>>(r.complexity_inputs, {});

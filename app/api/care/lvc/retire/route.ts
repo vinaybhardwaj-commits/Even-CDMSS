@@ -7,6 +7,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isCareUnlocked } from '@/lib/care-cookie';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { retireAssertion } from '@/lib/even-lvc';
+import { bumpEpoch } from '@/lib/even-ground';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -23,5 +24,8 @@ export async function POST(req: NextRequest) {
   let body: Record<string, unknown> = {};
   try { body = (await req.json()) as Record<string, unknown>; } catch { /* ignore */ }
   const result = await retireAssertion(String(body.id ?? ''));
+  // Retiring an assertion changes the grounding set (its citations now display-filter out) → bump the
+  // epoch so the worker re-sweeps newest-first (best-effort; never affects the retire result).
+  if (result.ok) await bumpEpoch();
   return NextResponse.json(result, { status: result.ok ? 200 : 400 });
 }

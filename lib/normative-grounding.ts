@@ -28,7 +28,15 @@ export type GroundingDeps = { retrieveFn?: typeof retrieve; evenCategoryLookup?:
  *  - categories: if set, ground ONLY findings whose lvc_category is in the list ([]/undefined = all).
  *  - tau: cosine threshold (default NORMATIVE_TAU).
  *  Defaults reproduce today's behaviour byte-identically. */
-export type GroundingOptions = { legs?: 'cw' | 'guideline' | 'even' | 'both' | 'all'; categories?: string[]; tau?: number };
+export type GroundingOptions = {
+  legs?: 'cw' | 'guideline' | 'even' | 'both' | 'all';
+  categories?: string[];
+  tau?: number;
+  /** Even-LVC grounding worker: a precomputed nomic query embedding for this finding (subject+rationale),
+   *  passed straight to retrieve so the worker reuses its finding_embeddings cache instead of re-embedding.
+   *  Omitted ⇒ retrieve embeds the query text as today (byte-identical). NO effect on gate math / τ. */
+  queryEmbedding?: number[];
+};
 
 /** Deterministic retrieval config: vector cosine only — no expansion, no reranker, no BM25, no source
  *  weighting. So hits[0].similarity is the raw cosine the gate reads, and the match is reproducible. */
@@ -59,13 +67,17 @@ export async function groundFinding(finding: GroundingFinding, deps: GroundingDe
   const q = `${finding.subject ?? ''} ${finding.rationale ?? ''}`.trim();
   if (!q) return empty;
 
+  // A precomputed embedding (grounding worker) is valid for every leg — it embeds THIS q. Omitted ⇒
+  // retrieve embeds q as today. Spread per-leg so the default path stays byte-identical.
+  const qEmb = options.queryEmbedding;
+
   let cw: Source | null = null;
   let guideline: Source | null = null;
   let even: Source | null = null;
 
   if (runCw) {
     try {
-      const r = await retrieveFn(q, CW_OPTS);
+      const r = await retrieveFn(q, { ...CW_OPTS, queryEmbedding: qEmb });
       const top = r.hits?.[0] as NormativeHit | undefined;
       if (top && cwCandidateAccepted(finding.lvc_category, top, tau)) cw = hitToSource(top, 0);
     } catch (e) { console.warn('[normative-grounding] CW leg failed', (e as Error).message); }
@@ -73,7 +85,7 @@ export async function groundFinding(finding: GroundingFinding, deps: GroundingDe
 
   if (runGuideline) {
     try {
-      const r = await retrieveFn(q, GUIDELINE_OPTS);
+      const r = await retrieveFn(q, { ...GUIDELINE_OPTS, queryEmbedding: qEmb });
       const top = r.hits?.[0] as NormativeHit | undefined;
       if (top && guidelineCandidateAccepted(top, tau)) guideline = hitToSource(top, 0);
     } catch (e) { console.warn('[normative-grounding] guideline leg failed', (e as Error).message); }
@@ -81,7 +93,7 @@ export async function groundFinding(finding: GroundingFinding, deps: GroundingDe
 
   if (runEven) {
     try {
-      const r = await retrieveFn(q, EVEN_OPTS);
+      const r = await retrieveFn(q, { ...EVEN_OPTS, queryEmbedding: qEmb });
       const top = r.hits?.[0] as NormativeHit | undefined;
       if (top && evenCandidateAccepted(finding.lvc_category, top, deps.evenCategoryLookup!, tau)) even = hitToSource(top, 0);
     } catch (e) { console.warn('[normative-grounding] even leg failed', (e as Error).message); }

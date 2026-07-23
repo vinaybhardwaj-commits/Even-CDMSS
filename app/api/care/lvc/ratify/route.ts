@@ -8,6 +8,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isCareUnlocked } from '@/lib/care-cookie';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { ratifyAssertion } from '@/lib/even-lvc';
+import { bumpEpoch } from '@/lib/even-ground';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -27,5 +28,8 @@ export async function POST(req: NextRequest) {
   const ratified_by = String(body.ratified_by ?? '').trim();
   const assertion_text = typeof body.assertion_text === 'string' ? body.assertion_text : undefined;
   const result = await ratifyAssertion({ id, ratified_by, assertion_text });
+  // A new/edited active assertion changes the grounding set → bump the epoch so the worker re-sweeps
+  // newest-first (best-effort; never affects the ratify result).
+  if (result.ok) await bumpEpoch();
   return NextResponse.json(result, { status: result.ok ? 200 : 400 });
 }

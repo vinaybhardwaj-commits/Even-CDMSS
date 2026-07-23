@@ -6,6 +6,7 @@ import {
 import type { AuditReport, AuditFinding, FieldStatus, PrognosisReport } from '@/lib/doc-audit-core';
 import type { PxNetStatus, PxLikelihood, PxSeverity } from '@/lib/prognosis-core';
 import type { Source } from '@/lib/citations-core';
+import { stripRetiredEvenCitations } from '@/lib/even-ground-core';
 import { DOMAIN_SHORT, type ValueScorecard, type Band } from '@/lib/value-score-core';
 import {
   inr, MetricCard, Collapsible, SectionTitle, TariffBlock, EvidenceList, EstimatesList,
@@ -31,7 +32,7 @@ const BAND_STYLE: Record<Band, { ring: string; text: string; bg: string; label: 
 const barColor = (s: number) => s >= 85 ? 'bg-teal-500' : s >= 70 ? 'bg-green-500' : s >= 55 ? 'bg-amber-500' : s >= 40 ? 'bg-orange-500' : 'bg-red-500';
 
 export default function CaseAuditReport({
-  report, extractTraceId, analyzeTraceId, findingActions,
+  report, extractTraceId, analyzeTraceId, findingActions, retiredEvenIds,
 }: {
   report: AuditReport;
   extractTraceId?: string;
@@ -40,7 +41,18 @@ export default function CaseAuditReport({
    *  FindingCard when provided; when absent the component is byte-identical for every
    *  existing caller (Case-Audit Mode 3 etc.). */
   findingActions?: (f: AuditFinding, i: number) => React.ReactNode;
+  /** Retire display-filter (CDMSS-EVEN-LVC-GROUNDING-WORKER §6): ids of retired Even assertions whose
+   *  `even-lvc` citations must be hidden. Passed by a data parent that can reach it; omitted/empty ⇒
+   *  byte-identical render (no filtering). */
+  retiredEvenIds?: string[];
 }) {
+  // Hide retired Even-LVC citations at render (display-time only; stored citation_ids are untouched).
+  // Short-circuits to the original arrays when nothing is retired, so existing callers are unaffected.
+  const filtered = retiredEvenIds?.length
+    ? stripRetiredEvenCitations(report.findings as never[], (report.sources ?? []) as never[], retiredEvenIds)
+    : { findings: report.findings, sources: report.sources };
+  const renderFindings = filtered.findings as AuditFinding[];
+  const renderSources = filtered.sources as Source[] | undefined;
   const c = report.completeness;
   const sc = report.valueScore;
   const flagged = report.findings.filter((f) => f.verdict === 'low-value' || f.verdict === 'context-dependent').length;
@@ -112,13 +124,13 @@ export default function CaseAuditReport({
         <section>
           <SectionTitle icon={<AlertTriangle className="h-3.5 w-3.5" />} text="Appropriateness & low-value decisions" />
           <div className="space-y-3">
-            {report.findings.map((f, i) => <FindingCard key={i} f={f} sources={report.sources} actions={findingActions?.(f, i)} />)}
+            {renderFindings.map((f, i) => <FindingCard key={i} f={f} sources={renderSources} actions={findingActions?.(f, i)} />)}
           </div>
         </section>
       )}
 
       {/* ── PX: Foreseeable outcomes & safety-netting (PRD v1.0) — absent on old runs / flag off ── */}
-      {report.prognosis && <PrognosisSection px={report.prognosis} sources={report.sources} />}
+      {report.prognosis && <PrognosisSection px={report.prognosis} sources={renderSources} />}
 
       {/* ── Idealised course vs actual ── */}
       <section>
@@ -151,9 +163,9 @@ export default function CaseAuditReport({
         </div>
       </Collapsible>
 
-      {report.sources && report.sources.length > 0 && (
-        <Collapsible title="Sources — retrieved from the CDMSS corpus" icon={<BookOpen className="h-3.5 w-3.5" />} count={report.sources.length}>
-          <SourcesPanel sources={report.sources} />
+      {renderSources && renderSources.length > 0 && (
+        <Collapsible title="Sources — retrieved from the CDMSS corpus" icon={<BookOpen className="h-3.5 w-3.5" />} count={renderSources.length}>
+          <SourcesPanel sources={renderSources} />
         </Collapsible>
       )}
 

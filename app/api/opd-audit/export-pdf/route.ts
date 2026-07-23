@@ -17,6 +17,8 @@ import { rowToOpdCase } from '@/lib/opd-ingest-core';
 import { doctorLabel } from '@/lib/opd-audit-ui';
 import { fetchDoctorAuditRows } from '@/lib/opd-audit-doctor';
 import { buildNoteAuditPdf, buildBulkPdf, type AuditPageData, type OriginalDoc, type PdfFinding } from '@/lib/opd-audit-pdf';
+import { stripRetiredEvenCitations } from '@/lib/even-ground-core';
+import type { Source } from '@/lib/citations-core';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -30,7 +32,7 @@ const FOOTER = 'Advisory note-level quality proxy — documentation, PDQI-9, app
 
 const AUDIT_COLS = `id, uid, doctor_uid, note_date, band, note_quality_index,
   score_documentation, score_note_quality, score_appropriateness, score_prescribing_safety, score_patient_centred,
-  findings, suggestions, engine_version`;
+  findings, sources, suggestions, engine_version`;
 const DOMAINS: { col: string; label: string }[] = [
   { col: 'score_documentation', label: 'Documentation' },
   { col: 'score_note_quality', label: 'Note quality' },
@@ -74,8 +76,14 @@ async function fetchOriginal(uid: string): Promise<{ original: OriginalDoc; stat
   }
 }
 
-function toPageData(row: Record<string, unknown>, doctor: string, specialty: string | null, originalStatus: string | null): AuditPageData {
-  const findings = parse<RawFinding[]>(row.findings, []).map((f) => ({
+function toPageData(row: Record<string, unknown>, doctor: string, specialty: string | null, originalStatus: string | null, retiredEvenIds?: string[]): AuditPageData {
+  // Retire display-filter (EVEN-LVC-GROUNDING §6): drop retired even-lvc citation_ids before the
+  // grounded/reasoning flag is derived, so a finding grounded ONLY by a retired assertion reads honestly.
+  const rawFindings = parse<RawFinding[]>(row.findings, []);
+  const usable = retiredEvenIds?.length
+    ? stripRetiredEvenCitations(rawFindings, parse<Source[]>(row.sources, []), retiredEvenIds).findings
+    : rawFindings;
+  const findings = usable.map((f) => ({
     subject: String(f.subject || ''), verdict: String(f.verdict || ''), domain: String(f.domain || ''),
     rationale: String(f.rationale || ''), ground: groundOf(f),
   }));
@@ -114,13 +122,15 @@ function pdfResponse(bytes: Uint8Array, filename: string): NextResponse {
 async function buildForRows(rows: Record<string, unknown>[]): Promise<{ data: AuditPageData; original: OriginalDoc }[]> {
   const uids = Array.from(new Set(rows.map((r) => String(r.doctor_uid || '')).filter(Boolean)));
   const [names, specs] = await Promise.all([namesFor(uids), specialtiesFor(uids)]);
+  const retiredEvenIds = (await run(`SELECT id FROM even_lvc_assertions WHERE status = 'retired'`, []).catch(() => []))
+    .map((r) => String((r as Record<string, unknown>).id));
   const items: { data: AuditPageData; original: OriginalDoc }[] = [];
   for (const row of rows) {
     const du = row.doctor_uid ? String(row.doctor_uid) : null;
     const doctor = (du && names[du]) || doctorLabel(du);
     const specialty = (du && specs[du]) || null;
     const { original, status } = await fetchOriginal(String(row.uid || ''));
-    items.push({ data: toPageData(row, doctor, specialty, status), original });
+    items.push({ data: toPageData(row, doctor, specialty, status, retiredEvenIds), original });
   }
   return items;
 }

@@ -27,6 +27,8 @@ import {
   buildReviewQueue, itemKey, type QueueFinding, type QueueItem,
 } from '@/lib/review-queue-core';
 import { matchFindings, disagreementsOf, type MatchFinding } from '@/lib/finding-match-core';
+import { stripRetiredEvenCitations } from '@/lib/even-ground-core';
+import type { Source } from '@/lib/citations-core';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 const APP = process.env.APP_SOURCE || 'standalone';
@@ -85,9 +87,15 @@ export async function GET(req: NextRequest) {
   if (to) { params.push(to); where += ` AND (note_date AT TIME ZONE 'Asia/Kolkata')::date <= $${params.length}`; }
   const cap = Math.max(200, Math.min(800, n * 20));
 
+  // Retire display-filter (EVEN-LVC-GROUNDING §6): hide retired assertions' citations. Empty set (the
+  // common case) ⇒ no sources SELECTed, byte-identical to today.
+  const retiredEvenIds = (await run(`SELECT id FROM even_lvc_assertions WHERE status = 'retired'`, []).catch(() => []))
+    .map((r) => String((r as Record<string, unknown>).id));
+  const srcCol = retiredEvenIds.length ? ', sources' : '';
+
   const rows = await run(
     `SELECT id::text AS id, uid, doctor_uid,
-            to_char((note_date AT TIME ZONE 'Asia/Kolkata'),'YYYY-MM-DD') AS note_date, findings
+            to_char((note_date AT TIME ZONE 'Asia/Kolkata'),'YYYY-MM-DD') AS note_date, findings${srcCol}
      FROM opd_note_audits WHERE ${where}
      ORDER BY note_date DESC NULLS LAST LIMIT ${cap}`, params).catch(() => []);
 
@@ -100,7 +108,10 @@ export async function GET(req: NextRequest) {
     const uid = r.uid ? String(r.uid) : '';
     const doctor = r.doctor_uid ? String(r.doctor_uid) : '';
     const note_date = String(r.note_date || '');
-    const stamped = stampFindingIdentity(parseJson<OpdFinding[]>(r.findings, []));
+    let stamped = stampFindingIdentity(parseJson<OpdFinding[]>(r.findings, []));
+    if (retiredEvenIds.length) {
+      stamped = stripRetiredEvenCitations(stamped, parseJson<Source[]>(r.sources, []), retiredEvenIds).findings;
+    }
     for (const f of stamped) {
       if (!f.finding_ref) continue;
       const qf: QueueFinding & MatchFinding = {

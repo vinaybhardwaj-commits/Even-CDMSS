@@ -9,6 +9,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ShieldCheck, Stamp, Sparkles, AlertTriangle, Archive, Pencil, Check, X } from 'lucide-react';
+import GroundingPanel from './GroundingPanel';
 
 type Supporting = { subject: string; count: number };
 type Assertion = {
@@ -226,6 +227,9 @@ export default function LvcBoard() {
           </div>
         </section>
       )}
+
+      {/* Grounding worker status (EVEN-LVC-GROUNDING §7) — additive; self-gates + soft-fails. */}
+      <GroundingPanel />
 
       <p className="mt-8 text-[11.5px] text-slate-400">Post-hoc grounding only — assertions never enter an audit prompt or any scorer. They attach an inline citation on matching low-value findings, ranked below external evidence.</p>
     </div>

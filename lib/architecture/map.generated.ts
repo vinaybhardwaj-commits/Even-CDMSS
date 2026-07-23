@@ -323,6 +323,14 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "even-ground",
+    "plane": "unregistered"
+  },
+  {
+    "id": "even-ground-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "even-lvc",
     "plane": "unregistered"
   },
@@ -803,6 +811,16 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/admin",
+    "to": "even-ground",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
+    "to": "even-ground-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
     "to": "formulary",
     "kind": "value"
   },
@@ -1204,6 +1222,16 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "drugs",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "even-ground",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "even-ground-core",
     "kind": "value"
   },
   {
@@ -2380,6 +2408,51 @@ export const MAP_EDGES: MapEdge[] = [
     "from": "episode-state",
     "to": "doc-audit-core",
     "kind": "type"
+  },
+  {
+    "from": "even-ground",
+    "to": "citations-core",
+    "kind": "type"
+  },
+  {
+    "from": "even-ground",
+    "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "even-ground",
+    "to": "even-ground-core",
+    "kind": "value"
+  },
+  {
+    "from": "even-ground",
+    "to": "llm",
+    "kind": "value"
+  },
+  {
+    "from": "even-ground",
+    "to": "mini-backfill",
+    "kind": "value"
+  },
+  {
+    "from": "even-ground",
+    "to": "normative-grounding",
+    "kind": "value"
+  },
+  {
+    "from": "even-ground",
+    "to": "normative-grounding-core",
+    "kind": "value"
+  },
+  {
+    "from": "even-ground-core",
+    "to": "even-lvc-core",
+    "kind": "value"
+  },
+  {
+    "from": "even-ground-core",
+    "to": "normative-grounding-core",
+    "kind": "value"
   },
   {
     "from": "even-lvc",

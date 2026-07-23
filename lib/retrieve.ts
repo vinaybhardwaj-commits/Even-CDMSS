@@ -20,6 +20,13 @@ export type RetrieveOptions = {
    *  Default = global USE_EMBEDDING_V2 env. */
   useEmbeddingV2?: boolean;
 
+  /** Even-LVC grounding worker (CDMSS-EVEN-LVC-GROUNDING-WORKER §5): a PRECOMPUTED query embedding
+   *  (nomic, same dim as `embedding`) to use INSTEAD of embedding the query text this call — the worker
+   *  caches finding embeddings in finding_embeddings and reuses them across sweeps. Omitted ⇒ today's
+   *  behaviour byte-identical (embed the (expanded) query text). Must be nomic-dim; only supplied on the
+   *  skipExpand, non-v2 grounding path, so it never collides with expansion/v2. */
+  queryEmbedding?: number[];
+
   /** v1.6: enable cross-encoder reranker on the candidate pool. */
   useReranker?: boolean;
 
@@ -382,7 +389,11 @@ export async function retrieve(query: string, opts: RetrieveOptions = {}): Promi
   if (useV2) assertEmbeddingV2Available(true, await embeddingV2ColumnExists());
 
   const expanded = opts.skipExpand ? query : await expandQuery(query);
-  const vec = useV2 ? await embedQueryV2(expanded) : await embedQuery(expanded);
+  // A precomputed (cached) nomic embedding short-circuits the embed call (grounding worker); default =
+  // embed the (expanded) query text exactly as before. Guarded to the non-v2 path (nomic dim).
+  const vec = (opts.queryEmbedding && !useV2)
+    ? opts.queryEmbedding
+    : (useV2 ? await embedQueryV2(expanded) : await embedQuery(expanded));
   const vlit = vectorLiteral(vec);
 
   // When reranker is on, pull a deeper pool so the cross-encoder has more
