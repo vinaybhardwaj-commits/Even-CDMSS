@@ -76,6 +76,11 @@ const EMBED_INSERT_SQL = `INSERT INTO mksap_chunks (source, book, chapter, secti
 
 const CHUNK_HIDE_SQL = `UPDATE mksap_chunks SET visible = false WHERE source = 'even-lvc' AND item_number = $1`;
 
+// Self-heal dead 'running' rows (a killed / navigated-away serverless fn) so the ?auto=1 cron is not
+// blocked forever by the in-progress guard. Interval mirrors LVC_RUN_STALE_MIN (10 min). Best-effort.
+const EXPIRE_STALE_RUNS_SQL = `UPDATE even_lvc_gen_runs SET status = 'error', finished_at = now(), error = 'expired (stale running)'
+  WHERE status = 'running' AND started_at < now() - interval '10 minutes'`;
+
 // ── generation (PRD §5, §5.2) ───────────────────────────────────────────────────
 export interface GenerationResult { ok: boolean; status: 'ok' | 'error' | 'skipped'; n_candidates: number; run_id?: string; reason?: string }
 
@@ -84,7 +89,7 @@ export interface GenerationResult { ok: boolean; status: 'ok' | 'error' | 'skipp
  *  the idempotent, dedup-guarded generation than to silently stall). */
 async function shouldSkipAuto(): Promise<string | null> {
   try {
-    const running = await run(`SELECT 1 FROM even_lvc_gen_runs WHERE status = 'running' AND started_at > now() - interval '2 hours' LIMIT 1`, []);
+    const running = await run(`SELECT 1 FROM even_lvc_gen_runs WHERE status = 'running' AND started_at > now() - interval '10 minutes' LIMIT 1`, []);
     if (running.length) return 'a generation run is already in progress';
   } catch { /* probe failed ⇒ don't block */ }
   try {
@@ -102,6 +107,9 @@ async function shouldSkipAuto(): Promise<string | null> {
 
 export async function runGeneration(opts: { trigger: 'manual' | 'cron'; auto?: boolean }): Promise<GenerationResult> {
   const trigger = opts.trigger;
+  // Expire dead 'running' rows first (both manual + auto) so a stale row self-heals and never blocks the
+  // in-progress guard beyond LVC_RUN_STALE_MIN. Best-effort: an error here must never fail generation.
+  try { await run(EXPIRE_STALE_RUNS_SQL, []); } catch { /* best-effort self-heal */ }
   if (opts.auto) {
     const skip = await shouldSkipAuto();
     if (skip) { try { await run(`INSERT INTO even_lvc_gen_runs (status, trigger, finished_at, n_candidates) VALUES ('skipped', $1, now(), 0)`, [trigger]); } catch { /* best-effort log */ } return { ok: true, status: 'skipped', n_candidates: 0, reason: skip }; }

@@ -6,8 +6,8 @@ import assert from 'node:assert/strict';
 import {
   buildDigest, normalizeSubject, evenGenUserMessage, parseCandidatesJson, dedupeCandidates,
   isDuplicateCandidate, maxOrdinalForCategory, nextAssertionId, assignAssertionIds,
-  computeOwnCases, rollupContests, evenChunkSection, normalizeAssertionText,
-  LVC_GEN_CAT_MIN, LVC_GEN_TOPK, LVC_GEN_SUBJECT_MIN, LVC_CONTEST_FLAG, EVEN_DEDUP_COSINE,
+  computeOwnCases, rollupContests, evenChunkSection, normalizeAssertionText, isRunStale,
+  LVC_GEN_CAT_MIN, LVC_GEN_TOPK, LVC_GEN_SUBJECT_MIN, LVC_CONTEST_FLAG, EVEN_DEDUP_COSINE, LVC_RUN_STALE_MIN,
   type DigestRow, type GenCandidate, type ExistingAssertion,
 } from '../even-lvc-core.ts';
 
@@ -170,6 +170,17 @@ test('evenGenUserMessage only references shown categories/subjects + surfaces th
   assert.match(prompt, /53 low-value findings total/);
   assert.match(prompt, /azithromycin for viral uri \(seen 45×\)/);
   assert.match(prompt, /up to 25 candidate/);
+});
+
+test('isRunStale: a fresh run is not stale; a >10-min run is; a malformed timestamp is safe-false (§1.2)', () => {
+  const now = Date.parse('2026-07-23T12:00:00.000Z');
+  assert.equal(LVC_RUN_STALE_MIN, 10);
+  assert.equal(isRunStale('2026-07-23T11:59:30.000Z', now), false, '30s old ⇒ not stale');
+  assert.equal(isRunStale('2026-07-23T11:51:00.000Z', now), false, 'exactly 9 min ⇒ not stale');
+  assert.equal(isRunStale('2026-07-23T11:49:00.000Z', now), true, '11 min old ⇒ stale');
+  assert.equal(isRunStale('2026-07-23T11:50:00.000Z', now), false, 'exactly 10 min ⇒ boundary, strict > ⇒ not stale');
+  assert.equal(isRunStale('not-a-date', now), false, 'malformed timestamp ⇒ NOT stale (never expires a live run)');
+  assert.equal(isRunStale(null, now), false, 'null ⇒ not stale');
 });
 
 test('evenChunkSection / normalizeAssertionText helpers', () => {

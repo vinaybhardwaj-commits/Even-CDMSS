@@ -28,6 +28,16 @@ export const LVC_GEN_SUBJECT_MIN = 2;       // drop pure singletons (count < 2) 
 export const LVC_GEN_MAX_CANDIDATES = 25;   // per-run insert cap
 export const LVC_CONTEST_FLAG = 5;          // ≥5 contests ⇒ active flips to 'contested' (still grounds)
 export const EVEN_DEDUP_COSINE = 0.90;      // same-category near-dup threshold for generation dedup
+export const LVC_RUN_STALE_MIN = 10;        // a 'running' gen-run older than this (minutes) is dead → expire it
+
+/** A 'running' generation run is STALE — its serverless function was killed or the operator navigated
+ *  away, so it will never close itself — once it is older than LVC_RUN_STALE_MIN minutes. Pure; a
+ *  malformed/absent timestamp ⇒ NOT stale (fail-safe false, so a parse glitch never expires a live run). */
+export function isRunStale(startedAtISO: string | null | undefined, nowMs: number): boolean {
+  const t = Date.parse(String(startedAtISO ?? ''));
+  if (!Number.isFinite(t)) return false;
+  return nowMs - t > LVC_RUN_STALE_MIN * 60_000;
+}
 /** The internal-consensus tier display strings (mirrors provenance-tier-core.citationSourceTier). */
 export const EVEN_DISPLAY_LABEL = 'Even Adjudicated LVC';
 export const EVEN_PROVENANCE_LABEL = 'Even Adjudicated LVC (physician-ratified)';

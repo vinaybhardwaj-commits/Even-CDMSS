@@ -28,6 +28,8 @@ const post = async (url: string, body: Record<string, unknown>): Promise<Record<
   return j;
 };
 
+const mmss = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+
 function CategoryChip({ c }: { c: string }) {
   return <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800">{c}</span>;
 }
@@ -43,6 +45,7 @@ export default function LvcBoard() {
   const [editing, setEditing] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
   const [genMsg, setGenMsg] = useState<string | null>(null);
+  const [genElapsed, setGenElapsed] = useState(0);   // heartbeat: seconds since the Generate POST started
 
   const load = useCallback(async () => {
     setLoading(true); setErr(null);
@@ -57,6 +60,15 @@ export default function LvcBoard() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  // Generate heartbeat: while the (~2-min) POST is in flight, tick a live elapsed timer so the operator
+  // can see it's alive. Resets on start; cleared on completion/unmount. Purely a client affordance.
+  useEffect(() => {
+    if (busy !== '__gen') return;
+    setGenElapsed(0);
+    const t = setInterval(() => setGenElapsed((e) => e + 1), 1000);
+    return () => clearInterval(t);
+  }, [busy]);
 
   const start = (name: string) => { setReviewer(name); setPhase('board'); };
 
@@ -119,7 +131,12 @@ export default function LvcBoard() {
         <button onClick={generate} disabled={busy === '__gen'} className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-3.5 py-2 text-[13px] font-medium text-white transition hover:bg-slate-700 disabled:opacity-50">
           <Sparkles className="h-3.5 w-3.5" />{busy === '__gen' ? 'Generating…' : 'Generate candidates'}
         </button>
-        {genMsg && <span className="text-[12px] text-slate-500">{genMsg}</span>}
+        {busy === '__gen' && (
+          <span className="text-[12px] text-slate-500">
+            <span className="font-medium tabular-nums text-slate-700">{mmss(genElapsed)}</span> · usually ~2 minutes — safe to leave open
+          </span>
+        )}
+        {busy !== '__gen' && genMsg && <span className="text-[12px] text-slate-500">{genMsg}</span>}
       </div>
 
       {err && <p className="mt-3 text-[12px] text-red-600">{err}</p>}
