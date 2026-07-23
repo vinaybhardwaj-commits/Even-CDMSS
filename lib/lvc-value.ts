@@ -59,7 +59,11 @@ async function llmCall(traceId: string | undefined, label: string, params: any, 
 
 async function defaultRetrieveHits(q: string): Promise<CiteHit[]> {
   try {
-    const r = await retrieve(q, { topK: 8, useReranker: true, useSourceWeights: true, hybrid: true, useNormativeLeg: true });
+    // NO useNormativeLeg here — this text enters the Value-Analysis JUDGE's prompt, and the
+    // normative-source frame ("this care is guideline-concordant") reframes the very judgment we
+    // want independent (CDMSS-WORKSPACE-FRAMING-PRINCIPLE §4 RightCare / §6 prompt boundary; R-11
+    // measured ~90% signal loss). Vector+BM25+rerank grounding stays; do NOT re-add the leg.
+    const r = await retrieve(q, { topK: 8, useReranker: true, useSourceWeights: true, hybrid: true });
     return r.hits.map((h) => ({
       id: h.id, source: h.source, book: h.book, chapter: h.chapter, section: h.section,
       page_start: h.page_start, page_end: h.page_end, item_number: h.item_number,
