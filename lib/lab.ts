@@ -93,6 +93,9 @@ export interface CorpusAddInput {
   section?: string;
   chunkType?: string;       // 'note' | 'guideline' | 'abstract' | …
   text: string;
+  /** Optional stable internal anchor (e.g. a guideline section slug). Absent ⇒ the chunk INDEX
+   *  (String(i+1)), byte-identical to prior behaviour. Never a DOI/PMID/URL. */
+  itemNumber?: string;
 }
 export interface CorpusAddResult { source: string; chunks: number; inserted: number; skipped_dup: number }
 
@@ -115,7 +118,7 @@ export async function corpusAddQuarantined(input: CorpusAddInput): Promise<Corpu
     const emb = vectorLiteral(await embedQuery(text)); // nomic on the mini — ₹0
     const ins = await run(
       CORPUS_QUARANTINE_INSERT_SQL,
-      [source, input.book, input.chapter ?? null, input.section ?? 'lab', String(i + 1),
+      [source, input.book, input.chapter ?? null, input.section ?? 'lab', input.itemNumber ?? String(i + 1),
        input.chunkType ?? 'note', text, hash, emb, approxTokens(text)],
     );
     if (ins.length) inserted++; else skipped++;

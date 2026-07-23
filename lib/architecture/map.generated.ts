@@ -351,6 +351,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "guidelines-ingest-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "harvest",
     "plane": "unregistered"
   },
@@ -2394,6 +2398,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "gemini-multimodal",
     "to": "trace",
+    "kind": "value"
+  },
+  {
+    "from": "guidelines-ingest-core",
+    "to": "lab-core",
     "kind": "value"
   },
   {
