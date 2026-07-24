@@ -3,7 +3,8 @@
  *
  * Maps the in-memory OpdNoteAudit → one de-identified, uid-keyed row. Idempotent insert
  * (ON CONFLICT (uid, engine_version) DO NOTHING), so the worker re-runs safely — the audit
- * table itself is the worker's watermark.
+ * table itself is the worker's watermark. A manual force mode (saveOpdAudit opts.force)
+ * upgrades the conflict to DO UPDATE for admin backfill overwrites.
  */
 
 import { sql } from './db';
@@ -19,6 +20,11 @@ function domainScore(audit: OpdNoteAudit, key: OpdDomain): number | null {
 }
 
 export interface SaveOpdAuditMeta { model?: string | null; latencyMs?: number | null }
+
+/** Force-overwrite mode for saveOpdAudit (obstetric re-score backfill): when a row already exists
+ *  at (uid, engine_version), DO UPDATE the scored columns instead of DO NOTHING. Off by default —
+ *  the idempotent daily worker path is unchanged (byte-identical SQL). */
+export interface SaveOpdAuditOptions { force?: boolean }
 
 /**
  * ClinicalState shadow (Platform B1) — DORMANT by default. Flag-gated, read-only w.r.t. the
@@ -54,10 +60,17 @@ async function quietingGenColumnExists(): Promise<boolean> {
   return _qgenCol.present;
 }
 
-/** Insert one audit. Returns 'inserted' | 'exists' (already audited at this engine version) | 'skipped' (no uid). */
-export async function saveOpdAudit(audit: OpdNoteAudit, meta: SaveOpdAuditMeta = {}): Promise<'inserted' | 'exists' | 'skipped'> {
+/** Insert one audit. Returns 'inserted' | 'exists' (already audited at this engine version) | 'skipped' (no uid).
+ *  With opts.force, an existing (uid, engine_version) row is overwritten (scored columns +
+ *  model/trace/latency/sources, audited_at = now()) and 'updated' is returned. */
+export async function saveOpdAudit(
+  audit: OpdNoteAudit,
+  meta: SaveOpdAuditMeta = {},
+  opts: SaveOpdAuditOptions = {},
+): Promise<'inserted' | 'exists' | 'skipped' | 'updated'> {
   const k = audit.keys;
   if (!k.uid) return 'skipped';
+  const force = opts.force === true;
   const sc = audit.scorecard;
   const findings = audit.findings || [];
   const nLow = findings.filter((f) => f.verdict === 'low-value').length;
@@ -65,6 +78,22 @@ export async function saveOpdAudit(audit: OpdNoteAudit, meta: SaveOpdAuditMeta =
   const nInteraction = findings.filter((f) => /interaction|contraindicat|\bddi\b/i.test(`${f.subject} ${f.rationale}`)).length;
   const missing = audit.completeness?.missing ?? [];
   const withGen = await quietingGenColumnExists();
+
+  // Force mode rewrites the scored columns from the fresh audit (EXCLUDED.*) and re-stamps
+  // audited_at; complexity_band/complexity_inputs are left as-is (same as updateOpdAudit).
+  const conflictClause = force
+    ? `DO UPDATE SET
+         note_quality_index = EXCLUDED.note_quality_index, band = EXCLUDED.band,
+         score_documentation = EXCLUDED.score_documentation, score_note_quality = EXCLUDED.score_note_quality,
+         score_appropriateness = EXCLUDED.score_appropriateness, score_prescribing_safety = EXCLUDED.score_prescribing_safety,
+         score_patient_centred = EXCLUDED.score_patient_centred,
+         pdqi9 = EXCLUDED.pdqi9, completeness_pct = EXCLUDED.completeness_pct, n_missing_mandatory = EXCLUDED.n_missing_mandatory,
+         n_findings = EXCLUDED.n_findings, n_low_value = EXCLUDED.n_low_value, n_context_dependent = EXCLUDED.n_context_dependent,
+         n_interaction_alerts = EXCLUDED.n_interaction_alerts,
+         findings = EXCLUDED.findings, suggestions = EXCLUDED.suggestions, missing_fields = EXCLUDED.missing_fields,
+         model = EXCLUDED.model, trace_id = EXCLUDED.trace_id, latency_ms = EXCLUDED.latency_ms, sources = EXCLUDED.sources,
+         ${withGen ? 'quieting_gen = EXCLUDED.quieting_gen, ' : ''}audited_at = now()`
+    : 'DO NOTHING';
 
   const rows = (await sql(
     `INSERT INTO opd_note_audits
@@ -78,8 +107,8 @@ export async function saveOpdAudit(audit: OpdNoteAudit, meta: SaveOpdAuditMeta =
      VALUES ($1,$2,$3,$4,$5,$6,$7, $8,$9, $10,$11,$12,$13,$14,
        $15::jsonb,$16,$17, $18,$19,$20,$21, $22::jsonb,$23::jsonb,$24,$25,$26,$27, $28::jsonb, $29::jsonb,
        $30, $31::jsonb${withGen ? ', $32' : ''})
-     ON CONFLICT (uid, engine_version) DO NOTHING
-     RETURNING id`,
+     ON CONFLICT (uid, engine_version) ${conflictClause}
+     RETURNING id${force ? ', (xmax = 0) AS inserted' : ''}`,
     [
       k.uid, k.consultUid, k.doctorUid, k.kxEncounterId, k.noteDate, k.prescriptionType, k.consultType,
       sc.headline, sc.band,
@@ -93,13 +122,17 @@ export async function saveOpdAudit(audit: OpdNoteAudit, meta: SaveOpdAuditMeta =
       audit.complexity?.band ?? null, audit.complexity?.inputs ? JSON.stringify(audit.complexity.inputs) : null,
       ...(withGen ? [audit.quietingGen ?? 0] : []),
     ],
-  )) as Array<{ id: string }>;
+  )) as Array<{ id: string; inserted?: boolean }>;
+  // Under force, DO UPDATE always returns the row; (xmax = 0) distinguishes fresh insert from overwrite.
+  const freshInsert = rows.length > 0 && (!force || rows[0].inserted === true);
   await runAuditShadow(audit, findings); // B1 shadow — dormant unless CLINICAL_STATE_AUDIT_SHADOW=1; read-only, fail-open
   // Stage 3 longitudinal pass (opd-longitudinal/0.1) — AFTER the INSERT, flag-gated + fail-open, so it can
   // never affect the base row. Only for a fresh insert (idempotent worker re-runs never re-charge it; the
-  // replay endpoint recomputes on demand). Dark unless OPD_LONGITUDINAL_ENABLED=1.
-  if (rows.length) await runLongitudinalPass(audit).catch(() => { /* fail-open — base audit already persisted */ });
-  return rows.length ? 'inserted' : 'exists';
+  // replay endpoint recomputes on demand — and a force overwrite never re-charges it either). Dark unless
+  // OPD_LONGITUDINAL_ENABLED=1.
+  if (freshInsert) await runLongitudinalPass(audit).catch(() => { /* fail-open — base audit already persisted */ });
+  if (!rows.length) return 'exists';
+  return freshInsert ? 'inserted' : 'updated';
 }
 
 /** UPDATE an existing audit row in place (deterministic backfill — same engine version). Rewrites

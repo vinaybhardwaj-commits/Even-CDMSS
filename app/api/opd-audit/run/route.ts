@@ -22,8 +22,16 @@ export async function GET(req: NextRequest) {
     const audit = await auditOpdNote(row);
     // &save=1 persists the audit (golden-A/B tool): writes the current-engine row so a before/after
     // comparison can be read from opd_note_audits by engine_version. Admin-gated; manual use only.
-    const saved = req.nextUrl.searchParams.get('save') === '1'
-      ? await saveOpdAudit(audit, { model: GEMINI_MODEL }) : undefined;
+    // &force=1 (only with save=1) overwrites an existing (uid, engine_version) row — finishes the
+    // obstetric re-score backfill where a pre-fix zero row already occupies the slot. Fail-safe:
+    // a forced-save error degrades to saved:'save_failed', never a 500.
+    const save = req.nextUrl.searchParams.get('save') === '1';
+    const force = save && req.nextUrl.searchParams.get('force') === '1';
+    const saved = save
+      ? (force
+          ? await saveOpdAudit(audit, { model: GEMINI_MODEL }, { force: true }).catch(() => 'save_failed' as const)
+          : await saveOpdAudit(audit, { model: GEMINI_MODEL }))
+      : undefined;
     return NextResponse.json({ ok: true, saved, engineVersion: audit.engineVersion, audit });
   } catch (e) {
     return NextResponse.json({ ok: false, error: String((e as Error).message) }, { status: 500 });
