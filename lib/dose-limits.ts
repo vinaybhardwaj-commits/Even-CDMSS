@@ -11,9 +11,11 @@ import type { OpdFinding } from './opd-note-audit-core';
 
 const TABLE = LIMITS as unknown as DoseLimitsTable;
 
-/** Molecule-level daily-dose aggregation findings for a prescription. */
-export function doseFindings(meds: OpdMed[]): OpdFinding[] {
-  return doseAggregationFindings(meds, TABLE);
+/** Molecule-level daily-dose aggregation findings for a prescription. `ctx` (PRD CDMSS-PHARMACY-ROUND1
+ *  §4) is OPTIONAL and forwarded to the pure core for conditional ceilings (etoricoxib gout / naproxen
+ *  day-one); omitting it reproduces prior behaviour exactly. */
+export function doseFindings(meds: OpdMed[], ctx?: { isGout?: boolean }): OpdFinding[] {
+  return doseAggregationFindings(meds, TABLE, ctx);
 }
 
 export const DOSE_LIMITS_VERSION = TABLE.version;

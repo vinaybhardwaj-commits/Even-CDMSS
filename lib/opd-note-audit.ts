@@ -23,6 +23,7 @@ import {
 import { computeOpdScore, type OpdScorecard, type NetValue, type Pdqi9Attr } from './opd-note-score-core';
 import { enrichOpdMeds } from './formulary';
 import { doseFindings } from './dose-limits';
+import { parseDurationDays } from './dose-aggregation-core';
 import { tagInteractions, DDI_MECHANISM_CITATIONS } from './ddi-tags';
 import type { FindingProvenance } from './provenance-tier-core';
 import { curatedInteractions, mergeRank, type DrugClass } from './ddi';
@@ -184,12 +185,16 @@ export function muscleRelaxantFindings(meds: OpdMed[]): OpdFinding[] {
   }];
 }
 
-// ── 0.81.8 bug 1 — unindicated bronchodilator / antihistamine+montelukast for an ACUTE URTI ───────────
+// ── 0.81.8 bug 1 — unindicated XANTHINE bronchodilator for an ACUTE URTI ──────────────────────────────
 // Deterministic appropriateness backstop, context-GUARDED: fires only for a clear acute upper-respiratory
-// presentation and NEVER for a chronic-airways patient (J40–J47 / asthma / COPD), where a xanthine or a
-// montelukast is legitimate maintenance. A miss the LLM made inconsistently → determinised (↓appropriateness).
+// presentation and NEVER for a chronic-airways patient (J40–J47 / asthma / COPD), where a xanthine is
+// legitimate maintenance. A miss the LLM made inconsistently → determinised (↓appropriateness).
+// 0.81.13 (PRD CDMSS-PHARMACY-ROUND1): the antihistamine+montelukast leg was RETIRED (Decision 11 — it
+// fired on allergic-rhinitis maintenance, standard care) and the xanthine subject/rationale relabelled
+// (Decision 3 — the "mucolytic" claim misdescribed the trigger list, which is xanthines only).
 const XANTHINE_MOLECULES = ['theophylline', 'doxophylline', 'doxofylline', 'acebrophylline', 'bamifylline', 'etofylline', 'aminophylline', 'choline theophyllinate', 'deriphyllin'];
-const ANTIHISTAMINE_MOLECULES = ['cetirizine', 'levocetirizine', 'loratadine', 'desloratadine', 'fexofenadine', 'chlorpheniramine', 'chlorphenamine', 'hydroxyzine', 'bilastine', 'ebastine', 'pheniramine', 'promethazine', 'cinnarizine', 'ketotifen'];
+// ANTIHISTAMINE_MOLECULES was deleted with the montelukast rule (PRD CDMSS-PHARMACY-ROUND1 Decision 11
+// — RETIRED entirely; it fired on allergic-rhinitis maintenance, standard care). No live reference remains.
 const ACUTE_URTI_RE = /\b(urti|upper respiratory|common cold|coryza|nasopharyngitis|rhinitis|rhinorrho?ea|running nose|sore throat|throat pain|pharyngitis|tonsillitis|viral fever|viral (?:uri|illness)|cough and cold|acute (?:cough|cold))\b/i;
 const ACUTE_URTI_ICD = /^J0[0-6]|^J1[01]/i;
 const CHRONIC_RESP_RE = /\b(asthma|copd|chronic obstructive|chronic bronchitis|emphysema|bronchiectasis|interstitial lung|reactive airway|\bild\b)\b/i;
@@ -210,44 +215,40 @@ export function unindicatedRespFindings(oc: DeidOpdCase): OpdFinding[] {
   const xanthines = oc.medications.filter((m) => medHasMoleculeFrom(m, XANTHINE_MOLECULES));
   if (xanthines.length) {
     const names = uniq(xanthines.map((m) => m.resolvedGeneric || m.generic || m.brand || 'xanthine bronchodilator'));
-    out.push(detAppr(`Bronchodilator/mucolytic not indicated for an acute URTI: ${names.join(', ')}`, 0.6,
-      'A xanthine / acebrophylline-type bronchodilator-mucolytic has no established role in an uncomplicated acute upper-respiratory infection (a self-limiting viral illness) — reserve it for obstructive airways disease. Deterministic appropriateness backstop; a chronic-airways context (asthma/COPD, J40–J47) is excluded.'));
+    out.push(detAppr(`Xanthine bronchodilator not indicated for an acute URTI: ${names.join(', ')}`, 0.6,
+      `A xanthine bronchodilator (${names.join(', ')}) has no established role in an uncomplicated acute upper-respiratory infection (a self-limiting viral illness) — reserve it for obstructive airways disease. Deterministic appropriateness backstop; a chronic-airways context (asthma/COPD, J40–J47) is excluded.`));
   }
-  const hasAntihistamine = oc.medications.some((m) => medHasMoleculeFrom(m, ANTIHISTAMINE_MOLECULES));
-  const hasMontelukast = oc.medications.some((m) => medHasMoleculeFrom(m, ['montelukast']));
-  if (hasAntihistamine && hasMontelukast) {
-    out.push(detAppr('Antihistamine + montelukast co-prescribed for a viral URTI', 0.55,
-      'A leukotriene antagonist (montelukast) added to an antihistamine for an acute viral upper-respiratory illness is not evidence-based — montelukast is an asthma/allergic-rhinitis maintenance drug, not an acute-URTI treatment. Excluded when a chronic-airways / allergic-rhinitis context is documented.'));
-  }
+  // Decision 11 — the antihistamine+montelukast leg is RETIRED (not thresholded): it fired on
+  // allergic-rhinitis maintenance (standard care), and ACUTE_URTI_RE captures `rhinitis`. The LLM leg
+  // covers antihistamine_allergy (~150/wk). No finding is emitted for that combination at any duration.
   return out;
 }
 
-// ── 0.81.8 bug 3 — topical nasal decongestant used >5 days (rhinitis medicamentosa) ───────────────────
-// Ingredient-level (catches FDCs / brand-only lines via the resolved composition); duration parsed from the
-// med line. >5 days of an imidazoline nasal decongestant risks rebound congestion (↓prescribing_safety).
+// ── 0.81.8 bug 3 — topical nasal decongestant used too long (rhinitis medicamentosa) ──────────────────
+// Ingredient-level (catches FDCs / brand-only lines via the resolved composition); duration parsed from
+// the med line by the shared parseDurationDays. 0.81.13 (Decision 4, Khatija Q14): two tiers — >15 days
+// (higher severity: septal thinning / dependence) and >7 && <=15 days (rebound congestion); <=7 days or
+// an unparseable duration emits NOTHING (was >5). The prior "3–5 day cap" wording is superseded here.
 const NASAL_DECONGESTANT_MOLECULES = ['oxymetazoline', 'xylometazoline', 'naphazoline', 'xylometazolin', 'oxymetazolin'];
-function parseDurationDays(s?: string): number | null {
-  if (!s) return null;
-  const str = s.toLowerCase();
-  let m = str.match(/(\d+)\s*(?:days?|d)\b/); if (m) return Number(m[1]);
-  m = str.match(/(\d+)\s*(?:weeks?|wks?|w)\b/); if (m) return Number(m[1]) * 7;
-  m = str.match(/(\d+)\s*(?:months?|mos?)\b/); if (m) return Number(m[1]) * 30;
-  return null;
-}
+// parseDurationDays is the single shared parser (defined in the pure dose core, PRD §3.1); re-exported
+// here so its existing export surface and importers are preserved.
+export { parseDurationDays };
 export function decongestantDurationFindings(meds: OpdMed[]): OpdFinding[] {
   const out: OpdFinding[] = [];
   for (const m of meds) {
     if (!medHasMoleculeFrom(m, NASAL_DECONGESTANT_MOLECULES)) continue;
     const days = parseDurationDays(m.duration);
-    if (days !== null && days > 5) {
-      const name = m.resolvedGeneric || m.generic || m.brand || 'topical nasal decongestant';
-      out.push({
-        subject: `Topical nasal decongestant prescribed for ${days} days: ${name}`,
-        verdict: 'low-value', confidence: 0.7, domain: 'prescribing_safety',
-        rationale: `An imidazoline nasal decongestant (${name}) used for ${days} days exceeds the 3–5 day cap — prolonged use causes rebound congestion (rhinitis medicamentosa). Ingredient-level deterministic check.`,
-        evidence: [], estimates: [], citation_ids: [], source: 'deterministic',
-      });
-    }
+    if (days === null || days <= 7) continue;                        // Decision 4: <=7 days or unparseable → no finding
+    const name = m.resolvedGeneric || m.generic || m.brand || 'topical nasal decongestant';
+    const highSeverity = days > 15;
+    out.push({
+      subject: `Topical nasal decongestant prescribed for ${days} days: ${name}`,
+      verdict: 'low-value', confidence: highSeverity ? 0.85 : 0.7, domain: 'prescribing_safety',
+      rationale: highSeverity
+        ? `An imidazoline nasal decongestant (${name}) used for ${days} days — beyond 15 days risks nasal septal thinning and dependence. Ingredient-level deterministic check.`
+        : `An imidazoline nasal decongestant (${name}) used for ${days} days exceeds the 7-day cap — prolonged use causes rebound congestion (rhinitis medicamentosa). Ingredient-level deterministic check.`,
+      evidence: [], estimates: [], citation_ids: [], source: 'deterministic',
+    });
   }
   return out;
 }
@@ -558,7 +559,13 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
   const { case: oc, keys } = rowToOpdCase(row);
   enrichOpdMeds(oc.medications);   // brand→generic + class/schedule/high-alert/LASA/VED from the formulary
 
-  const det = [...prescribingChecks(oc), ...doseFindings(oc.medications), ...ddiFindings(oc.medications), ...muscleRelaxantFindings(oc.medications),
+  // Decision 6 — etoricoxib's 120 mg/day ceiling applies ONLY under a documented gout diagnosis; else
+  // the tighter 90 mg default. Same haystack unindicatedRespFindings builds, plus an M10/M1A ICD code.
+  // Absent context → isGout false → 90 mg applies (fail-safe conservative).
+  const goutHay = [oc.reasonForConsult || '', ...oc.presentingComplaints, ...oc.impressions, ...oc.history].join(' ');
+  const goutCodes = [...oc.diagnosisCodes, ...oc.impressionCodes].map((c) => c.trim());
+  const isGout = /\bgout\b|\bgouty\b|\btophus\b|\btophi\b/i.test(goutHay) || goutCodes.some((c) => /^M1[0A]/i.test(c));
+  const det = [...prescribingChecks(oc), ...doseFindings(oc.medications, { isGout }), ...ddiFindings(oc.medications), ...muscleRelaxantFindings(oc.medications),
     ...unindicatedRespFindings(oc), ...decongestantDurationFindings(oc.medications),   // 0.81.8 bugs 1, 3
     ...bannedFdcFindings(oc.medications)];   // CDSCO banned-FDC (C1; DORMANT — seed ships with zero entries, stage 2 populates + bumps)
   const completeness = opdCompleteness(oc);

@@ -24,11 +24,17 @@ import type { OpdMed } from './opd-ingest-core';
 import type { OpdFinding } from './opd-note-audit-core';
 import type { CorpusCitation, FindingProvenance } from './provenance-tier-core';
 
-/** Provenance for a dose finding, from its DoseLimit entry (Deterministic-Citations §7). */
+/** Provenance for a dose finding, from its DoseLimit entry (Deterministic-Citations §7;
+ *  PRD CDMSS-PHARMACY-ROUND1 §2). `clinician` carries the signature and routes to `clinician_signed`.
+ *  A signature (signed_by/signed_on) is surfaced whenever present — a corpus citation PLUS a
+ *  signature is strictly better than either alone (§5.4), so `external` entries keep resolving to
+ *  `deterministic` and simply also carry the clinician's name. */
 function doseProvenance(lim: DoseLimit): FindingProvenance | undefined {
-  if (lim.derivation === 'external') return { citation: lim.citation ?? null, derivation: 'external' };
-  if (lim.derivation === 'llm') return { citation: null, derivation: 'llm' };
-  return undefined;   // no provenance set → finding stays uncited_deterministic (unchanged behaviour)
+  const sig = (lim.signed_by || lim.signed_on) ? { signed_by: lim.signed_by, signed_on: lim.signed_on } : {};
+  if (lim.derivation === 'external') return { citation: lim.citation ?? null, derivation: 'external', ...sig };
+  if (lim.derivation === 'llm') return { citation: null, derivation: 'llm', ...sig };
+  if (lim.derivation === 'clinician') return { citation: null, derivation: 'clinician', ...sig };
+  return undefined;   // no derivation set → finding stays uncited_deterministic (unchanged behaviour)
 }
 
 // ── Injected ceilings table (shape of data/dose-limits.json) ──────────────────
@@ -40,9 +46,16 @@ export interface DoseLimit {
   caution_note?: string;
   note?: string;
   // Deterministic-Citations (dose-limits/1.1): provenance of the ceiling threshold, attached to the
-  // emitted finding. 'external' carries a resolved corpus citation; 'llm' is internally-derived.
-  derivation?: 'external' | 'llm';
+  // emitted finding. 'external' carries a resolved corpus citation; 'llm' is internally-derived;
+  // 'clinician' (dose-limits/1.2, PRD CDMSS-PHARMACY-ROUND1 §2) means a named clinician signed it.
+  derivation?: 'external' | 'llm' | 'clinician';
   citation?: CorpusCitation | null;
+  signed_by?: string;      // clinician who signed this ceiling, e.g. "Dr Khatija, Chief Clinical Pharmacologist, Even"
+  signed_on?: string;      // ISO date, e.g. "2026-07-25"
+  // Decision 5 — naproxen: a higher allowance on day one of an acute course.
+  first_day_max_mg_per_day?: number;
+  // Decision 6 — etoricoxib: a higher ceiling only under a named indication (gout).
+  indication_conditional?: { indication: 'gout'; max_mg_per_day: number };
 }
 export interface DoseLimitsTable {
   version: string;
@@ -191,6 +204,23 @@ export function moleculesOf(m: OpdMed, limits: DoseLimit[]): MedMolecule[] {
   });
 }
 
+// ── Duration parse (single shared parser) ─────────────────────────────────────
+// PRD CDMSS-PHARMACY-ROUND1 §3.1/§4: the ONE duration parser, reused (do NOT write a second one).
+// It lives HERE in the pure core rather than in lib/opd-note-audit.ts because the day-one ceiling
+// resolution below must call it and this file loads under `--experimental-strip-types` (type-only
+// imports) — it cannot import the impure orchestrator. opd-note-audit.ts re-exports it verbatim, so
+// the §3.1 `export parseDurationDays` surface (and its existing decongestant caller) is preserved.
+// Regexes are UNCHANGED from the original definition — days/weeks/months plus d/wks/mos; `to continue`,
+// `sos`, `when needed`, `3 more days`, empty → null.
+export function parseDurationDays(s?: string): number | null {
+  if (!s) return null;
+  const str = s.toLowerCase();
+  let m = str.match(/(\d+)\s*(?:days?|d)\b/); if (m) return Number(m[1]);
+  m = str.match(/(\d+)\s*(?:weeks?|wks?|w)\b/); if (m) return Number(m[1]) * 7;
+  m = str.match(/(\d+)\s*(?:months?|mos?)\b/); if (m) return Number(m[1]) * 30;
+  return null;
+}
+
 // ── Aggregate + verdict ───────────────────────────────────────────────────────
 export interface MoleculeLoad {
   molecule: string;
@@ -233,12 +263,39 @@ function det(subject: string, verdict: OpdFinding['verdict'], confidence: number
 }
 
 /**
+ * Resolve the applicable daily ceiling for a molecule (PRD CDMSS-PHARMACY-ROUND1 §4), in order:
+ *  1. gout-conditional — `indication_conditional.indication === 'gout'` AND `ctx.isGout === true`
+ *     (etoricoxib 120 mg only with a documented gout diagnosis; else the tighter default applies).
+ *  2. first-day — `first_day_max_mg_per_day` set AND EVERY contributing product parses to exactly
+ *     1 day (naproxen 1250 mg permitted on day one of an acute course).
+ *  3. `max_mg_per_day` — the conservative default.
+ * Fail-safe: `ctx` omitted → rule 1 is skipped (isGout undefined) and rule 2 depends only on the
+ * meds' own durations, so a molecule with NEITHER new field resolves to rule 3 exactly as today.
+ */
+function resolveCeiling(lim: DoseLimit, molecule: string, meds: OpdMed[], limits: DoseLimit[], ctx?: { isGout?: boolean }): number {
+  if (lim.indication_conditional?.indication === 'gout' && ctx?.isGout === true) {
+    return lim.indication_conditional.max_mg_per_day;
+  }
+  if (lim.first_day_max_mg_per_day != null) {
+    const contributing = meds.filter((m) => moleculesOf(m, limits).some((mm) => mm.molecule === molecule));
+    if (contributing.length > 0 && contributing.every((m) => parseDurationDays(m.duration) === 1)) {
+      return lim.first_day_max_mg_per_day;
+    }
+  }
+  return lim.max_mg_per_day;
+}
+
+/**
  * Deterministic daily-dose findings. Flags a molecule when its aggregate across products exceeds
  * the ceiling. Fires ONLY for molecules present in >1 product OR whose single-product scheduled
  * total already exceeds the ceiling — so a single correctly-dosed drug never trips it. SOS-only
  * exceedance is a softer, lower-confidence advisory.
+ *
+ * `ctx` is OPTIONAL (PRD §4): omitting it reproduces today's behaviour byte-for-byte — the only
+ * ceilings that vary are those carrying the new `indication_conditional` / `first_day_max_mg_per_day`
+ * fields, and rule 2 reads only the meds' own durations.
  */
-export function doseAggregationFindings(meds: OpdMed[], table: DoseLimitsTable): OpdFinding[] {
+export function doseAggregationFindings(meds: OpdMed[], table: DoseLimitsTable, ctx?: { isGout?: boolean }): OpdFinding[] {
   const loads = aggregateDailyDose(meds, table);
   const byMol = new Map(table.limits.map((l) => [l.molecule, l]));
   const out: OpdFinding[] = [];
@@ -250,7 +307,7 @@ export function doseAggregationFindings(meds: OpdMed[], table: DoseLimitsTable):
     const nProducts = load.products.length;
     const sched = load.scheduledMgPerDay;
     const sosMax = sched + load.sosMaxMgPerDay;
-    const ceiling = lim.max_mg_per_day;
+    const ceiling = resolveCeiling(lim, load.molecule, meds, table.limits, ctx);
     const prods = load.products.join(' + ');
 
     const prov = doseProvenance(lim);   // corpus citation / llm mark for this molecule's ceiling

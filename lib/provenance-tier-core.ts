@@ -17,6 +17,7 @@
 // ── The tiers (L2 + PRD CDMSS-DETERMINISTIC-CITATIONS V1/V2) ──────────────────
 export const PROVENANCE_TIERS = [
   'deterministic',            // backed by a rule/check with a RESOLVABLE external citation
+  'clinician_signed',         // signed by a NAMED clinician (derivation:'clinician') — below corpus-cited, above internal consensus; NOT internal consensus (PRD CDMSS-PHARMACY-ROUND1 §2/§8)
   'category_authority',       // society/guideline citation at category level (see note below)
   'internal_consensus',       // attributed to a self-mined rule OR a deterministic check marked llm
   'uncited_deterministic',    // deterministic in-code check, no citation and not marked — a shrinking residue
@@ -34,6 +35,7 @@ export type ProvenanceTier = (typeof PROVENANCE_TIERS)[number];
 
 export const PROVENANCE_TIER_LABELS: Record<ProvenanceTier, string> = {
   deterministic: 'Deterministic — resolvable external citation',
+  clinician_signed: 'Clinician-signed — a named clinician stands behind this entry',
   category_authority: 'Category authority — society citation at category level',
   internal_consensus: 'Internal consensus — self-mined rule / marked internally-derived',
   uncited_deterministic: 'Deterministic check — no citation attached',
@@ -102,10 +104,15 @@ export interface CorpusCitation {
 }
 
 /** derivation on a deterministic check's finding: `external` carries a resolved corpus citation;
- *  `llm` is explicitly internally-derived (no corpus verification) per V's §2 ruling. */
+ *  `llm` is explicitly internally-derived (no corpus verification) per V's §2 ruling; `clinician`
+ *  (PRD CDMSS-PHARMACY-ROUND1 §2/§8) means a NAMED clinician signed the threshold — carries
+ *  `signed_by`/`signed_on` and routes to the `clinician_signed` tier, never `internal_consensus`.
+ *  Additive: existing `external`/`llm` provenance objects (no signature) still validate. */
 export interface FindingProvenance {
   citation?: CorpusCitation | null;
-  derivation: 'external' | 'llm';
+  derivation: 'external' | 'llm' | 'clinician';
+  signed_by?: string;      // e.g. "Dr Khatija, Chief Clinical Pharmacologist, Even"
+  signed_on?: string;      // ISO date, e.g. "2026-07-25"
 }
 
 // Recognised external published authorities. Corpus retrieval sources (openfda/statpearls/…) plus
@@ -163,7 +170,8 @@ export function classifyProvenanceTier(f: TierableFinding, rule?: RuleCitationFi
     // §7.3 — the finding's OWN corpus citation (dose ceilings, DDI mechanisms, ISMP high-alert):
     // a resolving citation → deterministic; an explicit llm mark → internal_consensus.
     if (f.provenance) {
-      if (corpusCitationResolves(f.provenance.citation)) return 'deterministic';
+      if (corpusCitationResolves(f.provenance.citation)) return 'deterministic';   // a resolving corpus citation is strictly best (external + signed → still deterministic)
+      if (f.provenance.derivation === 'clinician') return 'clinician_signed';        // §2 — a named clinician signed this; MUST NOT collapse into internal_consensus
       if (f.provenance.derivation === 'llm') return 'internal_consensus';
     }
     return 'uncited_deterministic';   // residue: defects + not-yet-adjudicated checks (e.g. lasa_pair, pending high-alert)

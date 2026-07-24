@@ -3241,6 +3241,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "opd-note-audit",
+    "to": "dose-aggregation-core",
+    "kind": "value"
+  },
+  {
+    "from": "opd-note-audit",
     "to": "dose-limits",
     "kind": "value"
   },
@@ -3733,13 +3738,13 @@ export const VERSION_REGISTRY: VersionRow[] = [
   },
   {
     "constName": "OPD_ENGINE_VERSION",
-    "value": "opd-note-audit/0.81.12",
+    "value": "opd-note-audit/0.81.13",
     "file": "lib/opd-note-audit-core.ts",
     "derived": false
   },
   {
     "constName": "OPD_ENGINE_VERSIONS_CURRENT",
-    "value": "['opd-note-audit/0.81.3', 'opd-note-audit/0.81.4', 'opd-note-audit/0.81.5', 'opd-note-audit/0.81.6', 'opd-note-audit/0.81.7', 'opd-note-audit/0.81.8', 'opd-note-audit/0.81.9', 'opd-note-audit/0.81.10', 'opd-note-audit/0.81.11', 'opd-note-audit/0.81.12']",
+    "value": "['opd-note-audit/0.81.3', 'opd-note-audit/0.81.4', 'opd-note-audit/0.81.5', 'opd-note-audit/0.81.6', 'opd-note-audit/0.81.7', 'opd-note-audit/0.81.8', 'opd-note-audit/0.81.9', 'opd-note-audit/0.81.10', 'opd-note-audit/0.81.11', 'opd-note-audit/0.81.12', 'opd-note-audit/0.81.13']",
     "file": "lib/opd-note-audit-core.ts",
     "derived": true
   },

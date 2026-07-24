@@ -14,6 +14,7 @@ import { PROVENANCE_TIERS, PROVENANCE_TIER_LABELS, type ProvenanceTier } from '@
 
 const TIER_TONE: Record<ProvenanceTier, string> = {
   deterministic: 'bg-teal-50 text-teal-800',
+  clinician_signed: 'bg-emerald-50 text-emerald-800',
   category_authority: 'bg-sky-50 text-sky-800',
   internal_consensus: 'bg-amber-50 text-amber-800',
   uncited_deterministic: 'bg-slate-100 text-slate-700',

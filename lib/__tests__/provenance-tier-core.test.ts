@@ -5,8 +5,28 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   citationResolves, urlResolves, classifyProvenanceTier, groundingKind, isJudgementSignalType,
-  corpusCitationResolves, GROUNDING_PRESENTATION, PROVENANCE_TIERS, type CorpusCitation,
+  corpusCitationResolves, GROUNDING_PRESENTATION, PROVENANCE_TIERS, PROVENANCE_TIER_LABELS, type CorpusCitation,
 } from '../provenance-tier-core';
+
+// ── PHARMACY-ROUND1 §2/§8 — the clinician-signed tier ─────────────────────────
+test('clinician-signed: derivation "clinician" → clinician_signed, NEVER internal_consensus / uncited_deterministic', () => {
+  const sig = { citation: null, derivation: 'clinician' as const, signed_by: 'Dr Khatija, Chief Clinical Pharmacologist, Even', signed_on: '2026-07-25' };
+  const tier = classifyProvenanceTier({ source: 'deterministic', signal_type: 'dose_ceiling_exceeded', verdict: 'low-value', provenance: sig });
+  assert.equal(tier, 'clinician_signed');
+  assert.notEqual(tier, 'internal_consensus');
+  assert.notEqual(tier, 'uncited_deterministic');
+  // the tier exists in the enum + label map, and ranks below deterministic and above internal_consensus
+  assert.ok(PROVENANCE_TIERS.includes('clinician_signed'));
+  assert.ok(PROVENANCE_TIER_LABELS.clinician_signed);
+  assert.ok(PROVENANCE_TIERS.indexOf('clinician_signed') > PROVENANCE_TIERS.indexOf('deterministic'));
+  assert.ok(PROVENANCE_TIERS.indexOf('clinician_signed') < PROVENANCE_TIERS.indexOf('internal_consensus'));
+});
+test('clinician-signed: existing external + llm derivations route exactly as before', () => {
+  assert.equal(classifyProvenanceTier({ source: 'deterministic', signal_type: 'dose_ceiling_exceeded', verdict: 'low-value', provenance: { citation: { source: 'openfda', book: 'OpenFDA-Drug-Labels', chapter: 'naproxen' }, derivation: 'external' } }), 'deterministic');
+  assert.equal(classifyProvenanceTier({ source: 'deterministic', signal_type: 'dose_ceiling_exceeded', verdict: 'low-value', provenance: { citation: null, derivation: 'llm' } }), 'internal_consensus');
+  // an external entry that ALSO carries a signature still resolves to deterministic (citation is strictly best)
+  assert.equal(classifyProvenanceTier({ source: 'deterministic', signal_type: 'dose_ceiling_exceeded', verdict: 'low-value', provenance: { citation: { source: 'statpearls', book: 'StatPearls' }, derivation: 'external', signed_by: 'Dr Khatija' } }), 'deterministic');
+});
 
 // ── L7 — the resolvability predicate ─────────────────────────────────────────
 test('MANDATORY PIN: the 44 society rules\' generic choosingwisely URL does NOT resolve', () => {
@@ -68,7 +88,7 @@ test('rule 5 direction: unknowns default to SOURCEABLE, never to inherent (the b
   for (const t of ['prescribing_general', 'prescribing_high_value', 'antibiotic_stewardship', undefined]) {
     assert.equal(classifyProvenanceTier({ verdict: 'context-dependent', source: 'llm', signal_type: t }), 'unattributed_sourceable', String(t));
   }
-  assert.equal(PROVENANCE_TIERS.length, 8);   // 6 original + deterministic_completeness + deterministic_logical (V1/V2)
+  assert.equal(PROVENANCE_TIERS.length, 9);   // 6 original + deterministic_completeness + deterministic_logical (V1/V2) + clinician_signed (PHARMACY-ROUND1)
 });
 
 // ── L8/L9 — grounding presentation ───────────────────────────────────────────
@@ -125,5 +145,5 @@ test('§3.3 unreachability: an in-scope deterministic signal type that carries p
   }
   // the residue is honest: a deterministic finding with NO provenance (lasa_pair, pending high-alert) STAYS uncited
   assert.equal(classifyProvenanceTier({ source: 'deterministic', signal_type: 'lasa_pair', verdict: 'context-dependent' }), 'uncited_deterministic');
-  assert.equal(PROVENANCE_TIERS.length, 8);
+  assert.equal(PROVENANCE_TIERS.length, 9);   // +clinician_signed (PHARMACY-ROUND1 §2)
 });

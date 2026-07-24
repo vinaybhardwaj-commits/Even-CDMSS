@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   parseFrequency, unitsPerDose, strengthTokenToMg, canonicalMolecule,
-  moleculesOf, aggregateDailyDose, doseAggregationFindings, isVolumetric,
+  moleculesOf, aggregateDailyDose, doseAggregationFindings, isVolumetric, parseDurationDays,
   type DoseLimitsTable,
 } from '../dose-aggregation-core.ts';
 import type { OpdMed } from '../opd-ingest-core.ts';
@@ -21,6 +21,18 @@ const TABLE: DoseLimitsTable = {
     { molecule: 'aceclofenac', max_mg_per_day: 200 },
     { molecule: 'ibuprofen', max_mg_per_day: 2400 },
     { molecule: 'caffeine', max_mg_per_day: 400 },
+  ],
+};
+
+// PHARMACY-ROUND1 §4/§5 fixture: conditional ceilings + a clinician-signed antidiabetic ceiling.
+const SIG = { signed_by: 'Dr Khatija, Chief Clinical Pharmacologist, Even', signed_on: '2026-07-25' };
+const CTX_TABLE: DoseLimitsTable = {
+  version: 'dose-limits/test-1.2',
+  default_sos_cap_per_day: 3,
+  limits: [
+    { molecule: 'naproxen', max_mg_per_day: 1000, first_day_max_mg_per_day: 1250, derivation: 'external', ...SIG },
+    { molecule: 'etoricoxib', max_mg_per_day: 90, indication_conditional: { indication: 'gout', max_mg_per_day: 120 }, derivation: 'external', ...SIG },
+    { molecule: 'metformin', aliases: ['metformin hydrochloride', 'metformin hcl'], max_mg_per_day: 3000, derivation: 'clinician', ...SIG },
   ],
 };
 
@@ -176,4 +188,67 @@ test('BUG-0.8-13: a syrup dosed "10ml (2 tsp)" is volumetric and its volume is n
   assert.equal(unitsPerDose('10ml (2 tsp)'), 1);
   assert.equal(unitsPerDose('2 tsp'), 1);
   assert.equal(unitsPerDose('2 tablet'), 2);   // real tablet counts still parse
+});
+
+// ══ PHARMACY-ROUND1 §4 — conditional ceilings (parseDurationDays lives here now) ══
+
+test('§3.1 parseDurationDays (moved to the pure core) parses days/weeks/months, null for chronic/unparseable', () => {
+  assert.equal(parseDurationDays('5 days'), 5);
+  assert.equal(parseDurationDays('1 week'), 7);
+  assert.equal(parseDurationDays('1 month'), 30);
+  assert.equal(parseDurationDays('30 days'), 30);
+  for (const s of ['to continue', 'sos', 'when needed', '', '3 more days']) assert.equal(parseDurationDays(s), null, s);
+});
+
+test('Decision 5 — naproxen: 1250 mg over a 1-day course does NOT fire; over 5 days it fires', () => {
+  const day1: OpdMed[] = [{ generic: 'Naproxen', strength: '1250mg', dose: '1 tab', frequency: 'OD', duration: '1 day' } as OpdMed];
+  assert.equal(doseAggregationFindings(day1, CTX_TABLE).filter((f) => !f.informational).length, 0);   // first-day ceiling 1250 applies
+  const day5: OpdMed[] = [{ generic: 'Naproxen', strength: '1250mg', dose: '1 tab', frequency: 'OD', duration: '5 days' } as OpdMed];
+  assert.ok(doseAggregationFindings(day5, CTX_TABLE).some((f) => f.subject.startsWith('Daily dose exceeds ceiling: naproxen')));   // reverts to 1000
+});
+
+test('Decision 6 — etoricoxib: 120 with gout → no finding; 120 without → fires; 90 without → no finding', () => {
+  const e120: OpdMed[] = [{ generic: 'Etoricoxib', strength: '120mg', dose: '1 tab', frequency: 'OD' } as OpdMed];
+  assert.equal(doseAggregationFindings(e120, CTX_TABLE, { isGout: true }).filter((f) => !f.informational).length, 0);   // gout → 120 ceiling
+  assert.ok(doseAggregationFindings(e120, CTX_TABLE).some((f) => f.subject.startsWith('Daily dose exceeds ceiling: etoricoxib')));   // no ctx → 90 ceiling → fires
+  assert.ok(doseAggregationFindings(e120, CTX_TABLE, { isGout: false }).some((f) => f.subject.startsWith('Daily dose exceeds ceiling: etoricoxib')));
+  const e90: OpdMed[] = [{ generic: 'Etoricoxib', strength: '90mg', dose: '1 tab', frequency: 'OD' } as OpdMed];
+  assert.equal(doseAggregationFindings(e90, CTX_TABLE).filter((f) => !f.informational).length, 0);   // 90 not > 90
+});
+
+test('§4 fail-safe — omitting ctx is identical to passing it for molecules without conditional fields', () => {
+  const meds: OpdMed[] = [
+    { generic: 'Paracetamol', brand: 'Dolo 650', strength: '650mg', dose: '1 tab', frequency: '1-1-1' },
+    { generic: 'Mefenamic Acid+Paracetamol', brand: 'Meftal-Forte', strength: '500mg+325mg', dose: '1 tab', frequency: '1-1-1' },
+    { generic: 'Chlorpheniramine Maleate+Paracetamol+Phenylephrine', brand: 'Sinarest New', strength: '2mg+500mg+10mg', dose: '1 tablet', frequency: '1-1-1' },
+  ];
+  // TABLE carries no conditional fields → ctx is inert; output must be byte-identical with vs without it.
+  assert.deepEqual(doseAggregationFindings(meds, TABLE), doseAggregationFindings(meds, TABLE, { isGout: true }));
+  assert.deepEqual(doseAggregationFindings(meds, TABLE), doseAggregationFindings(meds, TABLE, undefined));
+});
+
+test('Decision 7/8 — metformin: 500+500 within ceiling → informational (conf 0); 1500+2000 → scoring exceedance (clinician-signed)', () => {
+  const within: OpdMed[] = [
+    { generic: 'Metformin', brand: 'Glycomet 500', strength: '500mg', dose: '1 tab', frequency: 'OD' } as OpdMed,
+    { generic: 'Metformin', brand: 'Metsmall 500', strength: '500mg', dose: '1 tab', frequency: '0-0-1' } as OpdMed,
+  ];
+  const wf = doseAggregationFindings(within, CTX_TABLE);
+  const info = wf.find((f) => f.subject.includes('within ceiling') && f.subject.includes('metformin'));
+  assert.ok(info, 'expected an informational within-ceiling note for metformin');
+  assert.equal(info!.informational, true);
+  assert.equal(info!.confidence, 0);
+  assert.equal(wf.filter((f) => !f.informational).length, 0, 'nothing scoring for a 1000 mg total');
+
+  const over: OpdMed[] = [
+    { generic: 'Metformin', brand: 'Glycomet 750', strength: '750mg', dose: '1 tab', frequency: 'BD' } as OpdMed,   // 1500
+    { generic: 'Metformin', brand: 'Metformin SR 1000', strength: '1000mg', dose: '1 tab', frequency: 'BD' } as OpdMed, // 2000
+  ];
+  const of = doseAggregationFindings(over, CTX_TABLE);
+  const flag = of.find((f) => f.subject.startsWith('Daily dose exceeds ceiling: metformin'));
+  assert.ok(flag, 'expected a scoring exceedance for a >3 g metformin stack');
+  assert.ok(!flag!.informational);
+  // clinician-signed provenance is surfaced onto the finding
+  assert.equal(flag!.provenance?.derivation, 'clinician');
+  assert.equal(flag!.provenance?.signed_by, 'Dr Khatija, Chief Clinical Pharmacologist, Even');
+  assert.equal(flag!.provenance?.signed_on, '2026-07-25');
 });

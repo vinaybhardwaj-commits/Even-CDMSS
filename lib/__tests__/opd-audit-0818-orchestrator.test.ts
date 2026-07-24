@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { unindicatedRespFindings, decongestantDurationFindings, dedupeRouteAware, muscleRelaxantFindings } from '@/lib/opd-note-audit';
+import { unindicatedRespFindings, decongestantDurationFindings, dedupeRouteAware, muscleRelaxantFindings, parseDurationDays } from '@/lib/opd-note-audit';
 import { opdCaseText, type DeidOpdCase, type OpdMed } from '@/lib/opd-ingest-core';
 import type { OpdFinding } from '@/lib/opd-note-audit-core';
 
@@ -41,26 +41,67 @@ test('bug 1: the SAME xanthine is NOT flagged for a chronic-airways patient (J40
   const c2 = mkCase({ presentingComplaints: ['cough'], impressions: ['Bronchial asthma'], medications: [{ generic: 'Doxophylline' } as OpdMed] });
   assert.equal(unindicatedRespFindings(c2).length, 0);
 });
-test('bug 1: antihistamine + montelukast for a viral URTI fires', () => {
-  const c = mkCase({ presentingComplaints: ['viral URTI'], medications: [{ generic: 'Levocetirizine' } as OpdMed, { generic: 'Montelukast' } as OpdMed] });
+// ── 0.81.13 (PHARMACY-ROUND1 Decision 11) — montelukast + antihistamine is RETIRED entirely ──
+test('0.81.13 Decision 11: antihistamine + montelukast emits NO finding at any duration', () => {
+  for (const duration of ['3 days', '8 days', '30 days', undefined]) {
+    const c = mkCase({ presentingComplaints: ['viral URTI'], medications: [
+      { generic: 'Levocetirizine', duration } as OpdMed, { generic: 'Montelukast', duration } as OpdMed] });
+    assert.equal(unindicatedRespFindings(c).length, 0, `duration=${duration}`);
+  }
+});
+test('0.81.13 Decision 11: a xanthine AND antihistamine+montelukast → exactly ONE finding (the xanthine)', () => {
+  const c = mkCase({ presentingComplaints: ['viral URTI'], medications: [
+    { generic: 'Acebrophylline' } as OpdMed, { generic: 'Levocetirizine' } as OpdMed, { generic: 'Montelukast' } as OpdMed] });
   const fs = unindicatedRespFindings(c);
-  assert.ok(fs.some((f) => /montelukast/i.test(f.subject)));
+  assert.equal(fs.length, 1);
+  assert.match(fs[0].subject, /^Xanthine bronchodilator not indicated/);
+  assert.doesNotMatch(fs[0].subject, /montelukast/i);
+});
+// ── 0.81.13 (Decision 3) — xanthine relabel: no "mucolytic", correct subject ──
+test('0.81.13 Decision 3: xanthine subject/rationale carry no "mucolytic"; guard + confidence unchanged', () => {
+  const c = mkCase({ presentingComplaints: ['common cold, sore throat'], medications: [{ generic: 'Theophylline' } as OpdMed] });
+  const fs = unindicatedRespFindings(c);
+  assert.equal(fs.length, 1);
+  assert.equal(fs[0].subject, 'Xanthine bronchodilator not indicated for an acute URTI: Theophylline');
+  assert.doesNotMatch(fs[0].subject, /mucolytic/i);
+  assert.doesNotMatch(fs[0].rationale, /mucolytic/i);
+  assert.equal(fs[0].confidence, 0.6);
+  assert.equal(fs[0].domain, 'appropriateness');
+  // chronic-airways guard still suppresses
+  assert.equal(unindicatedRespFindings(mkCase({ presentingComplaints: ['cough'], diagnosisCodes: ['J45.9'], medications: [{ generic: 'Theophylline' } as OpdMed] })).length, 0);
 });
 test('bug 1: no acute-URTI context → nothing fires', () => {
   const c = mkCase({ presentingComplaints: ['knee pain'], medications: [{ generic: 'Acebrophylline' } as OpdMed] });
   assert.equal(unindicatedRespFindings(c).length, 0);
 });
 
-// ── bug 3 — nasal decongestant >5 days ────────────────────────────────────────
-test('bug 3: an imidazoline nasal decongestant for >5 days fires', () => {
-  const fs = decongestantDurationFindings([{ generic: 'Oxymetazoline', route: 'nasal', duration: '7 days' } as OpdMed]);
-  assert.equal(fs.length, 1);
-  assert.match(fs[0].subject, /7 days/);
+// ── 0.81.13 (Decision 4) — nasal decongestant two-tier (>7 → 0.7, >15 → 0.85) ──
+test('0.81.13 Decision 4: 5 → none; 7 → none; 8 and 15 → 0.7; 16 and 1 month → 0.85; unparseable → none', () => {
+  const one = (duration?: string) => decongestantDurationFindings([{ generic: 'Oxymetazoline', route: 'nasal', duration } as OpdMed]);
+  assert.equal(one('5 days').length, 0);
+  assert.equal(one('7 days').length, 0);        // was >5 → now <=7 emits nothing
+  assert.equal(one(undefined).length, 0);
+  assert.equal(one('to continue').length, 0);   // unparseable → none
+  const d8 = one('8 days'); assert.equal(d8.length, 1); assert.equal(d8[0].confidence, 0.7);
+  const d15 = one('15 days'); assert.equal(d15.length, 1); assert.equal(d15[0].confidence, 0.7);
+  const d16 = one('16 days'); assert.equal(d16.length, 1); assert.equal(d16[0].confidence, 0.85);
+  const dm = one('1 month'); assert.equal(dm.length, 1); assert.equal(dm[0].confidence, 0.85);
+  // ingredient-level in an FDC still resolves; no "3–5 day cap" wording survives
+  const fdc = decongestantDurationFindings([{ resolvedGeneric: 'Xylometazoline+Sodium chloride', duration: '10 days' } as OpdMed]);
+  assert.equal(fdc.length, 1);
+  assert.doesNotMatch(fdc[0].rationale, /3.?5 day/);
 });
-test('bug 3: 1 week (=7d) fires; 3 days does not; ingredient-level in an FDC', () => {
-  assert.equal(decongestantDurationFindings([{ generic: 'Xylometazoline', duration: '1 week' } as OpdMed]).length, 1);
-  assert.equal(decongestantDurationFindings([{ generic: 'Xylometazoline', duration: '3 days' } as OpdMed]).length, 0);
-  assert.equal(decongestantDurationFindings([{ resolvedGeneric: 'Xylometazoline+Sodium chloride', duration: '10 days' } as OpdMed]).length, 1);
+
+// ── 0.81.13 (Decision 2 / §3.1) — parseDurationDays export is unchanged behaviour ──
+test('0.81.13: parseDurationDays (exported) parses days/weeks/months and returns null for chronic/unparseable', () => {
+  assert.equal(parseDurationDays('5 days'), 5);
+  assert.equal(parseDurationDays('1 week'), 7);
+  assert.equal(parseDurationDays('1 month'), 30);
+  assert.equal(parseDurationDays('30 days'), 30);
+  for (const s of ['to continue', 'sos', 'when needed', '', '3 more days']) {
+    assert.equal(parseDurationDays(s), null, s);
+  }
+  assert.equal(parseDurationDays(undefined), null);
 });
 
 // ── bug 8 — route/formulation-aware duplication ───────────────────────────────

@@ -36,7 +36,7 @@ import type { FindingProvenance } from './provenance-tier-core';
 //       nasal-decongestant >5-day cap, route/formulation-aware duplication. Bug 5: hyoscine/dicyclomine
 //       reclassed Antispasmodic/anticholinergic in the formulary (DDI-invariant). LVC `other` sub-cat +
 //       frequent-flier list surfacing + 30-day longitudinal backfill ride in the same build (non-scoring).
-export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.12';
+export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.13';
 
 /**
  * Current-engine FAMILY for READ/aggregate surfaces. 0.81.3 → 0.81.4 → 0.81.5 are all score-identical
@@ -47,7 +47,7 @@ export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.12';
  * DESC, id DESC. WRITE-side targeting keeps exact OPD_ENGINE_VERSION (family there would stop history
  * re-scoring). See the patch report.
  */
-export const OPD_ENGINE_VERSIONS_CURRENT = ['opd-note-audit/0.81.3', 'opd-note-audit/0.81.4', 'opd-note-audit/0.81.5', 'opd-note-audit/0.81.6', 'opd-note-audit/0.81.7', 'opd-note-audit/0.81.8', 'opd-note-audit/0.81.9', 'opd-note-audit/0.81.10', 'opd-note-audit/0.81.11', 'opd-note-audit/0.81.12'] as const;
+export const OPD_ENGINE_VERSIONS_CURRENT = ['opd-note-audit/0.81.3', 'opd-note-audit/0.81.4', 'opd-note-audit/0.81.5', 'opd-note-audit/0.81.6', 'opd-note-audit/0.81.7', 'opd-note-audit/0.81.8', 'opd-note-audit/0.81.9', 'opd-note-audit/0.81.10', 'opd-note-audit/0.81.11', 'opd-note-audit/0.81.12', 'opd-note-audit/0.81.13'] as const;
 
 // Local copy of the PDQI-9 keys (kept in sync with opd-note-score-core) so this core has
 // no runtime cross-import and stays loadable under `node --experimental-strip-types`.
