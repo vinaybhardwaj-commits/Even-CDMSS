@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   rerank, resolveRerankBackend, assertRerankBackendHealthy, rerankCohere, _resetRerankHealth,
-  RerankBackendError, RerankBackendUnreachable, RerankBackendUnhealthy,
+  RerankBackendError, RerankBackendUnreachable, RerankBackendUnhealthy, RerankBackendMissing,
   RERANK_HEALTH_MIN_REL, RERANK_HEALTH_MIN_MARGIN,
   type RerankDeps, type RerankCandidate, type RerankResult,
 } from '../rerank.ts';
@@ -140,6 +140,90 @@ test('a TRANSIENT (generic, non-typed) failure still soft-falls to input order',
   });
   assert.equal(out.length, 2);
   assert.ok(out.every((h) => h.rerank_backend === 'none'), 'generic failure ⇒ input order preserved');
+});
+
+// ── R-10 D2: resilient env-default fallback chain (cohere → judge → input-order) ──
+// The env default in the test process is 'judge'; `deps.envBackend:'cohere'` simulates the post-flip
+// production default so the resilient path is exercised without a real env change.
+test('D2.1 env-default cohere: a typed cohere failure ⇒ falls back to JUDGE (tier 1), never throws', async () => {
+  const judge = { n: 0 };
+  const out = await rerank('q', cands(), undefined, {
+    envBackend: 'cohere', checkHealthy: async () => {},   // probe healthy
+    cohereFn: async () => { throw new RerankBackendUnreachable('cohere', 'm', 'simulated 403'); },
+    judgeFn: countingBackend('judge', judge),
+  });
+  assert.equal(judge.n, 1, 'judge ran as the fallback');
+  assert.ok(out.every((h) => h.rerank_backend === 'judge'), 'result comes from the judge tier');
+
+  // a PROBE failure (not just the call) also downgrades to judge
+  const judge2 = { n: 0 };
+  const out2 = await rerank('q', cands(), undefined, {
+    envBackend: 'cohere',
+    checkHealthy: async () => { throw new RerankBackendUnhealthy('cohere', 'm', 'no discrimination'); },
+    cohereFn: async () => { throw new Error('cohere must not run when the probe fails'); },
+    judgeFn: countingBackend('judge', judge2),
+  });
+  assert.equal(judge2.n, 1);
+  assert.ok(out2.every((h) => h.rerank_backend === 'judge'));
+});
+
+test('D2.2 env-default cohere: cohere AND judge both throw ⇒ INPUT ORDER (none), never throws', async () => {
+  const out = await rerank('q', cands(), undefined, {
+    envBackend: 'cohere', checkHealthy: async () => {},
+    cohereFn: async () => { throw new RerankBackendMissing('cohere', 'm', '404'); },
+    judgeFn: async () => { throw new Error('judge is down too'); },
+  });
+  assert.equal(out.length, 2);
+  assert.ok(out.every((h) => h.rerank_backend === 'none'), 'both tiers down ⇒ order-preserving input map');
+  assert.equal(out[0].id, 1, 'original order preserved');
+  assert.equal(out[1].id, 2);
+});
+
+test('D2.3 EXPLICIT cohere: a typed cohere failure PROPAGATES (strict — NO fallback to judge)', async () => {
+  const judge = { n: 0 };
+  await assert.rejects(
+    rerank('q', cands(), 'cohere', {   // explicit backend ⇒ strict, even though a judgeFn is available
+      checkHealthy: async () => {},
+      cohereFn: async () => { throw new RerankBackendUnreachable('cohere', 'm', 'simulated 403'); },
+      judgeFn: countingBackend('judge', judge),
+    }),
+    (e: unknown) => e instanceof RerankBackendUnreachable,
+  );
+  assert.equal(judge.n, 0, 'the explicit-cohere path must never fall back to the judge');
+});
+
+test('D2.4 env-default cohere HEALTHY ⇒ cohere scores; probe invoked once (memoization proven in §5.5)', async () => {
+  const cohere = { n: 0 }; let probes = 0;
+  const out = await rerank('q', cands(), undefined, {
+    envBackend: 'cohere',
+    checkHealthy: async () => { probes++; },
+    cohereFn: countingBackend('cohere', cohere),
+    judgeFn: async () => { throw new Error('judge must not run when cohere is healthy'); },
+  });
+  assert.equal(cohere.n, 1); assert.equal(probes, 1);
+  assert.ok(out.every((h) => h.rerank_backend === 'cohere'));
+});
+
+// ── R-10 D3: rerank spend routed to the cost sink ──
+test('D3 a successful cohere rerank records ONE cost entry carrying the response usage.cost', async () => {
+  await withKey(async () => {
+    const recorded: Array<{ cost: number | null | undefined; model?: string }> = [];
+    const recordCost = async (cost: number | null | undefined, model?: string) => { recorded.push({ cost, model }); };
+    const res = (async () => new Response(JSON.stringify({
+      results: [{ index: 0, relevance_score: 0.9 }, { index: 1, relevance_score: 0.1 }], usage: { cost: 0.0021 },
+    }), { status: 200 })) as unknown as typeof fetch;
+    const out = await rerankCohere('q', cands(), res, recordCost);
+    assert.equal(out.length, 2, 'scores still returned');
+    assert.equal(recorded.length, 1, 'exactly one cost entry per rerank');
+    assert.equal(recorded[0].cost, 0.0021, 'the response usage.cost is routed to the sink');
+    assert.equal(recorded[0].model, 'cohere/rerank-v3.5');
+  });
+  // no usage in the response ⇒ the hook is still called with null (the real recordRerankCost no-ops on null)
+  await withKey(async () => {
+    const recorded: Array<number | null | undefined> = [];
+    await rerankCohere('q', cands(), cohereRes([[0, 0.9], [1, 0.1]]), async (cost) => { recorded.push(cost); });
+    assert.deepEqual(recorded, [null]);
+  });
 });
 
 // ── §5.8 no 'bge' symbol remains ──

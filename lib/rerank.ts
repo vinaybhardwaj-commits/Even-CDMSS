@@ -15,7 +15,7 @@
  * retrieval). A TYPED RerankBackendError always propagates — thrown, never swallowed.
  */
 import { geminiUtilityModel } from './llm';
-import { governedChat } from './trace';
+import { governedChat, recordRerankCost } from './trace';
 
 const BACKEND = (process.env.RERANK_BACKEND || 'judge') as 'judge' | 'cohere';
 const JUDGE_MODEL = process.env.RERANK_JUDGE_MODEL || 'llama3.1:8b';
@@ -73,11 +73,12 @@ export function resolveRerankBackend(backend: 'judge' | 'cohere' | undefined, en
 
 /* ─────────────────────────────  Cohere rerank-api backend (§3.1)  ───────────────────────────── */
 
-/** One OpenRouter Cohere /rerank call → relevance scores index-aligned to `documents`. Throws the
- *  typed errors on unreachable/missing (never soft-fails to 0). Shared by rerankCohere + the probe.
+/** One OpenRouter Cohere /rerank call → relevance scores index-aligned to `documents` + the call's
+ *  `usage.cost` (USD, null if absent). Throws the typed errors on unreachable/missing (never soft-fails
+ *  to 0). Shared by rerankCohere + the probe. Request shape is UNCHANGED (D3).
  *  Request:  { model, query, documents: [<text…>] }
- *  Response: { results: [{ index, relevance_score∈[0,1] }], usage } — mapped back by index. */
-async function cohereRelevanceScores(query: string, documents: string[], fetchImpl: typeof fetch = fetch): Promise<number[]> {
+ *  Response: { results: [{ index, relevance_score∈[0,1] }], usage: { cost } } — mapped back by index. */
+async function cohereRelevanceScores(query: string, documents: string[], fetchImpl: typeof fetch = fetch): Promise<{ scores: number[]; usageCost: number | null }> {
   const key = process.env.OPENROUTER_API_KEY;
   if (!key) throw new RerankBackendUnreachable('cohere', RERANK_API_MODEL, 'OPENROUTER_API_KEY not set');
   let res: Response;
@@ -93,24 +94,33 @@ async function cohereRelevanceScores(query: string, documents: string[], fetchIm
   }
   if (res.status === 404) throw new RerankBackendMissing('cohere', RERANK_API_MODEL, 'endpoint or model 404');
   if (!res.ok) throw new RerankBackendUnreachable('cohere', RERANK_API_MODEL, `HTTP ${res.status}`);
-  let j: { results?: { index: number; relevance_score: number }[] };
+  let j: { results?: { index: number; relevance_score: number }[]; usage?: { cost?: number } };
   try { j = await res.json() as typeof j; }
   catch (e) { throw new RerankBackendUnreachable('cohere', RERANK_API_MODEL, `bad JSON: ${String((e as Error).message).slice(0, 80)}`); }
   const scores = new Array(documents.length).fill(Number.NaN);
   for (const r of j.results ?? []) {
     if (typeof r?.index === 'number' && r.index >= 0 && r.index < documents.length) scores[r.index] = r.relevance_score;
   }
-  return scores;
+  const usageCost = typeof j.usage?.cost === 'number' && Number.isFinite(j.usage.cost) ? j.usage.cost : null;
+  return { scores, usageCost };
 }
 
-export async function rerankCohere<T extends RerankCandidate>(query: string, candidates: T[], fetchImpl: typeof fetch = fetch): Promise<RerankResult<T>[]> {
-  const scores = await cohereRelevanceScores(query, candidates.map((c) => c.text || ''), fetchImpl);
+/** `recordCost` (injectable for tests) routes the call's usage.cost to the cost sink (D3). */
+export async function rerankCohere<T extends RerankCandidate>(
+  query: string,
+  candidates: T[],
+  fetchImpl: typeof fetch = fetch,
+  recordCost: (costUsd: number | null | undefined, model?: string) => Promise<void> = recordRerankCost,
+): Promise<RerankResult<T>[]> {
+  const { scores, usageCost } = await cohereRelevanceScores(query, candidates.map((c) => c.text || ''), fetchImpl);
   const paired = candidates.map((c, i) => ({
     ...c,
     rerank_score: Number.isFinite(scores[i]) ? scores[i] : 0,   // relevance_score used directly — NO sigmoid
     rerank_backend: 'cohere' as const,
   }));
   paired.sort((a, b) => b.rerank_score - a.rerank_score);
+  // D3: meter this rerank's spend into the same sink the governed layer uses (best-effort, never blocks).
+  await recordCost(usageCost, RERANK_API_MODEL);
   return paired;
 }
 
@@ -137,7 +147,7 @@ export async function assertRerankBackendHealthy(
   const last = healthCache.get(cacheKey);
   if (last != null && now() - last < RERANK_HEALTH_TTL_MS) return;   // memoized within TTL
 
-  const [rel, irr] = await cohereRelevanceScores(PROBE_QUERY, [PROBE_RELEVANT, PROBE_IRRELEVANT], fetchImpl);
+  const { scores: [rel, irr] } = await cohereRelevanceScores(PROBE_QUERY, [PROBE_RELEVANT, PROBE_IRRELEVANT], fetchImpl);
   if (!Number.isFinite(rel) || !Number.isFinite(irr)) throw new RerankBackendUnhealthy(backend, model, `non-finite probe scores (rel=${rel}, irr=${irr})`);
   if (!(rel >= RERANK_HEALTH_MIN_REL)) throw new RerankBackendUnhealthy(backend, model, `rel ${rel} < min ${RERANK_HEALTH_MIN_REL}`);
   if (!(rel - irr >= RERANK_HEALTH_MIN_MARGIN)) throw new RerankBackendUnhealthy(backend, model, `margin ${(rel - irr).toFixed(3)} < min ${RERANK_HEALTH_MIN_MARGIN}`);
@@ -151,16 +161,23 @@ export type RerankDeps = {
   checkHealthy?: (backend: 'cohere', opts?: { fetchImpl?: typeof fetch; now?: () => number }) => Promise<void>;
   cohereFn?: <U extends RerankCandidate>(q: string, c: U[]) => Promise<RerankResult<U>[]>;
   judgeFn?: <U extends RerankCandidate>(q: string, c: U[]) => Promise<RerankResult<U>[]>;
+  /** TEST-ONLY: simulate the RERANK_BACKEND env default (the module const `BACKEND`) so the resilient
+   *  env-default-cohere path can be exercised without a real env flip. Production passes nothing. */
+  envBackend?: 'judge' | 'cohere';
 };
 
 /**
  * Rerank candidates against the query. Returns a NEW array sorted by rerank_score descending.
  * Input array is not mutated.
  *
- * `backend` (optional) overrides the env default for THIS call only — no behaviour change unless a
- * caller passes it. An EXPLICIT 'cohere' request is STRICT: the backend is health-probed first, and a
- * typed RerankBackendError propagates on any failure (never a silent judge/input-order fallback).
- * Only GENERIC (non-typed) errors soft-fall to input order.
+ * Two dispatch modes (R-10 D2):
+ *  - EXPLICIT `backend` (a per-call override, e.g. lab `rerankBackend:'cohere'`) → STRICT. Explicit
+ *    'cohere' is health-probed first and any typed RerankBackendError PROPAGATES (never falls back) —
+ *    measurement honesty. Only GENERIC (non-typed) errors soft-fall to input order.
+ *  - ENV-DEFAULT (no `backend` arg) 'cohere' → RESILIENT chain `cohere → judge → input-order`: the
+ *    memoized probe + call run, and on ANY typed RerankBackendError it downgrades to judge, then to
+ *    input order if judge throws — never erupting a retrieval error on a Cohere blip. Each downgrade
+ *    is logged. Env-default 'judge' is unchanged (the current production path — byte-identical).
  */
 export async function rerank<T extends RerankCandidate>(
   query: string,
@@ -174,26 +191,50 @@ export async function rerank<T extends RerankCandidate>(
     return [{ ...candidates[0], rerank_score: 1.0, rerank_backend: 'none' }];
   }
 
-  const chosen = resolveRerankBackend(backend);
-  const strict = backend === 'cohere';   // only an EXPLICIT cohere request fails loud on unhealth
+  const explicit = backend !== undefined;   // an explicit per-call override was passed
+  const chosen = resolveRerankBackend(backend, deps.envBackend ?? BACKEND);
   const cohereFn = deps.cohereFn ?? rerankCohere;
   const judgeFn = deps.judgeFn ?? rerankJudge;
   const checkHealthy = deps.checkHealthy ?? assertRerankBackendHealthy;
 
+  const inputOrder = (): RerankResult<T>[] => candidates.map((c, i) => ({
+    ...c,
+    rerank_score: 1 - i / candidates.length,   // preserve original order
+    rerank_backend: 'none' as const,
+  }));
+
+  // D2 — ENV-DEFAULT cohere: resilient cohere → judge → input-order. Typed backend errors are CAUGHT
+  // (never thrown); each downgrade is logged. Applies ONLY when the backend was not passed explicitly.
+  if (chosen === 'cohere' && !explicit) {
+    try {
+      await checkHealthy('cohere');                       // memoized probe (D6); throws typed on unhealth
+      return await cohereFn(query, candidates);
+    } catch (e) {
+      if (e instanceof RerankBackendError) {
+        console.warn('[rerank] env-default cohere unavailable → falling back to judge:', (e as Error).message);
+        try {
+          return await judgeFn(query, candidates);
+        } catch (e2) {
+          console.warn('[rerank] judge fallback failed → input order:', (e2 as Error).message);
+          return inputOrder();
+        }
+      }
+      console.warn('[rerank] backend failed, returning input order', (e as Error).message);   // generic soft-fall
+      return inputOrder();
+    }
+  }
+
+  // Explicit request (STRICT for 'cohere') + env-default/explicit 'judge' — unchanged strictness.
   try {
     if (chosen === 'cohere') {
-      if (strict) await checkHealthy('cohere');
+      await checkHealthy('cohere');                       // explicit cohere is STRICT — probe first
       return await cohereFn(query, candidates);
     }
     return await judgeFn(query, candidates);
   } catch (e) {
-    if (e instanceof RerankBackendError) throw e;   // typed backend errors: propagate, never swallow, never fall back
+    if (e instanceof RerankBackendError) throw e;   // explicit cohere typed error → propagate (never fall back)
     console.warn('[rerank] backend failed, returning input order', (e as Error).message);
-    return candidates.map((c, i) => ({
-      ...c,
-      rerank_score: 1 - i / candidates.length,  // preserve original order
-      rerank_backend: 'none' as const,
-    }));
+    return inputOrder();
   }
 }
 

@@ -105,6 +105,26 @@ export async function logEvent(
   } catch {}
 }
 
+/**
+ * D3 (R-10) — record a Cohere /rerank spend into the SAME sink the governed layer uses (a `traces`
+ * row + an `llm_response` `trace_events` event carrying `usage.cost`), NOT via governedChat (the raw
+ * rerank fetch is correct per the PRD; a governed wrapper would trip reasoning:governance). Best-effort:
+ * cost tracking must never break retrieval. `costUsd` is OpenRouter's `usage.cost` (USD) for the call.
+ *
+ * NOTE (flagged): the $ read-model (lib/llm-cost.ts) prices gemini/qwen TOKENS and filters on model —
+ * it does not yet price a direct USD `usage.cost`, so this entry is CAPTURED in the sink but not yet
+ * surfaced on the dashboard. Displaying it is a small reader-only follow-up (add a cohere/usage.cost
+ * priced branch); doing it here would touch the token-summing aggregation and risk the shipped numbers.
+ */
+export async function recordRerankCost(costUsd: number | null | undefined, model: string = 'cohere/rerank-v3.5'): Promise<void> {
+  const cost = Number(costUsd);
+  if (costUsd == null || !Number.isFinite(cost)) return;   // nothing metered on this call
+  try {
+    const traceId = await startTrace('rerank_cohere', { model }, 1);
+    await logEvent(traceId, 'llm_response', 'rerank', { model, provider: 'openrouter-rerank', usage: { cost } });
+  } catch { /* cost tracking must never break retrieval */ }
+}
+
 export async function finishTrace(
   traceId: string,
   status: 'success' | 'error' | 'partial',
