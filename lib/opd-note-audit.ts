@@ -10,7 +10,7 @@
 import { retrieve, resolveNormativeSources, type RetrieveOptions } from './retrieve';
 import { hitsToSources, buildCitedContext, type CiteHit, type Source } from './citations-core';
 import { startTrace, logEvent, finishTrace, governedChat, setTraceQuestionPreview } from './trace';
-import { geminiModelFor, geminiUtilityModel, TEXT_MODEL, MINI_MODEL } from './llm';
+import { geminiModelFor, geminiUtilityModel, TEXT_MODEL, MINI_MODEL, AUDIT_LLM_SEED } from './llm';
 import { rowToOpdCase, opdCaseText, type OpdKeys, type OpdMed, type DeidOpdCase } from './opd-ingest-core';
 import {
   opdCompleteness, prescribingChecks, parseOpdAnalysis, stampFindingIdentity,
@@ -401,10 +401,30 @@ export function assembleAuditContext(litHits: CiteHit[], normHits: CiteHit[]): {
   };
 }
 
-/** EVAL-ONLY (lab): the OpenRouter chat body. temperature 0 (greedy) so a leg-off vs leg-on arm
- *  differs ONLY by retrieved context, not sampling. Pure — exported for tests. */
+/** Fixed thinking/reasoning budget for the eval body (Audit-Determinism §8d, lever 3): Gemini 2.5's
+ *  VARIABLE thinking is a hidden variance source, so the OpenRouter reasoning budget is pinned to a
+ *  constant. Eval-only. Env-overridable for the A/B sweep. */
+export const AUDIT_EVAL_THINKING_BUDGET = Number(process.env.AUDIT_EVAL_THINKING_BUDGET) || 4096;
+
+/** EVAL-ONLY (lab): the OpenRouter chat body. Determinism config (Audit-Score-Determinism PRD §8d —
+ *  LAB/EVAL PATH ONLY; the production defaultGenerate params are untouched this phase):
+ *   - temperature 0 + top_p 1 + a fixed `seed` (AUDIT_LLM_SEED) — greedy, canonical, seed-pinned so
+ *     re-runs are reproducible IF Gemini honors the seed (exactly what Phase 1 measures).
+ *   - `reasoning.max_tokens` fixed (lever 3) — pin 2.5's variable thinking budget.
+ *   - `provider: { allow_fallbacks:false, require_parameters:true }` (lever 4) — no cross-backend
+ *     fallback, and route ONLY to a provider that honors the passed params (seed/top_p), so A/B
+ *     re-runs hit one seed-respecting backend.
+ *  Pure — exported for tests. */
 export function buildOpenRouterBody(model: string, system: string, user: string): Record<string, unknown> {
-  return { model, messages: [{ role: 'system', content: system }, { role: 'user', content: user }], temperature: 0 };
+  return {
+    model,
+    messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+    temperature: 0,
+    top_p: 1,
+    seed: AUDIT_LLM_SEED,
+    reasoning: { max_tokens: AUDIT_EVAL_THINKING_BUDGET },
+    provider: { allow_fallbacks: false, require_parameters: true },
+  };
 }
 
 /** Bounded retry for the eval path: 3 tries total, retrying ONLY transient statuses (429/5xx) with

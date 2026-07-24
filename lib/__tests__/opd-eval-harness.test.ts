@@ -4,7 +4,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { opdRetrieveOpts, buildOpenRouterBody, openRouterGenerate } from '../opd-note-audit.ts';
+import { opdRetrieveOpts, buildOpenRouterBody, openRouterGenerate, AUDIT_EVAL_THINKING_BUDGET } from '../opd-note-audit.ts';
+import { AUDIT_LLM_SEED } from '../llm.ts';
 import { parseBatchState, LB_KEYS } from '../lab-batch-core.ts';
 
 const TODAY = { topK: 8, useReranker: true, useSourceWeights: true, hybrid: true };
@@ -27,12 +28,28 @@ test('evalNormativeLeg:true ⇒ useNormativeLeg true regardless of mini / env', 
   assert.deepEqual(opdRetrieveOpts(true, {}, true), { ...TODAY, useNormativeLeg: true });
 });
 
-// ── Test 3 — evalModel routes to OpenRouter at temperature 0; the request shape is exact ──
-test('buildOpenRouterBody is greedy (temperature 0) with the system+user messages', () => {
-  const body = buildOpenRouterBody('google/gemini-3.1-flash-lite', 'SYS', 'USR');
-  assert.equal(body.temperature, 0, 'leg-off vs leg-on must differ only by context, not sampling');
-  assert.equal(body.model, 'google/gemini-3.1-flash-lite');
+// ── Test 3 — evalModel routes to OpenRouter with the DETERMINISM config (Audit-Determinism §8d) ──
+test('buildOpenRouterBody carries the eval determinism config: temp0 + top_p1 + seed + reasoning-pin + provider-pin', () => {
+  const body = buildOpenRouterBody('google/gemini-2.5-pro', 'SYS', 'USR');
+  assert.equal(body.model, 'google/gemini-2.5-pro');
   assert.deepEqual(body.messages, [{ role: 'system', content: 'SYS' }, { role: 'user', content: 'USR' }]);
+  assert.equal(body.temperature, 0, 'greedy');
+  assert.equal(body.top_p, 1, 'canonical top_p');
+  assert.equal(body.seed, AUDIT_LLM_SEED, 'fixed decode seed (lever 2)');
+  assert.deepEqual(body.reasoning, { max_tokens: AUDIT_EVAL_THINKING_BUDGET }, 'pinned thinking budget (lever 3)');
+  assert.deepEqual(body.provider, { allow_fallbacks: false, require_parameters: true }, 'provider-pin: no cross-backend fallback, seed-honoring provider only (lever 4)');
+});
+
+// ── Phase-1 guard: the PRODUCTION (non-eval) generate params must stay byte-identical (lab-only) ──
+test('production defaultGenerate params are untouched — no seed/top_p/provider-pin leaked into the prod path', () => {
+  const src = readFileSync('lib/opd-note-audit.ts', 'utf8');
+  const from = src.indexOf('const isReasoning');
+  const to = src.indexOf("promptRef: 'opd-note-audit-core/OPD_AUDIT_SYSTEM'");
+  assert.ok(from >= 0 && to > from, 'located the production defaultGenerate params block');
+  const prodBlock = src.slice(from, to);
+  assert.ok(!/\bseed\b/.test(prodBlock), 'no decode seed in the production params (Phase 1 is lab-only)');
+  assert.ok(!/allow_fallbacks|require_parameters|top_p|reasoning:/.test(prodBlock), 'no provider-pin / top_p / reasoning-pin in production params');
+  assert.match(prodBlock, /temperature: isReasoning \? 0 : 0\.2/, 'production temperature policy unchanged (0.2 default)');
 });
 
 test('openRouterGenerate posts to the OpenRouter endpoint at temp 0 and returns the completion', async () => {

@@ -198,3 +198,8 @@ export async function embedQueryV2(text: string): Promise<number[]> {
 export function vectorLiteral(v: number[]): string {
   return '[' + v.map((x) => x.toFixed(7)).join(',') + ']';
 }
+
+/** Fixed decode seed for the OPD note-audit GRADER (Audit-Score-Determinism PRD §8d, lever 2). Mirrors
+ *  RETRIEVAL_LLM_SEED; env-overridable. Currently applied ONLY on the lab/eval OpenRouter body
+ *  (buildOpenRouterBody) — Phase 1 measures whether Gemini honors a seed before Phase 2 touches prod. */
+export const AUDIT_LLM_SEED = Number(process.env.AUDIT_LLM_SEED) || 42;
