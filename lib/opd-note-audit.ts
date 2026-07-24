@@ -479,12 +479,22 @@ async function defaultGenerate(traceId: string | undefined, system: string, user
   // must survive the reasoning tokens) and the full context window. Gated on the mini path +
   // model name, so qwen2.5:14b backfill and the Gemini path are byte-for-byte unchanged.
   const isReasoning = mini && /(?:^|[:/_-])(?:r1|qwq|deepseek-r1|reason|think)/i.test(MINI_MODEL);
+  // Audit-Score-Determinism PRD §8d (Phase 2): the PRODUCTION Vertex-Gemini scorer runs greedy +
+  // seed-pinned + canonical + fixed-thinking — the exact levers the Phase-1 OpenRouter A/B proved
+  // (100/100 byte-identical index+band). Gated on `onGemini` (a resolved Gemini model ⇒ Vertex is
+  // configured), so the mini/qwen backfill and any Gemini-unconfigured Ollama fallback are BYTE-
+  // IDENTICAL to today (temperature isReasoning ? 0 : 0.2, no seed/top_p/thinking).
+  const onGemini = !!geminiModel;
   const params = {
     model: mini ? MINI_MODEL : TEXT_MODEL,
     messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-    temperature: isReasoning ? 0 : 0.2,
+    temperature: onGemini ? 0 : (isReasoning ? 0 : 0.2),
     max_tokens: isReasoning ? 8192 : 2200,
     ...({ options: { num_ctx: isReasoning ? 16384 : 8192 }, keep_alive: '15m' } as Record<string, unknown>),
+    // seed/top_p flow through governedChat→tracedChat's `...rest` to the Vertex OpenAI-compat client;
+    // `google.thinking_config.thinking_budget` is the ONLY thinking form Vertex honors (trace.ts note)
+    // — a FIXED positive budget (Pro rejects 0). NOT sent on the mini/Ollama path (out of scope).
+    ...(onGemini ? { seed: AUDIT_LLM_SEED, top_p: 1, google: { thinking_config: { thinking_budget: AUDIT_EVAL_THINKING_BUDGET } } } : {}),
   };
   // Governed envelope (Stage 4): OPD-audit vertical fingerprint — the system prompt here is
   // always OPD_AUDIT_SYSTEM (see the single call site).

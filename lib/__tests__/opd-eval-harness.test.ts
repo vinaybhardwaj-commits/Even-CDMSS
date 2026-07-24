@@ -40,16 +40,33 @@ test('buildOpenRouterBody carries the eval determinism config: temp0 + top_p1 + 
   assert.deepEqual(body.provider, { allow_fallbacks: false, require_parameters: true }, 'provider-pin: no cross-backend fallback, seed-honoring provider only (lever 4)');
 });
 
-// ── Phase-1 guard: the PRODUCTION (non-eval) generate params must stay byte-identical (lab-only) ──
-test('production defaultGenerate params are untouched — no seed/top_p/provider-pin leaked into the prod path', () => {
+// ── Phase-2 guard: the PRODUCTION Vertex-Gemini audit path is seed-pinned; mini/Ollama byte-identical ──
+test('production defaultGenerate: Vertex-Gemini path gets temp0 + seed + top_p + fixed thinking, GATED on onGemini; mini/Ollama unchanged', () => {
   const src = readFileSync('lib/opd-note-audit.ts', 'utf8');
-  const from = src.indexOf('const isReasoning');
+  const from = src.indexOf('const onGemini');
   const to = src.indexOf("promptRef: 'opd-note-audit-core/OPD_AUDIT_SYSTEM'");
   assert.ok(from >= 0 && to > from, 'located the production defaultGenerate params block');
   const prodBlock = src.slice(from, to);
-  assert.ok(!/\bseed\b/.test(prodBlock), 'no decode seed in the production params (Phase 1 is lab-only)');
-  assert.ok(!/allow_fallbacks|require_parameters|top_p|reasoning:/.test(prodBlock), 'no provider-pin / top_p / reasoning-pin in production params');
-  assert.match(prodBlock, /temperature: isReasoning \? 0 : 0\.2/, 'production temperature policy unchanged (0.2 default)');
+  // Gemini prod → greedy; mini/qwen + Gemini-unconfigured Ollama fallback keep the exact 0.2 policy
+  assert.match(prodBlock, /temperature: onGemini \? 0 :/, 'Gemini prod path → temperature 0');
+  assert.match(prodBlock, /isReasoning \? 0 : 0\.2/, 'mini/Ollama temperature policy preserved byte-identical');
+  // the determinism config is present AND gated on onGemini (never on the mini/Ollama path)
+  assert.match(prodBlock, /onGemini \? \{ seed: AUDIT_LLM_SEED, top_p: 1, google: \{ thinking_config/, 'seed/top_p/thinking gated on onGemini');
+  // Vertex is a single backend → NO OpenRouter provider-pin on the audit call (that is Kimi-only)
+  assert.ok(!/allow_fallbacks|require_parameters/.test(prodBlock), 'no OpenRouter provider-pin on the Vertex audit path');
+});
+
+// ── Phase-2 guard: the LVC/Kimi adjudication grader is determinism-pinned (OpenRouter provider-pin) ──
+test('LVC/Kimi adjudication params: temp0 + seed + top_p + OpenRouter provider-pin', () => {
+  const src = readFileSync('lib/even-lvc.ts', 'utf8');
+  const a = src.indexOf("'lvc-generate'");
+  const b = src.indexOf('{ openrouter: GEN_MODEL }', a);
+  assert.ok(a >= 0 && b > a, 'located the lvc-generate governedChat call');
+  const call = src.slice(a, b);
+  assert.match(call, /temperature: 0\b/, 'greedy');
+  assert.match(call, /seed: AUDIT_LLM_SEED/, 'fixed seed');
+  assert.match(call, /top_p: 1/, 'canonical top_p');
+  assert.match(call, /provider: \{ allow_fallbacks: false, require_parameters: true \}/, 'OpenRouter provider-pin');
 });
 
 test('openRouterGenerate posts to the OpenRouter endpoint at temp 0 and returns the completion', async () => {

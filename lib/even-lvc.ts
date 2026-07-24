@@ -18,7 +18,7 @@
  */
 import { createHash } from 'crypto';
 import { sql } from './db';
-import { embedQuery, vectorLiteral, openrouterConfigured, modelsAgree } from './llm';
+import { embedQuery, vectorLiteral, openrouterConfigured, modelsAgree, AUDIT_LLM_SEED } from './llm';
 import { governedChat } from './trace';
 import { OPD_ENGINE_VERSIONS_CURRENT } from './opd-note-audit-core';
 import { EVEN_SOURCE, type EvenCategoryLookup } from './normative-grounding-core';
@@ -149,7 +149,10 @@ export async function runGeneration(opts: { trigger: 'manual' | 'cron'; auto?: b
   try {
     const completion = await governedChat(
       undefined, 'lvc-generate',
-      { model: GEN_MODEL, messages: [{ role: 'system', content: EVEN_GEN_SYSTEM }, { role: 'user', content: evenGenUserMessage(clusters, MAX_CANDIDATES) }], temperature: 0.3, max_tokens: 4000 },
+      // Audit-Score-Determinism PRD §8d (Phase 2): pin the LVC/Kimi adjudication generation too —
+      // greedy + fixed seed + canonical top_p + OpenRouter provider-pin (no cross-backend fallback,
+      // seed-honoring provider only). These ride governedChat→...rest to the OpenRouter client.
+      { model: GEN_MODEL, messages: [{ role: 'system', content: EVEN_GEN_SYSTEM }, { role: 'user', content: evenGenUserMessage(clusters, MAX_CANDIDATES) }], temperature: 0, top_p: 1, seed: AUDIT_LLM_SEED, max_tokens: 4000, provider: { allow_fallbacks: false, require_parameters: true } },
       { openrouter: GEN_MODEL },
     ) as { model?: string; choices?: Array<{ message?: { content?: string } }> };
     served = String(completion?.model ?? '');
