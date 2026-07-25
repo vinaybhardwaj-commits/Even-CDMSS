@@ -76,9 +76,15 @@ export default function LvcBoard() {
   const generate = async () => {
     setBusy('__gen'); setGenMsg(null); setErr(null);
     try {
-      const j = await post('/api/care/lvc/generate', {});
-      const status = String(j.status ?? 'ok'); const n = Number(j.n_candidates ?? 0);
-      setGenMsg(status === 'ok' ? `Generated ${n} candidate${n === 1 ? '' : 's'}.` : status === 'skipped' ? `Skipped — ${String(j.reason || 'nothing new')}.` : `Generation error — ${String(j.reason || 'no candidates')} (no fallback used).`);
+      // Addendum A §5: the generate route ALWAYS returns HTTP 200, carrying the outcome as
+      // { status: ok|error|skipped, reason, n_candidates }. Do NOT route through post() — its
+      // `j.ok === false` guard would throw "status 200" and hide a hard failure behind a transport
+      // code. Read the outcome directly; only a genuine non-200 (disabled/unauthorized) is a throw.
+      const r = await fetch('/api/care/lvc/generate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+      const j = (await r.json().catch(() => ({}))) as { status?: string; reason?: string; n_candidates?: number; error?: string };
+      if (!r.ok) throw new Error(String(j.error || `status ${r.status}`));
+      const status = String(j.status ?? 'ok'); const n = Number(j.n_candidates ?? 0); const reason = String(j.reason || '');
+      setGenMsg(status === 'ok' ? `Generated ${n} candidate${n === 1 ? '' : 's'}.` : status === 'skipped' ? `Skipped — ${reason || 'nothing new'}.` : `Generation error — ${reason || 'no candidates'} (no fallback used).`);
       await load();
     } catch (e) { setErr(String((e as Error).message)); }
     finally { setBusy(null); }

@@ -19,7 +19,7 @@
 import { createHash } from 'crypto';
 import { sql } from './db';
 import { embedQuery, vectorLiteral, openrouterConfigured, modelsAgree, AUDIT_LLM_SEED } from './llm';
-import { governedChat } from './trace';
+import { governedChat, startTrace, finishTraceIfRunning } from './trace';
 import { OPD_ENGINE_VERSIONS_CURRENT } from './opd-note-audit-core';
 import { EVEN_SOURCE, type EvenCategoryLookup } from './normative-grounding-core';
 import {
@@ -146,18 +146,29 @@ export async function runGeneration(opts: { trigger: 'manual' | 'cron'; auto?: b
   // 2) GOVERNED generation call (OpenRouter/Kimi) — never fall back to Ollama for a clinical candidate
   let served = '';
   let content = '';
+  // Addendum A §4 (register A-12): open a trace and pass a REAL traceId, so the generation run's
+  // provider_fallback / llm_request / llm_response events are written to trace_events (governedChat with
+  // a real traceId routes through tracedChat; with `undefined` it used the untraced chatWithFallback, so
+  // the fallback was invisible in v_trace_summary for 36h). Fail-safe: tracing never blocks generation.
+  let genTraceId: string | undefined;
+  try { genTraceId = await startTrace('lvc-generate', { model: GEN_MODEL, clusters: clusters.length, max_candidates: MAX_CANDIDATES }); } catch { genTraceId = undefined; }
   try {
     const completion = await governedChat(
-      undefined, 'lvc-generate',
+      genTraceId, 'lvc-generate',
       // Audit-Score-Determinism PRD §8d (Phase 2): pin the LVC/Kimi adjudication generation too —
       // greedy + fixed seed + canonical top_p + OpenRouter provider-pin (no cross-backend fallback,
       // seed-honoring provider only). These ride governedChat→...rest to the OpenRouter client.
-      { model: GEN_MODEL, messages: [{ role: 'system', content: EVEN_GEN_SYSTEM }, { role: 'user', content: evenGenUserMessage(clusters, MAX_CANDIDATES) }], temperature: 0, top_p: 1, seed: AUDIT_LLM_SEED, max_tokens: 4000, provider: { allow_fallbacks: false, require_parameters: true } },
+      // Addendum A §2 (the actual bug): request reasoning EXPLICITLY so tracedChat's `'reasoning' in rest`
+      // check finds it and STOPS injecting reasoning:{enabled:false} — which every modern reasoning model
+      // rejects with a 400 ("Reasoning is mandatory and cannot be disabled"), the real root cause of A-12.
+      { model: GEN_MODEL, messages: [{ role: 'system', content: EVEN_GEN_SYSTEM }, { role: 'user', content: evenGenUserMessage(clusters, MAX_CANDIDATES) }], temperature: 0, top_p: 1, seed: AUDIT_LLM_SEED, max_tokens: 4000, reasoning: { max_tokens: 2000 }, provider: { allow_fallbacks: false, require_parameters: true } },
       { openrouter: GEN_MODEL },
     ) as { model?: string; choices?: Array<{ message?: { content?: string } }> };
     served = String(completion?.model ?? '');
     content = String(completion?.choices?.[0]?.message?.content ?? '');
+    if (genTraceId) await finishTraceIfRunning(genTraceId, 'success').catch(() => {});
   } catch (e) {
+    if (genTraceId) await finishTraceIfRunning(genTraceId, 'error', String((e as Error).message).slice(0, 200)).catch(() => {});
     return fail(`OpenRouter generation error: ${String((e as Error).message).slice(0, 160)}`);
   }
   // integrity: if OpenRouter isn't configured or the served model is not the intended one (a silent

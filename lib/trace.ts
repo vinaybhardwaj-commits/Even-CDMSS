@@ -167,6 +167,38 @@ export function geminiThinkingBudget(): number | undefined {
 // Use 'any' for params/return because the OpenAI SDK's overload-based types conflict with
 // Ollama-specific extra fields (options, keep_alive) and our streaming/non-streaming union.
 // Callers know their own use case and cast accordingly.
+/**
+ * Addendum A §3 (register A-12) — the BOTH-FAILED fallback error. When a provider call fails AND the
+ * local Ollama fallback ALSO fails, preserve BOTH messages. Laundering an OpenRouter 400 ("Reasoning is
+ * mandatory and cannot be disabled") into the Ollama 404 that followed destroyed the true diagnosis for
+ * 36h — for a governed clinical call that is not graceful degradation. Each message is capped at 200
+ * chars. A *successful* fallback is unaffected (this is only built when both throw).
+ */
+export function composeProviderFallbackError(
+  provider: 'openrouter' | 'gemini',
+  servedModel: string | undefined,
+  originalErr: unknown,
+  fallbackErr: unknown,
+): Error {
+  const cap = (x: unknown): string => String((x as { message?: unknown })?.message ?? x).slice(0, 200);
+  return new Error(`${provider} ${servedModel ?? 'unknown'} failed: ${cap(originalErr)} | ollama fallback failed: ${cap(fallbackErr)}`);
+}
+
+/** Run the local Ollama fallback after a provider error: return its result on success (unchanged
+ *  behaviour), or throw a both-failed error carrying BOTH provider messages (§3). */
+export async function runOllamaFallback<T>(
+  provider: 'openrouter' | 'gemini',
+  servedModel: string | undefined,
+  originalErr: unknown,
+  doFallback: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await doFallback();
+  } catch (fallbackErr) {
+    throw composeProviderFallbackError(provider, servedModel, originalErr, fallbackErr);
+  }
+}
+
 export async function tracedChat(
   traceId: string,
   label: string,
@@ -247,7 +279,8 @@ export async function tracedChat(
         }, Date.now() - t0);
         provider = 'ollama';
         actualModel = (params as { model?: string }).model;
-        result = await llm.chat.completions.create(params);
+        // §3: keep the fallback, but if IT also throws, surface BOTH errors (not just Ollama's 404).
+        result = await runOllamaFallback('openrouter', servedModel, oe, () => llm.chat.completions.create(params));
       }
     } else if (useGemini) {
       try {
@@ -296,7 +329,8 @@ export async function tracedChat(
         }, Date.now() - t0);
         provider = 'ollama';
         actualModel = (params as { model?: string }).model;
-        result = await llm.chat.completions.create(params);
+        // §3: keep the fallback, but if IT also throws, surface BOTH errors (not just Ollama's 404).
+        result = await runOllamaFallback('gemini', servedModel, ge, () => llm.chat.completions.create(params));
       }
     } else {
       result = await llm.chat.completions.create(params);
