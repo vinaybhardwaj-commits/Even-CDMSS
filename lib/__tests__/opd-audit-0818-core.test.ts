@@ -19,11 +19,11 @@ function mkCase(p: Partial<DeidOpdCase> = {}): DeidOpdCase {
 const subj = (fs: OpdFinding[], re: RegExp) => fs.find((f) => re.test(f.subject));
 
 // ── version bump ─────────────────────────────────────────────────────────────
-test('engine bumped to 0.81.13 (PHARMACY-ROUND1) and the read family includes 0.81.8…0.81.13', () => {
-  assert.equal(OPD_ENGINE_VERSION, 'opd-note-audit/0.81.13');
+test('engine bumped to 0.81.14 (CLINICAL-RULINGS) and the read family includes 0.81.8…0.81.14', () => {
+  assert.equal(OPD_ENGINE_VERSION, 'opd-note-audit/0.81.14');
   assert.ok(OPD_ENGINE_VERSIONS_CURRENT.includes('opd-note-audit/0.81.8'));   // history stays in the read family
-  assert.ok(OPD_ENGINE_VERSIONS_CURRENT.includes('opd-note-audit/0.81.12'));
-  assert.ok(OPD_ENGINE_VERSIONS_CURRENT.includes('opd-note-audit/0.81.13'));  // the new version must be added or the index empties (decision 21)
+  assert.ok(OPD_ENGINE_VERSIONS_CURRENT.includes('opd-note-audit/0.81.13'));
+  assert.ok(OPD_ENGINE_VERSIONS_CURRENT.includes('opd-note-audit/0.81.14'));  // the new version must be added or the index empties (decision 21)
 });
 
 // ── bug 9 — unverified_brand is informational (non-scoring) ───────────────────

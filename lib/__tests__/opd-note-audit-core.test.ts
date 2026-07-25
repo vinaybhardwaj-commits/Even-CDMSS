@@ -6,8 +6,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { rowToOpdCase, opdCaseText, isTeleconsultEncounter, hasHandsOnExam } from '../opd-ingest-core.ts';
 import { computeOpdScore } from '../opd-note-score-core.ts';
-import { opdCompleteness, prescribingChecks, parseOpdAnalysis, medDoseDocumented, resolveMedRoute, opdSignalType, stampFindingIdentity, followUpDocumented, consolidateDecisions, neutralizeMetadataFindings, medHasMoleculeFrom, bpDocumented, obstetricDosingComplete, NSAID_MOLECULES, MUSCLE_RELAXANT_MOLECULES, OPD_SIGNAL_TYPES, OPD_AUDIT_SYSTEM, type OpdFinding } from '../opd-note-audit-core.ts';
-import type { DeidOpdCase } from '../opd-ingest-core.ts';
+import { opdCompleteness, prescribingChecks, parseOpdAnalysis, medDoseDocumented, resolveMedRoute, opdSignalType, stampFindingIdentity, followUpDocumented, consolidateDecisions, neutralizeMetadataFindings, medHasMoleculeFrom, bpDocumented, obstetricDosingComplete, isHighAlertExcluded, NSAID_MOLECULES, MUSCLE_RELAXANT_MOLECULES, OPD_SIGNAL_TYPES, OPD_AUDIT_SYSTEM, type OpdFinding } from '../opd-note-audit-core.ts';
+import type { DeidOpdCase, OpdMed } from '../opd-ingest-core.ts';
 
 // Mirrors a real GP row (medications + jsonb arrive as JSON strings via Metabase).
 const ROW: Record<string, unknown> = {
@@ -770,4 +770,35 @@ test('bpDocumented reads BP from the obstetric narrative (no structured BP colum
   assert.equal(bpDocumented(obsCase({ examination: ['BP 110/70 mmHg'], presentingComplaints: [], history: [] })), true);
   assert.equal(bpDocumented(obsCase({ examination: ['blood pressure 120/80'], presentingComplaints: [], history: [] })), true);
   assert.equal(bpDocumented(obsCase({ examination: ['fundal height 30cm'], presentingComplaints: ['amenorrhoea'], history: [] })), false);
+});
+
+// ── 0.81.14 Ruling 2 (CLINICAL-RULINGS §2.2) — molecule-level high-alert exclusions ──
+test('0.81.14 Ruling 2: high-alert name-collision artifacts excluded at molecule level; real high-alerts + injectable MgSO4 still fire', () => {
+  // the predicate itself
+  assert.equal(isHighAlertExcluded({ resolvedGeneric: 'Glucosamine Sulphate Potassium Chloride' } as OpdMed), true);
+  assert.equal(isHighAlertExcluded({ generic: 'Vit+Min+Amino Acids+Isoflavonone+Grape Seed Extract' } as OpdMed), true);
+  assert.equal(isHighAlertExcluded({ resolvedGeneric: 'Magnesium Sulphate', route: 'oral' } as OpdMed), true);   // laxative
+  assert.equal(isHighAlertExcluded({ resolvedGeneric: 'Magnesium Sulphate', route: 'iv' } as OpdMed), false);    // ISMP high-alert = injectable
+  for (const g of ['Insulin', 'Glimepiride', 'Tacrolimus', 'Colchicine']) {
+    assert.equal(isHighAlertExcluded({ resolvedGeneric: g } as OpdMed), false, g);
+  }
+  // end-to-end through prescribingChecks (the emission site)
+  const mk = (ms: unknown[]) => ({ medications: ms } as unknown as Parameters<typeof prescribingChecks>[0]);
+  const fires = (ms: unknown[]) => prescribingChecks(mk(ms)).some((f) => /^High-alert/.test(f.subject));
+  assert.equal(fires([{ resolvedGeneric: 'Glucosamine Sulphate Potassium Chloride', highAlert: true }]), false);
+  assert.equal(fires([{ resolvedGeneric: 'Magnesium Sulphate', highAlert: true, route: 'oral' }]), false);
+  assert.equal(fires([{ resolvedGeneric: 'Insulin', highAlert: true }]), true);
+  assert.equal(fires([{ resolvedGeneric: 'Magnesium Sulphate', highAlert: true, route: 'iv' }]), true);
+});
+
+// ── 0.81.14 register A-9 (§2.6) — LMP is CREDITED but NEVER a mandatory completeness field ──
+test('A-9: a non-obstetric note with an LMP gains NO mandatory LMP field; the obstetric path keeps it mandatory', () => {
+  // gynae-assessment path sets neither isObstetric nor obstetric → ordinary GP mandatory set (no LMP field)
+  const gynae = opdCompleteness(obsCase({ isObstetric: false, obstetric: undefined, lmp: '2026-06-10', impressions: ['LMP 2026-06-10'] }));
+  assert.ok(!gynae.items.some((i) => /LMP/i.test(i.label) && i.mandatory), 'no mandatory LMP field on the assessment path');
+  assert.ok(!gynae.missing.some((m) => /LMP/i.test(m)), 'a missing LMP is never a missing-mandatory penalty');
+  // the obstetric path is unchanged: lmp_edd stays mandatory and flags when absent
+  const obst = opdCompleteness(obsCase({ obstetric: { trimester: 1, gaDocumented: true, lmpOrEddDocumented: false, gravidityParityDocumented: true, weightDocumented: true, sfhDocumented: false, fhrDocumented: false, presentationDocumented: false } }));
+  assert.ok(obst.items.some((i) => i.key === 'lmp_edd' && i.mandatory), 'obstetric note keeps lmp_edd mandatory');
+  assert.ok(obst.missing.includes('LMP and/or EDD'), 'obstetric note with no LMP flags the missing mandatory');
 });

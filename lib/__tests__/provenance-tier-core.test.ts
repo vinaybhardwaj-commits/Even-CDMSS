@@ -129,6 +129,10 @@ test('deterministic finding marked llm → internal_consensus', () => {
 test('S1 (0.81.10): muscle_relaxant_indication → deterministic_completeness (documentation prompt, same class as incomplete_dosing)', () => {
   assert.equal(classifyProvenanceTier({ source: 'deterministic', signal_type: 'muscle_relaxant_indication', verdict: 'context-dependent' }), 'deterministic_completeness');
 });
+test('0.81.14: vitamin_d_repletion_duration + pregnancy_risk_verify → deterministic_completeness (documentation prompts)', () => {
+  assert.equal(classifyProvenanceTier({ source: 'deterministic', signal_type: 'vitamin_d_repletion_duration', verdict: 'uncertain' }), 'deterministic_completeness');
+  assert.equal(classifyProvenanceTier({ source: 'deterministic', signal_type: 'pregnancy_risk_verify', verdict: 'uncertain' }), 'deterministic_completeness');
+});
 test('V1/V2: incomplete_dosing → deterministic_completeness; duplicate_* → deterministic_logical', () => {
   assert.equal(classifyProvenanceTier({ source: 'deterministic', signal_type: 'incomplete_dosing', verdict: 'context-dependent' }), 'deterministic_completeness');
   assert.equal(classifyProvenanceTier({ source: 'deterministic', signal_type: 'duplicate_molecule', verdict: 'uncertain' }), 'deterministic_logical');

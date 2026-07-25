@@ -161,15 +161,32 @@ export function ddiFindings(meds: OpdMed[]): OpdFinding[] {
   const topical = new Set(
     meds.filter((m) => resolveMedRoute(m) === 'topical' && (m.resolvedGeneric || m.generic))
         .map((m) => (m.resolvedGeneric || m.generic as string).toLowerCase()));
+  // Ruling 1 (0.81.14, CLINICAL-RULINGS §2.1): an NSAID–NSAID additive-toxicity overlap where ANY
+  // member resolves to a topical route is routine practice (topical diclofenac ~6% oral systemic
+  // bioavailability; we capture neither quantity nor BSA, so the at-risk group is unidentifiable) —
+  // SUPPRESS ENTIRELY (was de-escalated to context-dependent, BUG-0.8-12). Restricted to NSAID–NSAID:
+  // a topical NSAID + an oral non-NSAID (e.g. an anticoagulant) is a real interaction and still fires.
+  const nsaidNames = new Set(items.filter((i) => i.major === 'NSAID').map((i) => i.name.toLowerCase()));
   const pairs = mergeRank([...tagInteractions(items), ...curatedInteractions(items.map((i) => i.name))]);
-  return pairs.map((p) => ddiToFinding(p, topical));
+  return pairs
+    .filter((p) => {
+      const involvesTopical = topical.has(p.drug_a.toLowerCase()) || topical.has(p.drug_b.toLowerCase());
+      const bothNsaid = nsaidNames.has(p.drug_a.toLowerCase()) && nsaidNames.has(p.drug_b.toLowerCase());
+      return !(involvesTopical && bothNsaid);
+    })
+    .map((p) => ddiToFinding(p, topical));
 }
 
 /** BUG-0.8-11 (R): the muscle-relaxant-FDC appropriateness objection was LLM-generated, so its
  *  presence and tier swung run-to-run on identical scripts. Determinise it into a fixed-tier
  *  (context-dependent) advisory; the prompt tells the LLM not to raise its own volatile version,
  *  and consolidateDecisions drops any LLM muscle-relaxant finding that slips through. */
-export function muscleRelaxantFindings(meds: OpdMed[]): OpdFinding[] {
+export function muscleRelaxantFindings(meds: OpdMed[], ctx?: { mskDocumented?: boolean }): OpdFinding[] {
+  // Ruling 4 (0.81.14, CLINICAL-RULINGS §2.3): a muscle relaxant WITH documented musculoskeletal
+  // context is a legitimate prescription — fire only when NONE is documented. MEASURED: 598/658
+  // (90.9%) already document it. ctx is OPTIONAL; omitting it reproduces prior behaviour exactly
+  // (undefined !== true → fires). Same ctx-threading pattern as isGout (0.81.13).
+  if (ctx?.mskDocumented === true) return [];
   const mr = meds.filter((m) => medHasMoleculeFrom(m, MUSCLE_RELAXANT_MOLECULES));
   if (!mr.length) return [];
   const names = Array.from(new Set(mr.map((m) => m.resolvedGeneric || m.generic || m.brand || 'muscle relaxant')));
@@ -192,7 +209,11 @@ export function muscleRelaxantFindings(meds: OpdMed[]): OpdFinding[] {
 // 0.81.13 (PRD CDMSS-PHARMACY-ROUND1): the antihistamine+montelukast leg was RETIRED (Decision 11 — it
 // fired on allergic-rhinitis maintenance, standard care) and the xanthine subject/rationale relabelled
 // (Decision 3 — the "mucolytic" claim misdescribed the trigger list, which is xanthines only).
-const XANTHINE_MOLECULES = ['theophylline', 'doxophylline', 'doxofylline', 'acebrophylline', 'bamifylline', 'etofylline', 'aminophylline', 'choline theophyllinate', 'deriphyllin'];
+// 0.81.14 (Ruling 12, CLINICAL-RULINGS §2.4): 'acebrophylline' REMOVED — it reads as a secretolytic/
+// mucokinetic (covered by the round-1 mucolytic endorsement), and 100% of this rule's output was
+// Acebrophylline + Acetylcysteine. The rule becomes DORMANT, not dead: the true xanthine bronchodilators
+// remain and would fire if genuinely prescribed for an acute URTI. ACUTE_URTI_RE is unchanged.
+const XANTHINE_MOLECULES = ['theophylline', 'doxophylline', 'doxofylline', 'bamifylline', 'etofylline', 'aminophylline', 'choline theophyllinate', 'deriphyllin'];
 // ANTIHISTAMINE_MOLECULES was deleted with the montelukast rule (PRD CDMSS-PHARMACY-ROUND1 Decision 11
 // — RETIRED entirely; it fired on allergic-rhinitis maintenance, standard care). No live reference remains.
 const ACUTE_URTI_RE = /\b(urti|upper respiratory|common cold|coryza|nasopharyngitis|rhinitis|rhinorrho?ea|running nose|sore throat|throat pain|pharyngitis|tonsillitis|viral fever|viral (?:uri|illness)|cough and cold|acute (?:cough|cold))\b/i;
@@ -251,6 +272,86 @@ export function decongestantDurationFindings(meds: OpdMed[]): OpdFinding[] {
     });
   }
   return out;
+}
+
+// ── 0.81.14 Ruling 13 (CLINICAL-RULINGS §2.5) — Vitamin D weekly-repletion duration ───────────────────
+// INFORMATIONAL prompt (non-scoring) when weekly 60,000 IU runs beyond 8 weeks — the standard repletion
+// course. NOT a dose ceiling (0 of 1,199 60k prescriptions were on a daily grid) and NOT a frequency
+// rule. Fires ONLY when composition is vitamin D3/cholecalciferol AND strength is 60,000/60k AND weekly
+// is stated AND parseDurationDays(duration) > 56 (8 weeks). LOAD-BEARING FAIL-SAFE: an unparseable
+// duration emits NOTHING — several clinicians write the correct extended protocol as free text
+// ("8 weeks followed by once a month for 4 months") which does not parse; they stay silent by design.
+// Do NOT extend parseDurationDays to capture them.
+const VITAMIN_D_RE = /(vitamin ?d3?|cholecalciferol|calciferol)/i;
+export function vitaminDRepletionFindings(meds: OpdMed[]): OpdFinding[] {
+  const out: OpdFinding[] = [];
+  for (const m of meds) {
+    const comp = `${m.resolvedGeneric || ''} ${m.generic || ''} ${m.brand || ''}`;
+    if (!VITAMIN_D_RE.test(comp)) continue;                                            // (1) vitamin D composition
+    const strengthHay = `${m.strength || ''} ${m.dose || ''} ${comp}`;
+    if (!/60[ ,]?000|60k/i.test(strengthHay)) continue;                                // (2) 60,000 IU strength
+    if (!/week/i.test(`${m.frequency || ''} ${m.instruction || ''}`)) continue;        // (3) weekly dosing stated
+    const days = parseDurationDays(m.duration);
+    if (days === null || days <= 56) continue;                                         // (4) > 8 weeks; unparseable → silent
+    const weeks = Math.round(days / 7);
+    out.push({
+      subject: `Vitamin D 60,000 IU weekly prescribed for ${weeks} weeks — document retest of levels`,
+      verdict: 'uncertain', confidence: 0, domain: 'prescribing_safety',
+      rationale: `Weekly 60,000 IU for 8 weeks is standard repletion once low levels are established, followed by a retest. This course runs ${weeks} weeks. Confirm levels were rechecked or that extended/maintenance dosing is intended. Informational — non-scoring.`,
+      evidence: [], estimates: [], citation_ids: [], source: 'deterministic',
+      informational: true,
+    });
+  }
+  return out;
+}
+
+// ── 0.81.14 Rulings 5–8 (CLINICAL-RULINGS §2.7) — Possible-pregnancy verification advisory ────────────
+// The system's first pregnancy-safety capability (register A-9). INFORMATIONAL (non-scoring), framed as
+// VERIFY — never as an assertion that a pregnant patient was harmed. Fires when the LMP interval is in
+// [36, 90] days AND a trigger molecule is present. NSAIDs are deliberately EXCLUDED (third-trimester-
+// specific risk; a recorded LMP cannot establish trimester). No age gate. FAIL-SAFE: no LMP / unparseable
+// LMP / interval outside 36–90 → nothing (absence of data must never accuse). ctx (the pre-computed LMP
+// interval) is OPTIONAL and threaded from the orchestrator — same pattern as isGout / mskDocumented.
+const PREGNANCY_CONTRA_MOLECULES = ['isotretinoin', 'acitretin', 'tretinoin', 'methotrexate', 'misoprostol', 'warfarin', 'valproate', 'divalproex'];
+const PREGNANCY_CAUTION_MOLECULES = ['doxycycline', 'minocycline', 'tetracycline', 'ofloxacin', 'levofloxacin', 'ciprofloxacin', 'norfloxacin', 'moxifloxacin', 'enalapril', 'ramipril', 'lisinopril', 'telmisartan', 'losartan', 'olmesartan', 'valsartan', 'fluconazole'];
+/** Days between an LMP string and the visit date; null when either is absent/unparseable (fail-safe → no
+ *  finding). Parses ISO-like dates only; an unrecognised format degrades to silence, never a wrong flag. */
+export function lmpIntervalDays(lmp: string | null | undefined, visitDate: string | null | undefined): number | null {
+  if (!lmp || !visitDate) return null;
+  const l = new Date(lmp), v = new Date(visitDate);
+  if (isNaN(l.getTime()) || isNaN(v.getTime())) return null;
+  const days = Math.floor((v.getTime() - l.getTime()) / 86_400_000);
+  return isFinite(days) ? days : null;
+}
+export function pregnancyRiskFindings(meds: OpdMed[], ctx?: { lmpIntervalDays?: number | null }): OpdFinding[] {
+  const interval = ctx?.lmpIntervalDays;
+  if (interval == null || interval < 36 || interval > 90) return [];                   // possible-pregnancy window only
+  const out: OpdFinding[] = [];
+  for (const m of meds) {
+    const contra = PREGNANCY_CONTRA_MOLECULES.find((n) => medHasMoleculeFrom(m, [n]));
+    const caution = contra ? null : PREGNANCY_CAUTION_MOLECULES.find((n) => medHasMoleculeFrom(m, [n]));
+    if (!contra && !caution) continue;
+    const drug = m.resolvedGeneric || m.generic || m.brand || (contra || caution)!;
+    const phrase = contra ? 'contraindicated in' : 'used with caution in';
+    out.push({
+      subject: `Possible pregnancy — verify status before ${drug}`,
+      verdict: 'uncertain', confidence: 0, domain: 'prescribing_safety',
+      rationale: `LMP was ${interval} days before this visit, so pregnancy cannot be excluded. ${drug} is ${phrase} pregnancy. Confirm pregnancy status was established before prescribing. Informational — non-scoring.`,
+      evidence: [], estimates: [], citation_ids: [], source: 'deterministic',
+      informational: true,
+    });
+  }
+  return out;
+}
+
+// ── 0.81.14 Ruling 4 (CLINICAL-RULINGS §2.3) — musculoskeletal-context predicate (for muscle relaxant) ─
+// Computed in the orchestrator over the SAME haystack unindicatedRespFindings builds; an M-code (any
+// musculoskeletal ICD) also counts. Exported for testability.
+const MSK_CONTEXT_RE = /\b(back pain|neck pain|spasm|myalgia|muscle|sprain|strain|lumbar|cervical|spondyl|sciatic|shoulder|knee pain|joint pain|stiff|musculoskeletal|body ?ache)\b/i;
+export function mskContextDocumented(oc: DeidOpdCase): boolean {
+  const hay = [oc.reasonForConsult || '', ...oc.presentingComplaints, ...oc.impressions, ...oc.history].join(' ');
+  const codes = [...oc.diagnosisCodes, ...oc.impressionCodes].map((c) => c.trim());
+  return MSK_CONTEXT_RE.test(hay) || codes.some((c) => /^M/i.test(c));
 }
 
 // ── 0.81.8 bug 8 — route/formulation-aware duplication ───────────────────────────────────────────────
@@ -565,9 +666,14 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
   const goutHay = [oc.reasonForConsult || '', ...oc.presentingComplaints, ...oc.impressions, ...oc.history].join(' ');
   const goutCodes = [...oc.diagnosisCodes, ...oc.impressionCodes].map((c) => c.trim());
   const isGout = /\bgout\b|\bgouty\b|\btophus\b|\btophi\b/i.test(goutHay) || goutCodes.some((c) => /^M1[0A]/i.test(c));
-  const det = [...prescribingChecks(oc), ...doseFindings(oc.medications, { isGout }), ...ddiFindings(oc.medications), ...muscleRelaxantFindings(oc.medications),
+  // 0.81.14 case context threaded into the meds[] checks (Rulings 4 + 5–8; same pattern as isGout).
+  const mskDocumented = mskContextDocumented(oc);                                   // Ruling 4 — muscle relaxant gate
+  const lmpDays = lmpIntervalDays(oc.lmp, oc.noteDate);                             // Rulings 5–8 — possible-pregnancy window (visit_date proxied by oc.noteDate)
+  const det = [...prescribingChecks(oc), ...doseFindings(oc.medications, { isGout }), ...ddiFindings(oc.medications), ...muscleRelaxantFindings(oc.medications, { mskDocumented }),
     ...unindicatedRespFindings(oc), ...decongestantDurationFindings(oc.medications),   // 0.81.8 bugs 1, 3
-    ...bannedFdcFindings(oc.medications)];   // CDSCO banned-FDC (C1; DORMANT — seed ships with zero entries, stage 2 populates + bumps)
+    ...vitaminDRepletionFindings(oc.medications),                                    // 0.81.14 Ruling 13 (informational)
+    ...pregnancyRiskFindings(oc.medications, { lmpIntervalDays: lmpDays }),          // 0.81.14 Rulings 5–8 (informational)
+    ...bannedFdcFindings(oc.medications)];   // CDSCO banned-FDC (C1) — seed live at v1.0 (5 entries); zero match current prescribing
   const completeness = opdCompleteness(oc);
   const healthCheck = isHealthCheckEncounter(oc);   // 0.81.8 bug 2 — institutional screening context
 

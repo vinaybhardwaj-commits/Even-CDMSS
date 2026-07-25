@@ -72,6 +72,11 @@ export interface DeidOpdCase {
   // stays valid; when unset the note audits exactly as today.
   isObstetric?: boolean;
   obstetric?: ObstetricMeta;
+  // 0.81.14 (CLINICAL-RULINGS §2.6, register A-9) — the raw last-menstrual-period string, read on the
+  // obstetric AND gynae-assessment templates. Used by the deterministic possible-pregnancy advisory
+  // (§2.7). Optional so existing literals stay valid; CREDITED-NEVER-REQUIRED (it never becomes a
+  // mandatory completeness field for the assessment template — see opdCompleteness).
+  lmp?: string | null;
 }
 /** Structured obstetric signals for the trimester-aware mandatory-field set (§8 decision 3). Every
  *  field is a documented/absent flag except `trimester` (1|2|3|null). Pure — populated in rowToOpdCase. */
@@ -313,6 +318,9 @@ function codesFrom(v: unknown): string[] {
 
 // ── obstetric-template adapter (CDMSS-OBGYN-TEMPLATE-EXTRACTION-FIX) ──────────────
 export const OBSTETRIC_TYPE = 'HOSPITAL_GYNAECOLOGY_OBSTETRICS';
+// 0.81.14 (CLINICAL-RULINGS §2.6, register A-9) — the gynaecology ASSESSMENT template (distinct from the
+// obstetric one). LMP is read here and CREDITED but NEVER made a mandatory completeness field.
+export const GYNAE_ASSESSMENT_TYPE = 'HOSPITAL_GYNAECOLOGY_ASSESSMENT';
 /** Feature flag — the obstetric adapter ships OFF; the metabase projection widening + this mapping both
  *  gate on it, so with the flag off ingestion is byte-identical to today. */
 export function obstetricExtractionEnabled(): boolean { return process.env.OBSTETRIC_EXTRACTION_ENABLED === '1'; }
@@ -379,6 +387,7 @@ function augmentObstetric(oc: DeidOpdCase, row: Record<string, unknown>): void {
   if (assessmentBits.length) oc.impressions = uniq([...oc.impressions, ...assessmentBits]);
 
   oc.isObstetric = true;
+  oc.lmp = lmp;   // 0.81.14 — surface the raw LMP for the possible-pregnancy advisory (§2.7); obstetric mandatory-field behaviour is unchanged (driven by oc.obstetric below)
   oc.obstetric = {
     trimester,
     gaDocumented: !!gaRaw || trimester != null,
@@ -389,6 +398,19 @@ function augmentObstetric(oc: DeidOpdCase, row: Record<string, unknown>): void {
     fhrDocumented: !!fhr,
     presentationDocumented: !!presentation,
   };
+}
+
+/** 0.81.14 (§2.6, register A-9) — LMP read for the gynae ASSESSMENT template. LIGHTWEIGHT by design:
+ *  it reads the menstrual-history LMP (and its notes), stores the raw value on oc.lmp, and emits
+ *  `LMP <date>` into the impression text exactly as the obstetric path does at :373 — but it sets
+ *  NEITHER isObstetric NOR obstetric, so LMP stays CREDITED and never becomes a mandatory completeness
+ *  field. Pure; never throws to the caller (caller wraps). */
+function augmentGynaeAssessmentLmp(oc: DeidOpdCase, row: Record<string, unknown>): void {
+  const lmp = strOrNull(row['gynae_patient_history__menstrual_history__last_menstrual_period'])
+    || strOrNull(row['gynae_patient_history__menstrual_history__notes']);
+  if (!lmp) return;
+  oc.lmp = lmp;
+  oc.impressions = uniq([...oc.impressions, `LMP ${lmp}`]);
 }
 
 /** Map a raw prescriptions row → { case (de-identified), keys (for join-back) }. */
@@ -456,8 +478,18 @@ export function rowToOpdCase(row: Record<string, unknown>): { case: DeidOpdCase;
   // Obstetric-template adapter (§4): when enabled + on the obstetric template, fill the canonical fields
   // the GP mapping left empty from the obstetric block. Fail-safe: any error leaves the GP-mapped case
   // exactly as-is (never a crash, never wrong data).
-  if (obstetricExtractionEnabled() && strOrNull(row.type_of_prescription) === OBSTETRIC_TYPE) {
-    try { augmentObstetric(oc, row); } catch { /* degrade to current behaviour */ }
+  // 0.81.14 (§2.6, register A-9): the gynae ASSESSMENT template also carries an LMP the audit was
+  // discarding. Read it (CREDITED — emitted into the note text and stored on oc.lmp for the pregnancy
+  // advisory) but NEVER make it a mandatory field: this path sets neither isObstetric nor obstetric, so
+  // opdCompleteness uses the ordinary GP mandatory set (50.4% of these notes have no LMP and must not be
+  // penalised). Same feature flag as the obstetric adapter.
+  if (obstetricExtractionEnabled()) {
+    const ptype = strOrNull(row.type_of_prescription);
+    if (ptype === OBSTETRIC_TYPE) {
+      try { augmentObstetric(oc, row); } catch { /* degrade to current behaviour */ }
+    } else if (ptype === GYNAE_ASSESSMENT_TYPE) {
+      try { augmentGynaeAssessmentLmp(oc, row); } catch { /* degrade to current behaviour */ }
+    }
   }
 
   const keys: OpdKeys = {

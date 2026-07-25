@@ -1,7 +1,4988 @@
 {
-  "version": "cdsco-banned-fdc/0.0",
-  "compiled_on": null,
-  "reviewed_by": null,
-  "note": "STAGE-1 DORMANT SKELETON (PRD CDMSS-CDSCO-BANNED-FDC C9): zero entries, so the banned-FDC check can never fire and scores are unchanged. Entries are compiled from Indian government gazette notifications (Section 26A, Drugs and Cosmetics Act 1940) and MUST be pharmacist-reviewed before ingest (C3) — never authored by a builder. Stage 2 populates the reviewed seed, runs the §5 dry run, bumps the engine, and sets version 1.0 with compiled_on + reviewed_by filled.",
-  "entries": []
+  "version": "cdsco-banned-fdc/2.0",
+  "compiled_on": "2026-07-25",
+  "reviewed_by": "Dr Khatija, Chief Clinical Pharmacologist, Even — 2026-07-25",
+  "source_documents": [
+    "S.O. 4379(E)–4712(E) dated 07.09.2018 — Prohibition and Restriction of FDC drugs, Section 26A (537pp)",
+    "S.O. 4972/4973/4974(E) dated 25.09.2018 — corrigenda, APPLIED",
+    "S.O. 697(E) dated 05.02.2019 — rescinds S.O. 4616(E), APPLIED (entry excluded)",
+    "CDSCO cumulative Section 26A list (Oct 2017) — pre-2016 entries carried from v1.0"
+  ],
+  "note": "v2.0 SUPERSEDES v1.0's pending_2018_renotification cohort: the 10.03.2016 block quashed by the Delhi HC was re-prohibited on 07.09.2018 and is now encoded from the primary notification. `entries` is the ONLY firing set. `withheld_qualified` are in force but NOT encodable — the gazette qualifies them by form/strength/route, which this schema cannot express. `rescinded` and `not_representable` never fire.",
+  "entries": [
+    {
+      "id": "cdsco-2018-4379",
+      "molecules": [
+        "aceclofenac",
+        "paracetamol",
+        "rabeprazole"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4379(E)",
+      "statement": "Aceclofenac + Paracetamol + Rabeprazole",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4380",
+      "molecules": [
+        "diclofenac",
+        "nimesulide"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4380(E)",
+      "statement": "Nimesulide + Diclofenac",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4381",
+      "molecules": [
+        "caffeine",
+        "cetirizine",
+        "nimesulide"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4381(E)",
+      "statement": "Nimesulide + Cetirizine + Caffeine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4382",
+      "molecules": [
+        "nimesulide",
+        "tizanidine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4382(E)",
+      "statement": "Nimesulide + Tizanidine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4383",
+      "molecules": [
+        "caffeine",
+        "cetirizine",
+        "paracetamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4383(E)",
+      "statement": "Paracetamol + Cetirizine + Caffeine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4384",
+      "molecules": [
+        "chlorzoxazone",
+        "diclofenac",
+        "tramadol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4384(E)",
+      "statement": "Diclofenac + Tramadol + Chlorzoxazone",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4385",
+      "molecules": [
+        "dicyclomine",
+        "domperidone",
+        "paracetamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4385(E)",
+      "statement": "Dicyclomine + Paracetamol + Domperidone",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4386",
+      "molecules": [
+        "diclofenac",
+        "paracetamol",
+        "tramadol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4386(E)",
+      "statement": "Diclofenac + Tramadol + Paracetamol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4387",
+      "molecules": [
+        "chlorzoxazone",
+        "diclofenac",
+        "famotidine",
+        "paracetamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4387(E)",
+      "statement": "Diclofenac + Paracetamol + Chlorzoxazone + Famotidine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4388",
+      "molecules": [
+        "naproxen",
+        "paracetamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4388(E)",
+      "statement": "Naproxen + Paracetamol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4389",
+      "molecules": [
+        "nimesulide",
+        "serratiopeptidase"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4389(E)",
+      "statement": "Nimesulide + serratiopeptidase",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4390",
+      "molecules": [
+        "diclofenac",
+        "famotidine",
+        "paracetamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4390(E)",
+      "statement": "Paracetamol + Diclofenac + Famotidine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4391",
+      "molecules": [
+        "benzyl alcohol",
+        "fenpiverinium",
+        "nimesulide",
+        "pitofenone"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4391(E)",
+      "statement": "Nimesulide + Pitofenone + Fenpiverinium + benzyl alcohol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4392",
+      "molecules": [
+        "diclofenac",
+        "omeprazole",
+        "paracetamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4392(E)",
+      "statement": "Omeprazole + Paracetamol + Diclofenac",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4394",
+      "molecules": [
+        "diclofenac",
+        "tamsulosin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4394(E)",
+      "statement": "Tamsulosin + Diclofenac",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4395",
+      "molecules": [
+        "caffeine",
+        "chlorpheniramine",
+        "dextromethorphan",
+        "paracetamol",
+        "phenylephirine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4395(E)",
+      "statement": "Paracetamol + Phenylephirine + Chlorpheniramine + Dextromethorphan + Caffeine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4396",
+      "molecules": [
+        "diclofenac",
+        "zinc carnosine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4396(E)",
+      "statement": "Diclofenac + Zinc Carnosine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4397",
+      "molecules": [
+        "chlorpheniramine maleate",
+        "diclofenac",
+        "magnesium trisillicate",
+        "paracetamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4397(E)",
+      "statement": "Diclofenac+ paracetamol+ chlorpheniramine maleate+ magnesium trisillicate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4398",
+      "molecules": [
+        "cetirizine",
+        "paracetamol",
+        "pseudoephedrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4398(E)",
+      "statement": "Paracetamol + Pseudoephedrine + Cetirizine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4399",
+      "molecules": [
+        "phenylbutazone",
+        "sodium salicylate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4399(E)",
+      "statement": "Phenylbutazone + Sodium Salicylate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4400",
+      "molecules": [
+        "lornoxicam",
+        "paracetamol",
+        "trypsin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4400(E)",
+      "statement": "Lornoxicam + Paracetamol + Trypsin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4401",
+      "molecules": [
+        "dicyclomine",
+        "mefenamic acid",
+        "paracetamol",
+        "ranitidine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4401(E)",
+      "statement": "Paracetamol + Mefenamic Acid + Ranitidine + Dicyclomine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4402",
+      "molecules": [
+        "dicyclomine",
+        "nimesulide"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4402(E)",
+      "statement": "Nimesulide + Dicyclomine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4403",
+      "molecules": [
+        "diclofenac",
+        "heparin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4403(E)",
+      "statement": "Heparin+ Diclofenac",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4404",
+      "molecules": [
+        "boron",
+        "copper",
+        "glucosamine",
+        "manganese",
+        "methyl sulfonyl methane",
+        "vitamin d",
+        "zinc"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4404(E)",
+      "statement": "Glucosamine+ Methyl Sulfonyl Methane + Vitamin D3 + Manganese + Boron+ Copper + Zinc",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4405",
+      "molecules": [
+        "paracetamol",
+        "tapentadol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4405(E)",
+      "statement": "Paracetamol+ Tapentadol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4406",
+      "molecules": [
+        "proanthocyanidin",
+        "tranexamic acid"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4406(E)",
+      "statement": "Tranexamic Acid + Proanthocyanidin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4407",
+      "molecules": [
+        "lornoxicam",
+        "paracetamol",
+        "tramadol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4407(E)",
+      "statement": "Lornoxicam + Paracetamol + Tramadol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4408",
+      "molecules": [
+        "lornoxicam",
+        "paracetamol",
+        "serratiopeptidase"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4408(E)",
+      "statement": "Lornoxicam + Paracetamol + Serratiopeptidase",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4409",
+      "molecules": [
+        "diclofenac",
+        "magnesium trisilicate",
+        "paracetamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4409(E)",
+      "statement": "Diclofenac + Paracetamol + Magnesium trisilicate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4410",
+      "molecules": [
+        "caffeine",
+        "domperidone",
+        "paracetamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4410(E)",
+      "statement": "Paracetamol + Domperidone + Caffeine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4411",
+      "molecules": [
+        "ammonium chloride",
+        "chlorpheniramine maleate",
+        "menthol",
+        "sodium citrate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4411(E)",
+      "statement": "Ammonium Chloride + Sodium Citrate + Chlorpheniramine Maleate + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4412",
+      "molecules": [
+        "diclofenac potassium",
+        "of doxycycline",
+        "of serratiopeptidase"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4412(E)",
+      "statement": "3 tablets of Serratiopeptidase (enteric coated 20000 units) + Diclofenac Potassium & 2 tablets of Doxycycline",
+      "product_type": "combikit"
+    },
+    {
+      "id": "cdsco-2018-4414",
+      "molecules": [
+        "aceclofenac",
+        "famotidine",
+        "paracetamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4414(E)",
+      "statement": "Aceclofenac + Paracetamol + Famotidine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4415",
+      "molecules": [
+        "aceclofenac",
+        "zinc carnosine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4415(E)",
+      "statement": "Aceclofenac + Zinc Carnosine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4416",
+      "molecules": [
+        "caffeine",
+        "disodium hydrogen citrate",
+        "paracetamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4416(E)",
+      "statement": "Paracetamol + Disodium Hydrogen Citrate + Caffeine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4417",
+      "molecules": [
+        "dl methionine",
+        "paracetamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4417(E)",
+      "statement": "Paracetamol + DL Methionine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4418",
+      "molecules": [
+        "disodium hydrogen citrate",
+        "paracetamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4418(E)",
+      "statement": "Disodium Hydrogen citrate + Paracetamol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4419",
+      "molecules": [
+        "caffeine",
+        "codeine phosphate",
+        "paracetamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4419(E)",
+      "statement": "Paracetamol + Caffeine + Codeine Phosphate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4422",
+      "molecules": [
+        "azithromycin",
+        "cefixime"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4422(E)",
+      "statement": "Azithromycin + Cefixime",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4423",
+      "molecules": [
+        "amoxicillin",
+        "dicloxacillin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4423(E)",
+      "statement": "Amoxicillin + Dicloxacillin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4424",
+      "molecules": [
+        "azithromycin",
+        "levofloxacin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4424(E)",
+      "statement": "Azithromycin + Levofloxacin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4425",
+      "molecules": [
+        "cefixime",
+        "linezolid"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4425(E)",
+      "statement": "Cefixime + Linezolid",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4426",
+      "molecules": [
+        "amoxicillin",
+        "cefixime",
+        "potassium clavulanic acid"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4426(E)",
+      "statement": "Amoxicillin + Cefixime + Potassium Clavulanic Acid",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4427",
+      "molecules": [
+        "nitazoxanide",
+        "ofloxacin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4427(E)",
+      "statement": "Ofloxacin + Nitazoxanide",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4428",
+      "molecules": [
+        "cefpodoxime proxetil",
+        "levofloxacin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4428(E)",
+      "statement": "Cefpodoxime Proxetil + Levofloxacin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4429",
+      "molecules": [
+        "azithromycin",
+        "fluconazole",
+        "secnidazole"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4429(E)",
+      "statement": "Azithromycin, Secnidazole and Fluconazole",
+      "product_type": "combikit"
+    },
+    {
+      "id": "cdsco-2018-4430",
+      "molecules": [
+        "alpha tocopherol acetate",
+        "levofloxacin",
+        "ornidazole"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4430(E)",
+      "statement": "Levofloxacin + Ornidazole + Alpha Tocopherol Acetate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4431",
+      "molecules": [
+        "nimorazole",
+        "ofloxacin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4431(E)",
+      "statement": "Nimorazole + Ofloxacin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4432",
+      "molecules": [
+        "azithromycin",
+        "ofloxacin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4432(E)",
+      "statement": "Azithromycin + ofloxacin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4433",
+      "molecules": [
+        "amoxycillin",
+        "tinidazole"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4433(E)",
+      "statement": "Amoxycillin + Tinidazole",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4434",
+      "molecules": [
+        "doxycyclin",
+        "serratiopeptidase"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4434(E)",
+      "statement": "Doxycyclin + Serratiopeptidase",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4435",
+      "molecules": [
+        "cefixime",
+        "levofloxacin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4435(E)",
+      "statement": "Cefixime + levofloxacin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4436",
+      "molecules": [
+        "metronidazole",
+        "ofloxacin",
+        "zinc acetate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4436(E)",
+      "statement": "Ofloxacin + Metronidazole + Zinc Acetate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4437",
+      "molecules": [
+        "atropine",
+        "diphenoxylate",
+        "furazolidone"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4437(E)",
+      "statement": "Diphenoxylate + Atropine + Furazolidone",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4438",
+      "molecules": [
+        "azithromycin",
+        "fluconazole",
+        "ornidazole"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4438(E)",
+      "statement": "Fluconazole Tablet, Azithromycin Tablet and Ornidazole Tablets",
+      "product_type": "combikit"
+    },
+    {
+      "id": "cdsco-2018-4439",
+      "molecules": [
+        "ciprofloxacin",
+        "phenazopyridine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4439(E)",
+      "statement": "Ciprofloxacin + Phenazopyridine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4440",
+      "molecules": [
+        "amoxycillin",
+        "dicloxacillin",
+        "serratiopeptidase"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4440(E)",
+      "statement": "Amoxycillin + Dicloxacillin + Serratiopeptidase",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4441",
+      "molecules": [
+        "azithromycin",
+        "cefpodoxime"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4441(E)",
+      "statement": "Azithromycin + Cefpodoxime",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4442",
+      "molecules": [
+        "beclomethasone",
+        "clotrimazole",
+        "lignocaine",
+        "ofloxacin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4442(E)",
+      "statement": "Lignocaine + Clotrimazole + Ofloxacin + Beclomethasone",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4443",
+      "molecules": [
+        "cefuroxime",
+        "linezolid"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4443(E)",
+      "statement": "Cefuroxime + Linezolid",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4444",
+      "molecules": [
+        "ofloxacin",
+        "ornidazole",
+        "zinc bisglycinate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4444(E)",
+      "statement": "Ofloxacin + Ornidazole + Zinc bisglycinate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4445",
+      "molecules": [
+        "metronidazole",
+        "norfloxacin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4445(E)",
+      "statement": "Metronidazole + Norfloxacin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4446",
+      "molecules": [
+        "ciprofloxacin",
+        "clotrimazole",
+        "fluticasone",
+        "neomycin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4446(E)",
+      "statement": "Ciprofloxacin + Fluticasone + Clotrimazole + Neomycin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4447",
+      "molecules": [
+        "metronidazole",
+        "tetracycline"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4447(E)",
+      "statement": "Metronidazole + Tetracycline",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4448",
+      "molecules": [
+        "cephalexin",
+        "neomycin",
+        "prednisolone"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4448(E)",
+      "statement": "Cephalexin + Neomycin + Prednisolone",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4449",
+      "molecules": [
+        "ambroxol",
+        "azithromycin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4449(E)",
+      "statement": "Azithromycin + Ambroxol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4450",
+      "molecules": [
+        "cilnidipine",
+        "metoprolol succinate",
+        "metoprolol tartrate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4450(E)",
+      "statement": "Cilnidipine + Metoprolol succinate + Metoprolol tartrate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4451",
+      "molecules": [
+        "larginine",
+        "sildenafil"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4451(E)",
+      "statement": "L-Arginine + Sildenafil",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4452",
+      "molecules": [
+        "atorvastatin",
+        "folic acid",
+        "pyridoxine",
+        "vitamin b",
+        "vitamin d"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4452(E)",
+      "statement": "Atorvastatin + Vitamin D3 + Folic acid + Vitamin B12 + Pyridoxine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4453",
+      "molecules": [
+        "atorvastatin",
+        "metformin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4453(E)",
+      "statement": "Metformin + Atorvastatin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4454",
+      "molecules": [
+        "clindamycin",
+        "telmisartan"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4454(E)",
+      "statement": "Clindamycin + Telmisartan",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4455",
+      "molecules": [
+        "chlorthalidone",
+        "hydrochlorothiazide",
+        "olmesartan"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4455(E)",
+      "statement": "Olmesartan + Hydrochlorothiazide + Chlorthalidone",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4456",
+      "molecules": [
+        "escitalopram",
+        "l methyltetrahydrofolate calcium"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4456(E)",
+      "statement": "L-5- Methyltetrahydrofolate calcium + Escitalopram",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4457",
+      "molecules": [
+        "paracetamol",
+        "promethazine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4457(E)",
+      "statement": "Paracetamol + Promethazine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4458",
+      "molecules": [
+        "betahistine",
+        "ginkgo biloba extract",
+        "piracetam",
+        "vinpocetine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4458(E)",
+      "statement": "Betahistine + Ginkgo Biloba Extract + Vinpocetine + Piracetam",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4459",
+      "molecules": [
+        "cetirizine",
+        "diethyl carbamazine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4459(E)",
+      "statement": "Cetirizine + Diethyl Carbamazine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4460",
+      "molecules": [
+        "doxylamine",
+        "mefenamic acid",
+        "paracetamol",
+        "pyridoxine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4460(E)",
+      "statement": "Doxylamine + Pyridoxine + Mefenamic Acid + Paracetamol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4461",
+      "molecules": [
+        "chlordiazepoxide",
+        "clidinium",
+        "drotaverine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4461(E)",
+      "statement": "Drotaverine + Clidinium + Chlordiazepoxide",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4462",
+      "molecules": [
+        "escitalopram",
+        "flupentixol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4462(E)",
+      "statement": "Flupentixol + Escitalopram",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4463",
+      "molecules": [
+        "gabapentin",
+        "mecobalamin",
+        "pyridoxine",
+        "thiamine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4463(E)",
+      "statement": "Gabapentin + Mecobalamin + Pyridoxine + Thiamine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4464",
+      "molecules": [
+        "chlordiazepoxide",
+        "imipramine",
+        "trifluoperazine",
+        "trihexyphenidyl"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4464(E)",
+      "statement": "Imipramine + Chlordiazepoxide + Trifluoperazine + Trihexyphenidyl",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4465",
+      "molecules": [
+        "chlorpromazine",
+        "trihexyphenidyl"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4465(E)",
+      "statement": "Chlorpromazine +Trihexyphenidyl",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4466",
+      "molecules": [
+        "silymarin",
+        "ursodeoxycholic acid"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4466(E)",
+      "statement": "Ursodeoxycholic Acid + Silymarin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4469",
+      "molecules": [
+        "chromium picolinate",
+        "metformin",
+        "voglibose"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4469(E)",
+      "statement": "Voglibose + Metformin + Chromium Picolinate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4476",
+      "molecules": [
+        "metformin",
+        "pioglitazone",
+        "voglibose"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4476(E)",
+      "statement": "Voglibose + Pioglitazone + Metformin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4477",
+      "molecules": [
+        "bromocriptine",
+        "metformin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4477(E)",
+      "statement": "Metformin + Bromocriptine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4478",
+      "molecules": [
+        "glimepiride",
+        "metformin",
+        "methylcobalamin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4478(E)",
+      "statement": "Metformin + Glimepiride + Methylcobalamin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4483",
+      "molecules": [
+        "chromium polynicotinate",
+        "metformin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4483(E)",
+      "statement": "Chromium Polynicotinate + Metformin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4484",
+      "molecules": [
+        "chromium polynicotinate",
+        "gliclazide",
+        "metformin",
+        "pioglitazone"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4484(E)",
+      "statement": "Metformin + Gliclazide + Pioglitazone + Chromium Polynicotinate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4485",
+      "molecules": [
+        "chromium polynicotinate",
+        "gliclazide",
+        "metformin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4485(E)",
+      "statement": "Metformin + Gliclazide + Chromium Polynicotinate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4488",
+      "molecules": [
+        "beclomethasone",
+        "chloramphenicol",
+        "clotrimazole",
+        "lignocaine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4488(E)",
+      "statement": "Chloramphenicol + Beclomethasone + Clotrimazole + Lignocaine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4489",
+      "molecules": [
+        "clotrimazole",
+        "glycerine",
+        "lignocaine",
+        "ofloxacin",
+        "propylene glycol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4489(E)",
+      "statement": "Clotrimazole + Ofloxacin + Lignocaine + Glycerine and Propylene glycol",
+      "product_type": "fdc",
+      "notes": [
+        "Corrigendum S.O. 4973(E) 25.09.2018: 'Chloramphenicol'→'Clotrimazole'. As published: Chloramphenicol + Ofloxacin + Lignocaine + Glycerine and Propylene glycol"
+      ]
+    },
+    {
+      "id": "cdsco-2018-4490",
+      "molecules": [
+        "antipyrine",
+        "betamethasone",
+        "chloramphennicol",
+        "clotrimazole",
+        "lignocaine",
+        "ofloxacin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4490(E)",
+      "statement": "Chloramphennicol + Lignocaine + Betamethasone + Clotrimazole + Ofloxacin + Antipyrine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4491",
+      "molecules": [
+        "betamethasone",
+        "clotrimazole",
+        "lignocaine",
+        "ofloxacin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4491(E)",
+      "statement": "Ofloxacin + Clotrimazole + Betamethasone + Lignocaine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4492",
+      "molecules": [
+        "betamethasone",
+        "clotrimazole",
+        "gentamicin sulphate",
+        "lignocaine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4492(E)",
+      "statement": "Gentamicin Sulphate + Clotrimazole + Betamethasone + Lignocaine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4493",
+      "molecules": [
+        "beclomethasone",
+        "clotrimazole",
+        "lignocaine",
+        "ofloxacin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4493(E)",
+      "statement": "Ofloxacin + Clotrimazole + Beclomethasone + Lignocaine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4495",
+      "molecules": [
+        "domperidone",
+        "flunarizine",
+        "paracetamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4495(E)",
+      "statement": "Flunarizine + Paracetamol + Domperidone",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4496",
+      "molecules": [
+        "rabeprazole",
+        "zinc carnosine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4496(E)",
+      "statement": "Rabeprazole + Zinc carnosine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4497",
+      "molecules": [
+        "famotidine",
+        "magaldrate",
+        "simethicone"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4497(E)",
+      "statement": "Magaldrate + Famotidine + Simethicone",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4498",
+      "molecules": [
+        "cyproheptadine",
+        "thiamine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4498(E)",
+      "statement": "Cyproheptadine + Thiamine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4499",
+      "molecules": [
+        "domperidone",
+        "magaldrate",
+        "pancreatin",
+        "ranitidine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4499(E)",
+      "statement": "Magaldrate + Ranitidine + Pancreatin + Domperidone",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4500",
+      "molecules": [
+        "magaldrate",
+        "ranitidine",
+        "simethicone"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4500(E)",
+      "statement": "Ranitidine + Magaldrate + Simethicone",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4501",
+      "molecules": [
+        "fungal diastase",
+        "magaldrate",
+        "papain",
+        "simethicone"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4501(E)",
+      "statement": "Magaldrate + Papain + Fungal diastase + Simethicone",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4502",
+      "molecules": [
+        "domperidone",
+        "rabeprazole",
+        "zinc"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4502(E)",
+      "statement": "Rabeprazole + zinc + Domperidone",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4503",
+      "molecules": [
+        "famotidine",
+        "magaldrate",
+        "oxytacaine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4503(E)",
+      "statement": "Famotidine + Oxytacaine + Magaldrate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4504",
+      "molecules": [
+        "domperidone",
+        "ranitidine",
+        "simethicone"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4504(E)",
+      "statement": "Ranitidine + Domperidone + Simethicone",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4505",
+      "molecules": [
+        "alginic acid",
+        "dried aluminium hydroxide",
+        "magnesium hydroxide",
+        "sodium bicarbonate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4505(E)",
+      "statement": "Alginic Acid + Sodium Bicarbonate + Dried Aluminium Hydroxide + Magnesium Hydroxide",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4506",
+      "molecules": [
+        "activated dimethicone",
+        "clidinium",
+        "dicyclomine",
+        "paracetamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4506(E)",
+      "statement": "Clidinium + Paracetamol + Dicyclomine + Activated Dimethicone",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4507",
+      "molecules": [
+        "furazolidone",
+        "loperamide",
+        "metronidazole"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4507(E)",
+      "statement": "Furazolidone + Metronidazole + Loperamide",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4508",
+      "molecules": [
+        "diclofenac",
+        "paracetamol",
+        "rabeprazole"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4508(E)",
+      "statement": "Rabeprazole + Diclofenac + Paracetamol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4509",
+      "molecules": [
+        "magaldrate",
+        "ranitidine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4509(E)",
+      "statement": "Ranitidine + Magaldrate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4510",
+      "molecules": [
+        "metronidazole",
+        "norfloxacin",
+        "zinc acetate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4510(E)",
+      "statement": "Norfloxacin + Metronidazole + Zinc Acetate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4511",
+      "molecules": [
+        "oxetacaine",
+        "zinc carnosine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4511(E)",
+      "statement": "Zinc Carnosine + Oxetacaine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4512",
+      "molecules": [
+        "famotidine",
+        "magaldrate",
+        "oxetacaine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4512(E)",
+      "statement": "Oxetacaine + Magaldrate + Famotidine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4513",
+      "molecules": [
+        "pantoprazole",
+        "zinc carnosine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4513(E)",
+      "statement": "Pantoprazole (as Enteric Coated Tablet) + Zinc Carnosine (as Film Coated Tablets)",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4514",
+      "molecules": [
+        "dried aluminium hydroxide",
+        "magnesium hydroxide",
+        "simethicone",
+        "zinc carnosine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4514(E)",
+      "statement": "Zinc Carnosine + Magnesium Hydroxide + Dried Aluminium Hydroxide + Simethicone",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4515",
+      "molecules": [
+        "sucralfate",
+        "zinc carnosine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4515(E)",
+      "statement": "Zinc Carnosine + Sucralfate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4516",
+      "molecules": [
+        "inner hpmc",
+        "mebeverine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4516(E)",
+      "statement": "Mebeverine & Inner HPMC capsule (Streptococcus Faecalis + Clostridium butyricum + Bacillus mesentricus + Lactic Acid Bacillus)",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4517",
+      "molecules": [
+        "clindamycin",
+        "clotrimazole",
+        "lactic acid bacillus"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4517(E)",
+      "statement": "Clindamycin + Clotrimazole + Lactic Acid Bacillus",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4518",
+      "molecules": [
+        "estradiol valerate",
+        "sildenafil"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4518(E)",
+      "statement": "Sildenafil + Estradiol Valerate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4519",
+      "molecules": [
+        "clomifene citrate",
+        "folic acid",
+        "larginine",
+        "levocarnitinetartrate",
+        "lycopene",
+        "methylcobalamin",
+        "pyridoxine",
+        "selenium",
+        "ubidecarenone",
+        "zinc"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4519(E)",
+      "statement": "Clomifene Citrate + Ubidecarenone + Zinc + Folic Acid + Methylcobalamin + Pyridoxine + Lycopene + Selenium + LevocarnitineTartrate + L-Arginine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4520",
+      "molecules": [
+        "folic acid",
+        "pyridoxine",
+        "thyroxine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4520(E)",
+      "statement": "Thyroxine + Pyridoxine + Folic Acid",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4521",
+      "molecules": [
+        "chloramphenicol",
+        "dexamethasone",
+        "gentamycin",
+        "ofloxacin",
+        "tobramycin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4521(E)",
+      "statement": "Gentamycin + Dexamethasone + Chloramphenicol + Tobramycin + Ofloxacin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4522",
+      "molecules": [
+        "dextromethorphan",
+        "levocetirizine",
+        "phenylephrine",
+        "zinc"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4522(E)",
+      "statement": "Dextromethorphan + Levocetirizine + Phenylephrine + Zinc",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4523",
+      "molecules": [
+        "ambroxol",
+        "loratadine",
+        "nimesulide",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4523(E)",
+      "statement": "Nimesulide + Loratadine + Phenylephrine + Ambroxol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4524",
+      "molecules": [
+        "bromhexine",
+        "chlorepheniramine maleate",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4524(E)",
+      "statement": "Bromhexine + Phenylephrine + Chlorepheniramine Maleate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4525",
+      "molecules": [
+        "bromhexine",
+        "dextromethorphan",
+        "guaiphenesin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4525(E)",
+      "statement": "Dextromethorphan + Bromhexine + Guaiphenesin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4526",
+      "molecules": [
+        "caffeine",
+        "dextromethorphan",
+        "loratadine",
+        "paracetamol",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4526(E)",
+      "statement": "Paracetamol + Loratadine + Phenylephrine + Dextromethorphan + Caffeine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4527",
+      "molecules": [
+        "caffeine",
+        "levocetirizine",
+        "nimesulide",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4527(E)",
+      "statement": "Nimesulide + Phenylephrine + Caffeine + Levocetirizine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4528",
+      "molecules": [
+        "acebrophylline",
+        "azithromycin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4528(E)",
+      "statement": "Azithromycin + Acebrophylline",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4529",
+      "molecules": [
+        "ammonium chloride",
+        "diphenhydramine",
+        "menthol",
+        "sodium chloride",
+        "terpine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4529(E)",
+      "statement": "Diphenhydramine + Terpine + Ammonium Chloride + Sodium Chloride + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4530",
+      "molecules": [
+        "cetirizine",
+        "nimesulide",
+        "paracetamol",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4530(E)",
+      "statement": "Nimesulide + Paracetamol + Cetirizine + Phenylephrine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4531",
+      "molecules": [
+        "caffeine",
+        "dextromethorphan",
+        "loratadine",
+        "paracetamol",
+        "pseudoepheridine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4531(E)",
+      "statement": "Paracetamol + Loratadine + Dextromethorphan + Pseudoepheridine + Caffeine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4532",
+      "molecules": [
+        "ammonium chloride",
+        "chlorpheniramine maleate",
+        "sodium citrate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4532(E)",
+      "statement": "Chlorpheniramine Maleate + Ammonium Chloride + Sodium Citrate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4533",
+      "molecules": [
+        "cetirizine",
+        "paracetamol",
+        "phenylephrine",
+        "zinc gluconate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4533(E)",
+      "statement": "Cetirizine + Phenylephrine + Paracetamol + Zinc Gluconate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4534",
+      "molecules": [
+        "ambroxol",
+        "ammonium chloride",
+        "chlorpheniramine maleate",
+        "guaiphenesin",
+        "menthol",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4534(E)",
+      "statement": "Ambroxol + Guaiphenesin + Ammonium Chloride + Phenylephrine + Chlorpheniramine Maleate + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4535",
+      "molecules": [
+        "bromhexine",
+        "chlorpheniramine maleate",
+        "dextromethorphen",
+        "guaiphenesin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4535(E)",
+      "statement": "Dextromethorphen + Bromhexine + Chlorpheniramine maleate + Guaiphenesin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4536",
+      "molecules": [
+        "ambroxol",
+        "guaiphenesin",
+        "levocetirizine",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4536(E)",
+      "statement": "Levocetirizine + Ambroxol + Phenylephrine + Guaiphenesin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4537",
+      "molecules": [
+        "chlorpheniramine",
+        "chlorpheniramine maleate",
+        "dextromethorphan"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4537(E)",
+      "statement": "Dextromethorphan + Chlorpheniramine + Chlorpheniramine maleate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4538",
+      "molecules": [
+        "ambroxol",
+        "ammonium chloride",
+        "cetirizine",
+        "guaiphenesin",
+        "menthol",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4538(E)",
+      "statement": "Cetirizine + Ambroxol + Guaiphenesin + Ammonium chloride + Phenylephrine + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4539",
+      "molecules": [
+        "caffeine",
+        "chlorpheniramine",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4539(E)",
+      "statement": "Chlorpheniramine + Phenylephrine + Caffeine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4540",
+      "molecules": [
+        "dextromethorphan",
+        "phenylephrine",
+        "triprolidine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4540(E)",
+      "statement": "Dextromethorphan + Triprolidine + Phenylephrine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4541",
+      "molecules": [
+        "dextromethorphan",
+        "menthol",
+        "terpin hydrate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4541(E)",
+      "statement": "Terpin hydrate + Dextromethorphan + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4542",
+      "molecules": [
+        "dextromethorphan",
+        "menthol",
+        "phenylephrine",
+        "zinc gluconate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4542(E)",
+      "statement": "Dextromethorphan + Phenylephrine + Zinc Gluconate + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4544",
+      "molecules": [
+        "bromhexin",
+        "enrofloxacin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4544(E)",
+      "statement": "Enrofloxacin + Bromhexin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4545",
+      "molecules": [
+        "bromhexine",
+        "dextromethorphan",
+        "menthol",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4545(E)",
+      "statement": "Bromhexine + Dextromethorphan + Phenylephrine + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4546",
+      "molecules": [
+        "bromhexine",
+        "levofloxacin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4546(E)",
+      "statement": "Levofloxacin + Bromhexine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4547",
+      "molecules": [
+        "levocetirizine",
+        "ranitidine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4547(E)",
+      "statement": "Levocetirizine + Ranitidine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4548",
+      "molecules": [
+        "ambroxol",
+        "guaiphenesin",
+        "levocetirizine",
+        "paracetamol",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4548(E)",
+      "statement": "Levocetirizine + Phenylephrine + Ambroxol + Guaiphenesin + Paracetamol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4549",
+      "molecules": [
+        "cetirizine",
+        "dextromethorphan",
+        "menthol",
+        "paracetamol",
+        "phenylephrine",
+        "zinc gluconate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4549(E)",
+      "statement": "Cetirizine + Dextromethorphan + Phenylephrine + Zinc gluconate + Paracetamol + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4550",
+      "molecules": [
+        "cetirizine",
+        "dextromethorphan",
+        "paracetamol",
+        "pseudoephedrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4550(E)",
+      "statement": "Paracetamol + Pseudoephedrine + Dextromethorphan + Cetirizine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4551",
+      "molecules": [
+        "ammonium chloride",
+        "bromhexine",
+        "diphenhydramine",
+        "guaiphenesin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4551(E)",
+      "statement": "Diphenhydramine + Guaiphenesin + Ammonium chloride + Bromhexine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4552",
+      "molecules": [
+        "chlorpheniramine",
+        "dextromethorphan",
+        "paracetamol",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4552(E)",
+      "statement": "Chlorpheniramine + Dextromethorphan + Phenylephrine + Paracetamol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4553",
+      "molecules": [
+        "dextromethorphan",
+        "promethazine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4553(E)",
+      "statement": "Dextromethorphan + Promethazine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4554",
+      "molecules": [
+        "cetirizine",
+        "diethylcabamazine citrate",
+        "guaiphenesin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4554(E)",
+      "statement": "Diethylcabamazine Citrate + Cetirizine + Guaiphenesin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4555",
+      "molecules": [
+        "cetirizine",
+        "dextromethorphan",
+        "pseudoephedrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4555(E)",
+      "statement": "Pseudoephedrine + Dextromethorphan + Cetirizine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4556",
+      "molecules": [
+        "chlorpheniramine",
+        "dextromethorphan iikm hkkjr dk jktik vlkkjk",
+        "menthol",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4556(E)",
+      "statement": "Chlorpheniramine + Phenylephrine + Dextromethorphan IIµ[k.M 3(ii)º Hkkjr dk jkti=k % vlk/kj.k 289 + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4557",
+      "molecules": [
+        "ambroxol",
+        "dextromethorphan",
+        "terbutaline"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4557(E)",
+      "statement": "Ambroxol + Terbutaline + Dextromethorphan",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4558",
+      "molecules": [
+        "chlorpheniramine",
+        "dextromethorphan",
+        "guaiphenesin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4558(E)",
+      "statement": "Dextromethorphan + Chlorpheniramine + Guaiphenesin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4559",
+      "molecules": [
+        "bromhexine",
+        "dextromethorphan",
+        "guaiphenesin",
+        "terbutaline"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4559(E)",
+      "statement": "Terbutaline + Bromhexine + Guaiphenesin + Dextromethorphan",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4560",
+      "molecules": [
+        "dextromethorphan",
+        "phenylephrine",
+        "triprolidine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4560(E)",
+      "statement": "Dextromethorphan + Triprolidine + Phenylephrine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4561",
+      "molecules": [
+        "chlorpheniramine",
+        "dextromethorphan",
+        "paracetamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4561(E)",
+      "statement": "Paracetamol + Dextromethorphan + Chlorpheniramine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4562",
+      "molecules": [
+        "phenylephrine",
+        "pholcodine",
+        "promethazine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4562(E)",
+      "statement": "Pholcodine + Phenylephrine + Promethazine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4563",
+      "molecules": [
+        "codeine",
+        "levocetirizine",
+        "menthol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4563(E)",
+      "statement": "Codeine + Levocetirizine + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4564",
+      "molecules": [
+        "ambroxol",
+        "chlorpheniramine",
+        "dextromethorphan",
+        "guaifenesin",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4564(E)",
+      "statement": "Dextromethorphan + Ambroxol + Guaifenesin + Phenylephrine + Chlorpheniramine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4565",
+      "molecules": [
+        "cetirizine",
+        "dextromethorphan",
+        "menthol",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4565(E)",
+      "statement": "Cetirizine + Phenylephrine + Dextromethorphan + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4566",
+      "molecules": [
+        "roxithromycin",
+        "serratiopeptidase"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4566(E)",
+      "statement": "Roxithromycin + Serratiopeptidase",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4567",
+      "molecules": [
+        "paracetamol",
+        "phenylephrine",
+        "triprolidine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4567(E)",
+      "statement": "Paracetamol + Phenylephrine + Triprolidine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4568",
+      "molecules": [
+        "acetaminophen",
+        "ambroxol",
+        "loratadine",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4568(E)",
+      "statement": "Acetaminophen+ Loratadine + Ambroxol + Phenylephrine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4569",
+      "molecules": [
+        "acetaminophen",
+        "cetirizine",
+        "dextromethorphan",
+        "phenylephrine",
+        "zinc gluconate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4569(E)",
+      "statement": "Cetirizine + Acetaminophen + Dextromethorphan + Phenylephrine + Zinc gluconate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4570",
+      "molecules": [
+        "ammonium chloride",
+        "bromhexine",
+        "diphenhydramine",
+        "guaifenesin",
+        "menthol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4570(E)",
+      "statement": "Diphenhydramine + Guaifenesin + Bromhexine + Ammonium Chloride + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4571",
+      "molecules": [
+        "cetirizine",
+        "dextromethorphan",
+        "menthol",
+        "zinc gluconate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4571(E)",
+      "statement": "Cetirizine + Dextromethorphan + Zinc Gluconate + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4572",
+      "molecules": [
+        "ambroxol",
+        "desloratadine",
+        "paracetamol",
+        "phenylephrine",
+        "zinc gluconate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4572(E)",
+      "statement": "Paracetamol + Phenylephrine + Desloratadine + Zinc Gluconate + Ambroxol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4573",
+      "molecules": [
+        "acebrophylline",
+        "levocetirizine",
+        "montelukast"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4573(E)",
+      "statement": "Levocetirizine + Montelukast + Acebrophylline",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4574",
+      "molecules": [
+        "ammonium chloride",
+        "dextromethorphan",
+        "menthol",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4574(E)",
+      "statement": "Dextromethorphan + Phenylephrine + Ammonium chloride + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4575",
+      "molecules": [
+        "bromhexine",
+        "dextromethorphan",
+        "guaiphenesin",
+        "menthol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4575(E)",
+      "statement": "Dextromethorphan + Bromhexine + Guaiphenesin+ Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4576",
+      "molecules": [
+        "acrivastine",
+        "caffeine",
+        "paracetamol",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4576(E)",
+      "statement": "Acrivastine + Paracetamol + Caffeine + Phenylephrine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4577",
+      "molecules": [
+        "camphor",
+        "carboxy methyl cellulose",
+        "menthol",
+        "naphazoline",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4577(E)",
+      "statement": "Naphazoline + Carboxy Methyl cellulose + Menthol + Camphor + Phenylephrine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4578",
+      "molecules": [
+        "cetirizine",
+        "dextromethorphan"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4578(E)",
+      "statement": "Dextromethorphan + Cetirizine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4579",
+      "molecules": [
+        "caffeine",
+        "levocetirizine",
+        "nimesulide",
+        "paracetamol",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4579(E)",
+      "statement": "Nimesulide + Paracetamol + Levocetirizine + Phenylephrine + Caffeine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4580",
+      "molecules": [
+        "ambroxol",
+        "guaiphenesin",
+        "menthol",
+        "terbutaline",
+        "zinc"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4580(E)",
+      "statement": "Terbutaline + Ambroxol + Guaiphenesin + Zinc + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4582",
+      "molecules": [
+        "dextromethorphan",
+        "guaifenesin",
+        "phenylephrine",
+        "triprolidine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4582(E)",
+      "statement": "Dextromethorphan + Phenylephrine + Guaifenesin + Triprolidine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4583",
+      "molecules": [
+        "ambroxol",
+        "cetirizine",
+        "diethylcarbamazine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4583(E)",
+      "statement": "Diethylcarbamazine + Cetirizine + Ambroxol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4584",
+      "molecules": [
+        "chlorpheniramine maleate",
+        "ethylmorphine",
+        "noscapine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4584(E)",
+      "statement": "Ethylmorphine + Noscapine + Chlorpheniramine Maleate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4585",
+      "molecules": [
+        "ambroxol th",
+        "cetirizine",
+        "dextromethorphan"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4585(E)",
+      "statement": "Cetirizine + Dextromethorphan + Ambroxol th",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4586",
+      "molecules": [
+        "ambroxol",
+        "chlorpheniramine",
+        "guaifenesin",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4586(E)",
+      "statement": "Ambroxol + Guaifenesin + Phenylephrine + Chlorpheniramine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4587",
+      "molecules": [
+        "chlorpheniramine",
+        "paracetamol",
+        "phenylephrine",
+        "zinc gluconate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4587(E)",
+      "statement": "Paracetamol + Phenylephrine + Chlorpheniramine + Zinc Gluconate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4588",
+      "molecules": [
+        "caffeine",
+        "cetirizine",
+        "dextromethorphan",
+        "paracetamol",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4588(E)",
+      "statement": "Dextromethorphan + Phenylephrine + Cetirizine + Paracetamol + Caffeine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4589",
+      "molecules": [
+        "dextromethorphan",
+        "levocetirizine",
+        "zinc"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4589(E)",
+      "statement": "Levocetirizine + Dextromethorphan + Zinc",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4590",
+      "molecules": [
+        "caffeine th",
+        "levocetirizine",
+        "paracetamol",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4590(E)",
+      "statement": "Paracetamol + Phenylephrine + Levocetirizine + Caffeine th",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4591",
+      "molecules": [
+        "ammonium chloride",
+        "chlorpheniramine",
+        "sodium chloride"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4591(E)",
+      "statement": "Chlorpheniramine + Ammonium Chloride + Sodium Chloride",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4592",
+      "molecules": [
+        "bromhexine",
+        "dextromethorphan",
+        "diphenhydramine",
+        "paracetamol",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4592(E)",
+      "statement": "Paracetamol + Dextromethorphan + Bromhexine + Phenylephrine + Diphenhydramine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4593",
+      "molecules": [
+        "bromhexine",
+        "guaiphenesin",
+        "menthol iikm hkkjr dk jktik vlkkjk",
+        "salbutamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4593(E)",
+      "statement": "Salbutamol + Bromhexine + Guaiphenesin + Menthol IIµ[k.M 3(ii)º Hkkjr dk jkti=k % vlk/kj.k 343",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4594",
+      "molecules": [
+        "ammonium chloride",
+        "chlorpheniramine",
+        "noscapine",
+        "sodium citrate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4594(E)",
+      "statement": "Chlorpheniramine + Ammonium Chloride + Noscapine + Sodium Citrate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4595",
+      "molecules": [
+        "bromhexine",
+        "cetirizine",
+        "dextromethorphan",
+        "guaifenesin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4595(E)",
+      "statement": "Cetirizine + Dextromethorphan + Bromhexine +Guaifenesin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4596",
+      "molecules": [
+        "chlorpheniramine",
+        "diethylcarbamazine",
+        "guaifenesin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4596(E)",
+      "statement": "Diethylcarbamazine + Chlorpheniramine + Guaifenesin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4597",
+      "molecules": [
+        "cetirizine",
+        "ketotifen"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4597(E)",
+      "statement": "Ketotifen + Cetirizine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4598",
+      "molecules": [
+        "bromhexine",
+        "etofylline",
+        "terbutaline"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4598(E)",
+      "statement": "Terbutaline + Bromhexine + Etofylline",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4599",
+      "molecules": [
+        "ketotifen",
+        "theophylline"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4599(E)",
+      "statement": "Ketotifen + Theophylline",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4600",
+      "molecules": [
+        "ambroxol",
+        "salbutamol",
+        "theophylline"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4600(E)",
+      "statement": "Ambroxol + Salbutamol + Theophylline",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4601",
+      "molecules": [
+        "cetirizine",
+        "nimesulide",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4601(E)",
+      "statement": "Cetirizine + Nimesulide + Phenylephrine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4602",
+      "molecules": [
+        "chlorpheniramine",
+        "paracetamol",
+        "phenylephrine",
+        "zinc gluconate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4602(E)",
+      "statement": "Chlorpheniramine + Phenylephrine + Paracetamol + Zinc Gluconate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4603",
+      "molecules": [
+        "acetaminophen",
+        "chlorpheniramine",
+        "dextromethorphan",
+        "guaifenesin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4603(E)",
+      "statement": "Acetaminophen + Guaifenesin + Dextromethorphan + Chlorpheniramine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4604",
+      "molecules": [
+        "cetirizine",
+        "dextromethorphan",
+        "phenylephrine",
+        "tulsi th"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4604(E)",
+      "statement": "Cetirizine + Dextromethorphan + Phenylephrine + Tulsi th",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4605",
+      "molecules": [
+        "ambroxol",
+        "caffeine",
+        "cetirizine",
+        "paracetamol",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4605(E)",
+      "statement": "Cetirizine + Phenylephrine + Paracetamol + Ambroxol + Caffeine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4606",
+      "molecules": [
+        "dextromethorphan",
+        "guaifenesin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4606(E)",
+      "statement": "Guaifenesin + Dextromethorphan",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4608",
+      "molecules": [
+        "ketotifen",
+        "levocetrizine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4608(E)",
+      "statement": "Ketotifen + Levocetrizine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4609",
+      "molecules": [
+        "levocetirizine",
+        "paracetamol",
+        "phenylephrine",
+        "zinc gluconate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4609(E)",
+      "statement": "Paracetamol + Levocetirizine + Phenylephrine + Zinc Gluconate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4610",
+      "molecules": [
+        "caffeine",
+        "paracetamol",
+        "phenylephrine",
+        "triprolidine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4610(E)",
+      "statement": "Paracetamol + Phenylephrine + Triprolidine + Caffeine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4611",
+      "molecules": [
+        "caffeine",
+        "cetirizine",
+        "paracetamol",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4611(E)",
+      "statement": "Caffeine + Paracetamol + Phenylephrine + Cetirizine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4612",
+      "molecules": [
+        "dextromethorphan",
+        "guaifenesin",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4612(E)",
+      "statement": "Dextromethorphan + Phenylephrine + Guaifenesin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4613",
+      "molecules": [
+        "ambroxol",
+        "guaiphenesin",
+        "levocetirizine",
+        "menthol",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4613(E)",
+      "statement": "Ambroxol + Levocetirizine + Phenylephrine + Guaiphenesin + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4614",
+      "molecules": [
+        "cetirizine",
+        "pseudoephedrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4614(E)",
+      "statement": "Pseudoephedrine + Cetirizine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4615",
+      "molecules": [
+        "ammonium chloride",
+        "chlorpheniramine",
+        "dextromethorphan",
+        "menthol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4615(E)",
+      "statement": "Dextromethorphan + Chlorpheniramine + Ammonium Chloride + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4617",
+      "molecules": [
+        "aminophylline",
+        "guaifenesin",
+        "salbutamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4617(E)",
+      "statement": "Salbutamol + Aminophylline + Guaifenesin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4618",
+      "molecules": [
+        "bromhexine",
+        "salbutamol",
+        "theophylline"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4618(E)",
+      "statement": "Salbutamol + Theophylline + Bromhexine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4619",
+      "molecules": [
+        "chlorpheniramine",
+        "dextromethorphan",
+        "guaifenesin",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4619(E)",
+      "statement": "Chlorpheniramine + Dextromethorphan + Guaifenesin + Phenylephrine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4620",
+      "molecules": [
+        "caffeine",
+        "chlorpheniramine",
+        "paracetamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4620(E)",
+      "statement": "Caffeine + Paracetamol + Chlorpheniramine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4621",
+      "molecules": [
+        "ammonium chloride",
+        "cetirizine",
+        "dextromethorphan",
+        "menthol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4621(E)",
+      "statement": "Ammonium Chloride + Dextromethorphan + Cetirizine + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4622",
+      "molecules": [
+        "cetirizine",
+        "dextromethorphan",
+        "paracetamol",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4622(E)",
+      "statement": "Dextromethorphan + Paracetamol+ Cetirizine + Phenylephrine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4623",
+      "molecules": [
+        "ammonium chloride",
+        "antimony potassium tartrate",
+        "chlorpheniramine",
+        "menthol",
+        "sodium citrate",
+        "terpin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4623(E)",
+      "statement": "Chlorpheniramine + Terpin + Antimony Potassium Tartrate + Ammonium chloride + Sodium Citrate + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4624",
+      "molecules": [
+        "ambroxol",
+        "etofylline",
+        "terbutaline sulphate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4624(E)",
+      "statement": "Terbutaline Sulphate + Etofylline + Ambroxol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4625",
+      "molecules": [
+        "chlorpheniramine",
+        "codeine",
+        "paracetamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4625(E)",
+      "statement": "Paracetamol + Codeine + Chlorpheniramine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4626",
+      "molecules": [
+        "caffeine",
+        "cetirizine",
+        "paracetamol",
+        "pseudoephedrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4626(E)",
+      "statement": "Paracetamol + Pseudoephedrine + Cetirizine + Caffeine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4627",
+      "molecules": [
+        "ammonium chloride",
+        "chlorpheniramine",
+        "menthol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4627(E)",
+      "statement": "Chlorpheniramine + Ammonium Chloride + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4628",
+      "molecules": [
+        "ambroxol",
+        "levocetirizine",
+        "nacetyl cysteine",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4628(E)",
+      "statement": "N-Acetyl Cysteine + Ambroxol + Phenylephrine + Levocetirizine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4629",
+      "molecules": [
+        "dextromethorphan",
+        "menthol",
+        "phenylephrine",
+        "triprolidine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4629(E)",
+      "statement": "Dextromethorphan + Phenylephrine + Triprolidine + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4630",
+      "molecules": [
+        "ambroxol",
+        "cetirizine",
+        "salbutamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4630(E)",
+      "statement": "Salbutamol + Cetirizine + Ambroxol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4631",
+      "molecules": [
+        "bromhexine",
+        "chlorpheniramine",
+        "dextromethorphan",
+        "guaifenesin",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4631(E)",
+      "statement": "Dextromethorphan + Phenylephrine + Bromhexine + Guaifenesin + Chlorpheniramine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4632",
+      "molecules": [
+        "cetirizine",
+        "nimesulide",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4632(E)",
+      "statement": "Nimesulide + Cetirizine + Phenylephrine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4633",
+      "molecules": [
+        "boric acid",
+        "chlorobutol",
+        "chlorpheniramine",
+        "naphazoline",
+        "sodium chloride",
+        "zinc sulphate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4633(E)",
+      "statement": "Naphazoline + Chlorpheniramine + Zinc Sulphate + Boric Acid + Sodium Chloride + Chlorobutol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4634",
+      "molecules": [
+        "acetaminophen",
+        "cetirizine",
+        "dextromethorphan",
+        "guaifenesin",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4634(E)",
+      "statement": "Dextromethorphan + Phenylephrine + Guaifenesin + Cetirizine + Acetaminophen",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4635",
+      "molecules": [
+        "bromhexine",
+        "chlorpheniramine",
+        "guaifenesin",
+        "paracetamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4635(E)",
+      "statement": "Guaifenesin + Bromhexine + Chlorpheniramine + Paracetamol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4636",
+      "molecules": [
+        "ammonium chloride",
+        "chloroform",
+        "chlorpheniramine",
+        "menthol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4636(E)",
+      "statement": "Chlorpheniramine + Ammonium Chloride + Chloroform + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4637",
+      "molecules": [
+        "ambroxol",
+        "choline theophyllinate",
+        "salbutamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4637(E)",
+      "statement": "Salbutamol + Choline Theophyllinate + Ambroxol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4638",
+      "molecules": [
+        "bromhexine",
+        "pseudoephedrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4638(E)",
+      "statement": "Pseudoephedrine + Bromhexine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4639",
+      "molecules": [
+        "caffeine",
+        "cetirizine",
+        "nimesulide",
+        "paracetamol",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4639(E)",
+      "statement": "Cetirizine + Phenylephrine + Paracetamol + Caffeine + Nimesulide",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4640",
+      "molecules": [
+        "ammonium chloride",
+        "cetirizine",
+        "dextromethorphan",
+        "guaifenesin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4640(E)",
+      "statement": "Dextromethorphan + Cetirizine + Guaifenesin + Ammonium Chloride",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4641",
+      "molecules": [
+        "ambroxol",
+        "choline theophyllinate",
+        "menthol",
+        "salbutamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4641(E)",
+      "statement": "Ambroxol + Salbutamol + Choline Theophyllinate + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4642",
+      "molecules": [
+        "ambroxol",
+        "chlorpheniramine",
+        "guaifenesin",
+        "paracetamol",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4642(E)",
+      "statement": "Paracetamol + Chlorpheniramine + Ambroxol + Guaifenesin + Phenylephrine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4643",
+      "molecules": [
+        "ammonium chloride",
+        "chlorpheniramine",
+        "menthol",
+        "sodium citrate",
+        "tolubalsam",
+        "vasaka"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4643(E)",
+      "statement": "Chlorpheniramine + Vasaka + Tolubalsam + Ammonium Chloride + Sodium Citrate + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4644",
+      "molecules": [
+        "bromhexine",
+        "cetirizine",
+        "guaifenesin",
+        "menthol",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4644(E)",
+      "statement": "Bromhexine + Cetirizine + Phenylephrine + Guaifenesin + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4645",
+      "molecules": [
+        "ambroxol",
+        "ammonium chloride",
+        "chlorpheniramine",
+        "dextromethorphan",
+        "menthol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4645(E)",
+      "statement": "Dextromethorphan + Ambroxol + Ammonium Chloride + Chlorpheniramine + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4646",
+      "molecules": [
+        "cetirizine",
+        "dextromethorphan",
+        "menthol",
+        "phenylephrine",
+        "zinc"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4646(E)",
+      "statement": "Dextromethorphan + Phenylephrine + Cetirizine + Zinc + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4647",
+      "molecules": [
+        "guaifenesin",
+        "nacetyl l cysteine",
+        "terbutaline"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4647(E)",
+      "statement": "Terbutaline + N-Acetyl L- Cysteine + Guaifenesin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4648",
+      "molecules": [
+        "calcium gluconate",
+        "levocetirizine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4648(E)",
+      "statement": "Calcium Gluconate + Levocetirizine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4649",
+      "molecules": [
+        "levocetirizine",
+        "paracetamol",
+        "pseudoephedrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4649(E)",
+      "statement": "Paracetamol + Levocetirizine + Pseudoephedrine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4650",
+      "molecules": [
+        "carbocisteine",
+        "choline theophyllinate",
+        "salbutamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4650(E)",
+      "statement": "Salbutamol + Choline Theophyllinate + Carbocisteine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4651",
+      "molecules": [
+        "chlorpheniramine",
+        "vitamin c"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4651(E)",
+      "statement": "Chlorpheniramine + Vitamin C",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4652",
+      "molecules": [
+        "calcium gluconate",
+        "chlorpheniramine",
+        "vitamin c"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4652(E)",
+      "statement": "Calcium Gluconate + Chlorpheniramine + Vitamin C",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4653",
+      "molecules": [
+        "caffeine",
+        "chlorpheniramine",
+        "iikm hkkjr dk jktik vlkkjk paracetamol",
+        "pseudoephedrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4653(E)",
+      "statement": "Chlorpheniramine + IIµ[k.M 3(ii)º Hkkjr dk jkti=k % vlk/kj.k 441 Paracetamol + Pseudoephedrine + Caffeine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4654",
+      "molecules": [
+        "bromhexine",
+        "chlorpheniramine",
+        "guaifenesin",
+        "paracetamol",
+        "phenylephrine",
+        "serratiopeptidase sp"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4654(E)",
+      "statement": "Guaifenesin + Bromhexine + Chlorpheniramine + Phenylephrine + Paracetamol + Serratiopeptidase (as enteric coated granules)10000 SP Units",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4655",
+      "molecules": [
+        "paracetamol",
+        "pheniramine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4655(E)",
+      "statement": "Paracetamol + Pheniramine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4656",
+      "molecules": [
+        "betamethasone",
+        "fusidic acid",
+        "gentamycin",
+        "iodochlorhydroxyquinoline",
+        "tolnaftate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4656(E)",
+      "statement": "Betamethasone + Fusidic Acid + Gentamycin + Tolnaftate + Iodochlorhydroxyquinoline(ICHQ)",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4657",
+      "molecules": [
+        "clobetasol",
+        "miconazole",
+        "ofloxacin",
+        "zinc sulphate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4657(E)",
+      "statement": "Clobetasol + Ofloxacin + Miconazole + Zinc Sulphate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4658",
+      "molecules": [
+        "clobetasole",
+        "gentamicin",
+        "miconazole",
+        "zinc sulphate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4658(E)",
+      "statement": "Clobetasole + Gentamicin + Miconazole + Zinc Sulphate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4659",
+      "molecules": [
+        "ambroxol",
+        "levocetirizine",
+        "paracetamol",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4659(E)",
+      "statement": "Levocetirizine + Ambroxol + Phenylephrine + Paracetamol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4660",
+      "molecules": [
+        "cetrimide",
+        "menthol",
+        "permethrin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4660(E)",
+      "statement": "Permethrin + Cetrimide + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4661",
+      "molecules": [
+        "beclomethasone",
+        "clotrimazole",
+        "iodochlorohydroxyquinone",
+        "neomycin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4661(E)",
+      "statement": "Beclomethasone +clotrimazole + neomycin + iodochlorohydroxyquinone",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4662",
+      "molecules": [
+        "doxycycline",
+        "neomycin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4662(E)",
+      "statement": "Neomycin + Doxycycline",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4663",
+      "molecules": [
+        "chlorocresol",
+        "ciprofloxacin",
+        "clotrimazole",
+        "fluocinolone",
+        "neomycin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4663(E)",
+      "statement": "Ciprofloxacin + Fluocinolone + Clotrimazole + Neomycin + Chlorocresol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4664",
+      "molecules": [
+        "clobetasol",
+        "ketoconazole",
+        "ofloxacin",
+        "zinc sulphate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4664(E)",
+      "statement": "Clobetasol + Ofloxacin + Ketoconazole + Zinc Sulphate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4665",
+      "molecules": [
+        "betamethasone",
+        "gentamicin",
+        "iodochlorhydroxyquinoloine",
+        "tolnaftate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4665(E)",
+      "statement": "Betamethasone + Gentamicin + Tolnaftate + Iodochlorhydroxyquinoloine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4666",
+      "molecules": [
+        "clobetasol",
+        "gentamicin",
+        "idochlorhydroxyquinone",
+        "ketoconazole",
+        "tolnaftate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4666(E)",
+      "statement": "Clobetasol + Gentamicin + Tolnaftate + Idochlorhydroxyquinone + Ketoconazole",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4668",
+      "molecules": [
+        "acriflavine",
+        "cetrimide",
+        "thymol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4668(E)",
+      "statement": "Acriflavine + Thymol + Cetrimide",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4669",
+      "molecules": [
+        "betamethasone",
+        "chlorocresol",
+        "iodo chloro hydroxy quinoline",
+        "neomycin",
+        "tolnaftate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4669(E)",
+      "statement": "Betamethasone + Neomycin + Tolnaftate + Iodo Chloro Hydroxy Quinoline + Chlorocresol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4670",
+      "molecules": [
+        "clobetasol",
+        "clotrimazole",
+        "miconazole",
+        "neomycin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4670(E)",
+      "statement": "clobetasol + Neomycin + Miconazole + Clotrimazole",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4671",
+      "molecules": [
+        "allantion",
+        "aloe vera",
+        "jojoba oil",
+        "ketoconazole",
+        "lavander oil",
+        "soap noodles",
+        "tea tree oil",
+        "zinc oxide"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4671(E)",
+      "statement": "Ketoconazole + Tea Tree oil + Allantion + zinc Oxide + Aloe Vera + Jojoba oil + Lavander oil + Soap noodles",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4672",
+      "molecules": [
+        "clobetasol",
+        "ofloxacin",
+        "ornidazole",
+        "terbinafine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4672(E)",
+      "statement": "Clobetasol + Ofloxacin + Ornidazole + Terbinafine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4673",
+      "molecules": [
+        "clobetasol",
+        "miconazole",
+        "neomycin",
+        "zinc sulphate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4673(E)",
+      "statement": "Clobetasol + Neomycin + Miconazole + Zinc Sulphate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4674",
+      "molecules": [
+        "beclomethasone",
+        "chlorocresol",
+        "iodochlorhydroxyquinoline",
+        "neomycin",
+        "tolnaftate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4674(E)",
+      "statement": "Beclomethasone + Neomycin + Tolnaftate + Iodochlorhydroxyquinoline + Chlorocresol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4676",
+      "molecules": [
+        "borax",
+        "boric acid",
+        "camphor",
+        "menthol",
+        "methyl hydroxy benzoate",
+        "naphazoline"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4676(E)",
+      "statement": "Borax + Boric acid + Naphazoline + Menthol + Camphor + methyl hydroxy benzoate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4677",
+      "molecules": [
+        "bromhexine",
+        "dextromethorphan"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4677(E)",
+      "statement": "Bromhexine + Dextromethorphan",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4678",
+      "molecules": [
+        "bromhexine",
+        "chlorpheniramine",
+        "dextromethorphan"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4678(E)",
+      "statement": "Dextromethorphan + Chlorpheniramine + Bromhexine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4679",
+      "molecules": [
+        "anesthetic ether",
+        "menthol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4679(E)",
+      "statement": "Menthol + Anesthetic Ether",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4680",
+      "molecules": [
+        "ammonium chloride",
+        "chlopheniramine",
+        "dextromethorphan",
+        "menthol",
+        "sodium citrate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4680(E)",
+      "statement": "Dextromethorphan + Chlopheniramine + Ammonium Chloride + Sodium Citrate + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4681",
+      "molecules": [
+        "belladona dry extract",
+        "caffeine",
+        "ergotamine tartrate",
+        "paracetamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4681(E)",
+      "statement": "Ergotamine Tartrate + Belladona dry extract + Caffeine + Paracetamol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4683",
+      "molecules": [
+        "ambroxol",
+        "chlorpheniramine",
+        "paracetamol",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4683(E)",
+      "statement": "Paracetamol + Ambroxol + Phenylephrine + Chlorpheniramine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4685",
+      "molecules": [
+        "albuterol",
+        "bromhexine",
+        "etofylline",
+        "menthol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4685(E)",
+      "statement": "Albuterol + Etofylline + Bromhexine + Menthol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4686",
+      "molecules": [
+        "albuterol",
+        "bromhexine",
+        "theophylline"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4686(E)",
+      "statement": "Albuterol + Bromhexine + Theophylline",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4687",
+      "molecules": [
+        "bromhexine",
+        "hydroxyethyltheophylline",
+        "salbutamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4687(E)",
+      "statement": "Salbutamol + Hydroxyethyltheophylline (Etofylline) + Bromhexine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4688",
+      "molecules": [
+        "levocetirizine",
+        "paracetamol",
+        "phenylephrine",
+        "sodium citrate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4688(E)",
+      "statement": "Paracetamol +Phenylephrine + Levocetirizine + Sodium Citrate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4689",
+      "molecules": [
+        "caffeine",
+        "paracetamol",
+        "propyphenazone"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4689(E)",
+      "statement": "Paracetamol + Propyphenazone + Caffeine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4690",
+      "molecules": [
+        "bromhexine",
+        "diphenhydramine",
+        "guaifenesin",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4690(E)",
+      "statement": "Guaifenesin + Diphenhydramine + Bromhexine + Phenylephrine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4692",
+      "molecules": [
+        "bromhexine",
+        "chlorpheniramine",
+        "paracetamol",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4692(E)",
+      "statement": "Bromhexine + Phenylephrine + Chlorpheniramine + Paracetamol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4693",
+      "molecules": [
+        "beclomethasone",
+        "clotrimazole",
+        "gentamicin",
+        "iodochlorhydroxyquinoline"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4693(E)",
+      "statement": "Beclomethasone + Clotrimazole + Gentamicin + Iodochlorhydroxyquinoline",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4694",
+      "molecules": [
+        "metformin",
+        "telmisartan"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4694(E)",
+      "statement": "Telmisartan + Metformin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4695",
+      "molecules": [
+        "ammonium citrate",
+        "folic acid",
+        "vitamin b",
+        "zinc sulphate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4695(E)",
+      "statement": "Ammonium Citrate + Vitamin B 12 + Folic Acid + Zinc Sulphate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4696",
+      "molecules": [
+        "levothyroxine",
+        "nicotinamide",
+        "pyridoxine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4696(E)",
+      "statement": "Levothyroxine + Pyridoxine + Nicotinamide",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4697",
+      "molecules": [
+        "benfotiamine",
+        "metformin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4697(E)",
+      "statement": "Benfotiamine + Metformin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4698",
+      "molecules": [
+        "calcium pantothenate",
+        "nicotinamide",
+        "pyridoxine",
+        "riboflavin",
+        "thiamine",
+        "thyroid",
+        "tocopheryl acetate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4698(E)",
+      "statement": "Thyroid + Thiamine + Riboflavin + Pyridoxine + Calcium Pantothenate + Tocopheryl Acetate + Nicotinamide",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4699",
+      "molecules": [
+        "adrenochrome mono semicarbazone",
+        "ascorbic acid",
+        "dibasic calcium phosphate",
+        "manadione sodium bisulphate",
+        "rutin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4699(E)",
+      "statement": "Ascorbic Acid + Manadione Sodium Bisulphate + Rutin + Dibasic Calcium Phosphate + Adrenochrome mono Semicarbazone",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4700",
+      "molecules": [
+        "bromhexine",
+        "caffeine",
+        "chlorpheniramine",
+        "paracetamol",
+        "phenylephrine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4700(E)",
+      "statement": "Phenylephrine + Chlorpheniramine + Paracetamol + Bromhexine + Caffeine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4701",
+      "molecules": [
+        "acetic acid",
+        "beclomethasone",
+        "clotrimazole",
+        "lignocaine",
+        "ofloxacin",
+        "propyl paraben",
+        "sodium methyl paraben"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4701(E)",
+      "statement": "Clotrimazole + Beclomethasone + Lignocaine + Ofloxacin + Acetic Acid + Sodium Methyl Paraben + Propyl Paraben",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4702",
+      "molecules": [
+        "levocetirizine",
+        "nimesulide"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4702(E)",
+      "statement": "Nimesulide + Levocetirizine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4704",
+      "molecules": [
+        "ambroxol",
+        "gemifloxacin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4704(E)",
+      "statement": "Gemifloxacin +Ambroxol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4705",
+      "molecules": [
+        "glucosamine",
+        "ibuprofen"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4705(E)",
+      "statement": "Glucosamine + Ibuprofen",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4706",
+      "molecules": [
+        "etodolac",
+        "paracetamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4706(E)",
+      "statement": "Etodolac + Paracetamol",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4707",
+      "molecules": [
+        "benzoxonium chloride",
+        "lidocaine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4707(E)",
+      "statement": "Benzoxonium Chloride + Lidocaine",
+      "product_type": "fdc",
+      "notes": [
+        "S.O. number corrected 4607→4707 by corrigendum S.O. 4972(E), 25.09.2018"
+      ]
+    },
+    {
+      "id": "cdsco-2018-4708",
+      "molecules": [
+        "paracetamol",
+        "prochlorperazine maleate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4708(E)",
+      "statement": "Paracetamol +Prochlorperazine Maleate",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4710",
+      "molecules": [
+        "paracetamol",
+        "prochlorperazine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4710(E)",
+      "statement": "Paracetamol + Prochlorperazine",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-2018-4711",
+      "molecules": [
+        "glimepiride",
+        "metformin",
+        "pioglitazone"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4711(E)",
+      "statement": "Glimepiride + Pioglitazone + Metformin",
+      "product_type": "fdc"
+    },
+    {
+      "id": "cdsco-093",
+      "molecules": [
+        "flupenthixol",
+        "melitracen"
+      ],
+      "notification_date": "2014-07-11",
+      "gazette_ref": "GSR 377(E)",
+      "statement": "Fixed dose combination of Flupenthixol + Melitracen"
+    },
+    {
+      "id": "cdsco-440",
+      "molecules": [
+        "levocetirizine",
+        "nimesulide"
+      ],
+      "notification_date": "2017-06-08",
+      "gazette_ref": "SO 1851(E)",
+      "statement": "Fixed Dose Combinations Of Nimesulide + Levocetrizine"
+    },
+    {
+      "id": "cdsco-442",
+      "molecules": [
+        "ambroxol",
+        "gemifloxacin"
+      ],
+      "notification_date": "2017-06-08",
+      "gazette_ref": "SO 1853(E)",
+      "statement": "Fixed Dose Combinations Of Gemifloxacin + Ambroxol"
+    },
+    {
+      "id": "cdsco-443",
+      "molecules": [
+        "glucosamine",
+        "ibuprofen"
+      ],
+      "notification_date": "2017-06-08",
+      "gazette_ref": "SO 1854(E)",
+      "statement": "Fixed Dose Combinations Of Glucosamine + Ibuprofen"
+    },
+    {
+      "id": "cdsco-444",
+      "molecules": [
+        "etodolac",
+        "paracetamol"
+      ],
+      "notification_date": "2017-06-08",
+      "gazette_ref": "SO 1855(E)",
+      "statement": "Fixed Dose Combinations Of Etodolac + Paracetamol and"
+    }
+  ],
+  "withheld_qualified": [
+    {
+      "id": "cdsco-2018-4393",
+      "molecules": [
+        "nimesulide",
+        "paracetamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4393(E)",
+      "statement": "Nimesulide + Paracetamol injection",
+      "product_type": "fdc",
+      "withheld_reason": "Gazette entry is form/strength-qualified (see statement). BannedFdcEntry has no route/form/strength field and the matcher is exact-molecule-set only, so encoding it would fire on unqualified products. MEASURED examples: S.O.4420(E) bans Aceclofenac (SR)+Paracetamol — we prescribe 306 immediate-release/90d; S.O.4684(E) bans Ofloxacin+Ornidazole suspension — we prescribe 153 tablets/90d."
+    },
+    {
+      "id": "cdsco-2018-4413",
+      "molecules": [
+        "nimesulide",
+        "paracetamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4413(E)",
+      "statement": "Nimesulide + Paracetamol suspension",
+      "product_type": "fdc",
+      "withheld_reason": "Gazette entry is form/strength-qualified (see statement). BannedFdcEntry has no route/form/strength field and the matcher is exact-molecule-set only, so encoding it would fire on unqualified products. MEASURED examples: S.O.4420(E) bans Aceclofenac (SR)+Paracetamol — we prescribe 306 immediate-release/90d; S.O.4684(E) bans Ofloxacin+Ornidazole suspension — we prescribe 153 tablets/90d."
+    },
+    {
+      "id": "cdsco-2018-4420",
+      "molecules": [
+        "aceclofenac",
+        "paracetamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4420(E)",
+      "statement": "Aceclofenac (SR) + Paracetamol",
+      "product_type": "fdc",
+      "withheld_reason": "Gazette entry is form/strength-qualified (see statement). BannedFdcEntry has no route/form/strength field and the matcher is exact-molecule-set only, so encoding it would fire on unqualified products. MEASURED examples: S.O.4420(E) bans Aceclofenac (SR)+Paracetamol — we prescribe 306 immediate-release/90d; S.O.4684(E) bans Ofloxacin+Ornidazole suspension — we prescribe 153 tablets/90d."
+    },
+    {
+      "id": "cdsco-2018-4421",
+      "molecules": [
+        "diclofenac",
+        "paracetamol"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4421(E)",
+      "statement": "Diclofenac + Paracetamol injection",
+      "product_type": "fdc",
+      "withheld_reason": "Gazette entry is form/strength-qualified (see statement). BannedFdcEntry has no route/form/strength field and the matcher is exact-molecule-set only, so encoding it would fire on unqualified products. MEASURED examples: S.O.4420(E) bans Aceclofenac (SR)+Paracetamol — we prescribe 306 immediate-release/90d; S.O.4684(E) bans Ofloxacin+Ornidazole suspension — we prescribe 153 tablets/90d."
+    },
+    {
+      "id": "cdsco-2018-4467",
+      "molecules": [
+        "glimepiride",
+        "metformin",
+        "pioglitazone"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4467(E)",
+      "statement": "Metformin 1000/ 1000/ 500/ 500 mg + Pioglitazone 7.5/ 7.5/ 7.5/ 7.5 mg + Glimepiride 1/ 2/ 1/ 2 mg",
+      "product_type": "fdc",
+      "withheld_reason": "Gazette entry is form/strength-qualified (see statement). BannedFdcEntry has no route/form/strength field and the matcher is exact-molecule-set only, so encoding it would fire on unqualified products. MEASURED examples: S.O.4420(E) bans Aceclofenac (SR)+Paracetamol — we prescribe 306 immediate-release/90d; S.O.4684(E) bans Ofloxacin+Ornidazole suspension — we prescribe 153 tablets/90d."
+    },
+    {
+      "id": "cdsco-2018-4468",
+      "molecules": [
+        "gliclazide",
+        "metformin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4468(E)",
+      "statement": "Gliclazide 80 mg + Metformin 325 mg",
+      "product_type": "fdc",
+      "withheld_reason": "Gazette entry is form/strength-qualified (see statement). BannedFdcEntry has no route/form/strength field and the matcher is exact-molecule-set only, so encoding it would fire on unqualified products. MEASURED examples: S.O.4420(E) bans Aceclofenac (SR)+Paracetamol — we prescribe 306 immediate-release/90d; S.O.4684(E) bans Ofloxacin+Ornidazole suspension — we prescribe 153 tablets/90d."
+    },
+    {
+      "id": "cdsco-2018-4470",
+      "molecules": [
+        "metformin",
+        "pioglitazone"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4470(E)",
+      "statement": "Pioglitazone 7.5/ 7.5 mg + Metformin 500/ 1000 mg",
+      "product_type": "fdc",
+      "withheld_reason": "Gazette entry is form/strength-qualified (see statement). BannedFdcEntry has no route/form/strength field and the matcher is exact-molecule-set only, so encoding it would fire on unqualified products. MEASURED examples: S.O.4420(E) bans Aceclofenac (SR)+Paracetamol — we prescribe 306 immediate-release/90d; S.O.4684(E) bans Ofloxacin+Ornidazole suspension — we prescribe 153 tablets/90d."
+    },
+    {
+      "id": "cdsco-2018-4471",
+      "molecules": [
+        "glimepiride",
+        "metformin",
+        "pioglitazone"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4471(E)",
+      "statement": "Glimepiride 1mg/ 2mg/ 3mg+ Pioglitazone 15mg/ 15mg/ 15mg+ Metformin 1000mg/ 1000mg/ 1000mg",
+      "product_type": "fdc",
+      "withheld_reason": "Gazette entry is form/strength-qualified (see statement). BannedFdcEntry has no route/form/strength field and the matcher is exact-molecule-set only, so encoding it would fire on unqualified products. MEASURED examples: S.O.4420(E) bans Aceclofenac (SR)+Paracetamol — we prescribe 306 immediate-release/90d; S.O.4684(E) bans Ofloxacin+Ornidazole suspension — we prescribe 153 tablets/90d."
+    },
+    {
+      "id": "cdsco-2018-4472",
+      "molecules": [
+        "glimepiride",
+        "metformin",
+        "pioglitazone"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4472(E)",
+      "statement": "Glimepiride 1mg/ 2mg + Pioglitazone 15mg/ 15mg + Metformin 850mg/ 850mg",
+      "product_type": "fdc",
+      "withheld_reason": "Gazette entry is form/strength-qualified (see statement). BannedFdcEntry has no route/form/strength field and the matcher is exact-molecule-set only, so encoding it would fire on unqualified products. MEASURED examples: S.O.4420(E) bans Aceclofenac (SR)+Paracetamol — we prescribe 306 immediate-release/90d; S.O.4684(E) bans Ofloxacin+Ornidazole suspension — we prescribe 153 tablets/90d."
+    },
+    {
+      "id": "cdsco-2018-4473",
+      "molecules": [
+        "glimepiride",
+        "metformin",
+        "pioglitazone"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4473(E)",
+      "statement": "Metformin 850mg + Pioglitazone 7.5 mg + Glimepiride 2mg",
+      "product_type": "fdc",
+      "withheld_reason": "Gazette entry is form/strength-qualified (see statement). BannedFdcEntry has no route/form/strength field and the matcher is exact-molecule-set only, so encoding it would fire on unqualified products. MEASURED examples: S.O.4420(E) bans Aceclofenac (SR)+Paracetamol — we prescribe 306 immediate-release/90d; S.O.4684(E) bans Ofloxacin+Ornidazole suspension — we prescribe 153 tablets/90d."
+    },
+    {
+      "id": "cdsco-2018-4474",
+      "molecules": [
+        "glimepiride",
+        "metformin",
+        "pioglitazone"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4474(E)",
+      "statement": "Metformin 850mg + Pioglitazone 7.5 mg + Glimepiride 1mg",
+      "product_type": "fdc",
+      "withheld_reason": "Gazette entry is form/strength-qualified (see statement). BannedFdcEntry has no route/form/strength field and the matcher is exact-molecule-set only, so encoding it would fire on unqualified products. MEASURED examples: S.O.4420(E) bans Aceclofenac (SR)+Paracetamol — we prescribe 306 immediate-release/90d; S.O.4684(E) bans Ofloxacin+Ornidazole suspension — we prescribe 153 tablets/90d."
+    },
+    {
+      "id": "cdsco-2018-4475",
+      "molecules": [
+        "gliclazide",
+        "metformin",
+        "pioglitazone"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4475(E)",
+      "statement": "Metformin 500mg/ 500mg + Gliclazide SR 30mg/ 60mg + Pioglitazone 7.5mg/ 7.5mg",
+      "product_type": "fdc",
+      "withheld_reason": "Gazette entry is form/strength-qualified (see statement). BannedFdcEntry has no route/form/strength field and the matcher is exact-molecule-set only, so encoding it would fire on unqualified products. MEASURED examples: S.O.4420(E) bans Aceclofenac (SR)+Paracetamol — we prescribe 306 immediate-release/90d; S.O.4684(E) bans Ofloxacin+Ornidazole suspension — we prescribe 153 tablets/90d."
+    },
+    {
+      "id": "cdsco-2018-4479",
+      "molecules": [
+        "metformin",
+        "pioglitazone"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4479(E)",
+      "statement": "Pioglitazone 30 mg + Metformin 500 mg",
+      "product_type": "fdc",
+      "withheld_reason": "Gazette entry is form/strength-qualified (see statement). BannedFdcEntry has no route/form/strength field and the matcher is exact-molecule-set only, so encoding it would fire on unqualified products. MEASURED examples: S.O.4420(E) bans Aceclofenac (SR)+Paracetamol — we prescribe 306 immediate-release/90d; S.O.4684(E) bans Ofloxacin+Ornidazole suspension — we prescribe 153 tablets/90d."
+    },
+    {
+      "id": "cdsco-2018-4480",
+      "molecules": [
+        "glipizide",
+        "metformin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4480(E)",
+      "statement": "Glipizide 2.5mg + Metformin 400 mg",
+      "product_type": "fdc",
+      "withheld_reason": "Gazette entry is form/strength-qualified (see statement). BannedFdcEntry has no route/form/strength field and the matcher is exact-molecule-set only, so encoding it would fire on unqualified products. MEASURED examples: S.O.4420(E) bans Aceclofenac (SR)+Paracetamol — we prescribe 306 immediate-release/90d; S.O.4684(E) bans Ofloxacin+Ornidazole suspension — we prescribe 153 tablets/90d."
+    },
+    {
+      "id": "cdsco-2018-4481",
+      "molecules": [
+        "metformin",
+        "pioglitazone"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4481(E)",
+      "statement": "Pioglitazone 15 mg + Metformin 850 mg",
+      "product_type": "fdc",
+      "withheld_reason": "Gazette entry is form/strength-qualified (see statement). BannedFdcEntry has no route/form/strength field and the matcher is exact-molecule-set only, so encoding it would fire on unqualified products. MEASURED examples: S.O.4420(E) bans Aceclofenac (SR)+Paracetamol — we prescribe 306 immediate-release/90d; S.O.4684(E) bans Ofloxacin+Ornidazole suspension — we prescribe 153 tablets/90d."
+    },
+    {
+      "id": "cdsco-2018-4482",
+      "molecules": [
+        "gliclazide",
+        "metformin",
+        "voglibose"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4482(E)",
+      "statement": "Metformin ER + Gliclazide MR + Voglibose",
+      "product_type": "fdc",
+      "withheld_reason": "Gazette entry is form/strength-qualified (see statement). BannedFdcEntry has no route/form/strength field and the matcher is exact-molecule-set only, so encoding it would fire on unqualified products. MEASURED examples: S.O.4420(E) bans Aceclofenac (SR)+Paracetamol — we prescribe 306 immediate-release/90d; S.O.4684(E) bans Ofloxacin+Ornidazole suspension — we prescribe 153 tablets/90d."
+    },
+    {
+      "id": "cdsco-2018-4486",
+      "molecules": [
+        "glimepride",
+        "metformin",
+        "pioglitazone"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4486(E)",
+      "statement": "Metformin (sustained release) 500mg + Pioglitazone 15 mg + Glimepride 3mg",
+      "product_type": "fdc",
+      "withheld_reason": "Gazette entry is form/strength-qualified (see statement). BannedFdcEntry has no route/form/strength field and the matcher is exact-molecule-set only, so encoding it would fire on unqualified products. MEASURED examples: S.O.4420(E) bans Aceclofenac (SR)+Paracetamol — we prescribe 306 immediate-release/90d; S.O.4684(E) bans Ofloxacin+Ornidazole suspension — we prescribe 153 tablets/90d."
+    },
+    {
+      "id": "cdsco-2018-4494",
+      "molecules": [
+        "beclomethasone",
+        "chloramphenicol",
+        "clotrimazole",
+        "gentamycin",
+        "lignocaine ear drop"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4494(E)",
+      "statement": "Beclomethasone + Clotrimazole + Chloramphenicol + Gentamycin + Lignocaine ear drop",
+      "product_type": "fdc",
+      "withheld_reason": "Gazette entry is form/strength-qualified (see statement). BannedFdcEntry has no route/form/strength field and the matcher is exact-molecule-set only, so encoding it would fire on unqualified products. MEASURED examples: S.O.4420(E) bans Aceclofenac (SR)+Paracetamol — we prescribe 306 immediate-release/90d; S.O.4684(E) bans Ofloxacin+Ornidazole suspension — we prescribe 153 tablets/90d."
+    },
+    {
+      "id": "cdsco-2018-4543",
+      "molecules": [
+        "chlorpheniramine",
+        "codeine",
+        "menthol",
+        "sodium citrate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4543(E)",
+      "statement": "Chlorpheniramine + Codeine + Sodium citrate + Menthol syrup",
+      "product_type": "fdc",
+      "withheld_reason": "Gazette entry is form/strength-qualified (see statement). BannedFdcEntry has no route/form/strength field and the matcher is exact-molecule-set only, so encoding it would fire on unqualified products. MEASURED examples: S.O.4420(E) bans Aceclofenac (SR)+Paracetamol — we prescribe 306 immediate-release/90d; S.O.4684(E) bans Ofloxacin+Ornidazole suspension — we prescribe 153 tablets/90d."
+    },
+    {
+      "id": "cdsco-2018-4581",
+      "molecules": [
+        "alcohol",
+        "chlorpheniramine",
+        "codeine"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4581(E)",
+      "statement": "Codeine + Chlorpheniramine + Alcohol syrup",
+      "product_type": "fdc",
+      "withheld_reason": "Gazette entry is form/strength-qualified (see statement). BannedFdcEntry has no route/form/strength field and the matcher is exact-molecule-set only, so encoding it would fire on unqualified products. MEASURED examples: S.O.4420(E) bans Aceclofenac (SR)+Paracetamol — we prescribe 306 immediate-release/90d; S.O.4684(E) bans Ofloxacin+Ornidazole suspension — we prescribe 153 tablets/90d."
+    },
+    {
+      "id": "cdsco-2018-4667",
+      "molecules": [
+        "allantoin",
+        "dimethicone",
+        "glycerin",
+        "liquid paraffin",
+        "propylene",
+        "urea"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4667(E)",
+      "statement": "Allantoin +Dimethicone + Urea + Propylene + Glycerin + Liquid paraffin",
+      "product_type": "fdc",
+      "notes": [
+        "Corrigendum S.O. 4974(E) 25.09.2018: 'Dimethieone'→'Dimethicone'. As published: Allantoin +OF INDIA : EXTRAORDINARY [PART II—SEC. 3(ii)] Dimethieone + Urea + Propylene + Glycerin + Liquid paraffin"
+      ],
+      "withheld_reason": "Gazette entry is form/strength-qualified (see statement). BannedFdcEntry has no route/form/strength field and the matcher is exact-molecule-set only, so encoding it would fire on unqualified products. MEASURED examples: S.O.4420(E) bans Aceclofenac (SR)+Paracetamol — we prescribe 306 immediate-release/90d; S.O.4684(E) bans Ofloxacin+Ornidazole suspension — we prescribe 153 tablets/90d."
+    },
+    {
+      "id": "cdsco-2018-4675",
+      "molecules": [
+        "betamethasone",
+        "chlorocresol",
+        "clotrimazole",
+        "iikm hkkjr dk jktik vlkkjk entamycin",
+        "zinc sulphate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4675(E)",
+      "statement": "Betamethasone + IIµ[k.M 3(ii)º Hkkjr dk jkti=k % vlk/kj.k 477 Gentamycin + Zinc Sulphate + Clotrimazole + Chlorocresol",
+      "product_type": "fdc",
+      "withheld_reason": "Gazette entry is form/strength-qualified (see statement). BannedFdcEntry has no route/form/strength field and the matcher is exact-molecule-set only, so encoding it would fire on unqualified products. MEASURED examples: S.O.4420(E) bans Aceclofenac (SR)+Paracetamol — we prescribe 306 immediate-release/90d; S.O.4684(E) bans Ofloxacin+Ornidazole suspension — we prescribe 153 tablets/90d."
+    },
+    {
+      "id": "cdsco-2018-4682",
+      "molecules": [
+        "gliclazide",
+        "metformin"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4682(E)",
+      "statement": "Gliclazide 40mg + Metformin 400mg",
+      "product_type": "fdc",
+      "withheld_reason": "Gazette entry is form/strength-qualified (see statement). BannedFdcEntry has no route/form/strength field and the matcher is exact-molecule-set only, so encoding it would fire on unqualified products. MEASURED examples: S.O.4420(E) bans Aceclofenac (SR)+Paracetamol — we prescribe 306 immediate-release/90d; S.O.4684(E) bans Ofloxacin+Ornidazole suspension — we prescribe 153 tablets/90d."
+    },
+    {
+      "id": "cdsco-2018-4684",
+      "molecules": [
+        "ofloxacin",
+        "ornidazole"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4684(E)",
+      "statement": "Ofloxacin + Ornidazole suspension",
+      "product_type": "fdc",
+      "withheld_reason": "Gazette entry is form/strength-qualified (see statement). BannedFdcEntry has no route/form/strength field and the matcher is exact-molecule-set only, so encoding it would fire on unqualified products. MEASURED examples: S.O.4420(E) bans Aceclofenac (SR)+Paracetamol — we prescribe 306 immediate-release/90d; S.O.4684(E) bans Ofloxacin+Ornidazole suspension — we prescribe 153 tablets/90d."
+    },
+    {
+      "id": "cdsco-2018-4691",
+      "molecules": [
+        "diazepam",
+        "dried aluminum hydroxide",
+        "propantheline"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4691(E)",
+      "statement": "Dried Aluminum Hydroxide Gel + Propantheline + Diazepam",
+      "product_type": "fdc",
+      "withheld_reason": "Gazette entry is form/strength-qualified (see statement). BannedFdcEntry has no route/form/strength field and the matcher is exact-molecule-set only, so encoding it would fire on unqualified products. MEASURED examples: S.O.4420(E) bans Aceclofenac (SR)+Paracetamol — we prescribe 306 immediate-release/90d; S.O.4684(E) bans Ofloxacin+Ornidazole suspension — we prescribe 153 tablets/90d."
+    },
+    {
+      "id": "cdsco-2018-4703",
+      "molecules": [
+        "ofloxacin",
+        "ornidazole"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4703(E)",
+      "statement": "Ofloxacin + Ornidazole injection",
+      "product_type": "fdc",
+      "withheld_reason": "Gazette entry is form/strength-qualified (see statement). BannedFdcEntry has no route/form/strength field and the matcher is exact-molecule-set only, so encoding it would fire on unqualified products. MEASURED examples: S.O.4420(E) bans Aceclofenac (SR)+Paracetamol — we prescribe 306 immediate-release/90d; S.O.4684(E) bans Ofloxacin+Ornidazole suspension — we prescribe 153 tablets/90d."
+    },
+    {
+      "id": "cdsco-2018-4709",
+      "molecules": [
+        "amoxicillin",
+        "potassium clavulanate"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4709(E)",
+      "statement": "Amoxicillin 250 mg + Potassium Clavulanate Diluted 62.5 mg",
+      "product_type": "fdc",
+      "withheld_reason": "Gazette entry is form/strength-qualified (see statement). BannedFdcEntry has no route/form/strength field and the matcher is exact-molecule-set only, so encoding it would fire on unqualified products. MEASURED examples: S.O.4420(E) bans Aceclofenac (SR)+Paracetamol — we prescribe 306 immediate-release/90d; S.O.4684(E) bans Ofloxacin+Ornidazole suspension — we prescribe 153 tablets/90d."
+    },
+    {
+      "id": "cdsco-2018-4712",
+      "molecules": [
+        "glibenclamide",
+        "metformin",
+        "pioglitazone"
+      ],
+      "notification_date": "2018-09-07",
+      "gazette_ref": "S.O. 4712(E)",
+      "statement": "Glibenclamide + Metformin (SR) + Pioglitazone",
+      "product_type": "fdc",
+      "withheld_reason": "Gazette entry is form/strength-qualified (see statement). BannedFdcEntry has no route/form/strength field and the matcher is exact-molecule-set only, so encoding it would fire on unqualified products. MEASURED examples: S.O.4420(E) bans Aceclofenac (SR)+Paracetamol — we prescribe 306 immediate-release/90d; S.O.4684(E) bans Ofloxacin+Ornidazole suspension — we prescribe 153 tablets/90d."
+    }
+  ],
+  "rescinded": [
+    {
+      "gazette_ref": "S.O. 4616(E)",
+      "notification_date": "2018-09-07",
+      "statement": "Paracetamol + Caffeine + Phenylephrine + Chlorpheniramine",
+      "rescinded_by": "S.O. 697(E) dated 05.02.2019 — 'rescinds ... with immediate effect'"
+    }
+  ],
+  "not_representable": [
+    {
+      "source_sr_no": 1,
+      "verbatim": "Amidopyrine. 578(E)Dated2 3.07.1983",
+      "gazette_ref": "GSR NO.",
+      "notification_date": null,
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 2,
+      "verbatim": "Fixed dose combinations of vitamins with anti-inflammatory agents and tranquilizers. 983",
+      "gazette_ref": "GSR 578(E)",
+      "notification_date": null,
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 3,
+      "verbatim": "Fixed dose combinations of Atropine in Analgesics and Antipyretics",
+      "gazette_ref": "GSR 578(E)",
+      "notification_date": "1983-07-23",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 4,
+      "verbatim": "Fixed dose combinations of Strychnine and Caffeine in tonics. 578(E) 983",
+      "gazette_ref": "GSR NO. Dated23.07.1",
+      "notification_date": null,
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 5,
+      "verbatim": "Fixed dose combinations of Yohimbine and Strychnine with Testosterone and Vitamins. 983",
+      "gazette_ref": "GSR 578(E)",
+      "notification_date": null,
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 6,
+      "verbatim": "Fixed dose combinations of Iron with Strychnine, Arsenic and Yohimbine. 983",
+      "gazette_ref": "GSR 578(E)",
+      "notification_date": null,
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 7,
+      "verbatim": "Fixed dose combinations of Sodium Bromide/chloral hydrate with other drugs. 983",
+      "gazette_ref": "GSR 578(E)",
+      "notification_date": null,
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 8,
+      "verbatim": "Phenacetin. 578(E) 983",
+      "gazette_ref": "GSR NO. Dated23.07.1",
+      "notification_date": null,
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 9,
+      "verbatim": "Fixed dose diarrhoeals. 983",
+      "gazette_ref": "GSR 578(E)",
+      "notification_date": null,
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 10,
+      "verbatim": "Fixed dose combinations of Penicillin with Sulphonamides. 578(E) Dated",
+      "gazette_ref": "GSR 23(E)",
+      "notification_date": "1983-07-23",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 11,
+      "verbatim": "Fixed dose combinations of Vitamins with Analgesics. 578(E)Dated",
+      "gazette_ref": "GSR 23(E)",
+      "notification_date": "1983-07-23",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 12,
+      "verbatim": "Fixed dose combinations of any other Tetracycline with Vitamin C",
+      "gazette_ref": "GSR 578(E)",
+      "notification_date": "1983-07-23",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 13,
+      "verbatim": "Fixed dose combinations of Hydroxyquinoline group of drugs with any other drug 793(E) Dated external use",
+      "gazette_ref": "GSR 13(E)",
+      "notification_date": "1995-12-13",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 14,
+      "verbatim": "Fixed dose combinations of Corticosteroids with any other drug for internal use except for preparations meant for meter 738(E) Dated dose inhalers and dry powder inhalers",
+      "gazette_ref": "GSR 09(E)",
+      "notification_date": "2009-10-09",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 15,
+      "verbatim": "Fixed dose combinations of Chloramphenicol with any other drug for internal use. 1057(E) Dated",
+      "gazette_ref": "GSR 03(E)",
+      "notification_date": "1988-11-03",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 16,
+      "verbatim": "Fixed dose combinations of crude Ergot preparations except those 304(E) Dated antihistamines for the treatment of migraine, headaches",
+      "gazette_ref": "GSR 07(E)",
+      "notification_date": "1991-06-07",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 17,
+      "verbatim": "Fixed dose combinations of Vitamins with Anti TB drugs except combination of Isoniazid with Pyridoxine Hydrochloride (Vitamin B6)",
+      "gazette_ref": "GSR 578(E)",
+      "notification_date": "1983-07-23",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 18,
+      "verbatim": "Penicillin skin/eye Ointment. 578(E) Dated",
+      "gazette_ref": "GSR 23(E)",
+      "notification_date": "1983-07-23",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 19,
+      "verbatim": "Tetracycline Liquid Oral preparations. 578(E) Dated",
+      "gazette_ref": "GSR 23(E)",
+      "notification_date": "1983-07-23",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 20,
+      "verbatim": "Nialamide. 578(E) Dated",
+      "gazette_ref": "GSR 23(E)",
+      "notification_date": "1983-07-23",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 21,
+      "verbatim": "Practolol. 578(E) Dated",
+      "gazette_ref": "GSR 23(E)",
+      "notification_date": "1983-07-23",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 22,
+      "verbatim": "Methapyrilene, its salts. 578(E) Dated",
+      "gazette_ref": "GSR 23(E)",
+      "notification_date": "1983-07-23",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 23,
+      "verbatim": "Methaqualone. 49(E)Dated",
+      "gazette_ref": "GSR 31(E)",
+      "notification_date": "1984-01-31",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 24,
+      "verbatim": "Oxytetracycline Liquid Oral preparations. 322(E)Dated",
+      "gazette_ref": "GSR 03(E)",
+      "notification_date": "1984-05-03",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 25,
+      "verbatim": "Demeclocycline Liquid Oral preparations. 322(E)Dated",
+      "gazette_ref": "GSR 03(E)",
+      "notification_date": "1984-05-03",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 26,
+      "verbatim": "Combination of anabolic Steroids with other drugs. 863(E)Dated2 2.11.1985",
+      "gazette_ref": "GSR NO.",
+      "notification_date": null,
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 27,
+      "verbatim": "Fixed dose combination of Oestrogen and Progestin (other than oral contraceptive) containing per tablet Estrogen 743(E) content of more than 50 mcg (equivalent to EthinylEstradiol) and content of more than 3 mg(equivalent to Norethisterone Acetate) and all fixed dose combination injectable preparations containing synthetic Oestrogen andProgesterone",
+      "gazette_ref": "Substituted vide GSR NO. Dated10.08.1 98",
+      "notification_date": "1989-08-10",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 28,
+      "verbatim": "Fixed dose combination of Sedatives/ hypnotics/anxiolytics GSR with analgesics-antipyretics",
+      "gazette_ref": "NO. 999(E)Dated 26.12.1990",
+      "notification_date": "1990-12-26",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 29,
+      "verbatim": "Fixed dose combination of Rifanpicin, isoniazid and Pyrazinamide, except those which Provide daily adult dose 100(E) given below: 003 Drugs Minimum Rifampicin 450 mg Isoniazid 300 mg Pyrazinamide1000mg",
+      "gazette_ref": "Substituted vide GSR NO. Dated11.02.2 Ma",
+      "notification_date": null,
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 30,
+      "verbatim": "Fixed dose combination of Histamine H-2 receptor antagonists with antacids except for those combinations approved by Drugs Controller, India",
+      "gazette_ref": "GSR 999(E)",
+      "notification_date": "1990-12-26",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 31,
+      "verbatim": "The patent and proprietary medicines of fixed dose combinations of essential oils with alcohol having percentage higher than 20% proof except preparations given in the Indian Pharmacopoeia",
+      "gazette_ref": "GSR 999(E)",
+      "notification_date": "1990-12-26",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 32,
+      "verbatim": "All Pharmaceutical preparations containing Chloroform GSR exceeding 0.5% w/w or v/v whichever is appropriate",
+      "gazette_ref": "NO. 999(E)Dated 26.12.1990",
+      "notification_date": "1990-12-26",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 33,
+      "verbatim": "Fixed dose combination of Ethambutol with INH other than the following: INH Ethambutol 200 mg. 600 mg. 300 mg. 800 mg",
+      "gazette_ref": "GSR 69(E)",
+      "notification_date": "1991-02-11",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 34,
+      "verbatim": "Fixed dose combination containing more than one GSR antihistamine",
+      "gazette_ref": "NO. 69(E)Dated 11.02.1991",
+      "notification_date": "1991-02-11",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 35,
+      "verbatim": "Fixed dose combination of any anthelmintic cathartic/purgative except for piperazine/Santonim",
+      "gazette_ref": "GSR 69(E)",
+      "notification_date": "1991-02-11",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 36,
+      "verbatim": "Fixed dose combination of Salbutamol or any other bronchodilator with centrally acting anti-tussive and/or 290(E) Dated antihistamine",
+      "gazette_ref": "GSR 16(E)",
+      "notification_date": "2008-04-16",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 37,
+      "verbatim": "Fixed dose combination of laxatives and/or anti-spasmodic drugs in enzyme preparations",
+      "gazette_ref": "GSR 69(E)",
+      "notification_date": "1991-02-11",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 38,
+      "verbatim": "Fixed dose combination of Metoclopramide with systemically absorbed drugs except fixed dose combination of 603(E)Dated2 metoclopramide with aspirin/paracetamol",
+      "gazette_ref": "GSR 4(E)",
+      "notification_date": "2001-08-04",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 39,
+      "verbatim": "Fixed dose combination of centrally acting, antitussive with antihistamine, having high atropine like activity in expectorants",
+      "gazette_ref": "GSR 395(E)",
+      "notification_date": "1999-05-19",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 40,
+      "verbatim": "Preparations claiming to combat cough associated with GSR asthma containing centrally acting antitussive and/ or an antihistamine",
+      "gazette_ref": "NO. 395(E)Dated 19.05.1999",
+      "notification_date": "1999-05-19",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 41,
+      "verbatim": "Liquid oral tonic preparations containing glycerophosphates and/or other phosphates and / or central nervous system stimulant and such preparations containing alcohol more than 20% proof",
+      "gazette_ref": "GSR 395(E)",
+      "notification_date": "1999-05-19",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 42,
+      "verbatim": "Fixed dose combination containing Pectin and/or Kaolin with any drug which is systemically absorbed from GI tract except for combinations of Pectin and/or Kaolin with drugs not systemically absorbed",
+      "gazette_ref": "GSR 395(E)",
+      "notification_date": "1999-05-19",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 43,
+      "verbatim": "Chloral Hydrate as a drug. 304(E)Dated",
+      "gazette_ref": "GSR 07(E)",
+      "notification_date": "1991-06-07",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 44,
+      "verbatim": "Dovers Powder I.P. 612(E) Dated",
+      "gazette_ref": "GSR 09(E)",
+      "notification_date": "1994-08-09",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 45,
+      "verbatim": "Dover’s Powder Tablets I.P. 612(E) Dated",
+      "gazette_ref": "GSR 09(E)",
+      "notification_date": "1994-08-09",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 46,
+      "verbatim": "Antidiarrhoeal formulations containing Kaolin or Pectin or Attapulgite or Activated Charcoal",
+      "gazette_ref": "GSR 731(E)",
+      "notification_date": "1994-09-30",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 47,
+      "verbatim": "Antidiarrhoeal PhthalylSulphathiazole SuccinylSulphathiazole",
+      "gazette_ref": "formulations containing GSR NO. or Sulph",
+      "notification_date": "1994-09-30",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 48,
+      "verbatim": "Antidiarrhoeal Streptomycin or Dihydrostreptomycin including their respective salts or esters",
+      "gazette_ref": "GSR 731(E)",
+      "notification_date": "1994-09-30",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 49,
+      "verbatim": "Liquid Oral antidiarrhoeals or any other dosage form for pediatric use containing DiphenoxylateLorloperamide or Atropine or Belladona including their salts or esters or metabolitesHyoscyamine or their extracts or their alkaloids",
+      "gazette_ref": "GSR 731(E)",
+      "notification_date": "1994-09-30",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 50,
+      "verbatim": "Liquid Oral antidiarrhoeals or any other dosage form for pediatric use containing halogenated hydroxyquinolines",
+      "gazette_ref": "GSR 731(E)",
+      "notification_date": "1994-09-30",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 51,
+      "verbatim": "Fixed dose combination of antidiarrhoeals with electrolytes. 731(E)Dated",
+      "gazette_ref": "GSR 30(E)",
+      "notification_date": "1994-09-30",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 52,
+      "verbatim": "Patent and Proprietary Oral Rehydration Salts other than those conforming to the following parameters: reconstitution to one litre shall contain: Total osmolarity – 240-290 milliosmoles Dextrose: than 3:1 on reconstitution to one litre shall contain: Total osmolarity – Not more than 290 milliosmoles Precooked rice – equivalent to not less than 50gms and not more than 80gms as total replacement of dextrose contain amino acids in addition to oral rehydration salts conforming to the parameters specified above and labelled with the indication for “Adult Chloretic Diarrhea Only” (d) Patent and proprietary oral rehydration salts (ORS) shall not contain mono or polysaccharides or saccharin sweetening agent",
+      "gazette_ref": "GSR 57(E)",
+      "notification_date": "1995-02-07",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 53,
+      "verbatim": "Fixed Phenylbutazone with any other drug. 995",
+      "gazette_ref": "GSR 633(E)",
+      "notification_date": null,
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 54,
+      "verbatim": "Fixed dose combination of Analgin with any other drug. 405(E)Dated",
+      "gazette_ref": "GSR 03(E)",
+      "notification_date": "1996-06-03",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 55,
+      "verbatim": "Fixed dose combination of dextropropoxyphene with any other drug other than anti-spasmodics and/or non-steriodal anti- inflammatory drugs (NSAIDS)",
+      "gazette_ref": "GSR 633(E)",
+      "notification_date": "1995-09-13",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 56,
+      "verbatim": "Fixed dose combination of a drug, standards of which are prescribed in the Second Schedule to the said Act with an Ayurvedic, Siddha or Unani drug",
+      "gazette_ref": "GSR 633(E)",
+      "notification_date": "1995-09-13",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 57,
+      "verbatim": "Mepacrine Hydrochloride (Quinacrine and its salts) in any dosage form for use for female sterilization or contraception. 4.08.1998",
+      "gazette_ref": "GSR 499(E)",
+      "notification_date": null,
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 58,
+      "verbatim": "Fenfluramine 499(E)Dated",
+      "gazette_ref": "GSR 14(E)",
+      "notification_date": "1998-08-14",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 59,
+      "verbatim": "Dexfenfluramine. 499(E)Dated",
+      "gazette_ref": "GSR 14(E)",
+      "notification_date": "1998-08-14",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 60,
+      "verbatim": "Fixed dose combination of Diazepam and Diphenhydramine Hydrochloride ",
+      "gazette_ref": "GSR 169(E)",
+      "notification_date": "2001-03-12",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 61,
+      "verbatim": "Cosmetics Licensed as toothpaste/tooth tobacco. 0.04.1992",
+      "gazette_ref": "GSR 444(E)",
+      "notification_date": null,
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 62,
+      "verbatim": "Parenteal Preparations fixed combination of streptomycin with Pencillin",
+      "gazette_ref": "GSR 93(E)",
+      "notification_date": "1997-02-25",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 63,
+      "verbatim": "Fixed dose combination of Vitamin B1Vitamin B6 and Vitamin B12 for human use",
+      "gazette_ref": "GSR 702(E)",
+      "notification_date": "1999-10-14",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 64,
+      "verbatim": "Fixed dose combination of haemoglobin in any form (natural or synthetic)",
+      "gazette_ref": "GSR 814(E)",
+      "notification_date": "1999-12-16",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 65,
+      "verbatim": "Fixed dose combination of Pancreatin or Pancrelipase containing amylase, protease and lipase with any other enzyme",
+      "gazette_ref": "GSR 814(E)",
+      "notification_date": "1999-12-16",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 66,
+      "verbatim": "Fixed dose combination of Nitrofurantoin and trimethoprim. GSR 170(E)Dated",
+      "gazette_ref": "NO. 12.03.2001",
+      "notification_date": "2001-03-12",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 67,
+      "verbatim": "Fixed dose combination of Phenobarbitone with any anti- GSR asthmatic drugs",
+      "gazette_ref": "NO. 170(E)Dated 12.03.2001",
+      "notification_date": "2001-03-12",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 68,
+      "verbatim": "Fixed dose combination of Phenobarbitone and/or Hyoscyamine",
+      "gazette_ref": "GSR 170(E)",
+      "notification_date": "2001-03-12",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 69,
+      "verbatim": "Fixed dose combination of Phenobarbitone with Ergotamine and/or Belladona",
+      "gazette_ref": "GSR 170(E)",
+      "notification_date": "2001-03-12",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 70,
+      "verbatim": "Fixed dose combination of Haloperidol with any anti- cholinergic agent including Propantheline Bromide",
+      "gazette_ref": "GSR 170(E)",
+      "notification_date": "2001-03-12",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 71,
+      "verbatim": "Fixed dose combination of Nalidixic Acid with any anti- amoebic including Metronidazole",
+      "gazette_ref": "GSR 170(E)",
+      "notification_date": "2001-03-12",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 72,
+      "verbatim": "Fixed dose combination of Loperamide Hydrochloride with Furazolidone",
+      "gazette_ref": "GSR 170(E)",
+      "notification_date": "2001-03-12",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 73,
+      "verbatim": "Fixed dose combination of Cyproheptadine with Lysine or Peptone",
+      "gazette_ref": "GSR 170(E)",
+      "notification_date": "2001-03-12",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 74,
+      "verbatim": "Astemizole 191(E)Dated0 5.03.2003",
+      "gazette_ref": "GSR NO.",
+      "notification_date": null,
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 75,
+      "verbatim": "Terfinadine 191(E)Dated",
+      "gazette_ref": "GSR 05(E)",
+      "notification_date": "2003-03-05",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 76,
+      "verbatim": "Phenformin 780(E)Dated",
+      "gazette_ref": "GSR 01(E)",
+      "notification_date": "2003-10-01",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 77,
+      "verbatim": "Rofecoxib and its formulations 810(E)Dated",
+      "gazette_ref": "GSR 13(E)",
+      "notification_date": "2004-12-13",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 78,
+      "verbatim": "Valdecoxib and its formulations 510(E)Dated",
+      "gazette_ref": "GSR 28(E)",
+      "notification_date": "2005-07-28",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 79,
+      "verbatim": "Diclofenac and its formulations (for animal use) 499(E)Dated",
+      "gazette_ref": "GSR 04(E)",
+      "notification_date": "2008-07-04",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 80,
+      "verbatim": "Rimonabant. 884(E) 009",
+      "gazette_ref": "GSR NO. Dated11.12.2",
+      "notification_date": null,
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 81,
+      "verbatim": "Rosiglitazone 910(E) Dated",
+      "gazette_ref": "GSR 12(E)",
+      "notification_date": "2010-11-12",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 82,
+      "verbatim": "Nimesulide formulations for human use in children below 12 years of age",
+      "gazette_ref": "GSR 82(E)",
+      "notification_date": "2011-02-10",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 83,
+      "verbatim": "Cisapride and its formulations for human use. 82(E)",
+      "gazette_ref": "GSR NO. Dated 10.02.2011",
+      "notification_date": "2011-02-10",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 84,
+      "verbatim": "Phenypropanolamine and its formulations for human use. GSR 82(E)Dated",
+      "gazette_ref": "NO.",
+      "notification_date": null,
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 85,
+      "verbatim": "Human Placental Extract and its formulations for human use except its NO.418(E)",
+      "gazette_ref": "Substituted vide GSR",
+      "notification_date": null,
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 1,
+      "verbatim": "Topical application for wound healing, and",
+      "gazette_ref": "Dated",
+      "notification_date": null,
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 2,
+      "verbatim": "Injection for pelvic inflammatory disease",
+      "gazette_ref": "30.05.2011",
+      "notification_date": "2011-05-30",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 86,
+      "verbatim": "Sibutramine and its formulations for human use. 82(E)",
+      "gazette_ref": "GSR NO. Dated 10.02.2011",
+      "notification_date": "2011-02-10",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 87,
+      "verbatim": "R-Sibutramine and its formulations for human use. 82(E)",
+      "gazette_ref": "GSR NO. Dated 10.02.2011",
+      "notification_date": "2011-02-10",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 88,
+      "verbatim": "“Gatifloxacin formulation for systemic use in human by any route including",
+      "gazette_ref": "GSR NO. oral and injectable”. 218(E) Dat",
+      "notification_date": "2011-03-16",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 89,
+      "verbatim": "Tegaserod and its formulations 218(E) Dated",
+      "gazette_ref": "GSR 16(E)",
+      "notification_date": "2011-03-16",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 90,
+      "verbatim": "Letrozole for induction of ovulation in anovulatory infertility. 752(E)Dated1 2.10.2011",
+      "gazette_ref": "GSR NO.",
+      "notification_date": null,
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 91,
+      "verbatim": "Serodiagnostic test kits for diagnosis of tuberculosis GSR",
+      "gazette_ref": "GSR 432(E)",
+      "notification_date": "2012-06-07",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 92,
+      "verbatim": "Dextropropoxyphene and formulations containing",
+      "gazette_ref": "GSR 332(E)",
+      "notification_date": null,
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 94,
+      "verbatim": "Analgin and all formulations containing analgin for human use vide G.S.R. No 378 (E)dated 18.6.2013 was revoked allowing the use of drug certain condition vide No.86(E)dated 13.2.2014",
+      "gazette_ref": "Initial Suspension with G.S.R.",
+      "notification_date": null,
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 95,
+      "verbatim": "Pioglitazone and all formulations containing Pioglitazone for human use vide No.379 (E) dt 18-6-2013 was revoked allowing the use of drug certain condition vide [G.S.R. 520 (E) dt 31-7-2013",
+      "gazette_ref": "Initial suspension G.S.R. with No.",
+      "notification_date": null,
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 133,
+      "verbatim": "Combikit of 3 tablets of Serratiopeptidase (enteric coated 20000 units) Doxycycline",
+      "gazette_ref": "SO 742(E)",
+      "notification_date": "2016-03-10",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 151,
+      "verbatim": "Combikit of fluconazole",
+      "gazette_ref": "SO 760(E)",
+      "notification_date": "2016-03-10",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 160,
+      "verbatim": "Combikit of Fluconazole Tablet, Azithromycin Tablet and Ornidazole Tablets",
+      "gazette_ref": "SO 769(E)",
+      "notification_date": "2016-03-10",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 175,
+      "verbatim": "Atorvastatin pyridoxine",
+      "gazette_ref": "SO 784(E)",
+      "notification_date": "2016-03-10",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 234,
+      "verbatim": "Clidinium Dimethicone",
+      "gazette_ref": "SO 843(E)",
+      "notification_date": "2016-03-10",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 266,
+      "verbatim": "Dextromethorphan chlorpheniraminemaleate",
+      "gazette_ref": "SO 875(E)",
+      "notification_date": "2016-03-10",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 271,
+      "verbatim": "Dextromethorphan menthol",
+      "gazette_ref": "SO 880(E)",
+      "notification_date": "2016-03-10",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 318,
+      "verbatim": "Ambroxol Chlorpheniramine",
+      "gazette_ref": "SO 927(E)",
+      "notification_date": "2016-03-10",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 335,
+      "verbatim": "Chloropheniramine Gluconate",
+      "gazette_ref": "SO 944(E)",
+      "notification_date": "2016-03-10",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 343,
+      "verbatim": "Paracetamol Gluconate",
+      "gazette_ref": "SO 952(E)",
+      "notification_date": "2016-03-10",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 362,
+      "verbatim": "N-Acetyl Cysteine Levocetirizine",
+      "gazette_ref": "SO 971(E)",
+      "notification_date": "2016-03-10",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 377,
+      "verbatim": "Dextromethorphan Chloride",
+      "gazette_ref": "SO 986(E)",
+      "notification_date": "2016-03-10",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 398,
+      "verbatim": "Beclomethasone iodochlorohydroxyquinone",
+      "gazette_ref": "SO 1007(E)",
+      "notification_date": "2016-03-10",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 425,
+      "verbatim": "Salbutamol Bromhexine",
+      "gazette_ref": "SO 1034(E)",
+      "notification_date": "2016-03-10",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 426,
+      "verbatim": "Paracetamol Citrate",
+      "gazette_ref": "SO 1035(E)",
+      "notification_date": "2016-03-10",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    },
+    {
+      "source_sr_no": 431,
+      "verbatim": "Beclomethasone Chlorhydroxyquinoline",
+      "gazette_ref": "SO 1040(E)",
+      "notification_date": "2016-03-10",
+      "reason": "single molecule or descriptive class — not expressible as an exact molecule set"
+    }
+  ]
 }

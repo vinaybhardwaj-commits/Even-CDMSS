@@ -36,7 +36,7 @@ import type { FindingProvenance } from './provenance-tier-core';
 //       nasal-decongestant >5-day cap, route/formulation-aware duplication. Bug 5: hyoscine/dicyclomine
 //       reclassed Antispasmodic/anticholinergic in the formulary (DDI-invariant). LVC `other` sub-cat +
 //       frequent-flier list surfacing + 30-day longitudinal backfill ride in the same build (non-scoring).
-export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.13';
+export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.14';
 
 /**
  * Current-engine FAMILY for READ/aggregate surfaces. 0.81.3 → 0.81.4 → 0.81.5 are all score-identical
@@ -47,7 +47,7 @@ export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.13';
  * DESC, id DESC. WRITE-side targeting keeps exact OPD_ENGINE_VERSION (family there would stop history
  * re-scoring). See the patch report.
  */
-export const OPD_ENGINE_VERSIONS_CURRENT = ['opd-note-audit/0.81.3', 'opd-note-audit/0.81.4', 'opd-note-audit/0.81.5', 'opd-note-audit/0.81.6', 'opd-note-audit/0.81.7', 'opd-note-audit/0.81.8', 'opd-note-audit/0.81.9', 'opd-note-audit/0.81.10', 'opd-note-audit/0.81.11', 'opd-note-audit/0.81.12', 'opd-note-audit/0.81.13'] as const;
+export const OPD_ENGINE_VERSIONS_CURRENT = ['opd-note-audit/0.81.3', 'opd-note-audit/0.81.4', 'opd-note-audit/0.81.5', 'opd-note-audit/0.81.6', 'opd-note-audit/0.81.7', 'opd-note-audit/0.81.8', 'opd-note-audit/0.81.9', 'opd-note-audit/0.81.10', 'opd-note-audit/0.81.11', 'opd-note-audit/0.81.12', 'opd-note-audit/0.81.13', 'opd-note-audit/0.81.14'] as const;
 
 // Local copy of the PDQI-9 keys (kept in sync with opd-note-score-core) so this core has
 // no runtime cross-import and stays loadable under `node --experimental-strip-types`.
@@ -105,6 +105,10 @@ export const OPD_SIGNAL_TYPES: Record<string, string> = {
   muscle_relaxant_indication: 'Muscle relaxant — document the indication',
   duplicate_molecule: 'Same molecule in multiple products',
   high_alert_medication: 'High-alert medication',
+  // 0.81.14 (CLINICAL-RULINGS §2.5/§2.7) — two informational documentation prompts; routed to
+  // deterministic_completeness (no external authority cites "retest the level" / "verify pregnancy status").
+  vitamin_d_repletion_duration: 'Vitamin D repletion — document retest',
+  pregnancy_risk_verify: 'Possible pregnancy — verify status',
   schedule_x: 'Schedule X drug',
   off_formulary: 'Off-formulary items',
   banned_fdc: 'Banned fixed-dose combination',
@@ -141,6 +145,8 @@ const SIGNAL_TYPE_RULES: { re: RegExp; type: string }[] = [
   { re: /^muscle relaxant prescribed\b/, type: 'muscle_relaxant_indication' },
   { re: /^same molecule in \d+ products?\b/, type: 'duplicate_molecule' },
   { re: /^high[\s-]?alert medication/, type: 'high_alert_medication' },
+  { re: /^vitamin d 60,?000 iu weekly/i, type: 'vitamin_d_repletion_duration' },   // 0.81.14 §2.5
+  { re: /^possible pregnancy\b/i, type: 'pregnancy_risk_verify' },                 // 0.81.14 §2.7
   { re: /^schedule x\b/, type: 'schedule_x' },
   { re: /^off[\s-]?formulary\b/, type: 'off_formulary' },
   { re: /^banned fixed-dose combination/i, type: 'banned_fdc' },
@@ -543,6 +549,27 @@ function highAlertProvenance(genericNames: string[]): FindingProvenance | undefi
   return undefined;   // pending pharmacy / defect → stays uncited_deterministic
 }
 
+// ── 0.81.14 Ruling 2 (CLINICAL-RULINGS §2.2) — molecule-level high-alert exclusions ───────────────────
+// `high_risk` is a formulary CLASS flag (register A-1), so a joint supplement (glucosamine "…potassium
+// chloride"), a multivitamin/multimineral/amino-acid blend, and ORAL magnesium sulphate all inherit the
+// high-alert flag by ACCIDENT — none carries a single high-alert molecule (ISMP's high-alert magnesium is
+// the INJECTABLE). This is a MOLECULE/COMPOSITION + route predicate (NOT a 3-name suppression list), so
+// the next name-collision does not recur. Consulted before a med contributes a high_alert_medication
+// finding. INJECTABLE magnesium sulphate still fires. Fail-safe: only excludes what the predicate matches.
+const HIGH_ALERT_SUPPLEMENT_RE = /glucosamine|chondroitin|multivitamin|multi[\s-]?mineral|amino[\s-]?acid|isoflavon|grape[\s-]?seed/i;
+const MAGNESIUM_SULPHATE_RE = /magnesium\s+(?:sulphate|sulfate)/i;
+export function isHighAlertExcluded(m: OpdMed): boolean {
+  const comp = `${m.resolvedGeneric || ''} ${m.generic || ''} ${m.brand || ''}`.toLowerCase();
+  // (a) glucosamine salts + multivitamin/multimineral/amino-acid blends — no single high-alert molecule.
+  if (HIGH_ALERT_SUPPLEMENT_RE.test(comp)) return true;
+  // (b) ORAL magnesium sulphate (a laxative); the INJECTABLE stays high-alert (route not resolving oral).
+  if (MAGNESIUM_SULPHATE_RE.test(comp)) {
+    const route = (resolveMedRoute(m) || '').toLowerCase();
+    if (route === 'oral' || /\b(oral|po|mouth)\b/.test(route)) return true;
+  }
+  return false;
+}
+
 // ── Deterministic rational-prescribing checks (from the medications array) ─────
 // Uses the formulary-RESOLVED generic where the note gave only a brand, so brand-only lines
 // finally dedupe and stop false-flagging. Formulary safety facts (ISMP high-alert, Schedule X,
@@ -596,7 +623,7 @@ export function prescribingChecks(c: DeidOpdCase): OpdFinding[] {
     if (gaps.length && !isDoseExempt) out.push(det(`Incomplete dosing: ${name}`, 'context-dependent', 0.5, `Missing ${gaps.join(', ')} — incomplete prescription (strength read from the drug name and route inferred from the dosage form where possible).`));
 
     if (gen) { const k = gen.toLowerCase(); const p = seen.get(k); seen.set(k, { n: (p?.n || 0) + 1, label: gen }); }
-    if (gen && m.highAlert) highAlerts.push(gen);
+    if (gen && m.highAlert && !isHighAlertExcluded(m)) highAlerts.push(gen);   // 0.81.14 Ruling 2 — molecule-level exclusion of name-collision artifacts
     if (gen && m.schedule === 'X') scheduleX.push(gen);
   }
 
