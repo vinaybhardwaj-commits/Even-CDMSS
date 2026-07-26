@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { bannedFdcFindings, normalizeMoleculeSet, type BannedFdcTable } from '../cdsco-banned-fdc-core';
 import { bannedFdcFindings as loaderFindings, CDSCO_BANNED_FDC_VERSION } from '../cdsco-banned-fdc';
 import { stampFindingIdentity, OPD_SIGNAL_TYPES, type OpdFinding } from '../opd-note-audit-core';
-import { applyDemotes, demoteRuleViolatesSeverityFloor, isSafetySignalType, type Suppression } from '../audit-suppression-core';
+import { applyDemotes, ruleViolatesSeverityFloor, isSafetySignalType, type Suppression } from '../audit-suppression-core';
 import type { OpdMed } from '../opd-ingest-core';
 
 const med = (over: Partial<OpdMed> = {}): OpdMed => ({ name: 'BrandX', ...over } as OpdMed);
@@ -101,7 +101,7 @@ test('stampFindingIdentity: banned-FDC keeps banned_fdc (C4 protection holds und
 // ── C4 — quieting severity floor, both halves ─────────────────────────────────
 test('severity floor: banned_fdc is protected — store half refuses, engine half skips a hostile rule', () => {
   assert.equal(isSafetySignalType('banned_fdc'), true);
-  assert.equal(demoteRuleViolatesSeverityFloor({ action: 'demote', signal_type: 'banned_fdc' }), true);
+  assert.equal(ruleViolatesSeverityFloor({ action: 'demote', signal_type: 'banned_fdc' }), true);
   const hostile: Suppression = {
     id: 'hostile', signal_type: 'banned_fdc', discriminator: 'mol-a', match_kind: 'subject_contains',
     scope: 'all', doctor_uid: null, action: 'demote', active: true, status: 'active',

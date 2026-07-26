@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  applyDemotes, applySuppressions, demoteRuleViolatesSeverityFloor, findingMatchesSuppression,
+  applyDemotes, applySuppressions, ruleViolatesSeverityFloor, findingMatchesSuppression,
   isSafetySignalType, SAFETY_SIGNAL_TYPES, type Suppression, type SuppressibleFinding,
 } from '../audit-suppression-core';
 import { computeOpdScore } from '../opd-note-score-core';
@@ -65,14 +65,55 @@ test('applyDemotes: already-informational findings are left alone (never re-badg
   assert.equal((findings[0] as Record<string, unknown>).quieted_by, undefined);
 });
 
-test('severity floor, store half: a demote rule on ANY deterministic safety signal type is refused', () => {
+test('severity floor, store half: a rule on ANY deterministic safety signal type is refused, for EVERY action', () => {
+  // V ruling 26 Jul 2026 — the floor was demote-only, which was a hole rather than a design: a drop
+  // or downgrade removes a safety finding just as effectively. This test previously asserted
+  // `{ action: 'downgrade', signal_type: 'drug_interaction' } === false` — i.e. it encoded the gap.
   for (const t of SAFETY_SIGNAL_TYPES) {
-    assert.equal(demoteRuleViolatesSeverityFloor({ action: 'demote', signal_type: t }), true, t);
+    for (const action of ['drop', 'downgrade', 'demote'] as const) {
+      assert.equal(ruleViolatesSeverityFloor({ action, signal_type: t }), true, `${action}/${t}`);
+    }
     assert.equal(isSafetySignalType(t), true, t);
   }
-  assert.equal(demoteRuleViolatesSeverityFloor({ action: 'demote', signal_type: 'low_value_care' }), false);
-  // the floor is demote-specific — legacy downgrade/drop rules are not this feature's to police
-  assert.equal(demoteRuleViolatesSeverityFloor({ action: 'downgrade', signal_type: 'drug_interaction' }), false);
+  // …and false for every action on a non-safety type — the floor must not become a blanket veto.
+  for (const action of ['drop', 'downgrade', 'demote'] as const) {
+    assert.equal(ruleViolatesSeverityFloor({ action, signal_type: 'low_value_care' }), false, action);
+  }
+});
+
+test('severity floor, engine half (drop/downgrade): a drop rule can NEVER remove a banned_fdc finding', () => {
+  // banned_fdc is a CDSCO Section-26A legal prohibition — the sharpest case for the floor.
+  const fdc = lvcFinding({ subject: 'Banned fixed-dose combination: nimesulide + paracetamol', signal_type: 'banned_fdc', lvc_category: undefined });
+  const hostileDrop: Suppression = { id: 'r-drop', signal_type: 'banned_fdc', discriminator: null, match_kind: 'type_only', scope: 'all', doctor_uid: null, action: 'drop', active: true };
+  const { findings, suppressed } = applySuppressions([fdc], null, [hostileDrop]);
+  assert.equal(findings.length, 1);                       // kept — not dropped
+  assert.equal(suppressed.length, 0);                     // and not recorded as suppressed
+  assert.equal((findings[0] as Record<string, unknown>).informational, undefined);
+});
+
+test('severity floor, engine half (drop/downgrade): a downgrade rule can NEVER informational-ise a high-alert finding', () => {
+  const ha = lvcFinding({ subject: 'High-alert medication: insulin', signal_type: 'high_alert_medication', lvc_category: undefined });
+  const hostileDowngrade: Suppression = { id: 'r-dg', signal_type: 'high_alert_medication', discriminator: null, match_kind: 'type_only', scope: 'all', doctor_uid: null, action: 'downgrade', active: true };
+  const { findings, suppressed } = applySuppressions([ha], null, [hostileDowngrade]);
+  assert.equal(findings.length, 1);
+  assert.equal(suppressed.length, 0);
+  assert.equal((findings[0] as Record<string, unknown>).informational, undefined);   // NOT set
+});
+
+test('severity floor does not over-reach: a drop rule on a NON-safety type still drops (regression guard)', () => {
+  const drop: Suppression = { id: 'r-ok', signal_type: 'low_value_care', discriminator: null, match_kind: 'type_only', scope: 'all', doctor_uid: null, action: 'drop', active: true };
+  const { findings, suppressed } = applySuppressions([lvcFinding()], null, [drop]);
+  assert.equal(findings.length, 0);                       // still removed — the floor is narrow
+  assert.equal(suppressed.length, 1);
+  assert.equal(suppressed[0].action, 'drop');
+});
+
+test('zero-delta: applySuppressions with no rules returns the input findings unchanged', () => {
+  const fixture = [lvcFinding(), lvcFinding({ signal_type: 'banned_fdc', finding_ref: 'zzz' })];
+  const { findings, suppressed } = applySuppressions(fixture, null, []);
+  assert.deepEqual(findings, fixture);                    // same contents, same order
+  assert.equal(findings[0], fixture[0]);                  // and the SAME objects — no cloning
+  assert.equal(suppressed.length, 0);
 });
 
 test('severity floor, engine half: safety findings are skipped even when a rule somehow matches them', () => {

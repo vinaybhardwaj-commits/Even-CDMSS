@@ -10,7 +10,7 @@ export const runtime = 'nodejs';
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { isCareUnlocked } from '@/lib/care-cookie';
-import { demoteRuleViolatesSeverityFloor, type Suppression } from '@/lib/audit-suppression-core';
+import { ruleViolatesSeverityFloor, type Suppression } from '@/lib/audit-suppression-core';
 import { demoteDryRunCount } from '@/lib/audit-suppression-store';
 
 export async function POST(req: NextRequest) {
@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
     scope: 'all', doctor_uid: null, action: 'demote', active: true, status: 'active',
   };
   if (!rule.signal_type) return NextResponse.json({ ok: false, error: 'signal_type required' }, { status: 400 });
-  if (demoteRuleViolatesSeverityFloor(rule)) {
+  if (ruleViolatesSeverityFloor(rule)) {
     return NextResponse.json({ ok: false, error: `severity floor: '${rule.signal_type}' cannot be quieted`, floor: true }, { status: 409 });
   }
   try {

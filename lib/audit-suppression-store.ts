@@ -11,7 +11,7 @@ import { sql } from './db';
 import { OPD_ENGINE_VERSION, stampFindingIdentity, type OpdFinding } from './opd-note-audit-core';
 import { parseJson } from './opd-audit-ui';
 import { loadValidLabelDoctors } from './opd-triage-store';
-import { demoteRuleViolatesSeverityFloor, findingMatchesSuppression, isSafetySignalType, type Suppression, type ValidLabelInstance, type SuppressionAction, type SuppressionMatch, type SuppressionScope } from './audit-suppression-core';
+import { ruleViolatesSeverityFloor, findingMatchesSuppression, isSafetySignalType, type Suppression, type ValidLabelInstance, type SuppressionAction, type SuppressionMatch, type SuppressionScope } from './audit-suppression-core';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 const APP = process.env.APP_SOURCE || 'standalone';
@@ -170,13 +170,15 @@ export async function createSuppression(input: CreateSuppressionInput): Promise<
     throw new Error(`${match_kind} requires a discriminator`);
   }
   if (scope === 'doctor' && !dstr(input.doctor_uid, 64)) throw new Error('doctor scope requires doctor_uid');
+  // SEVERITY FLOOR, store-side half (PRD §2.3, generalised by V ruling 26 Jul 2026): refuse to write
+  // ANY rule — drop, downgrade or demote — scoped to a deterministic safety signal type. Hoisted out
+  // of the `if (isDemote)` block below, which is what previously let a drop/downgrade through even
+  // though the predicate was consulted. The engine seams independently skip such findings.
+  if (ruleViolatesSeverityFloor({ action, signal_type })) {
+    throw new Error(`severity floor: '${signal_type}' is a deterministic safety signal type and cannot be suppressed or quieted`);
+  }
   const isDemote = action === 'demote';
   if (isDemote) {
-    // SEVERITY FLOOR, store-side half (PRD §2.3): refuse to write a demote rule scoped to a
-    // deterministic safety signal type. The engine seam independently skips such findings.
-    if (demoteRuleViolatesSeverityFloor({ action, signal_type })) {
-      throw new Error(`severity floor: '${signal_type}' is a deterministic safety signal type and cannot be quieted`);
-    }
     if (!dstr(input.reason)) throw new Error('demote proposal requires a reason');
     if (!dstr(input.created_by, 64)) throw new Error('demote proposal requires a named proposer (created_by)');
   }

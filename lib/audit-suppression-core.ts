@@ -82,6 +82,11 @@ export interface SuppressionOutcome<T> {
  * Apply active suppressions to one note's findings. First matching suppression wins.
  * `drop` removes the finding; `downgrade` sets informational (kept, but out of the queue + score).
  * Never touches an already-informational finding's presence (only real findings are suppressed).
+ *
+ * SEVERITY FLOOR, engine-side half for drop/downgrade (V ruling, 26 Jul 2026): a finding whose
+ * signal_type is in SAFETY_SIGNAL_TYPES is skipped regardless of what the suppressions table says —
+ * mirroring applyDemotes. Belt and braces: the store-side half now refuses to write such a rule for
+ * ANY action, so this can only fire on a row written before the floor was generalised.
  */
 export function applySuppressions<T extends SuppressibleFinding>(
   findings: T[], doctorUid: string | null, suppressions: Suppression[],
@@ -92,6 +97,7 @@ export function applySuppressions<T extends SuppressibleFinding>(
   const kept: T[] = [];
   const suppressed: SuppressionOutcome<T>['suppressed'] = [];
   for (const f of findings) {
+    if (isSafetySignalType(f.signal_type)) { kept.push(f); continue; }   // severity floor — belt and braces
     const hit = active.find((s) => findingMatchesSuppression(f, doctorUid, s));
     if (!hit) { kept.push(f); continue; }
     suppressed.push({ finding_ref: f.finding_ref, signal_type: f.signal_type, action: hit.action });
@@ -133,9 +139,13 @@ export function applyDemotes<T extends SuppressibleFinding>(
   return { findings: out, quieted };
 }
 
-/** Store-side half of the severity floor: is this rule one the store must refuse to write? */
-export function demoteRuleViolatesSeverityFloor(rule: Pick<Suppression, 'action' | 'signal_type'>): boolean {
-  return rule.action === 'demote' && isSafetySignalType(rule.signal_type);
+/** Store-side half of the severity floor: is this rule one the store must refuse to write?
+ *  ALL actions (V ruling, 26 Jul 2026) — a drop or downgrade removes a safety finding just as
+ *  effectively as a demote, and the previous demote-only scope was a hole, not a design. The rule
+ *  (not a bare signal_type) stays the parameter deliberately: the call sites read better, and a
+ *  future action-specific exception has somewhere to live. */
+export function ruleViolatesSeverityFloor(rule: Pick<Suppression, 'action' | 'signal_type'>): boolean {
+  return isSafetySignalType(rule.signal_type);
 }
 
 // ── Dual-label safety (PRD §7.2) ──────────────────────────────────────────────

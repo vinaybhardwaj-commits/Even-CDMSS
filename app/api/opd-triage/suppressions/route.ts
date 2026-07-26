@@ -14,7 +14,7 @@ export const runtime = 'nodejs';
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { isCareUnlocked } from '@/lib/care-cookie';
-import { previewCollateral, demoteRuleViolatesSeverityFloor, type Suppression } from '@/lib/audit-suppression-core';
+import { previewCollateral, ruleViolatesSeverityFloor, type Suppression } from '@/lib/audit-suppression-core';
 import {
   listSuppressions, createSuppression, setSuppressionActive, loadValidLabelInstances,
   approveDemoteRule, retireDemoteRule, currentQuietingGen, quietedVolume30d,
@@ -68,7 +68,7 @@ export async function POST(req: NextRequest) {
       created_by: b.created_by == null ? null : String(b.created_by),
       source_triage_ref: b.source_triage_ref == null ? null : String(b.source_triage_ref),
     };
-    if (demoteRuleViolatesSeverityFloor({ action: 'demote', signal_type: rule.signal_type })) {
+    if (ruleViolatesSeverityFloor({ action: 'demote', signal_type: rule.signal_type })) {
       return NextResponse.json({ ok: false, error: `severity floor: '${rule.signal_type}' is a deterministic safety signal type and cannot be quieted` }, { status: 409 });
     }
     try {
