@@ -77,17 +77,20 @@ test('parseAdjudicateArgs: monitor and all five decisions accepted; list default
   if (l2.ok && l2.action === 'list') assert.equal(l2.limit, 200); // clamped to max
 });
 
-// 5 — missed rows: nullable signal_type grouped as "(unclassified)"
-test('missed rows: null signal_type labelled (unclassified); unjoined engine preserved', () => {
+// 5 — missed rows: grouped by CATEGORY (F6 / A10.1), nulls as "(unclassified)"
+test('missed rows: grouped by category; null category labelled (unclassified); unjoined engine preserved', () => {
+  // F6 (addendum A10.1) — this previously grouped by `signal_type`, which NOTHING populates on a
+  // missed row, so every bucket collapsed to one null key and recall had no denominator. Rewritten,
+  // not deleted: the (unclassified) and UNJOINED assertions are preserved verbatim, now on category.
   const r = reduceRollup({
     findingRows: [], firedRows: [],
     missedRows: [
-      { engine_version: '0.81.2', signal_type: null, n: 2 },
-      { engine_version: UNJOINED, signal_type: 'coding_gap', n: 1 },
+      { engine_version: '0.81.2', category: null, n: 2 },
+      { engine_version: UNJOINED, category: 'coding', n: 1 },
     ],
     auditRows: [], reviewerRows: [], ledgerRows: [],
   });
-  const unc = r.missed.find((m) => m.signal_type === UNCLASSIFIED);
+  const unc = r.missed.find((m) => m.category === UNCLASSIFIED);
   assert.ok(unc && unc.n === 2);
   assert.ok(r.missed.some((m) => m.engine_version === UNJOINED));
   assert.equal(r.totals.missed, 3);

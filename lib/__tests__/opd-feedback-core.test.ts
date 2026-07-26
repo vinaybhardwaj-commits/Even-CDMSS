@@ -44,9 +44,11 @@ test('impact scope: TP-only second tap — valid tag + finding_ref required, cat
   assert.match(err({ auditId: AUDIT_ID, scope: 'impact', verdict: 'changes_management' }), /finding_ref/);
 });
 
-test('missed scope: optional category from the whitelist; unknown category rejected', () => {
-  // no category → null (backward-compatible with the shipped missed capture)
-  assert.equal(ok({ auditId: AUDIT_ID, scope: 'missed', comment: 'BP never rechecked' }).category, null);
+test('missed scope: category is REQUIRED (F6/A10.1) and whitelisted; unknown category rejected', () => {
+  // F6 (addendum A10.1) — category was OPTIONAL and this test asserted `no category → null`.
+  // Rewritten, not deleted: omitting it is now a 400, because an optional classifier gave recall no
+  // denominator to group by. The whitelist itself is unchanged and is still reused verbatim.
+  assert.match(err({ auditId: AUDIT_ID, scope: 'missed', comment: 'BP never rechecked' }), /category required/);
   for (const cat of MISSED_CATEGORIES) {
     const v = ok({ auditId: AUDIT_ID, scope: 'missed', comment: 'x', category: cat });
     assert.equal(v.category, cat);
@@ -116,7 +118,8 @@ test('finding scope: all four verdicts accepted, carries ref + signal_type + opt
 test('missed scope: verdict forced to missed, comment required', () => {
   assert.match(err({ auditId: AUDIT_ID, scope: 'missed' }), /comment required/);
   assert.match(err({ auditId: AUDIT_ID, scope: 'missed', comment: '   ' }), /comment required/);
-  const v = ok({ auditId: AUDIT_ID, scope: 'missed', comment: 'BP never rechecked', verdict: 'whatever' });
+  // F6: a category is now required alongside the comment.
+  const v = ok({ auditId: AUDIT_ID, scope: 'missed', comment: 'BP never rechecked', verdict: 'whatever', category: 'note_quality' });
   assert.equal(v.scope, 'missed');
   assert.equal(v.verdict, 'missed');
   assert.equal(v.finding_ref, null);

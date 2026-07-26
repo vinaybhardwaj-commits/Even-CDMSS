@@ -9,7 +9,7 @@
  *   - 'finding' → reviewer's call on a finding that FIRED; verdict ∈ FINDING_VERDICTS, finding_ref required.
  *   - 'impact'  → TP-only optional SECOND tap on a finding: verdict ∈ IMPACT_TAGS, finding_ref required.
  *   - 'missed'  → a finding that SHOULD have fired but didn't; verdict='missed', comment required,
- *                 optional `category` from MISSED_CATEGORIES.
+ *                 `category` from MISSED_CATEGORIES REQUIRED (F6 / addendum A10.1; was optional).
  *
  * Append-only: one call = one row; current state = latest row per (audit_id, finding_ref, scope).
  */
@@ -106,15 +106,18 @@ export function parseFeedbackBody(input: unknown): ParseResult {
 
   if (scope === 'missed') {
     if (!comment) return { ok: false, error: 'comment required for scope=missed' };
-    // Optional category — validated against the whitelist when present (an unknown value is rejected,
-    // not silently dropped, so a client bug surfaces rather than mislabels supervision).
-    let category: string | null = null;
-    if (rawCategory !== null) {
-      if (!(MISSED_CATEGORIES as readonly string[]).includes(rawCategory)) {
-        return { ok: false, error: 'category must be one of ' + MISSED_CATEGORIES.join(', ') };
-      }
-      category = rawCategory;
+    // F6 (addendum A10.1): `category` is REQUIRED for scope='missed' — changed from optional.
+    // The whitelist already existed and already rejected unknowns; the only defect was that the
+    // client could omit it, so recall had no denominator to group by. NO new classifier is invented:
+    // MISSED_CATEGORIES is reused verbatim. Existing rows with no category are NOT backfilled with a
+    // guess — feedback_rollup groups them as '(unclassified)'.
+    if (rawCategory === null) {
+      return { ok: false, error: 'category required for scope=missed — one of ' + MISSED_CATEGORIES.join(', ') };
     }
+    if (!(MISSED_CATEGORIES as readonly string[]).includes(rawCategory)) {
+      return { ok: false, error: 'category must be one of ' + MISSED_CATEGORIES.join(', ') };
+    }
+    const category: string = rawCategory;
     // verdict is fixed for missed; ignore/override whatever was sent.
     return { ok: true, value: { auditId, scope, uid, verdict: MISSED_VERDICT, comment, author, finding_ref: null, signal_type, category } };
   }

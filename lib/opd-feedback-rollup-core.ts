@@ -16,12 +16,27 @@
 // LAB-MCP Phase 1: cluster_key normalisation is shared with the identity core (one definition).
 import { normalizeClusterKey } from './opd-finding-identity-core';
 export { normalizeClusterKey };
+// F17/A10.3: import the impact tags rather than re-declare them, so the write and read sides of the
+// 'impact' scope can never drift. This is the ONE deliberate link between the two feedback cores.
+import { IMPACT_TAGS } from './opd-feedback-core';
 
 // ── controlled vocab ──────────────────────────────────────────────────────────
 export const FINDING_VERDICTS = ['true_positive', 'nitpick', 'false', 'contested'] as const;
 export const AUDIT_VERDICTS = ['agree', 'disagree', 'needs_action'] as const;
 export const MISSED_VERDICTS = ['missed'] as const;
 export const SCOPES = ['finding', 'missed', 'audit'] as const;
+/**
+ * F17 / A10.3 — the DELIBERATE reconciliation of the D22 vocabulary collision.
+ *
+ * opd-feedback-core.SCOPES has FOUR entries (audit, finding, missed, impact) because the WRITE path
+ * has always accepted 'impact'. This module's SCOPES has three because the ROLLUP has always grouped
+ * three. Those are two different facts and unifying them blind would silently change what
+ * reduceRollup buckets. So the read-side whitelist gets its own name: feedback_detail admits
+ * 'impact' (that is F17 — the scope was write-only), while SCOPES above is untouched.
+ * IMPACT_TAGS is IMPORTED rather than re-declared so the two modules can never disagree on the tags.
+ */
+export const DETAIL_SCOPES = ['finding', 'missed', 'audit', 'impact'] as const;
+export type DetailScope = (typeof DETAIL_SCOPES)[number];
 export const DECISIONS = ['fix', 'suppress', 'accept', 'defer', 'monitor'] as const;
 
 export type FeedbackScope = (typeof SCOPES)[number];
@@ -64,6 +79,27 @@ export function isEscalationComment(comment: unknown): boolean {
   return typeof comment === 'string' && comment.startsWith(ESCALATION_MARKER);
 }
 const nz = (v: unknown): number => { const x = Number(v); return Number.isFinite(x) ? x : 0; };
+/**
+ * F6 (A10.1) — category → signal_type map for recall_proxy. DELIBERATELY PARTIAL.
+ *
+ * A missed-finding `category` is domain-aligned; a bucket is keyed by `signal_type`. Only three
+ * categories map to signal types unambiguously. The rest (note_quality, continuity, documentation,
+ * other) have NO defensible mapping — their recall_proxy is reported as null with the reason, rather
+ * than invented. recall_proxy is a LOWER BOUND on sensitivity in every case: the denominator counts
+ * only misses a reviewer actually flagged, and nobody flags what they did not notice.
+ */
+export const CATEGORY_SIGNAL_MAP: Record<string, readonly string[]> = {
+  appropriateness_low_value: ['low_value_care', 'appropriateness_low_value', 'appropriateness_review', 'appropriateness_general'],
+  prescribing_safety: [
+    'prescribing_low_value', 'prescribing_review', 'prescribing_general', 'drug_interaction',
+    'high_alert_medication', 'dose_ceiling_exceeded', 'dose_ceiling_sos', 'schedule_x', 'lasa_pair',
+    'duplicate_molecule', 'duplicate_prescription', 'banned_fdc', 'incomplete_dosing',
+    'unverified_brand', 'off_formulary', 'antibiotic_stewardship',
+  ],
+  coding: ['coding_completeness'],
+};
+export const CATEGORY_UNMAPPED_REASON = 'no defensible category→signal_type mapping; recall_proxy would be invented, so it is null';
+
 const labelSig = (v: unknown): string => { const s = v == null ? '' : String(v).trim(); return s || UNCLASSIFIED; };
 
 // ── DDL + write SQL for the adjudication ledger (ensured at call time) ─────────
@@ -139,18 +175,47 @@ GROUP BY 1, 2`;
   return { text, params };
 }
 
-/** Missed flags (scope=missed, no finding_ref), grouped by engine_version × signal_type (nullable). */
+/**
+ * Missed flags (scope='missed'), grouped by engine_version x CATEGORY.
+ *
+ * F6 (addendum A10.1): this grouped by `signal_type`, which NOTHING populates on a missed row — the
+ * write path has never required it and the UI never sent it, so every missed bucket collapsed into a
+ * single null key and recall was ungroupable. `category` is the field the write path actually
+ * validates (MISSED_CATEGORIES), so grouping by it makes the EXISTING rows partially readable with
+ * no write-path migration. Rows predating the F6 required-category change carry NULL and are
+ * labelled '(unclassified)' — never backfilled with a guess.
+ */
 export function buildRollupMissedSql(o: RollupFilters): Sql {
   const { params, P } = pb();
   let where = `f.scope = 'missed' AND f.app_source = ${P(o.appSource)}`;
   where += rangeAnd(P, o.since, o.until);
-  if (o.signalType) where += ` AND f.signal_type = ${P(o.signalType)}`;
   const text = `WITH m AS (
-  SELECT f.audit_id, f.signal_type FROM opd_audit_feedback f WHERE ${where}
+  SELECT f.audit_id, f.category FROM opd_audit_feedback f WHERE ${where}
 )
-SELECT COALESCE(a.engine_version, '${UNJOINED}') AS engine_version, m.signal_type AS signal_type, count(*)::int AS n
+SELECT COALESCE(a.engine_version, '${UNJOINED}') AS engine_version, m.category AS category, count(*)::int AS n
 FROM m LEFT JOIN opd_note_audits a ON a.id = m.audit_id
 GROUP BY 1, 2`;
+  return { text, params };
+}
+
+/**
+ * F17 (addendum A10.2 / D23) — the `impact` scope, which is WRITE-ONLY today: parseFeedbackBody
+ * validates and stores it, and no read tool has ever exposed it. Current impact = the LATEST
+ * scope='impact' row per (audit_id, finding_ref), mirroring the finding current-state rule exactly.
+ */
+export function buildRollupImpactSql(o: RollupFilters): Sql {
+  const { params, P } = pb();
+  let cfWhere = `f.scope = 'impact' AND f.finding_ref IS NOT NULL AND f.app_source = ${P(o.appSource)}`;
+  cfWhere += rangeAnd(P, o.since, o.until);
+  const text = `WITH ci AS (
+  SELECT DISTINCT ON (f.audit_id, f.finding_ref) f.audit_id, f.finding_ref, f.verdict
+  FROM opd_audit_feedback f
+  WHERE ${cfWhere}
+  ${CURRENT_STATE_ORDER}
+)
+SELECT ci.verdict AS verdict, count(*)::int AS n, count(DISTINCT ci.finding_ref)::int AS n_refs
+FROM ci
+GROUP BY 1`;
   return { text, params };
 }
 
@@ -224,7 +289,8 @@ export function buildLatestLedgerSql(): Sql {
 // ── rollup reducer (PRD §3 semantics live here → unit-tested) ──────────────────
 export type FindingCountRow = { engine_version: string; signal_type: string | null; verdict: string; n: number | string };
 export type FiredRow = { engine_version: string; signal_type: string | null; fired: number | string };
-export type MissedRow = { engine_version: string; signal_type: string | null; n: number | string };
+export type MissedRow = { engine_version: string; category: string | null; n: number | string };
+export type ImpactRow = { verdict: string | null; n: number | string; n_refs: number | string };
 export type AuditRow = { verdict: string | null; comment: string | null };
 export type ReviewerRow = { author: string; n: number | string };
 export type LedgerLatestRow = { cluster_key: string; decision: string };
@@ -249,9 +315,12 @@ export function reduceRollup(inputs: {
   findingRows: FindingCountRow[]; firedRows: FiredRow[]; missedRows: MissedRow[];
   auditRows: AuditRow[]; reviewerRows: ReviewerRow[]; ledgerRows: LedgerLatestRow[];
   reviewerCurrentRows?: ReviewerRow[];
+  impactRows?: ImpactRow[];
 }, opts: { threshold?: number; minTriaged?: number; mode?: RollupMode; charBudget?: number } = {}): {
   buckets: RollupBucket[];
-  missed: { signal_type: string; n: number; engine_version: string }[];
+  missed: { category: string; n: number; engine_version: string }[];
+  recall_proxy: { category: string; tp: number; missed: number; recall_proxy: number | null; basis: string }[];
+  impact: { changes_management: number; chart_hygiene: number; coverage_of_tp: number | null; n_refs_tagged: number };
   audit_scope: { n_comments: number; verdict_counts: Record<string, number>; n_escalations: number };
   reviewers_all_rows: { author: string; n: number }[];
   reviewers_basis: string;
@@ -321,7 +390,8 @@ export function reduceRollup(inputs: {
     if (isEscalationComment(r.comment)) n_escalations += 1;
   }
 
-  const missed = inputs.missedRows.map((r) => ({ signal_type: labelSig(r.signal_type), n: nz(r.n), engine_version: String(r.engine_version) }));
+  // F6: missed is grouped by CATEGORY now (A10.1). Pre-F6 rows carry NULL → '(unclassified)'.
+  const missed = inputs.missedRows.map((r) => ({ category: labelSig(r.category), n: nz(r.n), engine_version: String(r.engine_version) }));
   const reviewers = inputs.reviewerRows.map((r) => ({ author: String(r.author), n: nz(r.n) }));
 
   const bucketList = [...buckets.values()].sort((a, b) => (b.triaged - a.triaged) || (b.fired - a.fired));
@@ -363,6 +433,38 @@ export function reduceRollup(inputs: {
   }
   const n_buckets_omitted = kept.length - emitted.length;
 
+  // ── F6 recall_proxy (A10.1) — per CATEGORY, a LOWER BOUND on sensitivity ────────
+  const tpBySignal = new Map<string, number>();
+  for (const b of bucketList) tpBySignal.set(b.signal_type, (tpBySignal.get(b.signal_type) ?? 0) + b.tp);
+  const missedByCat = new Map<string, number>();
+  for (const m of missed) missedByCat.set(m.category, (missedByCat.get(m.category) ?? 0) + m.n);
+  const recall_proxy = [...missedByCat.keys()].sort().map((category) => {
+    const sigs = CATEGORY_SIGNAL_MAP[category];
+    const missedN = missedByCat.get(category) ?? 0;
+    if (!sigs) {
+      return { category, tp: 0, missed: missedN, recall_proxy: null, basis: CATEGORY_UNMAPPED_REASON };
+    }
+    const tp = sigs.reduce((acc, sig) => acc + (tpBySignal.get(sig) ?? 0), 0);
+    return {
+      category, tp, missed: missedN,
+      recall_proxy: ratio(tp, tp + missedN),
+      basis: 'LOWER BOUND — tp / (tp + reviewer-flagged misses in this category). The denominator counts only misses someone noticed, so true sensitivity is at most this.',
+    };
+  });
+
+  // ── F17 impact fold (A10.2 / D23) — previously write-only ───────────────────────
+  const impactRows = inputs.impactRows ?? [];
+  const impactBy = (v: string) => impactRows.filter((r) => r.verdict === v).reduce((acc, r) => acc + nz(r.n), 0);
+  const changes_management = impactBy('changes_management');
+  const chart_hygiene = impactBy('chart_hygiene');
+  const n_refs_tagged = impactRows.reduce((acc, r) => acc + nz(r.n_refs), 0);
+  const impact = {
+    changes_management, chart_hygiene,
+    // What share of true positives a reviewer bothered to tag with an impact at all.
+    coverage_of_tp: ratio(n_refs_tagged, totTp),
+    n_refs_tagged,
+  };
+
   const totals: Record<string, number | null> = {
     buckets: bucketList.length, fired: totFired, triaged: totTriaged,
     tp: totTp, nitpick: totNit, false: totFalse, contested: totCon,
@@ -384,6 +486,8 @@ export function reduceRollup(inputs: {
   return {
     buckets: emitted,
     missed,
+    recall_proxy,
+    impact,
     audit_scope: { n_comments: inputs.auditRows.length, verdict_counts, n_escalations },
     reviewers_all_rows: reviewers,
     reviewers_basis: 'every opd_audit_feedback row with a non-blank author in the window, across ALL scopes (finding + missed + audit) and INCLUDING superseded revisions — reviewer activity, NOT triage coverage. Use reviewers_current to reconcile with totals.triaged.',
@@ -398,17 +502,20 @@ export function reduceRollup(inputs: {
 
 // ── feedback_detail SQL (PRD §4.2) ─────────────────────────────────────────────
 export type DetailFilters = {
-  appSource: string; scope: FeedbackScope; verdict?: string | null; signalType?: string | null;
+  appSource: string; scope: DetailScope; verdict?: string | null; signalType?: string | null;
   engineVersion?: string | null; uid?: string | null; history?: boolean; limit: number;
 };
 
-function verdictWhitelistFor(scope: FeedbackScope): readonly string[] {
-  return scope === 'finding' ? FINDING_VERDICTS : scope === 'missed' ? MISSED_VERDICTS : AUDIT_VERDICTS;
+function verdictWhitelistFor(scope: DetailScope): readonly string[] {
+  if (scope === 'finding') return FINDING_VERDICTS;
+  if (scope === 'missed') return MISSED_VERDICTS;
+  if (scope === 'impact') return IMPACT_TAGS;   // F17
+  return AUDIT_VERDICTS;
 }
 
 /** Build the detail query. Throws on a non-whitelisted scope/verdict filter (PRD §8 test 6). */
 export function buildDetailSql(o: DetailFilters): Sql {
-  if (!(SCOPES as readonly string[]).includes(o.scope)) throw new Error(`unknown scope filter: ${o.scope}`);
+  if (!(DETAIL_SCOPES as readonly string[]).includes(o.scope)) throw new Error(`unknown scope filter: ${o.scope}`);
   if (o.verdict && !verdictWhitelistFor(o.scope).includes(o.verdict)) {
     throw new Error(`unknown verdict filter for scope=${o.scope}: ${o.verdict}`);
   }

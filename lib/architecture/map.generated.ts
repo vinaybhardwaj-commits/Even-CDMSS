@@ -3163,6 +3163,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "opd-feedback-rollup-core",
+    "to": "opd-feedback-core",
+    "kind": "value"
+  },
+  {
+    "from": "opd-feedback-rollup-core",
     "to": "opd-finding-identity-core",
     "kind": "value"
   },
