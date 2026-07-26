@@ -3,6 +3,9 @@ import { embedQuery, embedQueryV2, vectorLiteral, TOP_K, USE_EMBEDDING_V2 } from
 import { expandQuery } from './expand';
 import { rerank } from './rerank';
 import { computeSourceQualityWeight } from './source-quality';
+// F16 (decision 14): lab-ingested sources may not outrank the best curated source until a batch has
+// passed an activation A/B. Pure clamp, shared with the Lab MCP so one rule governs both.
+import { clampSourceWeight } from './lvc-proposal-core';
 import { labLabel } from './lab-core';
 import type { ChunkHit } from './db';
 
@@ -558,7 +561,13 @@ export async function retrieve(query: string, opts: RetrieveOptions = {}): Promi
       // the same formula a reindex would, so unknown journals get the 0.80 default and
       // tiny/fragment chunks get penalised — no 2M-row backfill needed. Overwrite the
       // field so telemetry shows the weight actually applied.
-      const w = computeSourceQualityWeight({ book: h.book, source: h.source, chunk_type: h.chunk_type, token_count: h.token_count });
+      const wRaw = computeSourceQualityWeight({ book: h.book, source: h.source, chunk_type: h.chunk_type, token_count: h.token_count });
+      // F16 — EARNED weighting. A `lab:`/`labq:` chunk is clamped to 0.855 (the best curated
+      // source's weight) until its batch has passed an activation A/B. Today an unactivated labq:
+      // chunk computes to 0.9025, i.e. it outranks UpToDate and StatPearls purely by being new,
+      // which is a ranking claim nothing has earned. Non-lab sources are returned untouched, so
+      // production retrieval over the curated corpus is byte-identical.
+      const w = clampSourceWeight(h.source, wRaw);
       return { ...h, source_quality_weight: w, [`${sortKey}_weighted`]: raw * w } as ChunkHitWithMeta & Record<string, number>;
     });
     const k = `${sortKey}_weighted`;
