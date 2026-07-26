@@ -91,6 +91,11 @@ export const UNREGISTERED_PROMPTS: string[] = [
   'doc-audit-core/AUDIT_CRITIQUE_SYSTEM',
   'doc-audit-core/AUDIT_REVISE_SYSTEM',
   'doc-audit/IDENTITY_SYSTEM',
+  // Concept Coder Phase 1 (CDMSS-CONCEPT-CODER-PRD v1.0). No rubric linkage: it parses the GRAMMAR
+  // of a finding string into four structural slots and makes no clinical judgement, so there is
+  // nothing for a rubric to score. Stays unregistered until Phase 2 yields a coder-error gold from
+  // lvc_concept_evidence — which is exactly the regression signal §5.1 was designed to produce.
+  'even-concept/CONCEPT_EXTRACT_SYSTEM',
   'expand/SYSTEM',
   'extract/NORMALISE_SYSTEM',
   'extraction-eval-core/JUDGE_SYSTEM',

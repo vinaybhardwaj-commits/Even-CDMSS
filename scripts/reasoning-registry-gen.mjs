@@ -54,6 +54,7 @@ const FEATURE_OF = {
   'lib/ddx-hypothesis.ts': { feature: 'Differential (DDx)', group: 'Decision support' },
   'lib/doc-audit-core.ts': { feature: 'Right Care · Record audit', group: 'Right Care' },
   'lib/doc-audit.ts': { feature: 'Right Care · Record audit (identity)', group: 'Right Care' },
+  'lib/even-concept.ts': { feature: 'Right Care · Concept coder', group: 'Right Care' },
   'lib/expand.ts': { feature: 'Ask · query rewrite', group: 'Decision support' },
   'lib/investigations.ts': { feature: 'Ask/DDx input normaliser', group: 'Decision support' },
   'lib/learning-core.ts': { feature: 'Learning (label canonicalize)', group: 'System' },

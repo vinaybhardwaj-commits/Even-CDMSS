@@ -323,6 +323,14 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "even-concept",
+    "plane": "unregistered"
+  },
+  {
+    "id": "even-concept-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "even-ground",
     "plane": "unregistered"
   },
@@ -1222,6 +1230,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "drugs",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "even-concept",
     "kind": "value"
   },
   {
@@ -2408,6 +2421,26 @@ export const MAP_EDGES: MapEdge[] = [
     "from": "episode-state",
     "to": "doc-audit-core",
     "kind": "type"
+  },
+  {
+    "from": "even-concept",
+    "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "even-concept",
+    "to": "even-concept-core",
+    "kind": "value"
+  },
+  {
+    "from": "even-concept",
+    "to": "mini-backfill",
+    "kind": "value"
+  },
+  {
+    "from": "even-concept",
+    "to": "trace",
+    "kind": "value"
   },
   {
     "from": "even-ground",

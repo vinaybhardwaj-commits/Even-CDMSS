@@ -91,7 +91,7 @@ test('rubric inclusion: nabh/6e external-json + the five embedded-in-prompt rubr
   }
 });
 
-test('count invariant: counts match the committed artifact contents (29 prompts / 6 rubrics / 31 builders)', () => {
+test('count invariant: counts match the committed artifact contents (30 prompts / 6 rubrics / 32 builders)', () => {
   const gen = GENERATED as {
     counts: { prompts: number; rubrics: number; user_message_builders: number; features: number };
     prompts: Array<{ feature: string }>; rubrics: unknown[]; user_message_builders: unknown[];
@@ -104,8 +104,9 @@ test('count invariant: counts match the committed artifact contents (29 prompts 
   // a REAL change to the reasoning surface — bump knowingly, in the same commit as the prompt.
   // Inquiry K1 adds inquiry-core/INQUIRY_SELECT_SYSTEM + buildInquirySelectUser (27→28, 29→30).
   // Brainstem PR 0 adds verify-core/VERIFY_SYSTEM + buildVerifyUser (28→29, 30→31, +1 feature).
-  assert.equal(gen.counts.prompts, 29);
+  // Concept Coder Phase 1 adds even-concept/CONCEPT_EXTRACT_SYSTEM + buildConceptExtractUser (29→30, 31→32, +1 feature).
+  assert.equal(gen.counts.prompts, 30);
   assert.equal(gen.counts.rubrics, 6);
-  assert.equal(gen.counts.user_message_builders, 31);
-  assert.equal(gen.counts.features, 18);
+  assert.equal(gen.counts.user_message_builders, 32);
+  assert.equal(gen.counts.features, 19);
 });

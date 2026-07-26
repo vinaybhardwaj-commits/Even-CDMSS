@@ -5,10 +5,10 @@
   "scope_note": "Reasoning configuration ONLY — standing prompt system-instructions and rubrics. Contains NO clinical data, NO patient text, NO run outputs, NO retrieved passages, NO PHI. Every entry carries a sha256 content hash for reproducibility. Text may contain ${...} template slots (variable inputs), which are part of the instruction scaffold, not data.",
   "coverage_note": "Standing prompt consts + rubrics extracted from lib/. A few prompts are assembled inline inside route handlers (ask, topics, calculators/tooltip) rather than as named consts and are not captured here — this is exactly the gap the prompt registry closes.",
   "counts": {
-    "prompts": 29,
+    "prompts": 30,
     "rubrics": 6,
-    "user_message_builders": 31,
-    "features": 18
+    "user_message_builders": 32,
+    "features": 19
   },
   "prompts": [
     {
@@ -108,6 +108,20 @@
       "chars": 459,
       "lines": 5,
       "text": "You extract PATIENT IDENTITY FIELDS ONLY from a medical document, for record linkage.\nReturn ONLY JSON: {\"uhid\": string|null, \"mrn\": string|null, \"name\": string|null, \"dob\": string|null}\n- uhid/mrn: the hospital's patient identifiers exactly as printed (UHID, MRN, IP/OP no., patient ID).\n- name: the patient's full name as printed. dob: date of birth as printed.\n- null for anything not present. Do NOT return diagnoses, medications, or any clinical content."
+    },
+    {
+      "id": "even-concept/CONCEPT_EXTRACT_SYSTEM",
+      "const": "CONCEPT_EXTRACT_SYSTEM",
+      "feature": "Right Care · Concept coder",
+      "group": "Right Care",
+      "file": "lib/even-concept.ts",
+      "kind": "system",
+      "version_hint": "unversioned (git-tracked)",
+      "sha256": "3d641a05045abd63688563d33b5a956a6f0fa9cffebd857ca43faafd077561dc",
+      "sha12": "3d641a05045a",
+      "chars": 1442,
+      "lines": 18,
+      "text": "You parse the GRAMMAR of a short clinical audit finding string. You do not judge clinical quality, and you never decide whether the finding is correct.\n\nReturn STRICT JSON, one object, no prose and no code fence:\n{\"direction\":\"...\",\"action\":\"...\",\"target\":\"...\",\"context\":\"...\"}\n\ndirection — exactly one of: overuse | underuse | documentation | process\n  overuse       something was done that arguably should not have been\n  underuse      something was NOT done that arguably should have been\n  documentation something was not recorded, unclear, or internally inconsistent\n  process       a workflow/administrative step, not a clinical decision\n\naction  — the verb-ish category, lowercase, 1-2 words (e.g. rx, investigation, imaging, duplication, combo_rx, counseling, followup, documentation)\ntarget  — WHAT the action applies to, lowercase, as written in the string (a drug, a test, a document element). Do not expand abbreviations. Do not substitute a brand for a molecule.\ncontext — the clinical situation the string names, lowercase, or \"\" if the string names none. Never invent one.\n\nCRITICAL: direction is decided by what the string ASSERTS, not by keywords. \"antibiotic prescribed without documented indication\" is overuse. \"antibiotic not prescribed despite documented UTI\" is underuse. Read the whole clause before choosing.\n\nIf you cannot read the string, return {\"direction\":\"\",\"action\":\"\",\"target\":\"\",\"context\":\"\"} — never guess."
     },
     {
       "id": "expand/SYSTEM",
@@ -547,6 +561,11 @@
       "fn": "buildExtractUser",
       "file": "lib/doc-audit-core.ts",
       "feature": "Right Care · Record audit"
+    },
+    {
+      "fn": "buildConceptExtractUser",
+      "file": "lib/even-concept.ts",
+      "feature": "Right Care · Concept coder"
     },
     {
       "fn": "buildInquirySelectUser",
