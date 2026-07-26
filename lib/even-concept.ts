@@ -20,6 +20,7 @@
 import { sql } from './db';
 import { getSettings, setSetting } from './mini-backfill';
 import { governedChat, startTrace, finishTraceIfRunning } from './trace';
+import { OPD_ENGINE_VERSIONS_CURRENT } from './opd-note-audit-core';
 import {
   normalizeConceptSubject, stampConcepts, pendingSubjects, validateExtraction, baseConceptId,
   type ConceptAssignment, type ExtractionReject, type ConceptStatusRaw, type ConceptTickRow,
@@ -67,9 +68,16 @@ export function buildConceptExtractUser(norm: string): string {
 // ── INFERRED SQL (validate verbatim against live Neon) ──────────────────────────
 // Newest-first, epoch-aware candidate drain. engine_version is SELECTED so the writeback can target the
 // exact (uid, engine_version) row — opd_note_audits is keyed by (uid, engine_version).
+// DEFECT A FIX (26 Jul): the join is on (uid, engine_version), matching the grain opd_note_audits is
+// actually keyed at and the grain WRITEBACK_SQL targets. Keyed on uid alone, ONE watermark row
+// certified only ONE engine row and the `s.uid IS NULL OR ...` predicate then excluded every other
+// engine row for that uid permanently — 256 in-family findings across 201 uids were unreachable.
+// The rest of the WHERE clause is deliberately unchanged: ALL engine versions stay candidates, because
+// legacy strings warm the lvc_concept_strings cache and may recur live (V's decision). Provenance, not
+// exclusion, is how Phase 2 separates them — see in_family on the watermark.
 const CANDIDATE_SELECT_SQL = `SELECT a.uid, a.engine_version, a.findings
   FROM opd_note_audits a
-  LEFT JOIN even_concept_state s ON s.uid = a.uid
+  LEFT JOIN even_concept_state s ON s.uid = a.uid AND s.engine_version = a.engine_version
   WHERE a.app_source = $1 AND a.excluded_reason IS NULL
     AND a.findings @> '[{"verdict":"low-value"}]'
     AND (s.uid IS NULL OR s.coded_epoch < $2)
@@ -79,19 +87,66 @@ const CANDIDATE_SELECT_SQL = `SELECT a.uid, a.engine_version, a.findings
 // Additive writeback — the findings jsonb ONLY. NO score column is named.
 const WRITEBACK_SQL = `UPDATE opd_note_audits SET findings = $1::jsonb WHERE uid = $2 AND engine_version = $3`;
 
-const WATERMARK_UPSERT_SQL = `INSERT INTO even_concept_state (uid, coded_epoch, coded_at, n_stamped)
-  VALUES ($1, $2, now(), $3)
-  ON CONFLICT (uid) DO UPDATE SET coded_epoch = EXCLUDED.coded_epoch, coded_at = now(), n_stamped = EXCLUDED.n_stamped`;
+// Carries engine_version + in_family; conflict target is the composite key from migration 0021.
+const WATERMARK_UPSERT_SQL = `INSERT INTO even_concept_state (uid, engine_version, in_family, coded_epoch, coded_at, n_stamped)
+  VALUES ($1, $2, $3, $4, now(), $5)
+  ON CONFLICT (uid, engine_version) DO UPDATE SET coded_epoch = EXCLUDED.coded_epoch,
+    in_family = EXCLUDED.in_family, coded_at = now(), n_stamped = EXCLUDED.n_stamped`;
 
 const CACHE_GET_MANY_SQL = `SELECT norm, concept_id, context FROM lvc_concept_strings WHERE norm = ANY($1::text[])`;
 const CACHE_PUT_SQL = `INSERT INTO lvc_concept_strings (norm, concept_id, context, confidence, source, model, extracted_at)
   VALUES ($1,$2,$3,$4,'extracted',$5, now()) ON CONFLICT (norm) DO NOTHING`;
 
-// Concept upsert — first_seen preserved, last_seen/volume advanced. review_lane is NOT recomputed here
-// (it is a whole-corpus property; the seed loader computes it and Phase 2 recomputes it in bulk).
+// Concept upsert — first_seen preserved; n_strings and last_seen advanced. NEITHER volume NOR
+// live_volume is touched here (DEFECT C: the old comment claimed volume was advanced; it never was).
+//   · `volume` holds the RESEARCH TEAM'S SEED measurement and is deliberately never overwritten —
+//     it has evidential value and predicted the live distribution well.
+//   · `live_volume` is advanced only by the bulk recompute below, never per-stamp: incrementing per
+//     stamp would double-count across an epoch re-drain, since a re-drain re-stamps the same finding.
+// review_lane is likewise NOT recomputed here — a whole-corpus property, deferred to a bulk pass.
 const CONCEPT_UPSERT_SQL = `INSERT INTO lvc_concepts (concept_id, direction, action, target, n_strings, volume, review_lane, first_seen, last_seen)
   VALUES ($1,$2,$3,$4,1,0,'clean', now(), now())
   ON CONFLICT (concept_id) DO UPDATE SET n_strings = lvc_concepts.n_strings + 1, last_seen = now()`;
+
+/**
+ * Bulk `live_volume` recompute (DEFECT C). Counts coded findings per concept over IN-FAMILY rows
+ * ONLY, so the ranking Phase 2 reads reflects what a user-facing surface can actually see — every
+ * read surface filters on OPD_ENGINE_VERSIONS_CURRENT.
+ *
+ * IDEMPOTENT and safe to re-run: it SETs an absolute count (never increments), and zeroes concepts
+ * with no in-family coded findings so a stale figure cannot survive a re-run. The seed `volume`
+ * column is never touched.
+ */
+const LIVE_VOLUME_RECOMPUTE_SQL = `WITH per AS (
+    SELECT f->>'concept_id' AS cid, count(*)::int AS n
+    FROM opd_note_audits a, LATERAL jsonb_array_elements(a.findings) f
+    WHERE a.app_source = $1 AND a.excluded_reason IS NULL
+      AND a.engine_version = ANY($2)
+      AND f->>'verdict' = 'low-value' AND (f->>'informational') IS DISTINCT FROM 'true'
+      AND f->>'concept_id' IS NOT NULL
+    GROUP BY 1)
+  UPDATE lvc_concepts c
+     SET live_volume = coalesce(p.n, 0)
+    FROM (SELECT concept_id FROM lvc_concepts) AS all_c
+    LEFT JOIN per p ON p.cid = all_c.concept_id
+   WHERE c.concept_id = all_c.concept_id
+     AND c.live_volume IS DISTINCT FROM coalesce(p.n, 0)`;
+
+export interface LiveVolumeResult { updated: number; concepts_nonzero: number; total_live_volume: number }
+
+/** Run the bulk live_volume recompute. Read-mostly; touches only lvc_concepts.live_volume. */
+export async function recomputeLiveVolume(): Promise<LiveVolumeResult> {
+  await run(LIVE_VOLUME_RECOMPUTE_SQL, [APP, [...OPD_ENGINE_VERSIONS_CURRENT]]);
+  const r = await run(
+    `SELECT count(*) FILTER (WHERE live_volume > 0)::int AS nonzero,
+            coalesce(sum(live_volume),0)::int AS total FROM lvc_concepts`, []).catch(() => []);
+  const row = (r[0] ?? {}) as Record<string, unknown>;
+  return {
+    updated: Number(row.nonzero ?? 0),
+    concepts_nonzero: Number(row.nonzero ?? 0),
+    total_live_volume: Number(row.total ?? 0),
+  };
+}
 
 const TICK_INSERT_SQL = `INSERT INTO even_concept_ticks (status, processed, stamped, extracted, rejected, epoch, note)
   VALUES ($1,$2,$3,$4,$5,$6,$7)`;
@@ -236,8 +291,12 @@ export async function runConceptTick(opts: { trigger: 'cron' | 'manual' }): Prom
           await run(WRITEBACK_SQL, [JSON.stringify(res.findings), r.uid, r.engineVersion]);
           stamped += res.stamped;
         }
-        // watermark EVERY processed note (incl 0-stamp) so it isn't re-scanned until the epoch bumps.
-        await run(WATERMARK_UPSERT_SQL, [r.uid, epoch, res.stamped]).catch(() => {});
+        // Watermark EVERY processed note (incl 0-stamp) so it isn't re-scanned until the epoch bumps.
+        // Keyed on (uid, engine_version) — one row per ENGINE ROW, not per uid (defect A). in_family
+        // records whether any user-facing surface can read this note, since they all filter on
+        // OPD_ENGINE_VERSIONS_CURRENT; it is provenance for Phase 2, never a candidacy filter here.
+        const inFamily = (OPD_ENGINE_VERSIONS_CURRENT as readonly string[]).includes(r.engineVersion);
+        await run(WATERMARK_UPSERT_SQL, [r.uid, r.engineVersion, inFamily, epoch, res.stamped]).catch(() => {});
         processed++;
       } catch (e) {
         console.warn('[even-concept] note skipped', r.uid, String((e as Error).message).slice(0, 120));

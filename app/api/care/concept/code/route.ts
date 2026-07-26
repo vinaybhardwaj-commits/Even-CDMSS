@@ -10,7 +10,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isCareUnlocked } from '@/lib/care-cookie';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
-import { runConceptTick } from '@/lib/even-concept';
+import { runConceptTick, recomputeLiveVolume } from '@/lib/even-concept';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -32,6 +32,13 @@ async function authed(req: NextRequest): Promise<boolean> {
 export async function POST(req: NextRequest) {
   if (!enabled()) return NextResponse.json({ ok: false, status: 'disabled', error: 'disabled' }, { status: 404 });
   if (!(await authed(req))) return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
+  // ?recompute=1 — bulk live_volume recompute (the Phase 2 ranking input). Idempotent and safe to
+  // re-run: it SETs absolute counts over in-family rows only, never increments. Runs INSTEAD of a
+  // tick, so it can be driven on demand without competing with the drain for the single-flight lock.
+  if (req.nextUrl.searchParams.get('recompute') === '1') {
+    try { return NextResponse.json({ ok: true, action: 'recompute_live_volume', ...(await recomputeLiveVolume()) }); }
+    catch (e) { return NextResponse.json({ ok: false, action: 'recompute_live_volume', error: String((e as Error).message) }, { status: 500 }); }
+  }
   const auto = req.nextUrl.searchParams.get('auto') === '1';
   const result = await runConceptTick({ trigger: auto ? 'cron' : 'manual' });
   return NextResponse.json({ ok: true, ...result });   // always 200; status ∈ ok|idle|paused|locked|error

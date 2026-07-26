@@ -2444,6 +2444,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "even-concept",
+    "to": "opd-note-audit-core",
+    "kind": "value"
+  },
+  {
+    "from": "even-concept",
     "to": "trace",
     "kind": "value"
   },
