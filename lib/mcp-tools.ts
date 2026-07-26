@@ -925,7 +925,13 @@ async function ensureLvcProposalTables(): Promise<void> {
  *  would DISABLE the dedup gate, so a read failure is surfaced as an error instead. */
 async function loadExistingStatements(): Promise<ExistingStatement[] | null> {
   try {
-    const live = await run(`SELECT id::text AS id, statement, source, 'live' AS status FROM lvc_recommendations`, []);
+    // FAULT 1a (corrected 26 Jul): lvc_recommendations has NO `source` column — it is `society`.
+    // Aliased to `source` so lvc-proposal-core's ExistingStatement type is unchanged (there, `source`
+    // is a display field on the duplicate report, not a schema name). This query naming a
+    // non-existent column is what made lvc_propose refuse EVERY proposal: the mandatory dedup gate
+    // correctly refuses when the comparison set cannot be read, so the fault failed closed.
+    // lvc_recommendation_proposals is OUR table and genuinely has `source`.
+    const live = await run(`SELECT id::text AS id, statement, society AS source, 'live' AS status FROM lvc_recommendations`, []);
     const pending = await run(`SELECT id::text AS id, statement, source, status FROM lvc_recommendation_proposals WHERE status = 'proposed'`, []);
     return [...live, ...pending].map((r) => ({
       id: String(r.id), statement: String(r.statement ?? ''),
@@ -995,12 +1001,23 @@ async function lvcRatify(a: Record<string, unknown>): Promise<ToolResult> {
 
   // Promotion: insert into the live rulebook, then mark the staging row and append the ledger entry.
   try {
+    // CORRECTED 26 Jul against the live schema. Four faults, all of which failed closed:
+    //  1b. `source` does not exist → `society`, and the literal is 'EHRC' UPPERCASE. The existing 67
+    //      house rows carry 'EHRC'; inserting lowercase would mis-segment every society comparison
+    //      in lvc_gaps and in the dedup set.
+    //  2-4. proposed_by / ratified_by / ratified_at did not exist → added by migration 0024. They
+    //      live ON THE ROW, not only in the ledger, because lvc_ratify's confirm token is a
+    //      convention rather than authentication — the row must carry its own audit trail.
+    //  5.  `id` is text, NOT NULL, with NO DEFAULT and was not supplied, so every promotion would
+    //      have failed on a null id even with 1-4 fixed. Generated server-side to match the existing
+    //      convention exactly: 'ehrc-' || gen_random_uuid()::text.
+    // `status` is deliberately NOT supplied — the column defaults to 'active'.
     const ins = await run(
       `INSERT INTO lvc_recommendations
-         (statement, rationale, source, citation_url, citation_doi, citation_pmid,
+         (id, society, statement, rationale, citation_url, citation_doi, citation_pmid,
           source_release_year, license_status, provenance, proposed_by, ratified_by, ratified_at)
-       VALUES ($1,$2,'ehrc',$3,$4,$5,$6,$7,$8,$9,$10, now())
-       RETURNING id::text AS id`,
+       VALUES ('ehrc-' || gen_random_uuid()::text, 'EHRC', $1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now())
+       RETURNING id`,
       [prop!.statement, prop!.rationale, prop!.citation_url, prop!.citation_doi, prop!.citation_pmid,
        prop!.source_release_year, prop!.license_status, prop!.provenance, prop!.proposed_by, v.ratified_by]);
     const promotedId = ins[0]?.id == null ? null : String(ins[0].id);

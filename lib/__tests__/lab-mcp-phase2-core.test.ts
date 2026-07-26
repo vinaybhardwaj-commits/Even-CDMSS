@@ -16,6 +16,7 @@ import { SCOPES as ROLLUP_SCOPES, DETAIL_SCOPES, buildDetailSql, reduceRollup, C
 import { decideLabSource, normalizeRepoPath, LAB_SOURCE_ALLOW_PREFIXES } from '../lab-source-core';
 import { LAB_TOOLS } from '../mcp-tools';
 import { CORPUS_QUARANTINE_INSERT_SQL } from '../lab';
+import { readFileSync } from 'node:fs';
 import { applySaved, initProgress, type SavedEvent } from '../opd-feedback-ux-core';
 import { resolveProvider, checkPaidCeiling, DEFAULT_PAID_CEILING } from '../lab-provider-core';
 import {
@@ -442,4 +443,57 @@ test('wiring: lvc_propose never claims to write the rulebook; lvc_ratify is prom
   assert.match(TOOL('lvc_propose').description, /NEVER written/);
   assert.match(TOOL('lvc_ratify').description, /PROMOTE-ONLY|never create/i);
   assert.match(TOOL('lvc_gaps').description, /RETIREMENT candidate/);
+});
+
+// ── F14 schema correction (26 Jul, orchestrator-validated live) ─────────────────
+// These pin the five faults against the SOURCE TEXT of lib/mcp-tools.ts. They are deliberately
+// text-level: the faults were column NAMES in inferred SQL, which no type system catches and no
+// pure-core test can reach. All five failed CLOSED, so nothing was corrupted — but lvc_propose
+// refused every proposal and every promotion would have errored on a null id.
+const MCP_SRC = readFileSync(new URL('../mcp-tools.ts', import.meta.url), 'utf8');
+
+test('F14 fault 1: lvc_recommendations is queried by `society`, never `source`', () => {
+  // the dedup comparison set — this naming a non-existent column is what made lvc_propose refuse
+  assert.match(MCP_SRC, /SELECT id::text AS id, statement, society AS source, 'live' AS status FROM lvc_recommendations/);
+  // and no query anywhere selects a bare `source` FROM lvc_recommendations
+  assert.doesNotMatch(MCP_SRC, /statement, source,[^\n]*FROM lvc_recommendations/);
+});
+
+test('F14 fault 1b: the promoted row is society=EHRC, UPPERCASE', () => {
+  assert.match(MCP_SRC, /VALUES \('ehrc-' \|\| gen_random_uuid\(\)::text, 'EHRC',/);
+  // lowercase would mis-segment every society comparison against the existing 67 house rows
+  assert.doesNotMatch(MCP_SRC, /,\s*'ehrc',\s*\$1/);
+});
+
+test('F14 faults 2-4: the promotion INSERT names the three audit columns 0024 adds', () => {
+  for (const col of ['proposed_by', 'ratified_by', 'ratified_at']) {
+    assert.ok(MCP_SRC.includes(col), `promotion INSERT must carry ${col}`);
+  }
+  assert.match(MCP_SRC, /source_release_year, license_status, provenance, proposed_by, ratified_by, ratified_at\)/);
+});
+
+test('F14 fault 5: `id` is supplied explicitly, matching the ehrc-<uuid> convention', () => {
+  // id is text NOT NULL with NO DEFAULT — an unsupplied id fails every promotion
+  assert.match(MCP_SRC, /\(id, society, statement, rationale, citation_url/);
+  assert.match(MCP_SRC, /'ehrc-' \|\| gen_random_uuid\(\)::text/);
+  assert.match(MCP_SRC, /RETURNING id/);
+});
+
+test('F14: migration 0024 is additive, idempotent, and targets ONE table', () => {
+  const sql = readFileSync(new URL('../../migrations/0024_lvc_recommendations_ratification_columns.sql', import.meta.url), 'utf8');
+  for (const col of ['proposed_by', 'ratified_by', 'ratified_at']) {
+    assert.match(sql, new RegExp(`ADD COLUMN IF NOT EXISTS ${col}`));
+  }
+  assert.doesNotMatch(sql, /\bDROP\b/i);
+  assert.doesNotMatch(sql, /^\s*UPDATE\b/im);
+  // one migration, one table — mixing targets is how the 0023 wrong-table defect happened
+  assert.doesNotMatch(sql, /ALTER TABLE mksap_chunks/);
+  assert.doesNotMatch(sql, /ALTER TABLE corpus\b/);
+});
+
+test('migration 0023 targets mksap_chunks and never a table called `corpus`', () => {
+  const sql = readFileSync(new URL('../../migrations/0023_lvc_proposals_and_provenance.sql', import.meta.url), 'utf8');
+  assert.match(sql, /ALTER TABLE mksap_chunks ADD COLUMN IF NOT EXISTS citation_url/);
+  assert.doesNotMatch(sql, /ALTER TABLE corpus\b/);
+  assert.doesNotMatch(sql, /\bDROP\b/i);
 });
