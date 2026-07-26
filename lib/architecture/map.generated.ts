@@ -567,6 +567,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "opd-finding-identity-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "opd-funnel-core",
     "plane": "unregistered"
   },
@@ -1420,6 +1424,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "opd-feedback-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "opd-finding-identity-core",
     "kind": "value"
   },
   {
@@ -3153,6 +3162,11 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "opd-feedback-rollup-core",
+    "to": "opd-finding-identity-core",
+    "kind": "value"
+  },
+  {
     "from": "opd-gov-read",
     "to": "citations-core",
     "kind": "type"
@@ -3355,6 +3369,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "opd-note-audit",
     "to": "trace",
+    "kind": "value"
+  },
+  {
+    "from": "opd-note-audit-core",
+    "to": "opd-finding-identity-core",
     "kind": "value"
   },
   {
@@ -3612,6 +3631,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "ADJUDICATION_ENGINE_VERSION_DDL",
+    "value": "`ALTER TABLE opd_feedback_adjudications ADD COLUMN IF NOT EXISTS engine_version text`",
+    "file": "lib/opd-feedback-rollup-core.ts",
+    "derived": true
+  },
+  {
     "constName": "ADJUDICATION_LEDGER_VERSION",
     "value": "adjudication-ledger/1.0",
     "file": "lib/adjudication-ledger/core.ts",
@@ -3867,8 +3892,8 @@ export const VERSION_REGISTRY: VersionRow[] = [
 
 export const COVERAGE = {
   "registered": 15,
-  "unregistered": 16,
-  "total": 31,
+  "unregistered": 17,
+  "total": 32,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
@@ -3880,6 +3905,7 @@ export const COVERAGE = {
     "dose-limits",
     "formulary-match-core",
     "mcp-server",
+    "opd-feedback-rollup-core",
     "opd-note-audit",
     "opd-note-audit-core",
     "prognosis-core",

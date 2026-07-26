@@ -30,7 +30,8 @@ import {
 } from './lab-clinical-core';
 import {
   ADJUDICATION_DDL, buildRollupFindingSql, buildRollupFiredSql, buildRollupMissedSql,
-  buildRollupAuditSql, buildRollupReviewerSql, buildLatestLedgerSql, reduceRollup,
+  buildRollupAuditSql, buildRollupReviewerSql, buildRollupReviewerCurrentSql, buildLatestLedgerSql, reduceRollup,
+  ADJUDICATION_ENGINE_VERSION_DDL,
   buildDetailSql, shapeDetailRow, parseAdjudicateArgs, buildAdjudicationInsert,
   buildAdjudicationListSql, reduceLedgerList, clampLimit,
   type FindingCountRow, type FiredRow, type MissedRow, type AuditRow as RollupAuditRow,
@@ -47,7 +48,7 @@ const APP_SOURCE = process.env.APP_SOURCE || 'standalone';
 export const LAB_TOOLS = [
   {
     name: 'mini_analyze',
-    description: 'Run the CDMSS OPD note-quality audit on the FREE Mac-mini pipeline (Qwen, ₹0, never Gemini) and store the result in the experimental lab (table lab_analyses, namespaced by `experiment`). Provide EITHER metabase_uid (a db13 OPD note) OR text (a pasted clinical note). Does not touch production audit tables.',
+    description: 'Run the CDMSS OPD note-quality audit on the LOCAL Mac-mini (Qwen, ₹0) and store the result in the experimental lab (table lab_analyses, namespaced by `experiment`). Provide EITHER metabase_uid (a db13 OPD note) OR text (a pasted clinical note). Does not touch production audit tables. WRITE-CLASS: lab-write (lab_analyses only).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -60,7 +61,7 @@ export const LAB_TOOLS = [
   },
   {
     name: 'backfill_control',
-    description: 'Control the mini-pipeline OPD backfill autopilot (all mini, ₹0). action: status | start | pause | run_day (audit one specific IST day now). Mirrors the /admin/mini-backfill switches.',
+    description: 'Control the mini-pipeline OPD backfill autopilot (all mini, ₹0). action: status | start | pause | run_day (audit one specific IST day now). Mirrors the /admin/mini-backfill switches. WRITE-CLASS: PRODUCTION-WRITE — start|pause|run_day drive the mini backfill, which writes real audit rows to opd_note_audits.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -74,7 +75,7 @@ export const LAB_TOOLS = [
   },
   {
     name: 'corpus_add',
-    description: 'Add vetted medical content to the CDMSS corpus, QUARANTINED. It is chunked and embedded on the mini (nomic, ₹0) and stored inert as source `labq:<label>` — it does NOT affect production retrieval until you call corpus_activate. Fully reversible.',
+    description: 'Add vetted medical content to the CDMSS corpus, QUARANTINED. It is chunked and embedded on the mini (nomic, ₹0) and stored inert as source `labq:<label>` — it does NOT affect production retrieval until you call corpus_activate. Fully reversible. WRITE-CLASS: lab-write (quarantined corpus rows; inert until activated).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -89,20 +90,21 @@ export const LAB_TOOLS = [
   },
   {
     name: 'corpus_manage',
-    description: 'Manage lab corpus batches. action: list (all lab batches + status) | activate (labq:<label> → live in production retrieval) | delete (remove a batch). ACTIVATE affects the real clinical tool — use deliberately.',
+    description: 'Manage lab corpus batches. action: list (all lab batches + status) | activate (labq:<label> → live in production retrieval) | delete (remove a batch). ACTIVATE affects the real clinical tool — use deliberately. WRITE-CLASS: PRODUCTION-WRITE for action=activate (puts a batch into live production retrieval); lab-write for delete; read-only for list.',
     inputSchema: {
       type: 'object',
       properties: {
         action: { type: 'string', enum: ['list', 'activate', 'delete'] },
         label: { type: 'string' },
         which: { type: 'string', enum: ['quarantined', 'active', 'both'], description: 'delete scope (default both).' },
+        confirm: { type: 'boolean', description: 'REQUIRED and must be true for action=activate — activation is a PRODUCTION WRITE that puts the batch into live clinical retrieval. Ignored for list/delete.' },
       },
       required: ['action'],
     },
   },
   {
     name: 'lab_retrieve',
-    description: 'MEASUREMENT SEAM (read-only): run the REAL production retrieve() at served-k through the shipped path (query expansion → nomic embed → vector + BM25 legs → RRF fusion → cross-encoder rerank → source-quality weighting) and return the served hits WITH FULL TEXT and per-stage scores. Diagnoses what retrieval actually serves for a clinical question: which chunks, from which sources, at what vector_rank/bm25_rank/rrf_score/rerank_score/source_quality_weight. useReranker + useSourceWeights default TRUE (every production caller sets them true). multiQuery=true routes through retrieveMultiQuery (the condition Ask/DDx run — variant fan-out fused by RRF, then one rerank over the union) and adds variant_ranks per hit; default false. skipExpand=true holds the query fixed so multi- vs single-query arms are identical. includeQuarantined names ONE quarantined batch (e.g. guidelines-lvc-22jul) to fold in for A/B measurement — that batch ONLY, bound + slugged, never widened; omit it for the exact production condition. topK clamped ≤ 20 (measurement scope, not a bulk export). NB: returns licensed corpus text — do not paste into public docs. No model generation.',
+    description: 'MEASUREMENT SEAM (read-only): run the REAL production retrieve() at served-k through the shipped path (query expansion → nomic embed → vector + BM25 legs → RRF fusion → cross-encoder rerank → source-quality weighting) and return the served hits WITH FULL TEXT and per-stage scores. Diagnoses what retrieval actually serves for a clinical question: which chunks, from which sources, at what vector_rank/bm25_rank/rrf_score/rerank_score/source_quality_weight. useReranker + useSourceWeights default TRUE (every production caller sets them true). multiQuery=true routes through retrieveMultiQuery (the condition Ask/DDx run — variant fan-out fused by RRF, then one rerank over the union) and adds variant_ranks per hit; default false. skipExpand=true holds the query fixed so multi- vs single-query arms are identical. includeQuarantined names ONE quarantined batch (e.g. guidelines-lvc-22jul) to fold in for A/B measurement — that batch ONLY, bound + slugged, never widened; omit it for the exact production condition. topK clamped ≤ 20 (measurement scope, not a bulk export). NB: returns licensed corpus text — do not paste into public docs. No model generation. WRITE-CLASS: read-only.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -127,7 +129,7 @@ export const LAB_TOOLS = [
   },
   {
     name: 'lab_ddx',
-    description: 'Runs the REAL /api/ddx differential-diagnosis pipeline end-to-end (retrieval → hypothesis-first → draft → self-critique → revise → demographic guard) on the FREE mini (₹0, never Gemini), storing the full result in lab_analyses. Tests the ACTUAL production route — for pipeline bugs: missing cannot-miss dx, demographic leaks, anchoring, citation/parse failures. cc required. TIMING: ~2–5 min on the mini, which is longer than the MCP client waits (~180s) — so THIS CALL WILL LIKELY TIME OUT, but the run still completes + stores server-side. A `pending` row appears within ~1s and flips to done. After a timeout, POLL `lab_query experiment=<your-experiment>` (newest first) or `id=<run_id>` for output.status pending→done. Run ONE clinical probe at a time (single Mac-mini). Store many under one `experiment` and mine with audit_query / lab_query. NB: mini = cheaper brain than prod Gemini — reliable for pipeline/parse/retrieval bugs, indicative (not final) for clinical-quality claims.',
+    description: 'Runs the REAL /api/ddx differential-diagnosis pipeline end-to-end (retrieval → hypothesis-first → draft → self-critique → revise → demographic guard) on the LOCAL Mac-mini (Qwen, ₹0), storing the full result in lab_analyses. Tests the ACTUAL production route — for pipeline bugs: missing cannot-miss dx, demographic leaks, anchoring, citation/parse failures. cc required. TIMING: ~2–5 min on the mini, which is longer than the MCP client waits (~180s) — so THIS CALL WILL LIKELY TIME OUT, but the run still completes + stores server-side. A `pending` row appears within ~1s and flips to done. After a timeout, POLL `lab_query experiment=<your-experiment>` (newest first) or `id=<run_id>` for output.status pending→done. Run ONE clinical probe at a time (single Mac-mini). Store many under one `experiment` and mine with audit_query / lab_query. NB: THE LOCAL MAC-MINI PATH is a cheaper brain than production Gemini/Vertex — results from it are reliable for pipeline/parse/retrieval bugs and are INDICATIVE, NOT FINAL, for clinical-quality claims. The caveat attaches to that path. This tool has NO model-routing argument (see F11, LAB-MCP Phase 2). WRITE-CLASS: lab-write (lab_analyses only).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -143,7 +145,7 @@ export const LAB_TOOLS = [
   },
   {
     name: 'lab_ask',
-    description: 'Runs the REAL /api/ask RAG pipeline (retrieve → draft → audit → revise → cite-or-label) on the FREE mini (₹0), storing the answer + citations in lab_analyses. Tests the actual Ask route — grounding bugs: uncited claims (output.uncited), dead/absent citations, retrieval whiffs. TIMING: ~2–5 min > the MCP client wait (~180s), so THIS CALL WILL LIKELY TIME OUT but the run completes + stores; a `pending` row appears within ~1s. After a timeout, POLL `lab_query experiment=<your-experiment>` or `id=<run_id>` for output.status pending→done. ONE probe at a time. Store many under one `experiment` and mine with audit_query / lab_query.',
+    description: 'Runs the REAL /api/ask RAG pipeline (retrieve → draft → audit → revise → cite-or-label) on the LOCAL Mac-mini (Qwen, ₹0), storing the answer + citations in lab_analyses. Tests the actual Ask route — grounding bugs: uncited claims (output.uncited), dead/absent citations, retrieval whiffs. TIMING: ~2–5 min > the MCP client wait (~180s), so THIS CALL WILL LIKELY TIME OUT but the run completes + stores; a `pending` row appears within ~1s. After a timeout, POLL `lab_query experiment=<your-experiment>` or `id=<run_id>` for output.status pending→done. ONE probe at a time. Store many under one `experiment` and mine with audit_query / lab_query. WRITE-CLASS: lab-write (lab_analyses only).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -156,7 +158,7 @@ export const LAB_TOOLS = [
   },
   {
     name: 'lab_appropriateness',
-    description: 'Runs the REAL /api/appropriateness Right-Care order-check (Choosing-Wisely low-value-care matcher + LLM applicability judge + value analysis) on the FREE mini (₹0). Stores which CW statements FIRED per scenario in lab_analyses — the surface for the known ~74% over-flag: build a specificity set of clearly-appropriate scenarios and mine how often a flag fires when it should not (output.n_flags / output.flag_statements). TIMING: ~2–5 min > the MCP client wait (~180s), so THIS CALL WILL LIKELY TIME OUT but the run completes + stores; a `pending` row appears within ~1s. After a timeout, POLL `lab_query experiment=<your-experiment>` or `id=<run_id>` for output.status pending→done. ONE probe at a time. scenario required; optionally proposedActions (the specific orders), age, sex.',
+    description: 'Runs the REAL /api/appropriateness Right-Care order-check (Choosing-Wisely low-value-care matcher + LLM applicability judge + value analysis) on the LOCAL Mac-mini (Qwen, ₹0). Stores which CW statements FIRED per scenario in lab_analyses — the surface for the known ~74% over-flag: build a specificity set of clearly-appropriate scenarios and mine how often a flag fires when it should not (output.n_flags / output.flag_statements). TIMING: ~2–5 min > the MCP client wait (~180s), so THIS CALL WILL LIKELY TIME OUT but the run completes + stores; a `pending` row appears within ~1s. After a timeout, POLL `lab_query experiment=<your-experiment>` or `id=<run_id>` for output.status pending→done. ONE probe at a time. scenario required; optionally proposedActions (the specific orders), age, sex. WRITE-CLASS: lab-write (lab_analyses only).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -170,7 +172,7 @@ export const LAB_TOOLS = [
   },
   {
     name: 'lab_pathway',
-    description: 'Runs the REAL /api/pathway/skeleton care-pathway pass (stage classification + ordered care-path spine) on the FREE mini (₹0), storing the skeleton in lab_analyses. For router coverage / stage-detection bugs / dead branches. TIMING: a single fast pass — usually returns INLINE within the client wait (result in the response). If it does time out, a `pending` row is stored — poll `lab_query experiment=<your-experiment>` or `id=<run_id>`. ONE probe at a time. scenario required; optionally proposedActions, age, sex.',
+    description: 'Runs the REAL /api/pathway/skeleton care-pathway pass (stage classification + ordered care-path spine) on the LOCAL Mac-mini (Qwen, ₹0), storing the skeleton in lab_analyses. For router coverage / stage-detection bugs / dead branches. TIMING: a single fast pass — usually returns INLINE within the client wait (result in the response). If it does time out, a `pending` row is stored — poll `lab_query experiment=<your-experiment>` or `id=<run_id>`. ONE probe at a time. scenario required; optionally proposedActions, age, sex. WRITE-CLASS: lab-write (lab_analyses only).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -184,7 +186,7 @@ export const LAB_TOOLS = [
   },
   {
     name: 'lab_case_audit',
-    description: 'Runs the REAL /api/doc-audit/analyze case-audit + prognosis on the FREE mini (₹0), storing the scored report in lab_analyses. TEXT-ONLY: pass an already-EXTRACTED case (the PDF→OCR extract leg is multimodal Vertex and cannot run on the free mini). `extracted` = an object with docType + case fields (diagnosis, procedure, indication, courseSummary, medications[], investigations[], treatments[], disposition, followUp, patient{age,sex}). For bugs in the appropriateness/foreseeability reasoning independent of OCR. TIMING: ~2–5 min > the MCP client wait (~180s), so THIS CALL WILL LIKELY TIME OUT but the run completes + stores; a `pending` row appears within ~1s. After a timeout, POLL `lab_query experiment=<your-experiment>` or `id=<run_id>` for output.status pending→done. ONE probe at a time.',
+    description: 'Runs the REAL /api/doc-audit/analyze case-audit + prognosis on the LOCAL Mac-mini (Qwen, ₹0), storing the scored report in lab_analyses. TEXT-ONLY: pass an already-EXTRACTED case (the PDF→OCR extract leg is multimodal Vertex and cannot run on the free mini). `extracted` = an object with docType + case fields (diagnosis, procedure, indication, courseSummary, medications[], investigations[], treatments[], disposition, followUp, patient{age,sex}). For bugs in the appropriateness/foreseeability reasoning independent of OCR. TIMING: ~2–5 min > the MCP client wait (~180s), so THIS CALL WILL LIKELY TIME OUT but the run completes + stores; a `pending` row appears within ~1s. After a timeout, POLL `lab_query experiment=<your-experiment>` or `id=<run_id>` for output.status pending→done. ONE probe at a time. WRITE-CLASS: lab-write (lab_analyses only).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -196,7 +198,7 @@ export const LAB_TOOLS = [
   },
   {
     name: 'lab_query',
-    description: 'Inspect the experimental lab + POLL async clinical probes (lab_ddx/lab_ask/lab_appropriateness/lab_pathway/lab_case_audit): fetch one run by id (its output.status is pending → done → error; done rows carry the full result), list runs in one experiment (experiment=…), list experiments (no args), or storage stats (stats=true). args: experiment? | id? | stats?',
+    description: 'Inspect the experimental lab + POLL async clinical probes (lab_ddx/lab_ask/lab_appropriateness/lab_pathway/lab_case_audit): fetch one run by id (its output.status is pending → done → error; done rows carry the full result), list runs in one experiment (experiment=…), list experiments (no args), or storage stats (stats=true). args: experiment? | id? | stats? WRITE-CLASS: read-only.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -208,7 +210,7 @@ export const LAB_TOOLS = [
   {
     name: 'audit_query',
     description:
-      'Run a READ-ONLY SQL query (SELECT/WITH only) against the CDMSS audit database (Neon) — for mining bug prevalence + building golden sets. Readable tables are DE-IDENTIFIED (no PHI): opd_note_audits (per-note audit: uid, doctor_uid, note_date, note_quality_index, band, score_documentation/note_quality/appropriateness/prescribing_safety/patient_centred, pdqi9 jsonb [{attr,value}], completeness_pct, n_missing_mandatory, n_findings, n_low_value, n_interaction_alerts, findings jsonb [{subject,verdict,domain,source,informational,signal_type,finding_ref,citation_ids,rule_ref,lvc_category}] (lvc_category on low-value findings ∈ antibiotic|imaging|supplement_polypharmacy|therapeutic_duplication|systemic_steroid|gi_ppi_prokinetic|antihistamine_allergy|nsaid_analgesic|cough_cold_fdc|cough_expectorant|unindicated_investigation|other — the 8 overuse sub-tags added in engine 0.81.8), suggestions jsonb, missing_fields jsonb, engine_version), plus opd_audit_triage, opd_gov_signal(_event), doctor_directory, doctor_roster, audit_suppression, doctor_operational_metrics, lvc_recommendations (reference), lab_analyses (your lab_ddx/lab_ask/mini_analyze runs — output jsonb), and the DE-IDENTIFIED pipeline views v_trace_summary (feature/status/severity/timings/model_summary — NO clinical text) + v_appropriateness_summary (mode/doc_type/counts). PHI-bearing raw tables (traces, trace_events, appropriateness_runs, ccb_briefs, care_track_assignments, opd_audit_feedback) are BLOCKED — use the views, and the feedback_* tools for opd_audit_feedback. Enforced: SELECT/WITH only, single statement, no writes/DDL/system-functions, blocked-relation guard, LIMIT ≤ 500 (auto-added), audit-logged. Source-NOTE fields (medications count, followUpType, patient age, specialty) live in db13 — take the uids this returns and join via the Metabase MCP.',
+      'Run a READ-ONLY SQL query (SELECT/WITH only) against the CDMSS audit database (Neon) — for mining bug prevalence + building golden sets. Readable tables are DE-IDENTIFIED (no PHI): opd_note_audits (per-note audit: uid, doctor_uid, note_date, note_quality_index, band, score_documentation/note_quality/appropriateness/prescribing_safety/patient_centred, pdqi9 jsonb [{attr,value}], completeness_pct, n_missing_mandatory, n_findings, n_low_value, n_interaction_alerts, findings jsonb [{subject,verdict,domain,source,informational,signal_type,finding_ref,citation_ids,rule_ref,lvc_category}] (lvc_category on low-value findings ∈ antibiotic|imaging|supplement_polypharmacy|therapeutic_duplication|systemic_steroid|gi_ppi_prokinetic|antihistamine_allergy|nsaid_analgesic|cough_cold_fdc|cough_expectorant|unindicated_investigation|other — the 8 overuse sub-tags added in engine 0.81.8), suggestions jsonb, missing_fields jsonb, engine_version), plus opd_audit_triage, opd_gov_signal(_event), doctor_directory, doctor_roster, audit_suppression, doctor_operational_metrics, lvc_recommendations (reference), lab_analyses (your lab_ddx/lab_ask/mini_analyze runs — output jsonb), and the DE-IDENTIFIED pipeline views v_trace_summary (feature/status/severity/timings/model_summary — NO clinical text) + v_appropriateness_summary (mode/doc_type/counts). PHI-bearing raw tables (traces, trace_events, appropriateness_runs, ccb_briefs, care_track_assignments, opd_audit_feedback) are BLOCKED — use the views, and the feedback_* tools for opd_audit_feedback. Enforced: SELECT/WITH only, single statement, no writes/DDL/system-functions, blocked-relation guard, LIMIT ≤ 500 (auto-added), audit-logged. Source-NOTE fields (medications count, followUpType, patient age, specialty) live in db13 — take the uids this returns and join via the Metabase MCP. WRITE-CLASS: read-only.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -220,7 +222,7 @@ export const LAB_TOOLS = [
   },
   {
     name: 'lab_batch_start',
-    description: 'Queue a cohort-scoped FREE-mini (qwen, INR 0) eval batch into lab_analyses (experiment-namespaced; NEVER opd_note_audits). Provide EITHER uids[] OR cohort_sql (a read-only SELECT/WITH returning a uid column). The */2 cron drains it, yielding to the prod backfill; poll lab_batch_status, nudge with lab_batch_tick, analyse with lab_query/audit_query. For model-bridge + eval sweeps at scale without firing per-note calls.',
+    description: 'Queue a cohort-scoped FREE-mini (qwen, INR 0) eval batch into lab_analyses (experiment-namespaced; NEVER opd_note_audits). Provide EITHER uids[] OR cohort_sql (a read-only SELECT/WITH returning a uid column). The */2 cron drains it, yielding to the prod backfill; poll lab_batch_status, nudge with lab_batch_tick, analyse with lab_query/audit_query. For model-bridge + eval sweeps at scale without firing per-note calls. WRITE-CLASS: lab-write. ⚠️ COST: evalModel routes audit generation to a PAID OpenRouter model; omitting it runs the local Mac-mini. 87.8% of stored lab volume (4,041 of 4,604 runs) has been paid OpenRouter Gemini, so "the lab is free" is false for this tool — check evalModel before starting a batch.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -240,22 +242,22 @@ export const LAB_TOOLS = [
   },
   {
     name: 'lab_batch_status',
-    description: 'Progress of the active lab eval batch: done/total/remaining, enabled, window, last error, last tick summary.',
+    description: 'Progress of the active lab eval batch: done/total/remaining, enabled, window, last error, last tick summary. WRITE-CLASS: read-only.',
     inputSchema: { type: 'object', properties: {}, required: [] },
   },
   {
     name: 'lab_batch_stop',
-    description: 'Pause the lab eval batch (state kept; lab_batch_start resumes/re-arms).',
+    description: 'Pause the lab eval batch (state kept; lab_batch_start resumes/re-arms). WRITE-CLASS: lab-write (batch control settings).',
     inputSchema: { type: 'object', properties: {}, required: [] },
   },
   {
     name: 'lab_batch_tick',
-    description: 'Synchronously drain up to n (<=2) cohort notes NOW and return - a manual nudge that ignores the night window (still yields to the prod mini-backfill + its own lock). Use for immediate progress instead of waiting for the */2 cron. ~72s/note on the mini.',
+    description: 'Synchronously drain up to n (<=2) cohort notes NOW and return - a manual nudge that ignores the night window (still yields to the prod mini-backfill + its own lock). Use for immediate progress instead of waiting for the */2 cron. ~72s/note on the mini. WRITE-CLASS: lab-write (drains a lab batch).',
     inputSchema: { type: 'object', properties: {}, required: [] },
   },
   {
     name: 'feedback_rollup',
-    description: 'OPD feedback loop — MEASURED precision from clinician triage of audit findings (opd_audit_feedback), the read path for the feedback instrumentation. Current-state = latest verdict per (audit_id, finding_ref) (earlier rows are history). Returns per (engine_version × signal_type) bucket: fired (findings that fired in opd_note_audits), triaged, coverage_pct = triaged/fired, verdict counts (tp/nitpick/false/contested), precision_strict = tp/(tp+nitpick+false) with contested EXCLUDED (a demand-side dispute, reported separately as contested_rate); plus missed-flag volume by signal_type, audit_scope { n_comments, verdict_counts, n_escalations }, reviewer tally, open_adjudications (clusters with ≥3 false+nitpick and no current non-defer ledger decision), and totals. Zero denominators → null (never NaN). Read-only, fixed parameterized SQL (NOT free SQL — opd_audit_feedback stays blocked from audit_query). Args: engine_version? (default all, grouped), signal_type?, since?/until? (ISO dates on feedback created_at).',
+    description: 'OPD feedback loop — MEASURED precision from clinician triage of audit findings (opd_audit_feedback), the read path for the feedback instrumentation. Current-state = latest verdict per (audit_id, finding_ref) (earlier rows are history). Returns per (engine_version × signal_type) bucket: fired (findings that fired in opd_note_audits), triaged, coverage_pct = triaged/fired, verdict counts (tp/nitpick/false/contested), precision_strict = tp/(tp+nitpick+false) with contested EXCLUDED (a demand-side dispute, reported separately as contested_rate); plus missed-flag volume by signal_type, audit_scope { n_comments, verdict_counts, n_escalations }, reviewer tally, open_adjudications (clusters with ≥3 false+nitpick and no current non-defer ledger decision), and totals. Zero denominators → null (never NaN). Read-only, fixed parameterized SQL (NOT free SQL — opd_audit_feedback stays blocked from audit_query). Args: engine_version? (default all, grouped), signal_type?, since?/until? (ISO dates on feedback created_at). WRITE-CLASS: read-only (ensures the ledger table exists; writes no rows).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -263,12 +265,14 @@ export const LAB_TOOLS = [
         signal_type: { type: 'string', description: 'Filter to one signal_type.' },
         since: { type: 'string', description: 'ISO date — feedback created_at ≥ this day.' },
         until: { type: 'string', description: 'ISO date — feedback created_at ≤ this day (inclusive).' },
+        min_triaged: { type: 'number', description: 'Output filter (default 1): omit buckets with fewer than this many triaged findings. Zero-triaged buckets are still counted in totals as n_buckets_untriaged / fired_untriaged. TOTALS ARE UNAFFECTED — this filters the emitted bucket list only.' },
+        mode: { type: 'string', enum: ['summary', 'full'], description: "Output size (default 'summary'). summary = totals + the top 20 buckets by fired + EVERY bucket with triaged >= 5. full = every bucket that passes min_triaged. Either way a 20000-character ceiling applies: if exceeded, buckets are trimmed from the tail and truncated:true + n_buckets_omitted are set. Semantics never change." },
       },
     },
   },
   {
     name: 'feedback_detail',
-    description: 'OPD feedback loop — the adjudication feed: individual current-state feedback rows joined to the fired finding (subject/verdict/domain/rationale, located in opd_note_audits.findings by finding_ref; null for missed/audit scope or if the ref no longer resolves, with ref_resolved=false). ⚠️ Returns clinician free-text comments verbatim — treat as potentially containing clinical details; do not paste into public docs. Read-only, fixed parameterized SQL (opd_audit_feedback stays blocked from audit_query). Args: scope? (finding|missed|audit, default finding), verdict?, signal_type?, engine_version?, uid?, history? (default false = current-state only; true also returns superseded rows flagged history=true), limit? (default 50, max 200).',
+    description: 'OPD feedback loop — the adjudication feed: individual current-state feedback rows joined to the fired finding (subject/verdict/domain/rationale, located in opd_note_audits.findings by finding_ref; null for missed/audit scope or if the ref no longer resolves, with ref_resolved=false). ⚠️ Returns clinician free-text comments verbatim — treat as potentially containing clinical details; do not paste into public docs. Read-only, fixed parameterized SQL (opd_audit_feedback stays blocked from audit_query). Args: scope? (finding|missed|audit, default finding), verdict?, signal_type?, engine_version?, uid?, history? (default false = current-state only; true also returns superseded rows flagged history=true), limit? (default 50, max 200). WRITE-CLASS: read-only.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -284,7 +288,7 @@ export const LAB_TOOLS = [
   },
   {
     name: 'feedback_adjudicate',
-    description: 'OPD feedback loop — append-only adjudication ledger (opd_feedback_adjudications). The ONLY write tool here; it touches ONLY the ledger table, never opd_audit_feedback or any production table (the Lab MCP no-production-writes promise holds — the ledger is lab infrastructure). action=log records one cluster decision; action=list returns decisions newest-first, flagging the current status per cluster_key. decision ∈ fix (engine change owed) | suppress (down-tier/silence the check) | accept (noise tolerable, working as intended) | defer (need more labels) | monitor (no action now, keep watching). cluster_key convention <signal_type>@<engine_version> (or a bug id like 0.8-17). Table is ensured at call time (CREATE TABLE IF NOT EXISTS).',
+    description: 'OPD feedback loop — append-only adjudication ledger (opd_feedback_adjudications). The ONLY write tool here; it touches ONLY the ledger table, never opd_audit_feedback or any production table (the Lab MCP no-production-writes promise holds — the ledger is lab infrastructure). action=log records one cluster decision; action=list returns decisions newest-first, flagging the current status per cluster_key. decision ∈ fix (engine change owed) | suppress (down-tier/silence the check) | accept (noise tolerable, working as intended) | defer (need more labels) | monitor (no action now, keep watching). cluster_key convention <signal_type>@<engine_version> (or a bug id like 0.8-17). Table is ensured at call time (CREATE TABLE IF NOT EXISTS). WRITE-CLASS: lab-write (appends to the opd_feedback_adjudications ledger). NOT the only write tool here — see each tool\u2019s WRITE-CLASS line.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -599,7 +603,12 @@ async function corpusAdd(a: Record<string, unknown>): Promise<ToolResult> {
 async function corpusManage(a: Record<string, unknown>): Promise<ToolResult> {
   const action = S(a.action);
   if (action === 'list') return ok({ batches: await corpusLabList() });
-  if (action === 'activate') { if (!S(a.label)) return err('activate needs label'); return ok({ ...(await corpusActivate(S(a.label))), note: 'now LIVE in production retrieval (Ask/DDx/Right Care/audits)' }); }
+  if (action === 'activate') {
+    if (!S(a.label)) return err('activate needs label');
+    // PRODUCTION WRITE — an explicit confirm:true is required so activation can never be a one-token
+    // slip. Declared REQUIRED for this action in the schema and enforced here.
+    if (a.confirm !== true) return err('activate requires confirm:true — this is a PRODUCTION write that puts the batch into live clinical retrieval');
+    return ok({ ...(await corpusActivate(S(a.label))), note: 'now LIVE in production retrieval (Ask/DDx/Right Care/audits)' }); }
   if (action === 'delete') { if (!S(a.label)) return err('delete needs label'); const which = (['quarantined', 'active', 'both'] as const).includes(a.which as never) ? a.which as 'quarantined' | 'active' | 'both' : 'both'; return ok(await corpusDelete(S(a.label), which)); }
   return err(`unknown action: ${action}`);
 }
@@ -735,6 +744,9 @@ async function auditQuery(a: Record<string, unknown>): Promise<ToolResult> {
 // The only write is the ledger table, ensured at call time (ensureSqlAuditLog pattern).
 async function ensureAdjudicationTable(): Promise<void> {
   await run(ADJUDICATION_DDL, []);
+  // LAB-MCP Phase 1: additive + idempotent; the ledger is append-only so no row is rewritten.
+  // Fail-safe — if the ALTER cannot run, the rollup still works (engine_version is nullable metadata).
+  await run(ADJUDICATION_ENGINE_VERSION_DDL, []).catch(() => {});
 }
 
 async function feedbackRollup(a: Record<string, unknown>): Promise<ToolResult> {
@@ -746,22 +758,32 @@ async function feedbackRollup(a: Record<string, unknown>): Promise<ToolResult> {
     until: S(a.until).trim() || null,
     signalType: S(a.signal_type).trim() || null,
   };
-  const [findingQ, firedQ, missedQ, auditQ, reviewerQ, ledgerQ] = [
+  const [findingQ, firedQ, missedQ, auditQ, reviewerQ, reviewerCurQ, ledgerQ] = [
     buildRollupFindingSql(filters), buildRollupFiredSql(filters), buildRollupMissedSql(filters),
-    buildRollupAuditSql(filters), buildRollupReviewerSql(filters), buildLatestLedgerSql(),
+    buildRollupAuditSql(filters), buildRollupReviewerSql(filters), buildRollupReviewerCurrentSql(filters),
+    buildLatestLedgerSql(),
   ];
-  const [findingRows, firedRows, missedRows, auditRows, reviewerRows, ledgerRows] = await Promise.all([
+  const [findingRows, firedRows, missedRows, auditRows, reviewerRows, reviewerCurrentRows, ledgerRows] = await Promise.all([
     run(findingQ.text, findingQ.params), run(firedQ.text, firedQ.params), run(missedQ.text, missedQ.params),
-    run(auditQ.text, auditQ.params), run(reviewerQ.text, reviewerQ.params), run(ledgerQ.text, ledgerQ.params),
+    run(auditQ.text, auditQ.params), run(reviewerQ.text, reviewerQ.params),
+    // F4 reconciliation query — fail-safe: an error degrades reviewers_current to [] and never a 500.
+    run(reviewerCurQ.text, reviewerCurQ.params).catch(() => [] as Record<string, unknown>[]),
+    run(ledgerQ.text, ledgerQ.params),
   ]);
+  // F2 output budget. These are OUTPUT filters only — reduceRollup computes every total over the
+  // complete bucket set before applying them, so semantics cannot move.
+  const minTriagedRaw = Number(a.min_triaged);
+  const minTriaged = Number.isFinite(minTriagedRaw) ? Math.max(0, Math.floor(minTriagedRaw)) : 1;
+  const mode = S(a.mode).trim() === 'full' ? 'full' as const : 'summary' as const;
   const rollup = reduceRollup({
     findingRows: findingRows as unknown as FindingCountRow[],
     firedRows: firedRows as unknown as FiredRow[],
     missedRows: missedRows as unknown as MissedRow[],
     auditRows: auditRows as unknown as RollupAuditRow[],
     reviewerRows: reviewerRows as unknown as ReviewerRow[],
+    reviewerCurrentRows: reviewerCurrentRows as unknown as ReviewerRow[],
     ledgerRows: ledgerRows as unknown as LedgerLatestRow[],
-  });
+  }, { minTriaged, mode });
   return ok({ ok: true, filters: { engine_version: filters.engineVersion, signal_type: filters.signalType, since: filters.since, until: filters.until }, ...rollup });
 }
 

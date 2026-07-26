@@ -13,6 +13,10 @@
  *  - open-adjudication: (false + nitpick) ≥ OPEN_ADJ_THRESHOLD with no current non-defer ledger decision.
  */
 
+// LAB-MCP Phase 1: cluster_key normalisation is shared with the identity core (one definition).
+import { normalizeClusterKey } from './opd-finding-identity-core';
+export { normalizeClusterKey };
+
 // ── controlled vocab ──────────────────────────────────────────────────────────
 export const FINDING_VERDICTS = ['true_positive', 'nitpick', 'false', 'contested'] as const;
 export const AUDIT_VERDICTS = ['agree', 'disagree', 'needs_action'] as const;
@@ -72,6 +76,16 @@ export const ADJUDICATION_DDL = `CREATE TABLE IF NOT EXISTS opd_feedback_adjudic
   author text,
   created_at timestamptz NOT NULL DEFAULT now()
 )`;
+
+/**
+ * LAB-MCP Phase 1 (normative detail 5): cluster_key becomes the BARE signal_type and the engine
+ * version moves to its own NULLABLE column. Additive + idempotent, ensured at call time beside the
+ * DDL above. Existing "<signal>@<version>" rows are NOT rewritten — the ledger is append-only and is
+ * normalised on read (normalizeClusterKey); this column simply gives new rows somewhere honest to
+ * record the version instead of smuggling it into the identity.
+ */
+export const ADJUDICATION_ENGINE_VERSION_DDL =
+  `ALTER TABLE opd_feedback_adjudications ADD COLUMN IF NOT EXISTS engine_version text`;
 
 export type Sql = { text: string; params: unknown[] };
 
@@ -149,12 +163,53 @@ export function buildRollupAuditSql(o: RollupFilters): Sql {
   return { text, params };
 }
 
-/** Reviewer tally (any scope with an author) within the range. */
+/**
+ * Reviewer tally — ALL rows with an author in the range. UNCHANGED, and deliberately so: this is the
+ * existing `reviewers` number, renamed in the output to `reviewers_all_rows` (F4).
+ *
+ * WHAT IT COUNTS, exactly (this is the `basis` string the tool now emits): every opd_audit_feedback
+ * row with a non-blank author in the window, across ALL scopes (finding + missed + audit) and
+ * INCLUDING superseded revisions. It is a reviewer-activity measure, not a triage-coverage measure.
+ */
 export function buildRollupReviewerSql(o: RollupFilters): Sql {
   const { params, P } = pb();
   let where = `f.app_source = ${P(o.appSource)} AND f.author IS NOT NULL AND btrim(f.author) <> ''`;
   where += rangeAnd(P, o.since, o.until);
   const text = `SELECT f.author AS author, count(*)::int AS n FROM opd_audit_feedback f WHERE ${where} GROUP BY f.author ORDER BY n DESC`;
+  return { text, params };
+}
+
+/**
+ * F4 — reviewer tally over the CURRENT-STATE TRIAGED SET ONLY, so it reconciles with totals.triaged.
+ *
+ * ROOT CAUSE of the mismatch this fixes: buildRollupReviewerSql counts every authored row in the
+ * window, while totals.triaged counts only the current-state finding verdicts — DISTINCT ON
+ * (audit_id, finding_ref), scope='finding', finding_ref NOT NULL. The two therefore differ by
+ * (a) scope='missed' and scope='audit' rows, which have an author but are not finding triage, and
+ * (b) every superseded revision of a finding verdict, which the current-state dedup collapses but the
+ * reviewer tally counts once per revision. Neither is a bug in the data; they are two different
+ * questions that shared one label.
+ *
+ * This query mirrors the finding-rollup CTE EXACTLY (same predicate, same CURRENT_STATE_ORDER) and
+ * takes the author off the surviving row, so sum(n) === totals.triaged by construction.
+ */
+export function buildRollupReviewerCurrentSql(o: RollupFilters): Sql {
+  const { params, P } = pb();
+  let cfWhere = `f.scope = 'finding' AND f.finding_ref IS NOT NULL AND f.app_source = ${P(o.appSource)}`;
+  cfWhere += rangeAnd(P, o.since, o.until);
+  if (o.signalType) cfWhere += ` AND f.signal_type = ${P(o.signalType)}`;
+  let outer = '';
+  if (o.engineVersion) outer = ` WHERE a.engine_version = ${P(o.engineVersion)}`;
+  const text = `WITH cf AS (
+  SELECT DISTINCT ON (f.audit_id, f.finding_ref) f.audit_id, f.finding_ref, f.author
+  FROM opd_audit_feedback f
+  WHERE ${cfWhere}
+  ${CURRENT_STATE_ORDER}
+)
+SELECT COALESCE(NULLIF(btrim(cf.author), ''), '(unattributed)') AS author, count(*)::int AS n
+FROM cf LEFT JOIN opd_note_audits a ON a.id = cf.audit_id${outer}
+GROUP BY 1
+ORDER BY n DESC`;
   return { text, params };
 }
 
@@ -181,16 +236,31 @@ export type RollupBucket = {
   precision_strict: number | null; contested_rate: number | null;
 };
 
+/** F2 — the serialised-payload ceiling for the rollup response, in characters. */
+export const ROLLUP_CHAR_BUDGET = 20000;
+/** F2 — summary mode keeps the top N buckets by `fired` … */
+export const SUMMARY_TOP_FIRED = 20;
+/** … plus EVERY bucket with at least this many triaged, so a reviewed bucket is never dropped. */
+export const SUMMARY_MIN_TRIAGED = 5;
+
+export type RollupMode = 'summary' | 'full';
+
 export function reduceRollup(inputs: {
   findingRows: FindingCountRow[]; firedRows: FiredRow[]; missedRows: MissedRow[];
   auditRows: AuditRow[]; reviewerRows: ReviewerRow[]; ledgerRows: LedgerLatestRow[];
-}, opts: { threshold?: number } = {}): {
+  reviewerCurrentRows?: ReviewerRow[];
+}, opts: { threshold?: number; minTriaged?: number; mode?: RollupMode; charBudget?: number } = {}): {
   buckets: RollupBucket[];
   missed: { signal_type: string; n: number; engine_version: string }[];
   audit_scope: { n_comments: number; verdict_counts: Record<string, number>; n_escalations: number };
-  reviewers: { author: string; n: number }[];
+  reviewers_all_rows: { author: string; n: number }[];
+  reviewers_basis: string;
+  reviewers_current: { author: string; n: number }[];
   open_adjudications: string[];
   totals: Record<string, number | null>;
+  mode: RollupMode;
+  truncated: boolean;
+  n_buckets_omitted: number;
 } {
   const threshold = opts.threshold ?? OPEN_ADJ_THRESHOLD;
   const key = (ev: string, st: string) => `${ev} ${st}`;
@@ -222,14 +292,23 @@ export function reduceRollup(inputs: {
     b.precision_strict = ratio(b.tp, b.tp + b.nitpick + b.false);
     b.contested_rate = ratio(b.contested, b.triaged);
     b.coverage_pct = pct(b.triaged, b.fired);
-    if (b.false + b.nitpick >= threshold) open.add(clusterKey(b.signal_type, b.engine_version));
+    // Normative detail 5: cluster_key is now the BARE signal_type — engine version is metadata, not
+    // identity. Several engine versions of one signal therefore collapse to one adjudicable cluster.
+    if (b.false + b.nitpick >= threshold) open.add(b.signal_type);
   }
 
-  // open-adjudication gate: keep only cluster_keys with no current non-defer decision
+  // Open-adjudication gate: keep only cluster_keys with no current non-defer decision.
+  // Ledger keys are NORMALISED ON READ (the ledger is append-only, so historical
+  // "<signal>@<engine_version>" rows are never rewritten). Rows arrive newest-first per key; after
+  // normalisation several historical keys can fold onto one, so the FIRST decision seen for a
+  // normalised key wins and later (older) ones must not overwrite it.
   const latest = new Map<string, string>();
-  for (const r of inputs.ledgerRows) latest.set(r.cluster_key, r.decision);
+  for (const r of inputs.ledgerRows) {
+    const nk = normalizeClusterKey(r.cluster_key);
+    if (!latest.has(nk)) latest.set(nk, r.decision);
+  }
   const open_adjudications = [...open].filter((ck) => {
-    const d = latest.get(ck);
+    const d = latest.get(normalizeClusterKey(ck));
     return d === undefined || d === 'defer';
   }).sort();
 
@@ -246,9 +325,44 @@ export function reduceRollup(inputs: {
   const reviewers = inputs.reviewerRows.map((r) => ({ author: String(r.author), n: nz(r.n) }));
 
   const bucketList = [...buckets.values()].sort((a, b) => (b.triaged - a.triaged) || (b.fired - a.fired));
+
+  // ── TOTALS ARE COMPUTED OVER **ALL** BUCKETS, ALWAYS ────────────────────────────
+  // F2's hard invariant: min_triaged and mode are OUTPUT filters, never semantic ones. Every total
+  // below is summed from the complete bucketList BEFORE any filtering or truncation, so
+  // totals.tp/nitpick/false/contested are byte-identical to what this reducer returned pre-F2
+  // regardless of which buckets are emitted. Filtering after this point cannot move a total.
   const sum = (f: (b: RollupBucket) => number) => bucketList.reduce((s, b) => s + f(b), 0);
   const totTp = sum((b) => b.tp), totNit = sum((b) => b.nitpick), totFalse = sum((b) => b.false), totCon = sum((b) => b.contested);
   const totTriaged = sum((b) => b.triaged), totFired = sum((b) => b.fired);
+
+  // ── F2 output budget: min_triaged → mode → char ceiling ─────────────────────────
+  const minTriaged = Number.isFinite(Number(opts.minTriaged)) ? Math.max(0, Math.floor(Number(opts.minTriaged))) : 1;
+  const mode: RollupMode = opts.mode === 'full' ? 'full' : 'summary';
+  const charBudget = Number.isFinite(Number(opts.charBudget)) ? Math.max(1000, Math.floor(Number(opts.charBudget))) : ROLLUP_CHAR_BUDGET;
+
+  // min_triaged (default 1) drops zero-triaged buckets from `buckets`; they are NOT lost — they are
+  // reported in totals as n_buckets_untriaged / fired_untriaged so the fired denominator stays honest.
+  const kept = bucketList.filter((b) => b.triaged >= minTriaged);
+  const dropped = bucketList.filter((b) => b.triaged < minTriaged);
+
+  let emitted = kept;
+  if (mode === 'summary' && kept.length > 0) {
+    // top N by FIRED (the volume story) ∪ every bucket with triaged ≥ 5 (the reviewed story).
+    const byFired = [...kept].sort((a, b) => (b.fired - a.fired) || (b.triaged - a.triaged)).slice(0, SUMMARY_TOP_FIRED);
+    const chosen = new Set<RollupBucket>(byFired);
+    for (const b of kept) if (b.triaged >= SUMMARY_MIN_TRIAGED) chosen.add(b);
+    emitted = kept.filter((b) => chosen.has(b));   // preserve the canonical triaged-desc ordering
+  }
+
+  // Hard character ceiling. Trim from the TAIL (lowest triaged first, since `emitted` is triaged-desc)
+  // until the serialised buckets fit. This is a payload guard, not a semantic one — see totals above.
+  let truncated = false;
+  while (emitted.length > 0 && JSON.stringify(emitted).length > charBudget) {
+    emitted = emitted.slice(0, emitted.length - 1);
+    truncated = true;
+  }
+  const n_buckets_omitted = kept.length - emitted.length;
+
   const totals: Record<string, number | null> = {
     buckets: bucketList.length, fired: totFired, triaged: totTriaged,
     tp: totTp, nitpick: totNit, false: totFalse, contested: totCon,
@@ -257,9 +371,29 @@ export function reduceRollup(inputs: {
     coverage_pct: pct(totTriaged, totFired),
     missed: missed.reduce((s, m) => s + m.n, 0),
     n_escalations, open_adjudications: open_adjudications.length,
+    // What min_triaged removed from `buckets`, so the omission is visible rather than silent.
+    n_buckets_untriaged: dropped.length,
+    fired_untriaged: dropped.reduce((s, b) => s + b.fired, 0),
+    n_buckets_emitted: emitted.length,
   };
 
-  return { buckets: bucketList, missed, audit_scope: { n_comments: inputs.auditRows.length, verdict_counts, n_escalations }, reviewers, open_adjudications, totals };
+  // F4: the existing tally keeps its number but is RENAMED, with its basis stated in the payload;
+  // reviewers_current is the current-state triaged set and sums to totals.triaged.
+  const reviewers_current = (inputs.reviewerCurrentRows ?? []).map((r) => ({ author: String(r.author), n: nz(r.n) }));
+
+  return {
+    buckets: emitted,
+    missed,
+    audit_scope: { n_comments: inputs.auditRows.length, verdict_counts, n_escalations },
+    reviewers_all_rows: reviewers,
+    reviewers_basis: 'every opd_audit_feedback row with a non-blank author in the window, across ALL scopes (finding + missed + audit) and INCLUDING superseded revisions — reviewer activity, NOT triage coverage. Use reviewers_current to reconcile with totals.triaged.',
+    reviewers_current,
+    open_adjudications,
+    totals,
+    mode,
+    truncated,
+    n_buckets_omitted,
+  };
 }
 
 // ── feedback_detail SQL (PRD §4.2) ─────────────────────────────────────────────

@@ -175,6 +175,7 @@ export const UNREGISTERED: string[] = [
   'formulary-match-core',   // formulary matcher (named by rule 5's scored-core globs)
   'mcp-server',             // MCP protocol surface
   'opd-note-audit',         // audit engine wrapper (mini engine)
+  'opd-feedback-rollup-core', // pure feedback rollup core (surfaced as a subsystem by the LAB-MCP Phase 1 import edge)
   'opd-note-audit-core',    // the OPD audit engine (opd-note-audit/0.81.8)
   'prognosis-core',         // prognosis engine (prognosis/0.1)
   'proms',                  // PROMs catalog/scheduling/scoring

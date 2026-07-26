@@ -172,9 +172,13 @@ test('open_adjudications: ≥3 false+nitpick opens; defer/absent open; fix|monit
       { cluster_key: clusterKey('coding', '0.81.2'), decision: 'fix' },    // fix → closed
     ],
   });
-  assert.deepEqual(r.open_adjudications, [clusterKey('nsaid', '0.81.2'), clusterKey('muscle', '0.81.2')].sort());
-  assert.equal(r.open_adjudications.includes(clusterKey('benzo', '0.81.2')), false); // below threshold
-  assert.equal(r.open_adjudications.includes(clusterKey('coding', '0.81.2')), false); // closed by fix
+  // LAB-MCP Phase 1 (normative detail 5): cluster_key is now the BARE signal_type — engine version is
+  // metadata, not identity. This test previously asserted versioned keys; it is rewritten, not
+  // deleted, and its LEDGER rows deliberately stay versioned, which additionally proves that a
+  // historical '<signal>@<version>' decision still closes the cluster after read-time normalisation.
+  assert.deepEqual(r.open_adjudications, ['muscle', 'nsaid']);   // sorted, bare signal types
+  assert.equal(r.open_adjudications.includes('benzo'), false);   // below threshold
+  assert.equal(r.open_adjudications.includes('coding'), false);  // closed by a versioned 'fix' row
   // monitor also closes (non-defer)
   const r2 = reduceRollup({ findingRows: findingRows.filter((x) => x.signal_type === 'muscle'), firedRows: [], missedRows: [], auditRows: [], reviewerRows: [], ledgerRows: [{ cluster_key: clusterKey('muscle', '0.81.2'), decision: 'monitor' }] });
   assert.deepEqual(r2.open_adjudications, []);

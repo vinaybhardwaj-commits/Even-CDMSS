@@ -10,6 +10,10 @@
 import type { DeidOpdCase, OpdMed } from './opd-ingest-core';
 import type { NetValue, OpdFindingDomain, Pdqi9Attr } from './opd-note-score-core';
 import type { FindingProvenance } from './provenance-tier-core';
+// LAB-MCP Phase 1 (F1) — the ONE stable_ref implementation, shared with the backfill route.
+// This is the file's only VALUE import; opd-finding-identity-core has ZERO imports of its own
+// (its SHA-1 is pure), so this file stays `node --experimental-strip-types` loadable and client-safe.
+import { computeStableRef } from './opd-finding-identity-core';
 
 // 0.4 — formulary integration: brand→generic resolution + class/schedule/ISMP-high-alert/
 //       LASA/VED enrichment + formulary-scoped DDI, so brand-only OPD lines (~36%) are recognised.
@@ -72,6 +76,9 @@ export interface OpdFinding {
   // pure functions (deterministic), so legacy rows need no migration or forced re-audit.
   signal_type?: string;            // coarse controlled-vocab category — the CM triage batch key
   finding_ref?: string;            // stable per-note content hash — the instance address
+  // LAB-MCP Phase 1 (F1): note-scoped identity that survives a re-audit. Optional — absent on every
+  // finding stamped without a uid, and on all stored history until the backfill runs.
+  stable_ref?: string;
   // Right Care LVC identity (engine 0.81.3, metadata-only — never feeds scoring). Stamped on
   // low-value-verdict findings: rule_ref = lvc_recommendations id when a wired matcher knows it
   // (null in the OPD engine — no matcher wired; read-time/backfill can attach), lvc_category coarse bucket.
@@ -321,6 +328,22 @@ export function consolidateDecisions(findings: OpdFinding[]): OpdFinding[] {
 // low-value finding that matched NO precise SIGNAL_TYPE_RULES (see VERDICT_CLASS → `${domain}_low_value`).
 const GENERIC_LVC_BUCKETS = new Set(['appropriateness_low_value', 'prescribing_low_value']);
 
+/**
+ * LAB-MCP Phase 1 (F1): additionally stamps `stable_ref` — a content-addressed FINDING-KIND token
+ * that SURVIVES a re-audit, unlike finding_ref (positional, collision-suffixed, re-derived per audit).
+ *
+ * SIGNATURE UNCHANGED (addendum A1): no uid parameter. stable_ref = sha1(signal_type ␁ norm(subject)),
+ * so it is unique WITHIN a note, not globally — the same finding kind on two notes shares a ref by
+ * design. Note scoping happens at resolution, where resolveLabel takes uid as a REQUIRED parameter.
+ * All 9 existing call sites are unchanged and now stamp stable_ref automatically.
+ *
+ * computeStableRef is imported from lib/opd-finding-identity-core — ONE implementation, shared with
+ * the backfill route, so engine-stamped and backfilled refs are byte-identical by construction.
+ *
+ * EXISTING finding_ref BEHAVIOUR IS UNCHANGED — same signal_type collapse, same 12-char hash, same
+ * within-note "#2" collision suffixing, same ordering. stable_ref is purely additive metadata and
+ * feeds no score: computeOpdScore reads only (verdict, confidence, domain).
+ */
 export function stampFindingIdentity(findings: OpdFinding[]): OpdFinding[] {
   const used = new Set<string>();
   return findings.map((f) => {
@@ -342,7 +365,14 @@ export function stampFindingIdentity(findings: OpdFinding[]): OpdFinding[] {
     let ref = base;
     for (let n = 2; used.has(ref); n++) ref = `${base}#${n}`;
     used.add(ref);
-    return { ...f, signal_type, finding_ref: ref };
+    // F1: ALWAYS stamped (addendum A1) — no uid parameter, no conditional. An earlier draft made
+    // uid optional and stamped only when supplied; since all 9 call sites pass findings alone, that
+    // would have shipped F1 as a silent no-op (addendum A4). computeStableRef returns null only when
+    // signal_type or the normalised subject is empty, and the key is then omitted rather than nulled.
+    const stable = computeStableRef(signal_type, f.subject);
+    return stable
+      ? { ...f, signal_type, finding_ref: ref, stable_ref: stable }
+      : { ...f, signal_type, finding_ref: ref };
   });
 }
 
