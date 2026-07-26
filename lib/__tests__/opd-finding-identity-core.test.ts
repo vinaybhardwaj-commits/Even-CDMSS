@@ -6,7 +6,7 @@ import {
   computeStableRef, normStableText, resolveLabel, normalizeClusterKey, sha1Hex, STABLE_REF_DELIM,
 } from '../opd-finding-identity-core';
 import { stampFindingIdentity, type OpdFinding } from '../opd-note-audit-core';
-import { reduceRollup, ROLLUP_CHAR_BUDGET, type FindingCountRow, type FiredRow, type ReviewerRow } from '../opd-feedback-rollup-core';
+import { reduceRollup, reduceLedgerList, ROLLUP_CHAR_BUDGET, type FindingCountRow, type FiredRow, type ReviewerRow, type LedgerRow } from '../opd-feedback-rollup-core';
 
 const mk = (over: Partial<OpdFinding> = {}): OpdFinding => ({
   subject: 'Interaction (major): Aceclofenac + Methotrexate', verdict: 'low-value', confidence: 0.8,
@@ -283,4 +283,22 @@ test('ledger folding is newest-first-wins when several versioned keys normalise 
     ],
   };
   assert.deepEqual(reduceRollup(inputs, {}).open_adjudications, ['x']);
+});
+
+test('reduceLedgerList decides currency on the NORMALISED key (normative detail 5)', () => {
+  // Append-only ledger: two historical rows for what is now ONE cluster. Newest-first.
+  const rows: LedgerRow[] = [
+    { id: 2, cluster_key: 'lasa_pair@opd-note-audit/0.81.14', decision: 'accept', rationale: 'r', prd_ref: null, author: 'V', created_at: '2026-07-26T10:00:00Z' },
+    { id: 1, cluster_key: 'lasa_pair@opd-note-audit/0.81.8', decision: 'defer', rationale: 'r', prd_ref: null, author: 'V', created_at: '2026-07-10T10:00:00Z' },
+    { id: 3, cluster_key: 'other_signal', decision: 'fix', rationale: 'r', prd_ref: null, author: 'V', created_at: '2026-07-20T10:00:00Z' },
+  ];
+  const out = reduceLedgerList(rows);
+  assert.equal(out[0].is_current, true,  'the newest row of the folded cluster is current');
+  assert.equal(out[1].is_current, false, 'the older versioned row of the SAME cluster must NOT also be current');
+  assert.equal(out[2].is_current, true,  'an unrelated bare key is unaffected');
+  // the stored key is returned verbatim (append-only), with the normalised form alongside
+  assert.equal(out[1].cluster_key, 'lasa_pair@opd-note-audit/0.81.8');
+  assert.equal(out[0].cluster_key_normalized, 'lasa_pair');
+  assert.equal(out[1].cluster_key_normalized, 'lasa_pair');
+  assert.equal(out[2].cluster_key_normalized, 'other_signal');
 });

@@ -531,13 +531,24 @@ LIMIT ${P(clampLimit(o.limit))}`;
 }
 
 export type LedgerRow = { id: number | string; cluster_key: string; decision: string; rationale: string; prd_ref: string | null; author: string | null; created_at: string };
-/** Flag which listed rows are the current status for their cluster_key (newest per cluster_key). */
-export function reduceLedgerList(rows: LedgerRow[]): (LedgerRow & { is_current: boolean })[] {
+/**
+ * Flag which listed rows are the current status for their cluster_key (newest per cluster_key).
+ *
+ * LAB-MCP Phase 1 (normative detail 5): currency is decided on the NORMALISED key. The ledger is
+ * append-only, so historical rows keep their '<signal>@<engine_version>' key verbatim — but under the
+ * bare-signal_type convention those are the SAME cluster. Without normalising here, 'x@0.81.8' and
+ * 'x@0.81.14' would each be flagged is_current, showing two current decisions for one cluster and
+ * disagreeing with open_adjudications (which already normalises). The stored cluster_key is returned
+ * UNCHANGED; only the currency verdict is computed on the normalised form, and cluster_key_normalized
+ * is added so a reader can see which rows folded together.
+ */
+export function reduceLedgerList(rows: LedgerRow[]): (LedgerRow & { is_current: boolean; cluster_key_normalized: string })[] {
   const seen = new Set<string>();
-  // rows arrive newest-first; the first row per cluster_key is current
+  // rows arrive newest-first; the first row per NORMALISED cluster_key is current
   return rows.map((r) => {
-    const first = !seen.has(r.cluster_key);
-    if (first) seen.add(r.cluster_key);
-    return { ...r, is_current: first };
+    const nk = normalizeClusterKey(r.cluster_key);
+    const first = !seen.has(nk);
+    if (first) seen.add(nk);
+    return { ...r, is_current: first, cluster_key_normalized: nk };
   });
 }
