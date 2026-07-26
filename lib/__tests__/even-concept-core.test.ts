@@ -8,7 +8,8 @@ import {
   validateExtraction, stampConcepts, pendingSubjects, isCodableFinding, resolveTarget,
   applyCollapseRules, isGuardedBrandToken, isConceptDirection, CONCEPT_DIRECTIONS,
   CLEAN_LANE_MIN_CONTEXT_FREE_SHARE, EMPTY_TARGET_SENTINEL, usesEmptyTargetSentinel,
-  type ConceptAssignment, type TargetResolution,
+  deriveConceptState, codedPct, cacheHitPct, rejectedRecent, buildConceptStatus,
+  type ConceptAssignment, type TargetResolution, type ConceptTickRow, type ConceptStatusRaw,
 } from '../even-concept-core';
 import { normalizeSubject } from '../even-lvc-core';
 import { computeOpdScore } from '../opd-note-score-core';
@@ -295,6 +296,108 @@ test('§9 cache miss → extract once → cached; a repeated string makes NO sec
   const second = runTick();
   assert.equal(extractions, 2, 'a second tick over cached strings must make no further call');
   assert.equal(second.stamped, 41);
+});
+
+// ── worker-page status shaping ─────────────────────────────────────────────────
+const tick = (over: Partial<ConceptTickRow> = {}): ConceptTickRow => ({
+  ts: '2026-07-26T12:00:00', status: 'ok', processed: 200, stamped: 180, extracted: 12, rejected: 0,
+  epoch: 1, note: 'cron', ...over,
+});
+const rawStatus = (over: Partial<ConceptStatusRaw> = {}): ConceptStatusRaw => ({
+  enabled: true, paused: false, epoch: 1, coded: 500, candidates: 2000, notYetCoded: 1400,
+  stringsExtracted7d: 40, concepts: 3070, stringsSeed: 9444, lastTick: tick(), recentTicks: [tick()], ...over,
+});
+
+test('deriveConceptState: disabled outranks paused outranks pending work', () => {
+  assert.equal(deriveConceptState({ enabled: false, paused: false, notYetCoded: 100 }), 'disabled');
+  assert.equal(deriveConceptState({ enabled: false, paused: true, notYetCoded: 0 }), 'disabled');
+  assert.equal(deriveConceptState({ enabled: true, paused: true, notYetCoded: 100 }), 'paused');
+  assert.equal(deriveConceptState({ enabled: true, paused: false, notYetCoded: 100 }), 'draining');
+  assert.equal(deriveConceptState({ enabled: true, paused: false, notYetCoded: 0 }), 'idle');
+  assert.equal(deriveConceptState({ enabled: true, paused: false, notYetCoded: null }), 'idle');
+});
+
+test('codedPct is a clamped percentage, null when the denominator is unknown or zero', () => {
+  assert.equal(codedPct(500, 2000), 25);
+  assert.equal(codedPct(0, 2000), 0);
+  assert.equal(codedPct(2000, 2000), 100);
+  assert.equal(codedPct(null, 2000), null);
+  assert.equal(codedPct(5, null), null);
+  assert.equal(codedPct(5, 0), null);        // zero-state must not divide by zero
+  assert.equal(codedPct(9999, 100), 100);    // clamped, never >100
+});
+
+test('cacheHitPct is the share of stamps needing no model call; null before anything is stamped', () => {
+  assert.equal(cacheHitPct([tick({ stamped: 100, extracted: 10 })]), 90);
+  assert.equal(cacheHitPct([tick({ stamped: 50, extracted: 0 })]), 100);
+  assert.equal(cacheHitPct([tick({ stamped: 100, extracted: 10 }), tick({ stamped: 100, extracted: 30 })]), 80);
+  // ZERO-STATE: nothing stamped yet must be null (unknown), NOT 0% — 0% would read as "the cache is
+  // useless" on a page that has simply never run.
+  assert.equal(cacheHitPct([]), null);
+  assert.equal(cacheHitPct([tick({ stamped: 0, extracted: 0 })]), null);
+  // a tick may extract strings whose findings land later ⇒ clamp rather than emit a negative
+  assert.equal(cacheHitPct([tick({ stamped: 5, extracted: 40 })]), 0);
+});
+
+test('rejectedRecent sums across ticks and is 0 (never null) so the tile always renders a number', () => {
+  assert.equal(rejectedRecent([]), 0);
+  assert.equal(rejectedRecent([tick({ rejected: 3 }), tick({ rejected: 4 })]), 7);
+  assert.equal(rejectedRecent([tick({ rejected: 0 })]), 0);
+});
+
+test('buildConceptStatus shapes the payload and carries all four per-tick counts through', () => {
+  const s = buildConceptStatus(rawStatus({ recentTicks: [tick({ stamped: 100, extracted: 10, rejected: 2 })] }));
+  assert.equal(s.state, 'draining');
+  assert.equal(s.coded_pct, 25);
+  assert.equal(s.cache_hit_pct, 90);
+  assert.equal(s.rejected_recent, 2);
+  assert.equal(s.not_yet_coded, 1400);
+  assert.equal(s.concepts, 3070);
+  assert.equal(s.strings_seed, 9444);
+  const t = s.recent_ticks[0];
+  for (const k of ['processed', 'stamped', 'extracted', 'rejected']) {
+    assert.ok(typeof (t as unknown as Record<string, unknown>)[k] === 'number', `tick.${k} must survive`);
+  }
+});
+
+test('ZERO-STATE renders honestly: seed loaded, no ticks, nothing stamped', () => {
+  // Exactly the state this ships in. Every field must be a value the panel can render without
+  // looking broken: no NaN, no negative, no divide-by-zero, and "unknown" distinguishable from zero.
+  const s = buildConceptStatus({
+    enabled: true, paused: false, epoch: 1,
+    coded: 0, candidates: 20000, notYetCoded: 20000,
+    stringsExtracted7d: 0, concepts: 3070, stringsSeed: 9444,
+    lastTick: null, recentTicks: [],
+  });
+  assert.equal(s.state, 'draining');            // work pending, worker on — not 'idle', not an error
+  assert.equal(s.coded_pct, 0);                 // a real 0%, bar renders empty
+  assert.equal(s.cache_hit_pct, null);          // UNKNOWN, not 0 — nothing has been stamped
+  assert.equal(s.rejected_recent, 0);           // a number, so the tile shows "0" not "—"
+  assert.equal(s.not_yet_coded, 20000);
+  assert.equal(s.strings_extracted_7d, 0);
+  assert.equal(s.concepts, 3070);               // the seeded vocabulary is visible immediately
+  assert.equal(s.strings_seed, 9444);
+  assert.deepEqual(s.recent_ticks, []);
+  assert.equal(s.last_tick, null);
+  for (const v of [s.coded_pct, s.rejected_recent]) assert.ok(Number.isFinite(v as number));
+});
+
+test('a fully-degraded payload (every aggregate null) still shapes without throwing', () => {
+  const s = buildConceptStatus({
+    enabled: true, paused: false, epoch: 1, coded: null, candidates: null, notYetCoded: null,
+    stringsExtracted7d: null, concepts: null, stringsSeed: null, lastTick: null, recentTicks: [],
+  });
+  assert.equal(s.state, 'idle');
+  assert.equal(s.coded_pct, null);
+  assert.equal(s.cache_hit_pct, null);
+  assert.equal(s.rejected_recent, 0);
+});
+
+test('the disabled state is reachable and keeps its counts (the panel explains itself)', () => {
+  const s = buildConceptStatus(rawStatus({ enabled: false }));
+  assert.equal(s.state, 'disabled');
+  assert.equal(s.concepts, 3070);   // vocabulary still shown — "off", not "empty"
+  assert.equal(s.strings_seed, 9444);
 });
 
 // ── §9 SCORE-INVARIANCE — the hard invariant (PRD §3, §6 Phase 1 gate) ─────────

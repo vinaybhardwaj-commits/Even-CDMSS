@@ -22,7 +22,7 @@ import { getSettings, setSetting } from './mini-backfill';
 import { governedChat, startTrace, finishTraceIfRunning } from './trace';
 import {
   normalizeConceptSubject, stampConcepts, pendingSubjects, validateExtraction, baseConceptId,
-  type ConceptAssignment, type ExtractionReject,
+  type ConceptAssignment, type ExtractionReject, type ConceptStatusRaw, type ConceptTickRow,
 } from './even-concept-core';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
@@ -254,6 +254,64 @@ export async function runConceptTick(opts: { trigger: 'cron' | 'manual' }): Prom
   } finally {
     try { await setSetting(EC_KEYS.lock, ''); } catch { /* best-effort release */ }
   }
+}
+
+/**
+ * Worker-page status payload. Read-only; EVERY aggregate independently soft-fails to null so one slow
+ * or failing query degrades a tile rather than blanking the panel. NO PHI and NO doctor identifier is
+ * selected anywhere here — counts only.
+ *
+ * ⚠️ INFERRED SQL, same discipline as the tick above. The coded/candidate counts unnest findings
+ * jsonb (the `quietedVolume30d` precedent does the same); they are the two heaviest statements on
+ * this page, which is why they share ONE scan.
+ */
+export async function loadConceptStatusRaw(enabled: boolean): Promise<ConceptStatusRaw> {
+  const epoch = await getEpoch().catch(() => 1);
+  const paused = await isPaused().catch(() => false);
+  const one = async <T>(q: string, p: unknown[], k: string, cast: (v: unknown) => T, dflt: T): Promise<T> =>
+    run(q, p).then((r) => (r.length ? cast((r[0] as Record<string, unknown>)[k]) : dflt)).catch(() => dflt);
+
+  // ONE scan for both: eligible findings (low-value, non-informational) and those already carrying a
+  // concept_id. `informational` is absent on most findings, so the test is IS DISTINCT FROM 'true'.
+  const counts = await run(
+    `SELECT count(*) FILTER (WHERE f->>'concept_id' IS NOT NULL)::int AS coded,
+            count(*)::int AS candidates
+     FROM opd_note_audits a, LATERAL jsonb_array_elements(a.findings) f
+     WHERE a.app_source = $1 AND a.excluded_reason IS NULL
+       AND f->>'verdict' = 'low-value' AND (f->>'informational') IS DISTINCT FROM 'true'`, [APP])
+    .then((r) => (r.length ? r[0] as Record<string, unknown> : null)).catch(() => null);
+
+  // NOT REACHED ≠ tried-and-failed: eligible findings on notes with no watermark row at all. Keeping
+  // these separate from `rejected` is the whole point of the two tiles.
+  const notYetCoded = await one<number | null>(
+    `SELECT count(*)::int n
+     FROM opd_note_audits a
+     LEFT JOIN even_concept_state s ON s.uid = a.uid,
+     LATERAL jsonb_array_elements(a.findings) f
+     WHERE a.app_source = $1 AND a.excluded_reason IS NULL AND s.uid IS NULL
+       AND f->>'verdict' = 'low-value' AND (f->>'informational') IS DISTINCT FROM 'true'`, [APP], 'n', Number, null);
+
+  const stringsExtracted7d = await one<number | null>(
+    `SELECT count(*)::int n FROM lvc_concept_strings WHERE source='extracted' AND extracted_at > now() - interval '7 days'`, [], 'n', Number, null);
+  const concepts = await one<number | null>(`SELECT count(*)::int n FROM lvc_concepts`, [], 'n', Number, null);
+  const stringsSeed = await one<number | null>(`SELECT count(*)::int n FROM lvc_concept_strings WHERE source='seed'`, [], 'n', Number, null);
+
+  const tickRows = await run(
+    `SELECT to_char(ts,'YYYY-MM-DD"T"HH24:MI:SS') AS ts, status, processed, stamped, extracted, rejected, epoch, note
+     FROM even_concept_ticks ORDER BY ts DESC LIMIT 6`, []).catch(() => [] as Record<string, unknown>[]);
+  const recentTicks: ConceptTickRow[] = tickRows.map((r) => ({
+    ts: String(r.ts ?? ''), status: String(r.status ?? ''), processed: Number(r.processed ?? 0),
+    stamped: Number(r.stamped ?? 0), extracted: Number(r.extracted ?? 0), rejected: Number(r.rejected ?? 0),
+    epoch: r.epoch == null ? null : Number(r.epoch), note: r.note == null ? null : String(r.note),
+  }));
+
+  return {
+    enabled, paused, epoch,
+    coded: counts ? Number(counts.coded ?? 0) : null,
+    candidates: counts ? Number(counts.candidates ?? 0) : null,
+    notYetCoded, stringsExtracted7d, concepts, stringsSeed,
+    lastTick: recentTicks[0] ?? null, recentTicks,
+  };
 }
 
 /** Stamp-coverage report (PRD §6 Phase 1 gate). Read-only; each aggregate soft-fails to null. */

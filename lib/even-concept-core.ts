@@ -253,6 +253,75 @@ export function stampConcepts<T extends StampableFinding>(
   return { findings: out, stamped };
 }
 
+// ── status shaping (worker page) — pure, mirrors buildGroundStatus ──────────────
+export interface ConceptTickRow {
+  ts: string; status: string; processed: number; stamped: number; extracted: number; rejected: number;
+  epoch: number | null; note: string | null;
+}
+export interface ConceptStatusRaw {
+  enabled: boolean; paused: boolean; epoch: number;
+  coded: number | null; candidates: number | null; notYetCoded: number | null;
+  stringsExtracted7d: number | null; concepts: number | null; stringsSeed: number | null;
+  lastTick: ConceptTickRow | null; recentTicks: ConceptTickRow[];
+}
+export type ConceptState = 'draining' | 'idle' | 'paused' | 'disabled';
+export interface ConceptStatus {
+  state: ConceptState; epoch: number; paused: boolean;
+  coded: number | null; candidates: number | null; not_yet_coded: number | null;
+  cache_hit_pct: number | null; strings_extracted_7d: number | null; rejected_recent: number;
+  concepts: number | null; strings_seed: number | null;
+  last_tick: ConceptTickRow | null; recent_ticks: ConceptTickRow[]; coded_pct: number | null;
+}
+
+/** Flag off ⇒ 'disabled' (the panel explains itself rather than 404ing). Paused outranks pending work.
+ *  'idle' once nothing eligible remains unreached; otherwise 'draining'. Pure. */
+export function deriveConceptState(raw: Pick<ConceptStatusRaw, 'enabled' | 'paused' | 'notYetCoded'>): ConceptState {
+  if (!raw.enabled) return 'disabled';
+  if (raw.paused) return 'paused';
+  return (raw.notYetCoded ?? 0) > 0 ? 'draining' : 'idle';
+}
+
+/** Percent of eligible findings that carry a concept. Null when the denominator is unknown/zero. */
+export function codedPct(coded: number | null, candidates: number | null): number | null {
+  if (coded == null || candidates == null || candidates <= 0) return null;
+  return Math.max(0, Math.min(100, Math.round((coded / candidates) * 1000) / 10));
+}
+
+/**
+ * Share of recent STAMPS that needed no model call — the cost line. Defined over recent ticks as
+ * `1 − extracted/stamped`, i.e. of the findings stamped, how many were resolved from the cache
+ * rather than costing an extraction. Extraction is per unique STRING while stamping is per FINDING,
+ * so this is a stamps-per-call efficiency, not a per-string hit rate — the panel labels it as such.
+ * Null when nothing has been stamped yet (a zero-state must not read as 0% and look broken).
+ * Clamped to [0,100]: a tick may extract strings whose findings land on a later tick.
+ */
+export function cacheHitPct(ticks: readonly ConceptTickRow[]): number | null {
+  const stamped = ticks.reduce((n, t) => n + (Number(t.stamped) || 0), 0);
+  const extracted = ticks.reduce((n, t) => n + (Number(t.extracted) || 0), 0);
+  if (stamped <= 0) return null;
+  return Math.max(0, Math.min(100, Math.round((1 - extracted / stamped) * 1000) / 10));
+}
+
+/** Extraction failures across the recent ticks — the number that must not hide behind the backlog. */
+export function rejectedRecent(ticks: readonly ConceptTickRow[]): number {
+  return ticks.reduce((n, t) => n + (Number(t.rejected) || 0), 0);
+}
+
+export function buildConceptStatus(raw: ConceptStatusRaw): ConceptStatus {
+  const ticks = raw.recentTicks ?? [];
+  return {
+    state: deriveConceptState(raw),
+    epoch: raw.epoch, paused: raw.paused,
+    coded: raw.coded, candidates: raw.candidates, not_yet_coded: raw.notYetCoded,
+    cache_hit_pct: cacheHitPct(ticks),
+    strings_extracted_7d: raw.stringsExtracted7d,
+    rejected_recent: rejectedRecent(ticks),
+    concepts: raw.concepts, strings_seed: raw.stringsSeed,
+    last_tick: raw.lastTick, recent_ticks: ticks,
+    coded_pct: codedPct(raw.coded, raw.candidates),
+  };
+}
+
 /** The distinct un-coded subjects in a batch of findings — the extraction work-list. Deduped, ordered
  *  by first appearance so a tick is deterministic. */
 export function pendingSubjects<T extends StampableFinding>(findings: T[], known: (norm: string) => boolean): string[] {

@@ -1239,6 +1239,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/api",
+    "to": "even-concept-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
     "to": "even-ground",
     "kind": "value"
   },

@@ -3,7 +3,7 @@ export const runtime = 'nodejs';
 
 import Link from 'next/link';
 import { redirect, notFound } from 'next/navigation';
-import { ArrowRight, MessageSquareHeart, ClipboardCheck, ListChecks, ShieldCheck } from 'lucide-react';
+import { ArrowRight, MessageSquareHeart, ClipboardCheck, ListChecks, ShieldCheck, Boxes } from 'lucide-react';
 import { isCareUnlocked } from '@/lib/care-cookie';
 import { sql } from '@/lib/db';
 import { CCB_ENGINE_VERSION } from '@/lib/ccb-brief-core';
@@ -45,6 +45,12 @@ export default async function ManagedCareHome() {
     const lvcR = await run(`SELECT count(*)::int n FROM even_lvc_assertions WHERE status = 'pending'`).catch(() => []);
     lvcCount = Number((lvcR as Record<string, unknown>[])[0]?.n ?? 0);
   }
+
+  // Concept Coder (CDMSS-CONCEPT-CODER-PRD v1.0) — badge = governed-vocabulary size. Best-effort;
+  // the table may not exist pre-migration → 0. The card shows regardless of LVC_CONCEPT_ENABLED,
+  // because the page's whole job when the worker is off is to say so.
+  const conceptR = await run(`SELECT count(*)::int n FROM lvc_concepts`).catch(() => []);
+  const conceptCount = Number((conceptR as Record<string, unknown>[])[0]?.n ?? 0);
 
   // Review Mode team-progress strip (§2.4) — best-effort; omitted entirely on any error. Reuses the
   // gamification core over the same counted-label rows the stats route reads (identical basis).
@@ -98,6 +104,13 @@ export default async function ManagedCareHome() {
       desc: 'Ratify the low-value-care patterns Even’s own audits surface — then ground future audits against them. Advisory until you validate.',
       count: lvcCount, countLabel: 'pending', tint: 'amber',
     }] : []),
+    {
+      href: '/care/concepts',
+      icon: Boxes,
+      title: 'Concept coder',
+      desc: 'Codes each free-text audit finding to a governed clinical concept, the way a diagnosis is coded to ICD. Worker status only — score-invariant.',
+      count: conceptCount, countLabel: 'concepts', tint: 'slate',
+    },
   ];
 
   const tintClasses: Record<string, { badge: string; icon: string }> = {
@@ -105,6 +118,7 @@ export default async function ManagedCareHome() {
     sky: { badge: 'bg-sky-100 text-sky-800', icon: 'text-sky-500' },
     emerald: { badge: 'bg-emerald-100 text-emerald-800', icon: 'text-emerald-500' },
     amber: { badge: 'bg-amber-100 text-amber-800', icon: 'text-amber-500' },
+    slate: { badge: 'bg-slate-100 text-slate-700', icon: 'text-slate-500' },
   };
 
   return (
