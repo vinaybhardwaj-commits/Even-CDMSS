@@ -188,26 +188,51 @@ async function main() {
 
   const { sql } = await import('../lib/db.ts');
   const run = sql;
+  // Multi-row batches: 12.5k single-row INSERTs over neon-serverless is ~12.5k HTTP round-trips
+  // (≈20 min). Semantics are identical — same ON CONFLICT clause, same column order.
+  const CHUNK = 500;
+  const chunks = (a) => Array.from({ length: Math.ceil(a.length / CHUNK) }, (_, i) => a.slice(i * CHUNK, i * CHUNK + CHUNK));
+
   let ins = 0;
-  for (const c of C.rows) {
+  for (const batch of chunks(C.rows)) {
+    const vals = [], params = [];
+    for (const c of batch) {
+      const b = params.length;
+      vals.push(`($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7})`);
+      params.push(c.concept_id, c.direction, c.action, c.target, c.n_strings, c.volume, c.review_lane);
+    }
     await run(
       `INSERT INTO lvc_concepts (concept_id, direction, action, target, n_strings, volume, review_lane)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       VALUES ${vals.join(',')}
        ON CONFLICT (concept_id) DO UPDATE SET n_strings=EXCLUDED.n_strings, volume=EXCLUDED.volume,
-         review_lane=EXCLUDED.review_lane, last_seen=now()`,
-      [c.concept_id, c.direction, c.action, c.target, c.n_strings, c.volume, c.review_lane]);
-    ins++;
+         review_lane=EXCLUDED.review_lane, last_seen=now()`, params);
+    ins += batch.length;
+    process.stdout.write(`\r  lvc_concepts upserted: ${ins}/${C.rows.length}`);
   }
-  console.log(`lvc_concepts upserted: ${ins}`);
+  console.log(`\nlvc_concepts upserted: ${ins}`);
+
   let sIns = 0;
-  for (const s of S.rows) {
+  for (const batch of chunks(S.rows)) {
+    const vals = [], params = [];
+    for (const s of batch) {
+      const b = params.length;
+      vals.push(`($${b + 1},$${b + 2},$${b + 3},$${b + 4},'seed',NULL)`);
+      params.push(s.norm, s.concept_id, s.context, s.confidence);
+    }
     await run(
       `INSERT INTO lvc_concept_strings (norm, concept_id, context, confidence, source, model)
-       VALUES ($1,$2,$3,$4,'seed',NULL) ON CONFLICT (norm) DO NOTHING`,
-      [s.norm, s.concept_id, s.context, s.confidence]);
-    sIns++;
+       VALUES ${vals.join(',')} ON CONFLICT (norm) DO NOTHING`, params);
+    sIns += batch.length;
+    process.stdout.write(`\r  lvc_concept_strings sent: ${sIns}/${S.rows.length}`);
   }
-  console.log(`lvc_concept_strings inserted (ON CONFLICT DO NOTHING): ${sIns}`);
+  console.log(`\nlvc_concept_strings sent (ON CONFLICT DO NOTHING): ${sIns}`);
+
+  // Report what actually LANDED, not what we sent — the two differ if a row already existed.
+  const got = await run(`SELECT
+      (SELECT count(*)::int FROM lvc_concepts) AS concepts,
+      (SELECT count(*)::int FROM lvc_concept_strings WHERE source='seed') AS seeded,
+      (SELECT count(*)::int FROM lvc_concept_strings) AS strings_total`, []);
+  console.log(`LANDED — lvc_concepts=${got[0].concepts}  lvc_concept_strings(seed)=${got[0].seeded}  strings_total=${got[0].strings_total}`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
