@@ -3,12 +3,13 @@
 // is asserted by counting invocations, not inferred.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   normalizeConceptSubject, normalizeSlot, composeConceptId, baseConceptId, computeReviewLane,
   validateExtraction, stampConcepts, pendingSubjects, isCodableFinding, resolveTarget,
   applyCollapseRules, isGuardedBrandToken, isConceptDirection, CONCEPT_DIRECTIONS,
   CLEAN_LANE_MIN_CONTEXT_FREE_SHARE, EMPTY_TARGET_SENTINEL, usesEmptyTargetSentinel,
-  deriveConceptState, codedPct, cacheHitPct, rejectedRecent, buildConceptStatus,
+  deriveConceptState, codedPct, cacheHitPct, rejectedRecent, buildConceptStatus, CONCEPT_CRON_MIN,
   type ConceptAssignment, type TargetResolution, type ConceptTickRow, type ConceptStatusRaw,
 } from '../even-concept-core';
 import { normalizeSubject } from '../even-lvc-core';
@@ -306,6 +307,20 @@ const tick = (over: Partial<ConceptTickRow> = {}): ConceptTickRow => ({
 const rawStatus = (over: Partial<ConceptStatusRaw> = {}): ConceptStatusRaw => ({
   enabled: true, paused: false, epoch: 1, coded: 500, candidates: 2000, notYetCoded: 1400,
   stringsExtracted7d: 40, concepts: 3070, stringsSeed: 9444, lastTick: tick(), recentTicks: [tick()], ...over,
+});
+
+test('CONCEPT_CRON_MIN matches the schedule in vercel.json (the panel renders this number)', () => {
+  // The cadence was hardcoded at two use sites in the panel and silently went stale when the cron
+  // moved 10 → 2, so the page would have shown a wrong countdown and claimed the wrong interval.
+  // One constant, asserted against the actual deployment config.
+  const cfg = JSON.parse(readFileSync(new URL('../../vercel.json', import.meta.url), 'utf8')) as
+    { crons?: { path: string; schedule: string }[] };
+  const entry = (cfg.crons ?? []).find((c) => c.path.startsWith('/api/care/concept/code'));
+  assert.ok(entry, 'the Concept Coder cron entry must exist in vercel.json');
+  const m = entry.schedule.match(/^\*\/(\d+) \* \* \* \*$/);
+  assert.ok(m, `expected a */N minute schedule, got "${entry.schedule}"`);
+  assert.equal(Number(m[1]), CONCEPT_CRON_MIN,
+    `vercel.json says every ${m[1]}min but CONCEPT_CRON_MIN is ${CONCEPT_CRON_MIN} — the panel would misreport`);
 });
 
 test('deriveConceptState: disabled outranks paused outranks pending work', () => {

@@ -254,6 +254,18 @@ export function stampConcepts<T extends StampableFinding>(
 }
 
 // ── status shaping (worker page) — pure, mirrors buildGroundStatus ──────────────
+/**
+ * The worker's cron cadence in minutes — MUST match the schedule in vercel.json for
+ * `/api/care/concept/code`. Display-only: it drives the "next tick ~mm:ss" countdown and the
+ * zero-state's "runs every N minutes" line. It lives in the PURE core so the client panel can import
+ * it without pulling db/trace into the bundle, and so the number has ONE home rather than being
+ * hardcoded at each use site (it was, in two places, until the every-2-minutes change).
+ *
+ * 26 Jul: 10 → 2. Extraction saturated at 1-14 calls/tick against a 40 budget, so the extraction
+ * budget stopped being the constraint and the idle between ticks became the whole of it.
+ */
+export const CONCEPT_CRON_MIN = 2;
+
 export interface ConceptTickRow {
   ts: string; status: string; processed: number; stamped: number; extracted: number; rejected: number;
   epoch: number | null; note: string | null;

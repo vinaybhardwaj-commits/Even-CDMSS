@@ -16,6 +16,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Boxes, Pause, Play, Gauge, AlertTriangle } from 'lucide-react';
 import { formatAgo, nextTickInSec } from '@/lib/even-ground-core';
+import { CONCEPT_CRON_MIN } from '@/lib/even-concept-core';
 import { StateDot, LivePill } from './GroundingPanel';
 
 type Tick = { ts: string; status: string; processed: number; stamped: number; extracted: number; rejected: number; epoch: number | null; note: string | null };
@@ -105,7 +106,7 @@ export default function ConceptWorkerPanel() {
 
   const style = STATE_STYLE[st.state] ?? STATE_STYLE.idle;
   const ago = st.last_tick && nowMs ? formatAgo(st.last_tick.ts, nowMs) : null;
-  const nextIn = nowMs ? nextTickInSec(nowMs, 10) : null;
+  const nextIn = nowMs ? nextTickInSec(nowMs, CONCEPT_CRON_MIN) : null;
   const noTicksYet = (st.recent_ticks?.length ?? 0) === 0;
   const rejected = st.rejected_recent ?? 0;
 
@@ -171,7 +172,7 @@ export default function ConceptWorkerPanel() {
         <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-slate-400">Recent ticks</div>
         {noTicksYet ? (
           <p className="text-[11.5px] text-slate-400">
-            No ticks yet{st.state === 'disabled' ? '' : ` — the worker runs every 10 minutes${nextIn != null ? `, next in ~${mmss(nextIn)}` : ''}`}.
+            No ticks yet{st.state === 'disabled' ? '' : ` — the worker runs every ${CONCEPT_CRON_MIN} minutes${nextIn != null ? `, next in ~${mmss(nextIn)}` : ''}`}.
             {' '}Vocabulary is loaded: {num(st.concepts)} concepts, {num(st.strings_seed)} seeded strings.
           </p>
         ) : (
