@@ -9,8 +9,11 @@
 -- candidate predicate then excluded every other engine row for that uid permanently. Measured before
 -- this migration: 256 in-family low-value findings across 201 uids, unreachable under epoch 1.
 --
--- DEFECT B — no engine-family provenance on coded notes, so nothing downstream can separate
--- in-family notes (which user surfaces read) from legacy-engine ones (which none do).
+-- DEFECT B — no engine-family provenance on coded AUDIT ROWS, so nothing downstream can separate
+-- in-family rows (which user surfaces read) from legacy-engine ones (which none do). GRAIN MATTERS:
+-- measured 26 Jul the out-of-family share was ~30% by AUDIT ROW (3,535 of 11,760) but ~22% by NOTE,
+-- because a note re-audited under several engine versions is several rows. Quote the right one.
+-- in_family backfills as the corrected join re-walks each row, NOT at migration time.
 --
 -- DEFECT C — lvc_concepts.volume is the research team's SEED measurement and is deliberately
 -- preserved (it has evidential value and predicted the live distribution well). live_volume is a new,

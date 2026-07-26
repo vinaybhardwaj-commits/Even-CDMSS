@@ -373,7 +373,24 @@ export async function loadConceptStatusRaw(enabled: boolean): Promise<ConceptSta
   };
 }
 
-/** Stamp-coverage report (PRD §6 Phase 1 gate). Read-only; each aggregate soft-fails to null. */
+/**
+ * Stamp-coverage report (PRD §6 Phase 1 gate). Read-only; each aggregate soft-fails to null.
+ *
+ * ⚠️ GRAIN — read this before quoting any figure from here in Phase 2. THREE different denominators
+ * are in play and they are NOT interchangeable:
+ *   · FINDING  — one low-value, non-informational element of opd_note_audits.findings. This is what
+ *                `coded` / `candidates` on the status payload count, and what a concept's volume is.
+ *   · AUDIT ROW — one (uid, engine_version) pair. `even_concept_state` has one row per audit row,
+ *                NOT one per note, since migration 0021 re-keyed it. A single note re-audited under
+ *                four engine versions is FOUR audit rows.
+ *   · NOTE     — one uid, i.e. one prescription. Always ≤ audit rows.
+ * The in-family share differs by grain — measured 26 Jul it was ~22% out-of-family by NOTE and ~30%
+ * by AUDIT ROW. Quoting one as the other overstates or understates legacy exposure by a third.
+ *
+ * `inFamilyLabelled` is deliberately reported against the total: family provenance backfills only as
+ * the corrected join re-walks each audit row, so it climbs from ~0% to complete over the drain rather
+ * than being populated at migration time. A partial figure here means "still filling", not "broken".
+ */
 export async function loadConceptCoverage(): Promise<Record<string, number | null>> {
   const one = async (q: string, p: unknown[] = []) =>
     run(q, p).then((r) => (r.length ? Number((r[0] as Record<string, unknown>).n ?? 0) : null)).catch(() => null);
@@ -382,7 +399,13 @@ export async function loadConceptCoverage(): Promise<Record<string, number | nul
     seededStrings: await one(`SELECT count(*)::int n FROM lvc_concept_strings WHERE source='seed'`),
     extractedStrings: await one(`SELECT count(*)::int n FROM lvc_concept_strings WHERE source='extracted'`),
     concepts: await one(`SELECT count(*)::int n FROM lvc_concepts`),
-    notesCoded: await one(`SELECT count(*)::int n FROM even_concept_state`),
+    // AUDIT ROWS, not notes — one per (uid, engine_version).
+    auditRowsCoded: await one(`SELECT count(*)::int n FROM even_concept_state`),
+    // NOTES — distinct uids, the smaller and more intuitive denominator.
+    notesCoded: await one(`SELECT count(DISTINCT uid)::int n FROM even_concept_state`),
     findingsStamped: await one(`SELECT coalesce(sum(n_stamped),0)::int n FROM even_concept_state`),
+    // Family provenance fills in as the re-walk proceeds; unlabelled rows are pre-0021 watermarks.
+    inFamilyLabelled: await one(`SELECT count(*)::int n FROM even_concept_state WHERE in_family IS NOT NULL`),
+    inFamilyUnlabelled: await one(`SELECT count(*)::int n FROM even_concept_state WHERE in_family IS NULL`),
   };
 }
