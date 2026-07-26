@@ -57,18 +57,40 @@ export function normalizeSlot(v: string | null | undefined): string {
 }
 
 /**
+ * The empty-target sentinel (PRD §3.1, V ruling 26 Jul). An otherwise-valid slot triple whose TARGET
+ * is empty composes against `regimen` — "the prescription taken as a whole". Polypharmacy has no drug
+ * target because its target IS the whole prescription, and `overuse:polypharmacy:regimen` is a
+ * genuinely rulable proposition ("is this prescription over-loaded?").
+ *
+ * IT IS NOT A CATCH-ALL, and that is the point of the rule. ONLY an empty target qualifies. A triple
+ * failing for any OTHER reason — a direction outside the closed vocabulary, `exclude_test_note`, a
+ * blank ACTION — is still rejected and must never be swept in here. Letting the sentinel absorb those
+ * would convert a fail-safe into a silent accept-all, which is strictly worse than dropping the row.
+ */
+export const EMPTY_TARGET_SENTINEL = 'regimen';
+
+/**
  * Compose `direction:action:target`. The CONTEXT IS DELIBERATELY NOT PART OF THE ID — it is stored
  * alongside it (PRD §3: `lvc_concept_strings` carries `concept_id` and `context` as separate columns),
  * because §4's two-lane review rules at `direction:action:target` and drills into contexts separately.
- * Returns null when any of the three required slots is blank — the caller must then NOT stamp (§7
- * fail-safe: an unstamped finding behaves exactly as it does today).
+ *
+ * Returns null when the DIRECTION is outside the closed vocabulary or the ACTION is blank — the caller
+ * must then NOT stamp (§7 fail-safe: an unstamped finding behaves exactly as it does today). A blank
+ * TARGET is the one recoverable case: it composes against the sentinel (§3.1).
  */
 export function composeConceptId(slots: Pick<ConceptSlots, 'direction' | 'action' | 'target'>): string | null {
-  if (!isConceptDirection(slots.direction)) return null;
+  if (!isConceptDirection(slots.direction)) return null;   // never sentinel-recoverable
   const action = normalizeSlot(slots.action);
+  if (blankSlot(action)) return null;                      // never sentinel-recoverable
   const target = normalizeSlot(slots.target);
-  if (blankSlot(action) || blankSlot(target)) return null;
-  return `${slots.direction}:${action}:${target}`;
+  const finalTarget = blankSlot(target) ? EMPTY_TARGET_SENTINEL : target;   // §3.1 — empty target ONLY
+  return `${slots.direction}:${action}:${finalTarget}`;
+}
+
+/** Did this concept_id take the sentinel path? Useful for reporting and for the Phase 2 review sheet,
+ *  which should show a reviewer that the target was absent rather than named. */
+export function usesEmptyTargetSentinel(conceptId: string | null | undefined): boolean {
+  return baseConceptId(conceptId).split(':')[2] === EMPTY_TARGET_SENTINEL;
 }
 
 /** The base (context-free) concept of a possibly-context-qualified id — `a:b:c:ctx` → `a:b:c`. The seed
@@ -170,9 +192,11 @@ export function validateExtraction(raw: string | null | undefined, resolve?: Tar
   if (!isConceptDirection(o.direction)) {
     return { ok: false, reason: 'bad_direction', detail: String(o.direction ?? '').slice(0, 60) };
   }
-  if (blankSlot(o.action) || blankSlot(o.target)) return { ok: false, reason: 'missing_slot' };
+  // A blank ACTION is unrecoverable. A blank TARGET is NOT a reject — it takes the §3.1 sentinel.
+  if (blankSlot(o.action)) return { ok: false, reason: 'missing_slot' };
 
-  const target = resolveTarget(String(o.target), resolve);
+  const resolved = resolveTarget(blankSlot(o.target) ? '' : String(o.target), resolve);
+  const target = blankSlot(resolved) ? EMPTY_TARGET_SENTINEL : resolved;
   const slots: ConceptSlots = {
     direction: o.direction,
     action: normalizeSlot(String(o.action)),

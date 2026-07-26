@@ -24,8 +24,24 @@ import { readFileSync } from 'node:fs';
 import { resolve as resolvePath, join } from 'node:path';
 import { homedir } from 'node:os';
 import {
-  normalizeConceptSubject, isConceptDirection, computeReviewLane, baseConceptId,
+  normalizeConceptSubject, isConceptDirection, computeReviewLane, baseConceptId, composeConceptId,
+  EMPTY_TARGET_SENTINEL, usesEmptyTargetSentinel,
 } from '../lib/even-concept-core.ts';
+
+/**
+ * Fold a seed concept_id onto its BASE triple, applying the §3.1 empty-target sentinel.
+ * Returns null when the row is genuinely unusable — a direction outside the closed vocabulary
+ * (incl. the Research Team's `exclude_test_note` marker), a blank action, or a triple that is not
+ * three segments. ONLY an empty target is recovered; nothing else is swept into the sentinel.
+ */
+export function seedBaseConceptId(rawConceptId) {
+  const parts = baseConceptId(String(rawConceptId ?? '').trim()).split(':');
+  if (parts.length !== 3) return null;
+  const [direction, action, target] = parts;
+  if (!isConceptDirection(direction)) return null;   // exclude_test_note lands here — still rejected
+  if (!String(action ?? '').trim()) return null;     // blank action is never sentinel-recoverable
+  return composeConceptId({ direction, action, target });   // blank target ⇒ …:regimen (§3.1)
+}
 
 // ── args ─────────────────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2);
@@ -74,18 +90,21 @@ export function buildStringRows(rows) {
       continue;
     }
     if (!conceptId) { rejected.push({ line, norm, reason: 'blank concept_id' }); continue; }
-    const base = baseConceptId(conceptId).split(':');
-    if (base.length !== 3 || base.some((p) => !p)) { rejected.push({ line, norm, reason: `malformed concept_id "${conceptId}"` }); continue; }
-    if (!isConceptDirection(base[0])) { rejected.push({ line, norm, reason: `direction outside closed vocabulary: "${base[0]}"` }); continue; }
+    const rawParts = baseConceptId(conceptId).split(':');
+    if (rawParts.length !== 3) { rejected.push({ line, norm, reason: `malformed concept_id "${conceptId}"` }); continue; }
+    if (!isConceptDirection(rawParts[0])) { rejected.push({ line, norm, reason: `direction outside closed vocabulary: "${rawParts[0]}"` }); continue; }
+    const composed = seedBaseConceptId(conceptId);
+    if (!composed) { rejected.push({ line, norm, reason: `blank action in "${conceptId}"` }); continue; }
     const prev = seen.get(norm);
-    if (prev && prev !== conceptId) { rejected.push({ line, norm, reason: `duplicate norm with a DIFFERENT concept (${prev} vs ${conceptId})` }); continue; }
+    if (prev && prev !== composed) { rejected.push({ line, norm, reason: `duplicate norm with a DIFFERENT concept (${prev} vs ${composed})` }); continue; }
     if (prev) { rejected.push({ line, norm, reason: 'duplicate norm (identical concept) — first kept' }); continue; }
-    seen.set(norm, conceptId);
+    seen.set(norm, composed);
     const ctx = String(r.context ?? '').trim();
     out.push({
       norm,
-      concept_id: baseConceptId(conceptId),   // the id is the BASE; context is its own column
+      concept_id: composed,   // the BASE triple, §3.1 sentinel applied; context is its own column
       context: ctx || null,
+      sentinel: usesEmptyTargetSentinel(composed),
       confidence: String(r.conf ?? '').trim() || null,
       findings: int(r.findings),
     });
@@ -109,17 +128,19 @@ export function buildConceptRows(dictRows, stringRows) {
     const line = i + 2;
     const raw = String(r.concept_id ?? '').trim();
     if (!raw) { rejected.push({ line, concept_id: raw, reason: 'blank concept_id' }); continue; }
-    const base = baseConceptId(raw);
-    const parts = base.split(':');
-    if (parts.length !== 3 || parts.some((p) => !p)) { rejected.push({ line, concept_id: raw, reason: `malformed concept_id "${raw}"` }); continue; }
+    const parts = baseConceptId(raw).split(':');
+    if (parts.length !== 3) { rejected.push({ line, concept_id: raw, reason: `malformed concept_id "${raw}"` }); continue; }
     const direction = String(r.direction ?? parts[0]).trim();
     if (!isConceptDirection(direction)) { rejected.push({ line, concept_id: raw, reason: `direction outside closed vocabulary: "${direction}"` }); continue; }
+    const base = seedBaseConceptId(raw);
+    if (!base) { rejected.push({ line, concept_id: raw, reason: `blank action in "${raw}"` }); continue; }
     if (seen.has(base)) continue;   // context-qualified dictionary rows fold onto their base concept
     seen.add(base);
     const tv = totalVol.get(base) ?? int(r.volume);
     const cf = ctxFreeVol.get(base) ?? 0;
+    const bp = base.split(':');
     out.push({
-      concept_id: base, direction, action: parts[1], target: parts[2],
+      concept_id: base, direction, action: bp[1], target: bp[2],
       n_strings: nStrings.get(base) ?? int(r.n_strings),
       volume: tv,
       review_lane: computeReviewLane(tv, cf),
@@ -145,7 +166,15 @@ async function main() {
   const lanes = C.rows.reduce((m, r) => (m[r.review_lane] = (m[r.review_lane] ?? 0) + 1, m), {});
   console.log(`review_lane          ${JSON.stringify(lanes)}`);
   const dirs = S.rows.reduce((m, r) => (m[r.concept_id.split(':')[0]] = (m[r.concept_id.split(':')[0]] ?? 0) + 1, m), {});
-  console.log(`direction (strings)  ${JSON.stringify(dirs)}\n`);
+  console.log(`direction (strings)  ${JSON.stringify(dirs)}`);
+  const sentStrings = S.rows.filter((r) => r.sentinel);
+  const sentConcepts = C.rows.filter((r) => r.target === EMPTY_TARGET_SENTINEL);
+  console.log(`§3.1 sentinel        ${sentStrings.length} strings / ${sentConcepts.length} concepts recovered to ':${EMPTY_TARGET_SENTINEL}'`);
+  if (sentConcepts.length) {
+    const top = [...sentConcepts].sort((a, b) => b.n_strings - a.n_strings).slice(0, 6);
+    for (const c of top) console.log(`      ${c.concept_id.padEnd(44)} strings=${String(c.n_strings).padStart(3)} volume=${c.volume} lane=${c.review_lane}`);
+  }
+  console.log('');
 
   for (const [name, list] of [['strings', S.rejected], ['concepts', C.rejected]]) {
     if (!list.length) { console.log(`no ${name} rejected.`); continue; }

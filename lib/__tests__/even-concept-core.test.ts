@@ -7,7 +7,8 @@ import {
   normalizeConceptSubject, normalizeSlot, composeConceptId, baseConceptId, computeReviewLane,
   validateExtraction, stampConcepts, pendingSubjects, isCodableFinding, resolveTarget,
   applyCollapseRules, isGuardedBrandToken, isConceptDirection, CONCEPT_DIRECTIONS,
-  CLEAN_LANE_MIN_CONTEXT_FREE_SHARE, type ConceptAssignment, type TargetResolution,
+  CLEAN_LANE_MIN_CONTEXT_FREE_SHARE, EMPTY_TARGET_SENTINEL, usesEmptyTargetSentinel,
+  type ConceptAssignment, type TargetResolution,
 } from '../even-concept-core';
 import { normalizeSubject } from '../even-lvc-core';
 import { computeOpdScore } from '../opd-note-score-core';
@@ -31,13 +32,72 @@ test('normalizeSlot strips inner colons so a slot can never inject an extra id s
 });
 
 // ── composition ────────────────────────────────────────────────────────────────
-test('composeConceptId builds direction:action:target and refuses a blank or bad slot', () => {
+test('composeConceptId builds direction:action:target and refuses a bad direction or blank action', () => {
+  // NOTE: before the §3.1 sentinel (V ruling, 26 Jul) this test also asserted that a blank TARGET
+  // composed to null. That is now the ONE recoverable case — see the §3.1 block above. The other
+  // two refusals are unchanged and deliberately re-asserted here so the sentinel cannot widen.
   assert.equal(composeConceptId({ direction: 'overuse', action: 'rx', target: 'antibiotic' }), 'overuse:rx:antibiotic');
   assert.equal(composeConceptId({ direction: 'overuse', action: '', target: 'antibiotic' }), null);
-  assert.equal(composeConceptId({ direction: 'overuse', action: 'rx', target: '   ' }), null);
-  assert.equal(composeConceptId({ direction: 'overuse', action: 'rx', target: 'null' }), null);
   // a direction outside the closed vocabulary can never compose (PRD §9)
   assert.equal(composeConceptId({ direction: 'exclude_test_note' as never, action: 'rx', target: 'x' }), null);
+});
+
+// ── §3.1 the empty-target sentinel (V ruling, 26 Jul) ──────────────────────────
+test('§3.1 sentinel: an empty target composes to :regimen with a valid direction + action', () => {
+  assert.equal(EMPTY_TARGET_SENTINEL, 'regimen');
+  assert.equal(composeConceptId({ direction: 'overuse', action: 'polypharmacy', target: '' }), 'overuse:polypharmacy:regimen');
+  assert.equal(composeConceptId({ direction: 'documentation', action: 'rx', target: '   ' }), 'documentation:rx:regimen');
+  assert.equal(composeConceptId({ direction: 'overuse', action: 'other', target: 'null' }), 'overuse:other:regimen');
+  assert.equal(usesEmptyTargetSentinel('overuse:polypharmacy:regimen'), true);
+  assert.equal(usesEmptyTargetSentinel('overuse:rx:antibiotic'), false);
+  assert.equal(usesEmptyTargetSentinel('overuse:polypharmacy:regimen:urti'), true);   // folds to base first
+});
+
+test('§3.1 the named case: overuse:polypharmacy: ⇒ overuse:polypharmacy:regimen', () => {
+  const parts = 'overuse:polypharmacy:'.split(':');
+  assert.equal(composeConceptId({ direction: parts[0] as never, action: parts[1], target: parts[2] }), 'overuse:polypharmacy:regimen');
+});
+
+test('§3.1 the sentinel is NOT a catch-all: exclude_test_note is still rejected, never routed to it', () => {
+  assert.equal(composeConceptId({ direction: 'exclude_test_note' as never, action: 'documentation', target: '' }), null);
+  assert.equal(composeConceptId({ direction: 'exclude_test_note' as never, action: 'other', target: 'test' }), null);
+  const r = validateExtraction('{"direction":"exclude_test_note","action":"rx","target":""}');
+  assert.equal(r.ok, false);
+  assert.equal((r as { reason: string }).reason, 'bad_direction');   // NOT missing_slot, NOT a sentinel stamp
+});
+
+test('§3.1 the sentinel is NOT a catch-all: an out-of-vocabulary direction is still rejected', () => {
+  for (const d of ['misuse', 'OVERUSE', '', 'overuse ', 'unknown']) {
+    assert.equal(composeConceptId({ direction: d as never, action: 'rx', target: '' }), null, d);
+  }
+  const r = validateExtraction('{"direction":"misuse","action":"rx","target":""}');
+  assert.equal((r as { reason: string }).reason, 'bad_direction');
+});
+
+test('§3.1 the sentinel recovers ONLY an empty target — a blank ACTION is still a reject', () => {
+  assert.equal(composeConceptId({ direction: 'overuse', action: '', target: '' }), null);
+  assert.equal(composeConceptId({ direction: 'overuse', action: '   ', target: 'antibiotic' }), null);
+  const r = validateExtraction('{"direction":"overuse","action":"","target":""}');
+  assert.equal(r.ok, false);
+  assert.equal((r as { reason: string }).reason, 'missing_slot');
+});
+
+test('§3.1 an extraction with an empty target validates to the sentinel, slots and id agreeing', () => {
+  const r = validateExtraction('{"direction":"overuse","action":"polypharmacy","target":"","context":"urti"}');
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  assert.equal(r.conceptId, 'overuse:polypharmacy:regimen');
+  assert.equal(r.slots.target, 'regimen');       // slots must not disagree with the composed id
+  assert.equal(r.slots.context, 'urti');
+});
+
+test('§3.1 review_lane computes normally for a sentinel concept', () => {
+  // A sentinel concept is an ordinary concept for lane purposes — the empty slot is the TARGET, and
+  // a row can carry a blank target AND a context ("overuse:polypharmacy::urti"). Measured on the
+  // shipped seed, overuse:polypharmacy:regimen lands in the CONTEXT lane, which is the useful
+  // outcome: the reviewer rules "is this prescription over-loaded for URTI?", not in the abstract.
+  assert.equal(computeReviewLane(33, 10), 'context');
+  assert.equal(computeReviewLane(33, 33), 'clean');     // and would be clean if none carried a context
 });
 
 test('baseConceptId folds a context-qualified id onto its base', () => {
@@ -145,9 +205,14 @@ test('§9: a direction outside the closed vocabulary is rejected, never coerced'
   assert.equal((r2 as { reason: string }).reason, 'bad_direction');
 });
 
-test('a missing slot is a reject, not a partial stamp', () => {
+test('a missing ACTION is a reject, not a partial stamp; a missing TARGET takes the §3.1 sentinel', () => {
+  // Before the §3.1 sentinel both slots rejected. A blank action still does — it is the slot that
+  // carries what was actually done, and there is no defensible default for it.
   assert.equal((validateExtraction('{"direction":"overuse","action":"","target":"x"}') as { reason: string }).reason, 'missing_slot');
-  assert.equal((validateExtraction('{"direction":"overuse","action":"rx"}') as { reason: string }).reason, 'missing_slot');
+  // A missing target key (not merely empty) is the polypharmacy shape and now composes.
+  const r = validateExtraction('{"direction":"overuse","action":"rx"}');
+  assert.equal(r.ok, true);
+  assert.equal(r.ok && r.conceptId, 'overuse:rx:regimen');
 });
 
 test('a ```json fence is tolerated; nothing else is repaired', () => {
