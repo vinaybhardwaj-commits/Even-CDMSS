@@ -14,6 +14,8 @@ import {
 } from '../opd-feedback-core';
 import { SCOPES as ROLLUP_SCOPES, DETAIL_SCOPES, buildDetailSql, reduceRollup, CATEGORY_SIGNAL_MAP, type FindingCountRow, type FiredRow, type ImpactRow } from '../opd-feedback-rollup-core';
 import { decideLabSource, normalizeRepoPath, LAB_SOURCE_ALLOW_PREFIXES } from '../lab-source-core';
+import { LAB_TOOLS } from '../mcp-tools';
+import { CORPUS_QUARANTINE_INSERT_SQL } from '../lab';
 import { applySaved, initProgress, type SavedEvent } from '../opd-feedback-ux-core';
 import { resolveProvider, checkPaidCeiling, DEFAULT_PAID_CEILING } from '../lab-provider-core';
 import {
@@ -394,4 +396,50 @@ test('F6 UI: every category the controls offer is one the write path accepts', (
     assert.equal(r.ok, true, c);
   }
   assert.equal(MISSED_CATEGORIES.length, 7, 'the Review-Mode keys 1-7 map 1:1 onto the whitelist');
+});
+
+// ── Phase 2 WIRING — the tools exist, are shaped right, and reuse the cores ─────
+type LooseTool = { name: string; description: string; inputSchema: { properties?: Record<string, unknown>; required?: readonly string[] } };
+const TOOL = (n: string): LooseTool => {
+  const t = (LAB_TOOLS as unknown as LooseTool[]).find((x) => x.name === n);
+  assert.ok(t, `${n} must be registered`);
+  return t;
+};
+
+test('wiring: the four new tools are registered with their required args', () => {
+  for (const n of ['lab_source', 'corpus_add_batch', 'lvc_propose', 'lvc_ratify', 'lvc_gaps']) TOOL(n);
+  assert.deepEqual([...(TOOL('lab_source').inputSchema.required ?? [])], ['path']);
+  assert.deepEqual([...(TOOL('corpus_add_batch').inputSchema.required ?? [])], ['chunks']);
+  assert.deepEqual([...(TOOL('lvc_propose').inputSchema.required ?? [])], ['statement']);
+  // lvc_ratify's compensating controls are REQUIRED at the schema level, not just at runtime
+  assert.deepEqual([...(TOOL('lvc_ratify').inputSchema.required ?? [])], ['proposal_id', 'confirm', 'ratified_by', 'rationale']);
+});
+
+test('wiring: corpus_add exposes all six F13 provenance fields', () => {
+  const props = (TOOL('corpus_add').inputSchema.properties ?? {}) as Record<string, unknown>;
+  for (const f of ['citation_url', 'citation_doi', 'citation_pmid', 'source_release_year', 'license_status', 'provenance']) {
+    assert.ok(props[f], `corpus_add must expose ${f}`);
+  }
+});
+
+test('wiring: F13 provenance reaches the INSERT, and quarantine stays invisible', () => {
+  // The six columns are appended; the pre-F13 prefix and the literal false are untouched.
+  assert.match(CORPUS_QUARANTINE_INSERT_SQL, /citation_url, citation_doi, citation_pmid, source_release_year, license_status, provenance\)/);
+  assert.match(CORPUS_QUARANTINE_INSERT_SQL, /\$10, false, \$11, \$12, \$13, \$14, \$15, \$16\)/);
+  assert.match(CORPUS_QUARANTINE_INSERT_SQL, /ON CONFLICT \(book, text_hash\) DO NOTHING/);
+});
+
+test('wiring: every new tool description states its WRITE-CLASS (F3 discipline held)', () => {
+  for (const n of ['lab_source', 'corpus_add_batch', 'lvc_propose', 'lvc_ratify', 'lvc_gaps']) {
+    assert.match(TOOL(n).description, /WRITE-CLASS:/, n);
+  }
+  // and the one that actually touches the live rulebook says so
+  assert.match(TOOL('lvc_ratify').description, /PRODUCTION-WRITE/);
+  assert.match(TOOL('lab_source').description, /read-only/);
+});
+
+test('wiring: lvc_propose never claims to write the rulebook; lvc_ratify is promote-only', () => {
+  assert.match(TOOL('lvc_propose').description, /NEVER written/);
+  assert.match(TOOL('lvc_ratify').description, /PROMOTE-ONLY|never create/i);
+  assert.match(TOOL('lvc_gaps').description, /RETIREMENT candidate/);
 });

@@ -423,6 +423,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "lab-source-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "learning",
     "plane": "unregistered"
   },
@@ -2937,7 +2941,17 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "mcp-tools",
+    "to": "lab-source-core",
+    "kind": "value"
+  },
+  {
+    "from": "mcp-tools",
     "to": "llm",
+    "kind": "value"
+  },
+  {
+    "from": "mcp-tools",
+    "to": "lvc-proposal-core",
     "kind": "value"
   },
   {

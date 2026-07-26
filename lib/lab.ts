@@ -96,6 +96,14 @@ export interface CorpusAddInput {
   /** Optional stable internal anchor (e.g. a guideline section slug). Absent ⇒ the chunk INDEX
    *  (String(i+1)), byte-identical to prior behaviour. Never a DOI/PMID/URL. */
   itemNumber?: string;
+  /** F13 provenance (LAB-MCP Phase 2). Validated by checkCitationFields BEFORE this is called —
+   *  this interface carries the already-normalised values and performs no validation of its own. */
+  citationUrl?: string | null;
+  citationDoi?: string | null;
+  citationPmid?: string | null;
+  sourceReleaseYear?: number | null;
+  licenseStatus?: string | null;
+  provenance?: string | null;
 }
 export interface CorpusAddResult { source: string; chunks: number; inserted: number; skipped_dup: number }
 
@@ -103,8 +111,9 @@ export interface CorpusAddResult { source: string; chunks: number; inserted: num
  *  the source guard were ever bypassed, the row stays invisible until activation flips it true.
  *  Exported so the SQL is unit-testable (§7 test 5) without a live DB. */
 export const CORPUS_QUARANTINE_INSERT_SQL =
-  `INSERT INTO mksap_chunks (source, book, chapter, section, item_number, chunk_type, text, text_hash, embedding, token_count, visible)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::vector, $10, false)
+  `INSERT INTO mksap_chunks (source, book, chapter, section, item_number, chunk_type, text, text_hash, embedding, token_count, visible,
+                             citation_url, citation_doi, citation_pmid, source_release_year, license_status, provenance)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::vector, $10, false, $11, $12, $13, $14, $15, $16)
        ON CONFLICT (book, text_hash) DO NOTHING RETURNING id`;
 
 /** Add vetted material to the corpus, QUARANTINED (labq:<label>). Embeds on nomic (mini). */
@@ -119,7 +128,10 @@ export async function corpusAddQuarantined(input: CorpusAddInput): Promise<Corpu
     const ins = await run(
       CORPUS_QUARANTINE_INSERT_SQL,
       [source, input.book, input.chapter ?? null, input.section ?? 'lab', input.itemNumber ?? String(i + 1),
-       input.chunkType ?? 'note', text, hash, emb, approxTokens(text)],
+       input.chunkType ?? 'note', text, hash, emb, approxTokens(text),
+       // F13 — every chunk of one corpus_add call carries the same provenance.
+       input.citationUrl ?? null, input.citationDoi ?? null, input.citationPmid ?? null,
+       input.sourceReleaseYear ?? null, input.licenseStatus ?? null, input.provenance ?? null],
     );
     if (ins.length) inserted++; else skipped++;
   }

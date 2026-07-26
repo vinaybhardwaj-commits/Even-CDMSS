@@ -101,12 +101,20 @@ test('slugify → stable kebab anchor fragment', () => {
 });
 
 // ── byte-identity proof: the additive itemNumber change ──
-test('CORPUS_QUARANTINE_INSERT_SQL is UNCHANGED — item_number is still column $5, no schema change', () => {
+test('CORPUS_QUARANTINE_INSERT_SQL — item_number is still column $5; F13 provenance appended ONLY', () => {
+  // LAB-MCP Phase 2 / F13: this asserted byte-identity against the pre-provenance INSERT. The six
+  // provenance columns are a DELIBERATE additive change, so the guard is rewritten to pin what must
+  // not move — the original 11 columns, their order, item_number at $5, the literal false, and the
+  // dedup clause — while allowing the appended provenance tail. Rewritten, not deleted.
   const expected =
-    'INSERT INTO mksap_chunks (source, book, chapter, section, item_number, chunk_type, text, text_hash, embedding, token_count, visible)\n' +
-    '       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::vector, $10, false)\n' +
+    'INSERT INTO mksap_chunks (source, book, chapter, section, item_number, chunk_type, text, text_hash, embedding, token_count, visible,\n' +
+    '                             citation_url, citation_doi, citation_pmid, source_release_year, license_status, provenance)\n' +
+    '       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::vector, $10, false, $11, $12, $13, $14, $15, $16)\n' +
     '       ON CONFLICT (book, text_hash) DO NOTHING RETURNING id';
   assert.equal(CORPUS_QUARANTINE_INSERT_SQL, expected);
+  // the pre-F13 prefix is untouched: same first 11 columns, item_number still $5, visible still false
+  assert.match(CORPUS_QUARANTINE_INSERT_SQL, /\(source, book, chapter, section, item_number, chunk_type, text, text_hash, embedding, token_count, visible,/);
+  assert.match(CORPUS_QUARANTINE_INSERT_SQL, /VALUES \(\$1, \$2, \$3, \$4, \$5, \$6, \$7, \$8, \$9::vector, \$10, false,/);
   // and the value bound to $5 when itemNumber is ABSENT is byte-identical to the old String(i+1)
   const i = 0;
   const withItem = 'even-protocol#a' as string | undefined;

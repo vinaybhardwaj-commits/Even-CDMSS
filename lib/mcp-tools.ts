@@ -12,6 +12,12 @@ import { governedChat } from './trace';
 import { fetchOpdNoteByUid } from './metabase';
 import { sql } from './db';
 import { guardReadOnlySql } from './sql-guard-core';
+// LAB-MCP Phase 2 wiring — the pure cores shipped in f720579. REUSED, never reimplemented.
+import { decideLabSource } from './lab-source-core';
+import {
+  checkCitationFields, parseProposeArgs, parseRatifyArgs, checkPromotable, classifyGaps,
+  type ExistingStatement, type GapRow,
+} from './lvc-proposal-core';
 import { retrieve, clampLabRetrieveTopK, BM25_DEFAULT_DFMAX } from './retrieve';
 import { retrieveMultiQuery } from './multi-query';
 import { RerankBackendError } from './rerank';
@@ -84,6 +90,12 @@ export const LAB_TOOLS = [
         text: { type: 'string', description: 'The content to ingest.' },
         chapter: { type: 'string' }, section: { type: 'string' },
         chunk_type: { type: 'string', description: "e.g. 'guideline','note','abstract' (default 'note')." },
+        citation_url: { type: 'string', description: 'F13 provenance — source URL.' },
+        citation_doi: { type: 'string', description: 'F13 provenance — DOI.' },
+        citation_pmid: { type: 'string', description: 'F13 provenance — PubMed ID.' },
+        source_release_year: { type: 'number', description: 'F13 provenance — publication/release year (REQUIRED unless internal-protocol).' },
+        license_status: { type: 'string', enum: ['open', 'permission-granted', 'proprietary-cited', 'unknown-blocked'], description: 'F13 provenance — REQUIRED unless internal-protocol. All 44 external society statements are NULL today; that is the real copyright exposure.' },
+        provenance: { type: 'string', description: "F13 — set to 'internal-protocol' for Even's own protocol content, which needs no external citation. Any other value still requires a citation." },
       },
       required: ['label', 'book', 'text'],
     },
@@ -256,6 +268,70 @@ export const LAB_TOOLS = [
     inputSchema: { type: 'object', properties: {}, required: [] },
   },
   {
+    name: 'lab_source',
+    description: 'F12b — READ-ONLY code seam: return the text of one repository source file so the orchestrator reads the code it is reasoning about instead of inferring it. Allowlist: paths under lib/ and app/api/ ONLY. A secrets denylist (.env, secret, credential, key, token) is applied AFTER the allowlist, so a secret is unreadable wherever it sits. Any path containing ".." is refused before resolution — traversal is impossible. Every call is audit-logged to lab_sql_audit, the same table audit_query uses. There is no write path of any kind. WRITE-CLASS: read-only.',
+    inputSchema: {
+      type: 'object',
+      properties: { path: { type: 'string', description: 'Repo-relative path, e.g. lib/mcp-tools.ts or app/api/care/concept/status/route.ts.' } },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'corpus_add_batch',
+    description: 'F13 — add MANY vetted chunks in one call, each with its own provenance. Same validation as corpus_add applied per element; if ANY element fails the WHOLE batch is rejected and the failing index is named, so a partial ingest can never leave half a batch quarantined with no provenance. All chunks land QUARANTINED (labq:<label>) and are inert until corpus_manage action=activate confirm:true. WRITE-CLASS: lab-write (quarantined; inert until activated).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chunks: { type: 'array', description: 'Array of corpus_add-shaped objects (label, book, text + the F13 provenance fields).', items: { type: 'object' } },
+      },
+      required: ['chunks'],
+    },
+  },
+  {
+    name: 'lvc_propose',
+    description: "F14 — propose a low-value-care statement into the STAGING table (lvc_recommendation_proposals). lvc_recommendations is NEVER written by this tool. REFUSES an uncited proposal (needs citation_url OR citation_doi OR citation_pmid, AND source_release_year, AND license_status), and REFUSES a near-duplicate of any existing statement or pending proposal unless supersedes_id is supplied — the existing 60 house statements are ~15 concepts in machine-generated variants (11 diagnosis-mismatch, 5 vitamin D, 5 antibiotic-for-viral), and without this check the tool regenerates exactly that. WRITE-CLASS: lab-write (staging only).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        statement: { type: 'string', description: 'The proposed statement.' },
+        rationale: { type: 'string' }, evidence_note: { type: 'string' },
+        proposed_by: { type: 'string', description: 'Who is proposing this.' },
+        supersedes_id: { type: 'string', description: 'REQUIRED to push a near-duplicate through — names the statement this replaces.' },
+        citation_url: { type: 'string' }, citation_doi: { type: 'string' }, citation_pmid: { type: 'string' },
+        source_release_year: { type: 'number' },
+        license_status: { type: 'string', enum: ['open', 'permission-granted', 'proprietary-cited', 'unknown-blocked'] },
+      },
+      required: ['statement'],
+    },
+  },
+  {
+    name: 'lvc_ratify',
+    description: "F14 — PROMOTE-ONLY ratification of an existing 'proposed' row, or a first-class rejection. It can NEVER create a statement de novo. Requires confirm:true AND a named ratified_by (the 'cowork-orchestrator' default is REFUSED — the Lab MCP has no user identity, so a ratification must name a real person) AND a rationale. Writes an append-only lvc_ratifications row. Rejection (decision='rejected' + reason) sets status='rejected' and is never a delete. WRITE-CLASS: PRODUCTION-WRITE on ratify — a ratified statement is promoted into the live rulebook.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        proposal_id: { type: 'string', description: 'The staging row to act on (required).' },
+        confirm: { type: 'boolean', description: 'Must be true.' },
+        ratified_by: { type: 'string', description: 'Named clinician. Must not be the default author.' },
+        rationale: { type: 'string' },
+        decision: { type: 'string', enum: ['ratified', 'rejected'], description: "Default 'ratified'." },
+        reason: { type: 'string', description: 'Required when decision=rejected.' },
+      },
+      required: ['proposal_id', 'confirm', 'ratified_by', 'rationale'],
+    },
+  },
+  {
+    name: 'lvc_gaps',
+    description: 'F14 — the rulebook evidence gap list, RANKED BY FIRES (opd_note_audits.findings[].rule_ref joined to lvc_recommendations.id) and classified: license_exposure first (all 44 external society statements carry license_status NULL today — that is the actual copyright exposure, and it sits on the CITED half), then citation_candidate, then retirement_candidate. A NEVER-FIRED rule is a RETIREMENT candidate, not a citation candidate: 33 of 67 house statements have never fired in the 0.81.x era, so citing them is effort with no clinical reach. WRITE-CLASS: read-only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Max rows (default 50).' },
+        gap_class: { type: 'string', enum: ['license_exposure', 'citation_candidate', 'retirement_candidate', 'ok'], description: 'Filter to one class.' },
+      },
+    },
+  },
+  {
     name: 'feedback_rollup',
     description: 'OPD feedback loop — MEASURED precision from clinician triage of audit findings (opd_audit_feedback), the read path for the feedback instrumentation. Current-state = latest verdict per (audit_id, finding_ref) (earlier rows are history). Returns per (engine_version × signal_type) bucket: fired (findings that fired in opd_note_audits), triaged, coverage_pct = triaged/fired, verdict counts (tp/nitpick/false/contested), precision_strict = tp/(tp+nitpick+false) with contested EXCLUDED (a demand-side dispute, reported separately as contested_rate); plus missed-flag volume by signal_type, audit_scope { n_comments, verdict_counts, n_escalations }, reviewer tally, open_adjudications (clusters with ≥3 false+nitpick and no current non-defer ledger decision), and totals. Zero denominators → null (never NaN). Read-only, fixed parameterized SQL (NOT free SQL — opd_audit_feedback stays blocked from audit_query). Args: engine_version? (default all, grouped), signal_type?, since?/until? (ISO dates on feedback created_at). WRITE-CLASS: read-only (ensures the ledger table exists; writes no rows).',
     inputSchema: {
@@ -318,6 +394,11 @@ export async function callLabTool(name: string, args: Record<string, unknown>): 
       case 'backfill_control': return await backfillControl(args);
       case 'corpus_add': return await corpusAdd(args);
       case 'corpus_manage': return await corpusManage(args);
+      case 'corpus_add_batch': return await corpusAddBatch(args);
+      case 'lab_source': return await labSource(args);
+      case 'lvc_propose': return await lvcPropose(args);
+      case 'lvc_ratify': return await lvcRatify(args);
+      case 'lvc_gaps': return await lvcGaps(args);
       case 'lab_retrieve': return await labRetrieve(args);
       case 'lab_query': return await labQuery(args);
       case 'audit_query': return await auditQuery(args);
@@ -594,10 +675,83 @@ async function labBatchTick(): Promise<ToolResult> {
 }
 
 async function corpusAdd(a: Record<string, unknown>): Promise<ToolResult> {
+  const one = await corpusAddOne(a);
+  return one.ok ? ok(one.value) : err(one.error);
+}
+
+/** F13 — validate + insert ONE chunk. Shared by corpus_add and corpus_add_batch so a single rule
+ *  governs both; the batch path must not be a softer door into the same table. */
+async function corpusAddOne(a: Record<string, unknown>): Promise<{ ok: true; value: Record<string, unknown> } | { ok: false; error: string }> {
   const label = S(a.label), book = S(a.book), text = S(a.text);
-  if (!label || !book || !text) return err('label, book, and text are required');
-  const res = await corpusAddQuarantined({ label, book, text, chapter: S(a.chapter) || undefined, section: S(a.section) || undefined, chunkType: S(a.chunk_type) || undefined });
-  return ok({ ...res, status: 'quarantined', note: `inert until corpus_manage action=activate label=${labLabel(label)} — does not affect production retrieval yet` });
+  if (!label || !book || !text) return { ok: false, error: 'label, book and text are required' };
+  // The SAME gate lvc_propose uses — (url OR doi OR pmid) AND year AND licence, unless
+  // provenance='internal-protocol' (decision 10, the 332 Even Clinical Protocol chunks).
+  const cit = checkCitationFields(a as Record<string, unknown>);
+  if (!cit.ok) return { ok: false, error: cit.error };
+  const c = cit.normalized;
+  const res = await corpusAddQuarantined({
+    label, book, text,
+    chapter: S(a.chapter) || undefined, section: S(a.section) || undefined,
+    chunkType: S(a.chunk_type) || undefined,
+    citationUrl: c.citation_url, citationDoi: c.citation_doi, citationPmid: c.citation_pmid,
+    sourceReleaseYear: c.source_release_year, licenseStatus: c.license_status, provenance: c.provenance,
+  });
+  return { ok: true, value: { ...res, status: 'quarantined', provenance: c, note: `inert until corpus_manage action=activate confirm:true label=${labLabel(label)} — does not affect production retrieval` } };
+}
+
+/**
+ * F13 — many chunks, one call. ALL-OR-NOTHING BY DESIGN: every element is validated BEFORE any
+ * insert, and the first failure rejects the whole batch naming its index. A partial ingest would
+ * leave half a batch quarantined with no provenance and no record of which half, which is precisely
+ * the state F13 exists to prevent.
+ */
+async function corpusAddBatch(a: Record<string, unknown>): Promise<ToolResult> {
+  const chunks = Array.isArray(a.chunks) ? a.chunks as Record<string, unknown>[] : null;
+  if (!chunks || chunks.length === 0) return err('chunks must be a non-empty array');
+  if (chunks.length > 200) return err(`batch too large (${chunks.length}); split into batches of ≤200`);
+  // PASS 1 — validate everything, write nothing.
+  for (const [i, cRaw] of chunks.entries()) {
+    const c = (cRaw && typeof cRaw === 'object') ? cRaw : {};
+    if (!S(c.label) || !S(c.book) || !S(c.text)) return err(`chunk[${i}] rejected: label, book and text are required — WHOLE BATCH REJECTED, nothing was written`);
+    const cit = checkCitationFields(c as Record<string, unknown>);
+    if (!cit.ok) return err(`chunk[${i}] rejected: ${cit.error} — WHOLE BATCH REJECTED, nothing was written`);
+  }
+  // PASS 2 — insert. Validation already passed for every element.
+  const results: Record<string, unknown>[] = [];
+  for (const [i, c] of chunks.entries()) {
+    const r = await corpusAddOne(c as Record<string, unknown>);
+    if (!r.ok) return err(`chunk[${i}] failed at insert: ${r.error} — ${results.length} chunk(s) already written; re-run the remainder`);
+    results.push(r.value);
+  }
+  return ok({ chunks: results.length, results });
+}
+
+/**
+ * F12b — read-only code seam. The path POLICY lives in lib/lab-source-core (pure, tested); this
+ * function only performs the read and the audit-log. Reads via fs, never via a URL, so nothing can
+ * be fetched from outside the deployment.
+ */
+async function labSource(a: Record<string, unknown>): Promise<ToolResult> {
+  const raw = S(a.path);
+  // Belt-and-braces ahead of the core: refuse a literal '..' BEFORE any resolution.
+  if (raw.includes('..')) return err("path contains '..' — traversal is refused outright");
+  const d = decideLabSource(raw);
+  if (!d.ok) return err(`lab_source refused (${d.reason}): ${d.detail}`);
+  await ensureSqlAuditLog().catch(() => {});
+  const t0 = Date.now();
+  let text: string;
+  try {
+    const { readFile } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    text = await readFile(join(process.cwd(), d.path), 'utf8');
+  } catch (e) {
+    // Audit the attempt even when it fails — a miss is as interesting as a hit.
+    await run(`INSERT INTO lab_sql_audit (sql, rows, ms) VALUES ($1,$2,$3)`, [`lab_source MISS ${d.path}`, 0, Date.now() - t0]).catch(() => {});
+    return err(`cannot read ${d.path}: ${String((e as Error).message).slice(0, 160)}`);
+  }
+  const lines = text.split('\n').length;
+  await run(`INSERT INTO lab_sql_audit (sql, rows, ms) VALUES ($1,$2,$3)`, [`lab_source ${d.path}`, lines, Date.now() - t0]).catch(() => {});
+  return ok({ path: d.path, lines, bytes: text.length, text });
 }
 
 async function corpusManage(a: Record<string, unknown>): Promise<ToolResult> {
@@ -736,6 +890,156 @@ async function auditQuery(a: Record<string, unknown>): Promise<ToolResult> {
   const ms = Date.now() - t0;
   await run(`INSERT INTO lab_sql_audit (sql, rows, ms) VALUES ($1,$2,$3)`, [g.sql.slice(0, 4000), rows.length, ms]).catch(() => {});
   return ok({ sql: g.sql, rows: rows.length, ms, data: rows });
+}
+
+// ── F14: lvc_propose / lvc_ratify / lvc_gaps (LAB-MCP Phase 2) ────────────────────
+// lvc_recommendations is NEVER written by lvc_propose. Only lvc_ratify promotes, and only from an
+// existing 'proposed' staging row. Every statement below is INFERRED (no live DB in the sandbox) and
+// is listed verbatim in the build report; all paths fail-safe to an error result, never a wrong write.
+
+const PROPOSALS_DDL = `CREATE TABLE IF NOT EXISTS lvc_recommendation_proposals (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  statement text NOT NULL, rationale text, evidence_note text, source text, category text,
+  action_type text, specialty text, keywords jsonb,
+  citation_url text, citation_doi text, citation_pmid text, source_release_year int,
+  license_status text, provenance text,
+  status text NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed','ratified','rejected')),
+  proposed_by text NOT NULL, proposed_at timestamptz NOT NULL DEFAULT now(),
+  supersedes_id text, rejected_reason text, promoted_id text
+)`;
+const RATIFICATIONS_DDL = `CREATE TABLE IF NOT EXISTS lvc_ratifications (
+  id bigserial PRIMARY KEY,
+  proposal_id uuid NOT NULL REFERENCES lvc_recommendation_proposals (id),
+  decision text NOT NULL CHECK (decision IN ('ratified','rejected')),
+  ratified_by text NOT NULL, rationale text NOT NULL, reason text,
+  promoted_id text,
+  created_at timestamptz NOT NULL DEFAULT now()
+)`;
+async function ensureLvcProposalTables(): Promise<void> {
+  await run(PROPOSALS_DDL, []);
+  await run(RATIFICATIONS_DDL, []);
+}
+
+/** Existing statements the dedup check runs against: the live rulebook PLUS pending proposals, so
+ *  two near-identical proposals cannot both slip through before either is ratified. Fail-safe ⇒ []
+ *  would DISABLE the dedup gate, so a read failure is surfaced as an error instead. */
+async function loadExistingStatements(): Promise<ExistingStatement[] | null> {
+  try {
+    const live = await run(`SELECT id::text AS id, statement, source, 'live' AS status FROM lvc_recommendations`, []);
+    const pending = await run(`SELECT id::text AS id, statement, source, status FROM lvc_recommendation_proposals WHERE status = 'proposed'`, []);
+    return [...live, ...pending].map((r) => ({
+      id: String(r.id), statement: String(r.statement ?? ''),
+      source: r.source == null ? null : String(r.source), status: r.status == null ? null : String(r.status),
+    }));
+  } catch { return null; }
+}
+
+async function lvcPropose(a: Record<string, unknown>): Promise<ToolResult> {
+  await ensureLvcProposalTables().catch(() => {});
+  const existing = await loadExistingStatements();
+  if (existing === null) {
+    // The dedup gate is MANDATORY (A10.4). If the comparison set cannot be read we refuse rather
+    // than proceed ungated — proceeding would recreate the exact duplication problem F14 exists for.
+    return err('cannot read the existing rulebook to run the mandatory duplicate check — refusing to propose ungated');
+  }
+  const parsed = parseProposeArgs(a, existing);
+  if (!parsed.ok) {
+    return err(parsed.error + (parsed.duplicates?.length ? ` | near-duplicates: ${parsed.duplicates.map((d) => `${d.id} (${d.similarity})`).join(', ')}` : ''));
+  }
+  const v = parsed.value;
+  try {
+    const rows = await run(
+      `INSERT INTO lvc_recommendation_proposals
+         (statement, rationale, evidence_note, citation_url, citation_doi, citation_pmid,
+          source_release_year, license_status, provenance, status, proposed_by, supersedes_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'proposed',$10,$11)
+       RETURNING id::text AS id, status, proposed_at`,
+      [v.statement, v.rationale, v.evidence_note, v.citation.citation_url, v.citation.citation_doi,
+       v.citation.citation_pmid, v.citation.source_release_year, v.citation.license_status,
+       v.citation.provenance, v.proposed_by, v.supersedes_id]);
+    const row = rows[0] ?? {};
+    return ok({ proposal_id: row.id ?? null, status: 'proposed', statement: v.statement, supersedes_id: v.supersedes_id,
+      note: 'STAGED only — lvc_recommendations is untouched. lvc_ratify (confirm:true + a named ratifier) is the only promotion path.' });
+  } catch (e) { return err(`propose failed: ${String((e as Error).message).slice(0, 200)}`); }
+}
+
+async function lvcRatify(a: Record<string, unknown>): Promise<ToolResult> {
+  await ensureLvcProposalTables().catch(() => {});
+  const parsed = parseRatifyArgs(a);
+  if (!parsed.ok) return err(parsed.error);
+  const v = parsed.value;
+
+  let prop: Record<string, unknown> | undefined;
+  try {
+    const rows = await run(
+      `SELECT id::text AS id, statement, rationale, evidence_note, citation_url, citation_doi, citation_pmid,
+              source_release_year, license_status, provenance, status, proposed_by, supersedes_id
+       FROM lvc_recommendation_proposals WHERE id = $1::uuid`, [v.proposal_id]);
+    prop = rows[0];
+  } catch (e) { return err(`cannot read proposal: ${String((e as Error).message).slice(0, 160)}`); }
+
+  // PROMOTE-ONLY: without an existing 'proposed' row there is nothing to promote, and this tool has
+  // no path that creates a statement de novo.
+  const promotable = checkPromotable(prop ? String(prop.status ?? '') : null);
+  if (!promotable.ok) return err(promotable.error);
+
+  if (v.decision === 'rejected') {
+    try {
+      await run(`UPDATE lvc_recommendation_proposals SET status = 'rejected', rejected_reason = $2 WHERE id = $1::uuid`, [v.proposal_id, v.reason]);
+      await run(`INSERT INTO lvc_ratifications (proposal_id, decision, ratified_by, rationale, reason) VALUES ($1::uuid,'rejected',$2,$3,$4)`,
+        [v.proposal_id, v.ratified_by, v.rationale, v.reason]);
+      return ok({ proposal_id: v.proposal_id, status: 'rejected', ratified_by: v.ratified_by,
+        note: 'REJECTION IS FIRST-CLASS — the row is retained with its reason, never deleted. A rejected proposal is evidence about the rulebook.' });
+    } catch (e) { return err(`reject failed: ${String((e as Error).message).slice(0, 200)}`); }
+  }
+
+  // Promotion: insert into the live rulebook, then mark the staging row and append the ledger entry.
+  try {
+    const ins = await run(
+      `INSERT INTO lvc_recommendations
+         (statement, rationale, source, citation_url, citation_doi, citation_pmid,
+          source_release_year, license_status, provenance, proposed_by, ratified_by, ratified_at)
+       VALUES ($1,$2,'ehrc',$3,$4,$5,$6,$7,$8,$9,$10, now())
+       RETURNING id::text AS id`,
+      [prop!.statement, prop!.rationale, prop!.citation_url, prop!.citation_doi, prop!.citation_pmid,
+       prop!.source_release_year, prop!.license_status, prop!.provenance, prop!.proposed_by, v.ratified_by]);
+    const promotedId = ins[0]?.id == null ? null : String(ins[0].id);
+    await run(`UPDATE lvc_recommendation_proposals SET status = 'ratified', promoted_id = $2 WHERE id = $1::uuid`, [v.proposal_id, promotedId]).catch(() => {});
+    await run(`INSERT INTO lvc_ratifications (proposal_id, decision, ratified_by, rationale, promoted_id) VALUES ($1::uuid,'ratified',$2,$3,$4)`,
+      [v.proposal_id, v.ratified_by, v.rationale, promotedId]).catch(() => {});
+    return ok({ proposal_id: v.proposal_id, status: 'ratified', promoted_id: promotedId, ratified_by: v.ratified_by });
+  } catch (e) { return err(`ratify failed: ${String((e as Error).message).slice(0, 200)}`); }
+}
+
+async function lvcGaps(a: Record<string, unknown>): Promise<ToolResult> {
+  const limit = Math.max(1, Math.min(500, Number(a.limit) || 50));
+  const wanted = S(a.gap_class);
+  let rows: Record<string, unknown>[];
+  try {
+    rows = await run(
+      `WITH fires AS (
+         SELECT f->>'rule_ref' AS rule_ref, count(*)::int AS n
+         FROM opd_note_audits a, LATERAL jsonb_array_elements(a.findings) f
+         WHERE a.app_source = $1 AND a.engine_version LIKE 'opd-note-audit/0.81%'
+           AND f->>'rule_ref' IS NOT NULL
+         GROUP BY 1
+       )
+       SELECT r.id::text AS id, r.statement, r.source,
+              r.citation_url, r.citation_doi, r.citation_pmid,
+              r.source_release_year, r.license_status,
+              COALESCE(fires.n, 0)::int AS fires
+       FROM lvc_recommendations r
+       LEFT JOIN fires ON fires.rule_ref = r.id::text`, [APP_SOURCE]);
+  } catch (e) { return err(`gaps query failed: ${String((e as Error).message).slice(0, 200)}`); }
+
+  const classified = classifyGaps(rows as unknown as GapRow[]);
+  const filtered = wanted ? classified.filter((g) => g.gap_class === wanted) : classified;
+  const counts = classified.reduce((m, g) => { m[g.gap_class] = (m[g.gap_class] ?? 0) + 1; return m; }, {} as Record<string, number>);
+  return ok({
+    counts, returned: Math.min(filtered.length, limit), total: classified.length,
+    gaps: filtered.slice(0, limit),
+    note: 'A NEVER-FIRED rule is a RETIREMENT candidate, not a citation candidate (33 of 67 house statements have never fired). license_exposure ranks FIRST: all 44 external society statements carry license_status NULL, so the copyright exposure sits on the CITED half of the rulebook.',
+  });
 }
 
 // ── OPD feedback loop (PRD OPD-FEEDBACK-LOOP-MCP §4) ──────────────────────────────

@@ -10,13 +10,17 @@
 -- The escape hatch (provenance='internal-protocol') covers the 332 Even Clinical Protocol chunks,
 -- which have no external citation because they ARE the source. Everything else must cite.
 -- Existing 850 rows are left NULL — backfilled only where derivable, NEVER guessed.
-ALTER TABLE corpus ADD COLUMN IF NOT EXISTS citation_url text;
-ALTER TABLE corpus ADD COLUMN IF NOT EXISTS citation_doi text;
-ALTER TABLE corpus ADD COLUMN IF NOT EXISTS citation_pmid text;
-ALTER TABLE corpus ADD COLUMN IF NOT EXISTS source_release_year int;
-ALTER TABLE corpus ADD COLUMN IF NOT EXISTS license_status text;
-ALTER TABLE corpus ADD COLUMN IF NOT EXISTS provenance text;
-CREATE INDEX IF NOT EXISTS corpus_license_status_idx ON corpus (license_status);
+-- ⚠️ TABLE NAME CORRECTED (26 Jul): the corpus lives in `mksap_chunks`, NOT a table called
+-- `corpus`. The PRD and the earlier draft of this migration both said `corpus`; grounding
+-- CORPUS_QUARANTINE_INSERT_SQL in lib/lab.ts showed the real target. Applying the previous version
+-- would have errored on a non-existent table (or, worse, altered an unrelated one).
+ALTER TABLE mksap_chunks ADD COLUMN IF NOT EXISTS citation_url text;
+ALTER TABLE mksap_chunks ADD COLUMN IF NOT EXISTS citation_doi text;
+ALTER TABLE mksap_chunks ADD COLUMN IF NOT EXISTS citation_pmid text;
+ALTER TABLE mksap_chunks ADD COLUMN IF NOT EXISTS source_release_year int;
+ALTER TABLE mksap_chunks ADD COLUMN IF NOT EXISTS license_status text;
+ALTER TABLE mksap_chunks ADD COLUMN IF NOT EXISTS provenance text;
+CREATE INDEX IF NOT EXISTS mksap_chunks_license_status_idx ON mksap_chunks (license_status);
 
 -- ── F14: the staging table. Mirrors lvc_recommendations + governance columns ──
 -- status is the workflow; 'rejected' is FIRST-CLASS and keeps its reason. A rejected proposal is
