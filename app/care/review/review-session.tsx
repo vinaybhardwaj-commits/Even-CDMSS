@@ -258,9 +258,13 @@ export default function ReviewSession() {
     if (!current) return;
     const txt = missedText.trim();
     if (!txt) return; // core requires a comment on missed
+    // F6 (A10.1): the core now REJECTS a missed row without a category, so gate here rather than
+    // let Enter produce a 400. Never defaulted — an auto-picked classifier would silently mislabel
+    // the recall denominator it feeds.
+    if (!missedCat) { setErrMsg('pick a category (1–7) first'); return; }
     try {
-      await post({ scope: 'missed', auditId: current.audit_id, verdict: 'missed', comment: txt, category: missedCat || undefined, author: reviewer });
-      setMissedSaved(true); setMissedOpen(false); setMissedText('');
+      await post({ scope: 'missed', auditId: current.audit_id, verdict: 'missed', comment: txt, category: missedCat, author: reviewer });
+      setMissedSaved(true); setMissedOpen(false); setMissedText(''); setMissedCat(null); setErrMsg('');
       setSessionCount((c) => c + 1); setLabeledToday((c) => c + 1);
       setTeamTotal((t) => t + 1); setWeekMine((w) => w + 1); // §2.2 counted-save increment
     } catch (e) { setErrMsg(String((e as Error).message).slice(0, 60)); }
@@ -492,10 +496,11 @@ export default function ReviewSession() {
                       <span className="mr-1 text-[9px] text-slate-400">{i + 1}</span>{c}
                     </button>
                   ))}
+                  {!missedCat && <span className="self-center text-[10px] font-medium text-amber-600">category required</span>}
                 </div>
                 <input autoFocus value={missedText} onChange={(e) => setMissedText(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void saveMissed(); } else if (e.key === 'Escape') { e.preventDefault(); setMissedOpen(false); } }}
-                  placeholder="What should the audit have caught? (required · Enter saves)"
+                  placeholder={missedCat ? 'What should the audit have caught? (required · Enter saves)' : 'Pick a category above (1–7) first — then describe what was missed'}
                   className="mt-2 h-8 w-full rounded-lg border border-slate-200 bg-white px-3 text-[12.5px] text-slate-700 outline-none focus:border-sky-400" />
                 <div className="mt-1.5 flex items-center gap-2">
                   <button onClick={() => void saveMissed()} disabled={!missedText.trim()}

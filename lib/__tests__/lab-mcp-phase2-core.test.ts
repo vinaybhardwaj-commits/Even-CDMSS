@@ -14,6 +14,7 @@ import {
 } from '../opd-feedback-core';
 import { SCOPES as ROLLUP_SCOPES, DETAIL_SCOPES, buildDetailSql, reduceRollup, CATEGORY_SIGNAL_MAP, type FindingCountRow, type FiredRow, type ImpactRow } from '../opd-feedback-rollup-core';
 import { decideLabSource, normalizeRepoPath, LAB_SOURCE_ALLOW_PREFIXES } from '../lab-source-core';
+import { applySaved, initProgress, type SavedEvent } from '../opd-feedback-ux-core';
 import { resolveProvider, checkPaidCeiling, DEFAULT_PAID_CEILING } from '../lab-provider-core';
 import {
   checkCitationFields, INTERNAL_PROTOCOL, parseProposeArgs, parseRatifyArgs, checkPromotable,
@@ -367,4 +368,30 @@ test('F17: feedback_detail ADMITS scope=impact (it was write-only) and validates
   assert.throws(() => buildDetailSql({ appSource: 'standalone', scope: 'impact', verdict: 'true_positive', limit: 10 }), /unknown verdict/);
   // an unknown scope is still refused
   assert.throws(() => buildDetailSql({ appSource: 'standalone', scope: 'nonsense' as never, limit: 10 }), /unknown scope/);
+});
+
+// ── F6 UI contract — SavedEvent.category, applySaved semantics UNCHANGED ────────
+test('F6 UI: SavedEvent carries category; applySaved dedupe semantics are unchanged', () => {
+  const seed = initProgress({ total: 10, triagedRefs: ['a'], missed: 2 });
+  // a missed save still bumps `missed` by exactly one, with or without a category
+  const withCat: SavedEvent = { scope: 'missed', category: 'prescribing_safety' };
+  const withoutCat: SavedEvent = { scope: 'missed' };
+  assert.equal(applySaved(seed, withCat).missed, 3);
+  assert.equal(applySaved(seed, withoutCat).missed, 3, 'category must not change the counter');
+  assert.equal(applySaved(seed, withCat).triaged, seed.triaged, 'a missed save never bumps triaged');
+
+  // finding dedupe is untouched: a NEW ref counts, an already-seen ref does not
+  assert.equal(applySaved(seed, { findingRef: 'b' }).triaged, seed.triaged + 1);
+  assert.equal(applySaved(seed, { findingRef: 'a' }).triaged, seed.triaged);
+  assert.equal(applySaved(seed, { findingRef: 'a', category: 'coding' }).triaged, seed.triaged);
+});
+
+test('F6 UI: every category the controls offer is one the write path accepts', () => {
+  // The controls render MISSED_CATEGORIES directly, so this pins the contract end-to-end: anything
+  // a reviewer can click must parse. A divergence here is a 400 in a clinician's face.
+  for (const c of MISSED_CATEGORIES) {
+    const r = parseFeedbackBody({ auditId: AUDIT_ID, scope: 'missed', comment: 'x', category: c });
+    assert.equal(r.ok, true, c);
+  }
+  assert.equal(MISSED_CATEGORIES.length, 7, 'the Review-Mode keys 1-7 map 1:1 onto the whitelist');
 });

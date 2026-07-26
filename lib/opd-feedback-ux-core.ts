@@ -51,7 +51,13 @@ export function savedLabel(name: string | null | undefined, d: Date): string {
 }
 
 // ── sidebar triage progress (Feature B) ────────────────────────────────────────
-export type SavedEvent = { findingRef?: string; verdict?: string; scope?: string };
+/**
+ * F6 (A10.1): `category` rides the saved event for scope='missed'. Purely informational for the
+ * counter — applySaved's dedupe semantics are UNCHANGED (a missed save still bumps `missed` by one,
+ * a finding save still dedupes on findingRef). It is carried so a listener can show or group by the
+ * classifier without a refetch; nothing in this module branches on it.
+ */
+export type SavedEvent = { findingRef?: string; verdict?: string; scope?: string; category?: string };
 export type ProgressState = { triaged: number; total: number; missed: number; seen: Set<string> };
 
 /**

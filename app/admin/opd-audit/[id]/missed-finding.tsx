@@ -29,26 +29,29 @@ export function MissedFindingCapture({ auditId, initial }: { auditId: string; in
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [text, setText] = useState('');
-  const [cat, setCat] = useState<string | null>(null); // Review-Mode §1.6 optional category
+  const [cat, setCat] = useState<string | null>(null); // Review-Mode §1.6 category — REQUIRED since F6 (A10.1)
   const [busy, setBusy] = useState(false);
   const [failedText, setFailedText] = useState<string | null>(null); // persistent retry payload
   const [errMsg, setErrMsg] = useState('');
   const [savedLine, setSavedLine] = useState<string | null>(null);
 
   async function post(comment: string) {
-    if (busy || !comment.trim()) return;
+    // F6 (A10.1): the write path now REJECTS scope='missed' without a category, so the control gates
+    // submit rather than letting the user discover it as a 400. Never defaulted, never pre-selected —
+    // an auto-picked classifier would silently mislabel the recall denominator it feeds.
+    if (busy || !comment.trim() || !cat) return;
     setBusy(true); setFailedText(null); setErrMsg(''); setSavedLine(null);
     const author = getReviewer() || null; // re-read at post time (mid-session name change applies)
     try {
       const r = await fetch('/api/opd-audit/feedback', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ scope: 'missed', auditId, verdict: 'missed', comment: comment.trim(), category: cat || undefined, author }),
+        body: JSON.stringify({ scope: 'missed', auditId, verdict: 'missed', comment: comment.trim(), category: cat, author }),
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j.ok) throw new Error(j.error || `status ${r.status}`);
       setText(''); setCat(null); setOpen(false);
       setSavedLine(savedLabel(author, new Date()));
-      try { window.dispatchEvent(new CustomEvent('opd-feedback-saved', { detail: { scope: 'missed' } })); } catch { /* ignore */ }
+      try { window.dispatchEvent(new CustomEvent('opd-feedback-saved', { detail: { scope: 'missed', category: cat } })); } catch { /* ignore */ }
       router.refresh();
     } catch (e) {
       setFailedText(comment.trim());           // keep the exact text for a verbatim retry
@@ -73,15 +76,16 @@ export function MissedFindingCapture({ auditId, initial }: { auditId: string; in
                 {c}
               </button>
             ))}
-            <span className="self-center text-[10px] text-slate-300">category (optional)</span>
+            <span className={`self-center text-[10px] ${cat ? 'text-slate-300' : 'text-amber-600'}`}>{cat ? 'category' : 'pick a category (required)'}</span>
           </div>
           <textarea
             value={text} onChange={(e) => setText(e.target.value)} autoFocus rows={2}
             placeholder="What should the audit have caught but didn't?"
             className="w-full resize-y rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] leading-snug text-slate-700 outline-none focus:border-brand/50" />
           <div className="mt-1.5 flex items-center gap-2">
-            <button type="button" onClick={() => post(text)} disabled={busy || !text.trim()}
-              className={`rounded-lg border px-3 py-1 text-[11.5px] font-medium ${busy || !text.trim() ? 'border-slate-200 text-slate-400' : 'border-brand/40 text-brand hover:bg-brand-faint'}`}>
+            <button type="button" onClick={() => post(text)} disabled={busy || !text.trim() || !cat}
+              title={!cat ? 'Pick a category first' : undefined}
+              className={`rounded-lg border px-3 py-1 text-[11.5px] font-medium ${busy || !text.trim() || !cat ? 'border-slate-200 text-slate-400' : 'border-brand/40 text-brand hover:bg-brand-faint'}`}>
               {busy ? 'Saving…' : 'Save'}
             </button>
             <button type="button" onClick={() => { setOpen(false); setText(''); setErrMsg(''); }} className="text-[11px] text-slate-400 hover:text-slate-600">Cancel</button>
@@ -93,7 +97,7 @@ export function MissedFindingCapture({ auditId, initial }: { auditId: string; in
         <div className="mt-1.5 flex items-center gap-2 text-[10.5px]">
           {failedText && (
             <>
-              <button type="button" onClick={() => post(failedText)} disabled={busy} className="font-semibold text-red-600 hover:underline">Not saved — retry</button>
+              <button type="button" onClick={() => post(failedText)} disabled={busy || !cat} className="font-semibold text-red-600 hover:underline disabled:text-red-300 disabled:no-underline">Not saved — retry</button>
               {errMsg && <span className="text-red-400">{errMsg}</span>}
             </>
           )}
