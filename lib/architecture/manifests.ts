@@ -155,6 +155,17 @@ export const MODULE_MANIFESTS: ModuleManifest[] = [
     paths: ['lib/architecture/**'],
     lifecycle: 'integrated', // consumed by architecture:check and the CI staleness gate from day one
   },
+  {
+    id: 'scoring-policy',
+    title: 'How much each NABH field counts',
+    blurb: 'Lets the quality team say a missing discharge date matters more than a missing signature — and recalculates past audits under the new weighting, without re-running a single audit.',
+    plane: 'pure-core',
+    paths: ['lib/scoring-policy/**'],
+    lifecycle: 'implemented', // Phase A; v1 seeds all-Standard, which reproduces legacy scoring exactly
+    // No *_VERSION code constant BY DESIGN: weights carry their own DATA version line per note type
+    // (`nabh-weights/<note_type>/<n>`, PRD §2.8) precisely so that a weighting change is not an
+    // engine change. engine_version is untouched by this module.
+  },
 ];
 
 /**

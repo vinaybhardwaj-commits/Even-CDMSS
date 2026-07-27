@@ -104,6 +104,116 @@ export async function getIpdAudit(id: string): Promise<Record<string, unknown> |
   return rows[0] ?? null;
 }
 
+// ── recompute-on-read (Scoring policy Phase A, decision §1.1) ────────────────────────────────────
+//
+// Historical scores are RECOMPUTED, never rewritten. `completeness_pct` becomes derived: the stored
+// per-field statuses in `report.completeness.items` are re-scored under the ACTIVE weights version,
+// and the Care-Value Index + band are rebuilt from the stored domain scores with the new
+// documentation value substituted. Nothing is mutated; this is a pure read-side transform.
+//
+// FAIL-SAFE (PRD §8.1): if the policy layer cannot be read — table missing, migration not yet run,
+// DB error — getActivePolicy returns the equal-weights fallback, which reproduces legacy scoring
+// EXACTLY (PRD §2.5). A weighting failure therefore degrades to today's system, invisibly. This
+// function additionally wraps the whole transform so a malformed `report` returns the row UNCHANGED
+// rather than throwing into a page render.
+
+/** The row plus its derived fields. The original stored values are preserved under `stored_*` so a
+ *  surface can show both (PRD §6.5 shows the weighted and unweighted numbers side by side). */
+export interface RecomputedIpdRow extends Record<string, unknown> {
+  completeness_pct: number | null;
+  care_value_index: number | null;
+  band: string | null;
+  stored_completeness_pct: number | null;
+  stored_care_value_index: number | null;
+  stored_band: string | null;
+  weights_version: string | null;
+  /** applicable-field count and the unweighted NABH gap list, for the detail panel. */
+  nabh_applicable: number | null;
+  nabh_missing: string[] | null;
+}
+
+/**
+ * Apply the active weights to a batch of already-fetched rows. ONE policy read for the whole batch
+ * (module-cached, 60s TTL) and then pure arithmetic — no extra DB round-trip per row (PRD §4).
+ *
+ * Rows whose `report` carries no completeness items are returned untouched apart from the
+ * `stored_*` mirrors, because there is nothing to re-weight.
+ */
+export async function applyScoringPolicy<T extends Record<string, unknown>>(rows: T[]): Promise<(T & RecomputedIpdRow)[]> {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) return [];
+  try {
+    const { getActivePolicy, extractItems } = await import('../scoring-policy/store');
+    const { weightedCompleteness, DISCHARGE_SUMMARY_COND_KEYS } = await import('../scoring-policy/completeness');
+    const { recomputeIpdIndex } = await import('../scoring-policy/recompute');
+    const policy = await getActivePolicy('discharge_summary');
+
+    return list.map((r) => {
+      const storedCompleteness = r.completeness_pct == null ? null : Number(r.completeness_pct);
+      const storedIndex = r.care_value_index == null ? null : Number(r.care_value_index);
+      const storedBand = r.band == null ? null : String(r.band);
+      const base = {
+        ...r,
+        stored_completeness_pct: storedCompleteness,
+        stored_care_value_index: storedIndex,
+        stored_band: storedBand,
+        weights_version: policy.fallback ? null : policy.versionString,
+        nabh_applicable: null as number | null,
+        nabh_missing: null as string[] | null,
+      };
+      const items = extractItems(r.report);
+      if (!items.length) return base as T & RecomputedIpdRow;
+
+      const c = weightedCompleteness(items, policy.vector, { condKeys: DISCHARGE_SUMMARY_COND_KEYS });
+      const idx = recomputeIpdIndex(
+        {
+          appropriateness: numOrNull(r.score_appropriateness),
+          efficiency: numOrNull(r.score_efficiency),
+          safety: numOrNull(r.score_safety),
+          cost: numOrNull(r.score_cost),
+          documentation: c.pct,
+          patient_centred: numOrNull(r.score_patient_centred),
+        },
+        c.pct,
+      );
+      return {
+        ...base,
+        completeness_pct: c.pct,
+        score_documentation: c.pct,
+        care_value_index: idx.index,
+        band: idx.band,
+        nabh_applicable: c.applicable,
+        nabh_missing: c.missingMandatory,
+      } as T & RecomputedIpdRow;
+    });
+  } catch {
+    // Never let a scoring-policy fault cost a page render. Return the rows as stored.
+    return list.map((r) => ({
+      ...r,
+      stored_completeness_pct: r.completeness_pct == null ? null : Number(r.completeness_pct),
+      stored_care_value_index: r.care_value_index == null ? null : Number(r.care_value_index),
+      stored_band: r.band == null ? null : String(r.band),
+      weights_version: null,
+      nabh_applicable: null,
+      nabh_missing: null,
+    })) as (T & RecomputedIpdRow)[];
+  }
+}
+
+function numOrNull(v: unknown): number | null {
+  if (v == null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Single-row convenience for the report detail page. Never throws. */
+export async function getIpdAuditWeighted(id: string): Promise<(Record<string, unknown> & RecomputedIpdRow) | null> {
+  const row = await getIpdAudit(id);
+  if (!row) return null;
+  const [out] = await applyScoringPolicy([row]);
+  return out ?? null;
+}
+
 /** document_ids already audited (at this engine version) for an IST calendar day (by discharge
  *  date) — the daily worker's exclude set. */
 export async function auditedDocIdsForDay(day: string, engineVersion: string = IPD_ENGINE_VERSION): Promise<string[]> {

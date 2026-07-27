@@ -376,12 +376,64 @@ export function stampFindingIdentity(findings: OpdFinding[]): OpdFinding[] {
   });
 }
 
-export interface OpdCompletenessItem { key: string; label: string; present: boolean; mandatory: boolean }
+/**
+ * Structured NABH status vocabulary, matching the IPD side (lib/doc-audit-core.ts `FieldStatus`).
+ *
+ * ⚠️ THE OPD ENGINE PRODUCES ONLY `present` AND `missing`. Its checks are deterministic booleans
+ * over structured EMR fields — there is no partial credit and no not-applicable to express, because
+ * a field that does not apply (a physical examination on a teleconsult, the obstetric fields on a
+ * GP note) is simply NOT EMITTED rather than emitted as `na`. `partial` and `na` are in the type so
+ * the shape matches IPD's exactly and so the weighted-completeness core needs no OPD special case;
+ * they are not reachable from this engine today. Do NOT synthesise them.
+ */
+export type OpdFieldStatus = 'present' | 'partial' | 'missing' | 'na';
+
+/**
+ * ADDITIVE (Scoring policy PRD §2.10). `status`, `section` and `note` are NEW; `present` and
+ * `mandatory` are UNCHANGED and every existing reader keeps working. `status` is derived from
+ * `present`, so the two can never disagree.
+ *
+ * `section` groups the field on the weightage screen: 'documentation' | 'obstetric' | 'continuity'.
+ * The three continuity fields (advice_given, advice_instructions, follow_up) are scored in the
+ * Continuity domain and are EXCLUDED from the completeness weight vector — that exclusion lives in
+ * lib/scoring-policy/weights.ts, and `section` is what makes it legible here.
+ */
+export interface OpdCompletenessItem {
+  key: string;
+  label: string;
+  present: boolean;
+  mandatory: boolean;
+  status?: OpdFieldStatus;
+  section?: 'documentation' | 'obstetric' | 'continuity';
+  note?: string;
+}
 export interface OpdCompleteness {
   items: OpdCompletenessItem[];
   coverage: number;                          // 0..1 over applicable items
   missing: string[];
   patientCentred: { present: number; total: number };
+}
+
+/** Which section each emitted key belongs to. Keys are the engine's own (see below). */
+const OPD_ITEM_SECTION: Record<string, 'documentation' | 'obstetric' | 'continuity'> = {
+  presenting_complaint: 'documentation', diagnosis: 'documentation', medication_dosing: 'documentation',
+  examination: 'documentation', vitals: 'documentation', investigations: 'documentation',
+  ga_pog: 'obstetric', lmp_edd: 'obstetric', gravidity_parity: 'obstetric', obstetric_vitals: 'obstetric',
+  advice_given: 'continuity', follow_up: 'continuity', advice_instructions: 'continuity',
+};
+
+/**
+ * Stamp the structured fields onto an item list. PURE and total: it only ADDS `status`/`section`,
+ * so calling it twice is a no-op and an unknown key still gets a status (defaulting its section to
+ * 'documentation', the conservative choice — a mis-sectioned field is visible on the screen, a
+ * dropped one is not).
+ */
+export function withOpdFieldStatus(items: OpdCompletenessItem[]): OpdCompletenessItem[] {
+  return items.map((i) => ({
+    ...i,
+    status: (i.status ?? (i.present ? 'present' : 'missing')) as OpdFieldStatus,
+    section: i.section ?? OPD_ITEM_SECTION[i.key] ?? 'documentation',
+  }));
 }
 export interface OpdSuggestion { priority: number; text: string }
 
@@ -502,7 +554,8 @@ function opdCompletenessObstetric(c: DeidOpdCase): OpdCompleteness {
   const coverage = docItems.length ? docItems.filter((i) => i.present).length / docItems.length : 1;
   const missing = items.filter((i) => !i.present).map((i) => i.label);
   const pcItems = items.filter((i) => pc.includes(i.key));
-  return { items, coverage, missing, patientCentred: { present: pcItems.filter((i) => i.present).length, total: pcItems.length } };
+  // ADDITIVE: structured status/section alongside the existing shape (Scoring policy PRD §2.10).
+  return { items: withOpdFieldStatus(items), coverage, missing, patientCentred: { present: pcItems.filter((i) => i.present).length, total: pcItems.length } };
 }
 
 export function opdCompleteness(c: DeidOpdCase): OpdCompleteness {
@@ -545,7 +598,8 @@ export function opdCompleteness(c: DeidOpdCase): OpdCompleteness {
   // Continuity / patient-centred subset (advice + follow-up).
   const pcItems = items.filter((i) => pc.includes(i.key));
   return {
-    items,
+    // ADDITIVE: structured status/section alongside the existing shape (Scoring policy PRD §2.10).
+    items: withOpdFieldStatus(items),
     coverage,
     missing,
     patientCentred: { present: pcItems.filter((i) => i.present).length, total: pcItems.length },

@@ -258,3 +258,51 @@ export async function earliestAuditedDay(): Promise<string | null> {
   )) as Array<{ d: string | null }>;
   return rows[0]?.d ?? null;
 }
+
+// ── recompute-on-read (Scoring policy Phase A, decision §1.1 / §1.5) ─────────────────────────────
+//
+// ⚠️ OPD IS NEW-AUDITS-ONLY, AND THIS FUNCTION CANNOT CHANGE THAT. Decision §1.5: `opd_note_audits`
+// stores `missing_fields` (display LABELS) and `completeness_pct`, but NO per-field status array —
+// so its 25,130-note history cannot be re-weighted, and this wrapper deliberately does not try.
+// It attaches the active weights version for display (PRD §8.3, "every surface showing a band must
+// also show the weights version that produced it") and mirrors the stored values, but leaves the
+// scores alone. Re-weighting begins only once the engine's structured emission is persisted.
+//
+// It is written as a wrapper anyway, rather than omitted, so that the moment the structured array
+// IS persisted the change is a single `extractOpdItems` implementation here — not a new read path.
+
+export interface WeightedOpdRow extends Record<string, unknown> {
+  stored_completeness_pct: number | null;
+  stored_note_quality_index: number | null;
+  stored_band: string | null;
+  weights_version: string | null;
+  /** TRUE while OPD has no stored per-field detail to re-weight (decision §1.5). */
+  weights_not_applicable: boolean;
+}
+
+/**
+ * Attach the active OPD weights version to already-fetched rows. NEVER THROWS: on any failure the
+ * rows come back with `weights_version: null`, which every surface renders as "unweighted" — the
+ * legacy presentation (PRD §8.1).
+ */
+export async function applyOpdScoringPolicy<T extends Record<string, unknown>>(rows: T[]): Promise<(T & WeightedOpdRow)[]> {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) return [];
+  let versionString: string | null = null;
+  try {
+    const { getActivePolicy } = await import('./scoring-policy/store');
+    const policy = await getActivePolicy('opd_rx');
+    versionString = policy.fallback ? null : policy.versionString;
+  } catch {
+    versionString = null;
+  }
+  return list.map((r) => ({
+    ...r,
+    stored_completeness_pct: r.completeness_pct == null ? null : Number(r.completeness_pct),
+    stored_note_quality_index: r.note_quality_index == null ? null : Number(r.note_quality_index),
+    stored_band: r.band == null ? null : String(r.band),
+    weights_version: versionString,
+    // Flips to false once per-field statuses are persisted for OPD; see the note above.
+    weights_not_applicable: true,
+  })) as (T & WeightedOpdRow)[];
+}

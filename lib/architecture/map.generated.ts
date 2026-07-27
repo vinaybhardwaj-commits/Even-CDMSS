@@ -735,6 +735,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "scoring-policy",
+    "plane": "pure-core"
+  },
+  {
     "id": "signal-health-core",
     "plane": "unregistered"
   },
@@ -1024,6 +1028,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/admin",
     "to": "runs-export",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
+    "to": "scoring-policy",
     "kind": "value"
   },
   {
@@ -1599,6 +1608,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "right-care-state",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "scoring-policy",
     "kind": "value"
   },
   {
@@ -2733,6 +2747,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "ipd-audit",
+    "to": "scoring-policy",
+    "kind": "value"
+  },
+  {
+    "from": "ipd-audit",
     "to": "value-score-core",
     "kind": "type"
   },
@@ -3233,6 +3252,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "opd-audit-store",
+    "to": "scoring-policy",
+    "kind": "value"
+  },
+  {
+    "from": "opd-audit-store",
     "to": "trace",
     "kind": "value"
   },
@@ -3682,6 +3706,21 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "scoring-policy",
+    "to": "admin-cookie",
+    "kind": "value"
+  },
+  {
+    "from": "scoring-policy",
+    "to": "admin-gate",
+    "kind": "value"
+  },
+  {
+    "from": "scoring-policy",
+    "to": "db",
+    "kind": "value"
+  },
+  {
     "from": "trace",
     "to": "db",
     "kind": "value"
@@ -3976,9 +4015,9 @@ export const VERSION_REGISTRY: VersionRow[] = [
 ];
 
 export const COVERAGE = {
-  "registered": 15,
+  "registered": 16,
   "unregistered": 17,
-  "total": 32,
+  "total": 33,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
