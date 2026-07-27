@@ -63,6 +63,24 @@ async function quietingGenColumnExists(): Promise<boolean> {
 /** Insert one audit. Returns 'inserted' | 'exists' (already audited at this engine version) | 'skipped' (no uid).
  *  With opts.force, an existing (uid, engine_version) row is overwritten (scored columns +
  *  model/trace/latency/sources, audited_at = now()) and 'updated' is returned. */
+/**
+ * PHASE 1 (NQI coverage) — serialise the scorecard AS COMPUTED, unmodified: headline, band,
+ * domains[] (domain/label/score/weight/n/basis), pdqi9[], confidence, flags[], caveat. Nothing is
+ * pruned, reshaped or renamed; jsonb exists precisely so a question nobody has asked yet is still
+ * answerable. The load-bearing field is domains[].weight — a note_quality entry with weight 0 and
+ * basis "PDQI-9 not assessed" is what can finally contradict a high note_quality_index.
+ *
+ * FAIL-SAFE (PRD §5): returns null if serialisation throws for ANY reason, so the audit row is still
+ * written exactly as it is today with scorecard NULL. A scorecard-persistence fault must never cost
+ * an audit — the audit is the product, this column is instrumentation.
+ */
+function scorecardJson(sc: unknown): string | null {
+  try {
+    if (sc == null) return null;
+    return JSON.stringify(sc);
+  } catch { return null; }
+}
+
 export async function saveOpdAudit(
   audit: OpdNoteAudit,
   meta: SaveOpdAuditMeta = {},
@@ -92,6 +110,7 @@ export async function saveOpdAudit(
          n_interaction_alerts = EXCLUDED.n_interaction_alerts,
          findings = EXCLUDED.findings, suggestions = EXCLUDED.suggestions, missing_fields = EXCLUDED.missing_fields,
          model = EXCLUDED.model, trace_id = EXCLUDED.trace_id, latency_ms = EXCLUDED.latency_ms, sources = EXCLUDED.sources,
+         scorecard = EXCLUDED.scorecard,
          ${withGen ? 'quieting_gen = EXCLUDED.quieting_gen, ' : ''}audited_at = now()`
     : 'DO NOTHING';
 
@@ -103,10 +122,10 @@ export async function saveOpdAudit(
        pdqi9, completeness_pct, n_missing_mandatory,
        n_findings, n_low_value, n_context_dependent, n_interaction_alerts,
        findings, suggestions, engine_version, model, trace_id, latency_ms, missing_fields, sources,
-       complexity_band, complexity_inputs${withGen ? ', quieting_gen' : ''})
+       complexity_band, complexity_inputs, scorecard${withGen ? ', quieting_gen' : ''})
      VALUES ($1,$2,$3,$4,$5,$6,$7, $8,$9, $10,$11,$12,$13,$14,
        $15::jsonb,$16,$17, $18,$19,$20,$21, $22::jsonb,$23::jsonb,$24,$25,$26,$27, $28::jsonb, $29::jsonb,
-       $30, $31::jsonb${withGen ? ', $32' : ''})
+       $30, $31::jsonb, $32::jsonb${withGen ? ', $33' : ''})
      ON CONFLICT (uid, engine_version) ${conflictClause}
      RETURNING id${force ? ', (xmax = 0) AS inserted' : ''}`,
     [
@@ -120,6 +139,7 @@ export async function saveOpdAudit(
       audit.engineVersion, meta.model ?? null, audit.traceId ?? null, meta.latencyMs ?? null,
       JSON.stringify(missing), JSON.stringify(audit.sources ?? []),
       audit.complexity?.band ?? null, audit.complexity?.inputs ? JSON.stringify(audit.complexity.inputs) : null,
+      scorecardJson(sc),
       ...(withGen ? [audit.quietingGen ?? 0] : []),
     ],
   )) as Array<{ id: string; inserted?: boolean }>;
@@ -155,7 +175,8 @@ export async function updateOpdAudit(audit: OpdNoteAudit): Promise<'updated' | '
        score_prescribing_safety = $7, score_patient_centred = $8,
        pdqi9 = $9::jsonb, completeness_pct = $10, n_missing_mandatory = $11,
        n_findings = $12, n_low_value = $13, n_context_dependent = $14, n_interaction_alerts = $15,
-       findings = $16::jsonb, suggestions = $17::jsonb, missing_fields = $18::jsonb${withGen ? ', quieting_gen = $20' : ''}
+       findings = $16::jsonb, suggestions = $17::jsonb, missing_fields = $18::jsonb,
+       scorecard = $20::jsonb${withGen ? ', quieting_gen = $21' : ''}
      WHERE uid = $1 AND engine_version = $19
      RETURNING id`,
     [
@@ -166,6 +187,7 @@ export async function updateOpdAudit(audit: OpdNoteAudit): Promise<'updated' | '
       findings.length, nLow, nCtx, nInteraction,
       JSON.stringify(findings), JSON.stringify(audit.suggestions ?? []), JSON.stringify(missing),
       audit.engineVersion,
+      scorecardJson(sc),
       ...(withGen ? [audit.quietingGen ?? 0] : []),
     ],
   )) as Array<{ id: string }>;
