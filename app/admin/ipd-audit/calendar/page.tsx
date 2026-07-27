@@ -3,11 +3,10 @@
 // density comes from db13 (filed docs) with the audited overlay from Neon. No PHI on this view
 // (envelope only — the report page joins identifiers at read time).
 import Link from 'next/link';
-import { sql } from '@/lib/db';
 import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
 import { fmtIstDateLong } from '@/lib/opd-audit-ui';
 import { dischargeDocDensity, dischargeDocsForDay } from '@/lib/ipd-audit/db13';
-import { specialityOptions, UNASSIGNED_SPECIALITY } from '@/lib/ipd-audit/store';
+import { specialityOptions, ipdAuditedByDay } from '@/lib/ipd-audit/store';
 import { Locked, IpdTabs, BandChip, IpdFilterBar, todayIst } from '../ui';
 import AuditNowButton from '../audit-now-button';
 
@@ -38,33 +37,18 @@ export default async function IpdAuditCalendar({ searchParams }: { searchParams:
   // note rendered beside the heatmap for why the density itself cannot be filtered.
   const specialityFilter = (sp.speciality ?? '').trim();
   const specFiltered = specialityFilter && specialityFilter !== 'all';
-  const specClause = !specFiltered ? ''
-    : specialityFilter === UNASSIGNED_SPECIALITY ? ` AND (speciality IS NULL OR trim(speciality) = '')`
-    : ` AND speciality = $2`;
-  const specParams = specFiltered && specialityFilter !== UNASSIGNED_SPECIALITY ? [specialityFilter] : [];
 
-  const [density, dayDocs, auditedDays, specialities] = await Promise.all([
+  const [density, dayDocs, auditedCanonical, specialities] = await Promise.all([
     dischargeDocDensity(days[0], days[days.length - 1]).catch(() => ({} as Record<string, number>)),
     day ? dischargeDocsForDay(day).catch(() => []) : Promise.resolve([]),
-    sql(
-      `SELECT to_char((coalesce(discharged_at, audited_at) AT TIME ZONE 'Asia/Kolkata')::date,'YYYY-MM-DD') AS d, count(*)::int AS n
-       FROM ipd_discharge_audits WHERE to_char((coalesce(discharged_at, audited_at) AT TIME ZONE 'Asia/Kolkata')::date,'YYYY-MM') = $1${specClause} GROUP BY 1`,
-      [month, ...specParams],
-    ) as unknown as Promise<Array<{ d: string; n: number }>>,
-    specialityOptions().catch(() => []),
+    // §1.2 — ONE ROW PER DOCUMENT, the same pure rule the list and the overview use. Both the heat
+    // counts and the day-rail chips come from this single call, so a re-audited summary is counted
+    // once in the cell and marked once in the rail.
+    ipdAuditedByDay(month, specFiltered ? specialityFilter : null),
+    specialityOptions({ range: 'custom', from: `${month}-01`, to: `${month}-31` }).catch(() => []),
   ]);
-  const auditedByDay = new Map(auditedDays.map((r) => [r.d, r.n]));
-
-  const docIds = dayDocs.map((d) => d.documentId);
-  const audited = new Map<string, { id: string; band: string; cvi: number }>();
-  if (docIds.length) {
-    const rows = (await sql(
-      `SELECT DISTINCT ON (document_id) document_id, id, band, care_value_index
-       FROM ipd_discharge_audits WHERE document_id = ANY($1) ORDER BY document_id, audited_at DESC`,
-      [docIds],
-    )) as Array<{ document_id: string; id: string; band: string; care_value_index: number }>;
-    for (const r of rows) audited.set(r.document_id, { id: r.id, band: r.band, cvi: r.care_value_index });
-  }
+  const auditedByDay = new Map(Object.entries(auditedCanonical.byDay));
+  const audited = new Map(Object.entries(auditedCanonical.byDocument));
 
   const total = days.reduce((s, d) => s + (density[d] ?? 0), 0);
   const firstDow = new Date(`${days[0]}T00:00:00Z`).getUTCDay(); // 0 Sun

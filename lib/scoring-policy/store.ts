@@ -26,6 +26,7 @@ import {
 } from './weights';
 import type { StoredItem as CompletenessStoredItem } from './completeness';
 import type { CohortRow as PreviewCohortRow } from './preview';
+import { canonicalByDocument } from '../ipd-audit/canonical';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 
@@ -382,15 +383,19 @@ function numOrNull(v: unknown): number | null {
  */
 export async function ipdPreviewCohort(): Promise<PreviewCohortRow[]> {
   try {
-    const rows = await run(
-      `SELECT id, report, completeness_pct, care_value_index, band,
+    const raw = await run(
+      `SELECT id, document_id, engine_version, report, completeness_pct, care_value_index, band,
               score_appropriateness, score_efficiency, score_safety, score_cost,
-              score_documentation, score_patient_centred
+              score_documentation, score_patient_centred,
+              to_char(audited_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS audited_at
          FROM ipd_discharge_audits
         WHERE coalesce(discharged_at, audited_at) >= NOW() - INTERVAL '${PREVIEW_WINDOW_DAYS} days'
         ORDER BY coalesce(discharged_at, audited_at) DESC
         LIMIT ${PREVIEW_MAX_ROWS}`,
     );
+    // ONE ROW PER DOCUMENT (PRD §1.2). Without this the cohort counts a re-audited summary twice,
+    // inflating n and skewing the mean, the SD and the band histogram the impact panel reports.
+    const rows = canonicalByDocument(raw);
     const out: PreviewCohortRow[] = [];
     for (const r of rows) {
       const items = extractItems(r.report);

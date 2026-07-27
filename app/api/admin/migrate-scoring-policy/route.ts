@@ -14,8 +14,9 @@ const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Reco
  * POST /api/admin/migrate-scoring-policy
  *
  * Applies, IN ORDER and IN ONE CALL:
- *   · migrations/0026_scoring_policy.sql        — scoring_policy_versions + scoring_policy_drafts + v1 seeds
+ *   · migrations/0026_scoring_policy.sql         — scoring_policy_versions + scoring_policy_drafts + v1 seeds
  *   · migrations/0027_opd_completeness_items.sql — opd_note_audits.completeness_items jsonb
+ *   · migrations/0028_review_notes.sql           — ipd_audit_feedback.kind + reviewed_by_name (§1.2 B-3)
  *
  * Auth: ADMIN_TOKEN (Bearer / ?token=) OR a logged-in admin session cookie — so V can run it
  * one-click from an authenticated browser session, exactly like migrate-lvc-concepts.
@@ -119,6 +120,23 @@ export async function POST(req: NextRequest) {
       ON opd_note_audits (audited_at DESC) WHERE completeness_items IS NOT NULL`, []);
     steps.opd_completeness_items = 'ok';
 
+    // ── 0028 · reviewer notes + the reviewed marker (Phase B, §6.4; folded in per §1.2 B-3) ─────
+    // Additive: `kind` defaults to 'finding', so every per-finding triage row written since 0014
+    // classifies correctly with NO backfill. A review row is kind='review' with a null finding_ref;
+    // its existence IS the Reviewed marker on the list.
+    await run(`ALTER TABLE ipd_audit_feedback ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'finding'`, []);
+    await run(`ALTER TABLE ipd_audit_feedback ADD COLUMN IF NOT EXISTS reviewed_by_name text`, []);
+    // Already nullable in this repo (0014 declares `finding_ref TEXT` with no constraint) — kept
+    // because it is idempotent and would matter in an environment that did carry the constraint.
+    await run(`ALTER TABLE ipd_audit_feedback ALTER COLUMN finding_ref DROP NOT NULL`, []);
+    // One review per audit is structural, not merely conventional. Partial, so the append-only
+    // finding rows stay completely unconstrained.
+    await run(`CREATE UNIQUE INDEX IF NOT EXISTS ipd_audit_feedback_one_review_per_audit
+      ON ipd_audit_feedback (audit_id) WHERE kind = 'review'`, []);
+    await run(`CREATE INDEX IF NOT EXISTS ipd_audit_feedback_kind_idx
+      ON ipd_audit_feedback (kind, audit_id)`, []);
+    steps.review_notes = 'ok';
+
     // The active-policy cache is module-scoped with a 60s TTL; drop it so the very first render
     // after the migration reads the seeded v1 instead of waiting out the fallback entry.
     invalidatePolicyCache();
@@ -127,17 +145,21 @@ export async function POST(req: NextRequest) {
     const seeded = await run(
       `SELECT note_type, version, is_active FROM scoring_policy_versions ORDER BY note_type, version`, [],
     );
-    const hasCol = await run(
-      `SELECT 1 AS ok FROM information_schema.columns
-        WHERE table_name = 'opd_note_audits' AND column_name = 'completeness_items'`, [],
+    const cols = await run(
+      `SELECT table_name, column_name FROM information_schema.columns
+        WHERE (table_name = 'opd_note_audits' AND column_name = 'completeness_items')
+           OR (table_name = 'ipd_audit_feedback' AND column_name IN ('kind', 'reviewed_by_name'))`, [],
     );
+    const has = (t: string, c: string) => cols.some((r) => String(r.table_name) === t && String(r.column_name) === c);
 
     return NextResponse.json({
       ok: true,
       steps,
       verification: {
         versions: seeded.map((r) => `${r.note_type}/v${r.version}${r.is_active ? ' (active)' : ''}`),
-        opd_completeness_items_column: hasCol.length > 0,
+        opd_completeness_items_column: has('opd_note_audits', 'completeness_items'),
+        ipd_audit_feedback_kind_column: has('ipd_audit_feedback', 'kind'),
+        ipd_audit_feedback_reviewed_by_name_column: has('ipd_audit_feedback', 'reviewed_by_name'),
       },
       note: 'Re-running this endpoint is a no-op. Seeding v1 all-Standard does not change any score — it reproduces legacy scoring exactly.',
     });

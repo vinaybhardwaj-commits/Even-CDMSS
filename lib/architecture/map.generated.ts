@@ -3721,6 +3721,11 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "scoring-policy",
+    "to": "ipd-audit",
+    "kind": "value"
+  },
+  {
     "from": "trace",
     "to": "db",
     "kind": "value"

@@ -13,6 +13,9 @@ import {
   type DoctorRecord,
 } from '../ipd-audit/doctor-lookup.ts';
 import { resolveRange, UNASSIGNED_SPECIALITY } from '../ipd-audit/store.ts';
+import {
+  canonicalByDocument, specialityCounts, filterBySpeciality, compareEngineVersion, isMiniEngine,
+} from '../ipd-audit/canonical.ts';
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════
 // §6.3 / §8.10 — doctor disambiguation. THE IPNO-229 CASE IS THE ONE THAT MATTERS.
@@ -219,6 +222,215 @@ test('the IST boundary is respected — 23:00 UTC is already tomorrow in Kolkata
 });
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════
+// §1.2 B-1/B-2 — ONE ROW PER DOCUMENT, and the chip == doctor-view acceptance test
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * The live defect, as fixture data. Five orthopaedic documents were each audited TWICE — once at
+ * 0.1 and once at 0.2 — and the two rows disagree (IP-1253 is 95/C under 0.1 and 88/D under 0.2).
+ * Counting audit rows gives 27; counting documents gives 22. Both numbers appeared on one screen.
+ */
+const DUPLICATED: Record<string, unknown>[] = [
+  // the five re-audited documents, both engine versions each
+  { id: 'a1', document_id: 'DOC-1180', engine_version: 'ipd-discharge-audit/0.1', audited_at: '2026-07-01T10:00:00Z', speciality: 'Orthopedics', completeness_pct: 90, band: 'C', ip_uid: 'IP-1180' },
+  { id: 'a2', document_id: 'DOC-1180', engine_version: 'ipd-discharge-audit/0.2', audited_at: '2026-07-05T10:00:00Z', speciality: 'Orthopedics', completeness_pct: 90, band: 'D', ip_uid: 'IP-1180' },
+  { id: 'b1', document_id: 'DOC-1253', engine_version: 'ipd-discharge-audit/0.1', audited_at: '2026-07-01T10:00:00Z', speciality: 'Orthopedics', completeness_pct: 95, band: 'C', ip_uid: 'IP-1253' },
+  { id: 'b2', document_id: 'DOC-1253', engine_version: 'ipd-discharge-audit/0.2', audited_at: '2026-07-05T10:00:00Z', speciality: 'Orthopedics', completeness_pct: 88, band: 'D', ip_uid: 'IP-1253' },
+  { id: 'c1', document_id: 'DOC-1255', engine_version: 'ipd-discharge-audit/0.1', audited_at: '2026-07-01T10:00:00Z', speciality: 'Orthopedics', completeness_pct: 93, band: 'C', ip_uid: 'IP-1255' },
+  { id: 'c2', document_id: 'DOC-1255', engine_version: 'ipd-discharge-audit/0.2', audited_at: '2026-07-05T10:00:00Z', speciality: 'Orthopedics', completeness_pct: 88, band: 'C', ip_uid: 'IP-1255' },
+  { id: 'd1', document_id: 'DOC-1249', engine_version: 'ipd-discharge-audit/0.1', audited_at: '2026-07-01T10:00:00Z', speciality: 'Orthopedics', completeness_pct: 95, band: 'C', ip_uid: 'IP-1249' },
+  { id: 'd2', document_id: 'DOC-1249', engine_version: 'ipd-discharge-audit/0.2', audited_at: '2026-07-05T10:00:00Z', speciality: 'Orthopedics', completeness_pct: 98, band: 'C', ip_uid: 'IP-1249' },
+  { id: 'e1', document_id: 'DOC-1203', engine_version: 'ipd-discharge-audit/0.1', audited_at: '2026-07-01T10:00:00Z', speciality: 'Orthopedics', completeness_pct: 80, band: 'B', ip_uid: 'IP-1203' },
+  { id: 'e2', document_id: 'DOC-1203', engine_version: 'ipd-discharge-audit/0.2', audited_at: '2026-07-05T10:00:00Z', speciality: 'Orthopedics', completeness_pct: 80, band: 'B', ip_uid: 'IP-1203' },
+  // singly-audited orthopaedic documents
+  ...Array.from({ length: 17 }, (_, i) => ({
+    id: `o${i}`, document_id: `DOC-O${i}`, engine_version: 'ipd-discharge-audit/0.2',
+    audited_at: '2026-07-03T10:00:00Z', speciality: 'Orthopedics', completeness_pct: 85, band: 'B', ip_uid: `IP-O${i}`,
+  })),
+  // other specialities, incl. an unassigned one
+  { id: 'g1', document_id: 'DOC-G1', engine_version: 'ipd-discharge-audit/0.2', audited_at: '2026-07-03T10:00:00Z', speciality: 'General Surgery', completeness_pct: 70, band: 'C', ip_uid: 'IP-G1' },
+  { id: 'g2', document_id: 'DOC-G2', engine_version: 'ipd-discharge-audit/0.2', audited_at: '2026-07-03T10:00:00Z', speciality: '  ', completeness_pct: 70, band: 'C', ip_uid: 'IP-G2' },
+];
+
+test('THE DEFECT, reproduced: counting rows gives 27 orthopaedic, counting documents gives 22', () => {
+  const orthoRows = DUPLICATED.filter((r) => r.speciality === 'Orthopedics');
+  assert.equal(orthoRows.length, 27, 'audit rows — what the chip counted');
+  const orthoDocs = new Set(orthoRows.map((r) => r.document_id));
+  assert.equal(orthoDocs.size, 22, 'documents — what the doctor view counted');
+  // and the canonical rule produces the document count
+  assert.equal(canonicalByDocument(orthoRows).length, 22);
+});
+
+test('ACCEPTANCE: the speciality chip and the list total are EQUAL for every speciality', () => {
+  // This is §1.2's stated acceptance test. Both numbers now come off the SAME canonical array,
+  // so equality is structural — but assert it, because that is the thing that was wrong.
+  const canonical = canonicalByDocument(DUPLICATED);
+  const chips = specialityCounts(canonical, UNASSIGNED_SPECIALITY);
+  assert.ok(chips.length >= 3, 'Orthopedics, General Surgery, Unassigned');
+  for (const chip of chips) {
+    const listed = filterBySpeciality(canonical, chip.speciality, UNASSIGNED_SPECIALITY);
+    assert.equal(listed.length, chip.n, `chip "${chip.speciality}" says ${chip.n}, list has ${listed.length}`);
+  }
+  // the headline case
+  assert.equal(chips.find((c) => c.speciality === 'Orthopedics')!.n, 22, 'not 27');
+  // "All" equals the sum of the chips — no row is in two buckets or none
+  assert.equal(chips.reduce((s, c) => s + c.n, 0), canonical.length);
+});
+
+test('ACCEPTANCE holds for every range × speciality combination', () => {
+  // Ranges are applied upstream in SQL, so simulate them by slicing the fixture — the invariant
+  // under test is that WHATEVER the row set, chip and list agree over it.
+  const slices = [DUPLICATED, DUPLICATED.slice(0, 10), DUPLICATED.slice(5, 25), [], DUPLICATED.slice(-3)];
+  for (const [i, slice] of slices.entries()) {
+    const canonical = canonicalByDocument(slice);
+    for (const chip of specialityCounts(canonical, UNASSIGNED_SPECIALITY)) {
+      assert.equal(
+        filterBySpeciality(canonical, chip.speciality, UNASSIGNED_SPECIALITY).length, chip.n,
+        `slice ${i}, speciality "${chip.speciality}"`,
+      );
+    }
+  }
+});
+
+test('the winner is the HIGHEST engine version, ties broken by latest audited_at', () => {
+  const rows = canonicalByDocument(DUPLICATED);
+  const byDoc = new Map(rows.map((r) => [String(r.document_id), r]));
+  // IP-1253 disagrees across versions: 95/C at 0.1, 88/D at 0.2. 0.2 must win.
+  assert.equal(byDoc.get('DOC-1253')!.id, 'b2');
+  assert.equal(byDoc.get('DOC-1253')!.completeness_pct, 88);
+  assert.equal(byDoc.get('DOC-1253')!.band, 'D');
+  // tie on engine version → latest audited_at
+  const tie = canonicalByDocument([
+    { id: 'x', document_id: 'D', engine_version: 'v/0.2', audited_at: '2026-01-01T00:00:00Z' },
+    { id: 'y', document_id: 'D', engine_version: 'v/0.2', audited_at: '2026-06-01T00:00:00Z' },
+  ]);
+  assert.equal(tie.length, 1);
+  assert.equal(tie[0].id, 'y');
+});
+
+test('input order never changes the winner', () => {
+  const forward = canonicalByDocument(DUPLICATED).map((r) => r.id).sort();
+  const backward = canonicalByDocument([...DUPLICATED].reverse()).map((r) => r.id).sort();
+  assert.deepEqual(forward, backward);
+});
+
+test('version comparison is NUMERIC, so 0.10 beats 0.2 (a plain DESC sort gets this wrong)', () => {
+  assert.ok(compareEngineVersion('ipd-discharge-audit/0.2', 'ipd-discharge-audit/0.1') > 0);
+  assert.ok(compareEngineVersion('ipd-discharge-audit/0.10', 'ipd-discharge-audit/0.2') > 0,
+    'lexicographically "0.10" < "0.2" — the trap');
+  assert.equal(compareEngineVersion('a/0.2', 'a/0.2'), 0);
+  assert.ok(compareEngineVersion('a/1.0', 'a/0.9') > 0);
+  // unparseable tails fall back to a string compare rather than throwing
+  assert.doesNotThrow(() => compareEngineVersion('a/rc-1', 'a/0.2'));
+  assert.doesNotThrow(() => compareEngineVersion(null, undefined));
+});
+
+test('mini/Qwen backfill rows never win a document', () => {
+  // Lexicographically 'ipd-discharge-audit/0.2-mini' > 'ipd-discharge-audit/0.2', so a naive DESC
+  // sort would hand every document to the backfill.
+  const rows = canonicalByDocument([
+    { id: 'prod', document_id: 'D', engine_version: 'ipd-discharge-audit/0.2', audited_at: '2026-01-01T00:00:00Z' },
+    { id: 'mini', document_id: 'D', engine_version: 'ipd-discharge-audit/0.2-mini', audited_at: '2026-06-01T00:00:00Z' },
+  ]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].id, 'prod', 'the newer mini row must NOT win');
+  assert.equal(isMiniEngine('ipd-discharge-audit/0.2-mini'), true);
+  assert.equal(isMiniEngine('ipd-discharge-audit/0.2'), false);
+  // …but a document ONLY ever audited by mini still renders rather than vanishing
+  const onlyMini = canonicalByDocument([
+    { id: 'm', document_id: 'D2', engine_version: 'ipd-discharge-audit/0.2-mini', audited_at: '2026-06-01T00:00:00Z' },
+  ]);
+  assert.equal(onlyMini.length, 1, 'showing a backfill row beats showing nothing');
+});
+
+test('canonicalByDocument is a READ FILTER — it never mutates the rows it is given', () => {
+  const before = JSON.stringify(DUPLICATED);
+  const out = canonicalByDocument(DUPLICATED);
+  assert.equal(JSON.stringify(DUPLICATED), before, 'input array untouched');
+  // the returned rows are the SAME objects, not copies with fields rewritten
+  assert.ok(out.every((r) => DUPLICATED.includes(r)));
+});
+
+test('rows with no document_id are PASSED THROUGH, never silently dropped', () => {
+  const rows = canonicalByDocument([
+    { id: 'n1', engine_version: 'v/0.2', audited_at: '2026-01-01T00:00:00Z' },
+    { id: 'n2', document_id: null, engine_version: 'v/0.2', audited_at: '2026-01-01T00:00:00Z' },
+    { id: 'k', document_id: 'D', engine_version: 'v/0.2', audited_at: '2026-01-01T00:00:00Z' },
+  ]);
+  assert.equal(rows.length, 3, 'a null column must not cost a row');
+});
+
+test('canonicalByDocument preserves the SQL ordering of the survivors', () => {
+  const ordered = canonicalByDocument(DUPLICATED).map((r) => String(r.id));
+  const expectedOrder = DUPLICATED.filter((r) => ordered.includes(String(r.id))).map((r) => String(r.id));
+  assert.deepEqual(ordered, expectedOrder, 'ORDER BY applied in SQL must still hold');
+});
+
+test('canonicalByDocument never throws on rubbish', () => {
+  assert.deepEqual(canonicalByDocument([]), []);
+  assert.deepEqual(canonicalByDocument(null as never), []);
+  assert.doesNotThrow(() => canonicalByDocument([null, undefined] as never));
+});
+
+test('specialityCounts buckets blank/null speciality as Unassigned and sorts by count desc', () => {
+  const counts = specialityCounts(canonicalByDocument(DUPLICATED), UNASSIGNED_SPECIALITY);
+  assert.equal(counts[0].speciality, 'Orthopedics', 'largest first');
+  assert.ok(counts.some((c) => c.speciality === UNASSIGNED_SPECIALITY), 'blank speciality gets a bucket');
+  assert.equal(counts.find((c) => c.speciality === UNASSIGNED_SPECIALITY)!.n, 1);
+});
+
+test('every read surface goes through the ONE rule — no surface writes its own DISTINCT ON', () => {
+  const store = readFileSync('lib/ipd-audit/store.ts', 'utf8');
+  const policy = readFileSync('lib/scoring-policy/store.ts', 'utf8');
+  const page = readFileSync('app/admin/ipd-audit/page.tsx', 'utf8');
+  const cal = readFileSync('app/admin/ipd-audit/calendar/page.tsx', 'utf8');
+  // the list, the chips, the overview aggregates, the calendar and the preview cohort all call it
+  assert.ok((store.match(/canonicalByDocument\(/g) || []).length >= 4, 'store: list + overview + calendar + range fetch');
+  assert.ok(/canonicalByDocument\(raw\)/.test(policy), 'the impact-preview cohort is deduped');
+  // and no surface hand-rolls the rule
+  for (const [name, src] of [['store', store], ['page', page], ['calendar', cal]] as const) {
+    assert.ok(!/DISTINCT ON \(document_id\)/i.test(src), `${name} must not hand-roll the rule`);
+  }
+  // the pages no longer aggregate with raw SQL
+  assert.ok(!/sql\(/.test(page), 'the overview page no longer issues its own aggregate query');
+  assert.ok(!/sql\(/.test(cal), 'the calendar no longer issues its own aggregate query');
+});
+
+test('NOTHING IS WRITTEN OR DELETED — this is a read filter only', () => {
+  const canon = readFileSync('lib/ipd-audit/canonical.ts', 'utf8');
+  for (const verb of ['UPDATE ', 'DELETE ', 'INSERT ', 'sql(', 'import ']) {
+    assert.ok(!canon.includes(verb), `canonical.ts must be pure — found "${verb}"`);
+  }
+  const store = readFileSync('lib/ipd-audit/store.ts', 'utf8');
+  // the only writer in the store is still the original upsert; B.1 added no write path
+  assert.equal((store.match(/INSERT INTO ipd_discharge_audits/g) || []).length, 1);
+  assert.ok(!/DELETE FROM ipd_discharge_audits/i.test(store));
+  assert.ok(!/UPDATE ipd_discharge_audits/i.test(store));
+});
+
+test('the migration runner applies 0028 too, idempotently (§1.2 B-3)', () => {
+  const src = readFileSync('app/api/admin/migrate-scoring-policy/route.ts', 'utf8');
+  assert.ok(/ALTER TABLE ipd_audit_feedback ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'finding'/.test(src));
+  assert.ok(/ADD COLUMN IF NOT EXISTS reviewed_by_name text/.test(src));
+  assert.ok(/ipd_audit_feedback_one_review_per_audit/.test(src));
+  assert.ok(/steps\.review_notes = 'ok'/.test(src), 'reported in the same steps object');
+  // still fully idempotent across ALL THREE migrations
+  assert.deepEqual(src.match(/CREATE (?:UNIQUE )?(?:TABLE|INDEX)(?! IF NOT EXISTS)/g) || [], []);
+  assert.deepEqual(src.match(/ADD COLUMN(?! IF NOT EXISTS)/g) || [], []);
+  // and it verifies what landed rather than asserting it
+  assert.ok(/ipd_audit_feedback_kind_column/.test(src));
+});
+
+test('the runner and 0028_review_notes.sql agree on every object', () => {
+  const route = readFileSync('app/api/admin/migrate-scoring-policy/route.ts', 'utf8');
+  const m28 = readFileSync('migrations/0028_review_notes.sql', 'utf8');
+  for (const obj of ['kind text NOT NULL DEFAULT \'finding\'', 'reviewed_by_name text', 'ipd_audit_feedback_one_review_per_audit', 'ipd_audit_feedback_kind_idx']) {
+    assert.ok(m28.includes(obj), `${obj} in 0028`);
+    assert.ok(route.includes(obj), `${obj} in the runner`);
+  }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
 // Structural — the validated schema, fail-soft, batching, and the migration
 // ═════════════════════════════════════════════════════════════════════════════════════════════
 
@@ -297,12 +509,31 @@ test('the list query degrades when 0028 has not run — it never 500s', () => {
 });
 
 test('the speciality filter renders RAW values and offers Unassigned for the nulls (§6.1)', () => {
-  const src = readFileSync('lib/ipd-audit/store.ts', 'utf8');
+  // AMENDED in B.1: the counts moved from a SQL GROUP BY into `specialityCounts` over the canonical
+  // rows, precisely so the chip and the list cannot be computed two ways (§1.2 B-1). The behaviour
+  // is therefore asserted on the pure function rather than on a query string — a stronger test.
   assert.equal(UNASSIGNED_SPECIALITY, 'Unassigned');
-  assert.ok(/ORDER BY n DESC/.test(src), 'ordered by count descending');
-  assert.ok(/coalesce\(nullif\(trim\(speciality\), ''\), \$2\)/.test(src), 'nulls become Unassigned');
-  // NO normalisation in v1 — nothing that would merge the messy compounds
-  assert.ok(!/replace\(speciality/i.test(src) && !/lower\(speciality\)/i.test(src), 'raw values, no normalisation');
+  const counts = specialityCounts([
+    { speciality: 'General Surgery & Vascular Surgery' },
+    { speciality: 'General Surgery & Vascular Surgery' },
+    { speciality: 'Laparoscopic and General Surgery' },
+    { speciality: 'Orthopedics' },
+    { speciality: null },
+    { speciality: '   ' },
+  ], UNASSIGNED_SPECIALITY);
+  // count descending
+  assert.equal(counts[0].speciality, 'General Surgery & Vascular Surgery');
+  assert.equal(counts[0].n, 2);
+  // NO normalisation in v1 — the messy compounds stay distinct and verbatim
+  assert.ok(counts.some((c) => c.speciality === 'Laparoscopic and General Surgery'));
+  assert.ok(counts.some((c) => c.speciality === 'General Surgery & Vascular Surgery'));
+  assert.equal(counts.filter((c) => /general surgery/i.test(c.speciality)).length, 2, 'not merged');
+  // null AND blank both fall into one Unassigned bucket
+  assert.equal(counts.find((c) => c.speciality === UNASSIGNED_SPECIALITY)!.n, 2);
+  // and the store no longer hand-rolls a second count query
+  const src = readFileSync('lib/ipd-audit/store.ts', 'utf8');
+  assert.ok(!/GROUP BY 1/.test(src), 'the chip count is no longer a separate GROUP BY');
+  assert.ok(/specialityCounts\(/.test(src), 'it derives from the canonical rows');
 });
 
 test('the shared report renderer stays byte-identical for callers that pass no Phase B props', () => {

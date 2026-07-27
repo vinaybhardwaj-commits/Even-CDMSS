@@ -3,12 +3,11 @@
 // filed-count for context. Access-controlled by the admin unlock; PHI never appears here —
 // the overview is aggregate + link-back keys only.
 import Link from 'next/link';
-import { sql } from '@/lib/db';
 import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
 import { bandColor, istDateRange, fmtIstDateLong, type Period } from '@/lib/opd-audit-ui';
 import { bandFor, DOMAIN_LABEL, DEFAULT_WEIGHTS, VALUE_DOMAINS } from '@/lib/value-score-core';
 import {
-  IPD_ENGINE_VERSION, listIpdAudits, specialityOptions, reviewsForAudits,
+  ipdWorklist, ipdOverviewStats, reviewsForAudits,
   type ReviewedFilter, type RangePreset,
 } from '@/lib/ipd-audit/store';
 import { fetchDoctorsForAudits, groupByDoctor } from '@/lib/ipd-audit/doctor-lookup';
@@ -40,41 +39,25 @@ export default async function IpdAuditOverview({ searchParams }: {
   };
   const groupByDoctorOn = sp.group === 'doctor';
 
-  const domainSelect = VALUE_DOMAINS.map((d) => `round(avg(${DOMAIN_COL[d]}))::int AS ${DOMAIN_COL[d]}`).join(', ');
-  const [statsRows, bandRows, recentRows, filed] = await Promise.all([
-    sql(
-      `SELECT count(*)::int AS total, round(avg(care_value_index))::int AS mean_cvi,
-              round(avg(completeness_pct))::int AS mean_compl,
-              sum(n_low_value)::int AS lv, sum(n_context_dependent)::int AS cd, ${domainSelect}
-       FROM ipd_discharge_audits
-       WHERE engine_version = $1 AND (coalesce(discharged_at, audited_at) AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $2::date AND $3::date`,
-      [IPD_ENGINE_VERSION, from, to],
-    ) as unknown as Promise<Array<Record<string, unknown>>>,
-    sql(
-      `SELECT band, count(*)::int AS n FROM ipd_discharge_audits
-       WHERE engine_version = $1 AND (coalesce(discharged_at, audited_at) AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $2::date AND $3::date
-       GROUP BY band`,
-      [IPD_ENGINE_VERSION, from, to],
-    ) as unknown as Promise<Array<{ band: string; n: number }>>,
-    sql(
-      `SELECT id, ip_uid, speciality, care_value_index, band, n_low_value, n_context_dependent, completeness_pct,
-              to_char(audited_at AT TIME ZONE 'Asia/Kolkata','YYYY-MM-DD HH24:MI') AS audited, engine_version
-       FROM ipd_discharge_audits ORDER BY audited_at DESC LIMIT 20`,
-    ) as unknown as Promise<Array<Record<string, unknown>>>,
+  // §1.2 — the hero aggregates are ONE ROW PER DOCUMENT too. `ipdOverviewStats` fetches the window
+  // and reduces it with the same pure rule the worklist uses, so a re-audited summary is counted
+  // once here exactly as it is counted once below.
+  const [stats, filed] = await Promise.all([
+    ipdOverviewStats(from, to),
     dischargeDocDensity(from, to).catch(() => ({} as Record<string, number>)),
   ]);
+  const bandRows = stats.bands;
 
   // ── Phase B — the filtered worklist, its doctor attributions and its review markers ──
   // Each of these fails soft on its own: an unreadable list is [], an unreachable db13 is
   // Unattributed + one notice, an unrun migration 0028 is no chips. None can take the page down.
-  const [listRows, specialities] = await Promise.all([
-    listIpdAudits({
-      speciality: sp.speciality, reviewed: sp.reviewed as ReviewedFilter | undefined,
-      range: (sp.range as RangePreset | undefined) ?? 'last_3_months',
-      from: sp.from, to: sp.to, limit: 200,
-    }),
-    specialityOptions(),
-  ]);
+  // ONE canonical fetch → the rows, the true total, and the chip counts. The chip and the doctor
+  // view therefore read the same number off the same array (§1.2 acceptance).
+  const { rows: listRows, total: totalInRange, specialities, capped } = await ipdWorklist({
+    speciality: sp.speciality, reviewed: sp.reviewed as ReviewedFilter | undefined,
+    range: (sp.range as RangePreset | undefined) ?? 'last_3_months',
+    from: sp.from, to: sp.to, limit: 200,
+  });
   const listIds = listRows.map((r) => String(r.id));
   const [reviews, doctors] = await Promise.all([
     reviewsForAudits(listIds),
@@ -92,12 +75,11 @@ export default async function IpdAuditOverview({ searchParams }: {
 
   // read-time PHI join for every row we render (ONE batched query; never persisted)
   const names = await namesForIpUids(
-    [...recentRows.map((r) => String(r.ip_uid ?? '')), ...listRows.map((r) => String(r.ip_uid ?? ''))].filter(Boolean),
+    listRows.map((r) => String(r.ip_uid ?? '')).filter(Boolean),
   ).catch(() => ({} as Record<string, { patientName: string | null; uhid: string | null }>));
 
-  const st = statsRows[0] ?? {};
-  const total = Number(st.total ?? 0);
-  const meanCvi = Number(st.mean_cvi ?? 0);
+  const total = stats.total;
+  const meanCvi = stats.meanCvi;
   const band = bandFor(meanCvi);
   const filedCount = Object.values(filed).reduce((a, b) => a + b, 0);
   const periodLabel = period === 'day' ? fmtIstDateLong(day) : `${fmtIstDateLong(from)} → ${fmtIstDateLong(to)}`;
@@ -148,7 +130,7 @@ export default async function IpdAuditOverview({ searchParams }: {
               <div className="min-w-0 flex-1">
                 <h2 className="font-serif text-[16.5px] font-semibold text-slate-900">{period === 'day' ? `How ${fmtIstDateLong(day)} looked` : 'How this period looked'}</h2>
                 <p className="mt-1.5 text-[13.5px] leading-relaxed text-slate-700">
-                  <b>{total} discharge summar{total === 1 ? 'y' : 'ies'}</b> audited ({filedCount} filed). Mean Care-Value Index <b style={{ color: bandColor(band) }}>{meanCvi}</b>, completeness <b>{Number(st.mean_compl ?? 0)}%</b>, with <b>{Number(st.lv ?? 0)}</b> low-value and <b>{Number(st.cd ?? 0)}</b> context-dependent findings.
+                  <b>{total} discharge summar{total === 1 ? 'y' : 'ies'}</b> audited ({filedCount} filed). Mean Care-Value Index <b style={{ color: bandColor(band) }}>{meanCvi}</b>, completeness <b>{stats.meanCompleteness}%</b>, with <b>{stats.lowValue}</b> low-value and <b>{stats.contextDependent}</b> context-dependent findings.
                   {' '}Bands: {bandRows.sort((a, b) => a.band.localeCompare(b.band)).map((b) => `${b.band}×${b.n}`).join(' · ') || '—'}.
                 </p>
                 <div className="mt-3 flex items-center gap-2">
@@ -165,7 +147,7 @@ export default async function IpdAuditOverview({ searchParams }: {
           {/* six Care-Value domain pillars */}
           <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
             {VALUE_DOMAINS.map((d) => {
-              const score = st[DOMAIN_COL[d]] == null ? null : Number(st[DOMAIN_COL[d]]);
+              const score = stats.domains[DOMAIN_COL[d]] ?? null;
               return (
                 <div key={d} className="rounded-xl border border-slate-200 bg-white p-3">
                   <div className="text-[11px] font-semibold text-slate-500">{DOMAIN_LABEL[d]}</div>
@@ -193,7 +175,7 @@ export default async function IpdAuditOverview({ searchParams }: {
             {groupByDoctorOn ? 'By doctor' : 'Audits'}
           </span>
           <span className="text-[11.5px] text-slate-400">
-            {listRows.length} in range{reviewedCount > 0 ? ` · ${reviewedCount} reviewed` : ''}
+            {totalInRange} in range{capped ? ` · showing ${listRows.length}` : ''}{reviewedCount > 0 ? ` · ${reviewedCount} reviewed` : ''}
           </span>
         </div>
 

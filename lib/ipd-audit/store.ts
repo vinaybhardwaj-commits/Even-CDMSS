@@ -11,6 +11,7 @@
  */
 
 import { sql } from '../db';
+import { canonicalByDocument, specialityCounts, filterBySpeciality } from './canonical';
 
 // 0.2 (IPD citation fix, PRD CDMSS-IPD-CITATION-FIX-18-JUL-2026): per-finding evidence
 // enrichment + re-cite against the enriched pool. Distinguishes fixed rows from the 0.1
@@ -279,30 +280,65 @@ export function resolveRange(
   }
 }
 
+/** The slim projection every canonical read starts from. Cheap enough to fetch for a whole range. */
+const CANONICAL_SLIM = `id, document_id, engine_version, speciality,
+        to_char(audited_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS audited_at`;
+const CANONICAL_SCAN_CAP = 5000;
+
 /**
- * The distinct speciality options, ordered by count descending, each with its count (§6.1).
- * NO NORMALISATION in v1 — raw values, compounds included. Adds `Unassigned` for the nulls.
- * Never throws: an unreadable list renders as no options and the filter simply offers `All`.
+ * ═══ THE ONE CANONICAL FETCH (PRD §1.2, B-1/B-2) ═══
  *
- * INFERRED SQL — `speciality` is a column of ipd_discharge_audits (migrations/0013).
- *   SELECT coalesce(speciality, 'Unassigned') AS speciality, count(*)::int AS n
- *     FROM ipd_discharge_audits WHERE engine_version = $1
- *    GROUP BY 1 ORDER BY n DESC, speciality ASC
+ * Every count, list and aggregate on this surface starts here: the audits in a date range, reduced
+ * to ONE ROW PER DOCUMENT by lib/ipd-audit/canonical.ts. The speciality chips and the list are then
+ * both derived from THIS array, so they cannot disagree — which is precisely the defect B-1
+ * recorded ("Orthopedics · 27" beside "22 in range").
+ *
+ * ⚠️ NOTE WHAT CHANGED. This deliberately does NOT filter `engine_version = <current>`. That
+ * equality filter made the de-duplication a no-op (UNIQUE(document_id, engine_version) means one
+ * row per document per version) AND hid every document that was only ever audited at 0.1. Ranking
+ * per document is what the settled rule asks for, and it surfaces those older-only documents for
+ * the first time. Mini/Qwen backfill rows stay excluded, as they always have been.
+ *
+ * INFERRED SQL — columns from migrations/0013.
+ *   SELECT id, document_id, engine_version, speciality, audited_at
+ *     FROM ipd_discharge_audits
+ *    WHERE (coalesce(discharged_at, audited_at) AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $1 AND $2
+ *    ORDER BY coalesce(discharged_at, audited_at) DESC LIMIT 5000
  */
-export async function specialityOptions(engineVersion: string = IPD_ENGINE_VERSION): Promise<{ speciality: string; n: number }[]> {
+export async function canonicalAuditsInRange(filters: IpdListFilters = {}): Promise<Record<string, unknown>[]> {
+  const range = resolveRange(filters.range, filters.from, filters.to);
+  const params: unknown[] = [];
+  let where = '';
+  if (range) {
+    params.push(range.from, range.to);
+    where = `WHERE (coalesce(discharged_at, audited_at) AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $1::date AND $2::date`;
+  }
   try {
     const rows = (await sql(
-      `SELECT coalesce(nullif(trim(speciality), ''), $2) AS speciality, count(*)::int AS n
+      `SELECT ${CANONICAL_SLIM}
          FROM ipd_discharge_audits
-        WHERE engine_version = $1
-        GROUP BY 1
-        ORDER BY n DESC, speciality ASC`,
-      [engineVersion, UNASSIGNED_SPECIALITY],
-    )) as Array<{ speciality: string; n: number }>;
-    return rows.map((r) => ({ speciality: String(r.speciality), n: Number(r.n) }));
+         ${where}
+        ORDER BY coalesce(discharged_at, audited_at) DESC
+        LIMIT ${CANONICAL_SCAN_CAP}`,
+      params,
+    )) as Array<Record<string, unknown>>;
+    return canonicalByDocument(rows);
   } catch {
     return [];
   }
+}
+
+/**
+ * The speciality chips (§6.1) — raw values, count descending, `Unassigned` for the nulls, NO
+ * normalisation in v1.
+ *
+ * Derived from the canonical rows for the SAME range the list uses. Two things were wrong before:
+ * the counts ignored the date range entirely (they were all-time, which is the larger half of the
+ * 27-vs-22 gap), and they counted audit rows rather than documents.
+ */
+export async function specialityOptions(filters: IpdListFilters = {}): Promise<{ speciality: string; n: number }[]> {
+  const rows = await canonicalAuditsInRange(filters);
+  return specialityCounts(rows, UNASSIGNED_SPECIALITY);
 }
 
 /**
@@ -319,40 +355,54 @@ export async function specialityOptions(engineVersion: string = IPD_ENGINE_VERSI
  * ⚠️ `kind` does not exist until 0028 runs. The whole query is wrapped: on ANY failure this falls
  * back to the unfiltered-by-reviewed query, and if that fails too, to []. The list never 500s.
  */
+/**
+ * The filtered audit list. Returns rows ALREADY put through the Phase A recompute wrapper, so a
+ * caller can never accidentally render an unweighted score.
+ *
+ * ═══ ONE ROW PER DOCUMENT (PRD §1.2) ═══
+ * The canonical id set is chosen by `canonicalAuditsInRange` — the SAME call that produces the
+ * speciality chip counts — and the full rows are then fetched BY THOSE IDS. The chip and the list
+ * therefore count the same things by construction; there is no second query to drift.
+ *
+ * INFERRED SQL — columns from migrations/0013 + 0014 (`report`), plus a correlated EXISTS onto
+ * ipd_audit_feedback for the reviewed marker (0028). EXISTS rather than a JOIN so a duplicate
+ * review row can never multiply the result set.
+ *
+ * ⚠️ `kind` does not exist until 0028 runs. The query is wrapped: on ANY failure it falls back to
+ * the same list WITHOUT the reviewed marker, and if that fails too, to []. The list never 500s.
+ */
 export async function listIpdAudits(
   filters: IpdListFilters = {},
-  engineVersion: string = IPD_ENGINE_VERSION,
 ): Promise<(Record<string, unknown> & RecomputedIpdRow)[]> {
-  const limit = Math.max(1, Math.min(500, Math.floor(Number(filters.limit) || 200)));
-  const range = resolveRange(filters.range, filters.from, filters.to);
-  const reviewed: ReviewedFilter = filters.reviewed === 'reviewed' || filters.reviewed === 'not_reviewed' ? filters.reviewed : 'all';
+  return (await ipdWorklist(filters)).rows;
+}
 
-  const where: string[] = ['engine_version = $1'];
-  const params: unknown[] = [engineVersion];
-
-  const spec = typeof filters.speciality === 'string' ? filters.speciality.trim() : '';
-  if (spec && spec !== 'all') {
-    if (spec === UNASSIGNED_SPECIALITY) {
-      where.push(`(speciality IS NULL OR trim(speciality) = '')`);
-    } else {
-      params.push(spec);
-      where.push(`speciality = $${params.length}`);
-    }
-  }
-  if (range) {
-    params.push(range.from, range.to);
-    where.push(`(coalesce(discharged_at, audited_at) AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $${params.length - 1}::date AND $${params.length}::date`);
-  }
+/**
+ * Fetch the full rows for an explicit, already-canonical id set, with the reviewed marker.
+ *
+ * INFERRED SQL — columns from migrations/0013 + 0014 (`report`), plus a correlated EXISTS onto
+ * ipd_audit_feedback (0028). EXISTS rather than a JOIN so a duplicate review row can never
+ * multiply the result set.
+ *
+ * ⚠️ `kind` does not exist until 0028 runs. On ANY failure this falls back to the same query
+ * WITHOUT the reviewed marker, and if that fails too, to []. The list never 500s.
+ */
+async function fetchAuditsByIds(
+  ids: string[],
+  reviewedFilter?: ReviewedFilter,
+): Promise<(Record<string, unknown> & RecomputedIpdRow)[]> {
+  const clean = (ids || []).filter((i) => /^[0-9a-f-]{36}$/i.test(i));
+  if (!clean.length) return [];
+  const reviewed: ReviewedFilter = reviewedFilter === 'reviewed' || reviewedFilter === 'not_reviewed' ? reviewedFilter : 'all';
 
   const SELECT = `SELECT a.id, a.ip_uid, a.speciality, a.care_value_index, a.band, a.completeness_pct,
             a.score_appropriateness, a.score_efficiency, a.score_safety, a.score_cost,
             a.score_documentation, a.score_patient_centred, a.report,
-            a.n_low_value, a.n_context_dependent, a.engine_version,
+            a.n_low_value, a.n_context_dependent, a.engine_version, a.document_id,
             to_char(a.discharged_at AT TIME ZONE 'Asia/Kolkata','YYYY-MM-DD') AS discharged_day,
             to_char(a.audited_at AT TIME ZONE 'Asia/Kolkata','YYYY-MM-DD HH24:MI') AS audited`;
-  const FROM = `FROM ipd_discharge_audits a`;
-  const WHERE = where.map((w) => w.replace(/\b(engine_version|speciality|discharged_at|audited_at)\b/g, 'a.$1')).join(' AND ');
-
+  const FROM = `FROM ipd_discharge_audits a WHERE a.id = ANY($1::uuid[])`;
+  const ORDER = `ORDER BY coalesce(a.discharged_at, a.audited_at) DESC`;
   const reviewedExists = `EXISTS (SELECT 1 FROM ipd_audit_feedback f WHERE f.audit_id = a.id AND f.kind = 'review')`;
   const reviewedPredicate = reviewed === 'reviewed' ? ` AND ${reviewedExists}`
     : reviewed === 'not_reviewed' ? ` AND NOT ${reviewedExists}` : '';
@@ -360,22 +410,127 @@ export async function listIpdAudits(
   const withReviewed = `${SELECT},
             ${reviewedExists} AS reviewed,
             (SELECT f2.reviewed_by_name FROM ipd_audit_feedback f2 WHERE f2.audit_id = a.id AND f2.kind = 'review' LIMIT 1) AS reviewed_by_name
-     ${FROM} WHERE ${WHERE}${reviewedPredicate}
-     ORDER BY coalesce(a.discharged_at, a.audited_at) DESC LIMIT ${limit}`;
-
-  const withoutReviewed = `${SELECT}, FALSE AS reviewed, NULL::text AS reviewed_by_name
-     ${FROM} WHERE ${WHERE}
-     ORDER BY coalesce(a.discharged_at, a.audited_at) DESC LIMIT ${limit}`;
+     ${FROM}${reviewedPredicate} ${ORDER}`;
+  const withoutReviewed = `${SELECT}, FALSE AS reviewed, NULL::text AS reviewed_by_name ${FROM} ${ORDER}`;
 
   let rows: Array<Record<string, unknown>> = [];
   try {
-    rows = (await sql(withReviewed, params)) as Array<Record<string, unknown>>;
+    rows = (await sql(withReviewed, [clean])) as Array<Record<string, unknown>>;
   } catch {
-    // 0028 not yet run (no `kind` column), or the feedback table is unreadable. Degrade to the
-    // list WITHOUT the reviewed marker rather than losing the page (§8.8 posture).
-    try { rows = (await sql(withoutReviewed, params)) as Array<Record<string, unknown>>; } catch { rows = []; }
+    try { rows = (await sql(withoutReviewed, [clean])) as Array<Record<string, unknown>>; } catch { rows = []; }
   }
-  return applyScoringPolicy(rows);
+  // Defence in depth: the id set is already canonical, so this is a no-op — but it means no future
+  // edit to the fetch can reintroduce a duplicate document silently.
+  return applyScoringPolicy(canonicalByDocument(rows));
+}
+
+/**
+ * ONE fetch, three answers — the worklist rows, the true total in range, and the speciality chips.
+ *
+ * This is the shape B-1 asks for: the chip count and the doctor view's "N in range" are literally
+ * the same number, read off the same array. They cannot drift, because there is nothing to drift
+ * from. `total` is the canonical count for the CURRENT speciality filter; `rows` may be shorter
+ * when the display cap bites, and the caller says so rather than showing a smaller number.
+ */
+export async function ipdWorklist(filters: IpdListFilters = {}): Promise<{
+  rows: (Record<string, unknown> & RecomputedIpdRow)[];
+  total: number;
+  specialities: { speciality: string; n: number }[];
+  capped: boolean;
+}> {
+  const limit = Math.max(1, Math.min(500, Math.floor(Number(filters.limit) || 200)));
+  const canonical = await canonicalAuditsInRange(filters);
+  const specialities = specialityCounts(canonical, UNASSIGNED_SPECIALITY);
+  const scoped = filterBySpeciality(canonical, filters.speciality, UNASSIGNED_SPECIALITY);
+  const rows = await fetchAuditsByIds(scoped.slice(0, limit).map((r) => String(r.id)), filters.reviewed);
+  return { rows, total: scoped.length, specialities, capped: scoped.length > rows.length };
+}
+
+/**
+ * Overview aggregates for a window (§1.2: "every aggregate"). Rows are fetched, reduced to one per
+ * document, and aggregated IN TS with the same pure helper the list uses — deliberately not a SQL
+ * GROUP BY, because a second implementation of the rule is exactly what B-1 was.
+ *
+ * INFERRED SQL — columns from migrations/0013.
+ */
+export async function ipdOverviewStats(from: string, to: string): Promise<{
+  total: number; meanCvi: number; meanCompleteness: number; lowValue: number; contextDependent: number;
+  domains: Record<string, number | null>; bands: { band: string; n: number }[];
+}> {
+  const empty = { total: 0, meanCvi: 0, meanCompleteness: 0, lowValue: 0, contextDependent: 0, domains: {}, bands: [] };
+  try {
+    const raw = (await sql(
+      `SELECT id, document_id, engine_version, band, care_value_index, completeness_pct,
+              n_low_value, n_context_dependent,
+              score_appropriateness, score_efficiency, score_safety, score_cost,
+              score_documentation, score_patient_centred,
+              to_char(audited_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS audited_at
+         FROM ipd_discharge_audits
+        WHERE (coalesce(discharged_at, audited_at) AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $1::date AND $2::date
+        LIMIT ${CANONICAL_SCAN_CAP}`,
+      [from, to],
+    )) as Array<Record<string, unknown>>;
+    const rows = canonicalByDocument(raw);
+    if (!rows.length) return empty;
+    const num = (v: unknown) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+    const mean = (key: string) => {
+      const vals = rows.map((r) => num(r[key])).filter((n): n is number => n != null);
+      return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : null;
+    };
+    const bandMap = new Map<string, number>();
+    for (const r of rows) { const b = String(r.band ?? ''); if (b) bandMap.set(b, (bandMap.get(b) ?? 0) + 1); }
+    return {
+      total: rows.length,
+      meanCvi: mean('care_value_index') ?? 0,
+      meanCompleteness: mean('completeness_pct') ?? 0,
+      lowValue: rows.reduce((s, r) => s + (num(r.n_low_value) ?? 0), 0),
+      contextDependent: rows.reduce((s, r) => s + (num(r.n_context_dependent) ?? 0), 0),
+      domains: {
+        score_appropriateness: mean('score_appropriateness'), score_efficiency: mean('score_efficiency'),
+        score_safety: mean('score_safety'), score_cost: mean('score_cost'),
+        score_documentation: mean('score_documentation'), score_patient_centred: mean('score_patient_centred'),
+      },
+      bands: [...bandMap.entries()].map(([band, n]) => ({ band, n })).sort((a, b) => a.band.localeCompare(b.band)),
+    };
+  } catch {
+    return empty;
+  }
+}
+
+/**
+ * Calendar: audited counts per IST day for a month, and the per-document winner used by the day
+ * rail. Both deduped by the same rule, so the heat cell and the rail agree.
+ */
+export async function ipdAuditedByDay(month: string, speciality?: string | null): Promise<{
+  byDay: Record<string, number>;
+  byDocument: Record<string, { id: string; band: string; cvi: number }>;
+}> {
+  if (!/^\d{4}-\d{2}$/.test(month)) return { byDay: {}, byDocument: {} };
+  try {
+    const raw = (await sql(
+      `SELECT id, document_id, engine_version, band, care_value_index, speciality,
+              to_char((coalesce(discharged_at, audited_at) AT TIME ZONE 'Asia/Kolkata')::date,'YYYY-MM-DD') AS d,
+              to_char(audited_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS audited_at
+         FROM ipd_discharge_audits
+        WHERE to_char((coalesce(discharged_at, audited_at) AT TIME ZONE 'Asia/Kolkata')::date,'YYYY-MM') = $1
+        LIMIT ${CANONICAL_SCAN_CAP}`,
+      [month],
+    )) as Array<Record<string, unknown>>;
+    const canonical = canonicalByDocument(raw);
+    const scoped = filterBySpeciality(canonical, speciality, UNASSIGNED_SPECIALITY);
+    const byDay: Record<string, number> = {};
+    for (const r of scoped) { const d = String(r.d ?? ''); if (d) byDay[d] = (byDay[d] ?? 0) + 1; }
+    // The day rail marks a DOCUMENT as audited regardless of the speciality filter — filtering it
+    // would misrepresent an audited summary as un-audited (the §1.2 B-4 note on this surface).
+    const byDocument: Record<string, { id: string; band: string; cvi: number }> = {};
+    for (const r of canonical) {
+      const doc = String(r.document_id ?? '');
+      if (doc) byDocument[doc] = { id: String(r.id), band: String(r.band ?? ''), cvi: Number(r.care_value_index ?? 0) };
+    }
+    return { byDay, byDocument };
+  } catch {
+    return { byDay: {}, byDocument: {} };
+  }
 }
 
 /**
