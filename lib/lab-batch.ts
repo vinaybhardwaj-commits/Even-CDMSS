@@ -10,7 +10,7 @@
  * the prod mini-backfill (both hit the single Mac-mini) via that worker's soft lock.
  */
 import { sql } from './db';
-import { auditOpdNote } from './opd-note-audit';
+import { auditOpdNote, type LlmEnvelope } from './opd-note-audit';
 import { MINI_MODEL } from './llm';
 import { fetchOpdNoteByUid } from './metabase';
 import { saveLabAnalysis } from './lab';
@@ -48,16 +48,27 @@ export async function runMiniOpdToLab(uid: string, experiment: string, evalCfg: 
   const row = await fetchOpdNoteByUid(uid);
   if (!row) throw new Error(`no db13 OPD note for uid ${uid}`);
   const started = Date.now();
+  // PDQI-9 fail-loud Phase 1 (R2): keep the LAST envelope seen. On the eval path openRouterGenerate
+  // emits one per attempt, so after a retry this holds the attempt that actually produced the
+  // content. Assignment only — it cannot throw, and it is never read unless the audit SUCCEEDS.
+  // If the audit fails, the catch in auditOpdNote rethrows (eval only), drainOne records the error,
+  // and no row is written at all — which is the point of the build.
+  let lastEnvelope: LlmEnvelope | null = null;
   const audit = await auditOpdNote(row, {
     pipeline: 'mini', engineTag: 'lab', trace: false,
     evalNormativeLeg: evalCfg.evalNormativeLeg, evalModel: evalCfg.evalModel,
     evalNormativeChannel: evalCfg.evalNormativeChannel,
+    onEnvelope: (e) => { lastEnvelope = e; },
   });
   const output = {
     index: audit.scorecard.headline, band: audit.scorecard.band, scorecard: audit.scorecard,
     completeness: audit.completeness, findings: audit.findings, suggestions: audit.suggestions,
     // Phase-2 provenance stamp so band-migration analysis can split arms by (model × leg × channel).
     eval: { model: evalCfg.evalModel ?? null, normativeLeg: evalCfg.evalNormativeLeg === true, normativeChannel: evalCfg.evalNormativeChannel === true },
+    // R2 instrumentation. ADDITIVE — a key inside the existing `output` jsonb that saveLabAnalysis
+    // already writes whole, so there is NO migration. Absent on the mini path (no evalModel ⇒ no
+    // OpenRouter call ⇒ no envelope), which keeps every non-eval lab row byte-identical.
+    ...(lastEnvelope ? { llm_envelope: lastEnvelope } : {}),
   };
   const id = await saveLabAnalysis({
     experiment, kind: 'opd_note', engine: audit.engineVersion, inputRef: uid,

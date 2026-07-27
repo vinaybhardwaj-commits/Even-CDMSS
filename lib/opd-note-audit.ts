@@ -540,28 +540,153 @@ export function openRouterBackoffMs(attempt: number, rand: () => number = Math.r
   return Math.round(500 * 2 ** (attempt - 1) * (0.5 + rand()));   // attempt 1 → ~250-750ms, 2 → ~500-1500ms
 }
 
+/**
+ * EVAL-ONLY (lab): fetch deadline (PDQI-9 fail-loud PRD D4). With no timeout a hung request never
+ * throws and never returns — it takes the whole tick down, which we watched happen. Fail-loud is
+ * UNOBSERVABLE if a call can hang forever, so this is a precondition for D2 rather than a request-
+ * shape variable: it only converts "hangs" into "throws".
+ */
+export const OPENROUTER_TIMEOUT_MS = Number(process.env.OPENROUTER_TIMEOUT_MS) || 300_000;
+
+/**
+ * The response envelope OpenRouter already returns and this code has always discarded (§R2).
+ * `finish_reason` is the discriminator the 20-note probe reads: 'length' ⇒ the pinned reasoning
+ * budget consumed the output and an explicit completion `max_tokens` is the fix; anything else ⇒ a
+ * different fault and the request shape is not the cause.
+ */
+export interface LlmEnvelope {
+  finish_reason?: string | null;
+  native_finish_reason?: string | null;
+  provider?: string | null;
+  usage?: { prompt_tokens?: number; completion_tokens?: number; reasoning_tokens?: number } | null;
+  content_length: number;
+  attempt: number;
+}
+
+/**
+ * The empty-content failure message. NORMATIVE (PRD §4) — this string IS the instrumentation.
+ *
+ * It must carry the whole envelope because on failure NO `lab_analyses` ROW EXISTS: the tick summary
+ * in `app_settings.lab_batch_last` is the only surviving record of what went wrong. Exported so the
+ * shape is asserted by test rather than trusted.
+ */
+export function emptyContentErrorMessage(env: LlmEnvelope, maxTries: number = OPENROUTER_MAX_TRIES): string {
+  const v = (x: unknown) => (x == null || x === '' ? 'null' : String(x));
+  const n = (x: unknown) => (typeof x === 'number' && Number.isFinite(x) ? String(x) : 'null');
+  return `OpenRouter returned EMPTY CONTENT (HTTP 200) — treated as failure, not as an unassessed note.
+finish_reason=${v(env.finish_reason)} native_finish_reason=${v(env.native_finish_reason)} provider=${v(env.provider)} attempt=${env.attempt}/${maxTries}
+usage: prompt=${n(env.usage?.prompt_tokens)} completion=${n(env.usage?.completion_tokens)} reasoning=${n(env.usage?.reasoning_tokens)} content_length=${env.content_length}`;
+}
+
+/**
+ * Read the envelope off a parsed OpenRouter response. PURE and TOTAL — any shape yields a defined
+ * envelope, so capture can never be the thing that fails.
+ *
+ * ⚠️ INFERRED SHAPE, FLAGGED: OpenRouter documents reasoning tokens as
+ * `usage.completion_tokens_details.reasoning_tokens`, but some providers surface a flat
+ * `usage.reasoning_tokens`. BOTH are read, flat first. If the probe comes back with
+ * `reasoning=null` while `completion` is populated, this is the line to check — not the model.
+ */
+export function readLlmEnvelope(j: unknown, attempt: number, contentLength: number): LlmEnvelope {
+  const o = (j ?? {}) as {
+    choices?: { finish_reason?: unknown; native_finish_reason?: unknown }[];
+    provider?: unknown;
+    usage?: { prompt_tokens?: unknown; completion_tokens?: unknown; reasoning_tokens?: unknown;
+              completion_tokens_details?: { reasoning_tokens?: unknown } };
+  };
+  const c0 = Array.isArray(o.choices) ? o.choices[0] : undefined;
+  const num = (x: unknown): number | undefined => (typeof x === 'number' && Number.isFinite(x) ? x : undefined);
+  const u = o.usage;
+  return {
+    finish_reason: c0?.finish_reason == null ? null : String(c0.finish_reason),
+    native_finish_reason: c0?.native_finish_reason == null ? null : String(c0.native_finish_reason),
+    provider: o.provider == null ? null : String(o.provider),
+    usage: u
+      ? {
+        prompt_tokens: num(u.prompt_tokens),
+        completion_tokens: num(u.completion_tokens),
+        reasoning_tokens: num(u.reasoning_tokens) ?? num(u.completion_tokens_details?.reasoning_tokens),
+      }
+      : null,
+    content_length: contentLength,
+    attempt,
+  };
+}
+
 /** EVAL-ONLY (lab): generate one audit via OpenRouter's OpenAI-compatible endpoint. Any model id is
  *  accepted (the orchestrator passes it). Key from env OPENROUTER_API_KEY. Direct fetch — no new dep;
  *  this is the lab dry-run path and NEVER production generation. Transient 429/5xx are retried
- *  (bounded, jittered); ultimate failure throws. fetchImpl/sleepFn injectable for tests. */
+ *  (bounded, jittered); ultimate failure throws. fetchImpl/sleepFn injectable for tests.
+ *
+ *  ═══ FAIL LOUD (PDQI-9 Phase 1) ═══
+ *  EMPTY CONTENT NOW THROWS. A 200 with `choices: []`, a missing `message`, `content: ""` or
+ *  `content: null` used to return '' on the same statement as a full response — `parseOpdAnalysis('')`
+ *  → null → `pdqi9Score(null)` → weight 0, which RAISES the index because note_quality is the
+ *  lowest-scoring domain. Measured: notes the engine could not assess average 95.21 NQI (52% exactly
+ *  100) against 78.36 for assessed notes. A failure to measure was being scored as excellence.
+ *
+ *  Empty content is RETRYABLE on the EXISTING 3-try budget — only the final attempt throws, and
+ *  OPENROUTER_MAX_TRIES is deliberately NOT raised.
+ *
+ *  `onEnvelope` is APPENDED and optional, so every existing call site is unchanged. It fires on
+ *  EVERY attempt — success, HTTP failure, empty content and transport failure alike — and is wrapped
+ *  so instrumentation can never be the thing that breaks a run.
+ */
 export async function openRouterGenerate(
   model: string, system: string, user: string,
   fetchImpl: typeof fetch = fetch,
   sleepFn: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+  onEnvelope: (e: LlmEnvelope) => void = () => {},
 ): Promise<string> {
   const key = process.env.OPENROUTER_API_KEY;
   if (!key) throw new Error('OPENROUTER_API_KEY is not set — required for eval generation (evalModel)');
+  // Envelope capture must NEVER throw and NEVER block a real result (PRD §4 fail-safe direction).
+  const emit = (e: LlmEnvelope) => { try { onEnvelope(e); } catch { /* instrumentation is never fatal */ } };
   let lastErr: Error = new Error('OpenRouter: no attempt made');
   for (let attempt = 1; attempt <= OPENROUTER_MAX_TRIES; attempt++) {
-    const res = await fetchImpl('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-      body: JSON.stringify(buildOpenRouterBody(model, system, user)),
-    });
-    if (res.ok) {
-      const j = (await res.json()) as { choices?: { message?: { content?: string } }[] };
-      return j.choices?.[0]?.message?.content || '';
+    // D4 — a per-attempt deadline. Cleared in `finally` so a completed request never leaves a timer.
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), OPENROUTER_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetchImpl('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+        body: JSON.stringify(buildOpenRouterBody(model, system, user)),
+        signal: ctrl.signal,
+      });
+    } catch (e) {
+      // A timeout surfaces here as an AbortError, as does any transport failure (DNS/socket/reset).
+      // Both are treated as normal retryable failures on the SAME bounded budget: an abort that was
+      // not retryable would make the deadline strictly worse than no deadline.
+      emit({ finish_reason: null, native_finish_reason: null, provider: null, usage: null, content_length: 0, attempt });
+      const aborted = ctrl.signal.aborted;
+      lastErr = new Error(aborted
+        ? `OpenRouter TIMEOUT after ${OPENROUTER_TIMEOUT_MS}ms (attempt ${attempt}/${OPENROUTER_MAX_TRIES})`
+        : `OpenRouter transport error (attempt ${attempt}/${OPENROUTER_MAX_TRIES}): ${String((e as Error)?.message ?? e).slice(0, 200)}`);
+      if (attempt === OPENROUTER_MAX_TRIES) throw lastErr;
+      await sleepFn(openRouterBackoffMs(attempt));
+      continue;
+    } finally {
+      clearTimeout(timer);
     }
+
+    if (res.ok) {
+      // Widened cast: the envelope fields have always been on the wire and have always been discarded.
+      const j = (await res.json().catch(() => null)) as {
+        choices?: { message?: { content?: string } }[];
+      } | null;
+      const content = j?.choices?.[0]?.message?.content || '';
+      const env = readLlmEnvelope(j, attempt, content.length);
+      emit(env);
+      if (content) return content;
+      // EMPTY CONTENT — a failure, not an unassessed note. Retryable on the existing budget.
+      lastErr = new Error(emptyContentErrorMessage(env, OPENROUTER_MAX_TRIES));
+      if (attempt === OPENROUTER_MAX_TRIES) throw lastErr;
+      await sleepFn(openRouterBackoffMs(attempt));
+      continue;
+    }
+    emit({ finish_reason: null, native_finish_reason: null, provider: null, usage: null, content_length: 0, attempt });
     lastErr = new Error(`OpenRouter HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`);
     if (!openRouterRetryable(res.status) || attempt === OPENROUTER_MAX_TRIES) throw lastErr;
     await sleepFn(openRouterBackoffMs(attempt));
@@ -569,10 +694,12 @@ export async function openRouterGenerate(
   throw lastErr;
 }
 
-async function defaultGenerate(traceId: string | undefined, system: string, user: string, mini = false, evalModel?: string): Promise<string> {
+async function defaultGenerate(traceId: string | undefined, system: string, user: string, mini = false, evalModel?: string, onEnvelope?: (e: LlmEnvelope) => void): Promise<string> {
   // EVAL-ONLY (lab): route to OpenRouter when an eval model is named. evalModel unset ⇒ the Gemini/mini
   // path below is byte-identical to today (no production audit ever passes evalModel).
-  if (evalModel) return openRouterGenerate(evalModel, system, user);
+  // `onEnvelope` is threaded ONLY here, on the eval branch. The production path below — its params,
+  // its governedChat call and its line-604 `content || ''` — is untouched (D1).
+  if (evalModel) return openRouterGenerate(evalModel, system, user, fetch, undefined, onEnvelope);
   // mini=true forces the Mac-mini Ollama bridge (no Gemini) with MINI_MODEL — the
   // scoped mini pipeline (OPD mini backfill). Default path is byte-identical to before.
   const geminiModel = mini ? undefined : (geminiModelFor('doc_audit') ?? geminiUtilityModel());
@@ -614,6 +741,9 @@ export interface AuditReuse {
 }
 export interface AuditOpdOpts {
   trace?: boolean;
+  /** EVAL-ONLY (PDQI-9 fail-loud Phase 1). Fires on every OpenRouter attempt with the response
+   *  envelope. Only reached when `evalModel` is set; production never passes it. Never throws. */
+  onEnvelope?: (e: LlmEnvelope) => void;
   reuse?: AuditReuse;
   /** 'mini' = run the audit LLM pass on the Mac-mini bridge (MINI_MODEL, no Gemini) and tag
    *  the row with the '-<tag>' engine version — invisible to all prod dashboards/APIs, which
@@ -770,7 +900,7 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     if (traceId) await logEvent(traceId, 'opd_audit_sources', null, { count: sources.length });
 
     const specialty = await doctorSpecialtyFor(keys.doctorUid);
-    const raw = await defaultGenerate(traceId, OPD_AUDIT_SYSTEM, buildOpdAuditUser(opdCaseText(oc, { specialty }), citedContext), mini, opts.evalModel);
+    const raw = await defaultGenerate(traceId, OPD_AUDIT_SYSTEM, buildOpdAuditUser(opdCaseText(oc, { specialty }), citedContext), mini, opts.evalModel, opts.onEnvelope);
     const parsed = parseOpdAnalysis(raw, sources.length);
 
     const findings: OpdFinding[] = finalize([...det, ...(parsed?.findings ?? [])]);
@@ -808,6 +938,19 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     };
   } catch (e) {
     if (traceId) await finishTrace(traceId, 'error', String((e as Error).message)).catch(() => {});
+    // ═══ FAIL LOUD, EVAL PATH ONLY (D1 + D2) ═══
+    // Without this rethrow the whole build is inert: the throw added in openRouterGenerate lands
+    // HERE, and this block would swallow it and return a deterministic-only audit that is then
+    // persisted and scores ~95 — exactly the defect, one level up. (This is the second site the
+    // response document's R3 missed; §2.4 of the PRD.)
+    //
+    // On rethrow: drainOne's per-note catch records the error, NO lab_analyses row is written, the
+    // uid stays un-done, and the next tick retries it. Coverage becomes a visible gap instead of a 95.
+    //
+    // PRODUCTION IS BYTE-IDENTICAL BELOW THIS LINE. The production defect (a failed LLM leg scored as
+    // a deterministic-only ~95) is real and STAYS LIVE by decision — it gets its own PRD. Fix the
+    // instrument first; changing a live clinical surface follows evidence rather than preceding it.
+    if (opts.evalModel) throw e;
     // Even on LLM failure, return the deterministic-only audit (completeness + prescribing).
     const scorecard = computeOpdScore({
       findings: det.filter((f) => !f.informational).map((f) => ({ verdict: f.verdict, confidence: f.confidence, domain: f.domain })),
