@@ -1,1 +1,1046 @@
-[]
+[
+  {
+    "package": "COMPREHENSIVE HEALTH CHECK - FEMALE",
+    "aliases": [],
+    "contains": [
+      "Creatinine - Serum / Plasma",
+      "Fasting blood glucose",
+      "Glycosylated Haemoglobin (Hba1C) - Whole Blood",
+      "Liver Function Test",
+      "Post prandial blood glucose.",
+      "Serum Electrolytes",
+      "Urine Routine (CUE)",
+      "CBC ( Complete Blood Count )",
+      "Erythrocyte Sedimentation Rate (ESR)",
+      "X-Ray Chest Pa",
+      "Ultrasound - Whole Abdomen",
+      "Bun (Blood Urea Nitrogen)",
+      "2D ECHO",
+      "Pap Smear (Conventional Method)",
+      "Ultrasound Breast"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "DIABETIC HEALTH CHECK",
+    "aliases": [],
+    "contains": [
+      "ECG",
+      "Creatinine - Serum / Plasma",
+      "Fasting blood glucose",
+      "Glycosylated Haemoglobin (Hba1C) - Whole Blood",
+      "Thyroid Stimulating Harmone TSH",
+      "Vitamin B12 -Serum",
+      "Lipid Profile Test (Package)",
+      "Post prandial blood glucose.",
+      "Urine Routine (CUE)",
+      "CBC ( Complete Blood Count )",
+      "Erythrocyte Sedimentation Rate (ESR)",
+      "Random Blood Glucose (RBS)",
+      "Bun (Blood Urea Nitrogen)",
+      "2D ECHO"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Eagleview Health Check-up",
+    "aliases": [],
+    "contains": [
+      "Urine Routine (CUE)",
+      "Thyroid Profile (Free)",
+      "CBC+ESR",
+      "Liver Function Test",
+      "Lipid Profile Test (Package)",
+      "Glycosylated Haemoglobin (Hba1C) - Whole Blood",
+      "Kidney Function Test/ Renal function Test",
+      "Fasting blood glucose"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "ECG & Chest X Ray",
+    "aliases": [],
+    "contains": [
+      "ECG",
+      "X-Ray Chest Pa"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even - Anemia follow up (Hb%,PCV,Retic count)",
+    "aliases": [],
+    "contains": [
+      "Haemoglobin -Automation",
+      "Packed Cell Volume [PCV]- (Automation)",
+      "Reticulocyte Count",
+      "Haemoglobin (Hb)",
+      "Hematocrit(Packed cell volume)"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even - Autoimmune & Inflammatory Arthritis Panel",
+    "aliases": [],
+    "contains": [
+      "ANA Profile",
+      "Anti CCP (Cyclic Citrullinated Peptide)",
+      "Anti Cyclic Citrullinated Peptide (CCP)"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even - Diabetes 3 month follow-up package",
+    "aliases": [],
+    "contains": [
+      "Lipid profile",
+      "Glycosylated Haemoglobin (HbA1c)",
+      "Fasting Glucose- FBS",
+      "Lipid Profile Test (Package)",
+      "Glycosylated Haemoglobin (Hba1C) - Whole Blood",
+      "Fasting blood glucose"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even - Diabetes Follow-up package",
+    "aliases": [],
+    "contains": [
+      "Thyroid Stimulating Harmone TSH",
+      "Vitamin B12 -Serum",
+      "Urine Microalbumin (Random)",
+      "Lipid Profile Test (Package)",
+      "Glycosylated Haemoglobin (Hba1C) - Whole Blood",
+      "CBC ( Complete Blood Count )",
+      "25-Oh",
+      "Vitamin D (ETA)",
+      "Thyroid Stimulating Hormone (TSH)",
+      "Vitamin B12",
+      "Microalbumin",
+      "Lipid profile",
+      "Glycosylated Haemoglobin (HbA1c)",
+      "Complete Blood Count (CBC)",
+      "25-Hydroxy Vitamin D ( Vitamin-D)"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even - DM 3 month follow up package",
+    "aliases": [],
+    "contains": [
+      "Lipid profile",
+      "Glycosylated Haemoglobin (HbA1c)",
+      "Fasting Glucose- FBS"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even - DM follow up package",
+    "aliases": [],
+    "contains": [
+      "Thyroid Stimulating Hormone (TSH)",
+      "Vitamin B12",
+      "Microalbumin",
+      "Lipid profile",
+      "Glycosylated Haemoglobin (HbA1c)",
+      "Complete Blood Count (CBC)",
+      "25-Hydroxy Vitamin D ( Vitamin-D)"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even - Fever profile (Day 1-4)",
+    "aliases": [],
+    "contains": [
+      "Urine Complete Analysis",
+      "C-Reactive Protein (CRP)",
+      "Liver Function Test",
+      "Malarial Falciparum and Vivax Antigen (Parasite V & F)",
+      "CBC ( Complete Blood Count )",
+      "Dengue - NS1 Antigen (Quantitative)",
+      "Complete Blood Count (CBC)",
+      "Urine Routine (CUE)",
+      "Blood Parasites (Malaria)",
+      "NS1"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even - Haematology 2/dengue/fever follow up",
+    "aliases": [],
+    "contains": [
+      "Platelet Count",
+      "Haemoglobin -Automation",
+      "Packed Cell Volume [PCV]- (Automation)",
+      "Differential Count (DC)",
+      "Total WBC count",
+      "Haemoglobin (Hb)",
+      "Hematocrit(Packed cell volume)"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even - PCOS (base package)",
+    "aliases": [],
+    "contains": [
+      "Thyroid Stimulating Hormone (TSH)",
+      "Prolactin",
+      "Serum"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even - PCOS (with Hirsutism)",
+    "aliases": [],
+    "contains": [
+      "17-alpha Hydroxy Progesterone (17-OHP)",
+      "FSH LH Prolactin",
+      "Testosterone",
+      "Total",
+      "Thyroid Stimulating Hormone (TSH)",
+      "Dehydroepiandrosterone (DHEA)"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even - PCOS (without Hirsutism)",
+    "aliases": [],
+    "contains": [
+      "Thyroid Stimulating Hormone (TSH)",
+      "FSH LH Prolactin",
+      "Testosterone",
+      "Total"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even - PCOS Advanced package",
+    "aliases": [],
+    "contains": [
+      "FSH LH Prolactin",
+      "Testosterone",
+      "Total",
+      "Dehydroepiandrosterone (DHEA)",
+      "17-Alpha-Hydroxyprogesterone",
+      "17-alpha Hydroxy Progesterone (17-OHP)"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even - PCOS Basic package",
+    "aliases": [],
+    "contains": [
+      "Thyroid Stimulating Harmone TSH",
+      "FSH LH Prolactin",
+      "Testosterone",
+      "Total",
+      "Thyroid Stimulating Hormone (TSH)"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even - Polyarthritis/suspected autoimmune/inflammatory",
+    "aliases": [],
+    "contains": [
+      "ANA Profile",
+      "Anti Cyclic Citrullinated Peptide (CCP)"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even - Polyarthritis/suspected autoimmune/inflammatory package",
+    "aliases": [],
+    "contains": [
+      "ANA Profile",
+      "Anti Cyclic Citrullinated Peptide (CCP)"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even - Stool work up package for dyspepsia",
+    "aliases": [],
+    "contains": [
+      "Stool Complete Analysis",
+      "Stool for H pylori",
+      "Stool Occult Blood"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even - UTI package",
+    "aliases": [],
+    "contains": [
+      "Urine Complete Analysis",
+      "Culture and Sensitivity Urine",
+      "Culture & Sensitivity - Urine (Auto)",
+      "Urine Routine (CUE)"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even -Anaemia MCHC -IDA work up",
+    "aliases": [],
+    "contains": [
+      "Ferritin",
+      "Iron Profile",
+      "Blood Picture - Peripheral Smear Examination",
+      "Ferritin - Serum"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even Autoimmune Hepatitis Panel",
+    "aliases": [],
+    "contains": [
+      "Anti Smooth Muscle Antibody - Titre (ASMA)",
+      "Anti Mitochondrial Antibody (AMA)",
+      "by EIA",
+      "Anti Soluble Liver Antigen (Anti SLA)",
+      "Liver-Kidney Microsomal (LKM) by EIA",
+      "Anti - Mitochondrial Antibody (Ama) I F",
+      "SRL -Anti Soluble Liver Antigen",
+      "Liver Kidney Microsome Auto Ab"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even Basic HCU",
+    "aliases": [],
+    "contains": [
+      "Urine Complete Analysis",
+      "Free Thyroid profile",
+      "CBC+ESR",
+      "Liver Function Test",
+      "Lipid profile",
+      "Glycosylated Haemoglobin (HbA1c)",
+      "Kidney Function Test Mini"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even Care metabolic health profile",
+    "aliases": [],
+    "contains": [
+      "Thyroid Stimulating Harmone TSH",
+      "Hb Electrophoresis",
+      "Vitamin B12 -Serum",
+      "Lipid Profile Test (Package)",
+      "Glycosylated Haemoglobin (Hba1C) - Whole Blood",
+      "25-Oh",
+      "Vitamin D (ETA)",
+      "Thyroid Stimulating Hormone (TSH)",
+      "Hemoglobin (Hb) electrophoresis (HPLC)",
+      "Vitamin B12",
+      "Cholesterol - LDL",
+      "Glycosylated Haemoglobin (HbA1c)",
+      "25-Hydroxy Vitamin D ( Vitamin-D)",
+      "Triglycerides (TG)"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even Complete blood Profile",
+    "aliases": [],
+    "contains": [
+      "Urine Complete Analysis",
+      "Free Thyroid profile",
+      "CBC+ESR",
+      "Vitamin B12",
+      "Liver Function Test",
+      "Lipid profile",
+      "Glycosylated Haemoglobin (HbA1c)",
+      "Kidney Function Test Mini",
+      "25-Hydroxy Vitamin D ( Vitamin-D)",
+      "Thyroid Function Test (TFT)",
+      "Fasting Glucose- FBS",
+      "Vitamin B12 -Serum",
+      "Lipid Profile Test (Package)",
+      "Glycosylated Haemoglobin (Hba1C) - Whole Blood",
+      "25-Oh",
+      "Vitamin D (ETA)",
+      "Fasting blood glucose",
+      "Urine Complete Analysis / Urine Routine (CUE)",
+      "Urine Routine (CUE)",
+      "Thyroid Function Test (TFT: T3",
+      "T4 and TSH)",
+      "Kidney Function Test/ Renal function Test",
+      "CBC ( Complete Blood Count )",
+      "Erythrocyte Sedimentation Rate (E S R )",
+      "Erythrocyte Sedimentation Rate (ESR)",
+      "Thyroid Profile (T3"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even Complete Health Checkup - Center visit- Female",
+    "aliases": [],
+    "contains": [
+      "CBC+ESR",
+      "Kidney Function Test with Electrolytes",
+      "Fasting blood glucose",
+      "Post prandial blood glucose.",
+      "Lipid Profile Test (Package)",
+      "Urine Routine (CUE)",
+      "2D ECHO",
+      "USG ABDOMEN",
+      "ECG",
+      "X-Ray Chest Pa",
+      "25-Oh",
+      "Vitamin D (ETA)",
+      "Liver Function Test",
+      "Thyroid Profile (T3",
+      "T4 and TSH)",
+      "Glycosylated Haemoglobin (Hba1C) - Whole Blood",
+      "Vitamin B12 -Serum",
+      "Pap smear",
+      "Sono-Mammography",
+      "Fasting Glucose- FBS",
+      "PostPrandial Glucose - PPBS",
+      "Lipid profile",
+      "Urine Complete Analysis",
+      "XRAY CHEST PA",
+      "25-Hydroxy Vitamin D ( Vitamin-D)",
+      "Thyroid Function Test (TFT)",
+      "Glycosylated Haemoglobin (HbA1c)",
+      "Vitamin B12",
+      "MAMMO-SONOGRAPHY"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even Complete Health Checkup - Centre visit- Male",
+    "aliases": [],
+    "contains": [
+      "CBC+ESR",
+      "Fasting Glucose- FBS",
+      "PostPrandial Glucose - PPBS",
+      "Lipid profile",
+      "Urine Complete Analysis",
+      "ULTRASOUND - WHOLE ABDOMEN",
+      "2D ECHO",
+      "ECG",
+      "XRAY CHEST PA",
+      "Vitamin B12",
+      "25-Hydroxy Vitamin D ( Vitamin-D)",
+      "Liver Function Test",
+      "Thyroid Function Test (TFT)",
+      "Glycosylated Haemoglobin (HbA1c)",
+      "Prostate Specific Antigen (PSA)",
+      "Kidney Function Test with Electrolytes"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even FEVER Profile (Day 5 or more)",
+    "aliases": [],
+    "contains": [
+      "Urine Complete Analysis",
+      "Typhidot (Serum)",
+      "C-Reactive Protein (CRP)",
+      "Liver Function Test",
+      "Dengue Profile (Quantitative)",
+      "Malarial Falciparum and Vivax Antigen (Parasite V & F)",
+      "Complete Blood Count (CBC)"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even Gold Health Check-up",
+    "aliases": [],
+    "contains": [
+      "CBC ( Complete Blood Count )",
+      "Urine Complete Analysis",
+      "Thyroid Function Test (TFT)",
+      "Liver Function Test",
+      "Kidney Function Test with Electrolytes",
+      "Hs-CRP (Cardio Phase High Sensitivity C-Reactive Protein) - Serum",
+      "Glycosylated Haemoglobin (Hba1C) - Whole Blood",
+      "Vitamin B12 -Serum",
+      "25-Oh",
+      "Vitamin D (ETA)",
+      "Iron Profile",
+      "Stool Complete Analysis",
+      "Lipid Profile Test (Package)",
+      "Erythrocyte Sedimentation Rate (ESR)",
+      "ECG",
+      "X-Ray Chest Pa",
+      "Urine Complete Analysis / Urine Routine (CUE)",
+      "Complete Blood Count (CBC)",
+      "C-reactive protein ( HSCRP)",
+      "High sensitive",
+      "Glycosylated Haemoglobin (HbA1c)",
+      "Vitamin B12",
+      "25-Hydroxy Vitamin D ( Vitamin-D)",
+      "Lipid profile",
+      "XRAY CHEST PA"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even Gold Health Checkup Package",
+    "aliases": [],
+    "contains": [
+      "CBC ( Complete Blood Count )",
+      "Urine Routine (CUE)",
+      "Thyroid Profile (T3",
+      "T4 and TSH)",
+      "Liver Function Test",
+      "Kidney Function Test with Electrolytes",
+      "Hs-CRP (Cardio Phase High Sensitivity C-Reactive Protein) - Serum",
+      "Glycosylated Haemoglobin (Hba1C) - Whole Blood",
+      "Vitamin B12 -Serum",
+      "Vitamin D3 1",
+      "25 -Dihydroxy",
+      "Serum",
+      "Iron Profile",
+      "Stool Complete Analysis",
+      "Lipid Profile Test (Package)",
+      "Fasting blood glucose",
+      "Erythrocyte Sedimentation Rate (E S R )"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even Health Check Up Pro",
+    "aliases": [],
+    "contains": [
+      "Urine Routine (CUE)",
+      "Thyroid Function Test (TFT: T3",
+      "T4 and TSH)",
+      "Glycosylated Haemoglobin (Hba1C) - Whole Blood",
+      "Lipid Profile Test (Package)",
+      "Liver Function Test",
+      "Kidney Function Test with Electrolytes",
+      "Stool Complete Analysis",
+      "CBC ( Complete Blood Count )"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even Hospital Advanced Diabetes Screening",
+    "aliases": [],
+    "contains": [
+      "CBC ( Complete Blood Count )",
+      "Lipid Profile Test (Package)",
+      "Liver Function Test",
+      "Urine Complete Analysis",
+      "ECG",
+      "Thyroid Stimulating Hormone (TSH)",
+      "Spot Urine Microalbumin/Creatinine Ratio",
+      "RENAL FUNCTION TEST",
+      "Glycosylated Haemoglobin (Hba1C) - Whole Blood",
+      "Urine Complete Analysis / Urine Routine (CUE)",
+      "Urine Routine (CUE)",
+      "Thyroid Stimulating Harmone TSH",
+      "Complete Blood Count (CBC)",
+      "Lipid profile",
+      "Microalbumin creatinine ratio",
+      "Urine",
+      "Advance Kidney Function Test",
+      "Glycosylated Haemoglobin (HbA1c)",
+      "Kidney Function Test/ Renal function Test",
+      "Fasting blood glucose",
+      "Microscopy"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even Hospital Advanced Heart & Cholesterol Health Screening Package",
+    "aliases": [],
+    "contains": [
+      "ECG",
+      "Lipid Profile Test (Package)",
+      "Glycosylated Haemoglobin (Hba1C) - Whole Blood",
+      "CT Coronary Calcium Score",
+      "Hs-CRP (Cardio Phase High Sensitivity C-Reactive Protein) - Serum",
+      "TREAD MILL TEST (TMT)",
+      "2D ECHO",
+      "Random Blood Glucose (RBS)"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even Hospital Advanced Heart & Cholestrol Health Screening Package",
+    "aliases": [],
+    "contains": [
+      "2D ECHO",
+      "ECG",
+      "TREAD MILL TEST (TMT)",
+      "Lipid Profile Test (Package)",
+      "CT Coronary Calcium Score",
+      "Glycosylated Haemoglobin (Hba1C) - Whole Blood"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even Hospital Advanced Senior Citizen Full Body Checkup",
+    "aliases": [],
+    "contains": [
+      "X-Ray Chest Pa",
+      "Kidney Function Test/ Renal function Test",
+      "Vitamin B12 -Serum",
+      "ECG",
+      "Calcium - Serum",
+      "Liver Function Test",
+      "Lipid Profile Test (Package)",
+      "Glycosylated Haemoglobin (Hba1C) - Whole Blood",
+      "CBC ( Complete Blood Count )",
+      "2D ECHO",
+      "Prostate Specific Antigen (PSA)",
+      "Post prandial blood glucose.",
+      "Fasting blood glucose",
+      "25-Oh",
+      "Vitamin D (ETA)"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even Hospital Annual Full Body Master Checkup Female",
+    "aliases": [],
+    "contains": [
+      "CBC ( Complete Blood Count )",
+      "Urine Complete Analysis",
+      "ECG",
+      "2D ECHO",
+      "TREAD MILL TEST (TMT)",
+      "X-Ray Chest Pa",
+      "Lipid Profile Test (Package)",
+      "Liver Function Test",
+      "Glycosylated Haemoglobin (Hba1C) - Whole Blood",
+      "Glucose - Random",
+      "Thyroid Function Test (TFT)",
+      "Erythrocyte Sedimentation Rate (ESR)",
+      "Blood Grouping and Typing",
+      "RENAL FUNCTION TEST",
+      "Ultrasound Abdomen & Pelvis",
+      "Urine Routine (CUE)",
+      "Thyroid Profile (T3",
+      "T4 and TSH)",
+      "Erythrocyte Sedimentation Rate (E S R )",
+      "Complete Blood Count (CBC)",
+      "TMT",
+      "XRAY CHEST PA",
+      "Lipid profile",
+      "Glycosylated Haemoglobin (HbA1c)",
+      "Blood Grouping (A",
+      "B",
+      "O) and Rh factor",
+      "Advance Kidney Function Test",
+      "USG ABDOMEN WITH PELVIS",
+      "Kidney Function Test/ Renal function Test",
+      "Thyroid Function Test (TFT: T3",
+      "Pap Smear (Conventional Method)",
+      "Fasting blood glucose"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even Hospital Annual Full Body Master Checkup Male",
+    "aliases": [],
+    "contains": [
+      "CBC ( Complete Blood Count )",
+      "Glycosylated Haemoglobin (Hba1C) - Whole Blood",
+      "Glucose - Random",
+      "Urine Routine (CUE)",
+      "2D ECHO",
+      "TREAD MILL TEST (TMT)",
+      "Thyroid Profile (T3",
+      "T4 and TSH)",
+      "Liver Function Test",
+      "Lipid Profile Test (Package)",
+      "Prostate Specific Antigen (PSA)",
+      "X-Ray Chest Pa",
+      "ECG",
+      "Blood Grouping and Typing",
+      "Erythrocyte Sedimentation Rate (E S R )",
+      "RENAL FUNCTION TEST",
+      "Ultrasound Abdomen & Pelvis",
+      "Complete Blood Count (CBC)",
+      "Glycosylated Haemoglobin (HbA1c)",
+      "Urine Complete Analysis",
+      "TMT",
+      "Thyroid Function Test (TFT)",
+      "Lipid profile",
+      "XRAY CHEST PA",
+      "Blood Grouping (A",
+      "B",
+      "O) and Rh factor",
+      "Erythrocyte Sedimentation Rate (ESR)",
+      "Advance Kidney Function Test",
+      "USG ABDOMEN WITH PELVIS",
+      "Kidney Function Test/ Renal function Test",
+      "Thyroid Function Test (TFT: T3",
+      "Fasting blood glucose"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even Hospital Comprehensive Heart Health Screening Package",
+    "aliases": [],
+    "contains": [
+      "Lipid profile",
+      "TMT",
+      "2D ECHO",
+      "ECG",
+      "Glycosylated Haemoglobin (HbA1c)"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even Hospital Diabetes Screening",
+    "aliases": [],
+    "contains": [
+      "CBC ( Complete Blood Count )",
+      "Lipid Profile Test (Package)",
+      "Fasting blood glucose",
+      "Urine Complete Analysis",
+      "Liver Function Test",
+      "ECG",
+      "RENAL FUNCTION TEST",
+      "Glycosylated Haemoglobin (Hba1C) - Whole Blood",
+      "Complete Blood Count (CBC)",
+      "Lipid profile",
+      "Fasting Glucose- FBS",
+      "Advance Kidney Function Test",
+      "Glycosylated Haemoglobin (HbA1c)"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even Hospital Even Basic Package",
+    "aliases": [],
+    "contains": [
+      "CBC ( Complete Blood Count )",
+      "RENAL FUNCTION TEST",
+      "Lipid Profile Test (Package)",
+      "Glycosylated Haemoglobin (Hba1C) - Whole Blood",
+      "Urine Routine (CUE)",
+      "Liver Function Test",
+      "Thyroid Profile (T3",
+      "T4 and TSH)",
+      "Complete Blood Count (CBC)",
+      "Advance Kidney Function Test",
+      "Lipid profile",
+      "Glycosylated Haemoglobin (HbA1c)",
+      "Urine Complete Analysis",
+      "Thyroid Function Test (TFT)",
+      "Kidney Function Test/ Renal function Test"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even Hospital Even Disease Defender",
+    "aliases": [],
+    "contains": [
+      "Complete Blood Count (CBC)",
+      "Advance Kidney Function Test",
+      "Glycosylated Haemoglobin (HbA1c)",
+      "Lipid profile",
+      "Urine Complete Analysis",
+      "Liver Function Test",
+      "Thyroid Function Test (TFT)"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even Hospital Even Health Camp TV9",
+    "aliases": [],
+    "contains": [
+      "Alt (SGPT) - Serum",
+      "Thyroid Stimulating Harmone TSH",
+      "Creatinine - Serum / Plasma",
+      "Ast (SGOT) - Serum",
+      "CBC ( Complete Blood Count )",
+      "Thyroid Stimulating Hormone (TSH)",
+      "Complete Blood Count (CBC)",
+      "Creatinine",
+      "Aspartate Aminotransferase (AST/SGOT)",
+      "Alanine AminoTransferase/ ALT (SGPT)"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even Hospital Fever Profile",
+    "aliases": [],
+    "contains": [
+      "CBC ( Complete Blood Count )",
+      "Erythrocyte Sedimentation Rate (E S R )",
+      "C-Reactive Protein (CRP)",
+      "Urine Routine (CUE)",
+      "Dengue profile- Rapid",
+      "Blood Parasites (MP By QBC)",
+      "Typhidot (Serum)",
+      "Liver Function Test"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even Hospital Full Body Checkup",
+    "aliases": [],
+    "contains": [
+      "Complete Blood Count (CBC)",
+      "Glycosylated Haemoglobin (HbA1c)",
+      "Lipid profile",
+      "Liver Function Test",
+      "Thyroid Function Test (TFT)",
+      "Urine Complete Analysis",
+      "Advance Kidney Function Test",
+      "Urine Routine (CUE)",
+      "Kidney Function Test/ Renal function Test",
+      "Thyroid Function Test (TFT: T3",
+      "T4 and TSH)",
+      "Lipid Profile Test (Package)",
+      "Glycosylated Haemoglobin (Hba1C) - Whole Blood",
+      "CBC ( Complete Blood Count )",
+      "Thyroid Profile (T3"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even Hospital Full Body Checkup + Vitamins Test",
+    "aliases": [],
+    "contains": [
+      "CBC ( Complete Blood Count )",
+      "Glycosylated Haemoglobin (Hba1C) - Whole Blood",
+      "Lipid Profile Test (Package)",
+      "Liver Function Test",
+      "Thyroid Function Test (TFT)",
+      "Urine Complete Analysis",
+      "Vitamin B12 -Serum",
+      "RENAL FUNCTION TEST",
+      "Thyroid Profile (T3",
+      "T4 and TSH)",
+      "Urine Routine (CUE)",
+      "Complete Blood Count (CBC)",
+      "Glycosylated Haemoglobin (HbA1c)",
+      "Lipid profile",
+      "Vitamin B12",
+      "Advance Kidney Function Test"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even Hospital Joint Pain Evaluation Package",
+    "aliases": [],
+    "contains": [
+      "X-RAY KNEE (LEFT) AP AND LAT",
+      "X-RAY KNEE (RIGHT) AP AND LAT",
+      "Erythrocyte Sedimentation Rate (ESR)",
+      "C-Reactive Protein (CRP)",
+      "Uric Acid - Serum",
+      "Calcium Total",
+      "Serum",
+      "Anti Cyclic Citrullinated Peptide (CCP)",
+      "Rheumatoid Factor (RA test)"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even Longevity Test",
+    "aliases": [],
+    "contains": [
+      "Erythrocyte Sedimentation Rate (ESR)",
+      "Urine Complete Analysis",
+      "Free Thyroid profile",
+      "Glycosylated Haemoglobin (HbA1c)",
+      "Lipid profile",
+      "Liver Function Test",
+      "Vitamin B12",
+      "25-Hydroxy Vitamin D ( Vitamin-D)",
+      "C-reactive protein ( HSCRP)",
+      "High sensitive",
+      "Lipoprotein a (Lp-a)",
+      "Apolipoprotein B (APO-B)",
+      "Insulin - Random",
+      "HOMA-IR",
+      "Insulin resistance index",
+      "Cortisol - AM",
+      "Testosterone",
+      "Total",
+      "Estradiol (E2)",
+      "Progesterone",
+      "Dehydroepiandrosterone Sulphate (DHEAS)",
+      "Magnesium (MG) Serum",
+      "Zinc",
+      "Serum",
+      "Creatinine Kinase (CPK)"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even STD Panel",
+    "aliases": [],
+    "contains": [
+      "Anti HCV -RAPID",
+      "HIV 1 & 2 Antibody (Qualitative)",
+      "Hepatitis B Surface antigen (HBsAg)-Qualitative",
+      "VDRL",
+      "HCV - Rapid",
+      "VDRL (Qualitative) - Blood",
+      "HIV RAPID"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even Vitamin Panel",
+    "aliases": [],
+    "contains": [
+      "Vitamin B12",
+      "25-Hydroxy Vitamin D ( Vitamin-D)",
+      "Vitamin B12 -Serum",
+      "25-Oh",
+      "Vitamin D (ETA)"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even- Basic Health Check Up",
+    "aliases": [],
+    "contains": [
+      "Urine Complete Analysis",
+      "Free Thyroid profile",
+      "CBC+ESR",
+      "Liver Function Test",
+      "Lipid profile",
+      "Glycosylated Haemoglobin (HbA1c)",
+      "Kidney Function Test Mini",
+      "Fasting Glucose- FBS",
+      "Thyroid Profile (Free)",
+      "Lipid Profile Test (Package)",
+      "Glycosylated Haemoglobin (Hba1C) - Whole Blood",
+      "Fasting blood glucose",
+      "Urine Complete Analysis / Urine Routine (CUE)",
+      "Urine Routine (CUE)",
+      "Kidney Function Test/ Renal function Test",
+      "Erythrocyte Sedimentation Rate (E S R )",
+      "CBC ( Complete Blood Count )",
+      "Erythrocyte Sedimentation Rate (ESR)"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even- Dengue Profile (Qualitative)",
+    "aliases": [],
+    "contains": [
+      "Dengue - NS1 Antigen (Qualitative)",
+      "Dengue IgM (Qualitative)",
+      "Dengue IgG (Qualitative)",
+      "NS1",
+      "Dengue profile- Rapid"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Even- Fever profile (Day 5 or more)",
+    "aliases": [],
+    "contains": [
+      "Urine Complete Analysis",
+      "Typhidot (Serum)",
+      "C-Reactive Protein (CRP)",
+      "Liver Function Test",
+      "Dengue Profile (Quantitative)",
+      "Malarial Falciparum and Vivax Antigen (Parasite V & F)",
+      "CBC ( Complete Blood Count )",
+      "Complete Blood Count (CBC)",
+      "Urine Routine (CUE)",
+      "Dengue profile- Rapid",
+      "Typhi DOT - IGM",
+      "Typhi DOT - Igg",
+      "Blood Parasites (Malaria)"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Extended free TFT (thyroid profile)",
+    "aliases": [],
+    "contains": [
+      "Thyroid Function Test (TFT: T3",
+      "T4 and TSH)",
+      "Thyroid Stimulating Harmone TSH",
+      "Thyroxine - Free (FT4)",
+      "FT3",
+      "Thyroid Stimulating Hormone (TSH)"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Free thyroid profile ( free TFT followup)",
+    "aliases": [],
+    "contains": [
+      "Thyroid Stimulating Harmone TSH",
+      "Free T3 - Serum",
+      "Thyroxine - Free (FT4)",
+      "Thyroid Stimulating Hormone (TSH)"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "MASTER HEALTH CHECK - MALE",
+    "aliases": [],
+    "contains": [
+      "ECG",
+      "Creatinine - Serum / Plasma",
+      "Fasting blood glucose",
+      "Glycosylated Haemoglobin (Hba1C) - Whole Blood",
+      "Thyroid Stimulating Harmone TSH",
+      "Liver Function Test",
+      "Lipid Profile Test (Package)",
+      "Post prandial blood glucose.",
+      "Serum Electrolytes",
+      "Urine Routine (CUE)",
+      "CBC ( Complete Blood Count )",
+      "Erythrocyte Sedimentation Rate (ESR)",
+      "X-Ray Chest Pa",
+      "Ultrasound - Whole Abdomen",
+      "Bun (Blood Urea Nitrogen)",
+      "Uric Acid - Serum",
+      "Calcium",
+      "Ionized - Wb",
+      "25-Oh",
+      "Vitamin D (ETA)",
+      "2D ECHO",
+      "Free PSA - Serum"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "PAC 2 Package",
+    "aliases": [],
+    "contains": [
+      "CBC ( Complete Blood Count )",
+      "Kidney Function Test/ Renal function Test",
+      "Thyroid Stimulating Harmone TSH",
+      "Fasting blood glucose",
+      "Glycosylated Haemoglobin (Hba1C) - Whole Blood",
+      "Prothrombin Time",
+      "HIV RAPID",
+      "ECG",
+      "X-Ray Chest Pa",
+      "Urine Routine (CUE)",
+      "2D ECHO",
+      "HBSAG - Rapid",
+      "HCV - Rapid",
+      "Lipid Profile Test (Package)"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "Polyarthritis basic",
+    "aliases": [],
+    "contains": [
+      "Uric Acid - Serum",
+      "Urine Complete Analysis",
+      "Rheumatoid Factor (RA test)",
+      "C-Reactive Protein (CRP)"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  },
+  {
+    "package": "PROSTATE & URINARY HEALTH SCREENING",
+    "aliases": [],
+    "contains": [
+      "Prostatic Specific Antigen (PSA Total) - Serum",
+      "Kidney Function Test/ Renal function Test"
+    ],
+    "source": "db13:individuals-prescriptions__further_investigation"
+  }
+]
