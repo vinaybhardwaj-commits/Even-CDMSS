@@ -452,15 +452,31 @@ test('wiring: lvc_propose never claims to write the rulebook; lvc_ratify is prom
 // refused every proposal and every promotion would have errored on a null id.
 const MCP_SRC = readFileSync(new URL('../mcp-tools.ts', import.meta.url), 'utf8');
 
-test('F14 fault 1: lvc_recommendations is queried by `society`, never `source`', () => {
-  // the dedup comparison set — this naming a non-existent column is what made lvc_propose refuse
-  assert.match(MCP_SRC, /SELECT id::text AS id, statement, society AS source, 'live' AS status FROM lvc_recommendations/);
-  // and no query anywhere selects a bare `source` FROM lvc_recommendations
+test('F14 faults 1a + 7: ALL THREE lvc_recommendations query sites use `society`, never `source`', () => {
+  // FAULT 7's lesson, pinned: the original guard was scoped to the two sites named in correction 1
+  // (the dedup set and the promotion INSERT) and therefore could not catch the third — the lvc_gaps
+  // SELECT — which only surfaced when the tool was actually CALLED against production. This
+  // assertion is now written over the whole file so a fourth site cannot appear unnoticed.
+  assert.match(MCP_SRC, /SELECT id::text AS id, statement, society AS source, 'live' AS status FROM lvc_recommendations/);  // 1a dedup
+  assert.match(MCP_SRC, /SELECT r\.id::text AS id, r\.statement, r\.society AS source,/);                                   // 7  lvc_gaps
+  assert.match(MCP_SRC, /\(id, region, society, statement, rationale/);                                                     // 1b INSERT
+  // NOTHING anywhere SELECTS a bare `source` column off that table or its alias. Scoped to the
+  // SQL shape — `r.source` in JS is legitimate, since it reads the row returned BY the alias.
   assert.doesNotMatch(MCP_SRC, /statement, source,[^\n]*FROM lvc_recommendations/);
+  assert.doesNotMatch(MCP_SRC, /r\.statement, r\.source/);
+  assert.doesNotMatch(MCP_SRC, /SELECT[^`]*\br\.source\b/);
+});
+
+test('F14 fault 6: region is supplied — the NOT NULL set is exactly id, region, society, statement', () => {
+  // MEASURED live: those four are NOT NULL with no default. All four are supplied.
+  assert.match(MCP_SRC, /VALUES \('ehrc-' \|\| gen_random_uuid\(\)::text, 'IN', 'EHRC', \$1,/);
+  assert.match(MCP_SRC, /\(id, region, society, statement,/);
+  // status stays unsupplied — it defaults to 'active'
+  assert.doesNotMatch(MCP_SRC, /\(id, region, society, statement, status/);
 });
 
 test('F14 fault 1b: the promoted row is society=EHRC, UPPERCASE', () => {
-  assert.match(MCP_SRC, /VALUES \('ehrc-' \|\| gen_random_uuid\(\)::text, 'EHRC',/);
+  assert.match(MCP_SRC, /gen_random_uuid\(\)::text, 'IN', 'EHRC',/);
   // lowercase would mis-segment every society comparison against the existing 67 house rows
   assert.doesNotMatch(MCP_SRC, /,\s*'ehrc',\s*\$1/);
 });
@@ -474,7 +490,7 @@ test('F14 faults 2-4: the promotion INSERT names the three audit columns 0024 ad
 
 test('F14 fault 5: `id` is supplied explicitly, matching the ehrc-<uuid> convention', () => {
   // id is text NOT NULL with NO DEFAULT — an unsupplied id fails every promotion
-  assert.match(MCP_SRC, /\(id, society, statement, rationale, citation_url/);
+  assert.match(MCP_SRC, /\(id, region, society, statement, rationale, citation_url/);
   assert.match(MCP_SRC, /'ehrc-' \|\| gen_random_uuid\(\)::text/);
   assert.match(MCP_SRC, /RETURNING id/);
 });

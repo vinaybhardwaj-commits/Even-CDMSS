@@ -1361,6 +1361,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/api",
+    "to": "lvc-proposal-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
     "to": "lvc-value",
     "kind": "value"
   },

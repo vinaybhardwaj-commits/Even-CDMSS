@@ -1011,12 +1011,16 @@ async function lvcRatify(a: Record<string, unknown>): Promise<ToolResult> {
     //  5.  `id` is text, NOT NULL, with NO DEFAULT and was not supplied, so every promotion would
     //      have failed on a null id even with 1-4 fixed. Generated server-side to match the existing
     //      convention exactly: 'ehrc-' || gen_random_uuid()::text.
-    // `status` is deliberately NOT supplied — the column defaults to 'active'.
+    //  6.  `region` is NOT NULL with no default and was not supplied — measured after correction 1.
+    //      Hardcoded 'IN', the same treatment as 'EHRC'; all 67 existing house rows carry it.
+    // The COMPLETE NOT NULL set on lvc_recommendations is exactly four columns — id, region,
+    // society, statement — and all four are now supplied. `status` is deliberately NOT supplied
+    // (defaults to 'active'); every other column is nullable or defaulted, measured.
     const ins = await run(
       `INSERT INTO lvc_recommendations
-         (id, society, statement, rationale, citation_url, citation_doi, citation_pmid,
+         (id, region, society, statement, rationale, citation_url, citation_doi, citation_pmid,
           source_release_year, license_status, provenance, proposed_by, ratified_by, ratified_at)
-       VALUES ('ehrc-' || gen_random_uuid()::text, 'EHRC', $1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now())
+       VALUES ('ehrc-' || gen_random_uuid()::text, 'IN', 'EHRC', $1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now())
        RETURNING id`,
       [prop!.statement, prop!.rationale, prop!.citation_url, prop!.citation_doi, prop!.citation_pmid,
        prop!.source_release_year, prop!.license_status, prop!.provenance, prop!.proposed_by, v.ratified_by]);
@@ -1028,6 +1032,13 @@ async function lvcRatify(a: Record<string, unknown>): Promise<ToolResult> {
   } catch (e) { return err(`ratify failed: ${String((e as Error).message).slice(0, 200)}`); }
 }
 
+/**
+ * F14 lvc_gaps. FAULT 7 (corrected): this selected the alias-qualified `source` column, which does not exist — the real column is
+ * `society`, the THIRD site of the same mistake. Reading the inferred SQL caught the two write-path
+ * sites and missed this one; CALLING the tool against production surfaced it immediately
+ * (the column-does-not-exist error). lvc_gaps is read-only, so exercising it cost nothing. Aliased
+ * to `source` because lvc-proposal-core's GapRow uses that name as a display field.
+ */
 async function lvcGaps(a: Record<string, unknown>): Promise<ToolResult> {
   const limit = Math.max(1, Math.min(500, Number(a.limit) || 50));
   const wanted = S(a.gap_class);
@@ -1041,7 +1052,7 @@ async function lvcGaps(a: Record<string, unknown>): Promise<ToolResult> {
            AND f->>'rule_ref' IS NOT NULL
          GROUP BY 1
        )
-       SELECT r.id::text AS id, r.statement, r.source,
+       SELECT r.id::text AS id, r.statement, r.society AS source,
               r.citation_url, r.citation_doi, r.citation_pmid,
               r.source_release_year, r.license_status,
               COALESCE(fires.n, 0)::int AS fires
