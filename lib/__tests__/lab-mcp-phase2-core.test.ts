@@ -595,3 +595,30 @@ test('F11: NO route file was touched in this build', () => {
     assert.doesNotMatch(src, /resolveLabOverride/, `${r} stays unwired`);
   }
 });
+
+test('F11: the engine label is DERIVED from the resolved provider, not hardcoded', () => {
+  const SRC = readFileSync(new URL('../mcp-tools.ts', import.meta.url), 'utf8');
+  // the two probes whose provider can actually vary
+  assert.match(SRC, /engine: `ddx-route\/\$\{engineSuffix\(M\.provider\)\}`/);
+  assert.match(SRC, /engine: `ask-route\/\$\{engineSuffix\(M\.provider\)\}`/);
+  // neither still carries the hardcoded literal that stamped Vertex runs as 'mini'
+  assert.doesNotMatch(SRC, /engine: 'ask-route\/mini'/);
+  assert.doesNotMatch(SRC, /engine: 'ddx-route\/mini'/);
+  // …while the three probes that genuinely CANNOT vary keep their literal, because it is TRUE
+  for (const lit of ["appropriateness-route/mini", "pathway-route/mini", "doc-audit-route/mini"]) {
+    assert.ok(SRC.includes(`engine: '${lit}'`), `${lit} is accurate — those tools have no model param`);
+  }
+});
+
+test('F11: ollama maps back to "mini" so every historical label is preserved exactly', () => {
+  const SRC = readFileSync(new URL('../mcp-tools.ts', import.meta.url), 'utf8');
+  assert.match(SRC, /return provider === 'ollama' \? 'mini' : provider;/);
+  // i.e. a free run still writes 'ask-route/mini' — nothing reading this column has to change
+});
+
+test('F11: mini_analyze TEXT mode refuses a model rather than accepting and ignoring it', () => {
+  const SRC = readFileSync(new URL('../mcp-tools.ts', import.meta.url), 'utf8');
+  assert.match(SRC, /text mode runs on the local mini only and cannot honour a model/);
+  // and it records its provider explicitly rather than leaving it null
+  assert.match(SRC, /model: MINI_MODEL, provider: 'ollama', latencyMs/);
+});

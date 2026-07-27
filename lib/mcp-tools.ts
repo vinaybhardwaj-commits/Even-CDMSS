@@ -450,6 +450,13 @@ async function miniAnalyze(a: Record<string, unknown>): Promise<ToolResult> {
   }
 
   if (text) {
+    // F11: text mode is hardwired to the local mini (no evalModel seam, no gemini/openrouter opts),
+    // so it CANNOT honour a model. Refuse rather than accept-and-ignore — silently discarding the
+    // argument would stamp a row 'mini' while the caller believed otherwise, which is the exact
+    // defect this build is fixing.
+    if (M.provider !== 'ollama') {
+      return err('mini_analyze text mode runs on the local mini only and cannot honour a model — omit `model`, or use metabase_uid mode with openrouter:<id>');
+    }
     // Text mode: run the OPD audit SYSTEM prompt on the mini over the pasted note (no retrieval
     // grounding — this is an experimental raw pass; structured uid mode is the grounded one).
     // Governed envelope (Stage 4): traceless + no gemini → byte-identical local call.
@@ -461,8 +468,8 @@ async function miniAnalyze(a: Record<string, unknown>): Promise<ToolResult> {
     }, { promptRef: 'opd-note-audit-core/OPD_AUDIT_SYSTEM' });
     const raw = r.choices?.[0]?.message?.content || '';
     const output = { raw, note: 'text mode = ungrounded raw mini pass; use metabase_uid for the full grounded audit' };
-    const id = await saveLabAnalysis({ experiment, kind: 'text', engine: `${opdMiniEngine('lab')}-textraw`, inputRef: null, inputPreview: text.slice(0, 300), output, model: MINI_MODEL, latencyMs: Date.now() - started });
-    return ok({ stored_id: id, experiment, kind: 'text', chars: raw.length, model: MINI_MODEL });
+    const id = await saveLabAnalysis({ experiment, kind: 'text', engine: `${opdMiniEngine('lab')}-textraw`, inputRef: null, inputPreview: text.slice(0, 300), output, model: MINI_MODEL, provider: 'ollama', latencyMs: Date.now() - started });
+    return ok({ stored_id: id, experiment, kind: 'text', chars: raw.length, model: MINI_MODEL, provider: 'ollama' });
   }
 
   return err('provide metabase_uid or text');
@@ -513,6 +520,21 @@ async function selfPostNdjson(path: string, body: Record<string, unknown>, extra
  * another served it is unattributable, which is exactly the defect F11 exists to fix (87.8% of stored
  * volume turned out to be paid Gemini while the tools advertised "₹0, never Gemini").
  */
+/**
+ * F11 — the `engine` suffix for a lab row, DERIVED from the resolved provider.
+ *
+ * `engine` was a hardcoded '<route>/mini' label, so a run that provably executed on Vertex was
+ * stamped 'ask-route/mini' — the same defect class as opd_note_audits.model, where a hardcoded
+ * literal asserts a fact nobody checked. Found live on experiment f11_vertex_proof.
+ *
+ * 'ollama' maps back to 'mini' deliberately: every historical row and every free run keeps its exact
+ * existing label, so nothing that reads this column has to change. Only the paths that can actually
+ * vary get a new value.
+ */
+function engineSuffix(provider: string): string {
+  return provider === 'ollama' ? 'mini' : provider;
+}
+
 /** F11 — the gate's lab-origin marker (condition 2). Only ever sent on the two WIRED routes. */
 function labHeaders(a: Record<string, unknown>): Record<string, string> | undefined {
   return S(a.model).trim() ? { [LAB_ORIGIN_HEADER]: LAB_ORIGIN_VALUE, 'x-cdmss-lab-caller': 'lab-mcp' } : undefined;
@@ -577,7 +599,7 @@ async function labDdx(a: Record<string, unknown>): Promise<ToolResult> {
   const M = await resolveProbeModel(a, experiment);
   if (!M.ok) return err(M.error);
   return runLabProbe({
-    experiment, kind: 'ddx', engine: 'ddx-route/mini',
+    experiment, kind: 'ddx', engine: `ddx-route/${engineSuffix(M.provider)}`,
     inputPreview: [presentation.age, presentation.sex, cc].filter(Boolean).join(' / ').slice(0, 300),
     provider: M.provider, model: M.model,
     run: async () => {
@@ -594,7 +616,7 @@ async function labAsk(a: Record<string, unknown>): Promise<ToolResult> {
   const M = await resolveProbeModel(a, experiment);
   if (!M.ok) return err(M.error);
   return runLabProbe({
-    experiment, kind: 'ask', engine: 'ask-route/mini', inputPreview: question.slice(0, 300),
+    experiment, kind: 'ask', engine: `ask-route/${engineSuffix(M.provider)}`, inputPreview: question.slice(0, 300),
     provider: M.provider, model: M.model,
     run: async () => {
       const probe = reduceAskEvents(parseNdjson(await selfPostNdjson('/api/ask', labBody({ question, investigations: S(a.investigations) || undefined }, a), labHeaders(a))));
