@@ -452,12 +452,17 @@ async function miniAnalyze(a: Record<string, unknown>): Promise<ToolResult> {
 }
 
 /** Self-fetch one of the app's own streaming clinical routes, forcing the FREE mini, and
- *  return the raw NDJSON body. Routes are public (clinician app) → no auth header needed. */
-async function selfPostNdjson(path: string, body: Record<string, unknown>): Promise<string> {
+ *  return the raw NDJSON body. Routes are public (clinician app) → no auth header needed.
+ *
+ *  F11 (A12): `extraHeaders` was added so this path can carry the lab-origin marker
+ *  (x-cdmss-lab-origin) that gate condition 2 requires. Before this the headers were hardcoded to
+ *  content-type alone, so condition 2 was unsatisfiable and no override could ever fire. Omitted ⇒
+ *  byte-identical to the previous behaviour. */
+async function selfPostNdjson(path: string, body: Record<string, unknown>, extraHeaders?: Record<string, string>): Promise<string> {
   const base = labSelfBaseUrl(process.env as Record<string, string | undefined>);
   const res = await fetch(`${base}${path}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...(extraHeaders ?? {}) },
     body: JSON.stringify({ ...body, providerOverride: 'ollama' }),
   });
   if (!res.ok && res.status >= 400) {

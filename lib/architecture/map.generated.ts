@@ -423,6 +423,18 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "lab-override",
+    "plane": "unregistered"
+  },
+  {
+    "id": "lab-override-core",
+    "plane": "unregistered"
+  },
+  {
+    "id": "lab-provider-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "lab-source-core",
     "plane": "unregistered"
   },
@@ -1332,6 +1344,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "lab-batch-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "lab-override",
     "kind": "value"
   },
   {
@@ -2767,6 +2784,31 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "lab-batch",
     "to": "opd-note-audit",
+    "kind": "value"
+  },
+  {
+    "from": "lab-override",
+    "to": "admin-cookie",
+    "kind": "value"
+  },
+  {
+    "from": "lab-override",
+    "to": "care-cookie",
+    "kind": "value"
+  },
+  {
+    "from": "lab-override",
+    "to": "lab-override-core",
+    "kind": "value"
+  },
+  {
+    "from": "lab-override",
+    "to": "lab-provider-core",
+    "kind": "value"
+  },
+  {
+    "from": "lab-override",
+    "to": "llm",
     "kind": "value"
   },
   {

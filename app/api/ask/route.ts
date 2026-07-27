@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { retrieve } from '@/lib/retrieve';
 import { retrieveMultiQuery } from '@/lib/multi-query';
 import { TEXT_MODEL, CRITIQUE_MODEL, geminiModelFor, geminiConfigured, GEMINI_MODEL } from '@/lib/llm';
+import { resolveLabOverride, labRoutingOpts } from '@/lib/lab-override';
 import { modelLabel } from '@/lib/model-labels';
 import { searchPlos, formatPlosForPrompt, type PlosHit } from '@/lib/plos';
 import { makeNdjsonStream, ndjsonHeaders } from '@/lib/stream';
@@ -91,7 +92,7 @@ You will receive:
 Rewrite the draft to fix every issue. Keep what's correct, correct what's wrong, add what's missing. Cite every clinical claim using the same [n] / [P{n}] format. Do not include any meta-commentary about the revision process — output the final clean answer the physician will read.`;
 
 export async function POST(req: NextRequest) {
-  let body: { question?: string; bookFilter?: string; investigations?: string; includePlos?: boolean; multiQuery?: boolean; selfCritique?: boolean; useReranker?: boolean; useSourceWeights?: boolean; useEmbeddingV2?: boolean; providerOverride?: 'gemini' | 'ollama' };
+  let body: { question?: string; bookFilter?: string; investigations?: string; includePlos?: boolean; multiQuery?: boolean; selfCritique?: boolean; useReranker?: boolean; useSourceWeights?: boolean; useEmbeddingV2?: boolean; providerOverride?: 'gemini' | 'ollama'; labModel?: string };
   try { body = await req.json(); } catch {
     return new Response(JSON.stringify({ error: 'invalid json' }), { status: 400 });
   }
@@ -117,11 +118,23 @@ export async function POST(req: NextRequest) {
     : body.providerOverride === 'gemini' ? (geminiConfigured() ? GEMINI_MODEL : undefined)
     : geminiModelFor('ask');
 
+  // F11 (addendum A12, decision 15) — the Lab provider override, evaluated at exactly the point
+  // providerOverride is already interpreted. SIX gate conditions, all required, in order; ANY
+  // failure returns null and this route behaves EXACTLY as it does today. `labModel` is a new,
+  // additive field: absent ⇒ resolveLabOverride short-circuits before touching env or cookies, LAB
+  // is {}, and `{ gemini: G, ...LAB }` is byte-identical to `{ gemini: G }`. A refused override is
+  // silent — it is never surfaced into a clinical response.
+  const labOverride = await resolveLabOverride(req, body.labModel, 'app/api/ask');
+  const LAB = labRoutingOpts(labOverride);
+
   // v1.7 Sprint A: capture request + denormalize fast-access fields on traces row.
   await Promise.all([
     logEvent(traceId, 'request_received', null, { body, ua: req.headers.get('user-agent') || '', t: new Date().toISOString() }),
     setTraceQuestionPreview(traceId, question),
-    setTraceModelSummary(traceId, { draft: G ?? TEXT_MODEL, critique: G ?? CRITIQUE_MODEL, revise: G ?? CRITIQUE_MODEL, embedding: 'mxbai-embed-large', reranker: 'llama3.1:8b-judge', provider: G ? 'gemini' : 'ollama' }),
+    setTraceModelSummary(traceId, labOverride
+      // F11: record the RESOLVED model and its provider, never the requested string.
+      ? { draft: labOverride.model, critique: labOverride.model, revise: labOverride.model, embedding: 'mxbai-embed-large', reranker: 'llama3.1:8b-judge', provider: labOverride.provider }
+      : { draft: G ?? TEXT_MODEL, critique: G ?? CRITIQUE_MODEL, revise: G ?? CRITIQUE_MODEL, embedding: 'mxbai-embed-large', reranker: 'llama3.1:8b-judge', provider: G ? 'gemini' : 'ollama' }),
   ]);
 
   (async () => {
@@ -143,7 +156,7 @@ export async function POST(req: NextRequest) {
       let investigations: ParsedInvestigations | null = null;
       if (body.investigations && body.investigations.trim()) {
         emit({ type: 'progress', stage: 'expanding', msg: 'Interpreting investigation results…' });
-        investigations = await parseInvestigations(body.investigations, { model: CRITIQUE_MODEL, traceId, gemini: G });
+        investigations = await parseInvestigations(body.investigations, { model: CRITIQUE_MODEL, traceId, gemini: G, ...LAB });
       }
       const questionForPrompt = investigations?.promptBlock ? `${question}\n\n${investigations.promptBlock}` : question;
       const retrievalQuery = [question, ...(investigations?.abnormalTerms ?? [])].filter(Boolean).join('; ');
@@ -247,7 +260,7 @@ export async function POST(req: NextRequest) {
           temperature: 0.2,
           stream: true,
           ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
-        }, { gemini: G });
+        }, { gemini: G, ...LAB });
         for await (const part of draftRes as AsyncIterable<{ choices?: { delta?: { content?: string } }[] }>) {
           const delta = part.choices?.[0]?.delta?.content ?? '';
           if (delta) {
@@ -282,7 +295,7 @@ export async function POST(req: NextRequest) {
             stream: false,
             max_tokens: 800,
             ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
-          }, { gemini: G });
+          }, { gemini: G, ...LAB });
           let critiqueRaw = (critiqueRes as { choices?: { message?: { content?: string } }[] }).choices?.[0]?.message?.content?.trim() || '{}';
           if (critiqueRaw.startsWith('```')) critiqueRaw = critiqueRaw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
           const a = critiqueRaw.indexOf('{'); const b = critiqueRaw.lastIndexOf('}');
@@ -336,7 +349,7 @@ export async function POST(req: NextRequest) {
             temperature: 0.2,
             stream: true,
             ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
-          }, { gemini: G });
+          }, { gemini: G, ...LAB });
           let fullContent = '';
           for await (const part of revRes) {
             const delta = part.choices?.[0]?.delta?.content ?? '';
@@ -368,7 +381,7 @@ export async function POST(req: NextRequest) {
           temperature: 0.2,
           stream: true,
           ...({ options: { num_ctx: 16384 }, keep_alive: '15m' } as Record<string, unknown>),
-        }, { gemini: G });
+        }, { gemini: G, ...LAB });
         let fullContent = '';
         for await (const part of completion) {
           const delta = part.choices?.[0]?.delta?.content ?? '';
