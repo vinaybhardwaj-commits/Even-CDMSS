@@ -20,9 +20,29 @@ export const LB_KEYS = {
   evalNormativeChannel: 'lab_batch_eval_normative_channel',  // '1' ⇒ ADDITIVE CW channel (R-11 fix candidate)
 } as const;
 
-export const LB_LOCK_TTL_MS = 210 * 1000;   // matches the mini-backfill soft-lock TTL (< 300s Vercel cap)
+/**
+ * Soft-lock TTL for the LAB BATCH's own lock — deliberately NOT the prod mini-backfill's
+ * MB_LOCK_TTL_MS, which stays at 210s and governs a different worker (decision D1).
+ *
+ * 900s. MEASURED 27 Jul 2026 over 38 runs of experiment `det_model_independence_mini`:
+ * avg note 212.8s, max 513.7s. The previous 210s expired BEFORE the AVERAGE note finished, so a
+ * cron fire during a still-running tick saw no lock, started a second tick, and both drained from a
+ * `done` set the in-flight tick had not yet written — 9 duplicate rows across 38 runs, 24% of GPU
+ * time bought nothing. 900s covers the observed max with ~75% headroom.
+ *
+ * THE NUMBER IS NOT THE FIX. This constant asserted a latency for months while lab_analyses.latency_ms
+ * recorded the true one in the same database, and nothing ever compared them. ttlBreach() below is
+ * the contradicting field it never had — do not remove it as redundant.
+ * See CDMSS-LAB-BATCH-LOCK-PRD-AND-KICKOFF-27-JUL-2026.
+ */
+export const LB_LOCK_TTL_MS = 900 * 1000;
 export const LB_MAX_COHORT = 2000;
-export const LB_MAX_N = 2;                   // ~72s/note on the mini × 2 ≈ 150s < 300s cap
+// VALUE UNCHANGED at 2 (hard-listed). Only the arithmetic in this comment is corrected: it claimed
+// ~72s/note, which the 27 Jul measurement puts at 212.8s avg / 513.7s max — wrong by ~3x. At 2 notes
+// a tick can therefore run ~425s and has been observed at 513.7s, i.e. OVER the 300s Vercel cap the
+// old comment reasoned from. Raising or lowering n is a PRD decision, not a build one; this only
+// stops the file asserting a number the database disproves.
+export const LB_MAX_N = 2;
 
 // ── eval-drain constants (R-11 Phase 2, OpenRouter path ONLY — the mini caps above are untouched) ──
 export const EVAL_TICK_MAX = 50;             // uids per tick when evalModel is set (hosted, no mini GPU)
@@ -127,6 +147,48 @@ export function parseBatchState(s: Record<string, string>): LabBatchState {
     evalConcurrency: clampEvalConcurrency(s[LB_KEYS.evalConcurrency]),
     evalNormativeChannel: s[LB_KEYS.evalNormativeChannel] === '1',   // absent ⇒ false ⇒ today's assembly
   };
+}
+
+/**
+ * Soft lock for the LAB BATCH: true if a fresher-than-LB_LOCK_TTL_MS lock exists.
+ *
+ * Semantics are byte-for-byte those of mini-backfill.lockHeld — absent/empty ⇒ false, unparseable ⇒
+ * false, otherwise `now - t < TTL` — differing ONLY in which TTL is read. That mirroring is
+ * deliberate: lab-batch.ts previously imported lockHeld from ./mini-backfill for BOTH its own lock
+ * and the prod-worker busy check, so one constant silently governed two unrelated workers.
+ */
+export function labLockHeld(lockTs: string | null, now: Date = new Date()): boolean {
+  if (!lockTs) return false;
+  const t = Date.parse(lockTs);
+  return Number.isFinite(t) && now.getTime() - t < LB_LOCK_TTL_MS;
+}
+
+/**
+ * THE CONTRADICTING FIELD (decision D2). Observed per-note latency vs the TTL that is supposed to
+ * cover it. `breach` means at least one note ran at or beyond the lock's lifetime — so the lock
+ * expired mid-tick and concurrent ticks became possible, which is exactly how the 9 duplicates
+ * happened.
+ *
+ * PURE OBSERVATION: it never blocks a tick and never throws. A non-numeric or absent `ms` is
+ * ignored rather than coerced, and an empty set yields maxMs 0 ⇒ no breach.
+ */
+export function ttlBreach(
+  results: { ms?: number }[],
+  ttlMs: number = LB_LOCK_TTL_MS,
+): { breach: boolean; maxMs: number } {
+  let maxMs = 0;
+  for (const r of results ?? []) {
+    const n = Number(r?.ms);
+    if (Number.isFinite(n) && n > maxMs) maxMs = n;
+  }
+  return { breach: maxMs >= ttlMs, maxMs };
+}
+
+/** The breach message, verbatim per PRD §5. Exported so the runtime cannot drift from the spec. */
+export function ttlBreachMessage(maxMs: number, ttlMs: number): string {
+  return `LOCK TTL BREACH: a note took ${maxMs}ms against LB_LOCK_TTL_MS=${ttlMs}ms.
+Concurrent ticks are now possible and duplicate rows will follow.
+Raise LB_LOCK_TTL_MS above observed latency.`;
 }
 
 export type BatchSkip = 'disabled' | 'no_job' | 'outside_window' | 'locked' | 'mini_busy' | null;

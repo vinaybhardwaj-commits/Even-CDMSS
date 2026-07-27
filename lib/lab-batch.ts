@@ -15,7 +15,7 @@ import { MINI_MODEL } from './llm';
 import { fetchOpdNoteByUid } from './metabase';
 import { saveLabAnalysis } from './lab';
 import { getSettings, setSetting, windowOpen, lockHeld, readState as readMiniState } from './mini-backfill';
-import { LB_KEYS, type LabBatchState, parseBatchState, remainingUids, batchGate, drainPlan, boundedPool } from './lab-batch-core';
+import { LB_KEYS, LB_LOCK_TTL_MS, type LabBatchState, parseBatchState, remainingUids, batchGate, drainPlan, boundedPool, labLockHeld, ttlBreach, ttlBreachMessage } from './lab-batch-core';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 
@@ -79,13 +79,18 @@ export async function batchTick(opts: { ignoreWindow?: boolean } = {}): Promise<
   // in-flight note for ONE tick to avoid a literal concurrent mini call — not a standing yield.
   let miniBusy = false;
   if (plan.useMiniYield) {
+    // DELIBERATELY the PROD worker's lockHeld/MB_LOCK_TTL_MS — this reads the mini-backfill's lock
+    // to see whether the shared GPU is busy, so it must keep the prod worker's TTL. Do NOT switch
+    // this to labLockHeld: the two locks belong to two different workers (D1).
     try { miniBusy = lockHeld((await readMiniState()).lock); } catch { miniBusy = false; }
   }
   const skip = batchGate({
     enabled: st.enabled,
     hasJob: !!st.experiment && st.uids.length > 0,
     windowOpen: opts.ignoreWindow ? true : windowOpen(st.window),
-    lockHeld: lockHeld(st.lock),
+    // The BATCH's own lock, governed by LB_LOCK_TTL_MS (D1). Previously this called the prod
+    // worker's lockHeld, so MB_LOCK_TTL_MS=210s governed a batch whose average note takes 212.8s.
+    lockHeld: labLockHeld(st.lock),
     miniBusy,
   });
   if (skip) return { ...base, skipped: skip };
@@ -127,10 +132,19 @@ export async function batchTick(opts: { ignoreWindow?: boolean } = {}): Promise<
     }
     const okNow = results.filter((r) => !('error' in r)).length;
     const doneNow = priorDone + okNow;
+    // D2 — THE CONTRADICTING FIELD. Assert observed latency against the TTL meant to cover it. Pure
+    // observation, wrapped so it can NEVER throw and NEVER block a tick: a failure here must not
+    // cost the drain that already succeeded.
+    let breach = { breach: false, maxMs: 0 };
+    try { breach = ttlBreach(results as { ms?: number }[], LB_LOCK_TTL_MS); } catch { breach = { breach: false, maxMs: 0 }; }
+    if (breach.breach) {
+      await setSetting(LB_KEYS.error, ttlBreachMessage(breach.maxMs, LB_LOCK_TTL_MS)).catch(() => {});
+    }
     const summary = {
       ...base, experiment, model: st.evalModel || MINI_MODEL, processed: results.length,
       ...(plan.evalMode ? { evalConcurrency: plan.concurrency } : {}),
       done: doneNow, remaining: Math.max(0, st.uids.length - doneNow), results, at: new Date().toISOString(),
+      ttl_breach: breach.breach, max_ms: breach.maxMs, ttl_ms: LB_LOCK_TTL_MS,
     };
     await setSetting(LB_KEYS.last, JSON.stringify(summary));
     return summary;
