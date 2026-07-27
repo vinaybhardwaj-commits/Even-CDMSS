@@ -43,6 +43,11 @@ export async function ensureLabTables(): Promise<void> {
     created_at timestamptz NOT NULL DEFAULT now()
   )`, []);
   await run(`CREATE INDEX IF NOT EXISTS lab_analyses_experiment_idx ON lab_analyses (experiment, created_at DESC)`, []);
+  // F11: record WHICH PROVIDER served a run alongside the model. Additive + idempotent. Without it
+  // `model` alone is ambiguous — 'gemini-2.5-pro' could have come from Vertex or from OpenRouter,
+  // and the paid ceiling needs to count non-ollama runs per experiment.
+  await run(`ALTER TABLE lab_analyses ADD COLUMN IF NOT EXISTS provider text`, []).catch(() => {});
+  await run(`CREATE INDEX IF NOT EXISTS lab_analyses_provider_idx ON lab_analyses (experiment, provider)`, []).catch(() => {});
 }
 
 // ── lab_analyses store ──────────────────────────────────────────────────────────
@@ -50,15 +55,29 @@ export interface LabAnalysisRow {
   experiment: string; kind: string; engine: string;
   inputRef?: string | null; inputPreview?: string | null;
   output: unknown; model?: string | null; latencyMs?: number | null;
+  /** F11 — 'ollama' | 'openrouter' | 'vertex'. The RESOLVED provider, never the requested string. */
+  provider?: string | null;
 }
 export async function saveLabAnalysis(r: LabAnalysisRow): Promise<string> {
   const rows = await run(
-    `INSERT INTO lab_analyses (experiment, kind, engine, input_ref, input_preview, output, model, latency_ms)
-     VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8) RETURNING id`,
+    `INSERT INTO lab_analyses (experiment, kind, engine, input_ref, input_preview, output, model, latency_ms, provider)
+     VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9) RETURNING id`,
     [r.experiment, r.kind, r.engine, r.inputRef ?? null, (r.inputPreview ?? '').slice(0, 500),
-     JSON.stringify(r.output), r.model ?? null, r.latencyMs ?? null],
+     JSON.stringify(r.output), r.model ?? null, r.latencyMs ?? null, r.provider ?? null],
   );
   return String(rows[0]?.id ?? '');
+}
+
+/** F11 — how many NON-OLLAMA (paid) runs this experiment has already made. The ceiling counts
+ *  provider, not model: a free local run must never consume paid budget. Fail-safe ⇒ 0 would
+ *  DISABLE the ceiling, so the caller treats a read failure as a refusal instead. */
+export async function countPaidRuns(experiment: string): Promise<number | null> {
+  try {
+    const rows = await run(
+      `SELECT count(*)::int AS n FROM lab_analyses
+       WHERE experiment = $1 AND provider IS NOT NULL AND provider <> 'ollama'`, [experiment]);
+    return Number(rows[0]?.n ?? 0) || 0;
+  } catch { return null; }
 }
 
 export async function listLabAnalyses(experiment: string | null, limit: number): Promise<Record<string, unknown>[]> {

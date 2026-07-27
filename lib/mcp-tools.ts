@@ -14,6 +14,9 @@ import { sql } from './db';
 import { guardReadOnlySql } from './sql-guard-core';
 // LAB-MCP Phase 2 wiring — the pure cores shipped in f720579. REUSED, never reimplemented.
 import { decideLabSource } from './lab-source-core';
+// F11 (option 3): the ONE provider resolver + the ceiling, shipped and tested in f720579.
+import { resolveProvider, checkPaidCeiling, DEFAULT_PAID_CEILING } from './lab-provider-core';
+import { LAB_ORIGIN_HEADER, LAB_ORIGIN_VALUE } from './lab-override-core';
 import {
   checkCitationFields, parseProposeArgs, parseRatifyArgs, checkPromotable, classifyGaps,
   type ExistingStatement, type GapRow,
@@ -27,7 +30,7 @@ import { readState, setSetting, MB_KEYS } from './mini-backfill';
 import { LB_KEYS, sanitizeUids, clampN, clampEvalConcurrency } from './lab-batch-core';
 import { readBatchState, batchProgress, batchTick } from './lab-batch';
 import {
-  ensureLabTables, saveLabAnalysis, updateLabAnalysis, listLabAnalyses, getLabAnalysis, labLabel,
+  ensureLabTables, saveLabAnalysis, countPaidRuns, updateLabAnalysis, listLabAnalyses, getLabAnalysis, labLabel,
   corpusAddQuarantined, corpusActivate, corpusDelete, corpusLabList, labStorage,
 } from './lab';
 import {
@@ -58,6 +61,8 @@ export const LAB_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
+        model: { type: 'string', description: "F11 provider routing. OMIT for the local Mac-mini (₹0, today's behaviour, unchanged). Prefixes: ollama:<name> | openrouter:<id> | vertex:<id>; unprefixed ⇒ the mini. An unknown prefix ERRORS — it never silently falls back. PAID runs (openrouter/vertex) count against a per-experiment ceiling, default 250." },
+        ceiling: { type: 'number', description: 'Per-experiment cap on PAID (non-ollama) runs, default 250. Exceeding it STOPS and reports; raise it only by passing this explicitly.' },
         experiment: { type: 'string', description: 'Experiment label to file this under (new or existing).' },
         metabase_uid: { type: 'string', description: 'db13 individuals-prescriptions uid to audit (structured OPD audit).' },
         text: { type: 'string', description: 'Raw clinical note text to audit (used if no metabase_uid).' },
@@ -145,6 +150,8 @@ export const LAB_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
+        model: { type: 'string', description: "F11 provider routing. OMIT for the local Mac-mini (₹0, today's behaviour, unchanged). Prefixes: ollama:<name> | openrouter:<id> | vertex:<id>; unprefixed ⇒ the mini. An unknown prefix ERRORS — it never silently falls back. PAID runs (openrouter/vertex) count against a per-experiment ceiling, default 250." },
+        ceiling: { type: 'number', description: 'Per-experiment cap on PAID (non-ollama) runs, default 250. Exceeding it STOPS and reports; raise it only by passing this explicitly.' },
         experiment: { type: 'string', description: 'Experiment label to file this under.' },
         cc: { type: 'string', description: 'Chief complaint (required).' },
         age: { type: 'string', description: 'Patient age, e.g. "54" or "3 months".' },
@@ -161,6 +168,8 @@ export const LAB_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
+        model: { type: 'string', description: "F11 provider routing. OMIT for the local Mac-mini (₹0, today's behaviour, unchanged). Prefixes: ollama:<name> | openrouter:<id> | vertex:<id>; unprefixed ⇒ the mini. An unknown prefix ERRORS — it never silently falls back. PAID runs (openrouter/vertex) count against a per-experiment ceiling, default 250." },
+        ceiling: { type: 'number', description: 'Per-experiment cap on PAID (non-ollama) runs, default 250. Exceeding it STOPS and reports; raise it only by passing this explicitly.' },
         experiment: { type: 'string', description: 'Experiment label to file this under.' },
         question: { type: 'string', description: 'The clinical question (required).' },
         investigations: { type: 'string', description: 'Optional investigation results to fold in.' },
@@ -170,7 +179,7 @@ export const LAB_TOOLS = [
   },
   {
     name: 'lab_appropriateness',
-    description: 'Runs the REAL /api/appropriateness Right-Care order-check (Choosing-Wisely low-value-care matcher + LLM applicability judge + value analysis) on the LOCAL Mac-mini (Qwen, ₹0). Stores which CW statements FIRED per scenario in lab_analyses — the surface for the known ~74% over-flag: build a specificity set of clearly-appropriate scenarios and mine how often a flag fires when it should not (output.n_flags / output.flag_statements). TIMING: ~2–5 min > the MCP client wait (~180s), so THIS CALL WILL LIKELY TIME OUT but the run completes + stores; a `pending` row appears within ~1s. After a timeout, POLL `lab_query experiment=<your-experiment>` or `id=<run_id>` for output.status pending→done. ONE probe at a time. scenario required; optionally proposedActions (the specific orders), age, sex. WRITE-CLASS: lab-write (lab_analyses only).',
+    description: 'Runs the REAL /api/appropriateness Right-Care order-check (Choosing-Wisely low-value-care matcher + LLM applicability judge + value analysis) on the LOCAL Mac-mini (Qwen, ₹0). Stores which CW statements FIRED per scenario in lab_analyses — the surface for the known ~74% over-flag: build a specificity set of clearly-appropriate scenarios and mine how often a flag fires when it should not (output.n_flags / output.flag_statements). TIMING: ~2–5 min > the MCP client wait (~180s), so THIS CALL WILL LIKELY TIME OUT but the run completes + stores; a `pending` row appears within ~1s. After a timeout, POLL `lab_query experiment=<your-experiment>` or `id=<run_id>` for output.status pending→done. ONE probe at a time. scenario required; optionally proposedActions (the specific orders), age, sex. WRITE-CLASS: lab-write (lab_analyses only). ⚠️ NO `model` PARAMETER: this probe drives a route that has not been wired for F11 provider routing, so it runs on the LOCAL MAC-MINI only. Provider routing is unavailable here — do not infer coverage from lab_ask/lab_ddx/mini_analyze having it.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -184,7 +193,7 @@ export const LAB_TOOLS = [
   },
   {
     name: 'lab_pathway',
-    description: 'Runs the REAL /api/pathway/skeleton care-pathway pass (stage classification + ordered care-path spine) on the LOCAL Mac-mini (Qwen, ₹0), storing the skeleton in lab_analyses. For router coverage / stage-detection bugs / dead branches. TIMING: a single fast pass — usually returns INLINE within the client wait (result in the response). If it does time out, a `pending` row is stored — poll `lab_query experiment=<your-experiment>` or `id=<run_id>`. ONE probe at a time. scenario required; optionally proposedActions, age, sex. WRITE-CLASS: lab-write (lab_analyses only).',
+    description: 'Runs the REAL /api/pathway/skeleton care-pathway pass (stage classification + ordered care-path spine) on the LOCAL Mac-mini (Qwen, ₹0), storing the skeleton in lab_analyses. For router coverage / stage-detection bugs / dead branches. TIMING: a single fast pass — usually returns INLINE within the client wait (result in the response). If it does time out, a `pending` row is stored — poll `lab_query experiment=<your-experiment>` or `id=<run_id>`. ONE probe at a time. scenario required; optionally proposedActions, age, sex. WRITE-CLASS: lab-write (lab_analyses only). ⚠️ NO `model` PARAMETER: this probe drives a route that has not been wired for F11 provider routing, so it runs on the LOCAL MAC-MINI only. Provider routing is unavailable here — do not infer coverage from lab_ask/lab_ddx/mini_analyze having it.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -198,7 +207,7 @@ export const LAB_TOOLS = [
   },
   {
     name: 'lab_case_audit',
-    description: 'Runs the REAL /api/doc-audit/analyze case-audit + prognosis on the LOCAL Mac-mini (Qwen, ₹0), storing the scored report in lab_analyses. TEXT-ONLY: pass an already-EXTRACTED case (the PDF→OCR extract leg is multimodal Vertex and cannot run on the free mini). `extracted` = an object with docType + case fields (diagnosis, procedure, indication, courseSummary, medications[], investigations[], treatments[], disposition, followUp, patient{age,sex}). For bugs in the appropriateness/foreseeability reasoning independent of OCR. TIMING: ~2–5 min > the MCP client wait (~180s), so THIS CALL WILL LIKELY TIME OUT but the run completes + stores; a `pending` row appears within ~1s. After a timeout, POLL `lab_query experiment=<your-experiment>` or `id=<run_id>` for output.status pending→done. ONE probe at a time. WRITE-CLASS: lab-write (lab_analyses only).',
+    description: 'Runs the REAL /api/doc-audit/analyze case-audit + prognosis on the LOCAL Mac-mini (Qwen, ₹0), storing the scored report in lab_analyses. TEXT-ONLY: pass an already-EXTRACTED case (the PDF→OCR extract leg is multimodal Vertex and cannot run on the free mini). `extracted` = an object with docType + case fields (diagnosis, procedure, indication, courseSummary, medications[], investigations[], treatments[], disposition, followUp, patient{age,sex}). For bugs in the appropriateness/foreseeability reasoning independent of OCR. TIMING: ~2–5 min > the MCP client wait (~180s), so THIS CALL WILL LIKELY TIME OUT but the run completes + stores; a `pending` row appears within ~1s. After a timeout, POLL `lab_query experiment=<your-experiment>` or `id=<run_id>` for output.status pending→done. ONE probe at a time. WRITE-CLASS: lab-write (lab_analyses only). ⚠️ NO `model` PARAMETER: this probe drives a route that has not been wired for F11 provider routing, so it runs on the LOCAL MAC-MINI only. Provider routing is unavailable here — do not infer coverage from lab_ask/lab_ddx/mini_analyze having it.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -423,12 +432,20 @@ async function miniAnalyze(a: Record<string, unknown>): Promise<ToolResult> {
   const text = S(a.text).trim();
   const started = Date.now();
 
+  // F11 — mini_analyze routes through the EXISTING evalModel seam (auditOpdNote), which is why it
+  // can honour a model today while the three unwired-route probes cannot. evalModel is OpenRouter-
+  // only, so a vertex: request is refused here rather than silently downgraded.
+  const M = await resolveProbeModel(a, experiment);
+  if (!M.ok) return err(M.error);
+  if (M.provider === 'vertex') return err('mini_analyze routes via the evalModel seam, which is OpenRouter-only — use openrouter:<id> or omit model for the local mini');
+  const evalModel = M.provider === 'openrouter' ? M.model : undefined;
+
   if (uid) {
     const row = await fetchOpdNoteByUid(uid);
     if (!row) return err(`no db13 OPD note for uid ${uid}`);
-    const audit = await auditOpdNote(row, { pipeline: 'mini', engineTag: 'lab', trace: false });
+    const audit = await auditOpdNote(row, { pipeline: 'mini', engineTag: 'lab', trace: false, ...(evalModel ? { evalModel } : {}) });
     const output = { index: audit.scorecard.headline, band: audit.scorecard.band, scorecard: audit.scorecard, completeness: audit.completeness, findings: audit.findings, suggestions: audit.suggestions };
-    const id = await saveLabAnalysis({ experiment, kind: 'opd_note', engine: audit.engineVersion, inputRef: uid, inputPreview: `uid ${uid}`, output, model: MINI_MODEL, latencyMs: Date.now() - started });
+    const id = await saveLabAnalysis({ experiment, kind: 'opd_note', engine: audit.engineVersion, inputRef: uid, inputPreview: `uid ${uid}`, output, model: M.model, provider: M.provider, latencyMs: Date.now() - started });
     return ok({ stored_id: id, experiment, kind: 'opd_note', engine: audit.engineVersion, index: audit.scorecard.headline, band: audit.scorecard.band, findings: audit.findings.length });
   }
 
@@ -485,15 +502,57 @@ async function selfPostNdjson(path: string, body: Record<string, unknown>, extra
  * MCP client out but STILL complete + store — poll `lab_query experiment=<exp>` (newest first) or
  * `id=<run_id>`; output.status goes pending → done. One probe at a time (single Mac-mini).
  */
+/**
+ * F11 (option 3) — resolve a probe tool's `model` argument and enforce the per-experiment paid
+ * ceiling. Returns the RESOLVED provider/model, or a typed refusal the caller surfaces as an error.
+ *
+ * OMITTED `model` ⇒ { provider: 'ollama', model: MINI_MODEL } and NO ceiling check — byte-identical
+ * to today's behaviour, and a free local run must never consume paid budget.
+ *
+ * An unknown prefix ERRORS LOUD and never falls back to the mini: a lab row that says one model while
+ * another served it is unattributable, which is exactly the defect F11 exists to fix (87.8% of stored
+ * volume turned out to be paid Gemini while the tools advertised "₹0, never Gemini").
+ */
+/** F11 — the gate's lab-origin marker (condition 2). Only ever sent on the two WIRED routes. */
+function labHeaders(a: Record<string, unknown>): Record<string, string> | undefined {
+  return S(a.model).trim() ? { [LAB_ORIGIN_HEADER]: LAB_ORIGIN_VALUE, 'x-cdmss-lab-caller': 'lab-mcp' } : undefined;
+}
+/** F11 — add `labModel` ONLY when a model was asked for, so an omitted model leaves the request body
+ *  byte-identical to today. The route's own gate still decides; this only carries the request. */
+function labBody(base: Record<string, unknown>, a: Record<string, unknown>): Record<string, unknown> {
+  const m = S(a.model).trim();
+  return m ? { ...base, labModel: m } : base;
+}
+
+async function resolveProbeModel(a: Record<string, unknown>, experiment: string): Promise<
+  { ok: true; provider: string; model: string; paid: boolean } | { ok: false; error: string }
+> {
+  const r = resolveProvider(a.model, MINI_MODEL);
+  if (!r.ok) return { ok: false, error: r.error };
+  if (!r.paid) return { ok: true, provider: r.provider, model: r.model, paid: false };
+
+  const used = await countPaidRuns(experiment);
+  if (used === null) {
+    // The ceiling is a spend control; if its denominator cannot be read we refuse rather than run
+    // ungated, the same way lvc_propose refuses when its dedup set is unreadable.
+    return { ok: false, error: 'cannot read this experiment\'s paid-run count — refusing to start a PAID run ungated' };
+  }
+  const c = checkPaidCeiling(used, a.ceiling);
+  if (!c.ok) return { ok: false, error: c.error };
+  return { ok: true, provider: r.provider, model: r.model, paid: true };
+}
+
 async function runLabProbe(opts: {
   experiment: string; kind: string; engine: string; inputPreview: string; inputRef?: string | null;
+  /** F11 — the RESOLVED provider/model. Omitted ⇒ the local mini, byte-identical to before. */
+  provider?: string; model?: string;
   run: () => Promise<{ output: Record<string, unknown>; summary: Record<string, unknown> }>;
 }): Promise<ToolResult> {
   await ensureLabTables();
   const startedAt = Date.now();
   const runId = await saveLabAnalysis({
     experiment: opts.experiment, kind: opts.kind, engine: opts.engine, inputRef: opts.inputRef ?? null,
-    inputPreview: opts.inputPreview, model: MINI_MODEL, latencyMs: null,
+    inputPreview: opts.inputPreview, model: opts.model ?? MINI_MODEL, provider: opts.provider ?? 'ollama', latencyMs: null,
     output: { status: 'pending', started_at: new Date().toISOString() },
   });
   try {
@@ -515,12 +574,15 @@ async function labDdx(a: Record<string, unknown>): Promise<ToolResult> {
     history: S(a.history) || undefined, exam: S(a.exam) || undefined,
     vitals: S(a.vitals) || undefined, investigations: S(a.investigations) || undefined,
   };
+  const M = await resolveProbeModel(a, experiment);
+  if (!M.ok) return err(M.error);
   return runLabProbe({
     experiment, kind: 'ddx', engine: 'ddx-route/mini',
     inputPreview: [presentation.age, presentation.sex, cc].filter(Boolean).join(' / ').slice(0, 300),
+    provider: M.provider, model: M.model,
     run: async () => {
-      const probe = reduceDdxEvents(parseNdjson(await selfPostNdjson('/api/ddx', presentation)));
-      return { output: { presentation, ...probe }, summary: { ok: probe.ok } };
+      const probe = reduceDdxEvents(parseNdjson(await selfPostNdjson('/api/ddx', labBody(presentation, a), labHeaders(a))));
+      return { output: { presentation, provider: M.provider, model: M.model, ...probe }, summary: { ok: probe.ok, provider: M.provider, model: M.model } };
     },
   });
 }
@@ -529,11 +591,14 @@ async function labAsk(a: Record<string, unknown>): Promise<ToolResult> {
   const experiment = labLabel(a.experiment);
   const question = S(a.question).trim();
   if (!question) return err('question is required');
+  const M = await resolveProbeModel(a, experiment);
+  if (!M.ok) return err(M.error);
   return runLabProbe({
     experiment, kind: 'ask', engine: 'ask-route/mini', inputPreview: question.slice(0, 300),
+    provider: M.provider, model: M.model,
     run: async () => {
-      const probe = reduceAskEvents(parseNdjson(await selfPostNdjson('/api/ask', { question, investigations: S(a.investigations) || undefined })));
-      return { output: { question, ...probe }, summary: { ok: probe.ok } };
+      const probe = reduceAskEvents(parseNdjson(await selfPostNdjson('/api/ask', labBody({ question, investigations: S(a.investigations) || undefined }, a), labHeaders(a))));
+      return { output: { question, provider: M.provider, model: M.model, ...probe }, summary: { ok: probe.ok, provider: M.provider, model: M.model } };
     },
   });
 }

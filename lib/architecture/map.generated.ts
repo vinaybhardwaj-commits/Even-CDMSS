@@ -2988,6 +2988,16 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "mcp-tools",
+    "to": "lab-override-core",
+    "kind": "value"
+  },
+  {
+    "from": "mcp-tools",
+    "to": "lab-provider-core",
+    "kind": "value"
+  },
+  {
+    "from": "mcp-tools",
     "to": "lab-source-core",
     "kind": "value"
   },

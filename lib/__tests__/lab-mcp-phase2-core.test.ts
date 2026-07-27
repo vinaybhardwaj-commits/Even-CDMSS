@@ -513,3 +513,85 @@ test('migration 0023 targets mksap_chunks and never a table called `corpus`', ()
   assert.doesNotMatch(sql, /ALTER TABLE corpus\b/);
   assert.doesNotMatch(sql, /\bDROP\b/i);
 });
+
+// ── F11 option 3 — Lab-MCP side ────────────────────────────────────────────────
+const HAS_MODEL = ['mini_analyze', 'lab_ddx', 'lab_ask'];
+const NO_MODEL = ['lab_appropriateness', 'lab_pathway', 'lab_case_audit'];
+
+test('F11: exactly the three honourable probe tools expose `model` and `ceiling`', () => {
+  for (const n of HAS_MODEL) {
+    const props = (TOOL(n).inputSchema.properties ?? {}) as Record<string, unknown>;
+    assert.ok(props.model, `${n} must expose model`);
+    assert.ok(props.ceiling, `${n} must expose ceiling`);
+  }
+});
+
+test('F11: the three unwired-route probes have NO model param and SAY why (A4)', () => {
+  for (const n of NO_MODEL) {
+    const props = (TOOL(n).inputSchema.properties ?? {}) as Record<string, unknown>;
+    assert.equal(props.model, undefined, `${n} must NOT expose model — it would silently do nothing`);
+    assert.equal(props.ceiling, undefined, `${n} must NOT expose ceiling`);
+    // and the description must state the limitation so no caller infers coverage
+    assert.match(TOOL(n).description, /NO `model` PARAMETER/, n);
+    assert.match(TOOL(n).description, /LOCAL MAC-MINI only/, n);
+    assert.match(TOOL(n).description, /do not infer coverage/, n);
+  }
+});
+
+test('F11: the model param resolves all three prefixes and errors loud on unknown', () => {
+  const mini = 'qwen2.5:14b';
+  const ol = resolveProvider('ollama:qwen2.5:14b', mini);
+  assert.equal(ol.ok && ol.provider, 'ollama');
+  const o = resolveProvider('openrouter:google/gemini-2.5-flash', mini);
+  assert.equal(o.ok && o.provider, 'openrouter');
+  assert.equal(o.ok && o.model, 'google/gemini-2.5-flash', 'the RESOLVED string is stored, never the prefixed request');
+  const vx = resolveProvider('vertex:gemini-2.5-pro', mini);
+  assert.equal(vx.ok && vx.provider, 'vertex');
+  const bad = resolveProvider('gpt5:turbo', mini);
+  assert.equal(bad.ok, false);
+  assert.match((bad as { error: string }).error, /Never falls back/);
+});
+
+test('F11: omitted model ⇒ the local mini, byte-identical, and NOT paid', () => {
+  const d = resolveProvider(undefined, 'qwen2.5:14b');
+  assert.equal(d.ok && d.provider, 'ollama');
+  assert.equal(d.ok && d.model, 'qwen2.5:14b');
+  assert.equal(d.ok && d.paid, false, 'a free local run must never consume paid budget');
+  // the request body/headers are only augmented when a model is asked for
+  const SRC = readFileSync(new URL('../mcp-tools.ts', import.meta.url), 'utf8');
+  assert.match(SRC, /return m \? \{ \.\.\.base, labModel: m \} : base;/);
+  assert.match(SRC, /return S\(a\.model\)\.trim\(\) \? \{ \[LAB_ORIGIN_HEADER\]: LAB_ORIGIN_VALUE/);
+});
+
+test('F11: the paid ceiling stops at N and reports; free runs never count', () => {
+  assert.equal(DEFAULT_PAID_CEILING, 250);
+  assert.equal(checkPaidCeiling(249).ok, true);
+  const stop = checkPaidCeiling(250);
+  assert.equal(stop.ok, false);
+  assert.match((stop as { error: string }).error, /ceiling reached/);
+  assert.equal(checkPaidCeiling(250, 500).ok, true, 'raised only by passing it explicitly');
+});
+
+test('F11: provider is recorded on lab_analyses alongside the RESOLVED model', () => {
+  const LAB_SRC = readFileSync(new URL('../lab.ts', import.meta.url), 'utf8');
+  assert.match(LAB_SRC, /ALTER TABLE lab_analyses ADD COLUMN IF NOT EXISTS provider text/);
+  assert.match(LAB_SRC, /input_preview, output, model, latency_ms, provider\)/);
+  assert.match(LAB_SRC, /r\.provider \?\? null/);
+  // the ceiling counts PROVIDER, not model — a free local run must not consume budget
+  assert.match(LAB_SRC, /provider IS NOT NULL AND provider <> 'ollama'/);
+  const SRC = readFileSync(new URL('../mcp-tools.ts', import.meta.url), 'utf8');
+  assert.match(SRC, /provider: M\.provider, model: M\.model,/);
+  assert.match(SRC, /model: opts\.model \?\? MINI_MODEL, provider: opts\.provider \?\? 'ollama'/);
+});
+
+test('F11: NO route file was touched in this build', () => {
+  // the two wired routes keep exactly the wiring shipped in cfc995b; nothing here edits a route
+  for (const r of ['ask', 'ddx']) {
+    const src = readFileSync(new URL(`../../app/api/${r}/route.ts`, import.meta.url), 'utf8');
+    assert.match(src, /resolveLabOverride/, `${r} stays wired`);
+  }
+  for (const r of ['appropriateness', 'pathway/skeleton', 'doc-audit/analyze']) {
+    const src = readFileSync(new URL(`../../app/api/${r}/route.ts`, import.meta.url), 'utf8');
+    assert.doesNotMatch(src, /resolveLabOverride/, `${r} stays unwired`);
+  }
+});
