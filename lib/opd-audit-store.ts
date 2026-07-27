@@ -46,18 +46,40 @@ async function runAuditShadow(audit: OpdNoteAudit, findings: OpdNoteAudit['findi
 // Quieting choreography tolerance: the code deploys BEFORE the migration adds
 // opd_note_audits.quieting_gen, so the writers probe for the column (cached) and only include it
 // once it exists. Fail-safe: probe error ⇒ treat as absent (the stamp is dropped, never the audit).
-let _qgenCol: { at: number; present: boolean } | null = null;
-async function quietingGenColumnExists(): Promise<boolean> {
+// GENERALISED (A.1): the same deploy-before-migrate tolerance now guards two columns —
+// `quieting_gen` and `completeness_items` (0027). Semantics are UNCHANGED from the single-column
+// version: cache a present result for 300s, re-probe an absent one after 60s so the first render
+// after the migration picks it up, and treat a probe error as absent (drop the extra column, never
+// the audit). The cache is keyed per column, so the two never interfere.
+const _colProbe = new Map<string, { at: number; present: boolean }>();
+async function opdColumnExists(column: string): Promise<boolean> {
   const now = Date.now();
-  if (_qgenCol && now - _qgenCol.at < 300_000 && _qgenCol.present) return true;
-  if (_qgenCol && now - _qgenCol.at < 60_000) return _qgenCol.present;   // re-probe absent faster post-migration
+  const hit = _colProbe.get(column);
+  if (hit && now - hit.at < 300_000 && hit.present) return true;
+  if (hit && now - hit.at < 60_000) return hit.present;   // re-probe absent faster post-migration
   try {
     const rows = (await sql(
-      `SELECT 1 AS ok FROM information_schema.columns WHERE table_name = 'opd_note_audits' AND column_name = 'quieting_gen'`,
+      `SELECT 1 AS ok FROM information_schema.columns WHERE table_name = 'opd_note_audits' AND column_name = $1`,
+      [column],
     )) as Array<{ ok: number }>;
-    _qgenCol = { at: now, present: rows.length > 0 };
-  } catch { _qgenCol = { at: now, present: false }; }
-  return _qgenCol.present;
+    _colProbe.set(column, { at: now, present: rows.length > 0 });
+  } catch { _colProbe.set(column, { at: now, present: false }); }
+  return _colProbe.get(column)!.present;
+}
+async function quietingGenColumnExists(): Promise<boolean> { return opdColumnExists('quieting_gen'); }
+/** 0027 — the per-field completeness array (item D-1). Absent until the migration runs. */
+async function completenessItemsColumnExists(): Promise<boolean> { return opdColumnExists('completeness_items'); }
+
+/**
+ * The array to persist, or null. Returns null rather than `[]` when the engine produced nothing:
+ * NULL means "no per-field detail was recorded", and the read path treats that as "fall back to the
+ * stored flat completeness_pct". An empty array would mean "we looked and there were no fields",
+ * which weighted completeness scores as 100. The two must never be conflated.
+ */
+function completenessItemsJson(audit: OpdNoteAudit): string | null {
+  const items = audit.completeness?.items;
+  if (!Array.isArray(items) || items.length === 0) return null;
+  try { return JSON.stringify(items); } catch { return null; }
 }
 
 /** Insert one audit. Returns 'inserted' | 'exists' (already audited at this engine version) | 'skipped' (no uid).
@@ -96,6 +118,10 @@ export async function saveOpdAudit(
   const nInteraction = findings.filter((f) => /interaction|contraindicat|\bddi\b/i.test(`${f.subject} ${f.rationale}`)).length;
   const missing = audit.completeness?.missing ?? [];
   const withGen = await quietingGenColumnExists();
+  // 0027 — persist the per-field array the core already emits. Appended AFTER quieting_gen so every
+  // existing placeholder index is untouched.
+  const withItems = await completenessItemsColumnExists();
+  const itemsJson = completenessItemsJson(audit);
 
   // Force mode rewrites the scored columns from the fresh audit (EXCLUDED.*) and re-stamps
   // audited_at; complexity_band/complexity_inputs are left as-is (same as updateOpdAudit).
@@ -111,7 +137,7 @@ export async function saveOpdAudit(
          findings = EXCLUDED.findings, suggestions = EXCLUDED.suggestions, missing_fields = EXCLUDED.missing_fields,
          model = EXCLUDED.model, trace_id = EXCLUDED.trace_id, latency_ms = EXCLUDED.latency_ms, sources = EXCLUDED.sources,
          scorecard = EXCLUDED.scorecard,
-         ${withGen ? 'quieting_gen = EXCLUDED.quieting_gen, ' : ''}audited_at = now()`
+         ${withItems ? 'completeness_items = EXCLUDED.completeness_items, ' : ''}${withGen ? 'quieting_gen = EXCLUDED.quieting_gen, ' : ''}audited_at = now()`
     : 'DO NOTHING';
 
   const rows = (await sql(
@@ -122,10 +148,10 @@ export async function saveOpdAudit(
        pdqi9, completeness_pct, n_missing_mandatory,
        n_findings, n_low_value, n_context_dependent, n_interaction_alerts,
        findings, suggestions, engine_version, model, trace_id, latency_ms, missing_fields, sources,
-       complexity_band, complexity_inputs, scorecard${withGen ? ', quieting_gen' : ''})
+       complexity_band, complexity_inputs, scorecard${withGen ? ', quieting_gen' : ''}${withItems ? ', completeness_items' : ''})
      VALUES ($1,$2,$3,$4,$5,$6,$7, $8,$9, $10,$11,$12,$13,$14,
        $15::jsonb,$16,$17, $18,$19,$20,$21, $22::jsonb,$23::jsonb,$24,$25,$26,$27, $28::jsonb, $29::jsonb,
-       $30, $31::jsonb, $32::jsonb${withGen ? ', $33' : ''})
+       $30, $31::jsonb, $32::jsonb${withGen ? ', $33' : ''}${withItems ? `, $${withGen ? 34 : 33}::jsonb` : ''})
      ON CONFLICT (uid, engine_version) ${conflictClause}
      RETURNING id${force ? ', (xmax = 0) AS inserted' : ''}`,
     [
@@ -141,6 +167,7 @@ export async function saveOpdAudit(
       audit.complexity?.band ?? null, audit.complexity?.inputs ? JSON.stringify(audit.complexity.inputs) : null,
       scorecardJson(sc),
       ...(withGen ? [audit.quietingGen ?? 0] : []),
+      ...(withItems ? [itemsJson] : []),
     ],
   )) as Array<{ id: string; inserted?: boolean }>;
   // Under force, DO UPDATE always returns the row; (xmax = 0) distinguishes fresh insert from overwrite.
@@ -167,6 +194,8 @@ export async function updateOpdAudit(audit: OpdNoteAudit): Promise<'updated' | '
   const nInteraction = findings.filter((f) => /interaction|contraindicat|\bddi\b/i.test(`${f.subject} ${f.rationale}`)).length;
   const missing = audit.completeness?.missing ?? [];
   const withGen = await quietingGenColumnExists();
+  const withItems = await completenessItemsColumnExists();
+  const itemsJson = completenessItemsJson(audit);
 
   const rows = (await sql(
     `UPDATE opd_note_audits SET
@@ -176,7 +205,7 @@ export async function updateOpdAudit(audit: OpdNoteAudit): Promise<'updated' | '
        pdqi9 = $9::jsonb, completeness_pct = $10, n_missing_mandatory = $11,
        n_findings = $12, n_low_value = $13, n_context_dependent = $14, n_interaction_alerts = $15,
        findings = $16::jsonb, suggestions = $17::jsonb, missing_fields = $18::jsonb,
-       scorecard = $20::jsonb${withGen ? ', quieting_gen = $21' : ''}
+       scorecard = $20::jsonb${withGen ? ', quieting_gen = $21' : ''}${withItems ? `, completeness_items = $${withGen ? 22 : 21}::jsonb` : ''}
      WHERE uid = $1 AND engine_version = $19
      RETURNING id`,
     [
@@ -189,6 +218,7 @@ export async function updateOpdAudit(audit: OpdNoteAudit): Promise<'updated' | '
       audit.engineVersion,
       scorecardJson(sc),
       ...(withGen ? [audit.quietingGen ?? 0] : []),
+      ...(withItems ? [itemsJson] : []),
     ],
   )) as Array<{ id: string }>;
   return rows.length ? 'updated' : 'skipped';
@@ -276,33 +306,100 @@ export interface WeightedOpdRow extends Record<string, unknown> {
   stored_note_quality_index: number | null;
   stored_band: string | null;
   weights_version: string | null;
-  /** TRUE while OPD has no stored per-field detail to re-weight (decision §1.5). */
+  /** TRUE when THIS ROW has no stored per-field detail, so nothing could be re-weighted. */
   weights_not_applicable: boolean;
 }
 
 /**
- * Attach the active OPD weights version to already-fetched rows. NEVER THROWS: on any failure the
- * rows come back with `weights_version: null`, which every surface renders as "unweighted" — the
- * legacy presentation (PRD §8.1).
+ * Parse `opd_note_audits.completeness_items` (0027). Returns [] for NULL, a non-array, or unparseable
+ * JSON — the caller distinguishes "no items" from "items" and never scores an empty array.
+ */
+export function parseOpdCompletenessItems(raw: unknown): { key: string; status?: unknown; label?: string; section?: string }[] {
+  let v: unknown = raw;
+  if (v == null) return [];
+  if (typeof v === 'string') { try { v = JSON.parse(v); } catch { return []; } }
+  if (!Array.isArray(v)) return [];
+  return v.filter((i): i is { key: string } => !!i && typeof i === 'object' && typeof (i as { key?: unknown }).key === 'string');
+}
+
+/**
+ * Apply the active OPD weights to already-fetched rows (A.1 / item D-1).
+ *
+ * ═══ THE FALLBACK RULE — THE LOAD-BEARING PART OF THIS FUNCTION ═══
+ * A row whose `completeness_items` is NULL — every one of the 25,130 historical rows, and every row
+ * written before migration 0027 runs — KEEPS ITS STORED FLAT `completeness_pct`, `note_quality_index`
+ * and `band`, untouched. It is marked `weights_not_applicable: true`.
+ *
+ * It must NEVER be scored from the absent array. `weightedCompleteness([], …)` returns 100 ("no
+ * applicable fields ⇒ nothing missing"), which is correct for a document whose fields are all `na`
+ * and CATASTROPHICALLY wrong for a row we simply never recorded detail for: it would silently
+ * promote 25,130 historical audits to 100% documentation. Equally, a missing array must never read
+ * as "all fields missing" (0%). Hence the explicit `items.length === 0 ⇒ return stored` guard below,
+ * which has its own test.
+ *
+ * Decision §1.5 stands: OPD weighting is NEW-AUDITS-ONLY. There is no backfill and this function
+ * does not simulate one.
+ *
+ * Only the DOCUMENTATION fields are weighted: the three continuity items (advice_given,
+ * advice_instructions, follow_up) are scored in the Continuity domain and are excluded from the
+ * completeness denominator by the engine, so they are filtered out here too. With v1 all-Standard
+ * that makes the weighted value reproduce the engine's own `coverage` exactly.
+ *
+ * NEVER THROWS: on any failure the rows come back stored-as-is with `weights_version: null`.
  */
 export async function applyOpdScoringPolicy<T extends Record<string, unknown>>(rows: T[]): Promise<(T & WeightedOpdRow)[]> {
   const list = Array.isArray(rows) ? rows : [];
   if (!list.length) return [];
-  let versionString: string | null = null;
-  try {
-    const { getActivePolicy } = await import('./scoring-policy/store');
-    const policy = await getActivePolicy('opd_rx');
-    versionString = policy.fallback ? null : policy.versionString;
-  } catch {
-    versionString = null;
-  }
-  return list.map((r) => ({
+
+  const stored = (r: T) => ({
     ...r,
     stored_completeness_pct: r.completeness_pct == null ? null : Number(r.completeness_pct),
     stored_note_quality_index: r.note_quality_index == null ? null : Number(r.note_quality_index),
     stored_band: r.band == null ? null : String(r.band),
-    weights_version: versionString,
-    // Flips to false once per-field statuses are persisted for OPD; see the note above.
-    weights_not_applicable: true,
-  })) as (T & WeightedOpdRow)[];
+  });
+
+  try {
+    const { getActivePolicy } = await import('./scoring-policy/store');
+    const { weightedCompleteness, OPD_RX_COND_KEYS } = await import('./scoring-policy/completeness');
+    const { recomputeOpdIndex } = await import('./scoring-policy/recompute');
+    const { weightedKeysFor } = await import('./scoring-policy/weights');
+    const policy = await getActivePolicy('opd_rx');
+    const versionString = policy.fallback ? null : policy.versionString;
+    const weightable = new Set(weightedKeysFor('opd_rx'));
+
+    return list.map((r) => {
+      const base = { ...stored(r), weights_version: versionString };
+      const items = parseOpdCompletenessItems(r.completeness_items).filter((i) => weightable.has(i.key));
+      // ── THE GUARD. No stored detail ⇒ stored values, verbatim. ──
+      if (items.length === 0) return { ...base, weights_not_applicable: true } as T & WeightedOpdRow;
+
+      const c = weightedCompleteness(items, policy.vector, { condKeys: OPD_RX_COND_KEYS });
+      const idx = recomputeOpdIndex(
+        {
+          documentation: c.pct,
+          note_quality: numOrNull(r.score_note_quality),
+          appropriateness: numOrNull(r.score_appropriateness),
+          prescribing_safety: numOrNull(r.score_prescribing_safety),
+          patient_centred: numOrNull(r.score_patient_centred),
+        },
+        c.pct,
+      );
+      return {
+        ...base,
+        completeness_pct: c.pct,
+        score_documentation: c.pct,
+        note_quality_index: idx.index,
+        band: idx.band,
+        weights_not_applicable: false,
+      } as T & WeightedOpdRow;
+    });
+  } catch {
+    return list.map((r) => ({ ...stored(r), weights_version: null, weights_not_applicable: true })) as (T & WeightedOpdRow)[];
+  }
+}
+
+function numOrNull(v: unknown): number | null {
+  if (v == null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
 }

@@ -419,14 +419,25 @@ export async function ipdPreviewCohort(): Promise<PreviewCohortRow[]> {
 }
 
 /**
- * How many OPD audits exist in the window — the "currently {n}" in the empty state (decision §1.5).
+ * How many OPD audits CARRY PER-FIELD DETAIL — the "currently {n}" in the empty state.
+ *
+ * A.1 (kickoff §12.1a): this counts `completeness_items IS NOT NULL`, NOT all audits. Counting every
+ * audit would have told Dr. Binita there were 25,130 notes to preview against when the true number
+ * of re-weightable notes was zero — the count has to mean what the sentence around it claims.
+ *
+ * Returns 0 if the column does not exist yet (migration 0027 unrun), because the query errors and
+ * the catch returns 0 — which is the honest answer at that point.
+ *
  * INFERRED SQL:
- *   SELECT count(*)::int AS n FROM opd_note_audits WHERE audited_at >= NOW() - INTERVAL '90 days'
+ *   SELECT count(*)::int AS n FROM opd_note_audits
+ *    WHERE audited_at >= NOW() - INTERVAL '90 days' AND completeness_items IS NOT NULL
  */
 export async function opdAccumulatedCount(): Promise<number> {
   try {
     const rows = await run(
-      `SELECT count(*)::int AS n FROM opd_note_audits WHERE audited_at >= NOW() - INTERVAL '${PREVIEW_WINDOW_DAYS} days'`,
+      `SELECT count(*)::int AS n FROM opd_note_audits
+        WHERE audited_at >= NOW() - INTERVAL '${PREVIEW_WINDOW_DAYS} days'
+          AND completeness_items IS NOT NULL`,
     );
     return Number(rows[0]?.n ?? 0);
   } catch {

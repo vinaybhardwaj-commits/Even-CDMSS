@@ -27,50 +27,90 @@ test('migration 0025 is exactly one additive, idempotent statement', () => {
   assert.doesNotMatch(MIGRATION.replace(/--.*$/gm, ''), /\b(DROP|UPDATE|DELETE|TRUNCATE|INSERT)\b/i);
 });
 
+// ── A.1 (0027): a THIRD conditional column, `completeness_items`, joined `quieting_gen`. These
+// assertions were extended from the two withGen branches to the full 2×2 matrix rather than
+// relaxed — the alignment risk they guard grows with each conditional column, it does not shrink.
+// Both new columns are appended AFTER the existing ones so no established placeholder index moved.
+const GEN_COLS = "${withGen ? ', quieting_gen' : ''}";
+const ITEM_COLS = "${withItems ? ', completeness_items' : ''}";
+const GEN_VALS = "${withGen ? ', $33' : ''}";
+const ITEM_VALS = '${withItems ? `, $${withGen ? 34 : 33}::jsonb` : \'\'}';
+
+/** Expand the two conditional template segments into the concrete SQL for one branch pair. */
+function expand(src: string, withGen: boolean, withItems: boolean): string {
+  return src
+    .split(GEN_COLS).join(withGen ? ', quieting_gen' : '')
+    .split(ITEM_COLS).join(withItems ? ', completeness_items' : '')
+    .split(GEN_VALS).join(withGen ? ', $33' : '')
+    .split(ITEM_VALS).join(withItems ? `, $${withGen ? 34 : 33}::jsonb` : '');
+}
+
+const BRANCHES: [boolean, boolean][] = [[false, false], [true, false], [false, true], [true, true]];
+
 test('ALL THREE write paths carry the scorecard — a row written without one is a bug', () => {
   // 1. ON CONFLICT DO UPDATE (force mode)
   assert.match(STORE, /scorecard = EXCLUDED\.scorecard,/);
-  // 2. INSERT column list + placeholder
-  assert.match(STORE, /complexity_band, complexity_inputs, scorecard\$\{withGen \? ', quieting_gen' : ''\}\)/);
-  assert.match(STORE, /\$30, \$31::jsonb, \$32::jsonb\$\{withGen \? ', \$33' : ''\}\)/);
+  // 2. INSERT column list + placeholder — now with both conditional tails
+  assert.ok(STORE.includes(`complexity_band, complexity_inputs, scorecard${GEN_COLS}${ITEM_COLS})`));
+  assert.ok(STORE.includes(`$30, $31::jsonb, $32::jsonb${GEN_VALS}${ITEM_VALS})`));
   // 3. force-overwrite UPDATE
   assert.match(STORE, /scorecard = \$20::jsonb\$\{withGen \? ', quieting_gen = \$21' : ''\}/);
 });
 
-test('INSERT: columns and arguments align in BOTH withGen branches', () => {
+test('the A.1 column is APPENDED — no established placeholder index moved', () => {
+  // scorecard stays $32 and engine_version stays $19 in every branch. This is the assertion that
+  // would have caught a mid-list insertion, which writes right values into wrong columns silently.
+  assert.match(STORE, /\$30, \$31::jsonb, \$32::jsonb/);
+  assert.match(STORE, /WHERE uid = \$1 AND engine_version = \$19/);
+  assert.match(STORE, /scorecard = \$20::jsonb/);
+});
+
+test('INSERT: columns and arguments align in ALL FOUR branches', () => {
   const colBlock = STORE.slice(STORE.indexOf('(uid, consult_uid, doctor_uid'), STORE.indexOf('VALUES ($1'));
-  for (const withGen of [false, true]) {
-    const cols = colBlock
-      .replace(/\$\{withGen \? ', quieting_gen' : ''\}/, withGen ? ', quieting_gen' : '')
+  const vStart = STORE.indexOf('VALUES ($1');
+  const valBlock = STORE.slice(vStart, STORE.indexOf('ON CONFLICT (uid, engine_version)', vStart));
+
+  for (const [withGen, withItems] of BRANCHES) {
+    const label = `withGen=${withGen} withItems=${withItems}`;
+    const cols = expand(colBlock, withGen, withItems)
       .replace(/[()\n]/g, ' ').split(',').map((x) => x.trim()).filter(Boolean);
-    assert.equal(cols.length, withGen ? 33 : 32, `withGen=${withGen}`);
-    // scorecard is the 32nd column in both branches, immediately after complexity_inputs
-    assert.equal(cols[31], 'scorecard', `withGen=${withGen}: scorecard must be column 32`);
-    assert.equal(cols[30], 'complexity_inputs');
-    if (withGen) assert.equal(cols[32], 'quieting_gen');
+    const expected = 32 + (withGen ? 1 : 0) + (withItems ? 1 : 0);
+    assert.equal(cols.length, expected, label);
+    // scorecard is the 32nd column in EVERY branch, immediately after complexity_inputs
+    assert.equal(cols[31], 'scorecard', `${label}: scorecard must be column 32`);
+    assert.equal(cols[30], 'complexity_inputs', label);
+    if (withGen) assert.equal(cols[32], 'quieting_gen', label);
+    if (withItems) assert.equal(cols[withGen ? 33 : 32], 'completeness_items', label);
+
+    // …and the placeholder count must equal the column count, in the same branch.
+    const ph = [...expand(valBlock, withGen, withItems).matchAll(/\$(\d+)/g)].map((m) => Number(m[1]));
+    assert.equal(new Set(ph).size, ph.length, `${label}: no placeholder may be reused`);
+    assert.deepEqual(
+      ph.slice().sort((a, b) => a - b),
+      Array.from({ length: expected }, (_, i) => i + 1),
+      `${label}: placeholders must be 1..${expected}, no gap`,
+    );
+    assert.equal(cols.length, ph.length, `${label}: COLUMN/ARGUMENT COUNT MISMATCH`);
   }
 });
 
-test('INSERT placeholders are 1..33, sequential and unique — no gap, no reuse', () => {
-  // NB: the file's opening docblock also contains the literal "ON CONFLICT (uid, engine_version)",
-  // so the end anchor MUST be searched from after VALUES or the slice runs backwards and is empty —
-  // which would make this assertion vacuously pass on an empty set. Found while writing it.
+test('INSERT: every jsonb column is cast, including the A.1 one', () => {
   const vStart = STORE.indexOf('VALUES ($1');
   const vals = STORE.slice(vStart, STORE.indexOf('ON CONFLICT (uid, engine_version)', vStart));
   assert.ok(vals.length > 50, 'slice must be non-empty or the assertions below are vacuous');
-  const ph = [...vals.matchAll(/\$(\d+)/g)].map((m) => Number(m[1]));
-  assert.equal(new Set(ph).size, ph.length, 'no placeholder may be reused');
-  assert.deepEqual(ph.slice().sort((a, b) => a - b), Array.from({ length: 33 }, (_, i) => i + 1));
-  // the scorecard placeholder is cast, like every other jsonb column in this file
-  assert.match(vals, /\$32::jsonb/);
+  assert.match(vals, /\$32::jsonb/, 'scorecard');
+  assert.ok(vals.includes('::jsonb` : \'\'}'), 'completeness_items is cast in its conditional branch');
 });
 
-test('UPDATE placeholders are 1..21 and scorecard is $20, quieting_gen $21', () => {
+test('UPDATE placeholders align in all four branches; scorecard $20, quieting_gen $21', () => {
   const up = STORE.slice(STORE.indexOf('UPDATE opd_note_audits SET'), STORE.indexOf('WHERE uid = $1 AND engine_version = $19'));
   assert.match(up, /scorecard = \$20::jsonb/);
   assert.match(up, /quieting_gen = \$21/);
-  // $19 stays the engine_version predicate — the scorecard must not have displaced it
+  // $19 stays the engine_version predicate — neither new column may displace it
   assert.match(STORE, /WHERE uid = \$1 AND engine_version = \$19/);
+  // completeness_items takes 22 when quieting_gen is present, else 21 — asserted literally
+  assert.ok(up.includes("${withItems ? `, completeness_items = $${withGen ? 22 : 21}::jsonb` : ''}"),
+    'the A.1 UPDATE placeholder must be conditional on withGen');
 });
 
 test('serialisation is FAIL-SAFE: a scorecard fault must never cost an audit', () => {

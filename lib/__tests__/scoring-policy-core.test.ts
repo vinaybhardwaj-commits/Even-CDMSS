@@ -479,6 +479,161 @@ test('the OPD engine emits the structured shape from BOTH completeness paths (GP
   assert.ok(/missing: string\[\];/.test(src), 'missing_fields is NOT replaced');
 });
 
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// PHASE A.1 — persisted OPD items + the migration runner (kickoff §12.1a)
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+test('A.1 THE FALLBACK RULE: a NULL completeness_items row keeps its stored scores, untouched', async () => {
+  const { applyOpdScoringPolicy } = await import('../opd-audit-store.ts');
+  // Every one of the 25,130 historical rows looks like this.
+  const historical = {
+    id: 'h1', completeness_items: null,
+    completeness_pct: 67, note_quality_index: 58, band: 'C',
+    score_documentation: 67, score_note_quality: 40, score_appropriateness: 80,
+    score_prescribing_safety: 70, score_patient_centred: 50,
+  };
+  const [out] = await applyOpdScoringPolicy([historical]);
+  assert.equal(out.weights_not_applicable, true, 'nothing to re-weight');
+  // THE THREE THAT MATTER: stored values survive verbatim.
+  assert.equal(out.completeness_pct, 67, 'must NOT become 100 (empty-array semantics)');
+  assert.equal(out.note_quality_index, 58);
+  assert.equal(out.band, 'C');
+  // and the mirrors are present for a surface that wants to show both
+  assert.equal(out.stored_completeness_pct, 67);
+  assert.equal(out.stored_band, 'C');
+});
+
+test('A.1 a missing array is never read as 100 NOR as 0 — both directions', async () => {
+  const { applyOpdScoringPolicy } = await import('../opd-audit-store.ts');
+  const { weightedCompleteness } = await import('../scoring-policy/completeness.ts');
+  // The trap: the pure core scores an EMPTY item list as 100 (correct for an all-`na` document).
+  assert.equal(weightedCompleteness([], null, {}).pct, 100, 'the trap this guard exists for');
+  for (const raw of [null, undefined, '[]', '', 'not json', '{}', [], 0]) {
+    const [out] = await applyOpdScoringPolicy([{
+      id: 'x', completeness_items: raw, completeness_pct: 42, note_quality_index: 55, band: 'C',
+    }]);
+    assert.equal(out.completeness_pct, 42, `raw=${JSON.stringify(raw)} must keep the stored value`);
+    assert.notEqual(out.completeness_pct, 100, 'never silently promoted');
+    assert.notEqual(out.completeness_pct, 0, 'never read as all-fields-missing');
+    assert.equal(out.weights_not_applicable, true);
+  }
+});
+
+test('A.1 a row WITH items is weighted, and weights_not_applicable flips to false', async () => {
+  const { applyOpdScoringPolicy } = await import('../opd-audit-store.ts');
+  const items = [
+    { key: 'presenting_complaint', label: 'Presenting complaint', status: 'present', section: 'documentation' },
+    { key: 'diagnosis', label: 'Diagnosis / impression', status: 'present', section: 'documentation' },
+    { key: 'examination', label: 'Examination recorded', status: 'missing', section: 'documentation' },
+    { key: 'medication_dosing', label: 'Complete medication dosing', status: 'present', section: 'documentation' },
+  ];
+  const [out] = await applyOpdScoringPolicy([{
+    id: 'n1', completeness_items: items,
+    completeness_pct: 99, note_quality_index: 99, band: 'A',   // deliberately wrong stored values
+    score_note_quality: 40, score_appropriateness: 80, score_prescribing_safety: 70, score_patient_centred: 50,
+  }]);
+  assert.equal(out.weights_not_applicable, false);
+  assert.equal(out.completeness_pct, 75, '3 of 4 present under v1 all-Standard');
+  assert.equal(out.score_documentation, 75, 'the documentation domain IS completeness');
+  assert.notEqual(out.note_quality_index, 99, 'the index is rebuilt, not passed through');
+  assert.equal(out.stored_completeness_pct, 99, 'the stored value is still available');
+  // accepts the jsonb as a STRING too (driver-dependent)
+  const [asStr] = await applyOpdScoringPolicy([{ id: 'n2', completeness_items: JSON.stringify(items), completeness_pct: 1 }]);
+  assert.equal(asStr.completeness_pct, 75);
+});
+
+test('A.1 continuity items are EXCLUDED from the OPD denominator (reproduces the engine\'s coverage)', async () => {
+  const { applyOpdScoringPolicy } = await import('../opd-audit-store.ts');
+  // The engine computes coverage over docItems only — advice/follow-up are Continuity. If they
+  // leaked into the denominator this row would read 3/5 = 60 instead of 3/3 = 100.
+  const items = [
+    { key: 'presenting_complaint', status: 'present' },
+    { key: 'diagnosis', status: 'present' },
+    { key: 'medication_dosing', status: 'present' },
+    { key: 'advice_given', status: 'missing' },
+    { key: 'follow_up', status: 'missing' },
+  ];
+  const [out] = await applyOpdScoringPolicy([{ id: 'c1', completeness_items: items, completeness_pct: 0 }]);
+  assert.equal(out.completeness_pct, 100, 'continuity misses must not lower documentation completeness');
+});
+
+test('A.1 applyOpdScoringPolicy never throws and handles an empty batch', async () => {
+  const { applyOpdScoringPolicy } = await import('../opd-audit-store.ts');
+  assert.deepEqual(await applyOpdScoringPolicy([]), []);
+  assert.deepEqual(await applyOpdScoringPolicy(null as unknown as Record<string, unknown>[]), []);
+  await assert.doesNotReject(() => applyOpdScoringPolicy([{ id: 'weird' }]));
+  const [odd] = await applyOpdScoringPolicy([{ id: 'weird' }]);
+  assert.equal(odd.weights_not_applicable, true);
+  assert.equal(odd.stored_completeness_pct, null);
+});
+
+test('A.1 parseOpdCompletenessItems drops malformed entries rather than throwing', async () => {
+  const { parseOpdCompletenessItems } = await import('../opd-audit-store.ts');
+  assert.deepEqual(parseOpdCompletenessItems(null), []);
+  assert.deepEqual(parseOpdCompletenessItems('nonsense'), []);
+  assert.deepEqual(parseOpdCompletenessItems({ key: 'x' }), [], 'an object is not an array');
+  assert.equal(parseOpdCompletenessItems([{ key: 'a' }, null, { nokey: 1 }, { key: 'b' }]).length, 2);
+});
+
+test('A.1 the OPD write path persists the array, guarded by a column probe', () => {
+  const src = readFileSync('lib/opd-audit-store.ts', 'utf8');
+  // both writers persist it
+  assert.ok(/completeness_items/.test(src));
+  assert.equal((src.match(/completenessItemsColumnExists\(\)/g) || []).length, 3,
+    'declared once + probed in saveOpdAudit and updateOpdAudit');
+  assert.equal((src.match(/completenessItemsJson\(audit\)/g) || []).length, 2, 'both writers serialise it');
+  // deploy-before-migrate tolerance: the column is only named when it exists
+  assert.ok(/withItems \? ', completeness_items' : ''/.test(src), 'INSERT column list is conditional');
+  assert.ok(/EXCLUDED\.completeness_items/.test(src), 'force-mode overwrite carries it too');
+  // NULL, not [], when the engine produced nothing — the distinction the read path depends on
+  assert.ok(/if \(!Array\.isArray\(items\) \|\| items\.length === 0\) return null;/.test(src));
+});
+
+test('A.1 the migration runner exists, is admin-guarded, and every statement is idempotent', () => {
+  const src = readFileSync('app/api/admin/migrate-scoring-policy/route.ts', 'utf8');
+  assert.ok(/export async function POST/.test(src), 'POST, matching every other migrate-* route');
+  assert.ok(/runtime = 'nodejs'/.test(src));
+  assert.ok(/requireAdmin\(req\)/.test(src) && /isAdminUnlocked\(\)/.test(src), 'token OR session');
+  assert.ok(/const steps: Record<string, string> = \{\}/.test(src), 'per-step report');
+  // IDEMPOTENCE: no bare CREATE/ALTER anywhere
+  const creates = src.match(/CREATE (?:UNIQUE )?(?:TABLE|INDEX)(?! IF NOT EXISTS)/g) || [];
+  assert.deepEqual(creates, [], 'every CREATE must be IF NOT EXISTS');
+  const alters = src.match(/ADD COLUMN(?! IF NOT EXISTS)/g) || [];
+  assert.deepEqual(alters, [], 'every ADD COLUMN must be IF NOT EXISTS');
+  assert.ok(/WHERE NOT EXISTS \(SELECT 1 FROM scoring_policy_versions/.test(src), 'the seed is guarded');
+  assert.ok(/already_present/.test(src), 're-running reports the seed as already present');
+  // it applies BOTH migrations in one call
+  assert.ok(/scoring_policy_versions/.test(src) && /scoring_policy_drafts/.test(src), '0026');
+  assert.ok(/ALTER TABLE opd_note_audits ADD COLUMN IF NOT EXISTS completeness_items jsonb/.test(src), '0027');
+  // and proves what landed rather than asserting it
+  assert.ok(/information_schema\.columns/.test(src), 'verification read-back');
+});
+
+test('A.1 the runner\'s inlined DDL matches the two .sql files it stands in for', () => {
+  const route = readFileSync('app/api/admin/migrate-scoring-policy/route.ts', 'utf8');
+  const m26 = readFileSync('migrations/0026_scoring_policy.sql', 'utf8');
+  const m27 = readFileSync('migrations/0027_opd_completeness_items.sql', 'utf8');
+  // the objects created must be the same set, in both places
+  for (const obj of ['scoring_policy_versions', 'scoring_policy_drafts', 'scoring_policy_versions_one_active']) {
+    assert.ok(m26.includes(obj), `${obj} in 0026`);
+    assert.ok(route.includes(obj), `${obj} in the runner`);
+  }
+  assert.ok(m27.includes('completeness_items jsonb') && route.includes('completeness_items jsonb'));
+  // the seed rationale is verbatim in both
+  const RATIONALE = 'Initial — equal weight across all fields, reproduces legacy scoring.';
+  assert.ok(m26.includes(RATIONALE) && route.includes(RATIONALE));
+  // and the seeded key sets agree with the catalogue
+  for (const k of weightedKeysFor('discharge_summary')) assert.ok(route.includes(`${k}: 'standard'`) || route.includes(`"${k}":"standard"`), `DS ${k}`);
+  for (const k of weightedKeysFor('opd_rx')) assert.ok(route.includes(`${k}: 'standard'`), `OPD ${k}`);
+});
+
+test('A.1 no backfill: nothing in the build writes completeness_items to historical rows', () => {
+  const route = readFileSync('app/api/admin/migrate-scoring-policy/route.ts', 'utf8');
+  assert.ok(!/UPDATE opd_note_audits SET completeness_items/i.test(route), 'decision §1.5 — no backfill');
+  const m27 = readFileSync('migrations/0027_opd_completeness_items.sql', 'utf8');
+  assert.ok(!/UPDATE opd_note_audits/i.test(m27), 'the migration adds a column and stops');
+});
+
 test('the three continuity fields are EXCLUDED from the OPD weight vector (kickoff normative list)', () => {
   const weighted = weightedKeysFor('opd_rx');
   for (const k of ['advice_given', 'advice_instructions', 'follow_up']) {
