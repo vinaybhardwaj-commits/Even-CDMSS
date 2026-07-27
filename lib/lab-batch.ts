@@ -69,6 +69,10 @@ export async function runMiniOpdToLab(uid: string, experiment: string, evalCfg: 
 /** One tick: drain up to n un-done cohort uids into lab_analyses. Idempotent + resumable.
  *  ignoreWindow=true is the manual-nudge path (lab_batch_tick) — the cron respects the window. */
 export async function batchTick(opts: { ignoreWindow?: boolean } = {}): Promise<Record<string, unknown>> {
+  // D3 — wall clock for the tick. PURE OBSERVATION: read only where the summary is built, never
+  // branched on. The old summary could not distinguish "tick completed" from "tick never ran", which
+  // is precisely how the killed-invocation defect stayed invisible for a full paid run.
+  const tickStart = Date.now();
   const st = await readBatchState();
   const base = { enabled: st.enabled, experiment: st.experiment, window: st.window, total: st.uids.length };
   // Eval batches (evalModel set → OpenRouter, hosted+concurrent) fan out and skip the mini-yield —
@@ -102,7 +106,10 @@ export async function batchTick(opts: { ignoreWindow?: boolean } = {}): Promise<
     const todo = remainingUids(st.uids, done);
     if (todo.length === 0) {
       await setSetting(LB_KEYS.enabled, '0');
-      const summary = { ...base, done: st.uids.length, remaining: 0, finished: true, at: new Date().toISOString() };
+      const summary = {
+        ...base, done: st.uids.length, remaining: 0, finished: true, at: new Date().toISOString(),
+        tick_ms: Date.now() - tickStart, slice_planned: plan.sliceSize, slice_drained: 0,
+      };
       await setSetting(LB_KEYS.last, JSON.stringify(summary));
       return summary;
     }
@@ -145,6 +152,10 @@ export async function batchTick(opts: { ignoreWindow?: boolean } = {}): Promise<
       ...(plan.evalMode ? { evalConcurrency: plan.concurrency } : {}),
       done: doneNow, remaining: Math.max(0, st.uids.length - doneNow), results, at: new Date().toISOString(),
       ttl_breach: breach.breach, max_ms: breach.maxMs, ttl_ms: LB_LOCK_TTL_MS,
+      // D3 — the fields the old summary lacked. `slice_planned` vs `slice_drained` says whether the
+      // wave completed; `tick_ms` says how long one wave actually took. All three are derived from
+      // values already computed above — no new work, no branch, nothing that can throw.
+      tick_ms: Date.now() - tickStart, slice_planned: plan.sliceSize, slice_drained: results.length,
     };
     await setSetting(LB_KEYS.last, JSON.stringify(summary));
     return summary;

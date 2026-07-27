@@ -17,14 +17,71 @@ test('mini path (no evalModel): n≤2, serial (concurrency 1), mini-yield honour
   assert.deepEqual(drainPlan({ evalModel: null, n: 1 }), { evalMode: false, sliceSize: 1, concurrency: 1, useMiniYield: true });
 });
 
-// ── Test 2 — evalModel set ⇒ EVAL_TICK_MAX slice, no mini-yield ──
-test('eval path (evalModel set): drains up to EVAL_TICK_MAX and skips the mini-yield', () => {
+// ── Test 2 — evalModel set ⇒ ONE WAVE (slice == concurrency), no mini-yield ──
+// AMENDED 27 Jul 2026 (D1). This test previously asserted `sliceSize: EVAL_TICK_MAX` — it locked in
+// the defect: 50 audits at concurrency 10 is ~890s of work in one Vercel invocation, which was killed
+// at ~200-225s so `finally` never cleared the lock. The slice is now the concurrency.
+test('eval path (evalModel set): drains exactly ONE WAVE and skips the mini-yield', () => {
   const plan = drainPlan({ evalModel: 'google/gemini-3.1-flash-lite', evalConcurrency: 10, n: 2 });
-  assert.deepEqual(plan, { evalMode: true, sliceSize: EVAL_TICK_MAX, concurrency: 10, useMiniYield: false });
-  assert.equal(EVAL_TICK_MAX, 50);
-  // concurrency defaults + clamps
+  assert.deepEqual(plan, { evalMode: true, sliceSize: 10, concurrency: 10, useMiniYield: false });
+  assert.equal(EVAL_TICK_MAX, 50, 'retained as a ceiling (D2), no longer the slice');
+  // concurrency defaults + clamps — UNCHANGED
   assert.equal(drainPlan({ evalModel: 'm', n: 2 }).concurrency, EVAL_CONCURRENCY_DEFAULT);
   assert.equal(drainPlan({ evalModel: 'm', evalConcurrency: 999, n: 2 }).concurrency, EVAL_CONCURRENCY_MAX);
+});
+
+// ── Test 2a — THE INVARIANT: one tick is exactly one wave, at every reachable concurrency ──
+test('eval sliceSize == concurrency across the whole clamped range (1..EVAL_CONCURRENCY_MAX)', () => {
+  // The whole fix in one assertion: sliceSize can never exceed concurrency, so a tick dispatches one
+  // wave and awaits it. Tick duration is then ONE audit's latency whatever the model does, and no
+  // fan-out depth can push the invocation past the platform kill.
+  for (const c of [1, 2, 5, 9, 10, 11, 24, 25]) {
+    const p = drainPlan({ evalModel: 'google/gemini-2.5-pro', evalConcurrency: c, n: 2 });
+    assert.equal(p.sliceSize, p.concurrency, `slice must equal concurrency at ${c}`);
+    assert.equal(p.sliceSize, c);
+    assert.ok(p.sliceSize <= EVAL_TICK_MAX, 'ceiling still respected');
+  }
+  // garbage / out-of-range concurrency still yields one wave, never 50
+  for (const bad of [undefined, 0, -3, 'abc' as unknown as number, 999, NaN as unknown as number]) {
+    const p = drainPlan({ evalModel: 'm', evalConcurrency: bad as number | undefined, n: 2 });
+    assert.equal(p.sliceSize, p.concurrency, String(bad));
+    assert.ok(p.sliceSize <= EVAL_CONCURRENCY_MAX, String(bad));
+  }
+});
+
+// ── Test 2b — the defect, reproduced arithmetically from the MEASURED numbers ──
+test('THE DEFECT: the old slice was ~890s of work in one invocation; the new one is one audit', () => {
+  const MEAN_AUDIT_MS = 178_400;   // MEASURED 27 Jul 2026, det_08114_25pro_seed_a, google/gemini-2.5-pro
+  const KILL_MS = 225_000;         // observed burst ceiling before the invocation died
+  const concurrency = 10;
+  const plan = drainPlan({ evalModel: 'google/gemini-2.5-pro', evalConcurrency: concurrency, n: 2 });
+  // OLD: ceil(50/10) = 5 sequential waves ⇒ ~892s — far past the kill, so `finally` never ran
+  const oldWaves = Math.ceil(EVAL_TICK_MAX / concurrency);
+  assert.ok(oldWaves * MEAN_AUDIT_MS > KILL_MS, 'old plan could not finish inside one invocation');
+  // NEW: exactly one wave ⇒ ~178s, inside the observed kill window
+  const newWaves = Math.ceil(plan.sliceSize / plan.concurrency);
+  assert.equal(newWaves, 1);
+  assert.ok(newWaves * MEAN_AUDIT_MS < KILL_MS, 'one wave finishes, so the lock is released');
+});
+
+// ── Test 2c — EVAL_TICK_MAX still binds as a ceiling if concurrency ever exceeds it ──
+test('EVAL_TICK_MAX remains a hard ceiling on the slice (D2)', () => {
+  // Not reachable through clampEvalConcurrency today (max 25) — asserted on Math.min directly so the
+  // ceiling is not silently lost if EVAL_CONCURRENCY_MAX is ever raised past 50.
+  assert.equal(Math.min(EVAL_TICK_MAX, 80), EVAL_TICK_MAX);
+  assert.ok(EVAL_CONCURRENCY_MAX <= EVAL_TICK_MAX, 'while this holds, the ceiling is slack by construction');
+});
+
+// ── Test 2d — the MINI branch is byte-identical to the pre-change shape (regression guard) ──
+test('the mini branch of drainPlan is UNTOUCHED by the one-wave change', () => {
+  // Literal expected objects, not derived from the implementation, so a future edit to the eval
+  // branch that leaks into the mini branch fails here.
+  assert.deepEqual(drainPlan({ evalModel: null, n: 2 }), { evalMode: false, sliceSize: 2, concurrency: 1, useMiniYield: true });
+  assert.deepEqual(drainPlan({ evalModel: null, n: 1 }), { evalMode: false, sliceSize: 1, concurrency: 1, useMiniYield: true });
+  // '' is falsy ⇒ mini, and evalConcurrency must not leak into the mini plan
+  assert.deepEqual(drainPlan({ evalModel: '', evalConcurrency: 20, n: 2 }), { evalMode: false, sliceSize: 2, concurrency: 1, useMiniYield: true });
+  // mini slice is st.n verbatim — NOT clamped or capped here (clampN owns that, upstream)
+  assert.equal(drainPlan({ evalModel: null, n: 7 }).sliceSize, 7);
 });
 
 test('clampEvalConcurrency: default 10, clamp 1..25', () => {
@@ -125,6 +182,46 @@ test('the eval drain still writes lab_analyses only — never opd_note_audits', 
   assert.ok(!src.includes('saveOpdAudit'));
   assert.ok(!/opd-audit-store/.test(src));
   assert.ok(!/INSERT\s+INTO\s+opd_note_audits/i.test(src));
+});
+
+// ── Test 6 — D3 tick observability. STRUCTURAL: lib/lab-batch.ts imports ./db (transitively), so it
+// cannot be imported under --experimental-strip-types; this file already reads it as source for the
+// lab_analyses-only guard above, and the same technique is used here.
+test('the tick summary carries tick_ms / slice_planned / slice_drained (D3)', () => {
+  const src = readFileSync('lib/lab-batch.ts', 'utf8');
+  assert.ok(/const tickStart = Date\.now\(\);/.test(src), 'tick start stamped');
+  assert.ok(/tick_ms: Date\.now\(\) - tickStart/.test(src));
+  assert.ok(/slice_planned: plan\.sliceSize/.test(src));
+  assert.ok(/slice_drained: results\.length/.test(src));
+  // both persisted summaries carry the fields, so "finished" can never be confused with "never ran"
+  assert.equal((src.match(/tick_ms:/g) || []).length, 2, 'both the finished and the drained summary');
+  assert.equal((src.match(/slice_planned:/g) || []).length, 2);
+});
+
+test('the D3 fields are OBSERVATION ONLY — never branched on, never thrown from', () => {
+  const src = readFileSync('lib/lab-batch.ts', 'utf8');
+  // no control flow keyed on any of the three fields
+  for (const f of ['tick_ms', 'slice_planned', 'slice_drained', 'tickStart']) {
+    assert.ok(!new RegExp(`if\\s*\\([^)]*${f}`).test(src), `${f} must not gate a branch`);
+    assert.ok(!new RegExp(`(return|throw)\\s+[^;]*\\b${f}\\b\\s*[<>=!]`).test(src), `${f} must not gate a return`);
+  }
+  // Date.now() and .length cannot throw, so no try/except is needed — unlike ttlBreach, which calls a
+  // helper and is therefore wrapped. That asymmetry is deliberate; assert the wrap still exists.
+  assert.ok(/try \{ breach = ttlBreach\(/.test(src), 'ttlBreach stays wrapped (bed1449)');
+});
+
+// ── Test 7 — bed1449's lock work is UNTOUCHED by this build (hard-list guard) ──
+test('LB_LOCK_TTL_MS / labLockHeld / ttlBreach survive this build unchanged', () => {
+  const core = readFileSync('lib/lab-batch-core.ts', 'utf8');
+  assert.ok(/export const LB_LOCK_TTL_MS = 900 \* 1000;/.test(core), 'TTL literal unchanged at 900s');
+  assert.ok(/export function labLockHeld\(/.test(core));
+  assert.ok(/export function ttlBreach\(/.test(core));
+  assert.ok(/export function ttlBreachMessage\(/.test(core));
+  const rt = readFileSync('lib/lab-batch.ts', 'utf8');
+  assert.ok(/lockHeld: labLockHeld\(st\.lock\)/.test(rt), 'the batch still uses its OWN lock');
+  assert.ok(/ttl_ms: LB_LOCK_TTL_MS/.test(rt));
+  // the drain still runs inside try/finally — the whole point is that `finally` now actually reaches
+  assert.ok(/\} finally \{\n\s*await setSetting\(LB_KEYS\.lock, ''\)/.test(rt), 'lock cleared in finally');
 });
 
 // batch state round-trips the concurrency; absent ⇒ default

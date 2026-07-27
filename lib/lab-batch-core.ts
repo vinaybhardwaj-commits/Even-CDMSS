@@ -45,7 +45,10 @@ export const LB_MAX_COHORT = 2000;
 export const LB_MAX_N = 2;
 
 // ── eval-drain constants (R-11 Phase 2, OpenRouter path ONLY — the mini caps above are untouched) ──
-export const EVAL_TICK_MAX = 50;             // uids per tick when evalModel is set (hosted, no mini GPU)
+// VALUE UNCHANGED at 50. Its ROLE changed (D2): it is a hard CEILING on the eval slice, no longer
+// the slice itself. The slice is now the concurrency (see drainPlan). At every allowed concurrency
+// (1..EVAL_CONCURRENCY_MAX=25) this ceiling is slack; it binds only if the max is ever raised past 50.
+export const EVAL_TICK_MAX = 50;             // ceiling on uids per tick when evalModel is set (hosted, no mini GPU)
 export const EVAL_CONCURRENCY_DEFAULT = 10;  // audits in flight (OpenRouter rate-limit safety)
 export const EVAL_CONCURRENCY_MAX = 25;
 
@@ -56,12 +59,32 @@ export function clampEvalConcurrency(v: unknown): number {
 }
 
 /** Pure drain decision: how a tick drains, given the batch state. Mini (no evalModel) keeps the
- *  legacy shape EXACTLY — n≤2, serial, mini-yield honoured. Eval (evalModel set) fans out. */
+ *  legacy shape EXACTLY — n≤2, serial, mini-yield honoured. Eval (evalModel set) fans out.
+ *
+ * ONE WAVE PER TICK (decision D1, 27 Jul 2026). The eval slice is the CONCURRENCY, not
+ * EVAL_TICK_MAX. MEASURED on the live run `det_08114_25pro_seed_a` (gemini-2.5-pro, concurrency 10,
+ * 178.4s mean audit): sliceSize 50 at concurrency 10 is ~890s of work inside ONE function
+ * invocation. Vercel killed it at ~200–225s, so the `finally` that clears LB_KEYS.lock never ran,
+ * the lock stayed set, and every subsequent cron tick skipped 'locked' for the full 900s TTL —
+ * observed duty cycle 19% (bursts of ~200s separated by gaps of 848s and 704s). The corroborating
+ * field: app_settings.lab_batch_last still held the 26 Jul MINI summary, i.e. no eval tick had ever
+ * reached the line that writes it.
+ *
+ * With sliceSize == concurrency a tick dispatches exactly one wave and awaits it, so tick duration
+ * is ONE audit's latency whatever the model does and the invocation cannot be killed by fan-out
+ * depth. EVAL_TICK_MAX is retained as a hard CEILING (D2), not the default — it binds only if
+ * concurrency is ever raised above it.
+ *
+ * NOT a wall-clock budget (considered, rejected): with one wave there is no dispatching after t=0,
+ * so a budget would never fire — dead code asserting a protection it does not provide.
+ * See CDMSS-EVAL-TICK-BUDGET-PRD-AND-KICKOFF-27-JUL-2026.
+ */
 export function drainPlan(st: { evalModel: string | null; evalConcurrency?: number; n: number }): {
   evalMode: boolean; sliceSize: number; concurrency: number; useMiniYield: boolean;
 } {
   if (st.evalModel) {
-    return { evalMode: true, sliceSize: EVAL_TICK_MAX, concurrency: clampEvalConcurrency(st.evalConcurrency), useMiniYield: false };
+    const concurrency = clampEvalConcurrency(st.evalConcurrency);
+    return { evalMode: true, sliceSize: Math.min(EVAL_TICK_MAX, concurrency), concurrency, useMiniYield: false };
   }
   return { evalMode: false, sliceSize: st.n, concurrency: 1, useMiniYield: true };
 }
