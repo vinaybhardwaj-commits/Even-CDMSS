@@ -21,6 +21,12 @@ const STATUS_BADGE: Record<FieldStatus, string> = {
 };
 const STATUS_LABEL: Record<FieldStatus, string> = { present: 'Present', partial: 'Partial', missing: 'Missing', na: 'N/A' };
 const STATUS_ORDER: Record<FieldStatus, number> = { missing: 0, partial: 1, na: 2, present: 3 };
+/** The six discharge-summary sections (PRD §2.9), plus the OPD/OT ones, rendered plainly. */
+const SECTION_LABEL: Record<string, string> = {
+  identifiers: 'Identifiers', clinical: 'Clinical', course: 'Course of care',
+  followup: 'Follow-up', outcome: 'Outcome', signoff: 'Sign-off',
+  documentation: 'Documentation', obstetric: 'Obstetric', continuity: 'Continuity', other: 'Other',
+};
 
 const BAND_STYLE: Record<Band, { ring: string; text: string; bg: string; label: string }> = {
   A: { ring: '#0d9488', text: 'text-teal-700', bg: 'bg-teal-50', label: 'Excellent value' },
@@ -33,6 +39,7 @@ const barColor = (s: number) => s >= 85 ? 'bg-teal-500' : s >= 70 ? 'bg-green-50
 
 export default function CaseAuditReport({
   report, extractTraceId, analyzeTraceId, findingActions, retiredEvenIds,
+  weightsVersion, weightedCompletenessPct, reviewPanel,
 }: {
   report: AuditReport;
   extractTraceId?: string;
@@ -45,6 +52,15 @@ export default function CaseAuditReport({
    *  `even-lvc` citations must be hidden. Passed by a data parent that can reach it; omitted/empty ⇒
    *  byte-identical render (no filtering). */
   retiredEvenIds?: string[];
+  /** PRD §8.3 / §6.5 — the weights version the displayed documentation number was scored under
+   *  (`nabh-weights/discharge_summary/3`). Absent ⇒ the header renders exactly as before. */
+  weightsVersion?: string | null;
+  /** PRD §6.5 — the WEIGHTED documentation percentage, when the caller has recomputed it. Absent ⇒
+   *  the stored `coverage` is shown, i.e. today's behaviour. */
+  weightedCompletenessPct?: number | null;
+  /** PRD §6.4 — optional "Your review" panel, composed by the caller (a server page cannot pass a
+   *  client component's handlers, so this mirrors the existing `findingActions` slot). */
+  reviewPanel?: React.ReactNode;
 }) {
   // Hide retired Even-LVC citations at render (display-time only; stored citation_ids are untouched).
   // Short-circuits to the original arrays when nothing is retired, so existing callers are unaffected.
@@ -56,19 +72,38 @@ export default function CaseAuditReport({
   const c = report.completeness;
   const sc = report.valueScore;
   const flagged = report.findings.filter((f) => f.verdict === 'low-value' || f.verdict === 'context-dependent').length;
-  const items = [...c.items].sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status]);
   const presentCount = c.items.filter((i) => i.status === 'present' || i.status === 'na').length;
   const avoidable = (sc?.lowValueSpend ?? 0) + (sc?.excessBedDayCost ?? 0);
   const overuse = report.diff.filter((d) => d.kind === 'overuse');
   const gaps = report.diff.filter((d) => d.kind === 'gap');
   const fixes = [...report.suggestions].sort((a, b) => a.priority - b.priority);
   const pct = Math.round(c.coverage * 100);
+  // §6.5 — the weighted number when the caller supplies one, else exactly today's value.
+  const shownPct = weightedCompletenessPct == null ? pct : weightedCompletenessPct;
+  // The unweighted gap count. `missingMandatory` is the engine's own list; fall back to counting
+  // `missing` items so this is right even on an older stored report that lacks the field.
+  const gapCount = c.missingMandatory?.length ?? c.items.filter((i) => i.status === 'missing').length;
+  // Group by the item's own `section`, preserving first-seen order (the rubric's order).
+  const sections = (() => {
+    const order: string[] = [];
+    const map = new Map<string, typeof c.items>();
+    for (const it of c.items) {
+      const key = it.section || 'other';
+      if (!map.has(key)) { map.set(key, [] as unknown as typeof c.items); order.push(key); }
+      (map.get(key) as unknown as typeof c.items[number][]).push(it);
+    }
+    return order.map((section) => ({
+      section,
+      // Within a section, worst first — the same STATUS_ORDER the flat list used.
+      rows: [...(map.get(section) as unknown as typeof c.items[number][])].sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status]),
+    }));
+  })();
 
   return (
     <div className="space-y-4">
       {/* ── Verdict header: read the bottom line in two seconds ── */}
       {sc ? (
-        <VerdictHeader sc={sc} avoidable={avoidable} flagged={flagged} pct={pct} extractTraceId={extractTraceId} analyzeTraceId={analyzeTraceId} />
+        <VerdictHeader sc={sc} avoidable={avoidable} flagged={flagged} pct={shownPct} extractTraceId={extractTraceId} analyzeTraceId={analyzeTraceId} />
       ) : (
         <TraceRow extractTraceId={extractTraceId} analyzeTraceId={analyzeTraceId} />
       )}
@@ -81,7 +116,7 @@ export default function CaseAuditReport({
           sub={avoidable > 0 ? costParts(sc) : 'none tariffed'}
           tone={avoidable > 0 ? 'bad' : 'good'}
         />
-        <MetricCard label="Completeness" value={`${pct}%`} sub={`${presentCount}/${c.items.length} fields · ${c.missingMandatory.length} mandatory gap${c.missingMandatory.length === 1 ? '' : 's'}`} tone={c.coverage >= 0.85 ? 'good' : c.coverage >= 0.6 ? 'warn' : 'bad'} />
+        <MetricCard label="Completeness" value={`${shownPct}%`} sub={`${presentCount}/${c.items.length} fields · ${gapCount} mandatory gap${gapCount === 1 ? '' : 's'}`} tone={shownPct >= 85 ? 'good' : shownPct >= 60 ? 'warn' : 'bad'} />
         <MetricCard label="Flagged decisions" value={String(flagged)} sub="appropriateness / low-value" tone={flagged === 0 ? 'good' : 'bad'} />
         <MetricCard label="Idealised gaps" value={String(report.diff.length)} sub={`${overuse.length} over-use · ${gaps.length} missed`} tone="neutral" />
       </div>
@@ -151,17 +186,38 @@ export default function CaseAuditReport({
         )}
       </section>
 
-      {/* ── Reference detail: collapsed by default ── */}
-      <Collapsible title="Completeness audit (NABH + clinical)" icon={<ClipboardCheck className="h-3.5 w-3.5" />} count={`${presentCount}/${c.items.length}`}>
-        <div className="overflow-hidden rounded-lg border border-slate-200">
-          {items.map((it, i) => (
-            <div key={it.key} className={`flex items-center justify-between gap-3 px-3 py-2 ${i ? 'border-t border-slate-100' : ''}`}>
-              <span className="text-[13px] text-slate-800">{it.label} <span className="text-[11px] text-slate-400">{it.ref}</span></span>
-              <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${STATUS_BADGE[it.status]}`}>{STATUS_LABEL[it.status]}</span>
-            </div>
-          ))}
+      {/* ── §6.5 — the field list Dr. Binita could not find. Grouped by the six NABH sections,
+             carrying the extractor's note, with BOTH headline numbers side by side. ── */}
+      <Collapsible title="Documentation completeness (NABH AAC.14)" icon={<ClipboardCheck className="h-3.5 w-3.5" />} count={`${presentCount}/${c.items.length}`}>
+        <div className="mb-2.5 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-[12.5px]">
+          <span className="font-semibold text-slate-900">Documentation {shownPct}%</span>
+          {weightsVersion && <span className="text-[11.5px] text-slate-400">(weighted, <span className="font-mono">{weightsVersion}</span>)</span>}
+          <span className="text-slate-300">·</span>
+          {/* The UNWEIGHTED count, deliberately alongside: weighting moves the percentage, it never
+              changes how many mandatory fields are actually absent. */}
+          <span className="font-semibold text-slate-900">NABH mandatory gaps: {gapCount} of {c.mandatoryTotal}</span>
         </div>
+        {sections.map(({ section, rows }) => (
+          <div key={section} className="mb-2.5 last:mb-0">
+            <div className="mb-1 text-[10.5px] font-semibold uppercase tracking-[0.09em] text-slate-400">{SECTION_LABEL[section] ?? section}</div>
+            <div className="overflow-hidden rounded-lg border border-slate-200">
+              {rows.map((it, i) => (
+                <div key={it.key} className={`px-3 py-2 ${i ? 'border-t border-slate-100' : ''}`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <span className="text-[13px] text-slate-800">
+                      {it.label} <span className="ml-0.5 rounded border border-slate-200 px-1 py-px text-[10px] text-slate-400">{it.ref}</span>
+                    </span>
+                    <span className={`mt-0.5 shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${STATUS_BADGE[it.status]}`}>{STATUS_LABEL[it.status]}</span>
+                  </div>
+                  {it.note && <div className="mt-0.5 text-[11.5px] leading-relaxed text-slate-500">{it.note}</div>}
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
       </Collapsible>
+
+      {reviewPanel}
 
       {renderSources && renderSources.length > 0 && (
         <Collapsible title="Sources — retrieved from the CDMSS corpus" icon={<BookOpen className="h-3.5 w-3.5" />} count={renderSources.length}>

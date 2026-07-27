@@ -214,6 +214,199 @@ export async function getIpdAuditWeighted(id: string): Promise<(Record<string, u
   return out ?? null;
 }
 
+// ── Phase B — list filters (PRD §6.1, §6.2, §6.4) ────────────────────────────────────────────────
+//
+// The recompute wrapper above is UNTOUCHED by this phase; these add the parameters the IPD list and
+// calendar filter on. Everything is parameterised ($n) — no value is interpolated into SQL.
+
+export type ReviewedFilter = 'all' | 'reviewed' | 'not_reviewed';
+export type RangePreset = 'this_month' | 'last_month' | 'last_3_months' | 'custom';
+
+export interface IpdListFilters {
+  /** Raw `speciality` value, or the literal 'Unassigned' for the 4 null rows (§6.1). */
+  speciality?: string | null;
+  range?: RangePreset;
+  /** Only read when range === 'custom'; YYYY-MM-DD. */
+  from?: string | null;
+  to?: string | null;
+  reviewed?: ReviewedFilter;
+  limit?: number;
+}
+
+/** §6.1 — the literal option that selects rows whose speciality IS NULL. */
+export const UNASSIGNED_SPECIALITY = 'Unassigned';
+
+const isDay = (s: unknown): s is string => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
+
+/**
+ * PURE — resolve a preset to an IST date window. Exported so the range arithmetic is unit-tested
+ * without a database. `now` is injectable for exactly that reason.
+ *
+ * Dates are IST calendar days, matching every other date filter on this surface
+ * (`discharged_at AT TIME ZONE 'Asia/Kolkata'`).
+ */
+export function resolveRange(
+  preset: RangePreset | undefined,
+  from?: string | null,
+  to?: string | null,
+  now: Date = new Date(),
+): { from: string; to: string } | null {
+  const ist = new Date(now.getTime() + 5.5 * 3600 * 1000);   // shift to IST wall-clock
+  const y = ist.getUTCFullYear(), m = ist.getUTCMonth(), d = ist.getUTCDate();
+  const fmt = (yy: number, mm: number, dd: number) =>
+    `${yy}-${String(mm + 1).padStart(2, '0')}-${String(dd).padStart(2, '0')}`;
+  const lastDay = (yy: number, mm: number) => new Date(Date.UTC(yy, mm + 1, 0)).getUTCDate();
+
+  switch (preset) {
+    case 'this_month':
+      return { from: fmt(y, m, 1), to: fmt(y, m, d) };
+    case 'last_month': {
+      const pm = m === 0 ? 11 : m - 1;
+      const py = m === 0 ? y - 1 : y;
+      return { from: fmt(py, pm, 1), to: fmt(py, pm, lastDay(py, pm)) };
+    }
+    case 'custom':
+      // A half-open custom range is honoured on the side that IS given rather than silently
+      // widening to everything — the user asked for a bound and should get it.
+      if (!isDay(from) && !isDay(to)) return null;
+      return { from: isDay(from) ? from : '1970-01-01', to: isDay(to) ? to : fmt(y, m, d) };
+    case 'last_3_months':
+    default: {
+      // Default (§6.2). Three calendar months back, inclusive of today.
+      const start = new Date(Date.UTC(y, m - 2, 1));
+      return { from: fmt(start.getUTCFullYear(), start.getUTCMonth(), 1), to: fmt(y, m, d) };
+    }
+  }
+}
+
+/**
+ * The distinct speciality options, ordered by count descending, each with its count (§6.1).
+ * NO NORMALISATION in v1 — raw values, compounds included. Adds `Unassigned` for the nulls.
+ * Never throws: an unreadable list renders as no options and the filter simply offers `All`.
+ *
+ * INFERRED SQL — `speciality` is a column of ipd_discharge_audits (migrations/0013).
+ *   SELECT coalesce(speciality, 'Unassigned') AS speciality, count(*)::int AS n
+ *     FROM ipd_discharge_audits WHERE engine_version = $1
+ *    GROUP BY 1 ORDER BY n DESC, speciality ASC
+ */
+export async function specialityOptions(engineVersion: string = IPD_ENGINE_VERSION): Promise<{ speciality: string; n: number }[]> {
+  try {
+    const rows = (await sql(
+      `SELECT coalesce(nullif(trim(speciality), ''), $2) AS speciality, count(*)::int AS n
+         FROM ipd_discharge_audits
+        WHERE engine_version = $1
+        GROUP BY 1
+        ORDER BY n DESC, speciality ASC`,
+      [engineVersion, UNASSIGNED_SPECIALITY],
+    )) as Array<{ speciality: string; n: number }>;
+    return rows.map((r) => ({ speciality: String(r.speciality), n: Number(r.n) }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The filtered audit list. Returns rows ALREADY put through the Phase A recompute wrapper, so a
+ * caller can never accidentally render an unweighted score.
+ *
+ * INFERRED SQL — all columns from migrations/0013 + 0014 (`report`), plus a LEFT JOIN onto
+ * ipd_audit_feedback for the reviewed marker (0028).
+ *
+ * The reviewed join is written as a correlated EXISTS rather than a JOIN so a duplicate review row
+ * can never multiply the result set — the partial unique index makes duplicates impossible, but the
+ * query should not depend on an index for its row count.
+ *
+ * ⚠️ `kind` does not exist until 0028 runs. The whole query is wrapped: on ANY failure this falls
+ * back to the unfiltered-by-reviewed query, and if that fails too, to []. The list never 500s.
+ */
+export async function listIpdAudits(
+  filters: IpdListFilters = {},
+  engineVersion: string = IPD_ENGINE_VERSION,
+): Promise<(Record<string, unknown> & RecomputedIpdRow)[]> {
+  const limit = Math.max(1, Math.min(500, Math.floor(Number(filters.limit) || 200)));
+  const range = resolveRange(filters.range, filters.from, filters.to);
+  const reviewed: ReviewedFilter = filters.reviewed === 'reviewed' || filters.reviewed === 'not_reviewed' ? filters.reviewed : 'all';
+
+  const where: string[] = ['engine_version = $1'];
+  const params: unknown[] = [engineVersion];
+
+  const spec = typeof filters.speciality === 'string' ? filters.speciality.trim() : '';
+  if (spec && spec !== 'all') {
+    if (spec === UNASSIGNED_SPECIALITY) {
+      where.push(`(speciality IS NULL OR trim(speciality) = '')`);
+    } else {
+      params.push(spec);
+      where.push(`speciality = $${params.length}`);
+    }
+  }
+  if (range) {
+    params.push(range.from, range.to);
+    where.push(`(coalesce(discharged_at, audited_at) AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $${params.length - 1}::date AND $${params.length}::date`);
+  }
+
+  const SELECT = `SELECT a.id, a.ip_uid, a.speciality, a.care_value_index, a.band, a.completeness_pct,
+            a.score_appropriateness, a.score_efficiency, a.score_safety, a.score_cost,
+            a.score_documentation, a.score_patient_centred, a.report,
+            a.n_low_value, a.n_context_dependent, a.engine_version,
+            to_char(a.discharged_at AT TIME ZONE 'Asia/Kolkata','YYYY-MM-DD') AS discharged_day,
+            to_char(a.audited_at AT TIME ZONE 'Asia/Kolkata','YYYY-MM-DD HH24:MI') AS audited`;
+  const FROM = `FROM ipd_discharge_audits a`;
+  const WHERE = where.map((w) => w.replace(/\b(engine_version|speciality|discharged_at|audited_at)\b/g, 'a.$1')).join(' AND ');
+
+  const reviewedExists = `EXISTS (SELECT 1 FROM ipd_audit_feedback f WHERE f.audit_id = a.id AND f.kind = 'review')`;
+  const reviewedPredicate = reviewed === 'reviewed' ? ` AND ${reviewedExists}`
+    : reviewed === 'not_reviewed' ? ` AND NOT ${reviewedExists}` : '';
+
+  const withReviewed = `${SELECT},
+            ${reviewedExists} AS reviewed,
+            (SELECT f2.reviewed_by_name FROM ipd_audit_feedback f2 WHERE f2.audit_id = a.id AND f2.kind = 'review' LIMIT 1) AS reviewed_by_name
+     ${FROM} WHERE ${WHERE}${reviewedPredicate}
+     ORDER BY coalesce(a.discharged_at, a.audited_at) DESC LIMIT ${limit}`;
+
+  const withoutReviewed = `${SELECT}, FALSE AS reviewed, NULL::text AS reviewed_by_name
+     ${FROM} WHERE ${WHERE}
+     ORDER BY coalesce(a.discharged_at, a.audited_at) DESC LIMIT ${limit}`;
+
+  let rows: Array<Record<string, unknown>> = [];
+  try {
+    rows = (await sql(withReviewed, params)) as Array<Record<string, unknown>>;
+  } catch {
+    // 0028 not yet run (no `kind` column), or the feedback table is unreadable. Degrade to the
+    // list WITHOUT the reviewed marker rather than losing the page (§8.8 posture).
+    try { rows = (await sql(withoutReviewed, params)) as Array<Record<string, unknown>>; } catch { rows = []; }
+  }
+  return applyScoringPolicy(rows);
+}
+
+/**
+ * Reviews for a set of audit ids — the list chip and the report panel read this.
+ * Never throws; returns {} before 0028 runs.
+ */
+export async function reviewsForAudits(auditIds: string[]): Promise<Record<string, { note: string; reviewedByName: string | null; at: string | null }>> {
+  const ids = Array.from(new Set((auditIds || []).filter((i) => /^[0-9a-f-]{36}$/i.test(i))));
+  if (!ids.length) return {};
+  try {
+    const rows = (await sql(
+      `SELECT audit_id, note, reviewed_by_name,
+              to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS created_at
+         FROM ipd_audit_feedback
+        WHERE kind = 'review' AND audit_id = ANY($1::uuid[])`,
+      [ids],
+    )) as Array<Record<string, unknown>>;
+    const out: Record<string, { note: string; reviewedByName: string | null; at: string | null }> = {};
+    for (const r of rows) {
+      out[String(r.audit_id)] = {
+        note: String(r.note ?? ''),
+        reviewedByName: r.reviewed_by_name == null ? null : String(r.reviewed_by_name),
+        at: r.created_at == null ? null : String(r.created_at),
+      };
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 /** document_ids already audited (at this engine version) for an IST calendar day (by discharge
  *  date) — the daily worker's exclude set. */
 export async function auditedDocIdsForDay(day: string, engineVersion: string = IPD_ENGINE_VERSION): Promise<string[]> {

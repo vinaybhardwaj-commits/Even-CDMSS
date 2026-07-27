@@ -7,7 +7,8 @@ import { sql } from '@/lib/db';
 import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
 import { fmtIstDateLong } from '@/lib/opd-audit-ui';
 import { dischargeDocDensity, dischargeDocsForDay } from '@/lib/ipd-audit/db13';
-import { Locked, IpdTabs, BandChip, todayIst } from '../ui';
+import { specialityOptions, UNASSIGNED_SPECIALITY } from '@/lib/ipd-audit/store';
+import { Locked, IpdTabs, BandChip, IpdFilterBar, todayIst } from '../ui';
 import AuditNowButton from '../audit-now-button';
 
 export const dynamic = 'force-dynamic';
@@ -25,7 +26,7 @@ function addMonths(month: string, delta: number): string {
 const heat = (n: number) => n === 0 ? 'bg-slate-100 text-slate-400'
   : n <= 2 ? 'bg-teal-100 text-teal-900' : n <= 5 ? 'bg-teal-300 text-teal-950' : n <= 9 ? 'bg-teal-500 text-white' : 'bg-teal-700 text-white';
 
-export default async function IpdAuditCalendar({ searchParams }: { searchParams: Promise<{ month?: string; day?: string; locked?: string }> }) {
+export default async function IpdAuditCalendar({ searchParams }: { searchParams: Promise<{ month?: string; day?: string; locked?: string; speciality?: string }> }) {
   const sp = await searchParams;
   if (!(await isAdminUnlocked())) return <Locked configured={adminTokenConfigured()} bad={sp.locked === '1'} />;
 
@@ -33,14 +34,24 @@ export default async function IpdAuditCalendar({ searchParams }: { searchParams:
   const day = /^\d{4}-\d{2}-\d{2}$/.test(sp.day ?? '') ? sp.day! : null;
   const days = monthDays(month);
 
-  const [density, dayDocs, auditedDays] = await Promise.all([
+  // §6.1 — the speciality filter also appears here. It narrows the AUDITED overlay only; see the
+  // note rendered beside the heatmap for why the density itself cannot be filtered.
+  const specialityFilter = (sp.speciality ?? '').trim();
+  const specFiltered = specialityFilter && specialityFilter !== 'all';
+  const specClause = !specFiltered ? ''
+    : specialityFilter === UNASSIGNED_SPECIALITY ? ` AND (speciality IS NULL OR trim(speciality) = '')`
+    : ` AND speciality = $2`;
+  const specParams = specFiltered && specialityFilter !== UNASSIGNED_SPECIALITY ? [specialityFilter] : [];
+
+  const [density, dayDocs, auditedDays, specialities] = await Promise.all([
     dischargeDocDensity(days[0], days[days.length - 1]).catch(() => ({} as Record<string, number>)),
     day ? dischargeDocsForDay(day).catch(() => []) : Promise.resolve([]),
     sql(
       `SELECT to_char((coalesce(discharged_at, audited_at) AT TIME ZONE 'Asia/Kolkata')::date,'YYYY-MM-DD') AS d, count(*)::int AS n
-       FROM ipd_discharge_audits WHERE to_char((coalesce(discharged_at, audited_at) AT TIME ZONE 'Asia/Kolkata')::date,'YYYY-MM') = $1 GROUP BY 1`,
-      [month],
+       FROM ipd_discharge_audits WHERE to_char((coalesce(discharged_at, audited_at) AT TIME ZONE 'Asia/Kolkata')::date,'YYYY-MM') = $1${specClause} GROUP BY 1`,
+      [month, ...specParams],
     ) as unknown as Promise<Array<{ d: string; n: number }>>,
+    specialityOptions().catch(() => []),
   ]);
   const auditedByDay = new Map(auditedDays.map((r) => [r.d, r.n]));
 
@@ -65,6 +76,14 @@ export default async function IpdAuditCalendar({ searchParams }: { searchParams:
       <p className="mt-1 max-w-2xl text-[13.5px] text-slate-500">Summaries by discharge date (filed date where unlinked). Pick a day to list its summaries.</p>
 
       <IpdTabs active="calendar" />
+
+      <IpdFilterBar basePath="/admin/ipd-audit/calendar" sp={{ month, day: day ?? undefined, speciality: sp.speciality }} specialities={specialities} />
+      {specFiltered && (
+        <p className="mt-2 text-[11.5px] text-slate-400">
+          Speciality narrows the <b>audited</b> counts only. The density heat is every discharge summary FILED in db13,
+          which carries no speciality — that lives on the audit, so an unaudited summary has none to filter on.
+        </p>
+      )}
 
       <div className="mt-4 flex flex-col gap-5 lg:flex-row">
         {/* month heatmap */}

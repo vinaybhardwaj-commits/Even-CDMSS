@@ -10,6 +10,7 @@ import { isAdminUnlocked } from '@/lib/admin-cookie';
 
 import type { AuditReport, AuditFinding, ExtractedCase } from '@/lib/doc-audit-core';
 import { fetchIpdDoc, fetchIpdAdmissionHeader } from '@/lib/ipd-audit/db13';
+import { reviewsForAudits, applyScoringPolicy } from '@/lib/ipd-audit/store';
 import { fetchBillingEnvelope, reconcile, documentedFrom, peerBandForSpeciality } from '@/lib/ipd-audit/billing';
 import { BandChip } from '../ui';
 import ReportWithTriage from './report-with-triage';
@@ -54,6 +55,16 @@ export default async function IpdAuditReport({ params }: { params: Promise<{ id:
     ) as unknown as Promise<Array<{ finding_ref: string; verdict: string }>>,
   ]);
   const triaged = Object.fromEntries(feedback.map((f) => [f.finding_ref, f.verdict]));
+
+  // Phase B — this audit's existing review (§6.4) and its weighted documentation number + weights
+  // version (§6.5, §8.3). Both fail soft: no review ⇒ an empty panel; no policy ⇒ the stored,
+  // unweighted number and no version chip, i.e. exactly today's render.
+  const [reviewMap, weighted] = await Promise.all([
+    reviewsForAudits([id]),
+    applyScoringPolicy([r as Record<string, unknown>]),
+  ]);
+  const review = reviewMap[id] ?? null;
+  const w = weighted[0];
 
   const report = (typeof r.report === 'string' ? JSON.parse(r.report) : r.report) as AuditReport | null;
   const findings = (report?.findings ?? (typeof r.findings === 'string' ? JSON.parse(String(r.findings)) : r.findings) ?? []) as AuditFinding[];
@@ -173,7 +184,15 @@ export default async function IpdAuditReport({ params }: { params: Promise<{ id:
             <div className="mt-2 text-right text-[10.5px] text-slate-400">Care-Value Index below is a single-run estimate — ±1 band noise (S4-measured)</div>
             <div className="mt-1">
               {report ? (
-                <ReportWithTriage report={report} auditId={id} triaged={triaged} analyzeTraceId={r.trace_id ? String(r.trace_id) : undefined} />
+                <ReportWithTriage
+                  report={report}
+                  auditId={id}
+                  triaged={triaged}
+                  analyzeTraceId={r.trace_id ? String(r.trace_id) : undefined}
+                  weightsVersion={w?.weights_version ?? null}
+                  weightedCompletenessPct={w?.completeness_pct ?? null}
+                  review={review}
+                />
               ) : (
                 <div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-500">
                   This row predates the full-report column (0014) — re-run “Audit now” on the document to render the complete report.

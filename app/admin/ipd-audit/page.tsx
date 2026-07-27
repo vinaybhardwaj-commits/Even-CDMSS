@@ -7,9 +7,13 @@ import { sql } from '@/lib/db';
 import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
 import { bandColor, istDateRange, fmtIstDateLong, type Period } from '@/lib/opd-audit-ui';
 import { bandFor, DOMAIN_LABEL, DEFAULT_WEIGHTS, VALUE_DOMAINS } from '@/lib/value-score-core';
-import { IPD_ENGINE_VERSION } from '@/lib/ipd-audit/store';
+import {
+  IPD_ENGINE_VERSION, listIpdAudits, specialityOptions, reviewsForAudits,
+  type ReviewedFilter, type RangePreset,
+} from '@/lib/ipd-audit/store';
+import { fetchDoctorsForAudits, groupByDoctor } from '@/lib/ipd-audit/doctor-lookup';
 import { dischargeDocDensity, namesForIpUids } from '@/lib/ipd-audit/db13';
-import { Locked, IpdTabs, PipelineStrip, BandChip, addDays, todayIst } from './ui';
+import { Locked, IpdTabs, PipelineStrip, BandChip, ReviewedChip, IpdFilterBar, DoctorUnavailableNotice, addDays, todayIst } from './ui';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,13 +22,23 @@ const DOMAIN_COL: Record<string, string> = {
   cost: 'score_cost', documentation: 'score_documentation', patient_centred: 'score_patient_centred',
 };
 
-export default async function IpdAuditOverview({ searchParams }: { searchParams: Promise<{ day?: string; period?: string; locked?: string }> }) {
+export default async function IpdAuditOverview({ searchParams }: {
+  searchParams: Promise<{ day?: string; period?: string; locked?: string; speciality?: string; range?: string; from?: string; to?: string; reviewed?: string; group?: string }>;
+}) {
   const sp = await searchParams;
   if (!(await isAdminUnlocked())) return <Locked configured={adminTokenConfigured()} bad={sp.locked === '1'} />;
 
   const day = /^\d{4}-\d{2}-\d{2}$/.test(sp.day ?? '') ? sp.day! : todayIst();
   const period: Period = sp.period === 'week' || sp.period === 'month' ? sp.period : 'day';
   const { from, to } = istDateRange(day, period);
+
+  // ── Phase B filter state (the hero cards above keep their own day/period window; these govern
+  //    the worklist below, which is the surface Dr. Binita actually reviews from) ──
+  const filterSp: Record<string, string | undefined> = {
+    speciality: sp.speciality, range: sp.range, reviewed: sp.reviewed, group: sp.group,
+    from: sp.from, to: sp.to, day: sp.day, period: sp.period,
+  };
+  const groupByDoctorOn = sp.group === 'doctor';
 
   const domainSelect = VALUE_DOMAINS.map((d) => `round(avg(${DOMAIN_COL[d]}))::int AS ${DOMAIN_COL[d]}`).join(', ');
   const [statsRows, bandRows, recentRows, filed] = await Promise.all([
@@ -50,8 +64,36 @@ export default async function IpdAuditOverview({ searchParams }: { searchParams:
     dischargeDocDensity(from, to).catch(() => ({} as Record<string, number>)),
   ]);
 
-  // read-time PHI join for the recent-audits rows (ONE batched query; never persisted)
-  const names = await namesForIpUids(recentRows.map((r) => String(r.ip_uid ?? '')).filter(Boolean)).catch(() => ({} as Record<string, { patientName: string | null; uhid: string | null }>));
+  // ── Phase B — the filtered worklist, its doctor attributions and its review markers ──
+  // Each of these fails soft on its own: an unreadable list is [], an unreachable db13 is
+  // Unattributed + one notice, an unrun migration 0028 is no chips. None can take the page down.
+  const [listRows, specialities] = await Promise.all([
+    listIpdAudits({
+      speciality: sp.speciality, reviewed: sp.reviewed as ReviewedFilter | undefined,
+      range: (sp.range as RangePreset | undefined) ?? 'last_3_months',
+      from: sp.from, to: sp.to, limit: 200,
+    }),
+    specialityOptions(),
+  ]);
+  const listIds = listRows.map((r) => String(r.id));
+  const [reviews, doctors] = await Promise.all([
+    reviewsForAudits(listIds),
+    // ONE batched db13 call for the whole page — never one per row (§6.3).
+    fetchDoctorsForAudits(listRows.map((r) => ({ ipUid: r.ip_uid as string | null, speciality: r.speciality as string | null }))),
+  ]);
+  const reviewedCount = listIds.filter((id) => reviews[id]).length;
+  const byId = new Map(listRows.map((r) => [String(r.id), r as Record<string, unknown>]));
+  const doctorGroups = groupByDoctorOn
+    ? groupByDoctor(
+        listRows.map((r) => ({ id: String(r.id), ipUid: r.ip_uid as string | null, completeness: r.completeness_pct as number | null, band: r.band as string | null })),
+        doctors.byIpUid,
+      )
+    : [];
+
+  // read-time PHI join for every row we render (ONE batched query; never persisted)
+  const names = await namesForIpUids(
+    [...recentRows.map((r) => String(r.ip_uid ?? '')), ...listRows.map((r) => String(r.ip_uid ?? ''))].filter(Boolean),
+  ).catch(() => ({} as Record<string, { patientName: string | null; uhid: string | null }>));
 
   const st = statsRows[0] ?? {};
   const total = Number(st.total ?? 0);
@@ -141,38 +183,95 @@ export default async function IpdAuditOverview({ searchParams }: { searchParams:
 
       <PipelineStrip />
 
-      {/* recent audits */}
-      <div className="mt-5 rounded-xl border border-slate-200 bg-white">
-        <div className="border-b border-slate-100 px-4 py-3 text-[13px] font-semibold text-slate-800">Recent audits</div>
-        {recentRows.length === 0 ? (
-          <div className="px-4 py-6 text-center text-sm text-slate-500">Nothing audited yet.</div>
+      {/* ── Phase B — the review worklist: filters, optional doctor grouping, reviewed marker ── */}
+      <IpdFilterBar basePath="/admin/ipd-audit" sp={filterSp} specialities={specialities} />
+      {doctors.unavailable && <DoctorUnavailableNotice />}
+
+      <div className="mt-3 rounded-xl border border-slate-200 bg-white">
+        <div className="flex items-baseline justify-between border-b border-slate-100 px-4 py-3">
+          <span className="text-[13px] font-semibold text-slate-800">
+            {groupByDoctorOn ? 'By doctor' : 'Audits'}
+          </span>
+          <span className="text-[11.5px] text-slate-400">
+            {listRows.length} in range{reviewedCount > 0 ? ` · ${reviewedCount} reviewed` : ''}
+          </span>
+        </div>
+
+        {listRows.length === 0 ? (
+          <div className="px-4 py-6 text-center text-sm text-slate-500">
+            No audits match these filters. <Link href="/admin/ipd-audit" className="text-brand hover:underline">Clear them</Link>.
+          </div>
+        ) : groupByDoctorOn ? (
+          <div>
+            {doctorGroups.map((g) => (
+              <details key={g.name} className="border-t border-slate-100 first:border-t-0">
+                <summary className="flex cursor-pointer flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5 hover:bg-slate-50">
+                  <span className="text-[13px] font-semibold text-slate-900">{g.name}</span>
+                  {g.specialityUnconfirmed && (
+                    <span title="Resolved by recency — the audit carried no speciality to match on." className="text-[10.5px] text-slate-400">speciality unconfirmed</span>
+                  )}
+                  <span className="text-[12px] text-slate-500">{g.n} discharge{g.n === 1 ? '' : 's'}</span>
+                  <span className="text-[12px] text-slate-500">mean completeness {g.meanCompleteness == null ? '—' : `${g.meanCompleteness}%`}</span>
+                  <span className="text-[11.5px] text-slate-400">
+                    {['A', 'B', 'C', 'D', 'E'].filter((b) => g.bands[b]).map((b) => `${b}×${g.bands[b]}`).join(' · ') || '—'}
+                  </span>
+                </summary>
+                <table className="w-full text-left text-[12.5px]">
+                  <tbody>
+                    {g.auditIds.map((id) => {
+                      const r = byId.get(id);
+                      if (!r) return null;
+                      return <AuditRow key={id} r={r} names={names} reviews={reviews} indent />;
+                    })}
+                  </tbody>
+                </table>
+              </details>
+            ))}
+          </div>
         ) : (
           <table className="w-full text-left text-[12.5px]">
             <thead><tr className="text-[11px] uppercase tracking-wide text-slate-400">
-              <th className="px-4 py-2">Patient</th><th className="px-2 py-2">Speciality</th><th className="px-2 py-2">CVI</th>
-              <th className="px-2 py-2">Findings</th><th className="px-2 py-2">Compl.</th><th className="px-2 py-2">Audited</th><th className="px-2 py-2">Engine</th>
+              <th className="px-4 py-2">Patient</th><th className="px-2 py-2">Doctor</th><th className="px-2 py-2">Speciality</th><th className="px-2 py-2">CVI</th>
+              <th className="px-2 py-2">Findings</th><th className="px-2 py-2">Compl.</th><th className="px-2 py-2">Discharged</th><th className="px-2 py-2" />
             </tr></thead>
             <tbody>
-              {recentRows.map((r) => (
-                <tr key={String(r.id)} className="border-t border-slate-100 hover:bg-slate-50">
-                  <td className="px-4 py-2">
-                    <Link href={`/admin/ipd-audit/${r.id}`} className="font-semibold text-brand hover:underline">
-                      {names[String(r.ip_uid ?? '')]?.patientName ?? String(r.ip_uid ?? r.id).slice(0, 18)}
-                    </Link>
-                    {names[String(r.ip_uid ?? '')]?.uhid && <span className="ml-1.5 text-[11px] text-slate-400">{names[String(r.ip_uid ?? '')]!.uhid}</span>}
-                  </td>
-                  <td className="px-2 py-2 text-slate-600">{String(r.speciality ?? '—')}</td>
-                  <td className="px-2 py-2"><BandChip band={String(r.band)} cvi={Number(r.care_value_index)} /></td>
-                  <td className="px-2 py-2 text-slate-600">{Number(r.n_low_value)} LV · {Number(r.n_context_dependent)} CD</td>
-                  <td className="px-2 py-2 text-slate-600">{r.completeness_pct == null ? '—' : `${Number(r.completeness_pct)}%`}</td>
-                  <td className="px-2 py-2 text-slate-500">{String(r.audited)}</td>
-                  <td className="px-2 py-2 text-slate-400">{String(r.engine_version).replace('ipd-discharge-audit/', '')}</td>
-                </tr>
+              {listRows.map((r) => (
+                <AuditRow key={String(r.id)} r={r} names={names} reviews={reviews} doctor={doctors.byIpUid[String(r.ip_uid ?? '')]?.name} />
               ))}
             </tbody>
           </table>
         )}
       </div>
     </div>
+  );
+}
+
+/** One audit row, shared by the flat list and the expanded doctor groups. */
+function AuditRow({ r, names, reviews, doctor, indent }: {
+  r: Record<string, unknown>;
+  names: Record<string, { patientName: string | null; uhid: string | null }>;
+  reviews: Record<string, { note: string; reviewedByName: string | null; at: string | null }>;
+  doctor?: string;
+  indent?: boolean;
+}) {
+  const ipUid = String(r.ip_uid ?? '');
+  const id = String(r.id);
+  const review = reviews[id];
+  return (
+    <tr className="border-t border-slate-100 hover:bg-slate-50">
+      <td className={`py-2 ${indent ? 'pl-8 pr-2' : 'px-4'}`}>
+        <Link href={`/admin/ipd-audit/${id}`} className="font-semibold text-brand hover:underline">
+          {names[ipUid]?.patientName ?? String(r.ip_uid ?? id).slice(0, 18)}
+        </Link>
+        {names[ipUid]?.uhid && <span className="ml-1.5 text-[11px] text-slate-400">{names[ipUid]!.uhid}</span>}
+      </td>
+      {doctor !== undefined && <td className="px-2 py-2 text-slate-600">{doctor}</td>}
+      <td className="px-2 py-2 text-slate-600">{String(r.speciality ?? '—')}</td>
+      <td className="px-2 py-2"><BandChip band={String(r.band)} cvi={Number(r.care_value_index)} /></td>
+      <td className="px-2 py-2 text-slate-600">{Number(r.n_low_value)} LV · {Number(r.n_context_dependent)} CD</td>
+      <td className="px-2 py-2 text-slate-600">{r.completeness_pct == null ? '—' : `${Number(r.completeness_pct)}%`}</td>
+      <td className="px-2 py-2 text-slate-500">{String(r.discharged_day ?? r.audited ?? '—')}</td>
+      <td className="px-2 py-2">{review ? <ReviewedChip by={review.reviewedByName} at={review.at} /> : null}</td>
+    </tr>
   );
 }
