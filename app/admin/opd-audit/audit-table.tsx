@@ -12,6 +12,8 @@ export type AuditRow = {
   context?: string | null;   // Stage 3 (D5c) — established | thin | none | null (no longitudinal block)
   encounters?: number | null;   // 0.81.8 Part C — prior encounters (from the longitudinal block)
   longFindings?: number | null; // 0.81.8 Part C — longitudinal findings on this note
+  /** Phase C §7.1 — joined from db13 at read time. 'unknown' is a real answer, not a gap. */
+  investigations?: 'ordered' | 'none' | 'unknown';
 };
 
 // 0.81.8 Part C — the frequent-flier sort + its 3-state cycle live in the pure lib/opd-audit-context-sort
@@ -53,13 +55,18 @@ async function downloadBulk(ids: string[], setBusy: (b: boolean) => void, setErr
 // Top-issues panel (categorised, clickable) merged with the searchable all-notes table.
 // Clicking an issue filters the table; search + band + doctor + sort stack on top. All client-side
 // over the rows the server already fetched (≤600), so it's instant.
-export default function NotesExplorer({ rows, initialDoctorUid, triagedIds }: { rows: AuditRow[]; initialDoctorUid?: string; triagedIds?: string[] }) {
+export default function NotesExplorer({ rows, initialDoctorUid, triagedIds, investigationsUnavailable }: {
+  rows: AuditRow[]; initialDoctorUid?: string; triagedIds?: string[];
+  /** §7.1 fail-soft: db13 unreachable ⇒ the control disables itself and the list renders unfiltered. */
+  investigationsUnavailable?: boolean;
+}) {
   const triaged = useMemo(() => new Set(triagedIds || []), [triagedIds]);
   const [q, setQ] = useState('');
   const [band, setBand] = useState('');
   const [cat, setCat] = useState('');
   const [docUid, setDocUid] = useState(initialDoctorUid || '');
   const [sort, setSort] = useState<SortMode>('index');   // default unchanged (worst first)
+  const [inv, setInv] = useState<'all' | 'ordered' | 'none'>('all');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
@@ -80,12 +87,15 @@ export default function NotesExplorer({ rows, initialDoctorUid, triagedIds }: { 
     if (docUid) r = r.filter((x) => x.doctorUid === docUid);
     if (cat) r = r.filter((x) => x.cats.includes(cat));
     if (band) r = r.filter((x) => x.band === band);
+    // §7.1/§8.11 — 'unknown' (num_investigations NULL, ~half the corpus) matches NEITHER option.
+    // Never coerced to zero: that would assert half the corpus ordered nothing.
+    if (inv !== 'all') r = r.filter((x) => (x.investigations ?? 'unknown') === inv);
     if (needle) r = r.filter((x) => `${x.doctor} ${x.consult} ${x.issue} ${x.uid} ${x.band}`.toLowerCase().includes(needle));
     return [...r].sort((a, b) => (
       sort === 'index' ? a.index - b.index
       : sort === 'time' ? b.time.localeCompare(a.time)
       : frequentFlierCmp(a, b)));
-  }, [rows, q, band, cat, docUid, sort]);
+  }, [rows, q, band, cat, docUid, sort, inv]);
 
   type Issue = (typeof issues)[number];
   const IssueRow = ({ i }: { i: Issue }) => {
@@ -133,6 +143,20 @@ export default function NotesExplorer({ rows, initialDoctorUid, triagedIds }: { 
             ))}
           </span>
           <button onClick={() => setSort(SORT_NEXT[sort])} className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-500 hover:text-brand" title="Cycle: worst first → newest → frequent flier (longitudinal context)">sort: {SORT_LABEL[sort]}</button>
+          {/* Investigations filter (§7.1). Disabled — not hidden — when db13 is unreachable, so the
+              absence is visible rather than silently changing what the list means. */}
+          <select
+            value={inv}
+            onChange={(e) => setInv(e.target.value as 'all' | 'ordered' | 'none')}
+            disabled={investigationsUnavailable}
+            title={investigationsUnavailable ? 'Temporarily unavailable' : 'Notes where investigations were ordered. Notes with no recorded value stay out of both filtered views.'}
+            className={`rounded-lg border px-2 py-1 text-[11px] ${investigationsUnavailable ? 'border-slate-200 bg-slate-50 text-slate-300' : 'border-slate-200 text-slate-500'}`}
+          >
+            <option value="all">Investigations: all</option>
+            <option value="ordered">Investigations ordered</option>
+            <option value="none">None ordered</option>
+          </select>
+          {investigationsUnavailable && <span className="text-[11px] text-amber-600">Temporarily unavailable</span>}
           {cat && <button onClick={() => setCat('')} className="rounded-lg bg-brand-faint px-2 py-1 text-[11px] font-medium text-brand">✕ {CAT_DEF[cat]?.label}</button>}
           {docUid && <button onClick={() => setDocUid('')} className="rounded-lg bg-brand-faint px-2 py-1 text-[11px] font-medium text-brand">Filtered to {docName} · clear ✕</button>}
           <button onClick={() => downloadBulk(filtered.map((r) => r.id), setBusy, setErr)} disabled={busy || filtered.length === 0}

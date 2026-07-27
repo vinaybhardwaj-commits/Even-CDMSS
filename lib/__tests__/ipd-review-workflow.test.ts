@@ -15,7 +15,7 @@ import {
 import { resolveRange, UNASSIGNED_SPECIALITY } from '../ipd-audit/store.ts';
 import {
   canonicalByDocument, specialityCounts, filterBySpeciality, compareEngineVersion, isMiniEngine,
-} from '../ipd-audit/canonical.ts';
+} from '../audit-canonical.ts';
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════
 // §6.3 / §8.10 — doctor disambiguation. THE IPNO-229 CASE IS THE ONE THAT MATTERS.
@@ -397,9 +397,9 @@ test('every read surface goes through the ONE rule — no surface writes its own
 });
 
 test('NOTHING IS WRITTEN OR DELETED — this is a read filter only', () => {
-  const canon = readFileSync('lib/ipd-audit/canonical.ts', 'utf8');
+  const canon = readFileSync('lib/audit-canonical.ts', 'utf8');
   for (const verb of ['UPDATE ', 'DELETE ', 'INSERT ', 'sql(', 'import ']) {
-    assert.ok(!canon.includes(verb), `canonical.ts must be pure — found "${verb}"`);
+    assert.ok(!canon.includes(verb), `audit-canonical.ts must be pure — found "${verb}"`);
   }
   const store = readFileSync('lib/ipd-audit/store.ts', 'utf8');
   // the only writer in the store is still the original upsert; B.1 added no write path

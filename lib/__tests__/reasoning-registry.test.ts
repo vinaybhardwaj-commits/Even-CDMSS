@@ -91,7 +91,7 @@ test('rubric inclusion: nabh/6e external-json + the five embedded-in-prompt rubr
   }
 });
 
-test('count invariant: counts match the committed artifact contents (30 prompts / 6 rubrics / 32 builders)', () => {
+test('count invariant: counts match the committed artifact contents (30 prompts / 7 rubrics / 32 builders)', () => {
   const gen = GENERATED as {
     counts: { prompts: number; rubrics: number; user_message_builders: number; features: number };
     prompts: Array<{ feature: string }>; rubrics: unknown[]; user_message_builders: unknown[];
@@ -105,8 +105,11 @@ test('count invariant: counts match the committed artifact contents (30 prompts 
   // Inquiry K1 adds inquiry-core/INQUIRY_SELECT_SYSTEM + buildInquirySelectUser (27→28, 29→30).
   // Brainstem PR 0 adds verify-core/VERIFY_SYSTEM + buildVerifyUser (28→29, 30→31, +1 feature).
   // Concept Coder Phase 1 adds even-concept/CONCEPT_EXTRACT_SYSTEM + buildConceptExtractUser (29→30, 31→32, +1 feature).
+  // Scoring-policy Phase C registers data/lab-packages.json as a SECOND external-json reference
+  // (6→7 rubrics). No prompt, builder or feature changes: it is factual context injected into an
+  // existing prompt (lvc-core/buildJudgeUser), not a new reasoning surface.
   assert.equal(gen.counts.prompts, 30);
-  assert.equal(gen.counts.rubrics, 6);
+  assert.equal(gen.counts.rubrics, 7);
   assert.equal(gen.counts.user_message_builders, 32);
   assert.equal(gen.counts.features, 19);
 });

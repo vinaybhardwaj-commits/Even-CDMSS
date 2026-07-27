@@ -6,7 +6,7 @@
   "coverage_note": "Standing prompt consts + rubrics extracted from lib/. A few prompts are assembled inline inside route handlers (ask, topics, calculators/tooltip) rather than as named consts and are not captured here — this is exactly the gap the prompt registry closes.",
   "counts": {
     "prompts": 30,
-    "rubrics": 6,
+    "rubrics": 7,
     "user_message_builders": 32,
     "features": 19
   },
@@ -453,6 +453,19 @@
           "discharge_summary": 21,
           "opd_rx": 14
         }
+      }
+    },
+    {
+      "id": "lab-packages/1",
+      "kind": "external-json",
+      "source": "data/lab-packages.json",
+      "feature": "Right Care · Order check (low-value care judge context)",
+      "version": "empty — generator not yet run",
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "keys": [],
+      "meta": {
+        "generated_from": "db13:individuals-prescriptions__further_investigation",
+        "authored": false
       }
     },
     {

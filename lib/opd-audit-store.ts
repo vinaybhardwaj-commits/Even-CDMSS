@@ -13,6 +13,7 @@ import type { OpdDomain } from './opd-note-score-core';
 import { logEvent } from './trace';
 import { auditShadowReport } from './clinical-state/audit-shadow-core';
 import { runLongitudinalPass } from './opd-longitudinal';   // Stage 3 — dark unless OPD_LONGITUDINAL_ENABLED=1
+import { canonicalByUid } from './audit-canonical';
 
 function domainScore(audit: OpdNoteAudit, key: OpdDomain): number | null {
   const d = audit.scorecard.domains.find((x) => x.domain === key);
@@ -287,6 +288,72 @@ export async function earliestAuditedDay(): Promise<string | null> {
     `SELECT to_char(min((note_date AT TIME ZONE 'Asia/Kolkata')::date),'YYYY-MM-DD') AS d FROM opd_note_audits`,
   )) as Array<{ d: string | null }>;
   return rows[0]?.d ?? null;
+}
+
+// ── ONE ROW PER NOTE (Phase C FIX 0) ─────────────────────────────────────────────────────────────
+//
+// The OPD surface filters on an engine FAMILY (`engine_version = ANY(OPD_ENGINE_VERSIONS_CURRENT)`),
+// so a note audited at 0.81.13 AND 0.81.14 is counted twice by every aggregate on the page.
+// MEASURED 27 Jul: a 90-day window holds 25,128 rows over 11,835 notes — 52.9% duplicates — and it
+// bites hardest on the days an engine bump spans (2026-07-25: 532 rows, 429 notes, plus a -mini row).
+//
+// THE RULE IS NOT RE-IMPLEMENTED HERE. `canonicalByUid` is the same function the IPD surface uses
+// (lib/audit-canonical.ts), keyed on `uid` instead of `document_id`. This helper returns the winning
+// AUDIT IDS for a window; the page's existing aggregates then add `AND id = ANY($n::uuid[])`. That
+// keeps one implementation of the rule and leaves the (correct, tuned) SQL alone.
+//
+// READ FILTER ONLY — nothing is written, nothing is deleted.
+
+const OPD_CANONICAL_SCAN_CAP = 20000;
+
+/**
+ * The canonical audit ids for an IST day range — one per note uid, highest engine version,
+ * `-mini` excluded before ranking, ties by latest audited_at.
+ *
+ * Never throws: on any failure it returns `null`, which callers MUST treat as "do not filter"
+ * rather than "no rows". Degrading to today's inflated-but-present numbers beats an empty page.
+ *
+ * INFERRED SQL — columns from migrations/0007.
+ *   SELECT id, uid, engine_version, audited_at FROM opd_note_audits
+ *    WHERE app_source = $1 AND excluded_reason IS NULL
+ *      AND (note_date AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $2 AND $3
+ */
+export async function canonicalOpdAuditIds(appSource: string, from: string, to: string): Promise<string[] | null> {
+  try {
+    const rows = (await sql(
+      `SELECT id, uid, engine_version,
+              to_char(audited_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS audited_at
+         FROM opd_note_audits
+        WHERE app_source = $1 AND excluded_reason IS NULL
+          AND (note_date AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $2 AND $3
+        LIMIT ${OPD_CANONICAL_SCAN_CAP}`,
+      [appSource, from, to],
+    )) as Array<Record<string, unknown>>;
+    return canonicalByUid(rows).map((r) => String(r.id)).filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The acceptance number for FIX 0: how many DISTINCT NOTES a day holds, versus how many audit rows.
+ * Exposed so the count can be checked directly rather than inferred from a rendered page.
+ */
+export async function opdCanonicalDayCount(appSource: string, day: string): Promise<{ rows: number; notes: number }> {
+  try {
+    const raw = (await sql(
+      `SELECT id, uid, engine_version,
+              to_char(audited_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS audited_at
+         FROM opd_note_audits
+        WHERE app_source = $1 AND excluded_reason IS NULL
+          AND (note_date AT TIME ZONE 'Asia/Kolkata')::date = $2
+        LIMIT ${OPD_CANONICAL_SCAN_CAP}`,
+      [appSource, day],
+    )) as Array<Record<string, unknown>>;
+    return { rows: raw.length, notes: canonicalByUid(raw).length };
+  } catch {
+    return { rows: 0, notes: 0 };
+  }
 }
 
 // ── recompute-on-read (Scoring policy Phase A, decision §1.1 / §1.5) ─────────────────────────────

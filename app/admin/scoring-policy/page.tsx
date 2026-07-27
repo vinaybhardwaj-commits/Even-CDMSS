@@ -12,6 +12,7 @@ import Link from 'next/link';
 import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
 import { getActivePolicies } from '@/lib/scoring-policy/store';
 import { PHASE_A_NOTE_TYPES, weightedKeysFor } from '@/lib/scoring-policy/weights';
+import { activeLabPackages } from '@/lib/scoring-policy/lab-packages';
 import { Locked } from '../ipd-audit/ui';
 
 export const dynamic = 'force-dynamic';
@@ -25,7 +26,10 @@ export default async function ScoringPolicyIndex({ searchParams }: { searchParam
   const sp = await searchParams;
   if (!(await isAdminUnlocked())) return <Locked configured={adminTokenConfigured()} bad={sp.locked === '1'} />;
 
-  const policies = await getActivePolicies(PHASE_A_NOTE_TYPES);
+  const [policies, labPackages] = await Promise.all([
+    getActivePolicies(PHASE_A_NOTE_TYPES),
+    activeLabPackages(),
+  ]);
 
   return (
     <div>
@@ -66,6 +70,28 @@ export default async function ScoringPolicyIndex({ searchParams }: { searchParam
                 </div>
               );
             })}
+          </dl>
+        </Link>
+
+        {/* ── Lab packages (Phase C §7.3) — active, and honest about the empty state ── */}
+        <Link
+          href="/admin/scoring-policy/lab-packages"
+          className="group rounded-xl border border-slate-200 bg-white p-4 transition hover:border-brand hover:shadow-sm"
+        >
+          <div className="text-[13.5px] font-semibold text-slate-900 group-hover:text-brand">Lab packages</div>
+          <p className="mt-1 text-[12.5px] leading-relaxed text-slate-500">
+            What each package contains, so a panel and one of its own tests are not read as two duplicate orders.
+            Maintained by downloading a CSV, editing it, and uploading it back.
+          </p>
+          <dl className="mt-3 space-y-1 border-t border-slate-100 pt-2.5">
+            <div className="flex items-baseline justify-between gap-2 text-[11.5px]">
+              <dt className="text-slate-500">{labPackages.packages.length} packages</dt>
+              <dd className="tabular-nums text-slate-700">
+                {labPackages.origin === 'db'
+                  ? <>v{labPackages.version}</>
+                  : <span className="text-amber-600">{labPackages.packages.length ? 'from file' : 'not generated yet'}</span>}
+              </dd>
+            </div>
           </dl>
         </Link>
 

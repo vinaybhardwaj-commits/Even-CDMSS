@@ -11,7 +11,7 @@
  */
 
 import { sql } from '../db';
-import { canonicalByDocument, specialityCounts, filterBySpeciality } from './canonical';
+import { canonicalByDocument, specialityCounts, filterBySpeciality } from '../audit-canonical';
 
 // 0.2 (IPD citation fix, PRD CDMSS-IPD-CITATION-FIX-18-JUL-2026): per-finding evidence
 // enrichment + re-cite against the enriched pool. Distinguishes fixed rows from the 0.1

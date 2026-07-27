@@ -285,6 +285,10 @@ export function labelToOpdKey(label: string): string | null {
 }
 
 export function fieldsFor(noteType: string): FieldDef[] {
+  // `lab_packages` (Phase C) reuses this versioning table but has NO field catalogue — its stored
+  // value is a package ARRAY, not a {fieldKey: tier} object. Returning [] rather than silently
+  // handing back the discharge-summary catalogue keeps the two shapes from ever being conflated.
+  if (noteType === 'lab_packages') return [];
   return noteType === 'opd_rx' ? OPD_RX_FIELDS : DISCHARGE_SUMMARY_FIELDS;
 }
 

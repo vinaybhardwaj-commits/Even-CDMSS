@@ -15,6 +15,8 @@ import {
   type Period,
 } from '@/lib/opd-audit-ui';
 import { fetchRightCareDay, fetchDeptFindingNotes } from '@/lib/opd-audit-doctor';
+import { canonicalOpdAuditIds } from '@/lib/opd-audit-store';
+import { fetchInvestigationsForUids, stateFor } from '@/lib/opd-audit/investigations-lookup';
 import NotesExplorer, { type AuditRow } from './audit-table';
 import DomainPillars, { type DomainDatum } from './domain-pillars';
 import { RightCareTile } from './right-care-tile';
@@ -101,6 +103,13 @@ const PILLARS = [
 ] as const;
 type DomKey = (typeof PILLARS)[number]['key'];
 
+/** IST-day arithmetic for the trend's own 14-day canonical window. */
+function addDaysIso(day: string, delta: number): string {
+  const d = new Date(`${day}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + delta);
+  return d.toISOString().slice(0, 10);
+}
+
 export default async function OpdAuditAdmin({ searchParams }: { searchParams: Promise<{ day?: string; period?: string; locked?: string; doctor?: string; finding?: string; signal?: string; dept?: string }> }) {
   const sp = await searchParams;
   if (!(await isAdminUnlocked())) return <Locked configured={adminTokenConfigured()} bad={sp.locked === '1'} />;
@@ -113,7 +122,18 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
   const day = (sp.day && /^\d{4}-\d{2}-\d{2}$/.test(sp.day)) ? sp.day : latestDay;
   const { from, to } = istDateRange(day, period);
   const winParams = [APP, from, to];
-  const WIN = `app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND excluded_reason IS NULL AND (note_date AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $2 AND $3`;
+  // ── FIX 0 (Phase C): ONE ROW PER NOTE. The engine-FAMILY filter below counts a re-audited note
+  //    once per version — 52.9% duplicates over 90 days, and 532-vs-429 on 2026-07-25 alone. The
+  //    canonical id set is computed by the SAME rule the IPD surface uses (lib/audit-canonical.ts,
+  //    keyed on `uid`); every aggregate then filters on it. Null ⇒ the probe failed ⇒ no extra
+  //    predicate, i.e. today's behaviour, rather than an empty page.
+  const [canonIds, trendIds] = await Promise.all([
+    canonicalOpdAuditIds(APP, from, to),
+    canonicalOpdAuditIds(APP, addDaysIso(to, -14), to),
+  ]);
+  const CANON = canonIds ? ` AND id = ANY($${winParams.length + 1}::uuid[])` : '';
+  const canonParams = canonIds ? [...winParams, canonIds] : winParams;
+  const WIN = `app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND excluded_reason IS NULL AND (note_date AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $2 AND $3${CANON}`;
 
   const [kpiR, bandsR, trendR, docsR, reviewR, allR] = await Promise.all([
     rowsOf<Record<string, unknown>>(
@@ -127,15 +147,15 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
               round(avg(score_appropriateness))::int d_appr, round(avg(score_prescribing_safety))::int d_presc,
               round(avg(score_patient_centred))::int d_pc,
               count(*) FILTER (WHERE pdqi9 IS NOT NULL AND jsonb_array_length(pdqi9) > 0)::int pdqi_n
-       FROM opd_note_audits WHERE ${WIN}`, winParams),
-    rowsOf<{ band: string; c: number }>(`SELECT band, count(*)::int c FROM opd_note_audits WHERE ${WIN} GROUP BY band`, winParams),
+       FROM opd_note_audits WHERE ${WIN}`, canonParams),
+    rowsOf<{ band: string; c: number }>(`SELECT band, count(*)::int c FROM opd_note_audits WHERE ${WIN} GROUP BY band`, canonParams),
     rowsOf<TrendRow>(
       `SELECT to_char((note_date AT TIME ZONE 'Asia/Kolkata')::date,'YYYY-MM-DD') d, round(avg(note_quality_index))::int idx, count(*)::int c,
               round(avg(score_documentation))::int d_doc, round(avg(score_note_quality))::int d_nq,
               round(avg(score_appropriateness))::int d_appr, round(avg(score_prescribing_safety))::int d_presc,
               round(avg(score_patient_centred))::int d_pc
-       FROM opd_note_audits WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND excluded_reason IS NULL AND (note_date AT TIME ZONE 'Asia/Kolkata')::date > $2::date - 14 AND (note_date AT TIME ZONE 'Asia/Kolkata')::date <= $2::date
-       GROUP BY 1 ORDER BY 1`, [APP, to]),
+       FROM opd_note_audits WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND excluded_reason IS NULL AND (note_date AT TIME ZONE 'Asia/Kolkata')::date > $2::date - 14 AND (note_date AT TIME ZONE 'Asia/Kolkata')::date <= $2::date${trendIds ? ' AND id = ANY($3::uuid[])' : ''}
+       GROUP BY 1 ORDER BY 1`, trendIds ? [APP, to, trendIds] : [APP, to]),
     rowsOf<DocRow>(
       `SELECT doctor_uid, count(*)::int nnotes, round(avg(note_quality_index))::int idx,
               round(100.0*avg((n_low_value>0)::int))::int low_value, round(avg(completeness_pct))::int completeness,
@@ -143,14 +163,14 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
               round(avg(score_appropriateness))::int d_appr, round(avg(score_prescribing_safety))::int d_presc,
               round(avg(score_patient_centred))::int d_pc
        FROM opd_note_audits WHERE ${WIN} AND doctor_uid IS NOT NULL
-       GROUP BY doctor_uid ORDER BY nnotes DESC, idx ASC LIMIT 60`, winParams),
+       GROUP BY doctor_uid ORDER BY nnotes DESC, idx ASC LIMIT 60`, canonParams),
     rowsOf<ReviewRow>(
       `SELECT id, note_date, doctor_uid, band, note_quality_index, findings, n_low_value, completeness_pct
-       FROM opd_note_audits WHERE ${WIN} ORDER BY note_quality_index ASC, n_low_value DESC LIMIT 10`, winParams),
+       FROM opd_note_audits WHERE ${WIN} ORDER BY note_quality_index ASC, n_low_value DESC LIMIT 10`, canonParams),
     rowsOf<AllRow>(
       `SELECT id, uid, note_date, doctor_uid, consult_type, prescription_type, band, note_quality_index, n_low_value, completeness_pct, findings, missing_fields,
               score_documentation, score_note_quality, score_appropriateness, score_prescribing_safety, score_patient_centred, pdqi9, longitudinal
-       FROM opd_note_audits WHERE ${WIN} ORDER BY note_date DESC LIMIT 600`, winParams),
+       FROM opd_note_audits WHERE ${WIN} ORDER BY note_date DESC LIMIT 600`, canonParams),
   ]);
 
   // Right Care day tile (§7 / decision 24) — the page's selected day drives BOTH the rate and the
@@ -194,6 +214,12 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
   // one parameterized round-trip over the ids fetched for display. Read-only page query, NOT the MCP
   // guard path; .catch → [] so a pre-migration DB (no scope column) degrades to no ticks.
   const auditIds = notesRows.map((r) => r.id);
+
+  // §7.1 — investigations-ordered, joined from db13 at read time (decision §1.11, so the filter
+  // covers the full history immediately). ONE batched call for the page, never one per row.
+  // Fail-soft: on any error the control disables itself and the list renders unfiltered.
+  const investigations = await fetchInvestigationsForUids(notesRows.map((r) => r.uid));
+  const notesRowsWithInv: AuditRow[] = notesRows.map((r) => ({ ...r, investigations: stateFor(investigations, r.uid) }));
   const triagedIds = auditIds.length
     ? (await rowsOf<{ audit_id: string }>(`SELECT DISTINCT audit_id FROM opd_audit_feedback WHERE scope = 'finding' AND app_source = $1 AND audit_id = ANY($2)`, [APP, auditIds])).map((x) => String(x.audit_id))
     : [];
@@ -391,7 +417,7 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
                 <Link href="/admin/opd-audit" className="text-sky-700 hover:underline">clear</Link>
               </div>
             )}
-            <NotesExplorer rows={notesRows} initialDoctorUid={drillActive ? undefined : initialDoctorUid} triagedIds={triagedIds} />
+            <NotesExplorer rows={notesRowsWithInv} initialDoctorUid={drillActive ? undefined : initialDoctorUid} triagedIds={triagedIds} investigationsUnavailable={investigations.unavailable} />
           </div>
 
           {/* trend + band distribution */}

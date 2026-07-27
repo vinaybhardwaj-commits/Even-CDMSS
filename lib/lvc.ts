@@ -18,6 +18,7 @@ import { retrieve } from './retrieve';
 import { geminiUtilityModel, geminiModelFor, TEXT_MODEL } from './llm';
 import { logEvent, finishTrace, governedChat, withTrace } from './trace';
 import * as core from './lvc-core';
+import { labPackageContext } from './scoring-policy/lab-packages';
 import type { Candidate, JudgedRec, LvcFlag, LvcRecommendation, Region, Surface } from './lvc-core';
 
 export interface MatchInput {
@@ -152,6 +153,11 @@ async function defaultJudge(
   traceId?: string,
   forceOllama = false,
 ): Promise<JudgedRec[]> {
+  // Phase C §7.2 — factual lab-package composition, so a panel and one of its own analytes are not
+  // read as two duplicate orders. FAIL-OPEN and byte-identical when absent: an empty/malformed set
+  // renders no prompt block at all (buildLabPackageBlock returns ''), so the judge sees exactly
+  // today's context. Never let a context read cost a judgement.
+  const labPackages = await labPackageContext().catch(() => []);
   // Opt-in surface → Pro reasoning (geminiModelFor honours GEMINI_ALL); unsolicited
   // autoflag → cheap Flash. Both soft-fall to local Ollama if Vertex is unavailable.
   // forceOllama (lab probe) pins the whole judge to the free mini.
@@ -164,7 +170,7 @@ async function defaultJudge(
       model: fallbackModel,
       messages: [
         { role: 'system', content: core.JUDGE_SYSTEM },
-        { role: 'user', content: core.buildJudgeUser(ctx, recs, ctx.clinicalStateText, ctx.orderedActions) },
+        { role: 'user', content: core.buildJudgeUser(ctx, recs, ctx.clinicalStateText, ctx.orderedActions, labPackages) },
       ],
       temperature: 0.1,
       max_tokens: 900,

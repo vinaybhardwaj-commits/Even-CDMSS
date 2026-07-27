@@ -190,6 +190,23 @@ export function buildRegistryJson() {
     keys: Object.keys(nabh).filter((k) => k !== '_meta').sort(),
     meta: nabh._meta ?? null,
   }];
+
+  // Lab-package composition (Phase C §7.2) — the SECOND external, hashable JSON reference file,
+  // registered exactly as nabh/6e is. It is factual context injected into the low-value-care judge
+  // (lvc-core/buildLabPackageBlock), not a rubric that decides anything, hence `kind` says so.
+  // GENERATED from db13 by scripts/generate-lab-packages.ts; an empty file is valid and inert.
+  const lpRaw = readFileSync(join(ROOT, 'data/lab-packages.json'), 'utf8');
+  const lp = JSON.parse(lpRaw);
+  rubrics.push({
+    id: 'lab-packages/1',
+    kind: 'external-json',
+    source: 'data/lab-packages.json',
+    feature: 'Right Care · Order check (low-value care judge context)',
+    version: Array.isArray(lp) && lp.length ? `${lp.length} packages` : 'empty — generator not yet run',
+    sha256: sha256(lpRaw),
+    keys: Array.isArray(lp) ? lp.map((p) => p?.package).filter(Boolean).sort() : [],
+    meta: { generated_from: 'db13:individuals-prescriptions__further_investigation', authored: false },
+  });
   for (const r of EMBEDDED_RUBRICS) {
     const [hostFile, hostConst] = r.embedded_in.split('/');
     const hostId = `${hostFile.replace(/\.ts$/, '')}/${hostConst}`;

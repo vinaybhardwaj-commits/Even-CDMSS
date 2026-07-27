@@ -185,6 +185,7 @@ export const UNREGISTERED: string[] = [
   'dose-limits',            // dose-limits reference table
   'formulary-match-core',   // formulary matcher (named by rule 5's scored-core globs)
   'mcp-server',             // MCP protocol surface
+  'opd-audit',              // OPD read-side db13 joins (investigations-ordered lookup, Phase C §7.1)
   'opd-note-audit',         // audit engine wrapper (mini engine)
   'opd-feedback-rollup-core', // pure feedback rollup core (surfaced as a subsystem by the LAB-MCP Phase 1 import edge)
   'opd-note-audit-core',    // the OPD audit engine (opd-note-audit/0.81.8)

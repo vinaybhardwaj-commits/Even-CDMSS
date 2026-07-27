@@ -26,7 +26,7 @@ import {
 } from './weights';
 import type { StoredItem as CompletenessStoredItem } from './completeness';
 import type { CohortRow as PreviewCohortRow } from './preview';
-import { canonicalByDocument } from '../ipd-audit/canonical';
+import { canonicalByDocument } from '../audit-canonical';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 
@@ -295,6 +295,12 @@ export async function publishVersion(input: {
     return { ok: false, error: `A written rationale of at least ${MIN_RATIONALE_CHARS} characters is required.` };
   }
   const keys = weightedKeysFor(noteType);
+  // ⚠️ SHAPE BRANCH (§12.3). `weights` is a {fieldKey: tier} OBJECT for the weightage note types and
+  // a package ARRAY for note_type='lab_packages'. The canonical-JSON hash is defined over the key
+  // space, which an array does not have — so hash the serialised array directly. Without this
+  // branch the array would be hashed against the 21 discharge-summary keys and every version would
+  // carry the same meaningless digest.
+  const isArrayShape = Array.isArray(vector);
 
   try {
     // §8.6 — concurrent editing. Advisory: it warns, it does not lock.
@@ -311,7 +317,9 @@ export async function publishVersion(input: {
     );
     const prev = Number(maxRows[0]?.v ?? 0);
     const next = prev + 1;
-    const sha = vectorSha256(vector, keys);
+    const sha = isArrayShape
+      ? createHash('sha256').update(JSON.stringify(vector)).digest('hex')
+      : vectorSha256(vector, keys);
 
     // 1 — append, inactive
     await run(

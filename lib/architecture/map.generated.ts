@@ -75,6 +75,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "pure-core"
   },
   {
+    "id": "audit-canonical",
+    "plane": "unregistered"
+  },
+  {
     "id": "audit-suppression-core",
     "plane": "unregistered"
   },
@@ -539,6 +543,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "opd-audit",
+    "plane": "unregistered"
+  },
+  {
     "id": "opd-audit-cats",
     "plane": "unregistered"
   },
@@ -932,6 +940,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/admin",
+    "to": "opd-audit",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
     "to": "opd-audit-cats",
     "kind": "value"
   },
@@ -953,6 +966,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/admin",
     "to": "opd-audit-doctor",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
+    "to": "opd-audit-store",
     "kind": "value"
   },
   {
@@ -1029,6 +1047,11 @@ export const MAP_EDGES: MapEdge[] = [
     "from": "app/admin",
     "to": "runs-export",
     "kind": "value"
+  },
+  {
+    "from": "app/admin",
+    "to": "scoring-policy",
+    "kind": "type"
   },
   {
     "from": "app/admin",
@@ -2702,6 +2725,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "ipd-audit",
+    "to": "audit-canonical",
+    "kind": "value"
+  },
+  {
+    "from": "ipd-audit",
     "to": "db",
     "kind": "value"
   },
@@ -2923,6 +2951,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "lvc",
     "to": "retrieve",
+    "kind": "value"
+  },
+  {
+    "from": "lvc",
+    "to": "scoring-policy",
     "kind": "value"
   },
   {
@@ -3211,6 +3244,11 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "opd-audit",
+    "to": "metabase",
+    "kind": "value"
+  },
+  {
     "from": "opd-audit-doctor",
     "to": "db",
     "kind": "value"
@@ -3223,6 +3261,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "opd-audit-doctor",
     "to": "opd-note-audit-core",
+    "kind": "value"
+  },
+  {
+    "from": "opd-audit-store",
+    "to": "audit-canonical",
     "kind": "value"
   },
   {
@@ -3717,12 +3760,12 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "scoring-policy",
-    "to": "db",
+    "to": "audit-canonical",
     "kind": "value"
   },
   {
     "from": "scoring-policy",
-    "to": "ipd-audit",
+    "to": "db",
     "kind": "value"
   },
   {
@@ -4021,8 +4064,8 @@ export const VERSION_REGISTRY: VersionRow[] = [
 
 export const COVERAGE = {
   "registered": 16,
-  "unregistered": 17,
-  "total": 33,
+  "unregistered": 18,
+  "total": 34,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
@@ -4034,6 +4077,7 @@ export const COVERAGE = {
     "dose-limits",
     "formulary-match-core",
     "mcp-server",
+    "opd-audit",
     "opd-feedback-rollup-core",
     "opd-note-audit",
     "opd-note-audit-core",

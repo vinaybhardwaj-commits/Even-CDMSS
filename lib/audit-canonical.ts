@@ -1,5 +1,5 @@
 /**
- * lib/ipd-audit/canonical.ts — ONE ROW PER DOCUMENT (PRD §1.2, resolution to B-1/B-2).
+ * lib/audit-canonical.ts — ONE ROW PER AUDITED THING (PRD §1.2 for IPD; §12.3 FIX 0 for OPD).
  *
  * PURE, dependency-free, strip-types testable.
  *
@@ -14,6 +14,15 @@
  * from the report detail as history; they never contribute to a count, a mean or a histogram.
  *
  * THIS IS A READ FILTER. Nothing is updated, nothing is deleted.
+ *
+ * GENERALISED for Phase C. The rule is identical for both engines; only the IDENTITY COLUMN
+ * differs — `document_id` for IPD discharge audits, `uid` for OPD note audits. `canonicalBy` takes
+ * that key; `canonicalByDocument` and `canonicalByUid` are the two named bindings. There is exactly
+ * one implementation, which is the entire point (see the note below).
+ *
+ * OPD is the worse case, MEASURED 27 Jul on live data: a 90-day window holds 25,128 audit rows over
+ * 11,835 distinct notes — 52.9% duplicates. It bites hardest on the days an engine bump spans:
+ * 2026-07-25 is 532 rows over 429 notes, and includes a `-mini` row.
  * ═══════════════════════════════════════════════════════════════════════════════════════════════
  *
  * WHY IT EXISTS. `ipd_discharge_audits` carries UNIQUE(document_id, engine_version) by design, so
@@ -28,11 +37,17 @@
 
 /** The minimum a row must carry to be ranked. Extra properties are preserved untouched. */
 export interface CanonicalCandidate {
+  /** IPD identity — one audit per discharge-summary document. */
   document_id?: unknown;
+  /** OPD identity — one audit per db13 note uid. */
+  uid?: unknown;
   engine_version?: unknown;
   audited_at?: unknown;
   id?: unknown;
 }
+
+/** Which column identifies "the same audited thing" for a given engine. */
+export type IdentityKey = 'document_id' | 'uid';
 
 /**
  * Mini/Qwen backfill rows share a document with the prod row, distinguished only by a `-mini`
@@ -85,15 +100,15 @@ export interface CanonicalOptions {
 }
 
 /**
- * Reduce a fetched row set to one row per `document_id`, per THE RULE.
+ * Reduce a fetched row set to one row per identity, per THE RULE.
  *
  * · Input order does NOT affect the result (the comparator is total on the ranking keys).
- * · Rows with no `document_id` are PASSED THROUGH rather than dropped — losing a row because a
+ * · Rows with no identity value are PASSED THROUGH rather than dropped — losing a row because a
  *   column was null would be a silent data loss, and the caller asked for these rows.
  * · Relative order of the surviving rows is preserved, so an ORDER BY applied in SQL still holds.
  * · Never throws.
  */
-export function canonicalByDocument<T extends CanonicalCandidate>(rows: T[], opts: CanonicalOptions = {}): T[] {
+export function canonicalBy<T extends CanonicalCandidate>(rows: T[], key: IdentityKey, opts: CanonicalOptions = {}): T[] {
   const list = Array.isArray(rows) ? rows.filter(Boolean) : [];
   if (!list.length) return [];
   const excludeMini = opts.excludeMini !== false;
@@ -106,19 +121,30 @@ export function canonicalByDocument<T extends CanonicalCandidate>(rows: T[], opt
   const winner = new Map<string, T>();
   const passthrough: T[] = [];
   for (const r of source) {
-    const doc = r.document_id == null ? '' : String(r.document_id);
-    if (!doc) { passthrough.push(r); continue; }
-    const cur = winner.get(doc);
-    if (!cur) { winner.set(doc, r); continue; }
+    const raw = (r as Record<string, unknown>)[key];
+    const identity = raw == null ? '' : String(raw);
+    if (!identity) { passthrough.push(r); continue; }
+    const cur = winner.get(identity);
+    if (!cur) { winner.set(identity, r); continue; }
     const byEngine = compareEngineVersion(r.engine_version, cur.engine_version);
-    if (byEngine > 0) { winner.set(doc, r); continue; }
+    if (byEngine > 0) { winner.set(identity, r); continue; }
     if (byEngine < 0) continue;
     // Tie on engine version → latest audited_at wins.
-    if (auditedAtMs(r.audited_at) > auditedAtMs(cur.audited_at)) winner.set(doc, r);
+    if (auditedAtMs(r.audited_at) > auditedAtMs(cur.audited_at)) winner.set(identity, r);
   }
 
   const kept = new Set<T>([...winner.values(), ...passthrough]);
   return source.filter((r) => kept.has(r));
+}
+
+/** IPD: one row per discharge-summary document. */
+export function canonicalByDocument<T extends CanonicalCandidate>(rows: T[], opts: CanonicalOptions = {}): T[] {
+  return canonicalBy(rows, 'document_id', opts);
+}
+
+/** OPD: one row per db13 note uid. Same rule, same code — only the identity column differs. */
+export function canonicalByUid<T extends CanonicalCandidate>(rows: T[], opts: CanonicalOptions = {}): T[] {
+  return canonicalBy(rows, 'uid', opts);
 }
 
 /**

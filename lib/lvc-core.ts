@@ -245,11 +245,42 @@ Return ONLY a JSON array, one object per recommendation, no prose:
 // omitted/empty → the returned prompt is byte-identical to the ungrounded Slice-1 prompt
 // (unit-asserted). The block sits between the scenario and the candidate list so the judge
 // decides "does this APPLY to THIS patient" against the structured negatives/unknowns.
+/**
+ * Lab-package composition (Phase C, §7.2 / decision §1.12). A minimal, FACTUAL projection of
+ * data/lab-packages.json: the package name and what it contains. Nothing evaluative.
+ */
+export interface LabPackageContext { package: string; aliases?: string[]; contains: string[] }
+
+/**
+ * Render the package block for the judge.
+ *
+ * ⚠️ THE SAFETY PROPERTY (§7.2, §8.9): an EMPTY or MALFORMED package set must produce a judge
+ * context BYTE-IDENTICAL to today's. This function returns the empty string for anything unusable,
+ * so `buildJudgeUser` concatenates nothing and the prompt is unchanged. It must NEVER be read as
+ * "no packages exist, therefore everything is a duplicate" — the absence of the file widens nothing.
+ *
+ * This is CONTEXT, not rubric. It tells the judge what a package contains so that ordering a panel
+ * and separately ordering one of its analytes is recognised as one order, not two. It does not
+ * change the applicability test, any severity constant, or any weight.
+ */
+export function buildLabPackageBlock(packages?: LabPackageContext[] | null): string {
+  const list = (Array.isArray(packages) ? packages : [])
+    .filter((p) => p && typeof p.package === 'string' && p.package.trim() && Array.isArray(p.contains) && p.contains.length);
+  if (!list.length) return '';
+  const lines = list.map((p) => {
+    const aka = (p.aliases ?? []).map((a) => String(a ?? '').trim()).filter(Boolean);
+    const akaTxt = aka.length ? ` (also written: ${aka.join(', ')})` : '';
+    return `- ${p.package.trim()}${akaTxt} contains: ${p.contains.map((c) => String(c ?? '').trim()).filter(Boolean).join(', ')}`;
+  });
+  return `\nLAB PACKAGE COMPOSITION (factual, from this hospital's own order data). A package below is a SINGLE order that includes the listed tests. If the plan orders a package, its constituent tests are already covered — do NOT treat the package and one of its own constituents as two separate or duplicated orders:\n${lines.join('\n')}\n`;
+}
+
 export function buildJudgeUser(
   ctx: { scenario: string; patient?: { age?: number; sex?: string } },
   recs: LvcRecommendation[],
   clinicalStateText?: string,
   orderedActions?: string[],
+  labPackages?: LabPackageContext[] | null,
 ): string {
   const pt = ctx.patient
     ? `Patient: ${ctx.patient.age != null ? `${ctx.patient.age}y` : 'age unknown'}${ctx.patient.sex ? `, ${ctx.patient.sex}` : ''}\n`
@@ -264,11 +295,14 @@ export function buildJudgeUser(
   const actions = acts.length
     ? `\nORDERED ACTION(S) UNDER REVIEW (the specific test/treatment this plan actually ordered — judge each recommendation against THIS action, and apply any precondition carve-out that names it):\n${acts.map((a) => `- ${a}`).join('\n')}\n`
     : '';
+  // Phase C: factual package composition. Empty/absent → '' → the prompt is byte-identical to
+  // today's (unit-asserted), so a missing or malformed lab-packages.json changes nothing.
+  const packages = buildLabPackageBlock(labPackages);
   const list = recs
     .map((r, i) =>
       `${i + 1}. id=${r.id} [${r.region}/${r.society}]\n   STATEMENT: ${r.statement}\n   PRECONDITION: ${r.precondition || '(none stated)'}`)
     .join('\n');
-  return `${pt}Clinical scenario / proposed plan:\n${ctx.scenario.trim()}\n${picture}${actions}\nCandidate recommendations to judge:\n${list}`;
+  return `${pt}Clinical scenario / proposed plan:\n${ctx.scenario.trim()}\n${picture}${actions}${packages}\nCandidate recommendations to judge:\n${list}`;
 }
 
 const VERDICTS = new Set<Verdict>(['applies', 'does_not_apply', 'insufficient_info']);
