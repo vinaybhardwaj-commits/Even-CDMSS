@@ -4,7 +4,7 @@
 -- only lvc_ratify promotes one.
 --
 -- ⚠️ INFERRED against a live schema this sandbox cannot see. Every statement is a no-op if already
--- applied. Validate the column names on `corpus` and `lvc_recommendations` before running.
+-- applied. Validate the column names on `mksap_chunks` and `lvc_recommendations` before running.
 
 -- ── F13: provenance on ingest ────────────────────────────────────────────────
 -- The escape hatch (provenance='internal-protocol') covers the 332 Even Clinical Protocol chunks,
@@ -64,6 +64,15 @@ CREATE TABLE IF NOT EXISTS lvc_ratifications (
   ratified_by   text NOT NULL,
   rationale     text NOT NULL,
   reason        text,
+  -- The lvc_recommendations id this ratification promoted TO. lvc_ratify's INSERT supplies it and
+  -- the runtime DDL in lib/mcp-tools.ts always created it; this file omitted it, so whichever ran
+  -- FIRST decided whether the column existed — CREATE TABLE IF NOT EXISTS makes the loser a no-op.
+  -- Added by V before applying 0023 live, and reconciled here so repo and database agree.
+  promoted_id   text,
   created_at    timestamptz NOT NULL DEFAULT now()
 );
+-- Belt-and-braces: converges a database whose lvc_ratifications was created by the RUNTIME DDL
+-- before this column existed there. A no-op wherever the column is already present, which includes
+-- the live database. This is what makes the CREATE-vs-ALTER ordering stop mattering.
+ALTER TABLE lvc_ratifications ADD COLUMN IF NOT EXISTS promoted_id text;
 CREATE INDEX IF NOT EXISTS lvc_ratifications_proposal_idx ON lvc_ratifications (proposal_id, created_at DESC);

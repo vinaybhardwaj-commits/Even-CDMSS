@@ -512,6 +512,34 @@ test('migration 0023 targets mksap_chunks and never a table called `corpus`', ()
   assert.match(sql, /ALTER TABLE mksap_chunks ADD COLUMN IF NOT EXISTS citation_url/);
   assert.doesNotMatch(sql, /ALTER TABLE corpus\b/);
   assert.doesNotMatch(sql, /\bDROP\b/i);
+  // the header comment must not name the wrong table either — it did, and the file itself
+  // corrected that name 6 lines further down, which is exactly how a stale comment misleads
+  assert.doesNotMatch(sql, /column names on `corpus`/);
+});
+
+test('0023 and the runtime DDL agree on lvc_ratifications.promoted_id', () => {
+  // THE DRIFT THIS PINS: lvc_ratify's INSERT supplies promoted_id and the runtime DDL in
+  // mcp-tools.ts always created it, but 0023 omitted it — so whichever ran FIRST decided whether
+  // the column existed, and CREATE TABLE IF NOT EXISTS silently made the loser a no-op. Found by V
+  // when applying 0023 live. Both definitions must now carry it, and the ALTER converges a database
+  // whose table was created by the runtime path before the column existed there.
+  const sql = readFileSync(new URL('../../migrations/0023_lvc_proposals_and_provenance.sql', import.meta.url), 'utf8');
+  const mcp = readFileSync(new URL('../mcp-tools.ts', import.meta.url), 'utf8');
+  assert.match(sql, /promoted_id\s+text,/, '0023 CREATE TABLE must declare promoted_id');
+  assert.match(sql, /ALTER TABLE lvc_ratifications ADD COLUMN IF NOT EXISTS promoted_id text;/);
+  assert.match(mcp, /promoted_id text,\n\s*created_at timestamptz NOT NULL DEFAULT now\(\)\n\)`;/);
+  assert.match(mcp, /INSERT INTO lvc_ratifications \(proposal_id, decision, ratified_by, rationale, promoted_id\)/);
+});
+
+test('0023 remains a NO-OP on re-run: every statement is guarded, nothing destructive', () => {
+  const sql = readFileSync(new URL('../../migrations/0023_lvc_proposals_and_provenance.sql', import.meta.url), 'utf8');
+  const stripped = sql.replace(/--.*$/gm, '');
+  // \s in the filter so `created_at ...` inside a CREATE TABLE body is not mistaken for a statement
+  for (const stmt of stripped.split('\n').map((l) => l.trim()).filter((l) => /^(ALTER|CREATE)\s/i.test(l))) {
+    assert.match(stmt, /IF NOT EXISTS/i, `unguarded statement would fail a re-run: ${stmt.slice(0, 80)}`);
+  }
+  assert.doesNotMatch(stripped, /\b(DROP|TRUNCATE|DELETE)\b/i);
+  assert.doesNotMatch(stripped, /^\s*UPDATE\b/im);
 });
 
 // ── F11 option 3 — Lab-MCP side ────────────────────────────────────────────────
