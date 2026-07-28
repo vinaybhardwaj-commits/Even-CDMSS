@@ -37,24 +37,31 @@ const ITEM_COLS = "${withItems ? ', completeness_items' : ''}";
 // (UPDATE), so the conditional tail shifted by one. Fixed columns before it did not move.
 const GEN_VALS = "${withGen ? ', $34' : ''}";
 const ITEM_VALS = '${withItems ? `, $${withGen ? 35 : 34}::jsonb` : \'\'}';
+// S1 (0029) — a THIRD conditional column, displayed_band, appended after the other two. Its
+// placeholder is arithmetic over the two flags before it.
+const BAND_COLS = "${withBand ? ', displayed_band' : ''}";
+const BAND_VALS = '${withBand ? `, $${34 + (withGen ? 1 : 0) + (withItems ? 1 : 0)}` : \'\'}';
 
-/** Expand the two conditional template segments into the concrete SQL for one branch pair. */
-function expand(src: string, withGen: boolean, withItems: boolean): string {
+/** Expand the three conditional template segments into the concrete SQL for one branch triple. */
+function expand(src: string, withGen: boolean, withItems: boolean, withBand = false): string {
   return src
     .split(GEN_COLS).join(withGen ? ', quieting_gen' : '')
     .split(ITEM_COLS).join(withItems ? ', completeness_items' : '')
+    .split(BAND_COLS).join(withBand ? ', displayed_band' : '')
     .split(GEN_VALS).join(withGen ? ', $34' : '')
-    .split(ITEM_VALS).join(withItems ? `, $${withGen ? 35 : 34}::jsonb` : '');
+    .split(ITEM_VALS).join(withItems ? `, $${withGen ? 35 : 34}::jsonb` : '')
+    .split(BAND_VALS).join(withBand ? `, $${34 + (withGen ? 1 : 0) + (withItems ? 1 : 0)}` : '');
 }
 
 const BRANCHES: [boolean, boolean][] = [[false, false], [true, false], [false, true], [true, true]];
+const BAND_BRANCHES: boolean[] = [false, true];
 
 test('ALL THREE write paths carry the scorecard — a row written without one is a bug', () => {
   // 1. ON CONFLICT DO UPDATE (force mode)
   assert.match(STORE, /scorecard = EXCLUDED\.scorecard,/);
   // 2. INSERT column list + placeholder — now with both conditional tails
-  assert.ok(STORE.includes(`complexity_band, complexity_inputs, scorecard, excluded_reason${GEN_COLS}${ITEM_COLS})`));
-  assert.ok(STORE.includes(`$30, $31::jsonb, $32::jsonb, $33${GEN_VALS}${ITEM_VALS})`));
+  assert.ok(STORE.includes(`complexity_band, complexity_inputs, scorecard, excluded_reason${GEN_COLS}${ITEM_COLS}${BAND_COLS})`));
+  assert.ok(STORE.includes(`$30, $31::jsonb, $32::jsonb, $33${GEN_VALS}${ITEM_VALS}${BAND_VALS})`));
   // 3. force-overwrite UPDATE
   assert.match(STORE, /scorecard = \$20::jsonb,/);
 });
@@ -72,11 +79,11 @@ test('INSERT: columns and arguments align in ALL FOUR branches', () => {
   const vStart = STORE.indexOf('VALUES ($1');
   const valBlock = STORE.slice(vStart, STORE.indexOf('ON CONFLICT (uid, engine_version)', vStart));
 
-  for (const [withGen, withItems] of BRANCHES) {
-    const label = `withGen=${withGen} withItems=${withItems}`;
-    const cols = expand(colBlock, withGen, withItems)
+  for (const [withGen, withItems] of BRANCHES) for (const withBand of BAND_BRANCHES) {
+    const label = `withGen=${withGen} withItems=${withItems} withBand=${withBand}`;
+    const cols = expand(colBlock, withGen, withItems, withBand)
       .replace(/[()\n]/g, ' ').split(',').map((x) => x.trim()).filter(Boolean);
-    const expected = 33 + (withGen ? 1 : 0) + (withItems ? 1 : 0);
+    const expected = 33 + (withGen ? 1 : 0) + (withItems ? 1 : 0) + (withBand ? 1 : 0);
     assert.equal(cols.length, expected, label);
     // scorecard is the 32nd column in EVERY branch; S0's excluded_reason is the 33rd, FIXED (the
     // column exists in every deployment — 167 house_account rows), so the conditional tail follows it.
@@ -85,9 +92,11 @@ test('INSERT: columns and arguments align in ALL FOUR branches', () => {
     assert.equal(cols[30], 'complexity_inputs', label);
     if (withGen) assert.equal(cols[33], 'quieting_gen', label);
     if (withItems) assert.equal(cols[withGen ? 34 : 33], 'completeness_items', label);
+    // S1 — displayed_band is always LAST when present, whatever the other two flags did.
+    if (withBand) assert.equal(cols[expected - 1], 'displayed_band', label);
 
     // …and the placeholder count must equal the column count, in the same branch.
-    const ph = [...expand(valBlock, withGen, withItems).matchAll(/\$(\d+)/g)].map((m) => Number(m[1]));
+    const ph = [...expand(valBlock, withGen, withItems, withBand).matchAll(/\$(\d+)/g)].map((m) => Number(m[1]));
     assert.equal(new Set(ph).size, ph.length, `${label}: no placeholder may be reused`);
     assert.deepEqual(
       ph.slice().sort((a, b) => a - b),

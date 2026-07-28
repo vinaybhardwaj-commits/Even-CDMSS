@@ -15,7 +15,7 @@ import {
   type Period,
 } from '@/lib/opd-audit-ui';
 import { fetchRightCareDay, fetchDeptFindingNotes } from '@/lib/opd-audit-doctor';
-import { canonicalOpdAuditIds } from '@/lib/opd-audit-store';
+import { canonicalOpdAuditIds, displayedBandColumnExists } from '@/lib/opd-audit-store';
 import { fetchInvestigationsForUids, stateFor } from '@/lib/opd-audit/investigations-lookup';
 import NotesExplorer, { type AuditRow } from './audit-table';
 import DomainPillars, { type DomainDatum } from './domain-pillars';
@@ -72,8 +72,8 @@ function issueFrom(findings: unknown, completenessPct: number): string {
 type DomCols = { d_doc: number; d_nq: number; d_appr: number; d_presc: number; d_pc: number };
 type DocRow = { doctor_uid: string; nnotes: number; idx: number; low_value: number; completeness: number } & DomCols;
 type TrendRow = { d: string; idx: number; c: number } & DomCols;
-type ReviewRow = { id: string; note_date: string; doctor_uid: string | null; band: string; note_quality_index: number; findings: unknown; n_low_value: number; completeness_pct: number };
-type AllRow = { id: string; uid: string; note_date: string; doctor_uid: string | null; consult_type: string | null; prescription_type: string | null; band: string; note_quality_index: number; n_low_value: number; completeness_pct: number; findings: unknown; missing_fields: unknown; score_documentation: number; score_note_quality: number; score_appropriateness: number; score_prescribing_safety: number; score_patient_centred: number; pdqi9: unknown; longitudinal: unknown };
+type ReviewRow = { id: string; note_date: string; doctor_uid: string | null; band: string; displayed_band?: string | null; note_quality_index: number; findings: unknown; n_low_value: number; completeness_pct: number };
+type AllRow = { id: string; uid: string; note_date: string; doctor_uid: string | null; consult_type: string | null; prescription_type: string | null; band: string; displayed_band?: string | null; note_quality_index: number; n_low_value: number; completeness_pct: number; findings: unknown; missing_fields: unknown; score_documentation: number; score_note_quality: number; score_appropriateness: number; score_prescribing_safety: number; score_patient_centred: number; pdqi9: unknown; longitudinal: unknown };
 
 // Stage 3 (D5c) — the audit-list "context" indicator: established | thin | none, from the stored
 // longitudinal contextMeta.confidence (null when the note has no longitudinal block yet).
@@ -127,6 +127,10 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
   //    canonical id set is computed by the SAME rule the IPD surface uses (lib/audit-canonical.ts,
   //    keyed on `uid`); every aggregate then filters on it. Null ⇒ the probe failed ⇒ no extra
   //    predicate, i.e. today's behaviour, rather than an empty page.
+  // S1 deploy-tolerance: name displayed_band only once 0029 has run; a SELECT naming a missing
+  // column fails whole and would blank these sections. Pre-migration ⇒ raw band, exactly as today.
+  const withBand = await displayedBandColumnExists().catch(() => false);
+  const DBAND = withBand ? ', displayed_band' : '';
   const [canonIds, trendIds] = await Promise.all([
     canonicalOpdAuditIds(APP, from, to),
     canonicalOpdAuditIds(APP, addDaysIso(to, -14), to),
@@ -165,10 +169,10 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
        FROM opd_note_audits WHERE ${WIN} AND doctor_uid IS NOT NULL
        GROUP BY doctor_uid ORDER BY nnotes DESC, idx ASC LIMIT 60`, canonParams),
     rowsOf<ReviewRow>(
-      `SELECT id, note_date, doctor_uid, band, note_quality_index, findings, n_low_value, completeness_pct
+      `SELECT id, note_date, doctor_uid, band${DBAND}, note_quality_index, findings, n_low_value, completeness_pct
        FROM opd_note_audits WHERE ${WIN} ORDER BY note_quality_index ASC, n_low_value DESC LIMIT 10`, canonParams),
     rowsOf<AllRow>(
-      `SELECT id, uid, note_date, doctor_uid, consult_type, prescription_type, band, note_quality_index, n_low_value, completeness_pct, findings, missing_fields,
+      `SELECT id, uid, note_date, doctor_uid, consult_type, prescription_type, band${DBAND}, note_quality_index, n_low_value, completeness_pct, findings, missing_fields,
               score_documentation, score_note_quality, score_appropriateness, score_prescribing_safety, score_patient_centred, pdqi9, longitudinal
        FROM opd_note_audits WHERE ${WIN} ORDER BY note_date DESC LIMIT 600`, canonParams),
     // S0 (invalid-marking, V ruling on F-1): the NOT-ASSESSED COUNT for the selected period.
@@ -207,11 +211,13 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
   // one mapping for both the normal list and the drill list (identical AuditRow shape)
   const toAuditRow = (r: {
     id: string; note_date: string; doctor_uid: string | null; prescription_type: string | null; consult_type: string | null;
-    uid: string; band: string; note_quality_index: number; n_low_value: number; findings: unknown; completeness_pct: number; missing_fields: unknown; longitudinal?: unknown;
+    uid: string; band: string; displayed_band?: string | null; note_quality_index: number; n_low_value: number; findings: unknown; completeness_pct: number; missing_fields: unknown; longitudinal?: unknown;
   }): AuditRow => ({
     id: String(r.id), time: fmtIstTime(r.note_date), doctor: docName(r.doctor_uid),
     consult: formatEncounterChip(r.prescription_type, r.consult_type), uid: String(r.uid || ''),
-    band: r.band, index: n(r.note_quality_index), lowVal: n(r.n_low_value),
+    // S1 — render the DISPLAYED band (hysteresis anchor); raw band is the fallback for rows
+    // written before 0029 ran. The raw index renders beside it in the table, per the rule.
+    band: r.displayed_band ?? r.band, index: n(r.note_quality_index), lowVal: n(r.n_low_value),
     issue: issueFrom(r.findings, n(r.completeness_pct)),
     cats: catsForRow(parseJson<string[]>(r.missing_fields, []), parseJson<{ subject?: string; verdict?: string; rationale?: string }[]>(r.findings, [])),
     doctorUid: r.doctor_uid ? String(r.doctor_uid) : null,
@@ -502,7 +508,7 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
               <div>
                 {reviewR.map((r) => (
                   <div key={r.id} className="flex items-center gap-1.5 border-b border-slate-50 px-4 py-2 text-[11.5px] hover:bg-slate-50">
-                    <span className="rounded px-1.5 py-0.5 text-[10px] font-medium text-white" style={{ background: bandColor(r.band) }}>{r.band}</span>
+                    <span className="rounded px-1.5 py-0.5 text-[10px] font-medium text-white" style={{ background: bandColor(r.displayed_band ?? r.band) }}>{r.displayed_band ?? r.band}</span>
                     <Link href={`/admin/opd-audit/${r.id}`} className="whitespace-nowrap text-slate-500 hover:text-brand">{fmtIstTime(r.note_date)}</Link>
                     <span className="text-slate-300">·</span>
                     {r.doctor_uid

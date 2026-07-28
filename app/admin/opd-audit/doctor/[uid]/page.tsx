@@ -71,7 +71,8 @@ export default async function DoctorDetail({ params, searchParams }: { params: P
   const rows: AuditRow[] = auditRows.map((r) => ({
     id: String(r.id), time: `${fmtIstTime(r.note_date)}`, doctor,
     consult: prettyType(r.prescription_type || r.consult_type), uid: String(r.uid || ''),
-    band: r.band, index: n(r.note_quality_index), lowVal: n(r.n_low_value),
+    // S1 — displayed band (hysteresis anchor), raw-band fallback for pre-0029 rows.
+    band: r.displayed_band ?? r.band, index: n(r.note_quality_index), lowVal: n(r.n_low_value),
     issue: issueFrom(r.findings, n(r.completeness_pct)),
     cats: catsForRow(parseJson<string[]>(r.missing_fields, []), parseJson<{ subject?: string; verdict?: string; rationale?: string }[]>(r.findings, [])),
     doctorUid: uid,

@@ -10,6 +10,7 @@ import { presentMemberState, type MemberStateView } from '@/lib/member-state/pre
 import { type OpdDomain, documentationAdequacyFlag } from '@/lib/opd-note-score-core';
 import { OPD_ENGINE_VERSION, OPD_ENGINE_VERSIONS_CURRENT } from '@/lib/opd-note-audit-core';
 import { LVC_CATEGORY_LABELS } from '@/lib/opd-lvc-classify-core';
+import { displayedBandColumnExists } from '@/lib/opd-audit-store';
 
 // Decision 21: prev/next navigation READS the current-engine FAMILY (the escalation package below
 // keeps exact OPD_ENGINE_VERSION — that's the display/metadata stamp, not a read filter).
@@ -458,7 +459,7 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
     `SELECT id, uid, doctor_uid, consult_type, prescription_type, note_date, trace_id,
             note_quality_index, band, completeness_pct, n_missing_mandatory,
             score_documentation, score_note_quality, score_appropriateness, score_prescribing_safety, score_patient_centred,
-            pdqi9, findings, suggestions, sources, longitudinal, excluded_reason
+            pdqi9, findings, suggestions, sources, longitudinal, excluded_reason${(await displayedBandColumnExists().catch(() => false)) ? ', displayed_band' : ''}
      FROM opd_note_audits WHERE id = $1 AND app_source = $2 LIMIT 1`,
     [id, APP],
   ).catch(() => [])) as Record<string, unknown>[];
@@ -474,7 +475,10 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
   }
 
   const index = n(r.note_quality_index);
-  const band = String(r.band || '');
+  // S1 — the band this page SHOWS is the hysteresis-anchored displayed band (raw-band fallback for
+  // rows written before 0029). The raw index renders beside it everywhere, per the rule: a contest
+  // conversation is about the number, not the label.
+  const band = String(r.displayed_band || '') || String(r.band || '');
   // S0 D5 — a marked row's stored values stay, but they are NEVER presented as a score.
   const notAssessed = String(r.excluded_reason || '') === 'llm_leg_failed';
   const rawFindings = parseJson<Finding[]>(r.findings, []);

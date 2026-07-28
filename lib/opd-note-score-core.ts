@@ -129,8 +129,25 @@ function round(n: number): number { return Math.round(n); }
 // Exported so the "How the audit works" reference page renders the REAL constants (no drift).
 export const PENALTY_BASE = 45;
 export const SEVERITY: Record<NetValue, number> = { 'low-value': 1.0, 'context-dependent': 0.5, uncertain: 0.2, 'high-value': 0 };
+
+/**
+ * S1 (0.81.15) — confidence QUANTIZATION. `findingPenalty` used to multiply a RAW SAMPLED LLM FLOAT
+ * straight into the penalty: a ±0.15 confidence wobble on one low-value finding moved the domain
+ * score ±6.75 and the index ±1.35, and 9 of 50 A/A pairs had identical findings but different
+ * scores — variance the score model invited by treating a sampled scalar as a measurement.
+ * Three levels (research team's), boundaries at the level midpoints (ours — flagged in PRD §7 for
+ * their ratification): < 0.45 → 0.3 · [0.45, 0.80) → 0.6 · ≥ 0.80 → 1.0.
+ * Input is clamped first, so junk (<0, >1, NaN→0) lands in a level rather than escaping the scale.
+ */
+export function quantizeConfidence(c: number): number {
+  const x = clamp(Number(c) || 0, 0, 1);
+  if (x < 0.45) return 0.3;
+  if (x < 0.80) return 0.6;
+  return 1.0;
+}
+
 function findingPenalty(f: { verdict: NetValue; confidence: number }): number {
-  return PENALTY_BASE * (SEVERITY[f.verdict] ?? 0.2) * clamp(Number(f.confidence) || 0, 0, 1);
+  return PENALTY_BASE * (SEVERITY[f.verdict] ?? 0.2) * quantizeConfidence(f.confidence);
 }
 export function bandFor(headline: number): Band {
   if (headline >= 85) return 'A';
@@ -138,6 +155,37 @@ export function bandFor(headline: number): Band {
   if (headline >= 55) return 'C';
   if (headline >= 40) return 'D';
   return 'E';
+}
+
+/**
+ * S1 — the hysteresis guard width. MEASURED: σ per run 3.866 on the 50-pair A/A at 0.81.14 (paired
+ * SD 5.4669). g tracks the instrument it guards (D2): when an engine version has its own
+ * interleaved A/A σ, source g from that; 3.87 is the fallback. Simulated on the empirical
+ * distribution: re-score band-flip rate 0.223 → 0.079 at zero inference cost.
+ */
+export const HYSTERESIS_G = 3.87;
+
+/** Band lower bounds (inclusive) — DERIVED from bandFor's thresholds, which stay the one truth. */
+const BAND_LO: Record<Band, number> = { A: 85, B: 70, C: 55, D: 40, E: Number.NEGATIVE_INFINITY };
+const BAND_HI: Record<Band, number> = { A: Number.POSITIVE_INFINITY, B: 85, C: 70, D: 55, E: 40 };
+
+/**
+ * S1 — the hysteresis rule (design-final §2, adopted verbatim; PRD §3). A DISPLAY rule on the
+ * canonical row, anchored WITHIN an engine version only:
+ *   · no prior displayed band (NULL — first score at this version) ⇒ band normally, set the anchor;
+ *   · otherwise the displayed band HOLDS unless the new index leaves the held band's range by ≥ g;
+ *   · on a decisive crossing ⇒ `bandFor(index)` — the band the raw index actually implies, NOT one
+ *     step. An engine-version bump resets the anchor by construction (fresh row ⇒ NULL prior).
+ * The raw index is always displayed beside the band; a contest conversation is about the number,
+ * not the label. bandFor and its thresholds are UNTOUCHED — this wraps, never replaces.
+ * Pure and total: an unknown prior string behaves as no prior.
+ */
+export function hysteresisBand(index: number, priorDisplayedBand: string | null | undefined, g: number = HYSTERESIS_G): Band {
+  const prior = priorDisplayedBand as Band;
+  if (prior !== 'A' && prior !== 'B' && prior !== 'C' && prior !== 'D' && prior !== 'E') return bandFor(index);
+  const leavesDown = index < BAND_LO[prior] - g;
+  const leavesUp = index >= BAND_HI[prior] + g;
+  return leavesDown || leavesUp ? bandFor(index) : prior;
 }
 
 function scoreFromFindings(fs: OpdScoreFinding[]): { score: number; n: number } {

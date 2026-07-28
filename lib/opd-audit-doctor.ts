@@ -11,6 +11,7 @@
 import { sql } from '@/lib/db';
 import { OPD_ENGINE_VERSIONS_CURRENT } from '@/lib/opd-note-audit-core';
 import type { LvcCell } from '@/lib/opd-funnel-core';
+import { displayedBandColumnExists } from '@/lib/opd-audit-store';
 
 const APP = process.env.APP_SOURCE || 'standalone';
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
@@ -104,7 +105,7 @@ export async function fetchDoctorWeeklyTrend(uid: string, from: string | null = 
 export type DoctorAuditRow = {
   id: string; uid: string; note_date: string; doctor_uid: string | null;
   consult_type: string | null; prescription_type: string | null;
-  band: string; note_quality_index: number; n_low_value: number; completeness_pct: number;
+  band: string; displayed_band?: string | null; note_quality_index: number; n_low_value: number; completeness_pct: number;
   score_documentation: number; score_note_quality: number; score_appropriateness: number;
   score_prescribing_safety: number; score_patient_centred: number;
   findings: unknown; suggestions: unknown; missing_fields: unknown; engine_version: string;
@@ -115,7 +116,7 @@ export async function fetchDoctorAuditRows(uid: string, from: string | null = nu
   const lim = Math.max(1, Math.min(2000, Math.floor(limit)));
   return rowsOf<DoctorAuditRow>(
     `SELECT id, uid, note_date, doctor_uid, consult_type, prescription_type,
-            band, note_quality_index, n_low_value, completeness_pct,
+            band${(await displayedBandColumnExists().catch(() => false)) ? ', displayed_band' : ''}, note_quality_index, n_low_value, completeness_pct,
             score_documentation, score_note_quality, score_appropriateness, score_prescribing_safety, score_patient_centred,
             findings, suggestions, missing_fields, engine_version
      FROM opd_note_audits
@@ -297,7 +298,7 @@ export async function fetchDeptFindingNotes(dept: string, subject: string, signa
      FROM (
        SELECT DISTINCT ON (l.id) l.id, l.uid, l.note_date, l.doctor_uid, l.consult_type, l.prescription_type,
               l.band, l.note_quality_index, l.n_low_value, l.completeness_pct, l.findings, l.missing_fields
-       FROM ( ${distinctNoteSubquery('id, doctor_uid, consult_type, prescription_type, band, note_quality_index, n_low_value, completeness_pct, findings, missing_fields, note_date', ` AND ${WIN90}`)} ) l
+       FROM ( ${distinctNoteSubquery(`id, doctor_uid, consult_type, prescription_type, band${(await displayedBandColumnExists().catch(() => false)) ? ', displayed_band' : ''}, note_quality_index, n_low_value, completeness_pct, findings, missing_fields, note_date`, ` AND ${WIN90}`)} ) l
        ${DEPT_JOIN}
        CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(l.findings) = 'array' THEN l.findings ELSE '[]'::jsonb END) f
        WHERE ${matchWhere}

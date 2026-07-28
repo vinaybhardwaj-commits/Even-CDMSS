@@ -9,7 +9,7 @@
 
 import { sql } from './db';
 import type { OpdNoteAudit } from './opd-note-audit';
-import type { OpdDomain } from './opd-note-score-core';
+import { HYSTERESIS_G, type OpdDomain } from './opd-note-score-core';
 import { logEvent } from './trace';
 import { auditShadowReport } from './clinical-state/audit-shadow-core';
 import { runLongitudinalPass } from './opd-longitudinal';   // Stage 3 — dark unless OPD_LONGITUDINAL_ENABLED=1
@@ -70,6 +70,37 @@ async function opdColumnExists(column: string): Promise<boolean> {
 async function quietingGenColumnExists(): Promise<boolean> { return opdColumnExists('quieting_gen'); }
 /** 0027 — the per-field completeness array (item D-1). Absent until the migration runs. */
 async function completenessItemsColumnExists(): Promise<boolean> { return opdColumnExists('completeness_items'); }
+/** 0029 — the S1 hysteresis anchor. Absent until V runs the migration by hand (§8.1).
+ *  EXPORTED because the DISPLAY READERS need the same deploy-before-migrate tolerance as the
+ *  writers: a SELECT naming a missing column fails whole (rowsOf catches to []), which would blank
+ *  the OPD list / doctor pages / PDF export for the entire deploy-to-migration window. Readers
+ *  include the column only once it exists; until then they render the raw band, exactly as today. */
+export async function displayedBandColumnExists(): Promise<boolean> { return opdColumnExists('displayed_band'); }
+
+/**
+ * S1 — the hysteresis conditional AS SQL, built from the same HYSTERESIS_G the pure function uses
+ * so the two can never disagree on g. `ON CONFLICT DO UPDATE` (and plain UPDATE) can read the
+ * existing row, so the anchor logic needs no read-modify-write in application code:
+ *   prior NULL (first score at this version)  ⇒ take the fresh raw band (sets the anchor);
+ *   decisive crossing (index leaves the held band's range by ≥ g) ⇒ take the fresh raw band —
+ *     the band the raw index implies, NOT one step;
+ *   otherwise ⇒ HOLD the prior displayed band.
+ * `priorCol` names the existing row's column (qualified on the conflict path), `newBand`/`newIndex`
+ * name the incoming values (EXCLUDED.* on conflict; $-params in updateOpdAudit).
+ */
+function hysteresisCaseSql(priorCol: string, newBand: string, newIndex: string): string {
+  const g = HYSTERESIS_G;
+  return `CASE
+           WHEN ${priorCol} IS NULL THEN ${newBand}
+           WHEN (${priorCol} = 'A' AND ${newIndex} < ${85 - g})
+             OR (${priorCol} = 'B' AND (${newIndex} >= ${85 + g} OR ${newIndex} < ${70 - g}))
+             OR (${priorCol} = 'C' AND (${newIndex} >= ${70 + g} OR ${newIndex} < ${55 - g}))
+             OR (${priorCol} = 'D' AND (${newIndex} >= ${55 + g} OR ${newIndex} < ${40 - g}))
+             OR (${priorCol} = 'E' AND ${newIndex} >= ${40 + g})
+           THEN ${newBand}
+           ELSE ${priorCol}
+         END`;
+}
 
 /**
  * The array to persist, or null. Returns null rather than `[]` when the engine produced nothing:
@@ -123,6 +154,8 @@ export async function saveOpdAudit(
   // existing placeholder index is untouched.
   const withItems = await completenessItemsColumnExists();
   const itemsJson = completenessItemsJson(audit);
+  // 0029 (S1) — the hysteresis anchor, tolerated pre-migration like the two columns above.
+  const withBand = await displayedBandColumnExists();
   // ═══ S0 invalid-marking (PRD 28 Jul, D3/D4) ═══
   // Model-agnostic: the signal comes from auditOpdNote (the LLM leg failed after its one retry),
   // and the belt-and-braces pdqi9 check keeps the mark honest — a row is marked only when the
@@ -148,8 +181,11 @@ export async function saveOpdAudit(
          scorecard = EXCLUDED.scorecard,
          excluded_reason = COALESCE(EXCLUDED.excluded_reason,
            CASE WHEN opd_note_audits.excluded_reason = 'llm_leg_failed' THEN NULL ELSE opd_note_audits.excluded_reason END),
-         ${withItems ? 'completeness_items = EXCLUDED.completeness_items, ' : ''}${withGen ? 'quieting_gen = EXCLUDED.quieting_gen, ' : ''}audited_at = now()`
+         ${withBand ? `displayed_band = ${hysteresisCaseSql('opd_note_audits.displayed_band', 'EXCLUDED.displayed_band', 'EXCLUDED.note_quality_index')}, ` : ''}${withItems ? 'completeness_items = EXCLUDED.completeness_items, ' : ''}${withGen ? 'quieting_gen = EXCLUDED.quieting_gen, ' : ''}audited_at = now()`
     : 'DO NOTHING';
+  // ^ S1 hysteresis on a same-version overwrite: EXCLUDED.displayed_band is the fresh RAW band
+  //   (bandFor of the new index — what the INSERT below supplies), taken only on NULL prior or a
+  //   decisive crossing; otherwise the anchor HOLDS while band/note_quality_index move freely.
   // ^ S0 excluded_reason semantics on a force re-audit: a fresh failure re-marks; a SUCCESSFUL
   //   re-audit clears a stale 'llm_leg_failed' (Audit-now force is one of the two real clearing
   //   mechanisms; the other is the next engine-version bump superseding the row canonically);
@@ -163,10 +199,10 @@ export async function saveOpdAudit(
        pdqi9, completeness_pct, n_missing_mandatory,
        n_findings, n_low_value, n_context_dependent, n_interaction_alerts,
        findings, suggestions, engine_version, model, trace_id, latency_ms, missing_fields, sources,
-       complexity_band, complexity_inputs, scorecard, excluded_reason${withGen ? ', quieting_gen' : ''}${withItems ? ', completeness_items' : ''})
+       complexity_band, complexity_inputs, scorecard, excluded_reason${withGen ? ', quieting_gen' : ''}${withItems ? ', completeness_items' : ''}${withBand ? ', displayed_band' : ''})
      VALUES ($1,$2,$3,$4,$5,$6,$7, $8,$9, $10,$11,$12,$13,$14,
        $15::jsonb,$16,$17, $18,$19,$20,$21, $22::jsonb,$23::jsonb,$24,$25,$26,$27, $28::jsonb, $29::jsonb,
-       $30, $31::jsonb, $32::jsonb, $33${withGen ? ', $34' : ''}${withItems ? `, $${withGen ? 35 : 34}::jsonb` : ''})
+       $30, $31::jsonb, $32::jsonb, $33${withGen ? ', $34' : ''}${withItems ? `, $${withGen ? 35 : 34}::jsonb` : ''}${withBand ? `, $${34 + (withGen ? 1 : 0) + (withItems ? 1 : 0)}` : ''})
      ON CONFLICT (uid, engine_version) ${conflictClause}
      RETURNING id${force ? ', (xmax = 0) AS inserted' : ''}`,
     [
@@ -184,6 +220,9 @@ export async function saveOpdAudit(
       excludedReason,
       ...(withGen ? [audit.quietingGen ?? 0] : []),
       ...(withItems ? [itemsJson] : []),
+      // S1 — the fresh RAW band. On a first insert it IS the anchor (first score at this version
+      // bands normally); on conflict it is EXCLUDED.displayed_band, taken only per the CASE above.
+      ...(withBand ? [sc.band] : []),
     ],
   )) as Array<{ id: string; inserted?: boolean }>;
   // Under force, DO UPDATE always returns the row; (xmax = 0) distinguishes fresh insert from overwrite.
@@ -212,6 +251,8 @@ export async function updateOpdAudit(audit: OpdNoteAudit): Promise<'updated' | '
   const withGen = await quietingGenColumnExists();
   const withItems = await completenessItemsColumnExists();
   const itemsJson = completenessItemsJson(audit);
+  // 0029 (S1) — same pre-migration tolerance as saveOpdAudit.
+  const withBand = await displayedBandColumnExists();
   // S0 invalid-marking — same predicate as saveOpdAudit.
   const updScPdqi9 = (sc as { pdqi9?: unknown }).pdqi9;
   const updEmptyPdqi9 = updScPdqi9 == null || (Array.isArray(updScPdqi9) && updScPdqi9.length === 0);
@@ -227,7 +268,8 @@ export async function updateOpdAudit(audit: OpdNoteAudit): Promise<'updated' | '
        findings = $16::jsonb, suggestions = $17::jsonb, missing_fields = $18::jsonb,
        scorecard = $20::jsonb,
        excluded_reason = COALESCE($21,
-         CASE WHEN excluded_reason = 'llm_leg_failed' THEN NULL ELSE excluded_reason END)${withGen ? ', quieting_gen = $22' : ''}${withItems ? `, completeness_items = $${withGen ? 23 : 22}::jsonb` : ''}
+         CASE WHEN excluded_reason = 'llm_leg_failed' THEN NULL ELSE excluded_reason END)${withBand ? `,
+       displayed_band = ${hysteresisCaseSql('displayed_band', '$3', '$2')}` : ''}${withGen ? ', quieting_gen = $22' : ''}${withItems ? `, completeness_items = $${withGen ? 23 : 22}::jsonb` : ''}
      WHERE uid = $1 AND engine_version = $19
      RETURNING id`,
     [

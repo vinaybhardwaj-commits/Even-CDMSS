@@ -15,6 +15,7 @@ import { isCareUnlocked } from '@/lib/care-cookie';
 import { fetchOpdNoteByUid, fetchDoctorNames } from '@/lib/metabase';
 import { rowToOpdCase } from '@/lib/opd-ingest-core';
 import { doctorLabel } from '@/lib/opd-audit-ui';
+import { displayedBandColumnExists } from '@/lib/opd-audit-store';
 import { fetchDoctorAuditRows } from '@/lib/opd-audit-doctor';
 import { buildNoteAuditPdf, buildBulkPdf, type AuditPageData, type OriginalDoc, type PdfFinding } from '@/lib/opd-audit-pdf';
 import { stripRetiredEvenCitations } from '@/lib/even-ground-core';
@@ -30,7 +31,8 @@ const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Reco
 const n = (v: unknown): number => Number(v ?? 0);
 const FOOTER = 'Advisory note-level quality proxy — documentation, PDQI-9, appropriateness and prescribing safety as demonstrated in the note. Not an outcomes measure; not a clinician scorecard.';
 
-const AUDIT_COLS = `id, uid, doctor_uid, note_date, band, note_quality_index,
+// S1 deploy-tolerance: displayed_band joins the column list only once 0029 has run.
+const auditCols = async () => `id, uid, doctor_uid, note_date, band${(await displayedBandColumnExists().catch(() => false)) ? ', displayed_band' : ''}, note_quality_index,
   score_documentation, score_note_quality, score_appropriateness, score_prescribing_safety, score_patient_centred,
   findings, sources, suggestions, engine_version`;
 const DOMAINS: { col: string; label: string }[] = [
@@ -92,7 +94,8 @@ function toPageData(row: Record<string, unknown>, doctor: string, specialty: str
     uid: String(row.uid || ''), doctor, specialty, noteDate: fmtDate(row.note_date),
     engineVersion: String(row.engine_version || ''), generatedAt: new Date().toISOString().slice(0, 16).replace('T', ' '),
     originalStatus,
-    band: String(row.band || ''), index: n(row.note_quality_index),
+    // S1 — the PDF shows the DISPLAYED band (raw index beside it, as everywhere).
+    band: String(row.displayed_band || row.band || ''), index: n(row.note_quality_index),
     domains: DOMAINS.map((d) => ({ label: d.label, score: row[d.col] == null ? null : n(row[d.col]) })),
     findings, suggestions, footer: FOOTER,
   };
@@ -136,7 +139,7 @@ async function buildForRows(rows: Record<string, unknown>[]): Promise<{ data: Au
 }
 
 async function handleSingle(id: string): Promise<NextResponse> {
-  const rows = await run(`SELECT ${AUDIT_COLS} FROM opd_note_audits WHERE id = $1 AND app_source = $2 AND excluded_reason IS NULL LIMIT 1`, [id, APP]).catch(() => []);
+  const rows = await run(`SELECT ${await auditCols()} FROM opd_note_audits WHERE id = $1 AND app_source = $2 AND excluded_reason IS NULL LIMIT 1`, [id, APP]).catch(() => []);
   const row = rows[0];
   if (!row) return NextResponse.json({ error: 'audit not found' }, { status: 404 });
   const items = await buildForRows([row]);
@@ -199,7 +202,7 @@ export async function POST(req: NextRequest) {
   if (ids.length > BULK_CAP) return NextResponse.json({ error: `Too many audits (${ids.length}) for one PDF — cap is ${BULK_CAP}. Narrow the selection.` }, { status: 413 });
 
   try {
-    const rows = await run(`SELECT ${AUDIT_COLS} FROM opd_note_audits WHERE id = ANY($1) AND app_source = $2 AND excluded_reason IS NULL ORDER BY note_date DESC`, [ids, APP]).catch(() => []);
+    const rows = await run(`SELECT ${await auditCols()} FROM opd_note_audits WHERE id = ANY($1) AND app_source = $2 AND excluded_reason IS NULL ORDER BY note_date DESC`, [ids, APP]).catch(() => []);
     return await handleBulk(rows as Record<string, unknown>[], `opd-audits-${rows.length}-notes.pdf`);
   } catch (e) {
     return NextResponse.json({ error: String((e as Error).message) }, { status: 500 });
