@@ -188,7 +188,7 @@ function buildEscalationPackage({ uid, doctor, band, index, note, findings, scor
   L.push(`- Encounter (de-identified): \`${uid}\``);
   L.push(`- Reviewing clinician: ${doctor}`);
   // S0 D5 — a failed measurement is never presented as a grade, least of all to an external reviewer.
-  L.push(notAssessed ? `- CDMSS grade: not assessed — re-audit queued (grading model could not assess this note)` : `- CDMSS grade: ${index} · Band ${band}`);
+  L.push(notAssessed ? `- CDMSS grade: not assessed at this engine version (grading model could not assess this note)` : `- CDMSS grade: ${index} · Band ${band}`);
   L.push(`- Engine: \`${engineVersion}\``);
   L.push(``);
   L.push(`## The note (de-identified — exactly what the engine read)`);
@@ -606,7 +606,7 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
   const lowVal = findings.find((f) => f.verdict === 'low-value');
   // S0 D5 — the story never narrates a grade that is not a measurement.
   const story = notAssessed
-    ? 'The grading model could not assess this note, so no grade is shown. Deterministic findings (dosing, interactions, completeness) below remain valid. A re-audit is queued.'
+    ? 'The grading model could not assess this note at this engine version, so no grade is shown. Deterministic findings (dosing, interactions, completeness) below remain valid.'
     : index >= 70
       ? `A solid Band ${band} note — ${best.label.toLowerCase()} leads (${best.score}); the main headroom is ${worst.label.toLowerCase()} (${worst.score}).`
       : `Graded ${band} mainly on ${worst.label.toLowerCase()} (${worst.score})${lowVal ? ` — ${lowVal.subject.toLowerCase()}` : ''}${second && second.score < 55 ? `, with ${second.label.toLowerCase()} (${second.score}) close behind` : ''}; ${best.label.toLowerCase()} held up (${best.score}).`;
@@ -652,7 +652,7 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
                 <div className="mx-auto flex h-[66px] w-[66px] flex-col items-center justify-center rounded-full border-[5px] border-slate-300 bg-white">
                   <span className="text-[21px] font-medium leading-none text-slate-400">—</span>
                 </div>
-                <div className="mt-1.5 text-[12px] font-medium text-slate-500">Not assessed — re-audit queued</div>
+                <div className="mt-1.5 text-[12px] font-medium text-slate-500">Not assessed at this engine version</div>
               </>
             ) : (
               <>

@@ -135,7 +135,7 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
   const canonParams = canonIds ? [...winParams, canonIds] : winParams;
   const WIN = `app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND excluded_reason IS NULL AND (note_date AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $2 AND $3${CANON}`;
 
-  const [kpiR, bandsR, trendR, docsR, reviewR, allR] = await Promise.all([
+  const [kpiR, bandsR, trendR, docsR, reviewR, allR, notAssessedR] = await Promise.all([
     rowsOf<Record<string, unknown>>(
       `SELECT count(*)::int total, count(DISTINCT doctor_uid)::int doctors,
               round(avg(note_quality_index))::int mean_index,
@@ -171,6 +171,19 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
       `SELECT id, uid, note_date, doctor_uid, consult_type, prescription_type, band, note_quality_index, n_low_value, completeness_pct, findings, missing_fields,
               score_documentation, score_note_quality, score_appropriateness, score_prescribing_safety, score_patient_centred, pdqi9, longitudinal
        FROM opd_note_audits WHERE ${WIN} ORDER BY note_date DESC LIMIT 600`, canonParams),
+    // S0 (invalid-marking, V ruling on F-1): the NOT-ASSESSED COUNT for the selected period.
+    // Marked rows are correctly invisible in the list and every aggregate above (the house_account
+    // symmetry) — but invisibility is how the original defect survived for months, so the failure
+    // RATE renders as a count a human notices if it moves from 4-in-75 to 20-in-75. Same period +
+    // app_source + engine family as the page; deliberately NO canonical filter and NO
+    // excluded_reason IS NULL (marked rows are exactly what it counts). A COUNT, never a score.
+    // Its own params array, NOT winParams: the FIX 0 test rightly demands every WIN query take the
+    // canonical set, and this one is deliberately outside both WIN and CANON.
+    rowsOf<{ n: number }>(
+      `SELECT count(DISTINCT uid)::int AS n FROM opd_note_audits
+        WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL}
+          AND excluded_reason = 'llm_leg_failed'
+          AND (note_date AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $2 AND $3`, [APP, from, to]),
   ]);
 
   // Right Care day tile (§7 / decision 24) — the page's selected day drives BOTH the rate and the
@@ -226,6 +239,8 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
 
   const k = kpiR[0] || {};
   const total = n(k.total);
+  // S0 — notes in the period whose grading could not be assessed (excluded from everything above).
+  const notAssessed = n(notAssessedR[0]?.n ?? 0);
   const meanIndex = n(k.mean_index);
   const band = bandFor(meanIndex);
   const bandCounts: Record<string, number> = {};
@@ -402,6 +417,10 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
               <span><b className="font-serif text-[15px]" style={{ color: '#b45309' }}>{n(k.low_value_rate)}%</b> ≥1 low-value flag</span>
               <span><b className="font-serif text-[15px]" style={{ color: '#b91c1c' }}>{n(k.interactions)}</b> interaction alerts</span>
               <span><b className="font-serif text-[15px] text-slate-800">{n(k.pct_good)}%</b> graded A/B</span>
+              {/* S0 — a COUNT, never a score. Amber when non-zero so a human notices it moving. */}
+              <span title="Notes whose grading model could not assess them at this engine version. Excluded from every number and list on this page; visible here so the failure rate is never invisible.">
+                <b className="font-serif text-[15px]" style={{ color: notAssessed > 0 ? '#b45309' : '#94a3b8' }}>{notAssessed}</b> not assessed
+              </span>
               <span className="ml-auto flex items-center gap-1 text-[10px] text-slate-400">
                 {BANDS.map((b) => <span key={b} className="rounded px-1.5 py-0.5 font-semibold text-white" style={{ background: bandColor(b) }}>{b}</span>)}
                 <span className="ml-1">excellent → poor</span>

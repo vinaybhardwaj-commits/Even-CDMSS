@@ -160,16 +160,21 @@ test('EVERY enumerated aggregate/display reader excludes marked rows', () => {
 // 5 · Display suppression (D5)
 // ═════════════════════════════════════════════════════════════════════════════════════════════
 
-test('the detail page suppresses the score and says exactly "Not assessed — re-audit queued"', () => {
+test('the detail page suppresses the score and says exactly "Not assessed at this engine version"', () => {
   assert.ok(DETAIL.includes("const notAssessed = String(r.excluded_reason || '') === 'llm_leg_failed';"));
-  assert.ok(DETAIL.includes('Not assessed — re-audit queued'));
+  // V ruling on F-2: the earlier text asserted a queue that does not exist — the exact defect
+  // class this programme eliminates. The truthful text names the two REAL clearing mechanisms'
+  // shared property: the mark is scoped to this engine version.
+  assert.ok(DETAIL.includes('Not assessed at this engine version'));
+  assert.ok(!DETAIL.includes('re-audit queued') && !DETAIL.includes('re-audit is queued'),
+    'no surface may promise a queue nothing implements');
   assert.ok(DETAIL.includes(', excluded_reason'), 'the SELECT must actually fetch the mark');
   // The stored values stay; they are never presented as a score (D5) — the circle branch flips.
   assert.ok(DETAIL.includes('{notAssessed ? ('));
 });
 
 test('the escalation package never hands a failed measurement to an external reviewer', () => {
-  assert.ok(DETAIL.includes('- CDMSS grade: not assessed — re-audit queued (grading model could not assess this note)'));
+  assert.ok(DETAIL.includes('- CDMSS grade: not assessed at this engine version (grading model could not assess this note)'));
 });
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════

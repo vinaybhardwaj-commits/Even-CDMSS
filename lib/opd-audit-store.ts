@@ -151,7 +151,8 @@ export async function saveOpdAudit(
          ${withItems ? 'completeness_items = EXCLUDED.completeness_items, ' : ''}${withGen ? 'quieting_gen = EXCLUDED.quieting_gen, ' : ''}audited_at = now()`
     : 'DO NOTHING';
   // ^ S0 excluded_reason semantics on a force re-audit: a fresh failure re-marks; a SUCCESSFUL
-  //   re-audit clears a stale 'llm_leg_failed' (that is the whole point of "re-audit queued");
+  //   re-audit clears a stale 'llm_leg_failed' (Audit-now force is one of the two real clearing
+  //   mechanisms; the other is the next engine-version bump superseding the row canonically);
   //   any OTHER mark — house_account — is preserved verbatim. Never clobber a human's exclusion.
 
   const rows = (await sql(
