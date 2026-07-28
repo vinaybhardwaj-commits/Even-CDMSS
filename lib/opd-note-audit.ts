@@ -36,6 +36,8 @@ import { bannedFdcFindings } from './cdsco-banned-fdc';
 import { fetchPatientHistoryBundle } from './metabase';
 import { sql } from './db';
 import { buildLongitudinalInput, type LongitudinalNoteInput } from './opd-longitudinal-core';   // Stage 3 (opd-longitudinal/0.1)
+// Pure, dependency-free helper (lab-batch-core imports nothing, so this cannot form a cycle).
+import { remainingBudgetMs } from './lab-batch-core';
 
 // Best-effort cache of active suppressions (Tier-1 self-heal) so the per-note audit doesn't re-read
 // the table each time. Short TTL; a fresh suppression takes effect within a minute. Empty = no-op.
@@ -545,8 +547,13 @@ export function openRouterBackoffMs(attempt: number, rand: () => number = Math.r
  * throws and never returns — it takes the whole tick down, which we watched happen. Fail-loud is
  * UNOBSERVABLE if a call can hang forever, so this is a precondition for D2 rather than a request-
  * shape variable: it only converts "hangs" into "throws".
+ *
+ * ⚠️ 300_000 → 110_000 (Eval-tick-deadline PRD D4). At 110s per attempt, three attempts plus backoff
+ * fit inside the 240s tick deadline — so a note can still exhaust its retry budget WITHIN one tick
+ * and record its envelope, which is the whole point of the probe. At 300s a single attempt outlived
+ * the tick, so the retry budget could never be spent before the invocation was killed.
  */
-export const OPENROUTER_TIMEOUT_MS = Number(process.env.OPENROUTER_TIMEOUT_MS) || 300_000;
+export const OPENROUTER_TIMEOUT_MS = Number(process.env.OPENROUTER_TIMEOUT_MS) || 110_000;
 
 /**
  * The response envelope OpenRouter already returns and this code has always discarded (§R2).
@@ -576,6 +583,32 @@ export function emptyContentErrorMessage(env: LlmEnvelope, maxTries: number = OP
   return `OpenRouter returned EMPTY CONTENT (HTTP 200) — treated as failure, not as an unassessed note.
 finish_reason=${v(env.finish_reason)} native_finish_reason=${v(env.native_finish_reason)} provider=${v(env.provider)} attempt=${env.attempt}/${maxTries}
 usage: prompt=${n(env.usage?.prompt_tokens)} completion=${n(env.usage?.completion_tokens)} reasoning=${n(env.usage?.reasoning_tokens)} content_length=${env.content_length}`;
+}
+
+/**
+ * The tick-deadline failure message. NORMATIVE (Eval-tick-deadline PRD §4) — like
+ * `emptyContentErrorMessage`, this string IS the instrumentation: no `lab_analyses` row is written
+ * for a deadline-hit note, so the tick summary in `app_settings.lab_batch_last` is the only record.
+ *
+ * `env` is the LAST envelope seen on this note, or null when the deadline was already blown before
+ * attempt 1 (nothing has come back off the wire yet) — every field then reads `null`, which is
+ * itself the signal that the note never got a response.
+ */
+export function deadlineErrorMessage(attempt: number, maxTries: number, env: LlmEnvelope | null): string {
+  const v = (x: unknown) => (x == null || x === '' ? 'null' : String(x));
+  const n = (x: unknown) => (typeof x === 'number' && Number.isFinite(x) ? String(x) : 'null');
+  return `TICK DEADLINE reached before attempt ${attempt}/${maxTries} — abandoning this note so the tick can report.
+The uid is NOT marked done and will be retried next tick.
+last envelope: finish_reason=${v(env?.finish_reason)} native_finish_reason=${v(env?.native_finish_reason)} provider=${v(env?.provider)} content_length=${n(env?.content_length)}`;
+}
+
+/** The stable prefix of `deadlineErrorMessage`. The tick counts `deadline_hits` with it, so it is
+ *  defined ONCE here beside the builder rather than duplicated as a literal in `lab-batch.ts`. */
+export const DEADLINE_ERROR_PREFIX = 'TICK DEADLINE reached before attempt ';
+
+/** True when a per-note error string came from the tick deadline. Pure and total. */
+export function isDeadlineErrorMessage(msg: unknown): boolean {
+  return typeof msg === 'string' && msg.startsWith(DEADLINE_ERROR_PREFIX);
 }
 
 /**
@@ -631,22 +664,56 @@ export function readLlmEnvelope(j: unknown, attempt: number, contentLength: numb
  *  `onEnvelope` is APPENDED and optional, so every existing call site is unchanged. It fires on
  *  EVERY attempt — success, HTTP failure, empty content and transport failure alike — and is wrapped
  *  so instrumentation can never be the thing that breaks a run.
+ *
+ *  ═══ TICK DEADLINE (Eval-tick-deadline PRD D1/D2) ═══
+ *  `deadlineAt` is APPENDED and optional (absolute epoch ms), so every existing call site — every
+ *  production path included — is byte-identical when it is absent. When present it bounds this
+ *  note's TOTAL time, not one attempt:
+ *    · before EACH attempt, an exhausted budget throws immediately — no sleep, no fetch;
+ *    · before sleeping between retries, a backoff that would cross the deadline throws instead;
+ *    · the AbortController timeout is clamped to the remaining budget.
+ *  So the pool always resolves normally and the tick reaches the line that writes its summary and
+ *  clears the lock. Deliberately NOT `Promise.race` on the pool (D3): racing returns partial results
+ *  while in-flight calls keep running, and those calls write `lab_analyses` rows AFTER the lock is
+ *  released — the next tick would re-run the same uid, recreating the duplicate-row defect `bed1449`
+ *  fixed.
  */
 export async function openRouterGenerate(
   model: string, system: string, user: string,
   fetchImpl: typeof fetch = fetch,
   sleepFn: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
   onEnvelope: (e: LlmEnvelope) => void = () => {},
+  deadlineAt?: number,
 ): Promise<string> {
   const key = process.env.OPENROUTER_API_KEY;
   if (!key) throw new Error('OPENROUTER_API_KEY is not set — required for eval generation (evalModel)');
+  // The last envelope seen on this note, carried into the deadline message. Assignment only.
+  let lastEnv: LlmEnvelope | null = null;
   // Envelope capture must NEVER throw and NEVER block a real result (PRD §4 fail-safe direction).
-  const emit = (e: LlmEnvelope) => { try { onEnvelope(e); } catch { /* instrumentation is never fatal */ } };
+  const emit = (e: LlmEnvelope) => { lastEnv = e; try { onEnvelope(e); } catch { /* instrumentation is never fatal */ } };
+  // D1 — backoff that would cross the deadline throws NOW rather than sleeping through it. With no
+  // deadline this is exactly `await sleepFn(openRouterBackoffMs(attempt))`, one `rand()` draw and all.
+  const sleepOrThrow = async (attempt: number): Promise<void> => {
+    const backoff = openRouterBackoffMs(attempt);
+    if (deadlineAt != null && remainingBudgetMs(deadlineAt) <= backoff) {
+      throw new Error(deadlineErrorMessage(attempt + 1, OPENROUTER_MAX_TRIES, lastEnv));
+    }
+    await sleepFn(backoff);
+  };
   let lastErr: Error = new Error('OpenRouter: no attempt made');
   for (let attempt = 1; attempt <= OPENROUTER_MAX_TRIES; attempt++) {
+    // D1 — before EACH attempt. An exhausted budget throws immediately: no sleep, no fetch.
+    if (deadlineAt != null && remainingBudgetMs(deadlineAt) <= 0) {
+      throw new Error(deadlineErrorMessage(attempt, OPENROUTER_MAX_TRIES, lastEnv));
+    }
     // D4 — a per-attempt deadline. Cleared in `finally` so a completed request never leaves a timer.
+    // D2 — clamped to the remaining tick budget when there is one, so a fetch can never outlive the
+    // tick. With no deadline this is OPENROUTER_TIMEOUT_MS exactly, as before.
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), OPENROUTER_TIMEOUT_MS);
+    const timeoutMs = deadlineAt == null
+      ? OPENROUTER_TIMEOUT_MS
+      : Math.min(OPENROUTER_TIMEOUT_MS, remainingBudgetMs(deadlineAt));
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     let res: Response;
     try {
       res = await fetchImpl('https://openrouter.ai/api/v1/chat/completions', {
@@ -662,10 +729,10 @@ export async function openRouterGenerate(
       emit({ finish_reason: null, native_finish_reason: null, provider: null, usage: null, content_length: 0, attempt });
       const aborted = ctrl.signal.aborted;
       lastErr = new Error(aborted
-        ? `OpenRouter TIMEOUT after ${OPENROUTER_TIMEOUT_MS}ms (attempt ${attempt}/${OPENROUTER_MAX_TRIES})`
+        ? `OpenRouter TIMEOUT after ${timeoutMs}ms (attempt ${attempt}/${OPENROUTER_MAX_TRIES})`
         : `OpenRouter transport error (attempt ${attempt}/${OPENROUTER_MAX_TRIES}): ${String((e as Error)?.message ?? e).slice(0, 200)}`);
       if (attempt === OPENROUTER_MAX_TRIES) throw lastErr;
-      await sleepFn(openRouterBackoffMs(attempt));
+      await sleepOrThrow(attempt);
       continue;
     } finally {
       clearTimeout(timer);
@@ -683,23 +750,23 @@ export async function openRouterGenerate(
       // EMPTY CONTENT — a failure, not an unassessed note. Retryable on the existing budget.
       lastErr = new Error(emptyContentErrorMessage(env, OPENROUTER_MAX_TRIES));
       if (attempt === OPENROUTER_MAX_TRIES) throw lastErr;
-      await sleepFn(openRouterBackoffMs(attempt));
+      await sleepOrThrow(attempt);
       continue;
     }
     emit({ finish_reason: null, native_finish_reason: null, provider: null, usage: null, content_length: 0, attempt });
     lastErr = new Error(`OpenRouter HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`);
     if (!openRouterRetryable(res.status) || attempt === OPENROUTER_MAX_TRIES) throw lastErr;
-    await sleepFn(openRouterBackoffMs(attempt));
+    await sleepOrThrow(attempt);
   }
   throw lastErr;
 }
 
-async function defaultGenerate(traceId: string | undefined, system: string, user: string, mini = false, evalModel?: string, onEnvelope?: (e: LlmEnvelope) => void): Promise<string> {
+async function defaultGenerate(traceId: string | undefined, system: string, user: string, mini = false, evalModel?: string, onEnvelope?: (e: LlmEnvelope) => void, deadlineAt?: number): Promise<string> {
   // EVAL-ONLY (lab): route to OpenRouter when an eval model is named. evalModel unset ⇒ the Gemini/mini
   // path below is byte-identical to today (no production audit ever passes evalModel).
-  // `onEnvelope` is threaded ONLY here, on the eval branch. The production path below — its params,
-  // its governedChat call and its line-604 `content || ''` — is untouched (D1).
-  if (evalModel) return openRouterGenerate(evalModel, system, user, fetch, undefined, onEnvelope);
+  // `onEnvelope` and `deadlineAt` are threaded ONLY here, on the eval branch. The production path
+  // below — its params, its governedChat call and its `content || ''` — is untouched (D1).
+  if (evalModel) return openRouterGenerate(evalModel, system, user, fetch, undefined, onEnvelope, deadlineAt);
   // mini=true forces the Mac-mini Ollama bridge (no Gemini) with MINI_MODEL — the
   // scoped mini pipeline (OPD mini backfill). Default path is byte-identical to before.
   const geminiModel = mini ? undefined : (geminiModelFor('doc_audit') ?? geminiUtilityModel());
@@ -772,6 +839,11 @@ export interface AuditOpdOpts {
    *  byte-identical and the CW statements are appended as a separate citable block [9+]. Independent
    *  of evalNormativeLeg (the harmful union); absent ⇒ today's context assembly exactly. */
   evalNormativeChannel?: boolean;
+  /** LAB EVAL ONLY (Eval-tick-deadline PRD D1): absolute epoch-ms deadline for the tick this note is
+   *  being audited in. Reaches the LLM only via `defaultGenerate`'s evalModel branch, so it is inert
+   *  unless `evalModel` is also set. ABSENT ⇒ every existing call site, production included, is
+   *  byte-identical. Set ONLY by `batchTick`'s eval branch; never by any production caller. */
+  deadlineAt?: number;
 }
 
 /** Engine tag for mini-pipeline rows (default run). */
@@ -900,7 +972,7 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     if (traceId) await logEvent(traceId, 'opd_audit_sources', null, { count: sources.length });
 
     const specialty = await doctorSpecialtyFor(keys.doctorUid);
-    const raw = await defaultGenerate(traceId, OPD_AUDIT_SYSTEM, buildOpdAuditUser(opdCaseText(oc, { specialty }), citedContext), mini, opts.evalModel, opts.onEnvelope);
+    const raw = await defaultGenerate(traceId, OPD_AUDIT_SYSTEM, buildOpdAuditUser(opdCaseText(oc, { specialty }), citedContext), mini, opts.evalModel, opts.onEnvelope, opts.deadlineAt);
     const parsed = parseOpdAnalysis(raw, sources.length);
 
     const findings: OpdFinding[] = finalize([...det, ...(parsed?.findings ?? [])]);

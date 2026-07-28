@@ -22,6 +22,7 @@ import {
   OPENROUTER_MAX_TRIES, OPENROUTER_TIMEOUT_MS, AUDIT_EVAL_THINKING_BUDGET,
   type LlmEnvelope,
 } from '../opd-note-audit.ts';
+import { EVAL_TICK_DEADLINE_MS } from '../lab-batch-core.ts';
 
 const SRC = readFileSync('lib/opd-note-audit.ts', 'utf8');
 
@@ -206,9 +207,14 @@ test('readLlmEnvelope is total — any shape yields a defined envelope, never a 
 // 3 · THE TIMEOUT (D4)
 // ═════════════════════════════════════════════════════════════════════════════════════════════
 
-test('OPENROUTER_TIMEOUT_MS defaults to 300s and is env-overridable', () => {
-  assert.equal(OPENROUTER_TIMEOUT_MS, Number(process.env.OPENROUTER_TIMEOUT_MS) || 300_000);
-  assert.ok(/Number\(process\.env\.OPENROUTER_TIMEOUT_MS\) \|\| 300_000/.test(SRC));
+// ⚠️ 300s → 110s (Eval-tick-deadline PRD D4). Three attempts at 110s plus backoff fit inside the
+// 240s tick deadline, so a note can still exhaust its retry budget WITHIN one tick and record its
+// envelope. At 300s one attempt outlived the tick and the budget could never be spent.
+test('OPENROUTER_TIMEOUT_MS defaults to 110s and is env-overridable', () => {
+  assert.equal(OPENROUTER_TIMEOUT_MS, Number(process.env.OPENROUTER_TIMEOUT_MS) || 110_000);
+  assert.ok(/Number\(process\.env\.OPENROUTER_TIMEOUT_MS\) \|\| 110_000/.test(SRC));
+  assert.ok(3 * 110_000 < EVAL_TICK_DEADLINE_MS + 110_000,
+    'the retry budget must be spendable inside one tick — that is why this number changed');
 });
 
 test('an AbortSignal is passed to the fetch, and the timer is always cleared', () => {
@@ -292,12 +298,13 @@ test('the production defaultGenerate params are byte-identical — no eval chang
   assert.ok(block.includes("temperature: onGemini ? 0 : (isReasoning ? 0 : 0.2),"));
   assert.ok(block.includes("max_tokens: isReasoning ? 8192 : 2200,"));
   assert.ok(block.includes("...(onGemini ? { seed: AUDIT_LLM_SEED, top_p: 1, google: { thinking_config: { thinking_budget: AUDIT_EVAL_THINKING_BUDGET } } } : {}),"));
-  // the envelope is threaded ONLY on the eval branch
-  assert.ok(block.includes('if (evalModel) return openRouterGenerate(evalModel, system, user, fetch, undefined, onEnvelope);'));
-  // Count CODE occurrences only — comments legitimately mention it. Exactly two: the parameter and
-  // the eval call site. A third would mean it had leaked onto the production branch.
+  // the envelope AND the tick deadline are threaded ONLY on the eval branch
+  assert.ok(block.includes('if (evalModel) return openRouterGenerate(evalModel, system, user, fetch, undefined, onEnvelope, deadlineAt);'));
+  // Count CODE occurrences only — comments legitimately mention it. Exactly two each: the parameter
+  // and the eval call site. A third would mean it had leaked onto the production branch.
   const code = block.split('\n').filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
   assert.equal((code.match(/onEnvelope/g) || []).length, 2, 'the param and the eval call site only — never the production branch');
+  assert.equal((code.match(/deadlineAt/g) || []).length, 2, 'the deadline must not reach the Gemini/mini branch');
 });
 
 test('buildOpenRouterBody is BYTE-IDENTICAL — no max_tokens, no response_format (D3)', () => {

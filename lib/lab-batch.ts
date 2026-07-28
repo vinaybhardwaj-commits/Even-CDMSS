@@ -10,12 +10,12 @@
  * the prod mini-backfill (both hit the single Mac-mini) via that worker's soft lock.
  */
 import { sql } from './db';
-import { auditOpdNote, type LlmEnvelope } from './opd-note-audit';
+import { auditOpdNote, isDeadlineErrorMessage, type LlmEnvelope } from './opd-note-audit';
 import { MINI_MODEL } from './llm';
 import { fetchOpdNoteByUid } from './metabase';
 import { saveLabAnalysis } from './lab';
 import { getSettings, setSetting, windowOpen, lockHeld, readState as readMiniState } from './mini-backfill';
-import { LB_KEYS, LB_LOCK_TTL_MS, type LabBatchState, parseBatchState, remainingUids, batchGate, drainPlan, boundedPool, labLockHeld, ttlBreach, ttlBreachMessage } from './lab-batch-core';
+import { LB_KEYS, LB_LOCK_TTL_MS, EVAL_TICK_DEADLINE_MS, type LabBatchState, parseBatchState, remainingUids, batchGate, drainPlan, boundedPool, labLockHeld, ttlBreach, ttlBreachMessage } from './lab-batch-core';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 
@@ -38,8 +38,10 @@ export async function batchProgress(experiment: string, cohort: string[]): Promi
   return { total: cohort.length, done: doneInCohort, remaining: Math.max(0, cohort.length - doneInCohort) };
 }
 
-/** Lab eval config for a batch (R-11 Stage 2 Phase 2). Absent ⇒ today's mini/leg-off behaviour. */
-export interface LabEvalConfig { evalNormativeLeg?: boolean; evalModel?: string; evalNormativeChannel?: boolean }
+/** Lab eval config for a batch (R-11 Stage 2 Phase 2). Absent ⇒ today's mini/leg-off behaviour.
+ *  `deadlineAt` (Eval-tick-deadline PRD D1) is absolute epoch ms, set by `batchTick`'s EVAL branch
+ *  only — the mini branch leaves it undefined and is byte-identical. */
+export interface LabEvalConfig { evalNormativeLeg?: boolean; evalModel?: string; evalNormativeChannel?: boolean; deadlineAt?: number }
 
 /** The shared per-note primitive: audit one db13 uid → lab_analyses. Writes ONLY lab_analyses (via
  *  saveLabAnalysis); auditOpdNote is pure compute and never writes opd_note_audits. `evalCfg` (Phase 2)
@@ -58,6 +60,8 @@ export async function runMiniOpdToLab(uid: string, experiment: string, evalCfg: 
     pipeline: 'mini', engineTag: 'lab', trace: false,
     evalNormativeLeg: evalCfg.evalNormativeLeg, evalModel: evalCfg.evalModel,
     evalNormativeChannel: evalCfg.evalNormativeChannel,
+    // Inert unless evalModel is also set — it reaches the LLM only via defaultGenerate's eval branch.
+    deadlineAt: evalCfg.deadlineAt,
     onEnvelope: (e) => { lastEnvelope = e; },
   });
   const output = {
@@ -126,7 +130,11 @@ export async function batchTick(opts: { ignoreWindow?: boolean } = {}): Promise<
     }
     const priorDone = st.uids.length - todo.length;
     const slice = todo.slice(0, plan.sliceSize);
-    const evalCfg = { evalNormativeLeg: st.evalNormativeLeg, evalModel: st.evalModel ?? undefined, evalNormativeChannel: st.evalNormativeChannel };
+    // D1 — the tick deadline, computed ONCE, from the tick's own start. EVAL BRANCH ONLY: the mini
+    // branch gets `undefined` and is byte-identical, because the mini path is serial on a single GPU
+    // and never retries inside the tick, so it has neither the failure mode nor the fan-out.
+    const deadlineAt = plan.evalMode ? tickStart + EVAL_TICK_DEADLINE_MS : undefined;
+    const evalCfg = { evalNormativeLeg: st.evalNormativeLeg, evalModel: st.evalModel ?? undefined, evalNormativeChannel: st.evalNormativeChannel, ...(deadlineAt != null ? { deadlineAt } : {}) };
     // One note → one result row; errors captured per-note (never thrown out of the drain).
     const drainOne = async (uid: string): Promise<Record<string, unknown>> => {
       const t0 = Date.now();
@@ -160,7 +168,10 @@ export async function batchTick(opts: { ignoreWindow?: boolean } = {}): Promise<
     }
     const summary = {
       ...base, experiment, model: st.evalModel || MINI_MODEL, processed: results.length,
-      ...(plan.evalMode ? { evalConcurrency: plan.concurrency } : {}),
+      // D1 instrumentation, EVAL-ONLY so mini summaries stay byte-identical. `deadline_ms` is the
+      // field V watches to confirm the deploy took; `deadline_hits` counts notes abandoned to let
+      // the tick report — each stays un-done and is retried next tick, with NO lab_analyses row.
+      ...(plan.evalMode ? { evalConcurrency: plan.concurrency, deadline_ms: EVAL_TICK_DEADLINE_MS, deadline_hits: results.filter((r) => isDeadlineErrorMessage(r.error)).length } : {}),
       done: doneNow, remaining: Math.max(0, st.uids.length - doneNow), results, at: new Date().toISOString(),
       ttl_breach: breach.breach, max_ms: breach.maxMs, ttl_ms: LB_LOCK_TTL_MS,
       // D3 — the fields the old summary lacked. `slice_planned` vs `slice_drained` says whether the

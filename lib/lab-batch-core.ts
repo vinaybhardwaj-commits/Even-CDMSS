@@ -58,6 +58,32 @@ export function clampEvalConcurrency(v: unknown): number {
   return Math.min(EVAL_CONCURRENCY_MAX, n);
 }
 
+/**
+ * EVAL-ONLY (lab): the wall-clock deadline for ONE eval tick. Computed once at tick start and
+ * threaded to every LLM attempt (Eval-tick-deadline PRD D1).
+ *
+ * ⚠️ THIS CORRECTS THE CLOSING NOTE ON `drainPlan` BELOW, which rejected a wall-clock budget as
+ * "dead code asserting a protection it does not provide". That reasoning was about a budget gating
+ * DISPATCHING — and it is right about that one: with one wave there is nothing left to dispatch
+ * after t=0. This budget gates RETURNING AND RETRYING, which is a different mechanism. `6b12652`
+ * made a failing note retry up to 3× INSIDE the tick, so a wave containing one failure runs ~3×
+ * longer, exactly when the tick most needs to finish and report.
+ *
+ * MEASURED 27 Jul (probe `probe_r2_envelope_01`, 20 uids, evalConcurrency 6): the tick started
+ * 14:22:00, wrote 5 rows by 14:26:54, then died. `app_settings.lab_batch_last` still held the 12:46
+ * tick at 14:37 — the tick never completed — and `lab_batch_last_error` was EMPTY throughout,
+ * because the invocation was killed mid-retry: the throw never completed, `drainOne` never caught
+ * it, and the error key was never written.
+ *
+ * 240s leaves headroom under the observed ~300s kill. Env-overridable.
+ */
+export const EVAL_TICK_DEADLINE_MS = Number(process.env.EVAL_TICK_DEADLINE_MS) || 240_000;
+
+/** Remaining budget against an absolute epoch-ms deadline, floored at 0. Pure. */
+export function remainingBudgetMs(deadlineAt: number, now = Date.now()): number {
+  return Math.max(0, deadlineAt - now);
+}
+
 /** Pure drain decision: how a tick drains, given the batch state. Mini (no evalModel) keeps the
  *  legacy shape EXACTLY — n≤2, serial, mini-yield honoured. Eval (evalModel set) fans out.
  *

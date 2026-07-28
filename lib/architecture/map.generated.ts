@@ -3460,6 +3460,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "opd-note-audit",
+    "to": "lab-batch-core",
+    "kind": "value"
+  },
+  {
+    "from": "opd-note-audit",
     "to": "llm",
     "kind": "value"
   },
