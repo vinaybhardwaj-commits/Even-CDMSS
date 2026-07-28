@@ -1,0 +1,223 @@
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
+/**
+ * POST /api/lab/ml-label-trial — ML Phase 1 retrospective validation. DRY-RUN BY DEFAULT.
+ *
+ *   { }                                    → dry run: set sizes, call plan, cap check, rendered
+ *                                            prompt EXAMPLE (contains clinical text — admin eyes)
+ *   { action:'chunk', model, experiment,
+ *     offset, limit }                      → run BOTH passes over rows [offset, offset+limit),
+ *                                            store the chunk artefact in lab_analyses
+ *   { action:'summary', experiment }       → merge all stored chunks → the §7 report. The summary
+ *                                            block contains NO verbatim clinical text (PHI §6.5).
+ *
+ * D8 — the trial writes ONLY lab_analyses (kind 'ml_label_trial'), never opd_audit_feedback.
+ * Chunked because 1,634 provider calls do not fit one serverless invocation; chunks are
+ * deterministic (stable ORDER BY) and idempotent per (experiment, offset, limit) — a re-run
+ * overwrites its own chunk artefact and nothing else.
+ *
+ * ⚠️ INFERRED SQL (no live DB in the build sandbox; opd_audit_feedback is blocked from read-only
+ * tooling). Every column here is inferred from lib/opd-feedback-rollup-core.ts, which reads the
+ * same table in production. Both queries are listed verbatim in the build report for validation.
+ */
+import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
+import { requireAdmin } from '@/lib/admin-gate';
+import { isAdminUnlocked } from '@/lib/admin-cookie';
+import { sql } from '@/lib/db';
+import { saveLabAnalysis } from '@/lib/lab';
+import { fetchOpdNoteByUid } from '@/lib/metabase';
+import { rowToOpdCase, opdCaseText } from '@/lib/opd-ingest-core';
+import {
+  renderLabelPrompt, parseLabelResponse, planTrial, computeTrialReport,
+  TRIAL_PROMPT_VERSION, type TrialFinding, type TrialRow,
+} from '@/lib/ml-label-trial/core';
+import { trialLabelCall } from '@/lib/ml-label-trial/client';
+
+const APP = process.env.APP_SOURCE || 'standalone';
+const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
+const KIND = 'ml_label_trial';
+
+/** The current-state human-labelled set (D4): one row per (audit_id, finding_ref), latest wins —
+ *  the same current-state rule the rollup core uses. Deterministic outer order for chunking. */
+const TRIAL_SET_SQL = `
+  SELECT * FROM (
+    SELECT DISTINCT ON (f.audit_id, f.finding_ref)
+           f.audit_id, f.finding_ref, f.verdict AS human_verdict,
+           f.signal_type AS human_signal_type,
+           a.engine_version, a.uid, a.findings
+      FROM opd_audit_feedback f
+      JOIN opd_note_audits a ON a.id = f.audit_id
+     WHERE f.scope = 'finding' AND f.finding_ref IS NOT NULL AND f.app_source = $1
+     ORDER BY f.audit_id, f.finding_ref, f.created_at DESC, f.id DESC
+  ) t ORDER BY audit_id, finding_ref`;
+
+/** D11 — findings with ≥2 distinct non-blank authors across current AND superseded rows. */
+const OVERLAP_SQL = `
+  SELECT f.audit_id, f.finding_ref, count(DISTINCT btrim(f.author))::int AS n_authors
+    FROM opd_audit_feedback f
+   WHERE f.scope = 'finding' AND f.finding_ref IS NOT NULL AND f.app_source = $1
+     AND f.author IS NOT NULL AND btrim(f.author) <> ''
+   GROUP BY f.audit_id, f.finding_ref
+  HAVING count(DISTINCT btrim(f.author)) >= 2`;
+
+/** Human storage vocabulary → the model's class names. 'true_positive' IS 'tp' under its storage
+ *  name — the same class, not an invented mapping. 'contested' is preserved and held out (D5). */
+function humanClass(v: unknown): string {
+  const s = String(v ?? '');
+  return s === 'true_positive' ? 'tp' : s;
+}
+
+type SetRow = {
+  audit_id: string; finding_ref: string; human_verdict: string; human_signal_type: string | null;
+  engine_version: string; uid: string; findings: unknown;
+};
+
+function findingFromRow(r: SetRow): TrialFinding | null {
+  try {
+    const arr = (typeof r.findings === 'string' ? JSON.parse(r.findings) : r.findings) as Record<string, unknown>[];
+    const f = Array.isArray(arr) ? arr.find((x) => String(x.finding_ref ?? '') === r.finding_ref) : null;
+    if (!f) return null;
+    return {
+      subject: String(f.subject ?? ''), verdict: String(f.verdict ?? ''), domain: String(f.domain ?? ''),
+      signal_type: f.signal_type == null ? null : String(f.signal_type),
+      rationale: String(f.rationale ?? ''), confidence: Number(f.confidence) || 0,
+    };
+  } catch { return null; }
+}
+
+async function authed(req: NextRequest): Promise<boolean> {
+  const denied = requireAdmin(req);
+  return !denied || (await isAdminUnlocked().catch(() => false));
+}
+
+export async function POST(req: NextRequest) {
+  if (!(await authed(req))) return NextResponse.json({ ok: false, error: 'admin required' }, { status: 401 });
+  let body: Record<string, unknown> = {};
+  try { body = (await req.json()) as Record<string, unknown>; } catch { body = {}; }
+  const action = typeof body.action === 'string' ? body.action : 'dry';
+
+  try {
+    const set = (await run(TRIAL_SET_SQL, [APP])) as SetRow[];
+    const contestedN = set.filter((r) => humanClass(r.human_verdict) === 'contested').length;
+    const scoredN = set.length - contestedN;
+    const plan = planTrial(scoredN, contestedN);
+
+    if (action === 'dry') {
+      // The rendered example (D1/D2, §9.2 — checked by eye). Uses the FIRST row; contains
+      // clinical text, which is why the DRY response is admin-gated and never a shared doc.
+      const first = set[0];
+      const finding = first ? findingFromRow(first) : null;
+      const note = first ? await fetchOpdNoteByUid(first.uid).catch(() => null) : null;
+      const ctx = note ? opdCaseText(rowToOpdCase(note).case) : null;
+      return NextResponse.json({
+        ok: true, dryRun: true,
+        set: { total: set.length, scored: scoredN, contested: contestedN },
+        plan,
+        overlap: (await run(OVERLAP_SQL, [APP])).length,
+        promptVersion: TRIAL_PROMPT_VERSION,
+        renderedExample: finding ? renderLabelPrompt(finding, ctx) : null,
+      });
+    }
+
+    if (action === 'chunk') {
+      const model = typeof body.model === 'string' ? body.model.trim() : '';
+      if (!model) return NextResponse.json({ ok: false, error: 'model is required — it is a runtime parameter with no default (D7)' }, { status: 400 });
+      const experiment = String(body.experiment ?? '').replace(/[^a-z0-9_-]/gi, '').slice(0, 48);
+      if (!experiment) return NextResponse.json({ ok: false, error: 'experiment label required' }, { status: 400 });
+      if (!plan.ok) return NextResponse.json({ ok: false, error: plan.reason }, { status: 400 });   // D9 — before the first call
+      const offset = Math.max(0, Math.floor(Number(body.offset) || 0));
+      const limit = Math.max(1, Math.min(60, Math.floor(Number(body.limit) || 40)));
+      const slice = set.slice(offset, offset + limit);
+
+      const noteCache = new Map<string, string | null>();
+      const results: Record<string, unknown>[] = [];
+      let calls = 0;
+      for (const r of slice) {
+        const finding = findingFromRow(r);
+        if (!finding) {
+          results.push({ key: `${r.audit_id}:${r.finding_ref}`, status: 'finding_unmatched', human: humanClass(r.human_verdict), engine: r.engine_version });
+          continue;
+        }
+        if (!noteCache.has(r.uid)) {
+          const note = await fetchOpdNoteByUid(r.uid).catch(() => null);
+          noteCache.set(r.uid, note ? opdCaseText(rowToOpdCase(note).case) : null);
+        }
+        const ctx = noteCache.get(r.uid) ?? null;
+        const { system, user } = renderLabelPrompt(finding, ctx);
+        const out: Record<string, unknown> = {
+          key: `${r.audit_id}:${r.finding_ref}`, human: humanClass(r.human_verdict),
+          engine: r.engine_version, signalType: r.human_signal_type,
+          contested: humanClass(r.human_verdict) === 'contested',
+          contextIncluded: ctx != null,
+        };
+        for (const pass of [1, 2] as const) {
+          const call = await trialLabelCall(model, system, user);
+          calls++;
+          const parsed = call.error ? { cls: 'unparseable' as const, rationale: '', raw: `CALL_ERROR: ${call.error}` } : parseLabelResponse(call.raw);
+          out[`pass${pass}`] = parsed.cls;
+          out[`pass${pass}_rationale`] = parsed.rationale;
+          out[`pass${pass}_raw`] = parsed.raw.slice(0, 1200);
+          out[`pass${pass}_source`] = call.labelSource;
+          out[`pass${pass}_usage`] = call.usage;
+        }
+        results.push(out);
+      }
+
+      const id = await saveLabAnalysis({
+        experiment, kind: KIND, engine: TRIAL_PROMPT_VERSION, inputRef: `chunk:${offset}:${limit}`,
+        inputPreview: `ml-label-trial chunk ${offset}..${offset + slice.length}`,
+        output: { rows: results, model_requested: model, calls, offset, limit },
+        model, latencyMs: null, provider: 'openrouter',
+      });
+      return NextResponse.json({ ok: true, stored: id, chunk: { offset, limit, rows: results.length, calls }, done: offset + slice.length >= set.length, setTotal: set.length });
+    }
+
+    if (action === 'summary') {
+      const experiment = String(body.experiment ?? '').replace(/[^a-z0-9_-]/gi, '').slice(0, 48);
+      // Direct read: listLabAnalyses omits the output jsonb, which is the artefact itself.
+      const stored = await run(
+        `SELECT output FROM lab_analyses WHERE experiment = $1 AND kind = $2 ORDER BY created_at ASC LIMIT 500`,
+        [experiment, KIND]);
+      // later chunks win per key — re-runs of a chunk supersede themselves
+      const byKey = new Map<string, Record<string, unknown>>();
+      const sources = new Set<string>();
+      let calls = 0; let cost = 0; let promptTokens = 0; let completionTokens = 0;
+      for (const s of stored) {   // ascending created_at ⇒ later chunks naturally win per key
+        const raw = (s as { output?: unknown }).output;
+        const o = (typeof raw === 'string' ? JSON.parse(raw) : raw) as { rows?: Record<string, unknown>[]; calls?: number } | null;
+        for (const r of o?.rows ?? []) {
+          byKey.set(String(r.key), r);
+          for (const p of ['pass1', 'pass2']) {
+            const src = r[`${p}_source`]; if (typeof src === 'string') sources.add(src);
+            const u = r[`${p}_usage`] as { prompt_tokens?: number; completion_tokens?: number; cost?: number } | null;
+            if (u) { promptTokens += u.prompt_tokens ?? 0; completionTokens += u.completion_tokens ?? 0; cost += u.cost ?? 0; }
+          }
+        }
+        calls += o?.calls ?? 0;
+      }
+      const unmatched = [...byKey.values()].filter((r) => r.status === 'finding_unmatched').length;
+      const rows: TrialRow[] = [...byKey.values()].filter((r) => r.status !== 'finding_unmatched').map((r) => ({
+        key: String(r.key), human: String(r.human), engine: String(r.engine),
+        signalType: r.signalType == null ? null : String(r.signalType),
+        pass1: String(r.pass1 ?? 'missing'), pass2: String(r.pass2 ?? 'missing'),
+        contested: r.contested === true,
+      }));
+      const report = computeTrialReport(rows);
+      // PHI (§6.5): this summary carries counts, rates and ids ONLY — no clinical text.
+      return NextResponse.json({
+        ok: true, experiment, promptVersion: TRIAL_PROMPT_VERSION,
+        labelSources: [...sources], calls,
+        usage: { promptTokens, completionTokens, cost: Math.round(cost * 1e6) / 1e6 },
+        setCoverage: { labelled: byKey.size, ofSet: set.length, findingUnmatched: unmatched },
+        interHumanOverlap: (await run(OVERLAP_SQL, [APP])).length,
+        report,
+      });
+    }
+
+    return NextResponse.json({ ok: false, error: `unknown action: ${action}` }, { status: 400 });
+  } catch (e) {
+    return NextResponse.json({ ok: false, error: String((e as Error)?.message ?? e).slice(0, 300) }, { status: 500 });
+  }
+}

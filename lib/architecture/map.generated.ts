@@ -519,6 +519,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "ml-label-trial",
+    "plane": "unregistered"
+  },
+  {
     "id": "model-labels",
     "plane": "unregistered"
   },
@@ -1460,6 +1464,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "mini-backfill",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "ml-label-trial",
     "kind": "value"
   },
   {
@@ -4083,13 +4092,19 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "value": "2",
     "file": "lib/ccb-dossier-cache-core.ts",
     "derived": false
+  },
+  {
+    "constName": "TRIAL_PROMPT_VERSION",
+    "value": "ml-label-trial/1.0",
+    "file": "lib/ml-label-trial/core.ts",
+    "derived": false
   }
 ];
 
 export const COVERAGE = {
   "registered": 16,
-  "unregistered": 18,
-  "total": 34,
+  "unregistered": 19,
+  "total": 35,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
@@ -4101,6 +4116,7 @@ export const COVERAGE = {
     "dose-limits",
     "formulary-match-core",
     "mcp-server",
+    "ml-label-trial",
     "opd-audit",
     "opd-feedback-rollup-core",
     "opd-note-audit",
