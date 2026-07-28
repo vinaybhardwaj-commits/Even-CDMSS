@@ -7,17 +7,18 @@
  * needs to be readable six months later. Every label that renders this must say so — never "Verified
  * by", never "Signed by" (§12.4).
  *
- * ONE KEY, THREE PREFILL POINTS. The publish modal, the lab-packages publish panel and the IPD
- * review panel all read and write THIS key, so a name typed in any one of them prefills the other
- * two — "she types her name once, not on every publish and every review note". Defining the key
- * here rather than repeating the literal in three components is the only thing that makes that
- * guarantee hold; three copies would drift and silently split the memory in two.
+ * ⚠️ NO PREFILL, ANYWHERE (decision 17, V, 28 Jul — reverses the localStorage prefill shipped in
+ * §12.4). The name is typed on every publish and every review note: no localStorage, no
+ * sessionStorage, no default, no "last used" hint. On a shared browser a remembered name offers the
+ * LAST person's name to the NEXT one, so someone publishes without re-reading the field and the
+ * governance log confidently names the wrong person. A WRONG NAME IS WORSE THAN NO NAME — it reads
+ * as authoritative and gets relied on, which defeats the entire reason Phase D exists. V accepted
+ * the friction knowingly, over both the persistent and the session-scoped option.
+ *
+ * That is why this module exports no storage helper. If you are about to add one, read decision 17.
  *
  * No imports, no server dependencies — safe in any client component.
  */
-
-/** The single localStorage key. Do NOT inline this string anywhere else. */
-export const ATTRIBUTION_STORAGE_KEY = 'cdmss.admin.changedBy';
 
 /** Minimum length after trimming, enforced in the UI and again server-side. */
 export const MIN_ATTRIBUTION_CHARS = 2;
@@ -49,22 +50,3 @@ export function cleanAttribution(name: unknown): string | null {
 /** The server-side rejection message, shared by all three routes so the wording cannot drift. */
 export const ATTRIBUTION_REQUIRED_ERROR =
   'Your name is required — it is recorded with this change. (Self-declared; admin access is a shared token.)';
-
-/** Read the remembered name. Never throws — private mode / disabled storage yields ''. */
-export function rememberedAttribution(): string {
-  try {
-    return typeof window === 'undefined' ? '' : (window.localStorage.getItem(ATTRIBUTION_STORAGE_KEY) ?? '');
-  } catch {
-    return '';
-  }
-}
-
-/** Remember the name for next time. Never throws — a storage failure must not cost the save. */
-export function rememberAttribution(name: string): void {
-  try {
-    const v = cleanAttribution(name);
-    if (v && typeof window !== 'undefined') window.localStorage.setItem(ATTRIBUTION_STORAGE_KEY, v);
-  } catch {
-    /* storage is a convenience, never a precondition */
-  }
-}

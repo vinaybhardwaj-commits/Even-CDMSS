@@ -9,10 +9,10 @@
  * it, which is the exact failure mode that brought Dr. Binita here — so a removal is rendered in
  * danger colour, first, and never collapsed behind a summary count.
  */
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import type { LabPackage, PackageDiff } from '@/lib/scoring-policy/lab-packages-csv';
-// §12.4 — ONE remembered key, shared with the weightage publish modal and the IPD review panel.
-import { rememberedAttribution, rememberAttribution, isValidAttribution, ATTRIBUTION_LABEL, ATTRIBUTION_HELP } from '@/lib/admin-attribution';
+// §12.4 + decision 17 — required, and typed fresh every time. There is no prefill by design.
+import { isValidAttribution, ATTRIBUTION_LABEL, ATTRIBUTION_HELP } from '@/lib/admin-attribution';
 
 export default function LabPackagesEditor({ packages, count }: { packages: LabPackage[]; count: number }) {
   const [csv, setCsv] = useState<string | null>(null);
@@ -21,11 +21,9 @@ export default function LabPackagesEditor({ packages, count }: { packages: LabPa
   const [nextCount, setNextCount] = useState<number>(0);
   const [noChange, setNoChange] = useState(false);
   const [rationale, setRationale] = useState('');
-  // §12.4 — prefilled from the ONE remembered key. Prefilled ≠ skipped: still submitted, still
-  // validated here and again server-side. Deliberately NOT cleared by reset() — the remembered
-  // name survives picking a different file, which is the whole point of remembering it.
+  // ⚠️ STARTS EMPTY, ALWAYS (decision 17). No storage, no default — a remembered name would offer
+  // the LAST person's name to the NEXT one, and a wrong name is worse than no name.
   const [changedBy, setChangedBy] = useState('');
-  useEffect(() => { setChangedBy(rememberedAttribution()); }, []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -58,7 +56,6 @@ export default function LabPackagesEditor({ packages, count }: { packages: LabPa
     if (!csv) return;
     setBusy(true); setError(null);
     try {
-      rememberAttribution(changedBy);
       const res = await fetch('/api/scoring-policy/lab-packages/import', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ csv, filename, publish: true, rationale, published_by_name: changedBy.trim() }),

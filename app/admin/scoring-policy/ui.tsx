@@ -13,8 +13,8 @@
  */
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-// §12.4 — ONE remembered key, shared with the lab-packages panel and the IPD review panel.
-import { rememberedAttribution, rememberAttribution, isValidAttribution, ATTRIBUTION_LABEL, ATTRIBUTION_HELP } from '@/lib/admin-attribution';
+// §12.4 + decision 17 — required, and typed fresh every time. There is no prefill by design.
+import { isValidAttribution, ATTRIBUTION_LABEL, ATTRIBUTION_HELP } from '@/lib/admin-attribution';
 import {
   TIER_ORDER, TIER_LABEL, SECTION_LABEL, asTier, diffVectors, normalisedWeights, vectorsEqual,
   type FieldDef, type Tier, type WeightVector,
@@ -433,10 +433,9 @@ function PublishModal(props: {
   const { noteType, changedFields, fields, vector, draftUpdatedAt, restoredFromVersion, onClose, onDone } = props;
   // §5.5 — a restore arrives with its rationale prefilled, and editable.
   const [rationale, setRationale] = useState(restoredFromVersion != null ? `Restored v${restoredFromVersion}.` : '');
-  // §12.4 — prefilled from the ONE remembered key, so she types her name once. Prefilled ≠ skipped:
-  // it is still submitted and still validated, here and again server-side.
+  // ⚠️ STARTS EMPTY, ALWAYS (decision 17). A remembered name would offer the LAST person's name to
+  // the NEXT one on a shared browser, and a wrong name is worse than no name. Do not add a default.
   const [changedBy, setChangedBy] = useState('');
-  useEffect(() => { setChangedBy(rememberedAttribution()); }, []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const label = (k: string) => fields.find((f) => f.key === k)?.label ?? k;
@@ -445,7 +444,6 @@ function PublishModal(props: {
   const submit = async () => {
     setBusy(true); setError(null);
     try {
-      rememberAttribution(changedBy);
       const res = await fetch('/api/scoring-policy/publish', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({

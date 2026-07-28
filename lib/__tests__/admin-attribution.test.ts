@@ -20,10 +20,17 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import {
-  ATTRIBUTION_STORAGE_KEY, MIN_ATTRIBUTION_CHARS, MAX_ATTRIBUTION_CHARS,
+  MIN_ATTRIBUTION_CHARS, MAX_ATTRIBUTION_CHARS,
   ATTRIBUTION_LABEL, ATTRIBUTION_HELP, ATTRIBUTION_REQUIRED_ERROR,
-  isValidAttribution, cleanAttribution, rememberedAttribution, rememberAttribution,
+  isValidAttribution, cleanAttribution,
 } from '../admin-attribution.ts';
+
+/** Code only — comments legitimately name the storage APIs, to stop anyone re-adding them. */
+const codeOf = (src: string) =>
+  src.split('\n').filter((l) => {
+    const t = l.trim();
+    return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
+  }).join('\n');
 
 const PUBLISH = readFileSync('app/api/scoring-policy/publish/route.ts', 'utf8');
 const IMPORT_ = readFileSync('app/api/scoring-policy/lab-packages/import/route.ts', 'utf8');
@@ -63,53 +70,62 @@ test('PERSISTED VERBATIM — trimmed and capped, never title-cased or matched to
 });
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════
-// 2 · ONE KEY, THREE PREFILL POINTS
+// 2 · NO PREFILL, ANYWHERE (decision 17 — reverses the §12.4 localStorage prefill)
 // ═════════════════════════════════════════════════════════════════════════════════════════════
+//
+// A remembered name offers the LAST person's name to the NEXT one on a shared browser: someone
+// publishes without re-reading the field and the governance log confidently names the wrong person.
+// A WRONG NAME IS WORSE THAN NO NAME — it reads as authoritative and gets relied on.
 
-test('THE PREFILL PROPERTY: all three surfaces read and write ONE key', () => {
-  // The literal is defined once and must not be re-typed anywhere.
+test('THE RULE: no browser storage API is referenced from ANY of the three surfaces', () => {
+  const BANNED = ['localStorage', 'sessionStorage', 'indexedDB', 'document.cookie', 'caches.'];
   for (const [name, src] of [['weights modal', UI_WEIGHTS], ['packages panel', UI_PACKAGES], ['review panel', UI_REVIEW]] as const) {
-    assert.ok(/from '@\/lib\/admin-attribution'/.test(src), `${name} must import the shared helper`);
-    assert.ok(/rememberedAttribution\(\)/.test(src), `${name} must PREFILL from the remembered name`);
-    assert.ok(/rememberAttribution\(/.test(src), `${name} must REMEMBER the name it submits`);
-    assert.ok(!src.includes(ATTRIBUTION_STORAGE_KEY),
-      `${name} must not inline the key — three copies would drift and split the memory in two`);
+    const code = codeOf(src);
+    for (const api of BANNED) {
+      assert.ok(!code.includes(api), `${name} must not touch ${api} — decision 17 forbids any prefill`);
+    }
   }
 });
 
-test('the remembered name round-trips through storage and never throws', () => {
-  const store = new Map<string, string>();
-  const g = globalThis as { window?: unknown };
-  const prev = g.window;
-  g.window = { localStorage: {
-    getItem: (k: string) => store.get(k) ?? null,
-    setItem: (k: string, v: string) => { store.set(k, v); },
-  } };
-  try {
-    assert.equal(rememberedAttribution(), '', 'nothing remembered yet');
-    rememberAttribution('  Dr Binita Priyambada  ');
-    assert.equal(store.get(ATTRIBUTION_STORAGE_KEY), 'Dr Binita Priyambada', 'stored trimmed');
-    assert.equal(rememberedAttribution(), 'Dr Binita Priyambada');
-    rememberAttribution('x');          // too short — must not overwrite a good value
-    assert.equal(rememberedAttribution(), 'Dr Binita Priyambada');
-    // A storage that throws must not cost the save.
-    g.window = { localStorage: { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); } } };
-    assert.equal(rememberedAttribution(), '');
-    assert.doesNotThrow(() => rememberAttribution('Dr B'));
-  } finally {
-    if (prev === undefined) delete g.window; else g.window = prev;
+test('the storage helpers and the key are GONE from the shared module', () => {
+  const src = readFileSync('lib/admin-attribution.ts', 'utf8');
+  const code = codeOf(src);
+  for (const gone of ['ATTRIBUTION_STORAGE_KEY', 'rememberedAttribution', 'rememberAttribution', 'localStorage']) {
+    assert.ok(!code.includes(gone), `${gone} must not survive decision 17`);
   }
+  // The module still earns its place: the validator and the shared strings live here.
+  assert.ok(code.includes('export function cleanAttribution'));
+  assert.ok(code.includes('export function isValidAttribution'));
+  assert.ok(code.includes('export const ATTRIBUTION_REQUIRED_ERROR'));
 });
 
-test('server-side rendering has no window and must not crash', () => {
-  const g = globalThis as { window?: unknown };
-  const prev = g.window;
-  delete g.window;
-  try {
-    assert.equal(rememberedAttribution(), '');
-    assert.doesNotThrow(() => rememberAttribution('Dr B'));
-  } finally {
-    if (prev !== undefined) g.window = prev;
+test('EACH FIELD RENDERS EMPTY ON MOUNT — no default, no "last used" hint', () => {
+  // The name state is initialised to the empty string, with no effect populating it afterwards.
+  assert.ok(UI_WEIGHTS.includes("const [changedBy, setChangedBy] = useState('');"));
+  assert.ok(UI_PACKAGES.includes("const [changedBy, setChangedBy] = useState('');"));
+  assert.ok(UI_REVIEW.includes("const [reviewedBy, setReviewedBy] = useState('');"));
+  // The setter may appear EXACTLY twice: the useState declaration and the field's onChange. A third
+  // occurrence means something else writes the name — an effect, a restore, a "last used" hint.
+  for (const [name, src, setter] of [
+    ['weights modal', UI_WEIGHTS, 'setChangedBy'],
+    ['packages panel', UI_PACKAGES, 'setChangedBy'],
+    ['review panel', UI_REVIEW, 'setReviewedBy'],
+  ] as const) {
+    const n = (codeOf(src).match(new RegExp(`${setter}\\(`, 'g')) || []).length;
+    assert.equal(n, 1, `${name}: ${setter} must be called ONLY from onChange — nothing may prefill it`);
+    assert.ok(codeOf(src).includes(`, ${setter}] = useState('')`), `${name}: declared empty`);
+  }
+  // The review panel must NOT prefill from the stored author either — same failure mode.
+  assert.ok(!UI_REVIEW.includes('useState(initial?.reviewedByName'),
+    'prefilling from the existing review would attribute the next editor’s words to the original reviewer');
+  // …though the recorded author is still DISPLAYED on the saved header.
+  assert.ok(UI_REVIEW.includes("saved.reviewedByName ?? 'Unknown'"));
+});
+
+test('the name is still typed fresh and still sent by all three surfaces', () => {
+  for (const [name, src] of [['weights modal', UI_WEIGHTS], ['packages panel', UI_PACKAGES], ['review panel', UI_REVIEW]] as const) {
+    assert.ok(/from '@\/lib\/admin-attribution'/.test(src), `${name} must use the shared validator`);
+    assert.ok(/isValidAttribution\(/.test(src), `${name} must still validate before submitting`);
   }
 });
 
@@ -174,7 +190,7 @@ test('THE LABEL IS HONEST: "Your name", and the helper text says it is self-decl
 
 test('nothing anywhere implies authentication', () => {
   for (const src of [...ALL_UI, ...ALL_ROUTES, readFileSync('lib/admin-attribution.ts', 'utf8')]) {
-    const code = src.split('\n').filter((l) => !l.trim().startsWith('*') && !l.trim().startsWith('//')).join('\n');
+    const code = codeOf(src);
     for (const banned of ['Verified by', 'Signed by', 'Authenticated', 'Verified as']) {
       assert.ok(!code.includes(banned), `"${banned}" implies authentication — this is an attestation`);
     }
@@ -206,9 +222,14 @@ test('NO BACKFILL — existing Unknown/null rows are never rewritten or substitu
   assert.ok(UI_REVIEW.includes("saved.reviewedByName ?? 'Unknown'"), 'review panel reads the same way');
 });
 
-test('a name-only edit is savable, so an old review can gain an author without touching the note', () => {
-  assert.ok(UI_REVIEW.includes("|| reviewedBy.trim() !== (saved?.reviewedByName ?? '').trim()"),
+test('D-3 KEPT: a name-only edit is savable, so an old review can gain an author', () => {
+  // More important now, not less: with no prefill, an existing review's author is never carried
+  // into the field, so attributing an old review is always a name-only edit.
+  assert.ok(UI_REVIEW.includes('const nameChanged = isValidAttribution(reviewedBy)'),
     'dirty must account for the name, else a pre-§12.4 review could never be attributed');
+  assert.ok(UI_REVIEW.includes("const dirty = note.trim() !== (saved?.note ?? '').trim() || nameChanged;"));
+  // Gated on validity, so the empty starting state does not read as an unsaved change on mount.
+  assert.ok(UI_REVIEW.includes("&& reviewedBy.trim() !== (saved?.reviewedByName ?? '').trim()"));
 });
 
 test('the shared error message is the one users actually see, and names no roster', () => {

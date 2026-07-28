@@ -10,35 +10,35 @@
  * its `reviewPanel` slot by report-with-triage.tsx — the same posture as `findingActions`, so the
  * shared renderer stays byte-identical for every other caller.
  */
-import { useEffect, useState } from 'react';
-// §12.4 — ONE remembered key, shared with both publish surfaces in the Scoring policy module.
-import { rememberedAttribution, rememberAttribution, isValidAttribution, ATTRIBUTION_LABEL, ATTRIBUTION_HELP } from '@/lib/admin-attribution';
+import { useState } from 'react';
+// §12.4 + decision 17 — required, and typed fresh every time. There is no prefill by design.
+import { isValidAttribution, ATTRIBUTION_LABEL, ATTRIBUTION_HELP } from '@/lib/admin-attribution';
 
 export interface ExistingReview { note: string; reviewedByName: string | null; at: string | null }
 
 export default function ReviewPanel({ auditId, initial }: { auditId: string; initial: ExistingReview | null }) {
   const [note, setNote] = useState(initial?.note ?? '');
   const [saved, setSaved] = useState<ExistingReview | null>(initial);
-  // §12.4 — an EXISTING review's recorded author wins; otherwise fall back to the remembered name,
-  // so she types it once across both publish surfaces and every review note.
-  const [reviewedBy, setReviewedBy] = useState(initial?.reviewedByName ?? '');
-  useEffect(() => {
-    if (!initial?.reviewedByName) setReviewedBy((v) => v || rememberedAttribution());
-  }, [initial?.reviewedByName]);
+  // ⚠️ STARTS EMPTY, ALWAYS (decision 17) — including when a review already exists. Prefilling from
+  // the stored author has the SAME failure mode as the localStorage prefill it replaced: whoever
+  // edits the note next would save under the original reviewer's name without re-reading the field,
+  // and the log would confidently attribute their words to someone else.
+  const [reviewedBy, setReviewedBy] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // A name-only edit still counts as dirty — an old review saved before §12.4 has no author, and
-  // adding one must be savable without touching the note.
-  const dirty = note.trim() !== (saved?.note ?? '').trim()
-    || reviewedBy.trim() !== (saved?.reviewedByName ?? '').trim();
+  // D-3 (kept, and now more important): a NAME-ONLY edit counts as dirty, so a review saved before
+  // attribution existed can gain an author without touching its note. Gated on the name being valid
+  // so the empty starting state does not read as an unsaved change the moment the panel mounts.
+  const nameChanged = isValidAttribution(reviewedBy)
+    && reviewedBy.trim() !== (saved?.reviewedByName ?? '').trim();
+  const dirty = note.trim() !== (saved?.note ?? '').trim() || nameChanged;
 
   const save = async () => {
     if (!note.trim()) { setError('Write something first — an empty review is not a review.'); return; }
     if (!isValidAttribution(reviewedBy)) { setError('Add your name — it is recorded with the review.'); return; }
     setBusy(true); setError(null);
     try {
-      rememberAttribution(reviewedBy);
       const res = await fetch('/api/ipd-audit/review', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ auditId, note, reviewedByName: reviewedBy.trim() }),
