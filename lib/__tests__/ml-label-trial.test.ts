@@ -303,3 +303,37 @@ test('C2: the summary reports distinct keys vs the set WITH the missing-key list
   assert.ok(route.includes('trueCallCount'), 'the true call count vs the plan-sized cap');
   assert.ok(route.includes('crossInvocation'), 'cross-invocation is its own figure');
 });
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// 7 · Cohort freeze (addendum, 28 Jul) — a frozen key list, frozen labels, held-out growth
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+test('applyCohort: frozen labels win, extras separated, missing listed, revisions counted', async () => {
+  const { applyCohort } = await import('../ml-label-trial/core.ts');
+  const winners = new Map([
+    ['a:1', { row: { key: 'a:1', human: 'tp', pass1: 'tp', pass2: 'tp' } }],
+    ['a:2', { row: { key: 'a:2', human: 'nitpick', pass1: 'false', pass2: 'false' } }],  // revised post-capture
+    ['a:9', { row: { key: 'a:9', human: 'tp', pass1: 'tp', pass2: 'tp' } }],             // outside the cohort
+  ]);
+  const cohort = [
+    { key: 'a:1', human: 'true_positive', signalType: null, engine: 'e1' },
+    { key: 'a:2', human: 'false', signalType: null, engine: 'e1' },      // frozen label ≠ captured label
+    { key: 'a:3', human: 'contested', signalType: null, engine: 'e1' },  // not yet labelled
+  ];
+  const r = applyCohort(winners as never, cohort);
+  assert.equal(r.cohortRows.length, 2);
+  assert.equal(r.cohortRows.find((x) => x.key === 'a:1')!.human, 'tp', 'true_positive → tp, same class');
+  assert.equal(r.cohortRows.find((x) => x.key === 'a:2')!.human, 'false', 'the FROZEN label wins — a revision cannot silently move a reproducible number');
+  assert.equal(r.revisedSinceFreeze, 1, '…and the revision is COUNTED');
+  assert.deepEqual(r.extraKeys, ['a:9'], 'kept, reported separately, never folded in');
+  assert.deepEqual(r.missingKeys, ['a:3'], 'the keyed top-up target');
+});
+
+test('the cohort is immutable and the summary carries cohortId beside the metrics', () => {
+  const route = readFileSync('app/api/lab/ml-label-trial/route.ts', 'utf8');
+  assert.ok(route.includes('is already frozen — a cohort is immutable'), 'freeze refuses overwrite');
+  assert.ok(route.includes('cohort: cohortBlock'), 'cohortId/cohortSize ride the summary');
+  assert.ok(route.includes('postFreezeCohortSize'), 'the held-out set is NAMED');
+  assert.ok(route.includes('NAMED, not yet measured'), '…and explicitly not yet measured');
+  assert.ok(route.includes('NO FROZEN COHORT'), 'cohortless summaries say so rather than implying a freeze');
+});

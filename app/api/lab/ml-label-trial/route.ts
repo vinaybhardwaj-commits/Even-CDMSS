@@ -31,8 +31,8 @@ import { fetchOpdNoteByUid } from '@/lib/metabase';
 import { rowToOpdCase, opdCaseText } from '@/lib/opd-ingest-core';
 import {
   renderLabelPrompt, parseLabelResponse, planTrial, computeTrialReport, dedupStoredRows,
-  crossInvocationAgreement, TRIAL_PROMPT_VERSION,
-  type TrialFinding, type TrialRow, type StoredTrialRow,
+  crossInvocationAgreement, applyCohort, TRIAL_PROMPT_VERSION,
+  type TrialFinding, type TrialRow, type StoredTrialRow, type CohortEntry,
 } from '@/lib/ml-label-trial/core';
 import { trialLabelCall } from '@/lib/ml-label-trial/client';
 
@@ -193,6 +193,29 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, stored: id, chunk: { ref: chunkRef, rows: results.length, calls }, setTotal: set.length });
     }
 
+    // ═══ COHORT FREEZE (addendum 28 Jul) ═══ Snapshot the CURRENT label key set with the frozen
+    // human labels; the frozen list IS the Phase 1 cohort — the top-up targets it, any second
+    // model targets it, any re-run targets it. Refuses to overwrite an existing cohort id.
+    if (action === 'freeze') {
+      const cohortId = String(body.cohortId ?? '').replace(/[^a-z0-9_-]/gi, '').slice(0, 64);
+      if (!cohortId) return NextResponse.json({ ok: false, error: 'cohortId required' }, { status: 400 });
+      const experiment = String(body.experiment ?? '').replace(/[^a-z0-9_-]/gi, '').slice(0, 48) || 'ml_label_trial_p1';
+      const exists = await run(`SELECT id FROM lab_analyses WHERE kind = 'ml_label_cohort' AND input_ref = $1 LIMIT 1`, [cohortId]);
+      if (exists.length) return NextResponse.json({ ok: false, error: `cohort ${cohortId} is already frozen — a cohort is immutable` }, { status: 409 });
+      const entries: CohortEntry[] = set.map((r) => ({
+        key: `${r.audit_id}:${r.finding_ref}`, human: String(r.human_verdict),
+        signalType: r.human_signal_type == null ? null : String(r.human_signal_type),
+        engine: r.engine_version,
+      }));
+      const id = await saveLabAnalysis({
+        experiment, kind: 'ml_label_cohort', engine: TRIAL_PROMPT_VERSION,
+        inputRef: cohortId, inputPreview: `frozen Phase-1 cohort · ${entries.length} keys`,
+        output: { cohortId, size: entries.length, entries },
+        model: null, latencyMs: null, provider: null,
+      });
+      return NextResponse.json({ ok: true, cohortId, size: entries.length, stored: id });
+    }
+
     if (action === 'summary') {
       const experiment = String(body.experiment ?? '').replace(/[^a-z0-9_-]/gi, '').slice(0, 48);
       // Direct read: listLabAnalyses omits the output jsonb, which is the artefact itself.
@@ -218,24 +241,58 @@ export async function POST(req: NextRequest) {
       }
       // C1 — dedup by key, latest artefact wins (stated tie-break; see dedupStoredRows).
       const { winners, overlap } = dedupStoredRows(all);
-      // C2 — OUTPUT-SIDE reconciliation: distinct labelled keys vs the CURRENT input set, with the
-      // missing keys listed. The input set can GROW mid-run (measured 817 → 820), so both counts
-      // are stated; "labelled" is never asserted to equal anything it doesn't.
+
+      // ═══ COHORT VIEW (addendum) ═══ metrics are computed over the FROZEN cohort when one exists:
+      // frozen human labels (a post-freeze revision cannot silently move a reproducible number —
+      // it is counted), extra-cohort labelled keys kept and reported separately, missing = the
+      // keyed-top-up target, and the post-freeze set named (size only — it accrues as held-out).
+      const cohortIdReq = String(body.cohort ?? '').replace(/[^a-z0-9_-]/gi, '').slice(0, 64);
+      const cohortRow = (await run(
+        cohortIdReq
+          ? `SELECT output FROM lab_analyses WHERE kind = 'ml_label_cohort' AND input_ref = $1 LIMIT 1`
+          : `SELECT output FROM lab_analyses WHERE kind = 'ml_label_cohort' AND experiment = $1 ORDER BY created_at DESC LIMIT 1`,
+        [cohortIdReq || experiment]))[0];
+      const cohortOut = cohortRow
+        ? (typeof cohortRow.output === 'string' ? JSON.parse(String(cohortRow.output)) : cohortRow.output) as { cohortId?: string; entries?: CohortEntry[] }
+        : null;
+      const cohort = Array.isArray(cohortOut?.entries) ? cohortOut!.entries! : null;
+
       const setKeys = new Set(set.map((r) => `${r.audit_id}:${r.finding_ref}`));
-      const missingKeys = [...setKeys].filter((k) => !winners.has(k)).sort();
       const unmatched = [...winners.values()].filter((w) => w.row.status === 'finding_unmatched').length;
-      const rows: TrialRow[] = [...winners.values()].filter((w) => w.row.status !== 'finding_unmatched').map(({ row: r }) => ({
-        key: String(r.key), human: String(r.human), engine: String(r.engine),
-        signalType: r.signalType == null ? null : String(r.signalType),
-        pass1: String(r.pass1 ?? 'missing'), pass2: String(r.pass2 ?? 'missing'),
-        contested: r.contested === true,
-      }));
+
+      let rows: TrialRow[];
+      let cohortBlock: Record<string, unknown>;
+      let missingKeys: string[];
+      if (cohort) {
+        const applied = applyCohort(winners, cohort);
+        rows = applied.cohortRows;
+        missingKeys = applied.missingKeys;
+        const postFreeze = [...setKeys].filter((k) => !cohort.some((e) => e.key === k)).length;
+        cohortBlock = {
+          cohortId: cohortOut?.cohortId ?? 'unknown', cohortSize: cohort.length,
+          labelledInCohort: rows.length, missingFromCohort: missingKeys.length,
+          extraCohortLabelled: applied.extraKeys.length, extraCohortKeys: applied.extraKeys,
+          labelRevisedSinceFreeze: applied.revisedSinceFreeze,
+          postFreezeCohortSize: postFreeze,
+          postFreezeNote: 'labels arrived after the freeze — a held-out set the labeller has never seen; NAMED, not yet measured',
+        };
+      } else {
+        rows = [...winners.values()].filter((w) => w.row.status !== 'finding_unmatched').map(({ row: r }) => ({
+          key: String(r.key), human: String(r.human), engine: String(r.engine),
+          signalType: r.signalType == null ? null : String(r.signalType),
+          pass1: String(r.pass1 ?? 'missing'), pass2: String(r.pass2 ?? 'missing'),
+          contested: r.contested === true,
+        }));
+        missingKeys = [...setKeys].filter((k) => !winners.has(k)).sort();
+        cohortBlock = { cohortId: null, note: 'NO FROZEN COHORT — metrics computed over the live set; freeze before any second-model comparison' };
+      }
       const report = computeTrialReport(rows);
       // §4 — cross-invocation agreement, its own figure, never pooled with within-invocation.
       const cross = crossInvocationAgreement(overlap);
       // PHI (§6.5): this summary carries counts, rates, ids and KEYS only — no clinical text.
       return NextResponse.json({
         ok: true, experiment, promptVersion: TRIAL_PROMPT_VERSION,
+        cohort: cohortBlock,   // beside EVERY metric — no number reads without its denominator
         labelSources: [...sources],
         trueCallCount: { calls, capForOffsetRun: plan.calls, note: 'duplicates, failed shakedown and keyed top-ups included — the D9 plan sized only one clean offset pass' },
         usage: { promptTokens, completionTokens, cost: Math.round(cost * 1e6) / 1e6 },

@@ -311,3 +311,42 @@ export function computeTrialReport(rows: TrialRow[]): TrialReport {
     },
   };
 }
+
+// ─── cohort freeze (addendum, 28 Jul): the Phase-1 validation set is a FROZEN key list ───────────
+
+/** One frozen cohort entry: the key and the human label AS OF THE FREEZE. Metrics computed over a
+ *  cohort use the FROZEN label, not the live current-state one — a post-freeze revision by the
+ *  reviewer must not silently move a reproducible number (it is counted instead). */
+export interface CohortEntry { key: string; human: string; signalType: string | null; engine: string }
+
+/**
+ * Intersect labelled winners with a frozen cohort:
+ *   · cohortRows — winners ∩ cohort, human label OVERRIDDEN by the frozen one (revisions counted);
+ *   · extraKeys — labelled but outside the cohort (kept, reported separately, never folded in);
+ *   · missingKeys — cohort keys not yet labelled (the keyed top-up target);
+ *   · revisedSinceFreeze — winners whose captured-at-chunk-time label differs from the frozen one.
+ */
+export function applyCohort(
+  winners: Map<string, { row: Record<string, unknown> }>,
+  cohort: CohortEntry[],
+): { cohortRows: TrialRow[]; extraKeys: string[]; missingKeys: string[]; revisedSinceFreeze: number } {
+  const byKey = new Map(cohort.map((e) => [e.key, e]));
+  const cohortRows: TrialRow[] = [];
+  const extraKeys: string[] = [];
+  let revised = 0;
+  for (const [key, w] of winners) {
+    const e = byKey.get(key);
+    if (!e) { extraKeys.push(key); continue; }
+    if (w.row.status === 'finding_unmatched') continue;
+    const frozenHuman = e.human === 'true_positive' ? 'tp' : e.human;
+    if (String(w.row.human) !== frozenHuman) revised++;
+    cohortRows.push({
+      key, human: frozenHuman, engine: e.engine, signalType: e.signalType,
+      pass1: String(w.row.pass1 ?? 'missing'), pass2: String(w.row.pass2 ?? 'missing'),
+      contested: frozenHuman === 'contested',
+    });
+  }
+  const labelled = new Set(winners.keys());
+  const missingKeys = cohort.map((e) => e.key).filter((k) => !labelled.has(k)).sort();
+  return { cohortRows, extraKeys: extraKeys.sort(), missingKeys, revisedSinceFreeze: revised };
+}
