@@ -15,6 +15,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "advisory"
   },
   {
+    "id": "admin-attribution",
+    "plane": "unregistered"
+  },
+  {
     "id": "admin-cookie",
     "plane": "unregistered"
   },
@@ -795,6 +799,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/admin",
+    "to": "admin-attribution",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
     "to": "admin-cookie",
     "kind": "value"
   },
@@ -1061,6 +1070,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/admin",
     "to": "value-score-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "admin-attribution",
     "kind": "value"
   },
   {

@@ -16,6 +16,7 @@ export const runtime = 'nodejs';
 import { NextRequest, NextResponse } from 'next/server';
 import { publishVersion, MIN_RATIONALE_CHARS, authedAdminRequest, resolveNoteType } from '@/lib/scoring-policy/store';
 import { validateVector, weightedKeysFor } from '@/lib/scoring-policy/weights';
+import { cleanAttribution, ATTRIBUTION_REQUIRED_ERROR } from '@/lib/admin-attribution';
 
 export async function POST(req: NextRequest) {
   if (!(await authedAdminRequest(req))) return NextResponse.json({ error: 'admin required' }, { status: 401 });
@@ -37,12 +38,18 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // §12.4 — the self-declared author is REQUIRED wherever a rationale is required, and is rejected
+  // HERE as well as in the UI: a client that skips the field must not succeed. It is an attestation,
+  // not authentication (admin access is a shared token) — the label says so and so does the PRD.
+  const changedBy = cleanAttribution(body.published_by_name ?? body.changedBy);
+  if (!changedBy) return NextResponse.json({ error: ATTRIBUTION_REQUIRED_ERROR }, { status: 400 });
+
   const result = await publishVersion({
     noteType,
     vector: v.vector,
     rationale: rationale.slice(0, 4000),
     publishedBy: typeof body.published_by === 'string' ? body.published_by.slice(0, 200) : null,
-    publishedByName: typeof body.published_by_name === 'string' ? body.published_by_name.slice(0, 200) : null,
+    publishedByName: changedBy,
     expectedDraftUpdatedAt: typeof body.expected_draft_updated_at === 'string' ? body.expected_draft_updated_at : undefined,
   });
 

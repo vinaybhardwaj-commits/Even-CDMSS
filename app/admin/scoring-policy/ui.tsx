@@ -13,6 +13,8 @@
  */
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+// §12.4 — ONE remembered key, shared with the lab-packages panel and the IPD review panel.
+import { rememberedAttribution, rememberAttribution, isValidAttribution, ATTRIBUTION_LABEL, ATTRIBUTION_HELP } from '@/lib/admin-attribution';
 import {
   TIER_ORDER, TIER_LABEL, SECTION_LABEL, asTier, diffVectors, normalisedWeights, vectorsEqual,
   type FieldDef, type Tier, type WeightVector,
@@ -431,18 +433,24 @@ function PublishModal(props: {
   const { noteType, changedFields, fields, vector, draftUpdatedAt, restoredFromVersion, onClose, onDone } = props;
   // §5.5 — a restore arrives with its rationale prefilled, and editable.
   const [rationale, setRationale] = useState(restoredFromVersion != null ? `Restored v${restoredFromVersion}.` : '');
+  // §12.4 — prefilled from the ONE remembered key, so she types her name once. Prefilled ≠ skipped:
+  // it is still submitted and still validated, here and again server-side.
+  const [changedBy, setChangedBy] = useState('');
+  useEffect(() => { setChangedBy(rememberedAttribution()); }, []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const label = (k: string) => fields.find((f) => f.key === k)?.label ?? k;
-  const ok = rationale.trim().length >= 10;
+  const ok = rationale.trim().length >= 10 && isValidAttribution(changedBy);
 
   const submit = async () => {
     setBusy(true); setError(null);
     try {
+      rememberAttribution(changedBy);
       const res = await fetch('/api/scoring-policy/publish', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           note_type: noteType, weights: vector, rationale,
+          published_by_name: changedBy.trim(),
           expected_draft_updated_at: draftUpdatedAt ?? undefined,
         }),
       });
@@ -483,6 +491,17 @@ function PublishModal(props: {
             placeholder="A sentence is enough — it is kept with the version, permanently."
           />
           <span className="text-[11px] text-slate-400">{rationale.trim().length}/10 characters minimum</span>
+        </label>
+
+        <label className="mt-4 block">
+          <span className="text-[12.5px] font-semibold text-slate-800">{ATTRIBUTION_LABEL}</span>
+          <input
+            value={changedBy}
+            onChange={(e) => setChangedBy(e.target.value)}
+            className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-[13px]"
+            placeholder="Dr Binita Priyambada"
+          />
+          <span className="text-[11px] text-slate-400">{ATTRIBUTION_HELP}</span>
         </label>
 
         <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-[12px] text-slate-600">

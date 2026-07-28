@@ -23,6 +23,7 @@ import type { NextRequest } from 'next/server';
 import { authedAdminRequest, publishVersion, MIN_RATIONALE_CHARS } from '@/lib/scoring-policy/store';
 import { parseLabPackagesCsv, diffLabPackages, CSV_MAX_BYTES } from '@/lib/scoring-policy/lab-packages-csv';
 import { activeLabPackages, invalidateLabPackagesCache, LAB_PACKAGES_NOTE_TYPE } from '@/lib/scoring-policy/lab-packages';
+import { cleanAttribution, ATTRIBUTION_REQUIRED_ERROR } from '@/lib/admin-attribution';
 
 export async function POST(req: NextRequest) {
   if (!(await authedAdminRequest(req))) return NextResponse.json({ ok: false, error: 'admin required' }, { status: 401 });
@@ -67,6 +68,12 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // §12.4 — required alongside the rationale, rejected server-side too. Deliberately checked AFTER
+  // the `noChange` short-circuit above, so re-uploading an unmodified export still creates no
+  // version and still demands nothing: the round-trip guarantee is not weakened by attribution.
+  const changedBy = cleanAttribution(body.published_by_name ?? body.changedBy);
+  if (!changedBy) return NextResponse.json({ ok: false, error: ATTRIBUTION_REQUIRED_ERROR }, { status: 400 });
+
   // ⚠️ THE ARRAY SHAPE. `weights` carries a package ARRAY for note_type='lab_packages', where the
   // two weightage note types carry a {fieldKey: tier} OBJECT. Intentional divergence (§12.3); the
   // readers branch on note_type. `publishVersion` stores the value verbatim, so it is passed as-is.
@@ -75,7 +82,7 @@ export async function POST(req: NextRequest) {
     vector: parsed.packages as unknown as Record<string, never>,
     rationale: rationale.slice(0, 4000),
     publishedBy: typeof body.published_by === 'string' ? body.published_by.slice(0, 200) : null,
-    publishedByName: typeof body.published_by_name === 'string' ? body.published_by_name.slice(0, 200) : null,
+    publishedByName: changedBy,
   });
   if (!result.ok) return NextResponse.json({ ok: false, error: result.error ?? 'publish failed' }, { status: 500 });
 

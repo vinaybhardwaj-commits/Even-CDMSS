@@ -24,6 +24,7 @@ import type { NextRequest } from 'next/server';
 import { requireAdmin } from '@/lib/admin-gate';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { sql } from '@/lib/db';
+import { cleanAttribution, ATTRIBUTION_REQUIRED_ERROR } from '@/lib/admin-attribution';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 
@@ -50,8 +51,12 @@ async function save(req: NextRequest) {
   if (!isUuid(auditId)) return NextResponse.json({ ok: false, error: 'bad auditId' }, { status: 400 });
 
   const note = typeof body.note === 'string' ? body.note.trim().slice(0, 4000) : '';
-  const reviewedByName = typeof body.reviewedByName === 'string' ? body.reviewedByName.trim().slice(0, 200) : null;
   if (!note) return NextResponse.json({ ok: false, error: 'A review note is required.' }, { status: 400 });
+
+  // §12.4 — the reviewer's self-declared name is REQUIRED alongside the note, and rejected here as
+  // well as in the UI. An attestation, not authentication: admin access is a shared token.
+  const reviewedByName = cleanAttribution(body.reviewedByName ?? body.changedBy);
+  if (!reviewedByName) return NextResponse.json({ ok: false, error: ATTRIBUTION_REQUIRED_ERROR }, { status: 400 });
 
   try {
     // Overwrite in place, updating the timestamp (§6.4).
