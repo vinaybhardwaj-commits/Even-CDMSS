@@ -568,6 +568,25 @@ export interface LlmEnvelope {
   usage?: { prompt_tokens?: number; completion_tokens?: number; reasoning_tokens?: number } | null;
   content_length: number;
   attempt: number;
+  /** Eval-hardening D6 (Q3 overruled — ships now): the response body's error taxonomy, read from
+   *  the top-level `error` object or `error.metadata` (per-choice `error` as fallback). Absent ⇒
+   *  null. The tombstone is its consumer — without it a week of tombstones records prose instead
+   *  of taxonomy. */
+  error_type?: string | null;
+}
+
+/** Errors thrown on the eval path carry the envelope (Eval-hardening D5/O2). `lastEnvelope` was a
+ *  LOCAL in `runMiniOpdToLab` and died with the stack frame on the throw path, so `drainOne` only
+ *  ever saw `(e as Error).message` truncated to 300 chars — the tombstone could never carry a real
+ *  envelope. v1.0 specified something unbuildable; this is the fix. */
+export interface EvalPathError extends Error {
+  envelope?: LlmEnvelope | null;
+  error_type?: string | null;
+}
+
+/** Attach the envelope to an error about to be thrown on the eval path (D5/O2). */
+export function withEnvelope(err: Error, env: LlmEnvelope | null): EvalPathError {
+  return Object.assign(err, { envelope: env ?? null, error_type: env?.error_type ?? null });
 }
 
 /**
@@ -612,6 +631,23 @@ export function isDeadlineErrorMessage(msg: unknown): boolean {
 }
 
 /**
+ * Eval-path parse-guard messages — NORMATIVE (Eval-hardening §4), exported so the exact strings are
+ * asserted by test rather than trusted. They deliberately say "retried next tick", not "retryable"
+ * (O1): empty content retries WITHIN the call, seconds apart, because the 3-try budget lives inside
+ * `openRouterGenerate`; a parse-null throw happens AFTER it has already returned successfully and
+ * cannot re-enter that loop, so its retry is the NEXT TICK, minutes apart. Both end in the same
+ * tombstone. Nobody should later find this asymmetry and call it a bug — it is D1, intended.
+ */
+export const evalGuardMessage = {
+  parseNull: (contentLength: number) =>
+    `eval: parseOpdAnalysis returned null (content_length=${contentLength}) — retried next tick`,
+  pdqi9Absent: () =>
+    'eval: parsed response has no pdqi9 object — retried next tick',
+  pdqi9Partial: (rated: number) =>
+    `eval: pdqi9 has ${rated}/9 attributes, require 9 — retried next tick`,
+};
+
+/**
  * Read the envelope off a parsed OpenRouter response. PURE and TOTAL — any shape yields a defined
  * envelope, so capture can never be the thing that fails.
  *
@@ -622,14 +658,25 @@ export function isDeadlineErrorMessage(msg: unknown): boolean {
  */
 export function readLlmEnvelope(j: unknown, attempt: number, contentLength: number): LlmEnvelope {
   const o = (j ?? {}) as {
-    choices?: { finish_reason?: unknown; native_finish_reason?: unknown }[];
+    choices?: { finish_reason?: unknown; native_finish_reason?: unknown; error?: unknown }[];
     provider?: unknown;
+    error?: unknown;
     usage?: { prompt_tokens?: unknown; completion_tokens?: unknown; reasoning_tokens?: unknown;
               completion_tokens_details?: { reasoning_tokens?: unknown } };
   };
   const c0 = Array.isArray(o.choices) ? o.choices[0] : undefined;
   const num = (x: unknown): number | undefined => (typeof x === 'number' && Number.isFinite(x) ? x : undefined);
   const u = o.usage;
+  // D6 — the error taxonomy, TOTAL like everything else here: any shape yields a string or null.
+  // Top-level `error` first (the HTTP-failure body), per-choice `error` as fallback (some providers
+  // report a 200 whose failed choice carries its own error object). `type` beats `code` beats
+  // `metadata`, because `type` is the taxonomy and `code` is usually just the HTTP status again.
+  const errorType = (e: unknown): string | null => {
+    if (e == null || typeof e !== 'object') return null;
+    const x = e as { type?: unknown; code?: unknown; metadata?: { type?: unknown; raw?: unknown } | null };
+    const v = x.type ?? x.code ?? (x.metadata && typeof x.metadata === 'object' ? x.metadata.type ?? x.metadata.raw : null);
+    return v == null ? null : String(v).slice(0, 120);
+  };
   return {
     finish_reason: c0?.finish_reason == null ? null : String(c0.finish_reason),
     native_finish_reason: c0?.native_finish_reason == null ? null : String(c0.native_finish_reason),
@@ -643,6 +690,7 @@ export function readLlmEnvelope(j: unknown, attempt: number, contentLength: numb
       : null,
     content_length: contentLength,
     attempt,
+    error_type: errorType(o.error) ?? errorType(c0?.error),
   };
 }
 
@@ -686,7 +734,7 @@ export async function openRouterGenerate(
   deadlineAt?: number,
 ): Promise<string> {
   const key = process.env.OPENROUTER_API_KEY;
-  if (!key) throw new Error('OPENROUTER_API_KEY is not set — required for eval generation (evalModel)');
+  if (!key) throw withEnvelope(new Error('OPENROUTER_API_KEY is not set — required for eval generation (evalModel)'), null);
   // The last envelope seen on this note, carried into the deadline message. Assignment only.
   let lastEnv: LlmEnvelope | null = null;
   // Envelope capture must NEVER throw and NEVER block a real result (PRD §4 fail-safe direction).
@@ -696,7 +744,7 @@ export async function openRouterGenerate(
   const sleepOrThrow = async (attempt: number): Promise<void> => {
     const backoff = openRouterBackoffMs(attempt);
     if (deadlineAt != null && remainingBudgetMs(deadlineAt) <= backoff) {
-      throw new Error(deadlineErrorMessage(attempt + 1, OPENROUTER_MAX_TRIES, lastEnv));
+      throw withEnvelope(new Error(deadlineErrorMessage(attempt + 1, OPENROUTER_MAX_TRIES, lastEnv)), lastEnv);
     }
     await sleepFn(backoff);
   };
@@ -704,7 +752,7 @@ export async function openRouterGenerate(
   for (let attempt = 1; attempt <= OPENROUTER_MAX_TRIES; attempt++) {
     // D1 — before EACH attempt. An exhausted budget throws immediately: no sleep, no fetch.
     if (deadlineAt != null && remainingBudgetMs(deadlineAt) <= 0) {
-      throw new Error(deadlineErrorMessage(attempt, OPENROUTER_MAX_TRIES, lastEnv));
+      throw withEnvelope(new Error(deadlineErrorMessage(attempt, OPENROUTER_MAX_TRIES, lastEnv)), lastEnv);
     }
     // D4 — a per-attempt deadline. Cleared in `finally` so a completed request never leaves a timer.
     // D2 — clamped to the remaining tick budget when there is one, so a fetch can never outlive the
@@ -726,11 +774,11 @@ export async function openRouterGenerate(
       // A timeout surfaces here as an AbortError, as does any transport failure (DNS/socket/reset).
       // Both are treated as normal retryable failures on the SAME bounded budget: an abort that was
       // not retryable would make the deadline strictly worse than no deadline.
-      emit({ finish_reason: null, native_finish_reason: null, provider: null, usage: null, content_length: 0, attempt });
+      emit({ finish_reason: null, native_finish_reason: null, provider: null, usage: null, content_length: 0, attempt, error_type: null });
       const aborted = ctrl.signal.aborted;
-      lastErr = new Error(aborted
+      lastErr = withEnvelope(new Error(aborted
         ? `OpenRouter TIMEOUT after ${timeoutMs}ms (attempt ${attempt}/${OPENROUTER_MAX_TRIES})`
-        : `OpenRouter transport error (attempt ${attempt}/${OPENROUTER_MAX_TRIES}): ${String((e as Error)?.message ?? e).slice(0, 200)}`);
+        : `OpenRouter transport error (attempt ${attempt}/${OPENROUTER_MAX_TRIES}): ${String((e as Error)?.message ?? e).slice(0, 200)}`), lastEnv);
       if (attempt === OPENROUTER_MAX_TRIES) throw lastErr;
       await sleepOrThrow(attempt);
       continue;
@@ -748,13 +796,20 @@ export async function openRouterGenerate(
       emit(env);
       if (content) return content;
       // EMPTY CONTENT — a failure, not an unassessed note. Retryable on the existing budget.
-      lastErr = new Error(emptyContentErrorMessage(env, OPENROUTER_MAX_TRIES));
+      lastErr = withEnvelope(new Error(emptyContentErrorMessage(env, OPENROUTER_MAX_TRIES)), env);
       if (attempt === OPENROUTER_MAX_TRIES) throw lastErr;
       await sleepOrThrow(attempt);
       continue;
     }
-    emit({ finish_reason: null, native_finish_reason: null, provider: null, usage: null, content_length: 0, attempt });
-    lastErr = new Error(`OpenRouter HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`);
+    // HTTP failure — the body IS the error object (D6), so the envelope is read from it rather than
+    // emitted empty: `error_type` and any provider fields it carries survive into the tombstone.
+    // Same message as before (the raw text, sliced to 200); only the envelope got richer.
+    const errText = await res.text().catch(() => '');
+    let errBody: unknown = null;
+    try { errBody = JSON.parse(errText); } catch { errBody = null; }
+    const errEnv = readLlmEnvelope(errBody, attempt, 0);
+    emit(errEnv);
+    lastErr = withEnvelope(new Error(`OpenRouter HTTP ${res.status}: ${errText.slice(0, 200)}`), errEnv);
     if (!openRouterRetryable(res.status) || attempt === OPENROUTER_MAX_TRIES) throw lastErr;
     await sleepOrThrow(attempt);
   }
@@ -972,8 +1027,37 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     if (traceId) await logEvent(traceId, 'opd_audit_sources', null, { count: sources.length });
 
     const specialty = await doctorSpecialtyFor(keys.doctorUid);
-    const raw = await defaultGenerate(traceId, OPD_AUDIT_SYSTEM, buildOpdAuditUser(opdCaseText(oc, { specialty }), citedContext), mini, opts.evalModel, opts.onEnvelope, opts.deadlineAt);
+    // Eval-hardening D5/O2 — keep the last envelope HERE too, so the parse guards below can attach
+    // it to their throws. Wrapped ONLY when evalModel is set; absent ⇒ opts.onEnvelope passes
+    // through untouched and production is byte-identical.
+    let evalEnv: LlmEnvelope | null = null;
+    const onEnvelope = opts.evalModel
+      ? (e: LlmEnvelope) => { evalEnv = e; opts.onEnvelope?.(e); }
+      : opts.onEnvelope;
+    const raw = await defaultGenerate(traceId, OPD_AUDIT_SYSTEM, buildOpdAuditUser(opdCaseText(oc, { specialty }), citedContext), mini, opts.evalModel, onEnvelope, opts.deadlineAt);
     const parsed = parseOpdAnalysis(raw, sources.length);
+
+    // ═══ EVAL-PATH PARSE GUARDS (Eval-hardening D1/D2) ═══
+    // `openRouterGenerate` throws on EMPTY content, but non-empty content that fails to parse — or
+    // parses without pdqi9 — used to reach `pdqi9: parsed?.pdqi9 ?? null` below and persist a row
+    // with note_quality weight 0: the original defect one layer up (95.21 NQI for unassessed vs
+    // 78.36 for assessed, across 25,103 production rows).
+    //
+    // The guard sits at the CALL SITE, not inside parseOpdAnalysis: production RELIES on the
+    // parser's leniency — a partially parseable audit beats none for a clinician. The instrument
+    // needs the opposite. Same split as 6b12652.
+    //
+    // Retry is TICK-LEVEL, not call-level (D1/O1): the 3-try budget lives inside openRouterGenerate
+    // and these throws happen AFTER it returned successfully. No retry loop here — the throw
+    // propagates to drainOne, the uid stays un-done, and the NEXT TICK retries it, minutes later,
+    // with fresh provider state. Fewer than 9 rated attributes is schema noncompliance, not
+    // clinical nuance (D2/Q4: measured 0-or-9 with zero notes at 1–8 across 200 runs).
+    if (opts.evalModel) {
+      if (parsed === null) throw withEnvelope(new Error(evalGuardMessage.parseNull(raw.length)), evalEnv);
+      if (parsed.pdqi9 == null) throw withEnvelope(new Error(evalGuardMessage.pdqi9Absent()), evalEnv);
+      const rated = Object.keys(parsed.pdqi9).length;
+      if (rated !== 9) throw withEnvelope(new Error(evalGuardMessage.pdqi9Partial(rated)), evalEnv);
+    }
 
     const findings: OpdFinding[] = finalize([...det, ...(parsed?.findings ?? [])]);
     const scorecard = computeOpdScore({

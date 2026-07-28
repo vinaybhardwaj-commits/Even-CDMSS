@@ -263,7 +263,12 @@ test('deadlineAt is APPENDED — every existing positional call site still binds
 });
 
 test('auditOpdNote threads opts.deadlineAt and nothing else changed on the call', () => {
-  assert.ok(SRC.includes('const raw = await defaultGenerate(traceId, OPD_AUDIT_SYSTEM, buildOpdAuditUser(opdCaseText(oc, { specialty }), citedContext), mini, opts.evalModel, opts.onEnvelope, opts.deadlineAt);'));
+  // Eval-hardening wraps onEnvelope on the eval path (to capture the envelope for the parse
+  // guards); the wrapper is `opts.onEnvelope` itself whenever evalModel is absent, so production
+  // still receives exactly the caller's callback.
+  assert.ok(SRC.includes('const raw = await defaultGenerate(traceId, OPD_AUDIT_SYSTEM, buildOpdAuditUser(opdCaseText(oc, { specialty }), citedContext), mini, opts.evalModel, onEnvelope, opts.deadlineAt);'));
+  assert.ok(SRC.includes('? (e: LlmEnvelope) => { evalEnv = e; opts.onEnvelope?.(e); }\n      : opts.onEnvelope;'),
+    'the wrapper must collapse to opts.onEnvelope when evalModel is absent');
   // It reaches the LLM only through the evalModel branch, so it is inert without evalModel.
   const dg = SRC.slice(SRC.indexOf('async function defaultGenerate('), SRC.indexOf('/** Reuse the stored LLM half'));
   const code = dg.split('\n').filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
@@ -289,7 +294,9 @@ test('THE MINI BRANCH IS BYTE-IDENTICAL — it never receives a deadline', () =>
     'mini must not carry an explicit deadlineAt: undefined');
   // deadline_ms / deadline_hits live inside the eval-only spread, so mini summaries are unchanged.
   const summary = BATCH.slice(BATCH.indexOf('const summary = {', BATCH.indexOf('const okNow')));
-  const evalOnly = summary.slice(summary.indexOf('...(plan.evalMode'), summary.indexOf('\n', summary.indexOf('...(plan.evalMode')));
+  // The eval-only spread is multi-line since eval-hardening added tombstoned/failed_uids to it.
+  const spreadStart = summary.indexOf('...(plan.evalMode');
+  const evalOnly = summary.slice(spreadStart, summary.indexOf('} : {}),', spreadStart));
   assert.ok(evalOnly.includes('deadline_ms') && evalOnly.includes('deadline_hits'),
     'both fields must sit inside the plan.evalMode spread');
 });

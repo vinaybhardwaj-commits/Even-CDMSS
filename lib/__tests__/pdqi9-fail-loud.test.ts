@@ -356,7 +356,9 @@ test('runMiniOpdToLab writes the envelope on success and cannot write one on fai
   assert.ok(auditIdx < saveIdx, 'the audit must complete before anything is persisted');
   // drainOne's per-note catch is what makes that safe — it records and leaves the uid un-done
   assert.ok(/catch \(e\) \{\n\s*const msg = String\(\(e as Error\)\.message\);/.test(lab));
-  assert.ok(/return \{ uid, error: msg, ms: Date\.now\(\) - t0 \};/.test(lab),
+  // Eval-hardening widened the error row with the taxonomy (error_type when present) — the
+  // property that matters is unchanged: a failed note returns an ERROR row and is NOT done.
+  assert.ok(/return \{ uid, error: msg, \.\.\.\(et != null \? \{ error_type: et \} : \{\}\), ms: Date\.now\(\) - t0 \};/.test(lab),
     'a failed note returns an error row — it is NOT added to the done set');
 });
 
