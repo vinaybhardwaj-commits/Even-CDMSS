@@ -250,3 +250,56 @@ test('label_source shape is the ruling\'s, and the id comes from the RESPONSE', 
   const core = readFileSync('lib/ml-label-trial/core.ts', 'utf8');
   assert.ok(!/DEFAULT_MODEL|'openrouter\/|'google\/|'qwen\/|'anthropic\//.test(core), 'no hardcoded model default in the metric path');
 });
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// 6 · In-flight correction (28 Jul): dedup rule, output-side reconciliation, cross-invocation
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+test('C1: dedup is one-row-per-key, LATEST artefact wins — a re-run supersedes its failures', async () => {
+  const { dedupStoredRows } = await import('../ml-label-trial/core.ts');
+  const failed = { key: 'a:1', chunk: 'chunk:0:20', storedAt: '2026-07-28T10:00:00+00', row: { key: 'a:1', pass1: 'unparseable', pass1_source: 'unresolved', pass2: 'unparseable', pass2_source: 'unresolved' } };
+  const good = { key: 'a:1', chunk: 'chunk:0:60', storedAt: '2026-07-28T10:10:00+00', row: { key: 'a:1', pass1: 'tp', pass1_source: 'model:x@v1', pass2: 'tp', pass2_source: 'model:x@v1' } };
+  const { winners, overlap } = dedupStoredRows([failed, good]);
+  assert.equal(winners.get('a:1')!.row.pass1, 'tp', 'latest wins — earliest-wins would enshrine the CALL_ERROR shakedown');
+  assert.equal(overlap.get('a:1')!.length, 2, 'C4: the overlap rows are KEPT — they are a measurement');
+});
+
+test('§4: cross-invocation agreement is its own figure and ignores unresolved invocations', async () => {
+  const { dedupStoredRows, crossInvocationAgreement } = await import('../ml-label-trial/core.ts');
+  const mk = (key: string, at: string, p1: string, p2: string, src = 'model:x@v1') =>
+    ({ key, chunk: `c:${at}`, storedAt: at, row: { key, pass1: p1, pass1_source: src, pass2: p2, pass2_source: src } });
+  const rows = [
+    // key a:1 — two valid invocations, all four samples identical
+    mk('a:1', '2026-07-28T10:00:00+00', 'tp', 'tp'), mk('a:1', '2026-07-28T10:06:00+00', 'tp', 'tp'),
+    // key a:2 — two valid invocations, pass2 differs across them
+    mk('a:2', '2026-07-28T10:00:00+00', 'false', 'false'), mk('a:2', '2026-07-28T10:06:00+00', 'false', 'nitpick'),
+    // key a:3 — second "invocation" was the failed shakedown: not an invocation's answer
+    mk('a:3', '2026-07-28T10:00:00+00', 'tp', 'tp'), mk('a:3', '2026-07-28T09:00:00+00', 'unparseable', 'unparseable', 'unresolved'),
+  ];
+  const { overlap } = dedupStoredRows(rows);
+  const cross = crossInvocationAgreement(overlap);
+  assert.equal(cross.keysWithMultipleInvocations, 2, 'a:3 has only ONE valid invocation');
+  assert.equal(cross.pass1Agree, 2);
+  assert.equal(cross.pass2Agree, 1);
+  assert.equal(cross.allFourIdentical, 1);
+});
+
+test('C3: the route accepts a keyed top-up that bypasses the offset plan gate but not the auth', () => {
+  const route = readFileSync('app/api/lab/ml-label-trial/route.ts', 'utf8');
+  assert.ok(route.includes("const keyList = Array.isArray(body.keys)"), 'keys[] accepted');
+  assert.ok(route.includes('.slice(0, 100)'), 'bounded per invocation');
+  // the D9 refusal applies only on the offset path — the top-up must not be blocked (correction §3)
+  const chunkBlock = route.slice(route.indexOf("if (action === 'chunk')"), route.indexOf("if (action === 'summary')"));
+  const keyedBranch = chunkBlock.slice(chunkBlock.indexOf('if (keyList && keyList.length)'), chunkBlock.indexOf('} else {'));
+  assert.ok(!keyedBranch.includes('plan.ok'), 'keyed mode is exempt from the offset-run cap');
+  assert.ok(chunkBlock.includes('if (!plan.ok) return'), 'the offset path keeps the D9 refusal');
+});
+
+test('C2: the summary reports distinct keys vs the set WITH the missing-key list and the dedup rule', () => {
+  const route = readFileSync('app/api/lab/ml-label-trial/route.ts', 'utf8');
+  assert.ok(route.includes('missingKeys'), 'the list, not just the count');
+  assert.ok(route.includes('distinctKeysLabelled'), 'output-side reconciliation');
+  assert.ok(route.includes('dedupRule:'), 'the tie-break rule is STATED in the output');
+  assert.ok(route.includes('trueCallCount'), 'the true call count vs the plan-sized cap');
+  assert.ok(route.includes('crossInvocation'), 'cross-invocation is its own figure');
+});

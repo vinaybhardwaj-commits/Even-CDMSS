@@ -94,6 +94,69 @@ export function planTrial(scored: number, contested: number): { calls: number; o
   return { calls, ok: true };
 }
 
+// ─── in-flight correction (28 Jul): dedup, output-side reconciliation, cross-invocation ─────────
+
+/** A stored result row as it sits in a chunk artefact, with its provenance. */
+export interface StoredTrialRow {
+  key: string;
+  chunk: string;             // input_ref of the artefact that carried it
+  storedAt: string;          // artefact created_at (ISO) — the dedup tie-break input
+  row: Record<string, unknown>;
+}
+
+/**
+ * C1 — DEDUP RULE (stated, deterministic): one row per distinct finding key, the row from the
+ * LATEST artefact winning (`storedAt` DESC, then chunk string DESC as a total tie-break).
+ * Latest-wins rather than earliest-wins because a re-run of a failed window (e.g. the bad-model
+ * shakedown, whose 20 rows are all CALL_ERROR) must be superseded by the later valid answers —
+ * earliest-wins would enshrine the failure. Duplicates are NOT discarded (C4): they are returned
+ * separately as the overlap set, which is a measurement.
+ */
+export function dedupStoredRows(rows: StoredTrialRow[]): { winners: Map<string, StoredTrialRow>; overlap: Map<string, StoredTrialRow[]> } {
+  const byKey = new Map<string, StoredTrialRow[]>();
+  for (const r of rows) {
+    const list = byKey.get(r.key) ?? [];
+    list.push(r);
+    byKey.set(r.key, list);
+  }
+  const winners = new Map<string, StoredTrialRow>();
+  const overlap = new Map<string, StoredTrialRow[]>();
+  for (const [key, list] of byKey) {
+    const sorted = list.slice().sort((a, b) => (b.storedAt.localeCompare(a.storedAt)) || (b.chunk.localeCompare(a.chunk)));
+    winners.set(key, sorted[0]);
+    if (list.length > 1) overlap.set(key, sorted);
+  }
+  return { winners, overlap };
+}
+
+/**
+ * §4 — CROSS-INVOCATION agreement: the same model answering the same finding in separate process
+ * invocations. Reported as its OWN figure, clearly separated from within-invocation self-agreement
+ * (pass1 vs pass2 inside one invocation) — they answer different questions and are never pooled.
+ * Only rows with a RESOLVED label_source count (a CALL_ERROR row is not an invocation's answer).
+ */
+export function crossInvocationAgreement(overlap: Map<string, StoredTrialRow[]>): {
+  keysWithMultipleInvocations: number;
+  pass1Agree: number; pass2Agree: number;
+  allFourIdentical: number;
+  comparisons: number;
+} {
+  let p1 = 0, p2 = 0, all4 = 0, n = 0;
+  for (const list of overlap.values()) {
+    const valid = list.filter((r) => {
+      const s1 = r.row.pass1_source, s2 = r.row.pass2_source;
+      return typeof s1 === 'string' && s1 !== 'unresolved' && typeof s2 === 'string' && s2 !== 'unresolved';
+    });
+    if (valid.length < 2) continue;
+    n++;
+    const [a, b] = valid;   // latest two valid invocations
+    if (a.row.pass1 === b.row.pass1) p1++;
+    if (a.row.pass2 === b.row.pass2) p2++;
+    if (a.row.pass1 === b.row.pass1 && a.row.pass2 === b.row.pass2 && a.row.pass1 === a.row.pass2) all4++;
+  }
+  return { keysWithMultipleInvocations: n, pass1Agree: p1, pass2Agree: p2, allFourIdentical: all4, comparisons: n };
+}
+
 // ─── metrics ─────────────────────────────────────────────────────────────────────────────────────
 
 /** Cohen's κ over labelled pairs. Multi-class; total: empty ⇒ 0; pe = 1 (perfect chance) guarded. */

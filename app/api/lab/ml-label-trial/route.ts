@@ -30,8 +30,9 @@ import { saveLabAnalysis } from '@/lib/lab';
 import { fetchOpdNoteByUid } from '@/lib/metabase';
 import { rowToOpdCase, opdCaseText } from '@/lib/opd-ingest-core';
 import {
-  renderLabelPrompt, parseLabelResponse, planTrial, computeTrialReport,
-  TRIAL_PROMPT_VERSION, type TrialFinding, type TrialRow,
+  renderLabelPrompt, parseLabelResponse, planTrial, computeTrialReport, dedupStoredRows,
+  crossInvocationAgreement, TRIAL_PROMPT_VERSION,
+  type TrialFinding, type TrialRow, type StoredTrialRow,
 } from '@/lib/ml-label-trial/core';
 import { trialLabelCall } from '@/lib/ml-label-trial/client';
 
@@ -126,10 +127,28 @@ export async function POST(req: NextRequest) {
       if (!model) return NextResponse.json({ ok: false, error: 'model is required — it is a runtime parameter with no default (D7)' }, { status: 400 });
       const experiment = String(body.experiment ?? '').replace(/[^a-z0-9_-]/gi, '').slice(0, 48);
       if (!experiment) return NextResponse.json({ ok: false, error: 'experiment label required' }, { status: 400 });
-      if (!plan.ok) return NextResponse.json({ ok: false, error: plan.reason }, { status: 400 });   // D9 — before the first call
-      const offset = Math.max(0, Math.floor(Number(body.offset) || 0));
-      const limit = Math.max(1, Math.min(60, Math.floor(Number(body.limit) || 40)));
-      const slice = set.slice(offset, offset + limit);
+
+      // C3 (in-flight correction) — KEYED TOP-UP MODE: an explicit list of finding keys
+      // ("<audit_id>:<finding_ref>") instead of offset/limit. A keyed request cannot drift when
+      // the underlying set grows mid-run (MEASURED: 817 → 820 while the first run drained), which
+      // is what left offset windows non-partitioning. Exempt from the D9 plan refusal — the cap
+      // sized the OFFSET run; blocking the top-up would leave the set permanently short. Bounded
+      // instead by its own per-invocation limit; the TRUE cumulative call count is reported by
+      // the summary.
+      const keyList = Array.isArray(body.keys) ? body.keys.map((k) => String(k)).slice(0, 100) : null;
+      let slice: SetRow[];
+      let chunkRef: string;
+      if (keyList && keyList.length) {
+        const wanted = new Set(keyList);
+        slice = set.filter((r) => wanted.has(`${r.audit_id}:${r.finding_ref}`));
+        chunkRef = `keys:${keyList.length}`;
+      } else {
+        if (!plan.ok) return NextResponse.json({ ok: false, error: plan.reason }, { status: 400 });   // D9 — before the first call
+        const offset = Math.max(0, Math.floor(Number(body.offset) || 0));
+        const limit = Math.max(1, Math.min(60, Math.floor(Number(body.limit) || 40)));
+        slice = set.slice(offset, offset + limit);
+        chunkRef = `chunk:${offset}:${limit}`;
+      }
 
       const noteCache = new Map<string, string | null>();
       const results: Record<string, unknown>[] = [];
@@ -166,51 +185,71 @@ export async function POST(req: NextRequest) {
       }
 
       const id = await saveLabAnalysis({
-        experiment, kind: KIND, engine: TRIAL_PROMPT_VERSION, inputRef: `chunk:${offset}:${limit}`,
-        inputPreview: `ml-label-trial chunk ${offset}..${offset + slice.length}`,
-        output: { rows: results, model_requested: model, calls, offset, limit },
+        experiment, kind: KIND, engine: TRIAL_PROMPT_VERSION, inputRef: chunkRef,
+        inputPreview: `ml-label-trial ${chunkRef}`,
+        output: { rows: results, model_requested: model, calls, ref: chunkRef },
         model, latencyMs: null, provider: 'openrouter',
       });
-      return NextResponse.json({ ok: true, stored: id, chunk: { offset, limit, rows: results.length, calls }, done: offset + slice.length >= set.length, setTotal: set.length });
+      return NextResponse.json({ ok: true, stored: id, chunk: { ref: chunkRef, rows: results.length, calls }, setTotal: set.length });
     }
 
     if (action === 'summary') {
       const experiment = String(body.experiment ?? '').replace(/[^a-z0-9_-]/gi, '').slice(0, 48);
       // Direct read: listLabAnalyses omits the output jsonb, which is the artefact itself.
       const stored = await run(
-        `SELECT output FROM lab_analyses WHERE experiment = $1 AND kind = $2 ORDER BY created_at ASC LIMIT 500`,
+        `SELECT output, input_ref, to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS created_at
+           FROM lab_analyses WHERE experiment = $1 AND kind = $2 ORDER BY created_at ASC LIMIT 500`,
         [experiment, KIND]);
-      // later chunks win per key — re-runs of a chunk supersede themselves
-      const byKey = new Map<string, Record<string, unknown>>();
+      const all: StoredTrialRow[] = [];
       const sources = new Set<string>();
       let calls = 0; let cost = 0; let promptTokens = 0; let completionTokens = 0;
-      for (const s of stored) {   // ascending created_at ⇒ later chunks naturally win per key
+      for (const s of stored) {
         const raw = (s as { output?: unknown }).output;
         const o = (typeof raw === 'string' ? JSON.parse(raw) : raw) as { rows?: Record<string, unknown>[]; calls?: number } | null;
         for (const r of o?.rows ?? []) {
-          byKey.set(String(r.key), r);
+          all.push({ key: String(r.key), chunk: String((s as { input_ref?: unknown }).input_ref ?? ''), storedAt: String((s as { created_at?: unknown }).created_at ?? ''), row: r });
           for (const p of ['pass1', 'pass2']) {
             const src = r[`${p}_source`]; if (typeof src === 'string') sources.add(src);
             const u = r[`${p}_usage`] as { prompt_tokens?: number; completion_tokens?: number; cost?: number } | null;
             if (u) { promptTokens += u.prompt_tokens ?? 0; completionTokens += u.completion_tokens ?? 0; cost += u.cost ?? 0; }
           }
         }
-        calls += o?.calls ?? 0;
+        calls += o?.calls ?? 0;   // the TRUE cumulative call count, duplicates and failures included
       }
-      const unmatched = [...byKey.values()].filter((r) => r.status === 'finding_unmatched').length;
-      const rows: TrialRow[] = [...byKey.values()].filter((r) => r.status !== 'finding_unmatched').map((r) => ({
+      // C1 — dedup by key, latest artefact wins (stated tie-break; see dedupStoredRows).
+      const { winners, overlap } = dedupStoredRows(all);
+      // C2 — OUTPUT-SIDE reconciliation: distinct labelled keys vs the CURRENT input set, with the
+      // missing keys listed. The input set can GROW mid-run (measured 817 → 820), so both counts
+      // are stated; "labelled" is never asserted to equal anything it doesn't.
+      const setKeys = new Set(set.map((r) => `${r.audit_id}:${r.finding_ref}`));
+      const missingKeys = [...setKeys].filter((k) => !winners.has(k)).sort();
+      const unmatched = [...winners.values()].filter((w) => w.row.status === 'finding_unmatched').length;
+      const rows: TrialRow[] = [...winners.values()].filter((w) => w.row.status !== 'finding_unmatched').map(({ row: r }) => ({
         key: String(r.key), human: String(r.human), engine: String(r.engine),
         signalType: r.signalType == null ? null : String(r.signalType),
         pass1: String(r.pass1 ?? 'missing'), pass2: String(r.pass2 ?? 'missing'),
         contested: r.contested === true,
       }));
       const report = computeTrialReport(rows);
-      // PHI (§6.5): this summary carries counts, rates and ids ONLY — no clinical text.
+      // §4 — cross-invocation agreement, its own figure, never pooled with within-invocation.
+      const cross = crossInvocationAgreement(overlap);
+      // PHI (§6.5): this summary carries counts, rates, ids and KEYS only — no clinical text.
       return NextResponse.json({
         ok: true, experiment, promptVersion: TRIAL_PROMPT_VERSION,
-        labelSources: [...sources], calls,
+        labelSources: [...sources],
+        trueCallCount: { calls, capForOffsetRun: plan.calls, note: 'duplicates, failed shakedown and keyed top-ups included — the D9 plan sized only one clean offset pass' },
         usage: { promptTokens, completionTokens, cost: Math.round(cost * 1e6) / 1e6 },
-        setCoverage: { labelled: byKey.size, ofSet: set.length, findingUnmatched: unmatched },
+        reconciliation: {
+          distinctKeysLabelled: winners.size,
+          currentInputSet: set.length,
+          missing: missingKeys.length,
+          missingKeys,
+          storedRowsTotal: all.length,
+          duplicateRows: all.length - winners.size,
+          dedupRule: 'one row per key; LATEST artefact created_at wins (then chunk ref desc) — a re-run of a failed window supersedes its failures',
+        },
+        crossInvocation: { ...cross, note: 'same model, same finding, separate process invocations — NOT pooled with within-invocation self-agreement' },
+        setCoverage: { labelled: winners.size, ofSet: set.length, findingUnmatched: unmatched },
         interHumanOverlap: (await run(OVERLAP_SQL, [APP])).length,
         report,
       });
