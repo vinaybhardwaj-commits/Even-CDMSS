@@ -278,7 +278,9 @@ test('THE CATCH BLOCK rethrows ONLY for eval; the non-eval return is byte-identi
   // …and the production return below it is UNCHANGED, verbatim
   assert.ok(block.includes("// Even on LLM failure, return the deterministic-only audit (completeness + prescribing)."));
   assert.ok(block.includes('pdqi9: null,'));
-  assert.ok(block.includes('return { keys, scorecard, completeness, findings: finalize(det), suggestions: [], sources: [], engineVersion: engineVersion, traceId, complexity: await complexityFor(), quietingGen: quietCfg.gen };'));
+  // S0 (invalid-marking): the det-only fallback now carries llmLegFailed: true — the store turns it
+  // into excluded_reason='llm_leg_failed'. Everything else about the return is unchanged.
+  assert.ok(block.includes('return { keys, scorecard, completeness, findings: finalize(det), suggestions: [], sources: [], engineVersion: engineVersion, traceId, complexity: await complexityFor(), quietingGen: quietCfg.gen, llmLegFailed: true };'));
 
   // ORDER MATTERS: the rethrow must come AFTER finishTrace and BEFORE the deterministic fallback,
   // or production would either lose its trace row or never reach its return.

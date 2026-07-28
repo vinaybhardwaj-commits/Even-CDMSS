@@ -123,6 +123,14 @@ export async function saveOpdAudit(
   // existing placeholder index is untouched.
   const withItems = await completenessItemsColumnExists();
   const itemsJson = completenessItemsJson(audit);
+  // ═══ S0 invalid-marking (PRD 28 Jul, D3/D4) ═══
+  // Model-agnostic: the signal comes from auditOpdNote (the LLM leg failed after its one retry),
+  // and the belt-and-braces pdqi9 check keeps the mark honest — a row is marked only when the
+  // STORED pdqi9 will actually be empty. `sc.pdqi9` is the scorecard's provided-attributes array,
+  // exactly what is serialised below as `$15::jsonb`.
+  const scPdqi9 = (sc as { pdqi9?: unknown }).pdqi9;
+  const emptyPdqi9 = scPdqi9 == null || (Array.isArray(scPdqi9) && scPdqi9.length === 0);
+  const excludedReason = audit.llmLegFailed === true && emptyPdqi9 ? 'llm_leg_failed' : null;
 
   // Force mode rewrites the scored columns from the fresh audit (EXCLUDED.*) and re-stamps
   // audited_at; complexity_band/complexity_inputs are left as-is (same as updateOpdAudit).
@@ -138,8 +146,13 @@ export async function saveOpdAudit(
          findings = EXCLUDED.findings, suggestions = EXCLUDED.suggestions, missing_fields = EXCLUDED.missing_fields,
          model = EXCLUDED.model, trace_id = EXCLUDED.trace_id, latency_ms = EXCLUDED.latency_ms, sources = EXCLUDED.sources,
          scorecard = EXCLUDED.scorecard,
+         excluded_reason = COALESCE(EXCLUDED.excluded_reason,
+           CASE WHEN opd_note_audits.excluded_reason = 'llm_leg_failed' THEN NULL ELSE opd_note_audits.excluded_reason END),
          ${withItems ? 'completeness_items = EXCLUDED.completeness_items, ' : ''}${withGen ? 'quieting_gen = EXCLUDED.quieting_gen, ' : ''}audited_at = now()`
     : 'DO NOTHING';
+  // ^ S0 excluded_reason semantics on a force re-audit: a fresh failure re-marks; a SUCCESSFUL
+  //   re-audit clears a stale 'llm_leg_failed' (that is the whole point of "re-audit queued");
+  //   any OTHER mark — house_account — is preserved verbatim. Never clobber a human's exclusion.
 
   const rows = (await sql(
     `INSERT INTO opd_note_audits
@@ -149,10 +162,10 @@ export async function saveOpdAudit(
        pdqi9, completeness_pct, n_missing_mandatory,
        n_findings, n_low_value, n_context_dependent, n_interaction_alerts,
        findings, suggestions, engine_version, model, trace_id, latency_ms, missing_fields, sources,
-       complexity_band, complexity_inputs, scorecard${withGen ? ', quieting_gen' : ''}${withItems ? ', completeness_items' : ''})
+       complexity_band, complexity_inputs, scorecard, excluded_reason${withGen ? ', quieting_gen' : ''}${withItems ? ', completeness_items' : ''})
      VALUES ($1,$2,$3,$4,$5,$6,$7, $8,$9, $10,$11,$12,$13,$14,
        $15::jsonb,$16,$17, $18,$19,$20,$21, $22::jsonb,$23::jsonb,$24,$25,$26,$27, $28::jsonb, $29::jsonb,
-       $30, $31::jsonb, $32::jsonb${withGen ? ', $33' : ''}${withItems ? `, $${withGen ? 34 : 33}::jsonb` : ''})
+       $30, $31::jsonb, $32::jsonb, $33${withGen ? ', $34' : ''}${withItems ? `, $${withGen ? 35 : 34}::jsonb` : ''})
      ON CONFLICT (uid, engine_version) ${conflictClause}
      RETURNING id${force ? ', (xmax = 0) AS inserted' : ''}`,
     [
@@ -167,6 +180,7 @@ export async function saveOpdAudit(
       JSON.stringify(missing), JSON.stringify(audit.sources ?? []),
       audit.complexity?.band ?? null, audit.complexity?.inputs ? JSON.stringify(audit.complexity.inputs) : null,
       scorecardJson(sc),
+      excludedReason,
       ...(withGen ? [audit.quietingGen ?? 0] : []),
       ...(withItems ? [itemsJson] : []),
     ],
@@ -197,6 +211,10 @@ export async function updateOpdAudit(audit: OpdNoteAudit): Promise<'updated' | '
   const withGen = await quietingGenColumnExists();
   const withItems = await completenessItemsColumnExists();
   const itemsJson = completenessItemsJson(audit);
+  // S0 invalid-marking — same predicate as saveOpdAudit.
+  const updScPdqi9 = (sc as { pdqi9?: unknown }).pdqi9;
+  const updEmptyPdqi9 = updScPdqi9 == null || (Array.isArray(updScPdqi9) && updScPdqi9.length === 0);
+  const updExcludedReason = audit.llmLegFailed === true && updEmptyPdqi9 ? 'llm_leg_failed' : null;
 
   const rows = (await sql(
     `UPDATE opd_note_audits SET
@@ -206,7 +224,9 @@ export async function updateOpdAudit(audit: OpdNoteAudit): Promise<'updated' | '
        pdqi9 = $9::jsonb, completeness_pct = $10, n_missing_mandatory = $11,
        n_findings = $12, n_low_value = $13, n_context_dependent = $14, n_interaction_alerts = $15,
        findings = $16::jsonb, suggestions = $17::jsonb, missing_fields = $18::jsonb,
-       scorecard = $20::jsonb${withGen ? ', quieting_gen = $21' : ''}${withItems ? `, completeness_items = $${withGen ? 22 : 21}::jsonb` : ''}
+       scorecard = $20::jsonb,
+       excluded_reason = COALESCE($21,
+         CASE WHEN excluded_reason = 'llm_leg_failed' THEN NULL ELSE excluded_reason END)${withGen ? ', quieting_gen = $22' : ''}${withItems ? `, completeness_items = $${withGen ? 23 : 22}::jsonb` : ''}
      WHERE uid = $1 AND engine_version = $19
      RETURNING id`,
     [
@@ -218,6 +238,9 @@ export async function updateOpdAudit(audit: OpdNoteAudit): Promise<'updated' | '
       JSON.stringify(findings), JSON.stringify(audit.suggestions ?? []), JSON.stringify(missing),
       audit.engineVersion,
       scorecardJson(sc),
+      // S0 — same semantics as saveOpdAudit's conflict clause: mark on failure, clear a stale
+      // 'llm_leg_failed' on a successful re-audit, preserve any other mark (house_account) verbatim.
+      updExcludedReason,
       ...(withGen ? [audit.quietingGen ?? 0] : []),
       ...(withItems ? [itemsJson] : []),
     ],

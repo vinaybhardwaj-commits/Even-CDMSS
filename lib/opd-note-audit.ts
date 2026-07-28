@@ -398,6 +398,12 @@ export interface OpdNoteAudit {
   /** Quieting policy generation this audit was scored under (Q1). 0 = no quieting policy (also the
    *  fail-safe when config is unreachable). Persisted on the audit row (quieting_gen). */
   quietingGen?: number;
+  /** S0 invalid-marking (PRD 28 Jul, D1/D2): true when the PRODUCTION LLM leg failed — content
+   *  empty or pdqi9 unparseable — after the one bounded retry. The audit still completes and still
+   *  persists (fail-soft, D1); the store uses this signal to stamp
+   *  `excluded_reason = 'llm_leg_failed'` so a failure to measure is never scored as excellence.
+   *  ABSENT on every successful audit and on the whole eval path (which fail-louds instead). */
+  llmLegFailed?: boolean;
   // Right Care case-mix complexity (0.81.3). Computed at audit time from db13 history; NULL band on
   // any fetch failure (never blocks the audit). Persisted on the audit row; excluded from O/E when null.
   complexity?: { band: ComplexityBand | null; inputs: ComplexityInputs | null } | null;
@@ -646,6 +652,21 @@ export const evalGuardMessage = {
   pdqi9Partial: (rated: number) =>
     `eval: pdqi9 has ${rated}/9 attributes, require 9 — retried next tick`,
 };
+
+/**
+ * S0 (production invalid-marking, PRD 28 Jul) — the leg-failed predicate, PURE and shared by the
+ * retry trigger and the final signal so they can never disagree. True when the parse produced
+ * nothing PDQI-9-usable: parse returned null, `pdqi9` is null/absent, or it is an empty object
+ * (an empty object survives `== null` but scores as `pq.rows = []` — the same empty stored array
+ * the S0 gate counts). This is deliberately WEAKER than the lab's 9-attribute guard: production is
+ * fail-soft (D1) and a partial PDQI-9 still carries signal for a clinician; the lab needs schema
+ * compliance, production needs "did the instrument read at all".
+ */
+export function llmLegFailedAfterParse(parsed: { pdqi9?: unknown } | null): boolean {
+  if (parsed === null || parsed.pdqi9 == null) return true;
+  const p = parsed.pdqi9;
+  return typeof p === 'object' && !Array.isArray(p) && Object.keys(p).length === 0;
+}
 
 /**
  * Read the envelope off a parsed OpenRouter response. PURE and TOTAL — any shape yields a defined
@@ -1034,8 +1055,35 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     const onEnvelope = opts.evalModel
       ? (e: LlmEnvelope) => { evalEnv = e; opts.onEnvelope?.(e); }
       : opts.onEnvelope;
-    const raw = await defaultGenerate(traceId, OPD_AUDIT_SYSTEM, buildOpdAuditUser(opdCaseText(oc, { specialty }), citedContext), mini, opts.evalModel, onEnvelope, opts.deadlineAt);
-    const parsed = parseOpdAnalysis(raw, sources.length);
+    const generateLeg = () => defaultGenerate(traceId, OPD_AUDIT_SYSTEM, buildOpdAuditUser(opdCaseText(oc, { specialty }), citedContext), mini, opts.evalModel, onEnvelope, opts.deadlineAt);
+
+    // ═══ S0 — ONE bounded retry on the PRODUCTION LLM leg (invalid-marking PRD D2) ═══
+    // Lab evidence: 2 of 20 notes needed a second attempt, none needed a third — one retry converts
+    // most would-be-invalid rows into valid ones at trivial cost. ONE total, whether the first
+    // attempt THREW or parsed to nothing usable; never on the eval path (the lab fail-louds and has
+    // its own in-call budget). Latency cost on the failure path: exactly one extra model call.
+    let raw: string;
+    let legRetried = false;
+    try {
+      raw = await generateLeg();
+    } catch (e) {
+      if (opts.evalModel) throw e;   // eval propagation unchanged — drainOne records, next tick retries
+      legRetried = true;
+      raw = await generateLeg();     // a second throw lands in the outer catch: det-only + marked, as today
+    }
+    let parsed = parseOpdAnalysis(raw, sources.length);
+    if (!opts.evalModel && !legRetried && llmLegFailedAfterParse(parsed)) {
+      legRetried = true;
+      try {
+        const raw2 = await generateLeg();
+        const parsed2 = parseOpdAnalysis(raw2, sources.length);
+        // Keep the retry only if it actually helped — attempt 1's partial parse beats a worse attempt 2.
+        if (!llmLegFailedAfterParse(parsed2)) { raw = raw2; parsed = parsed2; }
+      } catch { /* retry failing changes nothing — fail-soft below (D1) */ }
+    }
+    // The signal the store turns into `excluded_reason = 'llm_leg_failed'`. NEVER set on the eval
+    // path — the lab throws instead of persisting, and this flag must not leak into lab rows.
+    const llmLegFailed = !opts.evalModel && llmLegFailedAfterParse(parsed);
 
     // ═══ EVAL-PATH PARSE GUARDS (Eval-hardening D1/D2) ═══
     // `openRouterGenerate` throws on EMPTY content, but non-empty content that fails to parse — or
@@ -1091,6 +1139,8 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
       quietingGen: quietCfg.gen,
       complexity: await complexityFor(),
       longitudinalInput,
+      // S0 — absent on every successful audit, so the common-path shape is unchanged.
+      ...(llmLegFailed ? { llmLegFailed: true } : {}),
     };
   } catch (e) {
     if (traceId) await finishTrace(traceId, 'error', String((e as Error).message)).catch(() => {});
@@ -1114,6 +1164,9 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
       pdqi9: null,
       patientCentred: completeness.patientCentred,
     });
-    return { keys, scorecard, completeness, findings: finalize(det), suggestions: [], sources: [], engineVersion: engineVersion, traceId, complexity: await complexityFor(), quietingGen: quietCfg.gen };
+    // S0 — EVERY det-only fallback is a failed measurement (pdqi9 was never assessed), whatever
+    // threw: LLM leg, retrieval, or anything else inside the try. Marking unconditionally here is
+    // what makes the S0 gate ("zero unmarked rows with empty pdqi9") hold for every fallback row.
+    return { keys, scorecard, completeness, findings: finalize(det), suggestions: [], sources: [], engineVersion: engineVersion, traceId, complexity: await complexityFor(), quietingGen: quietCfg.gen, llmLegFailed: true };
   }
 }

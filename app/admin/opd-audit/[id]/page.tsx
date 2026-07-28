@@ -177,16 +177,18 @@ const DOMAIN_LABEL: Record<string, string> = Object.fromEntries(DOMAINS.map((d) 
 // PRD §9.5 — assemble the portable "Escalate to Gemini" package. Input `note` is already
 // de-identified (DeidOpdCase), so the string carries no PHI. The consumer is the care manager's
 // own Gemini (then Claude + this repo) — free-form, no structured import.
-function buildEscalationPackage({ uid, doctor, band, index, note, findings, scores, engineVersion }: {
+function buildEscalationPackage({ uid, doctor, band, index, note, findings, scores, engineVersion, notAssessed }: {
   uid: string; doctor: string; band: string; index: number;
   note: DeidOpdCase | null; findings: Finding[]; scores: Record<OpdDomain, number>; engineVersion: string;
+  notAssessed?: boolean;
 }): string {
   const L: string[] = [];
   L.push(`# OPD note — escalation for independent re-audit`);
   L.push(``);
   L.push(`- Encounter (de-identified): \`${uid}\``);
   L.push(`- Reviewing clinician: ${doctor}`);
-  L.push(`- CDMSS grade: ${index} · Band ${band}`);
+  // S0 D5 — a failed measurement is never presented as a grade, least of all to an external reviewer.
+  L.push(notAssessed ? `- CDMSS grade: not assessed — re-audit queued (grading model could not assess this note)` : `- CDMSS grade: ${index} · Band ${band}`);
   L.push(`- Engine: \`${engineVersion}\``);
   L.push(``);
   L.push(`## The note (de-identified — exactly what the engine read)`);
@@ -456,7 +458,7 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
     `SELECT id, uid, doctor_uid, consult_type, prescription_type, note_date, trace_id,
             note_quality_index, band, completeness_pct, n_missing_mandatory,
             score_documentation, score_note_quality, score_appropriateness, score_prescribing_safety, score_patient_centred,
-            pdqi9, findings, suggestions, sources, longitudinal
+            pdqi9, findings, suggestions, sources, longitudinal, excluded_reason
      FROM opd_note_audits WHERE id = $1 AND app_source = $2 LIMIT 1`,
     [id, APP],
   ).catch(() => [])) as Record<string, unknown>[];
@@ -473,6 +475,8 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
 
   const index = n(r.note_quality_index);
   const band = String(r.band || '');
+  // S0 D5 — a marked row's stored values stay, but they are NEVER presented as a score.
+  const notAssessed = String(r.excluded_reason || '') === 'llm_leg_failed';
   const rawFindings = parseJson<Finding[]>(r.findings, []);
   // Right Care rule metadata (§7) — plain_rationale + citation per rule_ref on this note's LVC findings.
   const lvcRefs = Array.from(new Set(rawFindings.map((f) => f.rule_ref).filter(Boolean).map((x) => String(x))));
@@ -593,17 +597,20 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
   // Escalation package (PRD §9.5): de-identified note + CDMSS findings + domain scores +
   // engine_version + a fixed re-audit prompt. Built here (server), handed to EscalateButton for
   // client-side Copy / Download. No PHI: `note` is already de-identified (DeidOpdCase).
-  const escalationPackage = buildEscalationPackage({ uid, doctor, band, index, note, findings, scores, engineVersion: OPD_ENGINE_VERSION });
+  const escalationPackage = buildEscalationPackage({ uid, doctor, band, index, note, findings, scores, engineVersion: OPD_ENGINE_VERSION, notAssessed });
 
   // ── the grade story ───────────────────────────────────────────────────────────
   const ranked = DOMAINS.filter((d) => !(d.key === 'note_quality' && !pdqiAssessed))
     .map((d) => ({ ...d, score: scores[d.key] })).sort((a, b) => a.score - b.score);
   const worst = ranked[0], second = ranked[1], best = ranked[ranked.length - 1];
   const lowVal = findings.find((f) => f.verdict === 'low-value');
-  const story = index >= 70
-    ? `A solid Band ${band} note — ${best.label.toLowerCase()} leads (${best.score}); the main headroom is ${worst.label.toLowerCase()} (${worst.score}).`
-    : `Graded ${band} mainly on ${worst.label.toLowerCase()} (${worst.score})${lowVal ? ` — ${lowVal.subject.toLowerCase()}` : ''}${second && second.score < 55 ? `, with ${second.label.toLowerCase()} (${second.score}) close behind` : ''}; ${best.label.toLowerCase()} held up (${best.score}).`;
-  const statusWord = index >= 70 ? 'on track' : index >= 55 ? 'watch' : 'needs attention';
+  // S0 D5 — the story never narrates a grade that is not a measurement.
+  const story = notAssessed
+    ? 'The grading model could not assess this note, so no grade is shown. Deterministic findings (dosing, interactions, completeness) below remain valid. A re-audit is queued.'
+    : index >= 70
+      ? `A solid Band ${band} note — ${best.label.toLowerCase()} leads (${best.score}); the main headroom is ${worst.label.toLowerCase()} (${worst.score}).`
+      : `Graded ${band} mainly on ${worst.label.toLowerCase()} (${worst.score})${lowVal ? ` — ${lowVal.subject.toLowerCase()}` : ''}${second && second.score < 55 ? `, with ${second.label.toLowerCase()} (${second.score}) close behind` : ''}; ${best.label.toLowerCase()} held up (${best.score}).`;
+  const statusWord = notAssessed ? 'not assessed' : index >= 70 ? 'on track' : index >= 55 ? 'watch' : 'needs attention';
 
   // Stage 3 (opd-longitudinal/0.1) — the stored longitudinal block + a live as-of chart-read for the
   // panel (reuse present-core; recomputed at render because the block stores findings, not the view).
@@ -639,10 +646,22 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
         {/* ── persistent audit sidebar ── */}
         <aside className="self-start rounded-xl border border-slate-200 bg-white p-3.5 lg:sticky lg:top-4">
           <div className="text-center">
-            <div className="mx-auto flex h-[66px] w-[66px] flex-col items-center justify-center rounded-full bg-white" style={{ border: `5px solid ${bandColor(band)}` }}>
-              <span className="text-[21px] font-medium leading-none" style={{ color: bandColor(band) }}>{index}</span>
-            </div>
-            <div className="mt-1.5 text-[12px] font-medium" style={{ color: bandColor(band) }}>Band {band} · {statusWord}</div>
+            {/* S0 D5 — a marked row's NQI/band are suppressed, never presented as a score. */}
+            {notAssessed ? (
+              <>
+                <div className="mx-auto flex h-[66px] w-[66px] flex-col items-center justify-center rounded-full border-[5px] border-slate-300 bg-white">
+                  <span className="text-[21px] font-medium leading-none text-slate-400">—</span>
+                </div>
+                <div className="mt-1.5 text-[12px] font-medium text-slate-500">Not assessed — re-audit queued</div>
+              </>
+            ) : (
+              <>
+                <div className="mx-auto flex h-[66px] w-[66px] flex-col items-center justify-center rounded-full bg-white" style={{ border: `5px solid ${bandColor(band)}` }}>
+                  <span className="text-[21px] font-medium leading-none" style={{ color: bandColor(band) }}>{index}</span>
+                </div>
+                <div className="mt-1.5 text-[12px] font-medium" style={{ color: bandColor(band) }}>Band {band} · {statusWord}</div>
+              </>
+            )}
             <div className="mt-1 text-[11px] leading-snug text-slate-500">{fmtIstTime(noteDate)} · {doctor}<br /><span className="text-[10px] text-slate-400">{specialty || String(r.prescription_type || r.consult_type || 'OPD')}</span></div>
           </div>
 

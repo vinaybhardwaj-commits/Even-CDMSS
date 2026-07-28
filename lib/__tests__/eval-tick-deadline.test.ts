@@ -266,7 +266,9 @@ test('auditOpdNote threads opts.deadlineAt and nothing else changed on the call'
   // Eval-hardening wraps onEnvelope on the eval path (to capture the envelope for the parse
   // guards); the wrapper is `opts.onEnvelope` itself whenever evalModel is absent, so production
   // still receives exactly the caller's callback.
-  assert.ok(SRC.includes('const raw = await defaultGenerate(traceId, OPD_AUDIT_SYSTEM, buildOpdAuditUser(opdCaseText(oc, { specialty }), citedContext), mini, opts.evalModel, onEnvelope, opts.deadlineAt);'));
+  // S0 wrapped the call in generateLeg() for its one bounded production retry — the ARGUMENTS are
+  // unchanged, which is what this assertion actually guards.
+  assert.ok(SRC.includes('const generateLeg = () => defaultGenerate(traceId, OPD_AUDIT_SYSTEM, buildOpdAuditUser(opdCaseText(oc, { specialty }), citedContext), mini, opts.evalModel, onEnvelope, opts.deadlineAt);'));
   assert.ok(SRC.includes('? (e: LlmEnvelope) => { evalEnv = e; opts.onEnvelope?.(e); }\n      : opts.onEnvelope;'),
     'the wrapper must collapse to opts.onEnvelope when evalModel is absent');
   // It reaches the LLM only through the evalModel branch, so it is inert without evalModel.

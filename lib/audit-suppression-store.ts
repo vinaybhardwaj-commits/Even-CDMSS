@@ -112,7 +112,7 @@ export async function quietedVolume30d(): Promise<{ quieted: number; low_value: 
     `SELECT count(*) FILTER (WHERE f->>'quieted_by' IS NOT NULL)::int AS quieted,
             count(*) FILTER (WHERE f->>'verdict' = 'low-value')::int AS low_value
      FROM opd_note_audits, jsonb_array_elements(findings) f
-     WHERE app_source=$1 AND (note_date AT TIME ZONE 'Asia/Kolkata')::date > (now() AT TIME ZONE 'Asia/Kolkata')::date - 30`,
+     WHERE app_source=$1 AND (note_date AT TIME ZONE 'Asia/Kolkata')::date > (now() AT TIME ZONE 'Asia/Kolkata')::date - 30 AND excluded_reason IS DISTINCT FROM 'llm_leg_failed'`,
     [APP]).catch(() => []);
   const r = rows[0] as Record<string, unknown> | undefined;
   return { quieted: Number(r?.quieted ?? 0) || 0, low_value: Number(r?.low_value ?? 0) || 0 };
@@ -212,6 +212,7 @@ export async function demoteDryRunCount(rule: Suppression, windowDays = 30): Pro
     `SELECT doctor_uid, findings FROM opd_note_audits
      WHERE app_source=$1
        AND (note_date AT TIME ZONE 'Asia/Kolkata')::date > (now() AT TIME ZONE 'Asia/Kolkata')::date - $2::int
+          AND excluded_reason IS DISTINCT FROM 'llm_leg_failed'
      ORDER BY note_date DESC LIMIT 8000`,
     [APP, Math.max(1, windowDays)]).catch(() => []);
   let would = 0;
@@ -240,7 +241,7 @@ export async function loadValidLabelInstances(signalType: string, windowDays = 6
   if (protectedDoctors.length === 0) return [];
   const rows = await run(
     `SELECT doctor_uid, findings FROM opd_note_audits
-     WHERE app_source=$1 AND engine_version=$2 AND doctor_uid = ANY($3)
+     WHERE app_source=$1 AND engine_version=$2 AND doctor_uid = ANY($3) AND excluded_reason IS DISTINCT FROM 'llm_leg_failed'
        AND (note_date AT TIME ZONE 'Asia/Kolkata')::date > (now() AT TIME ZONE 'Asia/Kolkata')::date - $4::int
      LIMIT 6000`,
     [APP, OPD_ENGINE_VERSION, protectedDoctors, Math.max(1, windowDays)]).catch(() => []);

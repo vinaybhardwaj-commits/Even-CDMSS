@@ -172,7 +172,7 @@ test('the guard messages are EXACTLY the §4 normative strings', () => {
 });
 
 test('the guards sit at the CALL SITE, gated on opts.evalModel, in the §4 order', () => {
-  const i = SRC.indexOf('const parsed = parseOpdAnalysis(raw, sources.length);');
+  const i = SRC.indexOf('let parsed = parseOpdAnalysis(raw, sources.length);');   // let since S0's bounded retry
   assert.ok(i > 0);
   const after = SRC.slice(i, i + 2600);
   const gate = after.indexOf('if (opts.evalModel) {');
