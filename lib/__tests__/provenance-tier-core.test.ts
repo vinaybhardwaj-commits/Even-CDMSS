@@ -92,14 +92,17 @@ test('rule 5 direction: unknowns default to SOURCEABLE, never to inherent (the b
 });
 
 // ── L8/L9 — grounding presentation ───────────────────────────────────────────
-test('grounding: precedence + V-approved labels verbatim; internal corpus is never elevated', () => {
+test('grounding: precedence + R-7 labels verbatim; internal corpus is never elevated', () => {
   assert.equal(groundingKind({ source: 'deterministic', citation_ids: [1] }, true), 'deterministic_rule');
   assert.equal(groundingKind({ source: 'llm', citation_ids: [1] }, true), 'external_source');
   assert.equal(groundingKind({ source: 'llm', citation_ids: [1] }, false), 'internal_corpus');
   assert.equal(groundingKind({ source: 'llm', citation_ids: [] }, false), 'no_source');
+  // Ruling R-7 (bug 9b, 28 Jul): the two citation-derived labels carry "(support not verified)" —
+  // both rested on tests that are not support tests (resolution / presence). Wording only;
+  // `elevated` unchanged. See provenance-grounding-label.test.ts for the full correction suite.
   assert.deepEqual(GROUNDING_PRESENTATION.deterministic_rule, { label: 'Deterministic rule', elevated: true });
-  assert.deepEqual(GROUNDING_PRESENTATION.external_source, { label: 'External source', elevated: true });
-  assert.deepEqual(GROUNDING_PRESENTATION.internal_corpus, { label: 'Internal corpus reference', elevated: false });
+  assert.deepEqual(GROUNDING_PRESENTATION.external_source, { label: 'External source (support not verified)', elevated: true });
+  assert.deepEqual(GROUNDING_PRESENTATION.internal_corpus, { label: 'Internal corpus citation (support not verified)', elevated: false });
   assert.deepEqual(GROUNDING_PRESENTATION.no_source, { label: 'Clinical reasoning — no source', elevated: false });
 });
 

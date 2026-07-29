@@ -198,12 +198,19 @@ export function citationSourceTier(source: string | null | undefined): { tier: P
 // ── Finding-card grounding (L8/L9) — shared so the UI and ledger cannot disagree ──
 export type GroundingKind = 'deterministic_rule' | 'external_source' | 'internal_corpus' | 'no_source';
 
-/** V-approved labels (L8, verbatim) + tone. Elevation = certainty of mechanism or externality of
- *  source; internal self-reference is never elevated. */
+/** Labels approved verbatim by ruling R-7 (bug 9b, 28 Jul) + tone. Elevation = certainty of
+ *  mechanism or externality of source; internal self-reference is never elevated.
+ *  The two citation-derived kinds carry "(support not verified)" because BOTH rest on tests that
+ *  are not support tests: `external_source` on link RESOLUTION (citationResolves) and
+ *  `internal_corpus` on citation PRESENCE alone — measured 82.4% of LLM findings rendered the old
+ *  label on a presence test, including a cough-syrup finding citing an iron-deficiency review.
+ *  `deterministic_rule` is unaffected: a deterministic finding is produced by the rule itself.
+ *  Wording only — every `elevated` value is unchanged (this is a claim correction, not a
+ *  re-ranking). The phase-3 support check replaces the caveat with a verified state. */
 export const GROUNDING_PRESENTATION: Record<GroundingKind, { label: string; elevated: boolean }> = {
   deterministic_rule: { label: 'Deterministic rule', elevated: true },
-  external_source: { label: 'External source', elevated: true },
-  internal_corpus: { label: 'Internal corpus reference', elevated: false },
+  external_source: { label: 'External source (support not verified)', elevated: true },
+  internal_corpus: { label: 'Internal corpus citation (support not verified)', elevated: false },
   no_source: { label: 'Clinical reasoning — no source', elevated: false },
 };
 

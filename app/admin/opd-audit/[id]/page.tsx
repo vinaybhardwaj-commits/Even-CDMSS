@@ -743,6 +743,12 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
                 <div className="text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-400">Findings · grouped by domain, worst first · numbered where they sit in the note</div>
                 <EscalateButton pkg={escalationPackage} uid={uid} />
               </div>
+              {/* Ruling R-7 (bug 9b) — ONCE per page, not per finding. The grounding chip records
+                  attachment, not support; saying so here keeps 82.4% of cards honest until the
+                  phase-3 support check lands. */}
+              <p className="mb-2 text-[11.5px] leading-snug text-slate-400">
+                A citation label records that a source was attached to a finding. It does not verify that the source supports the finding. A support check is in build.
+              </p>
               <ReviewerBar />
               {findingDomains.map((dom) => {
                 const list = renderFindings.map((f, i) => ({ f, num: i + 1 })).filter((x) => x.f.domain === dom);
