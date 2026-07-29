@@ -18,7 +18,9 @@ import { computeOpdScore } from '../opd-note-score-core.ts';
 import {
   rescoreCandidateSql, clampRescoreLimit, RESCORE_WATERMARK_UPSERT_SQL, buildWatermarkParams,
   pdqi9ObjFromStoredRows, directionGained, underuseCount, reduceRescoreReport, emptyRescoreReport,
+  resolveEngineFilter,
 } from '../opd-rescore-direction-core.ts';
+import { OPD_ENGINE_VERSIONS_CURRENT } from '../opd-note-audit-core.ts';
 import type { OpdFinding } from '../opd-note-audit-core.ts';
 import type { DeidOpdCase } from '../opd-ingest-core.ts';
 import type { RescoreOutcome } from '../opd-rescore-direction-core.ts';
@@ -139,6 +141,35 @@ test('?limit= — default 800, clamped 1..3000, junk lands on the default', () =
   assert.equal(clampRescoreLimit(1), 1);
   assert.equal(clampRescoreLimit(99999), 3000);
   assert.equal(clampRescoreLimit('50'), 50);
+});
+
+// A-1 (D-8) — the ?engine= single-stratum filter. WHITELIST, not passthrough: only an exact member
+// of the family narrows the list; anything else selects zero rows. The value is a bound parameter
+// either way; these pin that it never reaches the query as a live term.
+test('A-1 §1: resolveEngineFilter(null) returns the whole family', () => {
+  assert.deepEqual(resolveEngineFilter(null, OPD_ENGINE_VERSIONS_CURRENT), [...OPD_ENGINE_VERSIONS_CURRENT]);
+  assert.deepEqual(resolveEngineFilter('  ', OPD_ENGINE_VERSIONS_CURRENT), [...OPD_ENGINE_VERSIONS_CURRENT], 'blank is absent');
+});
+
+test('A-1 §2: an exact family member narrows to exactly that one version', () => {
+  assert.deepEqual(resolveEngineFilter('opd-note-audit/0.81.17', OPD_ENGINE_VERSIONS_CURRENT), ['opd-note-audit/0.81.17']);
+});
+
+test('A-1 §3: an unknown version yields [] — the fail-safe, never a widened scope', () => {
+  assert.deepEqual(resolveEngineFilter('opd-note-audit/9.9.9', OPD_ENGINE_VERSIONS_CURRENT), []);
+  assert.deepEqual(resolveEngineFilter('0.81.17', OPD_ENGINE_VERSIONS_CURRENT), [],
+    'a short form is NOT accepted and NOT helpfully prefixed — exact match is the safety property');
+});
+
+test("A-1 §4: an injection-shaped value yields [] and never reaches the query as a live term", () => {
+  assert.deepEqual(resolveEngineFilter("'; DROP TABLE", OPD_ENGINE_VERSIONS_CURRENT), []);
+});
+
+test("A-1 §5: the report's engine_versions reflects the FILTERED list, not the family", () => {
+  assert.ok(ROUTE.includes("const engines = resolveEngineFilter(p.get('engine'), OPD_ENGINE_VERSIONS_CURRENT);"));
+  assert.ok(ROUTE.includes('engine_versions: engines.length,'), 'the report describes what actually ran');
+  assert.ok(ROUTE.includes('[APP, engines, limit]'), 'and the same resolved list is the $2 bound parameter');
+  assert.ok(!ROUTE.includes('[APP, [...OPD_ENGINE_VERSIONS_CURRENT], limit]'), 'the unfiltered family no longer feeds $2 directly');
 });
 
 test('a candidate-query error degrades to an EMPTY report — never a 500', () => {

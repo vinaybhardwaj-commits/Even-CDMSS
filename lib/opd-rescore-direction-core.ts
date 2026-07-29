@@ -60,6 +60,20 @@ export function rescoreCandidateSql(withDisplayedBand: boolean): string {
  LIMIT $3`;
 }
 
+/** A-1 (D-8): narrow the candidate engine list to one version. WHITELIST, not passthrough: a value
+ *  that is not a member of OPD_ENGINE_VERSIONS_CURRENT yields an EMPTY list, so the pass selects
+ *  zero rows and reports empty. An arbitrary string can never widen scope or reach rows outside
+ *  the family. Bare exact version only ('opd-note-audit/0.81.17') — no short forms, no prefixing:
+ *  the exact-match whitelist is the safety property. */
+export function resolveEngineFilter(
+  raw: string | null,
+  family: readonly string[],
+): string[] {
+  const v = (raw ?? '').trim();
+  if (!v) return [...family];
+  return family.includes(v) ? [v] : [];
+}
+
 /** Watermark upsert (migration 0030). `based_on_coded_at` = the concept stamp the re-score was
  *  COMPUTED FROM ($3, the coded_at read at selection); `rescored_at` = when it ran (now()). */
 export const RESCORE_WATERMARK_UPSERT_SQL = `INSERT INTO opd_rescore_state

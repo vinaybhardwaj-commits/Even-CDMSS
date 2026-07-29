@@ -13,6 +13,7 @@ import { isAdminUnlocked } from '@/lib/admin-cookie';
 import {
   rescoreCandidateSql, clampRescoreLimit, RESCORE_WATERMARK_UPSERT_SQL, buildWatermarkParams,
   pdqi9ObjFromStoredRows, directionGained, underuseCount, reduceRescoreReport, emptyRescoreReport,
+  resolveEngineFilter,
 } from '@/lib/opd-rescore-direction-core';
 import type { RescoreOutcome } from '@/lib/opd-rescore-direction-core';
 import type { OpdFinding, OpdSuggestion } from '@/lib/opd-note-audit-core';
@@ -57,6 +58,9 @@ export async function GET(req: NextRequest) {
   const p = req.nextUrl.searchParams;
   const apply = p.get('apply') === '1';
   const limit = clampRescoreLimit(p.get('limit'));
+  // A-1 (D-8): optional single-version stratum (?engine=opd-note-audit/0.81.17, exact match only).
+  // Whitelisted against the family — an unknown value resolves to [], selects zero rows, reports empty.
+  const engines = resolveEngineFilter(p.get('engine'), OPD_ENGINE_VERSIONS_CURRENT);
 
   // Migration-0029 tolerance, same as the store: without displayed_band, band_* fall back to raw band.
   let withBand = false;
@@ -64,7 +68,7 @@ export async function GET(req: NextRequest) {
 
   let rows: Record<string, unknown>[];
   try {
-    rows = await run(rescoreCandidateSql(withBand), [APP, [...OPD_ENGINE_VERSIONS_CURRENT], limit]);
+    rows = await run(rescoreCandidateSql(withBand), [APP, engines, limit]);
   } catch (e) {
     return NextResponse.json({
       ok: true, dry_run: !apply, ...emptyRescoreReport(),
@@ -155,7 +159,8 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     ok: true,
     dry_run: !apply,
-    engine_versions: OPD_ENGINE_VERSIONS_CURRENT.length,
+    // A-1: the FILTERED list, not the family — the report must describe what actually ran.
+    engine_versions: engines.length,
     displayed_band_column: withBand,
     stored_rows: rows.length,
     ...report,
