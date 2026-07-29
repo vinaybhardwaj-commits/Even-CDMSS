@@ -15,7 +15,7 @@ import { rowToOpdCase, opdCaseText, type OpdKeys, type OpdMed, type DeidOpdCase 
 import {
   opdCompleteness, prescribingChecks, parseOpdAnalysis, stampFindingIdentity,
   consolidateDecisions, neutralizeMetadataFindings, resolveMedRoute,
-  neutralizeScreeningContext, isHealthCheckEncounter,
+  neutralizeScreeningContext, isHealthCheckEncounter, neutralizeContradictedByStructure,
   NSAID_MOLECULES, MUSCLE_RELAXANT_MOLECULES, medHasMoleculeFrom,
   OPD_AUDIT_SYSTEM, buildOpdAuditUser, OPD_ENGINE_VERSION,
   type OpdFinding, type OpdCompleteness, type OpdSuggestion,
@@ -963,6 +963,9 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
   // Quieting config (demote rules + policy gen) — fail-safe to { rules: [], gen: 0 } (never blocks).
   const quietCfg = opts.quieting ?? await getQuietingConfig();
   const noMeds = oc.medications.length === 0;
+  // Phase 2 (class A) — arm 8 needs the paired suggestions; set after the parse on the success
+  // path, [] on the det-only fallback (the arm simply cannot fire there).
+  let latestSuggestions: OpdSuggestion[] = [];
   const finalize = (fs: OpdFinding[]): OpdFinding[] => {
     let out = stampFindingIdentity(fs);
     // B1 — nothing was prescribed this encounter → there is no prescription to fault. Deterministic
@@ -974,6 +977,9 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     out = consolidateDecisions(out);   // BUG-0.8-12: one decision → one finding, across sources
     out = neutralizeMetadataFindings(out);   // BUG-0.8-16: don't penalise the doctor for our metadata
     out = neutralizeScreeningContext(out, healthCheck);   // 0.81.8 bug 2: don't penalise a health-check package's protocol panel
+    // Phase 2 (class A, register bugs 1/2/4/5a/5c/6/7): LLM findings that contradict structured
+    // data the engine already holds — marked informational (R-2: mark, never drop), 8 arms.
+    out = neutralizeContradictedByStructure(out, oc, latestSuggestions);
     // 0.81.4 (RIGHT-CARE §5 / decision 14): stamp rule_ref/lvc_category on the SURVIVING,
     // non-informational low-value findings (after neutralisation) — keyword-matched against the active
     // lvc_recommendations. Additive metadata — never changes verdict/domain/score.
@@ -1107,6 +1113,7 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
       if (rated !== 9) throw withEnvelope(new Error(evalGuardMessage.pdqi9Partial(rated)), evalEnv);
     }
 
+    latestSuggestions = parsed?.suggestions ?? [];   // phase 2 arm 8 — set BEFORE finalize runs
     const findings: OpdFinding[] = finalize([...det, ...(parsed?.findings ?? [])]);
     const scorecard = computeOpdScore({
       findings: findings.filter((f) => !f.informational).map((f) => ({ verdict: f.verdict, confidence: f.confidence, domain: f.domain })),

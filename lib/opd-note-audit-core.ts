@@ -289,6 +289,140 @@ export function isHealthCheckEncounter(c: DeidOpdCase): boolean {
   return HEALTHCHECK_CTX_RE.test(hay);
 }
 
+// ═══ Class A — one neutralizer with many arms (audit-integrity batch phase 2) ═══════════════════
+//
+// LLM findings that CONTRADICT structured data the engine already holds at scoring time. The
+// prompt's "VERIFY BEFORE FLAGGING AN ABSENCE" instruction exists and the model does not follow
+// it — that is the argument for a deterministic guard rather than more prompt text (register
+// §5c). Modeled exactly on neutralizeMetadataFindings / neutralizeScreeningContext: act only on
+// source === 'llm'; never change verdict/domain/confidence/text; set informational + signal_type
+// ONLY; return unchanged when already informational. R-2 requires MARKING, not dropping.
+//
+// ⚠️ NEVER neutralize a high-value finding, in ANY arm. On several arms an absent item is the
+// REASON the finding is praise — MEASURED: 535 notes carry a high-value antibiotic finding where
+// the antibiotic is correctly absent. Deleting those is the worst possible regression here.
+
+// Arm 1 (bug 1) — the finding claims the plan holds no medication / only diet-and-lifestyle,
+// while c.medications is non-empty. Targets the false factual claim about MEDICATION absence,
+// never the legitimate missing-NON-pharmacological-plan class.
+const ABSENT_MEDICATION_RE = /(?:only|solely|merely|just)[^.]*\b(?:diet(?:ary)?|lifestyle)\b[^.]*(?:without|no|lacking|lacks)[^.]*\b(?:medication|pharmacotherap|pharmacologic|drug)|(?:no|without|lacks?|lacking|absence of|does not (?:include|contain|mention|prescribe|document))[^.]*\b(?:medication|pharmacotherap|pharmacologic(?:al)? (?:treatment|therapy|agent)|drug therapy)\b|\bmedication(?:s| adjustments?)?\b[^.]*\b(?:absent|not (?:prescribed|adjusted|included|specified|mentioned|documented))/i;
+
+// Arm 2 (bug 2) — the finding critiques an investigation as unindicated/low-value while the note
+// ordered NO investigation at all (all three db13 investigation signals were zero on the exhibit).
+const UNINDICATED_INVESTIGATION_RE = /\bunindicated investigation|\b(?:investigation|test(?:ing)?|imaging|panel|work[- ]?up)s?\b[^.]*(?:unindicated|not (?:indicated|warranted|necessary)|unnecessary|unwarranted|low[- ]value|excessive)|(?:unnecessary|excessive|unwarranted|unindicated)[^.]*\b(?:investigation|testing|imaging|work[- ]?up)/i;
+
+// Arm 3 (bugs 4b, 5a, 7a — three independent phantom antibiotics in ONE day, the register's
+// highest-frequency defect) — the finding asserts an antibiotic was prescribed while no
+// medication carries an antibiotic/antimicrobial class (zero medications satisfies this).
+const ANTIBIOTIC_TEXT_RE = /\banti[- ]?(?:biotic|microbial|bacterial)\b/i;
+const ANTIBIOTIC_CLASS_RE = /anti[- ]?(?:biotic|microbial|bacterial|infective)/i;
+
+// Arm 4 (bug 4a) — the finding asserts SYSTEMIC administration while every medication resolves to
+// a topical/local route (the rinse-off shampoo called a "systemic antifungal"). Route vocabulary
+// per the register: `Topical`, `topical ` (trailing space), `local` — and the phase-1.1 phrases.
+const SYSTEMIC_TEXT_RE = /\bsystemic\b/i;
+const NON_SYSTEMIC_ROUTE_RE = /\b(topical|local(ly)?|external)\b/i;
+
+// Arm 5 (bugs 5c, 6b) — "indication not documented" while the finding ITSELF names a condition
+// the note documents (the azelaic-acid finding names acne vulgaris; the chart documents it).
+const INDICATION_ABSENT_RE = /\bindication\b[^.]*(?:not|never|absent|lacking|missing|un)[^.]*document|(?:does not|doesn't|fails? to|not)[^.]*document[^.]*\bindication\b|\b(?:no|without) (?:an? )?(?:documented |explicit |specific )*indication\b/i;
+
+// Arm 6 (bugs 7b, 7d) — "the history does not record X" while X sits in the complaints/history.
+const HISTORY_ABSENT_RE = /\b(?:history|note|record|documentation)\b[^.]*(?:does not|doesn't|fails? to|no|never|without)[^.]*\b(?:record|document|mention|report)\b|\bno (?:documented )?history of\b|\bundocumented\b/i;
+
+// Arm 7 (bug 6a) — a scoring LLM finding contradicting a RATIFIED deterministic rule on the same
+// molecule (the vitamin-D "overly cautious" hallucination overruled the engine's own informational
+// repletion rule and scored). Start set per PRD §5.5: vitamin D + muscle relaxants; keyed by the
+// deterministic finding's signal_type → the molecule vocabulary an LLM finding would name.
+const RATIFIED_RULE_TERMS: Record<string, RegExp> = {
+  vitamin_d_repletion_duration: /vitamin[- ]?d|cholecalciferol|\bd3\b|60,?000\s?iu|60k\b/i,
+  muscle_relaxant_indication: /muscle relaxant|chlorzoxazone|thiocolchicoside|tizanidine|baclofen|methocarbamol/i,
+};
+
+// Arm 8 (bug 7c) — the paired suggestion recommends STARTING the class the finding calls
+// unindicated (the finding argued with itself: "antibiotic overuse" beside "consider starting an
+// antibiotic"). Not a text-vs-structure match: a coherence check between the two outputs.
+const SUGGEST_START_RE = /\b(?:start|initiate|begin|add|introduce|prescribe|consider (?:starting|adding|initiating|prescribing)|increase|escalate)\b/i;
+const CLASS_LEXICON: RegExp[] = [
+  /\banti[- ]?biotic|antimicrobial|antibacterial\b/i,
+  /\bantihistamine\b/i, /\bsteroid\b/i, /\bppi\b|proton[- ]pump/i, /\bnsaid\b/i,
+  /\bantifungal\b/i, /\bantiviral\b/i, /\bbronchodilator\b/i,
+];
+
+/**
+ * The eight arms, applied in table order; the first arm that fires marks the finding and no later
+ * arm re-marks it. `suggestions` is optional so the det-only fallback path stays byte-compatible.
+ */
+export function neutralizeContradictedByStructure(
+  findings: OpdFinding[],
+  c: DeidOpdCase,
+  suggestions: { priority: number; text: string }[] = [],
+): OpdFinding[] {
+  // Documented-condition haystacks for arms 5/6 — lowercase once. Terms shorter than 4 chars are
+  // too ambiguous to count as evidence of documentation.
+  const conditionTerms = [...c.impressions, ...c.presentingComplaints]
+    .map((s) => String(s || '').toLowerCase().trim()).filter((s) => s.length >= 4);
+  const historyTerms = [...c.presentingComplaints, ...c.history]
+    .map((s) => String(s || '').toLowerCase().trim()).filter((s) => s.length >= 4);
+  const hasAntibioticClass = c.medications.some((m) =>
+    ANTIBIOTIC_CLASS_RE.test(`${m.therapeuticClass || ''} ${m.subClass || ''}`));
+  const allRoutesNonSystemic = c.medications.length > 0 && c.medications.every((m) => {
+    const r = resolveMedRoute(m);
+    return r != null && NON_SYSTEMIC_ROUTE_RE.test(r.toLowerCase());
+  });
+
+  return findings.map((f) => {
+    if (f.source !== 'llm' || f.informational) return f;
+    if (f.verdict === 'high-value') return f;   // NEVER — praise for a correctly-absent item is legitimate
+    const hay = `${f.subject} ${f.rationale || ''}`;
+    const hayLow = hay.toLowerCase();
+
+    // 1 · medication presence, absent-claim
+    if (c.medications.length > 0 && ABSENT_MEDICATION_RE.test(hay)) {
+      return { ...f, informational: true, signal_type: 'contradicted_medication_present' };
+    }
+    // 2 · investigation presence
+    if (c.investigations.length === 0 && UNINDICATED_INVESTIGATION_RE.test(hay)) {
+      return { ...f, informational: true, signal_type: 'contradicted_investigation_absent' };
+    }
+    // 3 · drug-class (low-value / context-dependent ONLY — §5.3, the single most important constraint)
+    if ((f.verdict === 'low-value' || f.verdict === 'context-dependent')
+        && !hasAntibioticClass && ANTIBIOTIC_TEXT_RE.test(hay)) {
+      return { ...f, informational: true, signal_type: 'contradicted_drug_class_absent' };
+    }
+    // 4 · route
+    if (allRoutesNonSystemic && SYSTEMIC_TEXT_RE.test(hay)) {
+      return { ...f, informational: true, signal_type: 'contradicted_route' };
+    }
+    // 5 · indication presence — the finding names a condition the note documents
+    if (INDICATION_ABSENT_RE.test(hay) && conditionTerms.some((t) => hayLow.includes(t))) {
+      return { ...f, informational: true, signal_type: 'contradicted_indication_present' };
+    }
+    // 6 · history presence — the "denied" symptom is on the chart
+    if (HISTORY_ABSENT_RE.test(hay) && historyTerms.some((t) => hayLow.includes(t))) {
+      return { ...f, informational: true, signal_type: 'contradicted_history' };
+    }
+    // 7 · ratified rule — a deterministic finding fired on the same molecule
+    for (const det of findings) {
+      if (det.source !== 'deterministic' || !det.signal_type) continue;
+      const terms = RATIFIED_RULE_TERMS[det.signal_type];
+      if (terms && terms.test(hay)) {
+        return { ...f, informational: true, signal_type: 'contradicted_ratified_rule' };
+      }
+    }
+    // 8 · suggestion coherence
+    if (f.verdict === 'low-value' || f.verdict === 'context-dependent') {
+      for (const cls of CLASS_LEXICON) {
+        if (!cls.test(hay)) continue;
+        if (suggestions.some((s) => SUGGEST_START_RE.test(s.text) && cls.test(s.text))) {
+          return { ...f, informational: true, signal_type: 'incoherent_with_suggestion' };
+        }
+      }
+    }
+    return f;
+  });
+}
+
 /** BUG-0.8-12: one clinical decision → one SCORED finding, ACROSS sources. Fix N ("one issue, one
  *  finding") was prompt-only, so it never merged a DETERMINISTIC DDI finding with the LLM's own
  *  therapeutic-duplication finding for the same drug pair — both fired and the decision was
@@ -755,7 +889,7 @@ ENCOUNTER CONTEXT — read the header fields FIRST and let them frame everything
    - PATIENT-EDUCATION MATERIAL: any attached templated self-care leaflet (generic exercises, video/YouTube links) is AUTO-GENERATED, not clinician-authored. Do NOT reward it in PDQI-9 thoroughness/useful/synthesized, and do not treat it as evidence of a rich plan. Grade only the clinician's own documentation.
 
 1) FINDINGS — appropriateness and prescribing-safety issues for THIS encounter:
-   - appropriateness: low-value / inappropriate tests, treatments or referrals for the presentation. DIAGNOSIS–COMPLAINT CONCORDANCE: check the documented diagnosis actually corresponds to the presenting complaint and to what was treated; if the coded diagnosis is unrelated to why the patient came (e.g. a chronic comorbidity is coded while an acute complaint drives the visit and the medications treat that acute problem), flag the mismatch as an appropriateness/documentation finding. UNINDICATED / CONTRADICTED DRUG: check EVERY prescribed drug has a plausible indication in THIS note; a drug whose indication is absent AND is positively contradicted by the documented history (e.g. a 2nd-gen antihistamine when the history records 'No cold' / no allergic symptom) is a low-value / unindicated prescription — raise it as an APPROPRIATENESS finding (domain 'appropriateness', verdict low-value), applied CONSISTENTLY to all drugs, not just the obvious ones. MUSCLE RELAXANTS: do NOT raise a separate finding about a muscle relaxant's indication or rationality (e.g. a chlorzoxazone/thiocolchicoside FDC) — the engine handles it deterministically and consistently; put your appropriateness attention elsewhere. DIAGNOSIS DOCUMENTED WITHOUT A CODE: a clinical diagnosis/impression stated in words (e.g. 'Cervical Spondylosis') but shown without an ICD-10 code is a code AUTO-MAPPING gap, not a missing diagnosis — the diagnosis IS documented; do NOT raise 'missing coded diagnosis' or dock appropriateness for it. DOCUMENTED-RISK-WITHOUT-SAFEGUARD ONLY: reserve an appropriateness penalty for a risk THIS note actually documents that lacks its safeguard — do NOT dock for a niche pre-analytic / preparatory keyword the note simply doesn't mention (e.g. holding biotin before a thyroid/troponin immunoassay, a fasting/water-deprivation instruction before a test): that is an over-flag, not a note-quality gap — at most note it for awareness. INSTITUTIONAL HEALTH-CHECK PACKAGE: if the encounter is a preventive health-check / screening PACKAGE, its protocol panel of investigations is by design — do NOT flag the package's included tests as individually "unindicated / low-value".
+   - appropriateness: low-value / inappropriate tests, treatments or referrals for the presentation. DIAGNOSIS–COMPLAINT CONCORDANCE: check the documented diagnosis actually corresponds to the presenting complaint and to what was treated; if the coded diagnosis is unrelated to why the patient came (e.g. a chronic comorbidity is coded while an acute complaint drives the visit and the medications treat that acute problem), flag the mismatch as an appropriateness/documentation finding. UNINDICATED / CONTRADICTED DRUG: check EVERY prescribed drug has a plausible indication in THIS note; a drug whose indication is absent AND is positively contradicted by the documented history (e.g. a 2nd-gen antihistamine when the history records 'No cold' / no allergic symptom) is a low-value / unindicated prescription — raise it as an APPROPRIATENESS finding (domain 'appropriateness', verdict low-value), applied CONSISTENTLY to all drugs, not just the obvious ones. RATIFIED DETERMINISTIC RULES: where the engine already judges a class of decision deterministically and consistently, do NOT raise a separate finding about — and never contradict — that judgement; put your appropriateness attention elsewhere. Current members: muscle relaxants (e.g. a chlorzoxazone/thiocolchicoside FDC), vitamin D repletion duration and dosing, pregnancy-risk advisories, banned fixed-dose combinations, high-alert medications, and dose ceilings. DIAGNOSIS DOCUMENTED WITHOUT A CODE: a clinical diagnosis/impression stated in words (e.g. 'Cervical Spondylosis') but shown without an ICD-10 code is a code AUTO-MAPPING gap, not a missing diagnosis — the diagnosis IS documented; do NOT raise 'missing coded diagnosis' or dock appropriateness for it. DOCUMENTED-RISK-WITHOUT-SAFEGUARD ONLY: reserve an appropriateness penalty for a risk THIS note actually documents that lacks its safeguard — do NOT dock for a niche pre-analytic / preparatory keyword the note simply doesn't mention (e.g. holding biotin before a thyroid/troponin immunoassay, a fasting/water-deprivation instruction before a test): that is an over-flag, not a note-quality gap — at most note it for awareness. INSTITUTIONAL HEALTH-CHECK PACKAGE: if the encounter is a preventive health-check / screening PACKAGE, its protocol panel of investigations is by design — do NOT flag the package's included tests as individually "unindicated / low-value".
    - prescribing_safety: irrational or unsafe prescribing — wrong/unnecessary drug, an antibiotic for a likely-viral illness, drug–drug or drug–allergy interactions, duplications, dosing problems. Each medication carries the molecule plus [drug class · D&C schedule · ISMP high-alert] resolved from the hospital formulary (the note often gives only a brand); use these to judge class duplication, interactions and high-alert handling. These bracketed tags are SYSTEM-DERIVED formulary metadata, NOT the clinician's documentation — NEVER raise a finding about their accuracy and NEVER penalise the clinician for a drug-class label that looks wrong (e.g. a PPI shown as "Antibiotic"): a wrong tag is a system data issue, out of scope for this clinical audit. Items tagged "nutraceutical/cosmetic" or "not in hospital formulary" are NOT formulary drugs — do not invent drug interactions for them, but you may note non-evidence-based / cosmetic prescribing.
      · SCOPE (critical): a prescribing-safety finding may ONLY concern a drug that appears in the MEDICATIONS list of THIS prescription. Drugs the patient reports in the HISTORY (e.g. "was taking X", "advised medication elsewhere") are context for detecting an interaction or duplication WITH a currently-prescribed drug — they are NEVER by themselves a prescribing fault, and you must not fault THIS clinician for a drug they did not prescribe. If the MEDICATIONS list is empty (none prescribed this encounter), there is NO prescription to assess — emit NO prescribing-safety finding at all.
      · INDICATION: if a medication's usual indication does not match the documented diagnosis, it is most likely a continuation of chronic/long-term therapy (e.g. a statin or antihypertensive on a note for an acute complaint). Report this as "indication for <drug> not documented" (a documentation gap; verdict context-dependent) — do NOT assert it is the wrong drug FOR the acute diagnosis — UNLESS the drug is genuinely harmful or contraindicated for this patient.
