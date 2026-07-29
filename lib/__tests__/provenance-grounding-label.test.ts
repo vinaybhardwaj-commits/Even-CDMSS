@@ -141,8 +141,10 @@ test('GREP TEST: no surface renders the bare pre-caveat strings, and the map has
 // 5 · No engine bump, no scoring change
 // ═════════════════════════════════════════════════════════════════════════════════════════════
 
-test('NO ENGINE VERSION BUMP — a label correction re-audits nothing', () => {
-  assert.equal(OPD_ENGINE_VERSION, 'opd-note-audit/0.81.15');
+test('the label correction itself rode no bump — the version only moves for scoring changes', () => {
+  // R-7 shipped at 0.81.15 with no bump. 0.81.16 is the audit-integrity phase-0 quantization
+  // revert — a SCORING change, which is exactly what the version exists to name.
+  assert.match(OPD_ENGINE_VERSION, /^opd-note-audit\/0\.81\.\d+$/);
 });
 
 test('the provenance ledger page still reads ONLY the ledger map', () => {

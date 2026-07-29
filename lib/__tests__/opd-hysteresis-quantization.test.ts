@@ -9,16 +9,15 @@
  * findingPenalty multiplied a RAW SAMPLED LLM FLOAT into the penalty: ±0.15 confidence wobble
  * moved the index ±1.35, and 9/50 pairs had identical findings but different scores.
  *
- * Two changes of different classes: quantization is a SCORING change (engine bump, golden A/B
- * gated); hysteresis is a DISPLAY rule (changes no stored score). They ship together because the
- * version bump resets every anchor anyway — the anchors start clean by construction.
+ * Two changes of different classes shipped together at 0.81.15. Quantization (the scoring change)
+ * was REVERTED at 0.81.16 by the 28 Jul S0/S1 ruling — see quantization-revert.test.ts. Hysteresis
+ * (the display rule) was ENDORSED and is what this file now guards.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  quantizeConfidence, hysteresisBand, HYSTERESIS_G, bandFor, computeOpdScore,
-  PENALTY_BASE, SEVERITY,
+  hysteresisBand, HYSTERESIS_G, bandFor, computeOpdScore,
 } from '../opd-note-score-core.ts';
 import { OPD_ENGINE_VERSION, OPD_ENGINE_VERSIONS_CURRENT } from '../opd-note-audit-core.ts';
 
@@ -27,50 +26,10 @@ const STORE = readFileSync('lib/opd-audit-store.ts', 'utf8');
 const MIGRATION = readFileSync('migrations/0029_opd_displayed_band.sql', 'utf8');
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════
-// 1 · quantizeConfidence (D3) — three levels, boundaries at the level midpoints
-// ═════════════════════════════════════════════════════════════════════════════════════════════
-
-test('quantizeConfidence: the three levels, EXACT at the boundaries', () => {
-  // < 0.45 → 0.3
-  assert.equal(quantizeConfidence(0), 0.3);
-  assert.equal(quantizeConfidence(0.3), 0.3);
-  assert.equal(quantizeConfidence(0.4499), 0.3);
-  // 0.45 ≤ c < 0.80 → 0.6  (both boundaries: 0.45 IN, 0.80 OUT)
-  assert.equal(quantizeConfidence(0.45), 0.6);
-  assert.equal(quantizeConfidence(0.6), 0.6);
-  assert.equal(quantizeConfidence(0.7999), 0.6);
-  // ≥ 0.80 → 1.0
-  assert.equal(quantizeConfidence(0.80), 1.0);
-  assert.equal(quantizeConfidence(0.9), 1.0);
-  assert.equal(quantizeConfidence(1), 1.0);
-});
-
-test('quantizeConfidence is TOTAL — junk clamps into a level, never escapes the scale', () => {
-  assert.equal(quantizeConfidence(-3), 0.3);
-  assert.equal(quantizeConfidence(7), 1.0);
-  assert.equal(quantizeConfidence(NaN), 0.3, 'NaN clamps to 0 → lowest level');
-  assert.equal(quantizeConfidence(undefined as unknown as number), 0.3);
-});
-
-test('the quantized value reaches the penalty: a ±0.15 wobble inside a level moves the score ZERO', () => {
-  // The defect: 0.65 vs 0.79 used to differ by 45×1.0×0.14 = 6.3 points of domain penalty.
-  const at = (c: number) => computeOpdScore({
-    findings: [{ verdict: 'low-value', confidence: c, domain: 'appropriateness' }],
-    completenessCoverage: 1, pdqi9: null, patientCentred: { present: 1, total: 1 },
-  }).headline;
-  assert.equal(at(0.65), at(0.79), 'same level ⇒ identical score');
-  assert.equal(at(0.46), at(0.60), 'same level ⇒ identical score');
-  assert.equal(at(0.81), at(0.99), 'same level ⇒ identical score');
-  // …but levels still discriminate: a high-confidence finding penalises more than a low one.
-  assert.ok(at(0.9) < at(0.3), 'quantization must not flatten confidence entirely');
-});
-
-test('findingPenalty applies quantization IMMEDIATELY before the confidence multiply', () => {
-  assert.ok(CORE.includes('return PENALTY_BASE * (SEVERITY[f.verdict] ?? 0.2) * quantizeConfidence(f.confidence);'));
-  assert.equal(PENALTY_BASE, 45, 'the base is untouched');
-  assert.deepEqual(SEVERITY, { 'low-value': 1.0, 'context-dependent': 0.5, uncertain: 0.2, 'high-value': 0 }, 'severity untouched');
-});
-
+// 1 · (was: quantizeConfidence) — REVERTED at 0.81.16, audit-integrity phase 0. The quantization
+//     tests moved to lib/__tests__/quantization-revert.test.ts, which asserts the DELETION.
+//     Everything below — hysteresis, the anchor column, the write paths, the readers — was
+//     ENDORSED by the same ruling and stands.
 // ═════════════════════════════════════════════════════════════════════════════════════════════
 // 2 · hysteresisBand (D1/D2) — the §3 table, exact
 // ═════════════════════════════════════════════════════════════════════════════════════════════
@@ -206,9 +165,10 @@ test('migration 0029 is exactly one additive, idempotent statement', () => {
   assert.doesNotMatch(MIGRATION.replace(/--.*$/gm, ''), /\b(DROP|DELETE|TRUNCATE|NOT NULL|DEFAULT)\b/i);
 });
 
-test('engine version is 0.81.15 AND the read family includes it (the classic error, not repeated)', () => {
-  assert.equal(OPD_ENGINE_VERSION, 'opd-note-audit/0.81.15');
-  assert.ok((OPD_ENGINE_VERSIONS_CURRENT as readonly string[]).includes('opd-note-audit/0.81.15'),
+test('engine version is current AND the read family includes it (the classic error, not repeated)', () => {
+  // 0.81.16 = the phase-0 quantization revert; the anchor resets again by construction.
+  assert.equal(OPD_ENGINE_VERSION, 'opd-note-audit/0.81.16');
+  assert.ok((OPD_ENGINE_VERSIONS_CURRENT as readonly string[]).includes('opd-note-audit/0.81.16'),
     'bump without the family append orphans the corpus (decision 21)');
   assert.ok((OPD_ENGINE_VERSIONS_CURRENT as readonly string[]).includes('opd-note-audit/0.81.14'),
     'history stays in the read family');

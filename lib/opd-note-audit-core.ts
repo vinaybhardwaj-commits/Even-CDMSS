@@ -40,9 +40,11 @@ import { computeStableRef } from './opd-finding-identity-core';
 //       nasal-decongestant >5-day cap, route/formulation-aware duplication. Bug 5: hyoscine/dicyclomine
 //       reclassed Antispasmodic/anticholinergic in the formulary (DDI-invariant). LVC `other` sub-cat +
 //       frequent-flier list surfacing + 30-day longitudinal backfill ride in the same build (non-scoring).
-// 0.81.15 — S1: confidence quantization (scoring change; golden A/B gated) + displayed_band
-// hysteresis (display rule; anchors reset at this bump by construction).
-export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.15';
+// 0.81.15 — S1: confidence quantization + displayed_band hysteresis (anchors reset at the bump).
+// 0.81.16 — audit-integrity phase 0: quantization REVERTED (28 Jul S0/S1 ruling — 17.0% of scoring
+// findings sit exactly on the 0.80 boundary; +3.10 mean penalty). Hysteresis STAYS. The bump makes
+// the scoring change nameable; hysteresis anchors reset again by construction.
+export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.16';
 
 /**
  * Current-engine FAMILY for READ/aggregate surfaces. 0.81.3 → 0.81.4 → 0.81.5 are all score-identical
@@ -53,7 +55,7 @@ export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.15';
  * DESC, id DESC. WRITE-side targeting keeps exact OPD_ENGINE_VERSION (family there would stop history
  * re-scoring). See the patch report.
  */
-export const OPD_ENGINE_VERSIONS_CURRENT = ['opd-note-audit/0.81.3', 'opd-note-audit/0.81.4', 'opd-note-audit/0.81.5', 'opd-note-audit/0.81.6', 'opd-note-audit/0.81.7', 'opd-note-audit/0.81.8', 'opd-note-audit/0.81.9', 'opd-note-audit/0.81.10', 'opd-note-audit/0.81.11', 'opd-note-audit/0.81.12', 'opd-note-audit/0.81.13', 'opd-note-audit/0.81.14', 'opd-note-audit/0.81.15'] as const;
+export const OPD_ENGINE_VERSIONS_CURRENT = ['opd-note-audit/0.81.3', 'opd-note-audit/0.81.4', 'opd-note-audit/0.81.5', 'opd-note-audit/0.81.6', 'opd-note-audit/0.81.7', 'opd-note-audit/0.81.8', 'opd-note-audit/0.81.9', 'opd-note-audit/0.81.10', 'opd-note-audit/0.81.11', 'opd-note-audit/0.81.12', 'opd-note-audit/0.81.13', 'opd-note-audit/0.81.14', 'opd-note-audit/0.81.15', 'opd-note-audit/0.81.16'] as const;
 
 // Local copy of the PDQI-9 keys (kept in sync with opd-note-score-core) so this core has
 // no runtime cross-import and stays loadable under `node --experimental-strip-types`.

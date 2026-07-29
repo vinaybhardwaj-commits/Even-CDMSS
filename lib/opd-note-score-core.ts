@@ -131,23 +131,15 @@ export const PENALTY_BASE = 45;
 export const SEVERITY: Record<NetValue, number> = { 'low-value': 1.0, 'context-dependent': 0.5, uncertain: 0.2, 'high-value': 0 };
 
 /**
- * S1 (0.81.15) — confidence QUANTIZATION. `findingPenalty` used to multiply a RAW SAMPLED LLM FLOAT
- * straight into the penalty: a ±0.15 confidence wobble on one low-value finding moved the domain
- * score ±6.75 and the index ±1.35, and 9 of 50 A/A pairs had identical findings but different
- * scores — variance the score model invited by treating a sampled scalar as a measurement.
- * Three levels (research team's), boundaries at the level midpoints (ours — flagged in PRD §7 for
- * their ratification): < 0.45 → 0.3 · [0.45, 0.80) → 0.6 · ≥ 0.80 → 1.0.
- * Input is clamped first, so junk (<0, >1, NaN→0) lands in a level rather than escaping the scale.
+ * 0.81.16 (audit-integrity batch, phase 0) — confidence quantization REVERTED per the 28 Jul
+ * S0/S1 ruling. MEASURED on production: 17.0% of 36,502 scoring findings carry confidence exactly
+ * 0.80 — the quantization boundary — and quantization raised the mean penalty by 3.10 points per
+ * finding. A cliff sitting on the modal confidence value is a worse instrument than the raw float
+ * it replaced. The ruling withdrew quantization ONLY; hysteresis (displayed_band) stays endorsed.
+ * The input clamp is the one behaviour kept: junk (<0, >1, NaN→0) lands on the scale, not outside it.
  */
-export function quantizeConfidence(c: number): number {
-  const x = clamp(Number(c) || 0, 0, 1);
-  if (x < 0.45) return 0.3;
-  if (x < 0.80) return 0.6;
-  return 1.0;
-}
-
 function findingPenalty(f: { verdict: NetValue; confidence: number }): number {
-  return PENALTY_BASE * (SEVERITY[f.verdict] ?? 0.2) * quantizeConfidence(f.confidence);
+  return PENALTY_BASE * (SEVERITY[f.verdict] ?? 0.2) * clamp(Number(f.confidence) || 0, 0, 1);
 }
 export function bandFor(headline: number): Band {
   if (headline >= 85) return 'A';
