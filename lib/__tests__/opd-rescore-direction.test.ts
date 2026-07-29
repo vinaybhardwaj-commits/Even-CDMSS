@@ -173,7 +173,8 @@ test("A-1 §5: the report's engine_versions reflects the FILTERED list, not the 
 });
 
 test('a candidate-query error degrades to an EMPTY report — never a 500', () => {
-  assert.deepEqual(emptyRescoreReport(), { considered: 0, not_fetched: 0, direction_stamped: 0, index_changed: 0, band_changed: 0, applied: 0, sample: [] });
+  // A-2 §5: every counter zero, including the new apply diagnostics; first_apply_error null.
+  assert.deepEqual(emptyRescoreReport(), { considered: 0, not_fetched: 0, direction_stamped: 0, index_changed: 0, band_changed: 0, applied: 0, apply_skipped: 0, apply_error: 0, first_apply_error: null, missing_audit_uid: 0, sample: [] });
   assert.ok(ROUTE.includes('...emptyRescoreReport(),'), 'the catch path returns the empty report');
   assert.ok(ROUTE.includes('candidate_query_error'), 'with the error surfaced for diagnosis, not swallowed');
   const catchIdx = ROUTE.indexOf('candidate_query_error');
@@ -233,6 +234,57 @@ test('reduceRescoreReport counts direction/index/band movement directly and samp
   assert.equal(r.band_changed, 1);
   assert.equal(r.applied, 2, 'a zero-change note is still applied AND watermarked, so it is not rescanned');
   assert.deepEqual(r.sample.map((s) => s.uid), ['a'], 'only movers enter the sample');
+});
+
+// A-2 — the apply path must say why it failed. 'skipped' and a discarded throw were measured
+// indistinguishable on prod (applied 0 at HTTP 200 with no error output); these diagnostics are
+// purely additive — the fail-safe catch still continues.
+test('A-2 §1: one skipped + one error outcome count into apply_skipped 1 / apply_error 1', () => {
+  const base = { fetched: true, directionGained: 0, indexBefore: 70, indexAfter: 70, bandBefore: 'B', bandAfter: 'B', nUnderuse: 0, applied: false };
+  const r = reduceRescoreReport([
+    { ...base, uid: 'a', applyOutcome: 'skipped', auditUid: 'a' },
+    { ...base, uid: 'b', applyOutcome: 'error', applyError: 'column "x" does not exist', auditUid: 'b' },
+    { ...base, uid: 'c', applyOutcome: 'updated', applied: true, auditUid: 'c' },
+  ]);
+  assert.equal(r.apply_skipped, 1);
+  assert.equal(r.apply_error, 1);
+  assert.equal(r.applied, 1);
+});
+
+test('A-2 §2: first_apply_error is the FIRST non-empty error message, null when none occurred', () => {
+  const base = { fetched: true, directionGained: 0, indexBefore: 70, indexAfter: 70, bandBefore: 'B', bandAfter: 'B', nUnderuse: 0, applied: false };
+  const r = reduceRescoreReport([
+    { ...base, uid: 'a', applyOutcome: 'error', applyError: 'first message' },
+    { ...base, uid: 'b', applyOutcome: 'error', applyError: 'second message' },
+  ]);
+  assert.equal(r.first_apply_error, 'first message');
+  assert.equal(reduceRescoreReport([{ ...base, uid: 'c', applyOutcome: 'updated', applied: true }]).first_apply_error, null);
+});
+
+test('A-2 §3: an applyError longer than 300 characters is truncated to 300', () => {
+  const base = { fetched: true, directionGained: 0, indexBefore: 70, indexAfter: 70, bandBefore: 'B', bandAfter: 'B', nUnderuse: 0, applied: false };
+  const r = reduceRescoreReport([{ ...base, uid: 'a', applyOutcome: 'error', applyError: 'x'.repeat(500) }]);
+  assert.equal(r.first_apply_error?.length, 300);
+});
+
+test('A-2 §4: missing_audit_uid counts apply-path outcomes whose auditUid is null or empty', () => {
+  const base = { fetched: true, directionGained: 0, indexBefore: 70, indexAfter: 70, bandBefore: 'B', bandAfter: 'B', nUnderuse: 0, applied: false };
+  const r = reduceRescoreReport([
+    { ...base, uid: 'a', applyOutcome: 'skipped', auditUid: null },
+    { ...base, uid: 'b', applyOutcome: 'skipped', auditUid: '' },
+    { ...base, uid: 'c', applyOutcome: 'updated', applied: true, auditUid: 'c' },
+    { ...base, uid: 'd' },   // dry run — no apply outcome, never counted
+  ]);
+  assert.equal(r.missing_audit_uid, 2, "separates `if (!k.uid) return 'skipped'` from the-UPDATE-matched-no-row");
+});
+
+test("A-2: the route records updateOpdAudit's outcome and never console-logs the driver message", () => {
+  assert.ok(ROUTE.includes('const res = await updateOpdAudit(audit);'));
+  assert.ok(ROUTE.includes('applyOutcome = res;'), "'skipped' is no longer collapsed into silence");
+  assert.ok(ROUTE.includes("applyOutcome = 'error';"));
+  assert.ok(ROUTE.includes('applyError = String((e as Error)?.message ?? e).slice(0, 300);'));
+  assert.ok(ROUTE.includes('auditUid: audit.keys?.uid ?? null,'));
+  assert.ok(!ROUTE.includes('console.'), 'the driver message reaches the report only — never the console');
 });
 
 test('directionGained counts findings that GAINED a direction; underuseCount feeds the sample', () => {

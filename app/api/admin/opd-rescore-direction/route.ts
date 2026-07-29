@@ -129,9 +129,15 @@ export async function GET(req: NextRequest) {
     const bandAfter = withBand ? hysteresisBand(indexAfter, storedDisplayed) : audit.scorecard.band;
 
     let applied = false;
+    let applyOutcome: 'updated' | 'skipped' | 'error' | undefined;
+    let applyError: string | undefined;
     if (apply) {
       try {
-        if ((await updateOpdAudit(audit)) === 'updated') {
+        // A-2 — 'skipped' is no longer collapsed into silence: the outcome is reported so a
+        // skip and a discarded throw are distinguishable from outside. Behaviour unchanged.
+        const res = await updateOpdAudit(audit);
+        applyOutcome = res;
+        if (res === 'updated') {
           applied = true;
           // D-3 — the watermark carries the coded_at READ IN THE CANDIDATE SELECT (stored.coded_at),
           // NOT now() and NOT a re-read. Every processed note is watermarked, including zero-change
@@ -143,7 +149,12 @@ export async function GET(req: NextRequest) {
             }));
           } catch { watermarkFailed++; }
         }
-      } catch { /* continue — an unapplied candidate is simply re-selected next pass */ }
+      } catch (e) {
+        // Still continues — an unapplied candidate is simply re-selected next pass. A-2 adds the
+        // message (driver text only, never note content, never console-logged) to the report.
+        applyOutcome = 'error';
+        applyError = String((e as Error)?.message ?? e).slice(0, 300);
+      }
     }
 
     outcomes.push({
@@ -151,11 +162,14 @@ export async function GET(req: NextRequest) {
       directionGained: directionGained(storedFindings, audit.findings),
       indexBefore, indexAfter, bandBefore, bandAfter,
       nUnderuse: underuseCount(audit.findings),
-      applied,
+      applied, applyOutcome, applyError,
+      auditUid: audit.keys?.uid ?? null,
     });
   }
 
-  const report = reduceRescoreReport(outcomes);
+  // A-2 — the apply diagnostics ride the report but are EMITTED only when non-zero / non-null,
+  // matching the watermark_failed style.
+  const { apply_skipped, apply_error, first_apply_error, missing_audit_uid, ...report } = reduceRescoreReport(outcomes);
   return NextResponse.json({
     ok: true,
     dry_run: !apply,
@@ -164,6 +178,10 @@ export async function GET(req: NextRequest) {
     displayed_band_column: withBand,
     stored_rows: rows.length,
     ...report,
+    ...(apply_skipped ? { apply_skipped } : {}),
+    ...(apply_error ? { apply_error } : {}),
+    ...(first_apply_error != null ? { first_apply_error } : {}),
+    ...(missing_audit_uid ? { missing_audit_uid } : {}),
     ...(watermarkFailed ? { watermark_failed: watermarkFailed } : {}),
   });
 }

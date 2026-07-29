@@ -145,6 +145,15 @@ export interface RescoreOutcome {
   bandAfter: string | null;
   nUnderuse: number;
   applied: boolean;
+  /** A-2: what updateOpdAudit actually did — 'skipped' and a discarded throw were previously
+   *  indistinguishable from outside (a fail-safe that reports nothing is invisible, not safe).
+   *  Undefined on dry runs. */
+  applyOutcome?: 'updated' | 'skipped' | 'error';
+  /** A-2: driver MESSAGE TEXT only — never note content. */
+  applyError?: string;
+  /** A-2: audit.keys.uid as the apply path saw it — separates `if (!k.uid) return 'skipped'`
+   *  from "the UPDATE matched no row" without another round trip. */
+  auditUid?: string | null;
 }
 
 export interface RescoreReport {
@@ -156,11 +165,19 @@ export interface RescoreReport {
   index_changed: number;
   band_changed: number;
   applied: number;
+  /** A-2: updateOpdAudit returned 'skipped' — two causes, disambiguated by missing_audit_uid. */
+  apply_skipped: number;
+  /** A-2: updateOpdAudit threw; the throw is still swallowed (the fail-safe continues) but counted. */
+  apply_error: number;
+  /** A-2: the FIRST non-empty applyError seen, truncated to 300 chars. Null when none occurred. */
+  first_apply_error: string | null;
+  /** A-2: apply-path candidates whose audit.keys.uid was null/empty — the `if (!k.uid)` skip cause. */
+  missing_audit_uid: number;
   sample: { uid: string; index_before: number | null; index_after: number | null; band_before: string | null; band_after: string | null; n_underuse: number }[];
 }
 
 export function reduceRescoreReport(outcomes: RescoreOutcome[]): RescoreReport {
-  const r: RescoreReport = { considered: 0, not_fetched: 0, direction_stamped: 0, index_changed: 0, band_changed: 0, applied: 0, sample: [] };
+  const r: RescoreReport = { considered: 0, not_fetched: 0, direction_stamped: 0, index_changed: 0, band_changed: 0, applied: 0, apply_skipped: 0, apply_error: 0, first_apply_error: null, missing_audit_uid: 0, sample: [] };
   for (const o of outcomes) {
     if (!o.fetched) { r.not_fetched++; continue; }
     r.considered++;
@@ -170,6 +187,13 @@ export function reduceRescoreReport(outcomes: RescoreOutcome[]): RescoreReport {
     if (indexMoved) r.index_changed++;
     if (bandMoved) r.band_changed++;
     if (o.applied) r.applied++;
+    // A-2 — apply-path diagnostics. Purely additive: the fail-safe behaviour is unchanged.
+    if (o.applyOutcome === 'skipped') r.apply_skipped++;
+    if (o.applyOutcome === 'error') {
+      r.apply_error++;
+      if (r.first_apply_error == null && o.applyError) r.first_apply_error = o.applyError.slice(0, 300);
+    }
+    if (o.applyOutcome !== undefined && !o.auditUid) r.missing_audit_uid++;
     if ((o.directionGained > 0 || indexMoved || bandMoved) && r.sample.length < 20) {
       r.sample.push({ uid: o.uid, index_before: o.indexBefore, index_after: o.indexAfter, band_before: o.bandBefore, band_after: o.bandAfter, n_underuse: o.nUnderuse });
     }
