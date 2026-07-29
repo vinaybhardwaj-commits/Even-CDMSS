@@ -10,7 +10,7 @@
 
 import FORMULARY from '@/data/formulary-2026.json';
 import {
-  buildFormularyMatcher, classifyUnmatched, normalizeDrugName,
+  buildFormularyMatcher, classifyUnmatched, normalizeDrugName, lineIsTopical,
   type FormularyRow, type FormularyMatch, type NonFormularyTag,
 } from './formulary-match-core';
 import type { OpdMed } from './opd-ingest-core';
@@ -57,10 +57,16 @@ const NON_MEDICINE_CATEGORIES = new Set([
 
 export function enrichOpdMeds(meds: OpdMed[]): void {
   for (const m of meds) {
-    if (NON_MEDICINE_CATEGORIES.has(String(m.serviceCategory ?? '').trim())) {
+    // Phase 1.1 (route-aware gate, addendum A-6): the category ALONE gated ~24,614 ORAL lines —
+    // crocin/Paracetamol, buscogast, limcee, and Depura/Vitamin D3 (1,166 lines, which would have
+    // blinded the phase-3 vitamin D rule) all stopped resolving. THE PRINCIPLE: silence requires
+    // positive evidence of a topical form, never the absence of a route string — a category alone
+    // is not evidence. lineIsTopical already falls back to the brand text on a blank route.
+    if (NON_MEDICINE_CATEGORIES.has(String(m.serviceCategory ?? '').trim())
+        && lineIsTopical(m.brand, m.route)) {
       m.formularyMatch = 'none';
       m.nonFormulary = 'nutraceutical-cosmetic';
-      continue;   // layer 1 (§4.2): skip the matcher ENTIRELY
+      continue;   // layer 1 (§4.2 as corrected): skip the matcher for topical non-medicines only
     }
     const match = MATCHER.resolve({ brand: m.brand, generic: m.generic, route: m.route });
     if (match) {

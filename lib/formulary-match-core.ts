@@ -295,9 +295,17 @@ export function classifyUnmatched(brand: string): NonFormularyTag {
 // Tiers 1–3 are untouched: a source generic is trusted, an exact brand is exact, and an embedded
 // molecule name is verbatim evidence.
 
-/** Route vocabulary — MEASURED on one real note: `Topical`, `topical ` (trailing space), `local`.
- *  Lowercase + trim first; `local` IS topical. A naive equality against 'Topical' misses lines. */
-export const TOPICAL_ROUTE_RE = /^(topical|local)$/;
+/** Route vocabulary — MEASURED live: `Topical`, `topical ` (trailing space), `local`, and the
+ *  PHRASES `Topical application` (934 lines), `apply locally` (547), `Intranasal/ topical
+ *  application` (384), `Local application` (160). Phase 1.1 widened the anchored token match to a
+ *  word-boundary phrase match — ~2,025 topical-by-route lines were recognised only when their
+ *  brand text happened to carry a form word. Lowercase + trim first (unchanged); `local` IS
+ *  topical. */
+// ⚠️ DEVIATION, FLAGGED: the kickoff's literal /\b(topical|local)\b/ does NOT match 'apply
+// locally' — 'locally' has no word boundary after 'local' — yet its §3 and test 6 both REQUIRE
+// that match (547 live lines). The behaviour spec wins over the literal regex: local(ly)? is the
+// minimal widening that satisfies every required case. Direction unchanged — still only widens.
+export const TOPICAL_ROUTE_RE = /\b(topical|local(ly)?)\b/;
 
 /** Topical dosage forms, applied to LOWERCASED strings (a prescription line's brand text, or a
  *  formulary row's raw `form`). */

@@ -75,10 +75,19 @@ test('route vocabulary: Topical, "topical " (trailing space) and local ALL count
   for (const route of ['Topical', 'topical ', ' TOPICAL', 'local', 'Local ']) {
     assert.equal(lineIsTopical('8X-KT', route), true, `route "${route}" must be topical`);
   }
-  for (const route of ['Oral', 'oral', 'IV', '', null, undefined, 'sublingual']) {
+  for (const route of ['Oral', 'oral', 'IV', '', null, undefined, 'sublingual', 'Per oral', 'PO', 'nasal']) {
     assert.equal(lineIsTopical('Plain Tablet', route as never), false, `route "${route}" is not topical`);
   }
-  assert.equal(TOPICAL_ROUTE_RE.source, '^(topical|local)$', 'the normative regex, verbatim');
+  // Phase 1.1 — widened from the anchored token to a word-boundary phrase match. DEVIATION from
+  // the kickoff's literal regex, flagged: \blocal\b cannot match 'apply locally', which test 6
+  // requires — local(ly)? is the minimal widening that satisfies the behaviour spec.
+  assert.equal(TOPICAL_ROUTE_RE.source, String.raw`\b(topical|local(ly)?)\b`, 'the shipped regex, verbatim');
+});
+
+test('phase 1.1 route PHRASES: application/apply-locally/intranasal variants all count as topical', () => {
+  for (const route of ['topical application', 'Local application', 'apply locally', 'Intranasal/ topical application', 'topical', 'local']) {
+    assert.equal(lineIsTopical('Physiogel Ai', route), true, `route "${route}" must be topical`);
+  }
 });
 
 test('the topical-form regex is the normative one, and word boundaries hold', () => {
@@ -158,4 +167,72 @@ test('rowToOpdCase carries default_opd_service_category verbatim, fail-safe on a
   const src = readFileSync('lib/opd-ingest-core.ts', 'utf8');
   assert.ok(src.includes('serviceCategory: strOrNull(o.default_opd_service_category) || undefined,'),
     'the inferred db13 field name, read fail-safe — null/missing degrades to undefined');
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// 5 · Phase 1.1 — the category gate is ROUTE-AWARE (addendum A-6)
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+//
+// Phase 1's gate fired on category ALONE and silenced ~24,614 ORAL lines (crocin, buscogast,
+// limcee, Depura/Vitamin D3…). THE PRINCIPLE: silence requires positive evidence of a topical
+// form, never the absence of a route string. A category alone is not evidence.
+
+test('§5.1: the gate still fires for a category-gated TOPICAL line — the Atarax exhibit', async () => {
+  const { enrichOpdMeds } = await import('../formulary.ts');
+  const med = { brand: 'Atarax Cream For Distressed Dry And Itchy Skin', route: 'Topical', serviceCategory: 'ALLOPATHY_NON_MEDICINE' } as never as import('../opd-ingest-core.ts').OpdMed;
+  enrichOpdMeds([med]);
+  assert.equal(med.formularyMatch, 'none');
+  assert.equal(med.nonFormulary, 'nutraceutical-cosmetic');
+  assert.equal(med.resolvedGeneric, undefined, 'no hydroxyzine, ever');
+});
+
+test('§5.2: a category-gated ORAL line runs the matcher — Crocin resolves to Paracetamol', async () => {
+  const { enrichOpdMeds } = await import('../formulary.ts');
+  const med = { brand: 'Crocin 650mg Tablet', route: 'Per oral', serviceCategory: 'ALLOPATHY_NON_MEDICINE' } as never as import('../opd-ingest-core.ts').OpdMed;
+  enrichOpdMeds([med]);
+  assert.match(med.resolvedGeneric ?? '', /paracetamol/i, 'the oral molecule is restored');
+});
+
+test('§5.3 THE PHASE-3 UNBLOCKER: Depura 60000 IU Vitamin D3 Oral Solution resolves to Vitamin D3', async () => {
+  // 1,166 live lines. Without this, the Ruling 13 vitamin D band rule never fires on Depura and
+  // the blind spot looks like correct silence.
+  const { enrichOpdMeds } = await import('../formulary.ts');
+  const med = { brand: 'Depura 60000 IU Vitamin D3 Oral Solution', route: 'Per oral', serviceCategory: 'NUTRITIONAL_SUPPLIMENTS' } as never as import('../opd-ingest-core.ts').OpdMed;
+  enrichOpdMeds([med]);
+  assert.match(med.resolvedGeneric ?? '', /vitamin d3/i, 'the phase-3 vitamin D rule needs this molecule visible');
+});
+
+test('§5.4: category + BLANK route + form word in the brand ⇒ still gated (text is evidence)', async () => {
+  const { enrichOpdMeds } = await import('../formulary.ts');
+  const med = { brand: 'Venusia Max Intensive Moisturizing Lotion', serviceCategory: 'ALLOPATHY_NON_MEDICINE' } as never as import('../opd-ingest-core.ts').OpdMed;
+  enrichOpdMeds([med]);
+  assert.equal(med.formularyMatch, 'none');
+  assert.equal(med.nonFormulary, 'nutraceutical-cosmetic');
+});
+
+test('§5.5: category + blank route + NO form word ⇒ matcher runs — Zincovit Tablet', async () => {
+  const { enrichOpdMeds } = await import('../formulary.ts');
+  const med = { brand: 'Zincovit Tablet', serviceCategory: 'NUTRITIONAL_SUPPLIMENTS' } as never as import('../opd-ingest-core.ts').OpdMed;
+  enrichOpdMeds([med]);
+  assert.notEqual(med.nonFormulary === 'nutraceutical-cosmetic' && med.formularyMatch === 'none' && med.resolvedGeneric === undefined
+    ? 'gated' : 'ran', 'gated', 'absence of a route string is NOT evidence — the matcher must run');
+});
+
+test('§5.7: the tier-4/5 form gate from phase 1 is unchanged for non-category topical lines', () => {
+  // Same miniature matcher, no category involved: a topical line against the oral-only family.
+  assert.equal(M.resolve({ brand: 'Atarax Soothing Emollient', route: 'topical application' }), null,
+    'the WIDENED route regex now marks this line topical even with no form word in the text');
+  assert.equal(M.resolve({ brand: 'Atarax Forte Extra', route: 'Per oral' })?.matchType, 'brand-token', 'oral still resolves');
+});
+
+test('phase 1.1 direction check: the widened regex can only WITHHOLD matches, never create one', () => {
+  // Any line topical under the OLD anchored regex is topical under the new one (token ⊂ phrase);
+  // lineIsTopical appears only in the layer-1 gate (skip) and the tier-4/5 gates (return null) —
+  // every consumer uses it to SUPPRESS a match, so widening it cannot mint a new match.
+  const core = readFileSync('lib/formulary-match-core.ts', 'utf8');
+  const consumers = core.split('\n').filter((l) => l.includes('topicalLine') && !l.trim().startsWith('//'));
+  assert.ok(consumers.every((l) => l.includes('lineIsTopical') || l.includes('return null') || l.includes('&&')),
+    'every use of the predicate gates a return-null path');
+  const form = readFileSync('lib/formulary.ts', 'utf8');
+  assert.ok(form.includes("&& lineIsTopical(m.brand, m.route)) {"), 'layer 1 uses it only to skip the matcher');
 });
