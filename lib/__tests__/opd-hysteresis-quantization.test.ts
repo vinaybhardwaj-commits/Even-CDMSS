@@ -122,7 +122,10 @@ test('all three write paths set displayed_band: insert anchor, conflict CASE, up
   // 2. ON CONFLICT — the CASE reads the EXISTING row; no read-modify-write in app code.
   assert.ok(STORE.includes("displayed_band = ${hysteresisCaseSql('opd_note_audits.displayed_band', 'EXCLUDED.displayed_band', 'EXCLUDED.note_quality_index')}"));
   // 3. updateOpdAudit — REUSES $3 (band) and $2 (headline): zero new params, no re-indexing.
-  assert.ok(STORE.includes("displayed_band = ${hysteresisCaseSql('displayed_band', '$3', '$2')}"));
+  //    A-3: $2 must carry ::int here — it also appears as the note_quality_index SET value, and
+  //    Postgres deduces ONE type per parameter per statement ("inconsistent types deduced for $2"
+  //    rejected every re-score write from 28 Jul until this cast).
+  assert.ok(STORE.includes("displayed_band = ${hysteresisCaseSql('displayed_band', '$3', '$2::int')}"));
 });
 
 test('deploy-before-migrate tolerance on BOTH writers and readers — 0029 not yet run ⇒ raw band, never a blank page', () => {

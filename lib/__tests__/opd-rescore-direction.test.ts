@@ -14,7 +14,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { stampDirection } from '../opd-note-audit-core.ts';
-import { computeOpdScore } from '../opd-note-score-core.ts';
+import { computeOpdScore, hysteresisBand } from '../opd-note-score-core.ts';
 import {
   rescoreCandidateSql, clampRescoreLimit, RESCORE_WATERMARK_UPSERT_SQL, buildWatermarkParams,
   pdqi9ObjFromStoredRows, directionGained, underuseCount, reduceRescoreReport, emptyRescoreReport,
@@ -28,6 +28,7 @@ import type { RescoreOutcome } from '../opd-rescore-direction-core.ts';
 const AUDIT = readFileSync('lib/opd-note-audit.ts', 'utf8');
 const ROUTE = readFileSync('app/api/admin/opd-rescore-direction/route.ts', 'utf8');
 const MIGRATION = readFileSync('migrations/0030_opd_rescore_state.sql', 'utf8');
+const STORE = readFileSync('lib/opd-audit-store.ts', 'utf8');
 
 function mkFinding(p: Partial<OpdFinding> & { concept_id?: string }): OpdFinding {
   return {
@@ -304,7 +305,53 @@ test('pdqi9 stored rows-array reconstructs to the computeOpdScore object form', 
 });
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════
-// 7 · Migration 0030 — additive, idempotent, the composite key the race guard needs
+// 7 · A-3 — $2 must deduce ONE type in updateOpdAudit's statement
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+//
+// MEASURED on prod: apply_error 14/14, "inconsistent types deduced for parameter $2". $2 is
+// sc.headline — deduced integer by `note_quality_index = $2` and numeric by the hysteresis CASE's
+// literal comparisons. Live since 0029 ran (28 Jul, when withBand became true); the insert path
+// never broke because saveOpdAudit's CASE reads EXCLUDED.note_quality_index, a column reference.
+// The fix is a cast at the CASE's use site ONLY — same value, same thresholds, same g.
+
+// hysteresisCaseSql is deliberately unexported; the statement cannot run in tests. Extract the
+// real function from source and evaluate it, so the assertion is on the GENERATED SQL, not a copy.
+function extractHysteresisCaseSql(): (priorCol: string, newBand: string, newIndex: string) => string {
+  const start = STORE.indexOf('function hysteresisCaseSql');
+  const end = STORE.indexOf('\n}', start) + 2;
+  assert.ok(start > 0 && end > start, 'hysteresisCaseSql is locatable in the store source');
+  const HYSTERESIS_G = 3.87;   // pinned: the calibration everything is measured against
+  const js = STORE.slice(start, end).replace(/: string/g, '');   // the source is TS; strip the annotations
+  return new Function('HYSTERESIS_G', `${js}; return hysteresisCaseSql;`)(HYSTERESIS_G);
+}
+
+test("A-3 §1: hysteresisCaseSql('displayed_band','$3','$2::int') emits $2::int in every comparison, $3 as every result", () => {
+  const gen = extractHysteresisCaseSql()('displayed_band', '$3', '$2::int');
+  assert.equal((gen.match(/\$2::int/g) || []).length, 8, 'all eight band-boundary comparisons carry the cast');
+  assert.equal((gen.match(/\$2(?!::int)/g) || []).length, 0, 'no bare $2 survives anywhere in the CASE');
+  assert.equal((gen.match(/THEN \$3/g) || []).length, 2, 'both THEN arms (no-prior + decisive crossing) yield $3');
+  assert.ok(gen.includes('ELSE displayed_band'), 'the hold arm is the prior column, untouched');
+});
+
+test('A-3 §2: the UPDATE statement deduces $2 from the SET clause and casts it in the CASE', () => {
+  assert.ok(STORE.includes('note_quality_index = $2,'), 'the SET clause — integer deduction');
+  assert.ok(STORE.includes("hysteresisCaseSql('displayed_band', '$3', '$2::int')"), 'the CASE site — cast form');
+  assert.ok(!STORE.includes("hysteresisCaseSql('displayed_band', '$3', '$2')"), 'the bare form is gone');
+});
+
+test("A-3 §3: saveOpdAudit's conflict clause still reads EXCLUDED.note_quality_index — the two call sites must never be \"unified\" back into this bug", () => {
+  assert.ok(STORE.includes("hysteresisCaseSql('opd_note_audits.displayed_band', 'EXCLUDED.displayed_band', 'EXCLUDED.note_quality_index')"),
+    'a column reference needs no cast; adding one would be noise at best');
+});
+
+test('A-3 §4: the pure twin hysteresisBand is untouched — same thresholds, same g', () => {
+  assert.equal(hysteresisBand(82, 'B'), 'B', 'inside the guard: holds');
+  assert.equal(hysteresisBand(90, 'B'), 'A', 'decisive crossing: moves to the band the index implies');
+  assert.equal(hysteresisBand(90, null), 'A', 'no prior: raw band');
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// 8 · Migration 0030 — additive, idempotent, the composite key the race guard needs
 // ═════════════════════════════════════════════════════════════════════════════════════════════
 
 test('migration 0030: CREATE TABLE IF NOT EXISTS opd_rescore_state, keyed (uid, engine_version)', () => {

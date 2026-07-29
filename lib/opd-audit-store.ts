@@ -251,7 +251,11 @@ export async function updateOpdAudit(audit: OpdNoteAudit): Promise<'updated' | '
   const withGen = await quietingGenColumnExists();
   const withItems = await completenessItemsColumnExists();
   const itemsJson = completenessItemsJson(audit);
-  // 0029 (S1) — same pre-migration tolerance as saveOpdAudit.
+  // 0029 (S1) — same pre-migration tolerance as saveOpdAudit. In the statement below $2 appears
+  // both as the note_quality_index SET value (deduces integer) and inside the hysteresis CASE's
+  // comparisons — the CASE site must cast ($2::int, A-3): one deduced type per parameter per
+  // statement, or Postgres rejects the whole UPDATE with "inconsistent types deduced for $2".
+  // saveOpdAudit is unaffected — its CASE reads EXCLUDED.note_quality_index, a column reference.
   const withBand = await displayedBandColumnExists();
   // S0 invalid-marking — same predicate as saveOpdAudit.
   const updScPdqi9 = (sc as { pdqi9?: unknown }).pdqi9;
@@ -269,7 +273,7 @@ export async function updateOpdAudit(audit: OpdNoteAudit): Promise<'updated' | '
        scorecard = $20::jsonb,
        excluded_reason = COALESCE($21,
          CASE WHEN excluded_reason = 'llm_leg_failed' THEN NULL ELSE excluded_reason END)${withBand ? `,
-       displayed_band = ${hysteresisCaseSql('displayed_band', '$3', '$2')}` : ''}${withGen ? ', quieting_gen = $22' : ''}${withItems ? `, completeness_items = $${withGen ? 23 : 22}::jsonb` : ''}
+       displayed_band = ${hysteresisCaseSql('displayed_band', '$3', '$2::int')}` : ''}${withGen ? ', quieting_gen = $22' : ''}${withItems ? `, completeness_items = $${withGen ? 23 : 22}::jsonb` : ''}
      WHERE uid = $1 AND engine_version = $19
      RETURNING id`,
     [
