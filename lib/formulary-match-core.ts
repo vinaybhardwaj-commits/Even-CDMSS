@@ -132,7 +132,7 @@ function splitLasa(s: string | undefined): string[] {
 }
 
 export interface FormularyMatcher {
-  resolve(med: { brand?: string | null; generic?: string | null }): FormularyMatch | null;
+  resolve(med: { brand?: string | null; generic?: string | null; route?: string | null }): FormularyMatch | null;
   size: number;
 }
 
@@ -237,6 +237,11 @@ export function buildFormularyMatcher(rows: FormularyRow[]): FormularyMatcher {
         if (low.includes(` ${v.key} `)) return enrichByGeneric(v.molecule, 'embedded-generic', true);
       }
 
+      // Phase-1 form gate (bug 3): a topical LINE may not take a family/prefix match unless the
+      // matched rows include a topical form. Computed once — tiers 1–3 above are deliberately
+      // outside the gate (source generic / exact brand / verbatim molecule are not guesses).
+      const topicalLine = lineIsTopical(brand, med.route);
+
       // 4) brand family (first token) maps unambiguously to one molecule.
       const ft = nb.split(' ')[0];
       if (ft.length >= 4) {
@@ -244,6 +249,11 @@ export function buildFormularyMatcher(rows: FormularyRow[]): FormularyMatcher {
         if (fam && fam.length) {
           const canons = new Set(fam.map((r) => (r.generic_canon || r.generic || '').trim().toLowerCase()).filter(Boolean));
           if (canons.size === 1) {
+            // THE DEFECT: `atarax` → 3 oral hydroxyzine rows, canons.size === 1, confident:true —
+            // for a CREAM the formulary does not hold. If the line is topical and NO row in the
+            // family carries a topical form, this is not the product on the note: return null so
+            // the item is tagged, never approximated (§4.3).
+            if (topicalLine && !fam.some((r) => TOPICAL_FORM_RE.test(String(r.form ?? '').toLowerCase()))) return null;
             const row = fam[0];
             return rowToMatch(row, row.generic_canon || row.generic || '', 'brand-token', true);
           }
@@ -253,6 +263,8 @@ export function buildFormularyMatcher(rows: FormularyRow[]): FormularyMatcher {
       // 5) longest formulary brand that prefixes (or is contained in) the text — APPROX.
       for (const { nb: fnb, row } of brandNorms) {
         if (fnb.length >= 4 && (nb === fnb || nb.startsWith(`${fnb} `) || ` ${nb} `.includes(` ${fnb} `))) {
+          // Same gate: a topical line never takes an APPROXIMATE oral match (§4.3).
+          if (topicalLine && !TOPICAL_FORM_RE.test(String(row.form ?? '').toLowerCase())) return null;
           return rowToMatch(row, row.generic_canon || row.generic || '', 'brand-prefix', false);
         }
       }
@@ -267,4 +279,32 @@ const NUTRA = /sunscreen|spf\b|face\s?wash|facewash|\bserum\b|moistur|shampoo|cl
 /** Classify an UNMATCHED brand: a likely nutraceutical/cosmetic vs an out-of-formulary drug. */
 export function classifyUnmatched(brand: string): NonFormularyTag {
   return NUTRA.test(brand || '') ? 'nutraceutical-cosmetic' : 'non-formulary';
+}
+
+// ── The form gate (audit-integrity batch phase 1, bug 3 / class B) ─────────────────────────────
+//
+// "Atarax Cream For Distressed Dry And Itchy Skin" matched tier 4: the family `atarax` holds 3
+// ORAL hydroxyzine rows (2 tablets, 1 syrup) — no cream — yet the cosmetic emollient resolved to
+// Hydroxyzine with confident:true, which licensed a deterministic prescribing-safety finding. The
+// engine poisoned its own prompt: the LLM reasoned correctly from a false premise, so no
+// contradiction detector could catch it (bug register §3).
+//
+// The gate: a TOPICAL line may not take a tier-4/5 match from a family with no topical row. It
+// falls through to null so classifyUnmatched tags it — an unmatched item is tagged, not scored,
+// and the system prompt already forbids inventing interactions for non-formulary items (§4.4).
+// Tiers 1–3 are untouched: a source generic is trusted, an exact brand is exact, and an embedded
+// molecule name is verbatim evidence.
+
+/** Route vocabulary — MEASURED on one real note: `Topical`, `topical ` (trailing space), `local`.
+ *  Lowercase + trim first; `local` IS topical. A naive equality against 'Topical' misses lines. */
+export const TOPICAL_ROUTE_RE = /^(topical|local)$/;
+
+/** Topical dosage forms, applied to LOWERCASED strings (a prescription line's brand text, or a
+ *  formulary row's raw `form`). */
+export const TOPICAL_FORM_RE = /cream|ointment|lotion|\bgel\b|soap|shampoo|serum|face ?wash|dusting powder|\bbalm\b/;
+
+/** True when the prescription LINE is topical: by route, or failing that by its own text. Pure. */
+export function lineIsTopical(brand: string | null | undefined, route: string | null | undefined): boolean {
+  if (TOPICAL_ROUTE_RE.test(String(route ?? '').trim().toLowerCase())) return true;
+  return TOPICAL_FORM_RE.test(String(brand ?? '').toLowerCase());
 }

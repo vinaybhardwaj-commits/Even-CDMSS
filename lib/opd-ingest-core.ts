@@ -39,6 +39,10 @@ export interface OpdMed {
   // reads either in Stage 1 (score-invariant).
   form?: string;
   dosageForm?: DosageForm;
+  // Phase 1 (audit-integrity, bug 3): the EMR's own service category for the line, carried verbatim
+  // from the medications JSON `default_opd_service_category`. Source-system enum (case-sensitive);
+  // absent/null degrades to undefined — the form gate then decides. Never free text.
+  serviceCategory?: string;
   formularyMatch?: 'source-generic' | 'brand-exact' | 'embedded-generic' | 'brand-token' | 'brand-prefix' | 'none';
   nonFormulary?: 'nutraceutical-cosmetic' | 'non-formulary';
 }
@@ -298,6 +302,8 @@ function medsFrom(v: unknown): OpdMed[] {
       duration: strOrNull(o.duration) || undefined,
       route: strOrNull(o.route_of_administration) || undefined,
       instruction: strOrNull(o.instruction_to_patient) || undefined,
+      // Phase 1 — fail-safe: a missing/null category ⇒ undefined ⇒ falls through to the form gate.
+      serviceCategory: strOrNull(o.default_opd_service_category) || undefined,
     };
     return m;
   }).filter((m) => m.generic || m.brand);

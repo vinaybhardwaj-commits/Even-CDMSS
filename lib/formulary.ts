@@ -44,9 +44,25 @@ export function resolveMed(med: { brand?: string | null; generic?: string | null
 
 /** Enrich OPD meds IN PLACE with the formulary molecule + class + schedule + safety profile.
  *  Shared by the audit orchestrator and the case-view note panel so both show the same. */
+// Phase 1 (audit-integrity, bug 3) — the EMR category gate, layer 1. Source-system enums,
+// compared case-sensitively on the trimmed string. A line the EMR itself files as non-medicine
+// (the Atarax Cream line carries ALLOPATHY_NON_MEDICINE — as do all 15,438 topical non-medicine
+// lines measured) never reaches the matcher: no molecule, no confident:true, no deterministic
+// safety finding built on a product the formulary does not hold.
+const NON_MEDICINE_CATEGORIES = new Set([
+  'ALLOPATHY_NON_MEDICINE',
+  'COSMETIC_TREATMENTS_CATEGORY',
+  'NUTRITIONAL_SUPPLIMENTS',
+]);
+
 export function enrichOpdMeds(meds: OpdMed[]): void {
   for (const m of meds) {
-    const match = MATCHER.resolve({ brand: m.brand, generic: m.generic });
+    if (NON_MEDICINE_CATEGORIES.has(String(m.serviceCategory ?? '').trim())) {
+      m.formularyMatch = 'none';
+      m.nonFormulary = 'nutraceutical-cosmetic';
+      continue;   // layer 1 (§4.2): skip the matcher ENTIRELY
+    }
+    const match = MATCHER.resolve({ brand: m.brand, generic: m.generic, route: m.route });
     if (match) {
       m.resolvedGeneric = match.generic;
       m.therapeuticClass = match.major;
