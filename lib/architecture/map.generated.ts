@@ -655,6 +655,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "score-arithmetic"
   },
   {
+    "id": "opd-rescore-direction-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "opd-triage-core",
     "plane": "advisory"
   },
@@ -1574,6 +1578,21 @@ export const MAP_EDGES: MapEdge[] = [
     "from": "app/api",
     "to": "opd-note-score-core",
     "kind": "type"
+  },
+  {
+    "from": "app/api",
+    "to": "opd-note-score-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "opd-rescore-direction-core",
+    "kind": "type"
+  },
+  {
+    "from": "app/api",
+    "to": "opd-rescore-direction-core",
+    "kind": "value"
   },
   {
     "from": "app/api",
@@ -3583,6 +3602,16 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "opd-note-score-core",
     "to": "value-score-core",
+    "kind": "type"
+  },
+  {
+    "from": "opd-rescore-direction-core",
+    "to": "opd-note-audit-core",
+    "kind": "type"
+  },
+  {
+    "from": "opd-rescore-direction-core",
+    "to": "opd-note-score-core",
     "kind": "type"
   },
   {
