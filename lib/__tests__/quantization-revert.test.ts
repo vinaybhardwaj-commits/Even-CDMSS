@@ -102,9 +102,11 @@ test('hysteresis is ENDORSED and untouched: g, the rule, and the store CASE all 
 // 3 · The bump — a scoring change must be nameable
 // ═════════════════════════════════════════════════════════════════════════════════════════════
 
-test('engine is 0.81.16 and the family includes it (decision 21 — no orphaned corpus)', () => {
-  assert.equal(OPD_ENGINE_VERSION, 'opd-note-audit/0.81.16');
+test('engine is current and the family includes it (decision 21 — no orphaned corpus)', () => {
+  // 0.81.16 was THIS phase's bump; 0.81.17 is phase 3b's. The revert itself is pinned above.
+  assert.equal(OPD_ENGINE_VERSION, 'opd-note-audit/0.81.17');
   const fam = OPD_ENGINE_VERSIONS_CURRENT as readonly string[];
-  assert.ok(fam.includes('opd-note-audit/0.81.16'), 'bump without the append empties the lists');
+  assert.ok(fam.includes('opd-note-audit/0.81.17'), 'bump without the append empties the lists');
+  assert.ok(fam.includes('opd-note-audit/0.81.16'), 'history stays readable');
   assert.ok(fam.includes('opd-note-audit/0.81.15'), 'history stays readable');
 });

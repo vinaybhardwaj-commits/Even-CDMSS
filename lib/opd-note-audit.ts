@@ -21,6 +21,12 @@ import {
   type OpdFinding, type OpdCompleteness, type OpdSuggestion,
 } from './opd-note-audit-core';
 import { computeOpdScore, type OpdScorecard, type NetValue, type Pdqi9Attr } from './opd-note-score-core';
+// Phase 3b — ratified clinical bands + the vitamin-D dose matrix (code, per the file's own header).
+import {
+  vitaminDBand, parseVitaminDLevel, vitaminDConcordance,
+  VITAMIN_D_STANDARD, VITAMIN_D_UNITS, VITAMIN_D_DEFICIENT_BELOW, VITAMIN_D_SUFFICIENT_AT_OR_ABOVE,
+  type VitaminDBand,
+} from './clinical-bands';
 import { enrichOpdMeds } from './formulary';
 import { doseFindings } from './dose-limits';
 import { parseDurationDays } from './dose-aggregation-core';
@@ -284,8 +290,84 @@ export function decongestantDurationFindings(meds: OpdMed[]): OpdFinding[] {
 // duration emits NOTHING — several clinicians write the correct extended protocol as free text
 // ("8 weeks followed by once a month for 4 months") which does not parse; they stay silent by design.
 // Do NOT extend parseDurationDays to capture them.
+// ═══ Citation support check (phase 3b, register bug 9a) ════════════════════════════════════════
+//
+// A HIGH-VALUE finding praised cholecalciferol after cranioplasty citing Rae et al.'s wound-healing
+// protocol — whose components are vitamin A, ascorbic acid and zinc, and which names NO vitamin D.
+// The excerpt said "vitamin and mineral supplementation"; the model saw cholecalciferol on the
+// prescription and concluded the study endorsed it. The card then rendered it as grounded.
+//
+// ⚠️ GENERATION TIME, NOT POST-HOC. MEASURED: the model reads 700 chars per excerpt
+// (buildCitedContext perChunkChars) but only 600 are stored (hitsToSources .slice(0, 600)). A check
+// against the stored preview would strip citations whose supporting sentence sits in chars 601–700
+// — text the model legitimately read. Stripping a GOOD citation is worse than leaving a bad one,
+// because it makes an honest finding look ungrounded. So this runs where the full h.text is live.
+//
+// DISPLAY AND PROVENANCE ONLY. It cannot move a score: findingPenalty is a function of verdict,
+// confidence and direction. A stripped finding falls to `no_source` through the EXISTING
+// groundingKind, which is not touched.
+
+/** Molecule vocabulary a finding may name, with the alternates a cited excerpt might use instead. */
+const MOLECULE_ALIASES: { re: RegExp; alts: RegExp }[] = [
+  { re: /cholecalciferol|vitamin ?d3?\b|calciferol/i, alts: /cholecalciferol|vitamin ?d3?\b|calciferol|25[- ]?\(?oh\)?[- ]?d/i },
+  { re: /\bvitamin ?c\b|ascorbic acid/i, alts: /\bvitamin ?c\b|ascorbic acid/i },
+  { re: /\bvitamin ?a\b|retinol/i, alts: /\bvitamin ?a\b|retinol/i },
+  { re: /\bzinc\b/i, alts: /\bzinc\b/i },
+  { re: /methylcobalamin|vitamin ?b ?12|cyanocobalamin/i, alts: /methylcobalamin|vitamin ?b ?12|cyanocobalamin|cobalamin/i },
+];
+
+/**
+ * Strip citations that no cited excerpt supports. PURE.
+ *
+ * CONSERVATIVE BY CONSTRUCTION — it does nothing unless it is sure:
+ *   · no hits (the reuse path) ⇒ untouched;
+ *   · finding names no molecule this vocabulary knows ⇒ untouched;
+ *   · a cited excerpt has no text ⇒ untouched (never strip on missing data);
+ *   · any cited excerpt naming the molecule, its generic, or its class ⇒ untouched.
+ * Only when EVERY cited excerpt is readable and NONE names the molecule are citation_ids cleared
+ * and the affected points moved from `evidence` to `estimates`.
+ */
+export function stripUnsupportedCitations(
+  findings: OpdFinding[],
+  hits: { id: number; text?: string | null }[],
+  medHay = '',
+): OpdFinding[] {
+  if (!Array.isArray(hits) || hits.length === 0) return findings;   // reuse path / no retrieval
+  const byId = new Map(hits.map((h) => [Number(h.id), String(h.text ?? '')]));
+  return findings.map((f) => {
+    if (f.source !== 'llm') return f;
+    const ids = Array.isArray(f.citation_ids) ? f.citation_ids : [];
+    if (ids.length === 0) return f;
+    const hay = `${f.subject} ${f.rationale || ''} ${(f.evidence || []).join(' ')}`;
+    const molecule = MOLECULE_ALIASES.find((m) => m.re.test(hay));
+    if (!molecule) return f;                                        // molecule undeterminable ⇒ do nothing
+    const texts = ids.map((id) => byId.get(Number(id)));
+    if (texts.some((t) => t == null || t === '')) return f;          // missing excerpt text ⇒ do nothing
+    // Class-level support counts too: an excerpt naming the drug's own class supports it.
+    if (texts.some((t) => molecule.alts.test(String(t)))) return f;
+    if (medHay && molecule.alts.test(medHay) && texts.some((t) => molecule.alts.test(String(t)))) return f;
+    return {
+      ...f,
+      citation_ids: [],
+      evidence: [],
+      estimates: [...(f.estimates || []), ...(f.evidence || [])],
+    };
+  });
+}
+
 const VITAMIN_D_RE = /(vitamin ?d3?|cholecalciferol|calciferol)/i;
-export function vitaminDRepletionFindings(meds: OpdMed[]): OpdFinding[] {
+/**
+ * Ruling 13 (informational retest prompt) + phase 3b (the ratified dose matrix).
+ *
+ * `band` is the note's 25(OH)D band when one could be read, else null. FAIL-SAFE THROUGHOUT, and
+ * deliberately so: a null band, an unparseable duration, or a (band, regimen) pair the matrix does
+ * not hold ALL emit nothing. Silence is the designed default — the matrix ships with exactly two
+ * ratified rows, both "concordant, emit no finding", so this rule NEVER produces a scoring
+ * discordance finding. What it does produce is the Ruling 13 retest prompt, informational and
+ * non-scoring, and its presence is what lets phase-2 arm 7 take the vitamin-D dose topic away from
+ * the LLM (bug 8: 1,450 scoring LLM vitamin-D findings, only 101 of which stated their threshold).
+ */
+export function vitaminDRepletionFindings(meds: OpdMed[], band: VitaminDBand | null = null): OpdFinding[] {
   const out: OpdFinding[] = [];
   for (const m of meds) {
     const comp = `${m.resolvedGeneric || ''} ${m.generic || ''} ${m.brand || ''}`;
@@ -294,12 +376,31 @@ export function vitaminDRepletionFindings(meds: OpdMed[]): OpdFinding[] {
     if (!/60[ ,]?000|60k/i.test(strengthHay)) continue;                                // (2) 60,000 IU strength
     if (!/week/i.test(`${m.frequency || ''} ${m.instruction || ''}`)) continue;        // (3) weekly dosing stated
     const days = parseDurationDays(m.duration);
-    if (days === null || days <= 56) continue;                                         // (4) > 8 weeks; unparseable → silent
+    if (days === null) continue;                                                       // unparseable → silent, always
     const weeks = Math.round(days / 7);
+
+    if (days > 56) {                                                                   // (4a) > 8 weeks — Ruling 13, unchanged
+      out.push({
+        subject: `Vitamin D 60,000 IU weekly prescribed for ${weeks} weeks — document retest of levels`,
+        verdict: 'uncertain', confidence: 0, domain: 'prescribing_safety',
+        rationale: `Weekly 60,000 IU for 8 weeks is standard repletion once low levels are established, followed by a retest. This course runs ${weeks} weeks. Confirm levels were rechecked or that extended/maintenance dosing is intended. Informational — non-scoring.`,
+        evidence: [], estimates: [], citation_ids: [], source: 'deterministic',
+        informational: true,
+      });
+      continue;
+    }
+
+    // (4b) phase 3b — the RATIFIED 8-week course. The matrix verdict is "concordant, emit no
+    // finding", so no scoring finding is produced either way; what fires is the SAME Ruling 13
+    // retest prompt, now extended to the `insufficient` band as well as `deficient` per Dr Zaki's
+    // 29 Jul ratification ("the test should be repeated after 8 weeks"). A documentation-
+    // completeness prompt, not a concordance verdict — only the latter would belong in the score.
+    const regimen = { iu: 60000, weekly: true, weeks };
+    if (vitaminDConcordance(band, regimen) !== 'concordant') continue;                 // no ratified row → silent
     out.push({
-      subject: `Vitamin D 60,000 IU weekly prescribed for ${weeks} weeks — document retest of levels`,
+      subject: `Vitamin D 60,000 IU weekly for ${weeks} weeks — document retest of levels`,
       verdict: 'uncertain', confidence: 0, domain: 'prescribing_safety',
-      rationale: `Weekly 60,000 IU for 8 weeks is standard repletion once low levels are established, followed by a retest. This course runs ${weeks} weeks. Confirm levels were rechecked or that extended/maintenance dosing is intended. Informational — non-scoring.`,
+      rationale: `Weekly 60,000 IU for ${weeks} weeks is the ratified repletion course for a ${band} 25(OH)D level (${VITAMIN_D_STANDARD} bands: deficient below ${VITAMIN_D_DEFICIENT_BELOW} ${VITAMIN_D_UNITS}, insufficient below ${VITAMIN_D_SUFFICIENT_AT_OR_ABOVE}). The regimen is concordant; confirm the level is retested after the course. Informational — non-scoring.`,
       evidence: [], estimates: [], citation_ids: [], source: 'deterministic',
       informational: true,
     });
@@ -961,9 +1062,16 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
   // 0.81.14 case context threaded into the meds[] checks (Rulings 4 + 5–8; same pattern as isGout).
   const mskDocumented = mskContextDocumented(oc);                                   // Ruling 4 — muscle relaxant gate
   const lmpDays = lmpIntervalDays(oc.lmp, oc.noteDate);                             // Rulings 5–8 — possible-pregnancy window (visit_date proxied by oc.noteDate)
+  // Phase 3b — the note's 25(OH)D band, read from the documented text. FAIL-SAFE: unreadable ⇒
+  // null ⇒ the dose matrix stays silent (bug 8's cutoff came from model recall, never from data).
+  const vitDBand: VitaminDBand | null = (() => {
+    const hay = [...oc.history, ...oc.investigations, ...oc.impressions, ...oc.presentingComplaints, ...oc.examination].join(' · ');
+    const lvl = parseVitaminDLevel(hay);
+    return lvl == null ? null : vitaminDBand(lvl);
+  })();
   const det = [...prescribingChecks(oc), ...doseFindings(oc.medications, { isGout }), ...ddiFindings(oc.medications), ...muscleRelaxantFindings(oc.medications, { mskDocumented }),
     ...unindicatedRespFindings(oc), ...decongestantDurationFindings(oc.medications),   // 0.81.8 bugs 1, 3
-    ...vitaminDRepletionFindings(oc.medications),                                    // 0.81.14 Ruling 13 (informational)
+    ...vitaminDRepletionFindings(oc.medications, vitDBand),                          // Ruling 13 + phase 3b matrix (informational)
     ...pregnancyRiskFindings(oc.medications, { lmpIntervalDays: lmpDays }),          // 0.81.14 Rulings 5–8 (informational)
     ...bannedFdcFindings(oc.medications)];   // CDSCO banned-FDC (C1) — seed live at v1.0 (5 entries); zero match current prescribing
   const completeness = opdCompleteness(oc);
@@ -980,6 +1088,10 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
   // Phase 2 (class A) — arm 8 needs the paired suggestions; set after the parse on the success
   // path, [] on the det-only fallback (the arm simply cannot fire there).
   let latestSuggestions: OpdSuggestion[] = [];
+  // Phase 3b — the retrieval hits with their FULL text, set on the generation path only. Empty on
+  // the reuse path (which carries stored 600-char previews), which is the explicit guard that keeps
+  // the citation check off it: stripUnsupportedCitations returns early on an empty hits array.
+  let latestHits: { id: number; text?: string | null }[] = [];
   const finalize = (fs: OpdFinding[]): OpdFinding[] => {
     let out = stampFindingIdentity(fs);
     // B1 — nothing was prescribed this encounter → there is no prescription to fault. Deterministic
@@ -997,6 +1109,9 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     // Phase 3a (R-5) — direction AFTER the neutralizer (check 2 reads arm 8's marking) and BEFORE
     // stampLvcMetadata (which the underuse gate below keys on).
     out = stampDirection(out, oc);
+    // Phase 3b — display/provenance only; cannot move a score (findingPenalty reads verdict,
+    // confidence, direction). No-ops when latestHits is empty, i.e. on the reuse path.
+    out = stripUnsupportedCitations(out, latestHits, oc.medications.map((m) => `${m.resolvedGeneric || ''} ${m.generic || ''} ${m.brand || ''}`).join(' '));
     // 0.81.4 (RIGHT-CARE §5 / decision 14): stamp rule_ref/lvc_category on the SURVIVING,
     // non-informational low-value findings (after neutralisation) — keyword-matched against the active
     // lvc_recommendations. Additive metadata — never changes verdict/domain/score.
@@ -1143,6 +1258,7 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     }
 
     latestSuggestions = parsed?.suggestions ?? [];   // phase 2 arm 8 — set BEFORE finalize runs
+    latestHits = hits;                                // phase 3b — FULL excerpt text, generation path only
     const findings: OpdFinding[] = finalize([...det, ...(parsed?.findings ?? [])]);
     const scorecard = computeOpdScore({
       findings: findings.filter((f) => !f.informational).map((f) => ({ verdict: f.verdict, confidence: f.confidence, domain: f.domain, direction: f.direction })),

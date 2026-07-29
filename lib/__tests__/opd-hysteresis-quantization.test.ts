@@ -167,8 +167,8 @@ test('migration 0029 is exactly one additive, idempotent statement', () => {
 
 test('engine version is current AND the read family includes it (the classic error, not repeated)', () => {
   // 0.81.16 = the phase-0 quantization revert; the anchor resets again by construction.
-  assert.equal(OPD_ENGINE_VERSION, 'opd-note-audit/0.81.16');
-  assert.ok((OPD_ENGINE_VERSIONS_CURRENT as readonly string[]).includes('opd-note-audit/0.81.16'),
+  assert.equal(OPD_ENGINE_VERSION, 'opd-note-audit/0.81.17');
+  assert.ok((OPD_ENGINE_VERSIONS_CURRENT as readonly string[]).includes('opd-note-audit/0.81.17'),
     'bump without the family append orphans the corpus (decision 21)');
   assert.ok((OPD_ENGINE_VERSIONS_CURRENT as readonly string[]).includes('opd-note-audit/0.81.14'),
     'history stays in the read family');
