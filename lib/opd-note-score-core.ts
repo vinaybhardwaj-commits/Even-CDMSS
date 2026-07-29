@@ -73,7 +73,9 @@ export const PDQI9_LABEL: Record<Pdqi9Attr, string> = {
 // Findings (LLM appropriateness + LLM/deterministic prescribing-safety) flow through the
 // shared verdict×confidence penalty model. domain restricted to the two clinical axes.
 export type OpdFindingDomain = 'appropriateness' | 'prescribing_safety';
-export interface OpdScoreFinding { verdict: NetValue; confidence: number; domain?: OpdFindingDomain }
+// Phase 3a: `direction` is carried so findingPenalty can zero an UNDERUSE finding. Optional —
+// every stored row and every existing caller omits it, and absent means 'undetermined'.
+export interface OpdScoreFinding { verdict: NetValue; confidence: number; domain?: OpdFindingDomain; direction?: 'overuse' | 'underuse' }
 
 export interface OpdScoreInput {
   findings: OpdScoreFinding[];
@@ -138,7 +140,13 @@ export const SEVERITY: Record<NetValue, number> = { 'low-value': 1.0, 'context-d
  * it replaced. The ruling withdrew quantization ONLY; hysteresis (displayed_band) stays endorsed.
  * The input clamp is the one behaviour kept: junk (<0, >1, NaN→0) lands on the scale, not outside it.
  */
-function findingPenalty(f: { verdict: NetValue; confidence: number }): number {
+function findingPenalty(f: { verdict: NetValue; confidence: number; direction?: string }): number {
+  // Phase 3a (R-5): an UNDERUSE finding contributes ZERO penalty. Implemented as an early return
+  // rather than a new SEVERITY member — SEVERITY must stay a pure function of NetValue, and
+  // NetValue must stay closed (it feeds scoring). Underuse is the opposite failure to low-value
+  // care; penalising it under the low-value weight is what put 78 "prescribe more antibiotics"
+  // findings inside antibiotic OVERUSE.
+  if (f.direction === 'underuse') return 0;
   return PENALTY_BASE * (SEVERITY[f.verdict] ?? 0.2) * clamp(Number(f.confidence) || 0, 0, 1);
 }
 export function bandFor(headline: number): Band {
@@ -187,7 +195,9 @@ function scoreFromFindings(fs: OpdScoreFinding[]): { score: number; n: number } 
   // A single finding is unchanged vs the old additive model (preserves calibration for the common case).
   let remaining = 100;
   for (const f of fs) {
-    const p = findingPenalty({ verdict: f.verdict, confidence: f.confidence });
+    // `direction` MUST be forwarded — rebuilding the object without it silently re-penalised
+    // every underuse finding and made the phase-3a early return dead code.
+    const p = findingPenalty({ verdict: f.verdict, confidence: f.confidence, direction: f.direction });
     remaining *= 1 - clamp(p, 0, 100) / 100;
   }
   return { score: round(clamp(remaining, 0, 100)), n: fs.length };

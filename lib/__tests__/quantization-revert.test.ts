@@ -29,9 +29,12 @@ test('quantizeConfidence is DELETED — the function, its export, and every call
 });
 
 test('findingPenalty is the target text VERBATIM — raw clamped float, no level cliff', () => {
-  assert.ok(CORE.includes(`function findingPenalty(f: { verdict: NetValue; confidence: number }): number {
-  return PENALTY_BASE * (SEVERITY[f.verdict] ?? 0.2) * clamp(Number(f.confidence) || 0, 0, 1);
-}`));
+  // Phase 3a (R-5) added the underuse early return ABOVE this line and widened the parameter type;
+  // the quantization-revert assertion is the RETURN EXPRESSION, which is unchanged and is what
+  // this test exists to pin. (In-contract literal update per addendum A-1 — logic identical.)
+  assert.ok(CORE.includes(`function findingPenalty(f: { verdict: NetValue; confidence: number; direction?: string }): number {`));
+  assert.ok(CORE.includes(`  return PENALTY_BASE * (SEVERITY[f.verdict] ?? 0.2) * clamp(Number(f.confidence) || 0, 0, 1);`));
+  assert.ok(!CORE.includes('quantizeConfidence'), 'the revert stands');
 });
 
 test('the penalty is CONTINUOUS in confidence again — the 0.80 cliff is gone', () => {

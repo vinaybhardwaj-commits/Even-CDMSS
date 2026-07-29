@@ -15,7 +15,7 @@ import { rowToOpdCase, opdCaseText, type OpdKeys, type OpdMed, type DeidOpdCase 
 import {
   opdCompleteness, prescribingChecks, parseOpdAnalysis, stampFindingIdentity,
   consolidateDecisions, neutralizeMetadataFindings, resolveMedRoute,
-  neutralizeScreeningContext, isHealthCheckEncounter, neutralizeContradictedByStructure,
+  neutralizeScreeningContext, isHealthCheckEncounter, neutralizeContradictedByStructure, stampDirection, opdSignalType,
   NSAID_MOLECULES, MUSCLE_RELAXANT_MOLECULES, medHasMoleculeFrom,
   OPD_AUDIT_SYSTEM, buildOpdAuditUser, OPD_ENGINE_VERSION,
   type OpdFinding, type OpdCompleteness, type OpdSuggestion,
@@ -920,6 +920,14 @@ export interface AuditOpdOpts {
    *  unless `evalModel` is also set. ABSENT ⇒ every existing call site, production included, is
    *  byte-identical. Set ONLY by `batchTick`'s eval branch; never by any production caller. */
   deadlineAt?: number;
+  /** Phase 3a / A-8 — re-score an EXISTING row in place under its OWN engine version. Set only by
+   *  a backfill route: the recomputed audit carries this version, so `updateOpdAudit`'s
+   *  `WHERE engine_version = $19` matches the stored row instead of silently returning 'skipped'.
+   *  The row keeps its original label (engine_version is never in that UPDATE's SET list) — a
+   *  second row would be counted TWICE by every doctor aggregate, which has no per-uid dedup.
+   *  ABSENT ⇒ OPD_ENGINE_VERSION, exactly as before. Production path only; the mini path is
+   *  unaffected. */
+  engineVersion?: string;
 }
 
 /** Engine tag for mini-pipeline rows (default run). */
@@ -934,7 +942,13 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
   const mini = opts.pipeline === 'mini';
   // prodTag: a mini run that writes the PLAIN prod engine version (visible on dashboards) — the free
   // model correcting prod scores. Otherwise mini stays isolated under '-<tag>'.
-  const engineVersion = mini ? (opts.prodTag ? OPD_ENGINE_VERSION : opdMiniEngine(opts.engineTag)) : OPD_ENGINE_VERSION;
+  // Phase 3a / A-8 — the backfill override, PRODUCTION PATH ONLY. updateOpdAudit keys its WHERE on
+  // engineVersion, so re-scoring a stored 0.81.15 row with a fresh 0.81.16 audit matched nothing and
+  // returned 'skipped' SILENTLY. Passing the SOURCE version lets the UPDATE find its row; the row
+  // keeps its own 0.81.15 label because engine_version is in that WHERE and never in the SET list.
+  const engineVersion = mini
+    ? (opts.prodTag ? OPD_ENGINE_VERSION : opdMiniEngine(opts.engineTag))
+    : (opts.engineVersion ?? OPD_ENGINE_VERSION);
   const { case: oc, keys } = rowToOpdCase(row);
   enrichOpdMeds(oc.medications);   // brand→generic + class/schedule/high-alert/LASA/VED from the formulary
 
@@ -980,10 +994,25 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     // Phase 2 (class A, register bugs 1/2/4/5a/5c/6/7): LLM findings that contradict structured
     // data the engine already holds — marked informational (R-2: mark, never drop), 8 arms.
     out = neutralizeContradictedByStructure(out, oc, latestSuggestions);
+    // Phase 3a (R-5) — direction AFTER the neutralizer (check 2 reads arm 8's marking) and BEFORE
+    // stampLvcMetadata (which the underuse gate below keys on).
+    out = stampDirection(out, oc);
     // 0.81.4 (RIGHT-CARE §5 / decision 14): stamp rule_ref/lvc_category on the SURVIVING,
     // non-informational low-value findings (after neutralisation) — keyword-matched against the active
     // lvc_recommendations. Additive metadata — never changes verdict/domain/score.
-    out = stampLvcMetadata(out, lvcRules);
+    // Phase 3a taxonomy gate (§1.4): an UNDERUSE finding is not low-value care. It receives no
+    // lvc_category, and if stampFindingIdentity collapsed it into the generic `low_value_care`
+    // bucket that label is restored to the finding's own specific type (recomputed with the same
+    // pure opdSignalType the stamper used — never invented). MEASURED expectation: ~1,180 findings
+    // leave the low-value-care count and 78 leave antibiotic overuse.
+    // 1:1 map, so finding ORDER is preserved exactly (the report numbers findings by position).
+    const stamped = stampLvcMetadata(out, lvcRules);
+    out = out.map((f, i) => {
+      if (f.direction !== 'underuse') return stamped[i];
+      return f.signal_type === 'low_value_care'
+        ? { ...f, signal_type: opdSignalType(f.subject, f.domain, { verdict: f.verdict }) }
+        : f;
+    });
     out = applySuppressions(out, keys.doctorUid, supps).findings;
     // QUIETING SEAM (PRD Q1 — the one engine touch-point): active demote rules mark matching
     // findings informational + quieted_by, via the exact mechanism scoring already excludes
@@ -1015,7 +1044,7 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     // deterministic, so re-stamping stored LLM findings reproduces their refs.
     const findings: OpdFinding[] = finalize([...det, ...opts.reuse.llmFindings]);
     const scorecard = computeOpdScore({
-      findings: findings.filter((f) => !f.informational).map((f) => ({ verdict: f.verdict, confidence: f.confidence, domain: f.domain })),
+      findings: findings.filter((f) => !f.informational).map((f) => ({ verdict: f.verdict, confidence: f.confidence, domain: f.domain, direction: f.direction })),
       completenessCoverage: completeness.coverage,
       pdqi9: opts.reuse.pdqi9,
       patientCentred: completeness.patientCentred,
@@ -1116,7 +1145,7 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     latestSuggestions = parsed?.suggestions ?? [];   // phase 2 arm 8 — set BEFORE finalize runs
     const findings: OpdFinding[] = finalize([...det, ...(parsed?.findings ?? [])]);
     const scorecard = computeOpdScore({
-      findings: findings.filter((f) => !f.informational).map((f) => ({ verdict: f.verdict, confidence: f.confidence, domain: f.domain })),
+      findings: findings.filter((f) => !f.informational).map((f) => ({ verdict: f.verdict, confidence: f.confidence, domain: f.domain, direction: f.direction })),
       completenessCoverage: completeness.coverage,
       pdqi9: parsed?.pdqi9 ?? null,
       patientCentred: completeness.patientCentred,
@@ -1166,7 +1195,7 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     if (opts.evalModel) throw e;
     // Even on LLM failure, return the deterministic-only audit (completeness + prescribing).
     const scorecard = computeOpdScore({
-      findings: det.filter((f) => !f.informational).map((f) => ({ verdict: f.verdict, confidence: f.confidence, domain: f.domain })),
+      findings: det.filter((f) => !f.informational).map((f) => ({ verdict: f.verdict, confidence: f.confidence, domain: f.domain, direction: f.direction })),
       completenessCoverage: completeness.coverage,
       pdqi9: null,
       patientCentred: completeness.patientCentred,

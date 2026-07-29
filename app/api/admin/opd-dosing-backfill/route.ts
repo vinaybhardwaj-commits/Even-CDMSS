@@ -55,13 +55,18 @@ export async function GET(req: NextRequest) {
   const p = req.nextUrl.searchParams;
   const apply = p.get('apply') === '1';
   const limit = Math.max(1, Math.min(3000, Number(p.get('limit') || 800)));
+  // Phase 3a / A-8 — the SOURCE engine version to re-score IN PLACE. Absent ⇒ OPD_ENGINE_VERSION,
+  // so existing behaviour is byte-identical. FAIL-SAFE by construction: the value is only ever a
+  // bound parameter, so an unknown version selects ZERO rows and returns an empty report — never a
+  // throw, and never a write to some other version's rows.
+  const sourceEngine = (p.get('engine') || '').trim() || OPD_ENGINE_VERSION;
 
   let rows: Record<string, unknown>[];
   try {
     rows = await run(
       `SELECT uid, findings, pdqi9, suggestions, sources, missing_fields, completeness_pct
        FROM opd_note_audits WHERE engine_version = $1 ORDER BY note_date DESC LIMIT ${limit}`,
-      [OPD_ENGINE_VERSION],
+      [sourceEngine],
     );
   } catch (e) { return NextResponse.json({ ok: false, error: String((e as Error).message) }, { status: 500 }); }
 
@@ -97,7 +102,8 @@ export async function GET(req: NextRequest) {
     };
 
     let audit;
-    try { audit = await auditOpdNote(note, { trace: false, reuse }); }
+    // engineVersion threads the SOURCE version through to updateOpdAudit's WHERE clause (A-8).
+    try { audit = await auditOpdNote(note, { trace: false, reuse, engineVersion: sourceEngine }); }
     catch { notFetched++; considered--; continue; }
 
     const oldFlag = (asArr(stored.missing_fields) as string[]).includes(DOSING);
@@ -119,7 +125,7 @@ export async function GET(req: NextRequest) {
   const pct = (n: number) => (considered ? Math.round((n / considered) * 1000) / 10 : 0);
   return NextResponse.json({
     ok: true,
-    engine_version: OPD_ENGINE_VERSION,
+    engine_version: sourceEngine,
     stored_rows: rows.length,
     considered,
     not_fetched: notFetched,

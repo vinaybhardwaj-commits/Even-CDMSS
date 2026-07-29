@@ -88,6 +88,13 @@ export interface OpdFinding {
   // (null in the OPD engine — no matcher wired; read-time/backfill can attach), lvc_category coarse bucket.
   rule_ref?: string | null;        // lvc_recommendations id, or null
   lvc_category?: string;           // 'antibiotic' | 'imaging' | 'supplement_polypharmacy' | 'other'
+  // Phase 3a (ruling R-5, bug 5b): overuse vs underuse. MEASURED — all 1,771 findings whose
+  // concept_id begins `underuse:` carry verdict low-value, because NetValue has no member meaning
+  // underuse; 1,180 polluted the low-value-care count and 78 landed inside ANTIBIOTIC OVERUSE, so
+  // a recommendation to prescribe MORE antibiotics was counted as overuse. This is a SEPARATE
+  // field, deliberately NOT a NetValue member: NetValue feeds scoring and must stay a closed
+  // four-member vocabulary. Absent = undetermined (the default, and what every stored row has).
+  direction?: 'overuse' | 'underuse';
   // Deterministic-tier provenance (opd-note-audit/0.81.9, PRD CDMSS-DETERMINISTIC-CITATIONS §7).
   // A deterministic check (dose ceiling, DDI mechanism, ISMP high-alert) carries its resolved corpus
   // citation OR an explicit llm mark. Additive metadata — NEVER feeds scoring (citations do not enter
@@ -364,8 +371,10 @@ export function neutralizeContradictedByStructure(
     .map((s) => String(s || '').toLowerCase().trim()).filter((s) => s.length >= 4);
   const historyTerms = [...c.presentingComplaints, ...c.history]
     .map((s) => String(s || '').toLowerCase().trim()).filter((s) => s.length >= 4);
-  const hasAntibioticClass = c.medications.some((m) =>
-    ANTIBIOTIC_CLASS_RE.test(`${m.therapeuticClass || ''} ${m.subClass || ''}`));
+  // Phase 3a: ONE implementation of "no antibiotic class on this note", shared with the direction
+  // derivation (§1.2 check 1) so the two can never disagree. Behaviour identical to arm 3's
+  // original inline predicate.
+  const hasAntibioticClass = !noAntibioticClassOnNote(c);
   const allRoutesNonSystemic = c.medications.length > 0 && c.medications.every((m) => {
     const r = resolveMedRoute(m);
     return r != null && NON_SYSTEMIC_ROUTE_RE.test(r.toLowerCase());
@@ -419,6 +428,54 @@ export function neutralizeContradictedByStructure(
         }
       }
     }
+    return f;
+  });
+}
+
+// ── direction derivation (phase 3a, ruling R-5 / bugs 5b + 7c) ────────────────────────────────
+//
+// ⚠️ THE concept_id PREFIX IS NOT TRUSTWORTHY ON ITS OWN. MEASURED: bug 7c carries
+// `concept_id: overuse:antibiotic therapy:antibiotic` on content that recommends STARTING an
+// antibiotic — the prefix is model-generated free text and there it is the opposite of the
+// content. A direction derived from it alone would confidently mislabel that finding as overuse
+// and leave the antimicrobial statistics corrupted while APPEARING fixed.
+//
+// Three ORDERED checks (§1.2):
+//   1 class-absence — reuses phase 2 arm 3's predicate (see `noAntibioticClass` below): a finding
+//     asserting overuse of a class no medication carries is not overuse;
+//   2 coherence — already marked `incoherent_with_suggestion` by arm 8 ⇒ internally contradictory
+//     ⇒ NO direction at all, left informational, scoring in neither direction;
+//   3 prefix — only when 1 and 2 raise no objection may the concept_id prefix set direction.
+const UNDERUSE_PREFIX_RE = /^\s*underuse\s*:/i;
+const OVERUSE_PREFIX_RE = /^\s*overuse\s*:/i;
+
+/** Arm 3's predicate, extracted verbatim so the neutralizer and the direction derivation cannot
+ *  disagree about what "no antibiotic class on this note" means. */
+export function noAntibioticClassOnNote(c: DeidOpdCase): boolean {
+  return !c.medications.some((m) => ANTIBIOTIC_CLASS_RE.test(`${m.therapeuticClass || ''} ${m.subClass || ''}`));
+}
+
+/**
+ * Stamp `direction` on LLM findings. Pure; runs AFTER the neutralizer (it reads arm 8's marking)
+ * and BEFORE stampLvcMetadata (which gates on the result). Never touches verdict/domain/
+ * confidence/text, and never sets a direction it cannot justify — absent is the honest default.
+ */
+export function stampDirection(findings: OpdFinding[], c: DeidOpdCase): OpdFinding[] {
+  const classAbsent = noAntibioticClassOnNote(c);
+  return findings.map((f) => {
+    if (f.source !== 'llm') return f;
+    const conceptId = String((f as { concept_id?: unknown }).concept_id ?? '');
+    // 2 · coherence — checked first among the objections because it is the strongest: the finding
+    //     contradicts itself, so neither direction is defensible. No direction, stays informational.
+    if (f.signal_type === 'incoherent_with_suggestion') return f;
+    // 1 · class-absence — an "overuse" claim about a class the note does not carry is not overuse.
+    //     (Arm 3 has already marked such findings informational; this keeps the label off them too.)
+    if (OVERUSE_PREFIX_RE.test(conceptId) && classAbsent && ANTIBIOTIC_TEXT_RE.test(`${f.subject} ${f.rationale || ''}`)) {
+      return f;
+    }
+    // 3 · prefix — now, and only now, trustworthy enough to label.
+    if (UNDERUSE_PREFIX_RE.test(conceptId)) return { ...f, direction: 'underuse' };
+    if (OVERUSE_PREFIX_RE.test(conceptId)) return { ...f, direction: 'overuse' };
     return f;
   });
 }
