@@ -154,9 +154,11 @@ test('§4.5: an underuse finding receives NO lvc_category', () => {
 });
 
 test('§4.5: an underuse finding does not keep signal_type low_value_care', () => {
+  // A-4 renamed the branch's binding f → rest (the lvc_category strip destructure); the semantic
+  // claim pinned here is unchanged.
   const src = readFileSync('lib/opd-note-audit.ts', 'utf8');
-  assert.ok(src.includes("return f.signal_type === 'low_value_care'"), 'the collapse is undone for underuse');
-  assert.ok(src.includes("? { ...f, signal_type: opdSignalType(f.subject, f.domain, { verdict: f.verdict }) }"),
+  assert.ok(src.includes("return rest.signal_type === 'low_value_care'"), 'the collapse is undone for underuse');
+  assert.ok(src.includes("? { ...rest, signal_type: opdSignalType(rest.subject, rest.domain, { verdict: rest.verdict }) }"),
     'restored with the SAME pure function the stamper used — never an invented label');
 });
 

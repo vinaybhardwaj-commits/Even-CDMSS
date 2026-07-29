@@ -1124,9 +1124,12 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     const stamped = stampLvcMetadata(out, lvcRules);
     out = out.map((f, i) => {
       if (f.direction !== 'underuse') return stamped[i];
-      return f.signal_type === 'low_value_care'
-        ? { ...f, signal_type: opdSignalType(f.subject, f.domain, { verdict: f.verdict }) }
-        : f;
+      // A-4: an underuse finding is not low-value care. Withholding a NEW stamp is not enough on
+      // the reuse path — the stored finding arrives carrying lvc_category from its original audit.
+      const { lvc_category: _dropped, ...rest } = f as typeof f & { lvc_category?: string };
+      return rest.signal_type === 'low_value_care'
+        ? { ...rest, signal_type: opdSignalType(rest.subject, rest.domain, { verdict: rest.verdict }) }
+        : rest;
     });
     out = applySuppressions(out, keys.doctorUid, supps).findings;
     // QUIETING SEAM (PRD Q1 — the one engine touch-point): active demote rules mark matching

@@ -40,6 +40,15 @@ export function clampRescoreLimit(raw: unknown): number {
  * `withDisplayedBand` tolerates migration 0029 not having run (same pre-migration tolerance as
  * opd-audit-store): without the column, band_before/band_after fall back to the raw band.
  *
+ * A-4 defect 1 — `date_trunc('milliseconds', s.coded_at)`: the watermark's based_on_coded_at
+ * round-trips through a JS Date (millisecond precision) while timestamptz holds microseconds, so
+ * without the trunc the stored value sits 800–940 µs BEHIND the value it observed and the note
+ * re-selects forever (measured: a permanent no-op hot loop). NOT a tolerance — the trunc makes
+ * the comparison exact against what was stored; a genuine new stamp is milliseconds later and
+ * still re-selects, so the D-3 race guard keeps its meaning. Do NOT instead re-read coded_at
+ * inside the watermark INSERT: that records write-time, not selection-time, and silently
+ * reintroduces the clobber D-3 exists to survive.
+ *
  * ⚠️ Every opd_note_audits / even_concept_state column here is INFERRED against production except
  * those confirmed in PRD §5 — validate live before any apply=1 run.
  */
@@ -55,7 +64,7 @@ export function rescoreCandidateSql(withDisplayedBand: boolean): string {
  WHERE a.app_source = $1
    AND a.excluded_reason IS NULL
    AND a.engine_version = ANY($2::text[])
-   AND (r.uid IS NULL OR s.coded_at > r.based_on_coded_at)
+   AND (r.uid IS NULL OR date_trunc('milliseconds', s.coded_at) > r.based_on_coded_at)
  ORDER BY a.note_date DESC
  LIMIT $3`;
 }
@@ -131,6 +140,30 @@ export function directionGained(before: unknown, after: OpdFinding[]): number {
 
 export function underuseCount(findings: OpdFinding[]): number {
   return findings.filter((f) => f.direction === 'underuse').length;
+}
+
+// ── the pass lock (A-4 defect 3) ──────────────────────────────────────────────────────────────
+//
+// Two overlapping invocations both select the same candidates (neither has watermarked at
+// selection time); the later watermark write wins and overwrites index_before with post-update
+// values — the audit trail then reads "nothing changed" on notes that did change. Scores are
+// unaffected (the second write is idempotent); the trail is the casualty. ONE soft advisory lock
+// for the whole pass — per-uid Postgres advisory locks were rejected in the PRD for the wedge
+// risk. Pattern follows lab_batch (LB_KEYS.lock / labLockHeld), INCLUDING its TTL — the TTL's
+// absence was the 28 Jul defect.
+
+export const RESCORE_LOCK_KEY = 'opd_rescore_direction_lock';
+
+/** 600s. The route's maxDuration is 300s (Vercel kills harder runs), so 600s covers any possible
+ *  run with 100% headroom and a crashed run self-heals in ten minutes instead of wedging. */
+export const RESCORE_LOCK_TTL_MS = 600 * 1000;
+
+/** Semantics byte-for-byte those of labLockHeld / mini-backfill.lockHeld: absent/empty ⇒ false,
+ *  unparseable ⇒ false, otherwise `now - t < TTL` — differing only in which TTL is read. */
+export function rescoreLockHeld(lockTs: string | null, now: Date = new Date()): boolean {
+  if (!lockTs) return false;
+  const t = Date.parse(lockTs);
+  return Number.isFinite(t) && now.getTime() - t < RESCORE_LOCK_TTL_MS;
 }
 
 // ── report reducer ────────────────────────────────────────────────────────────────────────────

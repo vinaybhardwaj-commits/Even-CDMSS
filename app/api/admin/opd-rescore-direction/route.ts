@@ -10,10 +10,11 @@ import { OPD_ENGINE_VERSIONS_CURRENT } from '@/lib/opd-note-audit-core';
 import { hysteresisBand } from '@/lib/opd-note-score-core';
 import { fetchOpdNotesByUids } from '@/lib/metabase';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
+import { getSettings, setSetting } from '@/lib/mini-backfill';
 import {
   rescoreCandidateSql, clampRescoreLimit, RESCORE_WATERMARK_UPSERT_SQL, buildWatermarkParams,
   pdqi9ObjFromStoredRows, directionGained, underuseCount, reduceRescoreReport, emptyRescoreReport,
-  resolveEngineFilter,
+  resolveEngineFilter, RESCORE_LOCK_KEY, rescoreLockHeld,
 } from '@/lib/opd-rescore-direction-core';
 import type { RescoreOutcome } from '@/lib/opd-rescore-direction-core';
 import type { OpdFinding, OpdSuggestion } from '@/lib/opd-note-audit-core';
@@ -61,6 +62,23 @@ export async function GET(req: NextRequest) {
   // A-1 (D-8): optional single-version stratum (?engine=opd-note-audit/0.81.17, exact match only).
   // Whitelisted against the family — an unknown value resolves to [], selects zero rows, reports empty.
   const engines = resolveEngineFilter(p.get('engine'), OPD_ENGINE_VERSIONS_CURRENT);
+
+  // A-4 defect 3 — ONE soft advisory lock for the whole pass (lab_batch pattern, TTL included).
+  // Overlapping invocations both select the same candidates and the later watermark write
+  // overwrites index_before with post-update values, voiding the audit trail. Held ⇒ HTTP 200
+  // with the empty report and skipped:'locked' — never a 500, never a queue. A settings failure
+  // degrades to UNLOCKED: the lock is advisory, and the D-3 self-heal bounds what an overlap can
+  // cost (scores stay correct; only the watermark's before-record is at risk).
+  let lockAcquired = false;
+  try {
+    const st = await getSettings([RESCORE_LOCK_KEY]);
+    if (rescoreLockHeld(st[RESCORE_LOCK_KEY] || null)) {
+      return NextResponse.json({ ok: true, dry_run: !apply, skipped: 'locked', ...emptyRescoreReport() });
+    }
+    await setSetting(RESCORE_LOCK_KEY, new Date().toISOString());
+    lockAcquired = true;
+  } catch { /* advisory — proceed unlocked */ }
+  try {
 
   // Migration-0029 tolerance, same as the store: without displayed_band, band_* fall back to raw band.
   let withBand = false;
@@ -184,4 +202,10 @@ export async function GET(req: NextRequest) {
     ...(missing_audit_uid ? { missing_audit_uid } : {}),
     ...(watermarkFailed ? { watermark_failed: watermarkFailed } : {}),
   });
+
+  } finally {
+    // Released on EVERY exit, including the fail-safe early returns; a crashed run that never
+    // reaches here self-heals via RESCORE_LOCK_TTL_MS.
+    if (lockAcquired) await setSetting(RESCORE_LOCK_KEY, '').catch(() => {});
+  }
 }

@@ -13,12 +13,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { stampDirection } from '../opd-note-audit-core.ts';
+import { stampDirection, opdSignalType } from '../opd-note-audit-core.ts';
 import { computeOpdScore, hysteresisBand } from '../opd-note-score-core.ts';
 import {
   rescoreCandidateSql, clampRescoreLimit, RESCORE_WATERMARK_UPSERT_SQL, buildWatermarkParams,
   pdqi9ObjFromStoredRows, directionGained, underuseCount, reduceRescoreReport, emptyRescoreReport,
-  resolveEngineFilter,
+  resolveEngineFilter, RESCORE_LOCK_KEY, RESCORE_LOCK_TTL_MS, rescoreLockHeld,
 } from '../opd-rescore-direction-core.ts';
 import { OPD_ENGINE_VERSIONS_CURRENT } from '../opd-note-audit-core.ts';
 import type { OpdFinding } from '../opd-note-audit-core.ts';
@@ -123,7 +123,7 @@ test('candidate SQL: engine versions are a BOUND array param — unknown version
 
 test('candidate SQL: candidacy = the coder touched the note more recently than the last re-score observed', () => {
   const q = rescoreCandidateSql(true);
-  assert.ok(q.includes('(r.uid IS NULL OR s.coded_at > r.based_on_coded_at)'));
+  assert.ok(q.includes("(r.uid IS NULL OR date_trunc('milliseconds', s.coded_at) > r.based_on_coded_at)"));   // A-4: ms-truncated, or the pass never drains
   assert.ok(q.includes('JOIN even_concept_state s'));
   assert.ok(q.includes('LEFT JOIN opd_rescore_state r'));
   assert.ok(q.includes('a.excluded_reason IS NULL'));
@@ -351,7 +351,80 @@ test('A-3 §4: the pure twin hysteresisBand is untouched — same thresholds, sa
 });
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════
-// 8 · Migration 0030 — additive, idempotent, the composite key the race guard needs
+// 8 · A-4 — convergence, the lvc_category strip, and the pass lock
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+test("A-4 §1 (defect 1): the candidate comparison truncates the DB side to the watermark's precision", () => {
+  const q = rescoreCandidateSql(true);
+  assert.ok(q.includes("(r.uid IS NULL OR date_trunc('milliseconds', s.coded_at) > r.based_on_coded_at)"),
+    'a JS Date holds milliseconds; timestamptz holds microseconds — untruncated, every watermark sits ~900µs behind what it observed and the pass can never drain');
+  assert.ok(!q.includes('s.coded_at > r.based_on_coded_at)') || !/\bOR s\.coded_at >/.test(q),
+    'no bare microsecond-vs-millisecond comparison survives');
+  // The SELECT list still carries the FULL-precision s.coded_at — the watermark stores what was
+  // observed; only the COMPARISON is truncated. (D-3 unchanged.)
+  assert.ok(q.includes('s.coded_at,'), 'selection still reads the observed value verbatim');
+});
+
+// Defect 2 — the taxonomy gate. The map is a closure inside finalize(); extract the REAL shipped
+// source and evaluate it with the real opdSignalType, so the assertion is on what runs, not a copy.
+function extractTaxonomyGate(): (out: OpdFinding[], stamped: OpdFinding[]) => OpdFinding[] {
+  const anchor = AUDIT.indexOf('const stamped = stampLvcMetadata(out, lvcRules);');
+  const start = AUDIT.indexOf('out = out.map((f, i) => {', anchor);
+  const end = AUDIT.indexOf('});', start) + 3;
+  assert.ok(anchor > 0 && start > anchor && end > start, 'the gate is locatable in the audit source');
+  const js = AUDIT.slice(start, end).replace(' as typeof f & { lvc_category?: string }', '');
+  return new Function('out', 'stamped', 'opdSignalType', `${js} return out;`).bind(null) as never;
+}
+const runGate = (out: OpdFinding[], stamped: OpdFinding[]): OpdFinding[] =>
+  (extractTaxonomyGate() as unknown as (o: OpdFinding[], s: OpdFinding[], sig: typeof opdSignalType) => OpdFinding[])(out, stamped, opdSignalType);
+
+test('A-4 §2 (defect 2): an underuse finding carrying lvc_category on input emerges WITHOUT it — every other key survives', () => {
+  const f = mkFinding({ concept_id: 'underuse:rx:vitamin d', direction: 'underuse', lvc_category: 'antibiotic', signal_type: 'missed_therapy' } as never);
+  const [got] = runGate([f], [{ ...f, lvc_category: 'antibiotic' }]);
+  assert.ok(!('lvc_category' in got), 'the stored stamp from the original audit is REMOVED, not merely not-re-added');
+  for (const k of Object.keys(f).filter((k) => k !== 'lvc_category')) {
+    assert.deepEqual((got as never)[k], (f as never)[k], `key survives verbatim: ${k}`);
+  }
+});
+
+test('A-4 §3 (defect 2): a non-underuse finding is unchanged — it still receives stamped[i] with its lvc_category', () => {
+  const f = mkFinding({ concept_id: 'overuse:investigation:cbc', direction: 'overuse' } as never);
+  const stampedIn = { ...f, lvc_category: 'other', rule_ref: 'r1' } as OpdFinding;
+  const [got] = runGate([f], [stampedIn]);
+  assert.deepEqual(got, stampedIn, 'the gate only ever intervenes on underuse');
+});
+
+test('A-4 §4 (defect 2): underuse + signal_type low_value_care — specific type restored AND lvc_category dropped, both on one finding', () => {
+  const f = mkFinding({ concept_id: 'underuse:rx:vitamin d', direction: 'underuse', lvc_category: 'supplement_polypharmacy', signal_type: 'low_value_care' } as never);
+  const [got] = runGate([f], [{ ...f }]);
+  assert.ok(!('lvc_category' in got));
+  assert.equal(got.signal_type, opdSignalType(f.subject, f.domain, { verdict: f.verdict }),
+    'recomputed with the same pure opdSignalType the stamper used — never invented');
+  assert.notEqual(got.signal_type, 'low_value_care');
+});
+
+test('A-4 §5 (defect 3): the pass lock — lab_batch semantics, TTL pinned, held ⇒ empty report, never a 500', () => {
+  // Pure lock predicate, byte-for-byte labLockHeld semantics.
+  const now = new Date('2026-07-29T10:00:00Z');
+  assert.equal(rescoreLockHeld(null, now), false, 'absent ⇒ free');
+  assert.equal(rescoreLockHeld('', now), false, 'empty ⇒ free');
+  assert.equal(rescoreLockHeld('garbage', now), false, 'unparseable ⇒ free, never a wedge');
+  assert.equal(rescoreLockHeld(new Date(now.getTime() - 60_000).toISOString(), now), true, 'fresh ⇒ held');
+  assert.equal(rescoreLockHeld(new Date(now.getTime() - RESCORE_LOCK_TTL_MS - 1).toISOString(), now), false, 'expired ⇒ free — a crashed run self-heals');
+  assert.equal(RESCORE_LOCK_TTL_MS, 600_000, "the TTL is present and pinned — its absence was the 28 Jul lab-batch defect");
+  assert.equal(RESCORE_LOCK_KEY, 'opd_rescore_direction_lock');
+  // Route wiring: held ⇒ HTTP 200 empty report with skipped:'locked'; acquire ISO now; release on
+  // EVERY exit path via finally, best-effort.
+  assert.ok(ROUTE.includes("skipped: 'locked', ...emptyRescoreReport()"));
+  assert.ok(ROUTE.includes('await setSetting(RESCORE_LOCK_KEY, new Date().toISOString());'));
+  assert.ok(ROUTE.includes("if (lockAcquired) await setSetting(RESCORE_LOCK_KEY, '').catch(() => {});"));
+  assert.ok(/\} finally \{/.test(ROUTE), 'the release lives in a finally');
+  const lockIdx = ROUTE.indexOf("skipped: 'locked'");
+  assert.ok(!ROUTE.slice(lockIdx - 300, lockIdx + 100).includes('status: 5'), 'the locked path is a 200');
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// 9 · Migration 0030 — additive, idempotent, the composite key the race guard needs
 // ═════════════════════════════════════════════════════════════════════════════════════════════
 
 test('migration 0030: CREATE TABLE IF NOT EXISTS opd_rescore_state, keyed (uid, engine_version)', () => {
