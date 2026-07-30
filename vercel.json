@@ -12,7 +12,6 @@
     { "path": "/api/opd-audit/worker", "schedule": "*/4 13-18 * * *" },
     { "path": "/api/ipd-audit/worker", "schedule": "*/10 1-5 * * *" },
     { "path": "/api/learning/mine", "schedule": "0 1 * * *" },
-    { "path": "/api/ccb/worker", "schedule": "*/15 18-23 * * *" },
     { "path": "/api/admin/sync-doctor-directory", "schedule": "30 4 * * *" },
     { "path": "/api/admin/refresh-doctor-metrics", "schedule": "0 4 * * *" },
     { "path": "/api/admin/opd-audit-mini-backfill?auto=1", "schedule": "*/2 * * * *" },
