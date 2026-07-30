@@ -92,6 +92,27 @@ export interface SummaryEnvelope {
    *  degraded package differently — see degradedReason for what to show. */
   degraded: boolean;
   degraded_reason: string | null;
+  /**
+   * TRUE when grounding_summary.citation_coverage_pct is 0 — NO clinical claim in this package is
+   * backed by the CDMSS corpus. Measured 31 Jul 2026: two of six briefs came back grounded 0, and
+   * nothing obliged Pulse to render citation_coverage_pct, so at the point of care a zero-grounded
+   * summary was indistinguishable from a well-grounded one while the disclaimer read as an
+   * assurance. Same shape, same reasoning, same obligation as `degraded`: Pulse is REQUIRED to
+   * render an ungrounded package differently.
+   */
+  ungrounded: boolean;
+  /**
+   * Stage-2 LLM finding normalisation over state.clinical_state (flag-gated, default ON — see the
+   * wired half). `rejected` lists findings the model asserted whose claimed source span did NOT
+   * occur verbatim in the named field: they are discarded mechanically (anti-fabrication at the
+   * schema boundary), and surfaced here because the rejection rate is a free hallucination meter.
+   * `rejected_count` is null when the stage did not run (flag off, or no stage-1 state to enrich).
+   */
+  state_llm: {
+    enabled: boolean;
+    rejected_count: number | null;
+    rejected: Array<{ concept: string; rawText: string; field: string }>;
+  };
 }
 
 export interface PatientSummaryPackage {
@@ -143,13 +164,14 @@ export interface ServedObservation { provider?: string | null; model?: string | 
  * Rules:
  *   · the LAST observation wins (it is the one that produced the final text);
  *   · `degraded` is TRUE when ANY observation fell back to the local Ollama bridge, when nothing
- *     was observed at all (we cannot prove what served), or when the caller reports a partial
- *     assembly (a state/brief leg failed).
+ *     was observed at all (we cannot prove what served), when the caller reports a partial
+ *     assembly (a state/brief leg failed), or when the flag-on stage-2 state normalisation
+ *     failed (the state shipped thinner than the default contract promises).
  *   · a bare "we don't know" is degraded. Never assume the happy path.
  */
 export function resolveServed(
   observations: ServedObservation[],
-  opts: { partial?: boolean } = {},
+  opts: { partial?: boolean; stateLlmFailed?: boolean } = {},
 ): Pick<SummaryEnvelope, 'served_model' | 'served_provider' | 'degraded' | 'degraded_reason'> {
   const seen = observations.filter((o) => o && (o.provider || o.model));
   const last = seen.length ? seen[seen.length - 1] : null;
@@ -159,6 +181,7 @@ export function resolveServed(
   if (!seen.length) reasons.push('no served-model observation was recorded for this package — the serving provider could not be established');
   if (fellBack) reasons.push('at least one leg was served by the local fallback model, not the intended frontier model');
   if (opts.partial) reasons.push('part of the package could not be assembled and is null');
+  if (opts.stateLlmFailed) reasons.push('the LLM state-normalisation leg failed — state.clinical_state is deterministic-only, thinner than the default contract');
   return {
     served_model: last?.model ? String(last.model) : null,
     served_provider: last?.provider ? String(last.provider) : null,
@@ -185,6 +208,11 @@ export interface AssembleInput {
   episode: { keys?: unknown; prescription?: unknown; orders?: unknown[]; reports?: unknown[]; coverage?: string } | null;
   promRequests: unknown[];
   commercial: unknown | null;
+  /** Stage-2 state-normalisation outcome for the envelope. Omitted ⇒ the stage did not run. */
+  stateLlm?: {
+    enabled: boolean;
+    rejected: Array<{ concept: string; rawText: string; field: string }>;
+  } | null;
 }
 
 /**
@@ -193,6 +221,10 @@ export interface AssembleInput {
  * sorts, collapses, defaults-away or "tidies" a state object. `as_of` is taken from the snapshot.
  */
 export function assemblePackage(i: AssembleInput): PatientSummaryPackage {
+  // Zero-grounding is a first-class state (31 Jul 2026). Strictly === 0: the flag fires on a
+  // MEASURED zero, never on a missing/unreadable summary (that is `degraded` territory).
+  const coverage = (i.groundingSummary as { citation_coverage_pct?: unknown } | null | undefined)
+    ?.citation_coverage_pct;
   return {
     envelope: {
       api_version: PATIENT_SUMMARY_API_VERSION,
@@ -202,6 +234,12 @@ export function assemblePackage(i: AssembleInput): PatientSummaryPackage {
       // §2.7.4 — the snapshot's own asOf, never a second freshness figure.
       as_of: i.memberState?.asOf ?? null,
       ...i.served,
+      ungrounded: coverage === 0,
+      state_llm: {
+        enabled: i.stateLlm?.enabled ?? false,
+        rejected_count: i.stateLlm ? i.stateLlm.rejected.length : null,
+        rejected: i.stateLlm?.rejected ?? [],
+      },
     },
     clinical: {
       findings: i.clinicalFindings,

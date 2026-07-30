@@ -17,7 +17,12 @@ import { resolveBriefUid } from './ccb-resolve';
 import { generateBrief } from './ccb-brief';
 import { CCB_ENGINE_VERSION, type ExtractedReport } from './ccb-brief-core';
 import { getMemberSnapshot } from './member-state/member-state';
-import { deterministicExtract, type ExtractInput } from './clinical-state/extract';
+import {
+  deterministicExtract, normalizeWithLlm, mergeLlmFindings, type ChatFn, type ExtractInput,
+} from './clinical-state/extract';
+import type { ClinicalState } from './clinical-state/schema';
+import { governedChat } from './trace';
+import { geminiModelFor, geminiUtilityModel, TEXT_MODEL } from './llm';
 import { sql } from './db';
 import {
   assemblePackage, resolveServed, type PatientSummaryPackage, type ServedObservation,
@@ -51,15 +56,42 @@ async function servedObservations(traceId: string | null): Promise<ServedObserva
 }
 
 /**
- * ClinicalState for the episode, built by the DETERMINISTIC extractor over the episode's own
- * fields. No LLM pass here: the stage-2 normalisation is flag-gated and additive everywhere else
- * in the system, and a pre-encounter summary must not pay a second inference for it. Fail-open —
+ * Stage-2 LLM normalisation over the episode ClinicalState — V's decision, 31 Jul 2026, DEFAULT
+ * ON. Without it a physician's pre-encounter summary can report what the patient does NOT have
+ * and never what they DO: the deterministic stage has no path for diagnoses, planOfManagement or
+ * report impressions. Safe because normalizeWithLlm verifies every claimed span occurs VERBATIM
+ * in the named field and rejects the rest — an invented finding is discarded mechanically, and
+ * the rejects are surfaced in envelope.state_llm as a hallucination meter.
+ */
+function stateLlmEnabled(): boolean {
+  return process.env.PATIENT_SUMMARY_STATE_LLM !== '0';
+}
+
+/** The stage-2 chat leg, on the SAME trace as the brief so envelope provenance covers it. Model
+ *  wiring mirrors ccb-brief's generate() (same engine, same fallback discipline). */
+function normaliseChat(traceId: string | null): ChatFn {
+  const geminiModel = geminiModelFor('ccb') ?? geminiModelFor('doc_audit') ?? geminiUtilityModel();
+  return async (system, user) => {
+    const r = await governedChat(traceId ?? undefined, 'clinical_state_normalise', {
+      model: TEXT_MODEL,
+      messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+      temperature: 0.1,
+      max_tokens: 900,
+      ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
+    }, { gemini: geminiModel, promptRef: 'extract/NORMALISE_SYSTEM' });
+    return r.choices?.[0]?.message?.content ?? '';
+  };
+}
+
+/**
+ * ClinicalState for the episode: stage 1 (deterministic) built here; the input is returned
+ * alongside so the flag-gated stage-2 pass can run over the SAME fields. Fail-open —
  * a construction error yields null and the package reports itself degraded rather than lying.
  */
 function buildEpisodeClinicalState(
   bundle: Awaited<ReturnType<typeof assembleEpisode>>,
   reports: ExtractedReport[],
-): unknown | null {
+): { state: ClinicalState; input: ExtractInput } | null {
   if (!bundle) return null;
   try {
     const p = bundle.prescription;
@@ -79,7 +111,7 @@ function buildEpisodeClinicalState(
         reportAbnormalValues: reports.flatMap((r) => r.abnormalValues).filter(Boolean).join('; ') || undefined,
       },
     };
-    return deterministicExtract(input);
+    return { state: deterministicExtract(input), input };
   } catch {
     return null;
   }
@@ -112,12 +144,31 @@ export async function buildPatientSummary(req: SummaryRequest): Promise<BuildRes
   const envelope = await generateBrief(bundle, { onExtracted: (r) => { extractedReports = r; } });
 
   // 4. The two state objects. Both fail-open; a null is reported as degraded, never as "clean".
-  const clinicalState = buildEpisodeClinicalState(bundle, extractedReports);
+  const built = buildEpisodeClinicalState(bundle, extractedReports);
+  let clinicalState: ClinicalState | null = built?.state ?? null;
   const memberState = await getMemberSnapshot(bundle.keys.individualUid, generatedAt).catch(() => null);
 
-  // 5. §2.4 — provenance from the brief's own trace.
+  // 4b. Stage 2 — flag-gated, DEFAULT ON (V, 31 Jul 2026). Additive: a failed pass keeps the
+  //     stage-1 state (never discards it) and flags the package degraded instead of throwing.
+  //     extractionMethod stays 'llm' on every merged finding — never flattened to look
+  //     deterministic (§2.7.1).
+  let stateLlm: { enabled: boolean; rejected: Array<{ concept: string; rawText: string; field: string }> } | null = null;
+  let stateLlmFailed = false;
+  if (stateLlmEnabled() && built) {
+    try {
+      const llm = await normalizeWithLlm(built.input, normaliseChat(envelope.trace_id));
+      clinicalState = mergeLlmFindings(built.state, llm);
+      stateLlm = { enabled: true, rejected: llm.rejected };
+    } catch {
+      stateLlmFailed = true;
+    }
+  }
+
+  // 5. §2.4 — provenance from the brief's own trace, read AFTER the stage-2 leg so a fallback
+  //    there is seen too.
   const served = resolveServed(await servedObservations(envelope.trace_id), {
     partial: clinicalState == null || memberState == null,
+    stateLlmFailed,
   });
 
   return {
@@ -143,6 +194,7 @@ export async function buildPatientSummary(req: SummaryRequest): Promise<BuildRes
       // unstated one — the namespace exists so adding them later is additive for Pulse.
       promRequests: [],
       commercial: envelope.commercial,
+      stateLlm,
     }),
   };
 }

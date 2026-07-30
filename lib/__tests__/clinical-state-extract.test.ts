@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  deterministicExtract, normalizeWithLlm, mergeLlmFindings, type ExtractInput,
+  deterministicExtract, normalizeWithLlm, mergeLlmFindings, COMPLAINT_FIELD_NAMES, type ExtractInput,
 } from '../clinical-state/extract';
 import { buildDdxClinicalState, applyParsedInvestigations, floorRulesFor, priorFor } from '../clinical-state/from-primitives';
 import { validateClinicalState, emptyClinicalState } from '../clinical-state/schema';
@@ -51,6 +51,22 @@ test('"Denies vomiting" is a negation too; complaint carries its duration', () =
   const complaint = s.positives.find((f) => f.provenance.sourceField === 'complaint');
   assert.ok(complaint);
   assert.equal(complaint!.temporality?.duration, 'for 2 hours');
+});
+
+test('accepted complaint field names are pinned — a rename at a call site is a silent positives:0', () => {
+  // 31 Jul 2026: patient-summary.ts passed `presentingComplaint`, the extractor matched only
+  // `complaint`/`cc`, and the rich baseline reported positives:0. This pins the contract.
+  assert.deepEqual([...COMPLAINT_FIELD_NAMES].sort(), ['cc', 'complaint', 'presentingComplaint']);
+  for (const name of COMPLAINT_FIELD_NAMES) {
+    const s = deterministicExtract({ surface: 'ddx', fields: { [name]: 'crushing chest pain for 2 hours' } });
+    const complaint = s.positives.find((f) => f.provenance.sourceField === name);
+    assert.ok(complaint, `field name '${name}' must yield a complaint finding`);
+    assert.equal(complaint!.status, 'present');
+    assert.equal(complaint!.temporality?.duration, 'for 2 hours');
+  }
+  // An unrecognised field name yields NO complaint finding — the trap this test documents.
+  const miss = deterministicExtract({ surface: 'ddx', fields: { chiefComplaint: 'crushing chest pain' } });
+  assert.ok(!miss.positives.some((f) => f.provenance.sourceField === 'chiefComplaint'));
 });
 
 test('vitals: parsed reads + instability from adult thresholds', () => {

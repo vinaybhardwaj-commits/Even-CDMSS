@@ -3768,11 +3768,21 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "patient-summary",
     "to": "clinical-state",
+    "kind": "type"
+  },
+  {
+    "from": "patient-summary",
+    "to": "clinical-state",
     "kind": "value"
   },
   {
     "from": "patient-summary",
     "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "patient-summary",
+    "to": "llm",
     "kind": "value"
   },
   {
@@ -3783,6 +3793,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "patient-summary",
     "to": "patient-summary-core",
+    "kind": "value"
+  },
+  {
+    "from": "patient-summary",
+    "to": "trace",
     "kind": "value"
   },
   {

@@ -250,3 +250,44 @@ test('§2.3 the ExtractedReport[] sink is ADDITIVE — the envelope and every ex
   const env = core.slice(core.indexOf('export interface CcbEnvelope'), core.indexOf('/** De-identified read of one result PDF'));
   assert.ok(!env.includes('extracted'), 'CcbEnvelope is unchanged — persistence is untouched');
 });
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// 6 · 31 Jul 2026 — restore positive findings (stage 2 default ON) + zero-grounding first-class
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+test('ungrounded: citation_coverage_pct === 0 flips envelope.ungrounded — a zero-grounded package must not pass as well-grounded', () => {
+  const zero = assemblePackage({ ...base, groundingSummary: { citation_coverage_pct: 0 } });
+  assert.equal(zero.envelope.ungrounded, true);
+  const ok = assemblePackage({ ...base, groundingSummary: { citation_coverage_pct: 47 } });
+  assert.equal(ok.envelope.ungrounded, false);
+  // A MISSING summary is degraded territory, not a measured zero — ungrounded stays false.
+  assert.equal(assemblePackage({ ...base, groundingSummary: null }).envelope.ungrounded, false);
+  assert.equal(assemblePackage(base).envelope.ungrounded, false);
+});
+
+test('state_llm: rejected[] is surfaced in the envelope — the hallucination meter is not discarded', () => {
+  const rejected = [{ concept: 'fever', rawText: 'high grade fever', field: 'diagnoses' }];
+  const on = assemblePackage({ ...base, stateLlm: { enabled: true, rejected } });
+  assert.equal(on.envelope.state_llm.enabled, true);
+  assert.equal(on.envelope.state_llm.rejected_count, 1);
+  assert.deepEqual(on.envelope.state_llm.rejected, rejected);
+  // Stage did not run (flag off / no stage-1 state): count is NULL, never a fake zero.
+  const off = assemblePackage(base);
+  assert.equal(off.envelope.state_llm.enabled, false);
+  assert.equal(off.envelope.state_llm.rejected_count, null);
+  assert.deepEqual(off.envelope.state_llm.rejected, []);
+});
+
+test('a flag-on stage-2 failure is DEGRADED — the state shipped thinner than the default contract', () => {
+  const r = resolveServed([{ provider: 'openrouter', model: 'google/gemini-2.5-pro' }], { stateLlmFailed: true });
+  assert.equal(r.degraded, true);
+  assert.match(String(r.degraded_reason), /deterministic-only/);
+});
+
+test('the wired stage 2 is flag-gated DEFAULT ON, governed, and rides the brief trace', () => {
+  assert.ok(WIRED.includes("process.env.PATIENT_SUMMARY_STATE_LLM !== '0'"), 'default ON, named for what it does');
+  const leg = WIRED.slice(WIRED.indexOf('function normaliseChat'), WIRED.indexOf('function buildEpisodeClinicalState'));
+  assert.ok(leg.includes('governedChat'), 'no model call bypasses the governed layer');
+  assert.ok(leg.includes("promptRef: 'extract/NORMALISE_SYSTEM'"), 'registry-shaped prompt ref');
+  assert.ok(WIRED.includes('mergeLlmFindings'), 'merged, not a parallel state');
+});

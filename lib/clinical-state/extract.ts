@@ -32,6 +32,13 @@ export const CRITICAL_CONCEPTS: string[] = [
   'fever', 'chest pain', 'breathlessness', 'syncope', 'vomiting', 'weight loss', 'bleeding',
 ];
 
+// Field names recognised as THE presenting complaint. A caller whose field name is not in this
+// set gets no complaint finding and no error — exactly the silent mismatch that produced
+// "positives: 0" on the Patient Summary rich baseline (31 Jul 2026: patient-summary.ts passed
+// `presentingComplaint`, this file matched only `complaint`/`cc`). Exported so the accepted
+// names are pinned by test; extend the set rather than renaming at a call site.
+export const COMPLAINT_FIELD_NAMES: ReadonlySet<string> = new Set(['complaint', 'cc', 'presentingComplaint']);
+
 const NEGATION_RE = /\b(?:no|denies|denied|without|not)\s+(?:any\s+)?([a-z][a-z -]{2,40}?)(?=\s*(?:[,.;:)]|$|\bor\b|\band\b))/gi;
 const DURATION_RE = /\b(?:for|since|x|of)\s+(\d+(?:\.\d+)?\s*(?:minutes?|mins?|hours?|hrs?|days?|weeks?|months?|years?))\b/i;
 const ONSET_RE = /\b(\d+(?:\.\d+)?\s*(?:minutes?|mins?|hours?|hrs?|days?|weeks?|months?|years?))\s+ago\b/i;
@@ -151,7 +158,7 @@ export function deterministicExtract(input: ExtractInput, opts?: { criticalConce
   }
 
   // The presenting complaint is a finding in its own right, with its temporal phrase.
-  const complaintField = fields.find(([name]) => name === 'complaint' || name === 'cc');
+  const complaintField = fields.find(([name]) => COMPLAINT_FIELD_NAMES.has(name));
   if (complaintField) {
     const [name, text] = complaintField;
     state.positives.push(finding(text.trim(), 'present', name, text.trim(), 'deterministic', 0.95, {

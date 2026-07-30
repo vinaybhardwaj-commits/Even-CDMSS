@@ -18,6 +18,15 @@ export const maxDuration = 800;
  * the POST returns 200 immediately and Pulse's integration DOES NOT CHANGE. A synchronous V1
  * would force them to rewrite.
  *
+ * RENDERING OBLIGATIONS (31 Jul 2026) — the envelope carries three flags Pulse is REQUIRED to
+ * honour, each meaning "do not render this package as a normal chart":
+ *   · envelope.degraded    — produced on a fallback path / provider unestablished / partial.
+ *   · envelope.ungrounded  — citation_coverage_pct is 0: NO clinical claim is corpus-backed.
+ *     Measured 31 Jul: two of six briefs. Same obligation as degraded, same reasoning.
+ *   · envelope.state_llm   — stage-2 finding normalisation (PATIENT_SUMMARY_STATE_LLM, default
+ *     ON; set '0' to disable). rejected[] lists model assertions whose claimed span was not in
+ *     the source — discarded, surfaced as a hallucination meter.
+ *
  * ⚠️ AUTH IS V1/PILOT-SCOPED. This reuses the shared CRON_SECRET, by decision. That credential is
  * shared with every cron and admin endpoint in the system, so it carries no per-consumer identity,
  * cannot be rotated for Pulse alone, and cannot be revoked without breaking internal jobs.
