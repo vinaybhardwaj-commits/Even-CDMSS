@@ -12,10 +12,12 @@
  * never a thrown request.
  */
 
-import { getVertexAccessToken } from './gcp-auth';
-import { GEMINI_MODEL, geminiConfigured } from './llm';
+import { getVertexAccessToken, vertexSaEmail } from './gcp-auth';
+import { GEMINI_MODEL, geminiConfigured, openrouterGeminiSlug, openrouterConfigured, vertexRegion } from './llm';
 import { logEvent, buildEnvelope } from './trace';
 import { billableOutputTokens } from './llm-cost-core';
+import { buildDocRequestBody, DOC_READ_TIMEOUT_MS } from './doc-transport-core';
+import { providerErrorPayload, providerCallsInFlight, beginProviderCall, endProviderCall } from './provider-error-core';
 
 const GCP_LOCATION = process.env.GCP_LOCATION || 'asia-south1';
 const GCP_PROJECT = process.env.GCP_PROJECT || '';
@@ -38,6 +40,92 @@ function vertexHost(): string {
 }
 
 /**
+ * BRIDGE transport — the same document read against OpenRouter's /chat/completions.
+ * PDFs ride the file-parser plugin pinned to `native` (engine settled by the 30 Jul measurement:
+ * pdf-text is blind on 67% of radiology and 54% of diagnostic PDFs, and the ~₹44/day saving is
+ * not worth a silent clinical-value loss). Google-only provider pin. Returns null on ANY failure
+ * — the caller treats null as unreadable, which is the whole point of §2.1.
+ */
+async function generateFromDocumentViaOpenRouter(
+  slug: string,
+  systemPrompt: string,
+  userPrompt: string,
+  base64: string,
+  mime: string,
+  opts: MultimodalOpts,
+): Promise<string | null> {
+  const t0 = Date.now();
+  const body = buildDocRequestBody({
+    model: slug, systemPrompt, userPrompt, base64, mime,
+    maxOutputTokens: opts.maxOutputTokens, temperature: opts.temperature,
+  });
+
+  // A TIMEOUT, which the Vertex path below has never had — that absence is why Record audit HUNG
+  // (measured >399s at "Reading document", no trace, no fallback) instead of failing.
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), DOC_READ_TIMEOUT_MS);
+  beginProviderCall('openrouter');
+  try {
+    const res = await fetch(`${process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1'}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: ctl.signal,
+    });
+    const j = (await res.json().catch(() => null)) as {
+      choices?: { message?: { content?: string }; finish_reason?: string }[];
+      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; cost?: number };
+      error?: { message?: string; code?: unknown };
+    } | null;
+
+    // A corrupt source (measured: two 20KB radiology PDFs fail on BOTH engines) surfaces HERE as
+    // an error, and must reach the caller as unreadable — never as an empty extract (§3).
+    if (!res.ok || j?.error) {
+      const payload = providerErrorPayload({
+        provider: 'openrouter', label: opts.label || 'multimodal_read', feature: null, fellBackTo: 'none',
+        intendedModel: slug, fallbackModel: null, region: null, saIdentity: null,
+        error: j?.error ?? { status: res.status, message: `document read ${res.status}` },
+        inFlightAtError: providerCallsInFlight(),
+      });
+      console.error('[provider-fallback] openrouter document read failed → unreadable:', JSON.stringify(payload));
+      if (opts.traceId) await logEvent(opts.traceId, 'provider_error', opts.label || 'multimodal_read', payload, Date.now() - t0).catch(() => {});
+      return null;
+    }
+
+    const text = (j?.choices?.[0]?.message?.content || '').trim();
+    if (opts.traceId) {
+      const u = j?.usage ?? {};
+      const usage = { prompt_tokens: u.prompt_tokens ?? 0, completion_tokens: u.completion_tokens ?? 0, total_tokens: u.total_tokens ?? 0 };
+      await logEvent(opts.traceId, 'llm_response', opts.label || 'multimodal_read', {
+        model: slug, provider: 'openrouter', multimodal: true, pdf_engine: isPdf(mime) ? 'native' : null,
+        char_count: text.length, finish_reason: j?.choices?.[0]?.finish_reason ?? null,
+        usage, cost_usd: u.cost ?? null,
+      }, Date.now() - t0,
+        buildEnvelope(undefined, {
+          model: slug, provider: 'openrouter',
+          tokensIn: usage.prompt_tokens, tokensOut: billableOutputTokens(usage),
+        })).catch(() => {});
+    }
+    return text || null;
+  } catch (e) {
+    // Includes the AbortError on timeout — a hung read is now a failed read.
+    const payload = providerErrorPayload({
+      provider: 'openrouter', label: opts.label || 'multimodal_read', feature: null, fellBackTo: 'none',
+      intendedModel: slug, fallbackModel: null, region: null, saIdentity: null,
+      error: e, inFlightAtError: providerCallsInFlight(),
+    });
+    console.error('[provider-fallback] openrouter document read threw → unreadable:', JSON.stringify(payload));
+    if (opts.traceId) await logEvent(opts.traceId, 'provider_error', opts.label || 'multimodal_read', payload, Date.now() - t0).catch(() => {});
+    return null;
+  } finally {
+    clearTimeout(timer);
+    endProviderCall('openrouter');
+  }
+}
+
+const isPdf = (m: string): boolean => m === 'application/pdf';
+
+/**
  * Send a system + user prompt plus one inline document to Gemini and return the
  * model's text. Returns null on any failure (caller treats null as "unreadable").
  */
@@ -48,13 +136,23 @@ export async function generateFromDocument(
   mimeType: string,
   opts: MultimodalOpts = {},
 ): Promise<string | null> {
+  const model = opts.model || GEMINI_MODEL;
+  // Normalise a couple of common mime variants Gemini expects.
+  const mime = mimeType === 'image/jpg' ? 'image/jpeg' : mimeType;
+
+  // BRIDGE (30 Jul 2026) — with GEMINI_VIA_OPENROUTER=1 the document read goes to OpenRouter,
+  // because Vertex's native :generateContent endpoint below is 403 SERVICE_DISABLED on
+  // clinical-infra. Flag unset ⇒ the Vertex path runs UNCHANGED (it must work byte-identically
+  // the moment aiplatform.googleapis.com is re-enabled).
+  const orSlug = openrouterGeminiSlug(model);
+  if (orSlug && openrouterConfigured()) {
+    return generateFromDocumentViaOpenRouter(orSlug, systemPrompt, userPrompt, base64, mime, opts);
+  }
+
   if (!geminiConfigured()) {
     console.warn('[multimodal] gemini not configured — cannot read documents');
     return null;
   }
-  const model = opts.model || GEMINI_MODEL;
-  // Normalise a couple of common mime variants Gemini expects.
-  const mime = mimeType === 'image/jpg' ? 'image/jpeg' : mimeType;
 
   let token: string;
   try {

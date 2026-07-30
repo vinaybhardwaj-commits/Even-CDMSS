@@ -12,6 +12,7 @@
 
 import { sql } from './db';
 import { docSha } from './ccb-extract-cache-core';
+import { isEmptyExtract } from './doc-transport-core';
 import type { ExtractedReport } from './ccb-brief-core';
 
 /** Cached extract for this exact URL, or null on miss / corrupt row / read error. */
@@ -34,8 +35,14 @@ export async function getExtract(url: string): Promise<ExtractedReport | null> {
   }
 }
 
-/** Persist an extract. Immutable: first write wins (`ON CONFLICT DO NOTHING`). Never throws. */
+/** Persist an extract. Immutable: first write wins (`ON CONFLICT DO NOTHING`). Never throws.
+ *
+ *  §2.2 (30 Jul): REFUSES an empty extract. Because this store is immutable by design, a silent
+ *  empty read from a scanned report was cached FOREVER for that URL — it never self-healed, and
+ *  every later brief inherited it. An empty result is a failure, not a value, and a failure must
+ *  never enter an immutable store. The guard is here, at the write, so no caller can bypass it. */
 export async function putExtract(url: string, extract: ExtractedReport, model?: string | null): Promise<void> {
+  if (isEmptyExtract(extract)) return;
   try {
     await sql(
       `INSERT INTO ccb_doc_extract (doc_sha, extract, model)

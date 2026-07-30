@@ -303,6 +303,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "doc-transport-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "doctor-directory-core",
     "plane": "unregistered"
   },
@@ -1305,6 +1309,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/api",
+    "to": "doc-transport-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
     "to": "doctor-metrics-refresh",
     "kind": "value"
   },
@@ -1985,6 +1994,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "ccb-brief",
+    "to": "doc-transport-core",
+    "kind": "value"
+  },
+  {
+    "from": "ccb-brief",
     "to": "gemini-multimodal",
     "kind": "value"
   },
@@ -2012,6 +2026,11 @@ export const MAP_EDGES: MapEdge[] = [
     "from": "ccb-brief-core",
     "to": "citations-core",
     "kind": "type"
+  },
+  {
+    "from": "ccb-brief-core",
+    "to": "doc-transport-core",
+    "kind": "value"
   },
   {
     "from": "ccb-detect",
@@ -2086,6 +2105,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "ccb-extract-cache",
     "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "ccb-extract-cache",
+    "to": "doc-transport-core",
     "kind": "value"
   },
   {
@@ -2675,6 +2699,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "gemini-multimodal",
+    "to": "doc-transport-core",
+    "kind": "value"
+  },
+  {
+    "from": "gemini-multimodal",
     "to": "gcp-auth",
     "kind": "value"
   },
@@ -2686,6 +2715,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "gemini-multimodal",
     "to": "llm-cost-core",
+    "kind": "value"
+  },
+  {
+    "from": "gemini-multimodal",
+    "to": "provider-error-core",
     "kind": "value"
   },
   {

@@ -17,7 +17,8 @@
 import { retrieve } from './retrieve';
 import { hitsToSources, buildCitedContext, type CiteHit } from './citations-core';
 import { geminiModelFor, geminiUtilityModel, TEXT_MODEL, GEMINI_MODEL } from './llm';
-import { generateFromDocument, SUPPORTED_DOC_MIME } from './gemini-multimodal';
+import { generateFromDocument } from './gemini-multimodal';
+import { sniffMime } from './doc-transport-core';
 import { getExtract, putExtract } from './ccb-extract-cache';
 import { startTrace, logEvent, finishTrace, governedChat, setTraceQuestionPreview } from './trace';
 import {
@@ -32,15 +33,16 @@ import type { EpisodeBundle, ReportDoc } from './ccb-fetch-core';
 const MAX_REPORTS = 6;            // latency/cost cap per episode
 const MAX_PDF_BYTES = 25 * 1024 * 1024;
 
-function mimeFor(url: string, header: string | null): string {
-  const h = (header || '').split(';')[0].trim().toLowerCase();
-  if (SUPPORTED_DOC_MIME.has(h)) return h;
-  const ext = (url.match(/\.([a-z0-9]{2,4})(?:\?|$)/i)?.[1] || '').toLowerCase();
-  if (ext === 'pdf') return 'application/pdf';
-  if (ext === 'png') return 'image/png';
-  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
-  if (ext === 'webp') return 'image/webp';
-  return 'application/pdf';        // GCS report bodies are overwhelmingly PDF
+/**
+ * §2.3 (30 Jul): identify the document by its MAGIC NUMBER, not its URL.
+ *
+ * The old implementation fell through to `return 'application/pdf'` for any unrecognised
+ * extension. MEASURED: 4 of 25 `radiology` documents fetched from `report_url` are NOT PDFs at
+ * all, so they already reached the transport mislabelled. A null return means "not a supported
+ * document" and the caller must treat it as unreadable — never guess.
+ */
+function mimeForBytes(bytes: Uint8Array): string | null {
+  return sniffMime(bytes);
 }
 
 /** Fetch one result PDF and read it into a de-identified ExtractedReport (null on any failure). */
@@ -57,7 +59,10 @@ async function readReport(report: ReportDoc, traceId?: string): Promise<Extracte
     if (len && len > MAX_PDF_BYTES) return null;
     const buf = Buffer.from(await res.arrayBuffer());
     if (buf.byteLength > MAX_PDF_BYTES) return null;
-    const mime = mimeFor(report.url, res.headers.get('content-type'));
+    // §2.3 — sniffed, never guessed. An unsupported/corrupt body is UNREADABLE (null), which the
+    // caller already handles as "skip this document"; it must never become an empty extract.
+    const mime = mimeForBytes(buf);
+    if (!mime) return null;
     // Pass the traceId so the multimodal read self-logs its token usage into the cost tracker.
     const raw = await generateFromDocument(EXTRACT_SYSTEM, buildExtractUser(report.kind), buf.toString('base64'), mime, {
       maxOutputTokens: 2048, temperature: 0.1, traceId, label: 'ccb_report_read',

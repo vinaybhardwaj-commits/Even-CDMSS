@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { extractCase, extractMemberIdentity } from '@/lib/doc-audit';
 import { normDocType, type DocType } from '@/lib/doc-audit-core';
 import { SUPPORTED_DOC_MIME } from '@/lib/gemini-multimodal';
+import { sniffMime } from '@/lib/doc-transport-core';
 import { recordAuditLinkEnabled, type MemberLink } from '@/lib/record-audit-link-store';
 
 export const runtime = 'nodejs';
@@ -31,9 +32,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: 'document too large (max ~9 MB)' }, { status: 413 });
   }
 
-  const mime = typeof body.mime === 'string' ? body.mime.trim().toLowerCase() : '';
-  if (!SUPPORTED_DOC_MIME.has(mime)) {
+  // §2.3 (30 Jul) — the client-declared mime is a HINT; the bytes decide. A body whose magic
+  // number is not a supported document is rejected here rather than being sent to the model
+  // mislabelled (4 of 25 sampled radiology "PDFs" were not PDFs at all on the CCB side).
+  const declaredMime = typeof body.mime === 'string' ? body.mime.trim().toLowerCase() : '';
+  let sniffed: string | null = null;
+  try { sniffed = sniffMime(Buffer.from(base64.slice(0, 64), 'base64')); } catch { sniffed = null; }
+  const mime = sniffed || '';
+  if (!mime || !SUPPORTED_DOC_MIME.has(mime)) {
     return NextResponse.json({ ok: false, error: 'unsupported file type — upload a PDF, PNG, or JPEG' }, { status: 415 });
+  }
+  if (declaredMime && declaredMime !== mime && !(declaredMime === 'image/jpg' && mime === 'image/jpeg')) {
+    console.warn(`[doc-audit] declared mime ${declaredMime} != sniffed ${mime} — using sniffed`);
   }
 
   const hintRaw = typeof body.docTypeHint === 'string' ? body.docTypeHint.trim().toLowerCase() : 'auto';

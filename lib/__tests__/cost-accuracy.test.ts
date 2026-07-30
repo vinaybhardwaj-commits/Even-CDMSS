@@ -91,9 +91,15 @@ test('(b) the multimodal transport passes an envelope with the reasoning-inclusi
 
 test('(c) the multimodal read is logged exactly once — no double count', () => {
   const mm = read('lib/gemini-multimodal.ts');
-  // exactly one llm_response logger in the transport…
+  // ONE llm_response per CALL. Since 30 Jul the transport has TWO mutually-exclusive paths —
+  // the OpenRouter bridge and the native Vertex endpoint — each self-logging exactly once. The
+  // bridge returns before the Vertex path is reached, so a single call can never log twice.
   const responseLogs = mm.match(/logEvent\([^,]+,\s*'llm_response'/g) ?? [];
-  assert.equal(responseLogs.length, 1, 'the transport self-logs its llm_response exactly once');
+  assert.equal(responseLogs.length, 2, 'one llm_response logger per transport path (bridge + Vertex)');
+  const bridgeIdx = mm.indexOf('return generateFromDocumentViaOpenRouter(');
+  const vertexLogIdx = mm.lastIndexOf("logEvent(opts.traceId, 'llm_response'");
+  assert.ok(bridgeIdx > 0 && bridgeIdx < vertexLogIdx,
+    'the bridge RETURNS before the Vertex logger — the paths are exclusive, so no call logs twice');
 
   // …and the doc-audit caller must NOT log a second llm_response for the same call. It logs an
   // llm_request only (a different kind, which the dashboard's LLM_KINDS deliberately excludes).

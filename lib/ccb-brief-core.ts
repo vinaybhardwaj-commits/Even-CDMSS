@@ -15,6 +15,9 @@
 
 import type { Source } from './citations-core';
 import type { EpisodeBundle, ReportDoc } from './ccb-fetch-core';
+// §2.1/§2.2 — the empty-extract detector and the unreadable marker. Both pure; doc-transport-core
+// is itself dependency-free, so this core stays --experimental-strip-types loadable.
+import { isEmptyExtract, saysUnreadable } from './doc-transport-core';
 
 export const CCB_ENGINE_VERSION = 'care-brief/0.1';
 export const CCB_DISCLAIMER =
@@ -78,11 +81,20 @@ export interface ExtractedReport {
 
 // ── Prompts ─────────────────────────────────────────────────────────────────────
 
+// §2.1 (30 Jul): the old instruction ended "If unreadable, return empty fields." That turned a
+// FAILURE into DATA — measured on a real scanned report: HTTP 200, finish_reason stop, a
+// well-formed JSON object with every field empty, reproduced 3/3 byte-identically. Downstream,
+// a total extraction loss was indistinguishable from a genuinely unremarkable report. The model
+// must now say so explicitly. The prompt is only advisory, so parseExtractedReport ALSO refuses
+// an all-empty extract — the model can lie, the caller cannot.
 export const EXTRACT_SYSTEM =
   'You read a single clinical result document (lab/radiology/health-checkup) and return a DE-IDENTIFIED structured summary. ' +
   'NEVER output patient name, UHID, MRN, phone, address, or any identifier. Output ONLY clinical content. ' +
   'Return strict JSON: {"studyOrPanel": string|null, "impression": string|null, "keyFindings": string[], "abnormalValues": string[]}. ' +
-  'abnormalValues = out-of-range results with the value + flag (e.g. "Hb 9.1 g/dL (low)"). If unreadable, return empty fields.';
+  'abnormalValues = out-of-range results with the value + flag (e.g. "Hb 9.1 g/dL (low)"). ' +
+  'If you CANNOT READ the document — it is blank, a scan you cannot decipher, corrupt, or carries no clinical content — ' +
+  'return exactly {"unreadable": true} and NOTHING else. Never return empty fields to signal an unreadable document: ' +
+  'an empty summary means "this report is unremarkable", which is a different and dangerous claim.';
 
 export function buildExtractUser(kind: ReportDoc['kind']): string {
   return `This is a ${kind} report. Summarise its clinical content as instructed. Output JSON only.`;
@@ -184,14 +196,23 @@ export function parseCommercial(raw: string): { priority: CommercialLayer['prior
 export function parseExtractedReport(raw: string, kind: ReportDoc['kind']): ExtractedReport | null {
   const j = extractJson(raw) as Record<string, unknown> | null;
   if (!j) return null;
+  // §2.1 — the model's explicit marker.
+  if (saysUnreadable(j)) return null;
   const arr = (v: unknown): string[] => (Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean) : []);
-  return {
+  const out: ExtractedReport = {
     kind,
     studyOrPanel: (String(j.studyOrPanel ?? '').trim() || null),
     impression: (String(j.impression ?? '').trim() || null),
     keyFindings: arr(j.keyFindings),
     abnormalValues: arr(j.abnormalValues),
   };
+  // §2.1 belt-and-braces — the CALLER-SIDE detector. The prompt above is advisory and the model
+  // may still return empties (that is exactly what was measured). An extract with no clinical
+  // content whatsoever is a FAILED READ, not an unremarkable report: return null so the caller
+  // skips the document rather than publishing silence as a finding. `kind` is not content — it
+  // is stamped from the argument, so it never keeps an all-empty extract alive.
+  if (isEmptyExtract(out)) return null;
+  return out;
 }
 
 // ── De-identified episode text + retrieval query ──────────────────────────────
