@@ -81,6 +81,41 @@ export function openrouterChatClient(): OpenAI {
   return new OpenAI({ baseURL: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1', apiKey: process.env.OPENROUTER_API_KEY });
 }
 
+/** BRIDGE (30 Jul 2026): route Gemini through OpenRouter while aiplatform.googleapis.com is
+ *  disabled on clinical-infra. Returns a slug ONLY when the flag is set, so unset is
+ *  byte-identical to today. Retire with the flag when Vertex is restored. */
+export function openrouterGeminiSlug(model: string | undefined): string | undefined {
+  if (process.env.GEMINI_VIA_OPENROUTER !== '1') return undefined;
+  if (!model) return undefined;
+  return model.startsWith('google/') ? model : `google/${model}`;
+}
+
+/** Provider pin for Gemini-via-OpenRouter. Slugs read off OpenRouter's endpoints listing for
+ *  google/gemini-2.5-pro on 30 Jul 2026 — Google ("google-vertex", serving from OpenRouter's own
+ *  GCP project) and Google AI Studio ("google-ai-studio"); every listed endpoint is
+ *  Google-operated. allow_fallbacks:false so a future non-Google host can never serve a clinical
+ *  call by surprise. */
+export const OPENROUTER_GOOGLE_PROVIDER_PIN = { allow_fallbacks: false, only: ['google-vertex', 'google-ai-studio'] } as const;
+
+/**
+ * Build the OpenRouter request body for a slug. A non-Gemini slug reproduces the pre-bridge
+ * behaviour byte-for-byte: reasoning disabled unless the caller supplied its own (the citation
+ * critic's bounded-verdict contract). A GEMINI slug (the bridge) instead handles the two traps
+ * that would otherwise fire on the first call:
+ *   trap 1 (register A-12) — Gemini 2.5 CANNOT disable thinking; sending the disable is an
+ *     OpenRouter 400 "Reasoning is mandatory and cannot be disabled". Never send it.
+ *   trap 2 — Pro spends output budget on reasoning FIRST; the Ollama-tuned caps truncate the
+ *     JSON mid-string. Apply the same +8192 headroom the Vertex branch applies.
+ * Plus the Google provider pin above.
+ */
+export function buildOpenrouterParams(slug: string, rest: Record<string, unknown>): Record<string, unknown> {
+  if (!isGeminiModel(slug)) {
+    return { ...rest, model: slug, ...(('reasoning' in rest) ? {} : { reasoning: { enabled: false } }) };
+  }
+  const baseMax = Number((rest as { max_tokens?: number }).max_tokens) || 1024;
+  return { ...rest, model: slug, max_tokens: baseMax + 8192, provider: OPENROUTER_GOOGLE_PROVIDER_PIN };
+}
+
 /**
  * Does the SERVED model match the INTENDED one, tolerating provider prefixes/suffixes?
  * `google/gemini-2.5-pro` ≡ `gemini-2.5-pro`; `qwen/qwen3-32b` ≡ `qwen3-32b`. Used by the
@@ -164,12 +199,16 @@ export function geminiUtilityModel(): string | undefined {
 export async function chatWithFallback(params: any, geminiModel?: string, openrouterModel?: string): Promise<any> {
   // OpenRouter takes precedence when an explicit slug is given (the citation critic). Non-thinking by
   // default (bounded verdict); falls back to the local Ollama model in params.model on any error.
-  if (openrouterModel && openrouterConfigured()) {
+  // BRIDGE (30 Jul 2026): with GEMINI_VIA_OPENROUTER=1 a gemini model resolves to its OpenRouter
+  // slug HERE — derived centrally so no call site can be missed (a missed site would 403 on Vertex
+  // silently forever). Flag unset ⇒ openrouterGeminiSlug returns undefined ⇒ byte-identical.
+  const orModel = openrouterModel || openrouterGeminiSlug(geminiModel);
+  if (orModel && openrouterConfigured()) {
     beginProviderCall('openrouter');
     try {
       const { options: _o, keep_alive: _k, ...rest } = params as Record<string, unknown>;
       void _o; void _k;
-      const orParams = { ...rest, model: openrouterModel, ...(('reasoning' in (rest as Record<string, unknown>)) ? {} : { reasoning: { enabled: false } }) };
+      const orParams = buildOpenrouterParams(orModel, rest as Record<string, unknown>);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const res = await openrouterChatClient().chat.completions.create(orParams as any);
       endProviderCall('openrouter');
@@ -182,10 +221,10 @@ export async function chatWithFallback(params: any, geminiModel?: string, openro
       endProviderCall('openrouter');
       const payload = providerErrorPayload({
         provider: 'openrouter', label: 'chatWithFallback', feature: null, fellBackTo: 'ollama',
-        intendedModel: openrouterModel, fallbackModel: (params as { model?: string }).model ?? null,
+        intendedModel: orModel, fallbackModel: (params as { model?: string }).model ?? null,
         region: null, saIdentity: null, error: e, inFlightAtError,
       });
-      console.error(`[provider-fallback] openrouter ${openrouterModel} failed → ollama fallback:`, JSON.stringify(payload));
+      console.error(`[provider-fallback] openrouter ${orModel} failed → ollama fallback:`, JSON.stringify(payload));
       await emitProviderErrorTrace(payload);
       return llm.chat.completions.create(params);
     }

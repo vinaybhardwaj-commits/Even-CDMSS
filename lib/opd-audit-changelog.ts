@@ -23,6 +23,18 @@ export interface EngineChange {
 export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
     engine: null, date: '2026-07-30', scoring: false,
+    plain: 'The audits of 27–30 July were quietly produced by a much smaller local model: the Google connection had been cut off on 26 July and every call silently fell back to the office Mac mini. A temporary bridge now reaches the same Google model (Gemini 2.5 Pro) by a different road. Expect the scores to take a visible step on the day the bridge turns on — that step is NOT a rule change and NOT a regression; it is the intended model returning. No rule, weight, prompt or threshold changed.',
+    title: 'Gemini via OpenRouter — temporary bridge while aiplatform.googleapis.com is disabled on clinical-infra (GEMINI_VIA_OPENROUTER=1, flag-gated, V 30 Jul 2026). No engine bump; no rule/weight/prompt/threshold change; retire the bridge when Vertex is restored.',
+    points: [
+      'ROOT CAUSE (probe, 30 Jul): every Vertex call has 403d PERMISSION_DENIED / SERVICE_DISABLED since 26 Jul 12:50 UTC — the Vertex AI API is disabled on project clinical-infra. MEASURED: 367 OPD audits across 27–30 Jul carry the label gemini-2.5-pro but were served by qwen2.5:14b on the Mac mini via the silent fallback.',
+      'THE BRIDGE — with GEMINI_VIA_OPENROUTER=1, a resolved Gemini model routes through OpenRouter (google/gemini-2.5-pro), pinned to Google-operated providers only (google-vertex + google-ai-studio, allow_fallbacks:false). OpenRouter\'s Vertex runs in OpenRouter\'s own GCP project, so clinical-infra\'s disabled API is irrelevant to it. Flag unset ⇒ byte-identical to today. Ollama stays the last-leg fallback.',
+      'EXPECT A STEP CHANGE in dashboard scores on the day the flag turns on: 27–30 Jul audits were qwen2.5:14b under a gemini-2.5-pro label (register T-5, the mislabelling is fixed in the same push); from the flip they are genuinely Gemini 2.5 Pro. Standing hazard 3 applies in spirit — this is a scoring-path change in effect, but it is a RESTORATION of the intended provider, not a recalibration. Do not read the step as an engine regression.',
+      'The audits of 27–30 Jul remain labelled by what actually served them once T-5 lands; the mislabelled 367 are a known, dated cohort.',
+    ],
+    why: 'V, 30 Jul: restore a frontier model to production without touching clinical-infra (no console access to re-enable the API today). Bridge retires when aiplatform.googleapis.com is re-enabled.',
+  },
+  {
+    engine: null, date: '2026-07-30', scoring: false,
     plain: 'The nightly audit now runs in the evening, as it was always meant to. It had been running between about half past midnight and half past five in the morning — the schedule was written in Indian time but read by the host in UTC, a five-and-a-half hour slip nobody had noticed. Audits will now appear the same evening the notes were written, rather than the following dawn. No note, score or finding changes; only the hour the work happens.',
     title: 'Nightly OPD audit worker — cron corrected from UTC-read to IST-intended (`*/4 19-23` → `*/4 13-18`) and maxDuration raised 300s → 800s (V, 30 Jul 2026). Two independent defects found while investigating why the midnight Gemini spike had flattened: the window fired at the wrong hour, and the invocation box was discarding two-thirds of attempted work. Infrastructure only; no engine bump, no scoring effect, no A/B.',
     points: [

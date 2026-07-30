@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { sql } from './db';
-import { llm, geminiConfigured, getGeminiChatClient, vertexModelName, chatWithFallback, openrouterConfigured, openrouterChatClient, vertexRegion } from './llm';
+import { llm, geminiConfigured, getGeminiChatClient, vertexModelName, chatWithFallback, openrouterConfigured, openrouterChatClient, vertexRegion, openrouterGeminiSlug, buildOpenrouterParams } from './llm';
 import { vertexSaEmail } from './gcp-auth';
 import { PROVIDER_ERROR_CAP, beginProviderCall, endProviderCall, providerCallsInFlight, providerErrorPayload } from './provider-error-core';
 import { promptFingerprint } from './reasoning/registry-core';
@@ -222,9 +222,13 @@ export async function tracedChat(
 
   // Provider precedence: OpenRouter (explicit slug) → Vertex Gemini → local Ollama. Each keeps the
   // local Ollama model in params.model as its on-error fallback.
-  const useOpenRouter = Boolean(opts?.openrouter) && openrouterConfigured();
+  // BRIDGE (30 Jul 2026): with GEMINI_VIA_OPENROUTER=1 a gemini option resolves to its OpenRouter
+  // slug HERE — derived centrally so no call site can be missed. Flag unset ⇒ undefined ⇒
+  // byte-identical precedence. An explicit caller-supplied openrouter slug always wins.
+  const orSlug = opts?.openrouter || openrouterGeminiSlug(opts?.gemini);
+  const useOpenRouter = Boolean(orSlug) && openrouterConfigured();
   const useGemini = !useOpenRouter && Boolean(opts?.gemini) && geminiConfigured();
-  const servedModel = useOpenRouter ? (opts!.openrouter as string) : useGemini ? (opts!.gemini as string) : (params as { model?: string }).model;
+  const servedModel = useOpenRouter ? (orSlug as string) : useGemini ? (opts!.gemini as string) : (params as { model?: string }).model;
 
   // Log the request before firing (records the model we INTEND to use)
   const requestPayload = {
@@ -262,16 +266,14 @@ export async function tracedChat(
     if (useOpenRouter) {
       beginProviderCall('openrouter');
       try {
-        // Strip Ollama-only params; run NON-THINKING (reasoning off) — the critic wants a bounded
-        // JSON verdict, and Qwen3 otherwise spends the token budget on reasoning and returns no
-        // content. A caller may override by putting its own `reasoning` in params.
+        // Strip Ollama-only params. buildOpenrouterParams: a non-Gemini slug runs NON-THINKING
+        // (reasoning off — the critic wants a bounded JSON verdict, and Qwen3 otherwise spends the
+        // token budget on reasoning and returns no content; a caller may override with its own
+        // `reasoning`). A GEMINI slug (the bridge) instead gets the A-12 no-disable handling, the
+        // +8192 thinking headroom, and the Google provider pin.
         const { options: _o, keep_alive: _k, ...rest } = params as Record<string, unknown>;
         void _o; void _k;
-        const orParams: Record<string, unknown> = {
-          ...rest,
-          model: opts!.openrouter as string,
-          ...(('reasoning' in (rest as Record<string, unknown>)) ? {} : { reasoning: { enabled: false } }),
-        };
+        const orParams = buildOpenrouterParams(orSlug as string, rest as Record<string, unknown>);
         const client = openrouterChatClient();
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         result = await client.chat.completions.create(orParams as any);
