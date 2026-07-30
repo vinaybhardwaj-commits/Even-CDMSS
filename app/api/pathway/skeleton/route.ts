@@ -8,7 +8,7 @@ import { geminiUtilityModel, TEXT_MODEL } from '@/lib/llm';
 import type { ChatFn } from '@/lib/clinical-state/extract';
 
 export const runtime = 'nodejs';
-export const maxDuration = 300;
+export const maxDuration = 800;
 
 // POST /api/pathway/skeleton — fast Flash pass: classify stage + ordered care-path spine.
 // Body: { scenario, proposedActions?: string[], patient?: { age?, sex? } }

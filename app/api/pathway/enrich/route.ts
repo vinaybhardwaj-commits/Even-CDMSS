@@ -5,7 +5,7 @@ import { makeNdjsonStream, ndjsonHeaders, type Stage } from '@/lib/stream';
 import { rightCareGroundingEnabled, buildRightCareState, rightCareExtractInput, patientPictureBlock } from '@/lib/right-care-state';
 
 export const runtime = 'nodejs';
-export const maxDuration = 300;
+export const maxDuration = 800;
 
 // POST /api/pathway/enrich — Pro pass: enrich the skeleton spine with grounded
 // evidence / decision criteria / value + deterministic EHRC tariffs.

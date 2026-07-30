@@ -9,7 +9,7 @@ import { stateCounts, type ClinicalState } from '@/lib/clinical-state/schema';
 import { logEvent } from '@/lib/trace';
 
 export const runtime = 'nodejs';
-export const maxDuration = 300;
+export const maxDuration = 800;
 
 function str(v: unknown): string { return typeof v === 'string' ? v.trim() : ''; }
 function strOrNull(v: unknown): string | null { const s = str(v); return s ? s : null; }

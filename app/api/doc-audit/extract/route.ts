@@ -5,7 +5,7 @@ import { SUPPORTED_DOC_MIME } from '@/lib/gemini-multimodal';
 import { recordAuditLinkEnabled, type MemberLink } from '@/lib/record-audit-link-store';
 
 export const runtime = 'nodejs';
-export const maxDuration = 300;
+export const maxDuration = 800;
 
 // Hard cap on the inline document (base64 chars). ~9 MB raw ≈ 12M base64 chars.
 const MAX_B64 = 12_000_000;

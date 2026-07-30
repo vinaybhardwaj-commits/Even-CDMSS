@@ -11,7 +11,7 @@ import { geminiUtilityModel, TEXT_MODEL } from '@/lib/llm';
 import type { ChatFn } from '@/lib/clinical-state/extract';
 
 export const runtime = 'nodejs';
-export const maxDuration = 300; // Pro applicability judge over the candidate pool + value audit loop
+export const maxDuration = 800; // Pro applicability judge over the candidate pool + value audit loop // 800 = Pro GA ceiling; 300 was the platform default (hotfix 30 Jul, four-call chain)
 
 const REGIONS = new Set(['US', 'CA', 'IN']);
 
