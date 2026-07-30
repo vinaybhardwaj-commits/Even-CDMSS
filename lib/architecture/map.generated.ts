@@ -699,6 +699,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "provider-error-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "pubchem",
     "plane": "unregistered"
   },
@@ -2965,6 +2969,16 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "llm",
+    "to": "provider-error-core",
+    "kind": "value"
+  },
+  {
+    "from": "llm",
+    "to": "trace",
+    "kind": "value"
+  },
+  {
     "from": "llm-cost",
     "to": "db",
     "kind": "value"
@@ -3846,12 +3860,22 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "trace",
+    "to": "gcp-auth",
+    "kind": "value"
+  },
+  {
+    "from": "trace",
     "to": "llm",
     "kind": "value"
   },
   {
     "from": "trace",
     "to": "llm-cost-core",
+    "kind": "value"
+  },
+  {
+    "from": "trace",
+    "to": "provider-error-core",
     "kind": "value"
   },
   {

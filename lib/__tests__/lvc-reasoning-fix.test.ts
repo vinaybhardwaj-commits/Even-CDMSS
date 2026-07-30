@@ -44,10 +44,12 @@ test('§3/§7: the both-failed error contains BOTH the provider and the Ollama f
   assert.match(e.message, /404 model 'google\/gemini-2\.5-pro' not found/);
   // gemini branch composes the same shape with a 'gemini' prefix
   assert.match(composeProviderFallbackError('gemini', 'gemini-2.5-pro', orig, fb).message, /^gemini gemini-2\.5-pro failed/);
-  // each message is capped at 200 chars
-  const long = 'x'.repeat(500);
+  // each message is capped — at PROVIDER_ERROR_CAP (4000), raised from 200 by the 403-diagnosis
+  // kickoff §4.1: truncating a diagnostic to 200 chars destroyed the IAM-vs-quota discriminator.
+  const long = 'x'.repeat(5000);
   const capped = composeProviderFallbackError('openrouter', 'm', new Error(long), new Error(long));
-  assert.equal((capped.message.match(/x+/g) || []).every((run) => run.length <= 200), true);
+  assert.equal((capped.message.match(/x+/g) || []).every((run) => run.length <= 4000), true);
+  assert.equal((capped.message.match(/x+/g) || []).some((run) => run.length > 200), true, 'and no longer truncated at the old defect value');
 });
 
 // ── §7 test 4 — a SUCCESSFUL fallback returns the result unchanged (only the throw path composes) ──

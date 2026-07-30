@@ -1,6 +1,8 @@
 import { randomUUID } from 'crypto';
 import { sql } from './db';
-import { llm, geminiConfigured, getGeminiChatClient, vertexModelName, chatWithFallback, openrouterConfigured, openrouterChatClient } from './llm';
+import { llm, geminiConfigured, getGeminiChatClient, vertexModelName, chatWithFallback, openrouterConfigured, openrouterChatClient, vertexRegion } from './llm';
+import { vertexSaEmail } from './gcp-auth';
+import { PROVIDER_ERROR_CAP, beginProviderCall, endProviderCall, providerCallsInFlight, providerErrorPayload } from './provider-error-core';
 import { promptFingerprint } from './reasoning/registry-core';
 import { billableOutputTokens } from './llm-cost-core';
 
@@ -171,8 +173,10 @@ export function geminiThinkingBudget(): number | undefined {
  * Addendum A §3 (register A-12) — the BOTH-FAILED fallback error. When a provider call fails AND the
  * local Ollama fallback ALSO fails, preserve BOTH messages. Laundering an OpenRouter 400 ("Reasoning is
  * mandatory and cannot be disabled") into the Ollama 404 that followed destroyed the true diagnosis for
- * 36h — for a governed clinical call that is not graceful degradation. Each message is capped at 200
- * chars. A *successful* fallback is unaffected (this is only built when both throw).
+ * 36h — for a governed clinical call that is not graceful degradation. Each message is capped at
+ * PROVIDER_ERROR_CAP (4000 — raised from 200 by the 403-diagnosis kickoff §4.1: truncating a
+ * diagnostic to 200 characters was the defect). A *successful* fallback is unaffected (this is
+ * only built when both throw).
  */
 export function composeProviderFallbackError(
   provider: 'openrouter' | 'gemini',
@@ -180,7 +184,7 @@ export function composeProviderFallbackError(
   originalErr: unknown,
   fallbackErr: unknown,
 ): Error {
-  const cap = (x: unknown): string => String((x as { message?: unknown })?.message ?? x).slice(0, 200);
+  const cap = (x: unknown): string => String((x as { message?: unknown })?.message ?? x).slice(0, PROVIDER_ERROR_CAP);
   return new Error(`${provider} ${servedModel ?? 'unknown'} failed: ${cap(originalErr)} | ollama fallback failed: ${cap(fallbackErr)}`);
 }
 
@@ -256,6 +260,7 @@ export async function tracedChat(
 
   try {
     if (useOpenRouter) {
+      beginProviderCall('openrouter');
       try {
         // Strip Ollama-only params; run NON-THINKING (reasoning off) — the critic wants a bounded
         // JSON verdict, and Qwen3 otherwise spends the token budget on reasoning and returns no
@@ -270,19 +275,33 @@ export async function tracedChat(
         const client = openrouterChatClient();
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         result = await client.chat.completions.create(orParams as any);
+        endProviderCall('openrouter');
       } catch (oe) {
+        // 403-diagnosis §4.1/§4.2: snapshot in-flight BEFORE decrementing (the failing call
+        // counts), then the FULL error body as a provider_error event — feature is null here
+        // because the traces row carries it (join on trace_id through the de-identified views).
+        const inFlightAtError = providerCallsInFlight();
+        endProviderCall('openrouter');
+        const errPayload = providerErrorPayload({
+          provider: 'openrouter', label, feature: null, fellBackTo: 'ollama',
+          intendedModel: servedModel ?? null, fallbackModel: (params as { model?: string }).model ?? null,
+          region: null, saIdentity: null, error: oe, inFlightAtError,
+        });
+        await logEvent(traceId, 'provider_error', label, errPayload, Date.now() - t0);
         await logEvent(traceId, 'provider_fallback', label, {
           from: 'openrouter', to: 'ollama',
           intended_model: servedModel,
           fallback_model: (params as { model?: string }).model,
-          error: String((oe as Error).message).slice(0, 500),
+          error: String(errPayload.message ?? '').slice(0, PROVIDER_ERROR_CAP),
         }, Date.now() - t0);
+        console.error(`[provider-fallback] openrouter ${servedModel} failed → ollama fallback:`, JSON.stringify(errPayload));
         provider = 'ollama';
         actualModel = (params as { model?: string }).model;
         // §3: keep the fallback, but if IT also throws, surface BOTH errors (not just Ollama's 404).
         result = await runOllamaFallback('openrouter', servedModel, oe, () => llm.chat.completions.create(params));
       }
     } else if (useGemini) {
+      beginProviderCall('gemini');
       try {
         // Strip Ollama-only params (Vertex rejects unknown fields) + publisher-prefix the model.
         const { options: _o, keep_alive: _k, ...rest } = params as Record<string, unknown>;
@@ -318,15 +337,28 @@ export async function tracedChat(
             throw soErr;
           }
         }
+        endProviderCall('gemini');
       } catch (ge) {
         // Fall back to the local Ollama model — the request must never fail just
         // because Gemini is down/slow. Record the fallback for observability.
+        // 403-diagnosis §4.1/§4.2: the FULL Vertex body — error.status is the IAM-vs-quota
+        // discriminator and was previously truncated at 500 chars. Snapshot in-flight BEFORE
+        // decrementing: inFlightAtError is the field that tests the load-correlation hypothesis.
+        const inFlightAtError = providerCallsInFlight();
+        endProviderCall('gemini');
+        const errPayload = providerErrorPayload({
+          provider: 'gemini', label, feature: null, fellBackTo: 'ollama',
+          intendedModel: servedModel ?? null, fallbackModel: (params as { model?: string }).model ?? null,
+          region: vertexRegion(), saIdentity: vertexSaEmail(), error: ge, inFlightAtError,
+        });
+        await logEvent(traceId, 'provider_error', label, errPayload, Date.now() - t0);
         await logEvent(traceId, 'provider_fallback', label, {
           from: 'gemini', to: 'ollama',
           intended_model: servedModel,
           fallback_model: (params as { model?: string }).model,
-          error: String((ge as Error).message).slice(0, 500),
+          error: String(errPayload.message ?? '').slice(0, PROVIDER_ERROR_CAP),
         }, Date.now() - t0);
+        console.error(`[provider-fallback] gemini ${servedModel} failed → ollama fallback:`, JSON.stringify(errPayload));
         provider = 'ollama';
         actualModel = (params as { model?: string }).model;
         // §3: keep the fallback, but if IT also throws, surface BOTH errors (not just Ollama's 404).

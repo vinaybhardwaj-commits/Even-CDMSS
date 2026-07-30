@@ -54,6 +54,15 @@ function loadServiceAccount(): ServiceAccount {
 }
 
 /**
+ * The SA identity in use — client_email ONLY, never key material (403-diagnosis kickoff §4.1:
+ * a provider_error record must name WHICH identity Vertex refused). Null when GCP_SA_KEY is
+ * absent or unparseable; never throws.
+ */
+export function vertexSaEmail(): string | null {
+  try { return loadServiceAccount().client_email || null; } catch { return null; }
+}
+
+/**
  * Returns a valid cloud-platform access token, minting+caching a fresh one when
  * needed. Throws if credentials are missing/invalid or the token exchange fails.
  */

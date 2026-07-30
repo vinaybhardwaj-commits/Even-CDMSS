@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
-import { getVertexAccessToken } from './gcp-auth';
+import { getVertexAccessToken, vertexSaEmail } from './gcp-auth';
+import { beginProviderCall, endProviderCall, providerCallsInFlight, providerErrorPayload } from './provider-error-core';
 
 const baseURL = `${process.env.OLLAMA_BASE_URL!}/v1`;
 
@@ -15,6 +16,26 @@ export const llm = new OpenAI({ baseURL, apiKey: 'ollama' });
 /** Default region — override with GCP_LOCATION (e.g. asia-south1 for India residency). */
 const GCP_LOCATION = process.env.GCP_LOCATION || 'asia-south1';
 const GCP_PROJECT = process.env.GCP_PROJECT || '';
+
+/** The resolved Vertex region — a provider_error record must name where the call landed
+ *  (a per-region quota and a global IAM denial read identically without it). */
+export function vertexRegion(): string { return GCP_LOCATION; }
+
+/**
+ * 403-diagnosis kickoff §4.2 — emit a `provider_error` trace event from the TRACELESS paths
+ * (chatWithFallback has no traceId). Rides the existing startTrace/logEvent sink — no new table,
+ * no migration; the trace is finished immediately so it never adds to the orphaned-`running`
+ * count. Lazy import: trace.ts statically imports this module, so a static import back would be
+ * a cycle. Best-effort — observability must never break the fallback that keeps requests alive.
+ */
+async function emitProviderErrorTrace(payload: Record<string, unknown>): Promise<void> {
+  try {
+    const { startTrace, logEvent, finishTrace } = await import('./trace');
+    const tid = await startTrace('provider_error', { provider: payload.provider, model: payload.intended_model });
+    await logEvent(tid, 'provider_error', String(payload.label ?? '') || null, payload);
+    await finishTrace(tid, 'success');
+  } catch { /* never block the fallback */ }
+}
 
 /** Default Gemini model (Vertex publisher-prefixed form is applied at call time). */
 export const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-pro';
@@ -144,20 +165,35 @@ export async function chatWithFallback(params: any, geminiModel?: string, openro
   // OpenRouter takes precedence when an explicit slug is given (the citation critic). Non-thinking by
   // default (bounded verdict); falls back to the local Ollama model in params.model on any error.
   if (openrouterModel && openrouterConfigured()) {
+    beginProviderCall('openrouter');
     try {
       const { options: _o, keep_alive: _k, ...rest } = params as Record<string, unknown>;
       void _o; void _k;
       const orParams = { ...rest, model: openrouterModel, ...(('reasoning' in (rest as Record<string, unknown>)) ? {} : { reasoning: { enabled: false } }) };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return await openrouterChatClient().chat.completions.create(orParams as any);
+      const res = await openrouterChatClient().chat.completions.create(orParams as any);
+      endProviderCall('openrouter');
+      return res;
     } catch (e) {
-      console.warn(`[chatWithFallback] openrouter ${openrouterModel} failed → ollama fallback:`, String((e as Error).message).slice(0, 200));
+      // §4.1/§4.2/§4.3 — snapshot in-flight BEFORE decrementing (the failing call counts), then
+      // the FULL error (4000-char cap, not 200), loud (console.error, stable prefix), and a
+      // provider_error trace event. Behaviour unchanged: the fallback still serves the request.
+      const inFlightAtError = providerCallsInFlight();
+      endProviderCall('openrouter');
+      const payload = providerErrorPayload({
+        provider: 'openrouter', label: 'chatWithFallback', feature: null, fellBackTo: 'ollama',
+        intendedModel: openrouterModel, fallbackModel: (params as { model?: string }).model ?? null,
+        region: null, saIdentity: null, error: e, inFlightAtError,
+      });
+      console.error(`[provider-fallback] openrouter ${openrouterModel} failed → ollama fallback:`, JSON.stringify(payload));
+      await emitProviderErrorTrace(payload);
       return llm.chat.completions.create(params);
     }
   }
   if (!geminiModel || !geminiConfigured()) {
     return llm.chat.completions.create(params);
   }
+  beginProviderCall('gemini');
   try {
     const { options: _o, keep_alive: _k, ...rest } = params as Record<string, unknown>;
     void _o; void _k;
@@ -165,12 +201,25 @@ export async function chatWithFallback(params: any, geminiModel?: string, openro
     const gParams = { ...rest, model: vertexModelName(geminiModel), max_tokens: baseMax + 8192 };
     const gemini = await getGeminiChatClient();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return await gemini.chat.completions.create(gParams as any);
+    const res = await gemini.chat.completions.create(gParams as any);
+    endProviderCall('gemini');
+    return res;
   } catch (e) {
     // Never fail the request because Gemini is unavailable — use local Ollama.
-    // Log the fallback so utility-pass Mac-Mini usage is visible in runtime logs
-    // (silence here would hide e.g. Flash being unavailable in the region).
-    console.warn(`[chatWithFallback] gemini ${geminiModel} failed → ollama fallback:`, String((e as Error).message).slice(0, 200));
+    // §4.1/§4.2/§4.3 (403 diagnosis): the FULL Vertex error body — error.status is what
+    // distinguishes an IAM denial from a quota denial from a disabled API, and it was being
+    // truncated away at 200 chars into a console.warn nothing reads. Snapshot in-flight BEFORE
+    // decrementing (the failing call counts); loud console.error so Vercel groups it and the
+    // silent-Mac-mini rate becomes a number; provider_error event so it lands in trace_events.
+    const inFlightAtError = providerCallsInFlight();
+    endProviderCall('gemini');
+    const payload = providerErrorPayload({
+      provider: 'gemini', label: 'chatWithFallback', feature: null, fellBackTo: 'ollama',
+      intendedModel: geminiModel, fallbackModel: (params as { model?: string }).model ?? null,
+      region: vertexRegion(), saIdentity: vertexSaEmail(), error: e, inFlightAtError,
+    });
+    console.error(`[provider-fallback] gemini ${geminiModel} failed → ollama fallback:`, JSON.stringify(payload));
+    await emitProviderErrorTrace(payload);
     return llm.chat.completions.create(params);
   }
 }
