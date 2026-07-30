@@ -1,6 +1,14 @@
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-export const maxDuration = 300;
+// 300 → 800 (V, 30 Jul 2026). Pro's GA ceiling; 300 was the platform DEFAULT, not a cap.
+// Per-note latency moved from a 36–115s spread to 124–545s when the Phase-2 determinism pin
+// began sending a fixed 4096-token thinking budget on the production Gemini path
+// (opd-note-audit.ts:970). At conc=5 that put whole notes past the 300s box: on 30 Jul the
+// worker orphaned ~2 traces in 'running' for every 1 it completed (283 vs 146), all of them
+// still unresolved 5h later — the invocation dies and the in-flight notes are simply lost.
+// 800s clears the observed p75 (425s) and max (538s) with headroom, and recovers the wasted
+// two-thirds WITHOUT raising concurrency (which would aggravate the open gemini-2.5-pro 403s).
+export const maxDuration = 800;
 
 import { NextRequest, NextResponse } from 'next/server';
 import { auditOpdNote } from '@/lib/opd-note-audit';
