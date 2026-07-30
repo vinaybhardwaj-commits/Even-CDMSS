@@ -11,6 +11,7 @@ export const runtime = 'nodejs';
 export const maxDuration = 800;
 
 import { NextRequest, NextResponse } from 'next/server';
+import { sql } from '@/lib/db';
 import { auditOpdNote } from '@/lib/opd-note-audit';
 import { countOpdNotesForDay, fetchOpdNotesForDay, fetchOpdNoteByUid, istYesterday } from '@/lib/metabase';
 import { saveOpdAudit, auditedUidsForDayAnyVersion, auditedCountForDayAnyVersion, earliestAuditedDay, deleteOpdAuditsForUid } from '@/lib/opd-audit-store';
@@ -69,6 +70,27 @@ function addDays(day: string, delta: number): string {
   const d = new Date(day + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + delta); return d.toISOString().slice(0, 10);
 }
 
+/** T-5 — the model column records what actually SERVED, not a hardcoded literal. The old
+ *  hardcoded Pro string kept reporting Pro while every call silently fell back to
+ *  qwen2.5:14b on the Mac mini (26–30 Jul, 367 rows) — which is precisely what hid the
+ *  SERVICE_DISABLED incident for four days. tracedChat's llm_response event carries the
+ *  POST-fallback model (`actualModel`), so the audit's own trace is the source of truth.
+ *  Null when unknown (no trace / LLM leg dead) — an honest gap, never a guess. */
+async function servedModelFor(traceId: string | undefined): Promise<string | null> {
+  if (!traceId) return null;
+  try {
+    const rows = (await (sql as unknown as (q: string, p: unknown[]) => Promise<{ model?: string }[]>)(
+      `SELECT payload->>'model' AS model FROM trace_events
+        WHERE trace_id = $1 AND kind IN ('llm_response', 'llm_stream_usage')
+          AND stage = 'opd_audit_analyze'
+        ORDER BY seq DESC LIMIT 1`,
+      [traceId],
+    ));
+    const m = rows?.[0]?.model;
+    return typeof m === 'string' && m ? m : null;
+  } catch { return null; }
+}
+
 // Audit one batch of NEVER-YET-AUDITED notes for a single IST day. The Gemini worker only touches
 // genuinely NEW notes (no audit at ANY engine version) — re-auditing already-audited notes to a
 // newer engine is the free mini backfill's job (V, 2 Jul: Gemini forward-only, mini for old + re-audits).
@@ -83,7 +105,7 @@ async function processDay(day: string, max: number, conc: number, exclude: strin
     const started = Date.now();
     try {
       const audit = await auditOpdNote(row);
-      const status = await saveOpdAudit(audit, { model: 'gemini-2.5-pro', latencyMs: Date.now() - started });
+      const status = await saveOpdAudit(audit, { model: await servedModelFor(audit.traceId), latencyMs: Date.now() - started });
       return { uid: audit.keys.uid, index: audit.scorecard.headline, band: audit.scorecard.band, status };
     } catch (e) {
       return { uid: String((row as Record<string, unknown>).uid || ''), error: String((e as Error).message) };
@@ -134,7 +156,7 @@ export async function GET(req: NextRequest) {
         if (!row) return { uid, error: 'note not found in db13' };
         const audit = await auditOpdNote(row);           // 0.81.7 — consult_types-aware framing
         const deleted = await deleteOpdAuditsForUid(uid); // drop ALL prior rows → single current row
-        const status = await saveOpdAudit(audit, { model: 'gemini-2.5-pro' });
+        const status = await saveOpdAudit(audit, { model: await servedModelFor(audit.traceId) });
         return { uid, deleted, status, band: audit.scorecard.band, index: audit.scorecard.headline };
       } catch (e) { return { uid, error: String((e as Error).message) }; }
     });
