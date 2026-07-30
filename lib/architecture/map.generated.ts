@@ -679,6 +679,14 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "patient-summary",
+    "plane": "unregistered"
+  },
+  {
+    "id": "patient-summary-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "pharmacist-cookie",
     "plane": "unregistered"
   },
@@ -1625,6 +1633,16 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "pathway-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "patient-summary",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "patient-summary-core",
     "kind": "value"
   },
   {
@@ -3728,6 +3746,46 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "type"
   },
   {
+    "from": "patient-summary",
+    "to": "ccb-brief",
+    "kind": "value"
+  },
+  {
+    "from": "patient-summary",
+    "to": "ccb-brief-core",
+    "kind": "value"
+  },
+  {
+    "from": "patient-summary",
+    "to": "ccb-fetch",
+    "kind": "value"
+  },
+  {
+    "from": "patient-summary",
+    "to": "ccb-resolve",
+    "kind": "value"
+  },
+  {
+    "from": "patient-summary",
+    "to": "clinical-state",
+    "kind": "value"
+  },
+  {
+    "from": "patient-summary",
+    "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "patient-summary",
+    "to": "member-state",
+    "kind": "value"
+  },
+  {
+    "from": "patient-summary",
+    "to": "patient-summary-core",
+    "kind": "value"
+  },
+  {
     "from": "proms",
     "to": "clinical-state",
     "kind": "type"
@@ -4130,6 +4188,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": true
   },
   {
+    "constName": "PATIENT_SUMMARY_API_VERSION",
+    "value": "patient-summary/1.0",
+    "file": "lib/patient-summary-core.ts",
+    "derived": false
+  },
+  {
     "constName": "PROM_CATALOG_VERSION",
     "value": "prom-catalog/0.1",
     "file": "lib/proms/catalog.ts",
@@ -4199,8 +4263,8 @@ export const VERSION_REGISTRY: VersionRow[] = [
 
 export const COVERAGE = {
   "registered": 16,
-  "unregistered": 19,
-  "total": 35,
+  "unregistered": 20,
+  "total": 36,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
@@ -4217,6 +4281,7 @@ export const COVERAGE = {
     "opd-feedback-rollup-core",
     "opd-note-audit",
     "opd-note-audit-core",
+    "patient-summary-core",
     "prognosis-core",
     "proms",
     "reasoning",

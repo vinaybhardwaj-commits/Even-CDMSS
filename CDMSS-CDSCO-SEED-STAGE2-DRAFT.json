@@ -1,0 +1,30 @@
+{
+  "_DRAFT_NOTICE": "NOT THE LIVE SEED. Stage-2 candidate, held OUTSIDE data/cdsco-banned-fdc.json so it cannot reach production by accident. The live file must stay at entries:[] until a Stage-2 build lands the seed, the 0.81.9 bump, the OPD_ENGINE_VERSIONS_CURRENT append, and the scoring:true changelog IN THE SAME COMMIT. Copying this into data/ alone would change doctor scores under engine 0.81.8 with no version marker.",
+  "_REV2_NOTICE": "rev 2, 21 Jul, after the Phase-A dry run (harness 451d5a3). TWO CORRECTIONS: (1) cdsco-441 REMOVED to _excluded — its gazette prohibits the INJECTION, but all 36 real matches were oral tablets, so every finding would have falsely asserted illegality about a legal product. (2) Field renamed notification -> gazette_ref to match what lib/cdsco-banned-fdc-core.ts actually reads; the previous name would have rendered rationales as 'gazette undefined'. AS OF rev 2 ALL REMAINING ENTRIES MATCH ZERO STORED PRESCRIPTIONS — this seed does not currently justify an engine bump.",
+  "version": "cdsco-banned-fdc/1.0",
+  "compiled_on": "2026-07-21",
+  "reviewed_by": "pharmacist-supplied CDSCO Section 26A compilation (entries dated to 08.06.2017); molecule sets transcribed by orchestrator, pending confirmation",
+  "note": "SCOPE (V decision, 21 Jul): exact molecule-set entries only, from the undisputed portion of the supplied list. EXCLUDED: the 10.03.2016 tranche S.O. 705(E)-1048(E) (document entries 96-439, disputed legal status), and entries 84 (phenylpropanolamine, stayed), 92 (dextropropoxyphene, revoked with conditions), 94 (analgin, revoked), 95 (pioglitazone, revoked). ALSO OUT OF SCOPE for mechanical reasons: class-based prohibitions ('X with any other drug') which have no fixed molecule set; and single-drug withdrawals (rofecoxib, sibutramine, etc.) which need presence-matching not set-equality. KNOWN GAP (Phase A): the matcher has no dosage-form awareness, so any gazette entry scoped to a specific form (injection, liquid oral, topical) CANNOT be expressed safely and must stay in _excluded until form scoping is designed.",
+  "entries": [
+    { "id": "cdsco-060", "molecules": ["diazepam", "diphenhydramine"], "gazette_ref": "GSR 169(E)", "notification_date": "2001-03-12", "statement": "Fixed dose combination of Diazepam and Diphenhydramine Hydrochloride." },
+    { "id": "cdsco-062", "molecules": ["penicillin", "streptomycin"], "gazette_ref": "GSR 93(E)", "notification_date": "1997-02-25", "statement": "Parenteral preparations: fixed combination of streptomycin with penicillin." },
+    { "id": "cdsco-063", "molecules": ["vitamin b1", "vitamin b12", "vitamin b6"], "gazette_ref": "GSR 702(E)", "notification_date": "1999-10-14", "statement": "Fixed dose combination of Vitamin B1, Vitamin B6 and Vitamin B12 for human use." },
+    { "id": "cdsco-066", "molecules": ["nitrofurantoin", "trimethoprim"], "gazette_ref": "GSR 170(E)", "notification_date": "2001-03-12", "statement": "Fixed dose combination of Nitrofurantoin and Trimethoprim." },
+    { "id": "cdsco-072", "molecules": ["furazolidone", "loperamide"], "gazette_ref": "GSR 170(E)", "notification_date": "2001-03-12", "statement": "Fixed dose combination of Loperamide Hydrochloride with Furazolidone." },
+    { "id": "cdsco-093", "molecules": ["flupenthixol", "melitracen"], "gazette_ref": "GSR 377(E) / 498(E)", "notification_date": "2014-07-11", "statement": "Fixed dose combination of Flupenthixol + Melitracen for human use." },
+    { "id": "cdsco-440", "molecules": ["levocetirizine", "nimesulide"], "gazette_ref": "S.O. 1851(E)", "notification_date": "2017-06-08", "statement": "Fixed dose combination of Nimesulide + Levocetirizine." },
+    { "id": "cdsco-442", "molecules": ["ambroxol", "gemifloxacin"], "gazette_ref": "S.O. 1853(E)", "notification_date": "2017-06-08", "statement": "Fixed dose combination of Gemifloxacin + Ambroxol." },
+    { "id": "cdsco-443", "molecules": ["glucosamine", "ibuprofen"], "gazette_ref": "S.O. 1854(E)", "notification_date": "2017-06-08", "statement": "Fixed dose combination of Glucosamine + Ibuprofen." },
+    { "id": "cdsco-444", "molecules": ["etodolac", "paracetamol"], "gazette_ref": "S.O. 1855(E)", "notification_date": "2017-06-08", "statement": "Fixed dose combination of Etodolac + Paracetamol." }
+  ],
+  "_excluded": [
+    {
+      "id": "cdsco-441",
+      "molecules": ["ofloxacin", "ornidazole"],
+      "gazette_ref": "S.O. 1852(E)",
+      "notification_date": "2017-06-08",
+      "statement": "Fixed dose combination of Ofloxacin + Ornidazole INJECTION.",
+      "exclusion_reason": "FORM-SCOPED. The prohibition covers the injectable form only. Phase-A dry run: 36 of 36 matches were oral products (Oflox OZ Tablet, Orni-O Tablet, Zanocin OZ Tablet, O2 Tablet, one Oflox OZ Suspension), independently corroborated by the orchestrator against db13 — 14 distinct name/dosage variants, all oral, dosed 1-0-1, zero injections. The matcher is molecule-set-only with no dosage-form awareness, so including this entry would assert illegality against a legal oral FDC in every single case. Re-admit only after form/route scoping exists in both the seed schema and the matcher."
+    }
+  ]
+}

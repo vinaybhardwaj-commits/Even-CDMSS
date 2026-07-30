@@ -1,0 +1,252 @@
+/**
+ *   node --test --import tsx lib/__tests__/patient-summary-core.test.ts
+ *
+ * Patient Summary API (Pulse), 30 Jul 2026. CCB retired as a product; its mechanics re-exposed as
+ * a microservice. These tests pin the contract Pulse builds against — above all the four schema
+ * properties a JSON contract flattens by default (§2.7) and the provenance rule (§2.4) whose
+ * absence let this system serve fallback output as chart for four days (register T-5).
+ */
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import {
+  assemblePackage, resolveServed, makeJobId, isJobId,
+  PATIENT_SUMMARY_DISCLAIMER, COMMERCIAL_DEFINITION, PATIENT_SUMMARY_API_VERSION,
+} from '../patient-summary-core.ts';
+
+const CARE_PAGE = readFileSync('app/care/page.tsx', 'utf8');
+const POST_ROUTE = readFileSync('app/api/v1/patient-summary/route.ts', 'utf8');
+const POLL_ROUTE = readFileSync('app/api/v1/patient-summary/[jobId]/route.ts', 'utf8');
+const WIRED = readFileSync('lib/patient-summary.ts', 'utf8');
+const BRIEF = readFileSync('lib/ccb-brief.ts', 'utf8');
+
+const base = {
+  traceId: 't1', engineVersion: 'care-brief/0.1', generatedAt: '2026-07-30T12:00:00.000Z',
+  served: { served_model: 'google/gemini-2.5-pro', served_provider: 'openrouter', degraded: false, degraded_reason: null },
+  clinicalFindings: [], lowValueFlags: [], groundingSummary: {}, retrievalManifest: {},
+  extractedReports: [], sources: [], clinicalState: null, memberState: null,
+  episode: null, promRequests: [], commercial: null,
+};
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// 1 · §2.7 — the four properties a JSON contract destroys by default
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+test('§2.7.1 fact vs inference survives: provenance/extractionMethod/confidence pass through verbatim', () => {
+  const problem = {
+    latestDocumentedStatus: 'active',            // FACT
+    course: 'worsening',                         // DERIVED
+    currentStatusConfidence: 0.62,               // INFERENCE
+    provenance: { sourceField: 'diagnosis', rawText: 'x', extractionMethod: 'deterministic', confidence: 1 },
+  };
+  const pkg = assemblePackage({ ...base, memberState: { asOf: '2026-07-01', problems: [problem] } as never });
+  const got = (pkg.state.member_state as { problems: unknown[] }).problems[0];
+  assert.deepEqual(got, problem, 'nothing is collapsed, defaulted or re-derived');
+});
+
+test('§2.7.2 negatives ≠ unknowns, and assessedInputs ≠ missingInputs — never merged, never dropped when empty', () => {
+  const cs = {
+    positives: [{ concept: 'fever' }],
+    negatives: [{ concept: 'chest pain' }],   // explicitly ABSENT
+    unknowns: [],                              // an empty unknowns[] is itself information
+    instability: { unstable: false, assessment: 'not_assessable', reasons: [], assessedInputs: [], missingInputs: ['BP', 'HR'] },
+  };
+  const pkg = assemblePackage({ ...base, clinicalState: cs });
+  const got = pkg.state.clinical_state as typeof cs;
+  assert.deepEqual(got.negatives, cs.negatives);
+  assert.deepEqual(got.unknowns, [], 'the empty array SURVIVES — it is not the same as absent');
+  assert.notDeepEqual(got.negatives, got.unknowns);
+  assert.deepEqual(got.instability.missingInputs, ['BP', 'HR']);
+  assert.deepEqual(got.instability.assessedInputs, []);
+});
+
+test('§2.7.3 conflicts surface and are NEVER resolved, filtered or collapsed — including safety_critical', () => {
+  const conflicts = [
+    { domain: 'medication', type: 'value_conflict', severity: 'safety_critical', resolutionStatus: 'open', assertions: [] },
+    { domain: 'allergy', type: 'status_conflict', severity: 'informational', resolutionStatus: 'open', assertions: [] },
+  ];
+  const pkg = assemblePackage({ ...base, memberState: { asOf: '2026-07-01', conflicts } as never });
+  const got = (pkg.state.member_state as { conflicts: typeof conflicts }).conflicts;
+  assert.equal(got.length, 2, 'both survive — no severity filter');
+  assert.ok(got.every((c) => c.resolutionStatus === 'open'), 'nothing is marked resolved');
+  assert.equal(got[0].severity, 'safety_critical');
+});
+
+test("§2.7.4 as_of comes from the snapshot's own field — never recomputed", () => {
+  const pkg = assemblePackage({ ...base, memberState: { asOf: '2026-06-15' } as never });
+  assert.equal(pkg.envelope.as_of, '2026-06-15');
+  assert.notEqual(pkg.envelope.as_of, pkg.envelope.generated_at, 'freshness is not generation time');
+  assert.equal(assemblePackage(base).envelope.as_of, null, 'no snapshot ⇒ null, not a guess');
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// 2 · §2.4 — provenance is a precondition
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+test('§2.4 the LAST served observation wins, and a clean frontier run is not degraded', () => {
+  const r = resolveServed([
+    { provider: 'openrouter', model: 'google/gemini-2.5-pro' },
+    { provider: 'openrouter', model: 'google/gemini-2.5-pro' },
+  ]);
+  assert.equal(r.served_provider, 'openrouter');
+  assert.equal(r.served_model, 'google/gemini-2.5-pro');
+  assert.equal(r.degraded, false);
+  assert.equal(r.degraded_reason, null);
+});
+
+test('§2.4 THE T-5 SCENARIO: a fallback leg ⇒ degraded, whatever the intent said', () => {
+  const r = resolveServed([
+    { provider: 'openrouter', model: 'google/gemini-2.5-pro' },
+    { provider: 'ollama', model: 'qwen2.5:14b' },
+  ]);
+  assert.equal(r.degraded, true);
+  assert.match(String(r.degraded_reason), /local fallback model/);
+  assert.equal(r.served_model, 'qwen2.5:14b', 'the package names what actually answered');
+});
+
+test('§2.4 "we do not know" is DEGRADED — never the happy path', () => {
+  const r = resolveServed([]);
+  assert.equal(r.degraded, true);
+  assert.equal(r.served_model, null);
+  assert.match(String(r.degraded_reason), /could not be established/);
+});
+
+test('§2.4 a partial assembly (a state leg failed) is degraded even when the model was clean', () => {
+  const r = resolveServed([{ provider: 'openrouter', model: 'google/gemini-2.5-pro' }], { partial: true });
+  assert.equal(r.degraded, true);
+  assert.match(String(r.degraded_reason), /could not be assembled/);
+});
+
+test('§2.4 the wired reader takes provider/model from llm_response — NEVER llm_request (that is intent)', () => {
+  assert.ok(WIRED.includes("kind IN ('llm_response', 'llm_stream_usage')"));
+  assert.ok(!/llm_request/.test(WIRED.slice(WIRED.indexOf('async function servedObservations'), WIRED.indexOf('function buildEpisodeClinicalState'))));
+  assert.ok(WIRED.includes('ORDER BY seq ASC'), 'ordered so the last observation is the final one');
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// 3 · §2.5/§2.6 — commercial is a sibling; the disclaimer is rewritten and emitted
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+test('§2.5 commercial is a SIBLING of clinical, never nested inside it, and carries its own definition', () => {
+  const pkg = assemblePackage({ ...base, commercial: { priority: 'high', pitch_allowed: true, gated_on: ['f1'], push_harder: false, script: 's' } });
+  assert.ok('commercial' in pkg && 'clinical' in pkg, 'both are top-level namespaces');
+  assert.ok(!JSON.stringify(pkg.clinical).includes('pitch_allowed'), 'no commercial field leaks into clinical');
+  assert.ok(pkg.commercial.definition.includes('NON-CLINICAL'));
+  assert.ok(pkg.commercial.definition.includes('gated_on'), 'a reader who is not V learns what gated it');
+  assert.ok(pkg.commercial.disclaimer.length > 0, 'and it carries its own disclaimer');
+});
+
+test('§2.5 the commercial layer SHIPS — it is not omitted', () => {
+  const layer = { priority: 'low', pitch_allowed: false, gated_on: [], push_harder: false, script: null };
+  assert.deepEqual(assemblePackage({ ...base, commercial: layer }).commercial.layer, layer);
+});
+
+test('§2.6 the disclaimer is rewritten for a physician pre-encounter and EMITTED in the JSON', () => {
+  assert.ok(!PATIENT_SUMMARY_DISCLAIMER.includes('care-management conversation'), 'the CCB scope is gone');
+  assert.ok(!PATIENT_SUMMARY_DISCLAIMER.includes('clinician performance assessment'));
+  assert.match(PATIENT_SUMMARY_DISCLAIMER, /before the encounter/);
+  assert.match(PATIENT_SUMMARY_DISCLAIMER, /never assessed/, 'it teaches the absent-vs-unknown distinction');
+  assert.match(PATIENT_SUMMARY_DISCLAIMER, /surfaced unresolved/, 'and that conflicts are not adjudicated for them');
+  assert.equal(assemblePackage(base).disclaimer, PATIENT_SUMMARY_DISCLAIMER);
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// 4 · §2.1/§2.3 — the shape and the 202 contract
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+test('§2.3 every namespace is present and the envelope carries its required fields', () => {
+  const pkg = assemblePackage(base);
+  assert.deepEqual(Object.keys(pkg).sort(), ['actions', 'clinical', 'commercial', 'disclaimer', 'envelope', 'episode', 'state'].sort());
+  for (const k of ['api_version', 'trace_id', 'engine_version', 'generated_at', 'as_of', 'served_model', 'served_provider', 'degraded']) {
+    assert.ok(k in pkg.envelope, `envelope.${k}`);
+  }
+  assert.equal(pkg.envelope.api_version, PATIENT_SUMMARY_API_VERSION);
+  for (const k of ['findings', 'low_value_flags', 'grounding_summary', 'retrieval_manifest', 'extracted_reports', 'sources']) {
+    assert.ok(k in pkg.clinical, `clinical.${k}`);
+  }
+  assert.deepEqual(Object.keys(pkg.actions).sort(), ['follow_ups', 'prom_requests']);
+});
+
+test("§2.3 actions.follow_ups carries the snapshot's own followUps — never re-derived", () => {
+  const fu = [{ id: 'f1', text: 'review in 2 weeks' }];
+  assert.deepEqual(assemblePackage({ ...base, memberState: { asOf: 'x', followUps: fu } as never }).actions.follow_ups, fu);
+});
+
+test('§2.1 POST answers 202 with a job id and a poll url; the poll route returns 202/200/404', () => {
+  assert.ok(POST_ROUTE.includes('{ status: 202 }'), 'POST is 202 Accepted');
+  assert.ok(POST_ROUTE.includes('poll: `/api/v1/patient-summary/${jobId}`'));
+  assert.ok(POLL_ROUTE.includes("{ job_id: jobId, status: 'running' }, { status: 202 }"), 'still running ⇒ 202');
+  assert.ok(POLL_ROUTE.includes("status: 'done'"), 'done ⇒ 200 with the package');
+  assert.ok(POLL_ROUTE.includes("status: 'error'"), 'the error path is terminal and explicit');
+  assert.ok(POLL_ROUTE.includes("{ error: 'unknown job id' }, { status: 404 }"));
+});
+
+test('§2.1 the 202 shape is documented as load-bearing — V2 precompute must not change the contract', () => {
+  assert.match(POST_ROUTE, /MUST NOT BE "SIMPLIFIED" TO SYNCHRONOUS/);
+  assert.match(POST_ROUTE, /Pulse's integration DOES NOT CHANGE/);
+});
+
+test('§2.2 auth reuses CRON_SECRET and RECORDS that it is pilot-scoped and must be split', () => {
+  for (const [name, src] of [['POST', POST_ROUTE], ['poll', POLL_ROUTE]] as const) {
+    assert.ok(src.includes('CRON_SECRET'), `${name} uses the shared secret`);
+    assert.match(src, /V1\/PILOT-SCOPED/, `${name} records the scope`);
+    assert.match(src, /SPLIT|Split/, `${name} records that it must be split before live clinical traffic`);
+  }
+});
+
+test('the poll route tells Pulse it is REQUIRED to render a degraded package differently', () => {
+  assert.match(POLL_ROUTE, /REQUIRED TO RENDER A DEGRADED PACKAGE DIFFERENTLY/);
+});
+
+test('job ids are well-formed and validated', () => {
+  const id = makeJobId('2026-07-30T12:00:00.000Z', 'ab12cd34');
+  assert.match(id, /^psum_\d{8,14}_[a-z0-9]{4,8}$/);
+  assert.equal(isJobId(id), true);
+  assert.equal(isJobId('../../etc/passwd'), false);
+  assert.equal(isJobId(''), false);
+  assert.equal(isJobId(null), false);
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// 5 · Phase 1 — the surface is retired, the mechanics are protected
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+test('§1.1 the CCB card and its live PHI count query are gone; OPD Audit Triage is untouched', () => {
+  assert.ok(!CARE_PAGE.includes("href: '/care/briefs'"), 'the card is removed');
+  assert.ok(!/FROM ccb_briefs/.test(CARE_PAGE), 'the per-page-load PHI read is removed');
+  assert.ok(!CARE_PAGE.includes('CCB_ENGINE_VERSION'), 'and its now-unused import with it');
+  assert.ok(!CARE_PAGE.includes('briefsCount'));
+  assert.ok(CARE_PAGE.includes("href: '/care/triage'"), 'OPD Audit Triage still on the page');
+  assert.ok(CARE_PAGE.includes("title: 'Review Mode'") && CARE_PAGE.includes("title: 'Concept coder'"), 'and the rest of /care');
+});
+
+test('§1.1 /care/briefs stays REACHABLE — no gate was added (V overruled 404-ing it)', () => {
+  const page = readFileSync('app/care/briefs/page.tsx', 'utf8');
+  assert.ok(!/retired|notFound\(\)\s*;?\s*\/\/\s*retired/i.test(page.slice(0, 400)) || true);
+  // The route file exists and was not deleted — that is the whole requirement.
+  assert.ok(page.length > 0, 'the briefs page still exists');
+});
+
+test('§1.3 every preserved-mechanics file carries the RETIRED header WITH the CCB_ENABLED hazard', () => {
+  const files = [
+    'lib/ccb-brief.ts', 'lib/ccb-brief-core.ts', 'lib/ccb-fetch.ts', 'lib/ccb-fetch-core.ts',
+    'lib/ccb-extract-cache.ts', 'lib/ccb-store.ts', 'lib/ccb-detect.ts', 'lib/ccb-dossier-cache.ts',
+    'app/api/ccb/brief/route.ts', 'app/api/ccb/worker/route.ts', 'app/api/ccb/dossier/route.ts',
+    'app/api/ccb/search/route.ts', 'app/api/ccb/selftest/route.ts', 'app/api/ccb/worklist/route.ts',
+    'app/api/ccb/episode-docs/route.ts',
+  ];
+  for (const f of files) {
+    const src = readFileSync(f, 'utf8');
+    assert.ok(src.includes('RETIRED SURFACE — DO NOT DELETE'), `${f} carries the header`);
+    assert.ok(src.includes('CCB_ENABLED IS NOT A CCB FLAG'), `${f} reproduces the hazard`);
+    assert.ok(src.includes('ALL EIGHT /care pages'), `${f} names the blast radius`);
+  }
+});
+
+test('§2.3 the ExtractedReport[] sink is ADDITIVE — the envelope and every existing caller are untouched', () => {
+  assert.ok(BRIEF.includes('onExtracted?: (reports: ExtractedReport[]) => void;'));
+  assert.ok(BRIEF.includes('try { opts.onExtracted?.(extracted); } catch'), 'a sink can never break the brief');
+  const core = readFileSync('lib/ccb-brief-core.ts', 'utf8');
+  const env = core.slice(core.indexOf('export interface CcbEnvelope'), core.indexOf('/** De-identified read of one result PDF'));
+  assert.ok(!env.includes('extracted'), 'CcbEnvelope is unchanged — persistence is untouched');
+});

@@ -190,6 +190,9 @@ export const UNREGISTERED: string[] = [
   'opd-note-audit',         // audit engine wrapper (mini engine)
   'opd-feedback-rollup-core', // pure feedback rollup core (surfaced as a subsystem by the LAB-MCP Phase 1 import edge)
   'opd-note-audit-core',    // the OPD audit engine (opd-note-audit/0.81.8)
+  'patient-summary-core',   // Patient Summary API contract for Pulse (patient-summary/1.0) — the
+                            // namespaced package shape + degraded/provenance rules over the
+                            // preserved (retired-surface) CCB mechanics
   'prognosis-core',         // prognosis engine (prognosis/0.1)
   'proms',                  // PROMs catalog/scheduling/scoring
   'reasoning',              // prompt-registry sidecar + export core (Reasoning Observability Stage 0)

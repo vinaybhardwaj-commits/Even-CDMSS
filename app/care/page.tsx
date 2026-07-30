@@ -3,10 +3,9 @@ export const runtime = 'nodejs';
 
 import Link from 'next/link';
 import { redirect, notFound } from 'next/navigation';
-import { ArrowRight, MessageSquareHeart, ClipboardCheck, ListChecks, ShieldCheck, Boxes } from 'lucide-react';
+import { ArrowRight, ClipboardCheck, ListChecks, ShieldCheck, Boxes } from 'lucide-react';
 import { isCareUnlocked } from '@/lib/care-cookie';
 import { sql } from '@/lib/db';
-import { CCB_ENGINE_VERSION } from '@/lib/ccb-brief-core';
 import { OPD_ENGINE_VERSIONS_CURRENT } from '@/lib/opd-note-audit-core';
 import { getSettings } from '@/lib/mini-backfill';
 import { parseGoal, computeReviewStats, FALLBACK_ROSTER, type LabelRow } from '@/lib/review-stats-core';
@@ -17,24 +16,24 @@ const APP = process.env.APP_SOURCE || 'standalone';
 
 /**
  * Managed Care — the chooser home for the /care surface (PRD §4). Two purpose-built sub-modules
- * that share the care-manager auth + CAT shell: member-centric Care Conversation Briefs and
- * doctor-centric OPD Audit Triage. Deep CCB routes stay put.
+ * that share the care-manager auth + CAT shell. The member-centric Care Conversation Briefs card
+ * was retired 30 Jul 2026 (see Phase 1.1) — its route stays reachable and its mechanics are
+ * preserved for the Patient Summary API. Doctor-centric OPD Audit Triage is unchanged.
  */
 export default async function ManagedCareHome() {
   if (process.env.CCB_ENABLED !== '1') notFound();
   if (!(await isCareUnlocked())) redirect('/care/login');
 
   // Live "needs attention" counts (best-effort; each independently soft-fails to null).
-  const [briefsR, triageR] = await Promise.all([
-    run(`SELECT count(DISTINCT individual_uid)::int n FROM ccb_briefs
-         WHERE engine_version = $1 AND pitch_allowed = true AND individual_uid IS NOT NULL`, [CCB_ENGINE_VERSION]).catch(() => []),
+  // The ccb_briefs count query was REMOVED 30 Jul 2026 with the card: it was a live PHI read
+  // running on every page load for a retired surface.
+  const [triageR] = await Promise.all([
     run(`SELECT count(DISTINCT doctor_uid)::int n FROM opd_note_audits
          WHERE app_source = $1 AND engine_version = ANY($2) AND excluded_reason IS NULL
            AND (note_date AT TIME ZONE 'Asia/Kolkata')::date =
                (SELECT max((note_date AT TIME ZONE 'Asia/Kolkata')::date) FROM opd_note_audits WHERE app_source = $1 AND engine_version = ANY($2) AND excluded_reason IS NULL)`,
       [APP, [...OPD_ENGINE_VERSIONS_CURRENT]]).catch(() => []),
   ]);
-  const briefsCount = Number((briefsR as Record<string, unknown>[])[0]?.n ?? 0);
   const triageCount = Number((triageR as Record<string, unknown>[])[0]?.n ?? 0);
 
   // Even Adjudicated LVC (CDMSS-EVEN-LVC-ADJUDICATION §7) — 4th card, behind LVC_ADJUDICATION_ENABLED.
@@ -75,14 +74,10 @@ export default async function ManagedCareHome() {
     reviewStrip = `${goal.label}: ${st.team.total}/${goal.target} · this week ${st.team.week}/${goal.weekly_target}`;
   } catch { reviewStrip = null; }
 
+  // Care Conversation Briefs card REMOVED 30 Jul 2026 (CCB retirement, Phase 1.1). The surface is
+  // retired — non-use, not malfunction — and its mechanics are preserved for the Patient Summary
+  // API. `/care/briefs` stays REACHABLE by direct URL (V's decision); it is only off the chooser.
   const cards = [
-    {
-      href: '/care/briefs',
-      icon: MessageSquareHeart,
-      title: 'Care Conversation Briefs',
-      desc: 'Look up a member and prep a grounded call — or work today’s flagged list. Member-centric.',
-      count: briefsCount, countLabel: 'members flagged', tint: 'violet',
-    },
     {
       href: '/care/triage',
       icon: ClipboardCheck,
