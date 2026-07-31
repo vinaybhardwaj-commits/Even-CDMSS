@@ -67,6 +67,22 @@ function stateLlmEnabled(): boolean {
   return process.env.PATIENT_SUMMARY_STATE_LLM !== '0';
 }
 
+/**
+ * Stage-2 thinking budget (T-11 part 2, 31 Jul 2026). The leg copies spans out of a record and
+ * labels them — it does not reason its way to a conclusion — so it does not need Pro's default
+ * unbounded deliberation, and that deliberation is what kills the call: Pro emits NO BYTES while
+ * it thinks and OpenRouter closes the connection after ~125–155s of silence ("Upstream idle
+ * timeout exceeded", 504 inside an HTTP 200).
+ *
+ * Expressed in the Vertex form, which is the only form Vertex honors; buildOpenrouterParams
+ * translates it to OpenRouter's `reasoning.max_tokens` for the bridge (part 1). So ONE field caps
+ * the leg on both transports.
+ *
+ * ⚠️ NEVER 0 — gemini-2.5-pro rejects a zero thinking budget with an HTTP 400 (Pro cannot have
+ * thinking disabled). The floor is low but strictly above zero.
+ */
+export const STATE_LLM_THINKING_BUDGET = Number(process.env.PATIENT_SUMMARY_STATE_LLM_THINKING) || 1024;
+
 /** The stage-2 chat leg, on the SAME trace as the brief so envelope provenance covers it. Model
  *  wiring mirrors ccb-brief's generate() (same engine, same fallback discipline). */
 function normaliseChat(traceId: string | null): ChatFn {
@@ -78,6 +94,8 @@ function normaliseChat(traceId: string | null): ChatFn {
       temperature: 0.1,
       max_tokens: 900,
       ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
+      // Applies ONLY when a Gemini model is resolved; the Ollama path ignores an unknown field.
+      ...(geminiModel ? { google: { thinking_config: { thinking_budget: STATE_LLM_THINKING_BUDGET } } } : {}),
     }, { gemini: geminiModel, promptRef: 'extract/NORMALISE_SYSTEM' });
     return r.choices?.[0]?.message?.content ?? '';
   };

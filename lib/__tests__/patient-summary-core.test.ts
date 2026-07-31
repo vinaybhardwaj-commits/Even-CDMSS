@@ -310,3 +310,33 @@ test('the wired stage 2 is flag-gated DEFAULT ON, governed, and rides the brief 
   assert.ok(leg.includes("promptRef: 'extract/NORMALISE_SYSTEM'"), 'registry-shaped prompt ref');
   assert.ok(WIRED.includes('mergeLlmFindings'), 'merged, not a parallel state');
 });
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// The stage-2 thinking budget (T-11 part 2, 31 Jul 2026)
+//
+// MEASURED on the rich baseline's own stage-2 request, 20 calls per arm at concurrency 4:
+//   uncapped 11 failures/20, p90 72.7s · 4096 → 1/20, p90 64.0s · 1024 → 0/20, p90 33.2s
+//   · 512 → 0/20, p90 26.0s.
+// 1024 is the HIGHEST budget with zero failures, so it is the one that ships. The leg copies
+// spans out of a record and labels them; it does not need Pro's unbounded deliberation, and that
+// deliberation is what runs the call into OpenRouter's idle timeout.
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+test('stage 2 caps its thinking — the Vertex form, gated on a resolved Gemini model, never zero', () => {
+  const leg = WIRED.slice(WIRED.indexOf('function normaliseChat'), WIRED.indexOf('function buildEpisodeClinicalState'));
+  assert.ok(leg.includes('thinking_budget: STATE_LLM_THINKING_BUDGET'), 'the cap is on the leg');
+  assert.ok(leg.includes('geminiModel ? { google:'), 'gated: the Ollama path never sees the field');
+  // Read the shipped default off the source — importing lib/patient-summary.ts would drag the
+  // whole episode-assembly chain into a unit test.
+  const m = WIRED.match(/PATIENT_SUMMARY_STATE_LLM_THINKING\) \|\| (\d+);/);
+  assert.ok(m, 'env-overridable for a re-measure, with a named default');
+  const shipped = Number(m![1]);
+  assert.ok(shipped > 0, 'gemini-2.5-pro rejects a zero thinking budget with an HTTP 400');
+  assert.equal(shipped, 1024, 'the highest measured budget with 0 failures in 20');
+});
+
+test('the audit budget is NOT changed by the stage-2 cap — separate constants, separate files', () => {
+  assert.ok(!WIRED.includes('AUDIT_EVAL_THINKING_BUDGET'), 'stage 2 does not reach into the audit engine');
+  const AUDIT = readFileSync('lib/opd-note-audit.ts', 'utf8');
+  assert.ok(AUDIT.includes('AUDIT_EVAL_THINKING_BUDGET) || 4096'), 'the audit budget stays 4096');
+});
