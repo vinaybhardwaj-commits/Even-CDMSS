@@ -13,6 +13,7 @@
     "architecture:map": "node --import tsx scripts/architecture-map-gen.mjs",
     "reasoning:registry": "node scripts/reasoning-registry-gen.mjs",
     "reasoning:governance": "node scripts/reasoning-governance-check.mjs",
+    "changelog:coverage": "node scripts/changelog-coverage-check.mjs",
     "icd:master": "node --env-file=.env.local --import tsx scripts/icd-master-gen.mjs",
     "test": "node --test --import tsx \"lib/**/__tests__/*.test.ts\"",
     "ddx:bench": "node --import tsx scripts/ddx-p0-run.mjs"

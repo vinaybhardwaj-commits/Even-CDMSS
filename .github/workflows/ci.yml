@@ -48,6 +48,11 @@ jobs:
       # site was migrated in Stage 4; a new one fails CI here.
       - name: reasoning governance
         run: npm run reasoning:governance
+      # The OPD engine changelog is surfaced IN-PRODUCT on /admin/opd-audit/how-it-works, so a
+      # shipped engine version with no entry is a scoring change a clinician can see in their
+      # numbers and cannot look up. 0.81.15/16/17 all shipped undocumented before this gate.
+      - name: opd changelog covers every shipped engine version
+        run: npm run changelog:coverage
       # next-env.d.ts is gitignored (repo policy); `next dev/build` regenerates it locally.
       # Without it, tsc lacks Next's type-reference chain (styled-jsx's `jsx` prop, route types)
       # and reports errors that don't exist in any real environment — regenerate it here.
