@@ -23,6 +23,17 @@ export interface EngineChange {
 export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
     engine: null, date: '2026-07-31', scoring: false,
+    plain: 'The nightly audit now makes four requests at a time instead of five. The number is measured, not guessed: the bridge\'s failure mode is a per-connection stall whose probability rises with simultaneous load, and at four-at-a-time the evening\'s recovery runs completed 87% of previously-failed notes (140 of 161), against 75% at ten-at-a-time. Slightly slower, meaningfully more reliable; no note, score or finding changes.',
+    title: 'Nightly worker concurrency pinned to the measured value — vercel.json cron path gains ?conc=4 (addendum G task G3, 31 Jul 2026). Infrastructure only; no engine bump, no scoring effect.',
+    points: [
+      'THE EVIDENCE: conc 10 recovered 15/20 (75%) of the stranded-note residue; conc 4 recovered 36/40 (90%, stage 1) and 104/121 (86%, stage 2) — 140/161 (87%) combined. Every terminal failure in all three runs was three consecutive 110s stalls, and stalls overlapped peak in-flight; the stall class is load-correlated (addendum F v2 correction record: the by-hour rise this morning was the same signal).',
+      'The cron previously ran at the default conc 5 (worker/route.ts), untested against the stall class. 4 is the highest value with a measurement behind it. Throughput at the 800s box: an invocation of 15 notes at conc 4 and ~85s median still clears well inside the box, and invocations overlap by design.',
+      'Caveat carried honestly: stage 2 also saw upstream 429s on gemini-2.5-pro and -flash (evening peak, shared with the cron and other tenants) — a failure mode concurrency at our end cannot fully control. The retry wrapper (task 1) turns most of those into recovered attempts.',
+    ],
+    why: 'Addendum G task G3: do not leave the cron at a setting the evidence does not support. The whole point of measuring the lever at 4 was to stop it being tested at scale in the dark.',
+  },
+  {
+    engine: null, date: '2026-07-31', scoring: false,
     plain: 'Two reliability fixes for the temporary Google bridge, neither of which changes how any note is scored. First: when the bridge fails to answer — which it has been doing for roughly one call in five — the system now waits a bounded time, notices, and tries again up to three times, instead of accepting the failure on the first try. Second: a note whose audit failed no longer blocks its own re-audit; a later successful attempt now simply takes the failed attempt\'s place. Together these mean far fewer notes end the night without a real audit, and the ones that failed this week can be repaired in place. No rule, weight, prompt or threshold changed.',
     title: 'Bridge reliability (addendum F v2, 31 Jul 2026) — task 1: the production bridge call gains the lab path\'s deadline/retry discipline (per-attempt AbortController deadline, aborts + 429/5xx + empty-200s retryable, 3-try budget, backoff, timer cleared in finally; policy shared via lib/openrouter-retry.ts, not copied). Task 2: a row marked llm_leg_failed no longer consumes its (uid, engine_version) slot — saveOpdAudit\'s default conflict clause is now force-mode\'s DO UPDATE narrowed by WHERE excluded_reason = \'llm_leg_failed\', so a retry lands in place and no further carrier version needs minting. No engine bump; no rule, weight, prompt or threshold change.',
     points: [
