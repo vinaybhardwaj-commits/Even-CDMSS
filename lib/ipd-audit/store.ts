@@ -281,7 +281,7 @@ export function resolveRange(
 }
 
 /** The slim projection every canonical read starts from. Cheap enough to fetch for a whole range. */
-const CANONICAL_SLIM = `id, document_id, engine_version, speciality,
+const CANONICAL_SLIM = `id, document_id, engine_version, model, speciality,
         to_char(audited_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS audited_at`;
 const CANONICAL_SCAN_CAP = 5000;
 
@@ -398,7 +398,7 @@ async function fetchAuditsByIds(
   const SELECT = `SELECT a.id, a.ip_uid, a.speciality, a.care_value_index, a.band, a.completeness_pct,
             a.score_appropriateness, a.score_efficiency, a.score_safety, a.score_cost,
             a.score_documentation, a.score_patient_centred, a.report,
-            a.n_low_value, a.n_context_dependent, a.engine_version, a.document_id,
+            a.n_low_value, a.n_context_dependent, a.engine_version, a.model, a.document_id,
             to_char(a.discharged_at AT TIME ZONE 'Asia/Kolkata','YYYY-MM-DD') AS discharged_day,
             to_char(a.audited_at AT TIME ZONE 'Asia/Kolkata','YYYY-MM-DD HH24:MI') AS audited`;
   const FROM = `FROM ipd_discharge_audits a WHERE a.id = ANY($1::uuid[])`;
@@ -460,7 +460,7 @@ export async function ipdOverviewStats(from: string, to: string): Promise<{
   const empty = { total: 0, meanCvi: 0, meanCompleteness: 0, lowValue: 0, contextDependent: 0, domains: {}, bands: [] };
   try {
     const raw = (await sql(
-      `SELECT id, document_id, engine_version, band, care_value_index, completeness_pct,
+      `SELECT id, document_id, engine_version, model, band, care_value_index, completeness_pct,
               n_low_value, n_context_dependent,
               score_appropriateness, score_efficiency, score_safety, score_cost,
               score_documentation, score_patient_centred,
@@ -508,7 +508,7 @@ export async function ipdAuditedByDay(month: string, speciality?: string | null)
   if (!/^\d{4}-\d{2}$/.test(month)) return { byDay: {}, byDocument: {} };
   try {
     const raw = (await sql(
-      `SELECT id, document_id, engine_version, band, care_value_index, speciality,
+      `SELECT id, document_id, engine_version, model, band, care_value_index, speciality,
               to_char((coalesce(discharged_at, audited_at) AT TIME ZONE 'Asia/Kolkata')::date,'YYYY-MM-DD') AS d,
               to_char(audited_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS audited_at
          FROM ipd_discharge_audits

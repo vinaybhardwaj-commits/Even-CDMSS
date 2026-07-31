@@ -460,7 +460,9 @@ const OPD_CANONICAL_SCAN_CAP = 20000;
 
 /**
  * The canonical audit ids for an IST day range — one per note uid, highest engine version,
- * `-mini` excluded before ranking, ties by latest audited_at.
+ * `-mini` excluded before ranking, ties by model tier (reference before candidate, addendum H)
+ * then latest audited_at. `model` is fetched because the tier ranks on it — dropping it from the
+ * select silently degrades the tier to a no-op.
  *
  * Never throws: on any failure it returns `null`, which callers MUST treat as "do not filter"
  * rather than "no rows". Degrading to today's inflated-but-present numbers beats an empty page.
@@ -473,7 +475,7 @@ const OPD_CANONICAL_SCAN_CAP = 20000;
 export async function canonicalOpdAuditIds(appSource: string, from: string, to: string): Promise<string[] | null> {
   try {
     const rows = (await sql(
-      `SELECT id, uid, engine_version,
+      `SELECT id, uid, engine_version, model,
               to_char(audited_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS audited_at
          FROM opd_note_audits
         WHERE app_source = $1 AND excluded_reason IS NULL
@@ -494,7 +496,7 @@ export async function canonicalOpdAuditIds(appSource: string, from: string, to: 
 export async function opdCanonicalDayCount(appSource: string, day: string): Promise<{ rows: number; notes: number }> {
   try {
     const raw = (await sql(
-      `SELECT id, uid, engine_version,
+      `SELECT id, uid, engine_version, model,
               to_char(audited_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS audited_at
          FROM opd_note_audits
         WHERE app_source = $1 AND excluded_reason IS NULL

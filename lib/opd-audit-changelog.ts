@@ -23,6 +23,18 @@ export interface EngineChange {
 export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
     engine: null, date: '2026-07-31', scoring: false,
+    plain: 'When a note has been audited more than once at the same engine version by two different models, the display now prefers the reference model\'s audit over the free local model\'s, instead of simply taking whichever was written last. Measured before shipping: zero notes change what they display today — the fix closes the door the incident walked through, rather than altering anything currently shown. No score, rule, weight, prompt or threshold changed.',
+    title: 'Canonical read rule gains a model tier (addendum H task H1, 31 Jul 2026): highest engine version, then reference-before-candidate, then latest audited_at. Read-filter change only; no engine bump; measured flip count 0.',
+    points: [
+      'THE HAZARD, OBSERVED LIVE: the mini backfill writes candidate rows (model qwen2.5:14b) carrying the PLAIN production engine version, so isMiniEngine\'s -mini check never sees them, and a candidate row written later in the day outranked a reference row at the same version on the audited_at tiebreak. Two notes took candidate rows at 0.81.17 at 19:16 and 19:33 IST after the reference sweep; both were saved only because a 0.81.18 recovery row outranked them by version — luck, not design.',
+      'TIEBREAK ONLY, deliberately: a candidate row still wins when it is the only row or sits at a genuinely newer engine version. Candidate rows are 43% of the active corpus (11,792 rows / 6,848 notes) and all history before May 2026; whether reference should outrank candidate ACROSS versions is a policy question recorded for V, not this change.',
+      'ONE RULE, TWO EXPRESSIONS, ONE DEFINITION: the tier is defined by REFERENCE_MODELS (google/gemini-2.5-pro bridge-era, gemini-2.5-pro pre-bridge) in lib/audit-canonical.ts; canonicalBy reads it directly and CANONICAL_RANK_SQL derives its CASE from the same list. The shared fixture test now pins the tier in both expressions — removing it from either fails the twin test.',
+      'Call sites: the SQL surfaces needed no column change (DISTINCT ON permits ordering by an unselected base-table column — verified live). The TypeScript-side fetches feeding canonicalByUid/canonicalByDocument now select `model` (opd-audit-store ×2 — required; ipd-audit/store ×4 and scoring-policy/store ×1 — uniformity, measured no-op: every active non-mini IPD row is reference).',
+    ],
+    why: 'Addendum H §2: candidate-model output must never be shown to a doctor as their audit when a reference audit of the same note at the same engine version exists. Same class as the mislabelled outage rows, arriving by a different route.',
+  },
+  {
+    engine: null, date: '2026-07-31', scoring: false,
     plain: 'The nightly audit now makes four requests at a time instead of five. The number is measured, not guessed: the bridge\'s failure mode is a per-connection stall whose probability rises with simultaneous load, and at four-at-a-time the evening\'s recovery runs completed 87% of previously-failed notes (140 of 161), against 75% at ten-at-a-time. Slightly slower, meaningfully more reliable; no note, score or finding changes.',
     title: 'Nightly worker concurrency pinned to the measured value — vercel.json cron path gains ?conc=4 (addendum G task G3, 31 Jul 2026). Infrastructure only; no engine bump, no scoring effect.',
     points: [

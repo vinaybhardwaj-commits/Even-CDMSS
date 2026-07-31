@@ -4,10 +4,11 @@
  * PURE, dependency-free, strip-types testable.
  *
  * ═══════════════════════════════════════════════════════════════════════════════════════════════
- * THE RULE, settled 27 Jul 2026:
+ * THE RULE, settled 27 Jul 2026; model tier added 31 Jul 2026 (addendum H):
  *
  *   Every read surface shows ONE row per `document_id`: the one with the highest
- *   `engine_version`, ties broken by latest `audited_at`.
+ *   `engine_version`; ties broken by model tier (reference before candidate), then by
+ *   latest `audited_at`.
  *
  * Applied uniformly — list, calendar, doctor grouping, specialty counts, impact preview, and every
  * aggregate (mean, SD, band histogram, changing-band). Older re-audits remain STORED and reachable
@@ -42,6 +43,8 @@ export interface CanonicalCandidate {
   /** OPD identity — one audit per db13 note uid. */
   uid?: unknown;
   engine_version?: unknown;
+  /** Which model produced the row — ranks reference before candidate at the same engine version. */
+  model?: unknown;
   audited_at?: unknown;
   id?: unknown;
 }
@@ -59,6 +62,35 @@ export type IdentityKey = 'document_id' | 'uid';
  */
 export function isMiniEngine(engineVersion: unknown): boolean {
   return /-mini$/.test(String(engineVersion ?? ''));
+}
+
+/**
+ * THE MODEL TIER (addendum H, 31 Jul 2026). `isMiniEngine` is not a defense against candidate-model
+ * rows: the OPD mini backfill writes rows carrying the PLAIN production engine version
+ * (`opd-note-audit/0.81.17`, `model = 'qwen2.5:14b'`), invisible to a `-mini` suffix check. Without
+ * a tier, such a row written later in the day outranked a reference row at the same engine version
+ * purely on the `audited_at` tiebreak — observed live on two notes, 31 Jul (kickoff §2).
+ *
+ * The tier is a TIEBREAK WITHIN an engine version, never across versions: a candidate row still
+ * wins when it is the only row, or when it sits at a genuinely newer engine version. (Whether
+ * reference should outrank candidate ACROSS versions affects 43% of the active corpus and is V's
+ * call, recorded in the kickoff §6 — do not fold it in here.)
+ *
+ * A reference row is one whose model is a Gemini identifier — this list, not the engine version, is
+ * the definition. Both spellings are live in the corpus: `google/gemini-2.5-pro` (via the
+ * OpenRouter bridge, 31 Jul onward) and `gemini-2.5-pro` (pre-bridge Vertex). A future model name
+ * is a one-line change HERE and nowhere else; `CANONICAL_RANK_SQL` below derives from this list.
+ */
+export const REFERENCE_MODELS = ['google/gemini-2.5-pro', 'gemini-2.5-pro'] as const;
+
+/** Reference-model predicate. Unknown/absent model ranks as candidate. */
+export function isReferenceModel(model: unknown): boolean {
+  return (REFERENCE_MODELS as readonly string[]).includes(String(model ?? ''));
+}
+
+/** 0 = reference, 1 = candidate — the middle key of THE RULE's ordering. */
+function modelTier(model: unknown): number {
+  return isReferenceModel(model) ? 0 : 1;
 }
 
 /**
@@ -129,7 +161,11 @@ export function canonicalBy<T extends CanonicalCandidate>(rows: T[], key: Identi
     const byEngine = compareEngineVersion(r.engine_version, cur.engine_version);
     if (byEngine > 0) { winner.set(identity, r); continue; }
     if (byEngine < 0) continue;
-    // Tie on engine version → latest audited_at wins.
+    // Tie on engine version → reference model outranks candidate (addendum H)…
+    const byTier = modelTier(cur.model) - modelTier(r.model);
+    if (byTier > 0) { winner.set(identity, r); continue; }
+    if (byTier < 0) continue;
+    // …then latest audited_at wins.
     if (auditedAtMs(r.audited_at) > auditedAtMs(cur.audited_at)) winner.set(identity, r);
   }
 
@@ -168,12 +204,20 @@ export function canonicalBy<T extends CanonicalCandidate>(rows: T[], key: Identi
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
 
 /**
- * The ranking tail of THE RULE as SQL: highest engine version first, ties broken by latest
- * `audited_at`. Goes after `ORDER BY <identity>,` in a DISTINCT ON, or use `canonicalDistinctOnSql`.
- * Assumes mini rows are already excluded by the caller's engine filter — see trap 2 above.
+ * The ranking tail of THE RULE as SQL: highest engine version first, ties broken by model tier
+ * (reference before candidate — derived from REFERENCE_MODELS, the single definition), then by
+ * latest `audited_at`. Goes after `ORDER BY <identity>,` in a DISTINCT ON, or use
+ * `canonicalDistinctOnSql`. Assumes mini rows are already excluded by the caller's engine filter —
+ * see trap 2 above.
+ *
+ * The tier CASE reads the base table's `model` column. It does NOT need to appear in the caller's
+ * select list: with DISTINCT ON, Postgres permits ORDER BY on unselected base-table columns
+ * (verified live, 31 Jul 2026) — the plain-DISTINCT restriction does not apply.
  */
 export const CANONICAL_RANK_SQL =
-  `string_to_array(split_part(engine_version, '/', 2), '.')::int[] DESC, audited_at DESC`;
+  `string_to_array(split_part(engine_version, '/', 2), '.')::int[] DESC, ` +
+  `CASE WHEN model IN (${REFERENCE_MODELS.map((m) => `'${m}'`).join(', ')}) THEN 0 ELSE 1 END, ` +
+  `audited_at DESC`;
 
 /**
  * A DISTINCT ON subquery selecting the canonical row per identity — the SQL twin of `canonicalBy`.

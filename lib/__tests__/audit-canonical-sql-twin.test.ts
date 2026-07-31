@@ -18,12 +18,12 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  canonicalByUid, canonicalDistinctOnSql, CANONICAL_RANK_SQL,
+  canonicalByUid, canonicalDistinctOnSql, CANONICAL_RANK_SQL, REFERENCE_MODELS, isReferenceModel,
 } from '../audit-canonical.ts';
 
-interface Row { uid: string | null; engine_version: string; audited_at: string; id: string }
+interface Row { uid: string | null; engine_version: string; audited_at: string; id: string; model?: string }
 
-/** The four traps of §7, in one fixture. */
+/** The four traps of §7 plus the model-tier trap of addendum H, in one fixture. */
 const FIXTURE: Row[] = [
   // 1. lexicographic trap — '0.81.9' sorts above '0.81.17' as text, but 17 > 9 numerically.
   { uid: 'n1', engine_version: 'opd-note-audit/0.81.9', audited_at: '2026-07-29T10:00:00Z', id: 'zzz' },
@@ -36,6 +36,19 @@ const FIXTURE: Row[] = [
   { uid: 'n3', engine_version: 'opd-note-audit/0.81.14', audited_at: '2026-07-10T10:00:00Z', id: 'ddd' },
   // 4. a null uid — canonicalByUid PASSES IT THROUGH rather than dropping it (silent data loss).
   { uid: null, engine_version: 'opd-note-audit/0.81.17', audited_at: '2026-07-28T10:00:00Z', id: 'eee' },
+  // 5. THE ADDENDUM H HAZARD, as observed live 31 Jul: a candidate-model backfill row carrying the
+  //    PLAIN production engine version, written AFTER the reference sweep. `-mini` never matches it;
+  //    without the tier, audited_at hands the note to the candidate. Reference must win.
+  { uid: 'n5', engine_version: 'opd-note-audit/0.81.17', audited_at: '2026-07-27T10:00:00Z', id: 'ref-old', model: 'gemini-2.5-pro' },
+  { uid: 'n5', engine_version: 'opd-note-audit/0.81.17', audited_at: '2026-07-31T19:16:00Z', id: 'cand-new', model: 'qwen2.5:14b' },
+  //    …and with the bridge-era model spelling too.
+  { uid: 'n6', engine_version: 'opd-note-audit/0.81.17', audited_at: '2026-07-27T10:00:00Z', id: 'ref-bridge', model: 'google/gemini-2.5-pro' },
+  { uid: 'n6', engine_version: 'opd-note-audit/0.81.17', audited_at: '2026-07-31T19:33:00Z', id: 'cand-new2', model: 'qwen2.5:14b' },
+  // 6. THE TIER IS A TIEBREAK, NOT A REORDER (addendum H §4): a candidate row at a genuinely NEWER
+  //    engine version still beats a reference row at an older one. Ranking reference above
+  //    candidate ACROSS versions is V's open question (§6), not this rule.
+  { uid: 'n7', engine_version: 'opd-note-audit/0.81.14', audited_at: '2026-07-31T10:00:00Z', id: 'ref-oldver', model: 'gemini-2.5-pro' },
+  { uid: 'n7', engine_version: 'opd-note-audit/0.81.17', audited_at: '2026-07-10T10:00:00Z', id: 'cand-newver', model: 'qwen2.5:14b' },
 ];
 
 /** What the caller's engine-family filter does before ranking: `engine_version = ANY(family)`.
@@ -50,9 +63,15 @@ const familyFiltered = FIXTURE.filter((r) => FAMILY.includes(r.engine_version));
 function sqlDistinctOn(rows: Row[]): Row[] {
   assert.match(CANONICAL_RANK_SQL, /string_to_array\(split_part\(engine_version, '\/', 2\), '\.'\)::int\[\] DESC/,
     'the fragment must rank by the component-wise numeric tail');
-  assert.match(CANONICAL_RANK_SQL, /audited_at DESC/, 'ties must break on latest audited_at');
+  assert.match(CANONICAL_RANK_SQL, /CASE WHEN model IN \(.+\) THEN 0 ELSE 1 END/,
+    'version ties must rank the model tier — reference before candidate (addendum H)');
+  for (const m of REFERENCE_MODELS) {
+    assert.ok(CANONICAL_RANK_SQL.includes(`'${m}'`), `the tier CASE must derive from REFERENCE_MODELS (missing '${m}')`);
+  }
+  assert.match(CANONICAL_RANK_SQL, /audited_at DESC/, 'remaining ties must break on latest audited_at');
 
   const tail = (v: string): number[] => v.split('/')[1].split('.').map(Number);   // string_to_array(...)::int[]
+  const tier = (r: Row): number => (isReferenceModel(r.model) ? 0 : 1);           // the CASE expression
   const cmpIntArray = (a: number[], b: number[]): number => {                      // Postgres int[] compare
     for (let i = 0; i < Math.max(a.length, b.length); i++) {
       const d = (a[i] ?? 0) - (b[i] ?? 0);
@@ -70,11 +89,12 @@ function sqlDistinctOn(rows: Row[]): Row[] {
   const winners = [...byUid.values()].map((group) =>
     [...group].sort((a, b) =>
       cmpIntArray(tail(b.engine_version), tail(a.engine_version))
+      || tier(a) - tier(b)
       || Date.parse(b.audited_at) - Date.parse(a.audited_at))[0]);
   return [...winners, ...nullUid];
 }
 
-test('SQL twin and canonicalByUid select the SAME row — all four traps', () => {
+test('SQL twin and canonicalByUid select the SAME row — all traps', () => {
   const ts = canonicalByUid(familyFiltered);
   const pg = sqlDistinctOn(familyFiltered);
 
@@ -95,6 +115,16 @@ test('SQL twin and canonicalByUid select the SAME row — all four traps', () =>
   // 4. the null-uid row survives on both sides — never silently dropped.
   assert.ok((ts as Row[]).some((r) => r.uid == null), 'canonicalByUid passes a null identity through');
   assert.ok(pg.some((r) => r.uid == null), 'the SQL twin must not drop it either');
+  // 5. addendum H: at the SAME engine version the reference row wins even though the candidate row
+  //    is newer — the exact live hazard (19:16/19:33 IST, 31 Jul). Remove the tier from either
+  //    expression and these four assertions fail on audited_at.
+  assert.equal(pick(ts as Row[], 'n5').id, 'ref-old');
+  assert.equal(pick(pg, 'n5').id, 'ref-old');
+  assert.equal(pick(ts as Row[], 'n6').id, 'ref-bridge');
+  assert.equal(pick(pg, 'n6').id, 'ref-bridge');
+  // 6. and the tier does NOT reorder across engine versions — newer version still wins outright.
+  assert.equal(pick(ts as Row[], 'n7').id, 'cand-newver');
+  assert.equal(pick(pg, 'n7').id, 'cand-newver');
 });
 
 test('the ordering is the one THE RULE states — reverting it fails this test', () => {
@@ -103,6 +133,11 @@ test('the ordering is the one THE RULE states — reverting it fails this test',
   assert.ok(!/note_date/.test(CANONICAL_RANK_SQL), 'note_date cannot rank re-audits of the same note');
   assert.ok(!/\bid DESC/.test(CANONICAL_RANK_SQL), 'a UUID tiebreak is arbitrary, not canonical');
   assert.ok(!/engine_version DESC/.test(CANONICAL_RANK_SQL), 'a bare lexicographic sort ranks 0.81.9 above 0.81.17');
+  // Addendum H: the tier sits BETWEEN the version rank and the audited_at tiebreak — dropping it,
+  // or moving it ahead of the version rank (the §6 policy question, not this build), fails here.
+  assert.match(CANONICAL_RANK_SQL,
+    /::int\[\] DESC, CASE WHEN model IN \(.+\) THEN 0 ELSE 1 END, audited_at DESC$/,
+    'the model tier must be the middle key: version, then tier, then audited_at');
 });
 
 test('§6 — SCAN lib/ and app/: nobody hand-writes a note-identity dedup on opd_note_audits', () => {

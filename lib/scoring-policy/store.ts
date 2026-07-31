@@ -392,7 +392,7 @@ function numOrNull(v: unknown): number | null {
 export async function ipdPreviewCohort(): Promise<PreviewCohortRow[]> {
   try {
     const raw = await run(
-      `SELECT id, document_id, engine_version, report, completeness_pct, care_value_index, band,
+      `SELECT id, document_id, engine_version, model, report, completeness_pct, care_value_index, band,
               score_appropriateness, score_efficiency, score_safety, score_cost,
               score_documentation, score_patient_centred,
               to_char(audited_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS audited_at
