@@ -295,9 +295,11 @@ test('THE CATCH BLOCK rethrows ONLY for eval; the non-eval return is byte-identi
 test('the production defaultGenerate params are byte-identical — no eval change leaked in', () => {
   const start = SRC.indexOf('async function defaultGenerate(');
   const block = SRC.slice(start, SRC.indexOf('/** Reuse the stored LLM half', start));
-  // line 604's `content || ''` on the governedChat path — explicitly on the untouched list
-  assert.ok(block.includes("const r = await governedChat(traceId, 'opd_audit_analyze', params, { gemini: geminiModel, promptRef: 'opd-note-audit-core/OPD_AUDIT_SYSTEM' });\n  return r.choices?.[0]?.message?.content || '';"),
-    "the governedChat return and its `content || ''` must be unchanged");
+  // line 604's `content || ''` on the governedChat path — explicitly on the untouched list.
+  // D-1 (31 Jul): the call gained the audit's per-request ceiling (timeoutMs) — params, promptRef
+  // and the `content || ''` return are unchanged; only how long we wait changed.
+  assert.ok(block.includes("const r = await governedChat(traceId, 'opd_audit_analyze', params, { gemini: geminiModel, promptRef: 'opd-note-audit-core/OPD_AUDIT_SYSTEM', timeoutMs: LLM_AUDIT_TIMEOUT_MS });\n  return r.choices?.[0]?.message?.content || '';"),
+    "the governedChat return and its `content || ''` must be unchanged (plus the D-1 audit ceiling)");
   // the production params object, verbatim
   assert.ok(block.includes("temperature: onGemini ? 0 : (isReasoning ? 0 : 0.2),"));
   assert.ok(block.includes("max_tokens: isReasoning ? 8192 : 2200,"));

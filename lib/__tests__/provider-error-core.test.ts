@@ -158,8 +158,9 @@ test('§5 superseded for OpenRouter ONLY by addendum F v2: retry exists, but ONL
   assert.ok(!LLM.slice(LLM.indexOf('if (!geminiModel || !geminiConfigured())')).includes('openrouterCreateWithRetry'),
     'the Gemini branch gained no retry — only the bridge transport did');
   // The fallback call count is unchanged: each provider branch still makes exactly ONE fallback
-  // llm.chat call on error, and behaviour on success is byte-identical.
-  assert.equal((LLM.match(/return llm\.chat\.completions\.create\(params\);/g) || []).length, 3, 'the three existing fallback/default sites, no more');
+  // llm.chat call on error, and behaviour on success is byte-identical. (D-1: the sites carry the
+  // per-request ceiling now — same three sites, no more.)
+  assert.equal((LLM.match(/return llm\.chat\.completions\.create\(params, reqOpts\);/g) || []).length, 3, 'the three existing fallback/default sites, no more');
 });
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════

@@ -6,9 +6,33 @@ import {
 } from './provider-error-core';
 import { openrouterCreateWithRetry } from './openrouter-retry';
 
+// ─── D-1 (Right Care reliability §3, 31 Jul 2026): bound every provider call ────────────────────
+/** Per-call ceiling for a provider request. The SDK default is 10 minutes with 2 retries,
+ *  which exceeds every serverless box we run in and can triple wall time on a stall.
+ *  Override per call site — see LLM_AUDIT_TIMEOUT_MS. Pure resolvers exported for tests
+ *  (module-level env reads are untestable in-process — the resolveEnvRerankBackend pattern). */
+export function resolveLlmTimeoutMs(raw: string | undefined, fallback: number): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+/** maxRetries: 0 is deliberate (PRD §3.1): a retry inside a bounded outer budget spends the budget
+ *  twice for the same answer, and the soft-fail paths already degrade gracefully. Failing fast
+ *  beats retrying blind. A non-numeric env value falls back to 0, never NaN. */
+export function resolveLlmMaxRetries(raw: string | undefined): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
+}
+export const LLM_CALL_TIMEOUT_MS = resolveLlmTimeoutMs(process.env.LLM_CALL_TIMEOUT_MS, 90_000);
+export const LLM_MAX_RETRIES = resolveLlmMaxRetries(process.env.LLM_MAX_RETRIES);
+/** The audit override, applied AT THE AUDIT CALL SITES via governedChat's timeoutMs (per-request
+ *  { timeout } — one client per provider, the override visible where it is used). The audit runs
+ *  p50 267 s / p75 425 s per note; 600 s clears p75 with margin and sits under the 800 s box. A
+ *  single global 90 s ceiling would break the engine. */
+export const LLM_AUDIT_TIMEOUT_MS = resolveLlmTimeoutMs(process.env.LLM_AUDIT_TIMEOUT_MS, 600_000);
+
 const baseURL = `${process.env.OLLAMA_BASE_URL!}/v1`;
 
-export const llm = new OpenAI({ baseURL, apiKey: 'ollama' });
+export const llm = new OpenAI({ baseURL, apiKey: 'ollama', timeout: LLM_CALL_TIMEOUT_MS, maxRetries: LLM_MAX_RETRIES });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Vertex AI (Gemini) — hybrid backend. The local Ollama `llm` above stays the
@@ -84,7 +108,9 @@ export function openrouterConfigured(): boolean {
 
 /** OpenAI-SDK client bound to OpenRouter. Cheap to construct; the key rides the Authorization header. */
 export function openrouterChatClient(): OpenAI {
-  return new OpenAI({ baseURL: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1', apiKey: process.env.OPENROUTER_API_KEY });
+  // D-1: bounded at construction. openrouterCreateWithRetry's per-request opts (110s deadline,
+  // maxRetries 0) still override these on the wrapped path — this bounds the bare/streaming calls.
+  return new OpenAI({ baseURL: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1', apiKey: process.env.OPENROUTER_API_KEY, timeout: LLM_CALL_TIMEOUT_MS, maxRetries: LLM_MAX_RETRIES });
 }
 
 /** BRIDGE (30 Jul 2026): route Gemini through OpenRouter while aiplatform.googleapis.com is
@@ -184,7 +210,9 @@ export function vertexModelName(model: string): string {
  */
 export async function getGeminiChatClient(): Promise<OpenAI> {
   const token = await getVertexAccessToken();
-  return new OpenAI({ baseURL: vertexBaseURL(), apiKey: token });
+  // D-1: bounded at construction (the Vertex transport had NO ceiling at all — the same class
+  // doc-transport-core fixed for document reads). Audit call sites override per-request.
+  return new OpenAI({ baseURL: vertexBaseURL(), apiKey: token, timeout: LLM_CALL_TIMEOUT_MS, maxRetries: LLM_MAX_RETRIES });
 }
 
 /**
@@ -229,7 +257,10 @@ export function geminiUtilityModel(): string | undefined {
  * no geminiModel it is byte-identical to `llm.chat.completions.create(params)`.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function chatWithFallback(params: any, geminiModel?: string, openrouterModel?: string): Promise<any> {
+export async function chatWithFallback(params: any, geminiModel?: string, openrouterModel?: string, timeoutMs?: number): Promise<any> {
+  // D-1: an audit-class call site passes its own ceiling (per-request { timeout } — one client per
+  // provider, the override visible here). Absent ⇒ undefined ⇒ the client-level bound applies.
+  const reqOpts = timeoutMs ? { timeout: timeoutMs } : undefined;
   // OpenRouter takes precedence when an explicit slug is given (the citation critic). Non-thinking by
   // default (bounded verdict); falls back to the local Ollama model in params.model on any error.
   // BRIDGE (30 Jul 2026): with GEMINI_VIA_OPENROUTER=1 a gemini model resolves to its OpenRouter
@@ -290,12 +321,12 @@ export async function chatWithFallback(params: any, geminiModel?: string, openro
       });
       console.error(`[provider-fallback] openrouter ${orModel} failed → ollama fallback:`, JSON.stringify(payload));
       await emitProviderErrorTrace(payload);
-      return llm.chat.completions.create(params);
+      return llm.chat.completions.create(params, reqOpts);
     }
     return res;
   }
   if (!geminiModel || !geminiConfigured()) {
-    return llm.chat.completions.create(params);
+    return llm.chat.completions.create(params, reqOpts);
   }
   beginProviderCall('gemini');
   try {
@@ -305,7 +336,7 @@ export async function chatWithFallback(params: any, geminiModel?: string, openro
     const gParams = { ...rest, model: vertexModelName(geminiModel), max_tokens: baseMax + 8192 };
     const gemini = await getGeminiChatClient();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const res = await gemini.chat.completions.create(gParams as any);
+    const res = await gemini.chat.completions.create(gParams as any, reqOpts);
     endProviderCall('gemini');
     return res;
   } catch (e) {
@@ -324,7 +355,7 @@ export async function chatWithFallback(params: any, geminiModel?: string, openro
     });
     console.error(`[provider-fallback] gemini ${geminiModel} failed → ollama fallback:`, JSON.stringify(payload));
     await emitProviderErrorTrace(payload);
-    return llm.chat.completions.create(params);
+    return llm.chat.completions.create(params, reqOpts);
   }
 }
 

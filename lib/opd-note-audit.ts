@@ -10,7 +10,7 @@
 import { retrieve, resolveNormativeSources, type RetrieveOptions } from './retrieve';
 import { hitsToSources, buildCitedContext, type CiteHit, type Source } from './citations-core';
 import { startTrace, logEvent, finishTrace, governedChat, setTraceQuestionPreview } from './trace';
-import { geminiModelFor, geminiUtilityModel, TEXT_MODEL, MINI_MODEL, AUDIT_LLM_SEED } from './llm';
+import { geminiModelFor, geminiUtilityModel, TEXT_MODEL, MINI_MODEL, AUDIT_LLM_SEED, LLM_AUDIT_TIMEOUT_MS } from './llm';
 import { rowToOpdCase, opdCaseText, type OpdKeys, type OpdMed, type DeidOpdCase } from './opd-ingest-core';
 import {
   opdCompleteness, prescribingChecks, parseOpdAnalysis, stampFindingIdentity,
@@ -964,7 +964,10 @@ async function defaultGenerate(traceId: string | undefined, system: string, user
   };
   // Governed envelope (Stage 4): OPD-audit vertical fingerprint — the system prompt here is
   // always OPD_AUDIT_SYSTEM (see the single call site).
-  const r = await governedChat(traceId, 'opd_audit_analyze', params, { gemini: geminiModel, promptRef: 'opd-note-audit-core/OPD_AUDIT_SYSTEM' });
+  // D-1 (31 Jul 2026): the audit's provider call carries ITS OWN ceiling rather than inheriting the
+  // 90 s LLM_CALL_TIMEOUT_MS client default — the audit runs p50 267 s / p75 425 s per note, and a
+  // 90 s cap here would break the engine. Per-request { timeout } via governedChat's timeoutMs.
+  const r = await governedChat(traceId, 'opd_audit_analyze', params, { gemini: geminiModel, promptRef: 'opd-note-audit-core/OPD_AUDIT_SYSTEM', timeoutMs: LLM_AUDIT_TIMEOUT_MS });
   return r.choices?.[0]?.message?.content || '';
 }
 

@@ -152,9 +152,11 @@ test('both transports derive the slug centrally; a caller-supplied openrouter sl
 });
 
 test('the Ollama last-leg fallback is untouched in both transports', () => {
-  assert.equal((LLM.match(/return llm\.chat\.completions\.create\(params\);/g) || []).length, 3, 'chatWithFallback: both provider catches + the default path');
-  assert.ok(TRACE.includes("runOllamaFallback('openrouter', servedModel, oe, () => llm.chat.completions.create(params))"));
-  assert.ok(TRACE.includes("runOllamaFallback('gemini', servedModel, ge, () => llm.chat.completions.create(params))"));
+  // D-1 (31 Jul): the fallback calls now carry the per-request ceiling (reqOpts) — same sites,
+  // same count, same params; only how long we wait changed.
+  assert.equal((LLM.match(/return llm\.chat\.completions\.create\(params, reqOpts\);/g) || []).length, 3, 'chatWithFallback: both provider catches + the default path');
+  assert.ok(TRACE.includes("runOllamaFallback('openrouter', servedModel, oe, () => llm.chat.completions.create(params, reqOpts))"));
+  assert.ok(TRACE.includes("runOllamaFallback('gemini', servedModel, ge, () => llm.chat.completions.create(params, reqOpts))"));
 });
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════

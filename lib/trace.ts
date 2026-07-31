@@ -219,10 +219,14 @@ export async function tracedChat(
   // promptRef (Stage 1): a Stage-0 registry id — resolves version+hash via
   // promptFingerprint and stamps the envelope columns on this call's events.
   // Unset ⇒ only the call facts (model/provider/gen_params/tokens) are written.
-  opts?: { gemini?: string; openrouter?: string; promptRef?: string },
+  // timeoutMs (D-1, 31 Jul 2026): an audit-class call site passes its own per-request ceiling
+  // ({ timeout } in the SDK request options — one client per provider, the override visible at
+  // the call site). Absent ⇒ undefined ⇒ the client-level LLM_CALL_TIMEOUT_MS bound applies.
+  opts?: { gemini?: string; openrouter?: string; promptRef?: string; timeoutMs?: number },
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const t0 = Date.now();
+  const reqOpts = opts?.timeoutMs ? { timeout: opts.timeoutMs } : undefined;
 
   // Provider precedence: OpenRouter (explicit slug) → Vertex Gemini → local Ollama. Each keeps the
   // local Ollama model in params.model as its on-error fallback.
@@ -333,7 +337,7 @@ export async function tracedChat(
         provider = 'ollama';
         actualModel = (params as { model?: string }).model;
         // §3: keep the fallback, but if IT also throws, surface BOTH errors (not just Ollama's 404).
-        result = await runOllamaFallback('openrouter', servedModel, oe, () => llm.chat.completions.create(params));
+        result = await runOllamaFallback('openrouter', servedModel, oe, () => llm.chat.completions.create(params, reqOpts));
       }
     } else if (useGemini) {
       beginProviderCall('gemini');
@@ -362,12 +366,12 @@ export async function tracedChat(
         const gemini = await getGeminiChatClient();
         try {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          result = await gemini.chat.completions.create(gParams as any);
+          result = await gemini.chat.completions.create(gParams as any, reqOpts);
         } catch (soErr) {
           if (wantUsage && gParams.stream_options) {
             delete gParams.stream_options;
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            result = await gemini.chat.completions.create(gParams as any);
+            result = await gemini.chat.completions.create(gParams as any, reqOpts);
           } else {
             throw soErr;
           }
@@ -397,10 +401,10 @@ export async function tracedChat(
         provider = 'ollama';
         actualModel = (params as { model?: string }).model;
         // §3: keep the fallback, but if IT also throws, surface BOTH errors (not just Ollama's 404).
-        result = await runOllamaFallback('gemini', servedModel, ge, () => llm.chat.completions.create(params));
+        result = await runOllamaFallback('gemini', servedModel, ge, () => llm.chat.completions.create(params, reqOpts));
       }
     } else {
-      result = await llm.chat.completions.create(params);
+      result = await llm.chat.completions.create(params, reqOpts);
     }
   } catch (e) {
     await logEvent(traceId, 'llm_error', label, {
@@ -565,11 +569,11 @@ export async function governedChat(
   label: string,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   params: any,
-  opts?: { gemini?: string; openrouter?: string; promptRef?: string },
+  opts?: { gemini?: string; openrouter?: string; promptRef?: string; timeoutMs?: number },
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   if (traceId) return tracedChat(traceId, label, params, opts);
-  return chatWithFallback(params, opts?.gemini, opts?.openrouter);
+  return chatWithFallback(params, opts?.gemini, opts?.openrouter, opts?.timeoutMs);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
