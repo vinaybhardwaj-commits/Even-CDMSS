@@ -152,13 +152,14 @@ export async function buildPatientSummary(req: SummaryRequest): Promise<BuildRes
   //     stage-1 state (never discards it) and flags the package degraded instead of throwing.
   //     extractionMethod stays 'llm' on every merged finding — never flattened to look
   //     deterministic (§2.7.1).
-  let stateLlm: { enabled: boolean; rejected: Array<{ concept: string; rawText: string; field: string }> } | null = null;
+  type SpanRef = Array<{ concept: string; rawText: string; field: string }>;
+  let stateLlm: { enabled: boolean; rejected: SpanRef; polarityMarked: SpanRef } | null = null;
   let stateLlmFailed = false;
   if (stateLlmEnabled() && built) {
     try {
       const llm = await normalizeWithLlm(built.input, normaliseChat(envelope.trace_id));
       clinicalState = mergeLlmFindings(built.state, llm);
-      stateLlm = { enabled: true, rejected: llm.rejected };
+      stateLlm = { enabled: true, rejected: llm.rejected, polarityMarked: llm.polarityMarked };
     } catch {
       stateLlmFailed = true;
     }

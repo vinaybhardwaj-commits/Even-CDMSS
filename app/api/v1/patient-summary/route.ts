@@ -27,6 +27,17 @@ export const maxDuration = 800;
  *     ON; set '0' to disable). rejected[] lists model assertions whose claimed span was not in
  *     the source — discarded, surfaced as a hallucination meter.
  *
+ * PER-FINDING RENDERING OBLIGATION — `polaritySuspect` (31 Jul 2026). A finding inside
+ * state.clinical_state may carry `polaritySuspect: true`, meaning its source span READS AS A
+ * NEGATION while the model labelled it 'present' (e.g. "no PAH" arriving as a positive).
+ * envelope.state_llm.polarity_marked_count is the per-package total.
+ *   · Pulse MUST render a caution on such a finding and MUST NOT suppress, filter or reorder it.
+ *     The identical detection was previously used to DROP these findings and removed "absent
+ *     distal pulses" and "absent bowel sounds" — cannot-miss signs that trip the same cue. The
+ *     mark exists because the deletion was unsafe; re-implementing the deletion in the client
+ *     reintroduces exactly that harm.
+ *   · The absence of the mark is NOT a guarantee of correct polarity. It is a prompt to check.
+ *
  * ⚠️ AUTH IS V1/PILOT-SCOPED. This reuses the shared CRON_SECRET, by decision. That credential is
  * shared with every cron and admin endpoint in the system, so it carries no per-consumer identity,
  * cannot be rotated for Pulse alone, and cannot be revoked without breaking internal jobs.

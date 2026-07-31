@@ -139,6 +139,15 @@ export interface ClinicalFinding {
   temporality?: Temporality;
   provenance: Provenance;
   ext?: SurfaceExtension;
+  /**
+   * The source span reads as a negation while the model labelled it 'present'. NOT A VERDICT —
+   * "absent distal pulses" and "absent bowel sounds" are genuine positive signs that trip the same
+   * cue, and both are cannot-miss findings in red-flag cases. Consumers must render a CAUTION and
+   * must never suppress, filter or reorder on this field: an earlier build used the identical
+   * detection to DROP these findings and lost exactly those two signs, which is why this is a mark
+   * and not a gate. Absent ⇒ the cue did not fire, which is not evidence the polarity is right.
+   */
+  polaritySuspect?: true;
 }
 
 export interface Demographics {
@@ -278,6 +287,7 @@ export const zClinicalFinding = z.object({
   temporality: zTemporality.optional(),
   provenance: zProvenance,
   ext: zSurfaceExtension.optional(),
+  polaritySuspect: z.literal(true).optional(),
 }).strict();
 
 // Foreign shapes mirrored permissively (passthrough: owning modules may add fields).

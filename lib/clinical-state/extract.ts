@@ -199,6 +199,47 @@ export interface LlmNormaliseResult {
   accepted: ClinicalFinding[];
   /** Findings whose rawText was NOT found verbatim in the named field — rejected, surfaced for the trace. */
   rejected: Array<{ concept: string; rawText: string; field: string }>;
+  /** Accepted findings carrying `polaritySuspect` — MARKED, never removed. Distinct from
+   *  `rejected`: that is "the model invented text" and those findings are gone; this is "the span
+   *  reads as a negation" and those findings are present in `accepted`. Never merge the two. */
+  polarityMarked: Array<{ concept: string; rawText: string; field: string }>;
+}
+
+// ── Polarity marker (31 Jul 2026) ─────────────────────────────────────────────────────────────
+//
+// Span verification proves PROVENANCE, not POLARITY: a negated span copied faithfully and
+// labelled 'present' passes it cleanly (observed live: "No obvious regional wall motion
+// abnormalities" / "no PAH" as status:'present'). And the deterministic pass cannot be relied on
+// to contradict it — NEGATION_RE caps the captured concept at 41 chars, so long negations produce
+// no competing 'absent' finding and the stages disagree in silence.
+//
+// ⚠️ THIS MARKS, IT DOES NOT FILTER — AND THE HISTORY IS THE REASON. An earlier build used this
+// exact detection to REJECT the finding. Measured over the ddx-case-bank/1.0 and
+// right-care-check-gold/2.0 banks, 8 drops across 6 cases: 5 correct, but 3 HARMFUL and all 3 in
+// red-flag cases whose cannot-miss diagnosis depended on the dropped sign — `absent distal pulses`
+// (D18, acute limb ischaemia), `absent bowel sounds` (D19, perforated viscus), `not using
+// contraception` (D16, ruptured ectopic). `absent` and `negative` are adjectival heads of
+// genuinely PRESENT abnormal signs in clinical English, not negation operators like `no`/`denies`,
+// and no cue list can separate the two without understanding the concept.
+//
+// So the detection is unchanged and the CONSEQUENCE is inverted. A false mark costs a line of
+// noise; a false deletion cost a diagnosis. Flipping is likewise still out: flipping
+// "regional wall motion abnormalities"→absent would be right, but flipping "normal wall
+// motion"→absent asserts the opposite of the record.
+//
+// HEAD-GOVERNED only: a cue at the start of the span, or immediately to its left in the source
+// field (the cue often sits just outside rawText). A cue elsewhere in the span — "pain not
+// relieved by antacids" — modifies a qualifier, not the head concept, and must not fire.
+// Deliberately excluded: "non" (a "non-productive cough" is a present finding) and "r/o"
+// ("r/o MI" means suspected, not excluded).
+const POLARITY_HEAD_RE = /^(?:no|not|denies|denied|denying|without|absent|negative|free of|ruled out)\b/i;
+const POLARITY_LEFT_RE = /\b(?:no|not|denies|denied|denying|without|absent|negative for|free of|ruled out)\s+(?:[a-z][a-z-]*\s+){0,2}$/i;
+
+/** True when the span reads as a negation while carrying status 'present'. */
+function negationGoverned(rawText: string, sourceField: string, offset: number): boolean {
+  if (POLARITY_HEAD_RE.test(rawText.trim())) return true;
+  const left = sourceField.slice(Math.max(0, offset - 40), offset);
+  return POLARITY_LEFT_RE.test(left);
 }
 
 function parseLooseJson(s: string): unknown {
@@ -221,7 +262,8 @@ export async function normalizeWithLlm(input: ExtractInput, chat: ChatFn): Promi
   const parsed = parseLooseJson(raw) as { findings?: unknown };
   const accepted: ClinicalFinding[] = [];
   const rejected: LlmNormaliseResult['rejected'] = [];
-  if (!Array.isArray(parsed.findings)) return { accepted, rejected };
+  const polarityMarked: LlmNormaliseResult['polarityMarked'] = [];
+  if (!Array.isArray(parsed.findings)) return { accepted, rejected, polarityMarked };
 
   const byField = new Map(fields);
   for (const f of parsed.findings) {
@@ -239,6 +281,11 @@ export async function normalizeWithLlm(input: ExtractInput, chat: ChatFn): Promi
     const offset = src.indexOf(rawText);
     if (offset < 0) { rejected.push({ concept, rawText, field: fieldName }); continue; }
 
+    // POLARITY MARKER — annotate, never remove. 'present' only; absent/historical/resolved already
+    // carry the negation in their status. The finding is accepted in full either way.
+    const polaritySuspect = status === 'present' && negationGoverned(rawText, src, offset);
+    if (polaritySuspect) polarityMarked.push({ concept, rawText, field: fieldName });
+
     const t: Temporality = {};
     if (typeof o.duration === 'string' && o.duration) t.duration = o.duration;
     if (typeof o.onset === 'string' && o.onset) t.onset = o.onset;
@@ -254,9 +301,10 @@ export async function normalizeWithLlm(input: ExtractInput, chat: ChatFn): Promi
         sourceField: fieldName, rawText, startOffset: offset, endOffset: offset + rawText.length,
         extractionMethod: 'llm', confidence: 0.7,
       },
+      ...(polaritySuspect ? { polaritySuspect: true as const } : {}),
     });
   }
-  return { accepted, rejected };
+  return { accepted, rejected, polarityMarked };
 }
 
 /** Merge LLM findings into a stage-1 state: positives/negatives grow; a checklist 'unknown'

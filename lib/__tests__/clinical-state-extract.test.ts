@@ -167,6 +167,88 @@ test('mergeLlmFindings: resolves checklist unknowns, dedupes, sorts absent into 
   assert.deepEqual(validateClinicalState(merged), merged);
 });
 
+// ── Stage 2 — polarity MARKER (31 Jul 2026): annotate, never remove ──
+
+test('polarity MARKER: a negation-headed span labelled present is MARKED and KEPT — the live case', async () => {
+  const input: ExtractInput = {
+    surface: 'ddx',
+    fields: { reportImpressions: 'Normal LV systolic function; No obvious regional wall motion abnormalities; no PAH' },
+  };
+  const fake = async () => JSON.stringify({
+    findings: [
+      { concept: 'No obvious regional wall motion abnormalities', status: 'present', field: 'reportImpressions', rawText: 'No obvious regional wall motion abnormalities' },
+      { concept: 'No PAH', status: 'present', field: 'reportImpressions', rawText: 'no PAH' },
+      { concept: 'Normal LV systolic function', status: 'present', field: 'reportImpressions', rawText: 'Normal LV systolic function' },
+    ],
+  });
+  const { accepted, rejected, polarityMarked } = await normalizeWithLlm(input, fake);
+  // ALL THREE SURVIVE — nothing is dropped. That is the whole change.
+  assert.equal(accepted.length, 3, 'marking is behaviourally inert: no finding is removed');
+  const marked = accepted.filter((f) => f.polaritySuspect === true).map((f) => f.concept);
+  assert.deepEqual(marked, ['No obvious regional wall motion abnormalities', 'No PAH']);
+  assert.equal(accepted.find((f) => f.concept === 'Normal LV systolic function')!.polaritySuspect, undefined);
+  assert.deepEqual(polarityMarked.map((p) => p.concept), ['No obvious regional wall motion abnormalities', 'No PAH']);
+  assert.deepEqual(rejected, [], 'a mark is NOT a rejection — the two meters never merge');
+});
+
+test('polarity MARKER: the bank cases that killed the FILTER are kept, and merely annotated', async () => {
+  // These are the three red-flag DDx signs the reject-version deleted. Under the marker they are
+  // PRESENT — annotated at worst. This test is the reason the design changed.
+  const cases: Array<[string, string]> = [
+    ['absent distal pulses', 'Cool, mottled leg; absent distal pulses; reduced sensation.'],
+    ['absent bowel sounds', 'Rigid, board-like abdomen with rebound; absent bowel sounds.'],
+    ['not using contraception', 'Last menstrual period ~7 weeks ago; not using contraception.'],
+  ];
+  for (const [span, exam] of cases) {
+    const r = await normalizeWithLlm(
+      { surface: 'ddx', fields: { exam } },
+      async () => JSON.stringify({ findings: [{ concept: span, status: 'present', field: 'exam', rawText: span }] }),
+    );
+    assert.equal(r.accepted.length, 1, `"${span}" must SURVIVE — deleting it lost a cannot-miss sign`);
+    assert.equal(r.accepted[0].concept, span);
+    assert.equal(r.rejected.length, 0);
+  }
+});
+
+test('polarity MARKER: cue immediately LEFT of the span marks too', async () => {
+  const input: ExtractInput = { surface: 'ddx', fields: { history: 'headache. no evidence of focal deficit today' } };
+  const fake = async () => JSON.stringify({
+    findings: [{ concept: 'focal deficit', status: 'present', field: 'history', rawText: 'focal deficit' }],
+  });
+  const r = await normalizeWithLlm(input, fake);
+  assert.equal(r.accepted.length, 1, 'kept');
+  assert.equal(r.accepted[0].polaritySuspect, true, 'and marked');
+});
+
+test('polarity MARKER: head-governed ONLY — a mid-span cue is a modifier, and absent/historical are untouched', async () => {
+  const input: ExtractInput = {
+    surface: 'ddx',
+    fields: { history: 'epigastric pain not relieved by antacids. non-productive cough. No fever.' },
+  };
+  const fake = async () => JSON.stringify({
+    findings: [
+      { concept: 'pain not relieved by antacids', status: 'present', field: 'history', rawText: 'pain not relieved by antacids' },
+      { concept: 'non-productive cough', status: 'present', field: 'history', rawText: 'non-productive cough' },
+      { concept: 'fever', status: 'absent', field: 'history', rawText: 'No fever' },
+    ],
+  });
+  const r = await normalizeWithLlm(input, fake);
+  assert.equal(r.accepted.length, 3);
+  assert.equal(r.polarityMarked.length, 0, 'no mark: mid-span cue, non-, and a correctly-absent status');
+  assert.ok(r.accepted.every((f) => f.polaritySuspect === undefined));
+});
+
+test('polarity MARKER: a marked finding still validates against the .strict() schema', async () => {
+  const s0 = deterministicExtract({ surface: 'ddx', fields: { history: 'headache' } });
+  const r = await normalizeWithLlm(
+    { surface: 'ddx', fields: { exam: 'no murmur' } },
+    async () => JSON.stringify({ findings: [{ concept: 'murmur', status: 'present', field: 'exam', rawText: 'no murmur' }] }),
+  );
+  const merged = mergeLlmFindings(s0, r);
+  assert.ok(merged.positives.some((f) => f.polaritySuspect === true));
+  assert.deepEqual(validateClinicalState(merged), merged, 'zod .strict() accepts the new field');
+});
+
 // ── from-primitives wiring ──
 
 const PARSED: ParsedInvestigations = {

@@ -267,7 +267,7 @@ test('ungrounded: citation_coverage_pct === 0 flips envelope.ungrounded — a ze
 
 test('state_llm: rejected[] is surfaced in the envelope — the hallucination meter is not discarded', () => {
   const rejected = [{ concept: 'fever', rawText: 'high grade fever', field: 'diagnoses' }];
-  const on = assemblePackage({ ...base, stateLlm: { enabled: true, rejected } });
+  const on = assemblePackage({ ...base, stateLlm: { enabled: true, rejected, polarityMarked: [] } });
   assert.equal(on.envelope.state_llm.enabled, true);
   assert.equal(on.envelope.state_llm.rejected_count, 1);
   assert.deepEqual(on.envelope.state_llm.rejected, rejected);

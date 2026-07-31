@@ -108,18 +108,23 @@ export interface SummaryEnvelope {
    * schema boundary), and surfaced here because the rejection rate is a free hallucination meter.
    * `rejected_count` is null when the stage did not run (flag off, or no stage-1 state to enrich).
    *
-   * ⚠️ KNOWN GAP (31 Jul 2026): span verification proves PROVENANCE, NOT POLARITY. A negated span
+   * POLARITY (31 Jul 2026): span verification proves PROVENANCE, NOT POLARITY. A negated span
    * copied verbatim and labelled 'present' passes it cleanly — observed live, e.g. "no PAH" and
-   * "No obvious regional wall motion abnormalities" arriving as positives. A cue-based polarity
-   * guard was built and REJECTED on bank evidence (it dropped "absent distal pulses" and "absent
-   * bowel sounds" — cannot-miss signs in red-flag DDx cases). Unresolved; V's call. Until then
-   * `state_conflicts` below is the only automatic signal, and it only fires when the deterministic
-   * stage produced a competing 'absent'.
+   * "No obvious regional wall motion abnormalities" arriving as positives. Such findings are now
+   * MARKED with `polaritySuspect` on the finding itself and counted here as
+   * `polarity_marked_count`. They are NOT removed: a cue-based guard using the identical detection
+   * was built and rejected on bank evidence, because it dropped "absent distal pulses" and "absent
+   * bowel sounds" — cannot-miss signs in red-flag cases that trip the same cue. Pulse must render
+   * a caution on a marked finding and must never suppress it. An unmarked finding is not
+   * thereby verified; the mark is a prompt to check, not a verdict.
    */
   state_llm: {
     enabled: boolean;
     rejected_count: number | null;
     rejected: Array<{ concept: string; rawText: string; field: string }>;
+    /** Accepted findings carrying `polaritySuspect`. Never merged with `rejected` — a rejected
+     *  finding is GONE (fabricated span); a marked one is PRESENT and annotated. */
+    polarity_marked_count: number | null;
   };
   /**
    * Concepts appearing in BOTH state.clinical_state.positives and .negatives (normalised exact
@@ -226,6 +231,7 @@ export interface AssembleInput {
   stateLlm?: {
     enabled: boolean;
     rejected: Array<{ concept: string; rawText: string; field: string }>;
+    polarityMarked: Array<{ concept: string; rawText: string; field: string }>;
   } | null;
 }
 
@@ -281,6 +287,7 @@ export function assemblePackage(i: AssembleInput): PatientSummaryPackage {
         enabled: i.stateLlm?.enabled ?? false,
         rejected_count: i.stateLlm ? i.stateLlm.rejected.length : null,
         rejected: i.stateLlm?.rejected ?? [],
+        polarity_marked_count: i.stateLlm ? i.stateLlm.polarityMarked.length : null,
       },
       state_conflicts: (() => {
         const concepts = findStateConflicts(i.clinicalState);
