@@ -49,16 +49,19 @@ export async function loadRecentAuditRows(days = 90): Promise<AuditRowLite[]> {
   const rows = await sql2(
     // §5.2 (addendum E) — THE RULE, not newest-by-time. Measured, this picked the same row as the
     // canonical rule on all 7,552 duplicated notes, but by coincidence rather than construction.
-    // CHOSEN FILTER: `NOT LIKE '%-mini'` rather than the engine family. This read has never had an
-    // engine filter and mines a 90-day corpus; the family form would silently drop every note only
-    // ever audited at a pre-0.81 engine (~2,533 today), changing what learning sees. The mini
-    // exclusion is the minimum that makes the int[] cast safe — a `-mini` tail raised
-    // `invalid input syntax for type integer: "2-mini"` on a query of exactly this shape.
+    // CHOSEN FILTER: the SHAPE of the version tail, not the engine family. This read has never had
+    // an engine filter and mines a wide corpus; the family form would silently drop every note only
+    // ever audited at a pre-0.81 engine (~2,533 today), changing what learning sees. The shape test
+    // is exactly what makes the int[] cast in CANONICAL_RANK_SQL safe BY CONSTRUCTION — the earlier
+    // `NOT LIKE '%-mini'` enumerated one known bad suffix and let `opd-note-audit/0.5-verify`
+    // (Mar 2024, measured live) through to raise `invalid input syntax for type integer` on any
+    // caller passing a window wide enough to reach it.
     canonicalDistinctOnSql({
       table: 'opd_note_audits',
       identity: 'uid',
       cols: 'id, doctor_uid, consult_type, findings, sources',
-      where: `app_source = $1 AND excluded_reason IS NULL AND engine_version NOT LIKE '%-mini'
+      where: `app_source = $1 AND excluded_reason IS NULL
+        AND split_part(engine_version, '/', 2) ~ '^[0-9]+(\\.[0-9]+)*$'
         AND note_date >= NOW() - ($2 || ' days')::interval`,
     }),
     [APP, String(Math.max(1, Math.min(365, days)))],

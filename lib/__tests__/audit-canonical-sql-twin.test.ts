@@ -49,6 +49,10 @@ const FIXTURE: Row[] = [
   //    candidate ACROSS versions is V's open question (§6), not this rule.
   { uid: 'n7', engine_version: 'opd-note-audit/0.81.14', audited_at: '2026-07-31T10:00:00Z', id: 'ref-oldver', model: 'gemini-2.5-pro' },
   { uid: 'n7', engine_version: 'opd-note-audit/0.81.17', audited_at: '2026-07-10T10:00:00Z', id: 'cand-newver', model: 'qwen2.5:14b' },
+  // 7. a NON-NUMERIC TAIL THAT IS NOT `-mini` — `opd-note-audit/0.5-verify` exists in the live
+  //    table (Mar 2024, qwen). A suffix guard (`NOT LIKE '%-mini'`) passes it through and the
+  //    int[] cast RAISES; only a SHAPE test excludes it by construction (lib/learning.ts).
+  { uid: 'n8', engine_version: 'opd-note-audit/0.5-verify', audited_at: '2026-07-31T10:00:00Z', id: 'fff', model: 'qwen2.5:14b' },
 ];
 
 /** What the caller's engine-family filter does before ranking: `engine_version = ANY(family)`.
@@ -70,7 +74,12 @@ function sqlDistinctOn(rows: Row[]): Row[] {
   }
   assert.match(CANONICAL_RANK_SQL, /audited_at DESC/, 'remaining ties must break on latest audited_at');
 
-  const tail = (v: string): number[] => v.split('/')[1].split('.').map(Number);   // string_to_array(...)::int[]
+  // string_to_array(...)::int[] — and like Postgres, the cast RAISES on a non-numeric component
+  // rather than silently mis-ranking (NaN would compare as "equal to everything").
+  const tail = (v: string): number[] => v.split('/')[1].split('.').map((c) => {
+    if (!/^\d+$/.test(c)) throw new Error(`invalid input syntax for type integer: "${c}"`);
+    return Number(c);
+  });
   const tier = (r: Row): number => (isReferenceModel(r.model) ? 0 : 1);           // the CASE expression
   const cmpIntArray = (a: number[], b: number[]): number => {                      // Postgres int[] compare
     for (let i = 0; i < Math.max(a.length, b.length); i++) {
@@ -86,11 +95,15 @@ function sqlDistinctOn(rows: Row[]): Row[] {
     if (!byUid.has(r.uid)) byUid.set(r.uid, []);
     byUid.get(r.uid)!.push(r);
   }
-  const winners = [...byUid.values()].map((group) =>
-    [...group].sort((a, b) =>
-      cmpIntArray(tail(b.engine_version), tail(a.engine_version))
-      || tier(a) - tier(b)
-      || Date.parse(b.audited_at) - Date.parse(a.audited_at))[0]);
+  // Postgres computes the ORDER BY key for EVERY row before sorting — a lazy comparator would
+  // skip single-row groups and silently miss a cast that the real query raises on.
+  const winners = [...byUid.values()].map((group) => {
+    const keyed = group.map((r) => ({ r, vtail: tail(r.engine_version), t: tier(r) }));
+    keyed.sort((a, b) =>
+      cmpIntArray(b.vtail, a.vtail) || a.t - b.t || Date.parse(b.r.audited_at) - Date.parse(a.r.audited_at));
+    return keyed[0].r;
+  });
+  for (const r of nullUid) tail(r.engine_version);
   return [...winners, ...nullUid];
 }
 
@@ -206,6 +219,33 @@ test('ONE RULE across every surface — governance and stewardship included (add
   const stew = readFileSync('app/admin/stewardship/page.tsx', 'utf8');
   assert.ok(!/ORDER BY uid, audited_at DESC/.test(stew), 'newest-by-time ranking must be gone');
   assert.ok(stew.includes('ENG_FAMILY_SQL'), 'and it must now filter the engine family');
+});
+
+test('a non-numeric tail that is NOT -mini cannot reach the cast — shape, not suffix (learning.ts)', () => {
+  // Negative test: the 0.5-verify row alone RAISES in the SQL twin — exactly what Postgres does
+  // when a suffix-only guard (`NOT LIKE '%-mini'`) lets it through. No -mini suffix to match:
+  const verifyRows = FIXTURE.filter((r) => r.uid === 'n8');
+  assert.ok(verifyRows.length && verifyRows.every((r) => !/-mini$/.test(r.engine_version)),
+    'the trap row must carry a non-numeric tail WITHOUT a -mini suffix');
+  assert.throws(() => sqlDistinctOn(verifyRows), /invalid input syntax for type integer: "5-verify"/,
+    'the int[] cast must raise on the tail a suffix guard fails to exclude');
+
+  // The SHAPE test excludes it by construction — every -mini tail with it — and survivors rank
+  // cleanly and identically on both sides.
+  const SHAPE = /^[0-9]+(\.[0-9]+)*$/;
+  const shaped = FIXTURE.filter((r) => SHAPE.test(r.engine_version.split('/')[1]));
+  assert.ok(!shaped.some((r) => r.uid === 'n8'), 'shape test excludes 0.5-verify');
+  assert.ok(!shaped.some((r) => /-mini$/.test(r.engine_version)), 'shape test subsumes the -mini exclusion');
+  const key = (rows: Row[]) => rows.map((r) => `${r.uid ?? 'NULL'}:${r.id}`).sort();
+  assert.deepEqual(key(sqlDistinctOn(shaped)), key(canonicalByUid(shaped) as Row[]),
+    'the two expressions of THE RULE must agree over the shape-filtered set');
+
+  // And lib/learning.ts actually carries the shape test, not the suffix enumeration.
+  const learning = readFileSync('lib/learning.ts', 'utf8');
+  assert.ok(learning.includes(String.raw`split_part(engine_version, '/', 2) ~ '^[0-9]+(\\.[0-9]+)*$'`),
+    'loadRecentAuditRows must guard the int[] cast by tail SHAPE');
+  assert.ok(!learning.includes(`engine_version NOT LIKE '%-mini'`),
+    'the suffix-enumeration guard must be gone from the where clause');
 });
 
 test('canonicalDistinctOnSql composes the identity, the columns and the rank tail', () => {
