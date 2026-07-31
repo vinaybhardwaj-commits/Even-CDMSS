@@ -111,7 +111,9 @@ async function processDay(day: string, max: number, conc: number, exclude: strin
       return { uid: String((row as Record<string, unknown>).uid || ''), error: String((e as Error).message) };
     }
   });
-  const inserted = results.filter((r) => 'status' in r && (r as { status?: string }).status === 'inserted').length;
+  // 'updated' = a retry landed on a llm_leg_failed row at the write-target version (addendum F v2
+  // task 2) — completed work, counted the same as a fresh insert.
+  const inserted = results.filter((r) => 'status' in r && ['inserted', 'updated'].includes((r as { status?: string }).status ?? '')).length;
   const audited = already.length + inserted;
   const remaining = Math.max(0, total - audited);
   return { day, total, audited, processed: results.length, remaining, done: remaining === 0, results };

@@ -125,11 +125,15 @@ test('D6 — the trap survives in its NARROWED form: only an incident makes a no
      WHERE engine_version = $1 AND (note_date AT TIME ZONE 'Asia/Kolkata')::date = $2::date\``),
     'auditedUidsForDay must stay unfiltered');
 
-  // THE SPEND GUARD, and it must key on the WRITE TARGET, not the read family. saveOpdAudit is
-  // ON CONFLICT (uid, engine_version) DO NOTHING, so a note already holding a row at the version
-  // the worker writes would be re-audited nightly on the paid model for a result the insert throws
-  // away. Keyed on the family instead, EVERY stranded note is held and the change frees nothing.
-  assert.ok(STORE.includes('OR bool_or(engine_version = $3)'), 'the guard is a single write-target version');
+  // THE SPEND GUARD, and it must key on the WRITE TARGET, not the read family: a note holding a
+  // row at the version the worker writes would otherwise be re-audited nightly on the paid model
+  // for a result the save discards. Keyed on the family instead, EVERY stranded note is held and
+  // the change frees nothing. NARROWED by addendum F v2 task 2: a write-target row marked
+  // 'llm_leg_failed' no longer holds the note, because the default conflict clause now LANDS on
+  // exactly that row (DO UPDATE ... WHERE) — the discard the guard protected against is gone for
+  // that one class, and only that class.
+  assert.ok(STORE.includes(`OR bool_or(engine_version = $3 AND excluded_reason IS DISTINCT FROM 'llm_leg_failed')`),
+    'the guard is a single write-target version, and a failed row at that version does not hold the note');
   assert.ok(STORE.includes('day, RE_AUDITABLE_EXCLUSIONS as unknown as string[], OPD_ENGINE_VERSION,'),
     '$3 is OPD_ENGINE_VERSION — never OPD_ENGINE_VERSIONS_CURRENT');
   assert.ok(!/AUDITED_PARAMS[\s\S]{0,200}OPD_ENGINE_VERSIONS_CURRENT/.test(STORE),
@@ -138,6 +142,30 @@ test('D6 — the trap survives in its NARROWED form: only an incident makes a no
   // Both day readers share ONE predicate: the worker gates on the count and fetches on the uid
   // list, so a divergence would loop a day forever.
   assert.equal((STORE.match(/\$\{AUDITED_HAVING\}/g) || []).length, 2, 'both readers use the shared HAVING');
+});
+
+test('addendum F v2 task 2 — a failed row never blocks a retry, a successful row is never overwritten', () => {
+  // The DEFAULT conflict clause is force's DO UPDATE narrowed by a WHERE that admits ONLY
+  // 'llm_leg_failed' rows. DO NOTHING is gone: it is what made every retry round mint a new
+  // carrier version (0.81.18). The WHERE is the entire safety argument —
+  //   · a successful row is excluded, so a plain save still returns 'exists' for it;
+  //   · no 'llm_leg_failed' row is ever in the experiment cohort (its filter admits only
+  //     excluded_reason IS NULL or 'vertex_outage_mislabel_2026_07'), so the cohort is untouchable;
+  //   · audited_at moves only on rows no read surface counts.
+  assert.ok(!STORE.includes(`'DO NOTHING'`), 'the DO NOTHING clause is gone');
+  assert.ok(STORE.includes(`WHERE opd_note_audits.excluded_reason = 'llm_leg_failed'`),
+    'the default upsert lands ONLY on a failed row');
+  // Force mode keeps the FULL overwrite (no WHERE): the force branch applies overwriteSet with the
+  // hysteresis CASE, the default branch applies it with the fresh band and the WHERE.
+  assert.ok(/\?\s*`DO UPDATE SET \$\{overwriteSet\(hysteresisCaseSql\(/.test(STORE),
+    'force = full overwrite with hysteresis, unnarrowed');
+  // The retry path takes the fresh band UNCONDITIONALLY — the prior displayed_band belongs to a
+  // det-only failed row (~95/A, "failure scored as excellence") that no surface displayed; holding
+  // it would anchor the first real audit to an artifact.
+  assert.ok(/:\s*`DO UPDATE SET \$\{overwriteSet\('EXCLUDED\.displayed_band'\)\}/.test(STORE),
+    'the retry path bands fresh, not against the failed row\'s anchor');
+  // Both modes report what happened: (xmax = 0) distinguishes a fresh insert from a landed retry.
+  assert.ok(STORE.includes('RETURNING id, (xmax = 0) AS inserted'), 'every save can report insert-vs-update');
 });
 
 test('the canonical id set still excludes marked rows — the mark IS the aggregate exclusion', () => {

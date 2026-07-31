@@ -95,7 +95,10 @@ test('hysteresis is ENDORSED and untouched: g, the rule, and the store CASE all 
   assert.equal(hysteresisBand(72, null), 'B', 'NULL prior bands normally');
   const store = readFileSync('lib/opd-audit-store.ts', 'utf8');
   assert.ok(store.includes('function hysteresisCaseSql('), 'the displayed_band write paths stand');
-  assert.ok(store.includes("displayed_band = ${hysteresisCaseSql('opd_note_audits.displayed_band', 'EXCLUDED.displayed_band', 'EXCLUDED.note_quality_index')}"));
+  // Addendum F v2 task 2: the conflict SET list is shared (overwriteSet); FORCE still applies the
+  // hysteresis CASE — only the failed-row retry path bands fresh, and that path replaces rows no
+  // surface ever displayed.
+  assert.ok(store.includes("overwriteSet(hysteresisCaseSql('opd_note_audits.displayed_band', 'EXCLUDED.displayed_band', 'EXCLUDED.note_quality_index'))"));
 });
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════

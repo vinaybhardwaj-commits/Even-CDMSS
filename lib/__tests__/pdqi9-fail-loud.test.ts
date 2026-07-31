@@ -212,7 +212,9 @@ test('readLlmEnvelope is total — any shape yields a defined envelope, never a 
 // envelope. At 300s one attempt outlived the tick and the budget could never be spent.
 test('OPENROUTER_TIMEOUT_MS defaults to 110s and is env-overridable', () => {
   assert.equal(OPENROUTER_TIMEOUT_MS, Number(process.env.OPENROUTER_TIMEOUT_MS) || 110_000);
-  assert.ok(/Number\(process\.env\.OPENROUTER_TIMEOUT_MS\) \|\| 110_000/.test(SRC));
+  // Addendum F v2 task 1: the definition lives in lib/openrouter-retry.ts (shared policy);
+  // opd-note-audit.ts re-exports it, so the imported value above is still the one the lab uses.
+  assert.ok(/Number\(process\.env\.OPENROUTER_TIMEOUT_MS\) \|\| 110_000/.test(readFileSync('lib/openrouter-retry.ts', 'utf8')));
   assert.ok(3 * 110_000 < EVAL_TICK_DEADLINE_MS + 110_000,
     'the retry budget must be spendable inside one tick — that is why this number changed');
 });
@@ -332,8 +334,8 @@ test('buildOpenRouterBody is BYTE-IDENTICAL — no max_tokens, no response_forma
 test('no engine version bump, and the retry predicate is unchanged', () => {
   assert.ok(/export const OPD_ENGINE_VERSION/.test(readFileSync('lib/opd-note-audit-core.ts', 'utf8'))
     || /OPD_ENGINE_VERSION/.test(SRC), 'the constant still exists');
-  assert.ok(/export function openRouterRetryable\(status: number\): boolean \{\n  return status === 429 \|\| status >= 500;\n\}/.test(SRC),
-    'the HTTP retry predicate is untouched — empty content is handled separately');
+  assert.ok(/export function openRouterRetryable\(status: number\): boolean \{\n  return status === 429 \|\| status >= 500;\n\}/.test(readFileSync('lib/openrouter-retry.ts', 'utf8')),
+    'the HTTP retry predicate is untouched — empty content is handled separately (it now lives in the shared policy module, re-exported here)');
 });
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════

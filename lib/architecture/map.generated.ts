@@ -671,6 +671,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "openrouter-retry",
+    "plane": "unregistered"
+  },
+  {
     "id": "pathway",
     "plane": "unregistered"
   },
@@ -3037,6 +3041,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "llm",
+    "to": "openrouter-retry",
+    "kind": "value"
+  },
+  {
+    "from": "llm",
     "to": "provider-error-core",
     "kind": "value"
   },
@@ -3657,6 +3666,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "opd-note-audit",
+    "to": "openrouter-retry",
+    "kind": "value"
+  },
+  {
+    "from": "opd-note-audit",
     "to": "provenance-tier-core",
     "kind": "type"
   },
@@ -3723,6 +3737,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "opd-triage-store",
     "to": "opd-triage-core",
+    "kind": "value"
+  },
+  {
+    "from": "openrouter-retry",
+    "to": "provider-error-core",
     "kind": "value"
   },
   {
@@ -4008,6 +4027,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "trace",
     "to": "llm-cost-core",
+    "kind": "value"
+  },
+  {
+    "from": "trace",
+    "to": "openrouter-retry",
     "kind": "value"
   },
   {

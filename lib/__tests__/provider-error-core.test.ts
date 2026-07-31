@@ -147,8 +147,16 @@ test('the payload names model, region and SA identity — and the SA getter expo
   assert.ok(!fn.includes('private_key'), 'NEVER key material');
 });
 
-test('§5 out of scope: no retry/backoff, no routing flag change, no quota logic', () => {
-  assert.ok(!/for\s*\(.*attempt|retry|backoff/i.test(LLM), 'llm.ts gained no retry loop');
+test('§5 superseded for OpenRouter ONLY by addendum F v2: retry exists, but ONLY via the shared policy module', () => {
+  // The 403-diagnosis kickoff shipped observability with NO retry. Addendum F v2 task 1 then gave
+  // the production bridge path the lab's bounded retry — deliberately, and deliberately NOT as a
+  // second implementation: llm.ts may not carry its own loop/backoff, only the shared wrapper.
+  assert.ok(LLM.includes("import { openrouterCreateWithRetry } from './openrouter-retry';"),
+    'the retry comes from the ONE shared policy module');
+  assert.ok(!/openRouterBackoffMs|setTimeout\(/.test(LLM), 'llm.ts has no private backoff/timer of its own');
+  // The Vertex/Gemini branch is still §5-scoped: no retry there.
+  assert.ok(!LLM.slice(LLM.indexOf('if (!geminiModel || !geminiConfigured())')).includes('openrouterCreateWithRetry'),
+    'the Gemini branch gained no retry — only the bridge transport did');
   // The fallback call count is unchanged: each provider branch still makes exactly ONE fallback
   // llm.chat call on error, and behaviour on success is byte-identical.
   assert.equal((LLM.match(/return llm\.chat\.completions\.create\(params\);/g) || []).length, 3, 'the three existing fallback/default sites, no more');
@@ -238,26 +246,35 @@ test('§5.1: the caller sees a FAILURE, not an empty string — and the error is
   assert.ok(providerResponseErrorMessage(d, 'openrouter', null).includes('model=null'), 'total — null model still renders');
 });
 
-test('§2.2/§2.3: both transports validate the response, emit the event, and DO NOT fall back', () => {
+test('§2.2/§2.3: the response is validated per attempt, the event is emitted, and the bad-200 path DOES NOT fall back', () => {
+  // Since addendum F v2 the validation lives INSIDE the shared retry wrapper (every non-streaming
+  // attempt is classified; only the spent budget throws the MARKED error). The transports keep
+  // their §2.2 obligations — emit the payload, log loud — and §2.3 is enforced where the marked
+  // error is caught: the isProviderResponseError branch must rethrow BEFORE any Ollama fallback
+  // is reachable.
+  const RETRY = readFileSync('lib/openrouter-retry.ts', 'utf8');
+  assert.ok(RETRY.includes('classifyProviderResponse(res)'), 'every attempt is validated in the wrapper');
+  assert.ok(RETRY.includes('new ProviderResponseError(defect,'), 'the terminal empty-200 throws the marked error');
   for (const [name, src] of [['llm.ts', LLM], ['trace.ts', TRACE]] as const) {
-    assert.ok(src.includes('classifyProviderResponse(res)') || src.includes('classifyProviderResponse(result)'),
-      `${name} validates the returned response`);
     assert.ok(src.includes('providerResponsePayload({'), `${name} emits the §2.2 payload`);
     assert.ok(src.includes('[provider-bad-response]'), `${name} logs loud with a stable, distinct prefix`);
-    assert.ok(src.includes('throw new ProviderResponseError('), `${name} FAILS the call`);
-    // §2.3 — the bad-response branch must not reach for the local model. The nearest
-    // llm.chat.completions.create must not sit between the check and the throw.
-    const at = src.indexOf('const defect = classifyProviderResponse');
-    const thrown = src.indexOf('throw new ProviderResponseError(', at);
-    assert.ok(thrown > at, `${name}: the check ends in a throw`);
-    assert.ok(!src.slice(at, thrown).includes('llm.chat.completions.create'),
+    const at = src.indexOf('isProviderResponseError(');
+    assert.ok(at > -1, `${name} tells the marked error apart in its catch`);
+    const rethrow = src.indexOf(name === 'llm.ts' ? 'throw e;' : 'throw oe;', at);
+    assert.ok(rethrow > at, `${name}: the marked-error branch ends in a rethrow`);
+    assert.ok(!src.slice(at, rethrow).includes('llm.chat.completions.create'),
       `${name}: NO Ollama fallback on this path (§2.3) — the honest outcome is degraded`);
   }
 });
 
 test('§2.1: the check runs only when the provider actually served — never after a fallback', () => {
-  assert.ok(TRACE.includes("if (provider === 'openrouter') {"),
-    'a call that already fell back to Ollama is judged by Ollama rules, not OpenRouter ones');
+  // Structural now, not conditional: classification happens inside openrouterCreateWithRetry on
+  // the OpenRouter response BEFORE any fallback exists, and a fallen-back Ollama result is
+  // produced by llm.chat.completions.create and never passes through the wrapper. What must hold
+  // in trace.ts is the ORDER inside the catch: the marked-error rethrow comes before the fallback.
+  const at = TRACE.indexOf('isProviderResponseError(oe)');
+  const fb = TRACE.indexOf("runOllamaFallback('openrouter'");
+  assert.ok(at > -1 && fb > at, 'the marked error is filtered out before the Ollama fallback is reachable');
 });
 
 test('§6 out of scope: no retry, no backoff, and the Google provider pin is untouched', () => {

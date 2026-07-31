@@ -119,8 +119,12 @@ test('the SQL CASE mirrors the pure function EXACTLY, built from the same HYSTER
 test('all three write paths set displayed_band: insert anchor, conflict CASE, update CASE', () => {
   // 1. INSERT — the fresh raw band is the value (first score sets the anchor).
   assert.ok(STORE.includes('...(withBand ? [sc.band] : []),'));
-  // 2. ON CONFLICT — the CASE reads the EXISTING row; no read-modify-write in app code.
-  assert.ok(STORE.includes("displayed_band = ${hysteresisCaseSql('opd_note_audits.displayed_band', 'EXCLUDED.displayed_band', 'EXCLUDED.note_quality_index')}"));
+  // 2. ON CONFLICT — the CASE reads the EXISTING row; no read-modify-write in app code. Since
+  //    addendum F v2 task 2 the SET list is shared (overwriteSet) and displayed_band is its one
+  //    per-mode parameter: FORCE keeps the hysteresis CASE; the failed-row retry path bands fresh
+  //    (the prior anchor belongs to a det-only failed row no surface displayed).
+  assert.ok(STORE.includes('displayed_band = ${displayedBandSql}, '));
+  assert.ok(STORE.includes("overwriteSet(hysteresisCaseSql('opd_note_audits.displayed_band', 'EXCLUDED.displayed_band', 'EXCLUDED.note_quality_index'))"));
   // 3. updateOpdAudit — REUSES $3 (band) and $2 (headline): zero new params, no re-indexing.
   //    A-3: $2 must carry ::int here — it also appears as the note_quality_index SET value, and
   //    Postgres deduces ONE type per parameter per statement ("inconsistent types deduced for $2"

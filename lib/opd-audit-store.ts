@@ -115,8 +115,10 @@ function completenessItemsJson(audit: OpdNoteAudit): string | null {
   try { return JSON.stringify(items); } catch { return null; }
 }
 
-/** Insert one audit. Returns 'inserted' | 'exists' (already audited at this engine version) | 'skipped' (no uid).
- *  With opts.force, an existing (uid, engine_version) row is overwritten (scored columns +
+/** Insert one audit. Returns 'inserted' | 'exists' (a SUCCESSFUL row already holds this
+ *  (uid, engine_version)) | 'updated' (the slot held a 'llm_leg_failed' row and the retry landed
+ *  in place — addendum F v2 task 2) | 'skipped' (no uid).
+ *  With opts.force, ANY existing (uid, engine_version) row is overwritten (scored columns +
  *  model/trace/latency/sources, audited_at = now()) and 'updated' is returned. */
 /**
  * PHASE 1 (NQI coverage) — serialise the scorecard AS COMPUTED, unmodified: headline, band,
@@ -166,10 +168,12 @@ export async function saveOpdAudit(
   const emptyPdqi9 = scPdqi9 == null || (Array.isArray(scPdqi9) && scPdqi9.length === 0);
   const excludedReason = audit.llmLegFailed === true && emptyPdqi9 ? 'llm_leg_failed' : null;
 
-  // Force mode rewrites the scored columns from the fresh audit (EXCLUDED.*) and re-stamps
-  // audited_at; complexity_band/complexity_inputs are left as-is (same as updateOpdAudit).
-  const conflictClause = force
-    ? `DO UPDATE SET
+  // The overwrite SET list, shared by force mode and the failed-row retry below (addendum F v2
+  // task 2 — the retry clause is force's clause NARROWED by a WHERE, not a second copy). It
+  // rewrites the scored columns from the fresh audit (EXCLUDED.*) and re-stamps audited_at;
+  // complexity_band/complexity_inputs are left as-is (same as updateOpdAudit). displayed_band is
+  // the one per-mode difference, so it is the parameter.
+  const overwriteSet = (displayedBandSql: string) => `
          note_quality_index = EXCLUDED.note_quality_index, band = EXCLUDED.band,
          score_documentation = EXCLUDED.score_documentation, score_note_quality = EXCLUDED.score_note_quality,
          score_appropriateness = EXCLUDED.score_appropriateness, score_prescribing_safety = EXCLUDED.score_prescribing_safety,
@@ -182,15 +186,29 @@ export async function saveOpdAudit(
          scorecard = EXCLUDED.scorecard,
          excluded_reason = COALESCE(EXCLUDED.excluded_reason,
            CASE WHEN opd_note_audits.excluded_reason = 'llm_leg_failed' THEN NULL ELSE opd_note_audits.excluded_reason END),
-         ${withBand ? `displayed_band = ${hysteresisCaseSql('opd_note_audits.displayed_band', 'EXCLUDED.displayed_band', 'EXCLUDED.note_quality_index')}, ` : ''}${withItems ? 'completeness_items = EXCLUDED.completeness_items, ' : ''}${withGen ? 'quieting_gen = EXCLUDED.quieting_gen, ' : ''}audited_at = now()`
-    : 'DO NOTHING';
-  // ^ S1 hysteresis on a same-version overwrite: EXCLUDED.displayed_band is the fresh RAW band
-  //   (bandFor of the new index — what the INSERT below supplies), taken only on NULL prior or a
-  //   decisive crossing; otherwise the anchor HOLDS while band/note_quality_index move freely.
-  // ^ S0 excluded_reason semantics on a force re-audit: a fresh failure re-marks; a SUCCESSFUL
-  //   re-audit clears a stale 'llm_leg_failed' (Audit-now force is one of the two real clearing
-  //   mechanisms; the other is the next engine-version bump superseding the row canonically);
-  //   any OTHER mark — house_account — is preserved verbatim. Never clobber a human's exclusion.
+         ${withBand ? `displayed_band = ${displayedBandSql}, ` : ''}${withItems ? 'completeness_items = EXCLUDED.completeness_items, ' : ''}${withGen ? 'quieting_gen = EXCLUDED.quieting_gen, ' : ''}audited_at = now()`;
+  // ═══ Addendum F v2 task 2 — a FAILED row no longer consumes its (uid, engine_version) slot ═══
+  // The default clause was DO NOTHING, so a row marked 'llm_leg_failed' blocked every retry at the
+  // same version forever — each retry round needed a freshly minted carrier version (why 0.81.18
+  // exists). The default is now force's DO UPDATE narrowed by a WHERE that admits ONLY failed rows:
+  //   · a SUCCESSFUL row is never overwritten — the WHERE excludes it (the save returns 'exists',
+  //     exactly as under DO NOTHING);
+  //   · the experiment cohort cannot be touched — its filter admits only excluded_reason IS NULL
+  //     or 'vertex_outage_mislabel_2026_07', so no 'llm_leg_failed' row is ever in it;
+  //   · audited_at moves only on rows that were failures, which no read surface counts.
+  // displayed_band per mode: FORCE keeps the S1 hysteresis (EXCLUDED.displayed_band is the fresh
+  // RAW band, taken only on NULL prior or a decisive crossing; otherwise the anchor HOLDS). The
+  // RETRY path instead takes the fresh band UNCONDITIONALLY: the prior row was a failed,
+  // det-only-scored row (typically ~95/A — "failure scored as excellence") that no surface ever
+  // displayed, so holding its band would anchor the first REAL audit to an artifact.
+  const conflictClause = force
+    ? `DO UPDATE SET ${overwriteSet(hysteresisCaseSql('opd_note_audits.displayed_band', 'EXCLUDED.displayed_band', 'EXCLUDED.note_quality_index'))}`
+    : `DO UPDATE SET ${overwriteSet('EXCLUDED.displayed_band')}
+       WHERE opd_note_audits.excluded_reason = 'llm_leg_failed'`;
+  // ^ S0 excluded_reason semantics on a re-audit (both modes): a fresh failure re-marks; a
+  //   SUCCESSFUL re-audit clears a stale 'llm_leg_failed'; any OTHER mark — house_account,
+  //   vertex_outage_mislabel_2026_07 — is preserved verbatim (and on the default path the WHERE
+  //   never even reaches such a row). Never clobber a human's exclusion.
 
   const rows = (await sql(
     `INSERT INTO opd_note_audits
@@ -205,7 +223,7 @@ export async function saveOpdAudit(
        $15::jsonb,$16,$17, $18,$19,$20,$21, $22::jsonb,$23::jsonb,$24,$25,$26,$27, $28::jsonb, $29::jsonb,
        $30, $31::jsonb, $32::jsonb, $33${withGen ? ', $34' : ''}${withItems ? `, $${withGen ? 35 : 34}::jsonb` : ''}${withBand ? `, $${34 + (withGen ? 1 : 0) + (withItems ? 1 : 0)}` : ''})
      ON CONFLICT (uid, engine_version) ${conflictClause}
-     RETURNING id${force ? ', (xmax = 0) AS inserted' : ''}`,
+     RETURNING id, (xmax = 0) AS inserted`,
     [
       k.uid, k.consultUid, k.doctorUid, k.kxEncounterId, k.noteDate, k.prescriptionType, k.consultType,
       sc.headline, sc.band,
@@ -226,8 +244,11 @@ export async function saveOpdAudit(
       ...(withBand ? [sc.band] : []),
     ],
   )) as Array<{ id: string; inserted?: boolean }>;
-  // Under force, DO UPDATE always returns the row; (xmax = 0) distinguishes fresh insert from overwrite.
-  const freshInsert = rows.length > 0 && (!force || rows[0].inserted === true);
+  // DO UPDATE returns the row it landed on; (xmax = 0) distinguishes fresh insert from overwrite.
+  // Zero rows now means the conflict target was a SUCCESSFUL row the default WHERE refused to
+  // touch — 'exists', exactly the DO NOTHING outcome. A retry that landed on a failed row is
+  // 'updated'.
+  const freshInsert = rows.length > 0 && rows[0].inserted === true;
   await runAuditShadow(audit, findings); // B1 shadow — dormant unless CLINICAL_STATE_AUDIT_SHADOW=1; read-only, fail-open
   // Stage 3 longitudinal pass (opd-longitudinal/0.1) — AFTER the INSERT, flag-gated + fail-open, so it can
   // never affect the base row. Only for a fresh insert (idempotent worker re-runs never re-charge it; the
@@ -336,13 +357,12 @@ const RE_AUDITABLE_EXCLUSIONS = [
  *   · it holds a row that is active, or excluded for a reason OUTSIDE the allowlist (permanent); OR
  *   · ⚠️ THE SPEND GUARD — it already holds a row at the version the worker would WRITE.
  *
- * WHY THE GUARD EXISTS. `saveOpdAudit` writes `ON CONFLICT (uid, engine_version) DO NOTHING`, so a
- * re-audit of a note that already holds a row at the SAME engine version is SILENTLY DISCARDED.
- * Without this condition the 301 stranded notes that already hold an OPD_ENGINE_VERSION row would
+ * WHY THE GUARD EXISTS. `saveOpdAudit` wrote `ON CONFLICT (uid, engine_version) DO NOTHING`, so a
+ * re-audit of a note that already holds a row at the SAME engine version was SILENTLY DISCARDED.
+ * Without this condition the 301 stranded notes that already held an OPD_ENGINE_VERSION row would
  * be re-fetched and re-audited on the paid reference model every single night, for a result the
  * insert throws away — a permanent recurring spend loop that never clears the note. Deletion would
- * at least terminate. Those 301 need a recovery row under a DISTINCT engine version (addendum B
- * task B3); they are deliberately NOT reachable from here.
+ * at least terminate.
  *
  * ⚠️ IT MUST BE `OPD_ENGINE_VERSION`, NOT `OPD_ENGINE_VERSIONS_CURRENT`. Addendum B §3 specified
  * the read FAMILY, but the family spans 0.81.3 → 0.81.17 and EVERY stranded note holds a row
@@ -351,9 +371,18 @@ const RE_AUDITABLE_EXCLUSIONS = [
  * writes, so the write target is the only correct key: it frees the 192 whose rows sit at older
  * family versions (0.81.14 ×106, 0.81.15 ×85, 0.81.8 ×1), where an insert at 0.81.17 cannot
  * collide, and holds exactly the 301 that would loop. None of the 192 is in the experiment cohort.
+ *
+ * ⚠️ NARROWED (addendum F v2 task 2): a write-target row marked 'llm_leg_failed' no longer holds
+ * the note, because the save it was protecting against no longer discards — saveOpdAudit's default
+ * conflict clause is now `DO UPDATE ... WHERE excluded_reason = 'llm_leg_failed'`, so a retry
+ * LANDS in place (success clears the mark and branch 1 counts the note audited; a repeat failure
+ * re-marks and the note is retried on a later sweep — recurring, but every attempt can land, which
+ * is the opposite of the discard loop this guard exists to prevent). A write-target row that is
+ * ACTIVE or carries any OTHER exclusion still holds the note: for those the WHERE refuses the
+ * update and a re-audit would still be paid-and-discarded.
  */
 const AUDITED_HAVING = `HAVING bool_or(excluded_reason IS NULL OR excluded_reason <> ALL($2::text[]))
-        OR bool_or(engine_version = $3)`;
+        OR bool_or(engine_version = $3 AND excluded_reason IS DISTINCT FROM 'llm_leg_failed')`;
 const AUDITED_PARAMS = (day: string): unknown[] => [
   day, RE_AUDITABLE_EXCLUSIONS as unknown as string[], OPD_ENGINE_VERSION,
 ];

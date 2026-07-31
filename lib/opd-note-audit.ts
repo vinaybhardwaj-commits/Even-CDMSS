@@ -638,29 +638,16 @@ export function buildOpenRouterBody(model: string, system: string, user: string)
   };
 }
 
-/** Bounded retry for the eval path: 3 tries total, retrying ONLY transient statuses (429/5xx) with
- *  jittered exponential backoff (~0.5s/1s/2s × [0.5,1.5)). A non-transient status or the final
- *  failure throws loudly — never a silent fallback. */
-export const OPENROUTER_MAX_TRIES = 3;
-export function openRouterRetryable(status: number): boolean {
-  return status === 429 || status >= 500;
-}
-export function openRouterBackoffMs(attempt: number, rand: () => number = Math.random): number {
-  return Math.round(500 * 2 ** (attempt - 1) * (0.5 + rand()));   // attempt 1 → ~250-750ms, 2 → ~500-1500ms
-}
-
-/**
- * EVAL-ONLY (lab): fetch deadline (PDQI-9 fail-loud PRD D4). With no timeout a hung request never
- * throws and never returns — it takes the whole tick down, which we watched happen. Fail-loud is
- * UNOBSERVABLE if a call can hang forever, so this is a precondition for D2 rather than a request-
- * shape variable: it only converts "hangs" into "throws".
- *
- * ⚠️ 300_000 → 110_000 (Eval-tick-deadline PRD D4). At 110s per attempt, three attempts plus backoff
- * fit inside the 240s tick deadline — so a note can still exhaust its retry budget WITHIN one tick
- * and record its envelope, which is the whole point of the probe. At 300s a single attempt outlived
- * the tick, so the retry budget could never be spent before the invocation was killed.
- */
-export const OPENROUTER_TIMEOUT_MS = Number(process.env.OPENROUTER_TIMEOUT_MS) || 110_000;
+/** Bounded retry + fetch deadline: the POLICY now lives in lib/openrouter-retry.ts (bridge-
+ *  reliability addendum F v2 task 1) so the production bridge transport shares it — one copy of
+ *  tries/retryable-statuses/backoff/deadline for both loops. Moved VERBATIM; imported and
+ *  re-exported here so every lab call site and test is unchanged. The D4 rationale (110s fits
+ *  three attempts inside the 240s tick) travelled with the constants. `openRouterGenerate` below
+ *  keeps its own loop: its error strings are normative instrumentation pinned by test, it reads
+ *  the envelope off every attempt, and it clamps to the tick deadline — obligations the SDK
+ *  transport does not have. */
+import { OPENROUTER_MAX_TRIES, openRouterRetryable, openRouterBackoffMs, OPENROUTER_TIMEOUT_MS } from './openrouter-retry';
+export { OPENROUTER_MAX_TRIES, openRouterRetryable, openRouterBackoffMs, OPENROUTER_TIMEOUT_MS };
 
 /**
  * The response envelope OpenRouter already returns and this code has always discarded (§R2).

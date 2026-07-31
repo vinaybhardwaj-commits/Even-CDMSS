@@ -315,5 +315,10 @@ test('lab-batch-core is untouched: constants, drainPlan, locks all stand', () =>
 
 test('the attempts key is the documented name and OPENROUTER_TIMEOUT_MS did not move', () => {
   assert.equal(LB_ATTEMPTS_KEY, 'lab_batch_attempts');
-  assert.ok(SRC.includes('export const OPENROUTER_TIMEOUT_MS = Number(process.env.OPENROUTER_TIMEOUT_MS) || 110_000;'));
+  // Addendum F v2 task 1: the constant's HOME moved to lib/openrouter-retry.ts (shared with the
+  // production bridge transport); its value and env override are unchanged, and opd-note-audit.ts
+  // re-exports it so every consumer of this module is untouched.
+  assert.ok(readFileSync('lib/openrouter-retry.ts', 'utf8')
+    .includes('export const OPENROUTER_TIMEOUT_MS = Number(process.env.OPENROUTER_TIMEOUT_MS) || 110_000;'));
+  assert.ok(SRC.includes('export { OPENROUTER_MAX_TRIES, openRouterRetryable, openRouterBackoffMs, OPENROUTER_TIMEOUT_MS };'));
 });

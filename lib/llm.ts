@@ -2,8 +2,9 @@ import OpenAI from 'openai';
 import { getVertexAccessToken, vertexSaEmail } from './gcp-auth';
 import {
   beginProviderCall, endProviderCall, providerCallsInFlight, providerErrorPayload,
-  classifyProviderResponse, providerResponsePayload, ProviderResponseError,
+  providerResponsePayload, isProviderResponseError,
 } from './provider-error-core';
+import { openrouterCreateWithRetry } from './openrouter-retry';
 
 const baseURL = `${process.env.OLLAMA_BASE_URL!}/v1`;
 
@@ -237,23 +238,49 @@ export async function chatWithFallback(params: any, geminiModel?: string, openro
     beginProviderCall('openrouter');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let res: any;
-    // Snapshotted BEFORE the decrement on the success path, so a bad-200 carries the same
-    // load-correlation field as a thrown error.
-    let inFlightAtResponse = providerCallsInFlight();
     try {
       const { options: _o, keep_alive: _k, ...rest } = params as Record<string, unknown>;
       void _o; void _k;
       const orParams = buildOpenrouterParams(orModel, rest as Record<string, unknown>);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      res = await openrouterChatClient().chat.completions.create(orParams as any);
-      inFlightAtResponse = providerCallsInFlight();
+      const client = openrouterChatClient();
+      // Addendum F v2 task 1 — the production bridge call now carries the SAME deadline/retry
+      // discipline the lab path has had since D4/D2: bounded per-attempt AbortController deadline,
+      // aborts + transport errors + 429/5xx + empty-200s retryable on a 3-try budget with jittered
+      // backoff, timer cleared in finally. Streaming calls keep the bare call: an in-flight stream
+      // being consumed by the caller must not be aborted by a wall-clock timer, and
+      // classifyProviderResponse has never judged streams.
+      res = (orParams as { stream?: boolean }).stream
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ? await client.chat.completions.create(orParams as any)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        : await openrouterCreateWithRetry((ro) => client.chat.completions.create(orParams as any, ro), {
+            model: orModel,
+            onAttemptFailure: (f) => console.error(
+              `[provider-retry] openrouter ${orModel} attempt ${f.attempt}/${f.maxTries} ${f.kind}${f.status != null ? ` ${f.status}` : ''} — ${f.willRetry ? 'retrying' : 'giving up'}: ${f.message}`),
+          });
       endProviderCall('openrouter');
     } catch (e) {
       // §4.1/§4.2/§4.3 — snapshot in-flight BEFORE decrementing (the failing call counts), then
       // the FULL error (4000-char cap, not 200), loud (console.error, stable prefix), and a
-      // provider_error trace event. Behaviour unchanged: the fallback still serves the request.
+      // provider_error trace event.
       const inFlightAtError = providerCallsInFlight();
       endProviderCall('openrouter');
+      // §2.1/§2.2/§2.4 — a 200 that is not a completion, now surfaced AFTER the bounded retry
+      // (openrouterCreateWithRetry classifies every non-streaming response and throws the marked
+      // error only when the budget is spent). Emit the FULL body as provider_error and FAIL —
+      // deliberately NO Ollama fallback (§2.3); the retry budget changes WHEN this throws, never
+      // what happens after it throws.
+      if (isProviderResponseError(e)) {
+        const payload = providerResponsePayload({
+          provider: 'openrouter', label: 'chatWithFallback', feature: null, fellBackTo: 'none',
+          intendedModel: orModel, fallbackModel: null,
+          region: null, saIdentity: null, inFlightAtError, defect: e.defect,
+        });
+        console.error(`[provider-bad-response] openrouter ${orModel} returned a non-completion 200:`, JSON.stringify(payload));
+        await emitProviderErrorTrace(payload);
+        throw e;
+      }
+      // Thrown transport/HTTP failure: behaviour unchanged — the fallback still serves the request.
       const payload = providerErrorPayload({
         provider: 'openrouter', label: 'chatWithFallback', feature: null, fellBackTo: 'ollama',
         intendedModel: orModel, fallbackModel: (params as { model?: string }).model ?? null,
@@ -262,21 +289,6 @@ export async function chatWithFallback(params: any, geminiModel?: string, openro
       console.error(`[provider-fallback] openrouter ${orModel} failed → ollama fallback:`, JSON.stringify(payload));
       await emitProviderErrorTrace(payload);
       return llm.chat.completions.create(params);
-    }
-    // §2.1/§2.2/§2.4 (31 Jul 2026) — the identical shape, the identical blind spot: a 200 whose body
-    // is an error never entered the catch above. Validate it, emit the FULL body as provider_error,
-    // and FAIL — no Ollama fallback (§2.3). Reached only when the call did not already fall back
-    // (every catch path above returns).
-    const defect = classifyProviderResponse(res);
-    if (defect) {
-      const payload = providerResponsePayload({
-        provider: 'openrouter', label: 'chatWithFallback', feature: null, fellBackTo: 'none',
-        intendedModel: orModel, fallbackModel: null,
-        region: null, saIdentity: null, inFlightAtError: inFlightAtResponse, defect,
-      });
-      console.error(`[provider-bad-response] openrouter ${orModel} returned a non-completion 200:`, JSON.stringify(payload));
-      await emitProviderErrorTrace(payload);
-      throw new ProviderResponseError(defect, 'openrouter', orModel);
     }
     return res;
   }
