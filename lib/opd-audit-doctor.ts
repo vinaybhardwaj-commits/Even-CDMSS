@@ -12,6 +12,7 @@ import { sql } from '@/lib/db';
 import { OPD_ENGINE_VERSIONS_CURRENT } from '@/lib/opd-note-audit-core';
 import type { LvcCell } from '@/lib/opd-funnel-core';
 import { displayedBandColumnExists } from '@/lib/opd-audit-store';
+import { canonicalDistinctOnSql } from '@/lib/audit-canonical';
 
 const APP = process.env.APP_SOURCE || 'standalone';
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
@@ -33,6 +34,24 @@ function rangeClause(from: string | null, to: string | null, startIdx: number): 
   return { clause, params };
 }
 
+/**
+ * CANONICAL BASIS (31 Jul 2026, addendum C). Every aggregate below now counts ONE ROW PER NOTE —
+ * the canonical row per THE RULE in lib/audit-canonical.ts (highest engine version, ties by latest
+ * audited_at). The PK is (uid, engine_version), so a note accumulates a row per engine bump: these
+ * aggregates were counting most notes 2-3 times, inflating volume 40-68% per doctor. They are
+ * ENFORCING a rule settled 27 Jul, not introducing one.
+ *
+ * The dedup is in SQL, not `canonicalByUid`, because these functions aggregate server-side and
+ * never return rows for a TypeScript filter to reduce. `canonicalDistinctOnSql` is the twin of
+ * that function and is pinned to it by test.
+ *
+ * The engine-family filter must stay INSIDE the subquery: it excludes `-mini` rows before ranking,
+ * which is what makes the int[] cast in CANONICAL_RANK_SQL safe (see trap 2 there).
+ */
+function canonicalDoctorRows(cols: string, where: string): string {
+  return canonicalDistinctOnSql({ table: 'opd_note_audits', identity: 'uid', cols, where });
+}
+
 export type DoctorIndexRow = {
   doctor_uid: string; nnotes: number; mean_index: number; low_value_rate: number; last_audited: string;
 };
@@ -44,8 +63,10 @@ export async function fetchDoctorIndex(): Promise<DoctorIndexRow[]> {
             round(avg(note_quality_index))::int mean_index,
             round(100.0*avg((n_low_value>0)::int))::int low_value_rate,
             to_char(max((note_date ${IST})::date),'YYYY-MM-DD') last_audited
-     FROM opd_note_audits
-     WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND doctor_uid IS NOT NULL AND excluded_reason IS NULL
+     FROM (${canonicalDoctorRows(
+       'doctor_uid, note_quality_index, n_low_value, note_date',
+       `app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND doctor_uid IS NOT NULL AND excluded_reason IS NULL`,
+     )}) canonical
      GROUP BY doctor_uid
      ORDER BY nnotes DESC, mean_index ASC`, [APP]);
 }
@@ -67,8 +88,11 @@ export async function fetchDoctorStats(uid: string, from: string | null = null, 
             round(avg(score_documentation))::int d_doc, round(avg(score_note_quality))::int d_nq,
             round(avg(score_appropriateness))::int d_appr, round(avg(score_prescribing_safety))::int d_presc,
             round(avg(score_patient_centred))::int d_pc
-     FROM opd_note_audits
-     WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND doctor_uid = $2 AND excluded_reason IS NULL${r.clause}`,
+     FROM (${canonicalDoctorRows(
+       `note_quality_index, n_low_value, note_date, score_documentation, score_note_quality,
+              score_appropriateness, score_prescribing_safety, score_patient_centred`,
+       `app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND doctor_uid = $2 AND excluded_reason IS NULL${r.clause}`,
+     )}) canonical`,
     [APP, uid, ...r.params]);
   const row = rows[0];
   return row && Number(row.nnotes) > 0 ? row : null;
@@ -80,8 +104,10 @@ export async function fetchDoctorBandDist(uid: string, from: string | null = nul
   const r = rangeClause(from, to, 2);
   return rowsOf<BandRow>(
     `SELECT band, count(*)::int c
-     FROM opd_note_audits
-     WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND doctor_uid = $2 AND excluded_reason IS NULL${r.clause}
+     FROM (${canonicalDoctorRows(
+       'band, note_date',
+       `app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND doctor_uid = $2 AND excluded_reason IS NULL${r.clause}`,
+     )}) canonical
      GROUP BY band`, [APP, uid, ...r.params]);
 }
 
@@ -95,8 +121,10 @@ export async function fetchDoctorWeeklyTrend(uid: string, from: string | null = 
      FROM (
        SELECT to_char(date_trunc('week', (note_date ${IST}))::date,'YYYY-MM-DD') wk,
               note_quality_index idx
-       FROM opd_note_audits
-       WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND doctor_uid = $2 AND excluded_reason IS NULL${r.clause}
+       FROM (${canonicalDoctorRows(
+         'note_quality_index, note_date',
+         `app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND doctor_uid = $2 AND excluded_reason IS NULL${r.clause}`,
+       )}) canonical
      ) t
      GROUP BY wk
      ORDER BY wk`, [APP, uid, ...r.params]);
@@ -115,12 +143,15 @@ export async function fetchDoctorAuditRows(uid: string, from: string | null = nu
   const r = rangeClause(from, to, 2);
   const lim = Math.max(1, Math.min(2000, Math.floor(limit)));
   return rowsOf<DoctorAuditRow>(
-    `SELECT id, uid, note_date, doctor_uid, consult_type, prescription_type,
+    // §5 — the LIMIT must count CANONICAL rows, not duplicates. Deduplicating in TypeScript after
+    // the fetch would silently shrink a 600-row request to ~350 and truncate the bulk-PDF set.
+    `SELECT * FROM (${canonicalDoctorRows(
+      `id, note_date, doctor_uid, consult_type, prescription_type,
             band${(await displayedBandColumnExists().catch(() => false)) ? ', displayed_band' : ''}, note_quality_index, n_low_value, completeness_pct,
             score_documentation, score_note_quality, score_appropriateness, score_prescribing_safety, score_patient_centred,
-            findings, suggestions, missing_fields, engine_version
-     FROM opd_note_audits
-     WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND doctor_uid = $2 AND excluded_reason IS NULL${r.clause}
+            findings, suggestions, missing_fields, engine_version`,
+      `app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND doctor_uid = $2 AND excluded_reason IS NULL${r.clause}`,
+    )}) canonical
      ORDER BY note_date DESC
      LIMIT ${lim}`, [APP, uid, ...r.params]);
 }
@@ -135,12 +166,23 @@ export async function fetchDoctorAuditRows(uid: string, from: string | null = nu
 // n_low_value>0 == "≥1 gated LVC finding"). All strings are INFERRED — fail-safe (error → []/zero).
 // ─────────────────────────────────────────────────────────────────────────────
 const ENGINES: string[] = [...OPD_ENGINE_VERSIONS_CURRENT];
-/** Distinct-note (latest per uid) subquery over the current-engine family. `extra` adds WHERE terms. */
+/** Distinct-note (CANONICAL per uid) subquery over the current-engine family. `extra` adds WHERE terms.
+ *
+ *  ⚠️ RE-POINTED 31 Jul 2026 (addendum C §4). This previously ordered by `uid, note_date DESC,
+ *  id DESC`. `note_date` is the CLINICAL note's date — identical across every re-audit of the same
+ *  note — so it never broke a tie between duplicates, and the winner was decided by `id DESC` on a
+ *  UUID: arbitrary with respect to both recency and engine version. MEASURED on the live table
+ *  (current family, active rows, doctor_uid not null): 5,066 notes hold >1 row and the old and
+ *  canonical orderings disagree on 2,774 of them — 55%. Right Care's O/E numerator reads
+ *  `n_low_value` from the winning row, so on more than half the duplicated notes it was an older
+ *  engine's low-value verdict. Now uses THE RULE. Callers are unchanged. */
 function distinctNoteSubquery(cols: string, extra = ''): string {
-  return `SELECT DISTINCT ON (uid) uid, ${cols}
-          FROM opd_note_audits
-          WHERE app_source = $1 AND engine_version = ANY($2) AND doctor_uid IS NOT NULL AND excluded_reason IS NULL${extra}
-          ORDER BY uid, note_date DESC, id DESC`;
+  return canonicalDistinctOnSql({
+    table: 'opd_note_audits',
+    identity: 'uid',
+    cols,
+    where: `app_source = $1 AND engine_version = ANY($2) AND doctor_uid IS NOT NULL AND excluded_reason IS NULL${extra}`,
+  });
 }
 const WIN90 = `(note_date ${IST})::date >= (now() ${IST})::date - 90`;
 

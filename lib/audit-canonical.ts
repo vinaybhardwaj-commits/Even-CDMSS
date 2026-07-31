@@ -137,6 +137,61 @@ export function canonicalBy<T extends CanonicalCandidate>(rows: T[], key: Identi
   return source.filter((r) => kept.has(r));
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// THE SQL TWIN (31 Jul 2026, addendum C)
+//
+// "Every surface calls this function over rows it has already fetched" holds only for surfaces that
+// FETCH rows. Four doctor aggregates compute their answer in SQL — count(*), avg(), GROUP BY — and
+// never return the rows, so a TypeScript filter cannot deduplicate what was never sent. Those need
+// the rule expressed in SQL.
+//
+// ONE RULE, TWO EXPRESSIONS, and the same reasoning as ONE IMPLEMENTATION above: they are declared
+// adjacent, and a test feeds the SAME fixture to both and asserts they pick the same row. Editing
+// one without the other fails that test rather than silently creating a sixth posture.
+//
+// TWO TRAPS THE ORDERING MUST HANDLE — both are the SQL form of what compareEngineVersion and
+// isMiniEngine already handle above:
+//
+//   1. LEXICOGRAPHIC ORDERING IS WRONG. `ORDER BY engine_version DESC` ranks
+//      `opd-note-audit/0.81.9` ABOVE `opd-note-audit/0.81.17`, because '9' > '1'. The numeric tail
+//      must be compared component-wise, which `string_to_array(...)::int[]` does natively — int[]
+//      comparison in Postgres is element-wise, exactly like compareEngineVersion's loop.
+//
+//   2. `-mini` SORTS ABOVE ITS BASE VERSION, and its tail does not cast to int[]
+//      ('14-mini' is not an integer), so the cast would RAISE rather than mis-rank.
+//      ⚠️ DEPENDENCY, DELIBERATE: on these surfaces trap 2 cannot fire, because every caller
+//      already filters `engine_version = ANY(OPD_ENGINE_VERSIONS_CURRENT)` and none of that
+//      family's fifteen entries (0.81.3 → 0.81.17) carries a `-mini` suffix — mini rows are
+//      excluded BEFORE ranking and every surviving tail casts cleanly. So there is no guard here.
+//      Adding a `-mini` entry to OPD_ENGINE_VERSIONS_CURRENT breaks this cast; the family filter is
+//      what makes the bare cast safe, and the two must be changed together.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * The ranking tail of THE RULE as SQL: highest engine version first, ties broken by latest
+ * `audited_at`. Goes after `ORDER BY <identity>,` in a DISTINCT ON, or use `canonicalDistinctOnSql`.
+ * Assumes mini rows are already excluded by the caller's engine filter — see trap 2 above.
+ */
+export const CANONICAL_RANK_SQL =
+  `string_to_array(split_part(engine_version, '/', 2), '.')::int[] DESC, audited_at DESC`;
+
+/**
+ * A DISTINCT ON subquery selecting the canonical row per identity — the SQL twin of `canonicalBy`.
+ * Wrap an aggregate around this so `count(*)`/`avg()` see one row per note, and so a LIMIT counts
+ * canonical rows rather than duplicates.
+ *
+ * `table` and `where` are composed by the caller (this module stays table-agnostic and takes no
+ * imports); `where` must already carry the engine-family filter that makes the cast safe.
+ */
+export function canonicalDistinctOnSql(
+  opts: { table: string; identity: IdentityKey; cols: string; where: string },
+): string {
+  return `SELECT DISTINCT ON (${opts.identity}) ${opts.identity}, ${opts.cols}
+          FROM ${opts.table}
+          WHERE ${opts.where}
+          ORDER BY ${opts.identity}, ${CANONICAL_RANK_SQL}`;
+}
+
 /** IPD: one row per discharge-summary document. */
 export function canonicalByDocument<T extends CanonicalCandidate>(rows: T[], opts: CanonicalOptions = {}): T[] {
   return canonicalBy(rows, 'document_id', opts);

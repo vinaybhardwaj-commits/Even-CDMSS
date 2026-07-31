@@ -842,6 +842,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/admin",
+    "to": "audit-canonical",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
     "to": "care-cookie",
     "kind": "value"
   },
@@ -3358,6 +3363,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "opd-audit",
     "to": "metabase",
+    "kind": "value"
+  },
+  {
+    "from": "opd-audit-doctor",
+    "to": "audit-canonical",
     "kind": "value"
   },
   {

@@ -15,7 +15,8 @@ import {
   type Period,
 } from '@/lib/opd-audit-ui';
 import { fetchRightCareDay, fetchDeptFindingNotes } from '@/lib/opd-audit-doctor';
-import { canonicalOpdAuditIds, displayedBandColumnExists } from '@/lib/opd-audit-store';
+import { displayedBandColumnExists } from '@/lib/opd-audit-store';
+import { canonicalDistinctOnSql } from '@/lib/audit-canonical';
 import { fetchInvestigationsForUids, stateFor } from '@/lib/opd-audit/investigations-lookup';
 import NotesExplorer, { type AuditRow } from './audit-table';
 import DomainPillars, { type DomainDatum } from './domain-pillars';
@@ -131,13 +132,34 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
   // column fails whole and would blank these sections. Pre-migration ⇒ raw band, exactly as today.
   const withBand = await displayedBandColumnExists().catch(() => false);
   const DBAND = withBand ? ', displayed_band' : '';
-  const [canonIds, trendIds] = await Promise.all([
-    canonicalOpdAuditIds(APP, from, to),
-    canonicalOpdAuditIds(APP, addDaysIso(to, -14), to),
-  ]);
-  const CANON = canonIds ? ` AND id = ANY($${winParams.length + 1}::uuid[])` : '';
-  const canonParams = canonIds ? [...winParams, canonIds] : winParams;
+  // ⚠️ FAIL-CLOSED CANONICAL FILTER (31 Jul 2026, addendum C §6). This previously fetched an id
+  // allowlist through `canonicalOpdAuditIds` and, when that returned null, DROPPED the filter and
+  // rendered inflated numbers anyway. A dedup that silently disables itself is worse than one that
+  // errors: the page still renders and the figure is wrong. It also capped its scan at 20,000 rows,
+  // so a wide window truncated the allowlist without erroring at all — silently showing FEWER notes.
+  //
+  // Both failure modes come from doing the dedup in a separate round trip. Expressing THE RULE as a
+  // subquery removes them: there is no null to fall back from and no scan cap. The tuned aggregate
+  // SQL below is untouched — this still slots in exactly where the id predicate did.
+  //
+  // The engine-family filter inside the subquery is load-bearing: it drops `-mini` rows before
+  // ranking, which is what makes the int[] cast in CANONICAL_RANK_SQL safe (see audit-canonical.ts).
+  const canonicalWhere = `app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND excluded_reason IS NULL`;
+  const CANON = ` AND id IN (SELECT id FROM (${canonicalDistinctOnSql({
+    table: 'opd_note_audits',
+    identity: 'uid',
+    cols: 'id',
+    where: `${canonicalWhere} AND (note_date AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $2 AND $3`,
+  })}) canonical)`;
+  const canonParams = winParams;
   const WIN = `app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND excluded_reason IS NULL AND (note_date AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $2 AND $3${CANON}`;
+  // The 14-day trend uses its own window, so it needs its own canonical subquery over that range.
+  const TREND_CANON = ` AND id IN (SELECT id FROM (${canonicalDistinctOnSql({
+    table: 'opd_note_audits',
+    identity: 'uid',
+    cols: 'id',
+    where: `${canonicalWhere} AND (note_date AT TIME ZONE 'Asia/Kolkata')::date > $2::date - 14 AND (note_date AT TIME ZONE 'Asia/Kolkata')::date <= $2::date`,
+  })}) canonical)`;
 
   const [kpiR, bandsR, trendR, docsR, reviewR, allR, notAssessedR] = await Promise.all([
     rowsOf<Record<string, unknown>>(
@@ -158,8 +180,8 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
               round(avg(score_documentation))::int d_doc, round(avg(score_note_quality))::int d_nq,
               round(avg(score_appropriateness))::int d_appr, round(avg(score_prescribing_safety))::int d_presc,
               round(avg(score_patient_centred))::int d_pc
-       FROM opd_note_audits WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND excluded_reason IS NULL AND (note_date AT TIME ZONE 'Asia/Kolkata')::date > $2::date - 14 AND (note_date AT TIME ZONE 'Asia/Kolkata')::date <= $2::date${trendIds ? ' AND id = ANY($3::uuid[])' : ''}
-       GROUP BY 1 ORDER BY 1`, trendIds ? [APP, to, trendIds] : [APP, to]),
+       FROM opd_note_audits WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND excluded_reason IS NULL AND (note_date AT TIME ZONE 'Asia/Kolkata')::date > $2::date - 14 AND (note_date AT TIME ZONE 'Asia/Kolkata')::date <= $2::date${TREND_CANON}
+       GROUP BY 1 ORDER BY 1`, [APP, to]),
     rowsOf<DocRow>(
       `SELECT doctor_uid, count(*)::int nnotes, round(avg(note_quality_index))::int idx,
               round(100.0*avg((n_low_value>0)::int))::int low_value, round(avg(completeness_pct))::int completeness,

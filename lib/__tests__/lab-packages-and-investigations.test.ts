@@ -408,18 +408,24 @@ test('FIX 0: ONE implementation — canonicalByUid and canonicalByDocument are t
   assert.equal((src.match(/const winner = new Map/g) || []).length, 1, 'one ranking loop, not two');
 });
 
-test('FIX 0: the OPD aggregates filter on the canonical id set, and degrade rather than empty', () => {
+test('FIX 0: the OPD aggregates filter on the canonical set, and now FAIL CLOSED', () => {
   const page = readFileSync('app/admin/opd-audit/page.tsx', 'utf8');
-  assert.ok(/canonicalOpdAuditIds\(APP, from, to\)/.test(page));
-  assert.ok(/const CANON = canonIds \?/.test(page), 'the predicate is conditional on the probe succeeding');
-  assert.ok(/id = ANY\(/.test(page), 'the aggregates filter on the canonical id set');
-  // every WIN-based query must take canonParams, not the bare window params
-  assert.equal((page.match(/, winParams\)/g) || []).length, 0, 'no WIN query may still use winParams');
+  // ⚠️ REVERSED 31 Jul 2026 (addendum C §6). FIX 0 originally fetched an id allowlist and DROPPED
+  // the filter when the probe returned null — "degrade rather than empty". That is now understood
+  // as the worse failure: the page still renders and the number is silently inflated. The separate
+  // round trip also capped its scan at 20,000 rows, truncating the allowlist without erroring.
+  // Expressing THE RULE as a subquery removes both — there is no null to fall back from.
+  assert.ok(/id IN \(SELECT id FROM \(/.test(page), 'the canonical filter is a subquery, not an id allowlist');
+  assert.ok(page.includes('canonicalDistinctOnSql'), 'and it comes from the shared fragment');
+  assert.ok(!/canonIds \?/.test(page) && !/trendIds \?/.test(page), 'no conditional-on-probe predicate survives');
+  assert.ok(!/id = ANY\(\$\d+::uuid\[\]\)/.test(page), 'the id-allowlist predicate is gone');
+  assert.ok(!/canonicalOpdAuditIds/.test(page.replace(/^\s*\/\/.*$/gm, '')),
+    'the page no longer calls the fail-open probe (comments may still reference it)');
+  // the 14-day trend has its own window, so it needs its own canonical subquery
+  assert.ok(/TREND_CANON/.test(page), 'the trend window is deduped on its own range');
+  // every WIN-based query still carries the window params
   assert.ok((page.match(/canonParams\)/g) || []).length >= 5, 'all five WIN queries carry them');
-  // null ⇒ no predicate ⇒ today's behaviour, never an empty page
   const store = readFileSync('lib/opd-audit-store.ts', 'utf8');
-  assert.ok(/canonicalOpdAuditIds/.test(store) && /return null;/.test(store),
-    'a failed probe returns null, which callers treat as "do not filter"');
   // READ FILTER ONLY — asserted on what FIX 0 ADDED, not on the whole file. `deleteOpdAuditsForUid`
   // is a pre-existing admin utility and is deliberately left alone.
   const added = store.slice(store.indexOf('const OPD_CANONICAL_SCAN_CAP'), store.indexOf('// ── recompute-on-read'));
