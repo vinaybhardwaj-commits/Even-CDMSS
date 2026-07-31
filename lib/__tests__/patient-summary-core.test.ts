@@ -317,9 +317,11 @@ test('the wired stage 2 is flag-gated DEFAULT ON, governed, and rides the brief 
 // MEASURED on the rich baseline's own stage-2 request, 20 calls per arm at concurrency 4:
 //   uncapped 11 failures/20, p90 72.7s · 4096 → 1/20, p90 64.0s · 1024 → 0/20, p90 33.2s
 //   · 512 → 0/20, p90 26.0s.
-// 1024 is the HIGHEST budget with zero failures, so it is the one that ships. The leg copies
-// spans out of a record and labels them; it does not need Pro's unbounded deliberation, and that
-// deliberation is what runs the call into OpenRouter's idle timeout.
+// Reliability alone would pick 1024. V ruled 4096 on the FINDINGS (31 Jul): at 1024 the leg kept
+// 2 of 13 reportFindings items — a whole abdominal ultrasound absent from the summary — and its
+// negative spans came back as bare nouns whose source sentence carried the negation. A capped
+// leg still beats an uncapped one; uncapped fails 11 in 20 because Pro emits no bytes while it
+// thinks and OpenRouter closes the connection.
 // ═════════════════════════════════════════════════════════════════════════════════════════════
 
 test('stage 2 caps its thinking — the Vertex form, gated on a resolved Gemini model, never zero', () => {
@@ -332,7 +334,7 @@ test('stage 2 caps its thinking — the Vertex form, gated on a resolved Gemini 
   assert.ok(m, 'env-overridable for a re-measure, with a named default');
   const shipped = Number(m![1]);
   assert.ok(shipped > 0, 'gemini-2.5-pro rejects a zero thinking budget with an HTTP 400');
-  assert.equal(shipped, 1024, 'the highest measured budget with 0 failures in 20');
+  assert.equal(shipped, 4096, "V's ruling, 31 Jul — findings over the 1-in-20 failure rate");
 });
 
 test('the audit budget is NOT changed by the stage-2 cap — separate constants, separate files', () => {

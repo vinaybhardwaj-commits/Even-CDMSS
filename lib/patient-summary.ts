@@ -78,10 +78,21 @@ function stateLlmEnabled(): boolean {
  * translates it to OpenRouter's `reasoning.max_tokens` for the bridge (part 1). So ONE field caps
  * the leg on both transports.
  *
+ * MEASURED, 20 calls per arm at concurrency 4 (failures/20, p90): uncapped 11, 72.7s · 4096 1,
+ * 64.0s · 1024 0, 33.2s · 512 0, 26.0s. The reliability rule alone picks 1024 — V ruled 4096 on
+ * the FINDINGS (31 Jul 2026), and the reason is worth keeping here so nobody "optimises" it back:
+ * at 1024 the leg kept 2 of 13 reportFindings items, so an entire abdominal ultrasound vanished
+ * from the summary; and its negative spans came back as bare nouns ("vegetation") whose source
+ * sentence was "No clots, vegetation, or pericardial effusion" — verbatim-verifiable, correctly
+ * statused, but the span no longer carries the negation a reader would check. Under-extraction
+ * and a degraded evidence trail beat 1 failure in 20, which the package reports as degraded.
+ * 1-in-20 is a WEAK estimate (true rate plausibly 1–20%); register T-12 holds the 100-call
+ * re-measure and the bounded retry, both parked by V for V1.
+ *
  * ⚠️ NEVER 0 — gemini-2.5-pro rejects a zero thinking budget with an HTTP 400 (Pro cannot have
  * thinking disabled). The floor is low but strictly above zero.
  */
-export const STATE_LLM_THINKING_BUDGET = Number(process.env.PATIENT_SUMMARY_STATE_LLM_THINKING) || 1024;
+export const STATE_LLM_THINKING_BUDGET = Number(process.env.PATIENT_SUMMARY_STATE_LLM_THINKING) || 4096;
 
 /** The stage-2 chat leg, on the SAME trace as the brief so envelope provenance covers it. Model
  *  wiring mirrors ccb-brief's generate() (same engine, same fallback discipline). */
