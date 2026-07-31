@@ -18,6 +18,7 @@ export const LB_KEYS = {
   evalModel: 'lab_batch_eval_model',                 // OpenRouter model id for eval generation ('' ⇒ mini)
   evalConcurrency: 'lab_batch_eval_concurrency',     // eval drain pool size (clamped 1..EVAL_CONCURRENCY_MAX)
   evalNormativeChannel: 'lab_batch_eval_normative_channel',  // '1' ⇒ ADDITIVE CW channel (R-11 fix candidate)
+  evalRerankBackend: 'lab_batch_eval_rerank_backend',        // 'judge'|'cohere' ⇒ named rerank backend for the flip A/B ('' ⇒ today's default)
 } as const;
 
 /**
@@ -145,6 +146,10 @@ export interface LabBatchState {
   evalModel: string | null;      // lab eval: OpenRouter model id (null ⇒ mini generation, today's path)
   evalConcurrency: number;       // lab eval: drain pool size (default EVAL_CONCURRENCY_DEFAULT)
   evalNormativeChannel: boolean; // lab eval: ADDITIVE CW channel (independent of the leg)
+  /** Lab eval (rerank-flip-prep Addendum C): named rerank backend for the flip A/B. null ⇒ today's
+   *  path exactly. Explicit 'cohere' inherits the strict non-falling-back behaviour downstream, so a
+   *  backend failure errors rather than silently filling an arm with judge results. */
+  evalRerankBackend: 'judge' | 'cohere' | null;
 }
 
 export function clampN(v: unknown): number {
@@ -195,6 +200,11 @@ export function parseBatchState(s: Record<string, string>): LabBatchState {
     evalModel: s[LB_KEYS.evalModel] ? s[LB_KEYS.evalModel] : null,
     evalConcurrency: clampEvalConcurrency(s[LB_KEYS.evalConcurrency]),
     evalNormativeChannel: s[LB_KEYS.evalNormativeChannel] === '1',   // absent ⇒ false ⇒ today's assembly
+    // EXACT match only (the Addendum A principle) — absent/''/anything else ⇒ null ⇒ today's path.
+    // The write side (lab_batch_start) REJECTS unrecognised values loudly; this pure parse has no
+    // warning channel, and the lab row's eval provenance stamp records what actually ran either way.
+    evalRerankBackend: s[LB_KEYS.evalRerankBackend] === 'judge' || s[LB_KEYS.evalRerankBackend] === 'cohere'
+      ? (s[LB_KEYS.evalRerankBackend] as 'judge' | 'cohere') : null,
   };
 }
 

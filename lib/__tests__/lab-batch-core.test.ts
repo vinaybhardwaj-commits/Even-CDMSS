@@ -4,6 +4,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   clampN, sanitizeUids, remainingUids, parseBatchState, batchGate, LB_KEYS, LB_MAX_N, LB_MAX_COHORT,
   LB_LOCK_TTL_MS, labLockHeld, ttlBreach, ttlBreachMessage,
@@ -60,6 +61,37 @@ test('parseBatchState defaults', () => {
   assert.deepEqual(st.uids, []);
   assert.equal(st.n, 2);                    // default
   assert.equal(st.window, 'night');
+  assert.equal(st.evalRerankBackend, null); // absent ⇒ today's retrieval path exactly
+});
+
+test('evalRerankBackend (Addendum C): exact match only — judge/cohere parse, everything else is null', () => {
+  const k = LB_KEYS.evalRerankBackend;
+  assert.equal(parseBatchState({ [k]: 'judge' }).evalRerankBackend, 'judge');
+  assert.equal(parseBatchState({ [k]: 'cohere' }).evalRerankBackend, 'cohere');
+  // The live-defect value and every non-exact variant resolve to null (today's path), never guessed:
+  for (const bad of ['Cohere', 'COHERE', ' cohere ', 'cohre', '', '1']) {
+    assert.equal(parseBatchState({ [k]: bad }).evalRerankBackend, null, `${JSON.stringify(bad)} must not select a backend`);
+  }
+});
+
+test('evalRerankBackend threads batch state → evalCfg → runMiniOpdToLab (source-pinned)', () => {
+  // The tick's evalCfg construction is inline in batchTick; pin the thread at the source so a
+  // refactor cannot silently drop the arm parameter (same pattern as the §5.6 audit-path pins).
+  const lab = readFileSync('lib/lab-batch.ts', 'utf8');
+  assert.ok(lab.includes('rerankBackend: st.evalRerankBackend ?? undefined'),
+    'batchTick must thread the parsed backend into evalCfg');
+  assert.ok(lab.includes('rerankBackend: evalCfg.rerankBackend'),
+    'runMiniOpdToLab must pass it into auditOpdNote');
+  assert.ok(lab.includes('rerank: evalCfg.rerankBackend ?? null'),
+    'the lab row eval provenance must stamp the arm');
+  // And the MCP surface: schema enum + strict write-side rejection + the settings write.
+  const mcp = readFileSync('lib/mcp-tools.ts', 'utf8');
+  assert.ok(mcp.includes("evalRerankBackend: { type: 'string', enum: ['judge', 'cohere']"),
+    'lab_batch_start must expose evalRerankBackend with the exact enum');
+  assert.ok(mcp.includes("evalRerankBackend must be exactly 'judge' or 'cohere'"),
+    'an unrecognised value must ERROR at the tool boundary, not be stored or dropped');
+  assert.ok(mcp.includes('setSetting(LB_KEYS.evalRerankBackend, evalRerankBackend)'),
+    'the accepted value must be persisted under the LB_KEYS key');
 });
 
 test('batchGate precedence', () => {

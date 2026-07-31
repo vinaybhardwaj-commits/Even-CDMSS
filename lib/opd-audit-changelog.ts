@@ -23,6 +23,16 @@ export interface EngineChange {
 export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
     engine: null, date: '2026-07-31', scoring: false,
+    plain: 'The lab\'s batch runner — the surface the reranker measurement actually operates through — can now name which re-ranking system a batch of trial audits runs under. Nothing in production changes: the option exists only on the lab tool, writes only to the lab\'s own store, and when it is not set every batch behaves exactly as it did yesterday. This closes the gap between the measuring instrument built earlier tonight and the surface that can actually hold it.',
+    title: 'Rerank flip prep, follow-up (Addendum C, 31 Jul 2026): evalRerankBackend on the lab batch path — lab_batch_start schema + batch settings + thread into the audit call shipped in the previous entry. Lab-only; no engine bump; production reranker untouched.',
+    points: [
+      'WHY: Addendum B ruled the A/B could drive runMiniOpdToLab directly. It cannot — the orchestrator operates through MCP tools and cannot call a TypeScript function. The instrument shipped earlier tonight was real but unreachable from the surface the measurement runs on. This adds the missing reach, modeled exactly on the existing evalNormativeLeg/evalNormativeChannel lab overrides — same shape, same lab-only scope.',
+      'STRICT AT THE BOUNDARY: lab_batch_start REJECTS any value other than exactly \'judge\' or \'cohere\' (an arm silently running judge when the caller asked for a misspelled cohere is the same silent-mismatch class the flip-prep build removed). parseBatchState accepts only the exact strings, else null ⇒ today\'s path. Explicit \'cohere\' inherits the strict non-falling-back chain, and the resolved backend is stamped into each lab row\'s eval provenance so every arm is identifiable from its own rows.',
+    ],
+    why: 'Addendum C: check the surface you will actually operate through before ruling on whether you need it built. The four-arm A/B (J1/J2 noise floor, C1/C2 determinism check) is now runnable end-to-end from the lab tools.',
+  },
+  {
+    engine: null, date: '2026-07-31', scoring: false,
     plain: 'A configuration value that selects which system re-orders the clinical evidence excerpts was stored with a capital letter, and the code compared it case-sensitively without saying anything when it did not match. For seven days the system quietly used the fallback (an AI judge) while everyone believed the deterministic re-ranker was running. Nothing about scoring changes tonight: the value still resolves to the same fallback it has been using all week — but the mismatch is now announced loudly at startup instead of being swallowed, and the lab gains the instrument to measure what switching would actually do to scores before anyone switches. The switch itself is a separate, later change with its own measurement.',
     title: 'Reranker flip PREPARATION (PRD v1.1 + Addendum A, 31 Jul 2026) — RERANK_BACKEND read normalized (trim-only, exact case-sensitive match, loud warning on any unrecognised value) + lab-only rerankBackend threading through the audit path. NOT the flip; no engine bump; effective production backend unchanged (judge, as it has been since 24 Jul).',
     points: [

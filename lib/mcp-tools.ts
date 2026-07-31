@@ -257,6 +257,7 @@ export const LAB_TOOLS = [
         evalModel: { type: 'string', description: 'R-11 Phase-2 eval: route audit generation to this OpenRouter model id (e.g. google/gemini-3.1-flash-lite) at temperature 0. Absent ⇒ free mini. Needs OPENROUTER_API_KEY in env. Eval batches drain concurrently (50/tick, pool below) and skip the mini-yield; mini batches stay n≤2 serial.' },
         evalConcurrency: { type: 'number', description: 'Eval batches only: audits in flight per tick (default 10, max 25 — OpenRouter rate-limit safety). Ignored for mini batches.' },
         evalNormativeChannel: { type: 'boolean', description: 'R-11 fix candidate: ADDITIVE normative channel — the 8 literature excerpts stay byte-identical and CW statements are appended as a separate citable [9+] block (no eviction). Independent of evalNormativeLeg (the harmful union). Default false.' },
+        evalRerankBackend: { type: 'string', enum: ['judge', 'cohere'], description: "Rerank-flip A/B (Addendum C): run every audit in this batch with the named rerank backend. 'cohere' is the deterministic cross-encoder, STRICT — health-probed, typed errors fail the note rather than silently filling the arm with judge results (measurement honesty). Absent ⇒ today's retrieval path exactly. Lab-only: writes lab_analyses only; the production reranker is untouched. Resolved backend is stamped into each row's eval provenance." },
       },
       required: ['experiment'],
     },
@@ -733,6 +734,14 @@ async function labBatchStart(a: Record<string, unknown>): Promise<ToolResult> {
   const evalModel = S(a.evalModel).trim().slice(0, 128);
   const evalConcurrency = clampEvalConcurrency(a.evalConcurrency);
   const evalNormativeChannel = a.evalNormativeChannel === true;
+  // Addendum C — EXACT match, and an unrecognised value ERRORS rather than being stored/dropped:
+  // a batch silently running judge when the caller asked for a misspelled cohere is the same
+  // silent-mismatch class the flip-prep build exists to remove (where a channel exists, be strict).
+  const rawRerank = a.evalRerankBackend;
+  if (rawRerank != null && rawRerank !== 'judge' && rawRerank !== 'cohere') {
+    return err(`evalRerankBackend must be exactly 'judge' or 'cohere' (got ${JSON.stringify(rawRerank)})`);
+  }
+  const evalRerankBackend: '' | 'judge' | 'cohere' = rawRerank === 'judge' || rawRerank === 'cohere' ? rawRerank : '';
   await ensureLabTables();
   await setSetting(LB_KEYS.experiment, experiment);
   await setSetting(LB_KEYS.uids, JSON.stringify(uids));
@@ -743,10 +752,11 @@ async function labBatchStart(a: Record<string, unknown>): Promise<ToolResult> {
   await setSetting(LB_KEYS.evalModel, evalModel);
   await setSetting(LB_KEYS.evalConcurrency, String(evalConcurrency));
   await setSetting(LB_KEYS.evalNormativeChannel, evalNormativeChannel ? '1' : '0');
+  await setSetting(LB_KEYS.evalRerankBackend, evalRerankBackend);
   await setSetting(LB_KEYS.error, '');
   await setSetting(LB_KEYS.enabled, '1');
   const prog = await batchProgress(experiment, uids);
-  return ok({ experiment, kind, n, window, evalNormativeLeg, evalNormativeChannel, evalModel: evalModel || null, ...(evalModel ? { evalConcurrency } : {}), ...prog, note: evalModel ? 'queued - eval batch: drains 50/tick with a bounded pool via OpenRouter, skips the mini-yield. Poll lab_batch_status; nudge with lab_batch_tick. Writes lab_analyses ONLY.' : 'queued - the */2 cron drains it (mini, INR 0), yielding to the prod backfill. Poll lab_batch_status; nudge with lab_batch_tick. Writes lab_analyses ONLY.' });
+  return ok({ experiment, kind, n, window, evalNormativeLeg, evalNormativeChannel, evalRerankBackend: evalRerankBackend || null, evalModel: evalModel || null, ...(evalModel ? { evalConcurrency } : {}), ...prog, note: evalModel ? 'queued - eval batch: drains 50/tick with a bounded pool via OpenRouter, skips the mini-yield. Poll lab_batch_status; nudge with lab_batch_tick. Writes lab_analyses ONLY.' : 'queued - the */2 cron drains it (mini, INR 0), yielding to the prod backfill. Poll lab_batch_status; nudge with lab_batch_tick. Writes lab_analyses ONLY.' });
 }
 
 async function labBatchStatus(): Promise<ToolResult> {

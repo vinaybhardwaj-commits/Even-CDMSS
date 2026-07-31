@@ -222,7 +222,7 @@ export async function batchTick(opts: { ignoreWindow?: boolean } = {}): Promise<
     // branch gets `undefined` and is byte-identical, because the mini path is serial on a single GPU
     // and never retries inside the tick, so it has neither the failure mode nor the fan-out.
     const deadlineAt = plan.evalMode ? tickStart + EVAL_TICK_DEADLINE_MS : undefined;
-    const evalCfg = { evalNormativeLeg: st.evalNormativeLeg, evalModel: st.evalModel ?? undefined, evalNormativeChannel: st.evalNormativeChannel, ...(deadlineAt != null ? { deadlineAt } : {}) };
+    const evalCfg = { evalNormativeLeg: st.evalNormativeLeg, evalModel: st.evalModel ?? undefined, evalNormativeChannel: st.evalNormativeChannel, rerankBackend: st.evalRerankBackend ?? undefined, ...(deadlineAt != null ? { deadlineAt } : {}) };
     // Eval-hardening D3/D4 — the per-uid failure budget. EVAL BRANCH ONLY: the mini branch neither
     // reads nor writes it. Absent key ⇒ empty state, never an error (a batch is draining mid-deploy
     // as this ships). The read failing entirely degrades to "no budget enforcement" — losing the
