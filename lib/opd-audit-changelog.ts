@@ -22,6 +22,18 @@ export interface EngineChange {
 
 export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
+    engine: null, date: '2026-07-31', scoring: false,
+    plain: 'Since the temporary Google bridge opened on 30 July, the audit model has been thinking without the limit the engine sets for it. The limit was written in the dialect the old direct connection spoke, and the bridge does not speak that dialect, so it was silently ignored — every audit since 30 July was produced with unbounded deliberation rather than the intended amount. The limit is now translated correctly and applies again. Audits produced on the bridge from today may read slightly differently from those of 30–31 July; that is the intended setting returning, not a rule change. No rule, weight, prompt or threshold changed.',
+    title: 'THE THINKING CAP WAS BEING DROPPED ON THE BRIDGE — google.thinking_config.thinking_budget translated to OpenRouter\'s reasoning.max_tokens (T-11 part 1, 31 Jul 2026). Defect fix: it restores the 4096 budget the engine already asks for. No engine bump; no rule, weight, prompt or threshold change.',
+    points: [
+      'THE DEFECT: opd-note-audit.ts:970 has set google.thinking_config.thinking_budget = AUDIT_EVAL_THINKING_BUDGET (4096) on every production Gemini audit since the determinism work. That is the ONLY thinking form Vertex\'s OpenAI-compat endpoint honors — and OpenRouter does not know the field. From 30 Jul the bridge forwarded it untranslated, so it was dead weight: Pro ran UNCAPPED on the bridge and capped on Vertex, from identical code.',
+      'THE FIX: buildOpenrouterParams now reads the budget off the Vertex form, emits OpenRouter\'s own reasoning.max_tokens, and DROPS the google field from the outgoing body. No default is invented — a call site that sends no budget still sends no reasoning field, so every non-audit bridge call is byte-identical. The Vertex path is untouched and still sends the google form.',
+      'AUDIT OUTPUT WILL MOVE on the bridge: audits of 30–31 Jul were produced with unbounded thinking, from today with the intended 4096. Standing hazard 3 in spirit — a restoration of the intended setting, not a recalibration. The affected cohort is dated and bounded: bridge audits between 30 Jul and this deploy.',
+      'NOT the cure for the bridge\'s 42.3% empty-response rate (T-11). Measured directly: a matched 16-note arm carrying reasoning.max_tokens 4096 failed 6/16 against 8/16 uncapped. The failure is an upstream idle timeout on time-to-first-byte; this entry is the separate latent defect that investigation surfaced.',
+    ],
+    why: 'Found while diagnosing T-11 (bridge empty responses). The engine has asked for a bounded thinking budget since the Audit-Score-Determinism work; on the bridge it has not been getting one, which makes the audit less reproducible than the code claims.',
+  },
+  {
     engine: null, date: '2026-07-30', scoring: false,
     plain: 'The audits of 27–30 July were quietly produced by a much smaller local model: the Google connection had been cut off on 26 July and every call silently fell back to the office Mac mini. A temporary bridge now reaches the same Google model (Gemini 2.5 Pro) by a different road. Expect the scores to take a visible step on the day the bridge turns on — that step is NOT a rule change and NOT a regression; it is the intended model returning. No rule, weight, prompt or threshold changed.',
     title: 'Gemini via OpenRouter — temporary bridge while aiplatform.googleapis.com is disabled on clinical-infra (GEMINI_VIA_OPENROUTER=1, flag-gated, V 30 Jul 2026). No engine bump; no rule/weight/prompt/threshold change; retire the bridge when Vertex is restored.',

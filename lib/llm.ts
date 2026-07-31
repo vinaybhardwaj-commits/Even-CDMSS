@@ -109,14 +109,41 @@ export const OPENROUTER_GOOGLE_PROVIDER_PIN = { allow_fallbacks: false, only: ['
  *     OpenRouter 400 "Reasoning is mandatory and cannot be disabled". Never send it.
  *   trap 2 — Pro spends output budget on reasoning FIRST; the Ollama-tuned caps truncate the
  *     JSON mid-string. Apply the same +8192 headroom the Vertex branch applies.
+ *   trap 3 (T-11, 31 Jul 2026) — THE THINKING CAP WAS BEING DROPPED. Call sites express it in the
+ *     ONLY form Vertex honors, `google.thinking_config.thinking_budget` (see the trace.ts note).
+ *     OpenRouter does not know that field, so it rode along as dead weight and Pro thought
+ *     WITHOUT A LIMIT on the bridge while the same code capped it on Vertex. `thinkingBudgetOf`
+ *     translates it to OpenRouter's own `reasoning.max_tokens` and the `google` field is dropped
+ *     from the outgoing body. This is a DEFECT FIX: it restores what the call site already says.
+ *     No default is invented — no budget in ⇒ no `reasoning` out, byte-identical to today.
  * Plus the Google provider pin above.
  */
+export function thinkingBudgetOf(rest: Record<string, unknown>): number | undefined {
+  const g = rest.google as { thinking_config?: { thinking_budget?: unknown } } | undefined;
+  const n = Number(g?.thinking_config?.thinking_budget);
+  // Pro rejects a budget of 0 with an HTTP 400 (it cannot have thinking disabled), so 0 is not a
+  // translatable cap — it is passed on as "no cap sent", exactly as an absent field would be.
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
+}
+
 export function buildOpenrouterParams(slug: string, rest: Record<string, unknown>): Record<string, unknown> {
   if (!isGeminiModel(slug)) {
     return { ...rest, model: slug, ...(('reasoning' in rest) ? {} : { reasoning: { enabled: false } }) };
   }
   const baseMax = Number((rest as { max_tokens?: number }).max_tokens) || 1024;
-  return { ...rest, model: slug, max_tokens: baseMax + 8192, provider: OPENROUTER_GOOGLE_PROVIDER_PIN };
+  // The Vertex-only field never travels to OpenRouter, translated or not.
+  const { google: _g, ...body } = rest;
+  void _g;
+  const budget = thinkingBudgetOf(rest);
+  return {
+    ...body,
+    model: slug,
+    max_tokens: baseMax + 8192,
+    provider: OPENROUTER_GOOGLE_PROVIDER_PIN,
+    // A caller that already speaks OpenRouter's dialect (the eval body at opd-note-audit.ts:636)
+    // keeps its own reasoning block — translation never overwrites an explicit one.
+    ...(budget !== undefined && !('reasoning' in body) ? { reasoning: { max_tokens: budget } } : {}),
+  };
 }
 
 /**

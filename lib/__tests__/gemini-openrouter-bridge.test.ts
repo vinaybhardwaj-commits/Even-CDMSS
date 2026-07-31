@@ -13,7 +13,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { openrouterGeminiSlug, buildOpenrouterParams, OPENROUTER_GOOGLE_PROVIDER_PIN } from '../llm.ts';
+import { openrouterGeminiSlug, buildOpenrouterParams, OPENROUTER_GOOGLE_PROVIDER_PIN, thinkingBudgetOf } from '../llm.ts';
 
 const LLM = readFileSync('lib/llm.ts', 'utf8');
 const TRACE = readFileSync('lib/trace.ts', 'utf8');
@@ -78,6 +78,56 @@ test('trap 1 control: a NON-Gemini slug reproduces the pre-bridge behaviour byte
 test('trap 2: a Gemini slug gets baseMax + 8192 — Pro spends output budget on reasoning FIRST', () => {
   assert.equal(buildOpenrouterParams('google/gemini-2.5-pro', { max_tokens: 2200 }).max_tokens, 2200 + 8192);
   assert.equal(buildOpenrouterParams('google/gemini-2.5-pro', {}).max_tokens, 1024 + 8192, 'default base 1024, same as the Vertex branch');
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// 3b · Trap 3 (T-11) — the thinking cap was being DROPPED on the bridge
+//
+// Call sites express the cap in the only form Vertex honors, google.thinking_config.thinking_budget.
+// OpenRouter does not know that field, so from 30 Jul it rode along as dead weight and Pro thought
+// WITHOUT A LIMIT on the bridge — from the same code that capped it on Vertex.
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+const VERTEX_CAP = { google: { thinking_config: { thinking_budget: 4096 } } };
+
+test('trap 3: the Vertex thinking budget is TRANSLATED to reasoning.max_tokens, and `google` never travels', () => {
+  const p = buildOpenrouterParams('google/gemini-2.5-pro', { max_tokens: 2200, ...VERTEX_CAP });
+  assert.deepEqual(p.reasoning, { max_tokens: 4096 }, 'the cap the call site already asked for');
+  assert.ok(!('google' in p), 'the untranslated Vertex-only field is REMOVED from the outgoing body');
+  assert.equal(p.max_tokens, 2200 + 8192, 'the output headroom is unchanged by the translation');
+});
+
+test('trap 3: NO DEFAULT IS INVENTED — no budget in, no reasoning out (byte-identical to before)', () => {
+  const p = buildOpenrouterParams('google/gemini-2.5-pro', { max_tokens: 900 });
+  assert.ok(!('reasoning' in p), 'a call site that never asked for a cap still sends none');
+  assert.ok(!('google' in p));
+  // Junk and the Pro-rejected 0 are treated as "no cap", never as a translatable budget.
+  for (const bad of [0, -1, 'lots', null, undefined, NaN]) {
+    const q = buildOpenrouterParams('google/gemini-2.5-pro', { google: { thinking_config: { thinking_budget: bad } } });
+    assert.ok(!('reasoning' in q), `budget ${String(bad)} ⇒ no reasoning field (Pro 400s on 0)`);
+  }
+});
+
+test('trap 3: the reader is pure and total — any shape yields a budget or undefined', () => {
+  assert.equal(thinkingBudgetOf(VERTEX_CAP), 4096);
+  assert.equal(thinkingBudgetOf({ google: { thinking_config: { thinking_budget: 512.7 } } }), 512, 'floored');
+  assert.equal(thinkingBudgetOf({}), undefined);
+  assert.equal(thinkingBudgetOf({ google: {} }), undefined);
+  assert.equal(thinkingBudgetOf({ google: null as unknown as Record<string, unknown> }), undefined);
+});
+
+test('trap 3: an explicit OpenRouter reasoning block WINS — translation never overwrites it', () => {
+  const p = buildOpenrouterParams('google/gemini-2.5-pro', { reasoning: { max_tokens: 512 }, ...VERTEX_CAP });
+  assert.deepEqual(p.reasoning, { max_tokens: 512 }, 'the caller already speaks the dialect');
+});
+
+test('trap 3: the VERTEX path is untouched — it still sends the google form and no reasoning block', () => {
+  // The translation lives in buildOpenrouterParams, which the Vertex branches never call. Both
+  // Vertex branches forward `...rest` (google included) and add only the model + headroom.
+  assert.ok(LLM.includes('const gParams = { ...rest, model: vertexModelName(geminiModel), max_tokens: baseMax + 8192 };'));
+  assert.ok(TRACE.includes('model: vertexModelName(opts!.gemini as string),'));
+  assert.ok(!TRACE.includes('thinkingBudgetOf'), 'no translation on the Vertex path');
+  assert.ok(LLM.includes('const { google: _g, ...body } = rest;'), 'the strip happens only in the OpenRouter builder');
 });
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════
