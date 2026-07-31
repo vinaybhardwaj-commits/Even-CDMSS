@@ -3,6 +3,8 @@ import { sql } from '@/lib/db';
 import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
 import { fetchLvcCells, readRightCareExclusions, fetchRightCareCoverage } from '@/lib/opd-audit-doctor';
 import { computeDoctorOE, FUNNEL_MIN_N, type DoctorOE } from '@/lib/opd-funnel-core';
+import { canonicalDistinctOnSql } from '@/lib/audit-canonical';
+import { OPD_ENGINE_VERSIONS_CURRENT } from '@/lib/opd-note-audit-core';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Stewardship · Admin · CAT' };
@@ -20,17 +22,30 @@ type DoctorRow = DeptRow & { doctor_uid: string; doctor_name: string; speciality
 
 const WINDOW_DAYS = 90;
 
-// Shared inner subquery: latest audit per note (DISTINCT ON uid) over the window. Nested because
-// Neon's HTTP driver can't GROUP BY over a DISTINCT ON in one pass. doctor_directory (synced from
-// db13 via /api/admin/sync-doctor-directory) supplies the speciality + name; a missing table is
-// caught → empty state.
-const INNER = `
-  SELECT DISTINCT ON (uid) uid, doctor_uid, note_quality_index, band,
+/** Read-side engine FAMILY (decision 21) — also excludes `-mini` before ranking, which is what
+ *  makes the int[] cast in CANONICAL_RANK_SQL safe. */
+const ENG_FAMILY_SQL = `ANY(ARRAY[${OPD_ENGINE_VERSIONS_CURRENT.map((v) => `'${v}'`).join(', ')}])`;
+
+// Shared inner subquery: the CANONICAL audit per note over the window. Nested because Neon's HTTP
+// driver can't GROUP BY over a DISTINCT ON in one pass. doctor_directory (synced from db13 via
+// /api/admin/sync-doctor-directory) supplies the speciality + name; a missing table is caught →
+// empty state.
+//
+// ⚠️ RE-POINTED 31 Jul 2026 (addendum D). This ordered by `uid, audited_at DESC` — newest by TIME —
+// and carried NO engine filter at all, making it the third of three different rules over one table.
+// Newest-by-time is not THE RULE: a later re-audit on an OLDER engine outranked the newer engine's
+// score, and with no family filter a `-mini` backfill row could win the note outright — the exact
+// trap audit-canonical.ts documents. Now uses the shared fragment, and the family filter both
+// restores the convention and makes the int[] cast safe by excluding `-mini` before ranking.
+const CANON_WHERE = `app_source = $1 AND engine_version = ${ENG_FAMILY_SQL} AND excluded_reason IS NULL AND note_date >= NOW() - ($2 || ' days')::interval`;
+const INNER = canonicalDistinctOnSql({
+  table: 'opd_note_audits',
+  identity: 'uid',
+  cols: `doctor_uid, note_quality_index, band,
     score_appropriateness, score_prescribing_safety, score_documentation,
-    completeness_pct, n_low_value, n_interaction_alerts
-  FROM opd_note_audits
-  WHERE app_source = $1 AND excluded_reason IS NULL AND note_date >= NOW() - ($2 || ' days')::interval
-  ORDER BY uid, audited_at DESC`;
+    completeness_pct, n_low_value, n_interaction_alerts`,
+  where: CANON_WHERE,
+});
 
 const AGG = `
   count(*)::int AS n_notes,
@@ -68,9 +83,12 @@ const TOTAL_SQL = `
     round(100.0 * avg(CASE WHEN n_low_value > 0 THEN 1 ELSE 0 END))::int AS pct_low,
     sum(n_low_value)::int AS sum_low,
     sum(n_interaction_alerts)::int AS sum_interactions
-  FROM ( SELECT DISTINCT ON (uid) uid, note_quality_index, band, n_low_value, n_interaction_alerts
-    FROM opd_note_audits WHERE app_source = $1 AND excluded_reason IS NULL AND note_date >= NOW() - ($2 || ' days')::interval
-    ORDER BY uid, audited_at DESC ) t`;
+  FROM ( ${canonicalDistinctOnSql({
+    table: 'opd_note_audits',
+    identity: 'uid',
+    cols: 'note_quality_index, band, n_low_value, n_interaction_alerts',
+    where: CANON_WHERE,
+  })} ) t`;
 
 function scoreClass(v: number): string {
   if (v >= 80) return 'text-emerald-700';

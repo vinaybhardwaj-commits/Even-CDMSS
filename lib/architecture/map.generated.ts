@@ -3447,6 +3447,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "opd-gov-read",
+    "to": "audit-canonical",
+    "kind": "value"
+  },
+  {
+    "from": "opd-gov-read",
     "to": "citations-core",
     "kind": "type"
   },

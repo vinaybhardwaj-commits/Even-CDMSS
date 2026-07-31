@@ -122,6 +122,33 @@ test('no doctor-facing surface writes its own NOTE-IDENTITY dedup', () => {
   }
 });
 
+test('ONE RULE across every surface — governance and stewardship included (addendum D)', () => {
+  // The real defect was three surfaces holding three different rules over one table: the doctor
+  // pages deduped one way, governance PINNED a version, stewardship took the newest by TIME. This
+  // is the test that stops a fourth appearing.
+  for (const f of ['lib/opd-gov-read.ts', 'app/admin/stewardship/page.tsx', 'lib/opd-audit-doctor.ts']) {
+    const src = readFileSync(f, 'utf8');
+    assert.ok(src.includes('canonicalDistinctOnSql'), `${f} must dedup through the shared fragment`);
+    assert.ok(!/DISTINCT ON \(\s*uid\s*\)/.test(src), `${f} must not hand-write a note-identity dedup`);
+  }
+
+  // Governance: the version pin is gone from the METRICS path. It showed 4-7% of a doctor's notes
+  // and collapsed at every engine bump. (resolveInstances still pins — reported, not changed here.)
+  const gov = readFileSync('lib/opd-gov-read.ts', 'utf8');
+  const metrics = gov.slice(gov.indexOf('export async function doctorAuditMetrics'));
+  assert.ok(!/engine_version\s*=\s*\$\d/.test(metrics), 'doctorAuditMetrics must not pin a single engine version');
+  assert.ok(metrics.includes('ENG_FAMILY_SQL'), 'it reads the engine family, like every other surface');
+  // Option C, not B: the mix is DECLARED, never hidden.
+  assert.ok(/engine_versions: number; oldest_engine_version: string \| null;/.test(gov),
+    'AuditMetrics must carry the version spread behind the number');
+  assert.ok(metrics.includes('count(DISTINCT engine_version)'), 'and it must actually be computed');
+
+  // Stewardship: newest-by-time is not THE RULE, and it had no engine filter at all.
+  const stew = readFileSync('app/admin/stewardship/page.tsx', 'utf8');
+  assert.ok(!/ORDER BY uid, audited_at DESC/.test(stew), 'newest-by-time ranking must be gone');
+  assert.ok(stew.includes('ENG_FAMILY_SQL'), 'and it must now filter the engine family');
+});
+
 test('canonicalDistinctOnSql composes the identity, the columns and the rank tail', () => {
   const sqlText = canonicalDistinctOnSql({
     table: 'opd_note_audits', identity: 'uid', cols: 'band, note_date', where: 'app_source = $1',
