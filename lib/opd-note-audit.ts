@@ -522,16 +522,22 @@ export interface OpdNoteAudit {
  * note_quality_index can move. The flag is off in every environment until Phase 0/2 clear it.
  * Pure (env injectable) so the flag-off byte-identity is unit-testable without a DB.
  */
-export function opdRetrieveOpts(mini: boolean, env: Record<string, string | undefined> = process.env, evalNormativeLeg?: boolean): RetrieveOptions {
+export function opdRetrieveOpts(mini: boolean, env: Record<string, string | undefined> = process.env, evalNormativeLeg?: boolean, rerankBackend?: 'judge' | 'cohere'): RetrieveOptions {
   // Lab eval override (Phase 2): evalNormativeLeg forces the leg ON regardless of env/mini. Absent/false
   // ⇒ today's gate exactly (env==='1' && !mini), so with NO eval config the opts are byte-identical.
   const useNormativeLeg = evalNormativeLeg === true || (env.OPD_NORMATIVE_LEG_ENABLED === '1' && !mini);
-  return { topK: 8, useReranker: true, useSourceWeights: true, hybrid: true, ...(useNormativeLeg ? { useNormativeLeg: true } : {}) };
+  // Rerank-flip-prep (31 Jul): an explicit backend is added ONLY when set — the guarded spread keeps
+  // the unset shape deep-equal to today's (no `rerankBackend: undefined` key ever reaches retrieve()).
+  return {
+    topK: 8, useReranker: true, useSourceWeights: true, hybrid: true,
+    ...(useNormativeLeg ? { useNormativeLeg: true } : {}),
+    ...(rerankBackend ? { rerankBackend } : {}),
+  };
 }
 
-async function defaultRetrieve(q: string, mini = false, evalNormativeLeg?: boolean): Promise<CiteHit[]> {
+async function defaultRetrieve(q: string, mini = false, evalNormativeLeg?: boolean, rerankBackend?: 'judge' | 'cohere'): Promise<CiteHit[]> {
   try {
-    const r = await retrieve(q, opdRetrieveOpts(mini, process.env, evalNormativeLeg));
+    const r = await retrieve(q, opdRetrieveOpts(mini, process.env, evalNormativeLeg, rerankBackend));
     return r.hits.map((h) => ({
       id: h.id, source: h.source, book: h.book, chapter: h.chapter, section: h.section,
       page_start: h.page_start, page_end: h.page_end, item_number: h.item_number,
@@ -999,6 +1005,13 @@ export interface AuditOpdOpts {
   evalNormativeLeg?: boolean;
   /** LAB EVAL ONLY: route audit generation to this OpenRouter model id. Absent ⇒ Gemini/mini as today. */
   evalModel?: string;
+  /** LAB EVAL ONLY (rerank-flip-prep, 31 Jul 2026): run this audit's citation retrieval under a NAMED
+   *  rerank backend, so the flip A/B can produce full paired audits per backend. Explicit 'cohere'
+   *  inherits rerank()'s strict per-call behaviour — health-probed, typed errors PROPAGATE, never a
+   *  silent fallback (measurement honesty). ABSENT ⇒ the retrieve options object is deep-equal to
+   *  today's (guarded spread in opdRetrieveOpts) and production is byte-identical. Set only by the
+   *  lab; never by any production caller. This is the instrument for the flip, not the flip. */
+  rerankBackend?: 'judge' | 'cohere';
   /** LAB EVAL ONLY (R-11 fix candidate): ADDITIVE normative channel — the 8 literature excerpts stay
    *  byte-identical and the CW statements are appended as a separate citable block [9+]. Independent
    *  of evalNormativeLeg (the harmful union); absent ⇒ today's context assembly exactly. */
@@ -1179,7 +1192,7 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
       'outpatient appropriateness rational prescribing evidence-based management guideline',
     ].filter(Boolean).join('. ');
 
-    const hits = await defaultRetrieve(query, mini, opts.evalNormativeLeg);
+    const hits = await defaultRetrieve(query, mini, opts.evalNormativeLeg, opts.rerankBackend);
     // R-11 additive channel (lab eval only): a SEPARATE CW-only retrieve appended as [9+] — the 8
     // literature excerpts above are untouched. No channel ⇒ assembleAuditContext is byte-identical
     // to the previous hitsToSources(hits) + buildCitedContext(hits).

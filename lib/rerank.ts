@@ -17,7 +17,38 @@
 import { geminiUtilityModel } from './llm';
 import { governedChat, recordRerankCost } from './trace';
 
-const BACKEND = (process.env.RERANK_BACKEND || 'judge') as 'judge' | 'cohere';
+/**
+ * ⚠️ NORMALIZED READ — LOAD-BEARING (rerank-flip-prep, 31 Jul 2026). This was a bare
+ * `as 'judge' | 'cohere'` cast. Vercel held `RERANK_BACKEND=Cohere` (capital C, set 24 Jul,
+ * Production+Preview); `'Cohere' === 'cohere'` is false, so from 24–31 Jul every production rerank
+ * silently fell through to the LLM judge — under GEMINI_ALL=1 + the OpenRouter bridge, an unseeded
+ * Gemini utility model, five calls per audit — while the operator believed the deterministic
+ * cross-encoder was running. The strict health probe sat INSIDE the branch that never executed; a
+ * guard behind the condition it guards cannot fire.
+ *
+ * Match is TRIM-ONLY, EXACT and CASE-SENSITIVE, by design (PRD Addendum A ruling): `Cohere`,
+ * `COHERE` and any typo all resolve to 'judge' AND WARN on every cold start, naming the bad value.
+ * Case-folding was considered and rejected — it would have made the stored `Cohere` resolve to
+ * 'cohere' and flipped production on deploy, bypassing the engine bump, the scoring changelog entry
+ * and the golden A/B. A config value that decides which model reads clinical evidence fails loudly;
+ * it is never guessed at helpfully. Only the exact lowercase 'cohere' selects the cross-encoder,
+ * and V sets that value after the A/B — never this module.
+ */
+/** PURE resolver for the env read — exported so the matrix is unit-testable (the module-level
+ *  const below is this function applied once to process.env; ESM caching makes a module-level
+ *  read untestable in-process, the same pattern as opdRetrieveOpts' injectable env). */
+export function resolveEnvRerankBackend(raw: string | undefined): { backend: 'judge' | 'cohere'; warning: string | null } {
+  const trimmed = (raw || 'judge').trim();
+  const backend: 'judge' | 'cohere' = trimmed === 'cohere' ? 'cohere' : 'judge';
+  const warning = trimmed !== 'judge' && trimmed !== 'cohere'
+    ? `[rerank] unrecognised RERANK_BACKEND=${JSON.stringify(raw)} ` +
+      `— using 'judge'. Valid values are exactly 'judge' or 'cohere', lowercase.`
+    : null;
+  return { backend, warning };
+}
+const ENV_READ = resolveEnvRerankBackend(process.env.RERANK_BACKEND);
+const BACKEND: 'judge' | 'cohere' = ENV_READ.backend;
+if (ENV_READ.warning) console.warn(ENV_READ.warning);
 const JUDGE_MODEL = process.env.RERANK_JUDGE_MODEL || 'llama3.1:8b';
 const JUDGE_BATCH = 5;  // 5 candidates per LLM call
 const MAX_SNIPPET_CHARS = 600;

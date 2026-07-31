@@ -41,7 +41,7 @@ export async function batchProgress(experiment: string, cohort: string[]): Promi
 /** Lab eval config for a batch (R-11 Stage 2 Phase 2). Absent ⇒ today's mini/leg-off behaviour.
  *  `deadlineAt` (Eval-tick-deadline PRD D1) is absolute epoch ms, set by `batchTick`'s EVAL branch
  *  only — the mini branch leaves it undefined and is byte-identical. */
-export interface LabEvalConfig { evalNormativeLeg?: boolean; evalModel?: string; evalNormativeChannel?: boolean; deadlineAt?: number }
+export interface LabEvalConfig { evalNormativeLeg?: boolean; evalModel?: string; evalNormativeChannel?: boolean; deadlineAt?: number; rerankBackend?: 'judge' | 'cohere' }
 
 // ── per-uid failure budget (Eval-hardening D3/D4) ────────────────────────────────────────────────
 //
@@ -145,6 +145,9 @@ export async function runMiniOpdToLab(uid: string, experiment: string, evalCfg: 
     pipeline: 'mini', engineTag: 'lab', trace: false,
     evalNormativeLeg: evalCfg.evalNormativeLeg, evalModel: evalCfg.evalModel,
     evalNormativeChannel: evalCfg.evalNormativeChannel,
+    // Rerank-flip-prep (31 Jul): named rerank backend for the flip A/B. Absent ⇒ retrieve opts
+    // deep-equal to today's (guarded spread downstream); explicit 'cohere' stays strict.
+    rerankBackend: evalCfg.rerankBackend,
     // Inert unless evalModel is also set — it reaches the LLM only via defaultGenerate's eval branch.
     deadlineAt: evalCfg.deadlineAt,
     onEnvelope: (e) => { lastEnvelope = e; },
@@ -153,7 +156,7 @@ export async function runMiniOpdToLab(uid: string, experiment: string, evalCfg: 
     index: audit.scorecard.headline, band: audit.scorecard.band, scorecard: audit.scorecard,
     completeness: audit.completeness, findings: audit.findings, suggestions: audit.suggestions,
     // Phase-2 provenance stamp so band-migration analysis can split arms by (model × leg × channel).
-    eval: { model: evalCfg.evalModel ?? null, normativeLeg: evalCfg.evalNormativeLeg === true, normativeChannel: evalCfg.evalNormativeChannel === true },
+    eval: { model: evalCfg.evalModel ?? null, normativeLeg: evalCfg.evalNormativeLeg === true, normativeChannel: evalCfg.evalNormativeChannel === true, rerank: evalCfg.rerankBackend ?? null },
     // R2 instrumentation. ADDITIVE — a key inside the existing `output` jsonb that saveLabAnalysis
     // already writes whole, so there is NO migration. Absent on the mini path (no evalModel ⇒ no
     // OpenRouter call ⇒ no envelope), which keeps every non-eval lab row byte-identical.

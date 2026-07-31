@@ -61,7 +61,9 @@ export function geminiConfigured(): boolean {
  * (env change + redeploy). Scoped per-run mini use (e.g. the OPD mini backfill) does NOT
  * need this switch — it forces locally via opts.pipeline.
  */
-export function miniPipeline(): boolean { return process.env.LLM_PIPELINE === 'mini'; }
+export function miniPipeline(): boolean {
+  return (process.env.LLM_PIPELINE || '').trim().toLowerCase() === 'mini';
+}
 
 /** A model string targets Gemini if it names a gemini model (with or without the google/ prefix). */
 export function isGeminiModel(model: string | undefined | null): boolean {

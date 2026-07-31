@@ -4,8 +4,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import {
-  rerank, resolveRerankBackend, assertRerankBackendHealthy, rerankCohere, _resetRerankHealth,
+  rerank, resolveRerankBackend, resolveEnvRerankBackend, assertRerankBackendHealthy, rerankCohere, _resetRerankHealth,
   RerankBackendError, RerankBackendUnreachable, RerankBackendUnhealthy, RerankBackendMissing,
   RERANK_HEALTH_MIN_REL, RERANK_HEALTH_MIN_MARGIN,
   type RerankDeps, type RerankCandidate, type RerankResult,
@@ -240,6 +241,117 @@ test('discrimination thresholds default to 0.40 / 0.15', () => {
 });
 
 // scoresOnly trim (unchanged) — kept from the prior file
+// ═══ Rerank-flip-prep (PRD v1.1 + Addendum A, 31 Jul 2026) — §5 tests 1–7 ═══
+// The env read is module-level, so each case re-imports the module with a cache-busting query
+// string under a patched env, capturing console.warn emitted at load.
+import { miniPipeline } from '../llm.ts';
+import { opdRetrieveOpts } from '../opd-note-audit.ts';
+
+test('§5.1 the LIVE production case: RERANK_BACKEND=Cohere resolves to judge AND warns', () => {
+  const r = resolveEnvRerankBackend('Cohere');
+  assert.equal(r.backend, 'judge', 'Cohere (capital C) must NOT select the cross-encoder — that would be the flip');
+  assert.ok(r.warning?.includes('unrecognised RERANK_BACKEND="Cohere"'), 'the seven-day silent mismatch must now be loud, naming the bad value');
+});
+
+test('§5.1b …and the warning actually FIRES at real module load (cold-start proof, subprocess)', () => {
+  // ESM caching makes this unprovable in-process (the module loaded once at the top of this file),
+  // so the one cold-start proof runs the real import in a child with the live production env value.
+  const r = spawnSync(process.execPath, ['--import', 'tsx', '-e',
+    `import('./lib/rerank.ts').then((m) => { const f = m.resolveRerankBackend ?? m.default.resolveRerankBackend; console.log('BACKEND=' + f(undefined)); });`],
+  { env: { ...process.env, RERANK_BACKEND: 'Cohere' }, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /BACKEND=judge/, 'with the env holding Cohere the effective backend stays judge');
+  assert.ok(r.stderr.includes('unrecognised RERANK_BACKEND="Cohere"'),
+    'the cold-start warning must reach stderr naming the bad value');
+});
+
+test('§5.2 exact lowercase cohere (whitespace-trimmed) selects cohere silently; COHERE warns to judge', () => {
+  for (const v of ['cohere', ' cohere ']) {
+    const r = resolveEnvRerankBackend(v);
+    assert.equal(r.backend, 'cohere', `${JSON.stringify(v)} must select the cross-encoder`);
+    assert.equal(r.warning, null, `${JSON.stringify(v)} is valid — no warning`);
+  }
+  const upper = resolveEnvRerankBackend('COHERE');
+  assert.equal(upper.backend, 'judge', 'case is NOT folded — by Addendum A ruling');
+  assert.ok(upper.warning);
+});
+
+test('§5.3 judge, trimmed judge and unset are silent; any other value warns to judge', () => {
+  for (const v of ['judge', ' judge ', undefined]) {
+    const r = resolveEnvRerankBackend(v);
+    assert.equal(r.backend, 'judge');
+    assert.equal(r.warning, null, `${JSON.stringify(v)} must not warn`);
+  }
+  const typo = resolveEnvRerankBackend('cohre');
+  assert.equal(typo.backend, 'judge');
+  assert.ok(typo.warning?.includes('"cohre"'), 'a typo must be loud, never silently absorbed');
+  // and the module-level read IS this function applied to process.env — enforced at the source:
+  const src = readFileSync('lib/rerank.ts', 'utf8');
+  assert.ok(src.includes('resolveEnvRerankBackend(process.env.RERANK_BACKEND)'),
+    'the module const must come from the tested resolver');
+  assert.ok(!/as 'judge' \| 'cohere';/.test(src.split('\n').find((l) => l.includes('process.env.RERANK_BACKEND')) ?? ''),
+    'the bare cast must be gone');
+});
+
+test('§5.4 miniPipeline normalizes: Mini and " mini " both select the mini pipeline', () => {
+  const prev = process.env.LLM_PIPELINE;
+  try {
+    for (const v of ['Mini', ' mini ', 'mini']) {
+      process.env.LLM_PIPELINE = v;
+      assert.equal(miniPipeline(), true, `${JSON.stringify(v)} must select mini`);
+    }
+    process.env.LLM_PIPELINE = 'nope';
+    assert.equal(miniPipeline(), false);
+    delete process.env.LLM_PIPELINE;
+    assert.equal(miniPipeline(), false);
+  } finally {
+    if (prev === undefined) delete process.env.LLM_PIPELINE; else process.env.LLM_PIPELINE = prev;
+  }
+});
+
+test('§5.5 INVARIANCE: no rerankBackend ⇒ retrieve options deep-equal to today, no extra key', () => {
+  const TODAY = { topK: 8, useReranker: true, useSourceWeights: true, hybrid: true };
+  assert.deepEqual(opdRetrieveOpts(false, {}), TODAY);
+  assert.deepEqual(opdRetrieveOpts(false, {}, undefined, undefined), TODAY);
+  assert.deepEqual(opdRetrieveOpts(true, {}), TODAY);
+  // the guarded spread must not add the key with an undefined value — Object.keys is the proof
+  assert.deepEqual(Object.keys(opdRetrieveOpts(false, {}, undefined, undefined)), Object.keys(TODAY));
+  assert.ok(!('rerankBackend' in opdRetrieveOpts(false, {})), 'unset ⇒ the key is ABSENT, not undefined');
+  // and the normative-leg combination is unchanged too
+  assert.deepEqual(opdRetrieveOpts(false, {}, true), { ...TODAY, useNormativeLeg: true });
+});
+
+test('§5.6 rerankBackend:cohere reaches retrieve() — carried in the opts and threaded at the call sites', () => {
+  assert.equal(opdRetrieveOpts(false, {}, undefined, 'cohere').rerankBackend, 'cohere');
+  assert.equal(opdRetrieveOpts(true, {}, undefined, 'judge').rerankBackend, 'judge');
+  // the leg and the backend compose without disturbing each other
+  assert.deepEqual(opdRetrieveOpts(false, {}, true, 'cohere'),
+    { topK: 8, useReranker: true, useSourceWeights: true, hybrid: true, useNormativeLeg: true, rerankBackend: 'cohere' });
+  // thread integrity, enforced at the source so a refactor cannot silently drop the parameter:
+  const audit = readFileSync('lib/opd-note-audit.ts', 'utf8');
+  assert.ok(audit.includes('defaultRetrieve(query, mini, opts.evalNormativeLeg, opts.rerankBackend)'),
+    'auditOpdNote must pass opts.rerankBackend into its retrieve');
+  assert.ok(audit.includes('opdRetrieveOpts(mini, process.env, evalNormativeLeg, rerankBackend)'),
+    'defaultRetrieve must forward the backend into the opts builder');
+  const retrieveSrc = readFileSync('lib/retrieve.ts', 'utf8');
+  assert.ok(retrieveSrc.includes('opts.rerankBackend'), 'retrieve() must still forward the backend to rerank()');
+  const lab = readFileSync('lib/lab-batch.ts', 'utf8');
+  assert.ok(lab.includes('rerankBackend: evalCfg.rerankBackend'),
+    'the lab entry point that accepts evalModel must expose rerankBackend beside it');
+});
+
+test('§5.7 explicit cohere via the threaded path stays STRICT — typed errors propagate, no fallback', async () => {
+  const judge = { n: 0 };
+  await assert.rejects(
+    rerank('q', cands(), 'cohere', {
+      checkHealthy: async () => { throw new RerankBackendUnhealthy('cohere', 'm', 'down'); },
+      judgeFn: countingBackend('judge', judge),
+    }),
+    (e: unknown) => e instanceof RerankBackendUnhealthy,
+  );
+  assert.equal(judge.n, 0, 'strictness means the judge is NEVER consulted on an explicit cohere failure');
+});
+
 test('pickScoreFields drops text/section, keeps ids + scores', () => {
   const t = pickScoreFields({ final_rank: 1, id: 7, source: 's', book: 'b', chapter: 'c', section: 'sec', item_number: 'i', similarity: 0.5, vector_rank: 2, bm25_rank: 3, bm25_variant_ranks: [3, null], rrf_score: 0.1, rerank_score: 0.9, rerank_backend: 'cohere', source_quality_weight: 0.95, text: 'BIG' });
   assert.equal('text' in t, false);
