@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  assemblePackage, resolveServed, makeJobId, isJobId,
+  assemblePackage, resolveServed, makeJobId, isJobId, findStateConflicts,
   PATIENT_SUMMARY_DISCLAIMER, COMMERCIAL_DEFINITION, PATIENT_SUMMARY_API_VERSION,
 } from '../patient-summary-core.ts';
 
@@ -276,6 +276,25 @@ test('state_llm: rejected[] is surfaced in the envelope — the hallucination me
   assert.equal(off.envelope.state_llm.enabled, false);
   assert.equal(off.envelope.state_llm.rejected_count, null);
   assert.deepEqual(off.envelope.state_llm.rejected, []);
+});
+
+test('state_conflicts: a concept in BOTH positives and negatives is surfaced, normalised, never resolved', () => {
+  const cs = {
+    positives: [
+      { concept: 'Fever', status: 'present', provenance: { extractionMethod: 'llm' } },
+      { concept: 'back pain', status: 'present', provenance: { extractionMethod: 'llm' } },
+    ],
+    negatives: [
+      { concept: 'fever', status: 'absent', provenance: { extractionMethod: 'deterministic' } },
+    ],
+    unknowns: [],
+  };
+  assert.deepEqual(findStateConflicts(cs), ['Fever'], 'case-insensitive normalised match; the positive spelling is reported');
+  const pkg = assemblePackage({ ...base, clinicalState: cs });
+  assert.deepEqual(pkg.envelope.state_conflicts, { count: 1, concepts: ['Fever'] });
+  // Defensive: no state (or a non-state shape) means no conflicts — never a throw.
+  assert.deepEqual(assemblePackage(base).envelope.state_conflicts, { count: 0, concepts: [] });
+  assert.deepEqual(findStateConflicts('nonsense'), []);
 });
 
 test('a flag-on stage-2 failure is DEGRADED — the state shipped thinner than the default contract', () => {

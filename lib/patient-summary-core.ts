@@ -107,12 +107,26 @@ export interface SummaryEnvelope {
    * occur verbatim in the named field: they are discarded mechanically (anti-fabrication at the
    * schema boundary), and surfaced here because the rejection rate is a free hallucination meter.
    * `rejected_count` is null when the stage did not run (flag off, or no stage-1 state to enrich).
+   *
+   * ⚠️ KNOWN GAP (31 Jul 2026): span verification proves PROVENANCE, NOT POLARITY. A negated span
+   * copied verbatim and labelled 'present' passes it cleanly — observed live, e.g. "no PAH" and
+   * "No obvious regional wall motion abnormalities" arriving as positives. A cue-based polarity
+   * guard was built and REJECTED on bank evidence (it dropped "absent distal pulses" and "absent
+   * bowel sounds" — cannot-miss signs in red-flag DDx cases). Unresolved; V's call. Until then
+   * `state_conflicts` below is the only automatic signal, and it only fires when the deterministic
+   * stage produced a competing 'absent'.
    */
   state_llm: {
     enabled: boolean;
     rejected_count: number | null;
     rejected: Array<{ concept: string; rawText: string; field: string }>;
   };
+  /**
+   * Concepts appearing in BOTH state.clinical_state.positives and .negatives (normalised exact
+   * match) — the package would otherwise render a patient who simultaneously has and does not
+   * have a finding, silently. Surfaced, never resolved (§2.7.3 posture); empty when no state.
+   */
+  state_conflicts: { count: number; concepts: string[] };
 }
 
 export interface PatientSummaryPackage {
@@ -215,6 +229,34 @@ export interface AssembleInput {
   } | null;
 }
 
+/** Same normalisation the extractor uses for concept identity — dependency-free copy (this core
+ *  imports nothing, by design). */
+function normConcept(s: string): string {
+  return s.toLowerCase().normalize('NFKD').replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Concepts present in BOTH positives and negatives of a ClinicalState (normalised exact match).
+ * `seen` in mergeLlmFindings dedupes on concept|STATUS, so a deterministic 'absent' and an LLM
+ * 'present' for the same concept both survive — this makes that contradiction visible instead of
+ * silent. Pure and defensive: any non-state shape returns [].
+ */
+export function findStateConflicts(state: unknown): string[] {
+  const s = state as { positives?: Array<{ concept?: unknown }>; negatives?: Array<{ concept?: unknown }> } | null | undefined;
+  if (!s || !Array.isArray(s.positives) || !Array.isArray(s.negatives)) return [];
+  const negated = new Set(
+    s.negatives.map((f) => normConcept(String(f?.concept ?? ''))).filter(Boolean),
+  );
+  const out: string[] = [];
+  const emitted = new Set<string>();
+  for (const f of s.positives) {
+    const concept = String(f?.concept ?? '');
+    const n = normConcept(concept);
+    if (n && negated.has(n) && !emitted.has(n)) { emitted.add(n); out.push(concept); }
+  }
+  return out;
+}
+
 /**
  * Compose the namespaced package. Deliberately a PASS-THROUGH for every clinical structure: the
  * schemas are disciplined in ways this contract must not flatten (§2.7), so nothing here filters,
@@ -240,6 +282,10 @@ export function assemblePackage(i: AssembleInput): PatientSummaryPackage {
         rejected_count: i.stateLlm ? i.stateLlm.rejected.length : null,
         rejected: i.stateLlm?.rejected ?? [],
       },
+      state_conflicts: (() => {
+        const concepts = findStateConflicts(i.clinicalState);
+        return { count: concepts.length, concepts };
+      })(),
     },
     clinical: {
       findings: i.clinicalFindings,
