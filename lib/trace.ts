@@ -2,7 +2,10 @@ import { randomUUID } from 'crypto';
 import { sql } from './db';
 import { llm, geminiConfigured, getGeminiChatClient, vertexModelName, chatWithFallback, openrouterConfigured, openrouterChatClient, vertexRegion, openrouterGeminiSlug, buildOpenrouterParams } from './llm';
 import { vertexSaEmail } from './gcp-auth';
-import { PROVIDER_ERROR_CAP, beginProviderCall, endProviderCall, providerCallsInFlight, providerErrorPayload } from './provider-error-core';
+import {
+  PROVIDER_ERROR_CAP, beginProviderCall, endProviderCall, providerCallsInFlight, providerErrorPayload,
+  classifyProviderResponse, providerResponsePayload, ProviderResponseError,
+} from './provider-error-core';
 import { promptFingerprint } from './reasoning/registry-core';
 import { billableOutputTokens } from './llm-cost-core';
 
@@ -261,6 +264,9 @@ export async function tracedChat(
   let result: any;
   let provider = requestPayload.provider;
   let actualModel = servedModel;
+  // Snapshotted BEFORE the decrement on the SUCCESS path too, so a bad-200 carries the same
+  // load-correlation field as a thrown error (one of the two candidate causes is capacity).
+  let inFlightAtResponse = providerCallsInFlight();
 
   try {
     if (useOpenRouter) {
@@ -277,6 +283,7 @@ export async function tracedChat(
         const client = openrouterChatClient();
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         result = await client.chat.completions.create(orParams as any);
+        inFlightAtResponse = providerCallsInFlight();
         endProviderCall('openrouter');
       } catch (oe) {
         // 403-diagnosis §4.1/§4.2: snapshot in-flight BEFORE decrementing (the failing call
@@ -301,6 +308,27 @@ export async function tracedChat(
         actualModel = (params as { model?: string }).model;
         // §3: keep the fallback, but if IT also throws, surface BOTH errors (not just Ollama's 404).
         result = await runOllamaFallback('openrouter', servedModel, oe, () => llm.chat.completions.create(params));
+      }
+      // §2.1/§2.2 (31 Jul 2026) — A 200 IS NOT A SUCCESS. OpenRouter reports provider-side failures
+      // as HTTP 200 with an error object in the body; the SDK does not throw, so none of the
+      // machinery above fires and the caller receives content ''. Validate the response, and when it
+      // is not a completion emit the SAME provider_error event with the FULL body (§2.2) and FAIL.
+      // Deliberately NO Ollama fallback (§2.3): the package already reports itself degraded, which
+      // is the honest outcome, and V's standing direction is to take the local model out of
+      // frontline paths — not to add a new route into it. `provider` is still 'openrouter' only
+      // when the call above did NOT already fall back.
+      if (provider === 'openrouter') {
+        const defect = classifyProviderResponse(result);
+        if (defect) {
+          const errPayload = providerResponsePayload({
+            provider: 'openrouter', label, feature: null, fellBackTo: 'none',
+            intendedModel: servedModel ?? null, fallbackModel: null,
+            region: null, saIdentity: null, inFlightAtError: inFlightAtResponse, defect,
+          });
+          await logEvent(traceId, 'provider_error', label, errPayload, Date.now() - t0);
+          console.error(`[provider-bad-response] openrouter ${servedModel} returned a non-completion 200:`, JSON.stringify(errPayload));
+          throw new ProviderResponseError(defect, 'openrouter', servedModel ?? null);
+        }
       }
     } else if (useGemini) {
       beginProviderCall('gemini');

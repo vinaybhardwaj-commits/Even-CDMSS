@@ -15,6 +15,8 @@ import { readFileSync } from 'node:fs';
 import {
   PROVIDER_ERROR_CAP, serializeProviderError, providerErrorPayload,
   beginProviderCall, endProviderCall, providerCallsInFlight,
+  classifyProviderResponse, providerResponsePayload, providerResponseErrorMessage,
+  ProviderResponseError, isProviderResponseError, USABLE_FINISH_REASONS,
 } from '../provider-error-core.ts';
 
 const LLM = readFileSync('lib/llm.ts', 'utf8');
@@ -115,7 +117,9 @@ test('§4.3: the fallback is LOUD — console.error with the stable [provider-fa
 });
 
 test('§4.2: both tracedChat catches emit a provider_error event through the existing logEvent path', () => {
-  assert.equal((TRACE.match(/logEvent\(traceId, 'provider_error', label, errPayload/g) || []).length, 2);
+  // Two thrown-error catches (openrouter, gemini) + the bad-200 check added 31 Jul, which routes
+  // through the SAME event rather than inventing a second failure channel (that kickoff's §2.2).
+  assert.equal((TRACE.match(/logEvent\(traceId, 'provider_error', label, errPayload/g) || []).length, 3);
   assert.ok(!TRACE.includes('CREATE TABLE'), 'no new table, no migration — it rides trace_events');
 });
 
@@ -148,4 +152,117 @@ test('§5 out of scope: no retry/backoff, no routing flag change, no quota logic
   // The fallback call count is unchanged: each provider branch still makes exactly ONE fallback
   // llm.chat call on error, and behaviour on success is byte-identical.
   assert.equal((LLM.match(/return llm\.chat\.completions\.create\(params\);/g) || []).length, 3, 'the three existing fallback/default sites, no more');
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// 4 · The 200-that-is-not-a-completion check (bridge-empty-response kickoff, 31 Jul 2026)
+//
+// MEASURED: 1,523 of 3,963 gemini-2.5-pro responses on the bridge (38.4%) came back with no
+// content, and not one body was captured — every guard from the 403 kickoff fires only on a
+// THROWN exception, and OpenRouter reports provider failures as HTTP 200. Flash over the same
+// window: 0 of 1,021. These tests pin the check, and pin that it does NOT touch a good response.
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+const OK_RESPONSE = {
+  id: 'gen-1', provider: 'Google', model: 'google/gemini-2.5-pro',
+  choices: [{ finish_reason: 'stop', native_finish_reason: 'STOP', message: { role: 'assistant', content: '{"ok":true}' } }],
+  usage: { prompt_tokens: 100, completion_tokens: 8, total_tokens: 108 },
+};
+
+// The shape the 38.4% actually arrive in: HTTP 200, finish_reason 'error', content empty.
+const BAD_200 = {
+  id: 'gen-2', provider: 'Google AI Studio', model: 'google/gemini-2.5-pro',
+  choices: [{ finish_reason: 'error', native_finish_reason: 'OTHER', message: { role: 'assistant', content: '' } }],
+  error: { code: 429, message: 'Provider returned error', metadata: { provider_name: 'Google AI Studio' } },
+  usage: { prompt_tokens: 4211, completion_tokens: 0, total_tokens: 4211 },
+};
+
+test('§5.2: a good response is NOT reclassified — including a one-character answer', () => {
+  assert.equal(classifyProviderResponse(OK_RESPONSE), null);
+  assert.equal(classifyProviderResponse({ choices: [{ finish_reason: 'stop', message: { content: '1' } }] }), null,
+    'a valid SHORT answer is a success — this is the regression the check must never cause');
+  assert.equal(classifyProviderResponse({ choices: [{ message: { content: 'no finish_reason field' } }] }), null,
+    'content present + finish_reason absent stays a success: content is the real signal');
+  assert.equal(classifyProviderResponse({ choices: [{ finish_reason: 'tool_calls', message: { tool_calls: [{ id: 't' }] } }] }), null,
+    'a tool-call response legitimately carries no content');
+  assert.ok(USABLE_FINISH_REASONS.has('stop'));
+});
+
+test('§2.1: the three failure rules — no choices, empty content, unusable finish_reason', () => {
+  assert.equal(classifyProviderResponse(BAD_200)?.kind, 'empty_content');
+  assert.equal(classifyProviderResponse({ choices: [] })?.kind, 'no_choices');
+  assert.equal(classifyProviderResponse({ error: { message: 'upstream exploded' } })?.kind, 'no_choices');
+  assert.equal(classifyProviderResponse(null)?.kind, 'no_choices');
+  assert.equal(classifyProviderResponse({ choices: [{ finish_reason: 'stop', message: {} }] })?.kind, 'empty_content',
+    'a missing content field is empty content');
+  assert.equal(classifyProviderResponse({ choices: [{ finish_reason: 'length', message: { content: 'truncated {' } }] })?.kind, 'finish_reason',
+    'truncated JSON is a failure even though bytes came back');
+  assert.equal(classifyProviderResponse({ choices: [{ finish_reason: 'content_filter', message: { content: 'x' } }] })?.kind, 'finish_reason');
+});
+
+test('§2.1: a STREAM is never judged — it has no choices yet and would fail every rule', () => {
+  assert.equal(classifyProviderResponse({ controller: new AbortController() }), null);
+  assert.equal(classifyProviderResponse({ [Symbol.asyncIterator]: function* () {} }), null);
+});
+
+test('§2.2: the event carries the FULL body, both finish reasons, the served endpoint and the error object', () => {
+  const d = classifyProviderResponse(BAD_200)!;
+  assert.equal(d.finish_reason, 'error');
+  assert.equal(d.native_finish_reason, 'OTHER');
+  assert.equal(d.content_length, 0);
+  assert.equal(d.served_by, 'Google AI Studio', 'WHICH Google endpoint served it — the pin hypothesis needs this');
+  assert.ok(d.response_error?.includes('429'), 'the error object OpenRouter returned survives');
+  assert.ok(d.body?.includes('"native_finish_reason":"OTHER"'), 'the WHOLE body is kept — it is the entire diagnostic payload');
+
+  const p = providerResponsePayload({
+    provider: 'openrouter', label: 'opd_audit_analyze', feature: null, fellBackTo: 'none',
+    intendedModel: 'google/gemini-2.5-pro', fallbackModel: null, region: null, saIdentity: null,
+    inFlightAtError: { total: 7, by: { openrouter: 7 } }, defect: d,
+  });
+  assert.equal(p.failure_class, 'bad_response_200', 'distinguishable from a thrown provider error');
+  assert.equal(p.defect, 'empty_content');
+  assert.equal(p.served_by, 'Google AI Studio');
+  assert.equal(p.inFlightAtError, 7, 'load correlation stays falsifiable on the 200 path too');
+  assert.ok(String(p.response_body).length > 0);
+  assert.ok(String(p.message).includes('finish_reason=error'), 'the message alone diagnoses, for callers that only log .message');
+});
+
+test('§5.1: the caller sees a FAILURE, not an empty string — and the error is marked, not laundered', () => {
+  const d = classifyProviderResponse(BAD_200)!;
+  const e = new ProviderResponseError(d, 'openrouter', 'google/gemini-2.5-pro');
+  assert.ok(e instanceof Error);
+  assert.ok(isProviderResponseError(e), 'marked so a provider catch can tell it from a transport error');
+  assert.ok(!isProviderResponseError(new Error('transport')));
+  assert.ok(e.message.includes('NOT a completion'));
+  assert.ok(e.message.includes('served_by=Google AI Studio'));
+  assert.ok(providerResponseErrorMessage(d, 'openrouter', null).includes('model=null'), 'total — null model still renders');
+});
+
+test('§2.2/§2.3: both transports validate the response, emit the event, and DO NOT fall back', () => {
+  for (const [name, src] of [['llm.ts', LLM], ['trace.ts', TRACE]] as const) {
+    assert.ok(src.includes('classifyProviderResponse(res)') || src.includes('classifyProviderResponse(result)'),
+      `${name} validates the returned response`);
+    assert.ok(src.includes('providerResponsePayload({'), `${name} emits the §2.2 payload`);
+    assert.ok(src.includes('[provider-bad-response]'), `${name} logs loud with a stable, distinct prefix`);
+    assert.ok(src.includes('throw new ProviderResponseError('), `${name} FAILS the call`);
+    // §2.3 — the bad-response branch must not reach for the local model. The nearest
+    // llm.chat.completions.create must not sit between the check and the throw.
+    const at = src.indexOf('const defect = classifyProviderResponse');
+    const thrown = src.indexOf('throw new ProviderResponseError(', at);
+    assert.ok(thrown > at, `${name}: the check ends in a throw`);
+    assert.ok(!src.slice(at, thrown).includes('llm.chat.completions.create'),
+      `${name}: NO Ollama fallback on this path (§2.3) — the honest outcome is degraded`);
+  }
+});
+
+test('§2.1: the check runs only when the provider actually served — never after a fallback', () => {
+  assert.ok(TRACE.includes("if (provider === 'openrouter') {"),
+    'a call that already fell back to Ollama is judged by Ollama rules, not OpenRouter ones');
+});
+
+test('§6 out of scope: no retry, no backoff, and the Google provider pin is untouched', () => {
+  assert.ok(!/setTimeout\(|sleep\(|backoff/i.test(TRACE.slice(TRACE.indexOf('const defect = classifyProviderResponse'), TRACE.indexOf('} else if (useGemini)'))),
+    'no retry/backoff was smuggled in with the instrumentation');
+  assert.ok(LLM.includes("only: ['google-vertex', 'google-ai-studio']"), 'the pin is unchanged — relaxing it is V\'s decision');
+  assert.ok(LLM.includes('allow_fallbacks: false'));
 });

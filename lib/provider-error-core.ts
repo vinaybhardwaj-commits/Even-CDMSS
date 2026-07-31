@@ -63,6 +63,137 @@ export function serializeProviderError(e: unknown): SerializedProviderError {
   return out;
 }
 
+// ── the 200-that-is-not-a-completion check (31 Jul 2026) ──────────────────────────────────────
+//
+// WHY: every guard built by the 403-diagnosis kickoff fires only on a THROWN exception. OpenRouter
+// reports provider-side failures as HTTP 200 with an error object in the body, and the OpenAI SDK
+// does not throw on a 200 — so an empty response entered no catch, emitted no provider_error, and
+// returned a `result` whose content was undefined. The caller turned that into '' and reported
+// "stage failed" while the trace showed a successful call. Measured 31 Jul: 1,523 of 3,963
+// gemini-2.5-pro responses (38.4%) came back empty this way, and nothing captured a single body.
+//
+// This is the fourth instance of the same defect family — a value correct in one place and not
+// read where it is used. The check below is what makes the class visible; it is NOT a remedy.
+
+/** Finish reasons that describe a completion that actually finished. Anything else is a failure. */
+export const USABLE_FINISH_REASONS: ReadonlySet<string> = new Set(['stop', 'tool_calls', 'function_call']);
+
+export interface ProviderResponseDefect {
+  /** Which rule fired. `no_choices` ⇒ the body had no choices[0] at all. */
+  kind: 'no_choices' | 'empty_content' | 'finish_reason';
+  finish_reason: string | null;
+  /** OpenRouter passes the upstream's own reason through untranslated — the real diagnosis. */
+  native_finish_reason: string | null;
+  content_length: number;
+  /** OpenRouter's `provider` field: WHICH Google endpoint served this (google-vertex / ai-studio). */
+  served_by: string | null;
+  /** The body's `error` object (top-level, then per-choice), serialised verbatim. */
+  response_error: string | null;
+  /** The FULL response body, capped. It is the entire diagnostic payload and nothing kept it. */
+  body: string | null;
+}
+
+/** True for a streaming result — it has no choices yet and must never be judged by this check. */
+function isStream(x: unknown): boolean {
+  return Boolean(x && typeof x === 'object'
+    && ('controller' in (x as object) || Symbol.asyncIterator in (x as object)));
+}
+
+function firstDefined(...xs: unknown[]): string | null {
+  for (const x of xs) if (x != null && x !== '') return String(x);
+  return null;
+}
+
+/**
+ * §2.1 — validate the response instead of assuming it. Returns null when the response is a usable
+ * completion (the overwhelmingly common case, byte-identical behaviour), or the defect otherwise.
+ *
+ * PURE and TOTAL: any shape yields a verdict, so the check can never be the thing that fails.
+ *
+ * A NULL/absent finish_reason with content present is deliberately NOT a defect — content is the
+ * real signal, and some providers omit the field. A finish_reason that is PRESENT and not in
+ * USABLE_FINISH_REASONS is a defect even with content, because that content is truncated
+ * ('length') or filtered ('content_filter', 'error') and downstream JSON parsing will fail on it
+ * anyway — silently, which is the behaviour this exists to end.
+ */
+export function classifyProviderResponse(result: unknown): ProviderResponseDefect | null {
+  if (isStream(result)) return null;
+  const o = (result && typeof result === 'object' ? result : {}) as {
+    choices?: Array<{ message?: { content?: unknown; tool_calls?: unknown }; finish_reason?: unknown;
+                      native_finish_reason?: unknown; error?: unknown }>;
+    provider?: unknown;
+    error?: unknown;
+  };
+  const c0 = Array.isArray(o.choices) ? o.choices[0] : undefined;
+  const finish = c0?.finish_reason == null ? null : String(c0.finish_reason).toLowerCase();
+  const content = typeof c0?.message?.content === 'string' ? c0.message.content : '';
+  const base = {
+    finish_reason: finish,
+    native_finish_reason: c0?.native_finish_reason == null ? null : String(c0.native_finish_reason),
+    content_length: content.length,
+    served_by: o.provider == null ? null : String(o.provider),
+    response_error: (() => {
+      const e = o.error ?? c0?.error;
+      if (e == null) return null;
+      try { return cap(typeof e === 'string' ? e : JSON.stringify(e)); } catch { return cap(String(e)); }
+    })(),
+    body: (() => { try { return cap(JSON.stringify(result)); } catch { return cap(String(result)); } })(),
+  };
+  if (!c0) return { kind: 'no_choices', ...base };
+  // A tool-call response legitimately carries no content.
+  const hasToolCalls = Array.isArray(c0.message?.tool_calls) && (c0.message!.tool_calls as unknown[]).length > 0;
+  if (!content && !hasToolCalls) return { kind: 'empty_content', ...base };
+  if (finish !== null && !USABLE_FINISH_REASONS.has(finish)) return { kind: 'finish_reason', ...base };
+  return null;
+}
+
+/** The failure message. NORMATIVE — like emptyContentErrorMessage on the eval path, this string IS
+ *  the instrumentation for any caller that only ever sees `(e as Error).message`. */
+export function providerResponseErrorMessage(d: ProviderResponseDefect, provider: string, model: string | null): string {
+  const v = (x: unknown) => (x == null || x === '' ? 'null' : String(x));
+  return `${provider} returned HTTP 200 that is NOT a completion (${d.kind}) — treated as a failure, not as an empty answer.
+model=${v(model)} finish_reason=${v(d.finish_reason)} native_finish_reason=${v(d.native_finish_reason)} served_by=${v(d.served_by)} content_length=${d.content_length}
+error=${v(d.response_error)}`;
+}
+
+/** An error raised by the response check rather than by the transport. Marked so a provider path's
+ *  own catch can tell it apart and NOT route it into the local-model fallback (§2.3). */
+export class ProviderResponseError extends Error {
+  readonly defect: ProviderResponseDefect;
+  readonly isProviderResponseError = true as const;
+  constructor(d: ProviderResponseDefect, provider: string, model: string | null) {
+    super(providerResponseErrorMessage(d, provider, model));
+    this.name = 'ProviderResponseError';
+    this.defect = d;
+  }
+}
+
+export function isProviderResponseError(e: unknown): e is ProviderResponseError {
+  return Boolean(e && typeof e === 'object' && (e as { isProviderResponseError?: unknown }).isProviderResponseError === true);
+}
+
+/**
+ * §2.2 — the provider_error payload for a bad-response failure. Same event, same shape and the same
+ * 4000-char cap as the thrown-error path, PLUS the four fields that only exist on a 200: the defect
+ * kind, the finish reasons, which endpoint served it, and the body itself.
+ */
+export function providerResponsePayload(
+  i: Omit<ProviderErrorPayloadInput, 'error'> & { defect: ProviderResponseDefect },
+): Record<string, unknown> {
+  const { defect, ...rest } = i;
+  return {
+    ...providerErrorPayload({ ...rest, error: new Error(providerResponseErrorMessage(defect, rest.provider, rest.intendedModel)) }),
+    failure_class: 'bad_response_200',
+    defect: defect.kind,
+    finish_reason: defect.finish_reason,
+    native_finish_reason: defect.native_finish_reason,
+    content_length: defect.content_length,
+    served_by: defect.served_by,
+    response_error: defect.response_error,
+    response_body: defect.body,
+  };
+}
+
 // ── in-flight accounting ──────────────────────────────────────────────────────────────────────
 //
 // Module-scope, per-process — exactly the scope the hypothesis needs: `inFlightAtError` is the

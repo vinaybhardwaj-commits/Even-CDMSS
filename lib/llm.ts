@@ -1,6 +1,9 @@
 import OpenAI from 'openai';
 import { getVertexAccessToken, vertexSaEmail } from './gcp-auth';
-import { beginProviderCall, endProviderCall, providerCallsInFlight, providerErrorPayload } from './provider-error-core';
+import {
+  beginProviderCall, endProviderCall, providerCallsInFlight, providerErrorPayload,
+  classifyProviderResponse, providerResponsePayload, ProviderResponseError,
+} from './provider-error-core';
 
 const baseURL = `${process.env.OLLAMA_BASE_URL!}/v1`;
 
@@ -205,14 +208,19 @@ export async function chatWithFallback(params: any, geminiModel?: string, openro
   const orModel = openrouterModel || openrouterGeminiSlug(geminiModel);
   if (orModel && openrouterConfigured()) {
     beginProviderCall('openrouter');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let res: any;
+    // Snapshotted BEFORE the decrement on the success path, so a bad-200 carries the same
+    // load-correlation field as a thrown error.
+    let inFlightAtResponse = providerCallsInFlight();
     try {
       const { options: _o, keep_alive: _k, ...rest } = params as Record<string, unknown>;
       void _o; void _k;
       const orParams = buildOpenrouterParams(orModel, rest as Record<string, unknown>);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const res = await openrouterChatClient().chat.completions.create(orParams as any);
+      res = await openrouterChatClient().chat.completions.create(orParams as any);
+      inFlightAtResponse = providerCallsInFlight();
       endProviderCall('openrouter');
-      return res;
     } catch (e) {
       // §4.1/§4.2/§4.3 — snapshot in-flight BEFORE decrementing (the failing call counts), then
       // the FULL error (4000-char cap, not 200), loud (console.error, stable prefix), and a
@@ -228,6 +236,22 @@ export async function chatWithFallback(params: any, geminiModel?: string, openro
       await emitProviderErrorTrace(payload);
       return llm.chat.completions.create(params);
     }
+    // §2.1/§2.2/§2.4 (31 Jul 2026) — the identical shape, the identical blind spot: a 200 whose body
+    // is an error never entered the catch above. Validate it, emit the FULL body as provider_error,
+    // and FAIL — no Ollama fallback (§2.3). Reached only when the call did not already fall back
+    // (every catch path above returns).
+    const defect = classifyProviderResponse(res);
+    if (defect) {
+      const payload = providerResponsePayload({
+        provider: 'openrouter', label: 'chatWithFallback', feature: null, fellBackTo: 'none',
+        intendedModel: orModel, fallbackModel: null,
+        region: null, saIdentity: null, inFlightAtError: inFlightAtResponse, defect,
+      });
+      console.error(`[provider-bad-response] openrouter ${orModel} returned a non-completion 200:`, JSON.stringify(payload));
+      await emitProviderErrorTrace(payload);
+      throw new ProviderResponseError(defect, 'openrouter', orModel);
+    }
+    return res;
   }
   if (!geminiModel || !geminiConfigured()) {
     return llm.chat.completions.create(params);
