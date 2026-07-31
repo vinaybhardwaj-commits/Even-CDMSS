@@ -8,6 +8,7 @@
  * mutates the live audit engine, the corpus, or lvc_recommendations.
  */
 import { sql } from './db';
+import { canonicalDistinctOnSql } from './audit-canonical';
 import { geminiUtilityModel, TEXT_MODEL } from './llm';
 import { governedChat } from './trace';
 import {
@@ -46,10 +47,20 @@ function asObj(v: unknown): Record<string, unknown> {
 /** Latest audit per note (DISTINCT ON uid) over the lookback window — avoids cross-engine-version double counting. */
 export async function loadRecentAuditRows(days = 90): Promise<AuditRowLite[]> {
   const rows = await sql2(
-    `SELECT DISTINCT ON (uid) id, doctor_uid, consult_type, findings, sources
-       FROM opd_note_audits
-      WHERE app_source = $1 AND excluded_reason IS NULL AND note_date >= NOW() - ($2 || ' days')::interval
-      ORDER BY uid, audited_at DESC`,
+    // §5.2 (addendum E) — THE RULE, not newest-by-time. Measured, this picked the same row as the
+    // canonical rule on all 7,552 duplicated notes, but by coincidence rather than construction.
+    // CHOSEN FILTER: `NOT LIKE '%-mini'` rather than the engine family. This read has never had an
+    // engine filter and mines a 90-day corpus; the family form would silently drop every note only
+    // ever audited at a pre-0.81 engine (~2,533 today), changing what learning sees. The mini
+    // exclusion is the minimum that makes the int[] cast safe — a `-mini` tail raised
+    // `invalid input syntax for type integer: "2-mini"` on a query of exactly this shape.
+    canonicalDistinctOnSql({
+      table: 'opd_note_audits',
+      identity: 'uid',
+      cols: 'id, doctor_uid, consult_type, findings, sources',
+      where: `app_source = $1 AND excluded_reason IS NULL AND engine_version NOT LIKE '%-mini'
+        AND note_date >= NOW() - ($2 || ' days')::interval`,
+    }),
     [APP, String(Math.max(1, Math.min(365, days)))],
   );
   return rows.map((r) => ({
@@ -506,10 +517,13 @@ export async function fetchFlywheelData(): Promise<FlywheelView> {
   //     grounded    = LLM findings with ≥1 citation / all LLM findings
   const f = await sql2(
     `WITH notes AS (
-        SELECT DISTINCT ON (uid) findings FROM opd_note_audits
-         WHERE app_source = $1 AND excluded_reason IS NULL AND engine_version = ANY($2)
-           AND (note_date AT TIME ZONE 'Asia/Kolkata')::date >= ${IST_TODAY} - 90
-         ORDER BY uid, audited_at DESC)
+        ${canonicalDistinctOnSql({
+          table: 'opd_note_audits',
+          identity: 'uid',
+          cols: 'findings',
+          where: `app_source = $1 AND excluded_reason IS NULL AND engine_version = ANY($2)
+           AND (note_date AT TIME ZONE 'Asia/Kolkata')::date >= ${IST_TODAY} - 90`,
+        })})
      SELECT
        count(*) FILTER (WHERE fi->>'signal_type' = 'low_value_care')::int AS lvc_total,
        count(*) FILTER (WHERE fi->>'signal_type' = 'low_value_care' AND COALESCE(fi->>'rule_ref','') <> '')::int AS lvc_with_ref,

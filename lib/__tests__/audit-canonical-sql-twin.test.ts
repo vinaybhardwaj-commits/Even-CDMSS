@@ -15,7 +15,8 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   canonicalByUid, canonicalDistinctOnSql, CANONICAL_RANK_SQL,
 } from '../audit-canonical.ts';
@@ -102,6 +103,29 @@ test('the ordering is the one THE RULE states — reverting it fails this test',
   assert.ok(!/note_date/.test(CANONICAL_RANK_SQL), 'note_date cannot rank re-audits of the same note');
   assert.ok(!/\bid DESC/.test(CANONICAL_RANK_SQL), 'a UUID tiebreak is arbitrary, not canonical');
   assert.ok(!/engine_version DESC/.test(CANONICAL_RANK_SQL), 'a bare lexicographic sort ranks 0.81.9 above 0.81.17');
+});
+
+test('§6 — SCAN lib/ and app/: nobody hand-writes a note-identity dedup on opd_note_audits', () => {
+  // A HAND-LISTED FILE SET CANNOT CATCH A POSTURE IN A FILE NOBODY LISTED. The earlier version of
+  // this guard checked three named files, which is exactly why the triage queue route and
+  // lib/learning.ts were missed — both had been writing their own dedup the whole time.
+  // This walks the tree instead.
+  const offenders: string[] = [];
+  const walk = (dir: string) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.name === 'node_modules' || e.name === '.next' || e.name === '__tests__') continue;
+      const p = join(dir, e.name);
+      if (e.isDirectory()) { walk(p); continue; }
+      if (!/\.(ts|tsx)$/.test(e.name)) continue;
+      const src = readFileSync(p, 'utf8');
+      // Only care about dedups over the OPD audit table, keyed on note identity.
+      if (!/opd_note_audits/.test(src)) continue;
+      if (/DISTINCT ON \(\s*uid\s*\)/.test(src)) offenders.push(p);
+    }
+  };
+  walk('lib'); walk('app');
+  assert.deepEqual(offenders, [],
+    `these files hand-write DISTINCT ON (uid) over opd_note_audits — route them through canonicalDistinctOnSql: ${offenders.join(', ')}`);
 });
 
 test('no doctor-facing surface writes its own NOTE-IDENTITY dedup', () => {

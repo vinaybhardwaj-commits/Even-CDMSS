@@ -14,6 +14,7 @@ export const runtime = 'nodejs';
 
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
+import { canonicalDistinctOnSql } from '@/lib/audit-canonical';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { isCareUnlocked } from '@/lib/care-cookie';
 import { OPD_ENGINE_VERSION, OPD_ENGINE_VERSIONS_CURRENT, stampFindingIdentity, type OpdFinding } from '@/lib/opd-note-audit-core';
@@ -69,10 +70,20 @@ export async function GET(req: NextRequest) {
     .map((r) => String((r as Record<string, unknown>).id));
   const srcCol = retiredEvenIds.length ? ', sources' : '';
 
+  // §5.1 (addendum E) — CANONICAL per note. This read had no dedup, so a note re-audited across
+  // engine versions pushed a COPY OF EVERY FINDING per row into the queue against its doctor, and
+  // burned the 8000 cap on duplicates. The cap now counts canonical rows. The family filter is
+  // already present above and excludes `-mini` before ranking, which the int[] cast requires.
   const rows = await run(
-    `SELECT id::text AS id, doctor_uid, to_char(note_date AT TIME ZONE 'Asia/Kolkata','YYYY-MM-DD') AS note_date,
-            findings, complexity_band, complexity_inputs${srcCol}
-     FROM opd_note_audits WHERE ${where} LIMIT 8000`, params).catch(() => []);
+    `SELECT id, doctor_uid, note_date, findings, complexity_band, complexity_inputs${srcCol}
+     FROM (${canonicalDistinctOnSql({
+       table: 'opd_note_audits',
+       identity: 'uid',
+       cols: `id::text AS id, doctor_uid, to_char(note_date AT TIME ZONE 'Asia/Kolkata','YYYY-MM-DD') AS note_date,
+            findings, complexity_band, complexity_inputs${srcCol}`,
+       where,
+     })}) canonical
+     LIMIT 8000`, params).catch(() => []);
 
   const findings: TriageFinding[] = [];
   for (const r of rows as Record<string, unknown>[]) {

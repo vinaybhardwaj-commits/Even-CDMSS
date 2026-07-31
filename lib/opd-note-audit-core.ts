@@ -47,7 +47,18 @@ import { computeStableRef } from './opd-finding-identity-core';
 // 0.81.16 — audit-integrity phase 0: quantization REVERTED (28 Jul S0/S1 ruling — 17.0% of scoring
 // findings sit exactly on the 0.80 boundary; +3.10 mean penalty). Hysteresis STAYS. The bump makes
 // the scoring change nameable; hysteresis anchors reset again by construction.
+// 0.81.18 — NO ENGINE CHANGE. A carrier version for outage-recovery re-audits (31 Jul 2026,
+// addendum E §3). 301 notes stranded by the Vertex outage already hold a row at 0.81.17, and
+// saveOpdAudit is ON CONFLICT (uid, engine_version) DO NOTHING, so a recovery at the same version
+// is silently discarded. A plain numeric bump is the ONLY key that works: it wins the canonical
+// rule (highest version), it is also newest by time so lib/learning.ts's audited_at ordering picks
+// the same row, and — unlike a tag such as `0.81.17-r1` — it still casts through
+// CANONICAL_RANK_SQL's int[]. No rule, weight, prompt, threshold or check differs from 0.81.17.
+// OPD_ENGINE_VERSION deliberately STAYS at 0.81.17: the nightly worker must keep writing there,
+// and only the explicit opts.engineVersion recovery path writes 0.81.18.
 export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.17';
+/** The recovery carrier (addendum E §3). Written ONLY via the explicit engineVersion path. */
+export const OPD_RECOVERY_ENGINE_VERSION = 'opd-note-audit/0.81.18';
 
 /**
  * Current-engine FAMILY for READ/aggregate surfaces. 0.81.3 → 0.81.4 → 0.81.5 are all score-identical
@@ -58,7 +69,7 @@ export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.17';
  * DESC, id DESC. WRITE-side targeting keeps exact OPD_ENGINE_VERSION (family there would stop history
  * re-scoring). See the patch report.
  */
-export const OPD_ENGINE_VERSIONS_CURRENT = ['opd-note-audit/0.81.3', 'opd-note-audit/0.81.4', 'opd-note-audit/0.81.5', 'opd-note-audit/0.81.6', 'opd-note-audit/0.81.7', 'opd-note-audit/0.81.8', 'opd-note-audit/0.81.9', 'opd-note-audit/0.81.10', 'opd-note-audit/0.81.11', 'opd-note-audit/0.81.12', 'opd-note-audit/0.81.13', 'opd-note-audit/0.81.14', 'opd-note-audit/0.81.15', 'opd-note-audit/0.81.16', 'opd-note-audit/0.81.17'] as const;
+export const OPD_ENGINE_VERSIONS_CURRENT = ['opd-note-audit/0.81.3', 'opd-note-audit/0.81.4', 'opd-note-audit/0.81.5', 'opd-note-audit/0.81.6', 'opd-note-audit/0.81.7', 'opd-note-audit/0.81.8', 'opd-note-audit/0.81.9', 'opd-note-audit/0.81.10', 'opd-note-audit/0.81.11', 'opd-note-audit/0.81.12', 'opd-note-audit/0.81.13', 'opd-note-audit/0.81.14', 'opd-note-audit/0.81.15', 'opd-note-audit/0.81.16', 'opd-note-audit/0.81.17', 'opd-note-audit/0.81.18'] as const;
 
 // Local copy of the PDQI-9 keys (kept in sync with opd-note-score-core) so this core has
 // no runtime cross-import and stays loadable under `node --experimental-strip-types`.
