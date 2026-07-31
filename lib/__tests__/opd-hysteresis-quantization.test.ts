@@ -183,11 +183,12 @@ test('S0 behaviour and worker dedup are UNTOUCHED by S1', () => {
            CASE WHEN opd_note_audits.excluded_reason = 'llm_leg_failed' THEN NULL ELSE opd_note_audits.excluded_reason END)`));
   assert.ok(STORE.includes(`excluded_reason = COALESCE($21,
          CASE WHEN excluded_reason = 'llm_leg_failed' THEN NULL ELSE excluded_reason END)`));
-  // dedup readers still unfiltered, verbatim.
+  // dedup readers: the single-version one is verbatim-unchanged; the any-version one was narrowed
+  // on 31 Jul (addendum B / T-9) to admit incident-stranded notes, and its own invariants are
+  // pinned in opd-invalid-marking.test.ts. S1 still does not touch either.
   assert.ok(STORE.includes(`    \`SELECT uid FROM opd_note_audits
      WHERE engine_version = $1 AND (note_date AT TIME ZONE 'Asia/Kolkata')::date = $2::date\``));
-  assert.ok(STORE.includes(`    \`SELECT DISTINCT uid FROM opd_note_audits
-     WHERE (note_date AT TIME ZONE 'Asia/Kolkata')::date = $1::date\``));
+  assert.ok(STORE.includes('const RE_AUDITABLE_EXCLUSIONS = ['));
   // the S0 leg-failure predicate and the S0 gate text are untouched in the audit path.
   const audit = readFileSync('lib/opd-note-audit.ts', 'utf8');
   assert.ok(audit.includes('const llmLegFailed = !opts.evalModel && llmLegFailedAfterParse(parsed);'));

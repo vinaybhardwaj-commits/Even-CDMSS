@@ -3407,6 +3407,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "opd-audit-store",
+    "to": "opd-note-audit-core",
+    "kind": "value"
+  },
+  {
+    "from": "opd-audit-store",
     "to": "opd-note-score-core",
     "kind": "value"
   },

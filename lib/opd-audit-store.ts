@@ -10,6 +10,7 @@
 import { sql } from './db';
 import type { OpdNoteAudit } from './opd-note-audit';
 import { HYSTERESIS_G, type OpdDomain } from './opd-note-score-core';
+import { OPD_ENGINE_VERSION } from './opd-note-audit-core';
 import { logEvent } from './trace';
 import { auditShadowReport } from './clinical-state/audit-shadow-core';
 import { runLongitudinalPass } from './opd-longitudinal';   // Stage 3 — dark unless OPD_LONGITUDINAL_ENABLED=1
@@ -315,19 +316,64 @@ export async function auditedCountForDay(day: string, engineVersion: string): Pr
   return Number(rows[0]?.n ?? 0);
 }
 
-/** uids audited at ANY engine version for a day — the "already been audited at all" set. The
- *  Gemini worker uses this so it only audits GENUINELY NEW notes (never-audited); re-audits of
- *  already-audited notes to a newer engine are left to the free mini backfill.
+/**
+ * Exclusion reasons a note can RECOVER from — an incident marked the row, not the note (31 Jul
+ * 2026, addendum B). Everything NOT listed here is PERMANENT and keeps the note out of the fetch
+ * loop forever; `house_account` is the original such reason and stays that way. Adding a reason
+ * here is a deliberate act: a new exclusion reason defaults to permanent by omission.
+ */
+const RE_AUDITABLE_EXCLUSIONS = [
+  'vertex_outage_mislabel_2026_07',
+  'llm_leg_failed',
+] as const;
+
+/**
+ * The "counts as already audited" predicate, shared by the two reads below so the worker's sweep
+ * gate and its fetch-exclusion list can never disagree (they are compared against each other in
+ * `worker/route.ts`, so a divergence would loop a day forever).
  *
- *  ⚠️ DATA-QUALITY §1 EXCEPTION: this read deliberately does NOT filter `excluded_reason IS NULL`.
- *  If it did, the 166 excluded house-account audits would look un-audited → the worker would try to
- *  re-admit them each night. Keeping them "audited" here keeps them OUT of the fetch loop. (The intake
- *  filter also excludes them at db13-fetch time; this is belt-and-braces.) */
+ * A uid counts as AUDITED when EITHER:
+ *   · it holds a row that is active, or excluded for a reason OUTSIDE the allowlist (permanent); OR
+ *   · ⚠️ THE SPEND GUARD — it already holds a row at the version the worker would WRITE.
+ *
+ * WHY THE GUARD EXISTS. `saveOpdAudit` writes `ON CONFLICT (uid, engine_version) DO NOTHING`, so a
+ * re-audit of a note that already holds a row at the SAME engine version is SILENTLY DISCARDED.
+ * Without this condition the 301 stranded notes that already hold an OPD_ENGINE_VERSION row would
+ * be re-fetched and re-audited on the paid reference model every single night, for a result the
+ * insert throws away — a permanent recurring spend loop that never clears the note. Deletion would
+ * at least terminate. Those 301 need a recovery row under a DISTINCT engine version (addendum B
+ * task B3); they are deliberately NOT reachable from here.
+ *
+ * ⚠️ IT MUST BE `OPD_ENGINE_VERSION`, NOT `OPD_ENGINE_VERSIONS_CURRENT`. Addendum B §3 specified
+ * the read FAMILY, but the family spans 0.81.3 → 0.81.17 and EVERY stranded note holds a row
+ * somewhere in it — so the family form frees ZERO notes and silently makes this whole change a
+ * no-op (measured). The collision is per (uid, engine_version) against the ONE version the worker
+ * writes, so the write target is the only correct key: it frees the 192 whose rows sit at older
+ * family versions (0.81.14 ×106, 0.81.15 ×85, 0.81.8 ×1), where an insert at 0.81.17 cannot
+ * collide, and holds exactly the 301 that would loop. None of the 192 is in the experiment cohort.
+ */
+const AUDITED_HAVING = `HAVING bool_or(excluded_reason IS NULL OR excluded_reason <> ALL($2::text[]))
+        OR bool_or(engine_version = $3)`;
+const AUDITED_PARAMS = (day: string): unknown[] => [
+  day, RE_AUDITABLE_EXCLUSIONS as unknown as string[], OPD_ENGINE_VERSION,
+];
+
+/** uids that count as audited for a day — the set the Gemini worker keeps OUT of its fetch loop.
+ *
+ *  ⚠️ DATA-QUALITY §1 EXCEPTION (still in force): this read does NOT simply filter
+ *  `excluded_reason IS NULL`. If it did, the 167 excluded house-account audits would look
+ *  un-audited → the worker would try to re-admit them each night. `house_account` is not in
+ *  RE_AUDITABLE_EXCLUSIONS, so it still reads as audited. (The intake filter also excludes those
+ *  at db13-fetch time; this is belt-and-braces.) What CHANGED on 31 Jul is narrower: a note whose
+ *  only rows are `llm_leg_failed` / `vertex_outage_mislabel_2026_07` — an incident, not a verdict
+ *  — no longer counts as audited forever, provided it holds no current-family row. */
 export async function auditedUidsForDayAnyVersion(day: string): Promise<string[]> {
   const rows = (await sql(
-    `SELECT DISTINCT uid FROM opd_note_audits
-     WHERE (note_date AT TIME ZONE 'Asia/Kolkata')::date = $1::date`,
-    [day],
+    `SELECT uid FROM opd_note_audits
+     WHERE (note_date AT TIME ZONE 'Asia/Kolkata')::date = $1::date
+     GROUP BY uid
+     ${AUDITED_HAVING}`,
+    AUDITED_PARAMS(day),
   )) as Array<{ uid: string }>;
   return rows.map((r) => r.uid).filter(Boolean);
 }
@@ -341,12 +387,19 @@ export async function deleteOpdAuditsForUid(uid: string): Promise<number> {
   return rows.length;
 }
 
-/** Count of DISTINCT notes audited at ANY engine version for a day. */
+/** Count of DISTINCT notes that count as audited for a day. MUST use the same predicate as
+ *  `auditedUidsForDayAnyVersion` — the worker compares this count against the day's eligible total
+ *  to decide whether to process the day at all, then excludes that uid list from the fetch. If the
+ *  two disagreed, a day could look incomplete forever while the fetch returned nothing. */
 export async function auditedCountForDayAnyVersion(day: string): Promise<number> {
   const rows = (await sql(
-    `SELECT count(DISTINCT uid)::int AS n FROM opd_note_audits
-     WHERE (note_date AT TIME ZONE 'Asia/Kolkata')::date = $1::date`,
-    [day],
+    `SELECT count(*)::int AS n FROM (
+       SELECT uid FROM opd_note_audits
+       WHERE (note_date AT TIME ZONE 'Asia/Kolkata')::date = $1::date
+       GROUP BY uid
+       ${AUDITED_HAVING}
+     ) audited`,
+    AUDITED_PARAMS(day),
   )) as Array<{ n: number }>;
   return Number(rows[0]?.n ?? 0);
 }

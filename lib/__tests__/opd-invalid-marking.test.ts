@@ -107,20 +107,37 @@ test('a successful re-audit CLEARS a stale mark; house_account is preserved verb
          CASE WHEN excluded_reason = 'llm_leg_failed' THEN NULL ELSE excluded_reason END)`));
 });
 
-test('D6 — THE TRAP: auditedUidsForDay* and worker dedup DO NOT filter excluded_reason', () => {
-  // Verbatim: excluding here makes a marked note look un-audited and the worker re-admits it
-  // every night — the exact fault the house-account comment warns about.
+test('D6 — the trap survives in its NARROWED form: only an incident makes a note re-auditable', () => {
+  // 31 Jul 2026 (addendum B / T-9). D6's original rule was "never filter excluded_reason here",
+  // because a blanket filter makes every marked note look un-audited and the worker re-admits it
+  // nightly — the house-account fault. That rule is now expressed as an ALLOWLIST rather than an
+  // absence: a note recovers only from an INCIDENT that marked the row, never from a verdict about
+  // the note. Everything not listed stays permanent, so the original fault cannot recur by default.
+  assert.ok(STORE.includes(`const RE_AUDITABLE_EXCLUSIONS = [
+  'vertex_outage_mislabel_2026_07',
+  'llm_leg_failed',
+] as const;`), 'the allowlist is exactly the two incident reasons, verbatim');
+  assert.ok(!/RE_AUDITABLE_EXCLUSIONS = \[[^\]]*house_account/s.test(STORE),
+    'house_account must NEVER be re-auditable — it is the reason the trap exists');
+
+  // auditedUidsForDay (single-version) is untouched — it was never part of the fault.
   assert.ok(STORE.includes(`    \`SELECT uid FROM opd_note_audits
      WHERE engine_version = $1 AND (note_date AT TIME ZONE 'Asia/Kolkata')::date = $2::date\``),
     'auditedUidsForDay must stay unfiltered');
-  assert.ok(STORE.includes(`    \`SELECT DISTINCT uid FROM opd_note_audits
-     WHERE (note_date AT TIME ZONE 'Asia/Kolkata')::date = $1::date\``),
-    'auditedUidsForDayAnyVersion must stay unfiltered');
-  // CODE only — the DATA-QUALITY §1 EXCEPTION comment on auditedUidsForDayAnyVersion legitimately
-  // names excluded_reason; it exists precisely to stop someone adding the filter.
-  const dayFns = STORE.slice(STORE.indexOf('export async function auditedUidsForDay'), STORE.indexOf('export async function deleteOpdAuditsForUid'))
-    .split('\n').filter((l) => { const t = l.trim(); return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*'); }).join('\n');
-  assert.ok(!/excluded_reason/.test(dayFns), 'no dedup reader may grow an excluded_reason filter');
+
+  // THE SPEND GUARD, and it must key on the WRITE TARGET, not the read family. saveOpdAudit is
+  // ON CONFLICT (uid, engine_version) DO NOTHING, so a note already holding a row at the version
+  // the worker writes would be re-audited nightly on the paid model for a result the insert throws
+  // away. Keyed on the family instead, EVERY stranded note is held and the change frees nothing.
+  assert.ok(STORE.includes('OR bool_or(engine_version = $3)'), 'the guard is a single write-target version');
+  assert.ok(STORE.includes('day, RE_AUDITABLE_EXCLUSIONS as unknown as string[], OPD_ENGINE_VERSION,'),
+    '$3 is OPD_ENGINE_VERSION — never OPD_ENGINE_VERSIONS_CURRENT');
+  assert.ok(!/AUDITED_PARAMS[\s\S]{0,200}OPD_ENGINE_VERSIONS_CURRENT/.test(STORE),
+    'the read family must not become the guard key');
+
+  // Both day readers share ONE predicate: the worker gates on the count and fetches on the uid
+  // list, so a divergence would loop a day forever.
+  assert.equal((STORE.match(/\$\{AUDITED_HAVING\}/g) || []).length, 2, 'both readers use the shared HAVING');
 });
 
 test('the canonical id set still excludes marked rows — the mark IS the aggregate exclusion', () => {
