@@ -82,7 +82,7 @@ export default async function DoctorDetail({ params, searchParams }: { params: P
   // parameterized read-only round-trip (NOT the MCP guard path); .catch → [] degrades to no ticks.
   const auditIds = rows.map((r) => r.id);
   const triagedIds = auditIds.length
-    ? (await runSql(`SELECT DISTINCT audit_id FROM opd_audit_feedback WHERE scope = 'finding' AND app_source = $1 AND audit_id = ANY($2)`, [APP, auditIds]).catch(() => [])).map((x) => String(x.audit_id))
+    ? (await runSql(`SELECT DISTINCT audit_id FROM opd_audit_feedback WHERE scope = 'finding' AND app_source = $1 AND audit_id = ANY($2) AND study IS NOT DISTINCT FROM $3`, [APP, auditIds, null]).catch(() => [])).map((x) => String(x.audit_id))
     : [];
 
   // Right Care funnel (§4/§7) — this doctor's dot vs specialty peers, case-mix adjusted. Peer grouping

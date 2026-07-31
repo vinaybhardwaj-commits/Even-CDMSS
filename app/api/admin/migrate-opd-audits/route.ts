@@ -92,6 +92,15 @@ export async function POST(req: NextRequest) {
     // (an insert of `category` fails otherwise — the known column-add gotcha).
     await sql`ALTER TABLE opd_audit_feedback ADD COLUMN IF NOT EXISTS category TEXT`;
     steps.feedback_category = 'ok';
+    // Feedback study filter (§8, 1 Aug 2026) — the ONE additive column this build needs. `study`
+    // names the labelling study a row belongs to; NULL = production. Every production read filters
+    // `study IS NOT DISTINCT FROM NULL` so study rows can never contaminate rollups, learning or the
+    // clinician-facing pages (three D12-allowlisted activity reads stay unfiltered, commented at the
+    // read). Run BEFORE the new route/UI deploy — reads AND writes both fail on the missing column
+    // otherwise (the known column-add gotcha).
+    await sql`ALTER TABLE opd_audit_feedback ADD COLUMN IF NOT EXISTS study TEXT`;
+    await sql`CREATE INDEX IF NOT EXISTS opd_audit_feedback_study_idx ON opd_audit_feedback (study, created_at DESC)`;
+    steps.feedback_study = 'ok';
     // Right Care indicator v1 (RIGHT-CARE-INDICATOR-PRD §6). Additive, engine 0.81.3 is metadata-only.
     // complexity_band + complexity_inputs are computed at audit time (NULL = unbanded; backfilled by
     // /api/admin/complexity-backfill). lvc_recommendations gains category + plain_rationale (Branch 2 seeds).

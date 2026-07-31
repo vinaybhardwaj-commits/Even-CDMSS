@@ -46,6 +46,7 @@ import {
   type FindingCountRow, type FiredRow, type MissedRow, type AuditRow as RollupAuditRow,
   type ReviewerRow, type LedgerLatestRow, type DetailRawRow, type LedgerRow, type FeedbackScope,
 } from './opd-feedback-rollup-core';
+import { DETAIL_SCOPES } from './opd-feedback-rollup-core';
 
 export type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
 const ok = (obj: unknown): ToolResult => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
@@ -343,7 +344,7 @@ export const LAB_TOOLS = [
   },
   {
     name: 'feedback_rollup',
-    description: 'OPD feedback loop — MEASURED precision from clinician triage of audit findings (opd_audit_feedback), the read path for the feedback instrumentation. Current-state = latest verdict per (audit_id, finding_ref) (earlier rows are history). Returns per (engine_version × signal_type) bucket: fired (findings that fired in opd_note_audits), triaged, coverage_pct = triaged/fired, verdict counts (tp/nitpick/false/contested), precision_strict = tp/(tp+nitpick+false) with contested EXCLUDED (a demand-side dispute, reported separately as contested_rate); plus missed-flag volume by signal_type, audit_scope { n_comments, verdict_counts, n_escalations }, reviewer tally, open_adjudications (clusters with ≥3 false+nitpick and no current non-defer ledger decision), and totals. Zero denominators → null (never NaN). Read-only, fixed parameterized SQL (NOT free SQL — opd_audit_feedback stays blocked from audit_query). Args: engine_version? (default all, grouped), signal_type?, since?/until? (ISO dates on feedback created_at). WRITE-CLASS: read-only (ensures the ledger table exists; writes no rows).',
+    description: 'OPD feedback loop — MEASURED precision from clinician triage of audit findings (opd_audit_feedback), the read path for the feedback instrumentation. Current-state = latest verdict per (audit_id, finding_ref) (earlier rows are history). Returns per (engine_version × signal_type) bucket: fired (findings that fired in opd_note_audits), triaged, coverage_pct = triaged/fired, verdict counts (tp/nitpick/false/contested), precision_strict = tp/(tp+nitpick+false) with contested EXCLUDED (a demand-side dispute, reported separately as contested_rate); plus missed-flag volume by signal_type, audit_scope { n_comments, verdict_counts, n_escalations }, reviewer tally, open_adjudications (clusters with ≥3 false+nitpick and no current non-defer ledger decision), and totals. Zero denominators → null (never NaN). Read-only, fixed parameterized SQL (NOT free SQL — opd_audit_feedback stays blocked from audit_query). Args: engine_version? (default all, grouped), signal_type?, since?/until? (ISO dates on feedback created_at), study? (labelling study — omitted reads production rows ONLY: study IS NULL, NULL-matches-NULL; §8). WRITE-CLASS: read-only (ensures the ledger table exists; writes no rows).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -351,6 +352,7 @@ export const LAB_TOOLS = [
         signal_type: { type: 'string', description: 'Filter to one signal_type.' },
         since: { type: 'string', description: 'ISO date — feedback created_at ≥ this day.' },
         until: { type: 'string', description: 'ISO date — feedback created_at ≤ this day (inclusive).' },
+        study: { type: 'string', description: "Labelling study to read (§8). OMITTED = production rows only (study IS NULL) — the predicate is always applied with NULL matching NULL, so study rows never contaminate a production rollup and vice versa. Pass the study name to roll up that study's rows instead." },
         min_triaged: { type: 'number', description: 'Output filter (default 1): omit buckets with fewer than this many triaged findings. Zero-triaged buckets are still counted in totals as n_buckets_untriaged / fired_untriaged. TOTALS ARE UNAFFECTED — this filters the emitted bucket list only.' },
         mode: { type: 'string', enum: ['summary', 'full'], description: "Output size (default 'summary'). summary = totals + the top 20 buckets by fired + EVERY bucket with triaged >= 5. full = every bucket that passes min_triaged. Either way a 20000-character ceiling applies: if exceeded, buckets are trimmed from the tail and truncated:true + n_buckets_omitted are set. Semantics never change." },
       },
@@ -358,16 +360,17 @@ export const LAB_TOOLS = [
   },
   {
     name: 'feedback_detail',
-    description: 'OPD feedback loop — the adjudication feed: individual current-state feedback rows joined to the fired finding (subject/verdict/domain/rationale, located in opd_note_audits.findings by finding_ref; null for missed/audit scope or if the ref no longer resolves, with ref_resolved=false). ⚠️ Returns clinician free-text comments verbatim — treat as potentially containing clinical details; do not paste into public docs. Read-only, fixed parameterized SQL (opd_audit_feedback stays blocked from audit_query). Args: scope? (finding|missed|audit, default finding), verdict?, signal_type?, engine_version?, uid?, history? (default false = current-state only; true also returns superseded rows flagged history=true), limit? (default 50, max 200). WRITE-CLASS: read-only.',
+    description: 'OPD feedback loop — the adjudication feed: individual current-state feedback rows joined to the fired finding (subject/verdict/domain/rationale, located in opd_note_audits.findings by finding_ref; null for missed/audit scope or if the ref no longer resolves, with ref_resolved=false). ⚠️ Returns clinician free-text comments verbatim — treat as potentially containing clinical details; do not paste into public docs. Read-only, fixed parameterized SQL (opd_audit_feedback stays blocked from audit_query). Args: scope? (finding|missed|audit|impact, default finding), verdict?, signal_type?, engine_version?, uid?, history? (default false = current-state only; true also returns superseded rows flagged history=true), study? (labelling study — omitted reads production rows ONLY; §8), limit? (default 50, max 200). WRITE-CLASS: read-only.',
     inputSchema: {
       type: 'object',
       properties: {
-        scope: { type: 'string', enum: ['finding', 'missed', 'audit'], description: 'default finding.' },
+        scope: { type: 'string', enum: [...DETAIL_SCOPES], description: "default finding. ('impact' admitted per F17 — the live schema previously showed three scopes while the code accepted four; reconciled §8.)" },
         verdict: { type: 'string', description: 'Filter by verdict (whitelisted per scope).' },
         signal_type: { type: 'string' },
         engine_version: { type: 'string' },
         uid: { type: 'string', description: 'db13 note uid.' },
         history: { type: 'boolean', description: 'default false (current-state only).' },
+        study: { type: 'string', description: "Labelling study to read (§8). OMITTED = production rows only (study IS NULL); the predicate is always applied, NULL matching NULL." },
         limit: { type: 'number', description: 'default 50, max 200.' },
       },
     },
@@ -1191,6 +1194,8 @@ async function feedbackRollup(a: Record<string, unknown>): Promise<ToolResult> {
     since: S(a.since).trim() || null,
     until: S(a.until).trim() || null,
     signalType: S(a.signal_type).trim() || null,
+    // §8: default null ⇒ production rows only (study IS NULL) — never contaminated by a study.
+    study: S(a.study).trim().slice(0, 64) || null,
   };
   const [findingQ, firedQ, missedQ, auditQ, reviewerQ, reviewerCurQ, ledgerQ] = [
     buildRollupFindingSql(filters), buildRollupFiredSql(filters), buildRollupMissedSql(filters),
@@ -1233,6 +1238,7 @@ async function feedbackDetail(a: Record<string, unknown>): Promise<ToolResult> {
       uid: S(a.uid).trim() || null,
       history: a.history === true,
       limit: clampLimit(a.limit),
+      study: S(a.study).trim().slice(0, 64) || null,   // §8: default null ⇒ production rows only
     });
   } catch (e) { return err(String((e as Error).message)); }
   const rows = await run(q.text, q.params);

@@ -50,6 +50,8 @@ export async function GET(req: NextRequest) {
 
     // Counted-label rows for roster authors (finding + missed; impact excluded here AND in the core).
     // Ordered ASC so the core's current-state dedup ("later row wins") is correct. Fail-safe → [].
+    // study-filter-exempt (D12): roster stats read UNFILTERED by design — study labels are counted
+    // work for the roster's goal basis, and the roster match at :47 depends on raw stored authors.
     const rows = (await run(
       `SELECT author, scope, audit_id::text AS audit_id, finding_ref, verdict,
               to_char((created_at AT TIME ZONE 'Asia/Kolkata')::date,'YYYY-MM-DD') AS day

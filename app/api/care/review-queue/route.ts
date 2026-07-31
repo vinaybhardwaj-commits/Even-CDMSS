@@ -69,6 +69,8 @@ export async function GET(req: NextRequest) {
   const n = Math.max(1, Math.min(120, Number(sp.get('n')) || 20)); // §3.3: cap 50→120 (navigator working set)
   const queue = sp.get('queue') === 'disagreement' ? 'disagreement' : sp.get('queue') === 'fresh' ? 'fresh' : 'all';
   const signal_type = (sp.get('signal_type') || '').trim() || null;
+  // §8 study filter: names the labelling study this queue session belongs to. Absent ⇒ production.
+  const study = (sp.get('study') || '').trim().slice(0, 64) || null;
   const domain = (sp.get('domain') || '').trim() || null;
   const doctor_uid = (sp.get('doctor_uid') || '').trim() || null;
   const from = ISODATE.test(sp.get('from') || '') ? sp.get('from') : null;
@@ -138,11 +140,14 @@ export async function GET(req: NextRequest) {
   }
 
   // ── labeled-by-this-reviewer exclusion (current state) ────────────────────────
+  // §8 / PRD §3.2: the exclusion is STUDY-SCOPED — only labels from the same study (or from
+  // production, when study is absent) exclude an item from this reviewer's queue.
   const labeledRows = await run(
     `SELECT DISTINCT audit_id::text AS audit_id, finding_ref
      FROM opd_audit_feedback
-     WHERE app_source = $1 AND scope = 'finding' AND author = $2 AND finding_ref IS NOT NULL`,
-    [APP, reviewer]).catch(() => []);
+     WHERE app_source = $1 AND scope = 'finding' AND author = $2 AND finding_ref IS NOT NULL
+       AND study IS NOT DISTINCT FROM $3`,
+    [APP, reviewer, study]).catch(() => []);
   const labeledKeys = new Set<string>();
   for (const r of labeledRows as Record<string, unknown>[]) {
     labeledKeys.add(itemKey({ audit_id: String(r.audit_id), finding_ref: String(r.finding_ref) }));
@@ -244,6 +249,8 @@ async function buildDisagreements(
 /** Today's (IST) label count for the rail. Fail-safe → 0. Gamification §3.4: `impact` is NOT counted
  *  (it's a second tap on an already-counted finding) so the rail agrees with the team-goal basis. */
 async function labeledTodayCount(reviewer: string): Promise<number> {
+  // study-filter-exempt (D12): the daily rail counts reviewer ACTIVITY — a study label is work done
+  // today and must count toward the goal; filtering it would under-report against the team basis.
   const rows = await run(
     `SELECT count(*)::int AS n FROM opd_audit_feedback
      WHERE app_source = $1 AND author = $2

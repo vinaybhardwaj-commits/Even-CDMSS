@@ -100,14 +100,15 @@ test('missed rows: grouped by category; null category labelled (unclassified); u
 test('buildDetailSql: whitelist rejects bad scope/verdict; param slots line up', () => {
   assert.throws(() => buildDetailSql({ appSource: 'standalone', scope: 'weird' as never, history: false, limit: 50 }), /unknown scope/);
   assert.throws(() => buildDetailSql({ appSource: 'standalone', scope: 'finding', verdict: 'agree', history: false, limit: 50 }), /unknown verdict filter for scope=finding/);
-  // finding, no filters, current-only → params [appSource, limit]; uses inner JOIN cur
+  // finding, no filters, current-only → params [appSource, study(null §8), limit]; uses inner JOIN cur
   const a = buildDetailSql({ appSource: 'standalone', scope: 'finding', history: false, limit: 50 });
-  assert.equal(a.params.length, 2);
+  assert.equal(a.params.length, 3);
+  assert.equal(a.params[1], null);          // §8: the always-present study slot, NULL by default
   assert.match(a.text, /\nJOIN cur ON cur\.cur_id = f\.id/);       // current-only = inner join
   // finding, history=true → LEFT JOIN + history flag; all filters present → 6 params
   const b = buildDetailSql({ appSource: 'standalone', scope: 'finding', verdict: 'false', signalType: 'nsaid', uid: 'u1', engineVersion: '0.81.2', history: true, limit: 300 });
   assert.match(b.text, /LEFT JOIN cur ON cur\.cur_id = f\.id/);
-  assert.equal(b.params.length, 6);
+  assert.equal(b.params.length, 7);         // +1: the §8 study slot
   assert.equal(b.params[b.params.length - 1], 200);               // limit clamped 300 → 200
   // audit scope path parameterizes the scope value
   const c = buildDetailSql({ appSource: 'standalone', scope: 'audit', verdict: 'agree', history: false, limit: 50 });
@@ -115,12 +116,12 @@ test('buildDetailSql: whitelist rejects bad scope/verdict; param slots line up',
 });
 
 test('rollup SQL builders parameterize every arg (no interpolation) and count slots', () => {
-  // app($1) + since($2) + until($3) + signalType($4) + engineVersion($5) = 5 params
+  // app($1) + study($2, §8 always present) + since($3) + until($4) + signalType($5) + engineVersion($6) = 6
   const f = buildRollupFindingSql({ appSource: 'standalone', engineVersion: '0.81.2', since: '2026-07-01', until: '2026-07-08', signalType: 'nsaid' });
-  assert.equal(f.params.length, 5);
-  assert.equal(buildRollupFindingSql({ appSource: 's' }).params.length, 1); // app only when unfiltered
-  assert.deepEqual(buildRollupFiredSql({ appSource: 's' }).params, ['s']);
-  assert.equal(buildRollupMissedSql({ appSource: 's', since: 'd1' }).params.length, 2);
+  assert.equal(f.params.length, 6);
+  assert.deepEqual(buildRollupFindingSql({ appSource: 's' }).params, ['s', null]); // app + the NULL study slot
+  assert.deepEqual(buildRollupFiredSql({ appSource: 's' }).params, ['s']);         // fired is audit-side: no study slot
+  assert.equal(buildRollupMissedSql({ appSource: 's', since: 'd1' }).params.length, 3);
   assert.match(buildRollupFiredSql({ appSource: 's' }).text, /jsonb_array_elements\(COALESCE\(a\.findings/);
 });
 

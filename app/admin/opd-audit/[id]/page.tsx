@@ -522,9 +522,9 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
   // flags are their own list. All wrapped in .catch — before the migrate route adds the columns the
   // scope-filtered reads return empty rather than 500 (the documented migrate-first sequence).
   const [feedback, findingStateRows, missedRows, prevR, nextR] = await Promise.all([
-    run(`SELECT id, created_at, verdict, comment, author FROM opd_audit_feedback WHERE audit_id = $1 AND app_source = $2 AND (scope = 'audit' OR scope IS NULL) ORDER BY created_at DESC`, [id, APP]).catch(() => []),
-    run(`SELECT DISTINCT ON (finding_ref) finding_ref, verdict FROM opd_audit_feedback WHERE audit_id = $1 AND app_source = $2 AND scope = 'finding' AND finding_ref IS NOT NULL ORDER BY finding_ref, created_at DESC`, [id, APP]).catch(() => []),
-    run(`SELECT id, created_at, comment, author FROM opd_audit_feedback WHERE audit_id = $1 AND app_source = $2 AND scope = 'missed' ORDER BY created_at DESC`, [id, APP]).catch(() => []),
+    run(`SELECT id, created_at, verdict, comment, author FROM opd_audit_feedback WHERE audit_id = $1 AND app_source = $2 AND (scope = 'audit' OR scope IS NULL) AND study IS NOT DISTINCT FROM $3 ORDER BY created_at DESC`, [id, APP, null]).catch(() => []),
+    run(`SELECT DISTINCT ON (finding_ref) finding_ref, verdict FROM opd_audit_feedback WHERE audit_id = $1 AND app_source = $2 AND scope = 'finding' AND finding_ref IS NOT NULL AND study IS NOT DISTINCT FROM $3 ORDER BY finding_ref, created_at DESC`, [id, APP, null]).catch(() => []),
+    run(`SELECT id, created_at, comment, author FROM opd_audit_feedback WHERE audit_id = $1 AND app_source = $2 AND scope = 'missed' AND study IS NOT DISTINCT FROM $3 ORDER BY created_at DESC`, [id, APP, null]).catch(() => []),
     run(
       `SELECT id FROM opd_note_audits
        WHERE app_source = $1 AND engine_version = ${ENG_FAMILY_SQL}

@@ -72,8 +72,9 @@ async function fromOpdAuditFeedback(): Promise<LedgerRow[]> {
          FROM opd_audit_feedback f
          JOIN opd_note_audits a ON a.id = f.audit_id
         WHERE f.app_source = $1 AND f.scope = 'finding' AND f.finding_ref IS NOT NULL
+          AND f.study IS NOT DISTINCT FROM $2
         ORDER BY f.audit_id, f.finding_ref, f.created_at DESC`,
-      [APP],
+      [APP, null],
     );
     return rows.flatMap((r) => {
       const canonical = normalizeVerdict('finding', s(r.verdict));

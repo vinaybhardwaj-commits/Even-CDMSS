@@ -51,6 +51,7 @@ const TRIAL_SET_SQL = `
       FROM opd_audit_feedback f
       JOIN opd_note_audits a ON a.id = f.audit_id
      WHERE f.scope = 'finding' AND f.finding_ref IS NOT NULL AND f.app_source = $1
+       AND f.study IS NOT DISTINCT FROM $2
      ORDER BY f.audit_id, f.finding_ref, f.created_at DESC, f.id DESC
   ) t ORDER BY audit_id, finding_ref`;
 
@@ -59,6 +60,7 @@ const OVERLAP_SQL = `
   SELECT f.audit_id, f.finding_ref, count(DISTINCT btrim(f.author))::int AS n_authors
     FROM opd_audit_feedback f
    WHERE f.scope = 'finding' AND f.finding_ref IS NOT NULL AND f.app_source = $1
+     AND f.study IS NOT DISTINCT FROM $2
      AND f.author IS NOT NULL AND btrim(f.author) <> ''
    GROUP BY f.audit_id, f.finding_ref
   HAVING count(DISTINCT btrim(f.author)) >= 2`;
@@ -100,7 +102,7 @@ export async function POST(req: NextRequest) {
   const action = typeof body.action === 'string' ? body.action : 'dry';
 
   try {
-    const set = (await run(TRIAL_SET_SQL, [APP])) as SetRow[];
+    const set = (await run(TRIAL_SET_SQL, [APP, null])) as SetRow[];
     const contestedN = set.filter((r) => humanClass(r.human_verdict) === 'contested').length;
     const scoredN = set.length - contestedN;
     const plan = planTrial(scoredN, contestedN);
@@ -116,7 +118,7 @@ export async function POST(req: NextRequest) {
         ok: true, dryRun: true,
         set: { total: set.length, scored: scoredN, contested: contestedN },
         plan,
-        overlap: (await run(OVERLAP_SQL, [APP])).length,
+        overlap: (await run(OVERLAP_SQL, [APP, null])).length,
         promptVersion: TRIAL_PROMPT_VERSION,
         renderedExample: finding ? renderLabelPrompt(finding, ctx) : null,
       });
@@ -307,7 +309,7 @@ export async function POST(req: NextRequest) {
         },
         crossInvocation: { ...cross, note: 'same model, same finding, separate process invocations — NOT pooled with within-invocation self-agreement' },
         setCoverage: { labelled: winners.size, ofSet: set.length, findingUnmatched: unmatched },
-        interHumanOverlap: (await run(OVERLAP_SQL, [APP])).length,
+        interHumanOverlap: (await run(OVERLAP_SQL, [APP, null])).length,
         report,
       });
     }

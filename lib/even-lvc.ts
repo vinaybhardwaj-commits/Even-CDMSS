@@ -314,7 +314,7 @@ export async function loadBoard(): Promise<Board> {
 
   // recompute contest counts from the feedback channel + apply the active→contested flip (fail-safe)
   try {
-    const contestRows = await run(`SELECT assertion_id FROM opd_audit_feedback WHERE scope = 'assertion_contest' AND assertion_id IS NOT NULL`, []);
+    const contestRows = await run(`SELECT assertion_id FROM opd_audit_feedback WHERE scope = 'assertion_contest' AND assertion_id IS NOT NULL AND study IS NOT DISTINCT FROM $1`, [null]);
     const updates = rollupContests(
       rows.map((r) => ({ id: r.id, status: r.status, contest_count: Number(r.contest_count) || 0 })),
       contestRows.map((c) => ({ assertion_id: c.assertion_id as string })),

@@ -90,10 +90,11 @@ export async function fetchMissedFlags(): Promise<MissedFlagLite[]> {
        FROM opd_audit_feedback f
        JOIN opd_note_audits a ON a.id = f.audit_id
       WHERE f.app_source = $1 AND f.scope = 'missed' AND COALESCE(f.comment, '') <> ''
+        AND f.study IS NOT DISTINCT FROM $3
         AND a.excluded_reason IS NULL AND a.engine_version = ANY($2)
       ORDER BY f.created_at DESC
       LIMIT 4000`,
-    [APP, ENGINE_FAMILY]).catch(() => []);
+    [APP, ENGINE_FAMILY, null]).catch(() => []);
   return rows.map((r) => ({
     audit_id: String(r.audit_id ?? ''), category: r.category == null ? null : String(r.category),
     comment: String(r.comment ?? ''), author: r.author == null ? null : String(r.author),
@@ -112,10 +113,11 @@ export async function fetchFindingLabels(): Promise<FindingLabelLite[]> {
        JOIN opd_note_audits a ON a.id = f.audit_id
       WHERE f.app_source = $1 AND f.scope = 'finding' AND f.finding_ref IS NOT NULL
         AND f.verdict = ANY($2)
+        AND f.study IS NOT DISTINCT FROM $4
         AND a.excluded_reason IS NULL AND a.engine_version = ANY($3)
       ORDER BY f.audit_id, f.finding_ref, f.created_at DESC
       LIMIT 8000`,
-    [APP, VERDICT_SET, ENGINE_FAMILY]).catch(() => []);
+    [APP, VERDICT_SET, ENGINE_FAMILY, null]).catch(() => []);
   return rows.map((r) => ({
     audit_id: String(r.audit_id ?? ''), finding_ref: String(r.finding_ref ?? ''),
     subject: r.subject == null ? '' : String(r.subject),
@@ -501,8 +503,9 @@ export async function fetchFlywheelData(): Promise<FlywheelView> {
   // C — reviewer labels captured this week (all feedback scopes)
   const c = await sql2(
     `SELECT count(*)::int AS labels_week FROM opd_audit_feedback
-      WHERE app_source = $1 AND (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${IST_WEEK_START}`,
-    [APP]).catch(() => []);
+      WHERE app_source = $1 AND study IS NOT DISTINCT FROM $2
+        AND (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${IST_WEEK_START}`,
+    [APP, null]).catch(() => []);
   // D — proposals approved this week, by type (rules published / topics harvested)
   const d = await sql2(
     `SELECT type, count(*)::int AS n FROM learning_proposals
@@ -569,9 +572,9 @@ export async function fetchProgrammeData(): Promise<Meter[]> {
 
   const cad = await sql2(
     `SELECT count(*)::int AS n FROM opd_audit_feedback
-      WHERE app_source = $1 AND scope = 'finding'
+      WHERE app_source = $1 AND scope = 'finding' AND study IS NOT DISTINCT FROM $2
         AND (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${IST_WEEK_START}`,
-    [APP]).catch(() => []);
+    [APP, null]).catch(() => []);
 
   return buildMeters({
     frozenVersion,

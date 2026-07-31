@@ -133,7 +133,11 @@ function pb() {
 }
 
 // ── rollup SQL builders (PRD §4.1) ────────────────────────────────────────────
-export type RollupFilters = { appSource: string; engineVersion?: string | null; since?: string | null; until?: string | null; signalType?: string | null };
+export type RollupFilters = { appSource: string; engineVersion?: string | null; since?: string | null; until?: string | null; signalType?: string | null;
+  /** Study-filter build (§8): the labelling study to read. The predicate is ALWAYS present —
+   *  `f.study IS NOT DISTINCT FROM $n`, parameterised, default NULL — so NULL matches NULL and a
+   *  production read (study unset) can never see a study's rows, nor a study read production's. */
+  study?: string | null };
 
 function rangeAnd(P: (v: unknown) => string, since?: string | null, until?: string | null): string {
   let s = '';
@@ -146,6 +150,7 @@ function rangeAnd(P: (v: unknown) => string, since?: string | null, until?: stri
 export function buildRollupFindingSql(o: RollupFilters): Sql {
   const { params, P } = pb();
   let cfWhere = `f.scope = 'finding' AND f.finding_ref IS NOT NULL AND f.app_source = ${P(o.appSource)}`;
+  cfWhere += ` AND f.study IS NOT DISTINCT FROM ${P(o.study ?? null)}`;
   cfWhere += rangeAnd(P, o.since, o.until);
   if (o.signalType) cfWhere += ` AND f.signal_type = ${P(o.signalType)}`;
   let outer = '';
@@ -188,6 +193,7 @@ GROUP BY 1, 2`;
 export function buildRollupMissedSql(o: RollupFilters): Sql {
   const { params, P } = pb();
   let where = `f.scope = 'missed' AND f.app_source = ${P(o.appSource)}`;
+  where += ` AND f.study IS NOT DISTINCT FROM ${P(o.study ?? null)}`;
   where += rangeAnd(P, o.since, o.until);
   const text = `WITH m AS (
   SELECT f.audit_id, f.category FROM opd_audit_feedback f WHERE ${where}
@@ -206,6 +212,7 @@ GROUP BY 1, 2`;
 export function buildRollupImpactSql(o: RollupFilters): Sql {
   const { params, P } = pb();
   let cfWhere = `f.scope = 'impact' AND f.finding_ref IS NOT NULL AND f.app_source = ${P(o.appSource)}`;
+  cfWhere += ` AND f.study IS NOT DISTINCT FROM ${P(o.study ?? null)}`;
   cfWhere += rangeAnd(P, o.since, o.until);
   const text = `WITH ci AS (
   SELECT DISTINCT ON (f.audit_id, f.finding_ref) f.audit_id, f.finding_ref, f.verdict
@@ -223,6 +230,7 @@ GROUP BY 1`;
 export function buildRollupAuditSql(o: RollupFilters): Sql {
   const { params, P } = pb();
   let where = `f.scope = 'audit' AND f.app_source = ${P(o.appSource)}`;
+  where += ` AND f.study IS NOT DISTINCT FROM ${P(o.study ?? null)}`;
   where += rangeAnd(P, o.since, o.until);
   const text = `SELECT f.verdict AS verdict, f.comment AS comment FROM opd_audit_feedback f WHERE ${where}`;
   return { text, params };
@@ -239,6 +247,7 @@ export function buildRollupAuditSql(o: RollupFilters): Sql {
 export function buildRollupReviewerSql(o: RollupFilters): Sql {
   const { params, P } = pb();
   let where = `f.app_source = ${P(o.appSource)} AND f.author IS NOT NULL AND btrim(f.author) <> ''`;
+  where += ` AND f.study IS NOT DISTINCT FROM ${P(o.study ?? null)}`;
   where += rangeAnd(P, o.since, o.until);
   const text = `SELECT f.author AS author, count(*)::int AS n FROM opd_audit_feedback f WHERE ${where} GROUP BY f.author ORDER BY n DESC`;
   return { text, params };
@@ -261,6 +270,7 @@ export function buildRollupReviewerSql(o: RollupFilters): Sql {
 export function buildRollupReviewerCurrentSql(o: RollupFilters): Sql {
   const { params, P } = pb();
   let cfWhere = `f.scope = 'finding' AND f.finding_ref IS NOT NULL AND f.app_source = ${P(o.appSource)}`;
+  cfWhere += ` AND f.study IS NOT DISTINCT FROM ${P(o.study ?? null)}`;
   cfWhere += rangeAnd(P, o.since, o.until);
   if (o.signalType) cfWhere += ` AND f.signal_type = ${P(o.signalType)}`;
   let outer = '';
@@ -275,6 +285,32 @@ SELECT COALESCE(NULLIF(btrim(cf.author), ''), '(unattributed)') AS author, count
 FROM cf LEFT JOIN opd_note_audits a ON a.id = cf.audit_id${outer}
 GROUP BY 1
 ORDER BY n DESC`;
+  return { text, params };
+}
+
+/**
+ * Study-filter build (§8) — per-AUTHOR current state over scope='finding' rows: the latest verdict
+ * each author holds on each finding. This is the inter-rater read a study needs (compare two
+ * authors' current calls on the same finding), which no existing builder can produce — the
+ * (audit_id, finding_ref) dedup collapses authors into one winner.
+ *
+ * The DISTINCT ON key is (f.audit_id, f.finding_ref, f.author) and the ORDER BY leads with the
+ * SAME three columns before the shared currentness tail — derived from CURRENT_STATE_ORDER (the
+ * single definition of current state) rather than restated, so the tie-break can never drift.
+ */
+export const AUTHOR_CURRENT_STATE_ORDER = CURRENT_STATE_ORDER.replace('f.finding_ref,', 'f.finding_ref, f.author,');
+
+export function buildFindingAuthorCurrentSql(o: RollupFilters): Sql {
+  const { params, P } = pb();
+  let cfWhere = `f.scope = 'finding' AND f.finding_ref IS NOT NULL AND f.app_source = ${P(o.appSource)}`;
+  cfWhere += ` AND f.study IS NOT DISTINCT FROM ${P(o.study ?? null)}`;
+  cfWhere += rangeAnd(P, o.since, o.until);
+  if (o.signalType) cfWhere += ` AND f.signal_type = ${P(o.signalType)}`;
+  const text = `SELECT DISTINCT ON (f.audit_id, f.finding_ref, f.author)
+  f.audit_id, f.finding_ref, f.author, f.verdict, f.signal_type, f.created_at
+FROM opd_audit_feedback f
+WHERE ${cfWhere}
+${AUTHOR_CURRENT_STATE_ORDER}`;
   return { text, params };
 }
 
@@ -504,6 +540,8 @@ export function reduceRollup(inputs: {
 export type DetailFilters = {
   appSource: string; scope: DetailScope; verdict?: string | null; signalType?: string | null;
   engineVersion?: string | null; uid?: string | null; history?: boolean; limit: number;
+  /** Study-filter build (§8): same always-present `IS NOT DISTINCT FROM` predicate as RollupFilters. */
+  study?: string | null;
 };
 
 function verdictWhitelistFor(scope: DetailScope): readonly string[] {
@@ -522,6 +560,7 @@ export function buildDetailSql(o: DetailFilters): Sql {
   const limit = clampLimit(o.limit);
   const { params, P } = pb();
   const app = P(o.appSource);
+  const study = P(o.study ?? null);   // §8: one placeholder, reused by every feedback predicate below
   const commonFilters = (fAlias: string, aAlias: string) => {
     let s = '';
     if (o.verdict) s += ` AND ${fAlias}.verdict = ${P(o.verdict)}`;
@@ -543,7 +582,7 @@ export function buildDetailSql(o: DetailFilters): Sql {
     const curCte = `cur AS (
     SELECT DISTINCT ON (f.audit_id, f.finding_ref) f.id AS cur_id
     FROM opd_audit_feedback f
-    WHERE f.scope = 'finding' AND f.finding_ref IS NOT NULL AND f.app_source = ${cfApp}
+    WHERE f.scope = 'finding' AND f.finding_ref IS NOT NULL AND f.app_source = ${cfApp} AND f.study IS NOT DISTINCT FROM ${study}
     ${CURRENT_STATE_ORDER}
   )`;
     const join = o.history ? 'LEFT JOIN cur ON cur.cur_id = f.id' : 'JOIN cur ON cur.cur_id = f.id';
@@ -553,7 +592,7 @@ FROM opd_audit_feedback f
 ${join}
 LEFT JOIN opd_note_audits a ON a.id = f.audit_id
 ${lat}
-WHERE f.scope = 'finding' AND f.finding_ref IS NOT NULL AND f.app_source = ${app}${commonFilters('f', 'a')}
+WHERE f.scope = 'finding' AND f.finding_ref IS NOT NULL AND f.app_source = ${app} AND f.study IS NOT DISTINCT FROM ${study}${commonFilters('f', 'a')}
 ORDER BY f.created_at DESC, f.id DESC
 LIMIT ${P(limit)}`;
   } else {
@@ -561,7 +600,7 @@ LIMIT ${P(limit)}`;
     text = `SELECT ${cols}, NULL::jsonb AS finding_raw, false AS history
 FROM opd_audit_feedback f
 LEFT JOIN opd_note_audits a ON a.id = f.audit_id
-WHERE f.scope = ${scopeP} AND f.app_source = ${app}${commonFilters('f', 'a')}
+WHERE f.scope = ${scopeP} AND f.app_source = ${app} AND f.study IS NOT DISTINCT FROM ${study}${commonFilters('f', 'a')}
 ORDER BY f.created_at DESC, f.id DESC
 LIMIT ${P(limit)}`;
   }

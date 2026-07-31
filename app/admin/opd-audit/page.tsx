@@ -262,7 +262,7 @@ export default async function OpdAuditAdmin({ searchParams }: { searchParams: Pr
   const investigations = await fetchInvestigationsForUids(notesRows.map((r) => r.uid));
   const notesRowsWithInv: AuditRow[] = notesRows.map((r) => ({ ...r, investigations: stateFor(investigations, r.uid) }));
   const triagedIds = auditIds.length
-    ? (await rowsOf<{ audit_id: string }>(`SELECT DISTINCT audit_id FROM opd_audit_feedback WHERE scope = 'finding' AND app_source = $1 AND audit_id = ANY($2)`, [APP, auditIds])).map((x) => String(x.audit_id))
+    ? (await rowsOf<{ audit_id: string }>(`SELECT DISTINCT audit_id FROM opd_audit_feedback WHERE scope = 'finding' AND app_source = $1 AND audit_id = ANY($2) AND study IS NOT DISTINCT FROM $3`, [APP, auditIds, null])).map((x) => String(x.audit_id))
     : [];
 
   const k = kpiR[0] || {};

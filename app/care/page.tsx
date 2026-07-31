@@ -59,6 +59,8 @@ export default async function ManagedCareHome() {
     const goal = parseGoal(s.review_goal);
     let roster: string[] = FALLBACK_ROSTER;
     try { const j = JSON.parse(s.review_roster || ''); if (Array.isArray(j)) { const l = j.map((x) => String(x).trim()).filter(Boolean); if (l.length) roster = l; } } catch { /* fallback */ }
+    // study-filter-exempt (D12): the team-goal page reads UNFILTERED by design — study labels are
+    // counted work; this read and review-stats share one basis and must agree.
     const rows = (await run(
       `SELECT author, scope, audit_id::text AS audit_id, finding_ref, verdict,
               to_char((created_at AT TIME ZONE 'Asia/Kolkata')::date,'YYYY-MM-DD') AS day

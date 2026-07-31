@@ -52,6 +52,11 @@ export type FeedbackRow = {
   finding_ref: string | null;
   signal_type: string | null;
   category: string | null;
+  /** Study-filter build (§8, D8): the labelling study this row belongs to. NULL = production.
+   *  Non-null study REQUIRES a non-empty author (validated here, not in the route) — an
+   *  unattributable study row can never be compared across raters. Stored exactly as typed
+   *  (author too — D9/D10: trim/casefold only in reducers, never in SQL, never at write time). */
+  study: string | null;
 };
 
 export type ParseResult =
@@ -85,13 +90,19 @@ export function parseFeedbackBody(input: unknown): ParseResult {
   const finding_ref = str(body.finding_ref, 40);
   const signal_type = str(body.signal_type, 120);
   const rawCategory = str(body.category, 60);
+  // Study-filter build (§8, D8): string, trimmed, ≤64 chars, empty → null. A non-null study
+  // REQUIRES an author — the rule lives HERE so every write path through this parser enforces it.
+  const study = str(body.study, 64);
+  if (study !== null && author === null) {
+    return { ok: false, error: 'author required when study is set' };
+  }
 
   if (scope === 'finding') {
     if (!rawVerdict || !FEEDBACK_VERDICTS.finding.has(rawVerdict)) {
       return { ok: false, error: 'finding verdict must be one of ' + FINDING_VERDICTS.join(', ') };
     }
     if (!finding_ref) return { ok: false, error: 'finding_ref required for scope=finding' };
-    return { ok: true, value: { auditId, scope, uid, verdict: rawVerdict, comment, author, finding_ref, signal_type, category: null } };
+    return { ok: true, value: { auditId, scope, uid, verdict: rawVerdict, comment, author, finding_ref, signal_type, category: null, study } };
   }
 
   if (scope === 'impact') {
@@ -101,7 +112,7 @@ export function parseFeedbackBody(input: unknown): ParseResult {
       return { ok: false, error: 'impact tag must be one of ' + IMPACT_TAGS.join(', ') };
     }
     if (!finding_ref) return { ok: false, error: 'finding_ref required for scope=impact' };
-    return { ok: true, value: { auditId, scope, uid, verdict: rawVerdict, comment, author, finding_ref, signal_type, category: null } };
+    return { ok: true, value: { auditId, scope, uid, verdict: rawVerdict, comment, author, finding_ref, signal_type, category: null, study } };
   }
 
   if (scope === 'missed') {
@@ -119,11 +130,11 @@ export function parseFeedbackBody(input: unknown): ParseResult {
     }
     const category: string = rawCategory;
     // verdict is fixed for missed; ignore/override whatever was sent.
-    return { ok: true, value: { auditId, scope, uid, verdict: MISSED_VERDICT, comment, author, finding_ref: null, signal_type, category } };
+    return { ok: true, value: { auditId, scope, uid, verdict: MISSED_VERDICT, comment, author, finding_ref: null, signal_type, category, study } };
   }
 
   // scope === 'audit' — legacy path. verdict optional (constrained if present); bare comment allowed.
   const verdict = rawVerdict && FEEDBACK_VERDICTS.audit.has(rawVerdict) ? rawVerdict : null;
   if (!verdict && !comment) return { ok: false, error: 'provide a verdict or a comment' };
-  return { ok: true, value: { auditId, scope, uid, verdict, comment, author, finding_ref: null, signal_type: null, category: null } };
+  return { ok: true, value: { auditId, scope, uid, verdict, comment, author, finding_ref: null, signal_type: null, category: null, study } };
 }
