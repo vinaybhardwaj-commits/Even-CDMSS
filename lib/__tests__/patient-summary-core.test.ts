@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   assemblePackage, resolveServed, makeJobId, isJobId, findStateConflicts,
-  PATIENT_SUMMARY_DISCLAIMER, COMMERCIAL_DEFINITION, PATIENT_SUMMARY_API_VERSION,
+  PATIENT_SUMMARY_DISCLAIMER, COMMERCIAL_DEFINITION, PATIENT_SUMMARY_API_VERSION, normaliseAsOf,
 } from '../patient-summary-core.ts';
 
 const CARE_PAGE = readFileSync('app/care/page.tsx', 'utf8');
@@ -72,9 +72,13 @@ test('§2.7.3 conflicts surface and are NEVER resolved, filtered or collapsed �
   assert.equal(got[0].severity, 'safety_critical');
 });
 
-test("§2.7.4 as_of comes from the snapshot's own field — never recomputed", () => {
+test("§2.7.4 as_of comes from the snapshot's own field — never recomputed, only re-FORMATTED", () => {
+  // T-13 §4: the instant is the snapshot's, unchanged; only its shape is normalised on the way
+  // out, because the same field shipped as a bare date on one package and a full IST instant on
+  // another. The calendar date must survive that normalisation exactly.
   const pkg = assemblePackage({ ...base, memberState: { asOf: '2026-06-15' } as never });
-  assert.equal(pkg.envelope.as_of, '2026-06-15');
+  assert.ok(String(pkg.envelope.as_of).startsWith('2026-06-15'), "the snapshot's own day, not a recomputed one");
+  assert.equal(pkg.envelope.as_of, '2026-06-15T00:00:00+05:30');
   assert.notEqual(pkg.envelope.as_of, pkg.envelope.generated_at, 'freshness is not generation time');
   assert.equal(assemblePackage(base).envelope.as_of, null, 'no snapshot ⇒ null, not a guess');
 });
@@ -118,7 +122,11 @@ test('§2.4 a partial assembly (a state leg failed) is degraded even when the mo
 });
 
 test('§2.4 the wired reader takes provider/model from llm_response — NEVER llm_request (that is intent)', () => {
-  assert.ok(WIRED.includes("kind IN ('llm_response', 'llm_stream_usage')"));
+  // T-13 widened the SAME query to also read provider_error/llm_error, but provider and model are
+  // still taken only from the response rows — the filter below is what keeps intent out.
+  assert.ok(WIRED.includes("kind IN ('llm_response', 'llm_stream_usage', 'provider_error', 'llm_error')"));
+  assert.ok(WIRED.includes("r.kind === 'llm_response' || r.kind === 'llm_stream_usage'"),
+    'observations are filtered back down to responses before resolveServed sees them');
   assert.ok(!/llm_request/.test(WIRED.slice(WIRED.indexOf('async function servedObservations'), WIRED.indexOf('function buildEpisodeClinicalState'))));
   assert.ok(WIRED.includes('ORDER BY seq ASC'), 'ordered so the last observation is the final one');
 });
@@ -341,4 +349,117 @@ test('the audit budget is NOT changed by the stage-2 cap — separate constants,
   assert.ok(!WIRED.includes('AUDIT_EVAL_THINKING_BUDGET'), 'stage 2 does not reach into the audit engine');
   const AUDIT = readFileSync('lib/opd-note-audit.ts', 'utf8');
   assert.ok(AUDIT.includes('AUDIT_EVAL_THINKING_BUDGET) || 4096'), 'the audit budget stays 4096');
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// T-13 · a dead clinical leg must report itself degraded (31 Jul 2026)
+//
+// REPRODUCED FROM THE REAL FAILURE. Trace d2c9f0cb-08d4-4d3e-83c2-2448e8f92b0c: the ccb_clinical
+// leg died on the bridge (empty 200 after 133s), the response check caught it and wrote BOTH a
+// provider_error and an llm_error — and the package shipped `clinical.findings: []`,
+// `citation_coverage_pct: 0` and `degraded: FALSE`. The four original rules could not see it: the
+// array was empty but PRESENT, clinical_state built independently and was fine, and other legs
+// supplied observations. Evidence preserved as fixture-showcase-FAILED-CLINICAL-LEG.json.
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+// Exactly what that trace held: two healthy report reads, the dead clinical leg, a healthy stage 2.
+const T13_OBSERVATIONS = [
+  { provider: 'openrouter', model: 'google/gemini-2.5-pro' },   // ccb_report_read
+  { provider: 'openrouter', model: 'google/gemini-2.5-pro' },   // ccb_report_read
+  { provider: 'openrouter', model: 'google/gemini-2.5-pro' },   // clinical_state_normalise
+];
+
+test('T-13 §5.1: the captured failure now reports degraded, naming the dead leg', () => {
+  const r = resolveServed(T13_OBSERVATIONS, {
+    partial: false, stateLlmFailed: false,
+    failedLegs: ['ccb_clinical', 'ccb_clinical'],          // provider_error + llm_error, same leg
+    clinical: { findings: 0, citationCoveragePct: 0 },
+  });
+  assert.equal(r.degraded, true, 'the package that shipped as healthy no longer can');
+  assert.match(String(r.degraded_reason), /ccb_clinical/, 'the reason NAMES the leg — Pulse shows this text');
+  assert.match(String(r.degraded_reason), /NO clinical content/, 'and states plainly that the package is empty');
+  assert.equal(r.served_provider, 'openrouter', 'provenance is unchanged — the healthy legs still served');
+});
+
+test('T-13 §5.2: a HEALTHY package still reports degraded:false — the check must not mark everything', () => {
+  const r = resolveServed(T13_OBSERVATIONS, {
+    partial: false, stateLlmFailed: false, failedLegs: [],
+    clinical: { findings: 7, citationCoveragePct: 86 },
+  });
+  assert.equal(r.degraded, false);
+  assert.equal(r.degraded_reason, null);
+});
+
+test('T-13 §5.4: each check fires ALONE, with the other disabled', () => {
+  // Trace-based only: findings present, but a leg failed. A partial section is still degraded.
+  const traceOnly = resolveServed(T13_OBSERVATIONS, {
+    failedLegs: ['ccb_prognosis'], clinical: { findings: 4, citationCoveragePct: 50 },
+  });
+  assert.equal(traceOnly.degraded, true, 'a failed leg degrades even when content survived');
+  assert.match(String(traceOnly.degraded_reason), /ccb_prognosis/);
+  assert.doesNotMatch(String(traceOnly.degraded_reason), /NO clinical content/);
+
+  // Content-based only: the trace recorded nothing at all, yet the package is empty.
+  const contentOnly = resolveServed(T13_OBSERVATIONS, {
+    failedLegs: [], clinical: { findings: 0, citationCoveragePct: 0 },
+  });
+  assert.equal(contentOnly.degraded, true, 'a failure that never wrote an event is still visible');
+  assert.match(String(contentOnly.degraded_reason), /NO clinical content/);
+  assert.doesNotMatch(String(contentOnly.degraded_reason), /a model leg failed/);
+});
+
+test('T-13: the content check needs BOTH conditions — a grounded package with 0 findings, or an ungrounded one with findings, is not "empty"', () => {
+  assert.equal(resolveServed(T13_OBSERVATIONS, { clinical: { findings: 0, citationCoveragePct: 40 } }).degraded, false);
+  assert.equal(resolveServed(T13_OBSERVATIONS, { clinical: { findings: 3, citationCoveragePct: 0 } }).degraded, false,
+    'zero coverage alone is what `ungrounded` is for — a different obligation, not this one');
+  // Unknown coverage is NOT zero coverage. Never fire the empty-package reason on a missing figure.
+  assert.equal(resolveServed(T13_OBSERVATIONS, { clinical: { findings: 0, citationCoveragePct: null } }).degraded, false);
+});
+
+test('T-13: failed legs are deduped and named in sorted order, and junk never crashes the reason', () => {
+  const r = resolveServed(T13_OBSERVATIONS, { failedLegs: ['ccb_clinical', 'ccb_clinical', 'ccb_prognosis', ''] });
+  assert.match(String(r.degraded_reason), /\(ccb_clinical, ccb_prognosis\)/);
+  assert.equal(resolveServed(T13_OBSERVATIONS, { failedLegs: [] }).degraded, false, 'an empty list is not a failure');
+});
+
+test('T-13: the reasons compose — every independent cause is stated, none replaces another', () => {
+  const r = resolveServed([{ provider: 'ollama', model: 'qwen2.5:14b' }], {
+    partial: true, stateLlmFailed: true, failedLegs: ['ccb_clinical'],
+    clinical: { findings: 0, citationCoveragePct: 0 },
+  });
+  const reason = String(r.degraded_reason);
+  for (const fragment of ['local fallback model', 'could not be assembled', 'state-normalisation leg failed',
+    'a model leg failed', 'NO clinical content']) {
+    assert.ok(reason.includes(fragment), `states: ${fragment}`);
+  }
+});
+
+// ── §4 · as_of carries ONE format ─────────────────────────────────────────────────────────────
+
+test('T-13 §4: as_of is normalised to full ISO 8601 — a bare date keeps its calendar day', () => {
+  // MEASURED on the wire, same field, same api_version: fixture-rich returned a bare date,
+  // fixture-showcase a full IST instant.
+  assert.equal(normaliseAsOf('2026-07-29'), '2026-07-29T00:00:00+05:30');
+  assert.equal(normaliseAsOf('2026-07-27T11:29:11+05:30'), '2026-07-27T11:29:11+05:30', 'already full ISO — untouched');
+  // Anchored to IST, NOT converted to UTC: 00:00 IST is 18:30 the previous day in UTC, and a
+  // consumer slicing the first ten characters would see the date move.
+  assert.ok(normaliseAsOf('2026-07-29')!.startsWith('2026-07-29'));
+  assert.equal(normaliseAsOf('2026-07-29T06:00:00'), '2026-07-29T06:00:00+05:30', 'zoneless wall clock is IST here');
+  assert.equal(normaliseAsOf('2026-07-29T00:30:00Z'), '2026-07-29T00:30:00Z', 'a UTC instant is already unambiguous');
+  assert.equal(normaliseAsOf(null), null);
+  assert.equal(normaliseAsOf(''), null);
+  assert.equal(normaliseAsOf('not a date'), 'not a date', 'never invent a timestamp — pass junk through');
+});
+
+test('T-13 §4: the snapshot itself is NOT recomputed — only the envelope is formatted', () => {
+  assert.ok(WIRED.includes('getMemberSnapshot(bundle.keys.individualUid, generatedAt)'), 'unchanged call');
+  const CORE = readFileSync('lib/patient-summary-core.ts', 'utf8');
+  assert.ok(CORE.includes('as_of: normaliseAsOf(i.memberState?.asOf)'), 'formatted at the boundary');
+  assert.ok(!CORE.includes('memberState.asOf ='), 'the snapshot is never mutated');
+});
+
+test('T-13 §2: the envelope reads the failure signal that already existed on the trace', () => {
+  assert.ok(WIRED.includes("'provider_error', 'llm_error'"), 'the same query now reads failures too');
+  assert.ok(WIRED.includes('failedLegs: trace.failedLegs'), 'and passes them to the envelope');
+  assert.ok(!WIRED.includes('clinicalLegFailed'), 'generic by leg, not a fifth per-leg boolean the next leg can miss');
 });

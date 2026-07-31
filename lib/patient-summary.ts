@@ -39,19 +39,37 @@ export interface SummaryRequest {
  * llm_request, which records intent: that distinction is the whole reason register T-5 existed.
  * Ordered by seq so the LAST observation is the one that produced the final text.
  */
-async function servedObservations(traceId: string | null): Promise<ServedObservation[]> {
-  if (!traceId) return [];
+/**
+ * What the trace already knows about this package: what served it, AND which legs failed.
+ *
+ * T-13 (31 Jul 2026) — the failure half is why this reads two kinds of row. When `ccb_clinical`
+ * died on the bridge, the response check caught it and wrote BOTH a `provider_error` and an
+ * `llm_error` here, and the envelope read neither: the package shipped with an empty clinical
+ * section and `degraded: false`. The signal existed and was not read — the same shape as T-11 and
+ * as the July incident. Reading it generically (ANY failed leg, named by its stage) rather than
+ * per-leg means the NEXT leg to fail is covered without another code change.
+ */
+async function servedObservations(traceId: string | null): Promise<{ observations: ServedObservation[]; failedLegs: string[] }> {
+  if (!traceId) return { observations: [], failedLegs: [] };
   try {
     const rows = await run(
-      `SELECT payload->>'provider' AS provider, payload->>'model' AS model
+      `SELECT kind, stage, payload->>'provider' AS provider, payload->>'model' AS model
          FROM trace_events
-        WHERE trace_id = $1 AND kind IN ('llm_response', 'llm_stream_usage')
+        WHERE trace_id = $1 AND kind IN ('llm_response', 'llm_stream_usage', 'provider_error', 'llm_error')
         ORDER BY seq ASC`,
       [traceId],
     );
-    return rows.map((r) => ({ provider: r.provider as string | null, model: r.model as string | null }));
+    return {
+      observations: rows
+        .filter((r) => r.kind === 'llm_response' || r.kind === 'llm_stream_usage')
+        .map((r) => ({ provider: r.provider as string | null, model: r.model as string | null })),
+      failedLegs: rows
+        .filter((r) => r.kind === 'provider_error' || r.kind === 'llm_error')
+        .map((r) => String(r.stage ?? 'unknown leg')),
+    };
   } catch {
-    return [];   // unknown ⇒ resolveServed marks the package degraded, which is the honest answer
+    // unknown ⇒ resolveServed marks the package degraded, which is the honest answer
+    return { observations: [], failedLegs: [] };
   }
 }
 
@@ -195,10 +213,19 @@ export async function buildPatientSummary(req: SummaryRequest): Promise<BuildRes
   }
 
   // 5. §2.4 — provenance from the brief's own trace, read AFTER the stage-2 leg so a fallback
-  //    there is seen too.
-  const served = resolveServed(await servedObservations(envelope.trace_id), {
+  //    there is seen too. T-13: the same read also carries the legs that FAILED, and the
+  //    assembled clinical section is checked independently of the trace.
+  const trace = await servedObservations(envelope.trace_id);
+  const coveragePct = (envelope.grounding_summary as { citation_coverage_pct?: unknown } | null | undefined)
+    ?.citation_coverage_pct;
+  const served = resolveServed(trace.observations, {
     partial: clinicalState == null || memberState == null,
     stateLlmFailed,
+    failedLegs: trace.failedLegs,
+    clinical: {
+      findings: Array.isArray(envelope.clinical) ? envelope.clinical.length : 0,
+      citationCoveragePct: typeof coveragePct === 'number' ? coveragePct : null,
+    },
   });
 
   return {

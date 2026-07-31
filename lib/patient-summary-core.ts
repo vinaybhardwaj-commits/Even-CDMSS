@@ -187,10 +187,35 @@ export interface ServedObservation { provider?: string | null; model?: string | 
  *     assembly (a state/brief leg failed), or when the flag-on stage-2 state normalisation
  *     failed (the state shipped thinner than the default contract promises).
  *   · a bare "we don't know" is degraded. Never assume the happy path.
+ *
+ * ═══ T-13 (31 Jul 2026) — TWO INDEPENDENT ADDITIONS, EACH SUFFICIENT ON ITS OWN ═══
+ * MEASURED defect: the `ccb_clinical` leg died on the bridge (empty 200 after 133s), the response
+ * check caught it, the trace recorded BOTH a provider_error and an llm_error — and the package
+ * came back with `clinical.findings: []`, `citation_coverage_pct: 0` and `degraded: FALSE`. None
+ * of the four rules above can see it: the array is empty but PRESENT, clinical_state built
+ * independently and was fine, and other legs supplied observations. The one field Pulse is told
+ * to gate on could not see a wholesale failure of the section it gates.
+ *
+ *   `failedLegs` — read off the SAME trace the observations come from. Deliberately NOT a
+ *     per-leg boolean: any provider_error/llm_error row means A leg failed, whichever leg it was,
+ *     so the next leg to fail is covered without another code change. This is the signal that
+ *     already existed and was not read.
+ *   `clinical` — the content check, independent of the trace, because a failure that never
+ *     writes an event must still be visible. No findings AND zero citation coverage means the
+ *     package holds no clinical content; a thin note may yield FEW findings, never none with
+ *     zero coverage, and even if it legitimately could, a summary with no clinical content is
+ *     not a normal chart and must not be rendered as one.
  */
 export function resolveServed(
   observations: ServedObservation[],
-  opts: { partial?: boolean; stateLlmFailed?: boolean } = {},
+  opts: {
+    partial?: boolean;
+    stateLlmFailed?: boolean;
+    /** Trace stages that recorded a provider_error / llm_error on this package (T-13). */
+    failedLegs?: string[];
+    /** The assembled clinical section, for the content check (T-13). */
+    clinical?: { findings: number; citationCoveragePct: number | null };
+  } = {},
 ): Pick<SummaryEnvelope, 'served_model' | 'served_provider' | 'degraded' | 'degraded_reason'> {
   const seen = observations.filter((o) => o && (o.provider || o.model));
   const last = seen.length ? seen[seen.length - 1] : null;
@@ -201,6 +226,14 @@ export function resolveServed(
   if (fellBack) reasons.push('at least one leg was served by the local fallback model, not the intended frontier model');
   if (opts.partial) reasons.push('part of the package could not be assembled and is null');
   if (opts.stateLlmFailed) reasons.push('the LLM state-normalisation leg failed — state.clinical_state is deterministic-only, thinner than the default contract');
+  const legs = (opts.failedLegs ?? []).filter(Boolean);
+  if (legs.length) {
+    const named = [...new Set(legs.map((s) => String(s)))].sort().join(', ');
+    reasons.push(`a model leg failed while building this package (${named}) — the section it produces may be empty or incomplete`);
+  }
+  if (opts.clinical && opts.clinical.findings === 0 && opts.clinical.citationCoveragePct === 0) {
+    reasons.push('the package carries NO clinical content — zero findings and zero citation coverage; this is not a thin chart, it is an empty one');
+  }
   return {
     served_model: last?.model ? String(last.model) : null,
     served_provider: last?.provider ? String(last.provider) : null,
@@ -264,6 +297,36 @@ export function findStateConflicts(state: unknown): string[] {
 }
 
 /**
+ * The zone this system's wall-clock timestamps are written in. `MemberStateSnapshot.asOf` arrives
+ * either as a bare date ('2026-07-29') or as a full IST instant ('2026-07-27T11:29:11+05:30'),
+ * depending on which source watermark won — same field, same api_version, two formats on the wire
+ * (measured across fixture-rich and fixture-showcase, 31 Jul 2026). A consumer that parses one
+ * breaks on the other.
+ */
+const IST_OFFSET = '+05:30';
+
+/**
+ * §4 (T-13 kickoff) — normalise `as_of` to full ISO 8601 AT THE BOUNDARY. The snapshot's own
+ * `asOf` is NOT touched: CDMSS never recomputes member-state freshness, it only formats it on the
+ * way out.
+ *
+ * A bare date is anchored to IST midnight rather than converted to UTC deliberately: 00:00 IST is
+ * 18:30 the PREVIOUS DAY in UTC, so a naive consumer slicing the first ten characters would see
+ * the date move by one. Preserving the offset keeps the calendar date the source meant.
+ * An unparseable value is passed through untouched — never invent a timestamp.
+ */
+export function normaliseAsOf(raw: unknown): string | null {
+  if (raw == null) return null;
+  const s = String(raw).trim();
+  if (!s) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return `${s}T00:00:00${IST_OFFSET}`;
+  if (Number.isNaN(Date.parse(s.replace(' ', 'T')))) return s;
+  // A wall-clock timestamp with no zone is IST by this system's convention.
+  if (!/([zZ]|[+-]\d{2}:?\d{2})$/.test(s)) return `${s.replace(' ', 'T')}${IST_OFFSET}`;
+  return s;
+}
+
+/**
  * Compose the namespaced package. Deliberately a PASS-THROUGH for every clinical structure: the
  * schemas are disciplined in ways this contract must not flatten (§2.7), so nothing here filters,
  * sorts, collapses, defaults-away or "tidies" a state object. `as_of` is taken from the snapshot.
@@ -279,8 +342,9 @@ export function assemblePackage(i: AssembleInput): PatientSummaryPackage {
       trace_id: i.traceId,
       engine_version: i.engineVersion,
       generated_at: i.generatedAt,
-      // §2.7.4 — the snapshot's own asOf, never a second freshness figure.
-      as_of: i.memberState?.asOf ?? null,
+      // §2.7.4 — the snapshot's own asOf, never a second freshness figure. Formatted to one ISO
+      // shape on the way out (T-13 §4); the snapshot itself is not recomputed.
+      as_of: normaliseAsOf(i.memberState?.asOf),
       ...i.served,
       ungrounded: coverage === 0,
       state_llm: {
