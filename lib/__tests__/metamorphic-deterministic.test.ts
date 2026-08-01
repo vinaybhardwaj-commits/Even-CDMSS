@@ -3,11 +3,13 @@
 // this file only asserts what lib/metamorphic-core.ts `runRelations()` returns — the same call
 // the engine-health panel renders live.
 //
-// KNOWN-DEFECT PINNING: three relations FAIL at 46c7cf9 / opd-note-audit/0.81.17 — D-5 (no
-// release-profile awareness, observed class Q2), D-7 (antiplatelet-dose aspirin treated as an
-// analgesic NSAID, observed class Q28, named unanimously) and G-1 (finding_ref changes under
-// medications[] reorder — surfaced BY this suite). The PRD forbids fixing the engine in this
-// build (§3.1, §6) and a permanently-red gate stops all work (M1's own rationale), so each
+// KNOWN-DEFECT PINNING: two relations FAIL at opd-note-audit/0.81.17 — D-5 (no release-profile
+// awareness, observed class Q2) and D-7 (antiplatelet-dose aspirin treated as an analgesic NSAID,
+// observed class Q28, named unanimously). G-1 (finding_ref changed under medications[] reorder —
+// surfaced BY this suite at f816f34) was RE-RATIFIED pinned-fail → pass on 1 Aug 2026 by the DDI
+// pair-order canonicalisation build (orderPair in lib/ddi-tags.ts; regression-guarded by
+// ddi-pair-order.test.ts). The PRD forbids fixing the engine in the suite's own build (§3.1, §6)
+// and a permanently-red gate stops all work (M1's own rationale), so each
 // relation is asserted to MATCH its measured, ratified status instead of asserted green. If the
 // engine changes so a pinned failure starts passing (or a pass starts failing), this test fails
 // LOUDLY and RATIFIED_RELATION_STATUS must be re-ratified with V.

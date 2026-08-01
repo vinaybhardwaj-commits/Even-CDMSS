@@ -434,13 +434,14 @@ export const RATIFIED_RELATION_STATUS: Record<string, 'pass' | 'fail'> = {
   'D-1': 'pass', 'D-2': 'pass', 'D-3': 'pass', 'D-4': 'pass',
   'D-5': 'fail',   // the engine reads no release profile at 0.81.17 (dosageForm plumbed 0.81.11, unread by design) — observed class Q2
   'D-6': 'pass',
-  'D-7': 'fail',   // aspirin carries the `nsaid` tag at ANY dose (lib/ddi-tags.ts:29) — the Q28 defect, named unanimously
-  // G-1 is a NEW defect this suite surfaced (not in the PRD's observed set): interaction subjects
-  // embed the meds[] input order ("Interaction (major): A + B" vs "… B + A"), so finding_ref —
-  // sha1 over the subject detail — CHANGES when the EMR reorders medication lines. finding_ref is
-  // the triage instance address; an order-shifted re-audit orphans its triage rows. Measured at
-  // 46c7cf9: 3 of 4 refs in the fixture change under reversal (only the dose finding is stable).
-  'G-1': 'fail',
+  'D-7': 'fail',   // aspirin carries the `nsaid` tag at ANY dose (lib/ddi-tags.ts) — the Q28 defect, named unanimously
+  // G-1 RE-RATIFIED pass (DDI pair-order canonicalisation, 1 Aug 2026). The suite surfaced it at
+  // f816f34: interaction subjects embedded the meds[] input order ("Interaction (major): A + B"
+  // vs "… B + A"), so finding_ref — sha1 over the subject detail — changed when the EMR reordered
+  // medication lines, orphaning triage rows on re-audit. Fixed by canonicalising (drug_a, drug_b)
+  // at all three construction sites (orderPair in lib/ddi-tags.ts); the ordering itself is
+  // regression-guarded by lib/__tests__/ddi-pair-order.test.ts.
+  'G-1': 'pass',
   'G-2': 'pass', 'G-3': 'pass', 'G-4': 'pass', 'G-5': 'pass',
   'G-6': 'pass', 'G-7': 'pass',
 };

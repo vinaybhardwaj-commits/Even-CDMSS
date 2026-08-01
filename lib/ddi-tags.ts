@@ -11,6 +11,21 @@
 import type { DdiPair } from './rxlabelguard';
 import type { DrugClass } from './ddi';
 
+// ── canonical pair order (G-1 fix, 1 Aug 2026) ────────────────────────────────────────────────────
+// A DdiPair's (drug_a, drug_b) used to carry the meds[] INPUT order, so the finding subject
+// ("Interaction (major): A + B" vs "… B + A") — and with it finding_ref AND stable_ref, both hashed
+// over the subject text — changed when the EMR reordered medication lines (metamorphic relation G-1,
+// surfaced by the suite at f816f34). Canonicalise at CONSTRUCTION so every consumer inherits it:
+// sort on the normalised lowercase name — THE one normalisation, shared with ddi.ts's pairKey()
+// (this file is the leaf of the ddi→ddi-tags import edge, so the shared definition lives here).
+// The ORIGINAL names are preserved; only their order changes. Nothing about which pairs fire,
+// their severity, mechanism, recommendation or source is affected.
+export const normDrugName = (s: string): string => (s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+/** The two names in canonical order, originals intact — spread into a DdiPair literal. */
+export function orderPair(a: string, b: string): { drug_a: string; drug_b: string } {
+  return normDrugName(a) <= normDrugName(b) ? { drug_a: a, drug_b: b } : { drug_a: b, drug_b: a };
+}
+
 export type Tag =
   | 'anticoagulant' | 'antiplatelet' | 'nsaid' | 'qt' | 'serotonergic'
   | 'nephrotoxic' | 'cns_depressant' | 'ace_arb' | 'k_sparing' | 'potassium'
@@ -114,7 +129,7 @@ export function tagInteractions(items: DrugClass[]): DdiPair[] {
         const hit = (A.tags.has(r.a) && B.tags.has(r.b)) || (A.tags.has(r.b) && B.tags.has(r.a));
         if (!hit) continue;
         if (!best || SEV[r.severity] > SEV[best.severity]) {
-          best = { drug_a: A.name, drug_b: B.name, severity: r.severity, mechanism: r.mechanism, recommendation: r.rec, source: 'EHRC class rule' };
+          best = { ...orderPair(A.name, B.name), severity: r.severity, mechanism: r.mechanism, recommendation: r.rec, source: 'EHRC class rule' };
         }
       }
       if (best) out.push(best);

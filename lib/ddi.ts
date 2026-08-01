@@ -8,7 +8,10 @@
 // Auto-feeds audit parameter #12 (drug–drug interactions).
 
 import { rxlgInteractions, type DdiPair } from './rxlabelguard';
-import { tagInteractions } from './ddi-tags';
+// normDrugName is THE one pair normalisation (G-1 fix): pairKey() below and orderPair() both use
+// it, so canonical ordering and dedupe keys can never disagree. It lives in ddi-tags.ts because
+// that file is the leaf of the existing ddi→ddi-tags import edge (no cycle).
+import { tagInteractions, orderPair, normDrugName as norm } from './ddi-tags';
 
 // ---- 2. curated named pairs ----
 interface Rule { a: string; b: string; severity: DdiPair['severity']; mechanism: string; recommendation: string }
@@ -29,8 +32,6 @@ export const CURATED_RULES: Rule[] = [
   { a: 'ciprofloxacin', b: 'ondansetron', severity: 'moderate', mechanism: 'Additive QT prolongation.', recommendation: 'Avoid in patients at QT risk; consider ECG.' },
 ];
 
-const norm = (s: string) => (s || '').toLowerCase().replace(/\s+/g, ' ').trim();
-
 export function curatedInteractions(drugs: string[]): DdiPair[] {
   const out: DdiPair[] = [];
   for (let i = 0; i < drugs.length; i++) {
@@ -38,7 +39,7 @@ export function curatedInteractions(drugs: string[]): DdiPair[] {
       const A = norm(drugs[i]); const B = norm(drugs[j]);
       const r = CURATED_RULES.find((ru) =>
         (A.includes(ru.a) && B.includes(ru.b)) || (A.includes(ru.b) && B.includes(ru.a)));
-      if (r) out.push({ drug_a: drugs[i], drug_b: drugs[j], severity: r.severity, mechanism: r.mechanism, recommendation: r.recommendation, source: 'EHRC curated rule' });
+      if (r) out.push({ ...orderPair(drugs[i], drugs[j]), severity: r.severity, mechanism: r.mechanism, recommendation: r.recommendation, source: 'EHRC curated rule' });
     }
   }
   return out;
@@ -53,7 +54,7 @@ const isAntiplatelet = (c: DrugClass) => /antiplatelet/i.test(c.major) || /antip
 const isNSAID = (c: DrugClass) => /\bnsaid\b/i.test(c.major) || /\bnsaid\b/i.test(c.minor);
 
 function mk(a: DrugClass, b: DrugClass, severity: DdiPair['severity'], mechanism: string, recommendation: string): DdiPair {
-  return { drug_a: a.name, drug_b: b.name, severity, mechanism, recommendation, source: 'EHRC class rule' };
+  return { ...orderPair(a.name, b.name), severity, mechanism, recommendation, source: 'EHRC class rule' };
 }
 
 export function classInteractions(items: DrugClass[]): DdiPair[] {
