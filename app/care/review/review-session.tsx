@@ -68,7 +68,7 @@ const post = async (body: Record<string, unknown>): Promise<void> => {
   if (!r.ok || !j.ok) throw new Error(j.error || `status ${r.status}`);
 };
 
-export default function ReviewSession() {
+export default function ReviewSession({ study }: { study?: string } = {}) {
   const [phase, setPhase] = useState<'identify' | 'reviewing'>('identify');
   const [roster, setRoster] = useState<string[]>([]);
   const [reviewer, setReviewer] = useState('');
@@ -114,6 +114,16 @@ export default function ReviewSession() {
   const [missedText, setMissedText] = useState('');
   const [missedSaved, setMissedSaved] = useState(false);
 
+  // Study-lane banner (U3): flask glyph + lane name + the exact sentence. Violet family per the
+  // existing Tailwind idiom (DIS_TONE). Rendered on BOTH screens; null when unset — the DOM is
+  // byte-identical to today without ?study=.
+  const studyBanner = study ? (
+    <div className="mb-3 flex items-center gap-2 rounded-lg bg-purple-100 px-3 py-2 text-[12.5px] text-purple-700">
+      <span aria-hidden>⚗️</span>
+      <span><b className="font-semibold">Study lane: {study}</b> — Labels here do not enter production figures</span>
+    </div>
+  ) : null;
+
   const current = items[idx] || null;
   const modalOpen = reasonOpen || missedOpen;
   const currentKey = current ? itemKey(current) : null;
@@ -154,7 +164,9 @@ export default function ReviewSession() {
   const loadQueue = useCallback(async (who: string) => {
     setLoading(true); setLoadErr(null);
     try {
-      const r = await fetch(`/api/care/review-queue?reviewer=${encodeURIComponent(who)}&n=120`, { cache: 'no-store' }); // §3.3 working set
+      // Study-lane wiring (U2): the lane rides the queue fetch so the exclusion is study-scoped
+      // (route :149). Absent ⇒ the URL is byte-identical to today.
+      const r = await fetch(`/api/care/review-queue?reviewer=${encodeURIComponent(who)}&n=120${study ? `&study=${encodeURIComponent(study)}` : ''}`, { cache: 'no-store' }); // §3.3 working set
       const j = (await r.json()) as QueueResp;
       if (!j.ok) throw new Error(j.error || 'failed to load queue');
       setItems(j.items || []);
@@ -164,7 +176,7 @@ export default function ReviewSession() {
       setDisEnabled(!!j.disagreement_enabled);
     } catch (e) { setLoadErr(String((e as Error).message)); }
     finally { setLoading(false); }
-  }, []);
+  }, [study]);
 
   function begin(who: string) {
     setReviewer(who);
@@ -207,6 +219,11 @@ export default function ReviewSession() {
       await post({
         scope: 'finding', auditId: current.audit_id, finding_ref: current.finding_ref,
         signal_type: current.signal_type || null, verdict: attempt.verdict, comment: attempt.comment, author: reviewer,
+        // U2: one session, one lane — the retry path replays through here too. Guarded spread, not
+        // `study ?? null`: §2.3's byte-identical contract requires the unset body to carry NO study
+        // key at all (a "study":null field would change the request bytes; the parser treats both
+        // identically, so the lane semantics are unchanged either way).
+        ...(study ? { study } : {}),
       });
       setSavedMeta(savedLabel(reviewer, new Date()));
       setSessionCount((c) => c + 1);
@@ -223,7 +240,7 @@ export default function ReviewSession() {
       setErrMsg(String((e as Error).message).slice(0, 60));
     }
     setBusy(false);
-  }, [current, reviewer]);
+  }, [current, reviewer, study]);
 
   const tapVerdict = useCallback((key: string) => {
     if (!current || busy) return;
@@ -242,10 +259,10 @@ export default function ReviewSession() {
     const nextTag = order[(order.indexOf(impact) + 1) % order.length];
     setImpact(nextTag);
     if (nextTag) {
-      void post({ scope: 'impact', auditId: current.audit_id, finding_ref: current.finding_ref, signal_type: current.signal_type || null, verdict: nextTag, author: reviewer })
+      void post({ scope: 'impact', auditId: current.audit_id, finding_ref: current.finding_ref, signal_type: current.signal_type || null, verdict: nextTag, author: reviewer, ...(study ? { study } : {}) })
         .catch(() => { /* impact is a soft second tap; failure is non-blocking */ });
     }
-  }, [current, busy, selected, impact, reviewer]);
+  }, [current, busy, selected, impact, reviewer, study]);
 
   const saveReason = useCallback(() => {
     if (!current || !selected) return;
@@ -263,12 +280,12 @@ export default function ReviewSession() {
     // the recall denominator it feeds.
     if (!missedCat) { setErrMsg('pick a category (1–7) first'); return; }
     try {
-      await post({ scope: 'missed', auditId: current.audit_id, verdict: 'missed', comment: txt, category: missedCat, author: reviewer });
+      await post({ scope: 'missed', auditId: current.audit_id, verdict: 'missed', comment: txt, category: missedCat, author: reviewer, ...(study ? { study } : {}) });
       setMissedSaved(true); setMissedOpen(false); setMissedText(''); setMissedCat(null); setErrMsg('');
       setSessionCount((c) => c + 1); setLabeledToday((c) => c + 1);
       setTeamTotal((t) => t + 1); setWeekMine((w) => w + 1); // §2.2 counted-save increment
     } catch (e) { setErrMsg(String((e as Error).message).slice(0, 60)); }
-  }, [current, missedText, missedCat, reviewer]);
+  }, [current, missedText, missedCat, reviewer, study]);
 
   // ── keyboard ──────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -313,6 +330,8 @@ export default function ReviewSession() {
       <div className="mx-auto flex min-h-[70vh] max-w-md flex-col justify-center px-6" style={{ fontFamily: 'system-ui, sans-serif' }}>
         <h1 className="text-[22px] font-semibold text-slate-900">Review Mode</h1>
         <p className="mt-1 text-[13px] text-slate-500">Keyboard-first finding triage. Pick your reviewer identity to start — it rides every label.</p>
+
+        {studyBanner && <div className="mt-4">{studyBanner}</div>}
 
         {/* team progress block (§2.1) — omitted entirely when stats are absent (fail-safe) */}
         {stats && (
@@ -360,6 +379,7 @@ export default function ReviewSession() {
   const done = !loading && items.length > 0 && !items.some((it) => (status[itemKey(it)] ?? 'unlabeled') === 'unlabeled');
   return (
     <div className="w-full px-6 py-5" style={{ fontFamily: 'system-ui, sans-serif' }}>
+      {studyBanner}
       {/* rail */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2 text-[12px] text-slate-500">
         <div className="flex items-center gap-2">

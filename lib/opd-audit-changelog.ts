@@ -23,6 +23,17 @@ export interface EngineChange {
 export const OPD_AUDIT_CHANGELOG: EngineChange[] = [
   {
     engine: null, date: '2026-08-01', scoring: false,
+    plain: 'The Review Mode screen now completes the study-lane feature shipped earlier today. Opening the review page with a study named in the link shows a clear banner on both screens — "Study lane: <name> — Labels here do not enter production figures" — fetches the study-scoped queue, and stamps every label saved in that session (verdicts, impact taps, missed flags, and retries of failed saves) into that study. Without a study in the link, the page renders and behaves exactly as it did yesterday, byte for byte. Streak and team counters deliberately keep counting study labels as work done — the banner alone signals the lane.',
+    title: 'Study-lane UI wiring (PRD v1.0, 1 Aug 2026): /care/review reads ?study= server-side (U1), threads it through the queue fetch and all three label POSTs including the retry path (U2), and banners both screens (U3). Counters stay lane-blind (U4/D12). Two files; not score-affecting; no engine bump; no schema change; no new feedback reads.',
+    points: [
+      'ORIGIN: verification of the parent build found the API complete end to end and the UI not wired — the parent file contract omitted the Review Mode component. This closes exactly that gap: page.tsx sanitises searchParams.study ONCE (trim, ≤64, empty → undefined, string[] → first element — matching review-queue/route.ts\'s own read) and passes a prop; no useSearchParams, no Suspense.',
+      'THE LANE HOLDS UNDER FAILURE: the retry button replays through savePillPost, which rebuilds the POST body — so a retried save carries the study by construction and can never fall out of its lane.',
+      'ONE DELIBERATE DEVIATION, flagged in the build report: the PRD\'s normative snippet `study: study ?? null` would put a "study":null field in every PRODUCTION post body, violating its own §2.3 contract that the no-study path be byte-identical in DOM and requests. Implemented as a guarded spread — the field is present exactly when a study is set; the parser treats both forms identically, so lane semantics are unchanged.',
+    ],
+    why: 'Parent PRD (feedback integrity + blind study): a study session must be enterable by link, unmistakable on screen, and incapable of leaking labels into production figures — the API enforced the last part; this makes the first two true.',
+  },
+  {
+    engine: null, date: '2026-08-01', scoring: false,
     plain: 'Reviewer feedback rows can now be tagged with the name of a labelling study, and every production read of the feedback table filters on that tag — so trial labels gathered for a study can never leak into the learning loop, the adjudication ledger, the rollup tools or any clinician-facing page, and a study\'s analysis can never be diluted by production labels. With no study named, everything reads and writes exactly as it did yesterday. Three reviewer-activity counters deliberately keep counting study labels as work done (each carries its justification at the read). Requires the column migration BEFORE deploy.',
     title: 'Feedback study filter (§8, 1 Aug 2026): `study` column on opd_audit_feedback + an always-present parameterised `study IS NOT DISTINCT FROM $n` predicate on every read (three D12-allowlisted activity reads exempt, commented); study writes require an author (D8); per-author current-state builder for inter-rater reads. Not score-affecting; no engine bump.',
     points: [
