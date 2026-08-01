@@ -81,6 +81,31 @@ export interface DeidOpdCase {
   // (§2.7). Optional so existing literals stay valid; CREDITED-NEVER-REQUIRED (it never becomes a
   // mandatory completeness field for the assessment template — see opdCompleteness).
   lmp?: string | null;
+  // U4-A1 (VITALS-SOURCE PRD §A.5) — nurse-recorded vitals + weight/height, set ONLY when
+  // VITALS_EXTRACTION_ENABLED is on. NOTHING reads these yet — not opdCaseText, not any rule — so
+  // A1 is score-invariant (the prompt line is A2). Optional so every existing literal stays valid.
+  // vitalsRecorded is SEPARATE from vitals on purpose: "no record at all" (false + null) and "a
+  // record with a blank measurement" (true + nulls inside) are different findings — absence is the
+  // signal C7 needs later. A row exists → true, even if every measurement is null.
+  vitals?: OpdVitals | null;
+  vitalsRecorded?: boolean;
+  weightKg?: number | null;
+  heightCm?: number | null;
+}
+/** U4-A1 — one nurse-recorded vitals record: numbers only, never the chart's *_tag judgments (the
+ *  nurse chart tags a systolic of 149 NORMAL; R-11 forbids passing another system's judgment into
+ *  the dimension the engine grades). `recordedAt` is a RELATIVE offset in minutes from the note
+ *  timestamp, as a string — a wall clock could re-identify; null whenever either time is missing. */
+export interface OpdVitals {
+  bp: string | null;                // as recorded, e.g. "120/80"
+  systolic: number | null;          // parsed; null unless bp matches ^\d+\/\d+$
+  diastolic: number | null;
+  pulse: number | null;
+  spo2: number | null;
+  temperatureF: number | null;      // the source records Fahrenheit
+  respiratoryRate: string | null;   // TEXT at source — stays a string
+  ews: number | null;               // Early Warning Score
+  recordedAt: string | null;        // minutes from the note timestamp, as a string; never a wall clock
 }
 /** Structured obstetric signals for the trimester-aware mandatory-field set (§8 decision 3). Every
  *  field is a documented/absent flag except `trimester` (1|2|3|null). Pure — populated in rowToOpdCase. */
@@ -122,6 +147,12 @@ function asArr(v: unknown): unknown[] {
 }
 function str(v: unknown): string { return v == null ? '' : String(v).trim(); }
 function strOrNull(v: unknown): string | null { const s = str(v); return s ? s : null; }
+// U4-A1 — numeric coercer tolerant of Metabase's number-or-string values; anything non-finite → null.
+function numOrNull(v: unknown): number | null {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
 function firstKey(o: Record<string, unknown>, keys: string[]): string {
   for (const k of keys) { const s = str(o[k]); if (s) return s; }
   return '';
@@ -330,6 +361,8 @@ export const GYNAE_ASSESSMENT_TYPE = 'HOSPITAL_GYNAECOLOGY_ASSESSMENT';
 /** Feature flag — the obstetric adapter ships OFF; the metabase projection widening + this mapping both
  *  gate on it, so with the flag off ingestion is byte-identical to today. */
 export function obstetricExtractionEnabled(): boolean { return process.env.OBSTETRIC_EXTRACTION_ENABLED === '1'; }
+/** U4-A1 — the vitals-extraction flag (VITALS-SOURCE PRD §A.3), same shape as the obstetric flag. */
+export function vitalsExtractionEnabled(): boolean { return process.env.VITALS_EXTRACTION_ENABLED === '1'; }
 
 /** The "current visit" of an obstetric prescription's visit_notes[] (§4): the element with
  *  show_in_prescription === true; fallback = the latest date_of_visit that is NOT is_carried_over. */
@@ -419,6 +452,40 @@ function augmentGynaeAssessmentLmp(oc: DeidOpdCase, row: Record<string, unknown>
   oc.impressions = uniq([...oc.impressions, `LMP ${lmp}`]);
 }
 
+/** U4-A1 — map the vitals join columns (aliased vitals_* + measurements__*) and the weight/height
+ *  projection columns onto the case. Fail-safe in the augmentObstetric shape: the caller wraps, and
+ *  any error resets to the safe state (vitalsRecorded false, vitals null) — never a throw into the
+ *  audit path, never a wrong value. The LEFT-JOIN existence marker is vitals_consult_uid (the join
+ *  key comes back non-null iff a vitals row matched): a row with every measurement blank is still
+ *  vitalsRecorded true — "no record" and "a blank record" are different findings. */
+function augmentVitals(oc: DeidOpdCase, row: Record<string, unknown>): void {
+  oc.weightKg = numOrNull(row['patient_details__weight']);
+  oc.heightCm = numOrNull(row['patient_details__height']);
+  if (!strOrNull(row['vitals_consult_uid'])) { oc.vitalsRecorded = false; oc.vitals = null; return; }
+  const bp = strOrNull(row['measurements__blood_pressure']);
+  const m = bp ? bp.match(/^(\d+)\/(\d+)$/) : null;
+  // recordedAt: minutes from the note timestamp, as a string — a wall clock could re-identify.
+  const noteTs = strOrNull(row.timestamp);
+  const vitTs = strOrNull(row['vitals_update_time']);
+  let recordedAt: string | null = null;
+  if (noteTs && vitTs) {
+    const a = new Date(noteTs).getTime(), b = new Date(vitTs).getTime();
+    if (Number.isFinite(a) && Number.isFinite(b)) recordedAt = String(Math.round((b - a) / 60000));
+  }
+  oc.vitalsRecorded = true;
+  oc.vitals = {
+    bp,
+    systolic: m ? parseInt(m[1], 10) : null,
+    diastolic: m ? parseInt(m[2], 10) : null,
+    pulse: numOrNull(row['measurements__pulse_rate']),
+    spo2: numOrNull(row['measurements__spo2_level']),
+    temperatureF: numOrNull(row['measurements__temperature']),
+    respiratoryRate: strOrNull(row['measurements__respiratory_value']),
+    ews: numOrNull(row['measurements__early_warning_score']),
+    recordedAt,
+  };
+}
+
 /** Map a raw prescriptions row → { case (de-identified), keys (for join-back) }. */
 export function rowToOpdCase(row: Record<string, unknown>): { case: DeidOpdCase; keys: OpdKeys } {
   const gpPc = row['general_practitioner_prescription__presenting_complaints'];
@@ -496,6 +563,13 @@ export function rowToOpdCase(row: Record<string, unknown>): { case: DeidOpdCase;
     } else if (ptype === GYNAE_ASSESSMENT_TYPE) {
       try { augmentGynaeAssessmentLmp(oc, row); } catch { /* degrade to current behaviour */ }
     }
+  }
+
+  // U4-A1: vitals + weight/height enter the case ONLY when the flag is on. Fail-safe: any error
+  // resets every A1 field to the safe state and touches nothing else on the case; with the flag off
+  // the fields stay absent, so every existing literal and every current behaviour is unchanged.
+  if (vitalsExtractionEnabled()) {
+    try { augmentVitals(oc, row); } catch { oc.vitalsRecorded = false; oc.vitals = null; oc.weightKg = null; oc.heightCm = null; }
   }
 
   const keys: OpdKeys = {

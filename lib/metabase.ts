@@ -48,12 +48,29 @@ const OBSTETRIC_IP_COLS = [
   'gynae_patient_history__obstetric_history__gravidity',
   'gynae_patient_history__obstetric_history__parity',
 ];
+// U4-A1 vitals adapter (CDMSS-VITALS-SOURCE-AND-U4-RESCOPE §A.3/§A.5): weight/height + the nurse
+// vitals join enter the projection ONLY when VITALS_EXTRACTION_ENABLED is on, for the same reason
+// as the obstetric flag above — with the flag off every query string is byte-identical, so a wrong
+// column name can never break the standard audit path; the orchestrator validates the live shapes
+// (§A.4, read from db13 on 1 Aug) before enabling. Numbers only: no *_tag column is ever selected —
+// the nurse chart tags a systolic of 149 NORMAL; a tag is a judgment, not a fact (R-11).
+const VITALS_IP_COLS = [
+  'patient_details__weight',
+  'patient_details__height',
+];
+function vitalsExtractionOn(): boolean { return process.env.VITALS_EXTRACTION_ENABLED === '1'; }
 function ipCols(): string[] {
-  return process.env.OBSTETRIC_EXTRACTION_ENABLED === '1' ? [...IP_COLS, ...OBSTETRIC_IP_COLS] : IP_COLS;
+  const cols = process.env.OBSTETRIC_EXTRACTION_ENABLED === '1' ? [...IP_COLS, ...OBSTETRIC_IP_COLS] : IP_COLS;
+  return vitalsExtractionOn() ? [...cols, ...VITALS_IP_COLS] : cols;
 }
+// v.consult_uid doubles as the LEFT-JOIN row-exists marker (vitalsRecorded — a record with every
+// measurement blank is still a record); v._update_time feeds the RELATIVE recordedAt offset (the
+// wall clock never reaches the de-identified case). Neither is a measurement and neither is a tag.
+const VITALS_PROJ = 'v.consult_uid AS vitals_consult_uid, v._update_time AS vitals_update_time, v.measurements__blood_pressure, v.measurements__pulse_rate, v.measurements__spo2_level, v.measurements__temperature, v.measurements__respiratory_value, v.measurements__early_warning_score';
 function selectCols(): string {
-  return ipCols().map((c) => `ip.${c}`).join(', ')
+  const base = ipCols().map((c) => `ip.${c}`).join(', ')
     + ', d.presenting_complaint AS dpipe_pc, d.diagnosis AS dpipe_dx, d.plan_of_management AS dpipe_pom, d.further_investigation AS dpipe_inv';
+  return vitalsExtractionOn() ? `${base}, ${VITALS_PROJ}` : base;
 }
 
 const DPIPE_SELECT = 'presc_uid, presenting_complaint, diagnosis, plan_of_management, further_investigation';
@@ -61,6 +78,19 @@ const DPIPE_SELECT = 'presc_uid, presenting_complaint, diagnosis, plan_of_manage
 // uid-fetches) so we never seq-scan the whole 343k-row pipeline.
 function joinDpipe(dpipeWhere: string): string {
   return `LEFT JOIN (SELECT DISTINCT ON (presc_uid) ${DPIPE_SELECT} FROM dpipe_prescription_pipeline WHERE ${dpipeWhere} ORDER BY presc_uid, _update_time DESC) d ON d.presc_uid = ip.uid`;
+}
+
+// U4-A1: the nurse-vitals join, in the joinDpipe shape. The table name REQUIRES the quotes (it
+// contains a hyphen). LEFT JOIN — a note with no vitals must still audit; absence is the signal C7
+// needs later. Dedupe = DISTINCT ON newest _update_time (a real timestamptz; created_at is TEXT and
+// must not order anything). vitalsWhere bounds the vitals scan exactly as dpipeWhere bounds the
+// pipeline scan (a date window for day-fetches, a consult_uid semi-join for uid-fetches) — never a
+// seq-scan. Returns '' with the flag off so every query string stays byte-identical to today's.
+const VITALS_TABLE = '"individuals-individual_vitals_records"';
+const VITALS_SELECT = 'consult_uid, _update_time, measurements__blood_pressure, measurements__pulse_rate, measurements__spo2_level, measurements__temperature, measurements__respiratory_value, measurements__early_warning_score';
+function joinVitals(vitalsWhere: string): string {
+  if (!vitalsExtractionOn()) return '';
+  return ` LEFT JOIN (SELECT DISTINCT ON (consult_uid) ${VITALS_SELECT} FROM ${VITALS_TABLE} WHERE ${vitalsWhere} ORDER BY consult_uid, _update_time DESC) v ON v.consult_uid = ip.consult_uid`;
 }
 
 function base(): string {
@@ -115,33 +145,56 @@ export async function countOpdNotesForDay(day: string, excludeDoctorUids: string
   return Number(rows[0]?.n ?? 0);
 }
 
-/** Next page of non-draft medical notes for the day, excluding already-audited uids + house accounts. */
-export async function fetchOpdNotesForDay(day: string, excludeUids: string[], limit: number, excludeDoctorUids: string[] = []): Promise<Record<string, unknown>[]> {
+// U4-A1: the three note-fetch query strings are built by PURE exported builders so the gate test
+// can pin flag-off byte-identity against today's literal string. The async fetchers below only run
+// them; the strings they produce with the flag off are byte-identical to what the fetchers built
+// inline before this change (proven in lib/__tests__/vitals-extraction.test.ts).
+
+/** Pure SQL for the day-fetch page (exported for the U4-A1 byte-identity gate). */
+export function opdNotesForDaySql(day: string, excludeUids: string[], limit: number, excludeDoctorUids: string[] = []): string {
   if (!isDay(day)) throw new Error('bad day (YYYY-MM-DD)');
   const ex = (excludeUids || []).filter(isUid);
   const notIn = ex.length ? ` AND ip.uid NOT IN (${ex.map((u) => `'${u}'`).join(', ')})` : '';
   const lim = Math.max(1, Math.min(50, Math.floor(limit)));
   const join = joinDpipe(`(timestamp AT TIME ZONE 'Asia/Kolkata')::date BETWEEN '${day}'::date - 1 AND '${day}'::date + 1`);
-  return metabaseQuery(
-    `SELECT ${selectCols()} FROM ${SOURCE} ip ${join} WHERE ${baseWhere(day)}${notIn}${intakeExcludeClause(excludeDoctorUids)} ORDER BY ip.timestamp ASC LIMIT ${lim}`,
-  );
+  const vjoin = joinVitals(`(_update_time AT TIME ZONE 'Asia/Kolkata')::date BETWEEN '${day}'::date - 1 AND '${day}'::date + 1`);
+  return `SELECT ${selectCols()} FROM ${SOURCE} ip ${join}${vjoin} WHERE ${baseWhere(day)}${notIn}${intakeExcludeClause(excludeDoctorUids)} ORDER BY ip.timestamp ASC LIMIT ${lim}`;
+}
+
+/** Next page of non-draft medical notes for the day, excluding already-audited uids + house accounts. */
+export async function fetchOpdNotesForDay(day: string, excludeUids: string[], limit: number, excludeDoctorUids: string[] = []): Promise<Record<string, unknown>[]> {
+  return metabaseQuery(opdNotesForDaySql(day, excludeUids, limit, excludeDoctorUids));
+}
+
+/** Pure SQL for the single-note fetch (exported for the U4-A1 byte-identity gate). */
+export function opdNoteByUidSql(uid: string): string {
+  if (!isUid(uid)) throw new Error('bad uid');
+  const join = joinDpipe(`presc_uid = '${uid}'`);
+  const vjoin = joinVitals(`consult_uid IN (SELECT consult_uid FROM ${SOURCE} WHERE uid = '${uid}')`);
+  return `SELECT ${selectCols()} FROM ${SOURCE} ip ${join}${vjoin} WHERE ip.uid = '${uid}' LIMIT 1`;
 }
 
 /** Fetch a single note by uid (for spot-check / case-view note panel). */
 export async function fetchOpdNoteByUid(uid: string): Promise<Record<string, unknown> | null> {
-  if (!isUid(uid)) throw new Error('bad uid');
-  const join = joinDpipe(`presc_uid = '${uid}'`);
-  const rows = await metabaseQuery(`SELECT ${selectCols()} FROM ${SOURCE} ip ${join} WHERE ip.uid = '${uid}' LIMIT 1`);
+  const rows = await metabaseQuery(opdNoteByUidSql(uid));
   return rows[0] ?? null;
+}
+
+/** Pure SQL for the bulk uid fetch; null when no valid uids (exported for the U4-A1 gate). */
+export function opdNotesByUidsSql(uids: string[]): string | null {
+  const ex = Array.from(new Set((uids || []).filter(isUid)));
+  if (!ex.length) return null;
+  const inList = ex.map((u) => `'${u}'`).join(', ');
+  const join = joinDpipe(`presc_uid IN (${inList})`);
+  const vjoin = joinVitals(`consult_uid IN (SELECT consult_uid FROM ${SOURCE} WHERE uid IN (${inList}))`);
+  return `SELECT ${selectCols()} FROM ${SOURCE} ip ${join}${vjoin} WHERE ip.uid IN (${inList})`;
 }
 
 /** Bulk fetch notes by uid (for the no-LLM completeness backfill). */
 export async function fetchOpdNotesByUids(uids: string[]): Promise<Record<string, unknown>[]> {
-  const ex = Array.from(new Set((uids || []).filter(isUid)));
-  if (!ex.length) return [];
-  const inList = ex.map((u) => `'${u}'`).join(', ');
-  const join = joinDpipe(`presc_uid IN (${inList})`);
-  return metabaseQuery(`SELECT ${selectCols()} FROM ${SOURCE} ip ${join} WHERE ip.uid IN (${inList})`);
+  const sql = opdNotesByUidsSql(uids);
+  if (!sql) return [];
+  return metabaseQuery(sql);
 }
 
 /** Map doctor_uid → display name (db13 `doctors.name_with_prefix`). Names are staff data,
