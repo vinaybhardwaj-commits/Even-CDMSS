@@ -523,6 +523,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "metamorphic-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "mini-backfill",
     "plane": "unregistered"
   },
@@ -967,6 +971,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/admin",
     "to": "metabase",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
+    "to": "metamorphic-core",
     "kind": "value"
   },
   {
@@ -3317,6 +3326,41 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "metabase",
     "to": "opd-complexity-core",
+    "kind": "value"
+  },
+  {
+    "from": "metamorphic-core",
+    "to": "cdsco-banned-fdc",
+    "kind": "value"
+  },
+  {
+    "from": "metamorphic-core",
+    "to": "cdsco-banned-fdc-core",
+    "kind": "value"
+  },
+  {
+    "from": "metamorphic-core",
+    "to": "clinical-bands",
+    "kind": "value"
+  },
+  {
+    "from": "metamorphic-core",
+    "to": "dose-limits",
+    "kind": "value"
+  },
+  {
+    "from": "metamorphic-core",
+    "to": "opd-ingest-core",
+    "kind": "type"
+  },
+  {
+    "from": "metamorphic-core",
+    "to": "opd-note-audit",
+    "kind": "value"
+  },
+  {
+    "from": "metamorphic-core",
+    "to": "opd-note-audit-core",
     "kind": "value"
   },
   {

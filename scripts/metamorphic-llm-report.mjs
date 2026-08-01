@@ -1,0 +1,85 @@
+// scripts/metamorphic-llm-report.mjs — Part C: the LLM-leg metamorphic relations (PRD
+// CDMSS-METAMORPHIC-AND-SYNTHETIC-CONTROLS v1.0 §5; decisions M1/M2). REPORT ONLY — this script
+// gates nothing and deploys nothing. It is the weekly lab batch (M7) run by hand or on a schedule:
+//
+//   node --env-file=.env.local --import tsx scripts/metamorphic-llm-report.mjs
+//
+// Each relation (L-1 status qualifier · L-2 praise needs evidence · L-3 praise is not blind) runs
+// BASE and TRANSFORMED arms 3× each through the real grounded audit (auditOpdNote, mini pipeline —
+// the same engine path runMiniOpdToLab drives; the uid-fetch step is replaced because these
+// fixtures are SYNTHETIC db13-shaped rows: no db13 uid, no PHI, §9.3). Every run persists to
+// lab_analyses under the relation's experiment name (mm-llm-l1/l2/l3) so the engine-health panel
+// reads the same rows this report prints. Majority decides; a 2–1 arm is recorded split: true —
+// a finding about non-determinism, never a silent pass (M2).
+//
+// The relation FIXTURES + matchers live in lib/metamorphic-core.ts (single definition — the panel
+// verdicts and this report can never drift).
+import { PART_C_RELATIONS, majorityOf } from '../lib/metamorphic-core.ts';
+import { auditOpdNote } from '../lib/opd-note-audit.ts';
+import { ensureLabTables, saveLabAnalysis } from '../lib/lab.ts';
+import { MINI_MODEL } from '../lib/llm.ts';
+
+const RUNS_PER_ARM = 3;
+const log = (...a) => console.error(...a);
+
+await ensureLabTables();
+
+const report = [];
+for (const rel of PART_C_RELATIONS) {
+  const arms = { base: rel.baseRow, transformed: rel.transform(structuredClone(rel.baseRow)) };
+  const armFires = { base: [], transformed: [] };
+  // L-3 needs BOTH matchers on the transformed arm: praise still present? safety fired?
+  const praiseSeen = { base: [], transformed: [] };
+
+  for (const [arm, row] of Object.entries(arms)) {
+    for (let run = 1; run <= RUNS_PER_ARM; run++) {
+      const started = Date.now();
+      let fired = false; let praise = false; let findings = [];
+      let error = null;
+      try {
+        const audit = await auditOpdNote(row, { pipeline: 'mini', engineTag: 'lab', trace: false });
+        findings = audit.findings;
+        fired = rel.fires(findings);
+        praise = findings.some((f) => f.signal_type === 'appropriateness_high_value'
+          || (f.domain === 'appropriateness' && f.verdict === 'high-value'));
+      } catch (e) {
+        error = String(e?.message ?? e).slice(0, 300);
+        log(`  ! ${rel.id} ${arm} run ${run} FAILED: ${error}`);
+      }
+      armFires[arm].push(fired);
+      praiseSeen[arm].push(praise);
+      try {
+        await saveLabAnalysis({
+          experiment: rel.experiment, kind: 'opd_note', engine: 'mm-llm-leg',
+          inputRef: null, inputPreview: `${rel.id} ${arm} run ${run} (synthetic fixture — no db13 uid)`,
+          output: { relation: rel.id, arm, run, fired, praise, error,
+            matched: findings.filter((f) => rel.fires([f])).map((f) => f.subject).slice(0, 5) },
+          model: MINI_MODEL, latencyMs: Date.now() - started,
+        });
+      } catch (e) { log(`  ! ${rel.id} ${arm} run ${run}: lab write failed (${e?.message}) — report continues`); }
+      log(`  ${rel.id} ${arm} run ${run}: fired=${fired}${rel.id === 'L-3' ? ` praise=${praise}` : ''}`);
+    }
+  }
+
+  const baseMaj = majorityOf(armFires.base);
+  const transMaj = majorityOf(armFires.transformed);
+  // L-3's verdict reads (praise still present on transformed, safety fired on transformed) — M2.
+  const transPraiseMaj = majorityOf(praiseSeen.transformed);
+  const holds = rel.id === 'L-3'
+    ? rel.verdict(transPraiseMaj.fired, transMaj.fired)
+    : rel.verdict(baseMaj.fired, transMaj.fired);
+  const split = baseMaj.split || transMaj.split || (rel.id === 'L-3' && transPraiseMaj.split);
+  report.push({
+    relation: rel.id, title: rel.title, experiment: rel.experiment,
+    base_fires: `${armFires.base.filter(Boolean).length}/${RUNS_PER_ARM}`,
+    transformed_fires: `${armFires.transformed.filter(Boolean).length}/${RUNS_PER_ARM}`,
+    verdict: holds ? 'HOLDS' : 'FAILS',
+    split,
+  });
+}
+
+console.log('\nrelation | base fires (n/3) | transformed fires (n/3) | verdict | split?');
+for (const r of report) {
+  console.log(`${r.relation} ${r.title} | ${r.base_fires} | ${r.transformed_fires} | ${r.verdict} | ${r.split ? 'SPLIT (2-1) — a finding about non-determinism, not a pass' : 'no'}`);
+}
+console.log(`\nJSON: ${JSON.stringify(report)}`);

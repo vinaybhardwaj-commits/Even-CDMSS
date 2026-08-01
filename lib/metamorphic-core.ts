@@ -1,0 +1,728 @@
+/**
+ * lib/metamorphic-core.ts — metamorphic relations + synthetic known-positive controls over the
+ * OPD deterministic leg (PRD CDMSS-METAMORPHIC-AND-SYNTHETIC-CONTROLS v1.0, 1 Aug 2026).
+ *
+ * ONE DEFINITION OF EVERY RELATION (PRD §9.2, load-bearing): the CI tests
+ * (lib/__tests__/metamorphic-deterministic.test.ts, lib/__tests__/synthetic-controls.test.ts) and
+ * the engine-health panel (app/admin/observability/engine-health/page.tsx) BOTH call the
+ * `runRelations()` / `runSyntheticControls()` exported here. Nothing else implements a relation.
+ *
+ * Every relation asserts a DIRECTION or an INVARIANCE over `OpdFinding[]` / `OpdCompleteness` —
+ * never an index value, a band, or a score (PRD §3). G-1 compares findings as a MULTISET of
+ * `finding_ref` (§9.3). Fixtures are hand-built `DeidOpdCase` literals: no real patient data, no
+ * db13 uid, no PHI (M3). Banned-FDC fixtures use PLACEHOLDER molecule names against a test table
+ * (the standing rule inherited from lib/__tests__/cdsco-banned-fdc-core.test.ts: no real
+ * banned-drug data may originate from a builder, including in tests).
+ *
+ * ⚠️ DEVIATION, FLAGGED (build report §deviations): the PRD requires this file be "pure and
+ * dependency-free — no ./db, no ./llm, no next/*". Three of the stage-3 emitters under test
+ * (`ddiFindings`, `muscleRelaxantFindings`, and the 0.81.8/0.81.14 informational emitters) are
+ * exported from lib/opd-note-audit.ts — the ORCHESTRATOR module, whose import graph reaches ./db
+ * and ./llm. The single-definition rule ("the functions under test are the ones stage 3 composes",
+ * §9.1) and the engine-freeze rule (no emitter may be moved or forked) cannot both be satisfied
+ * without importing them from there. This file therefore performs NO I/O and calls NO db/llm
+ * function, but its import graph is not clean of them. Precedent: lib/__tests__/
+ * opd-audit-0818-orchestrator.test.ts already imports the same emitters under node:test, green in
+ * CI (./db connects lazily; nothing in the graph does I/O at import time).
+ *
+ * ⚠️ SECOND FLAGGED DUPLICATION: the isGout / vitamin-D-band / msk / lmp CONTEXT DERIVATIONS and
+ * the stage-3 composition order live INLINE in auditOpdNote (lib/opd-note-audit.ts:1062-1080,
+ * unexported). `detFindings()` below mirrors them verbatim. If stage 3 gains an emitter or a
+ * context input, THIS composition must be updated by hand or the suite silently tests a subset.
+ * (Extracting the composition into an exported pure function is an ENGINE-FILE edit, out of this
+ * build's contract — recommended as a follow-up.)
+ */
+
+import type { DeidOpdCase, OpdMed } from './opd-ingest-core';
+import {
+  prescribingChecks, opdCompleteness, stampFindingIdentity,
+  type OpdFinding, type OpdCompleteness,
+} from './opd-note-audit-core';
+import { doseFindings } from './dose-limits';
+import { bannedFdcFindings as bannedFdcFromLiveSeed } from './cdsco-banned-fdc';
+import { bannedFdcFindings as bannedFdcAgainstTable, type BannedFdcTable } from './cdsco-banned-fdc-core';
+import { parseVitaminDLevel, vitaminDBand, type VitaminDBand } from './clinical-bands';
+// Orchestrator-exported emitters + context predicates — see the flagged deviation in the header.
+import {
+  ddiFindings, muscleRelaxantFindings, unindicatedRespFindings, decongestantDurationFindings,
+  vitaminDRepletionFindings, pregnancyRiskFindings, lmpIntervalDays, mskContextDocumented,
+} from './opd-note-audit';
+
+// ── Fixture factory ───────────────────────────────────────────────────────────
+export function mkOpdCase(p: Partial<DeidOpdCase> = {}): DeidOpdCase {
+  return {
+    consultType: null, reasonForConsult: null, presentingComplaints: [], diagnosisCodes: [],
+    impressionCodes: [], impressions: [], history: [], comorbidities: [], medications: [],
+    investigations: [], advice: [], examination: [], allergies: null, followUpType: null,
+    followUpDateSet: false, ...p,
+  };
+}
+const clone = (c: DeidOpdCase): DeidOpdCase => JSON.parse(JSON.stringify(c)) as DeidOpdCase;
+
+/** A fully-dosed, formulary-resolved med line (fixtures override what a relation blanks). */
+function med(over: Partial<OpdMed> & { generic: string }): OpdMed {
+  return {
+    dose: '1 tablet', frequency: 'BD', duration: '5 days', route: 'oral',
+    resolvedGeneric: over.generic, formularyMatch: 'source-generic',
+    ...over,
+  };
+}
+
+// ── The deterministic leg, mirrored from lib/opd-note-audit.ts:1062-1080 ──────
+// (flagged duplication — see header). Pre-finalize: the DB-dependent passes (suppressions,
+// quieting, LVC stamping, dedupeRouteAware/consolidateDecisions) are NOT applied; the emitters
+// themselves are what this suite ratifies.
+const GOUT_RE = /\bgout\b|\bgouty\b|\btophus\b|\btophi\b/i;   // verbatim from opd-note-audit.ts:1064
+const GOUT_ICD_RE = /^M1[0A]/i;
+
+export function detFindings(oc: DeidOpdCase, opts?: { bannedTable?: BannedFdcTable }): OpdFinding[] {
+  const goutHay = [oc.reasonForConsult || '', ...oc.presentingComplaints, ...oc.impressions, ...oc.history].join(' ');
+  const goutCodes = [...oc.diagnosisCodes, ...oc.impressionCodes].map((c) => c.trim());
+  const isGout = GOUT_RE.test(goutHay) || goutCodes.some((c) => GOUT_ICD_RE.test(c));
+  const mskDocumented = mskContextDocumented(oc);
+  const lmpDays = lmpIntervalDays(oc.lmp, oc.noteDate);
+  const vitDBand: VitaminDBand | null = (() => {
+    const hay = [...oc.history, ...oc.investigations, ...oc.impressions, ...oc.presentingComplaints, ...oc.examination].join(' · ');
+    const lvl = parseVitaminDLevel(hay);
+    return lvl == null ? null : vitaminDBand(lvl);
+  })();
+  const banned = opts?.bannedTable
+    ? bannedFdcAgainstTable(oc.medications, opts.bannedTable)
+    : bannedFdcFromLiveSeed(oc.medications);
+  const det = [
+    ...prescribingChecks(oc),
+    ...doseFindings(oc.medications, { isGout }),
+    ...ddiFindings(oc.medications),
+    ...muscleRelaxantFindings(oc.medications, { mskDocumented }),
+    ...unindicatedRespFindings(oc),
+    ...decongestantDurationFindings(oc.medications),
+    ...vitaminDRepletionFindings(oc.medications, vitDBand),
+    ...pregnancyRiskFindings(oc.medications, { lmpIntervalDays: lmpDays }),
+    ...banned,
+  ];
+  return stampFindingIdentity(det);
+}
+
+// ── Assertion helpers ─────────────────────────────────────────────────────────
+const refs = (fs: OpdFinding[]): string[] => fs.map((f) => f.finding_ref || '?').sort();
+const hasSignal = (fs: OpdFinding[], type: string): boolean => fs.some((f) => f.signal_type === type);
+const multisetEq = (a: string[], b: string[]): boolean => a.length === b.length && a.every((x, i) => x === b[i]);
+/** every ref of `base` present in `trans` with at least the same multiplicity */
+function multisetContains(trans: string[], base: string[]): boolean {
+  const pool = [...trans];
+  for (const r of base) { const i = pool.indexOf(r); if (i < 0) return false; pool.splice(i, 1); }
+  return true;
+}
+const scoring = (fs: OpdFinding[]): OpdFinding[] => fs.filter((f) => f.informational !== true && f.confidence > 0);
+const summarize = (fs: OpdFinding[]): string => fs.length ? fs.map((f) => `${f.signal_type}:${f.finding_ref}`).sort().join(', ') : '(none)';
+
+// ── Part A — metamorphic relations ────────────────────────────────────────────
+export interface RelationResult {
+  id: string;
+  title: string;
+  transformation: string;
+  assertion: string;
+  pass: boolean;
+  /** what the relation observed, for the report/panel — never a score */
+  detail: string;
+}
+
+interface Relation {
+  id: string; title: string; transformation: string; assertion: string;
+  run: () => { pass: boolean; detail: string };
+}
+
+// Shared base notes. NON-febrile, non-URTI, non-MSK unless a relation needs it.
+const baseEtoricoxib = (strength: string, frequency = 'OD'): DeidOpdCase => mkOpdCase({
+  presentingComplaints: ['pain in the right great toe for 2 days'],
+  impressions: ['Acute monoarthritis'], diagnosisCodes: ['M13.9'],
+  examination: ['Right first MTP joint swollen'],
+  advice: ['Rest, review with reports'], followUpType: 'IF_REQUIRED',
+  medications: [med({ generic: 'Etoricoxib', strength, frequency })],
+});
+
+const baseInteraction = (): DeidOpdCase => mkOpdCase({
+  presentingComplaints: ['bilateral knee pain for 3 weeks'],
+  impressions: ['Osteoarthritis knee'], diagnosisCodes: ['M17.9'],
+  history: ['Hypertension on treatment'],
+  examination: ['Crepitus both knees'],
+  advice: ['Quadriceps strengthening'], followUpType: 'IF_REQUIRED',
+  medications: [
+    med({ generic: 'Naproxen', strength: '250 mg', therapeuticClass: 'NSAID' }),
+    med({ generic: 'Telmisartan', strength: '40 mg', frequency: 'OD', duration: '30 days', therapeuticClass: 'Antihypertensive' }),
+  ],
+});
+
+const RELATIONS: Relation[] = [
+  {
+    id: 'D-1', title: 'Dose context is read',
+    transformation: 'etoricoxib 120 mg/day, no gout → add a documented gout diagnosis',
+    assertion: 'the dose_ceiling_exceeded finding disappears (120 mg/day is permitted with documented gout)',
+    run: () => {
+      const base = baseEtoricoxib('120 mg');
+      const trans = clone(base);
+      trans.impressions = ['Acute gout flare'];
+      trans.diagnosisCodes = ['M10.9'];
+      const bf = detFindings(base); const tf = detFindings(trans);
+      const pass = hasSignal(bf, 'dose_ceiling_exceeded') && !hasSignal(tf, 'dose_ceiling_exceeded');
+      return { pass, detail: `base ${summarize(bf)} → gout ${summarize(tf)}` };
+    },
+  },
+  {
+    id: 'D-2', title: 'Dose context, inverse',
+    transformation: 'etoricoxib 60 mg/day → raise to 120 mg/day, no gout',
+    assertion: 'the dose_ceiling_exceeded finding appears',
+    run: () => {
+      const base = baseEtoricoxib('60 mg');
+      const trans = clone(base);
+      trans.medications[0].strength = '120 mg';
+      const bf = detFindings(base); const tf = detFindings(trans);
+      const pass = !hasSignal(bf, 'dose_ceiling_exceeded') && hasSignal(tf, 'dose_ceiling_exceeded');
+      return { pass, detail: `60 mg ${summarize(bf)} → 120 mg ${summarize(tf)}` };
+    },
+  },
+  {
+    id: 'D-3', title: 'SOS cap is applied',
+    transformation: 'etoricoxib SOS with no documented cap → add an explicit max frequency keeping the total under ceiling',
+    assertion: 'the dose_ceiling_sos advisory disappears',
+    run: () => {
+      const base = baseEtoricoxib('90 mg', 'SOS');
+      const trans = clone(base);
+      trans.medications[0].frequency = 'SOS, max 1 per day';
+      const bf = detFindings(base); const tf = detFindings(trans);
+      const pass = hasSignal(bf, 'dose_ceiling_sos') && !hasSignal(tf, 'dose_ceiling_sos');
+      return { pass, detail: `uncapped ${summarize(bf)} → capped ${summarize(tf)}` };
+    },
+  },
+  {
+    id: 'D-4', title: 'Dose completeness',
+    transformation: 'a medication with dose, frequency and duration → blank the duration',
+    assertion: 'an incomplete_dosing finding appears, naming duration',
+    run: () => {
+      const base = mkOpdCase({
+        presentingComplaints: ['sore ear'], impressions: ['Otitis externa'], diagnosisCodes: ['H60.9'],
+        examination: ['Left canal inflamed'], advice: ['Keep ear dry'], followUpType: 'IF_REQUIRED',
+        medications: [med({ generic: 'Amoxicillin', strength: '500 mg' })],
+      });
+      const trans = clone(base);
+      delete trans.medications[0].duration;
+      const bf = detFindings(base); const tf = detFindings(trans);
+      const f = tf.find((x) => x.signal_type === 'incomplete_dosing');
+      const pass = !hasSignal(bf, 'incomplete_dosing') && !!f && /duration/i.test(f.rationale);
+      return { pass, detail: `base ${summarize(bf)} → blanked ${f ? `"${f.rationale.slice(0, 60)}…"` : '(no incomplete_dosing finding)'}` };
+    },
+  },
+  {
+    id: 'D-5', title: 'Formulation is read',
+    transformation: 'a plain-release molecule → the sustained-release form (same strength/frequency)',
+    assertion: 'a finding whose rationale depends on release profile changes or disappears (any finding_ref multiset change)',
+    run: () => {
+      const base = mkOpdCase({
+        presentingComplaints: ['low back ache after lifting'], impressions: ['Lumbago'], diagnosisCodes: ['M54.5'],
+        examination: ['Paraspinal tenderness'], advice: ['Local heat'], followUpType: 'IF_REQUIRED',
+        medications: [med({ generic: 'Diclofenac', strength: '100 mg' })],   // 200 mg/day scheduled > the 150 mg/day ceiling
+      });
+      const trans = clone(base);
+      trans.medications[0].generic = 'Diclofenac SR';
+      trans.medications[0].resolvedGeneric = 'Diclofenac SR';
+      trans.medications[0].form = 'Tablet (SR)';
+      const bf = detFindings(base); const tf = detFindings(trans);
+      const pass = !multisetEq(refs(bf), refs(tf));
+      return { pass, detail: `plain ${summarize(bf)} → SR ${summarize(tf)}${pass ? '' : ' (identical — the engine reads no release profile)'}` };
+    },
+  },
+  {
+    id: 'D-6', title: 'Interaction needs both members',
+    transformation: 'a known pair (naproxen + telmisartan, NSAID + ARB) → remove one member',
+    assertion: 'the drug_interaction finding disappears',
+    run: () => {
+      const base = baseInteraction();
+      const trans = clone(base);
+      trans.medications = trans.medications.filter((m) => m.generic !== 'Telmisartan');
+      const bf = detFindings(base); const tf = detFindings(trans);
+      const pass = hasSignal(bf, 'drug_interaction') && !hasSignal(tf, 'drug_interaction');
+      return { pass, detail: `pair ${summarize(bf)} → single ${summarize(tf)}` };
+    },
+  },
+  {
+    id: 'D-7', title: 'Interaction ignores non-analgesic dose',
+    transformation: 'aspirin 75 mg (antiplatelet) + an ARB',
+    assertion: 'no NSAID-interaction finding fires — 75 mg aspirin is not an analgesic NSAID',
+    run: () => {
+      const c = mkOpdCase({
+        presentingComplaints: ['routine review of blood pressure'],
+        impressions: ['Hypertension; post-PTCA on antiplatelet'], diagnosisCodes: ['I10'],
+        history: ['PTCA 2024, on aspirin 75 mg'], examination: ['BP 128/82'],
+        advice: ['Continue current medication'], followUpType: 'MANDATORY_FOLLOW_UP',
+        medications: [
+          med({ generic: 'Aspirin', strength: '75 mg', frequency: 'OD', duration: '30 days', therapeuticClass: 'Antiplatelet' }),
+          med({ generic: 'Telmisartan', strength: '40 mg', frequency: 'OD', duration: '30 days', therapeuticClass: 'Antihypertensive' }),
+        ],
+      });
+      const fs = detFindings(c);
+      const ddi = fs.filter((f) => f.signal_type === 'drug_interaction');
+      return { pass: ddi.length === 0, detail: ddi.length ? `fired: ${ddi.map((f) => `"${f.subject}"`).join('; ')}` : 'no interaction fired' };
+    },
+  },
+  {
+    id: 'G-1', title: 'Order independence',
+    transformation: 'reorder medications[]',
+    assertion: 'findings identical as a set (finding_ref multiset unchanged)',
+    run: () => {
+      const base = mkOpdCase({
+        presentingComplaints: ['generalised body ache'], impressions: ['Viral myalgia'], diagnosisCodes: ['M79.1'],
+        history: ['Atrial fibrillation on anticoagulation'], examination: ['No focal deficit'],
+        advice: ['Hydration'], followUpType: 'IF_REQUIRED',
+        medications: [
+          med({ generic: 'Ibuprofen', strength: '400 mg', frequency: 'TDS', therapeuticClass: 'NSAID' }),
+          med({ generic: 'Warfarin', strength: '5 mg', frequency: 'OD', duration: '30 days', therapeuticClass: 'Anticoagulant' }),
+          med({ generic: 'Diclofenac', strength: '75 mg', frequency: 'TDS', therapeuticClass: 'NSAID' }),
+        ],
+      });
+      const trans = clone(base);
+      trans.medications = [...trans.medications].reverse();
+      const bf = detFindings(base); const tf = detFindings(trans);
+      const pass = multisetEq(refs(bf), refs(tf));
+      return { pass, detail: pass ? `${bf.length} findings, refs stable under reorder` : `refs differ — [${refs(bf).join(',')}] vs [${refs(tf).join(',')}]` };
+    },
+  },
+  {
+    id: 'G-2', title: 'Unrelated addition',
+    transformation: 'add a medication that trips no rule (cetirizine 10 mg, fully dosed)',
+    assertion: 'existing findings unchanged; only additions permitted',
+    run: () => {
+      const base = baseInteraction();
+      const trans = clone(base);
+      trans.medications.push(med({ generic: 'Cetirizine', strength: '10 mg', frequency: 'OD', therapeuticClass: 'Antihistamine' }));
+      const bf = detFindings(base); const tf = detFindings(trans);
+      const pass = multisetContains(refs(tf), refs(bf));
+      return { pass, detail: pass ? `all ${bf.length} base findings retained (${tf.length} after addition)` : `a base finding vanished — base [${refs(bf).join(',')}] vs [${refs(tf).join(',')}]` };
+    },
+  },
+  {
+    id: 'G-3', title: 'Empty-field safety',
+    transformation: 'blank examination, then advice, then investigations, one at a time',
+    assertion: 'no crash; absence never produces an accusatory (scoring) finding',
+    run: () => {
+      const base = mkOpdCase({
+        presentingComplaints: ['itchy scalp'], impressions: ['Seborrhoeic dermatitis'], diagnosisCodes: ['L21.0'],
+        examination: ['Scaling over vertex'], investigations: ['KOH mount'],
+        advice: ['Medicated shampoo twice weekly'], followUpType: 'IF_REQUIRED',
+        medications: [med({ generic: 'Cetirizine', strength: '10 mg', frequency: 'OD' })],
+      });
+      const bf = detFindings(base);
+      const details: string[] = [];
+      let pass = true;
+      for (const field of ['examination', 'advice', 'investigations'] as const) {
+        const trans = clone(base);
+        trans[field] = [];
+        try {
+          const tf = detFindings(trans);
+          opdCompleteness(trans);   // must not throw either
+          const newScoring = scoring(tf).filter((f) => !refs(bf).includes(f.finding_ref || '?'));
+          if (newScoring.length) { pass = false; details.push(`${field}: accusatory ${summarize(newScoring)}`); }
+          else details.push(`${field}: silent`);
+        } catch (e) { pass = false; details.push(`${field}: THREW ${(e as Error).message}`); }
+      }
+      return { pass, detail: details.join(' · ') };
+    },
+  },
+  {
+    id: 'G-4', title: 'Unit invariance',
+    transformation: 'the same dose expressed as "120 mg" and "0.12 g"',
+    assertion: 'same finding set',
+    run: () => {
+      const a = baseEtoricoxib('120 mg');
+      const b = baseEtoricoxib('0.12 g');
+      const fa = detFindings(a); const fb = detFindings(b);
+      const pass = multisetEq(refs(fa), refs(fb)) && hasSignal(fa, 'dose_ceiling_exceeded');
+      return { pass, detail: `mg ${summarize(fa)} vs g ${summarize(fb)}` };
+    },
+  },
+  {
+    id: 'G-5', title: 'Duplicate line',
+    transformation: 'duplicate one medication line verbatim',
+    assertion: 'no interaction fires against the drug and itself; additions limited to the duplication family (duplicate_prescription / duplicate_molecule — the engine\'s designed response to a repeated line; interpretation flagged in the build report)',
+    run: () => {
+      const base = mkOpdCase({
+        presentingComplaints: ['burning micturition'], impressions: ['Uncomplicated UTI'], diagnosisCodes: ['N39.0'],
+        examination: ['No renal angle tenderness'], advice: ['Fluids'], followUpType: 'IF_REQUIRED',
+        medications: [
+          med({ generic: 'Cefixime', strength: '200 mg' }),
+          med({ generic: 'Paracetamol', strength: '500 mg', frequency: 'TDS' }),
+        ],
+      });
+      const trans = clone(base);
+      trans.medications.push(JSON.parse(JSON.stringify(trans.medications[0])) as OpdMed);
+      const bf = detFindings(base); const tf = detFindings(trans);
+      const selfInteraction = tf.some((f) => f.signal_type === 'drug_interaction' && /cefixime\s*\+\s*cefixime/i.test(f.subject));
+      const allowed = new Set(['duplicate_prescription', 'duplicate_molecule']);
+      const baseRefs = refs(bf);
+      const additions = tf.filter((f) => !baseRefs.includes(f.finding_ref || '?'));
+      const outOfFamily = additions.filter((f) => !allowed.has(f.signal_type || ''));
+      const pass = !selfInteraction && outOfFamily.length === 0 && multisetContains(refs(tf), baseRefs);
+      return { pass, detail: `additions: ${summarize(additions)}${selfInteraction ? ' — SELF-INTERACTION FIRED' : ''}${outOfFamily.length ? ` — out-of-family ${summarize(outOfFamily)}` : ''}` };
+    },
+  },
+  {
+    id: 'G-6', title: 'Teleconsult context',
+    transformation: 'set isTeleconsult: true on a note with no examination',
+    assertion: 'no finding or completeness item penalises the missing physical examination',
+    run: () => {
+      const base = mkOpdCase({
+        presentingComplaints: ['acidity after meals'], impressions: ['Gastritis'], diagnosisCodes: ['K29.7'],
+        advice: ['Avoid late meals'], followUpType: 'IF_REQUIRED',
+        medications: [med({ generic: 'Pantoprazole', strength: '40 mg', frequency: 'OD' })],
+      });
+      const trans = clone(base);
+      trans.isTeleconsult = true;
+      const bc: OpdCompleteness = opdCompleteness(base);
+      const tc: OpdCompleteness = opdCompleteness(trans);
+      const baseHasExamGap = bc.items.some((i) => i.key === 'examination' && !i.present);
+      const teleHasExamItem = tc.items.some((i) => i.key === 'examination');
+      const bf = detFindings(base); const tf = detFindings(trans);
+      const pass = baseHasExamGap && !teleHasExamItem && multisetEq(refs(bf), refs(tf));
+      return { pass, detail: `in-person exam gap: ${baseHasExamGap}; tele exam item present: ${teleHasExamItem}; findings invariant: ${multisetEq(refs(bf), refs(tf))}` };
+    },
+  },
+  {
+    id: 'G-7', title: 'Referral handoff',
+    transformation: 'set isReferralHandoff + an onward referral on a note with no plan and no follow-up',
+    assertion: 'completeness expectations relax (the referral IS the plan and the care transition); no finding demands definitive management',
+    run: () => {
+      const base = mkOpdCase({
+        presentingComplaints: ['right shoulder pain, restricted movement'], impressions: ['Rotator cuff pathology, suspected'],
+        diagnosisCodes: ['M75.1'], examination: ['Painful arc positive'],
+        medications: [med({ generic: 'Paracetamol', strength: '500 mg', frequency: 'TDS' })],
+      });
+      const trans = clone(base);
+      trans.referrals = ['In-Person Orthopedics (Even-recommended)'];
+      trans.numReferrals = 1;
+      trans.isReferralHandoff = true;
+      const bc = opdCompleteness(base); const tc = opdCompleteness(trans);
+      const gap = (c: OpdCompleteness, k: string) => c.items.some((i) => i.key === k && !i.present);
+      const bf = detFindings(base); const tf = detFindings(trans);
+      const pass = gap(bc, 'advice_given') && gap(bc, 'follow_up')
+        && !gap(tc, 'advice_given') && !gap(tc, 'follow_up')
+        && multisetEq(refs(bf), refs(tf));
+      return { pass, detail: `base gaps advice/follow-up: ${gap(bc, 'advice_given')}/${gap(bc, 'follow_up')} → with referral: ${gap(tc, 'advice_given')}/${gap(tc, 'follow_up')}` };
+    },
+  },
+];
+
+export function runRelations(): RelationResult[] {
+  return RELATIONS.map((r) => {
+    try {
+      const { pass, detail } = r.run();
+      return { id: r.id, title: r.title, transformation: r.transformation, assertion: r.assertion, pass, detail };
+    } catch (e) {
+      return { id: r.id, title: r.title, transformation: r.transformation, assertion: r.assertion, pass: false, detail: `THREW: ${(e as Error).message}` };
+    }
+  });
+}
+
+/**
+ * MEASURED status of every relation at `main` 46c7cf9 (engine opd-note-audit/0.81.17), ratified by
+ * this build's report. The CI test asserts each relation MATCHES this map — a 'fail' entry is an
+ * OBSERVED PRODUCTION DEFECT reproduced as a standing test (PRD §3.1: D-7 "must not [be] changed
+ * … to make it pass"; §7.3: "record it, do not fix it in this build"). A permanently-red gate
+ * would stop all work (the PRD's own M1 rationale), so known defects are PINNED, not asserted
+ * green: if the engine ever changes so a pinned failure starts passing, the test fails LOUDLY and
+ * the map must be re-ratified with V.
+ */
+export const RATIFIED_RELATION_STATUS: Record<string, 'pass' | 'fail'> = {
+  'D-1': 'pass', 'D-2': 'pass', 'D-3': 'pass', 'D-4': 'pass',
+  'D-5': 'fail',   // the engine reads no release profile at 0.81.17 (dosageForm plumbed 0.81.11, unread by design) — observed class Q2
+  'D-6': 'pass',
+  'D-7': 'fail',   // aspirin carries the `nsaid` tag at ANY dose (lib/ddi-tags.ts:29) — the Q28 defect, named unanimously
+  // G-1 is a NEW defect this suite surfaced (not in the PRD's observed set): interaction subjects
+  // embed the meds[] input order ("Interaction (major): A + B" vs "… B + A"), so finding_ref —
+  // sha1 over the subject detail — CHANGES when the EMR reorders medication lines. finding_ref is
+  // the triage instance address; an order-shifted re-audit orphans its triage rows. Measured at
+  // 46c7cf9: 3 of 4 refs in the fixture change under reversal (only the dose finding is stable).
+  'G-1': 'fail',
+  'G-2': 'pass', 'G-3': 'pass', 'G-4': 'pass', 'G-5': 'pass',
+  'G-6': 'pass', 'G-7': 'pass',
+};
+
+// ── Part B — synthetic known-positives + negative controls ────────────────────
+/** Placeholder-molecule banned-FDC test table (standing rule from cdsco-banned-fdc-core.test.ts). */
+export const MM_BANNED_TEST_TABLE: BannedFdcTable = {
+  version: 'cdsco-banned-fdc/metamorphic-test',
+  entries: [
+    { id: 'mm-entry-1', molecules: ['mol-a', 'mol-b'], notification_date: '2026-06-11', gazette_ref: 'S.O. MMTEST(E)' },
+    { id: 'mm-entry-2', molecules: ['mol-c', 'mol-d', 'mol-e'], notification_date: '2026-06-11', gazette_ref: 'S.O. MMTEST2(E)' },
+  ],
+};
+
+export interface SyntheticFixture {
+  id: string;
+  family: 'dose_ceiling' | 'dose_sos' | 'banned_fdc' | 'interaction' | 'incomplete_dosing' | 'negative';
+  /** positives: the signal_type that must fire. negatives: the nearby signal_type that must NOT. */
+  expected_signal_type: string;
+  kind: 'positive' | 'negative';
+  note: string;
+  case: DeidOpdCase;
+  usesBannedTestTable?: boolean;
+}
+
+const controlCase = (meds: OpdMed[], over: Partial<DeidOpdCase> = {}): DeidOpdCase => mkOpdCase({
+  presentingComplaints: ['generalised weakness'], impressions: ['General medical review'], diagnosisCodes: ['Z00.0'],
+  examination: ['Unremarkable'], advice: ['Balanced diet'], followUpType: 'IF_REQUIRED',
+  medications: meds, ...over,
+});
+
+export const SYNTHETIC_FIXTURES: SyntheticFixture[] = [
+  // Dose ceiling exceeded — data/dose-limits.json (5)
+  { id: 'POS-DOSE-1', family: 'dose_ceiling', expected_signal_type: 'dose_ceiling_exceeded', kind: 'positive',
+    note: 'paracetamol stacked across two products: 650 QID + 500 TDS = 4100 mg/day > 4000',
+    case: controlCase([med({ generic: 'Paracetamol', strength: '650 mg', frequency: 'QID' }), med({ generic: 'Paracetamol', brand: 'FebriRelief Plus', strength: '500 mg', frequency: 'TDS' })]) },
+  { id: 'POS-DOSE-2', family: 'dose_ceiling', expected_signal_type: 'dose_ceiling_exceeded', kind: 'positive',
+    note: 'ibuprofen 800 QID = 3200 mg/day > 2400 (single product)',
+    case: controlCase([med({ generic: 'Ibuprofen', strength: '800 mg', frequency: 'QID' })]) },
+  { id: 'POS-DOSE-3', family: 'dose_ceiling', expected_signal_type: 'dose_ceiling_exceeded', kind: 'positive',
+    note: 'diclofenac 75 TDS = 225 mg/day > 150',
+    case: controlCase([med({ generic: 'Diclofenac', strength: '75 mg', frequency: 'TDS' })]) },
+  { id: 'POS-DOSE-4', family: 'dose_ceiling', expected_signal_type: 'dose_ceiling_exceeded', kind: 'positive',
+    note: 'etoricoxib 120 OD with NO documented gout > the 90 mg/day default ceiling (Decision 6)',
+    case: controlCase([med({ generic: 'Etoricoxib', strength: '120 mg', frequency: 'OD' })]) },
+  { id: 'POS-DOSE-5', family: 'dose_ceiling', expected_signal_type: 'dose_ceiling_exceeded', kind: 'positive',
+    note: 'mefenamic acid 500 QID = 2000 mg/day > 1500',
+    case: controlCase([med({ generic: 'Mefenamic Acid', strength: '500 mg', frequency: 'QID' })]) },
+  // Dose ceiling SOS — default_sos_cap_per_day (3)
+  { id: 'POS-SOS-1', family: 'dose_sos', expected_signal_type: 'dose_ceiling_sos', kind: 'positive',
+    note: 'paracetamol 1000 TDS scheduled + 650 SOS uncapped (default cap 3) → 4950 potential > 4000',
+    case: controlCase([med({ generic: 'Paracetamol', strength: '1000 mg', frequency: 'TDS' }), med({ generic: 'Paracetamol', brand: 'FebriRelief', strength: '650 mg', frequency: 'SOS' })]) },
+  { id: 'POS-SOS-2', family: 'dose_sos', expected_signal_type: 'dose_ceiling_sos', kind: 'positive',
+    note: 'etoricoxib 90 SOS with an EXPLICIT max 2/day → 180 potential > 90',
+    case: controlCase([med({ generic: 'Etoricoxib', strength: '90 mg', frequency: 'SOS, max 2 per day' })]) },
+  { id: 'POS-SOS-3', family: 'dose_sos', expected_signal_type: 'dose_ceiling_sos', kind: 'positive',
+    note: 'ibuprofen 600 grid 1-0-1 + 600 SOS uncapped → 3000 potential > 2400',
+    case: controlCase([med({ generic: 'Ibuprofen', strength: '600 mg', frequency: '1-0-1' }), med({ generic: 'Ibuprofen', brand: 'DoloTab Forte', strength: '600 mg', frequency: 'SOS' })]) },
+  // Banned FDC — placeholder molecules vs MM_BANNED_TEST_TABLE (3)
+  { id: 'POS-FDC-1', family: 'banned_fdc', expected_signal_type: 'banned_fdc', kind: 'positive', usesBannedTestTable: true,
+    note: 'exact two-molecule banned set (placeholders mol-a + mol-b)',
+    case: controlCase([med({ generic: 'Mol-A + Mol-B', resolvedGeneric: 'Mol-A + Mol-B' })]) },
+  { id: 'POS-FDC-2', family: 'banned_fdc', expected_signal_type: 'banned_fdc', kind: 'positive', usesBannedTestTable: true,
+    note: 'exact three-molecule banned set (placeholders mol-c/mol-d/mol-e)',
+    case: controlCase([med({ generic: 'Mol-C/Mol-D/Mol-E', resolvedGeneric: 'Mol-C/Mol-D/Mol-E' })]) },
+  { id: 'POS-FDC-3', family: 'banned_fdc', expected_signal_type: 'banned_fdc', kind: 'positive', usesBannedTestTable: true,
+    note: 'order-swapped banned pair (mol-b + mol-a) still matches the stored set',
+    case: controlCase([med({ generic: 'Mol-B + Mol-A', resolvedGeneric: 'Mol-B + Mol-A' })]) },
+  // Drug interaction — the shipped tag/curated tables (4, distinct mechanisms)
+  { id: 'POS-DDI-1', family: 'interaction', expected_signal_type: 'drug_interaction', kind: 'positive',
+    note: 'warfarin + ibuprofen — anticoagulant + NSAID (major)',
+    case: controlCase([med({ generic: 'Warfarin', strength: '5 mg', frequency: 'OD', therapeuticClass: 'Anticoagulant' }), med({ generic: 'Ibuprofen', strength: '400 mg', therapeuticClass: 'NSAID' })]) },
+  { id: 'POS-DDI-2', family: 'interaction', expected_signal_type: 'drug_interaction', kind: 'positive',
+    note: 'atorvastatin + clarithromycin — statin + macrolide (major)',
+    case: controlCase([med({ generic: 'Atorvastatin', strength: '20 mg', frequency: 'OD', therapeuticClass: 'Statin' }), med({ generic: 'Clarithromycin', strength: '500 mg', therapeuticClass: 'Macrolide antibiotic' })]) },
+  { id: 'POS-DDI-3', family: 'interaction', expected_signal_type: 'drug_interaction', kind: 'positive',
+    note: 'sertraline + tramadol — two serotonergic drugs (major)',
+    case: controlCase([med({ generic: 'Sertraline', strength: '50 mg', frequency: 'OD', therapeuticClass: 'SSRI' }), med({ generic: 'Tramadol', strength: '50 mg', therapeuticClass: 'Opioid analgesic' })]) },
+  { id: 'POS-DDI-4', family: 'interaction', expected_signal_type: 'drug_interaction', kind: 'positive',
+    note: 'telmisartan + spironolactone — ACE-I/ARB + potassium-sparing diuretic (major)',
+    case: controlCase([med({ generic: 'Telmisartan', strength: '40 mg', frequency: 'OD', therapeuticClass: 'Antihypertensive' }), med({ generic: 'Spironolactone', strength: '25 mg', frequency: 'OD', therapeuticClass: 'Diuretic' })]) },
+  // Incomplete dosing — each of dose, frequency, duration, route blanked (4)
+  { id: 'POS-DOSING-1', family: 'incomplete_dosing', expected_signal_type: 'incomplete_dosing', kind: 'positive',
+    note: 'dose/strength blanked (no dose field, no strength, none in the name)',
+    case: controlCase([{ generic: 'Amoxicillin', resolvedGeneric: 'Amoxicillin', formularyMatch: 'source-generic', frequency: 'BD', duration: '5 days', route: 'oral' }]) },
+  { id: 'POS-DOSING-2', family: 'incomplete_dosing', expected_signal_type: 'incomplete_dosing', kind: 'positive',
+    note: 'frequency blanked',
+    case: controlCase([{ generic: 'Amoxicillin', resolvedGeneric: 'Amoxicillin', formularyMatch: 'source-generic', strength: '500 mg', duration: '5 days', route: 'oral' }]) },
+  { id: 'POS-DOSING-3', family: 'incomplete_dosing', expected_signal_type: 'incomplete_dosing', kind: 'positive',
+    note: 'duration blanked',
+    case: controlCase([{ generic: 'Amoxicillin', resolvedGeneric: 'Amoxicillin', formularyMatch: 'source-generic', strength: '500 mg', frequency: 'BD', route: 'oral' }]) },
+  { id: 'POS-DOSING-4', family: 'incomplete_dosing', expected_signal_type: 'incomplete_dosing', kind: 'positive',
+    note: 'route blanked and not inferable (no dosage-form word anywhere on the line)',
+    case: controlCase([{ generic: 'Amoxicillin', resolvedGeneric: 'Amoxicillin', formularyMatch: 'source-generic', strength: '500 mg', dose: '1', frequency: 'BD', duration: '5 days' }]) },
+  // ── The six negative controls — just inside every limit; MUST stay silent ──
+  { id: 'NEG-1', family: 'negative', expected_signal_type: 'dose_ceiling_exceeded', kind: 'negative',
+    note: 'ibuprofen 800 TDS = exactly 2400 mg/day — AT the ceiling, not over it',
+    case: controlCase([med({ generic: 'Ibuprofen', strength: '800 mg', frequency: 'TDS' })]) },
+  { id: 'NEG-2', family: 'negative', expected_signal_type: 'dose_ceiling_exceeded', kind: 'negative',
+    note: 'etoricoxib 120 OD WITH a documented gout diagnosis — the conditional 120 ceiling applies',
+    case: controlCase([med({ generic: 'Etoricoxib', strength: '120 mg', frequency: 'OD' })],
+      { presentingComplaints: ['pain in the right great toe'], impressions: ['Acute gout flare'], diagnosisCodes: ['M10.9'] }) },
+  { id: 'NEG-3', family: 'negative', expected_signal_type: 'drug_interaction', kind: 'negative',
+    note: 'amoxicillin + paracetamol — just OUTSIDE every interaction pair (no shared mechanism tag)',
+    case: controlCase([med({ generic: 'Amoxicillin', strength: '500 mg', therapeuticClass: 'Penicillin antibiotic' }), med({ generic: 'Paracetamol', strength: '500 mg', therapeuticClass: 'Analgesic' })],
+      { presentingComplaints: ['painful swallowing'], impressions: ['Bacterial tonsillitis'], diagnosisCodes: ['J03.9'] }) },
+  { id: 'NEG-4', family: 'negative', expected_signal_type: 'incomplete_dosing', kind: 'negative',
+    note: 'a COMPLETE prescription — dose, frequency, duration and route all present',
+    case: controlCase([med({ generic: 'Amoxicillin', strength: '500 mg' })]) },
+  { id: 'NEG-5', family: 'negative', expected_signal_type: 'banned_fdc', kind: 'negative', usesBannedTestTable: true,
+    note: 'banned core + one extra molecule (mol-a + mol-b + mol-z) — the C5 superset boundary',
+    case: controlCase([med({ generic: 'Mol-A + Mol-B + Mol-Z', resolvedGeneric: 'Mol-A + Mol-B + Mol-Z' })]) },
+  { id: 'NEG-6', family: 'negative', expected_signal_type: 'dose_ceiling_sos', kind: 'negative',
+    note: 'paracetamol 500 SOS max 3/day = 1500 mg potential — well inside the 4000 ceiling',
+    case: controlCase([med({ generic: 'Paracetamol', strength: '500 mg', frequency: 'SOS, max 3 per day' })]) },
+];
+
+export interface SyntheticControlResult {
+  id: string;
+  family: SyntheticFixture['family'];
+  kind: 'positive' | 'negative';
+  expected_signal_type: string;
+  note: string;
+  /** positives: expected signal fired. negatives: it did NOT (see `held`). */
+  fired: boolean;
+  /** negatives only: no non-informational finding of ANY type fired */
+  held?: boolean;
+  observed: string;
+}
+export interface SyntheticControlsReport {
+  positives: SyntheticControlResult[];
+  negatives: SyntheticControlResult[];
+  planted: number;
+  fired: number;
+  /** recall of the DETERMINISTIC LEG ONLY over the planted corpus — no LLM recall claim (PRD §6) */
+  recall_det: number;
+  negativesHeld: boolean;
+}
+
+export function runSyntheticControls(): SyntheticControlsReport {
+  const results: SyntheticControlResult[] = SYNTHETIC_FIXTURES.map((fx) => {
+    const findings = detFindings(fx.case, fx.usesBannedTestTable ? { bannedTable: MM_BANNED_TEST_TABLE } : undefined);
+    const fired = hasSignal(findings, fx.expected_signal_type);
+    const base: SyntheticControlResult = {
+      id: fx.id, family: fx.family, kind: fx.kind, expected_signal_type: fx.expected_signal_type,
+      note: fx.note, fired, observed: summarize(findings),
+    };
+    if (fx.kind === 'negative') base.held = !fired && scoring(findings).length === 0;
+    return base;
+  });
+  const positives = results.filter((r) => r.kind === 'positive');
+  const negatives = results.filter((r) => r.kind === 'negative');
+  const fired = positives.filter((r) => r.fired).length;
+  return {
+    positives, negatives,
+    planted: positives.length, fired,
+    recall_det: positives.length ? fired / positives.length : 0,
+    negativesHeld: negatives.every((r) => r.held === true),
+  };
+}
+
+// ── Part C — LLM-leg relations (lab, NOT CI; PRD §5) ─────────────────────────
+// Fixtures are SYNTHETIC db13-SHAPED ROWS (rowToOpdCase input) so the lab runner drives the REAL
+// grounded audit path (auditOpdNote) without a db13 uid or any PHI (§9.3). The runner
+// (scripts/metamorphic-llm-report.mjs) audits base + transformed 3× each and persists to
+// lab_analyses under the relation's experiment name; the panel reads them back (§5A).
+export type Db13Row = Record<string, unknown>;
+
+export interface PartCRelation {
+  id: 'L-1' | 'L-2' | 'L-3';
+  title: string;
+  experiment: string;              // lab_analyses experiment name — panel queries LIKE 'mm-llm-%'
+  transformation: string;
+  assertion: string;
+  baseRow: Db13Row;
+  transform: (row: Db13Row) => Db13Row;
+  /** does the tested behaviour FIRE in this finding set? (evaluated per run, majority per arm) */
+  fires: (findings: OpdFinding[]) => boolean;
+  /** verdict from the two per-arm majorities */
+  verdict: (baseFires: boolean, transformedFires: boolean) => boolean;
+}
+
+const gpRow = (over: Db13Row): Db13Row => ({
+  uid: null,   // synthetic — never a db13 uid (§9.3)
+  type_of_prescription: 'HOSPITAL_GP',
+  consult_types: ['VISITING_HOSPITAL'],
+  follow_up_type: 'IF_REQUIRED',
+  timestamp: '2026-07-15T10:00:00Z',
+  ...over,
+});
+const gpBlock = (symptoms: string, diagnoses: { icd_code?: string; diagnosis_or_impression: string }[], plan: string) => ({
+  'general_practitioner_prescription__presenting_complaints': [{ symptoms, diagnoses }],
+  'general_practitioner_prescription__plan_of_management': [{ management_plan: plan }],
+});
+
+const praiseFires = (findings: OpdFinding[]): boolean =>
+  findings.some((f) => f.signal_type === 'appropriateness_high_value'
+    || (f.domain === 'appropriateness' && f.verdict === 'high-value'));
+
+export const PART_C_RELATIONS: PartCRelation[] = [
+  {
+    id: 'L-1', title: 'Status qualifier is read', experiment: 'mm-llm-l1',
+    transformation: 'add "healed / resolved" to the documented cellulitis',
+    assertion: 'any finding demanding management of the condition disappears',
+    baseRow: gpRow({
+      ...gpBlock('Came for review of left leg cellulitis. No fever.',
+        [{ icd_code: 'L03.1', diagnosis_or_impression: 'Left leg cellulitis' }],
+        'Review with reports.'),
+      'general_practitioner_prescription__examination': '<p>Left leg: previously affected area examined.</p>',
+      medications: [{ generic_name: 'Paracetamol', strength: '500 mg', dosage: '1 tablet', frequency: 'TDS', duration: '3 days', route_of_administration: 'oral' }],
+    }),
+    transform: (row) => ({
+      ...row,
+      ...gpBlock('Came for review of left leg cellulitis — healed. No fever.',
+        [{ icd_code: 'L03.1', diagnosis_or_impression: 'Left leg cellulitis — healed / resolved' }],
+        'Review with reports.'),
+    }),
+    fires: (findings) => findings.some((f) =>
+      /cellulitis/i.test(`${f.subject} ${f.rationale}`)
+      && f.informational !== true
+      && (f.verdict === 'low-value' || f.verdict === 'context-dependent')),
+    verdict: (base, transformed) => base && !transformed,
+  },
+  {
+    id: 'L-2', title: 'Praise requires evidence', experiment: 'mm-llm-l2',
+    transformation: 'delete the referral and action line the praise rests on',
+    assertion: 'the appropriateness_high_value finding disappears',
+    baseRow: gpRow({
+      ...gpBlock('Central chest discomfort on exertion for 1 week. No rest pain.',
+        [{ icd_code: 'R07.3', diagnosis_or_impression: 'Exertional chest pain — cardiac evaluation needed' }],
+        'ECG done today. Urgent cardiology referral for stress evaluation. Advised to report immediately if pain at rest.'),
+      refer_to: [{ specialist_type: { name: 'Cardiology', is_in_house: false }, recommended_by_even: true }],
+      num_referrals: 1,
+      medications: [],
+    }),
+    transform: (row) => {
+      const t = { ...row };
+      delete t.refer_to;
+      t.num_referrals = 0;
+      return {
+        ...t,
+        ...gpBlock('Central chest discomfort on exertion for 1 week. No rest pain.',
+          [{ icd_code: 'R07.3', diagnosis_or_impression: 'Exertional chest pain — cardiac evaluation needed' }],
+          ''),
+      };
+    },
+    fires: praiseFires,
+    verdict: (base, transformed) => base && !transformed,
+  },
+  {
+    id: 'L-3', title: 'Praise is not blind', experiment: 'mm-llm-l3',
+    transformation: 'add a clear safety problem elsewhere in the note (documented penicillin allergy + amoxicillin prescribed — LLM-leg only; the deterministic leg has no allergy check)',
+    assertion: 'either the praise disappears OR a safety finding appears — silence on both is a failure',
+    baseRow: gpRow({
+      ...gpBlock('Runny nose, sneezing, mild sore throat for 2 days. Afebrile.',
+        [{ icd_code: 'J00', diagnosis_or_impression: 'Common cold (viral URTI)' }],
+        'Symptomatic care only. Explained no antibiotic is needed for a viral illness. Warm saline gargles. Review if fever develops.'),
+      medications: [{ generic_name: 'Cetirizine', strength: '10 mg', dosage: '1 tablet', frequency: 'OD', duration: '3 days', route_of_administration: 'oral' }],
+    }),
+    transform: (row) => ({
+      ...row,
+      patient_details__allergies: 'Penicillin allergy — rash and facial swelling with amoxicillin in 2023',
+      medications: [
+        ...(row.medications as Db13Row[]),
+        { generic_name: 'Amoxicillin', strength: '500 mg', dosage: '1 capsule', frequency: 'BD', duration: '5 days', route_of_administration: 'oral' },
+      ],
+    }),
+    fires: (findings) => {
+      // in the TRANSFORMED arm this means "the engine responded": praise gone is checked by the
+      // verdict fn; here `fires` = a drug-allergy safety finding is present.
+      return findings.some((f) => f.domain === 'prescribing_safety'
+        && /allerg|penicillin|amoxicillin/i.test(`${f.subject} ${f.rationale}`)
+        && f.informational !== true);
+    },
+    // L-3's verdict is evaluated by the RUNNER over BOTH matchers (praise + safety); this
+    // signature receives (praiseStillPresent, safetyFired) for the transformed arm.
+    verdict: (praiseStillPresent, safetyFired) => !praiseStillPresent || safetyFired,
+  },
+];
+
+/** 3-run majority for one arm. A 2–1 result is a SPLIT — recorded, never silently passed (M2). */
+export function majorityOf(fires: boolean[]): { fired: boolean; split: boolean } {
+  const yes = fires.filter(Boolean).length;
+  return { fired: yes * 2 > fires.length, split: yes !== 0 && yes !== fires.length };
+}
