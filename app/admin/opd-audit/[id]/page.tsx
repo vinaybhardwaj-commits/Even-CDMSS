@@ -9,6 +9,7 @@ import { individualUidForPresc, getMemberSnapshotAsOf } from '@/lib/member-state
 import { presentMemberState, type MemberStateView } from '@/lib/member-state/present-core';
 import { type OpdDomain, documentationAdequacyFlag } from '@/lib/opd-note-score-core';
 import { OPD_ENGINE_VERSION, OPD_ENGINE_VERSIONS_CURRENT } from '@/lib/opd-note-audit-core';
+import { bucketByTier } from '@/lib/severity-tier-core';
 import { LVC_CATEGORY_LABELS } from '@/lib/opd-lvc-classify-core';
 import { displayedBandColumnExists } from '@/lib/opd-audit-store';
 
@@ -571,14 +572,24 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
   const { findings: renderFindings, sources: renderSources } = retiredEvenIds.length
     ? stripRetiredEvenCitations(findings, sources, retiredEvenIds)
     : { findings, sources };
-  const findingDomains = domainOrder.filter((d) => findings.some((f) => f.domain === d));
-  const otherFindings = findings.filter((f) => !domainOrder.includes(f.domain));
   const countByDomain: Record<string, number> = {};
   for (const f of rawFindings) countByDomain[f.domain] = (countByDomain[f.domain] || 0) + 1;
 
-  // Anchors computed on the DISPLAY order so chip numbers match the cards.
+  // ── U1-A severity tiers (ratified table v1.0) — DERIVED at read time, stored set unchanged. ──
+  // Tier 1 renders first (visually distinct), tier 2 as rows (domain-grouped, worst first),
+  // tier 3 as a COUNT (never rows — the entire point), praise as a count OUTSIDE the tier list
+  // (O1b — stored exactly as before, nothing deleted). Unknown kinds land in tier 2 and are
+  // counted (O1c). The action list below is tier 1 + tier 2 only.
+  const tiers = bucketByTier(renderFindings);
+  const tier2Sorted = tiers.tier2.slice().sort((a, b) => groupRank(a.domain) - groupRank(b.domain));
+  const displayFindings = [...tiers.tier1, ...tier2Sorted];
+  const tier2Domains = domainOrder.filter((d) => tier2Sorted.some((f) => f.domain === d));
+  const tier2Other = tier2Sorted.filter((f) => !domainOrder.includes(f.domain));
+
+  // Anchors computed on the DISPLAY order so chip numbers match the cards. Tier-3/praise findings
+  // render as counts, not rows, so they take no chip.
   const anchors = anchorFindings(
-    findings.map((f) => ({ subject: f.subject, domain: f.domain, verdict: f.verdict })),
+    displayFindings.map((f) => ({ subject: f.subject, domain: f.domain, verdict: f.verdict })),
     {
       medications: note ? note.medications.map((m) => String(m.resolvedGeneric || m.generic || m.brand || '')) : [],
       investigations: note ? note.investigations : [],
@@ -595,7 +606,10 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
 
   // Feature B seed (PRD §1B): total = findings with a finding_ref (triageable); triagedRefs = those
   // already triaged (reuse the current-state map above so live re-verdicts dedupe across the seed).
-  const triageableRefs = new Set(findings.filter((f) => f.finding_ref).map((f) => String(f.finding_ref)));
+  // U1-A: the triage seed follows the ACTION LIST (tier 1 + 2) — tier-3/praise findings render as
+  // counts, not rows, so they cannot be (and need not be) triaged from this page. Stored findings
+  // and past triage rows are untouched.
+  const triageableRefs = new Set(displayFindings.filter((f) => f.finding_ref).map((f) => String(f.finding_ref)));
   const triagedRefs = Object.keys(triage).filter((ref) => triageableRefs.has(ref));
 
   // Escalation package (PRD §9.5): de-identified note + CDMSS findings + domain scores +
@@ -734,15 +748,19 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
           {longitudinal && <LongitudinalPanel block={longitudinal} view={longitudinalView} />}
 
           <div id="note" className="mt-3 scroll-mt-4">
-            <NotePanel note={note} pdfUrl={prescriptionUrl} grouped={grouped} findings={findings} />
+            <NotePanel note={note} pdfUrl={prescriptionUrl} grouped={grouped} findings={displayFindings} />
           </div>
 
           {findings.length > 0 && (
             <div id="findings" className="mt-4 scroll-mt-4">
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-400">Findings · grouped by domain, worst first · numbered where they sit in the note</div>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-400">Findings · grouped by severity tier · numbered where they sit in the note</div>
                 <EscalateButton pkg={escalationPackage} uid={uid} />
               </div>
+              {/* U1-A (ratified tier table v1.0): the reporting unit, stated explicitly (§1.4). */}
+              <p className="mb-1 text-[11.5px] leading-snug text-slate-400">
+                Reporting unit: one row per finding on this note. Tier 1 = escalate now · tier 2 = act this week · tier 3 = log only, shown as a count. Tiers are derived from the stored finding at read time — nothing is deleted or re-scored.
+              </p>
               {/* Ruling R-7 (bug 9b) — ONCE per page, not per finding. The grounding chip records
                   attachment, not support; saying so here keeps 82.4% of cards honest until the
                   phase-3 support check lands. */}
@@ -750,8 +768,23 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
                 A citation label records that a source was attached to a finding. It does not verify that the source supports the finding. A support check is in build.
               </p>
               <ReviewerBar />
-              {findingDomains.map((dom) => {
-                const list = renderFindings.map((f, i) => ({ f, num: i + 1 })).filter((x) => x.f.domain === dom);
+              {/* ── Tier 1 — escalate now: rows at the top, visually distinct ── */}
+              {tiers.tier1.length > 0 && (
+                <div className="mb-3 rounded-lg border-2 border-red-300 bg-red-50/40 p-2">
+                  <div className="mb-1.5 text-[10.5px] font-semibold uppercase tracking-[0.06em] text-red-700">
+                    Tier 1 · Escalate now <span className="font-normal normal-case tracking-normal text-red-600">possible active patient risk · {tiers.tier1.length} finding{tiers.tier1.length > 1 ? 's' : ''}</span>
+                  </div>
+                  <div className="space-y-2">{displayFindings.map((f, i) => ({ f, num: i + 1 })).slice(0, tiers.tier1.length).map(({ f, num }) => <FindingCard key={num} f={f} num={num} sources={renderSources} auditId={id} triage={triage} ruleMap={ruleMap} />)}</div>
+                </div>
+              )}
+              {/* ── Tier 2 — act this week: rows, domain-grouped, worst first ── */}
+              {tier2Sorted.length > 0 && (
+                <div className="mb-1 text-[10.5px] font-semibold uppercase tracking-[0.06em] text-slate-500">
+                  Tier 2 · Act this week <span className="font-normal normal-case tracking-normal text-slate-400">{tier2Sorted.length} finding{tier2Sorted.length > 1 ? 's' : ''}</span>
+                </div>
+              )}
+              {tier2Domains.map((dom) => {
+                const list = displayFindings.map((f, i) => ({ f, num: i + 1 })).filter((x) => x.f.domain === dom && tier2Sorted.includes(x.f));
                 const v = scores[dom as OpdDomain];
                 return (
                   <div key={dom} id={`fd-${dom}`} className="mb-3 scroll-mt-4">
@@ -768,8 +801,23 @@ export default async function OpdCaseAudit({ params }: { params: Promise<{ id: s
                   </div>
                 );
               })}
-              {otherFindings.length > 0 && (
-                <div className="space-y-2">{renderFindings.map((f, i) => ({ f, num: i + 1 })).filter((x) => !domainOrder.includes(x.f.domain)).map(({ f, num }) => <FindingCard key={num} f={f} num={num} sources={renderSources} auditId={id} triage={triage} ruleMap={ruleMap} />)}</div>
+              {tier2Other.length > 0 && (
+                <div className="mb-3 space-y-2">{displayFindings.map((f, i) => ({ f, num: i + 1 })).filter((x) => tier2Other.includes(x.f)).map(({ f, num }) => <FindingCard key={num} f={f} num={num} sources={renderSources} auditId={id} triage={triage} ruleMap={ruleMap} />)}</div>
+              )}
+              {/* ── Tier 3 — log only: a COUNT, never rows (the entire point of U1-A) ── */}
+              {tiers.tier3.length > 0 && (
+                <div className="mb-2 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[11px] text-slate-500">
+                  <b className="text-slate-600">Tier 3 · Log only — {tiers.tier3.length} finding{tiers.tier3.length > 1 ? 's' : ''}</b> (blank fields, coding, formulary/metadata notes). Logged and stored; not shown as rows so the tiers above stay visible.
+                </div>
+              )}
+              {/* ── Praise — outside the tier list (O1b): a count; stored exactly as before ── */}
+              {tiers.praise.length > 0 && (
+                <div className="mb-2 rounded-md border border-emerald-200 bg-emerald-50/50 px-2.5 py-1.5 text-[11px] text-emerald-700">
+                  <b>Praise · {tiers.praise.length}</b> — positive finding{tiers.praise.length > 1 ? 's' : ''} on this note. Not an action; stored unchanged and counted here.
+                </div>
+              )}
+              {tiers.unlisted > 0 && (
+                <div className="mb-2 text-[10.5px] text-slate-400">{tiers.unlisted} finding{tiers.unlisted > 1 ? 's' : ''} carried a kind outside the ratified tier table and took the tier-2 default (O1c).</div>
               )}
               <MissedFindingCapture auditId={id} initial={missed} />
             </div>

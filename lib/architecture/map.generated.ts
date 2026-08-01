@@ -787,6 +787,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "pure-core"
   },
   {
+    "id": "severity-tier-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "signal-health-core",
     "plane": "unregistered"
   },
@@ -1111,6 +1115,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/admin",
     "to": "scoring-policy",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
+    "to": "severity-tier-core",
     "kind": "value"
   },
   {
