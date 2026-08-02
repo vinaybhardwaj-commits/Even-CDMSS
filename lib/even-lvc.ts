@@ -314,7 +314,12 @@ export async function loadBoard(): Promise<Board> {
 
   // recompute contest counts from the feedback channel + apply the active→contested flip (fail-safe)
   try {
-    const contestRows = await run(`SELECT assertion_id FROM opd_audit_feedback WHERE scope = 'assertion_contest' AND assertion_id IS NOT NULL AND study IS NOT DISTINCT FROM $1`, [null]);
+    // D-E (2 Aug 2026): app_source was the ONE predicate missing here — every other read of
+    // opd_audit_feedback in the tree filters it (admin/opd-audit/[id], admin/opd-audit, the doctor
+    // page, care). Without it the contest count on the assertion board summed rows written by any
+    // app sharing the table. Shape copied from app/admin/opd-audit/[id]/page.tsx:537.
+    // scope / assertion_id / study are UNCHANGED; the enclosing try still returns the raw board.
+    const contestRows = await run(`SELECT assertion_id FROM opd_audit_feedback WHERE scope = 'assertion_contest' AND app_source = $1 AND assertion_id IS NOT NULL AND study IS NOT DISTINCT FROM $2`, [APP, null]);
     const updates = rollupContests(
       rows.map((r) => ({ id: r.id, status: r.status, contest_count: Number(r.contest_count) || 0 })),
       contestRows.map((c) => ({ assertion_id: c.assertion_id as string })),
