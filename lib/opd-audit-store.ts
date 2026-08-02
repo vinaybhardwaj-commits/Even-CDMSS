@@ -21,7 +21,13 @@ function domainScore(audit: OpdNoteAudit, key: OpdDomain): number | null {
   return d ? Math.round(d.score) : null;
 }
 
-export interface SaveOpdAuditMeta { model?: string | null; latencyMs?: number | null }
+export interface SaveOpdAuditMeta {
+  model?: string | null;
+  /** Unit B — the PROVIDER that served the call ('vertex' | 'openrouter' | 'ollama' | 'bedrock').
+   *  Must come from what actually answered, never a constant. Absent/null = not attributed. */
+  provider?: string | null;
+  latencyMs?: number | null;
+}
 
 /** Force-overwrite mode for saveOpdAudit (obstetric re-score backfill): when a row already exists
  *  at (uid, engine_version), DO UPDATE the scored columns instead of DO NOTHING. Off by default —
@@ -77,6 +83,21 @@ async function completenessItemsColumnExists(): Promise<boolean> { return opdCol
  *  the OPD list / doctor pages / PDF export for the entire deploy-to-migration window. Readers
  *  include the column only once it exists; until then they render the raw band, exactly as today. */
 export async function displayedBandColumnExists(): Promise<boolean> { return opdColumnExists('displayed_band'); }
+/**
+ * PROVIDER-SWITCH Unit B (§5, 2 Aug 2026) — WHICH PROVIDER SERVED THE GRADING CALL.
+ *
+ * `model` alone cannot answer "who graded this": the SAME model id arrives by more than one route.
+ * `google/gemini-2.5-pro` is Gemini via the OpenRouter bridge; `gemini-2.5-pro` is Gemini via
+ * Vertex. When Vertex was disabled on 26 July, and again when the bridge's 110 s ceiling silently
+ * degraded every median-or-slower audit to the local model from 30 July, the stored rows could not
+ * say which path had been taken — the column that should have shouted "served somewhere else" was
+ * carrying a model name that looked perfectly normal. THAT AMBIGUITY IS A LARGE PART OF WHY A
+ * THREE-DAY OUTAGE WENT UNNOTICED.
+ *
+ * Probed, like quieting_gen / completeness_items / displayed_band, so the deploy is safe BEFORE
+ * migration 0032 runs: absent ⇒ the column is omitted from the INSERT and nothing fails.
+ */
+async function providerColumnExists(): Promise<boolean> { return opdColumnExists('provider'); }
 
 /**
  * S1 — the hysteresis conditional AS SQL, built from the same HYSTERESIS_G the pure function uses
@@ -159,6 +180,7 @@ export async function saveOpdAudit(
   const itemsJson = completenessItemsJson(audit);
   // 0029 (S1) — the hysteresis anchor, tolerated pre-migration like the two columns above.
   const withBand = await displayedBandColumnExists();
+  const withProvider = await providerColumnExists();
   // ═══ S0 invalid-marking (PRD 28 Jul, D3/D4) ═══
   // Model-agnostic: the signal comes from auditOpdNote (the LLM leg failed after its one retry),
   // and the belt-and-braces pdqi9 check keeps the mark honest — a row is marked only when the
@@ -186,7 +208,7 @@ export async function saveOpdAudit(
          scorecard = EXCLUDED.scorecard,
          excluded_reason = COALESCE(EXCLUDED.excluded_reason,
            CASE WHEN opd_note_audits.excluded_reason = 'llm_leg_failed' THEN NULL ELSE opd_note_audits.excluded_reason END),
-         ${withBand ? `displayed_band = ${displayedBandSql}, ` : ''}${withItems ? 'completeness_items = EXCLUDED.completeness_items, ' : ''}${withGen ? 'quieting_gen = EXCLUDED.quieting_gen, ' : ''}audited_at = now()`;
+         ${withProvider ? 'provider = EXCLUDED.provider, ' : ''}${withBand ? `displayed_band = ${displayedBandSql}, ` : ''}${withItems ? 'completeness_items = EXCLUDED.completeness_items, ' : ''}${withGen ? 'quieting_gen = EXCLUDED.quieting_gen, ' : ''}audited_at = now()`;
   // ═══ Addendum F v2 task 2 — a FAILED row no longer consumes its (uid, engine_version) slot ═══
   // The default clause was DO NOTHING, so a row marked 'llm_leg_failed' blocked every retry at the
   // same version forever — each retry round needed a freshly minted carrier version (why 0.81.18
@@ -218,10 +240,10 @@ export async function saveOpdAudit(
        pdqi9, completeness_pct, n_missing_mandatory,
        n_findings, n_low_value, n_context_dependent, n_interaction_alerts,
        findings, suggestions, engine_version, model, trace_id, latency_ms, missing_fields, sources,
-       complexity_band, complexity_inputs, scorecard, excluded_reason${withGen ? ', quieting_gen' : ''}${withItems ? ', completeness_items' : ''}${withBand ? ', displayed_band' : ''})
+       complexity_band, complexity_inputs, scorecard, excluded_reason${withGen ? ', quieting_gen' : ''}${withItems ? ', completeness_items' : ''}${withBand ? ', displayed_band' : ''}${withProvider ? ', provider' : ''})
      VALUES ($1,$2,$3,$4,$5,$6,$7, $8,$9, $10,$11,$12,$13,$14,
        $15::jsonb,$16,$17, $18,$19,$20,$21, $22::jsonb,$23::jsonb,$24,$25,$26,$27, $28::jsonb, $29::jsonb,
-       $30, $31::jsonb, $32::jsonb, $33${withGen ? ', $34' : ''}${withItems ? `, $${withGen ? 35 : 34}::jsonb` : ''}${withBand ? `, $${34 + (withGen ? 1 : 0) + (withItems ? 1 : 0)}` : ''})
+       $30, $31::jsonb, $32::jsonb, $33${withGen ? ', $34' : ''}${withItems ? `, $${withGen ? 35 : 34}::jsonb` : ''}${withBand ? `, $${34 + (withGen ? 1 : 0) + (withItems ? 1 : 0)}` : ''}${withProvider ? `, $${34 + (withGen ? 1 : 0) + (withItems ? 1 : 0) + (withBand ? 1 : 0)}` : ''})
      ON CONFLICT (uid, engine_version) ${conflictClause}
      RETURNING id, (xmax = 0) AS inserted`,
     [
@@ -242,6 +264,10 @@ export async function saveOpdAudit(
       // S1 — the fresh RAW band. On a first insert it IS the anchor (first score at this version
       // bands normally); on conflict it is EXCLUDED.displayed_band, taken only per the CASE above.
       ...(withBand ? [sc.band] : []),
+      // Unit B — the SERVED provider, beside the served model. Never a constant: that is the D-D
+      // defect and it has now bitten twice (the OPD run route, and lib/ipd-audit/run.ts:99).
+      // Null is a legitimate stored value meaning "not attributed", NOT the string 'null'.
+      ...(withProvider ? [meta.provider ?? null] : []),
     ],
   )) as Array<{ id: string; inserted?: boolean }>;
   // DO UPDATE returns the row it landed on; (xmax = 0) distinguishes fresh insert from overwrite.

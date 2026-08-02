@@ -107,7 +107,7 @@ test('the ?max= and ?conc= overrides and their caps still work', () => {
 // 3 · The served model
 // ═════════════════════════════════════════════════════════════════════════════════════════════
 
-test('servedModelFor queries stage doc_audit_analyze — NOT opd_audit_analyze', () => {
+test('servedCallFor queries stage doc_audit_analyze — NOT opd_audit_analyze', () => {
   assert.ok(RUN.includes("AND stage = 'doc_audit_analyze'"),
     'the IPD analyze stage (lib/doc-audit.ts:175)');
   // Comments are stripped first: the helper's doc-comment deliberately NAMES the OPD stage to
@@ -117,24 +117,27 @@ test('servedModelFor queries stage doc_audit_analyze — NOT opd_audit_analyze',
     'reading the OPD stage here would silently return null forever');
   // otherwise byte-identical to the OPD helper
   const opd = readFileSync('app/api/opd-audit/worker/route.ts', 'utf8');
-  const shape = (s: string) => s.slice(s.indexOf('async function servedModelFor'), s.indexOf('return typeof m'))
+  const shape = (s: string) => s.slice(s.indexOf('async function servedCallFor'), s.indexOf('} catch { return none; }'))
     .replace(/opd_audit_analyze|doc_audit_analyze/g, '<STAGE>');
   assert.equal(shape(RUN), shape(opd), 'same helper, one string different');
 });
 
 test('the model column is no longer a constant on the cloud path', () => {
-  assert.ok(RUN.includes('model: mini ? MINI_MODEL : await servedModelFor(traceId),'));
+  // Unit B (2 Aug 2026): the ternary moved into `served`, which now carries the provider too.
+  assert.ok(RUN.includes("? { model: MINI_MODEL, provider: 'ollama' as string | null }"));
+  assert.ok(RUN.includes(': await servedCallFor(traceId);'));
+  assert.ok(RUN.includes('model: served.model,'));
   assert.ok(!RUN.includes('GEMINI_MODEL'), 'the hardcoded literal is gone entirely');
 });
 
 test('THE MINI PATH IS UNCHANGED — it still records MINI_MODEL', () => {
-  assert.ok(RUN.includes('mini ? MINI_MODEL :'), 'the mini branch is the same literal as before');
+  assert.ok(RUN.includes('{ model: MINI_MODEL, provider:'), 'the mini branch is the same literal as before');
   assert.ok(RUN.includes("import { MINI_MODEL } from '../llm';"), 'and it still comes from the same place');
   // the engine-version branch beside it is untouched too
   assert.ok(RUN.includes('engineVersion: mini ? IPD_MINI_ENGINE_VERSION : IPD_ENGINE_VERSION,'));
 });
 
-test('servedModelFor soft-fails: null on a missing traceId, null on a query failure, never throws', async () => {
+test('servedCallFor soft-fails: null on a missing traceId, null on a query failure, never throws', async () => {
   // Reproduce the helper's contract against a stubbed query, since the real one needs a database.
   const helper = async (traceId: string | undefined, query: (q: string, p: unknown[]) => Promise<{ model?: string }[]>) => {
     if (!traceId) return null;
@@ -155,6 +158,6 @@ test('servedModelFor soft-fails: null on a missing traceId, null on a query fail
   assert.equal(await helper('t1', async () => [{ model: 'qwen2.5:14b' }]), 'qwen2.5:14b',
     'a fallback is REPORTED — that is the whole point');
   // and the source really does wrap in try/catch with a null return
-  const fn = RUN.slice(RUN.indexOf('async function servedModelFor'), RUN.indexOf('const row = buildIpdAuditRow'));
-  assert.ok(/catch \{ return null; \}/.test(fn), 'the soft-fail is in the source, not just this stub');
+  const fn = RUN.slice(RUN.indexOf('async function servedCallFor'), RUN.indexOf('export interface IpdRunInput'));
+  assert.ok(/catch \{ return none; \}/.test(fn), 'the soft-fail is in the source, not just this stub');
 });

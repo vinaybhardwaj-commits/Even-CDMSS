@@ -13,6 +13,40 @@
 import { sql } from '../db';
 import { canonicalByDocument, specialityCounts, filterBySpeciality } from '../audit-canonical';
 
+/**
+ * PROVIDER-SWITCH Unit B (§5, 2 Aug 2026) — deploy-before-migrate tolerance for `provider`.
+ *
+ * WHY THE COLUMN EXISTS. `model` alone cannot answer "who graded this": the SAME model id arrives
+ * by more than one route — `google/gemini-2.5-pro` is Gemini via the OpenRouter bridge,
+ * `gemini-2.5-pro` is Gemini via Vertex. When Vertex was disabled on 26 July, and again when the
+ * bridge's 110 s ceiling silently degraded every median-or-slower audit to the local model from
+ * 30 July, the rows could not say which path had been taken. THAT AMBIGUITY IS A LARGE PART OF WHY
+ * A THREE-DAY OUTAGE WENT UNNOTICED.
+ *
+ * Mirrors opdColumnExists: cache a present result for 300 s, re-probe an absent one after 60 s so
+ * the first write after migration 0032 picks it up, and treat a probe ERROR as absent — drop the
+ * extra column, never the audit.
+ */
+const _ipdColProbe = new Map<string, { at: number; present: boolean }>();
+async function ipdColumnExists(column: string): Promise<boolean> {
+  const now = Date.now();
+  const hit = _ipdColProbe.get(column);
+  if (hit && now - hit.at < 300_000 && hit.present) return true;
+  if (hit && now - hit.at < 60_000) return hit.present;
+  try {
+    const rows = (await sql(
+      `SELECT 1 AS ok FROM information_schema.columns WHERE table_name = 'ipd_discharge_audits' AND column_name = $1`,
+      [column],
+    )) as Array<{ ok: number }>;
+    const present = rows.length > 0;
+    _ipdColProbe.set(column, { at: now, present });
+    return present;
+  } catch {
+    _ipdColProbe.set(column, { at: now, present: false });
+    return false;
+  }
+}
+
 // 0.2 (IPD citation fix, PRD CDMSS-IPD-CITATION-FIX-18-JUL-2026): per-finding evidence
 // enrichment + re-cite against the enriched pool. Distinguishes fixed rows from the 0.1
 // baseline the PR0 benchmark measured (citation-support 0.05). Engine behaviour change.
@@ -51,6 +85,8 @@ export interface IpdAuditRow {
   // provenance
   engineVersion?: string;            // defaults IPD_ENGINE_VERSION
   model?: string | null;
+  /** Unit B — the PROVIDER that served the call. From what actually answered, never a constant. */
+  provider?: string | null;
   traceId?: string | null;
 }
 
@@ -58,15 +94,16 @@ export interface IpdAuditRow {
 export async function saveIpdAudit(row: IpdAuditRow): Promise<'inserted' | 'updated' | 'skipped'> {
   if (!row.documentId) return 'skipped';
   const engine = row.engineVersion || IPD_ENGINE_VERSION;
+  const withProvider = await ipdColumnExists('provider');
   const rows = (await sql(
     `INSERT INTO ipd_discharge_audits
       (document_id, ip_uid, member_id, speciality, discharge_type, los_days, discharged_at,
        care_value_index, band,
        score_appropriateness, score_efficiency, score_safety, score_cost, score_documentation, score_patient_centred,
        completeness_pct, n_findings, n_low_value, n_context_dependent,
-       findings, suggestions, report, billed_total, engine_version, model, trace_id)
+       findings, suggestions, report, billed_total, engine_version, model, trace_id${withProvider ? ', provider' : ''})
      VALUES ($1,$2,$3,$4,$5,$6,$7, $8,$9, $10,$11,$12,$13,$14,$15,
-       $16,$17,$18,$19, $20::jsonb,$21::jsonb,$22::jsonb,$23,$24,$25,$26)
+       $16,$17,$18,$19, $20::jsonb,$21::jsonb,$22::jsonb,$23,$24,$25,$26${withProvider ? ', $27' : ''})
      ON CONFLICT (document_id, engine_version) DO UPDATE SET
        ip_uid = EXCLUDED.ip_uid, member_id = EXCLUDED.member_id, speciality = EXCLUDED.speciality,
        discharge_type = EXCLUDED.discharge_type, los_days = EXCLUDED.los_days, discharged_at = EXCLUDED.discharged_at,
@@ -77,7 +114,7 @@ export async function saveIpdAudit(row: IpdAuditRow): Promise<'inserted' | 'upda
        completeness_pct = EXCLUDED.completeness_pct, n_findings = EXCLUDED.n_findings,
        n_low_value = EXCLUDED.n_low_value, n_context_dependent = EXCLUDED.n_context_dependent,
        findings = EXCLUDED.findings, suggestions = EXCLUDED.suggestions, report = EXCLUDED.report,
-       billed_total = EXCLUDED.billed_total, model = EXCLUDED.model, trace_id = EXCLUDED.trace_id,
+       billed_total = EXCLUDED.billed_total, model = EXCLUDED.model,${withProvider ? ' provider = EXCLUDED.provider,' : ''} trace_id = EXCLUDED.trace_id,
        audited_at = NOW()
      RETURNING (xmax = 0) AS inserted`,
     [
@@ -90,6 +127,8 @@ export async function saveIpdAudit(row: IpdAuditRow): Promise<'inserted' | 'upda
       JSON.stringify(row.findings ?? []), JSON.stringify(row.suggestions ?? []),
       row.report != null ? JSON.stringify(row.report) : null,
       row.billedTotal ?? null, engine, row.model ?? null, row.traceId ?? null,
+      // Unit B — null is a legitimate stored value ("not attributed"), never the string 'null'.
+      ...(withProvider ? [row.provider ?? null] : []),
     ],
   )) as Array<{ inserted: boolean }>;
   return rows.length ? (rows[0].inserted ? 'inserted' : 'updated') : 'skipped';

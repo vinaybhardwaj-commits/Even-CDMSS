@@ -27,25 +27,35 @@ import { sql } from '../db';
  *  three days (the 110 s OpenRouter ceiling, fixed in 3039c42: 126 OPD notes graded by qwen, zero
  *  by Gemini, every row still claiming Pro). A constant cannot report a fallback.
  *
- *  Byte-identical to app/api/opd-audit/worker/route.ts:79 EXCEPT the stage, which is
+ *  Unit B (§5, 2 Aug 2026): it now returns the PROVIDER beside the model, from the SAME row of the
+ *  SAME query. Deliberately one query: reading them separately could pair a model from one event
+ *  with a provider from another and attribute the call to a route it never took, which is a worse
+ *  lie than the ambiguity being fixed. `provider` on the llm_response payload is set AFTER fallback
+ *  (lib/trace.ts reassigns it to 'ollama' when the local model serves), so it is the served route.
+ *
+ *  Byte-identical to the OPD worker's helper EXCEPT the stage, which is
  *  `doc_audit_analyze` here (lib/doc-audit.ts:175) rather than `opd_audit_analyze` — the two legs
  *  are different pipelines and reading the wrong stage would silently return null forever.
  *  tracedChat's llm_response event carries the POST-fallback model (`actualModel`), so the audit's
  *  own trace is the source of truth. Null when unknown (no trace / LLM leg dead) — an honest gap,
  *  never a guess, and never a throw: a failed lookup must not fail an audit that already ran. */
-async function servedModelFor(traceId: string | undefined): Promise<string | null> {
-  if (!traceId) return null;
+async function servedCallFor(traceId: string | undefined): Promise<{ model: string | null; provider: string | null }> {
+  const none = { model: null, provider: null };
+  if (!traceId) return none;
   try {
-    const rows = (await (sql as unknown as (q: string, p: unknown[]) => Promise<{ model?: string }[]>)(
-      `SELECT payload->>'model' AS model FROM trace_events
+    const rows = (await (sql as unknown as (q: string, p: unknown[]) => Promise<{ model?: string; provider?: string }[]>)(
+      `SELECT payload->>'model' AS model, payload->>'provider' AS provider FROM trace_events
         WHERE trace_id = $1 AND kind IN ('llm_response', 'llm_stream_usage')
           AND stage = 'doc_audit_analyze'
         ORDER BY seq DESC LIMIT 1`,
       [traceId],
     ));
-    const m = rows?.[0]?.model;
-    return typeof m === 'string' && m ? m : null;
-  } catch { return null; }
+    const r = rows?.[0];
+    return {
+      model: typeof r?.model === 'string' && r.model ? r.model : null,
+      provider: typeof r?.provider === 'string' && r.provider ? r.provider : null,
+    };
+  } catch { return none; }
 }
 
 export interface IpdRunInput {
@@ -114,6 +124,12 @@ export async function runIpdAudit(input: IpdRunInput, opts: { mini?: boolean } =
           fetchBilledTotal(input.ipUid).catch(() => null),
         ])
       : [null, null];
+    // The MINI path keeps MINI_MODEL and records provider 'ollama' — a local run has no fallback to
+    // discover, and 'ollama' is the truth about it rather than a guess. The cloud path asks the
+    // trace what actually answered, for BOTH fields, from one row of one query.
+    const served = mini
+      ? { model: MINI_MODEL, provider: 'ollama' as string | null }
+      : await servedCallFor(traceId);
     const row = buildIpdAuditRow({
       documentId: input.documentId,
       ipUid: input.ipUid ?? null,
@@ -124,11 +140,14 @@ export async function runIpdAudit(input: IpdRunInput, opts: { mini?: boolean } =
       dischargedAt: header?.dischargeDate ? `${header.dischargeDate}T00:00:00+05:30` : null,
       billedTotal,
       engineVersion: mini ? IPD_MINI_ENGINE_VERSION : IPD_ENGINE_VERSION,
-      // The MINI path keeps MINI_MODEL — the local run has no fallback to discover, exactly as
-      // the OPD worker keeps its own behaviour. The cloud path asks the trace what answered.
-      model: mini ? MINI_MODEL : await servedModelFor(traceId),
+      model: served.model,
       traceId: traceId ?? null,
     }, extracted, report);
+    // `provider` is set on the ROW rather than threaded through buildIpdAuditRow's meta:
+    // lib/ipd-audit/assemble.ts constructs the row field-by-field and is outside this unit's file
+    // contract, so a meta field would be silently dropped there. Assigning here is equivalent and
+    // keeps the change inside the files this unit owns — flagged in the build report.
+    row.provider = served.provider;
     const status = await saveIpdAudit(row);
 
     // EpisodeState (#4 SL2) — build + persist the phased episode object, ADDITIVE + BEST-EFFORT.

@@ -165,14 +165,21 @@ test('the Ollama last-leg fallback is untouched in both transports', () => {
 
 test("T-5: the hardcoded 'gemini-2.5-pro' literal is GONE from the worker — it hid this incident for four days", () => {
   assert.ok(!WORKER.includes("model: 'gemini-2.5-pro'"), 'no literal remains');
-  assert.equal((WORKER.match(/servedModelFor\(audit\.traceId\)/g) || []).length, 2, 'both save sites derive from the served trace');
+  // Unit B (2 Aug 2026) renamed servedCallFor → servedCallFor: it now returns the PROVIDER beside
+  // the model, from one row of one query. The T-5 property is unchanged and still pinned here —
+  // both save sites derive from the served trace, never from a constant.
+  assert.equal((WORKER.match(/servedCallFor\(audit\.traceId\)/g) || []).length, 2, 'both save sites derive from the served trace');
 });
 
-test('T-5: servedModelFor reads the POST-fallback model from the audit trace, null when unknown', () => {
+test('T-5: servedCallFor reads the POST-fallback model from the audit trace, null when unknown', () => {
   assert.ok(WORKER.includes("kind IN ('llm_response', 'llm_stream_usage')"));
   assert.ok(WORKER.includes("stage = 'opd_audit_analyze'"), 'the main audit leg, not an incidental call');
-  assert.ok(WORKER.includes('if (!traceId) return null;'));
-  assert.ok(WORKER.includes('catch { return null; }'), 'an honest gap, never a guess — and never a failed audit');
+  // Unit B: the null return became a typed { model: null, provider: null } — same property, both
+  // fields. An honest gap, never a guess, and never a failed audit.
+  assert.ok(WORKER.includes('const none = { model: null, provider: null };'));
+  assert.ok(WORKER.includes('if (!traceId) return none;'));
+  assert.ok(WORKER.includes('catch { return none; }'), 'an honest gap, never a guess — and never a failed audit');
+  assert.ok(WORKER.includes("payload->>'provider' AS provider"), 'and the provider rides the same row');
 });
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════

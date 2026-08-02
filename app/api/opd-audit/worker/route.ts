@@ -76,19 +76,34 @@ function addDays(day: string, delta: number): string {
  *  SERVICE_DISABLED incident for four days. tracedChat's llm_response event carries the
  *  POST-fallback model (`actualModel`), so the audit's own trace is the source of truth.
  *  Null when unknown (no trace / LLM leg dead) — an honest gap, never a guess. */
-async function servedModelFor(traceId: string | undefined): Promise<string | null> {
-  if (!traceId) return null;
+/** Unit B (§5, 2 Aug 2026) — the SERVED provider beside the served model.
+ *
+ *  `model` alone cannot answer "who graded this": `google/gemini-2.5-pro` is Gemini via the
+ *  OpenRouter bridge and `gemini-2.5-pro` is Gemini via Vertex, and after 30 July we could not tell
+ *  which — a large part of why a three-day outage stayed hidden.
+ *
+ *  ONE QUERY, ONE ROW, BOTH FIELDS, deliberately. Reading them separately could pair a model from
+ *  one event with a provider from another and attribute the call to a route it never took, which is
+ *  a worse lie than the ambiguity being fixed. `provider` on the llm_response payload is set AFTER
+ *  fallback (lib/trace.ts:337/401 reassign it to 'ollama' when the local model serves), so it is
+ *  the served route, never the intended one. */
+async function servedCallFor(traceId: string | undefined): Promise<{ model: string | null; provider: string | null }> {
+  const none = { model: null, provider: null };
+  if (!traceId) return none;
   try {
-    const rows = (await (sql as unknown as (q: string, p: unknown[]) => Promise<{ model?: string }[]>)(
-      `SELECT payload->>'model' AS model FROM trace_events
+    const rows = (await (sql as unknown as (q: string, p: unknown[]) => Promise<{ model?: string; provider?: string }[]>)(
+      `SELECT payload->>'model' AS model, payload->>'provider' AS provider FROM trace_events
         WHERE trace_id = $1 AND kind IN ('llm_response', 'llm_stream_usage')
           AND stage = 'opd_audit_analyze'
         ORDER BY seq DESC LIMIT 1`,
       [traceId],
     ));
-    const m = rows?.[0]?.model;
-    return typeof m === 'string' && m ? m : null;
-  } catch { return null; }
+    const r = rows?.[0];
+    return {
+      model: typeof r?.model === 'string' && r.model ? r.model : null,
+      provider: typeof r?.provider === 'string' && r.provider ? r.provider : null,
+    };
+  } catch { return none; }
 }
 
 // Audit one batch of NEVER-YET-AUDITED notes for a single IST day. The Gemini worker only touches
@@ -105,7 +120,8 @@ async function processDay(day: string, max: number, conc: number, exclude: strin
     const started = Date.now();
     try {
       const audit = await auditOpdNote(row);
-      const status = await saveOpdAudit(audit, { model: await servedModelFor(audit.traceId), latencyMs: Date.now() - started });
+      const served = await servedCallFor(audit.traceId);
+      const status = await saveOpdAudit(audit, { model: served.model, provider: served.provider, latencyMs: Date.now() - started });
       return { uid: audit.keys.uid, index: audit.scorecard.headline, band: audit.scorecard.band, status };
     } catch (e) {
       return { uid: String((row as Record<string, unknown>).uid || ''), error: String((e as Error).message) };
@@ -158,7 +174,8 @@ export async function GET(req: NextRequest) {
         if (!row) return { uid, error: 'note not found in db13' };
         const audit = await auditOpdNote(row);           // 0.81.7 — consult_types-aware framing
         const deleted = await deleteOpdAuditsForUid(uid); // drop ALL prior rows → single current row
-        const status = await saveOpdAudit(audit, { model: await servedModelFor(audit.traceId) });
+        const served = await servedCallFor(audit.traceId);
+        const status = await saveOpdAudit(audit, { model: served.model, provider: served.provider });
         return { uid, deleted, status, band: audit.scorecard.band, index: audit.scorecard.headline };
       } catch (e) { return { uid, error: String((e as Error).message) }; }
     });
