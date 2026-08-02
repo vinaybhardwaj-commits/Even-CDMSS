@@ -33,13 +33,22 @@ test('the 1-Aug regression shape: L-3 with no base praise is VACUOUS, not HOLDS'
   assert.equal(out.reason, 'could not be tested — the base arm produced no praise');
 });
 
-test('every Part C relation is VACUOUS when its base arm lacks the tested state', () => {
+test('every Part C relation is VACUOUS in the state that makes IT untestable', () => {
+  // GENERALISED 2 Aug 2026 (LLM-LEG-RELATION-REPAIR, DEC-5): which base state is untestable now
+  // depends on the relation's direction. 'removes' is untestable on a SILENT base (nothing to
+  // remove) — the original rule. 'adds' is untestable on a FIRING base (the engine already flags
+  // the untransformed note, so the transformed arm proves nothing). Both are VACUOUS, never HOLDS.
   for (const r of PART_C_RELATIONS) {
-    const out = partCVerdict(r, silent);
-    assert.equal(out.verdict, 'VACUOUS', `${r.id} must be VACUOUS on a silent base arm`);
-    assert.equal(out.reason, `could not be tested — the base arm produced no ${r.precondition}`);
+    const untestable = r.direction === 'adds'
+      ? { ...silent, baseFired: true, basePraise: true }
+      : silent;
+    const out = partCVerdict(r, untestable);
+    assert.equal(out.verdict, 'VACUOUS', `${r.id} (${r.direction}) must be VACUOUS in its untestable state`);
+    assert.equal(out.reason, r.direction === 'adds'
+      ? 'could not be tested — the base arm already fired, so the engine flags this even before the transformation'
+      : `could not be tested — the base arm produced no ${r.precondition}`);
     // …even when the transformed arm looks like a pass — the precondition is checked FIRST.
-    const transformedLooksGood = partCVerdict(r, { ...silent, transformedFired: r.id === 'L-3' });
+    const transformedLooksGood = partCVerdict(r, { ...untestable, transformedFired: r.id !== 'L-2' });
     assert.equal(transformedLooksGood.verdict, 'VACUOUS', `${r.id}: precondition precedes the verdict fn`);
   }
 });
@@ -56,16 +65,21 @@ test('L-1/L-2 precondition is base fires; L-3 precondition is base praise, not b
 });
 
 test('with the precondition met, the verdicts are the relation\'s own — HOLDS and FAILS both reachable', () => {
-  // L-1: fired on base, gone on transformed → HOLDS; still firing → FAILS.
-  assert.equal(partCVerdict(rel('L-1'), { ...silent, baseFired: true }).verdict, 'HOLDS');
-  assert.equal(partCVerdict(rel('L-1'), { ...silent, baseFired: true, transformedFired: true }).verdict, 'FAILS');
+  // L-2 ('removes'): fired on base, gone on transformed → HOLDS; still firing → FAILS.
+  // (This was L-1 until 2 Aug 2026; L-1 was flipped to 'adds' by DEC-1, so the removes example
+  // moved to L-2, which still carries those semantics. The property under test is unchanged.)
+  assert.equal(partCVerdict(rel('L-2'), { ...silent, baseFired: true }).verdict, 'HOLDS');
+  assert.equal(partCVerdict(rel('L-2'), { ...silent, baseFired: true, transformedFired: true }).verdict, 'FAILS');
+  // L-1 ('adds'): silent base, finding appears on transformed → HOLDS; nothing appears → FAILS.
+  assert.equal(partCVerdict(rel('L-1'), { ...silent, transformedFired: true }).verdict, 'HOLDS');
+  assert.equal(partCVerdict(rel('L-1'), silent).verdict, 'FAILS');
   // L-3: praise present on base; transformed praise persists with NO safety finding → FAILS (the
   // blind-praise defect); praise persists but safety fired → HOLDS; praise withdrawn → HOLDS.
   assert.equal(partCVerdict(rel('L-3'), { ...silent, basePraise: true, transformedPraise: true }).verdict, 'FAILS');
   assert.equal(partCVerdict(rel('L-3'), { ...silent, basePraise: true, transformedPraise: true, transformedFired: true }).verdict, 'HOLDS');
   assert.equal(partCVerdict(rel('L-3'), { ...silent, basePraise: true, transformedPraise: false }).verdict, 'HOLDS');
   // A tested relation never reports VACUOUS's reason.
-  assert.equal(partCVerdict(rel('L-1'), { ...silent, baseFired: true }).reason, undefined);
+  assert.equal(partCVerdict(rel('L-2'), { ...silent, baseFired: true }).reason, undefined);
 });
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════

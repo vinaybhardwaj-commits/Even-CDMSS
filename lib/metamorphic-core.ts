@@ -648,6 +648,22 @@ export interface PartCRelation {
    * VACUOUS — never HOLDS (the disjunction that reported HOLDS on a silent engine, 1 Aug).
    */
   precondition: 'fires' | 'praise';
+  /**
+   * LLM-LEG-RELATION-REPAIR PRD §3 (DEC-5, 2 Aug 2026) — which way the transformation moves the
+   * finding, and therefore what makes the relation TESTABLE.
+   *
+   *  'removes' — the transformation should make the state GO. Testable only when the base arm HAS
+   *              it; otherwise there was nothing to remove. (Every relation before this build.)
+   *  'adds'    — the transformation should make the state APPEAR. Testable only when the base arm
+   *              does NOT have it; a base that already fires means the engine flags the note even
+   *              untransformed, so the transformed arm proves nothing. That reads VACUOUS, never
+   *              HOLDS, and is itself a real result: the engine is over-flagging the base.
+   *
+   * L-1 needed 'adds' because the engine emits NO finding type meaning "a condition was documented
+   * and not managed" — all 17 of its types are about a drug, a test or a code (MEASURED 2 Aug), so
+   * the old "the demand for management disappears" assertion was unfalsifiable.
+   */
+  direction: 'removes' | 'adds';
 }
 
 const gpRow = (over: Db13Row): Db13Row => ({
@@ -667,67 +683,104 @@ const praiseFires = (findings: OpdFinding[]): boolean =>
   findings.some((f) => f.signal_type === 'appropriateness_high_value'
     || (f.domain === 'appropriateness' && f.verdict === 'high-value'));
 
+// L-1 (§4.1) — the plan, examination and medication are IDENTICAL across both arms by construction,
+// not by careful copying: the transform reuses these constants, so an edit cannot desynchronise the
+// arms and accidentally give the engine a second reason to change its answer.
+const L1_PLAN = 'Antibiotic course started. Limb elevation. Review in 5 days or earlier if fever.';
+const L1_EXAM = '<p>Left leg: erythema and warmth over the shin, mild tenderness. No fluctuance.</p>';
+const L1_MEDS = [{ generic_name: 'Amoxicillin + Clavulanic acid', strength: '625 mg', dosage: '1 tablet', frequency: 'TDS', duration: '5 days', route_of_administration: 'oral' }];
+
 export const PART_C_RELATIONS: PartCRelation[] = [
   {
     id: 'L-1', title: 'Status qualifier is read', experiment: 'mm-llm-l1',
-    transformation: 'add "healed / resolved" to the documented cellulitis',
-    assertion: 'any finding demanding management of the condition disappears',
+    transformation: 'mark the documented cellulitis "healed / resolved" while the antibiotic stays',
+    assertion: 'a finding appears against the now-unindicated antibiotic',
+    // FLIPPED 2 Aug 2026 (LLM-LEG-RELATION-REPAIR §4.1, DEC-1). The old form asserted that a finding
+    // DEMANDING MANAGEMENT of the condition disappears — a finding the engine cannot emit (MEASURED:
+    // all 17 live finding types are about a drug, a test or a code), so the base could fire only by
+    // coincidence when an unrelated finding happened to mention cellulitis. Unfalsifiable as written.
+    // The flipped form tests a capability the prompt DOES specify (opd-note-audit-core.ts:843,
+    // "UNINDICATED / CONTRADICTED DRUG: check EVERY prescribed drug has a plausible indication in
+    // THIS note"): an antibiotic that was correct for an active cellulitis becomes unindicated the
+    // moment the cellulitis reads healed, and nothing else about the note moves.
     baseRow: gpRow({
-      ...gpBlock('Came for review of left leg cellulitis. No fever.',
+      ...gpBlock('Left leg redness, swelling and pain for 3 days. Warm to touch. No fever.',
         [{ icd_code: 'L03.1', diagnosis_or_impression: 'Left leg cellulitis' }],
-        'Review with reports.'),
-      'general_practitioner_prescription__examination': '<p>Left leg: previously affected area examined.</p>',
-      medications: [{ generic_name: 'Paracetamol', strength: '500 mg', dosage: '1 tablet', frequency: 'TDS', duration: '3 days', route_of_administration: 'oral' }],
+        L1_PLAN),
+      'general_practitioner_prescription__examination': L1_EXAM,
+      medications: L1_MEDS,
     }),
+    // ONLY the symptom line and the diagnosis text change. Examination, plan and medications are
+    // carried through untouched by the spread.
     transform: (row) => ({
       ...row,
-      ...gpBlock('Came for review of left leg cellulitis — healed. No fever.',
+      ...gpBlock('Review of left leg cellulitis — fully healed. No pain, no swelling. No fever.',
         [{ icd_code: 'L03.1', diagnosis_or_impression: 'Left leg cellulitis — healed / resolved' }],
-        'Review with reports.'),
+        L1_PLAN),
     }),
+    // Tests the ANTIBIOTIC, never the condition. Matching on /cellulitis/ was the original defect:
+    // it made the matcher fire on any finding that merely mentioned the diagnosis.
     fires: (findings) => findings.some((f) =>
-      /cellulitis/i.test(`${f.subject} ${f.rationale}`)
-      && f.informational !== true
-      && (f.verdict === 'low-value' || f.verdict === 'context-dependent')),
-    verdict: (base, transformed) => base && !transformed,
+      f.informational !== true
+      && (f.verdict === 'low-value' || f.verdict === 'context-dependent')
+      && /amoxicillin|clavulan|antibiotic/i.test(`${f.subject} ${f.rationale}`)),
+    verdict: (base, transformed) => !base && transformed,
     precondition: 'fires',
+    direction: 'adds',
   },
   {
     id: 'L-2', title: 'Praise requires evidence', experiment: 'mm-llm-l2',
-    transformation: 'delete the referral and action line the praise rests on',
+    transformation: 'delete the documented indication the praised drug rests on',
     assertion: 'the appropriateness_high_value finding disappears',
+    // REBUILT 2 Aug 2026 (LLM-LEG-RELATION-REPAIR §4.2, DEC-3). The old base carried
+    // `medications: []` and rested its praise on a cardiology referral — the one shape the engine
+    // almost never praises. MEASURED: praise is rare (8 appropriateness_high_value findings
+    // corpus-wide) and 10 of the 12 most recent land on a NAMED DRUG or a NAMED TEST; exactly one
+    // is referral-shaped. So the base scored 0/3 on both pipelines and L-2 was VACUOUS before its
+    // transformation was ever judged. This base copies the shape of uNpGAZQG7KkpTiXVGMpY, which
+    // earned this praise on two separate runs: iron justified by documented heavy bleeding.
     baseRow: gpRow({
-      ...gpBlock('Central chest discomfort on exertion for 1 week. No rest pain.',
-        [{ icd_code: 'R07.3', diagnosis_or_impression: 'Exertional chest pain — cardiac evaluation needed' }],
-        'ECG done today. Urgent cardiology referral for stress evaluation. Advised to report immediately if pain at rest.'),
-      refer_to: [{ specialist_type: { name: 'Cardiology', is_in_house: false }, recommended_by_even: true }],
-      num_referrals: 1,
-      medications: [],
+      ...gpBlock('Heavy menstrual bleeding for 4 months, passing clots. Tiredness on exertion.',
+        [{ icd_code: 'D25.9', diagnosis_or_impression: 'Uterine fibroid' },
+         { icd_code: 'N92.0', diagnosis_or_impression: 'Heavy menstrual bleeding' }],
+        'Iron supplementation started for anaemia risk from heavy bleeding. Pelvic ultrasound reviewed. Review in 6 weeks with haemoglobin.'),
+      medications: [
+        { generic_name: 'Ferrous Ascorbate + Folic Acid', strength: '100 mg', dosage: '1 tablet', frequency: 'OD', duration: '30 days', route_of_administration: 'oral' },
+        { generic_name: 'Mefenamic Acid + Paracetamol', strength: '250/325 mg', dosage: '1 tablet', frequency: 'TDS', duration: '3 days', route_of_administration: 'oral' },
+      ],
     }),
-    transform: (row) => {
-      const t = { ...row };
-      delete t.refer_to;
-      t.num_referrals = 0;
-      return {
-        ...t,
-        ...gpBlock('Central chest discomfort on exertion for 1 week. No rest pain.',
-          [{ icd_code: 'R07.3', diagnosis_or_impression: 'Exertional chest pain — cardiac evaluation needed' }],
-          ''),
-      };
-    },
+    // THE DRUGS STAY, THE REASON FOR THEM GOES — medications are carried through by the spread and
+    // are byte-identical across the arms. Only the complaint, the diagnoses and the plan change,
+    // so the iron and the mefenamic acid are left with nothing in the note justifying them.
+    transform: (row) => ({
+      ...row,
+      ...gpBlock('Came for a routine review. No specific complaint.',
+        [{ icd_code: 'Z00.0', diagnosis_or_impression: 'General medical examination' }],
+        'Continue current medication. Review in 6 weeks.'),
+    }),
     fires: praiseFires,
     verdict: (base, transformed) => base && !transformed,
     precondition: 'fires',
+    direction: 'removes',
   },
   {
     id: 'L-3', title: 'Praise is not blind', experiment: 'mm-llm-l3',
     transformation: 'add a clear safety problem elsewhere in the note (documented penicillin allergy + amoxicillin prescribed — LLM-leg only; the deterministic leg has no allergy check)',
     assertion: 'either the praise disappears OR a safety finding appears — silence on both is a failure',
+    // BASE REPLACED 2 Aug 2026 (LLM-LEG-RELATION-REPAIR §4.3, DEC-4) — CLINICAL CONTENT ONLY. The
+    // old base was a viral URTI with one antihistamine, which does not earn praise (see L-2's note),
+    // so L-3's `praise` precondition was never met and the relation was VACUOUS before the allergy
+    // transformation was ever judged. Its failure was never about allergies. Calamine for a rash is
+    // a praise shape observed in production (gs73Lv5Xo8OIzj5DqvJY).
+    // The transform, fires, verdict and precondition below are UNTOUCHED, byte for byte.
     baseRow: gpRow({
-      ...gpBlock('Runny nose, sneezing, mild sore throat for 2 days. Afebrile.',
-        [{ icd_code: 'J00', diagnosis_or_impression: 'Common cold (viral URTI)' }],
-        'Symptomatic care only. Explained no antibiotic is needed for a viral illness. Warm saline gargles. Review if fever develops.'),
-      medications: [{ generic_name: 'Cetirizine', strength: '10 mg', dosage: '1 tablet', frequency: 'OD', duration: '3 days', route_of_administration: 'oral' }],
+      ...gpBlock('Itchy raised rash over both forearms since yesterday after gardening. No breathlessness, no facial swelling. Afebrile.',
+        [{ icd_code: 'L50.9', diagnosis_or_impression: 'Acute urticaria' }],
+        'Antihistamine started for the itch. Calamine for symptomatic relief. Explained no antibiotic is needed. Review if breathlessness or facial swelling.'),
+      medications: [
+        { generic_name: 'Cetirizine', strength: '10 mg', dosage: '1 tablet', frequency: 'OD', duration: '3 days', route_of_administration: 'oral' },
+        { generic_name: 'Calamine Lotion', dosage: 'topical application', frequency: 'BD', duration: '5 days', route_of_administration: 'topical' },
+      ],
     }),
     transform: (row) => ({
       ...row,
@@ -748,6 +801,7 @@ export const PART_C_RELATIONS: PartCRelation[] = [
     // signature receives (praiseStillPresent, safetyFired) for the transformed arm.
     verdict: (praiseStillPresent, safetyFired) => !praiseStillPresent || safetyFired,
     precondition: 'praise',
+    direction: 'removes',
   },
 ];
 
@@ -773,10 +827,24 @@ export interface PartCArmMajorities {
 }
 
 export function partCVerdict(rel: PartCRelation, m: PartCArmMajorities): { verdict: PartCVerdict; reason?: string } {
-  const preconditionMet = rel.precondition === 'praise' ? m.basePraise : m.baseFired;
-  if (!preconditionMet) {
+  // Does the BASE arm exhibit the state the relation is about? (praise, or the relation's own matcher)
+  const baseHasState = rel.precondition === 'praise' ? m.basePraise : m.baseFired;
+
+  // LLM-LEG-RELATION-REPAIR §3 (DEC-5): testability depends on which way the transformation moves.
+  // An 'adds' relation is meaningless when the base ALREADY fires — the engine flags the note before
+  // the transformation, so the transformed arm proves nothing about the transformation. That is a
+  // real result about the engine over-flagging, and it must never be reported as HOLDS.
+  if (rel.direction === 'adds' && baseHasState) {
+    return { verdict: 'VACUOUS', reason: 'could not be tested — the base arm already fired, so the engine flags this even before the transformation' };
+  }
+  // A 'removes' relation is meaningless when the base LACKS the state — nothing to remove. Reason
+  // string byte-identical to the one shipped with ENGINE-HEALTH-HONESTY.
+  if (rel.direction === 'removes' && !baseHasState) {
     return { verdict: 'VACUOUS', reason: `could not be tested — the base arm produced no ${rel.precondition}` };
   }
+
+  // Testable. The formula itself lives on the relation ('removes' → base && !transformed,
+  // 'adds' → !base && transformed), so there is exactly one place per relation that states it.
   const holds = rel.id === 'L-3'
     ? rel.verdict(m.transformedPraise, m.transformedFired)   // (praiseStillPresent, safetyFired)
     : rel.verdict(m.baseFired, m.transformedFired);
