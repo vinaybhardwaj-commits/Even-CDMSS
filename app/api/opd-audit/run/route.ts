@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/admin-gate';
+import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { auditOpdNote } from '@/lib/opd-note-audit';
 import { saveOpdAudit } from '@/lib/opd-audit-store';
 import { sql } from '@/lib/db';
@@ -40,7 +41,23 @@ async function servedModelFor(traceId: string | undefined): Promise<string | nul
 // Metabase API and audits it (admin-gated) — no need to hand-assemble a row. The daily
 // worker (app/api/opd-audit/worker) audits the full day; this is for one-off inspection.
 export async function GET(req: NextRequest) {
-  const denied = requireAdmin(req); if (denied) return denied;
+  // Unit 1b (DEC-8/9/10, 2 Aug 2026) — accept the already-unlocked admin COOKIE as well as the
+  // token, copying app/api/opd-audit/export-pdf/route.ts:161-165 (admin cookie only; the care
+  // cookie does NOT unlock this route, DEC-10 — it runs audits and writes rows).
+  //
+  // THIS WIDENS NOTHING. isAdminUnlocked compares the cat_admin cookie value against ADMIN_TOKEN
+  // with timingSafeEqual — the cookie's value IS the token — and returns false when ADMIN_TOKEN is
+  // unset, so it never opens the route by default. The set of people who can call this does not
+  // change; only how they present the same secret does. It exists because the cookie is httpOnly,
+  // so a browser that has already unlocked /admin cannot read it back to send as a Bearer header,
+  // and pasting the token into a URL would put a secret in browser history and owe a rotation.
+  //
+  // GET is the SPOT-CHECK path (?uid=… fetches one note from db13 and audits it). POST stays
+  // TOKEN-ONLY on purpose (DEC-9): it accepts a hand-assembled row, so it keeps the narrower gate.
+  //
+  // FAIL CLOSED: .catch(() => false) is mandatory — a cookie-read failure must deny, never allow.
+  const denied = requireAdmin(req);
+  if (denied && !(await isAdminUnlocked().catch(() => false))) return denied;
   const uid = req.nextUrl.searchParams.get('uid');
   if (!uid) return NextResponse.json({ ok: false, error: 'pass ?uid=<prescription uid>' }, { status: 400 });
   try {
