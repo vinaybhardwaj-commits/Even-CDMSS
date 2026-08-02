@@ -86,23 +86,31 @@ test('with the precondition met, the verdicts are the relation\'s own — HOLDS 
 // Gate test 2 — the ratified-at label and the drift warning
 // ═════════════════════════════════════════════════════════════════════════════════════════════
 
-test('RATIFIED_AT_ENGINE is pinned to the version the map was measured at — NOT the current engine', () => {
-  assert.equal(RATIFIED_AT_ENGINE, 'opd-note-audit/0.81.17');
-  assert.notEqual(RATIFIED_AT_ENGINE, OPD_ENGINE_VERSION,
-    'if these are now equal, the relations were re-measured and this test must be re-ratified with the map');
+test('RATIFIED_AT_ENGINE is pinned to the version the map was measured at — now 0.81.20', () => {
+  // RE-RATIFIED 2 Aug 2026: measured live on production at 0.81.20 after 6cff240 and 97e2f36,
+  // 14/14 relations matching (CDMSS-RERATIFICATION-EVIDENCE-2-AUG-2026.md). The previous assertion
+  // pinned 0.81.17 and carried the note "if these are now equal, the relations were re-measured and
+  // this test must be re-ratified with the map" — that is exactly what happened, so it now asserts
+  // the map is CURRENT. It goes stale again on the next engine bump, and must move only with a
+  // fresh measurement.
+  assert.equal(RATIFIED_AT_ENGINE, 'opd-note-audit/0.81.20');
+  assert.equal(RATIFIED_AT_ENGINE, OPD_ENGINE_VERSION,
+    'the map is ratified AT the deployed engine — if a bump made these differ, re-measure and move it');
 });
 
-test('a deployed engine differing from RATIFIED_AT_ENGINE produces the drift warning, verbatim', () => {
-  const w = ratificationDriftWarning(OPD_ENGINE_VERSION);
-  assert.equal(w,
-    `Ratified at ${RATIFIED_AT_ENGINE}. The deployed engine is ${OPD_ENGINE_VERSION}. These statuses have not been re-measured against the deployed engine.`);
-  assert.equal(ratificationDriftWarning(RATIFIED_AT_ENGINE), null, 'no warning when the map is current');
+test('the drift warning is null at the deployed engine, and exact when a version differs', () => {
+  assert.equal(ratificationDriftWarning(OPD_ENGINE_VERSION), null,
+    'the map is current, so the panel shows no stale-ratification banner');
+  assert.equal(ratificationDriftWarning(RATIFIED_AT_ENGINE), null);
+  // …and the wording is unchanged for the next time it DOES drift.
+  assert.equal(ratificationDriftWarning('opd-note-audit/0.81.21'),
+    `Ratified at ${RATIFIED_AT_ENGINE}. The deployed engine is opd-note-audit/0.81.21. These statuses have not been re-measured against the deployed engine.`);
 });
 
 test('the panel renders the constant, not a hard-coded version string', () => {
   const page = readFileSync('app/admin/observability/engine-health/page.tsx', 'utf8');
   assert.ok(page.includes('Ratified @ {RATIFIED_AT_ENGINE}'), 'the header reads the exported constant');
-  assert.ok(!page.includes('Ratified @ 0.81.17'), 'the hard-coded header is gone');
+  assert.ok(!/Ratified @ 0\.81\.\d+/.test(page), 'no hard-coded version in the header — the constant is the only source');
   assert.ok(page.includes('ratificationDriftWarning(OPD_ENGINE_VERSION)'), 'the drift warning is wired to the deployed engine');
   assert.ok(page.includes('partCVerdict(rel, {'), 'the panel verdict goes through the shared partCVerdict — including L-3\'s (praise, safety) wiring');
 });

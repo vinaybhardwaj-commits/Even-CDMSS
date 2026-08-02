@@ -422,17 +422,32 @@ export function runRelations(): RelationResult[] {
 }
 
 /**
- * MEASURED status of every relation at `main` 46c7cf9 (engine opd-note-audit/0.81.17), ratified by
- * this build's report. The CI test asserts each relation MATCHES this map — a 'fail' entry is an
- * OBSERVED PRODUCTION DEFECT reproduced as a standing test (PRD §3.1: D-7 "must not [be] changed
- * … to make it pass"; §7.3: "record it, do not fix it in this build"). A permanently-red gate
- * would stop all work (the PRD's own M1 rationale), so known defects are PINNED, not asserted
- * green: if the engine ever changes so a pinned failure starts passing, the test fails LOUDLY and
- * the map must be re-ratified with V.
+ * MEASURED status of every relation. Originally ratified at `main` 46c7cf9 (engine 0.81.17);
+ * RE-MEASURED 2 August 2026 at engine opd-note-audit/0.81.20, live on production via an Engine
+ * Health panel load (the panel runs the deterministic relations on page load), after the deploys
+ * 6cff240 and 97e2f36 — evidence: CDMSS-RERATIFICATION-EVIDENCE-2-AUG-2026.md.
+ *
+ * ALL FOURTEEN MATCHED. The map itself did not change; only RATIFIED_AT_ENGINE moved. Synthetic
+ * known-positives 19/19 fired, negative controls 6/6 held (recall_det = 100%). D-4's observed
+ * detail showed 6cff240's incomplete_dosing change in the instrument — the strength gap gone,
+ * duration still checked, the relation still passing — and neither pinned defect was disturbed.
+ *
+ * The CI test asserts each relation MATCHES this map — a 'fail' entry is an OBSERVED PRODUCTION
+ * DEFECT reproduced as a standing test (PRD §3.1: D-7 "must not [be] changed … to make it pass";
+ * §7.3: "record it, do not fix it in this build"). A permanently-red gate would stop all work (the
+ * PRD's own M1 rationale), so known defects are PINNED, not asserted green: if the engine ever
+ * changes so a pinned failure starts passing, the test fails LOUDLY and the map must be
+ * re-ratified with V.
+ *
+ * ⚠️ NOTE FOR THE NEXT ENGINE BUMP: no gate demands this re-measure. changelog:coverage gates only
+ * engine VERSIONS, so a scoring change that does not bump — and a bump that nobody re-measures —
+ * both pass silently. Re-measuring the relations and moving RATIFIED_AT_ENGINE is step 3 of the
+ * engine-bump checklist, alongside appending to OPD_ENGINE_VERSIONS_CURRENT and writing the
+ * changelog entry. All three depend on the builder noticing.
  */
 export const RATIFIED_RELATION_STATUS: Record<string, 'pass' | 'fail'> = {
   'D-1': 'pass', 'D-2': 'pass', 'D-3': 'pass', 'D-4': 'pass',
-  'D-5': 'fail',   // the engine reads no release profile at 0.81.17 (dosageForm plumbed 0.81.11, unread by design) — observed class Q2
+  'D-5': 'fail',   // the engine reads no release profile at 0.81.20 (dosageForm plumbed 0.81.11; read since 6cff240 for incomplete_dosing gaps, but a coarse FORM is not a release profile) — observed class Q2
   'D-6': 'pass',
   'D-7': 'fail',   // aspirin carries the `nsaid` tag at ANY dose (lib/ddi-tags.ts) — the Q28 defect, named unanimously
   // G-1 RE-RATIFIED pass (DDI pair-order canonicalisation, 1 Aug 2026). The suite surfaced it at
@@ -447,13 +462,17 @@ export const RATIFIED_RELATION_STATUS: Record<string, 'pass' | 'fail'> = {
 };
 
 /**
- * The engine version RATIFIED_RELATION_STATUS was measured at. NOT the current engine: the
- * relations have not been re-measured since 0.81.17, and refreshing this number without a
- * re-measure would turn an honest stale label into a dishonest fresh one (ENGINE-HEALTH-HONESTY
- * PRD §3). The panel renders this constant and warns when it differs from the deployed
- * OPD_ENGINE_VERSION; changing it requires re-ratifying the map with V.
+ * The engine version RATIFIED_RELATION_STATUS was measured at. The panel renders this constant and
+ * warns when it differs from the deployed OPD_ENGINE_VERSION.
+ *
+ * MOVED 0.81.17 → 0.81.20 on 2 August 2026, and the reason it may move is the whole point: a
+ * measurement was taken, on production, at the deployed engine, after both of that day's
+ * score-affecting deploys (CDMSS-RERATIFICATION-EVIDENCE-2-AUG-2026.md). This constant's standing
+ * warning — that refreshing the number WITHOUT a re-measure "would turn an honest stale label into
+ * a dishonest fresh one" (ENGINE-HEALTH-HONESTY PRD §3) — is unchanged and still governs. Changing
+ * it requires re-ratifying the map with V and citing the evidence document that recorded the load.
  */
-export const RATIFIED_AT_ENGINE = 'opd-note-audit/0.81.17';
+export const RATIFIED_AT_ENGINE = 'opd-note-audit/0.81.20';
 
 /**
  * Drift warning for the health panel (pure — the deployed engine version is an argument so this
@@ -664,6 +683,21 @@ export interface PartCRelation {
    * the old "the demand for management disappears" assertion was unfalsifiable.
    */
   direction: 'removes' | 'adds';
+  /**
+   * Does this relation still RUN? (V ruled 2 Aug 2026 — stop investing in the LLM leg.)
+   *
+   * RETIRED IS NOT DELETED. A retired relation keeps its fixture, matchers, transform and verdict
+   * in full: the runner skips it and the panel hides it, but the object stays here because it is
+   * still a TEST FIXTURE. L-3 in particular is the subject of the 1 August regression guard
+   * (engine-health-honesty.test.ts) that pins the real production defect where a disjunction
+   * reported HOLDS while a documented penicillin allergy went unflagged. Deleting L-3 would delete
+   * that guard, and with it the record of the defect.
+   *
+   * L-2 and L-3 are retired because both rest on PRAISE, and praise proved too rare to build a
+   * test on — 8 appropriateness_high_value findings corpus-wide. Both read VACUOUS. L-1 stays
+   * active with its result on record.
+   */
+  active: boolean;
 }
 
 const gpRow = (over: Db13Row): Db13Row => ({
@@ -727,6 +761,7 @@ export const PART_C_RELATIONS: PartCRelation[] = [
     verdict: (base, transformed) => !base && transformed,
     precondition: 'fires',
     direction: 'adds',
+    active: true,   // the one LLM-leg relation still running; its result stands on record
   },
   {
     id: 'L-2', title: 'Praise requires evidence', experiment: 'mm-llm-l2',
@@ -762,6 +797,9 @@ export const PART_C_RELATIONS: PartCRelation[] = [
     verdict: (base, transformed) => base && !transformed,
     precondition: 'fires',
     direction: 'removes',
+    // RETIRED 2 Aug 2026 (V): rests on praise, and praise is too rare to build a test on — 8
+    // appropriateness_high_value findings corpus-wide. Kept in full as a verdict-logic fixture.
+    active: false,
   },
   {
     id: 'L-3', title: 'Praise is not blind', experiment: 'mm-llm-l3',
@@ -802,6 +840,11 @@ export const PART_C_RELATIONS: PartCRelation[] = [
     verdict: (praiseStillPresent, safetyFired) => !praiseStillPresent || safetyFired,
     precondition: 'praise',
     direction: 'removes',
+    // RETIRED 2 Aug 2026 (V): same praise problem as L-2. ⚠️ MUST NOT BE DELETED — this object is
+    // the fixture for the 1 August regression guard in engine-health-honesty.test.ts, which pins
+    // the production defect where the old disjunction reported HOLDS on a silent engine while a
+    // documented penicillin allergy went unflagged. Deleting it deletes the record of that defect.
+    active: false,
   },
 ];
 

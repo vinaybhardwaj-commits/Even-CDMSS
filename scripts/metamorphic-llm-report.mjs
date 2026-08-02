@@ -24,8 +24,18 @@ const log = (...a) => console.error(...a);
 
 await ensureLabTables();
 
+// RETIRED relations are skipped, not deleted (V, 2 Aug 2026): L-2 and L-3 both rest on praise, and
+// praise proved too rare to build a test on. Their objects stay in PART_C_RELATIONS as fixtures for
+// the verdict-logic tests — L-3 is the subject of the 1 August regression guard — but they no longer
+// consume runs. An empty active set is not an error: the loop simply produces no rows.
+const ACTIVE = PART_C_RELATIONS.filter((r) => r.active);
+log(`[part C] ${ACTIVE.length} active of ${PART_C_RELATIONS.length} relations`
+  + (ACTIVE.length < PART_C_RELATIONS.length
+    ? ` — retired: ${PART_C_RELATIONS.filter((r) => !r.active).map((r) => r.id).join(', ')}`
+    : ''));
+
 const report = [];
-for (const rel of PART_C_RELATIONS) {
+for (const rel of ACTIVE) {
   const arms = { base: rel.baseRow, transformed: rel.transform(structuredClone(rel.baseRow)) };
   const armFires = { base: [], transformed: [] };
   // L-3 needs BOTH matchers on the transformed arm: praise still present? safety fired?
@@ -83,6 +93,7 @@ for (const rel of PART_C_RELATIONS) {
   });
 }
 
+if (!report.length) console.log('\nNo active Part C relations — nothing was run.');
 console.log('\nrelation | base fires (n/3) | transformed fires (n/3) | verdict | split?');
 for (const r of report) {
   console.log(`${r.relation} ${r.title} | ${r.base_fires} | ${r.transformed_fires} | ${r.verdict}${r.reason ? ` (${r.reason})` : ''} | ${r.split ? 'SPLIT (2-1) — a finding about non-determinism, not a pass' : 'no'}`);

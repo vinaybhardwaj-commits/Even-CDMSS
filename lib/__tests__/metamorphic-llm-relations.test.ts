@@ -12,6 +12,7 @@
 // the PURE machinery and the fixture INVARIANTS only — never a verdict from a live run.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { PART_C_RELATIONS, partCVerdict, type PartCRelation } from '../metamorphic-core';
 
 const rel = (id: string): PartCRelation => {
@@ -169,6 +170,58 @@ test('L-3: the base earns praise through a named drug, and the transformation is
 // 5 · Every relation is well-formed
 // ═════════════════════════════════════════════════════════════════════════════════════════════
 
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// 6 · Retirement (V, 2 Aug 2026) — retired is NOT deleted
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+test('every relation carries an active flag, and it is a boolean', () => {
+  for (const r of PART_C_RELATIONS) {
+    assert.equal(typeof r.active, 'boolean', `${r.id} must declare active`);
+  }
+});
+
+test('EXACTLY ONE relation is active — L-1; L-2 and L-3 are retired', () => {
+  const active = PART_C_RELATIONS.filter((r) => r.active);
+  assert.equal(active.length, 1);
+  assert.equal(active[0].id, 'L-1');
+  assert.equal(rel('L-2').active, false, 'retired: rests on praise, which is too rare to test on');
+  assert.equal(rel('L-3').active, false, 'retired: same praise problem');
+});
+
+test('RETIRED IS NOT DELETED — both objects stay complete and usable as fixtures', () => {
+  // Deleting L-3 would delete the 1 August regression guard in engine-health-honesty.test.ts,
+  // which pins a real production defect. Every member must still be present and callable.
+  for (const id of ['L-2', 'L-3']) {
+    const r = rel(id);
+    assert.ok(r.baseRow && typeof r.transform === 'function', `${id} keeps its fixture and transform`);
+    assert.ok(typeof r.fires === 'function' && typeof r.verdict === 'function', `${id} keeps its matchers`);
+    assert.ok(r.precondition && r.direction && r.experiment && r.title, `${id} keeps its metadata`);
+    assert.doesNotThrow(() => r.transform(structuredClone(r.baseRow)), `${id}'s transform still runs`);
+  }
+  // and the verdict machinery still works on a retired relation — that is what the guard uses
+  assert.equal(partCVerdict(rel('L-3'), arms()).verdict, 'VACUOUS');
+});
+
+test('the runner and the panel both filter on active — retired relations are skipped, not shown', () => {
+  const runner = readFileSync('scripts/metamorphic-llm-report.mjs', 'utf8');
+  const panel = readFileSync('app/admin/observability/engine-health/page.tsx', 'utf8');
+  assert.ok(/PART_C_RELATIONS\.filter\(\(r\) => r\.active\)/.test(runner), 'the runner skips retired relations');
+  assert.ok(/for \(const rel of ACTIVE\)/.test(runner), 'and iterates only the active set');
+  assert.ok(/PART_C_RELATIONS\.filter\(\(rel\) => rel\.active\)/.test(panel), 'the panel hides retired relations');
+});
+
+test('the panel states the leg\'s scope and the retirement, without overclaiming', () => {
+  const panel = readFileSync('app/admin/observability/engine-health/page.tsx', 'utf8');
+  assert.ok(/run on the <b[^>]*>local model<\/b>|local model/.test(panel), 'says it runs on the local model');
+  assert.ok(/do not test the engine that scores doctors/.test(panel), 'says what it does NOT test');
+  assert.ok(/L-2 and L-3 are retired/.test(panel));
+  assert.ok(/praise proved too rare to build a test on/.test(panel), 'says WHY they were retired');
+  assert.ok(/L-1 is retained/.test(panel));
+  // the word "coverage" must not appear in the LLM-leg statement — it is a claim this leg cannot support
+  const section = panel.slice(panel.indexOf('LLM-leg relations'), panel.indexOf('lab_analyses could not be read'));
+  assert.ok(!/coverage/i.test(section), 'the leg must not claim coverage');
+});
+
 test('every relation in PART_C_RELATIONS carries a direction, and it is one of the two', () => {
   assert.equal(PART_C_RELATIONS.length, 3);
   for (const r of PART_C_RELATIONS) {
@@ -185,6 +238,14 @@ test('ids, experiment names and titles are preserved — the lab history must st
   assert.equal(rel('L-1').title, 'Status qualifier is read');
   assert.equal(rel('L-2').title, 'Praise requires evidence');
   assert.equal(rel('L-3').title, 'Praise is not blind');
+});
+
+test('the generalising tests still cover ALL THREE relations, active or retired', () => {
+  // Retirement must not shrink the test surface: a retired relation is still a fixture, and these
+  // loops must keep walking it. If PART_C_RELATIONS ever drops to the active set, this fails.
+  assert.equal(PART_C_RELATIONS.length, 3);
+  assert.deepEqual(PART_C_RELATIONS.map((r) => r.id), ['L-1', 'L-2', 'L-3']);
+  assert.equal(PART_C_RELATIONS.filter((r) => !r.active).length, 2, 'two retired fixtures still present');
 });
 
 test('every fixture is synthetic — no db13 uid may reach the lab runner (§9.3)', () => {

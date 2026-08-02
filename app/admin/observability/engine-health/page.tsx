@@ -77,7 +77,10 @@ export default async function EngineHealthPage() {
 
   // Latest 3 runs per (experiment, arm); majority per arm; 2–1 = split (M2). `praise` is read
   // beside `fired` because the precondition (and L-3's verdict) needs both (HONESTY PRD §2).
-  const llmByRelation = PART_C_RELATIONS.map((rel) => {
+  // RETIRED relations (active: false) are not displayed. They stay in PART_C_RELATIONS as fixtures
+  // for the verdict-logic tests — L-3 is the subject of the 1 August regression guard — but a
+  // retired relation has no live result to show. An empty active set renders the empty-state row.
+  const llmByRelation = PART_C_RELATIONS.filter((rel) => rel.active).map((rel) => {
     const rows = llmRows.filter((r) => r.experiment === rel.experiment);
     const arm = (name: string, key: 'fired' | 'praise') => rows
       .filter((r) => (r.output as { arm?: string })?.arm === name)
@@ -191,7 +194,18 @@ export default async function EngineHealthPage() {
 
       {/* ── Section 3: LLM-leg relations (lab history) ── */}
       <section className="mt-8">
-        <h2 className="text-sm font-semibold text-slate-900">LLM-leg relations — lab history (L-1…L-3, 3 runs per arm, majority decides)</h2>
+        <h2 className="text-sm font-semibold text-slate-900">LLM-leg relations — lab history (3 runs per arm, majority decides)</h2>
+        {/* Retirement + scope statement (V, 2 Aug 2026). States only what the leg supports: it runs
+            on the local model, so a verdict here is not a statement about the production grader. */}
+        <p className="mt-1.5 max-w-3xl text-xs leading-relaxed text-slate-500">
+          These relations run on the <b className="text-slate-700">local model</b>, not on the production grader,
+          so they do not test the engine that scores doctors. A verdict here is a statement about the lab pipeline
+          and nothing more.
+          {' '}<b className="text-slate-700">L-2 and L-3 are retired</b> — both rest on the engine praising a note,
+          and praise proved too rare to build a test on. Their fixtures are kept as test cases for the verdict logic;
+          they are no longer run.
+          {' '}<b className="text-slate-700">L-1 is retained</b>, and its result stands on record below.
+        </p>
         {llmError ? (
           <p className="mt-2 rounded border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
             lab_analyses could not be read ({llmError}) — the LLM section is empty; the live deterministic results above are unaffected.
