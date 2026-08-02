@@ -813,6 +813,10 @@ export const MAP_MODULES: MapModule[] = [
   {
     "id": "value-score-core",
     "plane": "unregistered"
+  },
+  {
+    "id": "vitals-coverage-core",
+    "plane": "unregistered"
   }
 ];
 
@@ -1125,6 +1129,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/admin",
     "to": "value-score-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
+    "to": "vitals-coverage-core",
     "kind": "value"
   },
   {
