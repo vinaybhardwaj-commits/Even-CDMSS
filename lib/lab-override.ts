@@ -42,6 +42,15 @@ export function probeReachable(provider: string): boolean {
     if (provider === 'ollama') return !!MINI_MODEL;          // the local default path
     if (provider === 'vertex') return geminiConfigured();
     if (provider === 'openrouter') return openrouterConfigured();
+    // BEDROCK (PROVIDER-SWITCH PRD §4.2, 2 Aug 2026) — catalogued but NOT YET REACHABLE. It resolves
+    // (`bedrock:anthropic.claude-x` parses) and returns false here, so the override is refused with
+    // a typed reason instead of silently running somewhere else. Both vars are required, following
+    // the vertex precedent (geminiConfigured checks GCP_PROJECT *and* GCP_SA_KEY): a Bedrock call
+    // cannot be addressed without a region, so a key alone is not "reachable".
+    // ⚠️ BEDROCK_REGION deliberately, NOT AWS_REGION — Vercel's runtime sets AWS_REGION itself, so
+    // gating on it would read as half-configured on every deploy. Until Unit C builds the client,
+    // neither var is set anywhere and this is false by construction.
+    if (provider === 'bedrock') return Boolean(process.env.BEDROCK_API_KEY && process.env.BEDROCK_REGION);
     return false;
   } catch { return false; }
 }

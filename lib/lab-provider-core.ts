@@ -12,8 +12,84 @@
  * out to be paid Gemini while the tools advertised "₹0, never Gemini").
  */
 
-export const LAB_PROVIDERS = ['ollama', 'openrouter', 'vertex'] as const;
+// 'bedrock' added 2 Aug 2026 (PROVIDER-SWITCH PRD §4.1). ONE ARRAY ENTRY is the whole of "add a
+// provider": resolveProvider's prefix parsing is already generic, so `bedrock:anthropic.claude-x`
+// resolves the moment the name is here. Reachability is separate and still false until credentials
+// exist (probeReachable in lib/lab-override.ts) — a provider that resolves but cannot be reached
+// errors loudly rather than falling back, which is the property this module exists to hold.
+export const LAB_PROVIDERS = ['ollama', 'openrouter', 'vertex', 'bedrock'] as const;
 export type LabProvider = (typeof LAB_PROVIDERS)[number];
+
+/**
+ * What KIND of call this is. The three classes have genuinely different shapes, and conflating them
+ * is what caused both of 2 August's outages:
+ *   · 'audit'    — one full note/document audit. Minutes, not seconds.
+ *   · 'utility'  — a short bounded call (critic, classifier, expansion). Seconds.
+ *   · 'doc_read' — a multimodal document read. Bounded separately from the analyze that follows it.
+ */
+export type CallClass = 'audit' | 'utility' | 'doc_read';
+
+/** A per-attempt ceiling and how many attempts the transport may make. */
+export interface ProviderBudget { perAttemptMs: number; maxTries: number }
+
+/**
+ * THESE NUMBERS ARE MEASURED, NOT PREFERRED.
+ *
+ * The OPD audit runs p50 267 s / p75 425 s per note. A 110 s per-attempt constant sat in front of
+ * it — `openrouterCreateWithRetry` overrode the caller's 600 s with its own — so from 30 July, when
+ * the OpenRouter bridge went live, THE MEDIAN AUDIT COULD NEVER COMPLETE. It aborted three times
+ * and fell through to the local model: 126 notes graded by qwen2.5:14b overnight, zero by Gemini,
+ * every row still labelled `gemini-2.5-pro`. It took three days to notice because the fast tail
+ * still succeeded. The same day, the IPD worker's batch was sized against no budget at all and
+ * 504'd on every run.
+ *
+ * Both failures were the same missing fact: nobody could state, as a number, how long a call of a
+ * given class on a given provider is allowed to take. This table is that fact, per provider and per
+ * class, in one place a route can be checked against.
+ *
+ * A `null` means the provider does not serve that class at all — see the ollama/doc_read note.
+ */
+export const PROVIDER_BUDGETS: Record<LabProvider, Record<CallClass, ProviderBudget | null>> = {
+  // Local mini: one try, never retried. A local box that did not answer in the budget will not
+  // answer on a second ask, and there is no spend to amortise. doc_read is NULL, not a number:
+  // the mini is not multimodal, so a document read on ollama is not slow — it is IMPOSSIBLE.
+  // Encoding a duration here would let a caller compute a budget for a call that cannot be made.
+  ollama:     { audit: { perAttemptMs: 600_000, maxTries: 1 }, utility: { perAttemptMs: 90_000, maxTries: 1 }, doc_read: null },
+  openrouter: { audit: { perAttemptMs: 600_000, maxTries: 3 }, utility: { perAttemptMs: 110_000, maxTries: 3 }, doc_read: { perAttemptMs: 180_000, maxTries: 1 } },
+  vertex:     { audit: { perAttemptMs: 600_000, maxTries: 3 }, utility: { perAttemptMs: 110_000, maxTries: 3 }, doc_read: { perAttemptMs: 180_000, maxTries: 1 } },
+  bedrock:    { audit: { perAttemptMs: 600_000, maxTries: 3 }, utility: { perAttemptMs: 110_000, maxTries: 3 }, doc_read: { perAttemptMs: 180_000, maxTries: 1 } },
+};
+
+/**
+ * The BACKOFF ALLOWANCE: the worst-case time spent sleeping BETWEEN attempts, not calling.
+ *
+ * Derived from the shipped curve rather than guessed. `openRouterBackoffMs` (lib/openrouter-retry.ts)
+ * is `round(500 × 2^(attempt-1) × (0.5 + rand()))` with `rand()` in [0,1), so one sleep is at most
+ * `750 × 2^(attempt-1)`. N tries means N−1 sleeps, and summing the geometric series gives
+ * `750 × (2^(N−1) − 1)` — 0 ms at one try, 2,250 ms at three.
+ *
+ * It is deliberately the exact UPPER BOUND of the real curve, not a round number: a budget a route
+ * is checked against must never be optimistic, and 2.25 s is small enough that being exact costs
+ * nothing. If the backoff curve changes, this must change with it — they are one fact in two files.
+ */
+export function backoffAllowanceMs(maxTries: number): number {
+  const n = Math.max(1, Math.trunc(Number(maxTries) || 1));
+  return 750 * (2 ** (n - 1) - 1);
+}
+
+/**
+ * THE NUMBER A ROUTE MUST FIT: worst-case wall time for one call of this class on this provider,
+ * including the sleeps between retries. Null when the provider does not serve the class.
+ *
+ * Its ABSENCE is what caused both of today's outages — no caller could compare a call's ceiling
+ * against the box it runs in, so a 110 s ceiling sat in front of a 267 s call and a ~1,530 s batch
+ * sat in an 800 s route, and both were invisible until they were measured from the outside.
+ */
+export function totalBudgetMs(provider: LabProvider, callClass: CallClass): number | null {
+  const b = PROVIDER_BUDGETS[provider]?.[callClass];
+  if (!b) return null;
+  return b.perAttemptMs * b.maxTries + backoffAllowanceMs(b.maxTries);
+}
 
 /** Decision 9 — raised only by passing it explicitly on the call. */
 export const DEFAULT_PAID_CEILING = 250;
