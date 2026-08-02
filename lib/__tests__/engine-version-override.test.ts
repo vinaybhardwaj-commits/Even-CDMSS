@@ -35,7 +35,7 @@ test('§4.7: opts.engineVersion threads through on the PRODUCTION path, verbatim
 test('§4.8: absent opts.engineVersion, the production path still yields OPD_ENGINE_VERSION', () => {
   // `?? OPD_ENGINE_VERSION` is the whole guarantee — existing callers are byte-identical.
   assert.ok(AUDIT.includes('(opts.engineVersion ?? OPD_ENGINE_VERSION)'));
-  assert.equal(OPD_ENGINE_VERSION, 'opd-note-audit/0.81.17', 'phase 3b bumped it — 3a itself bumped nothing');
+  assert.equal(OPD_ENGINE_VERSION, 'opd-note-audit/0.81.19', 'the neutraliser removal bumped it — 3a itself bumped nothing');
 });
 
 test('the MINI path is untouched by the override', () => {

@@ -15,7 +15,7 @@ import { rowToOpdCase, opdCaseText, type OpdKeys, type OpdMed, type DeidOpdCase 
 import {
   opdCompleteness, prescribingChecks, parseOpdAnalysis, stampFindingIdentity,
   consolidateDecisions, neutralizeMetadataFindings, resolveMedRoute,
-  neutralizeScreeningContext, isHealthCheckEncounter, neutralizeContradictedByStructure, stampDirection, opdSignalType,
+  neutralizeScreeningContext, isHealthCheckEncounter, stampDirection, opdSignalType,
   NSAID_MOLECULES, MUSCLE_RELAXANT_MOLECULES, medHasMoleculeFrom,
   OPD_AUDIT_SYSTEM, buildOpdAuditUser, OPD_ENGINE_VERSION,
   type OpdFinding, type OpdCompleteness, type OpdSuggestion,
@@ -1088,9 +1088,6 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
   // Quieting config (demote rules + policy gen) — fail-safe to { rules: [], gen: 0 } (never blocks).
   const quietCfg = opts.quieting ?? await getQuietingConfig();
   const noMeds = oc.medications.length === 0;
-  // Phase 2 (class A) — arm 8 needs the paired suggestions; set after the parse on the success
-  // path, [] on the det-only fallback (the arm simply cannot fire there).
-  let latestSuggestions: OpdSuggestion[] = [];
   // Phase 3b — the retrieval hits with their FULL text, set on the generation path only. Empty on
   // the reuse path (which carries stored 600-char previews), which is the explicit guard that keeps
   // the citation check off it: stripUnsupportedCitations returns early on an empty hits array.
@@ -1106,11 +1103,9 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     out = consolidateDecisions(out);   // BUG-0.8-12: one decision → one finding, across sources
     out = neutralizeMetadataFindings(out);   // BUG-0.8-16: don't penalise the doctor for our metadata
     out = neutralizeScreeningContext(out, healthCheck);   // 0.81.8 bug 2: don't penalise a health-check package's protocol panel
-    // Phase 2 (class A, register bugs 1/2/4/5a/5c/6/7): LLM findings that contradict structured
-    // data the engine already holds — marked informational (R-2: mark, never drop), 8 arms.
-    out = neutralizeContradictedByStructure(out, oc, latestSuggestions);
-    // Phase 3a (R-5) — direction AFTER the neutralizer (check 2 reads arm 8's marking) and BEFORE
-    // stampLvcMetadata (which the underuse gate below keys on).
+    // The contradicted-by-structure neutraliser once sat here — REMOVED in 0.81.19 (V, 1 Aug 2026:
+    // 400 live findings suppressed, zero correctly). Those findings now score.
+    // Phase 3a (R-5) — direction BEFORE stampLvcMetadata (which the underuse gate below keys on).
     out = stampDirection(out, oc);
     // Phase 3b — display/provenance only; cannot move a score (findingPenalty reads verdict,
     // confidence, direction). No-ops when latestHits is empty, i.e. on the reuse path.
@@ -1263,8 +1258,7 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
       if (rated !== 9) throw withEnvelope(new Error(evalGuardMessage.pdqi9Partial(rated)), evalEnv);
     }
 
-    latestSuggestions = parsed?.suggestions ?? [];   // phase 2 arm 8 — set BEFORE finalize runs
-    latestHits = hits;                                // phase 3b — FULL excerpt text, generation path only
+    latestHits = hits;   // phase 3b — FULL excerpt text, generation path only
     const findings: OpdFinding[] = finalize([...det, ...(parsed?.findings ?? [])]);
     const scorecard = computeOpdScore({
       findings: findings.filter((f) => !f.informational).map((f) => ({ verdict: f.verdict, confidence: f.confidence, domain: f.domain, direction: f.direction })),

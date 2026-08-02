@@ -54,9 +54,15 @@ import { computeStableRef } from './opd-finding-identity-core';
 // rule (highest version), it is also newest by time so lib/learning.ts's audited_at ordering picks
 // the same row, and — unlike a tag such as `0.81.17-r1` — it still casts through
 // CANONICAL_RANK_SQL's int[]. No rule, weight, prompt, threshold or check differs from 0.81.17.
-// OPD_ENGINE_VERSION deliberately STAYS at 0.81.17: the nightly worker must keep writing there,
-// and only the explicit opts.engineVersion recovery path writes 0.81.18.
-export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.17';
+// OPD_ENGINE_VERSION deliberately never moved to 0.81.18: the carrier is written only via the
+// explicit opts.engineVersion recovery path, never by the nightly worker.
+// 0.81.19 — the contradicted-by-structure neutraliser REMOVED (V, 1 Aug 2026). All eight arms
+// measured ZERO correct suppressions across 400 live findings; among the suppressed were metformin
+// duplicated across two FDCs, domperidone in pregnancy and omitted antibiotics for a diagnosed UTI.
+// Findings the arms marked informational (contradicted_* / incoherent_with_suggestion) now score.
+// Scores and bands FALL on affected notes — the intended correction, not a regression. No backfill:
+// stored rows keep their scores (D3); the correct behaviour applies to new audits only.
+export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.19';
 /** The recovery carrier (addendum E §3). Written ONLY via the explicit engineVersion path. */
 export const OPD_RECOVERY_ENGINE_VERSION = 'opd-note-audit/0.81.18';
 
@@ -69,7 +75,7 @@ export const OPD_RECOVERY_ENGINE_VERSION = 'opd-note-audit/0.81.18';
  * DESC, id DESC. WRITE-side targeting keeps exact OPD_ENGINE_VERSION (family there would stop history
  * re-scoring). See the patch report.
  */
-export const OPD_ENGINE_VERSIONS_CURRENT = ['opd-note-audit/0.81.3', 'opd-note-audit/0.81.4', 'opd-note-audit/0.81.5', 'opd-note-audit/0.81.6', 'opd-note-audit/0.81.7', 'opd-note-audit/0.81.8', 'opd-note-audit/0.81.9', 'opd-note-audit/0.81.10', 'opd-note-audit/0.81.11', 'opd-note-audit/0.81.12', 'opd-note-audit/0.81.13', 'opd-note-audit/0.81.14', 'opd-note-audit/0.81.15', 'opd-note-audit/0.81.16', 'opd-note-audit/0.81.17', 'opd-note-audit/0.81.18'] as const;
+export const OPD_ENGINE_VERSIONS_CURRENT = ['opd-note-audit/0.81.3', 'opd-note-audit/0.81.4', 'opd-note-audit/0.81.5', 'opd-note-audit/0.81.6', 'opd-note-audit/0.81.7', 'opd-note-audit/0.81.8', 'opd-note-audit/0.81.9', 'opd-note-audit/0.81.10', 'opd-note-audit/0.81.11', 'opd-note-audit/0.81.12', 'opd-note-audit/0.81.13', 'opd-note-audit/0.81.14', 'opd-note-audit/0.81.15', 'opd-note-audit/0.81.16', 'opd-note-audit/0.81.17', 'opd-note-audit/0.81.18', 'opd-note-audit/0.81.19'] as const;
 
 // Local copy of the PDQI-9 keys (kept in sync with opd-note-score-core) so this core has
 // no runtime cross-import and stays loadable under `node --experimental-strip-types`.
@@ -310,146 +316,13 @@ export function isHealthCheckEncounter(c: DeidOpdCase): boolean {
   return HEALTHCHECK_CTX_RE.test(hay);
 }
 
-// ═══ Class A — one neutralizer with many arms (audit-integrity batch phase 2) ═══════════════════
-//
-// LLM findings that CONTRADICT structured data the engine already holds at scoring time. The
-// prompt's "VERIFY BEFORE FLAGGING AN ABSENCE" instruction exists and the model does not follow
-// it — that is the argument for a deterministic guard rather than more prompt text (register
-// §5c). Modeled exactly on neutralizeMetadataFindings / neutralizeScreeningContext: act only on
-// source === 'llm'; never change verdict/domain/confidence/text; set informational + signal_type
-// ONLY; return unchanged when already informational. R-2 requires MARKING, not dropping.
-//
-// ⚠️ NEVER neutralize a high-value finding, in ANY arm. On several arms an absent item is the
-// REASON the finding is praise — MEASURED: 535 notes carry a high-value antibiotic finding where
-// the antibiotic is correctly absent. Deleting those is the worst possible regression here.
-
-// Arm 1 (bug 1) — the finding claims the plan holds no medication / only diet-and-lifestyle,
-// while c.medications is non-empty. Targets the false factual claim about MEDICATION absence,
-// never the legitimate missing-NON-pharmacological-plan class.
-const ABSENT_MEDICATION_RE = /(?:only|solely|merely|just)[^.]*\b(?:diet(?:ary)?|lifestyle)\b[^.]*(?:without|no|lacking|lacks)[^.]*\b(?:medication|pharmacotherap|pharmacologic|drug)|(?:no|without|lacks?|lacking|absence of|does not (?:include|contain|mention|prescribe|document))[^.]*\b(?:medication|pharmacotherap|pharmacologic(?:al)? (?:treatment|therapy|agent)|drug therapy)\b|\bmedication(?:s| adjustments?)?\b[^.]*\b(?:absent|not (?:prescribed|adjusted|included|specified|mentioned|documented))/i;
-
-// Arm 2 (bug 2) — the finding critiques an investigation as unindicated/low-value while the note
-// ordered NO investigation at all (all three db13 investigation signals were zero on the exhibit).
-const UNINDICATED_INVESTIGATION_RE = /\bunindicated investigation|\b(?:investigation|test(?:ing)?|imaging|panel|work[- ]?up)s?\b[^.]*(?:unindicated|not (?:indicated|warranted|necessary)|unnecessary|unwarranted|low[- ]value|excessive)|(?:unnecessary|excessive|unwarranted|unindicated)[^.]*\b(?:investigation|testing|imaging|work[- ]?up)/i;
-
-// Arm 3 (bugs 4b, 5a, 7a — three independent phantom antibiotics in ONE day, the register's
-// highest-frequency defect) — the finding asserts an antibiotic was prescribed while no
-// medication carries an antibiotic/antimicrobial class (zero medications satisfies this).
+// Antibiotic vocabulary — read by noAntibioticClassOnNote and stampDirection check 1 (§1.2).
+// ANTIBIOTIC_TEXT_RE matches a finding's prose; ANTIBIOTIC_CLASS_RE matches the formulary's
+// therapeuticClass/subClass strings (which additionally say "anti-infective").
+// The contradicted-by-structure neutraliser that once shared these was REMOVED in 0.81.19 —
+// all eight of its arms measured zero correct suppressions on 400 live findings (V, 1 Aug 2026).
 const ANTIBIOTIC_TEXT_RE = /\banti[- ]?(?:biotic|microbial|bacterial)\b/i;
 const ANTIBIOTIC_CLASS_RE = /anti[- ]?(?:biotic|microbial|bacterial|infective)/i;
-
-// Arm 4 (bug 4a) — the finding asserts SYSTEMIC administration while every medication resolves to
-// a topical/local route (the rinse-off shampoo called a "systemic antifungal"). Route vocabulary
-// per the register: `Topical`, `topical ` (trailing space), `local` — and the phase-1.1 phrases.
-const SYSTEMIC_TEXT_RE = /\bsystemic\b/i;
-const NON_SYSTEMIC_ROUTE_RE = /\b(topical|local(ly)?|external)\b/i;
-
-// Arm 5 (bugs 5c, 6b) — "indication not documented" while the finding ITSELF names a condition
-// the note documents (the azelaic-acid finding names acne vulgaris; the chart documents it).
-const INDICATION_ABSENT_RE = /\bindication\b[^.]*(?:not|never|absent|lacking|missing|un)[^.]*document|(?:does not|doesn't|fails? to|not)[^.]*document[^.]*\bindication\b|\b(?:no|without) (?:an? )?(?:documented |explicit |specific )*indication\b/i;
-
-// Arm 6 (bugs 7b, 7d) — "the history does not record X" while X sits in the complaints/history.
-const HISTORY_ABSENT_RE = /\b(?:history|note|record|documentation)\b[^.]*(?:does not|doesn't|fails? to|no|never|without)[^.]*\b(?:record|document|mention|report)\b|\bno (?:documented )?history of\b|\bundocumented\b/i;
-
-// Arm 7 (bug 6a) — a scoring LLM finding contradicting a RATIFIED deterministic rule on the same
-// molecule (the vitamin-D "overly cautious" hallucination overruled the engine's own informational
-// repletion rule and scored). Start set per PRD §5.5: vitamin D + muscle relaxants; keyed by the
-// deterministic finding's signal_type → the molecule vocabulary an LLM finding would name.
-const RATIFIED_RULE_TERMS: Record<string, RegExp> = {
-  // Phase 3b: the SAME vitamin-D vocabulary now also owns DOSE ADEQUACY, because the ratified
-  // matrix (lib/clinical-bands.ts) decides it deterministically. MEASURED: of 1,450 scoring LLM
-  // vitamin-D findings, 541 are low-value and 154 high-value, and only 101 state the numeric
-  // threshold they used — bug 8's 40-point spread on one nanogram came from exactly that recall.
-  vitamin_d_repletion_duration: /vitamin[- ]?d|cholecalciferol|\bd3\b|60,?000\s?iu|60k\b|25[- ]?\(?oh\)?[- ]?d/i,
-  vitamin_d_dose_concordance: /vitamin[- ]?d|cholecalciferol|\bd3\b|60,?000\s?iu|60k\b|25[- ]?\(?oh\)?[- ]?d/i,
-  muscle_relaxant_indication: /muscle relaxant|chlorzoxazone|thiocolchicoside|tizanidine|baclofen|methocarbamol/i,
-};
-
-// Arm 8 (bug 7c) — the paired suggestion recommends STARTING the class the finding calls
-// unindicated (the finding argued with itself: "antibiotic overuse" beside "consider starting an
-// antibiotic"). Not a text-vs-structure match: a coherence check between the two outputs.
-const SUGGEST_START_RE = /\b(?:start|initiate|begin|add|introduce|prescribe|consider (?:starting|adding|initiating|prescribing)|increase|escalate)\b/i;
-const CLASS_LEXICON: RegExp[] = [
-  /\banti[- ]?biotic|antimicrobial|antibacterial\b/i,
-  /\bantihistamine\b/i, /\bsteroid\b/i, /\bppi\b|proton[- ]pump/i, /\bnsaid\b/i,
-  /\bantifungal\b/i, /\bantiviral\b/i, /\bbronchodilator\b/i,
-];
-
-/**
- * The eight arms, applied in table order; the first arm that fires marks the finding and no later
- * arm re-marks it. `suggestions` is optional so the det-only fallback path stays byte-compatible.
- */
-export function neutralizeContradictedByStructure(
-  findings: OpdFinding[],
-  c: DeidOpdCase,
-  suggestions: { priority: number; text: string }[] = [],
-): OpdFinding[] {
-  // Documented-condition haystacks for arms 5/6 — lowercase once. Terms shorter than 4 chars are
-  // too ambiguous to count as evidence of documentation.
-  const conditionTerms = [...c.impressions, ...c.presentingComplaints]
-    .map((s) => String(s || '').toLowerCase().trim()).filter((s) => s.length >= 4);
-  const historyTerms = [...c.presentingComplaints, ...c.history]
-    .map((s) => String(s || '').toLowerCase().trim()).filter((s) => s.length >= 4);
-  // Phase 3a: ONE implementation of "no antibiotic class on this note", shared with the direction
-  // derivation (§1.2 check 1) so the two can never disagree. Behaviour identical to arm 3's
-  // original inline predicate.
-  const hasAntibioticClass = !noAntibioticClassOnNote(c);
-  const allRoutesNonSystemic = c.medications.length > 0 && c.medications.every((m) => {
-    const r = resolveMedRoute(m);
-    return r != null && NON_SYSTEMIC_ROUTE_RE.test(r.toLowerCase());
-  });
-
-  return findings.map((f) => {
-    if (f.source !== 'llm' || f.informational) return f;
-    if (f.verdict === 'high-value') return f;   // NEVER — praise for a correctly-absent item is legitimate
-    const hay = `${f.subject} ${f.rationale || ''}`;
-    const hayLow = hay.toLowerCase();
-
-    // 1 · medication presence, absent-claim
-    if (c.medications.length > 0 && ABSENT_MEDICATION_RE.test(hay)) {
-      return { ...f, informational: true, signal_type: 'contradicted_medication_present' };
-    }
-    // 2 · investigation presence
-    if (c.investigations.length === 0 && UNINDICATED_INVESTIGATION_RE.test(hay)) {
-      return { ...f, informational: true, signal_type: 'contradicted_investigation_absent' };
-    }
-    // 3 · drug-class (low-value / context-dependent ONLY — §5.3, the single most important constraint)
-    if ((f.verdict === 'low-value' || f.verdict === 'context-dependent')
-        && !hasAntibioticClass && ANTIBIOTIC_TEXT_RE.test(hay)) {
-      return { ...f, informational: true, signal_type: 'contradicted_drug_class_absent' };
-    }
-    // 4 · route
-    if (allRoutesNonSystemic && SYSTEMIC_TEXT_RE.test(hay)) {
-      return { ...f, informational: true, signal_type: 'contradicted_route' };
-    }
-    // 5 · indication presence — the finding names a condition the note documents
-    if (INDICATION_ABSENT_RE.test(hay) && conditionTerms.some((t) => hayLow.includes(t))) {
-      return { ...f, informational: true, signal_type: 'contradicted_indication_present' };
-    }
-    // 6 · history presence — the "denied" symptom is on the chart
-    if (HISTORY_ABSENT_RE.test(hay) && historyTerms.some((t) => hayLow.includes(t))) {
-      return { ...f, informational: true, signal_type: 'contradicted_history' };
-    }
-    // 7 · ratified rule — a deterministic finding fired on the same molecule
-    for (const det of findings) {
-      if (det.source !== 'deterministic' || !det.signal_type) continue;
-      const terms = RATIFIED_RULE_TERMS[det.signal_type];
-      if (terms && terms.test(hay)) {
-        return { ...f, informational: true, signal_type: 'contradicted_ratified_rule' };
-      }
-    }
-    // 8 · suggestion coherence
-    if (f.verdict === 'low-value' || f.verdict === 'context-dependent') {
-      for (const cls of CLASS_LEXICON) {
-        if (!cls.test(hay)) continue;
-        if (suggestions.some((s) => SUGGEST_START_RE.test(s.text) && cls.test(s.text))) {
-          return { ...f, informational: true, signal_type: 'incoherent_with_suggestion' };
-        }
-      }
-    }
-    return f;
-  });
-}
 
 // ── direction derivation (phase 3a, ruling R-5 / bugs 5b + 7c) ────────────────────────────────
 //
@@ -459,40 +332,35 @@ export function neutralizeContradictedByStructure(
 // content. A direction derived from it alone would confidently mislabel that finding as overuse
 // and leave the antimicrobial statistics corrupted while APPEARING fixed.
 //
-// Three ORDERED checks (§1.2):
-//   1 class-absence — reuses phase 2 arm 3's predicate (see `noAntibioticClass` below): a finding
-//     asserting overuse of a class no medication carries is not overuse;
-//   2 coherence — already marked `incoherent_with_suggestion` by arm 8 ⇒ internally contradictory
-//     ⇒ NO direction at all, left informational, scoring in neither direction;
-//   3 prefix — only when 1 and 2 raise no objection may the concept_id prefix set direction.
+// Two ORDERED checks (§1.2; the former check 2, coherence, died with the contradicted-by-structure
+// neutraliser in 0.81.19 — nothing sets `incoherent_with_suggestion` any more):
+//   1 class-absence — a finding asserting overuse of a class no medication carries is not overuse;
+//   2 prefix — only when class-absence raises no objection may the concept_id prefix set direction.
 const UNDERUSE_PREFIX_RE = /^\s*underuse\s*:/i;
 const OVERUSE_PREFIX_RE = /^\s*overuse\s*:/i;
 
-/** Arm 3's predicate, extracted verbatim so the neutralizer and the direction derivation cannot
- *  disagree about what "no antibiotic class on this note" means. */
+/** ONE implementation of "no antibiotic class on this note" (stampDirection check 1). */
 export function noAntibioticClassOnNote(c: DeidOpdCase): boolean {
   return !c.medications.some((m) => ANTIBIOTIC_CLASS_RE.test(`${m.therapeuticClass || ''} ${m.subClass || ''}`));
 }
 
 /**
- * Stamp `direction` on LLM findings. Pure; runs AFTER the neutralizer (it reads arm 8's marking)
- * and BEFORE stampLvcMetadata (which gates on the result). Never touches verdict/domain/
- * confidence/text, and never sets a direction it cannot justify — absent is the honest default.
+ * Stamp `direction` on LLM findings. Pure; runs BEFORE stampLvcMetadata (which gates on the
+ * result). Never touches verdict/domain/confidence/text, and never sets a direction it cannot
+ * justify — absent is the honest default.
  */
 export function stampDirection(findings: OpdFinding[], c: DeidOpdCase): OpdFinding[] {
   const classAbsent = noAntibioticClassOnNote(c);
   return findings.map((f) => {
     if (f.source !== 'llm') return f;
     const conceptId = String((f as { concept_id?: unknown }).concept_id ?? '');
-    // 2 · coherence — checked first among the objections because it is the strongest: the finding
-    //     contradicts itself, so neither direction is defensible. No direction, stays informational.
-    if (f.signal_type === 'incoherent_with_suggestion') return f;
     // 1 · class-absence — an "overuse" claim about a class the note does not carry is not overuse.
-    //     (Arm 3 has already marked such findings informational; this keeps the label off them too.)
+    //     Such findings now SCORE (the neutraliser that marked them informational is gone, 0.81.19);
+    //     this check only withholds the overuse LABEL, so they stay out of the stewardship counts.
     if (OVERUSE_PREFIX_RE.test(conceptId) && classAbsent && ANTIBIOTIC_TEXT_RE.test(`${f.subject} ${f.rationale || ''}`)) {
       return f;
     }
-    // 3 · prefix — now, and only now, trustworthy enough to label.
+    // 2 · prefix — now, and only now, trustworthy enough to label.
     if (UNDERUSE_PREFIX_RE.test(conceptId)) return { ...f, direction: 'underuse' };
     if (OVERUSE_PREFIX_RE.test(conceptId)) return { ...f, direction: 'overuse' };
     return f;

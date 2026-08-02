@@ -15,7 +15,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  stampDirection, noAntibioticClassOnNote, neutralizeContradictedByStructure, type OpdFinding,
+  stampDirection, noAntibioticClassOnNote, type OpdFinding,
 } from '../opd-note-audit-core.ts';
 import { computeOpdScore, SEVERITY, PENALTY_BASE } from '../opd-note-score-core.ts';
 import { stampLvcMetadata } from '../opd-lvc-classify-core.ts';
@@ -53,24 +53,7 @@ test('§4.1 CHECK 1: the prefix alone does NOT set direction when class-absence 
   assert.equal(out[0].direction, undefined, 'no direction may be claimed on an absent class');
 });
 
-test('§4.2 CHECK 2: an incoherent_with_suggestion finding gets NO direction and stays informational', () => {
-  // The bug-7c shape: concept_id says overuse:, the suggestion recommends STARTING an antibiotic.
-  const bug7c = mkFinding({
-    subject: 'Unindicated antibiotic therapy for pilonidal sinus',
-    rationale: 'The clinician prescribed an anti-inflammatory combination without any indication for antibiotic therapy.',
-    concept_id: 'overuse:antibiotic therapy:antibiotic',
-  });
-  // Arm 8 marks it first (phase 2, already shipped — reused, not reimplemented).
-  const marked = neutralizeContradictedByStructure([bug7c], ABX_NOTE,
-    [{ priority: 1, text: 'Consider prescribing an appropriate antibiotic for the symptomatic pilonidal sinus.' }]);
-  assert.equal(marked[0].signal_type, 'incoherent_with_suggestion', 'arm 8 fired');
-  assert.equal(marked[0].informational, true);
-  const out = stampDirection(marked, ABX_NOTE);
-  assert.equal(out[0].direction, undefined, 'internally contradictory ⇒ no direction, either way');
-  assert.equal(out[0].informational, true, 'and it stays informational');
-});
-
-test('§4 CHECK 3: with no objection, the prefix sets direction — both values', () => {
+test('with no objection, the prefix sets direction — both values', () => {
   const under = mkFinding({ subject: 'Consider systemic therapy', concept_id: 'underuse:systemic therapy:consideration' });
   assert.equal(stampDirection([under], NO_ABX_NOTE)[0].direction, 'underuse');
   const over = mkFinding({ subject: 'Duplicate PPI therapy', rationale: 'Two proton-pump inhibitors prescribed.', concept_id: 'overuse:rx:ppi' });
@@ -88,13 +71,13 @@ test('deterministic findings are never stamped', () => {
   assert.equal(stampDirection([det], NO_ABX_NOTE)[0].direction, undefined);
 });
 
-test('the class-absence predicate has ONE implementation, shared with arm 3', () => {
+test('the class-absence predicate has ONE implementation', () => {
   assert.equal(noAntibioticClassOnNote(NO_ABX_NOTE), true);
   assert.equal(noAntibioticClassOnNote(ABX_NOTE), false);
   assert.equal(noAntibioticClassOnNote(mkCase({ medications: [] })), true, 'zero meds satisfies it');
   const core = readFileSync('lib/opd-note-audit-core.ts', 'utf8');
-  assert.ok(core.includes('const hasAntibioticClass = !noAntibioticClassOnNote(c);'),
-    'arm 3 reuses the extracted predicate rather than a second copy');
+  assert.ok(core.includes('const classAbsent = noAntibioticClassOnNote(c);'),
+    'stampDirection reuses the extracted predicate rather than a second copy');
 });
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════
@@ -177,21 +160,22 @@ test('finding ORDER is preserved by the gate — the report numbers findings by 
   assert.ok(!src.includes('.concat(underuse'), 'no reordering');
 });
 
-test('direction is stamped AFTER the neutralizer and BEFORE stampLvcMetadata', () => {
+test('direction is stamped BEFORE stampLvcMetadata', () => {
   const src = readFileSync('lib/opd-note-audit.ts', 'utf8');
-  const armsIdx = src.indexOf('out = neutralizeContradictedByStructure(out, oc, latestSuggestions);');
   const dirIdx = src.indexOf('out = stampDirection(out, oc);');
   const lvcIdx = src.indexOf('const stamped = stampLvcMetadata(out, lvcRules);');
-  assert.ok(armsIdx > 0 && dirIdx > armsIdx, 'after the arms (check 2 reads arm 8)');
-  assert.ok(dirIdx < lvcIdx, 'before the LVC stamp (the gate keys on direction)');
+  assert.ok(dirIdx > 0 && dirIdx < lvcIdx, 'before the LVC stamp (the gate keys on direction)');
 });
 
-test('the neutralizer keeps its eight arms and CODING_GAP_RE is byte-identical', () => {
+test('the contradicted-by-structure neutraliser is GONE (0.81.19) and CODING_GAP_RE is byte-identical', () => {
   const core = readFileSync('lib/opd-note-audit-core.ts', 'utf8');
+  const orch = readFileSync('lib/opd-note-audit.ts', 'utf8');
+  assert.ok(!core.includes('function neutralizeContradictedByStructure'), 'the function is deleted');
+  assert.ok(!orch.includes('neutralizeContradictedByStructure'), 'no call site remains');
   for (const s of ['contradicted_medication_present', 'contradicted_investigation_absent',
     'contradicted_drug_class_absent', 'contradicted_route', 'contradicted_indication_present',
     'contradicted_history', 'contradicted_ratified_rule', 'incoherent_with_suggestion']) {
-    assert.ok(core.includes(`signal_type: '${s}'`), `arm signal ${s} intact`);
+    assert.ok(!core.includes(`signal_type: '${s}'`), `nothing may set ${s} any more — stored rows only`);
   }
   assert.ok(core.includes(String.raw`const CODING_GAP_RE = /(?:missing|absent|no|add|assign|map|include)[^.]*\bicd(?:[- ]?10)?\b|\bicd(?:[- ]?10)?\b[^.]*(?:code|mapping|missing|absent)|coding (?:gap|completeness|error|omission)|\bcode (?:is )?(?:not )?(?:documented|assigned|mapped|present)|should be coded|uncoded diagnosis/i;`));
 });

@@ -160,31 +160,9 @@ test('FAIL-SAFE doctrine intact: an unparseable duration emits NOTHING in either
 // 5 · Deterministic precedence (arm 7) and the untouched list
 // ═════════════════════════════════════════════════════════════════════════════════════════════
 
-test('§6.6: arm 7 silences a scoring LLM vitamin-D dose finding once the det rule owns the topic', async () => {
-  const { neutralizeContradictedByStructure } = await import('../opd-note-audit-core.ts');
-  const det = vitaminDRepletionFindings([vitD('8 weeks')], 'deficient').map((f) => ({ ...f, signal_type: 'vitamin_d_repletion_duration' }));
-  const llm = {
-    subject: 'Vitamin D dosing may be overly cautious', verdict: 'context-dependent' as const,
-    confidence: 0.85, domain: 'prescribing_safety' as const,
-    rationale: 'The regimen of vitamin D 60,000 IU weekly may be overly cautious compared to standard guidelines.',
-    evidence: [], estimates: [], citation_ids: [], source: 'llm' as const, signal_type: 'prescribing_review',
-  };
-  const c = {
-    consultType: null, reasonForConsult: null, presentingComplaints: [], diagnosisCodes: [],
-    impressionCodes: [], impressions: [], history: [], comorbidities: [], medications: [],
-    investigations: [], advice: [], examination: [], allergies: null, followUpType: null, followUpDateSet: false,
-  };
-  const out = neutralizeContradictedByStructure([...det, llm] as never, c as never);
-  const marked = out[out.length - 1];
-  assert.equal(marked.informational, true, 'the LLM must stop scoring vitamin D dose');
-  assert.equal(marked.signal_type, 'contradicted_ratified_rule');
-});
-
-test('arm 7 gained the dose signal type WITHOUT a second precedence mechanism', () => {
-  const core = readFileSync('lib/opd-note-audit-core.ts', 'utf8');
-  assert.ok(core.includes('vitamin_d_dose_concordance:'), 'the new signal type is an ENTRY in the existing table');
-  assert.equal((core.match(/const RATIFIED_RULE_TERMS/g) || []).length, 1, 'exactly one precedence table');
-});
+// §6.6 (arm 7 precedence) tests DELETED with the contradicted-by-structure neutraliser (0.81.19,
+// V 1 Aug 2026): contradicted_ratified_rule measured 50 findings suppressed, zero correctly. An LLM
+// vitamin-D dose finding now scores beside the deterministic rule's informational prompt.
 
 test('the system prompt names vitamin D dose adequacy beside muscle relaxants', () => {
   const core = readFileSync('lib/opd-note-audit-core.ts', 'utf8');
@@ -192,9 +170,10 @@ test('the system prompt names vitamin D dose adequacy beside muscle relaxants', 
   assert.ok(core.includes('never overrule the clinician'), 'bug 8: the model overruled the documented diagnosis');
 });
 
-test('the engine version is 0.81.17 and the read family includes it', async () => {
+test('the engine version is 0.81.19 and the read family keeps the older versions', async () => {
   const { OPD_ENGINE_VERSION, OPD_ENGINE_VERSIONS_CURRENT } = await import('../opd-note-audit-core.ts');
-  assert.equal(OPD_ENGINE_VERSION, 'opd-note-audit/0.81.17');
+  assert.equal(OPD_ENGINE_VERSION, 'opd-note-audit/0.81.19');
+  assert.ok((OPD_ENGINE_VERSIONS_CURRENT as readonly string[]).includes('opd-note-audit/0.81.19'));
   assert.ok((OPD_ENGINE_VERSIONS_CURRENT as readonly string[]).includes('opd-note-audit/0.81.17'));
   assert.ok((OPD_ENGINE_VERSIONS_CURRENT as readonly string[]).includes('opd-note-audit/0.81.16'));
 });
