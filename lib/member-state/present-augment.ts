@@ -27,6 +27,10 @@ export interface VitalsRead {
 export interface ModalityMix {
   total: number;
   counts: Record<string, number>;
+  /** D-B: rows whose assess_mode is actually populated. 0 with total > 0 ⇒ majority 'unknown' —
+   *  the source field has been empty on every prescription since 1 April 2026, and "no data" is
+   *  not "remote care". */
+  documented: number;
   inPerson: number;
   remoteOrUndocumented: number;
   majority: 'in_person' | 'mixed' | 'remote' | 'unknown';
@@ -34,7 +38,7 @@ export interface ModalityMix {
   lastAssessAt: string | null;
 }
 export const EMPTY_MODALITY: ModalityMix = {
-  total: 0, counts: {}, inPerson: 0, remoteOrUndocumented: 0, majority: 'unknown', lastAssessMode: null, lastAssessAt: null,
+  total: 0, counts: {}, documented: 0, inPerson: 0, remoteOrUndocumented: 0, majority: 'unknown', lastAssessMode: null, lastAssessAt: null,
 };
 
 // ── deterministic date math (parses PASSED-IN strings; never reads the clock) ──
@@ -249,11 +253,16 @@ export function computePictureConfidence(input: ConfidenceInput, now: string): P
       ? 'Vitals measured (structured record)'
       : `Vitals never measured${input.encounters.opd ? ` (${input.encounters.opd} visits)` : ''}` });
 
-  // modality: majority in-person 🟢 / mixed 🟡 / majority remote 🔴
-  const mDot: Dot = input.modalityMix.majority === 'in_person' ? 'g' : input.modalityMix.majority === 'mixed' ? 'a' : 'r';
+  // modality: majority in-person 🟢 / mixed 🟡 / UNKNOWN 🟡 / majority remote 🔴.
+  // D-B: 'unknown' is AMBER and still COUNTED — not knowing how a member was assessed is a real
+  // limitation on the picture, but it is not the same as knowing the care was remote. Red would
+  // repeat the false claim in a colour. The in_person / mixed / remote branches are unchanged.
+  const mDot: Dot = input.modalityMix.majority === 'in_person' ? 'g'
+    : input.modalityMix.majority === 'mixed' || input.modalityMix.majority === 'unknown' ? 'a' : 'r';
   factors.push({ key: 'modality', dot: mDot, counted: true,
     label: input.modalityMix.majority === 'in_person' ? 'Care modality in-person exam'
       : input.modalityMix.majority === 'mixed' ? 'Care modality mixed · some in-person'
+      : input.modalityMix.majority === 'unknown' ? 'Care modality not recorded'
       : `Care modality remote / undocumented · ${input.modalityMix.inPerson} in-person exam` });
 
   // labs: ≤12mo 🟢 / ≤24mo 🟡 / >24mo 🔴 (none → 🔴)
@@ -324,9 +333,13 @@ export function buildVitalsView(v: VitalsRead | null, modality: ModalityMix): Vi
   }
   // No structured vitals — render honestly from the modality mix (never a guessed number).
   const notPossible = modality.counts?.NOT_POSSIBLE_IN_ONLINE_CONSULTATION ?? 0;
-  const modalityNote = modality.total > 0
-    ? `Across ${modality.total} visit${modality.total === 1 ? '' : 's'}, care was remote or undocumented${notPossible ? ` — ${notPossible} marked “not possible in online consultation.”` : '.'}`
-    : null;
+  // D-B: when nothing recorded the modality, say THAT — do not report an absence of data as a
+  // finding about how the care was delivered. The other branch is unchanged.
+  const modalityNote = modality.total === 0
+    ? null
+    : modality.majority === 'unknown'
+      ? `Assessment modality was not recorded on any of the ${modality.total} visits.`
+      : `Across ${modality.total} visit${modality.total === 1 ? '' : 's'}, care was remote or undocumented${notPossible ? ` — ${notPossible} marked “not possible in online consultation.”` : '.'}`;
   return {
     hasVitals: false, measuredAt: null, items: [], ews: null,
     absentNote: 'No vitals on record. No BP, pulse, temperature or SpO₂ has ever been captured, so no stability read is possible.',

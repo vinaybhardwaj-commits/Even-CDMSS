@@ -111,8 +111,10 @@ test('computeCareGaps: abnormal-not-rechecked > 6mo; recent excluded; normal exc
 });
 
 // ── computePictureConfidence (Decision H, §2.5) ──
-const REMOTE_MODALITY: ModalityMix = { total: 8, counts: { NOT_POSSIBLE_IN_ONLINE_CONSULTATION: 1 }, inPerson: 0, remoteOrUndocumented: 8, majority: 'remote', lastAssessMode: 'NOT_POSSIBLE_IN_ONLINE_CONSULTATION', lastAssessAt: '2026-02-01' };
-const INPERSON_MODALITY: ModalityMix = { total: 3, counts: { IN_PERSON: 3 }, inPerson: 3, remoteOrUndocumented: 0, majority: 'in_person', lastAssessMode: 'IN_PERSON', lastAssessAt: '2026-07-12' };
+// D-B: both fixtures are DOCUMENTED members (documented === total) — their assess_mode really is
+// recorded, so they keep classifying exactly as before. The undocumented case is its own fixture.
+const REMOTE_MODALITY: ModalityMix = { total: 8, counts: { NOT_POSSIBLE_IN_ONLINE_CONSULTATION: 1 }, documented: 8, inPerson: 0, remoteOrUndocumented: 8, majority: 'remote', lastAssessMode: 'NOT_POSSIBLE_IN_ONLINE_CONSULTATION', lastAssessAt: '2026-02-01' };
+const INPERSON_MODALITY: ModalityMix = { total: 3, counts: { IN_PERSON: 3 }, documented: 3, inPerson: 3, remoteOrUndocumented: 0, majority: 'in_person', lastAssessMode: 'IN_PERSON', lastAssessAt: '2026-07-12' };
 
 test('computePictureConfidence: Ravali-like → THIN; in-person recent → GOOD', () => {
   const thin = computePictureConfidence({

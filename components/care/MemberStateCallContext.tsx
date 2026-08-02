@@ -41,9 +41,15 @@ export default function MemberStateCallContext({ prescUid, vitals, encounter }: 
   const topLab = view.flaggedLabs.surfaced.find((l) => l.abnormal) ?? view.flaggedLabs.surfaced[0] ?? null;
 
   // assessment completeness — deterministic from THIS visit's vitals + the member's modality.
+  // D-B (CHEAP-DEFECT-BATCH §4.2): when the modality is UNKNOWN the sentence must not claim the
+  // care was remote. The source field (general_practitioner_prescription__vitals) has been empty on
+  // every prescription since 1 April 2026, so "remote / undocumented throughout" was a statement
+  // about missing data dressed as a statement about the clinician. Every other case is unchanged.
   const completeness = vitalsView.hasVitals
     ? { tone: 'ok', text: 'Vitals captured this visit — a measured exam anchors this encounter.' }
-    : { tone: 'warn', text: `No vitals or exam findings captured; modality ${modality.lastAssessMode ? modality.lastAssessMode.replace(/_/g, ' ').toLowerCase() : 'not recorded'} on this note. For this member, care has been remote / undocumented throughout — this encounter adds a diagnosis, not a measured exam.` };
+    : modality.majority === 'unknown'
+      ? { tone: 'warn', text: 'No vitals or exam findings captured on this note. How this member has been assessed is not recorded, so no exam history can be read from it.' }
+      : { tone: 'warn', text: `No vitals or exam findings captured; modality ${modality.lastAssessMode ? modality.lastAssessMode.replace(/_/g, ' ').toLowerCase() : 'not recorded'} on this note. For this member, care has been remote / undocumented throughout — this encounter adds a diagnosis, not a measured exam.` };
 
   // compact confidence caption (mockup: "8 visits · no vitals · labs 2.5y old")
   const labsFactor = confidence.factors.find((f) => f.key === 'labs');
