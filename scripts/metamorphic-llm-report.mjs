@@ -14,7 +14,7 @@
 //
 // The relation FIXTURES + matchers live in lib/metamorphic-core.ts (single definition — the panel
 // verdicts and this report can never drift).
-import { PART_C_RELATIONS, majorityOf } from '../lib/metamorphic-core.ts';
+import { PART_C_RELATIONS, majorityOf, partCVerdict } from '../lib/metamorphic-core.ts';
 import { auditOpdNote } from '../lib/opd-note-audit.ts';
 import { ensureLabTables, saveLabAnalysis } from '../lib/lab.ts';
 import { MINI_MODEL } from '../lib/llm.ts';
@@ -63,23 +63,28 @@ for (const rel of PART_C_RELATIONS) {
 
   const baseMaj = majorityOf(armFires.base);
   const transMaj = majorityOf(armFires.transformed);
-  // L-3's verdict reads (praise still present on transformed, safety fired on transformed) — M2.
+  const basePraiseMaj = majorityOf(praiseSeen.base);
   const transPraiseMaj = majorityOf(praiseSeen.transformed);
-  const holds = rel.id === 'L-3'
-    ? rel.verdict(transPraiseMaj.fired, transMaj.fired)
-    : rel.verdict(baseMaj.fired, transMaj.fired);
-  const split = baseMaj.split || transMaj.split || (rel.id === 'L-3' && transPraiseMaj.split);
+  // ENGINE-HEALTH-HONESTY §2: precondition first (base must show the state the transformation
+  // removes), then the relation's own verdict — one implementation, shared with the panel.
+  const { verdict, reason } = partCVerdict(rel, {
+    baseFired: baseMaj.fired, basePraise: basePraiseMaj.fired,
+    transformedFired: transMaj.fired, transformedPraise: transPraiseMaj.fired,
+  });
+  const split = baseMaj.split || transMaj.split
+    || (rel.precondition === 'praise' && basePraiseMaj.split)
+    || (rel.id === 'L-3' && transPraiseMaj.split);
   report.push({
     relation: rel.id, title: rel.title, experiment: rel.experiment,
     base_fires: `${armFires.base.filter(Boolean).length}/${RUNS_PER_ARM}`,
     transformed_fires: `${armFires.transformed.filter(Boolean).length}/${RUNS_PER_ARM}`,
-    verdict: holds ? 'HOLDS' : 'FAILS',
+    verdict, reason: reason ?? null,
     split,
   });
 }
 
 console.log('\nrelation | base fires (n/3) | transformed fires (n/3) | verdict | split?');
 for (const r of report) {
-  console.log(`${r.relation} ${r.title} | ${r.base_fires} | ${r.transformed_fires} | ${r.verdict} | ${r.split ? 'SPLIT (2-1) — a finding about non-determinism, not a pass' : 'no'}`);
+  console.log(`${r.relation} ${r.title} | ${r.base_fires} | ${r.transformed_fires} | ${r.verdict}${r.reason ? ` (${r.reason})` : ''} | ${r.split ? 'SPLIT (2-1) — a finding about non-determinism, not a pass' : 'no'}`);
 }
 console.log(`\nJSON: ${JSON.stringify(report)}`);

@@ -446,6 +446,25 @@ export const RATIFIED_RELATION_STATUS: Record<string, 'pass' | 'fail'> = {
   'G-6': 'pass', 'G-7': 'pass',
 };
 
+/**
+ * The engine version RATIFIED_RELATION_STATUS was measured at. NOT the current engine: the
+ * relations have not been re-measured since 0.81.17, and refreshing this number without a
+ * re-measure would turn an honest stale label into a dishonest fresh one (ENGINE-HEALTH-HONESTY
+ * PRD §3). The panel renders this constant and warns when it differs from the deployed
+ * OPD_ENGINE_VERSION; changing it requires re-ratifying the map with V.
+ */
+export const RATIFIED_AT_ENGINE = 'opd-note-audit/0.81.17';
+
+/**
+ * Drift warning for the health panel (pure — the deployed engine version is an argument so this
+ * module never imports engine code). Null when the map is current; otherwise the exact sentence
+ * the panel must show. The stale number was never the danger; not knowing it was stale was.
+ */
+export function ratificationDriftWarning(deployedEngine: string): string | null {
+  if (deployedEngine === RATIFIED_AT_ENGINE) return null;
+  return `Ratified at ${RATIFIED_AT_ENGINE}. The deployed engine is ${deployedEngine}. These statuses have not been re-measured against the deployed engine.`;
+}
+
 // ── Part B — synthetic known-positives + negative controls ────────────────────
 /** Placeholder-molecule banned-FDC test table (standing rule from cdsco-banned-fdc-core.test.ts). */
 export const MM_BANNED_TEST_TABLE: BannedFdcTable = {
@@ -622,6 +641,13 @@ export interface PartCRelation {
   fires: (findings: OpdFinding[]) => boolean;
   /** verdict from the two per-arm majorities */
   verdict: (baseFires: boolean, transformedFires: boolean) => boolean;
+  /**
+   * ENGINE-HEALTH-HONESTY PRD §2: what the BASE arm must exhibit for the relation to be testable.
+   * 'fires' = base majority of the relation's own `fires` matcher; 'praise' = base majority of
+   * praise. If the base arm lacks it, the transformation had nothing to remove and the verdict is
+   * VACUOUS — never HOLDS (the disjunction that reported HOLDS on a silent engine, 1 Aug).
+   */
+  precondition: 'fires' | 'praise';
 }
 
 const gpRow = (over: Db13Row): Db13Row => ({
@@ -664,6 +690,7 @@ export const PART_C_RELATIONS: PartCRelation[] = [
       && f.informational !== true
       && (f.verdict === 'low-value' || f.verdict === 'context-dependent')),
     verdict: (base, transformed) => base && !transformed,
+    precondition: 'fires',
   },
   {
     id: 'L-2', title: 'Praise requires evidence', experiment: 'mm-llm-l2',
@@ -690,6 +717,7 @@ export const PART_C_RELATIONS: PartCRelation[] = [
     },
     fires: praiseFires,
     verdict: (base, transformed) => base && !transformed,
+    precondition: 'fires',
   },
   {
     id: 'L-3', title: 'Praise is not blind', experiment: 'mm-llm-l3',
@@ -719,6 +747,7 @@ export const PART_C_RELATIONS: PartCRelation[] = [
     // L-3's verdict is evaluated by the RUNNER over BOTH matchers (praise + safety); this
     // signature receives (praiseStillPresent, safetyFired) for the transformed arm.
     verdict: (praiseStillPresent, safetyFired) => !praiseStillPresent || safetyFired,
+    precondition: 'praise',
   },
 ];
 
@@ -726,4 +755,30 @@ export const PART_C_RELATIONS: PartCRelation[] = [
 export function majorityOf(fires: boolean[]): { fired: boolean; split: boolean } {
   const yes = fires.filter(Boolean).length;
   return { fired: yes * 2 > fires.length, split: yes !== 0 && yes !== fires.length };
+}
+
+// ── Part C verdict — ONE implementation (runner + panel), ENGINE-HEALTH-HONESTY PRD §2 ────────
+// A disjunction cannot distinguish "the engine responded correctly" from "the engine was silent":
+// on 1 Aug L-3 reported HOLDS while a documented penicillin allergy + amoxicillin went unflagged,
+// because base praise never appeared and `!praiseStillPresent` carried the verdict. The
+// precondition is therefore evaluated FIRST; a relation whose base arm lacks the state the
+// transformation is supposed to remove is VACUOUS — a real, visible result, never HOLDS.
+export type PartCVerdict = 'HOLDS' | 'FAILS' | 'VACUOUS';
+
+export interface PartCArmMajorities {
+  baseFired: boolean;        // base-arm majority of the relation's `fires` matcher
+  basePraise: boolean;       // base-arm majority of praise (L-3's precondition)
+  transformedFired: boolean; // transformed-arm majority of the relation's `fires` matcher
+  transformedPraise: boolean;// transformed-arm majority of praise (L-3's verdict input)
+}
+
+export function partCVerdict(rel: PartCRelation, m: PartCArmMajorities): { verdict: PartCVerdict; reason?: string } {
+  const preconditionMet = rel.precondition === 'praise' ? m.basePraise : m.baseFired;
+  if (!preconditionMet) {
+    return { verdict: 'VACUOUS', reason: `could not be tested — the base arm produced no ${rel.precondition}` };
+  }
+  const holds = rel.id === 'L-3'
+    ? rel.verdict(m.transformedPraise, m.transformedFired)   // (praiseStillPresent, safetyFired)
+    : rel.verdict(m.baseFired, m.transformedFired);
+  return { verdict: holds ? 'HOLDS' : 'FAILS' };
 }

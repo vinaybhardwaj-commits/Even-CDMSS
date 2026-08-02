@@ -20,7 +20,9 @@ import { sql } from '@/lib/db';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import {
   runRelations, runSyntheticControls, RATIFIED_RELATION_STATUS, PART_C_RELATIONS, majorityOf,
+  RATIFIED_AT_ENGINE, ratificationDriftWarning, partCVerdict, type PartCVerdict,
 } from '@/lib/metamorphic-core';
+import { OPD_ENGINE_VERSION } from '@/lib/opd-note-audit-core';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Engine Health · Observability' };
@@ -35,6 +37,15 @@ function Pill({ ok, label }: { ok: boolean; label: string }) {
       {label}
     </span>
   );
+}
+
+// VACUOUS is a real result, not an absence of one — and never green: it means the base arm lacked
+// the state the transformation removes, so the relation could not be tested (HONESTY PRD §2).
+function VerdictPill({ verdict }: { verdict: PartCVerdict }) {
+  const cls = verdict === 'HOLDS' ? 'bg-emerald-50 text-emerald-700'
+    : verdict === 'FAILS' ? 'bg-red-50 text-red-700'
+    : 'bg-amber-50 text-amber-700';
+  return <span className={`rounded px-1.5 py-0.5 text-[11px] font-semibold ${cls}`}>{verdict}</span>;
 }
 
 export default async function EngineHealthPage() {
@@ -64,19 +75,24 @@ export default async function EngineHealthPage() {
     )) as LlmRow[];
   } catch (e) { llmError = (e as Error).message; }
 
-  // Latest 3 runs per (experiment, arm); majority per arm; 2–1 = split (M2).
+  // Latest 3 runs per (experiment, arm); majority per arm; 2–1 = split (M2). `praise` is read
+  // beside `fired` because the precondition (and L-3's verdict) needs both (HONESTY PRD §2).
   const llmByRelation = PART_C_RELATIONS.map((rel) => {
     const rows = llmRows.filter((r) => r.experiment === rel.experiment);
-    const arm = (name: string) => rows
+    const arm = (name: string, key: 'fired' | 'praise') => rows
       .filter((r) => (r.output as { arm?: string })?.arm === name)
       .slice(0, 3)
-      .map((r) => (r.output as { fired?: boolean })?.fired === true);
-    const base = arm('base');
-    const transformed = arm('transformed');
+      .map((r) => (r.output as Record<string, unknown>)?.[key] === true);
+    const base = arm('base', 'fired');
+    const transformed = arm('transformed', 'fired');
     const baseMaj = base.length ? majorityOf(base) : null;
     const transMaj = transformed.length ? majorityOf(transformed) : null;
-    return { rel, base, transformed, baseMaj, transMaj, hasData: base.length > 0 || transformed.length > 0 };
+    const basePraiseMaj = base.length ? majorityOf(arm('base', 'praise')) : null;
+    const transPraiseMaj = transformed.length ? majorityOf(arm('transformed', 'praise')) : null;
+    return { rel, base, transformed, baseMaj, transMaj, basePraiseMaj, transPraiseMaj, hasData: base.length > 0 || transformed.length > 0 };
   });
+
+  const driftWarning = ratificationDriftWarning(OPD_ENGINE_VERSION);
 
   const fmt = (fires: boolean[]) => `${fires.filter(Boolean).length}/${fires.length}`;
 
@@ -98,6 +114,9 @@ export default async function EngineHealthPage() {
       {/* ── Section 1: metamorphic relations (live) ── */}
       <section className="mt-8">
         <h2 className="text-sm font-semibold text-slate-900">Metamorphic relations — live (D-1…D-7, G-1…G-7)</h2>
+        {driftWarning && (
+          <p className="mt-2 rounded border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">{driftWarning}</p>
+        )}
         {relationsError ? (
           <p className="mt-2 rounded border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">Relations could not run: {relationsError}</p>
         ) : (
@@ -106,7 +125,7 @@ export default async function EngineHealthPage() {
               <tr className="border-b border-slate-200 text-left text-slate-400">
                 <th className="py-1.5 pr-2 font-medium">Relation</th>
                 <th className="py-1.5 pr-2 font-medium">Status</th>
-                <th className="py-1.5 pr-2 font-medium">Ratified @ 0.81.17</th>
+                <th className="py-1.5 pr-2 font-medium">Ratified @ {RATIFIED_AT_ENGINE}</th>
                 <th className="py-1.5 font-medium">Observed</th>
               </tr>
             </thead>
@@ -189,7 +208,7 @@ export default async function EngineHealthPage() {
               </tr>
             </thead>
             <tbody>
-              {llmByRelation.map(({ rel, base, transformed, baseMaj, transMaj, hasData }) => {
+              {llmByRelation.map(({ rel, base, transformed, baseMaj, transMaj, basePraiseMaj, transPraiseMaj, hasData }) => {
                 if (!hasData) {
                   return (
                     <tr key={rel.id} className="border-b border-slate-100">
@@ -198,16 +217,27 @@ export default async function EngineHealthPage() {
                     </tr>
                   );
                 }
-                const split = (baseMaj?.split ?? false) || (transMaj?.split ?? false);
-                const verdict = baseMaj != null && transMaj != null
-                  ? rel.verdict(baseMaj.fired, transMaj.fired)
+                const split = (baseMaj?.split ?? false) || (transMaj?.split ?? false)
+                  || (rel.precondition === 'praise' && (basePraiseMaj?.split ?? false))
+                  || (rel.id === 'L-3' && (transPraiseMaj?.split ?? false));
+                // Precondition first, then the relation's own verdict — the SAME partCVerdict the
+                // runner uses (single definition). Also repairs the old L-3 wiring here, which fed
+                // (baseFired, transformedFired) into a verdict expecting (praiseStillPresent, safetyFired).
+                const result = baseMaj != null && transMaj != null && basePraiseMaj != null && transPraiseMaj != null
+                  ? partCVerdict(rel, {
+                      baseFired: baseMaj.fired, basePraise: basePraiseMaj.fired,
+                      transformedFired: transMaj.fired, transformedPraise: transPraiseMaj.fired,
+                    })
                   : null;
                 return (
                   <tr key={rel.id} className="border-b border-slate-100">
                     <td className="py-1.5 pr-2 font-medium text-slate-700">{rel.id} · {rel.title}</td>
                     <td className="py-1.5 pr-2 text-slate-500">{fmt(base)}</td>
                     <td className="py-1.5 pr-2 text-slate-500">{fmt(transformed)}</td>
-                    <td className="py-1.5 pr-2">{verdict == null ? <span className="text-slate-400">incomplete</span> : <Pill ok={verdict} label={verdict ? 'HOLDS' : 'FAILS'} />}</td>
+                    <td className="py-1.5 pr-2">
+                      {result == null ? <span className="text-slate-400">incomplete</span> : <VerdictPill verdict={result.verdict} />}
+                      {result?.reason && <span className="ml-1.5 text-amber-700">{result.reason}</span>}
+                    </td>
                     <td className="py-1.5">{split ? <b className="text-amber-700">split (2–1) — a finding about non-determinism, not a pass</b> : 'no'}</td>
                   </tr>
                 );
