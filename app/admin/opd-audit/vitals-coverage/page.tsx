@@ -90,6 +90,12 @@ export default async function VitalsCoveragePage() {
             consultation, even when individual measurements within it are blank. &ldquo;No record at all&rdquo; and
             &ldquo;a record with an empty field&rdquo; are different things, and only the first is counted here.
           </li>
+          <li>
+            <b className="text-slate-700">A visit with no consultation ID is excluded from the share.</b> Vitals are
+            matched to a visit by that ID, so without one the system cannot tell whether vitals were taken — that is
+            not evidence of a gap, and not evidence of coverage. Those visits are counted and shown separately rather
+            than being folded into either side.
+          </li>
           <li>The most recent day is still in progress, so its counts will rise during the day.</li>
         </ul>
       </section>
@@ -112,8 +118,16 @@ export default async function VitalsCoveragePage() {
               </span>
             </div>
             <p className="mt-1.5 text-xs text-slate-500">
-              {report.totalNoVitals.toLocaleString('en-IN')} of {report.totalGpNotes.toLocaleString('en-IN')} visits,
+              {report.totalNoVitals.toLocaleString('en-IN')} of {report.answerable.toLocaleString('en-IN')} visits,
               {' '}{fmtDay(win.start)} to {fmtDay(win.lastDay)} ({win.days} {win.days === 1 ? 'day' : 'days'}).
+              {report.totalNoConsultId > 0 && (
+                <>
+                  {' '}A further <b className="text-slate-700">{report.totalNoConsultId.toLocaleString('en-IN')} visit
+                  {report.totalNoConsultId === 1 ? '' : 's'} carried no consultation ID</b> and {report.totalNoConsultId === 1 ? 'is' : 'are'} not
+                  counted either way, so the {report.totalGpNotes.toLocaleString('en-IN')} visits in the window
+                  become {report.answerable.toLocaleString('en-IN')} we can answer for.
+                </>
+              )}
               {win.clamped && (
                 <>
                   {' '}<b className="text-amber-700">Window shortened:</b> the last {WINDOW_DAYS} days would reach
@@ -135,6 +149,7 @@ export default async function VitalsCoveragePage() {
                     <tr className="border-b border-slate-200 text-left text-slate-400">
                       <th className="py-1.5 pr-3 font-medium">Date</th>
                       <th className="py-1.5 pr-3 text-right font-medium">GP visits</th>
+                      <th className="py-1.5 pr-3 text-right font-medium">No consultation ID</th>
                       <th className="py-1.5 pr-3 text-right font-medium">No vitals record</th>
                       <th className="py-1.5 text-right font-medium">Share</th>
                     </tr>
@@ -144,6 +159,7 @@ export default async function VitalsCoveragePage() {
                       <tr key={d.date} className="border-b border-slate-100">
                         <td className="py-1.5 pr-3 whitespace-nowrap font-medium text-slate-700">{fmtDay(d.date)}</td>
                         <td className="py-1.5 pr-3 text-right tabular-nums text-slate-500">{d.gpNotes.toLocaleString('en-IN')}</td>
+                        <td className={`py-1.5 pr-3 text-right tabular-nums ${d.noConsultId > 0 ? 'text-amber-700' : 'text-slate-300'}`}>{d.noConsultId.toLocaleString('en-IN')}</td>
                         <td className="py-1.5 pr-3 text-right tabular-nums text-slate-700">{d.noVitals.toLocaleString('en-IN')}</td>
                         <td className="py-1.5 text-right tabular-nums text-slate-500">{d.pct}%</td>
                       </tr>

@@ -81,6 +81,18 @@ export function coverageWindow(today: string, days = WINDOW_DAYS): CoverageWindo
  * validated against ^\d{4}-\d{2}-\d{2}$ here and this function THROWS rather than interpolate
  * anything that fails. There is no path from a caller's string into the SQL except through isDay.
  *
+ * ⚠️ THE THREE-WAY SPLIT, AND WHY `NOT IN` NEEDED GUARDING (measured on db13, 2 Aug 2026).
+ * In SQL, `NULL NOT IN (…)` evaluates to NULL — not true — so a FILTER on it does not count the
+ * row. A GP note with a null consult_uid therefore fell out of `no_vitals` and was silently
+ * reported as COVERED: the page asserted vitals existed for a visit it could not look up. A note
+ * with a BLANK-STRING consult_uid failed the opposite way — `'' NOT IN (…)` is true, so it counted
+ * as no_vitals, asserting an absence it equally could not know. 33 of 2,771 GP notes (1.19%) in the
+ * window carry no usable ID.
+ *
+ * Both are now their own category. The `NOT IN` subquery is UNCHANGED (a LEFT JOIN onto the whole
+ * vitals table returns HTTP 504); it is only GUARDED, so it is asked exclusively about notes that
+ * actually have an ID to ask about.
+ *
  * TEMPLATE SCOPE (DEC-1): HOSPITAL_GP only. Teleconsults (GENERAL_PRACTITIONER), paediatrics and
  * the gynaecology templates are out of scope — each has its own vitals expectation and none was
  * measured. HOSPITAL_GP_INVESTIGATION_REFERRAL is excluded because it is DEAD: 3 notes since
@@ -92,9 +104,11 @@ export function buildVitalsCoverageSql(start: string, end: string): string {
   }
   return `SELECT (ip.uploaded_at AT TIME ZONE 'Asia/Kolkata')::date AS d,
        COUNT(*) AS gp_notes,
-       COUNT(*) FILTER (WHERE ip.consult_uid NOT IN (
-         SELECT consult_uid FROM "individuals-individual_vitals_records" WHERE consult_uid IS NOT NULL
-       )) AS no_vitals
+       COUNT(*) FILTER (WHERE ip.consult_uid IS NULL OR btrim(ip.consult_uid) = '') AS no_consult_id,
+       COUNT(*) FILTER (WHERE ip.consult_uid IS NOT NULL AND btrim(ip.consult_uid) <> ''
+         AND ip.consult_uid NOT IN (
+           SELECT consult_uid FROM "individuals-individual_vitals_records" WHERE consult_uid IS NOT NULL
+         )) AS no_vitals
 FROM "individuals-prescriptions" ip
 WHERE ip.is_draft = false
   AND ip.type_of_prescription = 'HOSPITAL_GP'
@@ -102,12 +116,28 @@ WHERE ip.is_draft = false
 GROUP BY 1 ORDER BY 1 DESC`;
 }
 
-export interface CoverageDay { date: string; gpNotes: number; noVitals: number; pct: number }
+/**
+ * One IST day. A GP visit is exactly one of three things, and the third is why this shape changed:
+ *   · noConsultId — no consultation ID at all, so whether vitals exist is UNKNOWABLE from here
+ *   · noVitals    — has an ID, and that ID is absent from the vitals table
+ *   · covered     — has an ID and a vitals record (= gpNotes − noConsultId − noVitals)
+ */
+export interface CoverageDay {
+  date: string;
+  gpNotes: number;
+  noConsultId: number;
+  noVitals: number;
+  /** noVitals ÷ (gpNotes − noConsultId): the share among visits we can actually answer for */
+  pct: number;
+}
 export interface CoverageReport {
   days: CoverageDay[];
   totalGpNotes: number;
+  totalNoConsultId: number;
   totalNoVitals: number;
-  /** headline: share of GP notes in the window with no vitals record, 0–100, one decimal */
+  /** the headline denominator: GP visits we can answer for = totalGpNotes − totalNoConsultId */
+  answerable: number;
+  /** headline: noVitals ÷ answerable, 0–100, one decimal. Unknowable visits are in NEITHER side. */
   pct: number;
 }
 
@@ -136,11 +166,20 @@ export function shapeCoverage(rows: unknown[], w: Pick<CoverageWindow, 'start' |
     const d = day(r.d);
     if (!d || d < w.start || d > w.lastDay) continue;
     const gpNotes = num(r.gp_notes);
-    const noVitals = Math.min(num(r.no_vitals), gpNotes);   // a subset can never exceed its whole
-    days.push({ date: d, gpNotes, noVitals, pct: pctOf(noVitals, gpNotes) });
+    // The three categories are disjoint and must stay so even on junk input: a subset can never
+    // exceed its whole, and no-vitals can never exceed the visits we can actually answer for.
+    const noConsultId = Math.min(num(r.no_consult_id), gpNotes);
+    const answerable = gpNotes - noConsultId;
+    const noVitals = Math.min(num(r.no_vitals), answerable);
+    days.push({ date: d, gpNotes, noConsultId, noVitals, pct: pctOf(noVitals, answerable) });
   }
   days.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));   // newest first
   const totalGpNotes = days.reduce((s, x) => s + x.gpNotes, 0);
+  const totalNoConsultId = days.reduce((s, x) => s + x.noConsultId, 0);
   const totalNoVitals = days.reduce((s, x) => s + x.noVitals, 0);
-  return { days, totalGpNotes, totalNoVitals, pct: pctOf(totalNoVitals, totalGpNotes) };
+  // THE HEADLINE DENOMINATOR EXCLUDES WHAT WE CANNOT KNOW. A visit with no consultation ID is not
+  // evidence of a gap and not evidence of coverage; folding it into either side would state
+  // something the data cannot support. It is reported separately, in its own words, on the page.
+  const answerable = totalGpNotes - totalNoConsultId;
+  return { days, totalGpNotes, totalNoConsultId, totalNoVitals, answerable, pct: pctOf(totalNoVitals, answerable) };
 }

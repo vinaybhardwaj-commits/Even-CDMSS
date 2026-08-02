@@ -81,6 +81,21 @@ test('the SQL is the measured NOT IN form, bounded, HOSPITAL_GP only', () => {
   assert.ok(sql.trimEnd().endsWith('GROUP BY 1 ORDER BY 1 DESC'));
 });
 
+test('the NOT IN filter is GUARDED so it is only asked about notes that HAVE an ID', () => {
+  // NULL NOT IN (…) is NULL, not true — an unguarded FILTER silently counted a null-ID note as
+  // COVERED. '' NOT IN (…) is true, so a blank-string ID counted as no-vitals. Both asserted
+  // something unknowable. The guard makes the question only reachable for a real ID.
+  const sql = buildVitalsCoverageSql('2026-07-04', '2026-08-03');
+  assert.ok(sql.includes("COUNT(*) FILTER (WHERE ip.consult_uid IS NULL OR btrim(ip.consult_uid) = '') AS no_consult_id"),
+    'the unknowable visits are counted in their own column');
+  assert.ok(sql.includes("COUNT(*) FILTER (WHERE ip.consult_uid IS NOT NULL AND btrim(ip.consult_uid) <> ''"),
+    'and the NOT IN filter is guarded by the same test');
+  // the guard must sit INSIDE the no_vitals filter, before the subquery
+  const noVitalsFilter = sql.slice(sql.indexOf('AS no_consult_id'), sql.indexOf('AS no_vitals'));
+  assert.ok(noVitalsFilter.includes("btrim(ip.consult_uid) <> ''") && noVitalsFilter.includes('NOT IN ('),
+    'guard then subquery, in that order');
+});
+
 test('THE INJECTION GUARD: a non-date bound THROWS, it is never interpolated', () => {
   const attacks = [
     "2026-07-04'; DROP TABLE x; --",
@@ -119,19 +134,59 @@ test('istDay reads the Asia/Kolkata calendar day, not UTC', () => {
 
 const WIN = { start: '2026-07-27', lastDay: '2026-08-01' };
 
+test('a note with a NULL consult ID is no-consult-ID — neither covered nor no-vitals', () => {
+  // 5 visits: 1 has no ID, 2 have no vitals, 2 are covered.
+  const r = shapeCoverage([{ d: '2026-07-28', gp_notes: 5, no_consult_id: 1, no_vitals: 2 }], WIN);
+  const d0 = r.days[0];
+  assert.equal(d0.gpNotes, 5);
+  assert.equal(d0.noConsultId, 1, 'counted in its own category');
+  assert.equal(d0.noVitals, 2, 'and NOT rolled into the gap count');
+  assert.equal(d0.gpNotes - d0.noConsultId - d0.noVitals, 2, 'the remainder is covered');
+  assert.equal(d0.pct, 50, '2 of the 4 answerable visits — the unknowable one is out of the denominator');
+});
+
+test('THE HEADLINE DENOMINATOR EXCLUDES what we cannot know', () => {
+  const r = shapeCoverage([
+    { d: '2026-07-28', gp_notes: 100, no_consult_id: 20, no_vitals: 20 },
+  ], WIN);
+  assert.equal(r.totalGpNotes, 100);
+  assert.equal(r.totalNoConsultId, 20);
+  assert.equal(r.answerable, 80, 'GP visits minus the ones with no ID');
+  assert.equal(r.pct, 25, '20/80, NOT 20/100 — folding them in either direction would misstate it');
+});
+
+test('empty-string and whitespace IDs are the SAME category as null (the SQL btrims them)', () => {
+  // The core sees only the counts, so this pins the CONTRACT: whatever the SQL classifies as
+  // no_consult_id lands in that column and leaves the denominator. The btrim is asserted above.
+  const sql = buildVitalsCoverageSql('2026-07-04', '2026-08-03');
+  assert.ok(sql.includes("btrim(ip.consult_uid) = ''"), 'whitespace-only trims to empty and counts as no-ID');
+  assert.ok(sql.includes("btrim(ip.consult_uid) <> ''"), 'and is excluded from the vitals lookup');
+  const r = shapeCoverage([{ d: '2026-07-28', gp_notes: 3, no_consult_id: 3, no_vitals: 0 }], WIN);
+  assert.equal(r.answerable, 0);
+  assert.equal(r.pct, 0, 'nothing answerable ⇒ 0%, never a divide-by-zero');
+});
+
+test('a note with an ID absent from the vitals table is still no-vitals; one present is still covered', () => {
+  const r = shapeCoverage([{ d: '2026-07-28', gp_notes: 10, no_consult_id: 0, no_vitals: 4 }], WIN);
+  assert.equal(r.days[0].noVitals, 4, 'absent from the table ⇒ no-vitals, unchanged');
+  assert.equal(r.days[0].gpNotes - r.days[0].noVitals, 6, 'present ⇒ covered, unchanged');
+  assert.equal(r.pct, 40, 'and with no unknowable visits the headline is unchanged from before');
+});
+
 test('the MEASURED window reproduces: 160 of 561 = 28.5%', () => {
   // PRD §3.1, measured 2 Aug against db13.
   const rows = [
-    { d: '2026-07-27', gp_notes: 136, no_vitals: 36 },
-    { d: '2026-07-28', gp_notes: 79, no_vitals: 28 },
-    { d: '2026-07-29', gp_notes: 96, no_vitals: 26 },
-    { d: '2026-07-30', gp_notes: 89, no_vitals: 30 },
-    { d: '2026-07-31', gp_notes: 71, no_vitals: 18 },
-    { d: '2026-08-01', gp_notes: 90, no_vitals: 22 },
+    { d: '2026-07-27', gp_notes: 136, no_consult_id: 0, no_vitals: 36 },
+    { d: '2026-07-28', gp_notes: 79, no_consult_id: 0, no_vitals: 28 },
+    { d: '2026-07-29', gp_notes: 96, no_consult_id: 0, no_vitals: 26 },
+    { d: '2026-07-30', gp_notes: 89, no_consult_id: 0, no_vitals: 30 },
+    { d: '2026-07-31', gp_notes: 71, no_consult_id: 0, no_vitals: 18 },
+    { d: '2026-08-01', gp_notes: 90, no_consult_id: 0, no_vitals: 22 },
   ];
   const r = shapeCoverage(rows, WIN);
   assert.equal(r.totalGpNotes, 561);
   assert.equal(r.totalNoVitals, 160);
+  assert.equal(r.answerable, 561, 'no unknowable visits in this fixture');
   assert.equal(r.pct, 28.5, 'the PRD says "roughly 28%" — a figure near 100% means the floor is gone');
   assert.equal(r.days.length, 6);
   assert.equal(r.days[0].date, '2026-08-01', 'newest first');
@@ -160,7 +215,8 @@ test('Metabase type wobble is absorbed: string counts and ISO timestamps', () =>
 });
 
 test('junk never produces a number that looks real', () => {
-  assert.deepEqual(shapeCoverage([], WIN), { days: [], totalGpNotes: 0, totalNoVitals: 0, pct: 0 });
+  assert.deepEqual(shapeCoverage([], WIN),
+    { days: [], totalGpNotes: 0, totalNoConsultId: 0, totalNoVitals: 0, answerable: 0, pct: 0 });
   assert.deepEqual(shapeCoverage(null as unknown as unknown[], WIN).days, []);
   const r = shapeCoverage([{ d: 'nope', gp_notes: 5, no_vitals: 1 }, null, 7, { }], WIN);
   assert.deepEqual(r.days, [], 'a row with no usable date is dropped, not defaulted');
@@ -168,6 +224,10 @@ test('junk never produces a number that looks real', () => {
   const clamp = shapeCoverage([{ d: '2026-07-28', gp_notes: 10, no_vitals: 99 }], WIN);
   assert.equal(clamp.days[0].noVitals, 10);
   assert.equal(clamp.days[0].pct, 100);
+  // the three categories stay disjoint even when the counts disagree
+  const both = shapeCoverage([{ d: '2026-07-28', gp_notes: 10, no_consult_id: 99, no_vitals: 99 }], WIN);
+  assert.equal(both.days[0].noConsultId, 10, 'cannot exceed the whole');
+  assert.equal(both.days[0].noVitals, 0, 'and cannot exceed what is answerable');
   // negatives and NaN read as zero rather than propagating
   const neg = shapeCoverage([{ d: '2026-07-28', gp_notes: -5, no_vitals: 'abc' }], WIN);
   assert.equal(neg.days[0].gpNotes, 0);
