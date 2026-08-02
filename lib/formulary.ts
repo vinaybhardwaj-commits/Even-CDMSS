@@ -55,6 +55,50 @@ const NON_MEDICINE_CATEGORIES = new Set([
   'NUTRITIONAL_SUPPLIMENTS',
 ]);
 
+// ── Per-molecule class fallback (FORMULARY-CLASS-RESOLUTION PRD §5, 2 Aug 2026) ─────────────────
+// A whole-string match cannot see a molecule inside a combination the formulary lacks as a
+// composition row: 'Cefpodoxime Proxetil+Clavulanic Acid' resolved (source-generic, trusted) with
+// NO class — 181 of 744 antibiotic lines a month — and noAntibioticClassOnNote() then reported no
+// antibiotic on the note. Runs ONLY when the whole-string path yields no class; the formulary
+// itself gains NO rows (it is a hospital artefact — the defect is in the matcher).
+const BRACKET_GROUP_RE = /\([^)]*\)/g;   // '(500Mg+125Mg)' — stripped BEFORE the '+' split so a bracketed strength can never split the line
+const STRENGTH_TAIL_RE = /(?:\s+\d+(?:\.\d+)?\s*(?:mg|mcg|ug|g|gm|ml|iu|%)(?:\s*w\/[wv])?)+\s*$/i;   // '500 Mg' · '550 Mg' · '0.3 %' · '2% W/W' · '100 Mg'
+const ESTER_SALT_TAIL_RE = /\s+(?:proxetil|axetil|phosphate|sodium|potassium)\s*$/i;
+const CLAVULANATE_RE = /clavulan/i;      // 'Clavulanic Acid' and 'Potassium Clavulanate' are the SAME molecule
+
+/** Resolve ONE '+'-fragment to a formulary match carrying a class, or null. Candidates are tried
+ *  in order: the strength-stripped fragment verbatim, its clavulanate synonyms, then the fragment
+ *  with a trailing ester/salt suffix removed ('Cefpodoxime Proxetil' → 'Cefpodoxime'). */
+function fragmentClassMatch(fragment: string): FormularyMatch | null {
+  const frag = fragment.replace(STRENGTH_TAIL_RE, '').trim();
+  if (!frag) return null;
+  const candidates = [frag];
+  if (CLAVULANATE_RE.test(frag)) candidates.push('Potassium Clavulanate', 'Clavulanic Acid');
+  const deSuffixed = frag.replace(ESTER_SALT_TAIL_RE, '').trim();
+  if (deSuffixed && deSuffixed !== frag) candidates.push(deSuffixed);
+  for (const c of candidates) {
+    const m = MATCHER.resolve({ generic: c });
+    if (m?.major) return m;
+  }
+  return null;
+}
+
+/** §5 steps 1–4: split the generic on '+' (bracket groups stripped first), resolve each fragment,
+ *  keep EVERY class found — one entry per resolving fragment, in fragment order, never picking one.
+ *  minor is taken from the FIRST resolving fragment (the one that owns therapeuticClasses[0]). */
+function perMoleculeClasses(generic: string): { classes: string[]; minor?: string } | null {
+  const fragments = generic.replace(BRACKET_GROUP_RE, ' ').split('+').map((s) => s.trim()).filter(Boolean);
+  const classes: string[] = [];
+  let minor: string | undefined;
+  for (const f of fragments) {
+    const m = fragmentClassMatch(f);
+    if (!m?.major) continue;
+    if (classes.length === 0) minor = m.minor;
+    classes.push(m.major);
+  }
+  return classes.length ? { classes, minor } : null;
+}
+
 export function enrichOpdMeds(meds: OpdMed[]): void {
   for (const m of meds) {
     // Phase 1.1 (route-aware gate, addendum A-6): the category ALONE gated ~24,614 ORAL lines —
@@ -73,6 +117,19 @@ export function enrichOpdMeds(meds: OpdMed[]): void {
       m.resolvedGeneric = match.generic;
       m.therapeuticClass = match.major;
       m.subClass = match.minor;
+      if (match.major) {
+        m.therapeuticClasses = [match.major];
+      } else if (m.generic) {
+        // §5 fallback — the whole-string path (untouched above) yielded no class; resolve per
+        // molecule. Class fields ONLY: schedule/highAlert/LASA/VED stay whatever the whole-string
+        // match said, because a fragment's safety profile does not describe the combination.
+        const pm = perMoleculeClasses(m.generic);
+        if (pm) {
+          m.therapeuticClass = pm.classes[0];
+          m.therapeuticClasses = pm.classes;
+          m.subClass = pm.minor;
+        }
+      }
       m.schedule = match.schedule;
       m.highAlert = match.highAlert;
       m.lasa = match.lasa.length ? match.lasa : undefined;

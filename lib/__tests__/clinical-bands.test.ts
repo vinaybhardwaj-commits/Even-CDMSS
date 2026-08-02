@@ -172,7 +172,7 @@ test('the system prompt names vitamin D dose adequacy beside muscle relaxants', 
 
 test('the engine version is 0.81.19 and the read family keeps the older versions', async () => {
   const { OPD_ENGINE_VERSION, OPD_ENGINE_VERSIONS_CURRENT } = await import('../opd-note-audit-core.ts');
-  assert.equal(OPD_ENGINE_VERSION, 'opd-note-audit/0.81.19');
+  assert.equal(OPD_ENGINE_VERSION, 'opd-note-audit/0.81.20');
   assert.ok((OPD_ENGINE_VERSIONS_CURRENT as readonly string[]).includes('opd-note-audit/0.81.19'));
   assert.ok((OPD_ENGINE_VERSIONS_CURRENT as readonly string[]).includes('opd-note-audit/0.81.17'));
   assert.ok((OPD_ENGINE_VERSIONS_CURRENT as readonly string[]).includes('opd-note-audit/0.81.16'));

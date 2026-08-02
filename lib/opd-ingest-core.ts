@@ -27,6 +27,10 @@ export interface OpdMed {
   // for a brand-only line; the rest is its EHRC formulary class / schedule / safety profile.
   resolvedGeneric?: string;
   therapeuticClass?: string;   // formulary Major Grouping
+  /** FORMULARY-CLASS-RESOLUTION §6, V ruling (b): EVERY class resolved from the line, one entry
+   *  per resolving fragment in fragment order — a kit holding an antifungal and an antibiotic is
+   *  both. therapeuticClass always equals therapeuticClasses[0]; single-class lines carry [class]. */
+  therapeuticClasses?: string[];
   subClass?: string;           // formulary Minor Grouping
   schedule?: string;           // D&C schedule: OTC | H | H1 | X | Biological
   highAlert?: boolean;         // ISMP high-alert medication
