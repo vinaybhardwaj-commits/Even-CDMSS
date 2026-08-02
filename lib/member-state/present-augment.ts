@@ -245,13 +245,29 @@ export function computePictureConfidence(input: ConfidenceInput, now: string): P
       ? `Last contact ${fmtAge(cAge ?? 0)} ago · ${monthLabel(input.lastContact)}`
       : 'No dated contact on record' });
 
-  // vitals: structured 🟢 / modality-only (an in-person exam, unstructured) 🟡 / none 🔴.
-  // Remote/undocumented-only members (Ravali: 0 in-person) → 🔴, matching the approved mockup.
-  const vDot: Dot = input.vitalsEver ? 'g' : input.modalityMix.inPerson > 0 ? 'a' : 'r';
+  // vitals: structured 🟢 / no structured record but an exam we know happened 🟡 / none 🔴.
+  //
+  // ⚠️ THE AMBER BRANCH BECAME UNREACHABLE IN APRIL. It was `inPerson > 0`, and the modality source
+  // (general_practitioner_prescription__vitals) has been empty on every prescription since 1 April
+  // 2026 — so inPerson is 0 for every member and EVERY member without structured vitals rendered
+  // RED. Red asserts we know there was no exam. With the modality unrecorded we do not know, and
+  // this is the same reasoning as D-B on the modality factor: not knowing is not the same as
+  // knowing the answer is bad. 'unknown' therefore joins the amber branch.
+  //
+  // A GENUINE REMOTE-MAJORITY MEMBER (documented modality, inPerson === 0) STILL RENDERS RED. That
+  // case is known, not unknown — the mockup's Ravali — and it must not move.
+  const vDot: Dot = input.vitalsEver ? 'g'
+    : (input.modalityMix.inPerson > 0 || input.modalityMix.majority === 'unknown') ? 'a'
+    : 'r';
   factors.push({ key: 'vitals', dot: vDot, counted: true,
+    // The label has to match the colour: an amber dot reading "Vitals never measured" would state
+    // the very certainty the amber is denying. Only the unknown case gets new wording; the other
+    // two are byte-identical, visit count included.
     label: input.vitalsEver
       ? 'Vitals measured (structured record)'
-      : `Vitals never measured${input.encounters.opd ? ` (${input.encounters.opd} visits)` : ''}` });
+      : input.modalityMix.majority === 'unknown'
+        ? 'No structured vitals · how the member was assessed is not recorded'
+        : `Vitals never measured${input.encounters.opd ? ` (${input.encounters.opd} visits)` : ''}` });
 
   // modality: majority in-person 🟢 / mixed 🟡 / UNKNOWN 🟡 / majority remote 🔴.
   // D-B: 'unknown' is AMBER and still COUNTED — not knowing how a member was assessed is a real
