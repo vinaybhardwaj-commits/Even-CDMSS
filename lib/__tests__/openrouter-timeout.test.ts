@@ -174,16 +174,17 @@ test('the IPD worker box is 800 s, matching the OPD worker', () => {
   assert.ok(opd.includes('export const maxDuration = 800;'), 'the OPD worker is untouched and still 800');
 });
 
-test('vercel.json has NO /api/ipd-audit/worker cron, and every other cron survives', () => {
+test('this build did not disturb the OPD cron window', () => {
+  // ⚠️ SUPERSEDED IN PART. This test used to assert the IPD worker cron was ABSENT (DEC-2, on the
+  // premise that the route "produced nothing"). That premise was WRONG and was withdrawn the same
+  // day: ipd_discharge_audits shows 19 audits on 2 Aug, 18 on 1 Aug, 37 on 31 Jul. The cron was
+  // restored at a cadence that clears the box, and lib/__tests__/ipd-worker-batch-and-model.test.ts
+  // now owns every assertion about it — including the coupling this file's defects were about
+  // (a cron interval must exceed the route's maxDuration, or invocations overlap).
+  //
+  // What remains here is what this build is actually responsible for: it must not have touched the
+  // OPD window, which is the one the timeout fix was shipped in time for.
   const cfg = JSON.parse(readFileSync('vercel.json', 'utf8')) as { crons: { path: string; schedule: string }[] };
-  assert.ok(!cfg.crons.some((c) => c.path.startsWith('/api/ipd-audit/worker')),
-    'DEC-2: disabled — it 504d on every run and produced nothing');
-  // the removal must be surgical: 14 crons remain, and the OPD window is untouched
-  assert.equal(cfg.crons.length, 14);
   assert.ok(cfg.crons.some((c) => c.path === '/api/opd-audit/worker?conc=4' && c.schedule === '*/4 18-23,0-2 * * *'),
     'the OPD overnight window is not disturbed');
-  // and the reason is recorded where someone re-enabling it will look (JSON cannot hold a comment)
-  const ipd = readFileSync('app/api/ipd-audit/worker/route.ts', 'utf8');
-  assert.ok(/THE CRON FOR THIS ROUTE IS DISABLED/.test(ipd));
-  assert.ok(/DO NOT RE-ENABLE until the 800 s box is verified/.test(ipd));
 });

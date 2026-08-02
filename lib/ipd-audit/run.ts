@@ -12,13 +12,41 @@
  */
 
 import { extractCase, analyzeCase } from '../doc-audit';
-import { GEMINI_MODEL, MINI_MODEL } from '../llm';
+import { MINI_MODEL } from '../llm';
 import { getVertexAccessToken } from '../gcp-auth';
 import { fetchIpdAdmissionHeader } from './db13';
 import { fetchBilledTotal, fetchBillingEnvelope } from './billing';
 import { persistEpisodeState } from './episode-adapter';
 import { buildIpdAuditRow } from './assemble';
 import { saveIpdAudit, IPD_ENGINE_VERSION, IPD_MINI_ENGINE_VERSION } from './store';
+import { sql } from '../db';
+
+/** T-5, applied to IPD (2 Aug 2026) — the model column records what actually SERVED, not a
+ *  hardcoded literal. This row said `gemini-2.5-pro` whether or not Gemini answered, so there was
+ *  no way to tell whether IPD had been silently degrading to the local model the way OPD was for
+ *  three days (the 110 s OpenRouter ceiling, fixed in 3039c42: 126 OPD notes graded by qwen, zero
+ *  by Gemini, every row still claiming Pro). A constant cannot report a fallback.
+ *
+ *  Byte-identical to app/api/opd-audit/worker/route.ts:79 EXCEPT the stage, which is
+ *  `doc_audit_analyze` here (lib/doc-audit.ts:175) rather than `opd_audit_analyze` — the two legs
+ *  are different pipelines and reading the wrong stage would silently return null forever.
+ *  tracedChat's llm_response event carries the POST-fallback model (`actualModel`), so the audit's
+ *  own trace is the source of truth. Null when unknown (no trace / LLM leg dead) — an honest gap,
+ *  never a guess, and never a throw: a failed lookup must not fail an audit that already ran. */
+async function servedModelFor(traceId: string | undefined): Promise<string | null> {
+  if (!traceId) return null;
+  try {
+    const rows = (await (sql as unknown as (q: string, p: unknown[]) => Promise<{ model?: string }[]>)(
+      `SELECT payload->>'model' AS model FROM trace_events
+        WHERE trace_id = $1 AND kind IN ('llm_response', 'llm_stream_usage')
+          AND stage = 'doc_audit_analyze'
+        ORDER BY seq DESC LIMIT 1`,
+      [traceId],
+    ));
+    const m = rows?.[0]?.model;
+    return typeof m === 'string' && m ? m : null;
+  } catch { return null; }
+}
 
 export interface IpdRunInput {
   documentId: string;
@@ -96,7 +124,9 @@ export async function runIpdAudit(input: IpdRunInput, opts: { mini?: boolean } =
       dischargedAt: header?.dischargeDate ? `${header.dischargeDate}T00:00:00+05:30` : null,
       billedTotal,
       engineVersion: mini ? IPD_MINI_ENGINE_VERSION : IPD_ENGINE_VERSION,
-      model: mini ? MINI_MODEL : GEMINI_MODEL,
+      // The MINI path keeps MINI_MODEL — the local run has no fallback to discover, exactly as
+      // the OPD worker keeps its own behaviour. The cloud path asks the trace what answered.
+      model: mini ? MINI_MODEL : await servedModelFor(traceId),
       traceId: traceId ?? null,
     }, extracted, report);
     const status = await saveIpdAudit(row);

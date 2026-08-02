@@ -1,15 +1,20 @@
-// ⚠️ THE CRON FOR THIS ROUTE IS DISABLED (DEC-2, V ruled 2 Aug 2026). Its line was removed from
-// vercel.json — that file is strict JSON and cannot carry a comment, so the record lives here,
-// where anyone re-enabling it will be standing.
+// ⚠️ CRON RESTORED 2 Aug 2026 at */15 1-5 IST, after being removed in 3039c42 ON A WRONG PREMISE.
 //
-// WHY: it 504'd on EVERY run and produced nothing, while holding up to 3 concurrent Gemini
-// requests each time and competing for the same provider budget as the OPD worker (the
-// "429 google/gemini-2.5-flash is temporarily rate limited" in the same window is that account
-// being throttled). Cause: maxDuration was 300 s against a 600 s LLM_AUDIT_TIMEOUT_MS plus a
-// ~350 s retry ladder — see the maxDuration note below, which is the fix.
+// THE CORRECTION, MEASURED. 3039c42's note said this worker "504'd on EVERY run and produced
+// nothing". The first half was true; the second was not. ipd_discharge_audits holds 19 audits on
+// 2 Aug, 18 on 1 Aug, 37 on 31 Jul. The worker WORKS: it completes several documents, writes them,
+// and then dies mid-batch when the invocation budget runs out. Removing the cron cost real output.
 //
-// DO NOT RE-ENABLE until the 800 s box is verified on a real run. This route has never been
-// watched running successfully; before restoring the cron, confirm it produces rows at all.
+// THE ACTUAL DEFECT WAS BATCH SIZE AGAINST THE BOX, not the route. See the max/conc note at the
+// defaults below for the arithmetic: max=8 × conc=3 is three sequential waves (~1,530 s) inside an
+// 800 s box, so it could not help but die partway. max=3 is one wave (~510 s) and fits.
+//
+// AND THE CADENCE HAD TO CLEAR THE BOX. The old schedule was */10 — a 600 s interval into an 800 s
+// maxDuration, which GUARANTEES overlapping invocations. That is how one slow run became a
+// continuous request storm holding 3 concurrent Gemini calls at a time and throttling the account
+// (the "429 google/gemini-2.5-flash is temporarily rate limited" in the same window). */15 is
+// 900 s and clears the box with 100 s to spare. Any future change to maxDuration must move the
+// cron interval with it, in the same commit — that relationship is not enforced anywhere.
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 // 300 → 800 (OPENROUTER-TIMEOUT-ROOT-CAUSE PRD §4.2, 2 Aug 2026), matching the OPD worker.
@@ -42,7 +47,7 @@ import { getSettings, setSetting } from '@/lib/mini-backfill';
  * K=1 by construction (one extract + one analyze per doc). Single-run bands carry the
  * '±1 · provisional' marker on the surface (S4 reframe) — nothing here presents them as settled.
  *
- * ?max (default 8, ≤20) · ?conc (default 3, ≤5) · ?lookback (default IPD_AUDIT_LOOKBACK or 3, ≤14)
+ * ?max (default 3, ≤20) · ?conc (default 3, ≤5) · ?lookback (default IPD_AUDIT_LOOKBACK or 3, ≤14)
  */
 
 // Forward cutoff — audit only discharges on/after this IST day. Set via ?set_forward_from=YYYY-MM-DD.
@@ -108,7 +113,21 @@ async function processDay(day: string, max: number, conc: number) {
 export async function GET(req: NextRequest) {
   if (!(await authed(req))) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   const p = req.nextUrl.searchParams;
-  const max = Math.max(1, Math.min(20, Number(p.get('max') || 8)));
+  // ── THE BATCH MUST FIT THE BOX (2 Aug 2026) ────────────────────────────────────────────────
+  // WORST CASE PER DOCUMENT: the multimodal read is bounded at DOC_READ_TIMEOUT_MS (180 s) and the
+  // analyze pass at OPENROUTER_MAX_TRIES × OPENROUTER_TIMEOUT_MS (3 × 110 s = 330 s) → 510 s.
+  //
+  //   max=8, conc=3  →  ceil(8/3) = 3 sequential waves  ≈ 1,530 s  in an 800 s box  → ALWAYS died
+  //                     mid-batch, which is exactly what the audit table shows: real rows written,
+  //                     then the invocation killed partway through.
+  //   max=3, conc=3  →  ONE wave                        ≈   510 s  in an 800 s box  → fits, with
+  //                     ~290 s of margin for the fetch, the store writes and the episode adapter.
+  //
+  // The DEFAULTS change only. ?max= and ?conc= keep their overrides and their caps (≤20 / ≤5), so
+  // a manual backfill can still ask for a bigger batch and accept the risk deliberately.
+  // ⚠️ These three numbers are coupled: max, conc and maxDuration. Changing any one without
+  // redoing this arithmetic is how the route ended up in a box it could not fit.
+  const max = Math.max(1, Math.min(20, Number(p.get('max') || 3)));
   const conc = Math.max(1, Math.min(5, Number(p.get('conc') || 3)));
   const dayParam = p.get('day');
 
