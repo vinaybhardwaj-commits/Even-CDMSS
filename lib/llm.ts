@@ -288,6 +288,12 @@ export async function chatWithFallback(params: any, geminiModel?: string, openro
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         : await openrouterCreateWithRetry((ro) => client.chat.completions.create(orParams as any, ro), {
             model: orModel,
+            // ROOT CAUSE FIX (2 Aug 2026): the caller's ceiling reaches the bridge. `reqOpts` was
+            // computed from `timeoutMs` above and then used ONLY on the Vertex and Ollama branches
+            // — this branch dropped it, so openrouterCreateWithRetry applied its own 110 s to an
+            // audit that needs 600 s. From 30 July, when the bridge went live, that silently
+            // degraded every median-or-slower audit to the local model. Absent ⇒ 110 s, unchanged.
+            timeoutMs,
             onAttemptFailure: (f) => console.error(
               `[provider-retry] openrouter ${orModel} attempt ${f.attempt}/${f.maxTries} ${f.kind}${f.status != null ? ` ${f.status}` : ''} — ${f.willRetry ? 'retrying' : 'giving up'}: ${f.message}`),
           });

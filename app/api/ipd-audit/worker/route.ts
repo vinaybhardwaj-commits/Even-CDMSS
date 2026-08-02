@@ -1,6 +1,24 @@
+// ⚠️ THE CRON FOR THIS ROUTE IS DISABLED (DEC-2, V ruled 2 Aug 2026). Its line was removed from
+// vercel.json — that file is strict JSON and cannot carry a comment, so the record lives here,
+// where anyone re-enabling it will be standing.
+//
+// WHY: it 504'd on EVERY run and produced nothing, while holding up to 3 concurrent Gemini
+// requests each time and competing for the same provider budget as the OPD worker (the
+// "429 google/gemini-2.5-flash is temporarily rate limited" in the same window is that account
+// being throttled). Cause: maxDuration was 300 s against a 600 s LLM_AUDIT_TIMEOUT_MS plus a
+// ~350 s retry ladder — see the maxDuration note below, which is the fix.
+//
+// DO NOT RE-ENABLE until the 800 s box is verified on a real run. This route has never been
+// watched running successfully; before restoring the cron, confirm it produces rows at all.
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-export const maxDuration = 300;
+// 300 → 800 (OPENROUTER-TIMEOUT-ROOT-CAUSE PRD §4.2, 2 Aug 2026), matching the OPD worker.
+// LLM_AUDIT_TIMEOUT_MS is 600 s and the transport retry ladder needs ~350 s on top, so a 300 s box
+// could not contain one audit let alone a retry. MEASURED: this route 504'd on EVERY run — 01:30,
+// 01:40, 01:50, 02:00, 02:10, 02:20, 02:31, 02:40, 02:50, 03:00, 03:10, 03:20 in a single night,
+// producing nothing while holding up to 3 concurrent Gemini requests each time. The constant is
+// global; maxDuration is per route, and nobody had checked this one against it.
+export const maxDuration = 800;
 
 import { NextRequest, NextResponse } from 'next/server';
 import { countDischargeDocsForDay, fetchDischargeDocsForDay } from '@/lib/ipd-audit/db13';

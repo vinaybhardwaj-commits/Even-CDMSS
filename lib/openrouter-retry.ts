@@ -90,21 +90,48 @@ export async function openrouterCreateWithRetry(
     model?: string | null;
     /** Fires on every FAILED attempt, terminal or not. Wrapped: observability is never fatal. */
     onAttemptFailure?: (f: OpenrouterAttemptFailure) => void;
+    /**
+     * THE CALLER'S per-attempt ceiling. Absent ⇒ OPENROUTER_TIMEOUT_MS, byte-identical to before.
+     *
+     * ⚠️ WHY THIS EXISTS (root cause, 2 Aug 2026). This helper hard-coded its own 110 s ceiling for
+     * BOTH the AbortController deadline and the SDK timeout, discarding whatever the caller asked
+     * for. The OPD audit runs p50 267 s / p75 425 s and passes LLM_AUDIT_TIMEOUT_MS of 600 s
+     * through governedChat — so on this path THE MEDIAN AUDIT COULD NEVER COMPLETE. It aborted,
+     * retried, aborted, retried, aborted, and fell through to the local model.
+     *
+     * It went unnoticed because it only began when the OpenRouter bridge went live on 30 July:
+     * Vertex honoured the 600 s override, the bridge silently replaced it with 110 s. MEASURED
+     * overnight 1–2 Aug: 126 notes graded by qwen2.5:14b, ZERO by Gemini, logs wall-to-wall
+     * "timeout — The user aborted a request". The fast tail still succeeded (a 79 s manual audit
+     * reached Gemini), which is exactly why it looked intermittent rather than broken.
+     *
+     * THE GENERAL LESSON: a per-attempt ceiling must be sized against the SLOWEST caller, not the
+     * fastest. 110 s is right for the short calls this helper was written for; it is not a property
+     * of the helper, it is a property of the call. Nothing here relates a timeout to the duration
+     * of its slowest caller or to the maxDuration of the route hosting it — see the PRD's §8.
+     */
+    timeoutMs?: number;
     /** Injection seams for tests (repo idiom — mirrors openRouterGenerate's). */
     sleepFn?: (ms: number) => Promise<void>;
     rand?: () => number;
   } = {},
 ): Promise<unknown> {
+  // The applied ceiling: the caller's when given, else this module's default. A non-finite or
+  // non-positive value degrades to the default rather than disabling the deadline — a deadline
+  // that can be switched off by a bad number would reintroduce the hang this exists to prevent.
+  const timeoutMs = Number.isFinite(cfg.timeoutMs) && (cfg.timeoutMs as number) > 0
+    ? (cfg.timeoutMs as number)
+    : OPENROUTER_TIMEOUT_MS;
   const sleep = cfg.sleepFn ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const report = (f: OpenrouterAttemptFailure) => { try { cfg.onAttemptFailure?.(f); } catch { /* instrumentation is never fatal */ } };
   let lastErr: unknown = new Error('openrouter: no attempt made');
   for (let attempt = 1; attempt <= OPENROUTER_MAX_TRIES; attempt++) {
     // The per-attempt deadline. Cleared in `finally` so a completed request never leaves a timer.
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), OPENROUTER_TIMEOUT_MS);
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     let res: unknown;
     try {
-      res = await doAttempt({ signal: ctrl.signal, timeout: OPENROUTER_TIMEOUT_MS, maxRetries: 0 });
+      res = await doAttempt({ signal: ctrl.signal, timeout: timeoutMs, maxRetries: 0 });
     } catch (e) {
       // A timeout surfaces as an abort; any transport failure (DNS/socket/reset) carries no HTTP
       // status. Both retry on the SAME bounded budget — an abort that was not retryable would make
@@ -120,7 +147,7 @@ export async function openrouterCreateWithRetry(
         status, message: String((e as Error)?.message ?? e).slice(0, 300),
       });
       lastErr = timedOut
-        ? new Error(`openrouter TIMEOUT after ${OPENROUTER_TIMEOUT_MS}ms (attempt ${attempt}/${OPENROUTER_MAX_TRIES})`)
+        ? new Error(`openrouter TIMEOUT after ${timeoutMs}ms (attempt ${attempt}/${OPENROUTER_MAX_TRIES})`)
         : e;
       if (!willRetry) throw lastErr;
       await sleep(openRouterBackoffMs(attempt, cfg.rand));

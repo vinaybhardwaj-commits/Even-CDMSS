@@ -10,7 +10,6 @@
     { "path": "/api/cron/harvest-epmc", "schedule": "0 3 * * *" },
     { "path": "/api/cron/curator", "schedule": "0 5 * * 1" },
     { "path": "/api/opd-audit/worker?conc=4", "schedule": "*/4 18-23,0-2 * * *" },
-    { "path": "/api/ipd-audit/worker", "schedule": "*/10 1-5 * * *" },
     { "path": "/api/learning/mine", "schedule": "0 1 * * *" },
     { "path": "/api/admin/sync-doctor-directory", "schedule": "30 4 * * *" },
     { "path": "/api/admin/refresh-doctor-metrics", "schedule": "0 4 * * *" },
