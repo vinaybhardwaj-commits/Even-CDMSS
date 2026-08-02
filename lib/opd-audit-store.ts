@@ -10,7 +10,7 @@
 import { sql } from './db';
 import type { OpdNoteAudit } from './opd-note-audit';
 import { HYSTERESIS_G, type OpdDomain } from './opd-note-score-core';
-import { OPD_ENGINE_VERSION } from './opd-note-audit-core';
+import { OPD_ENGINE_VERSION, OPD_ENGINE_VERSIONS_CURRENT } from './opd-note-audit-core';
 import { logEvent } from './trace';
 import { auditShadowReport } from './clinical-state/audit-shadow-core';
 import { runLongitudinalPass } from './opd-longitudinal';   // Stage 3 — dark unless OPD_LONGITUDINAL_ENABLED=1
@@ -325,6 +325,71 @@ export async function auditedUidsForDay(day: string, engineVersion: string): Pro
     [engineVersion, day],
   )) as Array<{ uid: string }>;
   return rows.map((r) => r.uid).filter(Boolean);
+}
+
+/**
+ * The engine LINE of a stored version string: the version with any RUN TAG removed.
+ *
+ * Strips everything from the first hyphen that FOLLOWS the version number, so
+ * `opd-note-audit/0.81.20-mini` and `opd-note-audit/0.81.20-verify` both reduce to
+ * `opd-note-audit/0.81.20`. An untagged string is returned unchanged.
+ *
+ * ⚠️ The engine NAME contains hyphens too (`opd-note-audit`), so a split on '-' is wrong. The
+ * pattern anchors on the slash-then-version-number, which is the only place a tag can follow.
+ * Pure and total — never throws, and a string that matches nothing comes back as it went in.
+ */
+export function engineLineOf(engineVersion: unknown): string {
+  return String(engineVersion ?? '').replace(/^(.*\/\d+(?:\.\d+)*)-.*$/, '$1');
+}
+
+/** Is this stored version part of the CURRENT engine line (tag ignored)? */
+export function isInCurrentEngineLine(engineVersion: unknown): boolean {
+  return (OPD_ENGINE_VERSIONS_CURRENT as readonly string[]).includes(engineLineOf(engineVersion));
+}
+
+/**
+ * uids on an IST calendar day already audited ANYWHERE IN THE CURRENT ENGINE LINE — the mini
+ * backfill's skip set (BACKFILL-SKIP-RULE PRD, V ruled DEC-1/DEC-2, 2 Aug 2026).
+ *
+ * WHY THIS EXISTS. The mini backfill skipped a note only if it held a row at the EXACT engine
+ * version string running at that moment, so every change to that string made a whole day look
+ * untouched and the worker started the day over. Three strings changed across 1–2 August
+ * (0.81.19 → 0.81.20 → 0.81.20-mini, the last of them a side effect of deleting prod mode in
+ * 4f055c3). MEASURED on 1 August's 412 notes: 13 notes were audited FOUR times while 306 were
+ * never audited at all. Under this rule the same day skips 106 and works 306, every one ungraded.
+ *
+ * WHY THE TAG IS STRIPPED. The tag says which PIPELINE ran; the version says which ENGINE ran.
+ * The skip rule is about the engine, so the tag is not part of the test. Any tag is stripped, not
+ * just `-mini` — opdMiniEngine() accepts an arbitrary 24-char tag (DEC-4). Consequence, stated
+ * plainly: a note audited only under the `verify` tag now counts as done. Two rows table-wide.
+ *
+ * ⚠️ STANDING CONSEQUENCE — EVERY FUTURE ENGINE BUMP MUST ADD ITS VERSION STRING TO
+ * OPD_ENGINE_VERSIONS_CURRENT. If a bump ships without that edit, the new version is outside the
+ * line, every day looks untouched again, and the 2 August reset repeats. That list is now
+ * load-bearing for COVERAGE, not only for reads. It belongs on the engine-bump checklist.
+ *
+ * ⚠️ The warning at `AUDITED_HAVING` below argues AGAINST the family form and FOR the single
+ * write-target version. It governs the re-audit SPEND GUARD, not this function, and the goals are
+ * opposite: there the aim is to FREE stranded notes (where the family form frees zero and no-ops),
+ * here the aim is to STOP re-auditing (where the family form is exactly right). Measured both ways.
+ *
+ * NOT filtered on `excluded_reason`, deliberately — this is a generalisation of the version
+ * predicate in `auditedUidsForDay` and nothing else. Adding an exclusion clause would be a new
+ * decision, not this one.
+ *
+ * FAIL-CLOSED BY PROPAGATION: this does NOT catch. An empty skip list would mean "re-audit the
+ * whole day", which is the very defect this replaces, so a query failure must abort the batch.
+ * All four call sites already sit inside a try/catch that returns an error and runs no audits.
+ */
+export async function auditedUidsForDayInLine(day: string): Promise<string[]> {
+  const rows = (await sql(
+    `SELECT uid, engine_version FROM opd_note_audits
+     WHERE (note_date AT TIME ZONE 'Asia/Kolkata')::date = $1::date`,
+    [day],
+  )) as Array<{ uid: string; engine_version: string }>;
+  return [...new Set(
+    rows.filter((r) => r.uid && isInCurrentEngineLine(r.engine_version)).map((r) => r.uid),
+  )];
 }
 
 /**

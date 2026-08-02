@@ -29,7 +29,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auditOpdNote, OPD_MINI_ENGINE_VERSION, opdMiniEngine } from '@/lib/opd-note-audit';
 import { MINI_MODEL } from '@/lib/llm';
 import { countOpdNotesForDay, fetchOpdNotesForDay, istYesterday } from '@/lib/metabase';
-import { saveOpdAudit, auditedUidsForDay, cloudAuditedUidsForDay, earliestAuditedDay } from '@/lib/opd-audit-store';
+import { saveOpdAudit, auditedUidsForDayInLine, cloudAuditedUidsForDay, earliestAuditedDay } from '@/lib/opd-audit-store';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { readState, setSetting, windowOpen, lockHeld, prevDay, MB_KEYS, logTick } from '@/lib/mini-backfill';
 import { getSettings } from '@/lib/mini-backfill';
@@ -55,7 +55,9 @@ function addDays(day: string, delta: number): string {
  *  is the efficiency guard; the safety guard is the grader tier in lib/audit-canonical.ts. */
 async function processBatch(day: string, n: number, engineStr: string, tag: string | undefined) {
   const total = await countOpdNotesForDay(day);
-  const already = await auditedUidsForDay(day, engineStr);
+  // SKIP RULE (BACKFILL-SKIP-RULE PRD, 2 Aug 2026): already audited anywhere in the CURRENT ENGINE
+  // LINE, not at this exact version string — an exact match reset the whole day on every bump.
+  const already = await auditedUidsForDayInLine(day);
   const cloudDone = await cloudAuditedUidsForDay(day);
   const skip = [...new Set([...already, ...cloudDone])];
   const rows = total > already.length ? await fetchOpdNotesForDay(day, skip, n) : [];
@@ -184,7 +186,9 @@ export async function GET(req: NextRequest) {
         scanned++;
         const total = await countOpdNotesForDay(d);
         if (total > 0) {
-          const done = await auditedUidsForDay(d, engineStr);
+          // Same rule as processBatch — if the scan and the work selection disagree, the cursor
+          // moves off a day that still has work, or sticks on a day that has none.
+          const done = await auditedUidsForDayInLine(d);
           if (done.length < total) { day = d; break; }
         }
         d = addDays(d, -1);
@@ -195,7 +199,7 @@ export async function GET(req: NextRequest) {
     }
 
     const total = await countOpdNotesForDay(day);
-    const already = await auditedUidsForDay(day, engineStr);
+    const already = await auditedUidsForDayInLine(day);
     const rows = await fetchOpdNotesForDay(day, already, n);
 
     // Sequential on purpose: one mini, one stream — and per-note wall time IS the probe.

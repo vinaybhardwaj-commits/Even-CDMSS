@@ -699,10 +699,11 @@ async function backfillControl(a: Record<string, unknown>): Promise<ToolResult> 
     const n = Math.max(1, Math.min(3, Number(a.n) || 1));
     const tag = a.tag ? labLabel(a.tag) : 'mini';
     const { countOpdNotesForDay, fetchOpdNotesForDay } = await import('./metabase');
-    const { saveOpdAudit, auditedUidsForDay } = await import('./opd-audit-store');
+    const { saveOpdAudit, auditedUidsForDayInLine } = await import('./opd-audit-store');
     const engineStr = opdMiniEngine(tag);
     const total = await countOpdNotesForDay(day);
-    const already = await auditedUidsForDay(day, engineStr);
+    // Skip rule: the current ENGINE LINE, tag stripped (BACKFILL-SKIP-RULE PRD, 2 Aug 2026).
+    const already = await auditedUidsForDayInLine(day);
     const rows = total > already.length ? await fetchOpdNotesForDay(day, already, n) : [];
     const results: Record<string, unknown>[] = [];
     for (const row of rows) {
