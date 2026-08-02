@@ -166,8 +166,28 @@ export function ddiFindings(meds: OpdMed[]): OpdFinding[] {
     }));
   if (items.length < 2) return [];
   // route-aware: molecules applied topically on THIS script (low systemic absorption).
+  //
+  // ⚠️ TWO SOURCES, BECAUSE ONE OF THEM HAS A BLIND SPOT (DDI-TOPICAL-ROUTE-LEAK PRD, V ruled
+  // DEC-1/DEC-3, 2 Aug 2026). resolveMedRoute returns m.route when the EMR set it, and otherwise
+  // INFERS the route by running ROUTE_RULES over the drug NAME, dose and INSTRUCTION — so it needs
+  // a dosage-form word (cream · ointment · gel · lotion · topical · patch · transderm · ung · apply
+  // · local) to appear in that text. `Diclofenac + Linseed Oil + Menthol + Methyl Salicylate`
+  // contains none of them, so its route resolved to NULL, it never entered this set, and Ruling 1
+  // below never fired on it. The suppression only worked when a clinician's instruction happened to
+  // carry a matching word, which is why the leak was partial rather than total.
+  //
+  // m.dosageForm does NOT have that blind spot: it is set at lib/formulary.ts:139 from the
+  // FORMULARY ROW's own `form` column via normalizeDosageForm — never parsed from clinician text.
+  //
+  // MEASURED COST OF THE BLIND SPOT: 62 findings leaked AFTER the suppression shipped at 0.81.14 —
+  // 17 at 0.81.14, 6 at 0.81.15, 1 at 0.81.16, 28 at 0.81.17, 10 at 0.81.18. Ten clinician reviews
+  // of oral-NSAID-plus-topical-gel returned ZERO true positives; on one occasion the engine's own
+  // rationale said the systemic risk was minimal and it fired anyway.
+  //
+  // ONLY 'topical' is added. Not drops, not inhaler, not injection: no evidence supports them and
+  // each carries its own systemic argument (DEC-4 keeps this narrow).
   const topical = new Set(
-    meds.filter((m) => resolveMedRoute(m) === 'topical' && (m.resolvedGeneric || m.generic))
+    meds.filter((m) => (resolveMedRoute(m) === 'topical' || m.dosageForm === 'topical') && (m.resolvedGeneric || m.generic))
         .map((m) => (m.resolvedGeneric || m.generic as string).toLowerCase()));
   // Ruling 1 (0.81.14, CLINICAL-RULINGS §2.1): an NSAID–NSAID additive-toxicity overlap where ANY
   // member resolves to a topical route is routine practice (topical diclofenac ~6% oral systemic
