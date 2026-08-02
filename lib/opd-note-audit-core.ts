@@ -788,10 +788,35 @@ export function prescribingChecks(c: DeidOpdCase): OpdFinding[] {
       || /nutraceutical|supplement|multivitamin|vitamin|probiotic|cosmetic/i.test(m.therapeuticClass || '')
       || /\bsupplement\b/i.test(gen || '')
       || COSMETIC_NAME_RE.test(`${m.brand || ''} ${gen || ''}`);               // off-formulary cosmetic by name (Bug 7)
+    // ── GAP-LEVEL exemptions (INCOMPLETE-DOSING-PRECISION PRD, V ruled DEC-1/2/3, 2 Aug 2026) ────
+    // WHY: incomplete_dosing is the worst-performing signal doctors actually see — precision 0.22 at
+    // 0.81.8, and doctors CONTESTED 14 of the 23 findings ever triaged. TWELVE OF THOSE FOURTEEN are
+    // a combination product or a topical. V wrote the diagnosis himself on 13 Jul: "These are fixed
+    // dose combinations and dosage is not a prerequisite if the drugs are in our formulary."
+    // For a combination the PRODUCT fixes each component's strength; for a cream the strength and
+    // the route ARE the dosage form. Asking the clinician to restate either is not a documentation
+    // gap, so the GAP is dropped — not the finding (DEC-1). A combination or topical that also lacks
+    // frequency or duration still fires on those, and isDoseExempt's wholesale suppression for
+    // nutraceuticals / cosmetics / unresolved proprietary lines is untouched below.
+    //
+    // ⚠️ THIS IS THE FIRST MATCHER TO READ `dosageForm`. The field was plumbed in 0.81.11 and left
+    // deliberately unread (changelog: score-invariant, max_nqi_delta 0); reading it here is the
+    // source of this build's score change. It comes from the FORMULARY ROW's own `form` column
+    // (lib/formulary.ts:139 → normalizeDosageForm), NEVER parsed from the clinician's free text —
+    // so a doctor cannot widen or dodge this exemption by how they write the line.
+    //
+    // NOT extended to inhaler, injection, tablet, capsule, syrup or other: those carry real,
+    // variable strengths and no contested row supports widening it (DEC-3).
+    const isFormularyCombination = (gen || '').includes('+') && m.nonFormulary === undefined;
+    const isTopicalOrDrops = m.dosageForm === 'topical' || m.dosageForm === 'drops';
+    // DEC-2, deliberate: a combination the formulary does NOT know still gets the strength gap —
+    // we cannot confirm what is in a product we cannot resolve.
+    const strengthGapExempt = isFormularyCombination || isTopicalOrDrops;
+    const routeGapExempt = isTopicalOrDrops;
     const gaps: string[] = [];
-    if (!medDoseDocumented(m)) gaps.push('dose/strength');
+    if (!strengthGapExempt && !medDoseDocumented(m)) gaps.push('dose/strength');
     if (!m.frequency) gaps.push('frequency');
-    if (resolveMedRoute(m) === null) gaps.push('route');
+    if (!routeGapExempt && resolveMedRoute(m) === null) gaps.push('route');
     if (!m.duration) gaps.push('duration');
     if (gaps.length && !isDoseExempt) out.push(det(`Incomplete dosing: ${name}`, 'context-dependent', 0.5, `Missing ${gaps.join(', ')} — incomplete prescription (strength read from the drug name and route inferred from the dosage form where possible).`));
 
