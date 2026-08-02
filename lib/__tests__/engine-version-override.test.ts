@@ -28,7 +28,7 @@ const ROUTE = readFileSync('app/api/admin/opd-dosing-backfill/route.ts', 'utf8')
 
 test('§4.7: opts.engineVersion threads through on the PRODUCTION path, verbatim per the kickoff', () => {
   assert.ok(AUDIT.includes(`  const engineVersion = mini
-    ? (opts.prodTag ? OPD_ENGINE_VERSION : opdMiniEngine(opts.engineTag))
+    ? opdMiniEngine(opts.engineTag)
     : (opts.engineVersion ?? OPD_ENGINE_VERSION);`));
 });
 
@@ -38,9 +38,10 @@ test('§4.8: absent opts.engineVersion, the production path still yields OPD_ENG
   assert.equal(OPD_ENGINE_VERSION, 'opd-note-audit/0.81.20', 'the formulary class-resolution build bumped it — 3a itself bumped nothing');
 });
 
-test('the MINI path is untouched by the override', () => {
-  assert.ok(AUDIT.includes('? (opts.prodTag ? OPD_ENGINE_VERSION : opdMiniEngine(opts.engineTag))'),
-    'the mini branch reads exactly as before — no engineVersion in it');
+test('the MINI path is untouched by the override — and always writes -<tag> (D1, 2 Aug 2026)', () => {
+  assert.ok(AUDIT.includes('? opdMiniEngine(opts.engineTag)'),
+    'no engineVersion in the mini branch; prodTag was DELETED, so a mini row can never carry the prod label');
+  assert.ok(!AUDIT.includes('prodTag'), 'the option is gone repo-wide');
 });
 
 test('AuditOpdOpts declares engineVersion as an optional string', () => {

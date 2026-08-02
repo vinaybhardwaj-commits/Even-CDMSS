@@ -7,7 +7,7 @@ type Tick = { t: string; status: string; processed: number };
 type Recent = { source: 'backfill' | 'mcp'; uid: string; band: string | null; idx: number | null; sec: number | null; at: string; kind: string | null };
 type Payload = {
   ok: boolean;
-  kpis: { processedToday: number; totalMini: number; mcpToday: number; mcpTotal: number; avgSecPerNote: number | null; state: string; window: string; prod: boolean; tag: string; engine: string; cursor: string | null; floor: string };
+  kpis: { processedToday: number; totalMini: number; mcpToday: number; mcpTotal: number; avgSecPerNote: number | null; state: string; window: string; tag: string; engine: string; cursor: string | null; floor: string };
   throughput: Bucket[];
   mcpThroughput: Bucket[];
   bucketMinutes: number;
@@ -15,8 +15,6 @@ type Payload = {
   inflight: { active: boolean; day?: string | null; sinceSec?: number; ttlSec?: number };
   coverage: { engine: string; scored: number; total: number; pct: number };
   labBatch: { enabled: boolean; experiment: string; kind: string; n: number; window: string; total: number; done: number; remaining: number; lastError: string | null } | null;
-  versionTransition: boolean;
-  prodVersion: string | null;
   recent: Recent[];
   generatedAt: string;
 };
@@ -269,12 +267,7 @@ export default function MiniBackfillMonitor() {
           <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
             <div className="h-full rounded-full bg-teal-500 transition-all" style={{ width: `${Math.max(1.5, data.coverage.pct)}%` }} />
           </div>
-          <div className="mt-1 text-[10.5px] text-slate-400">Sweeping backward · at {k?.cursor ?? '—'} → floor {k?.floor} · re-sweeps from today on each engine upgrade</div>
-          {data?.versionTransition ? (
-            <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-800">
-              New engine <span className="font-mono">{data.coverage.engine}</span> shipped — the re-score restarts from today and works backward. Coverage climbs from ~0 as history is re-scored to the new engine (a reset here is a fresh version pass, not lost progress).
-            </div>
-          ) : null}
+          <div className="mt-1 text-[10.5px] text-slate-400">Sweeping backward · at {k?.cursor ?? '—'} → floor {k?.floor}</div>
         </div>
       ) : null}
       <EvalBatchCard lb={data?.labBatch ?? null} busy={lbBusy} onPause={() => lbAction('pause')} onResume={() => lbAction('resume')} onStop={() => lbAction('stop')} />
@@ -296,7 +289,7 @@ export default function MiniBackfillMonitor() {
         <div className="rounded-lg bg-slate-50 p-2.5">
           <div className="text-[10.5px] text-slate-400">State</div>
           <div className={`mt-0.5 font-serif text-[16px] font-semibold ${stateCls}`}>{data ? stateLabel : '…'}</div>
-          <div className="text-[10px] text-slate-400">{k ? `${k.window} · ${k.prod ? `prod ${k.engine ? String(k.engine).replace('opd-note-audit/', '') : '?'}` : k.tag}` : ''}</div>
+          <div className="text-[10px] text-slate-400">{k ? `${k.window} · ${k.tag}` : ''}</div>
         </div>
       </div>
 

@@ -44,9 +44,11 @@ const FIXTURE: Row[] = [
   //    …and with the bridge-era model spelling too.
   { uid: 'n6', engine_version: 'opd-note-audit/0.81.17', audited_at: '2026-07-27T10:00:00Z', id: 'ref-bridge', model: 'google/gemini-2.5-pro' },
   { uid: 'n6', engine_version: 'opd-note-audit/0.81.17', audited_at: '2026-07-31T19:33:00Z', id: 'cand-new2', model: 'qwen2.5:14b' },
-  // 6. THE TIER IS A TIEBREAK, NOT A REORDER (addendum H §4): a candidate row at a genuinely NEWER
-  //    engine version still beats a reference row at an older one. Ranking reference above
-  //    candidate ACROSS versions is V's open question (§6), not this rule.
+  // 6. ⚠️ REVERSED 2 Aug 2026 by GRADER-PROVENANCE D2. Addendum H made the model tier a TIEBREAK
+  //    WITHIN a version, so a qwen row at a newer version beat a Gemini row at an older one — and
+  //    that is exactly how the mini backfill's prod-labelled rows took the dashboard. V ruled the
+  //    §6 open question: CLOUD OUTRANKS LOCAL REGARDLESS OF VERSION. The GRADER tier (first key)
+  //    decides this now; the REFERENCE tier still tiebreaks cloud-vs-cloud after the version.
   { uid: 'n7', engine_version: 'opd-note-audit/0.81.14', audited_at: '2026-07-31T10:00:00Z', id: 'ref-oldver', model: 'gemini-2.5-pro' },
   { uid: 'n7', engine_version: 'opd-note-audit/0.81.17', audited_at: '2026-07-10T10:00:00Z', id: 'cand-newver', model: 'qwen2.5:14b' },
   // 7. a NON-NUMERIC TAIL THAT IS NOT `-mini` — `opd-note-audit/0.5-verify` exists in the live
@@ -65,6 +67,8 @@ const familyFiltered = FIXTURE.filter((r) => FAMILY.includes(r.engine_version));
  * so the assertion is against the REAL fragment rather than a copy of it.
  */
 function sqlDistinctOn(rows: Row[]): Row[] {
+  assert.match(CANONICAL_RANK_SQL, /^CASE WHEN model LIKE 'qwen%' OR engine_version LIKE '%-mini' THEN 1 ELSE 0 END, /,
+    'D2: the grader tier is the FIRST key — cloud before local, ahead of the version');
   assert.match(CANONICAL_RANK_SQL, /string_to_array\(split_part\(engine_version, '\/', 2\), '\.'\)::int\[\] DESC/,
     'the fragment must rank by the component-wise numeric tail');
   assert.match(CANONICAL_RANK_SQL, /CASE WHEN model IN \(.+\) THEN 0 ELSE 1 END/,
@@ -80,7 +84,9 @@ function sqlDistinctOn(rows: Row[]): Row[] {
     if (!/^\d+$/.test(c)) throw new Error(`invalid input syntax for type integer: "${c}"`);
     return Number(c);
   });
-  const tier = (r: Row): number => (isReferenceModel(r.model) ? 0 : 1);           // the CASE expression
+  const tier = (r: Row): number => (isReferenceModel(r.model) ? 0 : 1);           // the reference CASE
+  const grader = (r: Row): number =>                                              // the grader CASE (D2, first key)
+    (/^qwen/i.test(String(r.model ?? '')) || /-mini$/.test(r.engine_version) ? 1 : 0);
   const cmpIntArray = (a: number[], b: number[]): number => {                      // Postgres int[] compare
     for (let i = 0; i < Math.max(a.length, b.length); i++) {
       const d = (a[i] ?? 0) - (b[i] ?? 0);
@@ -100,7 +106,8 @@ function sqlDistinctOn(rows: Row[]): Row[] {
   const winners = [...byUid.values()].map((group) => {
     const keyed = group.map((r) => ({ r, vtail: tail(r.engine_version), t: tier(r) }));
     keyed.sort((a, b) =>
-      cmpIntArray(b.vtail, a.vtail) || a.t - b.t || Date.parse(b.r.audited_at) - Date.parse(a.r.audited_at));
+      grader(a.r) - grader(b.r)
+      || cmpIntArray(b.vtail, a.vtail) || a.t - b.t || Date.parse(b.r.audited_at) - Date.parse(a.r.audited_at));
     return keyed[0].r;
   });
   for (const r of nullUid) tail(r.engine_version);
@@ -135,9 +142,11 @@ test('SQL twin and canonicalByUid select the SAME row — all traps', () => {
   assert.equal(pick(pg, 'n5').id, 'ref-old');
   assert.equal(pick(ts as Row[], 'n6').id, 'ref-bridge');
   assert.equal(pick(pg, 'n6').id, 'ref-bridge');
-  // 6. and the tier does NOT reorder across engine versions — newer version still wins outright.
-  assert.equal(pick(ts as Row[], 'n7').id, 'cand-newver');
-  assert.equal(pick(pg, 'n7').id, 'cand-newver');
+  // 6. D2 (2 Aug 2026): the GRADER tier DOES reorder across engine versions — the Gemini row at the
+  //    OLDER version beats the qwen row at the newer one. This assertion was 'cand-newver' until V
+  //    ruled; it is the addendum-H §6 open question, closed.
+  assert.equal(pick(ts as Row[], 'n7').id, 'ref-oldver');
+  assert.equal(pick(pg, 'n7').id, 'ref-oldver');
 });
 
 test('the ordering is the one THE RULE states — reverting it fails this test', () => {
@@ -146,11 +155,12 @@ test('the ordering is the one THE RULE states — reverting it fails this test',
   assert.ok(!/note_date/.test(CANONICAL_RANK_SQL), 'note_date cannot rank re-audits of the same note');
   assert.ok(!/\bid DESC/.test(CANONICAL_RANK_SQL), 'a UUID tiebreak is arbitrary, not canonical');
   assert.ok(!/engine_version DESC/.test(CANONICAL_RANK_SQL), 'a bare lexicographic sort ranks 0.81.9 above 0.81.17');
-  // Addendum H: the tier sits BETWEEN the version rank and the audited_at tiebreak — dropping it,
-  // or moving it ahead of the version rank (the §6 policy question, not this build), fails here.
+  // D2 (2 Aug 2026): grader tier FIRST, then version, then the REFERENCE tier, then audited_at.
+  // Dropping the grader tier, or demoting it below the version, fails here — that ordering is what
+  // let a local 14B model's row displace a Gemini audit on the dashboard.
   assert.match(CANONICAL_RANK_SQL,
-    /::int\[\] DESC, CASE WHEN model IN \(.+\) THEN 0 ELSE 1 END, audited_at DESC$/,
-    'the model tier must be the middle key: version, then tier, then audited_at');
+    /^CASE WHEN model LIKE 'qwen%' OR engine_version LIKE '%-mini' THEN 1 ELSE 0 END, string_to_array.+::int\[\] DESC, CASE WHEN model IN \(.+\) THEN 0 ELSE 1 END, audited_at DESC$/,
+    'the four keys must be: grader tier, version, reference tier, audited_at');
 });
 
 test('§6 — SCAN lib/ and app/: nobody hand-writes a note-identity dedup on opd_note_audits', () => {

@@ -4,11 +4,15 @@
  * PURE, dependency-free, strip-types testable.
  *
  * ═══════════════════════════════════════════════════════════════════════════════════════════════
- * THE RULE, settled 27 Jul 2026; model tier added 31 Jul 2026 (addendum H):
+ * THE RULE, settled 27 Jul 2026; model tier added 31 Jul 2026 (addendum H); GRADER TIER added and
+ * placed FIRST 2 Aug 2026 (GRADER-PROVENANCE PRD, V ruling D2):
  *
- *   Every read surface shows ONE row per `document_id`: the one with the highest
- *   `engine_version`; ties broken by model tier (reference before candidate), then by
- *   latest `audited_at`.
+ *   Every read surface shows ONE row per identity: cloud-graded before local-model-graded
+ *   (REGARDLESS of engine version); then the highest `engine_version`; then model tier
+ *   (reference before candidate); then latest `audited_at`.
+ *
+ * The grader tier leads because a newer engine version does not make a local 14B model a better
+ * grader than Gemini — and for a fortnight it did exactly that on the dashboard.
  *
  * Applied uniformly — list, calendar, doctor grouping, specialty counts, impact preview, and every
  * aggregate (mean, SD, band histogram, changing-band). Older re-audits remain STORED and reachable
@@ -43,7 +47,8 @@ export interface CanonicalCandidate {
   /** OPD identity — one audit per db13 note uid. */
   uid?: unknown;
   engine_version?: unknown;
-  /** Which model produced the row — ranks reference before candidate at the same engine version. */
+  /** Which model produced the row. Drives BOTH tiers: cloud-vs-local (first key, isLocalGrader) and
+   *  reference-vs-candidate (after the version, isReferenceModel). They are different questions. */
   model?: unknown;
   audited_at?: unknown;
   id?: unknown;
@@ -88,9 +93,42 @@ export function isReferenceModel(model: unknown): boolean {
   return (REFERENCE_MODELS as readonly string[]).includes(String(model ?? ''));
 }
 
-/** 0 = reference, 1 = candidate — the middle key of THE RULE's ordering. */
+/** 0 = reference, 1 = candidate — the reference tiebreak, applied WITHIN a grader tier. */
 function modelTier(model: unknown): number {
   return isReferenceModel(model) ? 0 : 1;
+}
+
+/**
+ * THE GRADER TIER (GRADER-PROVENANCE PRD, V ruled D2, 2 Aug 2026) — cloud before local, and it
+ * outranks the engine version.
+ *
+ * ⚠️ THIS IS A DIFFERENT QUESTION FROM `REFERENCE_MODELS`, and the two must not be conflated.
+ * `isReferenceModel` answers "reference or candidate?" — a bake-off question between CLOUD models,
+ * and it stays where it was, breaking cloud-vs-cloud ties after the version. This predicate answers
+ * "was this graded in the cloud, or by the local 14B?" — a provenance question about who is
+ * competent to grade a doctor at all. Overloading one list to answer both would mislead the next
+ * reader and silently re-tier every future model added for bake-off reasons.
+ *
+ * WHY IT SITS AHEAD OF THE VERSION: the mini backfill wrote `qwen2.5:14b` rows under the PLAIN
+ * production engine label, so they carried a newer version than the Gemini rows they displaced and
+ * won the ranking outright. Measured 1 Aug: 4 of 4 sampled notes scored LOWER on qwen and dropped a
+ * band, with the disagreeing cloud judgment sitting one row away where nobody looks. A newer engine
+ * version does not make a 14B local model a better grader than Gemini, so version can no longer
+ * promote it. Prod mode is deleted too (D1), but deletion alone would not have re-ranked the ~500
+ * rows already written — the tier is the guard, the deletion is the cause removed.
+ *
+ * A row is LOCAL when its model is a qwen identifier OR its engine version carries the `-mini`
+ * suffix. Either signal alone is sufficient: the suffix catches correctly-labelled mini rows whose
+ * model string is unknown, and the model check catches the prod-labelled contamination the suffix
+ * misses — which is exactly the hole this PRD closes.
+ */
+export function isLocalGrader(model: unknown, engineVersion?: unknown): boolean {
+  return /^qwen/i.test(String(model ?? '')) || isMiniEngine(engineVersion);
+}
+
+/** 0 = cloud, 1 = local — the FIRST key of THE RULE's ordering (D2). */
+function graderTier(model: unknown, engineVersion: unknown): number {
+  return isLocalGrader(model, engineVersion) ? 1 : 0;
 }
 
 /**
@@ -158,6 +196,11 @@ export function canonicalBy<T extends CanonicalCandidate>(rows: T[], key: Identi
     if (!identity) { passthrough.push(r); continue; }
     const cur = winner.get(identity);
     if (!cur) { winner.set(identity, r); continue; }
+    // D2 (2 Aug 2026): grader tier FIRST — a cloud audit outranks a local-model audit regardless of
+    // engine version. Ahead of the version compare on purpose; see isLocalGrader.
+    const byGrader = graderTier(cur.model, cur.engine_version) - graderTier(r.model, r.engine_version);
+    if (byGrader > 0) { winner.set(identity, r); continue; }
+    if (byGrader < 0) continue;
     const byEngine = compareEngineVersion(r.engine_version, cur.engine_version);
     if (byEngine > 0) { winner.set(identity, r); continue; }
     if (byEngine < 0) continue;
@@ -195,26 +238,40 @@ export function canonicalBy<T extends CanonicalCandidate>(rows: T[], key: Identi
 //
 //   2. `-mini` SORTS ABOVE ITS BASE VERSION, and its tail does not cast to int[]
 //      ('14-mini' is not an integer), so the cast would RAISE rather than mis-rank.
-//      ⚠️ DEPENDENCY, DELIBERATE: on these surfaces trap 2 cannot fire, because every caller
-//      already filters `engine_version = ANY(OPD_ENGINE_VERSIONS_CURRENT)` and none of that
-//      family's fifteen entries (0.81.3 → 0.81.17) carries a `-mini` suffix — mini rows are
-//      excluded BEFORE ranking and every surviving tail casts cleanly. So there is no guard here.
-//      Adding a `-mini` entry to OPD_ENGINE_VERSIONS_CURRENT breaks this cast; the family filter is
-//      what makes the bare cast safe, and the two must be changed together.
+//      ⚠️ DEPENDENCY, DELIBERATE: the int[] CAST is still made safe only by the caller's
+//      `engine_version = ANY(OPD_ENGINE_VERSIONS_CURRENT)` filter — no family entry carries a
+//      `-mini` suffix, so every surviving tail casts cleanly. Adding a `-mini` entry to
+//      OPD_ENGINE_VERSIONS_CURRENT breaks this cast; the family filter is what makes the bare cast
+//      safe, and the two must still be changed together.
+//
+//      ⚠️ WHAT CHANGED, 2 Aug 2026 (GRADER-PROVENANCE PRD, D2). This comment used to assert that
+//      mini rows were excluded before ranking and that no guard was therefore needed here.
+//      THAT ASSUMPTION WAS FALSE and the missing guard was doctor-facing. The mini backfill wrote
+//      `qwen2.5:14b` rows under the PLAIN production engine label: no `-mini` suffix, so the family
+//      filter passed them straight through to the ranking, where their newer version beat the real
+//      Gemini rows. Measured: 4 of 4 sampled notes scored lower on qwen and dropped a band.
+//      THE GUARD NOW EXISTS AND IS THE GRADER TIER — the first key below, cloud before local, ahead
+//      of the version. Prod mode is deleted (D1) so the label can no longer be forged, but the tier
+//      is what protects the ranking, including for the rows already written. The suffix filter is
+//      no longer the only thing standing between a local 14B model and a doctor's band.
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
 
 /**
- * The ranking tail of THE RULE as SQL: highest engine version first, ties broken by model tier
- * (reference before candidate — derived from REFERENCE_MODELS, the single definition), then by
- * latest `audited_at`. Goes after `ORDER BY <identity>,` in a DISTINCT ON, or use
- * `canonicalDistinctOnSql`. Assumes mini rows are already excluded by the caller's engine filter —
- * see trap 2 above.
+ * The ranking tail of THE RULE as SQL, in four keys (D2, 2 Aug 2026):
+ *   1. GRADER TIER — cloud (0) before local qwen/-mini (1). Ahead of the version on purpose.
+ *   2. highest engine version (component-wise numeric tail).
+ *   3. reference model before candidate — REFERENCE_MODELS, the single definition. A DIFFERENT
+ *      question from key 1 (cloud bake-off, not cloud-vs-local); see isLocalGrader.
+ *   4. latest `audited_at`.
+ * Goes after `ORDER BY <identity>,` in a DISTINCT ON, or use `canonicalDistinctOnSql`. The caller's
+ * engine-family filter is still what makes the int[] cast safe — see trap 2 above.
  *
- * The tier CASE reads the base table's `model` column. It does NOT need to appear in the caller's
+ * Both CASEs read the base table's `model` column. It does NOT need to appear in the caller's
  * select list: with DISTINCT ON, Postgres permits ORDER BY on unselected base-table columns
  * (verified live, 31 Jul 2026) — the plain-DISTINCT restriction does not apply.
  */
 export const CANONICAL_RANK_SQL =
+  `CASE WHEN model LIKE 'qwen%' OR engine_version LIKE '%-mini' THEN 1 ELSE 0 END, ` +
   `string_to_array(split_part(engine_version, '/', 2), '.')::int[] DESC, ` +
   `CASE WHEN model IN (${REFERENCE_MODELS.map((m) => `'${m}'`).join(', ')}) THEN 0 ELSE 1 END, ` +
   `audited_at DESC`;

@@ -992,10 +992,6 @@ export interface AuditOpdOpts {
   /** Engine suffix for mini rows (default 'mini'). A NEW tag (e.g. 'mini2') re-audits the same
    *  notes as a fresh run — the uid+engine PK treats it as a distinct generation. */
   engineTag?: string;
-  /** With pipeline:'mini', write the row under the PLAIN prod engine version (OPD_ENGINE_VERSION,
-   *  no '-<tag>' suffix) so it is VISIBLE on prod dashboards — the free mini model correcting the
-   *  prod scores. (V decision, 2 Jul: re-audit history on the free mini, treat 0.6 as 0.6.) */
-  prodTag?: boolean;
   /** Active Tier-1 suppressions to apply (defaults to the cached active set). Pass [] to disable. */
   suppressions?: Suppression[];
   /** Quieting config override (tests / replay). Omitted → cached store read with gen-0 fail-safe. */
@@ -1044,14 +1040,16 @@ export function opdMiniEngine(tag?: string): string {
 
 export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdOpts = {}): Promise<OpdNoteAudit> {
   const mini = opts.pipeline === 'mini';
-  // prodTag: a mini run that writes the PLAIN prod engine version (visible on dashboards) — the free
-  // model correcting prod scores. Otherwise mini stays isolated under '-<tag>'.
+  // A MINI RUN ALWAYS WRITES '-<tag>' (GRADER-PROVENANCE PRD D1, 2 Aug 2026). The former prod-tag
+  // option let a mini run write the PLAIN production engine version so its rows appeared on the
+  // dashboards; those qwen2.5:14b rows then outranked the real Gemini audits and marked doctors
+  // down. That option is DELETED — a local-model row can no longer be labelled as production.
   // Phase 3a / A-8 — the backfill override, PRODUCTION PATH ONLY. updateOpdAudit keys its WHERE on
   // engineVersion, so re-scoring a stored 0.81.15 row with a fresh 0.81.16 audit matched nothing and
   // returned 'skipped' SILENTLY. Passing the SOURCE version lets the UPDATE find its row; the row
   // keeps its own 0.81.15 label because engine_version is in that WHERE and never in the SET list.
   const engineVersion = mini
-    ? (opts.prodTag ? OPD_ENGINE_VERSION : opdMiniEngine(opts.engineTag))
+    ? opdMiniEngine(opts.engineTag)
     : (opts.engineVersion ?? OPD_ENGINE_VERSION);
   const { case: oc, keys } = rowToOpdCase(row);
   enrichOpdMeds(oc.medications);   // brand→generic + class/schedule/high-alert/LASA/VED from the formulary

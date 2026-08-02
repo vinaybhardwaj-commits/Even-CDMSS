@@ -109,7 +109,6 @@ export async function GET(req: NextRequest) {
         avgSecPerNote: todayRow[0]?.avg_ms ? Math.round(num(todayRow[0].avg_ms) / 1000) : (st.last && (st.last as Record<string, unknown>).throughput ? Math.round(num(((st.last as Record<string, unknown>).throughput as Record<string, unknown>).avg_ms_per_note) / 1000) : null),
         state,
         window: st.window,
-        prod: st.prod,
         tag: st.tag,
         engine: OPD_ENGINE_VERSION,
         cursor: st.cursor,
@@ -119,8 +118,6 @@ export async function GET(req: NextRequest) {
       // Only surface an ACTIVE eval batch — a paused/cancelled batch (enabled=0) yields null so its
       // stale experiment/uids/progress don't linger on the card (and can't offer a Resume). Stop clears it.
       labBatch: (lb.experiment && lb.enabled) ? { enabled: lb.enabled, experiment: lb.experiment, kind: lb.kind, n: lb.n, window: lb.window, total: lbProg.total, done: lbProg.done, remaining: lbProg.remaining, lastError: lb.lastError } : null,
-      versionTransition: !!(st.prod && st.prodVersion && st.prodVersion !== OPD_ENGINE_VERSION),
-      prodVersion: st.prodVersion ?? null,
       // two stacked series over the same time axis (the mini is ONE box — these together are its load)
       throughput: buckets.map((b) => ({ t: String(b.bucket), notes: num(b.notes), avgSec: b.avg_ms ? Math.round(num(b.avg_ms) / 1000) : null })),
       mcpThroughput: labBuckets.map((b) => ({ t: String(b.bucket), notes: num(b.notes), avgSec: b.avg_ms ? Math.round(num(b.avg_ms) / 1000) : null })),

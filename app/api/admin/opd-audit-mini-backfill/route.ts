@@ -27,10 +27,9 @@ export const maxDuration = 300;
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { auditOpdNote, OPD_MINI_ENGINE_VERSION, opdMiniEngine } from '@/lib/opd-note-audit';
-import { OPD_ENGINE_VERSION } from '@/lib/opd-note-audit-core';
 import { MINI_MODEL } from '@/lib/llm';
 import { countOpdNotesForDay, fetchOpdNotesForDay, istYesterday } from '@/lib/metabase';
-import { saveOpdAudit, auditedUidsForDay, earliestAuditedDay } from '@/lib/opd-audit-store';
+import { saveOpdAudit, auditedUidsForDay, cloudAuditedUidsForDay, earliestAuditedDay } from '@/lib/opd-audit-store';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { readState, setSetting, windowOpen, lockHeld, prevDay, MB_KEYS, logTick } from '@/lib/mini-backfill';
 import { getSettings } from '@/lib/mini-backfill';
@@ -51,16 +50,20 @@ function addDays(day: string, delta: number): string {
 }
 
 /** Audit up to `n` un-audited notes (engine `engineStr`) for `day`; sequential; self-timed.
- *  prod=true → the mini writes the PLAIN prod engine version (visible on dashboards). */
-async function processBatch(day: string, n: number, engineStr: string, tag: string | undefined, prod = false) {
+ *  D4 (GRADER-PROVENANCE PRD): a note the CLOUD has already graded at the current engine version is
+ *  skipped — the mini must not spend compute re-grading it, and the two workers must not race. This
+ *  is the efficiency guard; the safety guard is the grader tier in lib/audit-canonical.ts. */
+async function processBatch(day: string, n: number, engineStr: string, tag: string | undefined) {
   const total = await countOpdNotesForDay(day);
   const already = await auditedUidsForDay(day, engineStr);
-  const rows = total > already.length ? await fetchOpdNotesForDay(day, already, n) : [];
+  const cloudDone = await cloudAuditedUidsForDay(day);
+  const skip = [...new Set([...already, ...cloudDone])];
+  const rows = total > already.length ? await fetchOpdNotesForDay(day, skip, n) : [];
   const results: Record<string, unknown>[] = [];
   for (const row of rows) {
     const started = Date.now();
     try {
-      const audit = await auditOpdNote(row, { pipeline: 'mini', engineTag: tag, prodTag: prod });
+      const audit = await auditOpdNote(row, { pipeline: 'mini', engineTag: tag });
       const status = await saveOpdAudit(audit, { model: MINI_MODEL, latencyMs: Date.now() - started });
       results.push({ uid: audit.keys.uid, index: audit.scorecard.headline, band: audit.scorecard.band, status, ms: Date.now() - started, traceId: audit.traceId ?? null });
     } catch (e) {
@@ -68,7 +71,10 @@ async function processBatch(day: string, n: number, engineStr: string, tag: stri
     }
   }
   const audited = already.length + results.filter((r) => r.status === 'inserted').length;
-  return { day, total, audited, processed: results.length, remaining: Math.max(0, total - audited), done: total > 0 && audited >= total, results };
+  const skippedCloud = cloudDone.filter((u) => !already.includes(u)).length;
+  return { day, total, audited, processed: results.length, skippedCloud,
+           remaining: Math.max(0, total - audited - skippedCloud),
+           done: total > 0 && audited + skippedCloud >= total, results };
 }
 
 /**
@@ -78,19 +84,11 @@ async function processBatch(day: string, n: number, engineStr: string, tag: stri
  * (bounded scan per tick) until the floor. Every tick stores a summary for the module.
  */
 async function autoTick(): Promise<Record<string, unknown>> {
-  let st = await readState();
-  // ENGINE-UPGRADE PIVOT: when the prod engine version changes, restart the BACKWARD sweep from
-  // the upgrade date (istYesterday) so the new engine re-scores ALL history and never leaves a gap
-  // of already-audited recent days. The Gemini worker independently takes new notes forward.
-  if (st.prod && st.prodVersion !== OPD_ENGINE_VERSION) {
-    const pivot = istYesterday();
-    await setSetting(MB_KEYS.cursor, pivot);
-    await setSetting(MB_KEYS.enabled, '1');
-    await setSetting(MB_KEYS.prodVersion, OPD_ENGINE_VERSION);
-    await logTick({ status: 'running', note: `engine upgrade -> ${OPD_ENGINE_VERSION}: backfill restarted from ${pivot}, sweeping backward` });
-    st = await readState();
-  }
-  const base = { auto: true, enabled: st.enabled, window: st.window, prod: st.prod, tag: st.tag, cursor: st.cursor, floor: st.floor };
+  const st = await readState();
+  // The engine-upgrade pivot was DELETED with prod mode (D1, 2 Aug 2026): it restarted the sweep at
+  // istYesterday on every bump so the mini would re-score recent history under the new PROD label —
+  // the mechanism that put qwen rows on the dashboard. The mini now only ever writes '-<tag>'.
+  const base = { auto: true, enabled: st.enabled, window: st.window, tag: st.tag, cursor: st.cursor, floor: st.floor };
   // PRIORITY: a bounded lab eval batch preempts the unbounded history re-score. Yield the single
   // Mac-mini while a lab batch is active (window 'always' recommended; it self-disables at remaining 0),
   // then auto-resume the re-score on the next tick once it clears.
@@ -104,14 +102,13 @@ async function autoTick(): Promise<Record<string, unknown>> {
   await setSetting(MB_KEYS.lock, new Date().toISOString());
   try {
 
-  // prod mode → write the plain prod engine (correct the dashboards) and sweep NEWEST-FIRST
-  // (yesterday backwards) so the most-looked-at data corrects first; else isolated '-<tag>',
-  // seeded below the earliest existing audit to fill deep history.
-  const engineStr = st.prod ? OPD_ENGINE_VERSION : opdMiniEngine(st.tag);
+  // ALWAYS the isolated '-<tag>' engine (D1). There is no prod branch: a mini row can never again
+  // carry the plain production label, so it can never again be mistaken for a Gemini audit.
+  const engineStr = opdMiniEngine(st.tag);
   let day = st.cursor;
   if (!day) {
-    if (st.prod) { day = istYesterday(); }
-    else { const earliest = await earliestAuditedDay(); day = earliest ? prevDay(earliest) : istYesterday(); }
+    const earliest = await earliestAuditedDay();
+    day = earliest ? prevDay(earliest) : istYesterday();
     await setSetting(MB_KEYS.cursor, day);
   }
 
@@ -126,7 +123,7 @@ async function autoTick(): Promise<Record<string, unknown>> {
       await logTick({ status: 'finished', note: 'cursor passed floor — backfill complete' });
       return doneSummary;
     }
-    batch = await processBatch(day, st.n, engineStr, st.tag, st.prod);
+    batch = await processBatch(day, st.n, engineStr, st.tag);
     if (batch.total > 0 && !batch.done) break;              // worked (or partial) — stay on this day
     day = prevDay(day); hops++;                              // empty or completed day — step back
     await setSetting(MB_KEYS.cursor, day);
@@ -139,6 +136,7 @@ async function autoTick(): Promise<Record<string, unknown>> {
     ...base, cursor: day, engine: engineStr, model: MINI_MODEL,
     day: batch?.day ?? day, total: batch?.total ?? 0, audited: batch?.audited ?? 0,
     processed: batch?.processed ?? 0, remaining: batch?.remaining ?? 0,
+    skippedCloud: batch?.skippedCloud ?? 0,
     throughput: avgMs ? { avg_ms_per_note: avgMs, est_notes_per_24h: Math.round(86_400_000 / avgMs) } : null,
     at: new Date().toISOString(),
   };
@@ -173,9 +171,8 @@ export async function GET(req: NextRequest) {
   const n = Math.max(1, Math.min(3, Number(p.get('n') || 1)));
   const scan = Math.max(1, Math.min(365, Number(p.get('scan') || 30)));
   const dayParam = p.get('day');
-  // ?prod=1 → mini writes the PLAIN prod engine version (0.6) so it corrects the dashboards.
-  const prod = p.get('prod') === '1';
-  const engineStr = prod ? OPD_ENGINE_VERSION : OPD_MINI_ENGINE_VERSION;
+  // D1: no ?prod= switch. The manual probe writes the isolated mini engine, like the autopilot.
+  const engineStr = OPD_MINI_ENGINE_VERSION;
 
   try {
     // Pick the working day: explicit, or newest-first sweep.
@@ -206,7 +203,7 @@ export async function GET(req: NextRequest) {
     for (const row of rows) {
       const started = Date.now();
       try {
-        const audit = await auditOpdNote(row, { pipeline: 'mini', prodTag: prod });
+        const audit = await auditOpdNote(row, { pipeline: 'mini' });
         const status = await saveOpdAudit(audit, { model: MINI_MODEL, latencyMs: Date.now() - started });
         results.push({ uid: audit.keys.uid, index: audit.scorecard.headline, band: audit.scorecard.band, status, ms: Date.now() - started, traceId: audit.traceId ?? null });
       } catch (e) {
@@ -221,15 +218,12 @@ export async function GET(req: NextRequest) {
       ok: true,
       engine: engineStr,
       model: MINI_MODEL,
-      prod,
       day, total, audited, processed: results.length,
       remaining: Math.max(0, total - audited),
       done: audited >= total,
       results,
       throughput: avgMs ? { avg_ms_per_note: avgMs, est_notes_per_24h: Math.round(86_400_000 / avgMs) } : null,
-      advisory: prod
-        ? 'PROD-TAG mini rows are written under the plain prod engine (0.6) and ARE visible on dashboards — the free model correcting prod scores.'
-        : 'Mini-pipeline rows (engine -mini) are research artifacts — invisible to prod dashboards/APIs by engine filter; individual rows viewable at /admin/opd-audit/<id>.',
+      advisory: 'Mini-pipeline rows (engine -mini) are research artifacts — invisible to prod dashboards/APIs by engine filter; individual rows viewable at /admin/opd-audit/<id>.',
     });
   } catch (e) {
     return NextResponse.json({ ok: false, error: String((e as Error).message) }, { status: 500 });

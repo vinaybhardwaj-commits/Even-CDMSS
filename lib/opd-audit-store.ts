@@ -327,6 +327,26 @@ export async function auditedUidsForDay(day: string, engineVersion: string): Pro
   return rows.map((r) => r.uid).filter(Boolean);
 }
 
+/**
+ * D4 (GRADER-PROVENANCE PRD, 2 Aug 2026) — uids on this IST day the CLOUD has already graded at the
+ * CURRENT engine version, so the mini backfill can skip them instead of re-grading what Gemini has
+ * done and racing the nightly worker. `model NOT LIKE 'qwen%'` is the cloud test, matching
+ * isLocalGrader in lib/audit-canonical.ts; excluded rows do not count as done.
+ *
+ * EFFICIENCY ONLY. The safety guarantee is the grader tier in the canonical ranking — a mini row
+ * that slips through here still cannot outrank a cloud row.
+ */
+export async function cloudAuditedUidsForDay(day: string): Promise<string[]> {
+  const rows = (await sql(
+    `SELECT uid FROM opd_note_audits
+     WHERE engine_version = $1 AND (note_date AT TIME ZONE 'Asia/Kolkata')::date = $2::date
+       AND excluded_reason IS NULL
+       AND (model IS NULL OR model NOT LIKE 'qwen%')`,
+    [OPD_ENGINE_VERSION, day],
+  )) as Array<{ uid: string }>;
+  return rows.map((r) => r.uid).filter(Boolean);
+}
+
 /** Count audited (at this engine version) for an IST calendar day. */
 export async function auditedCountForDay(day: string, engineVersion: string): Promise<number> {
   const rows = (await sql(

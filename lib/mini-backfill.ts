@@ -28,8 +28,10 @@ export const MB_KEYS = {
   n: 'mini_backfill_n',
   lock: 'mini_backfill_lock',
   last: 'mini_backfill_last',
-  prod: 'mini_backfill_prod',   // '1' → write the PLAIN prod engine version, visible on dashboards
-  prodVersion: 'mini_backfill_prod_version', // last OPD_ENGINE_VERSION the prod backfill ran under (upgrade pivot)
+  // REMOVED 2 Aug 2026 (GRADER-PROVENANCE PRD D1): mini_backfill_prod / mini_backfill_prod_version.
+  // Prod mode made the mini write the PLAIN production engine label, so qwen2.5:14b rows displaced
+  // the Gemini audits on the dashboards. The mini now only ever writes '-<tag>'. Any residual rows
+  // in app_settings are inert — nothing reads these keys.
 } as const;
 
 export const MB_DEFAULT_FLOOR = '2024-03-25'; // first auditable db13 OPD note
@@ -49,8 +51,6 @@ export interface MiniBackfillState {
   n: number;
   lock: string | null;
   last: Record<string, unknown> | null;
-  prod: boolean;   // write plain prod engine version (correct dashboards) vs isolated '-<tag>'
-  prodVersion: string | null;   // engine version the prod backfill last ran under
 }
 
 export async function getSettings(keys: string[]): Promise<Record<string, string>> {
@@ -83,8 +83,6 @@ export async function readState(): Promise<MiniBackfillState> {
     n: Math.max(1, Math.min(4, Number(s[MB_KEYS.n]) || 4)),
     lock: s[MB_KEYS.lock] || null,
     last,
-    prod: s[MB_KEYS.prod] === '1',
-    prodVersion: s[MB_KEYS.prodVersion] || null,
   };
 }
 
