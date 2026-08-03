@@ -168,7 +168,27 @@ export async function extractMemberIdentity(input: { base64: string; mime: strin
 
 export interface AnalyzeResult { report: AuditReport | null; excerptCount: number; traceId?: string }
 
-async function analyzeGenerate(system: string, user: string, forceOllama = false): Promise<string> {
+/**
+ * ⚠️ THE ANALYZE FAMILY FIRES UP TO **THREE** LLM CALLS PER DOCUMENT, all through the one
+ * `generate` closure built in `analyzeCase`:
+ *   · `doc_audit_analyze`      — always
+ *   · `doc_audit_critique_llm` — whenever DOC_AUDIT_AUDIT !== '0', i.e. ON BY DEFAULT
+ *   · `doc_audit_revise`       — when that critique sets needs_revision
+ *
+ * A ROUTE SIZING ITSELF AGAINST ONE OF THESE WILL BLOW ITS BOX. That is not hypothetical: the
+ * first cut of this unit budgeted one leg per document and was out by 3×, which put the IPD
+ * worker at 2.3× its maxDuration while its own arithmetic claimed a comfortable margin.
+ *
+ * Guard-tested against the source call sites by lib/__tests__/route-budget-guard.test.ts — adding
+ * a fourth leg fails that test rather than silently costing a route its box.
+ *
+ * NOT counted here: the prognosis pass (`runPrognosisPass`, three more legs through the same
+ * closure) is dark by default behind PROGNOSIS_AUDIT === '1'. If it is ever enabled it runs
+ * CONCURRENTLY with this chain and the route budget must be redone.
+ */
+export const IPD_ANALYZE_LEGS = 3;
+
+async function analyzeGenerate(system: string, user: string, forceOllama = false, timeoutMs?: number, maxTries?: number): Promise<string> {
   const geminiModel = forceOllama ? undefined : (geminiModelFor('doc_audit') ?? geminiUtilityModel());
   // Governed envelope (Stage 4): this is the trace-less analyze path (opts.trace === false),
   // so governedChat takes the plain hybrid branch — byte-identical to the old direct call.
@@ -178,14 +198,14 @@ async function analyzeGenerate(system: string, user: string, forceOllama = false
     temperature: 0.2,
     max_tokens: 2800,
     ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
-  }, { gemini: geminiModel });
+  }, { gemini: geminiModel, timeoutMs, maxTries });
   return r.choices?.[0]?.message?.content || '';
 }
 
 // Traced analyze generate — routes through tracedChat so the (de-identified) analyze
 // LLM calls are captured in observability with model/provider/tokens/latency + fallback
 // detection. The extract is already de-identified (name/UHID stripped) before this runs.
-async function tracedAnalyzeGenerate(traceId: string, label: string, system: string, user: string, forceOllama = false, promptRef?: string): Promise<string> {
+async function tracedAnalyzeGenerate(traceId: string, label: string, system: string, user: string, forceOllama = false, promptRef?: string, timeoutMs?: number, maxTries?: number): Promise<string> {
   const geminiModel = forceOllama ? undefined : (geminiModelFor('doc_audit') ?? geminiUtilityModel());
   const r = await tracedChat(traceId, label, {
     model: TEXT_MODEL,
@@ -193,7 +213,7 @@ async function tracedAnalyzeGenerate(traceId: string, label: string, system: str
     temperature: 0.2,
     max_tokens: 2800,
     ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
-  }, { gemini: geminiModel, promptRef });
+  }, { gemini: geminiModel, promptRef, timeoutMs, maxTries });
   return r.choices?.[0]?.message?.content || '';
 }
 
@@ -447,7 +467,12 @@ async function runPrognosisPass(
 
 // Slice 2: opts.clinicalStateText threads the optional PATIENT PICTURE block into the
 // analyze prompt only (critique/revise unchanged). Omitted → byte-identical to Slice 1.
-export async function analyzeCase(extracted: ExtractedCase, deps: Partial<AnalyzeDeps> = {}, opts: { trace?: boolean; onProgress?: (stage: string, msg: string) => void; forceOllama?: boolean; clinicalStateText?: string } = {}): Promise<AnalyzeResult> {
+// Unit D (3 Aug 2026): analyzeTimeoutMs / analyzeMaxTries are the PER-LEG provider budget for the
+// analyze family — the channel that did not exist, which is why the IPD analyze pass ran on
+// openrouterCreateWithRetry's own 110 s × 3 no matter what. Callers read them from
+// PROVIDER_BUDGETS[provider].audit_ipd rather than restating numbers. BOTH ABSENT ⇒ every existing
+// caller is byte-identical to before.
+export async function analyzeCase(extracted: ExtractedCase, deps: Partial<AnalyzeDeps> = {}, opts: { trace?: boolean; onProgress?: (stage: string, msg: string) => void; forceOllama?: boolean; clinicalStateText?: string; analyzeTimeoutMs?: number; analyzeMaxTries?: number } = {}): Promise<AnalyzeResult> {
   const doTrace = opts.trace !== false;
   const doAudit = process.env.DOC_AUDIT_AUDIT !== '0';
   const doPrognosis = process.env.PROGNOSIS_AUDIT === '1'; // DARK by default (PRD D5)
@@ -459,10 +484,16 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
 
   const retrieveHits = deps.retrieveHits ?? defaultRetrieveHits;
   const fo = opts.forceOllama === true;   // lab probe: force the free mini through analyze + prognosis
+  // ⚠️ THE BUDGET GOES DOWN **BOTH** ARMS. The traced arm is the one production uses (runIpdAudit
+  // and ipd-audit-now both leave `trace` unset, so traceId is defined here); a fix that reached
+  // only the traceless arm would pass every naive test and change nothing in production. That is
+  // precisely how 3039c42's ceiling fix missed the worker for three days.
+  const aTimeout = opts.analyzeTimeoutMs;
+  const aTries = opts.analyzeMaxTries;
   const generate: (system: string, user: string, label?: string) => Promise<string> =
     deps.generate ?? (traceId
-      ? (s, u, label = 'doc_audit_analyze') => tracedAnalyzeGenerate(traceId, label, s, u, fo, ANALYZE_PROMPT_REFS[label])
-      : (s, u) => analyzeGenerate(s, u, fo));
+      ? (s, u, label = 'doc_audit_analyze') => tracedAnalyzeGenerate(traceId, label, s, u, fo, ANALYZE_PROMPT_REFS[label], aTimeout, aTries)
+      : (s, u) => analyzeGenerate(s, u, fo, aTimeout, aTries));
   const rubric = getRubric(extracted.docType);
 
   try {

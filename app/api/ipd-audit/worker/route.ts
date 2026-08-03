@@ -31,6 +31,8 @@ import { auditedDocIdsAnyVersion, earliestAuditedDay, IPD_ENGINE_VERSION } from 
 import { runIpdAudit } from '@/lib/ipd-audit/run';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { getSettings, setSetting } from '@/lib/mini-backfill';
+import { MINI_MODEL } from '@/lib/llm';
+import { providerSwitchEnabled, resolveWorkerProvider, canServe } from '@/lib/lab-provider-core';
 
 /**
  * S5 — the daily IPD discharge-summary worker (Gemini, K=1). Mirrors /api/opd-audit/worker:
@@ -113,23 +115,54 @@ async function processDay(day: string, max: number, conc: number) {
 export async function GET(req: NextRequest) {
   if (!(await authed(req))) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   const p = req.nextUrl.searchParams;
-  // ── THE BATCH MUST FIT THE BOX (2 Aug 2026) ────────────────────────────────────────────────
-  // WORST CASE PER DOCUMENT: the multimodal read is bounded at DOC_READ_TIMEOUT_MS (180 s) and the
-  // analyze pass at OPENROUTER_MAX_TRIES × OPENROUTER_TIMEOUT_MS (3 × 110 s = 330 s) → 510 s.
+  // ── THE BATCH MUST FIT THE BOX (2 Aug 2026, RE-DERIVED 3 Aug) ──────────────────────────────
+  // WORST CASE PER DOCUMENT, from PROVIDER_BUDGETS (lib/lab-provider-core.ts) × the leg count:
   //
-  //   max=8, conc=3  →  ceil(8/3) = 3 sequential waves  ≈ 1,530 s  in an 800 s box  → ALWAYS died
-  //                     mid-batch, which is exactly what the audit table shows: real rows written,
-  //                     then the invocation killed partway through.
-  //   max=3, conc=3  →  ONE wave                        ≈   510 s  in an 800 s box  → fits, with
-  //                     ~290 s of margin for the fetch, the store writes and the episode adapter.
+  //   doc_read                     180,000 × 1        =  180,000
+  //   audit_ipd × IPD_ANALYZE_LEGS 200,000 × 1 × 3    =  600,000
+  //                                                      -------
+  //   per document                                        780,000 ms
+  //   box                                                 800,000 ms
+  //   margin                                               20,000 ms   (2.5%)
+  //   waves  ceil(max 3 / conc 3) = 1                      guard PASS
+  //
+  // ⚠️ THE PREVIOUS ARITHMETIC HERE WAS WRONG TWICE OVER, and it is worth keeping the record.
+  // It read "the analyze pass at OPENROUTER_MAX_TRIES × OPENROUTER_TIMEOUT_MS (3 × 110 s = 330 s)
+  // → 510 s". The 110 s term WAS THE DEFECT — openrouterCreateWithRetry was discarding the caller's
+  // ceiling, so that number described a bug rather than a budget. And it counted ONE analyze leg
+  // when analyzeCase fires up to THREE (doc_audit_analyze, doc_audit_critique_llm which is on by
+  // default, and doc_audit_revise — see IPD_ANALYZE_LEGS in lib/doc-audit.ts). Sizing a batch
+  // against a defect times a third of the work is how a route "proves" it fits a box it is over.
+  //
+  // THE RETRY DID NOT DISAPPEAR. IT MOVED. A failed call fails that document and writes no row, and
+  // the worker sweeps for un-audited documents on every tick — so the sweep IS the retry, and it
+  // has a whole window of budget instead of the tail of one invocation. A transient 429 costs one
+  // document one tick.
   //
   // The DEFAULTS change only. ?max= and ?conc= keep their overrides and their caps (≤20 / ≤5), so
   // a manual backfill can still ask for a bigger batch and accept the risk deliberately.
-  // ⚠️ These three numbers are coupled: max, conc and maxDuration. Changing any one without
-  // redoing this arithmetic is how the route ended up in a box it could not fit.
+  // ⚠️ These four numbers are coupled: max, conc, maxDuration and the leg count. Changing any one
+  // without redoing this arithmetic is how the route ended up in a box it could not fit.
   const max = Math.max(1, Math.min(20, Number(p.get('max') || 3)));
   const conc = Math.max(1, Math.min(5, Number(p.get('conc') || 3)));
   const dayParam = p.get('day');
+
+  // ?provider= (Unit D, behind PROVIDER_SWITCH_ENABLED). Flag off ⇒ INERT and this route is
+  // byte-identical to today. Flag on ⇒ resolved loudly, and a provider with no 'audit_ipd' budget
+  // is REFUSED rather than quietly given a default. `ollama` legitimately serves audit_ipd (the
+  // Qwen backfill's analyze leg); it is `doc_read` it cannot serve, which is checked too because
+  // every IPD document begins with a multimodal read even on the mini path.
+  if (providerSwitchEnabled()) {
+    const rp = resolveWorkerProvider(p.get('provider'), MINI_MODEL);
+    if (!rp.ok) return NextResponse.json({ ok: false, error: rp.error }, { status: 400 });
+    if (rp.provider) {
+      for (const cls of ['audit_ipd', 'doc_read'] as const) {
+        if (!canServe(rp.provider, cls)) {
+          return NextResponse.json({ ok: false, error: `provider '${rp.provider}' has no '${cls}' budget — it cannot serve this class. Refusing rather than substituting a default.` }, { status: 400 });
+        }
+      }
+    }
+  }
 
   // Admin: set / clear the forward cutoff (?set_forward_from=YYYY-MM-DD, or =off).
   const setFwd = p.get('set_forward_from');

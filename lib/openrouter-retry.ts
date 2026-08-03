@@ -44,8 +44,16 @@ export function openRouterBackoffMs(attempt: number, rand: () => number = Math.r
  *
  * ⚠️ 300_000 → 110_000 (Eval-tick-deadline PRD D4). At 110s per attempt, three attempts plus
  * backoff fit inside the lab's 240s tick deadline — so a note can exhaust its retry budget WITHIN
- * one tick and record its envelope. On the production path the same value keeps a worst-case leg
- * (2 leg attempts × 3 transport tries, S0 composition) inside the worker's 800s box.
+ * one tick and record its envelope.
+ *
+ * ⚠️ THE SECOND SENTENCE OF THIS NOTE USED TO CLAIM the same value kept a worst-case production
+ * leg "(2 leg attempts × 3 transport tries, S0 composition) inside the worker's 800s box". THAT
+ * WAS NEVER TRUE and it is withdrawn (3 Aug 2026): 2 × 3 × 110,000 is 660,000 ms of transport
+ * alone, before retrieval or scoring, and it assumed a ceiling this module was in fact discarding.
+ * The production budget is NOT this constant — it is PROVIDER_BUDGETS in lib/lab-provider-core.ts,
+ * which is per class and per provider and is checked against each route's maxDuration by
+ * lib/__tests__/route-budget-guard.test.ts. This constant is the default for callers that pass
+ * nothing, i.e. the short utility calls it was written for.
  */
 export const OPENROUTER_TIMEOUT_MS = Number(process.env.OPENROUTER_TIMEOUT_MS) || 110_000;
 
@@ -95,9 +103,16 @@ export async function openrouterCreateWithRetry(
      *
      * ⚠️ WHY THIS EXISTS (root cause, 2 Aug 2026). This helper hard-coded its own 110 s ceiling for
      * BOTH the AbortController deadline and the SDK timeout, discarding whatever the caller asked
-     * for. The OPD audit runs p50 267 s / p75 425 s and passes LLM_AUDIT_TIMEOUT_MS of 600 s
-     * through governedChat — so on this path THE MEDIAN AUDIT COULD NEVER COMPLETE. It aborted,
-     * retried, aborted, retried, aborted, and fell through to the local model.
+     * for. The OPD audit passes LLM_AUDIT_TIMEOUT_MS of 600 s through governedChat, and this
+     * helper replaced it with 110 s — so every audit slower than 110 s aborted, retried, aborted,
+     * retried, aborted, and fell through to the local model.
+     *
+     * ⚠️ CORRECTION (3 Aug 2026): this note used to say the OPD audit "runs p50 267 s / p75 425 s".
+     * That figure was carried between documents and never re-measured. MEASURED on v_trace_summary,
+     * `opd_note_audit` successes, 30 Jul–2 Aug: p50 52–93 s, p75 90–209 s, p95 309–393 s, max
+     * 908,045 ms (31 Jul — which outran its own 800 s box and is still unexplained). The real p50
+     * being well UNDER 110 s is precisely why this defect read as intermittent: most notes finished
+     * inside the wrong ceiling and only the slow tail fell through.
      *
      * It went unnoticed because it only began when the OpenRouter bridge went live on 30 July:
      * Vertex honoured the 600 s override, the bridge silently replaced it with 110 s. MEASURED
@@ -111,6 +126,22 @@ export async function openrouterCreateWithRetry(
      * of its slowest caller or to the maxDuration of the route hosting it — see the PRD's §8.
      */
     timeoutMs?: number;
+    /**
+     * THE CALLER'S retry count. Absent ⇒ OPENROUTER_MAX_TRIES, byte-identical to before.
+     *
+     * ⚠️ WHY THIS EXISTS (3 Aug 2026). Same lesson as `timeoutMs` above, one variable across:
+     * A RETRY COUNT IS A PROPERTY OF THE CALL, NOT OF THIS MODULE. Three tries is right for the
+     * short utility calls this loop was written for. It is wrong for an audit leg, because the
+     * ladder is multiplicative against a route's box: an audit that may take 380 s, tried three
+     * times, is 1,140 s of worst case inside an 800 s `maxDuration` — the route cannot hold its
+     * own retry policy, so it dies mid-batch and writes nothing for the notes it was still
+     * holding. A route whose box cannot contain the full ladder must be able to shorten it.
+     *
+     * Cutting a caller to one try does not remove retrying, it MOVES it: both audit workers sweep
+     * for un-audited work every tick, so the sweep is the retry and it has a whole window of
+     * budget rather than the tail of one invocation. See lib/lab-provider-core.ts's PROVIDER_BUDGETS.
+     */
+    maxTries?: number;
     /** Injection seams for tests (repo idiom — mirrors openRouterGenerate's). */
     sleepFn?: (ms: number) => Promise<void>;
     rand?: () => number;
@@ -122,10 +153,16 @@ export async function openrouterCreateWithRetry(
   const timeoutMs = Number.isFinite(cfg.timeoutMs) && (cfg.timeoutMs as number) > 0
     ? (cfg.timeoutMs as number)
     : OPENROUTER_TIMEOUT_MS;
+  // The applied try budget, resolved with the SAME discipline as the ceiling above: junk degrades
+  // to the module default rather than to zero. A budget that could be switched off by a bad number
+  // would turn "retry fewer times" into "never call at all", which is strictly worse than no knob.
+  const maxTries = Number.isFinite(cfg.maxTries) && (cfg.maxTries as number) >= 1
+    ? Math.trunc(cfg.maxTries as number)
+    : OPENROUTER_MAX_TRIES;
   const sleep = cfg.sleepFn ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const report = (f: OpenrouterAttemptFailure) => { try { cfg.onAttemptFailure?.(f); } catch { /* instrumentation is never fatal */ } };
   let lastErr: unknown = new Error('openrouter: no attempt made');
-  for (let attempt = 1; attempt <= OPENROUTER_MAX_TRIES; attempt++) {
+  for (let attempt = 1; attempt <= maxTries; attempt++) {
     // The per-attempt deadline. Cleared in `finally` so a completed request never leaves a timer.
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -140,14 +177,14 @@ export async function openrouterCreateWithRetry(
       const status = typeof (e as { status?: unknown }).status === 'number' ? (e as { status: number }).status : null;
       const timedOut = ctrl.signal.aborted;
       const retryable = timedOut || status === null || openRouterRetryable(status);
-      const willRetry = retryable && attempt < OPENROUTER_MAX_TRIES;
+      const willRetry = retryable && attempt < maxTries;
       report({
-        attempt, maxTries: OPENROUTER_MAX_TRIES, willRetry,
+        attempt, maxTries, willRetry,
         kind: timedOut ? 'timeout' : status === null ? 'transport' : 'http',
         status, message: String((e as Error)?.message ?? e).slice(0, 300),
       });
       lastErr = timedOut
-        ? new Error(`openrouter TIMEOUT after ${timeoutMs}ms (attempt ${attempt}/${OPENROUTER_MAX_TRIES})`)
+        ? new Error(`openrouter TIMEOUT after ${timeoutMs}ms (attempt ${attempt}/${maxTries})`)
         : e;
       if (!willRetry) throw lastErr;
       await sleep(openRouterBackoffMs(attempt, cfg.rand));
@@ -161,9 +198,9 @@ export async function openrouterCreateWithRetry(
     const defect = classifyProviderResponse(res);
     if (!defect) return res;
     const err = new ProviderResponseError(defect, 'openrouter', cfg.model ?? null);
-    const willRetry = attempt < OPENROUTER_MAX_TRIES;
+    const willRetry = attempt < maxTries;
     report({
-      attempt, maxTries: OPENROUTER_MAX_TRIES, willRetry,
+      attempt, maxTries, willRetry,
       kind: 'bad_response', status: null, message: err.message.slice(0, 300),
     });
     lastErr = err;

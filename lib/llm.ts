@@ -257,7 +257,7 @@ export function geminiUtilityModel(): string | undefined {
  * no geminiModel it is byte-identical to `llm.chat.completions.create(params)`.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function chatWithFallback(params: any, geminiModel?: string, openrouterModel?: string, timeoutMs?: number): Promise<any> {
+export async function chatWithFallback(params: any, geminiModel?: string, openrouterModel?: string, timeoutMs?: number, maxTries?: number): Promise<any> {
   // D-1: an audit-class call site passes its own ceiling (per-request { timeout } — one client per
   // provider, the override visible here). Absent ⇒ undefined ⇒ the client-level bound applies.
   const reqOpts = timeoutMs ? { timeout: timeoutMs } : undefined;
@@ -294,6 +294,10 @@ export async function chatWithFallback(params: any, geminiModel?: string, openro
             // audit that needs 600 s. From 30 July, when the bridge went live, that silently
             // degraded every median-or-slower audit to the local model. Absent ⇒ 110 s, unchanged.
             timeoutMs,
+            // Unit D (3 Aug 2026): and the caller's TRY COUNT, for the same reason. An audit-class
+            // budget is one try (PROVIDER_BUDGETS) because a three-rung ladder is multiplicative
+            // against the route's 800 s box. Absent ⇒ OPENROUTER_MAX_TRIES (3), unchanged.
+            maxTries,
             onAttemptFailure: (f) => console.error(
               `[provider-retry] openrouter ${orModel} attempt ${f.attempt}/${f.maxTries} ${f.kind}${f.status != null ? ` ${f.status}` : ''} — ${f.willRetry ? 'retrying' : 'giving up'}: ${f.message}`),
           });

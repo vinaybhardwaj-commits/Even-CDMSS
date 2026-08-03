@@ -158,6 +158,40 @@ test('the backoff curve is untouched', () => {
 // 3 · The plumbing and the boxes
 // ═════════════════════════════════════════════════════════════════════════════════════════════
 
+/**
+ * ⚠️ EVERY call site of openrouterCreateWithRetry must forward BOTH the caller's ceiling and its
+ * try count. This test used to slice `lib/llm.ts` ALONE — and that is exactly why the defect
+ * survived: there are TWO call sites, and 3039c42 fixed only the one production does not use.
+ *
+ * `lib/trace.ts`'s tracedChat has its own inline OpenRouter branch (it does NOT delegate to
+ * chatWithFallback), and BOTH production audit paths are traced — the OPD worker calls
+ * auditOpdNote with no options and the IPD run calls analyzeCase with no `trace` option, so both
+ * get a traceId and route through tracedChat. The fix credited to 3039c42 therefore never reached
+ * either worker.
+ *
+ * ENUMERATING the sites rather than naming one is the point: a third call site added tomorrow
+ * fails here instead of silently reintroducing a 110 s ceiling in front of a 380 s leg.
+ */
+const RETRY_CALL_SITES = ['lib/llm.ts', 'lib/trace.ts'] as const;
+
+test('EVERY openrouterCreateWithRetry call site forwards the caller timeout AND maxTries', () => {
+  for (const path of RETRY_CALL_SITES) {
+    const src = readFileSync(path, 'utf8');
+    const i = src.indexOf('await openrouterCreateWithRetry');
+    assert.ok(i >= 0, `${path}: expected a call site here`);
+    const branch = src.slice(i, src.indexOf("endProviderCall('openrouter');", i));
+    assert.ok(/timeoutMs[,:]/.test(branch), `${path}: the per-attempt ceiling is dropped — this IS the defect`);
+    assert.ok(/maxTries[,:]/.test(branch), `${path}: the try count is dropped`);
+  }
+});
+
+test('there are exactly TWO call sites — a third must be added to RETRY_CALL_SITES above', () => {
+  const roots = ['lib/llm.ts', 'lib/trace.ts', 'lib/opd-note-audit.ts', 'lib/doc-audit.ts', 'lib/openrouter-retry.ts'];
+  const found = roots.filter((p) => /await openrouterCreateWithRetry/.test(readFileSync(p, 'utf8')));
+  assert.deepEqual(found, [...RETRY_CALL_SITES],
+    'a new call site must be enumerated here, or it can drop the budget unnoticed the way trace.ts did');
+});
+
 test("chatWithFallback's OpenRouter branch passes the caller's timeout through", () => {
   const src = readFileSync('lib/llm.ts', 'utf8');
   const branch = src.slice(src.indexOf('await openrouterCreateWithRetry'), src.indexOf('endProviderCall(\'openrouter\');'));
@@ -165,6 +199,15 @@ test("chatWithFallback's OpenRouter branch passes the caller's timeout through",
   // the Vertex/Ollama branches keep using reqOpts, untouched
   assert.ok(src.includes('const reqOpts = timeoutMs ? { timeout: timeoutMs } : undefined;'), 'reqOpts unchanged');
   assert.ok(src.includes('return llm.chat.completions.create(params, reqOpts);'), 'the Ollama path is unchanged');
+});
+
+test("tracedChat's OpenRouter branch — THE PRODUCTION PATH — passes both through", () => {
+  const src = readFileSync('lib/trace.ts', 'utf8');
+  const branch = src.slice(src.indexOf('await openrouterCreateWithRetry'), src.indexOf("endProviderCall('openrouter');"));
+  assert.ok(branch.includes('timeoutMs: opts?.timeoutMs,'));
+  assert.ok(branch.includes('maxTries: opts?.maxTries,'));
+  // reqOpts still serves the branches that never had a retry loop.
+  assert.ok(src.includes('const reqOpts = opts?.timeoutMs ? { timeout: opts.timeoutMs } : undefined;'));
 });
 
 test('the IPD worker box is 800 s, matching the OPD worker', () => {
@@ -185,6 +228,8 @@ test('this build did not disturb the OPD cron window', () => {
   // What remains here is what this build is actually responsible for: it must not have touched the
   // OPD window, which is the one the timeout fix was shipped in time for.
   const cfg = JSON.parse(readFileSync('vercel.json', 'utf8')) as { crons: { path: string; schedule: string }[] };
-  assert.ok(cfg.crons.some((c) => c.path === '/api/opd-audit/worker?conc=4' && c.schedule === '*/4 18-23,0-2 * * *'),
+  // ⚠️ The path lost its `?conc=4` on 3 Aug (Unit D, Task 11) so the route's re-sized defaults
+  // apply; the SCHEDULE, which is what this build was responsible for not disturbing, is unchanged.
+  assert.ok(cfg.crons.some((c) => c.path === '/api/opd-audit/worker' && c.schedule === '*/4 18-23,0-2 * * *'),
     'the OPD overnight window is not disturbed');
 });

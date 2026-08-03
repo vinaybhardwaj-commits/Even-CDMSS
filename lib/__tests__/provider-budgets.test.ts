@@ -19,7 +19,7 @@ import {
 } from '../lab-provider-core.ts';
 import { probeReachable } from '../lab-override.ts';
 
-const CALL_CLASSES: CallClass[] = ['audit', 'utility', 'doc_read'];
+const CALL_CLASSES: CallClass[] = ['audit', 'audit_ipd', 'utility', 'doc_read'];
 const MINI = 'qwen2.5:14b';
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════
@@ -50,10 +50,10 @@ test('EVERY provider has an entry for EVERY call class', () => {
 
 test('the measured table, verbatim', () => {
   const expect: Record<LabProvider, Record<CallClass, [number, number] | null>> = {
-    ollama:     { audit: [600_000, 1], utility: [90_000, 1],  doc_read: null },
-    openrouter: { audit: [600_000, 3], utility: [110_000, 3], doc_read: [180_000, 1] },
-    vertex:     { audit: [600_000, 3], utility: [110_000, 3], doc_read: [180_000, 1] },
-    bedrock:    { audit: [600_000, 3], utility: [110_000, 3], doc_read: [180_000, 1] },
+    ollama:     { audit: [380_000, 1], audit_ipd: [200_000, 1], utility: [90_000, 1],  doc_read: null },
+    openrouter: { audit: [380_000, 1], audit_ipd: [200_000, 1], utility: [110_000, 3], doc_read: [180_000, 1] },
+    vertex:     { audit: [380_000, 1], audit_ipd: [200_000, 1], utility: [110_000, 3], doc_read: [180_000, 1] },
+    bedrock:    { audit: [380_000, 1], audit_ipd: [200_000, 1], utility: [110_000, 3], doc_read: [180_000, 1] },
   };
   for (const p of LAB_PROVIDERS) {
     for (const c of CALL_CLASSES) {
@@ -68,10 +68,32 @@ test('the measured table, verbatim', () => {
 
 test('OLLAMA AUDIT IS SINGLE-TRY — a local box that missed the budget will not answer on a re-ask', () => {
   assert.equal(PROVIDER_BUDGETS.ollama.audit!.maxTries, 1);
+  assert.equal(PROVIDER_BUDGETS.ollama.audit_ipd!.maxTries, 1);
   assert.equal(PROVIDER_BUDGETS.ollama.utility!.maxTries, 1);
-  // and every PAID provider retries, because there a retry buys something
+});
+
+/**
+ * ⚠️ THIS ASSERTION REVERSED ON 3 AUGUST, and the reversal is the point rather than an erosion.
+ *
+ * It used to read: "every PAID provider retries, because there a retry buys something", pinning
+ * audit.maxTries === 3 on openrouter/vertex/bedrock. DEC-B4 (Addendum B) overturned that once the
+ * arithmetic was done honestly: a retry ladder is MULTIPLICATIVE against the route's box, and the
+ * OPD audit fires up to OPD_AUDIT_LEGS legs, so 3 tries × 380 s × 2 legs is 2,280 s inside an
+ * 800 s maxDuration. The route could not hold its own retry policy — it died mid-batch and wrote
+ * nothing for the notes still in flight, which is strictly worse than not retrying.
+ *
+ * THE RETRY DID NOT DISAPPEAR, IT MOVED (Addendum B §4.2). Both workers sweep for un-audited work
+ * every tick, so the sweep is the retry with a whole window of budget rather than the tail of one
+ * invocation; a transient 429 now costs one note one tick. `utility` KEEPS its three tries — it is
+ * seconds long and no route sizes itself against it.
+ */
+test('BOTH AUDIT CLASSES ARE SINGLE-TRY on every provider (DEC-B4, reversing Unit A)', () => {
+  for (const p of LAB_PROVIDERS) {
+    assert.equal(PROVIDER_BUDGETS[p].audit!.maxTries, 1, `${p}.audit`);
+    assert.equal(PROVIDER_BUDGETS[p].audit_ipd!.maxTries, 1, `${p}.audit_ipd`);
+  }
   for (const p of ['openrouter', 'vertex', 'bedrock'] as const) {
-    assert.equal(PROVIDER_BUDGETS[p].audit!.maxTries, 3, `${p} audit retries`);
+    assert.equal(PROVIDER_BUDGETS[p].utility!.maxTries, 3, `${p}.utility still retries`);
   }
 });
 
@@ -99,14 +121,19 @@ test('the backoff allowance is the exact upper bound of the shipped curve', () =
 });
 
 test('totalBudgetMs = perAttemptMs × maxTries + the backoff allowance', () => {
-  // ollama audit: 600 000 × 1 + 0
-  assert.equal(totalBudgetMs('ollama', 'audit'), 600_000);
+  // ⚠️ The audit numbers moved on 3 Aug (DEC-B3/DEC-B4). The FORMULA this test names is unchanged;
+  // only the inputs are. Both audit classes are now single-try, so their allowance is zero.
+  // ollama audit: 380 000 × 1 + 0
+  assert.equal(totalBudgetMs('ollama', 'audit'), 380_000);
+  // audit_ipd: 200 000 × 1 + 0, on every provider
+  assert.equal(totalBudgetMs('ollama', 'audit_ipd'), 200_000);
+  assert.equal(totalBudgetMs('openrouter', 'audit_ipd'), 200_000);
   // ollama utility: 90 000 × 1 + 0
   assert.equal(totalBudgetMs('ollama', 'utility'), 90_000);
-  // openrouter utility: 110 000 × 3 + 2 250
+  // openrouter utility: 110 000 × 3 + 2 250 — UNCHANGED by Unit D
   assert.equal(totalBudgetMs('openrouter', 'utility'), 332_250);
-  // openrouter audit: 600 000 × 3 + 2 250
-  assert.equal(totalBudgetMs('openrouter', 'audit'), 1_802_250);
+  // openrouter audit: 380 000 × 1 + 0
+  assert.equal(totalBudgetMs('openrouter', 'audit'), 380_000);
   // doc_read is single-try, so no backoff at all
   assert.equal(totalBudgetMs('openrouter', 'doc_read'), 180_000);
   // vertex and bedrock match openrouter class for class
@@ -197,13 +224,27 @@ test('the paid ceiling is untouched', () => {
 // 4 · The finding this table surfaces immediately
 // ═════════════════════════════════════════════════════════════════════════════════════════════
 
-test('SURFACED: one audit\'s worst-case budget EXCEEDS the worker box it runs in', () => {
-  // Not a failure of this unit — the point of the catalogue is that this is now computable.
-  // The OPD/IPD workers declare maxDuration 800 s = 800 000 ms.
+/**
+ * ⚠️ THIS TEST INVERTED ON 3 AUGUST, AND THAT IS THE POINT.
+ *
+ * Unit A could only SURFACE the problem: it asserted that one worst-case audit budget
+ * (600,000 × 3 + 2,250 = 1,802,250 ms) EXCEEDED the 800,000 ms worker box it ran in — 2.25× over —
+ * and recorded it as "not a failure of this unit, for the unit that wires this up". Unit D is that
+ * unit. DEC-B4 cut the audit class to one try at 380,000 ms, so a single audit leg now fits.
+ *
+ * Keeping the assertion and reversing it preserves the record: if a future change puts one leg back
+ * over the box, this fails again with the history attached rather than being quietly deleted.
+ *
+ * ⚠️ FITTING ONE LEG IS NECESSARY, NOT SUFFICIENT. A route runs LEGS × WAVES of these, and that is
+ * what lib/__tests__/route-budget-guard.test.ts checks. This test alone would pass a route that is
+ * still 2× over, which is exactly the mistake the first cut of Unit D made.
+ */
+test('RESOLVED BY UNIT D: one audit leg now fits the worker box it runs in', () => {
   const WORKER_BOX_MS = 800_000;
-  assert.ok(totalBudgetMs('openrouter', 'audit')! > WORKER_BOX_MS,
-    'a route cannot fit even ONE worst-case audit — recorded for the unit that wires this up');
-  // whereas a utility call and a doc read both fit comfortably
+  assert.ok(totalBudgetMs('openrouter', 'audit')! <= WORKER_BOX_MS,
+    'Unit A recorded this as 1,802,250 in an 800,000 box; DEC-B4 brought it inside');
+  assert.ok(totalBudgetMs('openrouter', 'audit_ipd')! <= WORKER_BOX_MS);
+  // a utility call and a doc read still fit comfortably
   assert.ok(totalBudgetMs('openrouter', 'utility')! < WORKER_BOX_MS);
   assert.ok(totalBudgetMs('openrouter', 'doc_read')! < WORKER_BOX_MS);
 });

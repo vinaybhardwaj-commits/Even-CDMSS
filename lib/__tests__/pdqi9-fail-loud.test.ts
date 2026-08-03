@@ -298,8 +298,12 @@ test('the production defaultGenerate params are byte-identical — no eval chang
   // line 604's `content || ''` on the governedChat path — explicitly on the untouched list.
   // D-1 (31 Jul): the call gained the audit's per-request ceiling (timeoutMs) — params, promptRef
   // and the `content || ''` return are unchanged; only how long we wait changed.
-  assert.ok(block.includes("const r = await governedChat(traceId, 'opd_audit_analyze', params, { gemini: geminiModel, promptRef: 'opd-note-audit-core/OPD_AUDIT_SYSTEM', timeoutMs: LLM_AUDIT_TIMEOUT_MS });\n  return r.choices?.[0]?.message?.content || '';"),
-    "the governedChat return and its `content || ''` must be unchanged (plus the D-1 audit ceiling)");
+  // Unit D + DEC-B9 (3 Aug): BOTH transport bounds now come from PROVIDER_BUDGETS — the ceiling as
+  // well as the try count. params, promptRef and the `content || ''` return are still unchanged;
+  // only how long we wait and how many times we ask. LLM_AUDIT_TIMEOUT_MS is unchanged and still
+  // exported, it is simply no longer this path's source.
+  assert.ok(block.includes("const r = await governedChat(traceId, 'opd_audit_analyze', params, { gemini: geminiModel, promptRef: 'opd-note-audit-core/OPD_AUDIT_SYSTEM', timeoutMs: opdAuditBudget().perAttemptMs, maxTries: opdAuditBudget().maxTries });\n  return r.choices?.[0]?.message?.content || '';"),
+    "the governedChat return and its `content || ''` must be unchanged (plus the Unit D transport bounds)");
   // the production params object, verbatim
   assert.ok(block.includes("temperature: onGemini ? 0 : (isReasoning ? 0 : 0.2),"));
   assert.ok(block.includes("max_tokens: isReasoning ? 8192 : 2200,"));

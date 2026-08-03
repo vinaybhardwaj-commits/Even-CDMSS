@@ -19,7 +19,27 @@ import { fetchBilledTotal, fetchBillingEnvelope } from './billing';
 import { persistEpisodeState } from './episode-adapter';
 import { buildIpdAuditRow } from './assemble';
 import { saveIpdAudit, IPD_ENGINE_VERSION, IPD_MINI_ENGINE_VERSION } from './store';
+import { PROVIDER_BUDGETS, providerSwitchEnabled } from '../lab-provider-core';
 import { sql } from '../db';
+
+/**
+ * The per-leg analyze budget for one IPD document, READ FROM THE TABLE rather than restated here —
+ * one fact, one place. `mini` runs the analyze leg on the local Mac-mini; everything else is the
+ * cloud path.
+ *
+ * ⚠️ THE PROVIDER IS A CONSTANT IN THIS BUILD, NOT A DECISION. `?provider=` resolution through
+ * resolveProvider is behind PROVIDER_SWITCH_ENABLED and lands on the worker routes; when it is on,
+ * the resolved provider replaces the literal below. Every cloud provider currently carries the same
+ * audit_ipd numbers, so the choice cannot change behaviour today.
+ */
+export function ipdAnalyzeBudget(mini: boolean): { analyzeTimeoutMs?: number; analyzeMaxTries?: number } {
+  const b = PROVIDER_BUDGETS[mini ? 'ollama' : 'openrouter'].audit_ipd;
+  // A null budget means the provider does not serve this class at all. Refuse rather than
+  // substitute a default: a silent fallback to the module ceiling is the whole class of defect
+  // this build exists to remove.
+  if (!b) throw new Error(`no audit_ipd budget for ${mini ? 'ollama' : 'openrouter'} — this provider cannot serve the analyze leg`);
+  return { analyzeTimeoutMs: b.perAttemptMs, analyzeMaxTries: b.maxTries };
+}
 
 /** T-5, applied to IPD (2 Aug 2026) — the model column records what actually SERVED, not a
  *  hardcoded literal. This row said `gemini-2.5-pro` whether or not Gemini answered, so there was
@@ -39,7 +59,7 @@ import { sql } from '../db';
  *  tracedChat's llm_response event carries the POST-fallback model (`actualModel`), so the audit's
  *  own trace is the source of truth. Null when unknown (no trace / LLM leg dead) — an honest gap,
  *  never a guess, and never a throw: a failed lookup must not fail an audit that already ran. */
-async function servedCallFor(traceId: string | undefined): Promise<{ model: string | null; provider: string | null }> {
+export async function servedCallFor(traceId: string | undefined): Promise<{ model: string | null; provider: string | null }> {
   const none = { model: null, provider: null };
   if (!traceId) return none;
   try {
@@ -111,8 +131,10 @@ export async function runIpdAudit(input: IpdRunInput, opts: { mini?: boolean } =
     });
     if (!extracted) return { documentId: input.documentId, skip: 'unreadable', extractTraceId };
 
-    // mini → analyze on the free Mac-mini (Qwen); extract stays Gemini-multimodal (reads the PDF)
-    const { report, traceId } = await analyzeCase(extracted, {}, mini ? { forceOllama: true } : {});
+    // mini → analyze on the free Mac-mini (Qwen); extract stays Gemini-multimodal (reads the PDF).
+    // The analyze family fires up to IPD_ANALYZE_LEGS calls, each bounded by this budget; the
+    // route's box holds doc_read + 3 × audit_ipd. See lib/lab-provider-core.ts.
+    const { report, traceId } = await analyzeCase(extracted, {}, { ...(mini ? { forceOllama: true } : {}), ...ipdAnalyzeBudget(mini) });
     if (!report?.valueScore) return { documentId: input.documentId, skip: 'unreadable', extractTraceId, analyzeTraceId: traceId };
 
     // S7: the admission envelope + its billed ₹ scalar, both read-time db13 joins. billed_total is
@@ -148,6 +170,19 @@ export async function runIpdAudit(input: IpdRunInput, opts: { mini?: boolean } =
     // contract, so a meta field would be silently dropped there. Assigning here is equivalent and
     // keeps the change inside the files this unit owns — flagged in the build report.
     row.provider = served.provider;
+    // DEC-2 AS REFINED (V, 3 Aug 2026) — enforced at the WRITE POINT rather than by removing
+    // tracedChat's Ollama fallback. Same guarantee, narrower blast radius: tracedChat also serves
+    // /ask, /ddx and the patient summary, and deleting the fallback there would silently change all
+    // of them. This is route-scoped and reversible by unsetting one variable.
+    //
+    // A cloud run that was actually
+    // served by the local mini FAILS THAT DOCUMENT and writes no row — the worker sweeps for
+    // un-audited documents every tick, so the sweep is the retry. Without this, a degraded run is
+    // laundered into a stored audit that reads as a normal one. Flag off ⇒ never fires ⇒ today's
+    // behaviour exactly, mini fallback rows and all. A NULL provider is "unknown", not proof.
+    if (providerSwitchEnabled() && !mini && served.provider === 'ollama') {
+      return { documentId: input.documentId, error: `DEC-2: a cloud provider was asked, ${served.model ?? 'the local model'} answered — document failed, no row written`, extractTraceId, analyzeTraceId: traceId, latencyMs: Date.now() - t0 };
+    }
     const status = await saveIpdAudit(row);
 
     // EpisodeState (#4 SL2) — build + persist the phased episode object, ADDITIVE + BEST-EFFORT.

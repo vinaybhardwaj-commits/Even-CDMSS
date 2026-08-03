@@ -13,6 +13,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { PROVIDER_BUDGETS } from '../lab-provider-core';
+import { OPD_AUDIT_LEGS } from '../opd-note-audit';
 import { createServer } from 'node:http';
 import OpenAI from 'openai';
 import {
@@ -60,17 +62,46 @@ test('T3: every new OpenAI(...) in lib/llm.ts carries timeout + maxRetries', () 
   }
 });
 
-// ── §T4 — THE REGRESSION GUARD: the audit's effective ceiling is the 600 s override, not 90 s ──
-test('T4: the audit call site passes LLM_AUDIT_TIMEOUT_MS and it clears the measured p75', () => {
-  // Budget arithmetic: p75 is 425 s; the audit ceiling must clear it with margin and must be the
-  // value the call site actually passes. 90 s would break the engine — assert the ordering.
-  assert.ok(LLM_AUDIT_TIMEOUT_MS >= 425_000 + 60_000, 'audit ceiling must clear p75 (425 s) with margin');
-  assert.ok(LLM_AUDIT_TIMEOUT_MS > LLM_CALL_TIMEOUT_MS, 'the audit override must exceed the general ceiling');
-
-  // The audit's provider call names the override at the call site:
+// ── §T4 — THE REGRESSION GUARD: the audit's effective ceiling clears real latency, not 90 s ──
+//
+// ⚠️ THE SOURCE OF THAT CEILING CHANGED ON 3 AUGUST (DEC-B9), and its premise was disproven.
+// This test used to require `timeoutMs: LLM_AUDIT_TIMEOUT_MS` at the call site and to justify it
+// with "p75 is 425 s". BOTH have moved:
+//   · The 425 s figure was carried between documents and never re-measured. MEASURED on
+//     v_trace_summary, opd_note_audit successes 30 Jul–2 Aug: p50 52–93 s, p75 90–209 s,
+//     p95 309–393 s. The ceiling must clear the real distribution, not the retracted one.
+//   · Once tracedChat began forwarding the caller's ceiling into openrouterCreateWithRetry,
+//     LLM_AUDIT_TIMEOUT_MS (600,000) and PROVIDER_BUDGETS.audit.perAttemptMs became the same slot.
+//     600,000 × 2 legs is 1,200,000 in an 800,000 box, so V ruled the call site sends the BUDGET.
+//
+// THE PROPERTY THIS TEST DEFENDS IS UNCHANGED: the audit's effective ceiling must be an explicit
+// audit-class value that comfortably clears measured latency, and must never fall back to the 90 s
+// general client bound, which would break the engine.
+test('T4: the audit call site passes an audit-class ceiling that clears measured latency', () => {
   const audit = readFileSync('lib/opd-note-audit.ts', 'utf8');
-  assert.match(audit, /governedChat\(traceId, 'opd_audit_analyze', params, \{[^}]*timeoutMs: LLM_AUDIT_TIMEOUT_MS/s,
-    'opd_audit_analyze must pass timeoutMs: LLM_AUDIT_TIMEOUT_MS');
+  const budget = PROVIDER_BUDGETS.openrouter.audit!;
+
+  // The effective ceiling is the budget, named at the call site rather than restated.
+  assert.match(audit, /governedChat\(traceId, 'opd_audit_analyze', params, \{[^}]*timeoutMs: opdAuditBudget\(\)\.perAttemptMs/s,
+    'opd_audit_analyze must pass the audit budget as its ceiling (DEC-B9)');
+  // ⚠️ COMPARE LIKE WITH LIKE. The budget is PER LEG; the measured percentiles are WHOLE-TRACE
+  // (retrieval + up to OPD_AUDIT_LEGS legs + scoring). Asserting a per-leg ceiling against a
+  // whole-trace p95 is exactly the category error Addendum A made when it sized doc_read against
+  // p95 instead of the observed max. A leg's SHARE of the busiest measured day's p95 is the
+  // honest upper bound to clear.
+  const TRACE_P95_MS = 382_195;            // 2 Aug, n=869, opd_note_audit successes
+  const legShareAtP95 = TRACE_P95_MS / OPD_AUDIT_LEGS;
+  assert.ok(budget.perAttemptMs >= legShareAtP95 * 1.5,
+    `the per-leg ceiling (${budget.perAttemptMs}) must clear a leg's share of the measured p95 ` +
+    `(${Math.round(legShareAtP95)}) with margin`);
+  // …and in fact it sits above the ENTIRE trace at p95, which is the sanity check in Addendum B §4.
+  assert.ok(budget.perAttemptMs >= TRACE_P95_MS * 0.99, 'a per-leg ceiling at ~the whole-trace p95 is generous');
+  assert.ok(budget.perAttemptMs > LLM_CALL_TIMEOUT_MS, 'and must exceed the general 90 s client bound');
+
+  // LLM_AUDIT_TIMEOUT_MS is NOT deleted and NOT changed — it remains the env-overridable default
+  // for any audit-class caller with no entry in the budget table. It is simply not this path's source.
+  assert.equal(LLM_AUDIT_TIMEOUT_MS, 600_000, 'unchanged in value');
+  assert.ok(LLM_AUDIT_TIMEOUT_MS > LLM_CALL_TIMEOUT_MS, 'and still an override over the general ceiling');
 
   // …and the plumbing actually applies it as per-request { timeout } on every non-wrapper branch.
   const trace = readFileSync('lib/trace.ts', 'utf8');
@@ -78,8 +109,15 @@ test('T4: the audit call site passes LLM_AUDIT_TIMEOUT_MS and it clears the meas
     'tracedChat must build per-request options from timeoutMs');
   assert.equal((trace.match(/completions\.create\((?:gParams|params)[^)]*, reqOpts\)/g) ?? []).length, 5,
     'tracedChat: gemini ×2 (stream_options retry twin) + ollama main + both fallback closures');
-  assert.ok(trace.includes('return chatWithFallback(params, opts?.gemini, opts?.openrouter, opts?.timeoutMs);'),
+  // ⚠️ Unit D (3 Aug 2026) added `opts?.maxTries` as a fifth argument. The property this asserts is
+  // UNCHANGED — governedChat must forward the caller's bounds on the traceless path — and it is now
+  // joined by its twin below, because the TRACED path is the one production actually uses and it
+  // was silently dropping both.
+  assert.ok(trace.includes('return chatWithFallback(params, opts?.gemini, opts?.openrouter, opts?.timeoutMs, opts?.maxTries);'),
     'governedChat must forward the ceiling on the TRACELESS path too (the lab runs trace:false)');
+  assert.ok(trace.includes('timeoutMs: opts?.timeoutMs,') && trace.includes('maxTries: opts?.maxTries,'),
+    "tracedChat's OpenRouter branch must forward them too — it has its own retry loop and dropped "
+    + 'both until 3 Aug, which is why the OPD fix credited to 3039c42 never reached the worker');
   const llmSrc = readFileSync('lib/llm.ts', 'utf8');
   assert.equal((llmSrc.match(/completions\.create\((?:gParams|params)[^)]*, reqOpts\)/g) ?? []).length, 4,
     'chatWithFallback: gemini + no-gemini ollama + both fallback returns');

@@ -222,7 +222,12 @@ export async function tracedChat(
   // timeoutMs (D-1, 31 Jul 2026): an audit-class call site passes its own per-request ceiling
   // ({ timeout } in the SDK request options — one client per provider, the override visible at
   // the call site). Absent ⇒ undefined ⇒ the client-level LLM_CALL_TIMEOUT_MS bound applies.
-  opts?: { gemini?: string; openrouter?: string; promptRef?: string; timeoutMs?: number },
+  // maxTries (Unit D, 3 Aug 2026): and its own transport try count, for the same reason — a retry
+  // ladder is multiplicative against the hosting route's maxDuration, so a caller in a box that
+  // cannot hold three rungs must be able to ask for one. Absent ⇒ OPENROUTER_MAX_TRIES (3).
+  // BOTH apply to the OpenRouter branch only; Vertex and Ollama have no retry loop of their own
+  // and take `reqOpts` exactly as before.
+  opts?: { gemini?: string; openrouter?: string; promptRef?: string; timeoutMs?: number; maxTries?: number },
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const t0 = Date.now();
@@ -294,6 +299,28 @@ export async function tracedChat(
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           : await openrouterCreateWithRetry((ro) => client.chat.completions.create(orParams as any, ro), {
               model: orSlug as string,
+              // ══ ROOT CAUSE, PART TWO (3 Aug 2026) ═══════════════════════════════════════════
+              // `3039c42` fixed the IDENTICAL asymmetry in lib/llm.ts's chatWithFallback and did
+              // not touch this function. `reqOpts` is computed at the top of tracedChat and used
+              // on the Vertex branch, the Ollama branch and BOTH fallback paths. This branch —
+              // the only one that owns a retry loop — dropped it, so openrouterCreateWithRetry
+              // applied its own 110 s ceiling and 3 tries no matter what the caller asked for.
+              //
+              // BOTH PRODUCTION AUDIT PATHS ARE TRACED AND THEREFORE BOTH USED THIS BRANCH:
+              //   · OPD — the worker calls auditOpdNote(row) with no options, so `doTrace` is
+              //     true, so governedChat(traceId, …) routes here rather than to chatWithFallback.
+              //   · IPD — runIpdAudit calls analyzeCase(extracted, {}, …) with no `trace` option,
+              //     so the generate closure selects tracedAnalyzeGenerate, which routes here.
+              // So the OPD fix credited to 3039c42 NEVER REACHED THE WORKER; it fixed the
+              // traceless arm, which production does not use.
+              //
+              // AND THE MECHANISM FOR THE QWEN ROWS, BY CODE RATHER THAN INFERENCE: a terminal
+              // timeout throws a plain Error. The isProviderResponseError guard below it only
+              // spares ProviderResponseError from the fallback, so a timeout falls straight
+              // through to the Ollama fallback further down. Every silently-degraded audit row
+              // took that path.
+              timeoutMs: opts?.timeoutMs,
+              maxTries: opts?.maxTries,
               onAttemptFailure: (f) => console.error(
                 `[provider-retry] openrouter ${orSlug} attempt ${f.attempt}/${f.maxTries} ${f.kind}${f.status != null ? ` ${f.status}` : ''} — ${f.willRetry ? 'retrying' : 'giving up'}: ${f.message}`),
             });
@@ -569,11 +596,15 @@ export async function governedChat(
   label: string,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   params: any,
-  opts?: { gemini?: string; openrouter?: string; promptRef?: string; timeoutMs?: number },
+  opts?: { gemini?: string; openrouter?: string; promptRef?: string; timeoutMs?: number; maxTries?: number },
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
+  // ⚠️ THE TRACED ARM IS THE ONE PRODUCTION USES. Both audit legs arrive here with a traceId, so
+  // a budget that only reaches the traceless arm below changes nothing in production while every
+  // naive test passes — which is exactly how the 110 s ceiling survived 3039c42. Both arms carry
+  // timeoutMs and maxTries; keep it that way.
   if (traceId) return tracedChat(traceId, label, params, opts);
-  return chatWithFallback(params, opts?.gemini, opts?.openrouter, opts?.timeoutMs);
+  return chatWithFallback(params, opts?.gemini, opts?.openrouter, opts?.timeoutMs, opts?.maxTries);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

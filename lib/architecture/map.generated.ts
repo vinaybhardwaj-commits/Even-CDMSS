@@ -1473,6 +1473,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/api",
+    "to": "lab-provider-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
     "to": "learning",
     "kind": "value"
   },
@@ -2903,6 +2908,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "ipd-audit",
+    "to": "lab-provider-core",
+    "kind": "value"
+  },
+  {
+    "from": "ipd-audit",
     "to": "llm",
     "kind": "value"
   },
@@ -3684,6 +3694,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "opd-note-audit",
     "to": "lab-batch-core",
+    "kind": "value"
+  },
+  {
+    "from": "opd-note-audit",
+    "to": "lab-provider-core",
     "kind": "value"
   },
   {

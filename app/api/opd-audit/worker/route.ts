@@ -6,8 +6,17 @@ export const runtime = 'nodejs';
 // (opd-note-audit.ts:970). At conc=5 that put whole notes past the 300s box: on 30 Jul the
 // worker orphaned ~2 traces in 'running' for every 1 it completed (283 vs 146), all of them
 // still unresolved 5h later — the invocation dies and the in-flight notes are simply lost.
-// 800s clears the observed p75 (425s) and max (538s) with headroom, and recovers the wasted
-// two-thirds WITHOUT raising concurrency (which would aggravate the open gemini-2.5-pro 403s).
+// 800s recovers the wasted two-thirds WITHOUT raising concurrency (which would aggravate the open
+// gemini-2.5-pro 403s).
+//
+// ⚠️ CORRECTION (Unit D, 3 Aug 2026). This note used to claim 800s "clears the observed p75 (425s)
+// and max (538s)". Neither figure was ever re-measured. MEASURED on v_trace_summary,
+// `opd_note_audit` successes: 2 Aug n=869 p50 51,713 · p75 89,650 · p95 382,195 · max 450,874;
+// 1 Aug n=857 p50 65,578 · p95 393,147 · max 623,385; 31 Jul n=1,702 p50 69,521 · p95 309,419 ·
+// max 908,045; 30 Jul n=939 p50 68,147 · p95 338,404 · max 763,927. p50 is 52–93 s, not 267 s, and
+// 31 JULY'S MAX OF 908,045 ms OUTRAN THIS 800,000 ms BOX. That is unexplained and is recorded as
+// owed rather than fixed here. The same stale 267/425 pair appeared in lib/opd-note-audit.ts and
+// lib/openrouter-retry.ts and is corrected in both.
 export const maxDuration = 800;
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -18,6 +27,8 @@ import { saveOpdAudit, auditedUidsForDayAnyVersion, auditedCountForDayAnyVersion
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { getSettings, setSetting } from '@/lib/mini-backfill';
 import { OPD_ENGINE_VERSION } from '@/lib/opd-note-audit-core';
+import { MINI_MODEL } from '@/lib/llm';
+import { providerSwitchEnabled, resolveWorkerProvider, canServe, type LabProvider } from '@/lib/lab-provider-core';
 
 // Fix A (intake eligibility): house-account doctor_uids excluded from the audit corpus. Lives in
 // app_settings audit_intake_doctor_exclusions (JSON uid array); fail-safe → this seeded constant (so an
@@ -109,7 +120,25 @@ async function servedCallFor(traceId: string | undefined): Promise<{ model: stri
 // Audit one batch of NEVER-YET-AUDITED notes for a single IST day. The Gemini worker only touches
 // genuinely NEW notes (no audit at ANY engine version) — re-auditing already-audited notes to a
 // newer engine is the free mini backfill's job (V, 2 Jul: Gemini forward-only, mini for old + re-audits).
-async function processDay(day: string, max: number, conc: number, exclude: string[]) {
+/**
+ * DEC-2, behind PROVIDER_SWITCH_ENABLED (Unit D, 3 Aug 2026). A failed provider call must FAIL THAT
+ * NOTE and write no row, so the next sweep picks it up again — it must not be laundered into a row
+ * graded by the local mini and labelled as if the cloud model had answered.
+ *
+ * The check is made HERE rather than by removing lib/trace.ts's fallback, because tracedChat serves
+ * far more than the audit workers (/ask, /ddx, patient summary) and removing the fallback globally
+ * would change all of them. The worker asks the trace what actually served and refuses to persist a
+ * mismatch; that is route-scoped and reversible by unsetting one variable.
+ *
+ * Flag OFF ⇒ always false ⇒ byte-identical to today, mini rows and all.
+ */
+function degradedAgainstIntent(served: { provider: string | null }, intended: LabProvider): boolean {
+  if (!providerSwitchEnabled()) return false;
+  if (intended === 'ollama') return false;              // a mini run is allowed to be served by the mini
+  return served.provider === 'ollama';                  // null ⇒ unknown, not proof of a fallback
+}
+
+async function processDay(day: string, max: number, conc: number, exclude: string[], intended: LabProvider) {
   const total = await countOpdNotesForDay(day, exclude);
   // §1 exception: auditedUidsForDayAnyVersion does NOT filter excluded_reason (see the store) — excluded
   // uids stay in the "already audited" set so they're never re-admitted.
@@ -121,6 +150,10 @@ async function processDay(day: string, max: number, conc: number, exclude: strin
     try {
       const audit = await auditOpdNote(row);
       const served = await servedCallFor(audit.traceId);
+      if (degradedAgainstIntent(served, intended)) {
+        // No row. The sweep is the retry: this uid stays un-audited and the next tick re-fetches it.
+        return { uid: audit.keys.uid, error: `DEC-2: ${intended} was asked, ${served.model ?? 'the local model'} answered — note failed, no row written` };
+      }
       const status = await saveOpdAudit(audit, { model: served.model, provider: served.provider, latencyMs: Date.now() - started });
       return { uid: audit.keys.uid, index: audit.scorecard.headline, band: audit.scorecard.band, status };
     } catch (e) {
@@ -146,13 +179,48 @@ async function processDay(day: string, max: number, conc: number, exclude: strin
  *    at the earliest-ever audited day, so it never reaches back before the system launched,
  *    and it's idempotent (uid+engine_version), so caught-up days are cheap no-ops — no re-charge.
  *
- *  ?max (12→ default 15, ≤30) · ?conc (default 5, ≤8) · ?lookback (default OPD_AUDIT_LOOKBACK or 4, ≤14).
+ *  ?max (default 8, ≤30) · ?conc (default 8, ≤8) · ?lookback (default OPD_AUDIT_LOOKBACK or 4, ≤14).
  */
 export async function GET(req: NextRequest) {
   if (!(await authed(req))) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   const p = req.nextUrl.searchParams;
-  const max = Math.max(1, Math.min(30, Number(p.get('max') || 15)));
-  const conc = Math.max(1, Math.min(8, Number(p.get('conc') || 5)));
+  // ── THE BATCH MUST FIT THE BOX (Unit D, 3 Aug 2026) ────────────────────────────────────────
+  // WORST CASE PER NOTE, from PROVIDER_BUDGETS (lib/lab-provider-core.ts) × the leg count:
+  //
+  //   audit × OPD_AUDIT_LEGS   380,000 × 1 × 2   =  760,000 ms
+  //   box                                           800,000 ms
+  //   margin                                         40,000 ms   (5.0%)
+  //   waves  ceil(max 8 / conc 8) = 1
+  //
+  // ⚠️ THE LEG TERM IS THE PART THAT WAS MISSING. The OPD audit does NOT make one LLM call: it
+  // makes up to two, the normal call plus one bounded S0 retry (opd-note-audit.ts, OPD_AUDIT_LEGS).
+  // Sizing this route against a single leg understates it by 2×, which is how the first cut of this
+  // unit "proved" a batch fitted a box it was over.
+  //
+  // 15 → 8 and 5 → 8 so the batch is ONE wave. Four waves of a 760,000 ms note cannot fit an
+  // 800,000 ms box under any budget; one wave can, and raising conc to match max costs nothing
+  // because the notes are independent. ?max= and ?conc= keep their overrides and caps, so a manual
+  // backfill can still ask for more and accept the risk deliberately.
+  // ⚠️ These four numbers are coupled: max, conc, maxDuration and the leg count. Changing any one
+  // without redoing this arithmetic is how a route ends up in a box it cannot fit.
+  const max = Math.max(1, Math.min(30, Number(p.get('max') || 8)));
+  const conc = Math.max(1, Math.min(8, Number(p.get('conc') || 8)));
+
+  // ?provider= (Unit D, behind PROVIDER_SWITCH_ENABLED). Flag off ⇒ the parameter is INERT and this
+  // route is byte-identical to today: it is not read, so a stray ?provider= cannot change a run.
+  // Flag on ⇒ resolved loudly through the provider catalogue, and a provider that cannot serve the
+  // 'audit' class is REFUSED rather than quietly given the module default.
+  let intended: LabProvider = 'openrouter';
+  if (providerSwitchEnabled()) {
+    const r = resolveWorkerProvider(p.get('provider'), MINI_MODEL);
+    if (!r.ok) return NextResponse.json({ ok: false, error: r.error }, { status: 400 });
+    if (r.provider) {
+      if (!canServe(r.provider, 'audit')) {
+        return NextResponse.json({ ok: false, error: `provider '${r.provider}' has no 'audit' budget — it cannot serve this class. Refusing rather than substituting a default.` }, { status: 400 });
+      }
+      intended = r.provider;
+    }
+  }
   const dayParam = p.get('day');
 
   // Admin: set / clear the forward cutoff (?set_forward_from=YYYY-MM-DD, or =off).
@@ -191,7 +259,7 @@ export async function GET(req: NextRequest) {
       if (cutoff && dayParam < cutoff) {
         return NextResponse.json({ ok: true, mode: 'day', day: dayParam, skipped: `before Gemini forward cutoff ${cutoff} — history is the mini backfill's job`, processed: 0 });
       }
-      const r = await processDay(dayParam, max, conc, exclude);
+      const r = await processDay(dayParam, max, conc, exclude, intended);
       return NextResponse.json({ ok: true, mode: 'day', ...r });
     }
 
@@ -210,7 +278,7 @@ export async function GET(req: NextRequest) {
       if (total === 0) continue;
       const auditedCount = await auditedCountForDayAnyVersion(d);
       if (auditedCount < total) {
-        const r = await processDay(d, max, conc, exclude);
+        const r = await processDay(d, max, conc, exclude, intended);
         return NextResponse.json({ ok: true, mode: 'sweep', window, ...r });
       }
     }

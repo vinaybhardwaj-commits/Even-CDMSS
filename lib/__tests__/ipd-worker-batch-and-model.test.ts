@@ -53,7 +53,11 @@ test('THE COUPLING: the cron interval EXCEEDS the route maxDuration, so runs can
 
 test('restoring the cron did not disturb any other schedule', () => {
   assert.equal(VERCEL.crons.length, 15, '14 + the restored IPD worker');
-  const opd = VERCEL.crons.find((c) => c.path === '/api/opd-audit/worker?conc=4');
+  // ⚠️ The OPD entry lost its `?conc=4` on 3 Aug (Unit D, Task 11) so the route's re-sized defaults
+  // (max=8, conc=8 — one wave) apply. Production had been sending conc=4 against a default max of
+  // 15, i.e. FOUR waves, and the guard has to be computed against what the cron actually sends.
+  // The SCHEDULE — which is what this test is about — is untouched.
+  const opd = VERCEL.crons.find((c) => c.path === '/api/opd-audit/worker');
   assert.ok(opd && opd.schedule === '*/4 18-23,0-2 * * *', 'the OPD overnight window is untouched');
 });
 

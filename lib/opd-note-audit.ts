@@ -40,6 +40,7 @@ import { stampLvcMetadata, type LvcRuleLite } from './opd-lvc-classify-core';
 import { bandFor, type ComplexityBand, type ComplexityInputs } from './opd-complexity-core';
 import { bannedFdcFindings } from './cdsco-banned-fdc';
 import { fetchPatientHistoryBundle } from './metabase';
+import { PROVIDER_BUDGETS } from './lab-provider-core';
 import { sql } from './db';
 import { buildLongitudinalInput, type LongitudinalNoteInput } from './opd-longitudinal-core';   // Stage 3 (opd-longitudinal/0.1)
 // Pure, dependency-free helper (lab-batch-core imports nothing, so this cannot form a cycle).
@@ -951,6 +952,31 @@ export async function openRouterGenerate(
   throw lastErr;
 }
 
+/**
+ * ⚠️ THE PRODUCTION LLM LEG RUNS UP TO **TWICE** PER NOTE, not once: the normal call, plus ONE
+ * bounded S0 retry — taken either when the first attempt THREW or when it parsed to nothing usable.
+ * `legRetried` caps it at one retry, so there are three `generateLeg()` call sites but only two
+ * possible executions (the throw-retry and the normal call are mutually exclusive arms of the same
+ * try/catch).
+ *
+ * A ROUTE SIZING ITSELF AGAINST ONE LEG WILL BLOW ITS BOX — the first cut of this unit did exactly
+ * that and was out by 2× on OPD. Guard-tested against the source call sites by
+ * lib/__tests__/route-budget-guard.test.ts; adding a third executable leg fails that test.
+ */
+export const OPD_AUDIT_LEGS = 2;
+
+/**
+ * The per-leg transport budget for the OPD audit, READ FROM THE TABLE rather than restated here.
+ * The provider is a constant in this build; `?provider=` resolution is behind
+ * PROVIDER_SWITCH_ENABLED and every cloud provider currently carries the same `audit` numbers.
+ * A null budget means the provider cannot serve the class — refuse rather than substitute a default.
+ */
+function opdAuditBudget(): { perAttemptMs: number; maxTries: number } {
+  const b = PROVIDER_BUDGETS.openrouter.audit;
+  if (!b) throw new Error('no audit budget for openrouter — this provider cannot serve the OPD audit leg');
+  return b;
+}
+
 async function defaultGenerate(traceId: string | undefined, system: string, user: string, mini = false, evalModel?: string, onEnvelope?: (e: LlmEnvelope) => void, deadlineAt?: number): Promise<string> {
   // EVAL-ONLY (lab): route to OpenRouter when an eval model is named. evalModel unset ⇒ the Gemini/mini
   // path below is byte-identical to today (no production audit ever passes evalModel).
@@ -985,9 +1011,37 @@ async function defaultGenerate(traceId: string | undefined, system: string, user
   // Governed envelope (Stage 4): OPD-audit vertical fingerprint — the system prompt here is
   // always OPD_AUDIT_SYSTEM (see the single call site).
   // D-1 (31 Jul 2026): the audit's provider call carries ITS OWN ceiling rather than inheriting the
-  // 90 s LLM_CALL_TIMEOUT_MS client default — the audit runs p50 267 s / p75 425 s per note, and a
-  // 90 s cap here would break the engine. Per-request { timeout } via governedChat's timeoutMs.
-  const r = await governedChat(traceId, 'opd_audit_analyze', params, { gemini: geminiModel, promptRef: 'opd-note-audit-core/OPD_AUDIT_SYSTEM', timeoutMs: LLM_AUDIT_TIMEOUT_MS });
+  // 90 s LLM_CALL_TIMEOUT_MS client default — a 90 s cap here would break the engine. Per-request
+  // { timeout } via governedChat's timeoutMs.
+  //
+  // ⚠️ CORRECTION (3 Aug 2026). This note used to justify the ceiling with "the audit runs p50
+  // 267 s / p75 425 s per note". That figure was carried between documents and never re-measured.
+  // MEASURED on v_trace_summary, `opd_note_audit` successes: 2 Aug n=869 p50 51,713 · p75 89,650 ·
+  // p95 382,195 · max 450,874; 1 Aug n=857 p50 65,578 · p95 393,147 · max 623,385; 31 Jul n=1,702
+  // p50 69,521 · p95 309,419 · max 908,045; 30 Jul n=939 p50 68,147 · p95 338,404 · max 763,927.
+  // So p50 is 52–93 s and p95 is ~310–393 s. 31 July's max of 908,045 ms outran the worker's own
+  // 800,000 ms box and is unexplained — recorded as owed, not fixed here.
+  //
+  // Unit D (3 Aug 2026): BOTH bounds now come from PROVIDER_BUDGETS — one source, not two.
+  //
+  // ⚠️ DEC-B9 (V, 3 Aug 2026, 13:00 IST). This call used to send `timeoutMs: LLM_AUDIT_TIMEOUT_MS`
+  // (600,000). Once tracedChat began forwarding the caller's ceiling into openrouterCreateWithRetry,
+  // that value and `PROVIDER_BUDGETS.<p>.audit.perAttemptMs` became THE SAME SLOT holding two
+  // different numbers — and the larger one put the route over its box: this leg runs up to
+  // OPD_AUDIT_LEGS times, so 2 × 600,000 = 1,200,000 ms inside an 800,000 ms maxDuration.
+  //
+  // 600,000 was set on 31 July against "p50 267 s / p75 425 s" — a figure this unit MEASURED and
+  // disproved (real p50 is 52–93 s; see the correction above) — and before anyone had counted that
+  // OPD runs two legs. It was a legacy number resting on a retracted measurement. 380,000 is
+  // DEC-B4, derived from the real leg count: 380,000 × 1 × 2 = 760,000 in an 800,000 box.
+  //
+  // It is also the SAFER FAILURE. At 380,000 a slow note times out and degrades, costing one note.
+  // At 600,000 the invocation outruns its box and every note in the wave is lost.
+  //
+  // ⚠️ LLM_AUDIT_TIMEOUT_MS IS NOT DEAD. It is still exported from lib/llm.ts, still env-overridable,
+  // and still the default ceiling for any audit-class caller that has no entry in the budget table.
+  // It is simply no longer the source on THIS path.
+  const r = await governedChat(traceId, 'opd_audit_analyze', params, { gemini: geminiModel, promptRef: 'opd-note-audit-core/OPD_AUDIT_SYSTEM', timeoutMs: opdAuditBudget().perAttemptMs, maxTries: opdAuditBudget().maxTries });
   return r.choices?.[0]?.message?.content || '';
 }
 
