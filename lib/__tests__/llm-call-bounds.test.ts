@@ -107,8 +107,17 @@ test('T4: the audit call site passes an audit-class ceiling that clears measured
   const trace = readFileSync('lib/trace.ts', 'utf8');
   assert.ok(trace.includes("const reqOpts = opts?.timeoutMs ? { timeout: opts.timeoutMs } : undefined;"),
     'tracedChat must build per-request options from timeoutMs');
-  assert.equal((trace.match(/completions\.create\((?:gParams|params)[^)]*, reqOpts\)/g) ?? []).length, 5,
-    'tracedChat: gemini ×2 (stream_options retry twin) + ollama main + both fallback closures');
+  // ⚠️ 5 → 3 IN UNIT V-a1 (3 Aug 2026), and this is a TIGHTENING, not a loss.
+  // The two Gemini calls (the stream_options self-heal twin) no longer take `reqOpts`: they now run
+  // inside `createWithRetry`, which hands each attempt its OWN `{ signal, timeout, maxRetries: 0 }`
+  // derived from the same `opts?.timeoutMs`. So the caller's ceiling still reaches Vertex — by a
+  // STRICTER route than before, because it is now an AbortController deadline as well as an SDK
+  // timeout, and the SDK's own silent retries are off. What remains on `reqOpts` is exactly the
+  // three call sites that have no retry loop of their own: the Ollama main path and both fallbacks.
+  assert.equal((trace.match(/completions\.create\((?:gParams|params)[^)]*, reqOpts\)/g) ?? []).length, 3,
+    'tracedChat: ollama main + both fallback closures — the loop-less sites');
+  assert.equal((trace.match(/completions\.create\(gParams as any, ro\)/g) ?? []).length, 2,
+    'and the gemini twin now takes the per-ATTEMPT opts from the shared retry loop');
   // ⚠️ Unit D (3 Aug 2026) added `opts?.maxTries` as a fifth argument. The property this asserts is
   // UNCHANGED — governedChat must forward the caller's bounds on the traceless path — and it is now
   // joined by its twin below, because the TRACED path is the one production actually uses and it
@@ -119,8 +128,14 @@ test('T4: the audit call site passes an audit-class ceiling that clears measured
     "tracedChat's OpenRouter branch must forward them too — it has its own retry loop and dropped "
     + 'both until 3 Aug, which is why the OPD fix credited to 3039c42 never reached the worker');
   const llmSrc = readFileSync('lib/llm.ts', 'utf8');
-  assert.equal((llmSrc.match(/completions\.create\((?:gParams|params)[^)]*, reqOpts\)/g) ?? []).length, 4,
-    'chatWithFallback: gemini + no-gemini ollama + both fallback returns');
+  // 4 → 3 in Unit V-a1, for the same reason as tracedChat above: the Gemini call moved inside
+  // createWithRetry and takes the loop's per-attempt opts instead of reqOpts. The ceiling still
+  // reaches Vertex, now as an abort deadline as well as an SDK timeout. What is left on reqOpts is
+  // the three loop-less Ollama sites: the no-gemini default and both fallback returns.
+  assert.equal((llmSrc.match(/completions\.create\((?:gParams|params)[^)]*, reqOpts\)/g) ?? []).length, 3,
+    'chatWithFallback: no-gemini ollama + both fallback returns — the loop-less sites');
+  assert.ok(/createWithRetry\(\s*\/\/[^\n]*\n\s*\(ro\) => gemini\.chat\.completions\.create\(gParams as any, ro\)/.test(llmSrc),
+    'and the gemini call takes the per-ATTEMPT opts from the shared retry loop');
 });
 
 // ── §T5 — a call exceeding its ceiling surfaces as a NORMAL error, once, and fast ──

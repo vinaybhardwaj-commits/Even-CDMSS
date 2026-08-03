@@ -185,11 +185,38 @@ test('EVERY openrouterCreateWithRetry call site forwards the caller timeout AND 
   }
 });
 
-test('there are exactly TWO call sites — a third must be added to RETRY_CALL_SITES above', () => {
-  const roots = ['lib/llm.ts', 'lib/trace.ts', 'lib/opd-note-audit.ts', 'lib/doc-audit.ts', 'lib/openrouter-retry.ts'];
-  const found = roots.filter((p) => /await openrouterCreateWithRetry/.test(readFileSync(p, 'utf8')));
-  assert.deepEqual(found, [...RETRY_CALL_SITES],
-    'a new call site must be enumerated here, or it can drop the budget unnoticed the way trace.ts did');
+/**
+ * ⚠️ WIDENED IN UNIT V-a1 (3 Aug 2026): TWO SITES BECAME FOUR.
+ *
+ * This enumeration existed because 3039c42 fixed one OpenRouter site and missed its twin, and the
+ * gap survived three days with both production audit paths on a 110 s ceiling. Unit V-a1 gives the
+ * VERTEX chat branch the same shared loop in both files, so the same lesson now covers four sites:
+ * lib/llm.ts and lib/trace.ts, each with an OpenRouter and a Vertex call.
+ *
+ * Per-site assertions live in lib/__tests__/vertex-retry-parity.test.ts, which enumerates all four
+ * by name. This test guards the COUNT, so a fifth site cannot appear unnoticed.
+ */
+test('there are exactly FOUR provider call sites — a fifth must be enumerated', () => {
+  const roots = ['lib/llm.ts', 'lib/trace.ts', 'lib/opd-note-audit.ts', 'lib/doc-audit.ts', 'lib/openrouter-retry.ts', 'lib/gemini-multimodal.ts'];
+  let openrouterSites = 0;
+  let vertexSites = 0;
+  for (const p of roots) {
+    const s = readFileSync(p, 'utf8');
+    // `await createWithRetry(` is a SUFFIX of `await openrouterCreateWithRetry(`, so count the
+    // wrapped form first and subtract it out rather than double-counting.
+    const wrapped = (s.match(/await openrouterCreateWithRetry\(/g) ?? []).length;
+    const all = (s.match(/await createWithRetry\(/g) ?? []).length;
+    openrouterSites += wrapped;
+    vertexSites += all;
+  }
+  assert.equal(openrouterSites, 2, 'lib/llm.ts and lib/trace.ts, one OpenRouter call each');
+  assert.equal(vertexSites, 2, 'lib/llm.ts and lib/trace.ts, one Vertex call each');
+  assert.equal(openrouterSites + vertexSites, 4,
+    'a new call site must be enumerated in vertex-retry-parity.test.ts, or it can drop the caller\'s ' +
+    'bounds unnoticed the way trace.ts did for three days after 3039c42');
+  // The OpenRouter sites are still the two this file has always named.
+  assert.deepEqual(RETRY_CALL_SITES.filter((p) => /await openrouterCreateWithRetry/.test(readFileSync(p, 'utf8'))),
+    [...RETRY_CALL_SITES]);
 });
 
 test("chatWithFallback's OpenRouter branch passes the caller's timeout through", () => {

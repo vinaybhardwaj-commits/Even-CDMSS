@@ -6,7 +6,7 @@ import {
   PROVIDER_ERROR_CAP, beginProviderCall, endProviderCall, providerCallsInFlight, providerErrorPayload,
   providerResponsePayload, isProviderResponseError,
 } from './provider-error-core';
-import { openrouterCreateWithRetry } from './openrouter-retry';
+import { openrouterCreateWithRetry, createWithRetry } from './openrouter-retry';
 import { promptFingerprint } from './reasoning/registry-core';
 import { billableOutputTokens } from './llm-cost-core';
 
@@ -391,18 +391,50 @@ export async function tracedChat(
         // Study arm only — absent on the shipped uncapped default.
         if (thinkingBudget) gParams.google = { thinking_config: { thinking_budget: thinkingBudget } };
         const gemini = await getGeminiChatClient();
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          result = await gemini.chat.completions.create(gParams as any, reqOpts);
-        } catch (soErr) {
-          if (wantUsage && gParams.stream_options) {
-            delete gParams.stream_options;
+        // ══ UNIT V-a1 (3 Aug 2026): THE VERTEX BRANCH GAINS THE OPENROUTER DISCIPLINE ═══════════
+        // Read in source on 3 Aug, this branch was a bare `create()` whose only bound was the SDK's
+        // own `timeout`: no per-attempt abort deadline, no bounded retry, no 429/5xx handling, and
+        // no body classification — a 200 that was not a completion went straight through as a
+        // successful audit. That was survivable only while Vertex was the fallback. It is about to
+        // be primary, so it gets the same loop, which is now provider-neutral (`createWithRetry`).
+        //
+        // ⚠️ INERT TODAY. With GEMINI_VIA_OPENROUTER=1, `useOpenRouter` is true for every Gemini
+        // call, so `useGemini` is false and this branch never executes — verified against 36 hours
+        // of production logs (zero `provider-fallback gemini` lines). This is discipline added
+        // ahead of the path needing it, not a change to tonight's behaviour.
+        //
+        // ⚠️ 3039c42 FIXED lib/llm.ts AND MISSED THIS FILE, and Unit D found it three days later
+        // with both production audit paths still on a 110 s ceiling. The same treatment is applied
+        // to `chatWithFallback`'s Vertex branch IN THIS SAME COMMIT. Two call sites, one change.
+        //
+        // The stream_options SELF-HEAL lives INSIDE the attempt closure on purpose: it is a
+        // different mechanism from the retry budget — one request the endpoint rejected for a
+        // field it does not know — so healing it must not consume a retry. Note it mutates
+        // `gParams`, so the heal persists across attempts, which is correct: once the endpoint has
+        // rejected the field, later attempts should not re-send it.
+        result = await createWithRetry(async (ro) => {
+          try {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            result = await gemini.chat.completions.create(gParams as any, reqOpts);
-          } else {
+            return await gemini.chat.completions.create(gParams as any, ro);
+          } catch (soErr) {
+            if (wantUsage && gParams.stream_options) {
+              delete gParams.stream_options;
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              return await gemini.chat.completions.create(gParams as any, ro);
+            }
             throw soErr;
           }
-        }
+        }, {
+          provider: 'vertex',
+          model: servedModel ?? null,
+          // Vertex's chat endpoint is OpenAI-COMPATIBLE, so the default classifyProviderResponse is
+          // correct here. The NATIVE :generateContent endpoint is not, and is not routed through
+          // this loop — see lib/gemini-multimodal.ts.
+          timeoutMs: opts?.timeoutMs,
+          maxTries: opts?.maxTries,
+          onAttemptFailure: (f) => console.error(
+            `[provider-retry] vertex ${servedModel} attempt ${f.attempt}/${f.maxTries} ${f.kind}${f.status != null ? ` ${f.status}` : ''} — ${f.willRetry ? 'retrying' : 'giving up'}: ${f.message}`),
+        });
         endProviderCall('gemini');
       } catch (ge) {
         // Fall back to the local Ollama model — the request must never fail just

@@ -132,18 +132,26 @@ test('the loop body reads the LOCAL maxTries, never the constant', () => {
 });
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════
-// 4 · maxTries reaches the OpenRouter branch and NO other
+// 4 · maxTries reaches every branch that OWNS A RETRY LOOP, and no other
 // ═════════════════════════════════════════════════════════════════════════════════════════════
 
-test('chatWithFallback takes maxTries fifth and uses it ONLY on the OpenRouter branch', () => {
+test('chatWithFallback takes maxTries fifth and uses it only where a retry loop exists', () => {
   const src = readFileSync('lib/llm.ts', 'utf8');
   assert.ok(src.includes('export async function chatWithFallback(params: any, geminiModel?: string, openrouterModel?: string, timeoutMs?: number, maxTries?: number)'),
     'fifth argument, after timeoutMs');
   const orBranch = src.slice(src.indexOf('await openrouterCreateWithRetry'), src.indexOf("endProviderCall('openrouter');"));
   assert.ok(/\bmaxTries,/.test(orBranch), 'the OpenRouter branch forwards it');
-  // Vertex and Ollama have no retry loop of their own; they take reqOpts exactly as before.
-  const afterOr = src.slice(src.indexOf('if (!geminiModel || !geminiConfigured())'));
-  assert.ok(!afterOr.includes('maxTries'), 'the Vertex and Ollama branches must not read it');
+  // ⚠️ NARROWED IN UNIT V-a1 (3 Aug 2026). This used to assert "the Vertex and Ollama branches must
+  // not read it", which was right when OpenRouter owned the only retry loop. Vertex now runs the
+  // same shared loop and legitimately consumes maxTries. THE PROPERTY THAT STILL HOLDS, and the one
+  // that mattered all along, is about OLLAMA: it has no loop of its own, so a try count there would
+  // be a number with nothing to spend it on.
+  const gem = src.slice(src.indexOf('if (!geminiModel || !geminiConfigured())'));
+  assert.ok(gem.includes('maxTries,'), 'the Vertex branch now forwards it too');
+  // The Ollama default/fallback calls take reqOpts and nothing else — no try count, no loop.
+  for (const m of src.matchAll(/return llm\.chat\.completions\.create\(params, ([^)]*)\);/g)) {
+    assert.equal(m[1], 'reqOpts', 'an Ollama call site must take reqOpts alone');
+  }
   assert.ok(src.includes('const reqOpts = timeoutMs ? { timeout: timeoutMs } : undefined;'), 'reqOpts unchanged');
 });
 

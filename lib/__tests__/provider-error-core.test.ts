@@ -151,12 +151,20 @@ test('§5 superseded for OpenRouter ONLY by addendum F v2: retry exists, but ONL
   // The 403-diagnosis kickoff shipped observability with NO retry. Addendum F v2 task 1 then gave
   // the production bridge path the lab's bounded retry — deliberately, and deliberately NOT as a
   // second implementation: llm.ts may not carry its own loop/backoff, only the shared wrapper.
-  assert.ok(LLM.includes("import { openrouterCreateWithRetry } from './openrouter-retry';"),
+  assert.ok(LLM.includes("import { openrouterCreateWithRetry, createWithRetry } from './openrouter-retry';"),
     'the retry comes from the ONE shared policy module');
   assert.ok(!/openRouterBackoffMs|setTimeout\(/.test(LLM), 'llm.ts has no private backoff/timer of its own');
-  // The Vertex/Gemini branch is still §5-scoped: no retry there.
-  assert.ok(!LLM.slice(LLM.indexOf('if (!geminiModel || !geminiConfigured())')).includes('openrouterCreateWithRetry'),
-    'the Gemini branch gained no retry — only the bridge transport did');
+  // ⚠️ THIS ASSERTION INVERTED IN UNIT V-a1 (3 Aug 2026), and the inversion IS the unit.
+  // It used to read "the Gemini branch gained no retry — only the bridge transport did", which was
+  // true and safe only while Vertex was the FALLBACK. Vertex is about to become PRIMARY, and read
+  // in source on 3 Aug its chat branch had no per-attempt abort deadline, no bounded retry, no
+  // 429/5xx handling and no body classification. It now runs the SAME shared loop — still one
+  // implementation, which is the property this test actually defends.
+  const gem = LLM.slice(LLM.indexOf('if (!geminiModel || !geminiConfigured())'));
+  assert.ok(gem.includes('await createWithRetry('), 'the Gemini branch now runs the shared policy too');
+  assert.ok(gem.includes("provider: 'vertex',"), 'and identifies itself as vertex, not openrouter');
+  assert.ok(!gem.includes('openrouterCreateWithRetry'),
+    'but NOT through the OpenRouter wrapper — a vertex failure must never log as openrouter');
   // The fallback call count is unchanged: each provider branch still makes exactly ONE fallback
   // llm.chat call on error, and behaviour on success is byte-identical. (D-1: the sites carry the
   // per-request ceiling now — same three sites, no more.)
@@ -254,7 +262,12 @@ test('§2.2/§2.3: the response is validated per attempt, the event is emitted, 
   // error is caught: the isProviderResponseError branch must rethrow BEFORE any Ollama fallback
   // is reachable.
   const RETRY = readFileSync('lib/openrouter-retry.ts', 'utf8');
-  assert.ok(RETRY.includes('classifyProviderResponse(res)'), 'every attempt is validated in the wrapper');
+  // Unit V-a1 made the classifier injectable (`classify`) so the loop can serve Vertex's NATIVE
+  // :generateContent shape too. The DEFAULT is still classifyProviderResponse, so every attempt on
+  // every current call site is validated exactly as before — that is what this pins.
+  assert.ok(RETRY.includes('const classify = cfg.classify ?? classifyProviderResponse;'),
+    'classifyProviderResponse is still the default validator');
+  assert.ok(RETRY.includes('const defect = classify(res);'), 'every attempt is validated in the wrapper');
   assert.ok(RETRY.includes('new ProviderResponseError(defect,'), 'the terminal empty-200 throws the marked error');
   for (const [name, src] of [['llm.ts', LLM], ['trace.ts', TRACE]] as const) {
     assert.ok(src.includes('providerResponsePayload({'), `${name} emits the §2.2 payload`);

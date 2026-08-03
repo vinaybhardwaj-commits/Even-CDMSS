@@ -158,7 +158,17 @@ export async function generateFromDocument(
   try {
     token = await getVertexAccessToken();
   } catch (e) {
-    console.warn('[multimodal] token mint failed', (e as Error).message);
+    // Unit V-a1: a token-mint failure was a bare console.warn nothing reads. It is a Vertex
+    // credential/IAM event and it names its region and service identity — exactly the diagnostic
+    // the OpenRouter path cannot give us, and the reason Vertex is becoming primary.
+    const payload = providerErrorPayload({
+      provider: 'gemini', label: opts.label || 'multimodal_read', feature: null, fellBackTo: 'none',
+      intendedModel: model, fallbackModel: null,
+      region: vertexRegion(), saIdentity: vertexSaEmail(),
+      error: e, inFlightAtError: providerCallsInFlight(),
+    });
+    console.error('[provider-fallback] vertex document read token mint failed → unreadable:', JSON.stringify(payload));
+    if (opts.traceId) await logEvent(opts.traceId, 'provider_error', opts.label || 'multimodal_read', payload).catch(() => {});
     return null;
   }
 
@@ -174,15 +184,42 @@ export async function generateFromDocument(
   };
 
   const t0 = Date.now();
+  // ══ UNIT V-a1 (3 Aug 2026): THE READ THAT COULD HANG FOREVER IS NOW BOUNDED ═══════════════════
+  // This fetch had NO signal, NO timeout and NO retry — the absence recorded a few lines above as
+  // the reason Record audit HUNG (measured 30 Jul: >399 s at "Reading document", no trace, no
+  // fallback) instead of failing. The OpenRouter transport directly above has had all three since
+  // then; this one did not, and it is the path about to become primary.
+  //
+  // ⚠️ maxTries STAYS 1 — THERE IS NO RETRY IN THIS UNIT, and that is arithmetic, not caution.
+  // The route budget is per DOCUMENT, and one IPD document is one doc_read plus IPD_ANALYZE_LEGS
+  // analyze legs:
+  //     1 try   180,000 + 3 × 200,000 =  780,000  in an 800,000 ms box   fits
+  //     2 tries 360,750 + 3 × 200,000 =  960,750  in an 800,000 ms box   OVER by 160,750
+  // The PRD's V-4 checked a retry against the per-CALL budget rather than the route total. The
+  // BOUNDING is the safety fix and it is free, so it ships here; the RETRY moves to V-a2, where the
+  // budgets are re-derived on clean post-Unit-D data with the prognosis legs counted.
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), DOC_READ_TIMEOUT_MS);
   try {
     const res = await fetch(url, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
       body: JSON.stringify(body),
+      signal: ctl.signal,
     });
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
-      console.warn(`[multimodal] vertex generateContent ${res.status}: ${detail.slice(0, 300)}`);
+      // Structured, and NAMING THE REGION AND SERVICE IDENTITY. A per-region quota denial and a
+      // global IAM denial read identically without them, and the old console.warn carried neither.
+      const payload = providerErrorPayload({
+        provider: 'gemini', label: opts.label || 'multimodal_read', feature: null, fellBackTo: 'none',
+        intendedModel: model, fallbackModel: null,
+        region: vertexRegion(), saIdentity: vertexSaEmail(),
+        error: { status: res.status, message: `document read ${res.status}: ${detail.slice(0, 300)}` },
+        inFlightAtError: providerCallsInFlight(),
+      });
+      console.error('[provider-fallback] vertex document read failed → unreadable:', JSON.stringify(payload));
+      if (opts.traceId) await logEvent(opts.traceId, 'provider_error', opts.label || 'multimodal_read', payload, Date.now() - t0).catch(() => {});
       return null;
     }
     const j = (await res.json()) as {
@@ -232,7 +269,19 @@ export async function generateFromDocument(
     }
     return text || null;
   } catch (e) {
-    console.warn('[multimodal] fetch failed', (e as Error).message);
+    // Includes the AbortError on timeout — a hung read is now a failed read, exactly as on the
+    // OpenRouter transport above. Still returns null: the caller's "null means unreadable"
+    // contract is unchanged, and this unit does not touch it.
+    const payload = providerErrorPayload({
+      provider: 'gemini', label: opts.label || 'multimodal_read', feature: null, fellBackTo: 'none',
+      intendedModel: model, fallbackModel: null,
+      region: vertexRegion(), saIdentity: vertexSaEmail(),
+      error: e, inFlightAtError: providerCallsInFlight(),
+    });
+    console.error('[provider-fallback] vertex document read threw → unreadable:', JSON.stringify(payload));
+    if (opts.traceId) await logEvent(opts.traceId, 'provider_error', opts.label || 'multimodal_read', payload, Date.now() - t0).catch(() => {});
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }

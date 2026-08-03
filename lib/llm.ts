@@ -4,7 +4,7 @@ import {
   beginProviderCall, endProviderCall, providerCallsInFlight, providerErrorPayload,
   providerResponsePayload, isProviderResponseError,
 } from './provider-error-core';
-import { openrouterCreateWithRetry } from './openrouter-retry';
+import { openrouterCreateWithRetry, createWithRetry } from './openrouter-retry';
 
 // ─── D-1 (Right Care reliability §3, 31 Jul 2026): bound every provider call ────────────────────
 /** Per-call ceiling for a provider request. The SDK default is 10 minutes with 2 retries,
@@ -345,8 +345,34 @@ export async function chatWithFallback(params: any, geminiModel?: string, openro
     const baseMax = Number((rest as { max_tokens?: number }).max_tokens) || 1024;
     const gParams = { ...rest, model: vertexModelName(geminiModel), max_tokens: baseMax + 8192 };
     const gemini = await getGeminiChatClient();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const res = await gemini.chat.completions.create(gParams as any, reqOpts);
+    // ══ UNIT V-a1 (3 Aug 2026): THE VERTEX BRANCH GAINS THE OPENROUTER DISCIPLINE ═══════════════
+    // This was a bare `create()` bounded only by the SDK's own `timeout`: no per-attempt abort
+    // deadline, no bounded retry, no 429/5xx handling, and no body classification — a 200 that was
+    // not a completion returned as a success. Acceptable while Vertex was the fallback; not
+    // acceptable now that it is about to be primary.
+    //
+    // ⚠️ BOTH ARMS, ONE COMMIT. 3039c42 fixed this file's OpenRouter branch and missed the twin in
+    // lib/trace.ts, and Unit D found it three days later with both production audit paths still on
+    // a 110 s ceiling. tracedChat's Vertex branch gets the identical treatment in this same commit
+    // so the asymmetry cannot repeat. The traced arm is the one production uses.
+    //
+    // ⚠️ INERT TODAY: with GEMINI_VIA_OPENROUTER=1 this branch never executes.
+    //
+    // No stream_options self-heal here — that mechanism exists only on the traced arm, which is
+    // the one that requests usage on streaming calls.
+    const res = await createWithRetry(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (ro) => gemini.chat.completions.create(gParams as any, ro),
+      {
+        provider: 'vertex',
+        model: geminiModel,
+        // Vertex's chat endpoint is OpenAI-compatible, so the default classifyProviderResponse fits.
+        timeoutMs,
+        maxTries,
+        onAttemptFailure: (f) => console.error(
+          `[provider-retry] vertex ${geminiModel} attempt ${f.attempt}/${f.maxTries} ${f.kind}${f.status != null ? ` ${f.status}` : ''} — ${f.willRetry ? 'retrying' : 'giving up'}: ${f.message}`),
+      },
+    );
     endProviderCall('gemini');
     return res;
   } catch (e) {

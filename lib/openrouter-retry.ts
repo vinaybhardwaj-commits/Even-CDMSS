@@ -1,6 +1,12 @@
 /**
- * lib/openrouter-retry.ts — the OpenRouter retry POLICY, shared by both transports
- * (bridge-reliability addendum F v2 task 1, 31 Jul 2026).
+ * lib/openrouter-retry.ts — the provider retry POLICY, shared by every SDK transport
+ * (bridge-reliability addendum F v2 task 1, 31 Jul 2026; generalised in Unit V-a1, 3 Aug 2026).
+ *
+ * ⚠️ THE FILE NAME IS NOW NARROWER THAN ITS CONTENTS, deliberately. The loop is `createWithRetry`
+ * and serves OpenRouter and Vertex alike; `openrouterCreateWithRetry` is a thin wrapper that pins
+ * `provider: 'openrouter'`. The file was NOT renamed because `lib/opd-note-audit.ts` imports and
+ * re-exports four symbols from this path and the whole lab call-graph resolves through it — a
+ * rename is a separate, mechanical change and this unit is not it.
  *
  * HISTORY. The lab/eval path built this discipline first (PDQI-9 fail-loud PRD D4 +
  * Eval-tick-deadline PRD D2, in opd-note-audit.ts `openRouterGenerate`): a bounded per-attempt
@@ -23,7 +29,7 @@
  * obligations; the policy can never diverge again because there is only one copy of it.
  */
 
-import { classifyProviderResponse, ProviderResponseError } from './provider-error-core';
+import { classifyProviderResponse, ProviderResponseError, type ProviderResponseDefect } from './provider-error-core';
 
 /** Bounded retry: 3 tries total, retrying ONLY transient statuses (429/5xx) with jittered
  *  exponential backoff (~0.5s/1s/2s × [0.5,1.5)). A non-transient status or the final failure
@@ -61,9 +67,11 @@ export const OPENROUTER_TIMEOUT_MS = Number(process.env.OPENROUTER_TIMEOUT_MS) |
  *  timeout as a belt (same value), and the SDK's internal retries OFF — the retry budget lives in
  *  this module, and the SDK's default 2 silent connection-level retries under a 3-try loop would
  *  otherwise mean up to 9 wire calls per logical attempt budget. */
-export interface OpenrouterAttemptOpts { signal: AbortSignal; timeout: number; maxRetries: 0 }
+export interface RetryAttemptOpts { signal: AbortSignal; timeout: number; maxRetries: 0 }
 
-export interface OpenrouterAttemptFailure {
+export interface RetryAttemptFailure {
+  /** Which provider this attempt was made against. Unit V-a1 — the loop serves more than one. */
+  provider: string;
   attempt: number;
   maxTries: number;
   willRetry: boolean;
@@ -73,11 +81,113 @@ export interface OpenrouterAttemptFailure {
   message: string;
 }
 
+/** Provider-neutral names are the primary ones from Unit V-a1; these aliases keep every existing
+ *  import compiling unchanged. Same types, two names — no call site had to move. */
+export type OpenrouterAttemptOpts = RetryAttemptOpts;
+export type OpenrouterAttemptFailure = RetryAttemptFailure;
+
 /**
- * Run one OpenRouter SDK call under the shared policy: per-attempt AbortController deadline
+ * Config for `createWithRetry`. Named (rather than inline) so the wrapper below can reuse it
+ * with `Omit<..., 'provider'>` WITHOUT losing callback parameter inference — an inline type
+ * behind `Parameters<typeof fn>[1]` widens to `| undefined` and silently degrades `f` to `any`.
+ */
+export interface CreateWithRetryCfg {
+  /**
+   * WHICH PROVIDER this call is against. Reaches the terminal error message, the
+   * ProviderResponseError, and every onAttemptFailure report, so a Vercel log line names the
+   * provider that actually failed rather than the module that happened to own the loop.
+   * Defaults to 'openrouter' — so every pre-Unit-V call site produces byte-identical strings.
+   */
+  provider?: string;
+  /** Intended model slug — carried into the terminal ProviderResponseError's message. */
+  model?: string | null;
+  /** Fires on every FAILED attempt, terminal or not. Wrapped: observability is never fatal. */
+  onAttemptFailure?: (f: RetryAttemptFailure) => void;
+  /**
+   * HOW TO JUDGE A 200 (Unit V-a1). Defaults to `classifyProviderResponse`, which understands
+   * OpenAI-shaped bodies — correct for OpenRouter AND for Vertex's OpenAI-compatible chat
+   * endpoint, which is what both chat call sites use today.
+   *
+   * It exists because the OTHER Vertex surface is not OpenAI-shaped: the native
+   * `:generateContent` endpoint returns `candidates[0].content.parts`, so a body classifier
+   * built for `choices[0].message.content` would call every valid response defective. A caller
+   * on that endpoint passes its own; a caller that wants no body judgement at all passes
+   * `() => null`, which restores pre-classification behaviour exactly.
+   *
+   * ⚠️ NO PRODUCTION CALLER OVERRIDES THIS YET. The native-endpoint reader
+   * (lib/gemini-multimodal.ts) is bounded but NOT retried in this unit — see V-a2.
+   */
+  classify?: (res: unknown) => ProviderResponseDefect | null;
+  /**
+   * The ceiling and try count applied when the CALLER passes none. A non-OpenRouter caller
+   * should not silently inherit OpenRouter's constants just because they were here first.
+   * Both absent ⇒ OPENROUTER_TIMEOUT_MS / OPENROUTER_MAX_TRIES, i.e. today's behaviour.
+   */
+  defaultTimeoutMs?: number;
+  defaultMaxTries?: number;
+  /**
+   * THE CALLER'S per-attempt ceiling. Absent ⇒ OPENROUTER_TIMEOUT_MS, byte-identical to before.
+   *
+   * ⚠️ WHY THIS EXISTS (root cause, 2 Aug 2026). This helper hard-coded its own 110 s ceiling for
+   * BOTH the AbortController deadline and the SDK timeout, discarding whatever the caller asked
+   * for. The OPD audit passes LLM_AUDIT_TIMEOUT_MS of 600 s through governedChat, and this
+   * helper replaced it with 110 s — so every audit slower than 110 s aborted, retried, aborted,
+   * retried, aborted, and fell through to the local model.
+   *
+   * ⚠️ CORRECTION (3 Aug 2026): this note used to say the OPD audit "runs p50 267 s / p75 425 s".
+   * That figure was carried between documents and never re-measured. MEASURED on v_trace_summary,
+   * `opd_note_audit` successes, 30 Jul–2 Aug: p50 52–93 s, p75 90–209 s, p95 309–393 s, max
+   * 908,045 ms (31 Jul — which outran its own 800 s box and is still unexplained). The real p50
+   * being well UNDER 110 s is precisely why this defect read as intermittent: most notes finished
+   * inside the wrong ceiling and only the slow tail fell through.
+   *
+   * It went unnoticed because it only began when the OpenRouter bridge went live on 30 July:
+   * Vertex honoured the 600 s override, the bridge silently replaced it with 110 s. MEASURED
+   * overnight 1–2 Aug: 126 notes graded by qwen2.5:14b, ZERO by Gemini, logs wall-to-wall
+   * "timeout — The user aborted a request". The fast tail still succeeded (a 79 s manual audit
+   * reached Gemini), which is exactly why it looked intermittent rather than broken.
+   *
+   * THE GENERAL LESSON: a per-attempt ceiling must be sized against the SLOWEST caller, not the
+   * fastest. 110 s is right for the short calls this helper was written for; it is not a property
+   * of the helper, it is a property of the call. Nothing here relates a timeout to the duration
+   * of its slowest caller or to the maxDuration of the route hosting it — see the PRD's §8.
+   */
+  timeoutMs?: number;
+  /**
+   * THE CALLER'S retry count. Absent ⇒ OPENROUTER_MAX_TRIES, byte-identical to before.
+   *
+   * ⚠️ WHY THIS EXISTS (3 Aug 2026). Same lesson as `timeoutMs` above, one variable across:
+   * A RETRY COUNT IS A PROPERTY OF THE CALL, NOT OF THIS MODULE. Three tries is right for the
+   * short utility calls this loop was written for. It is wrong for an audit leg, because the
+   * ladder is multiplicative against a route's box: an audit that may take 380 s, tried three
+   * times, is 1,140 s of worst case inside an 800 s `maxDuration` — the route cannot hold its
+   * own retry policy, so it dies mid-batch and writes nothing for the notes it was still
+   * holding. A route whose box cannot contain the full ladder must be able to shorten it.
+   *
+   * Cutting a caller to one try does not remove retrying, it MOVES it: both audit workers sweep
+   * for un-audited work every tick, so the sweep is the retry and it has a whole window of
+   * budget rather than the tail of one invocation. See lib/lab-provider-core.ts's PROVIDER_BUDGETS.
+   */
+  maxTries?: number;
+  /** Injection seams for tests (repo idiom — mirrors openRouterGenerate's). */
+  sleepFn?: (ms: number) => Promise<void>;
+  rand?: () => number;
+}
+
+/**
+ * Run one provider SDK call under the shared policy: per-attempt AbortController deadline
  * (timer cleared in `finally`), aborts and transport errors retryable, 429/5xx retryable,
  * AND a 200-that-is-not-a-completion retryable on the same budget (a captured empty 200 that is
  * not retried still costs the caller — d6efe39 made the class visible; this makes it survivable).
+ *
+ * ⚠️ PROVIDER-NEUTRAL SINCE UNIT V-a1 (3 Aug 2026). THE RETRY POLICY IS NOT AN OPENROUTER FACT.
+ * It was written for OpenRouter and named after it, and the consequence was a capability gap that
+ * went unnoticed for as long as OpenRouter was primary: read in source on 3 Aug, the Vertex chat
+ * path had NO per-attempt abort deadline (only the SDK's own `timeout`), NO bounded retry, NO
+ * 429/5xx handling, and NO body classification — a 200 that was not a completion sailed straight
+ * through. With Vertex about to become primary, that gap becomes the production path.
+ * `openrouterCreateWithRetry` remains exported as a thin wrapper, so every existing call site and
+ * test is byte-identical; only the name of the shared implementation changed.
  *
  * The terminal empty-200 failure throws `ProviderResponseError`, so the call site's catch can
  * tell it apart and NOT route it into the local-model fallback (§2.3 stands — the retry budget
@@ -91,77 +201,35 @@ export interface OpenrouterAttemptFailure {
  * (lib/llm.ts / lib/trace.ts) — scripts/reasoning-governance-check.mjs hard-fails a direct model
  * call anywhere else, this module included. This module never touches a model client.
  */
-export async function openrouterCreateWithRetry(
-  doAttempt: (opts: OpenrouterAttemptOpts) => Promise<unknown>,
-  cfg: {
-    /** Intended model slug — carried into the terminal ProviderResponseError's message. */
-    model?: string | null;
-    /** Fires on every FAILED attempt, terminal or not. Wrapped: observability is never fatal. */
-    onAttemptFailure?: (f: OpenrouterAttemptFailure) => void;
-    /**
-     * THE CALLER'S per-attempt ceiling. Absent ⇒ OPENROUTER_TIMEOUT_MS, byte-identical to before.
-     *
-     * ⚠️ WHY THIS EXISTS (root cause, 2 Aug 2026). This helper hard-coded its own 110 s ceiling for
-     * BOTH the AbortController deadline and the SDK timeout, discarding whatever the caller asked
-     * for. The OPD audit passes LLM_AUDIT_TIMEOUT_MS of 600 s through governedChat, and this
-     * helper replaced it with 110 s — so every audit slower than 110 s aborted, retried, aborted,
-     * retried, aborted, and fell through to the local model.
-     *
-     * ⚠️ CORRECTION (3 Aug 2026): this note used to say the OPD audit "runs p50 267 s / p75 425 s".
-     * That figure was carried between documents and never re-measured. MEASURED on v_trace_summary,
-     * `opd_note_audit` successes, 30 Jul–2 Aug: p50 52–93 s, p75 90–209 s, p95 309–393 s, max
-     * 908,045 ms (31 Jul — which outran its own 800 s box and is still unexplained). The real p50
-     * being well UNDER 110 s is precisely why this defect read as intermittent: most notes finished
-     * inside the wrong ceiling and only the slow tail fell through.
-     *
-     * It went unnoticed because it only began when the OpenRouter bridge went live on 30 July:
-     * Vertex honoured the 600 s override, the bridge silently replaced it with 110 s. MEASURED
-     * overnight 1–2 Aug: 126 notes graded by qwen2.5:14b, ZERO by Gemini, logs wall-to-wall
-     * "timeout — The user aborted a request". The fast tail still succeeded (a 79 s manual audit
-     * reached Gemini), which is exactly why it looked intermittent rather than broken.
-     *
-     * THE GENERAL LESSON: a per-attempt ceiling must be sized against the SLOWEST caller, not the
-     * fastest. 110 s is right for the short calls this helper was written for; it is not a property
-     * of the helper, it is a property of the call. Nothing here relates a timeout to the duration
-     * of its slowest caller or to the maxDuration of the route hosting it — see the PRD's §8.
-     */
-    timeoutMs?: number;
-    /**
-     * THE CALLER'S retry count. Absent ⇒ OPENROUTER_MAX_TRIES, byte-identical to before.
-     *
-     * ⚠️ WHY THIS EXISTS (3 Aug 2026). Same lesson as `timeoutMs` above, one variable across:
-     * A RETRY COUNT IS A PROPERTY OF THE CALL, NOT OF THIS MODULE. Three tries is right for the
-     * short utility calls this loop was written for. It is wrong for an audit leg, because the
-     * ladder is multiplicative against a route's box: an audit that may take 380 s, tried three
-     * times, is 1,140 s of worst case inside an 800 s `maxDuration` — the route cannot hold its
-     * own retry policy, so it dies mid-batch and writes nothing for the notes it was still
-     * holding. A route whose box cannot contain the full ladder must be able to shorten it.
-     *
-     * Cutting a caller to one try does not remove retrying, it MOVES it: both audit workers sweep
-     * for un-audited work every tick, so the sweep is the retry and it has a whole window of
-     * budget rather than the tail of one invocation. See lib/lab-provider-core.ts's PROVIDER_BUDGETS.
-     */
-    maxTries?: number;
-    /** Injection seams for tests (repo idiom — mirrors openRouterGenerate's). */
-    sleepFn?: (ms: number) => Promise<void>;
-    rand?: () => number;
-  } = {},
+export async function createWithRetry(
+  doAttempt: (opts: RetryAttemptOpts) => Promise<unknown>,
+  cfg: CreateWithRetryCfg = {},
 ): Promise<unknown> {
-  // The applied ceiling: the caller's when given, else this module's default. A non-finite or
+  const provider = cfg.provider || 'openrouter';
+  const classify = cfg.classify ?? classifyProviderResponse;
+  // The DEFAULTS this call falls back to. Resolved with the same degrade discipline as the caller's
+  // values below, so a bad default is no more able to disable a bound than a bad override is.
+  const fallbackTimeoutMs = Number.isFinite(cfg.defaultTimeoutMs) && (cfg.defaultTimeoutMs as number) > 0
+    ? (cfg.defaultTimeoutMs as number)
+    : OPENROUTER_TIMEOUT_MS;
+  const fallbackMaxTries = Number.isFinite(cfg.defaultMaxTries) && (cfg.defaultMaxTries as number) >= 1
+    ? Math.trunc(cfg.defaultMaxTries as number)
+    : OPENROUTER_MAX_TRIES;
+  // The applied ceiling: the caller's when given, else this call's default. A non-finite or
   // non-positive value degrades to the default rather than disabling the deadline — a deadline
   // that can be switched off by a bad number would reintroduce the hang this exists to prevent.
   const timeoutMs = Number.isFinite(cfg.timeoutMs) && (cfg.timeoutMs as number) > 0
     ? (cfg.timeoutMs as number)
-    : OPENROUTER_TIMEOUT_MS;
+    : fallbackTimeoutMs;
   // The applied try budget, resolved with the SAME discipline as the ceiling above: junk degrades
-  // to the module default rather than to zero. A budget that could be switched off by a bad number
+  // to the default rather than to zero. A budget that could be switched off by a bad number
   // would turn "retry fewer times" into "never call at all", which is strictly worse than no knob.
   const maxTries = Number.isFinite(cfg.maxTries) && (cfg.maxTries as number) >= 1
     ? Math.trunc(cfg.maxTries as number)
-    : OPENROUTER_MAX_TRIES;
+    : fallbackMaxTries;
   const sleep = cfg.sleepFn ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-  const report = (f: OpenrouterAttemptFailure) => { try { cfg.onAttemptFailure?.(f); } catch { /* instrumentation is never fatal */ } };
-  let lastErr: unknown = new Error('openrouter: no attempt made');
+  const report = (f: RetryAttemptFailure) => { try { cfg.onAttemptFailure?.(f); } catch { /* instrumentation is never fatal */ } };
+  let lastErr: unknown = new Error(`${provider}: no attempt made`);
   for (let attempt = 1; attempt <= maxTries; attempt++) {
     // The per-attempt deadline. Cleared in `finally` so a completed request never leaves a timer.
     const ctrl = new AbortController();
@@ -179,12 +247,12 @@ export async function openrouterCreateWithRetry(
       const retryable = timedOut || status === null || openRouterRetryable(status);
       const willRetry = retryable && attempt < maxTries;
       report({
-        attempt, maxTries, willRetry,
+        provider, attempt, maxTries, willRetry,
         kind: timedOut ? 'timeout' : status === null ? 'transport' : 'http',
         status, message: String((e as Error)?.message ?? e).slice(0, 300),
       });
       lastErr = timedOut
-        ? new Error(`openrouter TIMEOUT after ${timeoutMs}ms (attempt ${attempt}/${maxTries})`)
+        ? new Error(`${provider} TIMEOUT after ${timeoutMs}ms (attempt ${attempt}/${maxTries})`)
         : e;
       if (!willRetry) throw lastErr;
       await sleep(openRouterBackoffMs(attempt, cfg.rand));
@@ -195,12 +263,12 @@ export async function openrouterCreateWithRetry(
     // A 200 IS NOT A SUCCESS (d6efe39): validate the body. A usable completion returns here — the
     // overwhelmingly common case, one classify call more than before. A defect is RETRYABLE on the
     // remaining budget; only the final attempt throws.
-    const defect = classifyProviderResponse(res);
+    const defect = classify(res);
     if (!defect) return res;
-    const err = new ProviderResponseError(defect, 'openrouter', cfg.model ?? null);
+    const err = new ProviderResponseError(defect, provider, cfg.model ?? null);
     const willRetry = attempt < maxTries;
     report({
-      attempt, maxTries, willRetry,
+      provider, attempt, maxTries, willRetry,
       kind: 'bad_response', status: null, message: err.message.slice(0, 300),
     });
     lastErr = err;
@@ -208,4 +276,19 @@ export async function openrouterCreateWithRetry(
     await sleep(openRouterBackoffMs(attempt, cfg.rand));
   }
   throw lastErr;
+}
+
+/**
+ * The OpenRouter entry point. A THIN WRAPPER over `createWithRetry` since Unit V-a1 — it pins
+ * `provider: 'openrouter'` and changes nothing else, so every existing call site, every error
+ * string and every test is byte-identical to before the generalisation.
+ *
+ * Kept rather than renamed on purpose: `lib/llm.ts` and `lib/trace.ts` both call it, and
+ * `lib/__tests__/openrouter-retry.test.ts` pins its source text at both sites.
+ */
+export async function openrouterCreateWithRetry(
+  doAttempt: (opts: RetryAttemptOpts) => Promise<unknown>,
+  cfg: Omit<CreateWithRetryCfg, 'provider'> = {},
+): Promise<unknown> {
+  return createWithRetry(doAttempt, { ...cfg, provider: 'openrouter' });
 }
