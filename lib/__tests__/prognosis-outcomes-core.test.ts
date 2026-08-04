@@ -13,6 +13,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'crypto';
+import { readFileSync } from 'node:fs';
 import {
   OUTCOME_SOURCES, OUTCOME_CLASSIFICATIONS, isOutcomeSource, isOutcomeClassification,
   normalizeComplicationName, complicationHash, isComplicationHash,
@@ -199,4 +200,72 @@ test('§7.6 no_adverse alongside an event row: followed up, in the denominator, 
   ];
   assert.equal(followUpBucket(rows), 'followed_up');
   assert.equal(inOverWarningDenominator(rows), true);
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// Commit 2 · §7.7 the migration is idempotent, and the store keeps the P-7 write discipline
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+const MIGRATION = readFileSync('migrations/0033_prognosis_outcomes.sql', 'utf8');
+const STORE = readFileSync('lib/prognosis-outcomes-store.ts', 'utf8');
+const sqlOf = (s: string) => s.replace(/--[^\n]*/g, '');
+
+test('§7.7 idempotent migration: every statement is IF NOT EXISTS — running it twice is a no-op', () => {
+  assert.ok(MIGRATION.includes('CREATE TABLE IF NOT EXISTS prognosis_outcomes ('));
+  assert.ok(MIGRATION.includes('CREATE INDEX IF NOT EXISTS prognosis_outcomes_source_idx'));
+  const stmts = sqlOf(MIGRATION).split(';').map((s) => s.trim()).filter(Boolean);
+  for (const st of stmts) {
+    assert.ok(/^CREATE (TABLE|INDEX) IF NOT EXISTS/.test(st), `non-idempotent statement: ${st.slice(0, 60)}…`);
+  }
+  // The §5.1 DDL, structurally: every column the PRD names, and the partial-index predicate.
+  for (const col of ['source_table', 'source_id', 'source_engine', 'app_source', 'source ',
+    'observed_outcome', 'observed_at', 'horizon_days', 'matched_complication ',
+    'matched_complication_hash', 'classification', 'reviewed_by_name', 'notes',
+    'supersedes_id', 'superseded', 'created_at']) {
+    assert.ok(MIGRATION.includes(col), `column missing from DDL: ${col.trim()}`);
+  }
+  assert.ok(MIGRATION.includes('WHERE superseded = FALSE'), 'the partial index serves current-rows reads');
+  assert.ok(MIGRATION.includes('REFERENCES prognosis_outcomes(id)'), 'supersedes_id is a self-reference');
+});
+
+test('P-7 in the store: supersede is ONE atomic statement — flag-flip CTE + insert, no content UPDATE, no DELETE', () => {
+  // The Neon HTTP driver has no multi-statement transaction on this path, so atomicity comes from
+  // a single data-modifying-CTE statement. Both halves must live in the SAME template literal.
+  assert.ok(STORE.includes('WITH marked AS ('), 'the CTE exists');
+  const stmt = STORE.slice(STORE.indexOf('WITH marked AS ('), STORE.indexOf('RETURNING id`', STORE.indexOf('WITH marked AS (')));
+  assert.ok(stmt.includes('SET superseded = TRUE'), 'the old row is flagged…');
+  assert.ok(stmt.includes('AND superseded = FALSE'), '…only if still live (a raced double-correct refuses)');
+  assert.ok(stmt.includes('AND source_table = $1 AND source_id = $2'), '…and only within the same source document');
+  assert.ok(stmt.includes('INSERT INTO prognosis_outcomes'), 'the correction is an INSERT in the same statement');
+  assert.ok(stmt.includes('supersedes_id'), 'carrying the chain');
+  // Append-only: the ONLY UPDATE in the whole store is the superseded flag-flip. Checked on
+  // comment-stripped source — the docblocks legitimately SAY "No DELETE".
+  const storeCode = STORE.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '').replace(/\/\/[^\n']*$/gm, '');
+  const updates = storeCode.match(/UPDATE prognosis_outcomes/g) ?? [];
+  assert.equal(updates.length, 1, 'exactly one UPDATE, the flag-flip');
+  assert.ok(!/\bDELETE\b/.test(storeCode), 'nothing is ever deleted');
+});
+
+test('SQL honesty: reads degrade to unavailable and writes to a refusal — never a throw (no DB in this sandbox)', async () => {
+  // No DATABASE_URL in the test process, so every query path fails — which is exactly the
+  // condition §6 requires to be survivable. `unavailable: true` (not an empty "no outcomes")
+  // is the investigations-lookup discipline: null means unknown.
+  assert.equal(process.env.DATABASE_URL, undefined, 'precondition: no live DB in tests');
+  const { outcomesForSource, insertOutcome, supersedeOutcome } = await import('../prognosis-outcomes-store');
+  const read = await outcomesForSource('ipd_discharge_audits', 'doc-1');
+  assert.deepEqual(read, { rows: [], unavailable: true });
+  const ins = await insertOutcome({
+    sourceTable: 'ipd_discharge_audits', sourceId: 'doc-1', sourceEngine: 'ipd-discharge-audit/0.2',
+    source: 'complaint', observedOutcome: 'x', observedAt: null, horizonDays: null,
+    matchedComplication: null, matchedComplicationHash: null, classification: 'unpredicted_occurred',
+    reviewedByName: 'Dr X', notes: null,
+  });
+  assert.equal(ins.ok, false, 'a failed insert is a refusal, not a throw');
+  const sup = await supersedeOutcome({
+    sourceTable: 'ipd_discharge_audits', sourceId: 'doc-1', sourceEngine: null,
+    source: 'call', observedOutcome: 'y', observedAt: null, horizonDays: null,
+    matchedComplication: null, matchedComplicationHash: null, classification: 'no_adverse_outcome',
+    reviewedByName: 'Dr X', notes: null,
+  }, 0);
+  assert.equal(sup.ok, false, 'a bad supersedesId refuses before touching the DB');
 });

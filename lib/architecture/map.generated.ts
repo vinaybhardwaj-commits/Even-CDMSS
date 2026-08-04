@@ -707,6 +707,14 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "prognosis-outcomes-core",
+    "plane": "unregistered"
+  },
+  {
+    "id": "prognosis-outcomes-store",
+    "plane": "unregistered"
+  },
+  {
     "id": "proms",
     "plane": "unregistered"
   },
@@ -3930,6 +3938,16 @@ export const MAP_EDGES: MapEdge[] = [
     "from": "patient-summary",
     "to": "trace",
     "kind": "value"
+  },
+  {
+    "from": "prognosis-outcomes-store",
+    "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "prognosis-outcomes-store",
+    "to": "prognosis-outcomes-core",
+    "kind": "type"
   },
   {
     "from": "proms",
