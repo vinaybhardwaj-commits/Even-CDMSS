@@ -21,6 +21,9 @@ import MedRecPanel from './med-rec-panel';
 import { fetchMemberOpdRows } from '@/lib/ipd-audit/member-opd-fetch';
 import { computeMedRecView } from '@/lib/member-state-adapters/med-rec-view';
 import { admissionAdapterEnabled } from '@/lib/member-state-adapters/discharge-evidence';
+import OutcomePanel, { type ComplicationOption, type OutcomeRowView } from './outcome-panel';
+import { outcomesForSource } from '@/lib/prognosis-outcomes-store';
+import { complicationHash, resolveComplicationHash } from '@/lib/prognosis-outcomes-core';
 
 export const dynamic = 'force-dynamic';
 
@@ -88,6 +91,39 @@ export default async function IpdAuditReport({ params }: { params: Promise<{ id:
   // EpisodeState (#4 SL3) — READ-ONLY render of the persisted phased course. Best-effort: a read
   // failure or an un-built admission just hides the element, never affects the audit above.
   const episode = await fetchEpisodeState(documentId).catch(() => null);
+
+  // PX Phase 2 (§5.3) — outcomes against the prognosis block. Server-side because the stable
+  // binding needs Node crypto: each complication's hash and each stored row's resolution
+  // (BY HASH, never by the advisory index — P-2) are computed here and passed down. Best-effort:
+  // an unreadable outcomes table renders "temporarily unavailable" inside the panel, never a 500
+  // and never a lost report (§6). The panel renders ONLY when report.prognosis is present.
+  const prognosis = report?.prognosis ?? null;
+  let outcomeComplications: ComplicationOption[] = [];
+  let outcomeRows: OutcomeRowView[] = [];
+  let outcomesUnavailable = false;
+  if (prognosis) {
+    const lookup = await outcomesForSource('ipd_discharge_audits', documentId).catch(() => ({ rows: [], unavailable: true }));
+    outcomesUnavailable = lookup.unavailable;
+    outcomeComplications = (prognosis.complications ?? [])
+      .filter((c) => typeof c?.complication === 'string' && c.complication)
+      .map((c, i) => ({ name: c.complication, hash: complicationHash(c.complication), index: i }));
+    outcomeRows = lookup.rows.map((row) => {
+      const res = resolveComplicationHash(row.matched_complication_hash, prognosis.complications ?? []);
+      return {
+        id: row.id,
+        source: row.source,
+        observed_outcome: row.observed_outcome,
+        observed_at: row.observed_at,
+        classification: row.classification,
+        reviewed_by_name: row.reviewed_by_name,
+        notes: row.notes,
+        superseded: row.superseded,
+        supersedes_id: row.supersedes_id,
+        created_at: row.created_at,
+        resolution: res.status === 'matched' ? { status: 'matched', complication: res.complication } : { status: res.status },
+      };
+    });
+  }
 
   // Medication reconciliation (admission) — #5 SL3. The ONE flag (MEMBERSTATE_ADMISSION_ADAPTER)
   // gates BOTH the compose path AND this surface: with it off, medRec stays null and production is
@@ -209,6 +245,17 @@ export default async function IpdAuditReport({ params }: { params: Promise<{ id:
             {/* Medication reconciliation (admission) — #5 SL3 (behind MEMBERSTATE_ADMISSION_ADAPTER;
                 null ⇒ flag off ⇒ nothing rendered ⇒ production unchanged) */}
             {medRec && <MedRecPanel view={medRec} />}
+
+            {/* PX Phase 2 — outcomes against the prognosis block (renders only when one exists) */}
+            {prognosis && (
+              <OutcomePanel
+                documentId={documentId}
+                engineVersion={String(r.engine_version)}
+                complications={outcomeComplications}
+                initialRows={outcomeRows}
+                unavailable={outcomesUnavailable}
+              />
+            )}
 
             <div className="mt-5 flex flex-wrap items-center gap-3 text-[11px] text-slate-400">
               <span>engine {String(r.engine_version)}</span>

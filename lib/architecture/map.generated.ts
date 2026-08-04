@@ -1096,6 +1096,16 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/admin",
+    "to": "prognosis-outcomes-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
+    "to": "prognosis-outcomes-store",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
     "to": "provenance-tier",
     "kind": "value"
   },
@@ -1707,6 +1717,16 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "plos",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "prognosis-outcomes-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "prognosis-outcomes-store",
     "kind": "value"
   },
   {
