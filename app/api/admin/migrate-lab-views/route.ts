@@ -124,11 +124,25 @@ export async function GET(req: NextRequest) {
     // an event row proves someone looked at ONE outcome, not that the rest were checked.
     //
     // THE HASH IS RECOMPUTED IN SQL and must match lib/prognosis-outcomes-core.ts exactly:
-    // sha256(trim → lower → collapse whitespace), hex, first 16. `matched_complication` (the
-    // integer) is never consulted (P-2); a stored hash matching nothing counts as n_unresolved.
+    // sha256(normalize), hex, first 16. ⚠️ ADDENDUM A §1 (hash parity, MEASURED on live Neon):
+    // the normalization is COLLAPSE FIRST, THEN TRIM — `btrim(regexp_replace(...), ' ')`. The
+    // first cut trimmed first, and `btrim` with no second argument strips ASCII spaces ONLY, so a
+    // leading tab or trailing newline survived, was collapsed into a literal edge space, and
+    // hashed differently from Node — the outcome silently fell into `unresolved` and inflated
+    // over_warning_rate. Collapsing first turns every \s run (tabs, newlines, NBSP — Postgres \s
+    // matches it) into a plain space; trimming ' ' then matches JS .trim() exactly. Ten vectors
+    // validated Node-vs-SQL 4 Aug (zero divergent); they are pinned Node-side in
+    // lib/__tests__/prognosis-outcomes-core.test.ts and re-validated against live Neon by the
+    // orchestrator after any change to either side. `matched_complication` (the integer) is never
+    // consulted (P-2); a stored hash matching nothing counts as n_unresolved.
     //
-    // One row per document: the latest non-mini audit carrying a prognosis block ('%-mini' rows
-    // are the isolated Qwen backfill generation and must not shadow the prod block).
+    // One row per document (A-1): the row with the greatest audited_at carrying a NON-EMPTY
+    // prognosis.complications array. 60 of 363 prognosis documents have two engine versions, so
+    // the choice is live — and `engine_drift` makes the mixture legible: TRUE when any current
+    // outcome was linked at a different engine than the canonical row, NULL when the document has
+    // no outcome rows (absence of outcomes is not absence of drift — never FALSE by default).
+    // No '%-mini' filter (A-3): it matches zero rows in this table — the mini path writes to
+    // lab_analyses. An inert guard reads as a rule someone verified.
     //
     // DROP + CREATE rather than CREATE OR REPLACE: idempotent as a pair, and survives column-shape
     // changes on re-run (OR REPLACE cannot drop or retype a column). Also keeps the three lab
@@ -142,13 +156,13 @@ export async function GET(req: NextRequest) {
           FROM ipd_discharge_audits
          WHERE report->'prognosis' IS NOT NULL
            AND jsonb_typeof(report->'prognosis'->'complications') = 'array'
-           AND engine_version NOT LIKE '%-mini'
+           AND jsonb_array_length(report->'prognosis'->'complications') > 0
          ORDER BY document_id, audited_at DESC
       ),
       comp_hashes AS (
         SELECT b.document_id,
                substr(encode(sha256(convert_to(
-                 regexp_replace(lower(btrim(c.value->>'complication')), '\\s+', ' ', 'g'),
+                 btrim(regexp_replace(lower(c.value->>'complication'), '\\s+', ' ', 'g'), ' '),
                'UTF8')), 'hex'), 1, 16) AS comp_hash
           FROM blocks b
           CROSS JOIN LATERAL jsonb_array_elements(b.complications) AS c(value)
@@ -207,7 +221,14 @@ export async function GET(req: NextRequest) {
              CASE WHEN COALESCE(m.n_predicted_occurred, 0) + COALESCE(o.n_unpredicted_occurred, 0) > 0
                   THEN round(COALESCE(m.n_predicted_occurred, 0)::numeric
                              / (COALESCE(m.n_predicted_occurred, 0) + COALESCE(o.n_unpredicted_occurred, 0)), 3)
-                  ELSE NULL END AS recall_of_foreseeable
+                  ELSE NULL END AS recall_of_foreseeable,
+             CASE WHEN COALESCE(o.n_outcome_rows, 0) > 0
+                  THEN EXISTS (
+                    SELECT 1 FROM prognosis_outcomes po
+                     WHERE po.source_table = 'ipd_discharge_audits' AND po.source_id = b.document_id
+                       AND po.superseded = FALSE
+                       AND po.source_engine IS DISTINCT FROM b.engine_version)
+                  ELSE NULL END AS engine_drift
         FROM blocks b
         LEFT JOIN anticipated a ON a.document_id = b.document_id
         LEFT JOIN o ON o.document_id = b.document_id

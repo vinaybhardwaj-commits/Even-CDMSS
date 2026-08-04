@@ -52,6 +52,32 @@ test('the hash is EXACTLY sha256(normalized) hex first 16 — the stored contrac
   assert.ok(!isComplicationHash(expected.toUpperCase()), 'hex is lower-case');
 });
 
+test('ADDENDUM A §1.2 — the ten cross-engine vectors, pinned with their literal hashes', () => {
+  // Computed from live Neon AND Node on 4 Aug 2026 (zero divergent under the fixed SQL). These are
+  // THE regression suite for hash parity: this test pins the Node half; the orchestrator
+  // re-validates the Postgres half against live Neon after any change to either normalization.
+  // The shipped (trim-first) SQL diverged on lead_tab, trail_nl, crlf, nbsp_edge and vtab — the
+  // silent-unresolved / inflated-over-warning class this pin exists to keep dead.
+  const VECTORS: Array<[string, string, string]> = [
+    // Written as escapes so the invisible characters are unambiguous in source: NBSP (JS \s and
+    // Postgres \s both match U+00A0) and the vertical tab live below as \u escapes, never as
+    // bare characters a reader cannot see.
+    ['plain', 'Wound infection', '6739970f11b3130a'],
+    ['pad_spaces', '  Wound infection  ', '6739970f11b3130a'],
+    ['internal', 'Wound   infection', '6739970f11b3130a'],
+    ['lead_tab', '\tWound infection', '6739970f11b3130a'],
+    ['trail_nl', 'Wound infection\n', '6739970f11b3130a'],
+    ['crlf', 'Wound infection\r\n', '6739970f11b3130a'],
+    ['nbsp_edge', '\u00A0Wound infection\u00A0', '6739970f11b3130a'],
+    ['nbsp_internal', 'Wound\u00A0infection', '6739970f11b3130a'],
+    ['vtab', '\u000BWound infection', '6739970f11b3130a'],
+    ['mixed', 'Surgical Site Infection (SSI)', '66dd35867e43e6fc'],
+  ];
+  for (const [name, input, expected] of VECTORS) {
+    assert.equal(complicationHash(input), expected, `vector ${name}: ${JSON.stringify(input)}`);
+  }
+});
+
 test('normalization is trim + lower-case + collapse internal whitespace, nothing more', () => {
   assert.equal(normalizeComplicationName('  A   B\t\nC '), 'a b c');
   // Deliberately NOT stripped: punctuation and diacritics. Adding a step later would orphan
@@ -268,18 +294,29 @@ test('§7.6 the view emits the not_followed_up bucket, and the over-warning colu
 });
 
 test('the view reads only non-superseded rows and resolves by the SAME hash as the core', () => {
-  assert.equal((CAL_VIEW.match(/superseded = FALSE/g) ?? []).length, 3,
-    'every prognosis_outcomes read in the view filters superseded rows');
-  // The SQL hash chain must mirror complicationHash exactly: trim → lower → collapse ws →
-  // sha256 → hex → first 16. A drift here would quietly mark every outcome unresolved.
-  assert.ok(CAL_VIEW.includes("regexp_replace(lower(btrim(c.value->>'complication')), '\\\\s+', ' ', 'g')"),
-    'normalization: btrim + lower + whitespace collapse');
+  assert.equal((CAL_VIEW.match(/superseded = FALSE/g) ?? []).length, 4,
+    'every prognosis_outcomes read in the view filters superseded rows (incl. the engine_drift probe)');
+  // ⚠️ ADDENDUM A §1 — COLLAPSE FIRST, THEN TRIM. The first cut trimmed first, and btrim with no
+  // second argument strips ASCII spaces only, so a leading tab / trailing newline survived and
+  // hashed differently from Node (5 of 10 vectors diverged, MEASURED on live Neon 4 Aug). The
+  // fixed order turns every \s run into a plain space, then trims exactly what JS .trim() trims.
+  assert.ok(CAL_VIEW.includes("btrim(regexp_replace(lower(c.value->>'complication'), '\\\\s+', ' ', 'g'), ' ')"),
+    'normalization: lower → collapse whitespace → trim ASCII space (hash parity with Node)');
+  assert.ok(!CAL_VIEW.includes("lower(btrim("), 'the trim-first order is the defect — it must not come back');
   assert.ok(CAL_VIEW.includes("substr(encode(sha256(convert_to("), 'sha256 → hex');
   assert.ok(CAL_VIEW.includes("'hex'), 1, 16)"), 'first 16 chars');
   // P-2: the advisory integer never appears in the view's logic.
   assert.ok(!CAL_VIEW.includes('matched_complication '), 'resolution is by hash — the integer index is never consulted');
-  assert.ok(CAL_VIEW.includes("engine_version NOT LIKE '%-mini'"),
-    'the isolated Qwen backfill generation must not shadow the prod block');
+  // A-3: the '%-mini' guard matched ZERO rows in this table (the mini path writes to
+  // lab_analyses) — an inert guard reads as a rule someone verified, so it is gone.
+  assert.ok(!CAL_VIEW.includes('-mini'), 'no inert mini filter');
+  // A-1: canonical = greatest audited_at with a NON-EMPTY complications array…
+  assert.ok(CAL_VIEW.includes("jsonb_array_length(report->'prognosis'->'complications') > 0"));
+  // …and the engine mixture is legible, never silent: TRUE on any current outcome linked at a
+  // different engine, NULL when the document has no outcome rows — never FALSE by default.
+  assert.ok(CAL_VIEW.includes('ELSE NULL END AS engine_drift'), 'engine_drift is NULL without outcome rows');
+  assert.ok(CAL_VIEW.includes('po.source_engine IS DISTINCT FROM b.engine_version'),
+    'drift compares against the canonical row, treating an unknown link engine as visible, not equal');
 });
 
 test('the migrate route creates the table BEFORE the view, mirroring migrations/0033 exactly', () => {
@@ -304,6 +341,23 @@ test('P-8: the table and the view pass the SQL guard, and lib/sql-guard-core.ts 
   assert.ok(guard.includes('const BLOCKED_RELATIONS = /\\b(traces|trace_events|appropriateness_runs|ccb_briefs|care_track_assignments|opd_audit_feedback)\\b/i;'),
     'the block list is byte-identical — P-8 ruled the table readable; the revisit trigger is in the PRD');
   assert.ok(!/prognosis/.test(guard), 'the guard does not need to know the feature exists');
+});
+
+test('A-2: horizon_days is DERIVED in SQL against the canonical discharged_at — never typed, never audited_at', () => {
+  // Both write statements carry the same derivation: observed_at minus the canonical document's
+  // discharged_at in whole days, NULL when either is absent (67 of 423 documents have no
+  // discharged_at — NULL is normal, not an error).
+  assert.equal((STORE.match(/HORIZON_DERIVATION/g) ?? []).length, 3, 'defined once, used by insert AND supersede');
+  assert.ok(STORE.includes("SELECT ($7::date - d.discharged_at::date)"), 'whole days from discharged_at');
+  assert.ok(STORE.includes('ORDER BY d.audited_at DESC'), 'the canonical row is A-1\'s: greatest audited_at…');
+  assert.ok(STORE.includes("jsonb_array_length(d.report->'prognosis'->'complications') > 0"), '…with a non-empty complications array');
+  // audited_at appears ONLY as the canonical-row sort key — never as a date substituted into the
+  // subtraction (that would silently answer a different question).
+  assert.ok(!STORE.includes('audited_at::date'), 'never a fallback to the audit date');
+  assert.ok(!STORE.includes('COALESCE(d.discharged_at'), 'no substitute for an absent discharge date');
+  // …and the reviewer never types it: the input field is dead, no form/route value reaches SQL.
+  assert.ok(STORE.includes('IGNORED since Addendum A (A-2)'), 'the input field is documented dead');
+  assert.ok(!STORE.includes('i.horizonDays'), 'the store never reads it');
 });
 
 test('SQL honesty: reads degrade to unavailable and writes to a refusal — never a throw (no DB in this sandbox)', async () => {

@@ -35,6 +35,16 @@
 --
 -- ADDITIVE, IDEMPOTENT. CREATE TABLE IF NOT EXISTS + CREATE INDEX IF NOT EXISTS — running this
 -- twice is a no-op (PRD §6). No backfill: history starts when the loop starts.
+--
+-- ADDENDUM A (4 Aug 2026), recorded here so the DDL record stays in step with the writers:
+--   A-1 the canonical block per document is the row with the greatest audited_at carrying a
+--       non-empty prognosis.complications array; v_prognosis_calibration reports engine_drift.
+--   A-2 horizon_days is DERIVED on write (lib/prognosis-outcomes-store.ts): observed_at minus the
+--       canonical document's discharged_at in whole days; NULL when either date is absent
+--       (67 of 423 documents have no discharged_at — NULL is normal); NEVER audited_at.
+--   §1  the SQL-side hash normalization is collapse-then-trim
+--       (btrim(regexp_replace(lower(name), '\s+', ' ', 'g'), ' ')) for parity with Node's
+--       trim → toLowerCase → collapse; ten vectors validated on live Neon, zero divergent.
 
 CREATE TABLE IF NOT EXISTS prognosis_outcomes (
   id                  BIGSERIAL PRIMARY KEY,
@@ -45,7 +55,7 @@ CREATE TABLE IF NOT EXISTS prognosis_outcomes (
   source              TEXT NOT NULL,      -- complaint|readmission|revisit|reoperation|call|other
   observed_outcome    TEXT NOT NULL,
   observed_at         DATE,
-  horizon_days        INT,
+  horizon_days        INT,                -- DERIVED on write (A-2): observed_at - canonical discharged_at, whole days; never typed
   matched_complication      INT,          -- index at link time. Advisory only. NULL = nobody predicted it
   matched_complication_hash TEXT,         -- the stable binding. NULL = unpredicted
   classification      TEXT NOT NULL,      -- predicted_occurred | unpredicted_occurred | benefit_failure | no_adverse_outcome

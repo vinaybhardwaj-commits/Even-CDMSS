@@ -108,7 +108,11 @@ export interface PrognosisOutcomeInput {
   source: OutcomeSource;
   observedOutcome: string;
   observedAt: string | null;           // YYYY-MM-DD or null
-  horizonDays: number | null;
+  /** IGNORED since Addendum A (A-2): horizon_days is DERIVED in SQL on write — observed_at minus
+   *  the canonical document's discharged_at in whole days, NULL when either is absent, never
+   *  audited_at. The field stays so the API route (outside Addendum A's editable set) keeps
+   *  compiling; the store never reads it. */
+  horizonDays?: number | null;
   matchedComplication: number | null;  // advisory index at link time
   matchedComplicationHash: string | null;
   classification: OutcomeClassification;
@@ -128,10 +132,28 @@ const INSERT_COLUMNS = `(source_table, source_id, source_engine, app_source, sou
    horizon_days, matched_complication, matched_complication_hash, classification,
    reviewed_by_name, notes`;
 
+/**
+ * A-2 (Addendum A): horizon_days is DERIVED, not typed — observed_at minus the CANONICAL
+ * document's discharged_at, in whole days. The canonical row is A-1's: greatest audited_at
+ * carrying a non-empty prognosis.complications array. NULL when observed_at is absent, when the
+ * source is not an IPD document, or when the document has no discharged_at (67 of 423 do not —
+ * NULL is a normal outcome, not an error). NEVER audited_at: that is the audit date, not the
+ * discharge date, and substituting it would silently answer a different question.
+ */
+const HORIZON_DERIVATION = `CASE WHEN $1 = 'ipd_discharge_audits' AND $7::date IS NOT NULL THEN (
+    SELECT ($7::date - d.discharged_at::date)
+      FROM ipd_discharge_audits d
+     WHERE d.document_id = $2
+       AND jsonb_typeof(d.report->'prognosis'->'complications') = 'array'
+       AND jsonb_array_length(d.report->'prognosis'->'complications') > 0
+     ORDER BY d.audited_at DESC
+     LIMIT 1
+  ) ELSE NULL END`;
+
 function insertParams(i: PrognosisOutcomeInput): unknown[] {
   return [
     i.sourceTable, i.sourceId, i.sourceEngine ?? null, appSource(), i.source,
-    i.observedOutcome, i.observedAt ?? null, i.horizonDays ?? null,
+    i.observedOutcome, i.observedAt ?? null,
     i.matchedComplication ?? null, i.matchedComplicationHash ?? null, i.classification,
     i.reviewedByName ?? null, i.notes ?? null,
   ];
@@ -143,7 +165,9 @@ export async function insertOutcome(i: PrognosisOutcomeInput): Promise<WriteResu
     const rows = await run(
       `INSERT INTO prognosis_outcomes
   ${INSERT_COLUMNS})
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+VALUES ($1,$2,$3,$4,$5,$6,$7,
+  ${HORIZON_DERIVATION},
+  $8,$9,$10,$11,$12)
 RETURNING id`,
       insertParams(i),
     );
@@ -167,13 +191,15 @@ export async function supersedeOutcome(i: PrognosisOutcomeInput, supersedesId: n
       `WITH marked AS (
   UPDATE prognosis_outcomes
      SET superseded = TRUE
-   WHERE id = $14 AND superseded = FALSE
+   WHERE id = $13 AND superseded = FALSE
      AND source_table = $1 AND source_id = $2
    RETURNING id
 )
 INSERT INTO prognosis_outcomes
   ${INSERT_COLUMNS}, supersedes_id)
-SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, marked.id
+SELECT $1,$2,$3,$4,$5,$6,$7,
+  ${HORIZON_DERIVATION},
+  $8,$9,$10,$11,$12, marked.id
   FROM marked
 RETURNING id`,
       [...insertParams(i), supersedesId],
