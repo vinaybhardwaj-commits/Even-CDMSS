@@ -62,7 +62,9 @@ test('governedChat is exact delegation (transport-equivalence pin)', () => {
   // D-1 (31 Jul): the traceless branch forwards the per-request ceiling too — equivalence holds.
   // Unit D (3 Aug): and the transport try count, on BOTH arms. Equivalence is the point of this
   // pin, so a bound that reached one arm and not the other would break exactly what it protects.
-  assert.ok(body.includes('return chatWithFallback(params, opts?.gemini, opts?.openrouter, opts?.timeoutMs, opts?.maxTries);'), 'traceless branch is the plain hybrid fallback with the same params (+ openrouter route + D-1 ceiling + Unit D try count)');
+  // Unit V-a2 (4 Aug): and noLocalFallback, for the same reason — a flag that reached only the
+  // traced arm would leave the lab's traceless runs silently falling back to the local model.
+  assert.ok(body.includes('return chatWithFallback(params, opts?.gemini, opts?.openrouter, opts?.timeoutMs, opts?.maxTries, opts?.noLocalFallback);'), 'traceless branch is the plain hybrid fallback with the same params (+ openrouter route + D-1 ceiling + Unit D try count + V-a2 flag)');
 });
 
 test('governance config sanity: three call patterns, two governed files, fold declared', async () => {

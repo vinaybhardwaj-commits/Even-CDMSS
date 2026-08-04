@@ -188,7 +188,11 @@ export interface AnalyzeResult { report: AuditReport | null; excerptCount: numbe
  */
 export const IPD_ANALYZE_LEGS = 3;
 
-async function analyzeGenerate(system: string, user: string, forceOllama = false, timeoutMs?: number, maxTries?: number): Promise<string> {
+// Unit V-a2 (4 Aug 2026): `noLocalFallback` rides beside the budget on BOTH arms. When true, a
+// cloud analyze leg whose ladder fails end-to-end THROWS instead of being answered by the local
+// model; analyzeCase's own catch turns that into report:null, so the document writes no row and
+// the worker's sweep retries it. False or absent ⇒ today's behaviour exactly.
+async function analyzeGenerate(system: string, user: string, forceOllama = false, timeoutMs?: number, maxTries?: number, noLocalFallback?: boolean): Promise<string> {
   const geminiModel = forceOllama ? undefined : (geminiModelFor('doc_audit') ?? geminiUtilityModel());
   // Governed envelope (Stage 4): this is the trace-less analyze path (opts.trace === false),
   // so governedChat takes the plain hybrid branch — byte-identical to the old direct call.
@@ -198,14 +202,14 @@ async function analyzeGenerate(system: string, user: string, forceOllama = false
     temperature: 0.2,
     max_tokens: 2800,
     ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
-  }, { gemini: geminiModel, timeoutMs, maxTries });
+  }, { gemini: geminiModel, timeoutMs, maxTries, noLocalFallback });
   return r.choices?.[0]?.message?.content || '';
 }
 
 // Traced analyze generate — routes through tracedChat so the (de-identified) analyze
 // LLM calls are captured in observability with model/provider/tokens/latency + fallback
 // detection. The extract is already de-identified (name/UHID stripped) before this runs.
-async function tracedAnalyzeGenerate(traceId: string, label: string, system: string, user: string, forceOllama = false, promptRef?: string, timeoutMs?: number, maxTries?: number): Promise<string> {
+async function tracedAnalyzeGenerate(traceId: string, label: string, system: string, user: string, forceOllama = false, promptRef?: string, timeoutMs?: number, maxTries?: number, noLocalFallback?: boolean): Promise<string> {
   const geminiModel = forceOllama ? undefined : (geminiModelFor('doc_audit') ?? geminiUtilityModel());
   const r = await tracedChat(traceId, label, {
     model: TEXT_MODEL,
@@ -213,7 +217,7 @@ async function tracedAnalyzeGenerate(traceId: string, label: string, system: str
     temperature: 0.2,
     max_tokens: 2800,
     ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
-  }, { gemini: geminiModel, promptRef, timeoutMs, maxTries });
+  }, { gemini: geminiModel, promptRef, timeoutMs, maxTries, noLocalFallback });
   return r.choices?.[0]?.message?.content || '';
 }
 
@@ -472,7 +476,12 @@ async function runPrognosisPass(
 // openrouterCreateWithRetry's own 110 s × 3 no matter what. Callers read them from
 // PROVIDER_BUDGETS[provider].audit_ipd rather than restating numbers. BOTH ABSENT ⇒ every existing
 // caller is byte-identical to before.
-export async function analyzeCase(extracted: ExtractedCase, deps: Partial<AnalyzeDeps> = {}, opts: { trace?: boolean; onProgress?: (stage: string, msg: string) => void; forceOllama?: boolean; clinicalStateText?: string; analyzeTimeoutMs?: number; analyzeMaxTries?: number } = {}): Promise<AnalyzeResult> {
+// Unit V-a2 (4 Aug 2026): analyzeNoLocalFallback threads `noLocalFallback` into the generate
+// closure. THAT CLOSURE SERVES ALL SIX IPD LEGS — analyze, critique, revise, and the three
+// prognosis legs — so this one flag covers them. verifyCitation (the cite gate) deliberately does
+// NOT take it: it is utility class, soft-fails with `catch { return 'keep' }`, and a local answer
+// there strips no clinical judgement. Absent ⇒ every existing caller is byte-identical.
+export async function analyzeCase(extracted: ExtractedCase, deps: Partial<AnalyzeDeps> = {}, opts: { trace?: boolean; onProgress?: (stage: string, msg: string) => void; forceOllama?: boolean; clinicalStateText?: string; analyzeTimeoutMs?: number; analyzeMaxTries?: number; analyzeNoLocalFallback?: boolean } = {}): Promise<AnalyzeResult> {
   const doTrace = opts.trace !== false;
   const doAudit = process.env.DOC_AUDIT_AUDIT !== '0';
   const doPrognosis = process.env.PROGNOSIS_AUDIT === '1'; // DARK by default (PRD D5)
@@ -490,10 +499,11 @@ export async function analyzeCase(extracted: ExtractedCase, deps: Partial<Analyz
   // precisely how 3039c42's ceiling fix missed the worker for three days.
   const aTimeout = opts.analyzeTimeoutMs;
   const aTries = opts.analyzeMaxTries;
+  const aNoLocal = opts.analyzeNoLocalFallback === true;
   const generate: (system: string, user: string, label?: string) => Promise<string> =
     deps.generate ?? (traceId
-      ? (s, u, label = 'doc_audit_analyze') => tracedAnalyzeGenerate(traceId, label, s, u, fo, ANALYZE_PROMPT_REFS[label], aTimeout, aTries)
-      : (s, u) => analyzeGenerate(s, u, fo, aTimeout, aTries));
+      ? (s, u, label = 'doc_audit_analyze') => tracedAnalyzeGenerate(traceId, label, s, u, fo, ANALYZE_PROMPT_REFS[label], aTimeout, aTries, aNoLocal)
+      : (s, u) => analyzeGenerate(s, u, fo, aTimeout, aTries, aNoLocal));
   const rubric = getRubric(extracted.docType);
 
   try {

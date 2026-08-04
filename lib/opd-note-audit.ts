@@ -1041,7 +1041,14 @@ async function defaultGenerate(traceId: string | undefined, system: string, user
   // ⚠️ LLM_AUDIT_TIMEOUT_MS IS NOT DEAD. It is still exported from lib/llm.ts, still env-overridable,
   // and still the default ceiling for any audit-class caller that has no entry in the budget table.
   // It is simply no longer the source on THIS path.
-  const r = await governedChat(traceId, 'opd_audit_analyze', params, { gemini: geminiModel, promptRef: 'opd-note-audit-core/OPD_AUDIT_SYSTEM', timeoutMs: opdAuditBudget().perAttemptMs, maxTries: opdAuditBudget().maxTries });
+  //
+  // ⚠️ UNIT V-a2 (4 Aug 2026): `noLocalFallback: !mini`. A cloud audit whose ladder (Vertex, then
+  // OpenRouter) fails end-to-end now THROWS instead of being graded by the local model — the throw
+  // lands in auditOpdNote's outer catch, which marks the row `llmLegFailed`, the store writes
+  // `excluded_reason='llm_leg_failed'`, and AUDITED_HAVING keeps the note un-audited so the next
+  // sweep retries it. The MINI path passes false: the mini backfill is a deliberate free pipeline
+  // (MINI_MODEL is params.model, the PRIMARY route there), not a fallback, and it must keep working.
+  const r = await governedChat(traceId, 'opd_audit_analyze', params, { gemini: geminiModel, promptRef: 'opd-note-audit-core/OPD_AUDIT_SYSTEM', timeoutMs: opdAuditBudget().perAttemptMs, maxTries: opdAuditBudget().maxTries, noLocalFallback: !mini });
   return r.choices?.[0]?.message?.content || '';
 }
 

@@ -137,7 +137,8 @@ test('the loop body reads the LOCAL maxTries, never the constant', () => {
 
 test('chatWithFallback takes maxTries fifth and uses it only where a retry loop exists', () => {
   const src = readFileSync('lib/llm.ts', 'utf8');
-  assert.ok(src.includes('export async function chatWithFallback(params: any, geminiModel?: string, openrouterModel?: string, timeoutMs?: number, maxTries?: number)'),
+  // V-a2 (4 Aug 2026): noLocalFallback rides sixth — maxTries is still the fifth argument.
+  assert.ok(src.includes('export async function chatWithFallback(params: any, geminiModel?: string, openrouterModel?: string, timeoutMs?: number, maxTries?: number, noLocalFallback?: boolean)'),
     'fifth argument, after timeoutMs');
   const orBranch = src.slice(src.indexOf('await openrouterCreateWithRetry'), src.indexOf("endProviderCall('openrouter');"));
   assert.ok(/\bmaxTries,/.test(orBranch), 'the OpenRouter branch forwards it');
@@ -145,8 +146,9 @@ test('chatWithFallback takes maxTries fifth and uses it only where a retry loop 
   // not read it", which was right when OpenRouter owned the only retry loop. Vertex now runs the
   // same shared loop and legitimately consumes maxTries. THE PROPERTY THAT STILL HOLDS, and the one
   // that mattered all along, is about OLLAMA: it has no loop of its own, so a try count there would
-  // be a number with nothing to spend it on.
-  const gem = src.slice(src.indexOf('if (!geminiModel || !geminiConfigured())'));
+  // be a number with nothing to spend it on. (V-a2: the Vertex arm lives inside the ladder loop
+  // now, so slice from its beginProviderCall.)
+  const gem = src.slice(src.indexOf("beginProviderCall('gemini');"));
   assert.ok(gem.includes('maxTries,'), 'the Vertex branch now forwards it too');
   // The Ollama default/fallback calls take reqOpts and nothing else — no try count, no loop.
   for (const m of src.matchAll(/return llm\.chat\.completions\.create\(params, ([^)]*)\);/g)) {
@@ -157,11 +159,12 @@ test('chatWithFallback takes maxTries fifth and uses it only where a retry loop 
 
 test('governedChat threads maxTries down BOTH arms', () => {
   const src = readFileSync('lib/trace.ts', 'utf8');
-  assert.ok(src.includes('return chatWithFallback(params, opts?.gemini, opts?.openrouter, opts?.timeoutMs, opts?.maxTries);'),
+  // V-a2: noLocalFallback joins the traceless delegation as the sixth positional argument.
+  assert.ok(src.includes('return chatWithFallback(params, opts?.gemini, opts?.openrouter, opts?.timeoutMs, opts?.maxTries, opts?.noLocalFallback);'),
     'the traceless arm');
   assert.ok(src.includes('if (traceId) return tracedChat(traceId, label, params, opts);'),
     'the traced arm passes the whole opts object, so it carries maxTries with it');
   // Both signatures accept it.
-  assert.equal((src.match(/promptRef\?: string; timeoutMs\?: number; maxTries\?: number/g) ?? []).length, 2,
+  assert.equal((src.match(/promptRef\?: string; timeoutMs\?: number; maxTries\?: number; noLocalFallback\?: boolean/g) ?? []).length, 2,
     'tracedChat AND governedChat');
 });

@@ -137,8 +137,9 @@ test('the model column is no longer a constant on the cloud path', () => {
 test('THE MINI PATH IS UNCHANGED — it still records MINI_MODEL', () => {
   assert.ok(RUN.includes('{ model: MINI_MODEL, provider:'), 'the mini branch is the same literal as before');
   assert.ok(RUN.includes("import { MINI_MODEL } from '../llm';"), 'and it still comes from the same place');
-  // the engine-version branch beside it is untouched too
-  assert.ok(RUN.includes('engineVersion: mini ? IPD_MINI_ENGINE_VERSION : IPD_ENGINE_VERSION,'));
+  // the engine-version branch beside it is untouched too (V-a2 hoisted it to a function-scope
+  // const so the failure ledger can stamp the same version — same ternary, one line earlier)
+  assert.ok(RUN.includes('const engineVersion = mini ? IPD_MINI_ENGINE_VERSION : IPD_ENGINE_VERSION;'));
 });
 
 test('servedCallFor soft-fails: null on a missing traceId, null on a query failure, never throws', async () => {

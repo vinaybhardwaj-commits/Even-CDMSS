@@ -73,8 +73,9 @@ test('the cap is Gemini-only and cannot leak onto the Ollama fallback path', () 
   // in gen_params and would misreport the local fallback as a capped arm.
   assert.ok(/const thinkingBudget = useGemini \? geminiThinkingBudget\(\) : undefined;/.test(src),
     'the budget is resolved only when the call actually runs on Gemini');
-  // and it is applied inside the gemini branch, never to the `params` handed to llm.chat
-  const geminiBranch = src.slice(src.indexOf('if (useGemini) {'), src.indexOf('} catch (ge) {'));
+  // and it is applied inside the gemini tier (V-a2: the ladder arm), never to the `params`
+  // handed to llm.chat
+  const geminiBranch = src.slice(src.indexOf("beginProviderCall('gemini');"), src.indexOf('} catch (ge) {'));
   assert.ok(geminiBranch.includes('gParams.google'), 'the cap is applied to the Gemini params only');
 });
 

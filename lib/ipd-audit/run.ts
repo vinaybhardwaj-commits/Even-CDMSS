@@ -18,7 +18,7 @@ import { fetchIpdAdmissionHeader } from './db13';
 import { fetchBilledTotal, fetchBillingEnvelope } from './billing';
 import { persistEpisodeState } from './episode-adapter';
 import { buildIpdAuditRow } from './assemble';
-import { saveIpdAudit, IPD_ENGINE_VERSION, IPD_MINI_ENGINE_VERSION } from './store';
+import { saveIpdAudit, recordIpdAuditFailure, IPD_ENGINE_VERSION, IPD_MINI_ENGINE_VERSION } from './store';
 import { PROVIDER_BUDGETS, providerSwitchEnabled } from '../lab-provider-core';
 import { sql } from '../db';
 
@@ -122,6 +122,7 @@ async function fetchPdf(url: string): Promise<Buffer> {
 export async function runIpdAudit(input: IpdRunInput, opts: { mini?: boolean } = {}): Promise<IpdRunResult> {
   const t0 = Date.now();
   const mini = opts.mini === true;
+  const engineVersion = mini ? IPD_MINI_ENGINE_VERSION : IPD_ENGINE_VERSION;
   try {
     if (!input.pdfUrl) return { documentId: input.documentId, skip: 'no-pdf' };
     const buf = await fetchPdf(input.pdfUrl);
@@ -129,13 +130,28 @@ export async function runIpdAudit(input: IpdRunInput, opts: { mini?: boolean } =
       base64: buf.toString('base64'), mime: 'application/pdf',
       docTypeHint: 'discharge_summary', bytes: buf.length,
     });
-    if (!extracted) return { documentId: input.documentId, skip: 'unreadable', extractTraceId };
+    if (!extracted) {
+      // V-a2 ledger — VISIBILITY only, never behaviour: the skip return below is unchanged, the
+      // sweep still retries. extractCase soft-fails to null, so the real provider error lives in
+      // the extract trace's provider_error events; the ledger row links to it via trace_id.
+      await recordIpdAuditFailure({ documentId: input.documentId, engineVersion, stage: 'doc_read', error: 'extract returned no case (document read failed or unreadable)', traceId: extractTraceId ?? null });
+      return { documentId: input.documentId, skip: 'unreadable', extractTraceId };
+    }
 
     // mini → analyze on the free Mac-mini (Qwen); extract stays Gemini-multimodal (reads the PDF).
     // The analyze family fires up to IPD_ANALYZE_LEGS calls, each bounded by this budget; the
     // route's box holds doc_read + 3 × audit_ipd. See lib/lab-provider-core.ts.
-    const { report, traceId } = await analyzeCase(extracted, {}, { ...(mini ? { forceOllama: true } : {}), ...ipdAnalyzeBudget(mini) });
-    if (!report?.valueScore) return { documentId: input.documentId, skip: 'unreadable', extractTraceId, analyzeTraceId: traceId };
+    // V-a2: the cloud path runs with NO local fallback — a document whose ladder fails writes no
+    // row and is swept again. `mini` passes FALSE: the mini backfill is a deliberate free
+    // pipeline, not a fallback, and it must keep working.
+    const { report, traceId } = await analyzeCase(extracted, {}, { ...(mini ? { forceOllama: true } : {}), ...ipdAnalyzeBudget(mini), analyzeNoLocalFallback: !mini });
+    if (!report?.valueScore) {
+      // V-a2 ledger — the analyze chain produced no report (with noLocalFallback this is where a
+      // failed cloud ladder lands: analyzeCase catches the throw and returns report:null). The
+      // analyze trace's provider_error events carry the provider message; link via trace_id.
+      await recordIpdAuditFailure({ documentId: input.documentId, engineVersion, stage: 'analyze', error: 'analyze returned no report (LLM leg failed or unparseable)', traceId: traceId ?? null });
+      return { documentId: input.documentId, skip: 'unreadable', extractTraceId, analyzeTraceId: traceId };
+    }
 
     // S7: the admission envelope + its billed ₹ scalar, both read-time db13 joins. billed_total is
     // best-effort — a billing outage must never cost us the audit, and ~8% of admissions have no
@@ -161,7 +177,7 @@ export async function runIpdAudit(input: IpdRunInput, opts: { mini?: boolean } =
       losDays: header?.losDays ?? null,
       dischargedAt: header?.dischargeDate ? `${header.dischargeDate}T00:00:00+05:30` : null,
       billedTotal,
-      engineVersion: mini ? IPD_MINI_ENGINE_VERSION : IPD_ENGINE_VERSION,
+      engineVersion,
       model: served.model,
       traceId: traceId ?? null,
     }, extracted, report);
@@ -181,6 +197,8 @@ export async function runIpdAudit(input: IpdRunInput, opts: { mini?: boolean } =
     // laundered into a stored audit that reads as a normal one. Flag off ⇒ never fires ⇒ today's
     // behaviour exactly, mini fallback rows and all. A NULL provider is "unknown", not proof.
     if (providerSwitchEnabled() && !mini && served.provider === 'ollama') {
+      // V-a2 ledger — DEC-2 is a failure that writes no audit row, so it belongs in the ledger too.
+      await recordIpdAuditFailure({ documentId: input.documentId, engineVersion, stage: 'analyze', provider: served.provider, error: `DEC-2: a cloud provider was asked, ${served.model ?? 'the local model'} answered`, traceId: traceId ?? null });
       return { documentId: input.documentId, error: `DEC-2: a cloud provider was asked, ${served.model ?? 'the local model'} answered — document failed, no row written`, extractTraceId, analyzeTraceId: traceId, latencyMs: Date.now() - t0 };
     }
     const status = await saveIpdAudit(row);
@@ -198,6 +216,9 @@ export async function runIpdAudit(input: IpdRunInput, opts: { mini?: boolean } =
       latencyMs: Date.now() - t0, extractTraceId, analyzeTraceId: traceId,
     };
   } catch (e) {
+    // V-a2 ledger — one row on the existing catch (the kickoff's letter). Best-effort: the writer
+    // never throws, so the compact error return below is unchanged.
+    await recordIpdAuditFailure({ documentId: input.documentId, engineVersion, stage: 'run', error: String((e as Error).message) });
     return { documentId: input.documentId, error: String((e as Error).message), latencyMs: Date.now() - t0 };
   }
 }

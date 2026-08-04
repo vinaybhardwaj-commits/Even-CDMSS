@@ -68,7 +68,25 @@ export async function GET(req: NextRequest) {
              e.call_model, e.call_provider, e.tokens_out
         FROM trace_events e
         JOIN traces t ON t.trace_id = e.trace_id`, []);
-    return NextResponse.json({ ok: true, migrated: ['v_trace_summary', 'v_appropriateness_summary', 'v_stage_latency'] });
+    // Unit V-a2 (4 Aug 2026) — the IPD failure ledger. PURELY OBSERVATIONAL: a failed IPD audit
+    // writes nothing to ipd_discharge_audits (that is what keeps resumability working — the sweep
+    // retries anything unwritten), so failures were invisible. One row per failed attempt.
+    // NO PHI: `error` is a provider message, truncated to IPD_FAILURE_ERROR_CAP (2000) at the
+    // writer (lib/ipd-audit/store.ts recordIpdAuditFailure) — never clinical text. The table name
+    // deliberately contains neither `traces` nor `trace_events` as whole words, so it passes
+    // BLOCKED_RELATIONS in lib/sql-guard-core.ts and audit_query can read it WITHOUT that file
+    // changing. Additive + idempotent, same discipline as the views above.
+    await run(`CREATE TABLE IF NOT EXISTS ipd_audit_failures (
+      id            BIGSERIAL PRIMARY KEY,
+      document_id   TEXT NOT NULL,
+      engine_version TEXT,
+      stage         TEXT,
+      provider      TEXT,
+      error         TEXT,
+      trace_id      TEXT,
+      failed_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`, []);
+    return NextResponse.json({ ok: true, migrated: ['v_trace_summary', 'v_appropriateness_summary', 'v_stage_latency'], tables: ['ipd_audit_failures'] });
   } catch (e) {
     return NextResponse.json({ ok: false, error: String((e as Error).message) }, { status: 500 });
   }

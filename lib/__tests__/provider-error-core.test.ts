@@ -117,9 +117,11 @@ test('§4.3: the fallback is LOUD — console.error with the stable [provider-fa
 });
 
 test('§4.2: both tracedChat catches emit a provider_error event through the existing logEvent path', () => {
-  // Two thrown-error catches (openrouter, gemini) + the bad-200 check added 31 Jul, which routes
-  // through the SAME event rather than inventing a second failure channel (that kickoff's §2.2).
-  assert.equal((TRACE.match(/logEvent\(traceId, 'provider_error', label, errPayload/g) || []).length, 3);
+  // Two tier catches (openrouter, gemini). V-a2 folded the bad-200 payload into the openrouter
+  // catch's single emit (providerResponsePayload vs providerErrorPayload selected by the marked
+  // error) — 3 → 2 call sites, still the SAME event channel, never a second failure channel.
+  assert.equal((TRACE.match(/logEvent\(traceId, 'provider_error', label, errPayload/g) || []).length, 2);
+  assert.ok(TRACE.includes('providerResponsePayload({'), 'the bad-200 payload shape survives the fold');
   assert.ok(!TRACE.includes('CREATE TABLE'), 'no new table, no migration — it rides trace_events');
 });
 
@@ -160,15 +162,17 @@ test('§5 superseded for OpenRouter ONLY by addendum F v2: retry exists, but ONL
   // in source on 3 Aug its chat branch had no per-attempt abort deadline, no bounded retry, no
   // 429/5xx handling and no body classification. It now runs the SAME shared loop — still one
   // implementation, which is the property this test actually defends.
-  const gem = LLM.slice(LLM.indexOf('if (!geminiModel || !geminiConfigured())'));
+  // (V-a2: the Vertex arm lives inside the ladder loop now — slice from its beginProviderCall,
+  // which follows the OpenRouter arm, to the end of the function.)
+  const gem = LLM.slice(LLM.indexOf("beginProviderCall('gemini');"));
   assert.ok(gem.includes('await createWithRetry('), 'the Gemini branch now runs the shared policy too');
   assert.ok(gem.includes("provider: 'vertex',"), 'and identifies itself as vertex, not openrouter');
   assert.ok(!gem.includes('openrouterCreateWithRetry'),
     'but NOT through the OpenRouter wrapper — a vertex failure must never log as openrouter');
-  // The fallback call count is unchanged: each provider branch still makes exactly ONE fallback
-  // llm.chat call on error, and behaviour on success is byte-identical. (D-1: the sites carry the
-  // per-request ceiling now — same three sites, no more.)
-  assert.equal((LLM.match(/return llm\.chat\.completions\.create\(params, reqOpts\);/g) || []).length, 3, 'the three existing fallback/default sites, no more');
+  // V-a2 (4 Aug 2026): the two per-branch fallback sites became ONE terminal disposition after
+  // the cloud ladder, so the count is 2 — the no-cloud default path + the ladder terminal. Still
+  // exactly one fallback llm.chat call per failed request, and success is byte-identical.
+  assert.equal((LLM.match(/return llm\.chat\.completions\.create\(params, reqOpts\);/g) || []).length, 2, 'the default path + the ladder terminal, no more');
 });
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════
@@ -269,15 +273,20 @@ test('§2.2/§2.3: the response is validated per attempt, the event is emitted, 
     'classifyProviderResponse is still the default validator');
   assert.ok(RETRY.includes('const defect = classify(res);'), 'every attempt is validated in the wrapper');
   assert.ok(RETRY.includes('new ProviderResponseError(defect,'), 'the terminal empty-200 throws the marked error');
+  // V-a2 (4 Aug 2026): §2.3 moved from inside each catch to the LADDER's terminal disposition —
+  // the ladder may carry a bad-200 from OpenRouter to the direct Vertex tier (that broker failure
+  // class is exactly what the direct call heals), but once every cloud tier has failed, a marked
+  // OpenRouter error still rethrows BEFORE the Ollama fallback is reachable.
   for (const [name, src] of [['llm.ts', LLM], ['trace.ts', TRACE]] as const) {
     assert.ok(src.includes('providerResponsePayload({'), `${name} emits the §2.2 payload`);
     assert.ok(src.includes('[provider-bad-response]'), `${name} logs loud with a stable, distinct prefix`);
-    const at = src.indexOf('isProviderResponseError(');
-    assert.ok(at > -1, `${name} tells the marked error apart in its catch`);
-    const rethrow = src.indexOf(name === 'llm.ts' ? 'throw e;' : 'throw oe;', at);
-    assert.ok(rethrow > at, `${name}: the marked-error branch ends in a rethrow`);
-    assert.ok(!src.slice(at, rethrow).includes('llm.chat.completions.create'),
-      `${name}: NO Ollama fallback on this path (§2.3) — the honest outcome is degraded`);
+    const at = src.indexOf("if (lastTier === 'openrouter' && isProviderResponseError(lastErr)) throw lastErr;");
+    assert.ok(at > -1, `${name}: the terminal disposition rethrows the marked error`);
+    // The terminal Ollama call comes strictly AFTER the marked-error rethrow, so a marked error
+    // can never reach it. (Search from `at`: earlier llm.chat sites are the pre-ladder default
+    // path, which no failed cloud call can reach.)
+    const fb = src.indexOf('llm.chat.completions.create(params, reqOpts)', at);
+    assert.ok(fb > at, `${name}: NO Ollama fallback before the marked-error rethrow (§2.3) — the honest outcome is degraded`);
   }
 });
 
@@ -285,9 +294,9 @@ test('§2.1: the check runs only when the provider actually served — never aft
   // Structural now, not conditional: classification happens inside openrouterCreateWithRetry on
   // the OpenRouter response BEFORE any fallback exists, and a fallen-back Ollama result is
   // produced by llm.chat.completions.create and never passes through the wrapper. What must hold
-  // in trace.ts is the ORDER inside the catch: the marked-error rethrow comes before the fallback.
-  const at = TRACE.indexOf('isProviderResponseError(oe)');
-  const fb = TRACE.indexOf("runOllamaFallback('openrouter'");
+  // in trace.ts is the ORDER: the terminal marked-error rethrow comes before the fallback call.
+  const at = TRACE.indexOf("isProviderResponseError(lastErr)) throw lastErr;");
+  const fb = TRACE.indexOf('runOllamaFallback(lastTier');
   assert.ok(at > -1 && fb > at, 'the marked error is filtered out before the Ollama fallback is reachable');
 });
 

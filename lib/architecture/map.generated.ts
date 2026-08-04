@@ -3078,6 +3078,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "llm",
+    "to": "lab-batch-core",
+    "kind": "value"
+  },
+  {
+    "from": "llm",
     "to": "openrouter-retry",
     "kind": "value"
   },
@@ -4094,6 +4099,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "trace",
     "to": "gcp-auth",
+    "kind": "value"
+  },
+  {
+    "from": "trace",
+    "to": "lab-batch-core",
     "kind": "value"
   },
   {

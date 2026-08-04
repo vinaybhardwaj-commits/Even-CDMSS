@@ -302,8 +302,11 @@ test('the production defaultGenerate params are byte-identical — no eval chang
   // well as the try count. params, promptRef and the `content || ''` return are still unchanged;
   // only how long we wait and how many times we ask. LLM_AUDIT_TIMEOUT_MS is unchanged and still
   // exported, it is simply no longer this path's source.
-  assert.ok(block.includes("const r = await governedChat(traceId, 'opd_audit_analyze', params, { gemini: geminiModel, promptRef: 'opd-note-audit-core/OPD_AUDIT_SYSTEM', timeoutMs: opdAuditBudget().perAttemptMs, maxTries: opdAuditBudget().maxTries });\n  return r.choices?.[0]?.message?.content || '';"),
-    "the governedChat return and its `content || ''` must be unchanged (plus the Unit D transport bounds)");
+  // Unit V-a2 (4 Aug): `noLocalFallback: !mini` — the cloud audit throws instead of being graded
+  // locally (the throw lands in the outer catch's llmLegFailed machinery); the mini backfill
+  // passes false and keeps its local model. params and the return are still unchanged.
+  assert.ok(block.includes("const r = await governedChat(traceId, 'opd_audit_analyze', params, { gemini: geminiModel, promptRef: 'opd-note-audit-core/OPD_AUDIT_SYSTEM', timeoutMs: opdAuditBudget().perAttemptMs, maxTries: opdAuditBudget().maxTries, noLocalFallback: !mini });\n  return r.choices?.[0]?.message?.content || '';"),
+    "the governedChat return and its `content || ''` must be unchanged (plus the Unit D transport bounds + the V-a2 flag)");
   // the production params object, verbatim
   assert.ok(block.includes("temperature: onGemini ? 0 : (isReasoning ? 0 : 0.2),"));
   assert.ok(block.includes("max_tokens: isReasoning ? 8192 : 2200,"));

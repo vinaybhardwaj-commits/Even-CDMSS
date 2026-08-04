@@ -124,7 +124,8 @@ test('trap 3: an explicit OpenRouter reasoning block WINS — translation never 
 test('trap 3: the VERTEX path is untouched — it still sends the google form and no reasoning block', () => {
   // The translation lives in buildOpenrouterParams, which the Vertex branches never call. Both
   // Vertex branches forward `...rest` (google included) and add only the model + headroom.
-  assert.ok(LLM.includes('const gParams = { ...rest, model: vertexModelName(geminiModel), max_tokens: baseMax + 8192 };'));
+  // (V-a2: the geminiModel param is typed optional now the ladder owns the branch, hence `as string`.)
+  assert.ok(LLM.includes('const gParams = { ...rest, model: vertexModelName(geminiModel as string), max_tokens: baseMax + 8192 };'));
   assert.ok(TRACE.includes('model: vertexModelName(opts!.gemini as string),'));
   assert.ok(!TRACE.includes('thinkingBudgetOf'), 'no translation on the Vertex path');
   assert.ok(LLM.includes('const { google: _g, ...body } = rest;'), 'the strip happens only in the OpenRouter builder');
@@ -147,16 +148,24 @@ test('the pin: Google-operated providers only, no fallbacks — slugs read off t
 test('both transports derive the slug centrally; a caller-supplied openrouter slug takes precedence', () => {
   assert.ok(LLM.includes('const orModel = openrouterModel || openrouterGeminiSlug(geminiModel);'), 'chatWithFallback');
   assert.ok(TRACE.includes('const orSlug = opts?.openrouter || openrouterGeminiSlug(opts?.gemini);'), 'tracedChat');
-  assert.ok(TRACE.includes('const orParams = buildOpenrouterParams(orSlug as string, rest as Record<string, unknown>);'));
-  assert.ok(LLM.includes('const orParams = buildOpenrouterParams(orModel, rest as Record<string, unknown>);'));
+  // V-a2: the OpenRouter arm serves as tier 1 (the derived/explicit slug) AND as tier 2 behind a
+  // failed Vertex call (openrouterSlugForGemini — the SAME `google/` derivation, no flag). One
+  // local `slug` covers both; the flag-gated central derivation above is unchanged.
+  assert.ok(TRACE.includes("const slug = (orSlug as string | undefined) || openrouterSlugForGemini(opts!.gemini as string);"));
+  assert.ok(TRACE.includes('const orParams = buildOpenrouterParams(slug, rest as Record<string, unknown>);'));
+  assert.ok(LLM.includes('const slug = orModel || openrouterSlugForGemini(geminiModel as string);'));
+  assert.ok(LLM.includes('const orParams = buildOpenrouterParams(slug, rest as Record<string, unknown>);'));
 });
 
 test('the Ollama last-leg fallback is untouched in both transports', () => {
-  // D-1 (31 Jul): the fallback calls now carry the per-request ceiling (reqOpts) — same sites,
-  // same count, same params; only how long we wait changed.
-  assert.equal((LLM.match(/return llm\.chat\.completions\.create\(params, reqOpts\);/g) || []).length, 3, 'chatWithFallback: both provider catches + the default path');
-  assert.ok(TRACE.includes("runOllamaFallback('openrouter', servedModel, oe, () => llm.chat.completions.create(params, reqOpts))"));
-  assert.ok(TRACE.includes("runOllamaFallback('gemini', servedModel, ge, () => llm.chat.completions.create(params, reqOpts))"));
+  // D-1 (31 Jul): the fallback calls carry the per-request ceiling (reqOpts).
+  // V-a2 (4 Aug): the two per-branch fallback sites became ONE terminal disposition after the
+  // cloud ladder — same params, same reqOpts, the SOURCE tier now named by `lastTier`. So the
+  // llm.ts count is 2 (the no-cloud default path + the terminal return) and trace.ts has one
+  // runOllamaFallback call. `noLocalFallback: true` (the two audit call sites) throws before
+  // reaching it; every other caller still lands here exactly as before.
+  assert.equal((LLM.match(/return llm\.chat\.completions\.create\(params, reqOpts\);/g) || []).length, 2, 'chatWithFallback: the default path + the ladder terminal');
+  assert.ok(TRACE.includes("runOllamaFallback(lastTier, servedModel, lastErr, () => llm.chat.completions.create(params, reqOpts))"));
 });
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════

@@ -231,7 +231,9 @@ test("chatWithFallback's OpenRouter branch passes the caller's timeout through",
 test("tracedChat's OpenRouter branch — THE PRODUCTION PATH — passes both through", () => {
   const src = readFileSync('lib/trace.ts', 'utf8');
   const branch = src.slice(src.indexOf('await openrouterCreateWithRetry'), src.indexOf("endProviderCall('openrouter');"));
-  assert.ok(branch.includes('timeoutMs: opts?.timeoutMs,'));
+  // V-a2 (4 Aug 2026): the caller's ceiling still reaches the loop, now CLAMPED to what the leg
+  // has left (tierCeilingMs) so a tier-2 hop runs on tier 1's remainder, never a fresh budget.
+  assert.ok(branch.includes('timeoutMs: tierCeilingMs(opts?.timeoutMs, deadlineAt),'));
   assert.ok(branch.includes('maxTries: opts?.maxTries,'));
   // reqOpts still serves the branches that never had a retry loop.
   assert.ok(src.includes('const reqOpts = opts?.timeoutMs ? { timeout: opts.timeoutMs } : undefined;'));

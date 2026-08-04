@@ -226,8 +226,11 @@ test('EVERY provider call site forwards the caller timeout AND maxTries', () => 
 });
 
 test('the Vertex chat branch is wrapped in BOTH files, and identifies itself as vertex', () => {
+  // V-a2: the Vertex arm lives inside the cloud-ladder loop, textually AFTER the OpenRouter arm
+  // in both files — so slicing from its beginProviderCall to the end of the file must contain the
+  // shared loop and must NOT contain the OpenRouter wrapper.
   for (const [name, s] of [['trace.ts', TRACE], ['llm.ts', LLM]] as const) {
-    const gem = s.slice(s.indexOf(name === 'trace.ts' ? '} else if (useGemini) {' : 'if (!geminiModel || !geminiConfigured())'));
+    const gem = s.slice(s.indexOf("beginProviderCall('gemini');"));
     assert.ok(gem.includes('await createWithRetry('), `${name}: the Vertex call runs the shared loop`);
     assert.ok(gem.includes("provider: 'vertex',"), `${name}: reported as vertex`);
     assert.ok(gem.includes('[provider-retry] vertex '), `${name}: log prefix matches the OpenRouter one`);
@@ -317,19 +320,21 @@ test('⚠️ doc_read has NO RETRY in this unit, and that is ARITHMETIC — not 
 // ═════════════════════════════════════════════════════════════════════════════════════════════
 
 test('the Ollama fallback is still PRESENT and still CALLED in both files', () => {
-  // V-3 removes Ollama from the audit ladder TOMORROW, deliberately held back so tonight's window
-  // can answer whether Unit D's timeout fix worked: remove the qwen fallback first and the IPD
-  // qwen share is trivially zero and we learn nothing. If this test ever fails as a SIDE EFFECT,
-  // something removed the ladder without meaning to.
-  assert.ok(TRACE.includes("result = await runOllamaFallback('openrouter', servedModel, oe, () => llm.chat.completions.create(params, reqOpts));"),
-    'trace.ts: the OpenRouter → Ollama fallback is intact');
-  assert.ok(TRACE.includes("runOllamaFallback('gemini', servedModel, ge,"),
-    'trace.ts: the Vertex → Ollama fallback is intact');
+  // V-a2 (4 Aug 2026) IS the deliberate act the old wording of this test held the door for: the
+  // AUDIT paths now pass `noLocalFallback: true` and take the throw instead. The fallback itself
+  // must remain present and callable — it still serves /ask, /ddx, /topics, the cite gate and
+  // every other caller that does not set the flag, and it is the ladder's terminal for them. If
+  // this test ever fails as a SIDE EFFECT, something removed the fallback without meaning to.
+  assert.ok(TRACE.includes("result = await runOllamaFallback(lastTier, servedModel, lastErr, () => llm.chat.completions.create(params, reqOpts));"),
+    'trace.ts: the ladder terminal still calls the Ollama fallback');
   assert.ok(LLM.includes('return llm.chat.completions.create(params, reqOpts);'),
     'llm.ts: the fallback returns are intact');
-  // Both Vertex catches still record the fallback destination they actually take.
-  assert.ok(TRACE.includes("fellBackTo: 'ollama'"), 'trace.ts still records the destination');
-  assert.ok(LLM.includes("fellBackTo: 'ollama'"), 'llm.ts still records the destination');
+  // …and the flag is the ONLY thing that bypasses it (throw before the fallback, never silently).
+  assert.ok(TRACE.includes('if (opts?.noLocalFallback) throw lastErr;'), 'trace.ts: flag ⇒ throw');
+  assert.ok(LLM.includes('if (noLocalFallback) throw lastErr;'), 'llm.ts: flag ⇒ throw');
+  // The catches still record the destination they actually take (next tier, ollama, or none).
+  assert.ok(TRACE.includes("(opts?.noLocalFallback ? 'none' : 'ollama')"), 'trace.ts still records the destination');
+  assert.ok(LLM.includes("(noLocalFallback ? 'none' : 'ollama')"), 'llm.ts still records the destination');
 });
 
 test('no PROVIDER_BUDGETS value moved in this unit', () => {

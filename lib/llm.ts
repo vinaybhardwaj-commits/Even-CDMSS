@@ -1,10 +1,11 @@
 import OpenAI from 'openai';
 import { getVertexAccessToken, vertexSaEmail } from './gcp-auth';
 import {
-  beginProviderCall, endProviderCall, providerCallsInFlight, providerErrorPayload,
+  PROVIDER_ERROR_CAP, beginProviderCall, endProviderCall, providerCallsInFlight, providerErrorPayload,
   providerResponsePayload, isProviderResponseError,
 } from './provider-error-core';
 import { openrouterCreateWithRetry, createWithRetry } from './openrouter-retry';
+import { remainingBudgetMs } from './lab-batch-core';
 
 // ─── D-1 (Right Care reliability §3, 31 Jul 2026): bound every provider call ────────────────────
 /** Per-call ceiling for a provider request. The SDK default is 10 minutes with 2 retries,
@@ -113,13 +114,73 @@ export function openrouterChatClient(): OpenAI {
   return new OpenAI({ baseURL: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1', apiKey: process.env.OPENROUTER_API_KEY, timeout: LLM_CALL_TIMEOUT_MS, maxRetries: LLM_MAX_RETRIES });
 }
 
+/** The OpenRouter slug for a Gemini model (publisher-prefixed). Used by the flag-gated bridge
+ *  resolver below AND by the V-a2 ladder's tier-2 hop, which needs the slug regardless of the
+ *  flag (post-cutover, OpenRouter is the BACKUP tier for a Vertex-primary Gemini call). */
+export function openrouterSlugForGemini(model: string): string {
+  return model.startsWith('google/') ? model : `google/${model}`;
+}
+
 /** BRIDGE (30 Jul 2026): route Gemini through OpenRouter while aiplatform.googleapis.com is
  *  disabled on clinical-infra. Returns a slug ONLY when the flag is set, so unset is
  *  byte-identical to today. Retire with the flag when Vertex is restored. */
 export function openrouterGeminiSlug(model: string | undefined): string | undefined {
   if (process.env.GEMINI_VIA_OPENROUTER !== '1') return undefined;
   if (!model) return undefined;
-  return model.startsWith('google/') ? model : `google/${model}`;
+  return openrouterSlugForGemini(model);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UNIT V-a2 (4 Aug 2026) — the cloud ladder. Vertex is primary, OpenRouter is
+// the backup tier (V-8); the two tiers SHARE one leg budget, so the ladder can
+// never cost a route more than the single tier did.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Which cloud tiers a call runs, in order.
+ *
+ * TIER ORDER IS FIXED: VERTEX, THEN OPENROUTER. `GEMINI_VIA_OPENROUTER=1` INVERTS IT — the flag's
+ * existing precedence (an OpenRouter slug resolves for every Gemini call) already selects
+ * OpenRouter as tier 1 (`orFirst`), so with the flag set the ladder is OpenRouter → Vertex and the
+ * bridge remains an EXACT ROLLBACK: set the flag back to `1` and OpenRouter is primary again with
+ * Vertex behind it. That works only while the OpenRouter tier stays intact — never remove it as
+ * cleanup.
+ *
+ * A SECOND TIER EXISTS ONLY WHEN THE CALLER SUPPLIED A LEG BUDGET (`timeoutMs`): the tiers share
+ * that one budget (see tierCeilingMs), so a leg still costs at most the caller's number and the
+ * route-budget-guard arithmetic does not move. A caller with no budget — /ask, /ddx, /topics, the
+ * cite gate, every utility surface — keeps today's single cloud tier + local fallback exactly.
+ */
+export function cloudLadder(i: { orFirst: boolean; orAvailable: boolean; vertexAvailable: boolean; hasLegBudget: boolean }): Array<'openrouter' | 'gemini'> {
+  const ladder: Array<'openrouter' | 'gemini'> = [i.orFirst ? 'openrouter' : 'gemini'];
+  if (i.hasLegBudget) {
+    if (i.orFirst && i.vertexAvailable) ladder.push('gemini');
+    if (!i.orFirst && i.orAvailable) ladder.push('openrouter');
+  }
+  return ladder;
+}
+
+/**
+ * The per-attempt ceiling for the CURRENT tier: the caller's `timeoutMs` (already the call class's
+ * perAttemptMs) clamped to what remains of the leg. `remainingBudgetMs` is lib/lab-batch-core.ts's
+ * mechanism — the SAME idiom `openRouterGenerate` has used since the tick-deadline PRD, not a
+ * second one. THE BUDGET BELONGS TO THE LEG, NOT THE PROVIDER: tier 1 enters with the full budget,
+ * tier 2 with whatever tier 1 left. Consequence — THE GUARD ARITHMETIC DOES NOT MOVE: a leg still
+ * costs at most legBudgetMs across BOTH tiers (the naive vertex+openrouter sum would be
+ * 2 × 380,000 × 2 legs = 1,520,000 in OPD's 800,000 ms box), so route-budget-guard.test.ts still
+ * computes 760,000 (OPD) and 780,000 (IPD) and NO PROVIDER_BUDGETS value changes in this unit.
+ */
+export function tierCeilingMs(legBudgetMs: number | undefined, deadlineAt: number | null, now: number = Date.now()): number | undefined {
+  if (!legBudgetMs || deadlineAt == null) return legBudgetMs;
+  return Math.min(legBudgetMs, remainingBudgetMs(deadlineAt, now));
+}
+
+/** The error thrown when a tier is SKIPPED because the leg budget is already spent — a spent
+ *  budget must not buy another provider call. Names the tier that was skipped and why, and the
+ *  earlier tier's failure travels with it (capped at PROVIDER_ERROR_CAP, never 200). */
+export function ladderSkipError(tier: string, legBudgetMs: number, lastErr: unknown): Error {
+  const prior = String((lastErr as { message?: unknown })?.message ?? lastErr ?? 'no earlier failure').slice(0, PROVIDER_ERROR_CAP);
+  return new Error(`${tier} tier skipped: the ${legBudgetMs}ms leg budget is exhausted — earlier tier failed with: ${prior}`);
 }
 
 /** Provider pin for Gemini-via-OpenRouter. Slugs read off OpenRouter's endpoints listing for
@@ -255,9 +316,14 @@ export function geminiUtilityModel(): string | undefined {
  * raising max_tokens so 2.5 Pro's thinking tokens don't truncate the answer —
  * and falls back to the local Ollama model in `params.model` on any error. With
  * no geminiModel it is byte-identical to `llm.chat.completions.create(params)`.
+ *
+ * UNIT V-a2 (4 Aug 2026): the two cloud providers are now a LADDER (cloudLadder), sharing ONE leg
+ * budget (tierCeilingMs), and `noLocalFallback: true` makes both-tiers-failed a THROW instead of a
+ * local answer. Absent or false ⇒ today's behaviour exactly — that is what keeps /ask, /ddx,
+ * /topics, concept-extract, expand, drugs and the cite gate working unchanged.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function chatWithFallback(params: any, geminiModel?: string, openrouterModel?: string, timeoutMs?: number, maxTries?: number): Promise<any> {
+export async function chatWithFallback(params: any, geminiModel?: string, openrouterModel?: string, timeoutMs?: number, maxTries?: number, noLocalFallback?: boolean): Promise<any> {
   // D-1: an audit-class call site passes its own ceiling (per-request { timeout } — one client per
   // provider, the override visible here). Absent ⇒ undefined ⇒ the client-level bound applies.
   const reqOpts = timeoutMs ? { timeout: timeoutMs } : undefined;
@@ -267,132 +333,159 @@ export async function chatWithFallback(params: any, geminiModel?: string, openro
   // slug HERE — derived centrally so no call site can be missed (a missed site would 403 on Vertex
   // silently forever). Flag unset ⇒ openrouterGeminiSlug returns undefined ⇒ byte-identical.
   const orModel = openrouterModel || openrouterGeminiSlug(geminiModel);
-  if (orModel && openrouterConfigured()) {
-    beginProviderCall('openrouter');
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let res: any;
+  const useOpenRouter = Boolean(orModel) && openrouterConfigured();
+  const useGemini = Boolean(geminiModel) && geminiConfigured();
+  if (!useOpenRouter && !useGemini) {
+    return llm.chat.completions.create(params, reqOpts);
+  }
+
+  // ══ UNIT V-a2 (4 Aug 2026): THE CLOUD LADDER — one leg budget across both tiers ══════════════
+  // Tier order is FIXED: Vertex, then OpenRouter. GEMINI_VIA_OPENROUTER=1 inverts it (the flag's
+  // precedence above makes OpenRouter tier 1), so the bridge remains an exact rollback. The budget
+  // belongs to the LEG, not the provider — see tierCeilingMs: the guard arithmetic does not move,
+  // a leg still costs at most the caller's timeoutMs.
+  const ladder = cloudLadder({
+    orFirst: useOpenRouter,
+    orAvailable: openrouterConfigured(),
+    vertexAvailable: useGemini,
+    hasLegBudget: Boolean(timeoutMs),
+  });
+  const deadlineAt = timeoutMs ? Date.now() + timeoutMs : null;
+
+  let lastErr: unknown = null;
+  let lastTier: 'openrouter' | 'gemini' = ladder[0];
+  for (let ti = 0; ti < ladder.length; ti++) {
+    const tier = ladder[ti];
+    // A spent budget SKIPS the tier rather than calling it — throw-with-name, never a free call.
+    if (ti > 0 && deadlineAt != null && remainingBudgetMs(deadlineAt) <= 0) {
+      lastErr = ladderSkipError(tier, timeoutMs as number, lastErr);
+      lastTier = tier;
+      break;
+    }
+    // Where a failure here lands next: the next tier when one remains, else Ollama or nothing.
+    const nextHop = ti + 1 < ladder.length ? ladder[ti + 1] : null;
+    if (tier === 'openrouter') {
+      // Tier-2 hop from a failed Vertex call derives the slug itself — orModel is undefined there.
+      const slug = orModel || openrouterSlugForGemini(geminiModel as string);
+      beginProviderCall('openrouter');
+      try {
+        const { options: _o, keep_alive: _k, ...rest } = params as Record<string, unknown>;
+        void _o; void _k;
+        const orParams = buildOpenrouterParams(slug, rest as Record<string, unknown>);
+        const client = openrouterChatClient();
+        // Addendum F v2 task 1 — the production call carries the SAME deadline/retry discipline
+        // the lab path has had since D4/D2. Streaming calls keep the bare call: an in-flight
+        // stream being consumed by the caller must not be aborted by a wall-clock timer, and
+        // classifyProviderResponse has never judged streams.
+        const res = (orParams as { stream?: boolean }).stream
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          ? await client.chat.completions.create(orParams as any)
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          : await openrouterCreateWithRetry((ro) => client.chat.completions.create(orParams as any, ro), {
+              model: slug,
+              // ROOT CAUSE FIX (2 Aug 2026): the caller's ceiling reaches this call. V-a2 clamps
+              // it to what the leg has left, so tier 2 runs on tier 1's remainder, never on a
+              // fresh budget. Absent ⇒ 110 s, unchanged.
+              timeoutMs: tierCeilingMs(timeoutMs, deadlineAt),
+              // Unit D (3 Aug 2026): and the caller's TRY COUNT. An audit-class budget is one try
+              // (PROVIDER_BUDGETS). Absent ⇒ OPENROUTER_MAX_TRIES (3), unchanged.
+              maxTries,
+              onAttemptFailure: (f) => console.error(
+                `[provider-retry] openrouter ${slug} attempt ${f.attempt}/${f.maxTries} ${f.kind}${f.status != null ? ` ${f.status}` : ''} — ${f.willRetry ? 'retrying' : 'giving up'}: ${f.message}`),
+            });
+        endProviderCall('openrouter');
+        return res;
+      } catch (e) {
+        // §4.1/§4.2/§4.3 — snapshot in-flight BEFORE decrementing (the failing call counts), then
+        // the FULL error (4000-char cap, not 200), loud (console.error, stable prefix), and a
+        // provider_error trace event. §2.1/§2.2/§2.4 — a 200 that is not a completion surfaces
+        // AFTER the bounded retry as the marked ProviderResponseError; §2.3 (no Ollama laundering)
+        // is enforced at the terminal disposition below, but the LADDER may still move it to the
+        // other cloud tier — a broker's bad 200 is precisely what the direct Vertex call heals.
+        const inFlightAtError = providerCallsInFlight();
+        endProviderCall('openrouter');
+        const fellBackTo = nextHop ?? (noLocalFallback || isProviderResponseError(e) ? 'none' : 'ollama');
+        const payload = isProviderResponseError(e)
+          ? providerResponsePayload({
+              provider: 'openrouter', label: 'chatWithFallback', feature: null, fellBackTo,
+              intendedModel: slug, fallbackModel: fellBackTo === 'ollama' ? (params as { model?: string }).model ?? null : null,
+              region: null, saIdentity: null, inFlightAtError, defect: e.defect,
+            })
+          : providerErrorPayload({
+              provider: 'openrouter', label: 'chatWithFallback', feature: null, fellBackTo,
+              intendedModel: slug, fallbackModel: fellBackTo === 'ollama' ? (params as { model?: string }).model ?? null : null,
+              region: null, saIdentity: null, error: e, inFlightAtError,
+            });
+        if (isProviderResponseError(e)) {
+          console.error(`[provider-bad-response] openrouter ${slug} returned a non-completion 200 → ${fellBackTo}:`, JSON.stringify(payload));
+        } else {
+          console.error(`[provider-fallback] openrouter ${slug} failed → ${fellBackTo}:`, JSON.stringify(payload));
+        }
+        await emitProviderErrorTrace(payload);
+        lastErr = e;
+        lastTier = 'openrouter';
+        continue;
+      }
+    }
+    // tier === 'gemini'
+    beginProviderCall('gemini');
     try {
       const { options: _o, keep_alive: _k, ...rest } = params as Record<string, unknown>;
       void _o; void _k;
-      const orParams = buildOpenrouterParams(orModel, rest as Record<string, unknown>);
-      const client = openrouterChatClient();
-      // Addendum F v2 task 1 — the production bridge call now carries the SAME deadline/retry
-      // discipline the lab path has had since D4/D2: bounded per-attempt AbortController deadline,
-      // aborts + transport errors + 429/5xx + empty-200s retryable on a 3-try budget with jittered
-      // backoff, timer cleared in finally. Streaming calls keep the bare call: an in-flight stream
-      // being consumed by the caller must not be aborted by a wall-clock timer, and
-      // classifyProviderResponse has never judged streams.
-      res = (orParams as { stream?: boolean }).stream
+      const baseMax = Number((rest as { max_tokens?: number }).max_tokens) || 1024;
+      const gParams = { ...rest, model: vertexModelName(geminiModel as string), max_tokens: baseMax + 8192 };
+      const gemini = await getGeminiChatClient();
+      // ══ UNIT V-a1 (3 Aug 2026): THE VERTEX BRANCH GAINS THE OPENROUTER DISCIPLINE ═════════════
+      // A bare `create()` bounded only by the SDK's own `timeout` was survivable while Vertex was
+      // the fallback; it is primary now (V-a2), so it runs the same shared loop, provider-neutral.
+      //
+      // No stream_options self-heal here — that mechanism exists only on the traced arm, which is
+      // the one that requests usage on streaming calls.
+      const res = await createWithRetry(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ? await client.chat.completions.create(orParams as any)
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        : await openrouterCreateWithRetry((ro) => client.chat.completions.create(orParams as any, ro), {
-            model: orModel,
-            // ROOT CAUSE FIX (2 Aug 2026): the caller's ceiling reaches the bridge. `reqOpts` was
-            // computed from `timeoutMs` above and then used ONLY on the Vertex and Ollama branches
-            // — this branch dropped it, so openrouterCreateWithRetry applied its own 110 s to an
-            // audit that needs 600 s. From 30 July, when the bridge went live, that silently
-            // degraded every median-or-slower audit to the local model. Absent ⇒ 110 s, unchanged.
-            timeoutMs,
-            // Unit D (3 Aug 2026): and the caller's TRY COUNT, for the same reason. An audit-class
-            // budget is one try (PROVIDER_BUDGETS) because a three-rung ladder is multiplicative
-            // against the route's 800 s box. Absent ⇒ OPENROUTER_MAX_TRIES (3), unchanged.
-            maxTries,
-            onAttemptFailure: (f) => console.error(
-              `[provider-retry] openrouter ${orModel} attempt ${f.attempt}/${f.maxTries} ${f.kind}${f.status != null ? ` ${f.status}` : ''} — ${f.willRetry ? 'retrying' : 'giving up'}: ${f.message}`),
-          });
-      endProviderCall('openrouter');
+        (ro) => gemini.chat.completions.create(gParams as any, ro),
+        {
+          provider: 'vertex',
+          model: geminiModel,
+          // Vertex's chat endpoint is OpenAI-compatible, so the default classifyProviderResponse fits.
+          // V-a2: the caller's ceiling clamped to the leg's remainder (full budget when tier 1).
+          timeoutMs: tierCeilingMs(timeoutMs, deadlineAt),
+          maxTries,
+          onAttemptFailure: (f) => console.error(
+            `[provider-retry] vertex ${geminiModel} attempt ${f.attempt}/${f.maxTries} ${f.kind}${f.status != null ? ` ${f.status}` : ''} — ${f.willRetry ? 'retrying' : 'giving up'}: ${f.message}`),
+        },
+      );
+      endProviderCall('gemini');
+      return res;
     } catch (e) {
-      // §4.1/§4.2/§4.3 — snapshot in-flight BEFORE decrementing (the failing call counts), then
-      // the FULL error (4000-char cap, not 200), loud (console.error, stable prefix), and a
-      // provider_error trace event.
+      // §4.1/§4.2/§4.3 (403 diagnosis): the FULL Vertex error body — error.status is what
+      // distinguishes an IAM denial from a quota denial from a disabled API. Snapshot in-flight
+      // BEFORE decrementing; loud console.error; provider_error event into trace_events.
       const inFlightAtError = providerCallsInFlight();
-      endProviderCall('openrouter');
-      // §2.1/§2.2/§2.4 — a 200 that is not a completion, now surfaced AFTER the bounded retry
-      // (openrouterCreateWithRetry classifies every non-streaming response and throws the marked
-      // error only when the budget is spent). Emit the FULL body as provider_error and FAIL —
-      // deliberately NO Ollama fallback (§2.3); the retry budget changes WHEN this throws, never
-      // what happens after it throws.
-      if (isProviderResponseError(e)) {
-        const payload = providerResponsePayload({
-          provider: 'openrouter', label: 'chatWithFallback', feature: null, fellBackTo: 'none',
-          intendedModel: orModel, fallbackModel: null,
-          region: null, saIdentity: null, inFlightAtError, defect: e.defect,
-        });
-        console.error(`[provider-bad-response] openrouter ${orModel} returned a non-completion 200:`, JSON.stringify(payload));
-        await emitProviderErrorTrace(payload);
-        throw e;
-      }
-      // Thrown transport/HTTP failure: behaviour unchanged — the fallback still serves the request.
+      endProviderCall('gemini');
+      const fellBackTo = nextHop ?? (noLocalFallback ? 'none' : 'ollama');
       const payload = providerErrorPayload({
-        provider: 'openrouter', label: 'chatWithFallback', feature: null, fellBackTo: 'ollama',
-        intendedModel: orModel, fallbackModel: (params as { model?: string }).model ?? null,
-        region: null, saIdentity: null, error: e, inFlightAtError,
+        provider: 'gemini', label: 'chatWithFallback', feature: null, fellBackTo,
+        intendedModel: geminiModel ?? null, fallbackModel: fellBackTo === 'ollama' ? (params as { model?: string }).model ?? null : null,
+        region: vertexRegion(), saIdentity: vertexSaEmail(), error: e, inFlightAtError,
       });
-      console.error(`[provider-fallback] openrouter ${orModel} failed → ollama fallback:`, JSON.stringify(payload));
+      console.error(`[provider-fallback] gemini ${geminiModel} failed → ${fellBackTo}:`, JSON.stringify(payload));
       await emitProviderErrorTrace(payload);
-      return llm.chat.completions.create(params, reqOpts);
+      lastErr = e;
+      lastTier = 'gemini';
+      continue;
     }
-    return res;
   }
-  if (!geminiModel || !geminiConfigured()) {
-    return llm.chat.completions.create(params, reqOpts);
-  }
-  beginProviderCall('gemini');
-  try {
-    const { options: _o, keep_alive: _k, ...rest } = params as Record<string, unknown>;
-    void _o; void _k;
-    const baseMax = Number((rest as { max_tokens?: number }).max_tokens) || 1024;
-    const gParams = { ...rest, model: vertexModelName(geminiModel), max_tokens: baseMax + 8192 };
-    const gemini = await getGeminiChatClient();
-    // ══ UNIT V-a1 (3 Aug 2026): THE VERTEX BRANCH GAINS THE OPENROUTER DISCIPLINE ═══════════════
-    // This was a bare `create()` bounded only by the SDK's own `timeout`: no per-attempt abort
-    // deadline, no bounded retry, no 429/5xx handling, and no body classification — a 200 that was
-    // not a completion returned as a success. Acceptable while Vertex was the fallback; not
-    // acceptable now that it is about to be primary.
-    //
-    // ⚠️ BOTH ARMS, ONE COMMIT. 3039c42 fixed this file's OpenRouter branch and missed the twin in
-    // lib/trace.ts, and Unit D found it three days later with both production audit paths still on
-    // a 110 s ceiling. tracedChat's Vertex branch gets the identical treatment in this same commit
-    // so the asymmetry cannot repeat. The traced arm is the one production uses.
-    //
-    // ⚠️ INERT TODAY: with GEMINI_VIA_OPENROUTER=1 this branch never executes.
-    //
-    // No stream_options self-heal here — that mechanism exists only on the traced arm, which is
-    // the one that requests usage on streaming calls.
-    const res = await createWithRetry(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (ro) => gemini.chat.completions.create(gParams as any, ro),
-      {
-        provider: 'vertex',
-        model: geminiModel,
-        // Vertex's chat endpoint is OpenAI-compatible, so the default classifyProviderResponse fits.
-        timeoutMs,
-        maxTries,
-        onAttemptFailure: (f) => console.error(
-          `[provider-retry] vertex ${geminiModel} attempt ${f.attempt}/${f.maxTries} ${f.kind}${f.status != null ? ` ${f.status}` : ''} — ${f.willRetry ? 'retrying' : 'giving up'}: ${f.message}`),
-      },
-    );
-    endProviderCall('gemini');
-    return res;
-  } catch (e) {
-    // Never fail the request because Gemini is unavailable — use local Ollama.
-    // §4.1/§4.2/§4.3 (403 diagnosis): the FULL Vertex error body — error.status is what
-    // distinguishes an IAM denial from a quota denial from a disabled API, and it was being
-    // truncated away at 200 chars into a console.warn nothing reads. Snapshot in-flight BEFORE
-    // decrementing (the failing call counts); loud console.error so Vercel groups it and the
-    // silent-Mac-mini rate becomes a number; provider_error event so it lands in trace_events.
-    const inFlightAtError = providerCallsInFlight();
-    endProviderCall('gemini');
-    const payload = providerErrorPayload({
-      provider: 'gemini', label: 'chatWithFallback', feature: null, fellBackTo: 'ollama',
-      intendedModel: geminiModel, fallbackModel: (params as { model?: string }).model ?? null,
-      region: vertexRegion(), saIdentity: vertexSaEmail(), error: e, inFlightAtError,
-    });
-    console.error(`[provider-fallback] gemini ${geminiModel} failed → ollama fallback:`, JSON.stringify(payload));
-    await emitProviderErrorTrace(payload);
-    return llm.chat.completions.create(params, reqOpts);
-  }
+
+  // ── Terminal disposition: every cloud tier failed (or the second was skipped, budget spent) ──
+  // V-a2: `noLocalFallback` makes the failure a THROW — the audit paths' own machinery (OPD
+  // llm_leg_failed, the IPD failure ledger) is the handler, never a silent local grade.
+  if (noLocalFallback) throw lastErr;
+  // §2.3 stands, OpenRouter only (unchanged from before the ladder): a 200-that-is-not-a-completion
+  // from OpenRouter never launders into the local model. The Vertex tier keeps its historical
+  // any-error → Ollama, so a utility Gemini call degrades exactly as it always has.
+  if (lastTier === 'openrouter' && isProviderResponseError(lastErr)) throw lastErr;
+  return llm.chat.completions.create(params, reqOpts);
 }
 
 export const TEXT_MODEL = process.env.TEXT_MODEL || 'qwen2.5:14b';

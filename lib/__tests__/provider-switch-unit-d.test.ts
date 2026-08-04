@@ -76,12 +76,13 @@ test('analyzeCase accepts a budget and passes it down BOTH arms of the generate 
   const c = code(DOC_AUDIT);
   // ⚠️ THE TRACED ARM IS THE ONE PRODUCTION USES. A fix that reaches only the traceless arm passes
   // naive tests and changes nothing in production — that is precisely how 3039c42 missed the worker.
-  assert.ok(c.includes('tracedAnalyzeGenerate(traceId, label, s, u, fo, ANALYZE_PROMPT_REFS[label], aTimeout, aTries)'),
+  // (V-a2: aNoLocal rides beside the budget down the same two arms — same channel, same lesson.)
+  assert.ok(c.includes('tracedAnalyzeGenerate(traceId, label, s, u, fo, ANALYZE_PROMPT_REFS[label], aTimeout, aTries, aNoLocal)'),
     'TRACED arm — the production path');
-  assert.ok(c.includes('analyzeGenerate(s, u, fo, aTimeout, aTries)'), 'traceless arm');
+  assert.ok(c.includes('analyzeGenerate(s, u, fo, aTimeout, aTries, aNoLocal)'), 'traceless arm');
   // …and both helpers hand them to the governed layer rather than dropping them.
-  assert.ok(c.includes('{ gemini: geminiModel, timeoutMs, maxTries }'), 'analyzeGenerate → governedChat');
-  assert.ok(c.includes('{ gemini: geminiModel, promptRef, timeoutMs, maxTries }'), 'tracedAnalyzeGenerate → tracedChat');
+  assert.ok(c.includes('{ gemini: geminiModel, timeoutMs, maxTries, noLocalFallback }'), 'analyzeGenerate → governedChat');
+  assert.ok(c.includes('{ gemini: geminiModel, promptRef, timeoutMs, maxTries, noLocalFallback }'), 'tracedAnalyzeGenerate → tracedChat');
 });
 
 test('the IPD callers read the budget from the TABLE, never as literals in their own file', () => {

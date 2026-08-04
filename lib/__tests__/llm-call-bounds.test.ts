@@ -112,28 +112,31 @@ test('T4: the audit call site passes an audit-class ceiling that clears measured
   // inside `createWithRetry`, which hands each attempt its OWN `{ signal, timeout, maxRetries: 0 }`
   // derived from the same `opts?.timeoutMs`. So the caller's ceiling still reaches Vertex — by a
   // STRICTER route than before, because it is now an AbortController deadline as well as an SDK
-  // timeout, and the SDK's own silent retries are off. What remains on `reqOpts` is exactly the
-  // three call sites that have no retry loop of their own: the Ollama main path and both fallbacks.
-  assert.equal((trace.match(/completions\.create\((?:gParams|params)[^)]*, reqOpts\)/g) ?? []).length, 3,
-    'tracedChat: ollama main + both fallback closures — the loop-less sites');
+  // timeout, and the SDK's own silent retries are off.
+  // ⚠️ 3 → 2 IN UNIT V-a2 (4 Aug 2026): the two per-branch fallback closures became ONE terminal
+  // disposition after the cloud ladder. What remains on `reqOpts` is the Ollama main path and the
+  // single ladder-terminal fallback closure — still every loop-less site, no more.
+  assert.equal((trace.match(/completions\.create\((?:gParams|params)[^)]*, reqOpts\)/g) ?? []).length, 2,
+    'tracedChat: ollama main + the ladder-terminal fallback closure — the loop-less sites');
   assert.equal((trace.match(/completions\.create\(gParams as any, ro\)/g) ?? []).length, 2,
     'and the gemini twin now takes the per-ATTEMPT opts from the shared retry loop');
-  // ⚠️ Unit D (3 Aug 2026) added `opts?.maxTries` as a fifth argument. The property this asserts is
-  // UNCHANGED — governedChat must forward the caller's bounds on the traceless path — and it is now
-  // joined by its twin below, because the TRACED path is the one production actually uses and it
-  // was silently dropping both.
-  assert.ok(trace.includes('return chatWithFallback(params, opts?.gemini, opts?.openrouter, opts?.timeoutMs, opts?.maxTries);'),
+  // ⚠️ Unit D (3 Aug 2026) added `opts?.maxTries` as a fifth argument, and V-a2 added
+  // `opts?.noLocalFallback` sixth. The property this asserts is UNCHANGED — governedChat must
+  // forward the caller's bounds on the traceless path — and it is joined by its twin below,
+  // because the TRACED path is the one production actually uses and it was silently dropping both.
+  assert.ok(trace.includes('return chatWithFallback(params, opts?.gemini, opts?.openrouter, opts?.timeoutMs, opts?.maxTries, opts?.noLocalFallback);'),
     'governedChat must forward the ceiling on the TRACELESS path too (the lab runs trace:false)');
-  assert.ok(trace.includes('timeoutMs: opts?.timeoutMs,') && trace.includes('maxTries: opts?.maxTries,'),
+  // V-a2: the forwarded ceiling is CLAMPED to the leg's remainder (tierCeilingMs) so a tier-2 hop
+  // never runs on a fresh budget — the caller's number still bounds the whole leg.
+  assert.ok(trace.includes('timeoutMs: tierCeilingMs(opts?.timeoutMs, deadlineAt),') && trace.includes('maxTries: opts?.maxTries,'),
     "tracedChat's OpenRouter branch must forward them too — it has its own retry loop and dropped "
     + 'both until 3 Aug, which is why the OPD fix credited to 3039c42 never reached the worker');
   const llmSrc = readFileSync('lib/llm.ts', 'utf8');
-  // 4 → 3 in Unit V-a1, for the same reason as tracedChat above: the Gemini call moved inside
-  // createWithRetry and takes the loop's per-attempt opts instead of reqOpts. The ceiling still
-  // reaches Vertex, now as an abort deadline as well as an SDK timeout. What is left on reqOpts is
-  // the three loop-less Ollama sites: the no-gemini default and both fallback returns.
-  assert.equal((llmSrc.match(/completions\.create\((?:gParams|params)[^)]*, reqOpts\)/g) ?? []).length, 3,
-    'chatWithFallback: no-gemini ollama + both fallback returns — the loop-less sites');
+  // 4 → 3 in Unit V-a1 (the Gemini call moved inside createWithRetry), 3 → 2 in V-a2 (the two
+  // fallback returns became the single ladder terminal). What is left on reqOpts is the no-cloud
+  // default and the terminal fallback return — still every loop-less site.
+  assert.equal((llmSrc.match(/completions\.create\((?:gParams|params)[^)]*, reqOpts\)/g) ?? []).length, 2,
+    'chatWithFallback: no-cloud ollama + the ladder-terminal return — the loop-less sites');
   assert.ok(/createWithRetry\(\s*\/\/[^\n]*\n\s*\(ro\) => gemini\.chat\.completions\.create\(gParams as any, ro\)/.test(llmSrc),
     'and the gemini call takes the per-ATTEMPT opts from the shared retry loop');
 });

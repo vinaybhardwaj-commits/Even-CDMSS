@@ -134,6 +134,49 @@ export async function saveIpdAudit(row: IpdAuditRow): Promise<'inserted' | 'upda
   return rows.length ? (rows[0].inserted ? 'inserted' : 'updated') : 'skipped';
 }
 
+// ── Unit V-a2 (4 Aug 2026): the IPD failure ledger — a SEPARATE table, purely observational ─────
+//
+// ⚠️ NEVER a row in `ipd_discharge_audits`. Two reasons, both checked in source:
+//   1. auditedDocIdsAnyVersion (below) is a bare SELECT DISTINCT document_id with NO exclusion
+//      filter — a marked row would make the sweep skip that document FOREVER (the trap OPD needed
+//      addendum F v2 task 2 to escape).
+//   2. buildIpdAuditRow throws when the report has no valueScore (assemble.ts) — a failed audit
+//      has no report, so there is no row to build.
+// IPD resumability already works precisely BECAUSE a failure writes nothing; the gap this ledger
+// closes is VISIBILITY, not resumability. The table is created by /api/admin/migrate-lab-views
+// (additive + idempotent); its name passes BLOCKED_RELATIONS so audit_query can read it.
+
+/** The `error` cap for a ledger row. Follows the PROVIDER_ERROR_CAP posture (never truncate a
+ *  diagnostic to 200 chars) at half its size — a provider message, NEVER clinical text (no PHI). */
+export const IPD_FAILURE_ERROR_CAP = 2000;
+
+export interface IpdAuditFailureInput {
+  documentId: string;
+  engineVersion?: string | null;
+  stage?: string | null;
+  provider?: string | null;
+  error?: string | null;
+  traceId?: string | null;
+}
+
+/** Write one failure row. BEST-EFFORT, following persistEpisodeState's posture: a ledger write
+ *  must never fail an audit that otherwise succeeded, and never throw — including before the
+ *  migration has created the table (the catch swallows the missing-relation error). */
+export async function recordIpdAuditFailure(f: IpdAuditFailureInput): Promise<void> {
+  try {
+    if (!f.documentId) return;
+    await sql(
+      `INSERT INTO ipd_audit_failures (document_id, engine_version, stage, provider, error, trace_id)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        f.documentId, f.engineVersion ?? null, f.stage ?? null, f.provider ?? null,
+        f.error != null ? String(f.error).slice(0, IPD_FAILURE_ERROR_CAP) : null,
+        f.traceId ?? null,
+      ],
+    );
+  } catch { /* best-effort — observability must never break the audit path */ }
+}
+
 /** Read one audit by row id. Deliberately NO engine-version filter, so mini rows are
  *  viewable by id exactly like OPD's. Null if not found. */
 export async function getIpdAudit(id: string): Promise<Record<string, unknown> | null> {
