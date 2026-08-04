@@ -86,7 +86,134 @@ export async function GET(req: NextRequest) {
       trace_id      TEXT,
       failed_at     TIMESTAMPTZ NOT NULL DEFAULT now()
     )`, []);
-    return NextResponse.json({ ok: true, migrated: ['v_trace_summary', 'v_appropriateness_summary', 'v_stage_latency'], tables: ['ipd_audit_failures'] });
+    // ── PX Phase 2 (outcome linkage, 4 Aug 2026) — the outcomes table + the calibration view ──
+    //
+    // The table mirrors migrations/0033_prognosis_outcomes.sql EXACTLY (this route is how V runs
+    // numbered migrations from a browser — the ipd_audit_failures precedent above). It must exist
+    // BEFORE the view that reads it. Per P-8 it is NOT in BLOCKED_RELATIONS: readable by design,
+    // with the P-6 UI warning as the only PHI control — the revisit trigger is recorded in the PRD.
+    await run(`CREATE TABLE IF NOT EXISTS prognosis_outcomes (
+      id                  BIGSERIAL PRIMARY KEY,
+      source_table        TEXT NOT NULL,
+      source_id           TEXT NOT NULL,
+      source_engine       TEXT,
+      app_source          TEXT,
+      source              TEXT NOT NULL,
+      observed_outcome    TEXT NOT NULL,
+      observed_at         DATE,
+      horizon_days        INT,
+      matched_complication      INT,
+      matched_complication_hash TEXT,
+      classification      TEXT NOT NULL,
+      reviewed_by_name    TEXT,
+      notes               TEXT,
+      supersedes_id       BIGINT REFERENCES prognosis_outcomes(id),
+      superseded          BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`, []);
+    await run(`CREATE INDEX IF NOT EXISTS prognosis_outcomes_source_idx
+      ON prognosis_outcomes (source_table, source_id) WHERE superseded = FALSE`, []);
+    // v_prognosis_calibration (§5.5) — the three headline metrics, per source document, reading
+    // ONLY non-superseded rows.
+    //
+    // THE DENOMINATOR IS THE POINT: `follow_up_bucket` says out loud whether anyone looked.
+    // A document with NO current outcome row is `not_followed_up` — its over-warning columns are
+    // NULL, never zero, so it sits OUTSIDE the rate instead of silently inflating it (the
+    // survivor-counting error that let a 15.5% OPD loss read as healthy on 3 Aug). "Anticipated
+    // and never occurred" is counted ONLY where a no_adverse_outcome row exists for the document —
+    // an event row proves someone looked at ONE outcome, not that the rest were checked.
+    //
+    // THE HASH IS RECOMPUTED IN SQL and must match lib/prognosis-outcomes-core.ts exactly:
+    // sha256(trim → lower → collapse whitespace), hex, first 16. `matched_complication` (the
+    // integer) is never consulted (P-2); a stored hash matching nothing counts as n_unresolved.
+    //
+    // One row per document: the latest non-mini audit carrying a prognosis block ('%-mini' rows
+    // are the isolated Qwen backfill generation and must not shadow the prod block).
+    //
+    // DROP + CREATE rather than CREATE OR REPLACE: idempotent as a pair, and survives column-shape
+    // changes on re-run (OR REPLACE cannot drop or retype a column). Also keeps the three lab
+    // views above as exactly the set their tests pin.
+    await run(`DROP VIEW IF EXISTS v_prognosis_calibration`, []);
+    await run(`CREATE VIEW v_prognosis_calibration AS
+      WITH blocks AS (
+        SELECT DISTINCT ON (document_id)
+               document_id, engine_version, audited_at,
+               report->'prognosis'->'complications' AS complications
+          FROM ipd_discharge_audits
+         WHERE report->'prognosis' IS NOT NULL
+           AND jsonb_typeof(report->'prognosis'->'complications') = 'array'
+           AND engine_version NOT LIKE '%-mini'
+         ORDER BY document_id, audited_at DESC
+      ),
+      comp_hashes AS (
+        SELECT b.document_id,
+               substr(encode(sha256(convert_to(
+                 regexp_replace(lower(btrim(c.value->>'complication')), '\\s+', ' ', 'g'),
+               'UTF8')), 'hex'), 1, 16) AS comp_hash
+          FROM blocks b
+          CROSS JOIN LATERAL jsonb_array_elements(b.complications) AS c(value)
+         WHERE c.value->>'complication' IS NOT NULL
+      ),
+      anticipated AS (
+        SELECT document_id, count(*)::int AS n_anticipated FROM comp_hashes GROUP BY document_id
+      ),
+      o AS (
+        SELECT source_id AS document_id,
+               count(*)::int AS n_outcome_rows,
+               (count(*) FILTER (WHERE classification = 'unpredicted_occurred'))::int AS n_unpredicted_occurred,
+               (count(*) FILTER (WHERE classification = 'benefit_failure'))::int AS n_benefit_failure,
+               (count(*) FILTER (WHERE classification = 'no_adverse_outcome'))::int AS n_no_adverse_outcome
+          FROM prognosis_outcomes
+         WHERE source_table = 'ipd_discharge_audits' AND superseded = FALSE
+         GROUP BY source_id
+      ),
+      matched AS (
+        SELECT po.source_id AS document_id,
+               count(*)::int AS n_predicted_occurred,
+               count(DISTINCT po.matched_complication_hash)::int AS n_complications_confirmed
+          FROM prognosis_outcomes po
+          JOIN comp_hashes ch
+            ON ch.document_id = po.source_id AND ch.comp_hash = po.matched_complication_hash
+         WHERE po.source_table = 'ipd_discharge_audits' AND po.superseded = FALSE
+           AND po.classification = 'predicted_occurred'
+         GROUP BY po.source_id
+      ),
+      unresolved AS (
+        SELECT po.source_id AS document_id, count(*)::int AS n_unresolved
+          FROM prognosis_outcomes po
+         WHERE po.source_table = 'ipd_discharge_audits' AND po.superseded = FALSE
+           AND po.matched_complication_hash IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM comp_hashes ch
+              WHERE ch.document_id = po.source_id AND ch.comp_hash = po.matched_complication_hash)
+         GROUP BY po.source_id
+      )
+      SELECT b.document_id,
+             b.engine_version,
+             COALESCE(a.n_anticipated, 0) AS n_anticipated,
+             COALESCE(o.n_outcome_rows, 0) AS n_outcome_rows,
+             COALESCE(m.n_predicted_occurred, 0) AS n_predicted_occurred,
+             COALESCE(o.n_unpredicted_occurred, 0) AS n_unpredicted_occurred,
+             COALESCE(o.n_benefit_failure, 0) AS n_benefit_failure,
+             COALESCE(o.n_no_adverse_outcome, 0) AS n_no_adverse_outcome,
+             COALESCE(u.n_unresolved, 0) AS n_unresolved,
+             CASE WHEN COALESCE(o.n_outcome_rows, 0) > 0 THEN 'followed_up' ELSE 'not_followed_up' END AS follow_up_bucket,
+             CASE WHEN COALESCE(o.n_no_adverse_outcome, 0) > 0
+                  THEN GREATEST(COALESCE(a.n_anticipated, 0) - COALESCE(m.n_complications_confirmed, 0), 0)
+                  ELSE NULL END AS n_anticipated_never_occurred,
+             CASE WHEN COALESCE(o.n_no_adverse_outcome, 0) > 0 AND COALESCE(a.n_anticipated, 0) > 0
+                  THEN round((COALESCE(a.n_anticipated, 0) - COALESCE(m.n_complications_confirmed, 0))::numeric / a.n_anticipated, 3)
+                  ELSE NULL END AS over_warning_rate,
+             CASE WHEN COALESCE(m.n_predicted_occurred, 0) + COALESCE(o.n_unpredicted_occurred, 0) > 0
+                  THEN round(COALESCE(m.n_predicted_occurred, 0)::numeric
+                             / (COALESCE(m.n_predicted_occurred, 0) + COALESCE(o.n_unpredicted_occurred, 0)), 3)
+                  ELSE NULL END AS recall_of_foreseeable
+        FROM blocks b
+        LEFT JOIN anticipated a ON a.document_id = b.document_id
+        LEFT JOIN o ON o.document_id = b.document_id
+        LEFT JOIN matched m ON m.document_id = b.document_id
+        LEFT JOIN unresolved u ON u.document_id = b.document_id`, []);
+    return NextResponse.json({ ok: true, migrated: ['v_trace_summary', 'v_appropriateness_summary', 'v_stage_latency'], tables: ['ipd_audit_failures'], calibration: ['prognosis_outcomes', 'prognosis_outcomes_source_idx', 'v_prognosis_calibration'] });
   } catch (e) {
     return NextResponse.json({ ok: false, error: String((e as Error).message) }, { status: 500 });
   }

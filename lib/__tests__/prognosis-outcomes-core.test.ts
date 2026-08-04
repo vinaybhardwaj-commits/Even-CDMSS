@@ -14,6 +14,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'crypto';
 import { readFileSync } from 'node:fs';
+import { guardReadOnlySql } from '../sql-guard-core';
 import {
   OUTCOME_SOURCES, OUTCOME_CLASSIFICATIONS, isOutcomeSource, isOutcomeClassification,
   normalizeComplicationName, complicationHash, isComplicationHash,
@@ -244,6 +245,65 @@ test('P-7 in the store: supersede is ONE atomic statement — flag-flip CTE + in
   const updates = storeCode.match(/UPDATE prognosis_outcomes/g) ?? [];
   assert.equal(updates.length, 1, 'exactly one UPDATE, the flag-flip');
   assert.ok(!/\bDELETE\b/.test(storeCode), 'nothing is ever deleted');
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// Commit 4 · §7.6 the calibration view's denominator, and P-8 readability — pinned in source
+// (the SQL itself is INFERRED; the orchestrator validates it against live Neon)
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+const MIGRATE_ROUTE = readFileSync('app/api/admin/migrate-lab-views/route.ts', 'utf8');
+const CAL_VIEW = MIGRATE_ROUTE.slice(MIGRATE_ROUTE.indexOf('CREATE VIEW v_prognosis_calibration'));
+
+test('§7.6 the view emits the not_followed_up bucket, and the over-warning columns go NULL outside it', () => {
+  assert.ok(CAL_VIEW.includes("THEN 'followed_up' ELSE 'not_followed_up' END AS follow_up_bucket"),
+    'the bucket is a visible column — the honest denominator statement');
+  // Over-warning is computable ONLY where a no_adverse_outcome row exists; otherwise NULL, so a
+  // not-followed-up document can never silently inflate the rate.
+  assert.equal((CAL_VIEW.match(/WHEN COALESCE\(o\.n_no_adverse_outcome, 0\) > 0/g) ?? []).length, 2,
+    'both over-warning columns are gated on the no_adverse_outcome row');
+  assert.ok(CAL_VIEW.includes('ELSE NULL END AS n_anticipated_never_occurred'));
+  assert.ok(CAL_VIEW.includes('ELSE NULL END AS over_warning_rate'));
+  assert.ok(CAL_VIEW.includes('AS n_unresolved'), 'the §5.2 unresolved count is emitted');
+});
+
+test('the view reads only non-superseded rows and resolves by the SAME hash as the core', () => {
+  assert.equal((CAL_VIEW.match(/superseded = FALSE/g) ?? []).length, 3,
+    'every prognosis_outcomes read in the view filters superseded rows');
+  // The SQL hash chain must mirror complicationHash exactly: trim → lower → collapse ws →
+  // sha256 → hex → first 16. A drift here would quietly mark every outcome unresolved.
+  assert.ok(CAL_VIEW.includes("regexp_replace(lower(btrim(c.value->>'complication')), '\\\\s+', ' ', 'g')"),
+    'normalization: btrim + lower + whitespace collapse');
+  assert.ok(CAL_VIEW.includes("substr(encode(sha256(convert_to("), 'sha256 → hex');
+  assert.ok(CAL_VIEW.includes("'hex'), 1, 16)"), 'first 16 chars');
+  // P-2: the advisory integer never appears in the view's logic.
+  assert.ok(!CAL_VIEW.includes('matched_complication '), 'resolution is by hash — the integer index is never consulted');
+  assert.ok(CAL_VIEW.includes("engine_version NOT LIKE '%-mini'"),
+    'the isolated Qwen backfill generation must not shadow the prod block');
+});
+
+test('the migrate route creates the table BEFORE the view, mirroring migrations/0033 exactly', () => {
+  const tableAt = MIGRATE_ROUTE.indexOf('CREATE TABLE IF NOT EXISTS prognosis_outcomes (');
+  const viewAt = MIGRATE_ROUTE.indexOf('CREATE VIEW v_prognosis_calibration');
+  assert.ok(tableAt > -1 && viewAt > tableAt, 'table first — the view reads it');
+  assert.ok(MIGRATE_ROUTE.includes('CREATE INDEX IF NOT EXISTS prognosis_outcomes_source_idx'));
+  assert.ok(MIGRATE_ROUTE.includes('DROP VIEW IF EXISTS v_prognosis_calibration'),
+    'DROP + CREATE: idempotent as a pair, and survives column-shape changes on re-run');
+  // Idempotency of the whole route addition: rerunnable statements only.
+  for (const frag of ['CREATE TABLE IF NOT EXISTS prognosis_outcomes (', 'CREATE INDEX IF NOT EXISTS prognosis_outcomes_source_idx', 'DROP VIEW IF EXISTS v_prognosis_calibration']) {
+    assert.ok(MIGRATE_ROUTE.includes(frag), frag);
+  }
+});
+
+test('P-8: the table and the view pass the SQL guard, and lib/sql-guard-core.ts is untouched', () => {
+  const outcomes = guardReadOnlySql('SELECT source, classification, observed_at FROM prognosis_outcomes WHERE superseded = FALSE LIMIT 50');
+  assert.equal(outcomes.ok, true, (outcomes as { error?: string }).error);
+  const view = guardReadOnlySql('SELECT document_id, follow_up_bucket, over_warning_rate FROM v_prognosis_calibration LIMIT 50');
+  assert.equal(view.ok, true, (view as { error?: string }).error);
+  const guard = readFileSync('lib/sql-guard-core.ts', 'utf8');
+  assert.ok(guard.includes('const BLOCKED_RELATIONS = /\\b(traces|trace_events|appropriateness_runs|ccb_briefs|care_track_assignments|opd_audit_feedback)\\b/i;'),
+    'the block list is byte-identical — P-8 ruled the table readable; the revisit trigger is in the PRD');
+  assert.ok(!/prognosis/.test(guard), 'the guard does not need to know the feature exists');
 });
 
 test('SQL honesty: reads degrade to unavailable and writes to a refusal — never a throw (no DB in this sandbox)', async () => {
