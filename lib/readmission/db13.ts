@@ -22,12 +22,13 @@
  */
 
 import { metabaseQuery } from '../metabase';
-import type { KxEncounter, FormReadmission } from '../readmission-detect-core';
+import type { KxEncounter, FormReadmission, MappedAdtCols } from '../readmission-detect-core';
 import { ADT_COLUMN_CANDIDATES, resolveMappedCols } from '../readmission-detect-core';
 import { canonicalAnalyte, labAbnormal } from '../readmission-reconcile-core';
 
 // Re-exported so the worker/report layer names the mapping facts from one place.
 export { ADT_COLUMN_CANDIDATES, resolveMappedCols };
+export type { MappedAdtCols };
 
 const esc = (s: string) => s.replace(/'/g, "''");
 const isEncounterId = (s: string) => /^[A-Za-z0-9/_-]{2,40}$/.test(s);   // ip_uid shapes: IP-1250, IPNO-229
@@ -77,7 +78,7 @@ const ADT_MAX_PAGES = 20;
  *    LIMIT 500 OFFSET <n>
  * Fail-safe: any page error returns what was fetched so far; a first-page error → [].
  */
-export async function fetchAdtEncounters(): Promise<{ encounters: KxEncounter[]; mappedCols: { admission: string | null; discharge: string | null } }> {
+export async function fetchAdtEncounters(): Promise<{ encounters: KxEncounter[]; mappedCols: MappedAdtCols }> {
   const out: KxEncounter[] = [];
   let firstPage: Record<string, unknown>[] = [];
   for (let page = 0; page < ADT_MAX_PAGES; page++) {

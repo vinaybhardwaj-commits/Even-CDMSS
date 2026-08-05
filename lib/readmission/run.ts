@@ -20,7 +20,7 @@ import { startTrace, finishTrace, tracedChat } from '../trace';
 import { PROVIDER_BUDGETS } from '../lab-provider-core';
 import { sql } from '../db';
 import { detectReadmissions } from '../readmission-detect-core';
-import type { DetectionResult } from '../readmission-detect-core';
+import type { DetectionResult, MappedAdtCols } from '../readmission-detect-core';
 import { reconcileFinding } from '../readmission-reconcile-core';
 import type { PassClaims, ReadmissionFinding } from '../readmission-reconcile-core';
 import {
@@ -56,9 +56,10 @@ export interface DetectSweepResult {
   detection: Pick<DetectionResult, 'laneCounts' | 'within30' | 'formStats'>;
   encounters: number;
   forms: number;
-  /** Which ADT column candidate actually resolved (admission/discharge) — surfaced
-   *  so the orchestrator confirms the live mapping instead of inferring it from counts. */
-  mappedCols: { admission: string | null; discharge: string | null };
+  /** The FULL resolved ADT column mapping (admission/discharge/department/doctor/
+   *  encounter_id/dob/name) — surfaced so the orchestrator validates every field
+   *  live; a single-field miss (the excluded:0 defect) can't hide behind counts. */
+  mappedCols: MappedAdtCols;
   pairsStored: number;
   oonStored: number;
   storeSkipped: number;

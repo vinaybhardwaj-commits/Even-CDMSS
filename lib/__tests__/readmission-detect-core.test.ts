@@ -168,18 +168,37 @@ test('form patients with no Even IP stay are OUT of scope; blank readmission_dat
   assert.equal(det.formStats.noReadmitDate, 1);
 });
 
-// ── ADT column mapping (the 5 Aug prod defect: zero lanes from a null discharge) ─
-// Pins the fact the live bug taught us: the ADT discharge column is `discharge_date`,
-// and it must win over the kx_discharge_summary_records-shaped names.
+// ── ADT column mapping (the 5 Aug prod defects: zero lanes from a null discharge,
+// then excluded:0 from a null department) ────────────────────────────────────────
+// Pins the live-validated names: discharge_date / treating_sub_department_name /
+// current_treating_doctor must each win over the plausible-but-wrong candidates.
 
-test('ADT mapping: discharge_date resolves FIRST; admission_date_time stays first', () => {
+test('ADT mapping priority: the live-validated column wins each candidate list', () => {
   assert.equal(ADT_COLUMN_CANDIDATES.dischargeAt[0], 'discharge_date');
   assert.equal(ADT_COLUMN_CANDIDATES.admitAt[0], 'admission_date_time');
-  // Priority: a row carrying BOTH names maps to discharge_date, not the summary-table name.
-  const both = [{ admission_date_time: '2026-01-01T00:00:00Z', discharge_date: '2026-01-05T00:00:00Z', discharge_date_time: '2026-01-06T00:00:00Z' }];
-  assert.deepEqual(resolveMappedCols(both), { admission: 'admission_date_time', discharge: 'discharge_date' });
+  assert.equal(ADT_COLUMN_CANDIDATES.department[0], 'treating_sub_department_name');
+  assert.equal(ADT_COLUMN_CANDIDATES.department[1], 'treating_department_name');
+  assert.equal(ADT_COLUMN_CANDIDATES.doctor[0], 'current_treating_doctor');
+  assert.equal(ADT_COLUMN_CANDIDATES.doctor[1], 'admitting_doctor');
+  // Priority: a row carrying BOTH a live name and a wrong-table name maps to the live one.
+  const both = [{
+    admission_date_time: '2026-01-01T00:00:00Z',
+    discharge_date: '2026-01-05T00:00:00Z', discharge_date_time: '2026-01-06T00:00:00Z',
+    treating_sub_department_name: 'Oncology', department: 'X',
+    current_treating_doctor: 'Dr Vishal Naik', treating_doctor: 'Y',
+    encounter_id: 'IP-1', dob: '1980-01-01', patient_name: 'A B',
+  }];
+  assert.deepEqual(resolveMappedCols(both), {
+    admission: 'admission_date_time', discharge: 'discharge_date',
+    department: 'treating_sub_department_name', doctor: 'current_treating_doctor',
+    encounter_id: 'encounter_id', dob: 'dob', name: 'patient_name',
+  });
   // An unmapped field reports null — visible, never guessed.
-  assert.deepEqual(resolveMappedCols([{ admission_date_time: 'x' }]), { admission: 'admission_date_time', discharge: null });
+  const partial = resolveMappedCols([{ admission_date_time: 'x' }]);
+  assert.equal(partial.admission, 'admission_date_time');
+  assert.equal(partial.discharge, null);
+  assert.equal(partial.department, null);
+  assert.equal(partial.doctor, null);
 });
 
 test('detectReadmissions lane counts + within-30 subset', () => {
