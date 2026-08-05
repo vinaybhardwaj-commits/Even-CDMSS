@@ -28,11 +28,36 @@
  *   · Out-of-network (decision 13): index-side omission audit only, planned/same
  *     from the CM note, NO avoidable verdict on the other hospital; identity is
  *     authoritative, readmit facts are patient-reported and say so.
+ *
+ * PHASE 1.5 (substrate addendum, 5 Aug 2026) — this module now consumes the real
+ * substrate rather than the metadata table Phase 1 read:
+ *   · THREE COVERAGE TIERS (§3). tier1 = structured LOINC-coded lab values inside
+ *     the index window → a full NUMERIC omission audit. tier2 = no structured labs
+ *     → labs as the doctor wrote them in the index ExtractedCase + the cross-author
+ *     readmit case; a summary-vs-summary contradiction, so confidence is CAPPED at
+ *     moderate. tier3 = no index discharge PDF → not auditable, never guessed.
+ *   · The omission audit is DERIVED deterministically in tier 1 (a stability claim
+ *     in the index case vs the latest structured value at/before discharge), not
+ *     only proposed by the model. The §8c.3 lab-timing rule applies INSIDE tier 1.
+ *   · Same-condition matches on LOINC BUNDLES (§4) — a coder renaming the diagnosis
+ *     cannot move the LOINC codes. The test-name matcher stays as the fallback for
+ *     rows whose loinc_id is absent.
  */
 
 // ── Evidence ────────────────────────────────────────────────────────────────────
 
 export type EvidenceSource = 'index_summary' | 'readmit_summary' | 'lab' | 'adt' | 'cm_form';
+
+/**
+ * Where a lab evidence item's number came from (Phase 1.5 §3).
+ *   · 'structured'    — individuals-parameter_digital_values: a real numeric value
+ *                       against its own reference range. The tier-1 substrate.
+ *   · 'extracted_case'— the lab as the doctor WROTE it in the discharge PDF. Tier 2:
+ *                       an interested transcription of a number, not an independent one.
+ * ABSENT means 'structured': Phase-1 evidence carried numeric KX rows and is read
+ * that way so pre-1.5 callers keep their behaviour exactly.
+ */
+export type LabProvenance = 'structured' | 'extracted_case';
 
 export interface EvidenceItem {
   id: string;
@@ -43,6 +68,11 @@ export interface EvidenceItem {
   at?: string | null;          // ISO timestamp (labs)
   analyte?: string | null;     // canonical analyte, from canonicalAnalyte()
   abnormal?: boolean | null;
+  /** Labs only. Undefined = 'structured' (see LabProvenance). */
+  labProvenance?: LabProvenance;
+  /** Labs only: the numeric value and its reference range, for the derived audit. */
+  value?: number | null;
+  refRange?: string | null;
 }
 
 export interface EvidenceCatalog { items: EvidenceItem[] }
@@ -64,9 +94,40 @@ export const ANALYTE_BUNDLES: Record<string, readonly string[]> = {
   hepatic: ['bilirubin', 'inr', 'ammonia'],
 };
 
+/**
+ * LOINC → canonical analyte (addendum §4). The bundle test matches on the CODE, so a
+ * coder renaming the diagnosis — or the test — cannot move it. Codes resolve to the
+ * SAME canonical analyte names as the name matcher below, so ANALYTE_BUNDLES stays
+ * the single definition of what a bundle is.
+ *
+ * ⚠️ INFERRED that db13's `loinc_id` holds bare LOINC codes in this shape. Consequence
+ * drawn: an unrecognised or absent code falls through to the NAME matcher, so a wrong
+ * guess costs precision on that row, never a wrong bundle.
+ */
+export const LOINC_ANALYTES: Record<string, string> = {
+  // renal — creatinine + urea/BUN + potassium
+  '2160-0': 'creatinine', '38483-4': 'creatinine', '21232-4': 'creatinine',
+  '3094-0': 'bun', '6299-2': 'bun', '22664-7': 'bun',
+  '2823-3': 'potassium', '6298-4': 'potassium',
+  // cardiac — BNP + sodium
+  '30934-4': 'bnp', '33762-6': 'bnp', '33763-4': 'bnp',
+  '2951-2': 'sodium', '2947-0': 'sodium',
+  // hepatic — bilirubin + INR
+  '1975-2': 'bilirubin', '1968-7': 'bilirubin', '1971-1': 'bilirubin',
+  '6301-6': 'inr', '34714-6': 'inr',
+};
+
+/** The bundles as LOINC code sets — the addendum §4 statement of same-condition. */
+export const LOINC_BUNDLES: Record<string, readonly string[]> = Object.fromEntries(
+  Object.entries(ANALYTE_BUNDLES).map(([bundle, analytes]) => [
+    bundle,
+    Object.entries(LOINC_ANALYTES).filter(([, a]) => analytes.includes(a)).map(([code]) => code),
+  ]),
+);
+
 const ANALYTE_PATTERNS: Array<[RegExp, string]> = [
   [/creatinin/i, 'creatinine'],
-  [/\bbun\b|blood\s*urea/i, 'bun'],
+  [/\bbun\b|urea/i, 'bun'],
   [/potassium|\bk\+/i, 'potassium'],
   [/\bnt[- ]?pro[- ]?bnp\b|\bbnp\b/i, 'bnp'],
   [/sodium|\bna\+/i, 'sodium'],
@@ -81,6 +142,27 @@ export function canonicalAnalyte(testName: string | null | undefined): string | 
   if (!testName) return null;
   for (const [re, canon] of ANALYTE_PATTERNS) if (re.test(testName)) return canon;
   return null;
+}
+
+/** Canonical analyte for a LOINC code. Null when the code is outside every bundle. */
+export function analyteFromLoinc(loincId: string | null | undefined): string | null {
+  if (!loincId) return null;
+  return LOINC_ANALYTES[String(loincId).trim()] ?? null;
+}
+
+/**
+ * The addendum §4 resolution order: the LOINC CODE decides; the test NAME is only the
+ * fallback for rows that carry no (or an unrecognised) code.
+ */
+export function canonicalAnalyteFor(loincId: string | null | undefined, testName: string | null | undefined): string | null {
+  return analyteFromLoinc(loincId) ?? canonicalAnalyte(testName);
+}
+
+/** Which bundles a LOINC code belongs to (empty when the code is outside all of them). */
+export function bundlesForLoinc(loincId: string | null | undefined): string[] {
+  const analyte = analyteFromLoinc(loincId);
+  if (!analyte) return [];
+  return Object.entries(ANALYTE_BUNDLES).filter(([, list]) => list.includes(analyte)).map(([b]) => b);
 }
 
 /** Parse a "3.5-5.1" style reference range. Null when unparseable. */
@@ -146,6 +228,157 @@ export function labTimingProfile(
   return 'admission_only';
 }
 
+// ── Coverage tiers (addendum §3) ────────────────────────────────────────────────
+
+export type LabTier = 'tier1' | 'tier2' | 'tier3';
+
+/** What the omission audit was actually built from — carried onto the finding row. */
+export interface LabSourceProvenance {
+  tier: LabTier;
+  /** Structured LOINC-coded values found inside the index window. */
+  structuredLabCount: number;
+  /** [index_admission − 14d, index_discharge + 2d], as sent to db13. Null when unresolved. */
+  window: { from: string; to: string } | null;
+  /** True when the window START was derived (no admission timestamp) — see run.ts. */
+  windowStartInferred?: boolean;
+  /** Labs read out of the index ExtractedCase's investigations[] (the tier-2 substrate). */
+  caseLabCount: number;
+  /** Where each ExtractedCase came from: the shared store, a fresh extract, or nowhere. */
+  indexCase: 'store' | 'fresh_extract' | null;
+  readmitCase: 'store' | 'fresh_extract' | null;
+  extractionVersion: string | null;
+  indexDocumentId: string | null;
+  readmitDocumentId: string | null;
+}
+
+/**
+ * The confidence FLOOR (§3), decided before a model is asked anything:
+ *   no index case            → tier3, not auditable (never guessed)
+ *   structured labs in window→ tier1, full numeric omission audit
+ *   otherwise                → tier2, PDF-only, medium confidence
+ */
+export function resolveLabTier(args: { hasIndexCase: boolean; structuredLabsInWindow: number }): {
+  tier: LabTier; notAuditableReason?: string;
+} {
+  if (!args.hasIndexCase) {
+    return { tier: 'tier3', notAuditableReason: 'no index discharge-summary PDF could be read — not auditable' };
+  }
+  return { tier: args.structuredLabsInWindow > 0 ? 'tier1' : 'tier2' };
+}
+
+/** Labs whose number is an independent structured value (undefined provenance = structured). */
+const isStructuredLab = (i: EvidenceItem): boolean =>
+  i.source === 'lab' && (i.labProvenance == null || i.labProvenance === 'structured');
+
+/**
+ * Tier for a catalog when the caller did not state one (pre-1.5 callers and the pure
+ * tests). Structured lab items ⇒ tier1; an index narrative but no structured value ⇒
+ * tier2; nothing on the index side ⇒ tier3.
+ */
+export function inferLabTier(catalog: EvidenceCatalog): LabTier {
+  if (catalog.items.some((i) => isStructuredLab(i) && i.side === 'index')) return 'tier1';
+  const hasIndexNarrative = catalog.items.some((i) => i.source === 'index_summary');
+  return hasIndexNarrative ? 'tier2' : 'tier3';
+}
+
+// ── The derived numeric omission audit (tier 1) ─────────────────────────────────
+
+/**
+ * Stability claims in the INDEX narrative — the sentences the numbers are checked
+ * against. Deliberately narrow: a claim about the patient's condition AT DISCHARGE,
+ * not any mention of the word "stable" (a stable-angina diagnosis is not a claim).
+ */
+export function findStabilityClaims(catalog: EvidenceCatalog): EvidenceItem[] {
+  const CLAIM = /\b(stable|afebrile|improv(ed|ing)|uneventful|satisfactory|asymptomatic|well[- ]tolerated|vitals?\s+(are\s+|were\s+)?(normal|stable)|condition\s+(at|on)\s+discharge)\b/i;
+  const NOT_A_CLAIM = /\b(stable angina|haemodynamically unstable|not stable|unstable)\b/i;
+  return catalog.items.filter((i) =>
+    i.source === 'index_summary' && CLAIM.test(i.text) && !NOT_A_CLAIM.test(i.text));
+}
+
+/**
+ * The LATEST structured value per analyte at/before discharge — the number a "stable at
+ * discharge" claim is actually answerable by. Labs with no timestamp are kept as
+ * last resort (they are still the patient's own values) but sort behind timed ones.
+ */
+export function latestValuePerAnalyte(catalog: EvidenceCatalog, indexDischargeAt: string | null): Map<string, EvidenceItem> {
+  const disch = parseTs(indexDischargeAt);
+  const best = new Map<string, EvidenceItem>();
+  for (const i of catalog.items) {
+    if (!isStructuredLab(i) || i.side !== 'index' || !i.analyte) continue;
+    const t = parseTs(i.at);
+    if (disch != null && t != null && t > disch) continue;   // after discharge — not what discharge knew
+    const cur = best.get(i.analyte);
+    if (!cur) { best.set(i.analyte, i); continue; }
+    const curT = parseTs(cur.at);
+    if (t != null && (curT == null || t > curT)) best.set(i.analyte, i);
+  }
+  return best;
+}
+
+/**
+ * TIER 1 ONLY. Flags each index stability claim the last real number contradicts —
+ * deterministically, from the values themselves, so the finding does not depend on the
+ * model having noticed. §8c.3 timing rule applies HERE: a value dated only at admission
+ * is a low-confidence, clearly-labelled signal, never a "discharged unstable" claim.
+ *
+ * Danger ranks by whether the analyte sits in a failing-organ bundle, not by count.
+ */
+export function deriveNumericOmissions(args: {
+  catalog: EvidenceCatalog;
+  tier: LabTier;
+  labProfile: LabTimingProfile;
+  indexDischargeAt: string | null;
+}): ReadmissionFinding['omissions'] {
+  if (args.tier !== 'tier1') return [];
+  const claims = findStabilityClaims(args.catalog);
+  if (!claims.length) return [];   // nothing was claimed — there is no omission to audit
+  const disch = parseTs(args.indexDischargeAt);
+  const out: ReadmissionFinding['omissions'] = [];
+  for (const [analyte, lab] of latestValuePerAnalyte(args.catalog, args.indexDischargeAt)) {
+    if (lab.abnormal !== true) continue;
+    const t = parseTs(lab.at);
+    const nearDischarge = disch != null && t != null && t >= disch - 48 * H;
+    let confidence: 'high' | 'moderate' | 'low';
+    let caveat: string | undefined;
+    if (nearDischarge || args.labProfile === 'short_stay') {
+      confidence = 'high';
+    } else if (args.labProfile === 'has_late_labs') {
+      confidence = 'moderate';
+      caveat = 'the last value for this analyte is not from the final 48h before discharge';
+    } else {
+      confidence = 'low';
+      caveat = 'admission-only labs: the abnormal value is from the admission workup and may have corrected before discharge — not a "discharged unstable" claim';
+    }
+    const inBundle = Object.values(ANALYTE_BUNDLES).some((list) => list.includes(analyte));
+    out.push({
+      claim: `index summary claims stability; last ${analyte} at/before discharge is outside its reference range (${lab.text})`,
+      danger: inBundle ? 'high' : 'moderate',
+      confidence,
+      ...(caveat ? { caveat } : {}),
+      evidenceIds: [claims[0].id, lab.id],
+      source: 'derived',
+    });
+  }
+  const rank = { high: 0, moderate: 1, low: 2 };
+  return out.sort((a, b) => rank[a.danger] - rank[b.danger]);
+}
+
+/**
+ * Merge the deterministic tier-1 findings with the model's proposals. The DERIVED row
+ * wins a collision (same contradicting lab): it is anchored to the number itself, where
+ * the model's is anchored to its own reading of the number.
+ */
+export function mergeOmissions(
+  derived: ReadmissionFinding['omissions'],
+  modelScored: ReadmissionFinding['omissions'],
+): ReadmissionFinding['omissions'] {
+  const key = (o: ReadmissionFinding['omissions'][number]) => o.evidenceIds.slice().sort().join('|');
+  const seen = new Set(derived.map(key));
+  const merged = [...derived, ...modelScored.filter((o) => !seen.has(key(o)))];
+  const rank = { high: 0, moderate: 1, low: 2 };
+  return merged.sort((a, b) => rank[a.danger] - rank[b.danger]);
+}
+
 // ── Model-pass claims (parsed JSON — lib/readmission-prompts.ts) ────────────────
 
 export interface PassClaims {
@@ -167,13 +400,18 @@ export interface ReadmissionFinding {
   verdictScope: 'pair' | 'index_side_only';
   planned: { verdict: 'planned' | 'unplanned' | 'unknown'; confidence: number; evidenceIds: string[]; enforcement?: string } | null;
   sameCondition: { verdict: 'same' | 'different' | 'unknown'; confidence: number; basis: 'analyte_bundle' | 'model_prose' | 'patient_reported'; bundles: string[]; evidenceIds: string[] } | null;
-  omissions: Array<{ claim: string; danger: 'high' | 'moderate' | 'low'; confidence: 'high' | 'moderate' | 'low'; caveat?: string; evidenceIds: string[] }>;
+  /** `source` (1.5): 'derived' = computed from the numbers themselves (tier 1);
+   *  'model' = proposed by a Vertex pass and then scored against the timing rule. */
+  omissions: Array<{ claim: string; danger: 'high' | 'moderate' | 'low'; confidence: 'high' | 'moderate' | 'low'; caveat?: string; evidenceIds: string[]; source?: 'derived' | 'model' }>;
   exculpatory: Array<{ claim: string; corroborated: boolean; corroboratingIds: string[] }>;
   /** null on condition-only (lane D first pass) and ALWAYS null out-of-network. */
   avoidable: { verdict: AvoidableVerdict; evidenceIds: string[]; reason?: string } | null;
   /** Decision 14: lane-D condition pass came back SAME → run the full reconciliation. */
   promoteToFull?: boolean;
   labProfile: LabTimingProfile;
+  /** Phase 1.5 §3 — the coverage tier this finding was built under, and what from. */
+  labTier: LabTier;
+  labSourceProvenance?: LabSourceProvenance | null;
   /** Never 'corroborated' from absence of labs (§5 rule 6). */
   stabilityAssessment: 'contradicted' | 'corroborated' | 'unverifiable';
   corroborationTrack: 'lab_corroborated' | 'prose_only';
@@ -196,6 +434,10 @@ export interface ReconcileInput {
   /** Lane D first pass (decision 9): same/different-condition only. */
   conditionOnly?: boolean;
   formFlags?: { isPlanned: boolean | null; sameCondition: boolean | null } | null;
+  /** Phase 1.5 §3. Omitted → inferred from the catalog (inferLabTier), so pre-1.5
+   *  callers keep their exact behaviour. */
+  labTier?: LabTier;
+  labSourceProvenance?: LabSourceProvenance | null;
 }
 
 const byId = (catalog: EvidenceCatalog) => {
@@ -282,10 +524,14 @@ export function scoreOmissions(
   catalog: EvidenceCatalog,
   labProfile: LabTimingProfile,
   indexDischargeAt: string | null,
+  tier: LabTier = 'tier1',
 ): ReadmissionFinding['omissions'] {
   const m = byId(catalog);
   const disch = parseTs(indexDischargeAt);
   const out: ReadmissionFinding['omissions'] = [];
+  // §3 tier 3: no index PDF was read at all, so there is nothing to audit an omission
+  // against. Anything the model volunteered here rests on no index evidence.
+  if (tier === 'tier3') return out;
   for (const o of omissions) {
     const ids = validIds(o.contradictingEvidenceIds, m);
     const labItems = ids.map((id) => m.get(id)!).filter((i) => i.source === 'lab');
@@ -307,8 +553,15 @@ export function scoreOmissions(
       confidence = 'low';
       caveat = 'admission-only labs: the abnormal value is from the admission workup and may have corrected before discharge — not a "discharged unstable" claim';
     }
+    // §3 tier 2 CEILING: with no structured value, the contradiction is summary-vs-summary
+    // (the treating team's own transcription of a number, plus the other team's account).
+    // That is a medium-confidence signal by construction — it can never read as high.
+    if (tier === 'tier2' && confidence === 'high') {
+      confidence = 'moderate';
+      caveat = 'tier 2: no structured lab value exists for this stay — the contradiction rests on the labs as the doctor wrote them, not on an independent number';
+    }
     const claimIds = o.claimEvidenceId && m.has(o.claimEvidenceId) ? [o.claimEvidenceId] : [];
-    out.push({ claim: o.claim, danger: o.danger, confidence, ...(caveat ? { caveat } : {}), evidenceIds: [...claimIds, ...ids] });
+    out.push({ claim: o.claim, danger: o.danger, confidence, ...(caveat ? { caveat } : {}), evidenceIds: [...claimIds, ...ids], source: 'model' });
   }
   const rank = { high: 0, moderate: 1, low: 2 };
   out.sort((a, b) => rank[a.danger] - rank[b.danger]);   // ranked by clinical danger, not count
@@ -376,6 +629,9 @@ export function reconcileFinding(input: ReconcileInput): ReadmissionFinding {
   const a = input.passA ?? {};
   const b = input.passB ?? {};
 
+  const labTier = input.labTier ?? inferLabTier(catalog);
+  const labSourceProvenance = input.labSourceProvenance ?? null;
+
   const sameCondition = resolveSameCondition(a.sameCondition ?? null, catalog, input.formFlags);
 
   if (input.conditionOnly) {
@@ -383,7 +639,8 @@ export function reconcileFinding(input: ReconcileInput): ReadmissionFinding {
       findingClass: input.findingClass, verdictScope: 'pair',
       planned: null, sameCondition, omissions: [], exculpatory: [], avoidable: null,
       promoteToFull: sameCondition?.verdict === 'same',
-      labProfile, stabilityAssessment: 'unverifiable', corroborationTrack: labProfile === 'no_labs' ? 'prose_only' : 'lab_corroborated',
+      labProfile, labTier, labSourceProvenance,
+      stabilityAssessment: 'unverifiable', corroborationTrack: labProfile === 'no_labs' ? 'prose_only' : 'lab_corroborated',
       provenance: provenanceOf([...(sameCondition?.evidenceIds ?? [])], m),
       weakestStep: a.weakestStep ?? null,
       refusalRecord: a.refusalRecord ?? [],
@@ -391,7 +648,22 @@ export function reconcileFinding(input: ReconcileInput): ReadmissionFinding {
   }
 
   const planned = enforcePlanned(a.planned ?? null, catalog, input.findingClass, input.formFlags);
-  const omissions = scoreOmissions(a.omissions ?? [], catalog, labProfile, input.indexDischargeAt);
+  // The numbers speak first (tier 1), then the model's proposals are scored under the
+  // same timing rule and merged behind them.
+  //
+  // The derived audit runs ONLY on an EXPLICITLY stated tier 1 — never on an inferred
+  // one. A tier is an attestation that these numbers came from the structured lab
+  // pipeline with a real reference range, and only lib/readmission/assemble.ts can make
+  // it. An inferred tier is a guess about a catalog's shape; deriving a clinical finding
+  // from a guess is exactly what §3 exists to prevent. It also means every pre-1.5
+  // caller keeps its behaviour byte-for-byte.
+  const derived = input.labTier === 'tier1'
+    ? deriveNumericOmissions({ catalog, tier: 'tier1', labProfile, indexDischargeAt: input.indexDischargeAt })
+    : [];
+  const omissions = mergeOmissions(
+    derived,
+    scoreOmissions(a.omissions ?? [], catalog, labProfile, input.indexDischargeAt, labTier),
+  );
   const exculpatory = checkExculpatory(a.exculpatory ?? [], catalog);
 
   // §5a: no avoidable/for-money verdict on the other hospital. Ever.
@@ -406,23 +678,27 @@ export function reconcileFinding(input: ReconcileInput): ReadmissionFinding {
   const provenance = provenanceOf(citedIds, m);
 
   // Coverage honesty (§5 rule 6): absence of labs is never confirmation of stability.
+  // Only a STRUCTURED value can corroborate a stability claim (§3): the doctor's own
+  // transcription of a number cannot corroborate the doctor's own claim.
   const hasIndexLabs = catalog.items.some((i) => i.source === 'lab' && i.side === 'index');
   const stabilityAssessment: ReadmissionFinding['stabilityAssessment'] =
     omissions.length ? 'contradicted'
-      : hasIndexLabs && (labProfile === 'short_stay' || labProfile === 'has_late_labs') ? 'corroborated'
+      : labTier === 'tier1' && (labProfile === 'short_stay' || labProfile === 'has_late_labs') ? 'corroborated'
         : 'unverifiable';
   const corroborationTrack: ReadmissionFinding['corroborationTrack'] = hasIndexLabs ? 'lab_corroborated' : 'prose_only';
 
   const refusal: ReadmissionFinding['refusalRecord'] = [...(a.refusalRecord ?? [])];
   if (labProfile === 'no_labs') refusal.push({ lookedFor: 'any lab result for the index stay', found: false, note: 'verdict rests on the treating team’s own prose (prose-only track)' });
   if (labProfile === 'admission_only') refusal.push({ lookedFor: 'labs drawn after admission+24h', found: false, note: 'admission workup only — no near-discharge values exist' });
+  if (labTier === 'tier2') refusal.push({ lookedFor: 'structured lab values for this patient inside the index window', found: false, note: 'tier 2: labs are the ones the doctor wrote in the discharge summary, cross-read against the readmit team’s account — a summary-vs-summary contradiction, not an independent numeric one' });
+  if (labTier === 'tier3') refusal.push({ lookedFor: 'an index discharge-summary PDF', found: false, note: 'tier 3: no index document could be read — this pair is not auditable' });
   if (oon) refusal.push({ lookedFor: 'a readmit discharge summary', found: false, note: 'the readmission happened outside Even; readmit facts are patient-reported via the CM note' });
 
   return {
     findingClass: input.findingClass,
     verdictScope: oon ? 'index_side_only' : 'pair',
     planned, sameCondition, omissions, exculpatory, avoidable,
-    labProfile, stabilityAssessment, corroborationTrack, provenance,
+    labProfile, labTier, labSourceProvenance, stabilityAssessment, corroborationTrack, provenance,
     weakestStep: a.weakestStep ?? null,
     refusalRecord: refusal,
     ...(oon ? { readmitFactsPatientReported: true, identityResolved: true } : {}),

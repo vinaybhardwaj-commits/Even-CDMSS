@@ -12,9 +12,12 @@
  * PHI scrub is inspectable; run.ts wires the fetches around it.
  */
 
-import type { EvidenceCatalog, EvidenceItem, LabTimingProfile } from '../readmission-reconcile-core';
-import { labTimingProfile } from '../readmission-reconcile-core';
-import type { SummaryRecord, LabRow } from './db13';
+import type {
+  EvidenceCatalog, EvidenceItem, LabTimingProfile, LabTier, LabSourceProvenance,
+} from '../readmission-reconcile-core';
+import { labTimingProfile, labAbnormal, canonicalAnalyte, canonicalAnalyteFor, resolveLabTier } from '../readmission-reconcile-core';
+import type { SummaryRecord, LabRow, StructuredLabRow } from './db13';
+import type { ExtractedCase } from '../doc-audit-core';
 
 // ── de-identification ───────────────────────────────────────────────────────────
 
@@ -177,4 +180,209 @@ export function assembleInputs(args: {
 
   const labProfile = labTimingProfile(args.indexLabs, args.indexAdmitAt, args.indexDischargeAt);
   return { catalog: { items }, labProfile, indexSentenceCount: idxSentences.length, readmitSentenceCount: rdSentences.length };
+}
+
+// ═══ Phase 1.5 — the three-source substrate (addendum §2/§3) ═══════════════════
+//
+// Source 1: the index ExtractedCase (the discharge PDF, read by lib/doc-audit).
+// Source 2: the readmit ExtractedCase — a DIFFERENT author's account of what happened
+//           after the index discharge. Absent for out-of-network pairs (decision 13).
+// Source 3: structured LOINC-coded lab values for the patient, windowed to the index
+//           stay. The genuinely disinterested numeric source.
+//
+// This function remains the SINGLE PHI choke point. The ExtractedCase is already
+// de-identified by construction (the extractor never emits name or UHID, and rawNotes
+// is de-identified), but every string that leaves here is put through deidText anyway:
+// a second scrub costs nothing and means the guarantee does not depend on the
+// extractor's prompt continuing to behave.
+
+/** How each case reached us — carried onto the finding for the reviewer. */
+export type CaseSource = 'store' | 'fresh_extract' | null;
+
+/** The de-identified narrative lines an ExtractedCase contributes, in reading order. */
+export function extractedCaseLines(ec: ExtractedCase): string[] {
+  const lines: string[] = [];
+  const add = (label: string, v: string | null | undefined) => {
+    if (v && String(v).trim()) lines.push(`${label}: ${String(v).trim()}`);
+  };
+  const addList = (label: string, xs: string[] | undefined) => {
+    const clean = (xs ?? []).map((x) => String(x).trim()).filter(Boolean);
+    if (clean.length) lines.push(`${label}: ${clean.join('; ')}`);
+  };
+  add('diagnosis', ec.diagnosis);
+  add('indication', ec.indication);
+  add('procedure', ec.procedure);
+  addList('investigations', ec.investigations);
+  addList('treatments', ec.treatments);
+  addList('medications', ec.medications);
+  addList('risk factors', ec.riskFactors);
+  add('course in hospital', ec.courseSummary);
+  add('condition at discharge', ec.disposition);
+  add('follow up', ec.followUp);
+  addList('aftercare instructions', ec.aftercare?.instructions);
+  addList('warning signs given', ec.aftercare?.warning_signs);
+  add('follow-up detail', ec.aftercare?.follow_up_detail);
+  if (ec.adminFacts?.lengthOfStayDays != null) lines.push(`length of stay: ${ec.adminFacts.lengthOfStayDays} days`);
+  if (ec.adminFacts?.careSetting) lines.push(`care setting: ${ec.adminFacts.careSetting}`);
+  return lines;
+}
+
+/** Citable, de-identified sentences from one ExtractedCase. */
+export function extractedCaseSentences(
+  ec: ExtractedCase,
+  identity: { names: Array<string | null | undefined>; uhids: Array<string | null | undefined> },
+): string[] {
+  const lines = extractedCaseLines(ec);
+  if (!lines.length) return [];
+  return splitSentences(deidText(lines.join('\n'), identity));
+}
+
+/**
+ * Tier-2 labs: the investigations the DOCTOR wrote, parsed for a number and a range
+ * where one is written inline ("Potassium 2.9 (3.5-5.1)"). Tolerant by design — an
+ * unparseable line still contributes its text as evidence, it just carries no number.
+ */
+export function caseLabItems(
+  ec: ExtractedCase | null,
+  side: 'index' | 'readmit',
+  prefix: string,
+  identity: { names: Array<string | null | undefined>; uhids: Array<string | null | undefined> },
+): EvidenceItem[] {
+  const out: EvidenceItem[] = [];
+  for (const [i, raw] of (ec?.investigations ?? []).slice(0, 60).entries()) {
+    const text = deidText(String(raw).trim(), identity);
+    if (!text) continue;
+    const name = text.split(/[:=]/)[0]?.trim() ?? text;
+    const numMatch = text.match(/(-?\d+(?:\.\d+)?)/);
+    const value = numMatch ? Number(numMatch[1]) : null;
+    const rangeMatch = text.match(/(-?\d+(?:\.\d+)?\s*(?:-|–|to)\s*-?\d+(?:\.\d+)?)/g);
+    // The FIRST number is the result; a range needs two numbers, so a lone value never
+    // becomes its own reference range.
+    const refRange = rangeMatch && rangeMatch.length ? rangeMatch[rangeMatch.length - 1] : null;
+    out.push({
+      id: `${prefix}${i + 1}`,
+      source: 'lab',
+      side,
+      text,
+      analyte: canonicalAnalyte(name),
+      value: Number.isFinite(value as number) ? value : null,
+      refRange,
+      abnormal: labAbnormal(Number.isFinite(value as number) ? value : null, null, refRange),
+      labProvenance: 'extracted_case',
+      at: null,
+    });
+  }
+  return out;
+}
+
+/** Structured labs → evidence. Abnormality comes from the value vs its OWN range. */
+export function structuredLabItems(labs: StructuredLabRow[], identity: { names: Array<string | null | undefined>; uhids: Array<string | null | undefined> }): EvidenceItem[] {
+  return labs.slice(0, 120).map((l) => ({
+    id: l.id,
+    source: 'lab' as const,
+    side: 'index' as const,
+    at: l.at,
+    analyte: canonicalAnalyteFor(l.loincId, l.name),
+    // normalised_data_value is CARRIED but never decides: its semantics are not
+    // documented anywhere we can check, and an abnormality flag guessed from an
+    // unknown scale is exactly the kind of wrong number this audit must not invent.
+    abnormal: labAbnormal(l.value, null, l.refRange),
+    value: l.value,
+    refRange: l.refRange,
+    labProvenance: 'structured' as const,
+    text: deidText(
+      `${l.name ?? l.loincId ?? 'analyte'}: ${l.valueText ?? l.value ?? '?'}${l.unit ? ` ${l.unit}` : ''}`
+      + `${l.refRange ? ` (ref ${l.refRange})` : ''}${l.loincId ? ` [LOINC ${l.loincId}]` : ''}${l.at ? ` @ ${l.at}` : ''}`,
+      identity,
+    ),
+  }));
+}
+
+export interface ThreeSourceInputs {
+  catalog: EvidenceCatalog;
+  labProfile: LabTimingProfile;
+  labTier: LabTier;
+  labSourceProvenance: LabSourceProvenance;
+  notAuditableReason?: string;
+  indexSentenceCount: number;
+  readmitSentenceCount: number;
+}
+
+/**
+ * Assemble one pair's de-identified evidence catalog from the three sources and decide
+ * its coverage tier. Tier 3 (no index case) is returned with its reason rather than
+ * thrown — the caller writes 'not_auditable' and stops.
+ */
+export function assembleThreeSource(args: {
+  indexCase: ExtractedCase | null;
+  readmitCase: ExtractedCase | null;
+  structuredLabs: StructuredLabRow[];
+  indexAdmitAt: string | null;
+  indexDischargeAt: string | null;
+  readmitAdmitAt?: string | null;
+  cmNote?: string | null;
+  structuredFacts?: string[];
+  identity: { names: Array<string | null | undefined>; uhids: Array<string | null | undefined> };
+  labWindow: { from: string; to: string } | null;
+  windowStartInferred?: boolean;
+  caseSources: { index: CaseSource; readmit: CaseSource };
+  documentIds: { index: string | null; readmit: string | null };
+  extractionVersion: string;
+}): ThreeSourceInputs {
+  const items: EvidenceItem[] = [];
+
+  const idxSentences = args.indexCase ? extractedCaseSentences(args.indexCase, args.identity) : [];
+  idxSentences.forEach((t, i) => items.push({ id: `S${i + 1}`, source: 'index_summary', side: 'index', text: t }));
+
+  const rdSentences = args.readmitCase ? extractedCaseSentences(args.readmitCase, args.identity) : [];
+  rdSentences.forEach((t, i) => items.push({ id: `R${i + 1}`, source: 'readmit_summary', side: 'readmit', text: t }));
+
+  // Source 3 first — a structured value outranks the doctor's transcription of one.
+  const structured = structuredLabItems(args.structuredLabs, args.identity);
+  items.push(...structured);
+
+  const { tier, notAuditableReason } = resolveLabTier({
+    hasIndexCase: !!args.indexCase,
+    structuredLabsInWindow: structured.length,
+  });
+
+  // Tier 2 substrate: the labs as written, on BOTH sides — the readmit side is what
+  // makes the same-condition bundle test possible without structured values.
+  const caseLabs = tier === 'tier2'
+    ? [...caseLabItems(args.indexCase, 'index', 'IX', args.identity),
+       ...caseLabItems(args.readmitCase, 'readmit', 'RX', args.identity)]
+    : [];
+  items.push(...caseLabs);
+
+  (args.structuredFacts ?? []).forEach((t, i) => items.push({ id: `T${i + 1}`, source: 'adt', text: t }));
+  if (args.cmNote && args.cmNote.trim()) {
+    items.push({ id: 'F1', source: 'cm_form', text: deidText(args.cmNote.trim().slice(0, 1200), args.identity) });
+  }
+
+  // The §8c.3 timing profile is a fact about the STRUCTURED values: case labs carry no
+  // timestamp, so including them would silently turn "admission only" into "no labs".
+  const labProfile = labTimingProfile(
+    args.structuredLabs.map((l) => ({ at: l.at })), args.indexAdmitAt, args.indexDischargeAt,
+  );
+
+  return {
+    catalog: { items },
+    labProfile,
+    labTier: tier,
+    ...(notAuditableReason ? { notAuditableReason } : {}),
+    labSourceProvenance: {
+      tier,
+      structuredLabCount: structured.length,
+      window: args.labWindow,
+      ...(args.windowStartInferred ? { windowStartInferred: true } : {}),
+      caseLabCount: caseLabs.length,
+      indexCase: args.caseSources.index,
+      readmitCase: args.caseSources.readmit,
+      extractionVersion: args.extractionVersion,
+      indexDocumentId: args.documentIds.index,
+      readmitDocumentId: args.documentIds.readmit,
+    },
+    indexSentenceCount: idxSentences.length,
+    readmitSentenceCount: rdSentences.length,
+  };
 }

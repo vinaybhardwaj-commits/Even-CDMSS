@@ -20,6 +20,7 @@ import { persistEpisodeState } from './episode-adapter';
 import { buildIpdAuditRow } from './assemble';
 import { saveIpdAudit, recordIpdAuditFailure, IPD_ENGINE_VERSION, IPD_MINI_ENGINE_VERSION } from './store';
 import { PROVIDER_BUDGETS, providerSwitchEnabled } from '../lab-provider-core';
+import { upsertExtractedCase } from '../discharge-extract-store';
 import { sql } from '../db';
 
 /**
@@ -137,6 +138,22 @@ export async function runIpdAudit(input: IpdRunInput, opts: { mini?: boolean } =
       await recordIpdAuditFailure({ documentId: input.documentId, engineVersion, stage: 'doc_read', error: 'extract returned no case (document read failed or unreadable)', traceId: extractTraceId ?? null });
       return { documentId: input.documentId, skip: 'unreadable', extractTraceId };
     }
+
+    // ── Readmission Phase 1.5, decision 7.1: THE ONE PERMITTED EDIT TO THIS MODULE ──
+    // An ADDITIVE PERSISTENCE WRITE and nothing else. The de-identified ExtractedCase
+    // this audit just paid Gemini to produce is shared with the readmission agent, so
+    // that agent never re-reads the same PDF. Nothing below it reads this result: the
+    // extract, the analyze pass, the scoring, and the audit-row store are untouched.
+    // BEST-EFFORT: upsertExtractedCase never throws and returns 'skipped' on any fault
+    // (including the migration not having run), so a store problem cannot cost us an
+    // audit. Deliberately NOT awaited for its value — the return is ignored.
+    await upsertExtractedCase({
+      documentId: input.documentId,
+      ipUid: input.ipUid ?? null,
+      memberId: input.memberId ?? null,
+      extracted,
+      traceId: extractTraceId ?? null,
+    });
 
     // mini → analyze on the free Mac-mini (Qwen); extract stays Gemini-multimodal (reads the PDF).
     // The analyze family fires up to IPD_ANALYZE_LEGS calls, each bounded by this budget; the

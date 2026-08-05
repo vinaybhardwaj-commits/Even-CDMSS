@@ -64,12 +64,22 @@ export async function POST(req: NextRequest) {
       trace_id              TEXT
     )`;
     steps.create_table = 'ok';
+    // Phase 1.5 (substrate addendum §5) — additive + idempotent. The coverage tier the
+    // finding was built under, what its labs actually came from, and the omission
+    // evidence rows, each as its own column so a reviewer can filter without opening
+    // every `finding` blob. Safe on a table that already holds Phase-1 rows: existing
+    // rows simply carry NULL until they are re-audited.
+    await sql`ALTER TABLE readmission_findings ADD COLUMN IF NOT EXISTS lab_tier TEXT`;
+    await sql`ALTER TABLE readmission_findings ADD COLUMN IF NOT EXISTS lab_source_provenance JSONB`;
+    await sql`ALTER TABLE readmission_findings ADD COLUMN IF NOT EXISTS omission_evidence JSONB`;
+    steps.phase15_columns = 'ok';
     await sql`CREATE UNIQUE INDEX IF NOT EXISTS readmission_findings_key_engine_uq ON readmission_findings (dedup_key, engine_version)`;
     steps.unique_key_engine = 'ok';
     await sql`CREATE INDEX IF NOT EXISTS readmission_findings_lane_idx ON readmission_findings (lane)`;
     await sql`CREATE INDEX IF NOT EXISTS readmission_findings_status_idx ON readmission_findings (audit_status)`;
     await sql`CREATE INDEX IF NOT EXISTS readmission_findings_readmit_at_idx ON readmission_findings (readmit_admit_at DESC)`;
     await sql`CREATE INDEX IF NOT EXISTS readmission_findings_index_enc_idx ON readmission_findings (index_encounter_id)`;
+    await sql`CREATE INDEX IF NOT EXISTS readmission_findings_lab_tier_idx ON readmission_findings (lab_tier)`;
     steps.indexes = 'ok';
     const counts = (await sql`SELECT count(*)::int AS n FROM readmission_findings`) as Array<{ n: number }>;
     steps.rows = String(counts[0]?.n ?? 0);

@@ -23,7 +23,7 @@
 import { sql } from '../db';
 import type { ReadmitPair, OonDetection } from '../readmission-detect-core';
 import { pairDedupKey, oonDedupKey } from '../readmission-detect-core';
-import type { ReadmissionFinding } from '../readmission-reconcile-core';
+import type { ReadmissionFinding, LabTier } from '../readmission-reconcile-core';
 
 /** Flags (ship OFF): the Vertex surface is GEMINI_READMIT_AUDIT; the engine version
  *  starts at readmission/0.1 and bumps ONLY on behaviour change (house rule). */
@@ -157,6 +157,9 @@ export interface AuditResultWrite {
   provider?: string | null;
   traceId?: string | null;
   promoted?: boolean;
+  /** Phase 1.5: the tier for a NOT-AUDITABLE write, where there is no finding to read
+   *  it off. An audited row takes it from the finding. */
+  labTier?: LabTier | null;
 }
 
 /** Stage-2 write. On transient failure call recordAuditError instead — status stays
@@ -171,7 +174,9 @@ export async function saveAuditResult(w: AuditResultWrite, engineVersion: string
          finding = $4::jsonb, not_auditable_reason = $5,
          planned = $6, same_condition = $7, avoidable = $8,
          lab_timing_profile = $9, n_omissions = $10, needs_human_review = $11,
-         promoted_to_full = $12, model = $13, provider = $14, trace_id = $15, last_error = NULL
+         promoted_to_full = $12, model = $13, provider = $14, trace_id = $15,
+         lab_tier = $16, lab_source_provenance = $17::jsonb, omission_evidence = $18::jsonb,
+         last_error = NULL
        WHERE dedup_key = $1 AND engine_version = $2
        RETURNING id`,
       [
@@ -180,6 +185,12 @@ export async function saveAuditResult(w: AuditResultWrite, engineVersion: string
         f?.planned?.verdict ?? null, f?.sameCondition?.verdict ?? null, f?.avoidable?.verdict ?? null,
         f?.labProfile ?? null, f?.omissions?.length ?? 0, f?.provenance?.needsHumanReview ?? null,
         w.promoted === true, w.model ?? null, w.provider ?? null, w.traceId ?? null,
+        // Phase 1.5: the coverage tier, what it was built from, and the omission
+        // evidence rows — surfaced as their own columns so a reviewer can filter on
+        // "tier 1 only" without opening every `finding` blob.
+        f?.labTier ?? w.labTier ?? null,
+        f?.labSourceProvenance != null ? JSON.stringify(f.labSourceProvenance) : null,
+        f?.omissions?.length ? JSON.stringify(f.omissions) : null,
       ],
     )) as Array<{ id: string }>;
     return rows.length > 0;

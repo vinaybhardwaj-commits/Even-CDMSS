@@ -204,6 +204,216 @@ export async function fetchLabsForEncounter(encounterId: string): Promise<LabRow
   }).filter((l) => l.testName != null);
 }
 
+// ── Phase 1.5 substrate: encounter → discharge PDF (addendum §1/§6) ─────────────
+// The discharge narrative is a PDF in accounts-members-miscellaneous_documents, linked
+// to a stay by additional_metadata__booking_id = encounter_id. 191 of 203 pair
+// encounters (94%) have one filed. DOCS/CLS are the SAME constants lib/ipd-audit/db13.ts
+// uses — restated here rather than imported so this module keeps its own db13 contract.
+
+const DOCS = '"accounts-members-miscellaneous_documents"';
+const CLS = `document__classification__types::text ILIKE '%DISCHARGE_SUMMARY%'`;
+
+export interface DischargeDocLink {
+  documentId: string;
+  ipUid: string | null;
+  memberId: string | null;
+  pdfUrl: string | null;
+}
+
+/**
+ * INFERRED SQL (addendum §6; the column names are VALIDATED — lib/ipd-audit/db13.ts
+ * reads this table in production today):
+ *   SELECT _doc_id, _parent_doc_id, additional_metadata__booking_id AS ip_uid,
+ *          document__upload_uri AS pdf_url
+ *     FROM "accounts-members-miscellaneous_documents"
+ *    WHERE additional_metadata__booking_id = '<encounter_id>'
+ *      AND document__classification__types::text ILIKE '%DISCHARGE_SUMMARY%'
+ *      AND document__upload_uri ILIKE '%.pdf'
+ *    ORDER BY upload_timestamp DESC NULLS LAST LIMIT 1
+ *
+ * Fail-safe: any fault → null → the caller routes the pair to TIER 3 (not auditable),
+ * never to a guess. Newest filed document wins when a stay has more than one.
+ */
+export async function fetchDischargeDocForEncounter(encounterId: string): Promise<DischargeDocLink | null> {
+  if (!isEncounterId(encounterId)) return null;
+  try {
+    const rows = await metabaseQuery(
+      `SELECT _doc_id, _parent_doc_id, additional_metadata__booking_id AS ip_uid,
+              document__upload_uri AS pdf_url
+         FROM ${DOCS}
+        WHERE additional_metadata__booking_id = '${esc(encounterId)}'
+          AND ${CLS}
+          AND document__upload_uri ILIKE '%.pdf'
+        ORDER BY upload_timestamp DESC NULLS LAST
+        LIMIT 1`);
+    const r = rows[0];
+    if (!r || r._doc_id == null) return null;
+    return {
+      documentId: String(r._doc_id),
+      ipUid: s(r.ip_uid),
+      memberId: s(r._parent_doc_id),
+      pdfUrl: s(r.pdf_url),
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ── Phase 1.5 substrate: patient → individual → structured labs (§1/§6) ─────────
+
+/**
+ * Resolve a KX UHID to the individuals uid that parents the lab rows.
+ *
+ * INFERRED SQL (the kx_uhid link itself is MEASURED — PRD §3, 46/46 form records
+ * resolve through it):
+ *   SELECT uid, kx_uhid, old_kx_uhids FROM individuals
+ *    WHERE kx_uhid IN ('<u1>', '<u2>')
+ *       OR old_kx_uhids::text ~ '(^|[{,"])(<u1>|<u2>)([,}"]|$)'
+ *    LIMIT 5
+ *
+ * The regex is anchored on array delimiters so a UHID cannot substring-match a LONGER
+ * one, and the match is then RE-VERIFIED in JS by exact membership — the SQL only
+ * narrows, it never decides. A wrong patient here would be the worst failure this agent
+ * has, so both sides must agree before a uid is returned.
+ */
+export async function resolveIndividualUid(uhids: Array<string | null | undefined>): Promise<string | null> {
+  const ids = Array.from(new Set(uhids.filter((u): u is string => !!u && /^[A-Za-z0-9/_-]{2,40}$/.test(u))));
+  if (!ids.length) return null;
+  const list = ids.map((u) => `'${esc(u)}'`).join(', ');
+  const alt = ids.map((u) => esc(u).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+  try {
+    const rows = await metabaseQuery(
+      `SELECT uid, kx_uhid, old_kx_uhids FROM individuals
+        WHERE kx_uhid IN (${list})
+           OR old_kx_uhids::text ~ '(^|[{,"])(${alt})([,}"]|$)'
+        LIMIT 5`);
+    const wanted = new Set(ids);
+    for (const r of rows) {
+      const uid = s(r.uid);
+      if (!uid) continue;
+      const held: string[] = [];
+      const kx = s(r.kx_uhid);
+      if (kx) held.push(kx);
+      const old = r.old_kx_uhids;
+      if (Array.isArray(old)) for (const o of old) { const v = s(o); if (v) held.push(v); }
+      else if (typeof old === 'string') {
+        try { const arr = JSON.parse(old); if (Array.isArray(arr)) for (const o of arr) { const v = s(o); if (v) held.push(v); } }
+        catch { for (const o of old.replace(/[{}"]/g, '').split(',')) { const v = o.trim(); if (v) held.push(v); } }
+      }
+      // EXACT membership, re-checked here: the SQL narrowed, this decides.
+      if (held.some((h) => wanted.has(h))) return uid;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** One structured, LOINC-coded analyte value (addendum §1 — the disinterested source). */
+export interface StructuredLabRow {
+  id: string;                 // stable evidence-id seed (ordinal within this fetch)
+  name: string | null;
+  value: number | null;
+  valueText: string | null;
+  unit: string | null;
+  refRange: string | null;    // data_normal_range_report
+  normalised: string | null;  // normalised_data_value — carried, never used to decide abnormality
+  loincId: string | null;
+  at: string | null;          // result_date
+}
+
+/**
+ * Structured labs for one patient inside the index window.
+ *
+ * INFERRED SQL (addendum §6 — the column list is the addendum's, mined live on db13):
+ *   SELECT name, data_value, data_unit, data_normal_range_report,
+ *          normalised_data_value, loinc_id, result_date
+ *     FROM "individuals-parameter_digital_values__parameters"
+ *    WHERE _parent_path = '/individuals/' || '<individual_uid>'
+ *      AND result_date BETWEEN '<adm-14d>' AND '<disch+2d>'
+ *    ORDER BY result_date ASC
+ *    LIMIT 500
+ *
+ * Fail-safe: any fault → [] → the pair drops to TIER 2 (PDF-only), never to a wrong
+ * numeric finding.
+ */
+export async function fetchStructuredLabs(individualUid: string, fromTs: string, toTs: string): Promise<StructuredLabRow[]> {
+  if (!individualUid || !/^[A-Za-z0-9_-]{2,64}$/.test(individualUid)) return [];
+  let rows: Record<string, unknown>[];
+  try {
+    rows = await metabaseQuery(
+      `SELECT name, data_value, data_unit, data_normal_range_report,
+              normalised_data_value, loinc_id, result_date
+         FROM "individuals-parameter_digital_values__parameters"
+        WHERE _parent_path = '/individuals/' || '${esc(individualUid)}'
+          AND result_date BETWEEN '${esc(fromTs)}' AND '${esc(toTs)}'
+        ORDER BY result_date ASC
+        LIMIT 500`);
+  } catch {
+    return [];
+  }
+  return rows.map((r, i) => {
+    const valueText = s(r.data_value);
+    const num = valueText != null ? Number(String(valueText).replace(/[^\d.eE+-]/g, '')) : NaN;
+    return {
+      id: `L${i + 1}`,
+      name: s(r.name),
+      value: Number.isFinite(num) ? num : null,
+      valueText,
+      unit: s(r.data_unit),
+      refRange: s(r.data_normal_range_report),
+      normalised: s(r.normalised_data_value),
+      loincId: s(r.loinc_id),
+      at: s(r.result_date),
+    };
+  }).filter((l) => l.name != null || l.loincId != null);
+}
+
+/** The thin structured discharge extraction — corroboration only (addendum §1). */
+export interface ThinDischargeValues {
+  plannedProcedure: boolean | null;
+  admitDate: string | null;
+  dischargeDate: string | null;
+}
+
+/**
+ * ⚠️ INFERRED, AND ITS JOIN KEY IS UNSETTLED (flagged in the build report). The
+ * addendum names the table and the payload but not how a row reaches an encounter; the
+ * document id is the most plausible key for a per-document digital-values table.
+ *
+ *   SELECT digital_values__discharge_summary_values
+ *     FROM all_document_digital_values
+ *    WHERE _doc_id = '<document_id>' LIMIT 1
+ *
+ * This is CORROBORATION ONLY — the primary planned/unplanned rule is the index
+ * foreshadow test (PRD §5 rule 2), which does not consult it. A null costs the finding
+ * nothing, so a wrong key here degrades to "no corroboration", never to a wrong verdict.
+ */
+export async function fetchThinDischargeValues(documentId: string): Promise<ThinDischargeValues | null> {
+  if (!isDocId(documentId)) return null;
+  try {
+    const rows = await metabaseQuery(
+      `SELECT digital_values__discharge_summary_values
+         FROM all_document_digital_values
+        WHERE _doc_id = '${esc(documentId)}'
+        LIMIT 1`);
+    const raw = rows[0]?.digital_values__discharge_summary_values;
+    if (raw == null) return null;
+    let d: Record<string, unknown> = {};
+    if (typeof raw === 'object') d = raw as Record<string, unknown>;
+    else if (typeof raw === 'string') { try { d = JSON.parse(raw); } catch { return null; } }
+    const bool = (v: unknown): boolean | null =>
+      v === true || v === 'true' ? true : v === false || v === 'false' ? false : null;
+    return {
+      plannedProcedure: bool(d.planned_procedure),
+      admitDate: s(d.admission_date) ?? s(d.admit_date),
+      dischargeDate: s(d.discharge_date),
+    };
+  } catch {
+    return null;
+  }
+}
+
 // ── POST_IPD form detector (decision 12) ────────────────────────────────────────
 
 const HF_TABLE = '"individuals-health_forms"';   // quoting per lib/care-tracks-core.ts (validated)

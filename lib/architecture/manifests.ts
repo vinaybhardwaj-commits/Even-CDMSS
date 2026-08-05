@@ -181,6 +181,8 @@ export const UNREGISTERED: string[] = [
   'ccb-brief-core',         // care-brief engine (care-brief/0.1)
   'ccb-dossier-cache-core', // dossier snapshot cache (schema v2)
   'ddx-eval-core',          // DDx frozen evaluator (ddx-eval/3, ddx-case-bank/1.0)
+  'discharge-extract-store',// shared de-identified extracted-case store (doc-extract/1) — pure IO,
+                            // written by the IPD audit and read by the readmission agent
   'doc-audit-core',         // Right Care record-audit engine (named by rule 5's scored-core globs)
   'dose-limits',            // dose-limits reference table
   'formulary-match-core',   // formulary matcher (named by rule 5's scored-core globs)

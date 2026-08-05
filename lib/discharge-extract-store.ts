@@ -1,0 +1,145 @@
+/**
+ * lib/discharge-extract-store.ts — the SHARED de-identified extracted-case store
+ * (Phase 1.5 substrate addendum §5, decision 7.1).
+ *
+ * ONE extraction, two readers. The IPD discharge audit reads every filed discharge
+ * PDF on its cron and now writes the de-identified `ExtractedCase` here (an additive,
+ * best-effort persistence write — lib/ipd-audit/run.ts). The readmission agent reads
+ * from here first and only extracts a document itself when the store has no row,
+ * writing it back. That is the whole point of 7.1: no duplicate Gemini reads, and one
+ * extraction shared across both features.
+ *
+ * PHI POSTURE (§5a, V-approved). The row holds the de-identified `ExtractedCase` —
+ * clinical content the extractor produced from a de-identified read, with patient name
+ * and UHID already stripped (the extractor never emits them; `rawNotes` is
+ * de-identified by construction). `document_id`/`ip_uid`/`member_id` are LINK-BACK
+ * keys — re-identification metadata, never sent to a model — the same posture as the
+ * `ipd_discharge_audits` row. This is a DELIBERATE expansion of what the IPD audit
+ * persists (today it keeps the audit report, not the raw extract) and it is approved.
+ * Content sits in Neon under the existing BAA + Tokyo residency posture.
+ *
+ * FAIL-SAFE, ABSOLUTELY. Every writer returns 'skipped' and every reader returns null
+ * on any DB fault (including "the migration has not run yet"). Nothing here throws.
+ * The IPD audit calls the writer from inside its own success path, so a store fault
+ * must never be able to turn an audit that already ran into a failure.
+ */
+
+import { sql } from './db';
+import type { ExtractedCase } from './doc-audit-core';
+
+/**
+ * The shared extraction version. Bump ONLY when the extractor's output shape or the
+ * extract prompt changes in a way that makes an old row unusable — the upsert key is
+ * (document_id, extraction_version), so a bump re-extracts rather than overwriting,
+ * and both readers move together.
+ */
+export const DOC_EXTRACT_VERSION = 'doc-extract/1';
+
+export interface StoredExtractedCase {
+  documentId: string;
+  extractionVersion: string;
+  ipUid: string | null;
+  memberId: string | null;
+  extracted: ExtractedCase;
+  extractedAt: string | null;
+  traceId: string | null;
+}
+
+export interface UpsertExtractedCaseInput {
+  documentId: string;
+  ipUid?: string | null;
+  memberId?: string | null;
+  /** The DE-IDENTIFIED ExtractedCase exactly as lib/doc-audit's extractCase returned it. */
+  extracted: ExtractedCase;
+  traceId?: string | null;
+  extractionVersion?: string;
+}
+
+/**
+ * Upsert one extracted case. Idempotent on (document_id, extraction_version): a re-read
+ * of the same document at the same version overwrites its own row rather than growing
+ * the table. NEVER THROWS — returns 'skipped' on any fault.
+ */
+export async function upsertExtractedCase(input: UpsertExtractedCaseInput): Promise<'inserted' | 'updated' | 'skipped'> {
+  if (!input.documentId || !input.extracted) return 'skipped';
+  const version = input.extractionVersion || DOC_EXTRACT_VERSION;
+  try {
+    const rows = (await sql(
+      `INSERT INTO discharge_extracted_cases
+        (document_id, extraction_version, ip_uid, member_id, extracted_json, trace_id)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+       ON CONFLICT (document_id, extraction_version) DO UPDATE SET
+         ip_uid = COALESCE(EXCLUDED.ip_uid, discharge_extracted_cases.ip_uid),
+         member_id = COALESCE(EXCLUDED.member_id, discharge_extracted_cases.member_id),
+         extracted_json = EXCLUDED.extracted_json,
+         extracted_at = NOW(),
+         trace_id = COALESCE(EXCLUDED.trace_id, discharge_extracted_cases.trace_id)
+       RETURNING (xmax = 0) AS inserted`,
+      [
+        input.documentId, version, input.ipUid ?? null, input.memberId ?? null,
+        JSON.stringify(input.extracted), input.traceId ?? null,
+      ],
+    )) as Array<{ inserted: boolean }>;
+    return rows.length ? (rows[0].inserted ? 'inserted' : 'updated') : 'skipped';
+  } catch {
+    return 'skipped';   // migration not run / DB fault — the caller must be unaffected
+  }
+}
+
+/** Parse one DB row into a StoredExtractedCase. Null when the payload is unusable. */
+export function rowToStoredCase(row: Record<string, unknown> | undefined | null): StoredExtractedCase | null {
+  if (!row) return null;
+  const documentId = row.document_id == null ? null : String(row.document_id);
+  if (!documentId) return null;
+  const raw = row.extracted_json;
+  let extracted: unknown = raw;
+  // Neon returns jsonb as a parsed object; a text column (or a driver that does not
+  // parse) would hand back a string. Tolerate both rather than lose the row.
+  if (typeof raw === 'string') {
+    try { extracted = JSON.parse(raw); } catch { return null; }
+  }
+  if (!extracted || typeof extracted !== 'object') return null;
+  const s = (v: unknown) => (v == null || v === '' ? null : String(v));
+  return {
+    documentId,
+    extractionVersion: String(row.extraction_version ?? DOC_EXTRACT_VERSION),
+    ipUid: s(row.ip_uid),
+    memberId: s(row.member_id),
+    extracted: extracted as ExtractedCase,
+    extractedAt: s(row.extracted_at),
+    traceId: s(row.trace_id),
+  };
+}
+
+/** Read one extracted case by document id. Null = absent (the caller extracts + writes). */
+export async function fetchExtractedCase(documentId: string, extractionVersion: string = DOC_EXTRACT_VERSION): Promise<StoredExtractedCase | null> {
+  if (!documentId) return null;
+  try {
+    const rows = (await sql(
+      `SELECT document_id, extraction_version, ip_uid, member_id, extracted_json,
+              to_char(extracted_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS extracted_at, trace_id
+         FROM discharge_extracted_cases
+        WHERE document_id = $1 AND extraction_version = $2
+        LIMIT 1`,
+      [documentId, extractionVersion],
+    )) as Array<Record<string, unknown>>;
+    return rowToStoredCase(rows[0]);
+  } catch {
+    return null;   // absent and unreachable are the same answer to the caller: extract it
+  }
+}
+
+/** Store coverage for the admin/migration response. Zeroes on any fault. */
+export async function extractStoreCounts(extractionVersion: string = DOC_EXTRACT_VERSION): Promise<{ total: number; atVersion: number }> {
+  try {
+    const rows = (await sql(
+      `SELECT count(*)::int AS total,
+              count(*) FILTER (WHERE extraction_version = $1)::int AS at_version
+         FROM discharge_extracted_cases`,
+      [extractionVersion],
+    )) as Array<{ total: number; at_version: number }>;
+    return { total: Number(rows[0]?.total ?? 0), atVersion: Number(rows[0]?.at_version ?? 0) };
+  } catch {
+    return { total: 0, atVersion: 0 };
+  }
+}

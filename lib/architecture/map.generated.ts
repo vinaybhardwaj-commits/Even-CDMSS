@@ -295,6 +295,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "discharge-extract-store",
+    "plane": "unregistered"
+  },
+  {
     "id": "doc-audit",
     "plane": "unregistered"
   },
@@ -1378,6 +1382,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "ddx-hypothesis",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "discharge-extract-store",
     "kind": "value"
   },
   {
@@ -2506,6 +2515,16 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "discharge-extract-store",
+    "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "discharge-extract-store",
+    "to": "doc-audit-core",
+    "kind": "type"
+  },
+  {
     "from": "doc-audit",
     "to": "charge-master",
     "kind": "value"
@@ -2928,6 +2947,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "ipd-audit",
     "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "ipd-audit",
+    "to": "discharge-extract-store",
     "kind": "value"
   },
   {
@@ -4037,6 +4061,26 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "readmission",
+    "to": "discharge-extract-store",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
+    "to": "doc-audit",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
+    "to": "doc-audit-core",
+    "kind": "type"
+  },
+  {
+    "from": "readmission",
+    "to": "gcp-auth",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
     "to": "lab-provider-core",
     "kind": "value"
   },
@@ -4302,6 +4346,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "DOC_EXTRACT_VERSION",
+    "value": "doc-extract/1",
+    "file": "lib/discharge-extract-store.ts",
+    "derived": false
+  },
+  {
     "constName": "DOSE_LIMITS_VERSION",
     "value": "TABLE.version",
     "file": "lib/dose-limits.ts",
@@ -4545,8 +4595,8 @@ export const VERSION_REGISTRY: VersionRow[] = [
 
 export const COVERAGE = {
   "registered": 16,
-  "unregistered": 21,
-  "total": 37,
+  "unregistered": 22,
+  "total": 38,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
@@ -4554,6 +4604,7 @@ export const COVERAGE = {
     "ccb-dossier-cache-core",
     "cdsco-banned-fdc",
     "ddx-eval-core",
+    "discharge-extract-store",
     "doc-audit-core",
     "dose-limits",
     "formulary-match-core",
