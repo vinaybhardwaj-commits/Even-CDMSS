@@ -739,6 +739,22 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "readmission",
+    "plane": "unregistered"
+  },
+  {
+    "id": "readmission-detect-core",
+    "plane": "unregistered"
+  },
+  {
+    "id": "readmission-prompts",
+    "plane": "unregistered"
+  },
+  {
+    "id": "readmission-reconcile-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "reasoning",
     "plane": "unregistered"
   },
@@ -1747,6 +1763,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "pubchem",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "readmission",
     "kind": "value"
   },
   {
@@ -4010,6 +4031,61 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "readmission",
+    "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
+    "to": "lab-provider-core",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
+    "to": "llm",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
+    "to": "metabase",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
+    "to": "readmission-detect-core",
+    "kind": "type"
+  },
+  {
+    "from": "readmission",
+    "to": "readmission-detect-core",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
+    "to": "readmission-prompts",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
+    "to": "readmission-reconcile-core",
+    "kind": "type"
+  },
+  {
+    "from": "readmission",
+    "to": "readmission-reconcile-core",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
+    "to": "trace",
+    "kind": "value"
+  },
+  {
+    "from": "readmission-prompts",
+    "to": "readmission-reconcile-core",
+    "kind": "type"
+  },
+  {
     "from": "record-audit-link-store",
     "to": "db",
     "kind": "value"
@@ -4424,6 +4500,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "READMIT_ENGINE_VERSION",
+    "value": "readmission/0.1",
+    "file": "lib/readmission/store.ts",
+    "derived": false
+  },
+  {
     "constName": "RECONCILIATION_VERSION",
     "value": "member-reconcile/0.2",
     "file": "lib/member-state/schema.ts",
@@ -4463,8 +4545,8 @@ export const VERSION_REGISTRY: VersionRow[] = [
 
 export const COVERAGE = {
   "registered": 16,
-  "unregistered": 20,
-  "total": 36,
+  "unregistered": 21,
+  "total": 37,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
@@ -4484,6 +4566,7 @@ export const COVERAGE = {
     "patient-summary-core",
     "prognosis-core",
     "proms",
+    "readmission",
     "reasoning",
     "right-care-ground-eval-core"
   ]

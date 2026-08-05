@@ -260,7 +260,9 @@ test('lib/sql-guard-core.ts was NOT edited by this build', () => {
 
 test('exactly one cron entry moved, and it is the OPD worker path', () => {
   const cfg = JSON.parse(src('vercel.json')) as { crons: { path: string; schedule: string }[] };
-  assert.equal(cfg.crons.length, 15);
+  // 15 → 16 on 5 Aug 2026: the readmission worker cron landed (sanctioned, additive).
+  // The point of this test — the OPD entry and the original fourteen — is unchanged.
+  assert.equal(cfg.crons.length, 16);
   // The OPD entry drops ?conc=4 so the route's new defaults (max=8, conc=8) apply. Production was
   // running conc=4 against a default max of 15 — four waves, not the three anyone had assumed.
   assert.ok(cfg.crons.some((c) => c.path === '/api/opd-audit/worker' && c.schedule === '*/4 18-23,0-2 * * *'));

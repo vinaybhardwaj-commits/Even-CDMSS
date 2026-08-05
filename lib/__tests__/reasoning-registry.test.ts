@@ -108,8 +108,12 @@ test('count invariant: counts match the committed artifact contents (30 prompts 
   // Scoring-policy Phase C registers data/lab-packages.json as a SECOND external-json reference
   // (6→7 rubrics). No prompt, builder or feature changes: it is factual context injected into an
   // existing prompt (lvc-core/buildJudgeUser), not a new reasoning surface.
+  // Readmission Agent Phase 1 (5 Aug 2026) adds the four readmission-prompts builders
+  // (buildFullReconPrompt / buildSecondAvoidablePrompt / buildConditionPassPrompt / buildOonPrompt,
+  // 32→36). Their system prompts live inline in the builders, not as exported *_SYSTEM consts, so
+  // prompts/features are unchanged — a deliberate bump, in the same commit as the prompts.
   assert.equal(gen.counts.prompts, 30);
   assert.equal(gen.counts.rubrics, 7);
-  assert.equal(gen.counts.user_message_builders, 32);
+  assert.equal(gen.counts.user_message_builders, 36);
   assert.equal(gen.counts.features, 19);
 });

@@ -195,6 +195,7 @@ export const UNREGISTERED: string[] = [
                             // preserved (retired-surface) CCB mechanics
   'prognosis-core',         // prognosis engine (prognosis/0.1)
   'proms',                  // PROMs catalog/scheduling/scoring
+  'readmission',            // readmission analysis agent Phase 1 (readmission/0.1 — detect + reconcile + Vertex worker)
   'reasoning',              // prompt-registry sidecar + export core (Reasoning Observability Stage 0)
   'right-care-ground-eval-core', // Slice-2 grounding A/B referee (right-care-eval/1.0)
 ];
