@@ -56,6 +56,9 @@ export interface DetectSweepResult {
   detection: Pick<DetectionResult, 'laneCounts' | 'within30' | 'formStats'>;
   encounters: number;
   forms: number;
+  /** Which ADT column candidate actually resolved (admission/discharge) — surfaced
+   *  so the orchestrator confirms the live mapping instead of inferring it from counts. */
+  mappedCols: { admission: string | null; discharge: string | null };
   pairsStored: number;
   oonStored: number;
   storeSkipped: number;
@@ -63,7 +66,8 @@ export interface DetectSweepResult {
 
 /** Fetch ADT + forms, run the pure detector, upsert detection rows. Idempotent. */
 export async function runDetectionSweep(): Promise<DetectSweepResult> {
-  const [encounters, forms] = await Promise.all([fetchAdtEncounters(), fetchFormReadmissions()]);
+  const [adt, forms] = await Promise.all([fetchAdtEncounters(), fetchFormReadmissions()]);
+  const { encounters, mappedCols } = adt;
   const det = detectReadmissions(encounters, forms);
   let pairsStored = 0, oonStored = 0, storeSkipped = 0;
   for (const p of det.pairs) {
@@ -76,7 +80,7 @@ export async function runDetectionSweep(): Promise<DetectSweepResult> {
   }
   return {
     detection: { laneCounts: det.laneCounts, within30: det.within30, formStats: det.formStats },
-    encounters: encounters.length, forms: forms.length,
+    encounters: encounters.length, forms: forms.length, mappedCols,
     pairsStored, oonStored, storeSkipped,
   };
 }

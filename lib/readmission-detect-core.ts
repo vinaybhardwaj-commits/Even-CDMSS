@@ -123,6 +123,37 @@ export interface DetectionResult {
   };
 }
 
+/** Candidate column names per logical ADT field — tried in order, first present wins
+ *  (the db13 layer's tolerant mapping; PURE so the priority order is testable).
+ *  VALIDATED LIVE (5 Aug 2026, detect_only on prod): admission maps via
+ *  `admission_date_time`; the ADT discharge column is `discharge_date` (timestamptz) —
+ *  `discharge_date_time`/`discharge_datetime` exist on kx_discharge_summary_records, a
+ *  DIFFERENT table, and mapping only those made every pair's discharge null (0 lanes). */
+export const ADT_COLUMN_CANDIDATES = {
+  encounterId: ['encounter_id', 'ipd_no', 'ip_no', 'encounter_no', 'admission_no', 'ip_number'],
+  uhid: ['uhid'],
+  encounterType: ['encounter_type'],
+  admitAt: ['admission_date_time', 'admission_datetime', 'admit_date_time'],
+  dischargeAt: ['discharge_date', 'discharge_date_time', 'discharge_datetime'],
+  admissionType: ['admission_type'],
+  department: ['department', 'speciality', 'department_name'],
+  doctor: ['treating_doctor', 'treating_doctor_team', 'treating_doctor_name', 'admitting_doctor', 'admitting_doctor_team'],
+  payer: ['payer', 'payer_name', 'payer_type', 'payor'],
+  patientName: ['patient_name', 'name'],
+  dob: ['dob', 'date_of_birth', 'birth_date'],
+} as const;
+
+/** Which candidate actually resolved, in priority order, across the sampled rows —
+ *  surfaced on the worker's detect response so the orchestrator confirms the live
+ *  mapping instead of inferring it from downstream counts. Null = none matched. */
+export function resolveMappedCols(rows: Record<string, unknown>[]): { admission: string | null; discharge: string | null } {
+  const find = (cands: readonly string[]): string | null => {
+    for (const c of cands) if (rows.some((r) => c in r && r[c] != null && r[c] !== '')) return c;
+    return null;
+  };
+  return { admission: find(ADT_COLUMN_CANDIDATES.admitAt), discharge: find(ADT_COLUMN_CANDIDATES.dischargeAt) };
+}
+
 const parseTs = (s: string | null | undefined): number | null => {
   if (!s) return null;
   const iso = /^\d{4}-\d{2}-\d{2} /.test(s) ? s.replace(' ', 'T') : s;

@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   pairEncounters, computeTags, laneFor, detectReadmissions, reconcilePersons,
-  pairDedupKey, oonDedupKey, EXCLUDED_DEPARTMENTS,
+  pairDedupKey, oonDedupKey, EXCLUDED_DEPARTMENTS, ADT_COLUMN_CANDIDATES, resolveMappedCols,
   type KxEncounter, type FormReadmission,
 } from '../readmission-detect-core.ts';
 
@@ -166,6 +166,20 @@ test('form patients with no Even IP stay are OUT of scope; blank readmission_dat
   assert.equal(det.oon.length, 0);
   assert.equal(det.formStats.noEvenIpStay, 2);
   assert.equal(det.formStats.noReadmitDate, 1);
+});
+
+// ── ADT column mapping (the 5 Aug prod defect: zero lanes from a null discharge) ─
+// Pins the fact the live bug taught us: the ADT discharge column is `discharge_date`,
+// and it must win over the kx_discharge_summary_records-shaped names.
+
+test('ADT mapping: discharge_date resolves FIRST; admission_date_time stays first', () => {
+  assert.equal(ADT_COLUMN_CANDIDATES.dischargeAt[0], 'discharge_date');
+  assert.equal(ADT_COLUMN_CANDIDATES.admitAt[0], 'admission_date_time');
+  // Priority: a row carrying BOTH names maps to discharge_date, not the summary-table name.
+  const both = [{ admission_date_time: '2026-01-01T00:00:00Z', discharge_date: '2026-01-05T00:00:00Z', discharge_date_time: '2026-01-06T00:00:00Z' }];
+  assert.deepEqual(resolveMappedCols(both), { admission: 'admission_date_time', discharge: 'discharge_date' });
+  // An unmapped field reports null — visible, never guessed.
+  assert.deepEqual(resolveMappedCols([{ admission_date_time: 'x' }]), { admission: 'admission_date_time', discharge: null });
 });
 
 test('detectReadmissions lane counts + within-30 subset', () => {

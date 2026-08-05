@@ -23,7 +23,11 @@
 
 import { metabaseQuery } from '../metabase';
 import type { KxEncounter, FormReadmission } from '../readmission-detect-core';
+import { ADT_COLUMN_CANDIDATES, resolveMappedCols } from '../readmission-detect-core';
 import { canonicalAnalyte, labAbnormal } from '../readmission-reconcile-core';
+
+// Re-exported so the worker/report layer names the mapping facts from one place.
+export { ADT_COLUMN_CANDIDATES, resolveMappedCols };
 
 const esc = (s: string) => s.replace(/'/g, "''");
 const isEncounterId = (s: string) => /^[A-Za-z0-9/_-]{2,40}$/.test(s);   // ip_uid shapes: IP-1250, IPNO-229
@@ -39,20 +43,8 @@ const pick = (row: Record<string, unknown>, candidates: string[]): unknown => {
 };
 const s = (v: unknown): string | null => (v == null || v === '' ? null : String(v));
 
-/** Candidate column names per logical field — ALL INFERRED, listed for validation. */
-export const ADT_COLUMN_CANDIDATES = {
-  encounterId: ['encounter_id', 'ipd_no', 'ip_no', 'encounter_no', 'admission_no', 'ip_number'],
-  uhid: ['uhid'],
-  encounterType: ['encounter_type'],
-  admitAt: ['admission_date_time', 'admission_datetime', 'admit_date_time'],
-  dischargeAt: ['discharge_date_time', 'discharge_datetime'],
-  admissionType: ['admission_type'],
-  department: ['department', 'speciality', 'department_name'],
-  doctor: ['treating_doctor', 'treating_doctor_team', 'treating_doctor_name', 'admitting_doctor', 'admitting_doctor_team'],
-  payer: ['payer', 'payer_name', 'payer_type', 'payor'],
-  patientName: ['patient_name', 'name'],
-  dob: ['dob', 'date_of_birth', 'birth_date'],
-} as const;
+// ADT_COLUMN_CANDIDATES lives in the PURE core (readmission-detect-core.ts) so the
+// candidate priority — the exact thing the 5 Aug zero-lanes defect was — is unit-tested.
 
 function toEncounter(row: Record<string, unknown>): KxEncounter | null {
   const encounterId = s(pick(row, [...ADT_COLUMN_CANDIDATES.encounterId]));
@@ -85,8 +77,9 @@ const ADT_MAX_PAGES = 20;
  *    LIMIT 500 OFFSET <n>
  * Fail-safe: any page error returns what was fetched so far; a first-page error → [].
  */
-export async function fetchAdtEncounters(): Promise<KxEncounter[]> {
+export async function fetchAdtEncounters(): Promise<{ encounters: KxEncounter[]; mappedCols: { admission: string | null; discharge: string | null } }> {
   const out: KxEncounter[] = [];
+  let firstPage: Record<string, unknown>[] = [];
   for (let page = 0; page < ADT_MAX_PAGES; page++) {
     let rows: Record<string, unknown>[];
     try {
@@ -96,15 +89,17 @@ export async function fetchAdtEncounters(): Promise<KxEncounter[]> {
          ORDER BY admission_date_time ASC, uhid ASC
          LIMIT ${ADT_PAGE} OFFSET ${page * ADT_PAGE}`);
     } catch {
-      return page === 0 ? [] : out;   // degrade, never throw into the worker
+      // degrade, never throw into the worker
+      return { encounters: page === 0 ? [] : out, mappedCols: resolveMappedCols(firstPage) };
     }
+    if (page === 0) firstPage = rows;
     for (const r of rows) {
       const e = toEncounter(r);
       if (e) out.push(e);
     }
     if (rows.length < ADT_PAGE) break;
   }
-  return out;
+  return { encounters: out, mappedCols: resolveMappedCols(firstPage) };
 }
 
 // ── Discharge summary text ──────────────────────────────────────────────────────
