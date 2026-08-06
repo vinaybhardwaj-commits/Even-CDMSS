@@ -15,7 +15,7 @@
 import type {
   EvidenceCatalog, EvidenceItem, LabTimingProfile, LabTier, LabSourceProvenance,
 } from '../readmission-reconcile-core';
-import { labTimingProfile, labAbnormal, canonicalAnalyte, canonicalAnalyteFor, resolveLabTier } from '../readmission-reconcile-core';
+import { labTimingProfile, labAbnormal, canonicalAnalyte, canonicalAnalyteFor, refRangeDisplay, resolveLabTier } from '../readmission-reconcile-core';
 import type { SummaryRecord, LabRow, StructuredLabRow } from './db13';
 import type { ExtractedCase } from '../doc-audit-core';
 
@@ -275,7 +275,11 @@ export function caseLabItems(
   return out;
 }
 
-/** Structured labs → evidence. Abnormality comes from the value vs its OWN range. */
+/**
+ * Structured labs → evidence. Abnormality comes from the value vs its OWN range, read
+ * out of the {h, l, t, s} object db13 stores (parseRefRange). The analyte is resolved
+ * NAME-first: loinc_id is effectively absent in db13 (validated live 6 Aug 2026).
+ */
 export function structuredLabItems(labs: StructuredLabRow[], identity: { names: Array<string | null | undefined>; uhids: Array<string | null | undefined> }): EvidenceItem[] {
   return labs.slice(0, 120).map((l) => ({
     id: l.id,
@@ -292,7 +296,10 @@ export function structuredLabItems(labs: StructuredLabRow[], identity: { names: 
     labProvenance: 'structured' as const,
     text: deidText(
       `${l.name ?? l.loincId ?? 'analyte'}: ${l.valueText ?? l.value ?? '?'}${l.unit ? ` ${l.unit}` : ''}`
-      + `${l.refRange ? ` (ref ${l.refRange})` : ''}${l.loincId ? ` [LOINC ${l.loincId}]` : ''}${l.at ? ` @ ${l.at}` : ''}`,
+      // The lab's OWN wording of the range (the object's `t`), not our reconstruction of
+      // it — `t` carries units and qualifiers that bare bounds would drop.
+      + `${refRangeDisplay(l.refRange) ? ` (ref ${refRangeDisplay(l.refRange)})` : ''}`
+      + `${l.loincId ? ` [LOINC ${l.loincId}]` : ''}${l.at ? ` @ ${l.at}` : ''}`,
       identity,
     ),
   }));

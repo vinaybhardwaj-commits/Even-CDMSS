@@ -316,8 +316,14 @@ export interface StructuredLabRow {
   value: number | null;
   valueText: string | null;
   unit: string | null;
-  refRange: string | null;    // data_normal_range_report
+  /** data_normal_range_report — a JSON OBJECT, not a string (VALIDATED live 6 Aug 2026):
+   *  {"h":17,"l":13,"t":"13.0 - 17.0","s":2}. Passed through RAW and parsed by
+   *  parseRefRange; stringifying it here is what produced "[object Object]" and would
+   *  have silently disabled every tier-1 numeric flag. */
+  refRange: unknown;
   normalised: string | null;  // normalised_data_value — carried, never used to decide abnormality
+  /** ⚠️ Effectively ABSENT in db13 (confirmed live, V). Carried because it costs nothing
+   *  and is the right key the day it is populated; nothing numeric depends on it. */
   loincId: string | null;
   at: string | null;          // result_date
 }
@@ -361,7 +367,7 @@ export async function fetchStructuredLabs(individualUid: string, fromTs: string,
       value: Number.isFinite(num) ? num : null,
       valueText,
       unit: s(r.data_unit),
-      refRange: s(r.data_normal_range_report),
+      refRange: r.data_normal_range_report ?? null,   // RAW — see StructuredLabRow.refRange
       normalised: s(r.normalised_data_value),
       loincId: s(r.loinc_id),
       at: s(r.result_date),

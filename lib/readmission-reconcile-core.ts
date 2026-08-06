@@ -39,9 +39,19 @@
  *   · The omission audit is DERIVED deterministically in tier 1 (a stability claim
  *     in the index case vs the latest structured value at/before discharge), not
  *     only proposed by the model. The §8c.3 lab-timing rule applies INSIDE tier 1.
- *   · Same-condition matches on LOINC BUNDLES (§4) — a coder renaming the diagnosis
- *     cannot move the LOINC codes. The test-name matcher stays as the fallback for
- *     rows whose loinc_id is absent.
+ *   · Same-condition matches on the failing-organ ANALYTE BUNDLE (§4) — a coder
+ *     renaming the diagnosis cannot move which organ is failing.
+ *
+ * LIVE VALIDATION, 6 Aug 2026 (V, on prod) — two corrections to what 1.5 assumed:
+ *   · `data_normal_range_report` is a JSON OBJECT ({h, l, t, s}), not a range string.
+ *     parseRefRange reads the numeric bounds from l/h. The string-only parser returned
+ *     null for every structured row, which would have disabled the tier-1 numeric audit
+ *     silently — every other signal would have kept working and nothing would have said
+ *     the numbers had stopped being checked.
+ *   · `loinc_id` is effectively ABSENT in db13, so same-condition resolves NAME-first
+ *     (the analyte names are clean: "Creatinine", "Potassium", "Sodium", …). The LOINC
+ *     table is kept as the fallback — harmless where the column is empty, correct the
+ *     day it is populated. No numeric behaviour depends on it.
  */
 
 // ── Evidence ────────────────────────────────────────────────────────────────────
@@ -70,9 +80,12 @@ export interface EvidenceItem {
   abnormal?: boolean | null;
   /** Labs only. Undefined = 'structured' (see LabProvenance). */
   labProvenance?: LabProvenance;
-  /** Labs only: the numeric value and its reference range, for the derived audit. */
+  /** Labs only: the numeric value and its reference range, for the derived audit.
+   *  `refRange` is deliberately `unknown` — db13 hands back a JSON object
+   *  ({h, l, t, s}), the tier-2 path extracts a plain string, and parseRefRange
+   *  reads both. Typing it `string` is what hid the object shape in the first place. */
   value?: number | null;
-  refRange?: string | null;
+  refRange?: unknown;
 }
 
 export interface EvidenceCatalog { items: EvidenceItem[] }
@@ -137,9 +150,26 @@ const ANALYTE_PATTERNS: Array<[RegExp, string]> = [
   [/ammonia/i, 'ammonia'],
 ];
 
-/** Canonical analyte for a lab test name, or null when it is outside every bundle. */
+/**
+ * A different SPECIMEN is a different measurement with a different reference range: a
+ * urine sodium is not a serum sodium, and a creatinine CLEARANCE is not a creatinine.
+ * Names carrying one of these are left uncanonicalised rather than folded into an organ
+ * bundle whose ranges do not apply to them — the wrong-flag risk is not worth the recall.
+ */
+const OTHER_SPECIMEN = /\b(urine|urinary|24[\s-]*(hr|hour)|clearance|csf|fluid|ascitic|pleural)\b/i;
+
+/**
+ * Canonical analyte for a lab test name, or null when it is outside every bundle.
+ *
+ * VALIDATED 6 Aug 2026 against the live analyte names db13 actually carries
+ * ("Creatinine", "Potassium", "Sodium", "Haemoglobin", "Platelet Count", …). This is
+ * now the PRIMARY same-condition path — see canonicalAnalyteFor. Names outside the
+ * three organ bundles (haemoglobin, platelets) correctly return null: they are real
+ * values, they are simply not what the same-condition test is about.
+ */
 export function canonicalAnalyte(testName: string | null | undefined): string | null {
   if (!testName) return null;
+  if (OTHER_SPECIMEN.test(testName)) return null;
   for (const [re, canon] of ANALYTE_PATTERNS) if (re.test(testName)) return canon;
   return null;
 }
@@ -151,11 +181,18 @@ export function analyteFromLoinc(loincId: string | null | undefined): string | n
 }
 
 /**
- * The addendum §4 resolution order: the LOINC CODE decides; the test NAME is only the
- * fallback for rows that carry no (or an unrecognised) code.
+ * ⚠️ RESOLUTION ORDER CORRECTED 6 Aug 2026 (live validation, V): loinc_id is effectively
+ * ABSENT in db13, so the addendum §4 "code decides, name falls back" order had the
+ * primary path landing on a column that is never populated. The NAME now decides and the
+ * code is the fallback.
+ *
+ * The LOINC table is kept rather than deleted: it costs nothing where the column is
+ * empty, and it is the right answer the day those codes start arriving. NO NUMERIC
+ * BEHAVIOUR DEPENDS ON IT — abnormality comes from the value against its own reference
+ * range, and same-condition now resolves through the validated name matcher.
  */
 export function canonicalAnalyteFor(loincId: string | null | undefined, testName: string | null | undefined): string | null {
-  return analyteFromLoinc(loincId) ?? canonicalAnalyte(testName);
+  return canonicalAnalyte(testName) ?? analyteFromLoinc(loincId);
 }
 
 /** Which bundles a LOINC code belongs to (empty when the code is outside all of them). */
@@ -165,17 +202,78 @@ export function bundlesForLoinc(loincId: string | null | undefined): string[] {
   return Object.entries(ANALYTE_BUNDLES).filter(([, list]) => list.includes(analyte)).map(([b]) => b);
 }
 
-/** Parse a "3.5-5.1" style reference range. Null when unparseable. */
-export function parseRefRange(range: string | null | undefined): { lo: number; hi: number } | null {
-  if (!range) return null;
-  const m = String(range).match(/(-?\d+(?:\.\d+)?)\s*(?:-|–|to)\s*(-?\d+(?:\.\d+)?)/);
-  if (!m) return null;
-  const lo = Number(m[1]), hi = Number(m[2]);
-  return Number.isFinite(lo) && Number.isFinite(hi) && hi >= lo ? { lo, hi } : null;
+/**
+ * Parse a reference range into numeric bounds. Null when unparseable — and an
+ * unparseable range must yield NO numeric flag on that analyte, never a guessed one.
+ *
+ * ⚠️ CORRECTED 6 Aug 2026 (live validation, V). db13's `data_normal_range_report` is a
+ * JSON OBJECT, not a range string:
+ *
+ *     {"h": 17, "l": 13, "t": "13.0 - 17.0", "s": 2}
+ *
+ * `l`/`h` are the numeric bounds, `t` a display string, `s` a scale. The original
+ * string-only parser stringified the object to "[object Object]", matched nothing, and
+ * returned null for EVERY structured row — which would have silently disabled the whole
+ * tier-1 numeric audit while every other signal kept working. Bounds are read from l/h
+ * numerically; `t` is parsed only when l/h are missing; a plain string still parses, so
+ * the doctor-written ranges the tier-2 path extracts are unaffected.
+ */
+export function parseRefRange(range: unknown): { lo: number; hi: number } | null {
+  if (range == null || range === '') return null;
+
+  const ok = (lo: number, hi: number) =>
+    Number.isFinite(lo) && Number.isFinite(hi) && hi >= lo ? { lo, hi } : null;
+
+  const fromString = (s: string): { lo: number; hi: number } | null => {
+    const m = s.match(/(-?\d+(?:\.\d+)?)\s*(?:-|–|—|to)\s*(-?\d+(?:\.\d+)?)/);
+    return m ? ok(Number(m[1]), Number(m[2])) : null;
+  };
+
+  // A JSON object, or the same object handed back as text by a driver that did not parse it.
+  let obj: Record<string, unknown> | null = null;
+  if (typeof range === 'object') {
+    obj = range as Record<string, unknown>;
+  } else if (typeof range === 'string' && /^\s*\{/.test(range)) {
+    try {
+      const parsed: unknown = JSON.parse(range);
+      if (parsed && typeof parsed === 'object') obj = parsed as Record<string, unknown>;
+    } catch { return null; }   // looked like JSON and was not — refuse, never guess
+  }
+
+  if (obj) {
+    const num = (v: unknown): number => (typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN);
+    const lo = num(obj.l), hi = num(obj.h);
+    const bounds = ok(lo, hi);
+    if (bounds) return bounds;
+    // l/h absent or unusable — the display string is the only remaining evidence.
+    return typeof obj.t === 'string' ? fromString(obj.t) : null;
+  }
+
+  return typeof range === 'string' ? fromString(range) : null;
+}
+
+/**
+ * The range as written, for the reviewer to read. Prefers the object's display string
+ * (`t`) over re-rendering the bounds ourselves — a lab's own wording carries units and
+ * sex/age qualifiers that reconstructed bounds would drop.
+ */
+export function refRangeDisplay(range: unknown): string | null {
+  if (range == null || range === '') return null;
+  let obj: Record<string, unknown> | null = null;
+  if (typeof range === 'object') obj = range as Record<string, unknown>;
+  else if (typeof range === 'string' && /^\s*\{/.test(range)) {
+    try { const p: unknown = JSON.parse(range); if (p && typeof p === 'object') obj = p as Record<string, unknown>; } catch { /* fall through to the raw string */ }
+  }
+  if (obj) {
+    if (typeof obj.t === 'string' && obj.t.trim()) return obj.t.trim();
+    const b = parseRefRange(obj);
+    return b ? `${b.lo} - ${b.hi}` : null;
+  }
+  return typeof range === 'string' ? range : null;
 }
 
 /** Abnormality from an explicit flag first, else value-vs-range. Null = unknown. */
-export function labAbnormal(value: number | null, flag: string | null | undefined, range: string | null | undefined): boolean | null {
+export function labAbnormal(value: number | null, flag: string | null | undefined, range: unknown): boolean | null {
   if (flag != null && String(flag).trim() !== '') {
     const f = String(flag).trim().toLowerCase();
     if (/^(h|hh|l|ll|high|low|abnormal|critical|panic|\*)$/.test(f)) return true;

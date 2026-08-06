@@ -21,7 +21,8 @@ import assert from 'node:assert/strict';
 import {
   reconcileFinding, resolveLabTier, inferLabTier, deriveNumericOmissions, mergeOmissions,
   findStabilityClaims, latestValuePerAnalyte, scoreOmissions,
-  analyteFromLoinc, canonicalAnalyteFor, bundlesForLoinc, LOINC_BUNDLES,
+  analyteFromLoinc, canonicalAnalyte, canonicalAnalyteFor, bundlesForLoinc, LOINC_BUNDLES,
+  parseRefRange, refRangeDisplay, labAbnormal,
   type EvidenceCatalog, type EvidenceItem, type PassClaims,
 } from '../readmission-reconcile-core.ts';
 
@@ -193,15 +194,109 @@ test('only a STRUCTURED value can corroborate a stability claim', () => {
   assert.ok(f.refusalRecord.some((r) => /structured lab values/i.test(r.lookedFor)));
 });
 
-// ── §4 same condition by LOINC bundle ───────────────────────────────────────────
+// ── the live reference-range shape (corrected 6 Aug 2026) ───────────────────────
 
-test('LOINC codes resolve to canonical analytes, and the code beats the test name', () => {
+test('the range is a JSON OBJECT: bounds come from .l/.h numerically', () => {
+  // The exact shape db13 returns, confirmed live.
+  const live = { h: 17, l: 13, t: '13.0 - 17.0', s: 2 };
+  assert.deepEqual(parseRefRange(live), { lo: 13, hi: 17 });
+  // A driver that hands the same object back as TEXT must not lose it.
+  assert.deepEqual(parseRefRange(JSON.stringify(live)), { lo: 13, hi: 17 });
+  // String bounds inside the object (a lab that quotes its numbers) still resolve.
+  assert.deepEqual(parseRefRange({ h: '5.1', l: '3.5', t: '3.5 - 5.1', s: 2 }), { lo: 3.5, hi: 5.1 });
+  // .t is read ONLY when l/h are absent or unusable — never in preference to them.
+  assert.deepEqual(parseRefRange({ t: '0.6 - 1.2' }), { lo: 0.6, hi: 1.2 });
+  assert.deepEqual(parseRefRange({ h: null, l: null, t: '3.5-5.1' }), { lo: 3.5, hi: 5.1 });
+  // The plain-string form the tier-2 path extracts from doctor-written text still works.
+  assert.deepEqual(parseRefRange('3.5-5.1'), { lo: 3.5, hi: 5.1 });
+  assert.deepEqual(parseRefRange('13.0 to 17.0'), { lo: 13, hi: 17 });
+});
+
+test('an UNPARSEABLE range yields no numeric flag — never a guessed one', () => {
+  for (const bad of [
+    null, undefined, '', {}, { s: 2 }, { h: 17 }, { l: 13 },              // no usable bounds
+    { h: 'high', l: 'low', t: 'see report' },                             // non-numeric
+    { h: 3, l: 17, t: 'inverted' },                                       // hi < lo — refuse
+    '{ not json at all',                                                  // looked like JSON, was not
+    'Normal', 'WNL', 'refer to report', 42, true,                         // not a range at all
+  ]) {
+    assert.equal(parseRefRange(bad), null, `expected null for ${JSON.stringify(bad)}`);
+    // …and the abnormality decision must be UNKNOWN, not false — "we could not check"
+    // is not "the value was fine".
+    assert.equal(labAbnormal(2.9, null, bad), null, `expected unknown for ${JSON.stringify(bad)}`);
+  }
+});
+
+test('an abnormal value against the live object range flags; an in-range one does not', () => {
+  const k = { h: 5.1, l: 3.5, t: '3.5 - 5.1', s: 2 };
+  assert.equal(labAbnormal(2.9, null, k), true);
+  assert.equal(labAbnormal(5.4, null, k), true);
+  assert.equal(labAbnormal(4.1, null, k), false);
+  assert.equal(labAbnormal(3.5, null, k), false);   // bounds are inclusive
+  assert.equal(labAbnormal(null, null, k), null);   // no value → unknown, not normal
+});
+
+test('a value whose range will not parse produces NO derived omission, even under an explicit tier 1', () => {
+  const unparseable = item({
+    id: 'L1', source: 'lab', side: 'index', at: ago(12), analyte: 'potassium',
+    // This is the honest end state of an unparseable range: abnormal is UNKNOWN.
+    abnormal: labAbnormal(2.9, null, { t: 'see report' }),
+    value: 2.9, refRange: { t: 'see report' }, labProvenance: 'structured',
+    text: 'Potassium: 2.9 (ref see report)',
+  });
+  assert.equal(unparseable.abnormal, null);
+  const f = reconcileFinding({
+    findingClass: 'even_even', catalog: { items: [stableClaim, unparseable] },
+    labProfile: 'has_late_labs', labTier: 'tier1', indexDischargeAt: DISCH, passA: null, passB: null,
+  });
+  assert.equal(f.omissions.length, 0);                  // no flag on an unchecked number
+  assert.notEqual(f.stabilityAssessment, 'contradicted');
+});
+
+test('refRangeDisplay prefers the lab\'s own wording over our reconstruction', () => {
+  assert.equal(refRangeDisplay({ h: 17, l: 13, t: '13.0 - 17.0 g/dL', s: 2 }), '13.0 - 17.0 g/dL');
+  assert.equal(refRangeDisplay({ h: 17, l: 13, s: 2 }), '13 - 17');   // no `t` → reconstruct
+  assert.equal(refRangeDisplay('3.5-5.1'), '3.5-5.1');
+  assert.equal(refRangeDisplay({ s: 2 }), null);
+  assert.equal(refRangeDisplay(null), null);
+});
+
+// ── §4 same condition by analyte bundle ─────────────────────────────────────────
+
+test('the analyte-name matcher handles the real db13 names (LOINC is absent, so this is the primary path)', () => {
+  // Names taken from the live structured rows.
+  assert.equal(canonicalAnalyte('Creatinine'), 'creatinine');
+  assert.equal(canonicalAnalyte('Potassium'), 'potassium');
+  assert.equal(canonicalAnalyte('Sodium'), 'sodium');
+  assert.equal(canonicalAnalyte('Total Bilirubin'), 'bilirubin');
+  assert.equal(canonicalAnalyte('Blood Urea Nitrogen'), 'bun');
+  assert.equal(canonicalAnalyte('Urea'), 'bun');
+  assert.equal(canonicalAnalyte('INR'), 'inr');
+  assert.equal(canonicalAnalyte('NT-proBNP'), 'bnp');
+  // Real values that are simply outside the three organ bundles — null is correct.
+  assert.equal(canonicalAnalyte('Haemoglobin'), null);
+  assert.equal(canonicalAnalyte('Platelet Count'), null);
+  // A different SPECIMEN is a different measurement with a different range.
+  assert.equal(canonicalAnalyte('Urine Sodium'), null);
+  assert.equal(canonicalAnalyte('Creatinine Clearance'), null);
+  assert.equal(canonicalAnalyte('24 Hr Urine Protein'), null);
+});
+
+test('with loinc_id absent the NAME decides; the code is only the fallback', () => {
+  assert.equal(canonicalAnalyteFor(null, 'Creatinine'), 'creatinine');
+  assert.equal(canonicalAnalyteFor('', 'Potassium'), 'potassium');
+  // Name wins when both are present and they disagree — the name is the validated path.
+  assert.equal(canonicalAnalyteFor('2951-2', 'Creatinine'), 'creatinine');
+  // A code still rescues a row whose name we do not recognise.
+  assert.equal(canonicalAnalyteFor('2160-0', 'Renal Panel'), 'creatinine');
+  assert.equal(canonicalAnalyteFor(null, 'Renal Panel'), null);
+});
+
+
+test('the LOINC table still resolves where a code exists — kept as the fallback, not the primary path', () => {
   assert.equal(analyteFromLoinc('2823-3'), 'potassium');
   assert.equal(analyteFromLoinc('33762-6'), 'bnp');
   assert.equal(analyteFromLoinc('99999-9'), null);
-  // code wins over a name that says something else
-  assert.equal(canonicalAnalyteFor('2160-0', 'Renal Panel'), 'creatinine');
-  // absent/unknown code falls back to the name matcher rather than losing the row
   assert.equal(canonicalAnalyteFor(null, 'Serum Creatinine'), 'creatinine');
   assert.equal(canonicalAnalyteFor('99999-9', 'Blood Urea Nitrogen'), 'bun');
   assert.equal(canonicalAnalyteFor(null, 'Haemoglobin'), null);
@@ -211,7 +306,7 @@ test('LOINC codes resolve to canonical analytes, and the code beats the test nam
   assert.ok(LOINC_BUNDLES.hepatic.includes('6301-6'));
 });
 
-test('a renamed diagnosis cannot move the LOINC bundle: same codes both sides → SAME condition', () => {
+test('a renamed diagnosis cannot move the organ bundle: same failing organ both sides → SAME condition', () => {
   const lab = (id: string, side: 'index' | 'readmit', loinc: string, name: string) => item({
     id, source: 'lab', side, analyte: canonicalAnalyteFor(loinc, name), abnormal: true,
     labProvenance: 'structured', text: `${name} [LOINC ${loinc}]`,
