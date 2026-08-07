@@ -273,6 +273,140 @@ export async function pendingFindings(opts: {
   }
 }
 
+// ── Phase 2 (/care/readmissions) — the READ side ────────────────────────────────
+// Additive: nothing below writes. The surface renders findings the agent already
+// stored, so this is the only new thing the read path needed.
+
+/** One audited finding as the surface reads it (PRD Phase-2 §2). `finding` and
+ *  `omission_evidence` come back as jsonb — the Neon driver usually parses them,
+ *  but a TEXT-typed round trip is tolerated by the route's asJson(). */
+export interface SurfaceRow extends Record<string, unknown> {
+  dedup_key: string;
+  finding_class: string;
+  lane: string;
+  audit_status: string;
+  index_encounter_id: string;
+  readmit_encounter_id: string | null;
+  uhid: string | null;
+  tags: unknown;
+  gap_days: number | null;
+  index_department: string | null;
+  readmit_department: string | null;
+  index_doctor: string | null;
+  readmit_doctor: string | null;
+  index_discharge_at: string | null;
+  readmit_admit_at: string | null;
+  payer_index: string | null;
+  payer_readmit: string | null;
+  cm_note: string | null;
+  planned: string | null;
+  same_condition: string | null;
+  avoidable: string | null;
+  lab_tier: string | null;
+  lab_timing_profile: string | null;
+  n_omissions: number | null;
+  needs_human_review: boolean | null;
+  promoted_to_full: boolean | null;
+  not_auditable_reason: string | null;
+  finding: unknown;
+  omission_evidence: unknown;
+}
+
+export interface SurfaceRead {
+  rows: SurfaceRow[];
+  /** Still 'detected' — the "N pending audit" note. Not renderable as a finding. */
+  pendingCount: number;
+  /** The chooser badge: audited AND avoidable IN ('avoidable','needs_adjudication'). */
+  reviewCount: number;
+}
+
+/** Hard cap on what one page load reads. The detector's window is 90 days; 500 is
+ *  well above the measured pair count and keeps a runaway table off the page. */
+const SURFACE_LIMIT = 500;
+
+/**
+ * Read the audited findings the /care/readmissions surface renders, plus the two
+ * counts the page and the chooser badge need. READ-ONLY.
+ *
+ * `not_auditable` rows are included ONLY when explicitly asked for: they carry no
+ * verdict, and a queue of "we could not read the discharge" cards buries the findings
+ * that are actually work. The pending count keeps them honest in the meantime.
+ *
+ * Fail-safe (house posture): any DB error — including the migration not having run —
+ * degrades to an empty board with zero counts, never a 500. An empty surface says
+ * "nothing to review", which is the truthful reading of "we cannot see anything".
+ */
+export async function listFindingsForSurface(opts?: {
+  engineVersion?: string;
+  lane?: string | null;
+  includeNotAuditable?: boolean;
+  limit?: number;
+}): Promise<SurfaceRead> {
+  const engine = opts?.engineVersion ?? READMIT_ENGINE_VERSION;
+  const limit = Math.max(1, Math.min(SURFACE_LIMIT, Math.floor(opts?.limit ?? SURFACE_LIMIT)));
+  const params: unknown[] = [engine];
+  let where = `engine_version = $1 AND audit_status ${opts?.includeNotAuditable ? `IN ('audited','not_auditable')` : `= 'audited'`}`;
+  if (opts?.lane) {
+    params.push(opts.lane);
+    where += ` AND lane = $${params.length}`;
+  }
+  try {
+    const [rows, counts] = await Promise.all([
+      sql(
+        `SELECT dedup_key, finding_class, lane, audit_status, index_encounter_id, readmit_encounter_id,
+                uhid, tags, gap_days, index_department, readmit_department, index_doctor, readmit_doctor,
+                to_char(index_discharge_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS index_discharge_at,
+                to_char(readmit_admit_at,   'YYYY-MM-DD"T"HH24:MI:SSOF') AS readmit_admit_at,
+                payer_index, payer_readmit, cm_note,
+                planned, same_condition, avoidable, lab_tier, lab_timing_profile,
+                n_omissions, needs_human_review, promoted_to_full, not_auditable_reason,
+                finding, omission_evidence
+           FROM readmission_findings
+          WHERE ${where}
+          ORDER BY readmit_admit_at DESC NULLS LAST
+          LIMIT ${limit}`,
+        params,
+      ),
+      sql(
+        `SELECT
+           count(*) FILTER (WHERE audit_status = 'detected')::int AS pending,
+           count(*) FILTER (WHERE audit_status = 'audited'
+                              AND avoidable IN ('avoidable','needs_adjudication'))::int AS review
+         FROM readmission_findings WHERE engine_version = $1`,
+        [engine],
+      ),
+    ]);
+    const c = (counts as Array<{ pending: number; review: number }>)[0];
+    return {
+      rows: rows as SurfaceRow[],
+      pendingCount: Number(c?.pending ?? 0),
+      reviewCount: Number(c?.review ?? 0),
+    };
+  } catch {
+    return { rows: [], pendingCount: 0, reviewCount: 0 };
+  }
+}
+
+/**
+ * The chooser badge alone (app/care/page.tsx). Same predicate as listFindingsForSurface's
+ * `review` count — deliberately one SQL expression duplicated in one other place and
+ * nowhere else, because the badge must not be able to disagree with the page. Soft-fails
+ * to 0 like every other count on that page.
+ */
+export async function reviewCountForChooser(engineVersion: string = READMIT_ENGINE_VERSION): Promise<number> {
+  try {
+    const rows = (await sql(
+      `SELECT count(*)::int AS n FROM readmission_findings
+        WHERE engine_version = $1 AND audit_status = 'audited'
+          AND avoidable IN ('avoidable','needs_adjudication')`,
+      [engineVersion],
+    )) as Array<{ n: number }>;
+    return Number(rows[0]?.n ?? 0);
+  } catch {
+    return 0;
+  }
+}
+
 /** Status/lane rollup for the worker's response (V's lane-count validation, §12.5). */
 export async function findingCounts(engineVersion: string = READMIT_ENGINE_VERSION): Promise<{
   byLane: Record<string, number>; byStatus: Record<string, number>; total: number;

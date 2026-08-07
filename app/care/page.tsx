@@ -3,9 +3,10 @@ export const runtime = 'nodejs';
 
 import Link from 'next/link';
 import { redirect, notFound } from 'next/navigation';
-import { ArrowRight, ClipboardCheck, ListChecks, ShieldCheck, Boxes } from 'lucide-react';
+import { ArrowRight, ClipboardCheck, ListChecks, ShieldCheck, Boxes, Repeat } from 'lucide-react';
 import { isCareUnlocked } from '@/lib/care-cookie';
 import { sql } from '@/lib/db';
+import { reviewCountForChooser } from '@/lib/readmission/store';
 import { OPD_ENGINE_VERSIONS_CURRENT } from '@/lib/opd-note-audit-core';
 import { getSettings } from '@/lib/mini-backfill';
 import { parseGoal, computeReviewStats, FALLBACK_ROSTER, type LabelRow } from '@/lib/review-stats-core';
@@ -50,6 +51,13 @@ export default async function ManagedCareHome() {
   // because the page's whole job when the worker is off is to say so.
   const conceptR = await run(`SELECT count(*)::int n FROM lvc_concepts`).catch(() => []);
   const conceptCount = Number((conceptR as Record<string, unknown>[])[0]?.n ?? 0);
+
+  // Readmissions (CDMSS-READMISSION-PHASE-2-CARE-SURFACE-PRD §3) — 5th card, behind
+  // READMISSIONS_SURFACE_ENABLED (ships OFF). Badge = findings needing review, which is
+  // the SAME predicate the page's own count uses (lib/readmission/store.ts) so the badge
+  // and the page can never disagree. Best-effort: soft-fails to 0 like its peers.
+  const readmissionsEnabled = process.env.READMISSIONS_SURFACE_ENABLED === '1';
+  const readmissionCount = readmissionsEnabled ? await reviewCountForChooser().catch(() => 0) : 0;
 
   // Review Mode team-progress strip (§2.4) — best-effort; omitted entirely on any error. Reuses the
   // gamification core over the same counted-label rows the stats route reads (identical basis).
@@ -108,6 +116,13 @@ export default async function ManagedCareHome() {
       desc: 'Codes each free-text audit finding to a governed clinical concept, the way a diagnosis is coded to ICD. Worker status only — score-invariant.',
       count: conceptCount, countLabel: 'concepts', tint: 'slate',
     },
+    ...(readmissionsEnabled ? [{
+      href: '/care/readmissions',
+      icon: Repeat,
+      title: 'Readmissions',
+      desc: 'Find the unplanned readmissions that did not need to happen — a premature discharge, an admission that missed the threshold. Patient-centric.',
+      count: readmissionCount, countLabel: 'to review', tint: 'rose',
+    }] : []),
   ];
 
   const tintClasses: Record<string, { badge: string; icon: string }> = {
@@ -115,6 +130,7 @@ export default async function ManagedCareHome() {
     sky: { badge: 'bg-sky-100 text-sky-800', icon: 'text-sky-500' },
     emerald: { badge: 'bg-emerald-100 text-emerald-800', icon: 'text-emerald-500' },
     amber: { badge: 'bg-amber-100 text-amber-800', icon: 'text-amber-500' },
+    rose: { badge: 'bg-rose-100 text-rose-800', icon: 'text-rose-500' },
     slate: { badge: 'bg-slate-100 text-slate-700', icon: 'text-slate-500' },
   };
 

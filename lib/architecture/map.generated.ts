@@ -759,6 +759,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "readmission-surface-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "reasoning",
     "plane": "unregistered"
   },
@@ -1781,6 +1785,16 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/api",
+    "to": "readmission-detect-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "readmission-surface-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
     "to": "reasoning",
     "kind": "value"
   },
@@ -1957,6 +1971,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/care",
     "to": "opd-note-audit-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/care",
+    "to": "readmission",
     "kind": "value"
   },
   {
