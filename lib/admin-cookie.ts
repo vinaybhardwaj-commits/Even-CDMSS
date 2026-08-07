@@ -24,3 +24,21 @@ export async function isAdminUnlocked(): Promise<boolean> {
 export function adminTokenConfigured(): boolean {
   return !!process.env.ADMIN_TOKEN;
 }
+
+/**
+ * Timing-safe check of a PRESENTED admin credential against ADMIN_TOKEN, for callers that hold the
+ * value directly rather than as a cookie. Exact mirror of `careTokenMatches` in lib/care-cookie.ts,
+ * on the same `safeEq` — one comparison rule, three surfaces, no second implementation.
+ *
+ * ⚠️ FAIL-CLOSED, and the order matters: with ADMIN_TOKEN unset this is FALSE for every input,
+ * including the empty string. An unconfigured deployment must not be an unlocked one.
+ *
+ * Its only caller is the F11 lab-origin gate (lib/lab-override.ts), which uses it to accept an
+ * admin credential presented on a HEADER by the Lab MCP's own self-request. It deliberately does
+ * NOT touch the cookie jar and does NOT confer a session: `isAdminUnlocked` remains the one gate
+ * for the human admin surfaces, unchanged and with no new callers.
+ */
+export function adminTokenMatches(presented: string): boolean {
+  const token = process.env.ADMIN_TOKEN;
+  return !!token && !!presented && safeEq(presented, token);
+}

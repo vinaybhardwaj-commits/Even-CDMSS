@@ -12,13 +12,13 @@
  * error in a clinical response.
  */
 import type { NextRequest } from 'next/server';
-import { isAdminUnlocked } from './admin-cookie';
+import { isAdminUnlocked, adminTokenMatches } from './admin-cookie';
 import { isCareUnlocked } from './care-cookie';
 import { geminiConfigured, openrouterConfigured, bedrockConfigured, MINI_MODEL } from './llm';
 import { resolveProvider } from './lab-provider-core';
 import {
   decideOverride, overrideAuditLine, shouldLogRefusal,
-  OVERRIDE_ENV_FLAG, LAB_ORIGIN_HEADER,
+  OVERRIDE_ENV_FLAG, LAB_ORIGIN_HEADER, LAB_ADMIN_HEADER,
   type OverrideDecision,
 } from './lab-override-core';
 
@@ -64,6 +64,34 @@ export function probeReachable(provider: string): boolean {
 }
 
 /**
+ * CONDITION 3, established from a HEADER rather than a cookie session (7 Aug 2026).
+ *
+ * The Lab MCP runs server-side and already holds ADMIN_TOKEN in env; what it could not do was
+ * present it, because `selfPostNdjson` sends no cookies and `isAdminUnlocked` reads only the jar.
+ * This accepts the token on LAB_ADMIN_HEADER, compared timing-safely against the same env value by
+ * the same `safeEq` the cookie path uses (`adminTokenMatches`).
+ *
+ * ⚠️ WHAT IT IS NOT. It is not a bypass and not a session: it establishes the SAME `isAdmin` fact
+ * the cookie establishes, for the same gate, and it unlocks nothing else anywhere in the app. With
+ * ADMIN_TOKEN unset it is false for every input, so an unconfigured deployment stays refusing.
+ * Never logged, never returned, never written to a row or a trace — the audit line records route,
+ * provider, model and caller, and none of those is the credential.
+ */
+export function labAdminStanding(req: { headers: { get(name: string): string | null } }): boolean {
+  try {
+    return adminTokenMatches(req.headers.get(LAB_ADMIN_HEADER) || '');
+  } catch { return false; }
+}
+
+/** Injection seam for the two cookie readers (repo idiom — mirrors WithTraceDeps). Production
+ *  passes nothing and gets the real guards; tests drive all six conditions without a server, which
+ *  is what this module's whole split exists to make possible. */
+export interface LabOverrideDeps {
+  isAdmin?: () => Promise<boolean>;
+  isClinician?: () => Promise<boolean>;
+}
+
+/**
  * Gather the six facts and decide. `route` is used only for the audit line.
  *
  * Returns the honoured override, or null. NEVER throws.
@@ -72,6 +100,7 @@ export async function resolveLabOverride(
   req: NextRequest,
   requestedModel: unknown,
   route: string,
+  deps: LabOverrideDeps = {},
 ): Promise<HonouredOverride | null> {
   try {
     const requested = requestedModel == null ? '' : String(requestedModel).trim();
@@ -81,8 +110,14 @@ export async function resolveLabOverride(
 
     // Cookie reads are independently fail-safe: an unreadable cookie must not open the gate, so
     // isAdmin degrades to false and isClinicianSession degrades to TRUE (the refusing value).
-    const isAdmin = await isAdminUnlocked().catch(() => false);
-    const isClinicianSession = await isCareUnlocked().catch(() => true);
+    //
+    // ⚠️ TWO WAYS TO BE ADMIN, ONE STANDARD OF PROOF. The header is checked FIRST because it is
+    // cheap and because it is the only one the MCP can satisfy; the cookie session is unchanged and
+    // still serves the browser. Both compare against ADMIN_TOKEN with timingSafeEqual; neither can
+    // succeed when it is unset. Whichever answers, decideOverride sees one boolean and all six
+    // conditions below are byte-identical to before this existed.
+    const isAdmin = labAdminStanding(req) || await (deps.isAdmin ?? isAdminUnlocked)().catch(() => false);
+    const isClinicianSession = await (deps.isClinician ?? isCareUnlocked)().catch(() => true);
 
     const r = resolveProvider(requested, MINI_MODEL);
     const resolved = r.ok ? { ok: true as const, provider: r.provider, model: r.model, paid: r.paid } : { ok: false as const };

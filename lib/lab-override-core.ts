@@ -23,6 +23,27 @@ export const OVERRIDE_ENV_FLAG = 'LAB_PROVIDER_OVERRIDE_ENABLED';
  *  browser, and not something a clinician's session can carry by accident. */
 export const LAB_ORIGIN_HEADER = 'x-cdmss-lab-origin';
 export const LAB_ORIGIN_VALUE = 'lab-mcp';
+/**
+ * The admin STANDING marker (7 Aug 2026). A second header, carrying the ADMIN_TOKEN value, by which
+ * the Lab MCP's own self-request presents the admin credential it already holds in env.
+ *
+ * ⚠️ WHY THIS EXISTS. Condition 3 below requires admin auth on the same request, and it was
+ * measurably unsatisfiable from the MCP: `selfPostNdjson` forwards no cookies, so `isAdminUnlocked`
+ * read an empty jar and EVERY MCP override on /api/ask and /api/ddx was refused `not_admin` —
+ * silently, because a refusal is never surfaced. Measured 7 Aug: a `bedrock:` probe and a `vertex:`
+ * probe both ran the production default while their lab rows claimed the requested model.
+ *
+ * ⚠️ THIS FORWARDS STANDING, IT DOES NOT BYPASS THE CONDITION (V, 7 Aug). The gate below is
+ * BYTE-IDENTICAL: it still demands `isAdmin === true`. What changed is only HOW the impure wrapper
+ * may establish that fact — cookie session OR this header, both verified timing-safely against the
+ * same ADMIN_TOKEN. A caller with neither is refused exactly as before.
+ *
+ * A HEADER, and deliberately not the cat_admin cookie: a cookie would confer general admin standing
+ * on the whole request, unlocking every `isAdminUnlocked` check on the route. This is read by the
+ * F11 gate and nothing else. Like LAB_ORIGIN_HEADER it is also unsettable by a same-site browser
+ * form post.
+ */
+export const LAB_ADMIN_HEADER = 'x-cdmss-lab-admin';
 
 /** Every refusal reason, in gate order. Logged, never returned to a clinical caller. */
 export type OverrideRefusal =

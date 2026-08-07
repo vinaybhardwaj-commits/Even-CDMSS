@@ -588,7 +588,12 @@ test('F11: omitted model ⇒ the local mini, byte-identical, and NOT paid', () =
   // the request body/headers are only augmented when a model is asked for
   const SRC = readFileSync(new URL('../mcp-tools.ts', import.meta.url), 'utf8');
   assert.match(SRC, /return m \? \{ \.\.\.base, labModel: m \} : base;/);
-  assert.match(SRC, /return S\(a\.model\)\.trim\(\) \? \{ \[LAB_ORIGIN_HEADER\]: LAB_ORIGIN_VALUE/);
+  // ⚠️ RESHAPED 7 Aug 2026, SAME PROPERTY. labHeaders grew a third header (the admin standing
+  // credential, A12 condition 3) and became an early-return instead of a one-line ternary. What is
+  // asserted is unchanged and is the thing that matters: NO model requested ⇒ NO headers added ⇒
+  // the request is byte-identical to a pre-F11 one.
+  assert.match(SRC, /if \(!S\(a\.model\)\.trim\(\)\) return undefined;/);
+  assert.match(SRC, /\[LAB_ORIGIN_HEADER\]: LAB_ORIGIN_VALUE,/);
 });
 
 test('F11: the paid ceiling stops at N and reports; free runs never count', () => {

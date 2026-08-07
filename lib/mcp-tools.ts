@@ -16,7 +16,7 @@ import { guardReadOnlySql } from './sql-guard-core';
 import { decideLabSource } from './lab-source-core';
 // F11 (option 3): the ONE provider resolver + the ceiling, shipped and tested in f720579.
 import { resolveProvider, checkPaidCeiling, DEFAULT_PAID_CEILING } from './lab-provider-core';
-import { LAB_ORIGIN_HEADER, LAB_ORIGIN_VALUE } from './lab-override-core';
+import { LAB_ORIGIN_HEADER, LAB_ORIGIN_VALUE, LAB_ADMIN_HEADER } from './lab-override-core';
 import {
   checkCitationFields, parseProposeArgs, parseRatifyArgs, checkPromotable, classifyGaps,
   type ExistingStatement, type GapRow,
@@ -551,9 +551,50 @@ function engineSuffix(provider: string): string {
   return provider === 'ollama' ? 'mini' : provider;
 }
 
-/** F11 — the gate's lab-origin marker (condition 2). Only ever sent on the two WIRED routes. */
+/**
+ * F11 — the gate's lab-origin marker (condition 2) and, since 7 Aug 2026, the admin STANDING it
+ * needs for condition 3. Only ever sent on the two WIRED routes, and only when a model was actually
+ * requested: a probe with no override carries neither header and its request stays byte-identical.
+ *
+ * ⚠️ THE CREDENTIAL IS ATTACHED HERE, NOT IN selfPostNdjson, deliberately. This is the narrowest
+ * point that still covers every request that needs it: `labHeaders` feeds nothing but the two
+ * F11-wired self-posts, and only on the override path. The three UNWIRED probes
+ * (appropriateness / pathway / case-audit) call selfPostNdjson too, and their routes never consult
+ * the gate — sending them an admin credential would transmit the token for no purpose.
+ *
+ * ⚠️ ADMIN_TOKEN UNSET ⇒ THE HEADER IS ABSENT, not empty. Refusal stays the default for an
+ * unconfigured deployment, on both sides independently (the receiver also fails closed).
+ * The value is never logged here or anywhere: it appears in exactly one outgoing header.
+ */
 function labHeaders(a: Record<string, unknown>): Record<string, string> | undefined {
-  return S(a.model).trim() ? { [LAB_ORIGIN_HEADER]: LAB_ORIGIN_VALUE, 'x-cdmss-lab-caller': 'lab-mcp' } : undefined;
+  if (!S(a.model).trim()) return undefined;
+  const adminToken = process.env.ADMIN_TOKEN || '';
+  return {
+    [LAB_ORIGIN_HEADER]: LAB_ORIGIN_VALUE,
+    'x-cdmss-lab-caller': 'lab-mcp',
+    ...(adminToken && selfPostCarriesCredential() ? { [LAB_ADMIN_HEADER]: adminToken } : {}),
+  };
+}
+
+/**
+ * May the admin credential ride this self-post? Only over TLS, or to the loopback dev server.
+ *
+ * ⚠️ THE SELF-POST TARGET IS ENV-DERIVED (`labSelfBaseUrl`: LAB_SELF_BASE_URL, else VERCEL_URL,
+ * else localhost). Production and preview both resolve to `https://…`, and dev to
+ * `http://localhost:3000`, so this refuses nothing that exists today. What it stops is the one
+ * shape that would be silently catastrophic: a misconfigured LAB_SELF_BASE_URL sending ADMIN_TOKEN
+ * over plain http to a non-loopback host.
+ *
+ * It is NOT a full answer — a same-scheme foreign host would still receive it. LAB_SELF_BASE_URL is
+ * therefore a trust-sensitive variable and is called out as such in the build report. The credential
+ * simply being absent makes the override refuse (typed, silent), which is the correct failure.
+ */
+function selfPostCarriesCredential(): boolean {
+  try {
+    const u = new URL(labSelfBaseUrl(process.env as Record<string, string | undefined>));
+    if (u.protocol === 'https:') return true;
+    return u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '::1';
+  } catch { return false; }
 }
 /** F11 — add `labModel` ONLY when a model was asked for, so an omitted model leaves the request body
  *  byte-identical to today. The route's own gate still decides; this only carries the request. */
