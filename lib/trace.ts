@@ -10,6 +10,7 @@ import {
 import { openrouterCreateWithRetry, createWithRetry } from './openrouter-retry';
 import { promptFingerprint } from './reasoning/registry-core';
 import { billableOutputTokens } from './llm-cost-core';
+import { bedrockGenerate, bedrockFailurePayload, singleChunkStream } from './bedrock';
 
 const sqlFn = sql as unknown as (q: string, p: unknown[]) => Promise<unknown>;
 
@@ -230,26 +231,31 @@ export async function tracedChat(
   // instead of calling runOllamaFallback (the provider_error/provider_fallback events still fire,
   // with fellBackTo: 'none'). Absent or false ⇒ today's behaviour exactly. Set true at exactly two
   // audit call sites: opd-note-audit's opd_audit_analyze and doc-audit's analyze closure.
-  opts?: { gemini?: string; openrouter?: string; promptRef?: string; timeoutMs?: number; maxTries?: number; noLocalFallback?: boolean },
+  // bedrock (Bedrock S1, 7 Aug 2026): a full Bedrock modelId. AN EXPLICIT BEDROCK TARGET OUTRANKS
+  // EVERYTHING AND HAS NO LADDER BEHIND IT — see the branch below. Absent ⇒ every line here is
+  // byte-identical to before this option existed.
+  opts?: { gemini?: string; openrouter?: string; bedrock?: string; promptRef?: string; timeoutMs?: number; maxTries?: number; noLocalFallback?: boolean },
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const t0 = Date.now();
   const reqOpts = opts?.timeoutMs ? { timeout: opts.timeoutMs } : undefined;
 
-  // Provider precedence: OpenRouter (explicit slug) → Vertex Gemini → local Ollama. Each keeps the
-  // local Ollama model in params.model as its on-error fallback.
+  // Provider precedence: BEDROCK (explicit target) → OpenRouter (explicit slug) → Vertex Gemini →
+  // local Ollama. Each of the middle two keeps the local Ollama model in params.model as its
+  // on-error fallback; BEDROCK KEEPS NONE (F11 — an explicit target that fails is terminal).
   // BRIDGE (30 Jul 2026): with GEMINI_VIA_OPENROUTER=1 a gemini option resolves to its OpenRouter
   // slug HERE — derived centrally so no call site can be missed. Flag unset ⇒ undefined ⇒
   // byte-identical precedence. An explicit caller-supplied openrouter slug always wins.
-  const orSlug = opts?.openrouter || openrouterGeminiSlug(opts?.gemini);
+  const bedrockModel = opts?.bedrock;
+  const orSlug = bedrockModel ? undefined : (opts?.openrouter || openrouterGeminiSlug(opts?.gemini));
   const useOpenRouter = Boolean(orSlug) && openrouterConfigured();
-  const useGemini = !useOpenRouter && Boolean(opts?.gemini) && geminiConfigured();
-  const servedModel = useOpenRouter ? (orSlug as string) : useGemini ? (opts!.gemini as string) : (params as { model?: string }).model;
+  const useGemini = !bedrockModel && !useOpenRouter && Boolean(opts?.gemini) && geminiConfigured();
+  const servedModel = bedrockModel ? bedrockModel : useOpenRouter ? (orSlug as string) : useGemini ? (opts!.gemini as string) : (params as { model?: string }).model;
 
   // Log the request before firing (records the model we INTEND to use)
   const requestPayload = {
     model: servedModel,
-    provider: useOpenRouter ? 'openrouter' : useGemini ? 'gemini' : 'ollama',
+    provider: bedrockModel ? 'bedrock' : useOpenRouter ? 'openrouter' : useGemini ? 'gemini' : 'ollama',
     messages: (params as { messages?: unknown }).messages,
     temperature: (params as { temperature?: number }).temperature,
     max_tokens: (params as { max_tokens?: number }).max_tokens,
@@ -279,7 +285,55 @@ export async function tracedChat(
   let actualModel = servedModel;
 
   try {
-    if (useOpenRouter || useGemini) {
+    if (bedrockModel) {
+      // ══ BEDROCK (S1, 7 Aug 2026): ONE PROVIDER, NO LADDER, NO FALLBACK ═════════════════════
+      //
+      // An explicit `bedrock:` target is a STATEMENT ABOUT ATTRIBUTION, not a preference. The row
+      // it produces will say Bedrock served it, so nothing else may serve it — not Vertex, not
+      // OpenRouter, not the local mini. A failure here is terminal for this call and the caller's
+      // own machinery (the OPD llm_leg_failed marking, the IPD failure ledger, the lab's error
+      // row) is the handler. That is why this branch has no `nextHop`, no `runOllamaFallback`, and
+      // no `noLocalFallback` switch: there is nothing to switch off.
+      //
+      // The budget reaches the transport the same way it does for the other two providers — the
+      // caller's timeoutMs/maxTries, defaulted from PROVIDER_BUDGETS.bedrock inside bedrockGenerate.
+      let completion;
+      try {
+        completion = await bedrockGenerate(params, {
+          model: bedrockModel, timeoutMs: opts?.timeoutMs, maxTries: opts?.maxTries, label,
+        });
+      } catch (be) {
+        // The payload was built at the moment of failure (honest inFlightAtError) and names BOTH
+        // identities in the chain: the SA that signed the ID token and the role STS assumed.
+        await logEvent(traceId, 'provider_error', label, bedrockFailurePayload(label, bedrockModel, be), Date.now() - t0);
+        // No provider_fallback event: no fallback edge was taken, and inventing one would put a
+        // hop in the record that never happened.
+        throw be;
+      }
+      provider = 'bedrock';
+      actualModel = bedrockModel;
+      result = completion;
+      if ((params as { stream?: boolean }).stream) {
+        // A streaming CALLER over a non-streaming transport (see singleChunkStream). The response
+        // event is logged HERE, with the real content and the real usage, because the tail below
+        // would otherwise take the streaming branch and record a call with no tokens — and an
+        // untokened event is an unpriced call. Cost visibility is V's condition on this build.
+        await logEvent(traceId, 'llm_response', label, {
+          model: actualModel,
+          provider,
+          content: completion.choices[0]?.message?.content ?? '',
+          finish_reason: completion.choices[0]?.finish_reason,
+          usage: completion.usage,
+          // Names the shim in the record: this WAS one Converse call, not a token stream.
+          synthesized_stream: true,
+        }, Date.now() - t0,
+          buildEnvelope(promptRef, {
+            model: actualModel, provider, genParams,
+            tokensIn: completion.usage.prompt_tokens, tokensOut: billableOutputTokens(completion.usage),
+          }));
+        return singleChunkStream(completion);
+      }
+    } else if (useOpenRouter || useGemini) {
       // ══ UNIT V-a2 (4 Aug 2026): THE CLOUD LADDER ═══════════════════════════════════════════
       // Tier order is FIXED: Vertex, then OpenRouter (V-8 — CDMSS runs on Vertex; OpenRouter is
       // the backup tier). GEMINI_VIA_OPENROUTER=1 INVERTS it: the flag's precedence above makes
@@ -642,6 +696,36 @@ export async function setTracePromptIds(traceId: string, promptIds: string[]): P
 }
 
 /**
+ * The TRACELESS Bedrock arm (S1, 7 Aug 2026) — governedChat's other half.
+ *
+ * Same transport, same budget resolution, same no-fallback rule as the traced branch above; the
+ * only difference is what gets recorded. With no traceId there is no trace to hang events on, so a
+ * failure opens its OWN one-event trace, exactly as `emitProviderErrorTrace` does for the traceless
+ * Vertex/OpenRouter path. A SUCCESS on this arm records nothing — that is the pre-existing property
+ * of every traceless call in this repo (which is why the traced arm is the one production uses),
+ * and changing it for one provider would make Bedrock's cost visibility depend on which arm the
+ * caller happened to take.
+ *
+ * `stream: true` gets the same single-chunk shim the traced arm uses, so the caller's `for await`
+ * contract holds identically on both.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function bedrockOnlyChat(label: string, params: any, model: string, opts: { timeoutMs?: number; maxTries?: number }): Promise<any> {
+  try {
+    const completion = await bedrockGenerate(params, { model, timeoutMs: opts.timeoutMs, maxTries: opts.maxTries, label });
+    return (params as { stream?: boolean }).stream ? singleChunkStream(completion) : completion;
+  } catch (e) {
+    const payload = bedrockFailurePayload(label, model, e);
+    try {
+      const tid = await startTrace('provider_error', { provider: 'bedrock', model });
+      await logEvent(tid, 'provider_error', label, payload);
+      await finishTrace(tid, 'success');
+    } catch { /* observability must never be the thing that changes the outcome */ }
+    throw e;   // F11 — no fallback tier behind an explicit target.
+  }
+}
+
+/**
  * The governed model-call entry for feature code (Stage 4). Traced → tracedChat (envelope
  * stamped when promptRef is set); traceless → the plain hybrid fallback, whose ONLY
  * sanctioned call site is here inside the governed layer. Transport is byte-identical to
@@ -655,7 +739,7 @@ export async function governedChat(
   label: string,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   params: any,
-  opts?: { gemini?: string; openrouter?: string; promptRef?: string; timeoutMs?: number; maxTries?: number; noLocalFallback?: boolean },
+  opts?: { gemini?: string; openrouter?: string; bedrock?: string; promptRef?: string; timeoutMs?: number; maxTries?: number; noLocalFallback?: boolean },
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   // ⚠️ THE TRACED ARM IS THE ONE PRODUCTION USES. Both audit legs arrive here with a traceId, so
@@ -663,6 +747,12 @@ export async function governedChat(
   // naive test passes — which is exactly how the 110 s ceiling survived 3039c42. Both arms carry
   // timeoutMs, maxTries and (V-a2) noLocalFallback; keep it that way.
   if (traceId) return tracedChat(traceId, label, params, opts);
+  // ⚠️ AND THE SAME LESSON, INVERTED, FOR BEDROCK (S1, 7 Aug 2026). A `bedrock` option dropped on
+  // THIS arm would not error — chatWithFallback would see no gemini and no openrouter slug and
+  // quietly run the local mini, while the caller's row said Bedrock. That is a silent downgrade
+  // producing a misattributed row: the exact defect F11 exists to stop. The target is honoured on
+  // both arms or it is honoured on neither.
+  if (opts?.bedrock) return bedrockOnlyChat(label, params, opts.bedrock, opts);
   return chatWithFallback(params, opts?.gemini, opts?.openrouter, opts?.timeoutMs, opts?.maxTries, opts?.noLocalFallback);
 }
 

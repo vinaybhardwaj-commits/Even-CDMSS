@@ -488,6 +488,18 @@ export async function chatWithFallback(params: any, geminiModel?: string, openro
   return llm.chat.completions.create(params, reqOpts);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Amazon Bedrock — fourth provider (Bedrock S1, 7 Aug 2026). The transport lives
+// in lib/bedrock.ts (everything AWS in one file); these re-exports are what make
+// `lib/llm.ts` still the one place a caller asks "which providers exist and what
+// are their models called". DISPATCH is lib/trace.ts's, same as the other three.
+//
+// ⚠️ NOTHING HERE CALLS BEDROCK. Re-exporting the probe and the labels adds no
+// call site: `bedrockGenerate` is imported by the governed layer alone, and
+// scripts/reasoning-governance-check.mjs now fails the build on any other importer.
+// ─────────────────────────────────────────────────────────────────────────────
+export { bedrockConfigured, BEDROCK_MODELS, bedrockModelLabel, isKnownBedrockModel } from './bedrock';
+
 export const TEXT_MODEL = process.env.TEXT_MODEL || 'qwen2.5:14b';
 /** Model for scoped mini-pipeline runs (OPD mini backfill etc.). Defaults to TEXT_MODEL (qwen2.5:14b). */
 export const MINI_MODEL = process.env.MINI_MODEL || TEXT_MODEL;

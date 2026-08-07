@@ -91,6 +91,14 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "bedrock",
+    "plane": "unregistered"
+  },
+  {
+    "id": "bedrock-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "bookshelf",
     "plane": "unregistered"
   },
@@ -2049,6 +2057,36 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "bedrock",
+    "to": "bedrock-core",
+    "kind": "value"
+  },
+  {
+    "from": "bedrock",
+    "to": "gcp-auth",
+    "kind": "value"
+  },
+  {
+    "from": "bedrock",
+    "to": "lab-provider-core",
+    "kind": "value"
+  },
+  {
+    "from": "bedrock",
+    "to": "openrouter-retry",
+    "kind": "value"
+  },
+  {
+    "from": "bedrock",
+    "to": "provider-error-core",
+    "kind": "value"
+  },
+  {
+    "from": "bedrock",
+    "to": "trace",
+    "kind": "value"
+  },
+  {
     "from": "bookshelf",
     "to": "corpus-connector-core",
     "kind": "value"
@@ -3165,6 +3203,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "llm",
+    "to": "bedrock",
+    "kind": "value"
+  },
+  {
+    "from": "llm",
     "to": "gcp-auth",
     "kind": "value"
   },
@@ -4266,6 +4309,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "scoring-policy",
     "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "trace",
+    "to": "bedrock",
     "kind": "value"
   },
   {

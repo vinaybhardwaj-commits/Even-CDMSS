@@ -19,6 +19,8 @@
     "ddx:bench": "node --import tsx scripts/ddx-p0-run.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.1105.0",
+    "@aws-sdk/client-sts": "^3.1105.0",
     "@neondatabase/serverless": "^0.10.4",
     "dompurify": "^3.2.3",
     "lucide-react": "^0.383.0",

@@ -147,7 +147,12 @@ test('the pin: Google-operated providers only, no fallbacks — slugs read off t
 
 test('both transports derive the slug centrally; a caller-supplied openrouter slug takes precedence', () => {
   assert.ok(LLM.includes('const orModel = openrouterModel || openrouterGeminiSlug(geminiModel);'), 'chatWithFallback');
-  assert.ok(TRACE.includes('const orSlug = opts?.openrouter || openrouterGeminiSlug(opts?.gemini);'), 'tracedChat');
+  // ⚠️ PREFIXED 7 Aug 2026 (Bedrock S1), not rewritten: `bedrockModel ? undefined : (…)`. The
+  // derivation inside the parens is byte-identical, so the property this test protects — one
+  // central `google/` derivation that no call site can miss, with an explicit caller slug winning
+  // — is unchanged. The guard only stops an explicit BEDROCK target from silently acquiring an
+  // OpenRouter tier behind it, which is the F11 no-ladder rule.
+  assert.ok(TRACE.includes('const orSlug = bedrockModel ? undefined : (opts?.openrouter || openrouterGeminiSlug(opts?.gemini));'), 'tracedChat');
   // V-a2: the OpenRouter arm serves as tier 1 (the derived/explicit slug) AND as tier 2 behind a
   // failed Vertex call (openrouterSlugForGemini — the SAME `google/` derivation, no flag). One
   // local `slug` covers both; the flag-gated central derivation above is unchanged.

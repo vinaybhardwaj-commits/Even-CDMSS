@@ -25,10 +25,16 @@ export const PRICING: Pricing = {
 // `llm_stream_usage` (from the final include_usage chunk — see lib/trace.ts wrapStreamUsage).
 // Both must be counted or streamed spend (/ask, /ddx, /topics) is invisible.
 const LLM_KINDS = `e.kind IN ('llm_response', 'llm_stream_usage')`;
-// Priced providers: Vertex Gemini + OpenRouter Qwen (the migrated citation critic). A model that is
-// neither is not a paid call we meter (local Ollama). Broadened from gemini-only so Qwen spend is
-// visible in the cost tab (provider migration §4).
-const PRICED_MODEL = `((e.payload->>'model') ILIKE '%gemini%' OR (e.payload->>'model') ILIKE '%qwen%')`;
+// Priced providers: Vertex Gemini + OpenRouter Qwen (the migrated citation critic) + Bedrock Claude.
+// A model that is none of the three is not a paid call we meter (local Ollama). Broadened from
+// gemini-only so Qwen spend is visible in the cost tab (provider migration §4).
+//
+// ⚠️ THE FILTER IS PART OF "ADD A PROVIDER", NOT AN AFTERTHOUGHT (Bedrock S1, 7 Aug 2026). Pricing
+// ROWS in data/llm-pricing.json are necessary but NOT sufficient: a model that fails this predicate
+// never reaches the pricing code at all, so a fully-priced Bedrock call would have shown ₹0 across
+// every panel — spend invisible while the config looked complete. Tracked usage is V's condition on
+// this build, so the '%claude%' arm is as load-bearing as the rates themselves.
+const PRICED_MODEL = `((e.payload->>'model') ILIKE '%gemini%' OR (e.payload->>'model') ILIKE '%qwen%' OR (e.payload->>'model') ILIKE '%claude%')`;
 const FROM_WHERE =
   `FROM trace_events e JOIN traces t ON t.trace_id = e.trace_id
    WHERE ${LLM_KINDS} AND e.app_source = $1 AND ${PRICED_MODEL}`;

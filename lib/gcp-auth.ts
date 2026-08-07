@@ -22,6 +22,10 @@ type ServiceAccount = {
 };
 
 let cached: { token: string; expiresAt: number } | null = null;
+/** ID-token cache, keyed by audience (§3.1 of the Bedrock reference). Separate from `cached`
+ *  above: an ID token and an access token are different credentials for different callees, and
+ *  one map per audience means a second audience can never be served a token minted for the first. */
+const idTokenCache = new Map<string, { token: string; expiresAt: number }>();
 
 function b64url(input: Buffer | string): string {
   return Buffer.from(input)
@@ -115,4 +119,72 @@ export async function getVertexAccessToken(): Promise<string> {
     expiresAt: now + (json.expires_in ?? 3600) * 1000,
   };
   return cached.token;
+}
+
+/**
+ * A Google **ID token** for `audience` — the first leg of the Bedrock chain (AWS STS
+ * `AssumeRoleWithWebIdentity` trusts this token; see lib/bedrock.ts).
+ *
+ * The SAME RS256 JWT-bearer exchange `getVertexAccessToken` performs above, with exactly two
+ * differences, both of which are the whole reason this cannot just call that function:
+ *   1. the assertion carries `target_audience: <audience>` instead of `scope`;
+ *   2. the response field is `id_token`, not `access_token`.
+ *
+ * Cached per audience, refreshed 5 minutes before expiry — same discipline, same numbers. The
+ * token is never logged. Google's ID tokens carry no `expires_in` on this exchange, so the 1-hour
+ * validity we asserted in the claims IS the expiry (`exp = iat + 3600`), and we cache to it.
+ *
+ * ADDITIVE: `getVertexAccessToken` above is byte-identical to before this function existed.
+ */
+export async function getGcpIdToken(audience: string): Promise<string> {
+  const aud = String(audience ?? '').trim();
+  if (!aud) throw new Error('getGcpIdToken: audience is required');
+
+  const now = Date.now();
+  const hit = idTokenCache.get(aud);
+  if (hit && hit.expiresAt - 5 * 60_000 > now) return hit.token;
+
+  const sa = loadServiceAccount();
+  const tokenUri = sa.token_uri || 'https://oauth2.googleapis.com/token';
+  const iat = Math.floor(now / 1000);
+  const exp = iat + 3600;
+
+  const header = b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
+  const claims = b64url(
+    JSON.stringify({
+      iss: sa.client_email,
+      // ⚠️ target_audience, NOT scope — this is what makes the exchange return an ID token.
+      target_audience: aud,
+      aud: tokenUri,
+      iat,
+      exp,
+    }),
+  );
+  const signingInput = `${header}.${claims}`;
+  const signature = b64url(
+    createSign('RSA-SHA256').update(signingInput).sign(sa.private_key),
+  );
+  const assertion = `${signingInput}.${signature}`;
+
+  const res = await fetch(tokenUri, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+      assertion,
+    }),
+  });
+
+  if (!res.ok) {
+    // The BODY is the diagnosis (403-diagnosis §4.1) — a misconfigured audience and a disabled
+    // key read identically without it. It carries no token material.
+    const detail = await res.text().catch(() => '');
+    throw new Error(`Google ID-token exchange failed for audience ${aud} (${res.status}): ${detail.slice(0, 300)}`);
+  }
+
+  const json = (await res.json()) as { id_token?: string; expires_in?: number };
+  if (!json.id_token) throw new Error(`Google ID-token exchange returned no id_token for audience ${aud}`);
+
+  idTokenCache.set(aud, { token: json.id_token, expiresAt: now + (json.expires_in ?? 3600) * 1000 });
+  return json.id_token;
 }

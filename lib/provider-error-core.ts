@@ -224,17 +224,24 @@ export function providerCallsInFlight(): { total: number; by: Record<string, num
 // ── the provider_error event payload ──────────────────────────────────────────────────────────
 
 export interface ProviderErrorPayloadInput {
-  provider: 'gemini' | 'openrouter';
+  provider: 'gemini' | 'openrouter' | 'bedrock';
   label: string | null;
   /** Feature when known; null under tracedChat — the traces row carries it (join on trace_id). */
   feature: string | null;
   fellBackTo: string;
   intendedModel: string | null;
   fallbackModel: string | null;
-  /** Resolved region (gemini only; null for openrouter). */
+  /** Resolved region (gemini + bedrock; null for openrouter). */
   region: string | null;
-  /** SA identity in use — client_email ONLY, never key material (gemini only). */
+  /** SA identity in use — client_email ONLY, never key material (gemini + bedrock). */
   saIdentity: string | null;
+  /**
+   * The assumed AWS role (bedrock only, 7 Aug 2026). The SECOND identity in the OIDC chain: an IAM
+   * trust-policy denial names the role, a missing model grant names the role, a bad audience names
+   * the SA — and without both fields on the record they read identically. Omitted ⇒ the key is
+   * ABSENT from the payload, so every gemini/openrouter payload stays byte-identical.
+   */
+  roleArn?: string | null;
   error: unknown;
   inFlightAtError: { total: number; by: Record<string, number> };
 }
@@ -250,6 +257,7 @@ export function providerErrorPayload(i: ProviderErrorPayloadInput): Record<strin
     fallback_model: i.fallbackModel,
     region: i.region,
     sa_identity: i.saIdentity,
+    ...(i.roleArn ? { role_arn: i.roleArn } : {}),
     inFlightAtError: i.inFlightAtError.total,
     in_flight_by_provider: i.inFlightAtError.by,
     ...serializeProviderError(i.error),

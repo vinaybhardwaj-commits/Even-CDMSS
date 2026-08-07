@@ -14,7 +14,7 @@
 import type { NextRequest } from 'next/server';
 import { isAdminUnlocked } from './admin-cookie';
 import { isCareUnlocked } from './care-cookie';
-import { geminiConfigured, openrouterConfigured, MINI_MODEL } from './llm';
+import { geminiConfigured, openrouterConfigured, bedrockConfigured, MINI_MODEL } from './llm';
 import { resolveProvider } from './lab-provider-core';
 import {
   decideOverride, overrideAuditLine, shouldLogRefusal,
@@ -42,15 +42,23 @@ export function probeReachable(provider: string): boolean {
     if (provider === 'ollama') return !!MINI_MODEL;          // the local default path
     if (provider === 'vertex') return geminiConfigured();
     if (provider === 'openrouter') return openrouterConfigured();
-    // BEDROCK (PROVIDER-SWITCH PRD §4.2, 2 Aug 2026) — catalogued but NOT YET REACHABLE. It resolves
-    // (`bedrock:anthropic.claude-x` parses) and returns false here, so the override is refused with
-    // a typed reason instead of silently running somewhere else. Both vars are required, following
-    // the vertex precedent (geminiConfigured checks GCP_PROJECT *and* GCP_SA_KEY): a Bedrock call
-    // cannot be addressed without a region, so a key alone is not "reachable".
+    // BEDROCK (Bedrock S1, 7 Aug 2026) — NOW A REAL GATE. It reads the OIDC-federation vars the
+    // transport actually uses: GCP_SA_KEY (the one secret, already present for Vertex) plus
+    // BEDROCK_REGION, BEDROCK_ROLE_ARN and BEDROCK_OIDC_AUDIENCE. All four or nothing — a chain
+    // missing any link cannot be addressed, and a provider that resolves but cannot be reached
+    // must refuse with a typed reason rather than run somewhere else.
+    //
+    // ⚠️ THERE IS NO `BEDROCK_API_KEY`, AND THERE NEVER WILL BE. The stub this replaces gated on
+    // one; the whole point of the OIDC chain is that no AWS secret exists anywhere. If you find
+    // that name in an env list, it is dead configuration — delete it, do not set it.
+    //
     // ⚠️ BEDROCK_REGION deliberately, NOT AWS_REGION — Vercel's runtime sets AWS_REGION itself, so
-    // gating on it would read as half-configured on every deploy. Until Unit C builds the client,
-    // neither var is set anywhere and this is false by construction.
-    if (provider === 'bedrock') return Boolean(process.env.BEDROCK_API_KEY && process.env.BEDROCK_REGION);
+    // gating on it would read as half-configured on every deploy. (Kept verbatim from the stub: it
+    // is still the trap, and the AWS SDK now genuinely reads AWS_REGION as a default.)
+    //
+    // ROLLBACK: unset any one of the three BEDROCK_* vars and this goes false again — reachability
+    // refused, zero behaviour change anywhere else.
+    if (provider === 'bedrock') return bedrockConfigured();
     return false;
   } catch { return false; }
 }
@@ -115,12 +123,16 @@ export async function resolveLabOverride(
  * `{ gemini: G, ...labRoutingOpts(ovr) }` is byte-identical to `{ gemini: G }` — same single key,
  * same value. That is what the per-route byte-identity test asserts.
  *
- * An openrouter or ollama override must also CLEAR `gemini`, or the governed layer would still see a
- * Gemini model and prefer it.
+ * An openrouter, bedrock or ollama override must also CLEAR `gemini`, or the governed layer would
+ * still see a Gemini model and prefer it.
  */
-export function labRoutingOpts(ovr: HonouredOverride | null): { gemini?: string | undefined; openrouter?: string } {
+export function labRoutingOpts(ovr: HonouredOverride | null): { gemini?: string | undefined; openrouter?: string; bedrock?: string } {
   if (!ovr) return {};
   if (ovr.provider === 'vertex') return { gemini: ovr.model };
   if (ovr.provider === 'openrouter') return { gemini: undefined, openrouter: ovr.model };
+  // BEDROCK (S1, 7 Aug 2026). Clearing `gemini` is not belt-and-braces here, it is the whole
+  // mechanism: tracedChat gives an explicit bedrock target precedence over both cloud tiers, and
+  // leaving a Gemini model beside it would make the record ambiguous about what was asked for.
+  if (ovr.provider === 'bedrock') return { gemini: undefined, bedrock: ovr.model };
   return { gemini: undefined };   // ollama — force the local mini
 }

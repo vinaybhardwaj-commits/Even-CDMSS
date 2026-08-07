@@ -166,20 +166,44 @@ test('bedrock:anthropic.claude-x RESOLVES, and is marked paid', () => {
   assert.ok(r.ok && r.paid === true, 'every non-ollama provider is paid');
 });
 
-test('…but it PROBES UNREACHABLE until credentials exist', () => {
-  const hadKey = process.env.BEDROCK_API_KEY;
-  const hadRegion = process.env.BEDROCK_REGION;
+/**
+ * ⚠️ REWRITTEN 7 Aug 2026 (Bedrock S1), and the rewrite is the point.
+ *
+ * This test used to gate on `BEDROCK_API_KEY` + `BEDROCK_REGION`, because when it was written the
+ * client did not exist and an API key was the assumed shape of the credential. THERE IS NO AWS
+ * SECRET. The transport federates a Google ID token into STS, so the gate is the four OIDC vars —
+ * `GCP_SA_KEY` (already present for Vertex) plus the three non-secret BEDROCK_* ones. The property
+ * being asserted has not changed at all: a provider that resolves but cannot be reached returns
+ * false, so the override is refused with a typed reason instead of running somewhere else.
+ */
+test('…and it PROBES REACHABLE only when the WHOLE OIDC chain is configured', () => {
+  const VARS = ['GCP_SA_KEY', 'BEDROCK_REGION', 'BEDROCK_ROLE_ARN', 'BEDROCK_OIDC_AUDIENCE'] as const;
+  const had = Object.fromEntries(VARS.map((k) => [k, process.env[k]])) as Record<string, string | undefined>;
+  const VALUES: Record<string, string> = {
+    GCP_SA_KEY: '{"client_email":"x@y.iam.gserviceaccount.com","private_key":"k"}',
+    BEDROCK_REGION: 'ap-south-1',
+    BEDROCK_ROLE_ARN: 'arn:aws:iam::819481466105:role/GCPBedrockRole',
+    BEDROCK_OIDC_AUDIENCE: '588427270277',
+  };
   try {
-    delete process.env.BEDROCK_API_KEY;
-    delete process.env.BEDROCK_REGION;
-    assert.equal(probeReachable('bedrock'), false, 'no credentials ⇒ not reachable');
+    for (const k of VARS) delete process.env[k];
+    assert.equal(probeReachable('bedrock'), false, 'nothing configured ⇒ not reachable');
+    // Each var alone, and each three-of-four, must still refuse: a chain missing any link cannot
+    // be addressed, and "partly configured" is the state a rollback deliberately creates.
+    for (const missing of VARS) {
+      for (const k of VARS) process.env[k] = VALUES[k];
+      delete process.env[missing];
+      assert.equal(probeReachable('bedrock'), false, `missing ${missing} ⇒ not reachable`);
+    }
+    for (const k of VARS) process.env[k] = VALUES[k];
+    assert.equal(probeReachable('bedrock'), true, 'all four present ⇒ reachable');
+    // The dead name must not be able to open the gate on its own.
+    for (const k of VARS) delete process.env[k];
     process.env.BEDROCK_API_KEY = 'k';
-    assert.equal(probeReachable('bedrock'), false, 'a key without a region cannot address a call');
-    process.env.BEDROCK_REGION = 'ap-south-1';
-    assert.equal(probeReachable('bedrock'), true, 'both present ⇒ reachable');
+    assert.equal(probeReachable('bedrock'), false, 'BEDROCK_API_KEY is dead configuration, not a credential');
   } finally {
-    if (hadKey === undefined) delete process.env.BEDROCK_API_KEY; else process.env.BEDROCK_API_KEY = hadKey;
-    if (hadRegion === undefined) delete process.env.BEDROCK_REGION; else process.env.BEDROCK_REGION = hadRegion;
+    delete process.env.BEDROCK_API_KEY;
+    for (const k of VARS) { if (had[k] === undefined) delete process.env[k]; else process.env[k] = had[k] as string; }
   }
 });
 

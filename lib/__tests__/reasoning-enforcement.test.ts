@@ -67,9 +67,12 @@ test('governedChat is exact delegation (transport-equivalence pin)', () => {
   assert.ok(body.includes('return chatWithFallback(params, opts?.gemini, opts?.openrouter, opts?.timeoutMs, opts?.maxTries, opts?.noLocalFallback);'), 'traceless branch is the plain hybrid fallback with the same params (+ openrouter route + D-1 ceiling + Unit D try count + V-a2 flag)');
 });
 
-test('governance config sanity: three call patterns, two governed files, fold declared', async () => {
+test('governance config sanity: four call patterns, three governed files, fold declared', async () => {
   const gov = await import(['..', '..', 'scripts', 'reasoning-governance-check.mjs'].join('/'));
-  assert.equal(gov.DIRECT_CALL_PATTERNS.length, 3);
-  assert.deepEqual([...gov.GOVERNED_FILES].sort(), ['lib/llm.ts', 'lib/trace.ts']);
+  // 3 → 4 and 2 → 3 on 7 Aug 2026 (Bedrock S1): lib/bedrock.ts owns the AWS transport the way
+  // lib/llm.ts owns the two OpenAI-SDK ones, and bedrockConverse/bedrockGenerate join the banned
+  // direct calls so the S2 backfill runner cannot reach Bedrock except through governedChat.
+  assert.equal(gov.DIRECT_CALL_PATTERNS.length, 4);
+  assert.deepEqual([...gov.GOVERNED_FILES].sort(), ['lib/bedrock.ts', 'lib/llm.ts', 'lib/trace.ts']);
   assert.ok(gov.PARALLEL_STORE_PATTERNS.some((p: { id: string; foldedBy?: string }) => p.id === 'concordance_runs' && p.foldedBy === 'lib/concordance.ts'));
 });

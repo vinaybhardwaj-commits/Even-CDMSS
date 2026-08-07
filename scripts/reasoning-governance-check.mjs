@@ -31,14 +31,21 @@ import { fileURLToPath } from 'node:url';
 import { ROOT, walk } from './lib/import-scan.mjs';
 
 // ── declarative config ───────────────────────────────────────────────────────────────────────────
-/** The governed layer: the ONLY files allowed to touch a model client directly. */
-export const GOVERNED_FILES = new Set(['lib/trace.ts', 'lib/llm.ts']);
+/** The governed layer: the ONLY files allowed to touch a model client directly.
+ *  lib/bedrock.ts joined on 7 Aug 2026 — it owns the AWS transport the same way lib/llm.ts owns
+ *  the two OpenAI-SDK ones, and it must be allowed to define the calls the pattern below bans. */
+export const GOVERNED_FILES = new Set(['lib/trace.ts', 'lib/llm.ts', 'lib/bedrock.ts']);
 
 /** A direct model CALL (import lines don't match — each pattern requires the call paren). */
 export const DIRECT_CALL_PATTERNS = [
   { id: 'chat.completions.create', rx: /\.chat\.completions\.create\s*\(/ },
   { id: 'chatWithFallback', rx: /\bchatWithFallback\s*\(/ },
   { id: 'getGeminiChatClient', rx: /\bgetGeminiChatClient\s*\(/ },
+  // Bedrock S1 (7 Aug 2026). The S1 kickoff's constraint 5 — "bedrockConverse is called only
+  // through the governed layer; do not add any new call site in this slice" — is a build rule
+  // until it is a gate. This makes it a gate, so S2's runner cannot reach the transport except
+  // through governedChat, and PHI cannot reach AWS down a path de-identification never gated.
+  { id: 'bedrockConverse/bedrockGenerate', rx: /\bbedrock(Converse|Generate)\s*\(/ },
 ];
 
 /** Run stores parallel to `traces` — folded (mirrored) stores are INFO, not failures. */

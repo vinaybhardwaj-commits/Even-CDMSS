@@ -441,7 +441,16 @@ async function miniAnalyze(a: Record<string, unknown>): Promise<ToolResult> {
   // only, so a vertex: request is refused here rather than silently downgraded.
   const M = await resolveProbeModel(a, experiment);
   if (!M.ok) return err(M.error);
-  if (M.provider === 'vertex') return err('mini_analyze routes via the evalModel seam, which is OpenRouter-only — use openrouter:<id> or omit model for the local mini');
+  // ⚠️ THE REFUSAL COVERS EVERY NON-OPENROUTER PAID PROVIDER, NOT JUST VERTEX (Bedrock S1, 7 Aug
+  // 2026). It used to name vertex alone, and the consequence was live: `bedrock:<id>` passed this
+  // check, resolved paid, then fell through to `evalModel = undefined` — so the audit ran on the
+  // LOCAL MINI while saveLabAnalysis stamped the row provider='bedrock' with a Bedrock model
+  // string. An unattributable row is the whole defect class F11 exists to stop, and this one was
+  // reachable before this build (nothing here consults probeReachable). Refuse, never
+  // accept-and-ignore: the seam is OpenRouter-only until someone widens `defaultGenerate`.
+  if (M.provider !== 'ollama' && M.provider !== 'openrouter') {
+    return err(`mini_analyze routes via the evalModel seam, which is OpenRouter-only — '${M.provider}:' cannot serve it. Use openrouter:<id>, or omit model for the local mini.`);
+  }
   const evalModel = M.provider === 'openrouter' ? M.model : undefined;
 
   if (uid) {
