@@ -46,13 +46,16 @@ const DPIPE_SUB = (where: string) =>
   + `FROM dpipe_prescription_pipeline WHERE ${where} ORDER BY presc_uid, _update_time DESC) d ON d.presc_uid = ip.uid`;
 const NAME_RULE = " AND (ip.doctor_name_with_speciality IS NULL OR ip.doctor_name_with_speciality NOT LIKE 'Even Health(%')";
 
+// SWEEP-1 (D2, 7 Aug 2026): the day-fetch is now wrapped in a DISTINCT ON (ip.uid) subquery so a
+// duplicated db13 row is never handed to the auditor twice. The pin moves with it, byte-exactly —
+// the LIMIT stays on the OUTER query (inside, it would cap before dedup and shrink the batch).
 const DAY_SQL_OFF =
-  `SELECT ${SELECT_OFF} FROM "individuals-prescriptions" ip `
+  `SELECT * FROM (SELECT DISTINCT ON (ip.uid) ${SELECT_OFF} FROM "individuals-prescriptions" ip `
   + DPIPE_SUB("(timestamp AT TIME ZONE 'Asia/Kolkata')::date BETWEEN '2026-08-01'::date - 1 AND '2026-08-01'::date + 1")
   + ` WHERE ip.is_draft = false AND ip.type_of_prescription IN ${TYPES_IN}`
   + " AND (ip.timestamp AT TIME ZONE 'Asia/Kolkata')::date = '2026-08-01'"
   + " AND ip.uid NOT IN ('abc123')" + NAME_RULE
-  + ' ORDER BY ip.timestamp ASC LIMIT 5';
+  + ' ORDER BY ip.uid, ip._update_time DESC) t ORDER BY t."timestamp" ASC LIMIT 5';
 const BY_UID_SQL_OFF =
   `SELECT ${SELECT_OFF} FROM "individuals-prescriptions" ip `
   + DPIPE_SUB("presc_uid = 'abc123'")
@@ -93,6 +96,30 @@ test('flag ON: vitals LEFT JOIN present, DISTINCT ON newest _update_time, scan b
     assert.ok(day.includes("\"individuals-individual_vitals_records\" WHERE (_update_time AT TIME ZONE 'Asia/Kolkata')::date BETWEEN '2026-08-01'::date - 1 AND '2026-08-01'::date + 1"), 'day fetch: date-window bound');
     assert.ok(byUid.includes('WHERE consult_uid IN (SELECT consult_uid FROM "individuals-prescriptions" WHERE uid = \'abc123\')'), 'uid fetch: consult_uid semi-join bound');
     assert.ok((byUids as string).includes('WHERE consult_uid IN (SELECT consult_uid FROM "individuals-prescriptions" WHERE uid IN (\'abc123\', \'def456\'))'), 'bulk fetch: consult_uid semi-join bound');
+    // SWEEP-1 (D2): the uid dedup survives the vitals flag — the wrapper is outside both joins.
+    // Pinned here too because the flag-off literal above cannot see this path.
+    assert.ok(day.startsWith('SELECT * FROM (SELECT DISTINCT ON (ip.uid) '), 'flag on: day fetch still deduped by uid');
+    assert.ok(day.endsWith(' ORDER BY ip.uid, ip._update_time DESC) t ORDER BY t."timestamp" ASC LIMIT 5'), 'flag on: newest _update_time wins, encounter order restored, LIMIT outside the dedup');
+  });
+});
+
+test('SWEEP-1 (D2) — the day fetch deduplicates by uid; the single/bulk uid fetches do NOT change', () => {
+  withFlag(false, () => {
+    const day = opdNotesForDaySql('2026-08-01', [], 5, []);
+    // The LIMIT is the whole point of the wrapper: applied INSIDE, a page of duplicate rows would
+    // cap before dedup and hand back fewer than `limit` distinct notes — a silently short batch.
+    assert.ok(day.lastIndexOf('LIMIT 5') > day.lastIndexOf(') t '), 'LIMIT is applied after the dedup, not inside it');
+    assert.equal(day.indexOf('DISTINCT ON (ip.uid)'), 'SELECT * FROM (SELECT '.length, 'the uid dedup is the outermost thing the day fetch does');
+    // The dedup key and the tiebreak are both qualified to ip: with the vitals flag on, `v` also
+    // exposes an _update_time, and an unqualified reference there would be ambiguous.
+    assert.ok(day.includes('ORDER BY ip.uid, ip._update_time DESC) t'), 'tiebreak is ip._update_time, newest first');
+    // The outer sort must name the SELECTED alias of ip.timestamp, which selectCols() emits
+    // unaliased — so it is plainly "timestamp" inside the subquery, not "ip.timestamp".
+    assert.ok(day.includes('ORDER BY t."timestamp" ASC'), 'outer order is the encounter timestamp, ascending, by its subquery alias');
+    assert.ok(!day.includes('ORDER BY ip.timestamp ASC'), 'the old outer sort cannot survive — ip is out of scope outside the subquery');
+    // Byte-identity discipline: only the day fetch moved. These two are on the hard untouched list.
+    assert.ok(!opdNoteByUidSql('abc123').includes('DISTINCT ON (ip.uid)'), 'single-uid fetch unchanged');
+    assert.ok(!(opdNotesByUidsSql(['abc123']) as string).includes('DISTINCT ON (ip.uid)'), 'bulk-uid fetch unchanged');
   });
 });
 

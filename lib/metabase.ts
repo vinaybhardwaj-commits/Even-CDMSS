@@ -138,10 +138,20 @@ function intakeExcludeClause(excludeDoctorUids: string[]): string {
   return `${notIn}${nameRule}`;
 }
 
-/** Count non-draft medical notes for an IST calendar day (eligible, house accounts excluded). */
+/**
+ * Count non-draft medical notes for an IST calendar day (eligible, house accounts excluded).
+ *
+ * SWEEP-1 (D1, 7 Aug 2026): count(DISTINCT ip.uid), NOT count(*). The db13 sync can write the
+ * same note twice — MEASURED: `uprUJbQnetwvlFrmm2tb` landed in this table a second time on
+ * 6 Aug 12:51 IST with the same _doc_id — and count(*) then reports 469 where 468 distinct
+ * notes exist. Every consumer compares this number against a set of audited UIDS, so a
+ * count that outruns the distinct uids makes a fully-audited day look permanently
+ * incomplete: the fetch excludes all 468 and returns nothing, forever. The uid is the unit
+ * of work, so the uid is the unit of counting.
+ */
 export async function countOpdNotesForDay(day: string, excludeDoctorUids: string[] = []): Promise<number> {
   if (!isDay(day)) throw new Error('bad day (YYYY-MM-DD)');
-  const rows = await metabaseQuery(`SELECT count(*)::int AS n FROM ${SOURCE} ip WHERE ${baseWhere(day)}${intakeExcludeClause(excludeDoctorUids)}`);
+  const rows = await metabaseQuery(`SELECT count(DISTINCT ip.uid)::int AS n FROM ${SOURCE} ip WHERE ${baseWhere(day)}${intakeExcludeClause(excludeDoctorUids)}`);
   return Number(rows[0]?.n ?? 0);
 }
 
@@ -150,7 +160,23 @@ export async function countOpdNotesForDay(day: string, excludeDoctorUids: string
 // them; the strings they produce with the flag off are byte-identical to what the fetchers built
 // inline before this change (proven in lib/__tests__/vitals-extraction.test.ts).
 
-/** Pure SQL for the day-fetch page (exported for the U4-A1 byte-identity gate). */
+/**
+ * Pure SQL for the day-fetch page (exported for the U4-A1 byte-identity gate).
+ *
+ * SWEEP-1 (D2, 7 Aug 2026): the page is DEDUPED by uid, newest ip._update_time winning —
+ * the same DISTINCT ON shape the dpipe and vitals joins already use, and for the same
+ * reason. Without it a duplicated source row is handed to the auditor twice in one page,
+ * spending an LLM call on a note that is about to be written over by its own twin.
+ *
+ * The dedup has to be a SUBQUERY: DISTINCT ON requires its own ORDER BY to lead with the
+ * uid, and the caller needs the page ordered oldest-encounter-first. So the inner select
+ * picks the winner per uid and the outer one restores the encounter order and applies the
+ * LIMIT. The LIMIT must stay OUTSIDE — inside, it would cap the rows before deduplication
+ * and a page of duplicates would silently shrink the batch.
+ *
+ * `t."timestamp"` is the outer alias of `ip.timestamp`: selectCols() emits it unaliased, so
+ * the subquery column is plainly `timestamp` (quoted here because it is also a type name).
+ */
 export function opdNotesForDaySql(day: string, excludeUids: string[], limit: number, excludeDoctorUids: string[] = []): string {
   if (!isDay(day)) throw new Error('bad day (YYYY-MM-DD)');
   const ex = (excludeUids || []).filter(isUid);
@@ -158,7 +184,7 @@ export function opdNotesForDaySql(day: string, excludeUids: string[], limit: num
   const lim = Math.max(1, Math.min(50, Math.floor(limit)));
   const join = joinDpipe(`(timestamp AT TIME ZONE 'Asia/Kolkata')::date BETWEEN '${day}'::date - 1 AND '${day}'::date + 1`);
   const vjoin = joinVitals(`(_update_time AT TIME ZONE 'Asia/Kolkata')::date BETWEEN '${day}'::date - 1 AND '${day}'::date + 1`);
-  return `SELECT ${selectCols()} FROM ${SOURCE} ip ${join}${vjoin} WHERE ${baseWhere(day)}${notIn}${intakeExcludeClause(excludeDoctorUids)} ORDER BY ip.timestamp ASC LIMIT ${lim}`;
+  return `SELECT * FROM (SELECT DISTINCT ON (ip.uid) ${selectCols()} FROM ${SOURCE} ip ${join}${vjoin} WHERE ${baseWhere(day)}${notIn}${intakeExcludeClause(excludeDoctorUids)} ORDER BY ip.uid, ip._update_time DESC) t ORDER BY t."timestamp" ASC LIMIT ${lim}`;
 }
 
 /** Next page of non-draft medical notes for the day, excluding already-audited uids + house accounts. */

@@ -25,6 +25,7 @@ import { auditOpdNote } from '@/lib/opd-note-audit';
 import { countOpdNotesForDay, fetchOpdNotesForDay, fetchOpdNoteByUid, istYesterday } from '@/lib/metabase';
 import { saveOpdAudit, auditedUidsForDayAnyVersion, auditedCountForDayAnyVersion, earliestAuditedDay, deleteOpdAuditsForUid } from '@/lib/opd-audit-store';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
+import { startTrace, finishTrace } from '@/lib/trace';
 import { getSettings, setSetting } from '@/lib/mini-backfill';
 import { OPD_ENGINE_VERSION } from '@/lib/opd-note-audit-core';
 import { MINI_MODEL } from '@/lib/llm';
@@ -273,16 +274,39 @@ export async function GET(req: NextRequest) {
     for (let i = lookback - 1; i >= 0; i--) { const d = addDays(yesterday, -i); if (d >= floor) days.push(d); }
     const window = { from: days[0] ?? yesterday, to: yesterday };
 
+    // ── SWEEP-1 (D3/D4, 7 Aug 2026): a zero-progress day must not black out the days behind it ──
+    // The loop used to return after the FIRST incomplete day, whatever came of it. On the night of
+    // 6→7 Aug a duplicate db13 row made 5 Aug read 469 against 468 audited uids, so every tick
+    // re-opened 5 Aug, fetched nothing, and returned 200 — 120 cron invocations, zero traces, zero
+    // rows, and 6 August's 374 eligible notes never reached at all. A day that makes NO progress is
+    // now recorded and SKIPPED for this tick; the sweep moves on. Oldest-first still holds for
+    // every day that does progress, so this only ever relaxes a day that is already stuck.
+    const stalled: Array<{ day: string; total: number; audited: number; remaining: number }> = [];
     for (const d of days) {
       const total = await countOpdNotesForDay(d, exclude);
       if (total === 0) continue;
       const auditedCount = await auditedCountForDayAnyVersion(d);
-      if (auditedCount < total) {
-        const r = await processDay(d, max, conc, exclude, intended);
-        return NextResponse.json({ ok: true, mode: 'sweep', window, ...r });
+      if (auditedCount >= total) continue;
+      const r = await processDay(d, max, conc, exclude, intended);
+      // A recount inside processDay caught the day up (a concurrent tick finished it): complete,
+      // not stalled — nothing is wrong and nothing needs a trace.
+      if (r.done) continue;
+      if (r.processed === 0) {
+        // The count and the fetch disagree: the day says work remains, the fetch offers none.
+        // Numbers come from processDay's own read rather than the loop's, because those are the
+        // freshest and they are internally consistent (audited + remaining = total).
+        const mark = { day: d, total: r.total, audited: r.audited, remaining: r.remaining };
+        // ONE trace per stalled day per tick. Finished as 'error' deliberately: a silent 200 is
+        // exactly what hid this for a night, so the stall has to leave a mark that reads as wrong.
+        // Tracing never throws (lib/trace swallows its own errors), so this cannot break the sweep.
+        const traceId = await startTrace('opd_sweep_stall', mark);
+        await finishTrace(traceId, 'error', `sweep made no progress on ${d}: count says ${r.total}, ${r.audited} audited, the fetch returned no rows`);
+        stalled.push(mark);
+        continue;
       }
+      return NextResponse.json({ ok: true, mode: 'sweep', window, ...r, stalled_days: stalled });
     }
-    return NextResponse.json({ ok: true, mode: 'sweep', window, caughtUp: true, done: true, processed: 0 });
+    return NextResponse.json({ ok: true, mode: 'sweep', window, caughtUp: stalled.length === 0, done: stalled.length === 0, processed: 0, stalled_days: stalled });
   } catch (e) {
     return NextResponse.json({ ok: false, error: String((e as Error).message) }, { status: 500 });
   }
