@@ -75,25 +75,19 @@ export function bedrockConfiguredFrom(env: Record<string, string | undefined>): 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // Leg 1 — the Google ID token
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-
-export interface IdTokenClaims {
-  iss: string;
-  aud: string;
-  target_audience: string;
-  iat: number;
-  exp: number;
-}
-
-/**
- * The JWT-bearer claim set for an ID token. Identical to the access-token assertion
- * `getVertexAccessToken` already builds, with exactly one difference: `target_audience` replaces
- * `scope`. (The other difference is on the way back — the response field is `id_token`, not
- * `access_token`.) One hour of validity, matching the existing flow.
- */
-export function idTokenClaims(iss: string, tokenUri: string, audience: string, nowMs: number): IdTokenClaims {
-  const iat = Math.floor(nowMs / 1000);
-  return { iss, aud: tokenUri, target_audience: audience, iat, exp: iat + 3600 };
-}
+//
+// ⚠️ NOTHING PURE LIVES HERE ANY MORE, AND THAT IS THE FIX (7 Aug 2026).
+//
+// This section used to hold `idTokenClaims` — the JWT-bearer assertion shape (`target_audience` in
+// place of `scope`), tested to the letter. The shape was correct and the flow was wrong: Google's
+// token endpoint answers HTTP 400 `invalid_scope` for a numeric AWS audience, reproduced live
+// against the real service-account key. A pure function cannot catch that; only a live call can,
+// and the unit test that pinned the claim shape was quietly asserting the correctness of a request
+// that could never succeed.
+//
+// The mint is now two network steps with no interesting local arithmetic (access token →
+// IAM Credentials `:generateIdToken`), so it lives entirely in lib/gcp-auth.ts and is pinned by
+// request-shape assertions rather than by a value-returning helper. See `getGcpIdToken` there.
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // Leg 2 — the STS credential cache

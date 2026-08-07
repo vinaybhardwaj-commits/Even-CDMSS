@@ -121,20 +121,49 @@ export async function getVertexAccessToken(): Promise<string> {
   return cached.token;
 }
 
+/** The IAM Credentials `generateIdToken` endpoint. `projects/-` is the documented wildcard: the
+ *  project is inferred from the service-account email, so no project id is needed here. */
+export function generateIdTokenUrl(saEmail: string): string {
+  return `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${encodeURIComponent(saEmail)}:generateIdToken`;
+}
+
+/** Nominal ID-token lifetime. Google issues 1 hour; the shared 5-minute skew below makes the
+ *  USABLE life 55 minutes, which is the number to reason about (and the one the S1 warm-instance
+ *  refresh test is written against). The token's own `exp` is not decoded — see `getGcpIdToken`. */
+const ID_TOKEN_TTL_MS = 3600_000;
+
 /**
  * A Google **ID token** for `audience` — the first leg of the Bedrock chain (AWS STS
  * `AssumeRoleWithWebIdentity` trusts this token; see lib/bedrock.ts).
  *
- * The SAME RS256 JWT-bearer exchange `getVertexAccessToken` performs above, with exactly two
- * differences, both of which are the whole reason this cannot just call that function:
- *   1. the assertion carries `target_audience: <audience>` instead of `scope`;
- *   2. the response field is `id_token`, not `access_token`.
+ * ══ TWO STEPS, AND THE FIRST ONE IS THE FUNCTION ABOVE ═══════════════════════════════════════
+ *   1. a cloud-platform ACCESS token, via `getVertexAccessToken` (the existing JWT-bearer flow);
+ *   2. POST that as a bearer to IAM Credentials `:generateIdToken` with {audience, includeEmail},
+ *      and read the `token` field of the response.
  *
- * Cached per audience, refreshed 5 minutes before expiry — same discipline, same numbers. The
- * token is never logged. Google's ID tokens carry no `expires_in` on this exchange, so the 1-hour
- * validity we asserted in the claims IS the expiry (`exp = iat + 3600`), and we cache to it.
+ * ⚠️ WHY NOT THE JWT-BEARER FLOW, WHICH THIS FUNCTION USED UNTIL 7 AUG 2026. It looked like the
+ * natural extension of the exchange above — same assertion, `target_audience` in place of `scope`,
+ * `id_token` in place of `access_token` — and every reference for it says so. IT DOES NOT WORK FOR
+ * THIS AUDIENCE. Reproduced live against the real SA key: the token endpoint answers
+ * **HTTP 400 `invalid_scope`** for audience `588427270277`. A numeric AWS-style audience is not
+ * something that endpoint will mint for, full stop, and no amount of claim-shape tuning changes it.
  *
- * ADDITIVE: `getVertexAccessToken` above is byte-identical to before this function existed.
+ * The IAM Credentials path is what the source artifact's Go version actually used
+ * (`impersonate.IDTokenSource`), and it is proven end to end on this account: the minted token is
+ * accepted by STS (trust policy bound to sub 104742817559128344276), and Converse answered from all
+ * three models with usage reported. Everything downstream of this mint was already correct — the
+ * mint was the only broken link.
+ *
+ * PREREQUISITES, both verified live and neither in this repo: `iamcredentials.googleapis.com`
+ * enabled, and the SA holding `roles/iam.serviceAccountTokenCreator` ON ITSELF. A 403 here means
+ * one of those, and the error body says which — which is why the body travels with the error.
+ *
+ * Cached per audience, refreshed 5 minutes before expiry — same discipline and the same numbers as
+ * the access-token cache above. The token is never logged. Its `exp` claim is deliberately NOT
+ * decoded: a fixed 60-minute nominal life minus the shared skew is exactly as safe (Google issues
+ * one hour) and costs no JWT parsing on a path where a parse bug would be an outage.
+ *
+ * `getVertexAccessToken` is unchanged — this now DEPENDS on it rather than duplicating it.
  */
 export async function getGcpIdToken(audience: string): Promise<string> {
   const aud = String(audience ?? '').trim();
@@ -145,46 +174,35 @@ export async function getGcpIdToken(audience: string): Promise<string> {
   if (hit && hit.expiresAt - 5 * 60_000 > now) return hit.token;
 
   const sa = loadServiceAccount();
-  const tokenUri = sa.token_uri || 'https://oauth2.googleapis.com/token';
-  const iat = Math.floor(now / 1000);
-  const exp = iat + 3600;
+  // Step 1 — the cloud-platform access token that authorises the impersonation call. Its own cache
+  // and refresh discipline apply, so a warm instance usually spends no network here.
+  const accessToken = await getVertexAccessToken();
 
-  const header = b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
-  const claims = b64url(
-    JSON.stringify({
-      iss: sa.client_email,
-      // ⚠️ target_audience, NOT scope — this is what makes the exchange return an ID token.
-      target_audience: aud,
-      aud: tokenUri,
-      iat,
-      exp,
-    }),
-  );
-  const signingInput = `${header}.${claims}`;
-  const signature = b64url(
-    createSign('RSA-SHA256').update(signingInput).sign(sa.private_key),
-  );
-  const assertion = `${signingInput}.${signature}`;
-
-  const res = await fetch(tokenUri, {
+  // Step 2 — impersonate ourselves to mint an ID token for the AWS audience.
+  const res = await fetch(generateIdTokenUrl(sa.client_email), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-      assertion,
-    }),
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ audience: aud, includeEmail: true }),
   });
 
   if (!res.ok) {
-    // The BODY is the diagnosis (403-diagnosis §4.1) — a misconfigured audience and a disabled
-    // key read identically without it. It carries no token material.
+    // The BODY is the diagnosis (403-diagnosis §4.1): a missing serviceAccountTokenCreator, a
+    // disabled iamcredentials API and a wrong audience read identically without it. It carries no
+    // token material — the request body holds only the audience, and the bearer is in a header.
     const detail = await res.text().catch(() => '');
-    throw new Error(`Google ID-token exchange failed for audience ${aud} (${res.status}): ${detail.slice(0, 300)}`);
+    throw new Error(
+      `IAM Credentials generateIdToken failed for audience ${aud} as ${sa.client_email} (${res.status}): ${detail.slice(0, 300)}`,
+    );
   }
 
-  const json = (await res.json()) as { id_token?: string; expires_in?: number };
-  if (!json.id_token) throw new Error(`Google ID-token exchange returned no id_token for audience ${aud}`);
+  // ⚠️ THE RESPONSE FIELD IS `token`, not `id_token` — this endpoint is not the OAuth token
+  // endpoint and does not speak its dialect.
+  const json = (await res.json()) as { token?: string };
+  if (!json.token) throw new Error(`IAM Credentials generateIdToken returned no token for audience ${aud}`);
 
-  idTokenCache.set(aud, { token: json.id_token, expiresAt: now + (json.expires_in ?? 3600) * 1000 });
-  return json.id_token;
+  idTokenCache.set(aud, { token: json.token, expiresAt: now + ID_TOKEN_TTL_MS });
+  return json.token;
 }

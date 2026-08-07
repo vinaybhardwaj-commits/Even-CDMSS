@@ -6,7 +6,10 @@
  * WHAT IS PROVABLE WITHOUT AWS, AND WHY THAT IS THE RIGHT LINE. Three of this build's four
  * verification steps need a deployment (a live probe, a refusal probe, a 61-minute warm instance).
  * The DECISIONS underneath them do not, and those are what this file pins:
- *   1 · the ID-token claim shape — the one thing that makes the exchange return an id_token;
+ *   1 · the ID-token MINT — which endpoint, which body, which response field. Rewritten 7 Aug
+ *       after the shipped flow was reproduced returning HTTP 400 invalid_scope live: the shape it
+ *       used to pin was correct and the endpoint was wrong, so these assertions are now about the
+ *       request that was PROVEN to work, not about a locally-computed value;
  *   2 · the credential refresh decision — the 61-minute test, expressed as arithmetic;
  *   3 · the Converse mapping, both directions — including the two mappings that are load-bearing
  *       rather than cosmetic (stopReason → finish_reason, and usage → the cost tracker's shape);
@@ -21,9 +24,10 @@ import { readFileSync } from 'node:fs';
 import {
   BEDROCK_MODELS, BEDROCK_ENV_VARS, assertKnownBedrockModel, bedrockConfiguredFrom,
   bedrockModelLabel, credentialsUsable, CREDENTIAL_REFRESH_SKEW_MS, fromConverseOutput,
-  idTokenClaims, isKnownBedrockModel, mapStopReason, messageText, singleChunkStream,
+  isKnownBedrockModel, mapStopReason, messageText, singleChunkStream,
   toConverseInput,
 } from '../bedrock-core';
+import { generateIdTokenUrl } from '../gcp-auth';
 import { billableOutputTokens, priceFor, perCallInr, type Pricing } from '../llm-cost-core';
 import PRICING_JSON from '../../data/llm-pricing.json' with { type: 'json' };
 
@@ -46,32 +50,70 @@ const OPUS = 'global.anthropic.claude-opus-4-6-v1';
 // 1 · The Google ID token (C1)
 // ═════════════════════════════════════════════════════════════════════════════════════════════
 
-test('the ID-token assertion carries target_audience and NOT scope', () => {
-  const c = idTokenClaims('sa@p.iam.gserviceaccount.com', 'https://oauth2.googleapis.com/token', '588427270277', 1_700_000_000_000);
-  assert.deepEqual(c, {
-    iss: 'sa@p.iam.gserviceaccount.com',
-    aud: 'https://oauth2.googleapis.com/token',
-    target_audience: '588427270277',
-    iat: 1_700_000_000,
-    exp: 1_700_003_600,
-  });
-  // `scope` is what makes the SAME exchange return an ACCESS token. Both keys on one assertion is
-  // the one mistake that would silently produce the wrong credential type.
-  assert.ok(!('scope' in c));
-  assert.equal(c.exp - c.iat, 3600, 'one hour, same as the access-token flow');
+test('⚠️ THE MINT IS THE IAM CREDENTIALS API, NOT THE JWT-BEARER TOKEN ENDPOINT', () => {
+  // THE 7 AUG FAILURE. This flow shipped as an extension of getVertexAccessToken — same RS256
+  // assertion, `target_audience` in place of `scope`, `id_token` in place of `access_token`. Every
+  // reference describes it that way. Reproduced live against the real SA key, Google's token
+  // endpoint answers HTTP 400 `invalid_scope` for audience 588427270277: a numeric AWS-style
+  // audience is not something that endpoint will mint for. The claim shape was right and the
+  // endpoint was wrong, which is exactly the failure a pure claim-shape test cannot see.
+  const fn = GCP_AUTH.slice(GCP_AUTH.indexOf('export async function getGcpIdToken'));
+  // Stripped of comments throughout: the function documents what was disproven and why, which is
+  // the point; what must not survive is a LINE OF CODE that still sends it.
+  const body = code(fn);
+  assert.ok(!/target_audience/.test(body), 'the disproven claim must not survive anywhere in the mint');
+  assert.ok(!/jwt-bearer/.test(body), 'and neither may the grant type that rejected it');
+  assert.ok(!/createSign/.test(body), 'this function signs nothing — step 1 does that, once, for both tokens');
 });
 
-test('getGcpIdToken mirrors getVertexAccessToken, reads id_token, and caches PER AUDIENCE', () => {
+test('step 1 is the EXISTING access-token flow, reused rather than duplicated', () => {
   const fn = GCP_AUTH.slice(GCP_AUTH.indexOf('export async function getGcpIdToken'));
-  assert.ok(fn.includes('target_audience: aud'), 'the claim that selects an ID token');
-  assert.ok(!/\bscope:/.test(fn), 'no scope claim on this assertion');
-  assert.ok(fn.includes('id_token?: string'), 'the response field is id_token');
-  assert.ok(!/access_token/.test(fn), 'and never access_token');
-  assert.ok(fn.includes("createSign('RSA-SHA256')"), 'same pure-Node RS256 signing, no new dependency');
+  assert.ok(fn.includes('const accessToken = await getVertexAccessToken();'), 'one JWT-bearer implementation');
+  assert.ok(fn.includes('Authorization: `Bearer ${accessToken}`'), 'presented as a bearer, in a header');
+  // …and getVertexAccessToken itself is untouched by this fix.
+  assert.ok(GCP_AUTH.includes("scope: 'https://www.googleapis.com/auth/cloud-platform',"));
+  assert.ok(GCP_AUTH.includes("grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',"), 'still there, for the ACCESS token');
+});
+
+test('step 2 is :generateIdToken with {audience, includeEmail}, and reads `token`', () => {
+  // The URL, exactly: projects/- is the documented wildcard (the project comes from the SA email).
+  assert.equal(
+    generateIdTokenUrl('cdmss@clinical-infra.iam.gserviceaccount.com'),
+    'https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/cdmss%40clinical-infra.iam.gserviceaccount.com:generateIdToken');
+  assert.ok(generateIdTokenUrl('a+b@x.com').includes('a%2Bb%40x.com'), 'the email is URL-encoded');
+
+  const fn = GCP_AUTH.slice(GCP_AUTH.indexOf('export async function getGcpIdToken'));
+  assert.ok(fn.includes('fetch(generateIdTokenUrl(sa.client_email)'), 'impersonates the SA holding the key');
+  assert.ok(fn.includes("method: 'POST'"));
+  assert.ok(fn.includes("'Content-Type': 'application/json',"), 'JSON, not form-encoded');
+  assert.ok(fn.includes('body: JSON.stringify({ audience: aud, includeEmail: true }),'), 'the proven body');
+  // ⚠️ THE RESPONSE FIELD IS `token`. This endpoint does not speak the OAuth dialect, so reading
+  // `id_token` here would find undefined on a 200 and throw a "no token" error against a call that
+  // actually succeeded.
+  assert.ok(fn.includes('const json = (await res.json()) as { token?: string };'));
+  assert.ok(fn.includes('if (!json.token)'));
+  // Stripped of comments: the body's own note ("the response field is `token`, not `id_token`") is
+  // documentation worth keeping, but no CODE line may read that field.
+  assert.ok(!/id_token/.test(code(fn)), 'never id_token on this endpoint');
+});
+
+test('the failure carries the BODY and both identities — a 403 here is ambiguous without them', () => {
+  const fn = GCP_AUTH.slice(GCP_AUTH.indexOf('export async function getGcpIdToken'));
+  assert.ok(fn.includes('const detail = await res.text().catch(() => \'\');'));
+  assert.ok(fn.includes('`IAM Credentials generateIdToken failed for audience ${aud} as ${sa.client_email} (${res.status}): ${detail.slice(0, 300)}`'),
+    'names the audience, the impersonated identity, the status and the body — the three ways this fails ' +
+    '(no serviceAccountTokenCreator, iamcredentials API disabled, wrong audience) are indistinguishable otherwise');
+});
+
+test('cached per audience, 55 minutes of usable life, exp never decoded', () => {
+  const fn = GCP_AUTH.slice(GCP_AUTH.indexOf('export async function getGcpIdToken'));
   assert.ok(fn.includes('idTokenCache.get(aud)') && fn.includes('idTokenCache.set(aud'), 'keyed by audience');
-  assert.ok(fn.includes('hit.expiresAt - 5 * 60_000 > now'), 'refreshes 5 minutes before expiry');
-  // ADDITIVE: the existing minting path is untouched.
-  assert.ok(GCP_AUTH.includes("scope: 'https://www.googleapis.com/auth/cloud-platform',"), 'getVertexAccessToken keeps its scope claim');
+  assert.ok(fn.includes('hit.expiresAt - 5 * 60_000 > now'), 'the same 5-minute skew the file already uses');
+  assert.ok(fn.includes('expiresAt: now + ID_TOKEN_TTL_MS'));
+  assert.ok(GCP_AUTH.includes('const ID_TOKEN_TTL_MS = 3600_000;'), '60 nominal − 5 skew = 55 usable');
+  // No JWT parsing on this path: a decode bug here would be an outage, and the fixed life is
+  // exactly as safe because Google issues one hour.
+  assert.ok(!/atob|JSON\.parse\(Buffer\.from|split\('\.'\)/.test(fn), 'the token payload is never decoded');
 });
 
 test('no log line in the auth chain can print a token, key or credential', () => {
