@@ -139,6 +139,32 @@ export interface ChatParams {
   [k: string]: unknown;
 }
 
+/**
+ * OUTPUT FLOOR for a Bedrock call (7 Aug 2026, measured).
+ *
+ * ⚠️ BEDROCK WAS THE ONLY CLOUD PROVIDER GETTING THE MINI'S CAP RAW. Both other cloud paths already
+ * rewrite the caller's ceiling before it goes out — `baseMax + 8192` in lib/trace.ts and lib/llm.ts
+ * — because a cap tuned for qwen (700–800 tokens on the critique legs) does not fit a frontier
+ * model's output. This transport passed it straight through, so the caps stayed mini-sized and only
+ * on Bedrock.
+ *
+ * What that cost, live: an ask `critique` leg (max_tokens 800) came back HTTP 200
+ * `finish_reason=length` at ~2,900 characters, three times. The JSON critique never closed, so it
+ * never parsed, so the run recorded ZERO issues — an un-critiqued answer that reads exactly like a
+ * clean one. The critic was not lenient; it never finished a sentence.
+ *
+ * A FLOOR, not an addend, and that difference is the point. Gemini's `+8192` exists because a
+ * thinking model spends output budget on hidden reasoning BEFORE the answer, so it needs headroom
+ * proportional to nothing the caller can see. Claude on Converse (no extended thinking here) spends
+ * none — it simply writes longer prose than a 7B model. So the fix is "never less than enough to
+ * finish", while a caller that deliberately asks for MORE keeps its own number.
+ *
+ * 4096 is sized from the observed truncation (~800 tokens produced ~2,900 chars of an unfinished
+ * critique): comfortably more than double the point of failure, and bounded in cost by actual
+ * generation — an unused ceiling is free.
+ */
+export const BEDROCK_MIN_MAX_TOKENS = 4096;
+
 export interface ConverseInput {
   modelId: string;
   system?: Array<{ text: string }>;
@@ -196,7 +222,9 @@ export function toConverseInput(params: ChatParams, modelId: string): ConverseIn
 
   const inferenceConfig: { maxTokens?: number; temperature?: number } = {};
   const maxTokens = Number(params.max_tokens);
-  if (Number.isFinite(maxTokens) && maxTokens > 0) inferenceConfig.maxTokens = Math.floor(maxTokens);
+  if (Number.isFinite(maxTokens) && maxTokens > 0) {
+    inferenceConfig.maxTokens = Math.max(Math.floor(maxTokens), BEDROCK_MIN_MAX_TOKENS);
+  }
   const temperature = Number(params.temperature);
   if (Number.isFinite(temperature)) inferenceConfig.temperature = temperature;
 

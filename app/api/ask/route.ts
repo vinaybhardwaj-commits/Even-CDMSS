@@ -284,6 +284,14 @@ export async function POST(req: NextRequest) {
           citation_problems?: string[]; missing_relevant_evidence?: string[]; important_omissions?: string[];
           needs_revision?: boolean; overall_severity?: string;
         } = { needs_revision: false };
+        // ⚠️ DID THE CRITIC ACTUALLY RUN? (7 Aug 2026.) The catch below swallows every failure —
+        // a transport error, a truncated response, unparseable JSON — and leaves the default
+        // `{ needs_revision: false }`, which scores ZERO issues and severity 'none'. That is
+        // indistinguishable from a draft the critic read and passed, and it is what a live Bedrock
+        // run produced when its critique truncated: a stored answer that looked audited and clean
+        // and had never been audited at all. The severity vocabulary is unchanged (readers depend
+        // on it); this flag rides beside it so "0 issues" can be told from "no critique".
+        let criticRan = true;
         try {
           const critiqueRes = await tracedChat(traceId, 'critique', {
             model: CRITIQUE_MODEL,  // 7b instead of 14b — ~3x faster, audit quality acceptable
@@ -302,7 +310,8 @@ export async function POST(req: NextRequest) {
           if (a >= 0 && b > a) critiqueRaw = critiqueRaw.slice(a, b + 1);
           critiqueJson = JSON.parse(critiqueRaw);
         } catch (e) {
-          console.warn('[ask critique] parse failed', (e as Error).message);
+          criticRan = false;
+          console.warn('[ask critique] did not complete — the draft is UNAUDITED, not clean:', (e as Error).message);
         }
         await logStreamComplete(traceId, 'critique', JSON.stringify(critiqueJson), critiqueStart, { model: CRITIQUE_MODEL });
 
@@ -321,6 +330,7 @@ export async function POST(req: NextRequest) {
             issue_count: issueCount,
             severity,
             needs_revision: critiqueJson.needs_revision,
+            critic_ran: criticRan,
             critique: critiqueJson,
           }),
           setTraceSeverity(traceId, severity),
@@ -330,6 +340,7 @@ export async function POST(req: NextRequest) {
           type: 'critique',
           severity,
           issue_count: issueCount,
+          critic_ran: criticRan,
           details: critiqueJson,
         });
 

@@ -417,6 +417,9 @@ export async function POST(req: NextRequest) {
           missing_evidence?: string[]; investigation_problems?: string[]; citation_problems?: string[];
           needs_revision?: boolean; overall_severity?: string;
         } = { needs_revision: false };
+        // Same swallow, same consequence as /api/ask — see the note there. Fixed together because
+        // one of the two staying silent is how this class survives.
+        let criticRan = true;
         try {
           const critRes = await tracedChat(traceId, 'ddx_critique', {
             model: DDX_DRAFT_MODEL,
@@ -433,7 +436,10 @@ export async function POST(req: NextRequest) {
           const a = critRaw.indexOf('{'); const b = critRaw.lastIndexOf('}');
           if (a >= 0 && b > a) critRaw = critRaw.slice(a, b + 1);
           critiqueJson = JSON.parse(critRaw);
-        } catch (e) { console.warn('[ddx critique] parse failed', (e as Error).message); }
+        } catch (e) {
+          criticRan = false;
+          console.warn('[ddx critique] did not complete — the draft is UNAUDITED, not clean:', (e as Error).message);
+        }
 
         const issueCount = (critiqueJson.demographic_impossibility?.length || 0)
           + (critiqueJson.fabricated_findings?.length || 0)
@@ -455,12 +461,13 @@ export async function POST(req: NextRequest) {
             issue_count: issueCount,
             severity,
             needs_revision: critiqueJson.needs_revision,
+            critic_ran: criticRan,
             critique: critiqueJson,
           }),
           setTraceSeverity(traceId, severity),
         ]);
 
-        emit({ type: 'critique', severity, issue_count: issueCount, details: critiqueJson });
+        emit({ type: 'critique', severity, issue_count: issueCount, critic_ran: criticRan, details: critiqueJson });
 
         // Classic always revises when flagged. Hypothesis-first only revises on a
         // MAJOR audit (the reasoned synthesis is already strong) — saves a whole

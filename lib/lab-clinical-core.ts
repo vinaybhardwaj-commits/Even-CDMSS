@@ -32,6 +32,9 @@ export interface DdxProbe {
   n_plos: number;
   critique_severity: string | null;
   critique_issue_count: number | null;
+  /** FALSE when the critique leg did not complete — `critique_issue_count: 0` then means the draft
+   *  is UNAUDITED, not clean. Null on a stream that emitted no critique event at all. */
+  critic_ran: boolean | null;
   demographic_removed: string[];
   result: Record<string, unknown> | null;
   /** The route's trace id, off the terminal `done` event (F11 DEC-2). Null on an older route or a
@@ -47,7 +50,7 @@ export function reduceDdxEvents(events: NdjsonEvent[]): DdxProbe {
   const base: DdxProbe = {
     ok: false, error: null, summary: '', cannot_miss: [], most_likely: [], other: [],
     n_sources: 0, n_plos: 0, critique_severity: null, critique_issue_count: null,
-    demographic_removed: [], result: null, trace_id: null,
+    demographic_removed: [], result: null, trace_id: null, critic_ran: null,
   };
   let sawDone = false;
   for (const e of events) {
@@ -59,6 +62,7 @@ export function reduceDdxEvents(events: NdjsonEvent[]): DdxProbe {
       case 'critique':
         base.critique_severity = typeof e.severity === 'string' ? e.severity : base.critique_severity;
         base.critique_issue_count = typeof e.issue_count === 'number' ? e.issue_count : base.critique_issue_count;
+        if (typeof e.critic_ran === 'boolean') base.critic_ran = e.critic_ran;
         break;
       case 'result': {
         const d = (e.data && typeof e.data === 'object' ? e.data : {}) as Record<string, unknown>;
@@ -92,6 +96,9 @@ export interface AskProbe {
   n_plos: number;
   revised: boolean;
   critique_issue_count: number | null;
+  /** FALSE when the critique leg did not complete — `critique_issue_count: 0` then means the draft
+   *  is UNAUDITED, not clean. Null on a stream that emitted no critique event at all. */
+  critic_ran: boolean | null;
   citation_ids: number[];
   uncited: boolean;         // answer text present but no [n] citations at all → cite-or-label canary
   result: Record<string, unknown> | null;
@@ -113,6 +120,7 @@ export function reduceAskEvents(events: NdjsonEvent[]): AskProbe {
   let n_sources = 0, n_plos = 0;
   let revised = false;
   let critique_issue_count: number | null = null;
+  let critic_ran: boolean | null = null;
   let error: string | null = null;
   let sawDone = false;
   let traceId: string | null = null;
@@ -134,6 +142,7 @@ export function reduceAskEvents(events: NdjsonEvent[]): AskProbe {
       case 'critique':
       case 'audit':
         if (typeof e.issue_count === 'number') critique_issue_count = e.issue_count as number;
+        if (typeof e.critic_ran === 'boolean') critic_ran = e.critic_ran as boolean;
         break;
       case 'error':
         error = String(e.message || 'error');
@@ -154,6 +163,7 @@ export function reduceAskEvents(events: NdjsonEvent[]): AskProbe {
     answer_chars: answer.length,
     n_sources, n_plos, revised,
     critique_issue_count,
+    critic_ran,
     citation_ids,
     uncited: answer.length > 40 && citation_ids.length === 0,
     result: { answer, n_sources, n_plos, revised, citation_ids },

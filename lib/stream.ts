@@ -14,7 +14,11 @@ export type Stage = 'expanding' | 'variants' | 'retrieving' | 'reranking' | 'fus
 export type ProgressEvent =
   | { type: 'progress'; stage: Stage; msg: string; ms?: number }
   | { type: 'sources'; items: unknown[]; plos?: unknown[] }
-  | { type: 'critique'; severity: string; issue_count: number; details: Record<string, unknown> }
+  // critic_ran (7 Aug 2026): FALSE when the critique leg failed — transport error, truncated
+  // response, unparseable JSON. Without it `issue_count: 0` means both "read and passed" and
+  // "never ran", and a live Bedrock run produced the second while looking like the first.
+  // Optional, so every existing emitter and consumer is unchanged.
+  | { type: 'critique'; severity: string; issue_count: number; details: Record<string, unknown>; critic_ran?: boolean }
   | { type: 'draft_complete'; chars: number }
   | { type: 'draft_superseded'; reason: string }
   | { type: 'token'; content: string }

@@ -22,7 +22,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  BEDROCK_MODELS, BEDROCK_ENV_VARS, assertKnownBedrockModel, bedrockConfiguredFrom,
+  BEDROCK_MODELS, BEDROCK_ENV_VARS, BEDROCK_MIN_MAX_TOKENS, assertKnownBedrockModel, bedrockConfiguredFrom,
   bedrockModelLabel, credentialsUsable, CREDENTIAL_REFRESH_SKEW_MS, fromConverseOutput,
   isKnownBedrockModel, mapStopReason, messageText, singleChunkStream,
   toConverseInput,
@@ -238,7 +238,10 @@ test('OpenAI chat params → Converse: system split out, roles mapped, inference
     modelId: HAIKU,
     system: [{ text: 'You are an auditor.' }],
     messages: [{ role: 'user', content: [{ text: 'Grade this note.' }] }],
-    inferenceConfig: { maxTokens: 2200, temperature: 0.2 },
+    // ⚠️ 2200 → 4096 on 7 Aug (S1.3): the caller's cap is lifted to BEDROCK_MIN_MAX_TOKENS. This
+    // transport was the only cloud path passing a mini-sized ceiling through raw, and a live
+    // critique leg truncated at 800 because of it. See truncation-not-retried.test.ts.
+    inferenceConfig: { maxTokens: BEDROCK_MIN_MAX_TOKENS, temperature: 0.2 },
   });
   // The Ollama-only params and the local model name are dropped, exactly as the other two
   // providers' branches drop them — Bedrock rejects unknown fields.

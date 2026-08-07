@@ -29,7 +29,7 @@
  * obligations; the policy can never diverge again because there is only one copy of it.
  */
 
-import { classifyProviderResponse, ProviderResponseError, type ProviderResponseDefect } from './provider-error-core';
+import { classifyProviderResponse, isRetryableDefect, ProviderResponseError, type ProviderResponseDefect } from './provider-error-core';
 
 /** Bounded retry: 3 tries total, retrying ONLY transient statuses (429/5xx) with jittered
  *  exponential backoff (~0.5s/1s/2s × [0.5,1.5)). A non-transient status or the final failure
@@ -266,7 +266,13 @@ export async function createWithRetry(
     const defect = classify(res);
     if (!defect) return res;
     const err = new ProviderResponseError(defect, provider, cfg.model ?? null);
-    const willRetry = attempt < maxTries;
+    // ⚠️ NOT EVERY BAD 200 IS WORTH ANOTHER ATTEMPT (7 Aug 2026). A `finish_reason` defect means the
+    // model RAN and stopped for a reason we cannot use — `length` (the caller's cap was too small)
+    // or `content_filter`. Both are functions of the request, so an identical retry reproduces them:
+    // measured on a live Bedrock critique leg, three attempts truncated identically and burned 54 s
+    // of one run. It surfaces immediately now, as the sizing bug it is. The empty-200 class
+    // (no_choices / empty_content) — the one this loop was built for — retries exactly as before.
+    const willRetry = attempt < maxTries && isRetryableDefect(defect);
     report({
       provider, attempt, maxTries, willRetry,
       kind: 'bad_response', status: null, message: err.message.slice(0, 300),

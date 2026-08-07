@@ -147,6 +147,33 @@ export function classifyProviderResponse(result: unknown): ProviderResponseDefec
   return null;
 }
 
+/**
+ * IS THIS DEFECT WORTH ANOTHER ATTEMPT? (7 Aug 2026, measured on a live Bedrock critique leg.)
+ *
+ * ⚠️ WHAT THIS COSTS WHEN IT IS WRONG. A Bedrock `critique` call returned HTTP 200 with
+ * `finish_reason=length` — it had written ~2,900 characters and hit the leg's `max_tokens`. The
+ * shared loop treated that like any other bad 200 and retried it twice more, on the same prompt
+ * with the same cap, and got the same truncation both times: 54 seconds of a single run spent
+ * re-proving a deterministic outcome.
+ *
+ * THE RULE: a defect that says THE CALL COMPLETED is not retryable; a defect that says WE GOT
+ * NOTHING BACK is.
+ *   · `no_choices` / `empty_content` — the measured OpenRouter class (1,523 of 3,963 responses on
+ *     31 Jul). The provider hiccuped and returned a husk; another attempt genuinely may succeed.
+ *   · `finish_reason` — the model ran and stopped for a reason we cannot use: `length` (the caller's
+ *     cap was too small) or `content_filter` (the input was refused). Both are functions of the
+ *     REQUEST, not of the moment. Identical input reproduces them.
+ *
+ * A truncated leg is a SIZING bug and it must surface as one, immediately, instead of hiding
+ * behind three attempts' worth of latency. The retry loop cannot fix it: the cap belongs to the
+ * call site, and silently re-issuing a caller's request with different generation parameters would
+ * mean the answer that came back was not produced under the settings the call site asked for.
+ */
+export function isRetryableDefect(d: ProviderResponseDefect | null | undefined): boolean {
+  if (!d) return false;
+  return d.kind !== 'finish_reason';
+}
+
 /** The failure message. NORMATIVE — like emptyContentErrorMessage on the eval path, this string IS
  *  the instrumentation for any caller that only ever sees `(e as Error).message`. */
 export function providerResponseErrorMessage(d: ProviderResponseDefect, provider: string, model: string | null): string {
