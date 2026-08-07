@@ -34,6 +34,9 @@ export interface DdxProbe {
   critique_issue_count: number | null;
   demographic_removed: string[];
   result: Record<string, unknown> | null;
+  /** The route's trace id, off the terminal `done` event (F11 DEC-2). Null on an older route or a
+   *  stream that never reached `done` — the attribution check treats null as "no evidence". */
+  trace_id: string | null;
 }
 
 const dxNames = (arr: unknown): string[] =>
@@ -44,7 +47,7 @@ export function reduceDdxEvents(events: NdjsonEvent[]): DdxProbe {
   const base: DdxProbe = {
     ok: false, error: null, summary: '', cannot_miss: [], most_likely: [], other: [],
     n_sources: 0, n_plos: 0, critique_severity: null, critique_issue_count: null,
-    demographic_removed: [], result: null,
+    demographic_removed: [], result: null, trace_id: null,
   };
   let sawDone = false;
   for (const e of events) {
@@ -71,6 +74,7 @@ export function reduceDdxEvents(events: NdjsonEvent[]): DdxProbe {
         break;
       case 'done':
         sawDone = true;
+        if (typeof e.trace_id === 'string' && e.trace_id) base.trace_id = e.trace_id;
         break;
       default: break;
     }
@@ -91,6 +95,9 @@ export interface AskProbe {
   citation_ids: number[];
   uncited: boolean;         // answer text present but no [n] citations at all → cite-or-label canary
   result: Record<string, unknown> | null;
+  /** The route's trace id, off the terminal `done` event (F11 DEC-2). Null on an older route or a
+   *  stream that never reached `done` — the attribution check treats null as "no evidence". */
+  trace_id: string | null;
 }
 
 /** Distinct bracketed citation ids like [1] [P2] → numeric ids only (PLOS Pn tracked separately). */
@@ -108,6 +115,7 @@ export function reduceAskEvents(events: NdjsonEvent[]): AskProbe {
   let critique_issue_count: number | null = null;
   let error: string | null = null;
   let sawDone = false;
+  let traceId: string | null = null;
   // The final answer is the LAST contiguous run of token deltas (a revised answer
   // supersedes the draft). Reset the buffer when a revision run starts.
   for (const e of events) {
@@ -132,6 +140,7 @@ export function reduceAskEvents(events: NdjsonEvent[]): AskProbe {
         break;
       case 'done':
         sawDone = true;
+        if (typeof e.trace_id === 'string' && e.trace_id) traceId = e.trace_id;
         break;
       default: break;
     }
@@ -148,6 +157,7 @@ export function reduceAskEvents(events: NdjsonEvent[]): AskProbe {
     citation_ids,
     uncited: answer.length > 40 && citation_ids.length === 0,
     result: { answer, n_sources, n_plos, revised, citation_ids },
+    trace_id: traceId,
   };
 }
 

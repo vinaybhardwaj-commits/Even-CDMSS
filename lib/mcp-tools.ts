@@ -7,7 +7,7 @@
  */
 import { auditOpdNote, opdMiniEngine } from './opd-note-audit';
 import { OPD_AUDIT_SYSTEM, buildOpdAuditUser } from './opd-note-audit-core';
-import { MINI_MODEL } from './llm';
+import { MINI_MODEL, modelsAgree } from './llm';
 import { governedChat } from './trace';
 import { fetchOpdNoteByUid } from './metabase';
 import { sql } from './db';
@@ -30,9 +30,12 @@ import { readState, setSetting, MB_KEYS } from './mini-backfill';
 import { LB_KEYS, sanitizeUids, clampN, clampEvalConcurrency } from './lab-batch-core';
 import { readBatchState, batchProgress, batchTick } from './lab-batch';
 import {
-  ensureLabTables, saveLabAnalysis, countPaidRuns, updateLabAnalysis, listLabAnalyses, getLabAnalysis, labLabel,
+  ensureLabTables, saveLabAnalysis, countPaidRuns, updateLabAnalysis, correctLabAttribution, listLabAnalyses, getLabAnalysis, labLabel,
   corpusAddQuarantined, corpusActivate, corpusDelete, corpusLabList, labStorage,
 } from './lab';
+import {
+  ANSWER_LEGS, attributionErrorOutput, checkAttribution, type ServedCall,
+} from './lab-attribution-core';
 import {
   parseNdjson, reduceDdxEvents, reduceAskEvents, reduceAppropriatenessEvents,
   reduceDocAuditEvents, labSelfBaseUrl,
@@ -577,21 +580,100 @@ async function resolveProbeModel(a: Record<string, unknown>, experiment: string)
   return { ok: true, provider: r.provider, model: r.model, paid: true };
 }
 
+/**
+ * What the TRACE says ran, for the legs an override steers (F11 DEC-2, 7 Aug 2026).
+ *
+ * Reads `call_provider`/`call_model` off the envelope columns rather than the payload: the payload
+ * is PHI-bearing (prompt + completion text) and these columns exist precisely so attribution can be
+ * read without touching it. Falls back to the payload's two scalar fields when the 0012 envelope
+ * columns are null, which is the case for any event written before that migration.
+ *
+ * Best-effort by construction — a lookup failure returns [] and `checkAttribution` treats an empty
+ * result as "no evidence", which REFUSES a paid claim rather than passing it.
+ */
+async function servedCallsForTrace(traceId: string | null | undefined, legs: readonly string[]): Promise<ServedCall[]> {
+  if (!traceId || !legs.length) return [];
+  try {
+    const rows = await run(
+      `SELECT stage,
+              COALESCE(call_provider, payload->>'provider') AS provider,
+              COALESCE(call_model, payload->>'model')       AS model
+         FROM trace_events
+        WHERE trace_id = $1
+          AND kind IN ('llm_response', 'llm_stream_usage')
+          AND stage = ANY($2::text[])
+        ORDER BY seq ASC`,
+      [traceId, legs as string[]],
+    );
+    return rows.map((r) => ({
+      stage: r.stage == null ? null : String(r.stage),
+      provider: r.provider == null ? null : String(r.provider),
+      model: r.model == null ? null : String(r.model),
+    }));
+  } catch { return []; }
+}
+
 async function runLabProbe(opts: {
   experiment: string; kind: string; engine: string; inputPreview: string; inputRef?: string | null;
   /** F11 — the RESOLVED provider/model. Omitted ⇒ the local mini, byte-identical to before. */
   provider?: string; model?: string;
+  /**
+   * F11 DEC-2 (7 Aug 2026) — VERIFY THE CLAIM BEFORE STORING IT.
+   *
+   * `feature` selects the answer legs (ANSWER_LEGS); `traceIdOf` digs the route's trace id out of
+   * the probe output. Omitted ⇒ no check, for the probes whose routes are not F11-wired and cannot
+   * therefore misattribute (they have no `model` parameter at all).
+   */
+  attribution?: { feature: keyof typeof ANSWER_LEGS; traceIdOf: (output: Record<string, unknown>) => string | null };
   run: () => Promise<{ output: Record<string, unknown>; summary: Record<string, unknown> }>;
 }): Promise<ToolResult> {
   await ensureLabTables();
   const startedAt = Date.now();
+  const requested = { provider: opts.provider ?? 'ollama', model: opts.model ?? MINI_MODEL };
   const runId = await saveLabAnalysis({
     experiment: opts.experiment, kind: opts.kind, engine: opts.engine, inputRef: opts.inputRef ?? null,
-    inputPreview: opts.inputPreview, model: opts.model ?? MINI_MODEL, provider: opts.provider ?? 'ollama', latencyMs: null,
+    inputPreview: opts.inputPreview, model: requested.model, provider: requested.provider, latencyMs: null,
     output: { status: 'pending', started_at: new Date().toISOString() },
   });
   try {
     const { output, summary } = await opts.run();
+
+    // ══ THE ATTRIBUTION GATE ═════════════════════════════════════════════════════════════════
+    // Before this existed, the row was stamped from `resolveProbeModel` — i.e. from what the
+    // caller ASKED FOR. On 7 Aug that stored a Bedrock claim over an answer three qwen legs had
+    // produced, silently, because the route's override gate had refused the override and a refusal
+    // is (by A12 design) invisible to the caller. A resolver can only ever know the ask; only the
+    // trace knows the answer.
+    if (opts.attribution) {
+      const traceId = opts.attribution.traceIdOf(output);
+      const served = await servedCallsForTrace(traceId, ANSWER_LEGS[opts.attribution.feature] ?? []);
+      const verdict = checkAttribution(requested, served, modelsAgree);
+      if (!verdict.ok) {
+        // The row keeps the evidence and STOPS ASSERTING THE MODEL IT CANNOT SHOW. On a mismatch
+        // the columns become what served (so aggregates, the paid ceiling and lab_query all read
+        // the truth); on an unprovable paid claim there is nothing truthful to name, so the
+        // columns are nulled rather than left lying.
+        const servedLast = verdict.served[verdict.served.length - 1];
+        await correctLabAttribution(
+          runId,
+          attributionErrorOutput({ ...output }, requested, verdict),
+          Date.now() - startedAt,
+          verdict.reason === 'mismatch' ? (servedLast?.provider ?? null) : null,
+          verdict.reason === 'mismatch' ? (servedLast?.model ?? null) : null,
+        );
+        console.error(`[lab-attribution] run_id=${runId} experiment=${opts.experiment} ${verdict.message}`);
+        return err(`${opts.kind} probe REFUSED (run_id ${runId}): ${verdict.message}`);
+      }
+      // Verified: store what SERVED, which may differ from the request in provider only (a
+      // legitimate ladder hop) and must still be recorded as the truth.
+      await correctLabAttribution(
+        runId,
+        { status: 'done', ...output, attribution: { verified: verdict.verified, provider: verdict.provider, model: verdict.model, ...(verdict.reason ? { note: verdict.reason } : {}) } },
+        Date.now() - startedAt, verdict.provider, verdict.model,
+      );
+      return ok({ run_id: runId, experiment: opts.experiment, kind: opts.kind, status: 'done', ...summary, provider: verdict.provider, model: verdict.model, attribution_verified: verdict.verified, ms: Date.now() - startedAt });
+    }
+
     await updateLabAnalysis(runId, { status: 'done', ...output }, Date.now() - startedAt);
     return ok({ run_id: runId, experiment: opts.experiment, kind: opts.kind, status: 'done', ...summary, ms: Date.now() - startedAt });
   } catch (e) {
@@ -615,9 +697,11 @@ async function labDdx(a: Record<string, unknown>): Promise<ToolResult> {
     experiment, kind: 'ddx', engine: `ddx-route/${engineSuffix(M.provider)}`,
     inputPreview: [presentation.age, presentation.sex, cc].filter(Boolean).join(' / ').slice(0, 300),
     provider: M.provider, model: M.model,
+    // DEC-2: the stored provider/model are settled against the trace, not against M.
+    attribution: { feature: 'ddx', traceIdOf: (o) => (typeof o.trace_id === 'string' ? o.trace_id : null) },
     run: async () => {
       const probe = reduceDdxEvents(parseNdjson(await selfPostNdjson('/api/ddx', labBody(presentation, a), labHeaders(a))));
-      return { output: { presentation, provider: M.provider, model: M.model, ...probe }, summary: { ok: probe.ok, provider: M.provider, model: M.model } };
+      return { output: { presentation, ...probe }, summary: { ok: probe.ok } };
     },
   });
 }
@@ -631,9 +715,11 @@ async function labAsk(a: Record<string, unknown>): Promise<ToolResult> {
   return runLabProbe({
     experiment, kind: 'ask', engine: `ask-route/${engineSuffix(M.provider)}`, inputPreview: question.slice(0, 300),
     provider: M.provider, model: M.model,
+    // DEC-2: the stored provider/model are settled against the trace, not against M.
+    attribution: { feature: 'ask', traceIdOf: (o) => (typeof o.trace_id === 'string' ? o.trace_id : null) },
     run: async () => {
       const probe = reduceAskEvents(parseNdjson(await selfPostNdjson('/api/ask', labBody({ question, investigations: S(a.investigations) || undefined }, a), labHeaders(a))));
-      return { output: { question, provider: M.provider, model: M.model, ...probe }, summary: { ok: probe.ok, provider: M.provider, model: M.model } };
+      return { output: { question, ...probe }, summary: { ok: probe.ok } };
     },
   });
 }

@@ -609,7 +609,14 @@ test('F11: provider is recorded on lab_analyses alongside the RESOLVED model', (
   assert.match(LAB_SRC, /provider IS NOT NULL AND provider <> 'ollama'/);
   const SRC = readFileSync(new URL('../mcp-tools.ts', import.meta.url), 'utf8');
   assert.match(SRC, /provider: M\.provider, model: M\.model,/);
-  assert.match(SRC, /model: opts\.model \?\? MINI_MODEL, provider: opts\.provider \?\? 'ollama'/);
+  // ⚠️ REPHRASED 7 Aug 2026 (F11 DEC-2), same property. The requested provider/model still reach
+  // the pending row through one expression — it is now named `requested`, because that is what it
+  // is: a statement of intent. It is what the row OPENS with, no longer what the row is allowed to
+  // END with. On a checked probe the final columns are settled against the trace (see
+  // lib/lab-attribution-core.ts and lib/__tests__/lab-attribution.test.ts), after a run stored a
+  // Bedrock claim over three qwen legs.
+  assert.match(SRC, /const requested = \{ provider: opts\.provider \?\? 'ollama', model: opts\.model \?\? MINI_MODEL \};/);
+  assert.match(SRC, /inputPreview: opts\.inputPreview, model: requested\.model, provider: requested\.provider,/);
 });
 
 test('F11: NO route file was touched in this build', () => {

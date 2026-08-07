@@ -538,7 +538,11 @@ export async function POST(req: NextRequest) {
         setTraceFinalAnswer(traceId, finalAnswerText),
       ]);
 
-      emit({ type: 'done', ms: Date.now() - t0 });
+      // trace_id rides the terminal event (F11 DEC-2, 7 Aug 2026) so a lab probe can ask the
+      // TRACE what served it instead of asserting what it asked for. Additive: every existing
+      // consumer ignores unknown fields, and the id is an opaque key that unlocks nothing
+      // without the admin gate.
+      emit({ type: 'done', ms: Date.now() - t0, trace_id: traceId });
     } catch (e) {
       outcome = 'error';
       outcomeMsg = String((e as Error).message);

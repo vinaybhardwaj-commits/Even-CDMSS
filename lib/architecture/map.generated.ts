@@ -435,6 +435,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "lab-attribution-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "lab-batch",
     "plane": "unregistered"
   },
@@ -3334,6 +3338,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "mcp-tools",
     "to": "lab",
+    "kind": "value"
+  },
+  {
+    "from": "mcp-tools",
+    "to": "lab-attribution-core",
     "kind": "value"
   },
   {

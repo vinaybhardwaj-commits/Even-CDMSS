@@ -4,7 +4,7 @@
 //   { type: 'sources',  items }
 //   { type: 'token',    content }            (streaming endpoints only)
 //   { type: 'result',   data }                (non-streaming endpoints)
-//   { type: 'done',     ms }
+//   { type: 'done',     ms, trace_id? }
 //   { type: 'error',    message }
 
 export type Stage = 'expanding' | 'variants' | 'retrieving' | 'reranking' | 'fusing' | 'generating' | 'drafting' | 'reviewing' | 'revising' | 'finalizing' | 'parsing' | 'persisting' | 'done'
@@ -19,7 +19,11 @@ export type ProgressEvent =
   | { type: 'draft_superseded'; reason: string }
   | { type: 'token'; content: string }
   | { type: 'result'; data: unknown }
-  | { type: 'done'; ms: number }
+  // trace_id (F11 DEC-2, 7 Aug 2026): OPTIONAL, and only the two F11-wired routes set it. It lets
+  // a lab probe settle its stored attribution against what the TRACE says served the run, instead
+  // of against what it asked for — the difference between a fact and an intention. Optional keeps
+  // every other emitter and consumer byte-identical; unknown fields were already ignored.
+  | { type: 'done'; ms: number; trace_id?: string }
   | { type: 'pubchem_facts'; data: unknown }                                              // v1.9
   | { type: 'class_overlap'; pairs: unknown[] }                                            // v1.9
   | { type: 'error'; message: string };

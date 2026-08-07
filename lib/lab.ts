@@ -104,6 +104,24 @@ export async function updateLabAnalysis(id: string, output: unknown, latencyMs?:
   );
 }
 
+/**
+ * F11 DEC-2 (7 Aug 2026) — rewrite a row's ATTRIBUTION COLUMNS to what actually served.
+ *
+ * Separate from `updateLabAnalysis` on purpose, and additive: every existing caller keeps writing
+ * output alone, byte-identically. `provider`/`model` are the two columns a reader trusts — the
+ * paid-run ceiling counts `provider`, `lab_query`/`audit_query` group by `model` — so correcting
+ * them is what actually retires a false claim. Leaving the claim in place and appending a note
+ * beside it would leave every aggregate still wrong.
+ */
+export async function correctLabAttribution(
+  id: string, output: unknown, latencyMs: number | null, provider: string | null, model: string | null,
+): Promise<void> {
+  await run(
+    `UPDATE lab_analyses SET output = $2::jsonb, latency_ms = $3, provider = $4, model = $5 WHERE id = $1`,
+    [id, JSON.stringify(output), latencyMs ?? null, provider, model],
+  );
+}
+
 // ── corpus quarantine ────────────────────────────────────────────────────────────
 export interface CorpusAddInput {
   label: string;            // → source labq:<label>
