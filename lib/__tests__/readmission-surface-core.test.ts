@@ -101,6 +101,64 @@ test('out-of-network never shows an avoidable verdict, and not_auditable says wh
   assert.equal(verdictLabel({ findingClass: 'even_even', avoidable: null, auditStatus: 'not_auditable' }).label, 'Not auditable');
 });
 
+test('an excluded row says "Held out", never lane-D’s "No verdict"', () => {
+  // Phase 2.1 decision 3. Excluded rows are never audited, so `avoidable` is null on all
+  // of them — the branch has to fire on auditStatus, not on the empty verdict, or every
+  // one of the 38 held-out cards reads as "we audited this and found nothing", which is
+  // the opposite of what happened.
+  const held = verdictLabel({ auditStatus: 'excluded', avoidable: null, findingClass: 'even_even' });
+  assert.deepEqual(held, { label: 'Held out', sub: 'expected by design', tone: 'slate' });
+  // The status wins over BOTH fall-throughs it sits in front of: the out-of-network
+  // class label and any verdict a future engine might leave on an excluded row.
+  assert.equal(verdictLabel({ auditStatus: 'excluded', avoidable: 'avoidable', findingClass: 'out_of_network' }).label, 'Held out');
+  // And it does not steal the other unaudited label.
+  assert.equal(verdictLabel({ auditStatus: 'not_auditable', avoidable: null, findingClass: 'even_even' }).label, 'Not auditable');
+  assert.equal(verdictLabel({ auditStatus: 'audited', avoidable: null, findingClass: 'even_even' }).label, 'No verdict');
+  // Excluded rows are not work: the review predicate must still refuse them.
+  assert.equal(isReviewFinding({ auditStatus: 'excluded', avoidable: 'avoidable' }), false);
+});
+
+test('the held-out sample groups last and collapsed, with the audited lanes untouched', () => {
+  const groups = groupByLane([
+    f({ dedupKey: 'x1', lane: 'excluded', auditStatus: 'excluded', avoidable: null }),
+    f({ dedupKey: 'a1', lane: 'er_routed' }),
+    f({ dedupKey: 'n1', lane: 'structural_30d', auditStatus: 'not_auditable', avoidable: null }),
+    f({ dedupKey: 'x2', lane: 'excluded', auditStatus: 'excluded', avoidable: null }),
+    f({ dedupKey: 's1', lane: 'structural_30d' }),
+  ]);
+  assert.deepEqual(groups.map((g) => g.lane), ['er_routed', 'structural_30d', 'excluded']);
+  const excluded = groups[groups.length - 1];
+  assert.equal(excluded.collapsed, true);
+  assert.equal(excluded.rows.length, 2);
+  // not_auditable rows are NOT held out — they sit in their real lane, visible, where a
+  // reviewer can see that a discharge could not be read at all.
+  assert.equal(groups.find((g) => g.lane === 'structural_30d')?.rows.length, 2);
+  assert.notEqual(groups.find((g) => g.lane === 'er_routed')?.collapsed, true);
+});
+
+test('tiles are blind to excluded rows — the route filters, and the filter is the contract', () => {
+  // Guards the route-level `rows.filter(auditStatus === 'audited')`: computeTiles over the
+  // audited subset must equal computeTiles over that subset with the excluded rows never
+  // added. If these ever diverge, the rate people quote has silently changed basis.
+  const audited = [
+    f({ dedupKey: 'a', lane: 'er_routed', gapDays: 3 }),
+    f({ dedupKey: 'b', lane: 'structural_30d', gapDays: 12 }),
+    f({ dedupKey: 'c', lane: 'other', gapDays: 44 }),
+    f({ dedupKey: 'd', lane: 'out_of_network', findingClass: 'out_of_network', gapDays: null }),
+  ];
+  const heldOut = [
+    f({ dedupKey: 'x1', lane: 'excluded', auditStatus: 'excluded', avoidable: null, gapDays: 4 }),
+    f({ dedupKey: 'x2', lane: 'excluded', auditStatus: 'excluded', avoidable: null, gapDays: 9 }),
+  ];
+  const all = [...audited, ...heldOut];
+  assert.deepEqual(computeTiles(all.filter((r) => r.auditStatus === 'audited'), 200), computeTiles(audited, 200));
+  // And the basis genuinely matters — feeding everything WOULD move two tiles, which is
+  // exactly the mistake this filter exists to prevent.
+  assert.notDeepEqual(computeTiles(all, 200), computeTiles(audited, 200));
+  assert.equal(computeTiles(audited, 200).readmissionCount, 3);
+  assert.equal(computeTiles(audited, 200).thirtyDayRate, 2 / 200);
+});
+
 test('a badge is omitted rather than guessed — unknown planned, ambiguous department, absent tier', () => {
   // 'unknown' planned is the reconcile rule refusing to call it planned; that is NOT
   // the same as unplanned, and the chip must not blur the two.

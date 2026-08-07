@@ -328,9 +328,10 @@ const SURFACE_LIMIT = 500;
  * Read the audited findings the /care/readmissions surface renders, plus the two
  * counts the page and the chooser badge need. READ-ONLY.
  *
- * `not_auditable` rows are included ONLY when explicitly asked for: they carry no
- * verdict, and a queue of "we could not read the discharge" cards buries the findings
- * that are actually work. The pending count keeps them honest in the meantime.
+ * `not_auditable` and `excluded` rows are included ONLY when explicitly asked for, so
+ * that any OTHER caller still gets the audited findings and nothing else. The care
+ * surface asks for both (Phase 2.1, decision 1): the held-out sample is expected by
+ * design and reads as context, not as a queue — the board collapses it.
  *
  * Fail-safe (house posture): any DB error — including the migration not having run —
  * degrades to an empty board with zero counts, never a 500. An empty surface says
@@ -340,12 +341,21 @@ export async function listFindingsForSurface(opts?: {
   engineVersion?: string;
   lane?: string | null;
   includeNotAuditable?: boolean;
+  /** Add the held-out sample (audit_status 'excluded' — oncology / dialysis /
+   *  obstetric returns). Off by default; the care surface turns it on. */
+  includeExcluded?: boolean;
   limit?: number;
 }): Promise<SurfaceRead> {
   const engine = opts?.engineVersion ?? READMIT_ENGINE_VERSION;
   const limit = Math.max(1, Math.min(SURFACE_LIMIT, Math.floor(opts?.limit ?? SURFACE_LIMIT)));
+  // The status allowlist is assembled from literals in THIS function — no caller value
+  // reaches the SQL text. 'detected' is never a member: a row the sweep has not reached
+  // has nothing to render, and the pending count reports it instead.
+  const statuses: AuditStatus[] = ['audited'];
+  if (opts?.includeNotAuditable) statuses.push('not_auditable');
+  if (opts?.includeExcluded) statuses.push('excluded');
   const params: unknown[] = [engine];
-  let where = `engine_version = $1 AND audit_status ${opts?.includeNotAuditable ? `IN ('audited','not_auditable')` : `= 'audited'`}`;
+  let where = `engine_version = $1 AND audit_status IN (${statuses.map((st) => `'${st}'`).join(',')})`;
   if (opts?.lane) {
     params.push(opts.lane);
     where += ` AND lane = $${params.length}`;

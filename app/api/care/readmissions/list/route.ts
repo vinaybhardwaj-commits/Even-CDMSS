@@ -191,7 +191,10 @@ export async function GET() {
   if (!enabled()) return NextResponse.json({ ok: false, error: 'disabled' }, { status: 404 });
   if (!(await authed())) return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
 
-  const read = await listFindingsForSurface();
+  // Phase 2.1 decision 1: the board shows the held-out sample and the unauditable rows
+  // too — collapsed and labelled, not queued. The store default stays audited-only for
+  // every other caller.
+  const read = await listFindingsForSurface({ includeNotAuditable: true, includeExcluded: true });
   const ids = [...new Set(read.rows.map((r) => String(r.index_encounter_id)).filter(isEncounterId))];
 
   // All three db13 reads run together and each soft-fails on its own; none of them can
@@ -213,10 +216,17 @@ export async function GET() {
     return toFinding(r, id);
   });
 
+  // Phase 2.1 decision 2: the tiles keep their AUDITED-ONLY basis. The held-out sample
+  // is expected by design — counting it would inflate the readmission rate this surface
+  // asks people to quote, in the opposite direction from every CMS-style measure, which
+  // drops expected returns. Grouping shows everything; the tiles measure the audited set.
+  // (isReviewFinding already requires 'audited', so the review counts cannot move here.)
+  const audited = rows.filter((r) => r.auditStatus === 'audited');
+
   return NextResponse.json({
     ok: true,
     lanes: groupByLane(rows),
-    tiles: computeTiles(rows, denominator),
+    tiles: computeTiles(audited, denominator),
     pendingCount: read.pendingCount,
     reviewCount: read.reviewCount,
     total: rows.length,

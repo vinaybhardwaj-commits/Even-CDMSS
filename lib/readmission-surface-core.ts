@@ -219,6 +219,11 @@ export interface VerdictLabel {
  * so it gets its own honest label rather than being shown as an absent verdict.
  */
 export function verdictLabel(row: Pick<SurfaceFinding, 'avoidable' | 'findingClass' | 'auditStatus'>): VerdictLabel {
+  // The held-out sample (Phase 2.1, decision 3). These rows are never audited, so they
+  // carry no verdict at all — and they must NOT fall through to "No verdict / condition
+  // pass only", which is lane-D language and would read as an audit that came back
+  // empty. This one says what actually happened: we chose not to audit it.
+  if (row.auditStatus === 'excluded') return { label: 'Held out', sub: 'expected by design', tone: 'slate' };
   if (row.auditStatus === 'not_auditable') return { label: 'Not auditable', sub: 'no discharge record to read', tone: 'slate' };
   if (row.findingClass === 'out_of_network') {
     return { label: 'Our discharge: review', sub: 'other hospital not audited', tone: 'amber' };

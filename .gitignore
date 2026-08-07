@@ -61,3 +61,24 @@ ipd-audit-s4-theme-rescore*.md
 
 # Brainstem PR 0 local eval pack (de-identified clinical excerpts + link-back keys) — never commit
 .corpus-eval/
+
+# --- 7 Aug 2026: repo-root markdown noise (Phase 2.1 decision 4) ---
+# Orchestrator handoff docs (kickoffs, PRDs, carryovers, build reports) live in the repo
+# ROOT, not in the app. Hundreds of them drowned `git status`, which is how an untracked
+# ReadmissionsBoard.tsx went unnoticed and shipped a commit that could not build. Ignoring
+# them makes an untracked SOURCE file visible again.
+# Root-level only (leading slash) — docs/*.md and every in-app .md are unaffected.
+# An ignore rule cannot un-track a tracked file, but the `!` lines below are listed anyway
+# so that `git add` on them keeps working and no tool that honours .gitignore skips them.
+/*.md
+!/README.md
+!/CLAUDE.md
+!/PORT-NOTES.md
+!/CDMSS-MATCHER-SCOPING-AUDIT-REPORT-23-JUL-2026.md
+!/CDMSS-MATCHER-STAGE2-DRYRUN-REPORT-23-JUL-2026.md
+!/CDMSS-MATCHER-STAGE2B-DOSEGATE-MEASUREMENT-23-JUL-2026.md
+!/CDMSS-SIGNAL-TYPE-COLLAPSE-DRYRUN-REPORT-22-JUL-2026.md
+!/lvc-attribution-stage1-dryrun.md
+!/machinery-payoff-ablation.md
+!/source-authority-measurement.md
+!/source-authority-postactivation.md
