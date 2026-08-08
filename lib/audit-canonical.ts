@@ -88,6 +88,48 @@ export function isMiniEngine(engineVersion: unknown): boolean {
  */
 export const REFERENCE_MODELS = ['google/gemini-2.5-pro', 'gemini-2.5-pro'] as const;
 
+/**
+ * ══ THE BEDROCK GRADERS (Bedrock PRD §4.3.9, 7 Aug 2026) ═════════════════════════════════════
+ *
+ * The three Claude models the backfill runner may grade on. They are listed HERE, next to the two
+ * predicates that classify them, because the classification was previously an ACCIDENT of two
+ * negative checks — `isLocalGrader` is "not qwen and not -mini", `isReferenceModel` is "not in that
+ * list" — and an accident is not a decision anyone can review or defend later.
+ *
+ * THE PLACEMENT, stated: a Bedrock row is a CLOUD grader (tier 0, key 1) and a CANDIDATE model
+ * (tier 1, key 3). In words: it outranks a local qwen row regardless of engine version, and it
+ * loses a same-version tie to a Gemini row.
+ *
+ *   · CLOUD, because the grader tier answers "is this grader competent to grade a doctor at all?"
+ *     — a frontier model on Bedrock plainly is, and the tier exists to keep a local 14B from
+ *     outranking Gemini, not to keep new cloud models out.
+ *   · CANDIDATE, because Gemini remains the forward grader (PRD decision 6) and the reference for
+ *     the distribution comparison. Backfill rows are the thing being compared, so they must not be
+ *     able to win a tie against the thing they are compared to.
+ *
+ * ⚠️ NO NEW TIER, AND NO REORDERING. V refines the ordering after the first distribution comparison
+ * (§4.3.9); until there is data, inventing a rank between "cloud reference" and "cloud candidate"
+ * would be a guess wearing the costume of a rule.
+ *
+ * ⚠️ WHY THIS CANNOT COLLIDE IN PRACTICE TODAY, which is why no ordering change is urgent: the
+ * store's primary key is (uid, engine_version) and the runner is fill-only, so a Bedrock row and a
+ * Gemini row can never exist for the same note at the same engine version. Collisions are ACROSS
+ * versions, where the version key decides — the accepted residual in PRD §4.3.8.
+ *
+ * ⚠️ NO CODE CHANGE WAS NEEDED, AND NO LIST LIVES HERE. The first cut of this added a
+ * `BEDROCK_GRADER_MODELS` constant pulled in from lib/bedrock-core.ts — and the repo's own purity
+ * test rejected it, on the raw text of this file: the module is dependency-free ON PURPOSE, and
+ * taking a dependency is exactly how that stops being true. The existing predicates already classify a Bedrock row correctly (not qwen, not
+ * `-mini` ⇒ cloud; not in REFERENCE_MODELS ⇒ candidate), including in CANONICAL_RANK_SQL, so a
+ * second list would have added drift and bought nothing.
+ *
+ * WHAT PREVENTS DRIFT INSTEAD: lib/__tests__/backfill-runs-core.test.ts imports the transport's
+ * catalogue AND these predicates and asserts, for EVERY id in that catalogue, cloud + candidate — and that a
+ * bedrock row beats a qwen row while losing a same-version tie to Gemini. Adding a fourth model to
+ * lib/bedrock-core.ts puts it under that assertion automatically. The invariant is pinned where
+ * dependencies are free, and this file stays what its header claims.
+ */
+
 /** Reference-model predicate. Unknown/absent model ranks as candidate. */
 export function isReferenceModel(model: unknown): boolean {
   return (REFERENCE_MODELS as readonly string[]).includes(String(model ?? ''));

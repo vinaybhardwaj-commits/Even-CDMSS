@@ -108,7 +108,11 @@ test('the four mini-backfill call sites use the line rule; the Gemini worker is 
   const route = readFileSync('app/api/admin/opd-audit-mini-backfill/route.ts', 'utf8');
   const mcp = readFileSync('lib/mcp-tools.ts', 'utf8');
   const worker = readFileSync('app/api/opd-audit/worker/route.ts', 'utf8');
-  assert.equal((route.match(/auditedUidsForDayInLine\(/g) || []).length, 3, 'batch + day-scan + manual');
+  // ⚠️ 3 → 1 on 7 Aug 2026 (Bedrock S2). The route had three call sites — processBatch, the
+  // day-advance scan and the manual probe — because the autopilot had to FIND its own next day. A
+  // run carries its day range, so there is one place left that asks the question. The rule being
+  // asserted (the LINE, never the exact version) is unchanged and now has a single reader.
+  assert.equal((route.match(/auditedUidsForDayInLine\(/g) || []).length, 1, 'the runner asks once, in processRunBatch');
   assert.equal((mcp.match(/auditedUidsForDayInLine\(/g) || []).length, 1, 'backfill_control run_day');
   assert.ok(!/auditedUidsForDay\(/.test(route.replace(/auditedUidsForDayInLine\(/g, '')), 'no exact-match call left in the route');
   assert.ok(!/auditedUidsForDay\(/.test(mcp.replace(/auditedUidsForDayInLine\(/g, '')), 'no exact-match call left in mcp-tools');
@@ -117,9 +121,14 @@ test('the four mini-backfill call sites use the line rule; the Gemini worker is 
   assert.ok(!worker.includes('auditedUidsForDayInLine'), 'this change must not reach the Gemini worker');
 });
 
-test('the day-advance scan and the work selection use the SAME rule', () => {
-  // If they disagree the cursor moves off a day that still has work, or sticks on one with none.
+test('the work selection and the day-complete decision use the SAME rule', () => {
+  // ⚠️ REWRITTEN 7 Aug 2026 (Bedrock S2), same hazard. This used to compare the autopilot's
+  // day-advance SCAN against its work selection: if they disagreed the cursor moved off a day that
+  // still had work, or stuck on one with none. The scan is gone — a run knows its range — but the
+  // hazard survives in a new shape: the cursor marches on `dayComplete`, so the count that decides
+  // "complete" must be the same count that decided what to work. One query, used for both.
   const route = readFileSync('app/api/admin/opd-audit-mini-backfill/route.ts', 'utf8');
-  assert.ok(route.includes('const already = await auditedUidsForDayInLine(day);'), 'processBatch + manual path');
-  assert.ok(route.includes('const done = await auditedUidsForDayInLine(d);'), 'the day-advance scan');
+  assert.ok(route.includes('const already = await auditedUidsForDayInLine(day);'), 'the one work-selection read');
+  assert.ok(route.includes('const audited = already.length + processed;'), 'completeness is derived from that same read');
+  assert.ok(route.includes('dayComplete: total === 0 || audited + skippedCloud >= total,'), 'and it is what marches the cursor');
 });

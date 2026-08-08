@@ -82,7 +82,10 @@ test('T4: the audit call site passes an audit-class ceiling that clears measured
   const budget = PROVIDER_BUDGETS.openrouter.audit!;
 
   // The effective ceiling is the budget, named at the call site rather than restated.
-  assert.match(audit, /governedChat\(traceId, 'opd_audit_analyze', params, \{[^}]*timeoutMs: opdAuditBudget\(\)\.perAttemptMs/s,
+  // Bedrock S2 (7 Aug): resolved one line earlier into `budget`, from the provider that will serve
+  // the call. Still the budget, still named rather than restated — the property T4 guards.
+  assert.match(audit, /const budget = opdAuditBudget\(/, 'the ceiling is resolved from the budget table');
+  assert.match(audit, /governedChat\(traceId, 'opd_audit_analyze', params, \{[^}]*timeoutMs: budget\.perAttemptMs/s,
     'opd_audit_analyze must pass the audit budget as its ceiling (DEC-B9)');
   // ⚠️ COMPARE LIKE WITH LIKE. The budget is PER LEG; the measured percentiles are WHOLE-TRACE
   // (retrieval + up to OPD_AUDIT_LEGS legs + scoring). Asserting a per-leg ceiling against a

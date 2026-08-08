@@ -48,10 +48,17 @@ test('production defaultGenerate: Vertex-Gemini path gets temp0 + seed + top_p +
   assert.ok(from >= 0 && to > from, 'located the production defaultGenerate params block');
   const prodBlock = src.slice(from, to);
   // Gemini prod → greedy; mini/qwen + Gemini-unconfigured Ollama fallback keep the exact 0.2 policy
-  assert.match(prodBlock, /temperature: onGemini \? 0 :/, 'Gemini prod path → temperature 0');
+  // ⚠️ WIDENED 7 Aug 2026 (Bedrock S2): `(onGemini || onBedrock)`. The property this guards is
+  // "a CLOUD grader runs greedy; the mini/Ollama policy is untouched", and the second cloud grader
+  // joins the first rather than getting its own rule. The mini assertion below is the byte-identity
+  // half and is unchanged.
+  assert.match(prodBlock, /temperature: \(onGemini \|\| onBedrock\) \? 0 :/, 'every cloud grader runs greedy');
   assert.match(prodBlock, /isReasoning \? 0 : 0\.2/, 'mini/Ollama temperature policy preserved byte-identical');
   // the determinism config is present AND gated on onGemini (never on the mini/Ollama path)
   assert.match(prodBlock, /onGemini \? \{ seed: AUDIT_LLM_SEED, top_p: 1, google: \{ thinking_config/, 'seed/top_p/thinking gated on onGemini');
+  // …and STILL Gemini-only: Converse has no seed parameter, so sending one on the bedrock path
+  // would be a determinism claim the transport cannot keep.
+  assert.ok(!/onBedrock \? \{ seed/.test(prodBlock), 'no seed is claimed on the bedrock path');
   // Vertex is a single backend → NO OpenRouter provider-pin on the audit call (that is Kimi-only)
   assert.ok(!/allow_fallbacks|require_parameters/.test(prodBlock), 'no OpenRouter provider-pin on the Vertex audit path');
 });

@@ -99,7 +99,14 @@ test('D1: prodTag and the mini_backfill_prod settings keys are DELETED repo-wide
   assert.ok(!state.includes("'mini_backfill_prod_version'"), 'the upgrade-pivot key is gone');
   // the mini engine label is now unconditional
   assert.ok(audit.includes('? opdMiniEngine(opts.engineTag)'), 'a mini run always writes -<tag>');
-  assert.ok(route.includes('const engineStr = opdMiniEngine(st.tag);'), 'no prod branch in autoTick');
+  // ⚠️ REPLACED 7 Aug 2026 (Bedrock S2). There is no autoTick engine branch to check any more:
+  // the mini autopilot is gone and the route is a Bedrock run queue whose rows carry the PLAIN prod
+  // engine version. D1's PROPERTY still holds and is asserted the only way it now can be — no
+  // route path can produce a prod-labelled LOCAL-model row, because the route no longer runs a
+  // local model at all (bedrock-only run models, enforced by planRunCreate).
+  assert.ok(!route.includes('opdMiniEngine('), 'the mini engine label is not written by this route any more');
+  assert.ok(!route.includes('MINI_MODEL,'), 'and no row is stamped with the local model');
+  assert.ok(route.includes("resolves to ${r.provider}, and backfill runs are bedrock-only"), 'a local run model is refused outright');
 });
 
 test('the trap comment no longer claims a guard is unnecessary', () => {

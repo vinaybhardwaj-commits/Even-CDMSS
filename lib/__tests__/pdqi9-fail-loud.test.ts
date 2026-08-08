@@ -305,10 +305,18 @@ test('the production defaultGenerate params are byte-identical — no eval chang
   // Unit V-a2 (4 Aug): `noLocalFallback: !mini` — the cloud audit throws instead of being graded
   // locally (the throw lands in the outer catch's llmLegFailed machinery); the mini backfill
   // passes false and keeps its local model. params and the return are still unchanged.
-  assert.ok(block.includes("const r = await governedChat(traceId, 'opd_audit_analyze', params, { gemini: geminiModel, promptRef: 'opd-note-audit-core/OPD_AUDIT_SYSTEM', timeoutMs: opdAuditBudget().perAttemptMs, maxTries: opdAuditBudget().maxTries, noLocalFallback: !mini });\n  return r.choices?.[0]?.message?.content || '';"),
+  // Bedrock S2 (7 Aug): one option added (`bedrock: bedrockModel`, undefined on every existing
+  // caller) and the two bounds now read the SERVING provider's budget row instead of openrouter's
+  // hardcoded one — the numbers are identical, the source is now correct. params, promptRef, the
+  // V-a2 flag and the `content || ''` return are unchanged, which is what this guards.
+  assert.ok(block.includes("const r = await governedChat(traceId, 'opd_audit_analyze', params, { gemini: geminiModel, bedrock: bedrockModel, promptRef: 'opd-note-audit-core/OPD_AUDIT_SYSTEM', timeoutMs: budget.perAttemptMs, maxTries: budget.maxTries, noLocalFallback: !mini });\n  return r.choices?.[0]?.message?.content || '';"),
     "the governedChat return and its `content || ''` must be unchanged (plus the Unit D transport bounds + the V-a2 flag)");
+  assert.ok(block.includes("const budget = opdAuditBudget(onBedrock ? 'bedrock' : 'openrouter');"),
+    'the budget comes from the provider that will actually serve the call');
   // the production params object, verbatim
-  assert.ok(block.includes("temperature: onGemini ? 0 : (isReasoning ? 0 : 0.2),"));
+  // Bedrock S2: the greedy gate covers BOTH cloud graders; the mini/Ollama half of the ternary is
+  // byte-identical, which is what "no eval change leaked in" is actually about.
+  assert.ok(block.includes("temperature: (onGemini || onBedrock) ? 0 : (isReasoning ? 0 : 0.2),"));
   assert.ok(block.includes("max_tokens: isReasoning ? 8192 : 2200,"));
   assert.ok(block.includes("...(onGemini ? { seed: AUDIT_LLM_SEED, top_p: 1, google: { thinking_config: { thinking_budget: AUDIT_EVAL_THINKING_BUDGET } } } : {}),"));
   // the envelope AND the tick deadline are threaded ONLY on the eval branch

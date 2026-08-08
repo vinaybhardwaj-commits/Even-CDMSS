@@ -123,6 +123,9 @@ export interface MiniTick {
   day: string | null;
   avg_ms: number | null;
   note: string | null;
+  /** Which RUN this tick worked (Bedrock S2, §4.3.7). Null for every pre-S2 tick and for an idle
+   *  tick that had no run to work — the console colours the graph by it. */
+  run_id: number | null;
 }
 
 const TICKS_RETENTION_DAYS = 30;
@@ -139,16 +142,19 @@ export async function ensureTickTable(): Promise<void> {
        note       TEXT
      )`,
   );
+  // Additive, idempotent — the S2 runner stamps every tick with its run (§4.3.7). Pre-existing
+  // rows keep NULL, which reads correctly as "before there were runs".
+  await run(`ALTER TABLE mini_backfill_ticks ADD COLUMN IF NOT EXISTS run_id BIGINT`).catch(() => {});
   await run(`CREATE INDEX IF NOT EXISTS mini_backfill_ticks_ts_idx ON mini_backfill_ticks (ts DESC)`).catch(() => {});
 }
 
 /** Append one tick outcome; prunes rows older than the retention window. Never throws. */
-export async function logTick(t: { status: MiniTickStatus; processed?: number; day?: string | null; avg_ms?: number | null; note?: string | null }): Promise<void> {
+export async function logTick(t: { status: MiniTickStatus; processed?: number; day?: string | null; avg_ms?: number | null; note?: string | null; run_id?: number | null }): Promise<void> {
   try {
     await ensureTickTable();
     await run(
-      `INSERT INTO mini_backfill_ticks (status, processed, day, avg_ms, note) VALUES ($1,$2,$3,$4,$5)`,
-      [t.status, t.processed ?? 0, t.day && /^\d{4}-\d{2}-\d{2}$/.test(t.day) ? t.day : null, t.avg_ms ?? null, t.note ?? null],
+      `INSERT INTO mini_backfill_ticks (status, processed, day, avg_ms, note, run_id) VALUES ($1,$2,$3,$4,$5,$6)`,
+      [t.status, t.processed ?? 0, t.day && /^\d{4}-\d{2}-\d{2}$/.test(t.day) ? t.day : null, t.avg_ms ?? null, t.note ?? null, t.run_id ?? null],
     );
     await run(`DELETE FROM mini_backfill_ticks WHERE ts < NOW() - ($1 || ' days')::interval`, [String(TICKS_RETENTION_DAYS)]).catch(() => {});
   } catch { /* monitoring must never break the pipeline */ }
@@ -157,7 +163,7 @@ export async function logTick(t: { status: MiniTickStatus; processed?: number; d
 /** Read tick outcomes from the last `hours` (default 48), oldest→newest. */
 export async function getTicks(hours = 48): Promise<MiniTick[]> {
   const rows = await run(
-    `SELECT ts, status, processed, day, avg_ms, note
+    `SELECT ts, status, processed, day, avg_ms, note, run_id
        FROM mini_backfill_ticks
       WHERE ts >= NOW() - ($1 || ' hours')::interval
       ORDER BY ts ASC`,
@@ -170,5 +176,6 @@ export async function getTicks(hours = 48): Promise<MiniTick[]> {
     day: r.day ? String(r.day).slice(0, 10) : null,
     avg_ms: r.avg_ms == null ? null : Number(r.avg_ms),
     note: r.note == null ? null : String(r.note),
+    run_id: r.run_id == null ? null : Number(r.run_id),
   }));
 }

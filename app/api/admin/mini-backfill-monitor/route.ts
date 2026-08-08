@@ -20,6 +20,7 @@ import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { requireAdmin } from '@/lib/admin-gate';
 import { sql } from '@/lib/db';
 import { readState, getTicks, windowOpen, lockHeld, MB_LOCK_TTL_MS } from '@/lib/mini-backfill';
+import { activeRun, recentRuns } from '@/lib/backfill-runs';
 import { readBatchState, batchProgress } from '@/lib/lab-batch';
 import { OPD_ENGINE_VERSION } from '@/lib/opd-note-audit-core';
 
@@ -44,6 +45,13 @@ export async function GET(req: NextRequest) {
   try {
     const st = await readState();
     const lb = await readBatchState();
+    // S2 §C5 — the run objects, so the S3 console has data to render without a second fetch. Data
+    // only: no UI changes in this slice, and every existing field below is untouched. Best-effort,
+    // because a monitoring view must not go down with the runs table.
+    const [runActive, runHistory] = await Promise.all([
+      activeRun('opd').catch(() => null),
+      recentRuns('opd', 20).catch(() => []),
+    ]);
     const lbProg = lb.experiment ? await batchProgress(lb.experiment, lb.uids) : { total: 0, done: 0, remaining: 0 };
 
     const [buckets, labBuckets, todayRow, totalRow, labTodayRow, labTotalRow, recent, labRecent, scoredRow, totalUidRow, ticks] = await Promise.all([
@@ -122,7 +130,10 @@ export async function GET(req: NextRequest) {
       throughput: buckets.map((b) => ({ t: String(b.bucket), notes: num(b.notes), avgSec: b.avg_ms ? Math.round(num(b.avg_ms) / 1000) : null })),
       mcpThroughput: labBuckets.map((b) => ({ t: String(b.bucket), notes: num(b.notes), avgSec: b.avg_ms ? Math.round(num(b.avg_ms) / 1000) : null })),
       bucketMinutes: range.bucketMin,
-      ticks: ticks.map((t) => ({ t: t.ts, status: t.status, processed: t.processed })),
+      // run_id rides each tick so the S3 graph can colour by run (§4.3.7).
+      ticks: ticks.map((t) => ({ t: t.ts, status: t.status, processed: t.processed, runId: t.run_id })),
+      activeRun: runActive,
+      runs: runHistory,
       inflight: inflightMs != null ? { active: true, day: (st.last as Record<string, unknown> | null)?.day ?? st.cursor ?? null, sinceSec: Math.round(inflightMs / 1000), ttlSec: Math.round(MB_LOCK_TTL_MS / 1000) } : { active: false },
       recent: [
         ...recent.map((r) => ({

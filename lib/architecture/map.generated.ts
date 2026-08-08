@@ -91,6 +91,14 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "backfill-runs",
+    "plane": "unregistered"
+  },
+  {
+    "id": "backfill-runs-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "bedrock",
     "plane": "unregistered"
   },
@@ -1227,6 +1235,16 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/api",
+    "to": "backfill-runs",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "backfill-runs-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
     "to": "calculators",
     "kind": "type"
   },
@@ -1548,6 +1566,16 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "llm",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "llm-cost",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "llm-cost-core",
     "kind": "value"
   },
   {
@@ -2058,6 +2086,16 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "audit-suppression-store",
     "to": "opd-triage-store",
+    "kind": "value"
+  },
+  {
+    "from": "backfill-runs",
+    "to": "backfill-runs-core",
+    "kind": "type"
+  },
+  {
+    "from": "backfill-runs",
+    "to": "db",
     "kind": "value"
   },
   {

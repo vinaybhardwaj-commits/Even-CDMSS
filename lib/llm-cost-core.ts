@@ -70,9 +70,20 @@ export function modelLabel(model: string, pricing: Pricing): string { return pri
 
 /** ₹ cost for a token count at an explicit tier (used for SQL-bucketed aggregates). */
 export function costInr(model: string, inTok: number, outTok: number, hi: boolean, pricing: Pricing): number {
+  return costUsd(model, inTok, outTok, hi, pricing) * pricing.fxUsdInr;
+}
+
+/**
+ * USD cost for a token count. The same arithmetic `costInr` performs, stopped one step earlier.
+ *
+ * Added for per-run backfill accounting (Bedrock PRD §4.3.7), whose `cost_usd` column is USD by
+ * specification: Bedrock bills in dollars and a run's spend should be comparable to an AWS invoice
+ * without an FX round-trip. `costInr` now composes from this, so the two can never disagree about
+ * anything except the exchange rate.
+ */
+export function costUsd(model: string, inTok: number, outTok: number, hi: boolean, pricing: Pricing): number {
   const { inRate, outRate } = ratesFor(model, hi, pricing);
-  const usd = ((Number(inTok) || 0) * inRate + (Number(outTok) || 0) * outRate) / 1_000_000;
-  return usd * pricing.fxUsdInr;
+  return ((Number(inTok) || 0) * inRate + (Number(outTok) || 0) * outRate) / 1_000_000;
 }
 
 /** ₹ cost for a single call, choosing the tier from its own prompt size. */

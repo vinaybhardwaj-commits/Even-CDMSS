@@ -97,12 +97,17 @@ test('the IPD callers read the budget from the TABLE, never as literals in their
 
 test('a null budget throws rather than substituting a default', () => {
   assert.ok(IPD_RUN.includes('if (!b) throw new Error('), 'refuse, never fall back to the module ceiling');
-  assert.ok(OPD_AUDIT.includes("if (!b) throw new Error('no audit budget for openrouter"));
+  // Bedrock S2: the helper takes the provider, so the refusal names whichever one has no row.
+  assert.ok(OPD_AUDIT.includes('if (!b) throw new Error(`no audit budget for ${provider}'));
 });
 
 test('the OPD audit call site sends a maxTries taken from the budget', () => {
-  assert.ok(OPD_AUDIT.includes('maxTries: opdAuditBudget().maxTries'), 'not a literal, not the module default');
-  assert.ok(OPD_AUDIT.includes('timeoutMs: LLM_AUDIT_TIMEOUT_MS'), 'the ceiling source is unchanged, as instructed');
+  // Bedrock S2 (7 Aug): the budget is resolved once, from the provider that will SERVE the call,
+  // and both bounds read that object. Still not a literal and still not the module default — the
+  // property this pins — and the numbers are unchanged (bedrock.audit === openrouter.audit).
+  assert.ok(OPD_AUDIT.includes("const budget = opdAuditBudget(onBedrock ? 'bedrock' : 'openrouter');"));
+  assert.ok(OPD_AUDIT.includes('maxTries: budget.maxTries'), 'not a literal, not the module default');
+  assert.ok(OPD_AUDIT.includes('timeoutMs: budget.perAttemptMs'), 'the ceiling comes from the same object');
 });
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════

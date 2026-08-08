@@ -217,9 +217,12 @@ test('the OPD call site sends a per-attempt ceiling that matches its budget (DEC
   const budget = PROVIDER_BUDGETS.openrouter.audit;
   assert.ok(budget);
   // Read the EFFECTIVE ceiling out of the call site, never out of the table this guard is checking.
-  assert.ok(/timeoutMs:\s*opdAuditBudget\(\)\.perAttemptMs/.test(body),
+  // Bedrock S2: `opdAuditBudget(<provider>)` resolved into `budget` one line earlier. The guard's
+  // arithmetic does NOT move — PROVIDER_BUDGETS.bedrock.audit is the same 380,000 × 1 as
+  // openrouter's, so OPD still computes 2 × 380,000 = 760,000 in its 800,000 ms box.
+  assert.ok(/const budget = opdAuditBudget\(/.test(body) && /timeoutMs:\s*budget\.perAttemptMs/.test(body),
     'the ceiling must come from the budget, or the guard below is measuring a number the route does not use');
-  assert.ok(/maxTries:\s*opdAuditBudget\(\)\.maxTries/.test(body), 'and so must the try count');
+  assert.ok(/maxTries:\s*budget\.maxTries/.test(body), 'and so must the try count');
   assert.ok(!/timeoutMs:\s*LLM_AUDIT_TIMEOUT_MS/.test(body), 'the legacy 600,000 source is off this path');
 
   const box = boxMs(OPD_WORKER_PATH);

@@ -971,13 +971,13 @@ export const OPD_AUDIT_LEGS = 2;
  * PROVIDER_SWITCH_ENABLED and every cloud provider currently carries the same `audit` numbers.
  * A null budget means the provider cannot serve the class — refuse rather than substitute a default.
  */
-function opdAuditBudget(): { perAttemptMs: number; maxTries: number } {
-  const b = PROVIDER_BUDGETS.openrouter.audit;
-  if (!b) throw new Error('no audit budget for openrouter — this provider cannot serve the OPD audit leg');
+function opdAuditBudget(provider: 'openrouter' | 'bedrock' = 'openrouter'): { perAttemptMs: number; maxTries: number } {
+  const b = PROVIDER_BUDGETS[provider].audit;
+  if (!b) throw new Error(`no audit budget for ${provider} — this provider cannot serve the OPD audit leg`);
   return b;
 }
 
-async function defaultGenerate(traceId: string | undefined, system: string, user: string, mini = false, evalModel?: string, onEnvelope?: (e: LlmEnvelope) => void, deadlineAt?: number): Promise<string> {
+async function defaultGenerate(traceId: string | undefined, system: string, user: string, mini = false, evalModel?: string, onEnvelope?: (e: LlmEnvelope) => void, deadlineAt?: number, bedrockModel?: string): Promise<string> {
   // EVAL-ONLY (lab): route to OpenRouter when an eval model is named. evalModel unset ⇒ the Gemini/mini
   // path below is byte-identical to today (no production audit ever passes evalModel).
   // `onEnvelope` and `deadlineAt` are threaded ONLY here, on the eval branch. The production path
@@ -985,7 +985,12 @@ async function defaultGenerate(traceId: string | undefined, system: string, user
   if (evalModel) return openRouterGenerate(evalModel, system, user, fetch, undefined, onEnvelope, deadlineAt);
   // mini=true forces the Mac-mini Ollama bridge (no Gemini) with MINI_MODEL — the
   // scoped mini pipeline (OPD mini backfill). Default path is byte-identical to before.
-  const geminiModel = mini ? undefined : (geminiModelFor('doc_audit') ?? geminiUtilityModel());
+  // BACKFILL RUNNER (S2, 7 Aug 2026): an explicit bedrock target outranks BOTH — it is not a
+  // preference, it is what the run row will be attributed to. Gemini is cleared for the same reason
+  // labRoutingOpts clears it on an override: leaving a Gemini model beside a bedrock target makes
+  // the record ambiguous about what was asked for. Absent ⇒ every line below is byte-identical.
+  const onBedrock = !!bedrockModel;
+  const geminiModel = (mini || onBedrock) ? undefined : (geminiModelFor('doc_audit') ?? geminiUtilityModel());
   // Reasoning-class local models (DeepSeek-R1 / QwQ) emit a long <think> block before the
   // JSON, so they need greedy decoding (eval determinism), a bigger output budget (the JSON
   // must survive the reasoning tokens) and the full context window. Gated on the mini path +
@@ -1000,7 +1005,12 @@ async function defaultGenerate(traceId: string | undefined, system: string, user
   const params = {
     model: mini ? MINI_MODEL : TEXT_MODEL,
     messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-    temperature: onGemini ? 0 : (isReasoning ? 0 : 0.2),
+    // GREEDY ON EVERY CLOUD GRADER, including bedrock. The Audit-Score-Determinism programme made
+    // the production Vertex scorer greedy because run-to-run drift moves bands; a NEW grader has no
+    // legacy behaviour to preserve, so it starts where the measured one ended up. (No seed and no
+    // top_p on this path: Converse has no seed parameter, so asking for one would be a claim the
+    // transport cannot keep.)
+    temperature: (onGemini || onBedrock) ? 0 : (isReasoning ? 0 : 0.2),
     max_tokens: isReasoning ? 8192 : 2200,
     ...({ options: { num_ctx: isReasoning ? 16384 : 8192 }, keep_alive: '15m' } as Record<string, unknown>),
     // seed/top_p flow through governedChat→tracedChat's `...rest` to the Vertex OpenAI-compat client;
@@ -1048,7 +1058,10 @@ async function defaultGenerate(traceId: string | undefined, system: string, user
   // `excluded_reason='llm_leg_failed'`, and AUDITED_HAVING keeps the note un-audited so the next
   // sweep retries it. The MINI path passes false: the mini backfill is a deliberate free pipeline
   // (MINI_MODEL is params.model, the PRIMARY route there), not a fallback, and it must keep working.
-  const r = await governedChat(traceId, 'opd_audit_analyze', params, { gemini: geminiModel, promptRef: 'opd-note-audit-core/OPD_AUDIT_SYSTEM', timeoutMs: opdAuditBudget().perAttemptMs, maxTries: opdAuditBudget().maxTries, noLocalFallback: !mini });
+  // The budget is read from the row of the provider that will actually serve the call — one fact,
+  // one place, and bedrock's numbers are its own even though they currently match openrouter's.
+  const budget = opdAuditBudget(onBedrock ? 'bedrock' : 'openrouter');
+  const r = await governedChat(traceId, 'opd_audit_analyze', params, { gemini: geminiModel, bedrock: bedrockModel, promptRef: 'opd-note-audit-core/OPD_AUDIT_SYSTEM', timeoutMs: budget.perAttemptMs, maxTries: budget.maxTries, noLocalFallback: !mini });
   return r.choices?.[0]?.message?.content || '';
 }
 
@@ -1109,6 +1122,13 @@ export interface AuditOpdOpts {
    *  ABSENT ⇒ OPD_ENGINE_VERSION, exactly as before. Production path only; the mini path is
    *  unaffected. */
   engineVersion?: string;
+  /** BACKFILL RUNNER ONLY (Bedrock S2, 7 Aug 2026): grade this note on a Bedrock model — the full
+   *  modelId, e.g. `global.anthropic.claude-haiku-4-5-20251001-v1:0`. Reaches the LLM leg through
+   *  `defaultGenerate`, exactly the way an F11 lab override reaches the ask/ddx legs, and dispatches
+   *  with NO ladder and NO local fallback behind it (tracedChat's bedrock branch). The row must then
+   *  be stamped with this same model — see the runner route. ABSENT ⇒ every existing call site,
+   *  production included, is byte-identical. */
+  bedrockModel?: string;
 }
 
 /** Engine tag for mini-pipeline rows (default run). */
@@ -1285,7 +1305,7 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     const onEnvelope = opts.evalModel
       ? (e: LlmEnvelope) => { evalEnv = e; opts.onEnvelope?.(e); }
       : opts.onEnvelope;
-    const generateLeg = () => defaultGenerate(traceId, OPD_AUDIT_SYSTEM, buildOpdAuditUser(opdCaseText(oc, { specialty }), citedContext), mini, opts.evalModel, onEnvelope, opts.deadlineAt);
+    const generateLeg = () => defaultGenerate(traceId, OPD_AUDIT_SYSTEM, buildOpdAuditUser(opdCaseText(oc, { specialty }), citedContext), mini, opts.evalModel, onEnvelope, opts.deadlineAt, opts.bedrockModel);
 
     // ═══ S0 — ONE bounded retry on the PRODUCTION LLM leg (invalid-marking PRD D2) ═══
     // Lab evidence: 2 of 20 notes needed a second attempt, none needed a third — one retry converts

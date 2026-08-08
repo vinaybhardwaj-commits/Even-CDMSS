@@ -268,7 +268,11 @@ test('auditOpdNote threads opts.deadlineAt and nothing else changed on the call'
   // still receives exactly the caller's callback.
   // S0 wrapped the call in generateLeg() for its one bounded production retry — the ARGUMENTS are
   // unchanged, which is what this assertion actually guards.
-  assert.ok(SRC.includes('const generateLeg = () => defaultGenerate(traceId, OPD_AUDIT_SYSTEM, buildOpdAuditUser(opdCaseText(oc, { specialty }), citedContext), mini, opts.evalModel, onEnvelope, opts.deadlineAt);'));
+  // ⚠️ ONE ARGUMENT APPENDED 7 Aug 2026 (Bedrock S2): `opts.bedrockModel`, last in the list, so
+  // every argument this test was written to protect is in the same position carrying the same
+  // value. The property is unchanged — the ARGUMENTS are what this guards, and deadlineAt still
+  // reaches the leg untouched.
+  assert.ok(SRC.includes('const generateLeg = () => defaultGenerate(traceId, OPD_AUDIT_SYSTEM, buildOpdAuditUser(opdCaseText(oc, { specialty }), citedContext), mini, opts.evalModel, onEnvelope, opts.deadlineAt, opts.bedrockModel);'));
   assert.ok(SRC.includes('? (e: LlmEnvelope) => { evalEnv = e; opts.onEnvelope?.(e); }\n      : opts.onEnvelope;'),
     'the wrapper must collapse to opts.onEnvelope when evalModel is absent');
   // It reaches the LLM only through the evalModel branch, so it is inert without evalModel.
