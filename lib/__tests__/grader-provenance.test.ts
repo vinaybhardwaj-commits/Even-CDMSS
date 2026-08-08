@@ -105,8 +105,12 @@ test('D1: prodTag and the mini_backfill_prod settings keys are DELETED repo-wide
   // route path can produce a prod-labelled LOCAL-model row, because the route no longer runs a
   // local model at all (bedrock-only run models, enforced by planRunCreate).
   assert.ok(!route.includes('opdMiniEngine('), 'the mini engine label is not written by this route any more');
-  assert.ok(!route.includes('MINI_MODEL,'), 'and no row is stamped with the local model');
-  assert.ok(route.includes("resolves to ${r.provider}, and backfill runs are bedrock-only"), 'a local run model is refused outright');
+  // ⚠️ SHARPENED 8 Aug 2026 (S2b C2). This read `!route.includes('MINI_MODEL,')`, which the route's
+  // own IMPORT LIST now trips — MINI_MODEL is still imported, to be handed to resolveProvider as the
+  // fallback for an unprefixed string that this route then refuses anyway. The PROPERTY was never
+  // about the import: it is that no ROW is stamped with the local model, so that is what is asserted.
+  assert.ok(!/saveOpdAudit\([\s\S]{0,200}MINI_MODEL/.test(route), 'and no row is stamped with the local model');
+  assert.ok(route.includes('resolves to ${r.provider}, and backfill runs accept ${RUN_MODEL_PREFIXES.join'), 'a local run model is refused outright');
 });
 
 test('the trap comment no longer claims a guard is unnecessary', () => {

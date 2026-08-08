@@ -13,9 +13,13 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   accumulate, advanceAfterTick, canStartRun, clampNPerTick, isDay, isTerminal, planRunCreate,
-  planStatusChange, planTick, prevDay, statusAfterTickFailure, type BackfillRun,
+  planStatusChange, planTick, prevDay, statusAfterTickFailure, statusAfterTickWrite,
+  daysInclusive, estimateRunEta, etaSeconds, isStalled, rollingPace,
+  RUN_MODEL_PREFIXES, STALL_AFTER_MS, type BackfillRun,
 } from '../backfill-runs-core';
 import { BACKFILL_RUNS_DDL } from '../backfill-runs';
+import { resolveBatchModel, LB_MODEL_KEY } from '../lab-batch';
+import { normaliseProvider } from '../lab-attribution-core';
 import { isLocalGrader, isReferenceModel, canonicalByUid, CANONICAL_RANK_SQL } from '../audit-canonical';
 import { BEDROCK_MODELS } from '../bedrock-core';
 import { costUsd, costInr, type Pricing } from '../llm-cost-core';
@@ -37,16 +41,24 @@ const RUN = (over: Partial<BackfillRun> = {}): BackfillRun => ({
 // 1 · Creating a run
 // ═════════════════════════════════════════════════════════════════════════════════════════════
 
-test('a run is bedrock-only — qwen is retired from backfill, and the refusal says so', () => {
+// ⚠️ WIDENED 8 Aug 2026 (S2b C2, BAKEOFF-DESIGN §6 gap 2). This test read "a run is bedrock-only"
+// and pinned `vertex:gemini-2.5-pro` as REFUSED. Vertex is now accepted so the bake-off's Gemini arm
+// can be an ordinary run with counters, cost and a progress surface instead of 150 hand-driven
+// golden A/B calls. The PROPERTY the test defends is unchanged and is the one that matters: qwen and
+// the OpenRouter backup tier cannot back a backfill run, and the refusal explains itself.
+test('a run names bedrock or vertex — qwen is retired from backfill, and the refusal says so', () => {
   const bad = planRunCreate({ model: 'ollama:qwen2.5:14b', dayFrom: '2026-01-01', dayTo: '2026-01-02' });
   assert.equal(bad.ok, false);
-  assert.match((bad as { error: string }).error, /not a bedrock model/);
+  assert.match((bad as { error: string }).error, /names no accepted provider/);
+  assert.match((bad as { error: string }).error, /qwen is retired from backfill/);
   assert.match((bad as { error: string }).error, /Never falls back/);
-  for (const m of ['vertex:gemini-2.5-pro', 'openrouter:google/gemini-2.5-pro', 'qwen2.5:14b', 'bedrock:', '']) {
+  for (const m of ['openrouter:google/gemini-2.5-pro', 'qwen2.5:14b', 'bedrock:', 'vertex:', '']) {
     assert.equal(planRunCreate({ model: m, dayFrom: '2026-01-01', dayTo: '2026-01-02' }).ok, false, `${m} must be refused`);
   }
-  const good = planRunCreate({ model: `bedrock:${HAIKU}`, dayFrom: '2026-01-01', dayTo: '2026-01-10' });
-  assert.equal(good.ok, true);
+  for (const m of [`bedrock:${HAIKU}`, 'vertex:gemini-2.5-pro']) {
+    assert.equal(planRunCreate({ model: m, dayFrom: '2026-01-01', dayTo: '2026-01-10' }).ok, true, `${m} must be accepted`);
+  }
+  assert.deepEqual([...RUN_MODEL_PREFIXES], ['bedrock:', 'vertex:'], 'the accepted set is two, and it is stated once');
 });
 
 test('the cursor STARTS at day_to and the range is validated', () => {
@@ -223,11 +235,18 @@ test('⚠️ FILL-ONLY: the skip rule is unchanged, and it is what makes a prod-
   assert.match(src('lib/opd-audit-store.ts'), /ON CONFLICT[\s\S]{0,80}DO NOTHING/);
 });
 
-test('the row is PROD-LINE and stamped with the RESOLVED bedrock model, never MINI_MODEL', () => {
+// ⚠️ RESHAPED 8 Aug 2026 (S2b C2). The stamp is no longer the resolved id but WHAT SERVED, read off
+// the note's own trace, because a `vertex:` run has a ladder behind it and its request is therefore
+// not the same event as its answer. Both original properties are preserved and asserted below: the
+// row is PROD-LINE (no pipeline:'mini', no engineTag), and it is never stamped with the local model.
+test('the row is PROD-LINE and stamped with WHAT SERVED, never MINI_MODEL', () => {
   const c = code(ROUTE);
-  assert.ok(c.includes('await auditOpdNote(row, { bedrockModel: modelId })'), 'no pipeline:mini, no engineTag ⇒ plain prod engine');
-  assert.ok(c.includes("await saveOpdAudit(audit, { model: modelId, latencyMs: Date.now() - started })"));
-  assert.ok(!/saveOpdAudit\([^)]*MINI_MODEL/.test(c), 'the autopilot stamp is gone — it would be a lie here');
+  assert.ok(c.includes("await auditOpdNote(row, provider === 'bedrock' ? { bedrockModel: modelId } : {})"), 'no pipeline:mini, no engineTag ⇒ plain prod engine');
+  assert.ok(!/pipeline:\s*'mini'/.test(c) && !/engineTag/.test(c), 'a prod-line run never tags its engine');
+  assert.ok(c.includes('const served = await servedCallForAudit(audit.traceId);'), 'the stamp is read back, not assumed');
+  assert.ok(c.includes('model: served.model ?? modelId, provider: served.provider ?? provider'), 'and it is what answered');
+  assert.ok(/if \(served\.model && !modelsAgree\(served\.model, modelId\)\)/.test(c), 'a disagreement is a refusal — DEC-2');
+  assert.ok(!/saveOpdAudit\([\s\S]{0,200}MINI_MODEL/.test(c), 'the autopilot stamp is gone — it would be a lie here');
   // The model reaches the LLM leg the way an F11 override does, with no ladder behind it.
   const audit = src('lib/opd-note-audit.ts');
   assert.ok(audit.includes('bedrock: bedrockModel'), 'governedChat receives the target');
@@ -248,14 +267,19 @@ test('scheduling: the night window and the lab-batch yield are gone, the soft lo
   }
 });
 
-test('reachability is re-checked EVERY tick, so unsetting a BEDROCK_* var is a clean rollback', () => {
+// ⚠️ RESHAPED 8 Aug 2026 (S2b C2): the probe was hardcoded to 'bedrock' at BOTH sites, which for a
+// vertex run asks an unrelated question — a deployment with the BEDROCK_* vars unset would error a
+// perfectly healthy Gemini run, and one with Vertex unconfigured would sail past and fail note by
+// note. It now probes the RUN'S OWN provider. The re-check-every-tick property is unchanged.
+test('reachability is re-checked EVERY tick, for the RUN’S provider, so unsetting a var is a clean rollback', () => {
   const c = code(ROUTE);
   const tick = c.slice(c.indexOf('async function autoTick'), c.indexOf('async function statusPayload'));
-  assert.ok(tick.includes("probeReachable('bedrock')"));
+  assert.ok(tick.includes('probeReachable(resolved.provider)'), 'the run’s provider, not a constant');
+  assert.ok(!/probeReachable\('bedrock'\)/.test(tick), 'a hardcoded provider here would mis-gate a vertex run');
   assert.ok(tick.includes("await setRunStatus(active.id, 'error'"), 'one visible errored run, not a wall of failed notes');
   // Creation checks it too — a run that could never have worked should not enter the history.
   const post = c.slice(c.indexOf('export async function POST'));
-  assert.ok(post.includes("probeReachable('bedrock')"));
+  assert.ok(post.includes('probeReachable(resolved.provider)'));
   assert.ok(post.includes('canStartRun(await activeRun(WORKER))'));
 });
 
@@ -307,5 +331,214 @@ test('cost_usd is real dollars, and costInr composes from it', () => {
   assert.ok(Math.abs(usd - 0.02) < 1e-12, `$${usd}`);
   assert.ok(Math.abs(costInr(HAIKU, 10_000, 2_000, false, PRICING) - usd * PRICING.fxUsdInr) < 1e-12,
     'one arithmetic, two currencies — they cannot disagree except on the rate');
-  assert.ok(ROUTE.includes('costUsd(modelId, usage.tokensIn, usage.tokensOut, false, PRICING)'));
+  // The route prices what SERVED (S2b C2) — the same reason the row is stamped with it.
+  assert.ok(ROUTE.includes('costUsd(served.model ?? modelId, usage.tokensIn, usage.tokensOut, false, PRICING)'));
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// 7 · S2b — the vertex arm, the stop race, and the monitor's ETA + stall
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+test('C2: a vertex run is refused unless it names the Gemini this deployment will actually use', () => {
+  const c = code(ROUTE);
+  // There is no per-call Gemini override on the audit leg, so the ONLY way a vertex run's stamp can
+  // be honest is for the run to name the model the deployment already resolves to.
+  assert.ok(c.includes("return geminiModelFor('doc_audit') ?? geminiUtilityModel();"),
+    'the check reads the same expression defaultGenerate uses — one fact, not two');
+  assert.ok(c.includes('if (!modelsAgree(deployed, r.model))'), 'and a disagreement is refused');
+  assert.match(ROUTE, /refused rather than graded by one model and stamped with another/);
+  // Bedrock keeps its by-id threading: that branch has no ladder, so ask and answer are one event.
+  assert.ok(c.includes("return { ok: true, provider: 'bedrock', modelId: r.model };"));
+});
+
+test('C2: cost accrues on a vertex run through the SAME pricing path as a bedrock one', () => {
+  // Gemini 2.5 Pro: $1.25/M in, $10/M out. 10k in + 2k out = $0.0125 + $0.02 = $0.0325.
+  const usd = costUsd('gemini-2.5-pro', 10_000, 2_000, false, PRICING);
+  assert.ok(Math.abs(usd - 0.0325) < 1e-12, `$${usd}`);
+  // Whatever the ladder answered with, the row's model is what the route prices — including the
+  // OpenRouter slug for the same model, which must not fall through to the unpriced default.
+  assert.ok(costUsd('google/gemini-2.5-pro', 10_000, 2_000, false, PRICING) > 0);
+  assert.ok(costUsd(HAIKU, 10_000, 2_000, false, PRICING) > 0);
+});
+
+test('C4: a STOP issued mid-tick survives the tick’s completion write', () => {
+  // The pure semantic: a tick may only move a run that is still active.
+  assert.equal(statusAfterTickWrite('active', 'done'), 'done', 'an untouched run finishes normally');
+  assert.equal(statusAfterTickWrite('active', 'active'), 'active');
+  for (const stopped of ['stopped', 'paused', 'done', 'error'] as const) {
+    assert.equal(statusAfterTickWrite(stopped, 'active'), stopped,
+      `a tick landing after ${stopped} must not resurrect the run — this is the live defect`);
+    assert.equal(statusAfterTickWrite(stopped, 'done'), stopped,
+      'not even a tick that would have FINISHED the run may overwrite an operator’s instruction');
+  }
+  // …and the same rule restated in the SQL, because the decision and the write are a round-trip apart.
+  const store = src('lib/backfill-runs.ts');
+  const cursor = store.slice(store.indexOf('export async function setRunCursor'), store.indexOf('export async function addRunProgress'));
+  assert.match(cursor, /status\s+=\s+CASE WHEN status = 'active' THEN \$3 ELSE status END/);
+  assert.match(cursor, /cursor\s+=\s+\$2::date/, 'the CURSOR still marches — the work happened');
+  const status = store.slice(store.indexOf('export async function setRunStatus'), store.indexOf('export async function setRunCursor'));
+  assert.match(status, /CASE WHEN \$4::boolean AND status <> 'active' THEN status ELSE \$2 END/);
+  assert.match(status, /last_error = COALESCE\(\$3, last_error\)/, 'the error is recorded either way');
+  // Every TICK-originated status write carries the guard; the operator’s own actions must not.
+  const c = code(ROUTE);
+  const tick = c.slice(c.indexOf('async function autoTick'), c.indexOf('async function statusPayload'));
+  const tickWrites = tick.match(/setRunStatus\([^;]*\)/g) ?? [];
+  assert.ok(tickWrites.length >= 3, `expected the tick’s status writes, found ${tickWrites.length}`);
+  for (const w of tickWrites) assert.match(w, /onlyIfActive: true/, w);
+  const post = c.slice(c.indexOf('export async function POST'));
+  assert.ok(post.includes('await setRunStatus(target.id, change.status);'),
+    'pause/resume/stop are unconditional — a guard here would make RESUME a no-op');
+});
+
+test('C3: pace is weighted by notes, and only this run’s productive ticks count', () => {
+  const ticks = [
+    { run_id: 9, processed: 4, avg_ms: 1_000 },   // another run — ignored
+    { run_id: 1, processed: 0, avg_ms: null },    // idle/locked tick — contributes nothing, not a 0
+    { run_id: 1, processed: 1, avg_ms: 90_000 },
+    { run_id: 1, processed: 4, avg_ms: 40_000 },
+  ];
+  const p = rollingPace(ticks, 1);
+  assert.equal(p.notes, 5);
+  assert.equal(p.ticks, 2);
+  assert.equal(p.avgMsPerNote, Math.round((1 * 90_000 + 4 * 40_000) / 5), 'the 4-note tick outweighs the 1-note one');
+  assert.deepEqual(rollingPace([], 1), { avgMsPerNote: null, notes: 0, ticks: 0 }, 'no data ⇒ no pace, never zero');
+});
+
+test('C3: the ETA says what it is BASED on, and stays null rather than guessing', () => {
+  const pace = { avgMsPerNote: 45_000, notes: 8, ticks: 2 };
+  // Nothing finished yet ⇒ no notes-per-day denominator exists, so there is no honest ETA.
+  assert.equal(estimateRunEta(RUN({ cursor: '2026-01-10', notes_done: 3 }), pace).basis, 'no_completed_day_yet');
+  assert.equal(estimateRunEta(RUN({ cursor: '2026-01-08', notes_done: 60 }), { avgMsPerNote: null, notes: 0, ticks: 0 }).basis, 'no_pace_yet');
+  assert.equal(estimateRunEta(RUN({ status: 'paused' }), pace).basis, 'not_active');
+  // Two days done (10th, 9th), 60 notes ⇒ 30/day; 8 days left (8th…1st) ⇒ 240 notes × 45 s.
+  const eta = estimateRunEta(RUN({ cursor: '2026-01-08', notes_done: 60 }), pace);
+  assert.equal(eta.basis, 'estimated_from_completed_days');
+  assert.equal(eta.notesPerDay, 30);
+  assert.equal(eta.daysRemaining, 8);
+  assert.equal(eta.notesRemaining, 240);
+  assert.equal(eta.seconds, Math.round((240 * 45_000) / 1000));
+  assert.equal(etaSeconds(10, null), null, 'no pace ⇒ no number');
+  assert.equal(etaSeconds(0, 45_000), 0, 'nothing left is zero, which is a real answer');
+  assert.equal(daysInclusive('2026-01-01', '2026-01-01'), 1);
+  assert.equal(daysInclusive('2026-01-10', '2026-01-01'), 0, 'a backwards range is 0, never negative');
+});
+
+test('C3: a stall is 300s of silence on an ACTIVE worker — never on a paused or idle one', () => {
+  const now = Date.parse('2026-08-08T12:00:00Z');
+  const ago = (s: number) => now - s * 1000;
+  assert.equal(STALL_AFTER_MS, 300_000, 'the settled default (V, 8 Aug)');
+  assert.equal(isStalled({ active: true, lastProgressMs: ago(301) }, now), true);
+  assert.equal(isStalled({ active: true, lastProgressMs: ago(299) }, now), false);
+  // Deliberate idleness is not a stall: a paused/stopped run, or a batch outside its night window.
+  assert.equal(isStalled({ active: false, lastProgressMs: ago(86_400) }, now), false);
+  // Unknown idleness is not a stall either — an alarm on every freshly created run gets ignored.
+  assert.equal(isStalled({ active: true, lastProgressMs: null }, now), false);
+});
+
+test('C3: the monitor exposes ETA + stall for BOTH arms of the bake-off', () => {
+  const m = code(src('app/api/admin/mini-backfill-monitor/route.ts'));
+  // The Gemini arm is a RUN…
+  assert.ok(m.includes('const runPace = runActive ? rollingPace(ticks, runActive.id) : null;'), 'pace from ticks already fetched — no new query');
+  assert.ok(m.includes('runEta,') && m.includes('runStalled,'));
+  // …and the three Bedrock arms are lab BATCHES. A rule that watched only one would leave
+  // three-quarters of the experiment unwatched (standing rule §7, V, 8 Aug).
+  assert.ok(m.includes('etaSec: etaSeconds(lbProg.remaining, lbAvgMs)'), 'the cohort’s remaining is EXACT, so no estimate is needed');
+  assert.ok(m.includes('stalled: lbStalled'));
+  assert.ok(m.includes('const lbActive = !!(lb.experiment && lb.enabled && windowOpen(lb.window));'),
+    'a closed night window is deliberate idleness, not a stall');
+  assert.ok(m.includes('model: lbModel || null'), 'the monitor says WHO is grading — i.e. whether this batch spends');
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// 8 · S2b C1 — the lab batch gains a model (BAKEOFF-DESIGN §6 gap 1)
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+const BATCH = src('lib/lab-batch.ts');
+const MCP = src('lib/mcp-tools.ts');
+
+test('C1: the batch accepts bedrock, refuses every other provider, and no model ⇒ the mini path', () => {
+  const good = resolveBatchModel(`bedrock:${HAIKU}`);
+  assert.deepEqual(good, { ok: true, modelId: HAIKU });
+  // ABSENT is not an error — it is today's free-mini batch, and it must stay that way.
+  for (const empty of ['', '   ', null, undefined]) {
+    assert.deepEqual(resolveBatchModel(empty), { ok: true, modelId: null }, `${JSON.stringify(empty)} ⇒ mini`);
+  }
+  for (const m of ['ollama:qwen2.5:14b', 'vertex:gemini-2.5-pro', 'openrouter:google/gemini-2.5-pro']) {
+    const r = resolveBatchModel(m);
+    assert.equal(r.ok, false, `${m} must be refused`);
+    assert.match((r as { error: string }).error, /Never falls back|unknown provider/);
+  }
+  // An unresolvable string is the resolver's own typed error, not a silent mini run.
+  assert.equal(resolveBatchModel('gpt5:foo').ok, false);
+  assert.equal(resolveBatchModel('bedrock:').ok, false, 'a prefix with no id names nothing');
+});
+
+test('C1: a bedrock batch is TRACED and verified against that trace — a paid claim must be provable', () => {
+  const b = code(BATCH);
+  // The mini keeps trace:false; the paid arm cannot, because an untraced call proves neither who
+  // served it nor what it cost — and both are conditions on this build.
+  assert.ok(b.includes('trace: onBedrock,'), 'the bedrock arm traces; every other path stays false');
+  assert.ok(b.includes('bedrockModel: onBedrock ? bedrockModel : undefined,'), 'threaded exactly as the S2 runner threads it');
+  assert.ok(b.includes('const served = await servedCallForAudit(audit.traceId);'));
+  assert.ok(b.includes("const verdict = checkAttribution({ provider: 'bedrock', model: bedrockModel }, calls, modelsAgree);"),
+    'the SAME pure comparison the probe path uses — not a second copy of the rule');
+  // REFUSAL MEANS NO ROW: the throw precedes saveLabAnalysis, so a mismatched note is never stored.
+  const throwAt = b.indexOf('if (!verdict.ok) throw new Error');
+  assert.ok(throwAt > 0, 'a refused attribution throws');
+  assert.ok(throwAt < b.indexOf('const id = await saveLabAnalysis('), 'and it throws BEFORE anything is written');
+});
+
+test('C1: the row carries who SERVED, and that is what makes the paid ceiling count it', () => {
+  const b = code(BATCH);
+  assert.ok(b.includes('model: attribution ? attribution.model : (evalCfg.evalModel || MINI_MODEL),'));
+  assert.ok(b.includes('...(attribution ? { provider: attribution.provider } : {}),'),
+    'provider is written ONLY on the bedrock arm — the mini/eval rows stay byte-identical');
+  // countPaidRuns counts provider, not model, so a bedrock row registers as paid and a mini one
+  // never can. This is the assertion the kickoff asks for.
+  const lab = src('lib/lab.ts');
+  const fn = lab.slice(lab.indexOf('export async function countPaidRuns'), lab.indexOf('export async function listLabAnalyses'));
+  assert.match(fn, /provider IS NOT NULL AND provider <> 'ollama'/);
+  assert.ok(!/model/.test(fn.replace(/[\s\S]*?\{/, '')), 'the ceiling counts provider, never model');
+  // The value the row will actually carry is `checkAttribution`'s verdict provider, which for a
+  // bedrock leg is the normalised transport name — non-null and not 'ollama', i.e. counted.
+  const stored = normaliseProvider('bedrock');
+  assert.equal(stored, 'bedrock');
+  assert.notEqual(stored, 'ollama', 'a bedrock arm consumes paid budget; the free mini never does');
+});
+
+test('C1: the bedrock arm does not yield to the Mac-mini it never touches', () => {
+  const b = code(BATCH);
+  assert.ok(b.includes('if (plan.useMiniYield && !bedrockModel) {'),
+    'a paid arm waiting on the prod worker’s lock would wedge behind a resource it does not use');
+  // …and it stays SERIAL: the eval fan-out is an OpenRouter concurrency story, not this one.
+  assert.ok(b.includes(`      results = [];
+      for (const uid of slice) results.push(await drainOne(uid));`), 'the serial drain is unchanged');
+});
+
+test('C1: the poison-note budget covers the PAID arm, or a bad note retries for ever at a price', () => {
+  const b = code(BATCH);
+  assert.ok(b.includes('const attempts: AttemptsState | null = (plan.evalMode || !!bedrockModel)'),
+    'D3’s unbounded-retry defect is worse on a paid arm than it was on the free one');
+  assert.ok(b.includes('model: bedrockModel || st.evalModel || MINI_MODEL, latencyMs: Date.now() - t0,'),
+    'a tombstone names the model that FAILED');
+  assert.ok(!/kind: 'eval_failed'[\s\S]{0,300}provider:/.test(b), 'and carries no provider — nothing served it, so it is not a paid run');
+});
+
+test('C1: lab_batch_start writes the model key on EVERY start, so a paid arm cannot leak forward', () => {
+  const m = code(MCP);
+  assert.equal(LB_MODEL_KEY, 'lab_batch_model');
+  assert.ok(m.includes("await setSetting(LB_MODEL_KEY, batchModel ? `bedrock:${batchModel}` : '');"),
+    'the empty write is the point: a stale key would make the NEXT free batch a paid one');
+  // Both paid doors at once is a mistake, and defaultGenerate would silently pick evalModel.
+  assert.ok(m.includes('if (batchModel && evalModel) {'));
+  assert.match(MCP, /mutually exclusive — one batch, one grader/);
+  // Reachability at the door, so a batch that could never run does not sit looking queued.
+  assert.ok(m.includes("if (batchModel && !probeReachable('bedrock')) {"));
+  // The tick re-checks it, for the same reason the runner does: unsetting a var is the rollback.
+  const b = code(BATCH);
+  assert.ok(b.includes('if (bedrockModel && !bedrockConfigured()) {'));
+  assert.ok(b.includes('const resolvedModel = resolveBatchModel(await readBatchModel());'));
+  // The schema advertises it, or no caller can use it.
+  assert.ok(/model: \{ type: 'string', description: "S2b/.test(MCP), 'lab_batch_start exposes `model`');
+  assert.match(MCP, /bedrock:global\.anthropic\.claude-haiku-4-5-20251001-v1:0/, 'with a real id in the description');
 });

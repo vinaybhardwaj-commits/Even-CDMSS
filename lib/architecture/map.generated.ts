@@ -3125,6 +3125,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "lab-batch",
+    "to": "backfill-runs",
+    "kind": "value"
+  },
+  {
+    "from": "lab-batch",
     "to": "db",
     "kind": "value"
   },
@@ -3135,12 +3140,32 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "lab-batch",
+    "to": "lab-attribution-core",
+    "kind": "value"
+  },
+  {
+    "from": "lab-batch",
     "to": "lab-batch-core",
     "kind": "value"
   },
   {
     "from": "lab-batch",
+    "to": "lab-provider-core",
+    "kind": "value"
+  },
+  {
+    "from": "lab-batch",
     "to": "llm",
+    "kind": "value"
+  },
+  {
+    "from": "lab-batch",
+    "to": "llm-cost",
+    "kind": "value"
+  },
+  {
+    "from": "lab-batch",
+    "to": "llm-cost-core",
     "kind": "value"
   },
   {
@@ -3396,6 +3421,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "mcp-tools",
     "to": "lab-clinical-core",
+    "kind": "value"
+  },
+  {
+    "from": "mcp-tools",
+    "to": "lab-override",
     "kind": "value"
   },
   {

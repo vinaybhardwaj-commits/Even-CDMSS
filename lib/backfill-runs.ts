@@ -46,10 +46,15 @@ export async function ensureRunsTable(): Promise<void> {
   ensured = true;
 }
 
+// `updated_at_iso` is formatted IN SQL rather than trusted to the driver's timestamp mapping: the
+// stall check (§C3) does date arithmetic on it, and a driver that hands back a local-time string
+// would shift the heartbeat by the IST offset and make every healthy run read as stalled — or, worse,
+// every wedged one read as healthy. The raw `updated_at` stays in the list for existing readers.
 const SELECT_COLS = `id, worker, model, to_char(day_from, 'YYYY-MM-DD') AS day_from,
   to_char(day_to, 'YYYY-MM-DD') AS day_to, to_char(cursor, 'YYYY-MM-DD') AS cursor,
   n_per_tick, status, source, notes_done, notes_failed, tokens_in, tokens_out,
-  cost_usd, last_error, created_at, updated_at`;
+  cost_usd, last_error, created_at, updated_at,
+  to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS updated_at_iso`;
 
 function toRun(r: Record<string, unknown>): BackfillRun {
   return {
@@ -68,6 +73,7 @@ function toRun(r: Record<string, unknown>): BackfillRun {
     tokens_out: Number(r.tokens_out ?? 0),
     cost_usd: Number(r.cost_usd ?? 0),
     last_error: r.last_error == null ? null : String(r.last_error),
+    updated_at: r.updated_at_iso == null ? null : String(r.updated_at_iso),
   };
 }
 
@@ -119,21 +125,52 @@ export async function createRun(plan: Extract<RunCreatePlan, { ok: true }>): Pro
   return toRun(rows[0]);
 }
 
-export async function setRunStatus(id: number, status: RunStatus, lastError?: string | null): Promise<void> {
+/**
+ * Set a run's status.
+ *
+ * `onlyIfActive` is §C4 (see statusAfterTickWrite): EVERY status write originating in a tick passes
+ * it, and every write originating in an OPERATOR ACTION does not. A tick decided its status from a
+ * row it read before it began; an operator's stop is newer than that decision, so the tick must not
+ * overwrite it. The control endpoint keeps the unconditional form — `resume` sets `active` FROM a
+ * non-active status, and a guard here would make resume a no-op.
+ *
+ * ⚠️ `last_error` IS WRITTEN EITHER WAY. It is a record of something that happened, not a status;
+ * losing a tick's error message because the operator stopped the run in the same second would hide
+ * the very failure they may have been reacting to.
+ */
+export async function setRunStatus(
+  id: number, status: RunStatus, lastError?: string | null, opts: { onlyIfActive?: boolean } = {},
+): Promise<void> {
   await ensureRunsTable();
   await run(
-    `UPDATE backfill_runs SET status = $2, updated_at = NOW(),
-            last_error = COALESCE($3, last_error) WHERE id = $1`,
-    [id, status, lastError ?? null],
+    `UPDATE backfill_runs
+        SET status     = CASE WHEN $4::boolean AND status <> 'active' THEN status ELSE $2 END,
+            last_error = COALESCE($3, last_error),
+            updated_at = NOW()
+      WHERE id = $1`,
+    [id, status, lastError ?? null, opts.onlyIfActive === true],
   );
 }
 
-/** Advance the cursor and (optionally) the status in one write, so a tick can never leave a run
- *  with a marched cursor but a stale status. */
+/**
+ * Advance the cursor and the status in one write, so a tick can never leave a run with a marched
+ * cursor but a stale status.
+ *
+ * ⚠️ §C4 — THE CURSOR MOVES UNCONDITIONALLY, THE STATUS ONLY WHILE STILL ACTIVE. This is the fix for
+ * the live stop-race: a `stop` issued mid-tick was overwritten by this statement when the tick
+ * landed, and run 1 went back to `active` after the operator had stopped it. The work is still
+ * recorded — those notes were graded and stored, so the cursor must not re-offer them — but the
+ * operator's instruction outranks a decision this tick made before the instruction existed. Same
+ * rule, restated in SQL, because the decision and this write are a round-trip apart.
+ */
 export async function setRunCursor(id: number, cursor: string, status: RunStatus): Promise<void> {
   await ensureRunsTable();
   await run(
-    `UPDATE backfill_runs SET cursor = $2::date, status = $3, updated_at = NOW() WHERE id = $1`,
+    `UPDATE backfill_runs
+        SET cursor     = $2::date,
+            status     = CASE WHEN status = 'active' THEN $3 ELSE status END,
+            updated_at = NOW()
+      WHERE id = $1`,
     [id, cursor, status],
   );
 }
@@ -185,4 +222,47 @@ export async function usageForTrace(traceId: string | null | undefined, stage = 
     );
     return { tokensIn: Number(rows?.[0]?.t_in ?? 0) || 0, tokensOut: Number(rows?.[0]?.t_out ?? 0) || 0 };
   } catch { return { tokensIn: 0, tokensOut: 0 }; }
+}
+
+/**
+ * WHO ACTUALLY SERVED the audit leg of this note, off its own trace (F11 / DEC-2, S2b).
+ *
+ * ⚠️ WHY A CALLER CANNOT JUST STAMP WHAT IT ASKED FOR. It could, while `bedrock:` was the only run
+ * model: that branch of tracedChat has no ladder and no fallback, so the request and the fact were
+ * the same event. `vertex:` (§C2) is not like that — the cloud ladder may answer a Vertex request
+ * from the OpenRouter tier — and the lab batch's mini path (§C1) falls back by design. The same
+ * lesson has already cost this repo 126 notes graded by qwen with every row still reading
+ * `gemini-2.5-pro`. So the stamp is READ BACK, not assumed.
+ *
+ * ⚠️ ENVELOPE COLUMNS ONLY — no `payload->>` fallback, unlike `servedCallsForTrace` in
+ * lib/mcp-tools.ts. That fallback exists there to read events written before the 0012 migration;
+ * every trace THIS function reads was written seconds earlier by the current `tracedChat`, which
+ * always passes `buildEnvelope({ model, provider })` on its llm_response. Keeping payload out of
+ * this file's SQL altogether is worth more than covering a case that cannot arise here — `payload`
+ * is the PHI-bearing column, and a test in this repo holds that line.
+ *
+ * `call_provider` is written AFTER any fallback (lib/trace.ts reassigns `provider` before logging),
+ * so it names the route actually taken. The LAST llm_response for the stage is the one that produced
+ * the stored output. Nulls are an HONEST GAP, never a guess, and this never throws: a failed lookup
+ * must not fail a note that has already been graded.
+ */
+export async function servedCallForAudit(
+  traceId: string | null | undefined, stage = 'opd_audit_analyze',
+): Promise<{ model: string | null; provider: string | null }> {
+  const none = { model: null, provider: null };
+  if (!traceId) return none;
+  try {
+    const rows = await run(
+      `SELECT call_model AS model, call_provider AS provider
+         FROM trace_events
+        WHERE trace_id = $1 AND kind IN ('llm_response', 'llm_stream_usage') AND stage = $2
+        ORDER BY seq DESC LIMIT 1`,
+      [traceId, stage],
+    );
+    const r = rows?.[0];
+    return {
+      model: typeof r?.model === 'string' && r.model ? r.model : null,
+      provider: typeof r?.provider === 'string' && r.provider ? r.provider : null,
+    };
+  } catch { return none; }
 }

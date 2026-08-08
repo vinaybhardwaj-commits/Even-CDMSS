@@ -269,8 +269,12 @@ test('mixed history: abandons interleaved with failures — only the failures co
 // 5 · The tick wiring — eval-only, fail-safe, tombstones count as done
 // ═════════════════════════════════════════════════════════════════════════════════════════════
 
-test('the budget is EVAL-BRANCH ONLY and its read degrades to empty, never throws', () => {
-  assert.ok(BATCH.includes('const attempts: AttemptsState | null = plan.evalMode'));
+// ⚠️ WIDENED 8 Aug 2026 (S2b C1): the gate is now every PAID branch, not the eval one alone. The
+// defect D3 was written for — a poison note that writes no row, is never in doneUids, and is
+// re-selected every tick FOREVER — is strictly worse on the Bedrock arm, where each retry is billed.
+// The property this test defends is unchanged: the FREE MINI still gets null and touches nothing.
+test('the budget is PAID-BRANCH ONLY and its read degrades to empty, never throws', () => {
+  assert.ok(BATCH.includes('const attempts: AttemptsState | null = (plan.evalMode || !!bedrockModel)'));
   assert.ok(BATCH.includes(".catch(() => ({ experiment, uids: {} }))"), 'a failed read means no enforcement, not a lost tick');
   assert.ok(BATCH.includes(': null;'), 'mini gets null — it neither reads nor writes the map');
   // The map write is wrapped the same way.

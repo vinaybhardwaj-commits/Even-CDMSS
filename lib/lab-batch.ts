@@ -8,12 +8,24 @@
  * Three front doors share this core: the cron (/api/admin/lab-batch?auto=1), the admin
  * status endpoint, and the Lab MCP tools (lab_batch_start/status/stop/tick). It YIELDS to
  * the prod mini-backfill (both hit the single Mac-mini) via that worker's soft lock.
+ *
+ * S2b (8 Aug 2026) — A BATCH MAY NAME A MODEL. `lab_batch_start { model: 'bedrock:<id>' }` runs the
+ * cohort on Bedrock instead of the Mac-mini: resolved through the F11 resolver, reachability-checked,
+ * threaded to the audit leg the way the S2 backfill runner threads it, and — because a paid claim
+ * must be provable — TRACED, verified against that trace (DEC-2), and priced per note. Still
+ * lab_analyses only; still never opd_note_audits. No model named ⇒ every line below behaves exactly
+ * as it did before, mini-yield and all.
  */
 import { sql } from './db';
 import { auditOpdNote, isDeadlineErrorMessage, opdMiniEngine, type LlmEnvelope, type EvalPathError } from './opd-note-audit';
-import { MINI_MODEL } from './llm';
+import { MINI_MODEL, modelsAgree, bedrockConfigured } from './llm';
 import { fetchOpdNoteByUid } from './metabase';
 import { saveLabAnalysis } from './lab';
+import { resolveProvider } from './lab-provider-core';
+import { checkAttribution } from './lab-attribution-core';
+import { servedCallForAudit, usageForTrace } from './backfill-runs';
+import { costUsd } from './llm-cost-core';
+import { PRICING } from './llm-cost';
 import { getSettings, setSetting, windowOpen, lockHeld, readState as readMiniState } from './mini-backfill';
 import { LB_KEYS, LB_LOCK_TTL_MS, EVAL_TICK_DEADLINE_MS, type LabBatchState, parseBatchState, remainingUids, batchGate, drainPlan, boundedPool, labLockHeld, ttlBreach, ttlBreachMessage } from './lab-batch-core';
 
@@ -41,7 +53,57 @@ export async function batchProgress(experiment: string, cohort: string[]): Promi
 /** Lab eval config for a batch (R-11 Stage 2 Phase 2). Absent ⇒ today's mini/leg-off behaviour.
  *  `deadlineAt` (Eval-tick-deadline PRD D1) is absolute epoch ms, set by `batchTick`'s EVAL branch
  *  only — the mini branch leaves it undefined and is byte-identical. */
-export interface LabEvalConfig { evalNormativeLeg?: boolean; evalModel?: string; evalNormativeChannel?: boolean; deadlineAt?: number; rerankBackend?: 'judge' | 'cohere' }
+export interface LabEvalConfig {
+  evalNormativeLeg?: boolean; evalModel?: string; evalNormativeChannel?: boolean; deadlineAt?: number;
+  rerankBackend?: 'judge' | 'cohere';
+  /** S2b C1 — grade this batch on a BEDROCK model (the full modelId). Absent ⇒ every line of this
+   *  file behaves exactly as before. Mutually exclusive with `evalModel` (rejected at the door). */
+  bedrockModel?: string;
+}
+
+// ── S2b C1: the batch gains a model (BAKEOFF-DESIGN §6 gap 1) ────────────────────────────────────
+//
+// WHY A KEY OF ITS OWN RATHER THAN A FIELD ON LabBatchState. Exactly the reason LB_ATTEMPTS_KEY
+// above has one: lib/lab-batch-core.ts is outside this build's file contract, so LB_KEYS and
+// parseBatchState cannot grow. The reader below is the whole surface, and nothing else needs it.
+//
+// ⚠️ THIS KEY IS STICKY, AND THAT IS THE HAZARD IT MUST NOT HAVE. A stale `bedrock:` here would
+// silently make the NEXT free-mini batch a paid one. `lab_batch_start` therefore WRITES IT ON EVERY
+// START — the empty string when no model is named — so the key always describes the batch that is
+// actually queued, never the one before it.
+export const LB_MODEL_KEY = 'lab_batch_model';
+
+/** The batch's provider-prefixed model string, or '' for today's free-mini path. */
+export async function readBatchModel(): Promise<string> {
+  const s = await getSettings([LB_MODEL_KEY]).catch(() => ({} as Record<string, string>));
+  return String(s[LB_MODEL_KEY] ?? '').trim();
+}
+
+export type BatchModelResolution =
+  /** `modelId: null` ⇒ no model named ⇒ the mini path, byte-identical to before S2b. */
+  | { ok: true; modelId: string | null }
+  | { ok: false; error: string };
+
+/**
+ * Resolve the batch's `model` argument. ERRORS LOUD, NEVER FALLS BACK — the same rule the lab
+ * override and the backfill runner hold, for the same reason: a batch whose model was silently
+ * substituted produces 150 unattributable rows and an experiment nobody can read.
+ *
+ * ⚠️ BEDROCK ONLY, and the refusal names the alternative rather than just saying no. OpenRouter
+ * already has a door on this path (`evalModel`, with its own concurrency and deadline machinery);
+ * a second one would be two ways to say the same thing that drift. `ollama:`/`vertex:` are refused
+ * because the batch's ₹0 default IS ollama and because the lab never writes a production audit row.
+ */
+export function resolveBatchModel(raw: string | null | undefined): BatchModelResolution {
+  const s = String(raw ?? '').trim();
+  if (!s) return { ok: true, modelId: null };
+  const r = resolveProvider(s, MINI_MODEL);
+  if (!r.ok) return { ok: false, error: r.error };
+  if (r.provider !== 'bedrock') {
+    return { ok: false, error: `batch model '${s}' resolves to ${r.provider}; the lab batch accepts 'bedrock:<modelId>' only (use evalModel for OpenRouter, or omit model for the free mini). Never falls back.` };
+  }
+  return { ok: true, modelId: r.model };
+}
 
 // ── per-uid failure budget (Eval-hardening D3/D4) ────────────────────────────────────────────────
 //
@@ -131,10 +193,14 @@ export function tombstoneDue(state: AttemptsState, uid: string): boolean {
 /** The shared per-note primitive: audit one db13 uid → lab_analyses. Writes ONLY lab_analyses (via
  *  saveLabAnalysis); auditOpdNote is pure compute and never writes opd_note_audits. `evalCfg` (Phase 2)
  *  forces the R-11 normative leg on and/or routes generation to an OpenRouter model — absent ⇒ mini. */
-export async function runMiniOpdToLab(uid: string, experiment: string, evalCfg: LabEvalConfig = {}): Promise<{ id: string; band: string; index: number; findings: number; engine: string }> {
+export async function runMiniOpdToLab(uid: string, experiment: string, evalCfg: LabEvalConfig = {}): Promise<{ id: string; band: string; index: number; findings: number; engine: string; usd?: number }> {
   const row = await fetchOpdNoteByUid(uid);
   if (!row) throw new Error(`no db13 OPD note for uid ${uid}`);
   const started = Date.now();
+  // S2b C1 — the bake-off arm. `onBedrock` is the ONLY branch in this function: every line below is
+  // guarded on it, so a batch with no model is byte-identical to before this existed.
+  const bedrockModel = String(evalCfg.bedrockModel ?? '').trim();
+  const onBedrock = !!bedrockModel;
   // PDQI-9 fail-loud Phase 1 (R2): keep the LAST envelope seen. On the eval path openRouterGenerate
   // emits one per attempt, so after a retry this holds the attempt that actually produced the
   // content. Assignment only — it cannot throw, and it is never read unless the audit SUCCEEDS.
@@ -142,7 +208,13 @@ export async function runMiniOpdToLab(uid: string, experiment: string, evalCfg: 
   // and no row is written at all — which is the point of the build.
   let lastEnvelope: LlmEnvelope | null = null;
   const audit = await auditOpdNote(row, {
-    pipeline: 'mini', engineTag: 'lab', trace: false,
+    pipeline: 'mini', engineTag: 'lab',
+    // ⚠️ THE BEDROCK ARM IS TRACED, AND IT HAS TO BE. `trace: false` is right for the mini — a free
+    // local call with nothing to attribute and nothing to price — but a paid arm that records no
+    // trace can prove neither WHO SERVED it (DEC-2) nor WHAT IT COST, and both are conditions on
+    // this build. Every other path keeps `false` exactly as before.
+    trace: onBedrock,
+    bedrockModel: onBedrock ? bedrockModel : undefined,
     evalNormativeLeg: evalCfg.evalNormativeLeg, evalModel: evalCfg.evalModel,
     evalNormativeChannel: evalCfg.evalNormativeChannel,
     // Rerank-flip-prep (31 Jul): named rerank backend for the flip A/B. Absent ⇒ retrieve opts
@@ -152,6 +224,35 @@ export async function runMiniOpdToLab(uid: string, experiment: string, evalCfg: 
     deadlineAt: evalCfg.deadlineAt,
     onEnvelope: (e) => { lastEnvelope = e; },
   });
+  // ══ F11 / DEC-2 (51d5d41) ON THE BATCH PATH ═══════════════════════════════════════════════════
+  //
+  // The 7 Aug failure was a row that said `bedrock` while every leg had run on the local mini, and
+  // the lesson was NOT "resolve the provider properly" — the resolver was already right. It was that
+  // A STORED ATTRIBUTION MUST BE DERIVED FROM WHAT SERVED. The probe path learned it; this path is
+  // the one about to write 450 rows for the bake-off, so it learns it too, through the SAME pure
+  // comparison (`checkAttribution`) rather than a second copy of the rule.
+  //
+  // REFUSAL MEANS NO ROW. Not a corrected row, not a row with a warning: nothing. An unwritten uid
+  // stays outside `doneUids`, so the next tick re-offers it and the per-uid budget below bounds the
+  // retries. Writing "whoever answered" instead would quietly fill one arm of a note-paired
+  // comparison with a different model's grades — which is worse than the gap it papers over.
+  let attribution: { verified: boolean; provider: string; model: string } | null = null;
+  let usage: { tokens_in: number; tokens_out: number; usd: number } | null = null;
+  if (onBedrock) {
+    const served = await servedCallForAudit(audit.traceId);
+    const calls = served.model || served.provider ? [{ stage: 'opd_audit_analyze', provider: served.provider, model: served.model }] : [];
+    const verdict = checkAttribution({ provider: 'bedrock', model: bedrockModel }, calls, modelsAgree);
+    if (!verdict.ok) throw new Error(`uid ${uid}: ${verdict.message}`);
+    attribution = { verified: verdict.verified, provider: verdict.provider, model: verdict.model };
+    // Cost per note per arm is a deliverable of the bake-off (BAKEOFF-DESIGN §4.5), and it is read
+    // from the trace's ENVELOPE COLUMNS — never its payload, which carries the clinical text.
+    // Best-effort: zeros understate a run's cost rather than failing a note already graded.
+    const u = await usageForTrace(audit.traceId);
+    usage = {
+      tokens_in: u.tokensIn, tokens_out: u.tokensOut,
+      usd: Number(costUsd(verdict.model, u.tokensIn, u.tokensOut, false, PRICING).toFixed(6)),
+    };
+  }
   const output = {
     index: audit.scorecard.headline, band: audit.scorecard.band, scorecard: audit.scorecard,
     completeness: audit.completeness, findings: audit.findings, suggestions: audit.suggestions,
@@ -161,12 +262,27 @@ export async function runMiniOpdToLab(uid: string, experiment: string, evalCfg: 
     // already writes whole, so there is NO migration. Absent on the mini path (no evalModel ⇒ no
     // OpenRouter call ⇒ no envelope), which keeps every non-eval lab row byte-identical.
     ...(lastEnvelope ? { llm_envelope: lastEnvelope } : {}),
+    // Bedrock arm only: the verified attribution and this note's own spend, so an arm is readable
+    // from its rows alone without joining back to traces.
+    ...(attribution ? { attribution } : {}),
+    ...(usage ? { usage } : {}),
   };
   const id = await saveLabAnalysis({
     experiment, kind: 'opd_note', engine: audit.engineVersion, inputRef: uid,
-    inputPreview: `uid ${uid}`, output, model: evalCfg.evalModel || MINI_MODEL, latencyMs: Date.now() - started,
+    inputPreview: `uid ${uid}`, output,
+    // ⚠️ THE COLUMNS CARRY WHAT SERVED. `provider` is what the paid-run ceiling counts
+    // (countPaidRuns: provider IS NOT NULL AND provider <> 'ollama'), so a bedrock arm registers as
+    // paid where the free mini never does. On the mini/eval path both are exactly as before —
+    // `provider` stays absent, which is why today's eval batches do not move that counter.
+    model: attribution ? attribution.model : (evalCfg.evalModel || MINI_MODEL),
+    ...(attribution ? { provider: attribution.provider } : {}),
+    latencyMs: Date.now() - started,
   });
-  return { id, band: audit.scorecard.band, index: audit.scorecard.headline, findings: audit.findings.length, engine: audit.engineVersion };
+  return {
+    id, band: audit.scorecard.band, index: audit.scorecard.headline,
+    findings: audit.findings.length, engine: audit.engineVersion,
+    ...(usage ? { usd: usage.usd } : {}),
+  };
 }
 
 /** One tick: drain up to n un-done cohort uids into lab_analyses. Idempotent + resumable.
@@ -178,6 +294,24 @@ export async function batchTick(opts: { ignoreWindow?: boolean } = {}): Promise<
   const tickStart = Date.now();
   const st = await readBatchState();
   const base = { enabled: st.enabled, experiment: st.experiment, window: st.window, total: st.uids.length };
+  // ── S2b C1 — the batch's model, resolved before anything else happens ─────────────────────────
+  // Re-resolved EVERY TICK rather than trusted from start time, for the reason the runner re-probes
+  // every tick: the rollback for this whole build is unsetting a BEDROCK_* var, and a batch that
+  // kept grinding against an unreachable provider would turn that rollback into a wall of failed
+  // notes instead of one visible, stopped batch.
+  const resolvedModel = resolveBatchModel(await readBatchModel());
+  if (!resolvedModel.ok) {
+    await setSetting(LB_KEYS.error, resolvedModel.error.slice(0, 300)).catch(() => {});
+    return { ...base, skipped: `batch model refused: ${resolvedModel.error}` };
+  }
+  const bedrockModel = resolvedModel.modelId;
+  if (bedrockModel && !bedrockConfigured()) {
+    // The one reachability fact, read where it lives (lib/llm.ts) — `probeReachable('bedrock')` in
+    // lib/lab-override.ts delegates to this same function, so there is one rule, not two.
+    const msg = 'bedrock is not reachable in this deployment (BEDROCK_REGION / BEDROCK_ROLE_ARN / BEDROCK_OIDC_AUDIENCE / GCP_SA_KEY) — batch tick refused, nothing graded';
+    await setSetting(LB_KEYS.error, msg).catch(() => {});
+    return { ...base, model: `bedrock:${bedrockModel}`, skipped: msg };
+  }
   // Eval batches (evalModel set → OpenRouter, hosted+concurrent) fan out and skip the mini-yield —
   // that lock only protects the single mini GPU, which the eval path never touches. Mini batches
   // (no evalModel) keep the legacy plan EXACTLY: n≤2, serial, mini-yield honoured.
@@ -185,7 +319,13 @@ export async function batchTick(opts: { ignoreWindow?: boolean } = {}): Promise<
   // Prod re-score now yields to us (bounded run has priority), so we only defer to prod's transient
   // in-flight note for ONE tick to avoid a literal concurrent mini call — not a standing yield.
   let miniBusy = false;
-  if (plan.useMiniYield) {
+  // ⚠️ THE BEDROCK ARM DOES NOT YIELD TO THE MAC-MINI. `drainPlan` returns useMiniYield for every
+  // non-eval batch because, until S2b, every non-eval batch WAS the mini. A Bedrock batch never
+  // touches that box, so deferring to its lock would be waiting on a resource it does not use — and
+  // a prod worker whose lock ever stuck would silently wedge a paid bake-off arm behind it. The
+  // yield is dropped here rather than in drainPlan because lib/lab-batch-core.ts is outside this
+  // build's file contract; the eval branch's `useMiniYield: false` is the same call, made there.
+  if (plan.useMiniYield && !bedrockModel) {
     // DELIBERATELY the PROD worker's lockHeld/MB_LOCK_TTL_MS — this reads the mini-backfill's lock
     // to see whether the shared GPU is busy, so it must keep the prod worker's TTL. Do NOT switch
     // this to labLockHeld: the two locks belong to two different workers (D1).
@@ -222,12 +362,20 @@ export async function batchTick(opts: { ignoreWindow?: boolean } = {}): Promise<
     // branch gets `undefined` and is byte-identical, because the mini path is serial on a single GPU
     // and never retries inside the tick, so it has neither the failure mode nor the fan-out.
     const deadlineAt = plan.evalMode ? tickStart + EVAL_TICK_DEADLINE_MS : undefined;
-    const evalCfg = { evalNormativeLeg: st.evalNormativeLeg, evalModel: st.evalModel ?? undefined, evalNormativeChannel: st.evalNormativeChannel, rerankBackend: st.evalRerankBackend ?? undefined, ...(deadlineAt != null ? { deadlineAt } : {}) };
-    // Eval-hardening D3/D4 — the per-uid failure budget. EVAL BRANCH ONLY: the mini branch neither
-    // reads nor writes it. Absent key ⇒ empty state, never an error (a batch is draining mid-deploy
-    // as this ships). The read failing entirely degrades to "no budget enforcement" — losing the
-    // budget must never cost the drain (§4 fail-safe direction).
-    const attempts: AttemptsState | null = plan.evalMode
+    const evalCfg = { evalNormativeLeg: st.evalNormativeLeg, evalModel: st.evalModel ?? undefined, evalNormativeChannel: st.evalNormativeChannel, rerankBackend: st.evalRerankBackend ?? undefined, ...(deadlineAt != null ? { deadlineAt } : {}), ...(bedrockModel ? { bedrockModel } : {}) };
+    // Eval-hardening D3/D4 — the per-uid failure budget. PAID BRANCHES ONLY: the free mini branch
+    // neither reads nor writes it. Absent key ⇒ empty state, never an error (a batch is draining
+    // mid-deploy as this ships). The read failing entirely degrades to "no budget enforcement" —
+    // losing the budget must never cost the drain (§4 fail-safe direction).
+    //
+    // ⚠️ S2b EXTENDS THIS TO THE BEDROCK ARM, and the reason is the one D3 was written for. The
+    // poison note is unbounded by construction: drainOne catches, writes no row, so `doneUids` never
+    // contains the uid and `remainingUids` re-selects it every tick FOREVER. On the free mini that
+    // costs GPU time. On a paid arm it is indefinite paid retrying of a note that will never parse —
+    // and the DEC-2 refusal above is itself a no-row failure, so an arm pointed at a misconfigured
+    // provider would retry every uid in the cohort without end. Three terminal failures, then a
+    // tombstone, exactly as the OpenRouter path.
+    const attempts: AttemptsState | null = (plan.evalMode || !!bedrockModel)
       ? await getSettings([LB_ATTEMPTS_KEY])
           .then((s) => parseAttemptsState(s[LB_ATTEMPTS_KEY], experiment))
           .catch(() => ({ experiment, uids: {} }))
@@ -248,7 +396,9 @@ export async function batchTick(opts: { ignoreWindow?: boolean } = {}): Promise<
               failed: true, attempts: rec.failures, last_error: rec.last_error ?? null,
               llm_envelope: rec.llm_envelope ?? null, error_type: rec.error_type ?? null,
             },
-            model: st.evalModel || MINI_MODEL, latencyMs: Date.now() - t0,
+            // The tombstone names the model that FAILED, not the mini. It carries no `provider`:
+            // nothing served it, so it must not register against the paid-run ceiling.
+            model: bedrockModel || st.evalModel || MINI_MODEL, latencyMs: Date.now() - t0,
           });
           return { uid, tombstoned: true, id, ms: Date.now() - t0 };
         } catch (e) {
@@ -258,7 +408,7 @@ export async function batchTick(opts: { ignoreWindow?: boolean } = {}): Promise<
       }
       try {
         const r = await runMiniOpdToLab(uid, experiment, evalCfg);
-        return { uid, band: r.band, index: r.index, findings: r.findings, ms: Date.now() - t0 };
+        return { uid, band: r.band, index: r.index, findings: r.findings, ...(r.usd != null ? { usd: r.usd } : {}), ms: Date.now() - t0 };
       } catch (e) {
         const msg = String((e as Error).message);
         // D4 — deadline abandons and terminal failures are budgeted SEPARATELY (see recordDrainFailure).
@@ -292,7 +442,18 @@ export async function batchTick(opts: { ignoreWindow?: boolean } = {}): Promise<
       await setSetting(LB_KEYS.error, ttlBreachMessage(breach.maxMs, LB_LOCK_TTL_MS)).catch(() => {});
     }
     const summary = {
-      ...base, experiment, model: st.evalModel || MINI_MODEL, processed: results.length,
+      ...base, experiment,
+      model: bedrockModel ? `bedrock:${bedrockModel}` : (st.evalModel || MINI_MODEL),
+      processed: results.length,
+      // Bedrock arm only: this tick's spend, summed from the per-note usage each row already carries.
+      ...(bedrockModel ? {
+        provider: 'bedrock',
+        tick_usd: Number(results.reduce((s, r) => s + (Number(r.usd) || 0), 0).toFixed(6)),
+        // The budget's two fields, reported for this arm too — a paid arm that is quietly
+        // tombstoning notes must say so on the surface an operator actually watches.
+        tombstoned: results.filter((r) => r.tombstoned === true).length,
+        failed_uids: attempts ? Object.entries(attempts.uids).filter(([, r]) => r.failures > 0).map(([u]) => u).slice(0, 50) : [],
+      } : {}),
       // D1 instrumentation, EVAL-ONLY so mini summaries stay byte-identical. `deadline_ms` is the
       // field V watches to confirm the deploy took; `deadline_hits` counts notes abandoned to let
       // the tick report — each stays un-done and is retried next tick, with NO lab_analyses row.

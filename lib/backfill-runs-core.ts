@@ -21,7 +21,8 @@ export type RunStatus = 'active' | 'paused' | 'done' | 'stopped' | 'error';
 export interface BackfillRun {
   id: number;
   worker: BackfillWorker;
-  /** The full `bedrock:<modelId>` string, as requested. Attribution lives here, not in the label. */
+  /** The full `bedrock:<modelId>` or `vertex:<modelId>` string, as requested. Attribution lives
+   *  here, not in the label. */
   model: string;
   /** Oldest day, inclusive. The run is done when the cursor passes BELOW this. */
   day_from: string;
@@ -37,6 +38,10 @@ export interface BackfillRun {
   tokens_out: number;
   cost_usd: number;
   last_error: string | null;
+  /** ISO-8601 UTC of the last write to this row — every tick touches it (cursor, counters, status).
+   *  It is therefore the run's HEARTBEAT, and the only field the stall check reads (S2b C3).
+   *  Optional so a fixture or an older reader that never selected it still type-checks. */
+  updated_at?: string | null;
 }
 
 // ── day arithmetic ──────────────────────────────────────────────────────────────────────────────
@@ -55,6 +60,13 @@ export function prevDay(day: string): string {
   const d = new Date(`${day}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() - 1);
   return d.toISOString().slice(0, 10);
+}
+
+/** Calendar days from `from` to `to`, both ends INCLUSIVE. 0 when `to` is before `from`. */
+export function daysInclusive(from: string, to: string): number {
+  if (!isDay(from) || !isDay(to) || to < from) return 0;
+  const ms = Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`);
+  return Math.round(ms / 86_400_000) + 1;
 }
 
 // ── run creation ────────────────────────────────────────────────────────────────────────────────
@@ -81,13 +93,28 @@ export type RunCreatePlan =
   | { ok: false; error: string };
 
 /**
+ * The provider prefixes a RUN may name (S2b C2, 8 Aug 2026 — was `bedrock:` alone).
+ *
+ * ⚠️ WHY VERTEX JOINED, AND WHY THE LIST IS STILL A LIST. The bake-off (BAKEOFF-DESIGN §6 gap 2)
+ * grades one cohort four ways: three Bedrock arms and the PRODUCTION grader. The Gemini arm had no
+ * driver — 150 one-at-a-time golden A/B calls have no run row, no counters, no cost, and no progress
+ * surface, which the standing monitoring rule (§7) forbids. Letting the runner take `vertex:` makes
+ * that arm an ordinary fill run and nothing else changes: same fill-only rule, same prod-line label,
+ * same per-run accounting.
+ *
+ * `ollama:` and `openrouter:` remain refused. Qwen is retired from backfill (PRD decision 2), and an
+ * OpenRouter backfill would write prod-line rows through the backup tier while the production ladder
+ * calls Vertex first — an attribution muddle with no experiment behind it.
+ */
+export const RUN_MODEL_PREFIXES = ['bedrock:', 'vertex:'] as const;
+
+/**
  * Validate a run request. ERRORS LOUD, NEVER NORMALISES A MISTAKE AWAY.
  *
- * ⚠️ `bedrock:` ONLY (PRD decision 2). Qwen is retired from backfill and ollama is not a valid run
- * model; vertex/openrouter runs are out of scope for v1. This is checked here rather than at the
- * call site so the reason travels with the refusal: a run is an EXPERIMENT, and an experiment whose
- * model was silently substituted is worthless. Reachability is a separate, impure check the caller
- * makes before insert — a resolvable model that cannot be reached must not become an active run.
+ * ⚠️ `bedrock:` OR `vertex:` (see RUN_MODEL_PREFIXES). This is checked here rather than at the call
+ * site so the reason travels with the refusal: a run is an EXPERIMENT, and an experiment whose model
+ * was silently substituted is worthless. Reachability is a separate, impure check the caller makes
+ * before insert — a resolvable model that cannot be reached must not become an active run.
  *
  * THE CURSOR STARTS AT day_to and marches BACKWARDS (§4.3.2), so a run always begins with the most
  * recent day in its range — the days most likely to matter if the run is stopped early.
@@ -98,10 +125,11 @@ export function planRunCreate(i: RunCreateInput): RunCreatePlan {
 
   const model = String(i.model ?? '').trim();
   if (!model) return { ok: false, error: 'model is required — a run must name the model it attributes its rows to' };
-  if (!model.toLowerCase().startsWith('bedrock:')) {
-    return { ok: false, error: `run model '${model}' is not a bedrock model — backfill runs accept 'bedrock:<modelId>' only (qwen is retired from backfill; ollama/vertex/openrouter runs are out of scope). Never falls back.` };
+  const prefix = RUN_MODEL_PREFIXES.find((p) => model.toLowerCase().startsWith(p));
+  if (!prefix) {
+    return { ok: false, error: `run model '${model}' names no accepted provider — backfill runs accept ${RUN_MODEL_PREFIXES.map((p) => `'${p}<modelId>'`).join(' or ')} only (qwen is retired from backfill; ollama/openrouter runs are out of scope). Never falls back.` };
   }
-  if (!model.slice('bedrock:'.length).trim()) return { ok: false, error: "model id missing after 'bedrock:'" };
+  if (!model.slice(prefix.length).trim()) return { ok: false, error: `model id missing after '${prefix}'` };
 
   const dayFrom = String(i.dayFrom ?? '').trim();
   const dayTo = String(i.dayTo ?? '').trim();
@@ -214,6 +242,152 @@ export function accumulate(
  * whole range against a broken provider and fill `notes_failed` with the same message.
  */
 export function statusAfterTickFailure(): RunStatus { return 'error'; }
+
+/**
+ * §C4 — THE STOP RACE (found in live verification 8 Aug 2026, ratified by V the same day).
+ *
+ * WHAT HAPPENED. Run 1 was stopped while a tick was in flight. The tick had read the run as `active`
+ * before the stop landed, and its end-of-tick write set cursor AND status together — so `status =
+ * 'active'` was written back over `'stopped'` and the run resumed on the next cron fire. The operator
+ * pressed stop, the console showed stopped, and the run kept spending.
+ *
+ * THE RULE. A TICK MAY ONLY EVER MOVE A RUN THAT IS STILL ACTIVE. An operator action (stop, pause)
+ * is a statement about the future and the tick's status decision was computed from a past that no
+ * longer holds; between a stale intention and a fresh instruction, the instruction wins. This applies
+ * to EVERY status write a tick makes — the cursor advance, the day/run completion, and the error
+ * paths — because each of them is the same stale write.
+ *
+ * ⚠️ WHAT IS *NOT* CONDITIONAL: the work that actually happened. Progress counters, tokens, cost, the
+ * cursor and `last_error` are recorded regardless. Those notes WERE graded and stored; a run that
+ * dropped them on being stopped would under-report real spend and could re-grade the same day on
+ * resume. Accounting records the past, status records the intent, and only the second is contested.
+ *
+ * Enforced twice, as one fact in two places: here for the decision, and in the SQL itself
+ * (lib/backfill-runs.ts — a CASE guarded on `status = 'active'`), because between this function and
+ * that statement lies a network round-trip in which the operator can act again.
+ */
+export function statusAfterTickWrite(current: RunStatus, planned: RunStatus): RunStatus {
+  return current === 'active' ? planned : current;
+}
+
+// ── §C3: pace, ETA and the stall alarm (BAKEOFF-DESIGN §6 gaps 4 + 5) ───────────────────────────
+
+/**
+ * A run with no progress for this long is FLAGGED (not touched). 300 s, settled by V on 8 Aug.
+ *
+ * Sized against the thing being watched: a tick grades up to 8 notes and one Bedrock note measured
+ * ~45 s (§C2.3), so a healthy tick lands well inside 300 s at the operational n≤4, and the cron fires
+ * every 2 minutes. A run silent for five minutes is not slow, it is wedged — which until now looked
+ * exactly like a slow one, the whole reason gap 5 was written.
+ */
+export const STALL_AFTER_MS = 300_000;
+
+/**
+ * Is this worker wedged? PURE, and deliberately shaped for BOTH consumers — the run (heartbeat =
+ * `updated_at`) and the lab batch (heartbeat = its last tick summary) — so one threshold and one
+ * rule cover the bake-off's Gemini arm and its three Bedrock arms alike.
+ *
+ * ⚠️ TWO WAYS TO BE NOT-STALLED, AND THEY ARE DIFFERENT. `active: false` (paused, stopped, done, or a
+ * batch outside its night window) is DELIBERATE idleness and can never be a stall. A null heartbeat
+ * is UNKNOWN idleness — a run that has never ticked — and also returns false: an alarm that fires on
+ * every freshly created run is an alarm operators learn to ignore, and the gap this closes is a
+ * WEDGED run, which by definition has ticked at least once.
+ */
+export function isStalled(
+  input: { active: boolean; lastProgressMs: number | null },
+  nowMs: number,
+  thresholdMs: number = STALL_AFTER_MS,
+): boolean {
+  if (!input.active) return false;
+  const last = Number(input.lastProgressMs);
+  if (!Number.isFinite(last) || last <= 0) return false;
+  return nowMs - last > thresholdMs;
+}
+
+/** One tick as the monitor reads it back from `mini_backfill_ticks`. */
+export interface TickRow { run_id: number | null; processed: number; avg_ms: number | null }
+
+export interface RunPace {
+  /** Notes-weighted mean ms per note over the sampled ticks. Null until a tick has graded one. */
+  avgMsPerNote: number | null;
+  /** Notes the mean is computed over — the honesty field: a pace from 1 note is not a pace. */
+  notes: number;
+  ticks: number;
+}
+
+/**
+ * Rolling pace for one run, from ticks the monitor ALREADY fetches (`getTicks`) — no new query, and
+ * no new column: `avg_ms` and `processed` have been logged per tick since the autopilot.
+ *
+ * WEIGHTED BY NOTES, not by tick. A tick that graded one slow note and a tick that graded eight fast
+ * ones are not two equal samples of "ms per note", and averaging their averages would let the small
+ * tick swing the ETA. Ticks that graded nothing (idle, locked, skipped, errored) contribute nothing
+ * rather than a zero — a paused hour must not read as infinite speed.
+ */
+export function rollingPace(ticks: readonly TickRow[], runId: number, maxTicks = 10): RunPace {
+  const mine = (ticks ?? []).filter(
+    (t) => Number(t?.run_id) === runId && Number(t?.processed) > 0 && Number(t?.avg_ms) > 0,
+  );
+  const sample = mine.slice(-Math.max(1, maxTicks));
+  let notes = 0, msTotal = 0;
+  for (const t of sample) {
+    const n = Number(t.processed), ms = Number(t.avg_ms);
+    notes += n; msTotal += n * ms;
+  }
+  return { avgMsPerNote: notes > 0 ? Math.round(msTotal / notes) : null, notes, ticks: sample.length };
+}
+
+/** Seconds to grade `remaining` notes at `avgMsPerNote`. Null when either input is unknown. */
+export function etaSeconds(remaining: number | null | undefined, avgMsPerNote: number | null | undefined): number | null {
+  const n = Number(remaining), ms = Number(avgMsPerNote);
+  if (!Number.isFinite(n) || n < 0 || !Number.isFinite(ms) || ms <= 0) return null;
+  return Math.round((n * ms) / 1000);
+}
+
+export interface RunEta {
+  seconds: number | null;
+  /** Estimated notes left in the whole range — see the basis field before quoting it. */
+  notesRemaining: number | null;
+  notesPerDay: number | null;
+  daysRemaining: number;
+  avgMsPerNote: number | null;
+  /** WHY the number is what it is, in one token. Read this before the number. */
+  basis: 'estimated_from_completed_days' | 'no_completed_day_yet' | 'no_pace_yet' | 'not_active';
+}
+
+/**
+ * ETA for a run (gap 4). ⚠️ READ THE BASIS — THE DENOMINATOR IS AN ESTIMATE, NOT A COUNT.
+ *
+ * A run knows how many DAYS it has left (cursor → day_from) but not how many NOTES: the note count
+ * for an un-reached day lives in db13, and asking Metabase for every remaining day on every monitor
+ * poll would put an external round-trip on a 15-second refresh. So notes-per-day is inferred from the
+ * days this run has already finished, and the estimate is only offered once at least one day has
+ * completed. Before that: `no_completed_day_yet` and a null ETA, never a guess dressed as a number.
+ *
+ * It is deliberately PESSIMISTIC in one place: the current day counts as whole, though part of it is
+ * already graded. Overstating time-to-finish is the safe direction for an operator deciding whether
+ * to wait.
+ */
+export function estimateRunEta(run: BackfillRun, pace: RunPace): RunEta {
+  const cursor = isDay(run.cursor) ? (run.cursor as string) : run.day_to;
+  const daysLeft = daysInclusive(run.day_from, cursor);
+  const base = { seconds: null, notesRemaining: null, notesPerDay: null, daysRemaining: daysLeft, avgMsPerNote: pace.avgMsPerNote };
+  if (run.status !== 'active') return { ...base, basis: 'not_active' };
+  if (pace.avgMsPerNote == null) return { ...base, basis: 'no_pace_yet' };
+  // Days the cursor has fully passed: day_to down to the day AFTER the cursor.
+  const daysDone = daysInclusive(cursor, run.day_to) - 1;
+  if (daysDone < 1 || run.notes_done < 1) return { ...base, basis: 'no_completed_day_yet' };
+  const notesPerDay = run.notes_done / daysDone;
+  const notesRemaining = Math.round(notesPerDay * daysLeft);
+  return {
+    seconds: etaSeconds(notesRemaining, pace.avgMsPerNote),
+    notesRemaining,
+    notesPerDay: Math.round(notesPerDay * 10) / 10,
+    daysRemaining: daysLeft,
+    avgMsPerNote: pace.avgMsPerNote,
+    basis: 'estimated_from_completed_days',
+  };
+}
 
 /** A run's terminal states — nothing further will be worked without an operator action. */
 export const TERMINAL_STATUSES: readonly RunStatus[] = ['done', 'stopped'] as const;

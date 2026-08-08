@@ -21,7 +21,8 @@ import { requireAdmin } from '@/lib/admin-gate';
 import { sql } from '@/lib/db';
 import { readState, getTicks, windowOpen, lockHeld, MB_LOCK_TTL_MS } from '@/lib/mini-backfill';
 import { activeRun, recentRuns } from '@/lib/backfill-runs';
-import { readBatchState, batchProgress } from '@/lib/lab-batch';
+import { readBatchState, batchProgress, readBatchModel } from '@/lib/lab-batch';
+import { estimateRunEta, etaSeconds, isStalled, rollingPace, STALL_AFTER_MS } from '@/lib/backfill-runs-core';
 import { OPD_ENGINE_VERSION } from '@/lib/opd-note-audit-core';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
@@ -53,6 +54,7 @@ export async function GET(req: NextRequest) {
       recentRuns('opd', 20).catch(() => []),
     ]);
     const lbProg = lb.experiment ? await batchProgress(lb.experiment, lb.uids) : { total: 0, done: 0, remaining: 0 };
+    const lbModel = await readBatchModel().catch(() => '');
 
     const [buckets, labBuckets, todayRow, totalRow, labTodayRow, labTotalRow, recent, labRecent, scoredRow, totalUidRow, ticks] = await Promise.all([
       // backfill throughput: autopilot mini audits per bucket (opd_note_audits)
@@ -101,6 +103,38 @@ export async function GET(req: NextRequest) {
       getTicks(range.hours <= 48 ? 48 : Math.min(range.hours, 24 * 30)),
     ]);
 
+    // ══ S2b §C3 — ETA AND THE STALL ALARM (BAKEOFF-DESIGN §6 gaps 4 + 5) ═══════════════════════
+    //
+    // DATA ONLY, no UI: the console renders these in S3. They exist now because the standing
+    // monitoring rule (§7, V, 8 Aug) requires an estimated completion and a visibly flagged stall on
+    // any experiment over five notes BEFORE it starts, and the bake-off is 600 notes across four
+    // arms. Both arms of that bake-off are covered: the Gemini arm is a RUN, the three Bedrock arms
+    // are lab BATCHES, and a rule that only watched one of them would leave three-quarters of the
+    // experiment unwatched.
+    //
+    // The run's pace comes from `ticks`, already fetched above — no new query, no new column.
+    const nowMs = Date.now();
+    const runPace = runActive ? rollingPace(ticks, runActive.id) : null;
+    const runEta = runActive && runPace ? estimateRunEta(runActive, runPace) : null;
+    const runStalled = isStalled(
+      { active: runActive?.status === 'active', lastProgressMs: runActive?.updated_at ? Date.parse(runActive.updated_at) : null },
+      nowMs,
+    );
+    // The batch's heartbeat is its last tick summary; its remaining is EXACT (the cohort is a known
+    // list), so unlike the run its ETA needs no notes-per-day estimate.
+    const lbLast = (lb.last ?? null) as Record<string, unknown> | null;
+    const lbTickMs = Array.isArray(lbLast?.results)
+      ? (lbLast!.results as Record<string, unknown>[]).filter((r) => !('error' in r) && Number(r.ms) > 0).map((r) => Number(r.ms))
+      : [];
+    const lbAvgMs = lbTickMs.length ? Math.round(lbTickMs.reduce((s, m) => s + m, 0) / lbTickMs.length) : null;
+    // ⚠️ A CLOSED NIGHT WINDOW IS NOT A STALL. `window: 'night'` means idle 05:00–00:00 IST BY
+    // DESIGN, and an alarm that fires for nineteen hours a day is one operators stop reading.
+    const lbActive = !!(lb.experiment && lb.enabled && windowOpen(lb.window));
+    const lbStalled = isStalled(
+      { active: lbActive, lastProgressMs: lbLast?.at ? Date.parse(String(lbLast.at)) : null },
+      nowMs,
+    );
+
     const inflightMs = st.lock && lockHeld(st.lock) ? Date.now() - Date.parse(st.lock) : null;
     const state: 'running' | 'paused' | 'idle_window_closed' =
       !st.enabled ? 'paused' : windowOpen(st.window) ? 'running' : 'idle_window_closed';
@@ -125,7 +159,17 @@ export async function GET(req: NextRequest) {
       coverage: (() => { const scored = num(scoredRow[0]?.scored); const total = num(totalUidRow[0]?.total); return { engine: OPD_ENGINE_VERSION, scored, total, pct: total > 0 ? Math.round((scored / total) * 100) : 0 }; })(),
       // Only surface an ACTIVE eval batch — a paused/cancelled batch (enabled=0) yields null so its
       // stale experiment/uids/progress don't linger on the card (and can't offer a Resume). Stop clears it.
-      labBatch: (lb.experiment && lb.enabled) ? { enabled: lb.enabled, experiment: lb.experiment, kind: lb.kind, n: lb.n, window: lb.window, total: lbProg.total, done: lbProg.done, remaining: lbProg.remaining, lastError: lb.lastError } : null,
+      labBatch: (lb.experiment && lb.enabled) ? {
+        enabled: lb.enabled, experiment: lb.experiment, kind: lb.kind, n: lb.n, window: lb.window,
+        total: lbProg.total, done: lbProg.done, remaining: lbProg.remaining, lastError: lb.lastError,
+        // S2b: who is grading (null ⇒ the free mini) and when it last moved.
+        model: lbModel || null,
+        avgMsPerNote: lbAvgMs,
+        etaSec: etaSeconds(lbProg.remaining, lbAvgMs),
+        lastTickAt: lbLast?.at ? String(lbLast.at) : null,
+        stalled: lbStalled,
+        stallAfterSec: Math.round(STALL_AFTER_MS / 1000),
+      } : null,
       // two stacked series over the same time axis (the mini is ONE box — these together are its load)
       throughput: buckets.map((b) => ({ t: String(b.bucket), notes: num(b.notes), avgSec: b.avg_ms ? Math.round(num(b.avg_ms) / 1000) : null })),
       mcpThroughput: labBuckets.map((b) => ({ t: String(b.bucket), notes: num(b.notes), avgSec: b.avg_ms ? Math.round(num(b.avg_ms) / 1000) : null })),
@@ -133,6 +177,12 @@ export async function GET(req: NextRequest) {
       // run_id rides each tick so the S3 graph can colour by run (§4.3.7).
       ticks: ticks.map((t) => ({ t: t.ts, status: t.status, processed: t.processed, runId: t.run_id })),
       activeRun: runActive,
+      // §C3 — read `eta.basis` before quoting `eta.seconds`: the notes-per-day denominator is
+      // ESTIMATED from the days this run has already finished, and is null until one has.
+      runEta,
+      runPace,
+      runStalled,
+      stallAfterSec: Math.round(STALL_AFTER_MS / 1000),
       runs: runHistory,
       inflight: inflightMs != null ? { active: true, day: (st.last as Record<string, unknown> | null)?.day ?? st.cursor ?? null, sinceSec: Math.round(inflightMs / 1000), ttlSec: Math.round(MB_LOCK_TTL_MS / 1000) } : { active: false },
       recent: [

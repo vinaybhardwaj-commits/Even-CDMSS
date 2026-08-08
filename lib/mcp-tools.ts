@@ -28,7 +28,9 @@ import { RerankBackendError } from './rerank';
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 import { readState, setSetting, MB_KEYS } from './mini-backfill';
 import { LB_KEYS, sanitizeUids, clampN, clampEvalConcurrency } from './lab-batch-core';
-import { readBatchState, batchProgress, batchTick } from './lab-batch';
+import { readBatchState, batchProgress, batchTick, readBatchModel, resolveBatchModel, LB_MODEL_KEY } from './lab-batch';
+// S2b — the SAME reachability probe the backfill runner and the F11 override gate use. One rule.
+import { probeReachable } from './lab-override';
 import {
   ensureLabTables, saveLabAnalysis, countPaidRuns, updateLabAnalysis, correctLabAttribution, listLabAnalyses, getLabAnalysis, labLabel,
   corpusAddQuarantined, corpusActivate, corpusDelete, corpusLabList, labStorage,
@@ -247,7 +249,7 @@ export const LAB_TOOLS = [
   },
   {
     name: 'lab_batch_start',
-    description: 'Queue a cohort-scoped FREE-mini (qwen, INR 0) eval batch into lab_analyses (experiment-namespaced; NEVER opd_note_audits). Provide EITHER uids[] OR cohort_sql (a read-only SELECT/WITH returning a uid column). The */2 cron drains it, yielding to the prod backfill; poll lab_batch_status, nudge with lab_batch_tick, analyse with lab_query/audit_query. For model-bridge + eval sweeps at scale without firing per-note calls. WRITE-CLASS: lab-write. ⚠️ COST: evalModel routes audit generation to a PAID OpenRouter model; omitting it runs the local Mac-mini. 87.8% of stored lab volume (4,041 of 4,604 runs) has been paid OpenRouter Gemini, so "the lab is free" is false for this tool — check evalModel before starting a batch.',
+    description: 'Queue a cohort-scoped FREE-mini (qwen, INR 0) eval batch into lab_analyses (experiment-namespaced; NEVER opd_note_audits). Provide EITHER uids[] OR cohort_sql (a read-only SELECT/WITH returning a uid column). The */2 cron drains it, yielding to the prod backfill; poll lab_batch_status, nudge with lab_batch_tick, analyse with lab_query/audit_query. For model-bridge + eval sweeps at scale without firing per-note calls. WRITE-CLASS: lab-write. ⚠️ COST: model routes audit generation to a PAID Bedrock model and evalModel to a PAID OpenRouter one; omitting both runs the local Mac-mini. 87.8% of stored lab volume (4,041 of 4,604 runs) has been paid OpenRouter Gemini, so "the lab is free" is false for this tool — check model AND evalModel before starting a batch.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -255,7 +257,8 @@ export const LAB_TOOLS = [
         uids: { type: 'array', items: { type: 'string' }, description: 'cohort of db13 OPD note uids (<=2000).' },
         cohort_sql: { type: 'string', description: 'alternative to uids[]: a read-only SELECT/WITH returning a uid column.' },
         n: { type: 'number', description: 'notes per tick (1-2; default 2).' },
-        window: { type: 'string', enum: ['night', 'always'], description: "'always' drains all day; default 'night' (00-05 IST)." },
+        model: { type: 'string', description: "S2b — grade this cohort on a PAID Bedrock model instead of the Mac-mini, e.g. 'bedrock:global.anthropic.claude-haiku-4-5-20251001-v1:0'. Resolved through the F11 resolver and reachability-checked at start; errors loud, never falls back. Each note is traced, its attribution VERIFIED against that trace (a mismatch refuses the note and writes no row) and its cost priced per note. Mutually exclusive with evalModel. Absent ⇒ the free mini, unchanged. Still writes lab_analyses ONLY." },
+        window: { type: 'string', enum: ['night', 'always'], description: "'always' drains all day; default 'night' (00-05 IST). A bedrock batch does not touch the Mac-mini, so 'always' is the usual choice for it." },
         kind: { type: 'string', description: 'reserved; default opd.' },
         evalNormativeLeg: { type: 'boolean', description: 'R-11 Phase-2 eval: force the normative retrieval leg ON for every note in this batch (default false ⇒ today\'s gate). Lab-only; writes lab_analyses only.' },
         evalModel: { type: 'string', description: 'R-11 Phase-2 eval: route audit generation to this OpenRouter model id (e.g. google/gemini-3.1-flash-lite) at temperature 0. Absent ⇒ free mini. Needs OPENROUTER_API_KEY in env. Eval batches drain concurrently (50/tick, pool below) and skip the mini-yield; mini batches stay n≤2 serial.' },
@@ -882,6 +885,24 @@ async function labBatchStart(a: Record<string, unknown>): Promise<ToolResult> {
     return err(`evalRerankBackend must be exactly 'judge' or 'cohere' (got ${JSON.stringify(rawRerank)})`);
   }
   const evalRerankBackend: '' | 'judge' | 'cohere' = rawRerank === 'judge' || rawRerank === 'cohere' ? rawRerank : '';
+  // ── S2b C1 — the batch's model (BAKEOFF-DESIGN §6 gap 1) ───────────────────────────────────────
+  // Resolved and reachability-checked HERE, at the door, so a batch that could never have run does
+  // not sit in app_settings looking queued. The tick re-checks both (the rollback for this build is
+  // unsetting an env var), but a refusal an operator sees immediately is worth more than one they
+  // find in a tick summary two minutes later.
+  const rawModel = S(a.model).trim();
+  const resolvedModel = resolveBatchModel(rawModel);
+  if (!resolvedModel.ok) return err(resolvedModel.error);
+  const batchModel = resolvedModel.modelId;
+  // TWO PAID DOORS AT ONCE IS A MISTAKE, NOT A PREFERENCE. `evalModel` wins inside defaultGenerate
+  // (its branch precedes bedrock's), so the batch would run on OpenRouter while the caller asked for
+  // Bedrock, and the summary would name one and the rows the other. Refuse instead of ordering them.
+  if (batchModel && evalModel) {
+    return err(`model ('${rawModel}') and evalModel ('${evalModel}') are mutually exclusive — one batch, one grader. Pass model for Bedrock or evalModel for OpenRouter, never both.`);
+  }
+  if (batchModel && !probeReachable('bedrock')) {
+    return err('bedrock is not reachable in this deployment (BEDROCK_REGION / BEDROCK_ROLE_ARN / BEDROCK_OIDC_AUDIENCE / GCP_SA_KEY) — refusing to queue a batch that cannot run');
+  }
   await ensureLabTables();
   await setSetting(LB_KEYS.experiment, experiment);
   await setSetting(LB_KEYS.uids, JSON.stringify(uids));
@@ -893,16 +914,28 @@ async function labBatchStart(a: Record<string, unknown>): Promise<ToolResult> {
   await setSetting(LB_KEYS.evalConcurrency, String(evalConcurrency));
   await setSetting(LB_KEYS.evalNormativeChannel, evalNormativeChannel ? '1' : '0');
   await setSetting(LB_KEYS.evalRerankBackend, evalRerankBackend);
+  // ⚠️ WRITTEN ON EVERY START, INCLUDING THE EMPTY CASE. This key is sticky app_settings state: left
+  // behind, a previous arm's `bedrock:` model would silently make the NEXT free-mini batch a paid
+  // one. Clearing it here is what makes "omit model ⇒ free mini" true a second time.
+  await setSetting(LB_MODEL_KEY, batchModel ? `bedrock:${batchModel}` : '');
   await setSetting(LB_KEYS.error, '');
   await setSetting(LB_KEYS.enabled, '1');
   const prog = await batchProgress(experiment, uids);
-  return ok({ experiment, kind, n, window, evalNormativeLeg, evalNormativeChannel, evalRerankBackend: evalRerankBackend || null, evalModel: evalModel || null, ...(evalModel ? { evalConcurrency } : {}), ...prog, note: evalModel ? 'queued - eval batch: drains 50/tick with a bounded pool via OpenRouter, skips the mini-yield. Poll lab_batch_status; nudge with lab_batch_tick. Writes lab_analyses ONLY.' : 'queued - the */2 cron drains it (mini, INR 0), yielding to the prod backfill. Poll lab_batch_status; nudge with lab_batch_tick. Writes lab_analyses ONLY.' });
+  const note = batchModel
+    ? 'queued - PAID BEDROCK batch: serial, no mini-yield, every note traced and its attribution verified against that trace (a mismatch refuses the note). Poll lab_batch_status; nudge with lab_batch_tick. Writes lab_analyses ONLY.'
+    : (evalModel
+      ? 'queued - eval batch: drains 50/tick with a bounded pool via OpenRouter, skips the mini-yield. Poll lab_batch_status; nudge with lab_batch_tick. Writes lab_analyses ONLY.'
+      : 'queued - the */2 cron drains it (mini, INR 0), yielding to the prod backfill. Poll lab_batch_status; nudge with lab_batch_tick. Writes lab_analyses ONLY.');
+  return ok({ experiment, kind, n, window, model: batchModel ? `bedrock:${batchModel}` : null, evalNormativeLeg, evalNormativeChannel, evalRerankBackend: evalRerankBackend || null, evalModel: evalModel || null, ...(evalModel ? { evalConcurrency } : {}), ...prog, note });
 }
 
 async function labBatchStatus(): Promise<ToolResult> {
   const st = await readBatchState();
   const prog = st.experiment ? await batchProgress(st.experiment, st.uids) : { total: 0, done: 0, remaining: 0 };
-  return ok({ enabled: st.enabled, experiment: st.experiment, kind: st.kind, n: st.n, window: st.window, ...prog, last_error: st.lastError, last: st.last });
+  // `model` rides the status because it is the field that says whether this batch is SPENDING. A
+  // status view that reports progress without saying who is grading is how a paid arm goes unnoticed.
+  const model = await readBatchModel().catch(() => '');
+  return ok({ enabled: st.enabled, experiment: st.experiment, kind: st.kind, n: st.n, window: st.window, model: model || null, ...prog, last_error: st.lastError, last: st.last });
 }
 
 async function labBatchStop(): Promise<ToolResult> {
