@@ -40,7 +40,20 @@ const RANGES: Record<string, { hours: number; trunc: string; bucketMin: number }
 
 export async function GET(req: NextRequest) {
   if (!(await isAdminUnlocked())) { const denied = requireAdmin(req); if (denied) return denied; }
-  const rangeKey = (req.nextUrl.searchParams.get('range') || '7d') in RANGES ? (req.nextUrl.searchParams.get('range') as string) : '7d';
+  // ⚠️ FIXED 8 Aug 2026 — THE DEFAULT RANGE CRASHED THE WHOLE MONITOR. This line used to test
+  // `(get('range') || '7d') in RANGES` and then return `get('range')` RAW on the true branch, so a
+  // request with NO ?range param tested the string '7d', passed, and resolved to `null`.
+  // `RANGES[null]` is undefined, and the first read of `range.hours` below threw. The observable
+  // symptom in production was that the bare URL 500'd with "Cannot read properties of undefined
+  // (reading 'hours')" while `?range=7d` worked — i.e. the monitoring surface was down in exactly
+  // the case an operator reaches it in, and up in the case anyone testing it would have used.
+  //
+  // The defect was that the guard and the value were two different expressions. They are now one:
+  // the parameter is read ONCE, defaulted ONCE, and validated against the same variable that is then
+  // used to index. An unknown range (?range=nonsense) falls back to '7d' AND reports '7d' in the
+  // payload, so the response can never name a window other than the one it actually queried.
+  const requestedRange = req.nextUrl.searchParams.get('range') ?? '7d';
+  const rangeKey = requestedRange in RANGES ? requestedRange : '7d';
   const range = RANGES[rangeKey];
 
   try {
