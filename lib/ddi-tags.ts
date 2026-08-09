@@ -118,7 +118,20 @@ const SEV: Record<string, number> = { contraindicated: 5, major: 4, moderate: 3,
 
 // One DdiPair per interacting drug pair, carrying the highest-severity mechanism.
 export function tagInteractions(items: DrugClass[]): DdiPair[] {
-  const tagged = items.map((i) => ({ name: i.name, tags: tagsFor(i.name, i.major, i.minor) }));
+  // ── suppressNsaid (DETERMINISM-TRIO PRD v1.0 §2.2 step 3, D-1/D-2, 8 Aug 2026) ──────────────
+  // tagsFor adds `nsaid` to aspirin BY NAME (L45) at any dose, so aspirin 75 mg — an antiplatelet,
+  // not analgesic therapy — fired `nsaid × ace_arb` beside an ARB and lowered live scores
+  // (metamorphic relation D-7). The DOSE is not knowable here: this file sees a name and a
+  // formulary class, never a strength or a frequency. The caller that CAN compute it
+  // (ddiFindings → aspirinMaxDailyMg, lib/opd-note-audit.ts) marks the item, and the tag is
+  // removed here, AFTER tagsFor has run — so tagsFor's signature and body are untouched and every
+  // route into the tag (the name list AND `mj.includes('nsaid')`) is covered by the one deletion.
+  // `antiplatelet` is never removed: low-dose aspirin still fires DAPT and anticoagulant pairs.
+  const tagged = items.map((i) => {
+    const tags = tagsFor(i.name, i.major, i.minor);
+    if (i.suppressNsaid) tags.delete('nsaid');
+    return { name: i.name, tags };
+  });
   const out: DdiPair[] = [];
   for (let i = 0; i < tagged.length; i++) {
     for (let j = i + 1; j < tagged.length; j++) {

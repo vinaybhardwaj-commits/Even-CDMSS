@@ -86,14 +86,15 @@ test('with the precondition met, the verdicts are the relation\'s own — HOLDS 
 // Gate test 2 — the ratified-at label and the drift warning
 // ═════════════════════════════════════════════════════════════════════════════════════════════
 
-test('RATIFIED_AT_ENGINE is pinned to the version the map was measured at — now 0.81.20', () => {
-  // RE-RATIFIED 2 Aug 2026: measured live on production at 0.81.20 after 6cff240 and 97e2f36,
-  // 14/14 relations matching (CDMSS-RERATIFICATION-EVIDENCE-2-AUG-2026.md). The previous assertion
-  // pinned 0.81.17 and carried the note "if these are now equal, the relations were re-measured and
-  // this test must be re-ratified with the map" — that is exactly what happened, so it now asserts
-  // the map is CURRENT. It goes stale again on the next engine bump, and must move only with a
-  // fresh measurement.
-  assert.equal(RATIFIED_AT_ENGINE, 'opd-note-audit/0.81.20');
+test('RATIFIED_AT_ENGINE is pinned to the version the map was measured at — now 0.81.21', () => {
+  // RE-RATIFIED 8 Aug 2026 at 0.81.21 (DETERMINISM-TRIO PRD v1.0 §2.4). The deterministic relations
+  // are CODE-LEVEL and CI-measured — lib/__tests__/metamorphic-deterministic.test.ts calls the same
+  // runRelations() the panel loads — so this build's green suite IS the re-measurement, which is
+  // what the PRD authorises for Part A (and would NOT authorise for the LLM-leg Part C relations).
+  // Previously RE-RATIFIED 2 Aug 2026 at 0.81.20 on production after 6cff240 and 97e2f36, 14/14
+  // matching (CDMSS-RERATIFICATION-EVIDENCE-2-AUG-2026.md). It goes stale again on the next engine
+  // bump, and must move only with a fresh measurement.
+  assert.equal(RATIFIED_AT_ENGINE, 'opd-note-audit/0.81.21');
   assert.equal(RATIFIED_AT_ENGINE, OPD_ENGINE_VERSION,
     'the map is ratified AT the deployed engine — if a bump made these differ, re-measure and move it');
 });
@@ -103,8 +104,8 @@ test('the drift warning is null at the deployed engine, and exact when a version
     'the map is current, so the panel shows no stale-ratification banner');
   assert.equal(ratificationDriftWarning(RATIFIED_AT_ENGINE), null);
   // …and the wording is unchanged for the next time it DOES drift.
-  assert.equal(ratificationDriftWarning('opd-note-audit/0.81.21'),
-    `Ratified at ${RATIFIED_AT_ENGINE}. The deployed engine is opd-note-audit/0.81.21. These statuses have not been re-measured against the deployed engine.`);
+  assert.equal(ratificationDriftWarning('opd-note-audit/0.81.22'),
+    `Ratified at ${RATIFIED_AT_ENGINE}. The deployed engine is opd-note-audit/0.81.22. These statuses have not been re-measured against the deployed engine.`);
 });
 
 test('the panel renders the constant, not a hard-coded version string', () => {
@@ -115,8 +116,14 @@ test('the panel renders the constant, not a hard-coded version string', () => {
   assert.ok(page.includes('partCVerdict(rel, {'), 'the panel verdict goes through the shared partCVerdict — including L-3\'s (praise, safety) wiring');
 });
 
-test('RATIFIED_RELATION_STATUS itself is untouched — D-5 and D-7 stay pinned failures', () => {
-  assert.equal(RATIFIED_RELATION_STATUS['D-5'], 'fail');
-  assert.equal(RATIFIED_RELATION_STATUS['D-7'], 'fail');
+test('RATIFIED_RELATION_STATUS: D-5 stays a pinned failure; D-7 was FIXED and re-ratified', () => {
+  assert.equal(RATIFIED_RELATION_STATUS['D-5'], 'fail',
+    'a coarse dosage form is still not a release profile — the defect is real and still pinned');
+  // D-7 flipped fail → pass at 0.81.21 (DETERMINISM-TRIO PRD v1.0 §2, V ruled D-1/D-2, 8 Aug 2026).
+  // It was FIXED, not silenced: ddiFindings now computes the total daily aspirin mg and de-classes
+  // only a line at ≤ 100 mg/day, and the relation itself was strengthened to assert the POSITIVE
+  // arm too (650 mg TDS still fires), so it cannot be satisfied by an engine that has merely
+  // stopped flagging aspirin. Threshold behaviour is guarded by aspirin-dose-class.test.ts.
+  assert.equal(RATIFIED_RELATION_STATUS['D-7'], 'pass');
   assert.equal(Object.keys(RATIFIED_RELATION_STATUS).length, 14);
 });

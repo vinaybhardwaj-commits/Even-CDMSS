@@ -20,7 +20,7 @@ const subj = (fs: OpdFinding[], re: RegExp) => fs.find((f) => re.test(f.subject)
 
 // ── version bump ─────────────────────────────────────────────────────────────
 test('engine bumped to 0.81.19 (neutraliser removal) and the read family includes 0.81.8…0.81.17', () => {
-  assert.equal(OPD_ENGINE_VERSION, 'opd-note-audit/0.81.20');
+  assert.equal(OPD_ENGINE_VERSION, 'opd-note-audit/0.81.21');   // 0.81.21 — DETERMINISM-TRIO, 8 Aug 2026
   assert.ok(OPD_ENGINE_VERSIONS_CURRENT.includes('opd-note-audit/0.81.8'));   // history stays in the read family
   assert.ok(OPD_ENGINE_VERSIONS_CURRENT.includes('opd-note-audit/0.81.13'));
   assert.ok(OPD_ENGINE_VERSIONS_CURRENT.includes('opd-note-audit/0.81.14'));

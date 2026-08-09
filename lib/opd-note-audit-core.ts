@@ -69,7 +69,22 @@ import { computeStableRef } from './opd-finding-identity-core';
 // no class, so noAntibioticClassOnNote misread the note, overuse direction was withheld,
 // class-based DDI tags stayed silent and the class was absent from the prompt text. Scores fall
 // again on purpose; interaction findings rise. No backfill.
-export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.20';
+// 0.81.21 — dose-aware aspirin class + banned-FDC near-miss counter (DETERMINISM-TRIO PRD v1.0,
+// V ruled D-1…D-4 on 8 Aug 2026). UNIT A, the scoring half: tagsFor tagged aspirin `nsaid` BY NAME
+// at any dose, and ddiFindings promoted any NSAID-molecule line to major 'NSAID', so aspirin 75 mg
+// beside an ARB fired `nsaid × ace_arb` and docked the score for analgesic therapy nobody
+// prescribed — metamorphic relation D-7, pinned as a known defect since 0.81.17. The total daily
+// aspirin dose is now computed with the ONE dose machinery (aspirinMaxDailyMg, reusing
+// moleculesOf/parseFrequency/unitsPerDose/isVolumetric) and a line at ≤ 100 mg/day — or one whose
+// dose cannot be parsed (D-2: absence of data never accuses) — is antiplatelet only: no NSAID
+// promotion, no `nsaid` tag (new optional DrugClass.suppressNsaid, honoured in tagInteractions).
+// `antiplatelet` is NEVER removed, so DAPT and anticoagulant pairs still fire; 150 mg/day still
+// classes NSAID (D-1's accepted consequence). Scores RISE on affected notes — the correction can
+// only remove a penalty. UNIT B, non-scoring: bannedFdcNearMisses counts supersets and
+// subset-missing-one against the 308-entry CDSCO rulebook as informational, confidence-0 findings
+// (signal_type banned_fdc_near_miss, ratified tier 3 by D-3) to measure whether exact-match
+// checking is too strict. No backfill, forward-only (D3 precedent, 0.81.19 header).
+export const OPD_ENGINE_VERSION = 'opd-note-audit/0.81.21';
 /** The recovery carrier (addendum E §3). Written ONLY via the explicit engineVersion path. */
 export const OPD_RECOVERY_ENGINE_VERSION = 'opd-note-audit/0.81.18';
 
@@ -82,7 +97,7 @@ export const OPD_RECOVERY_ENGINE_VERSION = 'opd-note-audit/0.81.18';
  * DESC, id DESC. WRITE-side targeting keeps exact OPD_ENGINE_VERSION (family there would stop history
  * re-scoring). See the patch report.
  */
-export const OPD_ENGINE_VERSIONS_CURRENT = ['opd-note-audit/0.81.3', 'opd-note-audit/0.81.4', 'opd-note-audit/0.81.5', 'opd-note-audit/0.81.6', 'opd-note-audit/0.81.7', 'opd-note-audit/0.81.8', 'opd-note-audit/0.81.9', 'opd-note-audit/0.81.10', 'opd-note-audit/0.81.11', 'opd-note-audit/0.81.12', 'opd-note-audit/0.81.13', 'opd-note-audit/0.81.14', 'opd-note-audit/0.81.15', 'opd-note-audit/0.81.16', 'opd-note-audit/0.81.17', 'opd-note-audit/0.81.18', 'opd-note-audit/0.81.19', 'opd-note-audit/0.81.20'] as const;
+export const OPD_ENGINE_VERSIONS_CURRENT = ['opd-note-audit/0.81.3', 'opd-note-audit/0.81.4', 'opd-note-audit/0.81.5', 'opd-note-audit/0.81.6', 'opd-note-audit/0.81.7', 'opd-note-audit/0.81.8', 'opd-note-audit/0.81.9', 'opd-note-audit/0.81.10', 'opd-note-audit/0.81.11', 'opd-note-audit/0.81.12', 'opd-note-audit/0.81.13', 'opd-note-audit/0.81.14', 'opd-note-audit/0.81.15', 'opd-note-audit/0.81.16', 'opd-note-audit/0.81.17', 'opd-note-audit/0.81.18', 'opd-note-audit/0.81.19', 'opd-note-audit/0.81.20', 'opd-note-audit/0.81.21'] as const;
 
 // Local copy of the PDQI-9 keys (kept in sync with opd-note-score-core) so this core has
 // no runtime cross-import and stays loadable under `node --experimental-strip-types`.
@@ -157,6 +172,10 @@ export const OPD_SIGNAL_TYPES: Record<string, string> = {
   schedule_x: 'Schedule X drug',
   off_formulary: 'Off-formulary items',
   banned_fdc: 'Banned fixed-dose combination',
+  // 0.81.21 (DETERMINISM-TRIO PRD §3, D-3): one molecule extra or one short of a prohibited
+  // combination. Informational + confidence 0 — a measurement of whether exact-match is too
+  // strict, never an accusation. Ratified tier 3 (log only).
+  banned_fdc_near_miss: 'Near-match to a banned combination',
   antibiotic_stewardship: 'Antibiotic stewardship',
   // Coarse LLM buckets (by domain × verdict) — a free-text appropriateness/prescribing finding
   // that matches no precise rule batches here, so the CM sees "Low-value appropriateness ×12"
@@ -195,6 +214,9 @@ const SIGNAL_TYPE_RULES: { re: RegExp; type: string }[] = [
   { re: /^schedule x\b/, type: 'schedule_x' },
   { re: /^off[\s-]?formulary\b/, type: 'off_formulary' },
   { re: /^banned fixed-dose combination/i, type: 'banned_fdc' },
+  // 0.81.21 — no collision with the rule above: the prefixes differ from their first character,
+  // and this one is anchored on the full phrase the near-miss subject always opens with.
+  { re: /^near-match to a banned combination/i, type: 'banned_fdc_near_miss' },
   { re: /\bantibiotic|antimicrobial\b/, type: 'antibiotic_stewardship' },
   { re: /\b(?:drug[\s–-]+drug\s+)?interaction\b/, type: 'drug_interaction' },
 ];

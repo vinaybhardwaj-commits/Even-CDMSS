@@ -170,9 +170,10 @@ test('the system prompt names vitamin D dose adequacy beside muscle relaxants', 
   assert.ok(core.includes('never overrule the clinician'), 'bug 8: the model overruled the documented diagnosis');
 });
 
-test('the engine version is 0.81.19 and the read family keeps the older versions', async () => {
+test('the engine version is current and the read family keeps the older versions', async () => {
+  // 0.81.21 (DETERMINISM-TRIO PRD v1.0, 8 Aug 2026 — dose-aware aspirin class + near-miss counter).
   const { OPD_ENGINE_VERSION, OPD_ENGINE_VERSIONS_CURRENT } = await import('../opd-note-audit-core.ts');
-  assert.equal(OPD_ENGINE_VERSION, 'opd-note-audit/0.81.20');
+  assert.equal(OPD_ENGINE_VERSION, 'opd-note-audit/0.81.21');
   assert.ok((OPD_ENGINE_VERSIONS_CURRENT as readonly string[]).includes('opd-note-audit/0.81.19'));
   assert.ok((OPD_ENGINE_VERSIONS_CURRENT as readonly string[]).includes('opd-note-audit/0.81.17'));
   assert.ok((OPD_ENGINE_VERSIONS_CURRENT as readonly string[]).includes('opd-note-audit/0.81.16'));

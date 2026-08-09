@@ -48,7 +48,17 @@ export function curatedInteractions(drugs: string[]): DdiPair[] {
 // ---- 1. class-based pharmacodynamic rules ----
 // Each drug carries its EHRC formulary class (major/minor grouping). These catch
 // duplications the named list misses — most importantly dual anticoagulation.
-export interface DrugClass { name: string; major: string; minor: string }
+export interface DrugClass {
+  name: string; major: string; minor: string;
+  /**
+   * DETERMINISM-TRIO PRD v1.0 §2.2 (D-1/D-2, 8 Aug 2026) — this line carries aspirin at an
+   * ANTIPLATELET total daily dose (≤ 100 mg/day, or unparseable), so it is not analgesic NSAID
+   * therapy. OPTIONAL and ADDITIVE: every existing construction site omits it and is byte-identical.
+   * Honoured in tagInteractions (lib/ddi-tags.ts), which drops the `nsaid` tag from such an item
+   * AFTER tagsFor has run. The `antiplatelet` tag is never touched.
+   */
+  suppressNsaid?: boolean;
+}
 const isAnticoag = (c: DrugClass) => /anticoagulant/i.test(c.major) || /anticoagulant/i.test(c.minor);
 const isAntiplatelet = (c: DrugClass) => /antiplatelet/i.test(c.major) || /antiplatelet/i.test(c.minor);
 const isNSAID = (c: DrugClass) => /\bnsaid\b/i.test(c.major) || /\bnsaid\b/i.test(c.minor);

@@ -39,8 +39,11 @@ import {
   type OpdFinding, type OpdCompleteness,
 } from './opd-note-audit-core';
 import { doseFindings } from './dose-limits';
-import { bannedFdcFindings as bannedFdcFromLiveSeed } from './cdsco-banned-fdc';
-import { bannedFdcFindings as bannedFdcAgainstTable, type BannedFdcTable } from './cdsco-banned-fdc-core';
+import { bannedFdcFindings as bannedFdcFromLiveSeed, bannedFdcNearMisses as nearMissFromLiveSeed } from './cdsco-banned-fdc';
+import {
+  bannedFdcFindings as bannedFdcAgainstTable, bannedFdcNearMisses as nearMissAgainstTable,
+  type BannedFdcTable,
+} from './cdsco-banned-fdc-core';
 import { parseVitaminDLevel, vitaminDBand, type VitaminDBand } from './clinical-bands';
 // Orchestrator-exported emitters + context predicates — see the flagged deviation in the header.
 import {
@@ -86,9 +89,13 @@ export function detFindings(oc: DeidOpdCase, opts?: { bannedTable?: BannedFdcTab
     const lvl = parseVitaminDLevel(hay);
     return lvl == null ? null : vitaminDBand(lvl);
   })();
+  // 0.81.21 (DETERMINISM-TRIO §3) — the near-miss counter joined stage 3 beside the exact-match
+  // check, so this mirror carries it too (the header's standing rule: an emitter added to the
+  // engine must be added here or the suite silently tests a subset). Informational + confidence 0,
+  // so `scoring()` filters it out of every relation that reads scoring findings.
   const banned = opts?.bannedTable
-    ? bannedFdcAgainstTable(oc.medications, opts.bannedTable)
-    : bannedFdcFromLiveSeed(oc.medications);
+    ? [...bannedFdcAgainstTable(oc.medications, opts.bannedTable), ...nearMissAgainstTable(oc.medications, opts.bannedTable)]
+    : [...bannedFdcFromLiveSeed(oc.medications), ...nearMissFromLiveSeed(oc.medications)];
   const det = [
     ...prescribingChecks(oc),
     ...doseFindings(oc.medications, { isGout }),
@@ -246,22 +253,29 @@ const RELATIONS: Relation[] = [
   },
   {
     id: 'D-7', title: 'Interaction ignores non-analgesic dose',
-    transformation: 'aspirin 75 mg (antiplatelet) + an ARB',
-    assertion: 'no NSAID-interaction finding fires — 75 mg aspirin is not an analgesic NSAID',
+    // DETERMINISM-TRIO PRD v1.0 §2.4 (8 Aug 2026): the relation now carries BOTH arms, because the
+    // fix is a THRESHOLD and a one-armed relation cannot tell "reads the dose" from "stopped
+    // flagging aspirin". Negative arm = 75 mg OD (antiplatelet, must be silent); positive arm =
+    // 650 mg TDS = 1950 mg/day (analgesic intent, must still fire) — §2.3 rows 1 and 5.
+    transformation: 'aspirin 75 mg (antiplatelet) + an ARB, then the same script at 650 mg TDS (analgesic)',
+    assertion: 'no NSAID-interaction finding fires at 75 mg; the interaction DOES fire at 1950 mg/day',
     run: () => {
-      const c = mkOpdCase({
+      const withAspirin = (strength: string, frequency: string) => mkOpdCase({
         presentingComplaints: ['routine review of blood pressure'],
         impressions: ['Hypertension; post-PTCA on antiplatelet'], diagnosisCodes: ['I10'],
         history: ['PTCA 2024, on aspirin 75 mg'], examination: ['BP 128/82'],
         advice: ['Continue current medication'], followUpType: 'MANDATORY_FOLLOW_UP',
         medications: [
-          med({ generic: 'Aspirin', strength: '75 mg', frequency: 'OD', duration: '30 days', therapeuticClass: 'Antiplatelet' }),
+          med({ generic: 'Aspirin', strength, frequency, duration: '30 days', therapeuticClass: 'Antiplatelet' }),
           med({ generic: 'Telmisartan', strength: '40 mg', frequency: 'OD', duration: '30 days', therapeuticClass: 'Antihypertensive' }),
         ],
       });
-      const fs = detFindings(c);
-      const ddi = fs.filter((f) => f.signal_type === 'drug_interaction');
-      return { pass: ddi.length === 0, detail: ddi.length ? `fired: ${ddi.map((f) => `"${f.subject}"`).join('; ')}` : 'no interaction fired' };
+      const ddiOf = (c: ReturnType<typeof mkOpdCase>) => detFindings(c).filter((f) => f.signal_type === 'drug_interaction');
+      const low = ddiOf(withAspirin('75 mg', 'OD'));
+      const high = ddiOf(withAspirin('650 mg', 'TDS'));
+      const pass = low.length === 0 && high.length > 0;
+      const show = (fs: OpdFinding[]) => fs.length ? fs.map((f) => `"${f.subject}"`).join('; ') : '(none)';
+      return { pass, detail: `75 mg OD → ${show(low)} · 650 mg TDS → ${show(high)}` };
     },
   },
   {
@@ -449,7 +463,18 @@ export const RATIFIED_RELATION_STATUS: Record<string, 'pass' | 'fail'> = {
   'D-1': 'pass', 'D-2': 'pass', 'D-3': 'pass', 'D-4': 'pass',
   'D-5': 'fail',   // the engine reads no release profile at 0.81.20 (dosageForm plumbed 0.81.11; read since 6cff240 for incomplete_dosing gaps, but a coarse FORM is not a release profile) — observed class Q2
   'D-6': 'pass',
-  'D-7': 'fail',   // aspirin carries the `nsaid` tag at ANY dose (lib/ddi-tags.ts) — the Q28 defect, named unanimously
+  // D-7 RE-RATIFIED pass (dose-aware aspirin class, 8 Aug 2026 — DETERMINISM-TRIO PRD v1.0 §2,
+  // V ruled D-1/D-2). The pinned defect was real and is fixed, not silenced: tagsFor tagged aspirin
+  // `nsaid` BY NAME at any dose and ddiFindings promoted any NSAID-molecule line to major 'NSAID',
+  // so aspirin 75 mg beside an ARB fired `nsaid × ace_arb` and lowered live scores. ddiFindings now
+  // computes the total daily aspirin mg with the one dose machinery (aspirinMaxDailyMg) and marks a
+  // line at ≤ 100 mg/day — or one whose dose will not parse (D-2) — suppressNsaid, which
+  // tagInteractions honours by dropping the tag AFTER tagsFor. `antiplatelet` is never removed.
+  // The relation itself was STRENGTHENED rather than relaxed: it now also asserts the POSITIVE arm
+  // (650 mg TDS = 1950 mg/day still fires), so it cannot be satisfied by an engine that has merely
+  // stopped flagging aspirin. Threshold behaviour is regression-guarded by
+  // lib/__tests__/aspirin-dose-class.test.ts (every row of PRD §2.3).
+  'D-7': 'pass',
   // G-1 RE-RATIFIED pass (DDI pair-order canonicalisation, 1 Aug 2026). The suite surfaced it at
   // f816f34: interaction subjects embedded the meds[] input order ("Interaction (major): A + B"
   // vs "… B + A"), so finding_ref — sha1 over the subject detail — changed when the EMR reordered
@@ -465,6 +490,14 @@ export const RATIFIED_RELATION_STATUS: Record<string, 'pass' | 'fail'> = {
  * The engine version RATIFIED_RELATION_STATUS was measured at. The panel renders this constant and
  * warns when it differs from the deployed OPD_ENGINE_VERSION.
  *
+ * MOVED 0.81.20 → 0.81.21 on 8 August 2026 (DETERMINISM-TRIO PRD v1.0 §2.4). The evidence for this
+ * move is THIS BUILD'S GREEN SUITE, and the PRD says so in terms: the relations are code-level and
+ * CI-measured — `runRelations()` is the same function the panel loads — so a passing
+ * lib/__tests__/metamorphic-deterministic.test.ts at 0.81.21 IS the re-measurement, in a way the
+ * LLM-leg (Part C) relations, which need a live model, are not. D-7 flips fail → pass with the
+ * fix that earned it (see its entry above); every other status is unchanged, including D-5, which
+ * stays pinned FAIL — a coarse dosage form is still not a release profile.
+ *
  * MOVED 0.81.17 → 0.81.20 on 2 August 2026, and the reason it may move is the whole point: a
  * measurement was taken, on production, at the deployed engine, after both of that day's
  * score-affecting deploys (CDMSS-RERATIFICATION-EVIDENCE-2-AUG-2026.md). This constant's standing
@@ -472,7 +505,7 @@ export const RATIFIED_RELATION_STATUS: Record<string, 'pass' | 'fail'> = {
  * a dishonest fresh one" (ENGINE-HEALTH-HONESTY PRD §3) — is unchanged and still governs. Changing
  * it requires re-ratifying the map with V and citing the evidence document that recorded the load.
  */
-export const RATIFIED_AT_ENGINE = 'opd-note-audit/0.81.20';
+export const RATIFIED_AT_ENGINE = 'opd-note-audit/0.81.21';
 
 /**
  * Drift warning for the health panel (pure — the deployed engine version is an argument so this

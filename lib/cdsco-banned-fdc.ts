@@ -7,7 +7,11 @@
  */
 
 import TABLE_JSON from '@/data/cdsco-banned-fdc.json';
-import { bannedFdcFindings as pureBannedFdcFindings, type BannedFdcTable } from './cdsco-banned-fdc-core';
+import {
+  bannedFdcFindings as pureBannedFdcFindings,
+  bannedFdcNearMisses as pureBannedFdcNearMisses,
+  type BannedFdcTable,
+} from './cdsco-banned-fdc-core';
 import type { OpdMed } from './opd-ingest-core';
 import type { OpdFinding } from './opd-note-audit-core';
 
@@ -16,6 +20,12 @@ const TABLE = TABLE_JSON as unknown as BannedFdcTable;
 /** Deterministic CDSCO banned-FDC findings for a prescription (empty while the seed is empty). */
 export function bannedFdcFindings(meds: OpdMed[]): OpdFinding[] {
   return pureBannedFdcFindings(meds, TABLE);
+}
+
+/** Informational near-miss counter (DETERMINISM-TRIO PRD v1.0 §3) — the SAME table binding as the
+ *  exact-match check above, so the two can never be measured against different rulebooks. */
+export function bannedFdcNearMisses(meds: OpdMed[]): OpdFinding[] {
+  return pureBannedFdcNearMisses(meds, TABLE);
 }
 
 export const CDSCO_BANNED_FDC_VERSION = TABLE.version;

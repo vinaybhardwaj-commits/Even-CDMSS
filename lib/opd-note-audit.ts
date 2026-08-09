@@ -29,7 +29,11 @@ import {
 } from './clinical-bands';
 import { enrichOpdMeds } from './formulary';
 import { doseFindings } from './dose-limits';
-import { parseDurationDays } from './dose-aggregation-core';
+import { parseDurationDays, moleculesOf, parseFrequency, unitsPerDose, isVolumetric, type DoseLimitsTable } from './dose-aggregation-core';
+// Unit A (PRD §2) reads the SAME ceilings table lib/dose-limits.ts binds — moleculesOf needs it to
+// canonicalise a composition fragment. Imported here (the orchestrator is impure by design) rather
+// than re-exported, so lib/dose-limits.ts keeps its single, pre-bound surface.
+import DOSE_LIMITS_JSON from '@/data/dose-limits.json';
 import { tagInteractions, DDI_MECHANISM_CITATIONS } from './ddi-tags';
 import type { FindingProvenance } from './provenance-tier-core';
 import { curatedInteractions, mergeRank, type DrugClass } from './ddi';
@@ -38,7 +42,7 @@ import { applySuppressions, applyDemotes, type Suppression } from './audit-suppr
 import { loadActiveSuppressions, loadQuietingConfig } from './audit-suppression-store';
 import { stampLvcMetadata, type LvcRuleLite } from './opd-lvc-classify-core';
 import { bandFor, type ComplexityBand, type ComplexityInputs } from './opd-complexity-core';
-import { bannedFdcFindings } from './cdsco-banned-fdc';
+import { bannedFdcFindings, bannedFdcNearMisses } from './cdsco-banned-fdc';
 import { fetchPatientHistoryBundle } from './metabase';
 import { PROVIDER_BUDGETS } from './lab-provider-core';
 import { sql } from './db';
@@ -128,6 +132,63 @@ async function getLvcRules(): Promise<LvcRuleLite[]> {
 // brand-prefix match can drop a molecule from a combination, so it informs display only).
 const CONFIDENT_MATCH = new Set(['source-generic', 'brand-exact', 'embedded-generic', 'brand-token']);
 
+// ── Unit A — dose-aware aspirin class (DETERMINISM-TRIO PRD v1.0 §2, engine 0.81.21) ─────────────
+const DOSE_LIMITS_TABLE = DOSE_LIMITS_JSON as unknown as DoseLimitsTable;
+/** The molecule tokens that make a med line an aspirin line (the same two `NSAID_MOLECULES` carries). */
+const ASPIRIN_MOLECULES = ['aspirin', 'acetylsalicylic'];
+/**
+ * D-1 — the antiplatelet cutoff: TOTAL DAILY DOSE ≤ 100 mg is antiplatelet therapy, not analgesia.
+ * ACCEPTED CONSEQUENCE, stated to V in the PRD: aspirin 150 mg OD — a common Indian antiplatelet
+ * dose — sits ABOVE this cutoff and stays NSAID-classed.
+ */
+export const ASPIRIN_ANTIPLATELET_MAX_MG = 100;
+
+/**
+ * The MAXIMUM possible daily aspirin mg as prescribed, summed across every aspirin-carrying line:
+ * `perUnitMg × units × (scheduled + sosCap)` (D-1a — 75 mg OD compares as 75; 650 mg SOS up to
+ * 3/day compares as 1950, which is analgesic intent).
+ *
+ * ONE DOSE MACHINERY, REUSED (PRD kickoff: "writing a second dose parser is forbidden"): every
+ * number below comes from lib/dose-aggregation-core.ts — moleculesOf (composition → molecule +
+ * per-unit mg), unitsPerDose (the `dose` field, "1 tablet"), parseFrequency (grid · OD/BD/TDS ·
+ * SOS as a CEILING), isVolumetric (liquids by concentration, outside the tablet model), bound to
+ * the same data/dose-limits.json the aggregation findings use.
+ *
+ * Returns NULL — and D-2 then treats the med as antiplatelet-only — when any CONTRIBUTING line is
+ * volumetric, has an unparseable frequency, or has no parseable per-unit mg. ABSENCE OF DATA NEVER
+ * ACCUSES; `incomplete_dosing` flags the missing field independently. Null is also the answer when
+ * there is no aspirin on the script at all (no dose to compare), which no caller can misread: the
+ * value is consulted only for a line that carries aspirin.
+ */
+export function aspirinMaxDailyMg(meds: OpdMed[]): number | null {
+  const limits = DOSE_LIMITS_TABLE.limits;
+  let total = 0;
+  let sawAspirin = false;
+  for (const m of meds) {
+    const contributing = moleculesOf(m, limits).filter((mm) => ASPIRIN_MOLECULES.some((a) => mm.molecule.includes(a)));
+    if (!contributing.length) continue;
+    sawAspirin = true;
+    if (isVolumetric(m)) return null;
+    const fp = parseFrequency(m.frequency, DOSE_LIMITS_TABLE.default_sos_cap_per_day);
+    if (fp.unknown) return null;
+    const units = unitsPerDose(m.dose);
+    for (const mm of contributing) {
+      if (mm.perUnitMg == null) return null;
+      total += mm.perUnitMg * units * (fp.scheduled + fp.sosCap);
+    }
+  }
+  return sawAspirin ? total : null;
+}
+
+/** D-1/D-2 — is the aspirin on this script antiplatelet-only (no NSAID promotion, no `nsaid` tag)? */
+function aspirinIsAntiplateletOnly(meds: OpdMed[]): boolean {
+  const mg = aspirinMaxDailyMg(meds);
+  return mg == null || mg <= ASPIRIN_ANTIPLATELET_MAX_MG;
+}
+/** The NSAID molecules that are NOT aspirin — a combination line carrying one of them is an NSAID
+ *  line whatever its aspirin dose, so it is never de-classed (the PRD's subject is aspirin alone). */
+const NON_ASPIRIN_NSAID_MOLECULES = NSAID_MOLECULES.filter((n) => !ASPIRIN_MOLECULES.includes(n));
+
 function ddiToFinding(p: DdiPair, topical?: Set<string>): OpdFinding {
   const sev = p.severity;
   // BUG-0.8-12 route-awareness: a TOPICAL NSAID has low systemic absorption, so an "additive
@@ -158,13 +219,25 @@ export function ddiFindings(meds: OpdMed[]): OpdFinding[] {
   // BUG-0.8-10 (Q): include a med if it is confidently formulary-matched OR it carries an NSAID
   // ingredient anywhere in its composition (formulary-independent) — so a combination/topical whose
   // parsed primary is a non-NSAID (e.g. Methyl Salicylate) still counts as an NSAID for the overlap.
+  // Unit A (PRD §2.2 steps 1–2, D-1/D-2): the aspirin on this script is classed ONCE, from the
+  // whole meds[] (a molecule's daily total is a property of the prescription, not of one line), so
+  // the class cannot depend on which aspirin line is being mapped. Antiplatelet-only ⇒ the med is
+  // NOT promoted to major 'NSAID' — its real formulary class passes through — and it carries
+  // suppressNsaid, which tagInteractions honours by dropping the `nsaid` tag after tagsFor.
+  const antiplateletAspirin = aspirinIsAntiplateletOnly(meds);
   const items: DrugClass[] = meds
     .filter((m) => (m.resolvedGeneric && m.formularyMatch && CONFIDENT_MATCH.has(m.formularyMatch)) || medHasMoleculeFrom(m, NSAID_MOLECULES))
-    .map((m) => ({
-      name: m.resolvedGeneric || m.generic || m.brand || 'medication',
-      major: medHasMoleculeFrom(m, NSAID_MOLECULES) ? 'NSAID' : (m.therapeuticClass || ''),
-      minor: m.subClass || '',
-    }));
+    .map((m) => {
+      const antiplateletOnly = antiplateletAspirin
+        && medHasMoleculeFrom(m, ASPIRIN_MOLECULES)
+        && !medHasMoleculeFrom(m, NON_ASPIRIN_NSAID_MOLECULES);
+      return {
+        name: m.resolvedGeneric || m.generic || m.brand || 'medication',
+        major: (!antiplateletOnly && medHasMoleculeFrom(m, NSAID_MOLECULES)) ? 'NSAID' : (m.therapeuticClass || ''),
+        minor: m.subClass || '',
+        ...(antiplateletOnly ? { suppressNsaid: true } : {}),
+      };
+    });
   if (items.length < 2) return [];
   // route-aware: molecules applied topically on THIS script (low systemic absorption).
   //
@@ -1175,7 +1248,8 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     ...unindicatedRespFindings(oc), ...decongestantDurationFindings(oc.medications),   // 0.81.8 bugs 1, 3
     ...vitaminDRepletionFindings(oc.medications, vitDBand),                          // Ruling 13 + phase 3b matrix (informational)
     ...pregnancyRiskFindings(oc.medications, { lmpIntervalDays: lmpDays }),          // 0.81.14 Rulings 5–8 (informational)
-    ...bannedFdcFindings(oc.medications)];   // CDSCO banned-FDC (C1) — seed live at v1.0 (5 entries); zero match current prescribing
+    ...bannedFdcFindings(oc.medications),   // CDSCO banned-FDC (C1) — seed live at v1.0 (5 entries); zero match current prescribing
+    ...bannedFdcNearMisses(oc.medications)];   // 0.81.21 Unit B — informational near-miss COUNT against the same seed (never scores)
   const completeness = opdCompleteness(oc);
   const healthCheck = isHealthCheckEncounter(oc);   // 0.81.8 bug 2 — institutional screening context
 

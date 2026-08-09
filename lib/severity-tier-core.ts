@@ -56,6 +56,11 @@ const TIER3_KINDS = new Set([
   'contradicted_indication_present', 'contradicted_ratified_rule', 'contradicted_route',
   'contradicted_investigation_absent', 'contradicted_history',
   'incoherent_with_suggestion', 'pretest_niche',
+  // DETERMINISM-TRIO PRD v1.0 D-3 (V ratified in that decisions log, 8 Aug 2026): a near-match to a
+  // banned combination is a MEASUREMENT — informational, confidence 0, never scoring — so it is
+  // tier 3, rendered as a count and never as an action row. Deliberately NOT in SAFETY_SIGNAL_TYPES:
+  // the exact-match check (banned_fdc, tier 2) is the safety signal; this one is its instrument.
+  'banned_fdc_near_miss',
 ]);
 
 const PRAISE_KINDS = new Set(['appropriateness_high_value', 'prescribing_high_value']);

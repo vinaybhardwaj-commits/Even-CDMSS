@@ -109,9 +109,11 @@ test('noAntibioticClassOnNote (its own logic UNCHANGED) now sees the cefpodoxime
   assert.equal(noAntibioticClassOnNote(mkCase([enrich('Zzzunknownium Extract')])), true, 'still true when nothing resolves');
 });
 
-test('engine bumped to 0.81.20 (what the engine SEES changed) and the read family includes it', () => {
-  assert.equal(OPD_ENGINE_VERSION, 'opd-note-audit/0.81.20');
+test('this build\'s bump (0.81.20) stays in the read family, and the engine is current', () => {
+  // The live version moved on (0.81.21, DETERMINISM-TRIO, 8 Aug 2026); what this build owns is that
+  // 0.81.20 was bumped AND appended, so its notes stay readable — decision 21, the classic error.
   const fam = OPD_ENGINE_VERSIONS_CURRENT as readonly string[];
   assert.ok(fam.includes('opd-note-audit/0.81.20'), 'bump without the family append empties the read surfaces (decision 21)');
   assert.ok(fam.includes('opd-note-audit/0.81.19'), 'history stays readable');
+  assert.ok(fam.includes(OPD_ENGINE_VERSION), 'whatever the current engine is, the family carries it');
 });

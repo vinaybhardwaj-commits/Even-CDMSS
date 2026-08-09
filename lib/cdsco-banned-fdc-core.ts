@@ -12,6 +12,11 @@
  * `molecules` (canonicalised the same way defensively, though the seed is compiled lowercase+sorted).
  * A superset does NOT fire; a subset does NOT fire; no fuzzy or synonym matching, ever.
  *
+ * NEAR-MISSES (DETERMINISM-TRIO PRD v1.0 §3, 8 Aug 2026): `bannedFdcNearMisses` at the foot of this
+ * file counts — informationally, at confidence 0, never scoring — the products that come CLOSE to an
+ * entry (one molecule extra, or one short). It exists to measure whether exact-set matching is too
+ * strict. It changes nothing about the check above.
+ *
  * FAIL-SAFE (PRD §7): every failure degrades to SILENCE. Malformed/empty table → []. A brand with
  * no resolvable generic has no molecule set → no finding (an accepted miss — an unresolvable brand
  * is never accused). Any exception → caught, [] returned; the audit proceeds. There is NO path
@@ -83,5 +88,94 @@ export function bannedFdcFindings(meds: OpdMed[], table: BannedFdcTable): OpdFin
     return out;
   } catch {
     return [];                                            // PRD §7 — never throw, never block an audit
+  }
+}
+
+// ── Near-miss counter (DETERMINISM-TRIO PRD v1.0 §3, D-3, 8 Aug 2026) ─────────
+//
+// WHAT IT MEASURES, AND WHY IT IS NOT A SAFETY CHECK. The exact-match rule above is deliberately
+// absolute: a product fires only when its molecule set EQUALS a gazette entry. That is the right
+// posture for an accusation of illegality, and it is also untested — nobody knows how much real
+// prescribing sits one molecule away from a prohibited combination. This counter answers that with
+// data instead of opinion. Every finding it emits is INFORMATIONAL at CONFIDENCE 0: it can never
+// enter a score, and its wording (fixed in PRD §3.2, not to be editorialised) says so on its face.
+//
+// DEFINITION (§3.1, exact). For a med molecule set S (|S| ≥ 2) and an entry set E (|E| ≥ 2):
+//   · SUPERSET            S ⊋ E                        — the product is the banned combination plus more
+//   · SUBSET-MISSING-ONE  S ⊊ E and |E| − |S| = 1      — one molecule short of it
+// S = E is the exact match, the real finding above, and is NEVER also a near-miss — nor is any
+// entry that matched exactly ANYWHERE on this note, so a note carrying both the banned product and
+// a superset of it reports the ban once and does not also report a near-match to the same entry.
+// |S| ≥ 2 is inherited verbatim from the exact-match check: a single-molecule product is not a
+// combination, and admitting it would near-miss every two-molecule entry containing that molecule.
+//
+// Canonicalisation, dedupe-per-entry and the fail-safe posture are the exact-match check's, reused.
+
+/** Noise guard (§3.2): at most this many near-miss findings per note, taken in ENTRY order — so
+ *  the cap is deterministic and independent of the order the EMR listed the medications in. */
+export const BANNED_FDC_NEAR_MISS_CAP = 3;
+
+/** The near-miss closing sentence — VERBATIM from PRD §3.2. Do not editorialise. */
+const NEAR_MISS_CLOSE = 'This is not the prohibited combination. Informational only — it does not affect any score. Logged to measure whether exact-match checking is too strict.';
+
+/**
+ * Informational near-miss findings for a prescription (§3.2). Never scores, never accuses:
+ * verdict 'uncertain', confidence 0, informational true. The `Subject: detail` colon convention is
+ * load-bearing exactly as above — the text before the colon is the signal-type key
+ * (SIGNAL_TYPE_RULES → 'banned_fdc_near_miss'), and the text after it is the ENTRY composition,
+ * never the product name, so finding_ref is stable across re-audits and across products.
+ */
+export function bannedFdcNearMisses(meds: OpdMed[], table: BannedFdcTable): OpdFinding[] {
+  try {
+    const entries = Array.isArray(table?.entries) ? table.entries : [];
+    if (!entries.length || !Array.isArray(meds) || !meds.length) return [];
+
+    const canon = entries
+      .map((e) => ({ e, set: normalizeMoleculeSet(Array.isArray(e?.molecules) ? e.molecules : []) }))
+      .filter((x) => !!x.e?.id && x.set.length >= 2);
+    if (!canon.length) return [];
+
+    // The med sets, canonicalised once (|S| ≥ 2 — see the header).
+    const products = meds
+      .map((m) => ({ label: m.brand || m.generic || m.resolvedGeneric || 'medication', set: normalizeMoleculeSet(medMolecules(m)) }))
+      .filter((p) => p.set.length >= 2);
+    if (!products.length) return [];
+
+    // Entries that matched EXACTLY somewhere on this note — excluded from near-misses entirely.
+    const exact = new Set(
+      canon.filter((c) => products.some((p) => p.set.join('|') === c.set.join('|'))).map((c) => c.e.id));
+
+    const out: OpdFinding[] = [];
+    const fired = new Set<string>();
+    // Entries outer, products inner: the cap and the emitted order follow the RULEBOOK, not meds[].
+    for (const { e, set: E } of canon) {
+      if (out.length >= BANNED_FDC_NEAR_MISS_CAP) break;
+      if (exact.has(e.id) || fired.has(e.id)) continue;
+      for (const p of products) {
+        const S = p.set;
+        const inBoth = S.filter((x) => E.includes(x));
+        const superset = S.length > E.length && inBoth.length === E.length;
+        const subsetMissingOne = S.length < E.length && E.length - S.length === 1 && inBoth.length === S.length;
+        if (!superset && !subsetMissingOne) continue;
+        fired.add(e.id);
+        const composition = E.join(' + ');
+        const differing = superset ? S.filter((x) => !E.includes(x)) : E.filter((x) => !S.includes(x));
+        const diff = superset ? `extra: ${differing.join(', ')}` : `missing: ${differing.join(', ')}`;
+        out.push({
+          subject: `Near-match to a banned combination: ${composition}`,
+          verdict: 'uncertain',                            // §3.2 — a count, not a judgement
+          confidence: 0,                                   // §3.2 — non-scoring by construction
+          domain: 'prescribing_safety',
+          rationale: `${p.label} (${S.join(' + ')}) shares ${inBoth.join(', ')} with the prohibited combination ${composition} (gazette ${e.gazette_ref}, ${e.notification_date}), but differs — ${diff}. ${NEAR_MISS_CLOSE}`,
+          evidence: [], estimates: [], citation_ids: [],
+          source: 'deterministic',
+          informational: true,                             // §3.2 — never penalises the score
+        });
+        break;                                             // one finding per entry (dedupe per entry id)
+      }
+    }
+    return out;
+  } catch {
+    return [];                                            // §7 posture, inherited — never throw, never block
   }
 }
