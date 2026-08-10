@@ -209,6 +209,57 @@ export async function runOllamaFallback<T>(
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// TRANSPORT DISPATCH EVIDENCE — LVC JUDGE GUARD FIX PRD v3.0 §3.1 (D-8, D-15), 10 Aug 2026.
+//
+// The transport has always known which branch it dispatched through and which model slug it
+// supplied, and has always thrown that away at the return (line ~592 before this change), leaving
+// callers to guess attribution from `result.model` — a field some providers do not populate. An
+// empty body model then read as "wrong model", which is what made the judge retry every call.
+//
+// NAMED FOR WHAT IT IS. This is evidence of what the transport DISPATCHED, not proof of what
+// executed inside the provider. It is deliberately NOT called `served_model` (§3.1).
+//
+// ADDITIVE, AND MECHANICALLY SO: the value is attached as a NON-ENUMERABLE own property, so
+// Object.keys / JSON.stringify / object spread over a completion are byte-identical to before.
+// No existing shape changes, no existing consumer can see it, and a frozen provider object simply
+// does not receive it (attribution is best-effort; it must never cost a call).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The property name carrying dispatch evidence on a returned completion. Namespaced so it can
+ *  never collide with an OpenAI/Bedrock/OpenRouter SDK field. */
+export const TRANSPORT_ATTRIBUTION_FIELD = 'cdmss_transport_attribution';
+
+export type CdmssTransportAttribution = {
+  /** Which branch of tracedChat dispatched the request. 'vertex' is the direct Vertex Gemini
+   *  branch — the trace's own provider label for it is 'gemini'; this field uses the PRD's name. */
+  dispatched_provider: 'vertex' | 'openrouter' | 'ollama' | 'bedrock';
+  /** The model slug the transport supplied to that provider (publisher prefix as sent). */
+  dispatched_model: string | null;
+  /** True when a cloud provider produced this result; false for the local model. */
+  cloud_response_received: boolean;
+};
+
+/** Attach dispatch evidence to a completion and return the SAME object. Non-enumerable, so no
+ *  existing consumer of the completion can observe it. Never throws. */
+export function attachTransportAttribution<T>(result: T, attribution: CdmssTransportAttribution): T {
+  if (!result || (typeof result !== 'object' && typeof result !== 'function')) return result;
+  try {
+    Object.defineProperty(result, TRANSPORT_ATTRIBUTION_FIELD, {
+      value: attribution, enumerable: false, configurable: true, writable: true,
+    });
+  } catch { /* frozen/sealed provider object — evidence is best-effort, never a thrown call */ }
+  return result;
+}
+
+/** Read dispatch evidence back off a completion. `undefined` means the transport left none —
+ *  which is a real state (an untraced call, a stream wrapper), not a failure. */
+export function readTransportAttribution(result: unknown): CdmssTransportAttribution | undefined {
+  if (!result || (typeof result !== 'object' && typeof result !== 'function')) return undefined;
+  const v = (result as Record<string, unknown>)[TRANSPORT_ATTRIBUTION_FIELD];
+  return v && typeof v === 'object' ? (v as CdmssTransportAttribution) : undefined;
+}
+
 export async function tracedChat(
   traceId: string,
   label: string,
@@ -312,7 +363,11 @@ export async function tracedChat(
       }
       provider = 'bedrock';
       actualModel = bedrockModel;
-      result = completion;
+      // §3.1 branch 1 of 4 — dispatch evidence. Attached to the completion; the streaming shim
+      // below returns singleChunkStream(completion) instead, and that wrapper carries none.
+      result = attachTransportAttribution(completion, {
+        dispatched_provider: 'bedrock', dispatched_model: bedrockModel, cloud_response_received: true,
+      });
       if ((params as { stream?: boolean }).stream) {
         // A streaming CALLER over a non-streaming transport (see singleChunkStream). The response
         // event is logged HERE, with the real content and the real usage, because the tail below
@@ -403,6 +458,12 @@ export async function tracedChat(
             endProviderCall('openrouter');
             provider = 'openrouter';
             actualModel = slug;
+            // §3.1 branch 2 of 4 — dispatch evidence. `slug` is publisher-prefixed
+            // (google/gemini-2.5-pro); modelsAgree tolerates the prefix, so a bridged Gemini
+            // still resolves `verified` under D-15.
+            attachTransportAttribution(result, {
+              dispatched_provider: 'openrouter', dispatched_model: slug, cloud_response_received: true,
+            });
             servedByCloud = true;
           } catch (oe) {
             // 403-diagnosis §4.1/§4.2: snapshot in-flight BEFORE decrementing (the failing call
@@ -502,6 +563,11 @@ export async function tracedChat(
             endProviderCall('gemini');
             provider = 'gemini';
             actualModel = opts!.gemini as string;
+            // §3.1 branch 3 of 4 — dispatch evidence for the DIRECT Vertex branch. The slug is the
+            // caller's un-prefixed model; the trace's own provider label stays 'gemini'.
+            attachTransportAttribution(result, {
+              dispatched_provider: 'vertex', dispatched_model: opts!.gemini as string, cloud_response_received: true,
+            });
             servedByCloud = true;
           } catch (ge) {
             // 403-diagnosis §4.1/§4.2: the FULL Vertex body — error.status is the IAM-vs-quota
@@ -542,9 +608,24 @@ export async function tracedChat(
         actualModel = (params as { model?: string }).model;
         // §3: keep the fallback, but if IT also throws, surface BOTH errors (not just Ollama's 404).
         result = await runOllamaFallback(lastTier, servedModel, lastErr, () => llm.chat.completions.create(params, reqOpts));
+        // §3.1 branch 4 of 4 — THE LOCAL BRANCH MUST MARK ITSELF, so a local answer identifies
+        // itself rather than passing as unattributed. cloud_response_received: false is the whole
+        // point: under D-6 an *unknown* attribution is accepted, so a local answer must never be
+        // able to arrive unknown.
+        attachTransportAttribution(result, {
+          dispatched_provider: 'ollama', dispatched_model: (params as { model?: string }).model ?? null, cloud_response_received: false,
+        });
       }
     } else {
       result = await llm.chat.completions.create(params, reqOpts);
+      // ⚠️ FIFTH BRANCH, NOT IN THE PRD'S LIST OF FOUR — flagged in the build report, not decided
+      // here. This is the no-cloud-configured path (no bedrock target, no OpenRouter slug, Vertex
+      // unconfigured): local Ollama serves directly, without ever entering the ladder above. It is
+      // the same one-line attach and the same reason as branch 4 — an unmarked local answer would
+      // reach a D-6 `unknown` and be ACCEPTED. Marking it is additive and changes no logic.
+      attachTransportAttribution(result, {
+        dispatched_provider: 'ollama', dispatched_model: (params as { model?: string }).model ?? null, cloud_response_received: false,
+      });
     }
   } catch (e) {
     await logEvent(traceId, 'llm_error', label, {

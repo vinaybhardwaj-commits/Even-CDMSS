@@ -3359,6 +3359,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "lvc",
     "to": "trace",
+    "kind": "type"
+  },
+  {
+    "from": "lvc",
+    "to": "trace",
     "kind": "value"
   },
   {

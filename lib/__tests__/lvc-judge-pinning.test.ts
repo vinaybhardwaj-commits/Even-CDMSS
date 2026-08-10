@@ -90,12 +90,22 @@ test('D-2: a non-Gemini served model is retried ONCE, then the whole batch refus
   assert.deepEqual(assembleFlags(judged, 'autoflag', {}), [], 'no flag on the autoflag surface');
 });
 
-test('D-2: an EMPTY served model counts as a failure, not a pass', async () => {
+// ⚠️ SUPERSEDED BY D-6 (GUARD FIX PRD v3.0, 10 Aug 2026). This test used to assert that an EMPTY
+// served model is a failure — two calls, then refusal. THAT WAS THE DEFECT, and it passed: an
+// empty string does not mean "wrong model", it means "the provider did not echo a name", and
+// retrying every one of those doubled the judge's cost until no call finished inside the platform
+// ceiling (0/24 at 300s, from 106/118 at ~140s). The replacement lives in
+// lvc-judge-attribution.test.ts §3.6 test 1: one call, verdict accepted, attribution `unknown`.
+// It is kept here as a pointer so nobody reinstates the old assertion by reading this file alone.
+test('D-2 → D-6: an EMPTY served model is UNKNOWN attribution, not a failure (see lvc-judge-attribution.test.ts)', async () => {
   let calls = 0;
   const judged = await defaultJudge(CTX, RECS, 'surface', undefined, false, {
     call: async () => { calls++; return { model: '', choices: [{ message: { content: '[]' } }] }; },
   });
-  assert.equal(calls, 2);
+  assert.equal(calls, 1, 'exactly ONE call — an unlabeled answer is never retried (D-6)');
+  // Content '[]' names no rec, so the parser's own doctrine returns insufficient_info for all —
+  // that is the PARSER, not a refusal. Test 1 in the attribution suite proves a real verdict is
+  // served on this path.
   assert.ok(judged.every((j) => j.verdict === 'insufficient_info'));
 });
 
