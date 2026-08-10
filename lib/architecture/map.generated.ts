@@ -519,6 +519,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "lvc-ratified-wording",
+    "plane": "unregistered"
+  },
+  {
     "id": "lvc-value",
     "plane": "unregistered"
   },
@@ -1600,6 +1604,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "lvc-proposal-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "lvc-ratified-wording",
     "kind": "value"
   },
   {

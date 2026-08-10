@@ -134,3 +134,30 @@ export function summarizeAa(cases: AaCaseComparison[]): AaSummary {
     nUnmatchedRecs: list.reduce((s, c) => s + c.unmatched.length, 0),
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unit C — re-run support (LVC JUDGE PINNING PRD v1.0 §4, 10 Aug 2026)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The tag the r1 baseline was stored under. Unchanged, and still the default. */
+export const AA_EXPERIMENT_DEFAULT = 'lvc_judge_aa_r1';
+
+/**
+ * The ONLY shape a re-run tag may take (PRD §4). Deliberately narrow: the tag keys the resume
+ * skip-set (`doneUids`) AND the lab_analyses rows the report is read off, so a typo would silently
+ * start a fresh, empty round rather than resume — and two rounds sharing a tag would be
+ * indistinguishable in the analysis. `r0`–`r99`, nothing else.
+ */
+export const AA_EXPERIMENT_RE = /^lvc_judge_aa_r[0-9]{1,2}$/;
+
+/**
+ * Resolve the `experiment` query parameter. ANYTHING that does not match falls back to r1 —
+ * including empty, absent and junk — so the route can never write rows under a tag nobody will
+ * look for. Whitespace is trimmed; nothing else is coerced (no lower-casing: a tag that differs
+ * only in case is a different tag to the DB, and quietly folding it would be the same defect the
+ * regex exists to prevent).
+ */
+export function resolveAaExperiment(raw: string | null | undefined): string {
+  const v = String(raw ?? '').trim();
+  return AA_EXPERIMENT_RE.test(v) ? v : AA_EXPERIMENT_DEFAULT;
+}

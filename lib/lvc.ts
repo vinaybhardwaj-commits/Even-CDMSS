@@ -15,7 +15,7 @@
 
 import { sql } from './db';
 import { retrieve } from './retrieve';
-import { geminiUtilityModel, geminiModelFor, TEXT_MODEL } from './llm';
+import { geminiUtilityModel, geminiModelFor, TEXT_MODEL, AUDIT_LLM_SEED, modelsAgree } from './llm';
 import { logEvent, finishTrace, governedChat, withTrace } from './trace';
 import * as core from './lvc-core';
 import { labPackageContext } from './scoring-policy/lab-packages';
@@ -104,6 +104,29 @@ async function llmCall(traceId: string | undefined, label: string, params: any, 
   return governedChat(traceId, label, params, { gemini: geminiModel, promptRef });
 }
 
+/**
+ * STAGE 1 — CANDIDATE EXTRACTION (label `lvc_extract`, prompt `lvc-core/CANDIDATE_SYSTEM`).
+ *
+ * ⚠️ THIS IS THE "second temperature-0.1 call near lib/lvc.ts:115" the pinning PRD (§2.4) asked the
+ * builder to identify. It is NOT the judge, and it is DELIBERATELY LEFT UNPINNED — flagged for V,
+ * not decided here. The reasoning, so the next reader does not have to redo it:
+ *
+ *   · It answers a different question. This pass turns free text into the CANDIDATE ORDER LIST;
+ *     the judge decides applicability. Its variance moves which recommendations are RECALLED, not
+ *     which verdict a recalled rec receives.
+ *   · The A/A measurement that ordered the pin never observed it. The harness sets
+ *     `proposedActions`, which SKIPS this call entirely (see matchLowValueCare below), so none of
+ *     the 9 discordant cases in the 9 Aug report can be attributed to it, and pinning it would
+ *     change nothing the pre-registered r2 re-measurement can see.
+ *   · Pinning it is not free. Changing recall changes which recs reach the judge, i.e. LVC flag
+ *     composition, on a lever the PRD's stated consequences (§3 wording, §6 hazards) do not cover.
+ *     §2.4's own instruction is "do not pin unrelated calls silently".
+ *   · It runs on Flash utility routing and, unlike the judge, KEEPS its Ollama soft-fall: D-2
+ *     forbids a non-Gemini VERDICT, and this pass returns no verdict. Its failure mode is already
+ *     fail-safe — a caught error returns [], which ends the pipeline with zero flags.
+ *
+ * If V wants extraction pinned too, it is the same three lines as the judge and its own decision.
+ */
 async function defaultExtract(scenario: string, traceId?: string, forceOllama = false): Promise<Candidate[]> {
   try {
     const r = await llmCall(traceId, 'lvc_extract', {
@@ -146,12 +169,54 @@ async function defaultRecall(input: MatchInput, candidates: Candidate[]): Promis
   return core.dedupeById(kw, sem);
 }
 
-async function defaultJudge(
+/** The trace event that makes the refusal rate observable (PRD §2.3). One per refused batch. */
+export const LVC_JUDGE_REFUSED_EVENT = 'lvc_judge_gemini_refused';
+
+/** Injection seam for unit tests — the judge's ONE provider call. Defaults to the real llmCall. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type JudgeCall = (params: any) => Promise<any>;
+export interface JudgeDeps { call?: JudgeCall }
+
+/**
+ * The applicability judge. LVC JUDGE PINNING PRD v1.0 §2 (D-1, D-2), 10 Aug 2026.
+ *
+ * ── D-1, THE PIN ────────────────────────────────────────────────────────────────────────────────
+ * temperature 0 (was 0.1) + seed AUDIT_LLM_SEED + top_p 1 — the A-8 treatment, exactly, and the
+ * same three levers the production OPD scorer runs on. Nothing else in the params moves and the
+ * prompt does not move: JUDGE_SYSTEM and buildJudgeUser are untouched, and so is model resolution.
+ * The judge serves on the Vertex Gemini path, which IGNORES the seed, so the expected gain is
+ * partial — which is why §4/D-4 pre-registers the r2 re-measurement rather than declaring victory.
+ * Baseline to beat: 38/47 cases identical (80.9%) against a 95% bar
+ * (CDMSS-LVC-JUDGE-AA-REPORT-9-AUG-2026).
+ *
+ * ── D-2, GEMINI IN THE CLOUD IS THE ONLY GRADER ─────────────────────────────────────────────────
+ * V's standing ruling of 10 Aug: the judge path has NO fallback. Something answering as
+ * `qwen2.5:14b` through the still-live Ollama bridge served 42 lab calls in 14 days, four of them
+ * judge A/A cases and three of those discordant — a fallback that ANSWERS is a defect here, not a
+ * feature, because a verdict is what decides whether a clinician sees a flag at all.
+ *
+ * So, copying lib/even-lvc.ts:176: the SERVED model is checked against the INTENDED Gemini slug
+ * with `modelsAgree` (which tolerates the `google/` publisher prefix, so the OpenRouter bridge
+ * still passes). A throw, an empty served model, or a disagreement is a FAILURE → one retry
+ * against Gemini → on a second failure the whole batch returns the parse default, every rec
+ * `insufficient_info`, so no flag can fire and nothing false is asserted. `parseJudgeResponse('')`
+ * IS that default — reused rather than re-implemented, so the refuse path can never drift from
+ * the doctrine it is meant to apply.
+ *
+ * NO INTENDED SLUG ⇒ IMMEDIATE REFUSAL, WITHOUT A CALL. If Vertex is unconfigured, or the lab
+ * probe's `forceOllama` asked for the free mini, there is no Gemini to retry against and the only
+ * model that could answer is the one D-2 forbids. Refusing before the call is the same ruling
+ * applied one step earlier. FLAGGED CONSEQUENCE: `providerOverride: 'ollama'` on
+ * /api/appropriateness now returns zero flags — its candidate-extraction leg still runs free and
+ * local, but its judge stage is dead by ruling.
+ */
+export async function defaultJudge(
   ctx: { scenario: string; patient?: { age?: number; sex?: string }; clinicalStateText?: string; orderedActions?: string[] },
   recs: LvcRecommendation[],
   surface: Surface,
   traceId?: string,
   forceOllama = false,
+  deps: JudgeDeps = {},
 ): Promise<JudgedRec[]> {
   // Phase C §7.2 — factual lab-package composition, so a panel and one of its own analytes are not
   // read as two duplicate orders. FAIL-OPEN and byte-identical when absent: an empty/malformed set
@@ -159,29 +224,68 @@ async function defaultJudge(
   // today's context. Never let a context read cost a judgement.
   const labPackages = await labPackageContext().catch(() => []);
   // Opt-in surface → Pro reasoning (geminiModelFor honours GEMINI_ALL); unsolicited
-  // autoflag → cheap Flash. Both soft-fall to local Ollama if Vertex is unavailable.
-  // forceOllama (lab probe) pins the whole judge to the free mini.
+  // autoflag → cheap Flash. UNCHANGED resolution (PRD §2.1) — what changed is that an
+  // unresolved slug now refuses instead of soft-falling to the local mini.
   const geminiModel = forceOllama ? undefined : (surface === 'autoflag'
     ? geminiUtilityModel()
     : (geminiModelFor('appropriateness') ?? geminiUtilityModel()));
   const fallbackModel = surface === 'autoflag' ? 'llama3.1:8b' : TEXT_MODEL;
-  try {
-    const r = await llmCall(traceId, 'lvc_judge', {
-      model: fallbackModel,
-      messages: [
-        { role: 'system', content: core.JUDGE_SYSTEM },
-        { role: 'user', content: core.buildJudgeUser(ctx, recs, ctx.clinicalStateText, ctx.orderedActions, labPackages) },
-      ],
-      temperature: 0.1,
-      max_tokens: 900,
-      ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
-    }, geminiModel, 'lvc-core/JUDGE_SYSTEM');
-    return core.parseJudgeResponse(r.choices?.[0]?.message?.content || '', recs);
-  } catch (e) {
-    console.warn('[lvc] judge failed', (e as Error).message);
-    // soft-fail: nothing fires
-    return recs.map((rec) => ({ rec, verdict: 'insufficient_info' as const, confidence: 0, why: '', consider_instead: null }));
+
+  /** D-2: the whole batch to insufficient_info, plus ONE observable event carrying what served. */
+  const refuse = async (served: string, reason: string): Promise<JudgedRec[]> => {
+    console.warn(`[lvc] judge REFUSED (${reason}): served '${served || 'none'}' != intended '${geminiModel ?? 'none'}' — every rec insufficient_info, no flag fires`);
+    if (traceId) {
+      await logEvent(traceId, LVC_JUDGE_REFUSED_EVENT, 'lvc_judge', {
+        reason,
+        served_model: served || null,
+        intended_model: geminiModel ?? null,
+        surface,
+        n_recs: recs.length,
+        rec_ids: recs.map((r) => r.id),
+      }).catch(() => { /* observability must never cost a verdict */ });
+    }
+    // The existing "any rec not returned → insufficient_info" doctrine, applied to the whole batch.
+    return core.parseJudgeResponse('', recs);
+  };
+
+  if (!geminiModel) return refuse('', forceOllama ? 'force_ollama_requested' : 'no_gemini_model_resolved');
+
+  const params = {
+    model: fallbackModel,
+    messages: [
+      { role: 'system', content: core.JUDGE_SYSTEM },
+      { role: 'user', content: core.buildJudgeUser(ctx, recs, ctx.clinicalStateText, ctx.orderedActions, labPackages) },
+    ],
+    // D-1 — the pin. seed/top_p ride governedChat → tracedChat's `...rest` to the Vertex
+    // OpenAI-compat client (and to OpenRouter through the bridge); the guard above guarantees this
+    // body is only ever sent to a cloud Gemini, so no Ollama-only path sees them.
+    temperature: 0,
+    seed: AUDIT_LLM_SEED,
+    top_p: 1,
+    max_tokens: 900,
+    ...({ options: { num_ctx: 8192 }, keep_alive: '15m' } as Record<string, unknown>),
+  };
+  const call: JudgeCall = deps.call ?? ((p) => llmCall(traceId, 'lvc_judge', p, geminiModel, 'lvc-core/JUDGE_SYSTEM'));
+
+  // ONE retry, then refuse (D-2). Attempt 2 is identical to attempt 1 — same slug, same body.
+  let served = '';
+  let lastReason = 'unknown';
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const r = await call(params);
+      served = String(r?.model ?? '');
+      if (modelsAgree(served, geminiModel)) {
+        return core.parseJudgeResponse(r.choices?.[0]?.message?.content || '', recs);
+      }
+      lastReason = served ? 'served_model_disagrees' : 'served_model_empty';
+      console.warn(`[lvc] judge attempt ${attempt}/2 served '${served || 'none'}' != intended '${geminiModel}'`);
+    } catch (e) {
+      served = '';
+      lastReason = 'call_failed';
+      console.warn(`[lvc] judge attempt ${attempt}/2 failed`, (e as Error).message);
+    }
   }
+  return refuse(served, lastReason);
 }
 
 /**
