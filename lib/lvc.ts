@@ -48,6 +48,11 @@ export interface MatchResult {
   surface: Surface;
   traceId?: string;
   empty: boolean;
+  /** WHICH MODEL ACTUALLY JUDGED THIS RUN (HARNESS-AND-ATTRIBUTION kickoff item 3). Additive and
+   *  optional: absent when no judge ran (no candidates, no recall) or when the caller injected its
+   *  own judge, so every existing reader is unaffected. Taken in-process from the transport
+   *  attribution field 101e4e4 added — NOT re-read from a trace, and never from what was requested. */
+  judgeAttribution?: JudgeRunAttribution;
 }
 
 /** Injection seam for unit tests — override any stage; defaults hit the real backend. */
@@ -213,7 +218,15 @@ export type JudgeCall = (params: any) => Promise<any>;
  *  supplies its own to assert the PAYLOADS without a database. Storage is unchanged either way —
  *  this build adds no new store, only two new event kinds on the existing trace_events. */
 export type JudgeEventRecorder = (kind: string, payload: unknown) => void | Promise<void>;
-export interface JudgeDeps { call?: JudgeCall; recordEvent?: JudgeEventRecorder }
+export interface JudgeDeps {
+  call?: JudgeCall;
+  recordEvent?: JudgeEventRecorder;
+  /** Called exactly ONCE per invocation with the same record the invocation event carries — the
+   *  in-process carry that lets matchLowValueCare put attribution on its result (kickoff item 3).
+   *  Fires on the verdict path AND the refuse path, including the no-slug refusal. Never throws
+   *  into the judge: a sink that throws is swallowed like any other observability. */
+  onInvocation?: (rec: JudgeInvocationRecord) => void;
+}
 
 // ══ ATTRIBUTION — LVC JUDGE GUARD FIX PRD v3.0 §3.2 (D-6, D-8, D-9, D-15), 10 Aug 2026 ═════════
 
@@ -248,13 +261,32 @@ export type JudgeAttributionState = 'verified' | 'wrong_model' | 'unknown';
  * the transport's local branches name that slug — so a local answer resolves wrong_model, never
  * unknown. That is deliberate: `unknown` is accepted, so nothing local may be able to reach it.
  *
+ * ── HARDENING (HARNESS-AND-ATTRIBUTION kickoff, 10 Aug 2026) ────────────────────────────────────
+ * A FOURTH INPUT OUTRANKS THE TABLE: when the transport is PRESENT and says no cloud provider
+ * answered (`cloud_response_received: false`), the state is wrong_model whatever the model strings
+ * say. The strings were doing that job by accident — the local branches happen to name a slug that
+ * fails modelsAgree — and an accident is the wrong thing to rest D-7 on: a local branch that
+ * reported a null model, or one that echoed a Gemini slug from the request, would resolve
+ * `unknown` and be ACCEPTED. The boolean says it directly.
+ *
+ * ABSENT transport evidence leaves every rule below untouched, including the unknown path. This is
+ * a rule about evidence that EXISTS and says no; it is not a new reason to distrust silence.
+ *
  * Pure. No I/O, no provider, no clock — every row of the table is unit-tested (§3.6 test 10).
  */
 export function resolveJudgeAttribution(input: {
   intendedModel: string;
   transportModel?: string | null;
   bodyModel?: string | null;
+  /** trace.ts's `cloud_response_received`. undefined/null ⇒ NO transport evidence at all, and the
+   *  table below applies unchanged. `false` ⇒ evidence exists and says a local model answered. */
+  transportCloudResponse?: boolean | null;
 }): { state: JudgeAttributionState; reason: string } {
+  // Evidence that a cloud provider did NOT answer is decisive on its own — checked BEFORE the
+  // strings, because the strings are exactly what such a branch might not report honestly.
+  if (input.transportCloudResponse === false) {
+    return { state: 'wrong_model', reason: 'transport_reports_no_cloud_response' };
+  }
   const t = String(input.transportModel ?? '').trim();
   const b = String(input.bodyModel ?? '').trim();
   // null = the source said nothing, which is NOT the same as the source disagreeing.
@@ -335,6 +367,48 @@ export interface JudgeInvocationRecord {
   surface: Surface;
   n_recs: number;
   rec_ids: string[];
+}
+
+/**
+ * THE ATTRIBUTION SHAPE THAT LEAVES THE JUDGE (HARNESS-AND-ATTRIBUTION kickoff item 3).
+ *
+ * 101e4e4 put attribution on the trace event stream and nowhere else, so the A/A harness — and the
+ * verification connector reading its stored rows — could not see it, and the stored case kept
+ * recording an empty provider and model from `servedCallForAudit`. This is the compact record a
+ * CALLER can carry: taken from the transport attribution field itself, in-process, not re-read
+ * from a trace and not inferred from what was requested.
+ *
+ * It reports the LAST attempt, because that is the attempt whose answer was used (or, on a
+ * refusal, the one the refusal rests on). `attempts` and `retry_count` keep a first-attempt
+ * failure visible so a clean-looking verified row cannot hide a retry.
+ */
+export interface JudgeRunAttribution {
+  dispatched_provider: string | null;
+  dispatched_model: string | null;
+  body_model: string | null;
+  attribution_state: JudgeAttributionState | null;
+  attribution_reason: string | null;
+  outcome: 'verdict' | 'refusal' | null;
+  refuse_reason: string | null;
+  attempts: number;
+  retry_count: number;
+}
+
+/** Compact one-run attribution from an invocation record. Null in ⇒ an all-null shape out, never
+ *  a missing key: a reader must be able to tell "no attribution recorded" from "provider empty". */
+export function judgeRunAttributionFrom(rec: JudgeInvocationRecord | null | undefined): JudgeRunAttribution {
+  const last = rec?.attempts?.length ? rec.attempts[rec.attempts.length - 1] : null;
+  return {
+    dispatched_provider: last?.dispatched_provider ?? null,
+    dispatched_model: last?.dispatched_model ?? null,
+    body_model: last?.body_model ?? null,
+    attribution_state: last?.attribution_state ?? null,
+    attribution_reason: last?.attribution_reason ?? null,
+    outcome: rec?.outcome ?? null,
+    refuse_reason: rec?.refuse_reason ?? null,
+    attempts: rec?.attempts?.length ?? 0,
+    retry_count: rec?.retry_count ?? 0,
+  };
 }
 
 /** Pure builder for the one-per-invocation record. */
@@ -450,6 +524,12 @@ export async function defaultJudge(
   const record = async (kind: string, payload: unknown): Promise<void> => {
     try { await recorder(kind, payload); } catch { /* observability must never cost a verdict */ }
   };
+  /** The one-per-invocation record goes to the event stream AND to the in-process sink, so a
+   *  caller gets exactly what the trace got — never a second, differently-derived version. */
+  const recordInvocation = async (rec: JudgeInvocationRecord): Promise<void> => {
+    await record(LVC_JUDGE_INVOCATION_EVENT, rec);
+    try { deps.onInvocation?.(rec); } catch { /* a sink must never cost a verdict either */ }
+  };
 
   /** D-2/D-6: the whole batch to insufficient_info, plus the refusal event (kept) and the
    *  one-per-invocation record carrying every attempt that led here. */
@@ -464,7 +544,7 @@ export async function defaultJudge(
       n_recs: recs.length,
       rec_ids: recIds,
     });
-    await record(LVC_JUDGE_INVOCATION_EVENT, buildJudgeInvocationPayload({
+    await recordInvocation(buildJudgeInvocationPayload({
       intendedModel: geminiModel ?? null, attempts, outcome: 'refusal', refuseReason: reason, surface, recIds,
     }));
     // The existing "any rec not returned → insufficient_info" doctrine, applied to the whole batch.
@@ -512,6 +592,8 @@ export async function defaultJudge(
       const bodyModel = String(r?.model ?? '');
       const attribution = resolveJudgeAttribution({
         intendedModel: geminiModel, transportModel: transport?.dispatched_model ?? null, bodyModel,
+        // Present-and-false is decisive; absent transport leaves the table untouched.
+        transportCloudResponse: transport ? transport.cloud_response_received : null,
       });
       entry = buildJudgeAttemptPayload({
         attempt, status: 'ok', intendedModel: geminiModel, transport, bodyModel, attribution,
@@ -539,7 +621,7 @@ export async function defaultJudge(
     attempts.push(entry);
     await record(LVC_JUDGE_ATTEMPT_EVENT, entry);
     if (verdicts) {
-      await record(LVC_JUDGE_INVOCATION_EVENT, buildJudgeInvocationPayload({
+      await recordInvocation(buildJudgeInvocationPayload({
         intendedModel: geminiModel, attempts, outcome: 'verdict', surface, recIds,
       }));
       return verdicts;
@@ -562,9 +644,15 @@ export async function matchLowValueCare(input: MatchInput, deps: Partial<MatchDe
   const run = async (traceId?: string): Promise<MatchResult> => {
 
   const fo = input.forceOllama === true;
+  // Item 3's in-process carry: the DEFAULT judge reports which model answered, so the result can
+  // say so. An INJECTED judge (the harness's pass 0, every unit test) leaves this null and the
+  // field is simply absent from the result — no caller can be told a model judged when none did.
+  let invocation: JudgeInvocationRecord | null = null;
   const extract = deps.extractCandidates ?? ((s: string) => defaultExtract(s, traceId, fo));
   const recall = deps.recall ?? defaultRecall;
-  const judge = deps.judge ?? ((ctx, recs, surf) => defaultJudge(ctx, recs, surf, traceId, fo));
+  const judge = deps.judge ?? ((ctx, recs, surf) => defaultJudge(ctx, recs, surf, traceId, fo, {
+    onInvocation: (rec) => { invocation = rec; },
+  }));
 
   try {
     const candidates = input.proposedActions?.length
@@ -605,7 +693,10 @@ export async function matchLowValueCare(input: MatchInput, deps: Partial<MatchDe
       await logEvent(traceId, 'lvc_flags', null, { count: flags.length, ids: flags.map((f) => f.id) });
       await finishTrace(traceId, 'success');
     }
-    return { flags, candidates, considered: recs.length, surface, traceId, empty: flags.length === 0 };
+    return {
+      flags, candidates, considered: recs.length, surface, traceId, empty: flags.length === 0,
+      ...(invocation ? { judgeAttribution: judgeRunAttributionFrom(invocation) } : {}),
+    };
   } catch (e) {
     if (traceId) await finishTrace(traceId, 'error', String((e as Error).message));
     // The autoflag path must never break the parent DDx/Ask answer.

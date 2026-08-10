@@ -30,9 +30,25 @@
  * exactly as two real order-checks would. No scoring table is touched — not opd_note_audits, not
  * appropriateness_runs. Results land in lab_analyses and nowhere else.
  *
- * BUDGET. ~2 judge calls per case, fired by the ORCHESTRATOR when this route is called — never by
- * CI and never by the nightly worker. Sequential (concurrency 1), stops cleanly at 250 s and
- * reports progress; call it again to resume, since uids already stored for the tag are skipped.
+ * BUDGET (RE-SIZED 10 Aug 2026 — HARNESS-AND-ATTRIBUTION kickoff item 1). ~2 judge calls per case,
+ * fired by the ORCHESTRATOR when this route is called — never by CI and never by the nightly
+ * worker. Sequential (concurrency 1), stops cleanly and reports progress; call it again to resume,
+ * since uids already stored for the tag are skipped.
+ *
+ * ⚠️ WHY THE OLD NUMBERS COULD NOT WORK. A judge call measures ~135 s in production after the guard
+ * fix, so one case — two calls — is ~275 s. The route's box was 300 s and it would start a case
+ * with only 60 s left: the case then died at the clock, wrote nothing, and the invocation was lost
+ * mid-flight. 800 s (the box app/api/opd-audit/worker has run in since 30 July, which is the proof
+ * this rests on) with a 665 s internal deadline and a ONE-FULL-CASE reserve fixes both ends: cases
+ * are only started when they can finish, and a case that overruns anyway is now RECORDED as a
+ * timeout by its own watchdog rather than killed by the platform. All three values, and the
+ * reasoning, are in lib/lvc-judge-aa-core.ts where they are unit-tested.
+ *
+ * ⚠️ ATTRIBUTION (item 3). `servedCallForAudit` — the older lookup — has been returning an empty
+ * provider and model, so every stored case said nothing about which model judged it. The stored
+ * case now ALSO carries `attribution.runA` / `attribution.runB`, taken IN-PROCESS from the
+ * transport attribution field 101e4e4 added (MatchResult.judgeAttribution), never re-read from a
+ * trace and never inferred from what was requested. `served` is left exactly as it was, beside it.
  *
  * EVERY SQL STRING IN THIS FILE IS INFERRED (the builder has no live DB) and is reproduced verbatim
  * in the build report for orchestrator validation. Fail-safe throughout: a failure returns a JSON
@@ -41,9 +57,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/admin-gate';
 import { sql } from '@/lib/db';
-import { matchLowValueCare, type MatchInput } from '@/lib/lvc';
+import { matchLowValueCare, type MatchInput, type JudgeRunAttribution } from '@/lib/lvc';
 import type { JudgedRec, LvcRecommendation, Verdict } from '@/lib/lvc-core';
-import { compareJudgedRuns, summarizeAa, resolveAaExperiment, AA_EXPERIMENT_DEFAULT, type AaCaseComparison } from '@/lib/lvc-judge-aa-core';
+import {
+  compareJudgedRuns, summarizeAa, resolveAaExperiment, AA_EXPERIMENT_DEFAULT,
+  classifyAaCase, canStartCase, caseBudgetMs,
+  AA_ROUTE_MAX_DURATION_S, AA_DEADLINE_MS, AA_PER_CASE_RESERVE_MS, AA_MEASURED_CASE_MS,
+  type AaCaseComparison, type AaCaseStatus,
+} from '@/lib/lvc-judge-aa-core';
 import { fetchOpdNoteByUid } from '@/lib/metabase';
 import { rowToOpdCase, opdCaseText, type DeidOpdCase } from '@/lib/opd-ingest-core';
 import { OPD_ENGINE_VERSIONS_CURRENT } from '@/lib/opd-note-audit-core';
@@ -54,7 +75,14 @@ import { servedCallForAudit } from '@/lib/backfill-runs';
 import { remainingBudgetMs } from '@/lib/lab-batch-core';
 
 export const runtime = 'nodejs';
-export const maxDuration = 300;   // the route's own deadline is 250 s; this is the platform headroom
+// 300 → 800 (item 1). One case is ~275 s measured, so the old box could not hold even one with its
+// reserve. The value is not a guess about the plan: app/api/opd-audit/worker has run at 800 since
+// 30 July 2026. The route's OWN deadline is AA_DEADLINE_MS (665 s); this is the headroom above it.
+//
+// ⚠️ A LITERAL, NOT THE IMPORTED CONSTANT. Next parses segment config statically and fails the
+// build with `Unknown identifier "AA_ROUTE_MAX_DURATION_S" at "maxDuration"`. The two are pinned
+// to each other by a source-assertion test, so they cannot drift apart silently.
+export const maxDuration = 800;   // === AA_ROUTE_MAX_DURATION_S
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 
@@ -70,11 +98,6 @@ const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Reco
  */
 const AA_ENGINE = 'lvc-judge-aa/1.0';
 const APP_SOURCE = process.env.APP_SOURCE || 'standalone';
-/** §4.2 — stop cleanly near 250 s and let the next call resume. */
-const DEADLINE_MS = 250_000;
-/** Reserve before starting another case: two Pro judge calls plus the store. Never start one we
- *  cannot finish — a half-run case writes nothing and would be re-run from scratch anyway. */
-const PER_CASE_RESERVE_MS = 60_000;
 
 // ── INFERRED SQL 1 — the sample (§4.2) ────────────────────────────────────────────────────────────
 // Recent distinct note uids whose stored current-engine audit contains at least one NON-INFORMATIONAL
@@ -164,10 +187,12 @@ function inputForCase(oc: DeidOpdCase): MatchInput {
 
 interface CaseResult {
   uid: string;
-  status: 'compared' | 'no_orders' | 'no_recall' | 'no_verdicts' | 'error';
+  status: AaCaseStatus;
   comparison?: AaCaseComparison;
   stored?: string;
   detail?: string;
+  /** Per-run attribution, surfaced in the response as well as stored (item 3). */
+  attribution?: { runA: JudgeRunAttribution | null; runB: JudgeRunAttribution | null };
 }
 
 /**
@@ -218,12 +243,41 @@ async function runCase(uid: string, save: boolean, experiment: string): Promise<
       verdictsFromTrace(a.traceId, captured),
       verdictsFromTrace(b.traceId, captured),
     ]);
-    if (!judgedA.length && !judgedB.length) {
-      return { uid, status: 'no_verdicts', detail: 'no lvc_judge_verdicts event on either trace' };
-    }
-    const comparison = compareJudgedRuns(uid, judgedA, judgedB);
+    // ITEM 3 — WHICH MODEL ACTUALLY JUDGED EACH RUN, carried in-process off the transport
+    // attribution field (101e4e4) rather than re-read from a trace. Null only when the judge never
+    // ran or the pipeline soft-failed before it.
+    const attrA = a.judgeAttribution ?? null;
+    const attrB = b.judgeAttribution ?? null;
+    const attribution = { runA: attrA, runB: attrB };
 
-    // Attribution is DERIVED FROM WHAT SERVED (F11 / DEC-2), never from what was requested.
+    // ITEM 2 — the per-case outcome, classified BEFORE the comparison is believed. A refused run
+    // returns a full verdict set (every rec insufficient_info), so two refusals would compare as
+    // perfectly identical and inflate r2's headline; `compared` must mean a judgement happened.
+    const { status, detail } = classifyAaCase({
+      attrA, attrB, nVerdictsA: judgedA.length, nVerdictsB: judgedB.length,
+    });
+    const comparison = compareJudgedRuns(uid, judgedA, judgedB);
+    if (status !== 'compared') {
+      // Stored, so a failed case is COUNTABLE and the resume skip is honest — but never counted as
+      // a comparison: `comparison` rides along for diagnosis and the status says what it is worth.
+      const storedFail = save ? await saveLabAnalysis({
+        experiment, kind: 'lvc_judge_aa', engine: AA_ENGINE, inputRef: uid,
+        inputPreview: input.scenario.slice(0, 200),
+        output: {
+          uid, status, detail, surface: 'surface',
+          nRecsRecalled: captured.length,
+          runA: { traceId: a.traceId ?? null, nVerdicts: judgedA.length },
+          runB: { traceId: b.traceId ?? null, nVerdicts: judgedB.length },
+          attribution,
+        },
+        model: attrA?.dispatched_model ?? null, provider: attrA?.dispatched_provider ?? null,
+        latencyMs: Date.now() - t0,
+      }) : undefined;
+      return { uid, status, detail: detail ?? undefined, attribution, stored: storedFail };
+    }
+
+    // `served` is the OLDER lookup (F11 / DEC-2) and is LEFT EXACTLY AS IT WAS beside the new
+    // field — readers of r1 rows must find it unchanged, empty values and all.
     const served = await servedCallForAudit(a.traceId, 'lvc_judge');
     const stored = save ? await saveLabAnalysis({
       experiment, kind: 'lvc_judge_aa', engine: AA_ENGINE, inputRef: uid,
@@ -236,12 +290,40 @@ async function runCase(uid: string, save: boolean, experiment: string): Promise<
         runB: { traceId: b.traceId ?? null, verdicts: judgedB.map((j) => ({ id: j.rec.id, verdict: j.verdict, confidence: j.confidence })), nFlags: b.flags.length },
         comparison,
         served,
+        attribution,
       },
-      model: served.model, provider: served.provider, latencyMs: Date.now() - t0,
+      // The COLUMNS take the new evidence first and fall back to the old lookup, so a row is no
+      // longer blank about which model judged it. r1 rows are untouched history either way.
+      model: attrA?.dispatched_model ?? served.model,
+      provider: attrA?.dispatched_provider ?? served.provider,
+      latencyMs: Date.now() - t0,
     }) : undefined;
-    return { uid, status: 'compared', comparison, stored };
+    return { uid, status: 'compared', comparison, stored, attribution };
   } catch (e) {
     return { uid, status: 'error', detail: String((e as Error).message).slice(0, 300) };
+  }
+}
+
+/**
+ * ITEM 2 — the watchdog that makes `timeout` a RECORDED outcome instead of a lost invocation.
+ * The judge calls themselves are not cancellable (no abort signal is plumbed through
+ * matchLowValueCare, and plumbing one would reach into the pipeline this build must not touch), so
+ * the losing leg keeps running in the background until the invocation ends. What this buys is
+ * honesty: the route returns a JSON body naming the case that overran, rather than being killed
+ * with nothing written. FLAGGED in the build report.
+ */
+async function runCaseWithin(uid: string, save: boolean, experiment: string, budgetMs: number): Promise<CaseResult> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<CaseResult>((resolve) => {
+    timer = setTimeout(() => resolve({
+      uid, status: 'timeout',
+      detail: `case did not finish within its ${Math.round(budgetMs / 1000)} s budget (measured case ≈ ${Math.round(AA_MEASURED_CASE_MS / 1000)} s); the judge calls are not cancellable and continue in the background`,
+    }), budgetMs);
+  });
+  try {
+    return await Promise.race([runCase(uid, save, experiment), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -249,7 +331,7 @@ async function runCase(uid: string, save: boolean, experiment: string): Promise<
 // Sequential, resumable, 250 s deadline. `experiment` omitted or junk ⇒ the r1 baseline tag.
 export async function GET(req: NextRequest) {
   const denied = requireAdmin(req); if (denied) return denied;
-  const deadlineAt = Date.now() + DEADLINE_MS;
+  const deadlineAt = Date.now() + AA_DEADLINE_MS;
 
   const nRaw = parseInt(req.nextUrl.searchParams.get('n') || '50', 10);
   const n = Math.max(1, Math.min(100, Number.isFinite(nRaw) ? nRaw : 50));
@@ -271,8 +353,11 @@ export async function GET(req: NextRequest) {
   const results: CaseResult[] = [];
   let stopped: string | null = null;
   for (const item of queue) {
-    if (remainingBudgetMs(deadlineAt) < PER_CASE_RESERVE_MS) { stopped = 'deadline'; break; }
-    results.push(await runCase(item.uid, save, experiment));   // sequential — concurrency 1 (§4.2)
+    const left = remainingBudgetMs(deadlineAt);
+    // Never start a case that cannot finish (item 1). The reserve is now a FULL measured case.
+    if (!canStartCase(left)) { stopped = 'deadline'; break; }
+    // sequential — concurrency 1 (§4.2) — and bounded, so an overrun is recorded, not fatal.
+    results.push(await runCaseWithin(item.uid, save, experiment, caseBudgetMs(left)));
   }
 
   const comparisons = results.map((r) => r.comparison).filter((c): c is AaCaseComparison => !!c);
@@ -289,12 +374,18 @@ export async function GET(req: NextRequest) {
     stopped,
     stored: results.filter((r) => !!r.stored).length,
     statuses: results.reduce<Record<string, number>>((m, r) => { m[r.status] = (m[r.status] ?? 0) + 1; return m; }, {}),
+    // The budget the orchestrator is actually running under, reported so a timing change is
+    // visible in the response rather than only in the source.
+    budget: { maxDurationS: AA_ROUTE_MAX_DURATION_S, deadlineMs: AA_DEADLINE_MS, perCaseReserveMs: AA_PER_CASE_RESERVE_MS },
+    // ⚠️ summarizeAa is fed ONLY the cases that actually compared — a refused or failed case
+    // contributes no comparison, so it cannot flatter the repeatability headline.
     summary: summarizeAa(comparisons),
     cases: results.map((r) => ({
       uid: r.uid, status: r.status, detail: r.detail ?? null,
       nRecs: r.comparison?.nRecs ?? 0,
       identicalVerdictSet: r.comparison?.identicalVerdictSet ?? null,
       nFlips: r.comparison?.nFlips ?? 0,
+      attribution: r.attribution ?? null,
     })),
   });
 }

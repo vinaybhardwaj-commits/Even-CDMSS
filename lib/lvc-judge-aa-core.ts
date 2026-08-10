@@ -161,3 +161,119 @@ export function resolveAaExperiment(raw: string | null | undefined): string {
   const v = String(raw ?? '').trim();
   return AA_EXPERIMENT_RE.test(v) ? v : AA_EXPERIMENT_DEFAULT;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HARNESS TIMING + PER-CASE OUTCOME (HARNESS-AND-ATTRIBUTION kickoff, 10 Aug 2026)
+//
+// Pure, so the arithmetic and the classification are unit-tested without a route, a clock or a DB.
+// They live here rather than in the route because Next validates a route module's exports — an
+// extra export from app/api/**/route.ts fails `next build` — and the test glob only reaches lib/**.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The platform box. 300 was never a cap: app/api/opd-audit/worker/route.ts has run at 800 since
+ *  30 Jul 2026, which is the proof this value rests on rather than an assumption about the plan. */
+export const AA_ROUTE_MAX_DURATION_S = 800;
+
+/** MEASURED, 10 Aug 2026, after the guard fix: ~135 s per judge call, and one A/A case is two
+ *  calls plus the note fetch, the pass-0 assembly, two verdict reads and the store. */
+export const AA_MEASURED_JUDGE_CALL_MS = 135_000;
+export const AA_MEASURED_CASE_MS = 275_000;
+
+/** The route's own deadline, scaled from the old pair (250 s inside a 300 s box) so the SAME
+ *  fraction of the box stays in reserve for finishing and answering: 800 × 250/300 = 666.7 s,
+ *  rounded DOWN to 665 s so the headroom can only be larger than it was, never smaller. */
+export const AA_DEADLINE_MS = 665_000;
+
+/** Never start a case we cannot finish — a half-run case stores nothing and would be re-run from
+ *  scratch anyway. One full MEASURED case (275 s) plus 30 s, which covers the two trace reads and
+ *  the lab store on the slow side of what has been observed. The old value was 60 s, less than a
+ *  quarter of a case: it admitted cases that then died at the clock, which is the defect. */
+export const AA_PER_CASE_RESERVE_MS = 305_000;
+
+/** May another case start? Pure, so the arithmetic is testable against the measured case length. */
+export function canStartCase(remainingMs: number, reserveMs: number = AA_PER_CASE_RESERVE_MS): boolean {
+  return Number.isFinite(remainingMs) && remainingMs >= reserveMs;
+}
+
+/** The watchdog budget for a case that IS starting: everything left before the internal deadline.
+ *  A case can therefore never run past it, which is what makes a `timeout` status recordable
+ *  instead of the invocation being killed mid-case with nothing written. */
+export function caseBudgetMs(remainingMs: number): number {
+  return Math.max(0, Math.floor(remainingMs));
+}
+
+/**
+ * PER-CASE OUTCOME. `compared` must mean a comparison actually happened, which is why this is
+ * classified from ATTRIBUTION and not from the verdicts alone: a REFUSED judge run still returns a
+ * full verdict set (every rec insufficient_info) and still writes its trace event, so two refused
+ * runs would compare as perfectly identical and inflate r2's headline number. They are not a
+ * measurement of repeatability; they are a measurement of nothing.
+ */
+export type AaCaseStatus =
+  | 'compared'            // both runs served a verdict and the comparison ran
+  | 'no_orders'           // the note had nothing to judge (unchanged)
+  | 'no_recall'           // nothing recalled, so the judge was never called (unchanged)
+  | 'integrity_failure'   // a run was served by the wrong model, or refused for that reason
+  | 'transport_failure'   // a run's provider call failed, or no cloud model could be resolved
+  | 'parse_failure'       // a run's verdicts could not be read back — see the note below
+  | 'timeout'             // the case did not finish inside the budget it was started with
+  | 'error';              // anything else, with the message in `detail`
+
+/** Refusal reasons that mean THE WRONG MODEL ANSWERED (or that the two evidence sources fought). */
+export const AA_INTEGRITY_REASONS = new Set([
+  'transport_names_other_model', 'body_names_other_model', 'transport_body_conflict',
+  'transport_reports_no_cloud_response', 'served_model_disagrees', 'served_model_empty',
+]);
+/** Refusal reasons that mean NO MODEL ANSWERED AT ALL — a failed call, or nothing to call. */
+export const AA_TRANSPORT_REASONS = new Set([
+  'call_failed', 'no_gemini_model_resolved', 'force_ollama_requested',
+]);
+
+/** The per-run attribution this classifier needs. Structurally the compact record lib/lvc.ts
+ *  carries out of the judge (JudgeRunAttribution); declared locally to keep this module pure. */
+export interface AaRunAttribution {
+  attribution_state?: string | null;
+  attribution_reason?: string | null;
+  outcome?: string | null;
+  refuse_reason?: string | null;
+}
+
+/**
+ * Classify one case. Precedence is integrity → transport → parse → compared, because a run that
+ * was served by the wrong model is not also a parse problem, and calling it one would file a
+ * clinical-integrity event under a data-shape heading.
+ *
+ * ⚠️ WHAT `parse_failure` HONESTLY MEANS, AND WHAT IT CANNOT SEPARATE. The harness reads verdicts
+ * off the `lvc_judge_verdicts` trace event, so "the model returned something the parser could not
+ * use" and "no readable verdict event was found on the trace" arrive identically. ONE label covers
+ * both. The distinction would need the raw completion, which this route deliberately never stores.
+ */
+export function classifyAaCase(input: {
+  attrA?: AaRunAttribution | null;
+  attrB?: AaRunAttribution | null;
+  nVerdictsA: number;
+  nVerdictsB: number;
+}): { status: AaCaseStatus; detail: string | null } {
+  const runs: Array<[string, AaRunAttribution | null | undefined]> = [['A', input.attrA], ['B', input.attrB]];
+
+  for (const [name, a] of runs) {
+    if (!a) continue;
+    const reason = String(a.refuse_reason ?? a.attribution_reason ?? '');
+    if (a.attribution_state === 'wrong_model' || AA_INTEGRITY_REASONS.has(reason)) {
+      return { status: 'integrity_failure', detail: `run ${name}: ${reason || 'wrong_model'}` };
+    }
+  }
+  for (const [name, a] of runs) {
+    if (!a) continue;
+    if (a.outcome === 'refusal' && AA_TRANSPORT_REASONS.has(String(a.refuse_reason ?? ''))) {
+      return { status: 'transport_failure', detail: `run ${name}: ${a.refuse_reason}` };
+    }
+  }
+  if (input.nVerdictsA <= 0 || input.nVerdictsB <= 0) {
+    return {
+      status: 'parse_failure',
+      detail: `verdicts unreadable (A ${input.nVerdictsA}, B ${input.nVerdictsB}) — unparseable reply or no readable trace event; the harness cannot tell these apart`,
+    };
+  }
+  return { status: 'compared', detail: null };
+}
