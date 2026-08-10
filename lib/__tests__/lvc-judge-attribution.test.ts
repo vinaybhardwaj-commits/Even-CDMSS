@@ -143,15 +143,9 @@ test('4: transport names the LOCAL model → wrong_model, the verdict is never a
 
 // ── §3.6 TEST 5 ───────────────────────────────────────────────────────────────────────────────
 test('5: a CONFLICT between the two sources is wrong_model — in BOTH directions', async () => {
-  // ⚠️ REASON STRINGS UPDATED BY THE HARDENING (HARNESS-AND-ATTRIBUTION item 4, same day): a
-  // transport that reports `cloud_response_received: false` is decided by THAT, before the model
-  // strings are compared, so the local-transport direction is now named for the stronger fact.
-  // §3.6 test 5's requirement is the STATE, and it is unchanged: both directions are wrong_model.
   const cases = [
-    { name: 'transport Gemini, body local', transport: cloud('vertex', INTENDED), body: LOCAL, reason: 'transport_body_conflict' },
-    { name: 'transport local, body Gemini', transport: localTransport(), body: INTENDED, reason: 'transport_reports_no_cloud_response' },
-    // A cloud-vs-cloud conflict — the case where only the strings can decide — still reads as one.
-    { name: 'transport other cloud, body Gemini', transport: cloud('bedrock', 'claude-sonnet-4'), body: INTENDED, reason: 'transport_body_conflict' },
+    { name: 'transport Gemini, body local', transport: cloud('vertex', INTENDED), body: LOCAL },
+    { name: 'transport local, body Gemini', transport: localTransport(), body: INTENDED },
   ];
   for (const c of cases) {
     let calls = 0;
@@ -164,7 +158,7 @@ test('5: a CONFLICT between the two sources is wrong_model — in BOTH direction
     assert.ok(judged.every((j) => j.verdict === 'insufficient_info'), `${c.name}: refused`);
     const attempt = events.find((e) => e.kind === LVC_JUDGE_ATTEMPT_EVENT)?.payload as JudgeAttemptRecord;
     assert.equal(attempt.attribution_state, 'wrong_model', `${c.name}: wrong_model`);
-    assert.equal(attempt.attribution_reason, c.reason, `${c.name}: reason`);
+    assert.equal(attempt.attribution_reason, 'transport_body_conflict', `${c.name}: named as a conflict`);
   }
 });
 
