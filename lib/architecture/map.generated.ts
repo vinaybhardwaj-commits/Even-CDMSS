@@ -803,6 +803,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "retrieval-telemetry-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "retrieve",
     "plane": "unregistered"
   },
@@ -868,6 +872,10 @@ export const MAP_MODULES: MapModule[] = [
   },
   {
     "id": "trace",
+    "plane": "unregistered"
+  },
+  {
+    "id": "transport-attribution-core",
     "plane": "unregistered"
   },
   {
@@ -3317,6 +3325,16 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "llm",
+    "to": "transport-attribution-core",
+    "kind": "type"
+  },
+  {
+    "from": "llm",
+    "to": "transport-attribution-core",
+    "kind": "value"
+  },
+  {
     "from": "llm-cost",
     "to": "db",
     "kind": "value"
@@ -4462,6 +4480,16 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "trace",
+    "to": "transport-attribution-core",
+    "kind": "type"
+  },
+  {
+    "from": "trace",
+    "to": "transport-attribution-core",
+    "kind": "value"
+  },
+  {
     "from": "value-score-core",
     "to": "doc-audit-core",
     "kind": "type"
@@ -4548,6 +4576,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "HMAC_KEY_VERSION",
+    "value": "k1",
+    "file": "lib/retrieval-telemetry-core.ts",
+    "derived": false
+  },
+  {
     "constName": "HS_SETS_VERSION",
     "value": "hs-sets/0.2",
     "file": "lib/proms/catalog.ts",
@@ -4600,6 +4634,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "value": "`${IPD_ENGINE_VERSION}-mini`",
     "file": "lib/ipd-audit/store.ts",
     "derived": true
+  },
+  {
+    "constName": "MANIFEST_SCHEMA_VERSION",
+    "value": "1",
+    "file": "lib/retrieval-telemetry-core.ts",
+    "derived": false
   },
   {
     "constName": "MATCHER_VERSION",
@@ -4758,6 +4798,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "TELEMETRY_SCHEMA_VERSION",
+    "value": "1",
+    "file": "lib/retrieval-telemetry-core.ts",
+    "derived": false
+  },
+  {
     "constName": "TRIAL_PROMPT_VERSION",
     "value": "ml-label-trial/1.0",
     "file": "lib/ml-label-trial/core.ts",
@@ -4767,8 +4813,8 @@ export const VERSION_REGISTRY: VersionRow[] = [
 
 export const COVERAGE = {
   "registered": 16,
-  "unregistered": 22,
-  "total": 38,
+  "unregistered": 23,
+  "total": 39,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
@@ -4791,6 +4837,7 @@ export const COVERAGE = {
     "proms",
     "readmission",
     "reasoning",
+    "retrieval-telemetry-core",
     "right-care-ground-eval-core"
   ]
 } as const;

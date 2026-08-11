@@ -172,7 +172,15 @@ test('§5 superseded for OpenRouter ONLY by addendum F v2: retry exists, but ONL
   // V-a2 (4 Aug 2026): the two per-branch fallback sites became ONE terminal disposition after
   // the cloud ladder, so the count is 2 — the no-cloud default path + the ladder terminal. Still
   // exactly one fallback llm.chat call per failed request, and success is byte-identical.
-  assert.equal((LLM.match(/return llm\.chat\.completions\.create\(params, reqOpts\);/g) || []).length, 2, 'the default path + the ladder terminal, no more');
+  //
+  // ⚠️ SHAPE CHANGED, GUARD DID NOT (rerank telemetry §4.4, 11 Aug 2026). Both fallback returns are
+  // now wrapped in `attachTransportAttribution(...)` so the traceless rerank path can record which
+  // provider actually served the call. This test's subject is the COUNT — that llm.ts still holds
+  // exactly two fallback call sites and gained no third — and the count is asserted on the
+  // `llm.chat.completions.create(params, reqOpts)` call itself, which the wrapper does not change.
+  assert.equal((LLM.match(/llm\.chat\.completions\.create\(params, reqOpts\)/g) || []).length, 2, 'the default path + the ladder terminal, no more');
+  assert.equal((LLM.match(/return attachTransportAttribution\(await llm\.chat\.completions\.create\(params, reqOpts\), \{/g) || []).length, 2,
+    'and both are still RETURNED — the wrapper did not turn one into a fire-and-forget');
 });
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════

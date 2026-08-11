@@ -169,7 +169,20 @@ test('the Ollama last-leg fallback is untouched in both transports', () => {
   // llm.ts count is 2 (the no-cloud default path + the terminal return) and trace.ts has one
   // runOllamaFallback call. `noLocalFallback: true` (the two audit call sites) throws before
   // reaching it; every other caller still lands here exactly as before.
-  assert.equal((LLM.match(/return llm\.chat\.completions\.create\(params, reqOpts\);/g) || []).length, 2, 'chatWithFallback: the default path + the ladder terminal');
+  //
+  // ⚠️ SHAPE CHANGED, GUARD DID NOT (rerank telemetry §4.4, 11 Aug 2026). Both llm.ts fallback
+  // returns now wrap the SAME call in `attachTransportAttribution(...)`, which puts a
+  // non-enumerable evidence property on the returned completion so the traceless rerank path can
+  // report which provider actually served it. The assertion below therefore matches the new
+  // expression rather than the bare `return llm.chat…`. What it defends is unchanged and is now
+  // asserted MORE tightly than before: still exactly two sites, still `params`, still `reqOpts`,
+  // still awaited and returned. If a future change removes a fallback, this still fails.
+  assert.equal((LLM.match(/return attachTransportAttribution\(await llm\.chat\.completions\.create\(params, reqOpts\), \{/g) || []).length, 2,
+    'chatWithFallback: the default path + the ladder terminal, both still calling llm.chat with (params, reqOpts)');
+  assert.equal(/return llm\.chat\.completions\.create\(params, reqOpts\);/.test(LLM), false,
+    'the bare form is gone — if it comes back, one fallback lost its attribution');
+  // and the evidence names the LOCAL model, so a substituted call can never be read as the cloud one
+  assert.equal((LLM.match(/dispatched_provider: 'ollama'/g) || []).length, 2, 'both fallback returns record ollama');
   assert.ok(TRACE.includes("runOllamaFallback(lastTier, servedModel, lastErr, () => llm.chat.completions.create(params, reqOpts))"));
 });
 

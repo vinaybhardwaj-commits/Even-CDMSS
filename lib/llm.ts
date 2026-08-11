@@ -6,6 +6,8 @@ import {
 } from './provider-error-core';
 import { openrouterCreateWithRetry, createWithRetry } from './openrouter-retry';
 import { remainingBudgetMs } from './lab-batch-core';
+import { attachTransportAttribution, classifyAttemptOutcome } from './transport-attribution-core';
+import type { TransportAttempt } from './transport-attribution-core';
 
 // ─── D-1 (Right Care reliability §3, 31 Jul 2026): bound every provider call ────────────────────
 /** Per-call ceiling for a provider request. The SDK default is 10 minutes with 2 retries,
@@ -327,6 +329,12 @@ export async function chatWithFallback(params: any, geminiModel?: string, openro
   // D-1: an audit-class call site passes its own ceiling (per-request { timeout } — one client per
   // provider, the override visible here). Absent ⇒ undefined ⇒ the client-level bound applies.
   const reqOpts = timeoutMs ? { timeout: timeoutMs } : undefined;
+  // ── RERANK TELEMETRY §4.3/§4.4 (11 Aug 2026): INVOCATION-SCOPED ATTEMPT CAPTURE ───────────────
+  // A local array, not module state: §4.1 forbids mutable process-global state in a serverless
+  // process that serves concurrent requests, and two overlapping rerank batches would otherwise
+  // interleave their attempts into one sequence. Scoped by construction — it cannot outlive this
+  // call, and it needs no new parameter on a shared signature.
+  const attempts: TransportAttempt[] = [];
   // OpenRouter takes precedence when an explicit slug is given (the citation critic). Non-thinking by
   // default (bounded verdict); falls back to the local Ollama model in params.model on any error.
   // BRIDGE (30 Jul 2026): with GEMINI_VIA_OPENROUTER=1 a gemini model resolves to its OpenRouter
@@ -336,7 +344,12 @@ export async function chatWithFallback(params: any, geminiModel?: string, openro
   const useOpenRouter = Boolean(orModel) && openrouterConfigured();
   const useGemini = Boolean(geminiModel) && geminiConfigured();
   if (!useOpenRouter && !useGemini) {
-    return llm.chat.completions.create(params, reqOpts);
+    // No cloud was configured for this call — the local model is the INTENDED route here, not a
+    // substitution. Recorded so telemetry can tell "ran locally by design" from "fell back".
+    return attachTransportAttribution(await llm.chat.completions.create(params, reqOpts), {
+      dispatched_provider: 'ollama', dispatched_model: (params as { model?: string }).model ?? null,
+      cloud_response_received: false, attempts: [],
+    });
   }
 
   // ══ UNIT V-a2 (4 Aug 2026): THE CLOUD LADDER — one leg budget across both tiers ══════════════
@@ -390,11 +403,20 @@ export async function chatWithFallback(params: any, geminiModel?: string, openro
               // Unit D (3 Aug 2026): and the caller's TRY COUNT. An audit-class budget is one try
               // (PROVIDER_BUDGETS). Absent ⇒ OPENROUTER_MAX_TRIES (3), unchanged.
               maxTries,
-              onAttemptFailure: (f) => console.error(
-                `[provider-retry] openrouter ${slug} attempt ${f.attempt}/${f.maxTries} ${f.kind}${f.status != null ? ` ${f.status}` : ''} — ${f.willRetry ? 'retrying' : 'giving up'}: ${f.message}`),
+              onAttemptFailure: (f) => {
+                // ADDITIVE. `report()` in createWithRetry already wraps this callback in a
+                // try/catch ("instrumentation is never fatal"), so capture cannot change control
+                // flow; the console line below is byte-identical to before.
+                attempts.push({ tier: 'openrouter', attempt: f.attempt, outcome: classifyAttemptOutcome(f.kind, f.status), status: f.status });
+                console.error(
+                  `[provider-retry] openrouter ${slug} attempt ${f.attempt}/${f.maxTries} ${f.kind}${f.status != null ? ` ${f.status}` : ''} — ${f.willRetry ? 'retrying' : 'giving up'}: ${f.message}`);
+              },
             });
         endProviderCall('openrouter');
-        return res;
+        attempts.push({ tier: 'openrouter', attempt: attempts.filter((a) => a.tier === 'openrouter').length + 1, outcome: 'success', status: 200 });
+        return attachTransportAttribution(res, {
+          dispatched_provider: 'openrouter', dispatched_model: slug, cloud_response_received: true, attempts: [...attempts],
+        });
       } catch (e) {
         // §4.1/§4.2/§4.3 — snapshot in-flight BEFORE decrementing (the failing call counts), then
         // the FULL error (4000-char cap, not 200), loud (console.error, stable prefix), and a
@@ -451,12 +473,20 @@ export async function chatWithFallback(params: any, geminiModel?: string, openro
           // V-a2: the caller's ceiling clamped to the leg's remainder (full budget when tier 1).
           timeoutMs: tierCeilingMs(timeoutMs, deadlineAt),
           maxTries,
-          onAttemptFailure: (f) => console.error(
-            `[provider-retry] vertex ${geminiModel} attempt ${f.attempt}/${f.maxTries} ${f.kind}${f.status != null ? ` ${f.status}` : ''} — ${f.willRetry ? 'retrying' : 'giving up'}: ${f.message}`),
+          onAttemptFailure: (f) => {
+            // ADDITIVE — see the OpenRouter tier above. Same classifier on both tiers so a 429
+            // never counts as `http_other` on one and `http_429` on the other.
+            attempts.push({ tier: 'vertex', attempt: f.attempt, outcome: classifyAttemptOutcome(f.kind, f.status), status: f.status });
+            console.error(
+              `[provider-retry] vertex ${geminiModel} attempt ${f.attempt}/${f.maxTries} ${f.kind}${f.status != null ? ` ${f.status}` : ''} — ${f.willRetry ? 'retrying' : 'giving up'}: ${f.message}`);
+          },
         },
       );
       endProviderCall('gemini');
-      return res;
+      attempts.push({ tier: 'vertex', attempt: attempts.filter((a) => a.tier === 'vertex').length + 1, outcome: 'success', status: 200 });
+      return attachTransportAttribution(res, {
+        dispatched_provider: 'vertex', dispatched_model: geminiModel as string, cloud_response_received: true, attempts: [...attempts],
+      });
     } catch (e) {
       // §4.1/§4.2/§4.3 (403 diagnosis): the FULL Vertex error body — error.status is what
       // distinguishes an IAM denial from a quota denial from a disabled API. Snapshot in-flight
@@ -485,7 +515,13 @@ export async function chatWithFallback(params: any, geminiModel?: string, openro
   // from OpenRouter never launders into the local model. The Vertex tier keeps its historical
   // any-error → Ollama, so a utility Gemini call degrades exactly as it always has.
   if (lastTier === 'openrouter' && isProviderResponseError(lastErr)) throw lastErr;
-  return llm.chat.completions.create(params, reqOpts);
+  // THE SUBSTITUTION THE THROTTLE CENSUS COULD NOT SEE. Every cloud tier failed and the local model
+  // answered instead: the 21 rerank/expand calls of 10-11 Aug that were scored by llama3.1:8b and
+  // left no durable trace of it. `attempts` carries the full ladder history that led here.
+  return attachTransportAttribution(await llm.chat.completions.create(params, reqOpts), {
+    dispatched_provider: 'ollama', dispatched_model: (params as { model?: string }).model ?? null,
+    cloud_response_received: false, attempts: [...attempts],
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

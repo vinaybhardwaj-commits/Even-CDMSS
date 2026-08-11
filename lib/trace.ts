@@ -1,5 +1,7 @@
 import { randomUUID } from 'crypto';
 import { sql } from './db';
+import { attachTransportAttribution } from './transport-attribution-core';
+import type { CdmssTransportAttribution } from './transport-attribution-core';
 import { llm, geminiConfigured, getGeminiChatClient, vertexModelName, chatWithFallback, openrouterConfigured, openrouterChatClient, vertexRegion, openrouterGeminiSlug, openrouterSlugForGemini, buildOpenrouterParams, cloudLadder, tierCeilingMs, ladderSkipError } from './llm';
 import { remainingBudgetMs } from './lab-batch-core';
 import { vertexSaEmail } from './gcp-auth';
@@ -226,39 +228,27 @@ export async function runOllamaFallback<T>(
 // does not receive it (attribution is best-effort; it must never cost a call).
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** The property name carrying dispatch evidence on a returned completion. Namespaced so it can
- *  never collide with an OpenAI/Bedrock/OpenRouter SDK field. */
-export const TRANSPORT_ATTRIBUTION_FIELD = 'cdmss_transport_attribution';
-
-export type CdmssTransportAttribution = {
-  /** Which branch of tracedChat dispatched the request. 'vertex' is the direct Vertex Gemini
-   *  branch — the trace's own provider label for it is 'gemini'; this field uses the PRD's name. */
-  dispatched_provider: 'vertex' | 'openrouter' | 'ollama' | 'bedrock';
-  /** The model slug the transport supplied to that provider (publisher prefix as sent). */
-  dispatched_model: string | null;
-  /** True when a cloud provider produced this result; false for the local model. */
-  cloud_response_received: boolean;
-};
-
-/** Attach dispatch evidence to a completion and return the SAME object. Non-enumerable, so no
- *  existing consumer of the completion can observe it. Never throws. */
-export function attachTransportAttribution<T>(result: T, attribution: CdmssTransportAttribution): T {
-  if (!result || (typeof result !== 'object' && typeof result !== 'function')) return result;
-  try {
-    Object.defineProperty(result, TRANSPORT_ATTRIBUTION_FIELD, {
-      value: attribution, enumerable: false, configurable: true, writable: true,
-    });
-  } catch { /* frozen/sealed provider object — evidence is best-effort, never a thrown call */ }
-  return result;
-}
-
-/** Read dispatch evidence back off a completion. `undefined` means the transport left none —
- *  which is a real state (an untraced call, a stream wrapper), not a failure. */
-export function readTransportAttribution(result: unknown): CdmssTransportAttribution | undefined {
-  if (!result || (typeof result !== 'object' && typeof result !== 'function')) return undefined;
-  const v = (result as Record<string, unknown>)[TRANSPORT_ATTRIBUTION_FIELD];
-  return v && typeof v === 'object' ? (v as CdmssTransportAttribution) : undefined;
-}
+// ── Dispatch evidence (GUARD-FIX PRD v3.0 D-8, 10 Aug 2026) ─────────────────────────────────────
+// MOVED, NOT CHANGED (rerank telemetry §4.4, 11 Aug 2026). These four names were declared here
+// when only the TRACED transport needed them. The traceless transport (chatWithFallback, in
+// lib/llm.ts) now needs the same primitive, and lib/trace.ts imports lib/llm.ts — so the
+// definitions moved DOWN to lib/transport-attribution-core.ts, which both can depend on.
+//
+// EVERY NAME IS RE-EXPORTED AT ITS ORIGINAL PATH. lib/lvc.ts and
+// lib/__tests__/lvc-judge-attribution.test.ts both import these from './trace' / '../trace', and
+// neither file may be touched by this build (the test is one of the four held uncommitted on
+// main). Behaviour is byte-identical: this is a re-export, not a re-implementation.
+export {
+  TRANSPORT_ATTRIBUTION_FIELD,
+  attachTransportAttribution,
+  readTransportAttribution,
+  classifyAttemptOutcome,
+} from './transport-attribution-core';
+export type {
+  CdmssTransportAttribution,
+  TransportAttempt,
+  TransportAttemptOutcome,
+} from './transport-attribution-core';
 
 export async function tracedChat(
   traceId: string,
