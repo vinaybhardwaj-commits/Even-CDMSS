@@ -6,7 +6,10 @@ import {
 } from './provider-error-core';
 import { openrouterCreateWithRetry, createWithRetry } from './openrouter-retry';
 import { remainingBudgetMs } from './lab-batch-core';
-import { attachTransportAttribution, classifyAttemptOutcome } from './transport-attribution-core';
+import {
+  attachTransportAttribution, classifyAttemptOutcome,
+  attachTransportFailureAttribution, classifyLocalAttempt, localAttemptSuccess,
+} from './transport-attribution-core';
 import type { TransportAttempt } from './transport-attribution-core';
 
 // ─── D-1 (Right Care reliability §3, 31 Jul 2026): bound every provider call ────────────────────
@@ -346,10 +349,26 @@ export async function chatWithFallback(params: any, geminiModel?: string, openro
   if (!useOpenRouter && !useGemini) {
     // No cloud was configured for this call — the local model is the INTENDED route here, not a
     // substitution. Recorded so telemetry can tell "ran locally by design" from "fell back".
-    return attachTransportAttribution(await llm.chat.completions.create(params, reqOpts), {
-      dispatched_provider: 'ollama', dispatched_model: (params as { model?: string }).model ?? null,
-      cloud_response_received: false, attempts: [],
-    });
+    //
+    // ⚠️ D14 (on-path, 11 Aug 2026): this arm reported `attempts: []` WHILE MAKING A REAL REQUEST.
+    // An empty attempt list reads as "no provider was attempted", which is false here and is
+    // exactly the shape that licenses a `not_served` claim downstream. The local call is an
+    // attempt and is now recorded as one, success or failure.
+    try {
+      return attachTransportAttribution(await llm.chat.completions.create(params, reqOpts), {
+        dispatched_provider: 'ollama', dispatched_model: (params as { model?: string }).model ?? null,
+        cloud_response_received: false, attempts: [...attempts, localAttemptSuccess()],
+      });
+    } catch (e) {
+      const { outcome, status } = classifyLocalAttempt(e);
+      attempts.push({ tier: 'ollama', attempt: 1, outcome, status });
+      // The SAME error object, re-thrown unchanged. The only difference is a non-enumerable
+      // evidence property — which errors throw, and when, is untouched (§4.4 conditions 2 and 3).
+      throw attachTransportFailureAttribution(e, {
+        outcome: 'failed', servedProvider: null, servedModel: null,
+        attempts: [...attempts], terminalPhase: 'intended_local_failed',
+      });
+    }
   }
 
   // ══ UNIT V-a2 (4 Aug 2026): THE CLOUD LADDER — one leg budget across both tiers ══════════════
@@ -508,6 +527,25 @@ export async function chatWithFallback(params: any, geminiModel?: string, openro
   }
 
   // ── Terminal disposition: every cloud tier failed (or the second was skipped, budget spent) ──
+  //
+  // ⚠️ D14 (on-path, 11 Aug 2026): the ladder is over and `lastErr` is what ended it, so the
+  // failure evidence is attached HERE — once, before the three dispositions below rather than at
+  // each of them. Two consequences, both deliberate:
+  //   · the two `throw lastErr;` statements stay BYTE-IDENTICAL, so the committed guards that pin
+  //     them (transport-attribution-traceless.test.ts) still assert the terminal behaviour did not
+  //     move, instead of being rewritten to accommodate this build;
+  //   · the phase is chosen from the SAME two conditions those throws test, so the record names
+  //     which disposition ran. A test pins the selector against the throws so they cannot drift.
+  // `attachTransportFailureAttribution` returns its argument and never throws, so this statement
+  // cannot change which error is thrown, or whether one is.
+  attachTransportFailureAttribution(lastErr, {
+    outcome: 'failed', servedProvider: null, servedModel: null, attempts: [...attempts],
+    terminalPhase: noLocalFallback
+      ? 'cloud_ladder_exhausted_no_local_fallback'
+      : lastTier === 'openrouter' && isProviderResponseError(lastErr)
+        ? 'openrouter_bad_response_not_laundered'
+        : 'cloud_ladder_exhausted_local_substitution',
+  });
   // V-a2: `noLocalFallback` makes the failure a THROW — the audit paths' own machinery (OPD
   // llm_leg_failed, the IPD failure ledger) is the handler, never a silent local grade.
   if (noLocalFallback) throw lastErr;
@@ -517,11 +555,24 @@ export async function chatWithFallback(params: any, geminiModel?: string, openro
   if (lastTier === 'openrouter' && isProviderResponseError(lastErr)) throw lastErr;
   // THE SUBSTITUTION THE THROTTLE CENSUS COULD NOT SEE. Every cloud tier failed and the local model
   // answered instead: the 21 rerank/expand calls of 10-11 Aug that were scored by llama3.1:8b and
-  // left no durable trace of it. `attempts` carries the full ladder history that led here.
-  return attachTransportAttribution(await llm.chat.completions.create(params, reqOpts), {
-    dispatched_provider: 'ollama', dispatched_model: (params as { model?: string }).model ?? null,
-    cloud_response_received: false, attempts: [...attempts],
-  });
+  // left no durable trace of it. `attempts` carries the full ladder history that led here, and
+  // (D14) the local call itself is now the last entry in it rather than an unrecorded gap.
+  try {
+    return attachTransportAttribution(await llm.chat.completions.create(params, reqOpts), {
+      dispatched_provider: 'ollama', dispatched_model: (params as { model?: string }).model ?? null,
+      cloud_response_received: false, attempts: [...attempts, localAttemptSuccess()],
+    });
+  } catch (e) {
+    // Every route failed INCLUDING the local one. Before D14 this threw a bare SDK error carrying
+    // no evidence that a whole cloud ladder had been tried first — the worst case for a census,
+    // because it is indistinguishable from a call that was never made.
+    const { outcome, status } = classifyLocalAttempt(e);
+    attempts.push({ tier: 'ollama', attempt: 1, outcome, status });
+    throw attachTransportFailureAttribution(e, {
+      outcome: 'failed', servedProvider: null, servedModel: null,
+      attempts: [...attempts], terminalPhase: 'local_substitution_failed',
+    });
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

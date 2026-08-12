@@ -803,7 +803,27 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "retrieval-capture",
+    "plane": "unregistered"
+  },
+  {
+    "id": "retrieval-invocation-store",
+    "plane": "unregistered"
+  },
+  {
+    "id": "retrieval-settlement",
+    "plane": "unregistered"
+  },
+  {
     "id": "retrieval-telemetry-core",
+    "plane": "unregistered"
+  },
+  {
+    "id": "retrieval-telemetry-failure-store",
+    "plane": "unregistered"
+  },
+  {
+    "id": "retrieval-telemetry-store",
     "plane": "unregistered"
   },
   {
@@ -1876,6 +1896,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/api",
+    "to": "retrieval-telemetry-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
     "to": "retrieve",
     "kind": "value"
   },
@@ -2941,6 +2966,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "expand",
+    "to": "retrieval-capture",
+    "kind": "value"
+  },
+  {
+    "from": "expand",
     "to": "trace",
     "kind": "value"
   },
@@ -3366,6 +3396,36 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "lvc",
+    "to": "retrieval-capture",
+    "kind": "value"
+  },
+  {
+    "from": "lvc",
+    "to": "retrieval-invocation-store",
+    "kind": "value"
+  },
+  {
+    "from": "lvc",
+    "to": "retrieval-settlement",
+    "kind": "value"
+  },
+  {
+    "from": "lvc",
+    "to": "retrieval-telemetry-core",
+    "kind": "type"
+  },
+  {
+    "from": "lvc",
+    "to": "retrieval-telemetry-core",
+    "kind": "value"
+  },
+  {
+    "from": "lvc",
+    "to": "retrieval-telemetry-store",
+    "kind": "value"
+  },
+  {
+    "from": "lvc",
     "to": "retrieve",
     "kind": "value"
   },
@@ -3681,6 +3741,16 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "multi-query",
+    "to": "retrieval-capture",
+    "kind": "value"
+  },
+  {
+    "from": "multi-query",
+    "to": "retrieval-telemetry-core",
+    "kind": "type"
+  },
+  {
+    "from": "multi-query",
     "to": "retrieve",
     "kind": "value"
   },
@@ -3911,6 +3981,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "opd-note-audit",
+    "to": "backfill-runs",
+    "kind": "value"
+  },
+  {
+    "from": "opd-note-audit",
     "to": "cdsco-banned-fdc",
     "kind": "value"
   },
@@ -4013,6 +4088,31 @@ export const MAP_EDGES: MapEdge[] = [
     "from": "opd-note-audit",
     "to": "provenance-tier-core",
     "kind": "type"
+  },
+  {
+    "from": "opd-note-audit",
+    "to": "retrieval-capture",
+    "kind": "value"
+  },
+  {
+    "from": "opd-note-audit",
+    "to": "retrieval-invocation-store",
+    "kind": "value"
+  },
+  {
+    "from": "opd-note-audit",
+    "to": "retrieval-telemetry-core",
+    "kind": "type"
+  },
+  {
+    "from": "opd-note-audit",
+    "to": "retrieval-telemetry-core",
+    "kind": "value"
+  },
+  {
+    "from": "opd-note-audit",
+    "to": "retrieval-telemetry-store",
+    "kind": "value"
   },
   {
     "from": "opd-note-audit",
@@ -4326,7 +4426,97 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "rerank",
+    "to": "retrieval-capture",
+    "kind": "value"
+  },
+  {
+    "from": "rerank",
+    "to": "retrieval-telemetry-core",
+    "kind": "type"
+  },
+  {
+    "from": "rerank",
     "to": "trace",
+    "kind": "value"
+  },
+  {
+    "from": "retrieval-capture",
+    "to": "retrieval-telemetry-core",
+    "kind": "value"
+  },
+  {
+    "from": "retrieval-capture",
+    "to": "transport-attribution-core",
+    "kind": "value"
+  },
+  {
+    "from": "retrieval-invocation-store",
+    "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "retrieval-invocation-store",
+    "to": "retrieval-capture",
+    "kind": "value"
+  },
+  {
+    "from": "retrieval-invocation-store",
+    "to": "retrieval-telemetry-core",
+    "kind": "type"
+  },
+  {
+    "from": "retrieval-invocation-store",
+    "to": "retrieval-telemetry-failure-store",
+    "kind": "value"
+  },
+  {
+    "from": "retrieval-settlement",
+    "to": "retrieval-telemetry-core",
+    "kind": "value"
+  },
+  {
+    "from": "retrieval-settlement",
+    "to": "retrieval-telemetry-store",
+    "kind": "value"
+  },
+  {
+    "from": "retrieval-telemetry-failure-store",
+    "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "retrieval-telemetry-failure-store",
+    "to": "retrieval-telemetry-core",
+    "kind": "type"
+  },
+  {
+    "from": "retrieval-telemetry-failure-store",
+    "to": "retrieval-telemetry-core",
+    "kind": "value"
+  },
+  {
+    "from": "retrieval-telemetry-store",
+    "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "retrieval-telemetry-store",
+    "to": "retrieval-capture",
+    "kind": "value"
+  },
+  {
+    "from": "retrieval-telemetry-store",
+    "to": "retrieval-invocation-store",
+    "kind": "value"
+  },
+  {
+    "from": "retrieval-telemetry-store",
+    "to": "retrieval-telemetry-core",
+    "kind": "value"
+  },
+  {
+    "from": "retrieval-telemetry-store",
+    "to": "retrieval-telemetry-failure-store",
     "kind": "value"
   },
   {
@@ -4363,6 +4553,11 @@ export const MAP_EDGES: MapEdge[] = [
     "from": "retrieve",
     "to": "rerank",
     "kind": "value"
+  },
+  {
+    "from": "retrieve",
+    "to": "retrieval-capture",
+    "kind": "type"
   },
   {
     "from": "retrieve",
@@ -4637,7 +4832,7 @@ export const VERSION_REGISTRY: VersionRow[] = [
   },
   {
     "constName": "MANIFEST_SCHEMA_VERSION",
-    "value": "1",
+    "value": "2",
     "file": "lib/retrieval-telemetry-core.ts",
     "derived": false
   },
@@ -4799,7 +4994,7 @@ export const VERSION_REGISTRY: VersionRow[] = [
   },
   {
     "constName": "TELEMETRY_SCHEMA_VERSION",
-    "value": "1",
+    "value": "2",
     "file": "lib/retrieval-telemetry-core.ts",
     "derived": false
   },

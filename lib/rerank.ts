@@ -16,6 +16,11 @@
  */
 import { geminiUtilityModel } from './llm';
 import { governedChat, recordRerankCost } from './trace';
+import {
+  evidenceFromCompletion, evidenceFromError,
+  type TelemetryCapture, type CapturedBatch, type TransportEvidence,
+} from './retrieval-capture';
+import type { BatchOutcome } from './retrieval-telemetry-core';
 
 /**
  * ⚠️ NORMALIZED READ — LOAD-BEARING (rerank-flip-prep, 31 Jul 2026). This was a bare
@@ -136,14 +141,38 @@ async function cohereRelevanceScores(query: string, documents: string[], fetchIm
   return { scores, usageCost };
 }
 
-/** `recordCost` (injectable for tests) routes the call's usage.cost to the cost sink (D3). */
+/** `recordCost` (injectable for tests) routes the call's usage.cost to the cost sink (D3).
+ *  `capture` is TRAILING and OPTIONAL (D4) — it comes after both existing injected dependencies,
+ *  because position 3 is `fetchImpl` and a capture passed there would be called as `fetch`. */
 export async function rerankCohere<T extends RerankCandidate>(
   query: string,
   candidates: T[],
   fetchImpl: typeof fetch = fetch,
   recordCost: (costUsd: number | null | undefined, model?: string) => Promise<void> = recordRerankCost,
+  capture?: TelemetryCapture,
 ): Promise<RerankResult<T>[]> {
   const { scores, usageCost } = await cohereRelevanceScores(query, candidates.map((c) => c.text || ''), fetchImpl);
+  if (capture) {
+    // ONE request, ONE batch, count 1 (D16). Cohere is a raw fetch and never reaches
+    // chatWithFallback, so there is no transport attribution to read: a returned score array IS
+    // the evidence that it served, and the class is recorded from that rather than guessed.
+    capture.servedBackend = 'cohere';
+    capture.expectedBatchCount = 1;
+    const finite = scores.filter((s) => Number.isFinite(s)).length;
+    capture.batches.push({
+      index: 0, start: 0, end: candidates.length,
+      evidence: { servedProvider: 'openrouter', servedModel: RERANK_API_MODEL, attempts: null, provenNotServed: false },
+      outcome: finite === candidates.length ? 'success' : 'nonnumeric_score',
+      expectedScoreKeys: candidates.length,
+      finiteScoreKeys: finite,
+      missingScoreKeys: 0,
+      nonnumericScoreKeys: candidates.length - finite,
+      intendedProvider: 'openrouter', intendedModel: RERANK_API_MODEL,
+      // The rerank API reports spend as usage.cost, not tokens. Missing token data stays NULL —
+      // §4.6 forbids turning it into zero.
+      promptTokens: null, completionTokens: null,
+    });
+  }
   const paired = candidates.map((c, i) => ({
     ...c,
     rerank_score: Number.isFinite(scores[i]) ? scores[i] : 0,   // relevance_score used directly — NO sigmoid
@@ -190,8 +219,8 @@ export async function assertRerankBackendHealthy(
 /** Injectable collaborators — for tests ONLY. Production/real callers pass nothing. */
 export type RerankDeps = {
   checkHealthy?: (backend: 'cohere', opts?: { fetchImpl?: typeof fetch; now?: () => number }) => Promise<void>;
-  cohereFn?: <U extends RerankCandidate>(q: string, c: U[]) => Promise<RerankResult<U>[]>;
-  judgeFn?: <U extends RerankCandidate>(q: string, c: U[]) => Promise<RerankResult<U>[]>;
+  cohereFn?: <U extends RerankCandidate>(q: string, c: U[], capture?: TelemetryCapture) => Promise<RerankResult<U>[]>;
+  judgeFn?: <U extends RerankCandidate>(q: string, c: U[], capture?: TelemetryCapture) => Promise<RerankResult<U>[]>;
   /** TEST-ONLY: simulate the RERANK_BACKEND env default (the module const `BACKEND`) so the resilient
    *  env-default-cohere path can be exercised without a real env flip. Production passes nothing. */
   envBackend?: 'judge' | 'cohere';
@@ -215,18 +244,68 @@ export async function rerank<T extends RerankCandidate>(
   candidates: T[],
   backend?: 'judge' | 'cohere',
   deps: RerankDeps = {},
+  capture?: TelemetryCapture,
 ): Promise<RerankResult<T>[]> {
   if (candidates.length === 0) return [];
-  // Single candidate — no reorder needed
+  // Single candidate — no reorder needed.
+  // ⚠️ The capture is deliberately NOT stamped on either guard above (D17's edge cases): reranking
+  // did not happen, so intended backend and model stay 'none', expected and recorded stay 0, and
+  // `batches` stays empty. Stamping a backend here would claim a decision that was never made.
   if (candidates.length === 1) {
     return [{ ...candidates[0], rerank_score: 1.0, rerank_backend: 'none' }];
   }
 
   const explicit = backend !== undefined;   // an explicit per-call override was passed
   const chosen = resolveRerankBackend(backend, deps.envBackend ?? BACKEND);
-  const cohereFn = deps.cohereFn ?? rerankCohere;
+  const cohereFn = deps.cohereFn ?? (<U extends RerankCandidate>(
+    q: string, c: U[], cap?: TelemetryCapture,
+  ) => rerankCohere(q, c, undefined, undefined, cap));
   const judgeFn = deps.judgeFn ?? rerankJudge;
   const checkHealthy = deps.checkHealthy ?? assertRerankBackendHealthy;
+
+  if (capture) {
+    // INTENDED, not served. What actually runs is stamped by whichever backend runs (A10).
+    capture.intendedBackend = chosen;
+    capture.intendedModel = chosen === 'cohere' ? RERANK_API_MODEL : JUDGE_MODEL;
+  }
+
+  /**
+   * Synthesise one terminal-failure record per PLANNED boundary (D16). `rerank_soft_failed`
+   * describes degraded RANKING; it never waives §7's batch reconciliation, so expected must still
+   * equal recorded and a soft failure has to account for the requests it planned to make.
+   */
+  const recordSoftFailure = (plannedBackend: 'judge' | 'cohere') => {
+    if (!capture) return;
+    capture.rerankSoftFailed = true;
+    const boundaries = plannedBackend === 'cohere'
+      ? [{ start: 0, end: candidates.length }]
+      : judgeBatchBoundaries(candidates.length);
+    capture.servedBackend = plannedBackend;
+    capture.expectedBatchCount = boundaries.length;
+    // D16 maps this row to `not_served`, so the evidence says so EXPLICITLY. Leaving it null would
+    // map to `unattributed`, which is the other fact and means the opposite thing.
+    //
+    // ⚠️ FLAGGED, NOT DECIDED (see the build report). D16's mapping table assigns `not_served`
+    // here, while the same decision's proof rule says `not_served` requires failure attribution as
+    // proof. Cohere is a raw fetch and never reaches chatWithFallback, so it can never carry that
+    // attribution; and every DECLARED Cohere failure throws a typed RerankBackendError, which
+    // propagates or downgrades rather than reaching this branch. The only path that arrives here is
+    // a GENERIC throw, where non-delivery is not strictly proven. The table's specific instruction
+    // is implemented as written and the tension is reported rather than resolved by this build.
+    const notServed: TransportEvidence = {
+      servedProvider: null, servedModel: null, attempts: null, provenNotServed: true,
+    };
+    capture.batches = boundaries.map((b, i): CapturedBatch => ({
+      index: i, start: b.start, end: b.end,
+      evidence: notServed,
+      outcome: 'terminal_failure' as BatchOutcome,
+      expectedScoreKeys: b.end - b.start,
+      finiteScoreKeys: 0, missingScoreKeys: b.end - b.start, nonnumericScoreKeys: 0,
+      intendedProvider: plannedBackend === 'cohere' ? 'openrouter' : 'vertex',
+      intendedModel: plannedBackend === 'cohere' ? RERANK_API_MODEL : JUDGE_MODEL,
+      promptTokens: null, completionTokens: null,
+    }));
+  };
 
   const inputOrder = (): RerankResult<T>[] => candidates.map((c, i) => ({
     ...c,
@@ -239,18 +318,29 @@ export async function rerank<T extends RerankCandidate>(
   if (chosen === 'cohere' && !explicit) {
     try {
       await checkHealthy('cohere');                       // memoized probe (D6); throws typed on unhealth
-      return await cohereFn(query, candidates);
+      return await cohereFn(query, candidates, capture);
     } catch (e) {
       if (e instanceof RerankBackendError) {
         console.warn('[rerank] env-default cohere unavailable → falling back to judge:', (e as Error).message);
+        // ⚠️ THE CASE THAT WOULD HAVE FAILED THE GATE SILENTLY (A10/D16). Intended Cohere means one
+        // expected batch; the judge then serves N. Under §7's never-waived reconciliation every row
+        // on this path would be `persisted_partial` BY CONSTRUCTION. The expected count is
+        // therefore derived from the backend that SERVES — the judge stamps it below — and the
+        // downgrade is recorded as its own fact rather than hidden inside the counts.
+        if (capture) capture.rerankBackendDowngraded = true;
         try {
-          return await judgeFn(query, candidates);
+          return await judgeFn(query, candidates, capture);
         } catch (e2) {
+          // Unreachable in production: rerankJudge's only failure point is inside a per-batch
+          // try/catch, and the post-loop map and sort cannot throw. Kept, and instrumented, because
+          // an injected judgeFn in a test can throw and the record must still reconcile.
           console.warn('[rerank] judge fallback failed → input order:', (e2 as Error).message);
+          recordSoftFailure('judge');
           return inputOrder();
         }
       }
       console.warn('[rerank] backend failed, returning input order', (e as Error).message);   // generic soft-fall
+      recordSoftFailure('cohere');
       return inputOrder();
     }
   }
@@ -259,12 +349,13 @@ export async function rerank<T extends RerankCandidate>(
   try {
     if (chosen === 'cohere') {
       await checkHealthy('cohere');                       // explicit cohere is STRICT — probe first
-      return await cohereFn(query, candidates);
+      return await cohereFn(query, candidates, capture);
     }
-    return await judgeFn(query, candidates);
+    return await judgeFn(query, candidates, capture);
   } catch (e) {
     if (e instanceof RerankBackendError) throw e;   // explicit cohere typed error → propagate (never fall back)
     console.warn('[rerank] backend failed, returning input order', (e as Error).message);
+    recordSoftFailure(chosen);
     return inputOrder();
   }
 }
@@ -285,19 +376,55 @@ Return ONLY a JSON object with integer scores keyed by candidate INDEX (0-based,
 
 No prose, no explanation, no markdown fences.`;
 
-async function rerankJudge<T extends RerankCandidate>(
+/**
+ * The batch boundaries a judge run will use. Extracted so the soft-failure synthesis above can
+ * account for the requests it PLANNED without reaching for JUDGE_BATCH at a second site, and so
+ * the constant itself stays module-private (D16 forbids exporting it).
+ */
+/**
+ * A batch that produced no scores: `timeout` when the TERMINAL attempt says so, `terminal_failure`
+ * when the attempts were exhausted for any other reason (D15's precedence).
+ *
+ * Timeout is a distinct outcome, not a synonym: a batch that timed out and a batch that was refused
+ * look identical in the scores array and want opposite remediation — one is a capacity question,
+ * the other is not, and merging them is how a throttling problem hides as a reliability problem.
+ */
+function terminalOutcomeFor(evidence: TransportEvidence | null): BatchOutcome {
+  const attempts = evidence?.attempts;
+  if (attempts && attempts.length > 0 && attempts[attempts.length - 1].outcome === 'timeout') return 'timeout';
+  return 'terminal_failure';
+}
+
+function judgeBatchBoundaries(n: number): Array<{ start: number; end: number }> {
+  const out: Array<{ start: number; end: number }> = [];
+  for (let i = 0; i < n; i += JUDGE_BATCH) out.push({ start: i, end: Math.min(i + JUDGE_BATCH, n) });
+  return out;
+}
+
+/**
+ * ⚠️ NOW EXPORTED (D4). It was module-private, which made the judge path — the production path —
+ * the one leg of reranking with no direct test seam. The export adds no caller and changes no
+ * behaviour; `RerankDeps.judgeFn` already widened to match its signature.
+ */
+export async function rerankJudge<T extends RerankCandidate>(
   query: string,
   candidates: T[],
+  capture?: TelemetryCapture,
 ): Promise<RerankResult<T>[]> {
   const scores: number[] = new Array(candidates.length).fill(0);
 
   // Run JUDGE_BATCH-sized batches in PARALLEL so wall-clock stays bounded
-  const batches: { start: number; end: number }[] = [];
-  for (let i = 0; i < candidates.length; i += JUDGE_BATCH) {
-    batches.push({ start: i, end: Math.min(i + JUDGE_BATCH, candidates.length) });
+  const batches = judgeBatchBoundaries(candidates.length);
+
+  if (capture) {
+    // Expected is derived from the backend that IS SERVING — this one (A10). On the Cohere
+    // fall-through this overwrites the intended count of 1 with the judge's real N, which is the
+    // whole point: otherwise every downgraded row is partial by construction.
+    capture.servedBackend = 'judge';
+    capture.expectedBatchCount = batches.length;
   }
 
-  await Promise.all(batches.map(async ({ start, end }) => {
+  await Promise.all(batches.map(async ({ start, end }, batchIndex) => {
     const slice = candidates.slice(start, end);
     const passagesText = slice.map((c, idx) => {
       const snip = (c.text || '').slice(0, MAX_SNIPPET_CHARS).replace(/\s+/g, ' ').trim();
@@ -305,6 +432,18 @@ async function rerankJudge<T extends RerankCandidate>(
     }).join('\n\n');
 
     const userMsg = `QUESTION:\n${query}\n\nPASSAGES:\n${passagesText}\n\nReturn the JSON scoring object now.`;
+
+    // ⚠️ IN-MEMORY ONLY (constraint 3). No telemetry input or output happens inside a batch; these
+    // are locals, folded into the capture once the batch settles. The terminal manifest is built
+    // after Promise.all resolves.
+    let evidence: TransportEvidence | null = null;
+    let parseFailed = false;
+    let missing = 0;
+    let nonnumeric = 0;
+    let finite = 0;
+    let promptTokens: number | null = null;
+    let completionTokens: number | null = null;
+    let outcome: BatchOutcome = 'success';
 
     try {
       // Governed envelope (Stage 4): traceless retrieval path behaves exactly as before.
@@ -318,22 +457,60 @@ async function rerankJudge<T extends RerankCandidate>(
         max_tokens: 200,
         ...({ options: { num_ctx: 4096 }, keep_alive: '15m' } as Record<string, unknown>),
       }, { gemini: geminiUtilityModel(), promptRef: 'rerank/JUDGE_SYSTEM' });
+      evidence = evidenceFromCompletion(r);
+      const usage = (r as { usage?: { prompt_tokens?: number; completion_tokens?: number } }).usage;
+      promptTokens = typeof usage?.prompt_tokens === 'number' ? usage.prompt_tokens : null;
+      completionTokens = typeof usage?.completion_tokens === 'number' ? usage.completion_tokens : null;
       let txt = r.choices?.[0]?.message?.content?.trim() || '';
       if (txt.startsWith('```')) txt = txt.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
       const a = txt.indexOf('{');
       const b = txt.lastIndexOf('}');
       if (a >= 0 && b > a) txt = txt.slice(a, b + 1);
-      const parsed = JSON.parse(txt) as Record<string, number>;
+      // INNER TRY around the parse ONLY (D15). Without it a malformed completion and a dead
+      // transport land in the same catch and become the same outcome — but a parse failure means a
+      // completion ARRIVED, cost tokens and kept its provider, and §4.6 prices it. The error is
+      // re-thrown to the outer catch so the console line and the swallow below stay byte-identical.
+      let parsed: Record<string, number>;
+      try {
+        parsed = JSON.parse(txt) as Record<string, number>;
+      } catch (pe) {
+        parseFailed = true;
+        throw pe;
+      }
       for (let k = 0; k < slice.length; k++) {
         const raw = parsed[String(k)];
         if (typeof raw === 'number' && !Number.isNaN(raw)) {
           scores[start + k] = Math.max(0, Math.min(10, raw)) / 10;
+          finite += 1;
+        } else if (raw === undefined) {
+          // THE DEFECT THIS WORKSTREAM EXISTS TO MAKE VISIBLE. The score stays at its initialiser
+          // zero, and a genuine 0 and a missing key are indistinguishable in the array. They are
+          // not indistinguishable here.
+          missing += 1;
+        } else {
+          nonnumeric += 1;
         }
       }
+      // Precedence, highest first (D15). Independent counts are preserved alongside, so a response
+      // with both defects records both facts and one outcome.
+      outcome = missing > 0 ? 'missing_score_key' : nonnumeric > 0 ? 'nonnumeric_score' : 'success';
     } catch (e) {
       // Batch failed — leave those scores at 0 (will sort to bottom).
       // Soft fail is OK because we still have the input order as tiebreaker downstream.
       console.warn('[rerank judge] batch failed', start, '-', end, (e as Error).message);
+      if (!evidence) evidence = evidenceFromError(e);
+      missing = slice.length - finite;
+      outcome = parseFailed ? 'parse_failure' : terminalOutcomeFor(evidence);
+    }
+
+    if (capture) {
+      capture.batches.push({
+        index: batchIndex, start, end, evidence, outcome,
+        expectedScoreKeys: slice.length,
+        finiteScoreKeys: finite, missingScoreKeys: missing, nonnumericScoreKeys: nonnumeric,
+        intendedProvider: 'vertex', intendedModel: JUDGE_MODEL,
+        promptTokens, completionTokens,
+      });
     }
   }));
 

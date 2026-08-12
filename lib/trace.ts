@@ -250,6 +250,23 @@ export type {
   TransportAttemptOutcome,
 } from './transport-attribution-core';
 
+// ── Failure attribution (rerank telemetry on-path D14, 11 Aug 2026) ─────────────────────────────
+// NEW re-exports, and the only change this build makes to this file. `tracedChat` below is NOT
+// touched: it attaches no attempt list, and D14 scopes failure attribution to the TRACELESS arm
+// because the retrieval path never reaches the traced one (rerank_judge and expandQuery both
+// dispatch with an undefined trace id). That `tracedChat` attaches no attempts is a real defect
+// and is reported as one rather than fixed here — widening it is a transport change on an arm
+// this workstream has no measurement for.
+export {
+  TRANSPORT_FAILURE_ATTRIBUTION_FIELD,
+  TRANSPORT_TERMINAL_PHASES,
+  attachTransportFailureAttribution,
+  readTransportFailureAttribution,
+  classifyLocalAttempt,
+  localAttemptSuccess,
+} from './transport-attribution-core';
+export type { CdmssTransportFailureAttribution } from './transport-attribution-core';
+
 export async function tracedChat(
   traceId: string,
   label: string,

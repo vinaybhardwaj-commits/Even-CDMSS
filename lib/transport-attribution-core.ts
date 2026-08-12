@@ -45,9 +45,19 @@ export type TransportAttemptOutcome =
   | 'success';
 
 export interface TransportAttempt {
-  /** Which ladder tier made this attempt. */
-  tier: 'vertex' | 'openrouter';
-  /** 1-based, in dispatch order within that tier. */
+  /**
+   * WHICH PROVIDER this attempt was made against.
+   *
+   * ⚠️ WIDENED (rerank telemetry on-path D14, 11 Aug 2026) from the two cloud tiers to include the
+   * local model, and the field's meaning restated with it: it names the PROVIDER ATTEMPTED, not a
+   * position on the cloud ladder. Ollama is not a ladder tier — it is the terminal substitution,
+   * and before this change a local request left no attempt at all. That is precisely the hole the
+   * 11 Aug census fell into: 21 local substitutions were counted from console lines, and the
+   * attempt sequence that led to each of them recorded the cloud failures but never the local
+   * call that actually produced the answer.
+   */
+  tier: 'vertex' | 'openrouter' | 'ollama';
+  /** 1-based, in dispatch order within that provider. */
   attempt: number;
   outcome: TransportAttemptOutcome;
   /** HTTP status when the provider supplied one; null for timeouts and transport errors. */
@@ -105,4 +115,110 @@ export function classifyAttemptOutcome(kind: string, status: number | null): Tra
   if (kind === 'transport') return 'transport_error';
   if (kind === 'bad_response') return 'bad_response';
   return status === 429 ? 'http_429' : 'http_other';
+}
+
+/**
+ * Classify a THROWN local-model call, which never runs through `createWithRetry` and therefore has
+ * no `RetryAttemptFailure` to classify. Reads only what the SDK error itself declares — a numeric
+ * `status`, and the SDK's own `APIConnectionTimeoutError` name — and reports `transport_error`
+ * when it declares neither. §4.4 forbids GUESSING from requested model, environment or timing;
+ * reading a field the provider SDK set is the opposite of guessing, and an undeclared failure
+ * stays the honest "the transport failed and did not say more" rather than being sharpened.
+ *
+ * Deliberately a SECOND function rather than a widening of `classifyAttemptOutcome`: that one maps
+ * a declared `kind`, both ladder tiers reach it through the identical expression, and a source pin
+ * counts those two call sites to prove a 429 cannot be classified tier-dependently. The 429 rule
+ * itself is not duplicated — it is delegated below, so there is still exactly one copy of it.
+ */
+export function classifyLocalAttempt(err: unknown): { outcome: TransportAttemptOutcome; status: number | null } {
+  const e = (err ?? {}) as { status?: unknown; name?: unknown };
+  const status = typeof e.status === 'number' ? e.status : null;
+  const kind = e.name === 'APIConnectionTimeoutError' ? 'timeout' : status === null ? 'transport' : 'http';
+  return { outcome: classifyAttemptOutcome(kind, status), status };
+}
+
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+// FAILURE ATTRIBUTION (rerank telemetry on-path D14) — evidence on a THROWN error
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+/**
+ * ⚠️ WHY A SECOND, SEPARATE MECHANISM AND NOT A NULLABLE `dispatched_provider`.
+ *
+ * `CdmssTransportAttribution` answers "which provider served this completion". When every route
+ * fails there IS no completion, and PRD §4.4 is explicit that the record must then say so rather
+ * than naming the last provider attempted. Widening the success type to carry a null provider
+ * would put that "nobody served" state into a shape whose existing readers — `resolveJudgeAttribution`
+ * in lib/lvc.ts — already branch on `dispatched_provider` being present. A separate type on a
+ * separate property cannot reach those readers at all, which is what keeps §4.4 condition 4
+ * (existing callers behaviourally compatible) true by construction rather than by test.
+ *
+ * This is the difference the PRD calls out twice and forbids merging: `unattributed` means a
+ * completion may have arrived and we cannot say who served it. This type is the OTHER fact — the
+ * proof that no completion arrived at all, which is what licenses `not_served`.
+ */
+export const TRANSPORT_FAILURE_ATTRIBUTION_FIELD = 'cdmss_transport_failure_attribution';
+
+/**
+ * The terminal phases a failed dispatch can end in. STABLE NAMES, never a message and never an
+ * interpolated value — the same discipline `error_class` carries in the failure table. A phase
+ * names WHERE the ladder ended, so a census can separate "the caller forbade a local answer" from
+ * "a bad 200 was refused laundering" from "the local model itself failed".
+ */
+export const TRANSPORT_TERMINAL_PHASES = [
+  'cloud_ladder_exhausted_no_local_fallback',
+  'openrouter_bad_response_not_laundered',
+  'cloud_ladder_exhausted_local_substitution',
+  'intended_local_failed',
+  'local_substitution_failed',
+] as const;
+
+export type CdmssTransportFailureAttribution = {
+  /** Always `failed`. Present so a reader that holds both shapes can discriminate on one field. */
+  outcome: 'failed';
+  /** No provider served. Typed as the literal `null` so it cannot be filled in later by accident. */
+  servedProvider: null;
+  /** Ditto. §10: a requested model is never reported as a served model, and here none was served. */
+  servedModel: null;
+  /** The ordered ladder history that led to this failure. `null` means the transport collected
+   *  none — NOT that there were none. An absent sequence stays absent (§4.4: no reconstruction). */
+  attempts: TransportAttempt[] | null;
+  /** One of TRANSPORT_TERMINAL_PHASES. Typed `string` so a new phase needs no type surgery. */
+  terminalPhase: string;
+};
+
+/**
+ * Attach failure evidence to a THROWN error and return the SAME object, so `throw attach(e, …)`
+ * and `attach(e, …); throw e;` are both identity-preserving and neither changes which error is
+ * thrown or when. IMMUTABLE, unlike the success attribution: an error object travels up through
+ * catch blocks that may re-inspect it, and a record of what failed must not be silently rewritten
+ * by a later frame. Never throws — a frozen or exotic error is left exactly as it was.
+ */
+export function attachTransportFailureAttribution<T>(error: T, attribution: CdmssTransportFailureAttribution): T {
+  if (!error || (typeof error !== 'object' && typeof error !== 'function')) return error;
+  try {
+    Object.defineProperty(error, TRANSPORT_FAILURE_ATTRIBUTION_FIELD, {
+      value: attribution, enumerable: false, configurable: false, writable: false,
+    });
+  } catch { /* frozen/sealed/already-attributed error — evidence is best-effort, never a thrown call */ }
+  return error;
+}
+
+/**
+ * The one local attempt a `chatWithFallback` invocation can make. `attempt: 1` is correct BY
+ * CONSTRUCTION, not by convention: the intended-local arm returns before the ladder exists and the
+ * substitution arm runs only after the ladder is over, so the two are mutually exclusive and the
+ * local model is called at most once per invocation.
+ *
+ * `status: 200` on a success mirrors what both cloud tiers already record — the SDK surfaces no
+ * status on a success, and inventing a different placeholder here would make the local row the odd
+ * one out in every census that groups by status.
+ */
+export function localAttemptSuccess(): TransportAttempt {
+  return { tier: 'ollama', attempt: 1, outcome: 'success', status: 200 };
+}
+
+/** Read failure evidence back off a thrown error. `undefined` means the transport left none. */
+export function readTransportFailureAttribution(error: unknown): CdmssTransportFailureAttribution | undefined {
+  if (!error || (typeof error !== 'object' && typeof error !== 'function')) return undefined;
+  const v = (error as Record<string, unknown>)[TRANSPORT_FAILURE_ATTRIBUTION_FIELD];
+  return v && typeof v === 'object' ? (v as CdmssTransportFailureAttribution) : undefined;
 }

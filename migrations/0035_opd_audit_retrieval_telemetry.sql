@@ -1,144 +1,270 @@
--- 0035_opd_audit_retrieval_telemetry.sql — CDMSS-RERANK-TELEMETRY-CC-KICKOFF-11-AUG-2026 §4.2.
+-- 0035_opd_audit_retrieval_telemetry.sql
+-- CDMSS-RERANK-TELEMETRY-PRD-v2.1-11-AUG-2026 §4.2, and the on-path kickoff's D1/D2/D3.
 --
--- Stage 0a. OBSERVATION ONLY: this table records what retrieval did. Nothing reads it to make a
--- ranking decision, and no production reader selects from it (§6.4 asserts that).
+-- ⚠️ THIS FILE IS DOCUMENTATION. IT IS NOT APPLIED BY ANYTHING.
+-- There is no migration runner in this repository — nothing reads migrations/*.sql. Schema changes
+-- are applied by idempotent admin routes, and this one's route is:
 --
--- IDEMPOTENT. Every statement is IF NOT EXISTS / guarded, so re-running changes nothing.
+--     app/api/admin/migrate-retrieval-telemetry/route.ts   ← THE THING THAT ACTUALLY RUNS
 --
--- ⚠️ INFERRED SQL. Written without a live DB. Validate against the live schema before running.
--- The one hard dependency is `opd_note_audits(id)`, verified present as a UUID PRIMARY KEY at
--- migrations/0007_opd_note_audits.sql:12, so the FK below is valid as written.
+-- The route builds every CHECK value list from the exported constants in
+-- lib/retrieval-telemetry-core.ts (D2 forbids hand-typing them). THIS FILE IS HAND-TYPED, and
+-- lib/__tests__/migrate-retrieval-telemetry-parity.test.ts holds the two together statement for
+-- statement and CHECK value for CHECK value, in both directions. If you change one, the test
+-- fails until you change the other. Do not generate this file from the constants: a generated
+-- mirror would make that test tautological, and the test is the only thing keeping the
+-- documentation honest.
+--
+-- ⚠️ THE ROUTE HAS A STOP RULE THIS FILE CANNOT EXPRESS. If opd_audit_retrieval_telemetry already
+-- exists WITH ROWS, the route changes nothing, returns 409 with the row count and a state
+-- histogram, and waits for a signed legacy-data policy. The persistence-state vocabulary below
+-- goes from the eight values the original 0035 declared to fourteen, and drops `not_eligible`;
+-- replacing a constraint under existing rows is a decision, not a schema step.
 --
 -- ── WHY A DEDICATED TABLE AND NOT trace_events ─────────────────────────────────────────────────
--- The rerank judge is TRACELESS by requirement (kickoff constraint 2: passing a parent trace id
+-- The rerank judge is TRACELESS by requirement (PRD §3 constraint 2: passing a parent trace id
 -- into governedChat changes transport behaviour). It therefore writes no trace and no trace_event,
 -- which is exactly why the 11 Aug throttle-rate census could count 21 local substitutions and not
 -- say which caller owned them, and why the cost tracker — which joins trace_events to traces —
 -- shows zero rupees for every rerank call ever made.
 --
 -- ── RETENTION, ACCESS AND DELETION (§4.2, required) ────────────────────────────────────────────
--- `uid` is a re-identification key. It is the SAME key as opd_note_audits.uid and it receives the
--- SAME controls, no weaker:
---   · ACCESS.    Admin-gated surfaces only. No clinician-facing route and no patient-facing route
---                may select from this table. It is operational telemetry, not a clinical record.
---   · RETENTION. 90 days from started_at. This table exists to measure nightly windows and
---                reconcile them; a run older than a quarter answers no live question. The purge is
---                NOT automated by this migration — automating a delete against a table that may
---                hold the only evidence of an unreconciled incident is a decision, not a default.
---                Owner sets the schedule; the index on started_at makes the delete cheap.
---   · DELETION.  A patient erasure that removes an opd_note_audits row must remove the rows here
---                that carry the same uid. The FK is ON DELETE SET NULL (below) so a deleted audit
---                does not silently drop its telemetry, which would destroy the reconciliation
---                record; the uid column is what the erasure must target, deliberately and by name.
---   · NO CLINICAL TEXT. §4.3/§6.4: identifiers, enums, counts, timings and keyed HMACs only. No
---                query, passage, prompt or rendered scorer context is ever stored here.
+-- Declared per table in the three COMMENT ON TABLE statements at the foot of this file, with the
+-- correct anchor column named in each — started_at on the first two, observed_at on the failure
+-- table, which has no started_at. In summary:
+--   · ACCESS.    The admin gate on the route, which is the control opd_note_audits itself carries.
+--                That is the standard §4.2 sets: controls NO WEAKER than opd_note_audits.
+--                ⚠️ lib/sql-guard-core.ts is NOT edited. Its blocked-relation list exists for
+--                tables carrying raw clinician-typed text; these carry none by construction, and
+--                opd_note_audits is not on that list either — so blocking here would be STRONGER
+--                than required, at the cost of a guard two committed tests assert byte-identical.
+--   · RETENTION. 90 days. A run older than a quarter answers no live question.
+--   · DELETION.  Operator-scheduled purge, NOT automated here and NOT a trigger. Automating a
+--                delete against a table that may hold the only evidence of an unreconciled
+--                incident is a decision, not a default. The started_at / observed_at indexes make
+--                the delete cheap when the owner schedules it.
+--                A patient erasure that removes an opd_note_audits row must remove the rows here
+--                carrying the same uid. The FK is ON DELETE SET NULL so a deleted audit does not
+--                silently drop its telemetry — which would destroy the reconciliation record —
+--                and `uid` is what the erasure must target, deliberately and by name.
+--   · NO CLINICAL TEXT. Identifiers, enums, counts, timings and keyed HMACs only. No question,
+--                passage, instruction or rendered scorer context is ever stored here. Only the
+--                first table carries a patient identifier at all.
 
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+-- 1. THE RETRIEVAL-EXECUTION TABLE
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+-- One row per retrieval EXECUTION (§4.1). retrieval_run_id is NOT an audit id and is never derived
+-- from (uid, engine_version) — two concurrent executions for the same note must stay two rows.
+--
+-- audit_id is linked only AFTER the audit persistence result is known (§4.5 step 4). NULL is a
+-- real, expected state: a losing ON CONFLICT race, a failed save, or a retrieval that never
+-- produced an audit row. §4.2 forbids creating synthetic audit rows to populate it.
+--
+-- ⚠️ NO INLINE persistence_state CHECK, deliberately. The original 0035 declared one here with the
+-- eight old values. Keeping that shape would put the state vocabulary in two places in one
+-- migration — here and in the named constraint D2 requires be DROPped and re-ADDed — and a reader
+-- would have to check the two agree. There is one home for it: section 3 below.
 CREATE TABLE IF NOT EXISTS opd_audit_retrieval_telemetry (
-  -- §4.1: one id per retrieval EXECUTION. Not an audit id, and never derived from
-  -- (uid, engine_version) — two concurrent executions for the same note must stay two rows.
-  retrieval_run_id             UUID PRIMARY KEY,
-
-  -- Linked only AFTER the audit persistence result is known (§4.5 step 4). NULL is a real,
-  -- expected state: a losing ON CONFLICT race, a failed save, or a retrieval that never produced
-  -- an audit row at all. ON DELETE SET NULL so erasing an audit never erases the evidence that a
-  -- retrieval happened — §4.2 forbids creating synthetic audit rows to populate this column, and
-  -- the mirror of that rule is that losing the audit must not silently delete the telemetry.
-  audit_id                     UUID NULL REFERENCES opd_note_audits(id) ON DELETE SET NULL,
-
-  trace_id                     TEXT NULL,
-  uid                          TEXT NULL,
-  engine_version               TEXT NULL,
-
-  -- Route taxonomy (§5 step 1): which entrypoint executed this retrieval.
-  route                        TEXT NOT NULL,
-  -- The serverless invocation, so worker/backfill/lab overlap is analysable (§8).
-  invocation_id                TEXT NULL,
-  app_source                   TEXT NOT NULL,
-  -- The addendum's point: a clean local tree proves nothing about what Vercel serves. Every row
-  -- carries the SHA that produced it, so a canary window can prove it ran on one deployment.
-  deployment_sha               TEXT NULL,
-  telemetry_schema_version     INTEGER NOT NULL,
-
-  -- A/A and experiment linkage (§4.1: deliberate replicates must stay distinguishable).
-  experiment_run_id            TEXT NULL,
-  pair_id                      TEXT NULL,
-  replicate                    TEXT NULL,
-
-  -- §4.2: the state vocabulary is a DATABASE CONSTRAINT, so an unknown state cannot be written by
-  -- a caller that skipped the runtime definition. Kept in lockstep with RETRIEVAL_PERSISTENCE_STATES
-  -- in lib/retrieval-telemetry-core.ts, which a unit test pins against this list byte-for-byte.
-  persistence_state            TEXT NOT NULL,
-
-  started_at                   TIMESTAMPTZ NOT NULL,
-  completed_at                 TIMESTAMPTZ NULL,
-
-  expansion_status             TEXT NULL,
-  expansion_route_class        TEXT NULL,
-  rerank_route_class           TEXT NULL,
-
-  -- The reconciliation pair the canary gate turns on (§7): expected must equal recorded.
-  expected_rerank_batches      INTEGER NULL,
-  recorded_rerank_batches      INTEGER NULL,
-
-  -- Counters, by served route. `unattributed` is its own column and NOT folded into any other —
-  -- §7 requires an unattributed batch and a MISSING batch to be reported separately.
-  rerank_vertex_batches        INTEGER NOT NULL DEFAULT 0,
-  rerank_openrouter_batches    INTEGER NOT NULL DEFAULT 0,
-  rerank_local_batches         INTEGER NOT NULL DEFAULT 0,
-  rerank_failed_batches        INTEGER NOT NULL DEFAULT 0,
-  rerank_unattributed_batches  INTEGER NOT NULL DEFAULT 0,
-  rerank_429_attempts          INTEGER NOT NULL DEFAULT 0,
-
-  -- Keyed HMAC of the EXACT rendered scorer context (§4.3). Keyed, not a plain hash: a plain hash
-  -- of patient-derived text is reversible by dictionary attack and §4.3 rejects it.
-  context_hmac                 TEXT NULL,
-
-  retrieval_manifest           JSONB NULL,
-  -- Fail-visibly (§ constraint 8): when telemetry itself failed, the reason is recorded rather
-  -- than the row being dropped. A dropped row is indistinguishable from a retrieval that never ran.
-  telemetry_error              TEXT NULL,
-
-  CONSTRAINT opd_audit_retrieval_telemetry_persistence_state_chk CHECK (persistence_state IN (
-    'started',
-    'completed_unpersisted',
-    'persisted_complete',
-    'persisted_partial',
-    'telemetry_persistence_failed',
-    'audit_persistence_failed',
-    'aborted',
-    'not_eligible'
-  ))
+  retrieval_run_id UUID PRIMARY KEY,
+  audit_id UUID NULL REFERENCES opd_note_audits(id) ON DELETE SET NULL,
+  trace_id TEXT NULL,
+  uid TEXT NULL,
+  engine_version TEXT NULL,
+  route TEXT NOT NULL,
+  invocation_id TEXT NULL,
+  app_source TEXT NOT NULL DEFAULT 'standalone',
+  deployment_sha TEXT NULL,
+  telemetry_schema_version INTEGER NOT NULL,
+  experiment_run_id TEXT NULL,
+  pair_id TEXT NULL,
+  replicate TEXT NULL,
+  persistence_state TEXT NOT NULL,
+  started_at TIMESTAMPTZ NOT NULL,
+  completed_at TIMESTAMPTZ NULL,
+  expansion_status TEXT NULL,
+  expansion_route_class TEXT NULL,
+  rerank_route_class TEXT NULL,
+  expected_rerank_batches INTEGER NULL,
+  recorded_rerank_batches INTEGER NULL,
+  rerank_vertex_batches INTEGER NOT NULL DEFAULT 0,
+  rerank_openrouter_batches INTEGER NOT NULL DEFAULT 0,
+  rerank_local_batches INTEGER NOT NULL DEFAULT 0,
+  rerank_failed_batches INTEGER NOT NULL DEFAULT 0,
+  rerank_unattributed_batches INTEGER NOT NULL DEFAULT 0,
+  rerank_429_attempts INTEGER NOT NULL DEFAULT 0,
+  context_hmac TEXT NULL,
+  retrieval_manifest JSONB NULL,
+  telemetry_error TEXT NULL
 );
 
--- ── Indexes (§4.2: nightly reconciliation, audit linkage, route/invocation overlap, experiment
--- linkage, persistence state) ───────────────────────────────────────────────────────────────────
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+-- 2. THE ON-PATH ADDITIONS (D2)
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+-- fused_candidate_count and hydrated_candidate_count are TWO COUNTS, NOT ONE: the pool after the
+-- cap, and the rows the re-read actually returned. Their difference is a dropped row, which is
+-- invisible if only one is recorded.
+--
+-- index_version is the embedding column plus the embed model that column implies — together, which
+-- candidates exist at all. Stamped before the first fallible statement in retrieve(), so a row
+-- that fails still records the index it was reading.
+--
+-- active_backfill_state is 'active' or 'idle'. LOAD-BEARING: without it a cron tick cannot be
+-- distinguished from real work, which §2 forbids twice.
+ALTER TABLE opd_audit_retrieval_telemetry
+  ADD COLUMN IF NOT EXISTS retrieval_role TEXT,
+  ADD COLUMN IF NOT EXISTS retrieval_outcome TEXT,
+  ADD COLUMN IF NOT EXISTS retrieval_error_class TEXT,
+  ADD COLUMN IF NOT EXISTS persistence_settled_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS row_revision INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS expansion_served_model TEXT,
+  ADD COLUMN IF NOT EXISTS expansion_attempts JSONB,
+  ADD COLUMN IF NOT EXISTS rerank_not_served_batches INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS rerank_soft_failed BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS served_backend TEXT,
+  ADD COLUMN IF NOT EXISTS rerank_backend_downgraded BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS fused_candidate_count INTEGER,
+  ADD COLUMN IF NOT EXISTS hydrated_candidate_count INTEGER,
+  ADD COLUMN IF NOT EXISTS index_version TEXT,
+  ADD COLUMN IF NOT EXISTS active_backfill_run_id TEXT,
+  ADD COLUMN IF NOT EXISTS active_backfill_target TEXT,
+  ADD COLUMN IF NOT EXISTS active_backfill_state TEXT,
+  ALTER COLUMN app_source SET DEFAULT 'standalone';
 
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+-- 3. THE THREE CHECKS
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+-- Every value list below is GENERATED in the route from the exported constants in
+-- lib/retrieval-telemetry-core.ts. The copies here are hand-typed and are held to the route's
+-- output by the parity test. RETRIEVAL_PERSISTENCE_STATES is the source of truth for the first,
+-- RETRIEVAL_ROLES for the second, OUTCOME_REQUIRED_STATES and OUTCOME_EITHER_STATES for the third.
+
+-- Replaced, never edited: the DROP makes the pair idempotent and makes re-running safe.
+ALTER TABLE opd_audit_retrieval_telemetry DROP CONSTRAINT IF EXISTS opd_audit_retrieval_telemetry_persistence_state_chk;
+
+ALTER TABLE opd_audit_retrieval_telemetry ADD CONSTRAINT opd_audit_retrieval_telemetry_persistence_state_chk CHECK (persistence_state IN ('started', 'retrieval_complete', 'persisted_complete', 'persisted_partial', 'completed_unpersisted', 'persistence_refused', 'audit_persistence_failed', 'audit_generation_failed', 'telemetry_persistence_failed', 'aborted', 'persistence_unknown', 'retrieval_not_run', 'no_persistence_intended', 'persistence_skipped'));
+
+ALTER TABLE opd_audit_retrieval_telemetry DROP CONSTRAINT IF EXISTS opd_audit_retrieval_telemetry_role_chk;
+
+-- Unconditional. A NULL role passes a CHECK by SQL's own rules, which is exactly why the NOT NULL
+-- has to be a separate, conditional step — see the note at the foot of this section.
+ALTER TABLE opd_audit_retrieval_telemetry ADD CONSTRAINT opd_audit_retrieval_telemetry_role_chk CHECK (retrieval_role IN ('primary', 'normative_channel', 'lvc_recall', 'lab_direct', 'lab_multi_query'));
+
+ALTER TABLE opd_audit_retrieval_telemetry DROP CONSTRAINT IF EXISTS opd_audit_retrieval_telemetry_outcome_chk;
+
+-- retrieval_outcome stays NULLABLE because the worker inserts `started` rows before retrieval
+-- starts. The STATE is what makes an outcome required, so the guard is stateful. The three sets
+-- partition all fourteen states: 'started' alone, the nine that require an outcome, and the four
+-- that permit either. audit_generation_failed is in the EITHER set, not the required one — a row
+-- settled from `started` never recorded an outcome, and D12 permits that transition.
+ALTER TABLE opd_audit_retrieval_telemetry ADD CONSTRAINT opd_audit_retrieval_telemetry_outcome_chk CHECK (
+  (persistence_state = 'started' AND retrieval_outcome IS NULL)
+  OR (persistence_state IN ('retrieval_complete', 'persisted_complete', 'persisted_partial', 'completed_unpersisted', 'persistence_refused', 'audit_persistence_failed', 'persistence_skipped', 'no_persistence_intended', 'persistence_unknown') AND retrieval_outcome IS NOT NULL)
+  OR persistence_state IN ('aborted', 'retrieval_not_run', 'telemetry_persistence_failed', 'audit_generation_failed')
+);
+
+-- ⚠️ THE ONE STATEMENT THIS FILE DELIBERATELY DOES NOT CARRY, and the only permitted difference
+-- between this mirror and the route (it is named as such in the parity test's allowed-difference
+-- list, and nowhere else):
+--
+--     ALTER TABLE opd_audit_retrieval_telemetry ALTER COLUMN retrieval_role SET NOT NULL
+--
+-- The route applies it ONLY when the table is empty, and reports 'skipped, table not empty'
+-- otherwise. An existing row's role cannot be reconstructed, and a failed SET NOT NULL would abort
+-- the migration over history rather than over anything this build wrote. A .sql file cannot
+-- branch, so the rule is stated here instead of being half-applied.
+
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+-- 4. INDEXES ON THE RETRIEVAL TABLE
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
 -- Nightly window scans and the stale-start reconciler both range over started_at.
-CREATE INDEX IF NOT EXISTS opd_art_started_at_idx
-  ON opd_audit_retrieval_telemetry (started_at DESC);
+CREATE INDEX IF NOT EXISTS opd_art_started_at_idx ON opd_audit_retrieval_telemetry (started_at DESC);
 
--- The stale-start reconciler's hot path: `started` rows older than max duration + grace.
-CREATE INDEX IF NOT EXISTS opd_art_state_started_at_idx
-  ON opd_audit_retrieval_telemetry (persistence_state, started_at DESC);
+CREATE INDEX IF NOT EXISTS opd_art_state_started_at_idx ON opd_audit_retrieval_telemetry (persistence_state, started_at DESC);
 
 -- Audit linkage, and the "which audits have no telemetry" half of the canary gate.
-CREATE INDEX IF NOT EXISTS opd_art_audit_id_idx
-  ON opd_audit_retrieval_telemetry (audit_id) WHERE audit_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS opd_art_audit_id_idx ON opd_audit_retrieval_telemetry (audit_id) WHERE audit_id IS NOT NULL;
 
 -- Concurrency: two executions for the same note must be visible AS two.
-CREATE INDEX IF NOT EXISTS opd_art_uid_engine_idx
-  ON opd_audit_retrieval_telemetry (uid, engine_version, started_at DESC);
+CREATE INDEX IF NOT EXISTS opd_art_uid_engine_idx ON opd_audit_retrieval_telemetry (uid, engine_version, started_at DESC);
 
--- Route/invocation overlap analysis (§8: worker vs active backfill vs hosted lab).
-CREATE INDEX IF NOT EXISTS opd_art_route_invocation_idx
-  ON opd_audit_retrieval_telemetry (route, invocation_id, started_at DESC);
+-- Route/invocation overlap analysis (§8: worker vs ACTIVE backfill vs hosted lab).
+CREATE INDEX IF NOT EXISTS opd_art_route_invocation_idx ON opd_audit_retrieval_telemetry (route, invocation_id, started_at DESC);
 
 -- Experiment linkage for A/A replicates.
-CREATE INDEX IF NOT EXISTS opd_art_experiment_idx
-  ON opd_audit_retrieval_telemetry (experiment_run_id, pair_id)
-  WHERE experiment_run_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS opd_art_experiment_idx ON opd_audit_retrieval_telemetry (experiment_run_id, pair_id) WHERE experiment_run_id IS NOT NULL;
 
-COMMENT ON TABLE opd_audit_retrieval_telemetry IS
-  'Stage 0a rerank telemetry. Observation only — no ranking decision reads this table. Contains a '
-  're-identification key (uid) and is admin-access only. Retention 90 days from started_at; purge '
-  'is operator-scheduled, not automatic. See CDMSS-RERANK-TELEMETRY-CC-KICKOFF-11-AUG-2026 §4.2.';
+-- §7's per-role coverage question: one primary row per audit, one normative_channel row when that
+-- channel was declared, none when it was not.
+CREATE INDEX IF NOT EXISTS opd_art_role_state_idx ON opd_audit_retrieval_telemetry (retrieval_role, persistence_state, started_at DESC);
+
+-- The reconciler's hot path: the two non-terminal states, oldest first.
+CREATE INDEX IF NOT EXISTS opd_art_nonterminal_idx ON opd_audit_retrieval_telemetry (persistence_state, started_at) WHERE persistence_state IN ('started', 'retrieval_complete');
+
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+-- 5. INVOCATION ACCOUNTING
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+-- One row per serverless invocation that declared retrieval work, plus reconciler runs.
+-- telemetry_write_failures is incremented ONLY by the failure store's own fail-open handler: when
+-- even the failure row cannot be written, this counter is the last surviving evidence. §4.1 forbids
+-- process-global mutable state, and a per-process number would not survive the invocation anyway.
+CREATE TABLE IF NOT EXISTS opd_retrieval_invocations (
+  invocation_id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  route TEXT NOT NULL,
+  route_class TEXT NOT NULL,
+  app_source TEXT NOT NULL DEFAULT 'standalone',
+  deployment_sha TEXT NULL,
+  vercel_request_id TEXT NULL,
+  started_at TIMESTAMPTZ NOT NULL,
+  ended_at TIMESTAMPTZ NULL,
+  closure_state TEXT NOT NULL DEFAULT 'closure_unknown',
+  declared_retrievals INTEGER NOT NULL DEFAULT 0,
+  telemetry_write_failures INTEGER NOT NULL DEFAULT 0,
+  CONSTRAINT opd_ri_kind_chk CHECK (kind IN ('retrieval', 'reconciler')),
+  CONSTRAINT opd_ri_closure_chk CHECK (closure_state IN ('closed', 'closure_unknown'))
+);
+
+CREATE INDEX IF NOT EXISTS opd_ri_open_idx ON opd_retrieval_invocations (started_at) WHERE closure_state = 'closure_unknown';
+
+CREATE INDEX IF NOT EXISTS opd_ri_route_time_idx ON opd_retrieval_invocations (route, started_at DESC);
+
+CREATE INDEX IF NOT EXISTS opd_ri_kind_time_idx ON opd_retrieval_invocations (kind, started_at DESC);
+
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+-- 6. PER-RUN TELEMETRY-WRITE FAILURE EVIDENCE
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+-- error_class is a CLASS NAME. Never a message, never a value. Failure rows are historical: the
+-- reconciler reads them and never deletes or consumes them, and a successful terminal state always
+-- wins over earlier failure evidence.
+CREATE TABLE IF NOT EXISTS opd_retrieval_telemetry_failures (
+  id BIGSERIAL PRIMARY KEY,
+  invocation_id TEXT NOT NULL,
+  retrieval_run_id UUID NULL,
+  retrieval_role TEXT NULL,
+  failed_phase TEXT NOT NULL,
+  intended_state TEXT NULL,
+  observed_at TIMESTAMPTZ NOT NULL,
+  error_class TEXT NOT NULL,
+  CONSTRAINT opd_rtf_phase_chk CHECK (failed_phase IN ('invocation_start', 'work_declaration', 'retrieval_terminal', 'persistence_link', 'closure')),
+  CONSTRAINT opd_rtf_run_chk CHECK (
+    (failed_phase IN ('work_declaration', 'retrieval_terminal', 'persistence_link') AND retrieval_run_id IS NOT NULL AND retrieval_role IS NOT NULL)
+    OR failed_phase IN ('invocation_start', 'closure')
+  )
+);
+
+CREATE INDEX IF NOT EXISTS opd_rtf_run_idx ON opd_retrieval_telemetry_failures (retrieval_run_id, failed_phase, observed_at DESC) WHERE retrieval_run_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS opd_rtf_invocation_idx ON opd_retrieval_telemetry_failures (invocation_id, observed_at DESC);
+
+CREATE INDEX IF NOT EXISTS opd_rtf_phase_time_idx ON opd_retrieval_telemetry_failures (failed_phase, observed_at DESC);
+
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+-- 7. TABLE COMMENTS — the text DIFFERS PER TABLE, because the tables differ
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+-- Only the first names uid. Only the third anchors its retention on observed_at.
+COMMENT ON TABLE opd_audit_retrieval_telemetry IS 'Stage 0a rerank telemetry, one row per retrieval execution. Observation only: no ranking decision reads this table. uid is a re-identification key and carries controls no weaker than opd_note_audits (admin-gated reads only). No clinical text: identifiers, enums, counts, timings and keyed HMACs only. Retention 90 days from started_at; the purge is operator-scheduled and is NOT implemented here.';
+
+COMMENT ON TABLE opd_retrieval_invocations IS 'Stage 0a invocation accounting, one row per serverless invocation that declared retrieval work, plus reconciler runs. Observation only. No clinical text and NO PATIENT IDENTIFIER — it joins to the uid-bearing table and inherits its handling. Admin access only. Retention 90 days from started_at; the purge is operator-scheduled and is NOT implemented here.';
+
+COMMENT ON TABLE opd_retrieval_telemetry_failures IS 'Stage 0a telemetry-write failure evidence, one row per failed write. Observation only. No clinical text and NO PATIENT IDENTIFIER. error_class is a class name and is never a message or a value. Admin access only. Retention 90 days from observed_at — this table has no started_at — and the purge is operator-scheduled and is NOT implemented here.';

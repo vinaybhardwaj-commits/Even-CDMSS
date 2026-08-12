@@ -7,8 +7,21 @@
  * Soft-fails. The full PHI record stays in db13; only de-identified content reaches the LLM.
  */
 
+import { randomUUID } from 'node:crypto';
 import { retrieve, resolveNormativeSources, type RetrieveOptions } from './retrieve';
 import { hitsToSources, buildCitedContext, type CiteHit, type Source } from './citations-core';
+// ── Retrieval telemetry (Stage 0a on-path) ──────────────────────────────────────────────────────
+import { createTelemetryCapture, buildRetrievalPayload, errorClassOf, type TelemetryCapture } from './retrieval-capture';
+import {
+  declareRetrievals, writeRetrievalTerminal,
+  type LifecycleHandle, type PredeclaredTelemetryRuns,
+} from './retrieval-telemetry-store';
+import { startInvocation } from './retrieval-invocation-store';
+import { routeClassOf } from './retrieval-telemetry-core';
+import type {
+  TelemetryRequestContext, RetrievalRoute, OperationalTelemetry, BackfillActivity,
+} from './retrieval-telemetry-core';
+import { activeRun } from './backfill-runs';
 import { startTrace, logEvent, finishTrace, governedChat, setTraceQuestionPreview } from './trace';
 import { geminiModelFor, geminiUtilityModel, TEXT_MODEL, MINI_MODEL, AUDIT_LLM_SEED, LLM_AUDIT_TIMEOUT_MS } from './llm';
 import { rowToOpdCase, opdCaseText, type OpdKeys, type OpdMed, type DeidOpdCase } from './opd-ingest-core';
@@ -629,9 +642,9 @@ export function opdRetrieveOpts(mini: boolean, env: Record<string, string | unde
   };
 }
 
-async function defaultRetrieve(q: string, mini = false, evalNormativeLeg?: boolean, rerankBackend?: 'judge' | 'cohere'): Promise<CiteHit[]> {
+async function defaultRetrieve(q: string, mini = false, evalNormativeLeg?: boolean, rerankBackend?: 'judge' | 'cohere', capture?: TelemetryCapture): Promise<CiteHit[]> {
   try {
-    const r = await retrieve(q, opdRetrieveOpts(mini, process.env, evalNormativeLeg, rerankBackend));
+    const r = await retrieve(q, opdRetrieveOpts(mini, process.env, evalNormativeLeg, rerankBackend), capture);
     return r.hits.map((h) => ({
       id: h.id, source: h.source, book: h.book, chapter: h.chapter, section: h.section,
       page_start: h.page_start, page_end: h.page_end, item_number: h.item_number,
@@ -639,6 +652,14 @@ async function defaultRetrieve(q: string, mini = false, evalNormativeLeg?: boole
     }));
   } catch (e) {
     console.warn('[opd-audit] retrieve failed', (e as Error).message);
+    // ONE OF THE FOUR SITES THAT SWALLOW A RETRIEVAL EXCEPTION INTO AN EMPTY HIT LIST. The audit
+    // then proceeds on no evidence and scores a note as if the corpus had nothing to say. That is
+    // survivable and deliberate — but it must not be INVISIBLE, and until now it was: a failed
+    // retrieval and a retrieval that found nothing produced the same `[]`.
+    if (capture) {
+      capture.retrievalOutcome = 'retrieval_failure';
+      capture.retrievalErrorClass = errorClassOf(e);
+    }
     return [];
   }
 }
@@ -666,9 +687,9 @@ export function normativeChannelOpts(env: Record<string, string | undefined> = p
 
 /** Standalone normative retrieve for the channel. Fail-safe: any error ⇒ [] (the audit proceeds on
  *  literature alone — the channel can only ADD, never degrade). */
-async function normativeChannelRetrieve(q: string): Promise<CiteHit[]> {
+async function normativeChannelRetrieve(q: string, capture?: TelemetryCapture): Promise<CiteHit[]> {
   try {
-    const r = await retrieve(q, normativeChannelOpts());
+    const r = await retrieve(q, normativeChannelOpts(), capture);
     return r.hits.map((h) => ({
       id: h.id, source: h.source, book: h.book, chapter: h.chapter, section: h.section,
       page_start: h.page_start, page_end: h.page_end, item_number: h.item_number,
@@ -676,7 +697,100 @@ async function normativeChannelRetrieve(q: string): Promise<CiteHit[]> {
     }));
   } catch (e) {
     console.warn('[opd-audit] normative channel retrieve failed', (e as Error).message);
+    if (capture) {
+      capture.retrievalOutcome = 'retrieval_failure';
+      capture.retrievalErrorClass = errorClassOf(e);
+    }
     return [];
+  }
+}
+
+/**
+ * Read the ACTIVE provider-backfill state for the OPD worker, fail-open (D2).
+ *
+ * ⚠️ THE FAIL-OPEN WRAP IS REQUIRED, NOT CAUTIOUS. `activeRun` awaits `ensureRunsTable()` first,
+ * whose `CREATE TABLE IF NOT EXISTS` has NO `.catch` — unlike its two index statements. A throw
+ * from that call would turn an audit that would have completed into one that never ran, which
+ * constraint 1 forbids. All three fields are nullable in D17 for exactly this reason.
+ *
+ * ⚠️ AND IT IS NOT ONE ROUND TRIP. On a cold invocation it issues a CREATE TABLE and two CREATE
+ * INDEX before the SELECT — four statements — and one on every later retrieval. Both are measured
+ * separately in the overhead numbers rather than described as small.
+ *
+ * `lib/backfill-runs.ts` is NOT on this build's edit list, so the guard lives here rather than as
+ * a `.catch` added to that file.
+ */
+async function readBackfillActivity(): Promise<{ runId: string | null; target: string | null; state: BackfillActivity | null }> {
+  try {
+    // 'opd' is required — BackfillWorker is 'opd' | 'ipd', and this is the OPD audit path.
+    const run = await activeRun('opd');
+    // ⚠️ `target` IS THE RUN'S MODEL. `BackfillRun` has no field called `target`; what a backfill
+    // run targets is the `bedrock:<id>` / `vertex:<id>` string it is grading against, and that is
+    // the value an overlap analysis needs — "which backfill was running" is answered by the model,
+    // not by the day cursor. Named as an inference rather than presented as a schema field.
+    return run
+      ? { runId: String(run.id), target: run.model ?? null, state: 'active' }
+      // ⚠️ `idle` IS A MEASUREMENT, NOT AN ABSENCE. §2 forbids twice reporting a cron tick as a
+      // workload; without this value an overlap analysis cannot tell 360 route invocations from
+      // 360 backfills, which is the exact error the evidence boundary names.
+      : { runId: null, target: null, state: 'idle' };
+  } catch {
+    return { runId: null, target: null, state: null };
+  }
+}
+
+/** Write both role terminals in D11's order, publishing the handle after each. Never throws — a
+ *  telemetry write must not fail an audit (constraint 1). */
+async function writeRetrievalTerminals(args: {
+  tele: NonNullable<AuditOpdOpts['telemetry']>;
+  handle: LifecycleHandle;
+  publishHandle: (h: LifecycleHandle) => void;
+  traceId: string | null;
+  startedAt: string;
+  citedContext: string;
+  primaryCapture: TelemetryCapture;
+  normativeCapture?: TelemetryCapture;
+}): Promise<void> {
+  const { tele, publishHandle, traceId, startedAt, citedContext } = args;
+  let handle = args.handle;
+  try {
+    const hmacKey = process.env.CDMSS_TELEMETRY_HMAC_KEY ?? null;
+    const backfill = await readBackfillActivity();
+    const operationalFor = (role: 'primary' | 'normative_channel'): OperationalTelemetry => ({
+      route: tele.route, route_class: routeClassOf(tele.route), retrieval_role: role,
+      invocation_id: tele.ctx.invocationId, trace_id: traceId,
+      deployment_sha: tele.ctx.deploymentSha, started_at: startedAt,
+      completed_at: new Date().toISOString(), routing_flags: tele.ctx.routingFlags,
+      active_backfill_run_id: backfill.runId, active_backfill_target: backfill.target,
+      active_backfill_state: backfill.state,
+      active_lab_experiment_id: tele.ctx.labExperimentId ?? null,
+    });
+
+    // PRIMARY carries the scorer-context HMAC, computed over the EXACT rendered citedContext bytes.
+    // With zero candidates that string is empty, and the HMAC of the empty string is a defined
+    // value — never null because reranking was skipped or failed (A2).
+    handle = await writeRetrievalTerminal(handle, 'primary', {
+      payload: buildRetrievalPayload(args.primaryCapture, { hmacKey, scorerContext: citedContext }),
+      operational: operationalFor('primary'),
+      traceId, completedAt: new Date().toISOString(),
+    });
+    publishHandle(handle);
+
+    if (args.normativeCapture) {
+      // NORMATIVE carries null: the combined-context HMAC lives on the primary row, and duplicating
+      // it here would imply this leg produced a context of its own. Its expansion stage is also
+      // always `skipped` (normativeChannelOpts sets skipExpand unconditionally), which is why the
+      // validator accepts a null served class on a skipped stage — otherwise every one of these
+      // rows would be partial by construction.
+      handle = await writeRetrievalTerminal(handle, 'normative_channel', {
+        payload: buildRetrievalPayload(args.normativeCapture, { hmacKey, scorerContext: null }),
+        operational: operationalFor('normative_channel'),
+        traceId, completedAt: new Date().toISOString(),
+      });
+      publishHandle(handle);
+    }
+  } catch (e) {
+    console.warn('[opd-audit] retrieval telemetry terminal write failed', (e as Error).message);
   }
 }
 
@@ -1147,6 +1261,33 @@ export interface AuditReuse {
   sources: Source[];
 }
 export interface AuditOpdOpts {
+  /**
+   * RETRIEVAL TELEMETRY (D11). Present ⇒ this audit declares, instruments and settles its retrieval
+   * runs. Absent ⇒ `unknown_route` is recorded for nothing at all, because no capture is created
+   * and no telemetry statement executes.
+   */
+  telemetry?: {
+    ctx: TelemetryRequestContext;
+    route: RetrievalRoute;
+    /** Declared UP FRONT, not inferred from the role: the run route's POST arm audits and never
+     *  saves, and no property of `primary` could have told us that. Default `will_persist`. */
+    persistenceIntent?: 'will_persist' | 'never_persists';
+  };
+  /**
+   * Run ids the WORKER allocated before this function was entered (D10). ADOPTED, never
+   * reallocated — a second `started` row for the same execution would double the denominator every
+   * coverage percentage divides by.
+   */
+  predeclaredTelemetry?: PredeclaredTelemetryRuns;
+  /**
+   * Fires after declaration and after every successful lifecycle transition (D11).
+   *
+   * ⚠️ WHY A CALLBACK AND NOT ONLY THE RETURNED AUDIT. `auditOpdNote` can throw after declaration,
+   * after either retrieval, during context assembly, or during audit generation. On every one of
+   * those paths there is no returned audit — so a caller that could only read the handle off the
+   * result would hold nothing, and could not settle the rows it is responsible for.
+   */
+  onLifecycleHandleUpdated?: (handle: LifecycleHandle) => void;
   trace?: boolean;
   /** EVAL-ONLY (PDQI-9 fail-loud Phase 1). Fires on every OpenRouter attempt with the response
    *  envelope. Only reached when `evalModel` is set; production never passes it. Never throws. */
@@ -1351,6 +1492,48 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
       }).catch(() => undefined as string | undefined)
     : undefined;
 
+  // ══ RETRIEVAL TELEMETRY, STEPS 3-6 OF D11's FOURTEEN ══════════════════════════════════════════
+  // We are past the reuse guard (step 1) and past startTrace (step 2), so `traceId` exists where it
+  // exists at all. Now: determine the expected role set, create or adopt the invocation, declare
+  // the rows, and PUBLISH THE HANDLE — all before any fallible work.
+  const tele = opts.telemetry;
+  const wantsNormative = opts.evalNormativeChannel === true;
+  const primaryCapture = tele ? createTelemetryCapture('primary') : undefined;
+  const normativeCapture = tele && wantsNormative ? createTelemetryCapture('normative_channel') : undefined;
+  const telemetryStartedAt = new Date().toISOString();
+  let handle: LifecycleHandle | null = null;
+  const publishHandle = (h: LifecycleHandle) => { handle = h; opts.onLifecycleHandleUpdated?.(h); };
+
+  if (tele) {
+    await startInvocation(tele.ctx);
+    const pre = opts.predeclaredTelemetry;
+    const runs = [
+      { role: 'primary' as const, runId: pre?.primary.runId ?? randomUUID(), uid: keys.uid ?? null, engineVersion },
+      ...(wantsNormative
+        ? [{ role: 'normative_channel' as const, runId: pre?.normativeChannel?.runId ?? randomUUID(), uid: keys.uid ?? null, engineVersion }]
+        : []),
+    ];
+    if (pre) {
+      // ADOPT. The worker already inserted these rows and already counted them onto the invocation;
+      // re-declaring would insert nothing (ON CONFLICT DO NOTHING) but would count them twice.
+      handle = {
+        invocationId: tele.ctx.invocationId,
+        runs: runs.map((r) => ({ role: r.role, runId: r.runId, expectedRevision: 0 })),
+        persistenceIntent: tele.persistenceIntent ?? 'will_persist',
+      };
+      publishHandle(handle);
+    } else {
+      try {
+        publishHandle(await declareRetrievals(tele.ctx, runs, tele.persistenceIntent ?? 'will_persist'));
+      } catch (e) {
+        // Fail-open for a NON-WORKER caller. The worker's own declaration is fail-closed and
+        // happens before this function is entered (D10) — that is the path where a missing durable
+        // start actually matters, and it is guarded there.
+        console.warn('[opd-audit] telemetry declaration failed, continuing uninstrumented', (e as Error).message);
+      }
+    }
+  }
+
   try {
     // Richer retrieval query so the corpus is hit on the actual clinical content (readable dx
     // names + reason + complaints + resolved molecules), not just ICD codes — improves grounding.
@@ -1363,12 +1546,26 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
       'outpatient appropriateness rational prescribing evidence-based management guideline',
     ].filter(Boolean).join('. ');
 
-    const hits = await defaultRetrieve(query, mini, opts.evalNormativeLeg, opts.rerankBackend);
+    // STEPS 7 AND 8 — capture both retrievals IN MEMORY. No terminal write yet, deliberately.
+    const hits = await defaultRetrieve(query, mini, opts.evalNormativeLeg, opts.rerankBackend, primaryCapture);
     // R-11 additive channel (lab eval only): a SEPARATE CW-only retrieve appended as [9+] — the 8
     // literature excerpts above are untouched. No channel ⇒ assembleAuditContext is byte-identical
     // to the previous hitsToSources(hits) + buildCitedContext(hits).
-    const normHits = opts.evalNormativeChannel === true ? await normativeChannelRetrieve(query) : [];
+    const normHits = opts.evalNormativeChannel === true ? await normativeChannelRetrieve(query, normativeCapture) : [];
+    // STEP 9 — the combined context. ⚠️ THIS IS WHY THE PRIMARY TERMINAL WRITE CANNOT HAPPEN AT
+    // STEP 7. `assembleAuditContext` runs over BOTH hit sets and is the only place the exact bytes
+    // that reach the scorer exist; inside either retrieval call they do not exist yet, so a
+    // scorer-context HMAC written there would be a hash of something the scorer never saw.
     const { sources, citedContext } = assembleAuditContext(hits, normHits);
+    // STEPS 10-13 — HMAC the combined context, build both payloads, write both terminals, and
+    // publish the handle after each so a throw below still leaves the caller holding the latest.
+    if (tele && handle) {
+      await writeRetrievalTerminals({
+        tele, handle, publishHandle, traceId: traceId ?? null,
+        startedAt: telemetryStartedAt, citedContext,
+        primaryCapture: primaryCapture!, normativeCapture,
+      });
+    }
     if (traceId) await logEvent(traceId, 'opd_audit_sources', null, { count: sources.length });
 
     const specialty = await doctorSpecialtyFor(keys.doctorUid);

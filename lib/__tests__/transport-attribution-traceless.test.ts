@@ -216,8 +216,18 @@ test('the attempt sequence is invocation-scoped, never module state (§4.1)', ()
     'declared inside the function — two concurrent rerank batches cannot interleave');
   // no module-level mutable collector was introduced
   assert.equal(/^let _attempts|^const _attempts/m.test(src), false);
-  // the array is COPIED into the attribution, so a later push cannot mutate a returned record
-  assert.equal((body.match(/attempts: \[\.\.\.attempts\]/g) || []).length, 3);
+  // The array is COPIED into every attribution, so a later push cannot mutate a returned record.
+  //
+  // RE-PINNED (on-path D14): the old assertion counted the single exact spelling
+  // `attempts: [...attempts]` and expected 3. D14 adds two local-attempt sites that copy as
+  // `[...attempts, localAttemptSuccess()]` and two failure attributions that copy plainly, so that
+  // one spelling no longer enumerates the copies. The INVARIANT it stood for is unchanged and is
+  // now asserted directly and more strongly: no attribution anywhere receives the live array, and
+  // every one of them takes a copy.
+  assert.equal((body.match(/attempts: attempts\b/g) || []).length, 0,
+    'the live array is never handed to an attribution — a later push could rewrite a returned record');
+  assert.equal((body.match(/attempts: \[\.\.\.attempts/g) || []).length, 7,
+    'seven attributions, seven copies: 2 cloud success, 1 terminal failure, 2 local failure, 2 local success');
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════
