@@ -1,0 +1,281 @@
+/**
+ * lib/__tests__/retrieval-telemetry-lifecycle.test.ts — kickoff tests 19, 20, 31, 32, 34, 52 and 53.
+ *
+ * The handle's whole reason for existing is that the audit write and the telemetry link are NOT
+ * transactional and cannot be: `lib/db.ts` exports `sql` as a Proxy with only an `apply` trap, so
+ * the driver's own `transaction` is unreachable — and even if it were, it could not span the
+ * application logic between the two. What replaces atomicity is what is tested here: idempotent
+ * updates, an explicit revision guard, and per-role independence.
+ */
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { installDbStub, classedError } from './telemetry-db-stub';
+import {
+  declareRetrievals, writeRetrievalTerminal, applyTerminalState,
+  attachRetrievalTelemetry, readRetrievalTelemetry, RETRIEVAL_TELEMETRY_PROPERTY,
+  type LifecycleHandle,
+} from '../retrieval-telemetry-store';
+import { createTelemetryCapture, buildRetrievalPayload } from '../retrieval-capture';
+import type { TelemetryRequestContext, OperationalTelemetry } from '../retrieval-telemetry-core';
+
+const INSERT_RUNS = /INSERT INTO opd_audit_retrieval_telemetry/;
+const UPDATE_TERMINAL = /SET persistence_state = 'retrieval_complete'/;
+const SELECT_ROW = /SELECT persistence_state, row_revision, audit_id/;
+const UPDATE_SETTLE = /SET persistence_state = \$3, audit_id = \$4/;
+const INSERT_FAILURE = /INSERT INTO opd_retrieval_telemetry_failures/;
+const BUMP_FAILURES = /SET telemetry_write_failures = telemetry_write_failures \+ 1/;
+
+const AT = '2026-08-12T00:00:00.000Z';
+const ctx: TelemetryRequestContext = {
+  invocationId: 'inv-1', route: 'opd_audit_worker', routeClass: 'worker',
+  deploymentSha: 'sha', vercelRequestId: null, startedAt: AT, routingFlags: {},
+};
+
+const operational = (role: 'primary' | 'normative_channel'): OperationalTelemetry => ({
+  route: 'opd_audit_worker', route_class: 'worker', retrieval_role: role,
+  invocation_id: 'inv-1', trace_id: null, deployment_sha: 'sha',
+  started_at: AT, completed_at: AT, routing_flags: {},
+  active_backfill_run_id: null, active_backfill_target: null, active_backfill_state: null,
+  active_lab_experiment_id: null,
+});
+
+const payloadFor = (role: 'primary' | 'normative_channel') =>
+  buildRetrievalPayload(createTelemetryCapture(role), { hmacKey: 'k', scorerContext: role === 'primary' ? '' : null });
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// 19 — a predeclared id is ADOPTED, never reallocated
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+test('19 — the predeclared run id is the one every later write targets, and no second row is inserted', async () => {
+  const db = installDbStub();
+  db.on(INSERT_RUNS, [{ retrieval_run_id: 'pre-1' }]);
+  db.on(UPDATE_TERMINAL, [{ row_revision: 1 }]);
+
+  const handle = await declareRetrievals(ctx, [{ role: 'primary', runId: 'pre-1', uid: 'u', engineVersion: 'e' }], 'will_persist');
+  const after = await writeRetrievalTerminal(handle, 'primary', {
+    payload: payloadFor('primary'), operational: operational('primary'), traceId: null, completedAt: AT,
+  });
+
+  assert.equal(db.matching(INSERT_RUNS).length, 1, 'one insert, not two');
+  assert.equal(db.matching(UPDATE_TERMINAL)[0].params[0], 'pre-1', 'the terminal write targets the declared id');
+  assert.equal(after.runs[0].runId, 'pre-1', 'and the handle still carries it');
+  // The insert is idempotent, which is what makes adoption safe when a worker declared first.
+  assert.match(db.matching(INSERT_RUNS)[0].query, /ON CONFLICT \(retrieval_run_id\) DO NOTHING/);
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// 20 — revisions
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+test('20 — declare returns 0, the terminal write returns 1, and a stale handle is REJECTED', async () => {
+  const db = installDbStub();
+  db.on(INSERT_RUNS, [{ retrieval_run_id: 'r1' }]);
+  db.on(UPDATE_TERMINAL, [{ row_revision: 1 }]);
+
+  const declared = await declareRetrievals(ctx, [{ role: 'primary', runId: 'r1', uid: null, engineVersion: null }], 'will_persist');
+  assert.equal(declared.runs[0].expectedRevision, 0);
+
+  const advanced = await writeRetrievalTerminal(declared, 'primary', {
+    payload: payloadFor('primary'), operational: operational('primary'), traceId: null, completedAt: AT,
+  });
+  assert.equal(advanced.runs[0].expectedRevision, 1);
+  // ⚠️ NOTHING MUTATED IN PLACE. The old handle still reads 0, which is exactly what makes it stale.
+  assert.equal(declared.runs[0].expectedRevision, 0);
+  assert.notEqual(declared, advanced);
+
+  // Settling with the STALE handle is rejected, and is reported as rejected.
+  db.on(SELECT_ROW, [{ persistence_state: 'retrieval_complete', row_revision: 1, audit_id: null }]);
+  db.on(INSERT_FAILURE, []);
+  const r = await applyTerminalState(declared, declared.runs[0], { state: 'persisted_complete', auditId: 'a', settledAt: AT });
+  assert.equal(r.status, 'rejected');
+  assert.equal(r.rejection, 'stale_revision');
+  assert.equal(db.matching(UPDATE_SETTLE).length, 0, 'and nothing was written');
+});
+
+test('20 — revisions advance PER ROLE: a normative write cannot invalidate the primary\'s handle', async () => {
+  const db = installDbStub();
+  db.on(INSERT_RUNS, [{ retrieval_run_id: 'r-prim' }, { retrieval_run_id: 'r-norm' }]);
+  db.on(UPDATE_TERMINAL, [{ row_revision: 1 }]);
+
+  let handle = await declareRetrievals(ctx, [
+    { role: 'primary', runId: 'r-prim', uid: null, engineVersion: null },
+    { role: 'normative_channel', runId: 'r-norm', uid: null, engineVersion: null },
+  ], 'will_persist');
+
+  handle = await writeRetrievalTerminal(handle, 'normative_channel', {
+    payload: payloadFor('normative_channel'), operational: operational('normative_channel'), traceId: null, completedAt: AT,
+  });
+  assert.equal(handle.runs.find((r) => r.role === 'normative_channel')!.expectedRevision, 1);
+  assert.equal(handle.runs.find((r) => r.role === 'primary')!.expectedRevision, 0, 'the primary did not move');
+
+  handle = await writeRetrievalTerminal(handle, 'primary', {
+    payload: payloadFor('primary'), operational: operational('primary'), traceId: null, completedAt: AT,
+  });
+  assert.deepEqual(handle.runs.map((r) => r.expectedRevision), [1, 1]);
+});
+
+test('20 — a terminal write that matches nothing is NOT retried, and does not advance the handle', async () => {
+  const db = installDbStub();
+  db.on(UPDATE_TERMINAL, []);   // revision or state moved under us
+  const handle: LifecycleHandle = {
+    invocationId: 'inv-1', runs: [{ role: 'primary', runId: 'r1', expectedRevision: 0 }], persistenceIntent: 'will_persist',
+  };
+  const after = await writeRetrievalTerminal(handle, 'primary', {
+    payload: payloadFor('primary'), operational: operational('primary'), traceId: null, completedAt: AT,
+  });
+  assert.equal(after.runs[0].expectedRevision, 0, 'the handle is unchanged, so the caller is not told a lie');
+  assert.equal(db.matching(UPDATE_TERMINAL).length, 1, 'ONE attempt — a blind retry is how an old invocation overwrites a newer result');
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// 31 — reuse-only work writes nothing at all
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+test('31 — the reuse guard returns BEFORE any telemetry statement exists', () => {
+  const src = readFileSync('lib/opd-note-audit.ts', 'utf8');
+  const reuseReturn = src.indexOf('return { keys, scorecard, completeness, findings, suggestions: opts.reuse.suggestions');
+  const telemetryBlock = src.indexOf('// ══ RETRIEVAL TELEMETRY, STEPS 3-6 OF D11');
+  assert.ok(reuseReturn > 0 && telemetryBlock > 0);
+  assert.ok(reuseReturn < telemetryBlock,
+    'D11 step 1 is the reuse guard: no invocation row, no retrieval rows, no handle');
+  // An empty run list is the second half of the same guarantee, and it is exercised, not pinned:
+  // see retrieval-invocation-store.test.ts, "an empty run list writes nothing".
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// 32 — the handle is non-enumerable
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+test('32 — the attached handle is absent from JSON.stringify, from the keys, and from a spread', () => {
+  const audit = { keys: { uid: 'u' }, scorecard: { headline: 90 } };
+  const handle: LifecycleHandle = {
+    invocationId: 'inv-1', runs: [{ role: 'primary', runId: 'r1', expectedRevision: 1 }], persistenceIntent: 'will_persist',
+  };
+  const attached = attachRetrievalTelemetry(audit, { handle, manifestDefects: [] });
+
+  assert.equal(attached, audit, 'attached in place — the audit is not replaced by a wrapper');
+  // ⚠️ JSON.stringify IS WHAT REACHES THE STORE, THE LAB AND EVERY LOG LINE. An invocation id
+  // appearing there would put run ids in places §4.2 never authorised.
+  assert.equal(JSON.stringify(attached).includes('inv-1'), false);
+  assert.equal(JSON.stringify(attached).includes(RETRIEVAL_TELEMETRY_PROPERTY), false);
+  assert.deepEqual(Object.keys(attached), ['keys', 'scorecard']);
+  assert.equal(RETRIEVAL_TELEMETRY_PROPERTY in { ...attached }, false, 'a spread drops it too');
+  // …and it is still readable by the owner that needs it.
+  assert.equal(readRetrievalTelemetry(attached)?.handle, handle);
+  assert.equal(readRetrievalTelemetry({}), null);
+  assert.equal(readRetrievalTelemetry(null), null);
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// 34 — when even the failure store fails
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+test('34 — terminal write fails, failure row fails: the invocation counter is the only evidence left', async () => {
+  const db = installDbStub();
+  db.on(UPDATE_TERMINAL, classedError('NeonDbError'));
+  db.on(INSERT_FAILURE, classedError('AlsoDown'));
+  db.on(BUMP_FAILURES, []);
+  const handle: LifecycleHandle = {
+    invocationId: 'inv-1', runs: [{ role: 'primary', runId: 'r1', expectedRevision: 0 }], persistenceIntent: 'will_persist',
+  };
+  // Nothing propagates: an audit is never failed because its telemetry could not be recorded.
+  const after = await writeRetrievalTerminal(handle, 'primary', {
+    payload: payloadFor('primary'), operational: operational('primary'), traceId: null, completedAt: AT,
+  });
+  assert.equal(after, handle, 'the caller keeps the handle it had');
+  assert.equal(db.matching(BUMP_FAILURES).length, 1);
+  assert.deepEqual(db.matching(BUMP_FAILURES)[0].params, ['inv-1']);
+});
+
+test('34 — and when the counter ALSO fails: a log line, nothing else, still no propagation', async () => {
+  const db = installDbStub();
+  db.on(UPDATE_TERMINAL, classedError('NeonDbError'));
+  db.on(INSERT_FAILURE, classedError('AlsoDown'));
+  db.on(BUMP_FAILURES, classedError('DownToo'));
+  const handle: LifecycleHandle = {
+    invocationId: 'inv-1', runs: [{ role: 'primary', runId: 'r1', expectedRevision: 0 }], persistenceIntent: 'will_persist',
+  };
+  await writeRetrievalTerminal(handle, 'primary', {
+    payload: payloadFor('primary'), operational: operational('primary'), traceId: null, completedAt: AT,
+  });
+  assert.equal(db.matching(BUMP_FAILURES).length, 1, 'attempted once, and its own failure went nowhere');
+});
+
+test('34 — NO MODULE-LEVEL COUNTER EXISTS ANYWHERE, asserted by source search', () => {
+  // §4.1 forbids mutable process-global state, and a per-process number would not survive the
+  // invocation anyway — the whole point of this counter is that it is readable AFTER the invocation
+  // that failed is gone. The column is the record, or there is none.
+  for (const f of [
+    'lib/retrieval-telemetry-store.ts', 'lib/retrieval-invocation-store.ts',
+    'lib/retrieval-telemetry-failure-store.ts', 'lib/retrieval-settlement.ts',
+  ]) {
+    const src = readFileSync(f, 'utf8');
+    const moduleLevel = src.split('\n').filter((l) => /^(let|var) /.test(l));
+    assert.deepEqual(moduleLevel, [], `${f} declares module-level mutable state: ${moduleLevel.join(' | ')}`);
+  }
+  // And the column has exactly one writer, which is what makes it readable as a count.
+  const inv = readFileSync('lib/retrieval-invocation-store.ts', 'utf8');
+  assert.equal((inv.match(/telemetry_write_failures = telemetry_write_failures \+ 1/g) || []).length, 1);
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// 52 and 53 — the owner matrix, and the callback
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+/** Every file D9's matrix names, and the outcome each of its paths must settle. Source-read: these
+ *  are route handlers with no harness to invoke, which is stated rather than glossed. */
+const OWNERS: Array<[string, string[]]> = [
+  ['app/api/opd-audit/worker/route.ts', [
+    "outcomeForOwnedSave(s, defects), auditId",          // inserted / updated
+    'outcomeForOwnedSave(status, defects))',             // exists / skipped
+    "settleOwned(handle, 'persistence_refused')",        // DEC-2
+    "published ? 'audit_generation_failed' : 'retrieval_not_run'",
+  ]],
+  ['app/api/opd-audit/run/route.ts', [
+    "settleOwned(handle, 'audit_persistence_failed')",   // the force arm's own .catch
+    "settleOwned(handle, 'no_persistence_intended')",    // no save asked for, and the POST arm
+    "published ? 'audit_generation_failed' : 'retrieval_not_run'",
+  ]],
+  ['app/api/admin/opd-audit-mini-backfill/route.ts', [
+    'outcomeForOwnedSave(st, defects), auditId',
+    "'persistence_refused'",
+    "published ? 'audit_generation_failed' : 'retrieval_not_run'",
+  ]],
+  ['lib/lab-batch.ts', ["settleOwned(handle, 'no_persistence_intended')"]],
+  ['lib/mcp-tools.ts', [
+    "settleOwned(handle, 'no_persistence_intended')",    // mini_analyze, and lab_retrieve
+    'outcomeForOwnedSave(status), auditId',              // backfill_control, as the worker
+  ]],
+  ['lib/lvc.ts', ['settleRetrievalTelemetry(']],         // defaultRecall — no audit
+  ['scripts/bedrock-opd-note-probe.mjs', [
+    "settleOwned(handle, 'audit_persistence_failed')",   // its OWN save failure
+    "settleOwned(handle, 'no_persistence_intended')",    // the dry arm
+  ]],
+  ['scripts/metamorphic-llm-report.mjs', ["settleOwned(handle, 'no_persistence_intended')"]],
+];
+
+test('52 — every owner in the D9 matrix settles, including both scripts and both MCP paths', () => {
+  for (const [file, needles] of OWNERS) {
+    const src = readFileSync(file, 'utf8');
+    for (const n of needles) {
+      assert.ok(src.includes(n), `${file} does not settle: ${n}`);
+    }
+  }
+});
+
+test('53 — the callback carries the audit id, and its failure never changes the save result', () => {
+  const store = readFileSync('lib/opd-audit-store.ts', 'utf8');
+  // It fires only on the two results that produced a row — `exists` and `skipped` never reach it.
+  assert.match(store, /if \(opts\.onPersisted && rows\[0\]\.id\) \{/);
+  assert.ok(store.includes("await opts.onPersisted({ status: landed, auditId: String(rows[0].id) })"));
+  // ⚠️ A CALLBACK EXCEPTION IS SWALLOWED AND THE RESULT PRESERVED (constraint 1). The `.catch` is
+  // on the call, and `return landed` is after it and unconditional.
+  assert.match(store, /\.catch\(\(e\) => console\.warn\('\[opd-audit\] onPersisted threw; the save stands'/);
+  const call = store.indexOf('opts.onPersisted({');
+  assert.ok(store.indexOf('return landed;', call) > call, 'the result is returned after, whatever the callback did');
+  // saveOpdAudit NEVER receives the handle: the closure holds it, and this file imports no
+  // telemetry module at all.
+  assert.equal(/retrieval-telemetry|retrieval-settlement|LifecycleHandle/.test(store), false,
+    'a clinical write acquires no telemetry import');
+});

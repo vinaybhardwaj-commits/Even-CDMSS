@@ -24,6 +24,9 @@ import { auditedUidsForDayInLine, cloudAuditedUidsForDay, saveOpdAudit } from '.
 import { BEDROCK_MODELS } from '../lib/bedrock-core.ts';
 import { usageForTrace } from '../lib/backfill-runs.ts';
 import { costUsd } from '../lib/llm-cost-core.ts';
+import { telemetryContextFor } from '../lib/retrieval-telemetry-core.ts';
+import { startInvocation } from '../lib/retrieval-invocation-store.ts';
+import { settleOwned, outcomeForOwnedSave } from '../lib/retrieval-settlement.ts';
 import { PRICING } from '../lib/llm-cost.ts';
 
 const argv = process.argv.slice(2);
@@ -47,8 +50,21 @@ async function main() {
   const rows = await fetchOpdNotesForDay(day, skip, 1);
   if (!rows.length) { log('no un-audited note on this day — pass a different --day'); process.exit(2); }
 
+  // ⚠️ ONE INVOCATION PER PROCESS (D11). A script is a boundary like any route; what it is not is a
+  // request, so there are no headers and the deployment SHA is whatever the local environment says.
+  // Its route is `script`, which §8's overlap analysis reads as manual — never as a canary window.
+  const ctx = telemetryContextFor('script', null);
+  await startInvocation(ctx);
+  let handle = null;
+  let published = false;
+
   const started = Date.now();
-  const audit = await auditOpdNote(rows[0], { bedrockModel: MODEL });
+  const audit = await auditOpdNote(rows[0], {
+    bedrockModel: MODEL,
+    telemetry: { ctx, route: 'script', persistenceIntent: SAVE ? 'will_persist' : 'never_persists' },
+    onLifecycleHandleUpdated: (h) => { handle = h; published = true; },
+  });
+  void published;
   const ms = Date.now() - started;
 
   const usage = await usageForTrace(audit.traceId);
@@ -98,9 +114,27 @@ async function main() {
   console.log(json);
 
   if (SAVE) {
-    const status = await saveOpdAudit(audit, { model: MODEL, latencyMs: ms });
+    // As the worker (D9) — and its OWN save failure is `audit_persistence_failed`, because nothing
+    // above this line would otherwise ever hear about it.
+    let linked = false;
+    let status;
+    try {
+      status = await saveOpdAudit(audit, { model: MODEL, latencyMs: ms }, {
+        onPersisted: async ({ status: st, auditId }) => { linked = true; await settleOwned(handle, outcomeForOwnedSave(st), auditId); },
+      });
+    } catch (e) {
+      // ⚠️ NO `closeInvocation` HERE, AND THAT IS DELIBERATE. Who closes an invocation is genuinely
+      // unspecified — D9's owner matrix assigns settlement outcomes per path and names no closure
+      // owner at all — so this build proposes an owner matrix in the report and wires none. A
+      // script that ends without closing leaves `closure_unknown`, which is the honest record.
+      await settleOwned(handle, 'audit_persistence_failed');
+      throw e;
+    }
+    if (!linked) await settleOwned(handle, outcomeForOwnedSave(status));
     log(`\nsaved: ${status} (model column = ${MODEL})`);
   } else {
+    // The dry arm audits and deliberately writes nothing.
+    await settleOwned(handle, 'no_persistence_intended');
     log(`\nDRY RUN — no row written. Re-run with --save to store it.`);
   }
   log(problems.length ? '\nVERDICT: SUSPECT — do not wire the cron until this is explained.' : '\nVERDICT: intact.');

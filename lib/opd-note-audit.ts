@@ -13,11 +13,11 @@ import { hitsToSources, buildCitedContext, type CiteHit, type Source } from './c
 // ── Retrieval telemetry (Stage 0a on-path) ──────────────────────────────────────────────────────
 import { createTelemetryCapture, buildRetrievalPayload, errorClassOf, type TelemetryCapture } from './retrieval-capture';
 import {
-  declareRetrievals, writeRetrievalTerminal,
+  declareRetrievals, writeRetrievalTerminal, attachRetrievalTelemetry,
   type LifecycleHandle, type PredeclaredTelemetryRuns,
 } from './retrieval-telemetry-store';
 import { startInvocation } from './retrieval-invocation-store';
-import { routeClassOf } from './retrieval-telemetry-core';
+import { routeClassOf, validateManifest } from './retrieval-telemetry-core';
 import type {
   TelemetryRequestContext, RetrievalRoute, OperationalTelemetry, BackfillActivity,
 } from './retrieval-telemetry-core';
@@ -740,7 +740,12 @@ async function readBackfillActivity(): Promise<{ runId: string | null; target: s
 }
 
 /** Write both role terminals in D11's order, publishing the handle after each. Never throws — a
- *  telemetry write must not fail an audit (constraint 1). */
+ *  telemetry write must not fail an audit (constraint 1).
+ *
+ *  Returns the manifest's own validation verdict, which the OWNER needs and cannot compute: D17
+ *  makes a persisted row `persisted_partial` when `validateManifest` returned anything, and the
+ *  manifest never leaves this function. Until this build `validateManifest` had no production
+ *  caller at all, so no row could ever have been classified partial for the reason D17 gives. */
 async function writeRetrievalTerminals(args: {
   tele: NonNullable<AuditOpdOpts['telemetry']>;
   handle: LifecycleHandle;
@@ -750,9 +755,10 @@ async function writeRetrievalTerminals(args: {
   citedContext: string;
   primaryCapture: TelemetryCapture;
   normativeCapture?: TelemetryCapture;
-}): Promise<void> {
+}): Promise<string[]> {
   const { tele, publishHandle, traceId, startedAt, citedContext } = args;
   let handle = args.handle;
+  const defects: string[] = [];
   try {
     const hmacKey = process.env.CDMSS_TELEMETRY_HMAC_KEY ?? null;
     const backfill = await readBackfillActivity();
@@ -769,9 +775,12 @@ async function writeRetrievalTerminals(args: {
     // PRIMARY carries the scorer-context HMAC, computed over the EXACT rendered citedContext bytes.
     // With zero candidates that string is empty, and the HMAC of the empty string is a defined
     // value — never null because reranking was skipped or failed (A2).
+    const primaryPayload = buildRetrievalPayload(args.primaryCapture, { hmacKey, scorerContext: citedContext });
+    const primaryOperational = operationalFor('primary');
+    defects.push(...validateManifest({ ...primaryPayload, operational: primaryOperational }));
     handle = await writeRetrievalTerminal(handle, 'primary', {
-      payload: buildRetrievalPayload(args.primaryCapture, { hmacKey, scorerContext: citedContext }),
-      operational: operationalFor('primary'),
+      payload: primaryPayload,
+      operational: primaryOperational,
       traceId, completedAt: new Date().toISOString(),
     });
     publishHandle(handle);
@@ -782,9 +791,12 @@ async function writeRetrievalTerminals(args: {
       // always `skipped` (normativeChannelOpts sets skipExpand unconditionally), which is why the
       // validator accepts a null served class on a skipped stage — otherwise every one of these
       // rows would be partial by construction.
+      const normPayload = buildRetrievalPayload(args.normativeCapture, { hmacKey, scorerContext: null });
+      const normOperational = operationalFor('normative_channel');
+      defects.push(...validateManifest({ ...normPayload, operational: normOperational }));
       handle = await writeRetrievalTerminal(handle, 'normative_channel', {
-        payload: buildRetrievalPayload(args.normativeCapture, { hmacKey, scorerContext: null }),
-        operational: operationalFor('normative_channel'),
+        payload: normPayload,
+        operational: normOperational,
         traceId, completedAt: new Date().toISOString(),
       });
       publishHandle(handle);
@@ -792,6 +804,7 @@ async function writeRetrievalTerminals(args: {
   } catch (e) {
     console.warn('[opd-audit] retrieval telemetry terminal write failed', (e as Error).message);
   }
+  return defects;
 }
 
 /** The additive block's framing. Lives in the USER-message context only — OPD_AUDIT_SYSTEM is frozen. */
@@ -1502,7 +1515,12 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
   const normativeCapture = tele && wantsNormative ? createTelemetryCapture('normative_channel') : undefined;
   const telemetryStartedAt = new Date().toISOString();
   let handle: LifecycleHandle | null = null;
+  let manifestDefects: string[] = [];
   const publishHandle = (h: LifecycleHandle) => { handle = h; opts.onLifecycleHandleUpdated?.(h); };
+  /** D11: the non-enumerable property on the audit object, for the SUCCESS path. The callback above
+   *  is what covers every throwing path, where there is no returned audit to carry anything. */
+  const withHandle = <T extends object>(audit: T): T =>
+    (tele ? attachRetrievalTelemetry(audit, { handle, manifestDefects }) : audit);
 
   if (tele) {
     await startInvocation(tele.ctx);
@@ -1560,7 +1578,7 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     // STEPS 10-13 — HMAC the combined context, build both payloads, write both terminals, and
     // publish the handle after each so a throw below still leaves the caller holding the latest.
     if (tele && handle) {
-      await writeRetrievalTerminals({
+      manifestDefects = await writeRetrievalTerminals({
         tele, handle, publishHandle, traceId: traceId ?? null,
         startedAt: telemetryStartedAt, citedContext,
         primaryCapture: primaryCapture!, normativeCapture,
@@ -1654,7 +1672,7 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
       ? buildLongitudinalInput(oc, keys, engineVersion, opdCaseText(oc, { specialty }))
       : null;
 
-    return {
+    return withHandle({
       keys, scorecard, completeness,
       findings, suggestions: parsed?.suggestions ?? [],
       sources, engineVersion: engineVersion, traceId,
@@ -1663,7 +1681,7 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
       longitudinalInput,
       // S0 — absent on every successful audit, so the common-path shape is unchanged.
       ...(llmLegFailed ? { llmLegFailed: true } : {}),
-    };
+    });
   } catch (e) {
     if (traceId) await finishTrace(traceId, 'error', String((e as Error).message)).catch(() => {});
     // ═══ FAIL LOUD, EVAL PATH ONLY (D1 + D2) ═══
@@ -1689,6 +1707,13 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     // S0 — EVERY det-only fallback is a failed measurement (pdqi9 was never assessed), whatever
     // threw: LLM leg, retrieval, or anything else inside the try. Marking unconditionally here is
     // what makes the S0 gate ("zero unmarked rows with empty pdqi9") hold for every fallback row.
+    // ⚠️ NO HANDLE IS ATTACHED HERE, AND THAT IS D11's RULE, NOT AN OMISSION. The non-enumerable
+    // property is "for the SUCCESS path"; every throwing path is covered by
+    // `onLifecycleHandleUpdated`, which has already given the owner the latest handle — including
+    // on this one, where the throw happened after declaration. Attaching it here as well would buy
+    // nothing and would rewrite a return statement that three committed tests pin verbatim
+    // (opd-invalid-marking, pdqi9-fail-loud, vertex-primary-ladder), each of them asserting that
+    // the non-eval fallback is byte-identical to what it has always been.
     return { keys, scorecard, completeness, findings: finalize(det), suggestions: [], sources: [], engineVersion: engineVersion, traceId, complexity: await complexityFor(), quietingGen: quietCfg.gen, llmLegFailed: true };
   }
 }

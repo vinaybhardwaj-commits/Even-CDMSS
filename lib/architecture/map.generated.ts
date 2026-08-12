@@ -619,6 +619,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "opd-audit-runtime-config",
+    "plane": "unregistered"
+  },
+  {
     "id": "opd-audit-store",
     "plane": "unregistered"
   },
@@ -1701,6 +1705,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/api",
+    "to": "opd-audit-runtime-config",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
     "to": "opd-audit-store",
     "kind": "value"
   },
@@ -1896,7 +1905,27 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/api",
+    "to": "retrieval-invocation-store",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "retrieval-settlement",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
     "to": "retrieval-telemetry-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "retrieval-telemetry-failure-store",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "retrieval-telemetry-store",
     "kind": "value"
   },
   {
@@ -3240,6 +3269,21 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "lab-batch",
+    "to": "retrieval-settlement",
+    "kind": "value"
+  },
+  {
+    "from": "lab-batch",
+    "to": "retrieval-telemetry-core",
+    "kind": "type"
+  },
+  {
+    "from": "lab-batch",
+    "to": "retrieval-telemetry-store",
+    "kind": "type"
+  },
+  {
     "from": "lab-override",
     "to": "admin-cookie",
     "kind": "value"
@@ -3500,6 +3544,11 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "mcp-server",
+    "to": "retrieval-telemetry-core",
+    "kind": "type"
+  },
+  {
     "from": "mcp-tools",
     "to": "db",
     "kind": "value"
@@ -3597,6 +3646,31 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "mcp-tools",
     "to": "rerank",
+    "kind": "value"
+  },
+  {
+    "from": "mcp-tools",
+    "to": "retrieval-capture",
+    "kind": "value"
+  },
+  {
+    "from": "mcp-tools",
+    "to": "retrieval-invocation-store",
+    "kind": "value"
+  },
+  {
+    "from": "mcp-tools",
+    "to": "retrieval-settlement",
+    "kind": "value"
+  },
+  {
+    "from": "mcp-tools",
+    "to": "retrieval-telemetry-core",
+    "kind": "value"
+  },
+  {
+    "from": "mcp-tools",
+    "to": "retrieval-telemetry-store",
     "kind": "value"
   },
   {
@@ -4472,6 +4546,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "retrieval-settlement",
     "to": "retrieval-telemetry-core",
+    "kind": "value"
+  },
+  {
+    "from": "retrieval-settlement",
+    "to": "retrieval-telemetry-failure-store",
     "kind": "value"
   },
   {

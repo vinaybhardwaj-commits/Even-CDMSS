@@ -6,6 +6,7 @@
  */
 import { timingSafeEqual } from 'crypto';
 import { LAB_TOOLS, callLabTool } from './mcp-tools';
+import type { TelemetryRequestContext } from './retrieval-telemetry-core';
 
 export const MCP_SERVER_INFO = { name: 'cdmss-lab', version: '1.0.0' };
 export const MCP_PROTOCOL_VERSION = '2024-11-05';
@@ -27,8 +28,13 @@ export type McpReply = { status: number; body: unknown | null };
 const result = (id: unknown, r: unknown): McpReply => ({ status: 200, body: { jsonrpc: '2.0', id, result: r } });
 const rpcErr = (id: unknown, code: number, message: string): McpReply => ({ status: 200, body: { jsonrpc: '2.0', id, error: { code, message } } });
 
-/** Dispatch one JSON-RPC message (auth already checked by the caller). */
-export async function dispatchMcp(body: JsonRpc): Promise<McpReply> {
+/** Dispatch one JSON-RPC message (auth already checked by the caller).
+ *
+ *  ⚠️ THE CONTEXT IS THREADED, NOT MINTED (D11). This function takes only the body by design — it
+ *  is transport-agnostic and shared by two routes — so the invocation context has to arrive from
+ *  whichever of them handled the request. Optional: every method except `tools/call` ignores it,
+ *  and a caller with no request (a test, a script) legitimately has none. */
+export async function dispatchMcp(body: JsonRpc, ctx?: TelemetryRequestContext): Promise<McpReply> {
   const id = body.id ?? null;
   const method = String(body.method || '');
   const params = (body.params && typeof body.params === 'object') ? body.params as Record<string, unknown> : {};
@@ -52,7 +58,7 @@ export async function dispatchMcp(body: JsonRpc): Promise<McpReply> {
       const toolName = String(params.name || '');
       const args = (params.arguments && typeof params.arguments === 'object') ? params.arguments as Record<string, unknown> : {};
       if (!LAB_TOOLS.some((t) => t.name === toolName)) return rpcErr(id, -32602, `unknown tool: ${toolName}`);
-      return result(id, await callLabTool(toolName, args));
+      return result(id, await callLabTool(toolName, args, ctx));
     }
     default:
       return rpcErr(id, -32601, `method not found: ${method}`);

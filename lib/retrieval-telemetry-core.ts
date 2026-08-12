@@ -19,7 +19,7 @@
  * comment: the cheapest possible check is one that cannot be argued with.
  */
 
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 // 1. VERSIONS — independent of the application deployment (§4.3)
@@ -235,6 +235,36 @@ export interface TelemetryRequestContext {
   routingFlags: Record<string, string>;
   /** Hosted-lab linkage, when this invocation belongs to an experiment. */
   labExperimentId?: string | null;
+}
+
+/**
+ * Build the context ONE boundary establishes, from that boundary's own request (D11).
+ *
+ * ⚠️ ONE PLACE, BECAUSE THERE ARE TEN BOUNDARIES. Eight routes and two scripts each create exactly
+ * one of these; ten hand-written literals would drift on the deployment SHA env var, on the route
+ * class, or on what an absent `x-vercel-id` means, and the drift would look like data.
+ *
+ * ⚠️ AN ABSENT `x-vercel-id` OMITS THE KEY, never an empty string. An empty string is a value and
+ * would be read as one; absence is absence. `routing_flags` stays `Record<string, string>`, so the
+ * only honest way to say "not present" is not to have the key.
+ */
+export function telemetryContextFor(
+  route: InvocationRoute,
+  headers?: { get(name: string): string | null } | null,
+  extra?: { routingFlags?: Record<string, string>; labExperimentId?: string | null },
+): TelemetryRequestContext {
+  const vercelRequestId = headers?.get('x-vercel-id') || null;
+  const routingFlags: Record<string, string> = { ...(extra?.routingFlags ?? {}) };
+  return {
+    invocationId: randomUUID(),
+    route,
+    routeClass: routeClassOf(route),
+    deploymentSha: process.env.VERCEL_GIT_COMMIT_SHA || null,
+    vercelRequestId,
+    startedAt: new Date().toISOString(),
+    routingFlags,
+    labExperimentId: extra?.labExperimentId ?? null,
+  };
 }
 
 /** Invocation accounting (D2). `reconciler` runs are invocations too, and must not be counted as

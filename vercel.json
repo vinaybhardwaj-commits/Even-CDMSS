@@ -21,6 +21,7 @@
     { "path": "/api/admin/opd-audit/longitudinal-replay?auto=1", "schedule": "*/10 * * * *" },
     { "path": "/api/care/lvc/generate?auto=1", "schedule": "0 6 * * *" },
     { "path": "/api/care/lvc/ground?auto=1", "schedule": "*/10 * * * *" },
-    { "path": "/api/care/concept/code?auto=1", "schedule": "*/2 * * * *" }
+    { "path": "/api/care/concept/code?auto=1", "schedule": "*/2 * * * *" },
+    { "path": "/api/admin/retrieval-telemetry-reconcile", "schedule": "1 10 * * *" }
   ]
 }

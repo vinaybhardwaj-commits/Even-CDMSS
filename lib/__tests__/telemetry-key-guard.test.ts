@@ -10,15 +10,30 @@
 // keeping the copies honest. A condition that is duplicated and unpinned is how a deploy check
 // stops checking — it keeps passing while one copy quietly stops meaning what the other means.
 //
-// House style is a source-text pin (see retrieval-llm-determinism.test.ts): `next.config.mjs`
-// cannot import a `.ts`, so the copies can only be compared as text.
+// ⚠️ AND THE FIRST VERSION OF THIS PIN COULD BE DEFEATED BY ONE SPACE. It compared the two copies
+// as TEXT with all whitespace stripped, including whitespace inside string literals — so changing
+// `'1'` to `'1 '` in next.config.mjs made the guard unable to fire ever again while all eight tests
+// stayed green. It counted `&&` to forbid a fourth clause, which a fourth clause joined by `||` did
+// not touch. Both holes had the same cause: a condition was being compared as characters instead of
+// as a condition.
+//
+// WHAT REPLACES IT. `next.config.mjs` cannot import a `.ts`, so the two copies still cannot be
+// compared by evaluating them — but they can be PARSED. Both are read through the TypeScript
+// parser, which is already a devDependency, and compared as syntax trees. String literals are
+// compared by their exact value, so a space inside one is a difference; the shape of each clause is
+// asserted against what D8 specifies, so a fourth clause joined by any operator is a difference;
+// and the two trees are compared to each other, so one-sided drift is a difference. Formatting, line
+// breaks and the `process.env.` / `env.` spelling are the only things that do not count.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import ts from 'typescript';
 import { telemetryKeyMissingInProduction, TELEMETRY_HMAC_KEY_ENV } from '../telemetry-key-guard';
 
-const guardSrc = readFileSync('lib/telemetry-key-guard.ts', 'utf8');
-const nextConfigSrc = readFileSync('next.config.mjs', 'utf8');
+const GUARD_FILE = 'lib/telemetry-key-guard.ts';
+const CONFIG_FILE = 'next.config.mjs';
+const guardSrc = readFileSync(GUARD_FILE, 'utf8');
+const nextConfigSrc = readFileSync(CONFIG_FILE, 'utf8');
 
 // ── the five cases ──────────────────────────────────────────────────────────────────────────────
 //
@@ -67,101 +82,218 @@ test('57 case 3 — production Vercel build with a usable key: NOT missing', () 
   );
 });
 
+// The key values this case sweeps. `undefined` is absence; the rest are every shape case 2 and case
+// 3 distinguish. The title says "at any key value", so the test tries every one of them rather than
+// only the absent case, which is all it used to try.
+const EVERY_KEY_SHAPE = [undefined, '', '   ', '\t\n ', 'k', '  k  '];
+
 test('57 case 4 — a Vercel build that is not production: NOT missing, at any key value', () => {
   for (const env of ['preview', 'development', undefined]) {
-    assert.equal(
-      telemetryKeyMissingInProduction({ VERCEL: '1', VERCEL_ENV: env }), false,
-      `VERCEL_ENV=${String(env)} is not a production build`,
-    );
+    for (const key of EVERY_KEY_SHAPE) {
+      assert.equal(
+        telemetryKeyMissingInProduction({ VERCEL: '1', VERCEL_ENV: env, [TELEMETRY_HMAC_KEY_ENV]: key }), false,
+        `VERCEL_ENV=${String(env)} is not a production build (key ${JSON.stringify(key)})`,
+      );
+    }
   }
 });
 
 test('57 case 5 — not a Vercel build, even when the environment says production: NOT missing', () => {
   // The local case. A developer whose `.env.local` carries VERCEL_ENV=production is not deploying.
-  assert.equal(telemetryKeyMissingInProduction({ VERCEL_ENV: 'production' }), false);
-  assert.equal(telemetryKeyMissingInProduction({ VERCEL: '0', VERCEL_ENV: 'production' }), false);
+  for (const key of EVERY_KEY_SHAPE) {
+    assert.equal(telemetryKeyMissingInProduction({ VERCEL_ENV: 'production', [TELEMETRY_HMAC_KEY_ENV]: key }), false);
+    assert.equal(
+      telemetryKeyMissingInProduction({ VERCEL: '0', VERCEL_ENV: 'production', [TELEMETRY_HMAC_KEY_ENV]: key }), false,
+    );
+  }
   assert.equal(telemetryKeyMissingInProduction({}), false);
 });
 
-// ── the source pin ──────────────────────────────────────────────────────────────────────────────
+// ── the parser, and the one normalization ───────────────────────────────────────────────────────
 
-/** The substring between a `(` at `open` and its matching `)`. Depth-counted, not first-`)`. */
-function balanced(src: string, open: number): string {
-  let depth = 0;
-  for (let i = open; i < src.length; i += 1) {
-    if (src[i] === '(') depth += 1;
-    else if (src[i] === ')') {
-      depth -= 1;
-      if (depth === 0) return src.slice(open + 1, i);
-    }
+function parse(file: string, src: string, kind: ts.ScriptKind): ts.SourceFile {
+  return ts.createSourceFile(file, src, ts.ScriptTarget.ES2022, /* setParentNodes */ true, kind);
+}
+const configAst = parse(CONFIG_FILE, nextConfigSrc, ts.ScriptKind.JS);
+const guardAst = parse(GUARD_FILE, guardSrc, ts.ScriptKind.TS);
+
+/**
+ * A structural rendering of an expression. Two conditions render identically when they ARE the same
+ * condition, and differently otherwise.
+ *
+ * ⚠️ EXACTLY ONE THING IS NORMALIZED AWAY, AND IT IS NOT WHITESPACE. `process.env.X` in a build
+ * script and `env.X` in a function that takes the environment as a parameter are the same clause
+ * written in the only two ways each file has available; both render as `ENV.X`. Everything else is
+ * preserved, and string literals are rendered from their VALUE — `'1'` and `'1 '` are two different
+ * literals here, which is the whole reason this is a parser and not a `replace(/\s+/g, '')`.
+ */
+function ser(node: ts.Node, sf: ts.SourceFile): string {
+  if (ts.isParenthesizedExpression(node)) return ser(node.expression, sf);
+  if (ts.isIdentifier(node)) return node.text;
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return `str(${JSON.stringify(node.text)})`;
+  if (ts.isNumericLiteral(node)) return `num(${node.text})`;
+  if (ts.isPropertyAccessExpression(node)) {
+    const obj = ser(node.expression, sf);
+    return obj === 'process.env' || obj === 'env' ? `ENV.${node.name.text}` : `${obj}.${node.name.text}`;
   }
-  throw new Error('unbalanced parentheses from index ' + open);
+  if (ts.isCallExpression(node)) {
+    return `${ser(node.expression, sf)}(${node.arguments.map((a) => ser(a, sf)).join(', ')})`;
+  }
+  if (ts.isBinaryExpression(node)) {
+    return `(${ser(node.left, sf)} ${ts.tokenToString(node.operatorToken.kind)} ${ser(node.right, sf)})`;
+  }
+  if (ts.isPrefixUnaryExpression(node)) {
+    return `(${ts.tokenToString(node.operator)}${ser(node.operand, sf)})`;
+  }
+  // Anything this renderer does not model renders as its kind AND its text, so an unmodelled node
+  // can never accidentally compare equal to a different unmodelled node.
+  return `<${ts.SyntaxKind[node.kind]}:${JSON.stringify(node.getText(sf))}>`;
 }
 
-/** `next.config.mjs`'s inlined condition: the `if (…)` at the start of a line. */
-function inlinedCondition(): string {
-  const m = /^if \(/m.exec(nextConfigSrc);
-  assert.ok(m, 'next.config.mjs still opens the guard with a top-level `if (`');
-  return balanced(nextConfigSrc, m.index + 'if '.length);
+/** The `&&` operands at the top level, flattened. A root that is not `&&` yields one clause — which
+ *  is how `A && B && C || false` is caught: its root is `||`, so it has ONE clause, not three. */
+function ampChain(node: ts.Expression): ts.Expression[] {
+  const e = ts.isParenthesizedExpression(node) ? node.expression : node;
+  if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) {
+    return [...ampChain(e.left), ...ampChain(e.right)];
+  }
+  return [e];
+}
+
+function containsToken(node: ts.Node, kind: ts.SyntaxKind): boolean {
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === kind) return true;
+  let found = false;
+  ts.forEachChild(node, (c) => { if (!found && containsToken(c, kind)) found = true; });
+  return found;
+}
+
+// ── the two copies, located in their trees ──────────────────────────────────────────────────────
+
+/** The top-level `if` in `next.config.mjs` — the guard itself, not a nested one. */
+function inlinedGuard(): ts.IfStatement {
+  const found = configAst.statements.find(ts.isIfStatement);
+  assert.ok(found, `${CONFIG_FILE} still opens with a top-level \`if\` guard`);
+  return found;
 }
 
 /** The typed twin: whatever `telemetryKeyMissingInProduction` returns. */
-function typedCondition(): string {
-  const fn = guardSrc.indexOf('export function telemetryKeyMissingInProduction');
-  assert.ok(fn > 0, 'the typed twin is still exported under that name');
-  const ret = guardSrc.indexOf('return ', fn);
-  const end = guardSrc.indexOf(';', ret);
-  assert.ok(ret > fn && end > ret, 'its body is still a single returned expression');
-  return guardSrc.slice(ret + 'return '.length, end);
+function typedCondition(): ts.Expression {
+  const fn = guardAst.statements.find(
+    (s): s is ts.FunctionDeclaration => ts.isFunctionDeclaration(s) && s.name?.text === 'telemetryKeyMissingInProduction',
+  );
+  assert.ok(fn, 'the typed twin is still exported under that name');
+  const ret = fn.body?.statements[0];
+  assert.ok(ret && ts.isReturnStatement(ret) && ret.expression, 'its body is still a single returned expression');
+  return ret.expression;
 }
 
-/**
- * One spelling for two files. `process.env.X` and `env.X` are the same clause written in the only
- * two ways available to a `.mjs` build script and a typed function; nothing else is normalized, so
- * a changed operator, a changed literal or a dropped `.trim()` still fails.
- */
-function normalize(raw: string): string {
-  return raw
-    .replace(/\s+/g, '')
-    .replace(/process\.env\./g, 'ENV.')
-    .replace(/(?<![A-Za-z0-9_$.])env\./g, 'ENV.');
-}
+const COPIES: ReadonlyArray<readonly [string, ts.Expression, ts.SourceFile]> = [
+  [CONFIG_FILE, inlinedGuard().expression, configAst],
+  [GUARD_FILE, typedCondition(), guardAst],
+];
+
+// ── the oracle: each copy validated independently ───────────────────────────────────────────────
+
+test('57 pin — each copy is exactly D8\'s three clauses, and there is no fourth of any kind', () => {
+  for (const [where, cond, sf] of COPIES) {
+    const clauses = ampChain(cond);
+    assert.equal(clauses.length, 3, `${where}: D8 specifies three \`&&\` clauses, found ${clauses.length}`);
+    // A fourth clause joined by `||` does not change the `&&` count, so the `&&` count is not what
+    // is asserted. This is: no disjunction anywhere inside the condition.
+    assert.equal(
+      containsToken(cond, ts.SyntaxKind.BarBarToken), false,
+      `${where}: the condition contains a \`||\` — a fourth clause is V's to add, on both sides at once`,
+    );
+
+    // Clause 1 and clause 2: the two comparison roots. `===`, the env read on the left, and a
+    // string literal on the right whose VALUE is asserted, so a trailing space is a failure.
+    for (const [i, name, value] of [[0, 'VERCEL', '1'], [1, 'VERCEL_ENV', 'production']] as const) {
+      const c = clauses[i];
+      assert.ok(ts.isBinaryExpression(c), `${where}: clause ${i + 1} is a comparison`);
+      assert.equal(
+        c.operatorToken.kind, ts.SyntaxKind.EqualsEqualsEqualsToken,
+        `${where}: clause ${i + 1} compares with \`===\``,
+      );
+      assert.equal(ser(c.left, sf), `ENV.${name}`, `${where}: clause ${i + 1} reads ${name}`);
+      assert.ok(ts.isStringLiteral(c.right), `${where}: clause ${i + 1} compares against a string literal`);
+      assert.equal(
+        c.right.text, value,
+        `${where}: clause ${i + 1}'s literal is ${JSON.stringify(value)} and nothing else — `
+        + `${JSON.stringify(c.right.text)} would never equal the value the platform sets`,
+      );
+    }
+
+    // Clause 3: `!String(env.<KEY> ?? '').trim()`, asserted joint by joint. The env var name comes
+    // from the constant, so the pin and the two copies cannot drift on spelling — a typo'd variable
+    // reads as "no key" forever, in production, and nothing else would notice.
+    const trimmed = clauses[2];
+    assert.ok(
+      ts.isPrefixUnaryExpression(trimmed) && trimmed.operator === ts.SyntaxKind.ExclamationToken,
+      `${where}: clause 3 is a negation`,
+    );
+    const trimCall = (trimmed as ts.PrefixUnaryExpression).operand;
+    assert.ok(ts.isCallExpression(trimCall), `${where}: clause 3 negates a call`);
+    assert.ok(
+      ts.isPropertyAccessExpression(trimCall.expression) && trimCall.expression.name.text === 'trim',
+      `${where}: clause 3 calls .trim() — without it a key of three spaces is a key`,
+    );
+    const stringCall = trimCall.expression.expression;
+    assert.ok(
+      ts.isCallExpression(stringCall) && ser(stringCall.expression, sf) === 'String',
+      `${where}: clause 3 coerces with String(...)`,
+    );
+    assert.equal(stringCall.arguments.length, 1, `${where}: String(...) takes one argument`);
+    const coalesce = stringCall.arguments[0];
+    assert.ok(
+      ts.isBinaryExpression(coalesce) && coalesce.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken,
+      `${where}: clause 3 defaults an absent key with \`??\``,
+    );
+    assert.equal(
+      ser(coalesce.left, sf), `ENV.${TELEMETRY_HMAC_KEY_ENV}`,
+      `${where}: clause 3 reads ${TELEMETRY_HMAC_KEY_ENV}`,
+    );
+    assert.ok(ts.isStringLiteral(coalesce.right), `${where}: clause 3's default is a string literal`);
+    assert.equal(coalesce.right.text, '', `${where}: clause 3's default is the EMPTY string`);
+  }
+});
 
 test('57 pin — next.config.mjs and telemetry-key-guard.ts express the SAME condition', () => {
-  const inlined = normalize(inlinedCondition());
-  const typed = normalize(typedCondition());
+  const [[whereA, condA, sfA], [whereB, condB, sfB]] = COPIES;
+  const a = ser(condA, sfA);
+  const b = ser(condB, sfB);
 
-  // Neither may pass vacuously: an extractor that silently returned '' would satisfy equality.
-  assert.ok(inlined.length > 40, `inlined condition looks truncated: ${JSON.stringify(inlined)}`);
-  assert.ok(typed.length > 40, `typed condition looks truncated: ${JSON.stringify(typed)}`);
+  // Neither may pass vacuously: a locator that silently produced an empty rendering would satisfy
+  // equality. The real rendering is over 100 characters.
+  assert.ok(a.length > 80, `${whereA} rendered suspiciously short: ${JSON.stringify(a)}`);
+  assert.ok(b.length > 80, `${whereB} rendered suspiciously short: ${JSON.stringify(b)}`);
 
   assert.equal(
-    inlined, typed,
+    a, b,
     'the D8 predicate is written twice and the copies have drifted — change both or neither',
   );
 });
 
-test('57 pin — both copies are the SAME THREE CLAUSES, and there is no fourth', () => {
-  for (const [where, cond] of [['next.config.mjs', inlinedCondition()], ['telemetry-key-guard.ts', typedCondition()]] as const) {
-    const c = normalize(cond);
-    assert.ok(c.includes("ENV.VERCEL==='1'"), `${where}: clause 1, a Vercel build`);
-    assert.ok(c.includes("ENV.VERCEL_ENV==='production'"), `${where}: clause 2, the production environment`);
-    // The env var is named from the constant so the pin and the inline copy cannot drift on
-    // spelling — a typo'd variable name would otherwise read as "no key" forever, in production.
-    assert.ok(
-      c.includes(`!String(ENV.${TELEMETRY_HMAC_KEY_ENV}??'').trim()`),
-      `${where}: clause 3, a TRIMMED ${TELEMETRY_HMAC_KEY_ENV}`,
-    );
-    // D8 specifies three clauses. A fourth (a VERCEL_URL discriminator, say) is V's to add, and
-    // adding it silently on one side is exactly the drift this file exists to catch.
-    assert.equal((c.match(/&&/g) || []).length, 2, `${where}: three clauses, no fourth`);
-  }
-});
-
 test('57 pin — the inlined copy still THROWS, and says which variable is missing', () => {
-  const after = nextConfigSrc.slice(nextConfigSrc.indexOf(inlinedCondition()) + inlinedCondition().length);
-  assert.ok(/^\)\s*\{\s*throw new Error\(/.test(after), 'the condition guards a throw, not a warning');
-  assert.ok(after.includes(TELEMETRY_HMAC_KEY_ENV), 'the error names the env var a reader has to set');
+  const guard = inlinedGuard();
+  assert.equal(guard.elseStatement, undefined, 'the guard has no else arm to fall into');
+  const body = guard.thenStatement;
+  assert.ok(ts.isBlock(body), `${CONFIG_FILE}: the guard's consequent is a block`);
+  const first = body.statements[0];
+  assert.ok(
+    first && ts.isThrowStatement(first),
+    'the condition guards a THROW, not a warning — a production build must fail, not degrade',
+  );
+  assert.ok(
+    first.expression && ts.isNewExpression(first.expression) && ser(first.expression.expression, configAst) === 'Error',
+    'it throws an Error',
+  );
+  assert.ok(
+    first.getText(configAst).includes(TELEMETRY_HMAC_KEY_ENV),
+    'the error names the env var a reader has to set',
+  );
   // A build-time throw, not a runtime degradation: nothing here may be caught and logged.
-  assert.ok(!/catch\s*[({]/.test(nextConfigSrc), 'next.config.mjs does not swallow its own guard');
+  let hasTry = false;
+  const walk = (n: ts.Node): void => { if (ts.isTryStatement(n)) hasTry = true; ts.forEachChild(n, walk); };
+  walk(configAst);
+  assert.equal(hasTry, false, `${CONFIG_FILE} does not swallow its own guard`);
 });

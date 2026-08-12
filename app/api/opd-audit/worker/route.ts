@@ -30,6 +30,13 @@ import { getSettings, setSetting } from '@/lib/mini-backfill';
 import { OPD_ENGINE_VERSION } from '@/lib/opd-note-audit-core';
 import { MINI_MODEL } from '@/lib/llm';
 import { providerSwitchEnabled, resolveWorkerProvider, canServe, type LabProvider } from '@/lib/lab-provider-core';
+import { telemetryContextFor, type TelemetryRequestContext } from '@/lib/retrieval-telemetry-core';
+import {
+  declareNoteRuns, readRetrievalTelemetry, TelemetryDeclarationError,
+  type LifecycleHandle,
+} from '@/lib/retrieval-telemetry-store';
+import { startInvocation } from '@/lib/retrieval-invocation-store';
+import { settleOwned, outcomeForOwnedSave } from '@/lib/retrieval-settlement';
 
 // Fix A (intake eligibility): house-account doctor_uids excluded from the audit corpus. Lives in
 // app_settings audit_intake_doctor_exclusions (JSON uid array); fail-safe → this seeded constant (so an
@@ -69,11 +76,13 @@ async function authed(req: NextRequest): Promise<boolean> {
   try { return await isAdminUnlocked(); } catch { return false; }
 }
 
-async function mapLimit<T, R>(items: T[], limit: number, fn: (it: T) => Promise<R>): Promise<R[]> {
+/** Unchanged, except that the callback is now given its item's INDEX as well. The predeclared run
+ *  ids are index-aligned to the note set, and `indexOf` would pair two identical rows with one id. */
+async function mapLimit<T, R>(items: T[], limit: number, fn: (it: T, idx: number) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length);
   let i = 0;
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (i < items.length) { const idx = i++; out[idx] = await fn(items[idx]); }
+    while (i < items.length) { const idx = i++; out[idx] = await fn(items[idx], idx); }
   }));
   return out;
 }
@@ -139,25 +148,54 @@ function degradedAgainstIntent(served: { provider: string | null }, intended: La
   return served.provider === 'ollama';                  // null ⇒ unknown, not proof of a fallback
 }
 
-async function processDay(day: string, max: number, conc: number, exclude: string[], intended: LabProvider) {
+async function processDay(day: string, max: number, conc: number, exclude: string[], intended: LabProvider, ctx: TelemetryRequestContext) {
   const total = await countOpdNotesForDay(day, exclude);
   // §1 exception: auditedUidsForDayAnyVersion does NOT filter excluded_reason (see the store) — excluded
   // uids stay in the "already audited" set so they're never re-admitted.
   const already = await auditedUidsForDayAnyVersion(day);
   if (already.length >= total) return { day, total, audited: already.length, processed: 0, remaining: 0, done: true, results: [] as unknown[] };
   const rows = await fetchOpdNotesForDay(day, already, max, exclude);
-  const results = await mapLimit(rows, conc, async (row) => {
+  // Immediately before mapLimit, over the note set this day already fetched (D10).
+  const runIds = await declareNoteRuns(ctx, rows as Array<Record<string, unknown>>, OPD_ENGINE_VERSION);
+  const results = await mapLimit(rows, conc, async (row, idx) => {
     const started = Date.now();
+    const runId = runIds[idx];
+    // The handle the OWNER settles. It starts as the row this route already declared, so a throw
+    // inside auditOpdNote before it ever published one still leaves something settleable — and
+    // `published` is what tells the two D9 rows apart: a throw after adoption is an audit that
+    // failed, a throw before it is a retrieval that never ran.
+    let handle: LifecycleHandle = {
+      invocationId: ctx.invocationId,
+      runs: [{ role: 'primary', runId, expectedRevision: 0 }],
+      persistenceIntent: 'will_persist',
+    };
+    let published = false;
     try {
-      const audit = await auditOpdNote(row);
+      const audit = await auditOpdNote(row, {
+        telemetry: { ctx, route: 'opd_audit_worker', persistenceIntent: 'will_persist' },
+        predeclaredTelemetry: { primary: { runId, expectedRevision: 0 } },
+        onLifecycleHandleUpdated: (h) => { handle = h; published = true; },
+      });
       const served = await servedCallFor(audit.traceId);
       if (degradedAgainstIntent(served, intended)) {
         // No row. The sweep is the retry: this uid stays un-audited and the next tick re-fetches it.
+        await settleOwned(handle, 'persistence_refused');
         return { uid: audit.keys.uid, error: `DEC-2: ${intended} was asked, ${served.model ?? 'the local model'} answered — note failed, no row written` };
       }
-      const status = await saveOpdAudit(audit, { model: served.model, provider: served.provider, latencyMs: Date.now() - started });
+      const defects = readRetrievalTelemetry(audit)?.manifestDefects ?? [];
+      let linked = false;
+      const status = await saveOpdAudit(audit, { model: served.model, provider: served.provider, latencyMs: Date.now() - started }, {
+        // The audit id exists only inside the save, so the link is made from inside it (§4.5 step 4).
+        onPersisted: async ({ status: s, auditId }) => {
+          linked = true;
+          await settleOwned(handle, outcomeForOwnedSave(s, defects), auditId);
+        },
+      });
+      // `exists` (a losing ON CONFLICT race) and `skipped` (no uid) never produce a row to link to.
+      if (!linked) await settleOwned(handle, outcomeForOwnedSave(status, defects));
       return { uid: audit.keys.uid, index: audit.scorecard.headline, band: audit.scorecard.band, status };
     } catch (e) {
+      await settleOwned(handle, published ? 'audit_generation_failed' : 'retrieval_not_run');
       return { uid: String((row as Record<string, unknown>).uid || ''), error: String((e as Error).message) };
     }
   });
@@ -207,6 +245,11 @@ export async function GET(req: NextRequest) {
   const max = Math.max(1, Math.min(30, Number(p.get('max') || 8)));
   const conc = Math.max(1, Math.min(8, Number(p.get('conc') || 8)));
 
+  // ONE invocation per request, established here and threaded down (§4.1, D11). Never module state:
+  // two overlapping cron ticks in one warm process would otherwise attribute their work to
+  // whichever wrote the module variable last.
+  const ctx = telemetryContextFor('opd_audit_worker', req.headers);
+
   // ?provider= (Unit D, behind PROVIDER_SWITCH_ENABLED). Flag off ⇒ the parameter is INERT and this
   // route is byte-identical to today: it is not read, so a stray ?provider= cannot change a run.
   // Flag on ⇒ resolved loudly through the provider catalogue, and a provider that cannot serve the
@@ -237,21 +280,70 @@ export async function GET(req: NextRequest) {
   const reauditCsv = p.get('reaudit_uids');
   if (reauditCsv != null) {
     const uids = reauditCsv.split(',').map((s) => s.trim()).filter(Boolean).slice(0, 25);
-    const results = await mapLimit(uids, conc, async (uid) => {
+    // ── RESHAPED FOR D10, AND THE OUTPUT IS PRESERVED EXACTLY ─────────────────────────────────────
+    // The uid list is unvalidated input and each note used to be fetched INSIDE mapLimit, so there
+    // was no point at which the set of notes that really exist was known — and predeclaring per uid
+    // before the fetch would insert a `started` row for every uid that does not, each becoming a
+    // permanent `aborted` row that never had a retrieval to abort. So: fetch every uid first,
+    // declare for the resolved ones only, and put the unresolved ones back into `results` as the
+    // same `{ uid, error: 'note not found in db13' }` rows they have always been.
+    //
+    // mapLimit preserves input order and the 25-uid slice is upstream of the fetch, so `count` and
+    // the ordering of `results` are byte-identical to before.
+    let resolved: Array<{ uid: string; row: Record<string, unknown>; runId: string }>;
+    try {
+      const fetched = await mapLimit(uids, conc, async (uid) => ({ uid, row: await fetchOpdNoteByUid(uid).catch(() => null) }));
+      const present = fetched.filter((f): f is { uid: string; row: Record<string, unknown> } => !!f.row);
+      await startInvocation(ctx);
+      const runIds = await declareNoteRuns(ctx, present.map((f) => f.row), OPD_ENGINE_VERSION);
+      resolved = present.map((f, i) => ({ ...f, runId: runIds[i] }));
+    } catch (e) {
+      if (e instanceof TelemetryDeclarationError) {
+        return NextResponse.json({ ok: false, mode: 'reaudit', error: e.message }, { status: 503 });
+      }
+      throw e;
+    }
+
+    const audited = await mapLimit(resolved, conc, async ({ uid, row, runId }) => {
+      let handle: LifecycleHandle = {
+        invocationId: ctx.invocationId,
+        runs: [{ role: 'primary', runId, expectedRevision: 0 }],
+        persistenceIntent: 'will_persist',
+      };
+      let published = false;
       try {
-        const row = await fetchOpdNoteByUid(uid);
-        if (!row) return { uid, error: 'note not found in db13' };
-        const audit = await auditOpdNote(row);           // 0.81.7 — consult_types-aware framing
+        const audit = await auditOpdNote(row, {   // 0.81.7 — consult_types-aware framing
+          telemetry: { ctx, route: 'opd_audit_worker', persistenceIntent: 'will_persist' },
+          predeclaredTelemetry: { primary: { runId, expectedRevision: 0 } },
+          onLifecycleHandleUpdated: (h) => { handle = h; published = true; },
+        });
         const deleted = await deleteOpdAuditsForUid(uid); // drop ALL prior rows → single current row
         const served = await servedCallFor(audit.traceId);
-        const status = await saveOpdAudit(audit, { model: served.model, provider: served.provider });
+        const defects = readRetrievalTelemetry(audit)?.manifestDefects ?? [];
+        let linked = false;
+        const status = await saveOpdAudit(audit, { model: served.model, provider: served.provider }, {
+          onPersisted: async ({ status: s, auditId }) => {
+            linked = true;
+            await settleOwned(handle, outcomeForOwnedSave(s, defects), auditId);
+          },
+        });
+        if (!linked) await settleOwned(handle, outcomeForOwnedSave(status, defects));
         return { uid, deleted, status, band: audit.scorecard.band, index: audit.scorecard.headline };
-      } catch (e) { return { uid, error: String((e as Error).message) }; }
+      } catch (e) {
+        // The existing per-uid catch stays exactly as it is: every throw is still a 200 row.
+        await settleOwned(handle, published ? 'audit_generation_failed' : 'retrieval_not_run');
+        return { uid, error: String((e as Error).message) };
+      }
     });
+    // The unresolved uids go back in their original positions, carrying the exact row they carried
+    // before this was reshaped. Nothing downstream can tell the difference.
+    const byUid = new Map(audited.map((r) => [r.uid, r as unknown]));
+    const results = uids.map((uid) => byUid.get(uid) ?? { uid, error: 'note not found in db13' });
     return NextResponse.json({ ok: true, mode: 'reaudit', engine: OPD_ENGINE_VERSION, count: uids.length, results });
   }
 
   try {
+    await startInvocation(ctx);   // fail-open, even on the worker (D11)
     const cutoff = await forwardCutoff();
     const exclude = await intakeExclusions();
 
@@ -260,7 +352,7 @@ export async function GET(req: NextRequest) {
       if (cutoff && dayParam < cutoff) {
         return NextResponse.json({ ok: true, mode: 'day', day: dayParam, skipped: `before Gemini forward cutoff ${cutoff} — history is the mini backfill's job`, processed: 0 });
       }
-      const r = await processDay(dayParam, max, conc, exclude, intended);
+      const r = await processDay(dayParam, max, conc, exclude, intended, ctx);
       return NextResponse.json({ ok: true, mode: 'day', ...r });
     }
 
@@ -287,7 +379,7 @@ export async function GET(req: NextRequest) {
       if (total === 0) continue;
       const auditedCount = await auditedCountForDayAnyVersion(d);
       if (auditedCount >= total) continue;
-      const r = await processDay(d, max, conc, exclude, intended);
+      const r = await processDay(d, max, conc, exclude, intended, ctx);
       // A recount inside processDay caught the day up (a concurrent tick finished it): complete,
       // not stalled — nothing is wrong and nothing needs a trace.
       if (r.done) continue;
@@ -308,6 +400,17 @@ export async function GET(req: NextRequest) {
     }
     return NextResponse.json({ ok: true, mode: 'sweep', window, caughtUp: stalled.length === 0, done: stalled.length === 0, processed: 0, stalled_days: stalled });
   } catch (e) {
+    // ⚠️ 503, NOT 500, AND THE BODY SAYS WHAT SURVIVED. A declaration failure is a refusal to start
+    // work, not a failure of work that started — and on a sweep it can arrive after earlier days
+    // were audited and persisted, so "no notes were processed" is true of THAT DAY and of nothing
+    // wider. Saying otherwise would send an operator looking for rows that are there.
+    if (e instanceof TelemetryDeclarationError) {
+      return NextResponse.json({
+        ok: false,
+        error: e.message,
+        note: 'Any EARLIER day in this sweep was audited and persisted before this point; "no notes processed" is true per day, not per request.',
+      }, { status: 503 });
+    }
     return NextResponse.json({ ok: false, error: String((e as Error).message) }, { status: 500 });
   }
 }

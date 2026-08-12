@@ -22,6 +22,15 @@ import {
   type ExistingStatement, type GapRow,
 } from './lvc-proposal-core';
 import { retrieve, clampLabRetrieveTopK, BM25_DEFAULT_DFMAX } from './retrieve';
+import { randomUUID } from 'node:crypto';
+import {
+  telemetryContextFor, routeClassOf, validateManifest,
+  type TelemetryRequestContext, type RetrievalRole, type OperationalTelemetry,
+} from './retrieval-telemetry-core';
+import { createTelemetryCapture, buildRetrievalPayload, errorClassOf as telemetryErrorClassOf } from './retrieval-capture';
+import { declareRetrievals, writeRetrievalTerminal, type LifecycleHandle } from './retrieval-telemetry-store';
+import { startInvocation } from './retrieval-invocation-store';
+import { settleOwned, outcomeForOwnedSave } from './retrieval-settlement';
 import { retrieveMultiQuery } from './multi-query';
 import { RerankBackendError } from './rerank';
 
@@ -401,16 +410,22 @@ export const LAB_TOOLS = [
 ] as const;
 
 // ── dispatch ─────────────────────────────────────────────────────────────────────
-export async function callLabTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+/**
+ * ⚠️ THE CONTEXT COMES IN, IT IS NOT MADE HERE (D11). `dispatchMcp(body)` used to take only the
+ * body, so the two MCP routes had no way to say which invocation a tool call belonged to. It is
+ * optional because every non-retrieving tool ignores it, and because the MCP surface has callers
+ * (tests, the lab) that legitimately have no request.
+ */
+export async function callLabTool(name: string, args: Record<string, unknown>, ctx?: TelemetryRequestContext): Promise<ToolResult> {
   try {
     switch (name) {
-      case 'mini_analyze': return await miniAnalyze(args);
+      case 'mini_analyze': return await miniAnalyze(args, ctx);
       case 'lab_ddx': return await labDdx(args);
       case 'lab_ask': return await labAsk(args);
       case 'lab_appropriateness': return await labAppropriateness(args);
       case 'lab_pathway': return await labPathway(args);
       case 'lab_case_audit': return await labCaseAudit(args);
-      case 'backfill_control': return await backfillControl(args);
+      case 'backfill_control': return await backfillControl(args, ctx);
       case 'corpus_add': return await corpusAdd(args);
       case 'corpus_manage': return await corpusManage(args);
       case 'corpus_add_batch': return await corpusAddBatch(args);
@@ -418,7 +433,7 @@ export async function callLabTool(name: string, args: Record<string, unknown>): 
       case 'lvc_propose': return await lvcPropose(args);
       case 'lvc_ratify': return await lvcRatify(args);
       case 'lvc_gaps': return await lvcGaps(args);
-      case 'lab_retrieve': return await labRetrieve(args);
+      case 'lab_retrieve': return await labRetrieve(args, ctx);
       case 'lab_query': return await labQuery(args);
       case 'audit_query': return await auditQuery(args);
       case 'lab_batch_start': return await labBatchStart(args);
@@ -435,7 +450,7 @@ export async function callLabTool(name: string, args: Record<string, unknown>): 
   }
 }
 
-async function miniAnalyze(a: Record<string, unknown>): Promise<ToolResult> {
+async function miniAnalyze(a: Record<string, unknown>, ctx?: TelemetryRequestContext): Promise<ToolResult> {
   await ensureLabTables();
   const experiment = labLabel(a.experiment);
   const uid = S(a.metabase_uid).trim();
@@ -462,9 +477,22 @@ async function miniAnalyze(a: Record<string, unknown>): Promise<ToolResult> {
   if (uid) {
     const row = await fetchOpdNoteByUid(uid);
     if (!row) return err(`no db13 OPD note for uid ${uid}`);
-    const audit = await auditOpdNote(row, { pipeline: 'mini', engineTag: 'lab', trace: false, ...(evalModel ? { evalModel } : {}) });
+    // ⚠️ THIS TOOL WRITES `lab_analyses` AND NOTHING ELSE (D9), so `no_persistence_intended` is the
+    // honest settlement — and `trace: false` is why `trace_id` stays null on these rows from
+    // declaration all the way through the terminal write.
+    let handle: LifecycleHandle | null = null;
+    let published = false;
+    const audit = await auditOpdNote(row, {
+      pipeline: 'mini', engineTag: 'lab', trace: false, ...(evalModel ? { evalModel } : {}),
+      ...(ctx ? {
+        telemetry: { ctx, route: 'mcp_tools' as const, persistenceIntent: 'never_persists' as const },
+        onLifecycleHandleUpdated: (h: LifecycleHandle) => { handle = h; published = true; },
+      } : {}),
+    });
+    void published;
     const output = { index: audit.scorecard.headline, band: audit.scorecard.band, scorecard: audit.scorecard, completeness: audit.completeness, findings: audit.findings, suggestions: audit.suggestions };
     const id = await saveLabAnalysis({ experiment, kind: 'opd_note', engine: audit.engineVersion, inputRef: uid, inputPreview: `uid ${uid}`, output, model: M.model, provider: M.provider, latencyMs: Date.now() - started });
+    await settleOwned(handle, 'no_persistence_intended');
     return ok({ stored_id: id, experiment, kind: 'opd_note', engine: audit.engineVersion, index: audit.scorecard.headline, band: audit.scorecard.band, findings: audit.findings.length });
   }
 
@@ -827,7 +855,7 @@ async function labCaseAudit(a: Record<string, unknown>): Promise<ToolResult> {
   });
 }
 
-async function backfillControl(a: Record<string, unknown>): Promise<ToolResult> {
+async function backfillControl(a: Record<string, unknown>, ctx?: TelemetryRequestContext): Promise<ToolResult> {
   const action = S(a.action);
   if (action === 'status') return ok(await readState());
   if (action === 'start') { await setSetting(MB_KEYS.enabled, '1'); return ok({ enabled: true, note: 'autopilot on — runs within its compute window on the next 5-min tick' }); }
@@ -847,8 +875,28 @@ async function backfillControl(a: Record<string, unknown>): Promise<ToolResult> 
     const results: Record<string, unknown>[] = [];
     for (const row of rows) {
       const t0 = Date.now();
-      try { const au = await auditOpdNote(row, { pipeline: 'mini', engineTag: tag }); const st = await saveOpdAudit(au, { model: MINI_MODEL, latencyMs: Date.now() - t0 }); results.push({ uid: au.keys.uid, index: au.scorecard.headline, band: au.scorecard.band, status: st, ms: Date.now() - t0 }); }
-      catch (e) { results.push({ error: String((e as Error).message) }); }
+      // As the worker (D9): this branch DOES write opd_note_audits, so it settles by the save result.
+      let handle: LifecycleHandle | null = null;
+      let published = false;
+      try {
+        const au = await auditOpdNote(row, {
+          pipeline: 'mini', engineTag: tag,
+          ...(ctx ? {
+            telemetry: { ctx, route: 'mcp_tools' as const, persistenceIntent: 'will_persist' as const },
+            onLifecycleHandleUpdated: (h: LifecycleHandle) => { handle = h; published = true; },
+          } : {}),
+        });
+        let linked = false;
+        const st = await saveOpdAudit(au, { model: MINI_MODEL, latencyMs: Date.now() - t0 }, {
+          onPersisted: async ({ status, auditId }) => { linked = true; await settleOwned(handle, outcomeForOwnedSave(status), auditId); },
+        });
+        if (!linked) await settleOwned(handle, outcomeForOwnedSave(st));
+        results.push({ uid: au.keys.uid, index: au.scorecard.headline, band: au.scorecard.band, status: st, ms: Date.now() - t0 });
+      }
+      catch (e) {
+        await settleOwned(handle, published ? 'audit_generation_failed' : 'retrieval_not_run');
+        results.push({ error: String((e as Error).message) });
+      }
     }
     return ok({ day, engine: engineStr, total, already: already.length, processed: results.length, results });
   }
@@ -1045,7 +1093,7 @@ async function corpusManage(a: Record<string, unknown>): Promise<ToolResult> {
 /** Measurement seam: run production retrieve() (or the multi-query fusion Ask/DDx use) and return
  *  served hits + per-stage scores + full text. Read-only; no model generation. Defaults
  *  useReranker/useSourceWeights TRUE (the production config); diagnostics always populated (R-5). */
-async function labRetrieve(a: Record<string, unknown>): Promise<ToolResult> {
+async function labRetrieve(a: Record<string, unknown>, ctx?: TelemetryRequestContext): Promise<ToolResult> {
   const query = S(a.query).trim();
   if (!query) return err('query is required');
   const topK = clampLabRetrieveTopK(a.topK);
@@ -1074,9 +1122,46 @@ async function labRetrieve(a: Record<string, unknown>): Promise<ToolResult> {
     : [];
   const normativeSources = normList.length ? normList : undefined;
 
+  // ── STEP 9's SIXTH PLACEHOLDER, AND STEP 11's TWO CATCH ARMS ─────────────────────────────────
+  // The role is decided by the BRANCH, not by the tool: D6 gives the direct branch `lab_direct` and
+  // the fusion branch `lab_multi_query`, and they are different retrievals with different manifests.
+  const role: RetrievalRole = multiQuery ? 'lab_multi_query' : 'lab_direct';
+  const capture = ctx ? createTelemetryCapture(role) : undefined;
+  const startedAt = new Date().toISOString();
+  const runId = randomUUID();
+  let handle: LifecycleHandle | null = null;
+  if (ctx) {
+    await startInvocation(ctx);
+    try {
+      handle = await declareRetrievals(ctx, [{ role, runId, uid: null, engineVersion: null }], 'never_persists');
+    } catch (e) {
+      // Fail-open: this is a measurement seam, not the worker. Its declaration failure already
+      // wrote `work_declaration` evidence inside declareRetrievals.
+      console.warn('[mcp-tools] lab_retrieve declaration failed, continuing uninstrumented', (e as Error).message);
+    }
+  }
+
+  /** Write the terminal manifest, then settle. `lab_retrieve` writes NO audit row of any kind, so
+   *  its persistence outcome is `no_persistence_intended` on every path including the failing ones —
+   *  which is a statement about intent, not about what happened. */
+  const finish = async (): Promise<void> => {
+    if (!ctx || !handle || !capture) return;
+    const operational: OperationalTelemetry = {
+      route: ctx.route as OperationalTelemetry['route'], route_class: routeClassOf(ctx.route), retrieval_role: role,
+      invocation_id: ctx.invocationId, trace_id: null, deployment_sha: ctx.deploymentSha,
+      started_at: startedAt, completed_at: new Date().toISOString(), routing_flags: ctx.routingFlags,
+      active_backfill_run_id: null, active_backfill_target: null, active_backfill_state: null,
+      active_lab_experiment_id: ctx.labExperimentId ?? null,
+    };
+    const payload = buildRetrievalPayload(capture, { hmacKey: process.env.CDMSS_TELEMETRY_HMAC_KEY ?? null, scorerContext: null });
+    void validateManifest({ ...payload, operational });
+    handle = await writeRetrievalTerminal(handle, role, { payload, operational, traceId: null, completedAt: operational.completed_at ?? new Date().toISOString() });
+    await settleOwned(handle, 'no_persistence_intended');
+  };
+
   try {
     if (multiQuery) {
-      const res = await retrieveMultiQuery(query, { topK, includeQuarantined, useReranker, useSourceWeights, hybrid, skipExpand, bm25Mode, rerankBackend, restrictSources, useNormativeLeg, normativeSources });
+      const res = await retrieveMultiQuery(query, { topK, includeQuarantined, useReranker, useSourceWeights, hybrid, skipExpand, bm25Mode, rerankBackend, restrictSources, useNormativeLeg, normativeSources }, {}, capture);
       const full = res.hits.map((h, i) => {
         // rerank_score/backend/source_quality_weight/bm25 provenance are present at runtime but off the
         // exported MultiQueryHit type (see multi-query.ts) — read them via a narrow cast.
@@ -1093,6 +1178,7 @@ async function labRetrieve(a: Record<string, unknown>): Promise<ToolResult> {
         };
       });
       const hits = scoresOnly ? full.map(pickScoreFields) : full;
+      await finish();
       return ok({
         query, mode: 'multi_query', expandedQuery: res.expandedQuery, includeQuarantined: includeQuarantined ?? null,
         restrictSources: restrictSources ?? null,
@@ -1104,7 +1190,7 @@ async function labRetrieve(a: Record<string, unknown>): Promise<ToolResult> {
       });
     }
 
-    const res = await retrieve(query, { topK, includeQuarantined, useReranker, useSourceWeights, hybrid, skipExpand, withDiagnostics: true, bm25Mode, rerankBackend, restrictSources, useNormativeLeg, normativeSources });
+    const res = await retrieve(query, { topK, includeQuarantined, useReranker, useSourceWeights, hybrid, skipExpand, withDiagnostics: true, bm25Mode, rerankBackend, restrictSources, useNormativeLeg, normativeSources }, capture);
     const full = res.hits.map((h, i) => ({
       final_rank: h.final_rank ?? i + 1,
       id: h.id, source: h.source, book: h.book, chapter: h.chapter, section: h.section, item_number: h.item_number,
@@ -1114,6 +1200,7 @@ async function labRetrieve(a: Record<string, unknown>): Promise<ToolResult> {
       text: h.text,
     }));
     const hits = scoresOnly ? full.map(pickScoreFields) : full;
+    await finish();
     return ok({
       query, mode: 'single_query', expandedQuery: res.expandedQuery, includeQuarantined: includeQuarantined ?? null,
       restrictSources: restrictSources ?? null,
@@ -1121,6 +1208,15 @@ async function labRetrieve(a: Record<string, unknown>): Promise<ToolResult> {
       meta: res.meta, hits,
     });
   } catch (e) {
+    // ⚠️ BOTH ARMS RECORD `retrieval_failure`, AND NEITHER CHANGES WHAT IT RETURNS. The named
+    // RerankBackendError still becomes the same error RESULT and every other error still THROWS —
+    // §4.3's whole point is that a retrieval that found nothing and a retrieval that failed are two
+    // facts, and until now this seam produced the same empty answer for both.
+    if (capture) {
+      capture.retrievalOutcome = 'retrieval_failure';
+      capture.retrievalErrorClass = capture.retrievalErrorClass ?? telemetryErrorClassOf(e);
+    }
+    await finish();
     // D3: a requested cohere ruler that is unreachable/missing/unhealthy fails LOUD — surfaced named
     // (RerankBackendUnreachable/Missing/Unhealthy, all RerankBackendError), never a silent fallback.
     if (e instanceof RerankBackendError) return err(`${e.name}: ${e.message}`);

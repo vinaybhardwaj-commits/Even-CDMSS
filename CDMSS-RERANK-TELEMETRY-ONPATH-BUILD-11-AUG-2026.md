@@ -1,15 +1,772 @@
 # CDMSS Rerank Telemetry — on-path build report
 
+**Three issues, in reverse order.** Part III is this build: kickoff steps 14 to 17 and the test 57
+fix, 12 August 2026, on top of `177adc9`. Part II is the correction issue committed in `177adc9`,
+which withdrew twelve claims from the first issue. Part I is in git history at `90d8db1` and is not
+rewritten there — the record shows what was withdrawn.
+
+Nothing in Part II is edited by this issue except one sentence, which is named where it stood.
+
+---
+
+# PART III — STEPS 14 TO 17, AND THE TEST 57 FIX
+
+**Build report, 12 August 2026.** Branch `exp/rerank-telemetry`, on top of `177adc9`. Not pushed.
+
+Governing documents unchanged: `CDMSS-RERANK-TELEMETRY-PRD-v2.1-11-AUG-2026.md` and
+`CDMSS-RERANK-TELEMETRY-ONPATH-CC-KICKOFF-v11-11-AUG-2026.md`.
+
+No number here is restated from an earlier report: where an earlier figure would have been useful it
+was re-measured or dropped. This part makes **no claim about its own method** beyond that — a
+statement that every row carries its command is not checkable by reading the report, and the last
+one that stood in this file was false. Check the row you care about.
+
+---
+
+## 1. WHAT WAS NOT BUILT
+
+By step, then by test number, before anything else.
+
+### 1.1 Steps not built
+
+| Step | Status | Why |
+|---|---|---|
+| 18 | **NOT BUILT** | "Register every new `lib/*.ts` exporting a `*_VERSION` const." No module added by this pass exports one — `git grep -c "_VERSION =" lib/retrieval-*.ts lib/opd-audit-runtime-config.ts` returns nothing new. `architecture:check` coverage is green at 39 subsystems either way (§8 row 4). Nothing was registered because nothing qualified; if V reads step 18 as covering the constants that DO exist (`TELEMETRY_SCHEMA_VERSION`, `MANIFEST_SCHEMA_VERSION`, both already in `retrieval-telemetry-core.ts` at `177adc9`), that is a flag, not a build. |
+| 19 | **DEFERRED** by §1 of the brief | The cost query text and the ten PRD §8 query texts. |
+| 21 | **DEFERRED** by §1 of the brief | The five PRD §6.5 overhead numbers stay unmeasured. |
+
+### 1.2 Tests not written, by number
+
+The brief's §5 assigns 28 numbered tests to steps 14–17. **Six of them were not written.**
+
+```
+$ node -e 'const s14=[19,25,26,27,28,29,30,62],s15=[20,21,22,23,24,31,32,33,34,47,48],s16=[15,51,52,53,54],s17=[55,58,59,64];
+const all=[...s14,...s15,...s16,...s17];
+const written=[15,19,20,25,26,27,28,29,30,31,32,33,34,51,52,53,54,55,58,59,62,64];
+const missing=all.filter(n=>!written.includes(n));
+console.log("assigned",all.length,"written",all.filter(n=>written.includes(n)).length,"not written",missing.length,missing.join(", "))'
+assigned 28 written 22 not written 6 21, 22, 23, 24, 47, 48
+```
+
+The six are:
+
+| # | Subject | Why not |
+|---|---|---|
+| 21 | `onLifecycleHandleUpdated` fires after declaration and after each terminal write, and a throw at each of D11's five points leaves the caller holding the latest handle | Needs `auditOpdNote` driven end to end with five injected throw points. Its collaborators (retrieval, expansion, rerank, context assembly, generation) are not injectable at that function's boundary, so there is no seam to drive it from. **Not established.** |
+| 22 | A throw after declaration and before any save settles `audit_generation_failed`, from `started` AND from `retrieval_complete` | Same seam. The *mapping* is exercised (`retrieval-settlement.test.ts`, "revision 0 KEEPS an outcome a never-retrieved run can honestly carry"); the *path through `auditOpdNote`* is not. |
+| 23 | The D11 fourteen-step order: the primary terminal write happens after `assembleAuditContext` | Same seam. The order is visible in the source and is commented there; nothing asserts it. |
+| 24 | `trace_id` null at declaration, written at the terminal write, null for both `trace: false` callers | Same seam. |
+| 47 | The scorer-context HMAC by role | Belongs to `retrieval-capture-payload.test.ts`, which is on §4's create list and was **not created** (see 1.3). |
+| 48 | An absent HMAC key outside production: four explicit nulls, `telemetry_error`, a persisting role settling `persisted_partial` | Half is D8 (covered by test 57's five cases) and half is settlement under an absent key, which needs the same `auditOpdNote` seam. |
+
+**The common cause is one thing, said once:** `auditOpdNote` has no injection seam for its retrieval,
+context-assembly or generation collaborators, so no test in this repository can drive it. Every test
+that needed one is on the list above. That is a testability defect in the audit function, not in the
+telemetry, and it is flag 5 in §10.
+
+### 1.3 Files on §4's create list that were not created
+
+```
+$ ls lib/__tests__/retrieval-capture-payload.test.ts 2>&1
+ls: lib/__tests__/retrieval-capture-payload.test.ts: No such file or directory
+```
+
+`retrieval-capture-payload.test.ts` is named in §4 of the brief. Its kickoff tests (49, 50) are not
+in §5's step 14–17 list, so it was left; test 47 above is the one thing lost by that.
+
+### 1.4 One file created that is on no list
+
+`lib/__tests__/telemetry-db-stub.ts`, 132 lines. Not a test file — the `lib/**/__tests__/*.test.ts`
+glob does not collect it. Four of the test files this pass owes assert what reaches the database and
+there is no database in this sandbox; duplicating the stub into four files would have kept the file
+list pure and made four copies drift. Flagged, not decided (§10 flag 6).
+
+```
+$ wc -l lib/__tests__/telemetry-db-stub.ts
+     132 lib/__tests__/telemetry-db-stub.ts
+```
+
+---
+
+## 2. THE TEST 57 FIX
+
+### 2.1 The hole, reproduced
+
+The old `normalize()` stripped all whitespace before comparing, **including whitespace inside string
+literals**. One character in `next.config.mjs` defeated both the guard and its pin.
+
+Reproduced in a scratch copy of the three files the pin reads, never in the worktree
+(`/Users/vinaybhardwaj/.claude/jobs/a5ac63db/tmp/d8-mutations.sh`, which copies
+`next.config.mjs`, `lib/telemetry-key-guard.ts` and the test into a scratch directory and symlinks
+`node_modules`).
+
+### 2.2 What replaces it
+
+Both copies of the D8 predicate are now **parsed** by the TypeScript compiler API — already a
+devDependency at 5.9.3 — and compared as syntax trees.
+
+```
+$ node -e "console.log(require('typescript/package.json').version)"
+5.9.3
+```
+
+Exactly one thing is normalized: `process.env.X` in a build script and `env.X` in a function that
+takes the environment as a parameter both render as `ENV.X`. String literals render from their
+**value**, so `'1'` and `'1 '` are different literals. The oracle then validates each copy
+independently: exactly three `&&` clauses at the top level, **no `||` anywhere in the condition**
+(which is what catches a fourth clause the `&&` count could not see), both comparison roots as
+`===`, both string literals byte-exact, the env var name taken from `TELEMETRY_HMAC_KEY_ENV`, the
+`.trim()` present joint by joint, and — for the inlined copy — that it guards a direct `throw` with
+no `try` anywhere in the file to swallow it. Then the two renderings are compared to each other.
+
+### 2.3 The five mutations, each of which must FAIL
+
+Baseline first, so a test file that failed for an unrelated reason could not be mistaken for a
+mutation being caught.
+
+```
+$ zsh /Users/vinaybhardwaj/.claude/jobs/a5ac63db/tmp/d8-mutations.sh
+=== baseline (unmutated scratch copy: must PASS) ===
+baseline                                                   # pass 8  # fail 0
+
+=== five mutations (each must FAIL) ===
+1. inlined '1' -> '1 '                                     # pass 6  # fail 2   not ok 6 - 57 pin — each copy is exactly D8's three clauses, and there is no fourth of any kind
+2. typed 'production' -> 'Production'                      # pass 4  # fail 4   not ok 1 - 57 case 1 — production Vercel build with no key at all: MISSING
+3. inlined .trim() removed                                 # pass 6  # fail 2   not ok 6 - 57 pin — each copy is exactly D8's three clauses, and there is no fourth of any kind
+4. '|| false' added to BOTH                                # pass 7  # fail 1   not ok 6 - 57 pin — each copy is exactly D8's three clauses, and there is no fourth of any kind
+5. fourth '&&' clause added to BOTH                        # pass 7  # fail 1   not ok 6 - 57 pin — each copy is exactly D8's three clauses, and there is no fourth of any kind
+
+=== scratch restored, worktree never touched ===
+scratch == worktree
+```
+
+**One correction inside the harness itself, recorded because it nearly produced a false pass.** The
+first run of mutation 1 reported `# pass 8 # fail 0`. The substitution had landed on the **comment**
+at `next.config.mjs:9`, which quotes the same three clauses and is the first occurrence in the file;
+the code was untouched and the pin was right to pass. The mutation is now anchored on
+`process.env.VERCEL === '1'`. A mutation test that mutates nothing proves nothing, and this one
+would have been read as proof.
+
+### 2.4 The third, cosmetic hole
+
+Case 4 was titled "NOT missing, at any key value" and tried exactly one key value. It now sweeps six
+— absent, empty, three spaces, `\t\n `, `k`, `  k  ` — across all three non-production `VERCEL_ENV`
+values, and case 5 sweeps the same six. The title is now true of the test.
+
+### 2.5 The file's own comment
+
+The old header claimed "a changed literal still fails". That is now true and is proven above; the
+comment was rewritten to describe the parser rather than deleted.
+
+```
+$ node --test --import tsx lib/__tests__/telemetry-key-guard.test.ts 2>/dev/null | grep -E "^# (pass|fail)"
+# pass 8
+# fail 0
+```
+
+---
+
+## 3. THE FIVE DEFECTS IN §2 OF THE BRIEF
+
+### 3.1 A revision-0 run was settled as if it had succeeded (§2.1, step 16)
+
+**What was wrong.** `settleRetrievalTelemetry` computed one state outside the loop and mapped
+`settled`, `noop` **and** `rejected` to `{ status: 'settled' }`. `applyTerminalState` returns
+`rejected` from five places — no row, stale revision, already terminal, disallowed transition, and a
+zero-row update — and every one of them was reported to the caller as a success.
+
+**What was built.**
+
+1. A revision-0 run is now settled **from the failure evidence**, which is D9's second clause and
+   was not implemented. Two cases, and they are different:
+   - the outcome is one a run that never retrieved can honestly carry (`retrieval_not_run`,
+     `audit_generation_failed` — both legal from `started`): it is applied unchanged, and the
+     failure evidence is not read at all;
+   - the outcome implies a retrieval that completed: D12's transition guard forbids it from
+     `started`, so `reconcilerStateFor` decides — `retrieval_terminal` evidence gives
+     `telemetry_persistence_failed`, no evidence gives `aborted`.
+2. `PerRunSettlementResult.status` gains `'rejected'`, with a named `rejection` and **durable
+   evidence**: a `persistence_link` failure row carrying `error_class`
+   `settlement_rejected_<reason>`. `noop` remains `settled` — a retry of a write that already landed
+   is not a second event.
+
+```
+$ node --test --import tsx lib/__tests__/retrieval-settlement.test.ts 2>/dev/null | grep -E "^# (pass|fail)"
+# pass 11
+# fail 0
+```
+
+Eleven cases, including all five rejection classes one at a time, each asserting the status, the
+named reason, and that exactly one failure row was written with the right phase and error class.
+
+**⚠️ THE SIGNATURE CHANGE IS FLAGGED, NOT TAKEN QUIETLY.** D12 fixes that union at two values. The
+brief says: "take the smallest form that stops reporting a rejected write as a success", and this is
+it. See flag 1.
+
+### 3.2 `declared_retrievals` counted what was asked for (§2.2, step 14)
+
+The insert ends `ON CONFLICT (retrieval_run_id) DO NOTHING` and carried no `RETURNING`, so the
+increment bound `runs.length`. D11 line 681: "counts newly inserted run ids only." It now binds the
+rows that landed.
+
+```
+$ node --test --import tsx lib/__tests__/retrieval-invocation-store.test.ts 2>/dev/null | grep -E "^# (pass|fail)"
+# pass 13
+# fail 0
+```
+
+The case that matters declares three runs, has the transport return two, and asserts the increment
+binds `'2'` — and that a declaration landing nothing bumps nothing at all.
+
+### 3.3 A failed declaration wrote no evidence (§2.3, step 14)
+
+`declareRetrievals` had no `try`. `work_declaration` was in the phase union and in the migration's
+CHECK, and **no code path had ever written one** — so a failed declaration, which by D13 produces no
+retrieval row and whose "evidence lives only in the failure table", was invisible everywhere.
+
+One failure row per run the batch was going to declare, then the throw still propagates (the
+worker's declaration is fail-closed). Kickoff test 29, in the file above.
+
+### 3.4 The multi-query manifest would have carried a null `index_version` (§2.4, steps 9 and 11)
+
+`index_version` is written in exactly one place in the tree:
+
+```
+$ grep -rn "capture.indexVersion" lib | grep -v __tests__
+lib/retrieve.ts:399:  if (capture) capture.indexVersion = `${embCol}|${useV2 ? EMBED_MODEL_V2 : EMBED_MODEL}`;
+lib/retrieval-capture.ts:308:    index_version: capture.indexVersion,
+lib/multi-query.ts:308:    capture.indexVersion = capture.indexVersion
+```
+
+Three lines, two of which write it: `retrieve.ts:399` is the original and only writer,
+`multi-query.ts:308` is this pass, and `retrieval-capture.ts:308` READS it into the payload. `retrieveMultiQuery` called `retrieveFn(q, {…})` with two
+arguments and `retrieve`'s capture is its third positional parameter, so no arm ever got one.
+
+**The fix does not hand the parent capture down.** `retrieve()` also writes the candidate id lists,
+the passage texts and the retrieval outcome — fusion-level facts the fusion computes for itself —
+and six arms writing them in turn would have left the parent holding one arbitrary arm's view of a
+pool it never had. Each arm gets its own capture, they are kept on `capture.children` (declared in
+D5, written by nothing until now), and `index_version` is lifted from the first arm that has one.
+Because `retrieve()` stamps before its first fallible statement, an arm that threw still has one.
+
+```
+$ node --test --import tsx lib/__tests__/multi-query-telemetry.test.ts 2>/dev/null | grep -E "^# (pass|fail)"
+# pass 5
+# fail 0
+```
+
+**The brief's correction to the review stands and is worse, not better.** Nothing rejects the null at
+run time: `validateManifest` returns a `string[]`, the column is nullable and there is no CHECK. This
+pass gives `validateManifest` its first production caller — `writeRetrievalTerminals` runs it and
+hands the verdict to the owner — so a dirty manifest now makes a persisted row `persisted_partial`,
+which is what D17 always said and nothing did. It still does not *reject*.
+
+### 3.5 `DeclareInput` advertised two fields no writer consumed (§2.5, step 14)
+
+`pairId` and `replicate` were declared and bound by nothing, which left
+`opd_art_experiment_idx` — an index on `(experiment_run_id, pair_id)` — with a second column no
+writer could populate. Both are now bound by the insert, alongside `experiment_run_id`, which is
+their sibling and was already bound there. **No values were invented**: no caller supplies them, and
+what goes in them is an A/A question V has not opened. The bound-parameter test asserts all three
+positions, and asserts `[null, null, null]` when absent.
+
+**A discrepancy this surfaced, flagged not fixed.** `COLUMN_CLASSIFICATION` calls all three
+`mutable_terminal`, "written by the terminal write and by settlement". None of the three is in
+`writeRetrievalTerminal`'s SET list; all three are written at insert. That was already true of
+`experiment_run_id` before this pass. See flag 2.
+
+---
+
+## 4. WHAT §3 OF THE BRIEF FORBADE, AND WAS NOT DONE
+
+`writeRetrievalTerminal` does **not** reread and compare after a zero-row update.
+
+```
+$ grep -c "reread" lib/retrieval-telemetry-store.ts
+0
+```
+
+The zero-row branch logs and returns the unchanged handle, as D12 requires ("never retried
+blindly"). Reread-and-compare appears once in either document, inside D13, and it governs the
+reconciler — where it is built (§6).
+
+---
+
+## 5. THE D9 OWNER MATRIX AS WIRED
+
+Thirty settlement call sites, in seven files.
+
+```
+$ grep -rn "await settleOwned(" lib app scripts | grep -v __tests__ | awk -F: '{print $1}' | sort | uniq -c | sort -rn
+   7 app/api/opd-audit/worker/route.ts
+   7 app/api/opd-audit/run/route.ts
+   5 lib/mcp-tools.ts
+   4 scripts/bedrock-opd-note-probe.mjs
+   3 app/api/admin/opd-audit-mini-backfill/route.ts
+   2 scripts/metamorphic-llm-report.mjs
+   2 lib/lab-batch.ts
+```
+
+One line per path in D9's matrix:
+
+| Path | Outcome settled | Where |
+|---|---|---|
+| worker, day and sweep — inserted/updated | `persisted_clean` / `persisted_dirty` via `onPersisted` | `worker/route.ts` `processDay` |
+| worker — exists | `losing_conflict` | same, `if (!linked)` |
+| worker — skipped | `persistence_skipped` | same |
+| worker — DEC-2 refusal | `persistence_refused` | same, before the save |
+| worker — throw after adoption | `audit_generation_failed` | same, per-note catch |
+| worker — throw before adoption | `retrieval_not_run` | same, discriminated by whether the handle was ever published |
+| worker, re-audit | identical, in the reshaped arm | `worker/route.ts` re-audit block |
+| run route GET, force arm | `audit_persistence_failed` **settled by that arm itself** | `run/route.ts` — its `.catch(() => 'save_failed')` means the throw never reaches the outer catch |
+| run route GET, normal arm | as the worker | `run/route.ts` |
+| run route GET, no `?save=1` | `no_persistence_intended` | `run/route.ts` |
+| run route POST | `no_persistence_intended` | `run/route.ts` POST |
+| mini-backfill | as the worker; DEC-2 throw → `persistence_refused` | `opd-audit-mini-backfill/route.ts` |
+| mcp-tools `mini_analyze` | `no_persistence_intended` | `mcp-tools.ts` |
+| mcp-tools `backfill_control` | as the worker | `mcp-tools.ts` |
+| mcp-tools `lab_retrieve`, both branches | `no_persistence_intended`, on the success AND failure paths | `mcp-tools.ts` `labRetrieve` |
+| lab-batch normal completion | `no_persistence_intended` | `lab-batch.ts` `runMiniOpdToLab` |
+| lab-batch refusal branch | `no_persistence_intended` | same, in its catch |
+| bedrock probe script | as the worker; its own save failure → `audit_persistence_failed` | `scripts/bedrock-opd-note-probe.mjs` |
+| metamorphic script | `no_persistence_intended` | `scripts/metamorphic-llm-report.mjs` |
+| `defaultRecall` | `no_persistence_intended` | `lib/lvc.ts` (unchanged by this pass — it already settled) |
+
+**The "throw before adoption" discriminator, stated because it is not obvious.** D9 distinguishes a
+throw after adoption (`audit_generation_failed`) from one before it (`retrieval_not_run`). The signal
+is whether `onLifecycleHandleUpdated` ever fired: it fires at D11 step 6, which is adoption.
+
+**How the audit id reaches the settlement.** `saveOpdAudit` gains
+`onPersisted?: (result: { status; auditId }) => Promise<void>` and **never receives the handle** —
+the closure holds it. The store acquires no telemetry import:
+
+```
+$ grep -c "retrieval-telemetry\|retrieval-settlement\|LifecycleHandle" lib/opd-audit-store.ts
+0
+```
+
+A callback exception is swallowed and the save result preserved (constraint 1); asserted in
+`retrieval-telemetry-lifecycle.test.ts`, test 53.
+
+**Instrumented call sites of `auditOpdNote`:**
+
+```
+$ grep -rn "telemetry: { ctx" lib app scripts | grep -v __tests__ | wc -l
+      11
+```
+
+---
+
+## 6. THE RECONCILER (STEP 17)
+
+`app/api/admin/retrieval-telemetry-reconcile/route.ts`, 196 lines.
+
+```
+$ wc -l app/api/admin/retrieval-telemetry-reconcile/route.ts
+     196 app/api/admin/retrieval-telemetry-reconcile/route.ts
+```
+
+### 6.1 The preregistered grace, recorded now
+
+```
+$ node --import tsx -e "import('./lib/opd-audit-runtime-config.ts').then(m=>console.log(JSON.stringify(m)))"
+{"default":{"RECONCILER_GRACE_SECONDS":1800,"RECONCILER_STALE_AFTER_SECONDS":2600,"WORKER_MAX_DURATION_SECONDS":800}}
+```
+
+**`RECONCILER_STALE_AFTER_SECONDS` = 2600.** Recorded here, before any canary opens. It cannot be
+tuned afterwards to make a gate pass; changing it restarts the window.
+
+**It is conservative for most rows, deliberately, and that trade is stated rather than hidden.** 800
+is the highest `maxDuration` among the instrumented routes. The worker and the appropriateness route
+are 800; the run route, mini-backfill, lab-batch, the low-value-care A/A route and both MCP routes
+are 300. A row from a 300-second route therefore waits 2,600 seconds before the reconciler touches
+it, when its own route could not possibly have run for more than 300. **One grace for every row is
+the choice**, because a per-route grace is a tuning surface and this value must not be one. The cost
+is that short-route rows are reconciled later than they strictly need to be. The gain is that nobody
+can shorten a grace to make a window close.
+
+It is not read from the environment:
+
+```
+$ grep -c "process.env" lib/opd-audit-runtime-config.ts
+0
+```
+
+### 6.2 The three inferred SQL statements, verbatim
+
+```sql
+-- selection: bounded, non-terminal only, oldest first
+SELECT retrieval_run_id, retrieval_role, persistence_state, row_revision
+  FROM opd_audit_retrieval_telemetry
+ WHERE persistence_state IN ('started', 'retrieval_complete')
+   AND started_at < $1
+ ORDER BY started_at
+ LIMIT $2
+
+-- the compare-and-set
+UPDATE opd_audit_retrieval_telemetry
+   SET persistence_state = $3, persistence_settled_at = $4, row_revision = row_revision + 1
+ WHERE retrieval_run_id = $1
+   AND row_revision = $2
+   AND persistence_state IN ('started', 'retrieval_complete')
+ RETURNING row_revision
+
+-- the reread after a revision mismatch
+SELECT retrieval_run_id, retrieval_role, persistence_state, row_revision
+  FROM opd_audit_retrieval_telemetry
+ WHERE retrieval_run_id = $1
+```
+
+**All three are inferred and have not been executed against any database.** There is none in this
+sandbox. `opd_art_nonterminal_idx` — `(persistence_state, started_at) WHERE persistence_state IN
+('started','retrieval_complete')` — is the index the first statement is shaped for.
+
+### 6.3 What the algorithm does, and what it refuses to do
+
+- A **terminal row is skipped before anything else** — a successful terminal state always wins over
+  earlier failure evidence, and failure rows are historical: never deleted, never consumed.
+- The state comes from `reconcilerStateFor`, which reads only the phase relevant to the current row
+  state: `retrieval_terminal` for a `started` row, `persistence_link` for a `retrieval_complete` one.
+- The transition is checked against `isAllowedTransition` before the write, and a refusal is
+  **recorded rather than forced** — the transition table is the only authority.
+- The update carries the expected revision. A late terminal write therefore wins.
+- A revision mismatch causes **one** reread and reclassification, computed from what the row became.
+  Never a blind retry, and never a second reread.
+- The pass **never joins `(uid, engine_version)`**, and mentions neither in any statement:
+  asserted in `reconciler-races.test.ts` against the file with comments stripped.
+- It opens an invocation of `kind = 'reconciler'`, `route = 'reconciler'`, and closes it on both
+  exits. §2 forbids reporting a tick as a workload; a reconciler pass counted as `kind = 'retrieval'`
+  would be exactly that.
+- `?limit=` bounds the slice (default 500, max 2000) and the response carries
+  `more_may_remain: stale.length === limit`. A bounded pass that hides its truncation reads as
+  "everything was covered".
+- `?dry=1` reports what it would do and writes nothing.
+
+### 6.4 The cron
+
+```
+$ node -e "const v=require('./vercel.json');console.log(v.crons.length);console.log(JSON.stringify(v.crons.at(-1)))"
+17
+{"path":"/api/admin/retrieval-telemetry-reconcile","schedule":"1 10 * * *"}
+```
+
+`1 10 * * *` UTC, using the same `x-vercel-cron` guard the worker route uses. The OPD worker runs
+`*/4 18-23,0-2 * * *`; the nearest worker hour to 10 is 2 or 18, **eight hours** either way — the
+window wraps midnight, so the distance is circular and a naive subtraction reports −13 and reads as
+an overlap that is not there. Minute 1 is odd, keeping it clear of the `*/2` backfill ticks.
+`buildCommand`, `regions`, every existing schedule, every `maxDuration` and every `runtime` value
+are untouched:
+
+```
+$ git diff HEAD --stat vercel.json
+ vercel.json | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+```
+
+### 6.5 The two authorised test edits
+
+```
+$ git diff HEAD --unified=0 lib/__tests__/provider-switch-unit-d.test.ts lib/__tests__/ipd-worker-batch-and-model.test.ts | grep -E "^[-+][^-+]"
+-  assert.equal(VERCEL.crons.length, 16, '14 + the restored IPD worker + the readmission worker');
++  assert.equal(VERCEL.crons.length, 17, '14 + the restored IPD worker + the readmission worker + the retrieval-telemetry reconciler');
+-  assert.equal(cfg.crons.length, 16);
++  assert.equal(cfg.crons.length, 17);
+```
+
+One line in each file, at line 57 and line 270 respectively, and nothing else — kickoff test 64
+asserts the second fact by re-reading both files line by line. `provider-switch-unit-d.test.ts`
+line 255 (the test title) and line 257 (the `BLOCKED_RELATIONS` assertion) are re-read and asserted
+byte-identical in the same test; **the kickoff says line 255 holds that assertion at line 112 and
+line 257 at line 1073. The tree agrees with 1073.** Neither line moved.
+
+---
+
+## 7. TESTS
+
+### 7.1 Written
+
+Seven new files, 66 cases.
+
+```
+$ for f in retrieval-settlement retrieval-invocation-store retrieval-telemetry-transitions retrieval-telemetry-lifecycle worker-work-declaration reconciler-races multi-query-telemetry; do printf "%-36s %s\n" "$f" "$(node --test --import tsx lib/__tests__/$f.test.ts 2>/dev/null | grep -E '^# pass ' | tail -1)"; done
+retrieval-settlement                 # pass 11
+retrieval-invocation-store           # pass 13
+retrieval-telemetry-transitions      # pass 7
+retrieval-telemetry-lifecycle        # pass 11
+worker-work-declaration              # pass 8
+reconciler-races                     # pass 11
+multi-query-telemetry                # pass 5
+```
+
+11+13+7+11+8+11+5 = 66. The suite total moved by exactly that:
+
+```
+$ npm test 2>&1 | grep -E "^# (tests|pass|fail|skipped)"
+# tests 3006
+# pass 3006
+# fail 0
+# skipped 0
+```
+
+3006 − 66 = 2940, which is what the suite counted at `177adc9`. That subtraction is the only claim
+about the earlier count made here, and it is arithmetic on two measured numbers rather than a
+recollection.
+
+**The counting rule, because two units are in play.** 3006 counts `node --test` **cases**. 22 counts
+the kickoff's **named test requirements** satisfied out of the 28 §5 assigns to steps 14–17. They
+are not the same unit and neither converts to the other.
+
+Test 30 was claimed written by an earlier report. Verified rather than accepted: it is now written
+here (`retrieval-invocation-store.test.ts`, "30 — an invocation insert failure is fail-open"), and
+`git grep -c "test('30" lib/__tests__` at `177adc9` returns nothing.
+
+### 7.2 What a source pin can and cannot prove
+
+Three of the seven files use source-text pins for route behaviour. There is no Next request harness
+in this repository, so a route's HTTP behaviour is asserted by reading its source. **A source pin
+proves the code says a thing; it does not prove the thing happens at run time.** That is stated in
+each of those files' headers as well as here. What IS exercised behaviourally is everything the
+routes delegate to — the declaration, the failure evidence, the terminal write, the revision guard
+and the settlement — against a stubbed transport.
+
+The stub intercepts `globalThis.fetch`, which is the transport the Neon driver posts `{query,
+params}` to. `neonConfig.fetchFunction` is the driver's own documented seam and **does not take
+under the ESM build this repository loads**: the assignment reads back and the query still resolves
+DNS. Verified, not assumed. Stubbing the transport rather than the store is what makes an assertion
+about a bound parameter mean something — the parameters asserted are the ones Postgres would
+receive, in their wire form (a bound `1` arrives as `'1'`).
+
+---
+
+## 8. THE GATE
+
+All nine, in order.
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `npm test` | `# tests 3006 · # pass 3006 · # fail 0 · # skipped 0` |
+| 2 | `npm run typecheck` | exit 0 (`npm run typecheck >/dev/null 2>&1; echo $?` → `0`) |
+| 3a | `npm run build` | **exit 1** — `Error: CDMSS_TELEMETRY_HMAC_KEY is required for a production build` at `next.config.mjs:14:9`. This is D8 firing, and it is the pass condition, not a failure. |
+| 3b | `CDMSS_TELEMETRY_HMAC_KEY=local-gate-key-not-a-secret npm run build` | **exit 0** |
+| 4 | `npm run architecture:check` | `all 8 rules + coverage green` · `coverage · GREEN · 39 subsystems · 16 registered, 23 explicitly unregistered` |
+| 5 | `npm run architecture:map` | `wrote lib/architecture/map.generated.ts (90300 bytes)` |
+| 6 | `git add … && npm run architecture:map && git diff --exit-code lib/architecture/map.generated.ts` | exit 0 — byte-identical on regeneration |
+| 7 | `npm run reasoning:registry && git diff --exit-code data/reasoning-registry/prompts.generated.json` | exit 0 — `30 prompts · 7 rubrics · 36 builders · 19 features`, **file unchanged** |
+| 8 | `npm run reasoning:governance` | `GREEN: 0 ungoverned model calls; parallel stores folded` |
+| 9 | `npm run changelog:coverage` | `GREEN: all 19 shipped engine versions documented (30 versioned entries)` |
+
+**Two notes on gate 3.** The plain build fails locally because `VERCEL` and `VERCEL_ENV` are set in
+this environment, so D8's condition is genuinely true here; that is the same behaviour a production
+Vercel build without the key would show, which is the whole point of the guard. And the build caught
+a real defect on its first run: the reconciler route exported its two SQL constants for the test to
+import, and a Next route module may export only its handlers and a fixed set of config fields
+(`"RECONCILER_SELECT_SQL" is not a valid Route export field`). They are now module-private and the
+test reads them from source — which is weaker, and is said so in the test file.
+
+**`data/reasoning-registry/prompts.generated.json` did not change.** Nothing in this pass touched a
+prompt, a rubric or a builder.
+
+---
+
+## 9. FILES
+
+```
+$ git status --short
+ M app/api/admin/lab-batch/route.ts
+ M app/api/admin/opd-audit-mini-backfill/route.ts
+ M app/api/appropriateness/route.ts
+ M app/api/mcp/[key]/route.ts
+ M app/api/mcp/route.ts
+ M app/api/opd-audit/run/route.ts
+ M app/api/opd-audit/worker/route.ts
+ M lib/__tests__/backfill-runs-core.test.ts
+ M lib/__tests__/ipd-worker-batch-and-model.test.ts
+ M lib/__tests__/provider-switch-unit-d.test.ts
+ M lib/__tests__/telemetry-key-guard.test.ts
+M  lib/architecture/map.generated.ts
+ M lib/lab-batch.ts
+ M lib/mcp-server.ts
+ M lib/mcp-tools.ts
+ M lib/multi-query.ts
+ M lib/opd-audit-store.ts
+ M lib/opd-note-audit.ts
+ M lib/retrieval-settlement.ts
+ M lib/retrieval-telemetry-core.ts
+ M lib/retrieval-telemetry-store.ts
+ M scripts/bedrock-opd-note-probe.mjs
+ M scripts/metamorphic-llm-report.mjs
+ M vercel.json
+?? app/api/admin/retrieval-telemetry-reconcile/
+?? lib/__tests__/multi-query-telemetry.test.ts
+?? lib/__tests__/reconciler-races.test.ts
+?? lib/__tests__/retrieval-invocation-store.test.ts
+?? lib/__tests__/retrieval-settlement.test.ts
+?? lib/__tests__/retrieval-telemetry-lifecycle.test.ts
+?? lib/__tests__/retrieval-telemetry-transitions.test.ts
+?? lib/__tests__/telemetry-db-stub.ts
+?? lib/__tests__/worker-work-declaration.test.ts
+```
+
+The commit's own `git show --stat` is self-referential (this file is in it) and is left to the
+reader: `git show --stat HEAD`.
+
+### 9.1 Source pins broken by this build, and the invariant each preserves
+
+Three pins broke. Two were preserved rather than edited; one was re-pointed.
+
+| Pin | What broke it | What was done |
+|---|---|---|
+| `opd-invalid-marking.test.ts` — the det-only fallback return | wrapping the return literal to attach the handle | **Preserved.** No handle is attached on that path, which is D11's rule anyway ("the non-enumerable property … for the SUCCESS path"); every throwing path is covered by `onLifecycleHandleUpdated`. The literal is byte-identical. |
+| `pdqi9-fail-loud.test.ts` and `vertex-primary-ladder.test.ts` — the same return | same | **Preserved**, same fix. |
+| `eval-hardening.test.ts:297` — `runMiniOpdToLab(uid, experiment, evalCfg)` | adding a fourth parameter for the telemetry context | **Preserved.** The context is carried on `LabEvalConfig` instead, so the call text is unchanged and the pin's real subject — that the tombstone budget check happens before the attempt — is untouched. |
+| `backfill-runs-core.test.ts:244` — the whole `auditOpdNote(row, provider === 'bedrock' ? … : {})` call | merging the telemetry options into that call | **Re-pointed** to `...(provider === 'bedrock' ? { bedrockModel: modelId } : {}),`. The invariant it carries — the bedrock arm threads its modelId and the vertex arm passes nothing — is preserved; the "plain prod engine" half of its claim is asserted independently on the next line and is unchanged. |
+
+### 9.2 The seven new modules now have executing tests
+
+The previous issue's §12.1 reported that six of the seven modules `90d8db1` created had zero test
+importers. Re-measured, not restated:
+
+```
+$ for m in retrieval-telemetry-core retrieval-capture retrieval-telemetry-store retrieval-invocation-store retrieval-telemetry-failure-store retrieval-settlement opd-audit-runtime-config telemetry-key-guard; do printf "%-38s %5s %10s\n" "$m" "$(grep -rl "$m'" lib/__tests__ | wc -l | tr -d ' ')" "$(grep -rl "$m'" lib app scripts | grep -v "^lib/$m.ts$" | wc -l | tr -d ' ')"; done
+retrieval-telemetry-core                  11         33
+retrieval-capture                          2         11
+retrieval-telemetry-store                  4         12
+retrieval-invocation-store                 1          9
+retrieval-telemetry-failure-store          1          5
+retrieval-settlement                       1          7
+opd-audit-runtime-config                   1          2
+telemetry-key-guard                        1          1
+```
+
+Counting rule: column 2 is files under `lib/__tests__/` whose text contains the module name followed
+by a closing quote; column 3 is the same over `lib`, `app` and `scripts` excluding the module itself.
+Both over-count in principle (a mention in a comment matches) and neither is a call-graph.
+`opd-audit-runtime-config` had no importer anywhere before this pass; it now has the reconciler and
+its test.
+
+---
+
+## 10. FLAGGED, NOT DECIDED
+
+**Flag 1 — `PerRunSettlementResult.status` now has three values, and D12 fixes it at two.** Every
+alternative was worse: reporting a rejected write as `settled` is what let a permanently `started`
+row and a completed audit both be true at once. No owner in D9's matrix branches on the result, so
+nothing downstream changes behaviour; what changes is that the fact is now available and recorded.
+**V's call: ratify the third value, or name a different smallest form.**
+
+**Flag 2 — `COLUMN_CLASSIFICATION` says three columns are written by the terminal write, and none
+is.** `experiment_run_id`, `pair_id` and `replicate` are all classified `mutable_terminal`
+("written by the terminal write and by settlement") and all three are bound only at the insert. This
+was already true of `experiment_run_id` before this pass. The classification is the equality
+projection, so the mismatch is descriptive rather than behavioural today — but it will stop being
+descriptive the moment anything writes them at the terminal. **Not decided.**
+
+**Flag 3 — D9 says `aborted` and `telemetry_persistence_failed` are "reachable only by the
+reconciler", and settlement now reaches them.** D9 also requires a revision-0 run to be "settled
+from the failure evidence", and the failure evidence has exactly one mapping — D13's. The two
+sentences are in tension in the documents themselves. Waiting for the reconciler instead would leave
+a row whose fate is already known sitting non-terminal for 2,600 seconds. **The code takes the
+second reading; V holds which one is right.**
+
+**Flag 4 — who closes an invocation, and what makes a stale `closure_unknown` row explicitly
+reconciled.** `closeInvocation` is called by exactly one caller in the tree, the reconciler, which
+D13 names. Nothing else closes anything, deliberately: §7.1 of the brief says propose, do not wire.
+The proposal, one outer-boundary owner per request or operation:
+
+| Boundary | Closes at |
+|---|---|
+| `app/api/opd-audit/worker/route.ts` | the single `return NextResponse.json(...)` for each of its three modes, after the response body is built and before it is returned |
+| `app/api/opd-audit/run/route.ts` | both handlers' final return, and their outer catch |
+| `app/api/admin/opd-audit-mini-backfill/route.ts` | `autoTick`'s return, not `processRunBatch`'s — a tick is the operation, a batch is part of one |
+| `app/api/admin/lab-batch/route.ts` | after `batchTick` returns, never inside it |
+| `app/api/mcp/route.ts`, `app/api/mcp/[key]/route.ts` | after `dispatchMcp` returns, never inside `callLabTool` |
+| `app/api/appropriateness/route.ts` | at stream close |
+| `app/api/admin/lvc-judge-aa/route.ts` | its final return |
+| the two scripts | at process exit, or not at all — a killed script leaving `closure_unknown` is the honest record |
+| the reconciler | already wired, both exits |
+
+**Explicitly not owners:** `auditOpdNote`, `defaultRecall`, and any per-note worker body. A shared
+invocation closed by the first note to finish would report every later note's work as arriving after
+closure. **Not wired.**
+
+**Flag 5 — `auditOpdNote` has no injection seam, and six of this pass's tests could not be
+written because of it.** Tests 21, 22, 23, 24, 47 and 48 all need to drive that function with
+controlled collaborators and controlled throw points. This is a testability defect in the audit
+function, not in the telemetry. **Not fixed** — it would mean changing the signature of the most
+load-bearing function in the engine, during a freeze.
+
+**Flag 6 — `lib/__tests__/telemetry-db-stub.ts` is on no list.** §1.4 above. Its alternative was four
+drifting copies.
+
+**Flag 7 — what D9 §7.2 asks (two roles on one handle disagreeing) remains unresolvable through
+`settleRetrievalTelemetry`'s signature.** D17 gives per-row criteria for clean against partial; D12
+fixes the API as one outcome for the whole handle. A clean `primary` and a dirty `normative_channel`
+cannot be given different states. **The smallest change that would allow per-role states**, not
+made: give `SettlementInput` an optional `perRole?: Partial<Record<RetrievalRole, SettlementOutcome>>`
+consulted before `input.outcome`, leaving every existing call site byte-identical. D9 requires only
+the same audit id across roles, not the same state, so nothing in D9 forbids it. **Not made.**
+
+**Flag 8 — step 18's scope.** §1.1 above. No new module exports a `*_VERSION` const; two existing
+telemetry modules export schema-version constants that predate this pass. Whether step 18 covers
+those is V's reading.
+
+---
+
+## 11. DEFECTS FOUND AND LEFT ALONE
+
+1. **`validateManifest`'s verdict is advisory and always was.** It now has a production caller and
+   can make a row `persisted_partial`, which is D17's rule. It still cannot *reject* a manifest, and
+   no column has a CHECK behind it. A null `index_version` would still be stored — it would simply
+   also be classified partial.
+2. **The `RERANK_BACKEND` typo** is on the do-not-touch list and was not touched.
+3. **`bedrockOnlyChat` and `tracedChat` attach no attempts.** Unchanged by this pass, carried
+   forward from the previous issue's list.
+4. **`lib/sql-guard-core.ts` was not edited**, and both committed assertions on its literal are
+   intact — re-read and asserted byte-identical in `reconciler-races.test.ts`.
+
+```
+$ git diff HEAD --stat lib/sql-guard-core.ts lib/opd-audit-changelog.ts lib/__tests__/lvc-judge-attribution.test.ts lib/__tests__/lvc-judge-pinning.test.ts
+```
+
+(no output — all four untouched)
+
+5. **`lib/multi-query.ts:133` and its comment are untouched.** The comment still does not quote the
+   statement the determinism pin greps for, and `multi-query-telemetry.test.ts` now asserts the
+   literal appears exactly once in the file — so a comment that put it back would fail here as well.
+
+---
+
+## 12. WHAT THIS REPORT DOES NOT ASSERT
+
+No canary date. No overhead thresholds. No A/A pilot. Nothing prepared for C0.5, C0.6, C1, C2, Q1 or
+F1. `park/lvc-arm-c-unshipped-11-aug-2026` was neither merged nor read. Nothing deployed, nothing
+pushed. The engine is frozen and nothing about ranking changed: no scoring rule, prompt, suppression,
+formulary or low-value-care state was edited, and `npm run changelog:coverage` is green without an
+entry being added.
+
+
+---
+
+# PART II — THE CORRECTION ISSUE (committed in `177adc9`)
+
+Unchanged below except the one sentence named in its preamble.
+
+
 **Second issue, 12 August 2026**, correcting the issue committed in `90d8db1`. Against
 `CDMSS-RERANK-TELEMETRY-PRD-v2.1-11-AUG-2026.md` and
 `CDMSS-RERANK-TELEMETRY-ONPATH-CC-KICKOFF-v11-11-AUG-2026.md`, and following
 `CDMSS-RERANK-TELEMETRY-BUILD-VERDICT-12-AUG-2026.md`.
 
-**Every number below was re-measured for this issue, and the command that produced it is printed
-beside it.** The first issue's numbers were written from memory; nine of its claims were false and
-six of those were counts. Where a correction changes a number, the new number carries its command.
-Where a command was run against a specific commit, the commit is named — several of the first
-issue's figures were true of the baseline and were attached to the wrong tree.
+The first issue's numbers were written from memory; nine of its claims were false and six of those
+were counts. Where a correction changes a number, the new number carries its command. Where a
+command was run against a specific commit, the commit is named — several of the first issue's
+figures were true of the baseline and were attached to the wrong tree.
+
+**⚠️ A BLANKET CLAIM THAT USED TO STAND HERE HAS BEEN REMOVED.** It read "every number below was
+re-measured for this issue, and the command that produced it is printed beside it", and it was false
+of at least five numbers in this part. A claim about a report's own method is not checkable by
+reading the report, which is what makes it worth nothing and worth removing. Check any individual
+row instead.
 
 ---
 

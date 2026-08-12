@@ -21,7 +21,7 @@ import { retrieve, RRF_K, type RetrieveOptions, type RetrieveResult } from './re
 import { rerank } from './rerank';
 import { expandQuery, RETRIEVAL_LLM_SEED } from './expand';
 import { computeSourceQualityWeight } from './source-quality';
-import { evidenceFromCompletion, evidenceFromError, errorClassOf, type TelemetryCapture, type TransportEvidence } from './retrieval-capture';
+import { createTelemetryCapture, evidenceFromCompletion, evidenceFromError, errorClassOf, type TelemetryCapture, type TransportEvidence } from './retrieval-capture';
 import type { VariantStatus, VariantOutcome } from './retrieval-telemetry-core';
 import type { ChunkHit } from './db';
 
@@ -249,6 +249,20 @@ export async function retrieveMultiQuery(
   const allQueries = [expandedQuery, ...variants];
 
   const variantOutcomes: Array<{ index: number; outcome: VariantOutcome; candidateCount: number }> = [];
+  /**
+   * ⚠️ ONE CAPTURE PER ARM, AND THE PARENT IS NOT HANDED DOWN. `index_version` is written in exactly
+   * one place in the tree — `lib/retrieve.ts`, before its first fallible statement — and the arms
+   * were being called with two arguments, so a `lab_multi_query` row's `index_version` was whatever
+   * `createTelemetryCapture` initialised it to, which is null. D17 does not permit null there, and
+   * nothing rejects it at run time: `validateManifest` has no production caller and the column is
+   * nullable with no CHECK, so the row would have been written and stored looking complete.
+   *
+   * The parent capture is NOT passed into the arms, because `retrieve()` also writes the candidate
+   * id lists, the passage texts and the retrieval outcome — fusion-level facts that this function
+   * computes for itself below. Six arms writing them in turn would leave the parent holding one
+   * arbitrary arm's view of a pool it never had.
+   */
+  const armCaptures = capture ? allQueries.map(() => createTelemetryCapture(capture.role)) : undefined;
   const results = await Promise.all(
     // Every arm hands retrieve() its FINAL text — the original arm's is already expanded, the variants
     // are deliberately raw — so the per-call skipExpand is true for all of them (no double-expansion).
@@ -257,7 +271,7 @@ export async function retrieveMultiQuery(
     // rank) — provenance ONLY, it changes nothing retrieved or ranked. Fusion reads it below so a
     // chunk that arrived via a LATER variant's BM25 leg keeps its attribution.
     allQueries.map((q, vi) =>
-      retrieveFn(q, { ...opts, topK: perVariantK, skipExpand: true, useReranker: false, useSourceWeights: false, withDiagnostics: true })
+      retrieveFn(q, { ...opts, topK: perVariantK, skipExpand: true, useReranker: false, useSourceWeights: false, withDiagnostics: true }, armCaptures?.[vi])
         .then((r) => {
           // One of the four sites that swallow a retrieval exception into an empty hit list. The
           // three outcomes are DISCRIMINATED here (§4.3): a variant that found nothing and a
@@ -280,6 +294,26 @@ export async function retrieveMultiQuery(
     // variant count — which is what the manifest's arity check asserts.
     capture.variants = allQueries.map((_, vi) => variantOutcomes[vi]
       ?? { index: vi, outcome: 'zero_hits' as VariantOutcome, candidateCount: 0 });
+  }
+  if (capture && armCaptures) {
+    // `children` was declared in D5 and written by nothing. It is written here, and read by nothing
+    // that serializes: the arms' captures are raw material, and raw material never leaves the
+    // process (test 3). They are kept because the two fields lifted below are theirs.
+    capture.children = armCaptures;
+    // ⚠️ THE FIRST ARM THAT GOT AS FAR AS CHOOSING A COLUMN, NOT THE FIRST ARM. `index_version` is
+    // stamped BEFORE `retrieve()`'s first fallible statement, so an arm that threw still has one —
+    // which is what makes this the honest value even when every arm failed. It is null only if no
+    // arm reached that line at all, which for an injected `retrieveFn` that ignores its capture is
+    // a real absence and is recorded as one.
+    capture.indexVersion = capture.indexVersion
+      ?? armCaptures.find((c) => c.indexVersion !== null)?.indexVersion
+      ?? null;
+    // The arms all run the same configuration by construction — the per-call overrides above are
+    // fixed — so any arm's config is the fusion's config.
+    if (Object.keys(capture.retrievalConfig).length === 0) {
+      const cfg = armCaptures.find((c) => Object.keys(c.retrievalConfig).length > 0);
+      if (cfg) capture.retrievalConfig = { ...cfg.retrievalConfig };
+    }
   }
 
   // ---- RRF across variants ----

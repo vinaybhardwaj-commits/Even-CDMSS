@@ -32,7 +32,21 @@ export interface SaveOpdAuditMeta {
 /** Force-overwrite mode for saveOpdAudit (obstetric re-score backfill): when a row already exists
  *  at (uid, engine_version), DO UPDATE the scored columns instead of DO NOTHING. Off by default —
  *  the idempotent daily worker path is unchanged (byte-identical SQL). */
-export interface SaveOpdAuditOptions { force?: boolean }
+export interface SaveOpdAuditOptions {
+  force?: boolean;
+  /**
+   * Fires when — and only when — a row actually landed, with the id it landed on (D12, §4.5 step 4).
+   *
+   * ⚠️ THIS FUNCTION NEVER RECEIVES THE HANDLE, DELIBERATELY. The closure holds it. `saveOpdAudit`
+   * is a clinical write and must not acquire a telemetry parameter, a telemetry import or a reason
+   * to care whether telemetry exists; what it owes the caller is the one fact only it knows, which
+   * is the audit id.
+   *
+   * ⚠️ A CALLBACK EXCEPTION IS SWALLOWED AND THE SAVE RESULT PRESERVED. Constraint 1: an audit is
+   * never failed because its telemetry could not be recorded.
+   */
+  onPersisted?: (result: { status: 'inserted' | 'updated'; auditId: string }) => Promise<void>;
+}
 
 /**
  * ClinicalState shadow (Platform B1) — DORMANT by default. Flag-gated, read-only w.r.t. the
@@ -282,7 +296,15 @@ export async function saveOpdAudit(
   // OPD_LONGITUDINAL_ENABLED=1.
   if (freshInsert) await runLongitudinalPass(audit).catch(() => { /* fail-open — base audit already persisted */ });
   if (!rows.length) return 'exists';
-  return freshInsert ? 'inserted' : 'updated';
+  const landed = freshInsert ? 'inserted' as const : 'updated' as const;
+  // §4.5 step 4: the link happens only AFTER the persistence result is known, and only on the two
+  // results that produced a row. `exists` and `skipped` never reach here, and their owners settle
+  // them by their own outcome — a losing race is not a link.
+  if (opts.onPersisted && rows[0].id) {
+    await opts.onPersisted({ status: landed, auditId: String(rows[0].id) })
+      .catch((e) => console.warn('[opd-audit] onPersisted threw; the save stands', (e as Error).message));
+  }
+  return landed;
 }
 
 /** UPDATE an existing audit row in place (deterministic backfill — same engine version). Rewrites

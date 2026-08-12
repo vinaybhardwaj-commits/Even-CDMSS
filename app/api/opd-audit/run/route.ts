@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/admin-gate';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
+import { telemetryContextFor } from '@/lib/retrieval-telemetry-core';
+import { readRetrievalTelemetry, type LifecycleHandle } from '@/lib/retrieval-telemetry-store';
+import { settleOwned, outcomeForOwnedSave } from '@/lib/retrieval-settlement';
 import { auditOpdNote } from '@/lib/opd-note-audit';
 import { saveOpdAudit } from '@/lib/opd-audit-store';
 import { sql } from '@/lib/db';
@@ -60,25 +63,51 @@ export async function GET(req: NextRequest) {
   if (denied && !(await isAdminUnlocked().catch(() => false))) return denied;
   const uid = req.nextUrl.searchParams.get('uid');
   if (!uid) return NextResponse.json({ ok: false, error: 'pass ?uid=<prescription uid>' }, { status: 400 });
+  // The GET arm is a fresh audit that MAY save, so its intent is not knowable from the role — it is
+  // declared here from the query string (D12: `persistenceIntent` is stated up front, never inferred).
+  const willSave = req.nextUrl.searchParams.get('save') === '1';
+  const ctx = telemetryContextFor('opd_audit_run', req.headers);
+  let handle: LifecycleHandle | null = null;
+  let published = false;
   try {
     const { fetchOpdNoteByUid } = await import('@/lib/metabase');
     const row = await fetchOpdNoteByUid(uid);
     if (!row) return NextResponse.json({ ok: false, error: 'note not found for that uid' }, { status: 404 });
-    const audit = await auditOpdNote(row);
+    const audit = await auditOpdNote(row, {
+      telemetry: { ctx, route: 'opd_audit_run', persistenceIntent: willSave ? 'will_persist' : 'never_persists' },
+      onLifecycleHandleUpdated: (h) => { handle = h; published = true; },
+    });
     // &save=1 persists the audit (golden-A/B tool): writes the current-engine row so a before/after
     // comparison can be read from opd_note_audits by engine_version. Admin-gated; manual use only.
     // &force=1 (only with save=1) overwrites an existing (uid, engine_version) row — finishes the
     // obstetric re-score backfill where a pre-fix zero row already occupies the slot. Fail-safe:
     // a forced-save error degrades to saved:'save_failed', never a 500.
-    const save = req.nextUrl.searchParams.get('save') === '1';
+    const save = willSave;
     const force = save && req.nextUrl.searchParams.get('force') === '1';
+    const defects = readRetrievalTelemetry(audit)?.manifestDefects ?? [];
+    let linked = false;
+    const onPersisted = async ({ status, auditId }: { status: 'inserted' | 'updated'; auditId: string }) => {
+      linked = true;
+      await settleOwned(handle, outcomeForOwnedSave(status, defects), auditId);
+    };
     const saved = save
       ? (force
-          ? await saveOpdAudit(audit, { model: await servedModelFor(audit.traceId) }, { force: true }).catch(() => 'save_failed' as const)
-          : await saveOpdAudit(audit, { model: await servedModelFor(audit.traceId) }))
+          ? await saveOpdAudit(audit, { model: await servedModelFor(audit.traceId) }, { force: true, onPersisted }).catch(() => 'save_failed' as const)
+          : await saveOpdAudit(audit, { model: await servedModelFor(audit.traceId) }, { onPersisted }))
       : undefined;
+    // ⚠️ THE FORCE ARM IS ITS OWN OWNER (D9). Its `.catch(() => 'save_failed')` means the throw
+    // never reaches the outer catch, so nothing else could ever settle it — that arm settles
+    // `audit_persistence_failed` itself, and the external behaviour (a `save_failed` string, never
+    // a 500) is unchanged.
+    if (!linked) {
+      if (saved === 'save_failed') await settleOwned(handle, 'audit_persistence_failed');
+      else if (saved !== undefined) await settleOwned(handle, outcomeForOwnedSave(saved, defects));
+      // No save was asked for: the audit was generated and deliberately not persisted.
+      else await settleOwned(handle, 'no_persistence_intended');
+    }
     return NextResponse.json({ ok: true, saved, engineVersion: audit.engineVersion, audit });
   } catch (e) {
+    await settleOwned(handle, published ? 'audit_generation_failed' : 'retrieval_not_run');
     return NextResponse.json({ ok: false, error: String((e as Error).message) }, { status: 500 });
   }
 }
@@ -97,10 +126,20 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: 'body must be { row: <prescriptions row object> }' }, { status: 400 });
   }
 
+  // ⚠️ THIS ARM AUDITS AND NEVER SAVES, and no property of the `primary` role could have said so —
+  // which is exactly why D12 makes `persistenceIntent` a declaration rather than an inference.
+  const ctx = telemetryContextFor('opd_audit_run', req.headers);
+  let handle: LifecycleHandle | null = null;
+  let published = false;
   try {
-    const audit = await auditOpdNote(row);
+    const audit = await auditOpdNote(row, {
+      telemetry: { ctx, route: 'opd_audit_run', persistenceIntent: 'never_persists' },
+      onLifecycleHandleUpdated: (h) => { handle = h; published = true; },
+    });
+    await settleOwned(handle, 'no_persistence_intended');
     return NextResponse.json({ ok: true, audit });
   } catch (e) {
+    await settleOwned(handle, published ? 'audit_generation_failed' : 'retrieval_not_run');
     return NextResponse.json({ ok: false, error: String((e as Error).message) }, { status: 500 });
   }
 }

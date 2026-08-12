@@ -13,6 +13,7 @@
  * handle is rejected by the revision guard rather than silently overwriting a newer result.
  */
 
+import { randomUUID } from 'node:crypto';
 import { sql } from './db';
 import {
   TELEMETRY_SCHEMA_VERSION, canonicalJson, isAllowedTransition, isTerminalState,
@@ -44,11 +45,66 @@ export interface LifecycleHandle {
   persistenceIntent: 'will_persist' | 'never_persists';
 }
 
+/**
+ * Why a settlement write did not happen. Each of these is a REAL outcome that used to be reported
+ * as `settled`: `applyTerminalState` returns `rejected` from five places and all five were mapped
+ * to success.
+ */
+export const SETTLEMENT_REJECTIONS = [
+  'no_row', 'stale_revision', 'already_terminal', 'disallowed_transition', 'lost_update',
+] as const;
+export type SettlementRejection = typeof SETTLEMENT_REJECTIONS[number];
+
 export interface PerRunSettlementResult {
   role: RetrievalRole;
   runId: string;
-  status: 'settled' | 'failed';
+  /**
+   * ⚠️ `rejected` IS A THIRD VALUE, AND D12 FIXES THIS UNION AT TWO. Extending it is a change to a
+   * decided signature and is flagged in the build report rather than taken quietly; it is here
+   * because the alternative is worse. A rejected write means the row is NOT in the state the caller
+   * asked for, and reporting that as `settled` told every owner in the D9 matrix that a link it
+   * never got had been made. `noop` remains `settled`: identical content already landed.
+   */
+  status: 'settled' | 'failed' | 'rejected';
   errorClass?: string;
+  /** Present only on `rejected`. */
+  rejection?: SettlementRejection;
+}
+
+/**
+ * What an audit carries back about its own retrieval telemetry, for the owner that will settle it.
+ *
+ * `manifestDefects` is `validateManifest`'s output for whichever role was dirtiest. D17 makes a
+ * persisted row `persisted_partial` when validation returned anything, so the owner needs the
+ * verdict and cannot compute it — the manifest never leaves `auditOpdNote`.
+ */
+export interface RetrievalTelemetryOutcome {
+  handle: LifecycleHandle | null;
+  manifestDefects: string[];
+}
+
+/** The property name D11 requires be NON-ENUMERABLE. */
+export const RETRIEVAL_TELEMETRY_PROPERTY = '__retrievalTelemetry';
+
+/**
+ * Attach the outcome to the returned audit without widening what the audit IS.
+ *
+ * ⚠️ NON-ENUMERABLE, AND THAT IS THE WHOLE POINT. `JSON.stringify(audit)` is what reaches the store,
+ * the lab and every log line; a handle appearing there would put invocation and run ids into places
+ * §4.2 never authorised, and would change the serialized shape of an object other code compares.
+ * The callback in D11 is the primary channel — this is the success-path convenience beside it.
+ */
+export function attachRetrievalTelemetry<T extends object>(audit: T, outcome: RetrievalTelemetryOutcome): T {
+  Object.defineProperty(audit, RETRIEVAL_TELEMETRY_PROPERTY, {
+    value: outcome, enumerable: false, writable: false, configurable: true,
+  });
+  return audit;
+}
+
+/** Read it back at the owner. Null when the audit was uninstrumented, which is most of them. */
+export function readRetrievalTelemetry(audit: unknown): RetrievalTelemetryOutcome | null {
+  const v = (audit as Record<string, unknown> | null | undefined)?.[RETRIEVAL_TELEMETRY_PROPERTY];
+  return (v && typeof v === 'object') ? v as RetrievalTelemetryOutcome : null;
 }
 
 /** Run ids allocated by the WORKER before `auditOpdNote` is entered (D10). Threaded in and
@@ -73,6 +129,11 @@ export interface DeclareInput {
   runId: string;
   uid: string | null;
   engineVersion: string | null;
+  /** The three A/A experiment columns. All three are BOUND BY THE INSERT BELOW. They were declared
+   *  here and bound by nothing until this pass, which left `opd_art_experiment_idx` — an index on
+   *  `(experiment_run_id, pair_id)` — with a second column no writer could populate. Nothing was
+   *  lost meanwhile because no caller supplies them either; what goes in them is an A/A question
+   *  and V has not opened A/A. */
   experimentRunId?: string | null;
   pairId?: string | null;
   replicate?: string | null;
@@ -97,7 +158,7 @@ export async function declareRetrievals(
   if (runs.length === 0) {
     return { invocationId: ctx.invocationId, runs: [], persistenceIntent };
   }
-  const cols = 12;
+  const cols = 14;
   const values = runs.map((_, i) => {
     const b = i * cols;
     return `(${Array.from({ length: cols }, (_, k) => `$${b + k + 1}`).join(', ')})`;
@@ -107,23 +168,70 @@ export async function declareRetrievals(
     params.push(
       r.runId, r.role, ctx.route, ctx.invocationId, appSource(), ctx.deploymentSha,
       TELEMETRY_SCHEMA_VERSION, 'started', ctx.startedAt, r.uid, r.engineVersion,
-      r.experimentRunId ?? null,
+      r.experimentRunId ?? null, r.pairId ?? null, r.replicate ?? null,
     );
   }
-  await sql(
-    `INSERT INTO opd_audit_retrieval_telemetry
-       (retrieval_run_id, retrieval_role, route, invocation_id, app_source, deployment_sha,
-        telemetry_schema_version, persistence_state, started_at, uid, engine_version, experiment_run_id)
-     VALUES ${values}
-     ON CONFLICT (retrieval_run_id) DO NOTHING`,
-    params,
-  );
-  await addDeclaredRetrievals(ctx.invocationId, runs.length);
+  let landed: Array<{ retrieval_run_id: string }>;
+  try {
+    landed = (await sql(
+      `INSERT INTO opd_audit_retrieval_telemetry
+         (retrieval_run_id, retrieval_role, route, invocation_id, app_source, deployment_sha,
+          telemetry_schema_version, persistence_state, started_at, uid, engine_version,
+          experiment_run_id, pair_id, replicate)
+       VALUES ${values}
+       ON CONFLICT (retrieval_run_id) DO NOTHING
+       RETURNING retrieval_run_id`,
+      params,
+    )) as Array<{ retrieval_run_id: string }>;
+  } catch (e) {
+    // ⚠️ THE ONLY EVIDENCE A FAILED DECLARATION EVER LEAVES (D13). No retrieval row exists to
+    // reconcile — the insert is what would have created it — so `work_declaration` failure rows
+    // are the whole record, one per run this call was going to declare. The throw still
+    // propagates: the worker's declaration is fail-closed (D10) and the non-worker caller in
+    // `auditOpdNote` catches it and continues uninstrumented.
+    await recordDeclarationFailure(ctx, runs, e);
+    throw e;
+  }
+  // ⚠️ THE ROWS THAT LANDED, NOT THE ROWS THAT WERE ASKED FOR (D11: "counts newly inserted run ids
+  // only"). `ON CONFLICT DO NOTHING` returns nothing for a run id somebody already declared, and
+  // counting it again would inflate the denominator every coverage percentage divides by. That is
+  // reachable the moment the worker's adoption path exists, which is this build.
+  await addDeclaredRetrievals(ctx.invocationId, landed.length);
   return {
     invocationId: ctx.invocationId,
     runs: runs.map((r) => ({ role: r.role, runId: r.runId, expectedRevision: 0 })),
     persistenceIntent,
   };
+}
+
+/**
+ * The WORKER-SHAPED declaration: one `primary` run per note, in one statement, before any provider
+ * work, and FAIL-CLOSED (D10).
+ *
+ * ⚠️ ONE COPY FOR THREE ROUTES. The worker's single-day arm, its sweep arm, its re-audit arm and
+ * the mini-backfill all declare the same way; four copies of a fail-closed rule would eventually
+ * become three fail-closed rules and one that quietly logged. The returned ids are INDEX-ALIGNED to
+ * `rows`, which is the contract every caller then threads into `predeclaredTelemetry`.
+ */
+export async function declareNoteRuns(
+  ctx: TelemetryRequestContext,
+  rows: ReadonlyArray<Record<string, unknown>>,
+  engineVersion: string,
+): Promise<string[]> {
+  const runs: DeclareInput[] = rows.map((row) => ({
+    role: 'primary' as const,
+    runId: randomUUID(),
+    uid: String(row.uid ?? '') || null,
+    engineVersion,
+  }));
+  try {
+    await declareRetrievals(ctx, runs, 'will_persist');
+  } catch (e) {
+    throw new TelemetryDeclarationError(
+      `retrieval telemetry declaration failed (${String((e as Error).message).slice(0, 120)}) — no note of this day was processed`,
+    );
+  }
+  return runs.map((r) => r.runId);
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════
@@ -261,6 +369,27 @@ async function failEvidence(
   if (!ok) await bumpTelemetryWriteFailure(invocationId);
 }
 
+/**
+ * One `work_declaration` failure row per run the failed batch was going to declare (kickoff test
+ * 29, D13). NEVER THROWS — `failEvidence` is fail-open all the way down — so the declaration's own
+ * error is the one that reaches the caller.
+ *
+ * `observed_at` is the invocation's start: the declaration is the first durable write a request
+ * makes, and the failure table's retention anchor should sit with the invocation it belongs to.
+ */
+async function recordDeclarationFailure(
+  ctx: TelemetryRequestContext,
+  runs: DeclareInput[],
+  e: unknown,
+): Promise<void> {
+  for (const r of runs) {
+    await failEvidence(
+      ctx.invocationId, { role: r.role, runId: r.runId, expectedRevision: 0 },
+      'work_declaration', 'started', e, ctx.startedAt,
+    );
+  }
+}
+
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 // THE UPDATE PRECEDENCE (D12) — no-op, then revision, then transition, then apply
 // ════════════════════════════════════════════════════════════════════════════════════════════════
@@ -286,7 +415,24 @@ export async function applyTerminalState(
   handle: LifecycleHandle,
   run: LifecycleRun,
   input: SettleWriteInput,
-): Promise<{ handle: LifecycleHandle; status: 'settled' | 'noop' | 'rejected' | 'failed'; errorClass?: string }> {
+): Promise<{
+  handle: LifecycleHandle;
+  status: 'settled' | 'noop' | 'rejected' | 'failed';
+  errorClass?: string;
+  rejection?: SettlementRejection;
+}> {
+  /** A rejection leaves DURABLE EVIDENCE, not only a log line. The intended state never landed, so
+   *  D13's `persistence_link` mapping is exactly the right classification for a row still short of
+   *  it — and a row that is already terminal is never selected by the reconciler, so evidence
+   *  attached to one is inert rather than misleading. */
+  const reject = async (rejection: SettlementRejection, why: string) => {
+    console.warn('[retrieval-telemetry] settlement rejected:', rejection, run.role, why);
+    await failEvidence(
+      handle.invocationId, run, 'persistence_link', input.state,
+      { name: `settlement_rejected_${rejection}` }, input.settledAt,
+    );
+    return { handle, status: 'rejected' as const, rejection };
+  };
   try {
     const current = (await sql(
       `SELECT persistence_state, row_revision, audit_id
@@ -295,10 +441,7 @@ export async function applyTerminalState(
       [run.runId],
     )) as Array<{ persistence_state: string; row_revision: number; audit_id: string | null }>;
 
-    if (current.length === 0) {
-      console.warn('[retrieval-telemetry] settlement found no row', run.runId);
-      return { handle, status: 'rejected' };
-    }
+    if (current.length === 0) return reject('no_row', run.runId);
     const row = current[0];
 
     // 1. IDENTICAL CONTENT — a retry of a write that already landed. No revision is burned.
@@ -307,19 +450,14 @@ export async function applyTerminalState(
     }
     // 2. REVISION
     if (row.row_revision !== run.expectedRevision) {
-      console.warn('[retrieval-telemetry] settlement rejected: stale handle',
-        run.role, `expected ${run.expectedRevision}, found ${row.row_revision}`);
-      return { handle, status: 'rejected' };
+      return reject('stale_revision', `expected ${run.expectedRevision}, found ${row.row_revision}`);
     }
     // 3. TRANSITION — terminal states never transition, and the table is the only authority.
     if (isTerminalState(row.persistence_state)) {
-      console.warn('[retrieval-telemetry] settlement rejected: already terminal', row.persistence_state);
-      return { handle, status: 'rejected' };
+      return reject('already_terminal', row.persistence_state);
     }
     if (!isAllowedTransition(row.persistence_state, input.state)) {
-      console.warn('[retrieval-telemetry] settlement rejected: disallowed transition',
-        `${row.persistence_state} -> ${input.state}`);
-      return { handle, status: 'rejected' };
+      return reject('disallowed_transition', `${row.persistence_state} -> ${input.state}`);
     }
     // 4. APPLY
     const updated = (await sql(
@@ -330,7 +468,9 @@ export async function applyTerminalState(
         RETURNING row_revision`,
       [run.runId, run.expectedRevision, input.state, input.auditId, input.settledAt],
     )) as Array<{ row_revision: number }>;
-    if (updated.length === 0) return { handle, status: 'rejected' };
+    // A zero-row UPDATE after the revision already matched on the SELECT means somebody else moved
+    // the row between the two statements. Not retried — that is what the reconciler is for.
+    if (updated.length === 0) return reject('lost_update', run.runId);
     return { handle: advance(handle, run.role, updated[0].row_revision), status: 'settled' };
   } catch (e) {
     await failEvidence(handle.invocationId, run, 'persistence_link', input.state, e, input.settledAt);

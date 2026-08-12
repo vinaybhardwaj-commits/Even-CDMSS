@@ -56,6 +56,13 @@ import { probeReachable } from '@/lib/lab-override';
 import { MINI_MODEL, modelsAgree, geminiModelFor, geminiUtilityModel } from '@/lib/llm';
 import { PRICING } from '@/lib/llm-cost';
 import { costUsd } from '@/lib/llm-cost-core';
+import { telemetryContextFor, type TelemetryRequestContext } from '@/lib/retrieval-telemetry-core';
+import {
+  declareNoteRuns, readRetrievalTelemetry, TelemetryDeclarationError,
+  type LifecycleHandle,
+} from '@/lib/retrieval-telemetry-store';
+import { startInvocation } from '@/lib/retrieval-invocation-store';
+import { settleOwned, outcomeForOwnedSave } from '@/lib/retrieval-settlement';
 import {
   planRunCreate, planTick, canStartRun, advanceAfterTick, planStatusChange, RUN_MODEL_PREFIXES,
   type BackfillRun,
@@ -124,7 +131,7 @@ function resolveRunModel(model: string): RunModel {
  * `cloudAuditedUidsForDay`, both fed to the fetch as a skip list, and `ON CONFLICT DO NOTHING`
  * inside saveOpdAudit as the last line of defence. This is what makes a prod-line label safe.
  */
-async function processRunBatch(run: BackfillRun, day: string, resolved: Extract<RunModel, { ok: true }>) {
+async function processRunBatch(run: BackfillRun, day: string, resolved: Extract<RunModel, { ok: true }>, ctx: TelemetryRequestContext) {
   const { provider, modelId } = resolved;
   const total = await countOpdNotesForDay(day);
   const already = await auditedUidsForDayInLine(day);
@@ -132,19 +139,35 @@ async function processRunBatch(run: BackfillRun, day: string, resolved: Extract<
   const skip = [...new Set([...already, ...cloudDone])];
   const rows = total > skip.length ? await fetchOpdNotesForDay(day, skip, run.n_per_tick) : [];
 
+  // The worker's declaration shape, over this tick's note set, before any provider work (D10).
+  // Fail-closed here too: the caller turns a TelemetryDeclarationError into a 503 and the tick
+  // grades nothing, which is the same trade the worker makes and for the same reason.
+  const runIds = await declareNoteRuns(ctx, rows as Array<Record<string, unknown>>, OPD_ENGINE_VERSION);
+
   const results: Record<string, unknown>[] = [];
   let processed = 0, failed = 0, tokensIn = 0, tokensOut = 0, cost = 0;
   let lastError: string | null = null;
 
-  for (const row of rows) {
+  for (const [idx, row] of rows.entries()) {
     const started = Date.now();
+    let handle: LifecycleHandle = {
+      invocationId: ctx.invocationId,
+      runs: [{ role: 'primary', runId: runIds[idx], expectedRevision: 0 }],
+      persistenceIntent: 'will_persist',
+    };
+    let published = false;
     try {
       // No `pipeline: 'mini'`, no `engineTag`: the row carries the PLAIN prod engine version.
       // ⚠️ ONE THREADING RULE, TWO PROVIDERS. A bedrock run hands the leg its modelId (the S2 path,
       // unchanged); a VERTEX run passes nothing, because the production audit path IS the Gemini
       // arm — that is the whole point of §C2, and inventing a second way to reach Gemini here would
       // make the arm something other than "what production does".
-      const audit = await auditOpdNote(row, provider === 'bedrock' ? { bedrockModel: modelId } : {});
+      const audit = await auditOpdNote(row, {
+        ...(provider === 'bedrock' ? { bedrockModel: modelId } : {}),
+        telemetry: { ctx, route: 'opd_audit_mini_backfill', persistenceIntent: 'will_persist' },
+        predeclaredTelemetry: { primary: { runId: runIds[idx], expectedRevision: 0 } },
+        onLifecycleHandleUpdated: (h) => { handle = h; published = true; },
+      });
       // ⚠️ THE MODEL STAMP IS WHAT SERVED, READ BACK OFF THIS NOTE'S OWN TRACE. The autopilot
       // stamped MINI_MODEL, which was true for it and would be a lie for this runner; S2 stamped
       // the resolved bedrock id, which was true because that branch has no ladder. Neither is safe
@@ -157,15 +180,29 @@ async function processRunBatch(run: BackfillRun, day: string, resolved: Extract<
       if (served.model && !modelsAgree(served.model, modelId)) {
         throw new Error(`DEC-2: run ${run.id} asked ${provider}:${modelId} but ${served.provider ?? '?'}:${served.model} answered — no row written`);
       }
+      const defects = readRetrievalTelemetry(audit)?.manifestDefects ?? [];
+      let linked = false;
       const status = await saveOpdAudit(audit, {
         model: served.model ?? modelId, provider: served.provider ?? provider, latencyMs: Date.now() - started,
+      }, {
+        onPersisted: async ({ status: st, auditId }) => {
+          linked = true;
+          await settleOwned(handle, outcomeForOwnedSave(st, defects), auditId);
+        },
       });
+      if (!linked) await settleOwned(handle, outcomeForOwnedSave(status, defects));
       const usage = await usageForTrace(audit.traceId);
       const usd = costUsd(served.model ?? modelId, usage.tokensIn, usage.tokensOut, false, PRICING);
       tokensIn += usage.tokensIn; tokensOut += usage.tokensOut; cost += usd;
       if (status === 'inserted') processed++;
       results.push({ uid: audit.keys.uid, index: audit.scorecard.headline, band: audit.scorecard.band, status, ms: Date.now() - started, model: served.model ?? modelId, provider: served.provider ?? provider, tokens_in: usage.tokensIn, tokens_out: usage.tokensOut, usd: Number(usd.toFixed(4)), traceId: audit.traceId ?? null });
     } catch (e) {
+      // ⚠️ THE DEC-2 REFUSAL IS `persistence_refused`, NOT a generation failure (D9). It is thrown
+      // from inside this try, so it arrives here alongside real audit failures and has to be told
+      // apart by what it is: a decision not to persist a completed audit.
+      await settleOwned(handle,
+        /^DEC-2:/.test(String((e as Error).message)) ? 'persistence_refused'
+          : published ? 'audit_generation_failed' : 'retrieval_not_run');
       // A NOTE that fails is data, not an outage: count it, record why, keep going. A whole run
       // must not be lost to one unparseable note.
       failed++;
@@ -185,7 +222,7 @@ async function processRunBatch(run: BackfillRun, day: string, resolved: Extract<
 }
 
 /** The cron tick (?auto=1): work the ACTIVE run for this worker. */
-async function autoTick(): Promise<Record<string, unknown>> {
+async function autoTick(headers?: Headers): Promise<Record<string, unknown>> {
   const run = await activeRun(WORKER);
   const plan = planTick(run);
 
@@ -229,7 +266,10 @@ async function autoTick(): Promise<Record<string, unknown>> {
 
   await setSetting(MB_KEYS.lock, new Date().toISOString());
   try {
-    const batch = await processRunBatch(active, plan.day, resolved);
+    // One invocation per tick, established at this boundary and threaded down (D11).
+    const ctx = telemetryContextFor('opd_audit_mini_backfill', headers ?? null);
+    await startInvocation(ctx);
+    const batch = await processRunBatch(active, plan.day, resolved, ctx);
     await addRunProgress(active.id, {
       processed: batch.processed, failed: batch.failed,
       tokensIn: batch.tokensIn, tokensOut: batch.tokensOut, costUsd: batch.cost,
@@ -257,7 +297,11 @@ async function autoTick(): Promise<Record<string, unknown>> {
   } catch (e) {
     // A TICK that fails is infrastructure — every note in this run would fail the same way. Error
     // the run: loud, visible, resumable, and it stops burning the range against a broken provider.
-    const msg = String((e as Error).message).slice(0, 500);
+    // A TelemetryDeclarationError arrives here too: it is a refusal to start, so the tick grades
+    // nothing and the run is errored and resumable, exactly as for an unreachable provider.
+    const msg = e instanceof TelemetryDeclarationError
+      ? `503 ${e.message}`
+      : String((e as Error).message).slice(0, 500);
     await setRunStatus(active.id, 'error', msg, { onlyIfActive: true });
     await logTick({ status: 'error', note: msg.slice(0, 200), run_id: active.id });
     return { auto: true, run_id: active.id, status: 'error', error: msg };
@@ -281,7 +325,7 @@ async function statusPayload(): Promise<Record<string, unknown>> {
 export async function GET(req: NextRequest) {
   if (!(await authed(req))) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   if (req.nextUrl.searchParams.get('auto') === '1') {
-    try { return NextResponse.json({ ok: true, ...(await autoTick()) }); }
+    try { return NextResponse.json({ ok: true, ...(await autoTick(req.headers)) }); }
     catch (e) {
       await logTick({ status: 'error', note: String((e as Error).message).slice(0, 200) });
       return NextResponse.json({ ok: false, error: String((e as Error).message) }, { status: 500 });
