@@ -17,16 +17,27 @@
 // not touch. Both holes had the same cause: a condition was being compared as characters instead of
 // as a condition.
 //
-// WHAT REPLACES IT. `next.config.mjs` cannot import a `.ts`, so the two copies still cannot be
-// compared by evaluating them — but they can be PARSED. Both are read through the TypeScript
-// parser, which is already a devDependency, and compared as syntax trees. String literals are
-// compared by their exact value, so a space inside one is a difference; the shape of each clause is
-// asserted against what D8 specifies, so a fourth clause joined by any operator is a difference;
-// and the two trees are compared to each other, so one-sided drift is a difference. Formatting, line
-// breaks and the `process.env.` / `env.` spelling are the only things that do not count.
+// WHAT REPLACES IT, IN TWO HALVES THAT PROVE DIFFERENT THINGS.
+//
+// (a) THE ORACLE, below. Both copies of the predicate are PARSED and compared as syntax trees.
+//     String literals are compared by their exact value, so a space inside one is a difference.
+//     What it does NOT count is not a short list and is not worth pretending is one: formatting,
+//     line breaks, the `process.env.` / `env.` spelling, parentheses, optional chaining, and — most
+//     of all — whether `env` is the process environment at all. Its subject is DRIFT BETWEEN THE
+//     TWO COPIES, and that is all. ⚠️ IT INSPECTS ONE `IfStatement` AND NOTHING ELSE IN THE FILE:
+//     it cannot see a line prepended above the guard, a shadowed `process`, a redefined `String`,
+//     or an `uncaughtException` handler, and every one of those kills the guard while leaving the
+//     pinned expression byte-identical.
+//
+// (b) THE EXECUTION, immediately below this comment. `next.config.mjs` is SPAWNED in a fresh child
+//     process, three times, with the three guard inputs fixed explicitly. Its subject is WHETHER
+//     THE GUARD STILL FIRES. Nothing about a source pin can answer that, and for one pass this file
+//     passed 8 of 8 while the production deploy precondition was dead.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { resolve } from 'node:path';
 import ts from 'typescript';
 import { telemetryKeyMissingInProduction, TELEMETRY_HMAC_KEY_ENV } from '../telemetry-key-guard';
 
@@ -107,6 +118,49 @@ test('57 case 5 — not a Vercel build, even when the environment says productio
     );
   }
   assert.equal(telemetryKeyMissingInProduction({}), false);
+});
+
+// ── the guard, EXECUTED ─────────────────────────────────────────────────────────────────────────
+//
+// ⚠️ A FRESH CHILD PROCESS PER CASE, AND THAT IS NOT FASTIDIOUSNESS. Importing the config twice in
+// one process runs it once: ESM caches the module record, and the second import returns the cached
+// one without executing anything. A second in-process "case" would therefore assert nothing at all
+// while looking like a passing test.
+//
+// Only the three inputs D8's condition reads are fixed. Every other build input stays ambient, so
+// this is the config as it would run, not a sanitised imitation of it.
+
+const CONFIG_PATH = resolve(CONFIG_FILE);
+
+function runConfig(vercel: string, vercelEnv: string, key: string | null): { status: number; output: string } {
+  const env: NodeJS.ProcessEnv = { ...process.env, VERCEL: vercel, VERCEL_ENV: vercelEnv };
+  if (key === null) delete env[TELEMETRY_HMAC_KEY_ENV];
+  else env[TELEMETRY_HMAC_KEY_ENV] = key;
+
+  const r = spawnSync(process.execPath, [CONFIG_PATH], { env, encoding: 'utf8' });
+  // Asserted BEFORE the exit code is read. A spawn that never started, or one killed by a signal,
+  // has no exit code worth testing — and `status` is null in both cases, which `!== 0` would
+  // happily accept as "the guard fired".
+  assert.equal(r.error, undefined, `spawn failed: ${String(r.error)}`);
+  assert.equal(r.signal, null, `killed by ${String(r.signal)}`);
+  assert.equal(typeof r.status, 'number', 'no numeric exit status');
+  return { status: r.status as number, output: `${r.stdout}${r.stderr}` };
+}
+
+test('57 EXECUTED — a production build with no key FAILS, and says which variable is missing', () => {
+  const { status, output } = runConfig('1', 'production', null);
+  assert.notEqual(status, 0, 'the production deploy precondition did not fire');
+  assert.ok(output.includes(TELEMETRY_HMAC_KEY_ENV), `the failure does not name the variable:\n${output}`);
+});
+
+test('57 EXECUTED — a production build WITH a key succeeds', () => {
+  // A control. Without it, a config that failed unconditionally would pass the case above.
+  assert.equal(runConfig('1', 'production', 'local-test-key-not-a-secret').status, 0);
+});
+
+test('57 EXECUTED — a non-production build with no key succeeds', () => {
+  // The second control, and the one that matters to every developer: the guard must not fire here.
+  assert.equal(runConfig('0', 'development', null).status, 0);
 });
 
 // ── the parser, and the one normalization ───────────────────────────────────────────────────────
@@ -237,6 +291,10 @@ test('57 pin — each copy is exactly D8\'s three clauses, and there is no fourt
       ts.isPropertyAccessExpression(trimCall.expression) && trimCall.expression.name.text === 'trim',
       `${where}: clause 3 calls .trim() — without it a key of three spaces is a key`,
     );
+    // ⚠️ `.trim()` TAKES NO ARGUMENTS, AND UNTIL THIS ASSERTION EXISTED THAT WAS THE ONE POSITION A
+    // FOURTH CLAUSE COULD HIDE IN. `.trim(x && y)` is legal JavaScript, renders identically on both
+    // copies, and left every other assertion here satisfied.
+    assert.equal(trimCall.arguments.length, 0, `${where}: .trim() takes no arguments`);
     const stringCall = trimCall.expression.expression;
     assert.ok(
       ts.isCallExpression(stringCall) && ser(stringCall.expression, sf) === 'String',
@@ -291,9 +349,13 @@ test('57 pin — the inlined copy still THROWS, and says which variable is missi
     first.getText(configAst).includes(TELEMETRY_HMAC_KEY_ENV),
     'the error names the env var a reader has to set',
   );
-  // A build-time throw, not a runtime degradation: nothing here may be caught and logged.
+  // ⚠️ THIS ASSERTION CHECKS FOR A `try` STATEMENT AND NOTHING ELSE. It used to be introduced as
+  // "nothing here may be caught and logged", which claimed far more than it checks: a
+  // `process.on('uncaughtException', …)` handler swallows the throw with no `try` anywhere in the
+  // file. What actually proves the build fails is the EXECUTED case above, which reads the child's
+  // exit status. This is the narrow, structural half.
   let hasTry = false;
   const walk = (n: ts.Node): void => { if (ts.isTryStatement(n)) hasTry = true; ts.forEachChild(n, walk); };
   walk(configAst);
-  assert.equal(hasTry, false, `${CONFIG_FILE} does not swallow its own guard`);
+  assert.equal(hasTry, false, `${CONFIG_FILE} has no try statement around its guard`);
 });

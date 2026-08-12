@@ -1,13 +1,127 @@
 # CDMSS Rerank Telemetry — on-path build report
 
-**Three issues, in reverse order.** Part III is this build: kickoff steps 14 to 17 and the test 57
-fix, 12 August 2026, on top of `177adc9`. Part II is the correction issue committed in `177adc9`,
-which withdrew twelve claims from the first issue. Part I is in git history at `90d8db1` and is not
+**Four issues, in reverse order.** Part IV is the pin repair, 12 August 2026, on top of `e5dc756`:
+three pins that passed while the thing each guarded was dead or replaceable. Part III is the steps
+14 to 17 build, on top of `177adc9`. Part II is the correction issue committed in `177adc9`, which
+withdrew twelve claims from the first issue. Part I is in git history at `90d8db1` and is not
 rewritten there — the record shows what was withdrawn.
 
-Nothing in Part II is edited by this issue except one sentence, which is named where it stood.
+Two earlier parts are edited, one sentence each. Part IV changes Part III's §3.2 citation of D11 —
+at line 209 in the `e5dc756` report — from line 681 to 674; Part III changed one sentence in Part
+II's preamble.
 
 ---
+
+---
+
+# PART IV — PIN REPAIR (on top of `e5dc756`)
+
+## 1. What this part did not do
+
+No production code changed, and none of tests 21, 22, 23, 24, 47, 48 or 63 was written.
+
+```
+$ git diff --name-only e5dc756
+CDMSS-RERANK-TELEMETRY-ONPATH-BUILD-11-AUG-2026.md
+lib/__tests__/reconciler-races.test.ts
+lib/__tests__/telemetry-key-guard.test.ts
+```
+
+A mode change, type change or rename is **not established** by any test (SHA-256 sees content only), and nothing new was flagged — the two open items are unchanged, in Part III §10.
+
+## 2. The D8 deploy guard is now EXECUTED, not only parsed
+
+`next.config.mjs` is spawned in a fresh child process, three times, with `VERCEL`, `VERCEL_ENV` and
+the key fixed explicitly and everything else ambient. The oracle was kept: it inspects one
+`IfStatement`, and every attack below lives outside it.
+
+```
+$ zsh /Users/vinaybhardwaj/.claude/jobs/a5ac63db/tmp/d8-attacks.sh
+=== baseline (unmutated scratch copy: guard ALIVE, all pass) ===
+baseline                                       guard ALIVE   # pass 11  # fail 0
+
+=== six attacks (each: guard DEAD, and the test must FAIL) ===
+1. VERCEL forced to '0' above the guard        guard DEAD    # pass 10  # fail 1  not ok 6 - 57 EXECUTED
+2. process shadowed, guard lines untouched     guard DEAD    # pass 10  # fail 1  not ok 6 - 57 EXECUTED
+3. String redefined                            guard DEAD    # pass 10  # fail 1  not ok 6 - 57 EXECUTED
+4. clauses respelled env., env shadowed        guard DEAD    # pass 10  # fail 1  not ok 6 - 57 EXECUTED
+5. process.env redefined with a key            guard DEAD    # pass 10  # fail 1  not ok 6 - 57 EXECUTED
+6. uncaughtException handler, no try anywhere  guard DEAD    # pass 10  # fail 1  not ok 6 - 57 EXECUTED
+```
+
+Six attacks, the list complete: the six the brief names, each run once. The `guard` column is
+independent — the config is run under production inputs and its exit status read.
+
+Attack 4 is the instructive one: the oracle passes it — respelling `process.env.` as `env.` renders
+identically by design — and only the executed case fails.
+
+## 3. The reconciler's compare-and-set is proven at run time
+
+The exported `GET` is driven with a cron-authenticated `NextRequest` through the transport stub,
+against a fake table that decides whether an update lands from the observed SQL, the bound parameters
+and the row's state and revision. Five cases: the pass runs and selects; the UPDATE **as sent**
+carries both predicates; each row binds its own revision; the stale decision does not land; a
+terminal row wins.
+
+The line a source pin cannot see, applied to `route.ts:124` and reverted byte-identically:
+
+```
+$ node --test --import tsx lib/__tests__/reconciler-races.test.ts   # with RECONCILER_UPDATE_SQL.replace(…)
+not ok 8 - 55 runtime — the UPDATE the route ACTUALLY SENT carries both predicates
+not ok 10 - 55 runtime — THE STALE DECISION DOES NOT LAND: reread, reclassify, write the FRESH state
+# pass 14
+# fail 2
+```
+
+The stale-decision case is the property: selected `started` at 7, moved to `retrieval_complete` at 8
+immediately before the first update is evaluated; the first binds `'7'`/`aborted` and affects
+nothing, exactly one reread happens, the second binds `'8'`/`persistence_unknown` and lands. Two
+updates, counted with `/^\s*UPDATE opd_audit_retrieval_telemetry\b/`, because the request also
+closes its invocation.
+
+## 4. The untouched regions of the two cron test files are hashed
+
+Neither file is edited. The one authorised line is replaced in memory with its `177adc9` line and the
+whole file hashed against a baseline stored in `reconciler-races.test.ts`, not derived from the
+current source and not from git.
+
+```
+$ zsh /Users/vinaybhardwaj/.claude/jobs/a5ac63db/tmp/hash-mutations.sh
+=== baseline (unmutated scratch copy: must PASS) ===
+baseline                                             # pass 16  # fail 0
+
+=== three mutations (each must FAIL) ===
+1. provider-switch-unit-d:273 -> assert.ok(true);    # pass 15  # fail 1  not ok 15 - 64
+2. provider-switch-unit-d: one byte on line 1        # pass 15  # fail 1  not ok 15 - 64
+3. ipd-worker-batch-and-model: one byte on line 1    # pass 15  # fail 1  not ok 15 - 64
+```
+
+Three mutations, and the list is complete: the one the brief names, plus one unrelated byte in each
+file. The whole-file hash carries the property; the three show it holds.
+
+## 5. Sentences corrected
+
+| Where | What it claimed | What was done |
+|---|---|---|
+| header | formatting, line breaks and the `process.env.` / `env.` spelling are the only things the oracle does not count | Replaced. Parentheses, optional chaining and whether `env` is the environment at all are also not counted, and the header now says the list is not short. |
+| the throw pin | "nothing here may be caught and logged" above an assertion that checks only for a `try` keyword | Narrowed to what it checks. Attack 6 swallows the throw with no `try` anywhere; the executed case is what proves the build fails. |
+| header | a fourth clause joined by any operator is a difference | Made true: `.trim()`'s argument list was the one unchecked position, and `trimCall.arguments.length === 0` now closes it. |
+| `reconciler-races.test.ts` header | the route is "pinned by source and by its two exported statements" | There are none — Next rejects extra route exports — and there are three constants. Rewritten to say that, and why source alone was insufficient. |
+| Part III §3.2 | "D11 line 681" | The sentence is at line 674 (`grep -n "counts newly inserted run ids only" CDMSS-RERANK-TELEMETRY-ONPATH-CC-KICKOFF-v11-11-AUG-2026.md` → `674:`). |
+
+## 6. The gate
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `npm test` | `# tests 3014 · # pass 3014 · # fail 0 · # skipped 0` — the total the runner emits, counting `node --test` cases |
+| 2 | `npm run typecheck` | exit 0 |
+| 3a | `env -u CDMSS_TELEMETRY_HMAC_KEY VERCEL=1 VERCEL_ENV=production npm run build` | **the expected production-precondition failure occurred**: non-zero exit, output naming `CDMSS_TELEMETRY_HMAC_KEY`. Not a green build. |
+| 3b | `VERCEL=1 VERCEL_ENV=production CDMSS_TELEMETRY_HMAC_KEY=… npm run build` | exit 0 |
+| 4 | `npm run architecture:check` | `all 8 rules + coverage green` |
+| 5, 6 | `npm run architecture:map && git diff --exit-code HEAD -- lib/architecture/map.generated.ts` | `wrote … (90300 bytes)`, then exit 0 — compared against `HEAD`, nothing staged |
+| 7 | `npm run reasoning:registry && git diff --exit-code HEAD -- data/reasoning-registry/prompts.generated.json` | exit 0, no staging |
+| 8 | `npm run reasoning:governance` | `GREEN: 0 ungoverned model calls` |
+| 9 | `npm run changelog:coverage` | `GREEN: all 19 shipped engine versions documented (30 versioned entries)` |
 
 # PART III — STEPS 14 TO 17, AND THE TEST 57 FIX
 
@@ -206,7 +320,7 @@ it. See flag 1.
 ### 3.2 `declared_retrievals` counted what was asked for (§2.2, step 14)
 
 The insert ends `ON CONFLICT (retrieval_run_id) DO NOTHING` and carried no `RETURNING`, so the
-increment bound `runs.length`. D11 line 681: "counts newly inserted run ids only." It now binds the
+increment bound `runs.length`. D11 line 674: "counts newly inserted run ids only." It now binds the
 rows that landed.
 
 ```
