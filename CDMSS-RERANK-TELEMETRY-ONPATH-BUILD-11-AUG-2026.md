@@ -1,31 +1,117 @@
 # CDMSS Rerank Telemetry — on-path build report
 
-**12 August 2026.** Against `CDMSS-RERANK-TELEMETRY-PRD-v2.1-11-AUG-2026.md` and
-`CDMSS-RERANK-TELEMETRY-ONPATH-CC-KICKOFF-v11-11-AUG-2026.md`.
+**Second issue, 12 August 2026**, correcting the issue committed in `90d8db1`. Against
+`CDMSS-RERANK-TELEMETRY-PRD-v2.1-11-AUG-2026.md` and
+`CDMSS-RERANK-TELEMETRY-ONPATH-CC-KICKOFF-v11-11-AUG-2026.md`, and following
+`CDMSS-RERANK-TELEMETRY-BUILD-VERDICT-12-AUG-2026.md`.
+
+**Every number below was re-measured for this issue, and the command that produced it is printed
+beside it.** The first issue's numbers were written from memory; nine of its claims were false and
+six of those were counts. Where a correction changes a number, the new number carries its command.
+Where a command was run against a specific commit, the commit is named — several of the first
+issue's figures were true of the baseline and were attached to the wrong tree.
+
+---
+
+## 0A. WHAT THIS ISSUE WITHDRAWS
+
+The first issue of this report is in git history at `90d8db1` and is not rewritten there. These are
+the claims it made that this issue withdraws, and where each is now answered.
+
+| # | Withdrawn claim | Where it stood | Corrected in |
+|---|---|---|---|
+| 1 | "The retrieval path executes byte-identically to `fc28e0f`" | §0 | §0, §9 |
+| 2 | "no caller passes one" | §0 | §0 |
+| 3 | "a source pin holds the two copies together" (also compiled into `next.config.mjs:8`) | §11 flag 1 | §11 flag 1, §15 pin 5 |
+| 4 | Test 63 listed as written and green | §12 | §12, §18 flag |
+| 5 | "38 directories. 29 export a `POST`." | §3 | §3 |
+| 6 | "Four [pins changed], all preserving the same invariant" | §15 | §15 |
+| 7 | "All four [unbroken pins] pin `return attachTransportAttribution(...)`" | §15 | §15 |
+| 8 | "roughly forty of the seventy-three named tests" | §0 | §0, §12 |
+| 9 | "Three edits" to `batchCounters()` | §10.1 | §10.1 |
+| 10 | The architecture map "wrote 88,840 bytes" | §2 | §2 |
+| 11 | The CHECK-slice pin "passed on nothing" | **not in the report** — see note | §15 pin 3 |
+| 12 | Steps 9, 11 and 13 claimed built; step 14 claimed not built | §0, §12 | §12 |
+
+**A note on row 11.** The verdict places "sliced to end-of-file and passed on nothing" in §9. That
+sentence is not in the report file at either issue — `grep -n "passed on nothing"` returns nothing
+against `90d8db1`. It was said in the covering message that accompanied the commit, which is not a
+record anyone reads later but was wrong all the same. §15's wording was the accurate one and is
+kept; it is now backed by a measurement rather than by an impression (§15 pin 3).
+
+Two of those — 1 and 3 — would have changed a decision. Claim 3 was also a false sentence in
+shipped code; the code change that makes it true is in this pass (§15 pin 5).
 
 ---
 
 ## 0. THE HEADLINE, BEFORE ANYTHING ELSE
 
-**This build is PARTIAL. It is green, it is coherent, and it is INERT — but it is not the whole
-kickoff.** Steps 1 to 13 and 18 of the kickoff's twenty-two are built. Steps 14 to 17 — the
-lifecycle writes at the callers, the worker declaration, the settlement wiring and the reconciler —
-are **NOT built**, and neither are the ten C0 query texts, the overhead measurement, or roughly
-forty of the seventy-three named tests. §12 of this report lists every omission by number.
+**This build is PARTIAL. It is green, it is coherent, and its scoring behaviour is unchanged — but
+it is not the whole kickoff.** Steps 1 to 13 and 18 of the kickoff's twenty-two are built, three of
+them only partly (§12). Steps 14 to 17 — the lifecycle writes at the callers, the worker
+declaration, the settlement wiring and the reconciler — are **NOT built**, and neither are the ten
+C0 query texts, the overhead measurement, nor **50 of the 73 named tests**. §12 lists every
+omission by number, and the 50 is that list counted, not an estimate:
 
-**Two things follow, and V should read both before deciding anything else.**
+```bash
+node -e '
+const r=(a,b)=>Array.from({length:b-a+1},(_,i)=>a+i);
+const W=[...r(3,9),11,13,30,...r(35,38),45,46,50,57,61,66,68,69,71];   // §12, written and green
+const A=r(1,73).filter(n=>!W.includes(n));
+console.log("written",W.length,"absent",A.length,"total",W.length+A.length,"dups",W.length-new Set(W).size);'
+# written 23 absent 50 total 73 dups 0
+```
 
-1. **Nothing is activated.** Every instrumentation seam is opt-in on a trailing optional parameter
-   or an optional input field, and **no caller passes one**. `auditOpdNote` declares nothing
-   because no route sets `opts.telemetry`; `defaultRecall` captures nothing because no route sets
-   `input.telemetry`. The retrieval path executes byte-identically to `fc28e0f`. This is a
-   deliberate stopping point: I stopped at the opt-in boundary rather than half-wiring the
-   lifecycle, because a wired declaration with no settlement and no reconciler would leave every
-   row stranded at `retrieval_complete` forever, which is worse than no telemetry.
+A clean partition of 1..73, no overlap and no gap. The first issue said "roughly forty"; its own
+§12 list said 50, and §12 was the right one.
+
+**Three things follow, and V should read all three before deciding anything else.**
+
+1. **No top-level caller supplies telemetry, and ranking is unchanged — but the tree is not
+   byte-identical to `fc28e0f`.** The first issue said "the retrieval path executes byte-identically
+   to `fc28e0f`" and "no caller passes one". Both are withdrawn. What is true:
+
+   - **Ranking, scores and the retrieved set are unchanged.** Nothing in this commit reads a
+     capture to decide an order, a threshold or a slice.
+   - **No route sets `opts.telemetry` or `input.telemetry`**, so `auditOpdNote` declares nothing
+     and `defaultRecall` captures nothing. That is the sense in which the lifecycle is inert.
+   - **Thirteen in-tree call sites do pass the new trailing argument**, and every one of them
+     evaluates to `undefined` today, because the two constructors are conditioned on a field no
+     route sets (`lib/opd-note-audit.ts:1501-1502`, `lib/lvc.ts:205`, each `tele ? … : undefined`):
+
+     ```bash
+     grep -rn "capture)\|Capture)" lib/retrieve.ts lib/multi-query.ts lib/lvc.ts \
+       lib/opd-note-audit.ts lib/rerank.ts | grep -v "if (" | grep -v "capture?:"
+     # 13 lines
+     ```
+
+     `lib/retrieve.ts:408`, `:589` · `lib/multi-query.ts:231`, `:328` · `lib/lvc.ts:284` ·
+     `lib/opd-note-audit.ts:647`, `:692`, `:1550`, `:1554` · `lib/rerank.ts:321`, `:332`, `:352`,
+     `:354`. The verdict counted six; thirteen is what the tree holds under the definition "a call
+     site that passes a capture in the new trailing position". The conclusion is the verdict's,
+     unchanged: the value is `undefined` at every one of them.
+
+   - **`lib/llm.ts` is changed unconditionally, behind no optional parameter**, and the retrieval
+     path reaches it — the rerank judge through `governedChat` at `lib/rerank.ts:450`, `expandQuery`
+     at `lib/expand.ts:25`. Three changes, none of them a seam: `attempts: []` becomes
+     `[...attempts, localAttemptSuccess()]` on the intended-local arm, `[...attempts]` becomes
+     `[...attempts, localAttemptSuccess()]` on the substitution arm, and a new
+     `attachTransportFailureAttribution(lastErr, …)` statement runs before the three terminal
+     dispositions. The attribution object the retrieval path returns is therefore different, and a
+     thrown error now carries an added non-enumerable property. `git diff fc28e0f HEAD -- lib/llm.ts`
+     is the whole of it; §9 states the same change as an achievement, and the two sections now agree.
+
+   The stopping point itself was deliberate: the opt-in boundary rather than a half-wired lifecycle,
+   because a declaration with no settlement and no reconciler leaves every row stranded at
+   `retrieval_complete` forever, which is worse than no telemetry.
 
 2. **⚠️ A PRODUCTION BUILD NOW FAILS WITHOUT `CDMSS_TELEMETRY_HMAC_KEY`.** This is the one change
    in the commit that is NOT inert. It is D8 as specified. See §11, which also reports a finding
    about that guard that the kickoff could not have known.
+
+3. **"2940 green" does not cover the manifest path.** Six of the seven new modules — everything
+   that builds a manifest and writes it — are imported by no test at all. §12.1 states this
+   plainly, with the command.
 
 ---
 
@@ -34,9 +120,14 @@ forty of the seventy-three named tests. §12 of this report lists every omission
 | | |
 |---|---|
 | Preparatory (documentation + allowlist only) | `a2a8f4d1befce394b37c10a9b023aa6c742c30dd` |
-| Build commit | *(recorded at commit time — see `git log` on `exp/rerank-telemetry`)* |
+| Build commit (first issue of this report) | `90d8db1befc17e1fd6a3aa7d5e5b8612f590ed4f` |
+| Correction commit (this issue) | *on top of `90d8db1`, not an amend — see `git log` on `exp/rerank-telemetry`* |
 | Branch | `exp/rerank-telemetry`, **not pushed** |
 | Base | `fc28e0fdce015e9e303944e4197b19534c31c383` |
+
+`90d8db1` is **not amended.** The first issue of this report stays in history exactly as it was
+written, and this correction sits on top of it, so the record shows what was withdrawn rather than
+quietly replacing it.
 
 ```
 850249857454f190e52c9f9687eda64d176e1911ec439025ed1af0ee70305d95  CDMSS-RERANK-TELEMETRY-PRD-v2.1-11-AUG-2026.md
@@ -50,48 +141,69 @@ canary. Nothing here was run against the production database.
 
 ---
 
-## 2. Gate — nine commands
+## 2. Gate — nine commands, re-run in full for this issue
 
 | # | Command | Result |
 |---|---|---|
-| 1 | `npm test` | **GREEN — 2932/2932** (2887 at `fc28e0f` + 45 new; 0 fail, 0 skipped) |
-| 2 | `npm run typecheck` | **GREEN** — clean |
-| 3 | `npm run build` | **GREEN, with a caveat — see below** |
+| 1 | `npm test` | **GREEN — 2940/2940** (2887 at `fc28e0f` + 45 at `90d8db1` + 8 in this pass; 0 fail, 0 skipped) |
+| 2 | `npm run typecheck` | **GREEN** — `tsc --noEmit`, exit 0, no diagnostics |
+| 3 | `npm run build` | **exit 1 plain, exit 0 with the key — see below** |
 | 4 | `npm run architecture:check` | **GREEN** — 8 rules + coverage; 39 subsystems, 16 registered, 23 unregistered |
-| 5 | `npm run architecture:map` | **GREEN** — wrote 88,840 bytes |
+| 5 | `npm run architecture:map` | **GREEN** — `wc -c lib/architecture/map.generated.ts` → **88,842** |
 | 6 | map determinism (`git diff --exit-code`) | **GREEN** — regeneration is byte-identical |
-| 7 | `npm run reasoning:registry` + `git diff --exit-code` | **GREEN — the registry file did NOT change** |
-| 8 | `npm run reasoning:governance` | **GREEN** — 0 ungoverned model calls |
-| 9 | `npm run changelog:coverage` | **GREEN** — 19 shipped engine versions documented |
+| 7 | `npm run reasoning:registry` + `git diff --exit-code` | **GREEN — the registry file did NOT change** (88,737 bytes; 30 prompts · 7 rubrics · 36 builders · 19 features) |
+| 8 | `npm run reasoning:governance` | **GREEN** — 0 ungoverned model calls; parallel stores folded |
+| 9 | `npm run changelog:coverage` | **GREEN** — all 19 shipped engine versions documented (30 versioned entries) |
 
-**⚠️ COMMAND 3, EXACTLY AS RUN.** Plain `npm run build` **FAILS** on this machine, and it is not a
-defect in the build — it is the D8 guard firing correctly against an environment the kickoff did
-not anticipate. `vercel env pull` has written `VERCEL="1"` and `VERCEL_ENV="production"` into this
-machine's `.env.local`, Next.js loads `.env.local` into `process.env` before evaluating
-`next.config.mjs`, and D8's three clauses are therefore all true for a *local* build. The command
-that was actually run, and that produced the GREEN above, is:
+**⚠️ COMMAND 3, EXACTLY AS RUN, WITH BOTH EXIT CODES.** Eight of the nine gates pass as the kickoff
+writes them. The ninth does not, and that is the D8 guard firing correctly against an environment
+the kickoff did not anticipate — not a defect in the build. `vercel env pull` has written
+`VERCEL="1"` and `VERCEL_ENV="production"` into this machine's `.env.local`, Next.js loads
+`.env.local` into `process.env` before evaluating `next.config.mjs`, and D8's three clauses are
+therefore all true for a *local* build.
 
 ```bash
-CDMSS_TELEMETRY_HMAC_KEY=local-gate-key-not-a-secret npm run build
+$ npm run build >/dev/null 2>&1; echo $?
+1
+# Error: CDMSS_TELEMETRY_HMAC_KEY is required for a production build. …
+#     at <unknown> (next.config.mjs:14:9)
+
+$ CDMSS_TELEMETRY_HMAC_KEY=local-gate-key-not-a-secret npm run build >/dev/null 2>&1; echo $?
+0
 ```
 
 I did **not** change D8's predicate to make the plain command pass. See §11, finding 1.
 
+**The map byte count.** The script's own completion message says 88,840. The file is 88,842 bytes;
+the script under-reports by two. The table quotes `wc -c`, which is the file.
+
 New tests by file: `transport-failure-attribution` 21 · `retrieval-telemetry-core` 25 (rewritten,
-was 17) · `migrate-retrieval-telemetry-parity` 12 · `telemetry-non-exposure` 4.
+was 17) · `migrate-retrieval-telemetry-parity` 12 · `telemetry-non-exposure` 4 ·
+`telemetry-key-guard` 8 (this pass). **Two units are in play and they are not the same number.**
+"2940 tests" counts **test cases** executed by `node --test`. "23 of 73 written" counts the
+kickoff's **named test requirements** in §6. One named requirement can be several cases — test 57
+alone is eight.
 
 ---
 
 ## 3. The two counts I verified for myself
 
-The kickoff said not to carry these on its word.
+The kickoff said not to carry these on its word. **Both figures are commit-sensitive, and the first
+issue attached the baseline's figures to the tree that changes them.** This commit adds the 39th
+directory and the 30th `POST`, which is what §5.1 describes.
 
 ```bash
-ls -d app/api/admin/migrate-*/ | wc -l
-grep -l "export async function POST\|export const POST\|export function POST" app/api/admin/migrate-*/route.ts | wc -l
+# at fc28e0f — the baseline the kickoff was written against
+git ls-tree -d --name-only fc28e0f app/api/admin/ | grep -c "migrate-"          # 38
+git grep -lE "export (async )?function POST" fc28e0f -- 'app/api/admin/migrate-*/route.ts' | wc -l  # 29
+
+# at 90d8db1 — the tree this report describes
+ls -d app/api/admin/migrate-*/ | wc -l                                          # 39
+grep -l "export async function POST\|export function POST" app/api/admin/migrate-*/route.ts | wc -l # 30
 ```
 
-**38 directories. 29 export a `POST`.** Both match the kickoff. There is no migration runner and no
+**38 directories and 29 `POST`s at `fc28e0f`, matching the kickoff. 39 and 30 at `90d8db1`, because
+this build adds `app/api/admin/migrate-retrieval-telemetry/`.** There is no migration runner and no
 ledger; nothing reads `migrations/*.sql`, which is why migration 0035 has never been applied and
 cannot be.
 
@@ -313,8 +425,16 @@ look like new content.
 
 ## 9. Attribution — the five §4.4 conditions, each with its test
 
-This build modifies `chatWithFallback`, so none of the five is asserted without a test behind it.
-All live in `lib/__tests__/transport-failure-attribution.test.ts` (21/21) and
+**This build modifies `chatWithFallback` unconditionally, on every call, with or without a
+capture.** That is the same fact §0 now states, and the two sections agree; the first issue asserted
+it here as an achievement and denied it there. The change is not behind an optional parameter and
+is not a seam. `git diff fc28e0f HEAD -- lib/llm.ts` is the whole of it: two `try` blocks added
+around the two local `create` calls (the calls themselves not rewritten), one
+`attachTransportFailureAttribution(lastErr, …)` statement added before the terminal dispositions,
+and `attempts` gaining a `localAttemptSuccess()` entry on both local arms.
+
+None of the five §4.4 conditions is asserted without a test behind it. All live in
+`lib/__tests__/transport-failure-attribution.test.ts` (21/21) and
 `lib/__tests__/transport-attribution-traceless.test.ts`.
 
 | § | Condition | Test |
@@ -375,9 +495,21 @@ else if (b.served_route_class === 'unattributed') c.unattributed += 1;
 // a null or absent class increments NOTHING
 ```
 
-Three edits, all required to compile: the return-type annotation, the initialiser, and the branch
-chain. Without the fix, `not_served` and a null class would both have landed in the bare `else` and
-been reported as unattributed — three different facts merged into one column, which §2 forbids.
+**Four edits, all required to compile** — the first issue said three and missed the parameter type:
+
+```bash
+git diff fc28e0f 90d8db1 -- lib/retrieval-telemetry-core.ts | grep -E "^[-+].*batchCounters|^[-+].*const c = \{|^[-+].*not_served: number"
+```
+
+| # | What changed | Old | New |
+|---|---|---|---|
+| 1 | parameter type | `m: RetrievalManifest` | `m: Pick<RetrievalPayload, 'batches'>` |
+| 2 | return-type annotation | six fields | seven — `not_served: number` added |
+| 3 | initialiser | `{ vertex: 0, openrouter: 0, local: 0, failed: 0, unattributed: 0, retries_429: 0 }` | the same with `not_served: 0` |
+| 4 | branch chain | bare `else` | two explicit arms, no `else` |
+
+Without the fix, `not_served` and a null class would both have landed in the bare `else` and been
+reported as unattributed — three different facts merged into one column, which §2 forbids.
 
 **The two orphan columns finally have a writer**, plus the third: `rerank_429_attempts` ←
 `retries_429`, `rerank_unattributed_batches` ← `unattributed`, `rerank_not_served_batches` ←
@@ -430,10 +562,32 @@ and parse failures are priced from their preserved usage.
 `process.env` before evaluating `next.config.mjs`. So the three clauses D8 specifies cannot
 distinguish a real Vercel production build from a local `next build` on a machine that has pulled.
 **I kept D8's condition exactly as specified** and did not add a fourth clause, because the
-predicate is V's to define and a source pin holds the two copies together. The consequences:
-plain `npm run build` fails locally until a throwaway key is set, and `.env.example` now documents
-that. V's options are to tighten the predicate (a non-empty `VERCEL_URL` would discriminate), to
-have every developer set a local key, or to accept it.
+predicate is V's to define. The consequences: plain `npm run build` fails locally until a throwaway
+key is set, and `.env.example` now documents that. V's options are to tighten the predicate (a
+non-empty `VERCEL_URL` would discriminate), to have every developer set a local key, or to accept
+it. **The flag itself stands unchanged — this is still V's ruling.**
+
+**⚠️ The first issue justified leaving it alone with "a source pin holds the two copies together."
+That pin did not exist.** Two copies of a deploy-blocking predicate, one inlined in
+`next.config.mjs` and one typed in `lib/telemetry-key-guard.ts`, with nothing holding them
+together — and a comment in each file telling the next reader that something did. The comment at
+`next.config.mjs:8` shipped. It was the one false sentence in this build that was compiled into
+running code.
+
+```bash
+git grep -n "telemetryKeyMissingInProduction" 90d8db1 -- '*.ts' '*.mjs'
+# 90d8db1:lib/telemetry-key-guard.ts:23:export function telemetryKeyMissingInProduction(...)
+# 90d8db1:next.config.mjs:8:// `telemetryKeyMissingInProduction` in lib/telemetry-key-guard.ts, and a source pin asserts...
+```
+
+One definition and one comment about it. Nothing imported the module.
+
+**The pin exists as of this pass**, written as kickoff test 57 in
+`lib/__tests__/telemetry-key-guard.test.ts` (8/8). It extracts both conditions by balanced-paren
+scan, normalizes `process.env.X` and `env.X` to one spelling and nothing else, and asserts they are
+equal — so a change to either copy alone fails. It also asserts each is the same three clauses and
+has no fourth, and that the inlined copy still throws. Both comments are true now, and neither was
+deleted to make them true. §15 pin 5 carries the mutation check that proves the pin is not vacuous.
 
 **2. D16's `not_served` mapping for the Cohere soft-failure conflicts with its own proof rule, and
 the conflicting case is the only reachable one.** D16's table assigns `not_served` to "Cohere
@@ -460,29 +614,57 @@ coverage-bearing subsystem, and `retrieval-telemetry-core` was already in `UNREG
 `architecture:check` is green without touching it. One fewer deviation, reported so its absence
 from the diff is not read as an omission.
 
+**5. Kickoff test 63 — write it now, or leave it absent?** Test 63 asks for **this build's own**
+assertion that `lib/multi-query.ts` still contains the fail-open literal, so that a later refactor
+sees two failures rather than one puzzling pin in a determinism file. This pass did **not** write
+it. What it did instead was restore the pin that already exists: the first issue's doc comment at
+`lib/multi-query.ts:124` quoted the literal in prose, which satisfied
+`retrieval-llm-determinism.test.ts:34` on its own and made that pin vacuous. The comment is
+rewritten and no longer quotes it; §15 pin 6 carries both halves of the mutation check.
+
+So the guard is real again, but it is still **one** pin in a file about determinism, which is
+exactly the fragility test 63 exists to remove. **V's call:** write 63 now as a second, independent
+assertion, or leave it on the absent list. It stays on the absent list until then.
+
 ---
 
 ## 12. NOT BUILT — every omission, by kickoff step and test number
 
-**Kickoff steps 14, 15, 16 and 17 are not built.** Concretely:
+**Kickoff steps 14, 15, 16 and 17 are not built, and three steps claimed built are partial.** The
+first issue's step accounting was wrong in both directions; this is the corrected table.
 
-| Not built | What it was |
-|---|---|
-| **Step 14** | The two worker declaration shapes (D10), the re-audit reshape, `TelemetryDeclarationError`'s 503 branch in all three worker modes, predeclared-run threading from the worker |
-| **Step 15** (partial) | `writeRetrievalTerminal` and the D11 order **are** built inside `auditOpdNote`; what is missing is any caller that sets `opts.telemetry`, and the non-enumerable handle on the returned audit |
-| **Step 16** | `onPersisted` at the seven `saveOpdAudit` expressions, and every owner in the D9 matrix. `settleRetrievalTelemetry` and `outcomeForSaveResult` exist and are unit-testable; **nothing calls them from a save site** |
-| **Step 17** | The reconciler route, its cron entry, the two cron-count test updates (`provider-switch-unit-d.test.ts:270`, `ipd-worker-batch-and-model.test.ts:57` — both still read 16 and are green because `vercel.json` was not touched) |
-| **Step 19** | The cost query text and all ten PRD §8 query texts |
-| **Step 21** | **All five PRD §6.5 overhead numbers, and the three extra measurements.** Not measured, not estimated. V cannot set the guardrails from this report |
+| Step | Status | What holds |
+|---|---|---|
+| **Step 9** | **PARTIAL** — claimed built | Five of six placeholder call sites exist. `lib/mcp-tools.ts` is untouched (`git diff --quiet fc28e0f 90d8db1 -- lib/mcp-tools.ts` → clean), so the sixth is missing |
+| **Step 11** | **PARTIAL** — claimed built | The retrieval-outcome recording is built where the files were edited. `labRetrieve`'s two catch arms in `lib/mcp-tools.ts` are **not** instrumented, same untouched file |
+| **Step 13** | **PARTIAL** — claimed built | The `lvc.ts` seam (D7) is built. The route wiring is **absent**: `app/api/appropriateness/route.ts` is untouched, so nothing constructs the `telemetry` input the seam reads |
+| **Step 14** | **PARTIAL** — claimed not built | The invocation store, the failure store, `TelemetryDeclarationError` and predeclared-run threading into `auditOpdNote` all **exist**. Missing: the two worker declaration shapes (D10), the re-audit reshape, and the 503 branch in all three worker modes |
+| **Step 15** | **PARTIAL** | `writeRetrievalTerminal` and the D11 order **are** built inside `auditOpdNote`. Missing: any caller that sets `opts.telemetry`, and the non-enumerable handle on the returned audit |
+| **Step 16** | **NOT BUILT** | `onPersisted` at the seven `saveOpdAudit` expressions, and every owner in the D9 matrix. `settleRetrievalTelemetry` and `outcomeForSaveResult` exist; **nothing calls them from a save site** |
+| **Step 17** | **NOT BUILT** | The reconciler route, its cron entry, the two cron-count test updates (`provider-switch-unit-d.test.ts:270`, `ipd-worker-batch-and-model.test.ts:57` — both still read 16 and are green because `vercel.json` was not touched) |
+| **Step 19** | **NOT BUILT** | The cost query text and all ten PRD §8 query texts |
+| **Step 21** | **NOT BUILT** | **All five PRD §6.5 overhead numbers, and the three extra measurements.** Not measured, not estimated. V cannot set the guardrails from this report |
+| **Step 18** | vacuously satisfied | No new module exports a version constant, so none became coverage-bearing (§11 flag 4) |
+
+```bash
+for f in lib/mcp-tools.ts app/api/appropriateness/route.ts lib/mcp-server.ts \
+         lib/lab-batch.ts lib/opd-audit-store.ts vercel.json lib/sql-guard-core.ts; do
+  git diff --quiet fc28e0f 90d8db1 -- $f && echo "UNTOUCHED  $f" || echo "CHANGED    $f"; done
+# UNTOUCHED for all seven
+```
 
 **Sites not instrumented:** `labRetrieve` in `lib/mcp-tools.ts` (both arms, so roles `lab_direct`
 and `lab_multi_query` have no producer), `app/api/appropriateness/route.ts` (so `lvc_recall` has no
 producer either), `lib/mcp-server.ts` and the two MCP routes, `lib/lab-batch.ts`,
 `lib/opd-audit-store.ts`, and both scripts. `vercel.json` untouched.
 
-**Tests not written** — of the kickoff's 73, these are absent: 1–2 (instrumentation-off proof for
-all six functions), 10, 12, 14–29, 31–34, 39–44, 47–49, 51–60, 62, 64–65 (partly covered), 67,
-70, 72–73. Written and green: 3–9, 11, 13, 30, 35–38, 45 (partial), 46, 50, 61, 63, 66, 68–69, 71.
+**Tests, recounted as a partition of 1..73** (the command is in §0). Two moves since the first
+issue: **63 leaves the written list** — no test in this build ever asserted it, and the only pin on
+that literal predates the build — and **57 joins it**, written in this pass.
+
+- **Absent, 50:** 1–2 (instrumentation-off proof for all six functions), 10, 12, 14–29, 31–34,
+  39–44, 47–49, 51–56, 58–60, 62–65, 67, 70, 72–73.
+- **Written and green, 23:** 3–9, 11, 13, 30, 35–38, 45 (partial), 46, 50, **57**, 61, 66, 68–69, 71.
 
 **Two families are owed and are deliberately NOT stubbed:** §6.1 ranking invariance and §6.3
 lifecycle/concurrency. A stub that passes against absent code is worse than a named gap, because it
@@ -491,6 +673,48 @@ reads as coverage.
 **Consequently, three report items cannot be filled and are not filled:** item 11
 (instrumentation-off proof), item 16 (ranking-invariance evidence), item 19 (the five overhead
 numbers). Item 13 (the D9 owner matrix *as wired*) has nothing wired to report.
+
+### 12.1 What "2940 green" covers, and what it does not
+
+**Everything that builds a manifest and writes it is imported by no test.** Six of the seven new
+modules — 1,018 of their 1,047 lines — have zero test importers. The seventh, `telemetry-key-guard`,
+gained one in this pass and is the whole of the change.
+
+```bash
+for m in retrieval-capture retrieval-telemetry-store retrieval-invocation-store \
+         retrieval-telemetry-failure-store retrieval-settlement opd-audit-runtime-config \
+         telemetry-key-guard; do
+  printf "%-36s tests=%s  anywhere=%s\n" "$m" \
+    "$(grep -rlE "from '\.\./${m}(\.ts)?'" lib/__tests__ | wc -l | tr -d ' ')" \
+    "$(grep -rlE "from '\.{1,2}/${m}(\.ts)?'" lib app scripts | wc -l | tr -d ' ')"; done
+```
+
+| module | test importers at `90d8db1` | after this pass | importers anywhere | lines |
+|---|---|---|---|---|
+| `retrieval-capture` | 0 | 0 | 8 | 358 |
+| `retrieval-telemetry-store` | 0 | 0 | 3 | 344 |
+| `retrieval-invocation-store` | 0 | 0 | 3 | 106 |
+| `retrieval-telemetry-failure-store` | 0 | 0 | 2 | 80 |
+| `retrieval-settlement` | 0 | 0 | 1 | 87 |
+| `opd-audit-runtime-config` | 0 | 0 | **0** | 43 |
+| `telemetry-key-guard` | 0 | **1** | **0 → 1** | 29 |
+
+Nineteen exported symbols have no executing test: `createTelemetryCapture`, `buildRetrievalPayload`,
+`servedClassOf`, `counterColumns`, `evidenceFromCompletion`, `evidenceFromError`, `errorClassOf`,
+`declareRetrievals`, `writeRetrievalTerminal`, `applyTerminalState`, `addDeclaredRetrievals`,
+`bumpTelemetryWriteFailure`, `closeInvocation`, `startInvocation`, `recordTelemetryFailure`,
+`failurePhasesForRun`, `settleRetrievalTelemetry`, `outcomeForSaveResult`, `EQUALITY_PROJECTION`.
+
+**The apparent coverage is source-text reads and path strings**, not execution: a test that greps
+`lib/retrieval-capture.ts` for a symbol name proves the name is present, not that the function
+works. §8 of this report describes update precedence, state transitions and canonicalization as
+settled behaviour. They are **written**. They are **not demonstrated**. The 45 new test cases at
+`90d8db1` cover transport attribution, the migration route's parity with its documentation mirror,
+and non-exposure — three things that are all checkable without running the manifest path, which is
+why they were checkable at all before the lifecycle was wired.
+
+This is the true reading of the gate. It is not a defect in the code; it is the size of what §12's
+50 absent tests were going to cover.
 
 ---
 
@@ -533,7 +757,39 @@ No number in this report is compared to the single night of console logs from 10
 
 ## 15. Pins changed — old and new, side by side
 
-Four, all preserving the same invariant. Two more were *expected* to break and did not.
+**The first issue said "four". Four is the number of pins I could account for as *narratives*; it is
+not the number of assertions that changed.** The count below is derived mechanically instead of
+recalled. Definition: an **assertion line** is any line in the three edited test files containing
+`assert.`, with leading and trailing whitespace stripped and nothing else normalized — interior
+whitespace is significant, because one of these pins asserts a column's alignment inside the
+migration SQL and collapsing runs of spaces hides that change. Lines are compared as a multiset, so
+a pure move is not counted and a duplicate that vanished is.
+
+```js
+// The whole of it. Run against each of the three files, BASE=fc28e0f HEAD=90d8db1.
+const lines = (src) => src.split('\n').filter((l) => l.includes('assert.')).map((l) => l.trim());
+const a = lines(gitShow(BASE, f)), b = lines(gitShow(HEAD, f));
+// multiset difference both ways: removed = a \ b, added = b \ a, counting duplicates
+```
+
+```text
+=== lib/__tests__/retrieval-telemetry-core.test.ts
+    assertion lines: 59 at fc28e0f -> 110 at 90d8db1 ;  removed 21, added 72
+=== lib/__tests__/transport-attribution-traceless.test.ts
+    assertion lines: 57 at fc28e0f -> 58 at 90d8db1  ;  removed  1, added  2
+=== lib/__tests__/rerank-backend.test.ts
+    assertion lines: 77 at fc28e0f -> 79 at 90d8db1  ;  removed  1, added  3
+=== TOTAL: 193 assertion lines at fc28e0f -> 247 at 90d8db1; removed 23, added 77
+```
+
+**23 assertion lines removed, 77 added.** The full removed and added sets are printed in §15.1 —
+every one, not a sample. Seven of the removals are re-pointed pins with a named successor and are
+narrated below as 1 to 7; **three of those seven appear in this report for the first time** (5, 6
+and 7 — the first issue omitted them entirely). The remaining sixteen removals are the state
+vocabulary and validator assertions that the rewrite from 8 states to 14 replaced wholesale; they
+are in §15.1, not narrated, because their successor is the whole rewritten file.
+
+Pins **8 and 9 are new in this pass** and did not exist at `90d8db1`.
 
 **1. `transport-attribution-traceless.test.ts:220`**
 
@@ -576,8 +832,26 @@ const body = constraintBody(read(MIGRATION), 'opd_audit_retrieval_telemetry_pers
 ```
 
 *Invariant:* the runtime list and the constraint are one fact. **This one was broken before I
-touched it**: `));` did not exist in 0035, so the slice ran to end-of-file and passed only because
-nothing else in those bytes matched. There are now three such blocks, so anchoring on the name is
+touched it**, and here is the measurement rather than the impression:
+
+```bash
+# replay the fc28e0f pin against the fc28e0f migration, verbatim
+git show fc28e0f:migrations/0035_opd_audit_retrieval_telemetry.sql | node -e '
+let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+  const a=s.indexOf("persistence_state IN ("), b=s.indexOf("));",a), block=s.slice(a,b);
+  console.log("file",s.length,"start",a,"delim",b,"slice",block.length,
+              "states",[...block.matchAll(/'"'"'([a-z_]+)'"'"'/g)].map(m=>m[1]).length);});'
+# file 8333 start 6331 delim -1 slice 2001 states 8
+```
+
+`delim -1` is the whole finding: `));` is absent, so `slice(6331, -1)` runs to the last byte and the
+2,001-byte slice matched all eight expected states, in order —
+`started`, `completed_unpersisted`, `persisted_complete`, `persisted_partial`,
+`telemetry_persistence_failed`, `audit_persistence_failed`, `aborted`, `not_eligible`.
+
+So the pin was **unbounded, not empty**. It was doing real work over an accidental region — which
+is worse than a dead pin, because it looks alive: every assertion in it passed, on bytes nobody
+chose. There are now three such blocks, so anchoring on the constraint name is
 also necessary. A second test pins the outcome CHECK's two blocks the same way, and
 `constraintBody` asserts non-empty — neither can pass vacuously.
 
@@ -596,20 +870,273 @@ on an empty slice; it covers both field-bearing declarations; a companion test p
 is asserted to be exactly the intersection, rather than given a third ban loop that would pass
 vacuously forever.
 
-**Expected to break, did NOT:** `gemini-openrouter-bridge.test.ts:180`,
-`provider-error-core.test.ts:182`, `openrouter-timeout.test.ts:233`,
-`vertex-retry-parity.test.ts:330`. All four pin
-`return attachTransportAttribution(await llm.chat.completions.create(params, reqOpts), {`.
-D14 wraps that expression in a `try`/`catch` **without rewriting it**, so all four still pass
-untouched. `reasoning-enforcement.test.ts` did not fire.
+**5. `retrieval-telemetry-core.test.ts` — the `telemetry_schema_version` whitespace re-point**
+*(absent from the first issue entirely)*
+
+```js
+// OLD
+assert.ok(read(MIGRATION).includes('telemetry_schema_version     INTEGER NOT NULL'));
+// NEW
+assert.ok(read(MIGRATION).includes('telemetry_schema_version INTEGER NOT NULL'));
+```
+
+*Invariant:* the column exists and is `NOT NULL`. What changed is five spaces — the rewritten 0035
+aligns its column list differently. This is the pin that made me change how §15 is counted: a
+whitespace-normalizing diff reports it as unchanged, and it is exactly the kind of edit that a
+recalled list of "four pins" never contains. **The re-point weakens the pin slightly** (it no longer
+notices a column-alignment change) and that is honest: alignment was never the fact it stood for.
+
+**6. The `CREATE INDEX IF NOT EXISTS` count — deleted here, re-created at 14 elsewhere**
+*(absent from the first issue entirely)*
+
+```js
+// OLD — retrieval-telemetry-core.test.ts
+assert.equal((sql.match(/CREATE INDEX IF NOT EXISTS/g) || []).length, 6, 'every index is guarded');
+// NEW — migrate-retrieval-telemetry-parity.test.ts:171, and it now counts BOTH sides
+const inFile  = (read(SQL_FILE).match(/CREATE INDEX IF NOT EXISTS/g) || []).length;
+const inRoute = routeStatements().filter((s) => s.startsWith('CREATE INDEX')).length;
+assert.equal(inFile, 14, '8 on the retrieval table, 3 on invocations, 3 on failures');
+assert.equal(inRoute, 14);
+```
+
+*Invariant:* every index is `IF NOT EXISTS`, so the migration is re-runnable. **Strengthened:** the
+number moved 6 → 14 because the build adds two indexes to the retrieval table and six across the
+two new tables, and the successor counts the executed route and the documentation mirror
+*separately*, so the mirror cannot quietly drop one. It also moved file, which is why a
+per-file reading of the diff loses it.
+
+**7. `retrieval-telemetry-core.test.ts:152` → `:263` — the whole-object `batchCounters` `deepEqual`**
+*(absent from the first issue entirely)*
+
+```js
+// OLD — line 152, six fields
+assert.deepEqual(c, { vertex: 1, openrouter: 0, local: 1, failed: 1, unattributed: 1, retries_429: 3 });
+// NEW — line 263, seven fields, called on the manifest rather than a pre-built object
+assert.deepEqual(batchCounters(m), {
+  vertex: 1, openrouter: 0, local: 1, not_served: 0, failed: 1, unattributed: 1, retries_429: 3,
+});
+```
+
+*Invariant:* the counter object is exactly these fields with exactly these values — a whole-object
+`deepEqual`, so a new counter cannot be added silently. The kickoff predicted this one by line
+number. It is the assertion the `not_served` column breaks, and it broke.
+
+**8. NEW IN THIS PASS — `telemetry-key-guard.test.ts`, the D8 source pin (kickoff test 57)**
+
+```js
+// OLD — did not exist. Two comments claimed it did.
+// NEW — both conditions extracted by balanced-paren scan, normalized to one spelling, compared
+assert.equal(normalize(inlinedCondition()), normalize(typedCondition()),
+  'the D8 predicate is written twice and the copies have drifted — change both or neither');
+assert.equal((c.match(/&&/g) || []).length, 2, `${where}: three clauses, no fourth`);
+```
+
+*Invariant:* the two copies of a deploy-blocking predicate cannot drift. **Mutation-checked**, so
+this one is not taken on trust either — dropping `.trim()` from the inlined copy alone:
+
+```text
+$ # next.config.mjs: `!String(process.env.CDMSS_TELEMETRY_HMAC_KEY ?? '').trim()`
+$ #              ->  `!process.env.CDMSS_TELEMETRY_HMAC_KEY`
+$ npx tsx --test lib/__tests__/telemetry-key-guard.test.ts
+not ok 6 - 57 pin — next.config.mjs and telemetry-key-guard.ts express the SAME condition
+not ok 7 - 57 pin — both copies are the SAME THREE CLAUSES, and there is no fourth
+# pass 6 / fail 2                                     (mutation reverted; tree clean)
+```
+
+**9. NEW IN THIS PASS — `lib/multi-query.ts:124`, the comment that made an existing pin vacuous**
+
+The pin itself is untouched and predates this build: `retrieval-llm-determinism.test.ts:34` asserts
+`mqSrc.includes('return [];')`. The first issue's doc comment **quoted that literal in prose**, so
+the file contained it twice and the assertion matched the comment. The comment is rewritten to say
+what the statement does without quoting it; the statement at line 133 is unchanged, and so is the
+test. Both halves measured:
+
+```text
+$ grep -c 'return \[\];' lib/multi-query.ts        # 2 at 90d8db1  ->  1 now
+
+# at 90d8db1, with the STATEMENT deleted and the comment left in place:
+$ npx tsx --test lib/__tests__/retrieval-llm-determinism.test.ts
+# pass 3 / fail 0        <-- the pin passed over a file with no fail-open statement in it
+
+# after this pass, same deletion:
+not ok 3 - multi-query generateQueryVariants: … prompt + fail-open untouched
+  error: 'fail-open (→ []) preserved'
+# pass 2 / fail 1        <-- the pin is load-bearing again        (mutation reverted; tree clean)
+```
+
+*Invariant:* the fail-open behaviour survives a refactor. It was not being guarded at `90d8db1`;
+it is now. Kickoff test 63 asked for a **second** pin on the same literal in this build's own tests
+and is still absent — see §11 flag 5, which is V's.
+
+**Expected to break, did NOT — four pins, and the report was wrong about what two of them assert.**
+
+| Pin | What it actually asserts |
+|---|---|
+| `gemini-openrouter-bridge.test.ts:180` | count **2** of `return attachTransportAttribution\(await llm\.chat\.completions\.create\(params, reqOpts\), \{` |
+| `provider-error-core.test.ts:182` | the same regex, count **2** |
+| `openrouter-timeout.test.ts:233` | `src.includes('await llm.chat.completions.create(params, reqOpts)')` — a **shorter** string; plus a count of 2 at `:239` |
+| `vertex-retry-parity.test.ts:336` | `LLM.includes('await llm.chat.completions.create(params, reqOpts)')` — the same shorter string; plus a count of 2 at `:339` |
+
+Only two pin the long literal. The first issue said all four did, and cited
+`vertex-retry-parity.test.ts:330`, which is a `trace.ts` assertion, not this one. **The conclusion
+is unchanged and still holds:** D14 wraps that expression in a `try`/`catch` *without rewriting it*,
+so all four pass untouched, and `git diff --quiet fc28e0f 90d8db1` reports all four files
+UNTOUCHED. The reason was wrong for half the set.
+
+**And the kickoff did not expect these four to break.** It names exactly one of the four files —
+`gemini-openrouter-bridge.test.ts` — and names it for a *different* assertion: "counts
+`dispatched_provider: 'ollama'` occurrences in `lib/llm.ts`" (kickoff line 1064). That count is
+still 2 and that assertion also passes. The other three files appear nowhere in the kickoff. They
+were at risk because they read `lib/llm.ts`, not because anyone predicted them.
+
+`reasoning-enforcement.test.ts` did not fire.
+
+### 15.1 The full assertion diff
+
+Every removed and added assertion line across the three edited test files, `fc28e0f` → `90d8db1`.
+Not a sample.
+
+```diff
+=== lib/__tests__/retrieval-telemetry-core.test.ts   (59 -> 110; removed 21, added 72)
+- assert.equal(RETRIEVAL_PERSISTENCE_STATES.length, 8);
+- assert.equal(isTerminalState('started'), false);
+- assert.equal(TERMINAL_PERSISTENCE_STATES.length, RETRIEVAL_PERSISTENCE_STATES.length - 1);
+- assert.equal((sql.match(/CREATE INDEX IF NOT EXISTS/g) || []).length, 6, 'every index is guarded');
+- assert.equal(/CREATE INDEX (?!IF NOT EXISTS)/.test(sql), false);
+- assert.deepEqual(validateManifest(manifest([batch(0), batch(1)])), []);
+- assert.ok(validateManifest({ ...manifest([batch(0)]), manifest_schema_version: 99 }).includes('manifest_version_unrecognized'));
+- assert.ok(validateManifest({ ...manifest([batch(0), batch(1)]), expected_batch_count: 7 }).includes('batch_count_mismatch'));
+- assert.ok(validateManifest(manifest([batch(0), batch(0)])).includes('duplicate_batch_index'));
+- assert.ok(validateManifest(manifest([batch(0, { candidate_end: 0 })])).includes('bad_candidate_boundaries'));
+- assert.ok(validateManifest(manifest([batch(0, { finite_score_keys: 9 })])).includes('score_keys_exceed_expected'));
+- assert.ok(validateManifest(bad).includes('unattributed_with_model'));
+- assert.deepEqual(validateManifest(good), []);
+- assert.equal(counters.vertex, 3, 'and the counters are order-independent');
+- assert.deepEqual(c, { vertex: 1, openrouter: 0, local: 1, failed: 1, unattributed: 1, retries_429: 3 });
+- assert.equal(new RegExp(`^\\s*${banned}\\??:`, 'm').test(iface), false, `${banned} must not be a manifest field`);
+- assert.equal(vertex.prompt_tokens, 100);
+- assert.equal(TELEMETRY_SCHEMA_VERSION, 1);
+- assert.equal(MANIFEST_SCHEMA_VERSION, 1);
+- assert.equal(HMAC_KEY_VERSION, 'k1');
+- assert.ok(read(MIGRATION).includes('telemetry_schema_version     INTEGER NOT NULL'));
++ assert.notEqual(start, -1, `${constraintName} must be present in the migration`);
++ assert.notEqual(end, -1, `${constraintName} must be terminated — a slice to EOF is not a slice`);
++ assert.ok(body.trim().length > 0, `${constraintName} sliced to nothing — this test may not pass vacuously`);
++ assert.equal(inSql.includes('not_eligible'), false,
++ assert.equal(RETRIEVAL_PERSISTENCE_STATES.length, 14);
++ assert.equal(blocks.length, 2, 'the required set and the either set');
++ for (const b of blocks) assert.ok(b.trim().length > 0, 'neither block may be empty');
++ assert.deepEqual(required, [...OUTCOME_REQUIRED_STATES]);
++ assert.deepEqual(either, [...OUTCOME_EITHER_STATES]);
++ assert.ok(/persistence_state = 'started' AND retrieval_outcome IS NULL/.test(body),
++ for (const s of a) assert.equal(b.has(s), false, `${s} is in both halves of ${label}`);
++ assert.equal(union.size, all.size, 'the three sets cover exactly the fourteen');
++ for (const s of all) assert.ok(union.has(s), `${s} is in no set — the CHECK would reject every row carrying it`);
++ assert.ok(either.has('audit_generation_failed'),
++ assert.equal(required.has('audit_generation_failed'), false);
++ assert.deepEqual([...NON_TERMINAL_PERSISTENCE_STATES], ['started', 'retrieval_complete']);
++ for (const s of NON_TERMINAL_PERSISTENCE_STATES) assert.equal(isTerminalState(s), false);
++ assert.equal(TERMINAL_PERSISTENCE_STATES.length, RETRIEVAL_PERSISTENCE_STATES.length - 2);
++ assert.equal(TERMINAL_PERSISTENCE_STATES.length, 12);
++ assert.equal(isTerminalState('not_eligible'), false, 'the removed state is terminal for nothing');
++ assert.equal(/CREATE INDEX (?!IF NOT EXISTS)/.test(sql), false, 'every index is guarded');
++ assert.throws(() => telemetryHmac('   ', 'x'), /secret is required/);
++ assert.throws(() => telemetryHmac('\t\n ', 'x'), /secret is required/);
++ assert.ok(telemetryHmac(' s ', 'x'), 'a key with real content is still usable, trimmed or not');
++ assert.equal(one('vertex').vertex, 1);
++ assert.equal(one('openrouter').openrouter, 1);
++ assert.equal(one('local').local, 1);
++ assert.equal(one('not_served').not_served, 1);
++ assert.equal(one('unattributed').unattributed, 1);
++ assert.equal(one('not_served').unattributed, 0, 'a proven non-delivery is NOT an attribution gap');
++ assert.equal(one('unattributed').not_served, 0, 'and an attribution gap is not proof of non-delivery');
++ assert.equal(nulled[k], 0, `a null class must not increment ${k}`);
++ assert.equal(all.vertex + all.openrouter + all.local + all.not_served + all.unattributed, 5);
++ assert.deepEqual(
++ assert.deepEqual(batchCounters(m), {
++ assert.equal(batchCounters(m).retries_429, 2, 'the number this workstream exists to produce');
++ assert.equal(batchCounters({ batches: [] }).retries_429, 0);
++ assert.equal(batchCounters(inCompletionOrder).vertex, 3, 'and the counters are order-independent');
++ assert.notEqual(start, -1, `${decl} must exist — this pin may not pass because the name moved`);
++ assert.notEqual(end, -1, `${decl} must be a braced declaration`);
++ assert.ok(body.trim().length > 0, `${decl} sliced to nothing`);
++ assert.ok(body.length > 200, `${decl} is suspiciously short — did the slice find the real body?`);
++ assert.equal(new RegExp(`^\\s*${banned}\\??:`, 'm').test(body), false,
++ assert.equal(/^\s*query\??:/m.test(body), true, 'a banned field IS detectable by this matcher');
++ assert.equal(src.includes('TelemetryCapture'), false,
++ assert.ok(read('lib/retrieval-capture.ts').includes('TelemetryCapture'), 'it lives in the capture module');
++ assert.ok(keys.has('operational'));
++ assert.ok(new RegExp(`^\\s*${k}\\??:`, 'm').test(body), `${k} must be declared in RetrievalPayload, not grafted on`);
++ assert.ok(new RegExp(`^\\s*${k}\\??:`, 'm').test(opBody), `${k} must be declared in OperationalTelemetry`);
++ assert.ok(/export type StampedRetrievalManifest = RetrievalPayload & \{ operational: OperationalTelemetry \};/
++ assert.ok(RETRIEVAL_ROUTES.includes('unknown_route'));
++ assert.equal((RETRIEVAL_ROUTES as readonly string[]).includes('reconciler'), false,
++ assert.ok((INVOCATION_ROUTES as readonly string[]).includes('reconciler'));
++ assert.equal(INVOCATION_ROUTES.length, RETRIEVAL_ROUTES.length + 1);
++ assert.equal(routeClassOf('reconciler'), 'reconciler');
++ assert.deepEqual([...RETRIEVAL_ROLES],
++ assert.ok(RETRIEVAL_ROUTES.includes('lvc_judge_aa'));
++ assert.equal(buckets.find((b) => b.provider === 'vertex')!.prompt_tokens, 100);
++ assert.equal(isPriceableClass('vertex'), true);
++ assert.equal(isPriceableClass('openrouter'), true);
++ assert.equal(isPriceableClass('unattributed'), true, 'a completion may have arrived and been billed');
++ assert.equal(isPriceableClass('local'), false);
++ assert.equal(isPriceableClass('not_served'), false, 'proven non-delivery cannot have cost money');
++ assert.equal(isPriceableClass(null), false);
++ assert.equal(buckets.find((b) => b.provider === 'not_served')!.priceable, false);
++ assert.equal(unattributed.priceable, true);
++ assert.equal(unattributed.prompt_tokens, 80, 'a parse failure keeps the usage it really spent');
++ assert.equal(TELEMETRY_SCHEMA_VERSION, 2, 'the on-path build changes columns');
++ assert.equal(MANIFEST_SCHEMA_VERSION, 2, 'and manifest fields');
++ assert.equal(HMAC_KEY_VERSION, 'k1', 'the key did not rotate');
++ assert.ok(read(MIGRATION).includes('telemetry_schema_version INTEGER NOT NULL'));
+
+=== lib/__tests__/transport-attribution-traceless.test.ts   (57 -> 58; removed 1, added 2)
+- assert.equal((body.match(/attempts: \[\.\.\.attempts\]/g) || []).length, 3);
++ assert.equal((body.match(/attempts: attempts\b/g) || []).length, 0,
++ assert.equal((body.match(/attempts: \[\.\.\.attempts/g) || []).length, 7,
+
+=== lib/__tests__/rerank-backend.test.ts   (77 -> 79; removed 1, added 3)
+- assert.ok(audit.includes('defaultRetrieve(query, mini, opts.evalNormativeLeg, opts.rerankBackend)'),
++ assert.ok(/defaultRetrieve\(query, mini, opts\.evalNormativeLeg, opts\.rerankBackend[,)]/.test(audit),
++ assert.ok(/defaultRetrieve\(query, mini, opts\.evalNormativeLeg, opts\.rerankBackend, primaryCapture\)/.test(audit),
++ assert.ok(/rerank\(query, hits\.map\([\s\S]{0,200}?\)\), opts\.rerankBackend, undefined, capture\)/.test(retrieveSrc),
+```
+
+**The unit is a line, not a statement**, and several entries above are the first line of a
+multi-line assertion whose message ran onto the next one — `assert.deepEqual(` on its own is the
+clearest case. A statement-level count would be smaller. I did not make one, so I am not quoting
+one: 23 and 77 are line counts under the definition at the top of this section, and that is all
+they are.
 
 ---
 
 ## 16. Instrumented files and diff summary
 
-**28 files, +4,547 / −348** (excluding this report).
+**Two commits now. Both stats below are from `git show --stat`, not from memory.**
 
-**Created (11):** `lib/retrieval-capture.ts`, `lib/retrieval-telemetry-store.ts`,
+**Build commit `90d8db1`** — `git show --stat 90d8db1 | tail -1`:
+
+```text
+29 files changed, 5199 insertions(+), 348 deletions(-)
+```
+
+**28 files, +4,547 / −348 excluding this report**, which is the figure the first issue quoted and
+the one figure in its §16 that was right: 29 − 1 = 28 files, 5,199 − 652 = 4,547 insertions.
+
+**Correction commit (this pass)** — three files, and only two of them are code:
+
+| File | Change |
+|---|---|
+| `lib/__tests__/telemetry-key-guard.test.ts` | **created**, 167 lines (`wc -l`) — kickoff test 57, 8 cases |
+| `lib/multi-query.ts` | **6 insertions, 5 deletions** — the doc comment at `:124` only; line 133 untouched |
+| `CDMSS-RERANK-TELEMETRY-ONPATH-BUILD-11-AUG-2026.md` | this rewrite |
+
+The report's own line delta is self-referential — it cannot be printed inside the file it counts.
+`git show --stat HEAD` on `exp/rerank-telemetry` is the authority for it, and the two code figures
+above are exact and were read from `git diff --stat` before the commit was made.
+
+**Created at `90d8db1` (11):** `lib/retrieval-capture.ts`, `lib/retrieval-telemetry-store.ts`,
 `lib/retrieval-invocation-store.ts`, `lib/retrieval-telemetry-failure-store.ts`,
 `lib/retrieval-settlement.ts`, `lib/opd-audit-runtime-config.ts`, `lib/telemetry-key-guard.ts`,
 `app/api/admin/migrate-retrieval-telemetry/route.ts`, and three test files.
@@ -637,9 +1164,12 @@ the choice, because a per-route grace is a tuning surface and this value must no
 ## 17. What V does next
 
 1. **Decide whether to continue this build.** It is a partial delivery. §12 is the remaining work,
-   and it is at least as large as what is here.
-2. **Rule on the four flags in §11** — particularly flag 1, which affects every developer's local
-   build, and flag 2, which changes what a canary would record on the Cohere path.
+   and it is at least as large as what is here. §12.1 is why the green gate does not shrink it:
+   the manifest path has no executing test, so "continue" means writing the 50 absent tests as much
+   as it means writing steps 14 to 17.
+2. **Rule on the five flags in §11** — flag 1, which affects every developer's local build; flag 2,
+   which changes what a canary would record on the Cohere path; and flag 5, whether kickoff test 63
+   is written now or stays absent.
 3. **Do not deploy this commit as-is without setting `CDMSS_TELEMETRY_HMAC_KEY` in Vercel
    Production.** The build will fail otherwise. That is D8 working, not a defect.
 4. **Do not run the migration route yet.** The schema is ready and idempotent, but nothing writes to

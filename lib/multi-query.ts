@@ -121,11 +121,12 @@ export async function generateQueryVariantsWithTelemetry(question: string): Prom
  * ⚠️ SIGNATURE AND BEHAVIOUR UNCHANGED. A thin wrapper, not a copy of the body — one call site, one
  * prompt, one set of parameters. Every existing injection of this function still works.
  *
- * The `return [];` below is deliberate and load-bearing, not a formality:
- * lib/__tests__/retrieval-llm-determinism.test.ts greps this file for that exact string as its
- * "fail-open preserved" assertion. A wrapper that returned `result.variants` and nothing else would
- * delete the string and fail a test about behaviour this build must not change — and it would be
- * right to fail, because every non-`generated` status really does fail open to an empty array here.
+ * ⚠️ THE EARLY EXIT BELOW MUST KEEP ITS LITERAL FORM, AND THIS COMMENT DELIBERATELY DOES NOT QUOTE
+ * IT. lib/__tests__/retrieval-llm-determinism.test.ts greps this file for that statement as its
+ * "fail-open preserved" assertion; a comment repeating the same characters would satisfy the grep
+ * on its own, and the pin would keep passing over a file that no longer contained the statement.
+ * A wrapper that handed back the variants unconditionally would fail that test, and rightly so:
+ * every non-`generated` status really does fail open to an empty array here.
  */
 export async function generateQueryVariants(question: string): Promise<string[]> {
   const result = await generateQueryVariantsWithTelemetry(question);
