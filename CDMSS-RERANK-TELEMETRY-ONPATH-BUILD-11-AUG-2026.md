@@ -1,16 +1,106 @@
 # CDMSS Rerank Telemetry — on-path build report
 
-**Four issues, in reverse order.** Part IV is the pin repair, 12 August 2026, on top of `e5dc756`:
-three pins that passed while the thing each guarded was dead or replaceable. Part III is the steps
-14 to 17 build, on top of `177adc9`. Part II is the correction issue committed in `177adc9`, which
-withdrew twelve claims from the first issue. Part I is in git history at `90d8db1` and is not
-rewritten there — the record shows what was withdrawn.
+**Five issues, in reverse order.** Part V is the second pin repair, 12 August 2026, on top of
+`180e88f`: two of Part IV's three pins were defeated by a checker, and this is what replaces them.
+Part IV is the first pin repair, on top of `e5dc756`. Part III is the steps 14 to 17 build, on top
+of `177adc9`. Part II is the correction issue committed in `177adc9`, which withdrew twelve claims
+from the first issue. Part I is in git history at `90d8db1` and is not rewritten there.
 
-Two earlier parts are edited, one sentence each. Part IV changes Part III's §3.2 citation of D11 —
-at line 209 in the `e5dc756` report — from line 681 to 674; Part III changed one sentence in Part
-II's preamble.
+Every edit any part makes to an earlier one, in full. Part V edits four sentences in Part IV: the
+flag count in its §1, the oracle's reach in its §2, and the two script citations in its §2 and §4.
+Part IV edited one sentence in Part III — the §3.2 citation of D11, from line 681 to 674. Part III
+edited one sentence in Part II's preamble. Nothing else in any earlier part is touched.
 
 ---
+
+# PART V — PIN REPAIR, SECOND PASS (on top of `180e88f`)
+
+## 1. What this part did not do
+
+No production code changed. `next.config.mjs`, the reconciler route, both cron test files and
+`telemetry-db-stub.ts` are byte-identical to `180e88f`. None of tests 21, 22, 23, 24, 47, 48 or 63
+was written, and one survivor found in §4 is **not fixed** — §6 flags it. Six sentences false of the code beneath them are corrected in place, three per test file, each naming what it used to claim.
+
+## 2. The guard: the file, not the statement
+
+Part IV's harness ran the config as `process.argv[1]`; a build IMPORTS it, so anything that can tell those apart kills the guard for the test and leaves it on for nobody. Three things replace it.
+
+**The whole file** is pinned: exactly three top-level statements in order — guard, `nextConfig`
+declaration, default export — each shape-exact, no imports, no directives, no call, `new`, `await`,
+function or comma expression outside the guard's condition, over a non-empty source that parses
+cleanly. Every kill in that class was a prepended statement.
+
+**The import runs in a child a build cannot be told from**: `--input-type=module --eval` with the
+config URL in the environment so it never appears in `argv`, `NODE_TEST_CONTEXT` deleted, `VERCEL_URL`
+set as a deployment sets it, exit `86` on a caught import, one JSON record on stdout carrying `name`
+and `message` only, stdout and stderr never combined.
+
+**The message is evaluated, not grepped**: `new Error(/* CDMSS_TELEMETRY_HMAC_KEY */ 'build misconfigured')` satisfied a source search and names nothing a reader sees, so the sole argument must be string literals joined by `+`, folded, and contain the variable name.
+
+## 3. The reconciler, and the hashes
+
+`AND row_revision = $2 OR TRUE` parses as `(id AND rev) OR (nonterminal)` and rewrites every
+non-terminal row in one pass; a predicate parked behind `AND TRUE` in a `--` comment is text, not SQL.
+Both passed a substring check. So every statement that WRITES the table — classified by table name
+plus a write verb, not an anchored regex, so a CTE or a lower-case `update` is still seen — is
+normalized and compared WHOLE against a value hard-coded in the test, with `--`, `/*`, `;` and NUL
+refused outright.
+
+Counts are pinned per path: 1 write / 0 rereads for an ordinary pass and the SQL-shape case, 2 / 0
+for two selected rows, 2 / 1 for the race finding a fresh non-terminal row, 1 / 1 for the one finding
+a terminal row, 0 / 0 for the transition refusal, 1 / 0 for the cutoff case. Those refuse a spin loop,
+a forced unguarded write, and a guard weakened only on the reread path — whose write is checked by
+the same helper as the first, where two kills lived.
+
+The cutoff is bounded against the wall clock — a source pin on the constant's name is satisfied by
+the import line, and `const cutoff = at` keeps `grace_seconds: 2600` in the response — so the bound
+`$1` must sit inside `[before − 2 600 000, after − 2 600 000]` ms around the call. The refusal
+branch is reached by fault injection — `aborted` removed from `ALLOWED_TRANSITIONS.started` for one
+case, restored in `finally` — because no valid row reaches it. Nothing asserts inside the fetch
+callback, since `route.ts:192` catches and returns 500, so every case asserts 200 and `ok: true`
+first. For the two cron files, `lstat` must report a regular file, not a symlink, `nlink === 1`, mode
+`0644` before a byte is read: `chmod 777` and a symlink to identical content both passed Part IV.
+mtime, uid, gid, ACLs and xattrs stay outside the contract, stated in the file — git preserves none.
+
+## 4. Attacking the pins before claiming they hold
+
+Every mutation ran in a copy outside the repository, the worktree never modified, each copy deleted
+afterwards, no helper left in the tree. Recipe: `rsync` the tree excluding `node_modules`, `.git` and `.next`; symlink `node_modules`; mutate; run the targeted file with the copy as `cwd`. Counting rule: one row per mutation, each run once; "caught" means a non-zero `# fail`.
+
+| class | attacks | caught | survived |
+|---|---:|---:|---:|
+| guard: a prepended statement of every kind; discriminators on `argv[1]`, `NODE_TEST_CONTEXT`, `VERCEL_URL`, `.env.local`; an `uncaughtException` handler; a comma expression in the initializer; the statements reordered; the comment decoy; a guard firing unconditionally; the config emptied, corrupted, deleted | 14 | 14 | 0 |
+| reconciler: `OR TRUE`; both predicates parked in `--` comments; a weakening on the reread path only; a write inside a CTE; a lower-case `update`; the grace removed; a fifty-iteration spin loop; the refusal moved after the write; a change to what is bound rather than written | 10 | 10 | 0 |
+| hashes: `chmod 777`, a symlink, a second hard link, a deleted file | 4 | 4 | 0 |
+| boundary probes, chosen to find what the pins do NOT cover | 6 | 2 | 4 |
+
+**The four survivors, none fixed.** `"build": "next build || true"` in `package.json` — the suite
+proves the config throws on import, not that `npm run build` reaches it; gate 3a covers that, nothing
+in the suite does, §6 flags it. A widened column list on the reread `SELECT` — only writes are pinned
+whole, and a reread of the wrong ROW still fails the verdict assertions. The slice size
+cut from 500 to 5 — a bound, not the property. An mtime change on a cron file — outside the contract.
+Emptying, corrupting or deleting `next.config.mjs` fails the guard file at module LOAD, not in a
+named case, because the guard is located at module scope: a failure, and not a graceful one.
+
+## 5. The gate
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `npm test` | `# tests 3019 · # pass 3019 · # fail 0 · # skipped 0`, counting `node --test` cases. 3019 − 3014 = 5 added: 3 in `telemetry-key-guard.test.ts` (14 from 11), 2 in `reconciler-races.test.ts` (18 from 16) |
+| 2 | `npm run typecheck` | exit 0 |
+| 3a | `env -u CDMSS_TELEMETRY_HMAC_KEY VERCEL=1 VERCEL_ENV=production npm run build` | the expected production-precondition failure occurred: non-zero exit, output naming `CDMSS_TELEMETRY_HMAC_KEY`. Not a green build |
+| 3b | `VERCEL=1 VERCEL_ENV=production CDMSS_TELEMETRY_HMAC_KEY=… npm run build` | exit 0 |
+| 4 | `npm run architecture:check` | `all 8 rules + coverage green` |
+| 5, 6 | `npm run architecture:map && git diff --exit-code HEAD -- lib/architecture/map.generated.ts` | `wrote … (90300 bytes)`, then exit 0, nothing staged |
+| 7 | `npm run reasoning:registry && git diff --exit-code HEAD -- data/reasoning-registry/prompts.generated.json` | exit 0, nothing staged |
+| 8 | `npm run reasoning:governance` | `GREEN: 0 ungoverned model calls` |
+| 9 | `npm run changelog:coverage` | `GREEN: all 19 shipped engine versions documented (30 versioned entries)` |
+
+Both generated artifacts are byte-identical to `180e88f` by `git hash-object` against `git rev-parse 180e88f:<path>`, not only unchanged against `HEAD`.
+
+## 6. Flagged, not decided
+
+**New.** `npm run build` can be made to swallow the guard's failure without touching `next.config.mjs`. The suite would not notice; gate 3a would. A one-line pin on the build script would close it, and `package.json` is outside this pass's diff. Unchanged, with V already: D9's contradiction about which states the reconciler alone may reach, and per-role settlement states.
 
 ---
 
@@ -27,16 +117,18 @@ lib/__tests__/reconciler-races.test.ts
 lib/__tests__/telemetry-key-guard.test.ts
 ```
 
-A mode change, type change or rename is **not established** by any test (SHA-256 sees content only), and nothing new was flagged — the two open items are unchanged, in Part III §10.
+A mode change, type change or rename is **not established** by any test (SHA-256 sees content only), and nothing new was flagged. Part III §10 holds eight flags, seven of them carrying an explicit "not decided", "not made", "not wired", "not fixed" or "V's call" — counting `**Flag` headings and those five markers.
 
 ## 2. The D8 deploy guard is now EXECUTED, not only parsed
 
 `next.config.mjs` is spawned in a fresh child process, three times, with `VERCEL`, `VERCEL_ENV` and
-the key fixed explicitly and everything else ambient. The oracle was kept: it inspects one
-`IfStatement`, and every attack below lives outside it.
+the key fixed explicitly and everything else ambient. The oracle was kept: it compares one
+`IfStatement`'s condition, and five of the six attacks below live outside it. The sixth, attack 4,
+rewrites that condition — lines 12 and 13 of `next.config.mjs` — and the oracle passes it anyway,
+because respelling `process.env.` as `env.` renders identically by design.
 
 ```
-$ zsh /Users/vinaybhardwaj/.claude/jobs/a5ac63db/tmp/d8-attacks.sh
+$ # in a scratch copy: prepend each attack line to next.config.mjs, then run the test file
 === baseline (unmutated scratch copy: guard ALIVE, all pass) ===
 baseline                                       guard ALIVE   # pass 11  # fail 0
 
@@ -86,7 +178,7 @@ whole file hashed against a baseline stored in `reconciler-races.test.ts`, not d
 current source and not from git.
 
 ```
-$ zsh /Users/vinaybhardwaj/.claude/jobs/a5ac63db/tmp/hash-mutations.sh
+$ # in a scratch copy: apply each mutation, then run lib/__tests__/reconciler-races.test.ts
 === baseline (unmutated scratch copy: must PASS) ===
 baseline                                             # pass 16  # fail 0
 
@@ -113,7 +205,7 @@ file. The whole-file hash carries the property; the three show it holds.
 
 | # | Command | Result |
 |---|---|---|
-| 1 | `npm test` | `# tests 3014 · # pass 3014 · # fail 0 · # skipped 0` — the total the runner emits, counting `node --test` cases |
+| 1 | `npm test` | `# tests 3014 · # pass 3014 · # fail 0 · # skipped 0` — the total the runner emits, counting `node --test` cases. 3014 − 3006 = 8 added: 3 in `telemetry-key-guard.test.ts` (11 from 8), 5 in `reconciler-races.test.ts` (16 from 11). |
 | 2 | `npm run typecheck` | exit 0 |
 | 3a | `env -u CDMSS_TELEMETRY_HMAC_KEY VERCEL=1 VERCEL_ENV=production npm run build` | **the expected production-precondition failure occurred**: non-zero exit, output naming `CDMSS_TELEMETRY_HMAC_KEY`. Not a green build. |
 | 3b | `VERCEL=1 VERCEL_ENV=production CDMSS_TELEMETRY_HMAC_KEY=… npm run build` | exit 0 |
@@ -122,6 +214,15 @@ file. The whole-file hash carries the property; the three show it holds.
 | 7 | `npm run reasoning:registry && git diff --exit-code HEAD -- data/reasoning-registry/prompts.generated.json` | exit 0, no staging |
 | 8 | `npm run reasoning:governance` | `GREEN: 0 ungoverned model calls` |
 | 9 | `npm run changelog:coverage` | `GREEN: all 19 shipped engine versions documented (30 versioned entries)` |
+
+## 7. The commit shape, which this part asserted nowhere
+
+Stated now, from `e5dc756` rather than from `HEAD`: `git diff --summary e5dc756` printed nothing, so
+no mode, type or rename change; `git diff --name-status e5dc756` printed three `M` rows and no
+others; `git diff --cached --name-only` equalled those three paths exactly; both generated artifacts
+and both cron test files were byte-identical to `e5dc756` by `git hash-object` against
+`git rev-parse e5dc756:<path>`; the parent was `e5dc756e87e4e24315038f6d27fc727d9142a09a`; and
+`git status --short` was empty afterwards. All six held; none was written down.
 
 # PART III — STEPS 14 TO 17, AND THE TEST 57 FIX
 

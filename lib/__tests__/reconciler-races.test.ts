@@ -18,12 +18,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { lstatSync } from 'node:fs';
 import { NextRequest } from 'next/server';
 import { installDbStub, type DbStub } from './telemetry-db-stub';
 import { GET } from '../../app/api/admin/retrieval-telemetry-reconcile/route';
 import {
   reconcilerStateFor, isAllowedTransition, RETRIEVAL_PERSISTENCE_STATES, TERMINAL_PERSISTENCE_STATES,
-  NON_TERMINAL_PERSISTENCE_STATES,
+  NON_TERMINAL_PERSISTENCE_STATES, ALLOWED_TRANSITIONS,
 } from '../retrieval-telemetry-core';
 import {
   WORKER_MAX_DURATION_SECONDS, RECONCILER_GRACE_SECONDS, RECONCILER_STALE_AFTER_SECONDS,
@@ -78,8 +79,11 @@ test('55 — a revision mismatch causes ONE reread and reclassification, never a
   // …and the second attempt cannot recurse again.
   assert.ok(RECONCILER.includes("if (reread) {"));
   assert.match(RECONCILER, /if \(reread\) \{[\s\S]{0,260}return \{ runId: row\.retrieval_run_id, result: 'won_by_a_later_write', from \};/);
-  // A blind retry would look like a loop on the same row object. There is exactly one recursive
-  // call in the file, and it passes the FRESH row.
+  // ⚠️ THIS COUNTS RECURSIVE CALL SITES AND NOTHING MORE. It used to be introduced as "a blind retry
+  // would look like a loop on the same row object", which is false of the shape that actually
+  // matters: a fifty-iteration spin loop before the `if (reread)` block, with the pinned recursion
+  // left in place as dead code, satisfies every regex in this test. What refuses that is the exact
+  // write and reread COUNT per path, asserted at run time by `runPass`.
   assert.equal((RECONCILER.match(/reconcileRow\(/g) || []).length, 3, 'the definition, the entry call, and the one reread');
 });
 
@@ -112,20 +116,67 @@ test('55 — the reconciler owns an invocation of its own kind, and closes it', 
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════
-// 55, AT RUN TIME — the compare-and-set, the reread, and the stale decision that must not land
+// 55, AT RUN TIME — the whole statement, the counts, the cutoff, and the refusal branch
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 //
+// ⚠️ TEN KILLS SURVIVED THE PREVIOUS VERSION OF THIS SECTION, all sixteen cases green under every
+// one. The two that matter most: `AND row_revision = $2 OR TRUE` — which parses as
+// `(id AND rev) OR (nonterminal)` and rewrites EVERY non-terminal row in the table in one pass —
+// and a predicate parked in a `--` comment behind `AND TRUE`. Both leave a substring search happy.
+// Others weakened the guard only on the reread path, moved the transition refusal to after the
+// UPDATE, or replaced the pinned recursion with a fifty-iteration spin loop.
+//
+// So a substring is never what decides anything here. The COMPLETE normalized statement is compared
+// against a value hard-coded below, and the statement counts are pinned per path.
+//
 // ⚠️ NON-GLOBAL REGULAR EXPRESSIONS, DELIBERATELY. The stub calls `RegExp.test()` repeatedly against
-// the same objects, and `/g` or `/y` would carry `lastIndex` between calls — a route would match,
-// then silently stop matching.
+// the same objects, and `/g` or `/y` would carry `lastIndex` between calls.
 
 const STALE_SELECT = /SELECT retrieval_run_id[\s\S]*WHERE persistence_state IN/;
 const REREAD_SELECT = /SELECT retrieval_run_id[\s\S]*WHERE retrieval_run_id = \$1/;
-/** ⚠️ ANCHORED ON THE TELEMETRY TABLE. The request also closes its invocation, which issues an
- *  `UPDATE opd_retrieval_invocations`; counting every `UPDATE` gives the wrong answer. */
-const TELEMETRY_UPDATE = /^\s*UPDATE opd_audit_retrieval_telemetry\b/;
+/** Broad on purpose: ANY statement mentioning the telemetry table. The two selects are routed after
+ *  this one and win, so what reaches this route is every other way of touching the table — including
+ *  a write inside a CTE, or one spelled `update` in lower case, which an anchored
+ *  `/^\s*UPDATE opd_audit_retrieval_telemetry\b/` would never see. */
+const TOUCHES_TELEMETRY_TABLE = /opd_audit_retrieval_telemetry/i;
 const INVOCATION_WRITE = /opd_retrieval_invocations/;
 const FAILURE_PHASES = /SELECT failed_phase/;
+
+/**
+ * ⚠️ HARD-CODED, AND NOT DERIVED FROM `route.ts` OR `RECONCILER_UPDATE_SQL`. A pin that reads the
+ * thing it is checking asserts only that the file agrees with itself; every one of the ten kills
+ * left the module constant byte-identical.
+ */
+const PINNED_TELEMETRY_UPDATE = [
+  'UPDATE opd_audit_retrieval_telemetry',
+  'SET persistence_state = $3, persistence_settled_at = $4, row_revision = row_revision + 1',
+  'WHERE retrieval_run_id = $1',
+  'AND row_revision = $2',
+  "AND persistence_state IN ('started', 'retrieval_complete')",
+  'RETURNING row_revision',
+].join(' ');
+
+/** A write, however it is spelled. `SELECT … FROM opd_audit_retrieval_telemetry` is not one. */
+const writesTelemetryTable = (q: string): boolean =>
+  TOUCHES_TELEMETRY_TABLE.test(q) && /\b(update|insert|delete|merge)\b/i.test(q);
+
+/** Every statement this request sent that WRITES the telemetry table, in order. */
+const telemetryWrites = (db: DbStub) => db.calls.filter((c) => writesTelemetryTable(c.query));
+
+interface SqlVerdict { pinned: boolean; why: string }
+
+/**
+ * Collapse whitespace and compare the WHOLE statement. Comment markers and statement separators are
+ * refused outright: `--` and `/*` are how a predicate is made inert while staying present as text,
+ * and `;` is how a second statement rides along inside one string.
+ */
+function checkSql(q: string): SqlVerdict {
+  if (/[\0;]|--|\/\*|\*\//.test(q)) return { pinned: false, why: `comment marker, NUL or ';' in: ${q}` };
+  const normalized = q.replace(/\s+/g, ' ').trim();
+  return normalized === PINNED_TELEMETRY_UPDATE
+    ? { pinned: true, why: '' }
+    : { pinned: false, why: `not the pinned statement:\n  got      ${normalized}\n  expected ${PINNED_TELEMETRY_UPDATE}` };
+}
 
 interface FakeRow { id: string; role: string; state: string; revision: number }
 const wire = (r: FakeRow) => ({
@@ -133,11 +184,20 @@ const wire = (r: FakeRow) => ({
 });
 
 /**
- * A fake table that DECIDES. Returning `[]` from every update would prove nothing about a
- * compare-and-set: the point is that the predicates in the statement the route actually sent are
- * what determine whether the write lands.
+ * THE FAKE TABLE'S CONTRACT, IN TWO STEPS AND NO MORE.
  *
- * `race` is the concurrent writer, applied immediately before the Nth update is evaluated.
+ *   1. VALIDATE that the statement the route issued is the one pinned statement, complete.
+ *   2. MODEL THAT KNOWN STATEMENT'S semantics — compare-and-set on `row_revision`, refuse a terminal
+ *      state — from the bound parameters and the live row.
+ *
+ * It does NOT interpret arbitrary SQL and must not pretend to. A statement that fails step 1 is
+ * recorded and lands nothing; the test asserts afterwards that no such statement was issued.
+ *
+ * ⚠️ NOTHING HERE THROWS. `route.ts:192` catches and returns `{ ok: false }` with status 500, so an
+ * assertion raised inside this callback would become a 500 and the case could still pass. Every
+ * runtime case asserts status 200 and `ok: true` for that reason.
+ *
+ * `race` is the concurrent writer, applied immediately before the Nth write is evaluated.
  */
 function installFakeTable(
   db: DbStub,
@@ -145,29 +205,30 @@ function installFakeTable(
   race?: { beforeUpdate: number; becomes: FakeRow },
 ) {
   const live = new Map(selected.map((r) => [r.id, { ...r }]));
-  const log: Array<{ params: unknown[]; landed: boolean }> = [];
+  const log: Array<{ params: unknown[]; landed: boolean; verdict: SqlVerdict }> = [];
 
   db.on(INVOCATION_WRITE, []);
   db.on(FAILURE_PHASES, []);                       // no failure evidence in any case here
-  db.on(STALE_SELECT, selected.map(wire));         // a snapshot, as a real SELECT would be
-  db.on(REREAD_SELECT, (c) => {
-    const r = live.get(String(c.params[0]));
-    return r ? [wire(r)] : [];
-  });
-  db.on(TELEMETRY_UPDATE, (c) => {
+  db.on(TOUCHES_TELEMETRY_TABLE, (c) => {
     if (race && log.length + 1 === race.beforeUpdate) live.set(race.becomes.id, { ...race.becomes });
+    const verdict = checkSql(c.query);
     const [runId, boundRevision, state] = c.params as [string, string, string];
     const row = live.get(runId);
-    const revisionGuarded = /AND row_revision = \$2/.test(c.query);
-    const stateGuarded = /AND persistence_state IN \('started', 'retrieval_complete'\)/.test(c.query);
-    let landed = !!row;
-    if (row && revisionGuarded && Number(boundRevision) !== row.revision) landed = false;
-    if (row && stateGuarded && !(NON_TERMINAL_PERSISTENCE_STATES as readonly string[]).includes(row.state)) landed = false;
-    log.push({ params: c.params, landed });
+    const landed = verdict.pinned
+      && !!row
+      && Number(boundRevision) === row.revision
+      && (NON_TERMINAL_PERSISTENCE_STATES as readonly string[]).includes(row.state);
+    log.push({ params: c.params, landed, verdict });
     if (!landed || !row) return [];
     row.state = state;
     row.revision += 1;
     return [{ row_revision: row.revision }];
+  });
+  // Routed AFTER the broad rule, so these two win for themselves and everything else falls through.
+  db.on(STALE_SELECT, selected.map(wire));         // a snapshot, as a real SELECT would be
+  db.on(REREAD_SELECT, (c) => {
+    const r = live.get(String(c.params[0]));
+    return r ? [wire(r)] : [];
   });
   return { live, log };
 }
@@ -181,40 +242,62 @@ const cronRequest = () => new NextRequest(
 interface ReconcileBody {
   ok: boolean;
   selected: number;
+  cutoff: string;
+  grace_seconds: number;
   verdicts: Array<{ runId: string; result: string; from?: string; to?: string; reread?: boolean }>;
 }
 
-test('55 runtime — the pass runs, selects, and reports', async () => {
-  const db = installDbStub();
-  installFakeTable(db, [{ id: 'r1', role: 'primary', state: 'started', revision: 3 }]);
+/**
+ * Run the pass and check everything every case must check: a 200, `ok: true`, that every write to
+ * the telemetry table was the pinned statement, and the exact statement counts for this path.
+ */
+async function runPass(
+  db: DbStub,
+  log: Array<{ params: unknown[]; landed: boolean; verdict: SqlVerdict }>,
+  expect: { writes: number; rereads: number },
+): Promise<ReconcileBody> {
   const res = await GET(cronRequest());
+  // ⚠️ FIRST, ALWAYS. A 500 here means something threw inside the request, and the body would carry
+  // the reason rather than a result.
   assert.equal(res.status, 200);
   const body = await res.json() as ReconcileBody;
   assert.equal(body.ok, true);
+  for (const entry of log) assert.ok(entry.verdict.pinned, entry.verdict.why);
+  // Counted from the CLASSIFIER, not from an anchored regex: a write inside a CTE is still a write.
+  assert.equal(telemetryWrites(db).length, expect.writes, 'telemetry writes');
+  assert.equal(log.length, expect.writes, 'every telemetry write reached the fake table');
+  assert.equal(db.matching(REREAD_SELECT).length, expect.rereads, 'rereads');
+  return body;
+}
+
+test('55 runtime — an ordinary one-row pass: one pinned write, no reread', async () => {
+  const db = installDbStub();
+  const { log } = installFakeTable(db, [{ id: 'r1', role: 'primary', state: 'started', revision: 3 }]);
+  const body = await runPass(db, log, { writes: 1, rereads: 0 });
   assert.equal(body.selected, 1);
   assert.equal(db.matching(STALE_SELECT).length, 1, 'the stale-row SELECT ran');
+  assert.equal(log[0].landed, true);
 });
 
-test('55 runtime — the UPDATE the route ACTUALLY SENT carries both predicates', async () => {
+test('55 runtime — the statement the route ACTUALLY SENT is the pinned one, complete', async () => {
   const db = installDbStub();
-  installFakeTable(db, [{ id: 'r1', role: 'primary', state: 'started', revision: 3 }]);
-  await GET(cronRequest());
-  const [update] = db.matching(TELEMETRY_UPDATE);
-  assert.ok(update, 'a telemetry update was issued');
-  // ⚠️ THE RUNTIME TEXT, NOT THE MODULE CONSTANT. `RECONCILER_UPDATE_SQL.replace(…)` at the call
-  // site leaves the constant byte-identical and every source regex still matching.
-  assert.match(update.query, /AND row_revision = \$2/, 'the revision predicate survived to the wire');
-  assert.match(update.query, /AND persistence_state IN \('started', 'retrieval_complete'\)/);
+  const { log } = installFakeTable(db, [{ id: 'r1', role: 'primary', state: 'started', revision: 3 }]);
+  await runPass(db, log, { writes: 1, rereads: 0 });
+  // Said once more explicitly, because this is the assertion the whole section exists for: not that
+  // two substrings are present, but that nothing else is.
+  assert.equal(
+    telemetryWrites(db)[0].query.replace(/\s+/g, ' ').trim(), PINNED_TELEMETRY_UPDATE,
+    'the SET list, the WHERE clause and the RETURNING clause are all pinned, not just two predicates',
+  );
 });
 
-test('55 runtime — each row\'s update binds ITS OWN revision', async () => {
+test('55 runtime — each row\'s write binds ITS OWN revision', async () => {
   const db = installDbStub();
   const { log } = installFakeTable(db, [
     { id: 'r-a', role: 'primary', state: 'started', revision: 41 },
     { id: 'r-b', role: 'normative_channel', state: 'retrieval_complete', revision: 97 },
   ]);
-  await GET(cronRequest());
-  assert.equal(log.length, 2);
+  await runPass(db, log, { writes: 2, rereads: 0 });
   // Wire form: the driver renders every bound parameter to text before it leaves the process.
   assert.deepEqual(log.map((u) => [u.params[0], u.params[1]]), [['r-a', '41'], ['r-b', '97']]);
   assert.deepEqual(log.map((u) => u.landed), [true, true]);
@@ -222,21 +305,20 @@ test('55 runtime — each row\'s update binds ITS OWN revision', async () => {
 
 test('55 runtime — THE STALE DECISION DOES NOT LAND: reread, reclassify, write the FRESH state', async () => {
   const db = installDbStub();
-  // Selected as `started` at 7. A concurrent writer completes the retrieval before the update runs.
+  // Selected as `started` at 7. A concurrent writer completes the retrieval before the write runs.
   const { log } = installFakeTable(
     db,
     [{ id: 'r1', role: 'primary', state: 'started', revision: 7 }],
     { beforeUpdate: 1, becomes: { id: 'r1', role: 'primary', state: 'retrieval_complete', revision: 8 } },
   );
-  const body = await (await GET(cronRequest())).json() as ReconcileBody;
+  const body = await runPass(db, log, { writes: 2, rereads: 1 });
 
-  assert.equal(log.length, 2, 'exactly two telemetry updates');
   // The first carries the decision made from the row as SELECTED — and must not land.
   assert.deepEqual(log[0].params.slice(0, 3), ['r1', '7', 'aborted']);
   assert.equal(log[0].landed, false, 'the stale decision was written anyway');
-  assert.equal(db.matching(REREAD_SELECT).length, 1, 'exactly one reread');
   // The second is RECLASSIFIED from the fresh row: `retrieval_complete` with no failure evidence is
-  // `persistence_unknown`, not the `aborted` this pass first decided on.
+  // `persistence_unknown`, not the `aborted` this pass first decided on. Its statement is pinned by
+  // `runPass` too — the reread path was where two of the ten kills weakened the guard.
   assert.deepEqual(log[1].params.slice(0, 3), ['r1', '8', 'persistence_unknown']);
   assert.equal(log[1].landed, true);
   assert.deepEqual(body.verdicts, [{
@@ -244,19 +326,61 @@ test('55 runtime — THE STALE DECISION DOES NOT LAND: reread, reclassify, write
   }]);
 });
 
-test('55 runtime — a TERMINAL row wins, and no second update is issued', async () => {
+test('55 runtime — a TERMINAL row wins, and no second write is issued', async () => {
   const db = installDbStub();
   const { log } = installFakeTable(
     db,
     [{ id: 'r1', role: 'primary', state: 'started', revision: 7 }],
     { beforeUpdate: 1, becomes: { id: 'r1', role: 'primary', state: 'persisted_complete', revision: 8 } },
   );
-  const body = await (await GET(cronRequest())).json() as ReconcileBody;
-
-  assert.equal(log.length, 1, 'exactly one telemetry update — the reread found a terminal row');
+  const body = await runPass(db, log, { writes: 1, rereads: 1 });
   assert.equal(log[0].landed, false);
-  assert.equal(db.matching(REREAD_SELECT).length, 1, 'exactly one reread');
   assert.deepEqual(body.verdicts, [{ runId: 'r1', result: 'won_by_a_later_write', from: 'persisted_complete' }]);
+});
+
+test('55 runtime — the CUTOFF is the request time minus the preregistered grace', async () => {
+  // ⚠️ A SOURCE PIN ON THE CONSTANT'S NAME IS SATISFIED BY THE IMPORT LINE. `const cutoff = at;`
+  // removes the grace entirely and keeps `grace_seconds: 2600` in the response, so the wire value
+  // and the echoed value still agree with each other. Only a wall-clock bound catches it.
+  const db = installDbStub();
+  const { log } = installFakeTable(db, [{ id: 'r1', role: 'primary', state: 'started', revision: 3 }]);
+  const before = Date.now();
+  const body = await runPass(db, log, { writes: 1, rereads: 0 });
+  const after = Date.now();
+
+  const [select] = db.matching(STALE_SELECT);
+  assert.equal(db.matching(STALE_SELECT).length, 1, 'one stale-row select');
+  const bound = Date.parse(String(select.params[0]));
+  assert.ok(Number.isFinite(bound), `the bound cutoff is not a timestamp: ${String(select.params[0])}`);
+  assert.equal(String(select.params[0]), body.cutoff, 'the wire value and the echoed value agree');
+  assert.equal(body.grace_seconds, 2600);
+  const grace = 2_600_000;
+  assert.ok(
+    before - grace <= bound && bound <= after - grace,
+    `cutoff ${new Date(bound).toISOString()} is not within [${new Date(before - grace).toISOString()}, `
+    + `${new Date(after - grace).toISOString()}] — the grace is not being subtracted`,
+  );
+});
+
+test('55 runtime — a FORBIDDEN transition is refused, and nothing is written', async () => {
+  // ⚠️ FAULT INJECTION, BECAUSE NO VALID ROW REACHES THIS BRANCH. `ALLOWED_TRANSITIONS` permits all
+  // four states the reconciler can assign, so the refusal is unreachable with the real table — and
+  // an unreachable defensive branch is exactly where "move the check to after the UPDATE" hides.
+  const started = ALLOWED_TRANSITIONS.started;
+  const mutable = ALLOWED_TRANSITIONS as Record<string, readonly string[]>;
+  mutable.started = started.filter((t) => t !== 'aborted');
+  try {
+    const db = installDbStub();
+    const { live, log } = installFakeTable(db, [{ id: 'r1', role: 'primary', state: 'started', revision: 5 }]);
+    const body = await runPass(db, log, { writes: 0, rereads: 0 });
+    assert.deepEqual(body.verdicts, [{
+      runId: 'r1', result: 'transition_not_allowed', from: 'started', to: 'aborted',
+    }]);
+    // The row is untouched — which is the half that a refusal moved to AFTER the write would fail.
+    assert.deepEqual(live.get('r1'), { id: 'r1', role: 'primary', state: 'started', revision: 5 });
+  } finally {
+    mutable.started = started;
+  }
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════
@@ -352,8 +476,14 @@ test('64 — both files assert 17, and neither still asserts 16', () => {
  * are not derived from the current source at run time — a hash computed from the thing it is meant
  * to check is a tautology, and git is not consulted from a test.
  *
- * ⚠️ WHAT A CONTENT HASH CANNOT SEE: a mode change, a type change or a rename. Those are the
- * commit-shape checks' job, not this one's.
+ * ⚠️ WHAT A CONTENT HASH CANNOT SEE, and what is done about it. `chmod 777` on either file, and
+ * replacing either with a symlink to byte-identical content, both passed every case in the previous
+ * version of this test — and there were no "commit-shape checks" anywhere in the repository to catch
+ * them, which is what that sentence used to claim. A rename IS caught here, because the read throws.
+ * The `lstat` gate below closes the other two before either file is read.
+ *
+ * ⚠️ AND WHAT REMAINS OUTSIDE THE CONTRACT, DELIBERATELY: mtime, uid, gid, ACLs and extended
+ * attributes. Git preserves none of them, so a test that asserted them would fail on a fresh clone.
  */
 const CRON_BASELINE = [
   {
@@ -374,6 +504,15 @@ const CRON_BASELINE = [
 
 test('64 — undo the one authorised line and each file hashes to exactly what it did at 177adc9', () => {
   for (const b of CRON_BASELINE) {
+    // ⚠️ BEFORE A SINGLE BYTE IS READ. A symlink to identical content, or a second hard link, gives
+    // the same hash and is not the same file; a mode change gives the same hash and is not the same
+    // committed object. `lstat`, not `stat`, so the symlink is seen rather than followed.
+    const st = lstatSync(b.file);
+    assert.equal(st.isSymbolicLink(), false, `${b.file} is a symlink`);
+    assert.equal(st.isFile(), true, `${b.file} is not a regular file`);
+    assert.equal(st.nlink, 1, `${b.file} has ${st.nlink} hard links`);
+    assert.equal(st.mode & 0o7777, 0o644, `${b.file} is mode ${(st.mode & 0o7777).toString(8)}, not 644`);
+
     const lines = readFileSync(b.file, 'utf8').split('\n');
     assert.equal(
       lines.filter((l) => l === b.current).length, 1,

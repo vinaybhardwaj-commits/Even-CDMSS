@@ -24,10 +24,11 @@
 //     What it does NOT count is not a short list and is not worth pretending is one: formatting,
 //     line breaks, the `process.env.` / `env.` spelling, parentheses, optional chaining, and — most
 //     of all — whether `env` is the process environment at all. Its subject is DRIFT BETWEEN THE
-//     TWO COPIES, and that is all. ⚠️ IT INSPECTS ONE `IfStatement` AND NOTHING ELSE IN THE FILE:
-//     it cannot see a line prepended above the guard, a shadowed `process`, a redefined `String`,
-//     or an `uncaughtException` handler, and every one of those kills the guard while leaving the
-//     pinned expression byte-identical.
+//     TWO COPIES. ⚠️ IT LOCATES THE GUARD AS THE FIRST TOP-LEVEL `IfStatement` and compares that
+//     one condition; a shadowed `process`, a redefined `String` or an `uncaughtException` handler
+//     leaves the condition byte-identical and the guard dead, and the oracle cannot see any of
+//     them. (A prepended top-level `if` is a different matter: it becomes the located statement and
+//     fails the comparison. It is the file contract below, not the oracle, that refuses the rest.)
 //
 // (b) THE EXECUTION, immediately below this comment. `next.config.mjs` is SPAWNED in a fresh child
 //     process, three times, with the three guard inputs fixed explicitly. Its subject is WHETHER
@@ -38,6 +39,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import ts from 'typescript';
 import { telemetryKeyMissingInProduction, TELEMETRY_HMAC_KEY_ENV } from '../telemetry-key-guard';
 
@@ -120,47 +122,175 @@ test('57 case 5 — not a Vercel build, even when the environment says productio
   assert.equal(telemetryKeyMissingInProduction({}), false);
 });
 
-// ── the guard, EXECUTED ─────────────────────────────────────────────────────────────────────────
+// ── the guard, EXECUTED, AND THE WHOLE FILE CONSTRAINED ─────────────────────────────────────────
 //
-// ⚠️ A FRESH CHILD PROCESS PER CASE, AND THAT IS NOT FASTIDIOUSNESS. Importing the config twice in
-// one process runs it once: ESM caches the module record, and the second import returns the cached
-// one without executing anything. A second in-process "case" would therefore assert nothing at all
-// while looking like a passing test.
+// ⚠️ THREE PASSES, THREE DEFEATED PINS, AND THE PATTERN IS ALWAYS THE SAME: the attack lives at a
+// level the pin does not inspect. Whitespace-stripped text lost to a space inside a literal. An AST
+// oracle over one `IfStatement` lost to a line prepended above it. An execution harness that ran the
+// config as `process.argv[1]` lost to five discriminators keyed on exactly that — because a real
+// build IMPORTS the config from `next/dist/bin/next`, and anything that can tell the two apart can
+// switch the guard off for the test and leave it on for nobody.
 //
-// Only the three inputs D8's condition reads are fixed. Every other build input stays ambient, so
-// this is the config as it would run, not a sanitised imitation of it.
+// So two things are constrained, and neither is sufficient alone:
+//
+//   (a) THE WHOLE FILE, structurally. Not the guard — the file. Exactly three top-level statements,
+//       in order, each pinned to its exact shape, with no imports, no directives and no executable
+//       syntax anywhere else. Every kill in the class above is a PREPENDED STATEMENT, and this is
+//       what refuses them: `process.env.VERCEL = …`, an `existsSync('.env.local')` discriminator, a
+//       `VERCEL_URL` check, a `NODE_TEST_CONTEXT` check, a `/proc/<ppid>/cmdline` check.
+//
+//   (b) THE IMPORT, in a child process that a build cannot be distinguished from. The config is
+//       never `process.argv[1]`; `NODE_TEST_CONTEXT` is deleted; `VERCEL_URL` is set the way a real
+//       deployment sets it. That removes the specific signals a subtler discriminator would reach
+//       for, so (a) is not carrying the whole load on its own.
 
-const CONFIG_PATH = resolve(CONFIG_FILE);
+const CONFIG_URL = pathToFileURL(resolve(CONFIG_FILE)).href;
 
-function runConfig(vercel: string, vercelEnv: string, key: string | null): { status: number; output: string } {
-  const env: NodeJS.ProcessEnv = { ...process.env, VERCEL: vercel, VERCEL_ENV: vercelEnv };
+/**
+ * The child. ⚠️ `--input-type=module --eval` DELIBERATELY: it leaves the config out of `argv`
+ * entirely, so a discriminator cannot ask whether it is the entry point. The config URL arrives in
+ * the environment, and the child's ONLY output on success is nothing at all.
+ *
+ * Exit 86 is arbitrary and that is the point — it is a status nothing else in this toolchain
+ * produces, so "the import threw" cannot be confused with a loader failure, a syntax error, or a
+ * child that died for a reason of its own.
+ */
+const IMPORTER = [
+  'const url = process.env.CDMSS_TEST_CONFIG_URL;',
+  'try { await import(url); } catch (e) {',
+  '  process.stdout.write(JSON.stringify({ name: e && e.name, message: e && e.message }));',
+  '  process.exit(86);',
+  '}',
+].join('\n');
+
+interface ImportOutcome { status: number; record: { name?: string; message?: string } | null; stderr: string }
+
+function importConfig(vercel: string, vercelEnv: string, key: string | null): ImportOutcome {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    VERCEL: vercel,
+    VERCEL_ENV: vercelEnv,
+    CDMSS_TEST_CONFIG_URL: CONFIG_URL,
+    // A real production deployment always has one. A discriminator that switches the guard off when
+    // it is absent would otherwise be invisible here and live everywhere else.
+    VERCEL_URL: 'cdmss-rerank-telemetry.vercel.app',
+  };
+  // Inherited from `node --test`. A build never sets it, so anything keyed on it is a test-only
+  // escape hatch — and one of the five kills was exactly that.
+  delete env.NODE_TEST_CONTEXT;
   if (key === null) delete env[TELEMETRY_HMAC_KEY_ENV];
   else env[TELEMETRY_HMAC_KEY_ENV] = key;
 
-  const r = spawnSync(process.execPath, [CONFIG_PATH], { env, encoding: 'utf8' });
-  // Asserted BEFORE the exit code is read. A spawn that never started, or one killed by a signal,
-  // has no exit code worth testing — and `status` is null in both cases, which `!== 0` would
-  // happily accept as "the guard fired".
+  const r = spawnSync(process.execPath, ['--input-type=module', '--eval', IMPORTER], { env, encoding: 'utf8' });
+  // Asserted BEFORE the status is read: a spawn that never started and one killed by a signal both
+  // leave `status` null, which `!== 0` would happily accept as "the guard fired".
   assert.equal(r.error, undefined, `spawn failed: ${String(r.error)}`);
   assert.equal(r.signal, null, `killed by ${String(r.signal)}`);
   assert.equal(typeof r.status, 'number', 'no numeric exit status');
-  return { status: r.status as number, output: `${r.stdout}${r.stderr}` };
+  // ⚠️ STDOUT ONLY. Searching combined output would let a stack trace, a warning or an unrelated
+  // log line satisfy the message check.
+  const out = r.stdout.trim();
+  return { status: r.status as number, record: out ? JSON.parse(out) as { name?: string; message?: string } : null, stderr: r.stderr };
 }
 
-test('57 EXECUTED — a production build with no key FAILS, and says which variable is missing', () => {
-  const { status, output } = runConfig('1', 'production', null);
-  assert.notEqual(status, 0, 'the production deploy precondition did not fire');
-  assert.ok(output.includes(TELEMETRY_HMAC_KEY_ENV), `the failure does not name the variable:\n${output}`);
+test('57 EXECUTED — importing the config in production with no key throws, and names the variable', () => {
+  const { status, record } = importConfig('1', 'production', null);
+  assert.equal(status, 86, 'the production deploy precondition did not throw on import');
+  assert.ok(record, 'the child reported no caught value');
+  assert.equal(record.name, 'Error');
+  assert.ok(
+    String(record.message).includes(TELEMETRY_HMAC_KEY_ENV),
+    `the thrown message does not name the variable: ${String(record.message)}`,
+  );
 });
 
-test('57 EXECUTED — a production build WITH a key succeeds', () => {
-  // A control. Without it, a config that failed unconditionally would pass the case above.
-  assert.equal(runConfig('1', 'production', 'local-test-key-not-a-secret').status, 0);
+test('57 EXECUTED — a production import WITH a key succeeds', () => {
+  // A control. Without it, a config that threw unconditionally would pass the case above.
+  const { status, record } = importConfig('1', 'production', 'local-test-key-not-a-secret');
+  assert.equal(status, 0);
+  assert.equal(record, null, 'nothing was caught, so nothing is reported');
 });
 
-test('57 EXECUTED — a non-production build with no key succeeds', () => {
-  // The second control, and the one that matters to every developer: the guard must not fire here.
-  assert.equal(runConfig('0', 'development', null).status, 0);
+test('57 EXECUTED — a non-production import with no key succeeds', () => {
+  const { status, record } = importConfig('0', 'development', null);
+  assert.equal(status, 0);
+  assert.equal(record, null);
+});
+
+// ── the whole config file, structurally ─────────────────────────────────────────────────────────
+
+/** Parse diagnostics, which `createSourceFile` records but does not expose on the public type. An
+ *  empty, truncated or parser-recovered config must not read as a well-formed one. */
+function parseDiagnosticCount(sf: ts.SourceFile): number {
+  return ((sf as unknown as { parseDiagnostics?: unknown[] }).parseDiagnostics ?? []).length;
+}
+
+/** Every descendant kind present in a subtree — the cheap way to say "and nothing executable". */
+function kindsIn(node: ts.Node): Set<ts.SyntaxKind> {
+  const out = new Set<ts.SyntaxKind>();
+  const walk = (n: ts.Node): void => { out.add(n.kind); ts.forEachChild(n, walk); };
+  walk(node);
+  return out;
+}
+
+test('57 whole file — it parses, and holds EXACTLY three top-level statements in order', () => {
+  assert.ok(nextConfigSrc.trim().length > 0, `${CONFIG_FILE} is empty`);
+  assert.equal(parseDiagnosticCount(configAst), 0, `${CONFIG_FILE} does not parse cleanly`);
+  assert.equal(configAst.statements.length, 3, 'a fourth top-level statement is where every kill lived');
+  assert.ok(ts.isIfStatement(configAst.statements[0]), 'statement 1 is the D8 guard');
+  assert.ok(ts.isVariableStatement(configAst.statements[1]), 'statement 2 declares nextConfig');
+  assert.ok(ts.isExportAssignment(configAst.statements[2]), 'statement 3 is the default export');
+  // Not an `export =`, and not an import of any kind anywhere.
+  assert.equal((configAst.statements[2] as ts.ExportAssignment).isExportEquals, undefined);
+  assert.equal(configAst.statements.some(ts.isImportDeclaration), false, 'the config imports nothing');
+});
+
+test('57 whole file — the declaration and the export are exactly what they must be', () => {
+  const decl = configAst.statements[1] as ts.VariableStatement;
+  assert.ok((decl.declarationList.flags & ts.NodeFlags.Const) !== 0, 'nextConfig is const');
+  assert.equal(decl.declarationList.declarations.length, 1, 'one declarator — a second is a free line of code');
+  const d = decl.declarationList.declarations[0];
+  assert.ok(ts.isIdentifier(d.name) && d.name.text === 'nextConfig');
+
+  // ⚠️ THE INITIALIZER IS PINNED SHAPE-EXACT, because an allowed initializer is somewhere a mutation
+  // can hide: `{ ...(kill(), {}) , reactStrictMode: true }` is an object literal too.
+  const init = d.initializer;
+  assert.ok(init && ts.isObjectLiteralExpression(init), 'the initializer is an object literal');
+  assert.equal(init.properties.length, 1, 'one property');
+  const prop = init.properties[0];
+  assert.ok(ts.isPropertyAssignment(prop), 'a plain property assignment — not a spread, getter or method');
+  assert.ok(ts.isIdentifier(prop.name) && prop.name.text === 'reactStrictMode', 'not a computed key');
+  assert.equal(prop.initializer.kind, ts.SyntaxKind.TrueKeyword);
+
+  const exp = (configAst.statements[2] as ts.ExportAssignment).expression;
+  assert.ok(ts.isIdentifier(exp) && exp.text === 'nextConfig', 'the export is the identifier, not an expression');
+});
+
+test('57 whole file — nothing executable outside the guard', () => {
+  // The guard's own condition legitimately calls `String(...)` and `.trim()`. Everything else in the
+  // file must be inert: no call, no `new`, no `await`, no comma expression, no assignment.
+  const forbidden: Array<[string, ts.SyntaxKind]> = [
+    ['a call', ts.SyntaxKind.CallExpression],
+    ['a new expression', ts.SyntaxKind.NewExpression],
+    ['an await', ts.SyntaxKind.AwaitExpression],
+    ['a function', ts.SyntaxKind.FunctionDeclaration],
+    ['an arrow function', ts.SyntaxKind.ArrowFunction],
+  ];
+  for (const stmt of [configAst.statements[1], configAst.statements[2]]) {
+    const kinds = kindsIn(stmt);
+    for (const [label, kind] of forbidden) {
+      assert.equal(kinds.has(kind), false, `${ts.SyntaxKind[stmt.kind]} contains ${label}`);
+    }
+    // A comma expression is a binary expression, so it needs its own walk.
+    const walkComma = (n: ts.Node): void => {
+      assert.equal(
+        ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.CommaToken, false,
+        'a comma expression is a statement wearing an expression\'s clothes',
+      );
+      ts.forEachChild(n, walkComma);
+    };
+    walkComma(stmt);
+  }
 });
 
 // ── the parser, and the one normalization ───────────────────────────────────────────────────────
@@ -175,11 +305,12 @@ const guardAst = parse(GUARD_FILE, guardSrc, ts.ScriptKind.TS);
  * A structural rendering of an expression. Two conditions render identically when they ARE the same
  * condition, and differently otherwise.
  *
- * ⚠️ EXACTLY ONE THING IS NORMALIZED AWAY, AND IT IS NOT WHITESPACE. `process.env.X` in a build
- * script and `env.X` in a function that takes the environment as a parameter are the same clause
- * written in the only two ways each file has available; both render as `ENV.X`. Everything else is
- * preserved, and string literals are rendered from their VALUE — `'1'` and `'1 '` are two different
- * literals here, which is the whole reason this is a parser and not a `replace(/\s+/g, '')`.
+ * ⚠️ WHAT IS NORMALIZED AWAY, IN FULL: the `process.env.X` / `env.X` spelling (both render as
+ * `ENV.X`, because a build script and a function taking the environment as a parameter have only
+ * those two ways to say it), parentheses, and formatting. Optional chaining renders through the
+ * property-access branch and is likewise not distinguished. String literals are rendered from their
+ * VALUE — `'1'` and `'1 '` are two different literals here, which is the whole reason this is a
+ * parser and not a `replace(/\s+/g, '')`.
  */
 function ser(node: ts.Node, sf: ts.SourceFile): string {
   if (ts.isParenthesizedExpression(node)) return ser(node.expression, sf);
@@ -331,29 +462,50 @@ test('57 pin — next.config.mjs and telemetry-key-guard.ts express the SAME con
   );
 });
 
-test('57 pin — the inlined copy still THROWS, and says which variable is missing', () => {
+/**
+ * The message, EVALUATED rather than grepped.
+ *
+ * ⚠️ A SOURCE-TEXT SEARCH FOR THE VARIABLE NAME PASSES ON A COMMENT. This throws, names nothing a
+ * reader will ever see, and satisfied the previous version of this test:
+ *
+ *     throw new Error(/* CDMSS_TELEMETRY_HMAC_KEY *\/ 'build misconfigured')
+ *
+ * So the argument is required to be literals joined by `+` — nothing computed, nothing interpolated,
+ * nothing that could read an environment variable — and then it is folded and checked.
+ */
+function literalConcat(node: ts.Expression): string {
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    return literalConcat(node.left) + literalConcat(node.right);
+  }
+  throw new Error(`not a literal concatenation: ${ts.SyntaxKind[node.kind]}`);
+}
+
+test('57 pin — the guard THROWS one Error, and the message a reader sees names the variable', () => {
   const guard = inlinedGuard();
   assert.equal(guard.elseStatement, undefined, 'the guard has no else arm to fall into');
   const body = guard.thenStatement;
   assert.ok(ts.isBlock(body), `${CONFIG_FILE}: the guard's consequent is a block`);
+  assert.equal(body.statements.length, 1, 'exactly one statement in the block — nothing runs beside the throw');
   const first = body.statements[0];
   assert.ok(
-    first && ts.isThrowStatement(first),
+    ts.isThrowStatement(first),
     'the condition guards a THROW, not a warning — a production build must fail, not degrade',
   );
+  const thrown = first.expression;
+  assert.ok(thrown && ts.isNewExpression(thrown) && ser(thrown.expression, configAst) === 'Error', 'it throws an Error');
+  assert.equal(thrown.arguments?.length, 1, 'one argument: the message');
+
+  const message = literalConcat(thrown.arguments![0]);
   assert.ok(
-    first.expression && ts.isNewExpression(first.expression) && ser(first.expression.expression, configAst) === 'Error',
-    'it throws an Error',
+    message.includes(TELEMETRY_HMAC_KEY_ENV),
+    `the evaluated message does not name the variable: ${JSON.stringify(message)}`,
   );
-  assert.ok(
-    first.getText(configAst).includes(TELEMETRY_HMAC_KEY_ENV),
-    'the error names the env var a reader has to set',
-  );
-  // ⚠️ THIS ASSERTION CHECKS FOR A `try` STATEMENT AND NOTHING ELSE. It used to be introduced as
-  // "nothing here may be caught and logged", which claimed far more than it checks: a
-  // `process.on('uncaughtException', …)` handler swallows the throw with no `try` anywhere in the
-  // file. What actually proves the build fails is the EXECUTED case above, which reads the child's
-  // exit status. This is the narrow, structural half.
+
+  // ⚠️ THIS ASSERTION CHECKS FOR A `try` STATEMENT AND NOTHING ELSE, and it is kept for exactly that
+  // much. An `uncaughtException` handler swallows the throw with no `try` anywhere in the file —
+  // which the three-statement contract above is what actually refuses. What proves the build fails
+  // is the EXECUTED case, which reads the child's exit status.
   let hasTry = false;
   const walk = (n: ts.Node): void => { if (ts.isTryStatement(n)) hasTry = true; ts.forEachChild(n, walk); };
   walk(configAst);
