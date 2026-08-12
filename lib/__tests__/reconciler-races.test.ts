@@ -20,7 +20,7 @@ import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { lstatSync } from 'node:fs';
 import { NextRequest } from 'next/server';
-import { installDbStub, type DbStub } from './telemetry-db-stub';
+import { installDbStub, decodeCall, UnsupportedStubTransportError, type DbStub } from './telemetry-db-stub';
 import { GET } from '../../app/api/admin/retrieval-telemetry-reconcile/route';
 import {
   reconcilerStateFor, isAllowedTransition, RETRIEVAL_PERSISTENCE_STATES, TERMINAL_PERSISTENCE_STATES,
@@ -202,7 +202,7 @@ const wire = (r: FakeRow) => ({
 function installFakeTable(
   db: DbStub,
   selected: FakeRow[],
-  race?: { beforeUpdate: number; becomes: FakeRow },
+  races: Array<{ beforeUpdate: number; becomes: FakeRow }> = [],
 ) {
   const live = new Map(selected.map((r) => [r.id, { ...r }]));
   const log: Array<{ params: unknown[]; landed: boolean; verdict: SqlVerdict }> = [];
@@ -210,7 +210,7 @@ function installFakeTable(
   db.on(INVOCATION_WRITE, []);
   db.on(FAILURE_PHASES, []);                       // no failure evidence in any case here
   db.on(TOUCHES_TELEMETRY_TABLE, (c) => {
-    if (race && log.length + 1 === race.beforeUpdate) live.set(race.becomes.id, { ...race.becomes });
+    for (const r of races) if (log.length + 1 === r.beforeUpdate) live.set(r.becomes.id, { ...r.becomes });
     const verdict = checkSql(c.query);
     const [runId, boundRevision, state] = c.params as [string, string, string];
     const row = live.get(runId);
@@ -309,7 +309,7 @@ test('55 runtime — THE STALE DECISION DOES NOT LAND: reread, reclassify, write
   const { log } = installFakeTable(
     db,
     [{ id: 'r1', role: 'primary', state: 'started', revision: 7 }],
-    { beforeUpdate: 1, becomes: { id: 'r1', role: 'primary', state: 'retrieval_complete', revision: 8 } },
+    [{ beforeUpdate: 1, becomes: { id: 'r1', role: 'primary', state: 'retrieval_complete', revision: 8 } }],
   );
   const body = await runPass(db, log, { writes: 2, rereads: 1 });
 
@@ -331,7 +331,7 @@ test('55 runtime — a TERMINAL row wins, and no second write is issued', async 
   const { log } = installFakeTable(
     db,
     [{ id: 'r1', role: 'primary', state: 'started', revision: 7 }],
-    { beforeUpdate: 1, becomes: { id: 'r1', role: 'primary', state: 'persisted_complete', revision: 8 } },
+    [{ beforeUpdate: 1, becomes: { id: 'r1', role: 'primary', state: 'persisted_complete', revision: 8 } }],
   );
   const body = await runPass(db, log, { writes: 1, rereads: 1 });
   assert.equal(log[0].landed, false);
@@ -381,6 +381,176 @@ test('55 runtime — a FORBIDDEN transition is refused, and nothing is written',
   } finally {
     mutable.started = started;
   }
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// THE ROUTE ARTIFACT — the pin that four passes of SQL recognition could not replace
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// ⚠️ SEVEN ATTACKS SURVIVED THE PREVIOUS VERSION OF THIS FILE, all eighteen cases green under every
+// one. An unguarded UPDATE posted as a neon BATCH, so the stub saw no statement at all. A second
+// UPDATE to `U&"opd_audit_retrieval_telemetr\0079"` — Postgres Unicode-identifier syntax for the
+// same table, invisible to a substring classifier. The revision re-read immediately before the
+// write and bound from there, leaving the pinned statement byte-identical and the compare-and-set
+// vacuous. A predicate weakened inside `RECONCILER_SELECT_SQL` rather than the update. A per-row
+// `catch` fabricating a `reconciled` verdict with nothing written. A 64-step blind revision walk on
+// a branch no case reached. And `authed()` short-circuited to `true`, which makes a route that
+// rewrites rows world-callable.
+//
+// Four passes tried to recognise every dangerous SQL form through an incomplete fake database, and
+// lost four times. The guard pin holds because it pins the WHOLE ARTIFACT; this does the same.
+//
+// ⚠️ WHAT THIS COSTS, SAID PLAINLY: any legitimate change to the reconciler route now requires
+// updating the baseline below, under explicit review. That is the point. The route is a concurrency
+// guard on a deploy path — a change-detector on it is a feature, and a reviewer being made to look
+// at a one-line diff to a compare-and-set is the whole benefit.
+//
+// ⚠️ AND WHAT IS OUTSIDE THE CONTRACT, as for the two cron files: mtime, uid, gid, ACLs and extended
+// attributes. Git preserves none of them, so a test asserting them would fail on a fresh clone.
+
+const ROUTE_FILE = 'app/api/admin/retrieval-telemetry-reconcile/route.ts';
+/** Recorded at `2eeeaac`, stored HERE rather than in the file being hashed, and never derived from
+ *  the current tree at run time — a hash computed from the thing it checks is a tautology. */
+const ROUTE_SHA256_AT_2EEEAAC = '6ecd5b38d276802632294a192b0acb618ee1b05d815fe747890a37a900d4fd56';
+const ROUTE_GIT_BLOB_AT_2EEEAAC = 'ffd77c61ef5489bfa622db07911890de55d304c4';
+
+test('the reconciler route is byte-for-byte the reviewed artifact', () => {
+  // Before a single byte is read: a symlink to identical content, or a second hard link, hashes the
+  // same and is not the same file; a mode change hashes the same and is not the same committed
+  // object. `lstat`, not `stat`, so the symlink is seen rather than followed.
+  const st = lstatSync(ROUTE_FILE);
+  assert.equal(st.isSymbolicLink(), false, `${ROUTE_FILE} is a symlink`);
+  assert.equal(st.isFile(), true, `${ROUTE_FILE} is not a regular file`);
+  assert.equal(st.nlink, 1, `${ROUTE_FILE} has ${st.nlink} hard links`);
+  assert.equal(st.mode & 0o7777, 0o644, `${ROUTE_FILE} is mode ${(st.mode & 0o7777).toString(8)}, not 644`);
+
+  const raw = readFileSync(ROUTE_FILE);
+  assert.equal(
+    createHash('sha256').update(raw).digest('hex'), ROUTE_SHA256_AT_2EEEAAC,
+    `${ROUTE_FILE} changed. If that was deliberate, update the baseline in this file and say why in `
+    + 'the build report; if it was not, this is the assertion that just caught it.',
+  );
+  // The same bytes under git's own object identity, computed here rather than by shelling out — so
+  // the recorded blob id and the recorded digest have to agree with each other and with the file.
+  const header = Buffer.from(`blob ${raw.length}\0`, 'utf8');
+  assert.equal(
+    createHash('sha1').update(Buffer.concat([header, raw])).digest('hex'), ROUTE_GIT_BLOB_AT_2EEEAAC,
+    `${ROUTE_FILE}'s git blob id does not match the recorded one`,
+  );
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// THE TRANSPORT — the stub must refuse what it cannot model
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+test('the stub fails CLOSED on every body it does not model', () => {
+  // A neon batch. This is what A9 rode in on: no `query`, so the old unchecked cast produced
+  // `undefined`, and every classifier tested the string "undefined" and matched nothing.
+  assert.throws(
+    () => decodeCall(JSON.stringify({ queries: [{ query: 'UPDATE opd_audit_retrieval_telemetry SET x = 1', params: [] }] })),
+    UnsupportedStubTransportError,
+  );
+  assert.throws(() => decodeCall('not json at all'), UnsupportedStubTransportError);
+  assert.throws(() => decodeCall(JSON.stringify(['an', 'array'])), UnsupportedStubTransportError);
+  assert.throws(() => decodeCall(JSON.stringify('a bare string')), UnsupportedStubTransportError);
+  assert.throws(() => decodeCall(JSON.stringify(42)), UnsupportedStubTransportError);
+  assert.throws(() => decodeCall(JSON.stringify({ query: 7, params: [] })), UnsupportedStubTransportError);
+  assert.throws(() => decodeCall(JSON.stringify({ query: 'SELECT 1', params: 'nope' })), UnsupportedStubTransportError);
+  assert.throws(() => decodeCall(JSON.stringify({ params: [] })), UnsupportedStubTransportError);
+  // …and the one shape it does model still decodes.
+  assert.deepEqual(decodeCall(JSON.stringify({ query: 'SELECT 1', params: ['a'] })), { query: 'SELECT 1', params: ['a'] });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// BEHAVIOUR — what the artifact pin cannot say, kept so a deliberate change fails LEGIBLY
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// A hash says the file has not changed. It says nothing about what the file DOES, and a future
+// change that updates the baseline would sail past it. These are the diagnostics.
+
+/** The stale-row selection, complete and hard-coded, as the update is. */
+const PINNED_STALE_SELECT = [
+  'SELECT retrieval_run_id, retrieval_role, persistence_state, row_revision',
+  'FROM opd_audit_retrieval_telemetry',
+  "WHERE persistence_state IN ('started', 'retrieval_complete')",
+  'AND started_at < $1',
+  'ORDER BY started_at',
+  'LIMIT $2',
+].join(' ');
+
+test('55 behaviour — the SELECT sent at run time is the complete pinned selection', () => {
+  const db = installDbStub();
+  const { log } = installFakeTable(db, [{ id: 'r1', role: 'primary', state: 'started', revision: 3 }]);
+  return runPass(db, log, { writes: 1, rereads: 0 }).then(() => {
+    // ⚠️ THE STATEMENT, NOT ONLY THE BOUND CUTOFF. `RECONCILER_SELECT_SQL.replace('AND started_at <
+    // $1', 'AND ($1 IS NOT NULL)')` leaves the constant byte-identical and the bound parameter
+    // unchanged — the grace is computed and passed, and simply no longer filters anything.
+    const [select] = db.matching(STALE_SELECT);
+    assert.equal(select.query.replace(/\s+/g, ' ').trim(), PINNED_STALE_SELECT);
+    assert.match(select.query, /AND started_at < \$1/);
+  });
+});
+
+test('55 behaviour — the first write binds the revision the SELECTION returned', async () => {
+  // ⚠️ NOT WHATEVER THE ROW SAYS NOW. Re-reading the revision immediately before the write and
+  // binding that leaves the pinned statement byte-identical and makes the compare-and-set vacuous:
+  // it would then always match. The row is moved to revision 8 before the write is evaluated, and
+  // the write must still bind 7 — the value the pass decided on.
+  const db = installDbStub();
+  const { log } = installFakeTable(
+    db,
+    [{ id: 'r1', role: 'primary', state: 'started', revision: 7 }],
+    [{ beforeUpdate: 1, becomes: { id: 'r1', role: 'primary', state: 'started', revision: 8 } }],
+  );
+  await runPass(db, log, { writes: 2, rereads: 1 });
+  assert.equal(log[0].params[1], '7', 'the first write bound a revision it re-read rather than the one it selected');
+  assert.equal(log[0].landed, false);
+});
+
+test('55 behaviour — a transport error on the write is a 500, never a fabricated verdict', async () => {
+  // ⚠️ A PER-ROW `catch` PUSHING `{ result: 'reconciled' }` RETURNS 200 AND `ok: true` WITH NOTHING
+  // WRITTEN. Every other case here asserts 200, so none of them could ever have seen it.
+  const db = installDbStub();
+  db.on(INVOCATION_WRITE, []);
+  db.on(FAILURE_PHASES, []);
+  db.on(TOUCHES_TELEMETRY_TABLE, new Error('connection reset'));
+  db.on(STALE_SELECT, [{
+    retrieval_run_id: 'r1', retrieval_role: 'primary', persistence_state: 'started', row_revision: 3,
+  }]);
+
+  const res = await GET(cronRequest());
+  assert.equal(res.status, 500, 'a failed write reported success');
+  const body = await res.json() as { ok: boolean; verdicts?: unknown[] };
+  assert.equal(body.ok, false);
+  assert.equal(body.verdicts, undefined, 'no verdict is invented for a row that was never written');
+});
+
+test('55 behaviour — a SECOND conflict on the reread path stops after two writes and one reread', async () => {
+  // The reread is allowed once. A blind revision walk — sixty-four attempts hunting for one that
+  // lands — reaches no branch any other case exercises, and the counts are what refuse it.
+  const db = installDbStub();
+  const { log } = installFakeTable(
+    db,
+    [{ id: 'r1', role: 'primary', state: 'started', revision: 7 }],
+    [
+      { beforeUpdate: 1, becomes: { id: 'r1', role: 'primary', state: 'retrieval_complete', revision: 8 } },
+      { beforeUpdate: 2, becomes: { id: 'r1', role: 'primary', state: 'retrieval_complete', revision: 9 } },
+    ],
+  );
+  const body = await runPass(db, log, { writes: 2, rereads: 1 });
+  assert.deepEqual(log.map((u) => u.landed), [false, false], 'neither write landed');
+  assert.deepEqual(body.verdicts, [{ runId: 'r1', result: 'won_by_a_later_write', from: 'retrieval_complete' }]);
+});
+
+test('55 behaviour — an unauthenticated request is 401 and touches the database not at all', async () => {
+  // ⚠️ `authed()` SHORT-CIRCUITED TO `true` PASSED EVERY CASE, because every case sent the cron
+  // header. This route rewrites rows; unauthenticated reachability is the whole exposure.
+  const db = installDbStub();
+  installFakeTable(db, [{ id: 'r1', role: 'primary', state: 'started', revision: 3 }]);
+  const res = await GET(new NextRequest('https://cdmss.invalid/api/admin/retrieval-telemetry-reconcile'));
+  assert.equal(res.status, 401);
+  assert.deepEqual(await res.json(), { error: 'unauthorized' });
+  assert.equal(db.calls.length, 0, 'an unauthenticated request reached the database');
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════

@@ -45,8 +45,29 @@ import { telemetryKeyMissingInProduction, TELEMETRY_HMAC_KEY_ENV } from '../tele
 
 const GUARD_FILE = 'lib/telemetry-key-guard.ts';
 const CONFIG_FILE = 'next.config.mjs';
-const guardSrc = readFileSync(GUARD_FILE, 'utf8');
-const nextConfigSrc = readFileSync(CONFIG_FILE, 'utf8');
+
+/**
+ * ⚠️ READ AND PARSED LAZILY, INSIDE THE CASES, NOT AT MODULE SCOPE. These reads used to happen while
+ * the module initialized, and `inlinedGuard()` was called there too — so a deleted, emptied or
+ * truncated `next.config.mjs` threw before `node --test` registered a single case. The suite still
+ * failed, loudly, but it reported `not ok 1 - lib/__tests__/telemetry-key-guard.test.ts` and nothing
+ * about a missing deploy precondition. A deleted guard is the most important thing this file can
+ * find; it should say so by name.
+ */
+let sourcesCache: { guardSrc: string; nextConfigSrc: string; configAst: ts.SourceFile; guardAst: ts.SourceFile } | null = null;
+function sources() {
+  if (!sourcesCache) {
+    const nextConfigSrc = readFileSync(CONFIG_FILE, 'utf8');
+    const guardSrc = readFileSync(GUARD_FILE, 'utf8');
+    sourcesCache = {
+      guardSrc,
+      nextConfigSrc,
+      configAst: parse(CONFIG_FILE, nextConfigSrc, ts.ScriptKind.JS),
+      guardAst: parse(GUARD_FILE, guardSrc, ts.ScriptKind.TS),
+    };
+  }
+  return sourcesCache;
+}
 
 // ── the five cases ──────────────────────────────────────────────────────────────────────────────
 //
@@ -234,6 +255,7 @@ function kindsIn(node: ts.Node): Set<ts.SyntaxKind> {
 }
 
 test('57 whole file — it parses, and holds EXACTLY three top-level statements in order', () => {
+  const { nextConfigSrc, configAst } = sources();
   assert.ok(nextConfigSrc.trim().length > 0, `${CONFIG_FILE} is empty`);
   assert.equal(parseDiagnosticCount(configAst), 0, `${CONFIG_FILE} does not parse cleanly`);
   assert.equal(configAst.statements.length, 3, 'a fourth top-level statement is where every kill lived');
@@ -246,6 +268,7 @@ test('57 whole file — it parses, and holds EXACTLY three top-level statements 
 });
 
 test('57 whole file — the declaration and the export are exactly what they must be', () => {
+  const { configAst } = sources();
   const decl = configAst.statements[1] as ts.VariableStatement;
   assert.ok((decl.declarationList.flags & ts.NodeFlags.Const) !== 0, 'nextConfig is const');
   assert.equal(decl.declarationList.declarations.length, 1, 'one declarator — a second is a free line of code');
@@ -267,6 +290,7 @@ test('57 whole file — the declaration and the export are exactly what they mus
 });
 
 test('57 whole file — nothing executable outside the guard', () => {
+  const { configAst } = sources();
   // The guard's own condition legitimately calls `String(...)` and `.trim()`. Everything else in the
   // file must be inert: no call, no `new`, no `await`, no comma expression, no assignment.
   const forbidden: Array<[string, ts.SyntaxKind]> = [
@@ -298,8 +322,6 @@ test('57 whole file — nothing executable outside the guard', () => {
 function parse(file: string, src: string, kind: ts.ScriptKind): ts.SourceFile {
   return ts.createSourceFile(file, src, ts.ScriptTarget.ES2022, /* setParentNodes */ true, kind);
 }
-const configAst = parse(CONFIG_FILE, nextConfigSrc, ts.ScriptKind.JS);
-const guardAst = parse(GUARD_FILE, guardSrc, ts.ScriptKind.TS);
 
 /**
  * A structural rendering of an expression. Two conditions render identically when they ARE the same
@@ -356,14 +378,14 @@ function containsToken(node: ts.Node, kind: ts.SyntaxKind): boolean {
 
 /** The top-level `if` in `next.config.mjs` — the guard itself, not a nested one. */
 function inlinedGuard(): ts.IfStatement {
-  const found = configAst.statements.find(ts.isIfStatement);
+  const found = sources().configAst.statements.find(ts.isIfStatement);
   assert.ok(found, `${CONFIG_FILE} still opens with a top-level \`if\` guard`);
   return found;
 }
 
 /** The typed twin: whatever `telemetryKeyMissingInProduction` returns. */
 function typedCondition(): ts.Expression {
-  const fn = guardAst.statements.find(
+  const fn = sources().guardAst.statements.find(
     (s): s is ts.FunctionDeclaration => ts.isFunctionDeclaration(s) && s.name?.text === 'telemetryKeyMissingInProduction',
   );
   assert.ok(fn, 'the typed twin is still exported under that name');
@@ -372,15 +394,17 @@ function typedCondition(): ts.Expression {
   return ret.expression;
 }
 
-const COPIES: ReadonlyArray<readonly [string, ts.Expression, ts.SourceFile]> = [
-  [CONFIG_FILE, inlinedGuard().expression, configAst],
-  [GUARD_FILE, typedCondition(), guardAst],
-];
+function copies(): ReadonlyArray<readonly [string, ts.Expression, ts.SourceFile]> {
+  return [
+    [CONFIG_FILE, inlinedGuard().expression, sources().configAst],
+    [GUARD_FILE, typedCondition(), sources().guardAst],
+  ];
+}
 
 // ── the oracle: each copy validated independently ───────────────────────────────────────────────
 
 test('57 pin — each copy is exactly D8\'s three clauses, and there is no fourth of any kind', () => {
-  for (const [where, cond, sf] of COPIES) {
+  for (const [where, cond, sf] of copies()) {
     const clauses = ampChain(cond);
     assert.equal(clauses.length, 3, `${where}: D8 specifies three \`&&\` clauses, found ${clauses.length}`);
     // A fourth clause joined by `||` does not change the `&&` count, so the `&&` count is not what
@@ -447,7 +471,7 @@ test('57 pin — each copy is exactly D8\'s three clauses, and there is no fourt
 });
 
 test('57 pin — next.config.mjs and telemetry-key-guard.ts express the SAME condition', () => {
-  const [[whereA, condA, sfA], [whereB, condB, sfB]] = COPIES;
+  const [[whereA, condA, sfA], [whereB, condB, sfB]] = copies();
   const a = ser(condA, sfA);
   const b = ser(condB, sfB);
 
@@ -493,7 +517,7 @@ test('57 pin — the guard THROWS one Error, and the message a reader sees names
     'the condition guards a THROW, not a warning — a production build must fail, not degrade',
   );
   const thrown = first.expression;
-  assert.ok(thrown && ts.isNewExpression(thrown) && ser(thrown.expression, configAst) === 'Error', 'it throws an Error');
+  assert.ok(thrown && ts.isNewExpression(thrown) && ser(thrown.expression, sources().configAst) === 'Error', 'it throws an Error');
   assert.equal(thrown.arguments?.length, 1, 'one argument: the message');
 
   const message = literalConcat(thrown.arguments![0]);
@@ -508,6 +532,6 @@ test('57 pin — the guard THROWS one Error, and the message a reader sees names
   // is the EXECUTED case, which reads the child's exit status.
   let hasTry = false;
   const walk = (n: ts.Node): void => { if (ts.isTryStatement(n)) hasTry = true; ts.forEachChild(n, walk); };
-  walk(configAst);
+  walk(sources().configAst);
   assert.equal(hasTry, false, `${CONFIG_FILE} has no try statement around its guard`);
 });

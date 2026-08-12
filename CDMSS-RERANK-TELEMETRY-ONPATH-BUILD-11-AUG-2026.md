@@ -1,15 +1,120 @@
 # CDMSS Rerank Telemetry — on-path build report
 
-**Five issues, in reverse order.** Part V is the second pin repair, 12 August 2026, on top of
-`180e88f`: two of Part IV's three pins were defeated by a checker, and this is what replaces them.
-Part IV is the first pin repair, on top of `e5dc756`. Part III is the steps 14 to 17 build, on top
-of `177adc9`. Part II is the correction issue committed in `177adc9`, which withdrew twelve claims
-from the first issue. Part I is in git history at `90d8db1` and is not rewritten there.
+**Six issues, in reverse order.** Part VI is the reconciler pin, 12 August 2026, on top of
+`2eeeaac`: it **rejects Part V's reconciler pin**, which seven attacks survived, and accepts Part V's
+guard and cron-hash pins unchanged. Part V is the second pin repair, on top of `180e88f`. Part IV is
+the first, on top of `e5dc756`. Part III is the steps 14 to 17 build, on top of `177adc9`. Part II is
+the correction issue committed in `177adc9`, which withdrew twelve claims from the first issue. Part
+I is in git history at `90d8db1` and is not rewritten there.
 
-Every edit any part makes to an earlier one, in full. Part V edits four sentences in Part IV: the
-flag count in its §1, the oracle's reach in its §2, and the two script citations in its §2 and §4.
-Part IV edited one sentence in Part III — the §3.2 citation of D11, from line 681 to 674. Part III
-edited one sentence in Part II's preamble. Nothing else in any earlier part is touched.
+Every edit any part makes to an earlier one, in full. Part VI edits two claims in Part V: its
+reconciler attack row, which reported ten of ten caught, and its `package.json` flag, which
+overstated the reach. Part V edited four sentences in Part IV: the flag count in its §1, the
+oracle's reach in its §2, and the two script citations in its §2 and §4. Part IV edited one sentence
+in Part III — the §3.2 citation of D11, from line 681 to 674. Part III edited one sentence in Part
+II's preamble. Nothing else in any earlier part is touched.
+
+---
+
+# PART VI — THE RECONCILER PIN (on top of `2eeeaac`)
+
+## 1. What this part did not do
+
+No production behaviour changed: the reconciler route, `next.config.mjs`, both cron test files,
+`package.json` and `vercel.json` are byte-identical to `2eeeaac`. None of tests 21, 22, 23, 24, 47,
+48 or 63 was written. Part V's guard and cron-hash pins are accepted and NOT redesigned; only its
+reconciler pin is replaced.
+
+## 2. Why the reconciler pin was rejected
+
+Seven mutations to `route.ts` alone left all eighteen of Part V's cases green. An unguarded UPDATE
+posted as a neon BATCH — `{queries: […]}` has no `query`, so the stub's unchecked cast produced
+`undefined` and every classifier tested the string `"undefined"`. A second UPDATE to
+`U&"opd_audit_retrieval_telemetr\0079"`, Postgres Unicode-identifier syntax for the same table,
+invisible to a substring classifier. The revision re-read immediately before the write and bound from
+there, leaving the pinned statement byte-identical and the compare-and-set vacuous. The cutoff
+predicate neutralised inside `RECONCILER_SELECT_SQL`, which no case pinned as a statement. A per-row
+`catch` fabricating a `reconciled` verdict, returning 200 and `ok: true` with nothing written. A
+64-step blind revision walk on a branch no case reached. And `authed()` short-circuited to `true`.
+
+Four passes tried to recognise every dangerous SQL form through an incomplete fake database, and lost four times. That approach is abandoned.
+
+## 3. What replaces it
+
+**The route artifact is pinned**, the way the guard pin holds: `lstat` first — regular file, not a
+symlink, `nlink === 1`, mode `0644` — then the raw bytes hashed against a SHA-256 recorded at
+`2eeeaac`, and hashed again under git's own blob identity, computed in the test rather than by
+shelling out, so digest, blob id and file must all agree. Both baselines live in
+`reconciler-races.test.ts`, outside the file hashed, neither derived from the tree at run time.
+
+**What that costs, plainly:** any legitimate change to the route now requires updating the baseline
+under explicit review. That is the point — making a reviewer look at a one-line diff to a
+compare-and-set on a deploy path is the benefit, not the price. mtime, uid, gid, ACLs and xattrs stay
+outside the contract, as for the cron files: git preserves none of them.
+
+**The stub fails closed.** `lib/__tests__/telemetry-db-stub.ts` cast its decoded body instead of
+validating it. It now accepts exactly one shape — a string `query`, an array `params` — and throws
+`UnsupportedStubTransportError` for everything else, batches included, appending nothing to `calls`.
+Batch support was NOT added: the frozen route issues one statement per call, and refusing what is not
+modelled is smaller and safer than modelling a transport nothing uses.
+
+**Five behavioural cases stay**, because a hash says the file has not changed and nothing about what
+it does, and a change that updates the baseline would sail past it. The first write binds the
+revision the SELECTION returned, not one re-read since; the stale SELECT sent at run time equals a
+complete hard-coded statement including `started_at < $1`; a transport error on a write is a 500 with
+`ok: false` and no invented verdict; a second conflict on the reread path stops after two writes and
+one reread; an unauthenticated request is 401 with zero database calls. The last two had no coverage
+at all before.
+
+**Part V's guard pin gains legibility only.** Its reads and `inlinedGuard()` moved out of module
+initialization into the cases, so a deleted, emptied or truncated config now fails inside named tests
+rather than before `node --test` registers any. Measured with the config deleted: 14 cases register
+and 9 fail, where 0 registered before. No assertion changed; all fourteen guard attacks still caught.
+
+## 4. Attacking the new pin
+
+Every mutation ran in a copy outside the repository, the worktree never modified, each copy deleted afterwards, no helper left in the tree. Recipe: `rsync` the tree excluding `node_modules`, `.git` and `.next`; symlink `node_modules`; apply the mutation with `perl -0pi -e`; run the targeted test file with the copy as `cwd`. Counting rule: one row per mutation, each run once; "caught" means the file reported a non-zero `# fail`.
+
+| class | attacks | caught | survived |
+|---|---:|---:|---:|
+| the seven that survived Part V's pin, re-run unchanged | 7 | 7 | 0 |
+| new forms: a comment-only route change; a whitespace-only route change; a second db client imported under another name; a write moved into a module the route imports; the route deleted; the route emptied; a module the route imports broken | 7 | 7 | 0 |
+| stub bodies, through the decoder directly: a batch, non-JSON, an array, a bare string, a number, `query` as a number, `params` as a string, `query` absent | 8 | 8 | 0 |
+| guard attacks from Part V, re-run after the legibility change | 14 | 14 | 0 |
+
+**No survivors, and two results worth stating rather than counting.** The neon-batch and
+deleted-route attacks are caught because the test file fails to LOAD: the route import throws before
+the artifact pin can report. A failure, and not a graceful one — the shape the guard file had before
+§3's legibility fix, **not fixed here** because fixing it means importing the route lazily in every
+case, a redesign of a pin that works. And five of the seven are caught independently by the
+behavioural cases — the revision re-read by 10 of them, the SELECT mutation, the fabricated verdict,
+the blind walk and the short-circuited `authed()` each by their own — so a change that legitimately
+updates the baseline still fails with a message saying what broke.
+
+## 5. The gate
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `npm test` | `# tests 3026 · # pass 3026 · # fail 0 · # skipped 0`, counting `node --test` cases. 3026 − 3019 = 7 added, all in `reconciler-races.test.ts` (25 from 18); `telemetry-key-guard.test.ts` is unchanged at 14 |
+| 2 | `npm run typecheck` | exit 0 |
+| 3a | `env -u CDMSS_TELEMETRY_HMAC_KEY VERCEL=1 VERCEL_ENV=production npm run build` | the expected production-precondition failure occurred: non-zero exit, output naming `CDMSS_TELEMETRY_HMAC_KEY`. Not a green build |
+| 3b | `VERCEL=1 VERCEL_ENV=production CDMSS_TELEMETRY_HMAC_KEY=… npm run build` | exit 0 |
+| 4 | `npm run architecture:check` | `all 8 rules + coverage green` |
+| 5, 6 | `npm run architecture:map && git diff --exit-code HEAD -- lib/architecture/map.generated.ts` | `wrote … (90300 bytes)`, then exit 0, nothing staged |
+| 7 | `npm run reasoning:registry && git diff --exit-code HEAD -- data/reasoning-registry/prompts.generated.json` | exit 0, nothing staged |
+| 8 | `npm run reasoning:governance` | `GREEN: 0 ungoverned model calls` |
+| 9 | `npm run changelog:coverage` | `GREEN: all 19 shipped engine versions documented (30 versioned entries)` |
+
+Both generated artifacts are byte-identical to `2eeeaac` by `git hash-object` against `git rev-parse 2eeeaac:<path>`, not merely unchanged against `HEAD`.
+
+## 6. Flagged, not decided
+
+**New.** The route artifact pin is a change-detector, so the first legitimate reconciler change will
+fail it. The baseline is a two-line edit in `reconciler-races.test.ts` and the failure message says so
+— but somebody should decide that policy is right rather than discover it mid-change.
+
+Unchanged, with V already: D9's contradiction about which states the reconciler alone may reach, and
+per-role settlement states when two roles on one handle disagree.
 
 ---
 
@@ -71,6 +176,7 @@ afterwards, no helper left in the tree. Recipe: `rsync` the tree excluding `node
 |---|---:|---:|---:|
 | guard: a prepended statement of every kind; discriminators on `argv[1]`, `NODE_TEST_CONTEXT`, `VERCEL_URL`, `.env.local`; an `uncaughtException` handler; a comma expression in the initializer; the statements reordered; the comment decoy; a guard firing unconditionally; the config emptied, corrupted, deleted | 14 | 14 | 0 |
 | reconciler: `OR TRUE`; both predicates parked in `--` comments; a weakening on the reread path only; a write inside a CTE; a lower-case `update`; the grace removed; a fifty-iteration spin loop; the refusal moved after the write; a change to what is bound rather than written | 10 | 10 | 0 |
+| ⚠️ **the row above is withdrawn as a claim about the PIN.** Those ten mutations were caught; nine further forms were not tried, and seven of them survive this pin. Part VI §2 lists them and replaces the pin | — | — | — |
 | hashes: `chmod 777`, a symlink, a second hard link, a deleted file | 4 | 4 | 0 |
 | boundary probes, chosen to find what the pins do NOT cover | 6 | 2 | 4 |
 
@@ -100,7 +206,7 @@ Both generated artifacts are byte-identical to `180e88f` by `git hash-object` ag
 
 ## 6. Flagged, not decided
 
-**New.** `npm run build` can be made to swallow the guard's failure without touching `next.config.mjs`. The suite would not notice; gate 3a would. A one-line pin on the build script would close it, and `package.json` is outside this pass's diff. Unchanged, with V already: D9's contradiction about which states the reconciler alone may reach, and per-role settlement states.
+**New.** `npm run build` can be made to swallow the guard's failure without touching `next.config.mjs`. The suite would not notice; gate 3a would. ⚠️ **Corrected in Part VI:** this defeats the local gate and CI and does NOT reach the Vercel deploy, because `vercel.json:5` sets `"buildCommand": "next build"` and Vercel runs that directly. Unchanged, with V already: D9's contradiction about which states the reconciler alone may reach, and per-role settlement states.
 
 ---
 

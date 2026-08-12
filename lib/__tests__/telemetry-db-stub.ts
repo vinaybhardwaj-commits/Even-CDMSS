@@ -101,8 +101,13 @@ export function installDbStub(): DbStub {
   };
 
   (globalThis as unknown as { fetch: unknown }).fetch = async (_url: string, init: { body: string }) => {
-    const body = JSON.parse(init.body) as { query: string; params: unknown[] };
-    const call: DbCall = { query: body.query, params: body.params };
+    // ⚠️ VALIDATED, NEVER CAST. This line used to be
+    // `JSON.parse(init.body) as { query: string; params: unknown[] }`, and that cast was a hole big
+    // enough to drive an unguarded UPDATE through: a neon BATCH posts `{queries: [...]}` with no
+    // `query` at all, so `call.query` was `undefined`, and every classifier downstream — every
+    // `RegExp.test(call.query)` in every test — silently coerced it to the string `"undefined"` and
+    // matched nothing. A statement nothing could see is a statement nothing could refuse.
+    const call = decodeCall(init.body);
     calls.push(call);
     // Last route wins, so a test can narrow a default without removing it.
     const route = [...routes].reverse().find((r) => r.match.test(call.query) && !(r.once && r.used));
@@ -117,6 +122,52 @@ export function installDbStub(): DbStub {
   };
   installed = stub;
   return stub;
+}
+
+/**
+ * Thrown when the transport is handed a body this stub does not model. FAIL CLOSED, deliberately:
+ * the alternative is a request that looks like it was observed and was not.
+ *
+ * ⚠️ NO BATCH SUPPORT, ON PURPOSE. The frozen reconciler route issues one statement per call, and
+ * modelling a transport nothing uses would be more code and a second thing to get wrong. A batch
+ * body is REFUSED here, loudly, rather than half-understood.
+ */
+export class UnsupportedStubTransportError extends Error {
+  constructor(message: string) { super(message); this.name = 'UnsupportedStubTransportError'; }
+}
+
+/**
+ * Decode one posted body into a `DbCall`, or refuse it.
+ *
+ * The accepted shape is the only one the driver sends for `sql(text, params)`: an object with a
+ * string `query` and an array `params`. Everything else — a batch, a non-object, a missing or
+ * non-string `query`, a non-array `params` — throws, and NOTHING is appended to `calls`.
+ */
+export function decodeCall(rawBody: string): DbCall {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawBody);
+  } catch {
+    throw new UnsupportedStubTransportError(`stub transport: body is not JSON: ${rawBody.slice(0, 120)}`);
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new UnsupportedStubTransportError(`stub transport: body is not an object (${typeof parsed})`);
+  }
+  const body = parsed as Record<string, unknown>;
+  if ('queries' in body) {
+    throw new UnsupportedStubTransportError(
+      'stub transport: a batch body ({queries: […]}) is not modelled. The route under test issues one '
+      + 'statement per call; a batch here means something is routing around that, and it is refused '
+      + 'rather than silently observed as a single undefined statement.',
+    );
+  }
+  if (typeof body.query !== 'string') {
+    throw new UnsupportedStubTransportError(`stub transport: 'query' is ${typeof body.query}, not a string`);
+  }
+  if (!Array.isArray(body.params)) {
+    throw new UnsupportedStubTransportError(`stub transport: 'params' is ${typeof body.params}, not an array`);
+  }
+  return { query: body.query, params: body.params };
 }
 
 /** A named error whose CLASS is what the failure store records. */
