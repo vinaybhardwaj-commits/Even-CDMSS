@@ -103,6 +103,73 @@ const QUERY_EMBEDDING = [0.1, -0.2, 0.3, -0.4, 0.5, -0.6, 0.7, -0.8];
 const OPTS_A = Object.freeze({ topK: 4, skipExpand: true, queryEmbedding: QUERY_EMBEDDING, useReranker: false });
 const OPTS_B = Object.freeze({ topK: 4, skipExpand: true, queryEmbedding: QUERY_EMBEDDING, useReranker: true });
 
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// CASE C — THE PRODUCTION SHAPE. Fixture, weights and expected orders.
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// ⚠️ WHY THIS CASE EXISTS (addendum v3 §1). Cases A and B prove invariance for ONE opts shape, and
+// production uses a different one. Four fields differ and two of them matter:
+//   · `useSourceWeights: true` is set by production and by NO test before this one. The block at
+//     `lib/retrieve.ts:604-627` ends in `hits.sort(...)`, so it was dead code under the whole suite —
+//     a capture-conditional edit inside it would change production ranking under instrumentation and
+//     still pass every assertion at `31424cb`.
+//   · `topK: 8` gives poolSize 24, not 12, so the batch arithmetic under test was not the shipped one.
+// Production also sets neither `skipExpand` nor `queryEmbedding`, so expansion and embedding run for
+// real here — both served by the same local server, through the same OpenAI client.
+
+const VEC_ROWS_C = Array.from({ length: 26 }, (_, i) => ({ id: 301 + i, rank: i + 1 }));
+const BM25_ROWS_C = [{ id: 301, rank: 1 }, { id: 303, rank: 2 }, { id: 305, rank: 3 }];
+
+/** The fused top-24 under poolSize 24, by the same RRF arithmetic as cases A and B, tie-free. */
+const FUSED_C = [
+  301, 303, 305, 302, 304, 306, 307, 308, 309, 310, 311, 312,
+  313, 314, 315, 316, 317, 318, 319, 320, 321, 322, 323, 324,
+];
+
+/**
+ * Three source profiles, cycled across the fused order, chosen so `computeSourceQualityWeight`
+ * returns three CLEARLY different weights — a fixture where every source weighs the same exercises
+ * the block and proves nothing about it.
+ *
+ *   bookTier × chunkTypeBonus × tokenLengthFactor   (`lib/source-quality.ts:109-115`)
+ *   MKSAP 19    · explanation · 500 tokens  =  1.00 × 1.05 × 1.00  =  1.0500
+ *   StatPearls  · narrative   · 500 tokens  =  0.90 × 1.00 × 1.00  =  0.9000
+ *   PubMed      · (null)      ·  30 tokens  =  0.80 × 0.95 × 0.70  =  0.5320
+ *
+ * `bookTier` matches against `${book} ${source}` lowercased, so the third profile's strings are
+ * chosen to hit NO tier and fall to the 0.80 unknown-book default. None is a lab source, so
+ * `clampSourceWeight` leaves all three untouched.
+ */
+const PROFILES_C = [
+  { book: 'MKSAP 19', source: 'mksap-19', chunk_type: 'explanation', token_count: 500, weight: 1.05 },
+  { book: 'StatPearls', source: 'statpearls', chunk_type: 'narrative', token_count: 500, weight: 0.9 },
+  { book: 'Journal of Minor Findings', source: 'pubmed', chunk_type: null, token_count: 30, weight: 0.532 },
+];
+const profileFor = (id: number) => PROFILES_C[FUSED_C.indexOf(id) % 3];
+
+const HYDRATED_C = VEC_ROWS_C.map(({ id }) => {
+  const p = profileFor(id) ?? PROFILES_C[0];
+  return {
+    id, source: p.source, book: p.book, chapter: `Chapter ${id}`, section: `Section ${id}`,
+    page_start: id, page_end: id + 1, item_number: `IT-${id}`, chunk_type: p.chunk_type,
+    text: `MRK${id} a clinical passage used only by case C, numbered ${id}.`,
+    token_count: p.token_count, similarity: 0.9 - id / 1000, source_quality_weight: 1.0,
+  };
+});
+
+/**
+ * Judge scores descending in FUSED order, so the judge alone would return the fused order and the
+ * SOURCE WEIGHTS are the only thing that can reorder. Distinct, so neither sort has a tie.
+ */
+const JUDGE_SCORES_C: Record<string, number> = Object.fromEntries(
+  FUSED_C.map((id, k) => [`MRK${id}`, Number((10 - k * 0.35).toFixed(4))]),
+);
+
+/** What the top 8 would be on `rerank_score` alone — i.e. if `useSourceWeights` were false. */
+const UNWEIGHTED_TOP_8_C = [301, 303, 305, 302, 304, 306, 307, 308];
+/** What it is once `rerank_score_weighted = rerank_score × weight` is sorted. Order AND membership differ. */
+const WEIGHTED_TOP_8_C = [301, 302, 303, 307, 304, 310, 308, 313];
+
 // ── The seven statements, and the fragments that route them ────────────────────────────────────
 // Verified pairwise non-overlapping under the opts above by `pairwise fragments` below, which is an
 // executed check rather than a claim.
@@ -136,7 +203,12 @@ const ready = (async () => {
   stub.on(S7_HYDRATE, HYDRATED);
   const retrieveMod = await import('../retrieve');
   const captureMod = await import('../retrieval-capture');
-  return { retrieve: retrieveMod.retrieve, createTelemetryCapture: captureMod.createTelemetryCapture };
+  const auditMod = await import('../opd-note-audit');
+  return {
+    retrieve: retrieveMod.retrieve,
+    createTelemetryCapture: captureMod.createTelemetryCapture,
+    opdRetrieveOpts: auditMod.opdRetrieveOpts,
+  };
 })();
 
 test.after(async () => { await judge?.close(); });
@@ -309,6 +381,154 @@ test('60 B — useReranker true: identical results, batch boundaries and prompts
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════
+// 60 — case C: THE PRODUCTION SHAPE. topK 8, reranker on, SOURCE WEIGHTS ON, expansion and
+// embedding unescaped. This is the case that closes the single-configuration limit in Part IX.
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+test('60 C — the production opts: identical results with source weighting, expansion and embedding all live', async () => {
+  const { retrieve, createTelemetryCapture, opdRetrieveOpts } = await ready;
+
+  // ⚠️ THE OPTS COME FROM THE CODE, NOT FROM A LITERAL. `opdRetrieveOpts` is what
+  // `defaultRetrieve` hands `retrieve()` at `lib/opd-note-audit.ts:647`, so calling it means this
+  // case tracks production if the function ever changes — and the deep-equal below makes that
+  // change LOUD rather than silent.
+  const OPTS_C = Object.freeze(opdRetrieveOpts(false, {}));
+  assert.deepStrictEqual(
+    { ...OPTS_C },
+    { topK: 8, useReranker: true, useSourceWeights: true, hybrid: true },
+    'opdRetrieveOpts(false, {}) is no longer the four-field production shape this case was built for',
+  );
+
+  // Case C's own rows. Registered once, before both runs, and last-route-wins means they take over
+  // from cases A and B — which have already run, because node:test runs a file's cases in order.
+  stub.on(S4_VECTOR, VEC_ROWS_C);
+  stub.on(S5A_BM25, BM25_ROWS_C);
+  stub.on(S7_HYDRATE, HYDRATED_C);
+  judge.setScores(JUDGE_SCORES_C);
+
+  const countBefore = new Map(RAN_ALWAYS.map((re) => [re, stub.matching(re).length]));
+  const judgeBefore = judge.requests.length;
+
+  const off = await retrieve(QUERY, OPTS_C);
+  const captureC = createTelemetryCapture('primary');
+  const on = await retrieve(QUERY, OPTS_C, captureC);
+
+  // ── The oracle, whole, on the production shape.
+  assert.deepStrictEqual(off, on);
+
+  // ── Non-vacuity 1: the exact ids in the exact order, on both sides.
+  assert.deepStrictEqual(off.hits.map((h) => h.id), WEIGHTED_TOP_8_C);
+  assert.deepStrictEqual(on.hits.map((h) => h.id), WEIGHTED_TOP_8_C);
+  assert.equal(off.hits.length, 8, 'trimmed to topK = 8');
+
+  // ── ⚠️ THE POINT OF THIS CASE: the source weights REORDERED the hits, and it is checked two ways.
+  // First against the hand-derived order the judge alone would have produced.
+  assert.notDeepStrictEqual(
+    off.hits.map((h) => h.id), UNWEIGHTED_TOP_8_C,
+    'source weighting changed nothing — the block ran and nothing checked it',
+  );
+  // Second, and non-circularly, from the RETURNED data alone: re-sorting the returned hits by their
+  // own raw `rerank_score` gives a different order than the order they came back in. That can only
+  // be true if something other than rerank_score decided the final order.
+  const byRawScore = off.hits.slice().sort((a, b) => (b.rerank_score ?? 0) - (a.rerank_score ?? 0));
+  assert.notDeepStrictEqual(
+    byRawScore.map((h) => h.id), off.hits.map((h) => h.id),
+    'the returned order IS the raw rerank_score order, so the weighting had no effect',
+  );
+  // And the weighted sort key really was written onto every hit.
+  for (const h of off.hits) {
+    const w = (h as unknown as Record<string, number>).source_quality_weight;
+    const weighted = (h as unknown as Record<string, number>).rerank_score_weighted;
+    assert.ok([1.05, 0.9, 0.532].includes(w), `unexpected weight ${w} on hit ${h.id}`);
+    assert.ok(Math.abs(weighted - (h.rerank_score ?? 0) * w) < 1e-12, 'rerank_score_weighted = score × weight');
+  }
+  // ⚠️ AND THE DEMOTION IS THE CLEANEST STATEMENT OF THE EFFECT. The fixture gives eight of the 24
+  // hydrated rows the 0.532 profile; 305 and 306 are inside the top 8 on raw judge score and are
+  // pushed OUT of it once weighted. So the block did not merely run — it changed who survives the
+  // trim, which is the ranking claim `useSourceWeights` makes.
+  const lowWeightIds = FUSED_C.filter((id) => profileFor(id)?.weight === 0.532);
+  assert.ok(lowWeightIds.length >= 8, 'the fixture really is mixed: low-weight rows exist in the pool');
+  assert.ok(UNWEIGHTED_TOP_8_C.some((id) => lowWeightIds.includes(id)), '…and some reach the unweighted top 8');
+  assert.equal(
+    off.hits.some((h) => lowWeightIds.includes(h.id)), false,
+    'every 0.532-weight row was demoted out of the final top 8 by the weighting',
+  );
+  // The surviving weights are the two high tiers, and nothing else.
+  assert.deepStrictEqual(
+    [...new Set(off.hits.map((h) => (h as unknown as Record<string, number>).source_quality_weight))].sort(),
+    [0.9, 1.05],
+  );
+
+  // ── Non-vacuity 2, by value: poolSize is min(30, topK × 3) = 24 with the reranker on.
+  assert.equal(off.meta?.pool_size, 24, 'pool_size is 24 at topK 8 — 12 would mean topK 4, 0 the early return');
+  assert.equal(off.meta?.reranked, true);
+  assert.equal(off.meta?.source_weighted, true, 'the weighting block is the one under test here');
+  assert.equal(off.meta?.fused, 8);
+
+  assert.equal(scorerContext(off), scorerContext(on));
+
+  // ── Non-vacuity 3: the same three statements, twice each, and none of the other four.
+  for (const re of RAN_ALWAYS) {
+    assert.equal(stub.matching(re).length - (countBefore.get(re) as number), 2, `expected 2 more calls matching ${re}`);
+  }
+  for (const [name, re] of NEVER_RUN) {
+    assert.equal(stub.matching(re).length, 0, `${name} must not run under the production opts either`);
+  }
+
+  // ── Non-vacuity 4: the capture is populated, at the production pool size.
+  assert.deepStrictEqual(captureC.fusedCandidateIds, FUSED_C);
+  assert.equal(captureC.fusedCandidateIds.length, 24);
+  assert.deepStrictEqual(captureC.hydratedCandidateIds, FUSED_C);
+  assert.deepStrictEqual(captureC.orderedFinalCandidateIds, WEIGHTED_TOP_8_C);
+  assert.equal(captureC.retrievalOutcome, 'success');
+
+  // ── Non-vacuity 6: the batch count follows the HYDRATED count, not topK. JUDGE_BATCH is 5 and is
+  // not exported (`lib/rerank.ts:58`).
+  const JUDGE_BATCH_LITERAL = 5;
+  const hydratedCount = captureC.hydratedCandidateIds.length;
+  assert.equal(hydratedCount, 24, 'observed hydrated candidate count');
+  assert.equal(captureC.expectedBatchCount, Math.ceil(hydratedCount / JUDGE_BATCH_LITERAL));
+  assert.equal(captureC.expectedBatchCount, 5, 'ceil(24 / 5)');
+  assert.equal(captureC.batches.length, 5);
+  const byIndex = captureC.batches.slice().sort((a, b) => a.index - b.index);
+  assert.deepStrictEqual(
+    byIndex.map((b) => ({ start: b.start, end: b.end })),
+    [{ start: 0, end: 5 }, { start: 5, end: 10 }, { start: 10, end: 15 }, { start: 15, end: 20 }, { start: 20, end: 24 }],
+  );
+
+  // ── ⚠️ THE TWO ESCAPES CASES A AND B TAKE ARE GONE, AND THAT IS ASSERTED, NOT ASSUMED.
+  const reqs = judge.requests.slice(judgeBefore);
+  const expansions = reqs.filter((r) => r.kind === 'expansion');
+  const embeddings = reqs.filter((r) => r.kind === 'embedding');
+  const judged = reqs.filter((r) => r.kind === 'judge');
+  assert.equal(expansions.length, 2, 'expandQuery ran once per side — no skipExpand');
+  assert.equal(embeddings.length, 2, 'embedQuery ran once per side — no queryEmbedding');
+  assert.equal(judged.length, 10, 'five judge batches per side');
+  // The expansion really reached the expansion prompt, and the embedding really saw the EXPANDED text.
+  assert.match(expansions[0].system, /medical query rewriter/);
+  assert.ok(off.expandedQuery.startsWith(QUERY), 'the expansion appended to the original question');
+  assert.ok(off.expandedQuery.length > QUERY.length, 'and it is not a no-op');
+  assert.equal(embeddings[0].input, off.expandedQuery, 'embedQuery was handed the EXPANDED query');
+  assert.equal(embeddings[0].input, embeddings[1].input, 'both sides embedded identical text');
+
+  // ⚠️ AND THE VECTOR ITSELF MUST MATCH, WHICH IS NOT IMPLIED BY THE ABOVE. FOUND BY ATTACK:
+  // making the embedding server return a different vector on its second call broke NOTHING, because
+  // the database stub routes on statement TEXT and ignores bound parameters — so both runs got the
+  // same rows from a different query vector and every other assertion still held. The vector reaches
+  // the database only as `$1`, so that is where it has to be compared.
+  const vecCalls = stub.matching(S4_VECTOR).slice(-2);
+  assert.equal(vecCalls.length, 2, 'both sides issued the vector leg');
+  assert.equal(
+    vecCalls[0].params[0], vecCalls[1].params[0],
+    'the two sides bound DIFFERENT query vectors to $1 — the embedding is not deterministic',
+  );
+  assert.ok(String(vecCalls[0].params[0]).startsWith('['), 'and it really is a vector literal');
+  // And the capture recorded the expansion, which is what `lib/expand.ts:36` writes.
+  assert.ok(captureC.expansion, 'capture.expansion was populated');
+  assert.equal(captureC.expansion?.status, 'expanded');
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
 // The pins that stop this file from going vacuous
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 
@@ -331,7 +551,9 @@ test('60 — THE CALL-FORM PIN: one side omits the capture argument, per case', 
   const CODE = SELF.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
   const count = (needle: string) => CODE.split(needle).length - 1;
 
-  for (const [opts, cap] of [['OPTS_A', 'captureA'], ['OPTS_B', 'captureB']] as const) {
+  // ⚠️ OPTS_C IS IN THIS LIST, AND THAT IS NOT OPTIONAL. Case C is the production shape; if the pin
+  // did not cover it, the one case that matters most would be the one case free to go vacuous.
+  for (const [opts, cap] of [['OPTS_A', 'captureA'], ['OPTS_B', 'captureB'], ['OPTS_C', 'captureC']] as const) {
     assert.equal(count(call(opts)), 1, `exactly one TWO-argument retrieve call for ${opts}`);
     assert.equal(count(call(opts, cap)), 1, `exactly one THREE-argument retrieve call for ${opts}`);
   }

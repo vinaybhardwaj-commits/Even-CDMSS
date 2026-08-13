@@ -1,6 +1,11 @@
 # CDMSS Rerank Telemetry — on-path build report
 
-**Nine issues, in reverse order.** Part IX is the addendum v2 pass, 13 August 2026, on top of
+**Ten issues, in reverse order.** Part X is the addendum v3 pass, 13 August 2026, on top of
+`31424cb`: it closes the safety claim on the **production** retrieval shape — `topK: 8`,
+`useSourceWeights: true`, expansion and embedding live — adds the canary-gate characterization test
+the decisions document requires, and reports step 21's eight overhead numbers. It **rejects nothing**
+from Part IX; it adds an erratum (§12a) recording that Part IX's claim was single-configuration.
+**No production file changed at all.** Part IX is the addendum v2 pass, 13 August 2026, on top of
 `10f4a65`: test 60 and test 1 — the two tests that prove the safety claim — plus a shared judge
 server and three corrections owed from pass 1. It **rejects nothing** from Part VIII; it corrects one
 false statement Part VIII repeated and two line citations Part VIII got wrong. **No production file
@@ -18,7 +23,9 @@ the first, on top of `e5dc756`. Part III is the steps 14 to 17 build, on top of 
 the correction issue committed in `177adc9`, which withdrew twelve claims from the first issue. Part
 I is in git history at `90d8db1` and is not rewritten there.
 
-Every edit any part makes to an earlier one, in full. Part IX edits two things in Part VIII: its §4
+Every edit any part makes to an earlier one, in full. Part X edits one thing in Part IX: it adds
+§12a, an erratum stating that Part IX's invariance claim covers one `opts` shape and not
+production's. It changes nothing in Parts I to VIII. Part IX edits two things in Part VIII: its §4
 claim that `lib/retrieval-telemetry-failure-store.ts:66` was true, which it was not, and its §6 line
 citation for the pinned arms. It changes nothing in Parts I to VII. Part VIII edits two things in this report: the
 §6 pointer at line 223, which named the wrong file for the route baseline, and report item 23, whose
@@ -31,6 +38,372 @@ overstated the reach. Part V edited four sentences in Part IV: the flag count in
 oracle's reach in its §2, and the two script citations in its §2 and §4. Part IV edited one sentence
 in Part III — the §3.2 citation of D11, from line 681 to 674. Part III edited one sentence in Part
 II's preamble. Nothing else in any earlier part is touched.
+
+---
+
+# PART X — THE PRODUCTION SHAPE, THE CANARY-GATE HAZARD, AND STEP 21 (on top of `31424cb`)
+
+**13 August 2026.** Governed by `CDMSS-RERANK-TELEMETRY-ADDENDUM-v3-13-AUG-2026.md`, added to the
+commit unedited.
+
+**No production file changed. None at all** — not one file outside `lib/__tests__/`, `scripts/`, the
+two documents and `.gitignore`. `lib/retrieve.ts`, `lib/rerank.ts`, `lib/expand.ts`,
+`lib/multi-query.ts`, `lib/opd-note-audit.ts` and every store are byte-identical to `31424cb`. No
+seam, export, parameter or hook was added to make a test or a measurement work. **Nothing was
+deployed, no migration was run, and no production database was touched.** The only socket any of
+this opened was to `127.0.0.1`.
+
+## 1. Commit and document hash
+
+| | |
+|---|---|
+| Parent | `31424cb45f0cf66606c6d1acf68c96ed121013b4` |
+| This commit | *on top of `31424cb`, not an amend and not a rebase — see `git log`* |
+| SHA-256, `CDMSS-RERANK-TELEMETRY-ADDENDUM-v3-13-AUG-2026.md` | `4139eef20b2f4c3fed946d19c52abd2b28cd010a4729bcb6897909d303380397` |
+
+## 2. The gate
+
+**Pre-gate, before anything was staged:** `git status --short lib/architecture/map.generated.ts` →
+**empty**.
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `npm test` | **GREEN — 3053 of 3053** (3050 at the parent: +1 case C, +2 canary-gate cases) |
+| 2 | `npm run typecheck` | clean |
+| 3 | `npm run build`, unkeyed production | **fails as required**, naming `CDMSS_TELEMETRY_HMAC_KEY` |
+| 3 | `npm run build`, keyed | **succeeds** |
+| 4 | `npm run architecture:check` | all 8 rules + coverage green |
+| 5 | `npm run architecture:map` | **byte-identical to the committed file** |
+| 6 | determinism | exit 0, nothing left staged |
+| 7 | `npm run reasoning:registry && git diff --exit-code …` | exit 0, unchanged |
+| 8 | `npm run reasoning:governance` | GREEN: 0 ungoverned model calls |
+| 9 | `npm run changelog:coverage` | GREEN: 19 engine versions documented |
+
+### The four additions
+
+**Wall clock.**
+
+```text
+lib/__tests__/retrieval-ranking-invariance.test.ts    0.58 s   (5 cases, was 0.24 s at 4)
+lib/__tests__/instrumentation-off.test.ts             0.24 s   (8 cases, unchanged)
+lib/__tests__/retrieval-telemetry-lifecycle.test.ts   0.17 s   (13 cases, was 11)
+scripts/telemetry-overhead-measure.mjs                2.50 s   STANDALONE — not run by `npm test`
+```
+
+The measurement script is **not** in the suite: it is a `scripts/*.mjs` and the test glob is
+`lib/**/__tests__/*.test.ts`. It is run by hand with `node --import tsx`. Its 2.5 s includes twelve
+spawned child processes for the cold `activeRun` samples. Nothing approached the judge's 90-second
+timeout, so no routing mistake is hiding as a slow green.
+
+**No socket to anything but `127.0.0.1`.** Measured, not argued: each file and the script were re-run
+under a `--require` preload that records the ACTUAL connected peer from each socket's own
+`remoteAddress:remotePort` on its `connect` event, plus every `dns.lookup`.
+
+```text
+retrieval-ranking-invariance     PEERS 127.0.0.1:54259   DNS 127.0.0.1    pass 5   fail 0
+instrumentation-off              PEERS 127.0.0.1:54265   DNS 127.0.0.1    pass 8   fail 0
+retrieval-telemetry-lifecycle    PEERS (none)            DNS (none)       pass 13  fail 0
+telemetry-overhead-measure.mjs   PEERS 127.0.0.1:54267   DNS 127.0.0.1
+```
+
+**`RERANK_BACKEND` and `OPENROUTER_API_KEY` before deletion.** Both **unset**, as were
+`OLLAMA_BASE_URL`, `LLM_PIPELINE`, `GCP_PROJECT`, `GCP_SA_KEY`, `GEMINI_ALL`, `GEMINI_UTILITY`,
+`GEMINI_VIA_OPENROUTER`, `EMBED_MODEL` and `TOP_K`. The helper deletes the first two regardless,
+because `cohereRelevanceScores` reads the key directly at `lib/rerank.ts:118` with no
+`miniPipeline()` gate and would post to `https://openrouter.ai/api/v1/rerank` for real.
+
+## 3. Item 0 — the erratum
+
+Added as **Part IX §12a**, quoted in full there. In summary: Part IX's invariance holds for
+`topK: 4`, `skipExpand: true`, `queryEmbedding` supplied, `useReranker` false and true; it does not
+cover `useSourceWeights` (which production sets and which ends in a sort), `topK: 8` (poolSize 24,
+not 12), or the expansion and embedding calls that production makes and cases A and B escape.
+Written as an erratum against addendum v2, which specified `topK: 4` for a clean batch count and
+thereby moved the test off the production path — not as a defect of the pass-2 build.
+
+## 4. Item 1 — the judge server serves embeddings
+
+**`EMBED_MODEL` and the dimension, read from the code.** `EMBED_MODEL` is `'nomic-embed-text'`
+(`lib/llm.ts:593`), and its column is the **768**-dimension nomic space. The 768 is stated by the
+code rather than by a schema constraint: `lib/jats-chunk.ts:9` calls it "the nomic-768 embedder",
+and `lib/llm.ts:604` with `lib/retrieve.ts:23` establish 1024 for the mxbai `embedding_v2` column by
+contrast. The table itself declares `VECTOR` with no explicit dimension — `migrations/0019_even_ground.sql:19`
+says so in as many words, calling the match to `mksap_chunks.embedding` inferred. Reported as read,
+including that the DDL does not pin it.
+
+**⚠️ A trap worth recording: the reply must be BASE64 float32, not a JSON array.** `embedQuery` calls
+`llm.embeddings.create({ model, input })` with no `encoding_format`, so
+`node_modules/openai/resources/embeddings.js:44-47` sends `encoding_format: 'base64'` and
+unconditionally decodes the reply through `Core.toFloat32Array` (`core.js:968-973`), which does
+`Buffer.from(str, 'base64')`. A plain array would have been decoded as if it were base64 and produced
+garbage. The helper encodes little-endian float32 and `toFloat32Array` hands back a plain `Array`, so
+`vectorLiteral`'s `.toFixed(7)` behaves exactly as it does in production.
+
+**The vector is deterministic per input string**, because case C runs twice and both runs must be
+byte-identical: an FNV-1a hash of the input seeds a plain LCG. No randomness anywhere.
+
+**How the expansion request was distinguished from the judge request.** By the **system prompt**, not
+by assuming every chat is a judge call. The expansion prompt opens `You are a medical query rewriter`
+(`lib/expand.ts`) and the judge's opens `You are a clinical relevance judge` (`lib/rerank.ts:365`).
+The model would also separate them — the harness sets `RERANK_JUDGE_MODEL='test-judge'` while expand
+uses the hardcoded `FAST_MODEL` — but that is a property of the harness, and the prompt is a property
+of the code, so the prompt is what the server keys on. Requests are recorded with a `kind` of
+`'judge' | 'expansion' | 'embedding'`, which is what case C's assertions count.
+
+## 5. Item 2 — case C, the production shape
+
+**The `opdRetrieveOpts` output, asserted not assumed.** The case calls the real function and pins its
+result:
+
+```text
+opdRetrieveOpts(false, {})  →  { topK: 8, useReranker: true, useSourceWeights: true, hybrid: true }
+```
+
+deep-equalled in the test, so a change to `lib/opd-note-audit.ts:638-642` fails this case loudly
+rather than letting it drift off production silently.
+
+**The sources and the weights the stub returned.** Three profiles cycled across the fused order,
+chosen so `computeSourceQualityWeight` (`lib/source-quality.ts:109-115`) returns three clearly
+different values — a fixture where every source weighs the same exercises the block and proves
+nothing:
+
+| book / source | chunk_type | token_count | bookTier × chunkTypeBonus × tokenLengthFactor | weight |
+|---|---|---|---|---|
+| `MKSAP 19` / `mksap-19` | explanation | 500 | 1.00 × 1.05 × 1.00 | **1.0500** |
+| `StatPearls` / `statpearls` | narrative | 500 | 0.90 × 1.00 × 1.00 | **0.9000** |
+| `Journal of Minor Findings` / `pubmed` | (null) | 30 | 0.80 × 0.95 × 0.70 | **0.5320** |
+
+The third pair is chosen to match no entry in `BOOK_TIERS` and fall to the 0.80 unknown-book default;
+none is a lab source, so `clampSourceWeight` leaves all three untouched.
+
+**The unweighted and weighted orders.**
+
+```text
+fused pool (24)      301 303 305 302 304 306 307 308 309 310 311 312 313 …
+unweighted top 8     301 303 305 302 304 306 307 308      ← rerank_score alone
+weighted   top 8     301 302 303 307 304 310 308 313      ← rerank_score × source weight
+```
+
+**Order and membership both change.** 305 and 306 carry the 0.532 profile, sit inside the unweighted
+top 8, and are demoted out of the final 8 entirely. The judge scores descend in fused order on
+purpose, so the weighting is the *only* thing that can reorder. The case asserts this three ways:
+against the hand-derived unweighted order; non-circularly, by re-sorting the RETURNED hits on their
+own raw `rerank_score` and finding a different order than they came back in; and by checking
+`rerank_score_weighted === rerank_score × source_quality_weight` on every hit.
+
+**The numbers.** `meta.pool_size` = **24** (asserted by value), hydrated candidates = **24**, batch
+count = **5** = `ceil(24 / 5)` with `JUDGE_BATCH` hardcoded as 5 and cited to `lib/rerank.ts:58`
+because it is not exported. Boundaries `[{0,5},{5,10},{10,15},{15,20},{20,24}]`, compared after
+sorting a copy by `index` because `capture.batches` is in completion order.
+
+**The two escapes are gone, and that is asserted.** Per side: 1 expansion request, 1 embedding
+request, 5 judge requests. The expansion request carries the rewriter system prompt; `expandedQuery`
+starts with the original question and is longer than it; `embedQuery` was handed the **expanded**
+text, identical on both sides; and `capture.expansion.status` is `'expanded'`.
+
+**The call-form pin now covers `OPTS_C`.** Without that, case C — the one case that matters most —
+would have been the one case free to go vacuous. Attack 1 below confirms it fires.
+
+## 6. The routing fragments, re-verified under the new opts
+
+The seven statements are unchanged by `useSourceWeights`, which touches no SQL. Re-run under case C's
+opts, where `skipExpand` and `queryEmbedding` are both absent: **S4 (vector), S5a (BM25 default) and
+S7 (hydrate) run; S1, S2, S3, S5b and S6 do not.** The pairwise non-overlap check is executed, not
+asserted from the table — the last case in the file walks every statement the runs actually issued
+and requires each to be matched by **exactly one** of the eight fragments, and separately that S6's
+fragment does not capture the vector statement. Green across all three cases.
+
+## 7. Item 3 — the canary-gate characterization test
+
+Two cases at the end of `lib/__tests__/retrieval-telemetry-lifecycle.test.ts`, driving a real
+two-role handle through declare → terminal write → settle against the stub.
+
+**What it records.** When `primary`'s terminal write is rejected (zero rows back from the
+compare-and-set, `lib/retrieval-telemetry-store.ts:328-334`) and `normative_channel`'s lands:
+
+```text
+primary            revision 0, audit_id NULL, state 'aborted'      ← not linked
+normative_channel  revision 1, audit_id set,  state 'persisted_complete'
+consequence        linked terminal runs = 1, and it is NOT primary
+```
+
+PRD line 280's Stage 0b gate asks for "exactly one linked terminal retrieval run with role
+`primary`". **On this path an audit that persisted correctly produces zero.** The mirror — primary
+lands, normative rejected — is also covered and is *correct* under D9 as amended; only one of the two
+trips the gate, and the asymmetry is asserted rather than left implied.
+
+**This is a characterization test. It pins current behaviour, not desired behaviour, and it fixes
+nothing.** Production behaviour is unchanged by this pass. **V holds the decision** whether to accept
+a hard gate failure on this path or authorise a behavioural correction. If a later pass corrects the
+behaviour these two cases *should* fail — that is what a characterization test is for, and the
+failure is the signal to go back and read the comment above them.
+
+## 8. Item 4 — step 21, the five numbers and the three extras
+
+**⚠️ EVERY NUMBER BELOW IS SYNTHETIC AND EVERY NUMBER IS A FLOOR.** The database is
+`telemetry-db-stub.ts`, answering over a replaced `globalThis.fetch` with no network, no planner, no
+lock and no disk; the provider is the loopback judge server. What is measured is the **cost of the
+code path** — argument marshalling, canonicalisation, the SQL string build, the driver's encode and
+decode — not the cost of the statement in Neon. A production figure is this plus a round trip plus
+whatever the database is doing at the time. **Nothing here predicts production and no thresholds are
+proposed:** D18 leaves those to V, who judges start-write latency against the throttling behaviour it
+could perturb rather than against a generic budget.
+
+**Sample sizes, and why.** `N=300` for the cheap in-process paths (1, 2, 6, 7-warm): they settle
+within a few hundred iterations and their spread is dominated by GC and JIT, so 300 gives a stable
+median while still showing the tail those two produce. `N=40` for the retrieval paths (4, 5): each
+does one expansion, one embedding and five judge round trips over loopback at roughly 10–20 ms.
+`N=12` for cold `activeRun`: cold can be observed only **once per process** — `ensured` is module
+state at `lib/backfill-runs.ts:39` — so each sample is a fresh child process, which is also the
+faithful model of a cold serverless invocation; 12 is where the median stopped moving. Number 3 is a
+size, not a timing, so it is reported as one value rather than dressed up as three.
+
+### The five (PRD §6.5, D18)
+
+| # | D18's name | min | median | max | n |
+|---|---|---|---|---|---|
+| 1 | **Start-write latency**, batch of 50 notes | 0.1218 ms | **0.1415 ms** | 6.1732 ms | 300 |
+| 1 | …per note (derived: batch ÷ 50, one statement) | 0.0024 ms | **0.0028 ms** | 0.1235 ms | 300 |
+| 2 | **Terminal-write latency**, `primary` | 0.0450 ms | **0.0480 ms** | 0.9343 ms | 300 |
+| 2 | **Terminal-write latency**, `normative_channel` | 0.0444 ms | **0.0450 ms** | 0.6345 ms | 300 |
+| 3 | **Manifest size**, `primary` | — | **5 518 bytes** | — | 1 |
+| 3 | **Manifest size**, `normative_channel` | — | **5 463 bytes** | — | 1 |
+| 4 | **Retrieval wall time**, instrumentation OFF | 1.3379 ms | **1.6278 ms** | 2.2897 ms | 40 |
+| 4 | **Retrieval wall time**, instrumentation ON | 1.3593 ms | **1.6423 ms** | 2.3768 ms | 40 |
+| 4 | **ON − OFF, paired by iteration** | −0.5563 ms | **−0.0185 ms** | +1.0389 ms | 40 |
+| 5 | **Audit completion rate**, OFF | — | **100 %** | — | 40 |
+| 5 | **Audit completion rate**, ON | — | **100 %** | — | 40 |
+
+Number 1 is reported both ways because the worker declares one `primary` run per note in a **single**
+statement for the whole day's batch: the batch figure is what a request waits on, the per-note figure
+is what scales. Number 3 is the bytes actually bound to the jsonb column — `canonicalJson(manifest)`
+at `lib/retrieval-telemetry-store.ts:318`, not `JSON.stringify` of the payload — over a real case C
+capture with 24 hydrated candidates and 5 batches.
+
+**⚠️ Number 4's first version was wrong and is recorded as such.** Timing all the OFF samples and then
+all the ON samples reported instrumentation as *faster* than no instrumentation: the OFF arm paid the
+JIT warm-up for both. The arms are now warmed up, alternated within one loop, and differenced
+**pairwise by iteration**. The honest reading of the corrected figure is that **the instrumentation
+overhead on this path is below the measurement noise of this harness** — the median difference is
+−0.019 ms against a per-iteration spread of roughly ±1 ms. It is not evidence that the overhead is
+zero; it is evidence that this harness cannot resolve it.
+
+**Number 5's limit, stated.** Against a stub that never fails, both arms complete every time. This
+number can only ever falsify the claim, never confirm it: below 100 % would mean instrumentation
+broke a retrieval outright, and 100 % on both arms says nothing about production failure modes the
+stub cannot produce.
+
+### The three extras (separate, not part of the five)
+
+| # | What | min | median | max | n |
+|---|---|---|---|---|---|
+| 6 | Settlement write latency, `primary` | 0.0101 ms | **0.0105 ms** | 0.4013 ms | 300 |
+| 6 | Settlement write latency, `normative_channel` | 0.0102 ms | **0.0109 ms** | 0.3459 ms | 300 |
+| 7 | `activeRun('opd')` **COLD**, fresh process, 4 statements | 0.6663 ms | **0.7075 ms** | 1.0302 ms | 12 |
+| 7 | `activeRun('opd')` **WARM**, same process, 1 statement | 0.0045 ms | **0.0053 ms** | 0.1226 ms | 300 |
+| 8 | Added writes per audited note | — | **5 statements** | — | 1 |
+
+Number 7 follows kickoff line 102's method exactly: `activeRun` is not one round trip — it awaits
+`ensureRunsTable()`, which on a cold invocation issues a `CREATE TABLE` and two `CREATE INDEX` before
+the `SELECT`, and one statement on every later call. Both were measured, and the child-process count
+of 4 statements cold was read back from the stub rather than assumed.
+
+Number 8, counted from the stub rather than reasoned about — one instrumented note, start to settled:
+
+```text
+INSERT INTO opd_audit_retrieval_telemetry                          (declaration)
+UPDATE opd_retrieval_invocations SET declared_retrievals = …       (counter)
+UPDATE opd_audit_retrieval_telemetry                               (terminal write)
+SELECT persistence_state, row_revision, audit_id                   (settlement read)
+UPDATE opd_audit_retrieval_telemetry                               (settlement write)
+```
+
+The three retrieval SELECTs are excluded: they are not added by telemetry. `activeRun` is not in this
+count because it is per retrieval, not per note, and is reported separately as number 7.
+
+**The output is NOT committed.** Part X carries the numbers; the script is committed and re-runnable,
+and it is in the file contract as `scripts/telemetry-overhead-measure.mjs`.
+
+**Run-to-run spread**, from the mandated second run: medians moved 0.1415→0.1369 ms (number 1),
+0.0480→0.0461 ms (number 2 primary), 1.6278→1.5467 ms (number 4 OFF), 0.7075→0.6850 ms (number 7
+cold). Manifest sizes and statement counts were identical. So between-run drift on the medians is a
+few percent and smaller than the within-run min-to-max spread in every case — which is the point of
+reporting distributions rather than means.
+
+## 9. Every attack, including the ones that broke nothing
+
+| # | Attack | Expected | Observed |
+|---|---|---|---|
+| 1 | give case C's off side a capture | the extended pin fails | **fires, and only it.** Cases A, B and C all still pass — the same result as pass 2, now confirmed for `OPTS_C` |
+| 2 | flatten every source weight to one value | the reorder assertion fails | **fails** |
+| 3 | embedding server returns a different vector on the second call | case C fails | **DID NOT FAIL on the first attempt** — a real gap. See below |
+| 3b | …re-run against the strengthened case | case C fails | **fails**, on the `$1` vector-literal comparison |
+| 4 | route the expansion to the judge responder | report what happens | **case C fails** at `expandQuery ran once per side: 0 !== 2`. What happens: the expansion is answered with the judge's scoring JSON (`{}`, since no passages are present), so `expandedQuery` becomes the question plus `"{}"` — retrieval still "succeeds" with a garbage expansion, and only the request-kind count catches it |
+| 5 | set `topK` to 4 in case C | `meta.pool_size` fails at 24 | **fails** — but on the `opdRetrieveOpts` deep-equal guard, which sits earlier |
+| 5b | `topK` 4 applied after that guard | as above | **fails**, on the exact-ids assertion, which sits earlier still. Measured directly instead: `pool_size` is **24** at topK 8 and **12** at topK 4, so the assertion does discriminate |
+| 6 | run case C twice in one body | both runs agree | **agreed** — `301, 302, 303, 307, 304, 310, 308, 313` twice. No determinism defect |
+| 7 | make the primary write succeed | the characterization test fails | **both cases fail** — they pin the hazard, not the healthy path |
+| 8 | run the measurement twice | report the between-run spread | **done**, §8 above |
+
+**⚠️ Attack 3 found a real gap and is the reason case C is stronger than it was.** Returning a
+different embedding vector on the second call broke *nothing*: the database stub routes on statement
+**text** and ignores bound parameters, so both runs got identical rows from different query vectors
+and every other assertion still held. The embedding reaches the database only as `$1`, so that is
+where it now has to be compared — case C asserts both sides bound the same vector literal. Without
+it, a non-deterministic embedding was invisible to this harness.
+
+Attacks 5 and 5b are the same pattern pass 2 hit with attack 1: an assertion earlier in the case
+fires first, so the *specific* assertion named by the addendum is not the one that fails. Rather than
+neutralise the earlier assertions — which produced a syntax mess in pass 2 — the discriminating power
+of `meta.pool_size` was measured directly and is reported above.
+
+Attacks 6 and 8 were run as throwaway probes, not added to the test file: extra `retrieve` calls in
+the file would themselves trip the call-form pin.
+
+## 10. The two findings, flagged and not acted on
+
+Both come from addendum v3 §9, both concern the defect this workstream exists to make visible, and
+**neither is fixed here.**
+
+**10a. `intended_model` does not name the intended judge.**
+
+```text
+lib/rerank.ts:511   intendedProvider: 'vertex', intendedModel: JUDGE_MODEL,
+lib/rerank.ts:57    const JUDGE_MODEL = process.env.RERANK_JUDGE_MODEL || 'llama3.1:8b';
+lib/rerank.ts:459   { gemini: geminiUtilityModel(), promptRef: 'rerank/JUDGE_SYSTEM' }
+lib/llm.ts:78       GEMINI_FLASH_MODEL default 'gemini-2.5-flash'
+```
+
+On a normal successful Vertex batch the row records `intended_model = 'llama3.1:8b'` and
+`served_model = 'gemini-2.5-flash'`. Detection of the substitution is unaffected, because that runs
+off `served_route_class`. But **C0 query 4 is "actual provider and model", and any query comparing
+intended to served on this path reads as a permanent mismatch.** That is a defect in the telemetry
+and it should be settled before C0 rather than discovered inside it.
+
+**10b. The unseeded property is not captured anywhere.** The finding that started this workstream
+names an **unseeded** `gemini-2.5-flash` judge. `capture.retrievalConfig` at `lib/retrieve.ts:426-435`
+records eleven fields and neither a seed nor a temperature. The judge's `temperature: 0.0` at
+`lib/rerank.ts:456` lives in the source, not in the manifest. **Nothing in a persisted row would show
+a seeding or temperature change if one were ever made.**
+
+## 11. Flagged, not decided; and defects found and left alone
+
+1. **The canary-gate hazard (§7) is V's to rule on.** Accept a hard gate failure on that path, or
+   authorise a behavioural correction. The build did neither.
+2. **Findings 10a and 10b**, above, flagged and untouched.
+3. **The stub cannot see bound parameters** (attack 3). Case C now compares `$1` explicitly, but the
+   general limitation stands for every other statement: routing is by statement text, so any defect
+   that changes only a bound value is invisible unless a test reads the parameter itself. Worth
+   knowing before the remaining 38 tests are written.
+4. **Number 4's overhead is below this harness's resolution** (§8). Reported as such rather than as
+   "no overhead". A harness that can resolve it would need a real database and is out of scope here.
+5. **The RRF tie hazard** carried from Part IX §13 still applies to case C's fixture, which is
+   tie-free by construction and was verified as such.
+6. Carried forward, untouched and still owed: step 19's query texts, the remaining 38 tests, per-role
+   manifest defects, the `retrieval_terminal_rejected` phase, and the discriminated union. **None was
+   started**, per addendum v3 §2.
+7. Nothing was found unsettled between addendum v3 and the earlier documents, and **no test or
+   measurement required a production change** — the one thing §15 says this pass must not do.
 
 ---
 
@@ -328,6 +701,34 @@ and report item 11's `MatchInput` seam (§9, case 7).
 ## 12. Determinism
 
 Both runs agreed on both cases — see attack 8. **No determinism defect was found.**
+
+## 12a. ERRATUM, added 13 August 2026 by the pass-3 build: this part proves a SINGLE-CONFIGURATION claim
+
+**This is an erratum against addendum v2, not a defect of the pass-2 build**, which built exactly
+what it was told to build. v2 specified `topK: 4` to get a clean three-batch count, and that
+optimisation moved the test off the production path. Part IX above reads as a general safety claim.
+It is not one. Stated exactly:
+
+> The ranking invariance proved in `31424cb` holds for `topK: 4`, `skipExpand: true`,
+> `queryEmbedding` supplied, and `useReranker` both false and true.
+>
+> **It does not cover `useSourceWeights`**, which production sets and which contains a `hits.sort(...)`
+> at `lib/retrieve.ts:604-627`. Under the whole suite at `31424cb` that block was dead code, so a
+> capture-conditional edit inside it would have changed production ranking under instrumentation and
+> passed every assertion in Part IX.
+>
+> **It does not cover `topK: 8`**, which production uses and which gives `poolSize` 24, not 12 — so
+> the batch arithmetic under test was not the batch arithmetic that ships.
+>
+> **It does not cover the expansion or embedding calls.** Production sets neither `skipExpand` nor
+> `queryEmbedding`, so it runs `expandQuery` and `embedQuery` for real; cases A and B escape both.
+
+Production's shape is `opdRetrieveOpts(false, {})` → `{ topK: 8, useReranker: true,
+useSourceWeights: true, hybrid: true }` (`lib/opd-note-audit.ts:638-642`), reached through
+`defaultRetrieve` at `:647`.
+
+**Closed by pass 3**, whose case C runs at that exact shape with expansion and embedding live. See
+Part X.
 
 ## 13. Flagged, not decided; and defects found and left alone
 

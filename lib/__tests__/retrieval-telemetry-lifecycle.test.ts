@@ -279,3 +279,130 @@ test('53 — the callback carries the audit id, and its failure never changes th
   assert.equal(/retrieval-telemetry|retrieval-settlement|LifecycleHandle/.test(store), false,
     'a clinical write acquires no telemetry import');
 });
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// THE CANARY-GATE HAZARD — A CHARACTERIZATION TEST, NOT A FIX
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// ⚠️ READ THIS BEFORE CHANGING EITHER CASE BELOW. These two cases pin CURRENT BEHAVIOUR, not
+// desired behaviour. They exist because `CDMSS-RERANK-TELEMETRY-DECISIONS-13-AUG-2026.md` section 3,
+// hazard 1 identifies a real hole and says a test must cover it before the canary:
+//
+//   · a two-role handle is built at `lib/opd-note-audit.ts:1528-1533` — `primary` plus
+//     `normative_channel` — and the two roles' terminal writes are independent;
+//   · if `primary`'s terminal write is REJECTED (revision mismatch, or the row moved off `started`)
+//     while `normative_channel`'s lands, primary stays at revision 0 and is NEVER LINKED to the
+//     audit, because `stateForUnwrittenRun` refuses to apply an outcome a revision-0 row cannot
+//     carry, and normative_channel IS linked;
+//   · PRD line 280 makes that a Stage 0b canary gate: "Exactly one linked terminal retrieval run
+//     with role `primary`. Exactly one with role `normative_channel` when that channel was
+//     declared."
+//
+// So an audit that PERSISTED CORRECTLY ends the run with zero linked `primary` runs and one linked
+// `normative_channel` run, and fails the gate. The audit is fine. The telemetry is fine, in the
+// sense that every row states the truth about itself. The GATE is what cannot express it.
+//
+// ⚠️ V HOLDS THIS DECISION. Whether to accept a hard gate failure on this path, or to authorise a
+// behavioural correction, is not the build's call, and nothing here changes production behaviour.
+// If a later pass corrects the behaviour, these cases SHOULD fail — that is what a characterization
+// test is for, and the failure is the signal to come back and read this comment.
+
+const SELECT_ROW_C = /SELECT persistence_state, row_revision, audit_id/;
+// ⚠️ THE SETTLEMENT UPDATE SPECIFICALLY. A regex anchored on `UPDATE … SET persistence_state`
+// alone also matches the TERMINAL write, whose $3 is `retrieval_outcome` and not a state — which is
+// how the first version of this case read 'success' where it expected a persistence state. The
+// settlement statement is the one that binds `audit_id = $4` (`lib/retrieval-telemetry-store.ts:464-469`).
+const UPDATE_ROW_C = UPDATE_SETTLE;
+const SELECT_PHASES_C = /SELECT failed_phase/;
+const AUDIT_ID = '11111111-1111-1111-1111-111111111111';
+
+/**
+ * Drive one audit's two roles all the way through: declare both, let one terminal write land and
+ * the other be rejected, then settle. Returns what each role's settlement UPDATE actually bound.
+ */
+async function runTwoRoleAudit(rejected: 'primary' | 'normative_channel') {
+  const db = installDbStub();
+  db.on(INSERT_RUNS, [{ retrieval_run_id: 'r-prim' }, { retrieval_run_id: 'r-norm' }]);
+  // ⚠️ THE REJECTION IS MODELLED AS THE CODE MODELS IT: zero rows back from the compare-and-set.
+  // `writeRetrievalTerminal` returns the handle UNCHANGED on that path (`lib/retrieval-telemetry-store.ts:328-334`),
+  // so the role stays at expectedRevision 0.
+  db.on(UPDATE_TERMINAL, (c) => (String(c.params[0]).includes(rejected === 'primary' ? 'prim' : 'norm')
+    ? []
+    : [{ row_revision: 1 }]));
+
+  let handle: LifecycleHandle = await declareRetrievals(ctx, [
+    { role: 'primary', runId: 'r-prim', uid: 'u', engineVersion: 'e' },
+    { role: 'normative_channel', runId: 'r-norm', uid: 'u', engineVersion: 'e' },
+  ], 'will_persist');
+
+  for (const role of ['primary', 'normative_channel'] as const) {
+    handle = await writeRetrievalTerminal(handle, role, {
+      payload: payloadFor(role), operational: operational(role), traceId: null, completedAt: AT,
+    });
+  }
+
+  // Settlement reads each row's real state. The landed role is at `retrieval_complete` revision 1;
+  // the rejected one is still `started` at revision 0, with no failure evidence — nothing was ever
+  // heard from its write, because the rejected branch records none (decisions §8).
+  db.on(SELECT_ROW_C, (c) => (String(c.params[0]).includes(rejected === 'primary' ? 'prim' : 'norm')
+    ? [{ persistence_state: 'started', row_revision: 0, audit_id: null }]
+    : [{ persistence_state: 'retrieval_complete', row_revision: 1, audit_id: null }]));
+  db.on(UPDATE_ROW_C, (c) => [{ row_revision: (c.params[1] as number) + 1 }]);
+  db.on(SELECT_PHASES_C, []);
+
+  const { settleRetrievalTelemetry } = await import('../retrieval-settlement');
+  const results = await settleRetrievalTelemetry(handle, {
+    outcome: 'persisted_clean', auditId: AUDIT_ID, settledAt: AT,
+  });
+
+  // Each settlement UPDATE binds ($1 runId, $2 expectedRevision, $3 state, $4 auditId).
+  const bound = db.matching(UPDATE_ROW_C).map((c) => ({
+    runId: String(c.params[0]), state: c.params[2], auditId: c.params[3],
+  }));
+  return { results, bound, db };
+}
+
+test('CANARY-GATE HAZARD — primary rejected, normative lands: the audit persisted and the Stage 0b primary-link gate fails', async () => {
+  const { results, bound } = await runTwoRoleAudit('primary');
+
+  // Both roles settle without throwing — constraint 1 holds, the audit is never failed for this.
+  assert.equal(results.length, 2);
+  for (const r of results) assert.equal(r.status, 'settled');
+
+  const prim = bound.find((b) => b.runId === 'r-prim');
+  const norm = bound.find((b) => b.runId === 'r-norm');
+  assert.ok(prim && norm, 'both roles were settled');
+
+  // ⚠️ THE HAZARD, STATED AS THE ROWS STATE IT.
+  assert.equal(prim.auditId, null, 'primary is NOT linked: it never wrote a terminal manifest');
+  assert.notEqual(prim.state, 'persisted_complete', 'and it does not carry the owner\'s outcome');
+  assert.equal(prim.state, 'aborted', 'no failure evidence exists, so reconcilerStateFor says aborted');
+  assert.equal(norm.auditId, AUDIT_ID, 'normative_channel IS linked to the audit that really persisted');
+  assert.equal(norm.state, 'persisted_complete');
+
+  // ⚠️ AND THE CONSEQUENCE, ASSERTED DIRECTLY. PRD line 280's gate counts LINKED terminal runs per
+  // role. On this path that count is 0 for primary and 1 for normative_channel — on an audit that
+  // persisted correctly. This is the assertion V is being asked to rule on.
+  const linkedByRole = bound.filter((b) => b.auditId === AUDIT_ID).map((b) => b.runId);
+  assert.deepEqual(linkedByRole, ['r-norm'], 'exactly the wrong one is linked');
+  assert.equal(linkedByRole.length, 1, 'one linked run, and it is not primary — the gate expects primary');
+});
+
+test('CANARY-GATE HAZARD — the mirror: primary lands, normative rejected', async () => {
+  const { results, bound } = await runTwoRoleAudit('normative_channel');
+
+  assert.equal(results.length, 2);
+  for (const r of results) assert.equal(r.status, 'settled');
+
+  const prim = bound.find((b) => b.runId === 'r-prim');
+  const norm = bound.find((b) => b.runId === 'r-norm');
+  assert.ok(prim && norm);
+
+  // The mirror is CORRECT under D9 as amended: each row states the truth about its own manifest,
+  // and the gate's primary clause is satisfied. Recorded so the asymmetry between the two cases is
+  // explicit — only one of them trips the gate, and it is not this one.
+  assert.equal(prim.auditId, AUDIT_ID, 'primary is linked');
+  assert.equal(prim.state, 'persisted_complete');
+  assert.equal(norm.auditId, null, 'normative_channel is not linked, and says so');
+  assert.equal(norm.state, 'aborted');
+});
