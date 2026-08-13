@@ -31,6 +31,16 @@ const ROUTE_DIR = 'app/api/admin/retrieval-telemetry-reconcile/';
  * Recorded at `2eeeaac` and unchanged at `ee92c26`. Stored HERE, in the file doing the hashing and
  * not in the file being hashed, and never derived from the tree at run time — a hash computed from
  * the thing it checks is a tautology.
+ *
+ * ── RE-BASELINE PROCEDURE (addendum v1 item 1b, 13 Aug 2026) ────────────────────────────────────
+ * Any legitimate change to the route fails the case below until these baselines are updated. That
+ * is the pin working, not a fault in it, and this is the whole procedure:
+ *
+ *   1. Confirm the route change is intended and reviewed.
+ *   2. `sha256sum app/api/admin/retrieval-telemetry-reconcile/route.ts`
+ *   3. `git hash-object app/api/admin/retrieval-telemetry-reconcile/route.ts`
+ *   4. Replace `ROUTE_SHA256` and `ROUTE_GIT_BLOB` in this file.
+ *   5. State in the build report what changed in the route and why.
  */
 const ROUTE_SHA256 = '6ecd5b38d276802632294a192b0acb618ee1b05d815fe747890a37a900d4fd56';
 const ROUTE_GIT_BLOB = 'ffd77c61ef5489bfa622db07911890de55d304c4';
@@ -71,14 +81,22 @@ test('artifact — THE ROUTE HAS NOT RUN IN THIS PROCESS', () => {
 
 test('artifact — the reconciler route is byte-for-byte the reviewed file', () => {
   // ⚠️ BEFORE A BYTE IS READ. A symlink to identical content, or a second hard link, hashes the same
-  // and is not the same file; a mode change hashes the same and is not the same committed object.
-  // `lstat`, not `stat`, so the symlink is seen rather than followed. A deleted or unreadable route
-  // throws HERE, in a named case, which is the other thing the split buys.
+  // and is not the same file. `lstat`, not `stat`, so the symlink is seen rather than followed. A
+  // deleted or unreadable route throws HERE, in a named case, which is the other thing the split
+  // buys.
+  //
+  // ⚠️ AND NO MODE ASSERTION, DELIBERATELY (addendum v1 item 1, 13 Aug 2026). Git records exactly
+  // one permission bit — the executable bit — so a tree entry for a regular file is `100644` or
+  // `100755` and the group and other bits are never stored at all. A permission change that leaves
+  // the executable bit alone (`chmod 640`, `chmod 664`) therefore changes neither the blob nor the
+  // tree entry, and is not a change to the committed object. A change that DOES flip that bit is
+  // reported by `git status` on its own, without a test. What used to stand here asserted mode 644,
+  // which protected nothing about the artifact and failed on any checkout whose umask differed from
+  // the author's.
   const st = lstatSync(ROUTE_FILE);
   assert.equal(st.isSymbolicLink(), false, `${ROUTE_FILE} is a symlink`);
   assert.equal(st.isFile(), true, `${ROUTE_FILE} is not a regular file`);
   assert.equal(st.nlink, 1, `${ROUTE_FILE} has ${st.nlink} hard links`);
-  assert.equal(st.mode & 0o7777, 0o644, `${ROUTE_FILE} is mode ${(st.mode & 0o7777).toString(8)}, not 644`);
 
   const raw = readFileSync(ROUTE_FILE);
   assert.ok(raw.length > 0, `${ROUTE_FILE} is empty`);

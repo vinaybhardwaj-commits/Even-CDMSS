@@ -89,12 +89,18 @@ export async function settleRetrievalTelemetry(
  *     write was attempted and failed (`telemetry_persistence_failed`); no evidence means nothing
  *     was ever heard from it (`aborted`).
  *
- * ⚠️ FLAGGED, NOT DECIDED. D9 says `aborted` and `telemetry_persistence_failed` are "reachable only
- * by the reconciler", and this settles them at settlement time. The two sentences are in tension in
- * the documents themselves — D9 also requires this run to be "settled from the failure evidence",
- * and the failure evidence has exactly one mapping. Waiting for the reconciler would leave a row
- * whose fate is already known sitting non-terminal for 2,600 seconds. The build report puts this in
- * front of V rather than choosing quietly.
+ * ⚠️ DECIDED, AND D9 IS AMENDED TO SAY IT (addendum v1 item 2, 13 Aug 2026; decisions §2). D9 used
+ * to read that `aborted`, `persistence_unknown` and `telemetry_persistence_failed` were reachable
+ * only by the reconciler, while the same section required a revision-0 run to be "settled from the
+ * failure evidence" — and that evidence has exactly one mapping, which produces two of the three.
+ * The amended rule is that the three states are produced only through `reconcilerStateFor`, wherever
+ * it is called; settlement may call it for a revision-0 run; and the settlement mapping table itself
+ * never names them. That is the same rule, not a new one, and the call below is it.
+ *
+ * The code was not changed to obey the older literal reading. `RECONCILER_STALE_AFTER_SECONDS` is
+ * `WORKER_MAX_DURATION_SECONDS + 1800`, so waiting for the reconciler would leave a row whose fate
+ * is already known sitting non-terminal for about 43 minutes before it received the identical value
+ * from the identical mapping.
  */
 async function stateForUnwrittenRun(
   run: LifecycleRun,

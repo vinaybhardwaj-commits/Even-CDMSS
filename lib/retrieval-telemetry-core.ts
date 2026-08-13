@@ -869,9 +869,13 @@ export type SettlementOutcome = typeof SETTLEMENT_OUTCOMES[number];
 /**
  * D9's outcome-to-state table, complete and total.
  *
- * ⚠️ `aborted`, `persistence_unknown` and `telemetry_persistence_failed` are ABSENT by design: no
- * settlement produces them. They are reachable only by the reconciler (D13), because each of them
- * means "nobody ever told us", and a settlement is somebody telling us.
+ * ⚠️ `aborted`, `persistence_unknown` and `telemetry_persistence_failed` are ABSENT by design: THIS
+ * TABLE never names them. They are produced only through `reconcilerStateFor` below, which is the
+ * reconciler's own mapping — and `stateForUnwrittenRun` in `lib/retrieval-settlement.ts` also calls
+ * it, for a run still at revision 0 whose outcome D12's transition guard cannot apply. So the honest
+ * statement is about the PRODUCER, not about the caller: no settlement mapping produces these three,
+ * and a settlement that reaches one has gone through the reconciler's function to do it (D9 as
+ * amended by addendum v1 item 2, 13 Aug 2026).
  */
 const SETTLEMENT_STATE: Readonly<Record<SettlementOutcome, RetrievalPersistenceState>> = {
   persisted_clean: 'persisted_complete',

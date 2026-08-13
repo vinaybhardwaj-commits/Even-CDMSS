@@ -86,16 +86,19 @@ test('54 — the two deliberate asymmetries are both present, and are not accide
   assert.equal(isAllowedTransition('started', 'persisted_complete'), false);
 });
 
-test('54 — every settlement outcome lands on a state, and three states are the reconciler\'s alone', () => {
+test('54 — every settlement outcome lands on a state, and the settlement table names none of the three reconciler-mapped states', () => {
   const produced = new Set<RetrievalPersistenceState>(
     (SETTLEMENT_OUTCOMES as readonly SettlementOutcome[]).map(stateForSettlement),
   );
   for (const s of produced) {
     assert.ok((RETRIEVAL_PERSISTENCE_STATES as readonly string[]).includes(s), `${s} is a real state`);
   }
+  // The identifier is unchanged and so is the assertion: `reconcilerOnly` names the set this case
+  // tests, and the set is still exactly right under D9 as amended (addendum v1 item 2, 13 Aug 2026),
+  // because SETTLEMENT_STATE does not name any of the three.
   const reconcilerOnly = ['aborted', 'persistence_unknown', 'telemetry_persistence_failed'] as const;
   for (const s of reconcilerOnly) {
-    assert.equal(produced.has(s), false, `${s} is reachable only by the reconciler (D9)`);
+    assert.equal(produced.has(s), false, `${s} is never named by the settlement mapping table (D9 as amended)`);
   }
   // And the reconciler's mapping produces two of those three, from the two non-terminal states.
   assert.equal(reconcilerStateFor('started', []), 'aborted');

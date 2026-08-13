@@ -1,6 +1,11 @@
 # CDMSS Rerank Telemetry — on-path build report
 
-**Seven issues, in reverse order.** Part VII moves the route pin out of the process it measures, 12
+**Eight issues, in reverse order.** Part VIII is the addendum v1 pass, 13 August 2026, on top of
+`32f0f79`: four mechanical items — the two file-mode assertions deleted with both re-baseline
+procedures written down, D9's wording finished at five sites, the test 63 case renumbered, and step
+13 built as the five edits it actually is, with test 42 in two parts. It **rejects nothing** from
+Part VII; it corrects one stale pointer in this report's §6 and amends report item 23. Part VII moves
+the route pin out of the process it measures, 12
 August 2026, on top of `ee92c26`: it **rejects Part VI's route artifact pin**, which five attacks
 survived, and accepts everything else from that pass. Part VI is the reconciler pin, on top of
 `2eeeaac`: it **rejects Part V's reconciler pin**, which seven attacks survived, and accepts Part V's
@@ -9,7 +14,10 @@ the first, on top of `e5dc756`. Part III is the steps 14 to 17 build, on top of 
 the correction issue committed in `177adc9`, which withdrew twelve claims from the first issue. Part
 I is in git history at `90d8db1` and is not rewritten there.
 
-Every edit any part makes to an earlier one, in full. Part VII edits one claim in Part VI: its
+Every edit any part makes to an earlier one, in full. Part VIII edits two things in this report: the
+§6 pointer at line 223, which named the wrong file for the route baseline, and report item 23, whose
+`lib/sql-guard-core.ts` question is now closed. It changes nothing in Parts I to VII beyond that.
+Part VII edits one claim in Part VI: its
 attack table, which reported no survivors for a pin five attacks then defeated. Part VI edits two
 claims in Part V: its
 reconciler attack row, which reported ten of ten caught, and its `package.json` flag, which
@@ -17,6 +25,432 @@ overstated the reach. Part V edited four sentences in Part IV: the flag count in
 oracle's reach in its §2, and the two script citations in its §2 and §4. Part IV edited one sentence
 in Part III — the §3.2 citation of D11, from line 681 to 674. Part III edited one sentence in Part
 II's preamble. Nothing else in any earlier part is touched.
+
+---
+
+# PART VIII — THE ADDENDUM v1 PASS: FOUR MECHANICAL ITEMS (on top of `32f0f79`)
+
+**13 August 2026.** Governed by `CDMSS-RERANK-TELEMETRY-ADDENDUM-v1-13-AUG-2026.md`, with
+`CDMSS-RERANK-TELEMETRY-DECISIONS-13-AUG-2026.md` as the evidence companion. Both are added to the
+commit unedited.
+
+**Nothing was deployed. No migration was run. No production database was touched.** No canary was
+targeted, C0 was not started, and no engine version was bumped. This pass changes no ranking
+behaviour: the only production file it edits is the A/A harness route, and the only behaviour it adds
+there is a telemetry declaration on a pass that already performed the retrieval.
+
+## 1. Commits and document hashes
+
+| | |
+|---|---|
+| Parent | `32f0f79183592b804988113a36b042a8f0458f84` |
+| This commit | *on top of `32f0f79`, not an amend and not a rebase — see `git log` on `exp/rerank-telemetry`* |
+| SHA-256, `CDMSS-RERANK-TELEMETRY-ADDENDUM-v1-13-AUG-2026.md` | `acb13d002d0c09069fb3f2c5d21f788ff13d30b871d6b9c56027f4b835d21794` |
+| SHA-256, `CDMSS-RERANK-TELEMETRY-DECISIONS-13-AUG-2026.md` | `c74b25f14d9a7178bdf2372ac764a11b1229293f82a537bf15704f0acdc34220` |
+
+A report cannot state its own commit SHA — it is inside the object being named. This follows the
+convention Part II set at its §1 rather than inventing a second one. **No served deployment SHA is
+recorded here**, for the reason Part II gives: a clean local tree proves nothing about what Vercel is
+serving, and this pass neither deployed nor targeted a canary.
+
+## 2. The gate: the pre-gate map check, then all nine
+
+**Pre-gate, run before anything was staged**, per addendum §9:
+
+```bash
+$ git status --short lib/architecture/map.generated.ts
+(empty)
+```
+
+| # | Command | Result |
+|---|---|---|
+| — | `git status --short lib/architecture/map.generated.ts` | **empty**, before staging |
+| 1 | `npm test` | **GREEN — 3038 of 3038**, 0 fail |
+| 2 | `npm run typecheck` | clean, no output |
+| 3 | `npm run build`, unkeyed production | **fails as required**, naming `CDMSS_TELEMETRY_HMAC_KEY` |
+| 3 | `npm run build`, keyed | **succeeds** |
+| 4 | `npm run architecture:check` | all 8 rules + coverage green; 39 subsystems |
+| 5 | `npm run architecture:map` | wrote 90 300 bytes, **byte-identical to the committed file** |
+| 6 | `git add … && npm run architecture:map && git diff --exit-code …` | exit 0, no diff; **nothing left staged** |
+| 7 | `npm run reasoning:registry && git diff --exit-code …` | exit 0, registry unchanged (88 737 bytes) |
+| 8 | `npm run reasoning:governance` | GREEN: 0 ungoverned model calls |
+| 9 | `npm run changelog:coverage` | GREEN: all 19 shipped engine versions documented |
+
+The test total is **observed, not predeclared**: **3038 of 3038**. The arithmetic behind it was
+measured rather than reasoned about — with the new test file moved aside and every other edit in
+place, the suite is **3030 of 3030**, so test 42 contributes exactly its eight cases and nothing else
+in this pass adds or removes one. The two deleted mode lines were assertions *inside* existing cases,
+not cases of their own, which is why deleting them moves no count. Both figures are green; 3030 is
+also the parent's total, since the remaining edits are comments and one case title.
+
+Gate 3's unkeyed message, verbatim:
+
+```text
+Error: CDMSS_TELEMETRY_HMAC_KEY is required for a production build. Rerank telemetry keys every
+patient-derived value it records; an unkeyed digest of clinical text is not acceptable (§4.3). Set
+it in Vercel Production before deploying.
+    at <unknown> (next.config.mjs:14:9)
+```
+
+No changelog entry was added to satisfy command 9, and no engine bump was made.
+
+## 3. Item 1 — the two file-mode assertions, deleted, with both procedures written
+
+**The deletions.** `lib/__tests__/reconciler-races.test.ts:718` and
+`lib/__tests__/reconciler-route-artifact.test.ts:81`, both
+`assert.equal(st.mode & 0o7777, 0o644, …)`. Git records one permission bit, the executable bit; a
+tree entry for a regular file is `100644` or `100755` and the group and other bits are never stored,
+so `chmod 640` and `chmod 664` change neither the blob nor the tree entry. A change that does flip
+that bit is reported by `git status` without a test.
+
+**The two comments above them were rewritten**, each now saying those three things, at
+`reconciler-races.test.ts:731-741` and `reconciler-route-artifact.test.ts:88-98`. The symlink and
+hard-link sentences were left alone in both.
+
+**Everything else in both blocks still runs**, verified by the suite:
+
+| check | races, test 64 | route artifact |
+|---|---|---|
+| symlink | 740 | 97 |
+| regular file | 741 | 98 |
+| `nlink === 1` | 742 | 99 |
+| SHA-256 | 758 | 105 |
+| git blob id | not present | 113 |
+
+**Item 1b, both re-baseline procedures**, written as comments where the constants they describe live:
+
+- Route artifact pin, `reconciler-route-artifact.test.ts:35-43`: confirm the change is intended and
+  reviewed; `sha256sum` the route; `git hash-object` the route; replace `ROUTE_SHA256` and
+  `ROUTE_GIT_BLOB`; state in the build report what changed and why.
+- Cron pin, `reconciler-races.test.ts:692-708`: confirm the cron-count edit is the only intended
+  change; take the file **as it now stands**, replace the authorised line with its historical form in
+  memory, hash with SHA-256; replace `sha256At177adc9`, and `line` if it moved; state the change and
+  the reason in the build report. **Plus the sentence the addendum requires**: after any edit other
+  than the cron count, the name `sha256At177adc9` stops being true, because the baseline is then the
+  file at the later commit with one line reverted. Rename it when that happens.
+
+**Item 1c, the stale pointer.** §6 of this report said the route baseline is a two-line edit in
+`reconciler-races.test.ts`. Part VII moved it. It now names `reconciler-route-artifact.test.ts`, and
+records that the decision of 13 August keeps the detector and writes both procedures down.
+
+## 4. Item 2 — D9's wording, finished
+
+### The amended rule, as now written into the code
+
+> `aborted`, `persistence_unknown` and `telemetry_persistence_failed` are produced only through
+> `reconcilerStateFor`. Settlement may call that function for a revision-0 run. The settlement
+> mapping table itself never names those states.
+
+**No code changed. No assertion changed.** Both files carrying prose changes are comment-only, proved
+mechanically rather than asserted: stripping every comment from
+`lib/retrieval-settlement.ts` and `lib/retrieval-telemetry-core.ts` and normalising whitespace yields
+text identical to the same files at `32f0f79`.
+
+### The four sites, opened directly by line number
+
+**I did not rely on a grep to find them.** Each was opened at the line the addendum names, read in
+its surrounding block, and edited there:
+
+| Site | What changed |
+|---|---|
+| `lib/retrieval-settlement.ts:92-97` | the FLAGGED docstring became a decided one, citing the addendum and the decisions document. Now at 92-103 |
+| `lib/retrieval-telemetry-core.ts:869-875` | the `SETTLEMENT_STATE` docstring now says the TABLE never names the three, and that `stateForUnwrittenRun` also calls `reconcilerStateFor`. Now at 869-879 |
+| `lib/__tests__/retrieval-telemetry-transitions.test.ts:89` | the TEST TITLE, now "…the settlement table names none of the three reconciler-mapped states" |
+| `lib/__tests__/retrieval-telemetry-transitions.test.ts:98` | the assertion MESSAGE, now "…is never named by the settlement mapping table (D9 as amended)". Now at 101 |
+| `lib/__tests__/retrieval-settlement.test.ts:69` | the comment |
+
+The identifier `reconcilerOnly` was left exactly as it was, at
+`retrieval-telemetry-transitions.test.ts:99`, with a comment saying why it is still the right name.
+`lib/retrieval-telemetry-failure-store.ts:66` was **not touched**: its claim is about who *reads*
+failure phases, and it is true.
+
+### Every search I ran, with its full output
+
+```bash
+$ grep -rn -i "only by the reconciler\|reconciler.s alone\|reconciler-only" --include='*.ts' lib app
+lib/retrieval-settlement.ts:94: * only by the reconciler, while the same section required a revision-0 run to be "settled from the
+lib/retrieval-telemetry-failure-store.ts:66: * Read the failure phases recorded for one run, most recent first. Used ONLY by the reconciler
+
+$ rg -U -i --multiline "reachable only\s*\n?\s*\*?\s*by the reconciler" lib app
+(no matches, exit 1)
+```
+
+Both survivors are correct. The first is the amended docstring itself, quoting the superseded wording
+in order to explain what replaced it. The second is the true read-side claim the addendum says to
+leave.
+
+Two further sweeps, run because the addendum warns that its own grep missed two sites in revision 1:
+
+```bash
+$ rg -n -i "reconciler" --glob '*.ts' lib app   # filtered for reachab|alone|only|produce
+lib/retrieval-telemetry-core.ts:144,906   "…would leave the only honest settlement unreachable and hand
+                                           the row to the reconciler as an `aborted` guess"
+lib/__tests__/retrieval-settlement.test.ts:75  "${reconcilerOnly} is not a settlement outcome"
+$ rg -U -i --multiline "reachable[^.]{0,120}reconciler|reconciler[^.]{0,120}reachable" --glob '*.ts' lib app
+(the two core.ts lines above, the amended settlement docstring, and unrelated
+ "unreachable defensive branch" prose in the reconciler route and its test)
+```
+
+None is the stale claim. The two `core.ts` lines are about `started -> audit_generation_failed` and
+are still true; `retrieval-settlement.test.ts:75` says these are not settlement *outcomes*, which is
+literally true — they are states, and the case iterates the outcome table. **No site was found where
+the stale claim is load-bearing inside an assertion.** Scope was `lib/` and `app/` only.
+
+### The consequence, recorded
+
+**C0 must not read `aborted` as "written by the reconciler".** After this amendment it means *no
+terminal manifest was ever written, whoever noticed*. Any C0 text that counts `aborted` as a
+reconciler count is wrong. If that distinction is later wanted, decisions §2 records the cheap route
+— one additive column recording the writer, not a new state — and that is neither decided nor in
+scope.
+
+## 5. Item 3 — the test 63 case, renumbered
+
+`lib/__tests__/multi-query-telemetry.test.ts:110`. The title now begins `63 — `. Nothing else in the
+file changed: both assertions stay, including the once-only count at line 117 that closes the hole in
+the older pin at `lib/__tests__/retrieval-llm-determinism.test.ts:34`.
+
+**Nothing pins that title, confirmed for myself.** `rg` across the repository finds the file's own
+name only inside itself, and finds the title text only in this file and in the decisions document's
+quotation of it. No test reads the test directory to count titles: the directory walks that do exist
+(`telemetry-non-exposure`, `provenance-grounding-label`, `audit-canonical-sql-twin`,
+`feedback-study-filter`, `architecture-inquiry-semantics`, `admin-attribution`,
+`lab-override-ask-wiring`) scan for table reads, registry ids and migration names, never for case
+titles. No source-text pin covers the file — the only two content baselines in this workstream are
+`CRON_BASELINE`, over `provider-switch-unit-d.test.ts` and `ipd-worker-batch-and-model.test.ts`, and
+`ROUTE_SHA256`/`ROUTE_GIT_BLOB`, over the reconciler route.
+
+### The counts, and the basis
+
+**The basis is the mechanical one: a requirement counts as written when a case title carries its
+number.** Stated so no later reader has to guess. Counted over this build's own test files, by
+extracting every `test(...)` title and reading a leading requirement number:
+
+```text
+at 32f0f79, mechanical      23 written, 50 absent
+after item 3                24 written, 49 absent
+after test 42               25 written, 48 absent
+```
+
+Reproduced independently rather than restated; the numbers newly carried by a title in this pass are
+exactly `[42, 63]`. **The substantive count at `32f0f79` was already 24 and 49**, because test 63's
+subject was asserted at `multi-query-telemetry.test.ts:110-118` — a superset of it — without its
+number. Item 3 is what makes the two bases agree.
+
+**A trap worth recording for whoever counts next.** A first pass at this count returned 32 and 41,
+two errors cancelling into a plausible-looking figure: it swept all of `lib/__tests__`, picking up
+numbers 1 to 10 from four unrelated workstreams' own numbering, and it required a punctuation
+separator after the number, which silently dropped requirement 57 — whose cases are titled
+`57 case 1 — …`, `57 pin — …`. No `npm test` total is preregistered anywhere in this part: one
+requirement can produce several cases.
+
+## 6. Item 4 — step 13, which is five edits
+
+### The three confirmations the addendum asks for, with line numbers
+
+1. **`lib/lvc.ts:64`** declares `telemetry?: { ctx: TelemetryRequestContext; route: RetrievalRoute };`
+   — the committed shape is exactly as the addendum states. No difference to report.
+2. **`'lvc_judge_aa'` is a member of `RETRIEVAL_ROUTES`** at
+   `lib/retrieval-telemetry-core.ts:185`.
+3. **`telemetryContextFor`'s first parameter is typed `InvocationRoute`**, at
+   `lib/retrieval-telemetry-core.ts:252`, not `RetrievalRoute`.
+   `INVOCATION_ROUTES = [...RETRIEVAL_ROUTES, 'reconciler']` at line 196, so `'lvc_judge_aa'` is in
+   both. **It compiles**: gate 2 is clean.
+
+### The five edits, all in `app/api/admin/lvc-judge-aa/route.ts`
+
+| # | Line | Edit |
+|---|---|---|
+| 1 | 57 | `import { telemetryContextFor, type TelemetryRequestContext } from '@/lib/retrieval-telemetry-core';` — one statement, inline `type` |
+| 2 | 302 | `const ctx = telemetryContextFor('lvc_judge_aa', req.headers, { labExperimentId: experiment });` in `GET` |
+| 3 | 194 | `runCase(uid, save, experiment, ctx: TelemetryRequestContext)` — context last, required |
+| 4 | 316 | `results.push(await runCase(item.uid, save, experiment, ctx));` |
+| 5 | 223 | `matchLowValueCare({ ...input, trace: false, telemetry: { ctx, route: 'lvc_judge_aa' } }, {…})` |
+
+`lib/lvc.ts` was not edited. No `startInvocation` call was added — `defaultRecall` opens the
+invocation at `lib/lvc.ts:212`, idempotently and fail-open, whenever `input.telemetry` is present, so
+pass 0 opens it. No `closeInvocation` call was added. No `pairId`, `replicate` or `experimentRunId`.
+
+**The spread, with the reason stated correctly in the code.** What keeps the pinned arms clean is the
+injected `recall`: `matchLowValueCare` resolves `deps.recall ?? defaultRecall` at `lib/lvc.ts:666`,
+passes A and B supply `pinned = { recall: async () => captured }` at lines 215 and 216 of the route,
+and `defaultRecall` — the one and only reader of `input.telemetry`, at `lib/lvc.ts:204` — never runs
+on them. The spread is used anyway, as defence in depth against a later change removing that
+injection, and the code comment says that and not the false reason.
+
+### ⚠️ A finding: the architecture map moved, and the import form was not why
+
+Gate 5 rewrote `map.generated.ts`, adding a second `app/api → retrieval-telemetry-core` edge of kind
+`type` — the exact change the addendum's edit 1 exists to prevent. **The import statement was not the
+cause.** `scripts/lib/import-scan.mjs` is text-level and does not skip comments: its pattern is
+`import` + `type` + any run of characters containing no quote + `from` + a quoted specifier. The
+explanatory comment I had written above the import spelled those two keywords adjacently; the match
+ran past the prose, found no quote until the real statement below it, and bound to that statement's
+specifier.
+
+Corrected by rewording the comment so the two keywords never appear adjacently — the statement itself
+is unchanged — and the comment now records why its own wording is load-bearing. After the rewording,
+`npm run architecture:map` reproduces the committed file byte for byte:
+
+```bash
+$ git hash-object lib/architecture/map.generated.ts   # after regeneration
+795d5982e9ae2535e613c13e746aecc9d4e902c9
+$ git rev-parse 32f0f79:lib/architecture/map.generated.ts
+795d5982e9ae2535e613c13e746aecc9d4e902c9
+```
+
+**`lib/architecture/map.generated.ts` is not in this commit.** This is a fourth mechanism of the class
+addendum §3.2 catalogues — a check that reads files on the edit list and can be tripped by careless
+wording — and it is worth adding to that list: the three named there are the `^(let|var) ` scan, the
+non-exposure walk, and the import form. The import *comment* is a fourth. It was caught by
+`architecture-map-gen.test.ts`, which is the guard that already covers it.
+
+## 7. Test 42, in two parts
+
+New file `lib/__tests__/lvc-telemetry-seam.test.ts`. Eight cases, all green.
+
+**v11's item 42 asks for two things this harness cannot execute.** That is a finding about v11, not a
+choice to skip them. `installDbStub` seams `globalThis.fetch` and fails closed on any body that is
+not a Neon query — deliberately, and correctly. This file wraps that transport rather than editing the
+shared helper, which is not on the file contract: a Metabase `/api/dataset` body is answered locally,
+and the `lvc_recommendations` read is answered locally because the stub types every array column as
+`text` (oid 25) and `rowToRec` needs a real array in `keywords`. Everything else is delegated to the
+stub, so every telemetry statement is recorded with its real bound parameters, which is what the
+assertions read. No live model is called: every `fetch` is intercepted.
+
+### Part A — proved by execution
+
+| Case | What it proves |
+|---|---|
+| A1 | pass 0 uses default recall: role `lvc_recall`, route `lvc_judge_aa` on the declaration, the invocation opened by `defaultRecall` itself, **and the seam's own route inside `operational.route` in the terminal manifest** |
+| A2 | the pinned passes declare nothing — one declaration per case, not three |
+| A3 | exactly one `lvc_recall` row per pass-0 recall, each with its own run id: not two, not zero |
+| A4 | one context per request — one invocation id across every telemetry write of a request, and a different id for the next request |
+
+A4 asserts **one id per request, not one id across the three passes**. Passes A and B never reach
+`defaultRecall` and so have no id at all, which is what A2 asserts; asking for both would be asking
+for a contradiction. Two uids are processed per request, because a context minted per case is
+indistinguishable from a correct one on a single-case request.
+
+### Part B — source assertions, each with its reason
+
+| Case | Why it cannot execute |
+|---|---|
+| B5, the appropriateness route passes `'unknown_route'` | `POST` runs `matchLowValueCare` and `analyzeValue` in one `Promise.all`; `analyzeValue` calls a provider over `fetch`; the stub throws `UnsupportedStubTransportError` on any body that is not a Neon query. Driving it would mean modelling a provider reply well enough for `analyzeValue` to parse, which asserts the stub rather than the route |
+| B6, both right-care scripts write nothing | the fixture is deliberately uncommitted, each script ends in `process.exit(0)` — which would take the runner down with it — and both make live provider calls |
+| B7, the route's existing surface is unchanged | passes A and B run the real `defaultJudge` with no injection seam, and `fetchOpdNoteByUid` reaches Metabase over `fetch`, so a driven request cannot tell "unchanged" from "the harness answered". Asserted from the diff |
+
+The reason for each is written into the test file itself, so a reader sees that the split is by
+constraint and by choice. B7b is a source case added alongside A4: it pins the mint site, the widened
+signature, the threading, that there is exactly **one** `telemetryContextFor(` call, and the import
+form.
+
+### The attacks, including the ones that failed to break it
+
+| Attack | Expected | Observed |
+|---|---|---|
+| 1. Route string changed to `'unknown_route'` | case 1 fails | **first run: did NOT fail — a real gap in my test.** Fixed, then it fails |
+| 2. Pinned arms made to produce a capture | case 3 fails | **fails** (A3, and A1, A2, B7 with it) |
+| 3. Context minted inside `runCase` | case 4 fails | **fails** (A4, and B7b) |
+| 4. Production edit reverted to `32f0f79` entirely | every Part A case fails | **all four fail.** B7 correctly still passes: it asserts the *unchanged* surface, which a revert preserves |
+| 5. Telemetry field moved off the spread onto `input` | case 2 still passes | **did NOT fail — all 8 still green**, exactly as the addendum predicts |
+| supplementary: attack 5 **and** the pinned `recall` removed | — | **A1, A2, A3 fail** |
+
+**Attack 1 found a real defect in my own test and is the reason A1 is now stronger.** A1 originally
+read the route off the declaration insert's third bound parameter — but that parameter is
+`ctx.route`, which `telemetryContextFor` sets, not the `route` the seam was handed. The two are
+independent: changing the literal in `telemetry: { …, route }` left every assertion true. The seam's
+route reaches the database only inside `operational.route` in the terminal manifest, so A1 now parses
+that manifest and asserts it there. Without that block the mandated attack was survivable.
+
+**Attack 5 did not fail, and the addendum says so in advance.** Recording what actually protects the
+pinned arms: **the injected `recall`, not the spread.** `matchLowValueCare` resolves
+`deps.recall ?? defaultRecall`; passes A and B inject their own `recall`; `defaultRecall` is the only
+reader of `input.telemetry` anywhere in the codebase. So a field on `input` is never read on those
+arms, and moving it there instruments nothing new. The supplementary attack is the proof by
+measurement: with the field on `input` **and** the pinned injection removed, passes A and B do reach
+`defaultRecall`, three declarations land per case, and A1, A2 and A3 all fail. The spread is
+therefore defence in depth against exactly that future edit, and is not what holds today.
+
+## 8. The confirmations from addendum §3.2
+
+**No hash baseline needed re-computing, confirmed for myself and not taken on the document's word.**
+Every file the three pins cover is byte-identical to `32f0f79`:
+
+| Pinned target | Covering pin | Status |
+|---|---|---|
+| `lib/__tests__/provider-switch-unit-d.test.ts` | `CRON_BASELINE` | unmodified |
+| `lib/__tests__/ipd-worker-batch-and-model.test.ts` | `CRON_BASELINE` | unmodified |
+| `app/api/admin/retrieval-telemetry-reconcile/route.ts` | `ROUTE_SHA256`, `ROUTE_GIT_BLOB` | unmodified |
+
+The route's live digests still equal the recorded constants: `sha256`
+`6ecd5b38…d4fd56` and git blob `ffd77c61…d304c4`, both computed against the file on disk.
+
+The other two §3.2 checks were respected and verified: no line of any of the four files scanned by
+`retrieval-telemetry-lifecycle.test.ts:209-218` begins with `let ` or `var ` at column 0, and no
+`FROM` or `JOIN` of a telemetry table appears in `lib/retrieval-settlement.ts`,
+`lib/retrieval-telemetry-core.ts` or the new test file — none of which is in the non-exposure
+allow-list.
+
+`lib/sql-guard-core.ts` is byte-identical. `data/reasoning-registry/prompts.generated.json` is
+unchanged, so gate 7 required no commit of it.
+
+## 9. Amendment to report item 23
+
+**The `lib/sql-guard-core.ts` blocklist decision is CLOSED.** The three telemetry tables are **not**
+added to `BLOCKED_RELATIONS`. The list's criterion is raw clinical text; the manifests carry
+candidate ids, counts and HMACs, and `pre_rerank_passage_hmacs` holds HMACs rather than passages.
+`opd_note_audits` is not on that list either, and the requirement is controls no weaker than
+`opd_note_audits` — so adding them would be stronger than required. The file stays byte-identical and
+both committed assertions on its literal are intact.
+
+**The two guard gaps stay logged and out of scope**, with the privilege result from decisions §6:
+
+- `pg_read_binary_file` passes the guard, because `FORBIDDEN` matches the substring `pg_read_file`
+  and the longer name does not contain it. **Not reachable**: a live read-only query returned
+  `db_role neondb_owner`, `has_function_privilege('pg_read_binary_file(text)', 'execute') false`,
+  `is_superuser false`. The regex hole is real and its consequence is not.
+- `pg_catalog` and `information_schema` pass. **Reachable**, and bounded by that role's own
+  privileges; the query above read `pg_roles` through the guard, which is the proof.
+
+Neither is fixed here. Fixing either edits a file the kickoff forbids editing and breaks two committed
+tests.
+
+## 10. The `.gitignore` change, and why the commit could not happen without it
+
+`.gitignore:73` is `/*.md`, and the lines under it are explicit `!` exceptions, one per document, so
+that `git add` on them keeps working. Both new documents sat in the worktree root **ignored, not
+untracked** — which is why `git status --short` was empty at preflight despite their presence. Two
+lines were added to the end of that exception list, in the existing form:
+
+```text
+!/CDMSS-RERANK-TELEMETRY-ADDENDUM-v1-13-AUG-2026.md
+!/CDMSS-RERANK-TELEMETRY-DECISIONS-13-AUG-2026.md
+```
+
+No other line of `.gitignore` was changed, and **`git add -f` was not used**.
+
+## 11. Flagged, not decided; and defects found and left alone
+
+1. **A stale `index.lock` blocked every git write**, at
+   `.git/worktrees/Even-CDMSS-rerank-telemetry/index.lock`: zero bytes, three hours old, and held by
+   a macOS Virtualization file-share process on a **read** descriptor, not by git. No git process was
+   running. I removed it, which is the standard remedy and is what git's own error text advises;
+   recording it because it is a change to repository state outside the file contract. Gates 6 and 7
+   and the commit could not run otherwise.
+2. **The import-scanner comment hazard in §6 above.** Reported as a finding, fixed in the one file it
+   affected, and proposed as a fourth entry in addendum §3.2's list.
+3. **Test 42's Part B is three source assertions**, because v11 asked for two things — and, on
+   inspection, a third — that the harness cannot execute. Flagged rather than quietly dropped.
+4. **`RECONCILER_STALE_AFTER_SECONDS` was not tuned** and is not proposed for tuning. It is named in
+   §4 only to explain why the code was not changed to obey D9's superseded literal reading.
+5. Carried forward, untouched and still owed: the per-role manifest defect keying (decisions §3, with
+   its hazard 1 canary-gate test), the rejected-terminal-write failure row (decisions §8, blocked on
+   the D13 unknown-phase check), test 60 and test 1, steps 19 and 21. **None was started**, per
+   addendum §1.
+6. Nothing in this pass was flagged as unsettled between the addendum and the v11 kickoff. The one
+   place they could have collided — v11 item 42's four claims against the addendum's two-part split —
+   the addendum settles explicitly, and §7 above follows it.
 
 ---
 
@@ -220,8 +654,10 @@ Both generated artifacts are byte-identical to `2eeeaac` by `git hash-object` ag
 ## 6. Flagged, not decided
 
 **New.** The route artifact pin is a change-detector, so the first legitimate reconciler change will
-fail it. The baseline is a two-line edit in `reconciler-races.test.ts` and the failure message says so
-— but somebody should decide that policy is right rather than discover it mid-change.
+fail it. The baseline is a two-line edit in `reconciler-route-artifact.test.ts`, which is where Part
+VII moved it, and the failure message says so — but somebody should decide that policy is right
+rather than discover it mid-change. **Decided 13 August** (decisions §4, addendum item 1b): keep the
+detector, and both re-baseline procedures are now written into the two pin files themselves.
 
 Unchanged, with V already: D9's contradiction about which states the reconciler alone may reach, and
 per-role settlement states when two roles on one handle disagree.

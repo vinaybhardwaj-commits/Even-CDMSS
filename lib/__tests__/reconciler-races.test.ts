@@ -688,6 +688,22 @@ test('64 — both files assert 17, and neither still asserts 16', () => {
  *
  * ⚠️ AND WHAT REMAINS OUTSIDE THE CONTRACT, DELIBERATELY: mtime, uid, gid, ACLs and extended
  * attributes. Git preserves none of them, so a test that asserted them would fail on a fresh clone.
+ *
+ * ── RE-BASELINE PROCEDURE (addendum v1 item 1b, 13 Aug 2026) ────────────────────────────────────
+ * When a legitimate change to either hashed file makes this case fail, this is the whole procedure.
+ * It is written here because the failure message names no fix, and an undocumented pin is one a
+ * later reader re-baselines by guesswork or deletes.
+ *
+ *   1. Confirm the cron-count edit is the only intended change to the file.
+ *   2. Take the file AS IT NOW STANDS, replace the authorised line with its historical form in
+ *      memory, and hash the result with SHA-256.
+ *   3. Replace `sha256At177adc9`, and `line` if the line number moved.
+ *   4. State the change and the reason in the build report.
+ *
+ * ⚠️ AND RENAME THE CONSTANT WHEN THAT HAPPENS. After any edit other than the cron count, the name
+ * `sha256At177adc9` stops being true: the baseline is then the file at the LATER commit with one
+ * line reverted, not the file at `177adc9`. A name that quietly stops describing its value is how a
+ * pin turns into decoration.
  */
 const CRON_BASELINE = [
   {
@@ -709,13 +725,21 @@ const CRON_BASELINE = [
 test('64 — undo the one authorised line and each file hashes to exactly what it did at 177adc9', () => {
   for (const b of CRON_BASELINE) {
     // ⚠️ BEFORE A SINGLE BYTE IS READ. A symlink to identical content, or a second hard link, gives
-    // the same hash and is not the same file; a mode change gives the same hash and is not the same
-    // committed object. `lstat`, not `stat`, so the symlink is seen rather than followed.
+    // the same hash and is not the same file. `lstat`, not `stat`, so the symlink is seen rather
+    // than followed.
+    //
+    // ⚠️ AND NO MODE ASSERTION, DELIBERATELY (addendum v1 item 1, 13 Aug 2026). Git records exactly
+    // one permission bit — the executable bit — so a tree entry for a regular file is `100644` or
+    // `100755` and the group and other bits are never stored at all. A permission change that leaves
+    // the executable bit alone (`chmod 640`, `chmod 664`) therefore changes neither the blob nor the
+    // tree entry, and is not a change to the committed object. A change that DOES flip that bit is
+    // reported by `git status` on its own, without a test. What used to stand here asserted mode
+    // 644, which protected nothing about the artifact and failed on any checkout whose umask
+    // differed from the author's.
     const st = lstatSync(b.file);
     assert.equal(st.isSymbolicLink(), false, `${b.file} is a symlink`);
     assert.equal(st.isFile(), true, `${b.file} is not a regular file`);
     assert.equal(st.nlink, 1, `${b.file} has ${st.nlink} hard links`);
-    assert.equal(st.mode & 0o7777, 0o644, `${b.file} is mode ${(st.mode & 0o7777).toString(8)}, not 644`);
 
     const lines = readFileSync(b.file, 'utf8').split('\n');
     assert.equal(

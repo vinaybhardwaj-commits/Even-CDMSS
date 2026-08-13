@@ -107,7 +107,7 @@ test('INSTRUMENTATION OFF: no arm capture is made, and the arms are called with 
   assert.equal(res.hits.length, 2, 'and the runtime shape is exactly today\'s');
 });
 
-test('the fail-open early exit still has its literal form, and this file does not quote it in a comment', () => {
+test('63 — the fail-open early exit still has its literal form, and this file does not quote it in a comment', () => {
   // Kickoff test 63's subject, asserted in this build's own tests as well so a later refactor sees
   // two failures rather than one puzzling pin in a determinism file.
   assert.ok(MULTI_QUERY.includes('if (result.status !== \'generated\') return [];'));

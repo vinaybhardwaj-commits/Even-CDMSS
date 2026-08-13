@@ -66,7 +66,10 @@ test('51 — every settlement outcome has a state, and the mapping is D9\'s tabl
   for (const [outcome, state] of Object.entries(D9) as [SettlementOutcome, string][]) {
     assert.equal(stateForSettlement(outcome), state, `${outcome} settles ${state}`);
   }
-  // D9: aborted, persistence_unknown and telemetry_persistence_failed are the reconciler's alone.
+  // D9 as amended (addendum v1 item 2, 13 Aug 2026): aborted, persistence_unknown and
+  // telemetry_persistence_failed are produced only through `reconcilerStateFor`. This table never
+  // names them, which is what is asserted here; settlement may still reach two of them by calling
+  // that function for a revision-0 run.
   const produced = new Set(Object.values(D9));
   for (const reconcilerOnly of ['aborted', 'persistence_unknown', 'telemetry_persistence_failed']) {
     assert.equal(produced.has(reconcilerOnly), false, `${reconcilerOnly} is not a settlement outcome`);
