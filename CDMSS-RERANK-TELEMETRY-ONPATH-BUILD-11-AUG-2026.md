@@ -1,6 +1,9 @@
 # CDMSS Rerank Telemetry — on-path build report
 
-**Eleven issues, in reverse order.** Part XI is the addendum v4 pass, 13 August 2026, on top of
+**Twelve issues, in reverse order.** Part XII is the addendum v5 pass, 13 August 2026, on top of
+`cdc9c34`: eight corrections to the measurement route before it runs against anything, the highest
+being a **password disclosure in the 500 body**. No new capability. It corrects two sentences in
+Part XI in place. Part XI is the addendum v4 pass, 13 August 2026, on top of
 `d452fec`: it builds the temporary real-database measurement route and its five-guard test, and
 records V's signed Amendment 1. **It takes no measurement** — that needs a Preview deployment and a
 Neon branch endpoint, which are V's steps, and this pass deploys nothing. The route is owed a
@@ -27,7 +30,7 @@ the first, on top of `e5dc756`. Part III is the steps 14 to 17 build, on top of 
 the correction issue committed in `177adc9`, which withdrew twelve claims from the first issue. Part
 I is in git history at `90d8db1` and is not rewritten there.
 
-Every edit any part makes to an earlier one, in full. Part XI edits nothing in any earlier part.
+Every edit any part makes to an earlier one, in full. Part XII edits three sentences in Part XI: the 500-body claim, the response-shape count, and the expiry claim — all three struck through in place with the correction beside them. It changes nothing in Parts I to X. Part XI edits nothing in any earlier part.
 Part X edits one thing in Part IX: it adds
 §12a, an erratum stating that Part IX's invariance claim covers one `opts` shape and not
 production's. It changes nothing in Parts I to VIII. Part IX edits two things in Part VIII: its §4
@@ -43,6 +46,265 @@ overstated the reach. Part V edited four sentences in Part IV: the flag count in
 oracle's reach in its §2, and the two script citations in its §2 and §4. Part IV edited one sentence
 in Part III — the §3.2 citation of D11, from line 681 to 674. Part III edited one sentence in Part
 II's preamble. Nothing else in any earlier part is touched.
+
+---
+
+# PART XII — EIGHT CORRECTIONS BEFORE THE MEASUREMENT RUNS (on top of `cdc9c34`)
+
+**13 August 2026.** Governed by `CDMSS-RERANK-TELEMETRY-ADDENDUM-v5-13-AUG-2026.md`, added to the
+commit unedited. **No new capability.** Eight defects an adversarial pass found in `cdc9c34`, the
+highest of which is a password disclosure. The route ran against nothing before these landed and
+still has not: **no measurement was taken, nothing was deployed, no production database was touched,
+no migration was aimed by hand, and no threshold is proposed.** Zero sockets were opened, to any
+host.
+
+| | |
+|---|---|
+| Parent | `cdc9c34e04f4adceb06cdfb03d55fc896bae33d3` |
+| This commit | *on top of `cdc9c34`, not an amend and not a rebase* |
+| SHA-256, `CDMSS-RERANK-TELEMETRY-ADDENDUM-v5-13-AUG-2026.md` | `43842c5eeeaa3c055253d5f80900740d7c077312f167eb7a9e3bde7fdd896960` |
+
+## 1. Fix 1 — the 500 body leaked the database password
+
+**Confirmed against the real driver before changing anything, and the addendum's claim held.**
+When `DATABASE_URL` fails `new URL` but satisfies the hand parse, `neon()` puts the entire
+connection string into its throw, and the route returned that message sliced to 200 characters —
+more than enough for user, password and host. `lib/admin-gate.ts` returns `null` when `ADMIN_TOKEN`
+is unset, so the route may be open, which makes it a disclosure to anyone who can reach the URL.
+
+Measured, with a realistic username:
+
+```text
+value still wrapped in quotes  →  Connection string: "postgresql://cdmss_user:PASSWORD@ep-….neon.tech/db"
+a leading `psql `              →  Connection string: psql postgresql://cdmss_user:PASSWORD@ep-….neon.tech/db
+a dropped `postgresql://`      →  Connection string: cdmss_user:PASSWORD@ep-….neon.tech/db
+```
+
+**⚠️ I NEARLY FILED A FALSE CORRECTION AGAINST THIS, AND IT IS WORTH RECORDING.** My first probe used
+the one-character username `u`, where `u:` parses as a URL scheme and the driver emits a different,
+non-leaking message. On that evidence I was about to report "two of the three shapes leak, not
+three". Re-running with a realistic username showed **all three leak**. The addendum was right and my
+correction was wrong; the only reason it did not reach this report is that the test fixture used a
+realistic username and disagreed with me.
+
+**The fix.** The 500 body carries a fixed sentence plus `(e as Error).name` — the constructor name,
+which never carries operator input — and **nothing else derived from the caught error**. Not sliced,
+not sanitised, not included. Both `steps` values are fixed strings (`schema`, `audit_id`) and were
+checked for the same property.
+
+**Test:** `FIX 2 + FIX 1 — a REAL 500 …` asserts status 500, the fixed sentence, a short
+`error_class`, and that no part of the connection string appears anywhere in the child's output.
+
+## 2. Fix 2 — the test for that path never ran
+
+The old case was keyed on `CDMSS_OVERHEAD_FORCE_DB_ERROR`, which **nothing in the repository reads**,
+so it silently duplicated the all-pass case and the 500 shape had never been exercised at all.
+
+**The fix, taking the addendum's preferred option:** drive the real defect rather than simulate it.
+A `DATABASE_URL` with the scheme dropped parses to the expected endpoint, passes every guard, and
+makes `neon()` throw inside the route. The variable is gone.
+
+## 3. Fix 3 — guard 5 parsed the wrong part of the string
+
+The old parse took the last `@` in the **whole** string, so a query parameter could move the parsed
+host while the driver connected elsewhere:
+
+```text
+postgresql://u:pw@ep-production-999999.…/db?x=@ep-measure-000001.…
+parsed by the old code   ep-measure-000001      ← allowed
+connected by the driver  ep-production-999999   ← exactly what the guard exists to prevent
+```
+
+**The fix.** The authority is cut off first — at the first `/`, `?` or `#` after the scheme — and the
+last `@` is taken **within it**. The hand parse stands; `new URL` is still not used, because its
+error object retains the input.
+
+**Test:** `FIX 3 — a query parameter cannot move the parsed host …`. The bypass URL is now refused,
+and it is refused by the **denylist**, because the authority names the forbidden endpoint.
+
+**A second effect, found by testing.** The stricter parse also refuses the wrapped-in-quotes and
+leading-`psql ` shapes outright, before the driver ever sees them — so the two worst leak paths are
+now closed twice: once by never returning the error, once by never reaching it.
+
+## 4. Fix 4 — the denylist, because an allowlist of two operator-set variables cannot tell which side is wrong
+
+The design problem rather than the bug. Guard 5 compared two variables V sets and had no independent
+knowledge of which endpoint is production. Debugging a refusal late, the natural move is to change
+the variable you just added rather than the one that was already there — and that single paste would
+have opened the route onto production.
+
+**The fix.** `CDMSS_OVERHEAD_FORBIDDEN_ENDPOINT` holds the production endpoint id and is checked
+**before** the equality clause. Setting the expected value to production's id now still refuses, with
+the distinct word `forbidden_endpoint` and nothing else in the body. **An absent denylist refuses
+too** (`no_denylist`): a denylist that is not there is not a denylist.
+
+**Tests:** two — the production-id-on-both-variables case, and the unset case.
+
+## 5. Fix 5 — the p99 was the maximum
+
+At the default `n = 50`, one sample is consumed as `first_statement_in_process`, 49 remain, and
+nearest-rank p99 over 49 returns index 48: the largest sample. `p99 === max` for every n up to 99.
+The route printed p95, p99 and max side by side with no floor and no warning, which addendum v4 §4
+had warned about in as many words.
+
+**The fix.** `p95` is emitted only at n ≥ 40 and `p99` only at n ≥ 200. Below the floor the value is
+`null` and a sibling field names the floor that was not met.
+
+**Tests:** two. At n = 50 (49 surviving) `p99` is null with `p99_withheld` naming the 200 floor,
+while `p95` **is** reported because its floor is 40 — and at n = 11 (10 surviving) `p95` is withheld
+too. The second case exists because a floor that always refuses is as useless as no floor.
+
+**⚠️ My first version of that test asserted `p95` was also withheld at n = 49 and failed. The route
+was right and the test was wrong** — the addendum sets p95's floor at 40, and 49 clears it.
+
+## 6. Fix 6 — statement 1 had no cell
+
+The topology is 3 + 4N. Boundary 1 timed `declareRetrievals`, which is statements 2 and 3;
+`startInvocation` — the `INSERT INTO opd_retrieval_invocations` — was called untimed inside that
+cell. So 34 of 35 statements had a cell and any batch-level total built from the cells was short by
+exactly one statement.
+
+**The fix, taking both halves the addendum offered.** A `start_invocation` cell now times it, **and**
+the `declare` response carries `batch_total_note` saying plainly that it is a two-statement figure
+and that the batch total is `start_invocation` + `declare`.
+
+## 7. Fix 7 — the shape label was false for four cell types
+
+`shape: { max, conc }` was echoed into every response, including the four per-note cells, which run
+exactly one declared run per iteration whatever `max` says. Part XI recorded `terminal_primary` and
+`settle_primary` at shape `8/8` when the batch was size 1. The latency was unaffected; the
+provenance was wrong, which is worse in a report V reads to set guardrails.
+
+**The fix.** `shape` is `{ batch_size: max }` for the batch cell and `{ batch_size: 1 }` for per-note
+cells, with `shape_note` saying which it is. **`conc` is removed entirely**, not merely ignored: it
+never ran anything concurrently in any cell, and implementing it would introduce contention, which is
+a different experiment from the one D18 asks for. The response now says
+`concurrency: NOT EXERCISED anywhere in this route` once, instead of implying otherwise in every
+row. The test asserts `conc` is absent from the route's source, not just unused.
+
+## 8. Fix 8 — the real-audit arm could silently become the null arm
+
+If `SELECT id FROM opd_note_audits` returned nothing, `auditId` was null while `audit_mode` still
+read `"real"` — so two runs differing only in that string would be read as the foreign-key comparison
+when they were the same measurement twice.
+
+**The fix.** The real arm **refuses** (409, `no_audit_id`) rather than measuring.
+
+**One scoping decision the addendum left open, taken deliberately and flagged.** The refusal applies
+only to the cells that **consume** the id — the settlement boundary is the only one that binds
+`audit_id`. A `declare` or `activerun` run on a branch with no audits measures nothing false and is
+not refused, and those cells now report `audit_mode: 'n/a — this cell does not bind audit_id'`. A
+blanket refusal would have blocked every cell on any branch without audit rows, which is not what
+fix 8 is protecting.
+
+## 9. §9.1 — the expiry now runs second
+
+Part XI claimed "after 2026-08-20 every request is 410 whatever else is configured". With the expiry
+running **fifth** that was false: anything failing guards 2, 3 or 4 got a 403 after the expiry and
+never saw a 410, so the deletion deadline did not mean what the report said. **The expiry moved to
+position two, directly after admin** — the first position where the claim can be true. The guard
+order is now:
+
+```text
+1  admin              requireAdmin alone
+2  expiry             hard UTC 2026-08-20 → 410
+3  preview            VERCEL_ENV=preview AND VERCEL_GIT_COMMIT_REF=exp/rerank-telemetry
+4  armed              CDMSS_OVERHEAD_MEASURE=1
+5  database identity  NOT the forbidden endpoint, AND equal to the expected one
+```
+
+All five guard-case titles and every in-file cross-reference were renumbered to match; a stale
+number in a comment is how the next reader gets this wrong.
+
+## 10. §9.2 — the response shapes, and which were unexercised
+
+Part XI said "all eight response shapes". That was **eight test cases covering five shapes**. The
+route can return **seven** statuses, and after this pass **every one is exercised** by the leak check,
+which asserts the set explicitly so a new shape cannot be added without covering it:
+
+| status | shape | covered before | covered now |
+|---|---|---|---|
+| 401 | admin refusal | ✗ | ✓ |
+| 410 | `expired` | ✓ | ✓ |
+| 403 | `not_preview` | ✓ | ✓ |
+| 403 | `not_armed` | ✓ | ✓ |
+| 403 | `no_denylist` | — new | ✓ |
+| 403 | `forbidden_endpoint` | — new | ✓ |
+| 403 | `endpoint_mismatch` | ✓ | ✓ |
+| 409 | `no_audit_id` | — new | ✓ |
+| 400 | unknown cell | ✗ | ✓ |
+| 500 | driver throw | ✗ (the case never ran) | ✓ |
+| 200 | success | ✓ | ✓ |
+
+**Nothing remains unexercised.** The leak check also now searches the child's **stdout and stderr**,
+not only the parsed `RESULT` line — the old harness would have missed a driver message printed by a
+`console.error`.
+
+## 11. The gate
+
+| # | Command | Result |
+|---|---|---|
+| — | **map pre-gate, RESTORED** | **empty — the map did not move**; no new imports |
+| 1 | `npm test` | **GREEN — 3076 of 3076** (3066 at the parent, +10 guard cases) |
+| 2 | `npm run typecheck` | clean |
+| 3 | `npm run build`, unkeyed production | fails as required, naming `CDMSS_TELEMETRY_HMAC_KEY` |
+| 3 | `npm run build`, keyed | succeeds; `ƒ /api/admin/telemetry-overhead 600 B` |
+| 4 | `npm run architecture:check` | all 8 rules + coverage green |
+| 5 | `npm run architecture:map` | byte-identical to `cdc9c34` |
+| 6 | determinism | exit 0, nothing staged |
+| 7 | `npm run reasoning:registry && git diff --exit-code …` | exit 0, unchanged |
+| 8 | `npm run reasoning:governance` | GREEN: 0 ungoverned model calls |
+| 9 | `npm run changelog:coverage` | GREEN |
+
+**Wall clock:** `telemetry-overhead-guard.test.ts` — **5.77 s** for 23 cases and roughly 30 child
+processes, up from 3.07 s for 13.
+
+**No socket to anything, including loopback.** Measured under a `--require` preload recording each
+socket's own `remoteAddress` on `connect` plus every `dns.lookup`, propagated to children via
+`NODE_OPTIONS`: `PEERS (none)`, `DNS (none)`, parent and all children.
+
+## 12. Every attack, including the ones that broke nothing
+
+The addendum's seven, plus six of my own deleting each fix in turn — because a fix whose test does
+not depend on it is decoration.
+
+| # | Attack | Expected | Observed |
+|---|---|---|---|
+| 1 | each of the three unparseable shapes from fix 1 | body carries no part of the URL | **none does**, in body, stdout or stderr. Two are refused at guard 5 before the driver; the third reaches the 500 and carries a fixed sentence |
+| 2 | the `?x=@host` bypass from fix 3 | guard 5 refuses | **refuses**, as `forbidden_endpoint` |
+| 3 | expected = production id, denylist = same | `forbidden_endpoint` | **refuses**, body has exactly two keys |
+| 4 | unset `CDMSS_OVERHEAD_FORBIDDEN_ENDPOINT` | must refuse | **refuses**, `no_denylist` |
+| 5 | a cell at n=50 | `p99` null with a floor field | **null**, `p99_withheld` names the 200 floor. `p95` is a number, correctly — its floor is 40 |
+| 6 | real-audit arm with no `opd_note_audits` rows | must refuse | **refuses**, 409 `no_audit_id` |
+| 7 | delete each guard in turn | its tests fail | **all fail** — see below |
+| A | delete the denylist clause | fix 4's tests fail | **2 fail** |
+| B | delete the absent-denylist refusal | its test fails | **1 fails** |
+| C | revert fix 3 to the whole-string `@` | the bypass test fails | **2 fail** |
+| D | restore the truncated error in the 500 body | the leak tests fail | **2 fail**, naming the leaked credential: `the 500 path leaked "cdmss_user…"` |
+| E | remove the p99 floor | fix 5's tests fail | **2 fail** |
+| F | revert fix 8 | its test fails | **2 fail** |
+
+**Nothing in this pass broke nothing** — every one of the thirteen attacks landed on at least one
+assertion. The two failures that mattered were mine, not the code's: the false correction in §1, and
+the wrong p95 expectation in §5. Both were caught by running the thing rather than reasoning about
+it, which is the third and fourth time in this workstream that has been the deciding factor.
+
+## 13. Owed, unchanged and re-stated
+
+1. **DELETE THIS ROUTE** and its test before `exp/rerank-telemetry` merges anywhere. Guard 2's hard
+   expiry of **2026-08-20** is the enforcement. Remove `CDMSS_OVERHEAD_MEASURE`,
+   `CDMSS_OVERHEAD_DB_ENDPOINT`, **`CDMSS_OVERHEAD_FORBIDDEN_ENDPOINT`** and the branch-scoped
+   `DATABASE_URL` from Vercel at the same time, and delete the Neon branch.
+2. **The measurement has still not been taken.** Part XI §4's cells are still empty and Part XI §8's
+   six steps still stand, with one addition from addendum v5 §13: set
+   `CDMSS_OVERHEAD_FORBIDDEN_ENDPOINT` to the **production** endpoint id, Preview scope, before
+   deploying — the route refuses without it.
+3. §5's row-count verification is still owed, for the non-exposure collision recorded in Part XI §5.
+4. The topology figure is still 35 by source and 36 by the addendum; branch verification is owed.
+5. The region finding (Part XI §9.4) is unchanged and still V's call.
+6. Carried forward, untouched: step 19's query texts, the remaining 38 tests, per-role manifest
+   defects, the `retrieval_terminal_rejected` phase, the discriminated union, and Part X's findings
+   10a and 10b.
 
 ---
 
@@ -161,12 +423,25 @@ that is a test case. **Every failure direction is "do not run"**: an absent expe
 unparseable URL refuses, a mismatch refuses.
 
 **Nothing anywhere logs, echoes or returns any part of `DATABASE_URL`.** Guard 4 returns one word.
-The 500 path truncates the driver message to 200 characters. Both are checked against every
-connection-string substring across all eight response shapes.
+~~The 500 path truncates the driver message to 200 characters.~~ <!-- CORRECTED by Part XII, addendum
+v5 fix 1: truncating was not enough. `neon()` puts the WHOLE connection string, password included,
+into its throw on three ordinary paste mistakes, and 200 characters is more than enough for all of
+it. The 500 body now carries a fixed sentence plus the error's class name and nothing derived from
+the error. --> **The 500 path returned a truncated driver message, and that was a password
+disclosure — see Part XII §1.**
+
+~~Both are checked against every connection-string substring across all eight response shapes.~~
+<!-- CORRECTED by Part XII, addendum v5 §9.2: that was eight test CASES covering FIVE shapes.
+401, 400 and 500 were unexercised. All are covered now; see Part XII §10. -->
+**They are checked against every connection-string substring across five of the route's response
+shapes; three more are covered as of Part XII.**
 
 **Guard 5 is the only enforcement that this route is deleted**, because nothing in CI enumerates
-routes and a note in a report is not a mechanism. After 2026-08-20 every request is 410 whatever else
-is configured.
+routes and a note in a report is not a mechanism. ~~After 2026-08-20 every request is 410 whatever
+else is configured.~~ <!-- CORRECTED by Part XII, addendum v5 §9.1: guard 5 ran FIFTH, so a request
+failing guards 2, 3 or 4 got a 403 after the expiry and never a 410. The expiry now runs SECOND. -->
+**After 2026-08-20 every AUTHENTICATED request is 410 whatever else is configured — true only
+because Part XII moved the expiry to position two.**
 
 ### The five-guard test — 13 cases, all green
 
