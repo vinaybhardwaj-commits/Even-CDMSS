@@ -1,6 +1,10 @@
 # CDMSS Rerank Telemetry — on-path build report
 
-**Ten issues, in reverse order.** Part X is the addendum v3 pass, 13 August 2026, on top of
+**Eleven issues, in reverse order.** Part XI is the addendum v4 pass, 13 August 2026, on top of
+`d452fec`: it builds the temporary real-database measurement route and its five-guard test, and
+records V's signed Amendment 1. **It takes no measurement** — that needs a Preview deployment and a
+Neon branch endpoint, which are V's steps, and this pass deploys nothing. The route is owed a
+deletion and guard 5 enforces it. Part X is the addendum v3 pass, 13 August 2026, on top of
 `31424cb`: it closes the safety claim on the **production** retrieval shape — `topK: 8`,
 `useSourceWeights: true`, expansion and embedding live — adds the canary-gate characterization test
 the decisions document requires, and reports step 21's eight overhead numbers. It **rejects nothing**
@@ -23,7 +27,8 @@ the first, on top of `e5dc756`. Part III is the steps 14 to 17 build, on top of 
 the correction issue committed in `177adc9`, which withdrew twelve claims from the first issue. Part
 I is in git history at `90d8db1` and is not rewritten there.
 
-Every edit any part makes to an earlier one, in full. Part X edits one thing in Part IX: it adds
+Every edit any part makes to an earlier one, in full. Part XI edits nothing in any earlier part.
+Part X edits one thing in Part IX: it adds
 §12a, an erratum stating that Part IX's invariance claim covers one `opts` shape and not
 production's. It changes nothing in Parts I to VIII. Part IX edits two things in Part VIII: its §4
 claim that `lib/retrieval-telemetry-failure-store.ts:66` was true, which it was not, and its §6 line
@@ -38,6 +43,327 @@ overstated the reach. Part V edited four sentences in Part IV: the flag count in
 oracle's reach in its §2, and the two script citations in its §2 and §4. Part IV edited one sentence
 in Part III — the §3.2 citation of D11, from line 681 to 674. Part III edited one sentence in Part
 II's preamble. Nothing else in any earlier part is touched.
+
+---
+
+# PART XI — THE MEASUREMENT ROUTE AND ITS FIVE GUARDS (on top of `d452fec`)
+
+**13 August 2026.** Governed by `CDMSS-RERANK-TELEMETRY-ADDENDUM-v4-13-AUG-2026.md`, added to the
+commit unedited.
+
+**⚠️ THIS PASS BUILDS THE INSTRUMENT. IT DOES NOT TAKE THE MEASUREMENT.** The numbers addendum v4 §4
+asks for require a Vercel Preview deployment pointed at a non-production Neon branch, with
+`CDMSS_OVERHEAD_MEASURE`, `CDMSS_OVERHEAD_DB_ENDPOINT` and a branch-scoped `DATABASE_URL` set by V.
+This pass deploys nothing and touches no database. **Every latency cell in §4 below is empty and is
+V's to fill.** What is delivered and proven here is the route, its five guards, and the guard test.
+
+**Nothing was deployed, no migration was aimed by hand, no production database was touched, and no
+threshold is proposed.** The only files changed are the four addendum v4 §6 authorises plus the
+architecture map it predicts. No socket was opened to any host at all — not even loopback.
+
+## 1. Commit, document hash, and the signed amendment
+
+| | |
+|---|---|
+| Parent | `d452fecca6851ede6bb34a524bee22f664b76407` |
+| This commit | *on top of `d452fec`, not an amend and not a rebase* |
+| SHA-256, `CDMSS-RERANK-TELEMETRY-ADDENDUM-v4-13-AUG-2026.md` | `989b2ea86fc3ebd75ab41f987a20b7717b12b0baff680072e4161c00e364188b` |
+
+**Amendment 1, as V signed it, verbatim:**
+
+> **Amendment 1 to PRD v2.1 section 6.5 and kickoff D18, made before any canary opens.**
+>
+> Synthetic microbenchmark evidence, as D18 specifies it, establishes the absence of an
+> algorithmic blow-up. It does not set production timing guardrails and may not be used to
+> approve a deployment.
+>
+> A second measurement is authorised and required: a production-shaped run against a
+> non-production Neon branch, from a Vercel Preview deployment in the deployment's own
+> region. D18's prohibition on deploying to measure is lifted for Preview only. **The
+> prohibition on the production database stands without exception, and section 3's
+> database-identity guard is the mechanism, not a promise.**
+>
+> Numeric pre-canary guardrails are set from the second measurement. Canary rollback
+> triggers are a separate instrument, preregistered before exposure, and are not a
+> substitute for pre-canary evidence.
+
+PRD line 298: an amendment made before a canary opens is not a waiver. This is before.
+
+## 2. The gate
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `npm test` | **GREEN — 3066 of 3066** (3053 at the parent, +13 guard cases) |
+| 2 | `npm run typecheck` | clean |
+| 3 | `npm run build`, unkeyed production | **fails as required**, naming `CDMSS_TELEMETRY_HMAC_KEY` |
+| 3 | `npm run build`, keyed | **succeeds**; `ƒ /api/admin/telemetry-overhead 600 B` |
+| 4 | `npm run architecture:check` | all 8 rules + coverage green |
+| 5 | `npm run architecture:map` | **+1 edge, exactly as predicted** — see below |
+| 6 | determinism | exit 0; only `map.generated.ts` staged, which this pass commits |
+| 7 | `npm run reasoning:registry && git diff --exit-code …` | exit 0, unchanged |
+| 8 | `npm run reasoning:governance` | GREEN: 0 ungoverned model calls |
+| 9 | `npm run changelog:coverage` | GREEN: 19 engine versions documented |
+
+**The map pre-gate is suspended for this pass only**, per addendum v4 §6, because the route imports
+`createTelemetryCapture` and `buildRetrievalPayload`. The regenerated map differs from `d452fec` by
+**exactly one edge and nothing else**:
+
+```diff
++  {
++    "from": "app/api",
++    "to": "retrieval-capture",
++    "kind": "value"
++  },
+```
+
+No other edge appeared. `kind` is `value`, not `type`, which is correct: both imports are values.
+
+**Wall clock.** `lib/__tests__/telemetry-overhead-guard.test.ts` — **3.07 s** for 13 cases, each
+spawning its own child process. That is the whole cost of the child-process design and it is worth
+it: three of the five guards read `process.env` at request time and one reads the clock.
+
+**No socket to anything but `127.0.0.1` — in fact, none at all.** Measured under a `--require`
+preload that records each socket's own `remoteAddress:remotePort` on `connect` plus every
+`dns.lookup`, propagated to the children via `NODE_OPTIONS`:
+
+```text
+parent and all 13 children     PEERS (none)     DNS (none)
+```
+
+The child installs `telemetry-db-stub` before the route runs, so even the all-guards-pass case —
+which proceeds into the DDL and a measurement cell — never leaves the process. The `DATABASE_URL`
+used in the tests is a syntactically valid but entirely fictional endpoint.
+
+**`RERANK_BACKEND` and `OPENROUTER_API_KEY` before deletion:** both **unset**, as were
+`CDMSS_OVERHEAD_MEASURE`, `CDMSS_OVERHEAD_DB_ENDPOINT`, `DATABASE_URL` and `VERCEL_ENV`. This machine
+has no production credentials in its environment, which is also why guard 4 could not be exercised
+against a real endpoint here.
+
+## 3. The route and its five guards
+
+`app/api/admin/telemetry-overhead/route.ts`. **POST only**, `runtime = 'nodejs'`,
+`maxDuration = 800`. Guards run in this order and all five must pass:
+
+| # | Guard | Refusal |
+|---|---|---|
+| 1 | `requireAdmin(req)` **alone** — no `isAdminUnlocked()` clause | 401, from the gate itself |
+| 2 | `VERCEL_ENV === 'preview'` **and** `VERCEL_GIT_COMMIT_REF === 'exp/rerank-telemetry'` | 403 `not_preview` |
+| 3 | `CDMSS_OVERHEAD_MEASURE === '1'` | 403 `not_armed` |
+| 4 | **Neon endpoint id === `CDMSS_OVERHEAD_DB_ENDPOINT`** | 403 `endpoint_mismatch`, and nothing else |
+| 5 | Hard UTC expiry `2026-08-20T00:00:00Z` | 410 `expired` |
+
+**Guard 4 is the one that matters, and it is a mechanism rather than a promise.** The branch is a
+copy-on-write clone, so row counts and schema are identical to production — **no content check can
+tell them apart** and the host is the only discriminator. The endpoint id is parsed by hand rather
+than with `new URL`: the substring after the **last** `@`, stopped at the first `/`, `?`, `#` or `:`,
+then the leading `ep-…` label. A password containing `@` therefore cannot shift the parsed host, and
+that is a test case. **Every failure direction is "do not run"**: an absent expectation refuses, an
+unparseable URL refuses, a mismatch refuses.
+
+**Nothing anywhere logs, echoes or returns any part of `DATABASE_URL`.** Guard 4 returns one word.
+The 500 path truncates the driver message to 200 characters. Both are checked against every
+connection-string substring across all eight response shapes.
+
+**Guard 5 is the only enforcement that this route is deleted**, because nothing in CI enumerates
+routes and a note in a report is not a mechanism. After 2026-08-20 every request is 410 whatever else
+is configured.
+
+### The five-guard test — 13 cases, all green
+
+| Case | Result |
+|---|---|
+| Guard 1: `ADMIN_TOKEN` set, nothing presented | **401**, and `isAdminUnlocked` absent from the route's code |
+| Guard 2: `VERCEL_ENV=production`, everything else correct | **403 `not_preview`** |
+| Guard 2: preview but `VERCEL_GIT_COMMIT_REF=main` | **403 `not_preview`** |
+| Guard 3: `CDMSS_OVERHEAD_MEASURE` unset | **403 `not_armed`** |
+| Guard 4: endpoint set to a *different* (production-shaped) id | **403 `endpoint_mismatch`**, body has exactly two keys |
+| Guard 4: expectation **unset** | **403 `endpoint_mismatch`** — refuses, does not pass |
+| Guard 4: unparseable `DATABASE_URL` | **403 `endpoint_mismatch`** |
+| Guard 4: password containing `@` | **200** — the last `@` wins, so the real host is read |
+| Guard 5: clock one second past the expiry | **410 `expired`** |
+| Guard 5: one second before | **200** — the check discriminates, it does not always refuse |
+| All five pass | **200**, `route_written_as: 'script'`, first sample separated with `n=1` |
+| No response carries any `DATABASE_URL` substring | green across all eight shapes |
+| POST-only, expiry constant, deletion notice in source | green |
+
+## 4. What is measured, and what is still empty
+
+The route takes `?cell=&max=&conc=&n=&audit=` and measures **one cell per invocation**, because
+`maxDuration` is 800 s and at a 68 ms floor the full matrix at p99 needs far more than that buys.
+
+| # | Boundary | Cell name | Per |
+|---|---|---|---|
+| 1 | declaration insert **plus** invocation counter update | `declare` | **batch** |
+| 2 | terminal update | `terminal_primary`, `terminal_normative` | note |
+| 3 | settlement read **plus** update | `settle_primary`, `settle_normative` | note |
+| 4 | `activeRun('opd')` | `activerun` | note, + DDL on the first call in a process |
+
+Shapes: `max=8 conc=8` (production default), `max=1 conc=1`, `max=30 conc=8`. `max` is the batch size
+the declaration insert carries; **`conc` is recorded as provenance only** — the per-note boundaries
+are measured serially, so concurrency is not exercised, and the response says so rather than implying
+otherwise.
+
+**Every latency cell below is empty.** Filling them is V's step, and §9 says exactly how.
+
+| Cell | shape | first-statement-in-process (n=1) | min | median | p95 | p99 | max | n |
+|---|---|---|---|---|---|---|---|---|
+| `declare` | 8/8 | — | — | — | — | — | — | — |
+| `declare` | 1/1 | — | — | — | — | — | — | — |
+| `declare` | 30/8 | — | — | — | — | — | — | — |
+| `terminal_primary` | 8/8 | — | — | — | — | — | — | — |
+| `terminal_normative` | 8/8 | — | — | — | — | — | — | — |
+| `settle_primary` | 8/8 | — | — | — | — | — | — | — |
+| `settle_normative` | 8/8 | — | — | — | — | — | — | — |
+| `activerun` | 8/8 | — | — | — | — | — | — | — |
+
+**The first sample of each invocation is reported on its own, labelled `first-statement-in-process`,
+with `n = 1`, and never enters a percentile column.** It is not called cold: cold cannot be forced
+in-process, because `ensured` in `lib/backfill-runs.ts:39` is module state with no reset and no
+export. One request is one process, so that sample absorbs TLS setup and, if the branch compute has
+scaled to zero, a resume of hundreds of milliseconds.
+
+**Settlement uses a real `opd_note_audits` id.** `audit_id` is `REFERENCES opd_note_audits(id)`, so
+production's `UPDATE` carries an index probe into the largest table in the schema; passing `null`
+omits it and reads systematically low with nothing in the output to show it. The route selects a real
+id from the branch and reports which arm it ran. `?audit=null` runs the comparison arm.
+
+Every response carries the label `SYNTHETIC-AGAINST-A-BRANCH. Not a production measurement. No
+threshold is proposed.`
+
+## 5. The SQL topology, derived from source — and a correction to the addendum's arithmetic
+
+Enumerated from the code, not from a document:
+
+```text
+BATCH LEVEL (once per invocation / declaration batch)
+  1  INSERT INTO opd_retrieval_invocations …            lib/retrieval-invocation-store.ts:35
+  2  INSERT INTO opd_audit_retrieval_telemetry …        lib/retrieval-telemetry-store.ts:177   (multi-row)
+  3  UPDATE opd_retrieval_invocations SET declared_… +  lib/retrieval-invocation-store.ts:59
+
+PER NOTE
+  4  UPDATE … SET persistence_state = 'retrieval_complete'   lib/retrieval-telemetry-store.ts:269
+  5  SELECT persistence_state, row_revision, audit_id        lib/retrieval-telemetry-store.ts:438
+  6  UPDATE … SET persistence_state = $3, audit_id = $4      lib/retrieval-telemetry-store.ts:464
+  7  SELECT … FROM backfill_runs WHERE worker = $1           lib/backfill-runs.ts:84  (activeRun, warm)
+```
+
+So the shape is **3 + 4N**, which is **35 at N = 8** — not the addendum's `4 + 4N` = 36. The
+difference is one statement at batch level; the addendum's figure appears to count `activeRun`'s
+first-call cost or the invocation insert differently. **Addendum v4 §5 and §13 say 36; the source says
+35.** Reported rather than reconciled, because the addendum also says to verify against the branch
+and that verification has not happened.
+
+Both figures agree on the point §13 actually turns on: **the per-note serial chain is three
+statements, not five** — the declaration insert and the counter update are batch-level. At a 68 ms
+floor that is roughly **204 ms added per note**, plus about 17 ms of amortised batch cost at N=8,
+best case, against an idle branch with no contention.
+
+**⚠️ THE ROW-COUNT VERIFICATION HALF OF §5 IS NOT IMPLEMENTED, AND THE REASON IS A REAL COLLISION.**
+`lib/__tests__/telemetry-non-exposure.test.ts` fails on any `FROM <telemetry table>` in a file outside
+its `ALLOWED` set, and that test file is **not** on addendum v4 §6's contract, so it cannot be
+extended. The first version of the route did `SELECT count(*) FROM opd_audit_retrieval_telemetry`
+and the suite caught it. There were two ways to keep the number:
+
+1. extend the non-exposure allow-list — forbidden by §6;
+2. build the table name dynamically so the source-text scan cannot see it — which is **evading a
+   privacy control by obfuscation**, and is worse than not having the number.
+
+Neither was taken. The route now reads **nothing** from the three telemetry tables: `to_regclass`
+asks the catalog whether a relation exists and reads no row of it. **§5's row-count verification is
+owed** and is listed in §9.
+
+## 6. The route creates its own tables, and two deliberate deviations
+
+The Neon branch was cloned from `main`, and `main` has none of the three telemetry tables — so there
+is nothing to write to until the route creates them. It does that **itself, after guard 4**, and
+**no human is told to POST the migration route at a preview**: that endpoint is aimed by hand and the
+failure mode is aiming it at production.
+
+Two deviations from the migration route's stop rule, both flagged rather than quiet:
+
+1. **A second invocation always finds rows** — its own, from the previous cell — and §4 requires one
+   cell per invocation, so a literal 409 would make the matrix unreachable after the first call. The
+   decision is taken on **existence alone**: absent ⇒ create, present ⇒ skip the DDL entirely. That
+   is strictly safer than the migration route, because on the present branch no constraint is touched.
+2. **The emptiness count is gone**, for the non-exposure reason in §5.
+
+Every row this route writes carries **`route = 'script'`** (addendum v4 §7):
+`/api/admin/telemetry-overhead` is not a member of the closed `InvocationRoute` union at
+`lib/retrieval-telemetry-core.ts:197` and adding one is forbidden by §6. `script` is an existing
+member, honest about what this is, and keeps every synthetic row separable from real traffic by one
+predicate. **Those rows live only on the branch.**
+
+## 7. Every attack, including the ones that broke nothing
+
+| # | Attack | Expected | Observed |
+|---|---|---|---|
+| 1 | `CDMSS_OVERHEAD_DB_ENDPOINT` = a production endpoint id | guard 4 refuses | **refuses**, 403 `endpoint_mismatch` — permanent case |
+| 2 | `CDMSS_OVERHEAD_DB_ENDPOINT` unset entirely | refuses, not passes | **refuses** — permanent case |
+| 3 | `VERCEL_ENV=production`, all else correct | guard 2 refuses | **refuses** — permanent case |
+| 4 | `VERCEL_ENV=preview`, ref `main` | guard 2 refuses | **refuses** — permanent case |
+| 5 | clock past the expiry | 410 | **410** — permanent case |
+| 6 | settlement `auditId: null` vs a real id | report both and the gap | **NOT MEASURABLE HERE.** Against the stub there is no `opd_note_audits` table and no FK, so both arms are identical and the route reports `NONE FOUND on the branch`. The parameter and the reporting are built and tested; **the gap is V's to measure** |
+| 7 | run the same cell twice in one invocation | does sample 1 differ? | **yes, markedly, even with no network**: `declare` first 0.175 ms vs median-of-rest 0.045 ms (**3.9×**); `settle_primary` 0.250 vs 0.042 (**6.0×**); `activerun` 0.066 vs 0.007 (**9.9×**). Pure JIT and module warm-up against a stub — against a branch, TLS and a possible compute resume are added on top. This is the evidence for §4's rule that the first sample is `n=1` and never a percentile |
+| 8 | any error path returns a `DATABASE_URL` substring | none may | **none does**, across all eight response shapes — permanent case |
+| A | delete guard 4 from the route | its three cases fail | **all three fail** — the guard is real, not source decoration |
+| B | guard 2 checks only `VERCEL_ENV` | the promoted-build case fails | **fails** |
+| C | push the expiry out a year | the 410 case fails | **fails**, and the source-pin case with it |
+
+Attacks A, B and C are mine, not the addendum's: §3 says a guard that exists only in source is not a
+guard, so each guard was deleted in turn to confirm its test actually depends on it.
+
+**⚠️ Attack 7 also exposed a limitation of the stub-side smoke run, recorded so nobody reads those
+numbers as latencies.** The `settle_*` cells against the stub log `terminal write rejected` and
+`settlement rejected: no_row`, because the stub returns `[]` for the compare-and-set. So the stub
+timings measure the **rejection** path, not the success path. That does not affect the route — against
+the branch the rows exist and the writes land — but it means the only trustworthy thing attack 7
+shows is the *ratio* between the first sample and the rest, not any absolute figure.
+
+## 8. What V does to take the measurement
+
+1. Create the Neon branch from production and note its `ep-…` endpoint id.
+2. In Vercel **Preview** scope only, set `CDMSS_OVERHEAD_MEASURE=1`,
+   `CDMSS_OVERHEAD_DB_ENDPOINT=<the branch endpoint id>`, and `DATABASE_URL` to the branch.
+3. Deploy `exp/rerank-telemetry` as a Preview. Guard 2 requires that exact ref, so a promoted build
+   cannot serve this route.
+4. `POST /api/admin/telemetry-overhead?cell=<cell>&max=<N>&conc=<C>&n=<n>` — **one cell per call**.
+   The first call creates the three tables on the branch.
+5. Save each response body; it carries `raw_samples_ms`. Nothing is written to disk from a serverless
+   function, so the response **is** the archive. Hash it and record the hash.
+6. Run `settle_primary` twice, once with `&audit=null`, for attack 6's comparison.
+
+**The archive is not committed**, per addendum v4 §6 and v3's standing decision. Part XI carries the
+numbers once they exist. **No archive location or hash is recorded in this issue, because no samples
+were taken.**
+
+## 9. Owed, flagged, and not acted on
+
+1. **DELETE THIS ROUTE.** `app/api/admin/telemetry-overhead/route.ts` and
+   `lib/__tests__/telemetry-overhead-guard.test.ts` are deleted before `exp/rerank-telemetry` merges
+   anywhere. Guard 5's hard expiry of **2026-08-20** is the enforcement, because nothing in CI
+   enumerates routes. **At the same time, remove `CDMSS_OVERHEAD_MEASURE`,
+   `CDMSS_OVERHEAD_DB_ENDPOINT` and the branch-scoped `DATABASE_URL` from Vercel**, and delete the
+   Neon branch.
+2. **§5's row-count verification is owed**, for the non-exposure collision in §5. Taking it needs
+   either the allow-list extended on a pass whose contract permits it, or the counts read from an
+   already-allowed surface. It was not smuggled.
+3. **The topology figure is 35 by source and 36 by the addendum.** Verification against the branch is
+   owed alongside the measurement.
+4. **The region finding, flagged and not acted on** (addendum v4 §13). Every statement crosses Mumbai
+   (`vercel.json:4`, `regions: ["bom1"]`) to Singapore (Neon `ap-southeast-1`). If the measurement
+   confirms the floor, **colocating the Vercel and Neon regions removes most of the added term** — and
+   it shortens every note's wall time rather than only telemetry's share, acting directly on the
+   throttling this programme exists to fix. That is outside this workstream and is V's call.
+5. **`lab_sql_audit`'s p05 as a floor is an inference, and is labelled one.** Every row in that table
+   is an ad-hoc analyst `SELECT`, not a single-row primary-key `UPDATE`, and the six sub-10 ms samples
+   are `lab_source` filesystem reads that never touched Postgres — so the true round-trip floor is
+   cleaner than 68 ms suggested, in the direction that strengthens the case.
+6. **Guard 1 is open by default.** `lib/admin-gate.ts` returns `null` when `ADMIN_TOKEN` is unset. It
+   is the weakest of the five, nothing is load-bearing on it, and guards 2 through 5 are what make the
+   route unreachable from production.
+7. Carried forward, untouched: step 19's query texts, the remaining 38 tests, per-role manifest
+   defects, the `retrieval_terminal_rejected` phase, the discriminated union, and Part X's findings
+   10a and 10b. **None was started.**
 
 ---
 
