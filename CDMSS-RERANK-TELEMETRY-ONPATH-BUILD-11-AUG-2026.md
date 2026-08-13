@@ -1,18 +1,127 @@
 # CDMSS Rerank Telemetry — on-path build report
 
-**Six issues, in reverse order.** Part VI is the reconciler pin, 12 August 2026, on top of
+**Seven issues, in reverse order.** Part VII moves the route pin out of the process it measures, 12
+August 2026, on top of `ee92c26`: it **rejects Part VI's route artifact pin**, which five attacks
+survived, and accepts everything else from that pass. Part VI is the reconciler pin, on top of
 `2eeeaac`: it **rejects Part V's reconciler pin**, which seven attacks survived, and accepts Part V's
 guard and cron-hash pins unchanged. Part V is the second pin repair, on top of `180e88f`. Part IV is
 the first, on top of `e5dc756`. Part III is the steps 14 to 17 build, on top of `177adc9`. Part II is
 the correction issue committed in `177adc9`, which withdrew twelve claims from the first issue. Part
 I is in git history at `90d8db1` and is not rewritten there.
 
-Every edit any part makes to an earlier one, in full. Part VI edits two claims in Part V: its
+Every edit any part makes to an earlier one, in full. Part VII edits one claim in Part VI: its
+attack table, which reported no survivors for a pin five attacks then defeated. Part VI edits two
+claims in Part V: its
 reconciler attack row, which reported ten of ten caught, and its `package.json` flag, which
 overstated the reach. Part V edited four sentences in Part IV: the flag count in its §1, the
 oracle's reach in its §2, and the two script citations in its §2 and §4. Part IV edited one sentence
 in Part III — the §3.2 citation of D11, from line 681 to 674. Part III edited one sentence in Part
 II's preamble. Nothing else in any earlier part is touched.
+
+---
+
+# PART VII — THE ARTIFACT PIN, MOVED OUT OF THE PROCESS IT MEASURES (on top of `ee92c26`)
+
+## 1. What this part did not do
+
+No production code changed: the reconciler route, `next.config.mjs`, `telemetry-db-stub.ts`, `telemetry-key-guard.test.ts`, both cron test files, `package.json` and `vercel.json` are byte-identical to `ee92c26`. None of tests 21, 22, 23, 24, 47, 48 or 63 was written. Part VI's guard pin, cron-hash pin, fail-closed stub decoder, guard legibility fix and five behavioural reconciler cases are accepted and untouched; only its route artifact pin is replaced.
+
+## 2. Why the artifact pin was rejected: one line of ordering
+
+`reconciler-races.test.ts` imported the route at module scope — which EXECUTES it — and then read
+the file from that same process. The package declares no `"type": "module"`, so tsx emits CommonJS
+and `node:fs` exports are a live object. The artifact being measured ran first and owned the ruler.
+
+Five attacks survived at 25 of 25. A shim rebuilt the reviewed bytes by truncating its own source at
+a marker and replaced `readFileSync` for its own path; on top of it, the auth gate removed
+(`?secret=anything` with no cron header went from 401 with zero statements to 200 with five), the
+2 600-second grace turned into a query parameter while the response still echoed
+`grace_seconds: 2600`, and every verdict relabelled `reconciled` with `more_may_remain` hard-coded
+false. Separately, `SELECT opd_settle_stale_retrieval_row($1, $2, $3)` after a refused
+compare-and-set — a body the decoder accepts, carrying neither the table name nor a write verb, so
+the classifier never saw it and every refused row was settled anyway. And `node:test`'s `test`
+replaced before the cases registered, so two of them ran empty and reported `ok`.
+
+## 3. What replaces it
+
+**A new file that never imports the route.** `lib/__tests__/reconciler-route-artifact.test.ts`
+imports `node:test`, `node:assert/strict`, `node:fs` and `node:crypto`, and nothing else — nothing
+from `app/`, nothing from `lib/`. `node --test` gives each file its own process, so in that one the
+route is never loaded, never executed, and has nothing to patch: no `fs`, no `crypto`, no `test`, no
+module cache. The whole pin moved there — the `lstat` gate, the raw SHA-256, the in-process git blob
+identity — with the baselines unchanged and still hard-coded.
+
+**A self-check, because the whole fix rests on that isolation.** Before hashing, the file READS
+`require.cache` — the process's own record of every module it has evaluated — and asserts no key
+lies under `app/api/admin/retrieval-telemetry-reconcile/`. It also asserts the cache is non-empty
+and names this file, so the check cannot pass vacuously. An import added later that reaches the
+route fails here rather than quietly restoring the old flaw. The file says in its own header why it
+is separate: merging it back into `reconciler-races.test.ts` to tidy up restores all five survivors.
+
+**`reconciler-races.test.ts` keeps its route import and every behavioural case.** A shim installed
+there can still neuter cases in that file, and it cannot hide — any route change carrying one fails
+the artifact file in a clean process.
+
+**Unrecognized now means failed.** The classifier required the literal table name AND an
+`update|insert|delete|merge` word, which is two ways to be invisible at once. It now decodes
+Postgres Unicode identifiers, so `U&"opd_audit_retrieval_telemetr\0079"` is seen as the table it
+names, and classifies any statement naming the table whatever verb it carries. Beyond that, every
+statement the route sends is matched against the five shapes it is known to issue, and anything else
+fails the case — which is what catches a settle function that names neither.
+
+**The summary is asserted from the response.** `tally` was asserted nowhere and `more_may_remain` only as a substring of the route source, which a shim keeps pristine. A slice of terminal rows must now tally `{won_by_a_later_write: 2}` with no `reconciled:` key at all, and `more_may_remain` must be true when the selected count equals the limit and false when it does not.
+
+## 4. Attacking the split pin
+
+Every mutation ran in a copy outside the repository, the worktree never modified, each copy deleted
+afterwards, no helper left in the tree. Recipe: `rsync` the tree excluding `node_modules`, `.git` and
+`.next`; symlink `node_modules`; prepend the shim or apply the edit with `perl -0pi -e`; run the
+targeted test files with the copy as `cwd`. Counting rule: one row per mutation, each run once;
+"caught" means a non-zero `# fail` from the files it was run against.
+
+| class | attacks | caught | survived |
+|---|---:|---:|---:|
+| the five that survived the in-process pin, re-run unchanged | 5 | 5 | 0 |
+| the shim patching `node:crypto` instead of `node:fs`; the shim deleting its own module-cache entry; the route importing the artifact test file; the artifact file made to import the route | 4 | 4 | 0 |
+| a statement naming the table with no write verb; one naming it through a Unicode identifier; one the fake table has never seen | 3 | 3 | 0 |
+| a comment-only route change; a whitespace-only route change; the route deleted, emptied, and made syntactically invalid | 5 | 5 | 0 |
+
+**One control, and it behaved as it must.** A second test file importing the route was added and the artifact file run alone: it passed, 3 of 3. That is the property, not a survivor — `node --test` isolates by file, so another file's imports cannot contaminate this one's process, and the self-check is scoped to the process it runs in rather than to the repository.
+
+**The deleted, emptied and syntactically-invalid route each fail in a NAMED case now** — "artifact —
+the reconciler route is byte-for-byte the reviewed file" — where before the split they made
+`reconciler-races.test.ts` fail to load with zero of twenty-five cases registering.
+
+**And the behavioural cases stay load-bearing.** The settle-function attack is caught twice over,
+independently: the artifact file's hash, and four behavioural cases in a separate process. One
+earlier route change defeated the hash outright and still failed nine of them.
+
+## 5. The gate
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `npm test` | `# tests 3030 · # pass 3030 · # fail 0 · # skipped 0`, counting `node --test` cases. 3030 − 3026 = 4 added: `reconciler-route-artifact.test.ts` is new at 3, and `reconciler-races.test.ts` goes 25 → 26, having lost the artifact case to the new file and gained the two summary cases. Moving a case between files changes no total |
+| 2 | `npm run typecheck` | exit 0 |
+| 3a | `env -u CDMSS_TELEMETRY_HMAC_KEY VERCEL=1 VERCEL_ENV=production npm run build` | the expected production-precondition failure occurred: non-zero exit, output naming `CDMSS_TELEMETRY_HMAC_KEY`. Not a green build |
+| 3b | `VERCEL=1 VERCEL_ENV=production CDMSS_TELEMETRY_HMAC_KEY=… npm run build` | exit 0 |
+| 4 | `npm run architecture:check` | `all 8 rules + coverage green` |
+| 5, 6 | `npm run architecture:map && git diff --exit-code HEAD -- lib/architecture/map.generated.ts` | `wrote … (90300 bytes)`, then exit 0, nothing staged |
+| 7 | `npm run reasoning:registry && git diff --exit-code HEAD -- data/reasoning-registry/prompts.generated.json` | exit 0, nothing staged |
+| 8 | `npm run reasoning:governance` | `GREEN: 0 ungoverned model calls` |
+| 9 | `npm run changelog:coverage` | `GREEN: all 19 shipped engine versions documented (30 versioned entries)` |
+
+Both generated artifacts are byte-identical to `ee92c26` by `git hash-object` against `git rev-parse ee92c26:<path>`, not merely unchanged against `HEAD`.
+
+## 6. Flagged, not decided
+
+**New.** The self-check reads `require.cache`, which exists because tsx emits CommonJS here. If the
+package ever gains `"type": "module"`, that list is gone and the check silently loses its subject —
+it would need `module.builtinModules`-era plumbing or an ESM loader hook instead. The assertion that
+the cache is non-empty is what would turn that into a failure rather than a false pass, but the
+replacement is not designed.
+
+Unchanged, with V already: D9's contradiction about which states the reconciler alone may reach,
+per-role settlement states, and whether the route stays a change-detector once the pin holds.
 
 ---
 
@@ -78,6 +187,7 @@ Every mutation ran in a copy outside the repository, the worktree never modified
 | class | attacks | caught | survived |
 |---|---:|---:|---:|
 | the seven that survived Part V's pin, re-run unchanged | 7 | 7 | 0 |
+| ⚠️ **withdrawn as a claim about the PIN.** Every mutation below was caught, and five forms were not tried; all five defeat this pin. Part VII §2 names them and moves the pin into its own process | — | — | — |
 | new forms: a comment-only route change; a whitespace-only route change; a second db client imported under another name; a write moved into a module the route imports; the route deleted; the route emptied; a module the route imports broken | 7 | 7 | 0 |
 | stub bodies, through the decoder directly: a batch, non-JSON, an array, a bare string, a number, `query` as a number, `params` as a string, `query` absent | 8 | 8 | 0 |
 | guard attacks from Part V, re-run after the legibility change | 14 | 14 | 0 |
