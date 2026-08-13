@@ -63,8 +63,20 @@ export async function recordTelemetryFailure(row: TelemetryFailureRow): Promise<
 }
 
 /**
- * Read the failure phases recorded for one run, most recent first. Used ONLY by the reconciler
- * (D13), which needs to know whether a stalled row stalled with evidence or in silence.
+ * Read the failure phases recorded for one run, most recent first.
+ *
+ * ⚠️ TWO READERS, NOT ONE (corrected 13 Aug 2026, addendum v2 item 0a). This said "Used ONLY by the
+ * reconciler (D13)", and addendum v1 item 2 preserved that line on the grounds that it was a true
+ * claim about who reads. It was not true when it was written. The readers are:
+ *
+ *   1. the reconciler (D13), deciding whether a stalled row stalled with evidence or in silence;
+ *   2. SETTLEMENT, through `stateForUnwrittenRun` in `lib/retrieval-settlement.ts` — imported at
+ *      its line 19 and called at its line 110 — for a run still at revision 0, whose outcome D12's
+ *      transition guard cannot apply. That is D9 as amended by addendum v1 item 2: these states are
+ *      produced only through `reconcilerStateFor`, and settlement may call it.
+ *
+ * Both readers ask the same question of the same rows and get the same mapping, which is why the
+ * second reader was easy to miss and why the count is now written down rather than described.
  *
  * Failure rows are HISTORICAL: they are never deleted and never consumed, and a successful terminal
  * state always wins over earlier failure evidence.

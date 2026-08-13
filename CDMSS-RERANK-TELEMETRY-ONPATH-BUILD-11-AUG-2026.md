@@ -1,6 +1,10 @@
 # CDMSS Rerank Telemetry — on-path build report
 
-**Eight issues, in reverse order.** Part VIII is the addendum v1 pass, 13 August 2026, on top of
+**Nine issues, in reverse order.** Part IX is the addendum v2 pass, 13 August 2026, on top of
+`10f4a65`: test 60 and test 1 — the two tests that prove the safety claim — plus a shared judge
+server and three corrections owed from pass 1. It **rejects nothing** from Part VIII; it corrects one
+false statement Part VIII repeated and two line citations Part VIII got wrong. **No production file
+changed except one comment.** Part VIII is the addendum v1 pass, 13 August 2026, on top of
 `32f0f79`: four mechanical items — the two file-mode assertions deleted with both re-baseline
 procedures written down, D9's wording finished at five sites, the test 63 case renumbered, and step
 13 built as the five edits it actually is, with test 42 in two parts. It **rejects nothing** from
@@ -14,7 +18,9 @@ the first, on top of `e5dc756`. Part III is the steps 14 to 17 build, on top of 
 the correction issue committed in `177adc9`, which withdrew twelve claims from the first issue. Part
 I is in git history at `90d8db1` and is not rewritten there.
 
-Every edit any part makes to an earlier one, in full. Part VIII edits two things in this report: the
+Every edit any part makes to an earlier one, in full. Part IX edits two things in Part VIII: its §4
+claim that `lib/retrieval-telemetry-failure-store.ts:66` was true, which it was not, and its §6 line
+citation for the pinned arms. It changes nothing in Parts I to VII. Part VIII edits two things in this report: the
 §6 pointer at line 223, which named the wrong file for the route baseline, and report item 23, whose
 `lib/sql-guard-core.ts` question is now closed. It changes nothing in Parts I to VII beyond that.
 Part VII edits one claim in Part VI: its
@@ -25,6 +31,323 @@ overstated the reach. Part V edited four sentences in Part IV: the flag count in
 oracle's reach in its §2, and the two script citations in its §2 and §4. Part IV edited one sentence
 in Part III — the §3.2 citation of D11, from line 681 to 674. Part III edited one sentence in Part
 II's preamble. Nothing else in any earlier part is touched.
+
+---
+
+# PART IX — TEST 60 AND TEST 1: THE TWO TESTS THAT PROVE THE SAFETY CLAIM (on top of `10f4a65`)
+
+**13 August 2026.** Governed by `CDMSS-RERANK-TELEMETRY-ADDENDUM-v2-13-AUG-2026.md`, added to the
+commit unedited.
+
+**No production file changed except one comment** — item 0a's, in
+`lib/retrieval-telemetry-failure-store.ts`, proved comment-only by stripping comments and comparing
+against `10f4a65`. `lib/retrieve.ts`, `lib/rerank.ts`, `lib/expand.ts` and `lib/multi-query.ts` are
+byte-identical. No seam, export, parameter or hook was added to make any test run. **Nothing was
+deployed, no migration was run, and no production database was touched.**
+
+## 1. Commit and document hash
+
+| | |
+|---|---|
+| Parent | `10f4a653138226a0f17f8ae60046e9fdbef02bfb` |
+| This commit | *on top of `10f4a65`, not an amend and not a rebase — see `git log`* |
+| SHA-256, `CDMSS-RERANK-TELEMETRY-ADDENDUM-v2-13-AUG-2026.md` | `10c94bb95679c598062e546666e85c768d430d3291a1838b3a382f0074606ab9` |
+
+## 2. The gate
+
+**Pre-gate, before anything was staged:** `git status --short lib/architecture/map.generated.ts` →
+**empty**.
+
+| # | Command | Result |
+|---|---|---|
+| 1 | `npm test` | **GREEN — 3050 of 3050**, 0 fail (3038 at the parent, +12 new cases) |
+| 2 | `npm run typecheck` | clean |
+| 3 | `npm run build`, unkeyed production | **fails as required**, naming `CDMSS_TELEMETRY_HMAC_KEY` |
+| 3 | `npm run build`, keyed | **succeeds** |
+| 4 | `npm run architecture:check` | all 8 rules + coverage green |
+| 5 | `npm run architecture:map` | 90 300 bytes, **byte-identical to the committed file** |
+| 6 | determinism (`git add … && map && git diff --exit-code`) | exit 0, nothing left staged |
+| 7 | `npm run reasoning:registry && git diff --exit-code …` | exit 0, unchanged |
+| 8 | `npm run reasoning:governance` | GREEN: 0 ungoverned model calls |
+| 9 | `npm run changelog:coverage` | GREEN: 19 engine versions documented |
+
+The map is unchanged because `lib/__tests__` is not scanned as a subsystem, so the new imports create
+no edge. The total is **observed, not predeclared**.
+
+### The three additions from addendum v2 §10
+
+**Wall clock of the new files.** A 90-second judge timeout with no retry (`lib/llm.ts:41`) would turn
+a routing mistake into a slow green, so this is measured rather than assumed:
+
+```text
+lib/__tests__/retrieval-ranking-invariance.test.ts   0.24 s   (4 cases)
+lib/__tests__/instrumentation-off.test.ts            0.24 s   (8 cases)
+lib/__tests__/judge-server-stub.ts                   — not a test file; no independent runtime
+```
+
+Nothing approached the timeout, so every judge request was answered by the local server.
+
+**No socket to anything but 127.0.0.1, and how that was confirmed.** Not argued from the
+configuration — measured. Each file was re-run under a `--require` preload that wraps
+`net.Socket.prototype.connect` and records the ACTUAL connected peer from the socket's own
+`remoteAddress:remotePort` on its `connect` event, plus every `dns.lookup`:
+
+```text
+retrieval-ranking-invariance   peers: 127.0.0.1:52377     dns: 127.0.0.1     pass 4  fail 0
+instrumentation-off            peers: 127.0.0.1:52381     dns: 127.0.0.1     pass 8  fail 0
+```
+
+The peer list is the strong form: an IP-literal connection to an external host would need no DNS and
+would still appear there. The only peer either file ever connected to is the loopback port the judge
+server was listening on.
+
+**`RERANK_BACKEND` and `OPENROUTER_API_KEY` in the shell that ran the tests, read BEFORE deletion.**
+Both were **unset**, as were `OLLAMA_BASE_URL`, `LLM_PIPELINE`, `GCP_PROJECT`, `GCP_SA_KEY`,
+`GEMINI_ALL`, `GEMINI_UTILITY` and `GEMINI_VIA_OPENROUTER`. So the outbound-HTTPS hazard addendum v2
+§5 names was not armed on this machine. The helper deletes both anyway: had `RERANK_BACKEND=cohere`
+been exported, `rerank()` would have taken the env-default cohere arm and
+`cohereRelevanceScores` — which reads the key directly at `lib/rerank.ts:118` with **no
+`miniPipeline()` gate** — would have posted to `https://openrouter.ai/api/v1/rerank` for real.
+
+## 3. The `openai/_shims` check, which the whole pass rests on
+
+Run in-process before anything was built on it:
+
+```text
+openai/_shims fetch === globalThis.fetch          : false
+typeof shims.fetch                                : function
+after a stub-style replacement of globalThis.fetch:
+  shims.fetch === globalThis.fetch                : false
+  shims.fetch === the ORIGINAL globalThis.fetch   : false
+openai/core.js:144                                : this.fetch = overriddenFetch ?? index_1.fetch
+```
+
+The SDK binds its fetch at client CONSTRUCTION (`lib/llm.ts:41`) to the node-fetch@2 shim, which uses
+the `http` module. `telemetry-db-stub.ts:103` replaces `globalThis.fetch` and never touches that. So
+a judge request bypasses the database stub and reaches a real loopback socket — which is what lets one
+process hold both stubs at once.
+
+## 4. The seven routing fragments, and their pairwise non-overlap
+
+| # | What | Ran? | Fragment |
+|---|---|---|---|
+| S1 | `embedding_v2` probe | no | `/information_schema\.columns/` |
+| S2 | plainto lexemes | no | `/::text AS q/` |
+| S3 | DF estimate | no | `/EXPLAIN \(FORMAT JSON\)/` |
+| S4 | vector leg | **yes** | `/ROW_NUMBER\(\) OVER \(ORDER BY embedding <=> \$1::vector\)[\s\S]*NOT LIKE 'labq:%'/` |
+| S5a | BM25 default | **yes** | `/ts_rank_cd\(text_tsv, plainto_tsquery/` |
+| S5b | BM25 discriminating | no | `/WITH cand AS \(/` |
+| S6 | normative leg | no | `/ROW_NUMBER\(\) OVER \(ORDER BY embedding <=> \$1::vector\)[\s\S]*source = ANY\(\$3\)/` |
+| S7 | final hydrate | **yes** | `/COALESCE\(source_quality_weight/` |
+
+**Re-verified by execution, not by reading the table.** The last case in the invariance file walks
+every statement the runs actually issued and asserts each is matched by **exactly one** of the eight
+fragments, and separately that S6's fragment does not capture the vector statement. S4 and S6 are
+built from the same template and share their first line byte for byte; they differ only in the
+rendered filter, which is why S4 is anchored on `NOT LIKE 'labq:%'` and S6 on `source = ANY($3)`. That
+is also why no `restrictSources` is passed: it would add `source = ANY($3)` to the vector leg too, and
+S4's fragment would then match **nothing** while S6's captured both — a failure that presents as a
+missing route rather than as a regex problem.
+
+## 5. Test 60's non-vacuity assertions, and what each catches
+
+| # | Assertion | What it catches |
+|---|---|---|
+| 1 | exact hit ids in exact order, **on both sides** | a fixture or fusion change that leaves the two sides agreeing on the wrong answer |
+| 2 | `meta.pool_size` **by value** — 4 in case A, 12 in case B | the empty-fusion early return at `lib/retrieve.ts:540-546`, which emits **identical meta field names** to the main return, including both conditional spreads under identical guards. Only three values differ; the shapes do not |
+| 3 | `stub.matching(RE).length` delta of exactly 2 per statement | a missed route. `telemetry-db-stub.ts:115` returns `[]` for anything unmatched and all three legs at `:508`, `:509`, `:511` swallow every error, so without this a missing route is indistinguishable from an empty leg |
+| 4 | `fusedCandidateIds`, `hydratedCandidateIds`, `orderedFinalCandidateIds` non-empty and correct | an on side that wrote nothing, which would make invariance trivially true |
+| 5 | case B's reranked order **differs** from the input order | scores initialise to zero (`:414`) and the sort at `:523` is stable, so an all-zero judge returns input order and looks perfectly invariant |
+| 6 | `expectedBatchCount === 3`, with the observed hydrated count asserted alongside | fixture drift, which then shows up as a number rather than a mystery |
+
+Case B's observed values: **12 hydrated candidates, 3 batches**, boundaries
+`[{0,5},{5,10},{10,12}]`, every outcome `success`. `JUDGE_BATCH` is 5 and is **not exported**
+(`lib/rerank.ts:58`), so 5 is hardcoded in the test with that citation and the expectation derived
+from it — `Math.ceil(12 / 5)`.
+
+**Batch order.** `capture.batches` is in **completion** order: the push at `lib/rerank.ts:507` is the
+last statement of an async callback inside the `Promise.all` at `:427`, and the repair sort lives only
+in `buildRetrievalPayload` (`lib/retrieval-capture.ts:231-233`), which uses `.slice()` and never
+repairs in place. **The test sorts a copy by `index` before comparing.** Reading `batches[0]` and
+expecting `{start: 0, end: 5}` would be a race.
+
+**Scorer context.** v11's test 60 names it alongside the ordered output, and `RetrieveResult` carries
+none — so the test renders it from `hits` on both sides with the production renderer
+`buildCitedContext` (`lib/citations-core.ts:111`) and compares the two strings, plus a check that the
+rendering is non-empty. No HMAC is computed: these are the exact bytes an HMAC would be taken over, so
+comparing them is the same claim without a key.
+
+Not asserted, per addendum v2: `intendedProvider` is the hardcoded `'vertex'` (`lib/rerank.ts:511`)
+even when served locally, and a local server yields `servedProvider: 'ollama'` and
+`served_route_class: 'local'`. Both are correct behaviour.
+
+## 6. The source pin, quoted, and the attack that proves it fires
+
+```ts
+const call = (opts: string, cap?: string) => `await retrieve(QUERY, ${opts}${cap ? `, ${cap}` : ''});`;
+const CODE = SELF.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+const count = (needle: string) => CODE.split(needle).length - 1;
+
+for (const [opts, cap] of [['OPTS_A', 'captureA'], ['OPTS_B', 'captureB']] as const) {
+  assert.equal(count(call(opts)), 1, `exactly one TWO-argument retrieve call for ${opts}`);
+  assert.equal(count(call(opts, cap)), 1, `exactly one THREE-argument retrieve call for ${opts}`);
+}
+assert.equal(count(call('OPTS_A', 'captureB')), 0, 'the counter can return 0 — it is not matching everything');
+```
+
+The needles are **built, never written as literals**, so the pin cannot be satisfied by its own source
+text; the trailing `;` is what stops the two-argument needle matching inside the three-argument call.
+
+**The attack that proves it fires, and it is the most important result in this part.** Giving the off
+side a capture — the vacuous test addendum v2 §15 defect 1 describes — produced:
+
+```text
+ok 1 - 60 A — useReranker false: instrumentation on and off return byte-identical results
+ok 2 - 60 B — useReranker true: identical results, batch boundaries and prompts across on and off
+not ok 3 - 60 — THE CALL-FORM PIN     exactly one TWO-argument retrieve call for OPTS_A: 0 !== 1
+ok 4 - 60 — the seven routing fragments are pairwise non-overlapping
+```
+
+**Both behavioural cases still passed.** Every deep-equal, every count, every capture assertion was
+satisfied by a test that proved only that `retrieve` is deterministic against a fixed stub. The source
+pin is the single thing standing between this file and that.
+
+## 7. Every attack, including the ones that broke nothing
+
+| # | Attack | Expected | Observed |
+|---|---|---|---|
+| 1 | delete one stub route (S5a) | case A fails on non-vacuity 3 | **fails** — but on non-vacuity **1**, which is asserted first: removing the BM25 leg changes the fusion to `[101,102,103,104]` |
+| 1b | route deleted with the earlier assertions neutralised | 3 fires | attempt abandoned — the neutralisation left multi-line assertions half-commented and produced a syntax mess rather than a clean result. Superseded by 1c |
+| 1c | an extra uninstrumented run inside case A's body — results unchanged, only counts move | non-vacuity 3 fires alone | **fires**: `3 !== 2` on S4. This is the clean proof that assertion 3 catches a route-count change independently of the ordering assertions |
+| 2 | **give the off side a capture** | the source pin fails | **fires, and ONLY it** — see §6. Cases A and B both still pass |
+| 3 | judge returns all-equal scores | case B fails on non-vacuity 5 | **fails** |
+| 4 | judge returns all-zero scores | case B fails | **fails** |
+| 5 | malformed `content` string | report what happens | all three batches soft-fail; **outcome `parse_failure`**, provider `ollama` and model `test-judge` **preserved** (D15's inner try working), scores stay at initialiser 0, ranking collapses to input order, **nothing throws**, case B fails |
+| 6 | omit `usage` from the response | report what happens | **nothing throws**; both `typeof` guards go false, `promptTokens` and `completionTokens` become `null`, and the batch still records `outcome: 'success'`. With `usage` present the same batch records 11 and 7. `usage` is omitted by default |
+| 7 | swap two fixture rows so RRF ties | report whether the result changes | **the result CHANGES.** Two ids given the same rank tie exactly at `1/67`; swapping their order in the fixture swapped them in the output — ties resolve by `Map` insertion order (`lib/retrieve.ts:520-523`), and the sort at `:528-529` reads only the value. The committed fixture is deliberately tie-free, verified by computing every RRF total |
+| 8 | run each case twice in one body | both runs must agree | **agreed.** Case A `101, 103, 105, 102` twice; case B `112, 108, 101, 110` twice. **No determinism defect found.** Run as a separate probe, not added to the file — extra `retrieve` calls would themselves trip the call-form pin |
+| 9 | test 1: add a capture to one side only | the case still passes | **passes**, and is kept as permanent case `1a'` |
+
+Attacks 5, 6, 7 and 8 were run as throwaway probes against the real functions and the real helper,
+then deleted; 1, 1c, 2, 3 and 4 were run by patching the test file and restoring it from a byte-exact
+backup, verified by hash after each.
+
+## 8. The four dead expressions in `rerankJudge`
+
+v11 says instrumentation off "executes nothing". For `rerankJudge` that is **false**. These four run
+whether or not a capture exists, and are consumed only inside the `if (capture)` at
+`lib/rerank.ts:506`:
+
+```text
+lib/rerank.ts:460   evidence = evidenceFromCompletion(r)
+lib/rerank.ts:462   promptTokens
+lib/rerank.ts:463   completionTokens
+lib/rerank.ts:496   the outcome precedence (missing > nonnumeric > success)
+```
+
+Amended to **"executes nothing observable"**, and recorded in the test file as dead work rather than
+asserted away. `expandQuery` is the contrast and is asserted as such: there `evidenceFromCompletion`
+sits **inside** the guard at `lib/expand.ts:36`, so with no capture nothing runs at all.
+
+## 9. Test 1's seven cases
+
+| # | Function | The observable used |
+|---|---|---|
+| 1 | `retrieve` | two uninstrumented runs deep-equal, own keys `['hits','expandedQuery','meta']`, per-statement counts equal, and **zero** telemetry statements |
+| 1' | `retrieve`, one side captured | the returned value is identical; instrumentation is observable only in the capture |
+| 2 | `rerank` | `undefined` reaches `judgeFn` and `cohereFn` as the third argument; a generic throw soft-falls to input order with `recordSoftFailure` returning at `:278` |
+| 3 | `rerankJudge` | identical returned array, identical request bodies at the judge server, and the four dead expressions recorded |
+| 4 | `rerankCohere` | the `CapturedBatch` literal at `:162-174` exists only on the instrumented side; injected `fetchImpl`, so no socket at all |
+| 5 | `expandQuery` | identical expansion text; `capture.expansion` set only on the instrumented side |
+| 6 | `retrieveMultiQuery` | the house pattern — three arms, every one `hadCapture: false` |
+| 7 | **the `MatchInput` seam** | `defaultRecall` provably ran (its corpus read appears in the stub) and wrote **no** telemetry statement |
+
+Case 7 is v11 report item 11's requirement, which addendum v2 revision 1 dropped and §12 restored.
+Counts are taken with `stub.matching(RE)`, never by sequence position: `stub.calls` order is not
+deterministic for S4, S5 and S6, which are dispatched in one `Promise.all`.
+
+The "no telemetry own property" assertion revision 1 asked for was **dropped**: no return type in the
+six functions has ever carried such a property on any code path, so it passes unconditionally and
+proves nothing. The returned object's own keys are pinned against a frozen list instead.
+
+## 10. Item 0 — the three corrections owed from pass 1
+
+**0a. `lib/retrieval-telemetry-failure-store.ts:66-67` was a false statement, and addendum v1 said it
+was true.** It read "Used ONLY by the reconciler (D13)". There are two readers: the reconciler, and
+**settlement**, through `stateForUnwrittenRun` — `lib/retrieval-settlement.ts:19` imports
+`failurePhasesForRun` and `:110` calls it for a revision-0 run. Addendum v1 item 2 explicitly
+preserved the line on the grounds that the claim "is about who reads them, and it is true", and Part
+VIII §4 repeated that reasoning. Both were wrong. The comment now names both readers and says why the
+second was easy to miss: they ask the same question of the same rows and get the same mapping.
+**Comment only**, proved by comparison against `10f4a65`.
+
+**0b. The import-scanner hazard, recorded permanently.** `scripts/lib/import-scan.mjs` matches imports
+with one regex over raw file text and **does not skip comments**: `import` + `type` + any run of
+characters containing no quote + `from` + a quoted specifier. In pass 1 a comment that spelled those
+two keywords adjacently bound to the real statement's specifier below it and added a `type` edge to
+`lib/architecture/map.generated.ts`. This is a **fourth mechanism** in the class addendum v1 §3.2
+catalogues, alongside the `^(let|var) ` scan, the non-exposure walk and the import form itself.
+
+**It recurred in this pass, in a different check, and was caught by running it.** The call-form pin in
+test 60 first counted over raw source and read the file's own header illustration as a second
+two-argument call (`2 !== 1`). The pin now strips comment lines before counting, and says so. The
+general rule worth carrying: **any text-level check over a source file must decide explicitly whether
+comments are in scope**, because the file's own explanation of the check is exactly the text most
+likely to trip it.
+
+**0c. Two line citations in Part VIII were wrong.** Its §6 said the pinned arms are "at lines 215 and
+216 of the route". They are at **246 to 248** — the declaration at 246 and the two calls at 247 and
+248. Lines 215 and 216 are part of the comment explaining the spread. Corrected in place.
+
+**And one left alone, deliberately.** The pass-1 commit message says "three source cases" where test
+42 has four (B5, B6, B7 and B7b). An amend is forbidden, so it stands uncorrected in git history and
+is recorded here instead.
+
+## 11. Amendments and file-contract additions
+
+**Two v11 amendments recorded by this pass:**
+
+1. **Test 60's wording**, "the same injected collaborators" → "an identical environment on both
+   sides". This was **already settled in addendum v1 decision 9** and is restated, not made here;
+   v1's wording binds. `retrieve`, `rerankJudge` and `expandQuery` have no injection parameter at all.
+2. **Test 1's wording**, "executes nothing" → "executes nothing observable", because of the four
+   expressions in §8.
+
+With pass 1's finding on test 42 — that v11 asked for two things the harness cannot execute — that is
+**three instances of the same pattern**: v11 asking for something the code cannot provide. Recorded
+together so the pattern is visible rather than rediscovered a fourth time.
+
+**Two additions to v11's file contract.** `lib/__tests__/instrumentation-off.test.ts` and
+`lib/__tests__/judge-server-stub.ts` are not on v11's create list.
+`retrieval-ranking-invariance.test.ts` is. The helper is deliberately **not** named `.test.ts`, so the
+`lib/**/__tests__/*.test.ts` glob does not collect it — the same convention as `telemetry-db-stub.ts`.
+
+**Two v11 requirements revision 1 silently narrowed, both restored:** test 60's scorer context (§5)
+and report item 11's `MatchInput` seam (§9, case 7).
+
+## 12. Determinism
+
+Both runs agreed on both cases — see attack 8. **No determinism defect was found.**
+
+## 13. Flagged, not decided; and defects found and left alone
+
+1. **The RRF tie behaviour is real and is load-bearing for this test** (attack 7). Ties resolve by
+   `Map` insertion order, so a fixture with tied RRF totals would make the expected order an accident
+   of row order rather than a derivation. The committed fixture is tie-free by construction and that
+   was verified by computing every total. Flagged because a future edit to the fixture could
+   reintroduce a tie silently — the test would still pass, but it would be pinning the wrong thing.
+2. **`intendedProvider` is hardcoded `'vertex'`** at `lib/rerank.ts:511` even when the batch is served
+   locally. Correct behaviour per D16 and deliberately not asserted on, but it means a manifest read
+   naively would report Vertex for a call that never left the machine. Logged, not fixed.
+3. **The judge timeout is 90 000 ms with no retry.** An unrouted judge server holds a test for 90
+   seconds rather than failing fast. This pass measures wall clock (§2) precisely so that a routing
+   mistake cannot present as a slow green; no threshold is proposed.
+4. Carried forward, untouched and still owed: per-role manifest defects and the canary-gate test from
+   decisions §3, the `retrieval_terminal_rejected` phase (decisions §8, blocked on the D13
+   unknown-phase check), the `PerRunSettlementResult` discriminated union, and steps 19 and 21. **None
+   was started**, per addendum v2 §1.
+5. Nothing in this pass was found unsettled between addendum v2 and the v11 kickoff, and **no test
+   required a production change** — the one thing §14 says this pass must not do.
 
 ---
 
@@ -273,7 +596,10 @@ pass 0 opens it. No `closeInvocation` call was added. No `pairId`, `replicate` o
 
 **The spread, with the reason stated correctly in the code.** What keeps the pinned arms clean is the
 injected `recall`: `matchLowValueCare` resolves `deps.recall ?? defaultRecall` at `lib/lvc.ts:666`,
-passes A and B supply `pinned = { recall: async () => captured }` at lines 215 and 216 of the route,
+passes A and B supply `pinned = { recall: async () => captured }` at lines 246 to 248 of the route
+— the declaration at 246 and the two calls at 247 and 248 — <!-- corrected 13 Aug 2026, addendum v2
+item 0c: this said "lines 215 and 216", which are part of the comment explaining the spread, not the
+pinned arms -->
 and `defaultRecall` — the one and only reader of `input.telemetry`, at `lib/lvc.ts:204` — never runs
 on them. The spread is used anyway, as defence in depth against a later change removing that
 injection, and the code comment says that and not the false reason.
