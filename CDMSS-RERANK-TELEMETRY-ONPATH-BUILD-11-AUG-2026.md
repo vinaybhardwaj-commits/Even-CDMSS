@@ -1,6 +1,9 @@
 # CDMSS Rerank Telemetry — on-path build report
 
-**Twelve issues, in reverse order.** Part XII is the addendum v5 pass, 13 August 2026, on top of
+**Thirteen issues, in reverse order.** Part XIII is the addendum v6 pass, 13 August 2026, on top of
+`123041b`: four corrections, of which the first two are the reason the measurement could not have
+run and the production denylist could not have fired. **Pass 5 was correct on all eight fixes it was
+given.** Part XII is the addendum v5 pass, 13 August 2026, on top of
 `cdc9c34`: eight corrections to the measurement route before it runs against anything, the highest
 being a **password disclosure in the 500 body**. No new capability. It corrects two sentences in
 Part XI in place. Part XI is the addendum v4 pass, 13 August 2026, on top of
@@ -30,7 +33,7 @@ the first, on top of `e5dc756`. Part III is the steps 14 to 17 build, on top of 
 the correction issue committed in `177adc9`, which withdrew twelve claims from the first issue. Part
 I is in git history at `90d8db1` and is not rewritten there.
 
-Every edit any part makes to an earlier one, in full. Part XII edits three sentences in Part XI: the 500-body claim, the response-shape count, and the expiry claim — all three struck through in place with the correction beside them. It changes nothing in Parts I to X. Part XI edits nothing in any earlier part.
+Every edit any part makes to an earlier one, in full. Part XIII edits nothing in any earlier part; it corrects a comment inside the route it shares with Part XI and XII. Part XII edits three sentences in Part XI: the 500-body claim, the response-shape count, and the expiry claim — all three struck through in place with the correction beside them. It changes nothing in Parts I to X. Part XI edits nothing in any earlier part.
 Part X edits one thing in Part IX: it adds
 §12a, an erratum stating that Part IX's invariance claim covers one `opts` shape and not
 production's. It changes nothing in Parts I to VIII. Part IX edits two things in Part VIII: its §4
@@ -46,6 +49,163 @@ overstated the reach. Part V edited four sentences in Part IV: the flag count in
 oracle's reach in its §2, and the two script citations in its §2 and §4. Part IV edited one sentence
 in Part III — the §3.2 citation of D11, from line 681 to 674. Part III edited one sentence in Part
 II's preamble. Nothing else in any earlier part is touched.
+
+---
+
+# PART XIII — THE POOLER SUFFIX (on top of `123041b`)
+
+**13 August 2026.** Governed by `CDMSS-RERANK-TELEMETRY-ADDENDUM-v6-13-AUG-2026.md`, added to the
+commit unedited. Four corrections, no new capability.
+
+**Pass 5 was correct on all eight fixes it was given.** These are defects found afterwards, and the
+first is the orchestrator's own — the bare endpoint id was handed over with `-pooler` already
+stripped by hand, and the build was never told to normalise the same way.
+
+**No measurement was taken, nothing was deployed, no production database was touched, no migration
+was aimed by hand, and no threshold is proposed.** Zero sockets were opened, to any host.
+
+| | |
+|---|---|
+| Parent | `123041b47afb96ebc140c0fcda43d48dde4f9e49` |
+| SHA-256, `CDMSS-RERANK-TELEMETRY-ADDENDUM-v6-13-AUG-2026.md` | `bc2eb98b1f3233680f42c961835badd34f93ff19a469a1b2667c32c3da17320a` |
+
+## 1. Fix 1 — `neonEndpointId` did not strip a trailing `-pooler`
+
+**Confirmed by measurement before anything was changed.** `grep -n "pooler"` over the route returned
+nothing, and the parse against real-form hosts gave:
+
+```text
+branch POOLED  url → ep-young-moon-aofuyr1u-pooler   vs expected ep-young-moon-aofuyr1u   → endpoint_mismatch
+branch direct  url → ep-young-moon-aofuyr1u          vs expected ep-young-moon-aofuyr1u   → PASSES
+prod   POOLED  url → ep-super-union-aoys3lle-pooler  vs denylist ep-super-union-aoys3lle  → endpoint_mismatch
+prod   direct  url → ep-super-union-aoys3lle         vs denylist ep-super-union-aoys3lle  → forbidden_endpoint
+```
+
+A real connection string uses the pooled host, so **every request would have returned
+`endpoint_mismatch` and the measurement could not have run at all.**
+
+**The fix.** One trailing `-pooler`, stripped case-insensitively after the label matches, and the two
+environment values normalised the same way. Normalised **in the code, not in the variables**: telling
+the operator to set the `-pooler` form instead would leave the denylist blind to the direct host,
+which is the worse of the two failures.
+
+Four stated behaviours, each with a test:
+
+| input | result | why |
+|---|---|---|
+| `ep-x-pooler` | `ep-x` | the real case — Neon exposes both for one compute |
+| `ep-pooler-test-000001` | unchanged | `pooler` in the middle is part of the id |
+| `ep-x-pooler-pooler` | `ep-x-pooler` | one occurrence only; Neon never emits this and stripping repeatedly would invent a rule |
+| `ep-pooler` | unchanged | the remainder is not a valid id, so it is not collapsed to a bare `ep` |
+
+## 2. Fix 2 — the denylist did not fire on production's pooled host
+
+Same root cause, higher severity. Production's pooled host parsed to `…-pooler`, the denylist held
+the bare id, so `forbidden_endpoint` **did not fire**; the request fell through to
+`endpoint_mismatch`. Nothing was exposed, because it still refused — but the guard that exists
+specifically to catch production did not catch it, and had both variables been set to production
+values the route would have run.
+
+**Proven by execution with a pooled host, not by inspection**, as the addendum required:
+
+- `v6 FIX 2 — production on its POOLED host refuses forbidden_endpoint, NOT endpoint_mismatch`
+- `v6 FIX 2 — production on its DIRECT host also refuses forbidden_endpoint`
+
+And the failure the addendum named directly — **both variables set to production, pooled host** —
+now refuses `forbidden_endpoint` in either form:
+
+```text
+both vars = production, POOLED host   → 403 forbidden_endpoint
+both vars = production-pooler form    → 403 forbidden_endpoint
+```
+
+## 3. Fix 3 — the fixtures were not shaped like real Neon hosts
+
+`ep-measure-branch-000001` and `ep-production-primary-999999` carry no `-pooler`, so no test ever saw
+a realistic pooled host and the whole class above was invisible.
+
+**This is the same shape of error as the `u` username in pass 5, two passes running: an unrealistic
+fixture hid a real behaviour.** The fixtures are now the real endpoints in the real host form,
+`ep-<label>[-pooler].c-2.ap-southeast-1.aws.neon.tech`, the username is `neondb_owner`, and **the
+pooled host is the default** — the direct form is the variant, because pooled is what an operator
+actually pastes.
+
+That change alone is load-bearing: reverting fix 1 now fails **12 of 31** cases rather than the two
+that name it, because most of the suite runs through the pooled default.
+
+All six mandated cases are covered, each as its own test: branch pooled vs bare expected; branch
+direct vs bare expected; branch pooled vs pooled expected; production pooled; production direct; and
+`ep-pooler-test-000001` unchanged.
+
+## 4. Fix 4 — a comment recorded a conclusion the build had retracted
+
+The route's 500-path comment said two of the three paste shapes leak and the dropped scheme does not.
+Re-measured against the real driver with three usernames, reproducing the addendum's table exactly:
+
+```text
+user=u             dropped scheme     PW=no    HOST=no
+user=u             wrapped in quotes  PW=LEAK  HOST=LEAK
+user=u             leading psql       PW=LEAK  HOST=LEAK
+user=neondb_owner  all three          PW=LEAK  HOST=LEAK
+user=cdmss_user    all three          PW=LEAK  HOST=LEAK
+```
+
+**Why `u` differs, which is the useful part** and is now in the comment: `u:` is a valid URL scheme,
+so `new URL('u:…')` **parses successfully** with `protocol === 'u:'` and the driver never reaches its
+"not a valid URL" branch — it emits a generic format template instead. `new URL('neondb_owner:…')`
+throws, because an underscore cannot appear in a scheme, and that is the path that echoes the raw
+string. The real user is `neondb_owner`, so **all three shapes leak**.
+
+The code was safe either way — nothing error-derived reaches the body — but the comment was wrong on
+the highest-severity item in the place the next reader looks first.
+
+## 5. The gate
+
+| # | Command | Result |
+|---|---|---|
+| — | **map pre-gate** | **clean**; regenerated map byte-identical to `123041b` |
+| 1 | `npm test` | **GREEN — 3084 of 3084** (3076 at the parent, +8 cases) |
+| 2 | `npm run typecheck` | clean |
+| 3 | unkeyed production build / keyed build | fails naming the key / succeeds |
+| 4 | `npm run architecture:check` | all 8 rules + coverage green |
+| 5–6 | map + determinism | unchanged, exit 0, nothing staged |
+| 7 | reasoning registry | unchanged |
+| 8–9 | governance / changelog | GREEN |
+
+Guard test wall clock **8.35 s** for 31 cases, up from 5.77 s for 23. `PEERS (none)`, `DNS (none)`
+in parent and all children.
+
+## 6. Every attack, including the ones that broke nothing
+
+| # | Attack | Expected | Observed |
+|---|---|---|---|
+| 1 | revert fix 1 — pooled branch case | must fail | **fails**, `403 !== 200`: the measurement is blocked, exactly as measured before the fix |
+| 2 | revert fix 1 — production pooled case | must fail on `forbidden_endpoint` | **fails**, `'endpoint_mismatch' !== 'forbidden_endpoint'` — the denylist is blind, confirming fix 2's root cause |
+| 3 | feed `ep-pooler-test-000001` | must not truncate to `ep` | **not truncated**; it matches itself, and expecting `ep` refuses |
+| 4 | feed `-pooler-pooler` | decide, state, test | **one strip on each side**: doubled host matches a doubled expectation; a single-`pooler` or bare expectation refuses |
+| 5 | pooled host with pooled id, and with bare id | both must pass | **both pass** |
+| 6 | did any refusal body gain a field? | none may | **none did** — every 403 is exactly `{ok, refused}`; the 410 keeps its four, unchanged from v5 |
+| 7 | can stripping make two DIFFERENT endpoints equal? | must not | **cannot** — all four pooled/direct combinations of two different endpoints still refuse `endpoint_mismatch` |
+
+**Nothing broke nothing**: every attack landed on at least one assertion, and attacks 1 and 2
+reproduced the two headline defects precisely.
+
+**One failure was mine, not the code's.** My first `-pooler-pooler` case asserted that a doubled host
+would match a *single* `-pooler` expectation — forgetting that the expectation is normalised too. The
+route was right; the test was wrong. That symmetry is the whole point of normalising in the code
+rather than in the variables, and the corrected case now states it.
+
+## 7. Owed, unchanged
+
+1. **DELETE THIS ROUTE** and its test before `exp/rerank-telemetry` merges anywhere; guard 2's
+   expiry of **2026-08-20** enforces the date. Remove `CDMSS_OVERHEAD_MEASURE`,
+   `CDMSS_OVERHEAD_DB_ENDPOINT`, `CDMSS_OVERHEAD_FORBIDDEN_ENDPOINT` and the branch-scoped
+   `DATABASE_URL` from Vercel at the same time, and delete the Neon branch.
+2. **The measurement has still not been taken.** Part XI §4's cells are still empty. V's variables
+   stay exactly as they are — **bare ids, no `-pooler`** — because the route now normalises both
+   forms.
+3. §5's row-count verification, the 35-vs-36 topology figure, and the region finding (Part XI §9.4)
+   are all unchanged and still owed.
 
 ---
 

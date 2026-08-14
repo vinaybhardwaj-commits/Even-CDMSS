@@ -80,11 +80,45 @@ const ONLY_REF = 'exp/rerank-telemetry';
 function neonEndpointId(raw: string | undefined): string | null {
   if (!raw) return null;
   const afterScheme = raw.replace(/^[a-z+]+:\/\//i, '');
-  const authority = afterScheme.split(/[/?#]/)[0] ?? '';   // ← fix 3: cut BEFORE looking for '@'
+  const authority = afterScheme.split(/[/?#]/)[0] ?? '';   // ← v5 fix 3: cut BEFORE looking for '@'
   const at = authority.lastIndexOf('@');
   const host = (at >= 0 ? authority.slice(at + 1) : authority).split(':')[0] ?? '';
   const label = host.split('.')[0] ?? '';
-  return /^ep-[a-z0-9-]+$/i.test(label) ? label : null;
+  return /^ep-[a-z0-9-]+$/i.test(label) ? normaliseEndpointId(label) : null;
+}
+
+/**
+ * Strip ONE trailing `-pooler`, case-insensitively (addendum v6 fix 1).
+ *
+ * ⚠️ WITHOUT THIS THE MEASUREMENT CANNOT RUN, AND THE DENYLIST DOES NOT FIRE ON PRODUCTION.
+ * Neon exposes `ep-x` and `ep-x-pooler` for the SAME compute, and a real connection string uses the
+ * pooled host. Measured on the actual endpoints before this was written:
+ *
+ *     branch pooled URL parses to  ep-young-moon-aofuyr1u-pooler
+ *     CDMSS_OVERHEAD_DB_ENDPOINT   ep-young-moon-aofuyr1u        → endpoint_mismatch, every request
+ *     prod pooled URL parses to    ep-super-union-aoys3lle-pooler
+ *     CDMSS_OVERHEAD_FORBIDDEN_…   ep-super-union-aoys3lle       → forbidden_endpoint does NOT fire
+ *
+ * The second is the one that matters: the request still refused, at `endpoint_mismatch`, so nothing
+ * was exposed — but the guard that exists specifically to catch production did not catch it.
+ *
+ * ⚠️ NORMALISED IN THE CODE, NOT IN THE VARIABLES. Telling the operator to set the `-pooler` form
+ * instead would leave the denylist blind to the DIRECT host, which is the worse of the two failures.
+ * Normalising here makes the denylist catch both forms of the production endpoint, and lets either
+ * form be set for either variable.
+ *
+ * ⚠️ ONE TRAILING OCCURRENCE ONLY, AND NEVER INTO A DEGENERATE ID.
+ *   · `ep-x-pooler`            → `ep-x`          the real case
+ *   · `ep-pooler-test-000001`  → unchanged       `pooler` in the MIDDLE is part of the id
+ *   · `ep-x-pooler-pooler`     → `ep-x-pooler`   one occurrence, deliberately: Neon never emits this,
+ *                                                and stripping repeatedly would be inventing a rule
+ *   · `ep-pooler`              → unchanged       the remainder would not be a valid id, so the
+ *                                                suffix is treated as the id itself rather than
+ *                                                collapsing it to a bare `ep`
+ */
+function normaliseEndpointId(value: string): string {
+  const stripped = value.replace(/-pooler$/i, '');
+  return /^ep-[a-z0-9-]+$/i.test(stripped) ? stripped : value;
 }
 
 // ── statistics ─────────────────────────────────────────────────────────────────────────────────
@@ -195,8 +229,13 @@ export async function POST(req: NextRequest) {
   // `CDMSS_OVERHEAD_FORBIDDEN_ENDPOINT` holds the PRODUCTION endpoint id and is checked FIRST, so
   // setting the expected value to production's id still refuses. An ABSENT denylist refuses too: a
   // denylist that is not there is not a denylist.
-  const forbiddenEndpoint = (process.env.CDMSS_OVERHEAD_FORBIDDEN_ENDPOINT || '').trim();
-  const expectedEndpoint = (process.env.CDMSS_OVERHEAD_DB_ENDPOINT || '').trim();
+  // ⚠️ BOTH ENV VALUES GO THROUGH THE SAME NORMALISATION AS THE PARSED HOST (v6 fix 1), so an
+  // operator who sets either the bare or the `-pooler` form gets identical behaviour, and the
+  // denylist catches BOTH forms of the production endpoint rather than whichever one was typed.
+  const rawForbidden = (process.env.CDMSS_OVERHEAD_FORBIDDEN_ENDPOINT || '').trim();
+  const rawExpected = (process.env.CDMSS_OVERHEAD_DB_ENDPOINT || '').trim();
+  const forbiddenEndpoint = rawForbidden ? normaliseEndpointId(rawForbidden) : '';
+  const expectedEndpoint = rawExpected ? normaliseEndpointId(rawExpected) : '';
   const actualEndpoint = neonEndpointId(process.env.DATABASE_URL);
 
   if (!forbiddenEndpoint) {
@@ -408,12 +447,21 @@ export async function POST(req: NextRequest) {
     //
     // The first version returned `message.slice(0, 200)`, and that leaks the database password.
     // When `DATABASE_URL` fails `new URL` but still satisfies guard 5's hand parse, `neon()` puts
-    // the ENTIRE connection string into its throw. Measured against the real driver, two of the
-    // three ordinary paste mistakes do it:
+    // the ENTIRE connection string into its throw. Measured against the real driver, with the real
+    // username, ALL THREE ordinary paste mistakes do it:
     //
-    //   value still wrapped in quotes   →  'Connection string: "postgresql://u:PASSWORD@ep-….neon.tech/db"'
-    //   a leading `psql `               →  'Connection string: psql postgresql://u:PASSWORD@ep-….neon.tech/db'
-    //   a dropped `postgresql://`       →  a format template with no user data — this one does NOT leak
+    //   a dropped `postgresql://`       →  'Connection string: neondb_owner:PASSWORD@ep-….neon.tech/db'
+    //   value still wrapped in quotes   →  'Connection string: "postgresql://neondb_owner:PASSWORD@ep-….neon.tech/db"'
+    //   a leading `psql `               →  'Connection string: psql postgresql://neondb_owner:PASSWORD@ep-….neon.tech/db'
+    //
+    // ⚠️ AN EARLIER VERSION OF THIS COMMENT SAID THE DROPPED-SCHEME CASE DOES NOT LEAK. IT WAS
+    // WRONG, AND THE REASON IS WORTH KEEPING (addendum v6 fix 4). That reading came from probing
+    // with the one-character username `u`, and `u:` IS A VALID URL SCHEME — `new URL('u:…')` parses
+    // successfully with `protocol === 'u:'`, so the driver never reaches the "not a valid URL"
+    // branch and emits a generic format template instead. `new URL('neondb_owner:…')` throws,
+    // because an underscore cannot appear in a scheme, and THAT is the path that echoes the raw
+    // string. The real user is `neondb_owner`. One unrealistic character in a fixture hid the
+    // highest-severity finding in the file.
     //
     // 200 characters is more than enough for user, password and host. `lib/admin-gate.ts` returns
     // null when ADMIN_TOKEN is unset, so this route may be open, which makes it a disclosure to

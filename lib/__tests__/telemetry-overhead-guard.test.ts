@@ -22,12 +22,32 @@ import { fileURLToPath } from 'node:url';
 
 const SELF = fileURLToPath(import.meta.url);
 
-/** A fictional but well-formed Neon connection string. Nothing ever connects to it. */
-const FAKE_ENDPOINT = 'ep-measure-branch-000001';
+/**
+ * ⚠️ FIXTURES OF THE REAL FORM, INCLUDING THE POOLED VARIANT (addendum v6 fix 3).
+ *
+ * The previous fixtures were `ep-measure-branch-000001` and `ep-production-primary-999999`. Neither
+ * carries `-pooler`, so no test ever saw a realistic pooled host — and that is exactly why the
+ * endpoint guard's blindness to Neon's pooled suffix was invisible for two passes. A real Neon host
+ * is `ep-<label>[-pooler].c-2.<region>.aws.neon.tech`, and a real connection string uses the POOLED
+ * one, so the pooled form is the default here and the direct form is the variant.
+ *
+ * Same shape of error as the one-character username `u` in pass 5, which hid the password leak
+ * because `u:` parses as a URL scheme. Twice running, an unrealistic fixture hid a real behaviour.
+ * The username below is the real one for the same reason.
+ */
+const FAKE_ENDPOINT = 'ep-young-moon-aofuyr1u';
+const OTHER_ENDPOINT = 'ep-super-union-aoys3lle';
 const FAKE_PASSWORD = 's3cr3t-p%40ssword';
-const FAKE_DB_URL = `postgresql://cdmss_user:${FAKE_PASSWORD}@${FAKE_ENDPOINT}.ap-southeast-1.aws.neon.tech/neondb?sslmode=require`;
-/** A different, equally fictional endpoint standing in for production's. */
-const OTHER_ENDPOINT = 'ep-production-primary-999999';
+const DB_USER = 'neondb_owner';
+
+/** `ep-<label>[-pooler].c-2.ap-southeast-1.aws.neon.tech` — the real host shape. */
+const hostFor = (label: string, pooled = true) =>
+  `${label}${pooled ? '-pooler' : ''}.c-2.ap-southeast-1.aws.neon.tech`;
+const urlFor = (label: string, pooled = true) =>
+  `postgresql://${DB_USER}:${FAKE_PASSWORD}@${hostFor(label, pooled)}/neondb?sslmode=require`;
+
+/** The default: the BRANCH, on its POOLED host, which is what an operator actually pastes. */
+const FAKE_DB_URL = urlFor(FAKE_ENDPOINT);
 
 /**
  * The three ordinary paste mistakes that made the old 500 body leak the password (v5 fix 1).
@@ -35,14 +55,14 @@ const OTHER_ENDPOINT = 'ep-production-primary-999999';
  * throw; the third throws a format template carrying no user data.
  */
 const UNPARSEABLE = {
-  'dropped scheme': `cdmss_user:${FAKE_PASSWORD}@${FAKE_ENDPOINT}.ap-southeast-1.aws.neon.tech/neondb`,
+  'dropped scheme': `${DB_USER}:${FAKE_PASSWORD}@${hostFor(FAKE_ENDPOINT)}/neondb`,
   'wrapped in quotes': `"${FAKE_DB_URL}"`,
   'leading psql': `psql ${FAKE_DB_URL}`,
 };
 
 /** The parts of the connection string that must never appear in any response, in any case. */
 const SECRETS = [
-  FAKE_DB_URL, 'cdmss_user', FAKE_PASSWORD, 's3cr3t-p@ssword',
+  FAKE_DB_URL, DB_USER, FAKE_PASSWORD, 's3cr3t-p@ssword',
   'ap-southeast-1.aws.neon.tech', 'neondb', FAKE_ENDPOINT,
 ];
 
@@ -242,11 +262,12 @@ if (process.argv.includes('--guard-child')) {
     }
   });
 
-  test('FIX 1 — the two leaking shapes are refused BEFORE the driver ever sees them', () => {
-    // Measured against the real driver: wrapped-in-quotes and a leading `psql ` both make `neon()`
-    // throw with the ENTIRE connection string, password included. Fix 3's authority-scoped parse
-    // turns out to refuse both at guard 5, so the leak path is closed twice over — once by never
-    // returning the error, and once by never reaching it.
+  test('v5 FIX 1 — two of the three leaking shapes are refused BEFORE the driver ever sees them', () => {
+    // ⚠️ ALL THREE shapes leak with a realistic username (v6 fix 4) — `u:` parses as a URL scheme,
+    // which is the only reason the dropped-scheme case ever looked safe. What differs is REFUSAL:
+    // v5 fix 3's authority-scoped parse refuses these two at guard 5, so their leak path is closed
+    // twice over — once by never returning the error, once by never reaching it. The third shape
+    // does reach the 500, and the case above proves that body carries nothing.
     for (const shape of ['wrapped in quotes', 'leading psql'] as const) {
       const r = runGuardChild({ DATABASE_URL: UNPARSEABLE[shape] });
       assert.equal(r.status, 403, `${shape} must refuse at guard 5`);
@@ -271,7 +292,7 @@ if (process.argv.includes('--guard-child')) {
     // knowledge of which endpoint is production. Debugging a refusal late, the natural move is to
     // change the variable you just added — which would have opened the route onto production.
     const r = runGuardChild({
-      DATABASE_URL: FAKE_DB_URL.replace(FAKE_ENDPOINT, OTHER_ENDPOINT),
+      DATABASE_URL: urlFor(OTHER_ENDPOINT),   // production, POOLED host
       CDMSS_OVERHEAD_DB_ENDPOINT: OTHER_ENDPOINT,
       CDMSS_OVERHEAD_FORBIDDEN_ENDPOINT: OTHER_ENDPOINT,
     });
@@ -358,6 +379,102 @@ if (process.argv.includes('--guard-child')) {
     assert.match(String(declare.body.audit_mode), /n\/a/);
   });
 
+  // ══════════════════════════════════════════════════════════════════════════════════════════════
+  // v6 — THE POOLER SUFFIX. Neon exposes `ep-x` and `ep-x-pooler` for the SAME compute, and a real
+  // connection string uses the pooled host. Without normalisation the measurement cannot run at all
+  // and the denylist cannot see production.
+  // ══════════════════════════════════════════════════════════════════════════════════════════════
+
+  test('v6 FIX 1 — the branch POOLED host passes against the bare expected id', () => {
+    // THE CASE THAT BLOCKED THE MEASUREMENT. Before normalisation this parsed to
+    // `ep-young-moon-aofuyr1u-pooler`, never equalled the bare expected id, and every request
+    // returned endpoint_mismatch.
+    const r = runGuardChild({ DATABASE_URL: urlFor(FAKE_ENDPOINT, true), CDMSS_OVERHEAD_DB_ENDPOINT: FAKE_ENDPOINT });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.ok, true);
+  });
+
+  test('v6 FIX 1 — the branch DIRECT host passes against the bare expected id', () => {
+    const r = runGuardChild({ DATABASE_URL: urlFor(FAKE_ENDPOINT, false), CDMSS_OVERHEAD_DB_ENDPOINT: FAKE_ENDPOINT });
+    assert.equal(r.status, 200);
+  });
+
+  test('v6 FIX 1 — the branch POOLED host passes against a POOLED expected id', () => {
+    // Either form may be set for either variable: both sides go through the same normalisation.
+    const r = runGuardChild({
+      DATABASE_URL: urlFor(FAKE_ENDPOINT, true),
+      CDMSS_OVERHEAD_DB_ENDPOINT: `${FAKE_ENDPOINT}-pooler`,
+    });
+    assert.equal(r.status, 200);
+  });
+
+  test('v6 FIX 2 — production on its POOLED host refuses forbidden_endpoint, NOT endpoint_mismatch', () => {
+    // ⚠️ THE ONE THAT MATTERS. Before normalisation this fell through to `endpoint_mismatch`: the
+    // request still refused, so nothing was exposed, but the guard that exists specifically to catch
+    // production did not catch it — and had both variables been set to production values it would
+    // have run. Proven with a POOLED host, by execution, not by inspection.
+    const r = runGuardChild({ DATABASE_URL: urlFor(OTHER_ENDPOINT, true) });
+    assert.equal(r.status, 403);
+    assert.equal(r.body.refused, 'forbidden_endpoint');
+  });
+
+  test('v6 FIX 2 — production on its DIRECT host also refuses forbidden_endpoint', () => {
+    const r = runGuardChild({ DATABASE_URL: urlFor(OTHER_ENDPOINT, false) });
+    assert.equal(r.status, 403);
+    assert.equal(r.body.refused, 'forbidden_endpoint');
+  });
+
+  test('v6 — `pooler` in the MIDDLE of a label is part of the id and is never truncated', () => {
+    const MIDDLE = 'ep-pooler-test-000001';
+    // It matches itself…
+    const ok = runGuardChild({ DATABASE_URL: urlFor(MIDDLE, false), CDMSS_OVERHEAD_DB_ENDPOINT: MIDDLE });
+    assert.equal(ok.status, 200, 'a label merely containing "pooler" is unchanged');
+    // …and it is emphatically NOT collapsed to `ep`, which is what an over-eager strip would do.
+    const collapsed = runGuardChild({ DATABASE_URL: urlFor(MIDDLE, false), CDMSS_OVERHEAD_DB_ENDPOINT: 'ep' });
+    assert.equal(collapsed.status, 403);
+    assert.equal(collapsed.body.refused, 'endpoint_mismatch');
+  });
+
+  test('v6 — a doubled `-pooler-pooler` strips exactly ONE, and that is the stated rule', () => {
+    // Neon never emits this. Stripping repeatedly would be inventing a rule the platform does not
+    // have, so exactly ONE trailing occurrence comes off — and it comes off BOTH SIDES, because the
+    // env values go through the same normalisation. The stated rule is therefore: the two forms must
+    // correspond after one strip each.
+    //
+    // ⚠️ MY FIRST VERSION OF THIS CASE ASSERTED THE WRONG PAIRING and failed. I expected a doubled
+    // host to match a single `-pooler` expectation, forgetting that the expectation is normalised
+    // too. The route was right; the test was wrong. Recorded because the symmetry is the whole
+    // point of normalising in the code rather than in the variables.
+    const DOUBLED = `${FAKE_ENDPOINT}-pooler-pooler`;
+    const host = `${DOUBLED}.c-2.ap-southeast-1.aws.neon.tech`;
+    const url = `postgresql://${DB_USER}:${FAKE_PASSWORD}@${host}/neondb`;
+    // Doubled host, doubled expectation: one strip each, both land on `ep-…-pooler`.
+    const same = runGuardChild({ DATABASE_URL: url, CDMSS_OVERHEAD_DB_ENDPOINT: DOUBLED });
+    assert.equal(same.status, 200, 'one strip on each side, so the doubled forms correspond');
+    // A single `-pooler` expectation normalises to the bare id and does NOT match.
+    const single = runGuardChild({ DATABASE_URL: url, CDMSS_OVERHEAD_DB_ENDPOINT: `${FAKE_ENDPOINT}-pooler` });
+    assert.equal(single.status, 403);
+    assert.equal(single.body.refused, 'endpoint_mismatch');
+    // …and neither does the bare id: the strip is not applied repeatedly.
+    const bare = runGuardChild({ DATABASE_URL: url, CDMSS_OVERHEAD_DB_ENDPOINT: FAKE_ENDPOINT });
+    assert.equal(bare.status, 403);
+    assert.equal(bare.body.refused, 'endpoint_mismatch');
+  });
+
+  test('v6 — normalisation cannot make two DIFFERENT endpoints compare equal', () => {
+    // The only identity the strip creates is `ep-x` ≡ `ep-x-pooler`, which is one compute with two
+    // hostnames. Two genuinely different endpoints stay different in every combination of forms.
+    for (const [dbPooled, expPooled] of [[true, true], [true, false], [false, true], [false, false]] as const) {
+      const r = runGuardChild({
+        DATABASE_URL: urlFor(FAKE_ENDPOINT, dbPooled),
+        CDMSS_OVERHEAD_DB_ENDPOINT: expPooled ? `${OTHER_ENDPOINT}-pooler` : OTHER_ENDPOINT,
+        CDMSS_OVERHEAD_FORBIDDEN_ENDPOINT: 'ep-unrelated-denylist-000000',
+      });
+      assert.equal(r.status, 403, `db pooled=${dbPooled}, expected pooled=${expPooled}`);
+      assert.equal(r.body.refused, 'endpoint_mismatch', 'different endpoints never collapse together');
+    }
+  });
+
   test('NO OUTPUT ANYWHERE CARRIES A DATABASE_URL SUBSTRING — every response shape, stdout and stderr', () => {
     // ⚠️ EIGHT RESPONSE SHAPES, ALL EXERCISED. Part XI said "eight response shapes" when it meant
     // eight test cases covering five; 401, 400 and 500 were unexercised. All three are here now, and
@@ -368,7 +485,7 @@ if (process.argv.includes('--guard-child')) {
       ['403 not_preview', runGuardChild({ VERCEL_ENV: 'production' })],
       ['403 not_armed', runGuardChild({ CDMSS_OVERHEAD_MEASURE: undefined })],
       ['403 no_denylist', runGuardChild({ CDMSS_OVERHEAD_FORBIDDEN_ENDPOINT: undefined })],
-      ['403 forbidden_endpoint', runGuardChild({ DATABASE_URL: FAKE_DB_URL.replace(FAKE_ENDPOINT, OTHER_ENDPOINT) })],
+      ['403 forbidden_endpoint', runGuardChild({ DATABASE_URL: urlFor(OTHER_ENDPOINT) })],
       ['403 endpoint_mismatch', runGuardChild({ CDMSS_OVERHEAD_DB_ENDPOINT: 'ep-something-else-000002' })],
       ['409 no_audit_id', runGuardChild({}, [], 'cell=settle_primary&n=2&audit=real')],
       ['400 unknown cell', runGuardChild({}, [], 'cell=nonsense&n=2')],
