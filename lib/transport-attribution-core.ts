@@ -121,23 +121,75 @@ export function classifyAttemptOutcome(kind: string, status: number | null): Tra
   return status === 429 ? 'http_429' : 'http_other';
 }
 
+/** The SDK's timeout error, named once. Matched against BOTH `name` and `constructor.name`. */
+const TIMEOUT_ERROR_NAME = 'APIConnectionTimeoutError';
+
+/**
+ * Does this thrown value declare itself an SDK connection timeout?
+ *
+ * ⚠️ THE DEFECT THIS FIXES (addendum v12 §1, Saul's review 23 finding 1). The check was
+ * `e.name === 'APIConnectionTimeoutError'`, and the installed `openai` package's error does not
+ * carry that name. Executed against the package in this worktree, openai 4.104.0:
+ *
+ *     new APIConnectionTimeoutError({ message: 'timed out' })
+ *       e.name              "Error"          ← inherited from Error.prototype; not an own property
+ *       e.constructor.name  "APIConnectionTimeoutError"
+ *       e.status            undefined
+ *
+ * So the check was never true for a real SDK timeout: every local timeout classified
+ * `transport_error`, and because `terminalOutcomeFor` (lib/rerank.ts) lifts a batch to `timeout`
+ * only when the last attempt's outcome is `timeout`, the batch outcome `timeout` was UNREACHABLE on
+ * the local arm. The local arm is the substitution path under throttling — the instrument was blind
+ * exactly where this programme was built to look.
+ *
+ * ⚠️ BOTH READS, NOT A REPLACEMENT. The declared `name` still wins where it is present: a future SDK
+ * version that sets `name` properly, and any wrapper that re-declares it, must keep working.
+ *
+ * ⚠️ NO `instanceof`, AND NO IMPORT OF THE SDK (v12 §2 item 4). This file has ZERO outbound imports
+ * and that is what made pass 1's new architecture edge cycle-free — `retrieval-telemetry-core`
+ * imports this module, so an import here could create a cycle and would change the graph. The
+ * constructor name is read defensively instead.
+ *
+ * ⚠️ AND NEITHER READ MAY THROW (v12 §2 item 3). This runs ON A FAILURE PATH: a classifier that
+ * throws while classifying a failure destroys the failure it was called to record. `Object.create(null)`
+ * has no `constructor`; a proxy or a defined getter can throw on property access; the input may not
+ * be an object at all. Every read is guarded and every failure resolves to "not a timeout", which
+ * degrades to the honest `transport_error` rather than to a fabricated one.
+ */
+function declaresConnectionTimeout(e: unknown): boolean {
+  if (e === null || (typeof e !== 'object' && typeof e !== 'function')) return false;
+  try {
+    if ((e as { name?: unknown }).name === TIMEOUT_ERROR_NAME) return true;
+  } catch { /* a throwing `name` getter is not a declaration */ }
+  try {
+    const ctor = (e as { constructor?: unknown }).constructor;
+    if (typeof ctor === 'function' && (ctor as { name?: unknown }).name === TIMEOUT_ERROR_NAME) return true;
+  } catch { /* absent or throwing constructor — see the null-prototype case */ }
+  return false;
+}
+
 /**
  * Classify a THROWN local-model call, which never runs through `createWithRetry` and therefore has
  * no `RetryAttemptFailure` to classify. Reads only what the SDK error itself declares — a numeric
- * `status`, and the SDK's own `APIConnectionTimeoutError` name — and reports `transport_error`
- * when it declares neither. §4.4 forbids GUESSING from requested model, environment or timing;
- * reading a field the provider SDK set is the opposite of guessing, and an undeclared failure
- * stays the honest "the transport failed and did not say more" rather than being sharpened.
+ * `status`, and the SDK's own timeout identity — and reports `transport_error` when it declares
+ * neither. §4.4 forbids GUESSING from requested model, environment or timing; reading a field the
+ * provider SDK set is the opposite of guessing, and an undeclared failure stays the honest "the
+ * transport failed and did not say more" rather than being sharpened.
  *
  * Deliberately a SECOND function rather than a widening of `classifyAttemptOutcome`: that one maps
  * a declared `kind`, both ladder tiers reach it through the identical expression, and a source pin
  * counts those two call sites to prove a 429 cannot be classified tier-dependently. The 429 rule
  * itself is not duplicated — it is delegated below, so there is still exactly one copy of it.
+ *
+ * The 429 rule and the status handling below are UNCHANGED by v12 (§2 item 5).
  */
 export function classifyLocalAttempt(err: unknown): { outcome: TransportAttemptOutcome; status: number | null } {
-  const e = (err ?? {}) as { status?: unknown; name?: unknown };
-  const status = typeof e.status === 'number' ? e.status : null;
-  const kind = e.name === 'APIConnectionTimeoutError' ? 'timeout' : status === null ? 'transport' : 'http';
+  const e = (err ?? {}) as { status?: unknown };
+  let status: number | null = null;
+  try {
+    status = typeof e.status === 'number' ? e.status : null;
+  } catch { /* a throwing `status` getter leaves the status undeclared, which is not a guess */ }
+  const kind = declaresConnectionTimeout(err) ? 'timeout' : status === null ? 'transport' : 'http';
   return { outcome: classifyAttemptOutcome(kind, status), status };
 }
 
