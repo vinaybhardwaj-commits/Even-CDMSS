@@ -278,13 +278,29 @@ export type InvocationClosureState = typeof INVOCATION_CLOSURE_STATES[number];
 
 /** The phases a telemetry write can fail in (D2's failure table CHECK). */
 export const TELEMETRY_FAILURE_PHASES = [
-  'invocation_start', 'work_declaration', 'retrieval_terminal', 'persistence_link', 'closure',
+  'invocation_start', 'work_declaration', 'retrieval_terminal', 'retrieval_terminal_rejected',
+  'persistence_link', 'closure',
 ] as const;
 export type TelemetryFailurePhase = typeof TELEMETRY_FAILURE_PHASES[number];
 
 /** The phases that name a specific run, and therefore require a run id and role (D2). */
 export const RUN_SCOPED_FAILURE_PHASES: readonly TelemetryFailurePhase[] =
-  ['work_declaration', 'retrieval_terminal', 'persistence_link'] as const;
+  ['work_declaration', 'retrieval_terminal', 'retrieval_terminal_rejected', 'persistence_link'] as const;
+
+/**
+ * ⚠️ `retrieval_terminal_rejected` IS A SIBLING OF `retrieval_terminal`, NOT A REPLACEMENT, AND THE
+ * RECONCILER DELIBERATELY DOES NOT MAP IT (addendum v7 §8).
+ *
+ * A rejected terminal write is a compare-and-set that matched no row: the revision moved, or the row
+ * left `started`. That is NOT the same event as a terminal write that threw, and conflating them
+ * would lose the distinction the phase exists to record.
+ *
+ * `reconcilerStateFor` below tests membership of `'retrieval_terminal'` EXACTLY, so a row carrying
+ * only this new phase reconciles as `aborted` — the no-evidence answer. That is intentional and is
+ * the prior settled decision (decisions §8, 13 Aug): record the event so it becomes countable, and
+ * decide the state mapping when C0 shows how often each case occurs. Mapping it now would be a
+ * guess dressed as a rule. If C0 shows this path is common, that is the moment to revisit it.
+ */
 
 /**
  * Whether a provider backfill was ACTUALLY WORKING when this retrieval ran.
@@ -512,7 +528,14 @@ export interface RetrievalPayload {
    *  Required on role `primary`; null on the other four, and that null is not a defect (A2). */
   scorer_context_hmac: string | null;
 
-  retrieval_config: Record<string, string | number | boolean>;
+  /**
+   * ⚠️ `null` IS ADMITTED, AND IS A CLAIM (widened by addendum v7 §10). The house rule elsewhere in
+   * this module is that an omitted field and a declared null are different statements: absence reads
+   * as "this stage did not happen", null reads as "it happened and there is no value". The reranker
+   * decode settings need exactly that distinction — `rerank_temperature: null` means no rerank
+   * decode ran, which is a fact, where an absent key would mean the field was never implemented.
+   */
+  retrieval_config: Record<string, string | number | boolean | null>;
   corpus_version: string | null;
   /** The embedding column and the embed model it implies — together, which candidates exist. */
   index_version: string | null;
@@ -536,6 +559,22 @@ export interface OperationalTelemetry {
   completed_at: string | null;
   routing_flags: Record<string, string>;
   active_backfill_run_id: string | null;
+  /**
+   * THE ACTIVE BACKFILL RUN'S `model`. Null when there is no active run (addendum v7 §7).
+   *
+   * ⚠️ THE NAME PROMISES MORE THAN THE DATA HOLDS, AND THAT IS RECORDED RATHER THAN RENAMED.
+   * `BackfillRun` has no `target` field at all — verified, and v7 §7 says to stop if one appears.
+   * What this carries is the grader model identifier the run is written against. No code reads the
+   * value back, so nothing depends on the misreading today; the definition is written here so that
+   * no future reader infers a day range, a cursor or a note set from the word "target".
+   *
+   * ⚠️ NOT RENAMED, DELIBERATELY. Renaming a persisted column is a migration, and neither v7 nor
+   * this pass authorizes one for that purpose.
+   *
+   * Null is a MEASUREMENT here, paired with `active_backfill_state`: PRD §7 needs active
+   * provider-backfill intervals for overlap analysis and states that an idle cron tick is not an
+   * interval. Null target with state `idle` is exactly "no active run", which is that distinction.
+   */
   active_backfill_target: string | null;
   active_backfill_state: BackfillActivity | null;
   active_lab_experiment_id: string | null;

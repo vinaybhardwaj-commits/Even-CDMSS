@@ -14,11 +14,11 @@
  * Soft-fail: a GENERIC error on the default path returns input order unchanged (never blocks
  * retrieval). A TYPED RerankBackendError always propagates — thrown, never swallowed.
  */
-import { geminiUtilityModel } from './llm';
+import { geminiUtilityModel, geminiConfigured, openrouterConfigured, openrouterGeminiSlug } from './llm';
 import { governedChat, recordRerankCost } from './trace';
 import {
   evidenceFromCompletion, evidenceFromError,
-  type TelemetryCapture, type CapturedBatch, type TransportEvidence,
+  type TelemetryCapture, type CapturedBatch, type TransportEvidence, type RerankSeedStatus,
 } from './retrieval-capture';
 import type { BatchOutcome } from './retrieval-telemetry-core';
 
@@ -56,11 +56,106 @@ const BACKEND: 'judge' | 'cohere' = ENV_READ.backend;
 if (ENV_READ.warning) console.warn(ENV_READ.warning);
 const JUDGE_MODEL = process.env.RERANK_JUDGE_MODEL || 'llama3.1:8b';
 const JUDGE_BATCH = 5;  // 5 candidates per LLM call
+/** The judge's decode temperature, named so the manifest and the call cannot drift apart. */
+const JUDGE_TEMPERATURE = 0.0;
+/**
+ * The judge sets NO seed today, so this is `unseeded` whichever tier serves. The provider argument
+ * is taken now because the moment a seed is added to the options bag the answer stops being uniform:
+ * local applies it, every cloud tier strips the bag that carries it.
+ */
+function judgeSeedStatus(_provider: IntendedProvider): RerankSeedStatus {
+  return 'unseeded';
+}
 const MAX_SNIPPET_CHARS = 600;
 
 // Cohere rerank-api backend (OpenRouter). No new npm dep — raw fetch (D3: not a governed-chat site).
 const RERANK_API_MODEL = process.env.RERANK_API_MODEL || 'cohere/rerank-v3.5';
 const RERANK_API_URL = process.env.RERANK_API_URL || 'https://openrouter.ai/api/v1/rerank';
+
+// ══ INTENDED ATTRIBUTION — THE RESOLVED FIRST DISPATCH TARGET (addendum v7 §5) ═══════════════════
+//
+// ⚠️ THREE OF THE FOUR SITES WROTE AN IMPOSSIBLE PAIR. `intendedProvider: 'vertex'` was hardcoded
+// beside `intendedModel: JUDGE_MODEL`, and JUDGE_MODEL is the LOCAL model (`llama3.1:8b`). Vertex
+// never serves it. C0 query 4 asks for actual provider and model, and any query comparing intended
+// against served on the judge path read as a permanent mismatch — reported as finding 10a in Part X
+// and now corrected at source.
+//
+// ⚠️ RESOLVED DYNAMICALLY, NOT HARDCODED. Replacing JUDGE_MODEL with a fixed Gemini model would
+// trade one wrong constant for another: the judge's first target depends on GEMINI_ALL,
+// GEMINI_UTILITY, GEMINI_VIA_OPENROUTER, LLM_PIPELINE and provider configuration, every one of them
+// read at DISPATCH time. `GEMINI_VIA_OPENROUTER` reads '0' in Production and Preview today, so the
+// judge targets Vertex first — but that is an observation, not an invariant, and is not encoded.
+//
+// ⚠️ ONE RESOLVER, FOUR CALL SITES. Duplicated logic is how three of the four drifted in the first
+// place. This mirrors `chatWithFallback`'s own resolution (`lib/llm.ts`): `orModel` from
+// `openrouterGeminiSlug(geminiModel)`, `useOpenRouter`, `useGemini`, the `!useOpenRouter &&
+// !useGemini` local branch, and `cloudLadder({ orFirst: useOpenRouter, … })[0]`. If that ladder
+// changes, this must change with it, and `intended-attribution.test.ts` pins the correspondence.
+
+/** The provider tiers an intended pairing may name. */
+export type IntendedProvider = 'vertex' | 'openrouter' | 'ollama';
+export interface IntendedTarget { provider: IntendedProvider; model: string }
+
+/**
+ * The first tier `chatWithFallback` would dispatch the JUDGE to, right now.
+ *
+ * Not "where it ended up" — that is `served_*`, which comes from transport evidence. This is the
+ * target the call is aimed at before anything is attempted.
+ */
+export function resolveJudgeIntendedTarget(): IntendedTarget {
+  const geminiModel = geminiUtilityModel();                 // GEMINI_ALL / GEMINI_UTILITY / mini / configured
+  const orModel = openrouterGeminiSlug(geminiModel);        // GEMINI_VIA_OPENROUTER === '1' only
+  const useOpenRouter = Boolean(orModel) && openrouterConfigured();
+  const useGemini = Boolean(geminiModel) && geminiConfigured();
+  // `cloudLadder` puts OpenRouter first when the bridge flag produced a slug; otherwise Vertex.
+  if (useOpenRouter) return { provider: 'openrouter', model: orModel as string };
+  if (useGemini) return { provider: 'vertex', model: geminiModel as string };
+  // Neither cloud tier is available: chatWithFallback runs `params.model` on the local client, and
+  // for the judge that is JUDGE_MODEL. This is the one sanctioned use of JUDGE_MODEL as an INTENDED
+  // model, and it is a real dispatch target rather than a placeholder.
+  return { provider: 'ollama', model: JUDGE_MODEL };
+}
+
+/** Cohere is a raw fetch to OpenRouter's rerank endpoint; there is no ladder and no fallback. */
+export function resolveCohereIntendedTarget(): IntendedTarget {
+  return { provider: 'openrouter', model: RERANK_API_MODEL };
+}
+
+/**
+ * THE GUARD (addendum v7 §5, mirroring `lib/retrieval-capture.ts:245`).
+ *
+ * The served side already refuses to report a requested model as a served model. The intended side
+ * had no such guard, which is how `vertex` + `llama3.1:8b` reached the manifest and stayed there.
+ * These are the only four sanctioned pairings:
+ *
+ *     vertex      + the effective Gemini model
+ *     openrouter  + the Gemini slug
+ *     ollama      + JUDGE_MODEL
+ *     openrouter  + the effective Cohere model
+ *
+ * ⚠️ A PREDICATE, NOT A THROW. Constraint 2: a telemetry path that errors must degrade to a no-op,
+ * never to a 500. So this reports rather than raises, `buildRetrievalPayload` turns a false into a
+ * manifest defect, and `intended-attribution.test.ts` is where an impossible pairing fails loudly
+ * instead of serializing.
+ */
+export function isSanctionedIntendedPairing(provider: string, model: string): boolean {
+  if (!provider || !model) return false;
+  if (provider === 'ollama') return model === JUDGE_MODEL;
+  if (provider === 'openrouter') {
+    if (model === RERANK_API_MODEL) return true;                 // Cohere
+    return Boolean(openrouterSlugForGeminiShape(model));         // the Gemini slug
+  }
+  if (provider === 'vertex') {
+    // A Vertex target is a Gemini model, never the local judge model.
+    return model !== JUDGE_MODEL && /gemini/i.test(model);
+  }
+  return false;
+}
+
+/** A publisher-prefixed Gemini slug, which is the only OpenRouter-Gemini shape the bridge emits. */
+function openrouterSlugForGeminiShape(model: string): boolean {
+  return /gemini/i.test(model);
+}
 
 // Discrimination thresholds on the backend's normalized [0,1] score (D7; env-tunable).
 export const RERANK_HEALTH_MIN_REL = Number(process.env.RERANK_HEALTH_MIN_REL) || 0.40;
@@ -158,6 +253,10 @@ export async function rerankCohere<T extends RerankCandidate>(
     // the evidence that it served, and the class is recorded from that rather than guessed.
     capture.servedBackend = 'cohere';
     capture.expectedBatchCount = 1;
+    // Cohere is a deterministic cross-encoder: it takes neither a temperature nor a seed, and the
+    // request body carries neither. Null and `not_applicable` are the accurate values, not zeros.
+    capture.rerankTemperature = null;
+    capture.rerankSeedStatus = 'not_applicable';
     const finite = scores.filter((s) => Number.isFinite(s)).length;
     capture.batches.push({
       index: 0, start: 0, end: candidates.length,
@@ -265,8 +364,14 @@ export async function rerank<T extends RerankCandidate>(
 
   if (capture) {
     // INTENDED, not served. What actually runs is stamped by whichever backend runs (A10).
+    //
+    // ⚠️ `intendedBackend` is the BACKEND CHOICE ('judge' | 'cohere') and is unchanged. `intendedModel`
+    // was JUDGE_MODEL on the judge arm, which names the LOCAL model whatever the judge is actually
+    // dispatched to (addendum v7 §5). It now resolves the real first target.
     capture.intendedBackend = chosen;
-    capture.intendedModel = chosen === 'cohere' ? RERANK_API_MODEL : JUDGE_MODEL;
+    capture.intendedModel = (chosen === 'cohere'
+      ? resolveCohereIntendedTarget()
+      : resolveJudgeIntendedTarget()).model;
   }
 
   /**
@@ -282,27 +387,49 @@ export async function rerank<T extends RerankCandidate>(
       : judgeBatchBoundaries(candidates.length);
     capture.servedBackend = plannedBackend;
     capture.expectedBatchCount = boundaries.length;
-    // D16 maps this row to `not_served`, so the evidence says so EXPLICITLY. Leaving it null would
-    // map to `unattributed`, which is the other fact and means the opposite thing.
+    const plannedTarget = plannedBackend === 'cohere'
+      ? resolveCohereIntendedTarget()
+      : resolveJudgeIntendedTarget();
+    // ⚠️ RESOLVED: THE PROOF RULE GOVERNS (addendum v7 §6, 14 Aug 2026). D16 contained two
+    // statements that could not both hold here. Its MAPPING TABLE assigned `not_served` to a Cohere
+    // soft failure; its PROOF RULE says `not_served` requires failure attribution as proof, and that
+    // without proof the answer is `unattributed`. V ruled that the proof rule governs, and D16's
+    // mapping table is amended to that extent and only that extent.
     //
-    // ⚠️ FLAGGED, NOT DECIDED (see the build report). D16's mapping table assigns `not_served`
-    // here, while the same decision's proof rule says `not_served` requires failure attribution as
-    // proof. Cohere is a raw fetch and never reaches chatWithFallback, so it can never carry that
-    // attribution; and every DECLARED Cohere failure throws a typed RerankBackendError, which
-    // propagates or downgrades rather than reaching this branch. The only path that arrives here is
-    // a GENERIC throw, where non-delivery is not strictly proven. The table's specific instruction
-    // is implemented as written and the tension is reported rather than resolved by this build.
-    const notServed: TransportEvidence = {
+    // Why Cohere can never carry the proof: it is a raw fetch and never reaches `chatWithFallback`,
+    // so no transport attribution is ever attached. Every DECLARED Cohere failure throws a typed
+    // `RerankBackendError`, which propagates or downgrades rather than reaching this branch — the
+    // only path that arrives here is a GENERIC throw, where non-delivery is NOT proven.
+    // `provenNotServed: true` was therefore asserting a proof that does not exist.
+    //
+    // ⚠️ WHERE TRANSPORT PROOF EXISTS, `not_served` STANDS and is unchanged. This branch synthesises
+    // records for requests that were PLANNED, so it never has proof of anything.
+    //
+    // ⚠️ FLAGGED FOR V, NOT DECIDED HERE: the JUDGE arm of this same branch also synthesises
+    // `provenNotServed: true` without proof. v7 §6 rules on Cohere specifically, so the judge arm is
+    // left exactly as it was rather than corrected by extension. It is the same shape of unproven
+    // claim and it wants its own ruling. (The judge arm is reached only when an injected `judgeFn`
+    // throws; `rerankJudge`'s own failures are caught per batch, so it is effectively test-only.)
+    const cohereUnattributed: TransportEvidence = {
+      servedProvider: null, servedModel: null, attempts: null, provenNotServed: false,
+    };
+    const judgeNotServedUnchanged: TransportEvidence = {
       servedProvider: null, servedModel: null, attempts: null, provenNotServed: true,
     };
+    const notServed: TransportEvidence = plannedBackend === 'cohere'
+      ? cohereUnattributed
+      : judgeNotServedUnchanged;
     capture.batches = boundaries.map((b, i): CapturedBatch => ({
       index: i, start: b.start, end: b.end,
       evidence: notServed,
       outcome: 'terminal_failure' as BatchOutcome,
       expectedScoreKeys: b.end - b.start,
       finiteScoreKeys: 0, missingScoreKeys: b.end - b.start, nonnumericScoreKeys: 0,
-      intendedProvider: plannedBackend === 'cohere' ? 'openrouter' : 'vertex',
-      intendedModel: plannedBackend === 'cohere' ? RERANK_API_MODEL : JUDGE_MODEL,
+      // ⚠️ RESOLVED TOGETHER, NEVER AS A FIXED PAIR (addendum v7 §5). This was
+      // `'vertex'` beside `JUDGE_MODEL` — an impossible pairing, because Vertex never serves the
+      // local judge model. Provider and model now come from one resolution so they cannot disagree.
+      intendedProvider: plannedTarget.provider,
+      intendedModel: plannedTarget.model,
       promptTokens: null, completionTokens: null,
     }));
   };
@@ -415,6 +542,21 @@ export async function rerankJudge<T extends RerankCandidate>(
 
   // Run JUDGE_BATCH-sized batches in PARALLEL so wall-clock stays bounded
   const batches = judgeBatchBoundaries(candidates.length);
+  // Resolved ONCE per rerankJudge call, not per batch: the batches run in one Promise.all against
+  // one dispatch configuration, so resolving inside the loop would re-read the environment N times
+  // to get the same answer.
+  const judgeTarget = resolveJudgeIntendedTarget();
+
+  if (capture) {
+    // ⚠️ WHAT ACTUALLY APPLIED, NOT WHAT WAS REQUESTED (addendum v7 §10). The judge's call below
+    // sets `temperature: 0.0` and NO SEED — its options bag carries only `num_ctx`. So the honest
+    // status is `unseeded` on every path, cloud or local, and it stays that way until someone adds
+    // a seed. If one is ever added inside the options bag, it will reach a LOCAL model and be
+    // stripped before a cloud one, which is why the status distinguishes those two outcomes rather
+    // than recording the requested value.
+    capture.rerankTemperature = JUDGE_TEMPERATURE;
+    capture.rerankSeedStatus = judgeSeedStatus(judgeTarget.provider);
+  }
 
   if (capture) {
     // Expected is derived from the backend that IS SERVING — this one (A10). On the Cohere
@@ -453,7 +595,7 @@ export async function rerankJudge<T extends RerankCandidate>(
           { role: 'system', content: JUDGE_SYSTEM },
           { role: 'user', content: userMsg },
         ],
-        temperature: 0.0,
+        temperature: JUDGE_TEMPERATURE,   // the SAME constant the manifest records (v7 §10)
         max_tokens: 200,
         ...({ options: { num_ctx: 4096 }, keep_alive: '15m' } as Record<string, unknown>),
       }, { gemini: geminiUtilityModel(), promptRef: 'rerank/JUDGE_SYSTEM' });
@@ -508,7 +650,10 @@ export async function rerankJudge<T extends RerankCandidate>(
         index: batchIndex, start, end, evidence, outcome,
         expectedScoreKeys: slice.length,
         finiteScoreKeys: finite, missingScoreKeys: missing, nonnumericScoreKeys: nonnumeric,
-        intendedProvider: 'vertex', intendedModel: JUDGE_MODEL,
+        // ⚠️ THE HOT PATH, RESOLVED ONCE PER CALL rather than per batch (addendum v7 §5). Same
+        // impossible `'vertex'` + JUDGE_MODEL pair as the soft-failure branch, on every judge batch
+        // of every reranked retrieval — which is why it dominated the defect in the stored rows.
+        intendedProvider: judgeTarget.provider, intendedModel: judgeTarget.model,
         promptTokens, completionTokens,
       });
     }

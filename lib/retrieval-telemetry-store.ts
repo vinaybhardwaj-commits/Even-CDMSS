@@ -326,9 +326,17 @@ export async function writeRetrievalTerminal(
     )) as Array<{ row_revision: number }>;
 
     if (updated.length === 0) {
-      // Revision mismatch, or the row is no longer `started`. NEVER RETRIED BLINDLY (D12): a blind
-      // retry is how an old invocation overwrites a newer terminal result.
-      console.warn('[retrieval-telemetry] terminal write rejected (revision or state moved)', role);
+      // ══ THE REJECTED TERMINAL WRITE (addendum v7 §8) ═══════════════════════════════════════════
+      //
+      // Zero rows updated is NOT an exception, so the catch below never fires and — until this —
+      // the only trace was a `console.warn`. The manifest, the counters and the defect list computed
+      // for this write were computed and discarded, and nothing in the database recorded that the
+      // attempt had happened at all.
+      //
+      // ⚠️ STILL NEVER RETRIED BLINDLY (D12). A blind retry is how an old invocation overwrites a
+      // newer terminal result. The reread below is a READ, and its only outcome is a decision about
+      // what to record — it never rewrites the row.
+      await rejectedEvidence(handle, run, input.completedAt);
       return handle;
     }
     return advance(handle, role, updated[0].row_revision);
@@ -354,6 +362,61 @@ function advance(handle: LifecycleHandle, role: RetrievalRole, revision: number)
 }
 
 /** Write failure evidence, and fall back to the invocation counter when even that fails (D12). */
+/**
+ * Durable evidence for a terminal compare-and-set that matched no row, plus the reread that decides
+ * whether anything is owed (addendum v7 §8).
+ *
+ * ⚠️ REREAD, AND PRESERVE AN EXISTING TERMINAL ROW. Two different things produce zero rows: the
+ * revision moved under us, or the row already left `started`. Only a read can tell them apart, and
+ * the answer decides whether this rejection is benign. **A terminal row is never downgraded** — this
+ * function writes no UPDATE at all, so preservation is structural rather than a rule someone has to
+ * remember.
+ *
+ * ⚠️ FAIL-SAFE, LIKE EVERY OTHER TELEMETRY PATH. Constraint 2: a telemetry write that fails degrades
+ * to a no-op, never to a 500 and never to wrong data. The reread is wrapped, the evidence write is
+ * already fail-open through `recordTelemetryFailure`, and a failure of the evidence write itself
+ * falls back to the invocation counter exactly as `failEvidence` does.
+ */
+async function rejectedEvidence(
+  handle: LifecycleHandle,
+  run: LifecycleRun,
+  observedAt: string,
+): Promise<void> {
+  let observedState: string | null = null;
+  try {
+    const rows = (await sql(
+      `SELECT persistence_state, row_revision, audit_id
+         FROM opd_audit_retrieval_telemetry
+        WHERE retrieval_run_id = $1`,
+      [run.runId],
+    )) as Array<{ persistence_state: string; row_revision: number }>;
+    observedState = rows[0]?.persistence_state ?? null;
+  } catch {
+    // The reread is diagnostic. Losing it must not lose the evidence write below.
+    observedState = null;
+  }
+
+  const alreadyTerminal = observedState != null && isTerminalState(observedState);
+  console.warn(
+    '[retrieval-telemetry] terminal write rejected (revision or state moved)', role_(run),
+    alreadyTerminal ? `— row already terminal (${observedState}), preserved` : `— row state ${observedState ?? 'unknown'}`,
+  );
+
+  const ok = await recordTelemetryFailure({
+    invocationId: handle.invocationId, retrievalRunId: run.runId, retrievalRole: run.role,
+    failedPhase: 'retrieval_terminal_rejected',
+    // The state this write INTENDED to reach. It is not the state the row is in — that is the
+    // reread above, and it is deliberately not asserted as an outcome here.
+    intendedState: 'retrieval_complete',
+    errorClass: alreadyTerminal ? 'row_already_terminal' : 'revision_or_state_moved',
+    observedAt,
+  });
+  if (!ok) await bumpTelemetryWriteFailure(handle.invocationId);
+}
+
+/** The role, for the log line. Kept tiny so the warn call reads at a glance. */
+function role_(run: LifecycleRun): string { return run.role; }
+
 async function failEvidence(
   invocationId: string,
   run: LifecycleRun,

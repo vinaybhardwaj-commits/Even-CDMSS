@@ -91,6 +91,19 @@ export function evidenceFromError(err: unknown): TransportEvidence | null {
  *   a completion may have arrived         → 'unattributed'
  *   stage skipped, no request made        → null, the explicit STAGE-LEVEL null (A6)
  */
+/**
+ * What happened to the reranker's seed, as opposed to what was asked for (addendum v7 §10).
+ *
+ *   not_applicable  no rerank decode ran, or the backend takes no seed (Cohere is a deterministic
+ *                   cross-encoder with neither seed nor temperature)
+ *   unseeded        the call set no seed at all — TODAY'S JUDGE, on every path
+ *   applied_local   a seed was set and the call served locally, so it reached the model
+ *   stripped_cloud  a seed was set in the Ollama options bag and the call served on a cloud tier,
+ *                   which strips that bag — so the seed did NOT reach the model
+ */
+export const RERANK_SEED_STATUSES = ['not_applicable', 'unseeded', 'applied_local', 'stripped_cloud'] as const;
+export type RerankSeedStatus = typeof RERANK_SEED_STATUSES[number];
+
 export function servedClassOf(ev: TransportEvidence | null): ServedRouteClass {
   if (!ev) return 'unattributed';
   if (ev.provenNotServed) return 'not_served';
@@ -166,6 +179,22 @@ export interface TelemetryCapture {
   retrievalOutcome: RetrievalOutcome;
   retrievalErrorClass: string | null;
   retrievalConfig: Record<string, string | number | boolean>;
+
+  /**
+   * RERANKER DECODE SETTINGS, AS THEY ACTUALLY APPLIED (addendum v7 §10).
+   *
+   * ⚠️ STATUS, NOT AN ASSUMED SEED, AND THAT DISTINCTION IS THE WHOLE POINT. The finding that
+   * started this workstream names an UNSEEDED judge, and no persisted row would have shown a
+   * seeding change: neither seed nor temperature was captured anywhere. Worse, a seed set in code
+   * does not necessarily reach the provider — the Ollama options bag that carries it is stripped
+   * before every cloud call, at `lib/llm.ts:404`, `lib/llm.ts:474`, `lib/trace.ts:440` and
+   * `lib/trace.ts:516`. `lib/expand.ts:33` is a live example of a seed living in that bag. So the
+   * manifest records what APPLIED, never what was requested.
+   *
+   * Null temperature means no rerank decode happened (no reranker, or a single candidate).
+   */
+  rerankTemperature: number | null;
+  rerankSeedStatus: RerankSeedStatus;
   corpusVersion: string | null;
   indexVersion: string | null;
 
@@ -196,6 +225,9 @@ export function createTelemetryCapture(role: RetrievalRole): TelemetryCapture {
     retrievalOutcome: 'success',
     retrievalErrorClass: null,
     retrievalConfig: {},
+    // No rerank decode has happened yet. If none ever does, these are the honest values.
+    rerankTemperature: null,
+    rerankSeedStatus: 'not_applicable',
     corpusVersion: null,
     indexVersion: null,
   };
@@ -303,7 +335,14 @@ export function buildRetrievalPayload(
       ? hmac(opts.scorerContext)
       : null,
 
-    retrieval_config: { ...capture.retrievalConfig },
+    retrieval_config: {
+      ...capture.retrievalConfig,
+      // ⚠️ EMITTED UNCONDITIONALLY (addendum v7 §10). A field that appears only when a reranker ran
+      // cannot distinguish "no rerank" from "field not implemented yet", and guardrail 3 measures
+      // serialized bytes — so these land BEFORE the size baseline, not after it.
+      rerank_temperature: capture.rerankTemperature,
+      rerank_seed_status: capture.rerankSeedStatus,
+    },
     corpus_version: capture.corpusVersion,
     index_version: capture.indexVersion,
 

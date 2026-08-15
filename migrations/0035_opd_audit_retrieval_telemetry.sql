@@ -246,9 +246,9 @@ CREATE TABLE IF NOT EXISTS opd_retrieval_telemetry_failures (
   intended_state TEXT NULL,
   observed_at TIMESTAMPTZ NOT NULL,
   error_class TEXT NOT NULL,
-  CONSTRAINT opd_rtf_phase_chk CHECK (failed_phase IN ('invocation_start', 'work_declaration', 'retrieval_terminal', 'persistence_link', 'closure')),
+  CONSTRAINT opd_rtf_phase_chk CHECK (failed_phase IN ('invocation_start', 'work_declaration', 'retrieval_terminal', 'retrieval_terminal_rejected', 'persistence_link', 'closure')),
   CONSTRAINT opd_rtf_run_chk CHECK (
-    (failed_phase IN ('work_declaration', 'retrieval_terminal', 'persistence_link') AND retrieval_run_id IS NOT NULL AND retrieval_role IS NOT NULL)
+    (failed_phase IN ('work_declaration', 'retrieval_terminal', 'retrieval_terminal_rejected', 'persistence_link') AND retrieval_run_id IS NOT NULL AND retrieval_role IS NOT NULL)
     OR failed_phase IN ('invocation_start', 'closure')
   )
 );
