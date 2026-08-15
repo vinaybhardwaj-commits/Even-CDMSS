@@ -1193,34 +1193,41 @@ export function retrievalTelemetryDdl(): DdlStatement[] {
   ADD COLUMN IF NOT EXISTS active_backfill_state TEXT,
   ALTER COLUMN app_source SET DEFAULT 'standalone'`,
     },
-    // ── 3. The three CHECKs, every value generated from the constants above ─────────────────────
+    // ── 3. The three CHECKs, in ONE statement (v9 §6.1) ─────────────────────────────────────────
+    //
+    // ⚠️ ONE ALTER, NOT SIX. These were five drop/add pairs across two tables, run by a plain loop
+    // with no transaction (`migrate-retrieval-telemetry/route.ts:72-75`,
+    // `telemetry-overhead/route.ts:298`). THIS TABLE IS THE DANGEROUS ONE: its CREATE TABLE above
+    // carries no inline CHECK at all, deliberately, so this pair was the ONLY source of all three
+    // constraints — and a failure between a DROP and its ADD left the table UNCONSTRAINED, with
+    // nothing later putting the constraint back.
+    //
+    // ⚠️ WHY DROPPING AND ADDING THE SAME NAME IN ONE STATEMENT WORKS. PostgreSQL sorts the
+    // subcommands of one ALTER TABLE into ordered passes, and drops run before adds. It works
+    // because of PASS ORDERING, not because the actions run left to right — do not reason about
+    // this statement by reading it top to bottom. The whole statement takes one lock and validates
+    // every new CHECK against existing rows inside it, which is the atomicity this is for. It also
+    // means one bad row now fails the ENTIRE replacement rather than leaving the table half
+    // constrained; that is the intended trade, not a regression.
+    //
+    // Every value list is still generated from the constants above. Idempotent in both directions:
+    // DROP … IF EXISTS tolerates absence on a fresh table, and each ADD names a constraint the same
+    // statement has already freed.
+    //
+    // The role CHECK is UNCONDITIONAL. A NULL role passes a CHECK by SQL's own rules, which is
+    // exactly why the NOT NULL below has to be a separate, conditional step.
+    //
+    // `retrieval_outcome` stays NULLABLE because the worker inserts `started` rows before retrieval
+    // starts (D2). The state is what makes it required, so that guard is stateful.
     {
-      key: 'state_check_drop',
-      sql: `ALTER TABLE opd_audit_retrieval_telemetry DROP CONSTRAINT IF EXISTS opd_audit_retrieval_telemetry_persistence_state_chk`,
-    },
-    {
-      key: 'state_check',
-      sql: `ALTER TABLE opd_audit_retrieval_telemetry ADD CONSTRAINT opd_audit_retrieval_telemetry_persistence_state_chk CHECK (persistence_state IN (${q(RETRIEVAL_PERSISTENCE_STATES)}))`,
-    },
-    {
-      key: 'role_check_drop',
-      sql: `ALTER TABLE opd_audit_retrieval_telemetry DROP CONSTRAINT IF EXISTS opd_audit_retrieval_telemetry_role_chk`,
-    },
-    {
-      // Unconditional. A NULL role passes a CHECK by SQL's own rules, which is exactly why the
-      // NOT NULL below has to be a separate, conditional step.
-      key: 'role_check',
-      sql: `ALTER TABLE opd_audit_retrieval_telemetry ADD CONSTRAINT opd_audit_retrieval_telemetry_role_chk CHECK (retrieval_role IN (${q(RETRIEVAL_ROLES)}))`,
-    },
-    {
-      key: 'outcome_check_drop',
-      sql: `ALTER TABLE opd_audit_retrieval_telemetry DROP CONSTRAINT IF EXISTS opd_audit_retrieval_telemetry_outcome_chk`,
-    },
-    {
-      // `retrieval_outcome` stays NULLABLE because the worker inserts `started` rows before
-      // retrieval starts (D2). The state is what makes it required, so the guard is stateful.
-      key: 'outcome_check',
-      sql: `ALTER TABLE opd_audit_retrieval_telemetry ADD CONSTRAINT opd_audit_retrieval_telemetry_outcome_chk CHECK (
+      key: 'retrieval_checks',
+      sql: `ALTER TABLE opd_audit_retrieval_telemetry
+  DROP CONSTRAINT IF EXISTS opd_audit_retrieval_telemetry_persistence_state_chk,
+  DROP CONSTRAINT IF EXISTS opd_audit_retrieval_telemetry_role_chk,
+  DROP CONSTRAINT IF EXISTS opd_audit_retrieval_telemetry_outcome_chk,
+  ADD CONSTRAINT opd_audit_retrieval_telemetry_persistence_state_chk CHECK (persistence_state IN (${q(RETRIEVAL_PERSISTENCE_STATES)})),
+  ADD CONSTRAINT opd_audit_retrieval_telemetry_role_chk CHECK (retrieval_role IN (${q(RETRIEVAL_ROLES)})),
+  ADD CONSTRAINT opd_audit_retrieval_telemetry_outcome_chk CHECK (
   (persistence_state = 'started' AND retrieval_outcome IS NULL)
   OR (persistence_state IN (${q(OUTCOME_REQUIRED_STATES)}) AND retrieval_outcome IS NOT NULL)
   OR persistence_state IN (${q(OUTCOME_EITHER_STATES)})
@@ -1288,25 +1295,23 @@ export function retrievalTelemetryDdl(): DdlStatement[] {
     //
     // Production does not have this table. The measurement branch does, or will. That is enough.
     //
-    // The drop-then-add pair is the same idiom the three `opd_audit_retrieval_telemetry` CHECKs
-    // above already use (`state_check_drop`/`state_check`, and its two siblings), so the widened
-    // form applies whether the table is new or existing. Idempotent: `DROP … IF EXISTS` tolerates
-    // absence, and the ADD immediately follows on a constraint name that is now guaranteed free.
+    // The drop-then-add form is the same idiom the `retrieval_checks` statement above uses, so the
+    // widened form applies whether the table is new or existing. Idempotent: `DROP … IF EXISTS`
+    // tolerates absence, and each ADD names a constraint the same statement has already freed.
+    //
+    // ⚠️ ONE ALTER, NOT FOUR (v9 §6.1). Unlike the retrieval table, this one DOES carry both CHECKs
+    // inline in its CREATE TABLE, so a failure between a drop and an add could not leave a FRESH
+    // table unconstrained. The reason to collapse it is the same either way: one lock, one
+    // validation pass over existing rows, and no window in which an EXISTING table has lost a
+    // constraint that nothing later restores. Drops still run before adds — by ALTER TABLE's pass
+    // ordering, not by their left-to-right position.
     {
-      key: 'rtf_phase_check_drop',
-      sql: `ALTER TABLE opd_retrieval_telemetry_failures DROP CONSTRAINT IF EXISTS opd_rtf_phase_chk`,
-    },
-    {
-      key: 'rtf_phase_check',
-      sql: `ALTER TABLE opd_retrieval_telemetry_failures ADD CONSTRAINT opd_rtf_phase_chk CHECK (failed_phase IN (${q(TELEMETRY_FAILURE_PHASES)}))`,
-    },
-    {
-      key: 'rtf_run_check_drop',
-      sql: `ALTER TABLE opd_retrieval_telemetry_failures DROP CONSTRAINT IF EXISTS opd_rtf_run_chk`,
-    },
-    {
-      key: 'rtf_run_check',
-      sql: `ALTER TABLE opd_retrieval_telemetry_failures ADD CONSTRAINT opd_rtf_run_chk CHECK (
+      key: 'failure_checks',
+      sql: `ALTER TABLE opd_retrieval_telemetry_failures
+  DROP CONSTRAINT IF EXISTS opd_rtf_phase_chk,
+  DROP CONSTRAINT IF EXISTS opd_rtf_run_chk,
+  ADD CONSTRAINT opd_rtf_phase_chk CHECK (failed_phase IN (${q(TELEMETRY_FAILURE_PHASES)})),
+  ADD CONSTRAINT opd_rtf_run_chk CHECK (
     (failed_phase IN (${q(RUN_SCOPED_FAILURE_PHASES)}) AND retrieval_run_id IS NOT NULL AND retrieval_role IS NOT NULL)
     OR failed_phase IN (${q(TELEMETRY_FAILURE_PHASES.filter((p) => !(RUN_SCOPED_FAILURE_PHASES as readonly string[]).includes(p)))})
   )`,

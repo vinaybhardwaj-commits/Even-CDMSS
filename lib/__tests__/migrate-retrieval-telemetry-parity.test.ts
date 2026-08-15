@@ -69,6 +69,10 @@ test('every statement the route runs is in the .sql, and every statement in the 
   const fromRoute = routeStatements();
   const fromFile = fileStatements();
 
+  // ⚠️ ORDERED, ELEMENT BY ELEMENT (v9 §6.5). This compared the two sides as SETS in both directions
+  // plus an equal count, which cannot see a mirror that carries the right statements in the wrong
+  // order — and order is the whole subject of a migration file. The set comparison is kept below it
+  // because it names WHICH statement is missing, which an index mismatch does not.
   for (const s of fromRoute) {
     assert.ok(fromFile.includes(s), `the .sql mirror is missing a statement the route runs:\n  ${s.slice(0, 160)}`);
   }
@@ -77,7 +81,14 @@ test('every statement the route runs is in the .sql, and every statement in the 
   }
   // and they are the same COUNT, so a duplicated line on either side is caught too
   assert.equal(fromFile.length, fromRoute.length, 'same number of statements on both sides');
-  assert.ok(fromRoute.length >= 25, 'sanity: the splitter actually found statements');
+  for (let i = 0; i < fromRoute.length; i++) {
+    assert.equal(fromFile[i], fromRoute[i],
+      `statement ${i} differs in ORDER or content:\n  route: ${(fromRoute[i] ?? '<none>').slice(0, 160)}\n  .sql : ${(fromFile[i] ?? '<none>').slice(0, 160)}`);
+  }
+  // ⚠️ FLOOR RE-POINTED, 25 → 20. The count fell from 31 to 23 when v9 §6.1 collapsed ten constraint
+  // statements into two. The floor is a vacuity guard on the splitter, not a schema assertion, so it
+  // sits below the real number rather than pinning it.
+  assert.ok(fromRoute.length >= 20, 'sanity: the splitter actually found statements');
 });
 
 test('the parity comparison cannot pass vacuously', () => {
@@ -117,13 +128,25 @@ test('the value lists are GENERATED, never hand-typed into the route', () => {
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 
 test('the retrieval_role CHECK is generated from RETRIEVAL_ROLES and rejects an unknown role', () => {
-  const roleCheck = routeStatements().find((s) => s.includes('opd_audit_retrieval_telemetry_role_chk CHECK'));
-  assert.ok(roleCheck, 'the role CHECK exists');
+  // ⚠️ RE-ANCHORED (v9 §6.1, §8). The role CHECK is no longer a statement of its own: it is one
+  // subcommand of the collapsed `retrieval_checks` ALTER. Counting quotation marks across the whole
+  // statement would now count three constraints' values and prove nothing. The anchor becomes the
+  // role CHECK's own parenthesised value list, extracted from the statement — so the assertion still
+  // proves exactly what it proved: FIVE role literals, no extras.
+  const stmt = routeStatements().find((s) => s.includes('opd_audit_retrieval_telemetry_role_chk CHECK'));
+  assert.ok(stmt, 'the role CHECK exists');
+  const m = stmt.match(/ADD CONSTRAINT opd_audit_retrieval_telemetry_role_chk CHECK \(retrieval_role IN \(([^)]*)\)\)/);
+  assert.ok(m, 'the role CHECK keeps its generated IN-list form');
+  const roleCheck = m[1];
   for (const r of RETRIEVAL_ROLES) assert.ok(roleCheck.includes(`'${r}'`), `${r} admitted`);
   for (const notARole of ['reconciler', 'primary_channel', 'lvc', 'unknown_route']) {
     assert.equal(roleCheck.includes(`'${notARole}'`), false, `${notARole} is not a role and must be rejected`);
   }
   assert.equal((roleCheck.match(/'/g) || []).length / 2, RETRIEVAL_ROLES.length, 'exactly the five, no extras');
+  // And the extraction is not vacuous: a value from a NEIGHBOURING constraint in the same statement
+  // must not appear in it. `persistence_skipped` is a state, never a role.
+  assert.equal(roleCheck.includes('persistence_skipped'), false, 'the clause was isolated, not the whole ALTER');
+  assert.ok(stmt.includes(`'persistence_skipped'`), '…and that neighbour really is in the same statement');
 });
 
 test('the conditional NOT NULL is the ONE allowed difference, and the .sql states the rule', () => {
@@ -154,13 +177,39 @@ test('every statement is idempotent, and each ADD CONSTRAINT is preceded by its 
   }
   // Applying the route twice must leave the same constraints and must not error, which is exactly
   // what the DROP-before-ADD ordering buys. Assert the ORDER, not merely the presence.
-  for (const name of ['persistence_state_chk', 'role_chk', 'outcome_chk']) {
-    const dropAt = stmts.findIndex((s) => s.includes(`DROP CONSTRAINT IF EXISTS opd_audit_retrieval_telemetry_${name}`));
-    const addAt = stmts.findIndex((s) => s.includes(`ADD CONSTRAINT opd_audit_retrieval_telemetry_${name}`));
-    assert.notEqual(dropAt, -1, `${name} has a DROP`);
-    assert.notEqual(addAt, -1, `${name} has an ADD`);
-    assert.ok(dropAt < addAt, `${name}: the DROP must come first, or a second run errors`);
+  //
+  // ⚠️ RE-POINTED (v9 §6.1, §8). This searched for a DROP statement at a lower INDEX than its ADD
+  // statement. The three constraints now live in one collapsed ALTER, so both live at the same
+  // index and an index comparison cannot express the requirement. It becomes a comparison of
+  // POSITION WITHIN that statement.
+  //
+  // ⚠️ AND THE ORDER IS NOT WHAT MAKES IT WORK. PostgreSQL sorts an ALTER TABLE's subcommands into
+  // ordered passes in which drops precede adds, so the statement would be correct even written the
+  // other way round. It is written drops-first anyway, and pinned here, because a reader must not
+  // need that knowledge to believe the migration is re-runnable. Do not relax this to presence.
+  const combined = stmts.filter((s) => /^ALTER TABLE \w+ DROP CONSTRAINT IF EXISTS/.test(s));
+  assert.equal(combined.length, 2, 'one collapsed constraint statement per table, and only two tables have any');
+  for (const s of combined) {
+    assert.equal((s.match(/;/g) || []).length, 0, 'one statement');
+    const drops = [...s.matchAll(/DROP CONSTRAINT IF EXISTS (\w+)/g)].map((m) => m[1]);
+    const adds = [...s.matchAll(/ADD CONSTRAINT (\w+) CHECK/g)].map((m) => m[1]);
+    assert.deepEqual(adds, drops, 'every constraint added is first dropped, and nothing else is dropped');
+    for (const name of adds) {
+      assert.ok(s.indexOf(`DROP CONSTRAINT IF EXISTS ${name}`) < s.indexOf(`ADD CONSTRAINT ${name}`),
+        `${name}: the DROP is written first, or a reader has to know about ALTER TABLE passes`);
+    }
   }
+  // The three named constraints of the dangerous table are all in ONE statement, which is the point:
+  // its CREATE TABLE carries no inline CHECK, so a failure between a drop and an add left it bare.
+  const retrieval = combined.find((s) => s.startsWith('ALTER TABLE opd_audit_retrieval_telemetry '));
+  assert.ok(retrieval);
+  for (const name of ['persistence_state_chk', 'role_chk', 'outcome_chk']) {
+    assert.ok(retrieval.includes(`DROP CONSTRAINT IF EXISTS opd_audit_retrieval_telemetry_${name}`), `${name} DROP`);
+    assert.ok(retrieval.includes(`ADD CONSTRAINT opd_audit_retrieval_telemetry_${name}`), `${name} ADD`);
+  }
+  // No standalone constraint DROP survives anywhere in the list (v9 §6.1).
+  assert.equal(stmts.filter((s) => /^ALTER TABLE \w+ DROP CONSTRAINT IF EXISTS [\w]+$/.test(s)).length, 0,
+    'a lone DROP is exactly the window this commit closed');
 });
 
 test('the index count in the .sql is the real total', () => {

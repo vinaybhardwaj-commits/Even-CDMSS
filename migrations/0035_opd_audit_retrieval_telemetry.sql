@@ -132,32 +132,42 @@ ALTER TABLE opd_audit_retrieval_telemetry
   ALTER COLUMN app_source SET DEFAULT 'standalone';
 
 -- ════════════════════════════════════════════════════════════════════════════════════════════════
--- 3. THE THREE CHECKS
+-- 3. THE THREE CHECKS, IN ONE STATEMENT
 -- ════════════════════════════════════════════════════════════════════════════════════════════════
 -- Every value list below is GENERATED in the route from the exported constants in
 -- lib/retrieval-telemetry-core.ts. The copies here are hand-typed and are held to the route's
 -- output by the parity test. RETRIEVAL_PERSISTENCE_STATES is the source of truth for the first,
 -- RETRIEVAL_ROLES for the second, OUTCOME_REQUIRED_STATES and OUTCOME_EITHER_STATES for the third.
-
--- Replaced, never edited: the DROP makes the pair idempotent and makes re-running safe.
-ALTER TABLE opd_audit_retrieval_telemetry DROP CONSTRAINT IF EXISTS opd_audit_retrieval_telemetry_persistence_state_chk;
-
-ALTER TABLE opd_audit_retrieval_telemetry ADD CONSTRAINT opd_audit_retrieval_telemetry_persistence_state_chk CHECK (persistence_state IN ('started', 'retrieval_complete', 'persisted_complete', 'persisted_partial', 'completed_unpersisted', 'persistence_refused', 'audit_persistence_failed', 'audit_generation_failed', 'telemetry_persistence_failed', 'aborted', 'persistence_unknown', 'retrieval_not_run', 'no_persistence_intended', 'persistence_skipped'));
-
-ALTER TABLE opd_audit_retrieval_telemetry DROP CONSTRAINT IF EXISTS opd_audit_retrieval_telemetry_role_chk;
-
--- Unconditional. A NULL role passes a CHECK by SQL's own rules, which is exactly why the NOT NULL
--- has to be a separate, conditional step — see the note at the foot of this section.
-ALTER TABLE opd_audit_retrieval_telemetry ADD CONSTRAINT opd_audit_retrieval_telemetry_role_chk CHECK (retrieval_role IN ('primary', 'normative_channel', 'lvc_recall', 'lab_direct', 'lab_multi_query'));
-
-ALTER TABLE opd_audit_retrieval_telemetry DROP CONSTRAINT IF EXISTS opd_audit_retrieval_telemetry_outcome_chk;
-
+--
+-- ⚠️ ONE ALTER TABLE, NOT SIX STATEMENTS. The CREATE TABLE above carries no inline CHECK, so this
+-- is the ONLY source of all three constraints — and the route runs its statements in a plain loop
+-- with no transaction, so a failure between a separate DROP and its separate ADD left this table
+-- UNCONSTRAINED with nothing later restoring it. Collapsed, the replacement is atomic: one lock,
+-- one validation pass over existing rows.
+--
+-- ⚠️ DROPPING AND ADDING THE SAME NAME IN ONE STATEMENT IS LEGAL, and it works because PostgreSQL
+-- sorts an ALTER TABLE's subcommands into ordered passes in which drops precede adds — NOT because
+-- the actions run left to right. Do not reason about this statement by reading it top to bottom.
+-- One bad row now fails the whole replacement rather than leaving the table half constrained.
+--
+-- Idempotent in both directions: DROP … IF EXISTS tolerates absence on a fresh table, and each ADD
+-- names a constraint this same statement has already freed.
+--
+-- The role CHECK is unconditional: a NULL role passes a CHECK by SQL's own rules, which is why the
+-- NOT NULL has to be a separate, conditional step — see the note at the foot of this section.
+--
 -- retrieval_outcome stays NULLABLE because the worker inserts `started` rows before retrieval
--- starts. The STATE is what makes an outcome required, so the guard is stateful. The three sets
+-- starts. The STATE is what makes an outcome required, so that guard is stateful. The three sets
 -- partition all fourteen states: 'started' alone, the nine that require an outcome, and the four
 -- that permit either. audit_generation_failed is in the EITHER set, not the required one — a row
 -- settled from `started` never recorded an outcome, and D12 permits that transition.
-ALTER TABLE opd_audit_retrieval_telemetry ADD CONSTRAINT opd_audit_retrieval_telemetry_outcome_chk CHECK (
+ALTER TABLE opd_audit_retrieval_telemetry
+  DROP CONSTRAINT IF EXISTS opd_audit_retrieval_telemetry_persistence_state_chk,
+  DROP CONSTRAINT IF EXISTS opd_audit_retrieval_telemetry_role_chk,
+  DROP CONSTRAINT IF EXISTS opd_audit_retrieval_telemetry_outcome_chk,
+  ADD CONSTRAINT opd_audit_retrieval_telemetry_persistence_state_chk CHECK (persistence_state IN ('started', 'retrieval_complete', 'persisted_complete', 'persisted_partial', 'completed_unpersisted', 'persistence_refused', 'audit_persistence_failed', 'audit_generation_failed', 'telemetry_persistence_failed', 'aborted', 'persistence_unknown', 'retrieval_not_run', 'no_persistence_intended', 'persistence_skipped')),
+  ADD CONSTRAINT opd_audit_retrieval_telemetry_role_chk CHECK (retrieval_role IN ('primary', 'normative_channel', 'lvc_recall', 'lab_direct', 'lab_multi_query')),
+  ADD CONSTRAINT opd_audit_retrieval_telemetry_outcome_chk CHECK (
   (persistence_state = 'started' AND retrieval_outcome IS NULL)
   OR (persistence_state IN ('retrieval_complete', 'persisted_complete', 'persisted_partial', 'completed_unpersisted', 'persistence_refused', 'audit_persistence_failed', 'persistence_skipped', 'no_persistence_intended', 'persistence_unknown') AND retrieval_outcome IS NOT NULL)
   OR persistence_state IN ('aborted', 'retrieval_not_run', 'telemetry_persistence_failed', 'audit_generation_failed')
@@ -256,12 +266,19 @@ CREATE TABLE IF NOT EXISTS opd_retrieval_telemetry_failures (
 -- ⚠️ THE FAILURE-TABLE CHECKS, RE-APPLIED (pass 0a). The inline constraints above reach a FRESH
 -- table only: CREATE TABLE IF NOT EXISTS is a no-op when the table exists, so on a database that
 -- already has this table the OLD CHECKs survive and `retrieval_terminal_rejected` would be rejected
--- by the constraint. Drop-then-add is the same idiom the three opd_audit_retrieval_telemetry CHECKs
--- above use, and it is idempotent in both directions.
-ALTER TABLE opd_retrieval_telemetry_failures DROP CONSTRAINT IF EXISTS opd_rtf_phase_chk;
-ALTER TABLE opd_retrieval_telemetry_failures ADD CONSTRAINT opd_rtf_phase_chk CHECK (failed_phase IN ('invocation_start', 'work_declaration', 'retrieval_terminal', 'retrieval_terminal_rejected', 'persistence_link', 'closure'));
-ALTER TABLE opd_retrieval_telemetry_failures DROP CONSTRAINT IF EXISTS opd_rtf_run_chk;
-ALTER TABLE opd_retrieval_telemetry_failures ADD CONSTRAINT opd_rtf_run_chk CHECK (
+-- by the constraint. Drop-then-add is the same idiom the collapsed opd_audit_retrieval_telemetry
+-- statement above uses, and it is idempotent in both directions.
+--
+-- ⚠️ ONE ALTER TABLE, NOT FOUR STATEMENTS. Unlike the retrieval table, this one does carry both
+-- CHECKs inline in its CREATE TABLE, so a half-applied pair could not leave a FRESH table
+-- unconstrained. It is collapsed for the same reason regardless: one lock, one validation pass, and
+-- no window in which an EXISTING table has lost a constraint that nothing later restores. Drops
+-- still run before adds — by ALTER TABLE's pass ordering, not by their position in the list.
+ALTER TABLE opd_retrieval_telemetry_failures
+  DROP CONSTRAINT IF EXISTS opd_rtf_phase_chk,
+  DROP CONSTRAINT IF EXISTS opd_rtf_run_chk,
+  ADD CONSTRAINT opd_rtf_phase_chk CHECK (failed_phase IN ('invocation_start', 'work_declaration', 'retrieval_terminal', 'retrieval_terminal_rejected', 'persistence_link', 'closure')),
+  ADD CONSTRAINT opd_rtf_run_chk CHECK (
     (failed_phase IN ('work_declaration', 'retrieval_terminal', 'retrieval_terminal_rejected', 'persistence_link') AND retrieval_run_id IS NOT NULL AND retrieval_role IS NOT NULL)
     OR failed_phase IN ('invocation_start', 'closure')
   );

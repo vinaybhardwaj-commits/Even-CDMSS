@@ -89,15 +89,41 @@ export const manifest = (
 // §4.2 / D9 — the state vocabulary is ONE fact, and it is fourteen values
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 
-/** Slice a named constraint's body out of the migration, bounded by a delimiter that EXISTS. */
+/**
+ * Slice a named constraint's body out of the migration, bounded by a delimiter that EXISTS.
+ *
+ * ⚠️ RE-POINTED AGAIN (v9 §6.1). This bounded the slice at the next `;`, which was the right end
+ * only while every ADD CONSTRAINT was a statement of its own. The three CHECKs on
+ * `opd_audit_retrieval_telemetry` are now subcommands of ONE `ALTER TABLE`, so slicing the first of
+ * them to the next `;` swallowed the two that follow — and the state-list test then compared the
+ * state vocabulary against states PLUS roles PLUS the outcome CHECK's states and failed.
+ *
+ * ⚠️ This break is NOT in addendum v9 §8's pre-listed consequences. Reported as found, not
+ * presented as expected.
+ *
+ * The bound is now the CHECK's own matching close parenthesis, which is correct under either shape
+ * and does not depend on what follows the constraint.
+ */
 function constraintBody(sql: string, constraintName: string): string {
   const marker = `ADD CONSTRAINT ${constraintName} CHECK (`;
   const start = sql.indexOf(marker);
   assert.notEqual(start, -1, `${constraintName} must be present in the migration`);
-  const end = sql.indexOf(';', start);
-  assert.notEqual(end, -1, `${constraintName} must be terminated — a slice to EOF is not a slice`);
-  const body = sql.slice(start + marker.length, end);
+  const open = start + marker.length;
+  let depth = 1;
+  let i = open;
+  for (; i < sql.length && depth > 0; i++) {
+    if (sql[i] === '(') depth++;
+    else if (sql[i] === ')') depth--;
+  }
+  assert.equal(depth, 0, `${constraintName} has an unbalanced CHECK — a slice to EOF is not a slice`);
+  const body = sql.slice(open, i - 1);
   assert.ok(body.trim().length > 0, `${constraintName} sliced to nothing — this test may not pass vacuously`);
+  // The slice must stop at its OWN constraint: a neighbour's name inside it means it over-ran.
+  for (const sibling of ['opd_audit_retrieval_telemetry_role_chk', 'opd_audit_retrieval_telemetry_outcome_chk',
+    'opd_audit_retrieval_telemetry_persistence_state_chk']) {
+    if (sibling === constraintName) continue;
+    assert.equal(body.includes(sibling), false, `${constraintName}'s slice ran into ${sibling}`);
+  }
   return body;
 }
 

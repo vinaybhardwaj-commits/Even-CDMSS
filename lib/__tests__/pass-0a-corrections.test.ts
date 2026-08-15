@@ -32,57 +32,82 @@ const operational = (): OperationalTelemetry => ({
 // §2.1 — the widened CHECKs must reach an EXISTING table, not only a fresh one
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 
-test('§2.1 — the DDL carries a DROP/ADD pair for BOTH failure-table constraints', () => {
-  // ⚠️ THE DEFECT. The constraints are written inside `CREATE TABLE IF NOT EXISTS`, which is a
-  // NO-OP when the table exists — so on any database that already has the table, the OLD CHECKs
+test('§2.1 — the DDL re-applies BOTH failure-table constraints, in one keyed statement', () => {
+  // ⚠️ THE DEFECT (pass 0a). The constraints are written inside `CREATE TABLE IF NOT EXISTS`, which
+  // is a NO-OP when the table exists — so on any database that already has the table, the OLD CHECKs
   // survive and `retrieval_terminal_rejected` is rejected by the constraint. That would turn the
   // durable evidence v7 §8 exists to produce into a write error on the very path already failing.
+  //
+  // ⚠️ RE-POINTED (v9 §6.1). This was four keyed statements — `rtf_phase_check_drop`,
+  // `rtf_phase_check`, `rtf_run_check_drop`, `rtf_run_check`. They are now ONE, `failure_checks`,
+  // because a plain untransacted loop could fail between a DROP and its ADD. The guard is unchanged
+  // and is asserted the same way: the re-application must reach an EXISTING table, and the drop of
+  // each constraint must precede its add.
   const keys = retrievalTelemetryDdl().map((s) => s.key);
-  for (const k of ['rtf_phase_check_drop', 'rtf_phase_check', 'rtf_run_check_drop', 'rtf_run_check']) {
-    assert.ok(keys.includes(k), `missing keyed statement: ${k}`);
+  assert.ok(keys.includes('failure_checks'), 'missing keyed statement: failure_checks');
+  for (const gone of ['rtf_phase_check_drop', 'rtf_phase_check', 'rtf_run_check_drop', 'rtf_run_check']) {
+    assert.equal(keys.includes(gone), false, `${gone} was collapsed into failure_checks and must not return`);
   }
-  // Ordering is load-bearing: each DROP must precede its own ADD.
-  assert.ok(keys.indexOf('rtf_phase_check_drop') < keys.indexOf('rtf_phase_check'));
-  assert.ok(keys.indexOf('rtf_run_check_drop') < keys.indexOf('rtf_run_check'));
-  // …and the table must exist before either runs.
-  assert.ok(keys.indexOf('failure_table') < keys.indexOf('rtf_phase_check_drop'));
+  // The table must exist before the statement runs…
+  assert.ok(keys.indexOf('failure_table') < keys.indexOf('failure_checks'));
+  // …and ordering is still load-bearing WITHIN the statement: each DROP is written before its ADD.
+  // (PostgreSQL would sort them into passes regardless — see the next test — but a reader must not
+  // have to know that to believe this file is safe to re-run.)
+  const stmt = new Map(retrievalTelemetryDdl().map((s) => [s.key, s.sql])).get('failure_checks') as string;
+  for (const name of ['opd_rtf_phase_chk', 'opd_rtf_run_chk']) {
+    assert.ok(stmt.indexOf(`DROP CONSTRAINT IF EXISTS ${name}`) < stmt.indexOf(`ADD CONSTRAINT ${name}`), name);
+  }
 });
 
 test('§2.1 — the re-applied CHECKs carry the widened phase list', () => {
   const byKey = new Map(retrievalTelemetryDdl().map((s) => [s.key, s.sql]));
-  assert.match(byKey.get('rtf_phase_check') as string, /'retrieval_terminal_rejected'/);
-  assert.match(byKey.get('rtf_run_check') as string, /'retrieval_terminal_rejected'/);
+  const stmt = byKey.get('failure_checks') as string;
+  // Both constraints, both widened — asserted per constraint, not against the statement as a whole,
+  // so a phase reaching only one of the two would still fail.
+  const [phaseClause, runClause] = [
+    stmt.slice(stmt.indexOf('ADD CONSTRAINT opd_rtf_phase_chk'), stmt.indexOf('ADD CONSTRAINT opd_rtf_run_chk')),
+    stmt.slice(stmt.indexOf('ADD CONSTRAINT opd_rtf_run_chk')),
+  ];
+  assert.match(phaseClause, /'retrieval_terminal_rejected'/);
+  assert.match(runClause, /'retrieval_terminal_rejected'/);
   // Generated from the constant, never hand-typed: adding a phase to the vocabulary must move both.
   for (const phase of TELEMETRY_FAILURE_PHASES) {
-    assert.match(byKey.get('rtf_phase_check') as string, new RegExp(`'${phase}'`), `phase missing: ${phase}`);
+    assert.match(phaseClause, new RegExp(`'${phase}'`), `phase missing: ${phase}`);
   }
 });
 
-test('§2.1 — the pair is idempotent: DROP tolerates absence, ADD names a now-free constraint', () => {
-  const byKey = new Map(retrievalTelemetryDdl().map((s) => [s.key, s.sql]));
-  assert.match(byKey.get('rtf_phase_check_drop') as string, /DROP CONSTRAINT IF EXISTS opd_rtf_phase_chk/);
-  assert.match(byKey.get('rtf_run_check_drop') as string, /DROP CONSTRAINT IF EXISTS opd_rtf_run_chk/);
-  assert.match(byKey.get('rtf_phase_check') as string, /ADD CONSTRAINT opd_rtf_phase_chk/);
-  assert.match(byKey.get('rtf_run_check') as string, /ADD CONSTRAINT opd_rtf_run_chk/);
+test('§2.1 — the statement is idempotent: DROP tolerates absence, ADD names a now-free constraint', () => {
+  const stmt = new Map(retrievalTelemetryDdl().map((s) => [s.key, s.sql])).get('failure_checks') as string;
+  assert.match(stmt, /DROP CONSTRAINT IF EXISTS opd_rtf_phase_chk/);
+  assert.match(stmt, /DROP CONSTRAINT IF EXISTS opd_rtf_run_chk/);
+  assert.match(stmt, /ADD CONSTRAINT opd_rtf_phase_chk/);
+  assert.match(stmt, /ADD CONSTRAINT opd_rtf_run_chk/);
+  // ⚠️ Dropping and adding the SAME constraint name in one ALTER TABLE is legal because PostgreSQL
+  // sorts subcommands into ordered passes, drops before adds — not because they run left to right.
+  // This is a single statement, so it is one lock and one validation pass over existing rows: it
+  // cannot leave the table half constrained. Proven on the disposable database (v9 §6.7), not here.
+  assert.equal((stmt.match(/ALTER TABLE/g) || []).length, 1, 'one statement, or the atomicity claim is false');
+  assert.equal(stmt.includes(';'), false, 'no embedded statement separator');
 });
 
-test('§2.1 — a FRESH table run issues the full sequence, in order', async () => {
+test('§2.1 — a FRESH table run issues create, then the one ALTER, in order', async () => {
   // The whole DDL list, driven against the stub, so the statements are observed as SENT rather
   // than read out of the array that produced them.
   const db = installDbStub();
   for (const stmt of retrievalTelemetryDdl()) await (await import('../db')).sql(stmt.sql, []);
   const sent = db.calls.map((c) => c.query.replace(/\s+/g, ' '));
   const created = sent.findIndex((q) => /CREATE TABLE IF NOT EXISTS opd_retrieval_telemetry_failures/.test(q));
-  const dropped = sent.findIndex((q) => /DROP CONSTRAINT IF EXISTS opd_rtf_phase_chk/.test(q));
-  const added = sent.findIndex((q) => /ADD CONSTRAINT opd_rtf_phase_chk/.test(q));
-  assert.ok(created >= 0 && dropped > created && added > dropped, 'create, then drop, then add');
-  assert.match(sent[added], /'retrieval_terminal_rejected'/);
+  const altered = sent.findIndex((q) => /ALTER TABLE opd_retrieval_telemetry_failures/.test(q));
+  assert.ok(created >= 0 && altered > created, 'create, then alter');
+  assert.equal(sent.filter((q) => /ALTER TABLE opd_retrieval_telemetry_failures/.test(q)).length, 1,
+    'exactly one ALTER reaches the wire — four separate statements are what v9 §6.1 removed');
+  assert.match(sent[altered], /'retrieval_terminal_rejected'/);
 });
 
 test('§2.1 — a PRE-EXISTING table carrying the OLD constraints still ends with the widened form', async () => {
   // ⚠️ THE CASE THE DEFECT WAS ABOUT. The stub answers the CREATE as a no-op, exactly as Postgres
   // does when the table is already there, and the old constraints are treated as present. What
-  // matters is that the ALTERs still run and still carry the new phase — so the end state does not
+  // matters is that the ALTER still runs and still carries the new phase — so the end state does not
   // depend on whether the table existed.
   const db = installDbStub();
   db.on(/CREATE TABLE IF NOT EXISTS opd_retrieval_telemetry_failures/, []);   // no-op, table exists
@@ -92,21 +117,25 @@ test('§2.1 — a PRE-EXISTING table carrying the OLD constraints still ends wit
   const alters = db.calls
     .map((c) => c.query.replace(/\s+/g, ' '))
     .filter((q) => /ALTER TABLE opd_retrieval_telemetry_failures/.test(q));
-  assert.equal(alters.length, 4, 'two drops and two adds ran despite the create being a no-op');
-  const adds = alters.filter((q) => /ADD CONSTRAINT/.test(q));
-  assert.equal(adds.length, 2);
-  for (const a of adds) {
-    assert.match(a, /'retrieval_terminal_rejected'/, 'the widened form reached the existing table');
-  }
+  assert.equal(alters.length, 1, 'one statement ran despite the create being a no-op');
+  // and it still carries all four actions the four old statements carried between them
+  assert.equal((alters[0].match(/DROP CONSTRAINT IF EXISTS/g) || []).length, 2);
+  const adds = [...alters[0].matchAll(/ADD CONSTRAINT (\w+) CHECK/g)].map((m) => m[1]);
+  assert.deepEqual(adds, ['opd_rtf_phase_chk', 'opd_rtf_run_chk']);
+  assert.equal((alters[0].match(/'retrieval_terminal_rejected'/g) || []).length, 2,
+    'the widened form reached the existing table, in BOTH constraints');
 });
 
 test('§2.1 — migrations/0035 is in parity with the re-applied constraints', () => {
   // 0035 is DOCUMENTATION — nothing reads it at run time — and a parity test holds it to the DDL
-  // function, so both had to move together.
-  assert.match(SQL_FILE, /ALTER TABLE opd_retrieval_telemetry_failures DROP CONSTRAINT IF EXISTS opd_rtf_phase_chk;/);
-  assert.match(SQL_FILE, /ALTER TABLE opd_retrieval_telemetry_failures ADD CONSTRAINT opd_rtf_phase_chk[\s\S]*'retrieval_terminal_rejected'/);
-  assert.match(SQL_FILE, /ALTER TABLE opd_retrieval_telemetry_failures DROP CONSTRAINT IF EXISTS opd_rtf_run_chk;/);
-  assert.match(SQL_FILE, /ALTER TABLE opd_retrieval_telemetry_failures ADD CONSTRAINT opd_rtf_run_chk[\s\S]*'retrieval_terminal_rejected'/);
+  // function, so both had to move together. Here the shape is checked directly: one statement on
+  // the failure table, carrying both drops and both adds.
+  const m = SQL_FILE.match(/ALTER TABLE opd_retrieval_telemetry_failures[\s\S]*?;/g) || [];
+  assert.equal(m.length, 1, 'the mirror collapsed too — four statements would fail parity anyway');
+  assert.match(m[0], /DROP CONSTRAINT IF EXISTS opd_rtf_phase_chk,/);
+  assert.match(m[0], /DROP CONSTRAINT IF EXISTS opd_rtf_run_chk,/);
+  assert.match(m[0], /ADD CONSTRAINT opd_rtf_phase_chk[\s\S]*'retrieval_terminal_rejected'/);
+  assert.match(m[0], /ADD CONSTRAINT opd_rtf_run_chk[\s\S]*'retrieval_terminal_rejected'/);
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════
