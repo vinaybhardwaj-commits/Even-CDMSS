@@ -198,14 +198,28 @@ test('§2.2 — both fields are TYPE-checked, not merely present', () => {
   for (const st of RERANK_SEED_STATUSES) assert.deepEqual(bad({ rerank_seed_status: st }), [], `${st} must be valid`);
 });
 
-test('§2.2 — the duplicated seed vocabulary cannot drift', () => {
-  // ⚠️ TEMPORARY DUPLICATION, PINNED. The manifest contract's copy lives in
-  // `retrieval-telemetry-core.ts`; the capture-side copy lives in `retrieval-capture.ts`. Core
-  // cannot import from capture (capture imports FROM core — that direction is a cycle), and capture
-  // is outside pass 0a's file contract, so the constant could not be moved in this pass. A value
-  // added to one and not the other fails HERE rather than producing a manifest the validator
-  // silently rejects. FLAGGED: a pass whose contract includes capture should collapse the two.
+test('§2.2 — the seed vocabulary is ONE object, not two that agree', () => {
+  // ⚠️ THE DUPLICATION IS GONE (v11 §7, review 22 item 5). This test used to pin two identical
+  // declarations against each other and its comment said the constant "could not be moved in this
+  // pass" because pass 0a's contract excluded `retrieval-capture.ts`. Proof pass 1's contract
+  // includes both files, so core is now authoritative and capture RE-EXPORTS it.
+  //
+  // ⚠️ `strictEqual`, NOT `deepEqual`, AND THAT IS THE WHOLE POINT. A deep-equal assertion passes
+  // against a re-declared copy with the same members — which is precisely the state this pass
+  // removed, and precisely what a future edit might restore. Only a reference comparison can tell
+  // one array from two. The deep comparison is kept BELOW it, because it names WHICH value drifted
+  // when a genuine vocabulary change is what broke the test.
+  assert.strictEqual(RERANK_SEED_STATUSES, CAPTURE_STATUSES,
+    'capture must re-export core\'s object, not declare an equal one');
   assert.deepEqual([...RERANK_SEED_STATUSES], [...CAPTURE_STATUSES]);
+  assert.deepEqual([...RERANK_SEED_STATUSES], ['not_applicable', 'unseeded', 'applied_local', 'stripped_cloud']);
+
+  // And there is exactly ONE declaration in the tree. A source scan, because the reference check
+  // above can only see what the two import sites resolve to.
+  const declarations = ['lib/retrieval-telemetry-core.ts', 'lib/retrieval-capture.ts']
+    .map((f) => [f, (readFileSync(f, 'utf8').match(/^export const RERANK_SEED_STATUSES = \[/gm) || []).length] as const);
+  assert.deepEqual(declarations, [['lib/retrieval-telemetry-core.ts', 1], ['lib/retrieval-capture.ts', 0]],
+    'core declares it once; capture declares it never');
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════

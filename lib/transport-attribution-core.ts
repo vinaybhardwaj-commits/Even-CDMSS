@@ -35,14 +35,18 @@ export const TRANSPORT_ATTRIBUTION_FIELD = 'cdmss_transport_attribution';
  *
  * `success` is terminal for its tier. A tier that never reports one either fell through to the
  * next tier or ended the ladder.
+ *
+ * ⚠️ THE RUNTIME AUTHORITY IS THE ARRAY, NOT THE TYPE (v11 §4 item 1, review 22 item 3). The union
+ * was hand-written and had no runtime form, so nothing could ask "is this one of the six?" — and an
+ * attempt reaching the manifest from JSONB is an untyped value at runtime. `validateManifest` now
+ * branches on this array in all three manifest locations. The six values and their order are
+ * unchanged; the type is derived from the array so the two can never disagree.
  */
-export type TransportAttemptOutcome =
-  | 'http_429'
-  | 'http_other'
-  | 'timeout'
-  | 'transport_error'
-  | 'bad_response'
-  | 'success';
+export const TRANSPORT_ATTEMPT_OUTCOMES = [
+  'http_429', 'http_other', 'timeout', 'transport_error', 'bad_response', 'success',
+] as const;
+
+export type TransportAttemptOutcome = typeof TRANSPORT_ATTEMPT_OUTCOMES[number];
 
 export interface TransportAttempt {
   /**

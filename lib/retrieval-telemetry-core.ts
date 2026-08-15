@@ -20,6 +20,16 @@
  */
 
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
+/**
+ * ⚠️ THIS FILE'S FIRST OUTBOUND IMPORT (v11 §4 item 4, §5). It had none until now — only
+ * `node:crypto` above — and `lib/transport-attribution-core.ts` imports nothing at all, so no cycle
+ * is possible in either direction. The architecture map gains one edge because of this line, and
+ * `lib/architecture/map.generated.ts` is regenerated in the same commit.
+ *
+ * The alternative was a second copy of the six values here, which is the defect this pass removes
+ * from `RERANK_SEED_STATUSES` a few lines below. One authority, imported.
+ */
+import { TRANSPORT_ATTEMPT_OUTCOMES } from './transport-attribution-core';
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 // 1. VERSIONS — independent of the application deployment (§4.3)
@@ -291,17 +301,25 @@ export type InvocationClosureState = typeof INVOCATION_CLOSURE_STATES[number];
 /**
  * The reranker seed-status vocabulary, as the MANIFEST contract defines it (addendum v7 §10).
  *
- * ⚠️ TEMPORARILY DUPLICATED, AND PINNED SO IT CANNOT DRIFT. The same list is declared in
- * `lib/retrieval-capture.ts`, which is where the capture-side type lives. Core cannot import it from
- * there — capture imports FROM core, so that direction is a cycle — and capture is outside pass 0a's
- * file contract, so the constant cannot be moved in this pass.
+ * ⚠️ THIS IS NOW THE ONLY DECLARATION (v11 §7, review 22 item 5). It was duplicated in
+ * `lib/retrieval-capture.ts`, identically, because pass 0a's file contract did not include capture
+ * and the constant could not be moved then. This pass's contract includes both files, so capture's
+ * copy is deleted and capture re-exports THIS OBJECT. `lib/rerank.ts:21` imports the type from
+ * capture and needs no change, because the type moved with the const.
  *
- * `intended-attribution.test.ts` asserts the two lists are identical, so a value added to one and
- * not the other fails the suite rather than producing a manifest the validator silently rejects.
- * The proper home is HERE, beside the manifest contract it belongs to; a pass whose contract
- * includes `retrieval-capture.ts` should delete that copy and re-export this one. FLAGGED.
+ * ⚠️ IDENTITY IS TESTED WITH `strictEqual`, NOT DEEP EQUALITY. A deep-equal assertion passes against
+ * a re-declared copy with the same members, which is exactly the drift this collapse removes; only a
+ * reference comparison can tell one array from two.
+ *
+ *   not_applicable  no rerank decode ran, or the backend takes no seed (Cohere is a deterministic
+ *                   cross-encoder with neither seed nor temperature)
+ *   unseeded        the call set no seed at all — TODAY'S JUDGE, on every path
+ *   applied_local   a seed was set and the call served locally, so it reached the model
+ *   stripped_cloud  a seed was set in the Ollama options bag and the call served on a cloud tier,
+ *                   which strips that bag — so the seed did NOT reach the model
  */
 export const RERANK_SEED_STATUSES = ['not_applicable', 'unseeded', 'applied_local', 'stripped_cloud'] as const;
+export type RerankSeedStatus = typeof RERANK_SEED_STATUSES[number];
 
 /** The phases a telemetry write can fail in (D2's failure table CHECK). */
 export const TELEMETRY_FAILURE_PHASES = [
@@ -705,6 +723,8 @@ export function validateManifest(input: unknown): string[] {
     }
     if (!has(ex, 'served_model')) v.push('expansion_served_model_field_absent');
     if (!has(ex, 'attempts')) v.push('expansion_attempts_field_absent');
+    // LOCATION 1 of 3 (v11 §4). The presence check above asks only whether the FIELD is there.
+    pushAttemptOutcomeDefects(ex.attempts, 'attempt_outcome_absent_or_invalid', v);
   }
 
   // ── Candidates ───────────────────────────────────────────────────────────────────────────────
@@ -763,6 +783,8 @@ export function validateManifest(input: unknown): string[] {
       if (b.served_route_class === 'not_served' && b.served_model !== null) v.push('not_served_with_model');
       if (!has(b, 'served_model')) v.push('batch_served_model_field_absent');
       if (!has(b, 'attempts')) v.push('batch_attempts_field_absent');
+      // LOCATION 2 of 3 (v11 §4).
+      pushAttemptOutcomeDefects(b.attempts, 'attempt_outcome_absent_or_invalid', v);
       if (!(BATCH_OUTCOME_PRECEDENCE as readonly unknown[]).includes(b.outcome)) v.push('batch_outcome_absent_or_invalid');
       if (!isFiniteNum(b.expected_score_keys) || (b.expected_score_keys as number) < 0) v.push('expected_score_keys_absent');
       if (!isFiniteNum(b.finite_score_keys) || (b.finite_score_keys as number) < 0) v.push('finite_score_keys_absent');
@@ -821,6 +843,9 @@ export function validateManifest(input: unknown): string[] {
         if (!isVariantStatus(vg.status)) v.push('variant_generation_status_absent_or_invalid');
         if (!has(vg, 'served_route_class')) v.push('variant_generation_served_route_class_field_absent');
         if (!isFiniteNum(vg.generated_variant_count)) v.push('generated_variant_count_absent');
+        // LOCATION 3 of 3 (v11 §4, review 22 item 2). This block did not read `vg.attempts` at all
+        // before this line, so a variant-generation attempt could carry any outcome unchallenged.
+        pushAttemptOutcomeDefects(vg.attempts, 'attempt_outcome_absent_or_invalid', v);
       }
       if (!Array.isArray(mq.variants)) v.push('variants_absent');
       else if (vg && isFiniteNum((vg as Record<string, unknown>).generated_variant_count)
@@ -838,6 +863,37 @@ export function validateManifest(input: unknown): string[] {
 
 function isServedRouteClass(v: unknown): boolean {
   return v === 'vertex' || v === 'openrouter' || v === 'local' || v === 'unattributed' || v === 'not_served';
+}
+
+/**
+ * THE ATTEMPT-OUTCOME BRANCH (v11 §4, review 22 items 2 and 4). One implementation, called from all
+ * THREE manifest locations — expansion attempts, rerank batch attempts, and multi-query
+ * variant-generation attempts — with the same stable defect name at each.
+ *
+ * ⚠️ NOTHING VALIDATED AN ATTEMPT OUTCOME BEFORE THIS. The two checks that look like validation,
+ * `expansion_attempts_field_absent` and `batch_attempts_field_absent`, only ask whether the FIELD is
+ * present; the variant-generation block did not reach `attempts` at all. The single line in this
+ * file that read `a.outcome` was the 429 counter in `batchCounters`. So a manifest could carry any
+ * string — or nothing — where one of the six committed outcomes belongs, and the census that counts
+ * 429s would silently miss it.
+ *
+ * ⚠️ `attempts: null` IS LEGAL HERE AND MUST NOT BE FLAGGED. A skipped expansion stage emits null
+ * (`lib/retrieval-capture.ts:309`) and `manifestAttempts` returns null when there is no evidence
+ * (`:122-123`). Addendum v11 §6.1 defers the `null` to `[]` correction to PASS 3, so a branch that
+ * treated null as defective would flag every skipped stage today and would be making pass 3's
+ * decision early. Validate the members of an array when there is one; say nothing when there is not.
+ *
+ * ⚠️ A NON-ARRAY, NON-NULL value IS defective. `undefined`, a string or an object is neither "no
+ * attempts" nor a list of them, and the field-presence checks beside each call site do not catch a
+ * present-but-wrong-shaped value.
+ */
+function pushAttemptOutcomeDefects(attempts: unknown, defect: string, v: string[]): void {
+  if (attempts === null || attempts === undefined) return;          // legal today — see above
+  if (!Array.isArray(attempts)) { v.push(defect); return; }
+  for (const a of attempts) {
+    const outcome = (a as { outcome?: unknown } | null)?.outcome;
+    if (!(TRANSPORT_ATTEMPT_OUTCOMES as readonly unknown[]).includes(outcome)) { v.push(defect); return; }
+  }
 }
 function isVariantStatus(v: unknown): boolean {
   return ['generated', 'parsed_empty', 'all_invalid', 'not_an_array', 'parse_failure', 'failed_open', 'not_collected']

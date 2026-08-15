@@ -23,11 +23,23 @@
 
 import {
   MANIFEST_SCHEMA_VERSION, HMAC_KEY_VERSION, TELEMETRY_ERROR_HMAC_KEY_ABSENT,
-  telemetryHmac, batchCounters,
+  telemetryHmac, batchCounters, RERANK_SEED_STATUSES,
   type RetrievalRole, type RetrievalPayload, type ManifestBatch, type ManifestAttempt,
   type ExpansionStatus, type VariantStatus, type VariantOutcome, type RetrievalOutcome,
-  type ServedRouteClass, type BatchOutcome, type MultiQuerySection,
+  type ServedRouteClass, type BatchOutcome, type MultiQuerySection, type RerankSeedStatus,
 } from './retrieval-telemetry-core';
+
+/**
+ * ⚠️ RE-EXPORTED, NOT RE-DECLARED (v11 §7, review 22 item 5). This file declared its own identical
+ * copy of `RERANK_SEED_STATUSES` because pass 0a's contract could not touch core and capture
+ * together. It can now, so core owns the vocabulary beside the manifest contract it belongs to and
+ * this is the SAME OBJECT, not an equal one — `strictEqual` on the reference is what the test pins,
+ * because deep equality would pass against a re-declared copy and let the drift back in.
+ *
+ * The re-export exists so every consumer that imports these from capture — `lib/rerank.ts:21` among
+ * them — keeps working without an import change.
+ */
+export { RERANK_SEED_STATUSES, type RerankSeedStatus };
 import {
   readTransportAttribution, readTransportFailureAttribution,
   type TransportAttempt,
@@ -89,21 +101,22 @@ export function evidenceFromError(err: unknown): TransportEvidence | null {
  *   provider success                      → that provider's class
  *   proven terminal failure               → 'not_served'  (and only with proof)
  *   a completion may have arrived         → 'unattributed'
- *   stage skipped, no request made        → null, the explicit STAGE-LEVEL null (A6)
- */
-/**
- * What happened to the reranker's seed, as opposed to what was asked for (addendum v7 §10).
  *
- *   not_applicable  no rerank decode ran, or the backend takes no seed (Cohere is a deterministic
- *                   cross-encoder with neither seed nor temperature)
- *   unseeded        the call set no seed at all — TODAY'S JUDGE, on every path
- *   applied_local   a seed was set and the call served locally, so it reached the model
- *   stripped_cloud  a seed was set in the Ollama options bag and the call served on a cloud tier,
- *                   which strips that bag — so the seed did NOT reach the model
+ * ⚠️ REATTACHED (v11 §7). A duplicate `RERANK_SEED_STATUSES` and a second JSDoc sat between this
+ * comment and the function it describes, so it documented the constant instead. The duplicate is
+ * gone — core is authoritative and this file re-exports it above — and the comment is back on
+ * `servedClassOf`.
+ *
+ * ⚠️ AND ITS FOURTH ROW WAS A PROMISE THIS FUNCTION CANNOT KEEP. It read "stage skipped, no request
+ * made → null, the explicit STAGE-LEVEL null (A6)". `servedClassOf` returns `ServedRouteClass`,
+ * which does not include null, and it never receives the skip decision at all. The stage-level null
+ * is produced by the two CALLERS, each of which decides skip-ness before calling:
+ *
+ *   lib/retrieval-capture.ts:307   `expansionSkipped ? null : servedClassOf(...)`
+ *   lib/retrieval-capture.ts:364   `vg && ev ? servedClassOf(ev) : null`
+ *
+ * Given evidence, this function's own honest floor is 'unattributed', never null.
  */
-export const RERANK_SEED_STATUSES = ['not_applicable', 'unseeded', 'applied_local', 'stripped_cloud'] as const;
-export type RerankSeedStatus = typeof RERANK_SEED_STATUSES[number];
-
 export function servedClassOf(ev: TransportEvidence | null): ServedRouteClass {
   if (!ev) return 'unattributed';
   if (ev.provenNotServed) return 'not_served';

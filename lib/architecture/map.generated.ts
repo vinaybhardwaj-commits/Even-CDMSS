@@ -4564,6 +4564,11 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "retrieval-telemetry-core",
+    "to": "transport-attribution-core",
+    "kind": "value"
+  },
+  {
     "from": "retrieval-telemetry-failure-store",
     "to": "db",
     "kind": "value"
