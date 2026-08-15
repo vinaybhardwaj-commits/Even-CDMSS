@@ -58,12 +58,16 @@ async function main() {
   await startInvocation(ctx);
   let handle = null;
   let published = false;
+  /** The last map the callback delivered (v10 requirement 4), for the paths that return no audit. */
+  let publishedDefects;
 
   const started = Date.now();
   const audit = await auditOpdNote(rows[0], {
     bedrockModel: MODEL,
     telemetry: { ctx, route: 'script', persistenceIntent: SAVE ? 'will_persist' : 'never_persists' },
-    onLifecycleHandleUpdated: (h) => { handle = h; published = true; },
+    // ⚠️ `if (d)` IS LOAD-BEARING. The DECLARATION publication passes no map, and letting it
+    // overwrite a real one with undefined would throw away the verdict this exists to keep.
+    onLifecycleHandleUpdated: (h, d) => { handle = h; published = true; if (d) publishedDefects = d; },
   });
   void published;
   const ms = Date.now() - started;
@@ -121,7 +125,11 @@ async function main() {
     let status;
     // ⚠️ A PERSISTENCE OWNER, SO IT CARRIES THE ROLE MAP (pass 0b). This path passed no defects at
     // all, so every row it settled read `persisted_clean` whatever its manifest actually said.
-    const defectsByRole = readRetrievalTelemetry(audit)?.manifestDefectsByRole ?? {};
+    // ⚠️ NO `?? {}` (v10 requirement 5). An empty map is NOT "no map": under requirement 6 a
+    // PROVIDED map carrying no key for a role settles that linkable role partial, so `?? {}` would
+    // have made every uninstrumented save partial and left requirement 7 unreachable. The attached
+    // map first, then whatever the callback delivered, then undefined — which is a real answer.
+    const defectsByRole = readRetrievalTelemetry(audit)?.manifestDefectsByRole ?? publishedDefects;
     try {
       status = await saveOpdAudit(audit, { model: MODEL, latencyMs: ms }, {
         onPersisted: async ({ status: st, auditId }) => { linked = true; await settleOwned(handle, outcomeForOwnedSave(st), auditId, defectsByRole); },

@@ -28,7 +28,7 @@ import {
   type TelemetryRequestContext, type RetrievalRole, type OperationalTelemetry,
 } from './retrieval-telemetry-core';
 import { createTelemetryCapture, buildRetrievalPayload, errorClassOf as telemetryErrorClassOf } from './retrieval-capture';
-import { declareRetrievals, writeRetrievalTerminal, type LifecycleHandle } from './retrieval-telemetry-store';
+import { declareRetrievals, writeRetrievalTerminal, type LifecycleHandle, type ManifestDefectsByRole } from './retrieval-telemetry-store';
 import { startInvocation } from './retrieval-invocation-store';
 import { settleOwned, outcomeForOwnedSave } from './retrieval-settlement';
 import { readRetrievalTelemetry } from './retrieval-telemetry-store';
@@ -879,12 +879,16 @@ async function backfillControl(a: Record<string, unknown>, ctx?: TelemetryReques
       // As the worker (D9): this branch DOES write opd_note_audits, so it settles by the save result.
       let handle: LifecycleHandle | null = null;
       let published = false;
+      /** The last map the callback delivered (v10 requirement 4), for the paths that return no audit. */
+      let publishedDefects: ManifestDefectsByRole | undefined;
       try {
         const au = await auditOpdNote(row, {
           pipeline: 'mini', engineTag: tag,
           ...(ctx ? {
             telemetry: { ctx, route: 'mcp_tools' as const, persistenceIntent: 'will_persist' as const },
-            onLifecycleHandleUpdated: (h: LifecycleHandle) => { handle = h; published = true; },
+            // ⚠️ `if (d)` IS LOAD-BEARING. The DECLARATION publication passes no map, and letting it
+            // overwrite a real one with undefined would throw away the verdict this exists to keep.
+            onLifecycleHandleUpdated: (h: LifecycleHandle, d?: ManifestDefectsByRole) => { handle = h; published = true; if (d) publishedDefects = d; },
           } : {}),
         });
         let linked = false;
@@ -892,7 +896,11 @@ async function backfillControl(a: Record<string, unknown>, ctx?: TelemetryReques
         // at all, which meant every row it settled was `persisted_clean` whatever its manifest said.
         // It is `lab_direct`/`lab_multi_query`-shaped and single-role today, so the map is usually
         // one key — but reading it is what stops a real defect being silently dropped here.
-        const defectsByRole = readRetrievalTelemetry(au)?.manifestDefectsByRole ?? {};
+        // ⚠️ NO `?? {}` (v10 requirement 5). An empty map is NOT "no map": under requirement 6 a
+        // PROVIDED map carrying no key for a role settles that linkable role partial, so `?? {}` would
+        // have made every uninstrumented save partial and left requirement 7 unreachable. The attached
+        // map first, then whatever the callback delivered, then undefined — which is a real answer.
+        const defectsByRole = readRetrievalTelemetry(au)?.manifestDefectsByRole ?? publishedDefects;
         const st = await saveOpdAudit(au, { model: MINI_MODEL, latencyMs: Date.now() - t0 }, {
           onPersisted: async ({ status, auditId }) => { linked = true; await settleOwned(handle, outcomeForOwnedSave(status), auditId, defectsByRole); },
         });

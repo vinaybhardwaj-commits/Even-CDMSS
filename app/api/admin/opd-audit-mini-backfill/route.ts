@@ -59,7 +59,7 @@ import { costUsd } from '@/lib/llm-cost-core';
 import { telemetryContextFor, type TelemetryRequestContext } from '@/lib/retrieval-telemetry-core';
 import {
   declareNoteRuns, readRetrievalTelemetry, TelemetryDeclarationError,
-  type LifecycleHandle,
+  type LifecycleHandle, type ManifestDefectsByRole,
 } from '@/lib/retrieval-telemetry-store';
 import { startInvocation } from '@/lib/retrieval-invocation-store';
 import { settleOwned, outcomeForOwnedSave } from '@/lib/retrieval-settlement';
@@ -156,6 +156,8 @@ async function processRunBatch(run: BackfillRun, day: string, resolved: Extract<
       persistenceIntent: 'will_persist',
     };
     let published = false;
+    /** The last map the callback delivered (v10 requirement 4), for the paths that return no audit. */
+    let publishedDefects: ManifestDefectsByRole | undefined;
     try {
       // No `pipeline: 'mini'`, no `engineTag`: the row carries the PLAIN prod engine version.
       // ⚠️ ONE THREADING RULE, TWO PROVIDERS. A bedrock run hands the leg its modelId (the S2 path,
@@ -166,7 +168,9 @@ async function processRunBatch(run: BackfillRun, day: string, resolved: Extract<
         ...(provider === 'bedrock' ? { bedrockModel: modelId } : {}),
         telemetry: { ctx, route: 'opd_audit_mini_backfill', persistenceIntent: 'will_persist' },
         predeclaredTelemetry: { primary: { runId: runIds[idx], expectedRevision: 0 } },
-        onLifecycleHandleUpdated: (h) => { handle = h; published = true; },
+        // ⚠️ `if (d)` IS LOAD-BEARING. The DECLARATION publication passes no map, and letting it
+        // overwrite a real one with undefined would throw away the verdict this exists to keep.
+        onLifecycleHandleUpdated: (h, d) => { handle = h; published = true; if (d) publishedDefects = d; },
       });
       // ⚠️ THE MODEL STAMP IS WHAT SERVED, READ BACK OFF THIS NOTE'S OWN TRACE. The autopilot
       // stamped MINI_MODEL, which was true for it and would be a lie for this runner; S2 stamped
@@ -182,7 +186,11 @@ async function processRunBatch(run: BackfillRun, day: string, resolved: Extract<
       }
       // ⚠️ THE ROLE MAP, NOT A FLAT LIST (pass 0b). Settlement applies each run's own role's
       // verdict; passing one merged array is what made a normative defect dirty the primary row.
-      const defectsByRole = readRetrievalTelemetry(audit)?.manifestDefectsByRole ?? {};
+      // ⚠️ NO `?? {}` (v10 requirement 5). An empty map is NOT "no map": under requirement 6 a
+      // PROVIDED map carrying no key for a role settles that linkable role partial, so `?? {}` would
+      // have made every uninstrumented save partial and left requirement 7 unreachable. The attached
+      // map first, then whatever the callback delivered, then undefined — which is a real answer.
+      const defectsByRole = readRetrievalTelemetry(audit)?.manifestDefectsByRole ?? publishedDefects;
       let linked = false;
       const status = await saveOpdAudit(audit, {
         model: served.model ?? modelId, provider: served.provider ?? provider, latencyMs: Date.now() - started,

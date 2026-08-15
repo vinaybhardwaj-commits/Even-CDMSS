@@ -41,8 +41,63 @@ export interface SettlementInput {
    * ⚠️ THE CLEAN-TO-DIRTY UPGRADE IS APPLIED PER RUN, BELOW, NOT BY THE CALLER. That is the whole
    * correction: the owner knows one save result for the audit, but each ROW's manifest is its own,
    * and only the run itself can say whether its manifest was clean.
+   *
+   * ⚠️ OMITTING IT AND PASSING `{}` ARE NOT THE SAME THING (v10 requirements 6 and 7). Omitted
+   * means "no verdict to give" and is clean. An empty PROVIDED map means "verdicts exist and none
+   * of them is about this role", which settles a linkable clean run partial. Owners therefore pass
+   * `undefined` rather than `?? {}` — see `verdictForRun`.
    */
   manifestDefectsByRole?: ManifestDefectsByRole;
+}
+
+/**
+ * The synthetic defect that stands for "a map was provided and said nothing about this role".
+ *
+ * ⚠️ NOT A NEW OUTCOME VALUE, AND NOT A NEW PERSISTED VOCABULARY. It exists only to reach
+ * `upgradeForDefects`, which is what keeps rule 3 honest: ONLY the clean branch is upgraded, so a
+ * losing race or a skip is still never made partial. Nothing writes this string to the database —
+ * `roleDefects` is read by `upgradeForDefects` and by nothing else — so this pass adds no SQL, no
+ * DDL and no migration. v9 §5.4 considered a real "no verdict" outcome and did not propose one.
+ */
+export const MISSING_ROLE_VERDICT = 'manifest_verdict_absent_for_role';
+
+/**
+ * The manifest verdict that applies to ONE run, under v10 requirements 6, 7, 8, 9 and 10.
+ *
+ * Three cases, and they are three different statements:
+ *
+ *   1. NO MAP AT ALL (requirement 7). The caller has no manifest verdict to give — every
+ *      single-role and uninstrumented owner. Backward compatible: clean.
+ *
+ *   2. MAP PROVIDED, OWN-ROLE KEY PRESENT (requirement 8). That entry decides, and an explicit
+ *      `[]` is a real verdict of clean. This is the only case in which the caller has actually
+ *      inspected this role's manifest.
+ *
+ *   3. MAP PROVIDED, OWN-ROLE KEY ABSENT (requirement 6). The caller was instrumented, produced
+ *      verdicts, and produced none for this role — so nobody ever validated the manifest this row
+ *      claims to describe. A LINKABLE clean run settles partial rather than clean. Silence from an
+ *      instrument that was running is not evidence of cleanliness.
+ *
+ * ⚠️ LINKABLE ONLY (requirement 9). A revision-0 run never wrote a terminal manifest, so there is
+ * nothing about it to be partial about; it keeps going through `stateForUnwrittenRun` and is never
+ * linked by this rule. This is also what makes an attached-but-empty map safe: an empty map means
+ * no terminal write landed, so every run on that handle is still at revision 0.
+ *
+ * ⚠️ OWN PROPERTIES ONLY (requirement 10). `hasOwnProperty`, not `in` and not truthiness. An
+ * inherited key is not a verdict anyone recorded, and `Object.prototype` already carries names a
+ * role could one day collide with. Truthiness would additionally read an explicit `[]` — a real
+ * clean verdict — as absent, which is exactly the distinction rule 2 exists to keep.
+ */
+export function verdictForRun(
+  map: ManifestDefectsByRole | undefined,
+  role: string,
+  linkable: boolean,
+): readonly string[] {
+  if (map === undefined) return [];                                        // 1
+  if (Object.prototype.hasOwnProperty.call(map, role)) {
+    return (map as Record<string, readonly string[] | undefined>)[role] ?? [];   // 2
+  }
+  return linkable ? [MISSING_ROLE_VERDICT] : [];                           // 3
 }
 
 /**
@@ -79,18 +134,22 @@ export async function settleRetrievalTelemetry(
       continue;
     }
     rolesSeen.add(run.role);
-    // ⚠️ EACH RUN'S OWN ROLE'S DEFECTS, AND NOBODY ELSE'S (pass 0b). One base outcome arrives for
-    // the handle; the clean-to-dirty upgrade is decided here, per run, from that run's own
-    // manifest verdict. A missing key means that role produced no manifest, which settles clean —
-    // it is not evidence of a defect belonging to someone else.
-    const roleDefects = input.manifestDefectsByRole?.[run.role] ?? [];
-    const runOutcome = upgradeForDefects(input.outcome, roleDefects);
-    const outcomeState: RetrievalPersistenceState = stateForSettlement(runOutcome);
-
     // ⚠️ A ROLE STILL AT REVISION 0 IS NOT LINKED. Revision 0 means its terminal write never
     // landed, so there is no manifest to attach an audit to; linking it would claim this run
     // produced the evidence the audit was built from, which it demonstrably did not.
+    //
+    // ⚠️ HOISTED ABOVE THE OUTCOME, DELIBERATELY (v10 requirement 6). The missing-key rule below
+    // applies only to a LINKABLE run, so linkability has to be known before the outcome is derived.
+    // It is hoisted rather than duplicated inline: a second copy of `run.expectedRevision > 0` is
+    // how the two definitions drift apart later. Line 94's use of it is unchanged.
     const linkable = run.expectedRevision > 0;
+    // ⚠️ EACH RUN'S OWN ROLE'S DEFECTS, AND NOBODY ELSE'S (pass 0b). One base outcome arrives for
+    // the handle; the clean-to-dirty upgrade is decided here, per run, from that run's own
+    // manifest verdict — never from a verdict belonging to someone else.
+    const roleDefects = verdictForRun(input.manifestDefectsByRole, run.role, linkable);
+    const runOutcome = upgradeForDefects(input.outcome, roleDefects);
+    const outcomeState: RetrievalPersistenceState = stateForSettlement(runOutcome);
+
     const state = linkable ? outcomeState : await stateForUnwrittenRun(run, outcomeState);
     const r = await applyTerminalState(current, run, {
       state, auditId: linkable ? input.auditId : null, settledAt: input.settledAt,

@@ -94,7 +94,16 @@ export interface PerRunSettlementResult {
  * verdict belonged to neither of them.
  *
  * Partial by role: a role that produced no manifest has no key, which is a different statement from
- * a role whose manifest validated clean (empty array). Both settle clean; only one of them ran.
+ * a role whose manifest validated clean (empty array).
+ *
+ * ⚠️ AND THEY NO LONGER SETTLE THE SAME WAY (v10 requirement 6). This comment used to end "Both
+ * settle clean; only one of them ran," which became false. An empty array is a verdict of clean. A
+ * MISSING key, on a map that was provided at all, means nobody validated the manifest that row
+ * claims to describe — so a LINKABLE clean run settles `persisted_partial`. A run still at revision
+ * 0 is unaffected: it never wrote a manifest, so there is nothing to be partial about. The rule is
+ * `verdictForRun` in lib/retrieval-settlement.ts, and it turns on OWN properties only.
+ *
+ * Omitting the map entirely still settles clean, which is what every uninstrumented caller does.
  */
 export type ManifestDefectsByRole = Partial<Record<RetrievalRole, readonly string[]>>;
 

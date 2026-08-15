@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/admin-gate';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { telemetryContextFor } from '@/lib/retrieval-telemetry-core';
-import { readRetrievalTelemetry, type LifecycleHandle } from '@/lib/retrieval-telemetry-store';
+import { readRetrievalTelemetry, type LifecycleHandle, type ManifestDefectsByRole } from '@/lib/retrieval-telemetry-store';
 import { settleOwned, outcomeForOwnedSave } from '@/lib/retrieval-settlement';
 import { auditOpdNote } from '@/lib/opd-note-audit';
 import { saveOpdAudit } from '@/lib/opd-audit-store';
@@ -69,13 +69,17 @@ export async function GET(req: NextRequest) {
   const ctx = telemetryContextFor('opd_audit_run', req.headers);
   let handle: LifecycleHandle | null = null;
   let published = false;
+  /** The last map the callback delivered (v10 requirement 4), for the paths that return no audit. */
+  let publishedDefects: ManifestDefectsByRole | undefined;
   try {
     const { fetchOpdNoteByUid } = await import('@/lib/metabase');
     const row = await fetchOpdNoteByUid(uid);
     if (!row) return NextResponse.json({ ok: false, error: 'note not found for that uid' }, { status: 404 });
     const audit = await auditOpdNote(row, {
       telemetry: { ctx, route: 'opd_audit_run', persistenceIntent: willSave ? 'will_persist' : 'never_persists' },
-      onLifecycleHandleUpdated: (h) => { handle = h; published = true; },
+      // ⚠️ `if (d)` IS LOAD-BEARING. The DECLARATION publication passes no map, and letting it
+      // overwrite a real one with undefined would throw away the verdict this exists to keep.
+      onLifecycleHandleUpdated: (h, d) => { handle = h; published = true; if (d) publishedDefects = d; },
     });
     // &save=1 persists the audit (golden-A/B tool): writes the current-engine row so a before/after
     // comparison can be read from opd_note_audits by engine_version. Admin-gated; manual use only.
@@ -86,7 +90,11 @@ export async function GET(req: NextRequest) {
     const force = save && req.nextUrl.searchParams.get('force') === '1';
     // ⚠️ THE ROLE MAP, NOT A FLAT LIST (pass 0b). Settlement applies each run's own role's
     // verdict; passing one merged array is what made a normative defect dirty the primary row.
-    const defectsByRole = readRetrievalTelemetry(audit)?.manifestDefectsByRole ?? {};
+    // ⚠️ NO `?? {}` (v10 requirement 5). An empty map is NOT "no map": under requirement 6 a
+    // PROVIDED map carrying no key for a role settles that linkable role partial, so `?? {}` would
+    // have made every uninstrumented save partial and left requirement 7 unreachable. The attached
+    // map first, then whatever the callback delivered, then undefined — which is a real answer.
+    const defectsByRole = readRetrievalTelemetry(audit)?.manifestDefectsByRole ?? publishedDefects;
     let linked = false;
     const onPersisted = async ({ status, auditId }: { status: 'inserted' | 'updated'; auditId: string }) => {
       linked = true;

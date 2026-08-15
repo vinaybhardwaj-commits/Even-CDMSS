@@ -33,7 +33,7 @@ import { providerSwitchEnabled, resolveWorkerProvider, canServe, type LabProvide
 import { telemetryContextFor, type TelemetryRequestContext } from '@/lib/retrieval-telemetry-core';
 import {
   declareNoteRuns, readRetrievalTelemetry, TelemetryDeclarationError,
-  type LifecycleHandle,
+  type LifecycleHandle, type ManifestDefectsByRole,
 } from '@/lib/retrieval-telemetry-store';
 import { startInvocation } from '@/lib/retrieval-invocation-store';
 import { settleOwned, outcomeForOwnedSave } from '@/lib/retrieval-settlement';
@@ -170,11 +170,15 @@ async function processDay(day: string, max: number, conc: number, exclude: strin
       persistenceIntent: 'will_persist',
     };
     let published = false;
+    /** The last map the callback delivered (v10 requirement 4), for the paths that return no audit. */
+    let publishedDefects: ManifestDefectsByRole | undefined;
     try {
       const audit = await auditOpdNote(row, {
         telemetry: { ctx, route: 'opd_audit_worker', persistenceIntent: 'will_persist' },
         predeclaredTelemetry: { primary: { runId, expectedRevision: 0 } },
-        onLifecycleHandleUpdated: (h) => { handle = h; published = true; },
+        // ⚠️ `if (d)` IS LOAD-BEARING. The DECLARATION publication passes no map, and letting it
+        // overwrite a real one with undefined would throw away the verdict this exists to keep.
+        onLifecycleHandleUpdated: (h, d) => { handle = h; published = true; if (d) publishedDefects = d; },
       });
       const served = await servedCallFor(audit.traceId);
       if (degradedAgainstIntent(served, intended)) {
@@ -184,7 +188,11 @@ async function processDay(day: string, max: number, conc: number, exclude: strin
       }
       // ⚠️ THE ROLE MAP, NOT A FLAT LIST (pass 0b). Settlement applies each run's own role's
       // verdict; passing one merged array is what made a normative defect dirty the primary row.
-      const defectsByRole = readRetrievalTelemetry(audit)?.manifestDefectsByRole ?? {};
+      // ⚠️ NO `?? {}` (v10 requirement 5). An empty map is NOT "no map": under requirement 6 a
+      // PROVIDED map carrying no key for a role settles that linkable role partial, so `?? {}` would
+      // have made every uninstrumented save partial and left requirement 7 unreachable. The attached
+      // map first, then whatever the callback delivered, then undefined — which is a real answer.
+      const defectsByRole = readRetrievalTelemetry(audit)?.manifestDefectsByRole ?? publishedDefects;
       let linked = false;
       const status = await saveOpdAudit(audit, { model: served.model, provider: served.provider, latencyMs: Date.now() - started }, {
         // The audit id exists only inside the save, so the link is made from inside it (§4.5 step 4).
@@ -313,17 +321,25 @@ export async function GET(req: NextRequest) {
         persistenceIntent: 'will_persist',
       };
       let published = false;
+      /** The last map the callback delivered (v10 requirement 4), for the paths that return no audit. */
+      let publishedDefects: ManifestDefectsByRole | undefined;
       try {
         const audit = await auditOpdNote(row, {   // 0.81.7 — consult_types-aware framing
           telemetry: { ctx, route: 'opd_audit_worker', persistenceIntent: 'will_persist' },
           predeclaredTelemetry: { primary: { runId, expectedRevision: 0 } },
-          onLifecycleHandleUpdated: (h) => { handle = h; published = true; },
+          // ⚠️ `if (d)` IS LOAD-BEARING. The DECLARATION publication passes no map, and letting it
+          // overwrite a real one with undefined would throw away the verdict this exists to keep.
+          onLifecycleHandleUpdated: (h, d) => { handle = h; published = true; if (d) publishedDefects = d; },
         });
         const deleted = await deleteOpdAuditsForUid(uid); // drop ALL prior rows → single current row
         const served = await servedCallFor(audit.traceId);
         // ⚠️ THE ROLE MAP, NOT A FLAT LIST (pass 0b). Settlement applies each run's own role's
         // verdict; passing one merged array is what made a normative defect dirty the primary row.
-        const defectsByRole = readRetrievalTelemetry(audit)?.manifestDefectsByRole ?? {};
+        // ⚠️ NO `?? {}` (v10 requirement 5). An empty map is NOT "no map": under requirement 6 a
+        // PROVIDED map carrying no key for a role settles that linkable role partial, so `?? {}` would
+        // have made every uninstrumented save partial and left requirement 7 unreachable. The attached
+        // map first, then whatever the callback delivered, then undefined — which is a real answer.
+        const defectsByRole = readRetrievalTelemetry(audit)?.manifestDefectsByRole ?? publishedDefects;
         let linked = false;
         const status = await saveOpdAudit(audit, { model: served.model, provider: served.provider }, {
           onPersisted: async ({ status: s, auditId }) => {

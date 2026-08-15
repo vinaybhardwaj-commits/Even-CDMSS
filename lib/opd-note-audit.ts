@@ -749,7 +749,8 @@ async function readBackfillActivity(): Promise<{ runId: string | null; target: s
 async function writeRetrievalTerminals(args: {
   tele: NonNullable<AuditOpdOpts['telemetry']>;
   handle: LifecycleHandle;
-  publishHandle: (h: LifecycleHandle) => void;
+  /** Trailing optional map (v10 requirement 1). Terminal publications pass a SNAPSHOT; see :792. */
+  publishHandle: (h: LifecycleHandle, manifestDefectsByRole?: ManifestDefectsByRole) => void;
   traceId: string | null;
   startedAt: string;
   citedContext: string;
@@ -789,7 +790,11 @@ async function writeRetrievalTerminals(args: {
       operational: primaryOperational,
       traceId, completedAt: new Date().toISOString(),
     });
-    publishHandle(handle);
+    // ⚠️ A SHALLOW SNAPSHOT, NEVER THE LIVE OBJECT (v10 requirement 3). `defectsByRole` is mutated
+    // below — the normative verdict lands at :803 — and passing the object itself would let an
+    // owner observe a later mutation of something it was told at an earlier moment. What the owner
+    // is handed here is what was known here.
+    publishHandle(handle, { ...defectsByRole });
 
     if (args.normativeCapture) {
       // NORMATIVE carries null: the combined-context HMAC lives on the primary row, and duplicating
@@ -805,7 +810,7 @@ async function writeRetrievalTerminals(args: {
         operational: normOperational,
         traceId, completedAt: new Date().toISOString(),
       });
-      publishHandle(handle);
+      publishHandle(handle, { ...defectsByRole });   // snapshot, as above
     }
   } catch (e) {
     console.warn('[opd-audit] retrieval telemetry terminal write failed', (e as Error).message);
@@ -1305,8 +1310,21 @@ export interface AuditOpdOpts {
    * after either retrieval, during context assembly, or during audit generation. On every one of
    * those paths there is no returned audit — so a caller that could only read the handle off the
    * result would hold nothing, and could not settle the rows it is responsible for.
+   *
+   * ⚠️ THE SECOND ARGUMENT IS THE ROLE-KEYED MANIFEST VERDICT, AND IT IS WHY THIS EXISTS AT ALL
+   * (v10 requirement 1). The success path attaches the map to the audit; every throwing path has no
+   * audit, so before this the deterministic fallback delivered the handle and LOST the map, and the
+   * owner settled clean whatever the manifests said.
+   *
+   * ABSENT ON DECLARATION, PRESENT ON EACH TERMINAL WRITE (requirement 2). A declaration knows no
+   * verdict yet, and passing `{}` there would be a claim — under requirement 6 an empty PROVIDED map
+   * says "every declared role has no verdict". Undefined says "nothing to say", which is the truth.
+   * A receiver must therefore keep the last map it was GIVEN and not overwrite it with undefined.
+   *
+   * The map is a shallow snapshot taken at the moment of the call (requirement 3), never the live
+   * object the producer keeps mutating.
    */
-  onLifecycleHandleUpdated?: (handle: LifecycleHandle) => void;
+  onLifecycleHandleUpdated?: (handle: LifecycleHandle, manifestDefectsByRole?: ManifestDefectsByRole) => void;
   trace?: boolean;
   /** EVAL-ONLY (PDQI-9 fail-loud Phase 1). Fires on every OpenRouter attempt with the response
    *  envelope. Only reached when `evalModel` is set; production never passes it. Never throws. */
@@ -1522,7 +1540,10 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
   const telemetryStartedAt = new Date().toISOString();
   let handle: LifecycleHandle | null = null;
   let manifestDefectsByRole: ManifestDefectsByRole = {};
-  const publishHandle = (h: LifecycleHandle) => { handle = h; opts.onLifecycleHandleUpdated?.(h); };
+  const publishHandle = (h: LifecycleHandle, defects?: ManifestDefectsByRole) => {
+    handle = h;
+    opts.onLifecycleHandleUpdated?.(h, defects);
+  };
   /** D11: the non-enumerable property on the audit object, for the SUCCESS path. The callback above
    *  is what covers every throwing path, where there is no returned audit to carry anything. */
   const withHandle = <T extends object>(audit: T): T =>
