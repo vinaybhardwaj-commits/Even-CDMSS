@@ -52,6 +52,19 @@ export interface LifecycleHandle {
  */
 export const SETTLEMENT_REJECTIONS = [
   'no_row', 'stale_revision', 'already_terminal', 'disallowed_transition', 'lost_update',
+  // ⚠️ SIXTH CLASS (v9 §4.2). `LifecycleHandle.runs` is a plain array with no uniqueness rule, and
+  // two functions assume uniqueness while disagreeing about it: `writeRetrievalTerminal` takes the
+  // FIRST match by `find`, `advance` updates EVERY match by `map`. With two `primary` runs on one
+  // handle, one row is written and both revisions advance, and nothing reports it.
+  //
+  // ⚠️ THE GUARD IS NOT AT DECLARATION, DELIBERATELY. `declareNoteRuns` legitimately maps every note
+  // in a batch to one `primary` run and declares them together, so a 30-note batch produces a handle
+  // carrying 30 `primary` runs. A declare-time guard would stop the worker. The guard belongs to the
+  // two functions that assume uniqueness, and this class is what settlement reports when it sees it.
+  //
+  // No migration: a rejection class is a return value plus a free-text `error_class`, and
+  // `error_class` carries no CHECK in the generated DDL or in migration 0035.
+  'duplicate_role_on_handle',
 ] as const;
 export type SettlementRejection = typeof SETTLEMENT_REJECTIONS[number];
 
@@ -271,8 +284,15 @@ export async function writeRetrievalTerminal(
   role: RetrievalRole,
   input: TerminalWriteInput,
 ): Promise<LifecycleHandle> {
-  const run = handle.runs.find((r) => r.role === role);
-  if (!run) throw new Error(`writeRetrievalTerminal: no declared run for role ${role}`);
+  const matches = handle.runs.filter((r) => r.role === role);
+  if (matches.length === 0) throw new Error(`writeRetrievalTerminal: no declared run for role ${role}`);
+  // ⚠️ THROWS RATHER THAN PICKING ONE (v9 §4.2), matching the throw above for a role with no run at
+  // all. This function writes the FIRST match; `advance` then advances EVERY match. Silently writing
+  // one row and advancing several revisions is the failure this refuses.
+  if (matches.length > 1) {
+    throw new Error(`writeRetrievalTerminal: ${matches.length} declared runs for role ${role} on one handle`);
+  }
+  const run = matches[0];
 
   const manifest: StampedRetrievalManifest = { ...input.payload, operational: input.operational };
   const counters = counterColumns(input.payload);

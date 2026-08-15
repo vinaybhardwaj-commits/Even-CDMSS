@@ -16,11 +16,17 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { installDbStub, classedError, type DbStub } from './telemetry-db-stub';
 import {
   settleRetrievalTelemetry, outcomeForSaveResult,
 } from '../retrieval-settlement';
-import type { LifecycleHandle } from '../retrieval-telemetry-store';
+import {
+  writeRetrievalTerminal, SETTLEMENT_REJECTIONS,
+  type LifecycleHandle,
+} from '../retrieval-telemetry-store';
+import { createTelemetryCapture, buildRetrievalPayload } from '../retrieval-capture';
+import type { OperationalTelemetry } from '../retrieval-telemetry-core';
 import {
   SETTLEMENT_OUTCOMES, stateForSettlement, isAllowedTransition,
   type SettlementOutcome,
@@ -197,7 +203,12 @@ test('revision 0 with NO evidence settles aborted', async () => {
   db.on(SELECT_PHASES, []);
   await settleRetrievalTelemetry(
     handleOf([{ role: 'primary', runId: 'r0', expectedRevision: 0 }]),
-    { outcome: 'persisted_dirty', auditId: AUDIT, settledAt: AT },
+    // ⚠️ WAS `persisted_dirty` (v9 §4.1, §8). That value can no longer ARRIVE as a base outcome —
+    // it is derived inside settlement by `upgradeForDefects` — and this test's subject is
+    // revision-0 behaviour, not the outcome it happens to carry. `persisted_clean` reaches the same
+    // branch: it is equally illegal from `started`, so `stateForUnwrittenRun` still decides, and
+    // with no failure evidence the answer is still `aborted`.
+    { outcome: 'persisted_clean', auditId: AUDIT, settledAt: AT },
   );
   assert.equal(db.matching(UPDATE_ROW)[0].params[2], 'aborted');
 });
@@ -286,4 +297,131 @@ test('an identical-content retry stays SETTLED and burns no revision', async () 
   // D12 puts the no-op check FIRST, before the revision and transition checks, for exactly this.
   assert.deepEqual(results, [{ role: 'primary', runId: 'r1', status: 'settled' }]);
   assert.equal(db.matching(UPDATE_ROW).length, 0, 'no UPDATE, so no revision burned');
+});
+
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// v9 §4.2 — ONE RUN PER ROLE, on any handle that settles or writes
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * ⚠️ THE DEFECT. `LifecycleHandle.runs` is a plain array with no uniqueness rule, and two functions
+ * assume uniqueness while disagreeing about it: `writeRetrievalTerminal` takes the FIRST match by
+ * `find`, `advance` updates EVERY match by `map`. With two `primary` runs on one handle, one row is
+ * written and BOTH revisions advance — so the second write is then measured against a revision
+ * nothing set for it, and nothing reports any of it.
+ *
+ * ⚠️ AND THE GUARD IS NOT AT DECLARATION. `declareNoteRuns` legitimately declares one `primary` run
+ * per note in a batch, so a 30-note batch is a handle with 30 `primary` runs. A declare-time guard
+ * would stop the worker. The guard belongs to the two functions that assume uniqueness.
+ */
+const dupHandle = (): LifecycleHandle => ({
+  invocationId: 'inv-dup',
+  runs: [
+    { role: 'primary', runId: 'r-a', expectedRevision: 1 },
+    { role: 'primary', runId: 'r-b', expectedRevision: 1 },
+  ],
+  persistenceIntent: 'will_persist',
+});
+
+test('v9 §4.2 — settlement REFUSES a duplicate role and reports it, rather than settling it twice', async () => {
+  const db = installDbStub();
+  happyRow(db, 'retrieval_complete', 1);
+  db.on(INSERT_FAILURE, []);
+
+  const results = await settleRetrievalTelemetry(dupHandle(), {
+    outcome: 'persisted_clean', auditId: AUDIT, settledAt: AT,
+  });
+
+  assert.equal(results.length, 2, 'both runs are reported — the duplicate is not dropped silently');
+  assert.deepEqual(results[0], { role: 'primary', runId: 'r-a', status: 'settled' });
+  assert.deepEqual(results[1], {
+    role: 'primary', runId: 'r-b', status: 'rejected', rejection: 'duplicate_role_on_handle',
+  });
+  // ⚠️ ONE row written, not two. That is the harm: the same row would have been settled twice.
+  assert.equal(db.matching(UPDATE_ROW).length, 1, 'the duplicate never reached applyTerminalState');
+});
+
+test('v9 §4.2 — `status` stays at D12\'s three values; the new class rides in `rejection`', async () => {
+  const db = installDbStub();
+  happyRow(db, 'retrieval_complete', 1);
+  const results = await settleRetrievalTelemetry(dupHandle(), {
+    outcome: 'persisted_clean', auditId: AUDIT, settledAt: AT,
+  });
+  for (const r of results) {
+    assert.ok(['settled', 'failed', 'rejected'].includes(r.status), `status ${r.status} is outside D12's union`);
+  }
+  assert.equal(results[1].rejection, 'duplicate_role_on_handle');
+});
+
+test('v9 §4.2 — the vocabulary has SIX classes, and the sixth needs no migration', () => {
+  assert.equal(SETTLEMENT_REJECTIONS.length, 6);
+  assert.deepEqual([...SETTLEMENT_REJECTIONS], [
+    'no_row', 'stale_revision', 'already_terminal', 'disallowed_transition', 'lost_update',
+    'duplicate_role_on_handle',
+  ]);
+  // A rejection class is a return value plus a free-text `error_class`, and `error_class` carries no
+  // CHECK in either artefact — so adding one is not a schema change. Asserted, not assumed.
+  const core = readFileSync('lib/retrieval-telemetry-core.ts', 'utf8');
+  const sqlFile = readFileSync('migrations/0035_opd_audit_retrieval_telemetry.sql', 'utf8');
+  for (const [name, src] of [['generated DDL', core], ['migration 0035', sqlFile]] as const) {
+    assert.match(src, /error_class TEXT NOT NULL/, `${name} declares error_class`);
+    assert.equal(/error_class[^,)]*CHECK/i.test(src), false, `${name} puts a CHECK on error_class`);
+  }
+});
+
+test('v9 §4.2 — a duplicate role at the TERMINAL WRITE throws, as an undeclared role already does', async () => {
+  installDbStub();
+  const operational: OperationalTelemetry = {
+    route: 'opd_audit_worker', route_class: 'worker', retrieval_role: 'primary',
+    invocation_id: 'inv-dup', trace_id: null, deployment_sha: null,
+    started_at: AT, completed_at: AT, routing_flags: {},
+    active_backfill_run_id: null, active_backfill_target: null, active_backfill_state: null,
+    active_lab_experiment_id: null,
+  };
+  const input = {
+    payload: buildRetrievalPayload(createTelemetryCapture('primary'), { hmacKey: 'k', scorerContext: '' }),
+    operational, traceId: null, completedAt: AT,
+  };
+  // Writing the FIRST match while `advance` moves every match is the silent version of this.
+  await assert.rejects(
+    () => writeRetrievalTerminal(dupHandle(), 'primary', input),
+    /2 declared runs for role primary/,
+  );
+  // …and the existing throw for a role with no declared run is unchanged.
+  await assert.rejects(
+    () => writeRetrievalTerminal(
+      { invocationId: 'i', runs: [], persistenceIntent: 'will_persist' }, 'primary', input,
+    ),
+    /no declared run for role primary/,
+  );
+});
+
+test('v9 §4.2 — a handle with one run per role is untouched by the guard', async () => {
+  const db = installDbStub();
+  happyRow(db, 'retrieval_complete', 1);
+  const results = await settleRetrievalTelemetry(
+    handleOf([
+      { role: 'primary', runId: 'r-prim', expectedRevision: 1 },
+      { role: 'normative_channel', runId: 'r-norm', expectedRevision: 1 },
+    ]),
+    { outcome: 'persisted_clean', auditId: AUDIT, settledAt: AT },
+  );
+  assert.deepEqual(results.map((r) => r.status), ['settled', 'settled']);
+  assert.equal(db.matching(UPDATE_ROW).length, 2, 'two roles, two rows, no refusal');
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// v9 §4.1 — `persisted_dirty` cannot ARRIVE as a base outcome
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+test('v9 §4.1 — the base outcome type excludes persisted_dirty, and the mappers cannot produce it', () => {
+  // The type is the guard, so the proof is a source pin plus the behavioural fact that the two
+  // mappers only ever return base values. `persisted_dirty` is DERIVED, per run, by
+  // `upgradeForDefects` from that run's own role's verdict — it must never arrive pre-derived.
+  const src = readFileSync('lib/retrieval-settlement.ts', 'utf8');
+  assert.match(src, /outcome: Exclude<SettlementOutcome, 'persisted_dirty'>;/);
+  for (const r of ['inserted', 'updated', 'exists', 'skipped'] as const) {
+    assert.notEqual(outcomeForSaveResult(r), 'persisted_dirty');
+  }
 });

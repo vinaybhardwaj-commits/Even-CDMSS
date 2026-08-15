@@ -20,8 +20,15 @@ import {
 import { failurePhasesForRun } from './retrieval-telemetry-failure-store';
 
 export interface SettlementInput {
-  /** ONE BASE OUTCOME PER HANDLE. What the owner observed about the save, for the whole audit. */
-  outcome: SettlementOutcome;
+  /**
+   * ONE BASE OUTCOME PER HANDLE. What the owner observed about the save, for the whole audit.
+   *
+   * ⚠️ `persisted_dirty` IS EXCLUDED, AND MUST NEVER ARRIVE PRE-DERIVED (addendum v1 line 523,
+   * v9 §4.1). It is DERIVED here, per run, by `upgradeForDefects` from that run's own role's
+   * manifest verdict. An owner that could pass it in would be deciding, from one flat verdict, a
+   * question that belongs to each row separately — which is the contamination pass 0b removed.
+   */
+  outcome: Exclude<SettlementOutcome, 'persisted_dirty'>;
   /** Linked ONLY after the actual persistence result is known (§4.5 step 4). Null is a real state:
    *  a losing race, a failed save, or a retrieval that never produced an audit row. §4.2 forbids
    *  creating a synthetic audit row to populate it. */
@@ -53,7 +60,25 @@ export async function settleRetrievalTelemetry(
   const results: PerRunSettlementResult[] = [];
   let current = handle;
 
+  // ⚠️ ONE RUN PER ROLE ON A SETTLING HANDLE (v9 §4.2). Settlement walks `handle.runs` and calls
+  // `applyTerminalState` per run; two runs sharing a role would settle the same row twice and
+  // `advance` would move both revisions, so the second write sees a revision it did not set. The
+  // duplicate is REFUSED AND REPORTED rather than silently settled — `status` stays at D12's three
+  // values and the new class goes in `rejection`, which is where a "did not happen, and here is
+  // why" belongs.
+  //
+  // Not at declaration: `declareNoteRuns` legitimately declares one `primary` run per note in a
+  // batch, and a guard there would stop the worker.
+  const rolesSeen = new Set<string>();
+
   for (const run of handle.runs) {
+    if (rolesSeen.has(run.role)) {
+      results.push({
+        role: run.role, runId: run.runId, status: 'rejected', rejection: 'duplicate_role_on_handle',
+      });
+      continue;
+    }
+    rolesSeen.add(run.role);
     // ⚠️ EACH RUN'S OWN ROLE'S DEFECTS, AND NOBODY ELSE'S (pass 0b). One base outcome arrives for
     // the handle; the clean-to-dirty upgrade is decided here, per run, from that run's own
     // manifest verdict. A missing key means that role produced no manifest, which settles clean —
@@ -141,7 +166,9 @@ async function stateForUnwrittenRun(
  */
 export async function settleOwned(
   handle: LifecycleHandle | null | undefined,
-  outcome: SettlementOutcome,
+  /** Narrowed with `SettlementInput.outcome` it forwards to (v9 §4.1): an owner cannot pre-derive
+   *  `persisted_dirty` here either. The upgrade belongs to the run, not to the caller. */
+  outcome: Exclude<SettlementOutcome, 'persisted_dirty'>,
   auditId: string | null = null,
   /**
    * ⚠️ TRAILING AND OPTIONAL, SO NO POSITIONAL ARGUMENT MOVES (pass 0b). The shape this function
@@ -172,7 +199,11 @@ export async function settleOwned(
  */
 export function outcomeForOwnedSave(
   result: 'inserted' | 'updated' | 'exists' | 'skipped',
-): SettlementOutcome {
+  // ⚠️ THE RETURN NARROWS WITH `SettlementInput.outcome` (v9 §4.1). This function maps four save
+  // results to four BASE outcomes and provably never produces `persisted_dirty` — its type merely
+  // said it might. Narrowing here is what lets the six owners keep passing its result straight into
+  // `settleOwned` without any of them changing, which matters because they belong to commit D.
+): Exclude<SettlementOutcome, 'persisted_dirty'> {
   return outcomeForSaveResult(result);
 }
 
@@ -198,7 +229,9 @@ export function upgradeForDefects(
  * branch — and it means the audit was never keyed, which is a decision and not a failure. Mapping
  * it to anything else would report a deliberate skip as a lost write.
  */
-export function outcomeForSaveResult(result: 'inserted' | 'updated' | 'exists' | 'skipped'): SettlementOutcome {
+export function outcomeForSaveResult(
+  result: 'inserted' | 'updated' | 'exists' | 'skipped',
+): Exclude<SettlementOutcome, 'persisted_dirty'> {
   switch (result) {
     case 'inserted':
     case 'updated':
