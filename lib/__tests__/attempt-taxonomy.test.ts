@@ -9,11 +9,17 @@
  * `CDMSS-SAUL-RULING-GUARDRAILS-CRITICAL-PATH-14-AUG-2026.md:343-356` lists it among the missing,
  * and Saul is later and governs. The tree carried no implementation.
  *
- * ⚠️ AND UNTIL THIS PASS THE FIRST HALF WAS NOT PROVABLE. Nothing validated an attempt outcome
- * anywhere: `retrieval-telemetry-core.ts:707` and `:765` look like validation and are field-presence
- * checks, the multi-query block never read `vg.attempts`, and the only line reading `a.outcome` was
- * the 429 counter. The count was zero of three. v11 §4 adds the branch in all three locations, and
- * the second half of this file is what that makes provable.
+ * ⚠️ AND UNTIL PASS 1 THE FIRST HALF WAS NOT PROVABLE. Nothing validated an attempt outcome
+ * anywhere: the `expansion_attempts_field_absent` and `batch_attempts_field_absent` checks look like
+ * validation and only ask whether the FIELD is present, the multi-query block never read
+ * `vg.attempts`, and the only line reading `a.outcome` was the 429 counter. The count was zero of
+ * three. v11 §4 added the branch in all three locations, and the second half of this file is what
+ * that makes provable.
+ *
+ * ⚠️ CORRECTED IN PASS 1A (v12, Saul's review 23). Test 11.5 used a hand-named look-alike error and
+ * hid a production defect; it now constructs the ACTUAL exported SDK error. Test 11.3 scanned
+ * unstripped source and would have stayed green with the sites commented out. Source references are
+ * named rather than numbered, because the numbers went stale within one pass.
  *
  * PURE UNIT TEST. No database, no network, no judge server. The timeout is proven with a test-local
  * method mock (review 22 item 7) — never a wall clock, never an external host.
@@ -24,6 +30,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+// ⚠️ THE ACTUAL INSTALLED SDK ERROR (v12 §3 item 1). Pass 1 tested a hand-named look-alike, which is
+// what hid the production defect: the real error's `name` is "Error" and only `constructor.name`
+// carries the real name. This import is the primary evidence now.
+import { APIConnectionTimeoutError, APIConnectionError } from 'openai';
 import {
   TRANSPORT_ATTEMPT_OUTCOMES, classifyAttemptOutcome, classifyLocalAttempt, localAttemptSuccess,
 } from '../transport-attribution-core';
@@ -33,9 +43,18 @@ import type { OperationalTelemetry, RetrievalRole } from '../retrieval-telemetry
 
 const DEFECT = 'attempt_outcome_absent_or_invalid';
 
+/** Source with comment LINES removed, so a pin can never be satisfied by prose about the pin.
+ *  Copied from `defect-map-delivery.test.ts:27` (v12 §3 item 5). */
+function code(path: string): string {
+  return readFileSync(path, 'utf8')
+    .split('\n')
+    .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+    .join('\n');
+}
+
 const operational = (role: RetrievalRole): OperationalTelemetry => ({
-  // `lab_batch` is the hosted-lab route (core:205) and `routeClassOf` maps it to 'lab' (:229).
-  // Derived rather than hand-paired, so the two can never disagree.
+  // `lab_batch` is the hosted-lab route and `routeClassOf` maps it to 'lab'. Derived through that
+  // function rather than hand-paired, so the route and its class can never disagree here.
   route: role === 'lab_multi_query' ? 'lab_batch' : 'opd_audit_worker',
   route_class: routeClassOf(role === 'lab_multi_query' ? 'lab_batch' : 'opd_audit_worker'),
   retrieval_role: role,
@@ -48,9 +67,9 @@ const operational = (role: RetrievalRole): OperationalTelemetry => ({
 /**
  * A real manifest, built through the real capture, then given the attempts under test.
  *
- * ⚠️ BUILT, NOT HAND-WRITTEN. `manifestAttempts` at `lib/retrieval-capture.ts:122` is not exported
- * and must stay that way, so the only honest way to reach the manifest shape is
- * `buildRetrievalPayload`. A hand-assembled object would be testing my idea of the manifest.
+ * ⚠️ BUILT, NOT HAND-WRITTEN. `manifestAttempts` in `lib/retrieval-capture.ts` is not exported and
+ * must stay that way, so the only honest way to reach the manifest shape is `buildRetrievalPayload`.
+ * A hand-assembled object would be testing my idea of the manifest.
  */
 function manifestWith(role: RetrievalRole): Record<string, unknown> {
   const capture = createTelemetryCapture(role);
@@ -120,28 +139,36 @@ test('11.2 — `classifyAttemptOutcome` produces five of the six and NEVER `succ
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 
 test('11.3 — all four success sites record `success`, two of them through localAttemptSuccess()', () => {
-  // The two LOCAL sites, behaviourally: lib/llm.ts:360 and :563 both spread `localAttemptSuccess()`.
+  // The two LOCAL sites, behaviourally: both spread `localAttemptSuccess()` in `lib/llm.ts`.
   const local = localAttemptSuccess();
   assert.deepEqual(local, { tier: 'ollama', attempt: 1, outcome: 'success', status: 200 });
   assert.ok((TRANSPORT_ATTEMPT_OUTCOMES as readonly string[]).includes(local.outcome));
 
-  // The two CLOUD sites push the literal inline, so they are pinned at source — there is no
-  // exported function to call, and §8 forbids editing lib/llm.ts to create one.
-  const llm = readFileSync('lib/llm.ts', 'utf8');
-  const inline = llm.split('\n')
-    .map((l, i) => [i + 1, l] as const)
-    .filter(([, l]) => /attempts\.push\(\{ tier: '(openrouter|vertex)'/.test(l) && /outcome: 'success', status: 200/.test(l));
-  assert.equal(inline.length, 2, 'exactly two inline cloud success pushes');
-  assert.deepEqual(inline.map(([n]) => n), [435, 505], 'at the lines v11 §5 names');
-  const viaHelper = llm.split('\n')
-    .map((l, i) => [i + 1, l] as const)
-    .filter(([, l]) => l.includes('localAttemptSuccess()'));
-  assert.deepEqual(viaHelper.map(([n]) => n), [360, 563], 'and the two local sites use the helper');
+  // ⚠️ COMMENTS STRIPPED BEFORE COUNTING (v12 §3 item 5, review 23 finding 2). This scanned the RAW
+  // file, so commenting the two cloud pushes out would have left it green — the test would have
+  // reported four live success sites when two of them no longer executed. The helper is the one at
+  // `defect-map-delivery.test.ts:27`, copied rather than shared because these two files have no
+  // common module and neither may grow an export for the other's benefit.
+  //
+  // Line numbers are deliberately NOT asserted (review 23 finding 4): they moved once already in
+  // this programme, and a pin on a number breaks on an unrelated edit above it while proving
+  // nothing about the code below. What matters is the COUNT of each live form.
+  const llm = code('lib/llm.ts');
+  const inlineCloud = llm.split('\n')
+    .filter((l) => /attempts\.push\(\{ tier: '(openrouter|vertex)'/.test(l) && /outcome: 'success', status: 200/.test(l));
+  assert.equal(inlineCloud.length, 2, 'exactly two LIVE inline cloud success pushes');
+  const viaHelper = llm.split('\n').filter((l) => l.includes('localAttemptSuccess()'));
+  assert.equal(viaHelper.length, 2, 'exactly two LIVE local sites using the helper');
 
   // ⚠️ ALL FOUR, AND NO FIFTH SHAPE. A success attempt written any other way would not be counted
   // by this test and could carry any string; the union of the two forms is the whole population.
   const allSuccessSites = (llm.match(/outcome: 'success'|localAttemptSuccess\(\)/g) || []).length;
-  assert.equal(allSuccessSites, 4, 'four success sites in lib/llm.ts, no more');
+  assert.equal(allSuccessSites, 4, 'four live success sites in lib/llm.ts, no more');
+
+  // …and the strip is not vacuous: the raw file really does contain more matches than the stripped
+  // one, so a stripped count is a different measurement rather than the same one spelled longer.
+  const raw = readFileSync('lib/llm.ts', 'utf8');
+  assert.ok((raw.match(/localAttemptSuccess\(\)/g) || []).length >= viaHelper.length);
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════
@@ -156,14 +183,23 @@ test('11.4 — detector one: a declared timeout kind classifies `timeout`, not `
   assert.equal(classifyAttemptOutcome('transport', null), 'transport_error');
 });
 
-test('11.5 — detector two: a THROWN SDK timeout classifies `timeout`, by the name the SDK declares', async () => {
-  // ⚠️ A TEST-LOCAL METHOD MOCK, NOT A WALL CLOCK (review 22 item 7). Waiting for a real timeout
-  // would be slow and flaky and would prove the clock rather than the classifier. The SDK's own
-  // `APIConnectionTimeoutError` name is the declared evidence `classifyLocalAttempt` reads.
-  class APIConnectionTimeoutError extends Error {
-    constructor() { super('Request timed out.'); this.name = 'APIConnectionTimeoutError'; }
-  }
-  const thrown = await (async () => { throw new APIConnectionTimeoutError(); })().catch((e) => e);
+test('11.5 — detector two: a REAL SDK timeout classifies `timeout`', async () => {
+  // ⚠️ THE ACTUAL EXPORTED ERROR, CONSTRUCTED (v12 §3 item 1, review 23 finding 1). Pass 1 used a
+  // local class that set `this.name` by hand, and that fixture HID A PRODUCTION DEFECT: the real
+  // SDK error's `name` is "Error" — inherited from `Error.prototype`, not an own property — and only
+  // `constructor.name` carries "APIConnectionTimeoutError". The old check read `name` alone, so
+  // every real local timeout classified `transport_error` and the batch outcome `timeout` was
+  // unreachable on the local arm. In a measurement pass the fixture IS the experiment.
+  //
+  // ⚠️ STILL NO WALL CLOCK (review 22 item 7). Constructing the SDK's error is deterministic;
+  // waiting for a real timeout would prove the clock rather than the classifier.
+  const thrown = await (async () => {
+    throw new APIConnectionTimeoutError({ message: 'Request timed out.' });
+  })().catch((e) => e);
+
+  // The property the old fixture faked, asserted here so this test records WHY it exists.
+  assert.equal((thrown as Error).name, 'Error', 'the real SDK error does not declare the name');
+  assert.equal((thrown as Error).constructor.name, 'APIConnectionTimeoutError');
 
   const { outcome, status } = classifyLocalAttempt(thrown);
   assert.equal(outcome, 'timeout', 'the timeout must not be folded into a transport error');
@@ -172,16 +208,75 @@ test('11.5 — detector two: a THROWN SDK timeout classifies `timeout`, by the n
   // THE CONTRAST that makes the assertion above mean something: an error declaring NEITHER a status
   // nor the timeout name is the honest `transport_error`, not a sharpened guess.
   assert.equal(classifyLocalAttempt(new Error('socket hang up')).outcome, 'transport_error');
+  // …and the SDK's PARENT class is not a timeout either. Matching on `constructor.name` must not
+  // widen to the whole connection-error family.
+  assert.equal(classifyLocalAttempt(new APIConnectionError({ message: 'x' })).outcome, 'transport_error');
   // …and a declared status still routes by the one 429 rule, on this detector too.
   assert.equal(classifyLocalAttempt(Object.assign(new Error('x'), { status: 429 })).outcome, 'http_429');
   assert.equal(classifyLocalAttempt(Object.assign(new Error('x'), { status: 500 })).outcome, 'http_other');
-  // A timeout NAME wins over an absent status — the name is what the SDK declares, and §4.4 forbids
-  // guessing from requested model, environment or timing.
+  // ⚠️ THE DECLARED-NAME PATH IS PRESERVED, NOT REPLACED (v12 §2 requirement 2). This is the ONLY
+  // remaining role of the hand-named look-alike: it is the contrast proving the old behaviour still
+  // holds, so a future SDK that sets `name` properly, or any wrapper that re-declares it, keeps
+  // working. It is no longer the primary evidence for anything.
+  class HandNamedLookAlike extends Error {
+    constructor() { super('x'); this.name = 'APIConnectionTimeoutError'; }
+  }
+  assert.equal(classifyLocalAttempt(new HandNamedLookAlike()).outcome, 'timeout');
   assert.equal(classifyLocalAttempt({ name: 'APIConnectionTimeoutError' }).outcome, 'timeout');
   // Nothing at all is still transport_error, never a crash and never `success`.
   for (const junk of [null, undefined, 0, '', {}]) {
     assert.equal(classifyLocalAttempt(junk).outcome, 'transport_error');
   }
+});
+
+test('11.5b — REQUIREMENT 3: neither read may throw, on any hostile input', () => {
+  // ⚠️ NOT BOILERPLATE. `classifyLocalAttempt` runs ON A FAILURE PATH — it is called from
+  // `lib/llm.ts` inside the catch that records a failed local attempt. A classifier that throws
+  // while classifying a failure DESTROYS THE FAILURE it was called to record: the original error
+  // is replaced by a TypeError from the telemetry, and the attempt that caused it is never written.
+  //
+  // Each case below is one of v12 §2 requirement 3's four, and each must resolve — not throw — and
+  // must degrade to the honest `transport_error` rather than to a fabricated `timeout`.
+
+  // 1. NULL PROTOTYPE. `Object.create(null)` has no `constructor` at all, so an unguarded
+  //    `e.constructor.name` is a TypeError on undefined.
+  const nullProto = Object.create(null) as Record<string, unknown>;
+  nullProto.message = 'connection failed';
+  assert.equal(classifyLocalAttempt(nullProto).outcome, 'transport_error');
+
+  // 2. ABSENT CONSTRUCTOR, explicitly removed from an ordinary object.
+  const noCtor = { name: undefined, constructor: undefined } as unknown;
+  assert.equal(classifyLocalAttempt(noCtor).outcome, 'transport_error');
+
+  // 3. A GETTER THAT THROWS, on each of the three properties the classifier reads.
+  for (const prop of ['name', 'constructor', 'status'] as const) {
+    const hostile: Record<string, unknown> = {};
+    Object.defineProperty(hostile, prop, { get() { throw new Error(`${prop} exploded`); } });
+    assert.equal(classifyLocalAttempt(hostile).outcome, 'transport_error', `${prop} getter`);
+  }
+  // …and a proxy that throws on EVERY access, which is the general case of the above.
+  const proxy = new Proxy({}, { get() { throw new Error('proxy boom'); } });
+  assert.equal(classifyLocalAttempt(proxy).outcome, 'transport_error');
+
+  // 4. NON-OBJECT INPUT. A string has a `constructor.name` of "String"; a symbol throws on some
+  //    coercions; null and undefined have no properties at all.
+  for (const v of [null, undefined, 0, 1, '', 'APIConnectionTimeoutError', true, Symbol('s'), 42n]) {
+    assert.equal(classifyLocalAttempt(v).outcome, 'transport_error', `non-object ${String(typeof v)}`);
+  }
+
+  // ⚠️ AND THE STRING CASE IS NOT INCIDENTAL. A bare string equal to the error name must NOT be
+  // read as a timeout: it declares nothing, and matching it would mean matching on a value the
+  // transport never set.
+  assert.equal(classifyLocalAttempt('APIConnectionTimeoutError').outcome, 'transport_error');
+
+  // The guards are real code, not a try/catch around the whole function — pinned so a future edit
+  // cannot satisfy this test by swallowing everything including a genuine classification.
+  const src = readFileSync('lib/transport-attribution-core.ts', 'utf8');
+  assert.match(src, /function declaresConnectionTimeout\(e: unknown\): boolean \{/);
+  assert.equal(/instanceof/.test(code('lib/transport-attribution-core.ts')), false,
+    'no instanceof (v12 §2 item 4) — it would need an import of the SDK');
+  assert.equal(/^import /m.test(code('lib/transport-attribution-core.ts')), false,
+    'and the file keeps ZERO outbound imports, which is what makes the pass-1 edge cycle-free');
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════
@@ -259,10 +354,10 @@ test('11.8 — an ABSENT outcome, a wrong-shaped attempts value, and a mixed arr
 });
 
 test('11.9 — `attempts: null` is LEGAL at all three locations and must NOT be flagged', () => {
-  // ⚠️ THIS IS TODAY'S TRUTH AND IT IS DEFERRED, NOT ENDORSED. A skipped expansion stage emits null
-  // (`retrieval-capture.ts:309`) and `manifestAttempts` returns null for absent evidence
-  // (`:122-123`). Addendum v11 §6.1 moves the `null` to `[]` correction to PASS 3. A branch that
-  // treated null as defective would flag every skipped stage and would make pass 3's decision early.
+  // ⚠️ THIS IS TODAY'S TRUTH AND IT IS DEFERRED, NOT ENDORSED. A skipped expansion stage emits null,
+  // and `manifestAttempts` in `lib/retrieval-capture.ts` returns null for absent evidence. Addendum
+  // v11 §6.1 moves the `null` to `[]` correction to PASS 3. A branch that treated null as defective
+  // would flag every skipped stage and would make pass 3's decision early.
   for (const loc of LOCATIONS) {
     for (const empty of [null, undefined, []]) {
       const m = manifestWith(loc.role);

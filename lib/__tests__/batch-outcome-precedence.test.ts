@@ -5,18 +5,21 @@
  *   > defects coexist.
  *
  * ⚠️ THE PRECEDENCE HAS NO SINGLE IMPLEMENTATION, AND THIS FILE ASSERTS IT THROUGH BEHAVIOUR.
- * `BATCH_OUTCOME_PRECEDENCE` at `lib/retrieval-telemetry-core.ts:426` is a VOCABULARY list, used
- * once at `:766` to check that a batch's outcome is a known value — it orders nothing at run time.
- * The ordering lives in three separate lines of `lib/rerank.ts`, plus one helper:
+ * `BATCH_OUTCOME_PRECEDENCE` in `lib/retrieval-telemetry-core.ts` is a VOCABULARY list, used once
+ * to check that a batch's outcome is a known value — it orders nothing at run time. The ordering
+ * lives in three separate statements of `lib/rerank.ts`, plus one helper:
  *
- *     :590   `let outcome: BatchOutcome = 'success'`      the initialiser
- *     :640   missing > 0 ? missing_score_key : nonnumeric > 0 ? nonnumeric_score : success
- *     :647   parseFailed ? parse_failure : terminalOutcomeFor(evidence)     ← this proof turns here
- *     :521   terminalOutcomeFor — last attempt 'timeout' ? timeout : terminal_failure
+ *     the initialiser        `let outcome: BatchOutcome = 'success'`
+ *     the parsed branch      missing > 0 ? missing_score_key : nonnumeric > 0 ? nonnumeric_score : success
+ *     the catch branch       parseFailed ? parse_failure : terminalOutcomeFor(evidence)   ← turns here
+ *     terminalOutcomeFor     last attempt 'timeout' ? timeout : terminal_failure
+ *
+ * ⚠️ NAMED, NOT NUMBERED (review 23 finding 4). Line numbers in this programme have already gone
+ * stale twice; test 12.0 below locates each statement by searching for it.
  *
  * So every row below drives the real `rerankJudge` against a real socket and reads
  * `capture.batches[].outcome`. No resolver is extracted and `lib/rerank.ts` is not edited — that is
- * later work with its own specification (v11 §13).
+ * deferred by v12 §5, after the five proof passes.
  *
  * ⚠️ IMPORT ORDER IS LOAD-BEARING (review 22 item 8). `startJudgeServer` sets `OLLAMA_BASE_URL`,
  * `RERANK_JUDGE_MODEL` and the Gemini kill-switches, and `lib/llm.ts:41` builds its OpenAI client
@@ -29,9 +32,12 @@
  * Proof 11 is in `attempt-taxonomy.test.ts`: it is pure, needs no server, and keeping it separate
  * keeps this file's import-ordering hazard out of it.
  */
-import { test, mock } from 'node:test';
+import { test, mock, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+// ⚠️ THE ACTUAL INSTALLED SDK ERROR (v12 §3 item 2). Row 1 threw a hand-named look-alike, which is
+// what hid the production defect corrected in this same pass.
+import { APIConnectionTimeoutError } from 'openai';
 import { startJudgeServer, type JudgeServer } from './judge-server-stub';
 import type { TelemetryCapture } from '../retrieval-capture';
 
@@ -52,6 +58,17 @@ type Booted = {
 };
 
 let booted: Booted | null = null;
+
+/**
+ * ⚠️ UNCONDITIONAL CLEANUP (v12 §3 item 4). A case that throws must not leak a listening socket or
+ * a patched method into another file: `mock.method` patches a MODULE-LEVEL client that every later
+ * import shares, and a leaked listener keeps the process alive. `after` runs whether the cases pass
+ * or throw, and each case restores its own mock in a `finally` besides.
+ */
+after(async () => {
+  mock.restoreAll();
+  if (booted) { await booted.judge.close().catch(() => {}); booted = null; }
+});
 
 /** Server first, dynamic imports second. Once per file. */
 async function boot(): Promise<Booted> {
@@ -87,8 +104,10 @@ async function runBatch(): Promise<{
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 // The executable matrix (review 22 item 9). Six rows, each executed, each reading
-// `capture.batches[].outcome`. Rows 3 to 6 are served by the stub; rows 1 and 2 cannot be, and are
-// reached by the two techniques the kickoff names, in that order, because row 2 closes the server.
+// `capture.batches[].outcome`. Rows 3 to 6 are served by the stub. Rows 1 and 2 cannot be — the stub
+// has no failure hook and §5 forbids adding one — so each uses a deterministic method mock on the
+// exported client. ORDER NO LONGER MATTERS: v12 §3 item 3 replaced row 2's closed server with a
+// mock, so every case here is independently re-runnable.
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 
 test('12.0 — the precedence list is a VOCABULARY, not an implementation', async () => {
@@ -100,11 +119,23 @@ test('12.0 — the precedence list is a VOCABULARY, not an implementation', asyn
   const coreSrc = readFileSync('lib/retrieval-telemetry-core.ts', 'utf8');
   const uses = (coreSrc.match(/BATCH_OUTCOME_PRECEDENCE/g) || []).length;
   assert.equal(uses, 2, 'declared once, used once — as a membership check, never to order anything');
-  // The ordering really does live in rerank.ts, on the three lines named in this file's header.
-  const rerank = readFileSync('lib/rerank.ts', 'utf8').split('\n');
-  assert.match(rerank[589], /let outcome: BatchOutcome = 'success';/);
-  assert.match(rerank[639], /outcome = missing > 0 \? 'missing_score_key' : nonnumeric > 0 \? 'nonnumeric_score' : 'success';/);
-  assert.match(rerank[646], /outcome = parseFailed \? 'parse_failure' : terminalOutcomeFor\(evidence\);/);
+
+  // ⚠️ LOCATED BY SEARCH, NOT BY LINE INDEX (review 23 finding 4). The previous version indexed
+  // `rerank[589]`, `[639]` and `[646]`; any edit above them would have broken this test while
+  // proving nothing about the statements themselves. Each is now found wherever it sits, and the
+  // ORDER of the two resolving statements is asserted by position, which is what actually matters.
+  const rerank = readFileSync('lib/rerank.ts', 'utf8');
+  const at = (re: RegExp, what: string): number => {
+    const i = rerank.search(re);
+    assert.notEqual(i, -1, `${what} is no longer in lib/rerank.ts — the precedence moved`);
+    return i;
+  };
+  const init = at(/let outcome: BatchOutcome = 'success';/, 'the initialiser');
+  const parsed = at(/outcome = missing > 0 \? 'missing_score_key' : nonnumeric > 0 \? 'nonnumeric_score' : 'success';/, 'the parsed branch');
+  const caught = at(/outcome = parseFailed \? 'parse_failure' : terminalOutcomeFor\(evidence\);/, 'the catch branch');
+  at(/function terminalOutcomeFor\(evidence: TransportEvidence \| null\): BatchOutcome \{/, 'terminalOutcomeFor');
+  assert.ok(init < parsed && parsed < caught,
+    'the initialiser precedes the parsed branch, which precedes the catch branch');
 });
 
 test('12.3 — ROW 3: a malformed completion is `parse_failure`', async () => {
@@ -114,8 +145,8 @@ test('12.3 — ROW 3: a malformed completion is `parse_failure`', async () => {
   judge.setRawContent(null);
   assert.equal(b.outcome, 'parse_failure');
   // parse_failure PRESERVES its provider and usage — a completion arrived and cost tokens. It is
-  // resolved at rerank.ts:647, the same line as terminal_failure, and wins there because
-  // `parseFailed` was set inside the inner try at :618-621.
+  // resolved on the same statement as terminal_failure — the catch branch — and wins there because
+  // `parseFailed` was set inside the inner JSON.parse try.
   assert.equal(b.finiteScoreKeys, 0, 'nothing parsed, so nothing is finite');
 });
 
@@ -155,22 +186,25 @@ test('12.6 — ROW 6: all finite keys give `success`', async () => {
   assert.equal(b.nonnumericScoreKeys, 0);
 });
 
-test('12.1 — ROW 1: a TIMEOUT is `timeout`, and is not folded into terminal_failure', async () => {
+test('12.1 — ROW 1: a REAL SDK TIMEOUT is `timeout`, not terminal_failure', async () => {
   // ⚠️ A TEST-LOCAL METHOD MOCK ON THE EXPORTED CLIENT (review 22 item 7). No wall clock, no
-  // external host. The thrown error declares the SDK's own `APIConnectionTimeoutError` name, which
-  // is what `classifyLocalAttempt` reads at lib/llm.ts:362-364; the resulting `timeout` attempt
-  // becomes the terminal one, and `terminalOutcomeFor` at rerank.ts:521 resolves `timeout`.
+  // external host. The mock throws THE ACTUAL EXPORTED SDK ERROR (v12 §3 item 2) — pass 1 threw a
+  // hand-named look-alike, and that fixture hid the production defect this pass corrects: the real
+  // error's `name` is "Error", so the old `name`-only check never matched and this row's outcome
+  // was `terminal_failure` in production while the test read `timeout`.
+  //
+  // The path: the throw reaches lib/llm.ts's local catch → `classifyLocalAttempt` → a `timeout`
+  // attempt → it is the terminal attempt → `terminalOutcomeFor` resolves `timeout`.
   const { llm } = await boot();
-  class APIConnectionTimeoutError extends Error {
-    constructor() { super('Request timed out.'); this.name = 'APIConnectionTimeoutError'; }
-  }
-  mock.method(llm.chat.completions, 'create', async () => { throw new APIConnectionTimeoutError(); });
+  mock.method(llm.chat.completions, 'create', async () => {
+    throw new APIConnectionTimeoutError({ message: 'Request timed out.' });
+  });
   try {
     const b = await runBatch();
     assert.equal(b.outcome, 'timeout', 'a timeout must be its own outcome');
     assert.notEqual(b.outcome, 'terminal_failure');
     // The scores were never produced, so every expected key is counted missing — and the outcome is
-    // still `timeout`, because :647 resolves before the missing-key branch can apply.
+    // still `timeout`, because the catch branch resolves before the missing-key branch can apply.
     assert.equal(b.missingScoreKeys, 2);
     assert.equal(b.finiteScoreKeys, 0);
   } finally {
@@ -179,27 +213,63 @@ test('12.1 — ROW 1: a TIMEOUT is `timeout`, and is not folded into terminal_fa
 });
 
 test('12.2 — ROW 2: a generic exhausted transport is `terminal_failure`', async () => {
-  // ⚠️ RUNS LAST, BECAUSE IT CLOSES THE SERVER. The SDK then gets ECONNREFUSED, which declares a
-  // status of neither 429 nor anything else and no timeout name — so `classifyLocalAttempt` reports
-  // the honest `transport_error`, and `terminalOutcomeFor` resolves `terminal_failure` rather than
-  // sharpening it into a timeout.
+  // ⚠️ A METHOD MOCK, NOT A CLOSED SERVER (v12 §3 item 3). Pass 1 closed the loopback server to
+  // force ECONNREFUSED, which made this the only case that could not be re-run, forced it to run
+  // LAST, and left a server lifecycle inside a test file. A plain `Error` with no status and no
+  // timeout identity reaches the same classification deterministically, and row order stops
+  // mattering — this file's cases can now run in any order.
   //
   // This is the CONTRAST that makes row 1 mean something: same code path, same resolver line, and
-  // the only difference is what the transport declared about itself.
-  const { judge } = await boot();
-  await judge.close();
-  const b = await runBatch();
-  assert.equal(b.outcome, 'terminal_failure');
-  assert.notEqual(b.outcome, 'timeout', 'a dead socket is not a timeout');
-  assert.equal(b.finiteScoreKeys, 0);
+  // the ONLY difference is what the transport declared about itself.
+  const { llm } = await boot();
+  mock.method(llm.chat.completions, 'create', async () => { throw new Error('socket hang up'); });
+  try {
+    const b = await runBatch();
+    assert.equal(b.outcome, 'terminal_failure');
+    assert.notEqual(b.outcome, 'timeout', 'an undeclared transport failure is not a timeout');
+    assert.equal(b.finiteScoreKeys, 0);
+  } finally {
+    mock.restoreAll();
+  }
 });
 
-test('12.7 — the six rows produced six DISTINCT outcomes, and they are the committed six', async () => {
-  // A guard against a matrix that passes because every row resolves to the same value. Re-stated
-  // from what the rows above asserted, so it cannot drift from them silently.
+test('12.7 — the outcomes the six rows ACTUALLY produced are six distinct committed values', async () => {
+  // ⚠️ REWRITTEN (v12 §3 item 6, review 23 finding 3). This hard-coded the six strings and claimed
+  // to aggregate what the rows executed — it read nothing they produced, so it would have passed
+  // with every row deleted, and the pass 1 report repeated that overstatement to Saul.
+  //
+  // It now RE-EXECUTES each row's arrangement and collects the real outcomes. That makes it slower
+  // and redundant with the rows above, deliberately: the guard it exists for — "six rows, six
+  // different outcomes, not one value six times" — is a property of the SET, and no individual row
+  // can assert it.
+  const { llm, judge } = await boot();
+  const produced: string[] = [];
+
+  const withMock = async (thrown: unknown) => {
+    mock.method(llm.chat.completions, 'create', async () => { throw thrown; });
+    try { produced.push((await runBatch()).outcome); } finally { mock.restoreAll(); }
+  };
+  const withContent = async (body: string) => {
+    judge.setRawContent(() => body);
+    try { produced.push((await runBatch()).outcome); } finally { judge.setRawContent(null); }
+  };
+
+  await withMock(new APIConnectionTimeoutError({ message: 'timed out' }));   // row 1
+  await withMock(new Error('socket hang up'));                              // row 2
+  await withContent('this is not JSON at all');                             // row 3
+  await withContent('{"0":"x"}');                                           // row 4
+  await withContent('{"0":7,"1":"not-a-number"}');                          // row 5
+  judge.setScores({ MRKA: 8, MRKB: 4 });
+  produced.push((await runBatch()).outcome);                                // row 6
+
+  assert.equal(produced.length, 6, 'six rows executed');
+  assert.equal(new Set(produced).size, 6, 'six DIFFERENT outcomes, not one value six times');
+  assert.deepEqual(produced, [
+    'timeout', 'terminal_failure', 'parse_failure', 'missing_score_key', 'nonnumeric_score', 'success',
+  ], 'and each row produced the outcome its own case asserts');
+
+  // Every produced value is a committed one — the vocabulary check, now applied to real output.
   const core = await import('../retrieval-telemetry-core');
-  const produced = ['timeout', 'terminal_failure', 'parse_failure', 'missing_score_key', 'nonnumeric_score', 'success'];
-  assert.equal(new Set(produced).size, 6, 'six rows, six different outcomes');
   for (const o of produced) {
     assert.ok((core.BATCH_OUTCOME_PRECEDENCE as readonly string[]).includes(o), `${o} is a committed outcome`);
   }
