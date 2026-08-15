@@ -405,20 +405,22 @@ export async function rerank<T extends RerankCandidate>(
     // ⚠️ WHERE TRANSPORT PROOF EXISTS, `not_served` STANDS and is unchanged. This branch synthesises
     // records for requests that were PLANNED, so it never has proof of anything.
     //
-    // ⚠️ FLAGGED FOR V, NOT DECIDED HERE: the JUDGE arm of this same branch also synthesises
-    // `provenNotServed: true` without proof. v7 §6 rules on Cohere specifically, so the judge arm is
-    // left exactly as it was rather than corrected by extension. It is the same shape of unproven
-    // claim and it wants its own ruling. (The judge arm is reached only when an injected `judgeFn`
-    // throws; `rerankJudge`'s own failures are caught per batch, so it is effectively test-only.)
-    const cohereUnattributed: TransportEvidence = {
+    // ⚠️ AND THE SAME RULE GOVERNS THE JUDGE ARM (addendum v8 §2, 14 Aug 2026). Pass 0 corrected
+    // Cohere and correctly declined to correct the judge by extension, because v7 §6 ruled on Cohere
+    // only. V then ruled that the rule is the rule on both arms: a generic judge failure without
+    // transport proof records `provenNotServed: false`, and its class is `unattributed`.
+    //
+    // ⚠️ WHY IT WAS FIXED FIRST RATHER THAN DEFERRED. This branch is reached only when an injected
+    // `judgeFn` throws — `rerankJudge` catches its own failures per batch — so it is effectively
+    // test-only today. That is exactly the argument FOR correcting it now: a test-only path that
+    // fabricates a proof poisons every proof written against it, and the twenty hard proofs are next.
+    //
+    // ONE record for both arms now. Neither synthesised boundary has transport evidence, because
+    // both describe requests that were PLANNED and never delivered.
+    const unprovenNoDelivery: TransportEvidence = {
       servedProvider: null, servedModel: null, attempts: null, provenNotServed: false,
     };
-    const judgeNotServedUnchanged: TransportEvidence = {
-      servedProvider: null, servedModel: null, attempts: null, provenNotServed: true,
-    };
-    const notServed: TransportEvidence = plannedBackend === 'cohere'
-      ? cohereUnattributed
-      : judgeNotServedUnchanged;
+    const notServed: TransportEvidence = unprovenNoDelivery;
     capture.batches = boundaries.map((b, i): CapturedBatch => ({
       index: i, start: b.start, end: b.end,
       evidence: notServed,

@@ -36,8 +36,20 @@ import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
  */
 export const TELEMETRY_SCHEMA_VERSION = 2;
 
-/** The JSONB manifest contract. Bumped when a manifest FIELD changes. */
-export const MANIFEST_SCHEMA_VERSION = 2;
+/**
+ * The JSONB manifest contract. Bumped when a manifest FIELD changes.
+ *
+ * ⚠️ 2 → 3 (pass 0a). Addendum v7 §10 added `rerank_temperature` and `rerank_seed_status` to
+ * `retrieval_config`, and the version did not move — so a manifest WITH the fields and one WITHOUT
+ * them both claimed version 2, which is exactly what the version exists to prevent. PRD §7 gates the
+ * canary on recognised manifest versions, and a version that does not discriminate cannot gate.
+ *
+ * ⚠️ THERE ARE NO VERSION-2 ROWS ANYWHERE. The three telemetry tables have never been created in
+ * production, and the only database that has ever held them is the measurement branch, whose rows
+ * are synthetic and carry `route = 'script'`. So this bump orphans no stored data, and the validator
+ * below deliberately recognises ONE version rather than a list — see `manifest_version_unrecognized`.
+ */
+export const MANIFEST_SCHEMA_VERSION = 3;
 
 /**
  * The HMAC key generation. §4.3 requires a versioned key identifier: a rotated key produces
@@ -275,6 +287,21 @@ export type InvocationKind = typeof INVOCATION_KINDS[number];
 /** An invocation that never reached its own closing write stays `closure_unknown`, honestly. */
 export const INVOCATION_CLOSURE_STATES = ['closed', 'closure_unknown'] as const;
 export type InvocationClosureState = typeof INVOCATION_CLOSURE_STATES[number];
+
+/**
+ * The reranker seed-status vocabulary, as the MANIFEST contract defines it (addendum v7 §10).
+ *
+ * ⚠️ TEMPORARILY DUPLICATED, AND PINNED SO IT CANNOT DRIFT. The same list is declared in
+ * `lib/retrieval-capture.ts`, which is where the capture-side type lives. Core cannot import it from
+ * there — capture imports FROM core, so that direction is a cycle — and capture is outside pass 0a's
+ * file contract, so the constant cannot be moved in this pass.
+ *
+ * `intended-attribution.test.ts` asserts the two lists are identical, so a value added to one and
+ * not the other fails the suite rather than producing a manifest the validator silently rejects.
+ * The proper home is HERE, beside the manifest contract it belongs to; a pass whose contract
+ * includes `retrieval-capture.ts` should delete that copy and re-export this one. FLAGGED.
+ */
+export const RERANK_SEED_STATUSES = ['not_applicable', 'unseeded', 'applied_local', 'stripped_cloud'] as const;
 
 /** The phases a telemetry write can fail in (D2's failure table CHECK). */
 export const TELEMETRY_FAILURE_PHASES = [
@@ -755,6 +782,27 @@ export function validateManifest(input: unknown): string[] {
   if (!isIdArray(m.ordered_final_candidate_ids)) v.push('ordered_final_candidate_ids_absent');
   if (!m.retrieval_config || typeof m.retrieval_config !== 'object' || Array.isArray(m.retrieval_config)) {
     v.push('retrieval_config_absent');
+  } else {
+    // ── The v7 §10 decode fields, REQUIRED as of manifest version 3 ────────────────────────────
+    //
+    // ⚠️ `has`, NOT A TRUTHINESS TEST, and for the reason the rest of this validator uses it: an
+    // ABSENT field and an EXPLICIT NULL are different claims. `rerank_temperature: null` means no
+    // rerank decode ran, which is a fact worth recording; an absent key means the manifest predates
+    // the field or the writer forgot it, which is a defect.
+    const cfg = m.retrieval_config;
+    if (!has(cfg, 'rerank_temperature')) {
+      v.push('rerank_temperature_field_absent');
+    } else {
+      const t = get(cfg, 'rerank_temperature');
+      if (t !== null && (typeof t !== 'number' || !Number.isFinite(t))) v.push('rerank_temperature_invalid');
+    }
+    if (!has(cfg, 'rerank_seed_status')) {
+      v.push('rerank_seed_status_field_absent');
+    } else if (!(RERANK_SEED_STATUSES as readonly unknown[]).includes(get(cfg, 'rerank_seed_status'))) {
+      // Never null: a seed status is always knowable, and `not_applicable` is the value for
+      // "no rerank decode ran". A null here would be an absence dressed as a measurement.
+      v.push('rerank_seed_status_invalid');
+    }
   }
   if (!has(m, 'corpus_version')) v.push('corpus_version_field_absent');
   if (!isNonEmptyStr(m.index_version)) v.push('index_version_absent');
@@ -1228,6 +1276,40 @@ export function retrievalTelemetryDdl(): DdlStatement[] {
     OR failed_phase IN (${q(TELEMETRY_FAILURE_PHASES.filter((p) => !(RUN_SCOPED_FAILURE_PHASES as readonly string[]).includes(p)))})
   )
 )`,
+    },
+    // ── 6a. THE FAILURE-TABLE CHECKS, RE-APPLIED (pass 0a, kickoff §2.1) ────────────────────────
+    //
+    // ⚠️ THE INLINE CONSTRAINTS ABOVE REACH A FRESH TABLE ONLY. `CREATE TABLE IF NOT EXISTS` is a
+    // NO-OP when the table exists, so on any database that already has
+    // `opd_retrieval_telemetry_failures` the OLD CHECKs survive — and the old phase list does not
+    // contain `retrieval_terminal_rejected`. The durable evidence addendum v7 §8 exists to produce
+    // would then be REJECTED BY THE CONSTRAINT, silently turning a new safety record into a write
+    // error on exactly the path that is already failing.
+    //
+    // Production does not have this table. The measurement branch does, or will. That is enough.
+    //
+    // The drop-then-add pair is the same idiom the three `opd_audit_retrieval_telemetry` CHECKs
+    // above already use (`state_check_drop`/`state_check`, and its two siblings), so the widened
+    // form applies whether the table is new or existing. Idempotent: `DROP … IF EXISTS` tolerates
+    // absence, and the ADD immediately follows on a constraint name that is now guaranteed free.
+    {
+      key: 'rtf_phase_check_drop',
+      sql: `ALTER TABLE opd_retrieval_telemetry_failures DROP CONSTRAINT IF EXISTS opd_rtf_phase_chk`,
+    },
+    {
+      key: 'rtf_phase_check',
+      sql: `ALTER TABLE opd_retrieval_telemetry_failures ADD CONSTRAINT opd_rtf_phase_chk CHECK (failed_phase IN (${q(TELEMETRY_FAILURE_PHASES)}))`,
+    },
+    {
+      key: 'rtf_run_check_drop',
+      sql: `ALTER TABLE opd_retrieval_telemetry_failures DROP CONSTRAINT IF EXISTS opd_rtf_run_chk`,
+    },
+    {
+      key: 'rtf_run_check',
+      sql: `ALTER TABLE opd_retrieval_telemetry_failures ADD CONSTRAINT opd_rtf_run_chk CHECK (
+    (failed_phase IN (${q(RUN_SCOPED_FAILURE_PHASES)}) AND retrieval_run_id IS NOT NULL AND retrieval_role IS NOT NULL)
+    OR failed_phase IN (${q(TELEMETRY_FAILURE_PHASES.filter((p) => !(RUN_SCOPED_FAILURE_PHASES as readonly string[]).includes(p)))})
+  )`,
     },
     { key: 'idx_rtf_run', sql: `CREATE INDEX IF NOT EXISTS opd_rtf_run_idx ON opd_retrieval_telemetry_failures (retrieval_run_id, failed_phase, observed_at DESC) WHERE retrieval_run_id IS NOT NULL` },
     { key: 'idx_rtf_invocation', sql: `CREATE INDEX IF NOT EXISTS opd_rtf_invocation_idx ON opd_retrieval_telemetry_failures (invocation_id, observed_at DESC)` },

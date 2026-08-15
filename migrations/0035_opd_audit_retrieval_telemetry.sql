@@ -253,6 +253,19 @@ CREATE TABLE IF NOT EXISTS opd_retrieval_telemetry_failures (
   )
 );
 
+-- ⚠️ THE FAILURE-TABLE CHECKS, RE-APPLIED (pass 0a). The inline constraints above reach a FRESH
+-- table only: CREATE TABLE IF NOT EXISTS is a no-op when the table exists, so on a database that
+-- already has this table the OLD CHECKs survive and `retrieval_terminal_rejected` would be rejected
+-- by the constraint. Drop-then-add is the same idiom the three opd_audit_retrieval_telemetry CHECKs
+-- above use, and it is idempotent in both directions.
+ALTER TABLE opd_retrieval_telemetry_failures DROP CONSTRAINT IF EXISTS opd_rtf_phase_chk;
+ALTER TABLE opd_retrieval_telemetry_failures ADD CONSTRAINT opd_rtf_phase_chk CHECK (failed_phase IN ('invocation_start', 'work_declaration', 'retrieval_terminal', 'retrieval_terminal_rejected', 'persistence_link', 'closure'));
+ALTER TABLE opd_retrieval_telemetry_failures DROP CONSTRAINT IF EXISTS opd_rtf_run_chk;
+ALTER TABLE opd_retrieval_telemetry_failures ADD CONSTRAINT opd_rtf_run_chk CHECK (
+    (failed_phase IN ('work_declaration', 'retrieval_terminal', 'retrieval_terminal_rejected', 'persistence_link') AND retrieval_run_id IS NOT NULL AND retrieval_role IS NOT NULL)
+    OR failed_phase IN ('invocation_start', 'closure')
+  );
+
 CREATE INDEX IF NOT EXISTS opd_rtf_run_idx ON opd_retrieval_telemetry_failures (retrieval_run_id, failed_phase, observed_at DESC) WHERE retrieval_run_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS opd_rtf_invocation_idx ON opd_retrieval_telemetry_failures (invocation_id, observed_at DESC);

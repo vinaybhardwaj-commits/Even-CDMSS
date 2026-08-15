@@ -4916,7 +4916,7 @@ export const VERSION_REGISTRY: VersionRow[] = [
   },
   {
     "constName": "MANIFEST_SCHEMA_VERSION",
-    "value": "2",
+    "value": "3",
     "file": "lib/retrieval-telemetry-core.ts",
     "derived": false
   },

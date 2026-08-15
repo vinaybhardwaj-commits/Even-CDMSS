@@ -68,7 +68,10 @@ export const manifest = (
   rerank_soft_failed: false,
   ordered_final_candidate_ids: [3, 1, 2],
   scorer_context_hmac: 'k1:ctx',
-  retrieval_config: { topK: 8, useReranker: true },
+  // ⚠️ MANIFEST VERSION 3 REQUIRES THE TWO DECODE FIELDS (pass 0a, kickoff §2.2). This shared
+  // fixture is hand-built rather than produced by `buildRetrievalPayload`, so it does not get them
+  // for free — and the validator now says so, which is the whole point of the version bump.
+  retrieval_config: { topK: 8, useReranker: true, rerank_temperature: 0, rerank_seed_status: 'unseeded' },
   corpus_version: 'corpus/1',
   index_version: 'embedding|nomic-embed-text',
   batches,
@@ -456,7 +459,11 @@ test('this module prices nothing — money has ONE source of truth', () => {
 
 test('the row contract and the manifest contract version independently (§4.3)', () => {
   assert.equal(TELEMETRY_SCHEMA_VERSION, 2, 'the on-path build changes columns');
-  assert.equal(MANIFEST_SCHEMA_VERSION, 2, 'and manifest fields');
+  // ⚠️ 2 → 3 (pass 0a). v7 §10 added `rerank_temperature` and `rerank_seed_status` to
+  // `retrieval_config` and the version did not move, so two different manifest shapes both claimed
+  // version 2. PRD §7 gates the canary on recognised manifest versions, and a version that does not
+  // discriminate cannot gate.
+  assert.equal(MANIFEST_SCHEMA_VERSION, 3, 'and manifest fields — bumped for the v7 §10 decode fields');
   assert.equal(HMAC_KEY_VERSION, 'k1', 'the key did not rotate');
   assert.ok(read(MIGRATION).includes('telemetry_schema_version INTEGER NOT NULL'));
 });
