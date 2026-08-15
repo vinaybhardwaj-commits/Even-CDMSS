@@ -180,17 +180,19 @@ async function processRunBatch(run: BackfillRun, day: string, resolved: Extract<
       if (served.model && !modelsAgree(served.model, modelId)) {
         throw new Error(`DEC-2: run ${run.id} asked ${provider}:${modelId} but ${served.provider ?? '?'}:${served.model} answered — no row written`);
       }
-      const defects = readRetrievalTelemetry(audit)?.manifestDefects ?? [];
+      // ⚠️ THE ROLE MAP, NOT A FLAT LIST (pass 0b). Settlement applies each run's own role's
+      // verdict; passing one merged array is what made a normative defect dirty the primary row.
+      const defectsByRole = readRetrievalTelemetry(audit)?.manifestDefectsByRole ?? {};
       let linked = false;
       const status = await saveOpdAudit(audit, {
         model: served.model ?? modelId, provider: served.provider ?? provider, latencyMs: Date.now() - started,
       }, {
         onPersisted: async ({ status: st, auditId }) => {
           linked = true;
-          await settleOwned(handle, outcomeForOwnedSave(st, defects), auditId);
+          await settleOwned(handle, outcomeForOwnedSave(st), auditId, defectsByRole);
         },
       });
-      if (!linked) await settleOwned(handle, outcomeForOwnedSave(status, defects));
+      if (!linked) await settleOwned(handle, outcomeForOwnedSave(status), null, defectsByRole);
       const usage = await usageForTrace(audit.traceId);
       const usd = costUsd(served.model ?? modelId, usage.tokensIn, usage.tokensOut, false, PRICING);
       tokensIn += usage.tokensIn; tokensOut += usage.tokensOut; cost += usd;

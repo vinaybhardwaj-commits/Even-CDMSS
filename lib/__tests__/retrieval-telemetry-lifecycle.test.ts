@@ -152,7 +152,7 @@ test('32 — the attached handle is absent from JSON.stringify, from the keys, a
   const handle: LifecycleHandle = {
     invocationId: 'inv-1', runs: [{ role: 'primary', runId: 'r1', expectedRevision: 1 }], persistenceIntent: 'will_persist',
   };
-  const attached = attachRetrievalTelemetry(audit, { handle, manifestDefects: [] });
+  const attached = attachRetrievalTelemetry(audit, { handle, manifestDefectsByRole: {} });
 
   assert.equal(attached, audit, 'attached in place — the audit is not replaced by a wrapper');
   // ⚠️ JSON.stringify IS WHAT REACHES THE STORE, THE LAB AND EVERY LOG LINE. An invocation id
@@ -224,11 +224,22 @@ test('34 — NO MODULE-LEVEL COUNTER EXISTS ANYWHERE, asserted by source search'
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 
 /** Every file D9's matrix names, and the outcome each of its paths must settle. Source-read: these
- *  are route handlers with no harness to invoke, which is stated rather than glossed. */
+ *  are route handlers with no harness to invoke, which is stated rather than glossed.
+ *
+ *  ⚠️ FOUR LITERALS CHANGED IN PASS 0B, AND THE REASON IS THE POINT OF THAT PASS. The owners used
+ *  to pass a FLAT defect list into `outcomeForOwnedSave(result, defects)`, and that list was
+ *  "whichever role was dirtiest" — so one role's defect marked the other role's row partial. The
+ *  owners now pass a ROLE-KEYED MAP to `settleOwned`, and the clean-to-dirty upgrade happens per
+ *  run inside `settleRetrievalTelemetry`, where each run can see its own manifest's verdict.
+ *
+ *  So `outcomeForOwnedSave(s, defects), auditId` became `outcomeForOwnedSave(s), auditId,
+ *  defectsByRole`. THE OWNER SET IS UNCHANGED and every path still settles exactly once — this pin
+ *  still proves what it was written to prove, against the call form that now carries the verdict.
+ *  Decisions §3 predicted this cost and asked for the reason in writing; this is it. */
 const OWNERS: Array<[string, string[]]> = [
   ['app/api/opd-audit/worker/route.ts', [
-    "outcomeForOwnedSave(s, defects), auditId",          // inserted / updated
-    'outcomeForOwnedSave(status, defects))',             // exists / skipped
+    'outcomeForOwnedSave(s), auditId, defectsByRole',   // inserted / updated
+    'outcomeForOwnedSave(status), null, defectsByRole',  // exists / skipped
     "settleOwned(handle, 'persistence_refused')",        // DEC-2
     "published ? 'audit_generation_failed' : 'retrieval_not_run'",
   ]],
@@ -238,14 +249,14 @@ const OWNERS: Array<[string, string[]]> = [
     "published ? 'audit_generation_failed' : 'retrieval_not_run'",
   ]],
   ['app/api/admin/opd-audit-mini-backfill/route.ts', [
-    'outcomeForOwnedSave(st, defects), auditId',
+    'outcomeForOwnedSave(st), auditId, defectsByRole',
     "'persistence_refused'",
     "published ? 'audit_generation_failed' : 'retrieval_not_run'",
   ]],
   ['lib/lab-batch.ts', ["settleOwned(handle, 'no_persistence_intended')"]],
   ['lib/mcp-tools.ts', [
     "settleOwned(handle, 'no_persistence_intended')",    // mini_analyze, and lab_retrieve
-    'outcomeForOwnedSave(status), auditId',              // backfill_control, as the worker
+    'outcomeForOwnedSave(status), auditId, defectsByRole',   // backfill_control, as the worker
   ]],
   ['lib/lvc.ts', ['settleRetrievalTelemetry(']],         // defaultRecall — no audit
   ['scripts/bedrock-opd-note-probe.mjs', [

@@ -14,7 +14,7 @@ import { hitsToSources, buildCitedContext, type CiteHit, type Source } from './c
 import { createTelemetryCapture, buildRetrievalPayload, errorClassOf, type TelemetryCapture } from './retrieval-capture';
 import {
   declareRetrievals, writeRetrievalTerminal, attachRetrievalTelemetry,
-  type LifecycleHandle, type PredeclaredTelemetryRuns,
+  type LifecycleHandle, type PredeclaredTelemetryRuns, type ManifestDefectsByRole,
 } from './retrieval-telemetry-store';
 import { startInvocation } from './retrieval-invocation-store';
 import { routeClassOf, validateManifest } from './retrieval-telemetry-core';
@@ -755,10 +755,16 @@ async function writeRetrievalTerminals(args: {
   citedContext: string;
   primaryCapture: TelemetryCapture;
   normativeCapture?: TelemetryCapture;
-}): Promise<string[]> {
+}): Promise<ManifestDefectsByRole> {
   const { tele, publishHandle, traceId, startedAt, citedContext } = args;
   let handle = args.handle;
-  const defects: string[] = [];
+  // ⚠️ KEYED BY ROLE, NOT MERGED (pass 0b). This was one flat array that both roles pushed into,
+  // and `outcomeForOwnedSave` then marked the WHOLE save dirty if it was non-empty — so a
+  // normative-channel defect made the primary row `persisted_partial`, and the reverse held. Each
+  // role's verdict now stays attached to the role that produced it, and settlement applies each
+  // run's own. A role that never ran has no key at all, which is a different statement from a role
+  // whose manifest validated clean.
+  const defectsByRole: { primary?: readonly string[]; normative_channel?: readonly string[] } = {};
   try {
     const hmacKey = process.env.CDMSS_TELEMETRY_HMAC_KEY ?? null;
     const backfill = await readBackfillActivity();
@@ -777,7 +783,7 @@ async function writeRetrievalTerminals(args: {
     // value — never null because reranking was skipped or failed (A2).
     const primaryPayload = buildRetrievalPayload(args.primaryCapture, { hmacKey, scorerContext: citedContext });
     const primaryOperational = operationalFor('primary');
-    defects.push(...validateManifest({ ...primaryPayload, operational: primaryOperational }));
+    defectsByRole.primary = validateManifest({ ...primaryPayload, operational: primaryOperational });
     handle = await writeRetrievalTerminal(handle, 'primary', {
       payload: primaryPayload,
       operational: primaryOperational,
@@ -793,7 +799,7 @@ async function writeRetrievalTerminals(args: {
       // rows would be partial by construction.
       const normPayload = buildRetrievalPayload(args.normativeCapture, { hmacKey, scorerContext: null });
       const normOperational = operationalFor('normative_channel');
-      defects.push(...validateManifest({ ...normPayload, operational: normOperational }));
+      defectsByRole.normative_channel = validateManifest({ ...normPayload, operational: normOperational });
       handle = await writeRetrievalTerminal(handle, 'normative_channel', {
         payload: normPayload,
         operational: normOperational,
@@ -804,7 +810,7 @@ async function writeRetrievalTerminals(args: {
   } catch (e) {
     console.warn('[opd-audit] retrieval telemetry terminal write failed', (e as Error).message);
   }
-  return defects;
+  return defectsByRole;
 }
 
 /** The additive block's framing. Lives in the USER-message context only — OPD_AUDIT_SYSTEM is frozen. */
@@ -1515,12 +1521,12 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
   const normativeCapture = tele && wantsNormative ? createTelemetryCapture('normative_channel') : undefined;
   const telemetryStartedAt = new Date().toISOString();
   let handle: LifecycleHandle | null = null;
-  let manifestDefects: string[] = [];
+  let manifestDefectsByRole: ManifestDefectsByRole = {};
   const publishHandle = (h: LifecycleHandle) => { handle = h; opts.onLifecycleHandleUpdated?.(h); };
   /** D11: the non-enumerable property on the audit object, for the SUCCESS path. The callback above
    *  is what covers every throwing path, where there is no returned audit to carry anything. */
   const withHandle = <T extends object>(audit: T): T =>
-    (tele ? attachRetrievalTelemetry(audit, { handle, manifestDefects }) : audit);
+    (tele ? attachRetrievalTelemetry(audit, { handle, manifestDefectsByRole }) : audit);
 
   if (tele) {
     await startInvocation(tele.ctx);
@@ -1578,7 +1584,7 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     // STEPS 10-13 — HMAC the combined context, build both payloads, write both terminals, and
     // publish the handle after each so a throw below still leaves the caller holding the latest.
     if (tele && handle) {
-      manifestDefects = await writeRetrievalTerminals({
+      manifestDefectsByRole = await writeRetrievalTerminals({
         tele, handle, publishHandle, traceId: traceId ?? null,
         startedAt: telemetryStartedAt, citedContext,
         primaryCapture: primaryCapture!, normativeCapture,

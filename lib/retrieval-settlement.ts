@@ -15,16 +15,27 @@ import {
 import {
   applyTerminalState,
   type LifecycleHandle, type LifecycleRun, type PerRunSettlementResult,
+  type ManifestDefectsByRole,
 } from './retrieval-telemetry-store';
 import { failurePhasesForRun } from './retrieval-telemetry-failure-store';
 
 export interface SettlementInput {
+  /** ONE BASE OUTCOME PER HANDLE. What the owner observed about the save, for the whole audit. */
   outcome: SettlementOutcome;
   /** Linked ONLY after the actual persistence result is known (§4.5 step 4). Null is a real state:
    *  a losing race, a failed save, or a retrieval that never produced an audit row. §4.2 forbids
    *  creating a synthetic audit row to populate it. */
   auditId: string | null;
   settledAt: string;
+  /**
+   * `validateManifest`'s output PER ROLE (pass 0b). Optional: a caller with no manifest verdict —
+   * every single-role and uninstrumented owner — omits it and behaves exactly as before.
+   *
+   * ⚠️ THE CLEAN-TO-DIRTY UPGRADE IS APPLIED PER RUN, BELOW, NOT BY THE CALLER. That is the whole
+   * correction: the owner knows one save result for the audit, but each ROW's manifest is its own,
+   * and only the run itself can say whether its manifest was clean.
+   */
+  manifestDefectsByRole?: ManifestDefectsByRole;
 }
 
 /**
@@ -39,11 +50,18 @@ export async function settleRetrievalTelemetry(
   handle: LifecycleHandle,
   input: SettlementInput,
 ): Promise<PerRunSettlementResult[]> {
-  const outcomeState: RetrievalPersistenceState = stateForSettlement(input.outcome);
   const results: PerRunSettlementResult[] = [];
   let current = handle;
 
   for (const run of handle.runs) {
+    // ⚠️ EACH RUN'S OWN ROLE'S DEFECTS, AND NOBODY ELSE'S (pass 0b). One base outcome arrives for
+    // the handle; the clean-to-dirty upgrade is decided here, per run, from that run's own
+    // manifest verdict. A missing key means that role produced no manifest, which settles clean —
+    // it is not evidence of a defect belonging to someone else.
+    const roleDefects = input.manifestDefectsByRole?.[run.role] ?? [];
+    const runOutcome = upgradeForDefects(input.outcome, roleDefects);
+    const outcomeState: RetrievalPersistenceState = stateForSettlement(runOutcome);
+
     // ⚠️ A ROLE STILL AT REVISION 0 IS NOT LINKED. Revision 0 means its terminal write never
     // landed, so there is no manifest to attach an audit to; linking it would claim this run
     // produced the evidence the audit was built from, which it demonstrably did not.
@@ -125,10 +143,18 @@ export async function settleOwned(
   handle: LifecycleHandle | null | undefined,
   outcome: SettlementOutcome,
   auditId: string | null = null,
+  /**
+   * ⚠️ TRAILING AND OPTIONAL, SO NO POSITIONAL ARGUMENT MOVES (pass 0b). The shape this function
+   * promises is unchanged: ONE base outcome per handle, ONE settlement call. Omitting it is exactly
+   * today's behaviour, which is what every single-role and uninstrumented owner does.
+   */
+  manifestDefectsByRole?: ManifestDefectsByRole,
 ): Promise<void> {
   if (!handle || handle.runs.length === 0) return;
   try {
-    await settleRetrievalTelemetry(handle, { outcome, auditId, settledAt: new Date().toISOString() });
+    await settleRetrievalTelemetry(handle, {
+      outcome, auditId, settledAt: new Date().toISOString(), manifestDefectsByRole,
+    });
   } catch (e) {
     // settleRetrievalTelemetry isolates each run and does not throw; this is the belt for a
     // programming error inside it, not for a database fault, which is already handled below it.
@@ -146,9 +172,22 @@ export async function settleOwned(
  */
 export function outcomeForOwnedSave(
   result: 'inserted' | 'updated' | 'exists' | 'skipped',
-  manifestDefects: readonly string[] = [],
 ): SettlementOutcome {
-  const base = outcomeForSaveResult(result);
+  return outcomeForSaveResult(result);
+}
+
+/**
+ * The clean-to-dirty upgrade, applied to ONE run from ONE role's defects (pass 0b).
+ *
+ * ⚠️ ONLY THE CLEAN BRANCH IS UPGRADED, AND THAT IS UNCHANGED. A losing race or a skip is not made
+ * partial by a manifest defect, because neither of them persisted anything to be partial about. No
+ * defect code changed meaning in this rekeying: the same codes, from the same `validateManifest`,
+ * decide the same upgrade — they are now attributed to the role that produced them.
+ */
+export function upgradeForDefects(
+  base: SettlementOutcome,
+  manifestDefects: readonly string[],
+): SettlementOutcome {
   return base === 'persisted_clean' && manifestDefects.length > 0 ? 'persisted_dirty' : base;
 }
 

@@ -31,6 +31,7 @@ import { createTelemetryCapture, buildRetrievalPayload, errorClassOf as telemetr
 import { declareRetrievals, writeRetrievalTerminal, type LifecycleHandle } from './retrieval-telemetry-store';
 import { startInvocation } from './retrieval-invocation-store';
 import { settleOwned, outcomeForOwnedSave } from './retrieval-settlement';
+import { readRetrievalTelemetry } from './retrieval-telemetry-store';
 import { retrieveMultiQuery } from './multi-query';
 import { RerankBackendError } from './rerank';
 
@@ -887,10 +888,15 @@ async function backfillControl(a: Record<string, unknown>, ctx?: TelemetryReques
           } : {}),
         });
         let linked = false;
+        // ⚠️ A PERSISTENCE OWNER, SO IT CARRIES THE ROLE MAP (pass 0b). This path passed NO defects
+        // at all, which meant every row it settled was `persisted_clean` whatever its manifest said.
+        // It is `lab_direct`/`lab_multi_query`-shaped and single-role today, so the map is usually
+        // one key — but reading it is what stops a real defect being silently dropped here.
+        const defectsByRole = readRetrievalTelemetry(au)?.manifestDefectsByRole ?? {};
         const st = await saveOpdAudit(au, { model: MINI_MODEL, latencyMs: Date.now() - t0 }, {
-          onPersisted: async ({ status, auditId }) => { linked = true; await settleOwned(handle, outcomeForOwnedSave(status), auditId); },
+          onPersisted: async ({ status, auditId }) => { linked = true; await settleOwned(handle, outcomeForOwnedSave(status), auditId, defectsByRole); },
         });
-        if (!linked) await settleOwned(handle, outcomeForOwnedSave(st));
+        if (!linked) await settleOwned(handle, outcomeForOwnedSave(st), null, defectsByRole);
         results.push({ uid: au.keys.uid, index: au.scorecard.headline, band: au.scorecard.band, status: st, ms: Date.now() - t0 });
       }
       catch (e) {

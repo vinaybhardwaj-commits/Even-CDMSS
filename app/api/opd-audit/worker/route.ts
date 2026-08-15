@@ -182,17 +182,19 @@ async function processDay(day: string, max: number, conc: number, exclude: strin
         await settleOwned(handle, 'persistence_refused');
         return { uid: audit.keys.uid, error: `DEC-2: ${intended} was asked, ${served.model ?? 'the local model'} answered — note failed, no row written` };
       }
-      const defects = readRetrievalTelemetry(audit)?.manifestDefects ?? [];
+      // ⚠️ THE ROLE MAP, NOT A FLAT LIST (pass 0b). Settlement applies each run's own role's
+      // verdict; passing one merged array is what made a normative defect dirty the primary row.
+      const defectsByRole = readRetrievalTelemetry(audit)?.manifestDefectsByRole ?? {};
       let linked = false;
       const status = await saveOpdAudit(audit, { model: served.model, provider: served.provider, latencyMs: Date.now() - started }, {
         // The audit id exists only inside the save, so the link is made from inside it (§4.5 step 4).
         onPersisted: async ({ status: s, auditId }) => {
           linked = true;
-          await settleOwned(handle, outcomeForOwnedSave(s, defects), auditId);
+          await settleOwned(handle, outcomeForOwnedSave(s), auditId, defectsByRole);
         },
       });
       // `exists` (a losing ON CONFLICT race) and `skipped` (no uid) never produce a row to link to.
-      if (!linked) await settleOwned(handle, outcomeForOwnedSave(status, defects));
+      if (!linked) await settleOwned(handle, outcomeForOwnedSave(status), null, defectsByRole);
       return { uid: audit.keys.uid, index: audit.scorecard.headline, band: audit.scorecard.band, status };
     } catch (e) {
       await settleOwned(handle, published ? 'audit_generation_failed' : 'retrieval_not_run');
@@ -319,15 +321,17 @@ export async function GET(req: NextRequest) {
         });
         const deleted = await deleteOpdAuditsForUid(uid); // drop ALL prior rows → single current row
         const served = await servedCallFor(audit.traceId);
-        const defects = readRetrievalTelemetry(audit)?.manifestDefects ?? [];
+        // ⚠️ THE ROLE MAP, NOT A FLAT LIST (pass 0b). Settlement applies each run's own role's
+        // verdict; passing one merged array is what made a normative defect dirty the primary row.
+        const defectsByRole = readRetrievalTelemetry(audit)?.manifestDefectsByRole ?? {};
         let linked = false;
         const status = await saveOpdAudit(audit, { model: served.model, provider: served.provider }, {
           onPersisted: async ({ status: s, auditId }) => {
             linked = true;
-            await settleOwned(handle, outcomeForOwnedSave(s, defects), auditId);
+            await settleOwned(handle, outcomeForOwnedSave(s), auditId, defectsByRole);
           },
         });
-        if (!linked) await settleOwned(handle, outcomeForOwnedSave(status, defects));
+        if (!linked) await settleOwned(handle, outcomeForOwnedSave(status), null, defectsByRole);
         return { uid, deleted, status, band: audit.scorecard.band, index: audit.scorecard.headline };
       } catch (e) {
         // The existing per-uid catch stays exactly as it is: every throw is still a 200 row.

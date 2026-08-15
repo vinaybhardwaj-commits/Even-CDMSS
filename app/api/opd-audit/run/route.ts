@@ -84,11 +84,13 @@ export async function GET(req: NextRequest) {
     // a forced-save error degrades to saved:'save_failed', never a 500.
     const save = willSave;
     const force = save && req.nextUrl.searchParams.get('force') === '1';
-    const defects = readRetrievalTelemetry(audit)?.manifestDefects ?? [];
+    // ⚠️ THE ROLE MAP, NOT A FLAT LIST (pass 0b). Settlement applies each run's own role's
+    // verdict; passing one merged array is what made a normative defect dirty the primary row.
+    const defectsByRole = readRetrievalTelemetry(audit)?.manifestDefectsByRole ?? {};
     let linked = false;
     const onPersisted = async ({ status, auditId }: { status: 'inserted' | 'updated'; auditId: string }) => {
       linked = true;
-      await settleOwned(handle, outcomeForOwnedSave(status, defects), auditId);
+      await settleOwned(handle, outcomeForOwnedSave(status), auditId, defectsByRole);
     };
     const saved = save
       ? (force
@@ -101,7 +103,7 @@ export async function GET(req: NextRequest) {
     // a 500) is unchanged.
     if (!linked) {
       if (saved === 'save_failed') await settleOwned(handle, 'audit_persistence_failed');
-      else if (saved !== undefined) await settleOwned(handle, outcomeForOwnedSave(saved, defects));
+      else if (saved !== undefined) await settleOwned(handle, outcomeForOwnedSave(saved), null, defectsByRole);
       // No save was asked for: the audit was generated and deliberately not persisted.
       else await settleOwned(handle, 'no_persistence_intended');
     }

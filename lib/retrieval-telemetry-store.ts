@@ -72,15 +72,29 @@ export interface PerRunSettlementResult {
 }
 
 /**
+ * `validateManifest`'s output, KEYED BY THE ROLE WHOSE MANIFEST PRODUCED IT (pass 0b).
+ *
+ * ⚠️ THE CONTAMINATION THIS REPLACES. The previous shape was one flat `string[]`, described by this
+ * file's own comment as "whichever role was dirtiest" — and `outcomeForOwnedSave` then marked the
+ * WHOLE save dirty if that list was non-empty. So one defect on the `normative_channel` manifest
+ * made the `primary` row `persisted_partial`, and the reverse held. Two rows, one verdict, and the
+ * verdict belonged to neither of them.
+ *
+ * Partial by role: a role that produced no manifest has no key, which is a different statement from
+ * a role whose manifest validated clean (empty array). Both settle clean; only one of them ran.
+ */
+export type ManifestDefectsByRole = Partial<Record<RetrievalRole, readonly string[]>>;
+
+/**
  * What an audit carries back about its own retrieval telemetry, for the owner that will settle it.
  *
- * `manifestDefects` is `validateManifest`'s output for whichever role was dirtiest. D17 makes a
- * persisted row `persisted_partial` when validation returned anything, so the owner needs the
- * verdict and cannot compute it — the manifest never leaves `auditOpdNote`.
+ * D17 makes a persisted row `persisted_partial` when validation returned anything, so the owner
+ * needs the verdict and cannot compute it — the manifest never leaves `auditOpdNote`. It now carries
+ * one verdict PER ROLE, and `settleRetrievalTelemetry` applies each run's own.
  */
 export interface RetrievalTelemetryOutcome {
   handle: LifecycleHandle | null;
-  manifestDefects: string[];
+  manifestDefectsByRole: ManifestDefectsByRole;
 }
 
 /** The property name D11 requires be NON-ENUMERABLE. */

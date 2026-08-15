@@ -27,6 +27,7 @@ import { costUsd } from '../lib/llm-cost-core.ts';
 import { telemetryContextFor } from '../lib/retrieval-telemetry-core.ts';
 import { startInvocation } from '../lib/retrieval-invocation-store.ts';
 import { settleOwned, outcomeForOwnedSave } from '../lib/retrieval-settlement.ts';
+import { readRetrievalTelemetry } from '../lib/retrieval-telemetry-store.ts';
 import { PRICING } from '../lib/llm-cost.ts';
 
 const argv = process.argv.slice(2);
@@ -118,9 +119,12 @@ async function main() {
     // above this line would otherwise ever hear about it.
     let linked = false;
     let status;
+    // ⚠️ A PERSISTENCE OWNER, SO IT CARRIES THE ROLE MAP (pass 0b). This path passed no defects at
+    // all, so every row it settled read `persisted_clean` whatever its manifest actually said.
+    const defectsByRole = readRetrievalTelemetry(audit)?.manifestDefectsByRole ?? {};
     try {
       status = await saveOpdAudit(audit, { model: MODEL, latencyMs: ms }, {
-        onPersisted: async ({ status: st, auditId }) => { linked = true; await settleOwned(handle, outcomeForOwnedSave(st), auditId); },
+        onPersisted: async ({ status: st, auditId }) => { linked = true; await settleOwned(handle, outcomeForOwnedSave(st), auditId, defectsByRole); },
       });
     } catch (e) {
       // ⚠️ NO `closeInvocation` HERE, AND THAT IS DELIBERATE. Who closes an invocation is genuinely
@@ -130,7 +134,7 @@ async function main() {
       await settleOwned(handle, 'audit_persistence_failed');
       throw e;
     }
-    if (!linked) await settleOwned(handle, outcomeForOwnedSave(status));
+    if (!linked) await settleOwned(handle, outcomeForOwnedSave(status), null, defectsByRole);
     log(`\nsaved: ${status} (model column = ${MODEL})`);
   } else {
     // The dry arm audits and deliberately writes nothing.
