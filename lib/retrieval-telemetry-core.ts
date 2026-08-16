@@ -878,8 +878,10 @@ function isServedRouteClass(v: unknown): boolean {
  * 429s would silently miss it.
  *
  * ⚠️ `attempts: null` IS LEGAL HERE AND MUST NOT BE FLAGGED. A skipped expansion stage emits null
- * (`lib/retrieval-capture.ts:309`) and `manifestAttempts` returns null when there is no evidence
- * (`:122-123`). Addendum v11 §6.1 defers the `null` to `[]` correction to PASS 3, so a branch that
+ * (`buildRetrievalPayload` in `lib/retrieval-capture.ts`) and `manifestAttempts` in that same file
+ * returns null when there is no evidence — named rather than numbered (v13 §6), because the line
+ * numbers these two citations carried were stale the day they were written.
+ * Addendum v11 §6.1 defers the `null` to `[]` correction to PASS 3, so a branch that
  * treated null as defective would flag every skipped stage today and would be making pass 3's
  * decision early. Validate the members of an array when there is one; say nothing when there is not.
  *

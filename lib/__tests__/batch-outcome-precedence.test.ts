@@ -70,20 +70,50 @@ after(async () => {
   if (booted) { await booted.judge.close().catch(() => {}); booted = null; }
 });
 
-/** Server first, dynamic imports second. Once per file. */
+/**
+ * Server first, dynamic imports second. Once per file.
+ *
+ * ⚠️ THE IMPORTS ARE GUARDED, AND THE GAP IS WHY (v13 §4 item 4, review 24). The server starts, three
+ * dynamic imports run, and only then is `booted` assigned — so an import that THREW in that window
+ * left a listening socket that the `after()` hook could never see, because `after` closes
+ * `booted.judge` and `booted` was still null. The process then hangs on a live handle, and the
+ * failure a reader sees is a timeout rather than the import error that caused it.
+ *
+ * The catch closes the server and rethrows the original error unchanged, so the real cause is what
+ * surfaces.
+ */
 async function boot(): Promise<Booted> {
   if (booted) return booted;
   const judge = await startJudgeServer({ MRKA: 8, MRKB: 4 });
-  const rerankMod = await import('../rerank');
-  const captureMod = await import('../retrieval-capture');
-  const llmMod = await import('../llm');
-  booted = {
-    judge,
-    rerankJudge: rerankMod.rerankJudge as Booted['rerankJudge'],
-    createTelemetryCapture: captureMod.createTelemetryCapture,
-    llm: llmMod.llm as unknown as Booted['llm'],
-  };
+  try {
+    const rerankMod = await import('../rerank');
+    const captureMod = await import('../retrieval-capture');
+    const llmMod = await import('../llm');
+    booted = {
+      judge,
+      rerankJudge: rerankMod.rerankJudge as Booted['rerankJudge'],
+      createTelemetryCapture: captureMod.createTelemetryCapture,
+      llm: llmMod.llm as unknown as Booted['llm'],
+    };
+  } catch (e) {
+    await judge.close().catch(() => {});
+    throw e;
+  }
   return booted;
+}
+
+/**
+ * Run `fn` with the judge's raw response overridden, restoring it whether `fn` returns or throws.
+ *
+ * ⚠️ A `finally`, NOT THE NEXT LINE (v13 §4 item 5, review 24). Each case used to call
+ * `setRawContent(null)` on the statement after the one that ran the batch, so a FAILING ASSERTION
+ * between them left the responder configured — and the next case in the file, or the next file,
+ * would silently receive this case's malformed body. A leaked responder makes one real failure look
+ * like several unrelated ones.
+ */
+async function withRawContent<T>(judge: JudgeServer, body: string, fn: () => Promise<T>): Promise<T> {
+  judge.setRawContent(() => body);
+  try { return await fn(); } finally { judge.setRawContent(null); }
 }
 
 /** Run one judge call and return the single batch's captured record. */
@@ -140,9 +170,7 @@ test('12.0 — the precedence list is a VOCABULARY, not an implementation', asyn
 
 test('12.3 — ROW 3: a malformed completion is `parse_failure`', async () => {
   const { judge } = await boot();
-  judge.setRawContent(() => 'this is not JSON at all');
-  const b = await runBatch();
-  judge.setRawContent(null);
+  const b = await withRawContent(judge, 'this is not JSON at all', runBatch);
   assert.equal(b.outcome, 'parse_failure');
   // parse_failure PRESERVES its provider and usage — a completion arrived and cost tokens. It is
   // resolved on the same statement as terminal_failure — the catch branch — and wins there because
@@ -155,9 +183,7 @@ test('12.4 — ROW 4: missing AND nonnumeric keys give `missing_score_key`, and 
   // "1" is absent entirely. Precedence puts missing_score_key above nonnumeric_score, and D15
   // requires the independent counts to be preserved alongside the one outcome.
   const { judge } = await boot();
-  judge.setRawContent(() => '{"0":"x"}');
-  const b = await runBatch();
-  judge.setRawContent(null);
+  const b = await withRawContent(judge, '{"0":"x"}', runBatch);
   assert.equal(b.outcome, 'missing_score_key', 'missing outranks nonnumeric');
   assert.equal(b.missingScoreKeys, 1, 'the absent key is counted');
   assert.equal(b.nonnumericScoreKeys, 1, 'AND the non-numeric one is counted, not swallowed');
@@ -167,9 +193,7 @@ test('12.4 — ROW 4: missing AND nonnumeric keys give `missing_score_key`, and 
 
 test('12.5 — ROW 5: finite AND nonnumeric keys give `nonnumeric_score`', async () => {
   const { judge } = await boot();
-  judge.setRawContent(() => '{"0":7,"1":"not-a-number"}');
-  const b = await runBatch();
-  judge.setRawContent(null);
+  const b = await withRawContent(judge, '{"0":7,"1":"not-a-number"}', runBatch);
   assert.equal(b.outcome, 'nonnumeric_score');
   assert.equal(b.missingScoreKeys, 0, 'no key is absent, which is what separates this row from row 4');
   assert.equal(b.nonnumericScoreKeys, 1);
@@ -250,8 +274,7 @@ test('12.7 — the outcomes the six rows ACTUALLY produced are six distinct comm
     try { produced.push((await runBatch()).outcome); } finally { mock.restoreAll(); }
   };
   const withContent = async (body: string) => {
-    judge.setRawContent(() => body);
-    try { produced.push((await runBatch()).outcome); } finally { judge.setRawContent(null); }
+    produced.push((await withRawContent(judge, body, runBatch)).outcome);
   };
 
   await withMock(new APIConnectionTimeoutError({ message: 'timed out' }));   // row 1

@@ -30,6 +30,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import ts from 'typescript';
 // ⚠️ THE ACTUAL INSTALLED SDK ERROR (v12 §3 item 1). Pass 1 tested a hand-named look-alike, which is
 // what hid the production defect: the real error's `name` is "Error" and only `constructor.name`
 // carries the real name. This import is the primary evidence now.
@@ -43,13 +44,53 @@ import type { OperationalTelemetry, RetrievalRole } from '../retrieval-telemetry
 
 const DEFECT = 'attempt_outcome_absent_or_invalid';
 
-/** Source with comment LINES removed, so a pin can never be satisfied by prose about the pin.
- *  Copied from `defect-map-delivery.test.ts:27` (v12 §3 item 5). */
-function code(path: string): string {
-  return readFileSync(path, 'utf8')
-    .split('\n')
-    .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
-    .join('\n');
+/**
+ * EXECUTABLE CALL EXPRESSIONS, counted from the AST (v13 §4 item 1, Saul's review 24).
+ *
+ * ⚠️ WHY NOT A LINE FILTER. Pass 1a used a `code()` helper that dropped lines BEGINNING with `//`,
+ * `*` or `/*`. Saul defeated it in one move: wrap a call in a block comment and its body line begins
+ * with `attempts.push(`, so the filter keeps it and the test counts commented-out code as live. That
+ * is finding 2 again, one layer down — the same defect the line filter was written to fix.
+ *
+ * A COMMENT CANNOT PRODUCE A `CallExpression` NODE. The parser puts comments in trivia, so no regex
+ * has to be right about `//` versus `/* … *\/` versus a string containing either. Strings and prose
+ * fall out for the same reason. This is why the guard shrinks instead of growing another special
+ * case for each attack.
+ *
+ * `typescript` is a devDependency and `lib/__tests__/telemetry-key-guard.test.ts` already parses with
+ * the compiler API; this follows that file's `parse` idiom rather than inventing one.
+ */
+function callExpressionsIn(path: string): ts.CallExpression[] {
+  const sf = ts.createSourceFile(
+    path, readFileSync(path, 'utf8'), ts.ScriptTarget.ES2022, /* setParentNodes */ true, ts.ScriptKind.TS,
+  );
+  // A parser that recovered from an error could hide a node; refuse to count a file that did not
+  // parse cleanly, rather than reporting a number derived from a partial tree.
+  const diagnostics = ((sf as unknown as { parseDiagnostics?: unknown[] }).parseDiagnostics ?? []).length;
+  assert.equal(diagnostics, 0, `${path} did not parse cleanly — the counts below would be unreliable`);
+  const out: ts.CallExpression[] = [];
+  const walk = (n: ts.Node): void => { if (ts.isCallExpression(n)) out.push(n); ts.forEachChild(n, walk); };
+  walk(sf);
+  return out;
+}
+
+/** `attempts.push({ … })` where the object literal declares `outcome: 'success'`. */
+function isCloudSuccessPush(c: ts.CallExpression): boolean {
+  const callee = c.expression;
+  if (!ts.isPropertyAccessExpression(callee)) return false;
+  if (!ts.isIdentifier(callee.name) || callee.name.text !== 'push') return false;
+  if (!ts.isIdentifier(callee.expression) || callee.expression.text !== 'attempts') return false;
+  const arg = c.arguments[0];
+  if (!arg || !ts.isObjectLiteralExpression(arg)) return false;
+  return arg.properties.some((prop) =>
+    ts.isPropertyAssignment(prop)
+    && ts.isIdentifier(prop.name) && prop.name.text === 'outcome'
+    && ts.isStringLiteral(prop.initializer) && prop.initializer.text === 'success');
+}
+
+/** A bare `localAttemptSuccess()` call. */
+function isLocalHelperCall(c: ts.CallExpression): boolean {
+  return ts.isIdentifier(c.expression) && c.expression.text === 'localAttemptSuccess';
 }
 
 const operational = (role: RetrievalRole): OperationalTelemetry => ({
@@ -144,31 +185,37 @@ test('11.3 — all four success sites record `success`, two of them through loca
   assert.deepEqual(local, { tier: 'ollama', attempt: 1, outcome: 'success', status: 200 });
   assert.ok((TRANSPORT_ATTEMPT_OUTCOMES as readonly string[]).includes(local.outcome));
 
-  // ⚠️ COMMENTS STRIPPED BEFORE COUNTING (v12 §3 item 5, review 23 finding 2). This scanned the RAW
-  // file, so commenting the two cloud pushes out would have left it green — the test would have
-  // reported four live success sites when two of them no longer executed. The helper is the one at
-  // `defect-map-delivery.test.ts:27`, copied rather than shared because these two files have no
-  // common module and neither may grow an export for the other's benefit.
+  // ⚠️ COUNTED FROM THE AST, NOT FROM SOURCE TEXT (v13 §4 items 1 and 2, Saul's review 24). Two
+  // earlier versions of this assertion were defeatable: the first scanned raw source, so commenting
+  // the cloud pushes out left it green; the second stripped lines BEGINNING with a comment marker,
+  // and a `/* … *\/` wrapper leaves the call's own line beginning with `attempts.push(`. Both
+  // reported four live success sites when two of them no longer executed.
   //
-  // Line numbers are deliberately NOT asserted (review 23 finding 4): they moved once already in
-  // this programme, and a pin on a number breaks on an unrelated edit above it while proving
-  // nothing about the code below. What matters is the COUNT of each live form.
-  const llm = code('lib/llm.ts');
-  const inlineCloud = llm.split('\n')
-    .filter((l) => /attempts\.push\(\{ tier: '(openrouter|vertex)'/.test(l) && /outcome: 'success', status: 200/.test(l));
-  assert.equal(inlineCloud.length, 2, 'exactly two LIVE inline cloud success pushes');
-  const viaHelper = llm.split('\n').filter((l) => l.includes('localAttemptSuccess()'));
-  assert.equal(viaHelper.length, 2, 'exactly two LIVE local sites using the helper');
+  // A comment cannot produce a CallExpression. That is the whole point, and it is why this is the
+  // last version of this assertion rather than the third regex.
+  const calls = callExpressionsIn('lib/llm.ts');
+  const cloudPushes = calls.filter(isCloudSuccessPush);
+  const helperCalls = calls.filter(isLocalHelperCall);
+  assert.equal(cloudPushes.length, 2, 'exactly two LIVE cloud success pushes');
+  assert.equal(helperCalls.length, 2, 'exactly two LIVE localAttemptSuccess() calls');
 
   // ⚠️ ALL FOUR, AND NO FIFTH SHAPE. A success attempt written any other way would not be counted
-  // by this test and could carry any string; the union of the two forms is the whole population.
-  const allSuccessSites = (llm.match(/outcome: 'success'|localAttemptSuccess\(\)/g) || []).length;
-  assert.equal(allSuccessSites, 4, 'four live success sites in lib/llm.ts, no more');
+  // here and could carry any string; the union of the two forms is the whole population.
+  assert.equal(cloudPushes.length + helperCalls.length, 4, 'four live success sites in lib/llm.ts, no more');
 
-  // …and the strip is not vacuous: the raw file really does contain more matches than the stripped
-  // one, so a stripped count is a different measurement rather than the same one spelled longer.
-  const raw = readFileSync('lib/llm.ts', 'utf8');
-  assert.ok((raw.match(/localAttemptSuccess\(\)/g) || []).length >= viaHelper.length);
+  // Each cloud push names a REAL ladder tier, so the two counted are the openrouter and vertex ones
+  // rather than any two pushes that happen to say success.
+  const tiers = cloudPushes.map((c) => {
+    const obj = c.arguments[0] as ts.ObjectLiteralExpression;
+    const t = obj.properties.find((prop) =>
+      ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.name) && prop.name.text === 'tier');
+    return t && ts.isPropertyAssignment(t) && ts.isStringLiteral(t.initializer) ? t.initializer.text : null;
+  }).sort();
+  assert.deepEqual(tiers, ['openrouter', 'vertex'], 'one per cloud tier');
+
+  // …and the count is not vacuous: the file really does contain call expressions, many of them, so
+  // a filter that matched nothing would be visible here rather than passing as "exactly two".
+  assert.ok(calls.length > 50, 'the parse produced a real tree');
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════
@@ -269,14 +316,29 @@ test('11.5b — REQUIREMENT 3: neither read may throw, on any hostile input', ()
   // transport never set.
   assert.equal(classifyLocalAttempt('APIConnectionTimeoutError').outcome, 'transport_error');
 
-  // The guards are real code, not a try/catch around the whole function — pinned so a future edit
-  // cannot satisfy this test by swallowing everything including a genuine classification.
-  const src = readFileSync('lib/transport-attribution-core.ts', 'utf8');
-  assert.match(src, /function declaresConnectionTimeout\(e: unknown\): boolean \{/);
-  assert.equal(/instanceof/.test(code('lib/transport-attribution-core.ts')), false,
-    'no instanceof (v12 §2 item 4) — it would need an import of the SDK');
-  assert.equal(/^import /m.test(code('lib/transport-attribution-core.ts')), false,
-    'and the file keeps ZERO outbound imports, which is what makes the pass-1 edge cycle-free');
+  // ⚠️ THE TWO STRUCTURAL PROPERTIES, READ FROM THE AST (v13 §4 item 1). These were regexes over
+  // comment-stripped source, which is the technique review 24 defeated — and worse, the word
+  // `instanceof` appears in this file's own explanatory comment, so the check HAD to strip to avoid
+  // matching the prose that explains it. A syntax-kind query cannot match a comment at all.
+  const coreFile = 'lib/transport-attribution-core.ts';
+  const sf = ts.createSourceFile(
+    coreFile, readFileSync(coreFile, 'utf8'), ts.ScriptTarget.ES2022, true, ts.ScriptKind.TS,
+  );
+  let imports = 0;
+  let instanceofs = 0;
+  let hasGuardFn = false;
+  const walk = (n: ts.Node): void => {
+    if (ts.isImportDeclaration(n) || ts.isImportEqualsDeclaration(n)) imports += 1;
+    if (ts.isCallExpression(n) && n.expression.kind === ts.SyntaxKind.ImportKeyword) imports += 1;
+    if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword) instanceofs += 1;
+    if (ts.isFunctionDeclaration(n) && n.name?.text === 'declaresConnectionTimeout') hasGuardFn = true;
+    ts.forEachChild(n, walk);
+  };
+  walk(sf);
+  assert.equal(instanceofs, 0, 'no instanceof (v12 §2 item 4) — it would need an import of the SDK');
+  assert.equal(imports, 0,
+    'the file keeps ZERO outbound imports, which is what makes the pass-1 architecture edge cycle-free');
+  assert.ok(hasGuardFn, 'the guards are a real function, not a try/catch wrapped around everything');
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════

@@ -112,8 +112,12 @@ export function evidenceFromError(err: unknown): TransportEvidence | null {
  * which does not include null, and it never receives the skip decision at all. The stage-level null
  * is produced by the two CALLERS, each of which decides skip-ness before calling:
  *
- *   lib/retrieval-capture.ts:307   `expansionSkipped ? null : servedClassOf(...)`
- *   lib/retrieval-capture.ts:364   `vg && ev ? servedClassOf(ev) : null`
+ *   `buildRetrievalPayload`      `expansionSkipped ? null : servedClassOf(...)`
+ *   `buildMultiQuerySection`     `vg && ev ? servedClassOf(ev) : null`
+ *
+ * ⚠️ NAMED, NOT NUMBERED (v13 §6). These two citations carried line numbers that were stale the day
+ * they were written — the same commit that added them shifted the lines. A symbol reference survives
+ * an edit above it; a line number is a future stale reference by construction.
  *
  * Given evidence, this function's own honest floor is 'unattributed', never null.
  */
