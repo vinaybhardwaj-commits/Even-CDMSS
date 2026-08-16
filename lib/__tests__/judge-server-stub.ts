@@ -36,6 +36,7 @@
  * two token counts become null, and the batch still records `outcome: 'success'` — nothing throws.
  */
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
+import net from 'node:net';
 
 /**
  * Which of the three things production asks this server for.
@@ -61,6 +62,29 @@ export interface JudgeRequest {
   /** Embedding requests only: the exact text handed to `embedQuery`. */
   input?: string;
 }
+
+/**
+ * ONE WIRE-LEVEL OBSERVATION (addendum v15 §5.3). Recorded by the opt-in request recorder, which is
+ * a SEPARATE store from `requests` (§5.1): the parsed path discards the raw body the moment it
+ * `JSON.parse`s it, so a wire recorder cannot be built from `JudgeRequest` at all, and `JudgeRequest`
+ * gains no field (§5.11).
+ *
+ * `seq` is assigned at ACCEPTANCE, before the body has arrived (§5.4). `body` is the exact
+ * entity-body bytes as a Buffer. `overflowed` is true when the body exceeded the 1 MiB limit, in
+ * which case `body` is zero-length and the bytes were never buffered (§5.5).
+ *
+ * No headers. No authorization values. No timestamps. Nothing derived.
+ */
+export interface JudgeObservation {
+  seq: number;
+  method: string;
+  path: string;
+  body: Buffer;
+  overflowed: boolean;
+}
+
+/** The exact recorder limit (addendum v15 §5.5). 1048576 is accepted; 1048577 is rejected with 413. */
+export const RECORDER_BODY_LIMIT_BYTES = 1048576;
 
 export interface JudgeServer {
   readonly port: number;
@@ -89,7 +113,93 @@ export interface JudgeServer {
    * expansion to the judge by mistake" attack, kept here so it can be run without editing the file.
    */
   setChatDiscrimination(on: boolean): void;
+  /**
+   * THE REQUEST RECORDER, opt-in (addendum v15 §5.2). Off by default; while off, no observation is
+   * stored and the sequence counter does not advance. In the style of the six `set*` mutators above.
+   */
+  setRecording(on: boolean): void;
+  /**
+   * A defensive copy of every observation so far (§5.7): a new array of new objects, each with a
+   * copied Buffer. Throws while any request is in flight (§5.6), naming the in-flight count.
+   */
+  snapshot(): JudgeObservation[];
+  /**
+   * Clear observations and return the sequence counter to 0 (§5.4, §5.10). Throws while any request
+   * is in flight (§5.6). Leaves scores, raw content, usage inclusion, expansion text, embedding
+   * override and chat discrimination UNCHANGED.
+   */
+  resetObservations(): void;
+  /**
+   * The in-flight count right now (§5.6). Read-only. A test that has seen its client-side response
+   * end may still find this at 1 for a tick: the client's `end` event and the server's `finish`
+   * event are DIFFERENT MOMENTS, and the counter decrements on the server's. `settled()` waits.
+   */
+  inFlight(): number;
+  /** Resolves once the in-flight count is 0. Never throws; polls the counter, so no test sleeps. */
+  settled(): Promise<void>;
   close(): Promise<void>;
+}
+
+/**
+ * COMPARISON BY STABLE MARKER IDENTITY (addendum v15 §5.9). Concurrent judge batches are otherwise
+ * indistinguishable — model, system prompt, temperature, `max_tokens`, options, `keep_alive` and the
+ * `QUESTION:` prefix are byte-identical, and the local slice index restarts at `[0]` in every batch —
+ * so arrival order is an accident of which socket completed first. Two runs match when the multiset
+ * of marker-keyed bodies matches, whatever order the sockets completed in.
+ *
+ * `markers` is the set of marker tokens to look for. Each observation is keyed by the SORTED subset
+ * of markers found in its body; the value is the body bytes. Returns a Map from that key to the list
+ * of bodies seen under it, so multiplicity survives (§5.8) — two identical requests are two entries.
+ */
+export function groupByMarkerSet(
+  observations: readonly JudgeObservation[],
+  markers: readonly string[],
+): Map<string, Buffer[]> {
+  const out = new Map<string, Buffer[]>();
+  for (const o of observations) {
+    const text = o.body.toString('utf8');
+    const key = markers.filter((m) => text.includes(m)).sort().join('|');
+    const list = out.get(key) ?? [];
+    list.push(o.body);
+    out.set(key, list);
+  }
+  return out;
+}
+
+/**
+ * Do two observation lists carry the same multiset of marker-keyed bodies? Order-independent (§5.9),
+ * multiplicity-preserving (§5.8), byte-exact on method, path and entity body. Returns null when
+ * they match and a one-line reason when they do not, so an assertion can print WHICH key differed.
+ *
+ * ⚠️ THIS IS THE WHOLE OF J1's CLAIM (v15 §3.1): byte-identical HTTP method, path, and entity-body
+ * bytes received by the loopback server. It says nothing about TCP framing, TLS or headers, and the
+ * observation carries none of those to compare.
+ */
+export function sameWireObservations(
+  a: readonly JudgeObservation[],
+  b: readonly JudgeObservation[],
+  markers: readonly string[],
+): string | null {
+  if (a.length !== b.length) return `count differs: ${a.length} vs ${b.length}`;
+  const ga = groupByMarkerSet(a, markers);
+  const gb = groupByMarkerSet(b, markers);
+  if (ga.size !== gb.size) return `marker-set count differs: ${ga.size} vs ${gb.size}`;
+  for (const [key, bodiesA] of ga) {
+    const bodiesB = gb.get(key);
+    if (!bodiesB) return `marker set [${key}] present on one side only`;
+    if (bodiesA.length !== bodiesB.length) return `marker set [${key}] multiplicity ${bodiesA.length} vs ${bodiesB.length}`;
+    // Byte-exact body comparison, order-independent within the group.
+    const sortedA = [...bodiesA].sort(Buffer.compare);
+    const sortedB = [...bodiesB].sort(Buffer.compare);
+    for (let i = 0; i < sortedA.length; i++) {
+      if (!sortedA[i].equals(sortedB[i])) return `marker set [${key}] body ${i} differs`;
+    }
+  }
+  // Method and path are compared as multisets too, so a differing verb or route cannot hide.
+  const mp = (xs: readonly JudgeObservation[]) => xs.map((o) => `${o.method} ${o.path}`).sort();
+  const mpa = mp(a); const mpb = mp(b);
+  for (let i = 0; i < mpa.length; i++) if (mpa[i] !== mpb[i]) return `method/path differs: ${mpa[i]} vs ${mpb[i]}`;
+  return null;
 }
 
 // ── The embedding vector ───────────────────────────────────────────────────────────────────────
@@ -161,6 +271,12 @@ export async function startJudgeServer(initialScores: Record<string, number> = {
   let discriminateChat = true;
   let embeddingCalls = 0;
 
+  // ── THE REQUEST RECORDER (addendum v15 §5). A SEPARATE store from `requests` (§5.1). ──────────
+  let recording = false;                     // §5.2 off by default
+  const observations: JudgeObservation[] = [];
+  let nextSeq = 0;                           // §5.4 assigned at acceptance, monotonic, never reused
+  let inFlight = 0;                          // §5.6 incremented at acceptance, decremented at response end
+
   const json = (res: ServerResponse, payload: unknown) => {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify(payload));
@@ -168,13 +284,56 @@ export async function startJudgeServer(initialScores: Record<string, number> = {
 
   const server: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const chunks: Buffer[] = [];
-    req.on('data', (c: Buffer) => chunks.push(c));
+
+    // ── ACCEPTANCE (v15 §5.4, §5.6). The sequence number and the in-flight increment happen HERE,
+    // before a single body byte has arrived. A request that arrives first is numbered first even if
+    // it finishes last. Neither advances while recording is off (§5.2).
+    const seq = recording ? nextSeq++ : -1;
+    if (recording) inFlight += 1;
+    let received = 0;
+    let overflowed = false;
+    // The in-flight decrement is tied to the RESPONSE ending, for 200 and for 413 alike (§5.6).
+    //
+    // ⚠️ `close`, NOT `finish`. Probed on Node 22: when the client closes its socket right after
+    // reading the response — which is what a non-keep-alive `http.request` does — the server-side
+    // `ServerResponse` emits `close` and NEVER emits `finish`. A decrement hung on `finish` leaked
+    // one in-flight count per such request, and `settled()` then waited forever. `close` fires on
+    // every path: normal completion, 413, and an aborted client. It fires exactly once.
+    if (recording) res.once('close', () => { inFlight -= 1; });
+
+    // ── HOOK POINT ONE: byte accounting in the `data` handler (v15 §5.1, §5.5). The limit must be
+    // enforced before the body completes, so the running total lives here. Past the limit the
+    // chunks are DROPPED — never buffered beyond it, never logged — and the flag is set. Bytes are
+    // still consumed off the socket so the request reaches `end` normally.
+    req.on('data', (c: Buffer) => {
+      received += c.length;
+      if (recording && received > RECORDER_BODY_LIMIT_BYTES) { overflowed = true; chunks.length = 0; return; }
+      if (!overflowed) chunks.push(c);
+    });
     req.on('end', () => {
+      // ── HOOK POINT TWO: observation capture in the `end` handler, at the expression that
+      // concatenates the chunks (v15 §5.1). `req.method` and `req.url` are both in scope here, so
+      // method, path and body come from one place. The Buffer stored is the concatenated bytes
+      // themselves; `snapshot` copies them on the way out (§5.7).
+      const raw = Buffer.concat(chunks);
+      if (recording) {
+        observations.push({
+          seq, method: String(req.method ?? ''), path: String(req.url ?? ''),
+          body: overflowed ? Buffer.alloc(0) : raw, overflowed,
+        });
+      }
+      // ── OVERFLOW (v15 §5.5): HTTP 413, an empty JSON object, response ended normally, socket
+      // NOT destroyed. The parsed path below never runs for an overflowing request.
+      if (overflowed) {
+        res.writeHead(413, { 'content-type': 'application/json' });
+        res.end('{}');
+        return;
+      }
       let body: {
         model?: string; temperature?: number; max_tokens?: number; input?: string;
         messages?: Array<{ role: string; content: string }>;
       } = {};
-      try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { /* recorded below as empty */ }
+      try { body = JSON.parse(raw.toString('utf8')); } catch { /* recorded below as empty */ }
       const url = req.url ?? '';
 
       // ── EMBEDDINGS ──────────────────────────────────────────────────────────────────────────
@@ -264,9 +423,139 @@ export async function startJudgeServer(initialScores: Record<string, number> = {
     setExpansion(text) { expansionText = text; },
     setEmbeddingOverride(fn) { embeddingOverride = fn; },
     setChatDiscrimination(on) { discriminateChat = on; },
+    setRecording(on) { recording = on; },
+    snapshot() {
+      // §5.6: refuse while in flight. Do not return partial data; do not wait. Name the count.
+      if (inFlight > 0) throw new Error(`snapshot refused: ${inFlight} request(s) in flight`);
+      // §5.7: a new array of new objects, each with a COPIED Buffer.
+      return observations.map((o) => ({ ...o, body: Buffer.from(o.body) }));
+    },
+    resetObservations() {
+      if (inFlight > 0) throw new Error(`resetObservations refused: ${inFlight} request(s) in flight`);
+      // §5.4, §5.10: observations and the counter, and NOTHING else. Scores, raw content, usage
+      // inclusion, expansion text, embedding override and chat discrimination are not touched.
+      observations.length = 0;
+      nextSeq = 0;
+    },
+    inFlight() { return inFlight; },
+    settled() {
+      return new Promise<void>((resolve) => {
+        const tick = () => { if (inFlight === 0) resolve(); else setImmediate(tick); };
+        tick();
+      });
+    },
     close() {
       server.closeAllConnections?.();
       return new Promise<void>((r) => server.close(() => r()));
     },
   };
 }
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// THE CONNECTION GUARD (addendum v15 §10). No guard restricting outbound connections existed
+// anywhere in the suite before pass 2. This one changes no production code.
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * WHY `net.Socket.prototype.connect` (v15 §10.1). It is the one seam every path this pass touches
+ * goes through: loopback `http`, remote `http`, `tls.connect`, and Node's native `fetch`. It was
+ * tested against all four. `http.Agent.prototype.createConnection` is NOT that seam — the OpenAI
+ * SDK's node shim installs `agentkeepalive`, which supplies its own `createConnection`, so an Agent
+ * patch would miss the SDK's traffic entirely, which is the traffic that matters here.
+ *
+ * ⚠️ THREE FACTS THE IMPLEMENTATION HANDLES (v15 §10.2).
+ *
+ *   1. The argument shape is not uniform. Through `http`/`https` — the OpenAI path — the first
+ *      argument is an ARRAY of `[options, callback]`, because `net.createConnection` normalizes its
+ *      arguments before calling `socket.connect`. Through `tls.connect` it is a plain object.
+ *      `hostOf` normalizes both, then reads `host ?? hostname`. A guard reading only
+ *      `args[0].host` refuses loopback, because `args[0]` is the array.
+ *   2. A throw inside the guard is SYNCHRONOUS. It escapes the caller rather than arriving as an
+ *      `error` event. The guard's own test uses `try`/`catch`, not a listener.
+ *   3. The guard sees HOSTNAMES, not resolved addresses. DNS has not run at this point.
+ *
+ * ⚠️ THE `localhost` DECISION (v15 §10.3 item 1), stated explicitly: `localhost` is REFUSED.
+ * The guard permits the literal `127.0.0.1` and nothing else. Reasons, in order of weight:
+ *   - `localhost` is a NAME, and the guard sees names before DNS runs. On a host whose resolver
+ *     maps `localhost` to `::1` first, or to anything a hosts file says, the name is not the
+ *     loopback address the guard is meant to permit. Permitting the name would permit whatever the
+ *     resolver decides, which is precisely the indirection this guard exists to remove.
+ *   - Every path this pass drives already dials the literal address: `startJudgeServer` sets
+ *     `OLLAMA_BASE_URL` to `http://127.0.0.1:<port>`, and the connection-guard test dials it the
+ *     same way. Nothing in the pass needs the name.
+ *   - Refusing is the failure-closed direction. A test that dials `localhost` fails loudly and is
+ *     corrected to the literal; a guard that admitted the name could admit a non-loopback target
+ *     silently.
+ * If a later pass needs `localhost`, it widens the allow-list deliberately, in writing, and states
+ * why the resolver indirection is acceptable there.
+ *
+ * TLS is refused unconditionally (item 2). The pass opens no TLS connection to anything, so a TLS
+ * attempt is by construction an escape to a real remote host — the Cohere endpoint being the one
+ * this suite is most exposed to.
+ *
+ * Every other host is refused with an error NAMING THE HOST (item 3), so the failure a reader sees
+ * says where the socket was going.
+ *
+ * `uninstallConnectionGuard` restores the original prototype method (item 4) so the guard does not
+ * leak into later test files in the same process. Idempotent in both directions.
+ */
+export const CONNECTION_GUARD_ALLOWED_HOST = '127.0.0.1';
+
+type SocketConnect = typeof net.Socket.prototype.connect;
+let originalConnect: SocketConnect | null = null;
+
+/**
+ * Normalize the argument shapes and return the host being dialled, or null if none is visible.
+ *
+ * ⚠️ WHAT THE PROBE SHOWED, AND WHY THIS READS ONLY `host ?? hostname`. Run against Node with a
+ * throwing prototype patch, `http.get` arrives as an ARRAY `[options, cb]` whose options object
+ * carries `servername: ""` (an EMPTY STRING, not undefined) and `path: "/x"` (the URL PATH, not a
+ * unix socket). A first draft of this function read `'servername' in o` as a TLS signal and
+ * `typeof o.path === 'string'` as a unix-socket signal, and both misfired on plain http — every
+ * loopback connection was refused as TLS. Neither option is a reliable discriminator, so neither is
+ * read here. TLS is decided by the CALLER from the socket itself (`this.encrypted`, set on a
+ * `TLSSocket`), which is the only signal that cannot be spoofed by an options object.
+ */
+function hostOf(args: unknown[]): string | null {
+  // Shape 1 (http/https/native fetch, and net.connect(options)): args[0] is [options, callback?].
+  // Shape 2 (tls.connect): args[0] is the options object itself.
+  // Shape 3 (net.connect(port, host)): args[0] is a number and args[1] is the host string.
+  let first: unknown = args[0];
+  if (Array.isArray(first)) first = first[0];
+  if (first && typeof first === 'object') {
+    const o = first as { host?: unknown; hostname?: unknown };
+    const h = o.host ?? o.hostname;
+    return typeof h === 'string' ? h : null;
+  }
+  if (typeof first === 'number' && typeof args[1] === 'string') return args[1];
+  return null;
+}
+
+export function installConnectionGuard(): void {
+  if (originalConnect) return;   // already installed — idempotent
+  originalConnect = net.Socket.prototype.connect;
+  const original = originalConnect;
+  net.Socket.prototype.connect = function guardedConnect(this: net.Socket, ...args: unknown[]) {
+    const host = hostOf(args);
+    // `tls.connect` constructs a TLSSocket, whose `encrypted` property is true, and calls connect
+    // on it. That is the reliable TLS signal — see the note on `hostOf` for the two options-object
+    // fields that are NOT.
+    const isTls = (this as { encrypted?: boolean }).encrypted === true;
+    if (isTls) {
+      throw new Error(`connection guard: TLS connection refused (host ${host ?? 'unknown'})`);
+    }
+    if (host !== null && host !== CONNECTION_GUARD_ALLOWED_HOST) {
+      throw new Error(`connection guard: outbound connection to '${host}' refused; only ${CONNECTION_GUARD_ALLOWED_HOST} is permitted`);
+    }
+    return (original as unknown as (...a: unknown[]) => net.Socket).apply(this, args);
+  } as SocketConnect;
+}
+
+export function uninstallConnectionGuard(): void {
+  if (!originalConnect) return;   // not installed — idempotent
+  net.Socket.prototype.connect = originalConnect;
+  originalConnect = null;
+}
+
+/** Test-only: is the guard currently installed? */
+export function connectionGuardInstalled(): boolean { return originalConnect !== null; }
