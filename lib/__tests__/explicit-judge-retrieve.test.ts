@@ -269,7 +269,13 @@ test('J4.1 — every retrieval arm is called with useReranker OFF; exactly ONE f
   const rerankMod = await import('../rerank');
   const capture = createTelemetryCapture('lab_multi_query');
   const out = await retrieveMultiQuery(QUERY, { ...BASE_OPTS, rerankBackend: 'judge' }, {
-    retrieveFn: async (q, o, cap) => { arms.push({ query: q, useReranker: o.useReranker, rerankBackend: o.rerankBackend }); return retrieve(q, o, cap); },
+    retrieveFn: async (q, o, cap) => {
+      // `typeof retrieve` declares `opts` optional; retrieveMultiQuery always passes one. A real
+      // check, not a cast: if an arm ever arrived with no opts, that would be a finding.
+      assert.ok(o, 'retrieveMultiQuery passes an opts object to every arm');
+      arms.push({ query: q, useReranker: o.useReranker, rerankBackend: o.rerankBackend });
+      return retrieve(q, o, cap);
+    },
     rerankFn: async (q, c, third, deps, cap) => { fusion.push({ third, n: c.length }); return rerankMod.rerank(q, c, third, deps, cap); },
     // Deterministic variants, no LLM: the seam reports what it can (`not_collected`), honestly.
     variantsFn: async () => ['variant one of the question', 'variant two of the question'],

@@ -240,7 +240,11 @@ test('16.1 — Cohere selected, an UNTYPED throw: inputOrder returned, one synth
   assert.equal(capture.batches[0].outcome, 'terminal_failure');
   assert.equal(capture.batches[0].start, 0);
   assert.equal(capture.batches[0].end, 6);
-  assert.equal(capture.batches[0].evidence.provenNotServed, false, 'a generic throw carries no proof of non-delivery');
+  // `evidence` is nullable in the type; on this path recordSoftFailure always sets it. Assert the
+  // invariant, so a future regression fails as a test rather than as a type error.
+  const evidence = capture.batches[0].evidence;
+  assert.ok(evidence, 'a synthesised soft-failure batch carries an evidence record');
+  assert.equal(evidence.provenNotServed, false, 'a generic throw carries no proof of non-delivery');
   // Expected equals recorded, at the capture seam and in the manifest.
   assert.equal(capture.expectedBatchCount, 1);
   assert.equal(capture.rerankSoftFailed, true);
