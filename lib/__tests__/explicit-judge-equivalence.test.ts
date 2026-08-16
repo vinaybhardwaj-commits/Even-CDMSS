@@ -219,10 +219,17 @@ test('5.4 — sequence numbers are assigned at ACCEPTANCE, monotonic from 0, and
     });
     // Give A's first bytes time to reach the server before B is sent at all.
     await new Promise((r) => setTimeout(r, 30));
+    // ⚠️ SAME SHAPE AS 5.6, FOUND BY THE SWEEP (addendum v17 §3.2): A is held open and released only
+    // after an awaited call. If `post` rejected, `releaseA` would never run and `recorded()`'s
+    // `finally` would wait on `settled()` forever. The release now sits in a `finally`.
+    //
     // ⚠️ PLAIN `post`, NOT `postSettled`. A is deliberately held open, so `settled()` cannot resolve
     // until A is released; awaiting it here would deadlock the test against its own fixture.
-    await post(judge.port, '/v1/b', '{"b":1}');   // B arrives second, completes first
-    releaseA();
+    try {
+      await post(judge.port, '/v1/b', '{"b":1}');   // B arrives second, completes first
+    } finally {
+      releaseA();
+    }
     await aDone;
     await judge.settled();
     const snap = judge.snapshot();
@@ -240,19 +247,31 @@ test('5.4 — sequence numbers are assigned at ACCEPTANCE, monotonic from 0, and
 
 test('5.5a — the boundary: 1048576 bytes is ACCEPTED and recorded in full', async () => {
   await recorded(async (judge) => {
-    const exact = Buffer.alloc(RECORDER_BODY_LIMIT_BYTES, 0x20);
+    // ⚠️ A LITERAL, NOT THE CONSTANT (addendum v17 §3.1, mutation row 1). This was
+    // `Buffer.alloc(RECORDER_BODY_LIMIT_BYTES, …)`, and the mutation table showed why that is not a
+    // boundary test: a test whose INPUT is computed from the value under test moves with that value
+    // and cannot detect a change to it. When the constant was mutated to 1048577, this test kept
+    // sending "the constant" and still passed the boundary it was meant to pin. The number below is
+    // the boundary v15 §5.5 states, written down so a later reader does not "tidy" it back into an
+    // expression. The constant's own value is pinned SEPARATELY, three lines down.
+    const exact = Buffer.alloc(1048576, 0x20);
     const r = await postSettled(judge, '/v1/exact', exact);
     assert.equal(r.status, 200, 'exactly the limit is accepted');
     const [o] = judge.snapshot();
     assert.equal(o.overflowed, false);
-    assert.equal(o.body.length, RECORDER_BODY_LIMIT_BYTES, 'recorded in full');
+    assert.equal(o.body.length, 1048576, 'recorded in full');
+    // The source pin, kept as a separate check. It is useful; it is NOT the boundary test.
     assert.equal(RECORDER_BODY_LIMIT_BYTES, 1048576, 'the limit is 1048576 exactly');
   });
 });
 
 test('5.5b — the boundary: 1048577 bytes is REJECTED with 413, an empty JSON body, and an overflowed observation', async () => {
   await recorded(async (judge) => {
-    const over = Buffer.alloc(RECORDER_BODY_LIMIT_BYTES + 1, 0x20);
+    // ⚠️ A LITERAL, NOT `RECORDER_BODY_LIMIT_BYTES + 1` (addendum v17 §3.1, mutation row 1). The
+    // derived form was the defect the mutation table found: with the constant mutated to 1048577,
+    // this test sent 1048578, which the mutated limit still rejected, and the test that exists to
+    // pin the rejection boundary at 1048577 passed. Written as the number so it cannot move.
+    const over = Buffer.alloc(1048577, 0x20);
     const r = await postSettled(judge, '/v1/over', over);
     assert.equal(r.status, 413, 'one byte over is rejected');
     assert.equal(r.body, '{}', 'an empty JSON object as the body, response ended normally');
@@ -278,9 +297,18 @@ test('5.6 — while a request is in flight, BOTH snapshot and resetObservations 
       release = () => r.end('67890');
     });
     await new Promise((r) => setTimeout(r, 30));
-    assert.throws(() => judge.snapshot(), /1 request\(s\) in flight/, 'snapshot refuses and names the count');
-    assert.throws(() => judge.resetObservations(), /1 request\(s\) in flight/, 'reset refuses and names the count');
-    release();
+    // ⚠️ RELEASE IN A `finally` (addendum v17 §3.2, mutation rows 6 and 7). The release used to sit
+    // AFTER these two assertions. When the in-flight refusal was mutated away, `assert.throws`
+    // failed — and the held request was then never released, so `recorded()`'s own `finally`
+    // waited on `settled()` forever and the whole file timed out at 60 s. The mutation WAS detected,
+    // but as a nameless timeout rather than as `not ok 5.6`. A failed assertion must still let the
+    // request complete, so the failure is reported by name.
+    try {
+      assert.throws(() => judge.snapshot(), /1 request\(s\) in flight/, 'snapshot refuses and names the count');
+      assert.throws(() => judge.resetObservations(), /1 request\(s\) in flight/, 'reset refuses and names the count');
+    } finally {
+      release();
+    }
     await held;
     await judge.settled();
     // After the response ends the counter is back to zero and both succeed.
@@ -292,7 +320,7 @@ test('5.6 — while a request is in flight, BOTH snapshot and resetObservations 
 
 test('5.6b — the in-flight counter decrements on a 413 response too', async () => {
   await recorded(async (judge) => {
-    await postSettled(judge, '/v1/over', Buffer.alloc(RECORDER_BODY_LIMIT_BYTES + 1));
+    await postSettled(judge, '/v1/over', Buffer.alloc(1048577));   // literal, per v17 §3.1
     // If the 413 path did not decrement, this would throw.
     assert.doesNotThrow(() => judge.snapshot());
   });
