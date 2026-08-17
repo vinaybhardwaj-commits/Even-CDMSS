@@ -3,7 +3,10 @@
  * `retrieveMultiQuery`, against the real loopback judge.
  *
  * GOVERNED BY addendum v15 (signed by V, 16 August 2026), sections 3 and 4.1, under Saul review 27
- * and review 28. Kickoff v11 §9 is the numbering authority for J3 and J4.
+ * and review 28. Kickoff v11 §9 is the numbering authority for J3 and J4. Addendum v18 (signed by
+ * V, 16 August 2026, under Saul review 29) §3.8 adds J4's arm-count assertions — three arms,
+ * asserted at the seam AND on `capture.children` — as the follow-up review 29 carried with J4's
+ * closure.
  *
  * WHAT THIS FILE PROVES.
  *   · J3. `retrieve` under a hostile Cohere default. The OMITTED-backend control demonstrates
@@ -315,6 +318,14 @@ test('J4.2 — the fusion rerank happens ONCE even when the arms return overlapp
     }, capture);
     await judge.settled();
     assert.equal(fusionCalls, 1);
+    // THE ARM COUNT, both sides of the seam (v18 §3.8 — review 29 closed J4 and carried this as a
+    // follow-up). `retrieveMultiQuery` builds `allQueries = [expandedQuery, ...variants]`, and with
+    // the two deterministic variants above there are THREE arms. `armCaptures` here is the
+    // collection this test's own `retrieveFn` pushes to, so its length counts calls;
+    // `capture.children` is the array production built, assigned inside `retrieveMultiQuery`.
+    assert.equal(armCaptures.length, 3);        // calls observed at the seam
+    assert.ok(capture.children, 'retrieveMultiQuery assigned the children array');
+    assert.equal(capture.children.length, 3);   // the array production built
     // No ARM capture carries a batch: reranking was off on every arm, so nothing was stamped there.
     for (const ac of armCaptures) assert.equal(ac.batches.length, 0, 'an arm rerank would have stamped a batch here');
     // The only judge traffic on the wire is the fusion rerank's batches.

@@ -3,7 +3,10 @@
  *
  * GOVERNED BY addendum v15 (signed by V, 16 August 2026), sections 3, 4.2 and 5, under Saul review
  * 27 (which released pass 2) and review 28 (which set the corrections). Kickoff v11 §9 is the
- * numbering authority for J1.
+ * numbering authority for J1. Addendum v18 (signed by V, 16 August 2026, under Saul review 29)
+ * governs the pass 2 proof repairs in this file: the tuple comparator and its 5.9b guard (§3.2),
+ * the socket identity on the observation (§3.7a, §4.2), `Reflect.ownKeys` at all four exhaustive
+ * key sites (§3.7b), and 5.4's deterministic acceptance signal (§3.7c).
  *
  * WHAT THIS FILE PROVES.
  *   · Each of addendum v15 §5.2 to §5.11 — TEN guarded terms — has at least one executable test
@@ -110,12 +113,14 @@ after(async () => {
   restoreEnv();
 });
 
-/** Raw POST to the loopback server, bypassing the SDK, for the recorder-contract cases. */
-function post(port: number, path: string, body: Buffer | string, method = 'POST'): Promise<{ status: number; body: string }> {
+/** Raw POST to the loopback server, bypassing the SDK, for the recorder-contract cases.
+ *  `agent` is optional: the socket-reuse case (5.5b, v18 §3.7a) passes a keep-alive agent so two
+ *  requests share ONE socket; every other case uses the default per-request connection. */
+function post(port: number, path: string, body: Buffer | string, method = 'POST', agent?: http.Agent): Promise<{ status: number; body: string }> {
   const buf = Buffer.isBuffer(body) ? body : Buffer.from(body);
   return new Promise((resolve, reject) => {
     const req = http.request(
-      { host: '127.0.0.1', port, path, method, headers: { 'content-type': 'application/json', 'content-length': buf.length } },
+      { host: '127.0.0.1', port, path, method, agent, headers: { 'content-type': 'application/json', 'content-length': buf.length } },
       (res) => { const c: Buffer[] = []; res.on('data', (d) => c.push(d)); res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(c).toString('utf8') })); },
     );
     req.on('error', reject);
@@ -141,8 +146,8 @@ async function recorded<T>(fn: (judge: JudgeServer) => Promise<T>): Promise<T> {
 }
 
 /** POST, then wait until the server has finished its response, so the in-flight count is 0. */
-async function postSettled(judge: JudgeServer, path: string, body: Buffer | string, method = 'POST') {
-  const r = await post(judge.port, path, body, method);
+async function postSettled(judge: JudgeServer, path: string, body: Buffer | string, method = 'POST', agent?: http.Agent) {
+  const r = await post(judge.port, path, body, method, agent);
   await judge.settled();
   return r;
 }
@@ -190,20 +195,28 @@ test('5.2 — recording is OFF by default: no observation is stored and the coun
   } finally { await judge.settled(); judge.setRecording(false); judge.resetObservations(); }
 });
 
-test('5.3 — one observation holds seq, method, path, and the exact body bytes; nothing else', async () => {
+test('5.3 — one observation holds seq, socketId, method, path, and the exact body bytes; nothing else', async () => {
   await recorded(async (judge) => {
     const body = Buffer.from('{"messages":[{"role":"user","content":"MRKA1 exact bytes"}]}');
     await postSettled(judge, '/v1/chat/completions?x=1', body, 'POST');
     const [o] = judge.snapshot();
-    assert.deepEqual(Object.keys(o).sort(), ['body', 'method', 'overflowed', 'path', 'seq'],
-      'exactly five fields — no headers, no authorization values, no timestamps, nothing derived');
+    // ⚠️ `Reflect.ownKeys`, NOT `Object.keys` (v18 §3.7b, review 29 finding 7). `Object.keys` sees
+    // only enumerable string keys, so a non-enumerable or symbol-keyed field passed this exhaustive
+    // check unchallenged — and this field-set comparison is what would notice an extra key at all.
+    // Every key is wrapped in String(k): a symbol throws on implicit string coercion, and a
+    // deepEqual over a key list containing symbols needs the same treatment.
+    // `socketId` is the sixth field, permitted by addendum v18 §4.2 (amending v15 §5.3).
+    assert.deepEqual(Reflect.ownKeys(o).map((k) => String(k)).sort(),
+      ['body', 'method', 'overflowed', 'path', 'seq', 'socketId'],
+      'exactly six fields — no headers, no authorization values, no timestamps, nothing derived');
     assert.equal(o.method, 'POST');
     assert.equal(o.path, '/v1/chat/completions?x=1', 'req.url as received, unmodified');
     assert.ok(Buffer.isBuffer(o.body));
     assert.ok(o.body.equals(body), 'the exact entity-body bytes');
     assert.equal(o.overflowed, false);
-    // The observation is a plain object with no header-shaped key under any name.
-    for (const k of Object.keys(o)) assert.equal(/header|auth|content-type|time/i.test(k), false, `no ${k}`);
+    assert.equal(typeof o.socketId, 'number');
+    // The observation carries no header-shaped key under any name — symbol keys included.
+    for (const k of Reflect.ownKeys(o)) assert.equal(/header|auth|content-type|time/i.test(String(k)), false, `no ${String(k)}`);
   });
 });
 
@@ -217,8 +230,17 @@ test('5.4 — sequence numbers are assigned at ACCEPTANCE, monotonic from 0, and
       r.write('{"');           // half the body — the server has ACCEPTED it and assigned its seq
       releaseA = () => r.end('a"}');
     });
-    // Give A's first bytes time to reach the server before B is sent at all.
-    await new Promise((r) => setTimeout(r, 30));
+    // ⚠️ DETERMINISTIC ACCEPTANCE SIGNAL (v18 §3.7c, review 29 finding 7). The previous version of
+    // this line was `await new Promise((r) => setTimeout(r, 30));` — an unacknowledged 30
+    // millisecond timing assumption: nothing guaranteed A had been ACCEPTED before B was sent, only
+    // that 30 ms had passed. `seq` is assigned at acceptance, and acceptance is also where the
+    // in-flight counter increments, so waiting until the counter reads 1 waits for EXACTLY the
+    // event that assigns A's sequence number. Event-driven, no timer, and the race is removed
+    // rather than hidden.
+    await new Promise<void>((resolve) => {
+      const tick = () => { if (judge.inFlight() === 1) resolve(); else setImmediate(tick); };
+      tick();
+    });
     // ⚠️ SAME SHAPE AS 5.6, FOUND BY THE SWEEP (addendum v17 §3.2): A is held open and released only
     // after an awaited call. If `post` rejected, `releaseA` would never run and `recorded()`'s
     // `finally` would wait on `settled()` forever. The release now sits in a `finally`.
@@ -265,25 +287,42 @@ test('5.5a — the boundary: 1048576 bytes is ACCEPTED and recorded in full', as
   });
 });
 
-test('5.5b — the boundary: 1048577 bytes is REJECTED with 413, an empty JSON body, and an overflowed observation', async () => {
+test('5.5b — the boundary: 1048577 bytes is REJECTED with 413, an empty JSON body, an overflowed observation, and the SAME undestroyed socket carries the next request', async () => {
   await recorded(async (judge) => {
     // ⚠️ A LITERAL, NOT `RECORDER_BODY_LIMIT_BYTES + 1` (addendum v17 §3.1, mutation row 1). The
     // derived form was the defect the mutation table found: with the constant mutated to 1048577,
     // this test sent 1048578, which the mutated limit still rejected, and the test that exists to
     // pin the rejection boundary at 1048577 passed. Written as the number so it cannot move.
-    const over = Buffer.alloc(1048577, 0x20);
-    const r = await postSettled(judge, '/v1/over', over);
-    assert.equal(r.status, 413, 'one byte over is rejected');
-    assert.equal(r.body, '{}', 'an empty JSON object as the body, response ended normally');
-    // The socket was not destroyed: the same client can make another request and get 200.
-    const again = await postSettled(judge, '/v1/after', '{}');
-    assert.equal(again.status, 200);
-    const [o] = judge.snapshot();
-    assert.equal(o.overflowed, true);
-    assert.equal(o.body.length, 0, 'zero-length body — the raw bytes were discarded, never buffered');
-    assert.equal(o.method, 'POST');
-    assert.equal(o.path, '/v1/over');
-    assert.equal(typeof o.seq, 'number');
+    //
+    // ⚠️ ONE SOCKET FOR BOTH REQUESTS (v18 §3.7a, review 29 finding 7). "The socket was not
+    // destroyed" needs the SAME socket to carry the follow-up request — an earlier version of this
+    // test simply issued another request, which proved only that the server still listens, because
+    // a default `http.request` opens a fresh connection every time. A keep-alive agent with
+    // maxSockets 1 pins both requests to one socket, and the observation's `socketId` (v18 §4.2)
+    // is what makes the reuse ASSERTABLE: different `seq`, same `socketId`, is reuse proven.
+    const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+    try {
+      const over = Buffer.alloc(1048577, 0x20);
+      const r = await postSettled(judge, '/v1/over', over, 'POST', agent);
+      assert.equal(r.status, 413, 'one byte over is rejected');
+      assert.equal(r.body, '{}', 'an empty JSON object as the body, response ended normally');
+      // The socket was not destroyed: the SAME socket carries another request and gets 200.
+      const again = await postSettled(judge, '/v1/after', '{}', 'POST', agent);
+      assert.equal(again.status, 200);
+      const snap = judge.snapshot();
+      const o = snap.find((x) => x.path === '/v1/over');
+      const follow = snap.find((x) => x.path === '/v1/after');
+      assert.ok(o, 'the overflow observation exists');
+      assert.ok(follow, 'the follow-up observation exists');
+      assert.equal(o.overflowed, true);
+      assert.equal(o.body.length, 0, 'zero-length body — the raw bytes were discarded, never buffered');
+      assert.equal(o.method, 'POST');
+      assert.equal(o.path, '/v1/over');
+      assert.equal(typeof o.seq, 'number');
+      assert.notEqual(o.seq, follow.seq, 'two requests, two sequence numbers');
+      assert.equal(o.socketId, follow.socketId,
+        'the SAME undestroyed socket carried both requests — reuse proven, not inferred');
+    } finally { agent.destroy(); }
   });
 });
 
@@ -334,7 +373,7 @@ test('5.7 — snapshot is DEFENSIVE: mutating the array, an object, or a Buffer 
     // Mutate everything returned.
     first[0].body.fill(0x58);                 // write into the Buffer
     (first[0] as { path: string }).path = '/tampered';
-    first.push({ seq: 99, method: 'GET', path: '/x', body: Buffer.alloc(0), overflowed: false });
+    first.push({ seq: 99, socketId: 99, method: 'GET', path: '/x', body: Buffer.alloc(0), overflowed: false });
     // A second snapshot returns the ORIGINAL values.
     const second = judge.snapshot();
     assert.equal(second.length, 1, 'the pushed element did not reach the store');
@@ -366,7 +405,7 @@ test('5.9 — comparison groups by marker SET, not arrival order', async () => {
   // Two runs whose sockets completed in opposite orders carry the same multiset of marker-keyed
   // bodies and must compare equal. Two runs whose bodies differ under one marker set must not.
   const mk = (seq: number, marker: string, extra = ''): JudgeObservation => ({
-    seq, method: 'POST', path: '/v1/chat/completions',
+    seq, socketId: seq, method: 'POST', path: '/v1/chat/completions',
     body: Buffer.from(`{"messages":[{"role":"user","content":"PASSAGES: [0] ${marker} passage${extra}"}]}`),
     overflowed: false,
   });
@@ -380,6 +419,33 @@ test('5.9 — comparison groups by marker SET, not arrival order', async () => {
   // The grouping itself: keyed by sorted marker subset, order-independent.
   const g = groupByMarkerSet(runB, ['MRKB2', 'MRKA1']);
   assert.deepEqual([...g.keys()].sort(), ['MRKA1', 'MRKB2']);
+});
+
+test('5.9b — the comparator keeps method, path and body as ONE tuple: a swap between marker groups is a difference', () => {
+  // Review 29 finding 2 / v18 §3.2. The old comparator grouped BODIES by marker set and compared
+  // method and path separately, as a global sorted multiset — so two observations could swap their
+  // method or path between marker groups and still compare equal, and test 5.9 mutates only a body,
+  // so nothing caught it. The group value is now one Buffer, method + path + NUL + body, and this
+  // test is the guard: without it the repair would be unguarded and the defect merely moved.
+  const mk = (seq: number, marker: string, path: string, method = 'POST'): JudgeObservation => ({
+    seq, socketId: seq, method, path,
+    body: Buffer.from(`{"messages":[{"role":"user","content":"PASSAGES: [0] ${marker} passage"}]}`),
+    overflowed: false,
+  });
+  // Same bodies, same GLOBAL path multiset — but the paths have swapped marker groups.
+  const runA = [mk(0, 'MRKA1', '/v1/chat/completions'), mk(1, 'MRKB2', '/v1/elsewhere')];
+  const runB = [mk(0, 'MRKA1', '/v1/elsewhere'), mk(1, 'MRKB2', '/v1/chat/completions')];
+  const whyPath = sameWireObservations(runA, runB, ['MRKA1', 'MRKB2']);
+  assert.ok(whyPath !== null, 'a path swapped between marker groups is reported as a difference');
+  // A method swap between marker groups likewise — the global method multiset is unchanged.
+  const runC = [mk(0, 'MRKA1', '/v1/x', 'POST'), mk(1, 'MRKB2', '/v1/x', 'PUT')];
+  const runD = [mk(0, 'MRKA1', '/v1/x', 'PUT'), mk(1, 'MRKB2', '/v1/x', 'POST')];
+  assert.ok(sameWireObservations(runC, runD, ['MRKA1', 'MRKB2']) !== null,
+    'a method swapped between marker groups is reported as a difference');
+  // Positive control: identical tuples still compare equal, whatever the arrival order.
+  const runE = [mk(0, 'MRKB2', '/v1/elsewhere'), mk(1, 'MRKA1', '/v1/chat/completions')];
+  assert.equal(sameWireObservations(runA, runE, ['MRKA1', 'MRKB2']), null,
+    'same tuples in a different arrival order compare equal');
 });
 
 test('5.10 — resetObservations clears observations and the counter and NOTHING in responder configuration', async () => {
@@ -449,12 +515,16 @@ test('5.11 — the parsed `requests` API is unchanged: same fields, same push si
     const added = judge.requests.slice(before);
     assert.deepEqual(added.map((r) => r.kind), ['judge', 'expansion', 'embedding'], 'arrival order across all three kinds');
     // The field set of JudgeRequest, exactly, on each kind. A recorder field here would fail this.
+    // ⚠️ `Reflect.ownKeys` at every site, with String(k) before any regex or deepEqual (v18 §3.7b):
+    // `Object.keys` sees only enumerable string keys, so a non-enumerable or symbol-keyed recorder
+    // field would have passed both this exhaustive field-set check and the regex loop below.
     const FIELDS = ['kind', 'url', 'model', 'system', 'user', 'temperature', 'maxTokens', 'markers'];
-    assert.deepEqual(Object.keys(added[0]).sort(), [...FIELDS].sort(), 'judge request carries the parsed fields and nothing else');
-    assert.deepEqual(Object.keys(added[1]).sort(), [...FIELDS].sort(), 'expansion request likewise');
-    assert.deepEqual(Object.keys(added[2]).sort(), [...FIELDS, 'input'].sort(), 'embedding adds only its own optional `input`');
+    const ownKeys = (r: object) => Reflect.ownKeys(r).map((k) => String(k)).sort();
+    assert.deepEqual(ownKeys(added[0]), [...FIELDS].sort(), 'judge request carries the parsed fields and nothing else');
+    assert.deepEqual(ownKeys(added[1]), [...FIELDS].sort(), 'expansion request likewise');
+    assert.deepEqual(ownKeys(added[2]), [...FIELDS, 'input'].sort(), 'embedding adds only its own optional `input`');
     for (const r of added) {
-      for (const k of Object.keys(r)) assert.equal(/seq|body|overflow|observ/i.test(k), false, `no recorder field ${k} on JudgeRequest`);
+      for (const k of Reflect.ownKeys(r)) assert.equal(/seq|body|overflow|observ/i.test(String(k)), false, `no recorder field ${String(k)} on JudgeRequest`);
     }
     // And the two stores are independent: three parsed requests, three observations, no cross-write.
     assert.equal(judge.snapshot().length, 3);

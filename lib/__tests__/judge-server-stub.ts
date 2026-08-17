@@ -77,6 +77,15 @@ export interface JudgeRequest {
  */
 export interface JudgeObservation {
   seq: number;
+  /**
+   * SOCKET IDENTITY (addendum v18 §4.2, amending v15 §5.3): the one socket-identity field the
+   * amendment permits, recorded only while socket recording is enabled — which is the only time an
+   * observation exists at all. Identities come from a module-level `WeakMap<net.Socket, number>`
+   * and are assigned at ACCEPTANCE, beside `seq`. Two observations with different `seq` and the
+   * SAME `socketId` were carried by the same undestroyed socket — reuse proven, not inferred.
+   * `JudgeRequest` gains no field, so v15 §5.11 is untouched.
+   */
+  socketId: number;
   method: string;
   path: string;
   body: Buffer;
@@ -167,9 +176,20 @@ export function groupByMarkerSet(
 }
 
 /**
- * Do two observation lists carry the same multiset of marker-keyed bodies? Order-independent (§5.9),
- * multiplicity-preserving (§5.8), byte-exact on method, path and entity body. Returns null when
- * they match and a one-line reason when they do not, so an assertion can print WHICH key differed.
+ * Do two observation lists carry the same multiset of marker-keyed observations? Order-independent
+ * (§5.9), multiplicity-preserving (§5.8), byte-exact on method, path and entity body. Returns null
+ * when they match and a one-line reason when they do not, so an assertion can print WHICH key
+ * differed.
+ *
+ * ⚠️ THE GROUP VALUE IS THE WHOLE TUPLE (addendum v18 §3.2, review 29 finding 2). An earlier
+ * version grouped BODIES by marker set and compared method and path separately, as a global sorted
+ * multiset — so two observations could swap their method or path between marker groups and still
+ * compare equal. The value under each marker-set key is now ONE Buffer, built as
+ * `method` + `path` + a NUL byte + `body`, sorted within its group by `Buffer.compare`, so the
+ * method-path-body association cannot dissolve. The separate method/path multiset is deleted.
+ * `Buffer.compare`, not a string comparison on UTF-8: bodies may hold lone surrogates and a string
+ * compare is not byte-exact. The tuple is built HERE, inside the comparator — `groupByMarkerSet`
+ * is unchanged, because two existing tests assert on its output as body bytes.
  *
  * ⚠️ THIS IS THE WHOLE OF J1's CLAIM (v15 §3.1): byte-identical HTTP method, path, and entity-body
  * bytes received by the loopback server. It says nothing about TCP framing, TLS or headers, and the
@@ -181,24 +201,33 @@ export function sameWireObservations(
   markers: readonly string[],
 ): string | null {
   if (a.length !== b.length) return `count differs: ${a.length} vs ${b.length}`;
-  const ga = groupByMarkerSet(a, markers);
-  const gb = groupByMarkerSet(b, markers);
+  // Key: the sorted subset of markers found in the body. Value: the method+path+NUL+body tuple.
+  const group = (xs: readonly JudgeObservation[]): Map<string, Buffer[]> => {
+    const out = new Map<string, Buffer[]>();
+    for (const o of xs) {
+      const text = o.body.toString('utf8');
+      const key = markers.filter((mk) => text.includes(mk)).sort().join('|');
+      const tuple = Buffer.concat([Buffer.from(o.method, 'utf8'), Buffer.from(o.path, 'utf8'), Buffer.from([0]), o.body]);
+      const list = out.get(key) ?? [];
+      list.push(tuple);
+      out.set(key, list);
+    }
+    return out;
+  };
+  const ga = group(a);
+  const gb = group(b);
   if (ga.size !== gb.size) return `marker-set count differs: ${ga.size} vs ${gb.size}`;
-  for (const [key, bodiesA] of ga) {
-    const bodiesB = gb.get(key);
-    if (!bodiesB) return `marker set [${key}] present on one side only`;
-    if (bodiesA.length !== bodiesB.length) return `marker set [${key}] multiplicity ${bodiesA.length} vs ${bodiesB.length}`;
-    // Byte-exact body comparison, order-independent within the group.
-    const sortedA = [...bodiesA].sort(Buffer.compare);
-    const sortedB = [...bodiesB].sort(Buffer.compare);
+  for (const [key, tuplesA] of ga) {
+    const tuplesB = gb.get(key);
+    if (!tuplesB) return `marker set [${key}] present on one side only`;
+    if (tuplesA.length !== tuplesB.length) return `marker set [${key}] multiplicity ${tuplesA.length} vs ${tuplesB.length}`;
+    // Byte-exact tuple comparison, order-independent within the group.
+    const sortedA = [...tuplesA].sort(Buffer.compare);
+    const sortedB = [...tuplesB].sort(Buffer.compare);
     for (let i = 0; i < sortedA.length; i++) {
-      if (!sortedA[i].equals(sortedB[i])) return `marker set [${key}] body ${i} differs`;
+      if (!sortedA[i].equals(sortedB[i])) return `marker set [${key}] method/path/body tuple ${i} differs`;
     }
   }
-  // Method and path are compared as multisets too, so a differing verb or route cannot hide.
-  const mp = (xs: readonly JudgeObservation[]) => xs.map((o) => `${o.method} ${o.path}`).sort();
-  const mpa = mp(a); const mpb = mp(b);
-  for (let i = 0; i < mpa.length; i++) if (mpa[i] !== mpb[i]) return `method/path differs: ${mpa[i]} vs ${mpb[i]}`;
   return null;
 }
 
@@ -254,6 +283,19 @@ export function passageSegments(userMsg: string): Array<{ idx: number; text: str
   return out;
 }
 
+// ── SOCKET IDENTITY (addendum v18 §4.2). Module-level, so an identity survives across requests on
+// the same socket and across server instances in one process; a WeakMap, so a closed socket's entry
+// can be collected. The counter only ever grows — an identity is never reused, exactly like `seq`.
+// `resetObservations` does NOT touch it: identity is a property of the socket, not of the store,
+// and v15 §5.10's list of what a reset clears is unchanged.
+const socketIds = new WeakMap<net.Socket, number>();
+let nextSocketId = 0;
+function socketIdentityOf(s: net.Socket): number {
+  let id = socketIds.get(s);
+  if (id === undefined) { id = nextSocketId; nextSocketId += 1; socketIds.set(s, id); }
+  return id;
+}
+
 /**
  * Start the server and apply the environment it implies.
  *
@@ -289,6 +331,10 @@ export async function startJudgeServer(initialScores: Record<string, number> = {
     // before a single body byte has arrived. A request that arrives first is numbered first even if
     // it finishes last. Neither advances while recording is off (§5.2).
     const seq = recording ? nextSeq++ : -1;
+    // The socket identity is assigned at ACCEPTANCE, beside `seq` (v18 §4.2). `req.socket` is live
+    // at this hook point; the WeakMap hands the same identity back for every request the same
+    // undestroyed socket carries.
+    const socketId = recording ? socketIdentityOf(req.socket) : -1;
     if (recording) inFlight += 1;
     let received = 0;
     let overflowed = false;
@@ -318,7 +364,7 @@ export async function startJudgeServer(initialScores: Record<string, number> = {
       const raw = Buffer.concat(chunks);
       if (recording) {
         observations.push({
-          seq, method: String(req.method ?? ''), path: String(req.url ?? ''),
+          seq, socketId, method: String(req.method ?? ''), path: String(req.url ?? ''),
           body: overflowed ? Buffer.alloc(0) : raw, overflowed,
         });
       }

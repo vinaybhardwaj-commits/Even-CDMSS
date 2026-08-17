@@ -3,7 +3,12 @@
  *
  * GOVERNED BY addendum v15 (signed by V, 16 August 2026), sections 3, 4.1, 4.3, 4.4 and 4.5, under
  * Saul review 27 and review 28. Kickoff v11 §6 is the numbering authority for the five proofs, and
- * §9 for J2. Proof text is quoted from kickoff v11 by proof NUMBER, never by line.
+ * §9 for J2. Proof text is quoted from kickoff v11 by proof NUMBER, never by line. Addendum v18
+ * (signed by V, 16 August 2026, under Saul review 29) governs the pass 2 proof repairs in this
+ * file: real `validateManifest` output feeding `verdictForRun` on both a clean and a dirty arm for
+ * proofs 16 and 70 (§3.1), proof 18's Cohere arm delegating to the real `rerankCohere` (§3.3),
+ * proof 2.2's replaced discriminator (§3.4), proof 70's order observed at invocation (§3.5), and
+ * J2's pinned failure outcomes with judge-call counts (§3.6).
  *
  * WHAT THIS FILE PROVES.
  *   · Proof 2.  The `cohereFn` adapter passes the capture as capture and not as `fetch`, and the
@@ -49,8 +54,9 @@ import { execFileSync } from 'node:child_process';
 import {
   startJudgeServer, installConnectionGuard, uninstallConnectionGuard, type JudgeServer,
 } from './judge-server-stub';
-import type { RerankDeps } from '../rerank';
+import type { RerankDeps, RerankCandidate } from '../rerank';
 import type { TelemetryCapture } from '../retrieval-capture';
+import type { OperationalTelemetry } from '../retrieval-telemetry-core';
 
 // ── The ten environment variables `startJudgeServer` mutates and never restores (kickoff §4.5) ───
 const ENV_TOUCHED = [
@@ -127,6 +133,34 @@ async function manifestOf(capture: TelemetryCapture) {
 }
 
 /**
+ * THE OPERATIONAL STAMP, built as production builds it (v18 §3.1): `writeRetrievalTerminals` in
+ * `lib/opd-note-audit.ts` — the function addendum v18 names `finaliseTelemetry` — assembles
+ * `validateManifest({ ...primaryPayload, operational: primaryOperational })` through its
+ * `operationalFor` helper. This mirrors that helper's shape field for field, typed as the real
+ * `OperationalTelemetry` so no cast is needed anywhere: `validateManifest` takes `unknown`.
+ */
+function operationalStamp(core: Booted['core'], invocationId: string): OperationalTelemetry {
+  return {
+    route: 'opd_audit_worker', route_class: core.routeClassOf('opd_audit_worker'), retrieval_role: 'primary',
+    invocation_id: invocationId, trace_id: null, deployment_sha: null,
+    started_at: '2026-08-16T00:00:00.000Z', completed_at: '2026-08-16T00:00:01.000Z',
+    routing_flags: {}, active_backfill_run_id: null, active_backfill_target: null,
+    active_backfill_state: null, active_lab_experiment_id: null,
+  };
+}
+
+/**
+ * The production `index_version` stamp, for fixtures that never pass through `retrieve()`.
+ * `retrieve` stamps `capture.indexVersion = `${embCol}|${model}`` before its first fallible
+ * statement (`lib/retrieve.ts`), and `createTelemetryCapture` initialises it to null — so a capture
+ * driven straight into `rerank` carries a null, and real `validateManifest` honestly answers
+ * `index_version_absent`. The fixture was the defect (v18 §3.1a): it is completed HERE, with the
+ * value production stamps for the default embedding column, so the manifest is clean because it is
+ * COMPLETE — never because a defect code was filtered, masked or subtracted.
+ */
+const FIXTURE_INDEX_VERSION = 'embedding|nomic-embed-text';
+
+/**
  * `JUDGE_BATCH`, READ FROM THE SOURCE TEXT (proof 18, v15 §4.3, kickoff §3.1). The constant is
  * module-private in `lib/rerank.ts` and is not exported, which is what makes this requirement
  * natural: a test that imported it would need an export that D16 forbids, and a test that wrote
@@ -186,15 +220,21 @@ test('2.1 — rerankCohere with an injected fetchImpl serves, stamps the capture
 
 test('2.2 — the DEFAULT cohereFn adapter inside rerank passes the capture in the CAPTURE position, not the fetch position', async () => {
   // Through the real `rerank` dispatch with NO cohereFn injected, so the module-built adapter runs.
-  // `checkHealthy` is injected to pass. `fetchImpl` cannot be injected through this path — that is
-  // the point of proof 2: the adapter fixes positions 3 and 4 as `undefined` and passes the capture
-  // FIFTH. If it passed the capture THIRD, `cohereRelevanceScores` would call `capture(...)` as
-  // fetch and throw a TypeError. Instead the real `fetch` runs and the connection guard refuses the
-  // outbound socket, which is the exact evidence: the capture was NOT used as fetch.
+  // `checkHealthy` is injected to pass. TWO VARIANTS TOGETHER discriminate the slot (v18 §3.4,
+  // review 29 finding 4):
+  //   FAILURE variant — the real fetch dials out and the connection guard refuses the socket.
+  //   `cohereRelevanceScores` wraps ANY error from the fetch call as `RerankBackendUnreachable`, so
+  //   `instanceof` holds in the correct AND the swapped case and discriminates nothing. What
+  //   discriminates is the wrapped MESSAGE: a capture in the fetch slot is CALLED as a function and
+  //   produces "… is not a function" inside the same wrap; a real fetch refused by the guard does not.
+  //   SUCCESS variant — the default adapter runs to completion against a replaced global fetch, and
+  //   `rerankCohere`'s `if (capture)` block stamps the capture. Had the capture gone into the fetch
+  //   slot, that block is never reached and both stamps stay untouched.
   const { rerank, createTelemetryCapture, RerankBackendUnreachable } = await boot();
   const prevKey = process.env.OPENROUTER_API_KEY;
   process.env.OPENROUTER_API_KEY = 'proof-2-key-not-a-secret';
   try {
+    // ── FAILURE VARIANT ────────────────────────────────────────────────────────────────────────
     const capture = createTelemetryCapture('primary');
     let thrown: unknown = null;
     try {
@@ -202,20 +242,48 @@ test('2.2 — the DEFAULT cohereFn adapter inside rerank passes the capture in t
     } catch (e) { thrown = e; }
     // Explicit cohere is STRICT: the typed error propagates. It is Unreachable — the wrap that
     // `cohereRelevanceScores` puts around a thrown `fetch` — proof that `fetch` was CALLED with a
-    // real URL, and the capture was NOT that fetch. (Native fetch reports the guard's synchronous
-    // throw as the bare string "fetch failed"; the guard's own message is the cause underneath and
-    // does not survive the wrap, so the message is asserted only as far as the code surfaces it.)
+    // real URL. (Native fetch reports the guard's synchronous throw as the bare string "fetch
+    // failed"; the guard's own message is the cause underneath and does not survive the wrap.)
     assert.ok(thrown instanceof RerankBackendUnreachable, `typed Unreachable, got ${String(thrown)}`);
     assert.match((thrown as Error).message, /unreachable/i);
-    // Had the capture been passed as fetch, `capture(...)` would have thrown a TypeError ("capture
-    // is not a function"), which is NOT a RerankBackendError and would have soft-fallen instead of
-    // propagating. The typed propagation above rules that out.
-    assert.equal(thrown instanceof TypeError, false);
+    // THE DISCRIMINATING ASSERTION (v18 §3.4 item 1). A capture sitting in the fetch slot would be
+    // called as a function, and the resulting "… is not a function" would be wrapped into this very
+    // message. The type cannot tell the two apart; the wrapped message can.
+    assert.doesNotMatch((thrown as Error).message, /is not a function/,
+      'the fetch slot held a real fetch, not the capture');
     // The capture reached `rerank` and was stamped with the INTENDED backend before dispatch.
     assert.equal(capture.intendedBackend, 'cohere');
-    // Source pin of the adapter shape, by symbol not line: `rerankCohere(q, c, undefined, undefined, cap)`.
+    // ── SUCCESS VARIANT, `deps.cohereFn` OMITTED (v18 §3.4 item 2) ─────────────────────────────
+    // There is no seam to inject a fetch through the default adapter: it is
+    // `rerankCohere(q, c, undefined, undefined, cap)`, so `fetchImpl` is fixed `undefined` and
+    // `rerankCohere`'s default parameter resolves the GLOBAL fetch at call time. The global is
+    // therefore replaced for the duration of the call and restored in `finally`. That is safe here:
+    // the connection guard patches `net.Socket.prototype.connect`, not fetch, so the replaced
+    // global dials nothing.
+    const okFetch: typeof fetch = async (_url, init) => {
+      const docs = JSON.parse(String(init?.body)) as { documents: string[] };
+      return new Response(JSON.stringify({
+        results: docs.documents.map((_, i) => ({ index: i, relevance_score: (docs.documents.length - i) / (docs.documents.length + 1) })),
+        usage: { cost: 0.001 },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+    const prevFetch = globalThis.fetch;
+    const capture2 = createTelemetryCapture('primary');
+    try {
+      globalThis.fetch = okFetch;
+      const out = await rerank(QUERY, fresh(), 'cohere', { checkHealthy: async () => {} }, capture2);
+      assert.equal(out.length, 6);
+      assert.ok(out.every((c) => c.rerank_backend === 'cohere'), 'the default adapter served through Cohere');
+    } finally { globalThis.fetch = prevFetch; }
+    // The capture was received AS A CAPTURE: `rerankCohere`'s `if (capture)` block stamped it. Had
+    // the capture been passed as fetchImpl, that block is never reached and both stay untouched.
+    assert.equal(capture2.servedBackend, 'cohere');
+    assert.equal(capture2.batches.length, 1);
+    // ── SOURCE PIN, NOT A BEHAVIORAL DISCRIMINATOR (v18 §3.4). This pins the adapter's source
+    // shape so a drive-by edit is visible in review; the behavioral evidence is the two variants
+    // above, and nothing about this regex discriminates the slot at run time.
     const src = readFileSync('lib/rerank.ts', 'utf8');
-    assert.match(src, /rerankCohere\(q, c, undefined, undefined, cap\)/, 'the adapter fixes fetchImpl and recordCost and passes the capture fifth');
+    assert.match(src, /rerankCohere\(q, c, undefined, undefined, cap\)/, 'source pin of the adapter shape');
   } finally { if (prevKey === undefined) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = prevKey; }
 });
 
@@ -223,9 +291,12 @@ test('2.2 — the DEFAULT cohereFn adapter inside rerank passes the capture in t
 // Proof 16 — Cohere soft failure.
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 
-test('16.1 — Cohere selected, an UNTYPED throw: inputOrder returned, one synthesised terminal_failure batch, expected == recorded, soft_failed true, row not partial', async () => {
+test('16.1 — Cohere selected, an UNTYPED throw: inputOrder returned, one synthesised terminal_failure batch, expected == recorded, soft_failed true, row not partial — by the REAL validation chain, both arms', async () => {
   const { rerank, createTelemetryCapture, settlement, core } = await boot();
   const capture = createTelemetryCapture('primary');
+  // The fixture never passes through `retrieve()`, production's `index_version` stamp site, so it
+  // is completed here (v18 §3.1a) — the manifest must be clean because it is COMPLETE.
+  capture.indexVersion = FIXTURE_INDEX_VERSION;
   // Explicit Cohere; the probe passes; the Cohere call throws a PLAIN Error — not a RerankBackendError.
   const out = await rerank(QUERY, fresh(), 'cohere', {
     checkHealthy: async () => {},
@@ -252,13 +323,30 @@ test('16.1 — Cohere selected, an UNTYPED throw: inputOrder returned, one synth
   assert.equal(m.expected_batch_count, m.recorded_rerank_batches, 'expected == recorded');
   assert.equal(m.rerank_soft_failed, true);
   assert.equal(m.served_backend, 'cohere', 'the planned backend is stamped as served for reconciliation');
-  // THE ROW IS NOT PARTIAL (v15 §4.4): compose the real settlement mapping. A clean save with an
-  // empty defect list settles persisted_complete — soft failure is degraded RANKING, not a
-  // manifest defect, and does not partial the row.
-  const base = settlement.outcomeForSaveResult('inserted');
-  const defects = settlement.verdictForRun({ primary: [] }, 'primary', true);
-  const outcome = settlement.upgradeForDefects(base, defects);
+  // ── THE ROW IS NOT PARTIAL — BY THE REAL CHAIN, UNBROKEN (v18 §3.1, review 29 finding 1). ────
+  // CLEAN ARM: the real `validateManifest` runs over the stamped manifest exactly as production
+  // assembles it, and what it RETURNS feeds `verdictForRun`. No stipulated list, no `?? {}`, no
+  // filtered-then-discarded result. `verdictForRun` uses an own-key test, so the `primary` key is
+  // present and its value is exactly the validator's output. Soft failure is degraded RANKING, not
+  // a manifest defect, and does not partial the row.
+  const operational = operationalStamp(core, 'inv-16');
+  const defects = core.validateManifest({ ...m, operational });
+  assert.deepEqual(defects, [], 'the COMPLETE fixture validates clean — nothing was filtered or subtracted');
+  const verdict = settlement.verdictForRun({ primary: defects }, 'primary', true);
+  assert.deepEqual(verdict, [], 'the own-role key was present and carried the validator\'s own answer');
+  const outcome = settlement.upgradeForDefects(settlement.outcomeForSaveResult('inserted'), verdict);
   assert.equal(core.stateForSettlement(outcome), 'persisted_complete', 'the row is not partial');
+  // DIRTY ARM (v18 §3.1b): a test that only ever sees an empty defect list cannot tell real
+  // validation from a stub that always returns empty. Field broken: `recorded_rerank_batches`, off
+  // by one against the batches array. Code produced: `recorded_batch_count_mismatch`. The SAME
+  // real chain then settles persisted_partial.
+  const dirtyDefects = core.validateManifest({ ...m, operational, recorded_rerank_batches: m.recorded_rerank_batches + 1 });
+  assert.deepEqual(dirtyDefects, ['recorded_batch_count_mismatch'], 'the real validator names the broken field\'s code');
+  const dirtyVerdict = settlement.verdictForRun({ primary: dirtyDefects }, 'primary', true);
+  assert.deepEqual(dirtyVerdict, ['recorded_batch_count_mismatch']);
+  const dirtyOutcome = settlement.upgradeForDefects(settlement.outcomeForSaveResult('inserted'), dirtyVerdict);
+  assert.equal(dirtyOutcome, 'persisted_dirty');
+  assert.equal(core.stateForSettlement(dirtyOutcome), 'persisted_partial', 'a defective manifest settles partial');
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════
@@ -314,30 +402,46 @@ test('18.1 — JUDGE served: expected_batch_count == ceil(pool / JUDGE_BATCH), J
   }
 });
 
-test('18.2 — COHERE served: expected_batch_count == 1, whatever the pool', async () => {
-  const { rerank, createTelemetryCapture } = await boot();
+test('18.2 — COHERE served: expected_batch_count == 1, whatever the pool — stamped by the REAL rerankCohere', async () => {
+  // ⚠️ THE REAL FUNCTION RUNS (v18 §3.3, review 29 finding 3). An earlier version injected a fake
+  // `cohereFn` that wrote `servedBackend` and `expectedBatchCount` and then asserted those same
+  // values — the test asserted what its own fake wrote. The `cohereFn` below DELEGATES to the real
+  // `rerankCohere` with an injected fetch in position 3, the same shape proof 2.1 uses, so the
+  // stamps under assertion are the production function's own. `recordCost` is `async () => {}` so
+  // no cost sink is touched; no socket opens.
+  const { rerank, rerankCohere, createTelemetryCapture } = await boot();
   const JB = judgeBatchFromSource();
-  for (const pool of [2, 2 * JB + 1]) {
-    const cands = Array.from({ length: pool }, (_, i) => ({ id: i + 1, text: `MRKQ${i + 1} passage.` }));
-    const capture = createTelemetryCapture('primary');
-    await rerank(QUERY, cands, 'cohere', {
-      checkHealthy: async () => {},
-      cohereFn: async (q, c, cap) => {
-        // A cohereFn that stamps exactly what rerankCohere stamps, without a socket.
-        if (cap) { cap.servedBackend = 'cohere'; cap.expectedBatchCount = 1; cap.batches.push({
-          index: 0, start: 0, end: c.length,
-          evidence: { servedProvider: 'openrouter', servedModel: 'cohere', attempts: null, provenNotServed: false },
-          outcome: 'success', expectedScoreKeys: c.length, finiteScoreKeys: c.length, missingScoreKeys: 0, nonnumericScoreKeys: 0,
-          intendedProvider: 'openrouter', intendedModel: 'cohere', promptTokens: null, completionTokens: null,
-        }); }
-        return c.map((x, i) => ({ ...x, rerank_score: 1 - i / c.length, rerank_backend: 'cohere' as const }));
-      },
-    }, capture);
-    assert.equal(capture.servedBackend, 'cohere');
-    assert.equal(capture.expectedBatchCount, 1, `pool ${pool}: Cohere is always one batch`);
-    const m = await manifestOf(capture);
-    assert.equal(m.expected_batch_count, 1);
-  }
+  // OPENROUTER_API_KEY must be set or rerankCohere throws RerankBackendUnreachable before it ever
+  // calls fetch. Saved before, restored (or deleted) in `finally` — the proof 2 shape.
+  const prevKey = process.env.OPENROUTER_API_KEY;
+  process.env.OPENROUTER_API_KEY = 'proof-18-key-not-a-secret';
+  try {
+    for (const pool of [2, 2 * JB + 1]) {
+      const cands = Array.from({ length: pool }, (_, i) => ({ id: i + 1, text: `MRKQ${i + 1} passage.` }));
+      const capture = createTelemetryCapture('primary');
+      const fetchImpl: typeof fetch = async (_url, init) => {
+        const docs = JSON.parse(String(init?.body)) as { documents: string[] };
+        return new Response(JSON.stringify({
+          results: docs.documents.map((_, i) => ({ index: i, relevance_score: (docs.documents.length - i) / (docs.documents.length + 1) })),
+          usage: { cost: 0.001 },
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      };
+      const out = await rerank(QUERY, cands, 'cohere', {
+        checkHealthy: async () => {},
+        cohereFn: async <U extends RerankCandidate>(q: string, c: U[], cap?: TelemetryCapture) =>
+          rerankCohere(q, c, fetchImpl, async () => {}, cap),
+      }, capture);
+      assert.equal(out.length, pool);
+      assert.ok(out.every((c) => c.rerank_backend === 'cohere'), 'the real rerankCohere served');
+      assert.equal(capture.servedBackend, 'cohere');
+      assert.equal(capture.expectedBatchCount, 1, `pool ${pool}: Cohere is always one batch`);
+      assert.equal(capture.batches.length, 1);
+      assert.equal(capture.batches[0].outcome, 'success');
+      const m = await manifestOf(capture);
+      assert.equal(m.expected_batch_count, 1);
+      assert.equal(m.served_backend, 'cohere');
+    }
+  } finally { if (prevKey === undefined) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = prevKey; }
 });
 
 test('18.3 — DERIVED FROM served_backend, NEVER intended_backend: intended Cohere, judge serves, expected is the JUDGE count', async () => {
@@ -367,9 +471,20 @@ test('18.3 — DERIVED FROM served_backend, NEVER intended_backend: intended Coh
 // Proof 70 — the Cohere-to-judge downgrade. Four assertions, in the order v15 §4.3 gives.
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 
-/** One downgrade run with an ORDER LOG, so 70.1 can assert what happened before what. */
+/**
+ * One downgrade run with a SHARED ORDER LOG that both collaborators push to AT INVOCATION
+ * (v18 §3.5, review 29 finding 5). An earlier version recorded `judge:served` only after `rerank()`
+ * returned and inferred the judge from a snapshot length — bookkeeping after the fact, which cannot
+ * prove judge acceptance FOLLOWED the health failure. Both collaborators are injectable: the
+ * injected `checkHealthy` pushes and throws; the injected `judgeFn` pushes and DELEGATES to the
+ * real `rerankJudge`, so the judge still serves for real, on the wire.
+ *
+ * ⚠️ The backend argument to `rerank()` is `undefined`, and must be: the branch is
+ * `const explicit = backend !== undefined;` then `if (chosen === 'cohere' && !explicit)`. Passing
+ * `'cohere'` explicitly takes the strict arm, which never downgrades.
+ */
 async function downgradeRun() {
-  const { rerank, createTelemetryCapture, RerankBackendUnreachable, _resetRerankHealth, judge } = await boot();
+  const { rerank, rerankJudge, createTelemetryCapture, RerankBackendUnreachable, _resetRerankHealth, judge } = await boot();
   // ⚠️ THE HEALTH PROBE IS MEMOIZED per backend and model for ten minutes (v15 §4.3). A passing
   // probe from an earlier test in this process would prevent the downgrade. Reset before, and
   // restore in finally. A THROWN probe is not cached, so this run leaves nothing behind either.
@@ -378,21 +493,33 @@ async function downgradeRun() {
   judge.setRecording(true); judge.resetObservations();
   try {
     const capture = createTelemetryCapture('primary');
+    // The fixture never passes through `retrieve()`, production's `index_version` stamp site, so it
+    // is completed here (v18 §3.1a) — 70.3's manifest must be clean because it is COMPLETE.
+    capture.indexVersion = FIXTURE_INDEX_VERSION;
     const out = await rerank(QUERY, fresh(), undefined, {
       envBackend: 'cohere',   // "backend Cohere by environment default", simulated through RerankDeps
-      checkHealthy: async () => { order.push('checkHealthy:throw'); throw new RerankBackendUnreachable('cohere', 'rerank-v3.5', 'probe refused by design'); },
-      // No judgeFn injected: the REAL rerankJudge serves, on the wire.
+      checkHealthy: async () => { order.push('checkHealthy'); throw new RerankBackendUnreachable('cohere', 'rerank-v3.5', 'probe refused by design'); },
+      // Pushes at invocation, then the REAL rerankJudge serves, on the wire. The parameters are
+      // annotated explicitly (v18 §3.5): an inline arrow against RerankDeps['judgeFn'] may not
+      // typecheck bare, and casts are forbidden.
+      judgeFn: async <U extends RerankCandidate>(q: string, c: U[], cap?: TelemetryCapture) => {
+        order.push('judgeFn');
+        return rerankJudge(q, c, cap);
+      },
     }, capture);
     await judge.settled();
-    order.push(`judge:served:${judge.snapshot().length}-requests`);
-    return { out, capture, order };
+    const wire = judge.snapshot();
+    return { out, capture, order, wire };
   } finally { judge.setRecording(false); judge.resetObservations(); _resetRerankHealth(); }
 }
 
-test('70.1 — RUNTIME ORDER: checkHealthy throws RerankBackendError FIRST, the judge serves SECOND', async () => {
-  const { order, out } = await downgradeRun();
-  assert.equal(order[0], 'checkHealthy:throw', 'the probe threw first');
-  assert.match(order[1], /^judge:served:2-requests$/, 'then the real judge served — two batches on the wire');
+test('70.1 — RUNTIME ORDER, observed AT INVOCATION: checkHealthy throws RerankBackendError FIRST, the judge is invoked SECOND', async () => {
+  const { order, out, wire } = await downgradeRun();
+  // The order log is pushed to BY the collaborators as they are invoked, during the call — not
+  // reconstructed afterwards. This is the assertion that proves the judge's acceptance FOLLOWED
+  // the health failure (v18 §3.5).
+  assert.deepEqual(order, ['checkHealthy', 'judgeFn'], 'the probe threw first, the judge was invoked second');
+  assert.equal(wire.length, 2, 'the real judge served — two batches on the wire');
   assert.ok(out.every((c) => c.rerank_backend === 'judge'), 'the judge produced the ranking');
   assert.deepEqual(out.map((c) => c.id), [4, 2, 6, 3, 1, 5], 'and it REORDERED');
 });
@@ -416,27 +543,38 @@ test('70.2 — MANIFEST FACTS: intended_backend cohere, served_backend judge, re
   assert.equal(m.rerank_soft_failed, false, 'a downgrade is not a soft failure');
 });
 
-test('70.3 — the row is persisted_complete, by the composition in v15 §4.4', async () => {
-  const { capture, settlement, core } = { ...(await downgradeRun()), ...(await boot()) };
-  // The manifest validates clean — no defect — so the run's own verdict is an empty array.
+test('70.3 — the row is persisted_complete by the REAL chain, and a broken payload is persisted_partial', async () => {
+  // ⚠️ THE REAL CHAIN, UNBROKEN (v18 §3.1, review 29 finding 1). An earlier version computed real
+  // defects, FILTERED `index_version_absent` out, then discarded the result and supplied
+  // `{ primary: [] }` anyway — state mapping without validation. The filter was the symptom; the
+  // fixture was the defect, and `downgradeRun` now completes it (`indexVersion` set to the value
+  // production stamps), so nothing is filtered, masked or subtracted here.
+  const { capture } = await downgradeRun();
+  const { settlement, core } = await boot();
   const m = await manifestOf(capture);
-  const defectsOnManifest = core.validateManifest({ ...m, operational: {
-    route: 'opd_audit_worker', route_class: core.routeClassOf('opd_audit_worker'), retrieval_role: 'primary',
-    invocation_id: 'inv-70', trace_id: null, deployment_sha: null,
-    started_at: '2026-08-16T00:00:00.000Z', completed_at: '2026-08-16T00:00:01.000Z',
-    routing_flags: {}, active_backfill_run_id: null, active_backfill_target: null,
-    active_backfill_state: null, active_lab_experiment_id: null,
-  } } as never).filter((d) => d !== 'index_version_absent');   // the fixture sets no index; not this proof's subject
-  assert.deepEqual(defectsOnManifest, [], 'the downgraded manifest is otherwise clean');
-  // The composition, exactly as v15 §4.4 names it, all four synchronous and pure:
+  const operational = operationalStamp(core, 'inv-70');
+  // CLEAN ARM: real validateManifest output feeds verdictForRun. Own key present, value exactly
+  // what the validator returned — never `?? {}`, never a hand-written array.
+  const defects = core.validateManifest({ ...m, operational });
+  assert.deepEqual(defects, [], 'the COMPLETE downgraded manifest validates clean');
   const base = settlement.outcomeForSaveResult('inserted');            // persisted_clean
-  const verdict = settlement.verdictForRun({ primary: [] }, 'primary', true);   // own key present, []
+  const verdict = settlement.verdictForRun({ primary: defects }, 'primary', true);
   const outcome = settlement.upgradeForDefects(base, verdict);          // stays persisted_clean
   const state = core.stateForSettlement(outcome);                       // the mapper
   assert.equal(base, 'persisted_clean');
   assert.deepEqual(verdict, []);
   assert.equal(outcome, 'persisted_clean');
   assert.equal(state, 'persisted_complete', 'persisted_complete comes from exactly one outcome, persisted_clean');
+  // DIRTY ARM (v18 §3.1b): the guard is one-sided without it — a stub validator that always
+  // returned empty would pass the clean arm. Field broken: `recorded_rerank_batches`, off by one
+  // against the batches array. Code produced: `recorded_batch_count_mismatch`.
+  const dirtyDefects = core.validateManifest({ ...m, operational, recorded_rerank_batches: m.recorded_rerank_batches + 1 });
+  assert.deepEqual(dirtyDefects, ['recorded_batch_count_mismatch'], 'the real validator names the broken field\'s code');
+  const dirtyVerdict = settlement.verdictForRun({ primary: dirtyDefects }, 'primary', true);
+  assert.deepEqual(dirtyVerdict, ['recorded_batch_count_mismatch']);
+  const dirtyOutcome = settlement.upgradeForDefects(settlement.outcomeForSaveResult('inserted'), dirtyVerdict);
+  assert.equal(dirtyOutcome, 'persisted_dirty');
+  assert.equal(core.stateForSettlement(dirtyOutcome), 'persisted_partial', 'a defective manifest settles partial');
 });
 
 test('70.4 — SOURCE PARITY: provider selection and fallback order in lib/rerank.ts are byte-identical to 72960baa', async () => {
@@ -464,14 +602,24 @@ test('70.4 — SOURCE PARITY: provider selection and fallback order in lib/reran
 // J2 — explicit judge invokes neither checkHealthy nor cohereFn. Call-local, injected counters.
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 
-/** Counters through RerankDeps. `envBackend` simulates the hostile default without an env flip. */
-function counters(envBackend: 'judge' | 'cohere', judgeFn?: RerankDeps['judgeFn']): { deps: RerankDeps; n: { health: number; cohere: number } } {
-  const n = { health: 0, cohere: 0 };
+/** Counters through RerankDeps. `envBackend` simulates the hostile default without an env flip.
+ *  When a `judgeFn` is supplied it is WRAPPED so `n.judge` counts its invocations (v18 §3.6) — the
+ *  generic-failure arms prove "the failure really happened" with that count. Arms that run the real
+ *  `rerankJudge` inject no judgeFn, so these counters cannot see the judge there; those arms count
+ *  from the stub's recorded request list instead. */
+function counters(envBackend: 'judge' | 'cohere', judgeFn?: RerankDeps['judgeFn']): { deps: RerankDeps; n: { health: number; cohere: number; judge: number } } {
+  const n = { health: 0, cohere: 0, judge: 0 };
+  const jf = judgeFn;
   const deps: RerankDeps = {
     envBackend,
     checkHealthy: async () => { n.health += 1; },
     cohereFn: async (q, c) => { n.cohere += 1; return c.map((x, i) => ({ ...x, rerank_score: 1 - i, rerank_backend: 'cohere' as const })); },
-    ...(judgeFn ? { judgeFn } : {}),
+    ...(jf ? {
+      judgeFn: async <U extends RerankCandidate>(q: string, c: U[], cap?: TelemetryCapture) => {
+        n.judge += 1;
+        return jf(q, c, cap);
+      },
+    } : {}),
   };
   return { deps, n };
 }
@@ -500,10 +648,19 @@ test('J2.1 — under a JUDGE default: explicit judge, on success and on failure,
   }
 });
 
-test('J2.2 — under a HOSTILE COHERE default: explicit judge, on success and on failure, still calls neither', async () => {
+test('J2.2 — under a HOSTILE COHERE default: explicit judge, on success and on failure, still calls neither — and each failure arm PROVES its failure happened', async () => {
   // ⚠️ CALL-LOCAL. `envBackend: 'cohere'` is the hostile default. A memoized probe from an earlier
   // test is irrelevant to this assertion: the counter is on THIS call's injected checkHealthy, and
   // the claim is that the explicit arm never reaches it at all.
+  //
+  // ⚠️ EACH FAILURE ARM PINS ITS OUTCOME AND A NONZERO JUDGE-CALL COUNT (v18 §3.6, review 29
+  // finding 6). An earlier version asserted only that the Cohere counters were zero, so an arm
+  // that quietly succeeded — or never called anything — would have passed, and both arms discarded
+  // their captures. The captures are kept, the named failure is asserted to have HAPPENED, and a
+  // judge-call count proves a zero-Cohere pass is not a no-call pass. The two arms count the judge
+  // DIFFERENTLY: the parse-failure arm runs the real `rerankJudge`, which no injected counter can
+  // see, so it counts from the stub's recorded request list; the generic-failure arm injects
+  // `judgeFn`, so its wrapped counter works.
   const { rerank, createTelemetryCapture, judge } = await boot();
   {
     const { deps, n } = counters('cohere');
@@ -511,16 +668,55 @@ test('J2.2 — under a HOSTILE COHERE default: explicit judge, on success and on
     assert.equal(n.health, 0, 'checkHealthy never invoked'); assert.equal(n.cohere, 0, 'cohereFn never invoked');
     assert.ok(out.every((c) => c.rerank_backend === 'judge'));
   }
+  // ── REAL BATCH PARSE FAILURE: the real rerankJudge, `setRawContent(() => 'not json')`. Usage is
+  // turned ON for this arm so "a completion arrived" is assertable through the token counts.
   judge.setRawContent(() => 'not json');
+  judge.setIncludeUsage(true);
   try {
     const { deps, n } = counters('cohere');
-    await rerank(QUERY, fresh(), 'judge', deps, createTelemetryCapture('primary'));
+    const capture = createTelemetryCapture('primary');
+    const requestsBefore = judge.requests.length;
+    await rerank(QUERY, fresh(), 'judge', deps, capture);
     assert.equal(n.health, 0); assert.equal(n.cohere, 0);
-  } finally { judge.setRawContent(null); }
+    // The parse failure HAPPENED, and it is pinned:
+    assert.equal(capture.servedBackend, 'judge');
+    assert.equal(capture.rerankSoftFailed, false, 'a per-batch failure never reaches the outer catch');
+    assert.equal(capture.batches.length, 2, 'six candidates at JUDGE_BATCH 5 is two batches');
+    for (const bt of capture.batches) {
+      assert.equal(bt.outcome, 'parse_failure', 'every batch outcome is parse_failure');
+      assert.ok(bt.evidence, 'a completion arrived, so transport evidence exists');
+      assert.ok(bt.evidence.servedProvider !== null, 'a real served provider — the completion was delivered');
+      assert.ok(bt.evidence.servedModel !== null, 'a real served model');
+      assert.equal(bt.finiteScoreKeys, 0);
+      assert.equal(bt.missingScoreKeys, bt.end - bt.start, 'every key in the slice is missing');
+      assert.equal(typeof bt.promptTokens, 'number', 'a completion arrived and carried usage');
+      assert.equal(typeof bt.completionTokens, 'number');
+    }
+    // The judge-call count for THIS arm, from the stub's recorded request list (v18 §3.6):
+    const judgeCalls = judge.requests.slice(requestsBefore).filter((r) => r.kind === 'judge').length;
+    assert.equal(judgeCalls, 2, 'the real judge was called — a zero-Cohere pass is not a no-call pass');
+  } finally { judge.setRawContent(null); judge.setIncludeUsage(false); }
+  // ── GENERIC OUTER JUDGE FAILURE: an injected judgeFn throws; its wrapped counter proves the call.
   {
     const { deps, n } = counters('cohere', async () => { throw new Error('generic judge failure'); });
-    await rerank(QUERY, fresh(), 'judge', deps, createTelemetryCapture('primary'));
+    const capture = createTelemetryCapture('primary');
+    const out = await rerank(QUERY, fresh(), 'judge', deps, capture);
     assert.equal(n.health, 0); assert.equal(n.cohere, 0);
+    assert.equal(n.judge, 1, 'the judge was invoked once — the generic failure really happened');
+    // The generic failure HAPPENED, and it is pinned:
+    assert.equal(capture.rerankSoftFailed, true, 'the outer catch was reached');
+    assert.equal(capture.batches.length, 2, 'one synthesised record per PLANNED judge boundary');
+    for (const bt of capture.batches) {
+      assert.equal(bt.outcome, 'terminal_failure', 'every batch outcome is terminal_failure');
+      assert.ok(bt.evidence, 'the synthesised record carries an evidence object');
+      assert.equal(bt.evidence.servedProvider, null);
+      assert.equal(bt.evidence.servedModel, null);
+      assert.equal(bt.evidence.attempts, null);
+      assert.equal(bt.evidence.provenNotServed, false, 'a generic throw carries no proof of non-delivery');
+      assert.equal(bt.promptTokens, null);
+      assert.equal(bt.completionTokens, null);
+    }
+    assert.ok(out.every((c) => c.rerank_backend === 'none'), 'soft-fell to input order — and still no Cohere consultation');
   }
   // THE CONTRAST that makes zero mean something: with the backend OMITTED under the same hostile
   // default, the resilient arm DOES consult the probe. Same counters, different call.
