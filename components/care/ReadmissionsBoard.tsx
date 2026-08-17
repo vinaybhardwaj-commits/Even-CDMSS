@@ -24,7 +24,7 @@ import Link from 'next/link';
 import { RotateCw, Download } from 'lucide-react';
 import {
   cardIdentityLine, coverageChips, countsLine, isHeldOut, isReviewFinding, judgementLabel,
-  justificationLabel, NEGLIGENCE_ADVISORY, pathSegments, returnStayBill, situationLine,
+  justificationCell, NEGLIGENCE_ADVISORY, pathSegments, returnStayBill, situationLine,
   sortForCardList,
   type ChipState, type LaneGroup, type SurfaceFinding, type SurfaceTiles,
 } from '@/lib/readmission-surface-core';
@@ -145,7 +145,7 @@ function CaseCard({ f }: { f: SurfaceFinding }) {
       {/* Zone 4 — judgements + bill */}
       {audited ? (
         <div className="mt-3 grid grid-cols-2 gap-2">
-          <Cell k="Medical justification" v={justificationLabel(f)} />
+          <Cell k="Medical justification" v={justificationCell(f)} />
           <Cell k="Preventable injury" v={judgementLabel(f.preventableInjury)} />
           <Cell k="Negligence" v={judgementLabel(f.negligence)} sub={NEGLIGENCE_ADVISORY} />
           <Cell k="Return stay bill" v={returnStayBill(f)} />

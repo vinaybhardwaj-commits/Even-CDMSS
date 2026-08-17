@@ -134,10 +134,30 @@ test('filename rule: uhid + surname slug; no name → uhid; no uhid → dedup ke
   assert.equal(briefFilename({ uhid: 'UH-1', patientName: '  Mohd. Al-Rashid  ', dedupKey: 'x' }), 'uh-1-al-rashid-readmission-brief.md');
 });
 
-test('withholdNumbers removes mobiles and leaves clinical numbers alone', () => {
-  assert.equal(withholdNumbers('call 9876543210 or +91 98765 43210'), 'call [number withheld] or [number withheld]');
+test('withholdNumbers is PHONE-shaped (Addendum A1) — the five mandatory boundary cases', () => {
+  // withheld: a bare 10-digit mobile, and a country-prefixed one with a hyphen
+  assert.equal(withholdNumbers('call 98765 43210'), 'call [number withheld]');
+  assert.equal(withholdNumbers('call +91 98765-43210'), 'call [number withheld]');
+  // survives: two adjacent dashed dates (a date shape inside the run)
+  assert.equal(withholdNumbers('01-06-2026 05-06-2026'), '01-06-2026 05-06-2026');
+  // survives: a two-line numeric block (spans a newline)
+  assert.equal(withholdNumbers('98765\n43210'), '98765\n43210');
+  assert.equal(withholdNumbers('BP 120 80 HR 98\n37 2 96 18 14'), 'BP 120 80 HR 98\n37 2 96 18 14');
+  // survives: labs — never ten digits in one run
+  assert.equal(withholdNumbers('Hb 10.2, TLC 11 400'), 'Hb 10.2, TLC 11 400');
+});
+
+test('withholdNumbers — the shape rule at its edges', () => {
+  assert.equal(withholdNumbers('9876543210'), '[number withheld]');                 // 10
+  assert.equal(withholdNumbers('09876543210'), '[number withheld]');                // 11, leading 0
+  assert.equal(withholdNumbers('919876543210'), '[number withheld]');               // 12, leading 91
+  assert.equal(withholdNumbers('19876543210'), '19876543210');                      // 11, not leading 0
+  assert.equal(withholdNumbers('929876543210'), '929876543210');                    // 12, not leading 91
+  assert.equal(withholdNumbers('98765432101234'), '98765432101234');                // 14 — too long, not a phone
+  assert.equal(withholdNumbers('2026-06-01 987654'), '2026-06-01 987654');          // 10 digits but a date shape
   assert.equal(withholdNumbers('Hb 10.2, CRP 48, K 2.9 on 2026-06-01'), 'Hb 10.2, CRP 48, K 2.9 on 2026-06-01');
   assert.equal(withholdNumbers('IP-2026-0342'), 'IP-2026-0342');
+  assert.equal(withholdNumbers('call 9876543210 or +91 98765 43210'), 'call [number withheld] or [number withheld]');
 });
 
 test('toExtractSubset tolerates a partial / odd extract', () => {

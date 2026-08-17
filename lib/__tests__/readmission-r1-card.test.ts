@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   ageSexForCard, cardIdentityLine, countsLine, coverageChips, isHeldOut, isReviewFinding,
-  judgementLabel, justificationLabel, pathSegments, returnStayBill, situationLine, sortForCardList,
+  judgementLabel, justificationCell, justificationLabel, pathSegments, returnStayBill, situationLine, sortForCardList,
   NEGLIGENCE_ADVISORY, type SurfaceFinding,
 } from '../readmission-surface-core.ts';
 
@@ -129,6 +129,12 @@ test('medical justification is the verbatim §4 display mapping; null on an audi
   assert.equal(justificationLabel({ avoidable: 'needs_adjudication' }), 'Needs adjudication');
   assert.equal(justificationLabel({ avoidable: 'avoidable' }), 'Not justified');
   assert.equal(justificationLabel({ avoidable: null }), 'Needs adjudication');
+  // Addendum A2: the CARD cell on an OON row says "Index side only" — never a verdict on the
+  // other hospital's stay. Even–Even rows keep the §4 mapping (null → Needs adjudication).
+  assert.equal(justificationCell({ avoidable: null, findingClass: 'out_of_network' }), 'Index side only');
+  assert.equal(justificationCell({ avoidable: 'justified', findingClass: 'out_of_network' }), 'Index side only');
+  assert.equal(justificationCell({ avoidable: null, findingClass: 'even_even' }), 'Needs adjudication');
+  assert.equal(justificationCell({ avoidable: 'avoidable', findingClass: 'even_even' }), 'Not justified');
   assert.equal(judgementLabel('suspected'), 'Suspected');
   assert.equal(judgementLabel('not_suggested'), 'Not suggested');
   assert.equal(judgementLabel(null), 'Unknown');

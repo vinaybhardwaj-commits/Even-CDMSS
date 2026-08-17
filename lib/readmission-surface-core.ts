@@ -515,6 +515,13 @@ export function justificationLabel(row: Pick<SurfaceFinding, 'avoidable'>): stri
   }
 }
 
+/** The CARD's Medical-justification cell (PRD v1.1 Addendum A2): out-of-network rows read
+ *  `Index side only` — no justification verdict is ever made on the other hospital's stay
+ *  (§5a), and the cell must not imply one. Even–Even rows keep the §4 mapping verbatim. */
+export function justificationCell(row: Pick<SurfaceFinding, 'avoidable' | 'findingClass'>): string {
+  return row.findingClass === 'out_of_network' ? 'Index side only' : justificationLabel(row);
+}
+
 /** The stored judgement values, in words. Anything unrecognised (incl. a pre-R1 NULL) is
  *  `Unknown` — the honest reading of "not derived yet". */
 export function judgementLabel(v: string | null | undefined): 'Suspected' | 'Not suggested' | 'Unknown' {

@@ -79,9 +79,30 @@ export const CANNOT_SAY_LINES: readonly string[] = [
 const UNKNOWN = 'unknown';
 const u = (v: string | number | null | undefined): string => (v == null || v === '' ? UNKNOWN : String(v));
 
-/** Mobiles never: withhold any run of ≥10 digits (spaces/dashes tolerated inside). */
+/**
+ * Mobiles never — PHONE-SHAPED, not size-shaped (PRD v1.1 Addendum A1). A candidate run of
+ * digits with spaces/hyphens is withheld only when ALL hold:
+ *   (a) stripped of non-digits it is exactly 10 digits, or 11 with a leading 0, or 12
+ *       with a leading 91 (Indian mobile, trunk-prefixed, or country-prefixed);
+ *   (b) the raw match does not span a newline (a pasted numeric block is not a number);
+ *   (c) the raw match contains no date shape — `\d{4}[-/]\d{1,2}` or
+ *       `\d{1,2}[-/]\d{1,2}[-/]\d{2,4}`, each anchored to digit-token boundaries — so
+ *       adjacent dashed dates survive intact.
+ * Anything else (labs, vitals, dates, ids) is left exactly as written.
+ */
+const PHONE_CANDIDATE = /\+?\d[\d\s-]{8,}\d/g;
+// Anchored to digit-token boundaries: a year is a 4-digit TOKEN. Unanchored, `\d{4}[-/]\d{1,2}`
+// matches inside "98765-43210" and the mandated `+91 98765-43210` case would survive.
+const DATE_SHAPES = [/(?<!\d)\d{4}[-/]\d{1,2}(?!\d)/, /(?<!\d)\d{1,2}[-/]\d{1,2}[-/]\d{2,4}(?!\d)/];
+export function isPhoneShaped(raw: string): boolean {
+  const digits = raw.replace(/\D/g, '');
+  const a = digits.length === 10 || (digits.length === 11 && digits.startsWith('0')) || (digits.length === 12 && digits.startsWith('91'));
+  if (!a) return false;
+  if (/\n/.test(raw)) return false;
+  return !DATE_SHAPES.some((rx) => rx.test(raw));
+}
 export function withholdNumbers(text: string): string {
-  return text.replace(/(?:\+?\d[\d\s-]{8,}\d)/g, (m) => (m.replace(/\D/g, '').length >= 10 ? '[number withheld]' : m));
+  return text.replace(PHONE_CANDIDATE, (m) => (isPhoneShaped(m) ? '[number withheld]' : m));
 }
 
 const slug = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
