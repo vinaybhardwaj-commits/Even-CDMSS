@@ -110,6 +110,9 @@ export interface FindingBlob {
   labProfile?: string;
   labTier?: string;
   labSourceProvenance?: Record<string, unknown> | null;
+  /** R2 §3.4 — five-state coverage per template source. Absent on pre-R2 / tier-3 rows
+   *  (never looked) → the chip reads `unknown`. Every field optional: a stored blob is data. */
+  templateCoverage?: { ot?: { status?: string; count?: number } | null; pac?: { status?: string; count?: number } | null; progress?: { status?: string; count?: number } | null } | null;
   stabilityAssessment?: string;
   corroborationTrack?: string;
   provenance?: { interested?: number; disinterested?: number; ratio?: number; needsHumanReview?: boolean } | null;
@@ -405,6 +408,16 @@ export function identityLine(row: Pick<SurfaceFinding, 'patientName' | 'uhid' | 
   return parts.length ? parts.join(' · ') : 'Unidentified patient';
 }
 
+// ── R2: the finding-class union incl. the delayed-SSI LAYOUT GUARD (constraints 6-12) ──
+//
+// 'delayed_ssi' = index IP + a later wound/SSI signal with NO second KX IP stay. Not OON,
+// not Even→Even. R2 ships NO detector and NO producer of this class — only the pure guards
+// below, so the card, chips, judgement cells and brief already survive it the day a later
+// ruling adds detection. Nothing on live data reaches this branch in R2.
+export type FindingClass = 'even_even' | 'out_of_network' | 'delayed_ssi';
+export const DELAYED_SSI_CLASS: FindingClass = 'delayed_ssi';
+export const isDelayedSsi = (row: Pick<SurfaceFinding, 'findingClass'>): boolean => row.findingClass === DELAYED_SSI_CLASS;
+
 // ── R1: the case card (CDMSS-READMISSIONS-R1-PRD v1.1 §3/§4, ratified 17 Aug 2026) ────
 // Everything below is additive. The lane helpers above stay (the route payload is still
 // lane-grouped, decision 11); the board flattens client-side and uses these.
@@ -469,7 +482,10 @@ export function cardIdentityLine(row: Pick<SurfaceFinding, 'patientName' | 'uhid
 
 /** Directly under the path, ONLY when true: unplanned AND same-condition (R1). Not a
  *  judgement, not stored. Reads the scalar columns first, the blob as the fallback. */
-export function situationLine(row: Pick<SurfaceFinding, 'planned' | 'sameCondition' | 'finding'>): string | null {
+export function situationLine(row: Pick<SurfaceFinding, 'planned' | 'sameCondition' | 'finding' | 'findingClass'>): string | null {
+  // R2 constraint 7: the delayed-SSI class has its own line and NEVER also fires
+  // "Unplanned return" — that line is the IP–IP pair's only.
+  if (isDelayedSsi(row)) return 'Situation · Delayed SSI';
   const planned = row.planned ?? row.finding?.planned?.verdict ?? null;
   const same = row.sameCondition ?? row.finding?.sameCondition?.verdict ?? null;
   return planned === 'unplanned' && same === 'same' ? 'Situation · Unplanned return' : null;
@@ -477,28 +493,56 @@ export function situationLine(row: Pick<SurfaceFinding, 'planned' | 'sameConditi
 
 // ── coverage chips (§3 zone 3) ───────────────────────────────────────────────────
 
-export type ChipState = 'present' | 'unknown' | 'n/a';
+/** R2 (constraints 13-16): five states. `unknown` = never looked OR the fetch faulted;
+ *  `absent` = looked, no row; `empty` = looked, rows but no usable text. Every state string
+ *  is user-visible copy (see chipText). */
+export type ChipState = 'present' | 'empty' | 'absent' | 'unknown' | 'n/a';
 export interface CoverageChip { key: string; label: string; state: ChipState }
 
-/** The eight chips, in the mockup's order. States are exactly the §3 table — missing is
- *  `unknown`, never "uneventful". OT / PAC / Progress / Bill are never `present` in R1. */
+/** templateCoverage status → chip state. `fetch_failed` and an absent object are BOTH
+ *  `unknown` (constraint 13: a fault is never `absent`); anything unrecognised is `unknown`. */
+export function templateChipState(entry: { status?: string | null } | null | undefined): ChipState {
+  switch (entry?.status) {
+    case 'present': return 'present';
+    case 'empty': return 'empty';
+    case 'absent': return 'absent';
+    default: return 'unknown';   // 'fetch_failed', missing, unrecognised
+  }
+}
+
+/** The chip's copy per state (constraints §4b): present solid, `empty` → "OT empty",
+ *  `absent` → "OT none", `unknown` → bare label (the R1 look), `n/a` → "OT n/a" greyed. */
+export function chipText(c: Pick<CoverageChip, 'label' | 'state'>): string {
+  switch (c.state) {
+    case 'empty': return `${c.label} empty`;
+    case 'absent': return `${c.label} none`;
+    case 'n/a': return `${c.label} n/a`;
+    default: return c.label;   // present, unknown — the style tells them apart
+  }
+}
+
+/** The eight chips, in the mockup's order. Missing is `unknown`, never "uneventful".
+ *  OT / PAC / Progress read the R2 templateCoverage; Bill stays `unknown` (n/a on OON /
+ *  no-second-stay) until R3 (constraint 22). */
 export function coverageChips(row: Pick<SurfaceFinding, 'findingClass' | 'cmNote' | 'finding' | 'indexCase'>): CoverageChip[] {
   const oon = row.findingClass === 'out_of_network';
+  const noSecondStay = isDelayedSsi(row);   // R2 guard: Readmit DS and Bill are structurally n/a
   // labSourceProvenance is typed as an open record on the blob — narrow each field.
   const p = row.finding?.labSourceProvenance ?? null;
   const indexCaseProv = typeof p?.indexCase === 'string' && p.indexCase !== '';
   const readmitCaseProv = typeof p?.readmitCase === 'string' && p.readmitCase !== '';
   const labs = typeof p?.structuredLabCount === 'number' && p.structuredLabCount > 0;
   const heldForm = typeof row.cmNote === 'string' && row.cmNote.trim() !== '';   // a form was held — LEAD or OON
+  const cov = row.finding?.templateCoverage ?? null;
   return [
     { key: 'index_ds', label: 'Index DS', state: indexCaseProv || row.indexCase != null ? 'present' : 'unknown' },
-    { key: 'readmit_ds', label: 'Readmit DS', state: readmitCaseProv ? 'present' : oon ? 'n/a' : 'unknown' },
+    { key: 'readmit_ds', label: 'Readmit DS', state: noSecondStay ? 'n/a' : readmitCaseProv ? 'present' : oon ? 'n/a' : 'unknown' },
     { key: 'labs', label: 'Labs', state: labs ? 'present' : 'unknown' },
-    { key: 'ot', label: 'OT', state: 'unknown' },
-    { key: 'pac', label: 'PAC', state: 'unknown' },
-    { key: 'progress', label: 'Progress', state: 'unknown' },
+    { key: 'ot', label: 'OT', state: templateChipState(cov?.ot) },
+    { key: 'pac', label: 'PAC', state: templateChipState(cov?.pac) },
+    { key: 'progress', label: 'Progress', state: templateChipState(cov?.progress) },
     { key: 'post_ipd', label: 'POST_IPD', state: heldForm ? 'present' : 'unknown' },
-    { key: 'bill', label: 'Bill', state: oon ? 'n/a' : 'unknown' },
+    { key: 'bill', label: 'Bill', state: oon || noSecondStay ? 'n/a' : 'unknown' },
   ];
 }
 
@@ -519,6 +563,7 @@ export function justificationLabel(row: Pick<SurfaceFinding, 'avoidable'>): stri
  *  `Index side only` — no justification verdict is ever made on the other hospital's stay
  *  (§5a), and the cell must not imply one. Even–Even rows keep the §4 mapping verbatim. */
 export function justificationCell(row: Pick<SurfaceFinding, 'avoidable' | 'findingClass'>): string {
+  if (isDelayedSsi(row)) return 'n/a';   // R2 constraint 10: no return stay to justify
   return row.findingClass === 'out_of_network' ? 'Index side only' : justificationLabel(row);
 }
 
@@ -532,7 +577,7 @@ export function judgementLabel(v: string | null | undefined): 'Suspected' | 'Not
 
 /** The `Return stay bill` cell (decision 7/10): `n/a` on OON, else the fixed unknown. */
 export function returnStayBill(row: Pick<SurfaceFinding, 'findingClass'>): string {
-  return row.findingClass === 'out_of_network' ? 'n/a' : 'unknown — not yet measured';
+  return row.findingClass === 'out_of_network' || isDelayedSsi(row) ? 'n/a' : 'unknown — not yet measured';
 }
 
 /** Small permanent text under the negligence cell. */

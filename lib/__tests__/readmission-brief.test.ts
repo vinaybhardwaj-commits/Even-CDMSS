@@ -32,8 +32,14 @@ const row = (over: Partial<SurfaceFinding> = {}): SurfaceFinding => ({
     exculpatory: [{ claim: 'patient non-adherent to dressing advice', corroborated: false }],
     avoidable: { verdict: 'needs_adjudication', reason: 'passes agree on the label but cite disjoint evidence' },
     labSourceProvenance: { indexCase: 'store', readmitCase: 'store', structuredLabCount: 6, indexDocumentId: 'DOC-1', readmitDocumentId: 'DOC-2' },
+    // R2: five-state coverage — one of each looked-state so the artefact table exercises them.
+    templateCoverage: { ot: { status: 'present', count: 1 }, pac: { status: 'absent', count: 0 }, progress: { status: 'empty', count: 3 } },
     stabilityAssessment: 'contradicted', corroborationTrack: 'lab_corroborated',
-    refusalRecord: [{ lookedFor: 'an intra-op note or OT record', found: false, note: 'no OT artefact is read in R1' }],
+    refusalRecord: [
+      { lookedFor: 'ot_note', found: true, note: '1 row(s) with usable text' },
+      { lookedFor: 'pac_note', found: false, note: 'no row in db13 for this stay/window' },
+      { lookedFor: 'progress_note', found: false, note: '3 row(s) exist but none carries usable text' },
+    ],
   },
   omissionEvidence: null,
   preventableInjury: 'suspected', negligence: 'unknown', judgementRuleVersion: 'readmit-judgement/1',

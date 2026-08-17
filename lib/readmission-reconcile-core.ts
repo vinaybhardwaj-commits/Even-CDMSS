@@ -54,9 +54,16 @@
  *     day it is populated. No numeric behaviour depends on it.
  */
 
+// The only import: the R2 coverage TYPE (lib/readmission-template-core.ts is pure too).
+import type { TemplateCoverage } from './readmission-template-core';
+
 // ── Evidence ────────────────────────────────────────────────────────────────────
 
-export type EvidenceSource = 'index_summary' | 'readmit_summary' | 'lab' | 'adt' | 'cm_form';
+/** R2 (READMISSIONS-R2 PRD v1.0 §3.3, T-2): source 4 = KX clinical templates — 'ot_note' |
+ *  'pac_note' | 'progress_note'. Their weight is decided by SIDE (R2-2, evidenceWeight
+ *  below), never by the source name alone. Adding a value here without a case in
+ *  evidenceWeight is a compile error — the old silent fall-through is gone. */
+export type EvidenceSource = 'index_summary' | 'readmit_summary' | 'lab' | 'adt' | 'cm_form' | 'ot_note' | 'pac_note' | 'progress_note';
 
 /**
  * Where a lab evidence item's number came from (Phase 1.5 §3).
@@ -90,13 +97,39 @@ export interface EvidenceItem {
 
 export interface EvidenceCatalog { items: EvidenceItem[] }
 
-/** PRD §5 rule 1. The CM form is an interested-but-not-clinical source (§5a):
- *  patient-reported, so NOT disinterested corroboration either. */
+export type EvidenceWeight = 'interested' | 'disinterested' | 'neither';
+
+/**
+ * PRD §5 rule 1, made EXHAUSTIVE in R2 (a new EvidenceSource without a branch here no
+ * longer compiles, so it can no longer corrupt the provenance ratio silently):
+ *   · index_summary — the audited team's own prose: interested.
+ *   · lab / adt / readmit_summary — disinterested.
+ *   · cm_form — interested-but-not-clinical (§5a): patient-reported, so NOT disinterested
+ *     corroboration either.
+ *   · ot_note / pac_note / progress_note (R2-2) — by SIDE, mirroring the two summaries:
+ *     index-stay template items are interested (the audited team's contemporaneous
+ *     record); readmit-stay items are disinterested (the other admission's record). PAC on
+ *     pre-admit OPR is index-side. An item with NO side is read as index-side — the
+ *     fail-closed weight, since interested evidence can never carry an avoidable verdict.
+ */
+export function evidenceWeight(item: Pick<EvidenceItem, 'source' | 'side'>): EvidenceWeight {
+  switch (item.source) {
+    case 'index_summary': return 'interested';
+    case 'lab': case 'adt': case 'readmit_summary': return 'disinterested';
+    case 'cm_form': return 'neither';
+    case 'ot_note': case 'pac_note': case 'progress_note':
+      return item.side === 'readmit' ? 'disinterested' : 'interested';
+    default: {
+      const exhaustive: never = item.source;
+      return exhaustive;
+    }
+  }
+}
 export function isDisinterested(item: EvidenceItem): boolean {
-  return item.source === 'lab' || item.source === 'adt' || item.source === 'readmit_summary';
+  return evidenceWeight(item) === 'disinterested';
 }
 export function isInterested(item: EvidenceItem): boolean {
-  return item.source === 'index_summary';
+  return evidenceWeight(item) === 'interested';
 }
 
 // ── Analyte bundles (PRD §5 rule 4) ─────────────────────────────────────────────
@@ -510,6 +543,10 @@ export interface ReadmissionFinding {
   /** Phase 1.5 §3 — the coverage tier this finding was built under, and what from. */
   labTier: LabTier;
   labSourceProvenance?: LabSourceProvenance | null;
+  /** R2 §3.4 — what was looked for in db13 templates and what was found, five honest
+   *  states per source. ABSENT from the blob = never looked (tier-3 / pre-R2 rows) → the
+   *  chip reads `unknown`. Blob-only; no column, no migration. */
+  templateCoverage?: TemplateCoverage | null;
   /** Never 'corroborated' from absence of labs (§5 rule 6). */
   stabilityAssessment: 'contradicted' | 'corroborated' | 'unverifiable';
   corroborationTrack: 'lab_corroborated' | 'prose_only';
@@ -536,6 +573,8 @@ export interface ReconcileInput {
    *  callers keep their exact behaviour. */
   labTier?: LabTier;
   labSourceProvenance?: LabSourceProvenance | null;
+  /** R2: rides the finding unchanged and writes the constraint-21 refusal lines. */
+  templateCoverage?: TemplateCoverage | null;
 }
 
 const byId = (catalog: EvidenceCatalog) => {
@@ -729,6 +768,7 @@ export function reconcileFinding(input: ReconcileInput): ReadmissionFinding {
 
   const labTier = input.labTier ?? inferLabTier(catalog);
   const labSourceProvenance = input.labSourceProvenance ?? null;
+  const templateCoverage = input.templateCoverage ?? null;
 
   const sameCondition = resolveSameCondition(a.sameCondition ?? null, catalog, input.formFlags);
 
@@ -737,11 +777,11 @@ export function reconcileFinding(input: ReconcileInput): ReadmissionFinding {
       findingClass: input.findingClass, verdictScope: 'pair',
       planned: null, sameCondition, omissions: [], exculpatory: [], avoidable: null,
       promoteToFull: sameCondition?.verdict === 'same',
-      labProfile, labTier, labSourceProvenance,
+      labProfile, labTier, labSourceProvenance, templateCoverage,
       stabilityAssessment: 'unverifiable', corroborationTrack: labProfile === 'no_labs' ? 'prose_only' : 'lab_corroborated',
       provenance: provenanceOf([...(sameCondition?.evidenceIds ?? [])], m),
       weakestStep: a.weakestStep ?? null,
-      refusalRecord: a.refusalRecord ?? [],
+      refusalRecord: [...(a.refusalRecord ?? []), ...templateRefusalLines(templateCoverage)],
     };
   }
 
@@ -791,16 +831,43 @@ export function reconcileFinding(input: ReconcileInput): ReadmissionFinding {
   if (labTier === 'tier2') refusal.push({ lookedFor: 'structured lab values for this patient inside the index window', found: false, note: 'tier 2: labs are the ones the doctor wrote in the discharge summary, cross-read against the readmit team’s account — a summary-vs-summary contradiction, not an independent numeric one' });
   if (labTier === 'tier3') refusal.push({ lookedFor: 'an index discharge-summary PDF', found: false, note: 'tier 3: no index document could be read — this pair is not auditable' });
   if (oon) refusal.push({ lookedFor: 'a readmit discharge summary', found: false, note: 'the readmission happened outside Even; readmit facts are patient-reported via the CM note' });
+  refusal.push(...templateRefusalLines(templateCoverage));
 
   return {
     findingClass: input.findingClass,
     verdictScope: oon ? 'index_side_only' : 'pair',
     planned, sameCondition, omissions, exculpatory, avoidable,
-    labProfile, labTier, labSourceProvenance, stabilityAssessment, corroborationTrack, provenance,
+    labProfile, labTier, labSourceProvenance, templateCoverage, stabilityAssessment, corroborationTrack, provenance,
     weakestStep: a.weakestStep ?? null,
     refusalRecord: refusal,
     ...(oon ? { readmitFactsPatientReported: true, identityResolved: true } : {}),
   };
+}
+
+/**
+ * R2 constraint 21: every template fetch that RAN writes a refusal-record line
+ * `{ lookedFor: 'ot_note' | 'pac_note' | 'progress_note', found }`. A chip `absent` MUST
+ * correspond to found:false; `empty` (rows exist, no usable text) is also found:false — no
+ * usable text was found — with the note saying why; `present` writes found:true so the
+ * record is complete; `fetch_failed` writes NOTHING (the look did not complete → chip
+ * `unknown` ↔ unwritten line). Never-looked → coverage null → nothing written.
+ */
+export function templateRefusalLines(cov: TemplateCoverage | null | undefined): ReadmissionFinding['refusalRecord'] {
+  if (!cov) return [];
+  const out: ReadmissionFinding['refusalRecord'] = [];
+  const one = (lookedFor: 'ot_note' | 'pac_note' | 'progress_note', e: TemplateCoverage[keyof TemplateCoverage] | undefined) => {
+    if (!e) return;
+    switch (e.status) {
+      case 'present': out.push({ lookedFor, found: true, note: `${e.count} row(s) with usable text` }); break;
+      case 'empty': out.push({ lookedFor, found: false, note: `${e.count} row(s) exist but none carries usable text` }); break;
+      case 'absent': out.push({ lookedFor, found: false, note: 'no row in db13 for this stay/window' }); break;
+      case 'fetch_failed': break;   // deliberately unwritten — the look did not complete
+    }
+  };
+  one('ot_note', cov.ot);
+  one('pac_note', cov.pac);
+  one('progress_note', cov.progress);
+  return out;
 }
 
 function provenanceOf(citedIds: string[], m: Map<string, EvidenceItem>): ReadmissionFinding['provenance'] {

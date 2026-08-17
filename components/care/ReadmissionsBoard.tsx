@@ -23,7 +23,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { RotateCw, Download } from 'lucide-react';
 import {
-  cardIdentityLine, coverageChips, countsLine, isHeldOut, isReviewFinding, judgementLabel,
+  cardIdentityLine, chipText, coverageChips, countsLine, isHeldOut, isReviewFinding, judgementLabel,
   justificationCell, NEGLIGENCE_ADVISORY, pathSegments, returnStayBill, situationLine,
   sortForCardList,
   type ChipState, type LaneGroup, type SurfaceFinding, type SurfaceTiles,
@@ -48,10 +48,14 @@ type CaseDetail = {
   readmitExtract: ExtractSubset | null;
 };
 
+/** R2 five states (constraints §4b): present solid · empty / absent / unknown hollow
+ *  (the copy tells them apart — see chipText) · n/a greyed. Exhaustive by the compiler. */
 const CHIP_STATE: Record<ChipState, string> = {
-  present: 'bg-emerald-100 text-emerald-800',
-  unknown: 'bg-slate-100 text-slate-500',
-  'n/a': 'bg-slate-50 text-slate-400 line-through',
+  present: 'bg-emerald-100 text-emerald-800 border border-emerald-200',
+  empty: 'bg-transparent text-amber-800 border border-amber-300',
+  absent: 'bg-transparent text-slate-600 border border-slate-300',
+  unknown: 'bg-transparent text-slate-500 border border-slate-200 border-dashed',
+  'n/a': 'bg-slate-50 text-slate-400 border border-slate-100 line-through',
 };
 
 /** IST clock stamp for the brief header — the only clock the composer sees. */
@@ -137,7 +141,7 @@ function CaseCard({ f }: { f: SurfaceFinding }) {
         {coverageChips(f).map((c) => (
           <span key={c.key} title={`${c.label}: ${c.state}`}
             className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${CHIP_STATE[c.state]}`}>
-            {c.label} · {c.state}
+            {chipText(c)}
           </span>
         ))}
       </div>

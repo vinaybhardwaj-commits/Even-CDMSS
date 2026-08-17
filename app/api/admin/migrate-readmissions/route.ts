@@ -4,6 +4,7 @@ import type { NextRequest } from 'next/server';
 import { sql } from '@/lib/db';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { deriveJudgements, JUDGEMENT_RULE_VERSION, type JudgementInput } from '@/lib/readmission-reconcile-core';
+import { READMIT_ENGINE_VERSION } from '@/lib/readmission/store';
 
 export const runtime = 'nodejs';
 
@@ -36,21 +37,23 @@ function asBlob(v: unknown): JudgementInput | null {
 }
 
 /**
- * One backfill batch. Rows are selected by the STALENESS predicate, not by engine
- * version, so every audited row at every engine version converges on the current rule
- * version. A row whose blob cannot be read still gets 'unknown'/'unknown' — that is the
+ * One backfill batch. Rows are selected by the STALENESS predicate, ENGINE-SCOPED to the
+ * current READMIT_ENGINE_VERSION (R2-5): rows orphaned by an engine bump are never
+ * rescanned — the surface and the badge cannot see them, so re-deriving them is wasted
+ * work. A row whose blob cannot be read still gets 'unknown'/'unknown' — that is the
  * rule's own answer for "nothing to read", and stamping the version keeps the batch from
  * revisiting it forever.
  */
-async function backfillJudgements(): Promise<{ scanned: number; updated: number; remaining: number; ruleVersion: string }> {
+async function backfillJudgements(): Promise<{ scanned: number; updated: number; remaining: number; ruleVersion: string; engineVersion: string }> {
   const rows = (await sql(
     `SELECT id, finding FROM readmission_findings
       WHERE audit_status = 'audited'
+        AND engine_version = $2
         AND (preventable_injury IS NULL OR negligence IS NULL
              OR judgement_rule_version IS DISTINCT FROM $1)
       ORDER BY audited_at ASC NULLS LAST
       LIMIT ${BACKFILL_BATCH}`,
-    [JUDGEMENT_RULE_VERSION],
+    [JUDGEMENT_RULE_VERSION, READMIT_ENGINE_VERSION],
   )) as Array<{ id: string; finding: unknown }>;
   let updated = 0;
   for (const r of rows) {
@@ -67,11 +70,12 @@ async function backfillJudgements(): Promise<{ scanned: number; updated: number;
   const rem = (await sql(
     `SELECT count(*)::int AS n FROM readmission_findings
       WHERE audit_status = 'audited'
+        AND engine_version = $2
         AND (preventable_injury IS NULL OR negligence IS NULL
              OR judgement_rule_version IS DISTINCT FROM $1)`,
-    [JUDGEMENT_RULE_VERSION],
+    [JUDGEMENT_RULE_VERSION, READMIT_ENGINE_VERSION],
   )) as Array<{ n: number }>;
-  return { scanned: rows.length, updated, remaining: Number(rem[0]?.n ?? 0), ruleVersion: JUDGEMENT_RULE_VERSION };
+  return { scanned: rows.length, updated, remaining: Number(rem[0]?.n ?? 0), ruleVersion: JUDGEMENT_RULE_VERSION, engineVersion: READMIT_ENGINE_VERSION };
 }
 
 export async function POST(req: NextRequest) {
@@ -150,7 +154,7 @@ export async function POST(req: NextRequest) {
     steps.rows = String(counts[0]?.n ?? 0);
     // R1 versioned backfill — one batch per request, idempotent, re-run until remaining = 0.
     const backfill = await backfillJudgements();
-    steps.r1_judgement_backfill = `scanned ${backfill.scanned}, updated ${backfill.updated}, remaining ${backfill.remaining} @ ${backfill.ruleVersion}`;
+    steps.r1_judgement_backfill = `scanned ${backfill.scanned}, updated ${backfill.updated}, remaining ${backfill.remaining} @ ${backfill.ruleVersion} (engine ${backfill.engineVersion})`;
     return NextResponse.json({ ok: true, steps, backfill });
   } catch (e) {
     return NextResponse.json({ ok: false, steps, error: String((e as Error).message) }, { status: 500 });

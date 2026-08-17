@@ -27,8 +27,13 @@ import type { ReadmissionFinding, LabTier } from '../readmission-reconcile-core'
 import { deriveJudgements, JUDGEMENT_RULE_VERSION } from '../readmission-reconcile-core';
 
 /** Flags (ship OFF): the Vertex surface is GEMINI_READMIT_AUDIT; the engine version
- *  starts at readmission/0.1 and bumps ONLY on behaviour change (house rule). */
-export const READMIT_ENGINE_VERSION = 'readmission/0.1';
+ *  bumps ONLY on behaviour change (house rule).
+ *  0.1 → 0.2 (R2, 17 Aug 2026, V ruled R2-1): the catalog gained source 4 (KX OT / PAC /
+ *  progress templates), so the backlog re-audits WITH templates. Traced mechanics: the
+ *  next sweep INSERTs a parallel row set at 0.2 as 'detected', the surface and the badge
+ *  read 0.2 only (board blank, badge 0 until the cron refills at ≤ 60/day), 0.1 rows are
+ *  orphaned in place, PDF extraction is not re-paid (DOC_EXTRACT_VERSION unchanged). */
+export const READMIT_ENGINE_VERSION = 'readmission/0.2';
 
 export type AuditStatus = 'detected' | 'audited' | 'not_auditable' | 'excluded';
 

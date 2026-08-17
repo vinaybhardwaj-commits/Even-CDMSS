@@ -46,9 +46,9 @@ Care-manager copy · advisory throughout · dedup key `IP-2026-0101|IP-2026-0342
 | Index DS | present |
 | Readmit DS | present |
 | Labs | present |
-| OT | unknown |
-| PAC | unknown |
-| Progress | unknown |
+| OT | present |
+| PAC | absent |
+| Progress | empty |
 | POST_IPD | present |
 | Bill | unknown |
 
@@ -63,7 +63,8 @@ Care-manager copy · advisory throughout · dedup key `IP-2026-0101|IP-2026-0342
 - Return stay bill: unknown — not yet measured [finding row]
 
 ### Looked for and not found
-- an intra-op note or OT record — no OT artefact is read in R1 [audit finding]
+- pac_note — no row in db13 for this stay/window [audit finding]
+- progress_note — 3 row(s) exist but none carries usable text [audit finding]
 
 ## Part 2 — Actuarial / low-value-care
 

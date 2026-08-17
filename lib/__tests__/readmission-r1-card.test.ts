@@ -92,11 +92,18 @@ test('situation line only when unplanned AND same-condition; reads the blob when
 
 const states = (row: SurfaceFinding) => Object.fromEntries(coverageChips(row).map((c) => [c.key, c.state]));
 
-test('eight chips in order; OT / PAC / Progress / Bill are never present in R1', () => {
+// REWRITTEN for R2 (READMISSIONS-R2 PRD v1.0 §3.9): OT / PAC / Progress are no longer
+// pinned to `unknown` — they read the five-state templateCoverage; a row with NO coverage
+// (never looked: R1-era or tier-3) still reads `unknown`. Bill stays `unknown` (constraint 22).
+test('eight chips in order; OT / PAC / Progress read templateCoverage (five states) and are unknown when never looked; Bill never present', () => {
   const chips = coverageChips(f());
   assert.deepEqual(chips.map((c) => c.label), ['Index DS', 'Readmit DS', 'Labs', 'OT', 'PAC', 'Progress', 'POST_IPD', 'Bill']);
-  const s = states(f());
-  assert.equal(s.ot, 'unknown'); assert.equal(s.pac, 'unknown'); assert.equal(s.progress, 'unknown'); assert.equal(s.bill, 'unknown');
+  const never = states(f());
+  assert.equal(never.ot, 'unknown'); assert.equal(never.pac, 'unknown'); assert.equal(never.progress, 'unknown'); assert.equal(never.bill, 'unknown');
+  const looked = states(f({ finding: { templateCoverage: { ot: { status: 'present', count: 1 }, pac: { status: 'absent', count: 0 }, progress: { status: 'empty', count: 3 } } } }));
+  assert.equal(looked.ot, 'present'); assert.equal(looked.pac, 'absent'); assert.equal(looked.progress, 'empty'); assert.equal(looked.bill, 'unknown');
+  const faulted = states(f({ finding: { templateCoverage: { ot: { status: 'fetch_failed', count: 0 }, pac: { status: 'fetch_failed', count: 0 }, progress: { status: 'fetch_failed', count: 0 } } } }));
+  assert.equal(faulted.ot, 'unknown'); assert.equal(faulted.pac, 'unknown'); assert.equal(faulted.progress, 'unknown');   // a fault is never absent
 });
 
 test('POST_IPD is a fact about holding a form: present on a LEAD pair with cmNote, present on OON with a note, unknown on OON without', () => {

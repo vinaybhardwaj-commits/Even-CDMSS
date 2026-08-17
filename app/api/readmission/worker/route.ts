@@ -61,21 +61,33 @@ export async function GET(req: NextRequest) {
   const p = req.nextUrl.searchParams;
 
   // ── THE BATCH MUST FIT THE BOX (derived from PROVIDER_BUDGETS, the IPD discipline) ──
-  // WORST CASE PER FINDING (vertex audit_ipd budget = 200,000 ms × 1 try per leg):
+  // WORST CASE PER FINDING (vertex audit_ipd budget = 200,000 ms × 1 try per leg).
+  // REDONE 17 Aug 2026 for R2 (READMISSIONS-R2 PRD v1.0 §3.6, T-11): db13 reads grew by
+  // the source-4 template fetches. No fourth Vertex leg was added — templates are extra
+  // catalog items on the existing legs, so the leg term is unchanged.
   //
   //   lane D promoted (decision 14):  condition pass + recon A + recon B = 3 legs
   //   3 × 200,000                                   = 600,000 ms
-  //   db13 reads (2 summaries + 2 lab sets)         ≈  30,000 ms
-  //   per finding                                     ~630,000 ms
+  //   db13 reads (2 summaries + 2 lab sets)         ≈  30,000 ms   (unchanged)
+  //   db13 template fetches (R2): OT + progress on   ≈  60,000 ms   worst case — five
+  //     both stays + PAC two-hop, ALL in one              fetches in parallel with each
+  //     Promise.all beside the lab reads                   other AND with the lab reads; the
+  //                                                        slowest source may run 2 serial
+  //                                                        hops (primary → fallback), so the
+  //                                                        term is sized at 2 hops × ~30 s
+  //   per finding                                     ~690,000 ms
   //   box                                              800,000 ms
-  //   waves ceil(max 3 / conc 3) = 1 → wall ≈ one worst-case finding ≈ 630,000 ms
-  //   margin                                          ~170,000 ms   guard PASS
+  //   waves ceil(max 3 / conc 3) = 1 → wall ≈ one worst-case finding ≈ 690,000 ms
+  //   margin                                          ~110,000 ms   guard PASS
   //
-  // A second wave would be ~1,260,000 ms and CANNOT fit — max stays ≤ conc by default.
-  // (Plain lane A/B findings are 2 legs ≈ 430 s; OON is 1 leg ≈ 230 s. The arithmetic
-  // sizes against the worst case, not the average.)
-  // ⚠️ These numbers are coupled: max, conc, maxDuration, the leg count per lane, and
-  // PROVIDER_BUDGETS.vertex.audit_ipd. Changing any one means redoing this arithmetic.
+  // A second wave would be ~1,380,000 ms and CANNOT fit — max stays ≤ conc by default
+  // (waves = 1 holds while max ≤ conc). Plain lane A/B findings are 2 legs ≈ 490 s; OON
+  // is 1 leg ≈ 290 s. The arithmetic sizes against the worst case, not the average. If the
+  // template term measures larger than 60 s live, drop `max`, not the templates (templates
+  // PRD §4.5). No cron change (R2-1).
+  // ⚠️ These numbers are coupled: max, conc, maxDuration, the leg count per lane,
+  // PROVIDER_BUDGETS.vertex.audit_ipd, AND the db13 read set. Changing any one means
+  // redoing this arithmetic in the same commit.
   const max = Math.max(1, Math.min(10, Number(p.get('max') || 3)));
   const conc = Math.max(1, Math.min(5, Number(p.get('conc') || 3)));
   const dayParam = p.get('day');

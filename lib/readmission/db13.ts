@@ -498,3 +498,124 @@ export async function fetchFormReadmissions(): Promise<FormReadmission[]> {
   }
   return parsed;
 }
+
+// ── R2 — KX clinical templates as SOURCE 4 (CDMSS-READMISSIONS-R2-PRD v1.0 §3.1) ────
+//
+// db13 tables kx_clinical_template_ot_notes / _pac_reports / _progress_reports (confirmed
+// live via Metabase 17 Aug 2026). PHI POSTURE (T-6, hard rule): `patient_name` and
+// `patient_mobile` are NEVER in any SELECT below — the row type in
+// lib/readmission-template-core.ts has no field for them. `note` / `component_json` may
+// carry a name inside the text; lib/readmission/assemble.ts scrubs EVERY string.
+//
+// Fail-safe: any faulting hop → outcome 'fetch_failed' (chip `unknown`, NEVER `absent`);
+// rows obtained by a hop that did succeed are still returned so the recon can cite them.
+//
+// ⚠️ INFERRED SQL throughout (no live db13 in this sandbox). Hop recipe is the templates
+// PRD's MEASURED map (§2 / T-3): encounter_id primary; discharged-history fallback
+// uhid + ipd_no; PAC additionally on uhid inside [admit − 30d, discharge] because the PAC
+// majority is pre-admit OPR / OPVST and PAC is NEVER required to match on encounter alone.
+//
+//   OT / progress, primary:   SELECT <cols> FROM <table>
+//                              WHERE encounter_id = '<enc>' AND status = 'final'
+//                              ORDER BY created_at ASC LIMIT <cap>
+//   OT / progress, fallback:  SELECT <cols> FROM <table>
+//                              WHERE uhid = '<uhid>' AND encounter_id = '<ipd_no>' AND status = 'final'
+//                              ORDER BY created_at ASC LIMIT <cap>
+//   PAC, hop (a):             SELECT <cols> FROM kx_clinical_template_pac_reports
+//                              WHERE encounter_id = '<enc>' AND status = 'final'
+//                              ORDER BY created_at ASC LIMIT 5
+//   PAC, hop (b):             SELECT <cols> FROM kx_clinical_template_pac_reports
+//                              WHERE uhid = '<uhid>' AND created_at BETWEEN '<from>' AND '<to>' AND status = 'final'
+//                              ORDER BY created_at ASC LIMIT 5
+//   <cols> = uid, encounter_id, uhid, template_name, status, created_at, note, component_json
+//            (+ surgery_name on the OT table only — INFERRED that PAC / progress lack the column;
+//             selecting it there would fault every fetch, so they map surgery_name = null)
+
+import {
+  TEMPLATE_ROW_CAP, dedupTemplateRows, planOtProgressHops, planPacHops,
+  type KxTemplateRow, type TemplateHop, type TemplateSource,
+} from '../readmission-template-core';
+
+export interface TemplateFetchResult { outcome: 'ok' | 'fetch_failed'; rows: KxTemplateRow[] }
+
+const TEMPLATE_TABLE: Readonly<Record<TemplateSource, string>> = {
+  ot_note: 'kx_clinical_template_ot_notes',
+  pac_note: 'kx_clinical_template_pac_reports',
+  progress_note: 'kx_clinical_template_progress_reports',
+};
+const isUhid = (u: string) => /^[A-Za-z0-9/_-]{2,40}$/.test(u);
+const isIsoTs = (t: string) => /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/.test(t);
+
+function templateCols(source: TemplateSource): string {
+  // patient_name / patient_mobile are DELIBERATELY not here and must never be added.
+  return `uid, encounter_id, uhid, template_name, status, created_at, note, component_json${source === 'ot_note' ? ', surgery_name' : ''}`;
+}
+
+function toTemplateRow(r: Record<string, unknown>): KxTemplateRow {
+  const cj = r.component_json;
+  return {
+    uid: s(r.uid), encounterId: s(r.encounter_id), uhid: s(r.uhid),
+    templateName: s(r.template_name), status: s(r.status), createdAt: s(r.created_at),
+    surgeryName: s(r.surgery_name),
+    note: r.note == null ? null : String(r.note),
+    componentJson: cj == null ? null : typeof cj === 'string' ? cj : JSON.stringify(cj),
+  };
+}
+
+function hopWhere(hop: TemplateHop): string | null {
+  switch (hop.kind) {
+    case 'encounter':
+      return isEncounterId(hop.encounterId) ? `encounter_id = '${esc(hop.encounterId)}'` : null;
+    case 'uhid_ipdno':
+      return isUhid(hop.uhid) && isEncounterId(hop.ipdNo) ? `uhid = '${esc(hop.uhid)}' AND encounter_id = '${esc(hop.ipdNo)}'` : null;
+    case 'uhid_window':
+      return isUhid(hop.uhid) && isIsoTs(hop.fromTs) && isIsoTs(hop.toTs)
+        ? `uhid = '${esc(hop.uhid)}' AND created_at BETWEEN '${esc(hop.fromTs)}' AND '${esc(hop.toTs)}'` : null;
+  }
+}
+
+/** One hop. Throws on a query fault (the caller turns that into 'fetch_failed'); an
+ *  invalid identifier is not a fault — it is simply a hop that cannot run ([]). */
+async function runHop(source: TemplateSource, hop: TemplateHop): Promise<KxTemplateRow[]> {
+  const where = hopWhere(hop);
+  if (!where) return [];
+  const rows = await metabaseQuery(
+    `SELECT ${templateCols(source)} FROM ${TEMPLATE_TABLE[source]}
+      WHERE ${where} AND status = 'final'
+      ORDER BY created_at ASC
+      LIMIT ${TEMPLATE_ROW_CAP[source]}`);
+  return rows.map(toTemplateRow);
+}
+
+/** OT / progress: primary encounter hop; the discharged-history fallback ONLY when the
+ *  primary returned nothing (constraint 16). */
+async function fetchEncounterTemplates(source: 'ot_note' | 'progress_note', encounterId: string, fallback: { uhid: string | null; ipdNo: string | null } | null): Promise<TemplateFetchResult> {
+  const hops = planOtProgressHops({ encounterId, fallback });
+  try {
+    const primary = await runHop(source, hops[0]);
+    if (primary.length || hops.length < 2) return { outcome: 'ok', rows: primary };
+    return { outcome: 'ok', rows: await runHop(source, hops[1]) };
+  } catch {
+    return { outcome: 'fetch_failed', rows: [] };
+  }
+}
+
+export function fetchOtNotes(encounterId: string, fallback: { uhid: string | null; ipdNo: string | null } | null = null): Promise<TemplateFetchResult> {
+  return fetchEncounterTemplates('ot_note', encounterId, fallback);
+}
+export function fetchProgressNotes(encounterId: string, fallback: { uhid: string | null; ipdNo: string | null } | null = null): Promise<TemplateFetchResult> {
+  return fetchEncounterTemplates('progress_note', encounterId, fallback);
+}
+
+/**
+ * PAC: BOTH hops always run (in parallel), union deduped by uid, capped. Any faulting hop
+ * → 'fetch_failed' even when the other hop returned rows (those rows are still returned
+ * for the catalog; the chip just cannot claim the look was complete).
+ */
+export async function fetchPacNotes(encounterId: string, uhid: string | null, window: { fromTs: string; toTs: string } | null): Promise<TemplateFetchResult> {
+  const hops = planPacHops({ encounterId, uhid, window });
+  const settled = await Promise.allSettled(hops.map((h) => runHop('pac_note', h)));
+  const rows = dedupTemplateRows(settled.flatMap((r) => (r.status === 'fulfilled' ? r.value : []))).slice(0, TEMPLATE_ROW_CAP.pac_note);
+  const faulted = settled.some((r) => r.status === 'rejected');
+  return { outcome: faulted ? 'fetch_failed' : 'ok', rows };
+}

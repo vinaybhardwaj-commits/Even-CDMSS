@@ -24,6 +24,9 @@ const sourceLabel = (i: EvidenceItem): string => {
     case 'lab': return `raw lab value (disinterested)${i.side ? `, ${i.side} stay` : ''}${i.at ? `, ${i.at}` : ''}`;
     case 'adt': return 'admission/discharge record (disinterested)';
     case 'cm_form': return 'care-manager note — patient-reported (interested-but-not-clinical)';
+    // R2 source 4: weight by SIDE (R2-2), exactly as the two summaries are weighed.
+    case 'ot_note': case 'pac_note': case 'progress_note':
+      return `${i.source === 'ot_note' ? 'OT note' : i.source === 'pac_note' ? 'pre-anaesthesia check' : 'progress note'} — ${i.side === 'readmit' ? 'the readmit team\'s contemporaneous record (disinterested)' : 'the treating team\'s contemporaneous record (interested)'}`;
     default: return 'evidence';
   }
 };
@@ -51,6 +54,7 @@ export function buildFullReconPrompt(catalog: EvidenceCatalog, facts: {
 
 EVIDENCE LEDGER:
 ${renderEvidence(catalog)}
+Source 4 — OT / PAC / progress items ([OTn], [PACn], [Pn]) are the teams' contemporaneous notes from db13: index-stay items carry the same interest as the index summary; readmit-stay items are the other admission's record (disinterested). A template that is absent from the ledger is UNKNOWN, never "uneventful" — do not infer a clean intra-op course from silence.
 
 TASKS:
 1. planned — was this return intended BEFORE the index discharge? Planned counts ONLY if foreshadowed in the INDEX summary (written before the outcome). Intent asserted only in the readmit note does NOT count.
@@ -85,6 +89,7 @@ export function buildSecondAvoidablePrompt(catalog: EvidenceCatalog, facts: {
     system: `You are the physician's defence counsel in a hospital utilisation review. A readmission ${facts.gapDays} days after discharge has been questioned. Your job is to test whether "avoidable" would survive scrutiny: argue the strongest honest case that the readmission was justified, then concede only what the disinterested evidence forces you to concede. You must reach a verdict either way.`,
     user: `EVIDENCE LEDGER (lab-timing profile: ${facts.labProfile}):
 ${renderEvidence(catalog)}
+Source 4 — OT / PAC / progress items ([OTn], [PACn], [Pn]) are the teams' contemporaneous notes from db13: index-stay items carry the same interest as the index summary; readmit-stay items are the other admission's record (disinterested). A template that is absent from the ledger is UNKNOWN, never "uneventful" — do not infer a clean intra-op course from silence.
 
 After making the strongest defence, give your final verdict on whether this readmission was avoidable (the index care or discharge decision set it up) or justified (clinically necessary, not attributable to the index care). Cite the evidence ids that finally carried your verdict — the decisive items, not everything you read.
 
@@ -104,6 +109,7 @@ export function buildConditionPassPrompt(catalog: EvidenceCatalog, facts: { gapD
     system: `You are a clinical physiology auditor. A patient had two inpatient stays ${facts.gapDays} days apart, under a different doctor and department. Decide ONLY whether the second stay treats the SAME failing physiology as the first, or a genuinely different illness (a repeat hospitalization). A disguised same-condition bounce that switched departments is exactly what you are looking for.`,
     user: `EVIDENCE LEDGER:
 ${renderEvidence(catalog)}
+Source 4 — OT / PAC / progress items ([OTn], [PACn], [Pn]) are the teams' contemporaneous notes from db13: index-stay items carry the same interest as the index summary; readmit-stay items are the other admission's record (disinterested). A template that is absent from the ledger is UNKNOWN, never "uneventful" — do not infer a clean intra-op course from silence.
 
 Decide on the failing-organ analyte bundle (renal = creatinine+BUN+potassium; cardiac = BNP+weight+sodium; hepatic = bilirubin+INR+ammonia) and the clinical course — NOT the diagnosis strings, which a coder can rename.
 
@@ -127,6 +133,7 @@ export function buildOonPrompt(catalog: EvidenceCatalog, facts: {
     system: `You are a hospital-governance auditor. A patient discharged from Even Hospital was later readmitted AT ANOTHER HOSPITAL (reported by a care manager; readmit date ${facts.reportedReadmitDate ?? 'unknown'}). There is no readmit discharge summary in any system. You therefore audit the EVEN INDEX SIDE ONLY: did our discharge set the patient up to bounce? You must NOT judge the other hospital's care and must NOT decide whether the readmission was avoidable — that verdict is out of scope by design.`,
     user: `EVIDENCE LEDGER (lab-timing profile: ${facts.labProfile}; the care-manager note is patient-reported):
 ${renderEvidence(catalog)}
+Source 4 — OT / PAC / progress items ([OTn], [PACn], [Pn]) are the teams' contemporaneous notes from db13: index-stay items carry the same interest as the index summary; readmit-stay items are the other admission's record (disinterested). A template that is absent from the ledger is UNKNOWN, never "uneventful" — do not infer a clean intra-op course from silence.
 
 TASKS (index side only):
 1. planned — was a return foreshadowed in the index summary, or recorded as planned in the care-manager note?

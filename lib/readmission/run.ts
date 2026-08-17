@@ -34,8 +34,11 @@ import {
 import {
   fetchAdtEncounters, fetchFormReadmissions, fetchSummaryRecord,
   fetchDischargeDocForEncounter, resolveIndividualUid, fetchStructuredLabs,
+  fetchOtNotes, fetchPacNotes, fetchProgressNotes,
 } from './db13';
-import type { StructuredLabRow } from './db13';
+import type { StructuredLabRow, TemplateFetchResult } from './db13';
+import { flattenTemplateRow, pacWindow } from '../readmission-template-core';
+import type { FlattenedTemplate, TemplateFetchOutcomes } from '../readmission-template-core';
 import { assembleThreeSource } from './assemble';
 import type { CaseSource, ThreeSourceInputs } from './assemble';
 import {
@@ -242,6 +245,51 @@ interface AssembledPair {
   indexDischargeAt: string | null;
 }
 
+/**
+ * R2 source 4 (READMISSIONS-R2 PRD v1.0 §3.5): the OT / PAC / progress fetches for one
+ * finding — index stay always; readmit stay for Even→Even pairs; PAC index-only (its
+ * window is the index pre-admit period). ALL hops run in one Promise.all: the worker's
+ * ~170 s margin does not survive serial db13 round-trips. Runs ONLY after the tier-3
+ * short-circuit in assembleForRow — a not-auditable row never looks, so its coverage is
+ * unwritten and its chips read `unknown` (constraint 21, stated not "fixed").
+ *
+ * Outcome per SOURCE spans both stays: any faulting fetch for that source → 'fetch_failed'
+ * (chip `unknown`, never `absent`), rows from the fetches that did succeed still return.
+ * Rows come back flattened but NOT de-identified — assemble.ts is the choke point.
+ */
+async function fetchTemplatesForRow(args: {
+  indexEncounterId: string; readmitEncounterId: string | null; oon: boolean;
+  uhid: string | null; summaryUhid: string | null; summaryIpdNo: string | null;
+  indexAdmitAt: string | null; indexDischargeAt: string | null;
+}): Promise<{ templates: FlattenedTemplate[]; templateFetch: TemplateFetchOutcomes }> {
+  const uhid = args.uhid ?? args.summaryUhid;
+  // The discharged-history fallback hop exists only when a discharge row exists (its uhid + ipd_no).
+  const indexFallback = args.summaryIpdNo ? { uhid: args.summaryUhid ?? uhid, ipdNo: args.summaryIpdNo } : null;
+  const readmitFallback = args.readmitEncounterId ? { uhid, ipdNo: args.readmitEncounterId } : null;
+  const doReadmit = !args.oon && !!args.readmitEncounterId;
+  const none: TemplateFetchResult = { outcome: 'ok', rows: [] };
+
+  const [otIdx, prIdx, pacIdx, otRd, prRd] = await Promise.all([
+    fetchOtNotes(args.indexEncounterId, indexFallback),
+    fetchProgressNotes(args.indexEncounterId, indexFallback),
+    fetchPacNotes(args.indexEncounterId, uhid, pacWindow(args.indexAdmitAt, args.indexDischargeAt)),
+    doReadmit ? fetchOtNotes(args.readmitEncounterId!, readmitFallback) : Promise.resolve(none),
+    doReadmit ? fetchProgressNotes(args.readmitEncounterId!, readmitFallback) : Promise.resolve(none),
+  ]);
+  const templates: FlattenedTemplate[] = [
+    ...otIdx.rows.map((r) => flattenTemplateRow(r, 'ot_note', 'index')),
+    ...otRd.rows.map((r) => flattenTemplateRow(r, 'ot_note', 'readmit')),
+    ...pacIdx.rows.map((r) => flattenTemplateRow(r, 'pac_note', 'index')),
+    ...prIdx.rows.map((r) => flattenTemplateRow(r, 'progress_note', 'index')),
+    ...prRd.rows.map((r) => flattenTemplateRow(r, 'progress_note', 'readmit')),
+  ];
+  const failed = (...rs: TemplateFetchResult[]): 'ok' | 'fetch_failed' => (rs.some((r) => r.outcome === 'fetch_failed') ? 'fetch_failed' : 'ok');
+  return {
+    templates,
+    templateFetch: { ot_note: failed(otIdx, otRd), pac_note: failed(pacIdx), progress_note: failed(prIdx, prRd) },
+  };
+}
+
 /** Fetch + de-identify one finding's inputs. A `notAuditable` reason = tier 3, stop. */
 async function assembleForRow(row: PendingRow): Promise<AssembledPair | { notAuditable: string; labTier?: LabTier }> {
   const oon = row.finding_class === 'out_of_network';
@@ -275,12 +323,22 @@ async function assembleForRow(row: PendingRow): Promise<AssembledPair | { notAud
     losDays: indexLoaded.extracted.adminFacts?.lengthOfStayDays ?? null,
   });
 
-  // Source 3: structured labs for this patient inside the index window.
-  let structuredLabs: StructuredLabRow[] = [];
-  if (window) {
+  // Source 3 (structured labs inside the index window) and source 4 (R2: OT / PAC /
+  // progress templates) are fetched TOGETHER — the template fetches sit after the tier-3
+  // gate above and beside the lab reads, never serial to them (worker box arithmetic).
+  const labsRead = (async (): Promise<StructuredLabRow[]> => {
+    if (!window) return [];
     const individualUid = await resolveIndividualUid([row.uhid, idxSummary?.uhid]);
-    if (individualUid) structuredLabs = await fetchStructuredLabs(individualUid, window.from, window.to);
-  }
+    return individualUid ? fetchStructuredLabs(individualUid, window.from, window.to) : [];
+  })();
+  const [structuredLabs, tpl] = await Promise.all([
+    labsRead,
+    fetchTemplatesForRow({
+      indexEncounterId: row.index_encounter_id, readmitEncounterId: row.readmit_encounter_id, oon,
+      uhid: row.uhid, summaryUhid: idxSummary?.uhid ?? null, summaryIpdNo: idxSummary?.encounterId ?? null,
+      indexAdmitAt, indexDischargeAt,
+    }),
+  ]);
 
   const sameDoctor = !!row.index_doctor && !!row.readmit_doctor
     && row.index_doctor.trim().toLowerCase() === row.readmit_doctor.trim().toLowerCase();
@@ -306,6 +364,8 @@ async function assembleForRow(row: PendingRow): Promise<AssembledPair | { notAud
     caseSources: { index: indexLoaded.source, readmit: readmitLoaded.source },
     documentIds: { index: indexLoaded.documentId, readmit: readmitLoaded.documentId },
     extractionVersion: DOC_EXTRACT_VERSION,
+    templates: tpl.templates,
+    templateFetch: tpl.templateFetch,
   });
   if (inputs.notAuditableReason) return { notAuditable: inputs.notAuditableReason, labTier: inputs.labTier };
   return { inputs, indexAdmitAt, indexDischargeAt };
@@ -346,7 +406,7 @@ export async function runReadmissionAudit(row: PendingRow): Promise<ReadmitAudit
         if (!passA) throw new Error('OON pass unparseable or model unavailable');
         finding = reconcileFinding({
           findingClass: 'out_of_network', catalog: inputs.catalog, labProfile: inputs.labProfile,
-          labTier: inputs.labTier, labSourceProvenance: inputs.labSourceProvenance,
+          labTier: inputs.labTier, labSourceProvenance: inputs.labSourceProvenance, templateCoverage: inputs.templateCoverage ?? null,
           indexDischargeAt: assembled.indexDischargeAt, passA, passB: null,
           formFlags: { isPlanned: row.form_is_planned, sameCondition: row.form_same_condition },
         });
@@ -359,7 +419,7 @@ export async function runReadmissionAudit(row: PendingRow): Promise<ReadmitAudit
           if (!cond) throw new Error('condition pass unparseable or model unavailable');
           const condFinding = reconcileFinding({
             findingClass: 'even_even', catalog: inputs.catalog, labProfile: inputs.labProfile,
-            labTier: inputs.labTier, labSourceProvenance: inputs.labSourceProvenance,
+            labTier: inputs.labTier, labSourceProvenance: inputs.labSourceProvenance, templateCoverage: inputs.templateCoverage ?? null,
             indexDischargeAt: assembled.indexDischargeAt, passA: cond, passB: null, conditionOnly: true,
           });
           // …decision 14: SAME condition auto-promotes to the full reconciliation.
@@ -382,7 +442,7 @@ export async function runReadmissionAudit(row: PendingRow): Promise<ReadmitAudit
           if (!passB) throw new Error('recon pass B unparseable or model unavailable');
           finding = reconcileFinding({
             findingClass: 'even_even', catalog: inputs.catalog, labProfile: inputs.labProfile,
-            labTier: inputs.labTier, labSourceProvenance: inputs.labSourceProvenance,
+            labTier: inputs.labTier, labSourceProvenance: inputs.labSourceProvenance, templateCoverage: inputs.templateCoverage ?? null,
             indexDischargeAt: assembled.indexDischargeAt, passA, passB,
           });
         }

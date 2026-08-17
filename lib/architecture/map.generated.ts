@@ -791,6 +791,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "readmission-template-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "reasoning",
     "plane": "unregistered"
   },
@@ -4308,12 +4312,27 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "readmission",
+    "to": "readmission-template-core",
+    "kind": "type"
+  },
+  {
+    "from": "readmission",
+    "to": "readmission-template-core",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
     "to": "trace",
     "kind": "value"
   },
   {
     "from": "readmission-prompts",
     "to": "readmission-reconcile-core",
+    "kind": "type"
+  },
+  {
+    "from": "readmission-reconcile-core",
+    "to": "readmission-template-core",
     "kind": "type"
   },
   {
@@ -4749,7 +4768,7 @@ export const VERSION_REGISTRY: VersionRow[] = [
   },
   {
     "constName": "READMIT_ENGINE_VERSION",
-    "value": "readmission/0.1",
+    "value": "readmission/0.2",
     "file": "lib/readmission/store.ts",
     "derived": false
   },

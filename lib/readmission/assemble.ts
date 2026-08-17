@@ -18,6 +18,10 @@ import type {
 import { labTimingProfile, labAbnormal, canonicalAnalyte, canonicalAnalyteFor, refRangeDisplay, resolveLabTier } from '../readmission-reconcile-core';
 import type { SummaryRecord, LabRow, StructuredLabRow } from './db13';
 import type { ExtractedCase } from '../doc-audit-core';
+import {
+  OT_FACT_LABELS, TEMPLATE_ID_PREFIX, hasUsableText, reduceTemplateCoverage,
+  type FlattenedTemplate, type TemplateCoverage, type TemplateFetchOutcomes, type TemplateSource,
+} from '../readmission-template-core';
 
 // ── de-identification ───────────────────────────────────────────────────────────
 
@@ -305,11 +309,65 @@ export function structuredLabItems(labs: StructuredLabRow[], identity: { names: 
   }));
 }
 
+// ═══ R2 — SOURCE 4: KX clinical templates (READMISSIONS-R2 PRD v1.0 §3.3) ═══════════
+//
+// OT / PAC / progress rows arrive here FLATTENED (lib/readmission-template-core.ts) and
+// still carrying whatever the clinician typed — including, possibly, the patient's name.
+// This function is where that stops: EVERY string — narrative, template name, surgery
+// name, and every allowlisted fact value — goes through deidText before it becomes an
+// EvidenceItem. `structuredFacts` (the ADT line) bypasses deid because it is built from
+// department/date columns by construction; template text is free text and MUST NOT
+// follow that precedent.
+
+const deidTemplate = (f: FlattenedTemplate, identity: { names: Array<string | null | undefined>; uhids: Array<string | null | undefined> }): FlattenedTemplate => ({
+  ...f,
+  templateName: f.templateName ? deidText(f.templateName, identity) : null,
+  surgeryName: f.surgeryName ? deidText(f.surgeryName, identity) : null,
+  facts: f.facts.map((x) => ({ name: x.name, value: deidText(x.value, identity) })),
+  narrative: deidText(f.narrative, identity),
+});
+
+const SOURCE_WORD: Readonly<Record<TemplateSource, string>> = { ot_note: 'OT note', pac_note: 'pre-anaesthesia check', progress_note: 'progress note' };
+
+/**
+ * Flattened templates → de-identified, citable evidence items. IDs `OT1…`, `PAC1…`,
+ * `P1…` (per source, in input order — the caller passes index-side rows before
+ * readmit-side rows so ids read chronologically). Rows with NO usable text after deid
+ * contribute nothing (they still count toward coverage as `empty`).
+ */
+export function templateItems(
+  flattened: FlattenedTemplate[],
+  identity: { names: Array<string | null | undefined>; uhids: Array<string | null | undefined> },
+): { items: EvidenceItem[]; deidentified: FlattenedTemplate[] } {
+  const items: EvidenceItem[] = [];
+  const counters: Record<TemplateSource, number> = { ot_note: 0, pac_note: 0, progress_note: 0 };
+  const deidentified = flattened.map((f) => deidTemplate(f, identity));
+  for (const f of deidentified) {
+    if (!hasUsableText(f)) continue;
+    counters[f.source] += 1;
+    const parts: string[] = [];
+    parts.push(`${SOURCE_WORD[f.source]}${f.templateName ? ` (${f.templateName})` : ''}, ${f.side} stay${f.at ? `, ${f.at}` : ''}`);
+    if (f.source === 'ot_note' && f.surgeryName && !f.facts.some((x) => x.name === 'surgery-name')) parts.push(`surgery: ${f.surgeryName}`);
+    for (const x of f.facts) if (x.value.trim()) parts.push(`${OT_FACT_LABELS[x.name] ?? x.name}: ${x.value.trim()}`);
+    if (f.narrative.trim()) parts.push(`note: ${f.narrative.trim()}`);
+    items.push({
+      id: `${TEMPLATE_ID_PREFIX[f.source]}${counters[f.source]}`,
+      source: f.source,
+      side: f.side,
+      at: f.at,
+      text: parts.join(' · '),
+    });
+  }
+  return { items, deidentified };
+}
+
 export interface ThreeSourceInputs {
   catalog: EvidenceCatalog;
   labProfile: LabTimingProfile;
   labTier: LabTier;
   labSourceProvenance: LabSourceProvenance;
+  /** R2: present ONLY when the template fetches ran (post tier gate). Absent = never looked. */
+  templateCoverage?: TemplateCoverage;
   notAuditableReason?: string;
   indexSentenceCount: number;
   readmitSentenceCount: number;
@@ -335,6 +393,10 @@ export function assembleThreeSource(args: {
   caseSources: { index: CaseSource; readmit: CaseSource };
   documentIds: { index: string | null; readmit: string | null };
   extractionVersion: string;
+  /** R2 source 4 — flattened, NOT yet de-identified (this function does that). Both
+   *  fields absent = the templates were never looked for (no coverage written). */
+  templates?: FlattenedTemplate[];
+  templateFetch?: TemplateFetchOutcomes;
 }): ThreeSourceInputs {
   const items: EvidenceItem[] = [];
 
@@ -347,6 +409,16 @@ export function assembleThreeSource(args: {
   // Source 3 first — a structured value outranks the doctor's transcription of one.
   const structured = structuredLabItems(args.structuredLabs, args.identity);
   items.push(...structured);
+
+  // Source 4 (R2): after structured labs, before the tier-2 case labs — a contemporaneous
+  // team record outranks the discharge summary's retrospective transcription, but not a
+  // machine value. Coverage is judged on the DE-IDENTIFIED rows (constraint 17).
+  let templateCoverage: TemplateCoverage | undefined;
+  if (args.templateFetch) {
+    const t = templateItems(args.templates ?? [], args.identity);
+    items.push(...t.items);
+    templateCoverage = reduceTemplateCoverage(args.templateFetch, t.deidentified);
+  }
 
   const { tier, notAuditableReason } = resolveLabTier({
     hasIndexCase: !!args.indexCase,
@@ -389,6 +461,7 @@ export function assembleThreeSource(args: {
       indexDocumentId: args.documentIds.index,
       readmitDocumentId: args.documentIds.readmit,
     },
+    ...(templateCoverage ? { templateCoverage } : {}),
     indexSentenceCount: idxSentences.length,
     readmitSentenceCount: rdSentences.length,
   };

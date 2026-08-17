@@ -14,7 +14,7 @@
  */
 import type { ExtractedCase } from '../doc-audit-core';
 import {
-  cardIdentityLine, coverageChips, judgementLabel, justificationLabel, laneMeta,
+  cardIdentityLine, coverageChips, isDelayedSsi, judgementLabel, justificationLabel, laneMeta,
   NEGLIGENCE_ADVISORY, returnStayBill, situationLine, type SurfaceFinding,
 } from '../readmission-surface-core';
 
@@ -68,6 +68,8 @@ export interface Brief { filename: string; markdown: string }
 // ── fixed sentences (§7, verbatim) ───────────────────────────────────────────────
 export const BILL_SENTENCE_EVEN = 'Return stay bill not yet measured — no figure is available for this return.';
 export const BILL_SENTENCE_OON = 'No other-hospital bill exists for this return.';
+/** R2 delayed-SSI layout guard (constraint 11) — no producer of that class exists yet. */
+export const BILL_SENTENCE_NO_SECOND_STAY = 'No second stay — no return bill.';
 export const CANNOT_SAY_LINES: readonly string[] = [
   'No policy rule follows from n=1 — one case is a case, not a pattern.',
   'This is not a court or council finding; every judgement above is advisory and human-decided.',
@@ -259,7 +261,7 @@ export function composeBrief(input: BriefInput): Brief {
   L.push('## Part 2 — Actuarial / low-value-care');
   L.push('');
   L.push(`- Payer: ${oon ? `out of network (index payer ${u(row.payerIndex)})` : `Even–Even (index ${u(row.payerIndex)} → return ${u(row.payerReadmit)})`} ${T_ROW}`);
-  L.push(`- Bill: ${oon ? BILL_SENTENCE_OON : BILL_SENTENCE_EVEN}`);
+  L.push(`- Bill: ${isDelayedSsi(row) ? BILL_SENTENCE_NO_SECOND_STAY : oon ? BILL_SENTENCE_OON : BILL_SENTENCE_EVEN}`);
   L.push(`- Candidate pattern: ${candidatePattern(row, input.indexExtract, omissions.length)}`);
   L.push('- What we cannot say:');
   for (const c of CANNOT_SAY_LINES) L.push(`  - ${c}`);
@@ -271,12 +273,13 @@ export function composeBrief(input: BriefInput): Brief {
 /** One deterministic sentence from the judgements (§7). Never asserts a pattern that the
  *  situation line does not already support. */
 export function candidatePattern(
-  row: Pick<SurfaceFinding, 'planned' | 'sameCondition' | 'finding' | 'auditStatus' | 'indexCase'>,
+  row: Pick<SurfaceFinding, 'planned' | 'sameCondition' | 'finding' | 'auditStatus' | 'indexCase' | 'findingClass'>,
   indexExtract: ExtractSubset | null,
   nOmissions: number,
 ): string {
   if (row.auditStatus !== 'audited') return 'None — not yet audited.';
-  if (situationLine(row)) {
+  // Only the IP–IP situation asserts this pattern; the delayed-SSI line (R2 guard) does not.
+  if (situationLine(row) === 'Situation · Unplanned return') {
     const after = indexExtract?.procedure ?? row.indexCase?.procedure ?? indexExtract?.diagnosis ?? row.indexCase?.diagnosis ?? 'the index stay';
     return `Unplanned same-condition return after ${withholdNumbers(after)} with ${nOmissions} documentation omission(s) — candidate for Even Adjudicated LVC review.`;
   }
