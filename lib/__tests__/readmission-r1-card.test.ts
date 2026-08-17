@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import {
   ageSexForCard, cardIdentityLine, countsLine, coverageChips, isHeldOut, isReviewFinding,
   judgementLabel, justificationCell, justificationLabel, pathSegments, returnStayBill, situationLine, sortForCardList,
-  NEGLIGENCE_ADVISORY, type SurfaceFinding,
+  NEGLIGENCE_ADVISORY, toFindingClass, type FindingClass, type SurfaceFinding,
 } from '../readmission-surface-core.ts';
 
 const f = (over: Partial<SurfaceFinding> = {}): SurfaceFinding => ({
@@ -166,4 +166,15 @@ test('path segments drop nulls, render OON as out of network, and never assume a
   const bare = pathSegments(f({ indexDischargeAt: null, readmitAdmitAt: null, gapDays: null, payerIndex: null, payerReadmit: null, indexCase: null }));
   assert.deepEqual(bare, ['Orthopaedics → Orthopaedics']);
   assert.equal(bare.some((s) => /null|undefined/.test(s)), false);
+});
+
+// ── R2 Addendum A3: FindingClass is the closed union, narrowed once at the row boundary ──
+test('A3: toFindingClass passes the three known classes and falls back to even_even (hides nothing) for anything else', () => {
+  const known: FindingClass[] = ['even_even', 'out_of_network', 'delayed_ssi'];
+  for (const k of known) assert.equal(toFindingClass(k), k);
+  assert.equal(toFindingClass('delayed-ssi'), 'even_even');
+  assert.equal(toFindingClass(''), 'even_even');
+  assert.equal(toFindingClass(null), 'even_even');
+  assert.equal(toFindingClass(undefined), 'even_even');
+  assert.equal(toFindingClass(42), 'even_even');
 });

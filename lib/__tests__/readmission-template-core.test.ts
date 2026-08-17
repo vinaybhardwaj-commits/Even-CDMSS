@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import {
   OT_FACT_ALLOWLIST, TEMPLATE_ID_PREFIX, TEMPLATE_NARRATIVE_CAP, TEMPLATE_ROW_CAP,
   allowlistedOtFacts, coverageFor, dedupTemplateRows, flattenTemplateRow, hasUsableText,
-  pacWindow, parseComponentJson, planOtProgressHops, planPacHops, reduceTemplateCoverage,
+  pacWindow, parseComponentJson, planOtProgressHops, planPacHops, readmitFallbackFrom, reduceTemplateCoverage,
   type KxTemplateRow,
 } from '../readmission-template-core.ts';
 
@@ -75,6 +75,24 @@ test('OT / progress: encounter primary, discharged-history fallback ONLY when a 
   assert.deepEqual(planOtProgressHops({ encounterId: 'IPNO-229', fallback: { uhid: 'UH-1', ipdNo: 'IPNO-229' } }),
     [{ kind: 'encounter', encounterId: 'IPNO-229' }, { kind: 'uhid_ipdno', uhid: 'UH-1', ipdNo: 'IPNO-229' }]);
   assert.equal(planOtProgressHops({ encounterId: 'IP-1', fallback: { uhid: null, ipdNo: 'IP-1' } }).length, 1);
+});
+
+test('Addendum A1: the readmit fallback plan uses the readmit summary row\'s OWN ipd_no (distinct from the primary encounter hop) — or is absent when no readmit summary row exists', () => {
+  // The readmit stay's discharge row supplies uhid + ipd_no → a real second hop, on a different id.
+  const fb = readmitFallbackFrom({ uhid: 'UH-9', ipdNo: 'ADM-77' }, 'UH-1');
+  assert.deepEqual(fb, { uhid: 'UH-9', ipdNo: 'ADM-77' });
+  const plan = planOtProgressHops({ encounterId: 'IP-77', fallback: fb });
+  assert.deepEqual(plan, [{ kind: 'encounter', encounterId: 'IP-77' }, { kind: 'uhid_ipdno', uhid: 'UH-9', ipdNo: 'ADM-77' }]);
+  assert.notEqual((plan[1] as { ipdNo: string }).ipdNo, 'IP-77');
+  // Summary row without a uhid → the finding row's uhid fills in; the ipd_no still comes from the row.
+  assert.deepEqual(readmitFallbackFrom({ uhid: null, ipdNo: 'ADM-77' }, 'UH-1'), { uhid: 'UH-1', ipdNo: 'ADM-77' });
+  // No readmit summary row (still admitted / never summarised) → NO fallback: the plan is the primary hop alone.
+  assert.equal(readmitFallbackFrom(null, 'UH-1'), null);
+  assert.equal(readmitFallbackFrom(undefined, 'UH-1'), null);
+  assert.equal(readmitFallbackFrom({ uhid: 'UH-9', ipdNo: null }, 'UH-1'), null);
+  assert.deepEqual(planOtProgressHops({ encounterId: 'IP-77', fallback: readmitFallbackFrom(null, 'UH-1') }), [{ kind: 'encounter', encounterId: 'IP-77' }]);
+  // No uhid anywhere → the uhid+ipd_no hop cannot be formed; skipped, never half-built.
+  assert.equal(readmitFallbackFrom({ uhid: null, ipdNo: 'ADM-77' }, null), null);
 });
 
 test('PAC: NEVER encounter alone — the uhid window hop is always planned beside it (OPR pre-admit rows do not carry the IP encounter id)', () => {

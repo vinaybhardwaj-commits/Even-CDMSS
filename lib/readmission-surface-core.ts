@@ -36,7 +36,8 @@
  *  Every field is nullable because every one of them can be absent on a real row. */
 export interface SurfaceFinding {
   dedupKey: string;
-  findingClass: 'even_even' | 'out_of_network' | string;
+  /** R2 Addendum A3: the closed FindingClass union — `delayed_ssi` is compiler-enforced. */
+  findingClass: FindingClass;
   lane: string;
   auditStatus: string;
   /** Display-only, joined from KX at render (decision 5). Never sent to a model. */
@@ -415,6 +416,14 @@ export function identityLine(row: Pick<SurfaceFinding, 'patientName' | 'uhid' | 
 // below, so the card, chips, judgement cells and brief already survive it the day a later
 // ruling adds detection. Nothing on live data reaches this branch in R2.
 export type FindingClass = 'even_even' | 'out_of_network' | 'delayed_ssi';
+export const FINDING_CLASSES: readonly FindingClass[] = ['even_even', 'out_of_network', 'delayed_ssi'];
+/** Addendum A3: the ONE narrowing from the stored text column to the closed union. An
+ *  unrecognised value (a stored row is data, not a type guarantee) falls back to
+ *  'even_even' — the layout that hides nothing: no cell goes n/a, no side is dropped, every
+ *  chip reads unknown at worst. It never guesses OON or delayed-SSI structure. */
+export function toFindingClass(v: unknown): FindingClass {
+  return (FINDING_CLASSES as readonly unknown[]).includes(v) ? (v as FindingClass) : 'even_even';
+}
 export const DELAYED_SSI_CLASS: FindingClass = 'delayed_ssi';
 export const isDelayedSsi = (row: Pick<SurfaceFinding, 'findingClass'>): boolean => row.findingClass === DELAYED_SSI_CLASS;
 

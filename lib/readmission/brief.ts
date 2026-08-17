@@ -14,7 +14,7 @@
  */
 import type { ExtractedCase } from '../doc-audit-core';
 import {
-  cardIdentityLine, coverageChips, isDelayedSsi, judgementLabel, justificationLabel, laneMeta,
+  cardIdentityLine, chipText, coverageChips, isDelayedSsi, judgementLabel, justificationLabel, laneMeta,
   NEGLIGENCE_ADVISORY, returnStayBill, situationLine, type SurfaceFinding,
 } from '../readmission-surface-core';
 
@@ -224,7 +224,10 @@ export function composeBrief(input: BriefInput): Brief {
   L.push('### Artefacts');
   L.push('| Artefact | State |');
   L.push('|---|---|');
-  for (const c of coverageChips(row)) L.push(`| ${c.label} | ${c.state} |`);
+  // Addendum A2: the ratified chip copy (constraints §4b), not raw state words — the brief
+  // prints what the card prints: `OT none` / `OT empty` / bare label for present + unknown;
+  // `n/a` stays as-is (the state word IS the copy; the greyed style has no text form).
+  for (const c of coverageChips(row)) L.push(`| ${c.label} | ${c.state === 'n/a' ? 'n/a' : chipText(c)} |`);
   L.push('');
 
   L.push('### Assessment');

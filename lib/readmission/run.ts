@@ -37,7 +37,7 @@ import {
   fetchOtNotes, fetchPacNotes, fetchProgressNotes,
 } from './db13';
 import type { StructuredLabRow, TemplateFetchResult } from './db13';
-import { flattenTemplateRow, pacWindow } from '../readmission-template-core';
+import { flattenTemplateRow, pacWindow, readmitFallbackFrom } from '../readmission-template-core';
 import type { FlattenedTemplate, TemplateFetchOutcomes } from '../readmission-template-core';
 import { assembleThreeSource } from './assemble';
 import type { CaseSource, ThreeSourceInputs } from './assemble';
@@ -260,12 +260,16 @@ interface AssembledPair {
 async function fetchTemplatesForRow(args: {
   indexEncounterId: string; readmitEncounterId: string | null; oon: boolean;
   uhid: string | null; summaryUhid: string | null; summaryIpdNo: string | null;
+  /** The READMIT stay's discharge-summary row (uhid + its own ipd_no), when one exists. */
+  readmitSummary: { uhid: string | null; ipdNo: string | null } | null;
   indexAdmitAt: string | null; indexDischargeAt: string | null;
 }): Promise<{ templates: FlattenedTemplate[]; templateFetch: TemplateFetchOutcomes }> {
   const uhid = args.uhid ?? args.summaryUhid;
   // The discharged-history fallback hop exists only when a discharge row exists (its uhid + ipd_no).
   const indexFallback = args.summaryIpdNo ? { uhid: args.summaryUhid ?? uhid, ipdNo: args.summaryIpdNo } : null;
-  const readmitFallback = args.readmitEncounterId ? { uhid, ipdNo: args.readmitEncounterId } : null;
+  // Addendum A1: the readmit fallback comes from the READMIT stay's own discharge row; with no
+  // such row there is no discharged-history ipd_no distinct from the primary hop, so it is skipped.
+  const readmitFallback = readmitFallbackFrom(args.readmitSummary, uhid);
   const doReadmit = !args.oon && !!args.readmitEncounterId;
   const none: TemplateFetchResult = { outcome: 'ok', rows: [] };
 
@@ -310,7 +314,13 @@ async function assembleForRow(row: PendingRow): Promise<AssembledPair | { notAud
   // The KX summary record is still read — for the admission TIMESTAMP that sizes the lab
   // window and for the identity tokens the de-identification scrub matches on. Its
   // clinical text is no longer the substrate (PRD §1.1 BA-4: it holds metadata only).
-  const idxSummary = await fetchSummaryRecord(row.index_encounter_id);
+  // R2 Addendum A1: the readmit stay's summary row is read too (in parallel — no serial
+  // db13 round-trip added to the worker box) ONLY for its uhid + ipd_no, which build the
+  // readmit-side discharged-history template fallback. Its text is never used.
+  const [idxSummary, rdSummary] = await Promise.all([
+    fetchSummaryRecord(row.index_encounter_id),
+    !oon && row.readmit_encounter_id ? fetchSummaryRecord(row.readmit_encounter_id) : Promise.resolve(null),
+  ]);
   const identity = {
     names: [idxSummary?.patientName],
     uhids: [row.uhid, idxSummary?.uhid],
@@ -336,6 +346,7 @@ async function assembleForRow(row: PendingRow): Promise<AssembledPair | { notAud
     fetchTemplatesForRow({
       indexEncounterId: row.index_encounter_id, readmitEncounterId: row.readmit_encounter_id, oon,
       uhid: row.uhid, summaryUhid: idxSummary?.uhid ?? null, summaryIpdNo: idxSummary?.encounterId ?? null,
+      readmitSummary: rdSummary ? { uhid: rdSummary.uhid, ipdNo: rdSummary.ipdNo } : null,
       indexAdmitAt, indexDischargeAt,
     }),
   ]);

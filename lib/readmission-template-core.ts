@@ -152,6 +152,23 @@ export function planOtProgressHops(args: { encounterId: string; fallback: { uhid
 }
 
 /**
+ * Readmit-side discharged-history fallback (R2 Addendum A1). Built ONLY from the READMIT
+ * stay's own discharge-summary row — its `uhid` + `ipd_no` — never from the readmit
+ * encounter id itself (that is the primary hop; re-querying it as the fallback is a no-op).
+ * No readmit summary row (a still-admitted or never-summarised return stay) → null: the
+ * fallback is skipped rather than faked. `uhidHint` (the finding row's uhid) fills in only
+ * when the summary row carries no uhid.
+ */
+export function readmitFallbackFrom(
+  summary: { uhid: string | null; ipdNo: string | null } | null | undefined,
+  uhidHint: string | null,
+): { uhid: string; ipdNo: string } | null {
+  if (!summary?.ipdNo) return null;
+  const uhid = summary.uhid ?? uhidHint;
+  return uhid ? { uhid, ipdNo: summary.ipdNo } : null;
+}
+
+/**
  * PAC: TWO hops, BOTH always run, union deduped by uid — the encounter hop (the 19/47 IP
  * hits) AND the uhid window `[index.admitAt − 30d, index.dischargeAt]` (the OPR / OPVST
  * majority). PAC is NEVER joined on encounter alone (T-3, constraint 15). No uhid → the

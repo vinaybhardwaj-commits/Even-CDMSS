@@ -9,6 +9,7 @@
  */
 import type { SurfaceRow } from './store';
 import type { FindingBlob, IndexCaseSummary, SurfaceFinding } from '../readmission-surface-core';
+import { toFindingClass } from '../readmission-surface-core';
 import type { ExtractedCase } from '../doc-audit-core';
 
 /** Display-only identity from KX (decision 5 / decision 13). Never sent to a model. */
@@ -53,7 +54,7 @@ export function toFinding(r: SurfaceRow, id: Identity | undefined, indexCase: In
   const blob = asJson<FindingBlob>(r.finding);
   return {
     dedupKey: String(r.dedup_key),
-    findingClass: String(r.finding_class),
+    findingClass: toFindingClass(r.finding_class),   // A3: narrowed at the boundary, never String()
     lane: String(r.lane),
     auditStatus: String(r.audit_status),
     // Name from KX at render; the UHID on the finding row is the authoritative

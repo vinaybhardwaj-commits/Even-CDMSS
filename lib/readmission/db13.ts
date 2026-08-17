@@ -107,6 +107,9 @@ export async function fetchAdtEncounters(): Promise<{ encounters: KxEncounter[];
 
 export interface SummaryRecord {
   encounterId: string;
+  /** The discharge row's OWN `ipd_no` (VALIDATED key) — the discharged-history fallback hop
+   *  id (templates PRD T-3). Read off the row, not echoed from the lookup argument. */
+  ipdNo: string | null;
   patientName: string | null;   // PHI — for the de-identification scrub ONLY
   uhid: string | null;          // PHI — for the de-identification scrub ONLY
   admitAt: string | null;
@@ -135,6 +138,7 @@ export async function fetchSummaryRecord(encounterId: string): Promise<SummaryRe
     if (!r) return null;
     return {
       encounterId,
+      ipdNo: s(r.ipd_no),
       patientName: s(r.patient_name),
       uhid: s(r.uhid),
       admitAt: s(r.admission_date_time),
