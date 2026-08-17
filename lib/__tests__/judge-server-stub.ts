@@ -285,7 +285,10 @@ export function passageSegments(userMsg: string): Array<{ idx: number; text: str
 
 // ── SOCKET IDENTITY (addendum v18 §4.2). Module-level, so an identity survives across requests on
 // the same socket and across server instances in one process; a WeakMap, so a closed socket's entry
-// can be collected. The counter only ever grows — an identity is never reused, exactly like `seq`.
+// can be collected. The counter only ever grows and an identity is never reused — UNLIKE `seq`,
+// which `resetObservations` returns to 0 and whose values therefore recur across resets (v19 §3.5
+// corrects the earlier "exactly like `seq`" analogy, which misstated this). Identity is a property
+// of the SOCKET, not of the observation store, so no reset touches it.
 // `resetObservations` does NOT touch it: identity is a property of the socket, not of the store,
 // and v15 §5.10's list of what a reset clears is unchanged.
 const socketIds = new WeakMap<net.Socket, number>();
@@ -330,12 +333,20 @@ export async function startJudgeServer(initialScores: Record<string, number> = {
     // ── ACCEPTANCE (v15 §5.4, §5.6). The sequence number and the in-flight increment happen HERE,
     // before a single body byte has arrived. A request that arrives first is numbered first even if
     // it finishes last. Neither advances while recording is off (§5.2).
-    const seq = recording ? nextSeq++ : -1;
+    //
+    // ⚠️ THE RECORDING DECISION IS SAMPLED ONCE, AT ACCEPTANCE (addendum v19 §3.1). Acceptance used
+    // to read `recording` and each later handler read its CURRENT value again, so a mid-flight
+    // toggle could produce an observation with `seq: -1`, lose an accepted observation, or leak the
+    // in-flight count. The decision is captured in this local, and the module-level flag is never
+    // read again for a request already accepted: the `data` handler, the `end` handler, the `close`
+    // handler and observation creation all use `recordThisRequest`.
+    const recordThisRequest = recording;
+    const seq = recordThisRequest ? nextSeq++ : -1;
     // The socket identity is assigned at ACCEPTANCE, beside `seq` (v18 §4.2). `req.socket` is live
     // at this hook point; the WeakMap hands the same identity back for every request the same
     // undestroyed socket carries.
-    const socketId = recording ? socketIdentityOf(req.socket) : -1;
-    if (recording) inFlight += 1;
+    const socketId = recordThisRequest ? socketIdentityOf(req.socket) : -1;
+    if (recordThisRequest) inFlight += 1;
     let received = 0;
     let overflowed = false;
     // The in-flight decrement is tied to the RESPONSE ending, for 200 and for 413 alike (§5.6).
@@ -345,7 +356,7 @@ export async function startJudgeServer(initialScores: Record<string, number> = {
     // `ServerResponse` emits `close` and NEVER emits `finish`. A decrement hung on `finish` leaked
     // one in-flight count per such request, and `settled()` then waited forever. `close` fires on
     // every path: normal completion, 413, and an aborted client. It fires exactly once.
-    if (recording) res.once('close', () => { inFlight -= 1; });
+    if (recordThisRequest) res.once('close', () => { inFlight -= 1; });
 
     // ── HOOK POINT ONE: byte accounting in the `data` handler (v15 §5.1, §5.5). The limit must be
     // enforced before the body completes, so the running total lives here. Past the limit the
@@ -353,7 +364,7 @@ export async function startJudgeServer(initialScores: Record<string, number> = {
     // still consumed off the socket so the request reaches `end` normally.
     req.on('data', (c: Buffer) => {
       received += c.length;
-      if (recording && received > RECORDER_BODY_LIMIT_BYTES) { overflowed = true; chunks.length = 0; return; }
+      if (recordThisRequest && received > RECORDER_BODY_LIMIT_BYTES) { overflowed = true; chunks.length = 0; return; }
       if (!overflowed) chunks.push(c);
     });
     req.on('end', () => {
@@ -362,7 +373,7 @@ export async function startJudgeServer(initialScores: Record<string, number> = {
       // method, path and body come from one place. The Buffer stored is the concatenated bytes
       // themselves; `snapshot` copies them on the way out (§5.7).
       const raw = Buffer.concat(chunks);
-      if (recording) {
+      if (recordThisRequest) {
         observations.push({
           seq, socketId, method: String(req.method ?? ''), path: String(req.url ?? ''),
           body: overflowed ? Buffer.alloc(0) : raw, overflowed,
@@ -473,8 +484,18 @@ export async function startJudgeServer(initialScores: Record<string, number> = {
     snapshot() {
       // §5.6: refuse while in flight. Do not return partial data; do not wait. Name the count.
       if (inFlight > 0) throw new Error(`snapshot refused: ${inFlight} request(s) in flight`);
-      // §5.7: a new array of new objects, each with a COPIED Buffer.
-      return observations.map((o) => ({ ...o, body: Buffer.from(o.body) }));
+      // §5.7 + v19 §3.2: a new array of new objects, each with a COPIED Buffer — and the clone is
+      // DESCRIPTOR-FAITHFUL. An object spread here dropped non-enumerable properties, so a
+      // non-enumerable stored field could never reach `Reflect.ownKeys` inspection in test 5.3 and
+      // the no-headers guard was blind to it. Own-property descriptors preserve symbol-keyed and
+      // non-enumerable fields; the body is then replaced with a copied Buffer, so the clone is
+      // faithful AND defensive together — mutating anything returned still leaves the store
+      // unchanged.
+      return observations.map((o) => {
+        const clone: JudgeObservation = Object.create(Object.getPrototypeOf(o), Object.getOwnPropertyDescriptors(o));
+        clone.body = Buffer.from(o.body);
+        return clone;
+      });
     },
     resetObservations() {
       if (inFlight > 0) throw new Error(`resetObservations refused: ${inFlight} request(s) in flight`);

@@ -6,7 +6,10 @@
  * numbering authority for J1. Addendum v18 (signed by V, 16 August 2026, under Saul review 29)
  * governs the pass 2 proof repairs in this file: the tuple comparator and its 5.9b guard (§3.2),
  * the socket identity on the observation (§3.7a, §4.2), `Reflect.ownKeys` at all four exhaustive
- * key sites (§3.7b), and 5.4's deterministic acceptance signal (§3.7c).
+ * key sites (§3.7b), and 5.4's deterministic acceptance signal (§3.7c). Addendum v19 (signed by V,
+ * 16 August 2026, under Saul review 30) governs the recorder repair round: the once-sampled
+ * recording decision and its two mid-flight tests 5.2b/5.2c (§3.1), the descriptor-faithful
+ * snapshot (§3.2), and the bounded fail-loud acceptance waits in 5.4 and 5.6 (§3.3).
  *
  * WHAT THIS FILE PROVES.
  *   · Each of addendum v15 §5.2 to §5.11 — TEN guarded terms — has at least one executable test
@@ -152,6 +155,60 @@ async function postSettled(judge: JudgeServer, path: string, body: Buffer | stri
   return r;
 }
 
+/**
+ * BOUNDED, FAIL-LOUD acceptance wait (v19 §3.3). `seq` is assigned at acceptance and acceptance is
+ * where the in-flight counter increments, so polling the counter waits for exactly the accepting
+ * event. Three properties, because the previous poll had none of them and could hang the file:
+ *   1. BOUNDED — on expiry it fails BY NAME (the rejection carries `what` and surfaces as the named
+ *      test's failure), never polling forever.
+ *   2. REQUEST-ERROR REJECTION — a socket error on the held request rejects the wait instead of
+ *      stalling it. The listener stays attached afterwards, so a late error cannot crash the
+ *      process as an unhandled 'error' event either.
+ *   3. The CALLER puts the held request's release in an OUTER `finally`, so the release runs
+ *      whether or not this wait resolved. That is the caller's half of the contract; 5.4 and 5.6
+ *      both hold it.
+ */
+function waitForInFlight(judge: JudgeServer, target: number, held: http.ClientRequest, what: string, timeoutMs = 5000): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const startedAt = Date.now();
+    let done = false;
+    const fail = (e: Error) => { if (!done) { done = true; reject(e); } };
+    held.on('error', (e) => fail(new Error(`acceptance wait for ${what}: request error: ${e.message}`)));
+    const tick = () => {
+      if (done) return;
+      if (judge.inFlight() === target) { done = true; resolve(); return; }
+      if (Date.now() - startedAt > timeoutMs) {
+        fail(new Error(`acceptance wait timed out after ${timeoutMs} ms waiting for ${what}`));
+        return;
+      }
+      setImmediate(tick);
+    };
+    tick();
+  });
+}
+
+/**
+ * BOUNDED wait for the server's 100 Continue (v19 §3.1's mid-flight tests). A request accepted
+ * while recording is OFF moves no counter, so its acceptance is observed through
+ * `Expect: 100-continue`: the server auto-writes `100 Continue` at request-head parse, in the same
+ * synchronous block that runs the request handler and samples the recording decision — so the
+ * client's 'continue' event proves the decision has been sampled. Same three properties as
+ * `waitForInFlight`: bounded, request-error rejecting, and the caller releases in an outer
+ * `finally`.
+ */
+function waitForContinue(held: http.ClientRequest, what: string, timeoutMs = 5000): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let done = false;
+    const timer = setTimeout(() => {
+      if (!done) { done = true; reject(new Error(`100-continue wait timed out after ${timeoutMs} ms waiting for ${what}`)); }
+    }, timeoutMs);
+    held.on('continue', () => { if (!done) { done = true; clearTimeout(timer); resolve(); } });
+    held.on('error', (e) => {
+      if (!done) { done = true; clearTimeout(timer); reject(new Error(`100-continue wait for ${what}: request error: ${e.message}`)); }
+    });
+  });
+}
+
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 // The connection guard (v15 §10.3 item 5): one test proves it refuses a non-loopback host.
 // ════════════════════════════════════════════════════════════════════════════════════════════════
@@ -195,6 +252,88 @@ test('5.2 — recording is OFF by default: no observation is stored and the coun
   } finally { await judge.settled(); judge.setRecording(false); judge.resetObservations(); }
 });
 
+test('5.2b — MID-FLIGHT TOGGLE off→on: a request accepted while recording was off produces NO observation, and the in-flight count returns to zero', async () => {
+  // v19 §3.1. The recording decision is sampled ONCE, at acceptance, as `recordThisRequest`. Before
+  // that fix, the push guard at the `end` handler re-read the flag: a request accepted while
+  // recording was OFF, with recording toggled ON mid-flight, produced an observation with
+  // `seq: -1` — an observation for a request the recorder never accepted.
+  const { judge } = await boot();
+  await judge.settled();
+  judge.setRecording(false);
+  judge.resetObservations();
+  try {
+    // The in-flight counter does not move for an unrecorded request, so acceptance is observed
+    // through Expect: 100-continue — see `waitForContinue`.
+    const reqA = http.request({
+      host: '127.0.0.1', port: judge.port, path: '/v1/mid-off-on', method: 'POST',
+      headers: { 'content-length': 4, Expect: '100-continue' },
+    });
+    const aDone = new Promise<void>((resolve, reject) => {
+      reqA.on('response', (res) => { res.resume(); res.on('end', resolve); });
+      reqA.on('error', reject);
+    });
+    void aDone.catch(() => {});   // handled later at `await aDone`
+    try {
+      await waitForContinue(reqA, "request '/v1/mid-off-on' acceptance");
+      judge.setRecording(true);            // ← toggled ON while the request is in flight
+    } finally {
+      reqA.end('ABCD');   // outer finally — the body, released whether or not the wait resolved
+    }
+    await aDone;
+    await judge.settled();
+    // The in-flight count returned to zero — the leak here is the failure mode that hides behind a
+    // passing observation check (v19 §2).
+    assert.equal(judge.inFlight(), 0, 'no in-flight leak from the mid-flight toggle');
+    // The accepted-while-off request produced NO observation…
+    assert.deepEqual(judge.snapshot(), [], 'no observation for a request accepted while recording was off');
+    // …and the sequence counter never advanced for it: the next recorded request is seq 0, real,
+    // never -1.
+    const r = await postSettled(judge, '/v1/mid-off-on-next', '{}');
+    assert.equal(r.status, 200);
+    const snap = judge.snapshot();
+    assert.equal(snap.length, 1);
+    assert.equal(snap[0].seq, 0, 'the counter never advanced for the unrecorded request');
+  } finally { await judge.settled(); judge.setRecording(false); judge.resetObservations(); }
+});
+
+test('5.2c — MID-FLIGHT TOGGLE on→off: a request accepted while recording was on produces a COMPLETE observation with a real seq, and the in-flight count returns to zero', async () => {
+  // v19 §3.1, the other direction. Before the sampled decision, the push guard re-read the flag at
+  // the `end` handler: a request ACCEPTED with recording on — seq assigned, in-flight incremented —
+  // whose recording was toggled off mid-flight LOST its observation, and only the close handler's
+  // own acceptance-time registration kept the counter from leaking.
+  const { judge } = await boot();
+  await judge.settled();
+  judge.setRecording(true);
+  judge.resetObservations();
+  try {
+    const reqA = http.request({ host: '127.0.0.1', port: judge.port, path: '/v1/mid-on-off', method: 'POST', headers: { 'content-length': 10 } });
+    const aDone = new Promise<void>((resolve, reject) => {
+      reqA.on('response', (res) => { res.resume(); res.on('end', resolve); });
+      reqA.on('error', reject);
+    });
+    void aDone.catch(() => {});   // handled later at `await aDone`
+    reqA.write('12345');
+    try {
+      await waitForInFlight(judge, 1, reqA, "request '/v1/mid-on-off' acceptance");
+      judge.setRecording(false);           // ← toggled OFF while the request is in flight
+    } finally {
+      reqA.end('67890');   // outer finally — released whether or not the wait resolved
+    }
+    await aDone;
+    // `settled()` returning at all proves the decrement ran off the SAMPLED decision, and the
+    // direct assertion pins it: the in-flight count is back to zero, no leak.
+    await judge.settled();
+    assert.equal(judge.inFlight(), 0, 'no in-flight leak from the mid-flight toggle');
+    const snap = judge.snapshot();
+    assert.equal(snap.length, 1, 'the accepted-while-on request WAS recorded — the observation is not lost');
+    assert.equal(snap[0].path, '/v1/mid-on-off');
+    assert.notEqual(snap[0].seq, -1, 'a real seq, never -1');
+    assert.ok(snap[0].seq >= 0);
+    assert.equal(snap[0].body.length, 10, 'the COMPLETE body was recorded');
+    assert.equal(snap[0].overflowed, false);
+  } finally { await judge.settled(); judge.setRecording(false); judge.resetObservations(); }
+});
+
 test('5.3 — one observation holds seq, socketId, method, path, and the exact body bytes; nothing else', async () => {
   await recorded(async (judge) => {
     const body = Buffer.from('{"messages":[{"role":"user","content":"MRKA1 exact bytes"}]}');
@@ -223,34 +362,31 @@ test('5.3 — one observation holds seq, socketId, method, path, and the exact b
 test('5.4 — sequence numbers are assigned at ACCEPTANCE, monotonic from 0, and never reused', async () => {
   await recorded(async (judge) => {
     // Request A arrives first and finishes LAST; B arrives second and finishes first. A must be 0.
-    let releaseA!: () => void;
-    const aDone = new Promise<void>((resolve) => {
-      const r = http.request({ host: '127.0.0.1', port: judge.port, path: '/v1/a', method: 'POST', headers: { 'content-length': 4 } },
-        (res) => { res.resume(); res.on('end', resolve); });
-      r.write('{"');           // half the body — the server has ACCEPTED it and assigned its seq
-      releaseA = () => r.end('a"}');
+    const reqA = http.request({ host: '127.0.0.1', port: judge.port, path: '/v1/a', method: 'POST', headers: { 'content-length': 4 } });
+    const aDone = new Promise<void>((resolve, reject) => {
+      reqA.on('response', (res) => { res.resume(); res.on('end', resolve); });
+      reqA.on('error', reject);
     });
-    // ⚠️ DETERMINISTIC ACCEPTANCE SIGNAL (v18 §3.7c, review 29 finding 7). The previous version of
-    // this line was `await new Promise((r) => setTimeout(r, 30));` — an unacknowledged 30
-    // millisecond timing assumption: nothing guaranteed A had been ACCEPTED before B was sent, only
-    // that 30 ms had passed. `seq` is assigned at acceptance, and acceptance is also where the
-    // in-flight counter increments, so waiting until the counter reads 1 waits for EXACTLY the
-    // event that assigns A's sequence number. Event-driven, no timer, and the race is removed
-    // rather than hidden.
-    await new Promise<void>((resolve) => {
-      const tick = () => { if (judge.inFlight() === 1) resolve(); else setImmediate(tick); };
-      tick();
-    });
-    // ⚠️ SAME SHAPE AS 5.6, FOUND BY THE SWEEP (addendum v17 §3.2): A is held open and released only
-    // after an awaited call. If `post` rejected, `releaseA` would never run and `recorded()`'s
-    // `finally` would wait on `settled()` forever. The release now sits in a `finally`.
+    // If the acceptance wait rejects, the try below throws before `aDone` is awaited; this marks
+    // the rejection handled so it cannot surface as an unhandled rejection, while `await aDone`
+    // later still observes it.
+    void aDone.catch(() => {});
+    reqA.write('{"');           // half the body — the server has ACCEPTED it and assigned its seq
+    // ⚠️ DETERMINISTIC ACCEPTANCE SIGNAL (v18 §3.7c), now BOUNDED and FAIL-LOUD (v19 §3.3). The
+    // first version of this wait slept 30 ms — an unacknowledged timing assumption. The v18 repair
+    // replaced the sleep with an unbounded counter poll, which removed the race but could hang the
+    // file: no timeout, no request-error rejection, and a release that did not cover a failure
+    // before the wait resolved. `waitForInFlight` is bounded and rejects on request error, and the
+    // release (`reqA.end`) sits in the OUTER finally below, so it runs whether or not the wait
+    // resolved.
     //
-    // ⚠️ PLAIN `post`, NOT `postSettled`. A is deliberately held open, so `settled()` cannot resolve
-    // until A is released; awaiting it here would deadlock the test against its own fixture.
+    // ⚠️ PLAIN `post` for B, NOT `postSettled`. A is deliberately held open, so `settled()` cannot
+    // resolve until A is released; awaiting it here would deadlock the test against its own fixture.
     try {
+      await waitForInFlight(judge, 1, reqA, "request A ('/v1/a') acceptance");
       await post(judge.port, '/v1/b', '{"b":1}');   // B arrives second, completes first
     } finally {
-      releaseA();
+      reqA.end('a"}');   // the release — outer finally, whether or not the acceptance wait resolved
     }
     await aDone;
     await judge.settled();
@@ -328,25 +464,31 @@ test('5.5b — the boundary: 1048577 bytes is REJECTED with 413, an empty JSON b
 
 test('5.6 — while a request is in flight, BOTH snapshot and resetObservations throw, naming the count', async () => {
   await recorded(async (judge) => {
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => {
-      const r = http.request({ host: '127.0.0.1', port: judge.port, path: '/v1/held', method: 'POST', headers: { 'content-length': 10 } },
-        (res) => { res.resume(); res.on('end', resolve); });
-      r.write('12345');
-      release = () => r.end('67890');
+    const reqH = http.request({ host: '127.0.0.1', port: judge.port, path: '/v1/held', method: 'POST', headers: { 'content-length': 10 } });
+    const held = new Promise<void>((resolve, reject) => {
+      reqH.on('response', (res) => { res.resume(); res.on('end', resolve); });
+      reqH.on('error', reject);
     });
-    await new Promise((r) => setTimeout(r, 30));
+    void held.catch(() => {});   // handled later at `await held`; never an unhandled rejection
+    reqH.write('12345');
     // ⚠️ RELEASE IN A `finally` (addendum v17 §3.2, mutation rows 6 and 7). The release used to sit
     // AFTER these two assertions. When the in-flight refusal was mutated away, `assert.throws`
     // failed — and the held request was then never released, so `recorded()`'s own `finally`
     // waited on `settled()` forever and the whole file timed out at 60 s. The mutation WAS detected,
     // but as a nameless timeout rather than as `not ok 5.6`. A failed assertion must still let the
     // request complete, so the failure is reported by name.
+    //
+    // ⚠️ THE 30 ms SLEEP IS GONE (v19 §3.3). It was left in under v18, which authorized only 5.4's
+    // repair; v19 authorizes this one. The bounded, fail-loud acceptance wait replaces it, and the
+    // release now sits in the OUTER finally, covering a failure of the wait itself. A test that
+    // hangs instead of failing has an invisible failure mode — the same defect the mutation table
+    // found here two rounds ago.
     try {
+      await waitForInFlight(judge, 1, reqH, "the held request ('/v1/held') acceptance");
       assert.throws(() => judge.snapshot(), /1 request\(s\) in flight/, 'snapshot refuses and names the count');
       assert.throws(() => judge.resetObservations(), /1 request\(s\) in flight/, 'reset refuses and names the count');
     } finally {
-      release();
+      reqH.end('67890');   // outer finally — released whether or not the acceptance wait resolved
     }
     await held;
     await judge.settled();

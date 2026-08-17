@@ -33,10 +33,11 @@
  *   · Nothing about the wire. J2 is a CALL-LEVEL fact proved with counters; the wire-level fact —
  *     zero Cohere outbound requests through `retrieve` — is J3's, in
  *     `explicit-judge-retrieve.test.ts` (v15 §4.1). The two are not merged.
- *   · Nothing about "the base-to-commit production byte comparison" review 28 named. That phrase
- *     is defined nowhere in the corpus; addendum v15 §4.3 declines it pending clarification. Proof
- *     70's byte requirement is the SOURCE-PARITY sentence quoted from kickoff v11, and that is what
- *     70.4 asserts.
+ *   · Nothing beyond source parity for proof 70's byte requirement. Review 28's "base-to-commit
+ *     production byte comparison" is RESOLVED, not declined: review 29 defined it as the
+ *     repository production-path diff, recorded that the condition PASSED, and withdrew addendum
+ *     v15 §4.3's decline (addendum v18 §1.4). Proof 70's own byte requirement remains the
+ *     SOURCE-PARITY sentence quoted from kickoff v11, and that is what 70.4 asserts.
  *   · No database. `persisted_complete` is asserted by composing the real, pure production
  *     functions (v15 §4.4), not by writing or reading a row.
  *
@@ -580,7 +581,9 @@ test('70.3 — the row is persisted_complete by the REAL chain, and a broken pay
 test('70.4 — SOURCE PARITY: provider selection and fallback order in lib/rerank.ts are byte-identical to 72960baa', async () => {
   // Proof 70's byte requirement is THIS sentence from kickoff v11 — "provider selection and fallback
   // order are byte-identical to today" — a source-parity assertion over lib/rerank.ts. It is not a
-  // wire comparison; see this file's header on the review 28 phrase that v15 §4.3 declines.
+  // wire comparison. Review 28's "base-to-commit production byte comparison" is RESOLVED (addendum
+  // v18 §1.4): review 29 defined it as the repository production-path diff and recorded that the
+  // condition passed; v15 §4.3's decline is withdrawn.
   //
   // "Today" is pinned to the pass-2 base commit. The comparison is of the WHOLE FILE against that
   // commit's blob: pass 2 is test-only (v15 §2), so a byte-identical file is both the strongest and
