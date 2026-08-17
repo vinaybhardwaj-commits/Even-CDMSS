@@ -224,10 +224,10 @@ export function composeBrief(input: BriefInput): Brief {
   L.push('### Artefacts');
   L.push('| Artefact | State |');
   L.push('|---|---|');
-  // Addendum A2: the ratified chip copy (constraints §4b), not raw state words — the brief
-  // prints what the card prints: `OT none` / `OT empty` / bare label for present + unknown;
-  // `n/a` stays as-is (the state word IS the copy; the greyed style has no text form).
-  for (const c of coverageChips(row)) L.push(`| ${c.label} | ${c.state === 'n/a' ? 'n/a' : chipText(c)} |`);
+  // Addendum A2 (+ amendment): empty / absent print the ratified chip copy (`OT empty` /
+  // `OT none`); present / unknown print the words `present` / `unknown` — the card tells
+  // them apart by style, the brief has no style; `n/a` as-is. Brief only; the card is unchanged.
+  for (const c of coverageChips(row)) L.push(`| ${c.label} | ${c.state === 'empty' || c.state === 'absent' ? chipText(c) : c.state} |`);
   L.push('');
 
   L.push('### Assessment');

@@ -43,14 +43,14 @@ Care-manager copy · advisory throughout · dedup key `IP-2026-0101|IP-2026-0342
 ### Artefacts
 | Artefact | State |
 |---|---|
-| Index DS | Index DS |
-| Readmit DS | Readmit DS |
-| Labs | Labs |
-| OT | OT |
+| Index DS | present |
+| Readmit DS | present |
+| Labs | present |
+| OT | present |
 | PAC | PAC none |
 | Progress | Progress empty |
-| POST_IPD | POST_IPD |
-| Bill | Bill |
+| POST_IPD | present |
+| Bill | unknown |
 
 ### Assessment
 - Medical justification: Needs adjudication [audit finding]
