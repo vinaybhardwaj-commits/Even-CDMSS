@@ -812,3 +812,80 @@ function provenanceOf(citedIds: string[], m: Map<string, EvidenceItem>): Readmis
   const ratio = interested > 0 ? disinterested / interested : disinterested;
   return { interested, disinterested, ratio, needsHumanReview: disinterested === 0 };
 }
+
+// ── R1 advisory judgements (CDMSS-READMISSIONS-R1-PRD v1.1 §4, ratified 17 Aug 2026) ────
+//
+// Two STORED, human-decided, advisory judgements derived deterministically from a finding
+// — never a legal finding, never a court or council finding. Pure: no DB, no model. The
+// same function runs at audit time (store.saveAuditResult) and in the versioned backfill
+// (migrate-readmissions), reading the `finding` jsonb; the input type below is therefore
+// a structural SUBSET with every field optional, so an older stored blob is data, not a
+// type guarantee. A rule-list change bumps JUDGEMENT_RULE_VERSION and the same backfill
+// re-derives every audited row — nothing goes silently stale.
+//
+// Medical justification is a DISPLAY mapping of `avoidable` (lib/readmission-surface-core.ts),
+// not stored here — it is already the stored money verdict.
+
+export type JudgementValue = 'suspected' | 'not_suggested' | 'unknown';
+
+/** Bump when CLINICAL_HARM_STEMS / PERI_OP_EVENT_PATTERNS or the rule order change. */
+export const JUDGEMENT_RULE_VERSION = 'readmit-judgement/1';
+
+export interface Judgements {
+  preventableInjury: JudgementValue;
+  negligence: JudgementValue;
+}
+
+/** Everything deriveJudgements reads. ReadmissionFinding satisfies it structurally, and
+ *  so does a parsed `finding` blob written by an older engine (all optional). */
+export interface JudgementInput {
+  planned?: { verdict?: string | null } | null;
+  sameCondition?: { verdict?: string | null } | null;
+  omissions?: Array<{ claim?: string | null; danger?: string | null }> | null;
+  corroborationTrack?: string | null;
+  stabilityAssessment?: string | null;
+}
+
+/** §4 preventable-injury rule 2 — clinical-HARM stems, case-insensitive. A moderate
+ *  omission that is a documentation gap ("follow-up date not written") matches none of
+ *  these and lands in `unknown`, not `suspected`. */
+export const CLINICAL_HARM_STEMS: readonly RegExp[] = [
+  /wound/i, /infect/i, /bleed/i, /sepsis/i, /dehisc/i, /implant fail/i, /intra-?op/i, /unstable/i, /\bSSI\b/i,
+];
+
+/** §4 negligence rule 3 — intra-op / peri-op EVENT patterns. Bare procedure nouns and
+ *  all discharge-instruction language are deliberately NOT on this list (ratified
+ *  clinical-safety rule, PRD §4 — the Khan fixture in the tests is what it protects). */
+export const PERI_OP_EVENT_PATTERNS: readonly RegExp[] = [
+  /intra-?op/i, /intraoperative/i, /operative finding/i, /calcar/i, /cerclage/i, /anastomot/i, /retained/i, /wrong[- ]site/i,
+];
+
+const matchesAny = (claim: string | null | undefined, patterns: readonly RegExp[]): boolean =>
+  typeof claim === 'string' && patterns.some((rx) => rx.test(claim));
+
+export function deriveJudgements(finding: JudgementInput | null | undefined): Judgements {
+  const omissions = Array.isArray(finding?.omissions) ? finding!.omissions! : [];
+  const cleanBaseline = omissions.length === 0
+    && finding?.corroborationTrack === 'lab_corroborated'
+    && finding?.stabilityAssessment === 'corroborated';
+
+  // Preventable injury (§4 rules 1–4, in order).
+  let preventableInjury: JudgementValue;
+  if (omissions.some((o) => o?.danger === 'high')) preventableInjury = 'suspected';
+  else if (omissions.some((o) => o?.danger === 'moderate' && matchesAny(o?.claim, CLINICAL_HARM_STEMS))) preventableInjury = 'suspected';
+  else if (cleanBaseline) preventableInjury = 'not_suggested';
+  else preventableInjury = 'unknown';
+
+  // Negligence (§4) — `suspected` ONLY when all four hold; a missing peri-op event
+  // pattern is `unknown`, never `suspected`.
+  const unplanned = finding?.planned?.verdict === 'unplanned';
+  const sameVerdict = finding?.sameCondition?.verdict;
+  const conditionOk = sameVerdict !== 'different';   // 'same', absent, or 'unknown'
+  const periOpEvent = omissions.some((o) => matchesAny(o?.claim, PERI_OP_EVENT_PATTERNS));
+  let negligence: JudgementValue;
+  if (unplanned && conditionOk && periOpEvent) negligence = 'suspected';
+  else if (cleanBaseline) negligence = 'not_suggested';
+  else negligence = 'unknown';
+
+  return { preventableInjury, negligence };
+}

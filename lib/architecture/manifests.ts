@@ -198,6 +198,8 @@ export const UNREGISTERED: string[] = [
   'prognosis-core',         // prognosis engine (prognosis/0.1)
   'proms',                  // PROMs catalog/scheduling/scoring
   'readmission',            // readmission analysis agent Phase 1 (readmission/0.1 — detect + reconcile + Vertex worker)
+  'readmission-reconcile-core', // pure Stage-2 reconciliation + R1 advisory judgements (readmit-judgement/1) —
+                            // surfaced as its own versioned subsystem the day JUDGEMENT_RULE_VERSION was exported
   'reasoning',              // prompt-registry sidecar + export core (Reasoning Observability Stage 0)
   'right-care-ground-eval-core', // Slice-2 grounding A/B referee (right-care-eval/1.0)
 ];

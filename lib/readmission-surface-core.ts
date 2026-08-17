@@ -66,6 +66,27 @@ export interface SurfaceFinding {
   finding: FindingBlob | null;
   /** readmission_findings.omission_evidence — the same omissions, as their own column. */
   omissionEvidence: FindingBlob['omissions'] | null;
+  // ── R1 (CDMSS-READMISSIONS-R1-PRD v1.1) — additive, all optional so a pre-R1 caller or
+  //    fixture is still a complete SurfaceFinding. The route always populates them. ──
+  /** Stored advisory judgements (§5) — 'suspected' | 'not_suggested' | 'unknown' | null
+   *  (null = written before R1 and not yet backfilled). */
+  preventableInjury?: string | null;
+  negligence?: string | null;
+  judgementRuleVersion?: string | null;
+  /** The bounded join to discharge_extracted_cases for the INDEX document (§6, decision
+   *  4). null = no document id, no row at DOC_EXTRACT_VERSION, or the join failed —
+   *  the card renders thinner and the chips say unknown. Never invented. */
+  indexCase?: IndexCaseSummary | null;
+}
+
+/** What the list route carries from the index extract (§6): the three clinical fields
+ *  the path line shows, plus age/sex — used ONLY when the KX join has none (decision 13). */
+export interface IndexCaseSummary {
+  diagnosis: string | null;
+  indication: string | null;
+  procedure: string | null;
+  age: number | null;
+  sex: string | null;
 }
 
 /** The renderable subset of ReadmissionFinding (lib/readmission-reconcile-core.ts).
@@ -382,4 +403,157 @@ export function shortDate(iso: string | null | undefined): string | null {
 export function identityLine(row: Pick<SurfaceFinding, 'patientName' | 'uhid' | 'ageGender'>): string {
   const parts = [row.patientName, row.uhid, row.ageGender].filter((p): p is string => !!p && p.trim() !== '');
   return parts.length ? parts.join(' · ') : 'Unidentified patient';
+}
+
+// ── R1: the case card (CDMSS-READMISSIONS-R1-PRD v1.1 §3/§4, ratified 17 Aug 2026) ────
+// Everything below is additive. The lane helpers above stay (the route payload is still
+// lane-grouped, decision 11); the board flattens client-side and uses these.
+
+/** Decision 2 — the rows the default view hides behind one toggle: the held-out sample
+ *  (`excluded` lane / status) and the not-auditable rows. The badge predicate
+ *  (isReviewFinding) is NOT touched by this. */
+export function isHeldOut(row: Pick<SurfaceFinding, 'lane' | 'auditStatus'>): boolean {
+  return row.lane === 'excluded' || row.auditStatus === 'excluded' || row.auditStatus === 'not_auditable';
+}
+
+/**
+ * §3 order for the flat list: rows matching the review predicate first, then the other
+ * audited rows, then everything else (detected / not-auditable / held-out); newest
+ * readmit first within each group. Stable on ties.
+ */
+export function sortForCardList<T extends Pick<SurfaceFinding, 'auditStatus' | 'avoidable' | 'readmitAdmitAt'>>(rows: T[]): T[] {
+  const rank = (r: T): number => (isReviewFinding(r) ? 0 : r.auditStatus === 'audited' ? 1 : 2);
+  return rows
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => {
+      const d = rank(a.r) - rank(b.r);
+      if (d !== 0) return d;
+      const t = ts(b.r.readmitAdmitAt) - ts(a.r.readmitAdmitAt);
+      return t !== 0 ? t : a.i - b.i;
+    })
+    .map((x) => x.r);
+}
+
+/** §3 — the plain-text counts line under the list header. */
+export function countsLine(reviewCount: number, pendingCount: number): string {
+  return `${reviewCount} to review · ${pendingCount} pending audit`;
+}
+
+// ── identity (decision 13: KX-first) ─────────────────────────────────────────────
+
+const sexInitial = (sex: string | null | undefined): string | null => {
+  if (!sex) return null;
+  const c = sex.trim().charAt(0).toUpperCase();
+  return c === 'M' || c === 'F' ? c : sex.trim();
+};
+
+/** Age/sex for the identity line: the KX `ageGender` ALWAYS wins; the extract fills it
+ *  only when KX has none, and renders as "34/M" so it cannot be mistaken for the KX
+ *  string. Null when neither knows. */
+export function ageSexForCard(row: Pick<SurfaceFinding, 'ageGender' | 'indexCase'>): string | null {
+  if (row.ageGender && row.ageGender.trim() !== '') return row.ageGender;
+  const c = row.indexCase;
+  if (!c) return null;
+  const parts = [typeof c.age === 'number' && Number.isFinite(c.age) ? String(c.age) : null, sexInitial(c.sex)]
+    .filter((p): p is string => !!p);
+  return parts.length ? parts.join('/') : null;
+}
+
+/** Zone 1: `Name · UHID · age/sex` from the KX join, extract age/sex only as the
+ *  fallback above; name unresolved → UHID alone; never a blank card. */
+export function cardIdentityLine(row: Pick<SurfaceFinding, 'patientName' | 'uhid' | 'ageGender' | 'indexCase'>): string {
+  return identityLine({ patientName: row.patientName, uhid: row.uhid, ageGender: ageSexForCard(row) });
+}
+
+// ── situation line (decision 15) ─────────────────────────────────────────────────
+
+/** Directly under the path, ONLY when true: unplanned AND same-condition (R1). Not a
+ *  judgement, not stored. Reads the scalar columns first, the blob as the fallback. */
+export function situationLine(row: Pick<SurfaceFinding, 'planned' | 'sameCondition' | 'finding'>): string | null {
+  const planned = row.planned ?? row.finding?.planned?.verdict ?? null;
+  const same = row.sameCondition ?? row.finding?.sameCondition?.verdict ?? null;
+  return planned === 'unplanned' && same === 'same' ? 'Situation · Unplanned return' : null;
+}
+
+// ── coverage chips (§3 zone 3) ───────────────────────────────────────────────────
+
+export type ChipState = 'present' | 'unknown' | 'n/a';
+export interface CoverageChip { key: string; label: string; state: ChipState }
+
+/** The eight chips, in the mockup's order. States are exactly the §3 table — missing is
+ *  `unknown`, never "uneventful". OT / PAC / Progress / Bill are never `present` in R1. */
+export function coverageChips(row: Pick<SurfaceFinding, 'findingClass' | 'cmNote' | 'finding' | 'indexCase'>): CoverageChip[] {
+  const oon = row.findingClass === 'out_of_network';
+  // labSourceProvenance is typed as an open record on the blob — narrow each field.
+  const p = row.finding?.labSourceProvenance ?? null;
+  const indexCaseProv = typeof p?.indexCase === 'string' && p.indexCase !== '';
+  const readmitCaseProv = typeof p?.readmitCase === 'string' && p.readmitCase !== '';
+  const labs = typeof p?.structuredLabCount === 'number' && p.structuredLabCount > 0;
+  const heldForm = typeof row.cmNote === 'string' && row.cmNote.trim() !== '';   // a form was held — LEAD or OON
+  return [
+    { key: 'index_ds', label: 'Index DS', state: indexCaseProv || row.indexCase != null ? 'present' : 'unknown' },
+    { key: 'readmit_ds', label: 'Readmit DS', state: readmitCaseProv ? 'present' : oon ? 'n/a' : 'unknown' },
+    { key: 'labs', label: 'Labs', state: labs ? 'present' : 'unknown' },
+    { key: 'ot', label: 'OT', state: 'unknown' },
+    { key: 'pac', label: 'PAC', state: 'unknown' },
+    { key: 'progress', label: 'Progress', state: 'unknown' },
+    { key: 'post_ipd', label: 'POST_IPD', state: heldForm ? 'present' : 'unknown' },
+    { key: 'bill', label: 'Bill', state: oon ? 'n/a' : 'unknown' },
+  ];
+}
+
+// ── judgements + bill (§3 zone 4, §4 display mapping) ────────────────────────────
+
+/** Medical justification — a DISPLAY mapping of the stored money verdict, not stored
+ *  itself (§4). Null on an audited row reads as "Needs adjudication". */
+export function justificationLabel(row: Pick<SurfaceFinding, 'avoidable'>): string {
+  switch (row.avoidable) {
+    case 'justified': return 'Justified';
+    case 'needs_adjudication': return 'Needs adjudication';
+    case 'avoidable': return 'Not justified';
+    default: return 'Needs adjudication';
+  }
+}
+
+/** The stored judgement values, in words. Anything unrecognised (incl. a pre-R1 NULL) is
+ *  `Unknown` — the honest reading of "not derived yet". */
+export function judgementLabel(v: string | null | undefined): 'Suspected' | 'Not suggested' | 'Unknown' {
+  if (v === 'suspected') return 'Suspected';
+  if (v === 'not_suggested') return 'Not suggested';
+  return 'Unknown';
+}
+
+/** The `Return stay bill` cell (decision 7/10): `n/a` on OON, else the fixed unknown. */
+export function returnStayBill(row: Pick<SurfaceFinding, 'findingClass'>): string {
+  return row.findingClass === 'out_of_network' ? 'n/a' : 'unknown — not yet measured';
+}
+
+/** Small permanent text under the negligence cell. */
+export const NEGLIGENCE_ADVISORY = 'advisory — not a court or council finding';
+
+// ── path line (§3 zone 2) ────────────────────────────────────────────────────────
+
+/**
+ * `{index_department} → {readmit side}` · dates · gap · payer(s) · diagnosis · indication ·
+ * procedure — as ordered display segments; the board joins them. Any null segment is
+ * DROPPED, never rendered as "null". OON: readmit side is `out of network`. The layout
+ * does not assume a second admission: no readmit department and no admit date renders
+ * `no second IP stay`; a dated return with no department renders `unknown`.
+ */
+export function pathSegments(row: Pick<SurfaceFinding, 'findingClass' | 'indexDepartment' | 'readmitDepartment' | 'indexDischargeAt' | 'readmitAdmitAt' | 'gapDays' | 'payerIndex' | 'payerReadmit' | 'indexCase'>): string[] {
+  const oon = row.findingClass === 'out_of_network';
+  const readmitSide = oon ? 'out of network'
+    : row.readmitDepartment ?? (row.readmitAdmitAt ? 'unknown' : 'no second IP stay');
+  const out: string[] = [`${row.indexDepartment ?? 'unknown'} → ${readmitSide}`];
+  const from = shortDate(row.indexDischargeAt);
+  const to = shortDate(row.readmitAdmitAt);
+  if (from || to) out.push(`${from ? `discharged ${from}` : ''}${from && to ? ' → ' : ''}${to ? (oon ? `readmitted elsewhere ~${to}` : `readmitted ${to}`) : ''}`);
+  const gap = gapBadge(row.gapDays);
+  if (gap) out.push(gap.text);
+  const payers = [row.payerIndex, row.payerReadmit].filter((p): p is string => !!p);
+  if (payers.length) out.push(payers[0] === payers[1] ? payers[0] : payers.join(' / '));
+  if (row.indexCase?.diagnosis) out.push(row.indexCase.diagnosis);
+  if (row.indexCase?.indication) out.push(row.indexCase.indication);
+  if (row.indexCase?.procedure) out.push(row.indexCase.procedure);
+  return out;
 }

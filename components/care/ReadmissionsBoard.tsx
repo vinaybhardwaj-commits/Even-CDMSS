@@ -1,33 +1,34 @@
 'use client';
 
 /**
- * /care/readmissions — the read-only review room (CDMSS-READMISSION-PHASE-2-CARE-SURFACE-PRD
- * v1.0 §3, to the approved mockup). Renders what the readmission agent already stored:
- * findings grouped clearest-lane-first, each with its identity line, index→readmit path,
- * badges, verdict, reasoning and refusal record, plus an expandable evidence view.
+ * /care/readmissions — the flat case-card list (CDMSS-READMISSIONS-R1-PRD v1.1 §3,
+ * 17 Aug 2026; supersedes the Phase-2 lane board). Renders what the readmission agent
+ * already stored, one card per finding: identity (KX-first), the index→readmit path with
+ * the extracted diagnosis / indication / procedure, a situation line when true, eight
+ * artefact-coverage chips, the three advisory judgements + the `Return stay bill` cell,
+ * and ONE button that downloads a `.md` case brief built client-side.
  *
- * READ-ONLY (decision 10). There is deliberately not one control on this page that
- * mutates a finding — no escalate, no strike-down, no note. Everything is a <details>
- * or a link. Escalation is the next phase and the footer says so.
+ * READ-ONLY. Nothing on this page mutates a finding — the download is the only transmit
+ * (decision 8), it calls no model, and it writes nothing. The route payload is still
+ * lane-grouped (decision 11); this file flattens with `lanes.flatMap` and sorts
+ * review-first (sortForCardList). The held-out sample and the not-auditable rows sit
+ * behind one toggle, default off (decision 2). Tiles are gone (decision 1).
  *
- * ALL judgement lives in lib/readmission-surface-core.ts (lane order, review predicate,
- * badge and verdict mapping) so it is unit-tested; this file is markup and fetch.
- *
- * ONE HONEST DEPARTURE FROM THE MOCKUP: the mockup's "index said / readmit said" panel
- * quotes the discharge prose verbatim. That prose is NOT stored — by PHI design the
- * finding blob keeps only the structured reconciliation output (omissions, exculpatory
- * claims, the refusal record). The panel therefore renders those structured claims in
- * the same two-column shape: what the index discharge ASSERTED on the left, what the
- * readmission CONTRADICTED on the right. Same question answered, from data we actually
- * hold, with no re-read of a PDF on a page load.
+ * ALL judgement lives in lib/readmission-surface-core.ts (sort, chips, situation line,
+ * justification mapping, identity precedence) and lib/readmission/brief.ts (the brief) so
+ * it is unit-tested; this file is markup and fetch. Missing data renders `unknown`, never
+ * a guess; a failed case fetch still downloads a thinner brief from the card row alone.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { RotateCw } from 'lucide-react';
+import { RotateCw, Download } from 'lucide-react';
 import {
-  badgesFor, identityLine, shortDate, verdictConfidence, verdictLabel,
-  type Badge, type LaneGroup, type SurfaceFinding, type SurfaceTiles, type Tone,
+  cardIdentityLine, coverageChips, countsLine, isHeldOut, isReviewFinding, judgementLabel,
+  justificationLabel, NEGLIGENCE_ADVISORY, pathSegments, returnStayBill, situationLine,
+  sortForCardList,
+  type ChipState, type LaneGroup, type SurfaceFinding, type SurfaceTiles,
 } from '@/lib/readmission-surface-core';
+import { composeBrief, type ExtractSubset } from '@/lib/readmission/brief';
 
 type BoardData = {
   ok: boolean;
@@ -40,180 +41,143 @@ type BoardData = {
   error?: string;
 };
 
-const CHIP: Record<Tone, string> = {
-  red: 'bg-red-100 text-red-800',
-  amber: 'bg-amber-100 text-amber-800',
-  emerald: 'bg-emerald-100 text-emerald-800',
-  sky: 'bg-sky-100 text-sky-800',
-  slate: 'bg-slate-100 text-slate-700',
-};
-const VERDICT_TEXT: Record<Tone, string> = {
-  red: 'text-red-700', amber: 'text-amber-700', emerald: 'text-emerald-700', sky: 'text-sky-700', slate: 'text-slate-600',
+type CaseDetail = {
+  ok: boolean;
+  row: SurfaceFinding;
+  indexExtract: ExtractSubset | null;
+  readmitExtract: ExtractSubset | null;
 };
 
-function Chip({ b }: { b: Badge }) {
-  return <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${CHIP[b.tone]}`}>{b.text}</span>;
+const CHIP_STATE: Record<ChipState, string> = {
+  present: 'bg-emerald-100 text-emerald-800',
+  unknown: 'bg-slate-100 text-slate-500',
+  'n/a': 'bg-slate-50 text-slate-400 line-through',
+};
+
+/** IST clock stamp for the brief header — the only clock the composer sees. */
+function istStamp(): string {
+  const d = new Date(Date.now() + 5.5 * 3_600_000);
+  return d.toISOString().replace('T', ' ').slice(0, 16);
 }
 
-function Tile({ n, k }: { n: string; k: string }) {
+/** The escalate-button Blob pattern (app/admin/opd-audit/[id]/escalate-button.tsx). */
+function saveMarkdown(filename: string, markdown: string) {
+  const blob = new Blob([markdown], { type: 'text/markdown' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Fetch the pinned case detail, overlay the card's KX identity (decision 13 — the case
+ * route does not re-join it), compose, download. Any failure on the fetch degrades to a
+ * brief built from the card row alone; nothing here can leave the user without a file.
+ */
+async function downloadBrief(card: SurfaceFinding): Promise<void> {
+  let detail: CaseDetail | null = null;
+  try {
+    const r = await fetch(`/api/care/readmissions/case?dedup_key=${encodeURIComponent(card.dedupKey)}`);
+    if (r.ok) {
+      const j = (await r.json()) as CaseDetail;
+      if (j.ok && j.row) detail = j;
+    }
+  } catch { /* thinner brief below */ }
+  const row: SurfaceFinding = detail
+    ? { ...detail.row, patientName: card.patientName, ageGender: card.ageGender ?? detail.row.ageGender ?? null, indexCase: detail.row.indexCase ?? card.indexCase ?? null }
+    : card;
+  const brief = composeBrief({
+    row,
+    indexExtract: detail?.indexExtract ?? null,
+    readmitExtract: detail?.readmitExtract ?? null,
+    generatedAt: istStamp(),
+    detailFetched: detail != null,
+  });
+  saveMarkdown(brief.filename, brief.markdown);
+}
+
+function Cell({ k, v, sub }: { k: string; v: string; sub?: string }) {
   return (
-    <div className="rounded-lg border border-line bg-paper px-3.5 py-3">
-      <div className="font-serif text-[22px] font-semibold tracking-tight text-slate-900">{n}</div>
-      <div className="mt-0.5 text-[11px] leading-snug text-slate-500">{k}</div>
+    <div className="rounded-lg border border-line bg-canvas px-3 py-2">
+      <div className="text-[10.5px] uppercase tracking-wider text-slate-500">{k}</div>
+      <div className="mt-0.5 text-[12.5px] font-semibold text-slate-900">{v}</div>
+      {sub && <div className="mt-0.5 text-[10.5px] italic text-slate-500">{sub}</div>}
     </div>
   );
 }
 
-/** The index→readmit path line. Every part is optional on a real row, so each is
- *  dropped individually rather than rendering "null → null". */
-function PathLine({ f }: { f: SurfaceFinding }) {
-  const oon = f.findingClass === 'out_of_network';
-  const from = shortDate(f.indexDischargeAt);
-  const to = shortDate(f.readmitAdmitAt);
-  const bits: React.ReactNode[] = [];
-  if (f.indexDepartment) bits.push(<b key="dept" className="font-semibold text-slate-900">{f.indexDepartment}</b>);
-  if (f.indexDoctor) bits.push(<span key="doc">{f.indexDoctor}</span>);
-  return (
-    <div className="mt-1 text-[12.5px] text-slate-600">
-      {bits.map((b, i) => <span key={i}>{i > 0 && ' · '}{b}</span>)}
-      {(from || to) && (
-        <span>
-          {bits.length > 0 && '  ·  '}
-          {from && <>discharged {from}</>}
-          {to && <> → <b className="font-semibold text-slate-900">{oon ? `readmitted elsewhere ~${to}` : `readmitted ${to}`}</b></>}
-        </span>
-      )}
-      {f.payerIndex && <span> · {f.payerIndex}</span>}
-    </div>
-  );
-}
-
-/** The expandable evidence view — structured claims, not quoted prose (see docblock). */
-function EvidencePanel({ f }: { f: SurfaceFinding }) {
-  const blob = f.finding;
-  const omissions = f.omissionEvidence ?? [];
-  const exculpatory = blob?.exculpatory ?? [];
-  if (!omissions.length && !exculpatory.length && !blob?.stabilityAssessment) return null;
-  return (
-    <details className="mt-2.5 group">
-      <summary className="cursor-pointer list-none text-[12px] font-semibold text-brand marker:content-['']">
-        <span className="group-open:hidden">▸ </span><span className="hidden group-open:inline">▾ </span>
-        What the index discharge claimed / what the readmission showed
-      </summary>
-      <div className="mt-2.5 grid gap-2.5 sm:grid-cols-2">
-        <div className="rounded-lg border border-line bg-canvas px-3 py-2.5">
-          <h4 className="text-[11px] uppercase tracking-wider text-slate-500">Index discharge claimed</h4>
-          {exculpatory.length === 0 && <p className="mt-1.5 text-[12px] text-slate-500">No exculpatory claim recorded.</p>}
-          {exculpatory.map((e, i) => (
-            <p key={i} className="mt-1.5 text-[12px] leading-relaxed text-slate-600">
-              {e.claim}{' '}
-              <span className={`rounded px-1 py-px text-[11px] ${e.corroborated ? 'bg-emerald-50 text-emerald-800' : 'bg-red-50 text-red-800'}`}>
-                {e.corroborated ? 'corroborated' : 'uncorroborated'}
-              </span>
-            </p>
-          ))}
-          {blob?.stabilityAssessment && (
-            <p className="mt-2 text-[11.5px] text-slate-500">
-              Stability at discharge: <span className="font-medium text-slate-700">{blob.stabilityAssessment}</span>
-            </p>
-          )}
-        </div>
-        <div className="rounded-lg border border-line bg-canvas px-3 py-2.5">
-          <h4 className="text-[11px] uppercase tracking-wider text-slate-500">Readmission showed</h4>
-          {omissions.length === 0 && <p className="mt-1.5 text-[12px] text-slate-500">No contradicting finding recorded.</p>}
-          {omissions.map((o, i) => (
-            <p key={i} className="mt-1.5 text-[12px] leading-relaxed text-slate-600">
-              <span className="rounded bg-red-50 px-1 py-px text-red-800">{o.claim}</span>
-              {o.danger && <span className="text-slate-500"> · {o.danger} risk</span>}
-              {o.confidence && <span className="text-slate-500"> · {o.confidence} confidence</span>}
-              {o.source === 'derived' && <span className="text-slate-500"> · from the numbers</span>}
-              {o.caveat && <span className="block text-[11.5px] italic text-slate-500">{o.caveat}</span>}
-            </p>
-          ))}
-        </div>
-      </div>
-    </details>
-  );
-}
-
-function FindingCard({ f }: { f: SurfaceFinding }) {
-  const v = verdictLabel(f);
-  const conf = verdictConfidence(f.finding);
-  const reason = f.finding?.avoidable?.reason ?? f.notAuditableReason ?? null;
-  const refusals = (f.finding?.refusalRecord ?? []).filter((r) => r.found === false);
+function CaseCard({ f }: { f: SurfaceFinding }) {
+  const [busy, setBusy] = useState(false);
+  const audited = f.auditStatus === 'audited';
+  const situation = situationLine(f);
+  const review = isReviewFinding(f);
 
   return (
-    <div className="mb-3 rounded-xl border border-line bg-paper p-4 shadow-card">
+    <div className={`mb-3 rounded-xl border bg-paper p-4 shadow-card ${review ? 'border-red-200' : 'border-line'}`}>
+      {/* Zone 1 — identity (KX-first) */}
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-[14.5px] font-semibold text-slate-900">{identityLine(f)}</div>
-          <PathLine f={f} />
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {badgesFor(f).map((b, i) => <Chip key={i} b={b} />)}
+          <div className="text-[14.5px] font-semibold text-slate-900">{cardIdentityLine(f)}</div>
+          {/* Zone 2 — path */}
+          <div className="mt-1 text-[12.5px] text-slate-600">
+            {pathSegments(f).map((seg, i) => (
+              <span key={i}>{i > 0 && ' · '}{i === 0 ? <b className="font-semibold text-slate-900">{seg}</b> : seg}</span>
+            ))}
           </div>
-        </div>
-        <div className="shrink-0 text-right">
-          <div className={`text-[12.5px] font-semibold ${VERDICT_TEXT[v.tone]}`}>{v.label}</div>
-          <div className="mt-0.5 text-[11px] text-slate-500">{v.sub}</div>
-          {conf && <span className={`mt-1.5 inline-block rounded-full px-2 py-0.5 text-[10.5px] font-semibold ${CHIP[conf.tone]}`}>{conf.text}</span>}
-          {f.needsHumanReview && <div className="mt-1 text-[10.5px] font-medium text-amber-700">needs a human</div>}
+          {situation && <div className="mt-1 text-[12px] font-medium text-red-700">{situation}</div>}
         </div>
       </div>
 
-      {reason && (
-        <p className="mt-3 border-t border-line pt-3 text-[12.5px] leading-relaxed text-slate-600">
-          <span className="font-semibold text-slate-900">Why:</span> {reason}
+      {/* Zone 3 — coverage chips */}
+      <div className="mt-2.5 flex flex-wrap gap-1.5">
+        {coverageChips(f).map((c) => (
+          <span key={c.key} title={`${c.label}: ${c.state}`}
+            className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${CHIP_STATE[c.state]}`}>
+            {c.label} · {c.state}
+          </span>
+        ))}
+      </div>
+
+      {/* Zone 4 — judgements + bill */}
+      {audited ? (
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <Cell k="Medical justification" v={justificationLabel(f)} />
+          <Cell k="Preventable injury" v={judgementLabel(f.preventableInjury)} />
+          <Cell k="Negligence" v={judgementLabel(f.negligence)} sub={NEGLIGENCE_ADVISORY} />
+          <Cell k="Return stay bill" v={returnStayBill(f)} />
+        </div>
+      ) : (
+        // §3: one line. The qualifier names WHY for the two statuses the toggle reveals —
+        // a held-out row will never be audited, by design, and saying only "not yet" would
+        // promise otherwise (flagged in the R1 report as a one-line deviation).
+        <p className="mt-3 text-[12px] text-slate-500">
+          Not yet audited
+          {f.auditStatus === 'excluded' && <span className="text-slate-400"> · held out by design</span>}
+          {f.auditStatus === 'not_auditable' && <span className="text-slate-400"> · not auditable{f.notAuditableReason ? ` — ${f.notAuditableReason}` : ''}</span>}
         </p>
       )}
 
-      <EvidencePanel f={f} />
-
-      {refusals.length > 0 && (
-        <p className="mt-2.5 text-[11.5px] italic text-slate-500">
-          Looked for but not found: {refusals.map((r) => r.lookedFor).filter(Boolean).join('; ')}. Their absence is the finding.
-        </p>
-      )}
-      {f.finding?.readmitFactsPatientReported && (
-        <p className="mt-1.5 text-[11.5px] italic text-slate-500">
-          {f.finding.identityResolved ? 'Identity is certain (member → Even UHID). ' : ''}
-          What is patient-reported is the readmission itself, stated plainly.
-        </p>
-      )}
-      {f.finding?.weakestStep && (
-        <p className="mt-1.5 text-[11.5px] text-slate-500">Weakest step: {f.finding.weakestStep}</p>
-      )}
+      {/* Action row */}
+      <div className="mt-3 flex items-center justify-end">
+        <button type="button" disabled={busy}
+          onClick={() => { setBusy(true); void downloadBrief(f).finally(() => setBusy(false)); }}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-white px-2.5 py-1 text-[12px] font-medium text-slate-600 transition hover:border-brand/40 hover:text-brand disabled:opacity-50">
+          <Download className="h-3 w-3" />Download case brief · .md
+        </button>
+      </div>
     </div>
   );
-}
-
-function LaneSection({ g }: { g: LaneGroup }) {
-  const body = g.rows.map((f) => <FindingCard key={f.dedupKey} f={f} />);
-  const header = (
-    <div className="mb-2.5 mt-7 flex items-baseline gap-2.5">
-      <div className={`w-[3px] self-stretch rounded-sm ${g.bar}`} />
-      <h2 className="text-[14.5px] font-semibold text-slate-900">{g.title}</h2>
-      <span className="text-[12px] text-slate-500">{g.rows.length} {g.rows.length === 1 ? 'finding' : 'findings'} · {g.blurb}</span>
-    </div>
-  );
-  // The held-out sample collapses: it is expected by design, so it should not compete
-  // for attention with the lanes that are actually work.
-  if (g.collapsed) {
-    return (
-      <details className="mt-7">
-        <summary className="cursor-pointer list-none text-[13px] font-semibold text-slate-500 marker:content-['']">
-          ▸ {g.title} <span className="font-normal text-slate-400">({g.rows.length}) — {g.blurb}</span>
-        </summary>
-        <div className="mt-3">{body}</div>
-      </details>
-    );
-  }
-  return <section>{header}{body}</section>;
 }
 
 export default function ReadmissionsBoard() {
   const [data, setData] = useState<BoardData | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [showHeldOut, setShowHeldOut] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true); setErr(null);
@@ -228,8 +192,10 @@ export default function ReadmissionsBoard() {
 
   useEffect(() => { void load(); }, [load]);
 
-  const t = data?.tiles;
-  const rate = t && t.thirtyDayRate != null ? `${(t.thirtyDayRate * 100).toFixed(1)}` : '—';
+  // Decision 11: the payload stays lane-grouped; the board flattens and sorts here.
+  const flat = useMemo(() => sortForCardList((data?.lanes ?? []).flatMap((g) => g.rows)), [data]);
+  const heldOutCount = useMemo(() => flat.filter(isHeldOut).length, [flat]);
+  const visible = useMemo(() => (showHeldOut ? flat : flat.filter((r) => !isHeldOut(r))), [flat, showHeldOut]);
 
   return (
     <div className="mx-auto max-w-content px-5 py-7">
@@ -246,24 +212,16 @@ export default function ReadmissionsBoard() {
         </button>
       </div>
       <p className="mt-1 text-[12.5px] text-slate-500">
-        Every unplanned readmission the agent has audited, reviewed for whether it needed to happen. The agent proposes; you decide what to escalate.
+        Every readmission the agent has audited, one card each. The agent proposes; you decide what to escalate.
       </p>
 
-      <div className="mt-5 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-        <Tile n={rate === '—' ? '—' : `${rate}%`} k="30-day readmission rate (all IP stays)" />
-        <Tile n={String(t?.readmissionCount ?? 0)} k="readmissions audited" />
-        <Tile n={String(t?.inReviewLanes ?? 0)} k="unplanned, in scope to review (Lanes A + B)" />
-        <Tile n={String(t?.outOfNetwork ?? 0)} k="out-of-network (patient readmitted elsewhere)" />
-      </div>
+      {data && (
+        <p className="mt-4 text-[12.5px] text-slate-700">{countsLine(data.reviewCount, data.pendingCount)}</p>
+      )}
 
       {err && <p className="mt-4 text-[12px] text-red-700">{err}</p>}
       {loading && !data && <p className="mt-6 text-[13px] text-slate-400">Loading…</p>}
 
-      {data && data.pendingCount > 0 && (
-        <p className="mt-3 text-[11.5px] text-slate-500">
-          {data.pendingCount} finding{data.pendingCount === 1 ? '' : 's'} detected but not yet audited — they appear here once the sweep reaches them.
-        </p>
-      )}
       {data && data.total > 0 && !data.namesResolved && (
         <p className="mt-1 text-[11.5px] text-slate-500">
           Patient names are unavailable right now — cards are identified by UHID.
@@ -275,13 +233,22 @@ export default function ReadmissionsBoard() {
         </p>
       )}
 
-      {data?.lanes.map((g) => <LaneSection key={g.lane} g={g} />)}
+      {data && heldOutCount > 0 && (
+        <label className="mt-3 flex items-center gap-2 text-[12px] text-slate-600">
+          <input type="checkbox" checked={showHeldOut} onChange={(e) => setShowHeldOut(e.target.checked)} className="h-3.5 w-3.5" />
+          Show held-out and not-auditable cases ({heldOutCount})
+        </label>
+      )}
+
+      <div className="mt-4">
+        {visible.map((f) => <CaseCard key={f.dedupKey} f={f} />)}
+      </div>
 
       <p className="mt-7 border-t border-line pt-3.5 text-[11.5px] leading-relaxed text-slate-500">
-        Advisory throughout — never a clinician score. The agent is a high-sensitivity screen: it surfaces what to look at and
-        shows its evidence, never a verdict a doctor sees directly. Oncology, dialysis and obstetric readmissions are expected by
-        design and held out of the review lanes.{' '}
-        <b className="font-semibold text-slate-700">Escalation actions arrive in the next phase.</b> v1 is read-and-review.
+        Advisory throughout — never a clinician score, never a court or council finding. The agent is a high-sensitivity
+        screen: it surfaces what to look at and shows its evidence. Oncology, dialysis and obstetric readmissions are
+        expected by design and held out of the default view.{' '}
+        <b className="font-semibold text-slate-700">The brief is the only transmit; nothing on this page changes a finding.</b>
       </p>
     </div>
   );

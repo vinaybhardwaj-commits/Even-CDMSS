@@ -24,6 +24,7 @@ import { sql } from '../db';
 import type { ReadmitPair, OonDetection } from '../readmission-detect-core';
 import { pairDedupKey, oonDedupKey } from '../readmission-detect-core';
 import type { ReadmissionFinding, LabTier } from '../readmission-reconcile-core';
+import { deriveJudgements, JUDGEMENT_RULE_VERSION } from '../readmission-reconcile-core';
 
 /** Flags (ship OFF): the Vertex surface is GEMINI_READMIT_AUDIT; the engine version
  *  starts at readmission/0.1 and bumps ONLY on behaviour change (house rule). */
@@ -167,6 +168,7 @@ export interface AuditResultWrite {
 export async function saveAuditResult(w: AuditResultWrite, engineVersion: string = READMIT_ENGINE_VERSION): Promise<boolean> {
   if (!w.dedupKey) return false;
   const f = w.finding ?? null;
+  const judgements = f != null ? deriveJudgements(f) : null;
   try {
     const rows = (await sql(
       `UPDATE readmission_findings SET
@@ -176,6 +178,7 @@ export async function saveAuditResult(w: AuditResultWrite, engineVersion: string
          lab_timing_profile = $9, n_omissions = $10, needs_human_review = $11,
          promoted_to_full = $12, model = $13, provider = $14, trace_id = $15,
          lab_tier = $16, lab_source_provenance = $17::jsonb, omission_evidence = $18::jsonb,
+         preventable_injury = $19, negligence = $20, judgement_rule_version = $21,
          last_error = NULL
        WHERE dedup_key = $1 AND engine_version = $2
        RETURNING id`,
@@ -191,6 +194,12 @@ export async function saveAuditResult(w: AuditResultWrite, engineVersion: string
         f?.labTier ?? w.labTier ?? null,
         f?.labSourceProvenance != null ? JSON.stringify(f.labSourceProvenance) : null,
         f?.omissions?.length ? JSON.stringify(f.omissions) : null,
+        // R1 (READMISSIONS-R1 PRD v1.1 §5): the two stored advisory judgements, derived
+        // deterministically from the finding, stamped with the rule version that produced
+        // them. A not_auditable write has no finding and therefore no judgement — NULLs,
+        // never an invented value.
+        judgements?.preventableInjury ?? null, judgements?.negligence ?? null,
+        judgements ? JUDGEMENT_RULE_VERSION : null,
       ],
     )) as Array<{ id: string }>;
     return rows.length > 0;
@@ -310,6 +319,11 @@ export interface SurfaceRow extends Record<string, unknown> {
   not_auditable_reason: string | null;
   finding: unknown;
   omission_evidence: unknown;
+  /** R1 stored advisory judgements (PRD v1.1 §5) — NULL until the row is audited under
+   *  R1 or the versioned backfill has reached it. */
+  preventable_injury: string | null;
+  negligence: string | null;
+  judgement_rule_version: string | null;
 }
 
 export interface SurfaceRead {
@@ -370,7 +384,8 @@ export async function listFindingsForSurface(opts?: {
                 payer_index, payer_readmit, cm_note,
                 planned, same_condition, avoidable, lab_tier, lab_timing_profile,
                 n_omissions, needs_human_review, promoted_to_full, not_auditable_reason,
-                finding, omission_evidence
+                finding, omission_evidence,
+                preventable_injury, negligence, judgement_rule_version
            FROM readmission_findings
           WHERE ${where}
           ORDER BY readmit_admit_at DESC NULLS LAST
@@ -394,6 +409,37 @@ export async function listFindingsForSurface(opts?: {
     };
   } catch {
     return { rows: [], pendingCount: 0, reviewCount: 0 };
+  }
+}
+
+/**
+ * R1 (PRD v1.1 §6, decision 14): ONE finding for the case route, read exactly as the list
+ * reads it, PINNED to the engine version — never "pick latest". READ-ONLY. Null on no
+ * row and on any DB fault alike (the route turns both into a 404 / thinner brief, never
+ * a 500). Same column list as listFindingsForSurface so the brief and the card can never
+ * see different fields on the same row.
+ */
+export async function fetchFindingForSurface(dedupKey: string, engineVersion: string = READMIT_ENGINE_VERSION): Promise<SurfaceRow | null> {
+  if (!dedupKey) return null;
+  try {
+    const rows = (await sql(
+      `SELECT dedup_key, finding_class, lane, audit_status, index_encounter_id, readmit_encounter_id,
+              uhid, tags, gap_days, index_department, readmit_department, index_doctor, readmit_doctor,
+              to_char(index_discharge_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS index_discharge_at,
+              to_char(readmit_admit_at,   'YYYY-MM-DD"T"HH24:MI:SSOF') AS readmit_admit_at,
+              payer_index, payer_readmit, cm_note,
+              planned, same_condition, avoidable, lab_tier, lab_timing_profile,
+              n_omissions, needs_human_review, promoted_to_full, not_auditable_reason,
+              finding, omission_evidence,
+              preventable_injury, negligence, judgement_rule_version
+         FROM readmission_findings
+        WHERE dedup_key = $1 AND engine_version = $2
+        LIMIT 1`,
+      [dedupKey, engineVersion],
+    )) as SurfaceRow[];
+    return rows[0] ?? null;
+  } catch {
+    return null;
   }
 }
 

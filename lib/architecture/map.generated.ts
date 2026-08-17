@@ -1848,6 +1848,16 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/api",
+    "to": "readmission-reconcile-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "readmission-surface-core",
+    "kind": "type"
+  },
+  {
+    "from": "app/api",
     "to": "readmission-surface-core",
     "kind": "value"
   },
@@ -4288,6 +4298,16 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "readmission",
+    "to": "readmission-surface-core",
+    "kind": "type"
+  },
+  {
+    "from": "readmission",
+    "to": "readmission-surface-core",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
     "to": "trace",
     "kind": "value"
   },
@@ -4602,6 +4622,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": true
   },
   {
+    "constName": "JUDGEMENT_RULE_VERSION",
+    "value": "readmit-judgement/1",
+    "file": "lib/readmission-reconcile-core.ts",
+    "derived": false
+  },
+  {
     "constName": "MATCHER_VERSION",
     "value": "ddx-eval/3",
     "file": "lib/ddx-eval-core.ts",
@@ -4767,8 +4793,8 @@ export const VERSION_REGISTRY: VersionRow[] = [
 
 export const COVERAGE = {
   "registered": 16,
-  "unregistered": 22,
-  "total": 38,
+  "unregistered": 23,
+  "total": 39,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
@@ -4790,6 +4816,7 @@ export const COVERAGE = {
     "prognosis-core",
     "proms",
     "readmission",
+    "readmission-reconcile-core",
     "reasoning",
     "right-care-ground-eval-core"
   ]

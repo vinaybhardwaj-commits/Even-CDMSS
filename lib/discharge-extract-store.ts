@@ -129,6 +129,40 @@ export async function fetchExtractedCase(documentId: string, extractionVersion: 
   }
 }
 
+/**
+ * R1 batch variant (CDMSS-READMISSIONS-R1-PRD v1.1 §6): the extracted cases for MANY
+ * document ids in ONE query, keyed by document id. Empty map on any DB fault, on an empty
+ * input, and for every id with no row at this version — the caller (the /care/readmissions
+ * list route) renders a thinner card, never a 500 and never invented data.
+ *
+ * ⚠️ INFERRED SQL:
+ *   SELECT document_id, extraction_version, ip_uid, member_id, extracted_json,
+ *          to_char(extracted_at, ...) AS extracted_at, trace_id
+ *     FROM discharge_extracted_cases
+ *    WHERE document_id = ANY($1::text[]) AND extraction_version = $2
+ */
+export async function fetchExtractedCases(documentIds: string[], extractionVersion: string = DOC_EXTRACT_VERSION): Promise<Map<string, StoredExtractedCase>> {
+  const out = new Map<string, StoredExtractedCase>();
+  const ids = [...new Set((documentIds ?? []).filter((d): d is string => typeof d === 'string' && d.length > 0))];
+  if (!ids.length) return out;
+  try {
+    const rows = (await sql(
+      `SELECT document_id, extraction_version, ip_uid, member_id, extracted_json,
+              to_char(extracted_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS extracted_at, trace_id
+         FROM discharge_extracted_cases
+        WHERE document_id = ANY($1::text[]) AND extraction_version = $2`,
+      [ids, extractionVersion],
+    )) as Array<Record<string, unknown>>;
+    for (const r of rows) {
+      const c = rowToStoredCase(r);
+      if (c && !out.has(c.documentId)) out.set(c.documentId, c);
+    }
+    return out;
+  } catch {
+    return new Map();   // unreachable store = no extract for anyone; the card degrades, the page does not
+  }
+}
+
 /** Store coverage for the admin/migration response. Zeroes on any fault. */
 export async function extractStoreCounts(extractionVersion: string = DOC_EXTRACT_VERSION): Promise<{ total: number; atVersion: number }> {
   try {

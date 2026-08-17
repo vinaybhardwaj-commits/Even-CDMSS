@@ -9,6 +9,9 @@
  *      falls back to the UHID already on the finding row.
  *   3. db13 — the IP-discharge denominator for the 30-day-rate tile. Unavailable →
  *      the tile shows "—" rather than a rate built on a guessed denominator.
+ *   4. Neon — R1 (READMISSIONS-R1 PRD v1.1 §6): the index extract for each row, ONE
+ *      batch query on discharge_extracted_cases, emitted per row as `indexCase`
+ *      (additive payload). Join down → indexCase: null → thinner card, chips unknown.
  *
  * PHI: the patient name is read here and rendered behind the care-manager gate. It is
  * NOT persisted, and there is no model call anywhere on this surface — the audit that
@@ -24,8 +27,10 @@ import { isCareUnlocked } from '@/lib/care-cookie';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { metabaseQuery } from '@/lib/metabase';
 import { ADT_COLUMN_CANDIDATES } from '@/lib/readmission-detect-core';
-import { listFindingsForSurface, type SurfaceRow } from '@/lib/readmission/store';
-import { computeTiles, groupByLane, type FindingBlob, type SurfaceFinding } from '@/lib/readmission-surface-core';
+import { listFindingsForSurface } from '@/lib/readmission/store';
+import { fetchExtractedCases } from '@/lib/discharge-extract-store';
+import { asJson, indexDocumentIdOf, toFinding, toIndexCaseSummary, type Identity } from '@/lib/readmission/surface-row';
+import { computeTiles, groupByLane, type FindingBlob } from '@/lib/readmission-surface-core';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -46,18 +51,7 @@ const pick = (row: Record<string, unknown>, candidates: readonly string[]): unkn
   return null;
 };
 
-/** jsonb tolerance: the Neon driver normally hands back a parsed object, but a
- *  TEXT-typed round trip returns the string. Anything else → null, never a throw. */
-function asJson<T>(v: unknown): T | null {
-  if (v == null) return null;
-  if (typeof v === 'object') return v as T;
-  if (typeof v === 'string') { try { return JSON.parse(v) as T; } catch { return null; } }
-  return null;
-}
-
 // ── db13: the display name (decision 5) ─────────────────────────────────────────
-
-interface Identity { name: string | null; uhid: string | null; ageGender: string | null }
 
 /** Which column actually holds the encounter id in kx_discharged_completed_patients.
  *  Resolved once per process by trying the candidate list, then remembered — the
@@ -149,43 +143,7 @@ async function ipDischargeDenominator(): Promise<number | null> {
   }
 }
 
-// ── row → SurfaceFinding ────────────────────────────────────────────────────────
-
-function toFinding(r: SurfaceRow, id: Identity | undefined): SurfaceFinding {
-  const blob = asJson<FindingBlob>(r.finding);
-  return {
-    dedupKey: String(r.dedup_key),
-    findingClass: String(r.finding_class),
-    lane: String(r.lane),
-    auditStatus: String(r.audit_status),
-    // Name from KX at render; the UHID on the finding row is the authoritative
-    // secondary identifier and wins over the joined one (it is what the agent keyed on).
-    patientName: id?.name ?? null,
-    uhid: s(r.uhid) ?? id?.uhid ?? null,
-    ageGender: id?.ageGender ?? null,
-    gapDays: r.gap_days == null ? null : Number(r.gap_days),
-    indexDepartment: s(r.index_department),
-    readmitDepartment: s(r.readmit_department),
-    indexDoctor: s(r.index_doctor),
-    readmitDoctor: s(r.readmit_doctor),
-    indexDischargeAt: s(r.index_discharge_at),
-    readmitAdmitAt: s(r.readmit_admit_at),
-    payerIndex: s(r.payer_index),
-    payerReadmit: s(r.payer_readmit),
-    cmNote: s(r.cm_note),
-    planned: s(r.planned),
-    sameCondition: s(r.same_condition),
-    avoidable: s(r.avoidable),
-    labTier: s(r.lab_tier),
-    labTimingProfile: s(r.lab_timing_profile),
-    nOmissions: r.n_omissions == null ? null : Number(r.n_omissions),
-    needsHumanReview: r.needs_human_review == null ? null : Boolean(r.needs_human_review),
-    promotedToFull: r.promoted_to_full == null ? null : Boolean(r.promoted_to_full),
-    notAuditableReason: s(r.not_auditable_reason),
-    finding: blob,
-    omissionEvidence: asJson<FindingBlob['omissions']>(r.omission_evidence) ?? blob?.omissions ?? null,
-  };
-}
+// ── row → SurfaceFinding: lib/readmission/surface-row.ts (shared with the case route) ──
 
 export async function GET() {
   if (!enabled()) return NextResponse.json({ ok: false, error: 'disabled' }, { status: 404 });
@@ -200,10 +158,20 @@ export async function GET() {
   // All three db13 reads run together and each soft-fails on its own; none of them can
   // fail the response. Awaited with Promise.all (not allSettled) because every one of
   // them already resolves rather than rejects.
-  const [adt, summaries, denominator] = await Promise.all([
+  // R1 (PRD v1.1 §6, decision 4): the ONE bounded join to discharge_extracted_cases —
+  // every non-null index document id, narrowed off the stored provenance, in one query.
+  // fetchExtractedCases returns an empty map on any fault, so a store outage costs the
+  // diagnosis/procedure/indication segments and turns the Index DS chip unknown — never
+  // the page.
+  const indexDocIds = read.rows
+    .map((r) => indexDocumentIdOf(asJson<FindingBlob>(r.finding)))
+    .filter((d): d is string => d != null);
+
+  const [adt, summaries, denominator, extracts] = await Promise.all([
     namesFromAdt(ids),
     identityFromSummaries(ids),
     ipDischargeDenominator(),
+    fetchExtractedCases(indexDocIds),
   ]);
 
   const rows = read.rows.map((r) => {
@@ -213,7 +181,9 @@ export async function GET() {
     // Decision 5 names the ADT table as the source; the summary record fills the gaps
     // it cannot answer (age/sex) and stands in when the ADT join found nothing.
     const id: Identity = { name: a?.name ?? b?.name ?? null, uhid: a?.uhid ?? b?.uhid ?? null, ageGender: b?.ageGender ?? null };
-    return toFinding(r, id);
+    const docId = indexDocumentIdOf(asJson<FindingBlob>(r.finding));
+    const indexCase = docId ? toIndexCaseSummary(extracts.get(docId)?.extracted) : null;
+    return toFinding(r, id, indexCase);
   });
 
   // Phase 2.1 decision 2: the tiles keep their AUDITED-ONLY basis. The held-out sample
