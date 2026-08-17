@@ -9,7 +9,12 @@
  * key sites (§3.7b), and 5.4's deterministic acceptance signal (§3.7c). Addendum v19 (signed by V,
  * 16 August 2026, under Saul review 30) governs the recorder repair round: the once-sampled
  * recording decision and its two mid-flight tests 5.2b/5.2c (§3.1), the descriptor-faithful
- * snapshot (§3.2), and the bounded fail-loud acceptance waits in 5.4 and 5.6 (§3.3).
+ * snapshot (§3.2), and the bounded fail-loud acceptance waits in 5.4 and 5.6 (§3.3). Addendum v20
+ * (signed by V, 17 August 2026, under Saul review 31 as corrected by review 32; signature verified
+ * by one-line substitution) governs the final repair: 5.2c carries no unbounded settlement wait
+ * in its body or its finally (§3.1), the oversized mid-flight toggle test 5.2d guards the data
+ * handler's use of the sampled decision (§3.2), and 5.2b-fail is the executable guard on 5.2b's
+ * failure-path cleanup (§3.3). This file is the ONLY path commit 9 changes; the stub is untouched.
  *
  * WHAT THIS FILE PROVES.
  *   · Each of addendum v15 §5.2 to §5.11 — TEN guarded terms — has at least one executable test
@@ -196,7 +201,7 @@ function waitForInFlight(judge: JudgeServer, target: number, held: http.ClientRe
  * `waitForInFlight`: bounded, request-error rejecting, and the caller releases in an outer
  * `finally`.
  */
-function waitForContinue(held: http.ClientRequest, what: string, timeoutMs = 5000): Promise<void> {
+function waitForContinue(held: http.ClientRequest, what: string, timeoutMs = 5000, abort?: AbortSignal): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     let done = false;
     const timer = setTimeout(() => {
@@ -206,6 +211,12 @@ function waitForContinue(held: http.ClientRequest, what: string, timeoutMs = 500
     held.on('error', (e) => {
       if (!done) { done = true; clearTimeout(timer); reject(new Error(`100-continue wait for ${what}: request error: ${e.message}`)); }
     });
+    // v20 §3.3: an optional abort seam, so 5.2b's failure-path subcase can make this wait REJECT
+    // deterministically — no timeout, no real socket fault — and prove its cleanup works.
+    if (abort) {
+      const onAbort = () => { if (!done) { done = true; clearTimeout(timer); reject(new Error(`100-continue wait for ${what}: aborted before acceptance`)); } };
+      if (abort.aborted) onAbort(); else abort.addEventListener('abort', onAbort, { once: true });
+    }
   });
 }
 
@@ -296,22 +307,90 @@ test('5.2b — MID-FLIGHT TOGGLE off→on: a request accepted while recording wa
   } finally { await judge.settled(); judge.setRecording(false); judge.resetObservations(); }
 });
 
+test('5.2b-fail — 5.2b\'s FAILURE PATH: when the acceptance wait rejects, the request is destroyed and awaited, the original wait error is preserved, and the NEXT shared-server request succeeds', async () => {
+  // v20 §3.3, review 32 blocker 4. If `waitForContinue` fails, 5.2b's unrecorded request would
+  // otherwise be neither waited for nor terminated, and the shared server would proceed with it
+  // still in flight — and there was no test proving the cleanup works. This subcase makes the
+  // wait REJECT deterministically (an abort seam, not a timeout and not a real socket fault),
+  // destroys the request, awaits its completion-or-rejection, proves the next shared-server
+  // request succeeds, and asserts the ORIGINAL wait error is what surfaces — never a cleanup error
+  // masking it.
+  const { judge } = await boot();
+  await judge.settled();
+  judge.setRecording(false);
+  judge.resetObservations();
+  try {
+    // A request that will NEVER be given a body, so nothing else can complete it: only the
+    // deterministic abort below can end the wait, and only the destroy below can end the request.
+    const reqA = http.request({
+      host: '127.0.0.1', port: judge.port, path: '/v1/mid-off-on-fail', method: 'POST',
+      headers: { 'content-length': 4, Expect: '100-continue' },
+    });
+    const aSettled = new Promise<'response' | 'error'>((resolve) => {
+      reqA.on('response', (res) => { res.resume(); res.on('end', () => resolve('response')); });
+      reqA.on('error', () => resolve('error'));   // destroy() surfaces here; resolved, not rejected
+    });
+    const controller = new AbortController();
+    controller.abort();   // ← the wait is made to reject, deterministically, before it is even awaited
+    let waitError: Error | null = null;
+    let cleanupError: Error | null = null;
+    try {
+      await waitForContinue(reqA, "request '/v1/mid-off-on-fail' acceptance", 5000, controller.signal);
+      assert.fail('the aborted wait must reject');
+    } catch (e) {
+      waitError = e instanceof Error ? e : new Error(String(e));
+      // THE CLEANUP UNDER TEST: destroy the request, then await its completion-or-rejection so the
+      // shared server is not left with it in flight. A cleanup fault is captured SEPARATELY so it
+      // can never overwrite the original wait error.
+      try {
+        reqA.destroy();
+        await aSettled;
+      } catch (ce) {
+        cleanupError = ce instanceof Error ? ce : new Error(String(ce));
+      }
+    }
+    // 5. The ORIGINAL wait error is preserved and is the one that surfaces.
+    assert.ok(waitError, 'the wait rejected');
+    assert.match(waitError.message, /aborted before acceptance/, 'the real cause — the wait error — is what surfaces');
+    assert.match(waitError.message, /mid-off-on-fail/, 'and it names what was waited for');
+    assert.equal(cleanupError, null, 'the cleanup itself raised nothing to mask the wait error');
+    // 3. The request reached a terminal state (destroy → error, or a response if the server had
+    //    already answered) — it is not dangling.
+    assert.equal(reqA.destroyed, true, 'the request was destroyed');
+    // 4. The NEXT shared-server request succeeds: the server is not wedged on the destroyed one.
+    await judge.settled();
+    assert.equal(judge.inFlight(), 0, 'nothing in flight — the unrecorded request moved no counter and nothing leaked');
+    const next = await postSettled(judge, '/v1/mid-off-on-fail-next', '{}');
+    assert.equal(next.status, 200, 'the next request on the shared server succeeds');
+    assert.deepEqual(judge.snapshot(), [], 'recording was off throughout — nothing observed');
+  } finally { await judge.settled(); judge.setRecording(false); judge.resetObservations(); }
+});
+
 test('5.2c — MID-FLIGHT TOGGLE on→off: a request accepted while recording was on produces a COMPLETE observation with a real seq, and the in-flight count returns to zero', async () => {
   // v19 §3.1, the other direction. Before the sampled decision, the push guard re-read the flag at
   // the `end` handler: a request ACCEPTED with recording on — seq assigned, in-flight incremented —
   // whose recording was toggled off mid-flight LOST its observation, and only the close handler's
   // own acceptance-time registration kept the counter from leaking.
+  //
+  // ⚠️ NO UNBOUNDED SETTLEMENT WAIT ANYWHERE IN THIS TEST (v20 §3.1, review 32 blocker 3). The
+  // previous version awaited `judge.settled()` in the body AND in the finally. Under a close-
+  // counter leak — exactly what mutation row 34 introduces — the body's wait hung, and even with
+  // that one replaced, the finally's wait hung too and the named failure never appeared. Every
+  // settlement wait here is now the BOUNDED `waitForInFlight` with target 0: on expiry it fails BY
+  // NAME, stating what it waited for. Third instance of this defect class in this pass, after 5.6
+  // and 5.4 — and this one had it twice.
   const { judge } = await boot();
-  await judge.settled();
+  const reqA = http.request({ host: '127.0.0.1', port: judge.port, path: '/v1/mid-on-off', method: 'POST', headers: { 'content-length': 10 } });
+  const aDone = new Promise<void>((resolve, reject) => {
+    reqA.on('response', (res) => { res.resume(); res.on('end', resolve); });
+    reqA.on('error', reject);
+  });
+  void aDone.catch(() => {});   // handled later at `await aDone`
+  await waitForInFlight(judge, 0, reqA, 'a quiet server before 5.2c starts');
   judge.setRecording(true);
   judge.resetObservations();
+  let bodyFailed: Error | null = null;
   try {
-    const reqA = http.request({ host: '127.0.0.1', port: judge.port, path: '/v1/mid-on-off', method: 'POST', headers: { 'content-length': 10 } });
-    const aDone = new Promise<void>((resolve, reject) => {
-      reqA.on('response', (res) => { res.resume(); res.on('end', resolve); });
-      reqA.on('error', reject);
-    });
-    void aDone.catch(() => {});   // handled later at `await aDone`
     reqA.write('12345');
     try {
       await waitForInFlight(judge, 1, reqA, "request '/v1/mid-on-off' acceptance");
@@ -320,9 +399,10 @@ test('5.2c — MID-FLIGHT TOGGLE on→off: a request accepted while recording wa
       reqA.end('67890');   // outer finally — released whether or not the wait resolved
     }
     await aDone;
-    // `settled()` returning at all proves the decrement ran off the SAMPLED decision, and the
-    // direct assertion pins it: the in-flight count is back to zero, no leak.
-    await judge.settled();
+    // THE BOUNDED ZERO-IN-FLIGHT ASSERTION (mutation row 34's target). The close callback must
+    // decrement off the SAMPLED decision; if it re-reads the live flag — now false — the counter
+    // leaks at 1 and this wait fails by name instead of hanging.
+    await waitForInFlight(judge, 0, reqA, "5.2c's return to zero in-flight after the on→off toggle");
     assert.equal(judge.inFlight(), 0, 'no in-flight leak from the mid-flight toggle');
     const snap = judge.snapshot();
     assert.equal(snap.length, 1, 'the accepted-while-on request WAS recorded — the observation is not lost');
@@ -331,7 +411,92 @@ test('5.2c — MID-FLIGHT TOGGLE on→off: a request accepted while recording wa
     assert.ok(snap[0].seq >= 0);
     assert.equal(snap[0].body.length, 10, 'the COMPLETE body was recorded');
     assert.equal(snap[0].overflowed, false);
-  } finally { await judge.settled(); judge.setRecording(false); judge.resetObservations(); }
+  } catch (bodyError) {
+    bodyFailed = bodyError instanceof Error ? bodyError : new Error(String(bodyError));
+    throw bodyError;
+  } finally {
+    // The cleanup is bounded too. `resetObservations` refuses while in flight (v15 §5.6), so a
+    // leaked counter would make it throw — a NAMED failure, not a hang. The wait before it is
+    // bounded for the same reason the body's is: under row 34 an unbounded settled() here would
+    // hang the file and hide the very failure the test exists to report. And when the BODY has
+    // already failed, a cleanup fault is swallowed so the body's error — the real cause, e.g. the
+    // bounded zero-in-flight wait's own message — is what surfaces, never masked by the cleanup.
+    judge.setRecording(false);
+    try {
+      await waitForInFlight(judge, 0, reqA, "5.2c cleanup: the server quiet before resetObservations");
+      judge.resetObservations();
+    } catch (cleanupError) {
+      if (!bodyFailed) throw cleanupError;
+    }
+  }
+});
+
+test('5.2d — OVERSIZED MID-FLIGHT TOGGLE on→off: 1048577 bytes, one before acceptance and 1048576 after recording is turned off, is still REJECTED with 413 and recorded as one overflowed observation', async () => {
+  // v20 §3.2, review 32 blocker 5. Both other toggle tests send small bodies, so a data handler
+  // that re-read the LIVE `recording` flag instead of `recordThisRequest` left them green — and a
+  // request accepted with recording on, then toggled off, could bypass the 1 MiB limit entirely.
+  // This test drives that exact path: recording is ON at acceptance, ONE byte is on the wire
+  // before the bounded acceptance signal, recording is toggled OFF, and only THEN do the remaining
+  // bytes arrive. Under the sampled decision the data handler still enforces the limit.
+  //
+  // ⚠️ BOTH SIZES ARE LITERALS, not derived from RECORDER_BODY_LIMIT_BYTES (addendum v17 §3.1's
+  // rule, restated in v20 §3.2): a test whose input is computed from the value under test cannot
+  // detect a change to that value. Total 1048577; 1 byte before the signal; 1048576 after.
+  const { judge } = await boot();
+  const TOTAL = 1048577;
+  const reqA = http.request({ host: '127.0.0.1', port: judge.port, path: '/v1/mid-on-off-oversized', method: 'POST', headers: { 'content-length': TOTAL } });
+  const aDone = new Promise<{ status: number; body: string }>((resolve, reject) => {
+    reqA.on('response', (res) => {
+      const c: Buffer[] = [];
+      res.on('data', (d: Buffer) => c.push(d));
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(c).toString('utf8') }));
+    });
+    reqA.on('error', reject);
+  });
+  void aDone.catch(() => {});   // handled later at `await aDone`
+  await waitForInFlight(judge, 0, reqA, 'a quiet server before 5.2d starts');
+  judge.setRecording(true);
+  judge.resetObservations();
+  let bodyFailed: Error | null = null;
+  try {
+    reqA.write(Buffer.alloc(1, 0x20));   // ONE byte before the acceptance signal
+    try {
+      await waitForInFlight(judge, 1, reqA, "request '/v1/mid-on-off-oversized' acceptance");
+      judge.setRecording(false);         // ← toggled OFF while the request is in flight
+    } finally {
+      reqA.end(Buffer.alloc(1048576, 0x20));   // the remaining literal 1048576 bytes, AFTER the toggle
+    }
+    const r = await aDone;
+    // 1. HTTP 413.  2. Response body is {}.
+    assert.equal(r.status, 413, 'the limit was enforced on a request accepted with recording on and toggled off mid-flight');
+    assert.equal(r.body, '{}', 'an empty JSON object as the body');
+    // 5. A BOUNDED return to zero in-flight.
+    await waitForInFlight(judge, 0, reqA, "5.2d's return to zero in-flight after the oversized on→off toggle");
+    assert.equal(judge.inFlight(), 0);
+    // 3. Exactly one observation, overflowed.  4. Zero recorded body bytes.
+    const snap = judge.snapshot();
+    assert.equal(snap.length, 1, 'exactly one observation');
+    assert.equal(snap[0].overflowed, true, 'and it is overflowed');
+    assert.equal(snap[0].body.length, 0, 'zero recorded body bytes — the bytes were dropped, never buffered');
+    assert.equal(snap[0].path, '/v1/mid-on-off-oversized');
+  } catch (bodyError) {
+    bodyFailed = bodyError instanceof Error ? bodyError : new Error(String(bodyError));
+    throw bodyError;
+  } finally {
+    // The cleanup is bounded too. `resetObservations` refuses while in flight (v15 §5.6), so a
+    // leaked counter would make it throw — a NAMED failure, not a hang. The wait before it is
+    // bounded for the same reason the body's is: under row 34 an unbounded settled() here would
+    // hang the file and hide the very failure the test exists to report. And when the BODY has
+    // already failed, a cleanup fault is swallowed so the body's error — the real cause, e.g. the
+    // bounded zero-in-flight wait's own message — is what surfaces, never masked by the cleanup.
+    judge.setRecording(false);
+    try {
+      await waitForInFlight(judge, 0, reqA, "5.2d cleanup: the server quiet before resetObservations");
+      judge.resetObservations();
+    } catch (cleanupError) {
+      if (!bodyFailed) throw cleanupError;
+    }
+  }
 });
 
 test('5.3 — one observation holds seq, socketId, method, path, and the exact body bytes; nothing else', async () => {
