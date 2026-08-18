@@ -491,3 +491,124 @@ export async function findingCounts(engineVersion: string = READMIT_ENGINE_VERSI
     return { byLane: {}, byStatus: {}, total: 0 };
   }
 }
+
+// ── R4 (CDMSS-READMISSIONS-R4-PRD v1.0 §2) — the case artefacts, blob-only ─────────────────
+//
+// The narrative, the evidence ledger and the related-LVC selection are ADDITIVE artefacts on
+// the `finding` jsonb — no column, no DDL, no engine bump: the audit's judgements are unchanged
+// (the R1 judgement-column reasoning). Written once at audit time (run.ts) or by the backfill
+// tick on the Bedrock rails; the page renders them as stored (R4-2). The judgement columns
+// (planned / same_condition / avoidable / preventable_injury / negligence …) are NOT in this
+// SET list and cannot move here.
+
+/** Merge the R4 artefacts into the finding blob of ONE audited row at the given engine version.
+ *  `finding || $3` overwrites only the keys present in $3. Returns false when no such row. */
+export async function saveCaseArtefacts(dedupKey: string, artefacts: Record<string, unknown>, engineVersion: string = READMIT_ENGINE_VERSION): Promise<boolean> {
+  if (!dedupKey || !artefacts || !Object.keys(artefacts).length) return false;
+  try {
+    const rows = (await sql(
+      `UPDATE readmission_findings
+          SET finding = COALESCE(finding, '{}'::jsonb) || $3::jsonb
+        WHERE dedup_key = $1 AND engine_version = $2 AND audit_status = 'audited'
+        RETURNING id`,
+      [dedupKey, engineVersion, JSON.stringify(artefacts)],
+    )) as Array<{ id: unknown }>;
+    return rows.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** An audited row as the narrative leg needs it: the PendingRow facts + the stored finding. */
+export interface NarrativeRow extends PendingRow {
+  finding: unknown;
+  audited_at: string | null;
+}
+
+const NARRATIVE_ROW_COLS = `dedup_key, finding_class, index_encounter_id, readmit_encounter_id, form_uid, uhid, lane,
+              gap_days, index_department, readmit_department, index_doctor, readmit_doctor,
+              to_char(index_discharge_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS index_discharge_at,
+              to_char(readmit_admit_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS readmit_admit_at,
+              cm_note, form_is_planned, form_same_condition, finding,
+              to_char(audited_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS audited_at`;
+
+/** The predicate for "needs a narrative": audited at this engine, no caseNarrative on the blob. */
+const NEEDS_NARRATIVE = `engine_version = $1 AND audit_status = 'audited' AND (finding IS NULL OR finding->'caseNarrative' IS NULL)`;
+
+/**
+ * Backfill (R4-8): audited findings WITHOUT a stored narrative whose audited_at (UTC calendar day)
+ * is `day` — the run cursor's unit on the rails. Oldest first, capped. Fail-safe: [] on fault.
+ */
+export async function auditedRowsNeedingNarrative(opts: { day: string; limit: number; engineVersion?: string }): Promise<NarrativeRow[]> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(opts.day)) return [];
+  const engine = opts.engineVersion ?? READMIT_ENGINE_VERSION;
+  const limit = Math.max(1, Math.min(8, Math.floor(opts.limit)));
+  try {
+    return (await sql(
+      `SELECT ${NARRATIVE_ROW_COLS}
+         FROM readmission_findings
+        WHERE ${NEEDS_NARRATIVE} AND (audited_at AT TIME ZONE 'UTC')::date = $2::date
+        ORDER BY audited_at ASC
+        LIMIT ${limit}`,
+      [engine, opts.day],
+    )) as NarrativeRow[];
+  } catch {
+    return [];
+  }
+}
+
+/** How many audited findings on `day` (UTC) still lack a narrative — the tick's dayComplete test.
+ *  Null on fault (the tick then treats the day as NOT complete rather than marching past it). */
+export async function narrativePendingCountForDay(day: string, engineVersion: string = READMIT_ENGINE_VERSION): Promise<number | null> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+  try {
+    const rows = (await sql(
+      `SELECT count(*)::int AS n FROM readmission_findings
+        WHERE ${NEEDS_NARRATIVE} AND (audited_at AT TIME ZONE 'UTC')::date = $2::date`,
+      [engineVersion, day],
+    )) as Array<{ n: number }>;
+    return Number(rows[0]?.n ?? 0);
+  } catch {
+    return null;
+  }
+}
+
+/** The whole backlog: audited findings lacking a narrative, and the audited_at UTC day span they
+ *  cover — what an operator needs to size a run (day_from / day_to). Fail-safe: zeros / nulls. */
+export async function narrativeBacklog(engineVersion: string = READMIT_ENGINE_VERSION): Promise<{ pending: number; withNarrative: number; invalid: number; dayFrom: string | null; dayTo: string | null }> {
+  try {
+    const rows = (await sql(
+      `SELECT
+         count(*) FILTER (WHERE finding IS NULL OR finding->'caseNarrative' IS NULL)::int AS pending,
+         count(*) FILTER (WHERE finding->'caseNarrative' IS NOT NULL)::int AS with_narrative,
+         count(*) FILTER (WHERE (finding->'caseNarrative'->>'valid') = 'false')::int AS invalid,
+         to_char(min(audited_at) FILTER (WHERE finding IS NULL OR finding->'caseNarrative' IS NULL) AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day_from,
+         to_char(max(audited_at) FILTER (WHERE finding IS NULL OR finding->'caseNarrative' IS NULL) AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day_to
+       FROM readmission_findings
+       WHERE engine_version = $1 AND audit_status = 'audited'`,
+      [engineVersion],
+    )) as Array<Record<string, unknown>>;
+    const r = rows[0] ?? {};
+    return {
+      pending: Number(r.pending ?? 0), withNarrative: Number(r.with_narrative ?? 0), invalid: Number(r.invalid ?? 0),
+      dayFrom: r.day_from == null ? null : String(r.day_from), dayTo: r.day_to == null ? null : String(r.day_to),
+    };
+  } catch {
+    return { pending: 0, withNarrative: 0, invalid: 0, dayFrom: null, dayTo: null };
+  }
+}
+
+/** One audited row by key (any narrative state) — the manual single-finding path. */
+export async function auditedRowForNarrative(dedupKey: string, engineVersion: string = READMIT_ENGINE_VERSION): Promise<NarrativeRow | null> {
+  if (!dedupKey) return null;
+  try {
+    const rows = (await sql(
+      `SELECT ${NARRATIVE_ROW_COLS} FROM readmission_findings
+        WHERE dedup_key = $1 AND engine_version = $2 AND audit_status = 'audited' LIMIT 1`,
+      [dedupKey, engineVersion],
+    )) as NarrativeRow[];
+    return rows[0] ?? null;
+  } catch {
+    return null;
+  }
+}

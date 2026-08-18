@@ -7,7 +7,7 @@
   "counts": {
     "prompts": 30,
     "rubrics": 7,
-    "user_message_builders": 36,
+    "user_message_builders": 37,
     "features": 19
   },
   "prompts": [
@@ -727,6 +727,11 @@
     },
     {
       "fn": "buildFullReconPrompt",
+      "file": "lib/readmission-prompts.ts",
+      "feature": "readmission-prompts"
+    },
+    {
+      "fn": "buildNarrativePrompt",
       "file": "lib/readmission-prompts.ts",
       "feature": "readmission-prompts"
     },

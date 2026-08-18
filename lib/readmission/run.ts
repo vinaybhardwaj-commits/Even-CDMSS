@@ -41,6 +41,8 @@ import { flattenTemplateRow, pacWindow, readmitFallbackFrom } from '../readmissi
 import type { FlattenedTemplate, TemplateFetchOutcomes } from '../readmission-template-core';
 import { assembleThreeSource } from './assemble';
 import type { CaseSource, ThreeSourceInputs } from './assemble';
+import { composeCaseArtefacts } from './narrative';
+import { probeReachable } from '../lab-override';
 import {
   saveDetection, saveAuditResult, recordAuditError, pairToDetectionRow, oonToDetectionRow,
   READMIT_ENGINE_VERSION,
@@ -107,6 +109,9 @@ export interface ReadmitAuditResult {
   avoidable?: string | null;
   latencyMs?: number;
   traceId?: string | null;
+  /** R4: what the inline narrative leg did — 'skipped' when opted out (READMIT_NARRATIVE_INLINE=0)
+   *  or Bedrock is unreachable in this deployment. */
+  narrative?: 'stored' | 'invalid' | 'skipped' | 'failed';
 }
 
 /** T-5 posture: record what actually SERVED, from this audit's own trace — never a
@@ -239,10 +244,13 @@ export function indexLabWindow(args: {
   return { window: { from: toDay(startMs - 14 * DAY), to: toDay(disch + 2 * DAY) }, startInferred: inferred };
 }
 
-interface AssembledPair {
+export interface AssembledPair {
   inputs: ThreeSourceInputs;
   indexAdmitAt: string | null;
   indexDischargeAt: string | null;
+  /** R4: the identity tokens the scrub matched on — handed to the narrative leg so its own
+   *  deidText pass (LVC rationale) uses the SAME names / UHIDs. Never persisted. */
+  identity: { names: Array<string | null | undefined>; uhids: Array<string | null | undefined> };
 }
 
 /**
@@ -294,8 +302,10 @@ async function fetchTemplatesForRow(args: {
   };
 }
 
-/** Fetch + de-identify one finding's inputs. A `notAuditable` reason = tier 3, stop. */
-async function assembleForRow(row: PendingRow): Promise<AssembledPair | { notAuditable: string; labTier?: LabTier }> {
+/** Fetch + de-identify one finding's inputs. A `notAuditable` reason = tier 3, stop.
+ *  Exported for R4's backfill tick (lib/readmission/narrative-backfill.ts), which RE-ASSEMBLES
+ *  the evidence for an already-audited finding (db13 reads, no recon legs) to build its ledger. */
+export async function assembleForRow(row: PendingRow): Promise<AssembledPair | { notAuditable: string; labTier?: LabTier }> {
   const oon = row.finding_class === 'out_of_network';
 
   // Source 1 + source 2, in parallel: both discharge PDFs as de-identified cases.
@@ -379,7 +389,26 @@ async function assembleForRow(row: PendingRow): Promise<AssembledPair | { notAud
     templateFetch: tpl.templateFetch,
   });
   if (inputs.notAuditableReason) return { notAuditable: inputs.notAuditableReason, labTier: inputs.labTier };
-  return { inputs, indexAdmitAt, indexDischargeAt };
+  return { inputs, indexAdmitAt, indexDischargeAt, identity };
+}
+
+// ── R4: the narrative leg at audit time (CDMSS-READMISSIONS-R4-PRD v1.0 R4-3 / R4-11) ────────
+//
+// MEASURED 18 Aug 2026 (live, four Opus 4.6 calls on real audited findings at this SHA): 22–25 s
+// wall per narrative (2.9–4.2k tokens in / ~1.1k out), citations 100% valid — well inside the
+// ≤ 80 s budget R4-3 gives the leg. So the leg runs INLINE by default, per R4-11's ordering
+// (measured fit → inline; the follow-up-tick answer was the fallback for a call that did not
+// fit). Opt out with READMIT_NARRATIVE_INLINE=0. Two guards make the default safe:
+//   · it runs AFTER saveAuditResult, so a narrative fault or a box overrun can never cost the
+//     finding — the row is already 'audited'; the backfill sweep re-offers it for a narrative;
+//   · it runs only when Bedrock is reachable in this deployment (probeReachable), so unsetting a
+//     BEDROCK_* var degrades to "no narrative yet", never to a failed audit.
+// The worker box arithmetic for this mode is in app/api/readmission/worker/route.ts (worst case
+// ≈ 790,000 of 800,000 ms — a thin margin BY THE 200 s-per-leg WORST CASE; measured actuals are
+// ~35 s for leg + join). Budget: NARRATIVE_BUDGET_MS (80 s × 1 try) on NARRATIVE_MODEL only.
+export function narrativeInlineEnabled(): boolean {
+  if (process.env.READMIT_NARRATIVE_INLINE === '0') return false;
+  return probeReachable('bedrock');
 }
 
 /**
@@ -465,14 +494,28 @@ export async function runReadmissionAudit(row: PendingRow): Promise<ReadmitAudit
         dedupKey: row.dedup_key, status: 'audited', finding,
         model: served.model, provider: served.provider, traceId, promoted,
       });
-      await finishTrace(traceId, ok ? 'success' : 'partial');
       if (!ok) {
+        await finishTrace(traceId, 'partial');
         await recordAuditError(row.dedup_key, 'audit produced a finding but the store write failed');
         return { dedupKey: row.dedup_key, status: 'failed', reason: 'store write failed', traceId, latencyMs: Date.now() - t0 };
       }
+      // R4 — the fourth leg (see narrativeInlineEnabled above). Runs AFTER the audit row is
+      // stored, so a narrative fault can never cost the finding; its ledger is the very catalog
+      // the recon legs read (source 'audit').
+      let narrative: 'stored' | 'invalid' | 'skipped' | 'failed' = 'skipped';
+      if (narrativeInlineEnabled()) {
+        try {
+          const n = await composeCaseArtefacts({
+            row, finding, catalog: inputs.catalog, identity: assembled.identity,
+            ledgerSource: 'audit', narrativeSource: 'audit', traceId,
+          });
+          narrative = n.ok ? (n.valid ? 'stored' : 'invalid') : 'failed';
+        } catch { narrative = 'failed'; }
+      }
+      await finishTrace(traceId, 'success');
       return {
         dedupKey: row.dedup_key, status: 'audited', promoted,
-        avoidable: finding.avoidable?.verdict ?? null, traceId, latencyMs: Date.now() - t0,
+        avoidable: finding.avoidable?.verdict ?? null, traceId, latencyMs: Date.now() - t0, narrative,
       };
     } catch (e) {
       // Transient (model/parse) failure: row stays 'detected' → the sweep IS the retry.

@@ -134,6 +134,14 @@ export interface FindingBlob {
   readmitFactsPatientReported?: boolean;
   identityResolved?: boolean;
   promoteToFull?: boolean;
+  /** R4 (CDMSS-READMISSIONS-R4-PRD v1.0 §2) — the case artefacts, written at audit time or by the
+   *  backfill tick, RENDERED AS STORED (never produced at page-request time). All optional: a
+   *  pre-R4 row reads undefined and the page shows "no account written for this case yet". Typed
+   *  structurally (lib/readmission-narrative-core.ts owns the exact shapes) so this presentation
+   *  core stays free of the engine. */
+  evidenceLedger?: { version?: string; items?: Array<{ id?: string; source?: string; side?: string | null; at?: string | null; weight?: string; text?: string; abnormal?: boolean | null }>; generatedAt?: string; source?: string } | null;
+  caseNarrative?: { version?: string; text?: string; citedIds?: string[]; invalidIds?: string[]; valid?: boolean; invalidReason?: string | null; generatedAt?: string; model?: string; provider?: string; traceId?: string | null; source?: string } | null;
+  relatedLvc?: { version?: string; state?: string; audited?: number; totalNotes?: number; items?: Array<{ noteUid?: string; noteDate?: string | null; concept?: string; lvcCategory?: string | null; engineVersion?: string | null; reviewStatus?: string; reason?: string; priorEvidence?: string; readmitEvidenceIds?: string[] }>; droppedProposals?: number; joinFailure?: string | null; generatedAt?: string } | null;
 }
 
 // ── Lanes ───────────────────────────────────────────────────────────────────────
@@ -688,4 +696,46 @@ export function pathSegments(row: Pick<SurfaceFinding, 'findingClass' | 'indexDe
   if (row.indexCase?.indication) out.push(row.indexCase.indication);
   if (row.indexCase?.procedure) out.push(row.indexCase.procedure);
   return out;
+}
+
+// ── R4 (CDMSS-READMISSIONS-R4-PRD v1.0 §1) — the case page's code-assembled parts ──────────────
+
+/** R4-1: the case page route for a card. The dedup key is already client-visible (the card key). */
+export function caseHref(dedupKey: string): string {
+  return `/care/readmissions/case/${encodeURIComponent(dedupKey)}`;
+}
+
+/**
+ * "Why this case was flagged" — ASSEMBLED BY CODE from detection facts, no model (§1). Each line
+ * is a fact the finding row already carries; nulls are dropped, never rendered as "null". The
+ * order is the reviewer's: what happened, how fast, where, what the detector called it.
+ */
+export function whyFlaggedLines(row: Pick<SurfaceFinding, 'findingClass' | 'lane' | 'gapDays' | 'indexDepartment' | 'readmitDepartment' | 'indexDischargeAt' | 'readmitAdmitAt' | 'planned' | 'sameCondition' | 'cmNote' | 'labTier' | 'finding' | 'promotedToFull' | 'needsHumanReview'>): string[] {
+  const out: string[] = [];
+  const oon = row.findingClass === 'out_of_network';
+  const from = shortDate(row.indexDischargeAt);
+  const to = shortDate(row.readmitAdmitAt);
+  const gap = typeof row.gapDays === 'number' && Number.isFinite(row.gapDays) ? `${row.gapDays < 10 ? row.gapDays.toFixed(1) : Math.round(row.gapDays)} days` : null;
+  if (isDelayedSsi(row)) out.push('An index operation was followed by a later wound / surgical-site signal with no second inpatient stay recorded (delayed-SSI class).');
+  else if (oon) out.push(`The patient reported a readmission at another hospital${to ? ` around ${to}` : ''}${from ? `, after an Even discharge on ${from}` : ''} — only the index stay is in evidence.`);
+  else out.push(`The patient was readmitted${gap ? ` ${gap} after discharge` : ''}${from && to ? ` (discharged ${from}, readmitted ${to})` : ''}${row.readmitDepartment ? ` to ${row.readmitDepartment}` : ''}${row.indexDepartment ? ` following an index stay in ${row.indexDepartment}` : ''}.`);
+  const lane = laneMeta(row.lane);
+  out.push(`Detection lane: ${lane.title} — ${lane.blurb}.`);
+  const planned = row.planned ?? row.finding?.planned?.verdict ?? null;
+  const same = row.sameCondition ?? row.finding?.sameCondition?.verdict ?? null;
+  if (planned === 'unplanned' && same === 'same') out.push('The return was judged unplanned and for the same condition — the pattern this room exists to review.');
+  else if (planned || same) out.push(`Planned: ${planned ?? 'unknown'} · same condition: ${same ?? 'unknown'}.`);
+  if (row.cmNote && row.cmNote.trim()) out.push('A POST_IPD form was held for this patient (patient-reported).');
+  if (row.promotedToFull) out.push('A condition-only pass came back "same" and promoted this case to the full reconciliation.');
+  if (row.needsHumanReview === true) out.push('The audit could not decide alone — the evidence ratio routes this case to a human.');
+  const tier = tierBadge(row.labTier);
+  if (tier) out.push(`Evidence coverage: ${tier.text}.`);
+  return out;
+}
+
+/** The page's "no account" copy per stored state (R4-4): absent / invalid / valid. */
+export function narrativeStateCopy(n: FindingBlob['caseNarrative'] | undefined): { state: 'valid' | 'invalid' | 'absent'; copy: string } {
+  if (!n) return { state: 'absent', copy: 'No account written for this case yet.' };
+  if (n.valid === true && (n.text ?? '').trim() !== '') return { state: 'valid', copy: '' };
+  return { state: 'invalid', copy: 'An account was written but withheld — one or more of its citations did not resolve to the evidence ledger. Flagged for human review.' };
 }

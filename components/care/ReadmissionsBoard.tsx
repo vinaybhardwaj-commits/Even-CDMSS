@@ -10,6 +10,9 @@
  * stored, never the encounter id), and ONE button that downloads a `.md` case brief built
  * client-side (R3: Part 2 carries both stays' bills by service type).
  *
+ * R4 (CDMSS-READMISSIONS-R4-PRD v1.0, R4-1): clicking anywhere on a card (except its button)
+ * opens the case page /care/readmissions/case/[key] — the dedup key, already the card key.
+ *
  * READ-ONLY. Nothing on this page mutates a finding — the download is the only transmit
  * (decision 8), it calls no model, and it writes nothing. The route payload is still
  * lane-grouped (decision 11); this file flattens with `lanes.flatMap` and sorts
@@ -23,9 +26,10 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { RotateCw, Download } from 'lucide-react';
 import {
-  BILLS_UNAVAILABLE_NOTICE, cardIdentityLine, chipText, coverageChips, countsLine, isHeldOut, isReviewFinding, judgementLabel,
+  BILLS_UNAVAILABLE_NOTICE, cardIdentityLine, caseHref, chipText, coverageChips, countsLine, isHeldOut, isReviewFinding, judgementLabel,
   justificationCell, NEGLIGENCE_ADVISORY, pathSegments, returnStayBill, returnStayBillSub, situationLine,
   sortForCardList,
   type ChipState, type LaneGroup, type SurfaceFinding, type SurfaceTiles,
@@ -45,7 +49,7 @@ type BoardData = {
   error?: string;
 };
 
-type CaseDetail = {
+export type CaseDetail = {
   ok: boolean;
   row: SurfaceFinding;
   indexExtract: ExtractSubset | null;
@@ -89,7 +93,7 @@ function saveMarkdown(filename: string, markdown: string) {
  * route does not re-join it), compose, download. Any failure on the fetch degrades to a
  * brief built from the card row alone; nothing here can leave the user without a file.
  */
-async function downloadBrief(card: SurfaceFinding): Promise<void> {
+export async function downloadBrief(card: SurfaceFinding): Promise<void> {
   let detail: CaseDetail | null = null;
   try {
     const r = await fetch(`/api/care/readmissions/case?dedup_key=${encodeURIComponent(card.dedupKey)}`);
@@ -127,12 +131,20 @@ function Cell({ k, v, sub }: { k: string; v: string; sub?: string }) {
 
 function CaseCard({ f }: { f: SurfaceFinding }) {
   const [busy, setBusy] = useState(false);
+  const router = useRouter();
   const audited = f.auditStatus === 'audited';
   const situation = situationLine(f);
   const review = isReviewFinding(f);
+  const href = caseHref(f.dedupKey);
 
+  // R4-1: the WHOLE card opens the case page; the download button below stops propagation so a
+  // click on it never navigates. Keyboard: Enter / Space on the focused card.
+  const open = () => router.push(href);
   return (
-    <div className={`mb-3 rounded-xl border bg-paper p-4 shadow-card ${review ? 'border-red-200' : 'border-line'}`}>
+    <div role="link" tabIndex={0} aria-label={`Open case ${cardIdentityLine(f)}`}
+      onClick={open}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } }}
+      className={`mb-3 cursor-pointer rounded-xl border bg-paper p-4 shadow-card transition hover:border-brand/40 focus:outline-none focus:ring-2 focus:ring-brand/30 ${review ? 'border-red-200' : 'border-line'}`}>
       {/* Zone 1 — identity (KX-first) */}
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -179,7 +191,8 @@ function CaseCard({ f }: { f: SurfaceFinding }) {
       {/* Action row */}
       <div className="mt-3 flex items-center justify-end">
         <button type="button" disabled={busy}
-          onClick={() => { setBusy(true); void downloadBrief(f).finally(() => setBusy(false)); }}
+          onClick={(e) => { e.stopPropagation(); setBusy(true); void downloadBrief(f).finally(() => setBusy(false)); }}
+          onKeyDown={(e) => e.stopPropagation()}
           className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-white px-2.5 py-1 text-[12px] font-medium text-slate-600 transition hover:border-brand/40 hover:text-brand disabled:opacity-50">
           <Download className="h-3 w-3" />Download case brief · .md
         </button>

@@ -779,6 +779,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "readmission-narrative-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "readmission-prompts",
     "plane": "unregistered"
   },
@@ -1848,6 +1852,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "readmission-detect-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "readmission-narrative-core",
     "kind": "value"
   },
   {
@@ -4232,6 +4241,21 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "readmission",
+    "to": "audit-canonical",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
+    "to": "backfill-runs",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
+    "to": "backfill-runs-core",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
     "to": "db",
     "kind": "value"
   },
@@ -4257,6 +4281,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "readmission",
+    "to": "lab-override",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
     "to": "lab-provider-core",
     "kind": "value"
   },
@@ -4267,7 +4296,22 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "readmission",
+    "to": "llm-cost",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
+    "to": "llm-cost-core",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
     "to": "metabase",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
+    "to": "mini-backfill",
     "kind": "value"
   },
   {
@@ -4278,6 +4322,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "readmission",
     "to": "readmission-detect-core",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
+    "to": "readmission-narrative-core",
     "kind": "value"
   },
   {
@@ -4318,6 +4367,21 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "readmission",
     "to": "trace",
+    "kind": "value"
+  },
+  {
+    "from": "readmission-narrative-core",
+    "to": "audit-canonical",
+    "kind": "value"
+  },
+  {
+    "from": "readmission-narrative-core",
+    "to": "readmission-reconcile-core",
+    "kind": "type"
+  },
+  {
+    "from": "readmission-narrative-core",
+    "to": "readmission-reconcile-core",
     "kind": "value"
   },
   {
@@ -4642,6 +4706,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "LEDGER_VERSION",
+    "value": "ledger/1",
+    "file": "lib/readmission-narrative-core.ts",
+    "derived": false
+  },
+  {
     "constName": "MATCHER_VERSION",
     "value": "ddx-eval/3",
     "file": "lib/ddx-eval-core.ts",
@@ -4687,6 +4757,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "constName": "MEMBER_STATE_VERSION",
     "value": "member-state/1.1",
     "file": "lib/member-state/schema.ts",
+    "derived": false
+  },
+  {
+    "constName": "NARRATIVE_VERSION",
+    "value": "narrative/1",
+    "file": "lib/readmission-narrative-core.ts",
     "derived": false
   },
   {
@@ -4774,6 +4850,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "RELATED_LVC_VERSION",
+    "value": "related-lvc/1",
+    "file": "lib/readmission-narrative-core.ts",
+    "derived": false
+  },
+  {
     "constName": "RIGHT_CARE_CHECK_GOLD_2_VERSION",
     "value": "right-care-check-gold/2.0",
     "file": "lib/right-care-ground-eval-core.ts",
@@ -4807,8 +4889,8 @@ export const VERSION_REGISTRY: VersionRow[] = [
 
 export const COVERAGE = {
   "registered": 16,
-  "unregistered": 23,
-  "total": 39,
+  "unregistered": 24,
+  "total": 40,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
@@ -4830,6 +4912,7 @@ export const COVERAGE = {
     "prognosis-core",
     "proms",
     "readmission",
+    "readmission-narrative-core",
     "readmission-reconcile-core",
     "reasoning",
     "right-care-ground-eval-core"

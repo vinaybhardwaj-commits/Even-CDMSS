@@ -239,3 +239,108 @@ export function parsePassClaims(text: string | null | undefined): PassClaims | n
 
 /** A verifier can grep for this to confirm the gotcha is enforced, not just remembered. */
 export const NO_RESPONSE_FORMAT = true;
+
+// ═══ R4 — the case-page NARRATIVE leg (CDMSS-READMISSIONS-R4-PRD v1.0 §3, R4-4 / R4-5) ═════
+//
+// A NEW builder. The four recon builders above are byte-identical to R2 (a test pins them);
+// nothing here is read by reconcileFinding or deriveJudgements — the narrative is an
+// additive artefact stored on the finding, produced ONCE at audit time (or by the backfill
+// tick on the Bedrock rails), never at page-request time.
+//
+// The model PROPOSES: an intern-style account of the case citing ONLY the ledger ids, and
+// which of the patient's prior LVC findings relate to this return with a reason and both
+// ends of the citation. CODE DECIDES (lib/readmission-narrative-core.ts): every marker must
+// resolve to a ledger id or the account is withheld; every proposal must name a candidate
+// we showed and real readmit ids or it is dropped.
+//
+// Inputs are already de-identified (assemble.ts is the choke point; the LVC candidates'
+// rationale text is passed through deidText by the caller before it reaches here).
+
+export interface NarrativeFacts {
+  findingClass: 'even_even' | 'out_of_network' | 'delayed_ssi';
+  lane: string;
+  gapDays: number | null;
+  indexDepartment: string | null;
+  readmitDepartment: string | null;
+  /** The judged finding, as stored — the account must not contradict it. */
+  planned: string | null;
+  sameCondition: string | null;
+  avoidable: string | null;
+  omissions: Array<{ claim: string; danger: string; evidenceIds: string[] }>;
+  exculpatory: Array<{ claim: string; corroborated: boolean }>;
+  weakestStep: string | null;
+  refusalRecord: Array<{ lookedFor: string; found: boolean; note?: string }>;
+}
+
+export interface NarrativeLvcCandidate {
+  /** What the model must echo back: `noteUid#findingRef`. */
+  key: string;
+  noteDate: string | null;
+  concept: string;
+  lvcCategory: string | null;
+  /** De-identified by the caller. May be empty. */
+  rationale: string | null;
+  reviewStatus: string;
+}
+
+export function buildNarrativePrompt(
+  catalog: EvidenceCatalog,
+  facts: NarrativeFacts,
+  lvc: { audited: number; totalNotes: number; candidates: NarrativeLvcCandidate[]; joinFailed: boolean },
+): { system: string; user: string } {
+  const oon = facts.findingClass === 'out_of_network';
+  const candidateBlock = lvc.joinFailed
+    ? 'PRIOR OPD FINDINGS: unknown — the patient\'s outpatient records could not be joined. Do not speculate about prior care; return "related": [].'
+    : !lvc.candidates.length
+      ? `PRIOR OPD FINDINGS: ${lvc.audited} of this patient's ${lvc.totalNotes} outpatient notes before this readmission were audited; none of the audited notes carries a low-value-care finding. Return "related": [].`
+      : `PRIOR OPD FINDINGS (${lvc.audited} of this patient's ${lvc.totalNotes} outpatient notes before this readmission were audited — the rest are UNAUDITED, not clean; every candidate below is the LATEST audit of its note):
+${lvc.candidates.map((c) => `- key ${c.key} · ${c.noteDate ?? 'undated'} · ${c.concept}${c.lvcCategory ? ` (${c.lvcCategory})` : ''} · review: ${c.reviewStatus}${c.rationale ? ` · ${c.rationale}` : ''}`).join('\n')}`;
+  return {
+    system: `You are writing the intern's presentation of a hospital readmission case for a care-manager review room. You have ONLY the evidence ledger below and the audit's stored verdicts. You do not diagnose, you do not score, you do not address a doctor. Every factual sentence you write must carry a citation marker naming ledger ids in square brackets — [S4], [L2], [OT1], or a list [S4, R2] — and you may cite NOTHING that is not in the ledger. An uncited claim will be discarded by the system, and a single invented id discards the whole account. Prefer disinterested sources (raw labs, the readmit team's note, the other team's contemporaneous notes) over the treating team's own prose. Where the ledger is silent, say so ("the ledger does not record …") rather than inferring. Advisory throughout; a human decides.`,
+    user: `CASE FACTS (from detection, disinterested): finding class ${oon ? 'out of network — the return was at another hospital; only the index stay is in evidence' : facts.findingClass}, lane ${facts.lane}, gap ${facts.gapDays ?? 'unknown'} days, index department ${facts.indexDepartment ?? 'unknown'}${oon ? '' : `, readmit department ${facts.readmitDepartment ?? 'unknown'}`}.
+
+THE AUDIT'S STORED VERDICTS (do not contradict them; you may explain them): planned ${facts.planned ?? 'unknown'} · same condition ${facts.sameCondition ?? 'unknown'} · medical-justification verdict ${facts.avoidable ?? 'none (index side only)'}${facts.weakestStep ? ` · weakest step: ${facts.weakestStep}` : ''}.
+${facts.omissions.length ? `Omissions the audit recorded:\n${facts.omissions.map((o) => `- ${o.claim} (${o.danger} danger; evidence ${o.evidenceIds.join(', ') || 'none'})`).join('\n')}` : 'Omissions the audit recorded: none.'}
+${facts.exculpatory.length ? `Exculpatory claims:\n${facts.exculpatory.map((e) => `- ${e.claim} (${e.corroborated ? 'corroborated' : 'uncorroborated'})`).join('\n')}` : 'Exculpatory claims: none.'}
+${facts.refusalRecord.filter((r) => r.found === false).length ? `Looked for and NOT found: ${facts.refusalRecord.filter((r) => r.found === false).map((r) => r.lookedFor).join(', ')}.` : ''}
+
+EVIDENCE LEDGER (cite ONLY these ids):
+${renderEvidence(catalog)}
+
+${candidateBlock}
+
+WRITE, as strict JSON with exactly these keys and nothing before or after it:
+{
+  "narrative": "<4 to 8 short paragraphs, plain prose, no headings, no bullet characters. In order: (1) why this case was flagged — the return, its timing, the lane; (2) the index stay as the ledger records it; (3) the return as the ledger records it; (4) the medical question the audit put — what was looked for, what was found, what was not, using the omission and exculpatory items; (5) what the disinterested evidence supports and what rests on the treating team's prose alone; (6) one closing paragraph naming what a reviewer would need to see to settle it. Every factual sentence ends with a marker like [S3] or [L2, R4]. Never name the patient. Never write a rupee figure. Never quote a prior OPD note.>",
+  "related": [
+    { "key": "<a candidate key EXACTLY as listed>", "reason": "<one or two sentences: why this prior finding plausibly relates to THIS return>", "readmit_evidence_ids": ["<ledger id(s) on the readmission side that the link rests on>"] }
+  ]
+}
+Rules for "related": include a candidate ONLY when the ledger shows a clinical thread from that prior finding to this return (same organ system, same drug class, a foreseeable consequence). If nothing relates, return []. Never invent a key. Never cite a ledger id that is not above.`,
+  };
+}
+
+/** Parsed narrative-leg output. Tolerant: an unparseable reply → null (the finding is stored
+ *  WITHOUT a narrative and the backfill sweep re-offers it); a missing "related" → []. */
+export interface NarrativeOutput {
+  narrative: string;
+  related: Array<{ key: string; reason: string; readmitEvidenceIds: string[] }>;
+}
+export function parseNarrativeOutput(text: string | null | undefined): NarrativeOutput | null {
+  const obj = extractJsonObject(text);
+  if (!obj) return null;
+  const narrative = str(obj.narrative);
+  if (!narrative) return null;
+  const relatedRaw = Array.isArray(obj.related) ? obj.related : [];
+  const related = relatedRaw
+    .map((r) => {
+      const o = (r && typeof r === 'object' ? r : {}) as Record<string, unknown>;
+      return {
+        key: str(o.key) ?? '',
+        reason: str(o.reason) ?? '',
+        readmitEvidenceIds: strArr(o.readmit_evidence_ids ?? o.readmitEvidenceIds),
+      };
+    })
+    .filter((r) => r.key !== '');
+  return { narrative, related };
+}

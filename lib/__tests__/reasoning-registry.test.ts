@@ -112,8 +112,11 @@ test('count invariant: counts match the committed artifact contents (30 prompts 
   // (buildFullReconPrompt / buildSecondAvoidablePrompt / buildConditionPassPrompt / buildOonPrompt,
   // 32→36). Their system prompts live inline in the builders, not as exported *_SYSTEM consts, so
   // prompts/features are unchanged — a deliberate bump, in the same commit as the prompts.
+  // Readmissions R4 (18 Aug 2026) adds readmission-prompts/buildNarrativePrompt — the case-page
+  // narrative leg (Opus 4.6 on Bedrock, code-enforced citations); system inline, so builders only
+  // (36→37). The four recon builders are byte-identical (pinned in readmission-r4-case.test.ts).
   assert.equal(gen.counts.prompts, 30);
   assert.equal(gen.counts.rubrics, 7);
-  assert.equal(gen.counts.user_message_builders, 36);
+  assert.equal(gen.counts.user_message_builders, 37);
   assert.equal(gen.counts.features, 19);
 });

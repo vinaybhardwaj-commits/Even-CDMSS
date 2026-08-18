@@ -200,6 +200,8 @@ export const UNREGISTERED: string[] = [
   'readmission',            // readmission analysis agent Phase 1 (readmission/0.1 — detect + reconcile + Vertex worker)
   'readmission-reconcile-core', // pure Stage-2 reconciliation + R1 advisory judgements (readmit-judgement/1) —
                             // surfaced as its own versioned subsystem the day JUDGEMENT_RULE_VERSION was exported
+  'readmission-narrative-core', // R4 pure cores (narrative/1, ledger/1, related-lvc/1): citation validator,
+                            // relatedLvc reducer, three-hop join helpers — versioned by its exported *_VERSION consts
   'reasoning',              // prompt-registry sidecar + export core (Reasoning Observability Stage 0)
   'right-care-ground-eval-core', // Slice-2 grounding A/B referee (right-care-eval/1.0)
 ];

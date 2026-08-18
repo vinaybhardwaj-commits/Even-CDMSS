@@ -762,3 +762,60 @@ export async function fetchStayBillBreakdown(encounterId: string, run: Db13Runne
     lines: groups.reduce((a, g) => a + g.lines, 0),
   };
 }
+
+// ── R4 — the three-hop identity join, hop 2 (CDMSS-READMISSIONS-R4-PRD v1.0 §3; R4-7) ─────
+//
+// The pre-study (CDMSS-TWIN-PRESTUDY-OPD-READMIT-18-AUG-2026, MEASURED live) validated the path
+// audit row → prescription document (`uid` = `_doc_id`, 100% on a 500-note sample) → the
+// document's owner → the individual's KX UHID (94% of the readmission cohort, one-to-one).
+// R4 walks it in REVERSE from the finding's UHID:
+//   hop 3  resolveIndividualUid([uhid, …])  — BOTH live formats (UHID-nnnnnn / AH2526/nnnnnn),
+//          exact match on kx_uhid or old_kx_uhids, re-verified in JS (above; unchanged);
+//   hop 2  THIS fetch — the individual's prescription documents dated before the readmission;
+//   hop 1  lib/readmission/opd-lvc.ts — the app DB's latest audit per note for those uids.
+//
+// VALIDATED live 18 Aug 2026 (read-only probe, this SHA): `_parent_id` resolves to
+// individuals.uid on 500/500 recent prescriptions (as lib/ipd-audit/episode-opd-adapter.ts
+// reads it in production); `uid = _doc_id` on 2000/2000; UUID-form legacy uids ≈ 0.14% of recent
+// rows (1.7% of the readmitted cohort's notes per the pre-study) and are dropped downstream
+// (priorNoteUniverse) because they are structurally unjoinable to audits.
+//
+//   SELECT uid, _create_time
+//     FROM "individuals-prescriptions"
+//    WHERE _parent_id = '<individual_uid>'
+//      AND _create_time < '<readmit_admit_at>'        -- omitted when the readmit date is unknown
+//    ORDER BY _create_time DESC
+//    LIMIT 500
+//
+// PHI: two columns, neither of them identity or clinical text. Fail-safe: fault → { ok:false }
+// so the caller can write `join_failed` at THIS hop rather than an empty-as-clean list.
+
+export interface PriorNoteRow { uid: string; createdAt: string | null }
+export interface PriorNotesResult { ok: boolean; notes: PriorNoteRow[] }
+
+export function priorPrescriptionsSql(individualUid: string, beforeTs: string | null): string | null {
+  if (!individualUid || !/^[A-Za-z0-9_-]{2,64}$/.test(individualUid)) return null;
+  const before = beforeTs && isIsoTs(beforeTs) ? `\n      AND _create_time < '${esc(beforeTs)}'` : '';
+  return `SELECT uid, _create_time
+     FROM "individuals-prescriptions"
+    WHERE _parent_id = '${esc(individualUid)}'${before}
+    ORDER BY _create_time DESC
+    LIMIT 500`;
+}
+
+export async function fetchPriorPrescriptionDocs(individualUid: string, beforeTs: string | null, run: Db13Runner = metabaseQuery): Promise<PriorNotesResult> {
+  const sql = priorPrescriptionsSql(individualUid, beforeTs);
+  if (!sql) return { ok: false, notes: [] };
+  try {
+    const rows = await run(sql);
+    const notes: PriorNoteRow[] = [];
+    for (const r of rows) {
+      const uid = s(r.uid);
+      if (!uid) continue;
+      notes.push({ uid, createdAt: s(r._create_time) });
+    }
+    return { ok: true, notes };
+  } catch {
+    return { ok: false, notes: [] };
+  }
+}

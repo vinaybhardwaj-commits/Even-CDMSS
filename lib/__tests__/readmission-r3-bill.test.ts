@@ -190,7 +190,10 @@ test('PHI source-read: the R3 bill readers SELECT only visit_id_admission_id / n
   const src = readFileSync(join(process.cwd(), 'lib/readmission/db13.ts'), 'utf8');
   const start = src.indexOf('R3 — the return-stay HOSPITAL BILL');
   assert.ok(start > 0, 'the R3 section marker exists');
-  const r3 = src.slice(start);
+  // The R3 section runs to the next section marker (R4's three-hop join, appended after it —
+  // that section legitimately names the UHID as its join key and is pinned by its own test).
+  const next = src.indexOf('R4 — the three-hop identity join', start);
+  const r3 = src.slice(start, next > 0 ? next : undefined);
   for (const col of ['patient_name', 'patient_mobile', 'telecom', 'address_details', 'primary_email_address', 'secondary_email_address', 'employee_name', 'nationality', 'gender', 'age', 'uhid']) {
     assert.ok(!new RegExp(`\\b${col}\\b`).test(r3), `R3 section must not name '${col}'`);
   }

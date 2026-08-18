@@ -37,6 +37,7 @@ import { fetchExtractedCases } from '@/lib/discharge-extract-store';
 import { fetchStayBillTotals } from '@/lib/readmission/db13';
 import { asJson, indexDocumentIdOf, toFinding, toIndexCaseSummary, type Identity } from '@/lib/readmission/surface-row';
 import { computeTiles, groupByLane, returnBillFor, toFindingClass, type FindingBlob } from '@/lib/readmission-surface-core';
+import { stripCaseArtefacts } from '@/lib/readmission-narrative-core';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -206,7 +207,11 @@ export async function GET() {
       ok: bills.ok,
       total: readmitId ? bills.totals.get(readmitId) : null,
     });
-    return toFinding(r, id, indexCase, returnBill);
+    const f = toFinding(r, id, indexCase, returnBill);
+    // R4: the card renders neither the evidence ledger nor the narrative text — strip them from
+    // the list payload (the case route emits them in full). The small facts (narrative present /
+    // valid, relatedLvc state + denominator) stay so a later card affordance can read them.
+    return { ...f, finding: stripCaseArtefacts(f.finding) };
   });
 
   // Phase 2.1 decision 2: the tiles keep their AUDITED-ONLY basis. The held-out sample

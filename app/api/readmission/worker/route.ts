@@ -80,6 +80,29 @@ export async function GET(req: NextRequest) {
   //   waves ceil(max 3 / conc 3) = 1 → wall ≈ one worst-case finding ≈ 690,000 ms
   //   margin                                          ~110,000 ms   guard PASS
   //
+  // REDONE 18 Aug 2026 for R4 (READMISSIONS-R4 PRD v1.0 R4-3 / R4-11): the at-audit path gained
+  // a FOURTH leg — the case narrative, Opus 4.6 on Bedrock, its own budget — plus the three-hop
+  // prior-LVC join, both AFTER saveAuditResult (a fault or overrun there costs the narrative,
+  // never the finding). Inline by default because the leg MEASURED 22–25 s live (four calls,
+  // 18 Aug); opt out with READMIT_NARRATIVE_INLINE=0 → narratives then come only from the
+  // backfill tick on the Bedrock rails (lib/readmission/narrative-backfill.ts).
+  //   3 × 200,000 recon                              = 600,000 ms
+  //   db13 reads + template fetches (as above)       ≈  90,000 ms
+  //   narrative leg (NARRATIVE_BUDGET_MS, 1 try)     ≈  80,000 ms   worst case; measured 22–25 s
+  //   three-hop LVC join (db13 ×2 + app DB ×2)       ≈  20,000 ms   measured 2.4–10 s
+  //   per finding                                     ~790,000 ms
+  //   box                                              800,000 ms
+  //   waves = 1 (max ≤ conc) → wall ≈ one worst-case finding ≈ 790,000 ms
+  //   margin                                          ~10,000 ms    guard PASS — thin BY THE
+  //                                                                  200 s-per-leg worst case
+  //                                                                  (measured actuals ~35 s for
+  //                                                                  leg + join); safe because the
+  //                                                                  finding is stored before the
+  //                                                                  leg starts
+  // Dropping `max` cannot buy margin here (waves = 1 already; the wall IS one finding), so the
+  // R4-3 lever is the opt-out flag, not `max`. If the recon legs ever measure near their 200 s
+  // ceilings live, set READMIT_NARRATIVE_INLINE=0 in the same breath.
+  //
   // A second wave would be ~1,380,000 ms and CANNOT fit — max stays ≤ conc by default
   // (waves = 1 holds while max ≤ conc). Plain lane A/B findings are 2 legs ≈ 490 s; OON
   // is 1 leg ≈ 290 s. The arithmetic sizes against the worst case, not the average. If the

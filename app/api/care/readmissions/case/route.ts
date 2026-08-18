@@ -27,7 +27,8 @@ import { fetchExtractedCases } from '@/lib/discharge-extract-store';
 import { fetchStayBillBreakdown, type StayBillBreakdown } from '@/lib/readmission/db13';
 import { asJson, indexDocumentIdOf, readmitDocumentIdOf, toFinding, toIndexCaseSummary } from '@/lib/readmission/surface-row';
 import { toExtractSubset } from '@/lib/readmission/brief';
-import { returnBillFor, toFindingClass, type FindingBlob } from '@/lib/readmission-surface-core';
+import { returnBillFor, toFindingClass, whyFlaggedLines, type FindingBlob } from '@/lib/readmission-surface-core';
+import { renderableNarrative, type CaseArtefacts } from '@/lib/readmission-narrative-core';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -81,14 +82,29 @@ export async function GET(req: NextRequest) {
     total: readmitBill && readmitBill.ok && readmitBill.lines > 0 ? { netRs: readmitBill.totalRs, lines: readmitBill.lines } : null,
   });
 
+  const surfaceRow = toFinding(r, undefined, toIndexCaseSummary(indexExtracted), returnBill);
+  // R4 (§3, additive): the stored case artefacts, RENDERED AS STORED — no model call on this
+  // route, ever (R4-2). The narrative is emitted only when CODE marked it valid (R4-4); an invalid
+  // one is reported by state so the page can say it was withheld and flagged. Why-flagged is
+  // assembled by code from the row's detection facts.
+  const art = (blob ?? {}) as CaseArtefacts;
+  const narrative = renderableNarrative(art.caseNarrative ?? null);
   return NextResponse.json({
     ok: true,
     engineVersion: READMIT_ENGINE_VERSION,
-    row: toFinding(r, undefined, toIndexCaseSummary(indexExtracted), returnBill),
+    row: surfaceRow,
     indexExtract: toExtractSubset(indexExtracted),
     readmitExtract: toExtractSubset(readmitExtracted),
     /** R3: the two stays' bills by service_type (breakdown or null) — the brief's Part 2 tables. */
     indexBill,
     readmitBill,
+    /** R4: code-assembled, no model. */
+    whyFlagged: whyFlaggedLines(surfaceRow),
+    /** R4: the ledger (every citable item), the VALID narrative or null + its state, the LVC section. */
+    evidenceLedger: art.evidenceLedger ?? null,
+    caseNarrative: narrative,
+    narrativeState: !art.caseNarrative ? 'absent' : narrative ? 'valid' : 'invalid',
+    narrativeMeta: art.caseNarrative ? { generatedAt: art.caseNarrative.generatedAt, model: art.caseNarrative.model, provider: art.caseNarrative.provider, version: art.caseNarrative.version, source: art.caseNarrative.source, invalidReason: art.caseNarrative.invalidReason ?? null } : null,
+    relatedLvc: art.relatedLvc ?? null,
   });
 }
