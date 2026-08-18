@@ -92,7 +92,9 @@ export async function GET(req: NextRequest) {
   //   three-hop LVC join (db13 ×2 + app DB ×2)       ≈  20,000 ms   measured 2.4–10 s
   //   per finding                                     ~790,000 ms
   //   box                                              800,000 ms
-  //   waves = 1 (max ≤ conc) → wall ≈ one worst-case finding ≈ 790,000 ms
+  //   waves = 1 ENFORCED (max is clamped to conc, Addendum A3) → wall ≈ one worst-case finding
+  //                                                    ≈ 790,000 ms; a second wave (~1,580,000 ms)
+  //                                                    cannot fit and can no longer be requested
   //   margin                                          ~10,000 ms    guard PASS — thin BY THE
   //                                                                  200 s-per-leg worst case
   //                                                                  (measured actuals ~35 s for
@@ -111,8 +113,11 @@ export async function GET(req: NextRequest) {
   // ⚠️ These numbers are coupled: max, conc, maxDuration, the leg count per lane,
   // PROVIDER_BUDGETS.vertex.audit_ipd, AND the db13 read set. Changing any one means
   // redoing this arithmetic in the same commit.
-  const max = Math.max(1, Math.min(10, Number(p.get('max') || 3)));
   const conc = Math.max(1, Math.min(5, Number(p.get('conc') || 3)));
+  // Addendum A3 (R4, 18 Aug 2026): max ≤ conc so waves = 1 by construction — the arithmetic above
+  // holds ONE worst-case finding (~790,000 of 800,000 ms); a second wave cannot fit, so ?max=10
+  // must be unfireable rather than a foot-gun.
+  const max = Math.min(Math.max(1, Math.min(10, Number(p.get('max') || 3))), conc);
   const dayParam = p.get('day');
   const day = dayParam && /^\d{4}-\d{2}-\d{2}$/.test(dayParam) ? dayParam : null;
   const laneParam = p.get('lane');

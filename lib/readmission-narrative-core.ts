@@ -78,6 +78,10 @@ export interface CaseNarrative {
   provider: string;
   traceId: string | null;
   source: 'audit' | 'backfill';
+  /** Addendum A1: on the REBUILT-ledger path, how many stored audit-time evidence ids (omission /
+   *  exculpatory / weakest-step / refusal references) were dropped from the prompt input because
+   *  the rebuilt ledger no longer carries them. 0 on the inline path (its ledger IS the audit's). */
+  staleIdsDropped: number;
 }
 
 export type RelatedLvcState = 'present' | 'none_related' | 'no_audited_artefacts' | 'join_failed';
@@ -184,7 +188,7 @@ export function validateCitations(text: string | null | undefined, ledgerIds: It
 /** Assemble the stored narrative object from the model text + code's verdict. */
 export function buildCaseNarrative(args: {
   text: string; ledgerIds: Iterable<string>; generatedAt: string; model: string; provider: string;
-  traceId: string | null; source: CaseNarrative['source'];
+  traceId: string | null; source: CaseNarrative['source']; staleIdsDropped?: number;
 }): CaseNarrative {
   const v = validateCitations(args.text, args.ledgerIds);
   return {
@@ -199,7 +203,49 @@ export function buildCaseNarrative(args: {
     provider: args.provider,
     traceId: args.traceId,
     source: args.source,
+    staleIdsDropped: Math.max(0, Math.trunc(Number(args.staleIdsDropped ?? 0)) || 0),
   };
+}
+
+// ── Addendum A1: the stale-id filter for a REBUILT ledger ─────────────────────────────────
+//
+// The backfill re-assembles the evidence from db13; its ledger is consistent WITHIN itself, but
+// the audit-time finding carries evidence ids minted against the ORIGINAL catalog. If a stored id
+// (an omission's evidenceIds, an exculpatory item's corroboratingIds, an id-shaped mention inside
+// the weakest-step or a refusal note) survives into the prompt while the rebuilt ledger numbers
+// that item differently, the model could cite it and code would mark it valid — pointing at the
+// wrong item. So on the rebuilt path every id-shaped reference is filtered to ids the rebuilt
+// ledger actually has, BEFORE the model sees it, and the count is stored (staleIdsDropped).
+
+/** The catalog id grammar (the same as the citation marker's). */
+const ID_TOKEN_RE = /^[A-Z]{1,4}\d{1,4}$/;
+
+/** Keep only ids the ledger has. PURE. */
+export function filterStaleIds(ids: ReadonlyArray<string | null | undefined>, ledgerIds: Iterable<string>): { kept: string[]; dropped: number } {
+  const known = new Set(ledgerIds);
+  const kept: string[] = [];
+  let dropped = 0;
+  for (const raw of ids) {
+    const id = typeof raw === 'string' ? raw.trim() : '';
+    if (!id) continue;
+    if (known.has(id)) kept.push(id); else dropped++;
+  }
+  return { kept, dropped };
+}
+
+/** Remove bracketed id-shaped markers the ledger does not have from a free-text field (weakest
+ *  step, a refusal note, an omission claim); prose in brackets is untouched. PURE. */
+export function scrubStaleIdMentions(text: string | null | undefined, ledgerIds: Iterable<string>): { text: string | null; dropped: number } {
+  if (!text) return { text: text ?? null, dropped: 0 };
+  const known = new Set(ledgerIds);
+  let dropped = 0;
+  const out = text.replace(MARKER_RE, (whole, list: string) => {
+    const ids = list.split(/\s*[,;/]\s*/).map((x) => x.trim()).filter(Boolean);
+    const kept = ids.filter((id) => ID_TOKEN_RE.test(id) && known.has(id));
+    dropped += ids.length - kept.length;
+    return kept.length ? `[${kept.join(', ')}]` : '';
+  }).replace(/\s{2,}/g, ' ').trim();
+  return { text: out, dropped };
 }
 
 /** The page's rendering rule (R4-4): only a VALID narrative is shown. Everything else is

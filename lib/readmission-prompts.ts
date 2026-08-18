@@ -267,7 +267,7 @@ export interface NarrativeFacts {
   sameCondition: string | null;
   avoidable: string | null;
   omissions: Array<{ claim: string; danger: string; evidenceIds: string[] }>;
-  exculpatory: Array<{ claim: string; corroborated: boolean }>;
+  exculpatory: Array<{ claim: string; corroborated: boolean; corroboratingIds?: string[] }>;
   weakestStep: string | null;
   refusalRecord: Array<{ lookedFor: string; found: boolean; note?: string }>;
 }
@@ -301,7 +301,7 @@ ${lvc.candidates.map((c) => `- key ${c.key} · ${c.noteDate ?? 'undated'} · ${c
 
 THE AUDIT'S STORED VERDICTS (do not contradict them; you may explain them): planned ${facts.planned ?? 'unknown'} · same condition ${facts.sameCondition ?? 'unknown'} · medical-justification verdict ${facts.avoidable ?? 'none (index side only)'}${facts.weakestStep ? ` · weakest step: ${facts.weakestStep}` : ''}.
 ${facts.omissions.length ? `Omissions the audit recorded:\n${facts.omissions.map((o) => `- ${o.claim} (${o.danger} danger; evidence ${o.evidenceIds.join(', ') || 'none'})`).join('\n')}` : 'Omissions the audit recorded: none.'}
-${facts.exculpatory.length ? `Exculpatory claims:\n${facts.exculpatory.map((e) => `- ${e.claim} (${e.corroborated ? 'corroborated' : 'uncorroborated'})`).join('\n')}` : 'Exculpatory claims: none.'}
+${facts.exculpatory.length ? `Exculpatory claims:\n${facts.exculpatory.map((e) => `- ${e.claim} (${e.corroborated ? 'corroborated' : 'uncorroborated'}${e.corroboratingIds?.length ? `; evidence ${e.corroboratingIds.join(', ')}` : ''})`).join('\n')}` : 'Exculpatory claims: none.'}
 ${facts.refusalRecord.filter((r) => r.found === false).length ? `Looked for and NOT found: ${facts.refusalRecord.filter((r) => r.found === false).map((r) => r.lookedFor).join(', ')}.` : ''}
 
 EVIDENCE LEDGER (cite ONLY these ids):

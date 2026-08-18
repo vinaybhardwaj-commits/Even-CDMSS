@@ -356,3 +356,58 @@ test('a narrative-absent row: the case route reports narrativeState absent and t
   const b = composeBrief({ row: f({ finding: { caseNarrative: { text: 'x [S1]', valid: true }, relatedLvc: { state: 'present', audited: 1, totalNotes: 2, items: [] } } }), indexExtract: null, readmitExtract: null });
   assert.ok(!/x \[S1\]|prior finding/.test(b.markdown));
 });
+
+// ── Addendum A1 — the stale-id filter on the REBUILT-ledger path ─────────────────────────
+
+test('A1 pure: filterStaleIds keeps only ledger ids and counts the rest; scrubStaleIdMentions removes stale markers from free text, keeps prose brackets', async () => {
+  const { filterStaleIds, scrubStaleIdMentions } = await import('../readmission-narrative-core.ts');
+  assert.deepEqual(filterStaleIds(['S1', 'S99', 'L1', '', null, 'Q7'], LEDGER), { kept: ['S1', 'L1'], dropped: 2 });
+  assert.deepEqual(scrubStaleIdMentions('late culture [S99] against [L1, S98] and [PATIENT] said so', LEDGER), { text: 'late culture against [L1] and [PATIENT] said so', dropped: 2 });
+  assert.deepEqual(scrubStaleIdMentions(null, LEDGER), { text: null, dropped: 0 });
+  assert.deepEqual(scrubStaleIdMentions('no markers here', LEDGER), { text: 'no markers here', dropped: 0 });
+});
+
+test('A1 end-to-end: on the rebuilt path a stale id is filtered BEFORE the prompt, a model echo of it fails validation, staleIdsDropped is stored; the inline path is unchanged', async () => {
+  const { composeCaseArtefacts } = await import('../readmission/narrative.ts');
+  const row = {
+    dedup_key: 'IP-1|IP-2', finding_class: 'even_even', index_encounter_id: 'IP-1', readmit_encounter_id: 'IP-2', form_uid: null, uhid: 'UH-1',
+    lane: 'tight_bounce', gap_days: 4, index_department: 'Ortho', readmit_department: 'Ortho', index_doctor: null, readmit_doctor: null,
+    index_discharge_at: '2026-06-01T10:00:00+05:30', readmit_admit_at: '2026-06-05T09:30:00+05:30', cm_note: null, form_is_planned: null, form_same_condition: null,
+  };
+  const finding = {
+    findingClass: 'even_even', verdictScope: 'pair', planned: { verdict: 'unplanned', confidence: 0.8, evidenceIds: ['S1'] }, sameCondition: null,
+    // S99 / L77 were minted against the ORIGINAL catalog; the rebuilt ledger below has neither.
+    omissions: [{ claim: 'late culture [S99]', danger: 'moderate', confidence: 'moderate', evidenceIds: ['L1', 'S99'] }],
+    exculpatory: [{ claim: 'non-adherence', corroborated: false, corroboratingIds: ['L77'] }],
+    avoidable: { verdict: 'needs_adjudication', evidenceIds: ['S1'] }, labProfile: 'has_late_labs', labTier: 'tier1',
+    stabilityAssessment: 'unverifiable', corroborationTrack: 'prose_only', provenance: { interested: 1, disinterested: 1, ratio: 0.5, needsHumanReview: false },
+    weakestStep: 'wound review [S99, S1]', refusalRecord: [{ lookedFor: 'pac_note', found: false, note: 'no row [L77]' }],
+  } as never;
+  const catalog = { items: [{ id: 'S1', source: 'index_summary' as const, side: 'index' as const, text: 'diagnosis: fracture' }, { id: 'L1', source: 'lab' as const, side: 'index' as const, text: 'Hb 9.1' }] };
+  const join = async () => ({ ok: true, failure: null, totalNotes: 3, audited: 0, candidates: [] });
+  const saved: Array<Record<string, unknown>> = [];
+  const save = async (_k: string, art: Record<string, unknown>) => { saved.push(art); return true; };
+  const seen: string[] = [];
+  const echo = async (p: { system: string; user: string }) => { seen.push(p.user); return JSON.stringify({ narrative: 'Flagged on day 4 [S1]. The culture was late [S99].', related: [] }); };
+  const base = { row: row as never, finding, catalog, identity: { names: [], uhids: [] }, traceId: 't', join, save, call: echo };
+
+  // rebuilt path: S99 and L77 never reach the model; the echoed [S99] is invalid; count stored
+  const r = await composeCaseArtefacts({ ...base, ledgerSource: 'reassembled', narrativeSource: 'backfill' });
+  assert.equal(r.ok, true); assert.equal(r.valid, false); assert.equal(r.staleIdsDropped, 5);   // S99 (evidenceIds) + L77 (corroboratingIds) + S99 (claim) + S99 (weakest step) + L77 (refusal note)
+  assert.ok(!/S99|L77/.test(seen[0]), 'stale ids never reach the prompt');
+  assert.match(seen[0], /evidence L1\)/); assert.match(seen[0], /wound review \[S1\]/);
+  const stored = saved[0].caseNarrative as { valid: boolean; invalidIds: string[]; staleIdsDropped: number };
+  assert.equal(stored.valid, false); assert.deepEqual(stored.invalidIds, ['S99']); assert.equal(stored.staleIdsDropped, 5);
+
+  // inline path: unchanged — its ledger IS the audit's, so nothing is filtered (S99 reaches the prompt as stored)
+  seen.length = 0; saved.length = 0;
+  const i = await composeCaseArtefacts({ ...base, ledgerSource: 'audit', narrativeSource: 'audit' });
+  assert.equal(i.staleIdsDropped, 0); assert.match(seen[0], /evidence L1, S99/); assert.match(seen[0], /evidence L77/);
+  assert.equal((saved[0].caseNarrative as { staleIdsDropped: number }).staleIdsDropped, 0);
+});
+
+test('A3: the worker clamps max to conc (waves = 1 by construction) — ?max=10 is unfireable', () => {
+  const w = code('app/api/readmission/worker/route.ts');
+  assert.match(w, /const max = Math\.min\(Math\.max\(1, Math\.min\(10, Number\(p\.get\('max'\) \|\| 3\)\)\), conc\);/);
+  assert.match(w, /waves = 1 ENFORCED/);
+});

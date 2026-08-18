@@ -30,7 +30,7 @@ import { buildNarrativePrompt, parseNarrativeOutput, type NarrativeFacts, type N
 import type { EvidenceCatalog, ReadmissionFinding } from '../readmission-reconcile-core';
 import { toFindingClass } from '../readmission-surface-core';
 import {
-  buildCaseNarrative, buildLedger, lvcCandidates, priorNoteUniverse, reduceRelatedLvc, uhidCandidates,
+  buildCaseNarrative, buildLedger, filterStaleIds, lvcCandidates, priorNoteUniverse, reduceRelatedLvc, scrubStaleIdMentions, uhidCandidates,
   NARRATIVE_BUDGET_MS, NARRATIVE_MAX_TRIES, NARRATIVE_MODEL_ID, NARRATIVE_PROVIDER,
   type CaseArtefacts, type CaseNarrative, type EvidenceLedger, type LvcCandidate, type RelatedLvc,
 } from '../readmission-narrative-core';
@@ -85,8 +85,10 @@ export interface ComposeArgs {
   narrativeSource: CaseNarrative['source'];
   /** The trace the leg logs under (the audit's own, or the backfill's). */
   traceId: string;
-  /** Test seam: the model call. Production never passes it. */
+  /** Test seams (production never passes them): the model call, the three-hop join, the store write. */
   call?: (prompt: { system: string; user: string }) => Promise<string>;
+  join?: (args: { uhids: ReadonlyArray<string | null | undefined>; readmitAt: string | null }) => Promise<LvcJoin>;
+  save?: (dedupKey: string, artefacts: Record<string, unknown>) => Promise<boolean>;
 }
 
 export interface ComposeResult {
@@ -94,6 +96,10 @@ export interface ComposeResult {
   reason?: string;
   artefacts?: CaseArtefacts;
   valid?: boolean;
+  /** Addendum A1: stale audit-time ids dropped from the prompt (rebuilt-ledger path only). */
+  staleIdsDropped?: number;
+  /** Test seam: the prompt as sent (so a test can assert what the model was shown). */
+  prompt?: { system: string; user: string };
   tokensIn: number;
   tokensOut: number;
   costUsd: number;
@@ -129,9 +135,30 @@ export async function composeCaseArtefacts(a: ComposeArgs): Promise<ComposeResul
   const ledgerIds = ledger.items.map((i) => i.id);
 
   // 2. the LVC candidates (before the readmission; latest audit per note); a fault is a STATE
-  const join = await joinPriorLvc({ uhids: [row.uhid, ...a.identity.uhids], readmitAt: row.readmit_admit_at ?? null });
+  const join = await (a.join ?? joinPriorLvc)({ uhids: [row.uhid, ...a.identity.uhids], readmitAt: row.readmit_admit_at ?? null });
 
-  // 3. the model's inputs — every free-text string through deidText (choke point)
+  // 3. the model's inputs — every free-text string through deidText (choke point).
+  // Addendum A1 — THE STALE-ID FILTER: on the REBUILT-ledger path (backfill), every stored
+  // audit-time evidence id fed to the prompt (omission evidenceIds, exculpatory corroboratingIds,
+  // id-shaped mentions inside the weakest step / refusal notes / claims) is filtered to ids the
+  // rebuilt ledger actually carries, BEFORE the model sees it — a surviving stale id could be
+  // echoed, pass validation, and point at the wrong item. The inline (audit-time) path is
+  // untouched: its ledger IS the audit's, so every stored id resolves by construction.
+  const reassembled = a.ledgerSource === 'reassembled';
+  let staleIdsDropped = 0;
+  const ids = (list: string[] | null | undefined): string[] => {
+    if (!reassembled) return list ?? [];
+    const f = filterStaleIds(list ?? [], ledgerIds);
+    staleIdsDropped += f.dropped;
+    return f.kept;
+  };
+  const scrub = (text: string | null | undefined): string | null => {
+    const d = text ? deidText(text, a.identity) : null;
+    if (!reassembled || !d) return d;
+    const r = scrubStaleIdMentions(d, ledgerIds);
+    staleIdsDropped += r.dropped;
+    return r.text;
+  };
   const facts: NarrativeFacts = {
     findingClass: toFindingClass(row.finding_class),
     lane: row.lane,
@@ -140,10 +167,10 @@ export async function composeCaseArtefacts(a: ComposeArgs): Promise<ComposeResul
     planned: a.finding.planned?.verdict ?? null,
     sameCondition: a.finding.sameCondition?.verdict ?? null,
     avoidable: a.finding.avoidable?.verdict ?? null,
-    omissions: (a.finding.omissions ?? []).map((o) => ({ claim: deidText(o.claim, a.identity), danger: o.danger, evidenceIds: o.evidenceIds ?? [] })),
-    exculpatory: (a.finding.exculpatory ?? []).map((e) => ({ claim: deidText(e.claim, a.identity), corroborated: e.corroborated })),
-    weakestStep: a.finding.weakestStep ? deidText(a.finding.weakestStep, a.identity) : null,
-    refusalRecord: (a.finding.refusalRecord ?? []).map((r) => ({ lookedFor: r.lookedFor, found: r.found, note: r.note ? deidText(r.note, a.identity) : undefined })),
+    omissions: (a.finding.omissions ?? []).map((o) => ({ claim: scrub(o.claim) ?? '', danger: o.danger, evidenceIds: ids(o.evidenceIds) })),
+    exculpatory: (a.finding.exculpatory ?? []).map((e) => ({ claim: scrub(e.claim) ?? '', corroborated: e.corroborated, corroboratingIds: ids(e.corroboratingIds) })),
+    weakestStep: scrub(a.finding.weakestStep),
+    refusalRecord: (a.finding.refusalRecord ?? []).map((r) => ({ lookedFor: r.lookedFor, found: r.found, note: scrub(r.note) ?? undefined })),
   };
   const candidates: NarrativeLvcCandidate[] = join.candidates.map((c) => ({
     key: c.key, noteDate: c.noteDate ? c.noteDate.slice(0, 10) : null,
@@ -176,7 +203,7 @@ export async function composeCaseArtefacts(a: ComposeArgs): Promise<ComposeResul
   const caseNarrative = buildCaseNarrative({
     text: parsed.narrative, ledgerIds, generatedAt,
     model: served.model ?? NARRATIVE_MODEL_ID, provider: served.provider ?? NARRATIVE_PROVIDER,
-    traceId: a.traceId, source: a.narrativeSource,
+    traceId: a.traceId, source: a.narrativeSource, staleIdsDropped,
   });
   const relatedLvc = reduceRelatedLvc({
     join: join.ok ? { totalNotes: join.totalNotes, audited: join.audited, candidates: join.candidates } : null,
@@ -187,10 +214,10 @@ export async function composeCaseArtefacts(a: ComposeArgs): Promise<ComposeResul
   const artefacts: CaseArtefacts = { evidenceLedger: ledger, caseNarrative, relatedLvc };
 
   // 7. the blob write — the judgement columns are not in that SET list
-  const wrote = await saveCaseArtefacts(row.dedup_key, artefacts as unknown as Record<string, unknown>);
+  const wrote = await (a.save ?? saveCaseArtefacts)(row.dedup_key, artefacts as unknown as Record<string, unknown>);
   if (!wrote) return { ok: false, reason: 'artefacts composed but the store write failed', ...zero, latencyMs: Date.now() - t0 };
   return {
-    ok: true, artefacts, valid: caseNarrative.valid,
+    ok: true, artefacts, valid: caseNarrative.valid, staleIdsDropped, ...(a.call ? { prompt } : {}),
     tokensIn: usage.tokensIn, tokensOut: usage.tokensOut, costUsd: usd,
     latencyMs: Date.now() - t0, model: served.model ?? NARRATIVE_MODEL_ID, provider: served.provider ?? NARRATIVE_PROVIDER,
   };
