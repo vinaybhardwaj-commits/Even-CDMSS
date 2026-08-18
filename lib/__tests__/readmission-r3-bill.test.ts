@@ -17,7 +17,7 @@ import {
 import {
   BILL_IDS_CAP, billIdList, fetchStayBillBreakdown, fetchStayBillTotals, stayBillBreakdownSql, stayBillTotalsSql,
 } from '../readmission/db13.ts';
-import { BILL_SENTENCE_EVEN, BILL_SENTENCE_NO_SECOND_STAY, BILL_SENTENCE_OON, billSentence, billTableLines, composeBrief, T_BILL } from '../readmission/brief.ts';
+import { BILL_SENTENCE_EVEN, BILL_SENTENCE_NO_SECOND_STAY, BILL_SENTENCE_NOT_FINALISED, BILL_SENTENCE_OON, billSentence, billTableLines, composeBrief, T_BILL } from '../readmission/brief.ts';
 
 const f = (over: Partial<SurfaceFinding> = {}): SurfaceFinding => ({
   dedupKey: 'IP-1|IP-2', findingClass: 'even_even', lane: 'structural_30d', auditStatus: 'audited',
@@ -223,10 +223,12 @@ const bd = (over: Partial<Parameters<typeof billTableLines>[1] & object> = {}) =
   ok: true, groups: [{ serviceType: 'IP Package', netRs: 120000, lines: 1 }, { serviceType: 'Pharmacy', netRs: 12340, lines: 30 }], totalRs: 132340, lines: 31, ...over,
 });
 
-test('billSentence: billed → the measured figure tagged (as-of only when a stamp is given); not_finalised / unknown keep BILL_SENTENCE_EVEN; OON and no-second-stay unchanged', () => {
+test('billSentence: billed → the measured figure tagged (as-of only when a stamp is given); not_finalised → BILL_SENTENCE_NOT_FINALISED (Addendum A1); unknown / no object keep BILL_SENTENCE_EVEN; OON and no-second-stay unchanged', () => {
   assert.equal(billSentence(f({ returnBill: billed(51968) }), null), `Return stay bill: ₹51,968 — hospital bill, net of refunds. ${T_BILL}`);
   assert.equal(billSentence(f({ returnBill: billed(51968) }), '2026-08-18 10:00'), `Return stay bill: ₹51,968 — hospital bill, net of refunds, as of 2026-08-18 10:00. ${T_BILL}`);
-  assert.equal(billSentence(f({ returnBill: NOT_FIN })), BILL_SENTENCE_EVEN);
+  assert.equal(BILL_SENTENCE_NOT_FINALISED, 'Return stay bill not finalised — billing has not completed for this stay.');
+  assert.equal(billSentence(f({ returnBill: NOT_FIN })), BILL_SENTENCE_NOT_FINALISED);
+  assert.notEqual(BILL_SENTENCE_NOT_FINALISED, BILL_SENTENCE_EVEN);
   assert.equal(billSentence(f({ returnBill: UNKNOWN })), BILL_SENTENCE_EVEN);
   assert.equal(billSentence(f()), BILL_SENTENCE_EVEN);
   assert.equal(billSentence(f({ findingClass: 'out_of_network', returnBill: billed(1) })), BILL_SENTENCE_OON);
@@ -264,7 +266,9 @@ test('composeBrief: Even–Even billed → both tables + the measured sentence +
   const notFin = composeBrief({ row: f({ returnBill: NOT_FIN }), indexExtract: null, readmitExtract: null, indexBill: bd(), readmitBill: bd({ groups: [], totalRs: 0, lines: 0 }) });
   assert.match(notFin.markdown, /- Return stay bill: bill not finalised \[finding row\]/);
   assert.match(notFin.markdown, /\| Bill \| Bill pending \|/);
-  assert.match(notFin.markdown, new RegExp(BILL_SENTENCE_EVEN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  // A1: Part 2 agrees with Part 1 — the not-finalised sentence, and NOT the R1 "not yet measured" one.
+  assert.match(notFin.markdown, new RegExp(`- Bill: ${BILL_SENTENCE_NOT_FINALISED.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+  assert.doesNotMatch(notFin.markdown, new RegExp(BILL_SENTENCE_EVEN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match(notFin.markdown, /- Return stay bill: bill not finalised \[hospital bill, db13\]/);
   const unknown = composeBrief({ row: f({ returnBill: UNKNOWN }), indexExtract: null, readmitExtract: null, indexBill: null, readmitBill: null });
   assert.match(unknown.markdown, /- Return stay bill: unknown — not yet measured \[finding row\]/);

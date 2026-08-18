@@ -87,6 +87,9 @@ export interface Brief { filename: string; markdown: string }
 
 // ── fixed sentences (§7, verbatim) ───────────────────────────────────────────────
 export const BILL_SENTENCE_EVEN = 'Return stay bill not yet measured — no figure is available for this return.';
+/** R3 Addendum A1: the `not_finalised` state — looked in db13, no bill rows for the stay yet.
+ *  Part 1's cell says `bill not finalised`; Part 2 must not disagree with it. */
+export const BILL_SENTENCE_NOT_FINALISED = 'Return stay bill not finalised — billing has not completed for this stay.';
 export const BILL_SENTENCE_OON = 'No other-hospital bill exists for this return.';
 /** R2 delayed-SSI layout guard (constraint 11) — no producer of that class exists yet. */
 export const BILL_SENTENCE_NO_SECOND_STAY = 'No second stay — no return bill.';
@@ -299,9 +302,10 @@ export function composeBrief(input: BriefInput): Brief {
   return { filename: briefFilename(row), markdown: L.join('\n') };
 }
 
-/** Part 2's Bill sentence (R3 §3.4): OON and no-second-stay keep their fixed sentences; a
- *  BILLED return replaces BILL_SENTENCE_EVEN with the measured figure (tagged); the other
- *  Even–Even states (not_finalised, unknown) keep BILL_SENTENCE_EVEN verbatim. */
+/** Part 2's Bill sentence (R3 §3.4 + Addendum A1): OON and no-second-stay keep their fixed
+ *  sentences; a BILLED return replaces BILL_SENTENCE_EVEN with the measured figure (tagged);
+ *  `not_finalised` reads BILL_SENTENCE_NOT_FINALISED (A1 — Part 1 and Part 2 agree); `unknown`
+ *  (and no object at all) keeps BILL_SENTENCE_EVEN verbatim. */
 export function billSentence(row: Pick<SurfaceFinding, 'findingClass' | 'returnBill'>, generatedAt?: string | null): string {
   if (isDelayedSsi(row)) return BILL_SENTENCE_NO_SECOND_STAY;
   if (row.findingClass === 'out_of_network') return BILL_SENTENCE_OON;
@@ -309,6 +313,7 @@ export function billSentence(row: Pick<SurfaceFinding, 'findingClass' | 'returnB
   if (b?.state === 'billed' && typeof b.netRs === 'number' && Number.isFinite(b.netRs)) {
     return `Return stay bill: ${formatBillRs(b.netRs)} — hospital bill, net of refunds${generatedAt ? `, as of ${generatedAt}` : ''}. ${T_BILL}`;
   }
+  if (b?.state === 'not_finalised') return BILL_SENTENCE_NOT_FINALISED;
   return BILL_SENTENCE_EVEN;
 }
 

@@ -634,9 +634,11 @@ export async function fetchPacNotes(encounterId: string, uhid: string | null, wi
 // is deliberately not read here. The four insurer/claim tables (kx_claim_bills,
 // dpipe_services, medical_ipd_claims, ipd_claims_v1) are ruled out by evidence (R3-10).
 //
-// PHI (R3-9, hard rule): kx_billing_records carries patient name / contact columns. The
-// SELECT lists below name ONLY visit_id_admission_id, net_amt, amount, discount_amt,
-// service_type, status — a source-read test pins it. Nothing else may ever be added.
+// PHI (R3-9, hard rule; wording per Addendum A2): kx_billing_records carries patient name /
+// contact columns. The SELECT lists below name ONLY visit_id_admission_id, net_amt
+// (aggregated as SUM) and — in the breakdown query only — service_type. R3-9's allow-list
+// also permits amount, discount_amt and status; the queries do not need them and do not
+// select them. A source-read test pins the SELECTs. Nothing else may ever be added.
 //
 // FAIL-SAFE (R3-6): the caller must tell "fault" from "no bill rows" — an empty Map alone
 // cannot — so both readers return { ok }. ok:false = the query faulted → every card reads
