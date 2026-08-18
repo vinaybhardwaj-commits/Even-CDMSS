@@ -668,24 +668,58 @@ test('35.7 — the v11 §6.1 CORRECTION at the other two sites: ABSENT evidence 
   assert.deepEqual(payloadOf(mq).multi_query?.variant_generation.attempts, [], 'variant generation with absent evidence → []');
 });
 
-test('35.8 — ROW 6 AS AMENDED (v7 §6, v8 §2): a Cohere soft failure without transport proof synthesises one terminal_failure record per planned boundary with served_route_class UNATTRIBUTED — not the not_served D16 wrote — rerank_soft_failed true, and not_served stands only where proof exists', async () => {
+/**
+ * `JUDGE_BATCH`, READ FROM THE SOURCE TEXT of `lib/rerank.ts` (proof 18's standing rule; addendum v25
+ * §3.1). The constant is module-private and on the do-not-touch list; importing it would need an export
+ * and hard-coding it would let the two drift apart silently. Reading it keeps this test honest if the
+ * constant ever changes: the expected boundary list below is COMPUTED from what was read.
+ */
+function judgeBatchFromSource(): number {
+  const m = read('lib/rerank.ts').match(/^const JUDGE_BATCH = (\d+);/m);
+  assert.ok(m, 'lib/rerank.ts declares `const JUDGE_BATCH = <n>;` at column 0');
+  const n = Number(m[1]);
+  assert.ok(Number.isInteger(n) && n >= 2, `JUDGE_BATCH is a small positive integer, read as ${m[1]}`);
+  return n;
+}
+
+test('35.8 — ROW 6 AS AMENDED (v7 §6, v8 §2): a soft failure without transport proof synthesises one terminal_failure record per PLANNED boundary — MORE THAN ONE boundary on the judge arm, each with its exact start and end — served_route_class UNATTRIBUTED (not the not_served D16 wrote), rerank_soft_failed true; not_served stands only where proof exists', async () => {
+  // ⚠️ REPAIRED IN THE PASS 3 REPAIR (Saul review 36 finding 3; v25 §3.1). The first cut used three
+  // candidates, which is ONE judge batch, so an implementation that always synthesised exactly one
+  // record would have passed. The candidate count now spans more than one planned boundary — two
+  // full batches and one partial, computed from JUDGE_BATCH as read from source — and the assertion
+  // is on WHICH boundaries were recorded, start and end per record, not on a count.
   const { rerank } = await import('../rerank.ts');
+  const JB = judgeBatchFromSource();
   const thrower = async <U extends RerankCandidate>(_q: string, _c: U[]): Promise<RerankResult<U>[]> => { throw new Error('generic, untyped'); };
   const deps: RerankDeps = { checkHealthy: async () => undefined, cohereFn: thrower, judgeFn: thrower };
-  const candidates = [{ id: 1, text: 'a' }, { id: 2, text: 'b' }, { id: 3, text: 'c' }];
+  const n = 2 * JB + 1;   // two full batches and one partial: [0,JB), [JB,2JB), [2JB,2JB+1)
+  const candidates = Array.from({ length: n }, (_, i) => ({ id: i + 1, text: `passage ${i + 1} for proof thirty-five` }));
+  const expectedBoundaries = {
+    judge: [{ start: 0, end: JB }, { start: JB, end: 2 * JB }, { start: 2 * JB, end: n }],
+    cohere: [{ start: 0, end: n }],   // Cohere is one request, one planned batch, whatever the pool
+  };
+  assert.equal(expectedBoundaries.judge.length, 3, 'the judge arm plans THREE boundaries here — more than one, by construction');
   const backends: Array<'cohere' | 'judge'> = ['cohere', 'judge'];
   for (const backend of backends) {
     const capture = createTelemetryCapture('primary');
     const out = await rerank('q', candidates, backend, deps, capture);
     assert.ok(out.every((c) => c.rerank_backend === 'none'), `${backend}: soft-fell to input order`);
     assert.equal(capture.rerankSoftFailed, true, `${backend}: rerank_soft_failed = true`);
-    assert.ok(capture.batches.length >= 1, `${backend}: one synthesised record per PLANNED boundary`);
-    assert.equal(capture.expectedBatchCount, capture.batches.length, `${backend}: expected equals recorded — reconciliation is never waived`);
     const payload = payloadOf(capture);
+    // WHICH boundaries — start and end per record, in boundary order, not merely how many.
+    assert.deepEqual(
+      payload.batches.map((b) => ({ start: b.candidate_start, end: b.candidate_end })),
+      expectedBoundaries[backend],
+      `${backend}: one synthesised record per PLANNED boundary, with the exact boundaries`,
+    );
+    assert.deepEqual(payload.batches.map((b) => b.batch_index), expectedBoundaries[backend].map((_, i) => i), `${backend}: indices in boundary order`);
+    assert.equal(payload.expected_batch_count, expectedBoundaries[backend].length, `${backend}: expected equals the planned count`);
+    assert.equal(payload.recorded_rerank_batches, expectedBoundaries[backend].length, `${backend}: recorded equals expected — reconciliation is never waived`);
     for (const b of payload.batches) {
       assert.equal(b.outcome, 'terminal_failure', `${backend}: each outcome terminal_failure`);
       assert.equal(b.served_route_class, 'unattributed', `${backend}: v7 §6 / v8 §2 — no transport proof, so UNATTRIBUTED, never an inferred not_served`);
       assert.equal(b.served_model, null);
+      assert.equal(b.expected_score_keys, b.candidate_end - b.candidate_start, `${backend}: a record's expected keys are its own boundary width`);
     }
     const c = counterColumns(payload);
     assert.equal(c.rerank_not_served_batches, 0, `${backend}: D16's "rerank_not_served_batches += that count" does NOT apply without proof`);

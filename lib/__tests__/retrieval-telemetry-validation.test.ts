@@ -27,6 +27,15 @@
  * constant, `MANIFEST_SCHEMA_VERSION`, is used only to build a manifest the validator accepts as
  * current; the test that pins its VALUE lives in `retrieval-telemetry-core.test.ts`.
  *
+ * ⚠️ REPAIRED IN THE PASS 3 REPAIR (Saul review 36; addendum v25 §3.2, §3.3). Proof 45 gained the two
+ * per-batch usage fields, `prompt_tokens` and `completion_tokens`, which the validator did not check at
+ * all until v25 — a production defect that shipped in commit 13. Proof 47 gained the non-primary
+ * rejection (a non-null HMAC on any of the four non-primary roles is now a defect), the real
+ * `assembleAuditContext` output as the keyed context, and a comment-stripped source pin of the
+ * production caller's handoff in `lib/opd-note-audit.ts` (`writeRetrievalTerminals` is module-private
+ * and nothing in this repository can drive it in-process; the pin proves the wiring is written, not
+ * that it executes — stated here rather than papered over).
+ *
  * ⚠️ D17 SAYS `retrieval_config` "{} permitted"; addendum v7 §10 (manifest version 3) then made
  * `rerank_temperature` and `rerank_seed_status` REQUIRED inside it, so `{}` now carries those two
  * field-absent codes. 45 pins today's contract and names the amendment beside it.
@@ -38,6 +47,9 @@ import {
   type StampedRetrievalManifest, type OperationalTelemetry, type RetrievalRole, type ManifestBatch,
 } from '../retrieval-telemetry-core';
 import { createTelemetryCapture, buildRetrievalPayload } from '../retrieval-capture';
+import { readFileSync } from 'node:fs';
+import { assembleAuditContext } from '../opd-note-audit.ts';
+import type { CiteHit } from '../citations-core.ts';
 
 // ── A stamped manifest the validator accepts, hand-built from literals ─────────────────────────
 type Obj = Record<string, unknown>;
@@ -201,6 +213,14 @@ const ROWS: Row[] = [
   { field: 'batch.served_model', how: 'non-null on a not_served batch (§10)', mutate: (m) => { batch0(m).served_route_class = 'not_served'; }, code: 'not_served_with_model' },
   { field: 'batch.attempts', how: 'missing (null is permitted)', mutate: (m) => del(batch0(m), 'attempts'), code: 'batch_attempts_field_absent' },
   { field: 'batch.attempts', how: 'a member with an outcome outside the six', mutate: (m) => { batch0(m).attempts = [{ provider: 'vertex', attempt: 1, outcome: 'ok', status: 200 }]; }, code: 'attempt_outcome_absent_or_invalid' },
+  { field: 'batch.prompt_tokens', how: 'missing (null is permitted) — v25 §3.2, unvalidated until the pass 3 repair', mutate: (m) => del(batch0(m), 'prompt_tokens'), code: 'batch_prompt_tokens_field_absent' },
+  { field: 'batch.prompt_tokens', how: 'invalid: a numeric STRING', mutate: (m) => { batch0(m).prompt_tokens = '90'; }, code: 'batch_prompt_tokens_invalid' },
+  { field: 'batch.prompt_tokens', how: 'invalid number: negative', mutate: (m) => { batch0(m).prompt_tokens = -1; }, code: 'batch_prompt_tokens_invalid' },
+  { field: 'batch.prompt_tokens', how: 'invalid number: NaN', mutate: (m) => { batch0(m).prompt_tokens = Number.NaN; }, code: 'batch_prompt_tokens_invalid' },
+  { field: 'batch.completion_tokens', how: 'missing (null is permitted) — v25 §3.2, unvalidated until the pass 3 repair', mutate: (m) => del(batch0(m), 'completion_tokens'), code: 'batch_completion_tokens_field_absent' },
+  { field: 'batch.completion_tokens', how: 'invalid: a numeric STRING', mutate: (m) => { batch0(m).completion_tokens = '12'; }, code: 'batch_completion_tokens_invalid' },
+  { field: 'batch.completion_tokens', how: 'invalid number: Infinity', mutate: (m) => { batch0(m).completion_tokens = Number.POSITIVE_INFINITY; }, code: 'batch_completion_tokens_invalid' },
+  { field: 'batch.completion_tokens', how: 'invalid: an object', mutate: (m) => { batch0(m).completion_tokens = { n: 12 }; }, code: 'batch_completion_tokens_invalid' },
   { field: 'batch.outcome', how: 'invalid', mutate: (m) => { batch0(m).outcome = 'failed'; }, code: 'batch_outcome_absent_or_invalid' },
   { field: 'batch.expected_score_keys', how: 'null', mutate: (m) => { batch0(m).expected_score_keys = null; }, code: 'expected_score_keys_absent' },
   { field: 'batch.finite_score_keys', how: 'invalid number: negative', mutate: (m) => { batch0(m).finite_score_keys = -1; }, code: 'finite_score_keys_absent' },
@@ -296,6 +316,15 @@ test('45.1 — OWN-PROPERTY CHECKS: missing, explicit null, empty array, empty s
   }
   const zero = asObj(validManifest()); zero.fused_candidate_count = 0;
   assert.equal(codes(zero).includes('fused_candidate_count_absent'), false, 'zero is a finite, non-negative number');
+  // The two usage fields (v25 §3.2): present-and-null is "usage not reported" and is clean; zero is
+  // a value and is clean; absent, a string, or a negative number is a defect.
+  const nullUsage = asObj(validManifest()); batch0(nullUsage).prompt_tokens = null; batch0(nullUsage).completion_tokens = null;
+  assert.deepEqual(codes(nullUsage), [], 'null usage on both fields is a declaration, not a defect');
+  const zeroUsage = asObj(validManifest()); batch0(zeroUsage).prompt_tokens = 0; batch0(zeroUsage).completion_tokens = 0;
+  assert.deepEqual(codes(zeroUsage), [], 'zero usage is a value');
+  const noUsage = asObj(validManifest()); del(batch0(noUsage), 'prompt_tokens'); del(batch0(noUsage), 'completion_tokens');
+  const out = codes(noUsage);
+  assert.ok(out.includes('batch_prompt_tokens_field_absent') && out.includes('batch_completion_tokens_field_absent'), 'absent usage fields are defects — a manifest without them is NOT complete');
 });
 
 n += 1;
@@ -396,6 +425,90 @@ test('47.3 — on the other FOUR roles the HMAC is null, and those nulls are NOT
   // And a context handed to a non-primary role is NOT keyed — the combined-context HMAC lives on the
   // primary row only.
   assert.equal(payloadFor('normative_channel', 'a context the caller should not have supplied').scorer_context_hmac, null);
+});
+
+test('47.4 — a NON-NULL scorer-context HMAC on any of the four non-primary roles is REJECTED (v25 §3.3): scorer_context_hmac_on_non_primary_role — and primary is untouched', () => {
+  // ⚠️ REPAIRED IN THE PASS 3 REPAIR (Saul review 36 finding 2). Until v25 a non-null HMAC on a
+  // normative_channel / lvc_recall / lab_direct / lab_multi_query row validated clean, so a row that
+  // claimed a scorer context its leg never rendered was "complete".
+  const others: RetrievalRole[] = ['normative_channel', 'lvc_recall', 'lab_direct', 'lab_multi_query'];
+  for (const role of others) {
+    const m = role === 'lab_multi_query' ? validMultiQueryManifest() : asObj(validManifest(role));
+    assert.deepEqual(codes(m), [], `${role}: null HMAC is clean`);
+    m.scorer_context_hmac = 'k1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    const out = codes(m);
+    assert.ok(out.includes('scorer_context_hmac_on_non_primary_role'), `${role}: a non-null HMAC is a defect; got [${out.join(', ')}]`);
+    assert.equal(out.includes('scorer_context_hmac_absent'), false, `${role}: and it is not the primary code`);
+  }
+  // primary: a non-null HMAC is exactly what is required — no code.
+  assert.deepEqual(codes(validManifest('primary')), []);
+  // and an ABSENT field on a non-primary role stays the field-absent code, not this one.
+  const missing = asObj(validManifest('lvc_recall')); del(missing, 'scorer_context_hmac');
+  assert.ok(codes(missing).includes('scorer_context_hmac_field_absent'));
+});
+
+// ── 47.5 / 47.6: the REAL assembleAuditContext output, and the production caller's handoff ──────
+/** Literature and normative hits shaped as `retrieve()` returns them (the same fixtures
+ *  opd-normative-channel.test.ts uses); assembleAuditContext renders them into the exact bytes the
+ *  scorer sees. */
+const lit = (id: number): CiteHit => ({
+  id, source: 'statpearls', book: 'StatPearls', chapter: `ch${id}`, section: null,
+  page_start: null, page_end: null, item_number: null, chunk_type: 'narrative',
+  similarity: 0.5, text: `literature excerpt ${id} about antihistamine montelukast evidence`,
+});
+const cw = (id: number): CiteHit => ({
+  id, source: 'choosing-wisely', book: 'CW-AAFP', chapter: null, section: null,
+  page_start: null, page_end: null, item_number: `cwus-${id}`, chunk_type: 'recommendation',
+  similarity: 0.6, text: `Avoid prescribing antihistamine+montelukast for viral URTI (statement ${id})`,
+});
+
+test('47.5 — through the REAL assembleAuditContext: the primary HMAC is the keyed HMAC of the EXACT rendered citedContext (literature only, and literature plus the normative block), and with zero hits the rendered context is the EMPTY STRING whose HMAC is a defined value', () => {
+  // Literature only — the production shape when the normative channel is off.
+  const hits = [lit(1), lit(2), lit(3)];
+  const a = assembleAuditContext(hits, []);
+  assert.ok(a.citedContext.length > 0, 'a non-empty rendered context');
+  const pa = payloadFor('primary', a.citedContext);
+  assert.equal(pa.scorer_context_hmac, telemetryHmac(KEY, a.citedContext), 'HMAC of exactly what assembleAuditContext rendered');
+  assert.notEqual(pa.scorer_context_hmac, telemetryHmac(KEY, hits.map((h) => h.text).join('\n')), 'not the HMAC of the raw passages — the RENDERED context is what the scorer sees');
+  // Literature plus the normative block — the channel shape; a different rendering, a different HMAC.
+  const b = assembleAuditContext(hits, [cw(101)]);
+  assert.notEqual(b.citedContext, a.citedContext);
+  const pb = payloadFor('primary', b.citedContext);
+  assert.equal(pb.scorer_context_hmac, telemetryHmac(KEY, b.citedContext));
+  assert.notEqual(pb.scorer_context_hmac, pa.scorer_context_hmac, 'the normative block changes the keyed bytes');
+  // ZERO hits — the case proof 47 names: assembleAuditContext renders the EMPTY STRING and the HMAC
+  // of the empty string is a defined value, never null because reranking was skipped.
+  const z = assembleAuditContext([], []);
+  assert.equal(z.citedContext, '', 'zero candidates render an empty citedContext');
+  const pz = payloadFor('primary', z.citedContext);
+  assert.equal(pz.scorer_context_hmac, telemetryHmac(KEY, ''), 'HMAC("") is defined and is what the primary row carries');
+  assert.equal(typeof pz.scorer_context_hmac, 'string');
+  const stamped = { ...pz, operational: operational('primary') };
+  assert.deepEqual(codes(stamped), [], 'and that zero-candidate primary row is not partial');
+});
+
+test('47.6 — the PRODUCTION CALLER handoff, pinned in comment-stripped source: lib/opd-note-audit.ts destructures citedContext from assembleAuditContext(hits, normHits), passes it into writeRetrievalTerminals, keys the PRIMARY payload with scorerContext: citedContext, the NORMATIVE payload with scorerContext: null, and validates the stamped primary manifest', () => {
+  // ⚠️ WHY A SOURCE PIN, AND WHAT IT PROVES. `writeRetrievalTerminals` is module-private and nothing
+  // in this repository can drive `auditOpdNote` in-process (it needs a note row, retrieval,
+  // embeddings, a live LLM leg and the audit store — recorded in defect-map-delivery.test.ts). This
+  // pins that the caller is WRITTEN to hand exactly assembleAuditContext's output to the payload
+  // builder; it does not prove the function executes. Comments are stripped first so prose about the
+  // handoff cannot satisfy the pin.
+  const src = readFileSync('lib/opd-note-audit.ts', 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
+  const destructure = src.indexOf('const { sources, citedContext } = assembleAuditContext(hits, normHits);');
+  assert.ok(destructure > 0, 'the caller destructures citedContext from assembleAuditContext(hits, normHits)');
+  const handoff = src.indexOf('manifestDefectsByRole = await writeRetrievalTerminals({');
+  assert.ok(handoff > destructure, 'and hands it to writeRetrievalTerminals AFTER assembling it');
+  const handoffBlock = src.slice(handoff, src.indexOf('});', handoff));
+  assert.match(handoffBlock, /\bcitedContext,/, 'citedContext is passed by that name — the same bytes, no rendering in between');
+  const fn = src.slice(src.indexOf('async function writeRetrievalTerminals('), src.indexOf('export const NORMATIVE_CHANNEL_HEADER'));
+  assert.ok(fn.includes("const { tele, publishHandle, traceId, startedAt, citedContext } = args;"), 'writeRetrievalTerminals reads citedContext off its args');
+  assert.ok(fn.includes('buildRetrievalPayload(args.primaryCapture, { hmacKey, scorerContext: citedContext })'), 'PRIMARY: scorerContext is exactly citedContext');
+  assert.ok(fn.includes('buildRetrievalPayload(args.normativeCapture, { hmacKey, scorerContext: null })'), 'NORMATIVE: scorerContext is null');
+  assert.ok(fn.includes('validateManifest({ ...primaryPayload, operational: primaryOperational })'), 'and the stamped primary manifest is validated by the real validator');
+  assert.equal((fn.match(/scorerContext:/g) ?? []).length, 2, 'exactly two handoffs — one per role');
 });
 
 // ── 49. The four D17 edge cases ─────────────────────────────────────────────────────────────────

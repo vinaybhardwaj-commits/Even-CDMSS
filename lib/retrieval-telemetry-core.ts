@@ -785,6 +785,20 @@ export function validateManifest(input: unknown): string[] {
       if (!has(b, 'attempts')) v.push('batch_attempts_field_absent');
       // LOCATION 2 of 3 (v11 §4).
       pushAttemptOutcomeDefects(b.attempts, 'attempt_outcome_absent_or_invalid', v);
+      // ⚠️ THE TWO USAGE FIELDS HAD NO VALIDATION AT ALL (Saul review 36 finding 1; addendum v25 §3.2).
+      // D17 lists `prompt_tokens` and `completion_tokens` among the per-batch fields where null is
+      // PERMITTED — and the same own-property rule as every other nullable field applies: the field
+      // must be PRESENT (an absent field is not a declaration), null means "usage not reported", and
+      // anything else must be a finite, non-negative number. Before this a batch could omit both, or
+      // carry a string, and the manifest still validated clean — a malformed manifest classified as
+      // complete. That defect shipped in commit 13 and no test asked. Same pattern as
+      // `rerank_temperature` and `active_backfill_state` above and below: `has`, then null, then type.
+      const usageFields: Array<'prompt_tokens' | 'completion_tokens'> = ['prompt_tokens', 'completion_tokens'];
+      for (const usage of usageFields) {
+        if (!has(b, usage)) { v.push(`batch_${usage}_field_absent`); continue; }
+        const t = b[usage];
+        if (t !== null && !(isFiniteNum(t) && t >= 0)) v.push(`batch_${usage}_invalid`);
+      }
       if (!(BATCH_OUTCOME_PRECEDENCE as readonly unknown[]).includes(b.outcome)) v.push('batch_outcome_absent_or_invalid');
       if (!isFiniteNum(b.expected_score_keys) || (b.expected_score_keys as number) < 0) v.push('expected_score_keys_absent');
       if (!isFiniteNum(b.finite_score_keys) || (b.finite_score_keys as number) < 0) v.push('finite_score_keys_absent');
@@ -831,6 +845,13 @@ export function validateManifest(input: unknown): string[] {
 
   if (!has(m, 'scorer_context_hmac')) v.push('scorer_context_hmac_field_absent');
   else if (role === 'primary' && m.scorer_context_hmac === null && !keyAbsent) v.push('scorer_context_hmac_absent');
+  // ⚠️ THE OTHER DIRECTION WAS UNGUARDED (Saul review 36 finding 2; addendum v25 §3.3). D17: the HMAC is
+  // required on `primary` and NULL on the other four roles — the combined-context HMAC lives on the
+  // primary row only, and a value on a normative/lvc/lab row would claim that leg rendered a scorer
+  // context of its own. Before this a non-null HMAC on any of the four validated clean.
+  else if (role !== 'primary' && RETRIEVAL_ROLES.some((r) => r === role) && m.scorer_context_hmac !== null) {
+    v.push('scorer_context_hmac_on_non_primary_role');
+  }
 
   // ── Multi-query, required on exactly one role ─────────────────────────────────────────────────
   if (role === 'lab_multi_query') {
