@@ -775,6 +775,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "readmission-ask-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "readmission-detect-core",
     "plane": "unregistered"
   },
@@ -1855,8 +1859,18 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/api",
+    "to": "readmission-ask-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
     "to": "readmission-detect-core",
     "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "readmission-narrative-core",
+    "kind": "type"
   },
   {
     "from": "app/api",
@@ -4320,6 +4334,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "readmission",
+    "to": "readmission-ask-core",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
     "to": "readmission-detect-core",
     "kind": "type"
   },
@@ -4376,6 +4395,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "readmission",
     "to": "trace",
+    "kind": "value"
+  },
+  {
+    "from": "readmission-ask-core",
+    "to": "readmission-narrative-core",
     "kind": "value"
   },
   {

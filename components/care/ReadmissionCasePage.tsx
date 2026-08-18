@@ -7,7 +7,8 @@
  * rendered ONLY when code marked its citations valid; every marker is a link to its ledger row) ·
  * THE EVIDENCE LEDGER (every item the audit read — R4.2: source / stay / written-by in plain words
  * with a legend, and a date that never dashes; plus looked-for-and-not-found) · PRIOR FINDINGS RELATED TO THIS RETURN (relevance-filtered, the denominator on every
- * render) · THE MONEY (judgements + both bills, R3) · the download button · the R4.2 ask placeholder.
+ * render) · THE MONEY (judgements + both bills, R3) · the download button · ASK THE AGENT (R4.3 — a
+ * conversation fenced to this case's stored material, citations checked by code, ephemeral).
  *
  * READ-ONLY, RENDERS STORED ARTEFACTS ONLY (R4-2 / R4-9): two fetches — the case route (the pinned
  * finding + artefacts + bills) and the list route (the KX identity the board already resolved,
@@ -25,6 +26,7 @@ import {
   type ChipState, type LaneGroup, type SurfaceFinding,
 } from '@/lib/readmission-surface-core';
 import { denominatorLine, relatedLvcCopy, segmentNarrative } from '@/lib/readmission-narrative-core';
+import { ASK_ADVISORY, ASK_PER_LOAD_LIMIT, ASK_QUESTION_MAX_CHARS, ASK_SUGGESTIONS, ASK_WORKING_COPY, ASK_WITHHELD_COPY, type AskTurn } from '@/lib/readmission-ask-core';
 import type { BillBreakdown, ExtractSubset } from '@/lib/readmission/brief';
 import { downloadBrief } from './ReadmissionsBoard';
 
@@ -106,6 +108,84 @@ function BillTable({ heading, bill }: { heading: string; bill: BillBreakdown | n
           <tr className="border-t border-line font-semibold"><td className="py-0.5 pr-3">Total</td><td className="py-0.5 text-right tabular-nums">{formatBillRs(bill.totalRs)}</td></tr>
         </tbody>
       </table>
+    </div>
+  );
+}
+
+type AskResponse = { ok: boolean; error?: string; withheld?: boolean; reason?: string; copy?: string; answer?: string; citedIds?: string[]; answerable?: boolean; cost?: { usd: number } | null };
+type AskEntry = { question: string; answer: string | null; citedIds: string[]; withheld: boolean; copy?: string };
+
+/**
+ * R4.3 — ASK THE AGENT (R43-1..R43-8). The conversation's whole world is this case's stored material
+ * (the route enforces that); it is EPHEMERAL — component state only, gone on reload; the last ≤ 6
+ * turns go back as context. Every answer arrives with code-checked citations rendered as the same
+ * clickable tags the account uses (jump to the ledger row); a withheld answer shows the honest copy.
+ * Question length capped; ASK_PER_LOAD_LIMIT questions per page load (builder's proposal, flagged).
+ */
+function AskTheAgent({ dedupKey, known, onJump }: { dedupKey: string; known: Set<string>; onJump: (id: string) => void }) {
+  const [q, setQ] = useState('');
+  const [entries, setEntries] = useState<AskEntry[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const left = Math.max(0, ASK_PER_LOAD_LIMIT - entries.length);
+
+  const ask = useCallback(async (question: string) => {
+    const text = question.trim();
+    if (!text || busy || left <= 0) return;
+    setBusy(true); setErr(null);
+    const history: AskTurn[] = entries.filter((e) => !e.withheld && e.answer).slice(-6).map((e) => ({ question: e.question, answer: e.answer! }));
+    try {
+      const r = await fetch('/api/care/readmissions/ask', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ dedup_key: dedupKey, question: text, history }),
+      });
+      const j = (await r.json()) as AskResponse;
+      if (!r.ok || !j.ok) throw new Error(String(j.error || `status ${r.status}`));
+      if (j.withheld) setEntries((xs) => [...xs, { question: text, answer: null, citedIds: [], withheld: true, copy: j.copy ?? ASK_WITHHELD_COPY }]);
+      else setEntries((xs) => [...xs, { question: text, answer: j.answer ?? '', citedIds: j.citedIds ?? [], withheld: false }]);
+      setQ('');
+    } catch (e) { setErr(String((e as Error).message)); }
+    finally { setBusy(false); }
+  }, [busy, dedupKey, entries, left]);
+
+  return (
+    <div>
+      {entries.length > 0 && (
+        <div className="mb-3 space-y-3">
+          {entries.map((e, i) => (
+            <div key={i}>
+              <div className="text-[12.5px] font-medium text-slate-800">Q · {e.question}</div>
+              {e.withheld
+                ? <div className="mt-1 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12.5px] text-amber-900">{e.copy ?? ASK_WITHHELD_COPY}</div>
+                : (
+                  <div className="mt-1 rounded-lg border border-line bg-canvas px-3 py-2 text-[13px] leading-relaxed text-slate-800">
+                    {segmentNarrative(e.answer ?? '').map((seg, si) => seg.kind === 'text'
+                      ? <span key={si}>{seg.text}</span>
+                      : <span key={si}>[{seg.ids.map((id, k) => <span key={id}>{k > 0 && ','}<CiteLink id={id} known={known.has(id)} onJump={onJump} /></span>)}]</span>)}
+                    {e.citedIds.length === 0 && <div className="mt-1 text-[10.5px] italic text-slate-500">the case record does not answer this — nothing to cite</div>}
+                  </div>
+                )}
+            </div>
+          ))}
+        </div>
+      )}
+      {busy && <p className="mb-2 text-[12px] italic text-slate-500">{ASK_WORKING_COPY}</p>}
+      {err && <p className="mb-2 text-[12px] text-red-700">{err}</p>}
+      <div className="flex flex-wrap gap-1.5">
+        {ASK_SUGGESTIONS.map((sug) => (
+          <button key={sug} type="button" disabled={busy || left <= 0} onClick={() => void ask(sug)}
+            className="rounded-full border border-line bg-white px-2.5 py-0.5 text-[11.5px] text-slate-600 transition hover:border-brand/40 hover:text-brand disabled:opacity-50">{sug}</button>
+        ))}
+      </div>
+      <form className="mt-2 flex gap-2" onSubmit={(e) => { e.preventDefault(); void ask(q); }}>
+        <input type="text" value={q} maxLength={ASK_QUESTION_MAX_CHARS} disabled={busy || left <= 0}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder={left <= 0 ? `Question limit reached for this page load (${ASK_PER_LOAD_LIMIT}) — reload to ask more` : 'Ask about this case — answered only from its stored evidence'}
+          className="w-full rounded-lg border border-line bg-white px-3 py-1.5 text-[12.5px] text-slate-800 disabled:bg-slate-50 disabled:text-slate-400" />
+        <button type="submit" disabled={busy || left <= 0 || !q.trim()}
+          className="rounded-lg border border-line bg-white px-3 py-1.5 text-[12px] font-medium text-slate-600 transition hover:border-brand/40 hover:text-brand disabled:opacity-50">Ask</button>
+      </form>
+      <p className="mt-2 text-[10.5px] italic text-slate-500">{ASK_ADVISORY} · {left} of {ASK_PER_LOAD_LIMIT} questions left on this page load · the conversation is not saved</p>
     </div>
   );
 }
@@ -311,10 +391,9 @@ export default function ReadmissionCasePage({ dedupKey }: { dedupKey: string }) 
             <p className="mt-2 text-[10.5px] italic text-slate-500">hospital bill · net of refunds · fresh at load · [hospital bill, db13]</p>
           </Section>
 
-          {/* R4.2 placeholder — out of this build */}
+          {/* R4.3 (R43-7) — ask the agent: a conversation fenced to this case's stored material */}
           <Section title="Ask the agent">
-            <input type="text" disabled placeholder="Ask about this case — coming in R4.2 (not yet available)"
-              className="w-full rounded-lg border border-line bg-slate-50 px-3 py-1.5 text-[12.5px] text-slate-400" />
+            <AskTheAgent dedupKey={dedupKey} known={known} onJump={jump} />
           </Section>
 
           <p className="mt-7 border-t border-line pt-3.5 text-[11.5px] leading-relaxed text-slate-500">

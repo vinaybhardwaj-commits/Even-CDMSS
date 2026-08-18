@@ -345,3 +345,62 @@ export function parseNarrativeOutput(text: string | null | undefined): Narrative
     .filter((r) => r.key !== '');
   return { narrative, related };
 }
+
+// ═══ R4.3 — ASK THE AGENT (CDMSS-READMISSIONS-R4.3-PRD v1.0 R43-1..R43-8) ═══════════════════
+//
+// A NEW builder, its own section. The four recon builders and the narrative builder above are
+// byte-identical (fingerprint tests) and the refresh-gate fingerprint (4 recon + narrative) does
+// NOT include this builder — the armed probe stays armed. This prompt is a CONVERSATION FENCED TO
+// THE CASE: its whole world is the stored material the case page already renders (the ledger, the
+// account, the judgements, the coverage, the two bills). Nothing here re-audits, regenerates or
+// stores anything. The patient's name is never in it (R43-8): the material is de-identified by
+// construction and the route never passes an identity.
+
+export interface AskPromptMaterial {
+  ledger: Array<{ id: string; source: string; side: string | null; at: string | null; weight: string; text: string }>;
+  account: string | null;
+  judgements: { planned: string | null; sameCondition: string | null; justification: string; preventableInjury: string; negligence: string; findingClass: string; lane: string; gapDays: number | null };
+  coverage: Array<{ label: string; state: string }>;
+  bills: { index: { ok: boolean; groups: Array<{ serviceType: string; netRs: number; lines: number }>; totalRs: number; lines: number } | null; readmit: { ok: boolean; groups: Array<{ serviceType: string; netRs: number; lines: number }>; totalRs: number; lines: number } | null; returnCell: string };
+  refusals: Array<{ lookedFor: string; note?: string }>;
+}
+export interface AskPromptTurn { question: string; answer: string }
+
+const askSource = (s: string): string => ({
+  index_summary: 'discharge summary — first stay', readmit_summary: 'discharge summary — return stay', lab: 'lab', adt: 'admission record',
+  cm_form: 'care-manager follow-up form (patient-reported)', ot_note: 'operative note', pac_note: 'pre-anaesthesia check', progress_note: 'ward progress note',
+} as Record<string, string>)[s] ?? s;
+const askWeight = (w: string): string => ({ interested: "treating team's own account", disinterested: 'independent record', neither: 'patient-reported account' } as Record<string, string>)[w] ?? w;
+const askBill = (label: string, b: AskPromptMaterial['bills']['index']): string => {
+  if (!b || !b.ok) return `${label}: not available`;
+  if (!b.groups.length) return `${label}: bill not finalised`;
+  return `${label}: total ₹${b.totalRs} over ${b.lines} line(s) — ${b.groups.map((g) => `${g.serviceType} ₹${g.netRs}`).join(', ')} [hospital bill]`;
+};
+
+export function buildAskPrompt(material: AskPromptMaterial, history: readonly AskPromptTurn[], question: string): { system: string; user: string } {
+  const j = material.judgements;
+  const oon = j.findingClass === 'out_of_network';
+  return {
+    system: `You are answering a care manager's question about ONE hospital readmission case, in a review room. Your entire world is the case material below — the evidence ledger, the agent's stored account, the audit's stored judgements, the artefact coverage, and the hospital bills. Rules, in order:
+1. Answer ONLY from that material. If the material does not answer the question, say plainly that the case record does not show it — never fill the gap from general medical knowledge, never guess.
+2. Every factual sentence you write must carry a citation marker naming ledger ids in square brackets — [S4], [L2], [OT1], or a list [S4, R2]. You may cite NOTHING that is not in the ledger; a single invented id discards the whole answer. When you say the record does not show something, set "answerable": false and cite nothing.
+3. No diagnosis and no treatment advice for the patient. No legal conclusion: the audit's negligence and preventable-injury judgements are advisory rule outputs, not a court or council finding — say so if asked what they mean.
+4. Plain clinical English. Never internal system vocabulary (lane names, "even_even", "findingClass", tier names, "detection lane"). Say "the first stay", "the return admission", "the treating team".
+5. Be brief: two to six sentences, or a short list if the question asks for a list. Do not repeat the whole account. Plain text only — no markdown (no **bold**, no headings, no bullet characters); a list is plain numbered lines.
+Return STRICT JSON only: {"answer": "<your answer with [id] markers>", "answerable": true|false} — nothing before or after it.`,
+    user: `CASE FACTS: ${oon ? 'the return was at another hospital; only the first stay is in evidence' : `readmitted ${j.gapDays ?? 'an unknown number of'} days after discharge`}. STORED JUDGEMENTS (advisory, from the audit's rules): planned ${j.planned ?? 'unknown'} · same condition ${j.sameCondition ?? 'unknown'} · medical justification: ${j.justification} · preventable injury: ${j.preventableInjury} · negligence: ${j.negligence} (advisory — not a court or council finding). Return stay bill on the card: ${material.bills.returnCell}.
+
+ARTEFACT COVERAGE (what the audit had): ${material.coverage.map((c) => `${c.label}: ${c.state}`).join(' · ') || 'unknown'}.
+${material.refusals.length ? `LOOKED FOR AND NOT FOUND: ${material.refusals.map((r) => `${r.lookedFor}${r.note ? ` — ${r.note}` : ''}`).join('; ')}.` : ''}
+
+EVIDENCE LEDGER (cite ONLY these ids):
+${material.ledger.map((i) => `[${i.id}] (${askSource(i.source)}${i.side ? `, ${i.side === 'index' ? 'first stay' : i.side === 'readmit' ? 'return stay' : i.side}` : ''}, ${askWeight(i.weight)}${i.at ? `, ${i.at}` : ''}) ${i.text}`).join('\n') || '(no ledger stored for this case)'}
+
+THE AGENT'S STORED ACCOUNT (written at audit time; its markers are ledger ids):
+${material.account ?? '(no valid account stored for this case)'}
+
+BILLS: ${askBill('First stay', material.bills.index)}. ${askBill('Return stay', material.bills.readmit)}.
+${history.length ? `\nEARLIER IN THIS CONVERSATION (context only — do not repeat):\n${history.map((t, i) => `Q${i + 1}: ${t.question}\nA${i + 1}: ${t.answer}`).join('\n')}\n` : ''}
+QUESTION: ${question}`,
+  };
+}

@@ -7,7 +7,7 @@
   "counts": {
     "prompts": 30,
     "rubrics": 7,
-    "user_message_builders": 37,
+    "user_message_builders": 38,
     "features": 19
   },
   "prompts": [
@@ -719,6 +719,11 @@
       "fn": "buildPxUser",
       "file": "lib/prognosis-core.ts",
       "feature": "Right Care · Foreseeability"
+    },
+    {
+      "fn": "buildAskPrompt",
+      "file": "lib/readmission-prompts.ts",
+      "feature": "readmission-prompts"
     },
     {
       "fn": "buildConditionPassPrompt",

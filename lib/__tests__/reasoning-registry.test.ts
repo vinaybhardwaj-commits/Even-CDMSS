@@ -115,8 +115,11 @@ test('count invariant: counts match the committed artifact contents (30 prompts 
   // Readmissions R4 (18 Aug 2026) adds readmission-prompts/buildNarrativePrompt — the case-page
   // narrative leg (Opus 4.6 on Bedrock, code-enforced citations); system inline, so builders only
   // (36→37). The four recon builders are byte-identical (pinned in readmission-r4-case.test.ts).
+  // Readmissions R4.3 (19 Aug 2026) adds readmission-prompts/buildAskPrompt — "ask the agent", a
+  // conversation fenced to one case's stored material; system inline (37→38). Recon + narrative
+  // builders byte-identical (readmission-r43-ask.test.ts pins both fingerprint sets).
   assert.equal(gen.counts.prompts, 30);
   assert.equal(gen.counts.rubrics, 7);
-  assert.equal(gen.counts.user_message_builders, 37);
+  assert.equal(gen.counts.user_message_builders, 38);
   assert.equal(gen.counts.features, 19);
 });
