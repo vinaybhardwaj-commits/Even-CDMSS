@@ -6,8 +6,9 @@
  * numbering authority for J1. Addendum v18 (signed by V, 16 August 2026, under Saul review 29)
  * governs the pass 2 proof repairs in this file: the tuple comparator and its 5.9b guard (§3.2),
  * the socket identity on the observation (§3.7a, §4.2), `Reflect.ownKeys` at all four exhaustive
- * key sites (§3.7b), and 5.4's deterministic acceptance signal (§3.7c). Addendum v19 (signed by V,
- * 16 August 2026, under Saul review 30) governs the recorder repair round: the once-sampled
+ * key sites (§3.7b), and 5.4's deterministic acceptance signal (§3.7c). Addendum v19 (16 August 2026,
+ * under Saul review 30; NOT signed by V — addendum v20 §1 records the chronology, and review 31
+ * preserves v19 unchanged as historical evidence) governs the recorder repair round: the once-sampled
  * recording decision and its two mid-flight tests 5.2b/5.2c (§3.1), the descriptor-faithful
  * snapshot (§3.2), and the bounded fail-loud acceptance waits in 5.4 and 5.6 (§3.3). Addendum v20
  * (signed by V, 17 August 2026, under Saul review 31 as corrected by review 32; signature verified
@@ -15,6 +16,10 @@
  * in its body or its finally (§3.1), the oversized mid-flight toggle test 5.2d guards the data
  * handler's use of the sampled decision (§3.2), and 5.2b-fail is the executable guard on 5.2b's
  * failure-path cleanup (§3.3). This file is the ONLY path commit 9 changes; the stub is untouched.
+ * Addendum v22 (signed by V, 17 August 2026, under Saul review 33; signature verified by one-line
+ * substitution) governs the shared bounded cleanup: ONE helper, `destroyAndAwaitAfterRejectedWait`,
+ * called by actual 5.2b on its failure path and EXERCISED by 5.2b-fail (§2), and this header's
+ * correction (§4). This file is the ONLY path commit 11 changes; the stub is untouched.
  *
  * WHAT THIS FILE PROVES.
  *   · Each of addendum v15 §5.2 to §5.11 — TEN guarded terms — has at least one executable test
@@ -220,6 +225,42 @@ function waitForContinue(held: http.ClientRequest, what: string, timeoutMs = 500
   });
 }
 
+/**
+ * THE SHARED BOUNDED CLEANUP for a held request whose acceptance wait REJECTED (addendum v22 §2.1,
+ * Saul review 33). ONE function, called by actual 5.2b on its failure path (v22 §2.2) and EXERCISED
+ * by 5.2b-fail (v22 §2.3) — the same code, not a copy. Review 33 found the previous 5.2b-fail
+ * demonstrated a separate cleanup that actual 5.2b never ran, which guarded nothing: on a rejection
+ * 5.2b only called `reqA.end()`, its `await aDone` sat outside the `try` and never ran, and its
+ * `finally` reached `judge.settled()` — which returned at once, because a request accepted while
+ * recording was OFF was never counted by the recorder — leaving the shared server with the request
+ * live. Three steps, in order:
+ *   1. DESTROY the request. Past a rejected wait its body is never released, so nothing else can
+ *      end it.
+ *   2. BOUNDEDLY AWAIT ITS TERMINATION — the request's OWN terminal signal, its 'close' event, which
+ *      follows both the destroy's 'error' and a response's end. NEVER `judge.settled()`: the
+ *      recorder's `inFlight` never counted this request, so `settled()` cannot see it (that
+ *      blindness IS the finding). A request that had already terminated before this ran — the wait
+ *      rejected on the request's own error, whose 'close' follows synchronously — is recognised via
+ *      `closed` and not waited for again. On expiry this fails BY NAME, stating what it waited for
+ *      and carrying the original wait error's message, so neither cause is lost. (Every request
+ *      handed here went through `waitForContinue`, whose 'error' listener stays attached, so the
+ *      destroy's 'error' event can never be unhandled.)
+ *   3. RETHROW THE ORIGINAL WAIT ERROR, unchanged, so the real cause is what surfaces — never a
+ *      cleanup error masking it. The return type says so: this never returns normally.
+ */
+async function destroyAndAwaitAfterRejectedWait(held: http.ClientRequest, waitError: unknown, what: string, timeoutMs = 5000): Promise<never> {
+  held.destroy();
+  await new Promise<void>((resolve, reject) => {
+    if (held.closed) { resolve(); return; }
+    const timer = setTimeout(() => {
+      const cause = waitError instanceof Error ? waitError.message : String(waitError);
+      reject(new Error(`bounded cleanup timed out after ${timeoutMs} ms waiting for ${what} to terminate after destroy (the original wait error was: ${cause})`));
+    }, timeoutMs);
+    held.once('close', () => { clearTimeout(timer); resolve(); });
+  });
+  throw waitError;
+}
+
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 // The connection guard (v15 §10.3 item 5): one test proves it refuses a non-loopback host.
 // ════════════════════════════════════════════════════════════════════════════════════════════════
@@ -286,10 +327,16 @@ test('5.2b — MID-FLIGHT TOGGLE off→on: a request accepted while recording wa
     void aDone.catch(() => {});   // handled later at `await aDone`
     try {
       await waitForContinue(reqA, "request '/v1/mid-off-on' acceptance");
-      judge.setRecording(true);            // ← toggled ON while the request is in flight
-    } finally {
-      reqA.end('ABCD');   // outer finally — the body, released whether or not the wait resolved
+    } catch (waitError) {
+      // THE FAILURE PATH (v22 §2.2, review 33). The wait rejected: the SHARED helper — the one
+      // 5.2b-fail exercises — destroys the request, boundedly awaits its termination, and rethrows
+      // the wait error. NOT `reqA.end()`: releasing the body is the SUCCESS path's release, and on
+      // this path it left the request neither terminated nor awaited while `judge.settled()` in the
+      // outer finally, blind to a request the recorder never counted, returned at once.
+      await destroyAndAwaitAfterRejectedWait(reqA, waitError, "request '/v1/mid-off-on'");
     }
+    judge.setRecording(true);            // ← toggled ON while the request is in flight
+    reqA.end('ABCD');   // THE SUCCESS PATH: the body, released — the request completes and `aDone` sees its response
     await aDone;
     await judge.settled();
     // The in-flight count returned to zero — the leak here is the failure mode that hides behind a
@@ -307,56 +354,66 @@ test('5.2b — MID-FLIGHT TOGGLE off→on: a request accepted while recording wa
   } finally { await judge.settled(); judge.setRecording(false); judge.resetObservations(); }
 });
 
-test('5.2b-fail — 5.2b\'s FAILURE PATH: when the acceptance wait rejects, the request is destroyed and awaited, the original wait error is preserved, and the NEXT shared-server request succeeds', async () => {
-  // v20 §3.3, review 32 blocker 4. If `waitForContinue` fails, 5.2b's unrecorded request would
-  // otherwise be neither waited for nor terminated, and the shared server would proceed with it
-  // still in flight — and there was no test proving the cleanup works. This subcase makes the
-  // wait REJECT deterministically (an abort seam, not a timeout and not a real socket fault),
-  // destroys the request, awaits its completion-or-rejection, proves the next shared-server
-  // request succeeds, and asserts the ORIGINAL wait error is what surfaces — never a cleanup error
-  // masking it.
+test('5.2b-fail — 5.2b\'s FAILURE PATH: when the acceptance wait rejects, the SHARED bounded cleanup destroys the request, awaits its termination, rethrows the original wait error, and the NEXT shared-server request succeeds', async () => {
+  // v20 §3.3, as repaired under v22 §2.3 (Saul review 33). This test EXERCISES
+  // `destroyAndAwaitAfterRejectedWait` — the very function actual 5.2b calls on its failure path,
+  // in the same call shape — rather than demonstrating a cleanup of its own. Review 33 found the
+  // previous version destroyed and awaited a DIFFERENT request with its own logic, connected to
+  // 5.2b by nothing, so it guarded nothing. The wait is made to REJECT deterministically (the abort
+  // seam, not a timeout and not a real socket fault); the helper must destroy the request, await
+  // its termination, and rethrow the ORIGINAL wait error; and the next shared-server request must
+  // succeed. Mutation row 35 removes or defeats the helper and requires this test to fail BY NAME,
+  // without timing out.
   const { judge } = await boot();
   await judge.settled();
   judge.setRecording(false);
   judge.resetObservations();
   try {
     // A request that will NEVER be given a body, so nothing else can complete it: only the
-    // deterministic abort below can end the wait, and only the destroy below can end the request.
+    // deterministic abort below can end the wait, and only the helper's destroy can end the request.
     const reqA = http.request({
       host: '127.0.0.1', port: judge.port, path: '/v1/mid-off-on-fail', method: 'POST',
       headers: { 'content-length': 4, Expect: '100-continue' },
     });
-    const aSettled = new Promise<'response' | 'error'>((resolve) => {
-      reqA.on('response', (res) => { res.resume(); res.on('end', () => resolve('response')); });
-      reqA.on('error', () => resolve('error'));   // destroy() surfaces here; resolved, not rejected
-    });
+    // OBSERVERS, not drivers. `closeSeen` records the request's own terminal event; that it is
+    // already true when the wait error resurfaces is what proves the helper AWAITED termination
+    // instead of merely calling destroy() and moving on (termination is asynchronous: `closed` is
+    // still false immediately after destroy()). The 'error' listener keeps a late error from
+    // becoming an unhandled 'error' event; the 'response' listener drains a response the server
+    // never sends here.
+    let closeSeen = false;
+    reqA.on('close', () => { closeSeen = true; });
+    reqA.on('error', () => {});
+    reqA.on('response', (res) => { res.resume(); });
     const controller = new AbortController();
     controller.abort();   // ← the wait is made to reject, deterministically, before it is even awaited
-    let waitError: Error | null = null;
-    let cleanupError: Error | null = null;
+    let surfaced: Error | null = null;
+    let closedWhenSurfaced = false;
     try {
-      await waitForContinue(reqA, "request '/v1/mid-off-on-fail' acceptance", 5000, controller.signal);
-      assert.fail('the aborted wait must reject');
-    } catch (e) {
-      waitError = e instanceof Error ? e : new Error(String(e));
-      // THE CLEANUP UNDER TEST: destroy the request, then await its completion-or-rejection so the
-      // shared server is not left with it in flight. A cleanup fault is captured SEPARATELY so it
-      // can never overwrite the original wait error.
       try {
-        reqA.destroy();
-        await aSettled;
-      } catch (ce) {
-        cleanupError = ce instanceof Error ? ce : new Error(String(ce));
+        await waitForContinue(reqA, "request '/v1/mid-off-on-fail' acceptance", 5000, controller.signal);
+      } catch (waitError) {
+        // EXACTLY 5.2b's failure path — the same shared helper, the same call shape.
+        await destroyAndAwaitAfterRejectedWait(reqA, waitError, "request '/v1/mid-off-on-fail'");
       }
+      assert.fail('the aborted wait must reject, and the shared cleanup must rethrow it');
+    } catch (e) {
+      surfaced = e instanceof Error ? e : new Error(String(e));
+      closedWhenSurfaced = closeSeen;
     }
-    // 5. The ORIGINAL wait error is preserved and is the one that surfaces.
-    assert.ok(waitError, 'the wait rejected');
-    assert.match(waitError.message, /aborted before acceptance/, 'the real cause — the wait error — is what surfaces');
-    assert.match(waitError.message, /mid-off-on-fail/, 'and it names what was waited for');
-    assert.equal(cleanupError, null, 'the cleanup itself raised nothing to mask the wait error');
-    // 3. The request reached a terminal state (destroy → error, or a response if the server had
-    //    already answered) — it is not dangling.
+    // 3. THE ORIGINAL WAIT ERROR is what surfaced — the abort's own message, naming what was waited
+    //    for; never a cleanup error, and never `assert.fail`'s.
+    assert.ok(surfaced, 'an error surfaced');
+    assert.match(surfaced.message, /aborted before acceptance/, 'the real cause — the wait error — is what surfaces');
+    assert.match(surfaced.message, /mid-off-on-fail/, 'and it names what was waited for');
+    // 1. The request was DESTROYED.
     assert.equal(reqA.destroyed, true, 'the request was destroyed');
+    // 2. …and its termination was AWAITED before the wait error resurfaced: the request's own 'close'
+    //    had already fired. A helper that destroyed without awaiting — or that awaited
+    //    `judge.settled()`, which cannot see an uncounted request and returns at once — fails HERE,
+    //    by name, without any timeout.
+    assert.equal(closedWhenSurfaced, true, "the helper awaited the request's termination — close had fired before the wait error resurfaced");
+    assert.equal(reqA.closed, true, 'and the request is terminated now');
     // 4. The NEXT shared-server request succeeds: the server is not wedged on the destroyed one.
     await judge.settled();
     assert.equal(judge.inFlight(), 0, 'nothing in flight — the unrecorded request moved no counter and nothing leaked');
