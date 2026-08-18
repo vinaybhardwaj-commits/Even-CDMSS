@@ -1,7 +1,8 @@
 /**
  *   node --experimental-strip-types --test lib/__tests__/readmission-brief.test.ts
  * The R1 case brief composer (CDMSS-READMISSIONS-R1-PRD v1.1 §7) — a GOLDEN FILE pins the
- * structure verbatim, including the two fixed bill sentences. Regenerate deliberately with
+ * structure verbatim, including the bill sentences and (R3, READMISSIONS-R3 PRD v1.0 §3.4)
+ * the two service-type bill tables. Regenerate deliberately with
  *   UPDATE_BRIEF_GOLDEN=1 node --test --import tsx lib/__tests__/readmission-brief.test.ts
  * and review the diff — a changed brief is a changed deliverable.
  */
@@ -44,8 +45,27 @@ const row = (over: Partial<SurfaceFinding> = {}): SurfaceFinding => ({
   omissionEvidence: null,
   preventableInjury: 'suspected', negligence: 'unknown', judgementRuleVersion: 'readmit-judgement/1',
   indexCase: { diagnosis: 'Fracture neck of femur (L)', indication: null, procedure: 'Cemented hemiarthroplasty', age: 58, sex: 'F' },
+  // R3: the return stay's hospital bill value object, as the list / case route computes it.
+  returnBill: { state: 'billed', netRs: 96450, lines: 38 },
   ...over,
 });
+
+// R3 §3.4 — the two stays' bills by service_type, as the case route returns them.
+const indexBill = {
+  ok: true, lines: 52, totalRs: 184000,
+  groups: [
+    { serviceType: 'IP Package', netRs: 150000, lines: 1 }, { serviceType: 'Pharmacy', netRs: 21500, lines: 34 },
+    { serviceType: 'Investigations', netRs: 8600, lines: 12 }, { serviceType: 'Room Rent', netRs: 6400, lines: 4 },
+    { serviceType: 'Refund', netRs: -2500, lines: 1 },
+  ],
+};
+const readmitBill = {
+  ok: true, lines: 38, totalRs: 96450,
+  groups: [
+    { serviceType: 'Surgery', netRs: 45000, lines: 1 }, { serviceType: 'Pharmacy', netRs: 28950, lines: 26 },
+    { serviceType: 'Room Rent', netRs: 12000, lines: 6 }, { serviceType: 'Investigations', netRs: 10500, lines: 5 },
+  ],
+};
 
 const indexExtract: ExtractSubset = {
   diagnosis: 'Fracture neck of femur (L)', indication: 'Displaced intracapsular fracture', procedure: 'Cemented hemiarthroplasty',
@@ -60,14 +80,23 @@ const readmitExtract: ExtractSubset = {
   riskFactors: [], patient: { age: null, sex: null },
 };
 
-test('golden — the Even→Even brief structure is verbatim §7 (Part 1 · Part 2, source tags, fixed sentences)', () => {
-  const b = composeBrief({ row: row(), indexExtract, readmitExtract, detailFetched: true });
+test('golden — the Even→Even brief structure is verbatim §7 (Part 1 · Part 2, source tags, fixed sentences, R3 bill tables)', () => {
+  const b = composeBrief({ row: row(), indexExtract, readmitExtract, indexBill, readmitBill, detailFetched: true });
   if (process.env.UPDATE_BRIEF_GOLDEN === '1') writeFileSync(GOLDEN, b.markdown);
   const golden = readFileSync(GOLDEN, 'utf8');
   assert.equal(b.markdown, golden);
   assert.equal(b.filename, 'uh-77812-khan-readmission-brief.md');
-  // The two fixed sentences and the advisory line are present verbatim.
-  assert.match(b.markdown, /Return stay bill not yet measured — no figure is available for this return\./);
+  // R3 (R3-8): a BILLED return replaces the R1 sentence with the measured, tagged figure; the
+  // Part 1 cell reads the same figure; both tables are present; the advisory line is verbatim.
+  assert.doesNotMatch(b.markdown, /Return stay bill not yet measured — no figure is available for this return\./);
+  assert.match(b.markdown, /- Bill: Return stay bill: ₹96,450 — hospital bill, net of refunds\. \[hospital bill, db13\]/);
+  assert.match(b.markdown, /- Return stay bill: ₹96,450 \[finding row\]/);
+  assert.match(b.markdown, /- Index stay bill — 52 line\(s\) \[hospital bill, db13\]/);
+  assert.match(b.markdown, /\| Total \| ₹1,84,000 \| \[hospital bill, db13\] \|/);
+  assert.match(b.markdown, /- Return stay bill — 38 line\(s\) \[hospital bill, db13\]/);
+  assert.match(b.markdown, /\| Total \| ₹96,450 \| \[hospital bill, db13\] \|/);
+  assert.match(b.markdown, /\| Refund \| ₹-2,500 \| \[hospital bill, db13\] \|/);   // refunds render as computed, negative
+  assert.match(b.markdown, /\| Bill \| present \|/);
   assert.match(b.markdown, /advisory — not a court or council finding/);
   assert.match(b.markdown, /## Part 1 — Intern presentation/);
   assert.match(b.markdown, /## Part 2 — Actuarial \/ low-value-care/);
@@ -77,8 +106,16 @@ test('golden — the Even→Even brief structure is verbatim §7 (Part 1 · Part
   // Mobiles never — the CM note's number is withheld; the rest of the note survives.
   assert.doesNotMatch(b.markdown, /98765 43210/);
   assert.match(b.markdown, /\[number withheld\]/);
-  // No rupee, no invented figure.
-  assert.doesNotMatch(b.markdown, /₹|Rs\.? ?\d/);
+  // R3-8 amended contract: the ONLY rupees are the hospital's measured bill — every ₹ line
+  // carries the [hospital bill, db13] tag or is the Part 1 cell reading the same value object.
+  for (const l of b.markdown.split('\n').filter((x) => /₹|Rs\.? ?\d/.test(x) && !/^\| Service \|/.test(x))) {
+    assert.match(l, /\[hospital bill, db13\]|^- Return stay bill: ₹[\d,.]+ \[finding row\]$/, l);
+  }
+  // A pre-R3 caller (no returnBill, no breakdowns) still writes NO rupee anywhere.
+  const pre = composeBrief({ row: row({ returnBill: undefined }), indexExtract, readmitExtract, detailFetched: true });
+  assert.doesNotMatch(pre.markdown, /₹|Rs\.? ?\d/);
+  assert.match(pre.markdown, /Return stay bill not yet measured — no figure is available for this return\./);
+  assert.match(pre.markdown, /- Index stay bill: not available \[hospital bill, db13\]/);
   // Every extracted line is source-tagged.
   for (const l of b.markdown.split('\n').filter((x) => /^- (Diagnosis|Indication|Procedure|Course|Investigations|Treatments|Medications)/.test(x))) {
     assert.match(l, /\[(index|readmit) DS, extracted\]$/, l);
@@ -92,11 +129,16 @@ test('OON brief: the other-hospital bill sentence, the POST_IPD form line, no re
       readmitDepartment: null, readmitDoctor: null, payerReadmit: null, avoidable: null, indexCase: null,
       // An OON finding carries no readmit document (§5a) — its provenance says so.
       finding: { ...row().finding, avoidable: null, labSourceProvenance: { indexCase: 'store', readmitCase: null, structuredLabCount: 6, indexDocumentId: 'DOC-1', readmitDocumentId: null } },
+      // R3: an OON row's value object is `na`; the class rule would win even if it were not.
+      returnBill: { state: 'na', netRs: null, lines: null },
     }),
-    indexExtract: null, readmitExtract: null, detailFetched: true,
+    indexExtract: null, readmitExtract: null, indexBill, readmitBill: null, detailFetched: true,
   });
   assert.match(b.markdown, new RegExp(BILL_SENTENCE_OON.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.doesNotMatch(b.markdown, new RegExp(BILL_SENTENCE_EVEN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  // R3: the index table prints; there is NO return table and no "not available" line for the return.
+  assert.match(b.markdown, /- Index stay bill — 52 line\(s\) \[hospital bill, db13\]/);
+  assert.doesNotMatch(b.markdown, /Return stay bill: not available|Return stay bill —/);
   assert.match(b.markdown, /- Department: out of network — no second IP stay at Even/);
   assert.match(b.markdown, /- POST_IPD form held: Patient called on day 3/);
   assert.match(b.markdown, /\| Readmit DS \| n\/a \|/);

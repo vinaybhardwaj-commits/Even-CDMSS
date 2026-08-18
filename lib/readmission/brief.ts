@@ -6,15 +6,20 @@
  *
  * PHI POSTURE (§7): this is the care-manager copy — patient and doctor names MAY appear.
  * Mobiles never: any run of ten or more digits inside free text is withheld before it is
- * written. Every claim is source-tagged. Missing renders `unknown`. Nothing is invented:
- * no rupees, no packages, no "clean intra-op".
+ * written. Every claim is source-tagged. Missing renders `unknown`. Nothing is invented.
+ *
+ * RUPEES — the contract as AMENDED by R3 (CDMSS-READMISSIONS-R3-PRD v1.0, R3-8; not silently
+ * edited): the ONLY rupee figures permitted are the hospital's own MEASURED bill from db13
+ * kx_billing_records — SUM(net_amt) as computed, net of discounts and refunds, tax inclusive
+ * — and every such line carries the source tag `[hospital bill, db13]`. Invented rupees,
+ * packages, insurer / TPA estimates and "clean intra-op" remain banned exactly as before.
  *
  * Deterministic on its input (the golden-file test pins the structure): the only clock is
  * the optional `generatedAt` the caller passes.
  */
 import type { ExtractedCase } from '../doc-audit-core';
 import {
-  cardIdentityLine, chipText, coverageChips, isDelayedSsi, judgementLabel, justificationLabel, laneMeta,
+  cardIdentityLine, chipText, coverageChips, formatBillRs, isDelayedSsi, judgementLabel, justificationLabel, laneMeta,
   NEGLIGENCE_ADVISORY, returnStayBill, situationLine, type SurfaceFinding,
 } from '../readmission-surface-core';
 
@@ -52,11 +57,26 @@ export function toExtractSubset(e: ExtractedCase | null | undefined): ExtractSub
   };
 }
 
+/** R3 §3.4 — one stay's hospital bill grouped by service_type, as the case route returns it
+ *  (lib/readmission/db13.ts StayBillBreakdown, restated structurally so this pure composer
+ *  imports nothing server-side). `ok:false` = the fetch faulted (renders "not available");
+ *  `ok:true` with `lines` 0 = looked, no bill rows (renders `bill not finalised`). */
+export interface BillBreakdown {
+  ok: boolean;
+  groups: Array<{ serviceType: string; netRs: number; lines: number }>;
+  totalRs: number;
+  lines: number;
+}
+
 export interface BriefInput {
   /** The card's row — identity already resolved by the list route (decision 13). */
   row: SurfaceFinding;
   indexExtract: ExtractSubset | null;
   readmitExtract: ExtractSubset | null;
+  /** R3: the two stays' bills by service_type from the case route; null = not fetched /
+   *  no such stay. Absent on a pre-R3 caller — the brief then prints "not available". */
+  indexBill?: BillBreakdown | null;
+  readmitBill?: BillBreakdown | null;
   /** Optional ISO/IST stamp for the header line; omitted when absent (golden test). */
   generatedAt?: string | null;
   /** Whether the case route answered. False → the brief says so and stays thinner. */
@@ -136,6 +156,8 @@ const T_INDEX = '[index DS, extracted]';
 const T_READMIT = '[readmit DS, extracted]';
 const T_FORM = '[POST_IPD form, patient-reported]';
 const T_AUDIT = '[audit finding]';
+/** R3-8: the ONE tag every rupee line carries. */
+export const T_BILL = '[hospital bill, db13]';
 
 function extractLines(x: ExtractSubset | null, tag: string): string[] {
   const out: string[] = [];
@@ -264,13 +286,43 @@ export function composeBrief(input: BriefInput): Brief {
   L.push('## Part 2 — Actuarial / low-value-care');
   L.push('');
   L.push(`- Payer: ${oon ? `out of network (index payer ${u(row.payerIndex)})` : `Even–Even (index ${u(row.payerIndex)} → return ${u(row.payerReadmit)})`} ${T_ROW}`);
-  L.push(`- Bill: ${isDelayedSsi(row) ? BILL_SENTENCE_NO_SECOND_STAY : oon ? BILL_SENTENCE_OON : BILL_SENTENCE_EVEN}`);
+  L.push(`- Bill: ${billSentence(row, input.generatedAt)}`);
+  // R3 §3.4 — both stays' bills by service_type, every line tagged. The return table respects
+  // the OON / no-second-stay sentences above: no Even return stay → no return table, no line.
+  L.push(...billTableLines('Index stay bill', input.indexBill));
+  if (!oon && !isDelayedSsi(row)) L.push(...billTableLines('Return stay bill', input.readmitBill));
   L.push(`- Candidate pattern: ${candidatePattern(row, input.indexExtract, omissions.length)}`);
   L.push('- What we cannot say:');
   for (const c of CANNOT_SAY_LINES) L.push(`  - ${c}`);
   L.push('');
 
   return { filename: briefFilename(row), markdown: L.join('\n') };
+}
+
+/** Part 2's Bill sentence (R3 §3.4): OON and no-second-stay keep their fixed sentences; a
+ *  BILLED return replaces BILL_SENTENCE_EVEN with the measured figure (tagged); the other
+ *  Even–Even states (not_finalised, unknown) keep BILL_SENTENCE_EVEN verbatim. */
+export function billSentence(row: Pick<SurfaceFinding, 'findingClass' | 'returnBill'>, generatedAt?: string | null): string {
+  if (isDelayedSsi(row)) return BILL_SENTENCE_NO_SECOND_STAY;
+  if (row.findingClass === 'out_of_network') return BILL_SENTENCE_OON;
+  const b = row.returnBill;
+  if (b?.state === 'billed' && typeof b.netRs === 'number' && Number.isFinite(b.netRs)) {
+    return `Return stay bill: ${formatBillRs(b.netRs)} — hospital bill, net of refunds${generatedAt ? `, as of ${generatedAt}` : ''}. ${T_BILL}`;
+  }
+  return BILL_SENTENCE_EVEN;
+}
+
+/** One stay's bill table (R3 §3.4): heading line, `| Service | Net ₹ | Source |` rows desc by
+ *  net (the route's order, kept), then a Total row — every line carries T_BILL. Null or a
+ *  faulted breakdown → one `not available` line; looked-and-empty → `bill not finalised`
+ *  (never a ₹0 total for nothing). */
+export function billTableLines(heading: string, bill: BillBreakdown | null | undefined): string[] {
+  if (!bill || !bill.ok) return [`- ${heading}: not available ${T_BILL}`];
+  if (bill.lines <= 0 || !bill.groups.length) return [`- ${heading}: bill not finalised ${T_BILL}`];
+  const out = [`- ${heading} — ${bill.lines} line(s) ${T_BILL}`, '', '| Service | Net ₹ | Source |', '|---|---|---|'];
+  for (const g of bill.groups) out.push(`| ${withholdNumbers(g.serviceType).replace(/\|/g, '/')} | ${formatBillRs(g.netRs)} | ${T_BILL} |`);
+  out.push(`| Total | ${formatBillRs(bill.totalRs)} | ${T_BILL} |`, '');
+  return out;
 }
 
 /** One deterministic sentence from the judgements (§7). Never asserts a pattern that the

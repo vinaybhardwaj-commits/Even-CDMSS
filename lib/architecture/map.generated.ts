@@ -1858,11 +1858,6 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "readmission-surface-core",
-    "kind": "type"
-  },
-  {
-    "from": "app/api",
-    "to": "readmission-surface-core",
     "kind": "value"
   },
   {

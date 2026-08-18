@@ -12,6 +12,11 @@
  *   4. Neon — R1 (READMISSIONS-R1 PRD v1.1 §6): the index extract for each row, ONE
  *      batch query on discharge_extracted_cases, emitted per row as `indexCase`
  *      (additive payload). Join down → indexCase: null → thinner card, chips unknown.
+ *   5. db13 — R3 (READMISSIONS-R3 PRD v1.0 §3.2): the RETURN STAY'S HOSPITAL BILL, ONE
+ *      batched SUM(net_amt) over kx_billing_records for every readmit encounter id, computed
+ *      fresh on every read and never stored (R3-2). Emitted per row as the `returnBill`
+ *      value object (R3-5 — the encounter id stays off the client) plus the top-level
+ *      `billsResolved` honesty flag. Fault → every card `unknown`, never a 500 (R3-6).
  *
  * PHI: the patient name is read here and rendered behind the care-manager gate. It is
  * NOT persisted, and there is no model call anywhere on this surface — the audit that
@@ -29,8 +34,9 @@ import { metabaseQuery } from '@/lib/metabase';
 import { ADT_COLUMN_CANDIDATES } from '@/lib/readmission-detect-core';
 import { listFindingsForSurface } from '@/lib/readmission/store';
 import { fetchExtractedCases } from '@/lib/discharge-extract-store';
+import { fetchStayBillTotals } from '@/lib/readmission/db13';
 import { asJson, indexDocumentIdOf, toFinding, toIndexCaseSummary, type Identity } from '@/lib/readmission/surface-row';
-import { computeTiles, groupByLane, type FindingBlob } from '@/lib/readmission-surface-core';
+import { computeTiles, groupByLane, returnBillFor, toFindingClass, type FindingBlob } from '@/lib/readmission-surface-core';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -154,6 +160,11 @@ export async function GET() {
   // every other caller.
   const read = await listFindingsForSurface({ includeNotAuditable: true, includeExcluded: true });
   const ids = [...new Set(read.rows.map((r) => String(r.index_encounter_id)).filter(isEncounterId))];
+  // R3 §3.2: the readmit encounter ids — non-null and id-shaped. OON and null-readmit rows are
+  // skipped here (they render n/a regardless); the batch fetch dedups and caps once more.
+  const readmitIds = read.rows
+    .map((r) => (r.readmit_encounter_id == null ? null : String(r.readmit_encounter_id)))
+    .filter((d): d is string => d != null && isEncounterId(d));
 
   // All three db13 reads run together and each soft-fails on its own; none of them can
   // fail the response. Awaited with Promise.all (not allSettled) because every one of
@@ -167,11 +178,14 @@ export async function GET() {
     .map((r) => indexDocumentIdOf(asJson<FindingBlob>(r.finding)))
     .filter((d): d is string => d != null);
 
-  const [adt, summaries, denominator, extracts] = await Promise.all([
+  // R3: fetchStayBillTotals resolves { ok:false, empty Map } on a db13 fault — the route
+  // then emits every card as `unknown` and billsResolved:false; nothing rejects here.
+  const [adt, summaries, denominator, extracts, bills] = await Promise.all([
     namesFromAdt(ids),
     identityFromSummaries(ids),
     ipDischargeDenominator(),
     fetchExtractedCases(indexDocIds),
+    fetchStayBillTotals(readmitIds),
   ]);
 
   const rows = read.rows.map((r) => {
@@ -183,7 +197,16 @@ export async function GET() {
     const id: Identity = { name: a?.name ?? b?.name ?? null, uhid: a?.uhid ?? b?.uhid ?? null, ageGender: b?.ageGender ?? null };
     const docId = indexDocumentIdOf(asJson<FindingBlob>(r.finding));
     const indexCase = docId ? toIndexCaseSummary(extracts.get(docId)?.extracted) : null;
-    return toFinding(r, id, indexCase);
+    // R3-6 state rules, in ONE pure mapping (returnBillFor): class → na · ok:false → unknown ·
+    // id absent from the totals → not_finalised · present → billed with the computed sum.
+    const readmitId = r.readmit_encounter_id == null ? null : String(r.readmit_encounter_id);
+    const returnBill = returnBillFor({
+      findingClass: toFindingClass(r.finding_class),
+      readmitEncounterId: readmitId != null && isEncounterId(readmitId) ? readmitId : null,
+      ok: bills.ok,
+      total: readmitId ? bills.totals.get(readmitId) : null,
+    });
+    return toFinding(r, id, indexCase, returnBill);
   });
 
   // Phase 2.1 decision 2: the tiles keep their AUDITED-ONLY basis. The held-out sample
@@ -202,5 +225,8 @@ export async function GET() {
     total: rows.length,
     /** Honest signal for the page: the name column never resolved, so cards show UHIDs. */
     namesResolved: rows.some((r) => r.patientName != null),
+    /** R3 sibling: the batched bill fetch answered (ok). False → every cell reads unknown and
+     *  the board shows the quiet bills-unavailable notice. */
+    billsResolved: bills.ok,
   });
 }

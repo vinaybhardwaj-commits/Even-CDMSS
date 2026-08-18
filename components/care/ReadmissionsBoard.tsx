@@ -5,8 +5,10 @@
  * 17 Aug 2026; supersedes the Phase-2 lane board). Renders what the readmission agent
  * already stored, one card per finding: identity (KX-first), the index→readmit path with
  * the extracted diagnosis / indication / procedure, a situation line when true, eight
- * artefact-coverage chips, the three advisory judgements + the `Return stay bill` cell,
- * and ONE button that downloads a `.md` case brief built client-side.
+ * artefact-coverage chips, the three advisory judgements + the `Return stay bill` cell (R3:
+ * the return stay's hospital bill, computed fresh by the list route on every load — never
+ * stored, never the encounter id), and ONE button that downloads a `.md` case brief built
+ * client-side (R3: Part 2 carries both stays' bills by service type).
  *
  * READ-ONLY. Nothing on this page mutates a finding — the download is the only transmit
  * (decision 8), it calls no model, and it writes nothing. The route payload is still
@@ -23,12 +25,12 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { RotateCw, Download } from 'lucide-react';
 import {
-  cardIdentityLine, chipText, coverageChips, countsLine, isHeldOut, isReviewFinding, judgementLabel,
-  justificationCell, NEGLIGENCE_ADVISORY, pathSegments, returnStayBill, situationLine,
+  BILLS_UNAVAILABLE_NOTICE, cardIdentityLine, chipText, coverageChips, countsLine, isHeldOut, isReviewFinding, judgementLabel,
+  justificationCell, NEGLIGENCE_ADVISORY, pathSegments, returnStayBill, returnStayBillSub, situationLine,
   sortForCardList,
   type ChipState, type LaneGroup, type SurfaceFinding, type SurfaceTiles,
 } from '@/lib/readmission-surface-core';
-import { composeBrief, type ExtractSubset } from '@/lib/readmission/brief';
+import { composeBrief, type BillBreakdown, type ExtractSubset } from '@/lib/readmission/brief';
 
 type BoardData = {
   ok: boolean;
@@ -38,6 +40,8 @@ type BoardData = {
   reviewCount: number;
   total: number;
   namesResolved: boolean;
+  /** R3: the batched bill fetch answered. Absent (older route) reads as resolved. */
+  billsResolved?: boolean;
   error?: string;
 };
 
@@ -46,6 +50,9 @@ type CaseDetail = {
   row: SurfaceFinding;
   indexExtract: ExtractSubset | null;
   readmitExtract: ExtractSubset | null;
+  /** R3: both stays' bills by service_type — the brief's Part 2 tables. */
+  indexBill?: BillBreakdown | null;
+  readmitBill?: BillBreakdown | null;
 };
 
 /** R2 five states (constraints §4b): present solid · empty / absent / unknown hollow
@@ -91,13 +98,17 @@ async function downloadBrief(card: SurfaceFinding): Promise<void> {
       if (j.ok && j.row) detail = j;
     }
   } catch { /* thinner brief below */ }
+  // R3: the case route's returnBill is the fresher read (same state rule); the card's is the
+  // fallback so a thinner brief still says what the card said.
   const row: SurfaceFinding = detail
-    ? { ...detail.row, patientName: card.patientName, ageGender: card.ageGender ?? detail.row.ageGender ?? null, indexCase: detail.row.indexCase ?? card.indexCase ?? null }
+    ? { ...detail.row, patientName: card.patientName, ageGender: card.ageGender ?? detail.row.ageGender ?? null, indexCase: detail.row.indexCase ?? card.indexCase ?? null, returnBill: detail.row.returnBill ?? card.returnBill ?? null }
     : card;
   const brief = composeBrief({
     row,
     indexExtract: detail?.indexExtract ?? null,
     readmitExtract: detail?.readmitExtract ?? null,
+    indexBill: detail?.indexBill ?? null,
+    readmitBill: detail?.readmitBill ?? null,
     generatedAt: istStamp(),
     detailFetched: detail != null,
   });
@@ -152,7 +163,7 @@ function CaseCard({ f }: { f: SurfaceFinding }) {
           <Cell k="Medical justification" v={justificationCell(f)} />
           <Cell k="Preventable injury" v={judgementLabel(f.preventableInjury)} />
           <Cell k="Negligence" v={judgementLabel(f.negligence)} sub={NEGLIGENCE_ADVISORY} />
-          <Cell k="Return stay bill" v={returnStayBill(f)} />
+          <Cell k="Return stay bill" v={returnStayBill(f)} sub={returnStayBillSub(f)} />
         </div>
       ) : (
         // §3: one line. The qualifier names WHY for the two statuses the toggle reveals —
@@ -230,6 +241,9 @@ export default function ReadmissionsBoard() {
         <p className="mt-1 text-[11.5px] text-slate-500">
           Patient names are unavailable right now — cards are identified by UHID.
         </p>
+      )}
+      {data && data.total > 0 && data.billsResolved === false && (
+        <p className="mt-1 text-[11.5px] text-slate-500">{BILLS_UNAVAILABLE_NOTICE}</p>
       )}
       {data && data.total === 0 && !loading && (
         <p className="mt-6 text-[13px] text-slate-500">

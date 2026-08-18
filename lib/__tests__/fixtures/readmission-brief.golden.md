@@ -50,7 +50,7 @@ Care-manager copy · advisory throughout · dedup key `IP-2026-0101|IP-2026-0342
 | PAC | PAC none |
 | Progress | Progress empty |
 | POST_IPD | present |
-| Bill | unknown |
+| Bill | present |
 
 ### Assessment
 - Medical justification: Needs adjudication [audit finding]
@@ -60,7 +60,7 @@ Care-manager copy · advisory throughout · dedup key `IP-2026-0101|IP-2026-0342
 - Negligence: Unknown — advisory — not a court or council finding [audit finding]
   - Exculpatory: patient non-adherent to dressing advice — uncorroborated [audit finding]
 - Stability at discharge: contradicted · evidence track: lab_corroborated · lab tier: tier1 [audit finding]
-- Return stay bill: unknown — not yet measured [finding row]
+- Return stay bill: ₹96,450 [finding row]
 
 ### Looked for and not found
 - pac_note — no row in db13 for this stay/window [audit finding]
@@ -69,7 +69,28 @@ Care-manager copy · advisory throughout · dedup key `IP-2026-0101|IP-2026-0342
 ## Part 2 — Actuarial / low-value-care
 
 - Payer: Even–Even (index Even → return Even) [finding row]
-- Bill: Return stay bill not yet measured — no figure is available for this return.
+- Bill: Return stay bill: ₹96,450 — hospital bill, net of refunds. [hospital bill, db13]
+- Index stay bill — 52 line(s) [hospital bill, db13]
+
+| Service | Net ₹ | Source |
+|---|---|---|
+| IP Package | ₹1,50,000 | [hospital bill, db13] |
+| Pharmacy | ₹21,500 | [hospital bill, db13] |
+| Investigations | ₹8,600 | [hospital bill, db13] |
+| Room Rent | ₹6,400 | [hospital bill, db13] |
+| Refund | ₹-2,500 | [hospital bill, db13] |
+| Total | ₹1,84,000 | [hospital bill, db13] |
+
+- Return stay bill — 38 line(s) [hospital bill, db13]
+
+| Service | Net ₹ | Source |
+|---|---|---|
+| Surgery | ₹45,000 | [hospital bill, db13] |
+| Pharmacy | ₹28,950 | [hospital bill, db13] |
+| Room Rent | ₹12,000 | [hospital bill, db13] |
+| Investigations | ₹10,500 | [hospital bill, db13] |
+| Total | ₹96,450 | [hospital bill, db13] |
+
 - Candidate pattern: Unplanned same-condition return after Cemented hemiarthroplasty with 1 documentation omission(s) — candidate for Even Adjudicated LVC review.
 - What we cannot say:
   - No policy rule follows from n=1 — one case is a case, not a pattern.

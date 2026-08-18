@@ -78,7 +78,19 @@ export interface SurfaceFinding {
    *  4). null = no document id, no row at DOC_EXTRACT_VERSION, or the join failed —
    *  the card renders thinner and the chips say unknown. Never invented. */
   indexCase?: IndexCaseSummary | null;
+  /** R3 (CDMSS-READMISSIONS-R3-PRD v1.0, R3-5/R3-6): the return stay's HOSPITAL BILL as a
+   *  value object — computed fresh by the route on every read from kx_billing_records, never
+   *  stored, and the encounter id itself stays off the client. Absent (pre-R3 caller /
+   *  fixture) reads exactly like state 'unknown'. */
+  returnBill?: ReturnBill | null;
 }
+
+/** R3-6 — the four states of the return-stay bill. `billed` = rows exist, netRs is the
+ *  computed SUM(net_amt) (no floor, no rounding — R3-1); `not_finalised` = looked, no rows;
+ *  `unknown` = the batch fetch faulted (or nobody looked); `na` = OON / delayed-SSI, where
+ *  no Even bill for a return stay can exist. */
+export type ReturnBillState = 'billed' | 'not_finalised' | 'unknown' | 'na';
+export interface ReturnBill { state: ReturnBillState; netRs: number | null; lines: number | null }
 
 /** What the list route carries from the index extract (§6): the three clinical fields
  *  the path line shows, plus age/sex — used ONLY when the KX join has none (decision 13). */
@@ -521,19 +533,35 @@ export function templateChipState(entry: { status?: string | null } | null | und
 
 /** The chip's copy per state (constraints §4b): present solid, `empty` → "OT empty",
  *  `absent` → "OT none", `unknown` → bare label (the R1 look), `n/a` → "OT n/a" greyed. */
-export function chipText(c: Pick<CoverageChip, 'label' | 'state'>): string {
+export function chipText(c: Pick<CoverageChip, 'label' | 'state'> & { key?: string }): string {
   switch (c.state) {
     case 'empty': return `${c.label} empty`;
-    case 'absent': return `${c.label} none`;
+    // R3 §3.3 — the ONE documented divergence from the ratified `<label> none` copy: an
+    // absent bill is almost always billing that has not been finalised yet, not a permanent
+    // absence, so the Bill chip's `absent` reads `Bill pending`. Every other chip is unchanged.
+    case 'absent': return c.key === 'bill' ? `${c.label} pending` : `${c.label} none`;
     case 'n/a': return `${c.label} n/a`;
     default: return c.label;   // present, unknown — the style tells them apart
   }
 }
 
+/** R3-7 (constraint 22, fulfilled): the Bill chip is driven by the same returnBill state the
+ *  cell reads — billed → present · not_finalised → absent (copy `Bill pending`) · unknown /
+ *  absent object → unknown · the class rules → n/a. */
+export function billChipState(row: Pick<SurfaceFinding, 'findingClass' | 'returnBill'>): ChipState {
+  if (row.findingClass === 'out_of_network' || isDelayedSsi(row)) return 'n/a';
+  switch (row.returnBill?.state) {
+    case 'billed': return 'present';
+    case 'not_finalised': return 'absent';
+    case 'na': return 'n/a';
+    default: return 'unknown';   // 'unknown', missing object (pre-R3 caller / fixture)
+  }
+}
+
 /** The eight chips, in the mockup's order. Missing is `unknown`, never "uneventful".
- *  OT / PAC / Progress read the R2 templateCoverage; Bill stays `unknown` (n/a on OON /
- *  no-second-stay) until R3 (constraint 22). */
-export function coverageChips(row: Pick<SurfaceFinding, 'findingClass' | 'cmNote' | 'finding' | 'indexCase'>): CoverageChip[] {
+ *  OT / PAC / Progress read the R2 templateCoverage; Bill reads the R3 returnBill (n/a on
+ *  OON / no-second-stay). */
+export function coverageChips(row: Pick<SurfaceFinding, 'findingClass' | 'cmNote' | 'finding' | 'indexCase' | 'returnBill'>): CoverageChip[] {
   const oon = row.findingClass === 'out_of_network';
   const noSecondStay = isDelayedSsi(row);   // R2 guard: Readmit DS and Bill are structurally n/a
   // labSourceProvenance is typed as an open record on the blob — narrow each field.
@@ -551,7 +579,7 @@ export function coverageChips(row: Pick<SurfaceFinding, 'findingClass' | 'cmNote
     { key: 'pac', label: 'PAC', state: templateChipState(cov?.pac) },
     { key: 'progress', label: 'Progress', state: templateChipState(cov?.progress) },
     { key: 'post_ipd', label: 'POST_IPD', state: heldForm ? 'present' : 'unknown' },
-    { key: 'bill', label: 'Bill', state: oon || noSecondStay ? 'n/a' : 'unknown' },
+    { key: 'bill', label: 'Bill', state: billChipState(row) },
   ];
 }
 
@@ -584,10 +612,53 @@ export function judgementLabel(v: string | null | undefined): 'Suspected' | 'Not
   return 'Unknown';
 }
 
-/** The `Return stay bill` cell (decision 7/10): `n/a` on OON, else the fixed unknown. */
-export function returnStayBill(row: Pick<SurfaceFinding, 'findingClass'>): string {
-  return row.findingClass === 'out_of_network' || isDelayedSsi(row) ? 'n/a' : 'unknown — not yet measured';
+// ── R3: the return-stay bill (CDMSS-READMISSIONS-R3-PRD v1.0 §3.2 / §3.3) ───────────────
+
+/** Rupees, null-honest: NEVER called with null — the states handle absence (charge-master's
+ *  formatINR renders ₹0 for null, which is exactly the lie R3-6 forbids). `en-IN` grouping
+ *  (₹1,84,000); the value renders as computed — no floor, no rounding rule (R3-1). Fraction
+ *  digits are capped at the paise (a currency has two decimals — that is not rounding). */
+export function formatBillRs(n: number): string {
+  return `₹${n.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 }
+
+/** The ONE mapping from what the route learned to the value object it emits (R3-6):
+ *  OON / delayed-SSI → na · batch fault (`ok:false`) → unknown · no readmit encounter id
+ *  (nothing could be looked up) → unknown · id absent from the totals → not_finalised ·
+ *  present → billed with the computed sum. Pure; both routes call it. */
+export function returnBillFor(input: {
+  findingClass: FindingClass;
+  readmitEncounterId: string | null;
+  ok: boolean;
+  total: { netRs: number; lines: number } | null | undefined;
+}): ReturnBill {
+  if (input.findingClass === 'out_of_network' || input.findingClass === DELAYED_SSI_CLASS) return { state: 'na', netRs: null, lines: null };
+  if (!input.ok || !input.readmitEncounterId) return { state: 'unknown', netRs: null, lines: null };
+  const t = input.total;
+  if (!t || !Number.isFinite(t.netRs)) return { state: 'not_finalised', netRs: null, lines: null };
+  return { state: 'billed', netRs: t.netRs, lines: t.lines };
+}
+
+/** The `Return stay bill` cell (R3-6): `n/a` on OON / delayed-SSI · billed → the rupee figure ·
+ *  not_finalised → `bill not finalised` · anything else (unknown, na-by-state, no object at
+ *  all) → the R1 `unknown — not yet measured`. */
+export function returnStayBill(row: Pick<SurfaceFinding, 'findingClass' | 'returnBill'>): string {
+  if (row.findingClass === 'out_of_network' || isDelayedSsi(row)) return 'n/a';
+  const b = row.returnBill;
+  if (b?.state === 'billed' && typeof b.netRs === 'number' && Number.isFinite(b.netRs)) return formatBillRs(b.netRs);
+  if (b?.state === 'not_finalised') return 'bill not finalised';
+  return 'unknown — not yet measured';
+}
+
+/** The small line under a BILLED cell only (§3.3); undefined otherwise. */
+export const BILL_CELL_SUB = 'hospital bill · net of refunds · fresh at load';
+export function returnStayBillSub(row: Pick<SurfaceFinding, 'findingClass' | 'returnBill'>): string | undefined {
+  if (row.findingClass === 'out_of_network' || isDelayedSsi(row)) return undefined;
+  return row.returnBill?.state === 'billed' && typeof row.returnBill.netRs === 'number' ? BILL_CELL_SUB : undefined;
+}
+
+/** The board's quiet notice when the batch bill fetch faulted (§3.3, `billsResolved === false`). */
+export const BILLS_UNAVAILABLE_NOTICE = 'Bill amounts are unavailable right now — cells show unknown';
 
 /** Small permanent text under the negligence cell. */
 export const NEGLIGENCE_ADVISORY = 'advisory — not a court or council finding';

@@ -8,7 +8,7 @@
  * passed IN by the route that joined them; this file only shapes.
  */
 import type { SurfaceRow } from './store';
-import type { FindingBlob, IndexCaseSummary, SurfaceFinding } from '../readmission-surface-core';
+import type { FindingBlob, IndexCaseSummary, ReturnBill, SurfaceFinding } from '../readmission-surface-core';
 import { toFindingClass } from '../readmission-surface-core';
 import type { ExtractedCase } from '../doc-audit-core';
 
@@ -50,7 +50,10 @@ export function toIndexCaseSummary(e: ExtractedCase | null | undefined): IndexCa
   };
 }
 
-export function toFinding(r: SurfaceRow, id: Identity | undefined, indexCase: IndexCaseSummary | null = null): SurfaceFinding {
+/** `returnBill` (R3-5): the value object the route computed from `r.readmit_encounter_id` —
+ *  the id itself is NOT on SurfaceFinding and stays off the client. Null = the caller did not
+ *  look (renders exactly like state 'unknown'). */
+export function toFinding(r: SurfaceRow, id: Identity | undefined, indexCase: IndexCaseSummary | null = null, returnBill: ReturnBill | null = null): SurfaceFinding {
   const blob = asJson<FindingBlob>(r.finding);
   return {
     dedupKey: String(r.dedup_key),
@@ -88,5 +91,7 @@ export function toFinding(r: SurfaceRow, id: Identity | undefined, indexCase: In
     negligence: s(r.negligence),
     judgementRuleVersion: s(r.judgement_rule_version),
     indexCase,
+    // R3 — the return-stay bill value object (fresh per read; never the encounter id).
+    returnBill,
   };
 }

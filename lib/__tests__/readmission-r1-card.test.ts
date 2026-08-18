@@ -94,14 +94,20 @@ const states = (row: SurfaceFinding) => Object.fromEntries(coverageChips(row).ma
 
 // REWRITTEN for R2 (READMISSIONS-R2 PRD v1.0 §3.9): OT / PAC / Progress are no longer
 // pinned to `unknown` — they read the five-state templateCoverage; a row with NO coverage
-// (never looked: R1-era or tier-3) still reads `unknown`. Bill stays `unknown` (constraint 22).
-test('eight chips in order; OT / PAC / Progress read templateCoverage (five states) and are unknown when never looked; Bill never present', () => {
+// (never looked: R1-era or tier-3) still reads `unknown`.
+// REWRITTEN for R3 (READMISSIONS-R3 PRD v1.0, R3-7 — constraint 22 fulfilled): Bill reads the
+// route's `returnBill` value object — present when billed, absent (`Bill pending`) when looked
+// and no rows, unknown on a fault or when no object was carried; template work never moves it.
+test('eight chips in order; OT / PAC / Progress read templateCoverage (five states) and are unknown when never looked; Bill reads returnBill and is unknown without one', () => {
   const chips = coverageChips(f());
   assert.deepEqual(chips.map((c) => c.label), ['Index DS', 'Readmit DS', 'Labs', 'OT', 'PAC', 'Progress', 'POST_IPD', 'Bill']);
   const never = states(f());
   assert.equal(never.ot, 'unknown'); assert.equal(never.pac, 'unknown'); assert.equal(never.progress, 'unknown'); assert.equal(never.bill, 'unknown');
   const looked = states(f({ finding: { templateCoverage: { ot: { status: 'present', count: 1 }, pac: { status: 'absent', count: 0 }, progress: { status: 'empty', count: 3 } } } }));
-  assert.equal(looked.ot, 'present'); assert.equal(looked.pac, 'absent'); assert.equal(looked.progress, 'empty'); assert.equal(looked.bill, 'unknown');
+  assert.equal(looked.ot, 'present'); assert.equal(looked.pac, 'absent'); assert.equal(looked.progress, 'empty'); assert.equal(looked.bill, 'unknown');   // template coverage never moves Bill
+  assert.equal(states(f({ returnBill: { state: 'billed', netRs: 51968, lines: 40 } })).bill, 'present');
+  assert.equal(states(f({ returnBill: { state: 'not_finalised', netRs: null, lines: null } })).bill, 'absent');
+  assert.equal(states(f({ returnBill: { state: 'unknown', netRs: null, lines: null } })).bill, 'unknown');
   const faulted = states(f({ finding: { templateCoverage: { ot: { status: 'fetch_failed', count: 0 }, pac: { status: 'fetch_failed', count: 0 }, progress: { status: 'fetch_failed', count: 0 } } } }));
   assert.equal(faulted.ot, 'unknown'); assert.equal(faulted.pac, 'unknown'); assert.equal(faulted.progress, 'unknown');   // a fault is never absent
 });
@@ -118,13 +124,15 @@ test('POST_IPD is a fact about holding a form: present on a LEAD pair with cmNot
 test('Index DS / Readmit DS / Labs read the provenance; OON makes Readmit DS and Bill n/a; a join-down row is unknown, never a crash', () => {
   const prov = { labSourceProvenance: { indexCase: 'store', readmitCase: 'fresh_extract', structuredLabCount: 4, indexDocumentId: 'D1', readmitDocumentId: 'D2' } };
   const s1 = states(f({ finding: prov }));
-  assert.equal(s1.index_ds, 'present'); assert.equal(s1.readmit_ds, 'present'); assert.equal(s1.labs, 'present'); assert.equal(s1.bill, 'unknown');
+  assert.equal(s1.index_ds, 'present'); assert.equal(s1.readmit_ds, 'present'); assert.equal(s1.labs, 'present'); assert.equal(s1.bill, 'unknown');   // provenance never moves Bill (R3: returnBill does)
   // Index DS present from the extract join even when the provenance says nothing.
   assert.equal(states(f({ finding: null, indexCase: { diagnosis: 'x', indication: null, procedure: null, age: null, sex: null } })).index_ds, 'present');
   const s2 = states(f({ finding: { labSourceProvenance: { indexCase: null, readmitCase: null, structuredLabCount: 0 } }, indexCase: null }));
   assert.equal(s2.index_ds, 'unknown'); assert.equal(s2.readmit_ds, 'unknown'); assert.equal(s2.labs, 'unknown');
   const oon = states(f({ findingClass: 'out_of_network', finding: null, indexCase: null }));
   assert.equal(oon.readmit_ds, 'n/a'); assert.equal(oon.bill, 'n/a'); assert.equal(oon.index_ds, 'unknown');
+  // R3: OON stays n/a even when a value object is carried
+  assert.equal(states(f({ findingClass: 'out_of_network', returnBill: { state: 'billed', netRs: 1, lines: 1 } })).bill, 'n/a');
   // Provenance of an odd shape narrows to unknown.
   assert.equal(states(f({ finding: { labSourceProvenance: { structuredLabCount: 'four' as unknown as number } } })).labs, 'unknown');
 });
@@ -146,8 +154,14 @@ test('medical justification is the verbatim §4 display mapping; null on an audi
   assert.equal(judgementLabel('not_suggested'), 'Not suggested');
   assert.equal(judgementLabel(null), 'Unknown');
   assert.equal(judgementLabel('anything-else'), 'Unknown');
+  // R3 (R3-6): the cell reads the returnBill value object — no object / unknown → the R1
+  // unknown; not_finalised → `bill not finalised`; billed → the computed figure; OON → n/a always.
   assert.equal(returnStayBill({ findingClass: 'even_even' }), 'unknown — not yet measured');
+  assert.equal(returnStayBill({ findingClass: 'even_even', returnBill: { state: 'unknown', netRs: null, lines: null } }), 'unknown — not yet measured');
+  assert.equal(returnStayBill({ findingClass: 'even_even', returnBill: { state: 'not_finalised', netRs: null, lines: null } }), 'bill not finalised');
+  assert.equal(returnStayBill({ findingClass: 'even_even', returnBill: { state: 'billed', netRs: 51968, lines: 40 } }), '₹51,968');
   assert.equal(returnStayBill({ findingClass: 'out_of_network' }), 'n/a');
+  assert.equal(returnStayBill({ findingClass: 'out_of_network', returnBill: { state: 'billed', netRs: 51968, lines: 40 } }), 'n/a');
   assert.equal(NEGLIGENCE_ADVISORY, 'advisory — not a court or council finding');
 });
 

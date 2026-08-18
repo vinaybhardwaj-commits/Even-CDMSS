@@ -193,14 +193,18 @@ test('chip mapping: present / empty / absent map through; fetch_failed and a pre
   assert.equal(pre.ot, 'unknown'); assert.equal(pre.pac, 'unknown'); assert.equal(pre.progress, 'unknown');
   assert.equal(templateChipState({ status: 'weird' }), 'unknown');
   assert.equal(templateChipState(undefined), 'unknown');
-  // Bill does not move on template work (constraint 22).
+  // Bill does not move on template work (constraint 22) — R3 drives it from returnBill instead.
   assert.equal(s1.bill, 'unknown');
+  assert.equal(st(sf({ finding: s1 as never, returnBill: { state: 'billed', netRs: 51968, lines: 40 } })).bill, 'present');
   // Copy per state.
   assert.equal(chipText({ label: 'OT', state: 'empty' }), 'OT empty');
   assert.equal(chipText({ label: 'OT', state: 'absent' }), 'OT none');
   assert.equal(chipText({ label: 'OT', state: 'unknown' }), 'OT');
   assert.equal(chipText({ label: 'OT', state: 'present' }), 'OT');
   assert.equal(chipText({ label: 'Bill', state: 'n/a' }), 'Bill n/a');
+  // R3 §3.3: the ONE documented divergence — the Bill chip's `absent` reads "Bill pending", not "Bill none".
+  assert.equal(chipText({ key: 'bill', label: 'Bill', state: 'absent' }), 'Bill pending');
+  assert.equal(chipText({ key: 'pac', label: 'PAC', state: 'absent' }), 'PAC none');
 });
 
 test('delayed-SSI layout guards (constraints 6-11; NO producer in R2): situation line exclusive, chips n/a, justification n/a, bill n/a, brief sentence', () => {
@@ -213,13 +217,19 @@ test('delayed-SSI layout guards (constraints 6-11; NO producer in R2): situation
   assert.equal(s.ot, 'unknown');   // source-4 rules still apply to the rest
   assert.equal(justificationCell(d), 'n/a');
   assert.equal(returnStayBill(d), 'n/a');
+  // R3: the class guard wins over any returnBill object — chip, cell and brief stay n/a.
+  const dBilled = { ...d, returnBill: { state: 'billed' as const, netRs: 51968, lines: 40 } };
+  assert.equal(st(dBilled).bill, 'n/a');
+  assert.equal(returnStayBill(dBilled), 'n/a');
+  assert.match(composeBrief({ row: dBilled, indexExtract: null, readmitExtract: null }).markdown, /Return stay bill: n\/a/);
   const b = composeBrief({ row: d, indexExtract: null, readmitExtract: null });
   assert.match(b.markdown, new RegExp(BILL_SENTENCE_NO_SECOND_STAY.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match(b.markdown, /Situation · Delayed SSI/);
   assert.doesNotMatch(b.markdown, /Unplanned same-condition return after/);   // candidate pattern is the IP–IP line only
   assert.match(b.markdown, /Return stay bill: n\/a/);
-  // Even–Even and OON are untouched by the guard.
+  // Even–Even and OON are untouched by the guard (R3: Even–Even without a returnBill object still reads the R1 unknown).
   assert.equal(justificationCell(sf()), 'Needs adjudication');
   assert.equal(returnStayBill(sf()), 'unknown — not yet measured');
+  assert.equal(returnStayBill(sf({ returnBill: { state: 'billed', netRs: 51968, lines: 40 } })), '₹51,968');
   assert.equal(st(sf({ findingClass: 'out_of_network' })).readmit_ds, 'n/a');
 });

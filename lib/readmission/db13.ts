@@ -623,3 +623,140 @@ export async function fetchPacNotes(encounterId: string, uhid: string | null, wi
   const faulted = settled.some((r) => r.status === 'rejected');
   return { outcome: faulted ? 'fetch_failed' : 'ok', rows };
 }
+
+// ── R3 — the return-stay HOSPITAL BILL (CDMSS-READMISSIONS-R3-PRD v1.0 §3.1) ──────────
+//
+// VALIDATED (MEASURED live on db13 via Metabase, 18 Aug 2026 — CDMSS-R3-BILL-MEASUREMENT-
+// 18-AUG-2026.md): kx_billing_records.visit_id_admission_id = kx_*.encounter_id, zero
+// orphaned IP rows; 98.6% of last-90-day discharges carry a bill; refund lines carry a
+// NEGATIVE net_amt so plain SUM(net_amt) is already net of refunds (R3-4 — no status
+// filter). `service_type` is the service category; `billing_category` is the BED CLASS and
+// is deliberately not read here. The four insurer/claim tables (kx_claim_bills,
+// dpipe_services, medical_ipd_claims, ipd_claims_v1) are ruled out by evidence (R3-10).
+//
+// PHI (R3-9, hard rule): kx_billing_records carries patient name / contact columns. The
+// SELECT lists below name ONLY visit_id_admission_id, net_amt, amount, discount_amt,
+// service_type, status — a source-read test pins it. Nothing else may ever be added.
+//
+// FAIL-SAFE (R3-6): the caller must tell "fault" from "no bill rows" — an empty Map alone
+// cannot — so both readers return { ok }. ok:false = the query faulted → every card reads
+// `unknown`; ok:true + id absent from the Map = looked, no rows → `bill not finalised`.
+// Never a throw into a route, never ₹0 for a null. Fresh per read (R3-2): no store write.
+//
+//   fetchStayBillTotals (batched, VALIDATED):
+//     SELECT visit_id_admission_id, SUM(net_amt) AS net, COUNT(*)::int AS lines
+//       FROM kx_billing_records
+//      WHERE visit_id_admission_id IN ('<id1>', '<id2>', …)
+//      GROUP BY 1
+//   fetchStayBillBreakdown (single stay, VALIDATED):
+//     SELECT service_type, SUM(net_amt) AS net, COUNT(*)::int AS lines
+//       FROM kx_billing_records
+//      WHERE visit_id_admission_id = '<id>'
+//      GROUP BY 1
+//      ORDER BY 2 DESC NULLS LAST
+
+/** IN-list cap — mirrors store.ts SURFACE_LIMIT (500, not exported; the store's read paths
+ *  are untouched by R3, PRD §4). The list route never hands more rows than that. */
+export const BILL_IDS_CAP = 500;
+
+/** A query runner with metabaseQuery's signature — injectable so the fault path is
+ *  unit-tested without a live db13. Production callers never pass it. */
+export type Db13Runner = (sql: string) => Promise<Record<string, unknown>[]>;
+
+export interface StayBillTotal { netRs: number; lines: number }
+export interface StayBillTotalsResult { ok: boolean; totals: Map<string, StayBillTotal> }
+export interface StayBillGroup { serviceType: string; netRs: number; lines: number }
+export interface StayBillBreakdown { ok: boolean; groups: StayBillGroup[]; totalRs: number; lines: number }
+
+/** PURE — the IN-list discipline (route.ts:70-76 pattern): dedup, drop anything that is not
+ *  an encounter-id shape, cap. Exported so the test pins it. */
+export function billIdList(encounterIds: ReadonlyArray<string | null | undefined>): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of encounterIds) {
+    if (typeof raw !== 'string' || !isEncounterId(raw) || seen.has(raw)) continue;
+    seen.add(raw);
+    out.push(raw);
+    if (out.length >= BILL_IDS_CAP) break;
+  }
+  return out;
+}
+
+/** PURE — the batched totals SQL, or null when there is nothing to ask (no query is run). */
+export function stayBillTotalsSql(ids: readonly string[]): string | null {
+  if (!ids.length) return null;
+  return `SELECT visit_id_admission_id, SUM(net_amt) AS net, COUNT(*)::int AS lines
+       FROM kx_billing_records
+      WHERE visit_id_admission_id IN (${ids.map((i) => `'${esc(i)}'`).join(', ')})
+      GROUP BY 1`;
+}
+
+/** PURE — the single-stay breakdown SQL, or null for an invalid id. */
+export function stayBillBreakdownSql(encounterId: string): string | null {
+  if (!isEncounterId(encounterId)) return null;
+  return `SELECT service_type, SUM(net_amt) AS net, COUNT(*)::int AS lines
+       FROM kx_billing_records
+      WHERE visit_id_admission_id = '${esc(encounterId)}'
+      GROUP BY 1
+      ORDER BY 2 DESC NULLS LAST`;
+}
+
+const money = (v: unknown): number | null => {
+  const n = typeof v === 'number' ? v : v == null || v === '' ? NaN : Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+const count = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0; };
+/** Sums arrive exact to the paise from Postgres; a JS re-sum can carry float noise
+ *  (0.1 + 0.2). Snap to paise — a currency has two decimals; this is not a rounding rule. */
+const paise = (n: number): number => Math.round(n * 100) / 100;
+
+/**
+ * Batched net bill per stay (the list route). Empty input → { ok: true, empty Map } with NO
+ * query. Fault → { ok: false, empty Map }. Rows whose id / sum are unusable are skipped.
+ */
+export async function fetchStayBillTotals(encounterIds: ReadonlyArray<string | null | undefined>, run: Db13Runner = metabaseQuery): Promise<StayBillTotalsResult> {
+  const totals = new Map<string, StayBillTotal>();
+  const sql = stayBillTotalsSql(billIdList(encounterIds));
+  if (!sql) return { ok: true, totals };
+  let rows: Record<string, unknown>[];
+  try {
+    rows = await run(sql);
+  } catch {
+    return { ok: false, totals };
+  }
+  for (const r of rows) {
+    const id = s(r.visit_id_admission_id);
+    const net = money(r.net);
+    if (!id || net == null || totals.has(id)) continue;
+    totals.set(id, { netRs: net, lines: count(r.lines) });
+  }
+  return { ok: true, totals };
+}
+
+/**
+ * One stay, grouped by service_type, net desc (the case route / brief Part 2). Invalid id →
+ * null (nothing to ask). Fault → { ok: false, groups: [], totalRs: 0, lines: 0 } — the
+ * caller reads `ok`, never the zero. ok:true with lines 0 = looked, no bill rows yet.
+ */
+export async function fetchStayBillBreakdown(encounterId: string, run: Db13Runner = metabaseQuery): Promise<StayBillBreakdown | null> {
+  const sql = stayBillBreakdownSql(encounterId);
+  if (!sql) return null;
+  let rows: Record<string, unknown>[];
+  try {
+    rows = await run(sql);
+  } catch {
+    return { ok: false, groups: [], totalRs: 0, lines: 0 };
+  }
+  const groups: StayBillGroup[] = [];
+  for (const r of rows) {
+    const net = money(r.net);
+    if (net == null) continue;
+    groups.push({ serviceType: s(r.service_type) ?? 'unclassified', netRs: net, lines: count(r.lines) });
+  }
+  return {
+    ok: true,
+    groups,
+    totalRs: paise(groups.reduce((a, g) => a + g.netRs, 0)),
+    lines: groups.reduce((a, g) => a + g.lines, 0),
+  };
+}
