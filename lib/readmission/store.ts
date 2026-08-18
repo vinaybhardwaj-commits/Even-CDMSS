@@ -612,3 +612,24 @@ export async function auditedRowForNarrative(dedupKey: string, engineVersion: st
     return null;
   }
 }
+
+// ── R4.1 (CDMSS-READMISSIONS-R4.1-PRD v1.0 R41-4) — the refresh detector's read ─────────────
+//
+// Every AUDITED finding at the engine (optionally on one audited_at UTC day), WITH its finding blob
+// (the stored templateCoverage + the refresh bookkeeping ride inside it). The pure detector decides
+// which are refresh-pending; nothing here writes. Fail-safe: [] on fault.
+export async function auditedRowsForRefresh(opts: { day?: string | null; limit?: number; engineVersion?: string } = {}): Promise<NarrativeRow[]> {
+  const engine = opts.engineVersion ?? READMIT_ENGINE_VERSION;
+  const limit = Math.max(1, Math.min(500, Math.floor(opts.limit ?? 500)));
+  const params: unknown[] = [engine];
+  let where = `engine_version = $1 AND audit_status = 'audited'`;
+  if (opts.day && /^\d{4}-\d{2}-\d{2}$/.test(opts.day)) { params.push(opts.day); where += ` AND (audited_at AT TIME ZONE 'UTC')::date = $${params.length}::date`; }
+  try {
+    return (await sql(
+      `SELECT ${NARRATIVE_ROW_COLS} FROM readmission_findings WHERE ${where} ORDER BY audited_at ASC LIMIT ${limit}`,
+      params,
+    )) as NarrativeRow[];
+  } catch {
+    return [];
+  }
+}

@@ -85,6 +85,8 @@ export interface ComposeArgs {
   narrativeSource: CaseNarrative['source'];
   /** The trace the leg logs under (the audit's own, or the backfill's). */
   traceId: string;
+  /** R4.1: the narrative leg's budget on the refresh path (default NARRATIVE_BUDGET_MS). */
+  budgetMs?: number;
   /** Test seams (production never passes them): the model call, the three-hop join, the store write. */
   call?: (prompt: { system: string; user: string }) => Promise<string>;
   join?: (args: { uhids: ReadonlyArray<string | null | undefined>; readmitAt: string | null }) => Promise<LvcJoin>;
@@ -108,13 +110,13 @@ export interface ComposeResult {
   provider: string | null;
 }
 
-async function opusCall(traceId: string, prompt: { system: string; user: string }): Promise<string> {
+async function opusCall(traceId: string, prompt: { system: string; user: string }, budgetMs: number = NARRATIVE_BUDGET_MS): Promise<string> {
   const r = await tracedChat(traceId, NARRATIVE_STAGE, {
     model: TEXT_MODEL,   // nominal — the bedrock target below outranks it and has no ladder
     messages: [{ role: 'system', content: prompt.system }, { role: 'user', content: prompt.user }],
     temperature: 0.2,
     max_tokens: 3500,
-  }, { bedrock: NARRATIVE_MODEL_ID, timeoutMs: NARRATIVE_BUDGET_MS, maxTries: NARRATIVE_MAX_TRIES });
+  }, { bedrock: NARRATIVE_MODEL_ID, timeoutMs: budgetMs, maxTries: NARRATIVE_MAX_TRIES });
   return String(r?.choices?.[0]?.message?.content ?? '');
 }
 
@@ -184,7 +186,7 @@ export async function composeCaseArtefacts(a: ComposeArgs): Promise<ComposeResul
   // 4. ONE call, ≤ 80 s, Opus 4.6 on Bedrock, no ladder
   let text: string;
   try {
-    text = await (a.call ? a.call(prompt) : opusCall(a.traceId, prompt));
+    text = await (a.call ? a.call(prompt) : opusCall(a.traceId, prompt, a.budgetMs ?? NARRATIVE_BUDGET_MS));
   } catch (e) {
     return { ok: false, reason: `narrative leg failed: ${String((e as Error).message).slice(0, 300)}`, ...zero, latencyMs: Date.now() - t0 };
   }

@@ -819,3 +819,56 @@ export async function fetchPriorPrescriptionDocs(individualUid: string, beforeTs
     return { ok: false, notes: [] };
   }
 }
+
+// ── R4.1 — the refresh delta detector's EXISTENCE COUNTS (CDMSS-READMISSIONS-R4.1-PRD R41-4) ────
+//
+// A cheap batched look: how many FINAL template rows exist NOW, per source, for a set of stay
+// encounter ids — compared by the pure detector (lib/readmission-refresh-core.ts refreshDelta)
+// against the stored templateCoverage. Primary hop only (encounter_id); the R2 fallback hops
+// (uhid + ipd_no; PAC uhid-window) are NOT re-walked here — a note reachable only through a
+// fallback is missed by the detector, i.e. the detector is CONSERVATIVE (fewer refreshes, never a
+// spurious one). Flagged in the R4.1 report.
+//
+// PHI: encounter_id and a count — nothing else. Fail-safe: any faulting table → { ok:false } and
+// the caller reports the detector as unavailable (no finding is marked pending from a fault).
+//
+//   SELECT encounter_id, count(*)::int AS n FROM kx_clinical_template_ot_notes
+//    WHERE encounter_id IN ('<e1>', '<e2>', …) AND status = 'final' GROUP BY 1
+//   SELECT encounter_id, count(*)::int AS n FROM kx_clinical_template_pac_reports
+//    WHERE encounter_id IN (…) AND status = 'final' GROUP BY 1
+//   SELECT encounter_id, count(*)::int AS n FROM kx_clinical_template_progress_reports
+//    WHERE encounter_id IN (…) AND status = 'final' GROUP BY 1
+
+export interface TemplateExistence { ok: boolean; byEncounter: Map<string, { ot: number; pac: number; progress: number }> }
+
+export function templateExistenceSql(table: string, ids: readonly string[]): string | null {
+  const list = Array.from(new Set(ids.filter(isEncounterId)));
+  if (!list.length) return null;
+  return `SELECT encounter_id, count(*)::int AS n FROM ${table}
+    WHERE encounter_id IN (${list.map((i) => `'${esc(i)}'`).join(', ')}) AND status = 'final'
+    GROUP BY 1`;
+}
+
+export async function fetchTemplateExistence(encounterIds: ReadonlyArray<string | null | undefined>, run: Db13Runner = metabaseQuery): Promise<TemplateExistence> {
+  const byEncounter = new Map<string, { ot: number; pac: number; progress: number }>();
+  const ids = Array.from(new Set(encounterIds.filter((i): i is string => typeof i === 'string' && isEncounterId(i)))).slice(0, BILL_IDS_CAP);
+  if (!ids.length) return { ok: true, byEncounter };
+  const tables: Array<[keyof typeof TEMPLATE_TABLE, 'ot' | 'pac' | 'progress']> = [['ot_note', 'ot'], ['pac_note', 'pac'], ['progress_note', 'progress']];
+  try {
+    const results = await Promise.all(tables.map(([src]) => run(templateExistenceSql(TEMPLATE_TABLE[src], ids) as string)));
+    results.forEach((rows, i) => {
+      const key = tables[i][1];
+      for (const r of rows) {
+        const id = s(r.encounter_id);
+        const n = Number(r.n);
+        if (!id || !Number.isFinite(n)) continue;
+        const cur = byEncounter.get(id) ?? { ot: 0, pac: 0, progress: 0 };
+        cur[key] = n;
+        byEncounter.set(id, cur);
+      }
+    });
+    return { ok: true, byEncounter };
+  } catch {
+    return { ok: false, byEncounter: new Map() };
+  }
+}

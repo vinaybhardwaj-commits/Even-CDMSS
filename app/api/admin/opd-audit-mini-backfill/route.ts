@@ -66,6 +66,7 @@ import {
   usageForTrace, servedCallForAudit,
 } from '@/lib/backfill-runs';
 import { narrativeTick } from '@/lib/readmission/narrative-backfill';
+import { refreshTick } from '@/lib/readmission/refresh';
 
 const WORKER = 'opd' as const;
 
@@ -198,7 +199,13 @@ async function autoTick(): Promise<Record<string, unknown>> {
     // same rails, its own run row, its own lock, never while an OPD run is active (serial by
     // design). vercel.json is untouched: this is how the narrative run gets its cron ticks.
     const readmission = await narrativeTick().catch((e) => ({ worker: 'readmission' as const, error: String((e as Error).message).slice(0, 300) }));
-    return { auto: true, idle: true, note: plan.reason, readmission };
+    // R4.1 (R41-7): and if the narrative worker had nothing to do either, the template-REFRESH
+    // worker's active run gets the tick (lib/readmission/refresh.ts) — serial by construction:
+    // OPD run > narrative run > refresh run, one worker per cron fire, one case per refresh tick.
+    const refresh = 'idle' in readmission && readmission.idle
+      ? await refreshTick().catch((e) => ({ worker: 'readmission_refresh' as const, error: String((e as Error).message).slice(0, 300) }))
+      : { worker: 'readmission_refresh' as const, skipped: 'narrative worker ticked this fire' };
+    return { auto: true, idle: true, note: plan.reason, readmission, refresh };
   }
   if (plan.action === 'skip') {
     await logTick({ status: plan.status === 'done' ? 'finished' : 'paused', note: plan.reason, run_id: run!.id });

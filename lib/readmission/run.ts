@@ -411,6 +411,87 @@ export function narrativeInlineEnabled(): boolean {
   return probeReachable('bedrock');
 }
 
+// ── R4.1: the recon sequence, transport-agnostic (CDMSS-READMISSIONS-R4.1-PRD v1.0 R41-4) ─────
+//
+// The leg SEQUENCE (which prompt, in which order, with which reconcile call) is one function; the
+// TRANSPORT that answers a leg is injected as `pass`. The Vertex worker injects vertexPass exactly
+// as before — its tracedChat options are byte-identical (a source-read test pins the literal) —
+// and the R4.1 refresh run injects an Opus-4.6-on-Bedrock pass for its cases only. The four
+// prompt builders are byte-identical (fingerprint-pinned): what changes per path is WHO answers,
+// never WHAT is asked or how the answer is reconciled and judged.
+
+/** One leg: label + prompt in, PassClaims (or null = unparseable / unavailable) out. */
+export type PassFn = (label: string, prompt: { system: string; user: string }) => Promise<PassClaims | null>;
+
+export interface ReconSequenceArgs {
+  row: PendingRow;
+  inputs: ThreeSourceInputs;
+  indexDischargeAt: string | null;
+  pass: PassFn;
+}
+
+/** The recon legs for one finding, verbatim the R2 sequence: OON → one pass; lane D → condition
+ *  pass, promoted to the full pair on 'same' (decision 14); full pair → recon A then recon B (§5
+ *  two-pass money verdict). Throws on an unparseable leg (the caller decides retry semantics). */
+export async function runReconSequence(a: ReconSequenceArgs): Promise<{ finding: ReadmissionFinding; promoted: boolean }> {
+  const { row, inputs, pass } = a;
+  const oon = row.finding_class === 'out_of_network';
+  const laneD = row.lane === 'other';
+  const gapDays = Number(row.gap_days ?? 0);
+  let finding: ReadmissionFinding | null = null;
+  let promoted = false;
+  if (oon) {
+    // Decision 13: index side only, no avoidable verdict on the other hospital.
+    const passA = await pass('readmit_oon',
+      buildOonPrompt(inputs.catalog, { reportedReadmitDate: row.readmit_admit_at, labProfile: inputs.labProfile }));
+    if (!passA) throw new Error('OON pass unparseable or model unavailable');
+    finding = reconcileFinding({
+      findingClass: 'out_of_network', catalog: inputs.catalog, labProfile: inputs.labProfile,
+      labTier: inputs.labTier, labSourceProvenance: inputs.labSourceProvenance, templateCoverage: inputs.templateCoverage ?? null,
+      indexDischargeAt: a.indexDischargeAt, passA, passB: null,
+      formFlags: { isPlanned: row.form_is_planned, sameCondition: row.form_same_condition },
+    });
+  } else {
+    let doFull = !laneD;
+    if (laneD) {
+      // Decision 9: lane D gets the condition pass only…
+      const cond = await pass('readmit_condition',
+        buildConditionPassPrompt(inputs.catalog, { gapDays }));
+      if (!cond) throw new Error('condition pass unparseable or model unavailable');
+      const condFinding = reconcileFinding({
+        findingClass: 'even_even', catalog: inputs.catalog, labProfile: inputs.labProfile,
+        labTier: inputs.labTier, labSourceProvenance: inputs.labSourceProvenance, templateCoverage: inputs.templateCoverage ?? null,
+        indexDischargeAt: a.indexDischargeAt, passA: cond, passB: null, conditionOnly: true,
+      });
+      // …decision 14: SAME condition auto-promotes to the full reconciliation.
+      if (condFinding.promoteToFull) { doFull = true; promoted = true; }
+      else finding = condFinding;
+    }
+    if (doFull) {
+      const facts = {
+        gapDays, lane: row.lane,
+        indexDepartment: row.index_department, readmitDepartment: row.readmit_department,
+        sameDoctor: !!row.index_doctor && !!row.readmit_doctor
+          && row.index_doctor.trim().toLowerCase() === row.readmit_doctor.trim().toLowerCase(),
+        labProfile: inputs.labProfile,
+      };
+      const passA = await pass('readmit_recon_a', buildFullReconPrompt(inputs.catalog, facts));
+      if (!passA) throw new Error('recon pass A unparseable or model unavailable');
+      // The money verdict is produced TWICE, with different prompts (§5 two-pass rule).
+      const passB = await pass('readmit_recon_b',
+        buildSecondAvoidablePrompt(inputs.catalog, { gapDays, labProfile: inputs.labProfile }));
+      if (!passB) throw new Error('recon pass B unparseable or model unavailable');
+      finding = reconcileFinding({
+        findingClass: 'even_even', catalog: inputs.catalog, labProfile: inputs.labProfile,
+        labTier: inputs.labTier, labSourceProvenance: inputs.labSourceProvenance, templateCoverage: inputs.templateCoverage ?? null,
+        indexDischargeAt: a.indexDischargeAt, passA, passB,
+      });
+    }
+  }
+  if (!finding) throw new Error('no finding assembled');
+  return { finding, promoted };
+}
+
 /**
  * Audit one pending finding. Never throws. Fail-safe: any model/parse failure
  * leaves the row 'detected' (the sweep retries); a structural gap (no summary)
@@ -428,9 +509,6 @@ export async function runReadmissionAudit(row: PendingRow): Promise<ReadmitAudit
       return { dedupKey: row.dedup_key, status: 'not_auditable', reason: assembled.notAuditable, latencyMs: Date.now() - t0 };
     }
     const { inputs } = assembled;
-    const oon = row.finding_class === 'out_of_network';
-    const laneD = row.lane === 'other';
-    const gapDays = Number(row.gap_days ?? 0);
 
     const traceId = await startTrace('readmit_audit', {
       dedupKey: row.dedup_key, lane: row.lane, findingClass: row.finding_class, engine: READMIT_ENGINE_VERSION,
@@ -439,54 +517,14 @@ export async function runReadmissionAudit(row: PendingRow): Promise<ReadmitAudit
     let finding: ReadmissionFinding | null = null;
     let promoted = false;
     try {
-      if (oon) {
-        // Decision 13: index side only, no avoidable verdict on the other hospital.
-        const passA = await vertexPass(traceId, 'readmit_oon', model,
-          buildOonPrompt(inputs.catalog, { reportedReadmitDate: row.readmit_admit_at, labProfile: inputs.labProfile }));
-        if (!passA) throw new Error('OON pass unparseable or model unavailable');
-        finding = reconcileFinding({
-          findingClass: 'out_of_network', catalog: inputs.catalog, labProfile: inputs.labProfile,
-          labTier: inputs.labTier, labSourceProvenance: inputs.labSourceProvenance, templateCoverage: inputs.templateCoverage ?? null,
-          indexDischargeAt: assembled.indexDischargeAt, passA, passB: null,
-          formFlags: { isPlanned: row.form_is_planned, sameCondition: row.form_same_condition },
-        });
-      } else {
-        let doFull = !laneD;
-        if (laneD) {
-          // Decision 9: lane D gets the condition pass only…
-          const cond = await vertexPass(traceId, 'readmit_condition', model,
-            buildConditionPassPrompt(inputs.catalog, { gapDays }));
-          if (!cond) throw new Error('condition pass unparseable or model unavailable');
-          const condFinding = reconcileFinding({
-            findingClass: 'even_even', catalog: inputs.catalog, labProfile: inputs.labProfile,
-            labTier: inputs.labTier, labSourceProvenance: inputs.labSourceProvenance, templateCoverage: inputs.templateCoverage ?? null,
-            indexDischargeAt: assembled.indexDischargeAt, passA: cond, passB: null, conditionOnly: true,
-          });
-          // …decision 14: SAME condition auto-promotes to the full reconciliation.
-          if (condFinding.promoteToFull) { doFull = true; promoted = true; }
-          else finding = condFinding;
-        }
-        if (doFull) {
-          const facts = {
-            gapDays, lane: row.lane,
-            indexDepartment: row.index_department, readmitDepartment: row.readmit_department,
-            sameDoctor: !!row.index_doctor && !!row.readmit_doctor
-              && row.index_doctor.trim().toLowerCase() === row.readmit_doctor.trim().toLowerCase(),
-            labProfile: inputs.labProfile,
-          };
-          const passA = await vertexPass(traceId, 'readmit_recon_a', model, buildFullReconPrompt(inputs.catalog, facts));
-          if (!passA) throw new Error('recon pass A unparseable or model unavailable');
-          // The money verdict is produced TWICE, with different prompts (§5 two-pass rule).
-          const passB = await vertexPass(traceId, 'readmit_recon_b', model,
-            buildSecondAvoidablePrompt(inputs.catalog, { gapDays, labProfile: inputs.labProfile }));
-          if (!passB) throw new Error('recon pass B unparseable or model unavailable');
-          finding = reconcileFinding({
-            findingClass: 'even_even', catalog: inputs.catalog, labProfile: inputs.labProfile,
-            labTier: inputs.labTier, labSourceProvenance: inputs.labSourceProvenance, templateCoverage: inputs.templateCoverage ?? null,
-            indexDischargeAt: assembled.indexDischargeAt, passA, passB,
-          });
-        }
-      }
+      // The recon sequence (R4.1: one function, transport injected). The Vertex worker's transport
+      // is vertexPass, byte-identical to R2 — see the source-read pin in readmission-r41 tests.
+      const seq = await runReconSequence({
+        row, inputs, indexDischargeAt: assembled.indexDischargeAt,
+        pass: (label, prompt) => vertexPass(traceId, label, model, prompt),
+      });
+      finding = seq.finding;
+      promoted = seq.promoted;
 
       if (!finding) throw new Error('no finding assembled');
       const served = await servedReadmitCall(traceId);

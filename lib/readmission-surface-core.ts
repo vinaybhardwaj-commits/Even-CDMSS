@@ -83,6 +83,10 @@ export interface SurfaceFinding {
    *  stored, and the encounter id itself stays off the client. Absent (pre-R3 caller /
    *  fixture) reads exactly like state 'unknown'. */
   returnBill?: ReturnBill | null;
+  /** R4.1 (R41-3): the case line — the first sentence of the VALID stored narrative, markers
+   *  stripped, capped (caseLine()). Derived at read time by the list route from the full
+   *  narrative BEFORE it strips the text from the card payload; null when no valid account. */
+  caseLine?: string | null;
 }
 
 /** R3-6 — the four states of the return-stay bill. `billed` = rows exist, netRs is the
@@ -738,4 +742,50 @@ export function narrativeStateCopy(n: FindingBlob['caseNarrative'] | undefined):
   if (!n) return { state: 'absent', copy: 'No account written for this case yet.' };
   if (n.valid === true && (n.text ?? '').trim() !== '') return { state: 'valid', copy: '' };
   return { state: 'invalid', copy: 'An account was written but withheld — one or more of its citations did not resolve to the evidence ledger. Flagged for human review.' };
+}
+
+// ── R4.1 (CDMSS-READMISSIONS-R4.1-PRD v1.0, R41-1 / R41-3) — the card speaks only when it has news ──
+
+/** One judgement EXCEPTION line on the card (R41-1). The permanent Preventable-injury and
+ *  Negligence cells are gone: a judgement appears only when it says something — `suspected` as a
+ *  red line (like the situation line), `not_suggested` as a quiet slate line; unknown / null /
+ *  pre-R1 renders NOTHING. The negligence line carries the advisory caveat, since its cell no
+ *  longer does. Medical justification and Return stay bill stay as cells (R41-2). */
+export interface JudgementLine { key: 'preventable_injury' | 'negligence'; text: string; tone: 'red' | 'slate'; caveat?: string }
+
+export function judgementExceptionLines(row: Pick<SurfaceFinding, 'auditStatus' | 'preventableInjury' | 'negligence'>): JudgementLine[] {
+  if (row.auditStatus !== 'audited') return [];
+  const out: JudgementLine[] = [];
+  const line = (key: JudgementLine['key'], label: string, v: string | null | undefined, caveat?: string): void => {
+    if (v === 'suspected') out.push({ key, text: `${label} · Suspected`, tone: 'red', ...(caveat ? { caveat } : {}) });
+    else if (v === 'not_suggested') out.push({ key, text: `${label} · Not suggested`, tone: 'slate', ...(caveat ? { caveat } : {}) });
+    // 'unknown', null, anything else: nothing — silence is the honest render of "not derived / no rule fired"
+  };
+  line('preventable_injury', 'Preventable injury', row.preventableInjury);
+  line('negligence', 'Negligence', row.negligence, NEGLIGENCE_ADVISORY);
+  return out;
+}
+
+/** R41-3 — THE CASE LINE: one sentence of the case's story, derived PURELY from the stored
+ *  narrative — its first sentence, citation markers stripped, capped at ~160 chars on a word
+ *  boundary with an ellipsis. Rendered only when a VALID narrative with text exists (the R4-4
+ *  rule: an invalid or absent account shows nothing). No model call, no storage change. */
+export const CASE_LINE_MAX = 160;
+const CASE_MARKER_RE = /\s*\[[A-Z]{1,4}\d{1,4}(?:\s*[,;/]\s*[A-Z]{1,4}\d{1,4})*\]/g;
+
+export function caseLine(narrative: { text?: string | null; valid?: boolean } | null | undefined, max: number = CASE_LINE_MAX): string | null {
+  if (!narrative || narrative.valid !== true) return null;
+  const raw = (narrative.text ?? '').replace(CASE_MARKER_RE, '').replace(/\s+/g, ' ').trim();
+  if (!raw) return null;
+  // First sentence: up to the first terminal punctuation followed by a space / end (a decimal
+  // "9.1 g/dL" or "day 3." inside prose is not a sentence end unless followed by whitespace+capital
+  // or the end of text).
+  const m = raw.match(/^[\s\S]*?[.!?](?=\s+[A-Z(\["]|\s*$)/);
+  let s = (m ? m[0] : raw).trim();
+  // tidy an orphan space before terminal punctuation left by a stripped marker: "day 3 ." → "day 3."
+  s = s.replace(/\s+([.!?,;:])/g, '$1');
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max - 1);
+  const atWord = cut.lastIndexOf(' ');
+  return `${(atWord > max * 0.5 ? cut.slice(0, atWord) : cut).replace(/[\s,;:.]+$/, '')}…`;
 }

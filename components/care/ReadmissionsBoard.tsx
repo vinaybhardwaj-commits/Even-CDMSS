@@ -5,10 +5,13 @@
  * 17 Aug 2026; supersedes the Phase-2 lane board). Renders what the readmission agent
  * already stored, one card per finding: identity (KX-first), the index→readmit path with
  * the extracted diagnosis / indication / procedure, a situation line when true, eight
- * artefact-coverage chips, the three advisory judgements + the `Return stay bill` cell (R3:
- * the return stay's hospital bill, computed fresh by the list route on every load — never
- * stored, never the encounter id), and ONE button that downloads a `.md` case brief built
- * client-side (R3: Part 2 carries both stays' bills by service type).
+ * artefact-coverage chips, the Medical-justification + `Return stay bill` cells (R3: the return
+ * stay's hospital bill, computed fresh by the list route on every load — never stored, never the
+ * encounter id), the two advisory judgements ONLY as exception lines when they say something
+ * (R4.1, R41-1: suspected red, not_suggested quiet, unknown silent; the negligence line carries
+ * the advisory caveat), the R4.1 case line under the path (the stored account's first sentence,
+ * R41-3), and ONE button that downloads a `.md` case brief built client-side (R3: Part 2 carries
+ * both stays' bills by service type).
  *
  * R4 (CDMSS-READMISSIONS-R4-PRD v1.0, R4-1): clicking anywhere on a card (except its button)
  * opens the case page /care/readmissions/case/[key] — the dedup key, already the card key.
@@ -29,8 +32,8 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { RotateCw, Download } from 'lucide-react';
 import {
-  BILLS_UNAVAILABLE_NOTICE, cardIdentityLine, caseHref, chipText, coverageChips, countsLine, isHeldOut, isReviewFinding, judgementLabel,
-  justificationCell, NEGLIGENCE_ADVISORY, pathSegments, returnStayBill, returnStayBillSub, situationLine,
+  BILLS_UNAVAILABLE_NOTICE, cardIdentityLine, caseHref, chipText, coverageChips, countsLine, isHeldOut, isReviewFinding,
+  judgementExceptionLines, justificationCell, pathSegments, returnStayBill, returnStayBillSub, situationLine,
   sortForCardList,
   type ChipState, type LaneGroup, type SurfaceFinding, type SurfaceTiles,
 } from '@/lib/readmission-surface-core';
@@ -156,6 +159,8 @@ function CaseCard({ f }: { f: SurfaceFinding }) {
             ))}
           </div>
           {situation && <div className="mt-1 text-[12px] font-medium text-red-700">{situation}</div>}
+          {/* R4.1 (R41-3) — the case line: the first sentence of the stored, code-validated account */}
+          {f.caseLine && <div className="mt-1 text-[12.5px] italic text-slate-700">{f.caseLine}</div>}
         </div>
       </div>
 
@@ -169,14 +174,19 @@ function CaseCard({ f }: { f: SurfaceFinding }) {
         ))}
       </div>
 
-      {/* Zone 4 — judgements + bill */}
+      {/* Zone 4 — R4.1 (R41-1/2): the two always-valued cells; judgements only as exception lines */}
       {audited ? (
-        <div className="mt-3 grid grid-cols-2 gap-2">
-          <Cell k="Medical justification" v={justificationCell(f)} />
-          <Cell k="Preventable injury" v={judgementLabel(f.preventableInjury)} />
-          <Cell k="Negligence" v={judgementLabel(f.negligence)} sub={NEGLIGENCE_ADVISORY} />
-          <Cell k="Return stay bill" v={returnStayBill(f)} sub={returnStayBillSub(f)} />
-        </div>
+        <>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <Cell k="Medical justification" v={justificationCell(f)} />
+            <Cell k="Return stay bill" v={returnStayBill(f)} sub={returnStayBillSub(f)} />
+          </div>
+          {judgementExceptionLines(f).map((l) => (
+            <div key={l.key} className={`mt-2 text-[12px] ${l.tone === 'red' ? 'font-medium text-red-700' : 'text-slate-500'}`}>
+              {l.text}{l.caveat && <span className="ml-1 text-[10.5px] italic text-slate-400">— {l.caveat}</span>}
+            </div>
+          ))}
+        </>
       ) : (
         // §3: one line. The qualifier names WHY for the two statuses the toggle reveals —
         // a held-out row will never be audited, by design, and saying only "not yet" would

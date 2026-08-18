@@ -303,7 +303,10 @@ test('run.ts: the inline leg is on by default (measured fit, R4-11), opt-out REA
   const idxSave = run.indexOf("status: 'audited', finding,");
   const idxNarr = run.indexOf('composeCaseArtefacts({');
   assert.ok(idxSave > 0 && idxNarr > idxSave, 'the narrative leg follows saveAuditResult');
-  assert.equal((run.match(/vertexPass\(traceId, 'readmit_/g) ?? []).length, 4, 'the four recon call sites are as before (oon, condition, recon_a, recon_b)');
+  // R4.1: the four recon call sites live in runReconSequence as `pass('readmit_…')`; the audit path
+  // injects vertexPass (its slice sha-pinned in readmission-r41-refresh.test.ts).
+  assert.equal((run.match(/await pass\('readmit_/g) ?? []).length, 4, 'the four recon call sites are as before (oon, condition, recon_a, recon_b)');
+  assert.match(run, /pass: \(label, prompt\) => vertexPass\(traceId, label, model, prompt\),/);
 });
 
 // ── the surface: why-flagged (code), href, page gates ────────────────────────────────────

@@ -77,7 +77,8 @@ export interface CaseNarrative {
   model: string;
   provider: string;
   traceId: string | null;
-  source: 'audit' | 'backfill';
+  /** 'refresh' (R4.1): rewritten by the template-refresh run after a re-analysis on Opus. */
+  source: 'audit' | 'backfill' | 'refresh';
   /** Addendum A1: on the REBUILT-ledger path, how many stored audit-time evidence ids (omission /
    *  exculpatory / weakest-step / refusal references) were dropped from the prompt input because
    *  the rebuilt ledger no longer carries them. 0 on the inline path (its ledger IS the audit's). */

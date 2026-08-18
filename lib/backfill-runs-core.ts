@@ -20,8 +20,14 @@
  *  The row, cursor march, accounting, stop-race rule and progress helpers are shared unchanged;
  *  what differs (Bedrock-only, Opus-only, n ≤ 2, the unit is a FINDING not a note) is enforced by
  *  lib/readmission/narrative-backfill.ts on top of planRunCreate. */
-export type BackfillWorker = 'opd' | 'ipd' | 'readmission';
-export const BACKFILL_WORKERS: readonly BackfillWorker[] = ['opd', 'ipd', 'readmission'] as const;
+/** 'readmission_refresh' (R4.1, CDMSS-READMISSIONS-R4.1-PRD v1.0 R41-4/R41-7, 18 Aug 2026): the
+ *  TEMPLATE-REFRESH run — re-analyzes audited findings whose stays now carry final OT / PAC /
+ *  progress rows on Opus 4.6 (Bedrock), one case per tick, in place. Same rails; the probe gate,
+ *  the exact Opus id and n = 1 are enforced by lib/readmission/refresh.ts. */
+export type BackfillWorker = 'opd' | 'ipd' | 'readmission' | 'readmission_refresh';
+export const BACKFILL_WORKERS: readonly BackfillWorker[] = ['opd', 'ipd', 'readmission', 'readmission_refresh'] as const;
+/** The workers whose runs may name Bedrock ONLY (R4-11 / R41-4). */
+export const BEDROCK_ONLY_WORKERS: readonly BackfillWorker[] = ['readmission', 'readmission_refresh'] as const;
 export type RunStatus = 'active' | 'paused' | 'done' | 'stopped' | 'error';
 
 /** One row of `backfill_runs`, as the runner reads it. Mirrors the PRD's DDL. */
@@ -139,8 +145,8 @@ export function planRunCreate(i: RunCreateInput): RunCreatePlan {
   // R4-8 / R4-11: the readmission-narrative run type is TYPED TO BEDROCK — a vertex run here would
   // write a narrative stamped with a model the ruling excludes. The exact Opus id is enforced by
   // the readmission tick module (this core stays free of that constant).
-  if (worker === 'readmission' && prefix !== 'bedrock:') {
-    return { ok: false, error: `worker 'readmission' accepts 'bedrock:<modelId>' only (R4-11: the narrative model is Opus 4.6 on Bedrock, everywhere it is written) — '${model}' refused, never substituted` };
+  if ((BEDROCK_ONLY_WORKERS as readonly string[]).includes(worker) && prefix !== 'bedrock:') {
+    return { ok: false, error: `worker '${worker}' accepts 'bedrock:<modelId>' only (R4-11 / R41-4: Opus 4.6 on Bedrock, everywhere it is written) — '${model}' refused, never substituted` };
   }
   if (!model.slice(prefix.length).trim()) return { ok: false, error: `model id missing after '${prefix}'` };
 

@@ -791,6 +791,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "readmission-refresh-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "readmission-surface-core",
     "plane": "unregistered"
   },
@@ -4346,6 +4350,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "readmission",
+    "to": "readmission-refresh-core",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
     "to": "readmission-surface-core",
     "kind": "type"
   },
@@ -4391,6 +4400,21 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "readmission-reconcile-core",
+    "to": "readmission-template-core",
+    "kind": "type"
+  },
+  {
+    "from": "readmission-refresh-core",
+    "to": "readmission-prompts",
+    "kind": "value"
+  },
+  {
+    "from": "readmission-refresh-core",
+    "to": "readmission-reconcile-core",
+    "kind": "type"
+  },
+  {
+    "from": "readmission-refresh-core",
     "to": "readmission-template-core",
     "kind": "type"
   },
