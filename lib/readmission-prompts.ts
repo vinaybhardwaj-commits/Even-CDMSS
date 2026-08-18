@@ -316,7 +316,8 @@ WRITE, as strict JSON with exactly these keys and nothing before or after it:
     { "key": "<a candidate key EXACTLY as listed>", "reason": "<one or two sentences: why this prior finding plausibly relates to THIS return>", "readmit_evidence_ids": ["<ledger id(s) on the readmission side that the link rests on>"] }
   ]
 }
-Rules for "related": include a candidate ONLY when the ledger shows a clinical thread from that prior finding to this return (same organ system, same drug class, a foreseeable consequence). If nothing relates, return []. Never invent a key. Never cite a ledger id that is not above.`,
+Rules for "related": include a candidate ONLY when the ledger shows a clinical thread from that prior finding to this return (same organ system, same drug class, a foreseeable consequence). If nothing relates, return []. Never invent a key. Never cite a ledger id that is not above.
+LANGUAGE (plain clinical English): write for a care manager reading a case, never for the system. Never use internal system vocabulary — no lane names (er_routed, tight_bounce, structural_30d, out_of_network, "the other lane"), no "even_even" or "findingClass", no tier names (tier1 / tier2 / tier3, "lab-backed", "summary-only"), no "detection lane", no "this case was flagged". Open with the CLINICAL story — who the patient is clinically, what was done, what happened next — not with the detection story; say "readmitted", "the return admission", "the first stay" in ordinary words.`,
   };
 }
 

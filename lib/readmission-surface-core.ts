@@ -773,19 +773,149 @@ export function judgementExceptionLines(row: Pick<SurfaceFinding, 'auditStatus' 
 export const CASE_LINE_MAX = 160;
 const CASE_MARKER_RE = /\s*\[[A-Z]{1,4}\d{1,4}(?:\s*[,;/]\s*[A-Z]{1,4}\d{1,4})*\]/g;
 
+/** R42-5 — DETECTION VOCABULARY: a sentence that opens the account with the flag rather than the
+ *  story. `this case was flagged`, `the detection lane`, the class token `even_even` (and
+ *  `out_of_network` as a token), the lane ids, and the phrase "…lane" as in "in the other lane". */
+const DETECTION_VOCAB_RE = /this case was flagged|the detection lane|\beven_even\b|\bout_of_network\b|\b(?:er_routed|tight_bounce|structural_30d)\b|\b(?:other|excluded|er[- ]routed|tight[- ]bounce|structural(?:[- ]30[- ]day)?)\s+lane\b|\blane\b/i;
+
+/** PURE: split de-markered prose into sentences on terminal punctuation followed by whitespace +
+ *  an opener (a decimal "9.1 g/dL" or "day 3." inside prose is not a sentence end). */
+export function narrativeSentences(raw: string): string[] {
+  const out: string[] = [];
+  let rest = raw.trim();
+  while (rest) {
+    const m = rest.match(/^[\s\S]*?[.!?](?=\s+[A-Z(\["]|\s*$)/);
+    const sent = (m ? m[0] : rest).trim();
+    if (sent) out.push(sent);
+    rest = rest.slice(m ? m[0].length : rest.length).trim();
+  }
+  return out;
+}
+
+export function opensWithDetectionVocabulary(sentence: string): boolean {
+  return DETECTION_VOCAB_RE.test(sentence);
+}
+
 export function caseLine(narrative: { text?: string | null; valid?: boolean } | null | undefined, max: number = CASE_LINE_MAX): string | null {
   if (!narrative || narrative.valid !== true) return null;
   const raw = (narrative.text ?? '').replace(CASE_MARKER_RE, '').replace(/\s+/g, ' ').trim();
   if (!raw) return null;
-  // First sentence: up to the first terminal punctuation followed by a space / end (a decimal
-  // "9.1 g/dL" or "day 3." inside prose is not a sentence end unless followed by whitespace+capital
-  // or the end of text).
-  const m = raw.match(/^[\s\S]*?[.!?](?=\s+[A-Z(\["]|\s*$)/);
-  let s = (m ? m[0] : raw).trim();
+  // R42-5: skip a flag-language opening — take the first following sentence that does not open
+  // with detection vocabulary; fall back to the first sentence when none qualifies.
+  const sentences = narrativeSentences(raw);
+  if (!sentences.length) return null;
+  const pick = opensWithDetectionVocabulary(sentences[0]) ? (sentences.slice(1).find((x) => !opensWithDetectionVocabulary(x)) ?? sentences[0]) : sentences[0];
   // tidy an orphan space before terminal punctuation left by a stripped marker: "day 3 ." → "day 3."
-  s = s.replace(/\s+([.!?,;:])/g, '$1');
+  const s = pick.replace(/\s+([.!?,;:])/g, '$1');
   if (s.length <= max) return s;
   const cut = s.slice(0, max - 1);
   const atWord = cut.lastIndexOf(' ');
   return `${(atWord > max * 0.5 ? cut.slice(0, atWord) : cut).replace(/[\s,;:.]+$/, '')}…`;
+}
+
+// ── R4.2 (CDMSS-READMISSIONS-R4.2-PRD v1.0, R42-1..R42-4) — the ledger in plain clinical English ──
+//
+// V's 18 Aug critique: `Index DS`? · `side: index` meaningless · `weight: interested` meaningless ·
+// dates missing everywhere. Every helper below maps an internal enum to words a reviewer reads,
+// falls back to the RAW string for anything unrecognised (never a crash, never a dash), and the
+// date helper never returns a dash — the item's own timestamp, else the stay fallback from the
+// finding row. The compact card chips keep their short ratified labels (not reopened here).
+
+/** R42-1 — source in words. Lab items are told apart by their id prefix (the stored ledger carries no
+ *  labProvenance): IX / RX are the tier-2 values transcribed in a discharge summary; L / LX / M are
+ *  structured results. Unknown source → the raw string. */
+export function ledgerSourceLabel(source: string | null | undefined, id?: string | null): string {
+  switch (source) {
+    case 'index_summary': return 'Discharge summary — first stay';
+    case 'readmit_summary': return 'Discharge summary — return stay';
+    case 'lab': return /^(IX|RX)\d/.test(id ?? '') ? 'Lab value from discharge summary' : 'Lab result';
+    case 'ot_note': return 'Operative note';
+    case 'pac_note': return 'Pre-anaesthesia check';
+    case 'progress_note': return 'Ward progress note';
+    case 'cm_form': return 'Care-manager follow-up form';
+    case 'adt': return 'Admission record';
+    default: return source == null || source === '' ? 'unknown source' : String(source);
+  }
+}
+
+/** R42-2 — side in words. Null / unknown → the raw string (or 'both stays' when null: an admission
+ *  record and a follow-up form belong to the case, not one stay). */
+export function ledgerSideLabel(side: string | null | undefined): string {
+  switch (side) {
+    case 'index': return 'first stay';
+    case 'readmit': return 'return stay';
+    default: return side == null || side === '' ? 'both stays' : String(side);
+  }
+}
+
+/** R42-3 — weight in words. */
+export function ledgerWeightLabel(weight: string | null | undefined): string {
+  switch (weight) {
+    case 'interested': return "treating team's own account";
+    case 'disinterested': return 'independent record';
+    case 'neither': return 'patient-reported account';
+    default: return weight == null || weight === '' ? 'unweighted' : String(weight);
+  }
+}
+
+/** R42-3 — the ONE legend line above the ledger. */
+export const LEDGER_LEGEND = "The audit weighs evidence by who wrote it: the treating team describing its own care is one account; labs and the other admission's team are independent of it.";
+
+/** "7 Apr 2026" in IST; null on anything unparseable. */
+function ledgerLongDate(iso: string | null | undefined): string | null {
+  const t = ts(iso);
+  if (!Number.isFinite(t)) return null;
+  const d = new Date(t + 5.5 * 3_600_000);
+  return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
+}
+
+/**
+ * R42-4 — DATES NEVER DASH. The item's own timestamp when it has one (labs, OT / PAC / progress,
+ * forms). Otherwise the stay fallback from the finding row: `first stay · discharged {date}` /
+ * `return stay · admitted {date}`. An item with no side (admission record, follow-up form) is
+ * placed by what it is: an admission-record line naming the readmit stay → return stay; a
+ * follow-up form is about the return → return stay; anything else → first stay. A missing stay
+ * date renders `date not recorded` — words, never a dash.
+ */
+export function ledgerDateLabel(
+  item: { at?: string | null; side?: string | null; source?: string | null; text?: string | null },
+  row: Pick<SurfaceFinding, 'indexDischargeAt' | 'readmitAdmitAt'>,
+): string {
+  const own = ledgerLongDate(item.at);
+  if (own) return own;
+  const t = (item.text ?? '').toLowerCase();
+  const returnSide = item.side === 'readmit'
+    || (item.side == null && (item.source === 'cm_form' || (item.source === 'adt' && /^(readmit stay|readmission reported)/.test(t))));
+  if (returnSide) {
+    const d = ledgerLongDate(row.readmitAdmitAt);
+    return d ? `return stay · admitted ${d}` : 'return stay · date not recorded';
+  }
+  const d = ledgerLongDate(row.indexDischargeAt);
+  return d ? `first stay · discharged ${d}` : 'first stay · date not recorded';
+}
+
+/** R42-7 — the artefact / chip KEYS in words for the brief's table (the card chips keep `Index DS`…). */
+export function artefactLabel(key: string): string {
+  switch (key) {
+    case 'index_ds': return 'Discharge summary — first stay';
+    case 'readmit_ds': return 'Discharge summary — return stay';
+    case 'labs': return 'Lab results';
+    case 'ot': return 'Operative notes';
+    case 'pac': return 'Pre-anaesthesia check';
+    case 'progress': return 'Ward progress notes';
+    case 'post_ipd': return 'Care-manager follow-up form';
+    case 'bill': return 'Hospital bill';
+    default: return key;
+  }
+}
+
+/** R42-7 — a chip state in a plain word for the brief's table (the card keeps chipText). */
+export function artefactStateWord(c: Pick<CoverageChip, 'key' | 'state'>): string {
+  switch (c.state) {
+    case 'present': return 'present';
+    case 'empty': return 'empty — rows exist, no usable text';
+    case 'absent': return c.key === 'bill' ? 'pending — bill not finalised' : 'none';
+    case 'unknown': return 'unknown — not looked for, or the look failed';
+    case 'n/a': return 'n/a';
+  }
 }

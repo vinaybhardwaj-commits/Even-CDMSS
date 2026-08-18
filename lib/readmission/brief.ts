@@ -19,7 +19,7 @@
  */
 import type { ExtractedCase } from '../doc-audit-core';
 import {
-  cardIdentityLine, chipText, coverageChips, formatBillRs, isDelayedSsi, judgementLabel, justificationLabel, laneMeta,
+  artefactLabel, artefactStateWord, cardIdentityLine, coverageChips, formatBillRs, isDelayedSsi, judgementLabel, justificationLabel, laneMeta,
   NEGLIGENCE_ADVISORY, returnStayBill, situationLine, type SurfaceFinding,
 } from '../readmission-surface-core';
 
@@ -154,10 +154,13 @@ function longDate(iso: string | null | undefined): string {
 const gapText = (g: number | null | undefined): string =>
   typeof g === 'number' && Number.isFinite(g) ? `${g < 10 ? g.toFixed(1) : Math.round(g)} days` : UNKNOWN;
 
+// R4.2 (CDMSS-READMISSIONS-R4.2-PRD v1.0 R42-7): the source tags speak the same plain clinical
+// English as the case page's ledger (R42-1). Ids on the card / ledger are unchanged; these are the
+// human-read tags at the end of every brief line.
 const T_ROW = '[finding row]';
-const T_INDEX = '[index DS, extracted]';
-const T_READMIT = '[readmit DS, extracted]';
-const T_FORM = '[POST_IPD form, patient-reported]';
+const T_INDEX = '[discharge summary — first stay]';
+const T_READMIT = '[discharge summary — return stay]';
+const T_FORM = '[care-manager follow-up form, patient-reported]';
 const T_AUDIT = '[audit finding]';
 /** R3-8: the ONE tag every rupee line carries. */
 export const T_BILL = '[hospital bill, db13]';
@@ -233,14 +236,14 @@ export function composeBrief(input: BriefInput): Brief {
     L.push(`- Reported readmit date: ${longDate(row.readmitAdmitAt)} ${T_FORM}`);
     L.push(`- Payer: ${u(row.payerReadmit)} ${T_ROW}`);
     L.push(row.cmNote
-      ? `- POST_IPD form held: ${withholdNumbers(row.cmNote)} ${T_FORM}`
-      : `- POST_IPD form: ${UNKNOWN} — no form text held ${T_ROW}`);
+      ? `- Care-manager follow-up form held: ${withholdNumbers(row.cmNote)} ${T_FORM}`
+      : `- Care-manager follow-up form: ${UNKNOWN} — no form text held ${T_ROW}`);
   } else {
     L.push(`- Department: ${u(row.readmitDepartment)} ${T_ROW}`);
     if (row.readmitDoctor) L.push(`- Treating doctor: ${row.readmitDoctor} ${T_ROW}`);
     L.push(`- Admit date: ${longDate(row.readmitAdmitAt)} ${T_ROW}`);
     L.push(`- Payer: ${u(row.payerReadmit)} ${T_ROW}`);
-    if (row.cmNote) L.push(`- POST_IPD form held: ${withholdNumbers(row.cmNote)} ${T_FORM}`);
+    if (row.cmNote) L.push(`- Care-manager follow-up form held: ${withholdNumbers(row.cmNote)} ${T_FORM}`);
     const rd = extractLines(input.readmitExtract, T_READMIT);
     if (rd.length) L.push(...rd);
   }
@@ -249,10 +252,10 @@ export function composeBrief(input: BriefInput): Brief {
   L.push('### Artefacts');
   L.push('| Artefact | State |');
   L.push('|---|---|');
-  // Addendum A2 (+ amendment): empty / absent print the ratified chip copy (`OT empty` /
-  // `OT none`); present / unknown print the words `present` / `unknown` — the card tells
-  // them apart by style, the brief has no style; `n/a` as-is. Brief only; the card is unchanged.
-  for (const c of coverageChips(row)) L.push(`| ${c.label} | ${c.state === 'empty' || c.state === 'absent' ? chipText(c) : c.state} |`);
+  // R4.2 (R42-7, supersedes the R2 Addendum A2 chip-copy rule FOR THE BRIEF ONLY): the artefact
+  // names and states in plain words — the card's compact chips keep their short ratified labels
+  // and copy (chipText). One vocabulary here and on the case page's ledger.
+  for (const c of coverageChips(row)) L.push(`| ${artefactLabel(c.key)} | ${artefactStateWord(c)} |`);
   L.push('');
 
   L.push('### Assessment');

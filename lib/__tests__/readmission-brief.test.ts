@@ -96,7 +96,7 @@ test('golden — the Even→Even brief structure is verbatim §7 (Part 1 · Part
   assert.match(b.markdown, /- Return stay bill — 38 line\(s\) \[hospital bill, db13\]/);
   assert.match(b.markdown, /\| Total \| ₹96,450 \| \[hospital bill, db13\] \|/);
   assert.match(b.markdown, /\| Refund \| ₹-2,500 \| \[hospital bill, db13\] \|/);   // refunds render as computed, negative
-  assert.match(b.markdown, /\| Bill \| present \|/);
+  assert.match(b.markdown, /\| Hospital bill \| present \|/);
   assert.match(b.markdown, /advisory — not a court or council finding/);
   assert.match(b.markdown, /## Part 1 — Intern presentation/);
   assert.match(b.markdown, /## Part 2 — Actuarial \/ low-value-care/);
@@ -118,7 +118,7 @@ test('golden — the Even→Even brief structure is verbatim §7 (Part 1 · Part
   assert.match(pre.markdown, /- Index stay bill: not available \[hospital bill, db13\]/);
   // Every extracted line is source-tagged.
   for (const l of b.markdown.split('\n').filter((x) => /^- (Diagnosis|Indication|Procedure|Course|Investigations|Treatments|Medications)/.test(x))) {
-    assert.match(l, /\[(index|readmit) DS, extracted\]$/, l);
+    assert.match(l, /\[discharge summary — (first|return) stay\]$/, l);
   }
 });
 
@@ -140,9 +140,9 @@ test('OON brief: the other-hospital bill sentence, the POST_IPD form line, no re
   assert.match(b.markdown, /- Index stay bill — 52 line\(s\) \[hospital bill, db13\]/);
   assert.doesNotMatch(b.markdown, /Return stay bill: not available|Return stay bill —/);
   assert.match(b.markdown, /- Department: out of network — no second IP stay at Even/);
-  assert.match(b.markdown, /- POST_IPD form held: Patient called on day 3/);
-  assert.match(b.markdown, /\| Readmit DS \| n\/a \|/);
-  assert.match(b.markdown, /\| Bill \| n\/a \|/);
+  assert.match(b.markdown, /- Care-manager follow-up form held: Patient called on day 3/);
+  assert.match(b.markdown, /\| Discharge summary — return stay \| n\/a \|/);
+  assert.match(b.markdown, /\| Hospital bill \| n\/a \|/);
   assert.match(b.markdown, /Return stay bill: n\/a/);
   assert.match(b.markdown, /Medical justification: Needs adjudication \(no avoidable verdict is made on the other hospital\)/);
   assert.match(b.markdown, /Diagnosis \/ indication \/ procedure: unknown — no index extract available/);

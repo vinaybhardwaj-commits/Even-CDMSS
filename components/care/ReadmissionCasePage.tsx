@@ -5,8 +5,8 @@
  * Top to bottom: the card header (identity KX-first, path, situation, chips) · WHY THIS CASE WAS
  * FLAGGED (assembled by code, no model) · THE AGENT'S ACCOUNT (the stored audit-time narrative,
  * rendered ONLY when code marked its citations valid; every marker is a link to its ledger row) ·
- * THE EVIDENCE LEDGER (every item the audit read: source, side, weight, date; plus looked-for-and-
- * not-found) · PRIOR FINDINGS RELATED TO THIS RETURN (relevance-filtered, the denominator on every
+ * THE EVIDENCE LEDGER (every item the audit read — R4.2: source / stay / written-by in plain words
+ * with a legend, and a date that never dashes; plus looked-for-and-not-found) · PRIOR FINDINGS RELATED TO THIS RETURN (relevance-filtered, the denominator on every
  * render) · THE MONEY (judgements + both bills, R3) · the download button · the R4.2 ask placeholder.
  *
  * READ-ONLY, RENDERS STORED ARTEFACTS ONLY (R4-2 / R4-9): two fetches — the case route (the pinned
@@ -21,6 +21,7 @@ import { Download, RotateCw } from 'lucide-react';
 import {
   cardIdentityLine, chipText, coverageChips, judgementLabel, justificationCell, NEGLIGENCE_ADVISORY,
   pathSegments, returnStayBill, returnStayBillSub, situationLine, formatBillRs, narrativeStateCopy,
+  ledgerSourceLabel, ledgerSideLabel, ledgerWeightLabel, ledgerDateLabel, LEDGER_LEGEND,
   type ChipState, type LaneGroup, type SurfaceFinding,
 } from '@/lib/readmission-surface-core';
 import { denominatorLine, relatedLvcCopy, segmentNarrative } from '@/lib/readmission-narrative-core';
@@ -58,10 +59,6 @@ const WEIGHT_TONE: Record<string, string> = {
   disinterested: 'text-emerald-800 bg-emerald-50 border-emerald-200',
   interested: 'text-amber-800 bg-amber-50 border-amber-200',
   neither: 'text-slate-600 bg-slate-50 border-slate-200',
-};
-const SOURCE_WORD: Record<string, string> = {
-  index_summary: 'Index DS', readmit_summary: 'Readmit DS', lab: 'Lab', adt: 'ADT', cm_form: 'POST_IPD form',
-  ot_note: 'OT note', pac_note: 'PAC', progress_note: 'Progress note',
 };
 const REVIEW_WORD: Record<string, string> = {
   unreviewed: 'unreviewed', true_positive: 'reviewed · true positive', nitpick: 'reviewed · nitpick', false: 'reviewed · false', contested: 'reviewed · contested',
@@ -244,17 +241,20 @@ export default function ReadmissionCasePage({ dedupKey }: { dedupKey: string }) 
                 <p className="mb-2 text-[11.5px] text-slate-500">
                   {ledger.length} item{ledger.length === 1 ? '' : 's'} the audit read · {data.evidenceLedger?.source === 'reassembled' ? 're-assembled by the backfill from db13' : 'the catalog the audit legs read'} · {data.evidenceLedger?.generatedAt}
                 </p>
+                {/* R42-3 — the legend: what the weight column means, in one line */}
+                <p className="mb-2 text-[11.5px] italic text-slate-600">{LEDGER_LEGEND}</p>
                 <div className="overflow-x-auto">
                   <table className="w-full text-[12px]">
-                    <thead><tr className="text-left text-[10.5px] uppercase tracking-wider text-slate-500"><th className="py-1 pr-2">id</th><th className="py-1 pr-2">source</th><th className="py-1 pr-2">side</th><th className="py-1 pr-2">weight</th><th className="py-1 pr-2">date</th><th className="py-1">text</th></tr></thead>
+                    <thead><tr className="text-left text-[10.5px] uppercase tracking-wider text-slate-500"><th className="py-1 pr-2">id</th><th className="py-1 pr-2">source</th><th className="py-1 pr-2">stay</th><th className="py-1 pr-2">written by</th><th className="py-1 pr-2">date</th><th className="py-1">text</th></tr></thead>
                     <tbody>
                       {ledger.map((it) => (
                         <tr key={it.id} id={`ev-${it.id}`} className={`border-t border-line align-top ${highlight === it.id ? 'bg-brand-faint' : ''}`}>
                           <td className="py-1 pr-2 font-mono text-[11px] text-slate-700">{it.id}</td>
-                          <td className="py-1 pr-2 whitespace-nowrap text-slate-700">{SOURCE_WORD[it.source] ?? it.source}</td>
-                          <td className="py-1 pr-2 text-slate-600">{it.side ?? '—'}</td>
-                          <td className="py-1 pr-2"><span className={`rounded border px-1 text-[10.5px] ${WEIGHT_TONE[it.weight] ?? WEIGHT_TONE.neither}`}>{it.weight}</span></td>
-                          <td className="py-1 pr-2 whitespace-nowrap text-slate-600">{it.at ? it.at.slice(0, 10) : '—'}</td>
+                          {/* R42-1/2/3/4 — words, never enums; a date always (item's own, else the stay fallback) */}
+                          <td className="py-1 pr-2 whitespace-nowrap text-slate-700">{ledgerSourceLabel(it.source, it.id)}</td>
+                          <td className="py-1 pr-2 whitespace-nowrap text-slate-600">{ledgerSideLabel(it.side)}</td>
+                          <td className="py-1 pr-2"><span className={`rounded border px-1 text-[10.5px] ${WEIGHT_TONE[it.weight] ?? WEIGHT_TONE.neither}`}>{ledgerWeightLabel(it.weight)}</span></td>
+                          <td className="py-1 pr-2 whitespace-nowrap text-slate-600">{ledgerDateLabel(it, row)}</td>
                           <td className="py-1 text-slate-800">{it.text}{it.abnormal === true && <span className="ml-1 rounded bg-red-50 px-1 text-[10px] text-red-700">abnormal</span>}</td>
                         </tr>
                       ))}

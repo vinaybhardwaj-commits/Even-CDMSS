@@ -263,12 +263,12 @@ test('composeBrief: Even–Even billed → both tables + the measured sentence +
   assert.match(even.markdown, /- Bill: Return stay bill: ₹1,32,340 — hospital bill, net of refunds\. \[hospital bill, db13\]/);
   assert.match(even.markdown, /- Index stay bill — 31 line\(s\) \[hospital bill, db13\]/);
   assert.match(even.markdown, /- Return stay bill — 31 line\(s\) \[hospital bill, db13\]/);
-  assert.match(even.markdown, /\| Bill \| present \|/);
+  assert.match(even.markdown, /\| Hospital bill \| present \|/);   // R4.2: artefact rows in words
   // every rupee line carries the tag
   for (const l of even.markdown.split('\n').filter((x) => /₹/.test(x) && !/^\| Service \|/.test(x))) assert.ok(/\[hospital bill, db13\]|\[finding row\]/.test(l), l);
   const notFin = composeBrief({ row: f({ returnBill: NOT_FIN }), indexExtract: null, readmitExtract: null, indexBill: bd(), readmitBill: bd({ groups: [], totalRs: 0, lines: 0 }) });
   assert.match(notFin.markdown, /- Return stay bill: bill not finalised \[finding row\]/);
-  assert.match(notFin.markdown, /\| Bill \| Bill pending \|/);
+  assert.match(notFin.markdown, /\| Hospital bill \| pending — bill not finalised \|/);   // R4.2 wording; the card chip still reads "Bill pending"
   // A1: Part 2 agrees with Part 1 — the not-finalised sentence, and NOT the R1 "not yet measured" one.
   assert.match(notFin.markdown, new RegExp(`- Bill: ${BILL_SENTENCE_NOT_FINALISED.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
   assert.doesNotMatch(notFin.markdown, new RegExp(BILL_SENTENCE_EVEN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
@@ -282,11 +282,11 @@ test('composeBrief: Even–Even billed → both tables + the measured sentence +
   assert.match(oon.markdown, new RegExp(BILL_SENTENCE_OON.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match(oon.markdown, /- Index stay bill — 31 line\(s\)/);
   assert.doesNotMatch(oon.markdown, /Return stay bill: not available|Return stay bill —/);
-  assert.match(oon.markdown, /\| Bill \| n\/a \|/);
+  assert.match(oon.markdown, /\| Hospital bill \| n\/a \|/);
   assert.match(oon.markdown, /Return stay bill: n\/a/);
   const ssi = composeBrief({ row: f({ findingClass: 'delayed_ssi', readmitDepartment: null, readmitAdmitAt: null, gapDays: null, returnBill: NA }), indexExtract: null, readmitExtract: null, indexBill: null, readmitBill: null });
   assert.match(ssi.markdown, new RegExp(BILL_SENTENCE_NO_SECOND_STAY.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.doesNotMatch(ssi.markdown, /Return stay bill: not available|Return stay bill —/);
-  assert.match(ssi.markdown, /\| Bill \| n\/a \|/);
+  assert.match(ssi.markdown, /\| Hospital bill \| n\/a \|/);
   assert.match(ssi.markdown, /Return stay bill: n\/a/);
 });
