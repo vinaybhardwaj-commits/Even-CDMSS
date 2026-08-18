@@ -28,6 +28,12 @@ import {
   isPriceableClass,
   type StampedRetrievalManifest, type ManifestBatch,
 } from '../retrieval-telemetry-core';
+import {
+  createTelemetryCapture, buildRetrievalPayload, servedClassOf, counterColumns,
+  type TransportEvidence, type CapturedBatch, type TelemetryCapture,
+} from '../retrieval-capture';
+import type { TransportAttempt } from '../transport-attribution-core';
+import type { RerankDeps, RerankCandidate, RerankResult } from '../rerank';
 
 const read = (p: string) => readFileSync(join(process.cwd(), p), 'utf8');
 const MIGRATION = 'migrations/0035_opd_audit_retrieval_telemetry.sql';
@@ -242,7 +248,10 @@ test('a missing secret THROWS, and a whitespace-only key counts as missing (D8, 
 // D15 / test 61 — the counters, and the bare `else` that merged three facts
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 
-test('every served class increments its OWN counter, and a null increments none', () => {
+test('35.1 — every served class increments its OWN counter, and a null increments none (D16 rows: provider success → that route counter; proven non-delivery → not_served; attribution gap → unattributed; a stage-level null → nothing)', () => {
+  // ⚠️ RETITLED IN PASS 3 (addendum v23 §7), NOT NEW. Written 11 August 2026 as the D16 counter
+  // coverage the build report recorded as "35 written and green"; only the title changed, so proof
+  // 35 is discoverable by number. The assertions are byte-identical to the committed ones.
   // This test exists because the committed helper attributed classes with a chain ending in a bare
   // `else` that incremented `unattributed`. Once `not_served` and a null class exist, three
   // different facts would have been reported as one, which §2 forbids.
@@ -492,4 +501,303 @@ test('the row contract and the manifest contract version independently (§4.3)',
   assert.equal(MANIFEST_SCHEMA_VERSION, 3, 'and manifest fields — bumped for the v7 §10 decode fields');
   assert.equal(HMAC_KEY_VERSION, 'k1', 'the key did not rotate');
   assert.ok(read(MIGRATION).includes('telemetry_schema_version INTEGER NOT NULL'));
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// PROOF 35 — every row of the D16 stage mapping table (pass 3, addendum v23 §4, §5, §7)
+//
+// GOVERNED BY addendum v23 (authorized by the orchestrator on V's explicit delegation, 18 August
+// 2026, under Saul review 34), which carries the two v11 §6 payload corrections and pins proof 35
+// AFTER them. Kickoff v11 §6 is the numbering authority: proof 35 reads "Every row of the D16 stage
+// mapping table, including `parse_failure` preserving provider, model, attempts and token usage,
+// and `failed_open` mapping to `unattributed` without proof."
+//
+// ⚠️ ROW 6 IS BUILT FROM THE TWO SIGNED AMENDMENTS, NOT FROM D16'S TEXT (v23 §5). D16 as the kickoff
+// writes it says a Cohere soft failure records `served_route_class 'not_served'`. Addendum v7 §6
+// ruled that a generic Cohere failure WITHOUT transport proof records `unattributed`, never an
+// inferred `not_served`, and addendum v8 §2 extended the identical rule to the judge arm. Where
+// transport proof exists, `not_served` stands. 35.8 asserts the amended row and would FAIL against
+// D16's original wording.
+//
+// WHAT THIS BLOCK DOES NOT CLAIM. It does not drive a real judge or Cohere request — every
+// `TransportEvidence` here is a literal, and the one `rerank` call injects a thrower for both
+// backends and a no-op health check, so no socket is opened. It does not test the counters' SQL
+// columns (that is `counterColumns` and the DDL, owned elsewhere). Fixture values are literals,
+// never derived from the constants under test.
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+/** A captured batch with literal boundaries and the evidence under test. */
+const capturedBatch = (index: number, evidence: TransportEvidence | null, over: Partial<CapturedBatch> = {}): CapturedBatch => ({
+  index, start: index * 4, end: index * 4 + 4, evidence,
+  outcome: 'success', expectedScoreKeys: 4, finiteScoreKeys: 4, missingScoreKeys: 0, nonnumericScoreKeys: 0,
+  intendedProvider: 'vertex', intendedModel: 'gemini-2.5-flash',
+  promptTokens: 120, completionTokens: 16, ...over,
+});
+
+/** The payload of a capture, keyed with a literal test key; the scorer context only on `primary`. */
+const payloadOf = (capture: TelemetryCapture) => buildRetrievalPayload(capture, {
+  hmacKey: 'proof-35-key', scorerContext: capture.role === 'primary' ? '' : null,
+});
+
+/** A primary capture that made ONE rerank batch with the given evidence, so a whole row is visible
+ *  through the payload — class, model, attempts and the counter columns together. */
+function oneBatchPayload(evidence: TransportEvidence | null, over: Partial<CapturedBatch> = {}) {
+  const capture = createTelemetryCapture('primary');
+  capture.servedBackend = 'judge';
+  capture.expectedBatchCount = 1;
+  capture.batches = [capturedBatch(0, evidence, over)];
+  const payload = payloadOf(capture);
+  return { payload, batch: payload.batches[0], counters: counterColumns(payload) };
+}
+
+test('35.2 — ROW 1, provider success: vertex → vertex, openrouter → openrouter, ollama → local; that route counter += 1, failed unchanged, served model and attempts PRESERVED', () => {
+  const cases: Array<{
+    provider: TransportAttempt['tier']; cls: ManifestBatch['served_route_class'];
+    column: 'rerank_vertex_batches' | 'rerank_openrouter_batches' | 'rerank_local_batches'; model: string;
+  }> = [
+    { provider: 'vertex', cls: 'vertex', column: 'rerank_vertex_batches', model: 'gemini-2.5-flash' },
+    { provider: 'openrouter', cls: 'openrouter', column: 'rerank_openrouter_batches', model: 'google/gemini-2.5-flash' },
+    { provider: 'ollama', cls: 'local', column: 'rerank_local_batches', model: 'qwen2.5:7b' },
+  ];
+  for (const c of cases) {
+    const evidence: TransportEvidence = {
+      servedProvider: c.provider, servedModel: c.model,
+      attempts: [{ tier: c.provider, attempt: 1, outcome: 'success', status: 200 }],
+      provenNotServed: false,
+    };
+    assert.equal(servedClassOf(evidence), c.cls, `${c.provider} maps to ${c.cls}`);
+    const { batch: b, counters } = oneBatchPayload(evidence);
+    assert.equal(b.served_route_class, c.cls);
+    assert.equal(b.served_model, c.model, 'the SERVED model is preserved on a success');
+    assert.deepEqual(b.attempts, [{ provider: c.provider, attempt: 1, outcome: 'success', status: 200 }], 'the attempt sequence is preserved, provider named');
+    assert.equal(counters[c.column], 1, `${c.column} += 1`);
+    assert.equal(counters.rerank_failed_batches, 0, 'failed unchanged on a success');
+    assert.equal(counters.rerank_not_served_batches, 0);
+    assert.equal(counters.rerank_unattributed_batches, 0);
+  }
+});
+
+test('35.3 — ROW 2, terminal failure PROVEN to have returned no completion: not_served += 1, failed += 1, served_route_class not_served, served_model null', () => {
+  const proven: TransportEvidence = {
+    servedProvider: null, servedModel: null,
+    attempts: [{ tier: 'vertex', attempt: 1, outcome: 'http_other', status: 503 }, { tier: 'openrouter', attempt: 1, outcome: 'transport_error', status: null }],
+    provenNotServed: true,
+  };
+  assert.equal(servedClassOf(proven), 'not_served');
+  const { batch: b, counters } = oneBatchPayload(proven, { outcome: 'terminal_failure', finiteScoreKeys: 0, missingScoreKeys: 4, promptTokens: null, completionTokens: null });
+  assert.equal(b.served_route_class, 'not_served');
+  assert.equal(b.served_model, null, 'a class that did not serve carries no model');
+  assert.equal(b.attempts?.length, 2, 'the ladder history that PROVES non-delivery is preserved');
+  assert.equal(counters.rerank_not_served_batches, 1, 'not_served += 1');
+  assert.equal(counters.rerank_failed_batches, 1, 'failed += 1');
+  assert.equal(counters.rerank_unattributed_batches, 0, 'a proven non-delivery is NOT an attribution gap');
+});
+
+test('35.4 — ROW 3, a completion may have arrived and attribution is unavailable: unattributed += 1 (rerank_unattributed_batches), failed FOLLOWS the batch outcome, served_route_class unattributed', () => {
+  // No evidence at all — the honest floor is `unattributed`, never null and never `not_served`.
+  assert.equal(servedClassOf(null), 'unattributed');
+  // Evidence WITHOUT proof and without a provider is the same fact.
+  assert.equal(servedClassOf({ servedProvider: null, servedModel: null, attempts: null, provenNotServed: false }), 'unattributed');
+  // failed follows the outcome: a success stays unfailed…
+  const ok = oneBatchPayload(null, { outcome: 'success' });
+  assert.equal(ok.batch.served_route_class, 'unattributed');
+  assert.equal(ok.batch.served_model, null, 'a requested model is never reported as served (§10)');
+  assert.equal(ok.counters.rerank_unattributed_batches, 1, 'unattributed += 1');
+  assert.equal(ok.counters.rerank_failed_batches, 0, 'failed follows the outcome — success is not failed');
+  // …and a parse failure is failed, still unattributed.
+  const bad = oneBatchPayload(null, { outcome: 'parse_failure', finiteScoreKeys: 0, missingScoreKeys: 4 });
+  assert.equal(bad.counters.rerank_unattributed_batches, 1);
+  assert.equal(bad.counters.rerank_failed_batches, 1, 'failed follows the outcome — a parse failure is failed');
+  assert.equal(bad.counters.rerank_not_served_batches, 0);
+});
+
+test('35.5 — ROW 4, timeout: the attempt records outcome timeout, the batch outcome is timeout, and the served class follows the PROOF rule — not_served with proof, unattributed without', () => {
+  const timeoutAttempt: TransportAttempt = { tier: 'vertex', attempt: 1, outcome: 'timeout', status: null };
+  const withProof: TransportEvidence = { servedProvider: null, servedModel: null, attempts: [timeoutAttempt], provenNotServed: true };
+  const withoutProof: TransportEvidence = { servedProvider: null, servedModel: null, attempts: [timeoutAttempt], provenNotServed: false };
+  const proven = oneBatchPayload(withProof, { outcome: 'timeout', finiteScoreKeys: 0, missingScoreKeys: 4, promptTokens: null, completionTokens: null });
+  assert.equal(proven.batch.outcome, 'timeout', 'the batch outcome is timeout, not terminal_failure (D15)');
+  assert.deepEqual(proven.batch.attempts, [{ provider: 'vertex', attempt: 1, outcome: 'timeout', status: null }], 'the attempt records outcome timeout');
+  assert.equal(proven.batch.served_route_class, 'not_served', 'with proof, not_served');
+  assert.equal(proven.counters.rerank_failed_batches, 1, 'a timeout is a failed batch');
+  const unproven = oneBatchPayload(withoutProof, { outcome: 'timeout', finiteScoreKeys: 0, missingScoreKeys: 4, promptTokens: null, completionTokens: null });
+  assert.equal(unproven.batch.outcome, 'timeout');
+  assert.equal(unproven.batch.served_route_class, 'unattributed', 'without proof, unattributed — a timeout is not proof of non-delivery');
+  assert.equal(unproven.counters.rerank_not_served_batches, 0);
+  assert.equal(unproven.counters.rerank_unattributed_batches, 1);
+});
+
+test('35.6 — ROW 5 and the v11 §6.1 CORRECTION: a SKIPPED expansion stage records served_route_class null (NOT not_served), no route counter, no not_served counter — and attempts: [] , never null', () => {
+  // ⚠️ THE 2.1 CORRECTION'S TEST (addendum v23 §3, kickoff row 1). Before pass 3 the skipped stage
+  // emitted `attempts: null`, the same value the transport uses for "did not collect a sequence".
+  // A stage that made NO request has an EMPTY list of attempts, and the payload now says so.
+  const skippedByDefault = createTelemetryCapture('normative_channel');   // no expansion set at all
+  const p1 = payloadOf(skippedByDefault);
+  assert.equal(p1.expansion.status, 'skipped');
+  assert.equal(p1.expansion.served_route_class, null, 'the explicit stage-level null (A6)');
+  assert.notEqual(p1.expansion.served_route_class, 'not_served', 'a skipped stage is NOT not_served');
+  assert.deepEqual(p1.expansion.attempts, [], 'attempts is the EMPTY ARRAY — corrected from null');
+  assert.notEqual(p1.expansion.attempts, null);
+  assert.equal(p1.expansion.served_model, null);
+  assert.equal(p1.expansion.input_hmac, null, 'nothing to key — structural, not a key failure');
+  // The same when the stage was explicitly recorded as skipped by a caller.
+  const explicitlySkipped = createTelemetryCapture('primary');
+  explicitlySkipped.expansion = { status: 'skipped', inputText: '', evidence: null };
+  const p2 = payloadOf(explicitlySkipped);
+  assert.equal(p2.expansion.served_route_class, null);
+  assert.deepEqual(p2.expansion.attempts, []);
+  // A skipped stage moves NO batch counter — there is no batch to move it.
+  const c = counterColumns(p2);
+  assert.deepEqual(c, {
+    rerank_vertex_batches: 0, rerank_openrouter_batches: 0, rerank_local_batches: 0,
+    rerank_failed_batches: 0, rerank_unattributed_batches: 0, rerank_not_served_batches: 0, rerank_429_attempts: 0,
+  });
+});
+
+test('35.7 — the v11 §6.1 CORRECTION at the other two sites: ABSENT evidence records attempts [] on a batch and on variant generation, while a transport that did NOT COLLECT (attempts: null on real evidence) keeps null', () => {
+  // A batch with NO evidence — no dispatch was recorded, so the list is empty, not "not collected".
+  const noEvidence = oneBatchPayload(null);
+  assert.deepEqual(noEvidence.batch.attempts, [], 'absent evidence → []');
+  // A batch whose evidence says the transport collected no sequence — that null is the transport's
+  // own statement (D17: "null permitted, meaning not collected") and is preserved.
+  const notCollected = oneBatchPayload({ servedProvider: 'vertex', servedModel: 'gemini-2.5-flash', attempts: null, provenNotServed: false });
+  assert.equal(notCollected.batch.attempts, null, 'not collected stays null — a different fact from []');
+  // Variant generation that ran with no evidence: [] as well.
+  const mq = createTelemetryCapture('lab_multi_query');
+  mq.variantGeneration = { status: 'failed_open', evidence: null, promptTokens: null, completionTokens: null, generatedCount: 0 };
+  assert.deepEqual(payloadOf(mq).multi_query?.variant_generation.attempts, [], 'variant generation with absent evidence → []');
+});
+
+test('35.8 — ROW 6 AS AMENDED (v7 §6, v8 §2): a Cohere soft failure without transport proof synthesises one terminal_failure record per planned boundary with served_route_class UNATTRIBUTED — not the not_served D16 wrote — rerank_soft_failed true, and not_served stands only where proof exists', async () => {
+  const { rerank } = await import('../rerank.ts');
+  const thrower = async <U extends RerankCandidate>(_q: string, _c: U[]): Promise<RerankResult<U>[]> => { throw new Error('generic, untyped'); };
+  const deps: RerankDeps = { checkHealthy: async () => undefined, cohereFn: thrower, judgeFn: thrower };
+  const candidates = [{ id: 1, text: 'a' }, { id: 2, text: 'b' }, { id: 3, text: 'c' }];
+  const backends: Array<'cohere' | 'judge'> = ['cohere', 'judge'];
+  for (const backend of backends) {
+    const capture = createTelemetryCapture('primary');
+    const out = await rerank('q', candidates, backend, deps, capture);
+    assert.ok(out.every((c) => c.rerank_backend === 'none'), `${backend}: soft-fell to input order`);
+    assert.equal(capture.rerankSoftFailed, true, `${backend}: rerank_soft_failed = true`);
+    assert.ok(capture.batches.length >= 1, `${backend}: one synthesised record per PLANNED boundary`);
+    assert.equal(capture.expectedBatchCount, capture.batches.length, `${backend}: expected equals recorded — reconciliation is never waived`);
+    const payload = payloadOf(capture);
+    for (const b of payload.batches) {
+      assert.equal(b.outcome, 'terminal_failure', `${backend}: each outcome terminal_failure`);
+      assert.equal(b.served_route_class, 'unattributed', `${backend}: v7 §6 / v8 §2 — no transport proof, so UNATTRIBUTED, never an inferred not_served`);
+      assert.equal(b.served_model, null);
+    }
+    const c = counterColumns(payload);
+    assert.equal(c.rerank_not_served_batches, 0, `${backend}: D16's "rerank_not_served_batches += that count" does NOT apply without proof`);
+    assert.equal(c.rerank_unattributed_batches, payload.batches.length, `${backend}: the count lands in unattributed instead`);
+    assert.equal(c.rerank_failed_batches, payload.batches.length);
+  }
+  // Where transport proof EXISTS, not_served stands — the amendment narrows only the unproven case.
+  assert.equal(servedClassOf({ servedProvider: null, servedModel: null, attempts: [{ tier: 'openrouter', attempt: 1, outcome: 'http_other', status: 502 }], provenNotServed: true }), 'not_served');
+});
+
+test('35.9 — ROW 7, intended local request: exactly one ollama attempt; local on success, not_served on PROVEN failure', () => {
+  const success: TransportEvidence = {
+    servedProvider: 'ollama', servedModel: 'qwen2.5:7b',
+    attempts: [{ tier: 'ollama', attempt: 1, outcome: 'success', status: 200 }], provenNotServed: false,
+  };
+  const provenFailure: TransportEvidence = {
+    servedProvider: null, servedModel: null,
+    attempts: [{ tier: 'ollama', attempt: 1, outcome: 'transport_error', status: null }], provenNotServed: true,
+  };
+  const s = oneBatchPayload(success);
+  assert.equal(s.batch.served_route_class, 'local');
+  assert.equal(s.batch.attempts?.length, 1, 'exactly ONE attempt');
+  assert.equal(s.batch.attempts?.[0].provider, 'ollama');
+  assert.equal(s.counters.rerank_local_batches, 1);
+  const f = oneBatchPayload(provenFailure, { outcome: 'terminal_failure', finiteScoreKeys: 0, missingScoreKeys: 4, promptTokens: null, completionTokens: null });
+  assert.equal(f.batch.served_route_class, 'not_served', 'proven local failure → not_served');
+  assert.equal(f.batch.attempts?.length, 1, 'still exactly ONE attempt — the local call is recorded, not lost');
+  assert.equal(f.counters.rerank_not_served_batches, 1);
+});
+
+test('35.10 — ROW 8, variant parse_failure: served provider, model, attempts and BOTH token counts are PRESERVED, status parse_failure, never not_served', () => {
+  const capture = createTelemetryCapture('lab_multi_query');
+  capture.variantGeneration = {
+    status: 'parse_failure',
+    evidence: { servedProvider: 'vertex', servedModel: 'gemini-2.5-flash', attempts: [{ tier: 'vertex', attempt: 1, outcome: 'success', status: 200 }], provenNotServed: false },
+    promptTokens: 311, completionTokens: 42, generatedCount: 0,
+  };
+  const vg = payloadOf(capture).multi_query?.variant_generation;
+  assert.ok(vg, 'the multi-query section is present on lab_multi_query');
+  assert.equal(vg.status, 'parse_failure');
+  assert.equal(vg.served_route_class, 'vertex', 'a completion ARRIVED — the provider is preserved');
+  assert.equal(vg.served_model, 'gemini-2.5-flash', 'and the model');
+  assert.deepEqual(vg.attempts, [{ provider: 'vertex', attempt: 1, outcome: 'success', status: 200 }], 'and the attempts');
+  assert.equal(vg.prompt_tokens, 311, 'and the prompt tokens it cost');
+  assert.equal(vg.completion_tokens, 42, 'and the completion tokens');
+  assert.notEqual(vg.served_route_class, 'not_served', 'never not_served — a completion arrived and did not parse');
+  // The rerank-batch parse failure preserves the same four things (D16: "at both sites").
+  const b = oneBatchPayload({ servedProvider: 'openrouter', servedModel: 'google/gemini-2.5-flash', attempts: [{ tier: 'openrouter', attempt: 1, outcome: 'success', status: 200 }], provenNotServed: false },
+    { outcome: 'parse_failure', finiteScoreKeys: 0, missingScoreKeys: 4, promptTokens: 77, completionTokens: 9 });
+  assert.equal(b.batch.outcome, 'parse_failure');
+  assert.equal(b.batch.served_route_class, 'openrouter');
+  assert.equal(b.batch.served_model, 'google/gemini-2.5-flash');
+  assert.equal(b.batch.prompt_tokens, 77);
+  assert.equal(b.batch.completion_tokens, 9);
+  assert.equal(b.counters.rerank_openrouter_batches, 1, 'malformed served output still counts as provider usage');
+});
+
+test('35.11 — ROW 9, variant parsed_empty / all_invalid / not_an_array: served provider, model and usage preserved', () => {
+  const statuses: Array<'parsed_empty' | 'all_invalid' | 'not_an_array'> = ['parsed_empty', 'all_invalid', 'not_an_array'];
+  for (const status of statuses) {
+    const capture = createTelemetryCapture('lab_multi_query');
+    capture.variantGeneration = {
+      status,
+      evidence: { servedProvider: 'openrouter', servedModel: 'google/gemini-2.5-flash', attempts: [{ tier: 'openrouter', attempt: 1, outcome: 'success', status: 200 }], provenNotServed: false },
+      promptTokens: 205, completionTokens: 3, generatedCount: 0,
+    };
+    const vg = payloadOf(capture).multi_query?.variant_generation;
+    assert.ok(vg);
+    assert.equal(vg.status, status);
+    assert.equal(vg.served_route_class, 'openrouter', `${status}: provider preserved`);
+    assert.equal(vg.served_model, 'google/gemini-2.5-flash', `${status}: model preserved`);
+    assert.equal(vg.prompt_tokens, 205, `${status}: usage preserved`);
+    assert.equal(vg.completion_tokens, 3);
+  }
+});
+
+test('35.12 — ROW 10 and the v11 §6.2 CORRECTION: a variant-generation stage that RAN and failed_open records not_served ONLY with proof, otherwise UNATTRIBUTED — and only a stage that did NOT run records the stage-level null', () => {
+  // ⚠️ THE 2.2 CORRECTION'S TEST (addendum v23 §3, kickoff row 2). Before pass 3 the served class
+  // was `vg && ev ? servedClassOf(ev) : null`, so a failed-open stage with no transport proof —
+  // exactly the path `evidenceFromError` returns null on — was recorded as null, identically to a
+  // stage that never ran.
+  const ranNoProof = createTelemetryCapture('lab_multi_query');
+  ranNoProof.variantGeneration = { status: 'failed_open', evidence: null, promptTokens: null, completionTokens: null, generatedCount: 0 };
+  const a = payloadOf(ranNoProof).multi_query?.variant_generation;
+  assert.ok(a);
+  assert.equal(a.status, 'failed_open');
+  assert.equal(a.served_route_class, 'unattributed', 'RAN and failed without proof → unattributed, NOT null');
+  assert.notEqual(a.served_route_class, null, 'stage-level null is reserved for a stage that did not run');
+  assert.notEqual(a.served_route_class, 'not_served', 'no proof, so no not_served');
+  assert.equal(a.served_model, null);
+  // With proof — the transport attached failure attribution — not_served stands.
+  const ranWithProof = createTelemetryCapture('lab_multi_query');
+  ranWithProof.variantGeneration = {
+    status: 'failed_open',
+    evidence: { servedProvider: null, servedModel: null, attempts: [{ tier: 'vertex', attempt: 1, outcome: 'http_other', status: 500 }], provenNotServed: true },
+    promptTokens: null, completionTokens: null, generatedCount: 0,
+  };
+  const b = payloadOf(ranWithProof).multi_query?.variant_generation;
+  assert.ok(b);
+  assert.equal(b.served_route_class, 'not_served', 'with proof → not_served');
+  // A stage that did NOT run at all — nothing captured — records the explicit stage-level null.
+  const neverRan = createTelemetryCapture('lab_multi_query');
+  const c = payloadOf(neverRan).multi_query?.variant_generation;
+  assert.ok(c);
+  assert.equal(c.status, 'not_collected');
+  assert.equal(c.served_route_class, null, 'did not run → the stage-level null');
+});
+
+test('35.13 — D16, Bedrock defensively: a Bedrock completion on this path is unattributed, never quietly mapped to a plausible class', () => {
+  const bedrock: TransportEvidence = { servedProvider: 'bedrock', servedModel: 'anthropic.claude-3-5-haiku', attempts: null, provenNotServed: false };
+  assert.equal(servedClassOf(bedrock), 'unattributed');
+  const { batch: b } = oneBatchPayload(bedrock);
+  assert.equal(b.served_route_class, 'unattributed');
+  assert.equal(b.served_model, null, 'and it carries no served model, per §10');
 });

@@ -113,7 +113,7 @@ export function evidenceFromError(err: unknown): TransportEvidence | null {
  * is produced by the two CALLERS, each of which decides skip-ness before calling:
  *
  *   `buildRetrievalPayload`      `expansionSkipped ? null : servedClassOf(...)`
- *   `buildMultiQuerySection`     `vg && ev ? servedClassOf(ev) : null`
+ *   `buildMultiQuerySection`     `vg ? servedClassOf(ev) : null`   (pass 3, v11 §6.2: the stage RAN)
  *
  * ⚠️ NAMED, NOT NUMBERED (v13 §6). These two citations carried line numbers that were stale the day
  * they were written — the same commit that added them shifted the lines. A symbol reference survives
@@ -136,8 +136,18 @@ export function servedClassOf(ev: TransportEvidence | null): ServedRouteClass {
   }
 }
 
+/**
+ * The attempts as they reach the manifest. ⚠️ CORRECTED IN PASS 3 (addendum v11 §6.1, carried by v23
+ * §3): ABSENT evidence records `[]`, never null. No evidence means no dispatch was recorded, so
+ * there is nothing to list — an empty array says exactly that. `null` is kept for ONE case only: the
+ * transport itself reported `attempts: null`, meaning it did not COLLECT a sequence, which D17 names
+ * ("null permitted, meaning not collected") and §4.4 forbids reconstructing. Before this correction
+ * an absent evidence object and a not-collected sequence were both `null` — the same value for two
+ * different facts.
+ */
 function manifestAttempts(ev: TransportEvidence | null): ManifestAttempt[] | null {
-  if (!ev || ev.attempts == null) return null;
+  if (!ev) return [];
+  if (ev.attempts == null) return null;
   return ev.attempts.map((a) => ({
     provider: a.tier, attempt: a.attempt, outcome: a.outcome, status: a.status,
   }));
@@ -323,7 +333,10 @@ export function buildRetrievalPayload(
       // unconditionally, so its expansion stage never dispatches.
       served_route_class: expansionSkipped ? null : servedClassOf(expansion!.evidence),
       served_model: expansionSkipped ? null : (expansion!.evidence?.servedModel ?? null),
-      attempts: expansionSkipped ? null : manifestAttempts(expansion!.evidence),
+      // ⚠️ CORRECTED IN PASS 3 (v11 §6.1 / v23 §3, D16 row 5): a SKIPPED stage records `attempts: []`,
+      // never null. The stage made no request, so the honest list of attempts is EMPTY — not "not
+      // collected". Only the served class carries the stage-level null above.
+      attempts: expansionSkipped ? [] : manifestAttempts(expansion?.evidence ?? null),
     },
 
     ...(capture.role === 'lab_multi_query' ? { multi_query: buildMultiQuerySection(capture) } : {}),
@@ -378,7 +391,13 @@ function buildMultiQuerySection(capture: TelemetryCapture): MultiQuerySection {
       status: vg?.status ?? 'not_collected',
       // `parse_failure` PRESERVES its provider, model and usage — a completion arrived, cost
       // tokens and did not parse. Only a stage that made no request declares null.
-      served_route_class: vg && ev ? servedClassOf(ev) : null,
+      // ⚠️ CORRECTED IN PASS 3 (v11 §6.2 / v23 §3). This read `vg && ev ? servedClassOf(ev) : null`,
+      // and `ev` is null on the failed-open path without transport proof (`evidenceFromError`
+      // returns null without attribution) — so a stage that genuinely RAN and failed was recorded
+      // identically to a stage that never ran. Now: the stage RAN (`vg` is present) → its class is
+      // `servedClassOf(ev)`, whose honest floor without evidence is `unattributed`; the stage did
+      // NOT run (`vg` absent) → the explicit stage-level null. `not_served` still requires proof.
+      served_route_class: vg ? servedClassOf(ev) : null,
       served_model: ev?.servedModel ?? null,
       attempts: manifestAttempts(ev),
       prompt_tokens: vg?.promptTokens ?? null,

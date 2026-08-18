@@ -1,0 +1,491 @@
+/**
+ * lib/__tests__/retrieval-telemetry-validation.test.ts — exhaustive per-field validation (D17), and
+ * the four D17 edge cases. Proofs 45, 46, 47 and 49.
+ *
+ * GOVERNED BY addendum v23 (authorized by the orchestrator on V's explicit delegation, 18 August
+ * 2026, under Saul review 34), §4 (the proof texts, verbatim from kickoff v11 §6, the numbering
+ * authority) and §6 (this file, named by `retrieval-telemetry-core.test.ts`'s header since 11 August
+ * and never created until now). Addendum v15 §3 sets the conventions.
+ *
+ *   45  Every required field in D17, one absent-or-invalid test each, with own-property checks
+ *       distinguishing missing, null, empty array, empty string and invalid number.
+ *   46  `expansion.served_route_class` null with status `skipped` is valid, so a `normative_channel`
+ *       row is not partial.
+ *   47  The scorer-context HMAC by role: required on `primary`, null on the other four, and those
+ *       nulls not partial. Computed over the exact `citedContext`, including the empty-string case.
+ *   49  All four edge cases in D17, including the two zero-candidate shapes producing different
+ *       `fused_candidate_count` and `hydrated_candidate_count`.
+ *
+ * WHAT THIS FILE DOES NOT CLAIM. It does not run a retrieval: the four edge cases are the payload
+ * builder's synthesised shapes (D17: "all synthesised by the payload builder"), driven through the
+ * real `createTelemetryCapture` and `buildRetrievalPayload` and stamped with a literal operational
+ * block — not through `retrieve()`. It does not claim `validateManifest`'s codes are the persisted
+ * state; the row state is settlement's (D9/D12), and this file reads only the code list. It does not
+ * touch a database, a socket or a secret: the HMAC key here is a literal test string.
+ *
+ * ⚠️ FIXTURES ARE LITERALS. Nothing here is derived from the constant it tests. The one imported
+ * constant, `MANIFEST_SCHEMA_VERSION`, is used only to build a manifest the validator accepts as
+ * current; the test that pins its VALUE lives in `retrieval-telemetry-core.test.ts`.
+ *
+ * ⚠️ D17 SAYS `retrieval_config` "{} permitted"; addendum v7 §10 (manifest version 3) then made
+ * `rerank_temperature` and `rerank_seed_status` REQUIRED inside it, so `{}` now carries those two
+ * field-absent codes. 45 pins today's contract and names the amendment beside it.
+ */
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  validateManifest, telemetryHmac, batchCounters, MANIFEST_SCHEMA_VERSION,
+  type StampedRetrievalManifest, type OperationalTelemetry, type RetrievalRole, type ManifestBatch,
+} from '../retrieval-telemetry-core';
+import { createTelemetryCapture, buildRetrievalPayload } from '../retrieval-capture';
+
+// ── A stamped manifest the validator accepts, hand-built from literals ─────────────────────────
+type Obj = Record<string, unknown>;
+/** Type GUARDS, not casts: the mutation helpers narrow `unknown` by checking, and fail loudly
+ *  when a fixture is not the shape the row expects. */
+const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
+const isObjArray = (v: unknown): v is Obj[] => Array.isArray(v) && v.every(isObj);
+
+const operational = (role: RetrievalRole = 'primary'): OperationalTelemetry => ({
+  route: 'opd_audit_worker', route_class: 'worker', retrieval_role: role,
+  invocation_id: 'inv-45', trace_id: null, deployment_sha: null,
+  started_at: '2026-08-18T00:00:00.000Z', completed_at: '2026-08-18T00:00:02.000Z',
+  routing_flags: {}, active_backfill_run_id: null, active_backfill_target: null,
+  active_backfill_state: null, active_lab_experiment_id: null,
+});
+
+/** One rerank batch, valid. */
+const validBatch = (): ManifestBatch => ({
+  batch_index: 0, candidate_start: 0, candidate_end: 3,
+  intended_provider: 'vertex', intended_model: 'gemini-2.5-flash',
+  served_route_class: 'vertex', served_model: 'gemini-2.5-flash',
+  attempts: [{ provider: 'vertex', attempt: 1, outcome: 'success', status: 200 }],
+  outcome: 'success', expected_score_keys: 3, finite_score_keys: 3,
+  missing_score_keys: 0, nonnumeric_score_keys: 0, prompt_tokens: 90, completion_tokens: 12,
+});
+
+/** A complete, valid, keyed primary manifest with one batch. Deep-copied per test via JSON so a
+ *  mutation in one test cannot leak into the next. */
+function validManifest(role: RetrievalRole = 'primary'): StampedRetrievalManifest {
+  const m: StampedRetrievalManifest = {
+    manifest_schema_version: MANIFEST_SCHEMA_VERSION,
+    hmac_key_version: 'k1',
+    telemetry_error: null,
+    retrieval_outcome: 'success',
+    retrieval_error_class: null,
+    expansion: {
+      status: 'expanded', input_hmac: 'k1:0011', served_route_class: 'vertex', served_model: 'gemini-2.5-flash',
+      attempts: [{ provider: 'vertex', attempt: 1, outcome: 'success', status: 200 }],
+    },
+    fused_candidate_ids: [11, 12, 13],
+    hydrated_candidate_ids: [11, 12, 13],
+    fused_candidate_count: 3,
+    hydrated_candidate_count: 3,
+    pre_rerank_passage_hmacs: ['k1:aa', 'k1:bb', 'k1:cc'],
+    intended_backend: 'judge', intended_model: 'gemini-2.5-flash',
+    served_backend: 'judge', rerank_backend_downgraded: false,
+    expected_batch_count: 1, recorded_rerank_batches: 1, rerank_soft_failed: false,
+    ordered_final_candidate_ids: [12, 11, 13],
+    scorer_context_hmac: role === 'primary' ? 'k1:ctx' : null,
+    retrieval_config: { topK: 8, rerank_temperature: 0, rerank_seed_status: 'unseeded' },
+    corpus_version: null,
+    index_version: 'embedding|nomic-embed-text',
+    batches: [validBatch()],
+    operational: operational(role),
+  };
+  return JSON.parse(JSON.stringify(m));
+}
+/** The same manifest as a plain object, for mutation by key — parsed as `unknown` and narrowed by
+ *  the guard, so no cast is involved. */
+function asObj(m: StampedRetrievalManifest): Obj {
+  const parsed: unknown = JSON.parse(JSON.stringify(m));
+  assert.ok(isObj(parsed), 'the fixture serializes to an object');
+  return parsed;
+}
+const codes = (m: unknown): string[] => validateManifest(m);
+/** The nested object at `k`, checked. */
+function nested(o: Obj, k: string): Obj {
+  const v = o[k];
+  assert.ok(isObj(v), `${k} is an object in the fixture`);
+  return v;
+}
+/** The first batch record, checked. */
+function batch0(m: Obj): Obj {
+  const b = m.batches;
+  assert.ok(isObjArray(b) && b.length > 0, 'the fixture has a batch record');
+  return b[0];
+}
+
+test('45.0 — the fixture is CLEAN: the valid manifest returns no code, so every code below is caused by the one mutation named beside it', () => {
+  assert.deepEqual(codes(validManifest()), []);
+  assert.deepEqual(codes(validManifest('lvc_recall')), []);
+});
+
+// ── 45. One absent-or-invalid test per required field ──────────────────────────────────────────
+// Each row: a label, a mutation on the plain object, and the code that mutation must produce.
+// `del` removes the OWN property (missing); other rows set null / '' / [] / a bad number.
+type Row = { field: string; how: string; mutate: (m: Obj) => void; code: string };
+const del = (o: Obj, k: string) => { delete o[k]; };
+const ROWS: Row[] = [
+  { field: 'manifest_schema_version', how: 'null', mutate: (m) => { m.manifest_schema_version = null; }, code: 'manifest_version_unrecognized' },
+  { field: 'manifest_schema_version', how: 'wrong version 2', mutate: (m) => { m.manifest_schema_version = 2; }, code: 'manifest_version_unrecognized' },
+  { field: 'hmac_key_version', how: 'null WITHOUT hmac_key_absent', mutate: (m) => { m.hmac_key_version = null; }, code: 'hmac_key_version_absent' },
+  { field: 'hmac_key_version', how: 'empty string', mutate: (m) => { m.hmac_key_version = ''; }, code: 'hmac_key_version_absent' },
+  { field: 'operational', how: 'missing', mutate: (m) => del(m, 'operational'), code: 'operational_absent' },
+  { field: 'operational.route', how: 'missing', mutate: (m) => del(nested(m, 'operational'), 'route'), code: 'route_absent_or_invalid' },
+  { field: 'operational.route', how: 'invalid (not in RETRIEVAL_ROUTES)', mutate: (m) => { nested(m, 'operational').route = 'reconciler'; }, code: 'route_absent_or_invalid' },
+  { field: 'operational.route_class', how: 'null', mutate: (m) => { nested(m, 'operational').route_class = null; }, code: 'route_class_absent' },
+  { field: 'operational.retrieval_role', how: 'invalid', mutate: (m) => { nested(m, 'operational').retrieval_role = 'secondary'; }, code: 'retrieval_role_absent_or_invalid' },
+  { field: 'operational.started_at', how: 'null', mutate: (m) => { nested(m, 'operational').started_at = null; }, code: 'started_at_absent' },
+  { field: 'operational.completed_at', how: 'empty string', mutate: (m) => { nested(m, 'operational').completed_at = ''; }, code: 'completed_at_absent' },
+  { field: 'operational.invocation_id', how: 'empty string', mutate: (m) => { nested(m, 'operational').invocation_id = ''; }, code: 'invocation_id_absent' },
+  { field: 'operational.trace_id', how: 'missing (null is permitted)', mutate: (m) => del(nested(m, 'operational'), 'trace_id'), code: 'trace_id_field_absent' },
+  { field: 'operational.deployment_sha', how: 'missing (null is permitted)', mutate: (m) => del(nested(m, 'operational'), 'deployment_sha'), code: 'deployment_sha_field_absent' },
+  { field: 'operational.routing_flags', how: 'null ({} is permitted)', mutate: (m) => { nested(m, 'operational').routing_flags = null; }, code: 'routing_flags_absent' },
+  { field: 'operational.routing_flags', how: 'an array is not a flags object', mutate: (m) => { nested(m, 'operational').routing_flags = []; }, code: 'routing_flags_absent' },
+  { field: 'operational.active_backfill_run_id', how: 'missing (null is permitted)', mutate: (m) => del(nested(m, 'operational'), 'active_backfill_run_id'), code: 'active_backfill_run_id_field_absent' },
+  { field: 'operational.active_backfill_target', how: 'missing (null is permitted)', mutate: (m) => del(nested(m, 'operational'), 'active_backfill_target'), code: 'active_backfill_target_field_absent' },
+  { field: 'operational.active_backfill_state', how: 'missing (null is permitted)', mutate: (m) => del(nested(m, 'operational'), 'active_backfill_state'), code: 'active_backfill_state_field_absent' },
+  { field: 'operational.active_backfill_state', how: 'invalid (not active/idle)', mutate: (m) => { nested(m, 'operational').active_backfill_state = 'running'; }, code: 'active_backfill_state_invalid' },
+  { field: 'operational.active_lab_experiment_id', how: 'missing (null is permitted)', mutate: (m) => del(nested(m, 'operational'), 'active_lab_experiment_id'), code: 'active_lab_experiment_id_field_absent' },
+  { field: 'retrieval_outcome', how: 'null', mutate: (m) => { m.retrieval_outcome = null; }, code: 'retrieval_outcome_absent_or_invalid' },
+  { field: 'retrieval_outcome', how: 'invalid', mutate: (m) => { m.retrieval_outcome = 'partial'; }, code: 'retrieval_outcome_absent_or_invalid' },
+  { field: 'retrieval_error_class', how: 'missing (null is permitted on success)', mutate: (m) => del(m, 'retrieval_error_class'), code: 'retrieval_error_class_field_absent' },
+  { field: 'retrieval_error_class', how: 'null when the outcome is retrieval_failure', mutate: (m) => { m.retrieval_outcome = 'retrieval_failure'; m.retrieval_error_class = null; }, code: 'retrieval_error_class_absent_on_failure' },
+  { field: 'expansion', how: 'missing', mutate: (m) => del(m, 'expansion'), code: 'expansion_absent' },
+  { field: 'expansion.status', how: 'null', mutate: (m) => { nested(m, 'expansion').status = null; }, code: 'expansion_status_absent_or_invalid' },
+  { field: 'expansion.input_hmac', how: 'missing', mutate: (m) => del(nested(m, 'expansion'), 'input_hmac'), code: 'expansion_input_hmac_field_absent' },
+  { field: 'expansion.input_hmac', how: 'null on an EXPANDED stage without hmac_key_absent', mutate: (m) => { nested(m, 'expansion').input_hmac = null; }, code: 'expansion_input_hmac_absent' },
+  { field: 'expansion.served_route_class', how: 'missing', mutate: (m) => del(nested(m, 'expansion'), 'served_route_class'), code: 'expansion_served_route_class_field_absent' },
+  { field: 'expansion.served_route_class', how: 'null on an EXPANDED stage', mutate: (m) => { nested(m, 'expansion').served_route_class = null; }, code: 'expansion_served_route_class_absent' },
+  { field: 'expansion.served_route_class', how: 'invalid', mutate: (m) => { nested(m, 'expansion').served_route_class = 'gemini'; }, code: 'expansion_served_route_class_invalid' },
+  { field: 'expansion.served_model', how: 'missing (null is permitted)', mutate: (m) => del(nested(m, 'expansion'), 'served_model'), code: 'expansion_served_model_field_absent' },
+  { field: 'expansion.attempts', how: 'missing (null and [] are permitted)', mutate: (m) => del(nested(m, 'expansion'), 'attempts'), code: 'expansion_attempts_field_absent' },
+  { field: 'expansion.attempts', how: 'a non-array, non-null value', mutate: (m) => { nested(m, 'expansion').attempts = 'vertex'; }, code: 'attempt_outcome_absent_or_invalid' },
+  { field: 'fused_candidate_ids', how: 'null ([] is permitted)', mutate: (m) => { m.fused_candidate_ids = null; }, code: 'fused_candidate_ids_absent' },
+  { field: 'fused_candidate_ids', how: 'a non-numeric member', mutate: (m) => { m.fused_candidate_ids = [11, 'x']; }, code: 'fused_candidate_ids_absent' },
+  { field: 'hydrated_candidate_ids', how: 'null ([] is permitted)', mutate: (m) => { m.hydrated_candidate_ids = null; }, code: 'hydrated_candidate_ids_absent' },
+  { field: 'fused_candidate_count', how: 'null', mutate: (m) => { m.fused_candidate_count = null; }, code: 'fused_candidate_count_absent' },
+  { field: 'fused_candidate_count', how: 'invalid number: negative', mutate: (m) => { m.fused_candidate_count = -1; }, code: 'fused_candidate_count_absent' },
+  { field: 'fused_candidate_count', how: 'invalid number: NaN', mutate: (m) => { m.fused_candidate_count = Number.NaN; }, code: 'fused_candidate_count_absent' },
+  { field: 'fused_candidate_count', how: 'invalid number: a numeric STRING', mutate: (m) => { m.fused_candidate_count = '3'; }, code: 'fused_candidate_count_absent' },
+  { field: 'hydrated_candidate_count', how: 'invalid number: Infinity', mutate: (m) => { m.hydrated_candidate_count = Number.POSITIVE_INFINITY; }, code: 'hydrated_candidate_count_absent' },
+  { field: 'hydrated_candidate_count', how: 'null', mutate: (m) => { m.hydrated_candidate_count = null; }, code: 'hydrated_candidate_count_absent' },
+  { field: 'pre_rerank_passage_hmacs', how: 'missing', mutate: (m) => del(m, 'pre_rerank_passage_hmacs'), code: 'pre_rerank_passage_hmacs_field_absent' },
+  { field: 'pre_rerank_passage_hmacs', how: 'null WITHOUT hmac_key_absent', mutate: (m) => { m.pre_rerank_passage_hmacs = null; }, code: 'pre_rerank_passage_hmacs_absent' },
+  { field: 'pre_rerank_passage_hmacs', how: 'a non-array', mutate: (m) => { m.pre_rerank_passage_hmacs = 'k1:aa'; }, code: 'pre_rerank_passage_hmacs_absent' },
+  { field: 'pre_rerank_passage_hmacs', how: 'cardinality ≠ hydrated_candidate_ids (one per HYDRATED row)', mutate: (m) => { m.pre_rerank_passage_hmacs = ['k1:aa', 'k1:bb']; }, code: 'passage_hmac_cardinality_mismatch' },
+  { field: 'intended_backend', how: 'null (the string none is permitted)', mutate: (m) => { m.intended_backend = null; }, code: 'intended_backend_absent' },
+  { field: 'intended_backend', how: 'empty string', mutate: (m) => { m.intended_backend = ''; }, code: 'intended_backend_absent' },
+  { field: 'intended_model', how: 'empty string', mutate: (m) => { m.intended_model = ''; }, code: 'intended_model_absent' },
+  { field: 'served_backend', how: 'missing (null is permitted with no batches)', mutate: (m) => del(m, 'served_backend'), code: 'served_backend_field_absent' },
+  { field: 'served_backend', how: 'null once a batch record exists', mutate: (m) => { m.served_backend = null; }, code: 'served_backend_absent_with_batches' },
+  { field: 'rerank_backend_downgraded', how: 'null', mutate: (m) => { m.rerank_backend_downgraded = null; }, code: 'rerank_backend_downgraded_absent' },
+  { field: 'rerank_soft_failed', how: 'a string, not a boolean', mutate: (m) => { m.rerank_soft_failed = 'false'; }, code: 'rerank_soft_failed_absent' },
+  { field: 'expected_batch_count', how: 'null', mutate: (m) => { m.expected_batch_count = null; }, code: 'expected_batch_count_absent' },
+  { field: 'recorded_rerank_batches', how: 'invalid number: NaN', mutate: (m) => { m.recorded_rerank_batches = Number.NaN; }, code: 'recorded_rerank_batches_absent' },
+  { field: 'recorded_rerank_batches', how: 'disagrees with batches.length', mutate: (m) => { m.recorded_rerank_batches = 2; }, code: 'recorded_batch_count_mismatch' },
+  { field: 'expected_batch_count', how: 'disagrees with batches.length (§7, never waived)', mutate: (m) => { m.expected_batch_count = 2; }, code: 'batch_count_mismatch' },
+  { field: 'batches', how: 'null ([] is permitted)', mutate: (m) => { m.batches = null; }, code: 'batches_absent' },
+  { field: 'batch.batch_index', how: 'missing', mutate: (m) => del(batch0(m), 'batch_index'), code: 'batch_index_absent' },
+  { field: 'batch.batch_index', how: 'duplicated', mutate: (m) => { const b = batch0(m); m.batches = [b, { ...b, candidate_start: 3, candidate_end: 6 }]; m.expected_batch_count = 2; m.recorded_rerank_batches = 2; }, code: 'duplicate_batch_index' },
+  { field: 'batch.candidate_start/end', how: 'null', mutate: (m) => { batch0(m).candidate_end = null; }, code: 'batch_boundaries_absent' },
+  { field: 'batch.candidate_start/end', how: 'end <= start', mutate: (m) => { batch0(m).candidate_end = 0; }, code: 'bad_candidate_boundaries' },
+  { field: 'batch.intended_provider', how: 'empty string', mutate: (m) => { batch0(m).intended_provider = ''; }, code: 'batch_intended_provider_absent' },
+  { field: 'batch.intended_model', how: 'null', mutate: (m) => { batch0(m).intended_model = null; }, code: 'batch_intended_model_absent' },
+  { field: 'batch.served_route_class', how: 'missing', mutate: (m) => del(batch0(m), 'served_route_class'), code: 'batch_served_route_class_absent' },
+  { field: 'batch.served_route_class', how: 'null — the type permits it, the contract does not (A6)', mutate: (m) => { batch0(m).served_route_class = null; }, code: 'batch_served_route_class_absent' },
+  { field: 'batch.served_route_class', how: 'invalid', mutate: (m) => { batch0(m).served_route_class = 'cohere'; }, code: 'batch_served_route_class_invalid' },
+  { field: 'batch.served_model', how: 'missing (null is permitted)', mutate: (m) => del(batch0(m), 'served_model'), code: 'batch_served_model_field_absent' },
+  { field: 'batch.served_model', how: 'non-null on an unattributed batch (§10)', mutate: (m) => { batch0(m).served_route_class = 'unattributed'; }, code: 'unattributed_with_model' },
+  { field: 'batch.served_model', how: 'non-null on a not_served batch (§10)', mutate: (m) => { batch0(m).served_route_class = 'not_served'; }, code: 'not_served_with_model' },
+  { field: 'batch.attempts', how: 'missing (null is permitted)', mutate: (m) => del(batch0(m), 'attempts'), code: 'batch_attempts_field_absent' },
+  { field: 'batch.attempts', how: 'a member with an outcome outside the six', mutate: (m) => { batch0(m).attempts = [{ provider: 'vertex', attempt: 1, outcome: 'ok', status: 200 }]; }, code: 'attempt_outcome_absent_or_invalid' },
+  { field: 'batch.outcome', how: 'invalid', mutate: (m) => { batch0(m).outcome = 'failed'; }, code: 'batch_outcome_absent_or_invalid' },
+  { field: 'batch.expected_score_keys', how: 'null', mutate: (m) => { batch0(m).expected_score_keys = null; }, code: 'expected_score_keys_absent' },
+  { field: 'batch.finite_score_keys', how: 'invalid number: negative', mutate: (m) => { batch0(m).finite_score_keys = -1; }, code: 'finite_score_keys_absent' },
+  { field: 'batch.finite_score_keys', how: 'more finite keys than expected', mutate: (m) => { batch0(m).finite_score_keys = 4; }, code: 'score_keys_exceed_expected' },
+  { field: 'ordered_final_candidate_ids', how: 'null ([] is permitted)', mutate: (m) => { m.ordered_final_candidate_ids = null; }, code: 'ordered_final_candidate_ids_absent' },
+  { field: 'retrieval_config', how: 'null', mutate: (m) => { m.retrieval_config = null; }, code: 'retrieval_config_absent' },
+  { field: 'retrieval_config', how: 'an array is not a config object', mutate: (m) => { m.retrieval_config = []; }, code: 'retrieval_config_absent' },
+  { field: 'retrieval_config.rerank_temperature', how: 'missing (v7 §10: required as of manifest v3; null is permitted)', mutate: (m) => del(nested(m, 'retrieval_config'), 'rerank_temperature'), code: 'rerank_temperature_field_absent' },
+  { field: 'retrieval_config.rerank_temperature', how: 'invalid number: NaN', mutate: (m) => { nested(m, 'retrieval_config').rerank_temperature = Number.NaN; }, code: 'rerank_temperature_invalid' },
+  { field: 'retrieval_config.rerank_seed_status', how: 'missing (v7 §10)', mutate: (m) => del(nested(m, 'retrieval_config'), 'rerank_seed_status'), code: 'rerank_seed_status_field_absent' },
+  { field: 'retrieval_config.rerank_seed_status', how: 'null — never null, not_applicable is the value for no decode', mutate: (m) => { nested(m, 'retrieval_config').rerank_seed_status = null; }, code: 'rerank_seed_status_invalid' },
+  { field: 'corpus_version', how: 'missing (null is permitted)', mutate: (m) => del(m, 'corpus_version'), code: 'corpus_version_field_absent' },
+  { field: 'index_version', how: 'null', mutate: (m) => { m.index_version = null; }, code: 'index_version_absent' },
+  { field: 'index_version', how: 'empty string', mutate: (m) => { m.index_version = ''; }, code: 'index_version_absent' },
+  { field: 'scorer_context_hmac', how: 'missing', mutate: (m) => del(m, 'scorer_context_hmac'), code: 'scorer_context_hmac_field_absent' },
+  { field: 'scorer_context_hmac', how: 'null on role primary WITHOUT hmac_key_absent', mutate: (m) => { m.scorer_context_hmac = null; }, code: 'scorer_context_hmac_absent' },
+  { field: 'multi_query', how: 'present on a role that is not lab_multi_query', mutate: (m) => { m.multi_query = { variant_generation: {}, variants: [] }; }, code: 'multi_query_on_non_multi_query_role' },
+];
+
+let n = 1;
+for (const row of ROWS) {
+  n += 1;
+  test(`45.${n} — ${row.field}: ${row.how} → ${row.code}`, () => {
+    const m = asObj(validManifest());
+    row.mutate(m);
+    const out = codes(m);
+    assert.ok(out.includes(row.code), `${row.field} (${row.how}) must yield ${row.code}; got [${out.join(', ')}]`);
+  });
+}
+
+// The multi-query block, on the one role that requires it.
+const MQ_ROWS: Row[] = [
+  { field: 'multi_query', how: 'missing on lab_multi_query', mutate: (m) => del(m, 'multi_query'), code: 'multi_query_absent' },
+  { field: 'multi_query.variant_generation', how: 'null', mutate: (m) => { nested(m, 'multi_query').variant_generation = null; }, code: 'variant_generation_absent' },
+  { field: 'multi_query.variant_generation.status', how: 'invalid', mutate: (m) => { nested(nested(m, 'multi_query'), 'variant_generation').status = 'ok'; }, code: 'variant_generation_status_absent_or_invalid' },
+  { field: 'multi_query.variant_generation.served_route_class', how: 'missing (null is permitted for a stage that did not run)', mutate: (m) => del(nested(nested(m, 'multi_query'), 'variant_generation'), 'served_route_class'), code: 'variant_generation_served_route_class_field_absent' },
+  { field: 'multi_query.variant_generation.generated_variant_count', how: 'null', mutate: (m) => { nested(nested(m, 'multi_query'), 'variant_generation').generated_variant_count = null; }, code: 'generated_variant_count_absent' },
+  { field: 'multi_query.variant_generation.attempts', how: 'a member with an outcome outside the six', mutate: (m) => { nested(nested(m, 'multi_query'), 'variant_generation').attempts = [{ provider: 'vertex', attempt: 1, outcome: 'nope', status: null }]; }, code: 'attempt_outcome_absent_or_invalid' },
+  { field: 'multi_query.variants', how: 'null', mutate: (m) => { nested(m, 'multi_query').variants = null; }, code: 'variants_absent' },
+  { field: 'multi_query.variants', how: 'length ≠ generated_variant_count + 1', mutate: (m) => { nested(m, 'multi_query').variants = []; }, code: 'variant_arity_mismatch' },
+];
+function validMultiQueryManifest(): Obj {
+  const m = asObj(validManifest('lab_multi_query'));
+  m.multi_query = {
+    variant_generation: {
+      status: 'generated', served_route_class: 'vertex', served_model: 'gemini-2.5-flash',
+      attempts: [{ provider: 'vertex', attempt: 1, outcome: 'success', status: 200 }],
+      prompt_tokens: 150, completion_tokens: 30, generated_variant_count: 2,
+    },
+    variants: [
+      { index: 0, outcome: 'success', candidate_count: 3 },
+      { index: 1, outcome: 'success', candidate_count: 2 },
+      { index: 2, outcome: 'zero_hits', candidate_count: 0 },
+    ],
+  };
+  return m;
+}
+test(`45.${n + 1} — the lab_multi_query fixture is CLEAN before its rows run`, () => {
+  assert.deepEqual(codes(validMultiQueryManifest()), []);
+});
+n += 1;
+for (const row of MQ_ROWS) {
+  n += 1;
+  test(`45.${n} — ${row.field}: ${row.how} → ${row.code}`, () => {
+    const m = validMultiQueryManifest();
+    row.mutate(m);
+    const out = codes(m);
+    assert.ok(out.includes(row.code), `${row.field} (${row.how}) must yield ${row.code}; got [${out.join(', ')}]`);
+  });
+}
+
+test('45.1 — OWN-PROPERTY CHECKS: missing, explicit null, empty array, empty string and invalid number are FIVE different answers, and the validator tells them apart', () => {
+  // missing ≠ null: trace_id present-and-null is clean; trace_id absent is a defect.
+  const nullTrace = asObj(validManifest()); nested(nullTrace, 'operational').trace_id = null;
+  assert.equal(codes(nullTrace).includes('trace_id_field_absent'), false, 'present-and-null is a declaration');
+  const noTrace = asObj(validManifest()); del(nested(noTrace, 'operational'), 'trace_id');
+  assert.ok(codes(noTrace).includes('trace_id_field_absent'), 'an absent field is not a declaration');
+  // null ≠ empty array: fused_candidate_ids [] is permitted (with count 0 and the rest coherent); null is not.
+  const emptyIds = asObj(validManifest());
+  emptyIds.fused_candidate_ids = []; emptyIds.hydrated_candidate_ids = []; emptyIds.fused_candidate_count = 0; emptyIds.hydrated_candidate_count = 0;
+  emptyIds.pre_rerank_passage_hmacs = []; emptyIds.batches = []; emptyIds.expected_batch_count = 0; emptyIds.recorded_rerank_batches = 0;
+  emptyIds.ordered_final_candidate_ids = []; emptyIds.served_backend = null; emptyIds.intended_backend = 'none'; emptyIds.intended_model = 'none';
+  assert.deepEqual(codes(emptyIds), [], '[] is a value: an empty pool validates clean');
+  const nullIds = asObj(validManifest()); nullIds.fused_candidate_ids = null;
+  assert.ok(codes(nullIds).includes('fused_candidate_ids_absent'), 'null is not []');
+  // empty string ≠ a string: invocation_id '' is absent; 'inv-45' is present.
+  const emptyInv = asObj(validManifest()); nested(emptyInv, 'operational').invocation_id = '';
+  assert.ok(codes(emptyInv).includes('invocation_id_absent'));
+  // invalid number ≠ zero: fused_candidate_count 0 is valid, -1 / NaN / '0' are not.
+  for (const bad of [-1, Number.NaN, '0', null]) {
+    const m = asObj(validManifest()); m.fused_candidate_count = bad;
+    assert.ok(codes(m).includes('fused_candidate_count_absent'), `${String(bad)} is an invalid count`);
+  }
+  const zero = asObj(validManifest()); zero.fused_candidate_count = 0;
+  assert.equal(codes(zero).includes('fused_candidate_count_absent'), false, 'zero is a finite, non-negative number');
+});
+
+n += 1;
+test(`45.${n} — the HMAC-absent licence covers EXACTLY the four D8 fields, and only when telemetry_error declares it`, () => {
+  const licensed = asObj(validManifest());
+  licensed.telemetry_error = 'hmac_key_absent';
+  licensed.hmac_key_version = null; nested(licensed, 'expansion').input_hmac = null;
+  licensed.pre_rerank_passage_hmacs = null; licensed.scorer_context_hmac = null;
+  assert.deepEqual(codes(licensed), [], 'four explicit nulls under the declared error are clean');
+  const unlicensed = asObj(validManifest());
+  unlicensed.hmac_key_version = null; nested(unlicensed, 'expansion').input_hmac = null;
+  unlicensed.pre_rerank_passage_hmacs = null; unlicensed.scorer_context_hmac = null;
+  const out = codes(unlicensed);
+  for (const c of ['hmac_key_version_absent', 'expansion_input_hmac_absent', 'pre_rerank_passage_hmacs_absent', 'scorer_context_hmac_absent']) {
+    assert.ok(out.includes(c), `${c} without the licence`);
+  }
+});
+
+// ── 46. expansion.served_route_class null with status skipped is VALID ──────────────────────────
+
+test('46.1 — expansion.served_route_class null with status skipped is valid: no expansion code, so a normative_channel row is not partial by construction', () => {
+  const m = asObj(validManifest('normative_channel'));
+  m.expansion = { status: 'skipped', input_hmac: null, served_route_class: null, served_model: null, attempts: [] };
+  const out = codes(m);
+  assert.deepEqual(out, [], `a skipped stage with a null class carries no defect; got [${out.join(', ')}]`);
+  // The SAME null on an EXPANDED stage is the defect — the acceptance is conditional on `skipped`,
+  // not a blanket tolerance of null.
+  const expanded = asObj(validManifest('normative_channel'));
+  nested(expanded, 'expansion').served_route_class = null;
+  assert.ok(codes(expanded).includes('expansion_served_route_class_absent'), 'null on an expanded stage IS a defect');
+  // And absence of the field is never a declaration, skipped or not.
+  const missing = asObj(validManifest('normative_channel'));
+  missing.expansion = { status: 'skipped', input_hmac: null, served_model: null, attempts: [] };
+  assert.ok(codes(missing).includes('expansion_served_route_class_field_absent'));
+});
+
+test('46.2 — through the REAL builder: a normative_channel capture (expansion never set — the leg sets skipExpand unconditionally) produces a payload that validates clean', () => {
+  const capture = createTelemetryCapture('normative_channel');
+  capture.indexVersion = 'embedding|nomic-embed-text';
+  const payload = buildRetrievalPayload(capture, { hmacKey: 'proof-46-key', scorerContext: null });
+  assert.equal(payload.expansion.status, 'skipped');
+  assert.equal(payload.expansion.served_route_class, null);
+  assert.deepEqual(payload.expansion.attempts, [], 'and its attempts are [] (v11 §6.1)');
+  const stamped = { ...payload, operational: operational('normative_channel') };
+  assert.deepEqual(codes(stamped), [], 'the row is NOT partial');
+});
+
+// ── 47. The scorer-context HMAC by role ─────────────────────────────────────────────────────────
+
+const KEY = 'proof-47-key';
+const payloadFor = (role: RetrievalRole, scorerContext: string | null) => {
+  const capture = createTelemetryCapture(role);
+  capture.indexVersion = 'embedding|nomic-embed-text';
+  // A multi-query run always has its ORIGINAL arm at index 0 (`variants.length` is the generated
+  // count + 1), so the one role that carries the section gets that literal arm.
+  if (role === 'lab_multi_query') capture.variants = [{ index: 0, outcome: 'success', candidateCount: 3 }];
+  return buildRetrievalPayload(capture, { hmacKey: KEY, scorerContext });
+};
+
+test('47.1 — on role primary the scorer-context HMAC is REQUIRED: computed over the EXACT citedContext bytes, and it changes when one byte does', () => {
+  // The rendered context as assembleAuditContext would hand it over — with its trailing newline
+  // kept, so a builder that TRIMMED or normalised before keying is caught here by name.
+  const ctx = 'Cited context:\n  [1] passage one.\n  [2] passage two.\n';
+  const p = payloadFor('primary', ctx);
+  assert.equal(p.scorer_context_hmac, telemetryHmac(KEY, ctx), 'the keyed HMAC of the EXACT rendered context, trailing newline included');
+  assert.notEqual(p.scorer_context_hmac, telemetryHmac(KEY, ctx.trim()), 'a trimmed rendering is a different context');
+  assert.notEqual(p.scorer_context_hmac, telemetryHmac(KEY, ctx + ' '), 'one appended byte changes it');
+  assert.notEqual(p.scorer_context_hmac, telemetryHmac(KEY, ctx.replace(/\n/g, ' ')), 'a whitespace-normalised rendering is a different context');
+  assert.match(p.scorer_context_hmac ?? '', /^k1:[0-9a-f]{64}$/, 'versioned, hex digest');
+  // Required: a primary row whose HMAC is null (and no hmac_key_absent) is partial.
+  const nulled = { ...payloadFor('primary', ctx), scorer_context_hmac: null, operational: operational('primary') };
+  assert.ok(codes(nulled).includes('scorer_context_hmac_absent'), 'null on primary is a defect');
+});
+
+test('47.2 — the EMPTY-STRING case: zero candidates render an empty citedContext, and the HMAC of the empty string is a DEFINED value — never null because reranking was skipped', () => {
+  const p = payloadFor('primary', '');
+  assert.equal(typeof p.scorer_context_hmac, 'string');
+  assert.equal(p.scorer_context_hmac, telemetryHmac(KEY, ''), 'HMAC("") is a defined value');
+  assert.notEqual(p.scorer_context_hmac, telemetryHmac(KEY, ' '), 'and it is not the HMAC of a single space');
+  const stamped = { ...p, operational: operational('primary') };
+  assert.deepEqual(codes(stamped), [], 'a zero-candidate primary row with the empty-string HMAC is not partial');
+});
+
+test('47.3 — on the other FOUR roles the HMAC is null, and those nulls are NOT partial', () => {
+  const others: RetrievalRole[] = ['normative_channel', 'lvc_recall', 'lab_direct', 'lab_multi_query'];
+  for (const role of others) {
+    const p = payloadFor(role, null);
+    assert.equal(p.scorer_context_hmac, null, `${role}: null`);
+    const stamped = { ...p, operational: operational(role) };
+    if (role === 'lab_multi_query') {
+      // the multi-query section is required on this role and is present from the builder
+      assert.ok(stamped.multi_query, 'lab_multi_query carries its section');
+    }
+    const out = codes(stamped);
+    assert.equal(out.includes('scorer_context_hmac_absent'), false, `${role}: a null HMAC is not a defect`);
+    assert.deepEqual(out, [], `${role}: the row is not partial; got [${out.join(', ')}]`);
+  }
+  // And a context handed to a non-primary role is NOT keyed — the combined-context HMAC lives on the
+  // primary row only.
+  assert.equal(payloadFor('normative_channel', 'a context the caller should not have supplied').scorer_context_hmac, null);
+});
+
+// ── 49. The four D17 edge cases ─────────────────────────────────────────────────────────────────
+
+/** Every edge case shares this shape: expected 0, recorded 0, no batch, backend and model 'none',
+ *  served backend null, no soft failure, no rerank attribution anywhere, and validates clean. */
+function assertEdgeShape(role: RetrievalRole, payload: ReturnType<typeof buildRetrievalPayload>, label: string) {
+  assert.equal(payload.expected_batch_count, 0, `${label}: expected 0`);
+  assert.equal(payload.recorded_rerank_batches, 0, `${label}: recorded 0`);
+  assert.deepEqual(payload.batches, [], `${label}: batches []`);
+  assert.equal(payload.intended_backend, 'none', `${label}: intended backend none`);
+  assert.equal(payload.intended_model, 'none', `${label}: intended model none`);
+  assert.equal(payload.served_backend, null, `${label}: no rerank request was made`);
+  assert.equal(payload.rerank_backend_downgraded, false);
+  assert.equal(payload.rerank_soft_failed, false);
+  const c = batchCounters(payload);
+  assert.equal(c.unattributed + c.not_served + c.vertex + c.openrouter + c.local, 0, `${label}: none is unattributed — nothing is attributed at all`);
+  const stamped = { ...payload, operational: operational(role) };
+  assert.deepEqual(codes(stamped), [], `${label}: validates clean; got [${codes(stamped).join(', ')}]`);
+}
+
+test('49.1 — EMPTY FUSION: retrieve() returns before the rerank block exists — fused 0, hydrated 0, expected 0, recorded 0, batches [], backend and model none', () => {
+  const capture = createTelemetryCapture('primary');
+  capture.indexVersion = 'embedding|nomic-embed-text';
+  const p = buildRetrievalPayload(capture, { hmacKey: KEY, scorerContext: '' });
+  assert.equal(p.fused_candidate_count, 0);
+  assert.equal(p.hydrated_candidate_count, 0);
+  assert.deepEqual(p.fused_candidate_ids, []);
+  assert.deepEqual(p.hydrated_candidate_ids, []);
+  assert.deepEqual(p.pre_rerank_passage_hmacs, [], 'zero hydrated rows, zero passage HMACs');
+  assertEdgeShape('primary', p, 'empty fusion');
+});
+
+test('49.2 — HYDRATE EMPTIED: fused > 0, hydrated 0 — the same shape, and the TWO COUNTS DIFFER, which is the point', () => {
+  const capture = createTelemetryCapture('primary');
+  capture.indexVersion = 'embedding|nomic-embed-text';
+  capture.fusedCandidateIds = [41, 42, 43];
+  capture.hydratedCandidateIds = [];
+  capture.passageTexts = [];
+  const p = buildRetrievalPayload(capture, { hmacKey: KEY, scorerContext: '' });
+  assert.equal(p.fused_candidate_count, 3, 'the pool after the cap');
+  assert.equal(p.hydrated_candidate_count, 0, 'what the re-read returned');
+  assert.notEqual(p.fused_candidate_count, p.hydrated_candidate_count, 'a dropped row is OBSERVABLE');
+  assert.deepEqual(p.fused_candidate_ids, [41, 42, 43]);
+  assert.deepEqual(p.hydrated_candidate_ids, []);
+  assert.deepEqual(p.pre_rerank_passage_hmacs, [], 'one per HYDRATED row — none');
+  assertEdgeShape('primary', p, 'hydrate emptied');
+});
+
+test('49.3 — the two zero-candidate shapes are DISTINGUISHABLE: empty fusion (0/0) and hydrate emptied (3/0) differ in fused_candidate_count and agree in hydrated_candidate_count', () => {
+  const emptied = createTelemetryCapture('primary');
+  emptied.indexVersion = 'embedding|nomic-embed-text';
+  emptied.fusedCandidateIds = [41, 42, 43];
+  const a = buildRetrievalPayload(createTelemetryCapture('primary'), { hmacKey: KEY, scorerContext: '' });
+  const b = buildRetrievalPayload(emptied, { hmacKey: KEY, scorerContext: '' });
+  assert.equal(a.hydrated_candidate_count, b.hydrated_candidate_count, 'both hydrated 0');
+  assert.notEqual(a.fused_candidate_count, b.fused_candidate_count, 'but the fused counts differ — 0 and 3');
+  assert.equal(a.fused_candidate_count, 0);
+  assert.equal(b.fused_candidate_count, 3);
+});
+
+test('49.4 — ONE HYDRATED CANDIDATE: rerank() is never entered — hydrated 1, expected 0, recorded 0, batches [], backend and model none', () => {
+  const capture = createTelemetryCapture('primary');
+  capture.indexVersion = 'embedding|nomic-embed-text';
+  capture.fusedCandidateIds = [7];
+  capture.hydratedCandidateIds = [7];
+  capture.passageTexts = ['the one passage'];
+  capture.orderedFinalCandidateIds = [7];
+  const p = buildRetrievalPayload(capture, { hmacKey: KEY, scorerContext: 'Cited context: the one passage' });
+  assert.equal(p.hydrated_candidate_count, 1);
+  assert.equal(p.fused_candidate_count, 1);
+  assert.equal(p.pre_rerank_passage_hmacs?.length, 1, 'one passage HMAC for the one hydrated row');
+  assert.deepEqual(p.ordered_final_candidate_ids, [7]);
+  assert.notEqual(p.scorer_context_hmac, null, 'with one candidate the context is non-empty and keyed');
+  assertEdgeShape('primary', p, 'one hydrated candidate');
+});
+
+test('49.5 — RERANKER DISABLED (normative_channel always; lab_direct when the caller sets it): several hydrated candidates, the same shape as the one-candidate case', () => {
+  const disabledRoles: RetrievalRole[] = ['normative_channel', 'lab_direct'];
+  for (const role of disabledRoles) {
+    const capture = createTelemetryCapture(role);
+    capture.indexVersion = 'embedding|nomic-embed-text';
+    capture.fusedCandidateIds = [21, 22, 23, 24];
+    capture.hydratedCandidateIds = [21, 22, 23, 24];
+    capture.passageTexts = ['p1', 'p2', 'p3', 'p4'];
+    capture.orderedFinalCandidateIds = [21, 22, 23, 24];
+    const p = buildRetrievalPayload(capture, { hmacKey: KEY, scorerContext: null });
+    assert.equal(p.hydrated_candidate_count, 4, `${role}: four hydrated`);
+    assert.equal(p.pre_rerank_passage_hmacs?.length, 4);
+    assert.equal(p.scorer_context_hmac, null, `${role}: no scorer HMAC off primary`);
+    assertEdgeShape(role, p, `reranker disabled on ${role}`);
+  }
+});
