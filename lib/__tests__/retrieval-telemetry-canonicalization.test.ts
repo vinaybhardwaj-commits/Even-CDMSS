@@ -32,8 +32,8 @@
  */
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, readdirSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { canonicalJson } from '../retrieval-telemetry-core';
@@ -42,7 +42,19 @@ type Obj = Record<string, unknown>;
 /** A type GUARD, not a cast. */
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
 
-// ── The disposable cluster ──────────────────────────────────────────────────────────────────────
+// ── The disposable cluster — BOUNDED AND FAIL-LOUD at every step (addendum v26 §3.7) ─────────────
+//
+// Saul review 37 found four defects in the first harness: `pg_ctl stop` failures were swallowed, the
+// data directory was deleted whether or not the server had stopped, subprocesses had no timeout,
+// and a failed startup could bypass teardown. Each is closed below:
+//   · every PostgreSQL tool runs through `runPg`, with a hard TIMEOUT; a timeout or a non-zero exit is
+//     a named failure carrying the tool, its arguments and its stderr — nothing is swallowed;
+//   · `teardown` STOPS, then VERIFIES with `pg_ctl status` (exit 3 = no server running) and the
+//     absence of `postmaster.pid`, and only THEN removes the directory and confirms it is gone;
+//   · if shutdown cannot be verified the directory is LEFT IN PLACE and the failure names it — an
+//     orphaned directory a human can find beats an orphaned process nobody can;
+//   · a failed startup runs the same teardown before the failure is rethrown, so it cannot bypass it.
+// The teardown logic takes its runner as a parameter so 56.7 can prove those rules with a fake.
 
 /** Where PostgreSQL's binaries live on this machine: `PGBIN` if set, else the first directory on
  *  PATH or in the usual Homebrew / Debian / pgsql locations that holds all three tools. */
@@ -64,59 +76,127 @@ function findPgBin(): string {
   throw new Error('proof 56 needs a local PostgreSQL (initdb, pg_ctl, psql) to create a DISPOSABLE cluster; none found on PATH, PGBIN, Homebrew or /usr/lib/postgresql. The JSONB round trip is not simulated (addendum v25 §3.4).');
 }
 
-const cluster = { bin: '', dir: '', port: 0, up: false, version: '' };
+/** The result of one bounded tool run. `status` is null when the process was killed on timeout. */
+interface PgRun { status: number | null; stdout: string; stderr: string; timedOut: boolean }
+/** A runner: the real one below, or 56.7's fake. */
+type PgRunner = (tool: string, args: string[], timeoutMs: number, input?: string) => PgRun;
+
+const TIMEOUTS = { initdb: 60_000, start: 45_000, stop: 45_000, status: 10_000, sql: 20_000 };
+
+/** The REAL runner: never throws, always bounded. */
+function makeRunner(bin: string): PgRunner {
+  return (tool, args, timeoutMs, input) => {
+    const r = spawnSync(join(bin, tool), args, { input, encoding: 'utf8', timeout: timeoutMs, killSignal: 'SIGKILL' });
+    const timedOut = r.error !== undefined && 'code' in r.error && r.error.code === 'ETIMEDOUT';
+    return { status: r.status, stdout: r.stdout ?? '', stderr: (r.stderr ?? '') + (r.error && !timedOut ? `\n${r.error.message}` : ''), timedOut };
+  };
+}
+/** Run and REQUIRE success: a timeout or a non-zero exit throws, naming the tool, its arguments and stderr. */
+function must(run: PgRunner, tool: string, args: string[], timeoutMs: number, input?: string): string {
+  const r = run(tool, args, timeoutMs, input);
+  if (r.timedOut) throw new Error(`proof 56: ${tool} ${args.join(' ')} TIMED OUT after ${timeoutMs} ms (killed); stderr: ${r.stderr.trim()}`);
+  if (r.status !== 0) throw new Error(`proof 56: ${tool} ${args.join(' ')} exited ${r.status}; stderr: ${r.stderr.trim()}`);
+  return r.stdout;
+}
+
+interface Cluster { dir: string; data: string; port: number; started: boolean }
 const PGUSER = 'cdmss_proof56';
+const startOptions = (c: Cluster) => `-c listen_addresses=127.0.0.1 -c port=${c.port} -c unix_socket_directories=${c.dir}`;
+
+/**
+ * Stop, VERIFY, then delete — in that order, and never delete on an unverified stop.
+ * Returns what happened; THROWS (leaving the directory in place, naming it) when the server cannot be
+ * verified stopped or the directory survives removal.
+ */
+function teardown(c: Cluster, run: PgRunner): { stopStatus: number | null; verifiedStopped: boolean; deleted: boolean } {
+  let stopStatus: number | null = null;
+  if (c.started) {
+    const stop = run('pg_ctl', ['-D', c.data, '-m', 'fast', '-w', '-t', '30', 'stop'], TIMEOUTS.stop);
+    stopStatus = stop.timedOut ? null : stop.status;
+    // A failed stop is NOT swallowed: it is carried into the failure below if verification also fails.
+    if (stopStatus !== 0) console.warn(`proof 56: pg_ctl stop ${stop.timedOut ? 'timed out' : `exited ${stop.status}`}: ${stop.stderr.trim()}`);
+  }
+  // VERIFY. `pg_ctl status` exits 3 when no server is running on the data directory (4 when the
+  // directory itself is inaccessible — nothing to stop there either); 0 means it IS running.
+  const status = run('pg_ctl', ['-D', c.data, 'status'], TIMEOUTS.status);
+  const notRunning = !status.timedOut && (status.status === 3 || status.status === 4);
+  const pidFile = join(c.data, 'postmaster.pid');
+  const verifiedStopped = notRunning && !existsSync(pidFile);
+  if (!verifiedStopped) {
+    throw new Error(
+      `proof 56: SHUTDOWN NOT VERIFIED — the data directory is LEFT IN PLACE for a human: ${c.dir} `
+      + `(pg_ctl stop → ${stopStatus === null ? 'timed out / not run' : `exit ${stopStatus}`}; `
+      + `pg_ctl status → ${status.timedOut ? 'timed out' : `exit ${status.status}`}: ${status.stdout.trim()} ${status.stderr.trim()}; `
+      + `postmaster.pid ${existsSync(pidFile) ? 'PRESENT' : 'absent'}). Nothing was deleted.`,
+    );
+  }
+  rmSync(c.dir, { recursive: true, force: true });
+  if (existsSync(c.dir)) throw new Error(`proof 56: the cluster directory survived removal: ${c.dir}`);
+  return { stopStatus, verifiedStopped, deleted: true };
+}
+
+/** initdb, start (bounded, up to five random ports), or tear down and rethrow. */
+function startCluster(run: PgRunner): Cluster {
+  const dir = mkdtempSync(join(tmpdir(), 'cdmss-proof56-pg-'));
+  const c: Cluster = { dir, data: join(dir, 'data'), port: 0, started: false };
+  try {
+    must(run, 'initdb', ['-D', c.data, '-A', 'trust', '-U', PGUSER, '--no-locale', '-E', 'UTF8'], TIMEOUTS.initdb);
+    let lastErr = '';
+    for (let attempt = 0; attempt < 5 && !c.started; attempt++) {
+      c.port = 20000 + Math.floor(Math.random() * 20000);
+      const r = run('pg_ctl', ['-D', c.data, '-w', '-t', '30', '-l', join(dir, 'postgres.log'), '-o', startOptions(c), 'start'], TIMEOUTS.start);
+      if (!r.timedOut && r.status === 0) { c.started = true; break; }
+      lastErr = r.timedOut ? `timed out after ${TIMEOUTS.start} ms` : `exit ${r.status}: ${r.stderr.trim()}`;
+      // A start that failed may still have left a postmaster behind (a timeout especially): verify
+      // and stop it before the next attempt, through the same teardown rules — but keep the directory.
+      const st = run('pg_ctl', ['-D', c.data, 'status'], TIMEOUTS.status);
+      if (!st.timedOut && st.status === 0) { c.started = true; break; }   // it is running after all — use it
+    }
+    if (!c.started) throw new Error(`proof 56: the disposable PostgreSQL did not start on 127.0.0.1 after 5 attempts; last: ${lastErr}`);
+    return c;
+  } catch (e) {
+    // A failed startup MUST NOT bypass teardown: verify-then-delete, or leave the directory named.
+    teardown(c, run);
+    throw e;
+  }
+}
+
+const cluster: { bin: string; run: PgRunner; c: Cluster | null; version: string } = { bin: '', run: () => ({ status: null, stdout: '', stderr: 'no runner', timedOut: false }), c: null, version: '' };
 
 /** Run SQL from stdin against the disposable cluster, psql variables interpolated (`:'name'`), one
- *  value per line, unaligned, tuples only. Fails on the first SQL error. */
+ *  value per line, unaligned, tuples only. Bounded; the first SQL error fails by name. */
 function sql(text: string, vars: Record<string, string> = {}): string[] {
-  const args = ['-X', '-q', '-A', '-t', '-h', '127.0.0.1', '-p', String(cluster.port), '-U', PGUSER, '-d', 'postgres', '-v', 'ON_ERROR_STOP=1'];
+  assert.ok(cluster.c, 'the cluster is up');
+  const args = ['-X', '-q', '-A', '-t', '-h', '127.0.0.1', '-p', String(cluster.c.port), '-U', PGUSER, '-d', 'postgres', '-v', 'ON_ERROR_STOP=1'];
   for (const [k, v] of Object.entries(vars)) args.push('-v', `${k}=${v}`);
   args.push('-f', '-');
-  const out = execFileSync(join(cluster.bin, 'psql'), args, { input: text, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
-  return out.split('\n').filter((l) => l.length > 0);
+  return must(cluster.run, 'psql', args, TIMEOUTS.sql, text).split('\n').filter((l) => l.length > 0);
 }
 
 before(() => {
   cluster.bin = findPgBin();
-  cluster.dir = mkdtempSync(join(tmpdir(), 'cdmss-proof56-pg-'));
-  const data = join(cluster.dir, 'data');
-  execFileSync(join(cluster.bin, 'initdb'), ['-D', data, '-A', 'trust', '-U', PGUSER, '--no-locale', '-E', 'UTF8'], { stdio: ['ignore', 'pipe', 'pipe'] });
-  // A random high port on loopback; retry a few times if it is taken.
-  let started = false;
-  let lastErr = '';
-  for (let attempt = 0; attempt < 5 && !started; attempt++) {
-    cluster.port = 20000 + Math.floor(Math.random() * 20000);
-    try {
-      execFileSync(join(cluster.bin, 'pg_ctl'), [
-        '-D', data, '-w', '-t', '30', '-l', join(cluster.dir, 'postgres.log'),
-        '-o', `-c listen_addresses=127.0.0.1 -c port=${cluster.port} -c unix_socket_directories=${cluster.dir}`,
-        'start',
-      ], { stdio: ['ignore', 'pipe', 'pipe'] });
-      started = true;
-    } catch (e) {
-      lastErr = e instanceof Error ? e.message : String(e);
-    }
-  }
-  assert.ok(started, `the disposable PostgreSQL started on 127.0.0.1: ${lastErr}`);
-  cluster.up = true;
+  cluster.run = makeRunner(cluster.bin);
+  cluster.c = startCluster(cluster.run);
   cluster.version = sql('SELECT version();')[0] ?? '';
   sql('CREATE TABLE proof56_docs (id integer PRIMARY KEY, doc jsonb NOT NULL);');
 });
 
 after(() => {
-  if (cluster.up) {
-    try { execFileSync(join(cluster.bin, 'pg_ctl'), ['-D', join(cluster.dir, 'data'), '-m', 'fast', '-w', 'stop'], { stdio: ['ignore', 'pipe', 'pipe'] }); } catch { /* the directory is removed either way */ }
-    cluster.up = false;
+  // Stop → verify → delete. A failure here FAILS the run and names the directory it left behind.
+  if (cluster.c) {
+    const c = cluster.c;
+    cluster.c = null;
+    const outcome = teardown(c, cluster.run);
+    assert.equal(outcome.verifiedStopped && outcome.deleted, true, 'the disposable cluster was verified stopped and its directory removed');
   }
-  if (cluster.dir) rmSync(cluster.dir, { recursive: true, force: true });
 });
 
 // ── The proofs ──────────────────────────────────────────────────────────────────────────────────
 
 test('56.0 — the round trip runs against a REAL, DISPOSABLE PostgreSQL on 127.0.0.1 in a temporary directory: it answers SELECT version(), holds the one empty table, and is not any shared or production database', () => {
   assert.match(cluster.version, /^PostgreSQL \d+/, `a real server answered: ${cluster.version}`);
-  assert.ok(cluster.dir.startsWith(tmpdir()), 'its data directory is under the OS temp dir — created by this file, destroyed by this file');
+  assert.ok(cluster.c && cluster.c.dir.startsWith(tmpdir()), 'its data directory is under the OS temp dir — created by this file, destroyed by this file');
+  assert.ok(cluster.c && cluster.c.started, 'and it was started by this file');
   assert.equal(sql('SELECT count(*) FROM proof56_docs;')[0], '0', 'the table starts empty');
   assert.equal(sql("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public';")[0], '1', 'the cluster holds nothing but this file\'s one table');
   assert.equal(sql('SELECT host(inet_server_addr());')[0], '127.0.0.1', 'loopback only');
@@ -222,4 +302,64 @@ test('56.6 — NON-FINITE numbers are rejected at any depth, and finite ones pas
   const [back] = sql('SELECT doc::text FROM proof56_docs WHERE id = 3;');
   assert.ok(back);
   assert.equal(canonicalJson(JSON.parse(back)), stored, 'numeric values survive jsonb (numeric) and re-canonicalize identically');
+});
+
+test('56.7 — THE LIFECYCLE RULES, proved against a fake runner (v26 §3.7): deletion follows VERIFIED shutdown; a stop failure with the server still running LEAVES the directory in place and fails by name; a bounded timeout is a named failure, not a hang', () => {
+  // A: stop succeeds, status says "no server running", no pid file → verified → deleted, confirmed gone.
+  const dirA = mkdtempSync(join(tmpdir(), 'cdmss-proof56-fake-')); writeFileSync(join(dirA, 'marker'), 'x');
+  const fakeOk: PgRunner = (tool, args) => {
+    if (tool === 'pg_ctl' && args.includes('stop')) return { status: 0, stdout: 'server stopped', stderr: '', timedOut: false };
+    if (tool === 'pg_ctl' && args.includes('status')) return { status: 3, stdout: 'pg_ctl: no server running', stderr: '', timedOut: false };
+    return { status: 0, stdout: '', stderr: '', timedOut: false };
+  };
+  const a = teardown({ dir: dirA, data: join(dirA, 'data'), port: 1, started: true }, fakeOk);
+  assert.deepEqual(a, { stopStatus: 0, verifiedStopped: true, deleted: true });
+  assert.equal(existsSync(dirA), false, 'A: the directory is gone');
+
+  // B: stop FAILS and status says the server is STILL RUNNING → nothing is deleted, the failure names the dir.
+  const dirB = mkdtempSync(join(tmpdir(), 'cdmss-proof56-fake-')); writeFileSync(join(dirB, 'marker'), 'x');
+  const fakeStillRunning: PgRunner = (tool, args) => {
+    if (tool === 'pg_ctl' && args.includes('stop')) return { status: 1, stdout: '', stderr: 'pg_ctl: could not stop', timedOut: false };
+    if (tool === 'pg_ctl' && args.includes('status')) return { status: 0, stdout: 'pg_ctl: server is running (PID: 4242)', stderr: '', timedOut: false };
+    return { status: 0, stdout: '', stderr: '', timedOut: false };
+  };
+  const warn = console.warn;
+  const warned: string[] = [];
+  console.warn = (...a: unknown[]) => { warned.push(a.map(String).join(' ')); };
+  try {
+    assert.throws(
+      () => teardown({ dir: dirB, data: join(dirB, 'data'), port: 1, started: true }, fakeStillRunning),
+      (e: unknown) => e instanceof Error && e.message.includes('SHUTDOWN NOT VERIFIED') && e.message.includes(dirB) && e.message.includes('Nothing was deleted'),
+      'B: an unverified shutdown fails by name and names the directory',
+    );
+  } finally { console.warn = warn; }
+  assert.equal(existsSync(join(dirB, 'marker')), true, 'B: the directory was LEFT IN PLACE');
+  assert.ok(warned.some((w) => w.includes('pg_ctl stop exited 1')), 'B: the stop failure was reported, not swallowed');
+  rmSync(dirB, { recursive: true, force: true });   // a plain temp dir with a marker file — no server ever ran here
+
+  // C: the stop TIMED OUT but status verifies "no server running" → deletion proceeds (verification, not the stop's exit, decides).
+  const dirC = mkdtempSync(join(tmpdir(), 'cdmss-proof56-fake-')); writeFileSync(join(dirC, 'marker'), 'x');
+  const fakeStopTimedOut: PgRunner = (tool, args) => {
+    if (tool === 'pg_ctl' && args.includes('stop')) return { status: null, stdout: '', stderr: '', timedOut: true };
+    if (tool === 'pg_ctl' && args.includes('status')) return { status: 3, stdout: 'pg_ctl: no server running', stderr: '', timedOut: false };
+    return { status: 0, stdout: '', stderr: '', timedOut: false };
+  };
+  console.warn = () => {};
+  let c: { stopStatus: number | null; verifiedStopped: boolean; deleted: boolean };
+  try { c = teardown({ dir: dirC, data: join(dirC, 'data'), port: 1, started: true }, fakeStopTimedOut); } finally { console.warn = warn; }
+  assert.deepEqual(c, { stopStatus: null, verifiedStopped: true, deleted: true });
+  assert.equal(existsSync(dirC), false);
+
+  // D: a stale postmaster.pid with status "no server running" is NOT verified — the pid file is evidence.
+  const dirD = mkdtempSync(join(tmpdir(), 'cdmss-proof56-fake-')); const dataD = join(dirD, 'data');
+  rmSync(dataD, { recursive: true, force: true }); mkdirSync(dataD, { recursive: true }); writeFileSync(join(dataD, 'postmaster.pid'), '4242');
+  assert.throws(() => teardown({ dir: dirD, data: dataD, port: 1, started: false }, fakeOk), /postmaster\.pid PRESENT/, 'D: a pid file blocks deletion');
+  assert.equal(existsSync(join(dataD, 'postmaster.pid')), true, 'D: left in place');
+  rmSync(dirD, { recursive: true, force: true });
+
+  // E: the REAL runner is bounded: a tool that outlives its timeout is killed and reported as a timeout, never a hang.
+  const slow = makeRunner('/bin');
+  const r = slow('sleep', ['5'], 200);
+  assert.equal(r.timedOut, true, 'E: a 5 s sleep under a 200 ms timeout is reported as timed out');
+  assert.throws(() => must(slow, 'sleep', ['5'], 200), /TIMED OUT after 200 ms/, 'E: and must() names it');
 });

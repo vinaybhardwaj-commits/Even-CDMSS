@@ -36,6 +36,17 @@
  * and nothing in this repository can drive it in-process; the pin proves the wiring is written, not
  * that it executes — stated here rather than papered over).
  *
+ * ⚠️ REPAIRED AGAIN IN THE SECOND PASS 3 REPAIR (Saul review 37; addendum v26 §3.1–§3.6). The validator
+ * now DERIVES its field checks from `D17_FIELD_MATRIX`, and this file ENUMERATES that matrix: for every
+ * entry it generates an absent case, a null case and a wrong-type case (45.200 onwards), prints the
+ * matrix length as the ONLY coverage number this file states, checks D17's transcribed field list
+ * against the matrix, and proves `validateManifest` never throws on malformed input — `batches: [null]`
+ * included (v26 §3.2). `candidate_start` has its own rows (v26 §3.3); the HMAC-absent licence's
+ * accompanying fields must be present and typed (v26 §3.4); the variant-generation usage pair is
+ * validated (v26 §3.5); and proof 47 now EXECUTES the production terminal-payload path through
+ * `retrievalTerminalsSeam` in `lib/opd-note-audit.ts` with real `assembleAuditContext` output (v26
+ * §3.6, tests 47.7/47.8) — the source pin 47.6 remains as supporting evidence only.
+ *
  * ⚠️ D17 SAYS `retrieval_config` "{} permitted"; addendum v7 §10 (manifest version 3) then made
  * `rerank_temperature` and `rerank_seed_status` REQUIRED inside it, so `{}` now carries those two
  * field-absent codes. 45 pins today's contract and names the amendment beside it.
@@ -43,13 +54,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  validateManifest, telemetryHmac, batchCounters, MANIFEST_SCHEMA_VERSION,
+  validateManifest, telemetryHmac, batchCounters, MANIFEST_SCHEMA_VERSION, D17_FIELD_MATRIX,
   type StampedRetrievalManifest, type OperationalTelemetry, type RetrievalRole, type ManifestBatch,
+  type D17FieldRule,
 } from '../retrieval-telemetry-core';
 import { createTelemetryCapture, buildRetrievalPayload } from '../retrieval-capture';
 import { readFileSync } from 'node:fs';
-import { assembleAuditContext } from '../opd-note-audit.ts';
+import { assembleAuditContext, retrievalTerminalsSeam, type AuditOpdOpts } from '../opd-note-audit.ts';
 import type { CiteHit } from '../citations-core.ts';
+import { installDbStub, run as lifecycleRun } from './telemetry-db-stub';
+import type { LifecycleHandle, ManifestDefectsByRole } from '../retrieval-telemetry-store';
 
 // ── A stamped manifest the validator accepts, hand-built from literals ─────────────────────────
 type Obj = Record<string, unknown>;
@@ -201,8 +215,19 @@ const ROWS: Row[] = [
   { field: 'batches', how: 'null ([] is permitted)', mutate: (m) => { m.batches = null; }, code: 'batches_absent' },
   { field: 'batch.batch_index', how: 'missing', mutate: (m) => del(batch0(m), 'batch_index'), code: 'batch_index_absent' },
   { field: 'batch.batch_index', how: 'duplicated', mutate: (m) => { const b = batch0(m); m.batches = [b, { ...b, candidate_start: 3, candidate_end: 6 }]; m.expected_batch_count = 2; m.recorded_rerank_batches = 2; }, code: 'duplicate_batch_index' },
-  { field: 'batch.candidate_start/end', how: 'null', mutate: (m) => { batch0(m).candidate_end = null; }, code: 'batch_boundaries_absent' },
-  { field: 'batch.candidate_start/end', how: 'end <= start', mutate: (m) => { batch0(m).candidate_end = 0; }, code: 'bad_candidate_boundaries' },
+  // v26 §3.3: candidate_start gets its OWN absent-and-invalid rows, independent of candidate_end.
+  { field: 'batch.candidate_start', how: 'missing (v26 §3.3, its own row)', mutate: (m) => del(batch0(m), 'candidate_start'), code: 'batch_boundaries_absent' },
+  { field: 'batch.candidate_start', how: 'null (v26 §3.3, its own row)', mutate: (m) => { batch0(m).candidate_start = null; }, code: 'batch_boundaries_absent' },
+  { field: 'batch.candidate_start', how: 'invalid: a numeric STRING (v26 §3.3, its own row)', mutate: (m) => { batch0(m).candidate_start = '0'; }, code: 'batch_boundaries_absent' },
+  { field: 'batch.candidate_end', how: 'missing', mutate: (m) => del(batch0(m), 'candidate_end'), code: 'batch_boundaries_absent' },
+  { field: 'batch.candidate_end', how: 'null', mutate: (m) => { batch0(m).candidate_end = null; }, code: 'batch_boundaries_absent' },
+  { field: 'batch.candidate_start/end', how: 'end <= start (the relation, after both fields validate)', mutate: (m) => { batch0(m).candidate_end = 0; }, code: 'bad_candidate_boundaries' },
+  { field: 'batch (member)', how: 'a null member — reported, never dereferenced (v26 §3.2)', mutate: (m) => { m.batches = [null]; }, code: 'batch_member_invalid' },
+  { field: 'batch (member)', how: 'a numeric member', mutate: (m) => { m.batches = [42]; }, code: 'batch_member_invalid' },
+  { field: 'batch.missing_score_keys', how: 'missing (D15 count)', mutate: (m) => del(batch0(m), 'missing_score_keys'), code: 'missing_score_keys_absent' },
+  { field: 'batch.nonnumeric_score_keys', how: 'invalid: negative (D15 count)', mutate: (m) => { batch0(m).nonnumeric_score_keys = -1; }, code: 'nonnumeric_score_keys_absent' },
+  { field: 'telemetry_error', how: 'missing (D8 — the licence declaration must be a present field)', mutate: (m) => del(m, 'telemetry_error'), code: 'telemetry_error_field_absent' },
+  { field: 'telemetry_error', how: 'invalid: an unknown error string', mutate: (m) => { m.telemetry_error = 'something_else'; }, code: 'telemetry_error_invalid' },
   { field: 'batch.intended_provider', how: 'empty string', mutate: (m) => { batch0(m).intended_provider = ''; }, code: 'batch_intended_provider_absent' },
   { field: 'batch.intended_model', how: 'null', mutate: (m) => { batch0(m).intended_model = null; }, code: 'batch_intended_model_absent' },
   { field: 'batch.served_route_class', how: 'missing', mutate: (m) => del(batch0(m), 'served_route_class'), code: 'batch_served_route_class_absent' },
@@ -259,6 +284,14 @@ const MQ_ROWS: Row[] = [
   { field: 'multi_query.variant_generation.served_route_class', how: 'missing (null is permitted for a stage that did not run)', mutate: (m) => del(nested(nested(m, 'multi_query'), 'variant_generation'), 'served_route_class'), code: 'variant_generation_served_route_class_field_absent' },
   { field: 'multi_query.variant_generation.generated_variant_count', how: 'null', mutate: (m) => { nested(nested(m, 'multi_query'), 'variant_generation').generated_variant_count = null; }, code: 'generated_variant_count_absent' },
   { field: 'multi_query.variant_generation.attempts', how: 'a member with an outcome outside the six', mutate: (m) => { nested(nested(m, 'multi_query'), 'variant_generation').attempts = [{ provider: 'vertex', attempt: 1, outcome: 'nope', status: null }]; }, code: 'attempt_outcome_absent_or_invalid' },
+  { field: 'multi_query.variant_generation.prompt_tokens', how: 'missing (v26 §3.5, null is permitted)', mutate: (m) => del(nested(nested(m, 'multi_query'), 'variant_generation'), 'prompt_tokens'), code: 'variant_generation_prompt_tokens_field_absent' },
+  { field: 'multi_query.variant_generation.prompt_tokens', how: 'invalid: a numeric STRING (v26 §3.5)', mutate: (m) => { nested(nested(m, 'multi_query'), 'variant_generation').prompt_tokens = '150'; }, code: 'variant_generation_prompt_tokens_invalid' },
+  { field: 'multi_query.variant_generation.completion_tokens', how: 'missing (v26 §3.5, null is permitted)', mutate: (m) => del(nested(nested(m, 'multi_query'), 'variant_generation'), 'completion_tokens'), code: 'variant_generation_completion_tokens_field_absent' },
+  { field: 'multi_query.variant_generation.completion_tokens', how: 'invalid: negative (v26 §3.5)', mutate: (m) => { nested(nested(m, 'multi_query'), 'variant_generation').completion_tokens = -3; }, code: 'variant_generation_completion_tokens_invalid' },
+  { field: 'multi_query.variant_generation.served_model', how: 'missing (null is permitted)', mutate: (m) => del(nested(nested(m, 'multi_query'), 'variant_generation'), 'served_model'), code: 'variant_generation_served_model_field_absent' },
+  { field: 'multi_query.variants (member)', how: 'a null member (v26 §3.2)', mutate: (m) => { nested(m, 'multi_query').variants = [null, { index: 1, outcome: 'success', candidate_count: 2 }, { index: 2, outcome: 'zero_hits', candidate_count: 0 }]; }, code: 'variant_member_invalid' },
+  { field: 'multi_query.variants[].outcome', how: 'invalid', mutate: (m) => { const vs = nested(m, 'multi_query').variants; assert.ok(isObjArray(vs)); vs[0].outcome = 'ok'; }, code: 'variant_outcome_absent_or_invalid' },
+  { field: 'multi_query.variants[].candidate_count', how: 'missing', mutate: (m) => { const vs = nested(m, 'multi_query').variants; assert.ok(isObjArray(vs)); del(vs[1], 'candidate_count'); }, code: 'variant_candidate_count_absent_or_invalid' },
   { field: 'multi_query.variants', how: 'null', mutate: (m) => { nested(m, 'multi_query').variants = null; }, code: 'variants_absent' },
   { field: 'multi_query.variants', how: 'length ≠ generated_variant_count + 1', mutate: (m) => { nested(m, 'multi_query').variants = []; }, code: 'variant_arity_mismatch' },
 ];
@@ -341,6 +374,225 @@ test(`45.${n} — the HMAC-absent licence covers EXACTLY the four D8 fields, and
   for (const c of ['hmac_key_version_absent', 'expansion_input_hmac_absent', 'pre_rerank_passage_hmacs_absent', 'scorer_context_hmac_absent']) {
     assert.ok(out.includes(c), `${c} without the licence`);
   }
+});
+
+// ── 45.2xx — THE MATRIX, ENUMERATED (v26 §3.1). Generated: one absent, one null, one wrong-type case
+// per entry of D17_FIELD_MATRIX. The number this file states is the matrix length, printed below. ──
+
+/** Walk a dotted path (a `[]` segment = member 0 of that array) to the parent object of the last key. */
+function parentAt(m: Obj, path: string): Obj {
+  const segments = path.split('.');
+  let cur: Obj = m;
+  for (const seg of segments.slice(0, -1)) {
+    if (seg.endsWith('[]')) {
+      const arr = cur[seg.slice(0, -2)];
+      assert.ok(isObjArray(arr) && arr.length > 0, `${path}: fixture has array ${seg}`);
+      cur = arr[0];
+    } else {
+      cur = nested(cur, seg);
+    }
+  }
+  return cur;
+}
+const lastKey = (path: string): string => path.split('.').pop() ?? path;
+/** A present, non-null value of the WRONG type for the rule. */
+function wrongTyped(rule: D17FieldRule): unknown {
+  switch (rule.type) {
+    case 'string': case 'nonempty_string': return 4242;
+    case 'boolean': return 'false';
+    case 'finite_number': case 'nonneg_number': return 'not-a-number';
+    case 'object': return ['not', 'an', 'object'];
+    case 'array': case 'id_array': case 'string_array': return 'not-an-array';
+    case 'attempts': return 'not-an-attempt-list';
+    case 'enum': return 'not-a-member-of-this-enum';
+  }
+}
+/** The fixture a rule is exercised against: the lab_multi_query manifest for the multi_query section. */
+const fixtureFor = (rule: D17FieldRule): Obj => rule.path.startsWith('multi_query.') ? validMultiQueryManifest() : asObj(validManifest());
+/** Whether, against that fixture, null is PERMITTED for the rule (the fixture is keyed, expanded,
+ *  batched, successful, and primary or lab_multi_query — so every conditional resolves). */
+function nullPermittedInFixture(rule: D17FieldRule): boolean {
+  switch (rule.nullable) {
+    case 'always': return true;
+    case 'unless_failure': return true;                 // the fixture's outcome is success
+    case 'primary_hmac': return rule.path.startsWith('multi_query.') ? true : false;   // primary keyed → required
+    default: return false;                              // never / licence / skipped / no_batches: the fixture makes each 'must_not'
+  }
+}
+
+let matrixCases = 0;
+const MATRIX_BASE = 200;
+D17_FIELD_MATRIX.forEach((rule, i) => {
+  const base = MATRIX_BASE + i * 3;
+  const key = lastKey(rule.path);
+  if (key.endsWith('[]')) {
+    // A MEMBER rule: [null] and [42] members are reported by name and never dereferenced.
+    matrixCases += 3;
+    test(`45.${base} — matrix ${rule.path} (${rule.origin}): a null member → ${rule.invalid}, without throwing`, () => {
+      const m = fixtureFor(rule); parentAt(m, rule.path)[key.slice(0, -2)] = [null];
+      let out: string[] = [];
+      assert.doesNotThrow(() => { out = codes(m); });
+      assert.ok(out.includes(rule.invalid), `got [${out.join(', ')}]`);
+    });
+    test(`45.${base + 1} — matrix ${rule.path} (${rule.origin}): a numeric member → ${rule.invalid}`, () => {
+      const m = fixtureFor(rule); parentAt(m, rule.path)[key.slice(0, -2)] = [42];
+      assert.ok(codes(m).includes(rule.invalid));
+    });
+    test(`45.${base + 2} — matrix ${rule.path} (${rule.origin}): an array member → ${rule.invalid}`, () => {
+      const m = fixtureFor(rule); parentAt(m, rule.path)[key.slice(0, -2)] = [[]];
+      assert.ok(codes(m).includes(rule.invalid));
+    });
+    return;
+  }
+  matrixCases += 3;
+  test(`45.${base} — matrix ${rule.path} (${rule.origin}): ABSENT → ${rule.absent}`, () => {
+    const m = fixtureFor(rule); del(parentAt(m, rule.path), key);
+    const out = codes(m);
+    assert.ok(out.includes(rule.absent), `got [${out.join(', ')}]`);
+  });
+  const nullOk = nullPermittedInFixture(rule);
+  test(`45.${base + 1} — matrix ${rule.path} (${rule.origin}): NULL → ${nullOk ? 'permitted here, no code' : rule.nullCode}`, () => {
+    const m = fixtureFor(rule); parentAt(m, rule.path)[key] = null;
+    const out = codes(m);
+    if (nullOk) assert.equal(out.includes(rule.nullCode), false, `null is a declaration for ${rule.path}; got [${out.join(', ')}]`);
+    else assert.ok(out.includes(rule.nullCode), `got [${out.join(', ')}]`);
+  });
+  test(`45.${base + 2} — matrix ${rule.path} (${rule.origin}): WRONG TYPE (${JSON.stringify(wrongTyped(rule))}) → ${rule.invalid}`, () => {
+    const m = fixtureFor(rule); parentAt(m, rule.path)[key] = wrongTyped(rule);
+    const out = codes(m);
+    assert.ok(out.includes(rule.invalid), `got [${out.join(', ')}]`);
+  });
+});
+
+test('45.199 — THE COUNT, computed not recalled: the matrix length, the generated cases, unique paths, and D17\'s transcribed field list all resolved into the matrix', () => {
+  // How the number is counted: `D17_FIELD_MATRIX.length` — the enumeration above generated three
+  // cases per entry, so `matrixCases === 3 * D17_FIELD_MATRIX.length` by construction.
+  const n = D17_FIELD_MATRIX.length;
+  assert.equal(matrixCases, 3 * n, 'three generated cases per matrix entry');
+  assert.equal(new Set(D17_FIELD_MATRIX.map((r) => r.path)).size, n, 'every path is unique');
+  console.log(`# proof 45: D17_FIELD_MATRIX has ${n} entries; ${matrixCases} generated cases`);
+  // D17's required-field list, TRANSCRIBED from kickoff v11 D17 (the block that begins "Required
+  // fields, and whether explicit null is permitted"), one entry per field named there. This is the
+  // enumeration; the assertion is that every one resolves to a matrix path.
+  const D17_LIST: string[] = [
+    'manifest_schema_version', 'hmac_key_version',
+    'operational.route', 'operational.route_class', 'operational.retrieval_role',
+    'operational.started_at', 'operational.completed_at', 'operational.invocation_id',
+    'operational.trace_id', 'operational.deployment_sha', 'operational.routing_flags',
+    'operational.active_backfill_run_id', 'operational.active_backfill_target', 'operational.active_backfill_state',
+    'operational.active_lab_experiment_id',
+    'retrieval_outcome', 'retrieval_error_class',
+    'expansion.status', 'expansion.input_hmac', 'expansion.served_route_class', 'expansion.served_model', 'expansion.attempts',
+    'intended_backend', 'intended_model', 'served_backend', 'rerank_backend_downgraded',
+    'retrieval_config', 'corpus_version', 'index_version',
+    'fused_candidate_ids', 'hydrated_candidate_ids', 'pre_rerank_passage_hmacs',
+    'fused_candidate_count', 'hydrated_candidate_count', 'expected_batch_count', 'recorded_rerank_batches',
+    'rerank_soft_failed', 'ordered_final_candidate_ids', 'scorer_context_hmac', 'batches',
+    'batches[].batch_index', 'batches[].candidate_start', 'batches[].candidate_end',
+    'batches[].intended_provider', 'batches[].intended_model', 'batches[].served_route_class', 'batches[].outcome',
+    'batches[].expected_score_keys', 'batches[].finite_score_keys',
+    'batches[].served_model', 'batches[].attempts', 'batches[].prompt_tokens', 'batches[].completion_tokens',
+    'multi_query',
+  ];
+  const paths = new Set(D17_FIELD_MATRIX.map((r) => r.path));
+  // `multi_query` itself is a role-conditional presence rule (required on lab_multi_query, forbidden
+  // elsewhere) that lives in validateManifest's relation pass, so it is checked by 45.94/45.92 rather
+  // than by a matrix row; every other D17 field must be a matrix path.
+  const missing = D17_LIST.filter((f) => f !== 'multi_query' && !paths.has(f));
+  assert.deepEqual(missing, [], `D17 fields with no matrix row: ${missing.join(', ')}`);
+  console.log(`# proof 45: D17's list transcribes to ${D17_LIST.length} fields; ${D17_LIST.length - 1} are matrix rows and 1 (multi_query) is the role-conditional presence rule`);
+  // And the matrix carries what D17's list does not name but the manifest holds — stated as counts
+  // by origin, from the table itself.
+  const byOrigin = new Map<string, number>();
+  for (const r of D17_FIELD_MATRIX) byOrigin.set(r.origin, (byOrigin.get(r.origin) ?? 0) + 1);
+  console.log(`# proof 45: matrix rows by origin: ${[...byOrigin.entries()].map(([k, c]) => `${k}=${c}`).join(', ')}`);
+  assert.equal([...byOrigin.values()].reduce((a, b) => a + b, 0), n);
+});
+
+// ── 45.198 / 45.197 — NEVER THROWS (v26 §3.2) ─────────────────────────────────────────────────────
+
+test('45.198 — batches: [null] returns CODES, it does not throw; and every other malformed member shape is classified the same way', () => {
+  const m = asObj(validManifest());
+  m.batches = [null];
+  let out: string[] = [];
+  assert.doesNotThrow(() => { out = validateManifest(m); }, 'a null batch member must not throw');
+  assert.ok(out.includes('batch_member_invalid'), `the null member is reported by name; got [${out.join(', ')}]`);
+  assert.ok(out.every((c) => typeof c === 'string'), 'codes only');
+  for (const members of [[undefined], [42], ['x'], [[]], [true], [null, null], [{ batch_index: 0 }, null]]) {
+    const w = asObj(validManifest()); w.batches = members;
+    assert.doesNotThrow(() => { validateManifest(w); }, `batches ${JSON.stringify(members)} must not throw`);
+    assert.ok(validateManifest(w).includes('batch_member_invalid'), `batches ${JSON.stringify(members)} reports the member`);
+  }
+});
+
+test('45.197 — validateManifest is STABLE on unknown input: hostile top-level values and a hostile value at every matrix path return string codes and never throw', () => {
+  const HOSTILE: unknown[] = [undefined, null, 'x', 42, true, [], [null], {}, () => 1, Symbol('s'), Number.NaN, new Date(0)];
+  for (const top of HOSTILE) {
+    let out: string[] = [];
+    assert.doesNotThrow(() => { out = validateManifest(top); }, `top-level ${String(typeof top)} must not throw`);
+    assert.ok(Array.isArray(out) && out.length > 0 && out.every((c) => typeof c === 'string'), 'a non-manifest yields codes');
+  }
+  const VALUES: unknown[] = [null, undefined, [], {}, 'x', 0, -1, Number.NaN, Number.POSITIVE_INFINITY, [null], [42], [[]], true, { a: [null] }];
+  let tried = 0;
+  for (const rule of D17_FIELD_MATRIX) {
+    const key = lastKey(rule.path);
+    for (const value of VALUES) {
+      const m = fixtureFor(rule);
+      const parent = parentAt(m, rule.path);
+      parent[key.endsWith('[]') ? key.slice(0, -2) : key] = value;
+      tried += 1;
+      assert.doesNotThrow(() => { validateManifest(m); }, `${rule.path} = ${String(value)} must not throw`);
+    }
+    // and the WHOLE container replaced by a hostile value, when the path has one
+    const segs = rule.path.split('.');
+    if (segs.length > 1) {
+      for (const value of VALUES) {
+        const m = fixtureFor(rule);
+        const container = segs[0].endsWith('[]') ? segs[0].slice(0, -2) : segs[0];
+        m[container] = value;
+        tried += 1;
+        assert.doesNotThrow(() => { validateManifest(m); }, `${container} = ${String(value)} must not throw`);
+      }
+    }
+  }
+  console.log(`# proof 45: ${tried} hostile placements, none threw`);
+  assert.ok(tried > 500);
+});
+
+test('45.196 — THE LICENCE\'S FIELDS (v26 §3.4): under hmac_key_absent the four HMAC fields may be NULL but must be PRESENT and correctly TYPED — a missing hmac_key_version no longer validates clean', () => {
+  const licensed = (): Obj => {
+    const m = asObj(validManifest());
+    m.telemetry_error = 'hmac_key_absent';
+    m.hmac_key_version = null; nested(m, 'expansion').input_hmac = null;
+    m.pre_rerank_passage_hmacs = null; m.scorer_context_hmac = null;
+    return m;
+  };
+  assert.deepEqual(codes(licensed()), [], 'present-and-null under the licence is clean');
+  // ABSENT under the licence: each is a defect — the licence covers the value, not the field.
+  const a = licensed(); del(a, 'hmac_key_version');
+  assert.ok(codes(a).includes('hmac_key_version_field_absent'), 'a MISSING hmac_key_version under the licence is a defect (it validated clean before v26)');
+  const b = licensed(); del(nested(b, 'expansion'), 'input_hmac');
+  assert.ok(codes(b).includes('expansion_input_hmac_field_absent'));
+  const c = licensed(); del(c, 'pre_rerank_passage_hmacs');
+  assert.ok(codes(c).includes('pre_rerank_passage_hmacs_field_absent'));
+  const d = licensed(); del(d, 'scorer_context_hmac');
+  assert.ok(codes(d).includes('scorer_context_hmac_field_absent'));
+  // WRONGLY TYPED under the licence: each is a defect.
+  const e = licensed(); e.hmac_key_version = 1;
+  assert.ok(codes(e).includes('hmac_key_version_absent'), 'a numeric hmac_key_version is not a key version');
+  const f = licensed(); nested(f, 'expansion').input_hmac = 7;
+  assert.ok(codes(f).includes('expansion_input_hmac_invalid'));
+  const g = licensed(); g.pre_rerank_passage_hmacs = 'k1:aa';
+  assert.ok(codes(g).includes('pre_rerank_passage_hmacs_absent'));
+  const h = licensed(); h.scorer_context_hmac = 99;
+  assert.ok(codes(h).includes('scorer_context_hmac_invalid'));
+  // The declaration itself is a field with a type: absent, or any other string, is a defect.
+  const i = licensed(); del(i, 'telemetry_error');
+  assert.ok(codes(i).includes('telemetry_error_field_absent'));
+  const j = licensed(); j.telemetry_error = 'hmac_key_missing';
+  const out = codes(j);
+  assert.ok(out.includes('telemetry_error_invalid'), 'an unrecognised error string is not a licence');
+  assert.ok(out.includes('hmac_key_version_absent'), 'and without the licence the null key version is a defect again');
 });
 
 // ── 46. expansion.served_route_class null with status skipped is VALID ──────────────────────────
@@ -509,6 +761,87 @@ test('47.6 — the PRODUCTION CALLER handoff, pinned in comment-stripped source:
   assert.ok(fn.includes('buildRetrievalPayload(args.normativeCapture, { hmacKey, scorerContext: null })'), 'NORMATIVE: scorerContext is null');
   assert.ok(fn.includes('validateManifest({ ...primaryPayload, operational: primaryOperational })'), 'and the stamped primary manifest is validated by the real validator');
   assert.equal((fn.match(/scorerContext:/g) ?? []).length, 2, 'exactly two handoffs — one per role');
+});
+
+// ── 47.7 / 47.8 — EXECUTION through the production terminal-payload path (v26 §3.6) ────────────────
+/** The production terminal-payload path, driven: real assembleAuditContext output → the SAME
+ *  writeRetrievalTerminals production calls (via retrievalTerminalsSeam) → buildRetrievalPayload,
+ *  validateManifest and the two terminal UPDATEs, captured at the database transport by the stub. */
+async function driveTerminals(hits: CiteHit[], normHits: CiteHit[]) {
+  const KEY_ENV = 'CDMSS_TELEMETRY_HMAC_KEY';
+  const before = process.env[KEY_ENV];
+  process.env[KEY_ENV] = 'proof-47-seam-key';
+  try {
+    const db = installDbStub();
+    db.on(/SET persistence_state = 'retrieval_complete'/, [{ row_revision: 1 }]);
+    const { citedContext } = assembleAuditContext(hits, normHits);
+    const primaryCapture = createTelemetryCapture('primary');
+    primaryCapture.indexVersion = 'embedding|nomic-embed-text';
+    const normativeCapture = createTelemetryCapture('normative_channel');
+    normativeCapture.indexVersion = 'embedding|nomic-embed-text';
+    const handle: LifecycleHandle = {
+      invocationId: 'inv-47-seam',
+      runs: [lifecycleRun('primary', 'run-47-primary'), lifecycleRun('normative_channel', 'run-47-normative')],
+      persistenceIntent: 'will_persist',
+    };
+    const tele: NonNullable<AuditOpdOpts['telemetry']> = {
+      ctx: {
+        invocationId: 'inv-47-seam', route: 'opd_audit_worker', routeClass: 'worker', deploymentSha: null,
+        vercelRequestId: null, startedAt: '2026-08-18T00:00:00.000Z', routingFlags: {}, labExperimentId: null,
+      },
+      route: 'opd_audit_worker',
+      persistenceIntent: 'will_persist',
+    };
+    const published: Array<{ handle: LifecycleHandle; defects: ManifestDefectsByRole | undefined }> = [];
+    const defects = await retrievalTerminalsSeam.writeRetrievalTerminals({
+      tele, handle, publishHandle: (h, d) => { published.push({ handle: h, defects: d }); },
+      traceId: null, startedAt: '2026-08-18T00:00:00.000Z', citedContext, primaryCapture, normativeCapture,
+    });
+    const updates = db.matching(/SET persistence_state = 'retrieval_complete'/);
+    return { citedContext, defects, published, updates, key: 'proof-47-seam-key' };
+  } finally {
+    if (before === undefined) delete process.env[KEY_ENV]; else process.env[KEY_ENV] = before;
+  }
+}
+/** The bound parameters of a captured terminal UPDATE that matter here: $1 run id, $20 context_hmac,
+ *  $21 the canonical manifest JSON. */
+function terminalParams(u: { params: unknown[] }): { runId: unknown; contextHmac: unknown; manifest: unknown } {
+  const manifestText = u.params[20];
+  return { runId: u.params[0], contextHmac: u.params[19], manifest: typeof manifestText === 'string' ? JSON.parse(manifestText) : undefined };
+}
+
+test('47.7 — EXECUTED through the production terminal-payload path: real assembleAuditContext output → writeRetrievalTerminals (the seam) → the PRIMARY terminal write carries the keyed HMAC of exactly those bytes, the NORMATIVE write carries null, both manifests validate clean, and the handle is published after each', async () => {
+  const hits = [lit(1), lit(2), lit(3)];
+  const r = await driveTerminals(hits, [cw(101)]);
+  assert.ok(r.citedContext.includes('literature excerpt 1') && r.citedContext.includes('statement 101'), 'the real rendered context — literature and the normative block');
+  assert.equal(r.updates.length, 2, 'two terminal writes reached the database transport — primary then normative');
+  const primary = terminalParams(r.updates[0]);
+  const normative = terminalParams(r.updates[1]);
+  assert.equal(primary.runId, 'run-47-primary');
+  assert.equal(normative.runId, 'run-47-normative');
+  assert.equal(primary.contextHmac, telemetryHmac(r.key, r.citedContext), 'PRIMARY: context_hmac is the keyed HMAC of the EXACT assembleAuditContext bytes');
+  assert.notEqual(primary.contextHmac, telemetryHmac(r.key, r.citedContext + '\n'), 'one appended byte would be a different context');
+  assert.notEqual(primary.contextHmac, telemetryHmac(r.key, hits.map((h) => h.text).join('\n')), 'not the raw passages — the RENDERED context is what the scorer sees');
+  assert.equal(normative.contextHmac, null, 'NORMATIVE: null — the combined-context HMAC lives on the primary row');
+  assert.ok(isObj(primary.manifest) && isObj(normative.manifest), 'both persisted manifests are objects');
+  assert.equal(primary.manifest.scorer_context_hmac, primary.contextHmac, 'the persisted manifest carries the same HMAC as the column');
+  assert.equal(normative.manifest.scorer_context_hmac, null);
+  assert.deepEqual(validateManifest(primary.manifest), [], 'the persisted primary manifest validates clean');
+  assert.deepEqual(validateManifest(normative.manifest), [], 'the persisted normative manifest validates clean');
+  assert.deepEqual(r.defects, { primary: [], normative_channel: [] }, 'the caller\'s own verdicts, keyed by role');
+  assert.equal(r.published.length, 2, 'the handle was published after each terminal write');
+  assert.deepEqual(r.published[0].defects, { primary: [] }, 'the first snapshot holds only the primary verdict');
+  assert.deepEqual(r.published[1].defects, { primary: [], normative_channel: [] });
+  assert.equal(r.published[1].handle.runs.find((x) => x.role === 'primary')?.expectedRevision, 1, 'the primary run advanced');
+});
+
+test('47.8 — EXECUTED, the EMPTY-STRING case: zero hits render an empty citedContext through the production path, and the primary write carries HMAC(""), a defined value — never null', async () => {
+  const r = await driveTerminals([], []);
+  assert.equal(r.citedContext, '');
+  const primary = terminalParams(r.updates[0]);
+  assert.equal(primary.contextHmac, telemetryHmac(r.key, ''), 'HMAC of the empty string, from the production path');
+  assert.equal(typeof primary.contextHmac, 'string');
+  assert.deepEqual(r.defects, { primary: [], normative_channel: [] }, 'a zero-candidate primary row is not partial');
 });
 
 // ── 49. The four D17 edge cases ─────────────────────────────────────────────────────────────────

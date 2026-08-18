@@ -818,6 +818,18 @@ async function writeRetrievalTerminals(args: {
   return defectsByRole;
 }
 
+/**
+ * ⚠️ TEST SEAM — NARROW AND DEFAULT-PRESERVING (addendum v26 §3.6; Saul review 37 finding 2; the shape
+ * addendum v11 §8 authorized in principle). `writeRetrievalTerminals` above is module-private and its
+ * only caller, `auditOpdNote`, cannot be driven in-process (it needs a note row, retrieval, embeddings,
+ * a live LLM leg and the audit store). Proof 47 must EXECUTE the terminal-payload path with real
+ * `assembleAuditContext` output, not pin its source. This object hands a test the SAME function —
+ * unchanged, unwrapped, the one production calls at step 13. No production caller consults it,
+ * nothing on the default path reads it, `auditOpdNote` and every call site are byte-identical to
+ * before it existed, and it exists only so a test can drive what production drives.
+ */
+export const retrievalTerminalsSeam: { readonly writeRetrievalTerminals: typeof writeRetrievalTerminals } = { writeRetrievalTerminals };
+
 /** The additive block's framing. Lives in the USER-message context only — OPD_AUDIT_SYSTEM is frozen. */
 export const NORMATIVE_CHANNEL_HEADER =
   'NORMATIVE REFERENCES — professional-society recommendations (Choosing Wisely / guidelines). ' +

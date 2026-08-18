@@ -648,242 +648,362 @@ const isNonEmptyStr = (v: unknown): v is string => typeof v === 'string' && v.le
 const isIdArray = (v: unknown): v is number[] => Array.isArray(v) && v.every(isFiniteNum);
 
 /**
+ * ══ THE D17 FIELD MATRIX (addendum v26 §3.1; Saul review 37 finding 1) ═══════════════════════════
+ *
+ * ONE explicit table is the source of truth for which manifest fields exist, whether each may be
+ * null, what type it carries, and which code each failure produces. `validateManifest` DERIVES its
+ * field checks from this table; it no longer carries one hand-written `if` per field. A field that
+ * is not in the matrix is not validated, and that is now a visible fact of the table rather than an
+ * omission somewhere in a 250-line function — which is how `prompt_tokens`, `completion_tokens`,
+ * `candidate_start`'s independence and the licence's accompanying fields all went unchecked while
+ * a manifest was being classified as complete.
+ *
+ * PATHS. Dotted; a segment ending in `[]` walks the array and applies the rule to every MEMBER (a
+ * rule whose path itself ends in `[]` is the member's own shape rule). Sub-rules of a container are
+ * evaluated only when the container is present and of the right shape; the container's own rule
+ * reports otherwise — one code per defect, never a cascade.
+ *
+ * NULLABILITY is a named condition evaluated against the manifest, so "null permitted only under
+ * the HMAC-absent licence" (D8), "only on a skipped stage" (A6), "only with no batches" (A10) and
+ * "required on primary, REQUIRED NULL on the other four roles" (A2, v25 §3.3) are stated as data.
+ *
+ * ORIGIN names the contract line each entry comes from: D17's required-field list, D8's licence,
+ * D15's independent score counts, D16/A6's stage-level null, addendum v7 §10's decode fields, or
+ * addendum v25/v26's repairs. The tests enumerate this array; a coverage number stated anywhere is
+ * `D17_FIELD_MATRIX.length`, printed by the test that iterates it, never recalled.
+ *
+ * ⚠️ NEVER THROWS. Every rule reads through `has`/own-property lookups and type predicates only. A
+ * null or non-object array member is reported by the member rule and skipped by the field rules
+ * (v26 §3.2: a validator that throws on malformed input is a defect, not a guard).
+ */
+export type D17FieldType =
+  | 'string' | 'nonempty_string' | 'boolean' | 'finite_number' | 'nonneg_number'
+  | 'object' | 'array' | 'id_array' | 'string_array' | 'attempts' | 'enum';
+
+/** When null is permitted. Evaluated against the manifest being validated. */
+export type D17Nullability =
+  | 'never'                        // null is a defect
+  | 'always'                       // null is a declaration
+  | 'hmac_key_absent'              // D8: null only when telemetry_error declares the licence
+  | 'hmac_key_absent_or_skipped'   // expansion.input_hmac: the licence, or a stage that made no request
+  | 'skipped'                      // A6: the stage-level null, on a skipped stage only
+  | 'no_batches'                   // A10: served_backend may be null only when no request was made
+  | 'unless_failure'               // retrieval_error_class: required when the outcome is a failure
+  | 'primary_hmac';                // A2 / v25 §3.3: primary → null only under the licence; other roles → MUST be null
+
+export interface D17FieldRule {
+  path: string;
+  origin: 'D17' | 'D8' | 'D15' | 'D16' | 'v7 §10' | 'v25 §3.2' | 'v25 §3.3' | 'v26 §3.4' | 'v26 §3.5' | 'v26 §3.1';
+  nullable: D17Nullability;
+  type: D17FieldType;
+  /** For `enum`: the permitted values. */
+  values?: readonly unknown[];
+  /** The code when the OWN PROPERTY is absent. */
+  absent: string;
+  /** The code when the value is null and null is not permitted here. */
+  nullCode: string;
+  /** The code when the value is present, non-null, and of the wrong type or shape. */
+  invalid: string;
+  /** `primary_hmac` only: the code when a non-primary role carries a non-null value. */
+  mustBeNullCode?: string;
+}
+
+const RETRIEVAL_OUTCOMES: readonly RetrievalOutcome[] = ['success', 'zero_hits', 'retrieval_failure'];
+const EXPANSION_STATUSES: readonly ExpansionStatus[] = ['expanded', 'skipped', 'failed_open'];
+const SERVED_ROUTE_CLASSES: readonly ServedRouteClass[] = ['vertex', 'openrouter', 'local', 'unattributed', 'not_served'];
+const VARIANT_STATUSES: readonly VariantStatus[] = ['generated', 'parsed_empty', 'all_invalid', 'not_an_array', 'parse_failure', 'failed_open', 'not_collected'];
+const VARIANT_OUTCOMES: readonly VariantOutcome[] = ['success', 'zero_hits', 'retrieval_failure'];
+
+export const D17_FIELD_MATRIX: readonly D17FieldRule[] = [
+  { path: 'manifest_schema_version', origin: 'D17', nullable: 'never', type: 'enum', values: [MANIFEST_SCHEMA_VERSION], absent: 'manifest_version_unrecognized', nullCode: 'manifest_version_unrecognized', invalid: 'manifest_version_unrecognized' },
+  // D8: the licence lets the HMAC BE null; it does not let the field be absent or wrongly typed (v26 §3.4).
+  { path: 'hmac_key_version', origin: 'D8', nullable: 'hmac_key_absent', type: 'nonempty_string', absent: 'hmac_key_version_field_absent', nullCode: 'hmac_key_version_absent', invalid: 'hmac_key_version_absent' },
+  { path: 'telemetry_error', origin: 'D8', nullable: 'always', type: 'enum', values: [TELEMETRY_ERROR_HMAC_KEY_ABSENT], absent: 'telemetry_error_field_absent', nullCode: 'telemetry_error_invalid', invalid: 'telemetry_error_invalid' },
+  { path: 'operational', origin: 'D17', nullable: 'never', type: 'object', absent: 'operational_absent', nullCode: 'operational_absent', invalid: 'operational_absent' },
+  { path: 'operational.route', origin: 'D17', nullable: 'never', type: 'enum', values: RETRIEVAL_ROUTES, absent: 'route_absent_or_invalid', nullCode: 'route_absent_or_invalid', invalid: 'route_absent_or_invalid' },
+  { path: 'operational.route_class', origin: 'D17', nullable: 'never', type: 'nonempty_string', absent: 'route_class_absent', nullCode: 'route_class_absent', invalid: 'route_class_absent' },
+  { path: 'operational.retrieval_role', origin: 'D17', nullable: 'never', type: 'enum', values: RETRIEVAL_ROLES, absent: 'retrieval_role_absent_or_invalid', nullCode: 'retrieval_role_absent_or_invalid', invalid: 'retrieval_role_absent_or_invalid' },
+  { path: 'operational.invocation_id', origin: 'D17', nullable: 'never', type: 'nonempty_string', absent: 'invocation_id_absent', nullCode: 'invocation_id_absent', invalid: 'invocation_id_absent' },
+  { path: 'operational.started_at', origin: 'D17', nullable: 'never', type: 'nonempty_string', absent: 'started_at_absent', nullCode: 'started_at_absent', invalid: 'started_at_absent' },
+  { path: 'operational.completed_at', origin: 'D17', nullable: 'never', type: 'nonempty_string', absent: 'completed_at_absent', nullCode: 'completed_at_absent', invalid: 'completed_at_absent' },
+  { path: 'operational.trace_id', origin: 'D17', nullable: 'always', type: 'string', absent: 'trace_id_field_absent', nullCode: 'trace_id_field_absent', invalid: 'trace_id_invalid' },
+  { path: 'operational.deployment_sha', origin: 'D17', nullable: 'always', type: 'string', absent: 'deployment_sha_field_absent', nullCode: 'deployment_sha_field_absent', invalid: 'deployment_sha_invalid' },
+  { path: 'operational.routing_flags', origin: 'D17', nullable: 'never', type: 'object', absent: 'routing_flags_absent', nullCode: 'routing_flags_absent', invalid: 'routing_flags_absent' },
+  { path: 'operational.active_backfill_run_id', origin: 'D17', nullable: 'always', type: 'string', absent: 'active_backfill_run_id_field_absent', nullCode: 'active_backfill_run_id_field_absent', invalid: 'active_backfill_run_id_invalid' },
+  { path: 'operational.active_backfill_target', origin: 'D17', nullable: 'always', type: 'string', absent: 'active_backfill_target_field_absent', nullCode: 'active_backfill_target_field_absent', invalid: 'active_backfill_target_invalid' },
+  { path: 'operational.active_backfill_state', origin: 'D17', nullable: 'always', type: 'enum', values: BACKFILL_ACTIVITY, absent: 'active_backfill_state_field_absent', nullCode: 'active_backfill_state_field_absent', invalid: 'active_backfill_state_invalid' },
+  { path: 'operational.active_lab_experiment_id', origin: 'D17', nullable: 'always', type: 'string', absent: 'active_lab_experiment_id_field_absent', nullCode: 'active_lab_experiment_id_field_absent', invalid: 'active_lab_experiment_id_invalid' },
+  { path: 'retrieval_outcome', origin: 'D17', nullable: 'never', type: 'enum', values: RETRIEVAL_OUTCOMES, absent: 'retrieval_outcome_absent_or_invalid', nullCode: 'retrieval_outcome_absent_or_invalid', invalid: 'retrieval_outcome_absent_or_invalid' },
+  { path: 'retrieval_error_class', origin: 'D17', nullable: 'unless_failure', type: 'nonempty_string', absent: 'retrieval_error_class_field_absent', nullCode: 'retrieval_error_class_absent_on_failure', invalid: 'retrieval_error_class_invalid' },
+  { path: 'expansion', origin: 'D17', nullable: 'never', type: 'object', absent: 'expansion_absent', nullCode: 'expansion_absent', invalid: 'expansion_absent' },
+  { path: 'expansion.status', origin: 'D17', nullable: 'never', type: 'enum', values: EXPANSION_STATUSES, absent: 'expansion_status_absent_or_invalid', nullCode: 'expansion_status_absent_or_invalid', invalid: 'expansion_status_absent_or_invalid' },
+  { path: 'expansion.input_hmac', origin: 'D8', nullable: 'hmac_key_absent_or_skipped', type: 'nonempty_string', absent: 'expansion_input_hmac_field_absent', nullCode: 'expansion_input_hmac_absent', invalid: 'expansion_input_hmac_invalid' },
+  { path: 'expansion.served_route_class', origin: 'D16', nullable: 'skipped', type: 'enum', values: SERVED_ROUTE_CLASSES, absent: 'expansion_served_route_class_field_absent', nullCode: 'expansion_served_route_class_absent', invalid: 'expansion_served_route_class_invalid' },
+  { path: 'expansion.served_model', origin: 'D17', nullable: 'always', type: 'string', absent: 'expansion_served_model_field_absent', nullCode: 'expansion_served_model_field_absent', invalid: 'expansion_served_model_invalid' },
+  { path: 'expansion.attempts', origin: 'D17', nullable: 'always', type: 'attempts', absent: 'expansion_attempts_field_absent', nullCode: 'expansion_attempts_field_absent', invalid: 'attempt_outcome_absent_or_invalid' },
+  { path: 'fused_candidate_ids', origin: 'D17', nullable: 'never', type: 'id_array', absent: 'fused_candidate_ids_absent', nullCode: 'fused_candidate_ids_absent', invalid: 'fused_candidate_ids_absent' },
+  { path: 'hydrated_candidate_ids', origin: 'D17', nullable: 'never', type: 'id_array', absent: 'hydrated_candidate_ids_absent', nullCode: 'hydrated_candidate_ids_absent', invalid: 'hydrated_candidate_ids_absent' },
+  { path: 'fused_candidate_count', origin: 'D17', nullable: 'never', type: 'nonneg_number', absent: 'fused_candidate_count_absent', nullCode: 'fused_candidate_count_absent', invalid: 'fused_candidate_count_absent' },
+  { path: 'hydrated_candidate_count', origin: 'D17', nullable: 'never', type: 'nonneg_number', absent: 'hydrated_candidate_count_absent', nullCode: 'hydrated_candidate_count_absent', invalid: 'hydrated_candidate_count_absent' },
+  { path: 'pre_rerank_passage_hmacs', origin: 'D8', nullable: 'hmac_key_absent', type: 'string_array', absent: 'pre_rerank_passage_hmacs_field_absent', nullCode: 'pre_rerank_passage_hmacs_absent', invalid: 'pre_rerank_passage_hmacs_absent' },
+  { path: 'intended_backend', origin: 'D17', nullable: 'never', type: 'nonempty_string', absent: 'intended_backend_absent', nullCode: 'intended_backend_absent', invalid: 'intended_backend_absent' },
+  { path: 'intended_model', origin: 'D17', nullable: 'never', type: 'nonempty_string', absent: 'intended_model_absent', nullCode: 'intended_model_absent', invalid: 'intended_model_absent' },
+  { path: 'served_backend', origin: 'D17', nullable: 'no_batches', type: 'nonempty_string', absent: 'served_backend_field_absent', nullCode: 'served_backend_absent_with_batches', invalid: 'served_backend_invalid' },
+  { path: 'rerank_backend_downgraded', origin: 'D17', nullable: 'never', type: 'boolean', absent: 'rerank_backend_downgraded_absent', nullCode: 'rerank_backend_downgraded_absent', invalid: 'rerank_backend_downgraded_absent' },
+  { path: 'expected_batch_count', origin: 'D17', nullable: 'never', type: 'nonneg_number', absent: 'expected_batch_count_absent', nullCode: 'expected_batch_count_absent', invalid: 'expected_batch_count_absent' },
+  { path: 'recorded_rerank_batches', origin: 'D17', nullable: 'never', type: 'nonneg_number', absent: 'recorded_rerank_batches_absent', nullCode: 'recorded_rerank_batches_absent', invalid: 'recorded_rerank_batches_absent' },
+  { path: 'rerank_soft_failed', origin: 'D17', nullable: 'never', type: 'boolean', absent: 'rerank_soft_failed_absent', nullCode: 'rerank_soft_failed_absent', invalid: 'rerank_soft_failed_absent' },
+  { path: 'ordered_final_candidate_ids', origin: 'D17', nullable: 'never', type: 'id_array', absent: 'ordered_final_candidate_ids_absent', nullCode: 'ordered_final_candidate_ids_absent', invalid: 'ordered_final_candidate_ids_absent' },
+  { path: 'scorer_context_hmac', origin: 'v25 §3.3', nullable: 'primary_hmac', type: 'nonempty_string', absent: 'scorer_context_hmac_field_absent', nullCode: 'scorer_context_hmac_absent', invalid: 'scorer_context_hmac_invalid', mustBeNullCode: 'scorer_context_hmac_on_non_primary_role' },
+  { path: 'retrieval_config', origin: 'D17', nullable: 'never', type: 'object', absent: 'retrieval_config_absent', nullCode: 'retrieval_config_absent', invalid: 'retrieval_config_absent' },
+  { path: 'retrieval_config.rerank_temperature', origin: 'v7 §10', nullable: 'always', type: 'finite_number', absent: 'rerank_temperature_field_absent', nullCode: 'rerank_temperature_field_absent', invalid: 'rerank_temperature_invalid' },
+  { path: 'retrieval_config.rerank_seed_status', origin: 'v7 §10', nullable: 'never', type: 'enum', values: RERANK_SEED_STATUSES, absent: 'rerank_seed_status_field_absent', nullCode: 'rerank_seed_status_invalid', invalid: 'rerank_seed_status_invalid' },
+  { path: 'corpus_version', origin: 'D17', nullable: 'always', type: 'string', absent: 'corpus_version_field_absent', nullCode: 'corpus_version_field_absent', invalid: 'corpus_version_invalid' },
+  { path: 'index_version', origin: 'D17', nullable: 'never', type: 'nonempty_string', absent: 'index_version_absent', nullCode: 'index_version_absent', invalid: 'index_version_absent' },
+  { path: 'batches', origin: 'D17', nullable: 'never', type: 'array', absent: 'batches_absent', nullCode: 'batches_absent', invalid: 'batches_absent' },
+  // v26 §3.2: a member that is not an object is reported, never dereferenced.
+  { path: 'batches[]', origin: 'v26 §3.1', nullable: 'never', type: 'object', absent: 'batch_member_invalid', nullCode: 'batch_member_invalid', invalid: 'batch_member_invalid' },
+  { path: 'batches[].batch_index', origin: 'D17', nullable: 'never', type: 'finite_number', absent: 'batch_index_absent', nullCode: 'batch_index_absent', invalid: 'batch_index_absent' },
+  // Two INDEPENDENT rows (v26 §3.3): each boundary is present, non-null and a finite number on its own;
+  // they share the established code, and `bad_candidate_boundaries` below relates the two.
+  { path: 'batches[].candidate_start', origin: 'D17', nullable: 'never', type: 'finite_number', absent: 'batch_boundaries_absent', nullCode: 'batch_boundaries_absent', invalid: 'batch_boundaries_absent' },
+  { path: 'batches[].candidate_end', origin: 'D17', nullable: 'never', type: 'finite_number', absent: 'batch_boundaries_absent', nullCode: 'batch_boundaries_absent', invalid: 'batch_boundaries_absent' },
+  { path: 'batches[].intended_provider', origin: 'D17', nullable: 'never', type: 'nonempty_string', absent: 'batch_intended_provider_absent', nullCode: 'batch_intended_provider_absent', invalid: 'batch_intended_provider_absent' },
+  { path: 'batches[].intended_model', origin: 'D17', nullable: 'never', type: 'nonempty_string', absent: 'batch_intended_model_absent', nullCode: 'batch_intended_model_absent', invalid: 'batch_intended_model_absent' },
+  // A6: the type permits null on a batch defensively; the CONTRACT does not — a batch record IS a planned request.
+  { path: 'batches[].served_route_class', origin: 'D17', nullable: 'never', type: 'enum', values: SERVED_ROUTE_CLASSES, absent: 'batch_served_route_class_absent', nullCode: 'batch_served_route_class_absent', invalid: 'batch_served_route_class_invalid' },
+  { path: 'batches[].served_model', origin: 'D17', nullable: 'always', type: 'string', absent: 'batch_served_model_field_absent', nullCode: 'batch_served_model_field_absent', invalid: 'batch_served_model_invalid' },
+  { path: 'batches[].attempts', origin: 'D17', nullable: 'always', type: 'attempts', absent: 'batch_attempts_field_absent', nullCode: 'batch_attempts_field_absent', invalid: 'attempt_outcome_absent_or_invalid' },
+  { path: 'batches[].outcome', origin: 'D17', nullable: 'never', type: 'enum', values: BATCH_OUTCOME_PRECEDENCE, absent: 'batch_outcome_absent_or_invalid', nullCode: 'batch_outcome_absent_or_invalid', invalid: 'batch_outcome_absent_or_invalid' },
+  { path: 'batches[].expected_score_keys', origin: 'D17', nullable: 'never', type: 'nonneg_number', absent: 'expected_score_keys_absent', nullCode: 'expected_score_keys_absent', invalid: 'expected_score_keys_absent' },
+  { path: 'batches[].finite_score_keys', origin: 'D17', nullable: 'never', type: 'nonneg_number', absent: 'finite_score_keys_absent', nullCode: 'finite_score_keys_absent', invalid: 'finite_score_keys_absent' },
+  // D15: the two independent counts preserved beside the outcome; not in D17's list, in the manifest.
+  { path: 'batches[].missing_score_keys', origin: 'D15', nullable: 'never', type: 'nonneg_number', absent: 'missing_score_keys_absent', nullCode: 'missing_score_keys_absent', invalid: 'missing_score_keys_absent' },
+  { path: 'batches[].nonnumeric_score_keys', origin: 'D15', nullable: 'never', type: 'nonneg_number', absent: 'nonnumeric_score_keys_absent', nullCode: 'nonnumeric_score_keys_absent', invalid: 'nonnumeric_score_keys_absent' },
+  { path: 'batches[].prompt_tokens', origin: 'v25 §3.2', nullable: 'always', type: 'nonneg_number', absent: 'batch_prompt_tokens_field_absent', nullCode: 'batch_prompt_tokens_field_absent', invalid: 'batch_prompt_tokens_invalid' },
+  { path: 'batches[].completion_tokens', origin: 'v25 §3.2', nullable: 'always', type: 'nonneg_number', absent: 'batch_completion_tokens_field_absent', nullCode: 'batch_completion_tokens_field_absent', invalid: 'batch_completion_tokens_invalid' },
+  // The multi-query section, required on exactly one role (D6/D17). Its presence rule is role-driven and
+  // lives in `validateManifest`; these are its members, evaluated only when the section is present.
+  { path: 'multi_query.variant_generation', origin: 'D17', nullable: 'never', type: 'object', absent: 'variant_generation_absent', nullCode: 'variant_generation_absent', invalid: 'variant_generation_absent' },
+  { path: 'multi_query.variant_generation.status', origin: 'D17', nullable: 'never', type: 'enum', values: VARIANT_STATUSES, absent: 'variant_generation_status_absent_or_invalid', nullCode: 'variant_generation_status_absent_or_invalid', invalid: 'variant_generation_status_absent_or_invalid' },
+  { path: 'multi_query.variant_generation.served_route_class', origin: 'D16', nullable: 'always', type: 'enum', values: SERVED_ROUTE_CLASSES, absent: 'variant_generation_served_route_class_field_absent', nullCode: 'variant_generation_served_route_class_field_absent', invalid: 'variant_generation_served_route_class_invalid' },
+  { path: 'multi_query.variant_generation.served_model', origin: 'D17', nullable: 'always', type: 'string', absent: 'variant_generation_served_model_field_absent', nullCode: 'variant_generation_served_model_field_absent', invalid: 'variant_generation_served_model_invalid' },
+  { path: 'multi_query.variant_generation.attempts', origin: 'D17', nullable: 'always', type: 'attempts', absent: 'variant_generation_attempts_field_absent', nullCode: 'variant_generation_attempts_field_absent', invalid: 'attempt_outcome_absent_or_invalid' },
+  { path: 'multi_query.variant_generation.prompt_tokens', origin: 'v26 §3.5', nullable: 'always', type: 'nonneg_number', absent: 'variant_generation_prompt_tokens_field_absent', nullCode: 'variant_generation_prompt_tokens_field_absent', invalid: 'variant_generation_prompt_tokens_invalid' },
+  { path: 'multi_query.variant_generation.completion_tokens', origin: 'v26 §3.5', nullable: 'always', type: 'nonneg_number', absent: 'variant_generation_completion_tokens_field_absent', nullCode: 'variant_generation_completion_tokens_field_absent', invalid: 'variant_generation_completion_tokens_invalid' },
+  { path: 'multi_query.variant_generation.generated_variant_count', origin: 'D17', nullable: 'never', type: 'nonneg_number', absent: 'generated_variant_count_absent', nullCode: 'generated_variant_count_absent', invalid: 'generated_variant_count_absent' },
+  { path: 'multi_query.variants', origin: 'D17', nullable: 'never', type: 'array', absent: 'variants_absent', nullCode: 'variants_absent', invalid: 'variants_absent' },
+  { path: 'multi_query.variants[]', origin: 'v26 §3.1', nullable: 'never', type: 'object', absent: 'variant_member_invalid', nullCode: 'variant_member_invalid', invalid: 'variant_member_invalid' },
+  { path: 'multi_query.variants[].index', origin: 'D17', nullable: 'never', type: 'nonneg_number', absent: 'variant_index_absent_or_invalid', nullCode: 'variant_index_absent_or_invalid', invalid: 'variant_index_absent_or_invalid' },
+  { path: 'multi_query.variants[].outcome', origin: 'D17', nullable: 'never', type: 'enum', values: VARIANT_OUTCOMES, absent: 'variant_outcome_absent_or_invalid', nullCode: 'variant_outcome_absent_or_invalid', invalid: 'variant_outcome_absent_or_invalid' },
+  { path: 'multi_query.variants[].candidate_count', origin: 'D17', nullable: 'never', type: 'nonneg_number', absent: 'variant_candidate_count_absent_or_invalid', nullCode: 'variant_candidate_count_absent_or_invalid', invalid: 'variant_candidate_count_absent_or_invalid' },
+];
+
+/** The facts a nullability condition reads. Computed once per validation, from the manifest. */
+interface D17Context {
+  keyAbsent: boolean;
+  skipped: boolean;
+  noBatches: boolean;
+  outcomeIsFailure: boolean;
+  role: unknown;
+}
+
+type NullVerdict = 'may' | 'must_not' | 'must';
+
+function nullVerdict(rule: D17FieldRule, ctx: D17Context): NullVerdict {
+  switch (rule.nullable) {
+    case 'never': return 'must_not';
+    case 'always': return 'may';
+    case 'hmac_key_absent': return ctx.keyAbsent ? 'may' : 'must_not';
+    case 'hmac_key_absent_or_skipped': return ctx.keyAbsent || ctx.skipped ? 'may' : 'must_not';
+    case 'skipped': return ctx.skipped ? 'may' : 'must_not';
+    case 'no_batches': return ctx.noBatches ? 'may' : 'must_not';
+    case 'unless_failure': return ctx.outcomeIsFailure ? 'must_not' : 'may';
+    case 'primary_hmac':
+      // Required on primary (null only under the licence); REQUIRED NULL on the four other roles; a
+      // manifest whose role is unreadable gets the field checks only.
+      if (ctx.role === 'primary') return ctx.keyAbsent ? 'may' : 'must_not';
+      return RETRIEVAL_ROLES.some((r) => r === ctx.role) ? 'must' : 'may';
+  }
+}
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+const isStringArray = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string');
+
+/** Does a present, non-null value satisfy the rule's type? `attempts` members are checked by
+ *  `pushAttemptOutcomeDefects` (one implementation for all three locations, review 22 item 4). */
+function typeSatisfied(rule: D17FieldRule, v: unknown): boolean {
+  switch (rule.type) {
+    case 'string': return typeof v === 'string';
+    case 'nonempty_string': return isNonEmptyStr(v);
+    case 'boolean': return typeof v === 'boolean';
+    case 'finite_number': return isFiniteNum(v);
+    case 'nonneg_number': return isFiniteNum(v) && v >= 0;
+    case 'object': return isPlainObject(v);
+    case 'array': return Array.isArray(v);
+    case 'id_array': return isIdArray(v);
+    case 'string_array': return isStringArray(v);
+    case 'attempts': return Array.isArray(v);
+    case 'enum': return (rule.values ?? []).some((allowed) => allowed === v);
+  }
+}
+
+/**
+ * The parents a rule's path resolves to: the object(s) that carry the final key. A `[]` segment
+ * walks the array's members; a container that is missing or of the wrong shape yields NO parents
+ * (its own rule has already reported it), so a defect is reported once and nothing is dereferenced.
+ */
+function parentsOf(root: Record<string, unknown>, segments: readonly string[]): Record<string, unknown>[] {
+  let current: Record<string, unknown>[] = [root];
+  for (const seg of segments) {
+    const walksArray = seg.endsWith('[]');
+    const key = walksArray ? seg.slice(0, -2) : seg;
+    const next: Record<string, unknown>[] = [];
+    for (const parent of current) {
+      const value = get(parent, key);
+      if (walksArray) {
+        if (Array.isArray(value)) for (const member of value) if (isPlainObject(member)) next.push(member);
+      } else if (isPlainObject(value)) {
+        next.push(value);
+      }
+    }
+    current = next;
+  }
+  return current;
+}
+
+/** Apply one matrix rule to the manifest, appending codes. Never throws. */
+function applyRule(rule: D17FieldRule, root: Record<string, unknown>, ctx: D17Context, v: string[]): void {
+  const segments = rule.path.split('.');
+  const last = segments[segments.length - 1];
+  const parents = parentsOf(root, segments.slice(0, -1));
+  if (last.endsWith('[]')) {
+    // The MEMBER rule: every element of the array must be an object. Reported per bad member.
+    const key = last.slice(0, -2);
+    for (const parent of parents) {
+      const arr = get(parent, key);
+      if (!Array.isArray(arr)) continue;              // the array's own rule reports a missing/invalid array
+      for (const member of arr) if (!isPlainObject(member)) v.push(rule.invalid);
+    }
+    return;
+  }
+  for (const parent of parents) {
+    if (!has(parent, last)) { v.push(rule.absent); continue; }
+    const value = parent[last];
+    const verdict = nullVerdict(rule, ctx);
+    if (value === null) {
+      if (verdict === 'must_not') v.push(rule.nullCode);
+      continue;
+    }
+    if (verdict === 'must') { v.push(rule.mustBeNullCode ?? rule.invalid); continue; }
+    if (rule.type === 'attempts') {
+      // LOCATIONS 1, 2 and 3 of the attempt-outcome branch (v11 §4): the array's members.
+      pushAttemptOutcomeDefects(value, rule.invalid, v);
+      continue;
+    }
+    if (!typeSatisfied(rule, value)) v.push(rule.invalid);
+  }
+}
+
+/**
  * Structural validation of a STAMPED manifest. Returns violation CODES only — never a value, never
  * a fragment, because a validator that echoes what it rejected is a validator that can leak.
  *
  * Takes `unknown` (D17): the row this reads may have been written by an older deployment or by a
  * caller that skipped the type entirely, and a validator whose parameter is already the type it is
  * meant to prove is a validator that proves nothing.
+ *
+ * TWO PASSES. First the D17 FIELD MATRIX above — presence, null, type, for every field it names,
+ * including array members. Then the RELATIONS between fields, which no per-field rule can express:
+ * the batch reconciliation §7 never waives, boundary sanity and ordering, the served-model/served-
+ * class pairing (§10), passage-HMAC cardinality, the multi-query arity, and the role-conditional
+ * presence of the multi-query section itself. Both passes read through own-property lookups only
+ * and NEVER throw (v26 §3.2).
  */
 export function validateManifest(input: unknown): string[] {
   const v: string[] = [];
-  if (!input || typeof input !== 'object') return ['manifest_absent'];
-  const m = input as Record<string, unknown>;
+  if (!isPlainObject(input)) return ['manifest_absent'];
+  const m = input;
 
-  if (m.manifest_schema_version !== MANIFEST_SCHEMA_VERSION) v.push('manifest_version_unrecognized');
-
-  // ── The HMAC-absent licence. Four fields may be null when, and ONLY when, it is declared (D8) ──
+  // ── The facts the nullability conditions read ──────────────────────────────────────────────────
   const keyAbsent = m.telemetry_error === TELEMETRY_ERROR_HMAC_KEY_ABSENT;
-  if (!isNonEmptyStr(m.hmac_key_version) && !keyAbsent) v.push('hmac_key_version_absent');
+  const ex = get(m, 'expansion');
+  const skipped = isPlainObject(ex) && ex.status === 'skipped';
+  const batchesValue = get(m, 'batches');
+  const noBatches = !Array.isArray(batchesValue) || batchesValue.length === 0;
+  const op = get(m, 'operational');
+  const role = isPlainObject(op) ? get(op, 'retrieval_role') : undefined;
+  const ctx: D17Context = { keyAbsent, skipped, noBatches, outcomeIsFailure: m.retrieval_outcome === 'retrieval_failure', role };
 
-  // ── Operational ──────────────────────────────────────────────────────────────────────────────
-  const op = m.operational;
-  if (!op || typeof op !== 'object') {
-    v.push('operational_absent');
-  } else {
-    const o = op as Record<string, unknown>;
-    if (!(RETRIEVAL_ROUTES as readonly unknown[]).includes(o.route)) v.push('route_absent_or_invalid');
-    if (!isNonEmptyStr(o.route_class)) v.push('route_class_absent');
-    if (!(RETRIEVAL_ROLES as readonly unknown[]).includes(o.retrieval_role)) v.push('retrieval_role_absent_or_invalid');
-    if (!isNonEmptyStr(o.invocation_id)) v.push('invocation_id_absent');
-    if (!isNonEmptyStr(o.started_at)) v.push('started_at_absent');
-    if (!isNonEmptyStr(o.completed_at)) v.push('completed_at_absent');
-    if (!has(o, 'trace_id')) v.push('trace_id_field_absent');
-    if (!has(o, 'deployment_sha')) v.push('deployment_sha_field_absent');
-    if (!o.routing_flags || typeof o.routing_flags !== 'object' || Array.isArray(o.routing_flags)) {
-      v.push('routing_flags_absent');
-    }
-    if (!has(o, 'active_backfill_run_id')) v.push('active_backfill_run_id_field_absent');
-    if (!has(o, 'active_backfill_target')) v.push('active_backfill_target_field_absent');
-    if (!has(o, 'active_backfill_state')) v.push('active_backfill_state_field_absent');
-    else if (o.active_backfill_state !== null && !(BACKFILL_ACTIVITY as readonly unknown[]).includes(o.active_backfill_state)) {
-      v.push('active_backfill_state_invalid');
-    }
-    if (!has(o, 'active_lab_experiment_id')) v.push('active_lab_experiment_id_field_absent');
-  }
-  const role = (op as Record<string, unknown> | undefined)?.retrieval_role;
-
-  // ── Retrieval outcome ────────────────────────────────────────────────────────────────────────
-  const outcome = m.retrieval_outcome;
-  if (outcome !== 'success' && outcome !== 'zero_hits' && outcome !== 'retrieval_failure') {
-    v.push('retrieval_outcome_absent_or_invalid');
-  }
-  if (!has(m, 'retrieval_error_class')) v.push('retrieval_error_class_field_absent');
-  else if (outcome === 'retrieval_failure' && !isNonEmptyStr(m.retrieval_error_class)) {
-    v.push('retrieval_error_class_absent_on_failure');
+  // ── PASS 1: the matrix. The multi-query rules only when the role requires the section ──────────
+  const mqRequired = role === 'lab_multi_query';
+  for (const rule of D17_FIELD_MATRIX) {
+    if (rule.path.startsWith('multi_query.') && !mqRequired) continue;
+    applyRule(rule, m, ctx, v);
   }
 
-  // ── Expansion ────────────────────────────────────────────────────────────────────────────────
-  const ex = m.expansion as Record<string, unknown> | undefined;
-  if (!ex || typeof ex !== 'object') {
-    v.push('expansion_absent');
-  } else {
-    const skipped = ex.status === 'skipped';
-    if (ex.status !== 'expanded' && ex.status !== 'skipped' && ex.status !== 'failed_open') {
-      v.push('expansion_status_absent_or_invalid');
-    }
-    if (!has(ex, 'input_hmac')) v.push('expansion_input_hmac_field_absent');
-    else if (ex.input_hmac === null && !keyAbsent && !skipped) v.push('expansion_input_hmac_absent');
-    // A SKIPPED stage made no request, so its served class is the explicit stage-level null (A6).
-    // Anything else must declare — absence of the field is not a declaration (§7).
-    if (!has(ex, 'served_route_class')) v.push('expansion_served_route_class_field_absent');
-    else if (ex.served_route_class === null && !skipped) v.push('expansion_served_route_class_absent');
-    else if (ex.served_route_class !== null && !isServedRouteClass(ex.served_route_class)) {
-      v.push('expansion_served_route_class_invalid');
-    }
-    if (!has(ex, 'served_model')) v.push('expansion_served_model_field_absent');
-    if (!has(ex, 'attempts')) v.push('expansion_attempts_field_absent');
-    // LOCATION 1 of 3 (v11 §4). The presence check above asks only whether the FIELD is there.
-    pushAttemptOutcomeDefects(ex.attempts, 'attempt_outcome_absent_or_invalid', v);
-  }
-
-  // ── Candidates ───────────────────────────────────────────────────────────────────────────────
-  if (!isIdArray(m.fused_candidate_ids)) v.push('fused_candidate_ids_absent');
-  if (!isIdArray(m.hydrated_candidate_ids)) v.push('hydrated_candidate_ids_absent');
-  if (!isFiniteNum(m.fused_candidate_count) || (m.fused_candidate_count as number) < 0) v.push('fused_candidate_count_absent');
-  if (!isFiniteNum(m.hydrated_candidate_count) || (m.hydrated_candidate_count as number) < 0) v.push('hydrated_candidate_count_absent');
-  if (!has(m, 'pre_rerank_passage_hmacs')) v.push('pre_rerank_passage_hmacs_field_absent');
-  else if (m.pre_rerank_passage_hmacs === null) {
-    if (!keyAbsent) v.push('pre_rerank_passage_hmacs_absent');
-  } else if (!Array.isArray(m.pre_rerank_passage_hmacs)) {
-    v.push('pre_rerank_passage_hmacs_absent');
-  } else if (Array.isArray(m.hydrated_candidate_ids)
-    && (m.pre_rerank_passage_hmacs as unknown[]).length !== (m.hydrated_candidate_ids as unknown[]).length) {
-    // One per HYDRATED row. Pinned against the hydrated count, not the fused one — a dropped row is
-    // exactly the case this cardinality is here to make visible.
+  // ── PASS 2: relations ────────────────────────────────────────────────────────────────────────
+  // Passage HMACs: one per HYDRATED row (a dropped row is exactly what the cardinality makes visible).
+  const hmacs = get(m, 'pre_rerank_passage_hmacs');
+  const hydrated = get(m, 'hydrated_candidate_ids');
+  if (isStringArray(hmacs) && Array.isArray(hydrated) && hmacs.length !== hydrated.length) {
     v.push('passage_hmac_cardinality_mismatch');
   }
 
-  // ── Backend, batches and the reconciliation §7 never waives ───────────────────────────────────
-  if (!isNonEmptyStr(m.intended_backend)) v.push('intended_backend_absent');
-  if (!isNonEmptyStr(m.intended_model)) v.push('intended_model_absent');
-  if (typeof m.rerank_backend_downgraded !== 'boolean') v.push('rerank_backend_downgraded_absent');
-  if (typeof m.rerank_soft_failed !== 'boolean') v.push('rerank_soft_failed_absent');
-  if (!isFiniteNum(m.expected_batch_count)) v.push('expected_batch_count_absent');
-  if (!isFiniteNum(m.recorded_rerank_batches)) v.push('recorded_rerank_batches_absent');
-  if (!has(m, 'served_backend')) v.push('served_backend_field_absent');
-
-  if (!Array.isArray(m.batches)) {
-    v.push('batches_absent');
-  } else {
-    const batches = m.batches as Record<string, unknown>[];
-    // `served_backend` may be null ONLY when no request was made. A batch record IS a planned
-    // request, so one batch and a null served backend is a contradiction.
-    if (batches.length > 0 && m.served_backend === null) v.push('served_backend_absent_with_batches');
-    if (isFiniteNum(m.recorded_rerank_batches) && batches.length !== m.recorded_rerank_batches) {
-      v.push('recorded_batch_count_mismatch');
-    }
-    if (isFiniteNum(m.expected_batch_count) && batches.length !== m.expected_batch_count) {
-      v.push('batch_count_mismatch');
-    }
+  if (Array.isArray(batchesValue)) {
+    const batches = batchesValue.filter(isPlainObject);   // non-object members were reported by the matrix
+    // §7's reconciliation, never waived.
+    const recorded = get(m, 'recorded_rerank_batches');
+    if (isFiniteNum(recorded) && batchesValue.length !== recorded) v.push('recorded_batch_count_mismatch');
+    const expected = get(m, 'expected_batch_count');
+    if (isFiniteNum(expected) && batchesValue.length !== expected) v.push('batch_count_mismatch');
     const seen = new Set<number>();
     for (const b of batches) {
-      if (!isFiniteNum(b.batch_index)) { v.push('batch_index_absent'); continue; }
-      if (seen.has(b.batch_index as number)) v.push('duplicate_batch_index');
-      seen.add(b.batch_index as number);
-      if (!isFiniteNum(b.candidate_start) || !isFiniteNum(b.candidate_end)) v.push('batch_boundaries_absent');
-      else if ((b.candidate_end as number) <= (b.candidate_start as number)) v.push('bad_candidate_boundaries');
-      if (!isNonEmptyStr(b.intended_provider)) v.push('batch_intended_provider_absent');
-      if (!isNonEmptyStr(b.intended_model)) v.push('batch_intended_model_absent');
-      // §7: a declared served class on EVERY batch record. Absence of the field is not a
-      // declaration, and neither is null — the type permits it defensively, the gate does not (A6).
-      if (!has(b, 'served_route_class') || b.served_route_class === null) v.push('batch_served_route_class_absent');
-      else if (!isServedRouteClass(b.served_route_class)) v.push('batch_served_route_class_invalid');
-      if (b.served_route_class === 'unattributed' && b.served_model !== null) v.push('unattributed_with_model');
-      if (b.served_route_class === 'not_served' && b.served_model !== null) v.push('not_served_with_model');
-      if (!has(b, 'served_model')) v.push('batch_served_model_field_absent');
-      if (!has(b, 'attempts')) v.push('batch_attempts_field_absent');
-      // LOCATION 2 of 3 (v11 §4).
-      pushAttemptOutcomeDefects(b.attempts, 'attempt_outcome_absent_or_invalid', v);
-      // ⚠️ THE TWO USAGE FIELDS HAD NO VALIDATION AT ALL (Saul review 36 finding 1; addendum v25 §3.2).
-      // D17 lists `prompt_tokens` and `completion_tokens` among the per-batch fields where null is
-      // PERMITTED — and the same own-property rule as every other nullable field applies: the field
-      // must be PRESENT (an absent field is not a declaration), null means "usage not reported", and
-      // anything else must be a finite, non-negative number. Before this a batch could omit both, or
-      // carry a string, and the manifest still validated clean — a malformed manifest classified as
-      // complete. That defect shipped in commit 13 and no test asked. Same pattern as
-      // `rerank_temperature` and `active_backfill_state` above and below: `has`, then null, then type.
-      const usageFields: Array<'prompt_tokens' | 'completion_tokens'> = ['prompt_tokens', 'completion_tokens'];
-      for (const usage of usageFields) {
-        if (!has(b, usage)) { v.push(`batch_${usage}_field_absent`); continue; }
-        const t = b[usage];
-        if (t !== null && !(isFiniteNum(t) && t >= 0)) v.push(`batch_${usage}_invalid`);
+      const idx = get(b, 'batch_index');
+      if (isFiniteNum(idx)) {
+        if (seen.has(idx)) v.push('duplicate_batch_index');
+        seen.add(idx);
       }
-      if (!(BATCH_OUTCOME_PRECEDENCE as readonly unknown[]).includes(b.outcome)) v.push('batch_outcome_absent_or_invalid');
-      if (!isFiniteNum(b.expected_score_keys) || (b.expected_score_keys as number) < 0) v.push('expected_score_keys_absent');
-      if (!isFiniteNum(b.finite_score_keys) || (b.finite_score_keys as number) < 0) v.push('finite_score_keys_absent');
-      else if (isFiniteNum(b.expected_score_keys) && (b.finite_score_keys as number) > (b.expected_score_keys as number)) {
-        v.push('score_keys_exceed_expected');
-      }
+      const start = get(b, 'candidate_start');
+      const end = get(b, 'candidate_end');
+      if (isFiniteNum(start) && isFiniteNum(end) && end <= start) v.push('bad_candidate_boundaries');
+      // §10: a class that did not serve carries no model.
+      const cls = get(b, 'served_route_class');
+      const model = get(b, 'served_model');
+      if (cls === 'unattributed' && model !== null) v.push('unattributed_with_model');
+      if (cls === 'not_served' && model !== null) v.push('not_served_with_model');
+      const expectedKeys = get(b, 'expected_score_keys');
+      const finiteKeys = get(b, 'finite_score_keys');
+      if (isFiniteNum(expectedKeys) && isFiniteNum(finiteKeys) && finiteKeys > expectedKeys) v.push('score_keys_exceed_expected');
     }
     // Batches must be orderable by their boundaries independently of completion order (constraint 7).
-    const byIndex = [...batches].filter((b) => isFiniteNum(b.batch_index))
-      .sort((a, b) => (a.batch_index as number) - (b.batch_index as number));
+    const byIndex = batches
+      .map((b) => ({ idx: get(b, 'batch_index'), start: get(b, 'candidate_start'), end: get(b, 'candidate_end') }))
+      .filter((b): b is { idx: number; start: unknown; end: unknown } => isFiniteNum(b.idx))
+      .sort((a, b) => a.idx - b.idx);
     for (let i = 1; i < byIndex.length; i++) {
-      if ((byIndex[i].candidate_start as number) < (byIndex[i - 1].candidate_end as number)) v.push('overlapping_batches');
+      const prevEnd = byIndex[i - 1].end;
+      const start = byIndex[i].start;
+      if (isFiniteNum(prevEnd) && isFiniteNum(start) && start < prevEnd) v.push('overlapping_batches');
     }
   }
 
-  // ── Ordering, config and the role-sensitive scorer-context HMAC ───────────────────────────────
-  if (!isIdArray(m.ordered_final_candidate_ids)) v.push('ordered_final_candidate_ids_absent');
-  if (!m.retrieval_config || typeof m.retrieval_config !== 'object' || Array.isArray(m.retrieval_config)) {
-    v.push('retrieval_config_absent');
-  } else {
-    // ── The v7 §10 decode fields, REQUIRED as of manifest version 3 ────────────────────────────
-    //
-    // ⚠️ `has`, NOT A TRUTHINESS TEST, and for the reason the rest of this validator uses it: an
-    // ABSENT field and an EXPLICIT NULL are different claims. `rerank_temperature: null` means no
-    // rerank decode ran, which is a fact worth recording; an absent key means the manifest predates
-    // the field or the writer forgot it, which is a defect.
-    const cfg = m.retrieval_config;
-    if (!has(cfg, 'rerank_temperature')) {
-      v.push('rerank_temperature_field_absent');
-    } else {
-      const t = get(cfg, 'rerank_temperature');
-      if (t !== null && (typeof t !== 'number' || !Number.isFinite(t))) v.push('rerank_temperature_invalid');
-    }
-    if (!has(cfg, 'rerank_seed_status')) {
-      v.push('rerank_seed_status_field_absent');
-    } else if (!(RERANK_SEED_STATUSES as readonly unknown[]).includes(get(cfg, 'rerank_seed_status'))) {
-      // Never null: a seed status is always knowable, and `not_applicable` is the value for
-      // "no rerank decode ran". A null here would be an absence dressed as a measurement.
-      v.push('rerank_seed_status_invalid');
-    }
-  }
-  if (!has(m, 'corpus_version')) v.push('corpus_version_field_absent');
-  if (!isNonEmptyStr(m.index_version)) v.push('index_version_absent');
-
-  if (!has(m, 'scorer_context_hmac')) v.push('scorer_context_hmac_field_absent');
-  else if (role === 'primary' && m.scorer_context_hmac === null && !keyAbsent) v.push('scorer_context_hmac_absent');
-  // ⚠️ THE OTHER DIRECTION WAS UNGUARDED (Saul review 36 finding 2; addendum v25 §3.3). D17: the HMAC is
-  // required on `primary` and NULL on the other four roles — the combined-context HMAC lives on the
-  // primary row only, and a value on a normative/lvc/lab row would claim that leg rendered a scorer
-  // context of its own. Before this a non-null HMAC on any of the four validated clean.
-  else if (role !== 'primary' && RETRIEVAL_ROLES.some((r) => r === role) && m.scorer_context_hmac !== null) {
-    v.push('scorer_context_hmac_on_non_primary_role');
-  }
-
-  // ── Multi-query, required on exactly one role ─────────────────────────────────────────────────
-  if (role === 'lab_multi_query') {
-    const mq = m.multi_query as Record<string, unknown> | undefined;
-    if (!mq || typeof mq !== 'object') v.push('multi_query_absent');
+  // The multi-query section: required on exactly one role, forbidden on the others.
+  const mq = get(m, 'multi_query');
+  if (mqRequired) {
+    if (!isPlainObject(mq)) v.push('multi_query_absent');
     else {
-      const vg = mq.variant_generation as Record<string, unknown> | undefined;
-      if (!vg || typeof vg !== 'object') v.push('variant_generation_absent');
-      else {
-        if (!isVariantStatus(vg.status)) v.push('variant_generation_status_absent_or_invalid');
-        if (!has(vg, 'served_route_class')) v.push('variant_generation_served_route_class_field_absent');
-        if (!isFiniteNum(vg.generated_variant_count)) v.push('generated_variant_count_absent');
-        // LOCATION 3 of 3 (v11 §4, review 22 item 2). This block did not read `vg.attempts` at all
-        // before this line, so a variant-generation attempt could carry any outcome unchallenged.
-        pushAttemptOutcomeDefects(vg.attempts, 'attempt_outcome_absent_or_invalid', v);
-      }
-      if (!Array.isArray(mq.variants)) v.push('variants_absent');
-      else if (vg && isFiniteNum((vg as Record<string, unknown>).generated_variant_count)
-        && (mq.variants as unknown[]).length !== ((vg as Record<string, unknown>).generated_variant_count as number) + 1) {
-        // index 0 is the ORIGINAL expanded arm, so the array is always one longer than the count
-        v.push('variant_arity_mismatch');
-      }
+      const vg = get(mq, 'variant_generation');
+      const variants = get(mq, 'variants');
+      const count = isPlainObject(vg) ? get(vg, 'generated_variant_count') : undefined;
+      // index 0 is the ORIGINAL expanded arm, so the array is always one longer than the count.
+      if (Array.isArray(variants) && isFiniteNum(count) && variants.length !== count + 1) v.push('variant_arity_mismatch');
     }
   } else if (has(m, 'multi_query')) {
     v.push('multi_query_on_non_multi_query_role');
   }
 
   return v;
-}
-
-function isServedRouteClass(v: unknown): boolean {
-  return v === 'vertex' || v === 'openrouter' || v === 'local' || v === 'unattributed' || v === 'not_served';
 }
 
 /**
@@ -898,13 +1018,12 @@ function isServedRouteClass(v: unknown): boolean {
  * string — or nothing — where one of the six committed outcomes belongs, and the census that counts
  * 429s would silently miss it.
  *
- * ⚠️ `attempts: null` IS LEGAL HERE AND MUST NOT BE FLAGGED. A skipped expansion stage emits null
- * (`buildRetrievalPayload` in `lib/retrieval-capture.ts`) and `manifestAttempts` in that same file
- * returns null when there is no evidence — named rather than numbered (v13 §6), because the line
- * numbers these two citations carried were stale the day they were written.
- * Addendum v11 §6.1 defers the `null` to `[]` correction to PASS 3, so a branch that
- * treated null as defective would flag every skipped stage today and would be making pass 3's
- * decision early. Validate the members of an array when there is one; say nothing when there is not.
+ * ⚠️ `attempts: null` IS LEGAL HERE AND MUST NOT BE FLAGGED. Since pass 3 (addendum v11 §6.1, landed
+ * in commit 13) a skipped stage and absent evidence record `[]`; `manifestAttempts` in
+ * `lib/retrieval-capture.ts` returns null for ONE fact only — the transport reported that it did not
+ * COLLECT a sequence, which D17 names ("null permitted, meaning not collected"). Validate the members
+ * of an array when there is one; say nothing when there is not. The matrix above routes all three
+ * attempt locations here through the `attempts` type.
  *
  * ⚠️ A NON-ARRAY, NON-NULL value IS defective. `undefined`, a string or an object is neither "no
  * attempts" nor a list of them, and the field-presence checks beside each call site do not catch a
@@ -917,10 +1036,6 @@ function pushAttemptOutcomeDefects(attempts: unknown, defect: string, v: string[
     const outcome = (a as { outcome?: unknown } | null)?.outcome;
     if (!(TRANSPORT_ATTEMPT_OUTCOMES as readonly unknown[]).includes(outcome)) { v.push(defect); return; }
   }
-}
-function isVariantStatus(v: unknown): boolean {
-  return ['generated', 'parsed_empty', 'all_invalid', 'not_an_array', 'parse_failure', 'failed_open', 'not_collected']
-    .includes(v as string);
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════
