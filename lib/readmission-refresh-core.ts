@@ -108,18 +108,20 @@ export type StoredCoverage = Partial<Record<TemplateKey, { status?: TemplateCove
 
 /**
  * PURE — is this finding refresh-pending, and for which sources? A source is pending when rows
- * exist NOW and the stored coverage does not reflect rows: status absent (looked, none then),
- * fetch_failed (the look failed), or no entry at all (never looked). `present` and `empty` are
- * NOT pending — the audit already read rows for that source (`empty` = rows without usable text;
- * whether NEW usable rows have since landed is deliberately not chased here — flagged, R4.1
- * report). Attempt-capped cases are parked as `stuck`.
+ * exist NOW and the stored coverage says the audit looked and found NONE (status `absent`) or
+ * never looked (no entry). NOT pending: `present` / `empty` (rows were read; `empty` = rows without
+ * usable text — whether NEW usable rows have since landed is deliberately not chased, flagged) and
+ * `fetch_failed` (Addendum A1: a fetch_failed-only delta does not count — a refresh whose own
+ * template fetch fails would otherwise land fetch_failed, reset, and re-pend forever; the fault is
+ * an infrastructure fact for the operator, not a case to re-analyze). Attempt-capped cases are
+ * parked as `stuck`.
  */
 export function refreshDelta(coverage: StoredCoverage, counts: TemplateCounts, attempts = 0): { pending: boolean; stuck: boolean; sources: TemplateKey[] } {
   const sources: TemplateKey[] = [];
   for (const k of TEMPLATE_KEYS) {
     if (!(Number(counts[k]) > 0)) continue;
     const st = coverage?.[k]?.status ?? null;
-    if (st === 'present' || st === 'empty') continue;
+    if (st === 'present' || st === 'empty' || st === 'fetch_failed') continue;
     sources.push(k);
   }
   const stuck = attempts >= REFRESH_MAX_ATTEMPTS && sources.length > 0;
@@ -127,6 +129,14 @@ export function refreshDelta(coverage: StoredCoverage, counts: TemplateCounts, a
 }
 
 /** Sum the per-encounter counts for a stay's encounters (index; + readmit for Even–Even). */
+/** PURE (Addendum A1): did a refresh actually LAND rows for the sources it targeted? A refresh whose
+ *  coverage for every targeted source came back `fetch_failed` read nothing new — it counts as an
+ *  ATTEMPT (attempts increment, no reset), never as a success that resets the counter. */
+export function refreshLanded(coverage: StoredCoverage, sources: readonly TemplateKey[]): boolean {
+  if (!sources.length) return true;
+  return sources.some((k) => { const st = coverage?.[k]?.status ?? null; return st === 'present' || st === 'empty'; });
+}
+
 export function countsForStay(byEncounter: ReadonlyMap<string, Partial<TemplateCounts>>, encounterIds: ReadonlyArray<string | null | undefined>): TemplateCounts {
   const out: TemplateCounts = { ot: 0, pac: 0, progress: 0 };
   for (const id of encounterIds) {

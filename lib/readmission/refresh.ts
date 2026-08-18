@@ -37,7 +37,8 @@ import type { PassClaims, ReadmissionFinding } from '../readmission-reconcile-co
 import { NARRATIVE_MODEL, NARRATIVE_MODEL_ID, type CaseArtefacts } from '../readmission-narrative-core';
 import {
   REFRESH_WORKER, REFRESH_N_PER_TICK, REFRESH_LEG_BUDGET_MS, REFRESH_LEG_MAX_TRIES, REFRESH_NARRATIVE_BUDGET_MS, REFRESH_PROBE_KEY,
-  reconPromptFingerprints, probePassed, probeUnlocksRun, refreshDelta, countsForStay, type ProbeLeg, type ProbeRecord, type TemplateKey,
+  reconPromptFingerprints, probePassed, probeUnlocksRun, refreshDelta, refreshLanded, countsForStay, REFRESH_MAX_ATTEMPTS,
+  type ProbeLeg, type ProbeRecord, type TemplateKey,
 } from '../readmission-refresh-core';
 import { assembleForRow, runReconSequence, type PassFn } from './run';
 import { composeCaseArtefacts } from './narrative';
@@ -117,23 +118,62 @@ export interface RefreshOneResult {
   provider: string | null;
 }
 
+/** Test seams for reanalyzeOnOpus (production never passes them). */
+export interface ReanalyzeDeps {
+  assemble?: typeof assembleForRow;
+  pass?: (traceId: string) => PassFn;
+  served?: typeof servedCallForAudit;
+  saveAudit?: typeof saveAuditResult;
+  saveArtefacts?: typeof saveCaseArtefacts;
+  compose?: typeof composeCaseArtefacts;
+  trace?: { start: typeof startTrace; finish: typeof finishTrace };
+  usage?: typeof usageForTrace;
+}
+
 /**
- * Re-analyze ONE audited finding on Opus. `save:false` (the probe) reports and writes NOTHING;
- * `save:true` (the refresh) writes in place. Never throws.
+ * Re-analyze ONE audited finding on Opus. `save:false` (the probe) reports and writes NO finding
+ * (trace / usage rows are still written); `save:true` (the refresh) writes in place. Never throws.
+ *
+ * ADDENDUM A1 — THE ATTEMPT CAP IS COMPLETE: on the save path EVERY failure — re-assemble failure,
+ * an unparseable / thrown leg, the DEC-2 model-disagreement refusal, the in-place write failure —
+ * increments `refreshAttempts` (and records `lastRefreshError`), so a case that keeps failing is
+ * parked as refresh_stuck at REFRESH_MAX_ATTEMPTS instead of being re-offered every tick at Opus
+ * cost with the cursor pinned. A refresh that SUCCEEDS but whose coverage for every targeted source
+ * came back `fetch_failed` read nothing new: it counts as an attempt too (no reset). The probe
+ * (save:false) never touches attempts.
  */
-export async function reanalyzeOnOpus(row: PendingRow, opts: { save: boolean; runId?: number | null; sources?: TemplateKey[] }): Promise<RefreshOneResult> {
+export async function reanalyzeOnOpus(row: PendingRow, opts: { save: boolean; runId?: number | null; sources?: TemplateKey[] }, deps: ReanalyzeDeps = {}): Promise<RefreshOneResult> {
   const t0 = Date.now();
   const legs: ProbeLeg[] = [];
   const base = { dedupKey: row.dedup_key, legs, saved: false, tokensIn: 0, tokensOut: 0, usd: 0, traceId: null as string | null, model: null as string | null, provider: null as string | null };
+  const assemble = deps.assemble ?? assembleForRow;
+  const served0 = deps.served ?? servedCallForAudit;
+  const saveAudit = deps.saveAudit ?? saveAuditResult;
+  const saveArtefacts = deps.saveArtefacts ?? saveCaseArtefacts;
+  const compose = deps.compose ?? composeCaseArtefacts;
+  const trace = deps.trace ?? { start: startTrace, finish: finishTrace };
+  const usage = deps.usage ?? usageForTrace;
   let traceId: string | null = null;
+  const attemptsSoFar = Number(asJson<{ refreshAttempts?: number }>((row as NarrativeRow).finding ?? null)?.refreshAttempts ?? 0) || 0;
+  /** The ONE place a failed refresh is booked (save path only): attempts + 1, the reason, parked at the cap. */
+  const bookFailure = async (reason: string): Promise<{ attempts: number; stuck: boolean }> => {
+    const attempts = attemptsSoFar + 1;
+    const stuck = attempts >= REFRESH_MAX_ATTEMPTS;
+    if (opts.save) await saveArtefacts(row.dedup_key, { refreshAttempts: attempts, lastRefreshError: { at: new Date().toISOString(), reason: reason.slice(0, 400), attempts, stuck } }).catch(() => {});
+    return { attempts, stuck };
+  };
+  const fail = async (reason: string, extra: Partial<RefreshOneResult> = {}): Promise<RefreshOneResult> => {
+    const b = await bookFailure(reason);
+    return { ...base, ...extra, ok: false, reason: `${reason}${opts.save ? ` (attempt ${b.attempts}/${REFRESH_MAX_ATTEMPTS}${b.stuck ? ' — parked as refresh_stuck' : ''})` : ''}`, ms: Date.now() - t0 };
+  };
   try {
-    const assembled = await assembleForRow(row);
-    if ('notAuditable' in assembled) return { ...base, ok: false, reason: `evidence could not be re-assembled: ${assembled.notAuditable}`, ms: Date.now() - t0 };
-    traceId = await startTrace(opts.save ? 'readmit_refresh' : 'readmit_refresh_probe', { dedupKey: row.dedup_key, engine: READMIT_ENGINE_VERSION, model: NARRATIVE_MODEL, runId: opts.runId ?? null });
+    const assembled = await assemble(row);
+    if ('notAuditable' in assembled) return fail(`evidence could not be re-assembled: ${assembled.notAuditable}`);
+    traceId = await trace.start(opts.save ? 'readmit_refresh' : 'readmit_refresh_probe', { dedupKey: row.dedup_key, engine: READMIT_ENGINE_VERSION, model: NARRATIVE_MODEL, runId: opts.runId ?? null });
     base.traceId = traceId;
     // Every leg is recorded — label, wall, whether the JSON closed, the verdicts parsed — so the
     // probe report reads leg by leg (S2 discipline: "closed valid JSON on all legs").
-    const raw = bedrockPass(traceId);
+    const raw = (deps.pass ?? bedrockPass)(traceId);
     const pass: PassFn = async (label, prompt) => {
       const l0 = Date.now();
       let claims: PassClaims | null = null;
@@ -152,10 +192,10 @@ export async function reanalyzeOnOpus(row: PendingRow, opts: { save: boolean; ru
     const judgements = { planned: finding.planned?.verdict ?? null, sameCondition: finding.sameCondition?.verdict ?? null, avoidable: finding.avoidable?.verdict ?? null, nOmissions: finding.omissions.length };
 
     // Who answered — off the trace, never assumed (DEC-2). A disagreement is a refusal.
-    const served = await servedCallForAudit(traceId, legs[legs.length - 1]?.label ?? 'readmit_recon_a');
+    const served = await served0(traceId, legs[legs.length - 1]?.label ?? 'readmit_recon_a');
     if (served.model && !modelsAgree(served.model, NARRATIVE_MODEL_ID)) {
-      await finishTrace(traceId, 'error', 'DEC-2 model disagreement');
-      return { ...base, ok: false, reason: `DEC-2: asked ${NARRATIVE_MODEL_ID} but ${served.provider ?? '?'}:${served.model} answered — nothing saved`, judgements, ms: Date.now() - t0 };
+      await trace.finish(traceId, 'error', 'DEC-2 model disagreement');
+      return fail(`DEC-2: asked ${NARRATIVE_MODEL_ID} but ${served.provider ?? '?'}:${served.model} answered — nothing saved`, { judgements });
     }
     const model = served.model ?? NARRATIVE_MODEL_ID, provider = served.provider ?? 'bedrock';
 
@@ -166,37 +206,39 @@ export async function reanalyzeOnOpus(row: PendingRow, opts: { save: boolean; ru
       // IN PLACE at (dedup_key, engine 0.2): the SAME UPDATE the Vertex audit uses; deriveJudgements
       // re-runs untouched inside it; the whole finding blob is replaced (the artefacts are re-added
       // below; if the narrative leg fails, the narrative backfill sweep re-offers the case).
-      const ok = await saveAuditResult({ dedupKey: row.dedup_key, status: 'audited', finding, model, provider, traceId, promoted: seq.promoted });
-      if (!ok) { await finishTrace(traceId, 'partial'); return { ...base, ok: false, reason: 're-analysis produced a finding but the in-place store write failed', judgements, ms: Date.now() - t0 }; }
+      const ok = await saveAudit({ dedupKey: row.dedup_key, status: 'audited', finding, model, provider, traceId, promoted: seq.promoted });
+      if (!ok) { await trace.finish(traceId, 'partial'); return fail('re-analysis produced a finding but the in-place store write failed', { judgements }); }
       saved = true;
-      const n = await composeCaseArtefacts({
+      const n = await compose({
         row, finding, catalog: assembled.inputs.catalog, identity: assembled.identity,
         ledgerSource: 'audit', narrativeSource: 'refresh', traceId, budgetMs: REFRESH_NARRATIVE_BUDGET_MS,
       });
       narrativeValid = n.ok ? (n.valid ?? null) : null;
       tokensIn += n.tokensIn; tokensOut += n.tokensOut; usd += n.costUsd;
-      await saveCaseArtefacts(row.dedup_key, {
-        lastRefresh: { at: new Date().toISOString(), runId: opts.runId ?? null, model, provider, sources: opts.sources ?? [], narrative: n.ok ? (n.valid ? 'stored' : 'invalid') : 'failed', traceId },
-        refreshAttempts: 0,
+      // Addendum A1: a refresh that landed rows for its targeted sources resets the counter; one whose
+      // targeted sources all came back fetch_failed read nothing new — it is an ATTEMPT (increment,
+      // never reset), and since fetch_failed no longer pends it cannot loop.
+      const landed = refreshLanded(finding.templateCoverage ?? null, opts.sources ?? []);
+      const attemptsAfter = landed ? 0 : attemptsSoFar + 1;
+      await saveArtefacts(row.dedup_key, {
+        lastRefresh: { at: new Date().toISOString(), runId: opts.runId ?? null, model, provider, sources: opts.sources ?? [], landed, narrative: n.ok ? (n.valid ? 'stored' : 'invalid') : 'failed', traceId },
+        refreshAttempts: attemptsAfter,
+        ...(landed ? {} : { lastRefreshError: { at: new Date().toISOString(), reason: 'refresh landed no template rows — every targeted source came back fetch_failed', attempts: attemptsAfter, stuck: attemptsAfter >= REFRESH_MAX_ATTEMPTS } }),
       });
     }
     // Recon-leg spend off THIS trace (all readmit_% legs); the narrative added its own above.
     for (const label of new Set(legs.map((l) => l.label))) {
-      const u = await usageForTrace(traceId, label);
+      const u = await usage(traceId, label);
       tokensIn += u.tokensIn; tokensOut += u.tokensOut;
       usd += costUsd(model, u.tokensIn, u.tokensOut, false, PRICING);
     }
-    await finishTrace(traceId, 'success');
+    await trace.finish(traceId, 'success');
     return { ...base, ok: true, judgements, coverage: finding.templateCoverage ?? null, narrativeValid, saved, ms: Date.now() - t0, tokensIn, tokensOut, usd, model, provider };
   } catch (e) {
+    // An unparseable / thrown leg (or any other throw): booked like every other failure.
     const msg = String((e as Error).message).slice(0, 400);
-    if (traceId) await finishTrace(traceId, 'error', msg).catch(() => {});
-    if (opts.save) {
-      // Attempt bookkeeping so a chronically failing case is parked, not retried every tick.
-      const blob = asJson<{ refreshAttempts?: number }>((row as NarrativeRow).finding ?? null);
-      await saveCaseArtefacts(row.dedup_key, { refreshAttempts: (Number(blob?.refreshAttempts ?? 0) || 0) + 1, lastRefreshError: { at: new Date().toISOString(), reason: msg } }).catch(() => {});
-    }
-    return { ...base, ok: false, reason: msg, ms: Date.now() - t0 };
+    if (traceId) await trace.finish(traceId, 'error', msg).catch(() => {});
+    return fail(msg);
   }
 }
 

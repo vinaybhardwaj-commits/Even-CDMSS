@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { caseLine, judgementExceptionLines, NEGLIGENCE_ADVISORY, CASE_LINE_MAX, type SurfaceFinding } from '../readmission-surface-core.ts';
 import {
-  reconPromptFingerprints, probePassed, probeUnlocksRun, refreshDelta, countsForStay,
+  reconPromptFingerprints, probePassed, probeUnlocksRun, refreshDelta, refreshLanded, countsForStay,
   REFRESH_N_PER_TICK, REFRESH_LEG_BUDGET_MS, REFRESH_NARRATIVE_BUDGET_MS, REFRESH_MAX_ATTEMPTS, REFRESH_WORKER, REFRESH_PROBE_KEY,
 } from '../readmission-refresh-core.ts';
 import { planRunCreate } from '../backfill-runs-core.ts';
@@ -85,7 +85,6 @@ test('caseLine: ~160-char cap on a word boundary with an ellipsis; never mid-wor
   const out = caseLine({ text: long, valid: true })!;
   assert.ok(out.length <= CASE_LINE_MAX, `len ${out.length}`);
   assert.ok(out.endsWith('…'));
-  assert.ok(!/\S…$/.test(out.replace(/…$/, ' …')) || true);
   const body = out.slice(0, -1);
   assert.ok(long.startsWith(body), 'prefix of the sentence'); assert.ok(long[body.length] === ' ', 'cut on a word boundary');
   assert.equal(caseLine({ text: 'Short. [S1]', valid: true }), 'Short.');
@@ -108,11 +107,13 @@ test('board layout: the two judgement cells are gone, justification + bill stay 
 
 // ── the delta detector (R41-4) ───────────────────────────────────────────────────────────
 
-test('refreshDelta: rows-now vs stored coverage — absent / fetch_failed / missing → pending; present / empty → not; no rows → not; attempt cap → stuck', () => {
+test('refreshDelta: rows-now vs stored coverage — absent / missing → pending; present / empty / fetch_failed (A1) → not; no rows → not; attempt cap → stuck', () => {
   const rowsNow = { ot: 2, pac: 0, progress: 3 };
   assert.deepEqual(refreshDelta({ ot: { status: 'absent', count: 0 }, pac: { status: 'absent', count: 0 }, progress: { status: 'absent', count: 0 } }, rowsNow), { pending: true, stuck: false, sources: ['ot', 'progress'] });
   assert.deepEqual(refreshDelta({ ot: { status: 'present', count: 1 }, pac: { status: 'absent', count: 0 }, progress: { status: 'empty', count: 3 } }, rowsNow), { pending: false, stuck: false, sources: [] });
-  assert.deepEqual(refreshDelta({ ot: { status: 'fetch_failed', count: 0 }, pac: { status: 'absent', count: 0 }, progress: { status: 'present', count: 2 } }, rowsNow), { pending: true, stuck: false, sources: ['ot'] });
+  // Addendum A1: a fetch_failed-only delta is NOT refresh-pending (it cannot loop a case)
+  assert.deepEqual(refreshDelta({ ot: { status: 'fetch_failed', count: 0 }, pac: { status: 'absent', count: 0 }, progress: { status: 'present', count: 2 } }, rowsNow), { pending: false, stuck: false, sources: [] });
+  assert.deepEqual(refreshDelta({ ot: { status: 'fetch_failed', count: 0 }, pac: { status: 'fetch_failed', count: 0 }, progress: { status: 'absent', count: 0 } }, rowsNow), { pending: true, stuck: false, sources: ['progress'] });
   assert.deepEqual(refreshDelta(null, rowsNow), { pending: true, stuck: false, sources: ['ot', 'progress'] });          // never looked (pre-R2)
   assert.deepEqual(refreshDelta(undefined, { ot: 0, pac: 0, progress: 0 }), { pending: false, stuck: false, sources: [] });
   assert.deepEqual(refreshDelta({ ot: { status: 'absent', count: 0 } }, rowsNow, REFRESH_MAX_ATTEMPTS), { pending: false, stuck: true, sources: ['ot', 'progress'] });
@@ -230,7 +231,8 @@ test('refresh run type: worker readmission_refresh is Bedrock-only on the rails,
 
 test('save is IN PLACE (the same UPDATE at dedup_key + engine 0.2, never an insert); narrative source refresh; PHI-clean; never auto-started', () => {
   const src = code('lib/readmission/refresh.ts');
-  assert.match(src, /await saveAuditResult\(\{ dedupKey: row\.dedup_key, status: 'audited', finding, model, provider, traceId, promoted: seq\.promoted \}\)/);
+  assert.match(src, /await saveAudit\(\{ dedupKey: row\.dedup_key, status: 'audited', finding, model, provider, traceId, promoted: seq\.promoted \}\)/);
+  assert.match(src, /const saveAudit = deps\.saveAudit \?\? saveAuditResult;/);
   assert.ok(!/INSERT INTO/.test(src));
   assert.match(src, /narrativeSource: 'refresh'/);
   for (const col of ['patient_name', 'patient_mobile', 'telecom']) assert.ok(!new RegExp(`\\b${col}\\b`).test(src), `no ${col}`);
@@ -242,4 +244,86 @@ test('save is IN PLACE (the same UPDATE at dedup_key + engine 0.2, never an inse
   // the cron hook chains: OPD idle → narrative tick → (idle) → refresh tick
   const hook = code('app/api/admin/opd-audit-mini-backfill/route.ts');
   assert.match(hook, /'idle' in readmission && readmission\.idle\s*\n?\s*\? await refreshTick\(\)/);
+});
+
+// ── Addendum A1 — the attempt cap is complete ─────────────────────────────────────────────
+
+test('A1 pure: refreshLanded — a targeted source that came back present / empty landed; all fetch_failed did not; no targets → landed', () => {
+  assert.equal(refreshLanded({ ot: { status: 'present', count: 1 }, progress: { status: 'fetch_failed', count: 0 } }, ['ot', 'progress']), true);
+  assert.equal(refreshLanded({ ot: { status: 'fetch_failed', count: 0 }, progress: { status: 'fetch_failed', count: 0 } }, ['ot', 'progress']), false);
+  assert.equal(refreshLanded({ ot: { status: 'absent', count: 0 } }, ['ot']), false);
+  assert.equal(refreshLanded(null, ['ot']), false);
+  assert.equal(refreshLanded(null, []), true);
+});
+
+const seamRow = (attempts: number) => ({
+  dedup_key: 'IP-1|IP-2', finding_class: 'even_even', index_encounter_id: 'IP-1', readmit_encounter_id: 'IP-2', form_uid: null, uhid: 'UH-1', lane: 'tight_bounce', gap_days: 4,
+  index_department: 'Ortho', readmit_department: 'Ortho', index_doctor: null, readmit_doctor: null, index_discharge_at: '2026-06-01T10:00:00+05:30', readmit_admit_at: '2026-06-05T09:30:00+05:30',
+  cm_note: null, form_is_planned: null, form_same_condition: null, finding: { refreshAttempts: attempts, templateCoverage: { ot: { status: 'absent', count: 0 }, pac: { status: 'absent', count: 0 }, progress: { status: 'absent', count: 0 } } }, audited_at: '2026-08-18T00:00:00Z',
+});
+const okAssembled = (cov?: unknown) => ({ inputs: { ...inputs, templateCoverage: cov }, indexAdmitAt: null, indexDischargeAt: '2026-06-01T10:00:00+05:30', identity: { names: [], uhids: [] } });
+const trace = { start: async () => 't-1', finish: async () => {} };
+const usage0 = async () => ({ tokensIn: 0, tokensOut: 0 });
+type Written = Array<Record<string, unknown>>;
+const recorder = (): { writes: Written; save: (k: string, a: Record<string, unknown>) => Promise<boolean> } => { const writes: Written = []; return { writes, save: async (_k, a) => { writes.push(a); return true; } }; };
+
+test('A1: re-assemble failure on the save path books an attempt (n+1) and parks at the cap; the probe (save:false) writes nothing', async () => {
+  const m = await import('../readmission/refresh.ts');
+  const rec = recorder();
+  const r = await m.reanalyzeOnOpus(seamRow(0) as never, { save: true }, { assemble: async () => ({ notAuditable: 'no index PDF' }), saveArtefacts: rec.save as never, trace: trace as never, usage: usage0 as never });
+  assert.equal(r.ok, false); assert.match(r.reason!, /could not be re-assembled.*\(attempt 1\/3\)/);
+  assert.equal(rec.writes[0].refreshAttempts, 1); assert.equal((rec.writes[0].lastRefreshError as { stuck: boolean }).stuck, false);
+  const rec3 = recorder();
+  const r3 = await m.reanalyzeOnOpus(seamRow(2) as never, { save: true }, { assemble: async () => ({ notAuditable: 'no index PDF' }), saveArtefacts: rec3.save as never, trace: trace as never, usage: usage0 as never });
+  assert.match(r3.reason!, /attempt 3\/3 — parked as refresh_stuck/); assert.equal(rec3.writes[0].refreshAttempts, 3); assert.equal((rec3.writes[0].lastRefreshError as { stuck: boolean }).stuck, true);
+  const probe = recorder();
+  const p = await m.reanalyzeOnOpus(seamRow(0) as never, { save: false }, { assemble: async () => ({ notAuditable: 'no index PDF' }), saveArtefacts: probe.save as never, trace: trace as never, usage: usage0 as never });
+  assert.equal(p.ok, false); assert.equal(probe.writes.length, 0, 'the probe never books attempts');
+});
+
+test('A1: DEC-2 model-disagreement refusal books an attempt and saves no finding', async () => {
+  const m = await import('../readmission/refresh.ts');
+  const rec = recorder(); let audits = 0;
+  const r = await m.reanalyzeOnOpus(seamRow(1) as never, { save: true }, {
+    assemble: async () => okAssembled() as never, pass: () => async () => claims(), served: async () => ({ model: 'gemini-2.5-pro', provider: 'gemini' }),
+    saveAudit: async () => { audits++; return true; }, saveArtefacts: rec.save as never, trace: trace as never, usage: usage0 as never,
+  });
+  assert.equal(r.ok, false); assert.match(r.reason!, /DEC-2.*nothing saved \(attempt 2\/3\)/); assert.equal(audits, 0);
+  assert.equal(rec.writes.length, 1); assert.equal(rec.writes[0].refreshAttempts, 2);
+});
+
+test('A1: in-place write failure books an attempt; a thrown / unparseable leg books an attempt', async () => {
+  const m = await import('../readmission/refresh.ts');
+  const rec = recorder();
+  const r = await m.reanalyzeOnOpus(seamRow(0) as never, { save: true }, {
+    assemble: async () => okAssembled() as never, pass: () => async () => claims(), served: async () => ({ model: 'global.anthropic.claude-opus-4-6-v1', provider: 'bedrock' }),
+    saveAudit: async () => false, saveArtefacts: rec.save as never, trace: trace as never, usage: usage0 as never,
+  });
+  assert.equal(r.ok, false); assert.match(r.reason!, /in-place store write failed \(attempt 1\/3\)/); assert.equal(rec.writes[0].refreshAttempts, 1);
+  const rec2 = recorder();
+  const r2 = await m.reanalyzeOnOpus(seamRow(2) as never, { save: true }, {
+    assemble: async () => okAssembled() as never, pass: () => async () => null, saveArtefacts: rec2.save as never, trace: trace as never, usage: usage0 as never,
+  });
+  assert.equal(r2.ok, false); assert.match(r2.reason!, /recon pass A unparseable.*attempt 3\/3 — parked as refresh_stuck/); assert.equal(rec2.writes[0].refreshAttempts, 3);
+});
+
+test('A1: a successful refresh that LANDED rows resets attempts to 0; one whose targeted sources all came back fetch_failed counts as an attempt (no reset) — and fetch_failed no longer pends, so it cannot loop', async () => {
+  const m = await import('../readmission/refresh.ts');
+  const compose = async () => ({ ok: true, valid: true, tokensIn: 0, tokensOut: 0, costUsd: 0, latencyMs: 0, model: 'm', provider: 'bedrock' });
+  const served = async () => ({ model: 'global.anthropic.claude-opus-4-6-v1', provider: 'bedrock' });
+  const landed = recorder();
+  const a = await m.reanalyzeOnOpus(seamRow(2) as never, { save: true, sources: ['ot'] }, {
+    assemble: async () => okAssembled({ ot: { status: 'present', count: 2 }, pac: { status: 'absent', count: 0 }, progress: { status: 'absent', count: 0 } }) as never,
+    pass: () => async () => claims(), served, saveAudit: async () => true, saveArtefacts: landed.save as never, compose: compose as never, trace: trace as never, usage: usage0 as never,
+  });
+  assert.equal(a.ok, true); assert.equal(landed.writes[0].refreshAttempts, 0); assert.equal((landed.writes[0].lastRefresh as { landed: boolean }).landed, true);
+  const notLanded = recorder();
+  const b = await m.reanalyzeOnOpus(seamRow(1) as never, { save: true, sources: ['ot'] }, {
+    assemble: async () => okAssembled({ ot: { status: 'fetch_failed', count: 0 }, pac: { status: 'absent', count: 0 }, progress: { status: 'absent', count: 0 } }) as never,
+    pass: () => async () => claims(), served, saveAudit: async () => true, saveArtefacts: notLanded.save as never, compose: compose as never, trace: trace as never, usage: usage0 as never,
+  });
+  assert.equal(b.ok, true); assert.equal(notLanded.writes[0].refreshAttempts, 2); assert.equal((notLanded.writes[0].lastRefresh as { landed: boolean }).landed, false);
+  assert.match((notLanded.writes[0].lastRefreshError as { reason: string }).reason, /every targeted source came back fetch_failed/);
+  // and the stored fetch_failed coverage is not a delta any more: rows-now on OT, coverage fetch_failed → not pending
+  assert.deepEqual(refreshDelta({ ot: { status: 'fetch_failed', count: 0 } }, { ot: 2, pac: 0, progress: 0 }, 2), { pending: false, stuck: false, sources: [] });
 });
