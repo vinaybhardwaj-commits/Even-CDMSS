@@ -81,7 +81,7 @@ const discharges: DischargeBucket[] = [
   b({ day: '2025-10-05', department: 'Nephrology', n: 10 }),                 // held-out
   b({ day: '2025-10-20', disposition: 'DAMA', n: 4 }),                       // true-IPD exclusion
   b({ day: '2025-10-21', disposition: 'Expired', n: 1 }),                    // true-IPD exclusion
-  b({ day: '2025-10-22', disposition: 'Discharge On Request', n: 2 }),       // NOT excluded
+  b({ day: '2025-10-22', disposition: 'Discharge On Request', n: 2 }),       // true-IPD exclusion (R7.1)
   b({ day: '2026-07-18', n: 30 }),                                           // last eligible-30 day (ceiling − 30 = 2026-07-19) → inside
   b({ day: '2026-07-20', n: 20 }),                                           // outside eligible-30, inside all_in_window
   b({ day: '2026-08-18', n: 5 }),                                            // ceiling day → all_in_window only
@@ -106,8 +106,11 @@ test('computeRates: three denominators per facility; eligible default; all_in_wi
   const e = ehrc.denominators.eligible, t = ehrc.denominators.true_ipd, a = ehrc.denominators.all_in_window;
   // eligible-30: 100 + 10 + 4 + 1 + 2 + 30 = 147 (ceiling − 30 = 2026-07-19 inclusive; 07-20 excluded)
   assert.equal(e.d30, 147); assert.equal(e.d30_held_out, 10); assert.equal(e.d30_reviewable, 137);
-  // true IPD: minus DAMA 4 + Expired 1 = 142 ('Discharge On Request' stays)
-  assert.equal(t.d30, 142);
+  // true IPD (R7.1): minus DAMA 4 + Expired 1 + Discharge On Request 2 = 140
+  assert.equal(t.d30, 140);
+  // 'Refer External Hospital' / 'Early Neonatal' are NOT in the set — they stay in True IPD
+  const keep = computeRates({ pairs: [], discharges: [b({ disposition: 'Refer External Hospital', n: 3 }), b({ disposition: 'Early Neonatal', n: 1 }), b({ disposition: 'Absconded', n: 1 })], ceilingDay: CEILING });
+  assert.equal(keep.facilities[0].denominators.eligible.d30, 5); assert.equal(keep.facilities[0].denominators.true_ipd.d30, 4);
   // all in window: + 20 + 5 = 172
   assert.equal(a.d30, 172);
   assert.equal(DEFAULT_DENOMINATOR, 'eligible');
@@ -115,7 +118,7 @@ test('computeRates: three denominators per facility; eligible default; all_in_wi
   assert.equal(a.warning, 'understates — recent discharges lack 30d follow-up');
   assert.equal(e.warning, null); assert.equal(t.warning, null);
   assert.equal(DENOMINATOR_WARNING.all_in_window, a.warning);
-  assert.deepEqual([...TRUE_IPD_EXCLUDED_DISPOSITIONS], ['DAMA', 'LAMA', 'Expired', 'Mortuary', 'Admitted Dead']);
+  assert.deepEqual([...TRUE_IPD_EXCLUDED_DISPOSITIONS], ['DAMA', 'LAMA', 'Discharge On Request', 'Absconded', 'Expired', 'Mortuary', 'Admitted Dead']);
 });
 
 test('computeRates: numerators — 30d / 90d / reviewable vs held-out / immediate / proposed-avoidable; pairs before the start or after the window edge are not counted', () => {

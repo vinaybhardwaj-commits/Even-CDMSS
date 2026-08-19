@@ -8,7 +8,8 @@
  *   · Surveillance window: index discharges from SURVEILLANCE_START (22 Sep 2025, left truncation per
  *     the report) to the ascertainment ceiling.
  *   · Three denominators (R7-2): ELIGIBLE = discharges with complete 30-day follow-up (discharge day
- *     ≤ ceiling − 30; the default); TRUE IPD = eligible minus LAMA / DAMA / in-hospital deaths;
+ *     ≤ ceiling − 30; the default); TRUE IPD = eligible minus the patient-chose-to-leave class (DAMA /
+ *     LAMA / Discharge On Request / Absconded) and in-hospital deaths;
  *     ALL IN WINDOW = every discharge to the ceiling (rendered, tagged `understates` — recent discharges
  *     lack 30-day follow-up). The 90-day rate uses ceiling − 90 likewise.
  *   · Numerators: detected Even→Even pairs (one pair = one index encounter, LEAD pairing) whose index
@@ -35,9 +36,11 @@ export const FOLLOW_UP_90 = 90;
 /** db13 kx_discharged_completed_patients.discharge_type_value — values GROUNDED LIVE 19 Aug 2026 on
  *  2,025 ip_admission rows: 'Normal Discharge' 1,973 · 'DAMA' 22 · 'Discharge On Request' 11 ·
  *  'Expired' 7 · 'Mortuary' 5 · 'Admitted Dead' 3 · 'Refer External Hospital' 1 · 'Early Neonatal' 1 ·
- *  'LAMA' 1 · 'Absconded' 1. TRUE IPD removes LAMA / DAMA / in-hospital death = these five; 'Discharge
- *  On Request', 'Absconded' and 'Refer External Hospital' are NOT removed (flagged for a ruling). */
-export const TRUE_IPD_EXCLUDED_DISPOSITIONS: readonly string[] = ['DAMA', 'LAMA', 'Expired', 'Mortuary', 'Admitted Dead'];
+ *  'LAMA' 1 · 'Absconded' 1. TRUE IPD removes the patient-chose-to-leave class (DAMA / LAMA /
+ *  Discharge On Request / Absconded — R7.1, V ruled 19 Aug; Absconded bundled by the orchestrator) and
+ *  in-hospital death (Expired / Mortuary / Admitted Dead). 'Refer External Hospital' and 'Early
+ *  Neonatal' are NOT removed. */
+export const TRUE_IPD_EXCLUDED_DISPOSITIONS: readonly string[] = ['DAMA', 'LAMA', 'Discharge On Request', 'Absconded', 'Expired', 'Mortuary', 'Admitted Dead'];
 /** db13 facility_name values (R6, measured): the two hospitals. Encounter-prefix fallback for findings. */
 export const FACILITY_EHRC = 'Even';
 export const FACILITY_EHBR = 'Even-EHBR';
@@ -47,7 +50,7 @@ export type DenominatorKey = 'eligible' | 'true_ipd' | 'all_in_window';
 export const DENOMINATORS: readonly DenominatorKey[] = ['eligible', 'true_ipd', 'all_in_window'];
 export const DENOMINATOR_LABEL: Readonly<Record<DenominatorKey, string>> = {
   eligible: 'Eligible — complete 30-day follow-up',
-  true_ipd: 'True IPD — also excluding LAMA / DAMA / deaths',
+  true_ipd: 'True IPD — also excluding left-against-advice / on-request / absconded and deaths',
   all_in_window: 'All in window',
 };
 export const DENOMINATOR_WARNING: Readonly<Record<DenominatorKey, string | null>> = {
