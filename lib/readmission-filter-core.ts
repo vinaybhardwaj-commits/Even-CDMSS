@@ -9,7 +9,7 @@
  * filter. Filters compose ON TOP of the held-out checkbox, which is unchanged. The review / pending
  * badges are whole-population and untouched (R5-3): only the "showing X of Y" counter moves.
  *
- * URL persistence (R5-4): `q, verdict, flags, lane, dept, gap, from, to, minbill, held` — absent =
+ * URL persistence (R5-4): `q, verdict, flags, lane, dept, fac (R6), gap, from, to, minbill, held` — absent =
  * off; unknown or malformed values are ignored SILENTLY, so a bad shared link degrades to the
  * unfiltered list, never an error.
  */
@@ -35,6 +35,8 @@ export interface FilterState {
   lane: string | null;
   /** A department as rendered (matched case-insensitively against EITHER stay, R5-5). */
   dept: string | null;
+  /** R6: a hospital (db13 facility_name, verbatim). A null facility ALWAYS passes (R6-3). */
+  fac: string | null;
   gap: GapPreset | null;
   /** YYYY-MM-DD, inclusive, matched against readmitAdmitAt (IST calendar day). */
   from: string | null;
@@ -45,11 +47,11 @@ export interface FilterState {
   held: boolean;
 }
 
-export const EMPTY_FILTERS: FilterState = { q: '', verdict: null, flags: false, lane: null, dept: null, gap: null, from: null, to: null, minBill: null, held: false };
+export const EMPTY_FILTERS: FilterState = { q: '', verdict: null, flags: false, lane: null, dept: null, fac: null, gap: null, from: null, to: null, minBill: null, held: false };
 
 /** True when any filter (not the held-out checkbox) is active. */
 export function hasActiveFilters(f: FilterState): boolean {
-  return f.q.trim() !== '' || f.verdict != null || f.flags || f.lane != null || f.dept != null || f.gap != null || f.from != null || f.to != null || f.minBill != null;
+  return f.q.trim() !== '' || f.verdict != null || f.flags || f.lane != null || f.dept != null || f.fac != null || f.gap != null || f.from != null || f.to != null || f.minBill != null;
 }
 
 // ── URL params (R5-4) — encode / decode with silent rejection of junk ─────────────────────
@@ -73,6 +75,8 @@ export function decodeFilters(params: URLSearchParams | Record<string, string | 
   const lane = (LANE_ORDER as readonly string[]).includes(laneRaw) ? laneRaw : null;
   const deptRaw = (get('dept') ?? '').trim().slice(0, 120);
   const dept = deptRaw ? deptRaw : null;
+  const facRaw = (get('fac') ?? '').trim().slice(0, 120);
+  const fac = facRaw ? facRaw : null;
   const gapNum = Number(get('gap'));
   const gap = (GAP_PRESETS as readonly number[]).includes(gapNum) ? (gapNum as GapPreset) : null;
   const fromRaw = (get('from') ?? '').trim(); const toRaw = (get('to') ?? '').trim();
@@ -82,7 +86,7 @@ export function decodeFilters(params: URLSearchParams | Record<string, string | 
   const mbNum = /^\d+(\.\d+)?$/.test(mbRaw) ? Number(mbRaw) : NaN;
   const minBill = Number.isFinite(mbNum) && mbNum > 0 ? mbNum : null;
   const held = get('held') === '1';
-  return { q, verdict, flags, lane, dept, gap, from, to, minBill, held };
+  return { q, verdict, flags, lane, dept, fac, gap, from, to, minBill, held };
 }
 
 /** Write the filter state as a query string (no leading `?`); off filters are omitted. */
@@ -93,6 +97,7 @@ export function encodeFilters(f: FilterState): string {
   if (f.flags) p.set('flags', '1');
   if (f.lane) p.set('lane', f.lane);
   if (f.dept) p.set('dept', f.dept);
+  if (f.fac) p.set('fac', f.fac);
   if (f.gap != null) p.set('gap', String(f.gap));
   if (f.from) p.set('from', f.from);
   if (f.to) p.set('to', f.to);
@@ -103,7 +108,7 @@ export function encodeFilters(f: FilterState): string {
 
 // ── the searched text per case ────────────────────────────────────────────────────────────
 
-type Row = Pick<SurfaceFinding, 'patientName' | 'uhid' | 'indexDoctor' | 'readmitDoctor' | 'indexDepartment' | 'readmitDepartment' | 'indexCase' | 'caseLine' | 'avoidable' | 'preventableInjury' | 'negligence' | 'lane' | 'readmitAdmitAt' | 'gapDays' | 'returnBill' | 'auditStatus'>;
+type Row = Pick<SurfaceFinding, 'patientName' | 'uhid' | 'indexDoctor' | 'readmitDoctor' | 'indexDepartment' | 'readmitDepartment' | 'indexCase' | 'caseLine' | 'avoidable' | 'preventableInjury' | 'negligence' | 'lane' | 'readmitAdmitAt' | 'gapDays' | 'returnBill' | 'auditStatus' | 'facility'>;
 
 /** The normative haystack: name · UHID · both doctors · both departments · extracted diagnosis /
  *  indication / procedure · the case line. Nulls contribute nothing. Lower-cased. */
@@ -150,6 +155,14 @@ export function matchesDepartment(row: Row, dept: string | null): boolean {
   return eq(row.indexDepartment) || eq(row.readmitDepartment);
 }
 
+/** R6 — the hospital filter narrows only what it can judge (R6-3, the R5-6 precedent): a case whose
+ *  facility is unknown (null) ALWAYS passes; otherwise exact match on the verbatim db13 name. */
+export function matchesFacility(row: Row, fac: string | null): boolean {
+  if (!fac) return true;
+  if (row.facility == null || row.facility === '') return true;
+  return row.facility === fac;
+}
+
 /** R5-7 — `gapDays <= n`; a null gap passes only "Any". */
 export function matchesGap(row: Row, gap: GapPreset | null): boolean {
   if (gap == null) return true;
@@ -187,7 +200,7 @@ export function matchesMinBill(row: Row, minBill: number | null): boolean {
 export function applyFilters<T extends Row>(rows: readonly T[], f: FilterState): T[] {
   return rows.filter((r) =>
     matchesQuery(r, f.q) && matchesVerdict(r, f.verdict) && matchesFlags(r, f.flags) && matchesLane(r, f.lane)
-    && matchesDepartment(r, f.dept) && matchesGap(r, f.gap) && matchesDates(r, f.from, f.to) && matchesMinBill(r, f.minBill));
+    && matchesDepartment(r, f.dept) && matchesFacility(r, f.fac) && matchesGap(r, f.gap) && matchesDates(r, f.from, f.to) && matchesMinBill(r, f.minBill));
 }
 
 // ── toolbar helpers (pure) ───────────────────────────────────────────────────────────────
@@ -205,6 +218,14 @@ export function departmentOptions(rows: ReadonlyArray<Pick<SurfaceFinding, 'inde
   return [...seen.values()].sort((a, b) => a.localeCompare(b));
 }
 
+/** R6 — the hospital options: sorted distinct non-null facilities from the loaded list. Never
+ *  hardcoded, so a third hospital appears by itself; zero when the name join failed. */
+export function facilityOptions(rows: ReadonlyArray<Pick<SurfaceFinding, 'facility'>>): string[] {
+  const seen = new Set<string>();
+  for (const r of rows) { const v = typeof r.facility === 'string' ? r.facility.trim() : ''; if (v) seen.add(v); }
+  return [...seen].sort((a, b) => a.localeCompare(b));
+}
+
 /** The case-type options: the lanes in LANE_ORDER with the board's own plain-language titles. */
 export function laneOptions(): Array<{ lane: string; label: string }> {
   return LANE_ORDER.map((lane) => ({ lane, label: laneMeta(lane).title }));
@@ -218,6 +239,7 @@ export function activeFilterChips(f: FilterState): Array<{ key: keyof FilterStat
   if (f.flags) out.push({ key: 'flags', label: 'Serious flags only' });
   if (f.lane) out.push({ key: 'lane', label: laneMeta(f.lane).title });
   if (f.dept) out.push({ key: 'dept', label: f.dept });
+  if (f.fac) out.push({ key: 'fac', label: `hospital: ${f.fac}` });
   if (f.gap != null) out.push({ key: 'gap', label: `gap ≤ ${f.gap} days` });
   if (f.from || f.to) out.push({ key: 'from', label: `returned ${f.from ? `from ${f.from}` : ''}${f.from && f.to ? ' ' : ''}${f.to ? `to ${f.to}` : ''}` });
   if (f.minBill != null && f.minBill > 0) out.push({ key: 'minBill', label: `bill ≥ ₹${f.minBill.toLocaleString('en-IN')}` });

@@ -93,6 +93,10 @@ async function namesFromAdt(ids: string[]): Promise<Map<string, Identity>> {
         name: s(pick(r, ADT_COLUMN_CANDIDATES.patientName)),
         uhid: s(pick(r, ADT_COLUMN_CANDIDATES.uhid)),
         ageGender: null,   // the ADT table carries dob, not the "34M" the card shows
+        // R6 (Readmissions R6 PRD v1.0, R6-1): the hospital rides THIS join — facility_name is on
+        // every kx_discharged_completed_patients row (measured: two facilities, zero nulls) and was
+        // already fetched by the SELECT * above. No new query; null when the join finds nothing.
+        facility: s(r.facility_name),
       });
     }
     return out;
@@ -124,7 +128,7 @@ async function identityFromSummaries(ids: string[]): Promise<Map<string, Identit
   for (const r of rows) {
     const id = s(r.ipd_no);
     if (!id || out.has(id)) continue;   // ORDER BY put the Final row first
-    out.set(id, { name: s(r.patient_name), uhid: s(r.uhid), ageGender: s(r.age_gender) });
+    out.set(id, { name: s(r.patient_name), uhid: s(r.uhid), ageGender: s(r.age_gender), facility: null });   // the summary record carries no facility
   }
   return out;
 }
@@ -195,7 +199,7 @@ export async function GET() {
     const b = summaries.get(key);
     // Decision 5 names the ADT table as the source; the summary record fills the gaps
     // it cannot answer (age/sex) and stands in when the ADT join found nothing.
-    const id: Identity = { name: a?.name ?? b?.name ?? null, uhid: a?.uhid ?? b?.uhid ?? null, ageGender: b?.ageGender ?? null };
+    const id: Identity = { name: a?.name ?? b?.name ?? null, uhid: a?.uhid ?? b?.uhid ?? null, ageGender: b?.ageGender ?? null, facility: a?.facility ?? null };
     const docId = indexDocumentIdOf(asJson<FindingBlob>(r.finding));
     const indexCase = docId ? toIndexCaseSummary(extracts.get(docId)?.extracted) : null;
     // R3-6 state rules, in ONE pure mapping (returnBillFor): class → na · ok:false → unknown ·

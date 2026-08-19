@@ -44,6 +44,10 @@ export interface SurfaceFinding {
   patientName: string | null;
   uhid: string | null;
   ageGender: string | null;
+  /** R6 (Readmissions R6 PRD v1.0): the hospital — db13 facility_name VERBATIM ("Even", "Even-EHBR"),
+   *  riding the same read-time ADT join as the name; null when that join found nothing. Shown on the
+   *  card's identity line when known; the facility filter lets a null ALWAYS pass (R6-3). */
+  facility?: string | null;
   gapDays: number | null;
   indexDepartment: string | null;
   readmitDepartment: string | null;

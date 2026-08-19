@@ -13,7 +13,11 @@ import { toFindingClass } from '../readmission-surface-core';
 import type { ExtractedCase } from '../doc-audit-core';
 
 /** Display-only identity from KX (decision 5 / decision 13). Never sent to a model. */
-export interface Identity { name: string | null; uhid: string | null; ageGender: string | null }
+export interface Identity {
+  name: string | null; uhid: string | null; ageGender: string | null;
+  /** R6: the hospital (db13 facility_name, verbatim) from the ADT name join; null when the join found nothing. */
+  facility?: string | null;
+}
 
 const s = (v: unknown): string | null => (v == null || v === '' ? null : String(v));
 
@@ -65,6 +69,8 @@ export function toFinding(r: SurfaceRow, id: Identity | undefined, indexCase: In
     patientName: id?.name ?? null,
     uhid: s(r.uhid) ?? id?.uhid ?? null,
     ageGender: id?.ageGender ?? null,
+    facility: id?.facility ?? null,   // R6 — rides the name join; never stored
+
     gapDays: r.gap_days == null ? null : Number(r.gap_days),
     indexDepartment: s(r.index_department),
     readmitDepartment: s(r.readmit_department),

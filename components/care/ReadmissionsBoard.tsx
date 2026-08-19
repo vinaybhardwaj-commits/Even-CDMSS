@@ -44,7 +44,7 @@ import {
 } from '@/lib/readmission-surface-core';
 import { composeBrief, type BillBreakdown, type ExtractSubset } from '@/lib/readmission/brief';
 import {
-  activeFilterChips, applyFilters, decodeFilters, departmentOptions, encodeFilters, hasActiveFilters, laneOptions, showingLine,
+  activeFilterChips, applyFilters, decodeFilters, departmentOptions, encodeFilters, facilityOptions, hasActiveFilters, laneOptions, showingLine,
   EMPTY_FILTERS, GAP_PRESETS, VERDICTS, VERDICT_LABEL, type FilterState,
 } from '@/lib/readmission-filter-core';
 import { classifyLoadFailure, LOAD_TIMEOUT_MS, LOADING_COPY, RETRY_LABEL, SLOW_AFTER_MS, SLOW_LOAD_COPY, type LoadFailure } from '@/lib/readmission-load-core';
@@ -161,7 +161,11 @@ function CaseCard({ f }: { f: SurfaceFinding }) {
       {/* Zone 1 — identity (KX-first) */}
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-[14.5px] font-semibold text-slate-900">{cardIdentityLine(f)}</div>
+          <div className="text-[14.5px] font-semibold text-slate-900">
+            {cardIdentityLine(f)}
+            {/* R6-2: the hospital, verbatim from db13, whenever known — the filter matches what the reader sees */}
+            {f.facility && <span className="ml-1.5 text-[11px] font-normal text-slate-500">· {f.facility}</span>}
+          </div>
           {/* Zone 2 — path */}
           <div className="mt-1 text-[12.5px] text-slate-600">
             {pathSegments(f).map((seg, i) => (
@@ -289,6 +293,7 @@ function ReadmissionsBoardInner() {
   const eligible = useMemo(() => (showHeldOut ? flat : flat.filter((r) => !isHeldOut(r))), [flat, showHeldOut]);
   const visible = useMemo(() => applyFilters(eligible, filters), [eligible, filters]);
   const depts = useMemo(() => departmentOptions(flat), [flat]);
+  const facs = useMemo(() => facilityOptions(flat), [flat]);   // R6: from the data, never hardcoded
   const chips = activeFilterChips(filters);
   const filtering = hasActiveFilters(filters);
 
@@ -376,6 +381,13 @@ function ReadmissionsBoardInner() {
               className={`rounded-lg border px-2 py-1 text-[11.5px] ${depts.length === 0 ? 'border-line bg-slate-50 text-slate-300' : 'border-line bg-white text-slate-600'}`} title="Department — matches either stay">
               <option value="">Department: all</option>
               {depts.map((d) => <option key={d} value={d}>{d}</option>)}
+            </select>
+            {/* R6 — the hospital select: options from the loaded data; disabled-not-hidden when none
+                resolved (the name join failed → every facility null → everything passes). */}
+            <select value={filters.fac ?? ''} onChange={(e) => set('fac', e.target.value || null)} disabled={facs.length === 0}
+              className={`rounded-lg border px-2 py-1 text-[11.5px] ${facs.length === 0 ? 'border-line bg-slate-50 text-slate-300' : 'border-line bg-white text-slate-600'}`} title="Hospital — a case whose hospital is not known always stays visible">
+              <option value="">All hospitals</option>
+              {facs.map((h) => <option key={h} value={h}>{h}</option>)}
             </select>
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-2">

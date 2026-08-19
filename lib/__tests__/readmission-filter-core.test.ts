@@ -8,8 +8,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  applyFilters, activeFilterChips, decodeFilters, departmentOptions, encodeFilters, hasActiveFilters, istDay, laneOptions,
-  matchesDates, matchesDepartment, matchesFlags, matchesGap, matchesLane, matchesMinBill, matchesQuery, matchesVerdict, searchText, showingLine,
+  applyFilters, activeFilterChips, decodeFilters, departmentOptions, encodeFilters, facilityOptions, hasActiveFilters, istDay, laneOptions,
+  matchesDates, matchesDepartment, matchesFacility, matchesFlags, matchesGap, matchesLane, matchesMinBill, matchesQuery, matchesVerdict, searchText, showingLine,
   EMPTY_FILTERS, GAP_PRESETS, VERDICTS, VERDICT_LABEL, type FilterState,
 } from '../readmission-filter-core.ts';
 import { LANE_META, type SurfaceFinding } from '../readmission-surface-core.ts';
@@ -27,6 +27,7 @@ const f = (over: Partial<SurfaceFinding> = {}): SurfaceFinding => ({
   indexCase: { diagnosis: 'Fracture neck of femur (L)', indication: 'Displaced intracapsular fracture', procedure: 'Cemented hemiarthroplasty', age: 58, sex: 'F' },
   returnBill: { state: 'billed', netRs: 96450, lines: 38 },
   caseLine: 'She returned with a discharging wound.',
+  facility: 'Even',
   ...over,
 });
 const st = (over: Partial<FilterState> = {}): FilterState => ({ ...EMPTY_FILTERS, ...over });
@@ -144,9 +145,9 @@ test('applyFilters is AND across groups, preserves order, composes on whatever s
 // ── URL round-trip (R5-4) ──────────────────────────────────────────────────────────────
 
 test('encode/decode round-trip every param; absent = off; malformed values are ignored silently (bad shared link → unfiltered)', () => {
-  const full = st({ q: 'khan  hemi', verdict: 'avoidable', flags: true, lane: 'tight_bounce', dept: 'General Surgery', gap: 7, from: '2026-06-01', to: '2026-06-30', minBill: 50000, held: true });
+  const full = st({ q: 'khan  hemi', verdict: 'avoidable', flags: true, lane: 'tight_bounce', dept: 'General Surgery', fac: 'Even-EHBR', gap: 7, from: '2026-06-01', to: '2026-06-30', minBill: 50000, held: true });
   const qs = encodeFilters(full);
-  assert.equal(qs, 'q=khan++hemi&verdict=avoidable&flags=1&lane=tight_bounce&dept=General+Surgery&gap=7&from=2026-06-01&to=2026-06-30&minbill=50000&held=1');
+  assert.equal(qs, 'q=khan++hemi&verdict=avoidable&flags=1&lane=tight_bounce&dept=General+Surgery&fac=Even-EHBR&gap=7&from=2026-06-01&to=2026-06-30&minbill=50000&held=1');
   assert.deepEqual(decodeFilters(new URLSearchParams(qs)), { ...full, q: 'khan hemi' });
   assert.deepEqual(decodeFilters(new URLSearchParams('')), EMPTY_FILTERS);
   assert.deepEqual(decodeFilters(null), EMPTY_FILTERS);
@@ -175,4 +176,61 @@ test('hasActiveFilters ignores the held-out checkbox; chips in toolbar order wit
   assert.equal(activeFilterChips(st({ to: '2026-06-30' }))[0].label, 'returned to 2026-06-30');
   assert.equal(showingLine(3, 54), 'showing 3 of 54 cases');
   assert.equal(showingLine(1, 1), 'showing 1 of 1 case');
+});
+
+// ── R6: the hospital filter ──────────────────────────────────────────────────────────────
+
+test('R6: matchesFacility — exact verbatim match; an unknown (null / empty) facility ALWAYS passes (R6-3); no filter → all pass', () => {
+  assert.equal(matchesFacility(f({ facility: 'Even-EHBR' }), 'Even-EHBR'), true);
+  assert.equal(matchesFacility(f({ facility: 'Even' }), 'Even-EHBR'), false);
+  assert.equal(matchesFacility(f({ facility: 'even-ehbr' }), 'Even-EHBR'), false);   // verbatim, not case-folded: the option list IS the data
+  assert.equal(matchesFacility(f({ facility: null }), 'Even-EHBR'), true);
+  assert.equal(matchesFacility(f({ facility: undefined }), 'Even-EHBR'), true);
+  assert.equal(matchesFacility(f({ facility: '' }), 'Even-EHBR'), true);
+  assert.equal(matchesFacility(f({ facility: 'Even' }), null), true);
+});
+
+test('R6: facilityOptions from the data — sorted distinct non-null, never hardcoded; zero when the name join failed (every facility null)', () => {
+  assert.deepEqual(facilityOptions([f({ facility: 'Even-EHBR' }), f({ facility: 'Even' }), f({ facility: 'Even' }), f({ facility: null }), f({ facility: ' ' })]), ['Even', 'Even-EHBR']);
+  assert.deepEqual(facilityOptions([f({ facility: 'Even' }), f({ facility: 'Even-EHBR' }), f({ facility: 'A Third Hospital' })]), ['A Third Hospital', 'Even', 'Even-EHBR']);
+  assert.deepEqual(facilityOptions([f({ facility: null }), f({ facility: null })]), []);
+  assert.deepEqual(facilityOptions([]), []);
+});
+
+test('R6: `fac` URL round-trip incl. malformed values; a stored fac under a failed name join keeps the full list (everything passes)', () => {
+  assert.deepEqual(decodeFilters(new URLSearchParams('fac=Even-EHBR')), { ...EMPTY_FILTERS, fac: 'Even-EHBR' });
+  assert.deepEqual(decodeFilters(new URLSearchParams('fac=')), EMPTY_FILTERS);
+  assert.deepEqual(decodeFilters(new URLSearchParams('fac=%20%20')), EMPTY_FILTERS);
+  assert.equal(decodeFilters(new URLSearchParams(`fac=${'x'.repeat(300)}`)).fac!.length, 120);
+  assert.equal(encodeFilters(st({ fac: 'Even-EHBR' })), 'fac=Even-EHBR');
+  assert.deepEqual(decodeFilters(new URLSearchParams('fac=Even-EHBR&verdict=avoidable')), { ...EMPTY_FILTERS, fac: 'Even-EHBR', verdict: 'avoidable' });
+  // degraded load: every facility null → a stored fac hides nothing
+  const degraded = [f({ dedupKey: 'a', facility: null }), f({ dedupKey: 'b', facility: null })];
+  assert.deepEqual(applyFilters(degraded, st({ fac: 'Even-EHBR' })).map((r) => r.dedupKey), ['a', 'b']);
+  assert.deepEqual(activeFilterChips(st({ fac: 'Even-EHBR' })), [{ key: 'fac', label: 'hospital: Even-EHBR' }]);
+  assert.equal(hasActiveFilters(st({ fac: 'Even' })), true);
+});
+
+test('R6: composition — hospital AND verdict AND gap; unknown-facility cases ride through the hospital leg and are still judged by the other legs', () => {
+  const rows = [
+    f({ dedupKey: 'ehbr-avoid-2', facility: 'Even-EHBR', avoidable: 'avoidable', gapDays: 2 }),
+    f({ dedupKey: 'ehbr-avoid-12', facility: 'Even-EHBR', avoidable: 'avoidable', gapDays: 12 }),     // fails gap
+    f({ dedupKey: 'even-avoid-2', facility: 'Even', avoidable: 'avoidable', gapDays: 2 }),             // fails hospital
+    f({ dedupKey: 'unknown-avoid-3', facility: null, avoidable: 'avoidable', gapDays: 3 }),           // unknown facility passes (R6-3)
+    f({ dedupKey: 'unknown-justified-3', facility: null, avoidable: 'justified', gapDays: 3 }),       // passes hospital, fails verdict
+  ];
+  assert.deepEqual(applyFilters(rows, st({ fac: 'Even-EHBR', verdict: 'avoidable', gap: 7 })).map((r) => r.dedupKey), ['ehbr-avoid-2', 'unknown-avoid-3']);
+  assert.deepEqual(applyFilters(rows, st({ fac: 'Even-EHBR' })).map((r) => r.dedupKey), ['ehbr-avoid-2', 'ehbr-avoid-12', 'unknown-avoid-3', 'unknown-justified-3']);
+});
+
+test('R6: the list route maps facility_name off the ADT row the name join ALREADY fetches — no new SQL; the summary-record fallback carries no facility; toFinding passes it through; the card renders it verbatim', () => {
+  const { readFileSync } = require('node:fs') as typeof import('node:fs');
+  const route = readFileSync('app/api/care/readmissions/list/route.ts', 'utf8');
+  assert.match(route, /facility: s\(r\.facility_name\),/);
+  assert.match(route, /facility: a\?\.facility \?\? null/);
+  assert.equal((route.match(/metabaseQuery\(/g) ?? []).length, 3, 'the three pre-existing db13 reads — no new query');
+  assert.ok(!/facility_name/.test(route.slice(0, route.indexOf('function namesFromAdt'))), 'no new SELECT names the column — it rides SELECT *');
+  assert.match(readFileSync('lib/readmission/surface-row.ts', 'utf8'), /facility: id\?\.facility \?\? null,/);
+  assert.match(readFileSync('components/care/ReadmissionsBoard.tsx', 'utf8'), /\{f\.facility && <span[^>]*>· \{f\.facility\}<\/span>\}/);
+  assert.match(readFileSync('components/care/ReadmissionsBoard.tsx', 'utf8'), /<option value="">All hospitals<\/option>/);
 });
