@@ -783,6 +783,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "readmission-filter-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "readmission-narrative-core",
     "plane": "unregistered"
   },
@@ -4400,6 +4404,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "readmission-ask-core",
     "to": "readmission-narrative-core",
+    "kind": "value"
+  },
+  {
+    "from": "readmission-filter-core",
+    "to": "readmission-surface-core",
     "kind": "value"
   },
   {

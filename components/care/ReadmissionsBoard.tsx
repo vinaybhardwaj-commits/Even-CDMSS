@@ -15,6 +15,9 @@
  *
  * R4 (CDMSS-READMISSIONS-R4-PRD v1.0, R4-1): clicking anywhere on a card (except its button)
  * opens the case page /care/readmissions/case/[key] — the dedup key, already the card key.
+ * R5 (Readmissions R5 PRD v1.0, 19 Aug 2026): a search + filter toolbar over the loaded list —
+ * browser-side, AND across groups, on top of the held-out checkbox, mirrored to the URL; the
+ * review / pending badges stay whole-population; only "showing X of Y" moves.
  *
  * READ-ONLY. Nothing on this page mutates a finding — the download is the only transmit
  * (decision 8), it calls no model, and it writes nothing. The route payload is still
@@ -27,9 +30,9 @@
  * it is unit-tested; this file is markup and fetch. Missing data renders `unknown`, never
  * a guess; a failed case fetch still downloads a thinner brief from the card row alone.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { RotateCw, Download } from 'lucide-react';
 import {
   BILLS_UNAVAILABLE_NOTICE, cardIdentityLine, caseHref, chipText, coverageChips, countsLine, isHeldOut, isReviewFinding,
@@ -38,6 +41,10 @@ import {
   type ChipState, type LaneGroup, type SurfaceFinding, type SurfaceTiles,
 } from '@/lib/readmission-surface-core';
 import { composeBrief, type BillBreakdown, type ExtractSubset } from '@/lib/readmission/brief';
+import {
+  activeFilterChips, applyFilters, decodeFilters, departmentOptions, encodeFilters, hasActiveFilters, laneOptions, showingLine,
+  EMPTY_FILTERS, GAP_PRESETS, VERDICTS, VERDICT_LABEL, type FilterState,
+} from '@/lib/readmission-filter-core';
 
 type BoardData = {
   ok: boolean;
@@ -211,11 +218,36 @@ function CaseCard({ f }: { f: SurfaceFinding }) {
   );
 }
 
-export default function ReadmissionsBoard() {
+/**
+ * R5 (CDMSS Readmissions R5 PRD v1.0, 19 Aug 2026): the search + filter toolbar. Filtering runs in
+ * the browser over the loaded list (R5-1); every group is AND-ed and composes ON TOP of the held-out
+ * checkbox, whose behaviour and position are unchanged; the review / pending badges stay whole-
+ * population (R5-3) — only the "showing X of Y" counter moves. Filters mirror to the URL (R5-4):
+ * read once on mount, written with router.replace (no scroll jump, no history spam); malformed
+ * params are ignored silently. useSearchParams needs a Suspense boundary for static rendering, so
+ * the default export wraps the board in one (in-contract per the kickoff).
+ */
+function ReadmissionsBoardInner() {
   const [data, setData] = useState<BoardData | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [showHeldOut, setShowHeldOut] = useState(false);
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  // The URL is read ONCE on mount (R5-4); afterwards the state is the source of truth and is
+  // mirrored back with router.replace on every change.
+  const [filters, setFilters] = useState<FilterState>(() => decodeFilters(searchParams));
+  const showHeldOut = filters.held;
+  const setShowHeldOut = (held: boolean) => setFilters((f) => ({ ...f, held }));
+  const mounted = useRef(false);
+  useEffect(() => {
+    if (!mounted.current) { mounted.current = true; return; }
+    const qs = encodeFilters(filters);
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+  }, [filters, pathname, router]);
+  const set = <K extends keyof FilterState>(k: K, v: FilterState[K]) => setFilters((f) => ({ ...f, [k]: v }));
+  const clearAll = () => setFilters((f) => ({ ...EMPTY_FILTERS, held: f.held }));
+  const clearOne = (k: keyof FilterState) => setFilters((f) => (k === 'from' ? { ...f, from: null, to: null } : { ...f, [k]: EMPTY_FILTERS[k] }));
 
   const load = useCallback(async () => {
     setLoading(true); setErr(null);
@@ -233,7 +265,12 @@ export default function ReadmissionsBoard() {
   // Decision 11: the payload stays lane-grouped; the board flattens and sorts here.
   const flat = useMemo(() => sortForCardList((data?.lanes ?? []).flatMap((g) => g.rows)), [data]);
   const heldOutCount = useMemo(() => flat.filter(isHeldOut).length, [flat]);
-  const visible = useMemo(() => (showHeldOut ? flat : flat.filter((r) => !isHeldOut(r))), [flat, showHeldOut]);
+  // The held-out checkbox decides the ELIGIBLE set (unchanged); R5 filters narrow within it.
+  const eligible = useMemo(() => (showHeldOut ? flat : flat.filter((r) => !isHeldOut(r))), [flat, showHeldOut]);
+  const visible = useMemo(() => applyFilters(eligible, filters), [eligible, filters]);
+  const depts = useMemo(() => departmentOptions(flat), [flat]);
+  const chips = activeFilterChips(filters);
+  const filtering = hasActiveFilters(filters);
 
   return (
     <div className="mx-auto max-w-content px-5 py-7">
@@ -281,8 +318,70 @@ export default function ReadmissionsBoard() {
         </label>
       )}
 
+      {/* R5 — the toolbar: four groups, AND-ed, on top of the held-out set. House pattern from
+          app/admin/opd-audit/audit-table.tsx (search input · selects · dismissible chips · X of Y),
+          restyled to the /care look. Department select is disabled (not hidden) when no options. */}
+      {data && data.total > 0 && (
+        <div className="mt-3 rounded-xl border border-line bg-paper p-3 shadow-card">
+          <div className="flex flex-wrap items-center gap-2">
+            <input value={filters.q} onChange={(e) => set('q', e.target.value)} placeholder="Search patient, doctor, diagnosis, UHID…" maxLength={200}
+              className="w-64 max-w-full rounded-lg border border-line bg-white px-2.5 py-1 text-[12px] text-slate-700 outline-none focus:border-brand" />
+            <select value={filters.verdict ?? ''} onChange={(e) => set('verdict', (e.target.value || null) as FilterState['verdict'])}
+              className="rounded-lg border border-line bg-white px-2 py-1 text-[11.5px] text-slate-600" title="Medical-justification verdict">
+              <option value="">Verdict: all</option>
+              {VERDICTS.map((v) => <option key={v} value={v}>{VERDICT_LABEL[v]}</option>)}
+            </select>
+            <label className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-white px-2 py-1 text-[11.5px] text-slate-600" title="Keeps cases where preventable injury is suspected or negligence is suspected">
+              <input type="checkbox" checked={filters.flags} onChange={(e) => set('flags', e.target.checked)} className="h-3.5 w-3.5" />
+              Serious flags only
+            </label>
+            <select value={filters.lane ?? ''} onChange={(e) => set('lane', e.target.value || null)}
+              className="rounded-lg border border-line bg-white px-2 py-1 text-[11.5px] text-slate-600" title="Case type (detection lane)">
+              <option value="">Case type: all</option>
+              {laneOptions().map((o) => <option key={o.lane} value={o.lane}>{o.label}</option>)}
+            </select>
+            <select value={filters.dept ?? ''} onChange={(e) => set('dept', e.target.value || null)} disabled={depts.length === 0}
+              className={`rounded-lg border px-2 py-1 text-[11.5px] ${depts.length === 0 ? 'border-line bg-slate-50 text-slate-300' : 'border-line bg-white text-slate-600'}`} title="Department — matches either stay">
+              <option value="">Department: all</option>
+              {depts.map((d) => <option key={d} value={d}>{d}</option>)}
+            </select>
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="text-[11px] text-slate-500">Returned</span>
+            <input type="date" value={filters.from ?? ''} onChange={(e) => set('from', e.target.value || null)} className="rounded-lg border border-line bg-white px-2 py-1 text-[11.5px] text-slate-600" aria-label="Return date from" />
+            <span className="text-[11px] text-slate-400">to</span>
+            <input type="date" value={filters.to ?? ''} onChange={(e) => set('to', e.target.value || null)} className="rounded-lg border border-line bg-white px-2 py-1 text-[11.5px] text-slate-600" aria-label="Return date to" />
+            <span className="ml-2 text-[11px] text-slate-500">Gap</span>
+            <span className="flex overflow-hidden rounded-lg border border-line text-[11px]">
+              <button type="button" onClick={() => set('gap', null)} className={`px-2 py-1 ${filters.gap == null ? 'bg-brand text-white' : 'bg-white text-slate-500 hover:bg-slate-50'}`}>Any</button>
+              {GAP_PRESETS.map((g) => (
+                <button key={g} type="button" onClick={() => set('gap', filters.gap === g ? null : g)} className={`px-2 py-1 ${filters.gap === g ? 'bg-brand text-white' : 'bg-white text-slate-500 hover:bg-slate-50'}`}>≤{g} d</button>
+              ))}
+            </span>
+            <span className="ml-2 text-[11px] text-slate-500">Min return bill ₹</span>
+            <input type="number" min={0} step={1000} value={filters.minBill ?? ''} onChange={(e) => { const n = Number(e.target.value); set('minBill', e.target.value === '' || !Number.isFinite(n) || n <= 0 ? null : n); }}
+              className="w-28 rounded-lg border border-line bg-white px-2 py-1 text-[11.5px] text-slate-600" title="Cases whose bill is not finalised or not known always stay visible" />
+            <span className="ml-auto text-[11px] text-slate-500">{showingLine(visible.length, eligible.length)}</span>
+          </div>
+          {chips.length > 0 && (
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              {chips.map((c) => (
+                <button key={c.key} type="button" onClick={() => clearOne(c.key)} className="rounded-lg bg-brand-faint px-2 py-0.5 text-[11px] font-medium text-brand hover:bg-brand/10">✕ {c.label}</button>
+              ))}
+              {chips.length >= 2 && <button type="button" onClick={clearAll} className="text-[11px] font-medium text-slate-500 underline-offset-2 hover:text-brand hover:underline">Clear all</button>}
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="mt-4">
         {visible.map((f) => <CaseCard key={f.dedupKey} f={f} />)}
+        {data && eligible.length > 0 && visible.length === 0 && filtering && (
+          <div className="rounded-xl border border-line bg-paper p-6 text-center shadow-card">
+            <p className="text-[13px] text-slate-600">No cases match these filters.</p>
+            <button type="button" onClick={clearAll} className="mt-2 rounded-lg border border-line bg-white px-3 py-1 text-[12px] font-medium text-slate-600 transition hover:border-brand/40 hover:text-brand">Clear filters</button>
+          </div>
+        )}
       </div>
 
       <p className="mt-7 border-t border-line pt-3.5 text-[11.5px] leading-relaxed text-slate-500">
@@ -292,5 +391,16 @@ export default function ReadmissionsBoard() {
         <b className="font-semibold text-slate-700">The brief is the only transmit; nothing on this page changes a finding.</b>
       </p>
     </div>
+  );
+}
+
+/** R5: useSearchParams requires a Suspense boundary (Next's static-rendering rule for client
+ *  components); this wrapper is the only addition the URL sync needed. The fallback is the same
+ *  "Loading…" the board shows before its fetch. */
+export default function ReadmissionsBoard() {
+  return (
+    <Suspense fallback={<div className="mx-auto max-w-content px-5 py-7"><p className="mt-6 text-[13px] text-slate-400">Loading…</p></div>}>
+      <ReadmissionsBoardInner />
+    </Suspense>
   );
 }
