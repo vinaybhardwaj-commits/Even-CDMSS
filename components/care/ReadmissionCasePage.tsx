@@ -224,7 +224,7 @@ export default function ReadmissionCasePage({ dedupKey }: { dedupKey: string }) 
   const row: SurfaceFinding | null = useMemo(() => {
     if (!data?.row) return null;
     return card
-      ? { ...data.row, patientName: card.patientName, ageGender: card.ageGender ?? data.row.ageGender ?? null, indexCase: data.row.indexCase ?? card.indexCase ?? null, returnBill: data.row.returnBill ?? card.returnBill ?? null }
+      ? { ...data.row, patientName: card.patientName, ageGender: card.ageGender ?? data.row.ageGender ?? null, indexCase: data.row.indexCase ?? card.indexCase ?? null, returnBill: data.row.returnBill ?? card.returnBill ?? null, facility: card.facility ?? data.row.facility ?? null }
       : data.row;
   }, [data, card]);
 
@@ -252,7 +252,12 @@ export default function ReadmissionCasePage({ dedupKey }: { dedupKey: string }) 
           {/* Header — the card, verbatim helpers */}
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <h1 className="font-serif text-[21px] font-semibold tracking-tight text-slate-900">{cardIdentityLine(row)}</h1>
+              <h1 className="font-serif text-[21px] font-semibold tracking-tight text-slate-900">
+                {cardIdentityLine(row)}
+                {/* R6.1 (R61-3): the hospital, the same verbatim value the list card shows (it rides the list's
+                    identity overlay — the case route does no identity join, decision 13); nothing when unknown */}
+                {row.facility && <span className="ml-2 text-[12px] font-sans font-normal text-slate-500">· {row.facility}</span>}
+              </h1>
               <div className="mt-1 text-[12.5px] text-slate-600">
                 {pathSegments(row).map((seg, i) => (
                   <span key={i}>{i > 0 && ' · '}{i === 0 ? <b className="font-semibold text-slate-900">{seg}</b> : seg}</span>

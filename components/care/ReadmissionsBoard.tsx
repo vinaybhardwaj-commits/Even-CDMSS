@@ -20,6 +20,9 @@
  * review / pending badges stay whole-population; only "showing X of Y" moves.
  * R5.1 (Readmissions R5.1 PRD v1.0, 19 Aug 2026): the load path has a 45 s timeout, an honest
  * slow-load line at 8 s, an error state with one detail line and Retry; no polling, no auto-retry.
+ * R6.1 (Readmissions R6.1 PRD v1.0, 19 Aug 2026): unknown `fac` dropped as if absent; a failed refresh
+ * keeps the cards with an inline "Refresh did not work." + Retry; the Suspense wrapper removed so the
+ * board hydrates (and fetches) with the root even in a hidden tab.
  *
  * READ-ONLY. Nothing on this page mutates a finding — the download is the only transmit
  * (decision 8), it calls no model, and it writes nothing. The route payload is still
@@ -32,7 +35,7 @@
  * it is unit-tested; this file is markup and fetch. Missing data renders `unknown`, never
  * a guess; a failed case fetch still downloads a thinner brief from the card row alone.
  */
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { RotateCw, Download } from 'lucide-react';
@@ -44,10 +47,10 @@ import {
 } from '@/lib/readmission-surface-core';
 import { composeBrief, type BillBreakdown, type ExtractSubset } from '@/lib/readmission/brief';
 import {
-  activeFilterChips, applyFilters, decodeFilters, departmentOptions, encodeFilters, facilityOptions, hasActiveFilters, laneOptions, showingLine,
+  activeFilterChips, applyFilters, decodeFilters, departmentOptions, effectiveFilters, encodeFilters, facilityOptions, hasActiveFilters, laneOptions, showingLine,
   EMPTY_FILTERS, GAP_PRESETS, VERDICTS, VERDICT_LABEL, type FilterState,
 } from '@/lib/readmission-filter-core';
-import { classifyLoadFailure, LOAD_TIMEOUT_MS, LOADING_COPY, RETRY_LABEL, SLOW_AFTER_MS, SLOW_LOAD_COPY, type LoadFailure } from '@/lib/readmission-load-core';
+import { classifyLoadFailure, LOAD_TIMEOUT_MS, LOADING_COPY, REFRESH_FAILED_COPY, RETRY_LABEL, SLOW_AFTER_MS, SLOW_LOAD_COPY, type LoadFailure } from '@/lib/readmission-load-core';
 
 type BoardData = {
   ok: boolean;
@@ -231,18 +234,32 @@ function CaseCard({ f }: { f: SurfaceFinding }) {
  * checkbox, whose behaviour and position are unchanged; the review / pending badges stay whole-
  * population (R5-3) — only the "showing X of Y" counter moves. Filters mirror to the URL (R5-4):
  * read once on mount, written with router.replace (no scroll jump, no history spam); malformed
- * params are ignored silently. useSearchParams needs a Suspense boundary for static rendering, so
- * the default export wraps the board in one (in-contract per the kickoff).
+ * params are ignored silently. (R6.1: the R5 Suspense wrapper is gone — see the hidden-tab note on the
+ * component — the page is force-dynamic, so useSearchParams needs no boundary.)
  */
-function ReadmissionsBoardInner() {
+/**
+ * R6.1 item 4 (R61-2) — HIDDEN-TAB LOAD. Measured live 19 Aug on a background tab: at 140 s hidden the
+ * root was hydrated (a React fiber on <body>) but the board's h1 / Refresh button carried NO fiber, no
+ * list request had been issued, no slow line, no error state. Mechanism: the Suspense boundary R5
+ * added around the board (for useSearchParams) turned the board into a dehydrated boundary that React
+ * hydrates lazily (selective hydration, idle lane) — and that hydration waits for the tab to become
+ * visible, so the mount effect (the fetch) never ran while hidden. The page is `force-dynamic`, so
+ * useSearchParams does not bail out to client rendering and needs no boundary: the wrapper is removed
+ * and the board hydrates with the root again (as it did before R5), so the fetch starts right after
+ * hydration regardless of visibility. Visible-tab markup is unchanged (the fallback was never shown
+ * on a dynamic page).
+ */
+export default function ReadmissionsBoard() {
   const [data, setData] = useState<BoardData | null>(null);
-  const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   // R5.1 — the board stops hanging: the fetch runs under an AbortController (45 s); after 8 s a
   // second honest line appears; any failure becomes an error state with ONE detail line and Retry.
   // One fetch per page load or per Retry / Refresh press — nothing polls, nothing retries itself.
   const [slow, setSlow] = useState(false);
   const [loadError, setLoadError] = useState<LoadFailure | null>(null);
+  // R6.1 (R61-1): a failed REFRESH over a loaded board keeps the cards and shows an inline notice by
+  // the Refresh control with its own Retry; the control re-enables. First-load behaviour is R5.1's.
+  const [refreshFailed, setRefreshFailed] = useState(false);
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -262,7 +279,7 @@ function ReadmissionsBoardInner() {
   const clearOne = (k: keyof FilterState) => setFilters((f) => (k === 'from' ? { ...f, from: null, to: null } : { ...f, [k]: EMPTY_FILTERS[k] }));
 
   const load = useCallback(async () => {
-    setLoading(true); setErr(null); setLoadError(null); setSlow(false);
+    setLoading(true); setLoadError(null); setSlow(false); setRefreshFailed(false);
     const ctrl = new AbortController();
     const killer = setTimeout(() => ctrl.abort(), LOAD_TIMEOUT_MS);
     const slowTimer = setTimeout(() => setSlow(true), SLOW_AFTER_MS);
@@ -275,8 +292,8 @@ function ReadmissionsBoardInner() {
       // A failed FIRST load (no data yet) is the R5.1 error state; a failed Refresh with data on
       // screen keeps the existing small error line and the data (Refresh control unchanged).
       const failure = classifyLoadFailure(e);
-      setErr(String((e as Error)?.message ?? failure.detail));
       setLoadError(failure);
+      setRefreshFailed(true);   // meaningful only when data is on screen (a refresh); the first-load path reads loadError
     } finally {
       clearTimeout(killer); clearTimeout(slowTimer);
       setSlow(false);
@@ -291,11 +308,15 @@ function ReadmissionsBoardInner() {
   const heldOutCount = useMemo(() => flat.filter(isHeldOut).length, [flat]);
   // The held-out checkbox decides the ELIGIBLE set (unchanged); R5 filters narrow within it.
   const eligible = useMemo(() => (showHeldOut ? flat : flat.filter((r) => !isHeldOut(r))), [flat, showHeldOut]);
-  const visible = useMemo(() => applyFilters(eligible, filters), [eligible, filters]);
   const depts = useMemo(() => departmentOptions(flat), [flat]);
   const facs = useMemo(() => facilityOptions(flat), [flat]);   // R6: from the data, never hardcoded
-  const chips = activeFilterChips(filters);
-  const filtering = hasActiveFilters(filters);
+  // R6.1 (R61-4): once loaded, a `fac` not among the facilities is dropped as if absent — no chip, no
+  // filtering, the select on "All hospitals". The raw URL value is left alone (a shared link keeps
+  // its intent); only what the board APPLIES and SHOWS is normalised.
+  const applied = useMemo(() => effectiveFilters(filters, facs, data != null), [filters, facs, data]);
+  const visible = useMemo(() => applyFilters(eligible, applied), [eligible, applied]);
+  const chips = activeFilterChips(applied);
+  const filtering = hasActiveFilters(applied);
 
   return (
     <div className="mx-auto max-w-content px-5 py-7">
@@ -311,6 +332,15 @@ function ReadmissionsBoardInner() {
           <RotateCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />Refresh
         </button>
       </div>
+      {/* R6.1 (R61-1) — inline by the Refresh control: the slow line during a slow refresh, and the
+          failure line + Retry when a refresh failed. The loaded cards stay exactly as they were. */}
+      {data && loading && slow && <p className="mt-1 text-right text-[11.5px] text-slate-500">{SLOW_LOAD_COPY}</p>}
+      {data && !loading && refreshFailed && (
+        <p className="mt-1 text-right text-[11.5px] text-amber-800">
+          {REFRESH_FAILED_COPY}{' '}
+          <button type="button" onClick={() => void load()} className="font-medium text-brand underline-offset-2 hover:underline">{RETRY_LABEL}</button>
+        </p>
+      )}
       <p className="mt-1 text-[12.5px] text-slate-500">
         Every readmission the agent has audited, one card each. The agent proposes; you decide what to escalate.
       </p>
@@ -319,7 +349,6 @@ function ReadmissionsBoardInner() {
         <p className="mt-4 text-[12.5px] text-slate-700">{countsLine(data.reviewCount, data.pendingCount)}</p>
       )}
 
-      {err && data && <p className="mt-4 text-[12px] text-red-700">{err}</p>}
       {loading && !data && (
         <div className="mt-6">
           <p className="text-[13px] text-slate-400">{LOADING_COPY}</p>
@@ -384,7 +413,7 @@ function ReadmissionsBoardInner() {
             </select>
             {/* R6 — the hospital select: options from the loaded data; disabled-not-hidden when none
                 resolved (the name join failed → every facility null → everything passes). */}
-            <select value={filters.fac ?? ''} onChange={(e) => set('fac', e.target.value || null)} disabled={facs.length === 0}
+            <select value={applied.fac ?? ''} onChange={(e) => set('fac', e.target.value || null)} disabled={facs.length === 0}
               className={`rounded-lg border px-2 py-1 text-[11.5px] ${facs.length === 0 ? 'border-line bg-slate-50 text-slate-300' : 'border-line bg-white text-slate-600'}`} title="Hospital — a case whose hospital is not known always stays visible">
               <option value="">All hospitals</option>
               {facs.map((h) => <option key={h} value={h}>{h}</option>)}
@@ -438,13 +467,4 @@ function ReadmissionsBoardInner() {
   );
 }
 
-/** R5: useSearchParams requires a Suspense boundary (Next's static-rendering rule for client
- *  components); this wrapper is the only addition the URL sync needed. The fallback is the same
- *  "Loading…" the board shows before its fetch. */
-export default function ReadmissionsBoard() {
-  return (
-    <Suspense fallback={<div className="mx-auto max-w-content px-5 py-7"><p className="mt-6 text-[13px] text-slate-400">Loading…</p></div>}>
-      <ReadmissionsBoardInner />
-    </Suspense>
-  );
-}
+

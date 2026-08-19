@@ -18,6 +18,8 @@ export const LOAD_ERROR_HEADING = 'The case list did not load.';
 export const LOAD_ERROR_TIMEOUT_DETAIL = 'It took too long. The record systems may be slow.';
 export const LOAD_ERROR_OTHER_DETAIL = 'Something went wrong on the way to the server.';
 export const RETRY_LABEL = 'Retry';
+/** R6.1 (R61-1): a failed REFRESH over a loaded board — the cards stay; this line appears by the control. */
+export const REFRESH_FAILED_COPY = 'Refresh did not work.';
 
 export type LoadFailureKind = 'timeout' | 'other';
 export interface LoadFailure { kind: LoadFailureKind; heading: string; detail: string }

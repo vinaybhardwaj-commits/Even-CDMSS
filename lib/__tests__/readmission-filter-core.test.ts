@@ -8,7 +8,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  applyFilters, activeFilterChips, decodeFilters, departmentOptions, encodeFilters, facilityOptions, hasActiveFilters, istDay, laneOptions,
+  applyFilters, activeFilterChips, decodeFilters, departmentOptions, effectiveFacility, effectiveFilters, encodeFilters, facilityOptions, hasActiveFilters, istDay, laneOptions,
   matchesDates, matchesDepartment, matchesFacility, matchesFlags, matchesGap, matchesLane, matchesMinBill, matchesQuery, matchesVerdict, searchText, showingLine,
   EMPTY_FILTERS, GAP_PRESETS, VERDICTS, VERDICT_LABEL, type FilterState,
 } from '../readmission-filter-core.ts';
@@ -233,4 +233,29 @@ test('R6: the list route maps facility_name off the ADT row the name join ALREAD
   assert.match(readFileSync('lib/readmission/surface-row.ts', 'utf8'), /facility: id\?\.facility \?\? null,/);
   assert.match(readFileSync('components/care/ReadmissionsBoard.tsx', 'utf8'), /\{f\.facility && <span[^>]*>· \{f\.facility\}<\/span>\}/);
   assert.match(readFileSync('components/care/ReadmissionsBoard.tsx', 'utf8'), /<option value="">All hospitals<\/option>/);
+});
+
+// ── R6.1 (R61-4): an unknown `fac` is dropped as if absent ──────────────────────────────────
+
+test('R6.1: effectiveFacility / effectiveFilters — an unknown fac (not among the loaded options) is dropped: no chip, no filtering, select on All; a known fac still applies; before load the value is held; the degraded (no-options) load drops it too', () => {
+  const opts = ['Even', 'Even-EHBR'];
+  assert.equal(effectiveFacility('zzz', opts, true), null);
+  assert.equal(effectiveFacility('Even-EHBR', opts, true), 'Even-EHBR');
+  assert.equal(effectiveFacility('even-ehbr', opts, true), null);   // exact match only — the option list IS the data
+  assert.equal(effectiveFacility('zzz', opts, false), 'zzz');       // not yet loaded: held, not judged
+  assert.equal(effectiveFacility('Even', [], true), null);          // name join failed → every facility null → nothing to match → dropped
+  assert.equal(effectiveFacility(null, opts, true), null);
+  const raw = st({ fac: 'zzz', verdict: 'avoidable' });
+  const eff = effectiveFilters(raw, opts, true);
+  assert.deepEqual(eff, st({ fac: null, verdict: 'avoidable' }));
+  assert.deepEqual(activeFilterChips(eff).map((c) => c.key), ['verdict']);                 // no hospital chip
+  assert.equal(effectiveFilters(st({ fac: 'Even' }), opts, true).fac, 'Even');
+  const same = st({ fac: 'Even' });
+  assert.equal(effectiveFilters(same, opts, true), same, 'a known fac returns the same state object (no churn)');
+  // the full list survives `?fac=zzz`
+  const rows = [f({ dedupKey: 'a', facility: 'Even' }), f({ dedupKey: 'b', facility: 'Even-EHBR' }), f({ dedupKey: 'c', facility: null })];
+  assert.deepEqual(applyFilters(rows, effectiveFilters(st({ fac: 'zzz' }), facilityOptions(rows), true)).map((r) => r.dedupKey), ['a', 'b', 'c']);
+  assert.deepEqual(applyFilters(rows, effectiveFilters(st({ fac: 'Even-EHBR' }), facilityOptions(rows), true)).map((r) => r.dedupKey), ['b', 'c']);
+  // the raw URL value is untouched by effectiveFilters (it normalises what is applied, not the link)
+  assert.equal(encodeFilters(raw), 'verdict=avoidable&fac=zzz');
 });

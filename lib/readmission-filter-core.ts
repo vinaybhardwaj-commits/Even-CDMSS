@@ -226,6 +226,21 @@ export function facilityOptions(rows: ReadonlyArray<Pick<SurfaceFinding, 'facili
   return [...seen].sort((a, b) => a.localeCompare(b));
 }
 
+/** R6.1 (R61-4, the R5 malformed-param rule applied as written): a `fac` value not present among
+ *  the loaded facility options is dropped ENTIRELY — as if absent: no chip, no filtering, the select
+ *  on "All hospitals". Before data loads (no options yet) the value is held, not judged. PURE. */
+export function effectiveFacility(fac: string | null, options: readonly string[], loaded: boolean): string | null {
+  if (!fac) return null;
+  if (!loaded) return fac;
+  return options.includes(fac) ? fac : null;
+}
+
+/** The filter state as the board APPLIES it once data is loaded: an unknown `fac` is dropped. */
+export function effectiveFilters(f: FilterState, facilities: readonly string[], loaded: boolean): FilterState {
+  const fac = effectiveFacility(f.fac, facilities, loaded);
+  return fac === f.fac ? f : { ...f, fac };
+}
+
 /** The case-type options: the lanes in LANE_ORDER with the board's own plain-language titles. */
 export function laneOptions(): Array<{ lane: string; label: string }> {
   return LANE_ORDER.map((lane) => ({ lane, label: laneMeta(lane).title }));
