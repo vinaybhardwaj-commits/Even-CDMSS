@@ -18,6 +18,8 @@
  * R5 (Readmissions R5 PRD v1.0, 19 Aug 2026): a search + filter toolbar over the loaded list —
  * browser-side, AND across groups, on top of the held-out checkbox, mirrored to the URL; the
  * review / pending badges stay whole-population; only "showing X of Y" moves.
+ * R5.1 (Readmissions R5.1 PRD v1.0, 19 Aug 2026): the load path has a 45 s timeout, an honest
+ * slow-load line at 8 s, an error state with one detail line and Retry; no polling, no auto-retry.
  *
  * READ-ONLY. Nothing on this page mutates a finding — the download is the only transmit
  * (decision 8), it calls no model, and it writes nothing. The route payload is still
@@ -45,6 +47,7 @@ import {
   activeFilterChips, applyFilters, decodeFilters, departmentOptions, encodeFilters, hasActiveFilters, laneOptions, showingLine,
   EMPTY_FILTERS, GAP_PRESETS, VERDICTS, VERDICT_LABEL, type FilterState,
 } from '@/lib/readmission-filter-core';
+import { classifyLoadFailure, LOAD_TIMEOUT_MS, LOADING_COPY, RETRY_LABEL, SLOW_AFTER_MS, SLOW_LOAD_COPY, type LoadFailure } from '@/lib/readmission-load-core';
 
 type BoardData = {
   ok: boolean;
@@ -231,6 +234,11 @@ function ReadmissionsBoardInner() {
   const [data, setData] = useState<BoardData | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // R5.1 — the board stops hanging: the fetch runs under an AbortController (45 s); after 8 s a
+  // second honest line appears; any failure becomes an error state with ONE detail line and Retry.
+  // One fetch per page load or per Retry / Refresh press — nothing polls, nothing retries itself.
+  const [slow, setSlow] = useState(false);
+  const [loadError, setLoadError] = useState<LoadFailure | null>(null);
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -250,14 +258,26 @@ function ReadmissionsBoardInner() {
   const clearOne = (k: keyof FilterState) => setFilters((f) => (k === 'from' ? { ...f, from: null, to: null } : { ...f, [k]: EMPTY_FILTERS[k] }));
 
   const load = useCallback(async () => {
-    setLoading(true); setErr(null);
+    setLoading(true); setErr(null); setLoadError(null); setSlow(false);
+    const ctrl = new AbortController();
+    const killer = setTimeout(() => ctrl.abort(), LOAD_TIMEOUT_MS);
+    const slowTimer = setTimeout(() => setSlow(true), SLOW_AFTER_MS);
     try {
-      const r = await fetch('/api/care/readmissions/list');
+      const r = await fetch('/api/care/readmissions/list', { signal: ctrl.signal });
       const j = (await r.json()) as BoardData;
       if (!r.ok || !j.ok) throw new Error(String(j.error || `status ${r.status}`));
       setData(j);
-    } catch (e) { setErr(String((e as Error).message)); }
-    finally { setLoading(false); }
+    } catch (e) {
+      // A failed FIRST load (no data yet) is the R5.1 error state; a failed Refresh with data on
+      // screen keeps the existing small error line and the data (Refresh control unchanged).
+      const failure = classifyLoadFailure(e);
+      setErr(String((e as Error)?.message ?? failure.detail));
+      setLoadError(failure);
+    } finally {
+      clearTimeout(killer); clearTimeout(slowTimer);
+      setSlow(false);
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => { void load(); }, [load]);
@@ -294,8 +314,20 @@ function ReadmissionsBoardInner() {
         <p className="mt-4 text-[12.5px] text-slate-700">{countsLine(data.reviewCount, data.pendingCount)}</p>
       )}
 
-      {err && <p className="mt-4 text-[12px] text-red-700">{err}</p>}
-      {loading && !data && <p className="mt-6 text-[13px] text-slate-400">Loading…</p>}
+      {err && data && <p className="mt-4 text-[12px] text-red-700">{err}</p>}
+      {loading && !data && (
+        <div className="mt-6">
+          <p className="text-[13px] text-slate-400">{LOADING_COPY}</p>
+          {slow && <p className="mt-1 text-[12px] text-slate-500">{SLOW_LOAD_COPY}</p>}
+        </div>
+      )}
+      {!loading && !data && loadError && (
+        <div className="mt-6 rounded-xl border border-line bg-paper p-5 shadow-card">
+          <p className="text-[13.5px] font-semibold text-slate-800">{loadError.heading}</p>
+          <p className="mt-1 text-[12.5px] text-slate-600">{loadError.detail}</p>
+          <button type="button" onClick={() => void load()} className="mt-3 rounded-lg border border-line bg-white px-3 py-1 text-[12px] font-medium text-slate-600 transition hover:border-brand/40 hover:text-brand">{RETRY_LABEL}</button>
+        </div>
+      )}
 
       {data && data.total > 0 && !data.namesResolved && (
         <p className="mt-1 text-[11.5px] text-slate-500">
