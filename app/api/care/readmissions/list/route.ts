@@ -35,7 +35,7 @@ import { ADT_COLUMN_CANDIDATES } from '@/lib/readmission-detect-core';
 import { listFindingsForSurface } from '@/lib/readmission/store';
 import { fetchExtractedCases } from '@/lib/discharge-extract-store';
 import { fetchStayBillTotals } from '@/lib/readmission/db13';
-import { asJson, indexDocumentIdOf, toFinding, toIndexCaseSummary, type Identity } from '@/lib/readmission/surface-row';
+import { asJson, indexDocumentIdOf, readmitDocumentIdOf, returnContextOf, toFinding, toIndexCaseSummary, type Identity } from '@/lib/readmission/surface-row';
 import { caseLine, computeTiles, groupByLane, returnBillFor, toFindingClass, type FindingBlob } from '@/lib/readmission-surface-core';
 import { stripCaseArtefacts } from '@/lib/readmission-narrative-core';
 
@@ -179,8 +179,10 @@ export async function GET() {
   // fetchExtractedCases returns an empty map on any fault, so a store outage costs the
   // diagnosis/procedure/indication segments and turns the Index DS chip unknown — never
   // the page.
+  // R7 (R7-6): the READMIT document ids join the same batch — the staged-return match reads the return
+  // stay's extracted procedure. One query still; a missing readmit extract costs the marker only.
   const indexDocIds = read.rows
-    .map((r) => indexDocumentIdOf(asJson<FindingBlob>(r.finding)))
+    .flatMap((r) => { const b = asJson<FindingBlob>(r.finding); return [indexDocumentIdOf(b), readmitDocumentIdOf(b)]; })
     .filter((d): d is string => d != null);
 
   // R3: fetchStayBillTotals resolves { ok:false, empty Map } on a db13 fault — the route
@@ -200,8 +202,12 @@ export async function GET() {
     // Decision 5 names the ADT table as the source; the summary record fills the gaps
     // it cannot answer (age/sex) and stands in when the ADT join found nothing.
     const id: Identity = { name: a?.name ?? b?.name ?? null, uhid: a?.uhid ?? b?.uhid ?? null, ageGender: b?.ageGender ?? null, facility: a?.facility ?? null };
-    const docId = indexDocumentIdOf(asJson<FindingBlob>(r.finding));
-    const indexCase = docId ? toIndexCaseSummary(extracts.get(docId)?.extracted) : null;
+    const blob = asJson<FindingBlob>(r.finding);
+    const docId = indexDocumentIdOf(blob);
+    const indexExtracted = docId ? extracts.get(docId)?.extracted ?? null : null;
+    const indexCase = docId ? toIndexCaseSummary(indexExtracted) : null;
+    const readmitDocId = readmitDocumentIdOf(blob);
+    const readmitExtracted = readmitDocId ? extracts.get(readmitDocId)?.extracted ?? null : null;
     // R3-6 state rules, in ONE pure mapping (returnBillFor): class → na · ok:false → unknown ·
     // id absent from the totals → not_finalised · present → billed with the computed sum.
     const readmitId = r.readmit_encounter_id == null ? null : String(r.readmit_encounter_id);
@@ -211,7 +217,8 @@ export async function GET() {
       ok: bills.ok,
       total: readmitId ? bills.totals.get(readmitId) : null,
     });
-    const f = toFinding(r, id, indexCase, returnBill);
+    // R7 (R7-5 / R7-6): the return context — code-derived markers, nothing stored, no verdict touched.
+    const f = toFinding(r, id, indexCase, returnBill, returnContextOf(r, blob, indexExtracted, readmitExtracted));
     // R4: the card renders neither the evidence ledger nor the narrative text — strip them from
     // the list payload (the case route emits them in full). The small facts (narrative present /
     // valid, relatedLvc state + denominator) stay so a later card affordance can read them.

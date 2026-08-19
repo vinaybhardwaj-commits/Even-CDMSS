@@ -91,7 +91,16 @@ export interface SurfaceFinding {
    *  stripped, capped (caseLine()). Derived at read time by the list route from the full
    *  narrative BEFORE it strips the text from the card payload; null when no valid account. */
   caseLine?: string | null;
+  /** R7 (R7-5 / R7-6): the RETURN CONTEXT, derived at read time by code from the two extracts + the
+   *  readmit-side OT ledger items — `immediate` (gap ≤ 1) and the deterministic staged-return match.
+   *  Marker only: no judgement is overridden, the situation line stays, queue and badge unchanged.
+   *  Absent (pre-R7 caller / fixture) = no marker. */
+  returnContext?: ReturnContext | null;
 }
+
+/** R7 — see lib/readmission-rates-core.ts (returnContext). Re-declared structurally here so the
+ *  surface core stays free of the rates core; the two shapes are identical by test. */
+export interface ReturnContext { immediate: boolean; staged: { matched: boolean; kind: 'device' | 'deferred' | null; anchor: string | null } }
 
 /** R3-6 — the four states of the return-stay bill. `billed` = rows exist, netRs is the
  *  computed SUM(net_amt) (no floor, no rounding — R3-1); `not_finalised` = looked, no rows;

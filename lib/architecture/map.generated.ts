@@ -795,6 +795,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "readmission-rates-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "readmission-reconcile-core",
     "plane": "unregistered"
   },
@@ -1879,6 +1883,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "readmission-narrative-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "readmission-rates-core",
     "kind": "value"
   },
   {
@@ -4354,11 +4363,21 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "readmission",
     "to": "readmission-narrative-core",
+    "kind": "type"
+  },
+  {
+    "from": "readmission",
+    "to": "readmission-narrative-core",
     "kind": "value"
   },
   {
     "from": "readmission",
     "to": "readmission-prompts",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
+    "to": "readmission-rates-core",
     "kind": "value"
   },
   {
@@ -4430,6 +4449,11 @@ export const MAP_EDGES: MapEdge[] = [
     "from": "readmission-prompts",
     "to": "readmission-reconcile-core",
     "kind": "type"
+  },
+  {
+    "from": "readmission-rates-core",
+    "to": "readmission-detect-core",
+    "kind": "value"
   },
   {
     "from": "readmission-reconcile-core",
@@ -4895,6 +4919,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "RATES_VERSION",
+    "value": "rates/1",
+    "file": "lib/readmission-rates-core.ts",
+    "derived": false
+  },
+  {
     "constName": "READMIT_ENGINE_VERSION",
     "value": "readmission/0.2",
     "file": "lib/readmission/store.ts",
@@ -4946,8 +4976,8 @@ export const VERSION_REGISTRY: VersionRow[] = [
 
 export const COVERAGE = {
   "registered": 16,
-  "unregistered": 24,
-  "total": 40,
+  "unregistered": 25,
+  "total": 41,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
@@ -4970,6 +5000,7 @@ export const COVERAGE = {
     "proms",
     "readmission",
     "readmission-narrative-core",
+    "readmission-rates-core",
     "readmission-reconcile-core",
     "reasoning",
     "right-care-ground-eval-core"

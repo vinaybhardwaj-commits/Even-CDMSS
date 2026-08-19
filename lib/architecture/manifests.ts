@@ -202,6 +202,8 @@ export const UNREGISTERED: string[] = [
                             // surfaced as its own versioned subsystem the day JUDGEMENT_RULE_VERSION was exported
   'readmission-narrative-core', // R4 pure cores (narrative/1, ledger/1, related-lvc/1): citation validator,
                             // relatedLvc reducer, three-hop join helpers — versioned by its exported *_VERSION consts
+  'readmission-rates-core', // R7 pure rates definitions (rates/1): denominators, Wilson CI, monthly cohorts,
+                            // EHBR gate, staged-return matcher — the 19-Aug rate report's method, codified once
   'reasoning',              // prompt-registry sidecar + export core (Reasoning Observability Stage 0)
   'right-care-ground-eval-core', // Slice-2 grounding A/B referee (right-care-eval/1.0)
 ];

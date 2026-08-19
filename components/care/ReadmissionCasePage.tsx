@@ -26,6 +26,7 @@ import {
   type ChipState, type LaneGroup, type SurfaceFinding,
 } from '@/lib/readmission-surface-core';
 import { denominatorLine, relatedLvcCopy, segmentNarrative } from '@/lib/readmission-narrative-core';
+import { returnContextLines } from '@/lib/readmission-rates-core';
 import { ASK_ADVISORY, ASK_PER_LOAD_LIMIT, ASK_QUESTION_MAX_CHARS, ASK_SUGGESTIONS, ASK_WORKING_COPY, ASK_WITHHELD_COPY, type AskTurn } from '@/lib/readmission-ask-core';
 import type { BillBreakdown, ExtractSubset } from '@/lib/readmission/brief';
 import { downloadBrief } from './ReadmissionsBoard';
@@ -264,6 +265,10 @@ export default function ReadmissionCasePage({ dedupKey }: { dedupKey: string }) 
                 ))}
               </div>
               {situationLine(row) && <div className="mt-1 text-[12px] font-medium text-red-700">{situationLine(row)}</div>}
+              {/* R7 (R7-5 / R7-6) — the card's return-context markers, echoed; annotation only. */}
+              {returnContextLines(row.returnContext).map((l) => (
+                <div key={l.key} className="mt-1 text-[12px] font-medium text-amber-800">{l.text}</div>
+              ))}
               <div className="mt-2.5 flex flex-wrap gap-1.5">
                 {coverageChips(row).map((c) => (
                   <span key={c.key} title={`${c.label}: ${c.state}`} className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${CHIP_STATE[c.state]}`}>{chipText(c)}</span>

@@ -8,9 +8,11 @@
  * passed IN by the route that joined them; this file only shapes.
  */
 import type { SurfaceRow } from './store';
-import type { FindingBlob, IndexCaseSummary, ReturnBill, SurfaceFinding } from '../readmission-surface-core';
+import type { FindingBlob, IndexCaseSummary, ReturnBill, ReturnContext, SurfaceFinding } from '../readmission-surface-core';
 import { toFindingClass } from '../readmission-surface-core';
 import type { ExtractedCase } from '../doc-audit-core';
+import type { CaseArtefacts } from '../readmission-narrative-core';
+import { returnContext } from '../readmission-rates-core';
 
 /** Display-only identity from KX (decision 5 / decision 13). Never sent to a model. */
 export interface Identity {
@@ -57,7 +59,23 @@ export function toIndexCaseSummary(e: ExtractedCase | null | undefined): IndexCa
 /** `returnBill` (R3-5): the value object the route computed from `r.readmit_encounter_id` —
  *  the id itself is NOT on SurfaceFinding and stays off the client. Null = the caller did not
  *  look (renders exactly like state 'unknown'). */
-export function toFinding(r: SurfaceRow, id: Identity | undefined, indexCase: IndexCaseSummary | null = null, returnBill: ReturnBill | null = null): SurfaceFinding {
+/**
+ * R7 (R7-5 / R7-6) — the return context, PURE, from what the route already joined: the index stay's
+ * extracted procedure / followUp / aftercare follow_up_detail on one side; the return stay's extracted
+ * procedure + the readmit-side OT-note ledger items (surgery names ride their text) on the other.
+ * No extract on either side → staged unmatched (never guessed); immediate is the gap alone.
+ */
+export function returnContextOf(r: SurfaceRow, blob: FindingBlob | null, indexExtracted: ExtractedCase | null | undefined, readmitExtracted: ExtractedCase | null | undefined): ReturnContext {
+  const art = (blob ?? {}) as CaseArtefacts;
+  const otReadmit = (art.evidenceLedger?.items ?? []).filter((i) => i.source === 'ot_note' && i.side === 'readmit').map((i) => i.text);
+  return returnContext({
+    gapDays: r.gap_days == null ? null : Number(r.gap_days),
+    indexTexts: [indexExtracted?.procedure, indexExtracted?.followUp, indexExtracted?.aftercare?.follow_up_detail],
+    returnTexts: [readmitExtracted?.procedure, ...otReadmit],
+  });
+}
+
+export function toFinding(r: SurfaceRow, id: Identity | undefined, indexCase: IndexCaseSummary | null = null, returnBill: ReturnBill | null = null, returnCtx: ReturnContext | null = null): SurfaceFinding {
   const blob = asJson<FindingBlob>(r.finding);
   return {
     dedupKey: String(r.dedup_key),
@@ -99,5 +117,7 @@ export function toFinding(r: SurfaceRow, id: Identity | undefined, indexCase: In
     indexCase,
     // R3 — the return-stay bill value object (fresh per read; never the encounter id).
     returnBill,
+    // R7 — the return context (immediate / staged markers), derived by code at read time.
+    returnContext: returnCtx,
   };
 }

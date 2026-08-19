@@ -25,7 +25,7 @@ import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { fetchFindingForSurface, READMIT_ENGINE_VERSION } from '@/lib/readmission/store';
 import { fetchExtractedCases } from '@/lib/discharge-extract-store';
 import { fetchStayBillBreakdown, type StayBillBreakdown } from '@/lib/readmission/db13';
-import { asJson, indexDocumentIdOf, readmitDocumentIdOf, toFinding, toIndexCaseSummary } from '@/lib/readmission/surface-row';
+import { asJson, indexDocumentIdOf, readmitDocumentIdOf, returnContextOf, toFinding, toIndexCaseSummary } from '@/lib/readmission/surface-row';
 import { toExtractSubset } from '@/lib/readmission/brief';
 import { returnBillFor, toFindingClass, whyFlaggedLines, type FindingBlob } from '@/lib/readmission-surface-core';
 import { renderableNarrative, type CaseArtefacts } from '@/lib/readmission-narrative-core';
@@ -82,7 +82,8 @@ export async function GET(req: NextRequest) {
     total: readmitBill && readmitBill.ok && readmitBill.lines > 0 ? { netRs: readmitBill.totalRs, lines: readmitBill.lines } : null,
   });
 
-  const surfaceRow = toFinding(r, undefined, toIndexCaseSummary(indexExtracted), returnBill);
+  // R7: the same code-derived return context the card carries (immediate / staged markers).
+  const surfaceRow = toFinding(r, undefined, toIndexCaseSummary(indexExtracted), returnBill, returnContextOf(r, blob, indexExtracted, readmitExtracted));
   // R4 (§3, additive): the stored case artefacts, RENDERED AS STORED — no model call on this
   // route, ever (R4-2). The narrative is emitted only when CODE marked it valid (R4-4); an invalid
   // one is reported by state so the page can say it was withheld and flagged. Why-flagged is

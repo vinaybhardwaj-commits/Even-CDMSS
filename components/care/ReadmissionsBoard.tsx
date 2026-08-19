@@ -38,6 +38,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import ReadmissionRatesModule from './ReadmissionRatesModule';
+import { returnContextLines } from '@/lib/readmission-rates-core';
 import { RotateCw, Download } from 'lucide-react';
 import {
   BILLS_UNAVAILABLE_NOTICE, cardIdentityLine, caseHref, chipText, coverageChips, countsLine, isHeldOut, isReviewFinding,
@@ -176,6 +178,11 @@ function CaseCard({ f }: { f: SurfaceFinding }) {
             ))}
           </div>
           {situation && <div className="mt-1 text-[12px] font-medium text-red-700">{situation}</div>}
+          {/* R7 (R7-5 / R7-6) — return-context markers: immediate return (gap ≤ 1) · possible planned staged
+              return. Annotation only — the situation line stays, no verdict changes. */}
+          {returnContextLines(f.returnContext).map((l) => (
+            <div key={l.key} className="mt-1 text-[12px] font-medium text-amber-800">{l.text}</div>
+          ))}
           {/* R4.1 (R41-3) — the case line: the first sentence of the stored, code-validated account */}
           {f.caseLine && <div className="mt-1 text-[12.5px] italic text-slate-700">{f.caseLine}</div>}
         </div>
@@ -344,6 +351,10 @@ export default function ReadmissionsBoard() {
       <p className="mt-1 text-[12.5px] text-slate-500">
         Every readmission the agent has audited, one card each. The agent proposes; you decide what to escalate.
       </p>
+
+      {/* R7 (R7-1) — the rates module, above the counts line; its own fetch, its own fail-safe. The
+          facility tabs honour R6's hospital filter when one is applied (R7-4). */}
+      <ReadmissionRatesModule facility={applied.fac} />
 
       {data && (
         <p className="mt-4 text-[12.5px] text-slate-700">{countsLine(data.reviewCount, data.pendingCount)}</p>
