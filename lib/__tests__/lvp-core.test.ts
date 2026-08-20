@@ -4,8 +4,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  LVP_CAP, LVP_FLOOR, conceptIdFromPatternId, formatDisplayDate, parseConceptId, patternIdFor,
-  patternTitle, shelveSuggestions, statusPill, stripIdentifiers, whyText,
+  LVP_CAP, LVP_FLOOR, LVP_NON_OVERUSE_CAP, conceptIdFromPatternId, formatDisplayDate,
+  parseConceptId, patternIdFor, patternTitle, shelveSuggestions, statusPill, stripIdentifiers,
+  whyText,
 } from '../lvp-core';
 
 // ── concept-id parsing + stable id ──────────────────────────────────────────────────────────────
@@ -100,14 +101,49 @@ test('shelve: floor — volume_week below 5 never makes the shelf', () => {
   assert.equal(LVP_FLOOR, 5);
 });
 
-test('shelve: cap — never more than 23 cards', () => {
-  const rows = Array.from({ length: 40 }, (_, i) => card(i % 2 ? 'overuse' : 'process', 100 - i, `c${i}`));
+test('shelve (Addendum B): 40 overuse + 5 non-overuse above the floor → 23 + 5', () => {
+  const rows = [
+    ...Array.from({ length: 40 }, (_, i) => card('overuse', 200 - i, `o${i}`)),
+    ...Array.from({ length: 5 }, (_, i) => card(['documentation', 'process', 'underuse'][i % 3], 300 - i, `n${i}`)),
+  ];
   const out = shelveSuggestions(rows);
-  assert.equal(out.length, 23);
+  assert.equal(out.length, 28);
+  assert.equal(out.filter((r) => r.direction === 'overuse').length, 23);
+  assert.equal(out.filter((r) => r.direction !== 'overuse').length, 5);
+  // the whole overuse block precedes every non-overuse card, even though the non-overuse
+  // volumes (300…296) outrank every overuse volume
+  assert.ok(out.slice(0, 23).every((r) => r.direction === 'overuse'));
+  assert.ok(out.slice(23).every((r) => r.direction !== 'overuse'));
   assert.equal(LVP_CAP, 23);
-  // every overuse card admitted before any non-overuse card
-  const firstNonOveruse = out.findIndex((r) => r.direction !== 'overuse');
-  assert.ok(out.slice(0, firstNonOveruse).every((r) => r.direction === 'overuse'));
+});
+
+test('shelve (Addendum B): 10 overuse + 12 non-overuse above the floor → 10 + 8', () => {
+  const rows = [
+    ...Array.from({ length: 10 }, (_, i) => card('overuse', 100 - i, `o${i}`)),
+    ...Array.from({ length: 12 }, (_, i) => card(['documentation', 'process', 'underuse'][i % 3], 90 - i, `n${i}`)),
+  ];
+  const out = shelveSuggestions(rows);
+  assert.equal(out.length, 18);
+  assert.deepEqual(out.slice(0, 10).map((r) => r.id), Array.from({ length: 10 }, (_, i) => `o${i}`));
+  // the non-overuse block keeps its own volume order and its own cap of 8
+  assert.deepEqual(out.slice(10).map((r) => r.id), Array.from({ length: 8 }, (_, i) => `n${i}`));
+  assert.equal(LVP_NON_OVERUSE_CAP, 8);
+});
+
+test('shelve (Addendum B): hidden-id exclusion applies to BOTH blocks (store-flow simulation)', () => {
+  // lib/lvp-store.ts filters hidden pattern ids BEFORE shelving; simulate that flow and check
+  // both blocks re-fill from below their caps once hidden members are gone.
+  const rows = [
+    ...Array.from({ length: 25 }, (_, i) => card('overuse', 100 - i, `o${i}`)),   // 25 above floor
+    ...Array.from({ length: 10 }, (_, i) => card('documentation', 60 - i, `n${i}`)),
+  ];
+  const hidden = new Set(['o0', 'o1', 'n0']);
+  const out = shelveSuggestions(rows.filter((r) => !hidden.has(r.id)));
+  assert.ok(out.every((r) => !hidden.has(r.id)));
+  // overuse: 23 of the remaining 23 (o2…o24) — the two hidden made room for o23/o24
+  assert.deepEqual(out.slice(0, 23).map((r) => r.id), Array.from({ length: 23 }, (_, i) => `o${i + 2}`));
+  // non-overuse: 8 of the remaining 9 (n1…n8) — n0 hidden, n9 over the cap
+  assert.deepEqual(out.slice(23).map((r) => r.id), Array.from({ length: 8 }, (_, i) => `n${i + 1}`));
 });
 
 // ── date display ────────────────────────────────────────────────────────────────────────────────

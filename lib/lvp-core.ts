@@ -3,7 +3,10 @@
  *
  * Everything deterministic about the shelf lives here, unit-tested, with NO IO: concept-id
  * parsing, the stub title table (§4.3 — exact, do not invent titles beyond it), the stub "why"
- * sentence, the overuse-first sort + floor(5) + cap(23) shelving rule (O3), the belt-and-braces
+ * sentence, the two-block shelving rule (O3 as amended by Addendum B, V ruled 20 Aug 2026:
+ * overuse by volume capped at 23, then non-overuse by volume capped at 8 — measured 40 overuse
+ * vs 5 non-overuse kinds above the floor, so a single cap starved the non-overuse block and the
+ * `probably not overuse` pill never rendered; floor 5 unchanged for both), the belt-and-braces
  * de-id strip for example snippets (O10 — the audit findings are already de-identified; this is
  * a second net for mobile numbers, UHID shapes and emails), and IST date display.
  *
@@ -12,8 +15,9 @@
  * a score, Triage, or any audit table.
  */
 
-export const LVP_FLOOR = 5;   // minimum volume_week for a Suggested card
-export const LVP_CAP = 23;    // maximum Suggested cards on the shelf
+export const LVP_FLOOR = 5;            // minimum volume_week for a Suggested card (both blocks)
+export const LVP_CAP = 23;             // maximum OVERUSE cards (Addendum B: the cap is per-block)
+export const LVP_NON_OVERUSE_CAP = 8;  // maximum non-overuse cards, appended after the overuse block
 
 export type LvpDirection = 'overuse' | 'documentation' | 'process' | 'underuse' | string;
 
@@ -118,15 +122,20 @@ export interface ShelvableCard {
 }
 
 /**
- * The Suggested shelf order: overuse cards first (by volume desc), then every other direction
- * (by volume desc) — one list. Floor: volume_week ≥ 5. Cap: 23 cards. Stable within ties.
+ * The Suggested shelf order (O3 as amended by Addendum B, V ruled 20 Aug 2026): overuse cards
+ * by volume desc, capped at 23 — then every other direction (documentation / process / underuse)
+ * by volume desc, capped at 8, appended after. One list; floor volume_week ≥ 5 applies to both
+ * blocks; stable within ties. (The pre-amendment single cap let a heavy overuse week fill all
+ * 23 slots and starve the non-overuse block entirely.)
  */
-export function shelveSuggestions<T extends ShelvableCard>(cards: T[], floor = LVP_FLOOR, cap = LVP_CAP): T[] {
+export function shelveSuggestions<T extends ShelvableCard>(
+  cards: T[], floor = LVP_FLOOR, cap = LVP_CAP, nonOveruseCap = LVP_NON_OVERUSE_CAP,
+): T[] {
   const eligible = cards.filter((c) => c.volume_week >= floor);
   const overuse = eligible.filter((c) => c.direction.trim().toLowerCase() === 'overuse');
   const rest = eligible.filter((c) => c.direction.trim().toLowerCase() !== 'overuse');
   const byVolume = (a: T, b: T) => b.volume_week - a.volume_week;
-  return [...overuse.sort(byVolume), ...rest.sort(byVolume)].slice(0, cap);
+  return [...overuse.sort(byVolume).slice(0, cap), ...rest.sort(byVolume).slice(0, nonOveruseCap)];
 }
 
 // ── IST date display ────────────────────────────────────────────────────────────────────────────
