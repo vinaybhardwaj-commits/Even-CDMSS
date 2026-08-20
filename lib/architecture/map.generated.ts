@@ -531,6 +531,14 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "lvp-core",
+    "plane": "advisory"
+  },
+  {
+    "id": "lvp-store",
+    "plane": "unregistered"
+  },
+  {
     "id": "mcp-server",
     "plane": "unregistered"
   },
@@ -1642,6 +1650,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "lvc-value",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "lvp-store",
     "kind": "value"
   },
   {
@@ -3490,6 +3503,16 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "lvp-store",
+    "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "lvp-store",
+    "to": "lvp-core",
+    "kind": "value"
+  },
+  {
     "from": "mcp-server",
     "to": "mcp-tools",
     "kind": "value"
@@ -5020,9 +5043,9 @@ export const VERSION_REGISTRY: VersionRow[] = [
 ];
 
 export const COVERAGE = {
-  "registered": 16,
+  "registered": 17,
   "unregistered": 26,
-  "total": 42,
+  "total": 43,
   "unregisteredIds": [
     "calculators",
     "care-call-core",

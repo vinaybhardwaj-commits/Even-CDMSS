@@ -148,6 +148,14 @@ export const MODULE_MANIFESTS: ModuleManifest[] = [
     versionConst: 'CORPUS_EVAL_VERSION',
   },
   {
+    id: 'lvp-core',
+    title: 'Low-value patterns shelf',
+    blurb: 'Groups last night’s stamped low-value findings into suggestion kinds for the care-manager shelf — a count, not a finding. Hide compiles a suppression of the kind; nothing here scores, routes, or reaches Triage.',
+    plane: 'advisory',
+    paths: ['lib/lvp-core.ts'],
+    lifecycle: 'implemented', // LVP L1: stub operator computed on read, behind LVC_PATTERNS_ENABLED (ships OFF)
+  },
+  {
     id: 'architecture',
     title: 'This map’s own tooling',
     blurb: 'The behind-the-scenes tooling that keeps this very page accurate and up to date on every change.',
