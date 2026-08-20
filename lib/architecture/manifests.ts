@@ -156,6 +156,14 @@ export const MODULE_MANIFESTS: ModuleManifest[] = [
     lifecycle: 'implemented', // LVP L1: stub operator computed on read, behind LVC_PATTERNS_ENABLED (ships OFF)
   },
   {
+    id: 'opd-audit-layers-core',
+    title: 'Where each thing on the audit page came from',
+    blurb: 'Names the three layers of an audit — the facts read from the record, the findings, and the model’s own ratings — and says of every finding whether code decided it, the model wrote it, or the row is too old to say. Labels only: it changes nothing about what the audit finds or how it scores.',
+    plane: 'advisory',
+    paths: ['lib/opd-audit-layers-core.ts'],
+    lifecycle: 'integrated', // facts-then-rules PR 1: live on /admin/opd-audit/[id], score-neutral
+  },
+  {
     id: 'architecture',
     title: 'This map’s own tooling',
     blurb: 'The behind-the-scenes tooling that keeps this very page accurate and up to date on every change.',

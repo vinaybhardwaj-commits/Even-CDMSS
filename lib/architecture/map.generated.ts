@@ -623,6 +623,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "opd-audit-layers-core",
+    "plane": "advisory"
+  },
+  {
     "id": "opd-audit-pdf",
     "plane": "unregistered"
   },
@@ -1125,6 +1129,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/admin",
     "to": "opd-audit-doctor",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
+    "to": "opd-audit-layers-core",
     "kind": "value"
   },
   {
@@ -5043,9 +5052,9 @@ export const VERSION_REGISTRY: VersionRow[] = [
 ];
 
 export const COVERAGE = {
-  "registered": 17,
+  "registered": 18,
   "unregistered": 26,
-  "total": 43,
+  "total": 44,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
