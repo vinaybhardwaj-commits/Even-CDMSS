@@ -204,6 +204,8 @@ export const UNREGISTERED: string[] = [
                             // relatedLvc reducer, three-hop join helpers — versioned by its exported *_VERSION consts
   'readmission-rates-core', // R7 pure rates definitions (rates/1): denominators, Wilson CI, monthly cohorts,
                             // EHBR gate, staged-return matcher — the 19-Aug rate report's method, codified once
+  'readmission-versions-core', // R8.1 pure finding-versions logic (readmit-versions/1): capture reasons,
+                            // snapshot shapes, replay validation, the overwrite-snapshot decision
   'reasoning',              // prompt-registry sidecar + export core (Reasoning Observability Stage 0)
   'right-care-ground-eval-core', // Slice-2 grounding A/B referee (right-care-eval/1.0)
 ];

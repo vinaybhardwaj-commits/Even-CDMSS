@@ -815,6 +815,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "readmission-versions-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "reasoning",
     "plane": "unregistered"
   },
@@ -1887,8 +1891,18 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/api",
+    "to": "readmission-prompts",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
     "to": "readmission-rates-core",
     "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "readmission-reconcile-core",
+    "kind": "type"
   },
   {
     "from": "app/api",
@@ -1897,7 +1911,17 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/api",
+    "to": "readmission-refresh-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
     "to": "readmission-surface-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "readmission-versions-core",
     "kind": "value"
   },
   {
@@ -4417,6 +4441,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "readmission",
+    "to": "readmission-versions-core",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
     "to": "trace",
     "kind": "value"
   },
@@ -4473,6 +4502,16 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "readmission-refresh-core",
     "to": "readmission-template-core",
+    "kind": "type"
+  },
+  {
+    "from": "readmission-versions-core",
+    "to": "readmission-narrative-core",
+    "kind": "value"
+  },
+  {
+    "from": "readmission-versions-core",
+    "to": "readmission-reconcile-core",
     "kind": "type"
   },
   {
@@ -4971,13 +5010,19 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "value": "ml-label-trial/1.0",
     "file": "lib/ml-label-trial/core.ts",
     "derived": false
+  },
+  {
+    "constName": "VERSIONS_RULE_VERSION",
+    "value": "readmit-versions/1",
+    "file": "lib/readmission-versions-core.ts",
+    "derived": false
   }
 ];
 
 export const COVERAGE = {
   "registered": 16,
-  "unregistered": 25,
-  "total": 41,
+  "unregistered": 26,
+  "total": 42,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
@@ -5002,6 +5047,7 @@ export const COVERAGE = {
     "readmission-narrative-core",
     "readmission-rates-core",
     "readmission-reconcile-core",
+    "readmission-versions-core",
     "reasoning",
     "right-care-ground-eval-core"
   ]

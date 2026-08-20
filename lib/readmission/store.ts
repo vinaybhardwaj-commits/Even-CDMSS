@@ -25,6 +25,7 @@ import type { ReadmitPair, OonDetection } from '../readmission-detect-core';
 import { pairDedupKey, oonDedupKey } from '../readmission-detect-core';
 import type { ReadmissionFinding, LabTier } from '../readmission-reconcile-core';
 import { deriveJudgements, JUDGEMENT_RULE_VERSION } from '../readmission-reconcile-core';
+import { needsOverwriteSnapshot } from '../readmission-versions-core';
 
 /** Flags (ship OFF): the Vertex surface is GEMINI_READMIT_AUDIT; the engine version
  *  bumps ONLY on behaviour change (house rule).
@@ -175,8 +176,20 @@ export async function saveAuditResult(w: AuditResultWrite, engineVersion: string
   const f = w.finding ?? null;
   const judgements = f != null ? deriveJudgements(f) : null;
   try {
-    const rows = (await sql(
-      `UPDATE readmission_findings SET
+    // R8.1 (FINDING-VERSIONS PRD, "Change to the write path", O2): read what stands at
+    // (dedup_key, engine_version) BEFORE overwriting. An audited reading about to be
+    // replaced is snapshotted to the versions table; no row, or a row never
+    // audited, has nothing worth keeping and takes the plain UPDATE below unchanged.
+    // needsOverwriteSnapshot (pure core) also skips the snapshot when the stored reading
+    // IS the incoming one (same trace_id), keeping this function idempotent: a second
+    // identical save re-runs the UPDATE and writes no second snapshot of the same reading.
+    const current = (await sql(
+      `SELECT audit_status, trace_id FROM readmission_findings
+        WHERE dedup_key = $1 AND engine_version = $2`,
+      [w.dedupKey, engineVersion],
+    )) as Array<{ audit_status: string | null; trace_id: string | null }>;
+    const snapshotFirst = needsOverwriteSnapshot(current[0] ?? null, w.traceId ?? null);
+    const updateSql = `UPDATE readmission_findings SET
          audit_status = $3, audited_at = NOW(),
          finding = $4::jsonb, not_auditable_reason = $5,
          planned = $6, same_condition = $7, avoidable = $8,
@@ -186,7 +199,35 @@ export async function saveAuditResult(w: AuditResultWrite, engineVersion: string
          preventable_injury = $19, negligence = $20, judgement_rule_version = $21,
          last_error = NULL
        WHERE dedup_key = $1 AND engine_version = $2
-       RETURNING id`,
+       RETURNING id`;
+    // ONE statement = ONE transaction (Neon's HTTP driver has no interactive BEGIN/COMMIT):
+    // the snapshot INSERT and the UPDATE travel together, so a fault in either aborts both —
+    // a crash can never leave a snapshot with no overwrite behind it, and a failed snapshot
+    // BLOCKS the UPDATE (O2; the catch below returns false and the sweep is the retry, the
+    // same posture every transient save fault already has). The CTE re-reads the row inside
+    // the statement's own MVCC snapshot, so row_snapshot is exactly the row being replaced;
+    // its WHERE re-checks audited + trace-distinct so a race with another save degrades to
+    // "no snapshot inserted", never a wrong one.
+    const rows = (await sql(
+      snapshotFirst
+        ? `WITH cur AS (
+             SELECT * FROM readmission_findings
+              WHERE dedup_key = $1 AND engine_version = $2
+           ), snap AS (
+             INSERT INTO readmission_finding_versions
+               (capture_reason, dedup_key, engine_version, avoidable, planned, same_condition,
+                preventable_injury, audit_status, model, provider, audited_at, template_coverage,
+                row_snapshot, trace_id)
+             SELECT 'overwrite', c.dedup_key, c.engine_version, c.avoidable, c.planned, c.same_condition,
+                    c.preventable_injury, c.audit_status, c.model, c.provider, c.audited_at,
+                    c.finding->'templateCoverage', to_jsonb(c), c.trace_id
+               FROM cur c
+              WHERE c.audit_status = 'audited'
+                AND (c.trace_id IS NULL OR $15::text IS NULL OR c.trace_id <> $15::text)
+             RETURNING id
+           )
+           ${updateSql}`
+        : updateSql,
       [
         w.dedupKey, engineVersion, w.status,
         f != null ? JSON.stringify(f) : null, w.notAuditableReason ?? null,
