@@ -156,6 +156,23 @@ export const MODULE_MANIFESTS: ModuleManifest[] = [
     lifecycle: 'implemented', // LVP L1: stub operator computed on read, behind LVC_PATTERNS_ENABLED (ships OFF)
   },
   {
+    id: 'rule-governance',
+    title: 'The rule book',
+    blurb: 'Keeps an unchangeable record of every version of a low-value-care rule and of when each version was switched on or off, so anyone can ask what a rule said on the day it fired. It also records which shelf pattern a proposed rule came from, with the evidence frozen as it stood.',
+    plane: 'advisory',
+    // O3: TOP-LEVEL FILES, not a lib/ subdirectory — a new directory auto-registers as a subsystem
+    // and so does an exported *_VERSION constant, and this module deliberately has neither.
+    // Both files are claimed by ONE manifest so the core↔store import is internal to the module.
+    paths: ['lib/rule-governance-core.ts', 'lib/rule-governance-store.ts'],
+    lifecycle: 'implemented',
+    // DORMANT (R3-A, 20 Aug 2026). Nothing reads it, nothing scores off it, it writes no row and no
+    // status value to lvc_recommendations, and its only inbound import edges are its own two admin
+    // routes — behind LVC_RULE_GOVERNANCE_ENABLED === '1', which ships UNSET. Migration 0039 is
+    // built and NOT run; the bootstrap snapshot is built and NOT executed. The four dormancy proofs
+    // are lib/__tests__/rule-governance-dormancy.test.ts. R3-B is the live-writer rewiring and is
+    // HELD (Saul Rep 41, S1).
+  },
+  {
     id: 'opd-audit-layers-core',
     title: 'Where each thing on the audit page came from',
     blurb: 'Names the three layers of an audit — the facts read from the record, the findings, and the model’s own ratings — and says of every finding whether code decided it, the model wrote it, or the row is too old to say. Labels only: it changes nothing about what the audit finds or how it scores.',

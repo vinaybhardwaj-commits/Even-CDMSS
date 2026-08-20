@@ -875,6 +875,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "rule-governance",
+    "plane": "advisory"
+  },
+  {
     "id": "runs-export",
     "plane": "unregistered"
   },
@@ -1663,6 +1667,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/api",
+    "to": "lvp-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
     "to": "lvp-store",
     "kind": "value"
   },
@@ -1979,6 +1988,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "right-care-state",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "rule-governance",
     "kind": "value"
   },
   {
@@ -4647,6 +4661,11 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "rule-governance",
+    "to": "db",
+    "kind": "value"
+  },
+  {
     "from": "scoring-policy",
     "to": "admin-cookie",
     "kind": "value"
@@ -5052,9 +5071,9 @@ export const VERSION_REGISTRY: VersionRow[] = [
 ];
 
 export const COVERAGE = {
-  "registered": 18,
+  "registered": 20,
   "unregistered": 26,
-  "total": 44,
+  "total": 46,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
