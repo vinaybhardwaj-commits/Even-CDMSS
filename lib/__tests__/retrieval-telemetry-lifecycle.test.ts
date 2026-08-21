@@ -23,7 +23,8 @@ import {
   type TelemetryRequestContext, type OperationalTelemetry,
 } from '../retrieval-telemetry-core';
 import {
-  assembleAuditContext, auditOpdLifecycleTestSeam, LifecycleFaultInjected, retrievalTerminalsSeam,
+  assembleAuditContext, auditOpdLifecycleTestSeam, auditOpdNote, LifecycleFaultInjected,
+  retrievalTerminalsSeam,
   type AuditOpdOpts, type LifecycleFaultPoint,
 } from '../opd-note-audit.ts';
 import type { CiteHit } from '../citations-core.ts';
@@ -568,7 +569,9 @@ test('23.3 — SUPPORTING SOURCE PIN ONLY (23.1 and 23.2 are the proof): in comm
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
 
-  const retrieve = src.indexOf('const hits = await defaultRetrieve(query, mini, opts.evalNormativeLeg, opts.rerankBackend, primaryCapture);');
+  // RE-PINNED (pass 4 forward correction). The statement is a ternary whose FALSE arm is the
+  // unchanged five-argument production call; this anchors that arm.
+  const retrieve = src.indexOf(': await defaultRetrieve(query, mini, opts.evalNormativeLeg, opts.rerankBackend, primaryCapture);');
   const assemble = src.indexOf('const { sources, citedContext } = assembleAuditContext(hits, normHits);');
   const terminals = src.indexOf('manifestDefectsByRole = await writeRetrievalTerminals({');
   assert.ok(retrieve > 0 && assemble > 0 && terminals > 0, 'all three D11 landmarks are present');
@@ -779,7 +782,7 @@ async function driveFault(faultAt: LifecycleFaultPoint, over: Partial<AuditOpdOp
     let audit: unknown;
     try {
       audit = await auditOpdLifecycleTestSeam.run(ROW_4B, opts, {
-        faultAt, primaryHits: [lit23(1), lit23(2), lit23(3)], normativeHits: [cw23(101)],
+        faultAt, primaryHits: PRIMARY_FIXTURE, normativeHits: NORMATIVE_FIXTURE,
       });
     } catch (e) { thrown = e; }
 
@@ -838,24 +841,9 @@ test('4B-SEAM.2 — the plan is attached NON-ENUMERABLE, NON-WRITABLE and NON-CO
   assert.deepEqual(Object.keys(callerOpts), ['telemetry', 'evalModel', 'trace'], 'and gained no string key either');
 });
 
-test('4B-SEAM.3 — absent the private symbol the plan-free path is byte-identical: no fixture, no fault, real collaborators', async () => {
-  // The source-level guarantee: every fault site and every fixture site is guarded by the ONE read,
-  // and that read is the only place the symbol is consulted.
-  const SRC = readFileSync(new URL('../opd-note-audit.ts', import.meta.url), 'utf8');
-  const reads = [...SRC.matchAll(/\[LIFECYCLE_FAULT_PLAN\]/g)].length;
-  assert.equal(reads, 1, 'exactly one private-symbol read exists in the whole module');
-  assert.match(SRC, /const faultPlan = readLifecycleFaultPlan\(opts\);/);
-  // Every gate is `faultPlan ? … : <production expression>` or `if (plan && …)`.
-  assert.match(SRC, /function lifecycleFault\(plan: LifecycleFaultPlan \| undefined, at: LifecycleFaultPoint\): void \{\s*if \(plan && plan\.faultAt === at\)/);
-  const guarded = [...SRC.matchAll(/lifecycleFault\(faultPlan, '(\w+)'\)/g)].map((m) => m[1]);
-  assert.deepEqual(guarded, FAULT_POINTS, 'five guarded sites, Rep 42\'s names, in D11 order');
-  // THE PRIMARY LEG IS NOT SUBSTITUTED AT ALL: its call site is byte-identical to `t4a`, so the
-  // proofs run production's own `defaultRetrieve`. See the report's deviation 1.
-  assert.match(SRC, /const hits = await defaultRetrieve\(query, mini, opts\.evalNormativeLeg, opts\.rerankBackend, primaryCapture\);/);
-  assert.doesNotMatch(SRC, /lifecycleFixtureHits\(primaryCapture/, 'no primary fixture exists');
-  // The normative site is a ternary on the same local, so an absent plan takes production's arm.
-  assert.match(SRC, /:\s*\(opts\.evalNormativeChannel === true \? await normativeChannelRetrieve\(query, normativeCapture\) : \[\]\)/);
-});
+// ⚠️ 4B-SEAM.3 REMOVED, SUPERSEDED. It was a SOURCE-ONLY check and Rep 43 §3.4 requires a
+// BEHAVIOURAL plan-free equality against the pre-seam baseline. That is `4C-4`; the source pin
+// survives as `4C-4b`, supporting evidence only.
 
 test('4B-SEAM.4 — PARALLEL CALLS CARRY INDEPENDENT PLANS: two concurrent runs do not see each other\'s faults', async () => {
   const KEY_ENV = 'CDMSS_TELEMETRY_HMAC_KEY';
@@ -1038,15 +1026,15 @@ test('23.6 — the primary payload HMAC is over the COMBINED assembled context, 
   const r = await driveFault('during_generation');
   // $20 is context_hmac (lib/retrieval-telemetry-store.ts:325), so params[19] at the wire — the
   // same position 23.2 reads, but here the write was issued by the real `auditOpdNote`.
-  // ⚠️ THE PRIMARY HITS ARE PRODUCTION'S, NOT THE TEST'S. `defaultRetrieve` ran for real; with no
-  // corpus reachable under the transport stub it took its own FAIL-OPEN path and returned zero
-  // hits, which the row itself states: $3 is the retrieval outcome and $12/$13 the candidate
-  // counts. The test asserts what the run reported rather than assuming it.
-  assert.equal(r.terminals[0].params[2], 'retrieval_failure', 'the primary leg failed open, as production does');
-  assert.equal(r.terminals[0].params[11], '0', 'and returned zero candidates');
-  const hits: CiteHit[] = [];
-  const normHits = [cw23(101)];
-  const primaryHmac = r.terminals[0].params[19];
+  // ⚠️ BOTH LEGS ARE PLANNED FIXTURES (Rep 43 A1). Pass 4b let the real `defaultRetrieve` run and
+  // depended on missing provider configuration returning nothing — an environmental accident. The
+  // row now reports what the plan supplied, and the test asserts that before using it.
+  const m = manifestOf(r.terminals[0]);
+  assert.equal(m.retrieval_outcome, 'success', 'the primary leg is a CONTROLLED input now, not a provider accident');
+  assert.deepEqual(m.ordered_final_candidate_ids, PRIMARY_FIXTURE.map((h) => h.id), 'and carries the planned candidates');
+  const hits = PRIMARY_FIXTURE;
+  const normHits = NORMATIVE_FIXTURE;
+  const primaryHmac = m.scorer_context_hmac;
   const { citedContext } = assembleAuditContext(hits, normHits);
   assert.equal(primaryHmac, telemetryHmac('proof-4b-key', citedContext),
     'the row carries the HMAC of the COMBINED context — literature plus the normative block');
@@ -1056,5 +1044,397 @@ test('23.6 — the primary payload HMAC is over the COMBINED assembled context, 
   assert.notEqual(citedContext, stepSeven, 'the two contexts genuinely differ — the normative block is in one');
   assert.notEqual(primaryHmac, telemetryHmac('proof-4b-key', stepSeven),
     'so the write cannot have happened at step 7, before the normative hits existed');
-  assert.equal(r.terminals[1].params[19], null, 'and the normative row makes no scorer-context claim');
+  assert.equal(manifestOf(r.terminals[1]).scorer_context_hmac, null, 'and the normative row makes no scorer-context claim');
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// PASS 4 FORWARD CORRECTION — Saul Rep 43 A1/A3. THE PRIMARY LEG IS NOW FIXTURED.
+//
+// Pass 4b fixtured only the normative leg and let the real `defaultRetrieve` run on the primary.
+// Rep 43: "It is a material deviation, not a harmless reduction in production change." He is right,
+// and the reasons are worth keeping: that call can reach expansion and embedding providers; the
+// database stub does not contain the OpenAI SDK's captured transport, so the isolation claimed
+// there did not hold; 23.6 depended on MISSING LOCAL PROVIDER CONFIGURATION producing
+// `retrieval_failure`, which is an environmental accident and not a controlled input; and the
+// primary hit set was empty in practice, so proof 23 never established that BOTH primary and
+// normative material reach the combined-context HMAC — which is the substance of proof 23.
+//
+// The tests below are Rep 43's seven §3 requirements, each named.
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+/** The role manifest the terminal UPDATE binds at $21, read BY NAME rather than by index. */
+const manifestOf = (call: { params: unknown[] }) =>
+  JSON.parse(String(call.params[20])) as {
+    retrieval_outcome: string;
+    fused_candidate_ids: number[];
+    hydrated_candidate_ids: number[];
+    ordered_final_candidate_ids: number[];
+    scorer_context_hmac: string | null;
+  };
+
+/** Non-empty on BOTH legs — §3.1. Three literature excerpts and two normative statements. */
+const PRIMARY_FIXTURE = [lit23(1), lit23(2), lit23(3)];
+const NORMATIVE_FIXTURE = [cw23(101), cw23(102)];
+
+/**
+ * §3.4 — the pre-seam baseline, OBSERVED, not asserted in prose.
+ *
+ * Captured by running the plan-free `auditOpdNote` under the same deterministic collaborators in
+ * the `t4a` worktree at `5994922` — the last commit before the seam existed — and again in this
+ * worktree, and byte-comparing the two. They were identical. This constant is that observation,
+ * embedded so the equality is CHECKED on every run rather than claimed once.
+ *
+ * To regenerate: run the plan-free audit under `installDbStub` in a `5994922` worktree and dump
+ * `{ audit (traceId removed), handles, statements }`.
+ */
+const PRESEAM_BASELINE = {
+    "audit": {
+      "keys": {
+        "uid": "uid-4b-0001",
+        "consultUid": "consult-4b",
+        "doctorUid": "doctor-4b",
+        "kxEncounterId": null,
+        "consultType": null,
+        "prescriptionType": null,
+        "noteDate": null,
+        "prescriptionUrl": null
+      },
+      "scorecard": {
+        "headline": 62,
+        "band": "C",
+        "domains": [
+          {
+            "domain": "documentation",
+            "label": "Documentation completeness",
+            "score": 25,
+            "weight": 0.25,
+            "n": 1,
+            "basis": "NABH OPD completeness 25%"
+          },
+          {
+            "domain": "note_quality",
+            "label": "Note quality (PDQI-9)",
+            "score": 0,
+            "weight": 0,
+            "n": 0,
+            "basis": "PDQI-9 not assessed"
+          },
+          {
+            "domain": "appropriateness",
+            "label": "Diagnostic & test appropriateness",
+            "score": 100,
+            "weight": 0.2,
+            "n": 0,
+            "basis": "no low-value/inappropriate orders flagged"
+          },
+          {
+            "domain": "prescribing_safety",
+            "label": "Prescribing quality & safety",
+            "score": 100,
+            "weight": 0.2,
+            "n": 0,
+            "basis": "no prescribing or interaction issues flagged"
+          },
+          {
+            "domain": "patient_centred",
+            "label": "Continuity & patient-centredness",
+            "score": 0,
+            "weight": 0.1,
+            "n": 2,
+            "basis": "0/2 continuity fields present"
+          }
+        ],
+        "pdqi9": [],
+        "confidence": "low",
+        "flags": [],
+        "caveat": "Note-level quality proxy from the documented encounter — documentation, note quality (PDQI-9), appropriateness and prescribing safety AS DEMONSTRATED IN THE NOTE. Not an outcomes measure and not a clinician scorecard; read at the encounter / service-line level."
+      },
+      "completeness": {
+        "items": [
+          {
+            "key": "presenting_complaint",
+            "label": "Presenting complaint",
+            "present": false,
+            "mandatory": true,
+            "status": "missing",
+            "section": "documentation"
+          },
+          {
+            "key": "diagnosis",
+            "label": "Diagnosis / impression",
+            "present": false,
+            "mandatory": true,
+            "status": "missing",
+            "section": "documentation"
+          },
+          {
+            "key": "medication_dosing",
+            "label": "Complete medication dosing",
+            "present": true,
+            "mandatory": true,
+            "status": "present",
+            "section": "documentation"
+          },
+          {
+            "key": "advice_given",
+            "label": "Advice / plan",
+            "present": false,
+            "mandatory": true,
+            "status": "missing",
+            "section": "continuity"
+          },
+          {
+            "key": "follow_up",
+            "label": "Follow-up specified",
+            "present": false,
+            "mandatory": true,
+            "status": "missing",
+            "section": "continuity"
+          },
+          {
+            "key": "examination",
+            "label": "Examination recorded",
+            "present": false,
+            "mandatory": true,
+            "status": "missing",
+            "section": "documentation"
+          }
+        ],
+        "coverage": 0.25,
+        "missing": [
+          "Presenting complaint",
+          "Diagnosis / impression",
+          "Advice / plan",
+          "Follow-up specified",
+          "Examination recorded"
+        ],
+        "patientCentred": {
+          "present": 0,
+          "total": 2
+        }
+      },
+      "findings": [],
+      "suggestions": [],
+      "sources": [],
+      "engineVersion": "opd-note-audit/0.81.21",
+      "complexity": {
+        "band": null,
+        "inputs": null
+      },
+      "quietingGen": 0,
+      "llmLegFailed": true
+    },
+    "handles": [
+      [
+        "primary@0",
+        "normative_channel@0"
+      ],
+      [
+        "primary@1",
+        "normative_channel@0"
+      ],
+      [
+        "primary@1",
+        "normative_channel@1"
+      ]
+    ],
+    "statements": [
+      "SELECT id, signal_type, discriminator, match_kind, scope, doctor_uid, ",
+      "SELECT id, keywords, category FROM lvc_recommendations WHERE status = ",
+      "SELECT id, signal_type, discriminator, match_kind, scope, doctor_uid, ",
+      "SELECT coalesce(max(gen), 0)::int AS gen FROM quieting_policy_log",
+      "INSERT INTO opd_retrieval_invocations (invocation_id, kind, route, rou",
+      "INSERT INTO opd_audit_retrieval_telemetry (retrieval_run_id, retrieval",
+      "CREATE TABLE IF NOT EXISTS backfill_runs ( id BIGSERIAL PRIMARY KEY, w",
+      "CREATE UNIQUE INDEX IF NOT EXISTS backfill_runs_one_active_idx ON back",
+      "CREATE INDEX IF NOT EXISTS backfill_runs_worker_created_idx ON backfil",
+      "SELECT id, worker, model, to_char(day_from, 'YYYY-MM-DD') AS day_from,",
+      "UPDATE opd_audit_retrieval_telemetry SET persistence_state = 'retrieva",
+      "UPDATE opd_audit_retrieval_telemetry SET persistence_state = 'retrieva",
+      "SELECT doctor_uid, speciality FROM doctor_directory WHERE speciality I"
+    ]
+  } as const;
+
+/** The plan-free run, under the same deterministic collaborators the baseline was taken with. */
+async function planFreeRun() {
+  const KEY_ENV = 'CDMSS_TELEMETRY_HMAC_KEY';
+  const before = process.env[KEY_ENV];
+  process.env[KEY_ENV] = 'baseline-key';
+  try {
+    const db = installDbStub();
+    db.on(UPDATE_TERMINAL, [{ row_revision: 1 }]);
+    const handles: string[][] = [];
+    const audit = await auditOpdNote(ROW_4B, {
+      telemetry: TELE_4B, evalNormativeChannel: true, trace: false,
+      onLifecycleHandleUpdated: (h) => handles.push(h.runs.map((r) => `${r.role}@${r.expectedRevision}`)),
+    });
+    const stable = JSON.parse(JSON.stringify(audit));
+    delete stable.traceId;
+    return { audit: stable, handles, statements: db.calls.map((c) => c.query.replace(/\s+/g, ' ').slice(0, 70)) };
+  } finally {
+    if (before === undefined) delete process.env[KEY_ENV]; else process.env[KEY_ENV] = before;
+  }
+}
+
+// ══ §3.1 — both fixtures are consumed ══════════════════════════════════════════════════════════
+
+test('4C-1 (§3.1) — NON-EMPTY primary AND normative fixtures are both consumed, and both reach the combined context', async () => {
+  const r = await driveFault('during_generation');
+  assert.equal(r.terminals.length, 2, 'both terminals were written');
+
+  // PRIMARY: the row reports the fixture, not an accident. $3 is the retrieval outcome and $12 the
+  // fused candidate count — pass 4b saw `retrieval_failure` and 0 here, from missing local provider
+  // configuration. It now reports what the plan supplied.
+  const primary = manifestOf(r.terminals[0]);
+  const normative = manifestOf(r.terminals[1]);
+  assert.equal(primary.retrieval_outcome, 'success', 'the primary leg succeeded — a controlled input');
+  assert.deepEqual(primary.ordered_final_candidate_ids, PRIMARY_FIXTURE.map((h) => h.id),
+    'and the row carries EXACTLY the three planned primary candidates');
+  assert.deepEqual(primary.fused_candidate_ids, PRIMARY_FIXTURE.map((h) => h.id));
+  assert.deepEqual(primary.hydrated_candidate_ids, PRIMARY_FIXTURE.map((h) => h.id));
+  assert.equal(normative.retrieval_outcome, 'success', 'the normative leg too');
+  assert.deepEqual(normative.ordered_final_candidate_ids, NORMATIVE_FIXTURE.map((h) => h.id),
+    'with both planned normative statements');
+
+  // And the combined context genuinely contains material from EACH leg.
+  const { citedContext } = assembleAuditContext(PRIMARY_FIXTURE, NORMATIVE_FIXTURE);
+  for (const h of PRIMARY_FIXTURE) assert.ok(citedContext.includes(h.text), `primary excerpt ${h.id} is in the combined context`);
+  for (const h of NORMATIVE_FIXTURE) assert.ok(citedContext.includes(h.text), `normative statement ${h.id} is in the combined context`);
+  assert.equal(primary.scorer_context_hmac, telemetryHmac('proof-4b-key', citedContext),
+    'and the primary row hashes exactly that combined context');
+  assert.equal(normative.scorer_context_hmac, null, 'the normative row makes no scorer-context claim');
+});
+
+test('4C-2 (§3.2) — removing ONLY the primary contribution changes the proof-23 HMAC', async () => {
+  // The counterfactual that pass 4b could not run, because its primary set was empty: strip the
+  // primary material and keep the normative, and the row's HMAC must no longer match. Mutation row
+  // M6 is the executable half of this requirement.
+  const r = await driveFault('during_generation');
+  const primaryHmac = manifestOf(r.terminals[0]).scorer_context_hmac;
+  const withBoth = assembleAuditContext(PRIMARY_FIXTURE, NORMATIVE_FIXTURE).citedContext;
+  const normativeOnly = assembleAuditContext([], NORMATIVE_FIXTURE).citedContext;
+  assert.notEqual(withBoth, normativeOnly, 'the two contexts genuinely differ');
+  assert.equal(primaryHmac, telemetryHmac('proof-4b-key', withBoth));
+  assert.notEqual(primaryHmac, telemetryHmac('proof-4b-key', normativeOnly),
+    'the row does NOT carry the normative-only HMAC, so the primary material demonstrably reached it');
+});
+
+// ══ §3.3 — a planned call touches nothing outside the database transport ═══════════════════════
+
+test('4C-3 (§3.3) — a PLANNED call reaches no provider, socket, corpus database, embedding or reranker', async () => {
+  const KEY_ENV = 'CDMSS_TELEMETRY_HMAC_KEY';
+  const before = process.env[KEY_ENV];
+  process.env[KEY_ENV] = 'proof-4b-key';
+  const db = installDbStub();
+  db.on(UPDATE_TERMINAL, [{ row_revision: 1 }]);
+  // Wrap the stub's own fetch so EVERY outbound request is recorded, whoever makes it.
+  const stubbed = globalThis.fetch;
+  const urls: string[] = [];
+  globalThis.fetch = ((input: unknown, init?: unknown) => {
+    urls.push(typeof input === 'string' ? input : String((input as { url?: string })?.url ?? input));
+    return (stubbed as (a: unknown, b?: unknown) => Promise<Response>)(input, init);
+  }) as typeof fetch;
+  try {
+    await assert.rejects(
+      () => auditOpdLifecycleTestSeam.run(ROW_4B,
+        { telemetry: TELE_4B, evalNormativeChannel: true, evalModel: 'pass4b-fault-surface', trace: false },
+        { faultAt: 'during_generation', primaryHits: PRIMARY_FIXTURE, normativeHits: NORMATIVE_FIXTURE }),
+      (e: unknown) => e instanceof LifecycleFaultInjected,
+    );
+  } finally {
+    globalThis.fetch = stubbed;
+    if (before === undefined) delete process.env[KEY_ENV]; else process.env[KEY_ENV] = before;
+  }
+  assert.ok(urls.length > 0, 'the run did reach the database transport, so the guard is not vacuous');
+  // Every request is the Neon transport the stub owns. Nothing else was contacted.
+  const foreign = urls.filter((u) => !/neon|localhost:?\d*\/sql|\/sql$/i.test(u));
+  assert.deepEqual(foreign, [], `a planned call reached ${foreign.length} non-database host(s): ${foreign.join(', ')}`);
+  // Named negatives, so a future transport rename cannot quietly satisfy the filter above.
+  for (const forbidden of [/openai/i, /ollama/i, /embed/i, /rerank/i, /cohere/i, /openrouter/i, /generativelanguage/i, /bedrock/i]) {
+    assert.deepEqual(urls.filter((u) => forbidden.test(u)), [], `no request matching ${forbidden}`);
+  }
+});
+
+// ══ §3.4 — behavioural plan-free equality with the pre-seam baseline ═══════════════════════════
+
+/**
+ * Statements whose PRESENCE depends on how warm this process's module-level caches are, not on
+ * anything the seam does: the suppression and quieting caches, and the backfill store's
+ * CREATE TABLE IF NOT EXISTS warm-up. A standalone run issues them; a run after other tests in the
+ * same file does not. Excluding them compares the run, not the order the file happened to execute
+ * in. Everything the seam could plausibly affect — the invocation, the declaration, both terminals,
+ * the settlement reads and the specialty read — is retained.
+ */
+const CACHE_WARMUP = /lvc_recommendations|quieting_policy_log|signal_type, discriminator|CREATE (?:TABLE|UNIQUE INDEX|INDEX)/;
+const runStatements = (xs: readonly string[]) => xs.filter((q) => !CACHE_WARMUP.test(q));
+
+test('4C-4 (§3.4) — the direct PLAN-FREE path is BEHAVIOURALLY equal to the pre-seam baseline, not merely source-equal', async () => {
+  const now = await planFreeRun();
+  // The whole observable surface: the returned audit, the handle publications in order, and the
+  // statement sequence that reached the transport.
+  assert.deepEqual(now.handles, PRESEAM_BASELINE.handles, 'the same publications, in the same order');
+  assert.deepEqual(runStatements(now.statements), runStatements(PRESEAM_BASELINE.statements),
+    'the same statements, in the same order');
+  assert.deepEqual(now.audit, PRESEAM_BASELINE.audit, 'and the same audit, field for field');
+  // Not vacuous: the filter must not have removed the telemetry statements the seam sits among.
+  const kept = runStatements(now.statements);
+  assert.ok(kept.some((q) => /INSERT INTO opd_audit_retrieval_telemetry/.test(q)), 'the declaration is compared');
+  assert.equal(kept.filter((q) => /UPDATE opd_audit_retrieval_telemetry/.test(q)).length, 2, 'both terminals are compared');
+});
+
+test('4C-4b (§3.4, supporting) — the source pin remains, as supporting evidence only', () => {
+  const SRC = readFileSync(new URL('../opd-note-audit.ts', import.meta.url), 'utf8');
+  assert.equal([...SRC.matchAll(/\[LIFECYCLE_FAULT_PLAN\]/g)].length, 1, 'exactly one private-symbol read');
+  assert.match(SRC, /: await defaultRetrieve\(query, mini, opts\.evalNormativeLeg, opts\.rerankBackend, primaryCapture\);/,
+    'the plan-free arm is the unchanged five-argument production call');
+});
+
+// ══ §3.5 — the null retrieval outcome, OBSERVED at declaration ═════════════════════════════════
+
+test('4C-5 (§3.5) — the first four proof-22 cases OBSERVE the null retrieval outcome at declaration', async () => {
+  for (const faultAt of PRE_TERMINAL_FAULTS) {
+    const r = await driveFault(faultAt);
+    assert.equal(r.declarations.length, 1, `${faultAt}: the declaration reached the transport`);
+    const stmt = r.declarations[0].query.replace(/\s+/g, ' ');
+    // OBSERVED AT THE DECLARATION ITSELF, not inferred from revisions or from missing terminals.
+    // The INSERT names fourteen columns and no outcome column is among them, so the declared row's
+    // retrieval outcome is null in the database from the moment it exists.
+    const cols = /\(([^)]*)\) VALUES/.exec(stmt)![1].split(',').map((c) => c.trim());
+    assert.equal(cols.length, 14, `${faultAt}: fourteen bound columns`);
+    assert.equal(cols.includes('retrieval_outcome'), false, `${faultAt}: retrieval_outcome is NOT declared`);
+    assert.deepEqual(cols.filter((c) => /outcome/i.test(c)), [], `${faultAt}: no outcome column of any name`);
+    assert.equal(cols.includes('persistence_state'), true, `${faultAt}: and the state IS declared`);
+    // No bound parameter carries an outcome value either.
+    for (const p of r.declarations[0].params) {
+      assert.notEqual(p, 'success', `${faultAt}: no bound parameter is an outcome`);
+      assert.notEqual(p, 'retrieval_failure', `${faultAt}: nor a failure outcome`);
+    }
+  }
+});
+
+// ══ §3.6 and §3.7 ══════════════════════════════════════════════════════════════════════════════
+
+test('4C-6 (§3.6) — production callers and AuditOpdOpts are unchanged by the correction', () => {
+  const SRC = readFileSync(new URL('../opd-note-audit.ts', import.meta.url), 'utf8');
+  const optsBlock = SRC.slice(SRC.indexOf('export interface AuditOpdOpts {'), SRC.indexOf('/** Engine tag for mini-pipeline rows'));
+  assert.doesNotMatch(optsBlock, /\bfault/i, 'no fault field');
+  assert.doesNotMatch(optsBlock, /lifecycleFaultPlan|LIFECYCLE_FAULT_PLAN/, 'nor the plan by any name');
+  // The one production call site the correction touches keeps its five-argument shape, which
+  // rerank-backend.test.ts (NOT in this pass's file list, and untouched) independently pins.
+  assert.match(SRC, /defaultRetrieve\(query, mini, opts\.evalNormativeLeg, opts\.rerankBackend, primaryCapture\)/);
+  assert.match(SRC, /const normHits = faultPlan/, 'and the normative site keeps its guarded ternary');
+});
+
+test('4C-7 (§3.7) — no mutable global state is introduced', async () => {
+  const SRC = readFileSync(new URL('../opd-note-audit.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(SRC, /export (?:let|var) /, 'no mutable exported binding');
+  assert.doesNotMatch(SRC, /globalThis\.[A-Za-z_$]+\s*=/, 'the module assigns nothing onto globalThis');
+  assert.doesNotMatch(SRC, /installLifecycle|resetLifecycle|__setLifecycle/, 'no install or reset function');
+  // BEHAVIOURAL: a planned run leaves no residue a later run could observe. The plan-free run after
+  // two planned ones is still byte-equal to the pre-seam baseline.
+  await driveFault('after_declaration');
+  await driveFault('during_generation');
+  const after = await planFreeRun();
+  assert.deepEqual(after.audit, PRESEAM_BASELINE.audit, 'the plan-free path is unchanged by prior planned runs');
+  assert.deepEqual(after.handles, PRESEAM_BASELINE.handles);
 });

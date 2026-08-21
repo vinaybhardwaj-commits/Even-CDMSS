@@ -1471,14 +1471,13 @@ function lifecycleFault(plan: LifecycleFaultPlan | undefined, at: LifecycleFault
 /**
  * Deterministic hits standing in for a provider call, reached ONLY when a plan exists (§2.7).
  *
- * ⚠️ THE NORMATIVE LEG ONLY, AND THE PRIMARY LEG DELIBERATELY NOT — see the report's deviation 1.
- * The primary call site is frozen verbatim by two committed pins outside pass 4b's authorized
- * diff (`lib/__tests__/citation-support.test.ts:114` pins the assignment prefix,
- * `lib/__tests__/rerank-backend.test.ts:339` pins the call through its closing paren), so a
- * primary fixture cannot be injected without editing a file §10 excludes. It is also unnecessary:
- * under the transport stub the REAL `defaultRetrieve` returns deterministically in single-digit
- * milliseconds, so the primary leg the proofs execute is production's own, which is stronger than
- * a fixture would have been.
+ * ⚠️ BOTH LEGS, AND THE PRIMARY LEG IS NOT OPTIONAL (Rep 43 A1). Pass 4b fixtured only the
+ * normative leg and let the real `defaultRetrieve` run on the primary. That was a MATERIAL
+ * deviation, not a harmless reduction in production change: the real call can reach expansion and
+ * embedding providers, the database stub does not contain the OpenAI SDK's captured transport, so
+ * the isolation claimed there did not hold — and the primary hit set was empty in practice, which
+ * left proof 23 never establishing that BOTH primary and normative material reach the combined
+ * context. That is the substance of proof 23. A fixtured primary is what makes it provable.
  *
  * The capture is populated the way a real retrieval would leave it for these fields, so the
  * terminal payload builds and the manifest is validated over something real rather than over the
@@ -1730,7 +1729,9 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     ].filter(Boolean).join('. ');
 
     // STEPS 7 AND 8 — capture both retrievals IN MEMORY. No terminal write yet, deliberately.
-    const hits = await defaultRetrieve(query, mini, opts.evalNormativeLeg, opts.rerankBackend, primaryCapture);
+    const hits = faultPlan
+      ? lifecycleFixtureHits(primaryCapture, faultPlan.primaryHits)
+      : await defaultRetrieve(query, mini, opts.evalNormativeLeg, opts.rerankBackend, primaryCapture);
     lifecycleFault(faultPlan, 'after_primary_retrieval');
     // R-11 additive channel (lab eval only): a SEPARATE CW-only retrieve appended as [9+] — the 8
     // literature excerpts above are untouched. No channel ⇒ assembleAuditContext is byte-identical
