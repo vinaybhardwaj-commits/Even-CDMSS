@@ -109,3 +109,48 @@ Observed test total **3613**, never predeclared: 3607 at the base plus 6 added.
 4. **No stale comment was "fixed."** The two known stale citations (`:302` and Saul review 37's) were
    left exactly as they are.
 5. **No changelog entry, no engine bump, no production change, nothing pushed.**
+
+---
+
+## Addendum — two rulings from Saul Rep 42 (21 August 2026)
+
+Recorded here because they change what this report claims. Added in the Q1 cleanup's forward
+documentation commit, not by amending this report's original commit (`ed63ad7`); evidence for the
+cleanup itself is in `CDMSS-GATE-EVIDENCE-Q1-CLEANUP-21-AUG-2026.md`.
+
+### Gate command 1 — the red is resolved, by deletion
+
+Deviation 1 above ("gate command 1 red at the base") is closed. The cause was the hard expiry in
+`app/api/admin/telemetry-overhead/route.ts` firing on 20 Aug 2026. Rep 42 authorized deleting the
+instrument rather than disarming it. Cleanup commit `07452bb` removes the route, its guard test and
+the single `app/api → retrieval-capture` map edge, and the full gate is green:
+
+| | at `ed63ad7` | at `07452bb` |
+|---|---|---|
+| `npm test` | RED — 3613 tests, 3586 pass, **27 fail** | **GREEN — 3582 tests, 3582 pass, 0 fail** |
+| `npm run architecture:map` | 90492 bytes | **90409 bytes** (90492 pin superseded by Rep 42) |
+
+Both figures observed and recorded after the run, never predeclared.
+
+### Proof 24 — conditionally closed
+
+Conditional on the cleanup SHA producing a green full gate, which it does. **The official count
+stays 13/20 until that gate is reviewed, then becomes 14/20.** This report does not advance the
+count on its own authority.
+
+### Proof 23 — held, and moved into pass 4b
+
+Saul's reason, and it is correct: the test calls `assembleAuditContext` and then calls the terminal
+seam itself, so *the test's own choreography* guarantees assembly precedes the write. It never
+executes `auditOpdNote`, so it proves the test's ordering rather than production's. The source pin
+in 23.3 confirms current source text but is not an executable ordering proof.
+
+**This was an Orchestrator specification error, not a coder deviation.** Pass 4a §3 asked for
+exactly the insufficient thing, and this build delivered what was asked. Recorded as such.
+
+This supersedes the "What was built" section's claim that 23 is reached: 23 is **held**. What this
+pass actually established for 23 is that the seam and transport stub can observe terminal writes at
+execution — a component of a future proof, not the proof.
+
+Pass 4b will own proofs **21, 22 and 23**, reaching **17/20** if all three close. It may not begin
+until this gate is green and reviewed, on a base containing all pass-4a and cleanup commits.
