@@ -24,7 +24,8 @@ import { assertKnownBedrockModel } from './bedrock-core';
 import { sql } from './db';
 import { loadShelf } from './lvp-store';
 import {
-  LVP_OPERATOR_SYSTEM, operatorModel, operatorUserMessage, parseOperatorOutput, screenDecorations,
+  LVP_OPERATOR_SYSTEM, operatorModel, operatorUserMessage, parseOperatorOutput, rejectionLogLines,
+  screenDecorations,
   type Decoration, type OperatorPatternInput,
 } from './lvp-operator-core';
 import { finishTraceIfRunning, governedChat, startTrace } from './trace';
@@ -159,6 +160,11 @@ export async function runPatternOperator(opts: { trigger: 'cron' | 'manual' }): 
   // 3) parse, then screen ROW-WISE before any write (§5)
   const parsed = parseOperatorOutput(content, head.map((p) => p.pattern_id));
   const { accepted, rejected } = screenDecorations(parsed);
+
+  // §2.4: a rejection used to vanish on the nightly run — the caller is a cron nobody reads. One
+  // warn line per problem keeps pattern id, rule and span in the Vercel logs. Nothing rejected is
+  // written to a table; there is no home in the schema for unvalidated model output.
+  for (const line of rejectionLogLines(rejected)) console.warn(line);
 
   // 4) write only what survived
   let decorated = 0;

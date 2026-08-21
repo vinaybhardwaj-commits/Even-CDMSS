@@ -9,9 +9,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  forbiddenHits, frozenNumberHits, LVP_COUNT_NOUNS, LVP_COUNT_WINDOW, LVP_FORBIDDEN_STRINGS,
-  LVP_NUMBER_WORDS, LVP_OPERATOR_MODEL_DEFAULT, LVP_OPERATOR_SYSTEM, LVP_RANKING_PATTERNS,
-  LVP_TITLE_MAX, LVP_WHY_MAX, operatorModel, operatorUserMessage, parseOperatorOutput,
+  forbiddenHits, frozenNumberHits, LVP_CONTENT_NOUNS, LVP_COUNT_NOUNS, LVP_COUNT_WINDOW,
+  LVP_FORBIDDEN_STRINGS, LVP_NUMBER_WORDS, LVP_OPERATOR_MODEL_DEFAULT, LVP_OPERATOR_SYSTEM,
+  LVP_RANKING_PATTERNS, LVP_RECOMPUTED_COUNT_NOUNS, LVP_TITLE_MAX, LVP_VOLUME_MARKERS, LVP_WHY_MAX,
+  operatorModel, operatorUserMessage, parseOperatorOutput, problemRule, rejectionLogLines,
   screenDecorations, validateDecoration,
   type OperatorPatternInput,
 } from '../lvp-operator-core.ts';
@@ -570,4 +571,176 @@ test('acceptance 6: the voice section is byte-identical to L2 apart from the mot
   assert.ok(voice.includes(MOTIVATION_SENTENCE), 'the one permitted addition is present');
   assert.equal(voice.replace(MOTIVATION_SENTENCE, ''), VOICE_AT_L2,
     'remove that one sentence and the voice section must be what L2 shipped, byte for byte');
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// L2.2 — SPLIT THE COUNT NOUNS BY WHAT THE CARD RECOMPUTES (kickoff 20 Aug 2026)
+//
+// L2.1's first live run rejected three cards that were correct. The card recomputes volume of
+// findings and doctor spread and NOTHING else, so a number beside `prescriptions` describes
+// content, which does not drift. The three fixtures below are the LIVE rejections, quoted from the
+// run's `rejections[]` — not invented ones. §1 records why that distinction matters: the L2.1
+// suite was green because the same author wrote the validator and its fixtures, and had already
+// learned to avoid the shape that was broken.
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+// ══ acceptance 1 — the three live rejections now PASS ══════════════════════════════════════════
+
+test('acceptance 1: every span the live run wrongly rejected now passes, named one by one', () => {
+  // Quoted verbatim from the L2.1 re-run: 28 considered, 25 decorated, 3 rejected, all false.
+  const live: Array<[string, string]> = [
+    ['pattern:overuse:polypharmacy:polypharmacy', 'one prescription'],
+    ['pattern:overuse:rx:vitamin d', 'prescriptions (often 60'],
+    ['pattern:overuse:duplication:therapeutic', 'prescriptions containing two'],
+  ];
+  for (const [patternId, span] of live) {
+    assert.deepEqual(frozenNumberHits(span), [], `${patternId}: "${span}" is correct copy`);
+  }
+});
+
+test('acceptance 1: the live spans in the sentences they came from', () => {
+  for (const why of [
+    'These may include more than one prescription for the same drug class.',
+    'Repeat prescriptions (often 60 000 IU) without an interval in between.',
+    'Repeat prescriptions (often 60,000 IU) without an interval in between.',
+    'Prescriptions containing two anti-inflammatory drugs from the same class.',
+    'Two products containing paracetamol on one prescription.',
+    'A single prescription carrying two NSAIDs.',
+  ]) assert.deepEqual(validateDecoration({ ...good, why }), [], `must survive: ${why}`);
+});
+
+// ══ acceptance 2 — the volume-marker forms must NOT be freed ═══════════════════════════════════
+
+test('acceptance 2: a content noun WITH a volume marker still rejects, named one by one', () => {
+  assert.ok(rejectsWhy('43 cases this week'), '§2.3: 43 cases this week');
+  assert.ok(rejectsWhy('20 encounters in total'), '§2.3: 20 encounters in total');
+  assert.ok(rejectsWhy('seen 43 times this week'), '§2.3: seen 43 times this week');
+  // §2.3's fourth form, carrying a number — see the deviation note on the literal string below.
+  assert.ok(rejectsWhy('Forty notes across the week'), '§2.3: notes across the week');
+  assert.ok(rejectsWhy('40 notes across the week'), '§2.3: notes across the week, in digits');
+});
+
+test('the literal "notes across the week" has no number, and L2.1 did not reject it either', () => {
+  // DEVIATION, flagged in the report. §2.3 lists this as a form that must "still" reject, but it
+  // contains no digit and no number word, so no count rule — L2.1's or this one's — can fire on
+  // it. Freeing it is therefore not a regression: it was never caught. Asserted, not assumed, so
+  // the claim is checked rather than argued.
+  assert.deepEqual(frozenNumberHits('notes across the week'), []);
+});
+
+test('every volume marker §2.1 lists turns a content noun back into a tally', () => {
+  assert.deepEqual(LVP_VOLUME_MARKERS.map((m) => m.join(' ')),
+    ['this week', 'in total', 'so far', 'across', 'last seven days', 'per week']);
+  for (const marker of LVP_VOLUME_MARKERS) {
+    const phrase = marker.join(' ');
+    assert.ok(rejectsWhy(`43 prescriptions ${phrase}`), `"43 prescriptions ${phrase}" must reject`);
+  }
+});
+
+test('a volume marker outside the window does not reach back to reject', () => {
+  // The marker must sit WITH the pair, not merely somewhere in the same sentence — otherwise one
+  // "across" at the end of a `why` would re-break every card this fix exists to free.
+  assert.ok(!rejectsWhy('Two NSAIDs on one prescription, a pattern seen in several clinics across the network.'));
+  assert.ok(rejectsWhy('There were 43 prescriptions this week.'), 'in the window, it does reject');
+});
+
+// ══ acceptance 3 — the doctor and finding rules are untouched in strength ═══════════════════════
+
+test('acceptance 3: a recomputed noun rejects UNCONDITIONALLY — no marker required', () => {
+  assert.deepEqual([...LVP_RECOMPUTED_COUNT_NOUNS], ['doctor', 'doctors', 'finding', 'findings']);
+  for (const n of LVP_RECOMPUTED_COUNT_NOUNS) {
+    assert.ok(rejectsWhy(`There were 13 ${n}.`), `"13 ${n}" must reject with no volume marker`);
+    assert.ok(rejectsWhy(`Ten ${n}.`), `"Ten ${n}" must reject with no volume marker`);
+  }
+  // The §1 lines from L2.1 carry no volume marker either, and must stay rejected.
+  assert.ok(rejectsWhy('Only 4 doctors are involved, so the pattern is concentrated.'));
+  assert.ok(rejectsWhy('It spans 20 doctors, which is nearly the full panel.'));
+  assert.ok(rejectsWhy('Forty-three findings from 13 doctors suggests this is worth a look.'));
+});
+
+test('the two lists are disjoint, and their union is the L2.1 list unchanged', () => {
+  const overlap = LVP_RECOMPUTED_COUNT_NOUNS.filter((n) => LVP_CONTENT_NOUNS.includes(n));
+  assert.deepEqual(overlap, [], 'a noun is recomputed or content, never both');
+  assert.deepEqual([...LVP_COUNT_NOUNS], [...LVP_RECOMPUTED_COUNT_NOUNS, ...LVP_CONTENT_NOUNS]);
+  assert.deepEqual([...LVP_CONTENT_NOUNS], [
+    'prescription', 'prescriptions', 'case', 'cases', 'encounter', 'encounters',
+    'note', 'notes', 'time', 'times',
+  ]);
+});
+
+// ══ acceptance 4 — the space thousands separator ═══════════════════════════════════════════════
+
+test('acceptance 4: a space thousands separator is matched — 60 000 IU and 60,000 IU both survive', () => {
+  // Named, not pasted: an invisible separator in a fixture is a fixture nobody can review.
+  const separators: Array<[string, string]> = [
+    ['comma', ','], ['space', ' '], ['no-break space', '\u00A0'], ['narrow no-break space', '\u202F'],
+  ];
+  for (const [name, sep] of separators) {
+    const dose = `60${sep}000 IU`;
+    assert.deepEqual(frozenNumberHits(`Vitamin D ${dose} repeated without an interval.`), [],
+      `${name} separator must read as one clinical number`);
+  }
+});
+
+test('a grouped number is still a number when it sits beside a recomputed noun', () => {
+  assert.ok(rejectsWhy('13 000 doctors'), 'the wider NUM must not become an escape hatch');
+  assert.ok(rejectsWhy('13,000 findings this week'));
+});
+
+test('NUM cannot swallow the word after it — a separator needs exactly three digits', () => {
+  // If `\d+ \w+` were groupable, "13 doctors" would parse as one number token and never pair.
+  assert.ok(rejectsWhy('13 doctors'), 'the L2.1 case, unchanged');
+  assert.ok(rejectsWhy('43 similar findings'));
+  assert.deepEqual(frozenNumberHits('4 g/day'), [], 'and a unit still masks cleanly');
+});
+
+// ══ acceptance 5 — rejections are logged, never persisted ══════════════════════════════════════
+
+test('acceptance 5: a warn line carries the pattern id, the rule and the span', () => {
+  const lines = rejectionLogLines([
+    { pattern_id: 'pattern:a', problems: ['why: the card recomputes this on every read — count "13 doctors"'] },
+    { pattern_id: 'pattern:b', problems: ['title: forbidden on this page — Ratify'] },
+  ]);
+  assert.equal(lines.length, 2);
+  assert.match(lines[0], /^\[lvp-operator\] rejected pattern:a · rule=count · /);
+  assert.match(lines[0], /count "13 doctors"/, 'the span survives into the log');
+  assert.match(lines[1], /^\[lvp-operator\] rejected pattern:b · rule=forbidden-string · /);
+});
+
+test('one line per PROBLEM, so a decoration failing two rules reports both', () => {
+  const lines = rejectionLogLines([{
+    pattern_id: 'pattern:a',
+    problems: ['title: 91 characters exceeds the 90-character cap', 'why: the card recomputes this on every read — ranking "largest"'],
+  }]);
+  assert.equal(lines.length, 2);
+  assert.match(lines[0], /rule=length-cap/);
+  assert.match(lines[1], /rule=ranking/);
+});
+
+test('every rule the validator can emit classifies to a greppable name, never "unknown"', () => {
+  const samples = [
+    validateDecoration({ ...good, title: 'x'.repeat(91) }),
+    validateDecoration({ ...good, title: 'Ratify this' }),
+    validateDecoration({ ...good, why: 'It spans 20 doctors.' }),
+    validateDecoration({ ...good, why: 'Roughly 40% of these.' }),
+    validateDecoration({ ...good, why: 'The largest group here.' }),
+    validateDecoration({ ...good, title: '' }),
+    validateDecoration(null),
+  ].flat();
+  assert.ok(samples.length >= 7);
+  for (const p of samples) {
+    assert.notEqual(problemRule(p), 'unknown', `unclassified problem message: ${p}`);
+  }
+  assert.deepEqual([...new Set(samples.map(problemRule))].sort(),
+    ['count', 'forbidden-string', 'length-cap', 'percentage', 'ranking', 'required', 'shape']);
+});
+
+test('§2.4: the log carries the SPAN only — no decoration text is persisted or dumped', () => {
+  const OPERATOR_SRC = readFileSync(new URL('../lvp-operator.ts', import.meta.url), 'utf8');
+  const warns = [...OPERATOR_SRC.matchAll(/console\.warn\(([^)]*)\)/g)].map((m) => m[1]);
+  assert.deepEqual(warns, ['line'], 'exactly one warn, and it logs a prepared line');
+  // Nothing rejected reaches a table: the only write in this module is the accepted-row upsert.
+  assert.equal(/upsertDecoration\(\s*(?:d|r)\b/.test(code(OPERATOR_SRC)), true);
+  assert.equal(/rejected\.(?:map|forEach)\([^)]*upsert/i.test(OPERATOR_SRC), false, 'no rejected row is written');
+  assert.equal(/INSERT INTO \w+[\s\S]{0,200}reject/i.test(OPERATOR_SRC), false, 'no rejection table exists');
 });

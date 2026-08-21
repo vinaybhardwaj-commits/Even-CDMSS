@@ -78,10 +78,39 @@ export function forbiddenHits(text: string): string[] {
  * do not drift. maskClinicalNumbers() removes them before the count rule reads the text at all.
  */
 
-/** The nouns a count attaches to. Volume and doctor spread are what the card recomputes. */
+/**
+ * THE SPLIT (L2.2 §2.1). The card recomputes and displays exactly two quantities: volume of
+ * findings and doctor spread. It never displays prescriptions, cases, encounters or notes.
+ *
+ * So a number beside `doctors` or `findings` restates a tally that DRIFTS, and rejects
+ * unconditionally. A number beside the others describes CONTENT — "two NSAIDs on one prescription"
+ * is clinical composition and is exactly what that card is about — and rejects only when a volume
+ * marker sits in the window with it. L2.1 rejected all of them alike and cost three correct cards
+ * their copy on the first live run.
+ */
+export const LVP_RECOMPUTED_COUNT_NOUNS: readonly string[] = [
+  'doctor', 'doctors', 'finding', 'findings',
+];
+
+/** Nouns the card does NOT display. A number near one of these needs a volume marker to reject. */
+export const LVP_CONTENT_NOUNS: readonly string[] = [
+  'prescription', 'prescriptions', 'case', 'cases', 'encounter', 'encounters',
+  'note', 'notes', 'time', 'times',
+];
+
+/** Both lists, in the L2.1 order. The mask guard uses the union: no mask may swallow any of them. */
 export const LVP_COUNT_NOUNS: readonly string[] = [
-  'doctor', 'doctors', 'finding', 'findings', 'prescription', 'prescriptions',
-  'case', 'cases', 'encounter', 'encounters', 'note', 'notes', 'time', 'times',
+  ...LVP_RECOMPUTED_COUNT_NOUNS, ...LVP_CONTENT_NOUNS,
+];
+
+/**
+ * What turns a content noun back into a tally. "43 cases this week" is the card's own quantity
+ * wearing a different noun; "two NSAIDs on one prescription" is not. Token sequences, matched on
+ * the same masked token stream as everything else.
+ */
+export const LVP_VOLUME_MARKERS: ReadonlyArray<readonly string[]> = [
+  ['this', 'week'], ['in', 'total'], ['so', 'far'], ['across'],
+  ['last', 'seven', 'days'], ['per', 'week'],
 ];
 
 /** Digits are not enough: the run produced "Forty-three findings" and "Ten findings". */
@@ -110,7 +139,13 @@ export const LVP_RANKING_PATTERNS: ReadonlyArray<{ label: string; re: RegExp }> 
   { label: 'largest', re: /\blargest\b/gi },
 ];
 
-const NUM = String.raw`\d+(?:[.,]\d+)*`;
+/**
+ * A number, including a grouped one. A thousands separator may be a comma, a full stop, a space or
+ * a non-breaking space — `60,000` and `60 000` are the same dose, and L2.1 matched only the first,
+ * which is the leading hypothesis for the vitamin D rejection (§1). A separator must be followed by
+ * EXACTLY three digits, so NUM can never swallow the word after it: `13 doctors` stays `13`.
+ */
+const NUM = String.raw`\d+(?:[.,\u00A0\u202F ]\d{3})*(?:[.,]\d+)?`;
 const NUMBER_WORD_ALT = LVP_NUMBER_WORDS.join('|');
 const ANY_NUMBER = String.raw`(?:${NUM}|\b(?:${NUMBER_WORD_ALT})\b)`;
 
@@ -186,19 +221,78 @@ export function frozenNumberHits(text: string): FrozenNumberHit[] {
   const tokens = [...maskClinicalNumbers(lower).matchAll(TOKEN_RE)]
     .map((m) => ({ text: m[0], start: m.index, end: m.index + m[0].length }));
   const numberWords = new Set(LVP_NUMBER_WORDS);
-  const countNouns = new Set(LVP_COUNT_NOUNS);
+  const recomputed = new Set(LVP_RECOMPUTED_COUNT_NOUNS);
+  const content = new Set(LVP_CONTENT_NOUNS);
+
+  /** Does a volume marker sit within the window of the number/noun pair at [lo, hi]? */
+  const markerNear = (lo: number, hi: number): boolean => {
+    const from = Math.max(0, lo - LVP_COUNT_WINDOW);
+    const to = Math.min(tokens.length - 1, hi + LVP_COUNT_WINDOW);
+    for (let k = from; k <= to; k++) {
+      for (const phrase of LVP_VOLUME_MARKERS) {
+        if (phrase.every((w, n) => tokens[k + n]?.text === w)) return true;
+      }
+    }
+    return false;
+  };
+
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
     if (!/^\d/.test(t.text) && !numberWords.has(t.text)) continue;
     const from = Math.max(0, i - LVP_COUNT_WINDOW);
     const to = Math.min(tokens.length - 1, i + LVP_COUNT_WINDOW);
     for (let j = from; j <= to; j++) {
-      if (j === i || !countNouns.has(tokens[j].text)) continue;
+      if (j === i) continue;
+      const noun = tokens[j].text;
+      // A recomputed noun rejects on sight; a content noun needs a volume marker with it.
+      if (!recomputed.has(noun) && !(content.has(noun) && markerNear(Math.min(i, j), Math.max(i, j)))) continue;
       push('count', Math.min(t.start, tokens[j].start), Math.max(t.end, tokens[j].end));
       break;
     }
   }
   return hits;
+}
+
+// ── rejection logging (L2.2 §2.4) ───────────────────────────────────────────────────────────────
+
+/**
+ * The rule a problem message names. A rejection currently vanishes on a cron run — the caller is a
+ * cron nobody reads — which is why §1's vitamin D row is a hypothesis and not a fact. Classifying
+ * the rule makes the warn line greppable, so the next surprise is answered from the logs.
+ *
+ * This reads the message vocabulary rather than a parallel structured field, deliberately: the
+ * `problems: string[]` shape is returned in the route's JSON and is not worth breaking for a log.
+ */
+export function problemRule(problem: string): string {
+  const p = String(problem ?? '');
+  if (/the card recomputes this on every read/.test(p)) {
+    const kind = /— (count|percentage|ranking) "/.exec(p);
+    return kind ? kind[1] : 'frozen-number';
+  }
+  if (/forbidden on this page/.test(p)) return 'forbidden-string';
+  if (/exceeds the \d+-character cap/.test(p)) return 'length-cap';
+  if (/: required$/.test(p)) return 'required';
+  if (/must be an object/.test(p)) return 'shape';
+  return 'unknown';
+}
+
+/**
+ * One warn line per rejected problem: pattern id, the rule that fired, and the span it fired on.
+ *
+ * ⚠️ THE SPAN ONLY, NEVER THE WHOLE DECORATION. The quoted span already sits inside the problem
+ * message; nothing here reaches for `title` or `why` in full. Rejected text is unvalidated model
+ * output — it is not persisted to any table (§2.4) and it does not belong in a log either.
+ */
+export function rejectionLogLines(
+  rejections: ReadonlyArray<{ pattern_id: string; problems: readonly string[] }>,
+): string[] {
+  const lines: string[] = [];
+  for (const r of rejections) {
+    for (const problem of r.problems) {
+      lines.push(`[lvp-operator] rejected ${r.pattern_id} · rule=${problemRule(problem)} · ${problem}`);
+    }
+  }
+  return lines;
 }
 
 export interface Decoration {
