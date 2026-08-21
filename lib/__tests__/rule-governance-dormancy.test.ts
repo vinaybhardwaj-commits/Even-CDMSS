@@ -387,7 +387,14 @@ test('proof 4: migration 0039 is single-target — it never alters the registry'
 test('proof 4: the ordinal is 0039 and no other migration file was touched', () => {
   const files = readdirSync(join(ROOT, 'migrations')).filter((f) => f.endsWith('.sql')).sort();
   assert.ok(files.includes('0039_rule_governance.sql'));
-  assert.ok(!files.some((f) => /^004\d/.test(f)), '0040 belongs to LVP L2 — do not claim it');
+  // ⚠️ CORRECTED BY LVP L2, 21 Aug 2026. This line used to read
+  //   assert.ok(!files.some((f) => /^004\d/.test(f)), '0040 belongs to LVP L2 — do not claim it');
+  // which was over-tight: it asserted a fact about the NEXT unit, so it failed the moment LVP L2
+  // legitimately took 0040. What R3-A actually owns is that its own migration is 0039 and that it
+  // contributed exactly one.
+  const governanceMigrations = files.filter((f) => /rule.?governance/i.test(f));
+  assert.deepEqual(governanceMigrations, ['0039_rule_governance.sql'],
+    'R3-A contributes exactly one migration, and its ordinal is 0039');
   assert.match(MIGRATION, /Migration ordinal 0039/);
 });
 

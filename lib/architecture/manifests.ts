@@ -173,6 +173,17 @@ export const MODULE_MANIFESTS: ModuleManifest[] = [
     // HELD (Saul Rep 41, S1).
   },
   {
+    id: 'lvp-operator-core',
+    title: 'The words on the low-value patterns shelf',
+    blurb: 'Writes the two lines of copy on each card — a plain clinical name for the pattern and an argument for why it is worth a look. Copy only: every count, date and example on the card is still worked out from the findings themselves.',
+    plane: 'advisory',
+    paths: ['lib/lvp-operator-core.ts'],
+    lifecycle: 'implemented', // LVP L2: Opus on Bedrock behind LVC_PATTERNS_ENABLED (ships OFF);
+    // decoration-only by construction — no decoration leaves the L1 stub copy in place, and a
+    // failed run (F11: an explicit Bedrock target never degrades to another provider) writes
+    // nothing at all. Nothing here scores, routes, or reaches Triage.
+  },
+  {
     id: 'opd-audit-layers-core',
     title: 'Where each thing on the audit page came from',
     blurb: 'Names the three layers of an audit — the facts read from the record, the findings, and the model’s own ratings — and says of every finding whether code decided it, the model wrote it, or the row is too old to say. Labels only: it changes nothing about what the audit finds or how it scores.',

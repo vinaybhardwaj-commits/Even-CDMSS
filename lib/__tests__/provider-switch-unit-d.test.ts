@@ -280,11 +280,19 @@ test('exactly one cron entry moved, and it is the OPD worker path', () => {
     ['/api/admin/opd-audit-mini-backfill?auto=1', '*/2 * * * *'], ['/api/admin/lab-batch?auto=1', '*/2 * * * *'],
     ['/api/admin/complexity-backfill?auto=1', '*/2 * * * *'],
     ['/api/admin/opd-audit/longitudinal-replay?auto=1', '*/10 * * * *'],
-    ['/api/care/lvc/generate?auto=1', '0 6 * * *'], ['/api/care/lvc/ground?auto=1', '*/10 * * * *'],
+    // LVP L2 (21 Aug 2026, O13): the retired adjudication room's nightly `/api/care/lvc/generate`
+    // run was REPLACED here by the patterns operator at 30 0 * * * UTC (06:00 IST). One line out,
+    // one line in — the count stays 16 and this test's actual subject, the OPD worker entry and
+    // every other schedule, is untouched.
+    ['/api/care/patterns/generate?auto=1', '30 0 * * *'], ['/api/care/lvc/ground?auto=1', '*/10 * * * *'],
     ['/api/care/concept/code?auto=1', '*/2 * * * *'],
   ];
   assert.equal(others.length, 14);
   for (const [path, schedule] of others) {
     assert.ok(cfg.crons.some((c) => c.path === path && c.schedule === schedule), `${path} is unchanged`);
   }
+  // The retired room's cron is GONE, not merely unscheduled: /care/lvc redirects to the shelf, and
+  // a nightly run against a surface nobody can open is the kind of thing that survives for months.
+  assert.ok(!cfg.crons.some((c) => c.path.startsWith('/api/care/lvc/generate')),
+    'the retired adjudication room keeps no cron');
 });

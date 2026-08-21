@@ -91,7 +91,7 @@ test('rubric inclusion: nabh/6e external-json + the five embedded-in-prompt rubr
   }
 });
 
-test('count invariant: counts match the committed artifact contents (30 prompts / 7 rubrics / 32 builders)', () => {
+test('count invariant: counts match the committed artifact contents (31 prompts / 7 rubrics / 38 builders)', () => {
   const gen = GENERATED as {
     counts: { prompts: number; rubrics: number; user_message_builders: number; features: number };
     prompts: Array<{ feature: string }>; rubrics: unknown[]; user_message_builders: unknown[];
@@ -118,8 +118,12 @@ test('count invariant: counts match the committed artifact contents (30 prompts 
   // Readmissions R4.3 (19 Aug 2026) adds readmission-prompts/buildAskPrompt — "ask the agent", a
   // conversation fenced to one case's stored material; system inline (37→38). Recon + narrative
   // builders byte-identical (readmission-r43-ask.test.ts pins both fingerprint sets).
-  assert.equal(gen.counts.prompts, 30);
+  // LVP L2 (21 Aug 2026) adds lvp-operator-core/LVP_OPERATOR_SYSTEM — the low-value-patterns shelf
+  // operator (Opus 4.6 on Bedrock), a genuinely new reasoning surface (30→31 prompts, +1 feature).
+  // Builders are UNCHANGED at 38: its user message is assembled by operatorUserMessage(), which the
+  // generator does not count as a builder, and no existing builder moved.
+  assert.equal(gen.counts.prompts, 31);
   assert.equal(gen.counts.rubrics, 7);
   assert.equal(gen.counts.user_message_builders, 38);
-  assert.equal(gen.counts.features, 19);
+  assert.equal(gen.counts.features, 20);
 });

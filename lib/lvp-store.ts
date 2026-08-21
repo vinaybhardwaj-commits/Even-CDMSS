@@ -52,7 +52,9 @@ export interface SuggestedPattern {
   first_seen: string | null;    // display date ('12 Jul 2026') or null → the card omits `since`
   examples: string[];           // 0–3 × '{date} — {stripped subject}'
   generated_at: string;
-  model: 'stub';
+  // L2: the operator model that wrote this card's title and why, or 'stub' when nothing decorated
+  // it. Widened from the 'stub' literal; components/care/PatternsShelf.tsx already types it `string`.
+  model: string;
 }
 
 export interface HiddenPattern {
@@ -107,6 +109,11 @@ FROM (
 ) latest WHERE action = 'hide'`;
 
 const APPEND_SQL = `INSERT INTO lvp_hidden (pattern_id, action, cm_user, reason) VALUES ($1, $2, $3, $4)`;
+
+// L2 (O11): the operator's copy for the kinds that have any. A LEFT JOIN in spirit — read after the
+// shelf is decided, for the shelved head only, and applied to two string zones. It cannot move a
+// number, a sort position or a cap, because by the time it runs all of those are already fixed.
+const DECORATIONS_SQL = `SELECT pattern_id, title, why, model FROM lvp_decorations WHERE pattern_id = ANY($1)`;
 
 // ── reads ───────────────────────────────────────────────────────────────────────────────────────
 
@@ -178,7 +185,9 @@ export async function loadShelf(): Promise<LvpShelf> {
         first_seen: formatDisplayDate(m?.first_seen ?? null),
         examples: [] as string[],
         generated_at: generatedAt,
-        model: 'stub' as const,
+        // `as string`, not `as const`: L2 overwrites this in place below when a decoration exists,
+        // and a `'stub'` literal type would make that assignment a type error.
+        model: 'stub' as string,
       };
     });
 
@@ -198,6 +207,36 @@ export async function loadShelf(): Promise<LvpShelf> {
       byConcept.set(cid, list);
     }
     for (const s of suggested) s.examples = byConcept.get(s.concept_id) ?? [];
+  }
+
+  // ── L2 decoration (O11): COPY ONLY, and only after the shelf is fully decided ──────────────────
+  // ⚠️ APPLIED HERE, DELIBERATELY LAST. Floor, both caps, hide filtering, sort order, volume,
+  // doctor count, since-date, examples, pill and the stable pattern_id are ALL already computed
+  // above and are not read again below. This block can therefore only overwrite two strings, which
+  // is exactly what "decorate only" means — a decoration cannot promote a kind onto the shelf,
+  // reorder it, or change a single number on it.
+  //
+  // FAIL-SAFE: any decoration read error degrades to stub copy, never to a broken shelf. That is
+  // also what an unapplied migration 0040 looks like, and it is the same outcome as a failed
+  // operator run (F11) — the card simply keeps the copy lib/lvp-core.ts computed.
+  if (suggested.length) {
+    const decRows = await run(DECORATIONS_SQL, [suggested.map((s) => s.pattern_id)]).catch(() => []);
+    const decorations = new Map<string, { title: string; why: string; model: string }>();
+    for (const r of decRows as Record<string, unknown>[]) {
+      const title = r.title == null ? '' : String(r.title);
+      const why = r.why == null ? '' : String(r.why);
+      // A half-written row decorates nothing: both zones or neither, so a card can never show an
+      // operator title above stub prose that contradicts it.
+      if (!title || !why) continue;
+      decorations.set(String(r.pattern_id), { title, why, model: r.model == null ? 'stub' : String(r.model) });
+    }
+    for (const s of suggested) {
+      const d = decorations.get(s.pattern_id);
+      if (!d) continue;
+      s.title = d.title;
+      s.why = d.why;
+      s.model = d.model;
+    }
   }
 
   // Hidden tab: every latest-wins hide row, regardless of current volume (§4.4).

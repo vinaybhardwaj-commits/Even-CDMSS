@@ -535,6 +535,14 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "advisory"
   },
   {
+    "id": "lvp-operator",
+    "plane": "unregistered"
+  },
+  {
+    "id": "lvp-operator-core",
+    "plane": "advisory"
+  },
+  {
     "id": "lvp-store",
     "plane": "unregistered"
   },
@@ -1668,6 +1676,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "lvp-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "lvp-operator",
     "kind": "value"
   },
   {
@@ -3526,6 +3539,31 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "lvp-operator",
+    "to": "bedrock-core",
+    "kind": "value"
+  },
+  {
+    "from": "lvp-operator",
+    "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "lvp-operator",
+    "to": "lvp-operator-core",
+    "kind": "value"
+  },
+  {
+    "from": "lvp-operator",
+    "to": "lvp-store",
+    "kind": "value"
+  },
+  {
+    "from": "lvp-operator",
+    "to": "trace",
+    "kind": "value"
+  },
+  {
     "from": "lvp-store",
     "to": "db",
     "kind": "value"
@@ -5071,9 +5109,9 @@ export const VERSION_REGISTRY: VersionRow[] = [
 ];
 
 export const COVERAGE = {
-  "registered": 20,
+  "registered": 21,
   "unregistered": 26,
-  "total": 46,
+  "total": 47,
   "unregisteredIds": [
     "calculators",
     "care-call-core",

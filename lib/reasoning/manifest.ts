@@ -47,6 +47,14 @@ export const PROMPT_MANIFESTS: PromptManifest[] = [
   // AUDIT_REVISE's support discipline (embedded in the prompt, like the others). Measurement-only
   // (corpus-eval/1.0), Pro-tier. rubricId left blank — no separate rubric doc to link.
   { id: 'verify-core/VERIFY_SYSTEM', maturity: 'draft' },
+  // LVP L2 (21 Aug 2026) — the low-value-patterns shelf operator, Opus on Bedrock. REGISTERED
+  // rather than left unregistered because its discipline IS the prompt: the whole voice section
+  // (no assertion of wrongness, no blame, no instruction) is the rubric, embedded in the text the
+  // way the other seven embed theirs. rubricId left blank — there is no separate rubric doc.
+  // ⚠️ ITS OUTPUT IS FILTERED AFTER THE FACT TOO, and that is deliberate belt-and-braces: the
+  // prompt names the ten forbidden strings, and lvp-operator-core screens for them again
+  // server-side before any write. A prompt is an instruction, not a guarantee.
+  { id: 'lvp-operator-core/LVP_OPERATOR_SYSTEM', maturity: 'draft' },
 ];
 
 /**
