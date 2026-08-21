@@ -1905,11 +1905,6 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/api",
-    "to": "retrieval-capture",
-    "kind": "value"
-  },
-  {
-    "from": "app/api",
     "to": "retrieval-invocation-store",
     "kind": "value"
   },
