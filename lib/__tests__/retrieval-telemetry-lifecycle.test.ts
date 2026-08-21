@@ -1,5 +1,6 @@
 /**
- * lib/__tests__/retrieval-telemetry-lifecycle.test.ts — kickoff tests 19, 20, 31, 32, 34, 52 and 53.
+ * lib/__tests__/retrieval-telemetry-lifecycle.test.ts — kickoff tests 19, 20, 31, 32, 34, 52 and 53,
+ * plus pass 4a's proofs 23 and 24.
  *
  * The handle's whole reason for existing is that the audit write and the telemetry link are NOT
  * transactional and cannot be: `lib/db.ts` exports `sql` as a Proxy with only an `apply` trap, so
@@ -10,14 +11,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { installDbStub, classedError } from './telemetry-db-stub';
+import { installDbStub, classedError, run as lifecycleRun } from './telemetry-db-stub';
 import {
   declareRetrievals, writeRetrievalTerminal, applyTerminalState,
   attachRetrievalTelemetry, readRetrievalTelemetry, RETRIEVAL_TELEMETRY_PROPERTY,
   type LifecycleHandle,
 } from '../retrieval-telemetry-store';
 import { createTelemetryCapture, buildRetrievalPayload } from '../retrieval-capture';
-import type { TelemetryRequestContext, OperationalTelemetry } from '../retrieval-telemetry-core';
+import {
+  telemetryHmac,
+  type TelemetryRequestContext, type OperationalTelemetry,
+} from '../retrieval-telemetry-core';
+import { assembleAuditContext, retrievalTerminalsSeam, type AuditOpdOpts } from '../opd-note-audit.ts';
+import type { CiteHit } from '../citations-core.ts';
 
 const INSERT_RUNS = /INSERT INTO opd_audit_retrieval_telemetry/;
 const UPDATE_TERMINAL = /SET persistence_state = 'retrieval_complete'/;
@@ -416,4 +422,272 @@ test('CANARY-GATE HAZARD — the mirror: primary lands, normative rejected', asy
   assert.equal(prim.state, 'persisted_complete');
   assert.equal(norm.auditId, null, 'normative_channel is not linked, and says so');
   assert.equal(norm.state, 'aborted');
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// 23 and 24 — PASS 4a (Saul Rep 40 order D, Rep 41 risk order)
+//
+// ⚠️ NO NEW SEAM WAS BUILT, AND NONE WAS NEEDED. Pass 4a's kickoff §1 rules that 23 and 24 are the
+// two proofs that fall out without fault injection, and that a coder who concludes otherwise must
+// stop rather than build one. Both are reached with the seam that already exists
+// (`retrievalTerminalsSeam`, lib/opd-note-audit.ts:821-831) plus the transport stub. Proofs 21 and
+// 22 do need injection and are pass 4b, held on a seam-shape ruling.
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+/** Literature and normative hits shaped as `retrieve()` returns them — the same fixtures
+ *  retrieval-telemetry-validation.test.ts:706-715 uses for the 47.x execution proofs. */
+const lit23 = (id: number): CiteHit => ({
+  id, source: 'statpearls', book: 'StatPearls', chapter: `ch${id}`, section: null,
+  page_start: null, page_end: null, item_number: null, chunk_type: 'narrative',
+  similarity: 0.5, text: `literature excerpt ${id} about antihistamine montelukast evidence`,
+});
+const cw23 = (id: number): CiteHit => ({
+  id, source: 'choosing-wisely', book: 'CW-AAFP', chapter: null, section: null,
+  page_start: null, page_end: null, item_number: `cwus-${id}`, chunk_type: 'recommendation',
+  similarity: 0.6, text: `Avoid prescribing antihistamine+montelukast for viral URTI (statement ${id})`,
+});
+
+const TELE_CTX_23: NonNullable<AuditOpdOpts['telemetry']> = {
+  ctx: {
+    invocationId: 'inv-23', route: 'opd_audit_worker', routeClass: 'worker', deploymentSha: null,
+    vercelRequestId: null, startedAt: AT, routingFlags: {}, labExperimentId: null,
+  },
+  route: 'opd_audit_worker',
+  persistenceIntent: 'will_persist',
+};
+
+/**
+ * D11 steps 7 → 13, driven in production's own order, with the transport watched throughout.
+ *
+ * ⚠️ WHAT MAKES THIS AN OBSERVATION AND NOT CHOREOGRAPHY. The test chooses when to call
+ * `assembleAuditContext`; it does not choose what `writeRetrievalTerminals` then writes. The
+ * terminal write is the SAME function production calls at step 13, and the bytes it hashes are
+ * whatever it is handed. So the two things recorded here are facts about production code: that
+ * nothing reaches the transport before assembly returns (there is no statement in
+ * `assembleAuditContext` to reach it, and the terminal write is the first one that does), and —
+ * proof 23.2, which is the load-bearing half — that what the primary row carries is a function of
+ * assembly's output and therefore could not have been computed at step 7.
+ *
+ * Returns the transport positions of each moment, so the order is asserted at the wire.
+ */
+async function observeTerminalOrder(hits: CiteHit[], normHits: CiteHit[]) {
+  const KEY_ENV = 'CDMSS_TELEMETRY_HMAC_KEY';
+  const before = process.env[KEY_ENV];
+  process.env[KEY_ENV] = 'proof-23-key';
+  try {
+    const db = installDbStub();
+    db.on(UPDATE_TERMINAL, [{ row_revision: 1 }]);
+
+    // ── STEPS 7 AND 8 — both retrievals captured IN MEMORY. Production writes no terminal here. ──
+    const primaryCapture = createTelemetryCapture('primary');
+    primaryCapture.indexVersion = 'embedding|nomic-embed-text';
+    const normativeCapture = createTelemetryCapture('normative_channel');
+    normativeCapture.indexVersion = 'embedding|nomic-embed-text';
+    const terminalsAfterRetrieval = db.matching(UPDATE_TERMINAL).length;
+
+    // ── STEP 9 — the combined context. This is the moment the proof is about. ──
+    const { citedContext } = assembleAuditContext(hits, normHits);
+    const terminalsAtAssembly = db.matching(UPDATE_TERMINAL).length;
+    const callsAtAssembly = db.calls.length;
+
+    // ── STEPS 10-13 — the production function, unchanged and unwrapped. ──
+    const handle: LifecycleHandle = {
+      invocationId: 'inv-23',
+      runs: [lifecycleRun('primary', 'run-23-primary'), lifecycleRun('normative_channel', 'run-23-normative')],
+      persistenceIntent: 'will_persist',
+    };
+    await retrievalTerminalsSeam.writeRetrievalTerminals({
+      tele: TELE_CTX_23, handle, publishHandle: () => {},
+      traceId: null, startedAt: AT, citedContext, primaryCapture, normativeCapture,
+    });
+
+    const updates = db.matching(UPDATE_TERMINAL);
+    const firstTerminalCallIndex = db.calls.findIndex((c) => UPDATE_TERMINAL.test(c.query));
+    return {
+      citedContext, updates, key: 'proof-23-key',
+      terminalsAfterRetrieval, terminalsAtAssembly, callsAtAssembly, firstTerminalCallIndex,
+    };
+  } finally {
+    if (before === undefined) delete process.env[KEY_ENV]; else process.env[KEY_ENV] = before;
+  }
+}
+
+test('23.1 — OBSERVED AT EXECUTION: zero terminal writes have reached the transport when assembleAuditContext returns, and both arrive after it — never between primary retrieval and context assembly', async () => {
+  const r = await observeTerminalOrder([lit23(1), lit23(2), lit23(3)], [cw23(101)]);
+
+  // ⚠️ THE NEGATIVE THE PROOF STATEMENT NAMES. "Never immediately after primary retrieval" is this:
+  // at the point primary and normative results exist in memory and nothing else has run, the
+  // database has seen no terminal write at all.
+  assert.equal(r.terminalsAfterRetrieval, 0, 'steps 7 and 8 write no terminal — the captures are in memory');
+  assert.equal(r.terminalsAtAssembly, 0, 'and step 9 has still written none when it returns');
+
+  // …and then both do arrive, at wire positions after the moment assembly returned.
+  assert.equal(r.updates.length, 2, 'two terminal writes reached the transport — primary then normative');
+  assert.ok(r.firstTerminalCallIndex >= r.callsAtAssembly,
+    `the first terminal statement is at transport position ${r.firstTerminalCallIndex}, at or after assembly's ${r.callsAtAssembly}`);
+  assert.equal(String(r.updates[0].params[0]), 'run-23-primary', 'the PRIMARY terminal is the first of the two');
+  assert.equal(String(r.updates[1].params[0]), 'run-23-normative');
+});
+
+test('23.2 — OBSERVED AT EXECUTION, and this is the load-bearing half: the primary row carries the keyed HMAC of exactly assembleAuditContext\'s bytes, which is NOT the HMAC of the context that existed at step 7 — so the write cannot have happened there', async () => {
+  const hits = [lit23(1), lit23(2), lit23(3)];
+  const normHits = [cw23(101)];
+  const r = await observeTerminalOrder(hits, normHits);
+
+  // $20 is context_hmac (lib/retrieval-telemetry-store.ts:325), so params[19] at the wire.
+  const primaryHmac = r.updates[0].params[19];
+  assert.equal(primaryHmac, telemetryHmac(r.key, r.citedContext),
+    'the primary row hashes the EXACT bytes assembleAuditContext returned');
+
+  // ⚠️ THE STEP-7 COUNTERFACTUAL, COMPUTED RATHER THAN ASSERTED IN PROSE. At step 7 only the
+  // primary hit set exists, so the only context assembleable there is assembleAuditContext(hits, []).
+  // The row does not carry its HMAC. A terminal write issued immediately after primary retrieval
+  // would necessarily have carried that value instead — which is precisely the comment at
+  // lib/opd-note-audit.ts:1612-1615 ("a scorer-context HMAC written there would be a hash of
+  // something the scorer never saw"), now shown by execution rather than read.
+  const stepSevenContext = assembleAuditContext(hits, []).citedContext;
+  assert.notEqual(r.citedContext, stepSevenContext, 'the two contexts genuinely differ — the fixture has a normative block');
+  assert.notEqual(primaryHmac, telemetryHmac(r.key, stepSevenContext),
+    'the row does NOT carry the step-7 context\'s HMAC');
+  assert.notEqual(primaryHmac, telemetryHmac(r.key, hits.map((h) => h.text).join('\n')),
+    'nor the raw passages — the RENDERED combined context is what the scorer sees');
+
+  // The normative row carries null, so the combined-context claim lives on exactly one row.
+  assert.equal(r.updates[1].params[19], null, 'NORMATIVE: null — it makes no claim about the scorer context');
+});
+
+test('23.3 — SUPPORTING SOURCE PIN ONLY (23.1 and 23.2 are the proof): in comment-stripped source, auditOpdNote retrieves, then assembles, then writes the terminals — and issues no terminal write in between', () => {
+  // ⚠️ SUPPORTING, NEVER THE PROOF. Review 37's ruling on proof 47 governs: a source pin is
+  // insufficient where execution is possible, and it is possible above. This exists so a future
+  // reordering of the production caller fails something, since 23.1 and 23.2 drive the terminal
+  // write directly and would not see the caller move.
+  const src = readFileSync('lib/opd-note-audit.ts', 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
+
+  const retrieve = src.indexOf('const hits = await defaultRetrieve(query, mini, opts.evalNormativeLeg, opts.rerankBackend, primaryCapture);');
+  const assemble = src.indexOf('const { sources, citedContext } = assembleAuditContext(hits, normHits);');
+  const terminals = src.indexOf('manifestDefectsByRole = await writeRetrievalTerminals({');
+  assert.ok(retrieve > 0 && assemble > 0 && terminals > 0, 'all three D11 landmarks are present');
+  assert.ok(retrieve < assemble, 'step 7 precedes step 9');
+  assert.ok(assemble < terminals, 'step 9 precedes steps 12-13');
+
+  // Nothing writes a terminal between primary retrieval and context assembly.
+  const between = src.slice(retrieve, assemble);
+  assert.equal(/writeRetrievalTerminals?\s*\(/.test(between), false,
+    'no terminal write is issued between primary retrieval and context assembly');
+  // And exactly one terminal-write call site exists in the whole steps-7-to-13 region.
+  const region = src.slice(retrieve, src.indexOf("if (traceId) await logEvent(traceId, 'opd_audit_sources'", retrieve));
+  assert.equal((region.match(/writeRetrievalTerminals\(\{/g) ?? []).length, 1, 'exactly one terminal-write call site');
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// 24 — trace_id: null at declaration, written at the terminal write, null for BOTH trace:false callers
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+const TRACE_SENTINEL = 'trace-24-4f3a2b1c';
+
+/** One run declared and then terminal-written, with a distinctive traceId, so both statements for
+ *  the SAME run are captured at the transport and can be compared against each other. */
+async function declareThenTerminal(traceId: string | null) {
+  const db = installDbStub();
+  db.on(INSERT_RUNS, [{ retrieval_run_id: 'r24' }]);
+  db.on(UPDATE_TERMINAL, [{ row_revision: 1 }]);
+  const handle = await declareRetrievals(
+    ctx, [{ role: 'primary', runId: 'r24', uid: 'u', engineVersion: 'e' }], 'will_persist');
+  await writeRetrievalTerminal(handle, 'primary', {
+    payload: payloadFor('primary'), operational: operational('primary'), traceId, completedAt: AT,
+  });
+  return { db, insert: db.matching(INSERT_RUNS)[0], update: db.matching(UPDATE_TERMINAL)[0] };
+}
+
+test('24.1 — the declaration INSERT binds FOURTEEN columns at the transport and trace_id is not among them: the column is never written at declaration, and is not written as null either — it is not in the statement at all', async () => {
+  const { insert, update } = await declareThenTerminal(TRACE_SENTINEL);
+
+  // ⚠️ READ OFF THE CAPTURED STATEMENT, NOT THE SOURCE FILE. `insert.query` and `insert.params` are
+  // what the driver posted — the same bytes Postgres would have received.
+  assert.equal(insert.params.length, 14, 'one declared run, fourteen bound values');
+  const cols = insert.query
+    .slice(insert.query.indexOf('(') + 1, insert.query.indexOf(')'))
+    .split(',').map((c) => c.trim());
+  assert.equal(cols.length, 14, 'and fourteen named columns');
+  assert.equal(cols.includes('trace_id'), false, `trace_id is not a declared column: ${cols.join(', ')}`);
+  assert.equal(/\btrace_id\b/.test(insert.query), false, 'the declaration statement does not name trace_id anywhere');
+  // The placeholder list matches the parameter list exactly — no fifteenth value smuggled in.
+  assert.deepEqual(
+    (insert.query.match(/\$\d+/g) ?? []).map((p) => Number(p.slice(1))),
+    Array.from({ length: 14 }, (_, i) => i + 1),
+    'VALUES ($1 … $14), one placeholder per bound value');
+
+  // ⚠️ THE PAIR, AT THE WIRE. The same run id's terminal write DOES carry the sentinel, and the
+  // declaration carries it nowhere. That is proof 24's first two halves stated as one observation.
+  assert.equal(insert.params.includes(TRACE_SENTINEL), false, 'the sentinel is bound by no declaration parameter');
+  assert.equal(update.params.includes(TRACE_SENTINEL), true, 'and it IS bound by the terminal write');
+  assert.equal(String(insert.params[0]), 'r24');
+  assert.equal(String(update.params[0]), 'r24', 'both statements are about the same run');
+});
+
+test('24.2 — the terminal UPDATE writes trace_id at $6, and binds exactly what the caller was holding — the sentinel when there is a trace, null when there is not', async () => {
+  const withTrace = await declareThenTerminal(TRACE_SENTINEL);
+  assert.match(withTrace.update.query, /trace_id = \$6,/, '$6 is the trace_id assignment');
+  assert.equal(withTrace.update.params[5], TRACE_SENTINEL, 'and $6 carries the traceId');
+
+  // ⚠️ THE trace:false CONSEQUENCE, EXECUTED. `auditOpdNote` leaves `traceId` undefined when
+  // `opts.trace === false` and hands `traceId ?? null` to the terminal write, so what those two
+  // callers produce at this statement is a bound null — not a missing column, and not a string.
+  const withoutTrace = await declareThenTerminal(null);
+  assert.equal(withoutTrace.update.params[5], null, 'a null traceId is bound as null at $6');
+  assert.match(withoutTrace.update.query, /trace_id = \$6,/, 'the same statement, whatever the value');
+});
+
+test('24.3 — both trace:false callers, and the mechanism that makes their rows null: lib/mcp-tools.ts and scripts/metamorphic-llm-report.mjs each audit with trace:false AND telemetry wired, and auditOpdNote turns that flag into a null traceId at the terminal write', () => {
+  // ⚠️ SOURCE-READ, AND WHY. `scripts/metamorphic-llm-report.mjs` is a `.mjs` script that the test
+  // glob (`lib/**/__tests__/*.test.ts`) does not collect and that cannot be driven in-process; test
+  // 52 above reads it the same way for the same reason. The MCP tool is a `.ts` module but reaching
+  // its `trace: false` branch needs a db13 note row, so it is read too. What is EXECUTED is the
+  // consequence — 24.2's null bind — not the callers.
+  for (const [file, needle] of [
+    ['lib/mcp-tools.ts', "pipeline: 'mini', engineTag: 'lab', trace: false,"],
+    ['scripts/metamorphic-llm-report.mjs', "pipeline: 'mini', engineTag: 'lab', trace: false,"],
+  ] as const) {
+    const src = readFileSync(file, 'utf8');
+    assert.ok(src.includes(needle), `${file} does not audit with trace: false`);
+    // Both are RETRIEVING, INSTRUMENTED callers — otherwise "trace_id stays null" would be a
+    // statement about rows that do not exist. Each wires telemetry onto the same call.
+    assert.match(src, /telemetry: \{ ctx/, `${file} does not wire telemetry, so it declares no row`);
+    assert.match(src, /persistenceIntent: 'never_persists'/, `${file} is not a never-persists caller`);
+  }
+  // ⚠️ COMMENT-STRIPPED BEFORE COUNTING. lib/mcp-tools.ts:482 is a COMMENT that names `trace: false`
+  // to explain the row it produces, so a raw count reads two call sites where there is one. The
+  // tool's other arm (`text`) audits nothing — it is an ungrounded governedChat pass with no
+  // retrieval and no telemetry — so one call site is the whole of D10's claim for this file.
+  const mcpCode = readFileSync('lib/mcp-tools.ts', 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
+  assert.equal((mcpCode.match(/trace: false/g) ?? []).length, 1,
+    'exactly one trace:false audit call in the MCP tools — the one D10 names');
+
+  // ⚠️ AND THE FILE'S OTHER AUDIT CALL PROVES THE FLAG IS PER-CALL, NOT PER-FILE. lib/mcp-tools.ts
+  // audits twice: `mini_analyze` (never_persists, trace:false — D10's caller) and
+  // `backfill_control` (will_persist, acting as the worker), which OMITS `trace` and is therefore
+  // traced. Proof 24's claim is about the first and must not be read as covering the second: a
+  // `trace_id` on a backfill_control row is correct, not a defect.
+  const callBlocks = [...mcpCode.matchAll(/auditOpdNote\(/g)]
+    .map((m) => mcpCode.slice(m.index!, mcpCode.indexOf('});', m.index!)));
+  assert.equal(callBlocks.length, 2, 'the file audits twice');
+  const untraced = callBlocks.filter((b) => b.includes('trace: false'));
+  assert.equal(untraced.length, 1, 'exactly one of the two opts out of tracing');
+  assert.match(untraced[0], /persistenceIntent: 'never_persists'/, 'and it is the never-persists arm');
+  assert.match(callBlocks.find((b) => !b.includes('trace: false'))!, /persistenceIntent: 'will_persist'/,
+    'the traced one is the will-persist arm, and its rows carry a trace_id by design');
+
+  // The mechanism, in comment-stripped source: the flag becomes `undefined`, and the terminal write
+  // coalesces it to null. Nothing between the two can reintroduce a trace id.
+  const audit = readFileSync('lib/opd-note-audit.ts', 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
+  assert.ok(audit.includes('const doTrace = opts.trace !== false;'), 'trace:false is what clears doTrace');
+  assert.match(audit, /const traceId = doTrace\s*\?/, 'and traceId is conditional on it');
+  assert.ok(audit.includes(': undefined;'), 'the false arm yields undefined');
+  assert.ok(audit.includes('traceId: traceId ?? null,'), 'which the terminal write binds as null');
 });
