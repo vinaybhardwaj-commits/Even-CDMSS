@@ -8,12 +8,13 @@
  * A pattern with no decoration keeps `patternTitle()` / `whyText()` stub copy, which is why
  * lib/lvp-core.ts's stub functions are the fallback and are not deleted.
  *
- * Everything here is PURE: prompt assembly, output parsing, validation, and the forbidden-strings
- * filter. No IO, no env read at module scope, no model call — those live in lib/lvp-operator.ts.
+ * Everything here is PURE: prompt assembly, output parsing, validation, the forbidden-strings
+ * filter and the count rule. No IO, no env read at module scope, no model call — those live in
+ * lib/lvp-operator.ts.
  *
- * ⚠️ MODEL TEXT NEVER REACHES THE PAGE UNFILTERED (§5). Every decoration passes length caps AND the
- * forbidden-strings filter server-side BEFORE any write. A violation is rejected ROW-WISE: that one
- * pattern keeps its stub copy and the rest of the run proceeds. There is no "sanitise and keep"
+ * ⚠️ MODEL TEXT NEVER REACHES THE PAGE UNFILTERED (§5). Every decoration passes length caps, the
+ * forbidden-strings filter AND the count rule (L2.1) server-side BEFORE any write. A violation is
+ * rejected ROW-WISE: that one pattern keeps its stub copy and the rest of the run proceeds. There is no "sanitise and keep"
  * path — a rewritten sentence is a sentence nobody wrote.
  */
 
@@ -59,6 +60,147 @@ export function forbiddenHits(text: string): string[] {
   return LVP_FORBIDDEN_STRINGS.filter((f) => haystack.includes(f.toLowerCase()));
 }
 
+// ── the count rule (L2.1 §2.1) ───────────────────────────────────────────────────────────────────
+
+/**
+ * FROZEN NUMBERS. The card header renders `×N this week` and `N doctors` and RECOMPUTES both on
+ * every read, from a rolling seven-day window. A number written into `title` or `why` froze at
+ * generation time; the two drift apart inside a single day — the antibiotic kind moved ×101 → ×100
+ * between two reads a few hours apart — and a care manager cannot tell which number is live.
+ *
+ * L2 stated this rule in the prompt only. Opus ignored it in 12 of 28 cards, 43%. The hard rules
+ * that were VALIDATED here — forbidden strings, length caps — held perfectly, zero rejections.
+ * A rule that matters gets a validator, not a sentence in a prompt.
+ *
+ * ⚠️ CLINICAL NUMBERS MUST SURVIVE. Dose ceilings, thresholds and strengths are the most valuable
+ * content in this copy: `200 mg/day`, `120 mg`, `4 g/day`, `60,000 IU`, `25-OH-D`, `COX-2`. They
+ * are numbers bound to a unit, a drug name or a dosing schedule — never to a count noun — and they
+ * do not drift. maskClinicalNumbers() removes them before the count rule reads the text at all.
+ */
+
+/** The nouns a count attaches to. Volume and doctor spread are what the card recomputes. */
+export const LVP_COUNT_NOUNS: readonly string[] = [
+  'doctor', 'doctors', 'finding', 'findings', 'prescription', 'prescriptions',
+  'case', 'cases', 'encounter', 'encounters', 'note', 'notes', 'time', 'times',
+];
+
+/** Digits are not enough: the run produced "Forty-three findings" and "Ten findings". */
+export const LVP_NUMBER_WORDS: readonly string[] = [
+  'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
+  'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen',
+  'eighteen', 'nineteen', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy',
+  'eighty', 'ninety', 'hundred',
+];
+
+/**
+ * How far apart a number and a count noun may sit and still be one claim, in tokens. `13 doctors`
+ * is 1 and `43 similar findings` is 2; 3 leaves one token of slack and stops well short of joining
+ * two sentences. Wider would start catching a dose in one clause and a noun in the next.
+ */
+export const LVP_COUNT_WINDOW = 3;
+
+/**
+ * Frozen RANKINGS. "the second-highest volume pattern this week" carries no digit but is a
+ * position in an ordering that is recomputed on every read, so it drifts exactly like a count.
+ */
+export const LVP_RANKING_PATTERNS: ReadonlyArray<{ label: string; re: RegExp }> = [
+  { label: 'highest-volume', re: /\bhighest[\s-]+volume\b/gi },
+  { label: 'second-highest', re: /\bsecond[\s-]+highest\b/gi },
+  { label: 'most common this week', re: /\bmost[\s-]+common[\s-]+this[\s-]+week\b/gi },
+  { label: 'largest', re: /\blargest\b/gi },
+];
+
+const NUM = String.raw`\d+(?:[.,]\d+)*`;
+const NUMBER_WORD_ALT = LVP_NUMBER_WORDS.join('|');
+const ANY_NUMBER = String.raw`(?:${NUM}|\b(?:${NUMBER_WORD_ALT})\b)`;
+
+/** A digit or a number word carrying `%`, `percent`, `per cent` or `percentage`. */
+const PERCENTAGE_RE = new RegExp(String.raw`${ANY_NUMBER}\s*(?:%|per\s?cent\w*)`, 'gi');
+
+/** Dose and measure units. Longest first — the alternation is first-match, and `mmol` must beat `mm`. */
+const CLINICAL_UNITS = 'mmhg|mmol|kcal|units|unit|mcg|meq|mol|ml|mg|kg|dl|ng|cm|mm|iu|µg|ug|g|l|u';
+
+/**
+ * The shapes a clinical number takes. Everything these match is removed before the count
+ * rule runs, which is why `200 mg/day` and `COX-2` survive and `13 doctors` does not.
+ */
+const CLINICAL_MASKS: ReadonlyArray<{ re: RegExp; guard: boolean }> = [
+  // bound to a unit, with or without a per-something tail: 200 mg/day · 120 mg · 4 g/day · 60,000 IU
+  { re: new RegExp(String.raw`${ANY_NUMBER}\s*(?:${CLINICAL_UNITS})\b(?:\s*\/\s*[a-z]+)?`, 'gi'), guard: true },
+  // welded into a term: COX-2 · 25-OH-D · B12 · omega-3
+  { re: /[a-z][a-z0-9]*-?\d+(?:[.,]\d+)*[a-z0-9-]*|\d+(?:[.,]\d+)*-[a-z][a-z0-9-]*/gi, guard: true },
+  // a dosing SCHEDULE: "three times a day" is a frequency, not a volume, and it does not drift.
+  // UNGUARDED, and it has to be: the phrase contains `times`, which is itself a count noun. The
+  // narrowness is the safety — "a day", "per week", "daily" is a rate; "43 times this week" is a
+  // volume, matches nothing here, and is still rejected.
+  { re: new RegExp(String.raw`${ANY_NUMBER}[\s-]+times?[\s-]+(?:a|per)[\s-]+(?:day|week|month|dose)\b`, 'gi'), guard: false },
+  { re: new RegExp(String.raw`${ANY_NUMBER}[\s-]+times?[\s-]+(?:daily|weekly|monthly)\b`, 'gi'), guard: false },
+];
+
+const COUNT_NOUN_RE = new RegExp(String.raw`\b(?:${LVP_COUNT_NOUNS.join('|')})\b`, 'i');
+const TOKEN_RE = new RegExp(String.raw`[a-z]+|${NUM}`, 'g');
+
+/**
+ * Blank out every clinical number, preserving offsets so a hit can still be quoted from the
+ * original. On the two GUARDED masks a match that would swallow a count noun is refused — a
+ * `13-doctor spread` must not buy its way out of the rule by hyphenating itself into a compound
+ * term. The two schedule masks are unguarded by necessity; see the note on them.
+ */
+function maskClinicalNumbers(lower: string): string {
+  let out = lower;
+  for (const { re, guard } of CLINICAL_MASKS) {
+    out = out.replace(re, (m) => (guard && COUNT_NOUN_RE.test(m) ? m : '#'.repeat(m.length)));
+  }
+  return out;
+}
+
+export interface FrozenNumberHit {
+  kind: 'count' | 'percentage' | 'ranking';
+  /** The offending span, quoted from the text as written. */
+  text: string;
+}
+
+/**
+ * Every frozen number in `text`. [] means the copy may be written.
+ *
+ * Percentages and rankings are read from the raw text; counts are read from the MASKED text, so a
+ * dose can never be mistaken for a volume. Deduplicated by kind+span, because one sentence
+ * repeating "13 doctors" is one violation to report, not two.
+ */
+export function frozenNumberHits(text: string): FrozenNumberHit[] {
+  const original = String(text ?? '');
+  const lower = original.toLowerCase();
+  const hits: FrozenNumberHit[] = [];
+  const push = (kind: FrozenNumberHit['kind'], start: number, end: number) => {
+    const snippet = original.slice(start, end).trim();
+    if (!snippet) return;
+    if (hits.some((h) => h.kind === kind && h.text === snippet)) return;
+    hits.push({ kind, text: snippet });
+  };
+
+  for (const m of lower.matchAll(PERCENTAGE_RE)) push('percentage', m.index, m.index + m[0].length);
+  for (const { re } of LVP_RANKING_PATTERNS) {
+    for (const m of lower.matchAll(re)) push('ranking', m.index, m.index + m[0].length);
+  }
+
+  const tokens = [...maskClinicalNumbers(lower).matchAll(TOKEN_RE)]
+    .map((m) => ({ text: m[0], start: m.index, end: m.index + m[0].length }));
+  const numberWords = new Set(LVP_NUMBER_WORDS);
+  const countNouns = new Set(LVP_COUNT_NOUNS);
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (!/^\d/.test(t.text) && !numberWords.has(t.text)) continue;
+    const from = Math.max(0, i - LVP_COUNT_WINDOW);
+    const to = Math.min(tokens.length - 1, i + LVP_COUNT_WINDOW);
+    for (let j = from; j <= to; j++) {
+      if (j === i || !countNouns.has(tokens[j].text)) continue;
+      push('count', Math.min(t.start, tokens[j].start), Math.max(t.end, tokens[j].end));
+      break;
+    }
+  }
+  return hits;
+}
+
 export interface Decoration {
   pattern_id: string;
   title: string;
@@ -73,6 +215,9 @@ export type DecorationProblem = string;
  * Length is measured on the TRIMMED string, because that is what the card renders. Emptiness is a
  * rejection and not a silent stub fallback: a model that returned an empty title did not decline,
  * it failed, and the two must not read the same in the run counts.
+ *
+ * Three checks per field, in the order a reader would apply them: length, forbidden vocabulary,
+ * then frozen numbers (L2.1). All three report, so one rejection names every reason for it.
  */
 export function validateDecoration(raw: unknown): DecorationProblem[] {
   const problems: DecorationProblem[] = [];
@@ -88,6 +233,11 @@ export function validateDecoration(raw: unknown): DecorationProblem[] {
     if (v.length > max) problems.push(`${field}: ${v.length} characters exceeds the ${max}-character cap`);
     const hits = forbiddenHits(v);
     if (hits.length) problems.push(`${field}: forbidden on this page — ${hits.join(', ')}`);
+    const frozen = frozenNumberHits(v);
+    if (frozen.length) {
+      problems.push(`${field}: the card recomputes this on every read — `
+        + frozen.map((h) => `${h.kind} "${h.text}"`).join(', '));
+    }
   }
   return problems;
 }
@@ -123,9 +273,21 @@ Each item is a KIND of finding, not a case. It is a group of low-value-care find
 WHAT YOU WRITE
 For each item, exactly two things:
 
-1. title — the pattern in plain clinical English, as a clinician would name it in conversation. At most 90 characters. No counts, no dates, no percentages: the card already displays those and they must not appear twice.
+1. title — the pattern in plain clinical English, as a clinician would name it in conversation. At most 90 characters.
 
 2. why — your argument for why this kind is worth a care manager's attention. At most 400 characters. Say what the pattern is, and say what makes it interesting to look at.
+
+NUMBERS — THE CARD ALREADY SHOWS THEM
+Beside your two lines the card displays, and recomputes on every read from a rolling seven-day window: how many findings there were this week, how many distinct doctors they came from, and the date this kind was first seen. A number you write is frozen at the moment you write it. The card's number is not. Inside a day the two disagree, and the care manager reading them cannot tell which one is live.
+
+So, in BOTH fields:
+- Never restate the volume, the doctor spread or the first-seen date. Not in digits and not in words — "Forty-three findings" is the same violation as "43 findings", and "Ten findings from only 5 doctors" is two of them.
+- Never write a percentage, in digits or in words.
+- Never rank this kind against the others: no "highest-volume", no "second-highest", no "most common this week", no "largest". A ranking is a frozen count wearing a different hat, and it drifts the same way.
+- Doses, ceilings, thresholds, strengths, frequencies and units are WANTED. They are not counts, they do not drift, and they are the most useful thing you can put in these two lines.
+
+Write this: "Paracetamol appears twice on the same prescription, which can push the daily total past the 4 g/day ceiling."
+Not this: "Forty-three findings from 13 doctors — the second-highest volume pattern this week."
 
 VOICE — THIS IS THE PART THAT MATTERS
 You are an operator. The "why" is an argument YOU are making. It is not Even policy, it is not a physician's ruling, and it is not a finding.
@@ -133,7 +295,7 @@ You are an operator. The "why" is an argument YOU are making. It is not Even pol
 - Do not assert that anything is wrong. You have not seen the notes. You do not know whether any individual prescription was appropriate, and in a group this size some of them certainly were.
 - Say what the pattern IS and why it is worth a look. Nothing stronger.
 - Write "this looks like", "this is worth a look because", "these may include". Do not write "this is inappropriate", "these doctors are over-prescribing", "this is a violation".
-- No blame. Never characterise the doctors. The card shows a doctor count as spread, not as a list of offenders.
+- No blame. Never characterise the doctors. Never speculate about motivation: you may describe what the pattern IS, never why a clinician chose it — not "a habit of adding supplements", not "a feel-good measure", not "defensive prescribing". The card shows a doctor count as spread, not as a list of offenders.
 - No instruction. Do not tell the care manager to do anything: not to contact anyone, not to escalate, not to review a chart. Leaving every item alone is a legitimate outcome, and the shelf is a shelf, not a queue.
 - Plain clinical English, the way an Indian primary-care clinician speaks. Expand an abbreviation the first time. No marketing tone, no hedging padding, no exclamation marks.
 - Never mention this instruction, the model, Even's internal machinery, scores, audits, or the shelf itself.

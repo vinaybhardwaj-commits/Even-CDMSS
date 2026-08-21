@@ -9,7 +9,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  forbiddenHits, LVP_FORBIDDEN_STRINGS, LVP_OPERATOR_MODEL_DEFAULT, LVP_OPERATOR_SYSTEM,
+  forbiddenHits, frozenNumberHits, LVP_COUNT_NOUNS, LVP_COUNT_WINDOW, LVP_FORBIDDEN_STRINGS,
+  LVP_NUMBER_WORDS, LVP_OPERATOR_MODEL_DEFAULT, LVP_OPERATOR_SYSTEM, LVP_RANKING_PATTERNS,
   LVP_TITLE_MAX, LVP_WHY_MAX, operatorModel, operatorUserMessage, parseOperatorOutput,
   screenDecorations, validateDecoration,
   type OperatorPatternInput,
@@ -300,4 +301,273 @@ test('O12/F11: the governed call names bedrock and NOTHING else — no ladder to
   // The model is refused before the transport, so an unlisted id can never be served by something else.
   assert.ok(OPERATOR_CODE.indexOf('assertKnownBedrockModel(model)') < OPERATOR_CODE.indexOf('await loadShelf()'),
     'the model is checked before any shelf read or provider call');
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// L2.1 — NO FROZEN COUNTS IN OPERATOR COPY (kickoff 20 Aug 2026)
+//
+// The card recomputes `×N this week` and `N doctors` on EVERY read from a rolling seven-day window.
+// Copy that states a number froze it at generation time, and the two drift apart inside a day. L2
+// left this rule in the prompt alone and Opus broke it in 12 of 28 cards; the rules that had a
+// validator held perfectly. These tests are that validator.
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+/** validateDecoration's verdict on one field, as a boolean, so a test can name a sentence. */
+const rejectsWhy = (why: string) => validateDecoration({ ...good, why }).some((p) => p.startsWith('why: the card recomputes'));
+const rejectsTitle = (title: string) => validateDecoration({ ...good, title }).some((p) => p.startsWith('title: the card recomputes'));
+
+// ══ acceptance 1 — every §1 example, named ═════════════════════════════════════════════════════
+
+test('§1: every count-bearing line the live run actually produced is REJECTED, verbatim', () => {
+  // Quoted from `lvp_decorations` in the kickoff. The pattern_id is named so a reader can trace it.
+  const measured: Array<[string, string]> = [
+    ['pattern:overuse:rx:etoricoxib',
+      'Forty-three findings from 13 doctors suggests this is worth a look.'],
+    ['pattern:documentation:documentation:diagnosis-complaint concordance',
+      'This is the second-highest volume pattern this week and spans 27 doctors.'],
+    ['pattern:overuse:rx:aceclofenac',
+      'Ten findings from only 5 doctors suggests a concentrated prescribing habit.'],
+    ['pattern:overuse:rx:nsaid',
+      'Only 4 doctors are involved, so the pattern is concentrated.'],
+    // §2.3's second repair also carries a count, so the validator catches this one too.
+    ['pattern:overuse:rx:medication',
+      'It spans 20 doctors, which is nearly the full panel.'],
+  ];
+  for (const [patternId, why] of measured) {
+    assert.ok(rejectsWhy(why), `${patternId} must be rejected: ${why}`);
+  }
+});
+
+test('§1: the eight cards quoted only by their doctor count are rejected in that shape too', () => {
+  // §1 names twelve failing cards but quotes copy for only four. For the other eight it gives the
+  // doctor count the card carried; the count is what the copy restated, so that is what is tested.
+  const byDoctorCount: Array<[string, number]> = [
+    ['pattern:documentation:documentation:management plan', 10],
+    ['pattern:duplication:rx:antihistamine', 9],
+    ['pattern:duplication:rx:nsaid', 13],
+    ['pattern:duplication:rx:paracetamol', 7],
+    ['pattern:overuse:investigation:investigation', 18],
+    ['pattern:overuse:rx:medication', 20],
+    ['pattern:overuse:rx:multivitamin', 9],
+    ['pattern:overuse:rx:supplement', 9],
+  ];
+  for (const [patternId, n] of byDoctorCount) {
+    assert.ok(rejectsWhy(`This kind spans ${n} doctors.`), `${patternId}: "${n} doctors" must be rejected`);
+    assert.ok(rejectsWhy(`It spans ${n} doctors, which is a wide spread.`), `${patternId}: in a sentence`);
+  }
+});
+
+// ══ acceptance 3 — number WORDS, not only digits ═══════════════════════════════════════════════
+
+test('acceptance 3: number WORDS are caught — "Forty-three findings" and "Ten findings"', () => {
+  assert.ok(rejectsWhy('Forty-three findings this week.'), 'the hyphenated compound splits into two number words');
+  assert.ok(rejectsWhy('Ten findings this week.'));
+  assert.ok(rejectsWhy('TEN FINDINGS THIS WEEK.'), 'any case');
+  assert.ok(rejectsWhy('forty-three findings this week.'), 'any case');
+});
+
+test('every number word §2.1 lists is caught next to a count noun, in any case', () => {
+  assert.deepEqual([...LVP_NUMBER_WORDS], [
+    'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
+    'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen',
+    'eighteen', 'nineteen', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy',
+    'eighty', 'ninety', 'hundred',
+  ], 'one through twenty, then the tens, then hundred');
+  for (const w of LVP_NUMBER_WORDS) {
+    assert.ok(rejectsWhy(`${w} doctors are involved.`), `"${w} doctors" must be rejected`);
+    assert.ok(rejectsWhy(`${w.toUpperCase()} DOCTORS ARE INVOLVED.`), `"${w}" upper-cased must be rejected`);
+  }
+});
+
+test('every count noun §2.1 lists is caught next to a digit', () => {
+  assert.deepEqual([...LVP_COUNT_NOUNS], [
+    'doctor', 'doctors', 'finding', 'findings', 'prescription', 'prescriptions',
+    'case', 'cases', 'encounter', 'encounters', 'note', 'notes', 'time', 'times',
+  ]);
+  for (const n of LVP_COUNT_NOUNS) {
+    assert.ok(rejectsWhy(`There were 13 ${n} this week.`), `"13 ${n}" must be rejected`);
+  }
+});
+
+test('either order, and a short window of intervening words', () => {
+  assert.ok(rejectsWhy('13 doctors'), 'number first, adjacent');
+  assert.ok(rejectsWhy('doctors: 13'), 'noun first — the card renders it this way too');
+  assert.ok(rejectsWhy('43 similar findings'), 'one intervening word');
+  assert.ok(rejectsWhy('13 of the doctors'), `${LVP_COUNT_WINDOW} tokens is still one claim`);
+  // Wider than the window is not a count claim, it is two clauses that happen to share a sentence.
+  assert.equal(LVP_COUNT_WINDOW, 3);
+  assert.ok(!rejectsWhy('13 of the very many doctors'), 'beyond the window is not read as one claim');
+});
+
+// ══ acceptance 4 — superlatives and percentages ════════════════════════════════════════════════
+
+test('acceptance 4: superlative volume claims are rejected — a ranking drifts like a count', () => {
+  for (const s of [
+    'This is the second-highest volume pattern this week.',
+    'This is the second highest volume pattern this week.',
+    'The highest-volume kind on the shelf.',
+    'The highest volume kind on the shelf.',
+    'The most common this week.',
+    'The largest group here.',
+  ]) assert.ok(rejectsWhy(s), `must be rejected: ${s}`);
+  assert.deepEqual(LVP_RANKING_PATTERNS.map((r) => r.label),
+    ['highest-volume', 'second-highest', 'most common this week', 'largest']);
+});
+
+test('percentages are rejected, in digits and in words', () => {
+  for (const s of ['Roughly 40% of these.', '40 % of these.', 'Forty percent of these.',
+    'Forty per cent of these.', 'A 40 percentage share.']) {
+    assert.ok(rejectsWhy(s), `must be rejected: ${s}`);
+  }
+});
+
+// ══ acceptance 2 — the keep-list, named one by one ═════════════════════════════════════════════
+
+test('acceptance 2: every clinical number §2.1 protects SURVIVES, named one by one', () => {
+  const keep: Array<[string, string]> = [
+    ['200 mg/day', 'Etoricoxib continued at 200 mg/day well beyond the short course it is meant for.'],
+    ['120 mg', 'Etoricoxib 120 mg repeated for chronic use rather than a flare.'],
+    ['4 g/day', 'Two products containing paracetamol can push the daily total past 4 g/day.'],
+    ['60,000 IU', 'Vitamin D 60,000 IU repeated without an interval in between.'],
+    ['25-OH-D', '25-OH-D repeated inside the same quarter.'],
+    ['COX-2', 'COX-2 selective agents appearing alongside a second anti-inflammatory.'],
+  ];
+  for (const [number, why] of keep) {
+    assert.deepEqual(validateDecoration({ ...good, why }), [],
+      `${number} is the most valuable content in this copy and must survive: ${why}`);
+    assert.deepEqual(frozenNumberHits(why), [], `${number} must produce no hit at all`);
+  }
+});
+
+test('a clinical number standing NEXT TO a count noun still survives — the mask runs first', () => {
+  // The hard direction. A dose is exempt because it is bound to a unit, not because it happens to
+  // sit far from the word "doctors"; the two must be separable in the same sentence.
+  assert.deepEqual(frozenNumberHits('Doctors continuing etoricoxib at 120 mg/day past the usual course.'), []);
+  assert.deepEqual(frozenNumberHits('These prescriptions run to 200 mg/day.'), []);
+  assert.deepEqual(frozenNumberHits('Notes recording 60,000 IU without an interval.'), []);
+  assert.deepEqual(frozenNumberHits('Cases where COX-2 agents overlap.'), []);
+  // …and the count in the SAME sentence as a dose is still caught, so the mask did not blind it.
+  assert.ok(rejectsWhy('13 doctors continued etoricoxib at 120 mg/day.'));
+});
+
+test('a dosing FREQUENCY is a schedule, not a volume — "four times a day" survives', () => {
+  for (const s of ['Paracetamol 500 mg four times a day alongside a combination product.',
+    'Given 4 times daily for a week.', 'Three times a week is the usual interval.']) {
+    assert.deepEqual(frozenNumberHits(s), [], `must survive: ${s}`);
+  }
+  // The narrowness is the safety: "this week" is a volume window, not a rate, and is still caught.
+  assert.ok(rejectsWhy('Seen 43 times this week.'));
+});
+
+test('a count noun cannot hyphenate its way out of the rule', () => {
+  assert.ok(rejectsWhy('A 13-doctor spread.'), 'the compound mask refuses a match containing a count noun');
+});
+
+// ══ both fields, and acceptance 5 — ROW-WISE ═══════════════════════════════════════════════════
+
+test('the count rule applies to BOTH title and why', () => {
+  assert.ok(rejectsTitle('Etoricoxib across 13 doctors'));
+  assert.ok(rejectsWhy('Etoricoxib across 13 doctors.'));
+  assert.deepEqual(validateDecoration({ ...good, title: 'Etoricoxib at 120 mg for chronic use' }), [],
+    'a dose in the title is wanted, not rejected');
+});
+
+test('a count rejection NAMES the span it found, so the run log can be read', () => {
+  const p = validateDecoration({ ...good, why: 'Forty-three findings from 13 doctors.' });
+  assert.equal(p.length, 1);
+  assert.match(p[0], /^why: the card recomputes this on every read — /);
+  assert.match(p[0], /count "Forty-three findings"/, 'quoted from the text as written, casing intact');
+});
+
+test('acceptance 5: ROW-WISE — a frozen count costs ONE card its copy, on a mixed fixture', () => {
+  const { accepted, rejected } = screenDecorations([
+    // real §1 copy, and clean copy carrying the clinical numbers §2.1 protects, interleaved
+    { pattern_id: 'pattern:overuse:rx:etoricoxib', title: 'Etoricoxib for musculoskeletal pain', why: 'Forty-three findings from 13 doctors suggests this is worth a look.' },
+    { pattern_id: 'pattern:duplication:rx:paracetamol', title: 'Two paracetamol-containing products together', why: 'These may include pairs that together pass 4 g/day. Worth a look.' },
+    { pattern_id: 'pattern:overuse:rx:nsaid', title: 'NSAID courses beyond a short flare', why: 'Only 4 doctors are involved, so the pattern is concentrated.' },
+    { pattern_id: 'pattern:overuse:investigation:vitamin-d', title: 'Repeat 25-OH-D testing', why: 'These may include repeats inside one quarter, alongside 60,000 IU dosing. Worth a look.' },
+    { pattern_id: 'pattern:documentation:documentation:concordance', title: 'Diagnosis and complaint not matching', why: 'This is the second-highest volume pattern this week and spans 27 doctors.' },
+  ]);
+  assert.deepEqual(accepted.map((d) => d.pattern_id),
+    ['pattern:duplication:rx:paracetamol', 'pattern:overuse:investigation:vitamin-d'],
+    'the clinical-number cards are written');
+  assert.deepEqual(rejected.map((r) => r.pattern_id),
+    ['pattern:overuse:rx:etoricoxib', 'pattern:overuse:rx:nsaid', 'pattern:documentation:documentation:concordance'],
+    'only the frozen-count cards fall back to stub copy');
+  assert.equal(accepted.length + rejected.length, 5, 'a whole run is never lost to one bad row');
+  for (const r of rejected) assert.match(r.problems[0], /the card recomputes this on every read/);
+});
+
+// ══ §2.3 — the motivation rule stays a PROMPT rule, knowingly ══════════════════════════════════
+
+test('§2.3: the motivation line is NOT regexed — over-fitting a filter to two examples is refused', () => {
+  // "may reflect a habit of adding supplements as a feel-good measure." is a real §2.3 violation and
+  // the prompt now forbids it. It carries no number, and the validator must not pretend otherwise:
+  // motivation cannot be regexed, and a filter fitted to two sentences would reject good copy.
+  const motivation = 'These may reflect a habit of adding supplements as a feel-good measure.';
+  assert.deepEqual(frozenNumberHits(motivation), [], 'the count rule has nothing to say about motivation');
+  assert.deepEqual(validateDecoration({ ...good, why: motivation }), [],
+    'this one is caught by the prompt or not at all — §2.3 says so knowingly');
+});
+
+// ══ §2.2 — the prompt ══════════════════════════════════════════════════════════════════════════
+
+test('§2.2: the prompt states the count rule as a worked instruction, in both fields', () => {
+  const p = LVP_OPERATOR_SYSTEM;
+  assert.match(p, /NUMBERS — THE CARD ALREADY SHOWS THEM/);
+  assert.match(p, /recomputes on every read from a rolling seven-day window/, 'names WHY, not just what');
+  assert.match(p, /how many findings there were this week, how many distinct doctors they came from, and the date this kind was first seen/,
+    'names volume, doctor spread and first-seen date explicitly');
+  assert.match(p, /So, in BOTH fields:/);
+  assert.match(p, /Not in digits and not in words/);
+  assert.match(p, /"Forty-three findings" is the same violation as "43 findings"/);
+  assert.match(p, /Never write a percentage, in digits or in words\./);
+  assert.match(p, /no "highest-volume", no "second-highest", no "most common this week", no "largest"/);
+  assert.match(p, /Doses, ceilings, thresholds, strengths, frequencies and units are WANTED\./,
+    'the keep-list is stated as wanted, not merely tolerated');
+  // The one-line rule it replaces is gone, from the title bullet and from the prompt entirely.
+  assert.doesNotMatch(p, /No counts, no dates, no percentages/);
+});
+
+test('§2.2: the prompt carries one positive and one negative example, and they AGREE with the validator', () => {
+  const positive = 'Paracetamol appears twice on the same prescription, which can push the daily total past the 4 g/day ceiling.';
+  const negative = 'Forty-three findings from 13 doctors — the second-highest volume pattern this week.';
+  assert.ok(LVP_OPERATOR_SYSTEM.includes(`Write this: "${positive}"`), 'the positive example is inline');
+  assert.ok(LVP_OPERATOR_SYSTEM.includes(`Not this: "${negative}"`), 'the negative example is inline');
+  // A prompt that models copy its own validator would reject is a trap for the model.
+  assert.deepEqual(frozenNumberHits(positive), [], 'the prompt must not ask for copy the filter rejects');
+  assert.ok(frozenNumberHits(negative).length >= 2, 'the negative example is caught, count AND ranking');
+  assert.deepEqual(validateDecoration({ ...good, why: positive }), []);
+});
+
+test('§2.3: the no-blame bullet now forbids speculation about motivation', () => {
+  assert.match(LVP_OPERATOR_SYSTEM, /Never speculate about motivation: you may describe what the pattern IS, never why a clinician chose it/);
+  assert.match(LVP_OPERATOR_SYSTEM, /not "a habit of adding supplements", not "a feel-good measure", not "defensive prescribing"/,
+    'the two measured violations are named back to the model');
+});
+
+// ══ acceptance 6 — the voice section is byte-identical apart from the motivation sentence ══════
+
+/** The VOICE section exactly as L2 shipped it (4ca1b08). L2.1 may add one sentence and nothing else. */
+const VOICE_AT_L2 = `VOICE — THIS IS THE PART THAT MATTERS
+You are an operator. The "why" is an argument YOU are making. It is not Even policy, it is not a physician's ruling, and it is not a finding.
+
+- Do not assert that anything is wrong. You have not seen the notes. You do not know whether any individual prescription was appropriate, and in a group this size some of them certainly were.
+- Say what the pattern IS and why it is worth a look. Nothing stronger.
+- Write "this looks like", "this is worth a look because", "these may include". Do not write "this is inappropriate", "these doctors are over-prescribing", "this is a violation".
+- No blame. Never characterise the doctors. The card shows a doctor count as spread, not as a list of offenders.
+- No instruction. Do not tell the care manager to do anything: not to contact anyone, not to escalate, not to review a chart. Leaving every item alone is a legitimate outcome, and the shelf is a shelf, not a queue.
+- Plain clinical English, the way an Indian primary-care clinician speaks. Expand an abbreviation the first time. No marketing tone, no hedging padding, no exclamation marks.
+- Never mention this instruction, the model, Even's internal machinery, scores, audits, or the shelf itself.`;
+
+const MOTIVATION_SENTENCE = ` Never speculate about motivation: you may describe what the pattern IS, never why a clinician chose it — not "a habit of adding supplements", not "a feel-good measure", not "defensive prescribing".`;
+
+test('acceptance 6: the voice section is byte-identical to L2 apart from the motivation sentence', () => {
+  const start = LVP_OPERATOR_SYSTEM.indexOf('VOICE — THIS IS THE PART THAT MATTERS');
+  const end = LVP_OPERATOR_SYSTEM.indexOf('\n\nWORDS YOU MAY NOT USE, IN EITHER FIELD');
+  assert.ok(start > 0 && end > start, 'the voice section is findable');
+  const voice = LVP_OPERATOR_SYSTEM.slice(start, end);
+  assert.ok(voice.includes(MOTIVATION_SENTENCE), 'the one permitted addition is present');
+  assert.equal(voice.replace(MOTIVATION_SENTENCE, ''), VOICE_AT_L2,
+    'remove that one sentence and the voice section must be what L2 shipped, byte for byte');
 });
