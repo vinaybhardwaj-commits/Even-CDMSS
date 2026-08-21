@@ -22,7 +22,10 @@ import {
   telemetryHmac,
   type TelemetryRequestContext, type OperationalTelemetry,
 } from '../retrieval-telemetry-core';
-import { assembleAuditContext, retrievalTerminalsSeam, type AuditOpdOpts } from '../opd-note-audit.ts';
+import {
+  assembleAuditContext, auditOpdLifecycleTestSeam, LifecycleFaultInjected, retrievalTerminalsSeam,
+  type AuditOpdOpts, type LifecycleFaultPoint,
+} from '../opd-note-audit.ts';
 import type { CiteHit } from '../citations-core.ts';
 
 const INSERT_RUNS = /INSERT INTO opd_audit_retrieval_telemetry/;
@@ -690,4 +693,368 @@ test('24.3 — both trace:false callers, and the mechanism that makes their rows
   assert.match(audit, /const traceId = doTrace\s*\?/, 'and traceId is conditional on it');
   assert.ok(audit.includes(': undefined;'), 'the false arm yields undefined');
   assert.ok(audit.includes('traceId: traceId ?? null,'), 'which the terminal write binds as null');
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// PASS 4B — PROOFS 21, 22 AND 23, EXECUTED THROUGH THE REAL `auditOpdNote`
+//
+// ⚠️ WHY THIS BLOCK EXISTS AND WHAT IT REPLACES. Pass 4a's proof-23 test called
+// `assembleAuditContext` and then called the terminal seam itself. The test's own choreography
+// guaranteed the ordering it claimed to prove; it never executed `auditOpdNote`, so it proved the
+// test's sequence rather than production's. Rep 42 held 23 out of that pass for exactly this
+// reason, and recorded the cause as an ORCHESTRATOR SPECIFICATION ERROR — the pass 4a kickoff
+// asked for the insufficient thing. Every proof below drives the real audit function through the
+// fault seam and reads the result at the database transport.
+//
+// The seam is Saul Rep 42's shape: a module-private Symbol carrying an immutable per-call plan,
+// attached by a frozen exported wrapper that clones the options and calls the real function. No
+// public fault field on `AuditOpdOpts`; no mutable exported or global collaborator.
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+const AT_4B = '2026-08-12T00:00:00.000Z';
+
+/** A note row shaped as the worker hands it over. Deterministic — nothing here reaches a provider. */
+const ROW_4B: Record<string, unknown> = {
+  uid: 'uid-4b-0001', consult_uid: 'consult-4b', doctor_uid: 'doctor-4b',
+  note_text: 'Fever 3 days, sore throat. Dx: viral URTI. Rx: montelukast 10mg OD, cetirizine 10mg OD.',
+  created_at: AT_4B,
+};
+
+const TELE_4B: NonNullable<AuditOpdOpts['telemetry']> = {
+  ctx: {
+    invocationId: 'inv-4b', route: 'opd_audit_worker', routeClass: 'worker', deploymentSha: null,
+    vercelRequestId: null, startedAt: AT_4B, routingFlags: {}, labExperimentId: null,
+  },
+  route: 'opd_audit_worker',
+  persistenceIntent: 'will_persist',
+};
+
+/** Rep 42's canonical five, in D11 order. No expansion point and no rerank point exists. */
+const FAULT_POINTS: LifecycleFaultPoint[] = [
+  'after_declaration', 'after_primary_retrieval', 'after_normative_retrieval',
+  'during_context_assembly', 'during_generation',
+];
+/** The four that fire before the terminal writes; `during_generation` fires after both. */
+const PRE_TERMINAL_FAULTS = FAULT_POINTS.slice(0, 4);
+
+/** Revision pairs as `[primary, normative_channel]`, read off a published handle. */
+const revs = (h: LifecycleHandle): [number, number] => [
+  h.runs.find((r) => r.role === 'primary')!.expectedRevision,
+  h.runs.find((r) => r.role === 'normative_channel')!.expectedRevision,
+];
+
+/**
+ * Drive the REAL `auditOpdNote` to a chosen fault and record what the owner and the database saw.
+ *
+ * ⚠️ HOW A SWALLOWED FAULT IS SURFACED (kickoff §5.1). `lib/opd-note-audit.ts`'s outer catch
+ * returns a deterministic-only audit for every non-eval throw, so an injected fault would not
+ * reject out of the function and — worse — all five faults would produce the SAME det-only audit,
+ * leaving a test unable to tell which point fired, or whether the fault fired at all rather than
+ * the audit failing for an unrelated reason. That is precisely the "proves nothing" shape this pass
+ * exists to avoid. So the proofs pass `evalModel`, the one flag the source rethrows on, and assert
+ * the propagated error is the injected `LifecycleFaultInjected` instance carrying its own point.
+ * Every fault fires BEFORE any generation work, so the flag's only live effect here is the rethrow;
+ * `4B-SEAM.5` below drives the non-eval path separately and pins the swallow as unchanged.
+ */
+async function driveFault(faultAt: LifecycleFaultPoint, over: Partial<AuditOpdOpts> = {}) {
+  const KEY_ENV = 'CDMSS_TELEMETRY_HMAC_KEY';
+  const before = process.env[KEY_ENV];
+  process.env[KEY_ENV] = 'proof-4b-key';
+  try {
+    const db = installDbStub();
+    db.on(UPDATE_TERMINAL, [{ row_revision: 1 }]);
+
+    const handles: LifecycleHandle[] = [];
+    const defects: Array<Record<string, readonly string[] | undefined> | undefined> = [];
+    const opts: AuditOpdOpts = {
+      telemetry: TELE_4B,
+      evalNormativeChannel: true,
+      evalModel: 'pass4b-fault-surface',
+      trace: false,
+      onLifecycleHandleUpdated: (h, d) => { handles.push(h); defects.push(d); },
+      ...over,
+    };
+
+    let thrown: unknown;
+    let audit: unknown;
+    try {
+      audit = await auditOpdLifecycleTestSeam.run(ROW_4B, opts, {
+        faultAt, primaryHits: [lit23(1), lit23(2), lit23(3)], normativeHits: [cw23(101)],
+      });
+    } catch (e) { thrown = e; }
+
+    const terminals = db.matching(UPDATE_TERMINAL);
+    return {
+      db, handles, defects, thrown, audit, terminals,
+      declarations: db.matching(INSERT_RUNS),
+      last: handles[handles.length - 1],
+    };
+  } finally {
+    if (before === undefined) delete process.env[KEY_ENV]; else process.env[KEY_ENV] = before;
+  }
+}
+
+// ══ the seam itself — §2's seven properties ════════════════════════════════════════════════════
+
+test('4B-SEAM.1 — the wrapper is frozen, exposes only `run`, and AuditOpdOpts carries no fault field', () => {
+  assert.equal(Object.isFrozen(auditOpdLifecycleTestSeam), true, 'frozen exported wrapper');
+  assert.deepEqual(Object.keys(auditOpdLifecycleTestSeam), ['run']);
+  // §2.4 — the public options type is unchanged. A fault field would be visible in source.
+  const SRC = readFileSync(new URL('../opd-note-audit.ts', import.meta.url), 'utf8');
+  const optsBlock = SRC.slice(SRC.indexOf('export interface AuditOpdOpts {'), SRC.indexOf('/** Engine tag for mini-pipeline rows'));
+  // `\b` matters: `defaultGenerate`, `defaultRetrieve` and "Default `will_persist`" all contain
+  // the letters, and none of them is a fault field.
+  assert.doesNotMatch(optsBlock, /\bfault/i, 'AuditOpdOpts must not gain a fault field');
+  assert.doesNotMatch(optsBlock, /lifecycleFaultPlan|LIFECYCLE_FAULT_PLAN/, 'nor the plan by any name');
+  // §2.5 — no install/reset, no mutable module-level collaborator object.
+  assert.doesNotMatch(SRC, /export (?:let|var) /, 'no mutable exported binding');
+  assert.doesNotMatch(SRC, /installLifecycle|resetLifecycle|__setLifecycle/, 'no install or reset function');
+  // §2.1 — the plan key is a module-private Symbol, never exported.
+  assert.match(SRC, /const LIFECYCLE_FAULT_PLAN = Symbol\(/);
+  assert.doesNotMatch(SRC, /export const LIFECYCLE_FAULT_PLAN/);
+});
+
+test('4B-SEAM.2 — the plan is attached NON-ENUMERABLE, NON-WRITABLE and NON-CONFIGURABLE, on a clone, and holds exactly three fields', async () => {
+  const SRC = readFileSync(new URL('../opd-note-audit.ts', import.meta.url), 'utf8');
+  // §2.2's three descriptor flags, pinned at the one site that attaches the plan.
+  const attach = SRC.slice(SRC.indexOf('Object.defineProperty(planned, LIFECYCLE_FAULT_PLAN, {'));
+  assert.match(attach.slice(0, 400), /enumerable: false, writable: false, configurable: false,/);
+  assert.match(SRC, /const planned: AuditOpdOpts = \{ \.\.\.opts \};/, 'the options are CLONED, never mutated');
+  // The plan carries exactly Rep 42's three fields, and each is frozen before attachment.
+  assert.match(attach.slice(0, 400), /value: Object\.freeze\(\{\s*faultAt: plan\.faultAt,\s*primaryHits: Object\.freeze\(/);
+  const planIface = SRC.slice(SRC.indexOf('export interface LifecycleFaultPlan {'), SRC.indexOf('/** Module-private.'));
+  assert.deepEqual([...planIface.matchAll(/^\s*readonly (\w+)/gm)].map((m) => m[1]),
+    ['faultAt', 'primaryHits', 'normativeHits'], 'exactly faultAt, primaryHits, normativeHits');
+
+  // BEHAVIOURAL: the caller's own options object never gains the symbol, before or after the run.
+  const callerOpts: AuditOpdOpts = { telemetry: TELE_4B, evalModel: 'pass4b-fault-surface', trace: false };
+  assert.deepEqual(Object.getOwnPropertySymbols(callerOpts), []);
+  installDbStub();
+  await assert.rejects(
+    () => auditOpdLifecycleTestSeam.run(ROW_4B, callerOpts, { faultAt: 'after_declaration', primaryHits: [lit23(1)], normativeHits: [cw23(101)] }),
+    (e: unknown) => e instanceof LifecycleFaultInjected,
+  );
+  assert.deepEqual(Object.getOwnPropertySymbols(callerOpts), [], 'the caller\'s options are untouched after the run');
+  assert.deepEqual(Object.keys(callerOpts), ['telemetry', 'evalModel', 'trace'], 'and gained no string key either');
+});
+
+test('4B-SEAM.3 — absent the private symbol the plan-free path is byte-identical: no fixture, no fault, real collaborators', async () => {
+  // The source-level guarantee: every fault site and every fixture site is guarded by the ONE read,
+  // and that read is the only place the symbol is consulted.
+  const SRC = readFileSync(new URL('../opd-note-audit.ts', import.meta.url), 'utf8');
+  const reads = [...SRC.matchAll(/\[LIFECYCLE_FAULT_PLAN\]/g)].length;
+  assert.equal(reads, 1, 'exactly one private-symbol read exists in the whole module');
+  assert.match(SRC, /const faultPlan = readLifecycleFaultPlan\(opts\);/);
+  // Every gate is `faultPlan ? … : <production expression>` or `if (plan && …)`.
+  assert.match(SRC, /function lifecycleFault\(plan: LifecycleFaultPlan \| undefined, at: LifecycleFaultPoint\): void \{\s*if \(plan && plan\.faultAt === at\)/);
+  const guarded = [...SRC.matchAll(/lifecycleFault\(faultPlan, '(\w+)'\)/g)].map((m) => m[1]);
+  assert.deepEqual(guarded, FAULT_POINTS, 'five guarded sites, Rep 42\'s names, in D11 order');
+  // THE PRIMARY LEG IS NOT SUBSTITUTED AT ALL: its call site is byte-identical to `t4a`, so the
+  // proofs run production's own `defaultRetrieve`. See the report's deviation 1.
+  assert.match(SRC, /const hits = await defaultRetrieve\(query, mini, opts\.evalNormativeLeg, opts\.rerankBackend, primaryCapture\);/);
+  assert.doesNotMatch(SRC, /lifecycleFixtureHits\(primaryCapture/, 'no primary fixture exists');
+  // The normative site is a ternary on the same local, so an absent plan takes production's arm.
+  assert.match(SRC, /:\s*\(opts\.evalNormativeChannel === true \? await normativeChannelRetrieve\(query, normativeCapture\) : \[\]\)/);
+});
+
+test('4B-SEAM.4 — PARALLEL CALLS CARRY INDEPENDENT PLANS: two concurrent runs do not see each other\'s faults', async () => {
+  const KEY_ENV = 'CDMSS_TELEMETRY_HMAC_KEY';
+  const before = process.env[KEY_ENV];
+  process.env[KEY_ENV] = 'proof-4b-key';
+  try {
+    const db = installDbStub();
+    db.on(UPDATE_TERMINAL, [{ row_revision: 1 }]);
+    const mk = (faultAt: LifecycleFaultPoint) => auditOpdLifecycleTestSeam.run(
+      ROW_4B,
+      { telemetry: TELE_4B, evalNormativeChannel: true, evalModel: 'pass4b-fault-surface', trace: false },
+      { faultAt, primaryHits: [lit23(1)], normativeHits: [cw23(101)] },
+    ).then(() => null, (e) => e);
+
+    // Started together, resolved together — no install/reset step exists to serialise them.
+    const [a, b] = await Promise.all([mk('after_declaration'), mk('during_context_assembly')]);
+    assert.ok(a instanceof LifecycleFaultInjected);
+    assert.ok(b instanceof LifecycleFaultInjected);
+    assert.equal((a as LifecycleFaultInjected).faultAt, 'after_declaration', 'call A kept its own plan');
+    assert.equal((b as LifecycleFaultInjected).faultAt, 'during_context_assembly', 'call B kept its own plan');
+  } finally {
+    if (before === undefined) delete process.env[KEY_ENV]; else process.env[KEY_ENV] = before;
+  }
+});
+
+test('4B-SEAM.5 — without evalModel the outer catch still swallows: the det-only audit is returned and the handle arrives only by callback', async () => {
+  // The production non-eval path, unchanged by the seam. This is why the proofs above pass
+  // `evalModel` deliberately rather than by accident — see driveFault's doc block.
+  const r = await driveFault('during_context_assembly', { evalModel: undefined });
+  assert.equal(r.thrown, undefined, 'nothing propagates on the non-eval path');
+  const audit = r.audit as { llmLegFailed?: boolean; sources: unknown[]; suggestions: unknown[] };
+  assert.equal(audit.llmLegFailed, true, 'the det-only fallback, exactly as today');
+  assert.deepEqual(audit.sources, [], 'no sources — the throw preceded assembly');
+  assert.deepEqual(audit.suggestions, []);
+  assert.ok(r.handles.length >= 1, 'and the owner still holds a handle, delivered by the callback');
+});
+
+// ══ PROOF 21 — handle publication survives every fault ═════════════════════════════════════════
+
+test('21.1 — declaration publishes both roles at revisions [0,0], through the real auditOpdNote', async () => {
+  const r = await driveFault('after_declaration');
+  assert.ok(r.thrown instanceof LifecycleFaultInjected, 'the fault fired, and it is the injected one');
+  assert.equal((r.thrown as LifecycleFaultInjected).faultAt, 'after_declaration');
+  assert.equal(r.declarations.length, 1, 'the real declaration INSERT reached the transport');
+  assert.equal(r.handles.length, 1, 'exactly one publication — the declaration\'s');
+  assert.deepEqual(revs(r.handles[0]), [0, 0], 'declaration publication is [0,0]');
+  assert.equal(r.terminals.length, 0, 'and no terminal write happened');
+});
+
+test('21.2 — the primary terminal publishes [1,0]: the primary advanced and the normative has not', async () => {
+  const r = await driveFault('during_generation');
+  const primaryPublication = r.handles[1];
+  assert.ok(primaryPublication, 'a publication follows the primary terminal write');
+  assert.deepEqual(revs(primaryPublication), [1, 0], 'primary terminal publication is [1,0]');
+});
+
+test('21.3 — the normative terminal publishes [1,1]', async () => {
+  const r = await driveFault('during_generation');
+  const normativePublication = r.handles[2];
+  assert.ok(normativePublication, 'a publication follows the normative terminal write');
+  assert.deepEqual(revs(normativePublication), [1, 1], 'normative terminal publication is [1,1]');
+  assert.deepEqual(revs(r.handles[0]), [0, 0], 'and the three publications are [0,0] → [1,0] → [1,1]');
+});
+
+test('21.4 — EVERY injected throw leaves the owner holding the latest published handle, all five points', async () => {
+  const expected: Record<LifecycleFaultPoint, [number, number]> = {
+    after_declaration: [0, 0],
+    after_primary_retrieval: [0, 0],
+    after_normative_retrieval: [0, 0],
+    during_context_assembly: [0, 0],
+    during_generation: [1, 1],
+  };
+  for (const faultAt of FAULT_POINTS) {
+    const r = await driveFault(faultAt);
+    assert.ok(r.thrown instanceof LifecycleFaultInjected, `${faultAt}: the injected fault fired`);
+    assert.equal((r.thrown as LifecycleFaultInjected).faultAt, faultAt, `${faultAt}: at the named point`);
+    assert.ok(r.last, `${faultAt}: the owner holds a handle`);
+    assert.deepEqual(revs(r.last), expected[faultAt], `${faultAt}: and it is the LATEST published`);
+    // The owner's handle is the last one published, not merely some handle.
+    assert.deepEqual(revs(r.last), revs(r.handles[r.handles.length - 1]));
+  }
+});
+
+// ══ PROOF 22 — settlement, through the real settlement API ═════════════════════════════════════
+
+/** Settle a driven fault with the REAL API, with the row's current state stubbed at the transport. */
+async function settleAfter(faultAt: LifecycleFaultPoint, currentState: string) {
+  const r = await driveFault(faultAt);
+  const db = r.db;
+  const callsBeforeSettlement = db.calls.length;
+  db.on(SELECT_ROW, [{ persistence_state: currentState, row_revision: faultAt === 'during_generation' ? 1 : 0, audit_id: null }]);
+  db.on(UPDATE_SETTLE, [{ retrieval_run_id: 'r', persistence_state: 'audit_generation_failed' }]);
+  const { settleOwned } = await import('../retrieval-settlement');
+  await settleOwned(r.last, 'audit_generation_failed', null, r.defects[r.defects.length - 1]);
+  return { ...r, callsBeforeSettlement, settles: db.matching(UPDATE_SETTLE) };
+}
+
+test('22.1 — the FIRST FOUR faults settle started → audit_generation_failed, through the real settlement API', async () => {
+  for (const faultAt of PRE_TERMINAL_FAULTS) {
+    const s = await settleAfter(faultAt, 'started');
+    // The precondition, for the same reason M2 gave in 22.2: assert the fault fired at THIS point.
+    assert.ok(s.thrown instanceof LifecycleFaultInjected, `${faultAt}: the fault actually fired`);
+    assert.equal((s.thrown as LifecycleFaultInjected).faultAt, faultAt, `${faultAt}: at the named point`);
+    assert.ok(s.settles.length >= 1, `${faultAt}: the real settlement API wrote a terminal state`);
+    for (const call of s.settles) {
+      assert.equal(call.params[2], 'audit_generation_failed', `${faultAt}: settles to audit_generation_failed`);
+    }
+    // The row it settled from is the one the transport reported: `started`.
+    const reads = s.db.matching(SELECT_ROW);
+    assert.ok(reads.length >= 1, `${faultAt}: settlement read the row's current state`);
+  }
+});
+
+test('22.2 — during_generation settles retrieval_complete → audit_generation_failed', async () => {
+  const s = await settleAfter('during_generation', 'retrieval_complete');
+  // ⚠️ THE PRECONDITION, ASSERTED. Mutation row M2 deleted the `during_generation` fault outright
+  // and this test still passed: both terminals had been written and the settlement was still
+  // correct, so every assertion below held while the thing being settled FROM had never happened.
+  // A test that cannot tell whether its own fault fired proves the settlement mapping, which
+  // retrieval-settlement.test.ts already owns, and nothing about the path through auditOpdNote.
+  assert.ok(s.thrown instanceof LifecycleFaultInjected, 'the generation fault actually fired');
+  assert.equal((s.thrown as LifecycleFaultInjected).faultAt, 'during_generation');
+  assert.equal(s.terminals.length, 2, 'both terminals were written first, so the row IS retrieval_complete');
+  assert.ok(s.settles.length >= 1);
+  for (const call of s.settles) {
+    assert.equal(call.params[2], 'audit_generation_failed', 'settles to audit_generation_failed');
+  }
+});
+
+test('22.3 — the started cases retain a NULL retrieval outcome: no terminal write ever ran for them', async () => {
+  for (const faultAt of PRE_TERMINAL_FAULTS) {
+    const r = await driveFault(faultAt);
+    assert.equal(r.terminals.length, 0,
+      `${faultAt}: zero terminal writes, so the row's retrieval outcome was never written and stays null`);
+    // And the handle the owner settles with says so too: nothing advanced past revision 0.
+    assert.deepEqual(revs(r.last), [0, 0], `${faultAt}: no run is linkable`);
+  }
+  // The contrast case, so the assertion above is not vacuous.
+  const gen = await driveFault('during_generation');
+  assert.equal(gen.terminals.length, 2, 'during_generation DID write both, and is not a null-outcome case');
+});
+
+test('22.4 — NO AUDIT SAVE occurs before settlement, on any of the five faults', async () => {
+  const AUDIT_SAVE = /INSERT INTO opd_note_audits|UPDATE opd_note_audits/i;
+  for (const faultAt of FAULT_POINTS) {
+    const s = await settleAfter(faultAt, faultAt === 'during_generation' ? 'retrieval_complete' : 'started');
+    assert.ok(s.thrown instanceof LifecycleFaultInjected, `${faultAt}: the fault actually fired`);
+    const beforeSettlement = s.db.calls.slice(0, s.callsBeforeSettlement);
+    assert.equal(beforeSettlement.filter((c) => AUDIT_SAVE.test(c.query)).length, 0,
+      `${faultAt}: no audit row was saved before settlement`);
+    assert.equal(s.db.calls.filter((c) => AUDIT_SAVE.test(c.query)).length, 0,
+      `${faultAt}: and none at all — a faulted audit has nothing to save`);
+  }
+});
+
+// ══ PROOF 23 — ordering, established through the actual caller ═════════════════════════════════
+
+test('23.4 — A CONTEXT-ASSEMBLY FAULT PRODUCES ZERO TERMINAL WRITES, driven through the real auditOpdNote', async () => {
+  // This is the pass-4a proof done properly: the ordering is production's, not the test's. The
+  // test chooses only WHERE to fault; auditOpdNote chooses what has happened by then.
+  const r = await driveFault('during_context_assembly');
+  assert.ok(r.thrown instanceof LifecycleFaultInjected);
+  assert.equal((r.thrown as LifecycleFaultInjected).faultAt, 'during_context_assembly');
+  assert.equal(r.terminals.length, 0, 'nothing reached the terminal UPDATE before assembly');
+  assert.equal(r.declarations.length, 1, 'though the declaration certainly did — so the run got that far');
+  assert.equal(r.handles.length, 1, 'and the only publication is the declaration\'s');
+});
+
+test('23.5 — A GENERATION FAULT OCCURS ONLY AFTER BOTH TERMINAL WRITES, in the transport\'s own order', async () => {
+  const r = await driveFault('during_generation');
+  assert.ok(r.thrown instanceof LifecycleFaultInjected);
+  assert.equal(r.terminals.length, 2, 'both terminals were written before generation was reached');
+  const firstTerminal = r.db.calls.findIndex((c) => UPDATE_TERMINAL.test(c.query));
+  const declaration = r.db.calls.findIndex((c) => INSERT_RUNS.test(c.query));
+  assert.ok(declaration >= 0 && declaration < firstTerminal, 'declaration precedes the terminals at the wire');
+  assert.deepEqual(revs(r.handles[r.handles.length - 1]), [1, 1], 'and both publications happened');
+});
+
+test('23.6 — the primary payload HMAC is over the COMBINED assembled context, computed by the real run', async () => {
+  const r = await driveFault('during_generation');
+  // $20 is context_hmac (lib/retrieval-telemetry-store.ts:325), so params[19] at the wire — the
+  // same position 23.2 reads, but here the write was issued by the real `auditOpdNote`.
+  // ⚠️ THE PRIMARY HITS ARE PRODUCTION'S, NOT THE TEST'S. `defaultRetrieve` ran for real; with no
+  // corpus reachable under the transport stub it took its own FAIL-OPEN path and returned zero
+  // hits, which the row itself states: $3 is the retrieval outcome and $12/$13 the candidate
+  // counts. The test asserts what the run reported rather than assuming it.
+  assert.equal(r.terminals[0].params[2], 'retrieval_failure', 'the primary leg failed open, as production does');
+  assert.equal(r.terminals[0].params[11], '0', 'and returned zero candidates');
+  const hits: CiteHit[] = [];
+  const normHits = [cw23(101)];
+  const primaryHmac = r.terminals[0].params[19];
+  const { citedContext } = assembleAuditContext(hits, normHits);
+  assert.equal(primaryHmac, telemetryHmac('proof-4b-key', citedContext),
+    'the row carries the HMAC of the COMBINED context — literature plus the normative block');
+  // The step-7 counterfactual, computed. Only the primary hits exist there, so the only context
+  // assembleable at that moment is assembleAuditContext(hits, []). The row does not carry it.
+  const stepSeven = assembleAuditContext(hits, []).citedContext;
+  assert.notEqual(citedContext, stepSeven, 'the two contexts genuinely differ — the normative block is in one');
+  assert.notEqual(primaryHmac, telemetryHmac('proof-4b-key', stepSeven),
+    'so the write cannot have happened at step 7, before the normative hits existed');
+  assert.equal(r.terminals[1].params[19], null, 'and the normative row makes no scorer-context claim');
 });

@@ -1402,6 +1402,127 @@ export function opdMiniEngine(tag?: string): string {
   return `${OPD_ENGINE_VERSION}-${t}`;
 }
 
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// LIFECYCLE FAULT SEAM — pass 4b. THE SHAPE IS SAUL REP 42'S, and both shapes proposed before it
+// were rejected: no public fault field on `AuditOpdOpts`, and no mutable exported or global
+// collaborator object. What is authorized, and what is built here, is a module-private Symbol
+// carrying an immutable per-call plan, attached by a frozen exported wrapper that clones the
+// options and calls the REAL `auditOpdNote`.
+//
+// ⚠️ WHY THIS IS LAWFUL UNDER ADDENDUM v11'S "NEVER CONSULTED ON THE DEFAULT PATH" — Rep 42's own
+// interpretation, transcribed:
+//
+//   · no production caller invokes the wrapper;
+//   · no plan exists on production options;
+//   · no injected collaborator or fault hook runs when the private symbol is absent.
+//
+//   A SINGLE ABSENT PRIVATE-SYMBOL READ INSIDE THE SHARED CORE IS PERMITTED. Without that
+//   clarification, no in-function fault seam could exist. There is exactly one such read, at the
+//   top of the outer try, and when it yields `undefined` every site below is production's own
+//   expression, unchanged.
+//
+// ⚠️ THIS DOES NOT TOUCH `retrievalTerminalsSeam` (:830). That seam stays exactly as it is.
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * The five D11 handle states a fault can be injected at — Rep 42's canonical list, with his names.
+ *
+ * ⚠️ THERE IS NO EXPANSION POINT AND NO RERANK POINT, DELIBERATELY. Both are internal to primary
+ * retrieval and neither represents a separate D11 handle state; the build report's
+ * retrieval/expansion/rerank list does not govern here.
+ */
+export type LifecycleFaultPoint =
+  | 'after_declaration'
+  | 'after_primary_retrieval'
+  | 'after_normative_retrieval'
+  | 'during_context_assembly'
+  | 'during_generation';
+
+/** Exactly three fields, per Rep 42. Frozen by the wrapper before it is ever attached. */
+export interface LifecycleFaultPlan {
+  readonly faultAt: LifecycleFaultPoint;
+  readonly primaryHits: readonly CiteHit[];
+  readonly normativeHits: readonly CiteHit[];
+}
+
+/** Module-private. Not exported, so no caller outside this module can name the key. */
+const LIFECYCLE_FAULT_PLAN = Symbol('cdmss.opd-note-audit.lifecycle-fault-plan');
+
+/** The injected failure. A distinct class so a test asserts the fault fired, never merely that
+ *  something failed — five faults that all produced an indistinguishable det-only audit would
+ *  prove nothing about WHERE they fired. */
+export class LifecycleFaultInjected extends Error {
+  constructor(readonly faultAt: LifecycleFaultPoint) {
+    super(`injected lifecycle fault at ${faultAt}`);
+    this.name = 'LifecycleFaultInjected';
+  }
+}
+
+/** THE single absent-symbol read. Undefined on every production path. */
+function readLifecycleFaultPlan(opts: AuditOpdOpts): LifecycleFaultPlan | undefined {
+  return (opts as unknown as Record<symbol, LifecycleFaultPlan | undefined>)[LIFECYCLE_FAULT_PLAN];
+}
+
+/** Throw iff a plan exists AND names this point. `plan === undefined` ⇒ a no-op comparison. */
+function lifecycleFault(plan: LifecycleFaultPlan | undefined, at: LifecycleFaultPoint): void {
+  if (plan && plan.faultAt === at) throw new LifecycleFaultInjected(at);
+}
+
+/**
+ * Deterministic hits standing in for a provider call, reached ONLY when a plan exists (§2.7).
+ *
+ * ⚠️ THE NORMATIVE LEG ONLY, AND THE PRIMARY LEG DELIBERATELY NOT — see the report's deviation 1.
+ * The primary call site is frozen verbatim by two committed pins outside pass 4b's authorized
+ * diff (`lib/__tests__/citation-support.test.ts:114` pins the assignment prefix,
+ * `lib/__tests__/rerank-backend.test.ts:339` pins the call through its closing paren), so a
+ * primary fixture cannot be injected without editing a file §10 excludes. It is also unnecessary:
+ * under the transport stub the REAL `defaultRetrieve` returns deterministically in single-digit
+ * milliseconds, so the primary leg the proofs execute is production's own, which is stronger than
+ * a fixture would have been.
+ *
+ * The capture is populated the way a real retrieval would leave it for these fields, so the
+ * terminal payload builds and the manifest is validated over something real rather than over the
+ * blank `createTelemetryCapture` defaults.
+ */
+function lifecycleFixtureHits(capture: TelemetryCapture | undefined, hits: readonly CiteHit[]): CiteHit[] {
+  const out = hits.map((h) => ({ ...h }));
+  if (capture) {
+    const ids = out.map((h) => h.id);
+    capture.indexVersion = 'embedding|nomic-embed-text';
+    capture.fusedCandidateIds = [...ids];
+    capture.hydratedCandidateIds = [...ids];
+    capture.passageTexts = out.map((h) => h.text);
+    capture.orderedFinalCandidateIds = [...ids];
+    capture.retrievalOutcome = ids.length ? 'success' : 'zero_hits';
+  }
+  return out;
+}
+
+/**
+ * ⚠️ TEST SEAM. Clones the caller's options and attaches an immutable plan under the private
+ * symbol — non-enumerable, non-writable, non-configurable — then calls the REAL `auditOpdNote`.
+ *
+ * `AuditOpdOpts` is unchanged and no production call site is touched. There is no module-level
+ * state here, no install, no reset and nothing to clean up between tests: every call builds its own
+ * frozen plan on its own clone, so two concurrent runs cannot observe each other's faults.
+ */
+export const auditOpdLifecycleTestSeam: {
+  readonly run: (row: Record<string, unknown>, opts: AuditOpdOpts, plan: LifecycleFaultPlan) => Promise<OpdNoteAudit>;
+} = Object.freeze({
+  run(row: Record<string, unknown>, opts: AuditOpdOpts, plan: LifecycleFaultPlan): Promise<OpdNoteAudit> {
+    const planned: AuditOpdOpts = { ...opts };
+    Object.defineProperty(planned, LIFECYCLE_FAULT_PLAN, {
+      value: Object.freeze({
+        faultAt: plan.faultAt,
+        primaryHits: Object.freeze(plan.primaryHits.map((h) => Object.freeze({ ...h }))),
+        normativeHits: Object.freeze(plan.normativeHits.map((h) => Object.freeze({ ...h }))),
+      }),
+      enumerable: false, writable: false, configurable: false,
+    });
+    return auditOpdNote(row, planned);
+  },
+});
+
 export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdOpts = {}): Promise<OpdNoteAudit> {
   const mini = opts.pipeline === 'mini';
   // A MINI RUN ALWAYS WRITES '-<tag>' (GRADER-PROVENANCE PRD D1, 2 Aug 2026). The former prod-tag
@@ -1591,7 +1712,12 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     }
   }
 
+  // THE single absent private-symbol read (pass 4b seam, see the block above `auditOpdNote`).
+  // Undefined on every production path, and every site below is then production's own expression.
+  const faultPlan = readLifecycleFaultPlan(opts);
+
   try {
+    lifecycleFault(faultPlan, 'after_declaration');
     // Richer retrieval query so the corpus is hit on the actual clinical content (readable dx
     // names + reason + complaints + resolved molecules), not just ICD codes — improves grounding.
     const query = [
@@ -1605,14 +1731,19 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
 
     // STEPS 7 AND 8 — capture both retrievals IN MEMORY. No terminal write yet, deliberately.
     const hits = await defaultRetrieve(query, mini, opts.evalNormativeLeg, opts.rerankBackend, primaryCapture);
+    lifecycleFault(faultPlan, 'after_primary_retrieval');
     // R-11 additive channel (lab eval only): a SEPARATE CW-only retrieve appended as [9+] — the 8
     // literature excerpts above are untouched. No channel ⇒ assembleAuditContext is byte-identical
     // to the previous hitsToSources(hits) + buildCitedContext(hits).
-    const normHits = opts.evalNormativeChannel === true ? await normativeChannelRetrieve(query, normativeCapture) : [];
+    const normHits = faultPlan
+      ? (opts.evalNormativeChannel === true ? lifecycleFixtureHits(normativeCapture, faultPlan.normativeHits) : [])
+      : (opts.evalNormativeChannel === true ? await normativeChannelRetrieve(query, normativeCapture) : []);
+    lifecycleFault(faultPlan, 'after_normative_retrieval');
     // STEP 9 — the combined context. ⚠️ THIS IS WHY THE PRIMARY TERMINAL WRITE CANNOT HAPPEN AT
     // STEP 7. `assembleAuditContext` runs over BOTH hit sets and is the only place the exact bytes
     // that reach the scorer exist; inside either retrieval call they do not exist yet, so a
     // scorer-context HMAC written there would be a hash of something the scorer never saw.
+    lifecycleFault(faultPlan, 'during_context_assembly');
     const { sources, citedContext } = assembleAuditContext(hits, normHits);
     // STEPS 10-13 — HMAC the combined context, build both payloads, write both terminals, and
     // publish the handle after each so a throw below still leaves the caller holding the latest.
@@ -1625,6 +1756,10 @@ export async function auditOpdNote(row: Record<string, unknown>, opts: AuditOpdO
     }
     if (traceId) await logEvent(traceId, 'opd_audit_sources', null, { count: sources.length });
 
+    // Both terminals are written and both publications have happened. Everything from this line on
+    // exists only to build and run the generation leg — the specialty is read for
+    // `buildOpdAuditUser`'s prompt and is used nowhere else — so this is generation work's edge.
+    lifecycleFault(faultPlan, 'during_generation');
     const specialty = await doctorSpecialtyFor(keys.doctorUid);
     // Eval-hardening D5/O2 — keep the last envelope HERE too, so the parse guards below can attach
     // it to their throws. Wrapped ONLY when evalModel is set; absent ⇒ opts.onEnvelope passes
