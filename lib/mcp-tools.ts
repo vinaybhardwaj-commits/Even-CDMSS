@@ -1207,7 +1207,16 @@ async function loadExistingStatements(): Promise<ExistingStatement[] | null> {
     // correctly refuses when the comparison set cannot be read, so the fault failed closed.
     // lvc_recommendation_proposals is OUR table and genuinely has `source`.
     const live = await run(`SELECT id::text AS id, statement, society AS source, 'live' AS status FROM lvc_recommendations`, []);
-    const pending = await run(`SELECT id::text AS id, statement, source, status FROM lvc_recommendation_proposals WHERE status = 'proposed'`, []);
+    // ⚠️ D2 §1.2 LANE A — BRIDGE ROWS ARE EXCLUDED FROM THE ORDINARY DEDUP SET (Saul Rep 48).
+    // An ordinary MCP request carries no trustworthy pattern identity, so cross-channel semantic
+    // identity between an MCP statement and a bridge row CANNOT BE INFERRED and must not be
+    // guessed. Comparing them by Jaccard over wrapper prose is guessing: the bridge wraps every
+    // pattern in near-identical boilerplate, so an ordinary proposal would collide with whichever
+    // bridge row happened to exist rather than with anything it actually duplicates.
+    //
+    // Lane B — bridge to bridge — is exact `lvp_pattern_id`, enforced in the database by the
+    // unique claim in PROPOSE_PATTERN_SQL. The two lanes never compare across each other.
+    const pending = await run(`SELECT id::text AS id, statement, source, status FROM lvc_recommendation_proposals WHERE status = 'proposed' AND coalesce(source, '') <> 'lvp-pattern' AND coalesce(provenance, '') <> 'lvp-pattern'`, []);
     return [...live, ...pending].map((r) => ({
       id: String(r.id), statement: String(r.statement ?? ''),
       source: r.source == null ? null : String(r.source), status: r.status == null ? null : String(r.status),
@@ -1253,11 +1262,42 @@ async function lvcRatify(a: Record<string, unknown>): Promise<ToolResult> {
   let prop: Record<string, unknown> | undefined;
   try {
     const rows = await run(
+      // D2 §1.1: `source` added to the EXISTING projection — no second query. `provenance` was
+      // already selected.
       `SELECT id::text AS id, statement, rationale, evidence_note, citation_url, citation_doi, citation_pmid,
-              source_release_year, license_status, provenance, status, proposed_by, supersedes_id
+              source_release_year, license_status, provenance, source, status, proposed_by, supersedes_id
        FROM lvc_recommendation_proposals WHERE id = $1::uuid`, [v.proposal_id]);
     prop = rows[0];
   } catch (e) { return err(`cannot read proposal: ${String((e as Error).message).slice(0, 160)}`); }
+
+  // ══ D2 §1.1 — BRIDGE CONTAINMENT (Saul Rep 48). BEFORE promotion AND BEFORE rejection. ════════
+  //
+  // ⚠️ WHAT THIS PREVENTS, CONCRETELY. A bridge row written by the governed path carries
+  // `source='lvp-pattern'`, and until now this tool would happily promote it: it checks only the
+  // proposal id and `status='proposed'`. Promotion then MINTS A DIFFERENT rule_ref, inserts an
+  // `lvc_recommendations` row whose status column defaults to ACTIVE, omits the bridge's frozen
+  // executable-definition fields, does its follow-up updates as separate statements with swallowed
+  // failures — and BYPASSES THE GOVERNED WORKFLOW COMPLETELY. R3-A2 refusing to activate the
+  // governed version does not undo a separately created active registry row. The governed refusal
+  // and the legacy promotion are not connected, so the strictness of one buys nothing while the
+  // other stays open.
+  //
+  // ⚠️ EITHER FIELD, NOT BOTH. `source` and `provenance` are both stamped 'lvp-pattern' by the
+  // bridge, and a row carrying only one of them is still bridge-origin. Requiring both would let a
+  // single missing column reopen the path.
+  //
+  // ⚠️ BEFORE THE REJECT BRANCH TOO. A bridge row must not be REJECTABLE here either: rejection
+  // writes `status='rejected'` and a ledger row, which would let this tool retire a governed
+  // proposal outside the governed workflow — a different unauthorised state change, not a safe one.
+  //
+  // ⚠️ OUT OF SCOPE, AND REP 48 SAYS SO. The wider race and swallowed-write defects in ORDINARY
+  // legacy ratification are R3-B hardening. The `.catch(() => {})` calls below are deliberately
+  // left exactly as they are, and the ordinary promotion path is not restructured.
+  const bridgeOrigin = prop
+    && (String(prop.source ?? '') === 'lvp-pattern' || String(prop.provenance ?? '') === 'lvp-pattern');
+  if (bridgeOrigin) {
+    return err('bridge_origin_requires_governed_workflow');
+  }
 
   // PROMOTE-ONLY: without an existing 'proposed' row there is nothing to promote, and this tool has
   // no path that creates a statement de novo.

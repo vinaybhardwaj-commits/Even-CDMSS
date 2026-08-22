@@ -409,7 +409,11 @@ test('acceptance 3: every governance write is ONE statement — no multi-stateme
     const start = store.indexOf(`export async function ${fn}`);
     assert.ok(start > 0, `${fn} must exist`);
     const body = store.slice(start, store.indexOf('\n}\n', start));
-    const awaits = [...body.matchAll(/await run\(/g)].length;
+    // ⚠️ `run` OR `runner`. D2 §3 item 8 makes the bridge write take an INJECTED sql runner so the
+    // concurrent-loser property can be exercised. The pin is about how many statements a write
+    // issues, not what the callee is spelled — counting only `await run(` would score the injected
+    // form as ZERO and pass for the wrong reason.
+    const awaits = [...body.matchAll(/await run(?:ner)?\(/g)].length;
     assert.equal(awaits, 1, `${fn} must issue exactly ONE statement (O2) — found ${awaits}`);
   }
   // Neither write SQL is two statements pretending to be one.
@@ -474,5 +478,9 @@ test('§3.5: the map column is lvp_pattern_id (O1) and never becomes a rule_ref'
   assert.match(store, /lvp_pattern_id\s+text NOT NULL/);
   const m = /export const PROPOSE_PATTERN_SQL = `([\s\S]*?)`;/.exec(store)!;
   assert.doesNotMatch(m[1], /rule_ref\s*=\s*\$16/, 'the pattern id must never be written as a rule_ref');
-  assert.match(m[1], /SELECT \$16::text, ver\.rule_ref/, 'the two identities sit side by side, not merged');
+  // D2 §1.3: the map now LEADS, so the rule_ref it stores is the caller-minted parameter rather
+  // than one selected from `ver`. The property being pinned is unchanged — the two identities sit
+  // side by side and are never merged — but it is now visible on two parameters, not on a join.
+  assert.match(m[1], /SELECT \$16::text, \$8::text/, 'the two identities sit side by side, not merged');
+  assert.doesNotMatch(m[1], /lvp_pattern_id\s*=\s*\$8/, 'a rule_ref must never be written as a pattern id');
 });
