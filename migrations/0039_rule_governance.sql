@@ -112,8 +112,9 @@ CREATE TABLE IF NOT EXISTS rule_pattern_map (
   CONSTRAINT rule_pattern_map_pattern_nonblank CHECK (btrim(lvp_pattern_id) <> ''),
   CONSTRAINT rule_pattern_map_ref_nonblank     CHECK (btrim(rule_ref) <> ''),
   CONSTRAINT rule_pattern_map_pattern_unique UNIQUE (lvp_pattern_id),
-  CONSTRAINT rule_pattern_map_snapshot_identity
-    CHECK (evidence_snapshot ->> 'pattern_id' = lvp_pattern_id),
+  CONSTRAINT rule_pattern_map_snapshot_identity CHECK (
+    evidence_snapshot ->> 'pattern_id' IS NOT NULL
+    AND evidence_snapshot ->> 'pattern_id' = lvp_pattern_id),
   CONSTRAINT rule_pattern_map_pattern_id_form CHECK (
     evidence_snapshot ->> 'concept_id' IS NOT NULL
     AND btrim(evidence_snapshot ->> 'concept_id') <> ''

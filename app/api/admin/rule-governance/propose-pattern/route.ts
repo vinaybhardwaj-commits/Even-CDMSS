@@ -140,9 +140,21 @@ export async function POST(req: NextRequest) {
       evidence,
     });
     if (!result.written) {
+      // ⚠️ THIS MESSAGE WAS WRONG AFTER §1.3 CHANGED THE GUARD (D2 correction §3a). It said "an
+      // identical pending proposal already exists", which described the old exact-statement
+      // NOT EXISTS rule. The claim is now on `lvp_pattern_id` and fires whenever this pattern has
+      // EVER been mapped — including after its proposal was rejected. Neither "pending" nor
+      // "identical" is true of that condition.
+      //
+      // ⚠️ OPEN QUESTION, DELIBERATELY NOT SOLVED HERE (D2 correction §3b). The claim is PERMANENT
+      // by design: `rule_pattern_map` has no status column and the row is never deleted, so a
+      // pattern that was proposed, rejected, and later becomes worth proposing again with better
+      // wording CANNOT be re-proposed through this route. Rep 48 asked for exactly this permanence
+      // and nobody has ruled on the re-proposal case. NO release path, override or soft-delete is
+      // added here; the behaviour is reported for Saul to rule on.
       return NextResponse.json({
         ok: false,
-        error: 'an identical pending proposal already exists — nothing was written',
+        error: 'this pattern is already mapped to a rule — nothing was written',
         lvp_pattern_id: patternId,
       }, { status: 409 });
     }

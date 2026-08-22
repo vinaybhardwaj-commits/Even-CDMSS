@@ -294,10 +294,44 @@ test('D2.10 — lvp_pattern_id is UNIQUE, in both copies', async () => {
   }
 });
 
-test('D2.11 — the snapshot pattern_id must EQUAL lvp_pattern_id', async () => {
+test('D2.11 — the snapshot pattern_id must EQUAL lvp_pattern_id, and an ABSENT key is refused too', async () => {
   const { PATTERN_MAP_TABLE_DDL } = await import('../rule-governance-store');
-  assert.match(PATTERN_MAP_TABLE_DDL,
-    /CONSTRAINT rule_pattern_map_snapshot_identity\s*\n?\s*CHECK \(evidence_snapshot ->> 'pattern_id' = lvp_pattern_id\)/);
+  const { readFileSync } = await import('node:fs');
+  const copies: Array<[string, string]> = [
+    ['inlined', PATTERN_MAP_TABLE_DDL],
+    ['reference .sql', readFileSync('migrations/0039_rule_governance.sql', 'utf8')],
+  ];
+  for (const [name, ddl] of copies) {
+    // ⚠️ TWO DISTINCT REFUSALS, AND ONLY ONE OF THEM USED TO HOLD (D2 correction §1). A snapshot
+    // whose pattern_id DISAGREES was always refused by the equality. A snapshot with NO pattern_id
+    // key AT ALL was ADMITTED: `->>` yields SQL NULL for an absent key, the comparison yields NULL,
+    // and a CHECK IS SATISFIED BY NULL. The presence conjunct is what closes that, and it is
+    // asserted separately from the equality so its removal cannot hide behind it.
+    assert.match(ddl, /CONSTRAINT rule_pattern_map_snapshot_identity CHECK \(\s*\n\s*evidence_snapshot ->> 'pattern_id' IS NOT NULL/,
+      `${name}: an ABSENT pattern_id must be refused`);
+    assert.match(ddl, /AND evidence_snapshot ->> 'pattern_id' = lvp_pattern_id\)/,
+      `${name}: a DISAGREEING pattern_id must be refused`);
+  }
+});
+
+test('D2.11b — NO CHECK anywhere in the DDL compares a ->> extraction without a presence test', async () => {
+  // The sweep the correction asks for, mechanised rather than eyeballed: the defect class is
+  // "an arrow extraction used in a comparison with nothing asserting the key is there", and it
+  // appeared in one constraint while its neighbour guarded against it correctly.
+  const { RULE_GOVERNANCE_DDL } = await import('../rule-governance-store');
+  const all = RULE_GOVERNANCE_DDL.join('\n');
+  const keys = [...all.matchAll(/->>\s*'([a-z_]+)'/g)].map((m) => m[1]);
+  assert.ok(keys.length > 0, 'the sweep must find extractions, or it proves nothing');
+  for (const key of new Set(keys)) {
+    assert.ok(all.includes(`evidence_snapshot ->> '${key}' IS NOT NULL`),
+      `${key}: extracted and compared with no presence test — a CHECK is SATISFIED by NULL`);
+  }
+  // …and the two copies agree on the whole shape, which the parity test also covers.
+  const { readFileSync } = await import('node:fs');
+  const sql = readFileSync('migrations/0039_rule_governance.sql', 'utf8');
+  for (const key of new Set(keys)) {
+    assert.ok(sql.includes(`evidence_snapshot ->> '${key}' IS NOT NULL`), `${key}: missing in the .sql copy`);
+  }
 });
 
 test('D2.12 — lvp_pattern_id must be "pattern:" + a NONBLANK concept_id, and blank does not default', async () => {

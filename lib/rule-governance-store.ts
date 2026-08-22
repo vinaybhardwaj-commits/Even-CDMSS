@@ -166,6 +166,17 @@ export const ACTIVATION_EVENTS_INDEX_DDL =
  * evidence is the entire point of freezing: a snapshot describing a different pattern is not
  * replayable, and nothing downstream could detect the substitution.
  *
+ * ⚠️ THE PRESENCE CONJUNCT IS NOT DECORATION, AND ITS ABSENCE WAS A REAL DEFECT (D2 correction §1).
+ * As first written this constraint was the bare equality `evidence_snapshot ->> 'pattern_id' =
+ * lvp_pattern_id`. With the key ABSENT, `->>` yields SQL NULL, the comparison yields NULL, and a
+ * CHECK IS SATISFIED BY NULL — so a snapshot carrying no `pattern_id` at all was admitted, and the
+ * paragraph above was false in exactly the case it was written to prevent. The hazard was written
+ * out correctly for `concept_id` in the constraint below and not applied to this one, immediately
+ * above it. A DISAGREEING pattern_id was refused; a MISSING one was not.
+ *
+ * Nonblank needs no conjunct of its own here: the value is required to equal `lvp_pattern_id`,
+ * which `rule_pattern_map_pattern_nonblank` already forbids from being blank.
+ *
  * `rule_pattern_map_pattern_id_form` — the identity is DERIVED from the concept, and the derivation
  * is fixed: `patternIdFor()` in lib/lvp-core.ts returns `'pattern:' + concept_id`. Pinned so a row
  * cannot claim an identity the shelf could never have produced.
@@ -190,8 +201,9 @@ export const PATTERN_MAP_TABLE_DDL = `CREATE TABLE IF NOT EXISTS rule_pattern_ma
   CONSTRAINT rule_pattern_map_pattern_nonblank CHECK (btrim(lvp_pattern_id) <> ''),
   CONSTRAINT rule_pattern_map_ref_nonblank     CHECK (btrim(rule_ref) <> ''),
   CONSTRAINT rule_pattern_map_pattern_unique UNIQUE (lvp_pattern_id),
-  CONSTRAINT rule_pattern_map_snapshot_identity
-    CHECK (evidence_snapshot ->> 'pattern_id' = lvp_pattern_id),
+  CONSTRAINT rule_pattern_map_snapshot_identity CHECK (
+    evidence_snapshot ->> 'pattern_id' IS NOT NULL
+    AND evidence_snapshot ->> 'pattern_id' = lvp_pattern_id),
   CONSTRAINT rule_pattern_map_pattern_id_form CHECK (
     evidence_snapshot ->> 'concept_id' IS NOT NULL
     AND btrim(evidence_snapshot ->> 'concept_id') <> ''
@@ -313,12 +325,30 @@ export function definitionHashSql(exprs: readonly string[]): string {
  * §3.1 forbids a foreign key: R3-B is the unit that would create the registry row under exactly
  * this id. Nothing reads a rule_ref that names no row, because nothing reads these tables at all.
  *
- * IDEMPOTENCY / DEDUP: the proposal INSERT carries a NOT EXISTS guard on an identical pending
- * statement. When it fires, the CTE chain has no proposal row to feed, so the version and map
- * INSERTs select from an empty set and the whole statement writes nothing and returns no row —
- * a re-POST of the same pattern is a no-op rather than a duplicate rule book entry. NOTE: this is
- * an EXACT-statement guard, not F14's near-duplicate gate (lvc_propose's loadExistingStatements);
- * running that gate needs a second read and is therefore R3-B's, not this statement's.
+ * IDEMPOTENCY / DEDUP: THE IDENTITY CLAIM, NOT A STATEMENT COMPARISON (rewritten, D2 correction §2).
+ *
+ * ⚠️ WHAT THIS PARAGRAPH USED TO SAY, AND WHY IT WAS LEFT WRONG. It described a `NOT EXISTS` guard
+ * on an identical pending STATEMENT, and said the chain had "no proposal row to feed" when it
+ * fired. Both halves are now false: the guard was removed as the authoritative rule because it
+ * compared boilerplate against boilerplate, and the chain is fed by the CLAIM, not the proposal.
+ * The code moved and the comment did not. That has happened three times in this programme now, and
+ * a stale comment is worse than none — a reader trusts it exactly where they cannot see the code.
+ *
+ * What is true: the FIRST CTE claims `lvp_pattern_id` with `ON CONFLICT (lvp_pattern_id) DO
+ * NOTHING`, and every downstream CTE selects FROM the one above it. A request whose claim
+ * conflicts therefore feeds an EMPTY SET into the proposal, which feeds an empty set into the
+ * version, so the whole statement writes nothing and returns no row. A re-POST of the same pattern
+ * is a no-op, and a concurrent loser writes zero rows everywhere.
+ *
+ * ⚠️ THE CLAIM IS ON THE PATTERN AND IS PERMANENT. It is not "an identical pending proposal" —
+ * `rule_pattern_map` has no status column and the row is never deleted, so once a pattern is
+ * mapped it is mapped for good. That is Rep 48's intent, and its consequence is stated at the
+ * route's 409 rather than hidden here: a pattern whose proposal was REJECTED cannot be re-proposed
+ * through this path. See the note there.
+ *
+ * NOTE: this is an identity claim, not F14's near-duplicate gate (lvc_propose's
+ * loadExistingStatements); running that gate needs a second read and is therefore R3-B's, not this
+ * statement's.
  */
 /**
  * THE BRIDGE WRITE — claim-first (D2 §1.3, Saul Rep 48).
