@@ -672,6 +672,15 @@ test('14.8 — NORMATIVE swallow, all three arms: success · zero hits · retrie
   assert.equal(outcomeOf(failed.normative), 'retrieval_failure');
 
   assert.equal(new Set([outcomeOf(hits.normative), outcomeOf(none.normative), outcomeOf(failed.normative)]).size, 3);
+
+  // ⚠️ THE ROW IS THE NORMATIVE LEG'S OWN, NOT A COPY OF THE PRIMARY'S. `normativeChannelOpts` sets
+  // skipExpand unconditionally, so the normative capture's expansion is ALWAYS `skipped` while the
+  // primary's is not. Mutation row M12 builds the normative payload from `primaryCapture`, and
+  // without this assertion nothing notices: when both legs are given the same corpus answers their
+  // outcomes are identical, so an outcome-only check cannot tell the two captures apart.
+  const manifest = (call: { params: unknown[] }) => JSON.parse(String(call.params[20])) as { expansion?: { status?: string } };
+  assert.equal(manifest(hits.normative!).expansion?.status, 'skipped', 'the normative capture, by its own expansion status');
+  assert.notEqual(manifest(hits.primary!).expansion?.status, 'skipped', 'and the primary\'s is not — so the two are distinguishable');
 });
 
 test('14.9 — SUCCESS records exactly ONE terminal outcome PER ROLE, never two', async () => {
@@ -759,6 +768,13 @@ test('14.11 — labRetrieve GENERIC error: the ORIGINAL error still throws, unch
   const text = String(res.content?.[0]?.text ?? '');
   assert.match(text, /embeddings unavailable \(proof 14 stub\)/, 'carrying the ORIGINAL error, not a replacement');
   assert.doesNotMatch(text, /RerankBackend/, 'and NOT via the typed-error path 14.10 covers');
+  // ⚠️ EXACT, AND THAT IS WHAT DISCRIMINATES. `callLabTool`'s catch formats a rethrow as
+  // `err(String(e.message))` — the message alone. If `labRetrieve` had converted the generic error
+  // to its own `err(...)` instead of rethrowing, the text would carry an extra `${e.name}: `
+  // prefix. Mutation row M9 does exactly that, and only this exact match catches it: a substring
+  // assertion passes under both.
+  assert.equal(text, 'Error: 500 embeddings unavailable (proof 14 stub)',
+    'the dispatcher\'s rethrow format, with no err()-added name prefix');
   assert.equal(r.terminals.length, 1, 'the outcome was still recorded before it left');
   assert.equal(outcomeOf(r.terminals[0]), 'retrieval_failure',
     'so a caller that only saw the throw still has the row saying WHY');
