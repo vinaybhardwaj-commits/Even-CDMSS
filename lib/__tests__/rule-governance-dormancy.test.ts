@@ -31,6 +31,24 @@ const MODULE_ROUTES = [
 ];
 const read = (p: string) => readFileSync(join(ROOT, p), 'utf8');
 
+/**
+ * A file with its comments AND string literals removed — i.e. what actually executes.
+ *
+ * ⚠️ A CALLER SWEEP THAT READS PROSE FINDS THE CHANGELOG. `lib/opd-audit-changelog.ts` describes
+ * this build in English and NAMES `recordActivationEvent` inside a string literal; a raw scan
+ * reported the changelog as a caller of the function it was describing. Two earlier tests in this
+ * workstream hit the same class — a source pin matching the comment that explains why the thing is
+ * absent — so the sweep reads executable text and the documentation stays free to name things.
+ */
+function codeOf(p: string): string {
+  return read(p)
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^[ \t]*\/\/.*$/gm, '')
+    .replace(/'(?:[^'\\\n]|\\.)*'/g, "''")
+    .replace(/"(?:[^"\\\n]|\\.)*"/g, '""')
+    .replace(/`(?:[^`\\]|\\.)*`/g, '``');
+}
+
 function walk(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(join(ROOT, dir))) {
     if (name === 'node_modules' || name === '.next' || name === '.git') continue;
@@ -405,18 +423,26 @@ test('proof 4: the ordinal is 0039 and no other migration file was touched', () 
 test('acceptance 3: every governance write is ONE statement — no multi-statement write path', () => {
   const store = read('lib/rule-governance-store.ts');
   // Each write function body may contain exactly one `await run(`.
-  for (const fn of ['proposePatternAsRule', 'bootstrapRuleVersions']) {
+  for (const fn of ['proposePatternAsRule', 'bootstrapRuleVersions', 'recordActivationEvent']) {
     const start = store.indexOf(`export async function ${fn}`);
     assert.ok(start > 0, `${fn} must exist`);
     const body = store.slice(start, store.indexOf('\n}\n', start));
-    const awaits = [...body.matchAll(/await run\(/g)].length;
+    // ⚠️ `run` OR `runner`. R3-A2 §5 requires the activation writer to take an INJECTED sql runner
+    // so the flag-off case can prove ZERO calls rather than one failed call. The pin is about how
+    // many statements a write issues, not what the callee is spelled — counting only `await run(`
+    // would have scored the injected form as zero and passed for the wrong reason.
+    const awaits = [...body.matchAll(/await run(?:ner)?\(/g)].length;
     assert.equal(awaits, 1, `${fn} must issue exactly ONE statement (O2) — found ${awaits}`);
   }
   // Neither write SQL is two statements pretending to be one.
-  for (const c of ['PROPOSE_PATTERN_SQL', 'BOOTSTRAP_SNAPSHOT_SQL']) {
+  for (const c of ['PROPOSE_PATTERN_SQL', 'BOOTSTRAP_SNAPSHOT_SQL', 'RECORD_ACTIVATION_EVENT_SQL']) {
     const m = new RegExp(`export const ${c} = \`([\\s\\S]*?)\`;`).exec(store);
     assert.ok(m, `${c} must be an exported constant`);
-    assert.doesNotMatch(m![1], /;\s*\S/, `${c} must not contain a statement separator`);
+    // ⚠️ COMMENTS STRIPPED FIRST. `RECORD_ACTIVATION_EVENT_SQL` carries a trailing `-- already
+    // applied; not a refusal`, whose semicolon reads as a statement separator to a raw scan. The
+    // pin is about executable text; the explanation is not executable.
+    const code = m![1].replace(/--.*$/gm, '');
+    assert.doesNotMatch(code, /;\s*\S/, `${c} must not contain a statement separator`);
   }
 });
 
@@ -428,12 +454,50 @@ test('acceptance 5 / S4: neither bootstrap nor proposal creates an activation ev
       `${c} must write NO activation event (S4)`);
   }
   assert.match(store, /'bootstrap_snapshot'/, 'bootstrap rows are stamped bootstrap_snapshot');
+  // ⚠️ AND THIS STAYS TRUE NOW THAT AN EVENT WRITER EXISTS (R3-A2 §5). The check above would pass
+  // vacuously if no statement in the module wrote events at all, which was the case until today.
+  // Exactly ONE statement may name the event table as a write target, and it is the new one.
+  const writers = ['PROPOSE_PATTERN_SQL', 'BOOTSTRAP_SNAPSHOT_SQL', 'RECORD_ACTIVATION_EVENT_SQL']
+    .filter((c) => {
+      const m = new RegExp(`export const ${c} = \`([\\s\\S]*?)\`;`).exec(store)!;
+      return /INSERT INTO lvc_rule_activation_events/.test(m[1]);
+    });
+  assert.deepEqual(writers, ['RECORD_ACTIVATION_EVENT_SQL'],
+    'exactly one statement writes events, and it is the activation writer');
+});
+
+test('R3A2: the activation writer has ZERO callers anywhere outside its own module and tests', () => {
+  // Rep 46 point 8: it must retain zero production callers until R3-B provides the atomic live
+  // workflow. Proven the same way bootstrap is — by sweeping every source file.
+  const callers = SOURCE_FILES
+    .filter((f) => !MODULE_FILES.includes(f))
+    .filter((f) => /recordActivationEvent/.test(codeOf(f)));
+  assert.deepEqual(callers, [], `the activation writer must have no caller: ${callers.join(', ')}`);
+});
+
+test('R3A2: the writer NEVER calls ensureRuleGovernanceTables — no DDL on a write path', () => {
+  // §3: that is how a dormant module accidentally creates tables in production — one convenience
+  // call on a path somebody later makes live.
+  const store = read('lib/rule-governance-store.ts');
+  const start = store.indexOf('export async function recordActivationEvent');
+  assert.ok(start > 0);
+  const body = store.slice(start, store.indexOf('\n}\n', start));
+  assert.doesNotMatch(body, /ensureRuleGovernanceTables/);
+  // …and nothing inside the store CALLS it: the only occurrence outside prose is its own
+  // declaration. Counted on code with comments stripped, and excluding the declaration itself.
+  const code = store.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+  const occurrences = [...code.matchAll(/ensureRuleGovernanceTables\(/g)].length;
+  const declarations = [...code.matchAll(/export async function ensureRuleGovernanceTables\(/g)].length;
+  assert.equal(declarations, 1, 'declared exactly once');
+  assert.equal(occurrences - declarations, 0, 'and called by nothing inside the store');
 });
 
 test('acceptance 5: bootstrap is BUILT, NOT EXECUTED — nothing in app/ or scripts/ calls it', () => {
+  // Reads executable text for the same reason the activation sweep does — the hole is latent here
+  // too, and would open the first time the changelog described the bootstrap.
   const callers = SOURCE_FILES
     .filter((f) => !MODULE_FILES.includes(f))
-    .filter((f) => /bootstrapRuleVersions/.test(read(f)));
+    .filter((f) => /bootstrapRuleVersions/.test(codeOf(f)));
   assert.deepEqual(callers, [], `bootstrap must have no caller: ${callers.join(', ')}`);
 });
 

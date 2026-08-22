@@ -107,7 +107,31 @@ test('a complete tuple validates', () => {
 });
 
 test('reviewed_n = 0 is LEGITIMATE — it is a ruling on an abstraction, not an error (0020:36)', () => {
-  assert.deepEqual(validateEvidence({ ...GOOD, reviewed_n: 0, sample_size: 0 }), []);
+  // ⚠️ `n_not_belonging` MUST BE null HERE, AND THAT IS THE NEW BOUND TALKING (R3-A2 §2). This
+  // fixture previously carried `n_not_belonging: 3` alongside `reviewed_n: 0` and passed — a tuple
+  // claiming three rows did not belong among zero reviewed. Nothing caught it because the bound
+  // did not exist. Nothing reviewed means the count is not meaningful, and the core's own rule for
+  // that case is "null is honest, 0 is a claim".
+  assert.deepEqual(validateEvidence({ ...GOOD, reviewed_n: 0, sample_size: 0, n_not_belonging: null }), []);
+});
+
+test('R3A2 — n_not_belonging cannot exceed reviewed_n, and the bound is not vacuous', () => {
+  // The bound the kickoff names as missing. Among the rows a human REVIEWED, how many did not
+  // belong — so it cannot exceed the number reviewed.
+  const over = validateEvidence({ ...GOOD, reviewed_n: 5, n_not_belonging: 6 });
+  assert.equal(over.length, 1);
+  assert.match(over[0], /^n_not_belonging: cannot exceed reviewed_n$/);
+  // Equal is legal: every reviewed row may fail to belong.
+  assert.deepEqual(validateEvidence({ ...GOOD, reviewed_n: 5, n_not_belonging: 5 }), []);
+  assert.deepEqual(validateEvidence({ ...GOOD, reviewed_n: 5, n_not_belonging: 0 }), []);
+  // Absent stays legal — "where meaningful" (§3.4).
+  assert.deepEqual(validateEvidence({ ...GOOD, n_not_belonging: null }), []);
+  // …and the OLD bound still holds, so the new one did not replace it.
+  const negative = validateEvidence({ ...GOOD, n_not_belonging: -1 });
+  assert.equal(negative.length, 1);
+  assert.match(negative[0], /non-negative integer/);
+  const reviewedOver = validateEvidence({ ...GOOD, reviewed_n: 41 });
+  assert.ok(reviewedOver.some((x) => /reviewed_n: cannot exceed sample_size/.test(x)));
 });
 
 test('ratified_by must be a named human — every role literal is refused', () => {
