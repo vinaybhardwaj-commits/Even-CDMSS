@@ -30,19 +30,45 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { generateKeyPairSync } from 'node:crypto';
 import ts from 'typescript';
 // ⚠️ THE ACTUAL INSTALLED SDK ERROR (v12 §3 item 1). Pass 1 tested a hand-named look-alike, which is
 // what hid the production defect: the real error's `name` is "Error" and only `constructor.name`
 // carries the real name. This import is the primary evidence now.
-import { APIConnectionTimeoutError, APIConnectionError } from 'openai';
+import OpenAI, { APIConnectionTimeoutError, APIConnectionError } from 'openai';
 import {
   TRANSPORT_ATTEMPT_OUTCOMES, classifyAttemptOutcome, classifyLocalAttempt, localAttemptSuccess,
+  readTransportAttribution,
 } from '../transport-attribution-core';
 import { createTelemetryCapture, buildRetrievalPayload } from '../retrieval-capture';
 import { validateManifest, routeClassOf } from '../retrieval-telemetry-core';
 import type { OperationalTelemetry, RetrievalRole } from '../retrieval-telemetry-core';
 
 const DEFECT = 'attempt_outcome_absent_or_invalid';
+
+/**
+ * THE COMMITTED SIX, WRITTEN OUT BY HAND (Rep 44 §3.1).
+ *
+ * ⚠️ THIS LIST IS THE ORACLE AND IS NEVER DERIVED FROM PRODUCTION. Not imported, not spread, not
+ * mapped, not sliced, not filtered from `TRANSPORT_ATTEMPT_OUTCOMES`. That sharing was the entire
+ * defect the 22 August retrospective mutation sweep exposed: 11.7 iterated the production constant
+ * to build its "valid" inputs while `validateManifest` decided validity from the same import
+ * (lib/retrieval-telemetry-core.ts), so both sides moved together and NO substitution of any
+ * literal, in any number, in any order, could make the test fail. A test whose expectation IS the
+ * thing under test is not weak evidence for it; it is no evidence for it.
+ *
+ * If an outcome is ever genuinely retired or renamed, THIS LIST IS EDITED BY HAND in the commit
+ * that does it. That is the point rather than the cost: the edit is the review.
+ */
+const COMMITTED_ATTEMPT_OUTCOMES = Object.freeze([
+  'http_429',
+  'http_other',
+  'timeout',
+  'transport_error',
+  'bad_response',
+  'success',
+] as const);
+
 
 /**
  * EXECUTABLE CALL EXPRESSIONS, counted from the AST (v13 §4 item 1, Saul's review 24).
@@ -179,32 +205,77 @@ test('11.2 — `classifyAttemptOutcome` produces five of the six and NEVER `succ
 // 2. Each of the FOUR success sites produces `success`
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 
-test('11.3 — all four success sites record `success`, two of them through localAttemptSuccess()', () => {
+/**
+ * ⚠️ WHY 11.3 WAS REBUILT (Rep 44 §3.2, after the 22 August retrospective mutation sweep).
+ *
+ * The previous 11.3 counted `CallExpression` nodes and never executed `chatWithFallback`. The sweep
+ * disabled all four success sites in turn — `if (false)` before each cloud push, a `false ?` guard
+ * around each `localAttemptSuccess()` call — leaving every AST node in the tree, and 11.3 STAYED
+ * GREEN on all four. Four production success records could stop being written and the test that
+ * exists to prove "all four success sites record `success`" would not notice. The AST guard closed
+ * the commented-out attack; it never closed the DISABLED attack.
+ *
+ * The census is RETAINED below, because it is still the only thing that closes the attack it was
+ * written for. What is added is the half that was missing: the four paths are now RUN, and every
+ * assertion is made against the attribution the transport actually attached.
+ *
+ * ⚠️ TEST-ONLY INTERCEPTION, NO PRODUCTION SEAM (Rep 44 §3.2 and §2's file contract). The single
+ * interception point is `OpenAI.Chat.Completions.prototype.create`. Verified against the installed
+ * openai 4.104.0: a `Completions` instance carries NO own `create`, and its prototype IS
+ * `OpenAI.Chat.Completions.prototype` — so one patch reaches every client, including the
+ * module-scope `llm` that lib/llm.ts constructs at import time and that no per-instance mock could
+ * reach. lib/llm.ts is not modified, and is not imported until the synthetic environment is set.
+ *
+ * ⚠️ FAIL-LOUD BY CONSTRUCTION. Every base URL is a closed loopback port (127.0.0.1:1 and :2), and
+ * the two providers get DIFFERENT ports so the interceptor can tell them apart by `_client.baseURL`
+ * rather than by trusting the call order. If interception ever stops working the call takes
+ * ECONNREFUSED against localhost instead of reaching a real provider, and this test dies visibly.
+ *
+ * ⚠️ THE VERTEX TOKEN MINT IS A SEPARATE MECHANISM. `getVertexAccessToken` uses `globalThis.fetch`
+ * — unlike the SDK transport, which pass 5 proved does not — so it is stubbed there, with a
+ * loopback `token_uri` as the same fail-loud safeguard. The service-account key is generated
+ * in-process by `generateKeyPairSync`; nothing here is a credential.
+ *
+ * ⚠️ EVERY environment value, the prototype method and `globalThis.fetch` are restored in `finally`.
+ */
+const LOOPBACK_OLLAMA = 'http://127.0.0.1:1';
+const LOOPBACK_OPENROUTER = 'http://127.0.0.1:2/v1';
+const SYNTHETIC_TOKEN_URI = 'http://127.0.0.1:1/synthetic-token';
+
+/** A minimal completion that `classifyProviderResponse` accepts: one choice, non-empty content,
+ *  a usable finish reason. Anything less would be judged a bad response and never reach a
+ *  `success` attempt, which would make this test pass for the wrong reason. */
+const syntheticCompletion = (marker: string) => ({
+  id: `synthetic-${marker}`,
+  choices: [{ index: 0, message: { role: 'assistant', content: marker }, finish_reason: 'stop' }],
+});
+
+/** The env keys this test writes. Captured and restored wholesale — including keys that were
+ *  ABSENT, which must go back to absent rather than to the empty string. */
+const SYNTHETIC_ENV_KEYS = [
+  'OLLAMA_BASE_URL', 'GCP_PROJECT', 'GCP_LOCATION', 'GCP_SA_KEY',
+  'OPENROUTER_API_KEY', 'OPENROUTER_BASE_URL', 'LLM_PIPELINE', 'GEMINI_VIA_OPENROUTER',
+] as const;
+
+test('11.3 — all four success sites record `success`, EXECUTED end to end', async () => {
   // The two LOCAL sites, behaviourally: both spread `localAttemptSuccess()` in `lib/llm.ts`.
   const local = localAttemptSuccess();
   assert.deepEqual(local, { tier: 'ollama', attempt: 1, outcome: 'success', status: 200 });
   assert.ok((TRANSPORT_ATTEMPT_OUTCOMES as readonly string[]).includes(local.outcome));
 
-  // ⚠️ COUNTED FROM THE AST, NOT FROM SOURCE TEXT (v13 §4 items 1 and 2, Saul's review 24). Two
-  // earlier versions of this assertion were defeatable: the first scanned raw source, so commenting
-  // the cloud pushes out left it green; the second stripped lines BEGINNING with a comment marker,
-  // and a `/* … *\/` wrapper leaves the call's own line beginning with `attempts.push(`. Both
-  // reported four live success sites when two of them no longer executed.
-  //
-  // A comment cannot produce a CallExpression. That is the whole point, and it is why this is the
-  // last version of this assertion rather than the third regex.
+  // ── PART A. THE AST CENSUS, RETAINED ──────────────────────────────────────────────────────────
+  // Counted from the AST, not from source text (v13 §4 items 1 and 2, Saul's review 24). Two
+  // earlier versions were defeatable: the first scanned raw source, so commenting the cloud pushes
+  // out left it green; the second stripped lines BEGINNING with a comment marker, and a block
+  // comment leaves the call's own line beginning with `attempts.push(`. A comment cannot produce a
+  // CallExpression, which is what makes this the last version of THIS assertion — but see part B
+  // for what it still cannot see.
   const calls = callExpressionsIn('lib/llm.ts');
   const cloudPushes = calls.filter(isCloudSuccessPush);
   const helperCalls = calls.filter(isLocalHelperCall);
   assert.equal(cloudPushes.length, 2, 'exactly two LIVE cloud success pushes');
   assert.equal(helperCalls.length, 2, 'exactly two LIVE localAttemptSuccess() calls');
-
-  // ⚠️ ALL FOUR, AND NO FIFTH SHAPE. A success attempt written any other way would not be counted
-  // here and could carry any string; the union of the two forms is the whole population.
   assert.equal(cloudPushes.length + helperCalls.length, 4, 'four live success sites in lib/llm.ts, no more');
-
-  // Each cloud push names a REAL ladder tier, so the two counted are the openrouter and vertex ones
-  // rather than any two pushes that happen to say success.
   const tiers = cloudPushes.map((c) => {
     const obj = c.arguments[0] as ts.ObjectLiteralExpression;
     const t = obj.properties.find((prop) =>
@@ -212,10 +283,159 @@ test('11.3 — all four success sites record `success`, two of them through loca
     return t && ts.isPropertyAssignment(t) && ts.isStringLiteral(t.initializer) ? t.initializer.text : null;
   }).sort();
   assert.deepEqual(tiers, ['openrouter', 'vertex'], 'one per cloud tier');
-
-  // …and the count is not vacuous: the file really does contain call expressions, many of them, so
-  // a filter that matched nothing would be visible here rather than passing as "exactly two".
   assert.ok(calls.length > 50, 'the parse produced a real tree');
+
+  // ── PART B. THE FOUR PATHS, EXECUTED ──────────────────────────────────────────────────────────
+  const savedEnv = new Map<string, string | undefined>(
+    SYNTHETIC_ENV_KEYS.map((k) => [k, process.env[k]] as [string, string | undefined]));
+  const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  process.env.OLLAMA_BASE_URL = LOOPBACK_OLLAMA;
+  process.env.GCP_PROJECT = 'synthetic-project';
+  process.env.GCP_LOCATION = 'asia-south1';
+  process.env.GCP_SA_KEY = JSON.stringify({
+    client_email: 'synthetic@proof-11.invalid',
+    private_key: privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
+    token_uri: SYNTHETIC_TOKEN_URI,
+  });
+  process.env.OPENROUTER_API_KEY = 'synthetic-openrouter-key';
+  process.env.OPENROUTER_BASE_URL = LOOPBACK_OPENROUTER;
+  delete process.env.LLM_PIPELINE;          // `mini` would switch every cloud tier off
+  delete process.env.GEMINI_VIA_OPENROUTER; // the bridge inverts the ladder; tier order must be fixed
+
+  const completionsPrototype = (OpenAI as unknown as {
+    Chat: { Completions: { prototype: Record<string, unknown> } };
+  }).Chat.Completions.prototype;
+  const realCreate = completionsPrototype.create;
+  const realFetch = globalThis.fetch;
+
+  /** Every base URL the SDK was asked to call, in order. The EXACT CALL COUNT assertions read
+   *  this, so an extra provider call — a retry, a second tier, a stray embedding — is visible. */
+  let seen: string[] = [];
+  /** Per-path responder, keyed by base URL. Anything it does not name throws, so a path that
+   *  reaches an unexpected provider fails loudly instead of quietly returning a canned success. */
+  let respond: (baseURL: string) => unknown = () => {
+    throw new Error('11.3: the SDK was called before a path installed its responder');
+  };
+
+  try {
+    globalThis.fetch = (async (input: unknown) => {
+      const url = String(input);
+      if (url === SYNTHETIC_TOKEN_URI) {
+        return new Response(JSON.stringify({ access_token: 'synthetic-access-token', expires_in: 3600 }),
+          { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      // FAIL LOUD. Nothing else may leave this test.
+      throw new Error(`11.3: an unintercepted fetch escaped to ${url}`);
+    }) as typeof globalThis.fetch;
+
+    completionsPrototype.create = async function (this: { _client?: { baseURL?: string } }) {
+      const base = String(this._client?.baseURL ?? '');
+      seen.push(base);
+      return respond(base);
+    };
+
+    // ⚠️ IMPORTED ONLY NOW. lib/llm.ts reads OLLAMA_BASE_URL, GCP_PROJECT and GCP_LOCATION at
+    // MODULE SCOPE and constructs its `llm` client there (pass 5's finding). A static import at the
+    // top of this file would bind the real environment before any of the above ran.
+    const { chatWithFallback } = await import('../llm');
+
+    // The interception is real and the module bound OUR environment, asserted before anything is
+    // concluded from a passing path. A silently unpatched prototype would otherwise look like a
+    // provider that simply never got called.
+    assert.equal(typeof completionsPrototype.create, 'function');
+    assert.notEqual(completionsPrototype.create, realCreate, 'the prototype patch did not take');
+
+    const params = { model: 'llama3.1:8b', messages: [] as unknown[] };
+
+    // ── SITE 1 — INTENDED-LOCAL OLLAMA ──────────────────────────────────────────────────────────
+    // No gemini model and no openrouter model ⇒ neither cloud tier is available ⇒ the local model
+    // is the INTENDED route, not a substitution. This is the D14 arm that once reported
+    // `attempts: []` while making a real request.
+    seen = [];
+    respond = (b) => {
+      if (b.startsWith(LOOPBACK_OLLAMA)) return syntheticCompletion('intended-local');
+      throw new Error(`site 1 reached an unexpected provider: ${b}`);
+    };
+    const r1 = readTransportAttribution(await chatWithFallback(params));
+    assert.ok(r1, 'site 1 attached no attribution at all');
+    assert.equal(r1.dispatched_provider, 'ollama');
+    assert.equal(r1.cloud_response_received, false);
+    assert.deepEqual(r1.attempts, [{ tier: 'ollama', attempt: 1, outcome: 'success', status: 200 }],
+      'site 1 must record ONE ollama attempt, numbered 1, success, status 200');
+    assert.equal(seen.length, 1, 'site 1 must make exactly one provider call');
+
+    // ── SITE 2 — OPENROUTER ─────────────────────────────────────────────────────────────────────
+    // An explicit OpenRouter slug takes precedence, so OpenRouter is tier 1 and answers.
+    seen = [];
+    respond = (b) => {
+      if (b.startsWith(LOOPBACK_OPENROUTER)) return syntheticCompletion('openrouter');
+      throw new Error(`site 2 reached an unexpected provider: ${b}`);
+    };
+    const r2 = readTransportAttribution(
+      await chatWithFallback(params, undefined, 'openai/gpt-4o-mini', undefined, 1));
+    assert.ok(r2, 'site 2 attached no attribution at all');
+    assert.equal(r2.dispatched_provider, 'openrouter');
+    assert.equal(r2.dispatched_model, 'openai/gpt-4o-mini');
+    assert.equal(r2.cloud_response_received, true);
+    assert.deepEqual(r2.attempts, [{ tier: 'openrouter', attempt: 1, outcome: 'success', status: 200 }],
+      'site 2 must record ONE openrouter attempt, numbered 1, success, status 200');
+    assert.equal(seen.length, 1, 'site 2 must make exactly one provider call');
+
+    // ── SITE 3 — VERTEX ─────────────────────────────────────────────────────────────────────────
+    // A gemini model with Vertex configured and no OpenRouter slug ⇒ Vertex is tier 1 and answers.
+    seen = [];
+    respond = (b) => {
+      if (b.includes('aiplatform.googleapis.com')) return syntheticCompletion('vertex');
+      throw new Error(`site 3 reached an unexpected provider: ${b}`);
+    };
+    const r3 = readTransportAttribution(
+      await chatWithFallback(params, 'gemini-2.5-flash', undefined, undefined, 1));
+    assert.ok(r3, 'site 3 attached no attribution at all');
+    assert.equal(r3.dispatched_provider, 'vertex');
+    assert.equal(r3.dispatched_model, 'gemini-2.5-flash');
+    assert.equal(r3.cloud_response_received, true);
+    assert.deepEqual(r3.attempts, [{ tier: 'vertex', attempt: 1, outcome: 'success', status: 200 }],
+      'site 3 must record ONE vertex attempt, numbered 1, success, status 200');
+    assert.equal(seen.length, 1, 'site 3 must make exactly one provider call');
+
+    // ── SITE 4 — CLOUD LADDER EXHAUSTED, THEN LOCAL ─────────────────────────────────────────────
+    // A leg budget gives a two-tier ladder (Vertex then OpenRouter); both fail with a plain
+    // transport error, and the local model answers instead. THE SUBSTITUTION THE THROTTLE CENSUS
+    // COULD NOT SEE — and the assertion below is on ORDERING as much as on the success: the local
+    // row must be LAST, after the full ladder history that led to it.
+    seen = [];
+    respond = (b) => {
+      if (b.startsWith(LOOPBACK_OLLAMA)) return syntheticCompletion('fallback-local');
+      throw new Error('synthetic tier failure');
+    };
+    const r4 = readTransportAttribution(
+      await chatWithFallback(params, 'gemini-2.5-flash', undefined, 5_000, 1));
+    assert.ok(r4, 'site 4 attached no attribution at all');
+    assert.equal(r4.dispatched_provider, 'ollama');
+    assert.equal(r4.cloud_response_received, false);
+    assert.deepEqual(r4.attempts, [
+      { tier: 'vertex', attempt: 1, outcome: 'transport_error', status: null },
+      { tier: 'openrouter', attempt: 1, outcome: 'transport_error', status: null },
+      { tier: 'ollama', attempt: 1, outcome: 'success', status: 200 },
+    ], 'site 4 must record the ordered ladder history and END with the local success');
+    assert.equal(seen.length, 3, 'site 4 must make exactly three provider calls: vertex, openrouter, ollama');
+
+    // ⚠️ AND THE FOUR ARE DISTINCT SITES, not one site reached four ways. Each ran a different
+    // provider to a `success`, which is the claim in this test's name.
+    assert.deepEqual(
+      [r1.dispatched_provider, r2.dispatched_provider, r3.dispatched_provider, r4.dispatched_provider],
+      ['ollama', 'openrouter', 'vertex', 'ollama']);
+    const successes = [r1, r2, r3, r4].flatMap((r) => (r.attempts ?? []).filter((a) => a.outcome === 'success'));
+    assert.equal(successes.length, 4, 'exactly four executed success records across the four paths');
+    assert.ok(successes.every((a) => a.status === 200 && a.attempt === 1),
+      'every executed success is attempt 1 with status 200');
+  } finally {
+    completionsPrototype.create = realCreate;
+    globalThis.fetch = realFetch;
+    for (const [k, v] of savedEnv) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+  }
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════
@@ -384,13 +604,24 @@ test('11.6 — an outcome OUTSIDE the six is a manifest defect, in all three loc
 
 test('11.7 — an outcome INSIDE the six is not a defect, in all three locations', () => {
   // The other half of 11.6. Without it, a branch that flagged everything would pass 11.6.
+  //
+  // ⚠️ THE ORACLE IS `COMMITTED_ATTEMPT_OUTCOMES`, THE HAND-WRITTEN LIST — never
+  // `TRANSPORT_ATTEMPT_OUTCOMES`. See that constant's note. Substituting any production literal now
+  // makes this test fail, because the value this loop offers no longer matches what the validator
+  // will accept. Before Rep 44 §3.1 the two were the same object and the test was unfailable.
   for (const loc of LOCATIONS) {
-    for (const good of TRANSPORT_ATTEMPT_OUTCOMES) {
+    for (const good of COMMITTED_ATTEMPT_OUTCOMES) {
       const m = manifestWith(loc.role);
       loc.put(m, [{ provider: 'vertex', attempt: 1, outcome: good, status: null }]);
       assert.equal(defects(m), 0, `${loc.name}: ${good} is committed and must be accepted`);
     }
   }
+  // …and the oracle really did drive the loop, so a list that silently became empty — or a
+  // production constant that grew a seventh value the oracle does not know about — is visible here
+  // rather than passing as "every outcome was accepted".
+  assert.equal(COMMITTED_ATTEMPT_OUTCOMES.length, 6);
+  assert.equal(TRANSPORT_ATTEMPT_OUTCOMES.length, COMMITTED_ATTEMPT_OUTCOMES.length,
+    'production declares a different number of outcomes than the committed oracle');
 });
 
 test('11.8 — an ABSENT outcome, a wrong-shaped attempts value, and a mixed array are all defects', () => {

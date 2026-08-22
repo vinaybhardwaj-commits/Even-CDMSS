@@ -18,6 +18,7 @@
  */
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import OpenAI from 'openai';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -166,17 +167,23 @@ function sqlExpectingError(text: string): { status: number | null; stderr: strin
 }
 
 /**
- * The retrieval table's name, taken FROM THE DDL UNDER TEST rather than typed here.
+ * The retrieval table, NAMED LITERALLY (Rep 44 §5).
  *
- * ⚠️ AND THAT IS ALSO WHY. `lib/__tests__/telemetry-non-exposure.test.ts` scans every file under
- * `lib/` and `app/` for a literal `SELECT … FROM <telemetry table>`, allowing only an explicit
- * list. This file legitimately reads its OWN disposable cluster, not production's database, but the
- * scan cannot tell those apart — and the proper remedy, adding this path to that test's allow-list,
- * would be a THIRD file, which pass 5's acceptance 1 forbids. Deriving the name is not an attempt
- * to slip past the check: it is flagged in the evidence document for V and Saul, and the allow-list
- * entry should be added by whoever owns that file next.
+ * ⚠️ THIS WAS A DERIVED IDENTIFIER, AND THAT WAS THE WRONG FIX. The name used to be extracted from
+ * the DDL at run time and checked against `'opd_audit' + '_retrieval_telemetry'` — a split string
+ * literal, which exists for exactly one reason: to stop
+ * `lib/__tests__/telemetry-non-exposure.test.ts` from matching it. That test scans `lib/` and
+ * `app/` for a literal read of a telemetry table and permits only an explicit allow-list. This file
+ * legitimately drives its OWN disposable cluster on its own loopback port and never touches
+ * production's database, but the scan cannot tell those apart, and pass 5's file contract made
+ * editing the allow-list a third file.
+ *
+ * Rep 44 settled it: *"The allow-list entry, not identifier obfuscation, is the permanent
+ * explanation for why a disposable test-cluster query is permitted."* The entry now exists, so the
+ * dodge is removed and the table is written out. A future reader greping for this table name finds
+ * this file, which is the property the scan exists to protect.
  */
-let TELEM_TABLE = '';
+const TELEM_TABLE = 'opd_audit_retrieval_telemetry';
 
 /** The bound values every row below shares; only state and outcome vary. */
 const ROW_COLS = 'retrieval_run_id, retrieval_role, route, invocation_id, app_source, deployment_sha, telemetry_schema_version, persistence_state, started_at, retrieval_outcome';
@@ -205,8 +212,11 @@ before(async () => {
   ({ RerankBackendError: RerankBackendErrorCtor } = await import('../rerank'));
   const { retrievalTelemetryDdl } = await import('../retrieval-telemetry-core');
   const ddl = retrievalTelemetryDdl();
-  TELEM_TABLE = /CREATE TABLE IF NOT EXISTS (\w+)/.exec(ddl[0].sql)?.[1] ?? '';
-  assert.equal(TELEM_TABLE, 'opd_audit' + '_retrieval_telemetry', 'the DDL still creates the table proof 10 is about');
+  // The DDL is still the authority on WHAT IS CREATED — the literal above is checked AGAINST it,
+  // rather than being trusted. What changed is the direction: the name is declared and verified,
+  // not extracted and obscured.
+  const created = /CREATE TABLE IF NOT EXISTS (\w+)/.exec(ddl[0].sql)?.[1] ?? '';
+  assert.equal(created, TELEM_TABLE, 'the DDL still creates the table proof 10 is about');
   for (const stmt of ddl) sql(`${stmt.sql};`);
 });
 
@@ -695,7 +705,31 @@ test('14.9 — SUCCESS records exactly ONE terminal outcome PER ROLE, never two'
 
 const LAB_CTX = { invocationId: 'inv-14-lab', route: 'mcp_lab_retrieve', routeClass: 'mcp', deploymentSha: null, vercelRequestId: null, startedAt: '2026-08-12T00:00:00.000Z', routingFlags: {}, labExperimentId: null } as never;
 
-/** Drive the real `lab_retrieve` tool. `cohere` routes the rerank call to a local 404 — no egress. */
+/**
+ * Drive the real `lab_retrieve` tool. `cohere404` routes the rerank call to a local 404 — no egress.
+ *
+ * ⚠️ THE COHERE ARM DID NOT REACH THE 404 BEFORE REP 44 §4. `cohereRelevanceScores`
+ * (lib/rerank.ts:214) throws `RerankBackendUnreachable` on a missing `OPENROUTER_API_KEY` BEFORE it
+ * calls fetch, and the key is unset under test — so the arm made ZERO requests, the synthetic 404
+ * responder was never reached, and the `RerankBackendMissing` this file's comment claimed to raise
+ * was never raised. `retrieval_error_class` recorded `RerankBackendUnreachable` and 14.10's regex
+ * accepted it. `RERANK_API_URL` also defaults to an openrouter.ai path, which does not match the
+ * interceptor's `/cohere/i`, so even a made request would not have been counted.
+ *
+ * Fixed HERE, in the test. The synthetic key is supplied so the call gets past the key check, and
+ * the interceptor below is widened from `/cohere/i` to the RERANK ENDPOINT ITSELF so the request is
+ * caught and answered locally. `RERANK_API_URL` cannot be overridden from inside a test — lib/rerank.ts
+ * reads it at MODULE SCOPE (line 73) — which is exactly why the interceptor, not the env, is the
+ * place to close this. Nothing in lib/rerank.ts changes.
+ *
+ * ⚠️ THE WIDENING IS ALSO AN EGRESS GUARD. Supplying the key means the call now REACHES fetch, and
+ * the default `RERANK_API_URL` is `https://openrouter.ai/api/v1/rerank`. Without this the synthetic
+ * key would have been sent to a real host. It is answered locally instead and asserted to be.
+ */
+/** The rerank endpoint the cohere backend calls — matched by PATH, so the default openrouter.ai
+ *  host and any override both land on the synthetic responder rather than on the network. */
+const RERANK_ENDPOINT = /\/rerank(?:$|[?#])/;
+
 async function driveLabRetrieve(args: Record<string, unknown>, opts: { corpus?: 'hits' | 'none'; corpusError?: Error; cohere404?: boolean; embedFails?: boolean } = {}) {
   const { installDbStub } = await import('./telemetry-db-stub');
   const db = installDbStub();
@@ -719,21 +753,30 @@ async function driveLabRetrieve(args: Record<string, unknown>, opts: { corpus?: 
   // which is what raises the NAMED RerankBackendMissing. Nothing leaves this machine.
   const stubbed = globalThis.fetch;
   const external: string[] = [];
+  /** How many requests the SYNTHETIC 404 RESPONDER actually answered. Separate from `external`
+   *  so "a cohere-shaped URL was seen" and "the 404 responder served it" are two facts, not one. */
+  let responder404Hits = 0;
   globalThis.fetch = (async (input: unknown, init?: unknown) => {
     const url = typeof input === 'string' ? input : String((input as { url?: string })?.url ?? input);
-    if (/cohere/i.test(url)) { external.push(url); return new Response('not found', { status: 404 }); }
+    if (/cohere/i.test(url) || RERANK_ENDPOINT.test(url)) {
+      external.push(url); responder404Hits++; return new Response('not found', { status: 404 });
+    }
     return (stubbed as (a: unknown, b?: unknown) => Promise<Response>)(input, init);
   }) as typeof fetch;
   if (opts.embedFails) embedStub.mode = 'fail';
+  // Restored in `finally`, absent-back-to-absent. Only the cohere arm sets these.
+  const savedKey = process.env.OPENROUTER_API_KEY;
+  if (opts.cohere404) process.env.OPENROUTER_API_KEY = 'synthetic-proof-14-key';
   try {
     const { callLabTool } = await import('../mcp-tools');
     let result: unknown;
     let threw: unknown;
     try { result = await callLabTool('lab_retrieve', args, LAB_CTX); } catch (e) { threw = e; }
-    return { db, result, threw, external, terminals: db.matching(TERMINAL_SQL) };
+    return { db, result, threw, external, responder404Hits, terminals: db.matching(TERMINAL_SQL) };
   } finally {
     globalThis.fetch = stubbed;
     embedStub.mode = 'ok';
+    if (savedKey === undefined) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = savedKey;
   }
 }
 
@@ -748,9 +791,37 @@ test('14.10 — labRetrieve TYPED error: a RerankBackendError still returns the 
   // The outcome was recorded before the result was formed.
   assert.equal(r.terminals.length, 1);
   assert.equal(outcomeOf(r.terminals[0]), 'retrieval_failure');
-  assert.ok(r.external.every((u) => /cohere/i.test(u)), 'the only non-database request was the cohere one, answered locally');
-  // The discriminator against 14.11: the typed arm is labRetrieve's OWN `err(...)`, not a rethrow.
-  assert.match(asText, /RerankBackend/, 'the typed arm names the backend; the generic arm carries the original error');
+
+  // ── REP 44 §4 ASSERTION 2 — EXACTLY ONE INTERCEPTED REQUEST ─────────────────────────────────
+  // ⚠️ THIS REPLACES A VACUOUS ASSERTION. The line here was
+  //     assert.ok(r.external.every((u) => /cohere/i.test(u)), …)
+  // and `every` IS TRUE ON AN EMPTY ARRAY. The arm was in fact making ZERO requests — the key
+  // check at lib/rerank.ts:214 threw first — so a test claiming "the only external request was the
+  // cohere one" was passing on no request at all. A count is not a stylistic improvement over
+  // `every` here; it is the difference between an assertion and a decoration.
+  assert.equal(r.external.length, 1, 'EXACTLY one intercepted external request, never zero');
+  // The cohere backend is OpenRouter-HOSTED, so the endpoint is openrouter.ai's `/rerank`, not a
+  // cohere.com host — which is the other half of why the old `/cohere/i` filter recorded nothing.
+  assert.match(r.external[0], RERANK_ENDPOINT, 'and it is the rerank call');
+  assert.doesNotMatch(r.external[0], /^https?:\/\/(?!openrouter\.ai\/)/,
+    'answered locally at the known endpoint — no request to an unexpected host');
+
+  // ── REP 44 §4 ASSERTION 3 — THAT REQUEST REACHED THE INTENDED SYNTHETIC 404 RESPONDER ────────
+  // Counted at the responder itself, not inferred from the URL list, so "a cohere URL was seen"
+  // and "the 404 responder served it" stay two separate facts.
+  assert.equal(r.responder404Hits, 1, 'the synthetic 404 responder answered exactly once');
+  // …and the 404 is what produced the error, provable by its CLASS: only the `res.status === 404`
+  // branch raises RerankBackendMissing. RerankBackendUnreachable here would mean the call died
+  // before the responder — which is precisely the state this arm was silently in until Rep 44.
+  assert.equal(String(r.terminals[0].params[3]), 'RerankBackendMissing',
+    'the recorded error class proves the 404 branch ran, not the pre-fetch key check');
+
+  // ── REP 44 §4 ASSERTION 4 — THE TYPED ERROR REMAINS THE EXISTING RETURNED FORM ───────────────
+  // A ToolResult, returned not thrown, carrying the backend name — unchanged from before this
+  // repair. The discriminator against 14.11: the typed arm is labRetrieve's OWN `err(...)`.
+  assert.equal(res.isError, true, 'the existing form: an isError ToolResult, not a throw');
+  assert.ok(Array.isArray(res.content), 'with the existing content array');
+  assert.match(asText, /RerankBackendMissing/, 'the typed arm names the backend it could not reach');
 });
 
 test('14.11 — labRetrieve GENERIC error: the ORIGINAL error still throws, unchanged', async () => {
@@ -778,6 +849,60 @@ test('14.11 — labRetrieve GENERIC error: the ORIGINAL error still throws, unch
   assert.equal(r.terminals.length, 1, 'the outcome was still recorded before it left');
   assert.equal(outcomeOf(r.terminals[0]), 'retrieval_failure',
     'so a caller that only saw the throw still has the row saying WHY');
+
+  // ── REP 44 §4 ASSERTION 5 — THE ORIGINAL ERROR OBJECT, NOT MERELY ITS MESSAGE ────────────────
+  //
+  // ⚠️ WHY THE ASSERTIONS ABOVE CANNOT SETTLE THIS. `callLabTool`'s catch formats a rethrow as
+  // `err(String((e as Error).message))` — THE MESSAGE ALONE. At that boundary the original error
+  // and a freshly-built `new Error(sameMessage)` are indistinguishable by construction, so no
+  // assertion on the returned text can tell them apart. A test that only checks the text would
+  // stay green if production started replacing the error it caught, which is exactly the mutation
+  // Rep 44 §6 asks this to detect.
+  //
+  // THE CHANNEL THAT DOES CARRY OBJECT IDENTITY is `retrieval_error_class` ($4 on the terminal
+  // write). `errorClassOf` (lib/retrieval-capture.ts:71) reads `e.name` — a property of the OBJECT,
+  // which a same-message copy does not carry. So the original is BRANDED with a name nothing else
+  // in the process uses, and the recorded class is asserted to be that brand: the row can only say
+  // so if the object that reached the telemetry write is the object that was thrown.
+  //
+  // The brand is applied by intercepting `OpenAI.Embeddings.prototype.create` — the same
+  // test-only prototype technique 11.3 uses, no production seam — because the HTTP-500 arm above
+  // yields an SDK error whose `name` is the useless inherited "Error" (proof 11.5's finding), which
+  // a replacement would reproduce exactly.
+  const BRAND = 'ProofFourteenOriginalError_9f3c';
+  class BrandedOriginal extends Error {
+    constructor() { super('branded original (proof 14 assertion 5)'); this.name = BRAND; }
+  }
+  const thrownOriginal = new BrandedOriginal();
+  const embeddingsPrototype = (OpenAI as unknown as {
+    Embeddings: { prototype: Record<string, unknown> };
+  }).Embeddings.prototype;
+  const realEmbeddingsCreate = embeddingsPrototype.create;
+  let branded;
+  try {
+    embeddingsPrototype.create = async function () { throw thrownOriginal; };
+    assert.notEqual(embeddingsPrototype.create, realEmbeddingsCreate, 'the embeddings patch did not take');
+    branded = await driveLabRetrieve({ query: 'montelukast viral urti', topK: 4 }, { corpus: 'hits' });
+  } finally {
+    embeddingsPrototype.create = realEmbeddingsCreate;
+  }
+  assert.equal(branded.terminals.length, 1, 'the branded arm still wrote exactly one terminal');
+  assert.equal(outcomeOf(branded.terminals[0]), 'retrieval_failure');
+  assert.equal(String(branded.terminals[0].params[3]), BRAND,
+    'the recorded error class is the BRAND — the object thrown is the object that reached telemetry, '
+    + 'not a same-message replacement, which would have recorded "Error"');
+  // …and the brand is genuinely distinctive, so the assertion above cannot pass by coincidence with
+  // whatever class the unbranded arm records.
+  assert.notEqual(String(r.terminals[0].params[3]), BRAND);
+  assert.equal(String(r.terminals[0].params[3]), 'Error',
+    'the unbranded SDK arm records the inherited "Error" — which is exactly why it cannot prove identity');
+  // The original message still reaches the caller too, so identity is proven WITHOUT giving up the
+  // behaviour 14.11 already guarded.
+  const brandedRes = branded.result as { isError?: boolean; content?: { text?: string }[] };
+  assert.equal(brandedRes.isError, true);
+  assert.equal(String(brandedRes.content?.[0]?.text ?? ''),
+    'Error: branded original (proof 14 assertion 5)',
+    'the ORIGINAL message, carried by the dispatcher\'s rethrow format');
 });
 
 test('14.12 — MULTI-QUERY variant swallow, all three arms: success · zero hits · retrieval failure', async () => {
@@ -793,6 +918,32 @@ test('14.12 — MULTI-QUERY variant swallow, all three arms: success · zero hit
   embedStub.mode = 'ok';
   assert.ok(failed.terminals.length >= 1, 'and the terminal is still written when every arm failed');
   assert.equal(outcomeOf(failed.terminals[0]), 'retrieval_failure');
+
+  // ── REP 44 §4 ASSERTION 1 — THE EXPORTED RESULT STAYS THE NORMAL SUCCESSFUL FORM ─────────────
+  //
+  // ⚠️ THIS TEST CHECKED TELEMETRY AND NOTHING ELSE. It proved the ROW said `retrieval_failure`
+  // and never asked what the CALLER got. That is half a proof of a swallow: the whole point of a
+  // swallow is that the outcome is recorded WITHOUT the failure escaping, so if the dispatcher had
+  // begun returning an error `ToolResult` here the row would still have read `retrieval_failure`
+  // and this test would still have passed — while every caller's behaviour had changed.
+  //
+  // The claim is therefore made explicit: same shape as the SUCCESSFUL arm, no `isError`, no error
+  // text — an empty result, not a failed one.
+  const failedRes = failed.result as { isError?: boolean; content?: { type?: string; text?: string }[] };
+  const hitsRes = hits.result as { isError?: boolean; content?: { type?: string; text?: string }[] };
+  assert.equal(failed.threw, undefined, 'the multi-query failure did not propagate');
+  assert.notEqual(failedRes, undefined, 'a result was returned at all');
+  assert.notEqual(failedRes.isError, true, 'and it is NOT a dispatcher-generated error ToolResult');
+  assert.equal(failedRes.content?.[0]?.type, 'text');
+  const failedBody = JSON.parse(String(failedRes.content?.[0]?.text ?? '{}')) as Record<string, unknown>;
+  const hitsBody = JSON.parse(String(hitsRes.content?.[0]?.text ?? '{}')) as Record<string, unknown>;
+  assert.deepEqual(Object.keys(failedBody).sort(), Object.keys(hitsBody).sort(),
+    'the EXPECTED NORMAL EXTERNAL RESULT: the same keys the successful arm returns, not an error shape');
+  assert.equal(failedBody.mode, 'multi_query');
+  assert.equal(failedBody.count, 0, 'empty, which is what a swallowed failure looks like from outside');
+  assert.deepEqual(failedBody.hits, []);
+  assert.doesNotMatch(String(failedRes.content?.[0]?.text ?? ''), /\bError\b/,
+    'and it carries no error text — the failure lives in the row, not in the caller\'s result');
 
   assert.equal(new Set([outcomeOf(hits.terminals[0]), outcomeOf(none.terminals[0]), outcomeOf(failed.terminals[0])]).size, 3,
     'three arms, three distinct recorded facts');

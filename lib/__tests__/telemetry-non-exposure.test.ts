@@ -49,6 +49,14 @@ const ALLOWED = new Set([
   'lib/__tests__/retrieval-settlement.test.ts',
   'lib/__tests__/reconciler-races.test.ts',
   'lib/__tests__/worker-work-declaration.test.ts',
+  // ⚠️ ADDED BY REP 44 §5, and it is the PERMANENT explanation. This file drives proof 10 against a
+  // DISPOSABLE PostgreSQL cluster on its own loopback port and never reads production's database —
+  // but the scan cannot tell a disposable cluster from the real one, and until now the file dodged
+  // it by DERIVING the table name from the DDL and comparing against a split string literal.
+  // Rep 44: "The allow-list entry, not identifier obfuscation, is the permanent explanation for why
+  // a disposable test-cluster query is permitted." The entry is the explanation; the obfuscation is
+  // removed at the other end, and that file now names the table literally.
+  'lib/__tests__/retrieval-outcome-discrimination.test.ts',
 ]);
 
 function walk(dir: string, out: string[] = []): string[] {
