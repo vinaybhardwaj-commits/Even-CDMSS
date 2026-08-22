@@ -548,7 +548,7 @@ test('14.3b — the three LVC arms are mutually distinguishable, which is the wh
 
 test('14.4 — outer defaultRecall SQL branch (NO region filter): records `retrieval_failure` and RETHROWS', async () => {
   const { classedError } = await import('./telemetry-db-stub');
-  const r = await driveLvc('hits', classedError('lvc_recommendations unavailable', '57P01'));
+  const r = await driveLvc('hits', classedError('lvc_recommendations unavailable'));
   assert.ok(r.threw instanceof Error, 'the error RETHROWS — this branch sits outside the semantic leg\'s try');
   assert.match(String((r.threw as Error).message), /lvc_recommendations unavailable/, 'and it is the ORIGINAL error');
   assert.equal(r.terminals.length, 1, 'and the outcome was recorded BEFORE the error left the function');
@@ -559,8 +559,8 @@ test('14.5 — outer defaultRecall SQL branch (WITH region filter) behaves ident
   const { installDbStub, classedError } = await import('./telemetry-db-stub');
   const db = installDbStub();
   db.on(TERMINAL_SQL, [{ row_revision: 1 }]);
-  db.on(/FROM lvc_recommendations WHERE status = 'active' AND region = ANY/, classedError('region branch down', '57P01'));
-  db.on(LVC_RECS_SQL, classedError('region branch down', '57P01'));
+  db.on(/FROM lvc_recommendations WHERE status = 'active' AND region = ANY/, classedError('region branch down'));
+  db.on(LVC_RECS_SQL, classedError('region branch down'));
   embedStub.mode = 'ok';
   const { matchLowValueCare } = await import('../lvc');
   let threw: unknown;

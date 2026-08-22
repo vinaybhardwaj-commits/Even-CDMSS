@@ -1514,7 +1514,7 @@ test('44.2 — IDLE: a null ID, a null target, and exactly `idle` — never an a
 });
 
 test('44.3 — READ FAILURE REMAINS FAIL-OPEN and records THREE NULLS, distinct from idle', async () => {
-  const r = await driveWithBackfill(classedError('backfill_runs unavailable', '57P01'));
+  const r = await driveWithBackfill(classedError('backfill_runs unavailable'));
   const op = operationalOf(r.terminals[0]);
   assert.equal(op.active_backfill_run_id, null);
   assert.equal(op.active_backfill_target, null);
