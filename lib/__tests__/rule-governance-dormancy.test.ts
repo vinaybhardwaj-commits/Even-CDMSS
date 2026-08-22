@@ -166,23 +166,44 @@ test('proof 2: the flag is compared in EXACTLY ONE place in the whole module', (
     'no negated check — only the exact === "1" form, so no value but "1" can enable');
 });
 
-test('proof 2: both routes 404 on the flag BEFORE any auth work (kickoff §6 trap 5)', () => {
+test('proof 2: R3 routes authenticate STRICTLY, and only the OPERATIONAL one gates on the flag', () => {
+  // ⚠️ THIS PROOF WAS INVERTED BY D2 §2 (Saul Rep 48), AND ITS OLD FORM WAS RIGHT WHEN IT WAS
+  // WRITTEN. It required the FLAG to be checked BEFORE auth on BOTH routes, for a stated reason:
+  // `requireAdmin()` FAILS OPEN when ADMIN_TOKEN is unset, so auth could not be what made these
+  // routes dormant — the flag had to be. That premise is now false. Both routes use
+  // `requireConfiguredAdmin`, which REFUSES an unconfigured deployment, so authentication is what
+  // makes them safe and the flag is free to mean only "is the feature on".
+  //
+  // The consequence is asymmetric, and that asymmetry is the point:
+  //   · the MIGRATION route creates SCHEMA — authenticated, and NO LONGER flag-gated, because
+  //     creating empty tables and arming the feature are different decisions;
+  //   · the PROPOSE route performs an OPERATIONAL write — flag first, then strict auth.
+  const migrate = 'app/api/admin/migrate-rule-governance/route.ts';
+  const propose = 'app/api/admin/rule-governance/propose-pattern/route.ts';
+
   for (const r of MODULE_ROUTES) {
-    // From the handler declaration only: `isAdminUnlocked` also appears in the import list.
     const whole = stripComments(read(r));
     const handlerAt = whole.search(/export async function (GET|POST)\b/);
     assert.ok(handlerAt > 0, `${r} must export a handler`);
     const src = whole.slice(handlerAt);
+
+    // BOTH: strict auth, and never the fail-open helper or the browser cookie.
+    assert.match(src, /requireConfiguredAdmin\(req\)/, `${r} must authenticate strictly`);
+    assert.doesNotMatch(src, /requireAdmin\(/, `${r} must not use the fail-open helper`);
+    assert.doesNotMatch(src, /isAdminUnlocked\(/, `${r} must not admit the admin cookie`);
+
     const flagAt = src.indexOf('ruleGovernanceEnabled()');
-    const authAt = Math.min(
-      ...['isAdminUnlocked', 'requireAdmin'].map((s) => {
-        const i = src.indexOf(s + '(');
-        return i < 0 ? Number.MAX_SAFE_INTEGER : i;
-      }));
-    assert.ok(flagAt > 0, `${r} must check the flag`);
-    assert.ok(authAt < Number.MAX_SAFE_INTEGER, `${r} must also gate on auth`);
-    assert.ok(flagAt < authAt, `${r} must check the flag BEFORE auth — requireAdmin fails OPEN when ADMIN_TOKEN is unset`);
-    assert.match(src, /status:\s*404/, `${r} must 404 when the flag is unset`);
+    if (r === migrate) {
+      assert.equal(flagAt, -1, 'the schema route must NOT gate on the feature flag any more');
+      assert.doesNotMatch(src, /status:\s*404/, 'and therefore has no flag 404');
+    } else if (r === propose) {
+      assert.ok(flagAt > 0, 'the operational route must still gate on the flag');
+      assert.ok(flagAt < src.indexOf('requireConfiguredAdmin('),
+        'flag first on the operational route — it is the cheapest refusal and needs no credential');
+      assert.match(src, /status:\s*404/, 'flag unset ⇒ 404');
+    } else {
+      assert.fail(`unexpected R3 route ${r} — the asymmetry above must be decided for it`);
+    }
   }
 });
 

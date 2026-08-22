@@ -262,7 +262,15 @@ export const RULE_GOVERNANCE_DDL: readonly string[] = [
  * a column with nobody noticing (kickoff §6 trap 3). The bridge route does not call this.
  */
 export async function ensureRuleGovernanceTables(): Promise<void> {
-  assertEnabled();
+  // ⚠️ NO `assertEnabled()` HERE ANY MORE (D2 §2, Saul Rep 48). Creating the SCHEMA and enabling
+  // the FEATURE are different decisions, and the flag gate here forced an operator to arm the
+  // feature in order to create empty tables. Its ONE caller — the migrate route — now authenticates
+  // strictly with `requireConfiguredAdmin`, which refuses when ADMIN_TOKEN is absent, so this is
+  // authenticated schema DDL rather than an ungated one.
+  //
+  // ⚠️ THIS IS THE ONLY FLAG GATE REMOVED. `assertEnabled()` stays on every OPERATIONAL write —
+  // `proposePatternAsRule` and `bootstrapRuleVersions` — because those write governance ROWS, and
+  // a row written while the feature is off is a fact nobody decided to record.
   for (const ddl of RULE_GOVERNANCE_DDL) await run(ddl, []);
 }
 

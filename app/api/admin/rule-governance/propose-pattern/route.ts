@@ -29,8 +29,7 @@
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server';
-import { isAdminUnlocked } from '@/lib/admin-cookie';
-import { requireAdmin } from '@/lib/admin-gate';
+import { requireConfiguredAdmin } from '@/lib/admin-gate';
 import { LVP_CAP, LVP_FLOOR, LVP_NON_OVERUSE_CAP } from '@/lib/lvp-core';
 import { loadShelf } from '@/lib/lvp-store';
 import {
@@ -45,7 +44,10 @@ export const runtime = 'nodejs';
 
 export async function POST(req: NextRequest) {
   if (!ruleGovernanceEnabled()) return NextResponse.json({ ok: false, error: 'disabled' }, { status: 404 });
-  if (!(await isAdminUnlocked())) { const denied = requireAdmin(req); if (denied) return denied; }
+  // D2 §2: STRICT admin. The FLAG CHECK ABOVE STAYS — this route performs an operational write,
+  // and Rep 48 keeps the proposal route and every store write exact-flag gated.
+  const denied = requireConfiguredAdmin(req);
+  if (denied) return denied;
 
   const body = await req.json().catch(() => null) as Record<string, unknown> | null;
   if (!body || typeof body !== 'object') {
