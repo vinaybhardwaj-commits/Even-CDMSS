@@ -1,6 +1,8 @@
 /**
  * app/api/admin/migrate-rule-governance/route.ts — the runner for migration 0039 (R3-A).
- * Copies app/api/admin/migrate-lvp-hidden/route.ts, with the flag check added FIRST.
+ * Copies app/api/admin/migrate-lvp-hidden/route.ts. It once added a flag check FIRST; it no
+ * longer does — see the note below. This route authenticates STRICTLY and does not gate on the
+ * feature flag.
  *
  * IT DOES NOT RUN ITSELF. No cron, no build hook, no deploy step: an operator GETs it once, after
  * the deploy is READY.

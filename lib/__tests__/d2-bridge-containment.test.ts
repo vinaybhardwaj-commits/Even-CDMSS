@@ -345,3 +345,105 @@ test('D2.12 — lvp_pattern_id must be "pattern:" + a NONBLANK concept_id, and b
   assert.match(c, /btrim\(evidence_snapshot ->> 'concept_id'\) <> ''/, 'blank must fail');
   assert.match(c, /lvp_pattern_id = 'pattern:' \|\| \(evidence_snapshot ->> 'concept_id'\)/, 'the derivation is pinned');
 });
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// §1 of D2 correction 2 — the dedup predicate, BEHAVIOURALLY
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Evaluate the WHERE clause of the pending-proposal query the code ACTUALLY SENT, against rows,
+ * under SQL's three-valued logic.
+ *
+ * ⚠️ WHY THIS EXISTS. D2.6 and D2.7 assert the predicate is WRITTEN. That is a text check: it would
+ * pass unchanged if `coalesce(source, '')` became a bare `source`, and it is precisely that edit
+ * which breaks the gate. `NULL <> 'lvp-pattern'` is NULL, not true, so a proposal with a NULL
+ * source would silently DROP OUT of the comparison set — weakening dedup on exactly the ordinary
+ * rows it exists to catch. Nothing textual notices.
+ *
+ * So the predicate is parsed out of the real query string and EXECUTED here. Three-valued logic is
+ * modelled honestly: a conjunct that evaluates to NULL is not true, and the row does not survive.
+ */
+function evalPendingPredicate(query: string, rows: Record<string, unknown>[]): Record<string, unknown>[] {
+  const where = query.slice(query.indexOf('WHERE ') + 'WHERE '.length).trim();
+  const conjuncts = where.split(/\s+AND\s+/i).map((c) => c.trim());
+  assert.ok(conjuncts.length >= 1, 'the pending query must carry a WHERE clause');
+
+  /** null models SQL NULL — "unknown", which is NOT true. */
+  const evalConjunct = (c: string, row: Record<string, unknown>): boolean | null => {
+    let m = /^coalesce\((\w+),\s*''\)\s*(=|<>)\s*'([^']*)'$/.exec(c);
+    if (m) {
+      const v = row[m[1]] == null ? '' : String(row[m[1]]);   // coalesce: NULL becomes ''
+      return m[2] === '=' ? v === m[3] : v !== m[3];
+    }
+    m = /^(\w+)\s*(=|<>)\s*'([^']*)'$/.exec(c);
+    if (m) {
+      const raw = row[m[1]];
+      if (raw == null) return null;                          // NULL <> 'x' is NULL, not true
+      return m[2] === '=' ? String(raw) === m[3] : String(raw) !== m[3];
+    }
+    assert.fail(`the predicate evaluator does not model this conjunct: ${JSON.stringify(c)}`);
+  };
+
+  return rows.filter((row) => conjuncts.every((c) => evalConjunct(c, row) === true));
+}
+
+async function proposeWithPending(pending: Record<string, unknown>[], statement: string) {
+  const stub = installStub();
+  stub.on(/FROM lvc_recommendations$/, []);
+  const { callLabTool } = await import('../mcp-tools');
+  // The pending route EXECUTES the predicate the code sent, rather than replaying canned rows.
+  (stub as unknown as { on(m: RegExp, r: unknown): void }).on(PENDING_SELECT, []);
+  const original = globalThis.fetch as unknown as (u: string, i: { body: string }) => Promise<unknown>;
+  (globalThis as unknown as { fetch: unknown }).fetch = async (u: string, init: { body: string }) => {
+    const body = JSON.parse(init.body) as { query?: string };
+    if (typeof body.query === 'string' && PENDING_SELECT.test(body.query)) {
+      const surviving = evalPendingPredicate(body.query, pending);
+      return { ok: true, status: 200, json: async () => encode(surviving), text: async () => '' };
+    }
+    return original(u, init);
+  };
+  const r = await callLabTool('lvc_propose', {
+    statement, rationale: 'r', evidence_note: 'e', proposed_by: 'V (Dr Vinay Bhardwaj)',
+    citation_url: 'https://example.invalid/g', provenance: 'society-guideline',
+    source_release_year: 2024, license_status: 'open',
+  }) as { isError?: boolean; content?: { text?: string }[] };
+  return { stub, result: r };
+}
+
+const DUPE = 'Do not order a chest X-ray for uncomplicated bronchitis.';
+
+test('D2.21 — BEHAVIOURAL: a pending proposal with source AND provenance NULL still participates in dedup', async () => {
+  // ⚠️ THE EXACT CASE `coalesce` EXISTS FOR. An ordinary proposal typically carries no `source` at
+  // all — lvcPropose's INSERT does not populate that column — so NULL is the NORMAL state of the
+  // rows this gate most needs to compare against, not an edge case.
+  const { result } = await proposeWithPending(
+    [{ id: 'pending-1', statement: DUPE, source: null, provenance: null, status: 'proposed' }],
+    DUPE);
+  assert.equal(result.isError, true, 'a NULL-source pending duplicate must still be caught');
+  assert.match(String(result.content?.[0]?.text ?? ''), /near-duplicate/);
+});
+
+test('D2.22 — BEHAVIOURAL: a pending BRIDGE row is excluded, so it cannot block an ordinary proposal', async () => {
+  // The other half of lane A, and the control that stops D2.21 passing merely because the
+  // evaluator lets everything through.
+  const { result } = await proposeWithPending(
+    [{ id: 'bridge-1', statement: DUPE, source: 'lvp-pattern', provenance: 'lvp-pattern', status: 'proposed' }],
+    DUPE);
+  assert.notEqual(result.isError, true, 'a bridge row must not block an ordinary proposal');
+  // …and a row marked only by `provenance` is excluded too.
+  const byProvenance = await proposeWithPending(
+    [{ id: 'bridge-2', statement: DUPE, source: null, provenance: 'lvp-pattern', status: 'proposed' }],
+    DUPE);
+  assert.notEqual(byProvenance.result.isError, true, 'provenance alone excludes the row');
+});
+
+test('D2.23 — the evaluator models SQL three-valued logic, which is what makes D2.21 meaningful', () => {
+  // If this evaluator treated `NULL <> 'x'` as true, D2.21 would pass with or without coalesce and
+  // would be worth nothing. Pinned directly.
+  const row = { statement: 's', source: null, provenance: null, status: 'proposed' };
+  const withCoalesce = "SELECT x FROM t WHERE status = 'proposed' AND coalesce(source, '') <> 'lvp-pattern'";
+  const bare = "SELECT x FROM t WHERE status = 'proposed' AND source <> 'lvp-pattern'";
+  assert.equal(evalPendingPredicate(withCoalesce, [row]).length, 1, 'coalesce keeps a NULL-source row');
+  assert.equal(evalPendingPredicate(bare, [row]).length, 0,
+    'a bare comparison DROPS it — NULL <> value is NULL, and NULL is not true');
+});

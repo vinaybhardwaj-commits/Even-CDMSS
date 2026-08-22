@@ -8,8 +8,11 @@
 -- lib/__tests__/rule-governance-migration.test.ts asserts this file and those constants agree
 -- statement-for-statement, so the pair cannot fork silently.
 --
--- IT DOES NOT RUN ITSELF. No cron, no build hook, no deploy step. The route is behind
--- LVC_RULE_GOVERNANCE_ENABLED === '1' — which ships UNSET — and then behind the admin gate.
+-- IT DOES NOT RUN ITSELF. No cron, no build hook, no deploy step. The route AUTHENTICATES STRICTLY
+-- (requireConfiguredAdmin, which refuses when ADMIN_TOKEN is absent) and, since D2, does NOT gate on
+-- LVC_RULE_GOVERNANCE_ENABLED: creating these empty tables and arming the feature are different
+-- decisions, and coupling them forced an operator to arm the feature to get its storage. The FLAG
+-- still gates the proposal route and every operational store write, and it ships UNSET.
 --
 -- ADDITIVE AND SINGLE-TARGET. Four new objects and nothing else: no existing table is changed, no
 -- existing row is rewritten, nothing is removed. `lvc_recommendations` is not a target of any

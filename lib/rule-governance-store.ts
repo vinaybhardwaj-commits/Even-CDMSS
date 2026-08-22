@@ -1,9 +1,15 @@
 /**
  * lib/rule-governance-store.ts — R3-A: the Even rule book, IO layer (Neon). DORMANT.
  *
- * NOTHING IMPORTS THIS except its own two admin routes (kickoff §4 proof 1). It is gated on
- * LVC_RULE_GOVERNANCE_ENABLED === '1' (S3), which ships UNSET. No cron, no build hook, no deploy
- * step, no worker reaches it. IT DOES NOT RUN ITSELF (the refusal sentence from
+ * NOTHING IMPORTS THIS except its own two admin routes (kickoff §4 proof 1). Every OPERATIONAL
+ * write — `proposePatternAsRule`, `bootstrapRuleVersions` — is gated on
+ * LVC_RULE_GOVERNANCE_ENABLED === '1' (S3), which ships UNSET.
+ *
+ * ⚠️ THE ONE EXCEPTION, AND IT IS DELIBERATE (D2, Saul Rep 48): `ensureRuleGovernanceTables` creates
+ * SCHEMA and is authenticated rather than flag-gated, because its caller now refuses an
+ * unconfigured deployment. Saying "the module is gated on the flag" without that exception would
+ * be the same class of stale claim D2 was called back to fix. No cron, no build hook, no deploy
+ * step, no worker reaches any of it. IT DOES NOT RUN ITSELF (the refusal sentence from
  * app/api/admin/migrate-lvc-wording/route.ts:15, copied deliberately).
  *
  * NO LLM. No prompt is issued or registered here (kickoff §6 trap 7).
@@ -268,17 +274,19 @@ export const RULE_GOVERNANCE_DDL: readonly string[] = [
 /**
  * Idempotent DDL for migration 0039.
  *
- * CALLED FROM EXACTLY ONE PLACE: GET /api/admin/migrate-rule-governance, itself behind the flag
- * AND the admin gate. Deliberately NOT the ensureLvcProposalTables() idiom, which runs on every
+ * CALLED FROM EXACTLY ONE PLACE: GET /api/admin/migrate-rule-governance, which authenticates
+ * STRICTLY with `requireConfiguredAdmin` and — since D2 — does NOT gate on the feature flag.
+ * Creating schema and arming the feature are different decisions. Deliberately NOT the
+ * ensureLvcProposalTables() idiom, which runs on every
  * MCP propose or ratify call — that is how a runtime DDL and a migration file once disagreed on
  * a column with nobody noticing (kickoff §6 trap 3). The bridge route does not call this.
  */
 export async function ensureRuleGovernanceTables(): Promise<void> {
   // ⚠️ NO `assertEnabled()` HERE ANY MORE (D2 §2, Saul Rep 48). Creating the SCHEMA and enabling
-  // the FEATURE are different decisions, and the flag gate here forced an operator to arm the
-  // feature in order to create empty tables. Its ONE caller — the migrate route — now authenticates
-  // strictly with `requireConfiguredAdmin`, which refuses when ADMIN_TOKEN is absent, so this is
-  // authenticated schema DDL rather than an ungated one.
+  // the FEATURE are different decisions, and the flag gate THAT USED TO BE HERE forced an operator
+  // to arm the feature in order to create empty tables. Its ONE caller — the migrate route — now
+  // authenticates strictly with `requireConfiguredAdmin`, which refuses when ADMIN_TOKEN is absent,
+  // so this is authenticated schema DDL rather than an ungated one.
   //
   // ⚠️ THIS IS THE ONLY FLAG GATE REMOVED. `assertEnabled()` stays on every OPERATIONAL write —
   // `proposePatternAsRule` and `bootstrapRuleVersions` — because those write governance ROWS, and

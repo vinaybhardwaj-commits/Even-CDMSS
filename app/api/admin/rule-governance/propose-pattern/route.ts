@@ -23,8 +23,14 @@
  * LVP_NON_OVERUSE_CAP, which changed on 20 Aug 2026 when Addendum B split one cap into a
  * per-block pair, so a snapshot omitting them cannot be replayed.
  *
- * FLAG BEFORE AUTH. requireAdmin() fails OPEN when ADMIN_TOKEN is unset (lib/admin-gate.ts:6), so
- * the flag is what genuinely fails closed (kickoff §6 trap 5, acceptance 6).
+ * FLAG BEFORE AUTH — STILL TRUE, BUT NO LONGER FOR THE OLD REASON (D2, Saul Rep 48). It used to
+ * be that requireAdmin() FAILS OPEN when ADMIN_TOKEN is unset, so the flag was the only thing that
+ * genuinely failed closed. This route now uses `requireConfiguredAdmin`, which REFUSES an
+ * unconfigured deployment, so auth fails closed on its own.
+ *
+ * The flag still runs first, and now for its own reason: it is the cheapest refusal and needs no
+ * credential to decide. This route performs an OPERATIONAL write, so it stays exact-flag gated —
+ * unlike the migration route, which creates schema and is authenticated only.
  */
 export const dynamic = 'force-dynamic';
 
