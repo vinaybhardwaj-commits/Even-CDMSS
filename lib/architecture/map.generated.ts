@@ -411,6 +411,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "guardrails-r3-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "guidelines-ingest-core",
     "plane": "unregistered"
   },
@@ -1566,6 +1570,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "gov-auth",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "guardrails-r3-core",
     "kind": "value"
   },
   {
