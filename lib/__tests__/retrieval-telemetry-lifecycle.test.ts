@@ -1438,3 +1438,112 @@ test('4C-7 (§3.7) — no mutable global state is introduced', async () => {
   assert.deepEqual(after.audit, PRESEAM_BASELINE.audit, 'the plan-free path is unchanged by prior planned runs');
   assert.deepEqual(after.handles, PRESEAM_BASELINE.handles);
 });
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// PROOF 44 — THE BACKFILL SNAPSHOT, THROUGH THE REAL TERMINAL PATH (pass 5, Rep 43 A4)
+//
+// `readBackfillActivity()` answers "what else was this machine doing while this retrieval ran".
+// The value matters because §2's evidence boundary forbids reporting a cron tick as a workload: an
+// overlap analysis that cannot tell 360 route invocations from 360 backfills is reporting the same
+// work twice. `idle` is therefore a MEASUREMENT, not an absence, and the three-null read failure is
+// a third state distinct from both.
+//
+// Every case below drives the REAL `auditOpdNote` to `during_generation`, so both terminals are
+// written by production's own `writeRetrievalTerminals` and the snapshot is read off the operational
+// block the row actually carries.
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+const ACTIVE_RUN_SQL = /SELECT [\s\S]*FROM backfill_runs WHERE worker = \$1 AND status = 'active'/;
+
+/** The operational block the terminal UPDATE binds, inside the role manifest. */
+const operationalOf = (call: { params: unknown[] }) =>
+  (JSON.parse(String(call.params[20])) as {
+    operational: {
+      active_backfill_run_id: string | null;
+      active_backfill_target: string | null;
+      active_backfill_state: string | null;
+      retrieval_role: string;
+    };
+  }).operational;
+
+/** Drive the real audit to `during_generation` with `backfill_runs` answering as `answer` says. */
+async function driveWithBackfill(answer: Record<string, unknown>[] | Error) {
+  const KEY_ENV = 'CDMSS_TELEMETRY_HMAC_KEY';
+  const before = process.env[KEY_ENV];
+  process.env[KEY_ENV] = 'proof-44-key';
+  try {
+    const db = installDbStub();
+    db.on(UPDATE_TERMINAL, [{ row_revision: 1 }]);
+    db.on(ACTIVE_RUN_SQL, answer);
+    await assert.rejects(
+      () => auditOpdLifecycleTestSeam.run(ROW_4B,
+        { telemetry: TELE_4B, evalNormativeChannel: true, evalModel: 'pass4b-fault-surface', trace: false },
+        { faultAt: 'during_generation', primaryHits: PRIMARY_FIXTURE, normativeHits: NORMATIVE_FIXTURE }),
+      (e: unknown) => e instanceof LifecycleFaultInjected,
+    );
+    const terminals = db.matching(UPDATE_TERMINAL);
+    assert.equal(terminals.length, 2, 'both terminals were written through the real path');
+    return { db, terminals, activeRunCalls: db.matching(ACTIVE_RUN_SQL) };
+  } finally {
+    if (before === undefined) delete process.env[KEY_ENV]; else process.env[KEY_ENV] = before;
+  }
+}
+
+const ACTIVE_ROW = {
+  id: 4471, worker: 'opd', model: 'bedrock:global.anthropic.claude-haiku-4-5-20251001-v1:0',
+  status: 'active', day_from: '2026-08-01', day_to: '2026-08-20', created_at: '2026-08-20T00:00:00.000Z',
+};
+
+test('44.1 — ACTIVE: the row records the run ID, run.model as the target, and exactly `active`', async () => {
+  const r = await driveWithBackfill([ACTIVE_ROW]);
+  const op = operationalOf(r.terminals[0]);
+  assert.equal(op.active_backfill_run_id, String(ACTIVE_ROW.id), 'the run ID, as a string');
+  assert.equal(op.active_backfill_target, ACTIVE_ROW.model,
+    'the TARGET is run.model — BackfillRun has no `target` field, and what a run targets is the model it grades against');
+  assert.equal(op.active_backfill_state, 'active');
+});
+
+test('44.2 — IDLE: a null ID, a null target, and exactly `idle` — never an absent field', async () => {
+  const r = await driveWithBackfill([]);
+  const op = operationalOf(r.terminals[0]);
+  assert.equal(op.active_backfill_run_id, null);
+  assert.equal(op.active_backfill_target, null);
+  assert.equal(op.active_backfill_state, 'idle',
+    'idle is a MEASUREMENT: without it an overlap analysis cannot tell 360 route invocations from 360 backfills');
+  assert.notEqual(op.active_backfill_state, null, 'and it is emphatically not the read-failure state');
+});
+
+test('44.3 — READ FAILURE REMAINS FAIL-OPEN and records THREE NULLS, distinct from idle', async () => {
+  const r = await driveWithBackfill(classedError('backfill_runs unavailable', '57P01'));
+  const op = operationalOf(r.terminals[0]);
+  assert.equal(op.active_backfill_run_id, null);
+  assert.equal(op.active_backfill_target, null);
+  assert.equal(op.active_backfill_state, null, 'a null STATE — "we do not know", which idle is not');
+  // FAIL-OPEN, and the wrap is required rather than cautious: the audit completed to its fault and
+  // both terminals were still written. A telemetry read must never cost a retrieval its row.
+  assert.equal(r.terminals.length, 2, 'the terminal writes happened anyway');
+});
+
+test('44.4 — activeRun BINDS WORKER `opd`, not ipd and not a default', async () => {
+  const r = await driveWithBackfill([ACTIVE_ROW]);
+  assert.ok(r.activeRunCalls.length >= 1, 'the active-run query reached the transport');
+  for (const call of r.activeRunCalls) {
+    assert.equal(call.params[0], 'opd', 'worker is bound as opd — this is the OPD audit path');
+    assert.notEqual(call.params[0], 'ipd', 'BackfillWorker is opd | ipd, and this path is never ipd');
+  }
+});
+
+test('44.5 — BOTH ROLES receive the SAME backfill snapshot', async () => {
+  const r = await driveWithBackfill([ACTIVE_ROW]);
+  const primary = operationalOf(r.terminals[0]);
+  const normative = operationalOf(r.terminals[1]);
+  assert.equal(primary.retrieval_role, 'primary');
+  assert.equal(normative.retrieval_role, 'normative_channel');
+  assert.deepEqual(
+    { id: normative.active_backfill_run_id, target: normative.active_backfill_target, state: normative.active_backfill_state },
+    { id: primary.active_backfill_run_id, target: primary.active_backfill_target, state: primary.active_backfill_state },
+    'one snapshot, read once, given to both roles — not two reads that could disagree',
+  );
+  // And it is read ONCE per audit, so the two roles cannot straddle a backfill starting mid-run.
+  assert.equal(r.activeRunCalls.length, 1, 'exactly one active-run read for the whole audit');
+});
