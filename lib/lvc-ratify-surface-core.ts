@@ -7,9 +7,14 @@
  * ⚠️ THE ACCEPT WRITES PRODUCTION DATA AND THERE IS NO UNDO (D-20). No snapshot table exists and a
  * code revert will not restore a rule. Three things make that survivable and they are all here:
  *   · every UPDATE is guarded IS DISTINCT FROM, so a second press is inert (§6.8);
- *   · every accept appends the survivor's PREVIOUS statement, precondition, keywords and category
- *     to the append-only ledger, which is what makes a correction WRITABLE — a recovery path, not
- *     an undo button;
+ *   · every accept records the survivor's PREVIOUS statement, precondition, keywords, category and
+ *     citation as a JSON payload in the ledger ANCHOR ROW's `lvc_recommendation_proposals
+ *     .evidence_note` — NOT on the `lvc_ratifications` row, which carries the ratifier, the
+ *     rationale and the decision but none of the previous values. That payload is what makes a
+ *     correction WRITABLE — a recovery path, not an undo button — and PRD A-1 is the reason
+ *     `LEDGER_READ_SQL` now selects it and `parsePreviousValues` reads it back onto the screen.
+ *     Before A-1 it was written and never read, so recovery meant hand-written SQL against
+ *     production;
  *   · stored findings are never rewritten (D-4), so no audit already delivered to a doctor changes.
  *
  * NO SESSION STATE (D-21 / §6.13). Progress is a PURE function of the live rulebook plus the
@@ -73,6 +78,15 @@ export interface AbsorbedView {
   applied: boolean;
 }
 
+/** The survivor's values as they stood BEFORE an accept overwrote them (D-20 / PRD A-1). */
+export interface PreviousValues {
+  statement: string | null;
+  precondition: string | null;
+  keywords: string[];
+  category: string | null;
+  citation_url: string | null;
+}
+
 export interface LedgerEntry {
   decision: string;
   ratified_by: string;
@@ -80,6 +94,14 @@ export interface LedgerEntry {
   reason: string | null;
   created_at: string;
   survivor_id: string;
+  /**
+   * The recovery payload, parsed out of the anchor row's `evidence_note`. NULL means "not
+   * recorded" — the column was empty, the JSON did not parse, it was not a merge payload, or it
+   * carried no `previous` object. It is never an exception and never a partial object presented
+   * as complete: an unreadable payload must degrade, because the screen it feeds is the one a
+   * clinician is mid-sitting on.
+   */
+  previous: PreviousValues | null;
 }
 
 export interface RuleView {
@@ -103,6 +125,24 @@ export interface RuleView {
   progress: RuleProgress;
   /** the most recent ledger decision touching this survivor, if any */
   last_decision: LedgerEntry | null;
+  /**
+   * A-1 — what this rule WAS before the accept that is now in force, from the most recent
+   * ratification's recovery payload. D-20 leaves this as the only recovery path in the system, so
+   * it has to be reachable from the screen rather than from hand-written SQL.
+   *
+   * ONLY populated for a rule whose progress is `accepted`. A pending rule has not been overwritten
+   * by anything, so there is nothing it "was"; showing a payload there would invite a reviewer to
+   * read a previous sitting's row as this one's history.
+   *
+   * NULL means one of two different things, and `previous_recorded` separates them.
+   */
+  previous: PreviousValues | null;
+  /**
+   * `false` when the rule is accepted but its payload could not be read — the screen must then say
+   * "not recorded" rather than rendering blank fields that look like empty previous values.
+   * `null` when the question does not arise (the rule is not accepted).
+   */
+  previous_recorded: boolean | null;
 }
 
 export interface SurfaceState {
@@ -162,9 +202,7 @@ export function deriveProgress(
 
 /** D-20 — what the ledger must carry so a mistake is CORRECTABLE: the values that were there
  *  before this accept overwrote them. Read off the live row, never off the draft. */
-export function previousValues(cur: CurrentRuleRow | undefined): {
-  statement: string | null; precondition: string | null; keywords: string[]; category: string | null; citation_url: string | null;
-} {
+export function previousValues(cur: CurrentRuleRow | undefined): PreviousValues {
   return {
     statement: cur?.statement ?? null,
     precondition: cur?.precondition ?? null,
@@ -174,10 +212,16 @@ export function previousValues(cur: CurrentRuleRow | undefined): {
   };
 }
 
+/** The discriminator on the payload. ONE constant, written by ledgerPayload and required by
+ *  parsePreviousValues, so the writer and the reader cannot disagree about what they are looking at.
+ *  The proposals table is shared with lvc_propose, whose rows carry a human evidence_note — the
+ *  `kind` check is what stops one of those being read as a recovery payload. */
+export const LEDGER_PAYLOAD_KIND = 'lvc-rule-merge';
+
 /** The self-describing payload stored in the anchor row's `evidence_note`. */
 export function ledgerPayload(record: MergedRule, cur: CurrentRuleRow | undefined, recordSetKey: string): string {
   return JSON.stringify({
-    kind: 'lvc-rule-merge',
+    kind: LEDGER_PAYLOAD_KIND,
     record_set: recordSetKey,
     section: record.section,
     survivor_id: record.id,
@@ -191,6 +235,49 @@ export function ledgerPayload(record: MergedRule, cur: CurrentRuleRow | undefine
       citation_url: record.citation_url,
     },
   });
+}
+
+/**
+ * READ THE RECOVERY PAYLOAD BACK (PRD A-1). The exact inverse of `ledgerPayload`, and the only
+ * reader of `evidence_note` in the product.
+ *
+ * ⚠️ TOTAL AND FAIL-SAFE BY CONTRACT. It returns `null` and NEVER throws for every way the column
+ * can disappoint: NULL, empty or whitespace, malformed JSON, a JSON scalar or array rather than an
+ * object, a `kind` that is not ours (another tool's proposal sharing the table), or a payload whose
+ * `previous` object is missing or not an object. That matters more here than anywhere else in the
+ * build — this feeds a screen a clinician is mid-sitting on, and a throw would blank it. "Not
+ * recorded" is an honest answer; a crash, or a half-parsed object presented as the previous
+ * wording, is not.
+ *
+ * Field-level tolerance is deliberate too: a `previous` object missing `citation_url` (written by
+ * an older shape) yields null for that field rather than discarding the statement and precondition
+ * that ARE there. Keywords that are not an array degrade to [], never to a string that would render
+ * as one long phrase.
+ */
+export function parsePreviousValues(evidenceNote: unknown): PreviousValues | null {
+  if (typeof evidenceNote !== 'string') return null;
+  const raw = evidenceNote.trim();
+  if (!raw) return null;
+
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { return null; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+
+  const payload = parsed as Record<string, unknown>;
+  if (payload.kind !== LEDGER_PAYLOAD_KIND) return null;
+
+  const prev = payload.previous;
+  if (!prev || typeof prev !== 'object' || Array.isArray(prev)) return null;
+  const p = prev as Record<string, unknown>;
+
+  const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
+  return {
+    statement: str(p.statement),
+    precondition: str(p.precondition),
+    keywords: Array.isArray(p.keywords) ? p.keywords.map((k) => String(k)) : [],
+    category: str(p.category),
+    citation_url: str(p.citation_url),
+  };
 }
 
 // ── INFERRED SQL — reads ───────────────────────────────────────────────────────────────────────
@@ -207,10 +294,19 @@ export const FIRE_COUNTS_SQL = `WITH f AS (
    WHERE fi->>'rule_ref' = ANY($1)
    GROUP BY 1`;
 
-/** The ledger for these survivors, newest first. Joined through the anchor row's supersedes_id,
- *  which is how a merge ratification is addressable at all (see the flagged deviation above). */
+/**
+ * The ledger for these survivors, newest first. Joined through the anchor row's supersedes_id,
+ * which is how a merge ratification is addressable at all (see the flagged deviation above).
+ *
+ * ⚠️ `p.evidence_note` IS THE RECOVERY PAYLOAD AND IT IS WHY THIS QUERY EXISTS AT ALL (PRD A-1).
+ * D-20 removed the undo and the snapshot, so the previous values written at each accept carry the
+ * entire recovery burden. Until A-1 this column was written and never read back: recovery meant
+ * hand-written SQL against production plus a manual JSON.parse. Selecting it here is what makes it
+ * reachable from the product. The join, the WHERE and the ORDER BY are unchanged from that version
+ * — a test asserts each of them, because widening this query's reach is not what A-1 asked for.
+ */
 export const LEDGER_READ_SQL = `SELECT r.decision, r.ratified_by, r.rationale, r.reason,
-       r.created_at, p.supersedes_id AS survivor_id
+       r.created_at, p.supersedes_id AS survivor_id, p.evidence_note
   FROM lvc_ratifications r
   JOIN lvc_recommendation_proposals p ON p.id = r.proposal_id
  WHERE p.supersedes_id = ANY($1)
@@ -264,9 +360,12 @@ export interface AcceptResult {
  *        readback(survivor + absorbed) → survivor UPDATE → one UPDATE per absorbed id → readback;
  *   3. if step 2 changed nothing, the ledger is SKIPPED — a second press must be genuinely inert,
  *      and an append-only ledger filling with identical rows is not inert;
- *   4. INSERT the anchor proposal row (the FK the ledger requires);
- *   5. INSERT the lvc_ratifications row carrying the ratifier, the rationale and the survivor's
- *      PREVIOUS statement, precondition, keywords and category (D-20).
+ *   4. INSERT the anchor proposal row — the FK the ledger requires, AND the row that carries the
+ *      recovery payload: the survivor's PREVIOUS statement, precondition, keywords, category and
+ *      citation, as JSON in `evidence_note` (D-20);
+ *   5. INSERT the lvc_ratifications row carrying the ratifier, the rationale and the decision. It
+ *      does NOT carry the previous values — step 4's anchor does. Read them back with
+ *      `LEDGER_READ_SQL` + `parsePreviousValues` (PRD A-1).
  *
  * A failure at 4 or 5 does NOT roll back 2 — there are no transactions. It is reported as
  * `ledger: 'failed'` with ok:false, so the row that landed and the row that did not are both
@@ -428,6 +527,26 @@ export async function rejectRule(
 // ── assembling what the screen renders ─────────────────────────────────────────────────────────
 
 /**
+ * A-1 — the "what this rule was before" fields for one rule. PURE.
+ *
+ * Gated on `accepted` deliberately (see RuleView.previous). The three outcomes are distinct and the
+ * screen renders each one differently:
+ *   · not accepted        → { previous: null, previous_recorded: null }  — the question does not arise
+ *   · accepted, readable  → { previous: {...}, previous_recorded: true }
+ *   · accepted, unreadable→ { previous: null, previous_recorded: false } — say "not recorded"
+ */
+export function previousForRule(
+  survivorId: string,
+  progress: RuleProgress,
+  ledger: LedgerEntry[],
+): { previous: PreviousValues | null; previous_recorded: boolean | null } {
+  if (progress !== 'accepted') return { previous: null, previous_recorded: null };
+  const accept = ledger.find((l) => l.survivor_id === survivorId && l.decision === 'ratified');
+  if (!accept) return { previous: null, previous_recorded: false };
+  return { previous: accept.previous, previous_recorded: accept.previous !== null };
+}
+
+/**
  * PURE. Given the rulebook rows, the fire counts and the ledger, produce the whole screen state.
  * Separated from the reads so that progress derivation is testable without a database and so the
  * fail-safe behaviour lives in exactly one place — the loader below.
@@ -467,6 +586,10 @@ export function assembleSurfaceState(
       }),
       progress,
       last_decision: ledger.find((l) => l.survivor_id === record.id) ?? null,
+      // A-1. `ledger` arrives newest-first (ORDER BY created_at DESC), so the first RATIFIED row
+      // for this survivor is the accept currently in force — and its payload is what the rule was
+      // immediately before that accept. Rejections are skipped: a rejection overwrote nothing.
+      ...previousForRule(record.id, progress, ledger),
     };
   });
 
@@ -544,6 +667,10 @@ export async function loadSurfaceState(run: SqlRunner, key?: string | null): Pro
       reason: r.reason == null ? null : String(r.reason),
       created_at: String(r.created_at ?? ''),
       survivor_id: String(r.survivor_id ?? ''),
+      // A-1: the recovery payload, parsed here so every consumer of a LedgerEntry gets it already
+      // safe. A row whose payload is unreadable still returns — the decision, the ratifier and the
+      // timestamp are real facts and must not be lost because the JSON beside them was not.
+      previous: parsePreviousValues(r.evidence_note),
     }));
   } catch { ledgerAvailable = false; ledger = []; }
 

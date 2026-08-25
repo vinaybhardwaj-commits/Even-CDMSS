@@ -12,8 +12,12 @@
  *   2. UPDATE the survivor (guarded IS DISTINCT FROM);
  *   3. UPDATE each absorbed id → status='retired', merged_into=<survivor> (guarded);
  *   4. verification readback;
- *   5. INSERT the ledger anchor row, then INSERT the lvc_ratifications row carrying the survivor's
- *      PREVIOUS statement, precondition, keywords and category.
+ *   5. INSERT the ledger anchor row — which carries the survivor's PREVIOUS statement,
+ *      precondition, keywords, category and citation as JSON in `evidence_note` — then INSERT the
+ *      lvc_ratifications row, which carries the ratifier, the rationale and the decision and none
+ *      of the previous values. That split is forced by the schema: a ratification cannot exist
+ *      without a proposal to point at. GET /api/admin/lvc-ratify/state reads the payload back
+ *      (PRD A-1); before A-1 it was written and unreachable.
  * Step 5 is SKIPPED when steps 2–3 changed nothing, so pressing accept twice is genuinely inert
  * rather than filling an append-only ledger with identical rows.
  *

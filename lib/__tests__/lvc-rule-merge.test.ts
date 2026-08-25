@@ -37,7 +37,9 @@ import { LVC_CATEGORIES } from '../opd-lvc-classify-core';
 import { RATIFIED_PRECONDITIONS } from '../lvc-ratified-wording';
 import {
   acceptRuleMerge, rejectRule, deriveProgress, previousValues, assembleSurfaceState,
-  LEDGER_ANCHOR_INSERT_SQL, LEDGER_INSERT_SQL, getRecordSet,
+  LEDGER_ANCHOR_INSERT_SQL, LEDGER_INSERT_SQL, LEDGER_READ_SQL, LEDGER_PAYLOAD_KIND,
+  getRecordSet, ledgerPayload, parsePreviousValues, previousForRule,
+  type LedgerEntry,
 } from '../lvc-ratify-surface-core';
 import { compareSample, buildProposedRules, classifyChange, summarise } from '../lvc-merge-compare';
 
@@ -556,7 +558,9 @@ test('18: progress derivation is PURE — same inputs, same progress, no session
   untouched.set(record.absorbs[0], { ...untouched.get(record.absorbs[0])!, status: 'active', mergedInto: null });
   assert.equal(deriveProgress(record, untouched, []), 'pending');
   assert.equal(deriveProgress(record, untouched, [
-    { decision: 'rejected', ratified_by: RATIFIER, rationale: 'r', reason: 'not one concept', created_at: 't', survivor_id: record.id },
+    // `previous` is required on a LedgerEntry since A-1. A rejection overwrote nothing, so it is
+    // null here — and previousForRule ignores rejections regardless (asserted in the A-1 block).
+    { decision: 'rejected', ratified_by: RATIFIER, rationale: 'r', reason: 'not one concept', created_at: 't', survivor_id: record.id, previous: null },
   ]), 'rejected');
 });
 
@@ -629,4 +633,201 @@ test('the record set the surface loads is the 19 merge rules', () => {
   assert.equal(MERGE_RECORD_SET.records, MERGE_RULES);
   assert.equal(MERGE_RECORD_SET.key, 'phase1-merge');
   assert.equal(validateRecords(MERGE_RULES).length, 0, 'the shipped record set is valid by its own validator');
+});
+
+
+// ── PRD §1.1 A-1 — THE RECOVERY PAYLOAD MUST BE READABLE ──────────────────────────────────────
+//
+// D-20 removed the undo and the snapshot, so the previous values written at each accept carry the
+// entire recovery burden. Phase 1 wrote them to the anchor row's `evidence_note` and nothing ever
+// read them back: recovery meant hand-written SQL against production. These cases are the read
+// path, and — since the live ledger is EMPTY today — they are the only test it has.
+
+test('A-1: LEDGER_READ_SQL selects evidence_note, and nothing else about the query changed', () => {
+  // The addendum is explicit that only the select list widens. Each of the other three clauses is
+  // pinned separately so a later "while I am here" edit to the reach of this query fails loudly.
+  assert.match(LEDGER_READ_SQL, /\bp\.evidence_note\b/, 'the recovery payload must be selected');
+  assert.match(LEDGER_READ_SQL, /JOIN lvc_recommendation_proposals p ON p\.id = r\.proposal_id/, 'join unchanged');
+  assert.match(LEDGER_READ_SQL, /WHERE p\.supersedes_id = ANY\(\$1\)/, 'WHERE unchanged');
+  assert.match(LEDGER_READ_SQL, /ORDER BY r\.created_at DESC/, 'ORDER BY unchanged');
+  assert.match(LEDGER_READ_SQL, /^SELECT r\.decision, r\.ratified_by, r\.rationale, r\.reason,/, 'the original select list is intact');
+  assert.ok(!/\bWITH\b|\bUNION\b|LEFT JOIN|\bLIMIT\b/i.test(LEDGER_READ_SQL), 'no new query machinery');
+  assert.equal((LEDGER_READ_SQL.match(/\bJOIN\b/gi) ?? []).length, 1, 'still exactly one join');
+});
+
+test('A-1: a well-formed payload round-trips — ledgerPayload → parsePreviousValues, identical', () => {
+  const record = MERGE_RULES.find((r) => r.section === 'R10')!;
+  const cur = {
+    id: record.id,
+    statement: 'Avoid: Fixed-dose combination containing Serratiopeptidase',
+    precondition: null,
+    keywords: ['fixed', 'dose', 'combination', 'containing', 'serratiopeptidase'],
+    category: null,
+    citationUrl: null,
+    status: 'active', mergedInto: null, ratifiedBy: null, ratifiedAt: null,
+  };
+  const written = ledgerPayload(record, cur, 'phase1-merge');
+  const readBack = parsePreviousValues(written);
+  assert.deepEqual(readBack, previousValues(cur), 'what comes out is exactly what previousValues put in');
+  assert.deepEqual(readBack, {
+    statement: 'Avoid: Fixed-dose combination containing Serratiopeptidase',
+    precondition: null,
+    keywords: ['fixed', 'dose', 'combination', 'containing', 'serratiopeptidase'],
+    category: null,
+    citation_url: null,
+  });
+
+  // and a payload carrying real values in every field survives too
+  const full = ledgerPayload(record, { ...cur, precondition: 'the old precondition', category: 'other', citationUrl: '§ X, L1' }, 'phase1-merge');
+  assert.deepEqual(parsePreviousValues(full), {
+    statement: cur.statement, precondition: 'the old precondition',
+    keywords: cur.keywords, category: 'other', citation_url: '§ X, L1',
+  });
+});
+
+test('A-1: every malformed payload degrades to "not recorded" and NOTHING throws', () => {
+  const record = MERGE_RULES[0];
+  const good = JSON.parse(ledgerPayload(record, undefined, 'phase1-merge'));
+  // The screen this feeds is one a clinician is mid-sitting on. A throw would blank it.
+  const bad: unknown[] = [
+    null,                                              // column is NULL
+    undefined,
+    '',                                                // empty
+    '   \n  ',                                          // whitespace only
+    '{not json',                                       // malformed
+    '{"kind":"lvc-rule-merge","previous":',            // truncated
+    '"a string"',                                      // valid JSON, not an object
+    '12345',                                           // valid JSON scalar
+    '[{"kind":"lvc-rule-merge"}]',                     // valid JSON array
+    JSON.stringify({ ...good, kind: 'something-else' }),        // wrong kind
+    JSON.stringify({ ...good, kind: undefined }),               // no kind
+    JSON.stringify((() => { const o = { ...good }; delete (o as Record<string, unknown>).previous; return o; })()), // previous missing
+    JSON.stringify({ ...good, previous: null }),                // previous null
+    JSON.stringify({ ...good, previous: 'not an object' }),     // previous wrong type
+    JSON.stringify({ ...good, previous: ['a'] }),               // previous an array
+    'a human evidence note from lvc_propose, not JSON at all',  // the shared-table case
+    42, {}, [],                                        // non-string column values
+  ];
+  for (const v of bad) {
+    let out: unknown;
+    assert.doesNotThrow(() => { out = parsePreviousValues(v); }, `threw on ${JSON.stringify(v)?.slice(0, 40)}`);
+    assert.equal(out, null, `must be "not recorded" for ${JSON.stringify(v)?.slice(0, 40)}`);
+  }
+
+  // Field-level tolerance: a partial `previous` keeps what IS there rather than discarding it all.
+  const partial = parsePreviousValues(JSON.stringify({ kind: LEDGER_PAYLOAD_KIND, previous: { statement: 'kept' } }));
+  assert.deepEqual(partial, { statement: 'kept', precondition: null, keywords: [], category: null, citation_url: null });
+  // keywords that are not an array degrade to [], never to a string rendered as one long phrase
+  const wrongKw = parsePreviousValues(JSON.stringify({ kind: LEDGER_PAYLOAD_KIND, previous: { keywords: 'a b c' } }));
+  assert.deepEqual(wrongKw!.keywords, []);
+});
+
+test('A-1: the state exposes previous values ONLY for an accepted rule, never for a pending one', () => {
+  const set = getRecordSet('phase1-merge');
+  const record = set.records.find((r) => r.section === 'R14')!;
+  const payload = parsePreviousValues(ledgerPayload(record, {
+    id: record.id, statement: 'the old mined statement', precondition: null,
+    keywords: ['unindicated', 'abdominal', 'pelvic', 'ultrasound'], category: null, citationUrl: null,
+    status: 'active', mergedInto: null, ratifiedBy: null, ratifiedAt: null,
+  }, 'phase1-merge'));
+  const ledger: LedgerEntry[] = [{
+    decision: 'ratified', ratified_by: RATIFIER, rationale: 'sitting', reason: null,
+    created_at: '2026-08-25T00:00:00Z', survivor_id: record.id, previous: payload,
+  }];
+
+  // pending: the rule was never overwritten, so there is nothing it "was"
+  assert.deepEqual(previousForRule(record.id, 'pending', ledger), { previous: null, previous_recorded: null });
+  assert.deepEqual(previousForRule(record.id, 'partially_applied', ledger), { previous: null, previous_recorded: null });
+  assert.deepEqual(previousForRule(record.id, 'rejected', ledger), { previous: null, previous_recorded: null });
+  assert.deepEqual(previousForRule(record.id, 'missing', ledger), { previous: null, previous_recorded: null });
+
+  // accepted: the payload comes through
+  const accepted = previousForRule(record.id, 'accepted', ledger);
+  assert.equal(accepted.previous_recorded, true);
+  assert.equal(accepted.previous!.statement, 'the old mined statement');
+
+  // accepted but the payload is unreadable ⇒ recorded:false, so the screen says "not recorded"
+  const broken = previousForRule(record.id, 'accepted', [{ ...ledger[0], previous: null }]);
+  assert.deepEqual(broken, { previous: null, previous_recorded: false });
+
+  // accepted with no ratification row at all (a hand-applied merge) ⇒ also "not recorded"
+  assert.deepEqual(previousForRule(record.id, 'accepted', []), { previous: null, previous_recorded: false });
+
+  // a REJECTION overwrote nothing, so it must never be read as the accept's history
+  const rejectionOnly: LedgerEntry[] = [{ ...ledger[0], decision: 'rejected' }];
+  assert.deepEqual(previousForRule(record.id, 'accepted', rejectionOnly), { previous: null, previous_recorded: false });
+
+  // and another survivor's payload is never borrowed
+  assert.deepEqual(previousForRule('some-other-id', 'accepted', ledger), { previous: null, previous_recorded: false });
+});
+
+test('A-1: assembleSurfaceState carries previous onto the accepted rule and no other', () => {
+  const set = getRecordSet('phase1-merge');
+  const record = set.records.find((r) => r.section === 'R15')!;   // absorbs [] ⇒ accepted on content alone
+  const rows = new Map([[record.id, {
+    id: record.id, statement: record.statement, precondition: record.precondition,
+    keywords: record.keywords, category: record.category, citationUrl: record.citation_url,
+    status: 'active', mergedInto: null, ratifiedBy: RATIFIER, ratifiedAt: 'x',
+  }]]);
+  const ledger: LedgerEntry[] = [{
+    decision: 'ratified', ratified_by: RATIFIER, rationale: 'sitting', reason: null,
+    created_at: '2026-08-25T00:00:00Z', survivor_id: record.id,
+    previous: { statement: 'Avoid: High-dose PPI prescription', precondition: null, keywords: ['high', 'dose', 'ppi'], category: null, citation_url: null },
+  }];
+  const state = assembleSurfaceState(set, rows, new Map(), ledger, {
+    rulebookAvailable: true, firesAvailable: false, ledgerAvailable: true, mergedIntoPresent: true,
+  });
+
+  const accepted = state.rules.find((r) => r.section === 'R15')!;
+  assert.equal(accepted.progress, 'accepted');
+  assert.equal(accepted.previous_recorded, true);
+  assert.equal(accepted.previous!.statement, 'Avoid: High-dose PPI prescription');
+  assert.deepEqual(accepted.previous!.keywords, ['high', 'dose', 'ppi']);
+
+  for (const other of state.rules.filter((r) => r.section !== 'R15')) {
+    assert.notEqual(other.progress, 'accepted');
+    assert.equal(other.previous, null, `${other.section} is not accepted and must carry no previous values`);
+    assert.equal(other.previous_recorded, null, `${other.section}`);
+  }
+});
+
+test('A-1: the read path adds NO write statement anywhere', () => {
+  // The patch makes a payload readable. It must not have grown a restore, an undo, or any other
+  // way to put the old values back — D-20 stands (PRD §1.2).
+  const core = readFileSync('lib/lvc-ratify-surface-core.ts', 'utf8');
+  const page = readFileSync('app/admin/lvc-ratify/sitting.tsx', 'utf8');
+  const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').filter((l) => !l.trimStart().startsWith('//')).join('\n');
+
+  // exactly the four writes Phase 1 shipped — two rulebook UPDATEs (imported) and the two ledger
+  // INSERTs. No fifth write statement may appear in the core.
+  const inserts = (strip(core).match(/INSERT INTO/gi) ?? []).length;
+  assert.equal(inserts, 2, 'only the anchor and the ledger INSERT');
+  assert.ok(!/UPDATE lvc_recommendations/i.test(strip(core)), 'the core issues no UPDATE of its own');
+  assert.ok(!/\bDELETE\b|\bDROP\b|\bTRUNCATE\b/i.test(strip(core)));
+
+  // And the screen has no restore AFFORDANCE. Pinned on the CONTROLS, not on the words: the panel's
+  // own prose says "Nothing here can be restored automatically", and a word-match would flag the
+  // sentence that exists precisely to tell the reviewer there is no restore.
+  const handlers = [...page.matchAll(/onClick=\{([^}]*)\}/g)].map((m) => m[1].trim());
+  assert.deepEqual(handlers, [
+    '() => go(idx - 1)',            // previous rule
+    '() => go(idx + 1)',            // next rule
+    '() => setPrevOpen(!prevOpen)', // A-1 disclosure — pure client state, no fetch
+    'toggleImpact',                 // impact disclosure
+    "() => void submit('accept')",
+    '() => go(idx + 1)',            // skip
+    '() => void reject()',
+  ], 'the A-1 patch adds ONE control and it only toggles a disclosure');
+  assert.equal((page.match(/<button/g) ?? []).length, 7, 'no eighth control appeared');
+  // no identifier, handler or function anywhere is a restore path
+  assert.ok(!/(?:function|const|let|onClick=\{)[^\n]*\b(restore|undo|revert|rollback)\b/i.test(strip(page)),
+    'no restore/undo/revert handler may exist');
+  assert.match(page, /read-only/i, 'and the panel says it is read-only');
+  // the only fetches the page makes are the three Phase 1 endpoints; no new write endpoint
+  const fetched = [...page.matchAll(/fetch\(\s*[`'"]([^`'"]+)/g)].map((m) => m[1]);
+  assert.deepEqual([...new Set(fetched)].sort(), [
+    '/api/admin/lvc-merge-compare?section=${encodeURIComponent(rule.section)}',
+    '/api/admin/lvc-ratify/accept',
+    '/api/admin/lvc-ratify/state',
+  ]);
 });

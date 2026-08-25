@@ -33,11 +33,16 @@ type Draft = {
   keywords: string[]; category: string; citation_url: string | null; absorbs: string[];
 };
 type Absorbed = { id: string; statement: string | null; status: string | null; merged_into: string | null; fires: number | null; applied: boolean };
+type Previous = { statement: string | null; precondition: string | null; keywords: string[]; category: string | null; citation_url: string | null };
 type RuleView = {
   section: string; id: string; draft: Draft;
   current: { statement: string | null; precondition: string | null; keywords: string[]; category: string | null; citation_url: string | null; status: string | null; ratified_by: string | null; ratified_at: string | null; fires: number | null } | null;
   absorbs: Absorbed[]; progress: Progress;
   last_decision: { decision: string; ratified_by: string; created_at: string; reason: string | null } | null;
+  /** A-1 — what the rule was before the accept in force. Only sent for an accepted rule. */
+  previous: Previous | null;
+  /** false = accepted but the payload could not be read ⇒ "not recorded". null = not accepted. */
+  previous_recorded: boolean | null;
 };
 type State = {
   ok?: boolean; error?: string;
@@ -76,6 +81,7 @@ export default function RatifySitting() {
   const [impactOpen, setImpactOpen] = useState(false);      // COLLAPSED BY DEFAULT (D-19)
   const [impact, setImpact] = useState<Impact | null>(null);
   const [impactBusy, setImpactBusy] = useState(false);
+  const [prevOpen, setPrevOpen] = useState(false);          // A-1 panel, also collapsed by default
 
   const load = useCallback(async () => {
     try {
@@ -112,7 +118,7 @@ export default function RatifySitting() {
 
   const go = (next: number) => {
     setIdx(Math.max(0, Math.min(rules.length - 1, next)));
-    setMsg(null); setImpact(null); setImpactOpen(false);
+    setMsg(null); setImpact(null); setImpactOpen(false); setPrevOpen(false);
   };
 
   const runImpact = async () => {
@@ -324,6 +330,62 @@ export default function RatifySitting() {
                     </li>
                   ))}
                 </ul>
+              </div>
+            )}
+
+            {/* A-1 — what this rule WAS before the accept in force. READ-ONLY: there is
+                deliberately no restore button and no undo here. D-20 stands; this panel exists so
+                a correction can be WRITTEN accurately, by reading the previous wording and typing
+                it back into the fields above, not so the screen can put it back for you. */}
+            {rule.progress === 'accepted' && (
+              <div className="rounded border border-slate-200">
+                <button onClick={() => setPrevOpen(!prevOpen)} className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-[12.5px] font-medium text-slate-700">
+                  {prevOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                  What this rule was before it was accepted — read-only
+                </button>
+                {prevOpen && (
+                  <div className="space-y-2.5 border-t border-slate-100 px-3 py-2.5 text-[12.5px]">
+                    {rule.previous_recorded === false || !rule.previous ? (
+                      <p className="text-amber-800">
+                        Not recorded — the recovery payload for this accept could not be read. The rule
+                        is applied; its previous wording is not recoverable from this screen.
+                      </p>
+                    ) : (
+                      <>
+                        <p className="text-slate-500">
+                          Recorded at the accept
+                          {rule.last_decision?.ratified_by ? <> by {rule.last_decision.ratified_by}</> : null}.
+                          Nothing here can be restored automatically — correct the rule by editing the
+                          fields above and accepting the correction.
+                        </p>
+                        <div>
+                          <div className="text-[11.5px] font-semibold uppercase tracking-wide text-slate-500">Previous statement</div>
+                          <p className="mt-0.5 text-slate-800">{rule.previous.statement ?? <em className="text-slate-400">none</em>}</p>
+                        </div>
+                        <div>
+                          <div className="text-[11.5px] font-semibold uppercase tracking-wide text-slate-500">Previous precondition</div>
+                          <p className="mt-0.5 whitespace-pre-wrap leading-relaxed text-slate-800">
+                            {rule.previous.precondition ?? <em className="text-slate-400">none</em>}
+                          </p>
+                        </div>
+                        <div className="grid gap-2.5 sm:grid-cols-2">
+                          <div>
+                            <div className="text-[11.5px] font-semibold uppercase tracking-wide text-slate-500">Previous keywords</div>
+                            {rule.previous.keywords.length
+                              ? <ul className="mt-0.5 font-mono text-[11.5px] text-slate-800">{rule.previous.keywords.map((k, i) => <li key={`${k}-${i}`}>{k}</li>)}</ul>
+                              : <p className="mt-0.5 text-slate-400"><em>none</em></p>}
+                          </div>
+                          <div>
+                            <div className="text-[11.5px] font-semibold uppercase tracking-wide text-slate-500">Previous category</div>
+                            <p className="mt-0.5 text-slate-800">{rule.previous.category ?? <em className="text-slate-400">none</em>}</p>
+                            <div className="mt-2 text-[11.5px] font-semibold uppercase tracking-wide text-slate-500">Previous citation</div>
+                            <p className="mt-0.5 text-slate-800">{rule.previous.citation_url ?? <em className="text-slate-400">none</em>}</p>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
