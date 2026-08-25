@@ -515,11 +515,23 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "lvc-merge-compare",
+    "plane": "unregistered"
+  },
+  {
     "id": "lvc-proposal-core",
     "plane": "unregistered"
   },
   {
     "id": "lvc-ratified-wording",
+    "plane": "unregistered"
+  },
+  {
+    "id": "lvc-ratify-surface-core",
+    "plane": "unregistered"
+  },
+  {
+    "id": "lvc-rule-merge",
     "plane": "unregistered"
   },
   {
@@ -1071,6 +1083,16 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/admin",
     "to": "llm-cost-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
+    "to": "lvc-merge-compare",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
+    "to": "lvc-rule-merge",
     "kind": "value"
   },
   {
@@ -1660,12 +1682,32 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/api",
+    "to": "lvc-merge-compare",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
     "to": "lvc-proposal-core",
     "kind": "value"
   },
   {
     "from": "app/api",
     "to": "lvc-ratified-wording",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "lvc-ratify-surface-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "lvc-rule-merge",
+    "kind": "type"
+  },
+  {
+    "from": "app/api",
+    "to": "lvc-rule-merge",
     "kind": "value"
   },
   {
@@ -1797,6 +1839,11 @@ export const MAP_EDGES: MapEdge[] = [
     "from": "app/api",
     "to": "opd-longitudinal",
     "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "opd-lvc-classify-core",
+    "kind": "type"
   },
   {
     "from": "app/api",
@@ -3492,6 +3539,36 @@ export const MAP_EDGES: MapEdge[] = [
     "from": "lvc-judge-aa-core",
     "to": "lvc-core",
     "kind": "type"
+  },
+  {
+    "from": "lvc-merge-compare",
+    "to": "lvc-rule-merge",
+    "kind": "type"
+  },
+  {
+    "from": "lvc-merge-compare",
+    "to": "opd-lvc-classify-core",
+    "kind": "value"
+  },
+  {
+    "from": "lvc-ratify-surface-core",
+    "to": "lvc-rule-merge",
+    "kind": "value"
+  },
+  {
+    "from": "lvc-rule-merge",
+    "to": "lvc-proposal-core",
+    "kind": "value"
+  },
+  {
+    "from": "lvc-rule-merge",
+    "to": "lvc-ratified-wording",
+    "kind": "value"
+  },
+  {
+    "from": "lvc-rule-merge",
+    "to": "opd-lvc-classify-core",
+    "kind": "value"
   },
   {
     "from": "lvc-value",
