@@ -82,6 +82,8 @@ export interface PreopEpisodeRow {
   status: string | null;
   urgency: string | null;
   pacWorkflowStatus: string | null;
+  /** the booking row's last write — the proxy for "when the workflow status was logged" */
+  pacWorkflowLoggedAt: string | null;
   comorbidities: string[];
   createdAt: string | null;
 }
@@ -108,7 +110,7 @@ export async function fetchUpcomingEpisodes(horizonDays = 60): Promise<Fetched<P
               sc.clinical__comorbidities::text AS comorbidities,
               sc.hospital_info__hospital_uid,
               sc.planned_surgery_date::date::text AS surgery_date,
-              sc.created_at::text AS created_at,
+              sc.created_at::text AS created_at, sc._update_time::text AS updated_at,
               i.kx_uhid, i.display_name, i.first_name, i.last_name, i.gender,
               date_part('year', age((NOW() AT TIME ZONE 'Asia/Kolkata')::date, i.dob::date))::int AS age_years
          FROM surgery_cases sc
@@ -141,6 +143,7 @@ export async function fetchUpcomingEpisodes(horizonDays = 60): Promise<Fetched<P
       status: s(r.status),
       urgency: s(r.clinical__urgency),
       pacWorkflowStatus: s(r.pac__status),
+      pacWorkflowLoggedAt: s(r.updated_at),
       comorbidities: parsePgArray(r.comorbidities),
       createdAt: s(r.created_at),
     });

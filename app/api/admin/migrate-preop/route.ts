@@ -94,6 +94,12 @@ export async function POST(req: NextRequest) {
       ON preop_findings (needs_review, surgery_date)`;
     await sql`CREATE INDEX IF NOT EXISTS preop_findings_individual_idx ON preop_findings (individual_uid)`;
     steps.findings_indexes = 'ok';
+    // B4 (Amendment A1-3): the booking workflow's own PAC state, beside — never instead
+    // of — the bridged report. Additive and nullable; deliberately OUTSIDE the snapshot
+    // fingerprint, so the sweep refreshes these two columns without minting a version.
+    await sql`ALTER TABLE preop_findings ADD COLUMN IF NOT EXISTS pac_workflow_status TEXT`;
+    await sql`ALTER TABLE preop_findings ADD COLUMN IF NOT EXISTS pac_workflow_logged_at TIMESTAMPTZ`;
+    steps.b4_pac_workflow_columns = 'ok';
 
     await sql`CREATE TABLE IF NOT EXISTS preop_finding_versions (
       id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -140,6 +146,9 @@ export async function POST(req: NextRequest) {
     )`;
     await sql`CREATE INDEX IF NOT EXISTS preop_sweeps_engine_idx
       ON preop_sweeps (engine_version, ran_at DESC)`;
+    // B4: the board's degraded strip needs the fault list as data, not as prose parsed
+    // back out of `notes`. Additive and nullable — existing heartbeat rows carry NULL.
+    await sql`ALTER TABLE preop_sweeps ADD COLUMN IF NOT EXISTS degraded_sources JSONB`;
     steps.create_sweeps = 'ok';
 
     const f = (await sql`SELECT count(*)::int AS n FROM preop_findings`) as Array<{ n: number }>;

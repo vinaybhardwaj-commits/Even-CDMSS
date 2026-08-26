@@ -177,7 +177,7 @@ const episodeRow = {
   patientName: 'Test Patient', age: 62, sex: 'FEMALE',
   procedure: 'Total Hip Replacement - Unilateral- (Package )', hospitalUid: 'vZmEPseTKP3vS3DrZzrv',
   surgeryDate: '2026-08-27', status: 'ADMITTED', urgency: 'ELECTIVE',
-  pacWorkflowStatus: 'COMPLETED', comorbidities: ['DIABETES', 'HYPOTHYROID'],
+  pacWorkflowStatus: 'COMPLETED', pacWorkflowLoggedAt: '2026-08-25T00:00:00Z', comorbidities: ['DIABETES', 'HYPOTHYROID'],
   createdAt: '2026-08-01T00:00:00Z',
 };
 

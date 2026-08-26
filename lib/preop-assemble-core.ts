@@ -325,16 +325,30 @@ export function charlsonFrom(m: Inputs): InstrumentScore {
 // ── the snapshot ────────────────────────────────────────────────────────────────
 
 export interface PacState {
-  /** a PAC report exists for this patient */
+  /** a bridged KareXpert PAC REPORT exists for this patient */
   onFile: boolean;
   status: string | null;
   /** the anaesthetist's conclusion, quoted VERBATIM — never paraphrased, never replaced */
   verdict: string | null;
   reportUid: string | null;
   finalizedAt: string | null;
+  /**
+   * Amendment A1-3 — the OTHER fact. `surgery_cases.pac__status` is the BOOKING WORKFLOW's
+   * own state (PENDING / SCHEDULED_WITH_ANAESTHETIST / COMPLETED / POST_ADMISSION). It is
+   * not the report and the report is not it: measured 26 Aug, 8 of the 19 upcoming
+   * episodes read COMPLETED while 1 has a report. Both are carried, the UI shows both,
+   * and neither is ever allowed to stand in for the other.
+   */
+  workflowStatus: string | null;
+  /** when the surgery_cases row was last written — the closest thing to "when the
+   *  workflow status was logged"; the table has no PAC-specific timestamp. */
+  workflowLoggedAt: string | null;
 }
 
-export const PAC_NONE: PacState = { onFile: false, status: null, verdict: null, reportUid: null, finalizedAt: null };
+export const PAC_NONE: PacState = {
+  onFile: false, status: null, verdict: null, reportUid: null, finalizedAt: null,
+  workflowStatus: null, workflowLoggedAt: null,
+};
 
 export interface EpisodeFacts {
   episodeKey: string;
@@ -482,6 +496,11 @@ export function snapshotFingerprint(s: Omit<PreopSnapshot, 'fingerprint'>): stri
   const material = {
     engine: s.engineVersion,
     rules: s.rules,
+    // The REPORT is in the fingerprint; the booking WORKFLOW status is not. The versions
+    // rail answers "how did this score ripen", and a workflow moving PENDING → COMPLETED
+    // changes no instrument input — recording it as a snapshot version would put
+    // operational noise into a clinical timeline. It is displayed from its own live-row
+    // column instead, refreshed by the store on every tick (see lib/preop/store.ts).
     pac: { onFile: s.pac.onFile, status: s.pac.status, reportUid: s.pac.reportUid, verdict: s.pac.verdict },
     inputs: s.inputs.map((i) => ({
       id: i.inputId, status: i.status, source: i.source, value: i.value ?? null,

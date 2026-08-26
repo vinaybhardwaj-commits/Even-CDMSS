@@ -783,6 +783,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "preop-surface-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "preop-tier-core",
     "plane": "unregistered"
   },
@@ -1956,6 +1960,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/api",
+    "to": "preop-versions-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
     "to": "prognosis-outcomes-core",
     "kind": "value"
   },
@@ -2227,6 +2236,16 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/care",
     "to": "opd-note-audit-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/care",
+    "to": "preop",
+    "kind": "value"
+  },
+  {
+    "from": "app/care",
+    "to": "preop-versions-core",
     "kind": "value"
   },
   {
@@ -4436,6 +4455,16 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "preop",
+    "to": "admin-cookie",
+    "kind": "value"
+  },
+  {
+    "from": "preop",
+    "to": "care-cookie",
+    "kind": "value"
+  },
+  {
+    "from": "preop",
     "to": "db",
     "kind": "value"
   },
@@ -4456,8 +4485,23 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "preop",
+    "to": "preop-instruments-core",
+    "kind": "type"
+  },
+  {
+    "from": "preop",
     "to": "preop-pac-map-core",
     "kind": "value"
+  },
+  {
+    "from": "preop",
+    "to": "preop-surface-core",
+    "kind": "type"
+  },
+  {
+    "from": "preop",
+    "to": "preop-tier-core",
+    "kind": "type"
   },
   {
     "from": "preop",
@@ -4483,6 +4527,16 @@ export const MAP_EDGES: MapEdge[] = [
     "from": "preop-pac-map-core",
     "to": "preop-assemble-core",
     "kind": "type"
+  },
+  {
+    "from": "preop-surface-core",
+    "to": "preop-instruments-core",
+    "kind": "value"
+  },
+  {
+    "from": "preop-surface-core",
+    "to": "preop-tier-core",
+    "kind": "value"
   },
   {
     "from": "preop-tier-core",
@@ -5207,6 +5261,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "PREOP_SURFACE_RULE_VERSION",
+    "value": "preop-surface/1",
+    "file": "lib/preop-surface-core.ts",
+    "derived": false
+  },
+  {
     "constName": "PREOP_TIER_RULE_VERSION",
     "value": "preop-tier/0",
     "file": "lib/preop-tier-core.ts",
@@ -5312,8 +5372,8 @@ export const VERSION_REGISTRY: VersionRow[] = [
 
 export const COVERAGE = {
   "registered": 21,
-  "unregistered": 32,
-  "total": 53,
+  "unregistered": 33,
+  "total": 54,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
@@ -5336,6 +5396,7 @@ export const COVERAGE = {
     "preop-assemble-core",
     "preop-instruments-core",
     "preop-pac-map-core",
+    "preop-surface-core",
     "preop-tier-core",
     "preop-versions-core",
     "prognosis-core",

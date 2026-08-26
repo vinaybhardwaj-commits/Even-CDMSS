@@ -154,8 +154,10 @@ export function assembleEpisode(ep: PreopEpisodeRow, src: EpisodeSources): Assem
         verdict: parsedPac?.conclusion ?? src.pac.closingLine,
         reportUid: src.pac.uid,
         finalizedAt: src.pac.createdAt,
+        workflowStatus: ep.pacWorkflowStatus,
+        workflowLoggedAt: ep.pacWorkflowLoggedAt,
       }
-    : PAC_NONE;
+    : { ...PAC_NONE, workflowStatus: ep.pacWorkflowStatus, workflowLoggedAt: ep.pacWorkflowLoggedAt };
 
   const facts: EpisodeFacts = {
     episodeKey: ep.docId,
@@ -317,7 +319,7 @@ export async function runPreopSweep(opts: { now?: Date; horizonDays?: number; dr
     await recordSweep({
       engineVersion: PREOP_ENGINE_VERSION, episodes: episodes.length,
       inserted: written.inserted, updated: written.updated, unchanged: written.unchanged,
-      skipped: written.skipped, byTier, pacLinked, ms,
+      skipped: written.skipped, byTier, pacLinked, ms, degradedSources: degraded,
       notes: errors.length ? `${degraded.length ? `DEGRADED [${degraded.join(', ')}] ` : ''}${errors.slice(0, 3).join(' | ')}`.slice(0, 500) : null,
     });
   }

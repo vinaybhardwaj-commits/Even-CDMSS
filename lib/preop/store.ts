@@ -71,6 +71,8 @@ interface LiveRow {
   trace_id: string | null;
   needs_review: boolean | null;
   reviewed_version: number | null;
+  pac_workflow_status: string | null;
+  pac_workflow_logged_at: string | null;
 }
 
 /** jsonb tolerance — Neon usually parses, a TEXT round trip does not. */
@@ -119,7 +121,8 @@ export async function saveSnapshot(
     const current = (await sql(
       `SELECT episode_key, engine_version, version_no, tier, snapshot, snapshot_fingerprint,
               to_char(computed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS computed_at,
-              trace_id, needs_review, reviewed_version
+              trace_id, needs_review, reviewed_version, pac_workflow_status,
+              to_char(pac_workflow_logged_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS pac_workflow_logged_at
          FROM preop_findings
         WHERE episode_key = $1 AND engine_version = $2`,
       [snap.episodeKey, engineVersion],
@@ -141,9 +144,10 @@ export async function saveSnapshot(
             tier, rcri_lo, rcri_hi, mfi_lo, mfi_hi, cci_lo, cci_hi,
             needs_review, booking_only, pac_on_file, pac_status, pac_report_uid,
             pac_finalized_at, pac_verdict, why_line, missing_line, situation_line,
-            snapshot, snapshot_fingerprint, version_no, computed_at, trace_id)
+            snapshot, snapshot_fingerprint, version_no, computed_at, trace_id,
+            pac_workflow_status, pac_workflow_logged_at)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
-                 $22,$23,$24,$25,$26,$27,$28,$29,$30::jsonb,$31,1,$32,$33)`,
+                 $22,$23,$24,$25,$26,$27,$28,$29,$30::jsonb,$31,1,$32,$33,$34,$35)`,
         [
           snap.episodeKey, engineVersion, snap.episode.individualUid, snap.episode.uhid,
           snap.episode.patientName, snap.episode.age, snap.episode.sex,
@@ -155,6 +159,7 @@ export async function saveSnapshot(
           snap.pac.finalizedAt, snap.pac.verdict,
           snap.lines.why, snap.lines.missing, snap.lines.situation,
           JSON.stringify(snap), snap.fingerprint, snap.computedAt, traceId,
+          snap.pac.workflowStatus, snap.pac.workflowLoggedAt,
         ],
       );
       return { outcome: 'inserted', versionNo: 1, snapshotted: false };
@@ -162,13 +167,18 @@ export async function saveSnapshot(
 
     const willSnapshot = needsOverwriteSnapshot(row, snap.fingerprint);
     if (!willSnapshot) {
-      // Same reading. Refresh needs_review ONLY if it actually moved; otherwise write
-      // nothing at all, which is what the double-tick gate measures.
-      if ((row.needs_review ?? false) !== needsReview) {
+      // Same READING. Two live-row facts are deliberately outside the fingerprint and may
+      // still be refreshed here: needs_review, a board predicate that decays with the
+      // calendar, and the PAC booking-workflow status, which is operational rather than
+      // clinical (A1-3). Both are written ONLY when they actually moved, so a steady-state
+      // board still writes nothing at all and the double-tick gate still holds.
+      const workflowMoved = (row.pac_workflow_status ?? null) !== (snap.pac.workflowStatus ?? null)
+        || (row.pac_workflow_logged_at ?? null) !== (snap.pac.workflowLoggedAt ?? null);
+      if ((row.needs_review ?? false) !== needsReview || workflowMoved) {
         await sql(
-          `UPDATE preop_findings SET needs_review = $3
+          `UPDATE preop_findings SET needs_review = $3, pac_workflow_status = $4, pac_workflow_logged_at = $5
             WHERE episode_key = $1 AND engine_version = $2`,
-          [snap.episodeKey, engineVersion, needsReview],
+          [snap.episodeKey, engineVersion, needsReview, snap.pac.workflowStatus, snap.pac.workflowLoggedAt],
         );
       }
       return { outcome: 'unchanged', versionNo: row.version_no ?? 1, snapshotted: false };
@@ -196,7 +206,8 @@ export async function saveSnapshot(
          pac_on_file = $22, pac_status = $23, pac_report_uid = $24, pac_finalized_at = $25,
          pac_verdict = $26, why_line = $27, missing_line = $28, situation_line = $29,
          snapshot = $30::jsonb, snapshot_fingerprint = $31, version_no = $32,
-         computed_at = $33, trace_id = $34, updated_at = NOW()
+         computed_at = $33, trace_id = $34, updated_at = NOW(),
+         pac_workflow_status = $35, pac_workflow_logged_at = $36
        WHERE episode_key = $1 AND engine_version = $2`,
       [
         snap.episodeKey, engineVersion, snap.episode.individualUid, snap.episode.uhid,
@@ -209,6 +220,7 @@ export async function saveSnapshot(
         snap.pac.finalizedAt, snap.pac.verdict,
         snap.lines.why, snap.lines.missing, snap.lines.situation,
         JSON.stringify(snap), snap.fingerprint, versionNo, snap.computedAt, traceId,
+        snap.pac.workflowStatus, snap.pac.workflowLoggedAt,
       ],
     );
     return { outcome: 'updated', versionNo, snapshotted: true };
@@ -246,6 +258,12 @@ export interface FindingRow extends Record<string, unknown> {
   reviewed_by: string | null;
   reviewed_version: number | null;
   computed_at: string | null;
+  /** the whole stored snapshot — the read routes build their card rows from THIS, so the
+   *  board renders exactly what the sweep computed and cannot drift from it */
+  snapshot?: unknown;
+  pac_finalized_at?: string | null;
+  pac_workflow_status?: string | null;
+  pac_workflow_logged_at?: string | null;
 }
 
 const LIST_LIMIT = 500;
@@ -260,7 +278,10 @@ export async function listUpcoming(
               department, surgeon, to_char(surgery_date, 'YYYY-MM-DD') AS surgery_date,
               tier, rcri_lo, rcri_hi, mfi_lo, mfi_hi, cci_lo, cci_hi,
               needs_review, booking_only, pac_on_file, pac_status, pac_verdict,
-              why_line, missing_line, situation_line, version_no,
+              why_line, missing_line, situation_line, version_no, snapshot,
+              pac_finalized_at::text AS pac_finalized_at,
+              pac_workflow_status,
+              to_char(pac_workflow_logged_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS pac_workflow_logged_at,
               to_char(reviewed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS reviewed_at,
               reviewed_by, reviewed_version,
               to_char(computed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS computed_at
@@ -387,6 +408,8 @@ export interface SweepRecord {
   byTier: Record<string, number>;
   pacLinked: number;
   ms: number;
+  /** sources that FAULTED this tick — the board renders a strip when this is non-empty */
+  degradedSources?: string[];
   notes?: string | null;
 }
 
@@ -401,10 +424,11 @@ export async function recordSweep(r: SweepRecord): Promise<boolean> {
   try {
     await sql(
       `INSERT INTO preop_sweeps
-         (engine_version, episodes, inserted, updated, unchanged, skipped, by_tier, pac_linked, ms, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10)`,
+         (engine_version, episodes, inserted, updated, unchanged, skipped, by_tier, pac_linked, ms, notes, degraded_sources)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11::jsonb)`,
       [r.engineVersion, r.episodes, r.inserted, r.updated, r.unchanged, r.skipped,
-       JSON.stringify(r.byTier), r.pacLinked, r.ms, r.notes ?? null],
+       JSON.stringify(r.byTier), r.pacLinked, r.ms, r.notes ?? null,
+       JSON.stringify(r.degradedSources ?? [])],
     );
     return true;
   } catch {
@@ -415,15 +439,22 @@ export async function recordSweep(r: SweepRecord): Promise<boolean> {
 /** The board's "last sweep" stamp. Fail-safe. */
 export async function lastSweep(
   engineVersion: string = PREOP_ENGINE_VERSION,
-): Promise<{ at: string | null; episodes: number | null; error: string | null }> {
+): Promise<{ at: string | null; episodes: number | null; degradedSources: string[]; error: string | null }> {
   try {
     const rows = (await sql(
-      `SELECT to_char(ran_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS ran_at, episodes
+      `SELECT to_char(ran_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS ran_at, episodes, degraded_sources
          FROM preop_sweeps WHERE engine_version = $1 ORDER BY ran_at DESC LIMIT 1`,
       [engineVersion],
-    )) as Array<{ ran_at: string; episodes: number }>;
-    return { at: rows[0]?.ran_at ?? null, episodes: rows[0]?.episodes ?? null, error: null };
+    )) as Array<{ ran_at: string; episodes: number; degraded_sources: unknown }>;
+    const raw = rows[0]?.degraded_sources;
+    const parsed = typeof raw === 'string' ? (() => { try { return JSON.parse(raw); } catch { return []; } })() : raw;
+    return {
+      at: rows[0]?.ran_at ?? null,
+      episodes: rows[0]?.episodes ?? null,
+      degradedSources: Array.isArray(parsed) ? (parsed as unknown[]).map(String) : [],
+      error: null,
+    };
   } catch (e) {
-    return { at: null, episodes: null, error: String((e as Error).message).slice(0, 300) };
+    return { at: null, episodes: null, degradedSources: [], error: String((e as Error).message).slice(0, 300) };
   }
 }

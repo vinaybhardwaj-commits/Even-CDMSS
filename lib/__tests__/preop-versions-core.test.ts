@@ -58,7 +58,7 @@ const episode = {
 const base: SnapshotInput = {
   engineVersion: 'preop-risk/0.1', episode,
   observations: [{ inputId: 'high_risk_surgery', status: 'absent', source: 'BOOKING' }],
-  pac: { onFile: false, status: null, verdict: null, reportUid: null, finalizedAt: null },
+  pac: { onFile: false, status: null, verdict: null, reportUid: null, finalizedAt: null, workflowStatus: null, workflowLoggedAt: null },
   daysToSurgery: 20, reviewed: false, includeExtracted: false, bookingEnumerated: true,
   bookingOnly: true, computedAt: '2026-08-12T05:30:00Z',
 };

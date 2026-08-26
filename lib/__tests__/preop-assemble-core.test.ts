@@ -121,7 +121,7 @@ const base: SnapshotInput = {
   engineVersion: 'preop-risk/0.1', episode, observations: [
     { inputId: 'high_risk_surgery', status: 'absent', source: 'BOOKING' },
   ],
-  pac: { onFile: false, status: null, verdict: null, reportUid: null, finalizedAt: null },
+  pac: { onFile: false, status: null, verdict: null, reportUid: null, finalizedAt: null, workflowStatus: null, workflowLoggedAt: null },
   daysToSurgery: 20, reviewed: false, includeExtracted: false, bookingEnumerated: true,
   bookingOnly: true, computedAt: '2026-09-10T00:00:00Z',
 };
@@ -170,7 +170,7 @@ test('a tier that escalates as the calendar closes in DOES mint a version', () =
 test('needs_review is a board predicate, not a snapshot fact — it never mints a version', () => {
   const red: SnapshotInput = {
     ...base, bookingOnly: false,
-    pac: { onFile: true, status: 'final', verdict: 'FIT', reportUid: 'p1', finalizedAt: '2026-09-01T00:00:00Z' },
+    pac: { onFile: true, status: 'final', verdict: 'FIT', reportUid: 'p1', finalizedAt: '2026-09-01T00:00:00Z', workflowStatus: 'COMPLETED', workflowLoggedAt: null },
     observations: [
       { inputId: 'high_risk_surgery', status: 'present', source: 'BOOKING' },
       { inputId: 'ischaemic_heart_disease', status: 'present', source: 'BOOKING' },

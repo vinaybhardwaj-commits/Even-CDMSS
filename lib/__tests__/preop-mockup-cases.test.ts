@@ -28,7 +28,7 @@ const ENGINE = 'preop-risk/0.1';
 function snap(over: Partial<SnapshotInput> & Pick<SnapshotInput, 'episode' | 'observations'>): ReturnType<typeof composeSnapshot> {
   return composeSnapshot({
     engineVersion: ENGINE,
-    pac: { onFile: false, status: null, verdict: null, reportUid: null, finalizedAt: null },
+    pac: { onFile: false, status: null, verdict: null, reportUid: null, finalizedAt: null, workflowStatus: null, workflowLoggedAt: null },
     daysToSurgery: null,
     reviewed: false,
     includeExtracted: true,
@@ -80,6 +80,7 @@ const shobhaPac: Observation[] = [
 const SHOBHA_PAC_FINAL = {
   onFile: true, status: 'final', verdict: 'PATIENT CAN BE TAKEN FOR SURGERY',
   reportUid: 'kx:PAC-77', finalizedAt: '2026-08-24T12:32:00Z',
+  workflowStatus: 'COMPLETED', workflowLoggedAt: '2026-08-24T12:32:00Z',
 };
 
 test('mockup · Shobha K — RED, RCRI 2 Class III 6.6%, mFI-5 2/5, Charlson 4', () => {
@@ -224,7 +225,7 @@ test('mockup · Farhan S — AMBER on the confirmed lower bound, dashed on the c
       { inputId: 'hypertension_on_medication', status: 'present', source: 'BOOKING' },
       { inputId: 'functional_status_dependent', status: 'absent', source: 'PAC', detail: 'independent', observedAt: '2026-08-22T00:00:00Z' },
     ],
-    pac: { onFile: true, status: 'final', verdict: 'PATIENT CAN BE TAKEN FOR SURGERY', reportUid: 'kx:PAC-81', finalizedAt: '2026-08-22T10:10:00Z' },
+    pac: { onFile: true, status: 'final', verdict: 'PATIENT CAN BE TAKEN FOR SURGERY', reportUid: 'kx:PAC-81', finalizedAt: '2026-08-22T10:10:00Z', workflowStatus: 'COMPLETED', workflowLoggedAt: '2026-08-22T10:10:00Z' },
     daysToSurgery: 8,
   });
 
@@ -301,7 +302,7 @@ test('mockup · a clean young patient renders GREEN with a point score on all th
       { inputId: 'creatinine_over_2', status: 'absent', source: 'LAB', value: 0.9 },
       { inputId: 'functional_status_dependent', status: 'absent', source: 'PAC' },
     ],
-    pac: { onFile: true, status: 'final', verdict: 'PATIENT CAN BE TAKEN FOR SURGERY', reportUid: 'kx:PAC-90', finalizedAt: '2026-08-25T09:00:00Z' },
+    pac: { onFile: true, status: 'final', verdict: 'PATIENT CAN BE TAKEN FOR SURGERY', reportUid: 'kx:PAC-90', finalizedAt: '2026-08-25T09:00:00Z', workflowStatus: 'COMPLETED', workflowLoggedAt: '2026-08-25T09:00:00Z' },
     daysToSurgery: 12,
   });
   assert.equal(s.rcri.lo, 0);
