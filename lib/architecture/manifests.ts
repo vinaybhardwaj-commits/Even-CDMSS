@@ -240,6 +240,16 @@ export const UNREGISTERED: string[] = [
                             // namespaced package shape + degraded/provenance rules over the
                             // preserved (retired-surface) CCB mechanics
   'prognosis-core',         // prognosis engine (prognosis/0.1)
+  'preop',                  // pre-op risk agent orchestration + store (preop-risk/0.1 — deterministic
+                            // sweep, snapshot write-through, versions rail; no model in the loop)
+  'preop-instruments-core', // RCRI / mFI-5 / age-adjusted Charlson as pure arithmetic
+                            // (preop-instruments/1) — tri-state in, point/range/not-computable out
+  'preop-tier-core',        // pre-op tier rule v0 (preop-tier/0): per-instrument bands, the AMBER
+                            // floor, the two CRITICAL escalations, the derived card lines
+  'preop-assemble-core',    // pre-op input assembly (preop-assemble/1): source precedence, conflict
+                            // tagging, the extraction floor, the closed-world rule, the fingerprint
+  'preop-versions-core',    // pre-op snapshot versions (preop-versions/1) — the R8.1 rail, keyed on
+                            // the fingerprint rather than a trace because there is no model to trace
   'proms',                  // PROMs catalog/scheduling/scoring
   'readmission',            // readmission analysis agent Phase 1 (readmission/0.1 — detect + reconcile + Vertex worker)
   'readmission-reconcile-core', // pure Stage-2 reconciliation + R1 advisory judgements (readmit-judgement/1) —

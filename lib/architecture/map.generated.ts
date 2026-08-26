@@ -767,6 +767,26 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "preop",
+    "plane": "unregistered"
+  },
+  {
+    "id": "preop-assemble-core",
+    "plane": "unregistered"
+  },
+  {
+    "id": "preop-instruments-core",
+    "plane": "unregistered"
+  },
+  {
+    "id": "preop-tier-core",
+    "plane": "unregistered"
+  },
+  {
+    "id": "preop-versions-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "prognosis-core",
     "plane": "unregistered"
   },
@@ -1923,6 +1943,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "plos",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "preop",
     "kind": "value"
   },
   {
@@ -4406,6 +4431,46 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "preop",
+    "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "preop",
+    "to": "preop-assemble-core",
+    "kind": "type"
+  },
+  {
+    "from": "preop",
+    "to": "preop-tier-core",
+    "kind": "value"
+  },
+  {
+    "from": "preop",
+    "to": "preop-versions-core",
+    "kind": "value"
+  },
+  {
+    "from": "preop-assemble-core",
+    "to": "preop-instruments-core",
+    "kind": "value"
+  },
+  {
+    "from": "preop-assemble-core",
+    "to": "preop-tier-core",
+    "kind": "value"
+  },
+  {
+    "from": "preop-tier-core",
+    "to": "preop-instruments-core",
+    "kind": "value"
+  },
+  {
+    "from": "preop-versions-core",
+    "to": "preop-assemble-core",
+    "kind": "type"
+  },
+  {
     "from": "prognosis-outcomes-store",
     "to": "db",
     "kind": "value"
@@ -5094,6 +5159,36 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "PREOP_ASSEMBLE_RULE_VERSION",
+    "value": "preop-assemble/1",
+    "file": "lib/preop-assemble-core.ts",
+    "derived": false
+  },
+  {
+    "constName": "PREOP_ENGINE_VERSION",
+    "value": "preop-risk/0.1",
+    "file": "lib/preop/store.ts",
+    "derived": false
+  },
+  {
+    "constName": "PREOP_INSTRUMENTS_VERSION",
+    "value": "preop-instruments/1",
+    "file": "lib/preop-instruments-core.ts",
+    "derived": false
+  },
+  {
+    "constName": "PREOP_TIER_RULE_VERSION",
+    "value": "preop-tier/0",
+    "file": "lib/preop-tier-core.ts",
+    "derived": false
+  },
+  {
+    "constName": "PREOP_VERSIONS_RULE_VERSION",
+    "value": "preop-versions/1",
+    "file": "lib/preop-versions-core.ts",
+    "derived": false
+  },
+  {
     "constName": "PROM_CATALOG_VERSION",
     "value": "prom-catalog/0.1",
     "file": "lib/proms/catalog.ts",
@@ -5187,8 +5282,8 @@ export const VERSION_REGISTRY: VersionRow[] = [
 
 export const COVERAGE = {
   "registered": 21,
-  "unregistered": 26,
-  "total": 47,
+  "unregistered": 31,
+  "total": 52,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
@@ -5207,6 +5302,11 @@ export const COVERAGE = {
     "opd-note-audit",
     "opd-note-audit-core",
     "patient-summary-core",
+    "preop",
+    "preop-assemble-core",
+    "preop-instruments-core",
+    "preop-tier-core",
+    "preop-versions-core",
     "prognosis-core",
     "proms",
     "readmission",

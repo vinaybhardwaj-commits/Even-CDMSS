@@ -1,0 +1,429 @@
+/**
+ * lib/preop/store.ts — persist + read pre-op findings (Neon `preop_findings` and
+ * `preop_finding_versions`, created by /api/admin/migrate-preop).
+ * Mirrors lib/readmission/store.ts: a pure DB layer — no LLM calls, no db13 reads, no
+ * arithmetic; everything parameterised.
+ *
+ * IDEMPOTENCY IS THE POINT OF THIS FILE. The live row is keyed on
+ * (episode_key, engine_version). `saveSnapshot` reads the stored fingerprint first and
+ * takes ONE of three paths:
+ *
+ *   · no row              -> INSERT, version 1, no version row (nothing was destroyed)
+ *   · same fingerprint    -> 'unchanged': ZERO statements are written. Not "an UPDATE
+ *                            that happens to change nothing" — no write at all. That is
+ *                            what makes the B2 double-tick gate provable by row counts
+ *                            rather than by argument.
+ *   · new fingerprint     -> snapshot the OLD reading into preop_finding_versions with
+ *                            capture_reason 'overwrite', then UPDATE the live row and
+ *                            bump version_no. Exactly one version row per real change.
+ *
+ * needs_review is refreshed on the 'unchanged' path too — it is a BOARD PREDICATE that
+ * decays with the calendar (unreviewed RED/CRITICAL with surgery within 7 days), not a
+ * fact about the snapshot, so it is deliberately outside the fingerprint. It is the one
+ * column an unchanged tick may touch, and only when its value actually differs, so
+ * "second tick writes nothing" still holds for a steady-state board.
+ *
+ * PHI: the row carries individual_uid / uhid as LINK-BACK keys and patient_name for the
+ * board's own card header (this is a clinician-facing Managed Care surface, not an
+ * analytics export). Nothing here reaches a model — B1 and B2 have no model at all.
+ *
+ * Fail-safe: every reader returns []/null and every writer returns 'skipped' on a DB
+ * error (e.g. the migration has not run yet). The worker reports; it never 500s.
+ *
+ * ⚠️ INFERRED SQL throughout: this sandbox has no live Neon. Every statement is
+ * validated against production by running the migration and the worker (B2 gates).
+ */
+
+import { sql } from '../db';
+import type { PreopSnapshot } from '../preop-assemble-core';
+import {
+  buildOverwriteSnapshot, needsOverwriteSnapshot, nextVersionNo,
+  PREOP_CAPTURE_REASONS, type PreopVersionSnapshot,
+} from '../preop-versions-core';
+import { within7d } from '../preop-tier-core';
+
+/**
+ * The engine version. A bump is the A/B boundary and is FORWARD-ONLY: the next sweep
+ * writes a parallel row set at the new version, the surface reads the new version only,
+ * and the old rows are orphaned in place rather than migrated (the readmissions 0.1->0.2
+ * mechanics, PRD §6).
+ */
+export const PREOP_ENGINE_VERSION = 'preop-risk/0.1';
+
+export type SaveOutcome = 'inserted' | 'updated' | 'unchanged' | 'skipped';
+
+export interface SaveResult {
+  outcome: SaveOutcome;
+  versionNo: number | null;
+  /** true when this save minted a preop_finding_versions row */
+  snapshotted: boolean;
+  error?: string;
+}
+
+interface LiveRow {
+  episode_key: string;
+  engine_version: string;
+  version_no: number | null;
+  tier: string | null;
+  snapshot: unknown;
+  snapshot_fingerprint: string | null;
+  computed_at: string | null;
+  trace_id: string | null;
+  needs_review: boolean | null;
+  reviewed_version: number | null;
+}
+
+/** jsonb tolerance — Neon usually parses, a TEXT round trip does not. */
+function asObject(v: unknown): Record<string, unknown> | null {
+  if (v == null) return null;
+  if (typeof v === 'object') return v as Record<string, unknown>;
+  if (typeof v === 'string') { try { return JSON.parse(v) as Record<string, unknown>; } catch { return null; } }
+  return null;
+}
+
+/** Insert ONE version row. THROWS on failure — a history table that fails quietly is
+ *  worse than no history table (the R8.1 O2 asymmetry, kept). */
+export async function insertVersion(s: PreopVersionSnapshot): Promise<string> {
+  if (!PREOP_CAPTURE_REASONS.includes(s.captureReason)) {
+    throw new Error(`capture_reason must be one of ${PREOP_CAPTURE_REASONS.join(' | ')} — got '${String(s.captureReason)}'`);
+  }
+  if (!s.episodeKey || !s.engineVersion) throw new Error('version row requires episode_key and engine_version');
+  const rows = (await sql(
+    `INSERT INTO preop_finding_versions
+       (capture_reason, episode_key, engine_version, version_no, tier,
+        rcri_lo, rcri_hi, mfi_lo, mfi_hi, cci_lo, cci_hi,
+        snapshot_fingerprint, capture_note, computed_at, row_snapshot, trace_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16)
+     RETURNING id`,
+    [
+      s.captureReason, s.episodeKey, s.engineVersion, s.versionNo, s.tier,
+      s.rcriLo, s.rcriHi, s.mfiLo, s.mfiHi, s.cciLo, s.cciHi,
+      s.snapshotFingerprint, s.captureNote, s.computedAt, JSON.stringify(s.rowSnapshot), s.traceId,
+    ],
+  )) as Array<{ id: string }>;
+  if (!rows.length || !rows[0]?.id) throw new Error('version insert returned no row');
+  return rows[0].id;
+}
+
+/**
+ * The write path. See the file header for the three branches. `traceId` is carried for
+ * born-instrumented provenance (PRD §6) even though B1/B2 make no model call.
+ */
+export async function saveSnapshot(
+  snap: PreopSnapshot,
+  traceId: string | null = null,
+  engineVersion: string = PREOP_ENGINE_VERSION,
+): Promise<SaveResult> {
+  if (!snap.episodeKey) return { outcome: 'skipped', versionNo: null, snapshotted: false, error: 'no episode_key' };
+  try {
+    const current = (await sql(
+      `SELECT episode_key, engine_version, version_no, tier, snapshot, snapshot_fingerprint,
+              to_char(computed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS computed_at,
+              trace_id, needs_review, reviewed_version
+         FROM preop_findings
+        WHERE episode_key = $1 AND engine_version = $2`,
+      [snap.episodeKey, engineVersion],
+    )) as LiveRow[];
+    const row = current[0] ?? null;
+
+    // A stored review only stands for the version it was given for (mockup note 7: a new
+    // snapshot version re-opens review). Recomputed here so the predicate cannot drift.
+    const reviewedStands = row != null && row.reviewed_version != null && row.reviewed_version === (row.version_no ?? 0);
+    const needsReview = !reviewedStands
+      && (snap.tier.tier === 'RED' || snap.tier.tier === 'CRITICAL')
+      && within7d(snap.context.daysToSurgery);
+
+    if (!row) {
+      await sql(
+        `INSERT INTO preop_findings
+           (episode_key, engine_version, individual_uid, uhid, patient_name, age, sex,
+            procedure, hospital, department, surgeon, surgery_date,
+            tier, rcri_lo, rcri_hi, mfi_lo, mfi_hi, cci_lo, cci_hi,
+            needs_review, booking_only, pac_on_file, pac_status, pac_report_uid,
+            pac_finalized_at, pac_verdict, why_line, missing_line, situation_line,
+            snapshot, snapshot_fingerprint, version_no, computed_at, trace_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
+                 $22,$23,$24,$25,$26,$27,$28,$29,$30::jsonb,$31,1,$32,$33)`,
+        [
+          snap.episodeKey, engineVersion, snap.episode.individualUid, snap.episode.uhid,
+          snap.episode.patientName, snap.episode.age, snap.episode.sex,
+          snap.episode.procedure, snap.episode.hospital, snap.episode.department,
+          snap.episode.surgeon, snap.episode.surgeryDate,
+          snap.tier.tier, snap.rcri.lo, snap.rcri.hi, snap.mfi5.lo, snap.mfi5.hi,
+          snap.charlson.lo, snap.charlson.hi,
+          needsReview, snap.bookingOnly, snap.pac.onFile, snap.pac.status, snap.pac.reportUid,
+          snap.pac.finalizedAt, snap.pac.verdict,
+          snap.lines.why, snap.lines.missing, snap.lines.situation,
+          JSON.stringify(snap), snap.fingerprint, snap.computedAt, traceId,
+        ],
+      );
+      return { outcome: 'inserted', versionNo: 1, snapshotted: false };
+    }
+
+    const willSnapshot = needsOverwriteSnapshot(row, snap.fingerprint);
+    if (!willSnapshot) {
+      // Same reading. Refresh needs_review ONLY if it actually moved; otherwise write
+      // nothing at all, which is what the double-tick gate measures.
+      if ((row.needs_review ?? false) !== needsReview) {
+        await sql(
+          `UPDATE preop_findings SET needs_review = $3
+            WHERE episode_key = $1 AND engine_version = $2`,
+          [snap.episodeKey, engineVersion, needsReview],
+        );
+      }
+      return { outcome: 'unchanged', versionNo: row.version_no ?? 1, snapshotted: false };
+    }
+
+    // A real change: keep the reading we are about to destroy, THEN overwrite.
+    await insertVersion(buildOverwriteSnapshot({
+      episodeKey: row.episode_key,
+      engineVersion: row.engine_version,
+      versionNo: row.version_no,
+      tier: row.tier,
+      snapshot: asObject(row.snapshot),
+      snapshotFingerprint: row.snapshot_fingerprint,
+      computedAt: row.computed_at,
+      traceId: row.trace_id,
+    }));
+
+    const versionNo = nextVersionNo(row, true);
+    await sql(
+      `UPDATE preop_findings SET
+         individual_uid = $3, uhid = $4, patient_name = $5, age = $6, sex = $7,
+         procedure = $8, hospital = $9, department = $10, surgeon = $11, surgery_date = $12,
+         tier = $13, rcri_lo = $14, rcri_hi = $15, mfi_lo = $16, mfi_hi = $17,
+         cci_lo = $18, cci_hi = $19, needs_review = $20, booking_only = $21,
+         pac_on_file = $22, pac_status = $23, pac_report_uid = $24, pac_finalized_at = $25,
+         pac_verdict = $26, why_line = $27, missing_line = $28, situation_line = $29,
+         snapshot = $30::jsonb, snapshot_fingerprint = $31, version_no = $32,
+         computed_at = $33, trace_id = $34, updated_at = NOW()
+       WHERE episode_key = $1 AND engine_version = $2`,
+      [
+        snap.episodeKey, engineVersion, snap.episode.individualUid, snap.episode.uhid,
+        snap.episode.patientName, snap.episode.age, snap.episode.sex,
+        snap.episode.procedure, snap.episode.hospital, snap.episode.department,
+        snap.episode.surgeon, snap.episode.surgeryDate,
+        snap.tier.tier, snap.rcri.lo, snap.rcri.hi, snap.mfi5.lo, snap.mfi5.hi,
+        snap.charlson.lo, snap.charlson.hi,
+        needsReview, snap.bookingOnly, snap.pac.onFile, snap.pac.status, snap.pac.reportUid,
+        snap.pac.finalizedAt, snap.pac.verdict,
+        snap.lines.why, snap.lines.missing, snap.lines.situation,
+        JSON.stringify(snap), snap.fingerprint, versionNo, snap.computedAt, traceId,
+      ],
+    );
+    return { outcome: 'updated', versionNo, snapshotted: true };
+  } catch (e) {
+    return { outcome: 'skipped', versionNo: null, snapshotted: false, error: String((e as Error).message).slice(0, 300) };
+  }
+}
+
+// ── reads (all fail-safe) ───────────────────────────────────────────────────────
+
+export interface FindingRow extends Record<string, unknown> {
+  episode_key: string;
+  individual_uid: string | null;
+  uhid: string | null;
+  patient_name: string | null;
+  age: number | null;
+  sex: string | null;
+  procedure: string | null;
+  hospital: string | null;
+  surgery_date: string | null;
+  tier: string | null;
+  rcri_lo: number | null; rcri_hi: number | null;
+  mfi_lo: number | null; mfi_hi: number | null;
+  cci_lo: number | null; cci_hi: number | null;
+  needs_review: boolean | null;
+  booking_only: boolean | null;
+  pac_on_file: boolean | null;
+  pac_status: string | null;
+  pac_verdict: string | null;
+  why_line: string | null;
+  missing_line: string | null;
+  situation_line: string | null;
+  version_no: number | null;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
+  reviewed_version: number | null;
+  computed_at: string | null;
+}
+
+const LIST_LIMIT = 500;
+
+/** Upcoming episodes (surgery today or later), newest-surgery-last. Fail-safe. */
+export async function listUpcoming(
+  engineVersion: string = PREOP_ENGINE_VERSION,
+): Promise<{ rows: FindingRow[]; error: string | null }> {
+  try {
+    const rows = (await sql(
+      `SELECT episode_key, individual_uid, uhid, patient_name, age, sex, procedure, hospital,
+              department, surgeon, to_char(surgery_date, 'YYYY-MM-DD') AS surgery_date,
+              tier, rcri_lo, rcri_hi, mfi_lo, mfi_hi, cci_lo, cci_hi,
+              needs_review, booking_only, pac_on_file, pac_status, pac_verdict,
+              why_line, missing_line, situation_line, version_no,
+              to_char(reviewed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS reviewed_at,
+              reviewed_by, reviewed_version,
+              to_char(computed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS computed_at
+         FROM preop_findings
+        WHERE engine_version = $1
+          AND surgery_date IS NOT NULL
+          AND surgery_date >= (NOW() AT TIME ZONE 'Asia/Kolkata')::date
+        ORDER BY surgery_date ASC, episode_key ASC
+        LIMIT ${LIST_LIMIT}`,
+      [engineVersion],
+    )) as FindingRow[];
+    return { rows, error: null };
+  } catch (e) {
+    return { rows: [], error: `preop list unavailable: ${String((e as Error).message).slice(0, 300)}` };
+  }
+}
+
+/** The board's tiles + the chooser badge, from ONE predicate set. Fail-safe. */
+export async function boardCounts(
+  engineVersion: string = PREOP_ENGINE_VERSION,
+): Promise<{ upcoming: number; needsReview: number; noPac: number; bookingOnly: number; byTier: Record<string, number>; error: string | null }> {
+  const empty = { upcoming: 0, needsReview: 0, noPac: 0, bookingOnly: 0, byTier: {} as Record<string, number> };
+  try {
+    const rows = (await sql(
+      `SELECT tier,
+              count(*)::int AS n,
+              sum(CASE WHEN needs_review THEN 1 ELSE 0 END)::int AS needs_review,
+              sum(CASE WHEN NOT COALESCE(pac_on_file, false) THEN 1 ELSE 0 END)::int AS no_pac,
+              sum(CASE WHEN COALESCE(booking_only, false) THEN 1 ELSE 0 END)::int AS booking_only
+         FROM preop_findings
+        WHERE engine_version = $1
+          AND surgery_date IS NOT NULL
+          AND surgery_date >= (NOW() AT TIME ZONE 'Asia/Kolkata')::date
+        GROUP BY tier`,
+      [engineVersion],
+    )) as Array<{ tier: string | null; n: number; needs_review: number; no_pac: number; booking_only: number }>;
+    const out = { ...empty, byTier: {} as Record<string, number> };
+    for (const r of rows) {
+      out.upcoming += Number(r.n ?? 0);
+      out.needsReview += Number(r.needs_review ?? 0);
+      out.noPac += Number(r.no_pac ?? 0);
+      out.bookingOnly += Number(r.booking_only ?? 0);
+      out.byTier[r.tier ?? 'unknown'] = Number(r.n ?? 0);
+    }
+    return { ...out, error: null };
+  } catch (e) {
+    return { ...empty, error: `preop counts unavailable: ${String((e as Error).message).slice(0, 300)}` };
+  }
+}
+
+/** One episode's live row. Fail-safe (null on any error). */
+export async function getFinding(
+  episodeKey: string,
+  engineVersion: string = PREOP_ENGINE_VERSION,
+): Promise<{ row: (FindingRow & { snapshot: unknown }) | null; error: string | null }> {
+  try {
+    const rows = (await sql(
+      `SELECT *, to_char(surgery_date, 'YYYY-MM-DD') AS surgery_date
+         FROM preop_findings WHERE episode_key = $1 AND engine_version = $2`,
+      [episodeKey, engineVersion],
+    )) as Array<FindingRow & { snapshot: unknown }>;
+    return { row: rows[0] ?? null, error: null };
+  } catch (e) {
+    return { row: null, error: `preop case unavailable: ${String((e as Error).message).slice(0, 300)}` };
+  }
+}
+
+/** The case page's timeline. Oldest first — the story reads forward. Fail-safe. */
+export async function listVersionsForEpisode(
+  episodeKey: string,
+  engineVersion: string = PREOP_ENGINE_VERSION,
+): Promise<{ rows: Array<Record<string, unknown>>; error: string | null }> {
+  try {
+    const rows = (await sql(
+      `SELECT id,
+              to_char(captured_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS captured_at,
+              capture_reason, episode_key, engine_version, version_no, tier,
+              rcri_lo, rcri_hi, mfi_lo, mfi_hi, cci_lo, cci_hi,
+              snapshot_fingerprint, capture_note,
+              to_char(computed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS computed_at,
+              row_snapshot, trace_id
+         FROM preop_finding_versions
+        WHERE episode_key = $1 AND engine_version = $2
+        ORDER BY captured_at ASC
+        LIMIT 200`,
+      [episodeKey, engineVersion],
+    )) as Array<Record<string, unknown>>;
+    return { rows, error: null };
+  } catch (e) {
+    return { rows: [], error: `preop versions unavailable: ${String((e as Error).message).slice(0, 300)}` };
+  }
+}
+
+/** Slice 1's only workflow verb: mark THIS version reviewed. Fail-safe. */
+export async function markReviewed(
+  episodeKey: string,
+  versionNo: number,
+  by: string,
+  engineVersion: string = PREOP_ENGINE_VERSION,
+): Promise<{ ok: boolean; error: string | null }> {
+  try {
+    const rows = (await sql(
+      `UPDATE preop_findings
+          SET reviewed_at = NOW(), reviewed_by = $4, reviewed_version = $3, needs_review = FALSE
+        WHERE episode_key = $1 AND engine_version = $2 AND version_no = $3
+        RETURNING episode_key`,
+      [episodeKey, engineVersion, versionNo, by],
+    )) as Array<{ episode_key: string }>;
+    return { ok: rows.length > 0, error: rows.length ? null : 'no row at that episode + version (a new snapshot may have re-opened review)' };
+  } catch (e) {
+    return { ok: false, error: String((e as Error).message).slice(0, 300) };
+  }
+}
+
+// ── the sweep heartbeat ─────────────────────────────────────────────────────────
+
+export interface SweepRecord {
+  engineVersion: string;
+  episodes: number;
+  inserted: number;
+  updated: number;
+  unchanged: number;
+  skipped: number;
+  byTier: Record<string, number>;
+  pacLinked: number;
+  ms: number;
+  notes?: string | null;
+}
+
+/**
+ * One row per tick. The mockup's "last sweep 14:00 IST" stamp needs a heartbeat that is
+ * written even when no finding changed — and putting that stamp on the finding rows
+ * would destroy the "second tick writes nothing" guarantee this store exists to keep.
+ * ⚠️ A THIRD table, beyond the two the Build Plan names — flagged for V.
+ * Fail-safe: a failed heartbeat never fails a sweep.
+ */
+export async function recordSweep(r: SweepRecord): Promise<boolean> {
+  try {
+    await sql(
+      `INSERT INTO preop_sweeps
+         (engine_version, episodes, inserted, updated, unchanged, skipped, by_tier, pac_linked, ms, notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10)`,
+      [r.engineVersion, r.episodes, r.inserted, r.updated, r.unchanged, r.skipped,
+       JSON.stringify(r.byTier), r.pacLinked, r.ms, r.notes ?? null],
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The board's "last sweep" stamp. Fail-safe. */
+export async function lastSweep(
+  engineVersion: string = PREOP_ENGINE_VERSION,
+): Promise<{ at: string | null; episodes: number | null; error: string | null }> {
+  try {
+    const rows = (await sql(
+      `SELECT to_char(ran_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS ran_at, episodes
+         FROM preop_sweeps WHERE engine_version = $1 ORDER BY ran_at DESC LIMIT 1`,
+      [engineVersion],
+    )) as Array<{ ran_at: string; episodes: number }>;
+    return { at: rows[0]?.ran_at ?? null, episodes: rows[0]?.episodes ?? null, error: null };
+  } catch (e) {
+    return { at: null, episodes: null, error: String((e as Error).message).slice(0, 300) };
+  }
+}
