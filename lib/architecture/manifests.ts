@@ -248,6 +248,8 @@ export const UNREGISTERED: string[] = [
                             // floor, the two CRITICAL escalations, the derived card lines
   'preop-assemble-core',    // pre-op input assembly (preop-assemble/1): source precedence, conflict
                             // tagging, the extraction floor, the closed-world rule, the fingerprint
+  'preop-pac-map-core',     // the one KareXpert PAC template's key→semantic map (preop-pac-map/1) —
+                            // deterministic reads only; ASA and Mallampati decoded but display-only
   'preop-versions-core',    // pre-op snapshot versions (preop-versions/1) — the R8.1 rail, keyed on
                             // the fingerprint rather than a trace because there is no model to trace
   'proms',                  // PROMs catalog/scheduling/scoring

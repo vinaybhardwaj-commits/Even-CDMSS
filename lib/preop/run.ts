@@ -23,8 +23,12 @@ import {
 } from '../preop-assemble-core';
 import {
   fetchCreatinine, fetchOpdIcd, fetchPacReports, fetchUpcomingEpisodes,
-  looksLikeFitnessVerdict, type PacRow, type PreopEpisodeRow,
+  type PacRow, type PreopEpisodeRow,
 } from './db13';
+import {
+  pacAgeMismatch, pacBodyMetrics, pacObservations, parsePacComponentJson,
+  type ParsedPac,
+} from '../preop-pac-map-core';
 import { PREOP_ENGINE_VERSION, recordSweep, saveSnapshot, type SaveOutcome } from './store';
 
 /** PREOP_EXTRACT_ENABLED (PRD §7). Ships OFF; B5 builds what it gates. */
@@ -93,6 +97,12 @@ export interface AssembledEpisode {
   pac: PacState;
   unmappedBookingTerms: string[];
   unmatchedIcd: string[];
+  /** B3: the mapped PAC, for the case page. null when no report is attached. */
+  parsedPac: ParsedPac | null;
+  /** B3: how many instrument inputs the PAC actually supplied */
+  pacInputCount: number;
+  /** B3: the PAC's own recorded age disagrees with the dob-derived age by this many years */
+  pacAgeMismatch: number | null;
 }
 
 /**
@@ -123,15 +133,25 @@ export function assembleEpisode(ep: PreopEpisodeRow, src: EpisodeSources): Assem
     if (obs) observations.push(obs);
   }
 
-  // 4 · the PAC: B2 uses EXISTENCE, status, time and the note's closing line only.
-  //     Mapping the payload's opaque keys to semantic fields is B3, so no PAC-derived
-  //     INPUT is asserted here — the anaesthetist's own conclusion is carried verbatim
-  //     for the banner and nothing is inferred from it.
+  // 4 · the PAC. B3 maps the template's opaque keys to semantic fields and feeds the
+  //     DETERMINISTIC ones — coded review-of-systems values, medication checkboxes and
+  //     the investigations creatinine — as PAC-sourced observations, which outrank
+  //     BOOKING and OPD. Free text (diagnosis, other history, examination) is carried
+  //     for display and read by nobody: inferring a condition from prose is B5.
+  const parsedPac = src.pac ? parsePacComponentJson(src.pac.componentJson) : null;
+  let pacInputCount = 0;
+  if (src.pac && parsedPac) {
+    const obs = pacObservations(parsedPac, src.pac.createdAt, src.pac.uid);
+    pacInputCount = obs.length;
+    observations.push(...obs);
+  }
   const pac: PacState = src.pac
     ? {
         onFile: true,
         status: src.pac.status,
-        verdict: src.pac.closingLine,
+        // The anaesthetist's conclusion box when they filled it, the note's closing line
+        // otherwise. Quoted verbatim either way, never paraphrased, never replaced.
+        verdict: parsedPac?.conclusion ?? src.pac.closingLine,
         reportUid: src.pac.uid,
         finalizedAt: src.pac.createdAt,
       }
@@ -161,6 +181,9 @@ export function assembleEpisode(ep: PreopEpisodeRow, src: EpisodeSources): Assem
     pac,
     unmappedBookingTerms: booking.unmapped,
     unmatchedIcd,
+    parsedPac,
+    pacInputCount,
+    pacAgeMismatch: parsedPac ? pacAgeMismatch(parsedPac, ep.age) : null,
   };
 }
 

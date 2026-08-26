@@ -120,7 +120,10 @@ test('an unrecognised unit observes NOTHING rather than comparing the wrong scal
 
 // ── the PAC, attached to ONE episode ────────────────────────────────────────────
 
-const pac = (uid: string, at: string, status = 'final') => ({ uid, uhid: 'UHID-1', status, createdAt: at, closingLine: 'PATIENT CAN BE TAKEN FOR SURGERY', templateName: 't' });
+const pac = (uid: string, at: string, status = 'final') => ({
+  uid, uhid: 'UHID-1', status, createdAt: at,
+  closingLine: 'PATIENT CAN BE TAKEN FOR SURGERY', templateName: 't', componentJson: null,
+});
 
 test('the PAC window keeps one anaesthetist evaluation attached to one operation', () => {
   const reports = [pac('a', '2026-03-01T10:00:00Z'), pac('b', '2026-08-20T10:00:00Z')];

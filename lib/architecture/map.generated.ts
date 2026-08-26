@@ -779,6 +779,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "preop-pac-map-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "preop-tier-core",
     "plane": "unregistered"
   },
@@ -4452,6 +4456,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "preop",
+    "to": "preop-pac-map-core",
+    "kind": "value"
+  },
+  {
+    "from": "preop",
     "to": "preop-tier-core",
     "kind": "value"
   },
@@ -4469,6 +4478,11 @@ export const MAP_EDGES: MapEdge[] = [
     "from": "preop-assemble-core",
     "to": "preop-tier-core",
     "kind": "value"
+  },
+  {
+    "from": "preop-pac-map-core",
+    "to": "preop-assemble-core",
+    "kind": "type"
   },
   {
     "from": "preop-tier-core",
@@ -5187,6 +5201,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "PREOP_PAC_MAP_VERSION",
+    "value": "preop-pac-map/1",
+    "file": "lib/preop-pac-map-core.ts",
+    "derived": false
+  },
+  {
     "constName": "PREOP_TIER_RULE_VERSION",
     "value": "preop-tier/0",
     "file": "lib/preop-tier-core.ts",
@@ -5292,8 +5312,8 @@ export const VERSION_REGISTRY: VersionRow[] = [
 
 export const COVERAGE = {
   "registered": 21,
-  "unregistered": 31,
-  "total": 52,
+  "unregistered": 32,
+  "total": 53,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
@@ -5315,6 +5335,7 @@ export const COVERAGE = {
     "preop",
     "preop-assemble-core",
     "preop-instruments-core",
+    "preop-pac-map-core",
     "preop-tier-core",
     "preop-versions-core",
     "prognosis-core",

@@ -113,3 +113,15 @@ Mirror the readmission agent's ratified posture, byte-for-byte where it applies:
 - **D4 (V, 26 Aug):** LLM at **two boundaries — extraction and narrative — both shipped dark behind env flags**; scores permanently deterministic; extraction reuses ClinicalState B2; narrative reuses the readmit `NARRATIVE_MODEL` posture; labels derived, never typed.
 
 *Advisory module: outputs are decision support for clinicians and governance; nothing raw reaches a patient; nothing here overrides the anaesthetist's fitness conclusion — the PAC verdict is displayed alongside, never replaced.*
+
+---
+
+## 13 · Amendment A1
+
+*Ratified by V's orchestrator, 26 Aug 2026, on the evidence of the B0–B2 build report. Appended verbatim.*
+
+- **A1-1 Booking enum.** `clinical__comorbidities` is a closed 5-value enum array. Scoring: DIABETES ⇒ DM present (mFI-5, Charlson) but RCRI insulin-factor **unknown** (range) until PAC meds or extraction resolve it; HEART_DISEASE ⇒ IHD and CHF both **unknown** (opens both ranges); HYPOTHYROID ⇒ no instrument (display-only); HYPERTENSION ⇒ mFI on-medication item present (B5 settles the medication half). Widening the form is a product ask on V's governance list — not build work.
+- **A1-2 Fifth provenance source `OPD`** — structured ICD-10 from `individuals-prescriptions`, deterministic, ranked beside BOOKING, never labelled EXTRACTED, never hidden by the extraction flag.
+- **A1-3 PAC dual-fact rule.** `pac__status` (booking workflow) and a bridged KareXpert report are two different facts; the UI shows both, neither stands in for the other (chip states in B4 below). Measured 26 Aug: the 1-vs-8 gap is mostly ≤1-day scrape lag; a >48h "complete but no report" case is a data-quality signal.
+- **A1-4 Identity fallback.** `individuals.display_name` is empty cohort-wide; the first/last-name fallback added in B2 is ratified; final fallback = UHID · age/sex — never an anonymous card.
+- **A1-5 B0–B2 deviations ratified:** `preop_sweeps` heartbeat table · fingerprint-keyed versions rail · one why-line shape · booking HYPERTENSION = on-medication · 72h as ≤3 whole days · cron-count test edits · no GRANTs. **Keeper pattern (module-wide):** db13 fetchers return `{rows, error}`; the sweep carries `degradedSources`; non-empty ⇒ coverage numbers are floors.

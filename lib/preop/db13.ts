@@ -159,6 +159,8 @@ export interface PacRow {
    *  paraphrased. B3 replaces this with the mapped fitness field. */
   closingLine: string | null;
   templateName: string | null;
+  /** the raw KareXpert form payload — parsed by lib/preop-pac-map-core.ts (B3) */
+  componentJson: string | null;
 }
 
 /** Fitness language, so the banner can say whether the closing line IS a verdict. */
@@ -193,7 +195,8 @@ export async function fetchPacReports(uhids: string[]): Promise<Fetched<PacRow>>
   let rows: Record<string, unknown>[];
   try {
     rows = await metabaseQuery(
-      `SELECT uid, uhid, status, template_name, created_at::text AS created_at, note
+      `SELECT uid, uhid, status, template_name, created_at::text AS created_at, note,
+              component_json::text AS component_json
          FROM kx_clinical_template_pac_reports
         WHERE uhid IN (${list}) AND status = 'final'
         ORDER BY created_at ASC
@@ -209,6 +212,7 @@ export async function fetchPacReports(uhids: string[]): Promise<Fetched<PacRow>>
       uid, uhid, status: s(r.status), createdAt: s(r.created_at),
       closingLine: pacClosingLine(r.note == null ? null : String(r.note)),
       templateName: s(r.template_name),
+      componentJson: r.component_json == null ? null : String(r.component_json),
     });
   }
   return { rows: out, error: null };
