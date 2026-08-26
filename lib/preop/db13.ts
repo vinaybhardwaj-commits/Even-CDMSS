@@ -151,6 +151,33 @@ export async function fetchUpcomingEpisodes(horizonDays = 60): Promise<Fetched<P
   return { rows: out, error: null };
 }
 
+/**
+ * uid → name for the hospitals a surgical episode can be booked at.
+ *
+ * VALIDATED 26 Aug 2026: `even_hospitals` holds THREE rows, and the two that appear on
+ * surgery_cases are vZmEPseTKP3vS3DrZzrv "Even Hospital" (318 cases) and
+ * F8jrPHlVTWsvNtB1Iz0k "Altius Hospital, HBR Layout" (24). `facility_centres` does NOT
+ * contain these ids — it is a different collection, and joining there returns nothing.
+ *
+ * Without this the board prints a firestore id where the mockup prints a hospital name.
+ * Fail-safe: an empty map means every card falls back to showing the uid, which is ugly
+ * but true, rather than showing a name we could not look up.
+ */
+export async function fetchHospitalNames(): Promise<Fetched<{ uid: string; name: string }>> {
+  let rows: Record<string, unknown>[];
+  try {
+    rows = await metabaseQuery(`SELECT _doc_id, name FROM even_hospitals LIMIT 100`);
+  } catch (e) {
+    return failed('even_hospitals', e);
+  }
+  const out: Array<{ uid: string; name: string }> = [];
+  for (const r of rows) {
+    const uid = s(r._doc_id), name = s(r.name);
+    if (uid && name) out.push({ uid, name });
+  }
+  return { rows: out, error: null };
+}
+
 // ── the PAC report (existence + status + time + the note's closing line) ────────
 
 export interface PacRow {

@@ -181,6 +181,16 @@ const episodeRow = {
   createdAt: '2026-08-01T00:00:00Z',
 };
 
+test('the hospital renders as a NAME, falling back to its uid rather than to nothing', () => {
+  // VALIDATED: surgery_cases carries hospital_info__hospital_uid, and even_hospitals maps
+  // it. Without the lookup the board printed a firestore id where the mockup prints a
+  // hospital name — caught on the Preview deployment, not by any type.
+  const named = assembleEpisode(episodeRow, { creatinine: [], icd: [], pac: null, hospitalName: 'Even Hospital' });
+  assert.equal(named.facts.hospital, 'Even Hospital');
+  const unresolved = assembleEpisode(episodeRow, { creatinine: [], icd: [], pac: null, hospitalName: null });
+  assert.equal(unresolved.facts.hospital, 'vZmEPseTKP3vS3DrZzrv', 'ugly but true beats a name we could not look up');
+});
+
 test('a real upcoming episode assembles into exactly the inputs its sources support', () => {
   const a = assembleEpisode(episodeRow, { creatinine: [], icd: [], pac: null });
   assert.equal(a.bookingOnly, true);                    // no consult, no lab, no PAC

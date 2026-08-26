@@ -22,7 +22,7 @@ import {
   type EpisodeFacts, type Observation, type PacState, type PreopInputId, type PreopSnapshot,
 } from '../preop-assemble-core';
 import {
-  fetchCreatinine, fetchOpdIcd, fetchPacReports, fetchUpcomingEpisodes,
+  fetchCreatinine, fetchHospitalNames, fetchOpdIcd, fetchPacReports, fetchUpcomingEpisodes,
   type PacRow, type PreopEpisodeRow,
 } from './db13';
 import {
@@ -86,6 +86,8 @@ export interface EpisodeSources {
   creatinine: Array<{ value: number | null; unit: string | null; at: string | null }>;
   icd: Array<{ codes: string[]; at: string | null; ref: string | null }>;
   pac: PacRow | null;
+  /** the hospital's NAME, resolved from its uid — the uid itself when the lookup failed */
+  hospitalName?: string | null;
 }
 
 export interface AssembledEpisode {
@@ -167,7 +169,7 @@ export function assembleEpisode(ep: PreopEpisodeRow, src: EpisodeSources): Assem
     age: ep.age,
     sex: ep.sex,
     procedure: ep.procedure,
-    hospital: ep.hospitalUid,
+    hospital: src.hospitalName ?? ep.hospitalUid,
     surgeryDate: ep.surgeryDate,
     surgeon: null,           // treating_doctor_uid is a uid, not a name — B4 resolves it
     department: null,
@@ -231,16 +233,18 @@ export async function runPreopSweep(opts: { now?: Date; horizonDays?: number; dr
   const individualUids = episodes.map((e) => e.individualUid);
   const uhids = episodes.map((e) => e.uhid).filter((u): u is string => !!u);
 
-  const [creat, icd, pacs] = await Promise.all([
+  const [creat, icd, pacs, hospitals] = await Promise.all([
     fetchCreatinine(individualUids),
     fetchOpdIcd(individualUids),
     fetchPacReports(uhids),
+    fetchHospitalNames(),
   ]);
+  const hospitalName = new Map(hospitals.rows.map((h) => [h.uid, h.name]));
   // A source that FAULTED and a source that is genuinely empty produce the same rows and
   // must never produce the same report. Both the error line and the degraded flag ride
   // all the way out to the response and the heartbeat row.
   const degraded: string[] = [];
-  for (const f of [creat, icd, pacs]) if (f.error) { errors.push(f.error); degraded.push(f.error.split(':')[0]); }
+  for (const f of [creat, icd, pacs, hospitals]) if (f.error) { errors.push(f.error); degraded.push(f.error.split(':')[0]); }
   const creatRows = creat.rows, icdRows = icd.rows, pacRows = pacs.rows;
 
   const creatByUid = new Map<string, EpisodeSources['creatinine']>();
@@ -274,6 +278,7 @@ export async function runPreopSweep(opts: { now?: Date; horizonDays?: number; dr
       creatinine: creatByUid.get(ep.individualUid) ?? [],
       icd: icdByUid.get(ep.individualUid) ?? [],
       pac: pacForEpisode(ep.uhid ? (pacByUhid.get(ep.uhid) ?? []) : [], ep.surgeryDate),
+      hospitalName: ep.hospitalUid ? (hospitalName.get(ep.hospitalUid) ?? null) : null,
     };
     const a = assembleEpisode(ep, src);
     const snap: PreopSnapshot = composeSnapshot({
