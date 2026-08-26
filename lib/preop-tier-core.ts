@@ -291,13 +291,21 @@ export function whyLine(i: CardLineInputs): string {
     return detail ? `${label} (${detail})` : label;
   });
 
+  // With nothing CONFIRMED anywhere, the honest why-line is about the absence itself —
+  // and it must say which of the two absences this is. An AMBER that exists only because
+  // the floor caught a boundary-crossing range is a different sentence from a GREEN with
+  // nothing to report, and printing "nothing confirmed on RCRI yet" for both (as the
+  // first production sweep did) tells a reader neither.
+  const missingCount = new Set([...i.rcri.missing, ...i.mfi5.missing, ...i.charlson.missing]).size;
   const head = parts.length
     ? `${parts.join(' + ')} (${INSTRUMENT_UNITS[dom](score.lo ?? 0)})`
-    : `nothing confirmed on ${INSTRUMENT_TITLES[dom]} yet`;
+    : i.tier.amberFloorApplied
+      ? `no risk factor is confirmed on any of the three instruments — the tier is AMBER only because ${missingCount} input${missingCount === 1 ? ' is' : 's are'} still unknown`
+      : 'no risk factor on any of the three instruments';
 
-  const tail: string[] = [];
-  if (crossesBoundary(score)) tail.push('upper bound unconfirmed');
-  const line = tail.length ? `${head} — ${tail.join(', ')}` : head;
+  // The "upper bound unconfirmed" tail only adds something when the head named a
+  // confirmed factor; the no-factor head above already says the whole story.
+  const line = parts.length && crossesBoundary(score) ? `${head} — upper bound unconfirmed` : head;
   return i.bookingOnly ? `${line} · ${BOOKING_ONLY_CLAUSE}` : line;
 }
 
@@ -346,7 +354,11 @@ export function missingLine(i: CardLineInputs, pacAlreadyCalledOut = false): str
   let tail = '';
   if (ids.length === 1 && ids[0] === 'creatinine_over_2') {
     tail = ' — a single lab collapses the range';
-  } else if (ids.length > 0 && !pacListed && ids.every((id) => PAC_COMPLETABLE.has(id))) {
+  } else if (ids.length > 0 && !pacListed && !i.context.pacFinalized && ids.every((id) => PAC_COMPLETABLE.has(id))) {
+    // Only promise the PAC will settle these when there ISN'T one yet. A finalized PAC
+    // that still leaves them unknown is the PRD §9.3 capture problem, not a pending
+    // appointment, and telling a clinician to "confirm at PAC" about a PAC they already
+    // have is the module wasting their time.
     tail = ids.length === 2 ? ' — both confirmable at PAC' : ' — confirmable at PAC';
   }
   return `Missing: ${labels.join(' · ')}${tail}`;

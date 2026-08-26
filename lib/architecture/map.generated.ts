@@ -4437,8 +4437,18 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "preop",
+    "to": "metabase",
+    "kind": "value"
+  },
+  {
+    "from": "preop",
     "to": "preop-assemble-core",
     "kind": "type"
+  },
+  {
+    "from": "preop",
+    "to": "preop-assemble-core",
+    "kind": "value"
   },
   {
     "from": "preop",

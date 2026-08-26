@@ -53,8 +53,10 @@ test('THE COUPLING: the cron interval EXCEEDS the route maxDuration, so runs can
 
 test('restoring the cron did not disturb any other schedule', () => {
   // 15 → 16 on 5 Aug 2026: the readmission worker cron landed (its PRD's one sanctioned
-  // vercel.json line). The schedule assertions below are what this test is really about.
-  assert.equal(VERCEL.crons.length, 16, '14 + the restored IPD worker + the readmission worker');
+  // vercel.json line). 16 → 17 on 26 Aug 2026: the pre-op risk worker's cron landed the
+  // same way (Build Plan B2 requires it in the same commit as the route's maxDuration —
+  // the covenant). The schedule assertions below are what this test is really about.
+  assert.equal(VERCEL.crons.length, 17, '14 + the restored IPD worker + the readmission worker + the pre-op worker');
   // ⚠️ The OPD entry lost its `?conc=4` on 3 Aug (Unit D, Task 11) so the route's re-sized defaults
   // (max=8, conc=8 — one wave) apply. Production had been sending conc=4 against a default max of
   // 15, i.e. FOUR waves, and the guard has to be computed against what the cron actually sends.

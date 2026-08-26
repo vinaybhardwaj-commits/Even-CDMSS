@@ -51,10 +51,22 @@ export const PREOP_ASSEMBLE_RULE_VERSION = 'preop-assemble/1';
 
 // ── sources and precedence ──────────────────────────────────────────────────────
 
-export type PreopSource = 'LAB' | 'PAC' | 'BOOKING' | 'EXTRACTED';
+export type PreopSource = 'LAB' | 'PAC' | 'BOOKING' | 'OPD' | 'EXTRACTED';
 
-/** Lower rank wins. LAB and PAC tie at the top on purpose (see the header). */
-export const SOURCE_RANK: Record<PreopSource, number> = { LAB: 0, PAC: 0, BOOKING: 1, EXTRACTED: 2 };
+/**
+ * Lower rank wins. LAB and PAC tie at the top on purpose (see the header); BOOKING and
+ * OPD tie one below, because both are "the record says so" — a form the patient filled
+ * and an ICD code a doctor coded — and neither is a measurement. A disagreement between
+ * them raises the conflict tag rather than being silently resolved by fiat.
+ *
+ * ⚠️ OPD is a FIFTH source, and the approved mockup's provenance legend draws four
+ * chips. Flagged for V at B4: the PRD's own data registry (§4) names "OPD visits /
+ * ClinicalState — history corroboration, diagnoses" as a source, and its diagnoses
+ * arrive as STRUCTURED ICD codes on individuals-prescriptions — deterministic, no model
+ * anywhere near them, so labelling them EXTRACTED would be a lie about where they came
+ * from and would wrongly hide them when the extraction flag is off.
+ */
+export const SOURCE_RANK: Record<PreopSource, number> = { LAB: 0, PAC: 0, BOOKING: 1, OPD: 1, EXTRACTED: 2 };
 
 /**
  * Below this, an EXTRACTED observation is dropped and its input reverts to UNKNOWN.
@@ -142,6 +154,14 @@ export interface ResolveOptions {
   includeExtracted: boolean;
   /** A booking form exists and enumerated this patient's comorbidities. */
   bookingEnumerated: boolean;
+  /**
+   * Inputs the enumeration explicitly DECLINES to close, even though it exists. The
+   * booking form's HEART_DISEASE says there is cardiac disease without saying which, so
+   * it can close neither ischaemic heart disease nor heart failure — both stay unknown,
+   * the instruments widen, and the missing line names them. Silence would have been
+   * scored as absence.
+   */
+  notClosedBy?: PreopInputId[];
   confidenceFloor?: number;
 }
 
@@ -198,7 +218,8 @@ export function resolveInputs(observations: Observation[], opts: ResolveOptions)
     const list = byInput.get(id) ?? [];
     const droppedHere = dropped.get(id) ?? [];
     if (!list.length) {
-      const closed = opts.bookingEnumerated && ENUMERATED_INPUTS.has(id) && !NEVER_ENUMERATED.has(id);
+      const closed = opts.bookingEnumerated && ENUMERATED_INPUTS.has(id) && !NEVER_ENUMERATED.has(id)
+        && !(opts.notClosedBy ?? []).includes(id);
       out[id] = {
         inputId: id, status: closed ? 'absent' : 'unknown', detail: null, value: null,
         source: closed ? 'BOOKING' : null, provenanceRef: null, observedAt: null,
@@ -340,6 +361,7 @@ export interface SnapshotInput {
   reviewed: boolean;
   includeExtracted: boolean;
   bookingEnumerated: boolean;
+  notClosedBy?: PreopInputId[];
   /**
    * The episode has NO document beyond the booking form — no OPD visit, no lab row, no
    * PAC (PRD §4: 28 of 105 patients). A document-level fact only the assembler can know,
@@ -386,6 +408,7 @@ export function composeSnapshot(inp: SnapshotInput): PreopSnapshot {
   const inputs = resolveInputs(observations, {
     includeExtracted: inp.includeExtracted,
     bookingEnumerated: inp.bookingEnumerated,
+    notClosedBy: inp.notClosedBy,
     confidenceFloor: inp.confidenceFloor,
   });
   const rcri = rcriFrom(inputs);
@@ -471,4 +494,170 @@ export function snapshotFingerprint(s: Omit<PreopSnapshot, 'fingerprint'>): stri
     escalations: [...s.tier.escalations].sort(),
   };
   return fnv1a(canonicalJson(material));
+}
+
+// ── the structured sources, mapped (B2; all deterministic, no model anywhere) ────
+//
+// Each mapper turns ONE db13 fact into observations. They only ever assert PRESENT (or,
+// for a measured lab, absent-because-measured). None of them asserts absence from
+// silence: an ICD code that is not there means the visit did not code it, which is not
+// the same as the patient not having it. Only the booking enumeration closes a world,
+// and only over the inputs it actually enumerates.
+
+/**
+ * `surgery_cases.clinical__comorbidities` — a CLOSED five-value enum on production
+ * (measured 26 Aug 2026: NO_KNOWN_CONDITION 305 · DIABETES 14 · HYPOTHYROID 5 ·
+ * HYPERTENSION 2 · HEART_DISEASE 2 across 342 cases).
+ *
+ * ⚠️ FLAGGED FOR V — the PRD §3 coverage table does not survive contact with this
+ * field. It promises "5/6 RCRI factors from booking comorbidities + OPD history" and
+ * "4/5 mFI-5 items from booking comorbidities (~90%)". What the form can actually say is
+ * diabetes, hypertension, hypothyroidism, or unspecified heart disease. In particular:
+ *   · DIABETES cannot distinguish INSULIN-TREATED diabetes, which is what RCRI scores —
+ *     so it feeds mFI-5 and Charlson and leaves RCRI's factor UNKNOWN.
+ *   · HEART_DISEASE cannot distinguish ischaemic heart disease from heart failure — so
+ *     it asserts neither and OPENS both (they stay unknown rather than being closed to
+ *     absent). It is the one value that widens rather than narrows.
+ *   · HYPOTHYROID maps to no input in any of the three instruments. Recorded as
+ *     unmapped so the coverage report can count it rather than lose it.
+ */
+export interface BookingComorbidityMap {
+  observations: Observation[];
+  /** the form exists and enumerated something — the closed world stands on this */
+  enumerated: boolean;
+  /** inputs the enumeration explicitly cannot close (see HEART_DISEASE) */
+  notClosedBy: PreopInputId[];
+  /** values with no instrument input, kept for the coverage report */
+  unmapped: string[];
+}
+
+export function bookingComorbidityObservations(
+  values: readonly string[] | null | undefined,
+  ref: string | null = null,
+  observedAt: string | null = null,
+): BookingComorbidityMap {
+  const list = (values ?? []).map((v) => String(v).trim().toUpperCase()).filter(Boolean);
+  const out: BookingComorbidityMap = { observations: [], enumerated: list.length > 0, notClosedBy: [], unmapped: [] };
+  const add = (inputId: PreopInputId, detail: string) =>
+    out.observations.push({ inputId, status: 'present', source: 'BOOKING', detail, provenanceRef: ref, observedAt });
+
+  for (const v of list) {
+    switch (v) {
+      case 'NO_KNOWN_CONDITION':
+        break;                                     // the enumeration itself is the assertion
+      case 'DIABETES':
+        add('diabetes_mellitus', 'booking: diabetes');
+        add('diabetes_uncomplicated', 'booking: diabetes');
+        // RCRI scores INSULIN-treated diabetes; the form does not say. Leave it unknown.
+        out.notClosedBy.push('insulin_treated_diabetes');
+        break;
+      case 'HYPERTENSION':
+        // ⚠️ mFI-5's item is hypertension REQUIRING MEDICATION and the form says only
+        // that hypertension exists. Treated as on-medication, because in this cohort a
+        // declared hypertension is a treated one and the alternative — unknown —
+        // widens every frailty score to a range on the commonest comorbidity there is.
+        // Flagged for V; B5's extraction of the medication list can settle it properly.
+        add('hypertension_on_medication', 'booking: hypertension');
+        break;
+      case 'HEART_DISEASE':
+        out.notClosedBy.push('ischaemic_heart_disease', 'congestive_heart_failure');
+        break;
+      default:
+        out.unmapped.push(v);
+        break;
+    }
+  }
+  return out;
+}
+
+/**
+ * ICD-10 diagnosis / impression codes off `individuals-prescriptions` (OPD). Structured,
+ * doctor-coded, no model. Prefix matching on the code's alphanumeric head, so 'I25.10'
+ * and 'I25' both reach the ischaemic-heart-disease rule.
+ *
+ * v1 covers the codes that reach an instrument input and nothing else. A code outside
+ * the map is silence, never absence.
+ */
+type IcdRule = { test: RegExp; inputs: PreopInputId[]; label: string };
+
+export const ICD_RULES: IcdRule[] = [
+  { test: /^I2[1-2]/, inputs: ['ischaemic_heart_disease', 'myocardial_infarction'], label: 'myocardial infarction' },
+  { test: /^I25\.2/, inputs: ['ischaemic_heart_disease', 'myocardial_infarction'], label: 'old myocardial infarction' },
+  { test: /^I2[0345]/, inputs: ['ischaemic_heart_disease'], label: 'ischaemic heart disease' },
+  { test: /^I50/, inputs: ['congestive_heart_failure'], label: 'heart failure' },
+  { test: /^(I6[0-9]|G45)/, inputs: ['cerebrovascular_disease'], label: 'cerebrovascular disease' },
+  { test: /^E1[0-4]\.[2-5]/, inputs: ['diabetes_mellitus', 'diabetes_end_organ_damage'], label: 'diabetes with end-organ damage' },
+  { test: /^E1[0-4]/, inputs: ['diabetes_mellitus', 'diabetes_uncomplicated'], label: 'diabetes mellitus' },
+  { test: /^I1[0-5]/, inputs: ['hypertension_on_medication'], label: 'hypertension' },
+  { test: /^J4[0-7]/, inputs: ['copd_or_pneumonia', 'chronic_pulmonary_disease'], label: 'chronic lower respiratory disease' },
+  { test: /^J1[2-8]/, inputs: ['copd_or_pneumonia'], label: 'pneumonia' },
+  { test: /^(N18\.[3-6]|N19)/, inputs: ['moderate_severe_renal_disease'], label: 'moderate or severe renal disease' },
+  { test: /^(K72|K76\.6|K76\.7|I85\.0)/, inputs: ['moderate_severe_liver_disease'], label: 'moderate or severe liver disease' },
+  { test: /^(K7[034]|B18)/, inputs: ['mild_liver_disease'], label: 'chronic liver disease' },
+  { test: /^(C7[789]|C80)/, inputs: ['metastatic_solid_tumour'], label: 'metastatic solid tumour' },
+  { test: /^C9[1-5]/, inputs: ['leukaemia'], label: 'leukaemia' },
+  { test: /^(C8[1-8]|C96)/, inputs: ['lymphoma'], label: 'lymphoma' },
+  { test: /^C[0-7]/, inputs: ['any_tumour'], label: 'malignancy' },
+  { test: /^G8[12]/, inputs: ['hemiplegia'], label: 'hemiplegia' },
+  { test: /^(F0[0-3]|G30)/, inputs: ['dementia'], label: 'dementia' },
+  { test: /^(I7[0-4]|I77)/, inputs: ['peripheral_vascular_disease'], label: 'peripheral vascular disease' },
+  { test: /^(M0[56]|M3[234]|M35\.3)/, inputs: ['connective_tissue_disease'], label: 'connective tissue disease' },
+  { test: /^K2[5-8]/, inputs: ['peptic_ulcer_disease'], label: 'peptic ulcer disease' },
+  { test: /^B2[0-4]/, inputs: ['aids'], label: 'AIDS' },
+];
+
+export function icdObservations(
+  codes: readonly string[] | null | undefined,
+  observedAt: string | null = null,
+  ref: string | null = null,
+): { observations: Observation[]; matched: string[]; unmatched: string[] } {
+  const observations: Observation[] = [];
+  const matched: string[] = [];
+  const unmatched: string[] = [];
+  for (const raw of codes ?? []) {
+    const code = String(raw).trim().toUpperCase();
+    if (!code) continue;
+    const rule = ICD_RULES.find((r) => r.test.test(code));
+    if (!rule) { unmatched.push(code); continue; }
+    matched.push(code);
+    for (const inputId of rule.inputs) {
+      observations.push({
+        inputId, status: 'present', source: 'OPD',
+        detail: `${rule.label} (ICD ${code})`, provenanceRef: ref, observedAt,
+      });
+    }
+  }
+  return { observations, matched, unmatched };
+}
+
+/**
+ * The RCRI renal factor off a measured creatinine. A measurement can assert ABSENT —
+ * that is exactly what makes it collapse the range — but only when the units are the
+ * mg/dL the threshold is written in. An unrecognised unit observes nothing rather than
+ * comparing a number against the wrong scale.
+ */
+export function creatinineObservation(
+  value: number | null,
+  unit: string | null,
+  observedAt: string | null,
+  ref: string | null = null,
+): Observation | null {
+  if (value == null || !Number.isFinite(value)) return null;
+  const u = (unit ?? '').toLowerCase().replace(/\s/g, '');
+  if (u && !/^mg\/?d?l$/.test(u) && u !== 'mg%') return null;
+  return {
+    inputId: 'creatinine_over_2',
+    status: value > 2.0 ? 'present' : 'absent',
+    value,
+    detail: `${value}${unit ? ` ${unit}` : ' mg/dL'}${observedAt ? ` · ${observedAt.slice(0, 10)}` : ''}`,
+    source: 'LAB', provenanceRef: ref, observedAt,
+  };
+}
+
+/** The procedure's RCRI risk class as an observation (BOOKING — it is the booking's own
+ *  procedure text). Unknown classifications observe nothing, so the input stays unknown. */
+export function procedureObservation(procedure: string | null, ref: string | null = null): Observation | null {
+  const c = classifyProcedureRisk(procedure);
+  if (c.status === 'unknown') return null;
+  return { inputId: 'high_risk_surgery', status: c.status, source: 'BOOKING', detail: c.reason, provenanceRef: ref };
 }
