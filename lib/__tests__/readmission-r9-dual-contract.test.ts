@@ -527,9 +527,13 @@ test('T7 — the model pin: the ask path still targets NARRATIVE_MODEL_ID via Be
 });
 
 test('the branch is grep-clean of the refused transports (gpt-5.6 / terra / mantle) in every file it touched', () => {
+  const SELF = 'lib/__tests__/readmission-r9-dual-contract.test.ts';
   const changed = execFileSync('git', ['diff', '--name-only', 'f4a67ee', '--'], { encoding: 'utf8' })
-    .split('\n').filter((f) => f && /\.(ts|tsx|sql|json)$/.test(f));
+    .split('\n').filter((f) => f && f !== SELF && /\.(ts|tsx|sql|json)$/.test(f));
   assert.ok(changed.length > 0, 'the branch changed something');
+  // This file is excluded from its own sweep for the obvious reason: it has to name the strings it is
+  // forbidding. Nothing else on the branch gets that exemption.
+  assert.match(code(SELF), /gpt-5\.6/, 'the sweep really is looking for a string that exists');
   for (const f of changed) {
     let src: string;
     try { src = code(f); } catch { continue; }
