@@ -22,7 +22,12 @@ import type {
 } from '../clinical-state/schema';
 import { zFollowUpAssertion } from '../clinical-state/schema';
 
-export const MEMBER_STATE_VERSION = 'member-state/1.1' as const;
+/**
+ * O1 — bumped 1.1 → 1.2 by CASE-AGENTS-SPINE P4: the snapshot gains a `procedures` slot and the
+ * evidence kind union gains 'ipd'. `zMemberStateSnapshot` is `.strict()`, so this is a version bump
+ * and not a passthrough — a 1.1 reader handed a 1.2 snapshot must know the shape moved.
+ */
+export const MEMBER_STATE_VERSION = 'member-state/1.2' as const;
 export const NORMALIZATION_VERSION = 'member-norm/0.1' as const;
 export const RECONCILIATION_VERSION = 'member-reconcile/0.2' as const;
 
@@ -35,9 +40,15 @@ export interface NormalizedConcept extends ConceptRef {
 
 // ── Immutable per-encounter evidence (the source of truth; projection is derived) ──
 export interface EncounterEvidence {
-  encounterRef: string;              // opaque (prescription uid / booking id / care-call id)
+  encounterRef: string;              // opaque (prescription uid / booking id / care-call id / stay ref)
   date: string;                      // ISO date, as stated
-  kind: 'opd' | 'lab' | 'care_call'; // 1.1: care_call = the patient-reported return channel (CCB)
+  /**
+   * 1.1: care_call = the patient-reported return channel (CCB).
+   * 1.2 (D7): 'ipd' = an INPATIENT STAY, folded from its ClinicalState library. Deliberately NOT
+   * the compose-outside `'admission'` kind in lib/member-state-adapters/discharge-evidence.ts —
+   * that kind is not in this union, its adapter dumps EpisodeState, and P4 is a ClinicalState fold.
+   */
+  kind: 'opd' | 'lab' | 'care_call' | 'ipd';
   problems: { conceptRaw: string; icdCode?: string | null; explicitStatus?: 'active' | 'resolved' | null; provenance: Provenance }[];
   medicationAssertions: MedicationAssertion[];
   allergyAssertions: AllergyAssertion[];
@@ -45,6 +56,23 @@ export interface EncounterEvidence {
   demographics?: { age?: number | null; sex?: 'F' | 'M' | null };
   complaintStatuses?: ComplaintStatusAssertion[];   // 1.1 (optional) — patient-reported symptom outcome
   followUps?: FollowUpAssertion[];                   // 1.1 (optional) — carried onto the snapshot, no overlay
+  /**
+   * 1.2 (§6.1) — procedures this encounter evidences. OPTIONAL, so every existing encounter builder
+   * (assemble-core's opd/lab, care-call, PROMs) stays byte-compatible without being edited.
+   *
+   * `setting` is what the SOURCE evidences, never what the title suggests: 'ot' only for a theatre
+   * record, 'unknown' for a procedure merely named in a discharge summary. `laterality` comes only
+   * from a side field on the same source row — never parsed out of a procedure name (§6.2).
+   */
+  procedures?: EncounterProcedure[];
+}
+
+/** 1.2 (§6.1) — one procedure as a single encounter evidenced it. */
+export interface EncounterProcedure {
+  conceptRaw: string;
+  laterality?: string | null;
+  setting?: 'ot' | 'ward' | 'unknown';
+  provenance: Provenance;
 }
 
 export interface MemberEvidence {
@@ -86,6 +114,28 @@ export interface LongitudinalAllergy {
   occurrences: AllergyOccurrence[];
 }
 
+/** 1.2 (§6.1) — one occurrence of a procedure on the longitudinal spine. Mirrors
+ *  MedicationOccurrence deliberately: same fields-plus-provenance shape, same aggregation. */
+export interface ProcedureOccurrence {
+  encounterRef: string;
+  date: string;
+  laterality?: string | null;
+  setting?: 'ot' | 'ward' | 'unknown';
+  provenance: Provenance;
+}
+
+/**
+ * 1.2 (§6.1) — a procedure across the member's history. Mirrors LongitudinalMedication's
+ * firstSeen / lastSeen / occurrences shape exactly; there is deliberately NO procedure status enum
+ * (a procedure is an event that happened, not a state that can be current or stopped).
+ */
+export interface LongitudinalProcedure {
+  normalizedConcept: NormalizedConcept;
+  firstSeen: string;
+  lastSeen: string;
+  occurrences: ProcedureOccurrence[];
+}
+
 export interface InvestigationPoint { encounterRef: string; date: string; value: string; unit?: string | null; abnormal?: string | null; provenance: Provenance }
 export interface LongitudinalInvestigation {
   normalizedAnalyte: NormalizedConcept;
@@ -97,7 +147,8 @@ export interface LongitudinalInvestigation {
 export interface EvidenceRef { encounterRef: string; date: string; detail: string }
 export interface Discrepancy {
   id: string;
-  domain: 'problem' | 'medication' | 'allergy' | 'investigation' | 'demographic';
+  /** 1.2 adds 'procedure' — emitted ONLY when two named procedures actually collide (§6.1). */
+  domain: 'problem' | 'medication' | 'allergy' | 'investigation' | 'demographic' | 'procedure';
   type: 'status_conflict' | 'value_conflict' | 'identity_conflict' | 'temporal_conflict' | 'source_conflict';
   assertions: EvidenceRef[];
   severity: 'informational' | 'review' | 'safety_critical';
@@ -115,6 +166,12 @@ export interface MemberStateSnapshot {
   medications: LongitudinalMedication[];
   allergies: LongitudinalAllergy[];
   investigations: LongitudinalInvestigation[];
+  /**
+   * 1.2 (§6.1) — procedure history. ALWAYS PRESENT (empty when nothing folded), because
+   * zMemberStateSnapshot is `.strict()` and a sometimes-there key would make the snapshot two
+   * shapes rather than one. See the P4 report on the §6.1-vs-acceptance-#9 conflict this creates.
+   */
+  procedures: LongitudinalProcedure[];
   conflicts: Discrepancy[];
   followUps: FollowUpAssertion[];    // 1.1 — carried (deduped by id), NO care-coordination overlay (Plane 3, later)
   sourceEncounterRefs: string[];
@@ -185,9 +242,21 @@ const zLongitudinalInvestigation = z.object({
   }).passthrough()),
 }).passthrough();
 
+const zLongitudinalProcedure = z.object({
+  normalizedConcept: zNormalizedConcept,
+  firstSeen: z.string(),
+  lastSeen: z.string(),
+  occurrences: z.array(z.object({
+    encounterRef: z.string(), date: z.string(),
+    laterality: z.string().nullable().optional(),
+    setting: z.enum(['ot', 'ward', 'unknown']).optional(),
+    provenance: zProvenance,
+  }).passthrough()),
+}).passthrough();
+
 const zDiscrepancy = z.object({
   id: z.string().min(1),
-  domain: z.enum(['problem', 'medication', 'allergy', 'investigation', 'demographic']),
+  domain: z.enum(['problem', 'medication', 'allergy', 'investigation', 'demographic', 'procedure']),
   type: z.enum(['status_conflict', 'value_conflict', 'identity_conflict', 'temporal_conflict', 'source_conflict']),
   assertions: z.array(z.object({ encounterRef: z.string(), date: z.string(), detail: z.string() }).passthrough()),
   severity: z.enum(['informational', 'review', 'safety_critical']),
@@ -205,6 +274,7 @@ export const zMemberStateSnapshot = z.object({
   medications: z.array(zLongitudinalMedication),
   allergies: z.array(zLongitudinalAllergy),
   investigations: z.array(zLongitudinalInvestigation),
+  procedures: z.array(zLongitudinalProcedure),
   conflicts: z.array(zDiscrepancy),
   followUps: z.array(zFollowUpAssertion),
   sourceEncounterRefs: z.array(z.string()),
@@ -228,6 +298,7 @@ export function emptyMemberStateSnapshot(computedAt: string, asOf: string): Memb
     medications: [],
     allergies: [],
     investigations: [],
+    procedures: [],
     conflicts: [],
     followUps: [],
     sourceEncounterRefs: [],

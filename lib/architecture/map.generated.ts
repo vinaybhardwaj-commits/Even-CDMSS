@@ -3962,6 +3962,16 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "member-state",
+    "to": "readmission",
+    "kind": "value"
+  },
+  {
+    "from": "member-state",
+    "to": "stay-library",
+    "kind": "value"
+  },
+  {
     "from": "member-state-adapters",
     "to": "clinical-state",
     "kind": "type"
@@ -5148,6 +5158,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "stay-library",
+    "to": "metabase",
+    "kind": "value"
+  },
+  {
+    "from": "stay-library",
     "to": "readmission",
     "kind": "value"
   },
@@ -5415,7 +5430,7 @@ export const VERSION_REGISTRY: VersionRow[] = [
   },
   {
     "constName": "MEMBER_STATE_VERSION",
-    "value": "member-state/1.1",
+    "value": "member-state/1.2",
     "file": "lib/member-state/schema.ts",
     "derived": false
   },
