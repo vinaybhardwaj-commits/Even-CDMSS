@@ -247,6 +247,11 @@ loud in the footer — *"N further readings agreed with what the record already 
 not shown"* — rather than quietly dropped. It is the B5 corroboration rule applied to a
 clinician's attention, and without it this rail would have been unusable on its first day.
 
+**Verified on the live board with the filter in place** (Preview, `rails=suggest`, dry run):
+**21 suggestions made on that episode, 1 offered, 20 redundant.** The flood is one
+actionable chip — `functional_status_dependent`, the only reading that would change
+anything. Across the whole 15-episode board: 1 offered, 20 redundant, 0 dropped by a gate.
+
 ---
 
 ## 5 · B8c — housekeeping
