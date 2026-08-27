@@ -22,41 +22,56 @@ import {
   type EpisodeFacts, type Observation, type PacState, type PreopInputId, type PreopSnapshot,
 } from '../preop-assemble-core';
 import {
-  fetchCreatinine, fetchHospitalNames, fetchOpdIcd, fetchOpdNarrative, fetchPacReports,
+  fetchCreatinine, fetchHospitalNames, fetchOpdComorbidities, fetchOpdIcd, fetchPacReports,
   fetchUpcomingEpisodes,
   type PacRow, type PreopEpisodeRow,
 } from './db13';
+import {
+  diseaseObservations, opdComorbidityObservations, rxObservations,
+} from '../preop-harvest-core';
 import {
   pacAgeMismatch, pacBodyMetrics, pacObservations, parsePacComponentJson,
   type ParsedPac,
 } from '../preop-pac-map-core';
 import {
-  PREOP_ENGINE_VERSION, readRails, recordSweep, saveExtraction, saveNarrative, saveSnapshot,
-  type SaveOutcome,
+  PREOP_ENGINE_VERSION, readDecisions, readRails, recordSweep, saveExtraction, saveNarrative,
+  saveSnapshot, type SaveOutcome,
 } from './store';
 import {
-  extractOne, preopExtractEnabled, preopExtractFields, PREOP_EXTRACT_BUDGET_MS,
-  type ExtractCall, type ExtractOneResult,
-} from './extract';
+  preopExtractMode, preopSuggestFields, suggestOne, PREOP_SUGGEST_BUDGET_MS,
+  type SuggestCall, type SuggestOneResult,
+} from './suggest';
 import { narrateOne, preopNarrativeEnabled, type NarrativeCall } from './narrative';
-import { extractionObservations, type PreopExtraction } from '../preop-extract-core';
+import {
+  autoAcceptable, decisionObservations, openSuggestions,
+  type PreopDecision, type PreopExtractMode, type PreopSuggestionRecord,
+} from '../preop-suggest-core';
+import { extractionSourceFingerprint } from '../preop-extract-core';
 import {
   PREOP_NARRATIVE_BUDGET_MS, PREOP_NARRATIVE_MAX_PER_TICK, type PreopNarrative,
 } from '../preop-narrative-core';
 
-// The two flags live beside the rails they gate (lib/preop/extract.ts, lib/preop/narrative.ts)
-// and are re-exported here because the worker route reads them off the sweep's own module.
-export { preopExtractEnabled, preopNarrativeEnabled };
+// The rails' switches live beside the rails they gate (lib/preop/suggest.ts,
+// lib/preop/narrative.ts) and are re-exported here because the worker route reads them off
+// the sweep's own module.
+export { preopExtractMode, preopNarrativeEnabled };
 
 /**
- * Which rails run this tick. Defaults come from the environment; the OVERRIDE exists for
- * one purpose only — measuring a rail without committing to it — and the worker route
- * refuses to honour an override unless the tick is a dry run that writes nothing.
+ * Which rails run this tick.
+ *
+ * B8 replaced the extraction BOOLEAN with a MODE — off | suggest | score — and the change is
+ * not cosmetic. `suggest` runs the model and shows what it found on the case page WITHOUT
+ * touching a single score; only a named human pressing Confirm can turn a suggestion into an
+ * input. `score` additionally auto-accepts the field classes that have earned it through
+ * B8d, and while PROMOTED_CLASSES is empty it behaves exactly as `suggest`.
+ *
+ * The OVERRIDE exists for one purpose only — measuring a rail without committing to it — and
+ * the worker route refuses to honour it unless the tick is a dry run that writes nothing.
  */
-export interface PreopRails { extract: boolean; narrative: boolean }
+export interface PreopRails { extract: PreopExtractMode; narrative: boolean }
 
 export function preopRailsFromEnv(): PreopRails {
-  return { extract: preopExtractEnabled(), narrative: preopNarrativeEnabled() };
+  return { extract: preopExtractMode(), narrative: preopNarrativeEnabled() };
 }
 
 /**
@@ -69,9 +84,17 @@ export function preopRailsFromEnv(): PreopRails {
  * the same commit — the cron covenant, applied to the model legs.
  */
 export const PREOP_LLM_BUDGET_MS = 180_000;
-/** Opus is paced (PREOP_NARRATIVE_MAX_PER_TICK); the cheaper extraction leg is paced too,
- *  so one sweep after a bulk PAC import cannot spend the whole box on new text. */
-export const PREOP_EXTRACT_MAX_PER_TICK = 8;
+/**
+ * Opus is paced (PREOP_NARRATIVE_MAX_PER_TICK); the suggestion leg is paced too, so one
+ * sweep after a bulk PAC import cannot spend the whole box on new text.
+ *
+ * ⚠️ B8 CUT THIS FROM 8 TO 3, and the arithmetic is the reason: the leg is now THREE reads
+ * per episode rather than one, so its per-episode ceiling went from 60 s to 135 s. Three
+ * episodes × 135 s = 405 s, which the 180 s LLM budget refuses long before the cap does —
+ * exactly as designed, the budget binding rather than the cap. A settled board still makes
+ * zero calls, because the source-fingerprint rail is unchanged.
+ */
+export const PREOP_EXTRACT_MAX_PER_TICK = 3;
 
 /** How far ahead the board looks. The mockup's tile counts "surgery date today or later". */
 export const PREOP_HORIZON_DAYS = 60;
@@ -122,6 +145,8 @@ export function pacForEpisode(reports: PacRow[], surgeryDate: string | null): Pa
 export interface EpisodeSources {
   creatinine: Array<{ value: number | null; unit: string | null; at: string | null }>;
   icd: Array<{ codes: string[]; at: string | null; ref: string | null }>;
+  /** B8a · the sixth deterministic source: structured OPD comorbidity names */
+  comorbidities?: Array<{ names: string[]; at: string | null; ref: string | null }>;
   pac: PacRow | null;
   /** the hospital's NAME, resolved from its uid — the uid itself when the lookup failed */
   hospitalName?: string | null;
@@ -142,6 +167,43 @@ export interface AssembledEpisode {
   pacInputCount: number;
   /** B3: the PAC's own recorded age disagrees with the dob-derived age by this many years */
   pacAgeMismatch: number | null;
+  /** B8a: what the deterministic harvest found, for the report and the coverage tally */
+  harvest: {
+    rx: number;
+    disease: number;
+    /** disease names that appeared but were governed by a negation — observed NOTHING */
+    negationSuppressed: string[];
+    /** names in the curated list that reach no instrument (hypothyroidism today) */
+    diseaseUnmapped: string[];
+    comorbidityMatched: string[];
+    comorbidityUnmapped: string[];
+  };
+}
+
+/**
+ * B8a · the PAC boxes the deterministic harvest reads. Every one is a `verbatim` field on
+ * the PAC map — the boxes lib/preop-pac-map-core.ts deliberately refuses to interpret. B8a
+ * does not interpret them either: it matches a DRUG NAME against a reviewed dictionary and
+ * a DISEASE NAME against a curated list, and anything needing a judgement stays for B8b.
+ */
+export const HARVEST_FIELDS: Array<{ id: string; label: string }> = [
+  { id: 'pac_other_history', label: 'PAC · other medical history' },
+  { id: 'pac_meds_note', label: 'PAC · medication note' },
+  { id: 'pac_cvs_note', label: 'PAC · cardiovascular note' },
+  { id: 'pac_endo_note', label: 'PAC · endocrine note' },
+  { id: 'pac_pulm_note', label: 'PAC · pulmonary note' },
+  { id: 'pac_renal_note', label: 'PAC · renal note' },
+  { id: 'pac_examination', label: 'PAC · physical examination' },
+];
+
+/** The text of each harvest field that actually has any, keyed by field id. */
+export function harvestTexts(parsedPac: ParsedPac | null): Array<{ id: string; label: string; text: string }> {
+  const out: Array<{ id: string; label: string; text: string }> = [];
+  for (const f of HARVEST_FIELDS) {
+    const v = parsedPac?.fields?.[f.id]?.text;
+    if (typeof v === 'string' && v.trim()) out.push({ ...f, text: v.trim() });
+  }
+  return out;
 }
 
 /**
@@ -184,6 +246,39 @@ export function assembleEpisode(ep: PreopEpisodeRow, src: EpisodeSources): Assem
     pacInputCount = obs.length;
     observations.push(...obs);
   }
+  // 4b · B8a · THE DETERMINISTIC HARVEST over the PAC's verbatim boxes. This is the half of
+  //      B7's extraction rail that a TABLE can do: a reviewed drug dictionary whose ban on
+  //      medication→diagnosis is a category rather than a blocklist, and a curated
+  //      disease-NAME list with a negation guard biased to miss rather than to guess. Both
+  //      are deterministic, reproducible and free — which is precisely what B7 measured the
+  //      model rail could not promise about these same facts.
+  const harvest = {
+    rx: 0, disease: 0,
+    negationSuppressed: [] as string[],
+    diseaseUnmapped: [] as string[],
+    comorbidityMatched: [] as string[],
+    comorbidityUnmapped: [] as string[],
+  };
+  for (const f of harvestTexts(parsedPac)) {
+    const rx = rxObservations(f.text, f.label, src.pac?.createdAt ?? null, src.pac?.uid ?? null);
+    harvest.rx += rx.length;
+    observations.push(...rx);
+    const dz = diseaseObservations(f.text, f.label, src.pac?.createdAt ?? null, src.pac?.uid ?? null);
+    harvest.disease += dz.observations.length;
+    harvest.negationSuppressed.push(...dz.suppressedByNegation);
+    harvest.diseaseUnmapped.push(...dz.unmapped);
+    observations.push(...dz.observations);
+  }
+
+  // 5 · B8a · the sixth deterministic source — the OPD comorbidity list. Structured, not
+  //     prose; ranked with BOOKING and OPD because it is a record, not a measurement.
+  for (const row of src.comorbidities ?? []) {
+    const m = opdComorbidityObservations(row.names, row.at, row.ref);
+    observations.push(...m.observations);
+    harvest.comorbidityMatched.push(...m.matched);
+    harvest.comorbidityUnmapped.push(...m.unmapped);
+  }
+
   const pac: PacState = src.pac
     ? {
         onFile: true,
@@ -225,6 +320,7 @@ export function assembleEpisode(ep: PreopEpisodeRow, src: EpisodeSources): Assem
     parsedPac,
     pacInputCount,
     pacAgeMismatch: parsedPac ? pacAgeMismatch(parsedPac, ep.age) : null,
+    harvest,
   };
 }
 
@@ -245,6 +341,9 @@ export interface PreopRailTally {
   skippedBudget: number;
   failed: number;
   ms: number;
+  /** B8b: MODEL READS made, three per fresh suggestion — `called` counts episodes, this
+   *  counts calls, and the two differ by design now. */
+  reads: number;
   outcomes: Record<string, number>;
 }
 
@@ -256,7 +355,10 @@ export interface PreopCaseTrace {
   mfi5: [number | null, number | null];
   charlson: [number | null, number | null];
   snapshot?: PreopSnapshot;
-  extraction?: PreopExtraction | null;
+  suggestions?: PreopSuggestionRecord | null;
+  /** suggestions not yet confirmed or dismissed against the current source fingerprint */
+  open?: number;
+  decisions?: PreopDecision[];
   narrative?: PreopNarrative | null;
   extractOutcome?: string;
 }
@@ -281,10 +383,24 @@ export interface PreopSweepResult {
   unmatchedIcd: Record<string, number>;
   /** B5/B6 — which rails ran and what they cost. Reported on EVERY tick, dark or not. */
   rails: { requested: PreopRails; extraction: PreopRailTally; narrative: PreopRailTally };
-  /** B5 — inputs the extraction rail actually resolved, by input id (accepted + above floor) */
-  extractedInputs: Record<string, number>;
-  /** B5 — ids flagged unstable across the whole board (gate 4 firing in public) */
-  unstableInputs: string[];
+  /** B8a — what the deterministic harvest found, by kind */
+  harvest: {
+    rxObservations: number;
+    diseaseObservations: number;
+    negationSuppressed: Record<string, number>;
+    diseaseUnmapped: Record<string, number>;
+    comorbidityMatched: Record<string, number>;
+    comorbidityUnmapped: Record<string, number>;
+  };
+  /** B8b — suggestions OFFERED, by input id. None of these scored anything. */
+  suggestedInputs: Record<string, number>;
+  /** B8b — classes where the three reads did not agree unanimously somewhere on the board */
+  splitSuggestions: string[];
+  /** B8b — proposals a gate threw away before they were ever offered, by reason.
+   *  `medication_inference` is the B7 rabeprazole defect being refused in public. */
+  droppedByGate: Record<string, number>;
+  /** B8b — inputs a HUMAN confirmed, by input id. The only model-adjacent path to a score. */
+  confirmedInputs: Record<string, number>;
   /** B7 — per-episode detail, only when the caller asks for it (the golden-set harness) */
   cases?: PreopCaseTrace[];
   ms: number;
@@ -293,7 +409,7 @@ export interface PreopSweepResult {
 
 const emptyTally = (on: boolean): PreopRailTally => ({
   on, eligible: 0, called: 0, reused: 0, skippedNoText: 0, skippedBudget: 0, failed: 0,
-  ms: 0, outcomes: {},
+  ms: 0, reads: 0, outcomes: {},
 });
 
 export interface PreopSweepOptions {
@@ -311,7 +427,7 @@ export interface PreopSweepOptions {
    * harness threads the SAME map through two consecutive runs, which is what exercises
    * the reuse path without writing a byte to production.
    */
-  extractionCache?: Map<string, PreopExtraction | null>;
+  extractionCache?: Map<string, PreopSuggestionRecord | null>;
   /** episode keys to sweep INSTEAD of the upcoming window (the golden set) */
   onlyEpisodes?: string[];
   /** collect per-episode detail into result.cases (the validation pack's raw material) */
@@ -320,7 +436,7 @@ export interface PreopSweepOptions {
   collectSnapshots?: boolean;
   llmBudgetMs?: number;
   /** test seams — production never passes them */
-  extractCall?: ExtractCall;
+  suggestCall?: SuggestCall;
   narrativeCall?: NarrativeCall;
 }
 
@@ -356,16 +472,15 @@ export async function runPreopSweep(opts: PreopSweepOptions = {}): Promise<Preop
     fetchPacReports(uhids),
     fetchHospitalNames(),
   ]);
-  // The OPD free-text leg costs a query, so a dark rail does not pay for it.
-  const opdNarr = rails.extract
-    ? await fetchOpdNarrative(individualUids)
-    : { rows: [] as Array<{ individualUid: string; text: string }>, error: null };
+  // B8a · the sixth deterministic source. Unlike the rails it is NOT flag-gated: it is
+  // structured data that feeds the score, so it runs on every tick like the ICD codes do.
+  const opdComorb = await fetchOpdComorbidities(individualUids);
   const hospitalName = new Map(hospitals.rows.map((h) => [h.uid, h.name]));
   // A source that FAULTED and a source that is genuinely empty produce the same rows and
   // must never produce the same report. Both the error line and the degraded flag ride
   // all the way out to the response and the heartbeat row.
   const degraded: string[] = [];
-  for (const f of [creat, icd, pacs, hospitals, opdNarr]) if (f.error) { errors.push(f.error); degraded.push(f.error.split(':')[0]); }
+  for (const f of [creat, icd, pacs, hospitals, opdComorb]) if (f.error) { errors.push(f.error); degraded.push(f.error.split(':')[0]); }
   const creatRows = creat.rows, icdRows = icd.rows, pacRows = pacs.rows;
 
   const creatByUid = new Map<string, EpisodeSources['creatinine']>();
@@ -386,27 +501,43 @@ export async function runPreopSweep(opts: PreopSweepOptions = {}): Promise<Preop
     list.push(r);
     pacByUhid.set(r.uhid, list);
   }
-  const narrByUid = new Map<string, string>();
-  for (const r of opdNarr.rows) {
-    const prev = narrByUid.get(r.individualUid);
-    narrByUid.set(r.individualUid, prev ? `${prev}\n${r.text}` : r.text);
+  const comorbByUid = new Map<string, EpisodeSources['comorbidities']>();
+  for (const r of opdComorb.rows) {
+    const list = comorbByUid.get(r.individualUid) ?? [];
+    list.push({ names: r.names, at: r.at, ref: r.ref });
+    comorbByUid.set(r.individualUid, list);
   }
 
   // The stored rail artefacts for exactly these episodes, in one round trip. Read BEFORE
   // any snapshot is composed — that is what makes "unchanged text ⇒ no call" hold ACROSS
   // ticks and not merely within one.
-  const railStore = rails.extract || rails.narrative
+  const railStore = rails.extract !== 'off' || rails.narrative
     ? await readRails(episodes.map((e) => e.docId))
     : { byKey: new Map(), error: null };
   if (railStore.error) { errors.push(railStore.error); degraded.push('preop rails'); }
+
+  // B8b · the decisions are read on EVERY tick, whatever the mode. A confirmation is a fact
+  // about a person's judgement, not an output of the rail, and turning the rail off must
+  // never silently retract one.
+  const decisionStore = await readDecisions(episodes.map((e) => e.docId));
+  if (decisionStore.error) { errors.push(decisionStore.error); degraded.push('preop decisions'); }
 
   const written: Record<SaveOutcome, number> = { inserted: 0, updated: 0, unchanged: 0, skipped: 0 };
   const byTier: Record<string, number> = {};
   const unmappedBookingTerms: Record<string, number> = {};
   const unmatchedIcd: Record<string, number> = {};
-  const extractedInputs: Record<string, number> = {};
-  const unstableInputs = new Set<string>();
-  const extractTally = emptyTally(rails.extract);
+  const suggestedInputs: Record<string, number> = {};
+  const confirmedInputs: Record<string, number> = {};
+  const droppedByGate: Record<string, number> = {};
+  const splitSuggestions = new Set<string>();
+  const harvestTally = {
+    rxObservations: 0, diseaseObservations: 0,
+    negationSuppressed: {} as Record<string, number>,
+    diseaseUnmapped: {} as Record<string, number>,
+    comorbidityMatched: {} as Record<string, number>,
+    comorbidityUnmapped: {} as Record<string, number>,
+  };
+  const extractTally = emptyTally(rails.extract !== 'off');
   const narrativeTally = emptyTally(rails.narrative);
   const cases: PreopCaseTrace[] = [];
   let needsReview = 0, pacLinked = 0, bookingOnly = 0, withCreatinine = 0, withIcd = 0;
@@ -416,47 +547,85 @@ export async function runPreopSweep(opts: PreopSweepOptions = {}): Promise<Preop
     const src: EpisodeSources = {
       creatinine: creatByUid.get(ep.individualUid) ?? [],
       icd: icdByUid.get(ep.individualUid) ?? [],
+      comorbidities: comorbByUid.get(ep.individualUid) ?? [],
       pac: pacForEpisode(ep.uhid ? (pacByUhid.get(ep.uhid) ?? []) : [], ep.surgeryDate),
       hospitalName: ep.hospitalUid ? (hospitalName.get(ep.hospitalUid) ?? null) : null,
     };
     const a = assembleEpisode(ep, src);
     const stored = railStore.byKey.get(ep.docId) ?? null;
 
-    // ── B5 · the extraction rail ────────────────────────────────────────────────
-    let extraction: PreopExtraction | null = opts.extractionCache?.get(ep.docId)
-      ?? (stored?.extraction as PreopExtraction | null | undefined)
+    // ── B8b · the suggestion rail ───────────────────────────────────────────────
+    // What this DOES NOT do is the point: nothing here reaches an instrument. The rail
+    // reads the PAC's prose three times, reconciles the reads, and stores what it found.
+    // The score is computed from the record and from HUMAN confirmations, and from nothing
+    // else — `suggestObs` below is empty unless a class has been promoted through B8d, and
+    // PROMOTED_CLASSES is empty.
+    let suggestions: PreopSuggestionRecord | null = opts.extractionCache?.get(ep.docId)
+      ?? (stored?.extraction as PreopSuggestionRecord | null | undefined)
       ?? null;
     let extractOutcome: string | undefined;
-    if (rails.extract) {
-      const fields = preopExtractFields(a.parsedPac, narrByUid.get(ep.individualUid) ?? null);
+    const suggestFields = preopSuggestFields(a.parsedPac);
+    if (rails.extract !== 'off') {
       const t0 = Date.now();
-      let r: ExtractOneResult;
-      if (extractTally.called >= PREOP_EXTRACT_MAX_PER_TICK || !roomFor(PREOP_EXTRACT_BUDGET_MS)) {
-        // The cap and the box are checked BEFORE the call, and a leg we decline to start
-        // leaves the STORED reading in place — a budget skip must never look like a
-        // retraction of an input the rail has already proposed.
-        r = { outcome: 'reused', record: extraction, changed: false, moved: [], called: false, latencyMs: 0 };
-        if (Object.keys(fields).length) { extractTally.skippedBudget++; extractOutcome = 'skipped_budget'; }
+      let r: SuggestOneResult;
+      if (extractTally.called >= PREOP_EXTRACT_MAX_PER_TICK || !roomFor(PREOP_SUGGEST_BUDGET_MS)) {
+        // The cap and the box are checked BEFORE the reads, and a leg we decline to start
+        // leaves the STORED record in place — a budget skip must never look like a
+        // retraction of a suggestion the rail has already made.
+        r = { outcome: 'reused', record: suggestions, changed: false, reads: 0, latencyMs: 0 };
+        if (Object.keys(suggestFields).length) { extractTally.skippedBudget++; extractOutcome = 'skipped_budget'; }
       } else {
-        r = await extractOne({ episodeKey: ep.docId, fields, stored: extraction, now, call: opts.extractCall });
+        r = await suggestOne({ episodeKey: ep.docId, fields: suggestFields, stored: suggestions, now, call: opts.suggestCall });
         extractOutcome = r.outcome;
       }
       extractTally.ms += Date.now() - t0;
       extractTally.outcomes[extractOutcome ?? r.outcome] = (extractTally.outcomes[extractOutcome ?? r.outcome] ?? 0) + 1;
-      if (Object.keys(fields).length) extractTally.eligible++;
-      if (r.called) extractTally.called++;
+      if (Object.keys(suggestFields).length) extractTally.eligible++;
+      if (r.reads) extractTally.called++;
+      extractTally.reads += r.reads;
       if (r.outcome === 'reused') extractTally.reused++;
       if (r.outcome === 'no_text') extractTally.skippedNoText++;
-      if (r.outcome === 'failed') { extractTally.failed++; if (r.error) errors.push(`${ep.docId} extract: ${r.error}`); }
-      extraction = r.record;
-      opts.extractionCache?.set(ep.docId, extraction);
+      if (r.outcome === 'failed') { extractTally.failed++; if (r.error) errors.push(`${ep.docId} suggest: ${r.error}`); }
+      else if (r.error) errors.push(`${ep.docId} suggest (partial): ${r.error}`);
+      suggestions = r.record;
+      opts.extractionCache?.set(ep.docId, suggestions);
       if (r.changed && r.record && !opts.dryRun) {
-        const ok = await saveExtraction(ep.docId, r.record, r.record);
-        if (!ok && written.inserted + written.updated > 0) errors.push(`${ep.docId}: extraction write failed`);
+        const ok = await saveExtraction(ep.docId, { sourceFingerprint: r.record.sourceFingerprint, model: r.record.model, provider: r.record.provider, extractedAt: r.record.generatedAt }, r.record);
+        if (!ok && written.inserted + written.updated > 0) errors.push(`${ep.docId}: suggestion write failed`);
       }
-      for (const id of extraction?.unstable ?? []) unstableInputs.add(id);
+      for (const sg of suggestions?.suggestions ?? []) {
+        suggestedInputs[sg.inputId] = (suggestedInputs[sg.inputId] ?? 0) + 1;
+        if (sg.agreement !== 'unanimous') splitSuggestions.add(sg.inputId);
+      }
+      for (const d of suggestions?.dropped ?? []) droppedByGate[d.reason] = (droppedByGate[d.reason] ?? 0) + 1;
     }
-    const extractObs = rails.extract ? extractionObservations(extraction) : [];
+
+    // ── the only path from a suggestion to a score ──────────────────────────────
+    // A named human, shown the verbatim span, pressed Confirm. That becomes an observation
+    // with HUMAN provenance, bound to the fingerprint of the text they were shown.
+    const decisions: PreopDecision[] = (decisionStore.byKey.get(ep.docId) ?? []).map((d) => ({
+      episodeKey: d.episode_key, inputId: d.input_id as PreopDecision['inputId'],
+      status: d.status === 'absent' ? 'absent' : 'present',
+      span: d.span ?? '', field: d.field ?? '',
+      decision: d.decision === 'dismiss' ? 'dismiss' : 'confirm',
+      decidedBy: d.decided_by, decidedAt: d.decided_at,
+      sourceFingerprint: d.source_fingerprint,
+    }));
+    const currentSourceFp = Object.keys(suggestFields).length ? extractionSourceFingerprint(suggestFields) : null;
+    const humanObs = decisionObservations(decisions, currentSourceFp);
+    for (const o of humanObs) confirmedInputs[o.inputId] = (confirmedInputs[o.inputId] ?? 0) + 1;
+
+    // B8d: auto-accepted classes only. Empty by construction until V ratifies one.
+    const suggestObs = (suggestions?.suggestions ?? [])
+      .filter((sg) => autoAcceptable(rails.extract, sg.inputId))
+      .map((sg) => ({
+        inputId: sg.inputId, status: sg.status,
+        detail: `${sg.label} — auto-accepted (promoted class) from ${sg.fieldLabel}`,
+        source: 'EXTRACTED' as const, confidence: sg.modelConfidence,
+        extractedBy: suggestions?.model ? `${suggestions.provider ?? 'unknown'}:${suggestions.model}` : null,
+        sourceSpan: sg.span, provenanceRef: sg.field, observedAt: suggestions?.generatedAt ?? null,
+      }));
+    const extractObs = [...humanObs, ...suggestObs];
 
     const snap: PreopSnapshot = composeSnapshot({
       engineVersion: PREOP_ENGINE_VERSION,
@@ -465,13 +634,21 @@ export async function runPreopSweep(opts: PreopSweepOptions = {}): Promise<Preop
       pac: a.pac,
       daysToSurgery: daysBetweenDays(todayIst, ep.surgeryDate),
       reviewed: false,                       // the store re-reads the stored review state
-      includeExtracted: rails.extract,
+      // HUMAN observations are not extractions and are never gated by this: a clinician's
+      // confirmation is a deterministic fact about a decision that was made. Only the
+      // auto-accepted (promoted) EXTRACTED observations need the flag, and there are none.
+      includeExtracted: rails.extract !== 'off',
       bookingEnumerated: a.bookingEnumerated,
       notClosedBy: a.notClosedBy,
       bookingOnly: a.bookingOnly,
       computedAt,
     });
-    for (const i of snap.inputs) if (i.source === 'EXTRACTED') extractedInputs[i.inputId] = (extractedInputs[i.inputId] ?? 0) + 1;
+    harvestTally.rxObservations += a.harvest.rx;
+    harvestTally.diseaseObservations += a.harvest.disease;
+    for (const n of a.harvest.negationSuppressed) harvestTally.negationSuppressed[n] = (harvestTally.negationSuppressed[n] ?? 0) + 1;
+    for (const n of a.harvest.diseaseUnmapped) harvestTally.diseaseUnmapped[n] = (harvestTally.diseaseUnmapped[n] ?? 0) + 1;
+    for (const n of a.harvest.comorbidityMatched) harvestTally.comorbidityMatched[n] = (harvestTally.comorbidityMatched[n] ?? 0) + 1;
+    for (const n of a.harvest.comorbidityUnmapped) harvestTally.comorbidityUnmapped[n] = (harvestTally.comorbidityUnmapped[n] ?? 0) + 1;
 
     byTier[snap.tier.tier] = (byTier[snap.tier.tier] ?? 0) + 1;
     if (snap.tier.needsReview) needsReview++;
@@ -533,7 +710,10 @@ export async function runPreopSweep(opts: PreopSweepOptions = {}): Promise<Preop
         mfi5: [snap.mfi5.lo, snap.mfi5.hi],
         charlson: [snap.charlson.lo, snap.charlson.hi],
         ...(opts.collectSnapshots ? { snapshot: snap } : {}),
-        extraction, narrative, extractOutcome,
+        suggestions,
+        open: openSuggestions(suggestions, decisions).length,
+        decisions,
+        narrative, extractOutcome,
       });
     }
     void saved;
@@ -546,8 +726,11 @@ export async function runPreopSweep(opts: PreopSweepOptions = {}): Promise<Preop
     withCreatinine, withIcd, notComputable, unmappedBookingTerms, unmatchedIcd, ms,
     degradedSources: degraded,
     rails: { requested: rails, extraction: extractTally, narrative: narrativeTally },
-    extractedInputs,
-    unstableInputs: [...unstableInputs].sort(),
+    harvest: harvestTally,
+    suggestedInputs,
+    splitSuggestions: [...splitSuggestions].sort(),
+    droppedByGate,
+    confirmedInputs,
     ...(opts.collect ? { cases } : {}),
     errors: errors.slice(0, 20),
   };

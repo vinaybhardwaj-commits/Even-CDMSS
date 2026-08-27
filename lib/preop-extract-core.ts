@@ -1,8 +1,14 @@
 /**
- * lib/preop-extract-core.ts — the extraction rail's PURE half (PRD v1.1-LOCKED §7 / D4;
- * Build Plan B5). No DB, no fetch, no clock, NO MODEL: the model call is injected by
- * lib/preop/extract.ts, and everything that decides what a model is allowed to have said
+ * lib/preop-extract-core.ts — the model rail's PURE reading half (PRD v1.1-LOCKED §7 / D4;
+ * Build Plan B5, repurposed by B8b). No DB, no fetch, no clock, NO MODEL: the calls are made by
+ * lib/preop/suggest.ts, and everything that decides what a model is allowed to have said
  * lives here, where a table of cases can pin it.
+ *
+ * ⚠️ B8 CHANGED WHAT HAPPENS TO WHAT THIS FILE ACCEPTS. Its four gates are unchanged and
+ * still run exactly as written — but an accepted reading is no longer an INPUT. It is a
+ * SUGGESTION (lib/preop-suggest-core.ts), reconciled across three reads and shown on the
+ * case page until a named human confirms it. The header below describes the gates; the
+ * assertion it makes about scoring was true of B5 and is now the suggestion rail's job.
  *
  * THE INVARIANT THIS FILE DEFENDS. "A model may propose an INPUT (with provenance and
  * confidence) or write prose ABOUT a computed result. It may never contribute a point of
@@ -164,9 +170,18 @@ RULES — a violation of any one makes the whole item worthless:
 Return ONLY this JSON, no prose, no markdown fence:
 {"inputs":[{"input":"<id>","status":"present|absent","field":"<field name>","rawText":"<verbatim substring>","confidence":0.0,"note":"<= 12 words or null"}]}`;
 
-/** The user message: the target table, then the source fields. Pure string building. */
-export function buildExtractPrompt(fields: Record<string, string>): { system: string; user: string } {
-  const targets = EXTRACT_TARGETS.map((t) => `- ${t.id} — ${t.label}: ${t.definition}`).join('\n');
+/**
+ * The user message: the target table, then the source fields. Pure string building.
+ *
+ * B8b passes a NARROWED target list (SUGGEST_TARGETS). The three inputs B8a's drug
+ * dictionary now owns deterministically are no longer asked about at all — asking a model
+ * for a fact a table already has is how the rabeprazole reading happened.
+ */
+export function buildExtractPrompt(
+  fields: Record<string, string>,
+  targetList: readonly ExtractTarget[] = EXTRACT_TARGETS,
+): { system: string; user: string } {
+  const targets = targetList.map((t) => `- ${t.id} — ${t.label}: ${t.definition}`).join('\n');
   const named = Object.entries(fields)
     .filter(([k, v]) => EXTRACT_SOURCE_IDS.has(k) && typeof v === 'string' && v.trim())
     .map(([k, v]) => `### ${k}\n${v.trim()}`)

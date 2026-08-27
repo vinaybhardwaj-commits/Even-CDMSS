@@ -248,6 +248,12 @@ export const UNREGISTERED: string[] = [
                             // floor, the two CRITICAL escalations, the derived card lines
   'preop-assemble-core',    // pre-op input assembly (preop-assemble/1): source precedence, conflict
                             // tagging, the extraction floor, the closed-world rule, the fingerprint
+  'preop-harvest-core',     // B8a's deterministic harvest (preop-harvest/1): the drug dictionary whose
+                            // ban on medication→diagnosis is a CATEGORY, the explicit disease-name
+                            // matcher with its negation guard, and the sixth structured source
+  'preop-suggest-core',     // B8b's suggestion rail (preop-suggest/1): the off|suggest|score mode, the
+                            // three-read reconciler, the medication→diagnosis filter applied BEFORE
+                            // suggestion, and the human-confirmation path that is the only route to a score
   'preop-extract-core',     // the pre-op extraction rail's gates (preop-extract/1): target whitelist,
                             // span verification, the confidence floor, the source-fingerprint
                             // anti-flap rule — a model may fill an UNKNOWN and nothing else

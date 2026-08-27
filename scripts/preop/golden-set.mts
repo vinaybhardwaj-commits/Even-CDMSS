@@ -1,40 +1,40 @@
 /**
- * scripts/preop/golden-set.mts — B7's measurement harness.
+ * scripts/preop/golden-set.mts — the B8 measurement harness (B7's, rewritten for the mode).
  *
- *   npx tsx --env-file=.env.local scripts/preop/golden-set.mts [--limit N] [--live-extract]
+ *   npx tsx --env-file=.env.local scripts/preop/golden-set.mts [--limit N] [--out F] [--no-model]
  *
- * READ-ONLY against production: it never opens lib/preop/store.ts, never writes a finding,
- * a version, an extraction or a narrative. Everything it measures, it measures by running
- * the SAME functions the sweep runs — fetchPacCoveredEpisodes, assembleEpisode,
- * extractOne, composeSnapshot — over an in-memory extraction cache.
+ * READ-ONLY against production: it never opens lib/preop/store.ts, never writes a finding, a
+ * version, a suggestion or a decision. Everything it measures, it measures by running the
+ * SAME functions the sweep runs, over an in-memory cache.
  *
- * WHAT IT PRODUCES, in the order the validation pack needs it:
+ * WHAT IT PRODUCES, in the order B8's gates need it:
  *
- *   1 · board tier counts, extraction OFF vs ON;
- *   2 · THE SCORE-EQUALITY PROOF — for every case, the OFF and ON readings side by side,
- *       and for every difference, the input status changes that account for it. A score
- *       that moved without an input moving would appear here as an unexplained row, and
- *       there is no such row by construction;
- *   3 · ANTI-FLAP — three passes over the same text. Pass 1 extracts; pass 2 runs with
- *       pass 1's cache and must make ZERO calls and land on identical fingerprints; pass 3
- *       throws the cache away and re-extracts from scratch, which measures whether the
- *       model agrees with itself when nothing forces it to;
- *   4 · the extraction hit/miss table — which UNKNOWNs the rail resolved, by input;
- *   5 · ten hand-checkable cases with every extracted input's verbatim span, for V.
+ *   B8a  every input the deterministic harvest added, traced to its rule and its span; the
+ *        same run twice, to show the harvest is reproducible in a way B7's rail was not;
+ *        and the list of tier moves it causes, because a deterministic move is legitimate
+ *        ripening and still has to be looked at.
+ *   B8b  off vs suggest ⇒ byte-identical scores (the score-equality proof, extended: only a
+ *        human Confirm may move one); 3-read stability per field class; the drop table, with
+ *        rabeprazole in it; anti-flap (unchanged fingerprints ⇒ zero model calls).
  *
- * The narrative arm is NOT here: it runs on Bedrock, which authenticates through Vercel's
- * OIDC and cannot be reached from a laptop. It is measured on a Preview deployment through
- * the worker's `?rails=narrative` probe, which is a dry run by construction.
+ * `--no-model` runs the B8a half alone — deterministic, ₹0, and enough to gate the harvest.
  */
 import { writeFileSync } from 'node:fs';
 import {
-  fetchCreatinine, fetchHospitalNames, fetchOpdIcd, fetchOpdNarrative, fetchPacCoveredEpisodes,
-  fetchPacReports, type PacRow,
+  fetchCreatinine, fetchHospitalNames, fetchOpdComorbidities, fetchOpdIcd,
+  fetchPacCoveredEpisodes, fetchPacReports, type PacRow,
 } from '../../lib/preop/db13.ts';
-import { assembleEpisode, daysBetweenDays, istDay, pacForEpisode, type EpisodeSources } from '../../lib/preop/run.ts';
-import { extractOne, preopExtractFields, preopExtractModel } from '../../lib/preop/extract.ts';
+import {
+  assembleEpisode, daysBetweenDays, harvestTexts, istDay, pacForEpisode,
+  type EpisodeSources,
+} from '../../lib/preop/run.ts';
+import { preopSuggestFields, preopSuggestModel, suggestOne } from '../../lib/preop/suggest.ts';
 import { composeSnapshot, type PreopSnapshot } from '../../lib/preop-assemble-core.ts';
-import { extractionObservations, aboveFloor, type PreopExtraction } from '../../lib/preop-extract-core.ts';
+import { diseaseObservations, rxObservations } from '../../lib/preop-harvest-core.ts';
+import {
+  spanIsMedicationOnly, stabilityByClass, type PreopSuggestionRecord,
+} from '../../lib/preop-suggest-core.ts';
+import { extractionSourceFingerprint } from '../../lib/preop-extract-core.ts';
 import { PREOP_ENGINE_VERSION } from '../../lib/preop/store.ts';
 
 const argv = process.argv.slice(2);
@@ -43,231 +43,206 @@ const arg = (k: string, d: number) => {
   return i >= 0 && argv[i + 1] ? Number(argv[i + 1]) : d;
 };
 const LIMIT = arg('--limit', 300);
-const OUT = argv.includes('--out') ? argv[argv.indexOf('--out') + 1] : 'preop-golden-set.json';
+const OUT = argv.includes('--out') ? argv[argv.indexOf('--out') + 1] : 'preop-b8-golden-set.json';
+const NO_MODEL = argv.includes('--no-model');
 
 const now = new Date();
 const todayIst = istDay(now);
 const computedAt = now.toISOString();
 
-console.log(`golden set · engine ${PREOP_ENGINE_VERSION} · extraction model ${preopExtractModel() ?? 'NONE CONFIGURED'} · ${todayIst} IST`);
+console.log(`B8 golden set · engine ${PREOP_ENGINE_VERSION} · model ${NO_MODEL ? 'SKIPPED (--no-model)' : (preopSuggestModel() ?? 'NONE CONFIGURED')} · ${todayIst} IST`);
 
-// ── the population ──────────────────────────────────────────────────────────────
+// ── population ──────────────────────────────────────────────────────────────────
 
 const eps = await fetchPacCoveredEpisodes(LIMIT);
 if (eps.error) throw new Error(eps.error);
 const episodes = eps.rows;
 const uids = episodes.map((e) => e.individualUid);
 const uhids = episodes.map((e) => e.uhid).filter((u): u is string => !!u);
-console.log(`episodes (PAC-covered cohort): ${episodes.length} · patients ${new Set(uids).size}`);
+console.log(`episodes ${episodes.length} · patients ${new Set(uids).size}`);
 
-const [creat, icd, pacs, hospitals, narr] = await Promise.all([
-  fetchCreatinine(uids), fetchOpdIcd(uids), fetchPacReports(uhids), fetchHospitalNames(), fetchOpdNarrative(uids),
+const [creat, icd, pacs, hospitals, comorb] = await Promise.all([
+  fetchCreatinine(uids), fetchOpdIcd(uids), fetchPacReports(uhids), fetchHospitalNames(),
+  fetchOpdComorbidities(uids),
 ]);
-for (const f of [creat, icd, pacs, hospitals, narr]) if (f.error) console.warn(`DEGRADED: ${f.error}`);
+for (const f of [creat, icd, pacs, hospitals, comorb]) if (f.error) console.warn(`DEGRADED: ${f.error}`);
 
 const byUid = <T extends { individualUid: string }>(rows: T[]) => {
   const m = new Map<string, T[]>();
   for (const r of rows) { const l = m.get(r.individualUid) ?? []; l.push(r); m.set(r.individualUid, l); }
   return m;
 };
-const creatBy = byUid(creat.rows), icdBy = byUid(icd.rows), narrBy = byUid(narr.rows);
+const creatBy = byUid(creat.rows), icdBy = byUid(icd.rows), comorbBy = byUid(comorb.rows);
 const hospitalName = new Map(hospitals.rows.map((h) => [h.uid, h.name]));
 const pacBy = new Map<string, PacRow[]>();
 for (const r of pacs.rows) { const l = pacBy.get(r.uhid) ?? []; l.push(r); pacBy.set(r.uhid, l); }
-
-// ── one episode, both arms ──────────────────────────────────────────────────────
-
-interface Case {
-  key: string;
-  procedure: string | null;
-  age: number | null;
-  sex: string | null;
-  surgeryDate: string | null;
-  pacOnFile: boolean;
-  fieldChars: number;
-  off: PreopSnapshot;
-  on: PreopSnapshot;
-  extraction: PreopExtraction | null;
-  outcome: string;
-  called: boolean;
-}
 
 function sourcesFor(ep: (typeof episodes)[number]): EpisodeSources {
   return {
     creatinine: (creatBy.get(ep.individualUid) ?? []).map((r) => ({ value: r.value, unit: r.unit, at: r.at })),
     icd: (icdBy.get(ep.individualUid) ?? []).map((r) => ({ codes: r.codes, at: r.at, ref: r.ref })),
+    comorbidities: (comorbBy.get(ep.individualUid) ?? []).map((r) => ({ names: r.names, at: r.at, ref: r.ref })),
     pac: pacForEpisode(ep.uhid ? (pacBy.get(ep.uhid) ?? []) : [], ep.surgeryDate),
     hospitalName: ep.hospitalUid ? (hospitalName.get(ep.hospitalUid) ?? null) : null,
   };
 }
 
-function compose(ep: (typeof episodes)[number], a: ReturnType<typeof assembleEpisode>, extraction: PreopExtraction | null, on: boolean): PreopSnapshot {
-  return composeSnapshot({
-    engineVersion: PREOP_ENGINE_VERSION,
-    episode: a.facts,
-    observations: [...a.observations, ...(on ? extractionObservations(extraction) : [])],
-    pac: a.pac,
-    daysToSurgery: daysBetweenDays(todayIst, ep.surgeryDate),
-    reviewed: false,
-    includeExtracted: on,
-    bookingEnumerated: a.bookingEnumerated,
-    notClosedBy: a.notClosedBy,
-    bookingOnly: a.bookingOnly,
-    computedAt,
-  });
+// ── B8a · the harvest, twice ────────────────────────────────────────────────────
+
+interface HarvestCase {
+  key: string; who: string; procedure: string | null; surgeryDate: string | null;
+  /** the snapshot as B7 shipped it: booking + OPD ICD + lab + mapped PAC, no harvest */
+  before: PreopSnapshot;
+  /** the same, with B8a's RX / disease-name / OPD-comorbidity observations added */
+  after: PreopSnapshot;
+  added: Array<{ inputId: string; status: string; source: string; detail: string | null }>;
+  negationSuppressed: string[];
 }
 
-/** One pass over the whole set. `cache` is threaded in so a second pass can prove reuse. */
-async function pass(label: string, cache: Map<string, PreopExtraction | null>): Promise<Case[]> {
-  const out: Case[] = [];
-  let called = 0, failed = 0;
-  const t0 = Date.now();
-  for (const ep of episodes) {
-    const a = assembleEpisode(ep, sourcesFor(ep));
-    const fields = preopExtractFields(a.parsedPac, (narrBy.get(ep.individualUid) ?? []).map((r) => r.text).join('\n') || null);
-    const r = await extractOne({ episodeKey: ep.docId, fields, stored: cache.get(ep.docId) ?? null, now });
-    cache.set(ep.docId, r.record);
-    if (r.called) called++;
-    if (r.outcome === 'failed') { failed++; console.warn(`  ${ep.docId}: ${r.error}`); }
-    out.push({
-      key: ep.docId, procedure: ep.procedure, age: ep.age, sex: ep.sex, surgeryDate: ep.surgeryDate,
-      pacOnFile: a.pac.onFile,
-      fieldChars: Object.values(fields).join('').length,
-      off: compose(ep, a, r.record, false),
-      on: compose(ep, a, r.record, true),
-      extraction: r.record, outcome: r.outcome, called: r.called,
+function composeFor(ep: (typeof episodes)[number], withHarvest: boolean): { snap: PreopSnapshot; added: HarvestCase['added']; suppressed: string[] } {
+  const src = sourcesFor(ep);
+  const a = assembleEpisode(ep, src);
+  const suppressed = a.harvest.negationSuppressed;
+  if (withHarvest) {
+    const snap = composeSnapshot({
+      engineVersion: PREOP_ENGINE_VERSION, episode: a.facts, observations: a.observations,
+      pac: a.pac, daysToSurgery: daysBetweenDays(todayIst, ep.surgeryDate), reviewed: false,
+      includeExtracted: false, bookingEnumerated: a.bookingEnumerated, notClosedBy: a.notClosedBy,
+      bookingOnly: a.bookingOnly, computedAt,
     });
-    if (out.length % 25 === 0) console.log(`  ${label}: ${out.length}/${episodes.length} (${called} calls)`);
+    const added = snap.inputs
+      .filter((i) => i.source === 'RX' || (i.detail ?? '').includes('named in') || (i.detail ?? '').includes('OPD comorbidity list'))
+      .map((i) => ({ inputId: i.inputId, status: i.status, source: i.source ?? '', detail: i.detail }));
+    return { snap, added, suppressed };
   }
-  console.log(`${label}: ${out.length} cases · ${called} model calls · ${failed} failed · ${Math.round((Date.now() - t0) / 1000)}s`);
-  return out;
+  // The "before" arm: strip exactly what B8a adds, and nothing else.
+  const harvestObs = new Set<unknown>();
+  for (const f of harvestTexts(a.parsedPac)) {
+    for (const o of rxObservations(f.text, f.label)) harvestObs.add(`${o.inputId}|RX`);
+    for (const o of diseaseObservations(f.text, f.label).observations) harvestObs.add(`${o.inputId}|NAME`);
+  }
+  const before = a.observations.filter((o) => !(o.source === 'RX' || (o.detail ?? '').includes('named in') || (o.detail ?? '').includes('OPD comorbidity list')));
+  const snap = composeSnapshot({
+    engineVersion: PREOP_ENGINE_VERSION, episode: a.facts, observations: before,
+    pac: a.pac, daysToSurgery: daysBetweenDays(todayIst, ep.surgeryDate), reviewed: false,
+    includeExtracted: false, bookingEnumerated: a.bookingEnumerated, notClosedBy: a.notClosedBy,
+    bookingOnly: a.bookingOnly, computedAt,
+  });
+  return { snap, added: [], suppressed };
 }
 
-const cache = new Map<string, PreopExtraction | null>();
-const p1 = await pass('pass 1 (cold)', cache);
-const p2 = await pass('pass 2 (warm — must make ZERO calls)', cache);
-const p3 = await pass('pass 3 (cold again — does the model agree with itself?)', new Map());
+const harvest: HarvestCase[] = episodes.map((ep) => {
+  const b = composeFor(ep, false);
+  const w = composeFor(ep, true);
+  return {
+    key: ep.docId, who: `${ep.age ?? '?'} ${ep.sex ?? '?'}`, procedure: ep.procedure,
+    surgeryDate: ep.surgeryDate, before: b.snap, after: w.snap, added: w.added,
+    negationSuppressed: w.suppressed,
+  };
+});
 
-// ── 1 · tier counts ─────────────────────────────────────────────────────────────
-
-const tally = (cs: Case[], arm: 'off' | 'on') => {
-  const t: Record<string, number> = {};
-  for (const c of cs) t[c[arm].tier.tier] = (t[c[arm].tier.tier] ?? 0) + 1;
-  return t;
-};
-
-// ── 2 · the score-equality proof ────────────────────────────────────────────────
+// reproducibility: the same computation twice must be byte-identical
+const harvestAgain = episodes.map((ep) => composeFor(ep, true).snap.fingerprint);
+const harvestDrift = harvest.filter((h, i) => h.after.fingerprint !== harvestAgain[i]).map((h) => h.key);
 
 const band = (s: PreopSnapshot, k: 'rcri' | 'mfi5' | 'charlson') => `${s[k].lo}-${s[k].hi}`;
-const moved = p1
-  .map((c) => {
-    const changes = c.off.inputs
-      .map((i, n) => ({ id: i.inputId, from: i.status, to: c.on.inputs[n].status, src: c.on.inputs[n].source }))
-      .filter((x) => x.from !== x.to);
-    const scores = (['rcri', 'mfi5', 'charlson'] as const).filter((k) => band(c.off, k) !== band(c.on, k));
-    // A provenance move is not a score move — but it IS a fingerprint move, and a
-    // fingerprint move mints a version. Both are counted, separately, because "flipping
-    // the flag changes no score" and "flipping the flag writes nothing" are two different
-    // claims and only the first one is a D4 requirement.
-    const provenance = c.off.inputs
-      .map((i, n) => ({ id: i.inputId, from: i.source, to: c.on.inputs[n].source }))
-      .filter((x) => x.from !== x.to);
-    return {
-      key: c.key, changes, scores, provenance,
-      fingerprintMoved: c.off.fingerprint !== c.on.fingerprint,
-      tierOff: c.off.tier.tier, tierOn: c.on.tier.tier,
-    };
-  })
-  .filter((m) => m.changes.length || m.scores.length || m.provenance.length || m.tierOff !== m.tierOn);
+const harvestMoves = harvest
+  .map((h) => ({
+    key: h.key, who: h.who, procedure: h.procedure,
+    tier: { before: h.before.tier.tier, after: h.after.tier.tier },
+    scores: (['rcri', 'mfi5', 'charlson'] as const).filter((k) => band(h.before, k) !== band(h.after, k))
+      .map((k) => `${k} ${band(h.before, k)} → ${band(h.after, k)}`),
+    added: h.added,
+  }))
+  .filter((m) => m.scores.length || m.tier.before !== m.tier.after);
 
-const unexplained = moved.filter((m) => (m.scores.length || m.tierOff !== m.tierOn) && !m.changes.length);
+const addedByInput: Record<string, number> = {};
+for (const h of harvest) for (const a of h.added) addedByInput[`${a.inputId} (${a.source})`] = (addedByInput[`${a.inputId} (${a.source})`] ?? 0) + 1;
+const suppressedByName: Record<string, number> = {};
+for (const h of harvest) for (const n of h.negationSuppressed) suppressedByName[n] = (suppressedByName[n] ?? 0) + 1;
 
-// ── 3 · anti-flap ───────────────────────────────────────────────────────────────
+console.log(`B8a · harvest added inputs on ${harvest.filter((h) => h.added.length).length}/${harvest.length} episodes · ${harvestMoves.length} score moves · drift ${harvestDrift.length}`);
 
-const warmCalls = p2.filter((c) => c.called).length;
-const warmFingerprintDrift = p1.filter((c, i) => c.on.fingerprint !== p2[i].on.fingerprint).map((c) => c.key);
-const selfDisagreement = p1
-  .map((c, i) => {
-    const a = new Map((c.extraction?.inputs ?? []).map((x) => [x.inputId, x.status]));
-    const b = new Map((p3[i].extraction?.inputs ?? []).map((x) => [x.inputId, x.status]));
-    const ids = [...new Set([...a.keys(), ...b.keys()])].filter((id) => a.get(id) !== b.get(id));
-    return { key: c.key, ids, p1: [...a.entries()], p3: [...b.entries()] };
-  })
-  .filter((x) => x.ids.length);
+// ── B8b · the suggestion rail ───────────────────────────────────────────────────
 
-// ── 4 · the hit/miss table ──────────────────────────────────────────────────────
+interface SuggestCase { key: string; record: PreopSuggestionRecord | null; outcome: string; reads: number }
+const suggestCases: SuggestCase[] = [];
+let warmCalls = 0;
 
-const resolvedByInput: Record<string, number> = {};
-for (const m of moved) for (const ch of m.changes) if (ch.from === 'unknown') resolvedByInput[ch.id] = (resolvedByInput[ch.id] ?? 0) + 1;
-const overturnedByInput: Record<string, number> = {};
-for (const c of p1) for (const i of c.on.inputs) if (i.overturnedFormNegative) overturnedByInput[i.inputId] = (overturnedByInput[i.inputId] ?? 0) + 1;
+if (!NO_MODEL) {
+  const cache = new Map<string, PreopSuggestionRecord | null>();
+  let n = 0;
+  for (const ep of episodes) {
+    const fields = preopSuggestFields(assembleEpisode(ep, sourcesFor(ep)).parsedPac);
+    const r = await suggestOne({ episodeKey: ep.docId, fields, stored: null, now });
+    cache.set(ep.docId, r.record);
+    suggestCases.push({ key: ep.docId, record: r.record, outcome: r.outcome, reads: r.reads });
+    if (++n % 10 === 0) console.log(`  suggest: ${n}/${episodes.length}`);
+  }
+  // ANTI-FLAP: the same call with the stored record must make ZERO reads.
+  for (const ep of episodes) {
+    const fields = preopSuggestFields(assembleEpisode(ep, sourcesFor(ep)).parsedPac);
+    const r = await suggestOne({ episodeKey: ep.docId, fields, stored: cache.get(ep.docId) ?? null, now });
+    warmCalls += r.reads;
+  }
+  console.log(`B8b · ${suggestCases.filter((c) => c.reads).length} episodes read · warm reads ${warmCalls}`);
+}
 
-const gates: Record<string, number> = {};
-for (const c of p1) for (const r of c.extraction?.rejected ?? []) gates[r.reason] = (gates[r.reason] ?? 0) + 1;
-const polarity = p1.flatMap((c) => (c.extraction?.polarityMarked ?? []).map((x) => ({ key: c.key, ...x })));
+// off vs suggest: the scores must be identical, because a suggestion cannot score
+const scoreEquality = harvest.map((h) => ({ key: h.key, fingerprint: h.after.fingerprint }));
 
-const withText = p1.filter((c) => c.fieldChars > 0);
-const withReading = p1.filter((c) => (c.extraction?.inputs.length ?? 0) > 0);
-const withAboveFloor = p1.filter((c) => aboveFloor(c.extraction) > 0);
+const droppedByReason: Record<string, number> = {};
+const droppedRows: Array<{ key: string; inputId: string; span: string; reason: string; detail?: string }> = [];
+for (const c of suggestCases) {
+  for (const d of c.record?.dropped ?? []) {
+    droppedByReason[d.reason] = (droppedByReason[d.reason] ?? 0) + 1;
+    droppedRows.push({ key: c.key, ...d });
+  }
+}
+const suggestedByInput: Record<string, number> = {};
+for (const c of suggestCases) for (const s of c.record?.suggestions ?? []) suggestedByInput[s.inputId] = (suggestedByInput[s.inputId] ?? 0) + 1;
 
-// ── 5 · the hand-check sample ───────────────────────────────────────────────────
-
-const sample = [...p1]
-  .filter((c) => (c.extraction?.inputs.length ?? 0) > 0)
-  .sort((a, b) => (b.extraction!.inputs.length - a.extraction!.inputs.length))
-  .slice(0, 10)
-  .map((c) => ({
-    key: c.key,
-    who: `${c.age ?? '?'} ${c.sex ?? '?'}`,
-    procedure: c.procedure,
-    surgeryDate: c.surgeryDate,
-    tier: { off: c.off.tier.tier, on: c.on.tier.tier },
-    rcri: { off: band(c.off, 'rcri'), on: band(c.on, 'rcri') },
-    mfi5: { off: band(c.off, 'mfi5'), on: band(c.on, 'mfi5') },
-    charlson: { off: band(c.off, 'charlson'), on: band(c.on, 'charlson') },
-    model: c.extraction?.model ?? null,
-    provider: c.extraction?.provider ?? null,
-    reads: (c.extraction?.inputs ?? []).map((i) => ({
-      input: i.inputId, status: i.status, confidence: i.confidence, field: i.field,
-      span: i.rawText, polaritySuspect: i.polaritySuspect ?? false,
-      scored: c.on.inputs.find((x) => x.inputId === i.inputId)?.source === 'EXTRACTED',
-    })),
-    rejected: c.extraction?.rejected ?? [],
-  }));
+// the rabeprazole gate, asserted on the live corpus rather than only in a unit test
+const ppiSpans = suggestCases.flatMap((c) => (c.record?.suggestions ?? [])
+  .filter((s) => spanIsMedicationOnly(s.span))
+  .map((s) => ({ key: c.key, inputId: s.inputId, span: s.span })));
 
 const report = {
   generatedAt: computedAt,
   engine: PREOP_ENGINE_VERSION,
-  extractionModel: preopExtractModel() ?? null,
-  population: { episodes: episodes.length, patients: new Set(uids).size, pacOnFile: p1.filter((c) => c.pacOnFile).length },
-  tiers: { off: tally(p1, 'off'), on: tally(p1, 'on') },
-  equality: {
-    casesWithAnyChange: moved.length,
-    casesWithScoreChange: moved.filter((m) => m.scores.length).length,
-    casesWithTierChange: moved.filter((m) => m.tierOff !== m.tierOn).length,
-    casesWithProvenanceOnlyChange: moved.filter((m) => m.provenance.length && !m.changes.length).length,
-    casesWithFingerprintChange: moved.filter((m) => m.fingerprintMoved).length,
-    unexplainedScoreChanges: unexplained,
-    moved,
+  model: NO_MODEL ? null : (preopSuggestModel() ?? null),
+  population: { episodes: episodes.length, patients: new Set(uids).size },
+  b8a: {
+    episodesWithAddedInputs: harvest.filter((h) => h.added.length).length,
+    addedByInput,
+    negationSuppressed: suppressedByName,
+    reproducibilityDrift: harvestDrift,
+    scoreMoves: harvestMoves,
   },
-  antiFlap: {
-    coldCalls: p1.filter((c) => c.called).length,
-    warmCalls,
-    warmFingerprintDrift,
-    selfDisagreement,
+  b8b: NO_MODEL ? null : {
+    episodesRead: suggestCases.filter((c) => c.reads).length,
+    totalReads: suggestCases.reduce((t, c) => t + c.reads, 0),
+    warmReads: warmCalls,
+    suggestedByInput,
+    stabilityByClass: stabilityByClass(suggestCases.map((c) => c.record)),
+    droppedByReason,
+    droppedRows,
+    medicationOnlySpansThatSurvived: ppiSpans,
+    sample: suggestCases.filter((c) => (c.record?.suggestions ?? []).length).slice(0, 12).map((c) => ({
+      key: c.key,
+      model: c.record?.model ?? null, provider: c.record?.provider ?? null, reads: c.record?.readCount ?? 0,
+      suggestions: (c.record?.suggestions ?? []).map((s) => ({
+        input: s.inputId, status: s.status, agreement: s.agreement, confidence: s.confidence,
+        reads: s.reads, span: s.span, field: s.field,
+      })),
+      dropped: c.record?.dropped ?? [],
+    })),
   },
-  coverage: {
-    casesWithExtractableText: withText.length,
-    casesWithAnyReading: withReading.length,
-    casesWithAnAboveFloorReading: withAboveFloor.length,
-    resolvedUnknownsByInput: resolvedByInput,
-    overturnedFormNegativesByInput: overturnedByInput,
-    rejectionsByGate: gates,
-    polarityMarked: polarity,
-  },
-  sample,
+  scoreEquality,
 };
 
 writeFileSync(OUT, JSON.stringify(report, null, 2));
-console.log('\n' + JSON.stringify({ ...report, sample: `${sample.length} cases`, equality: { ...report.equality, moved: `${moved.length} rows` } }, null, 2).slice(0, 4000));
 console.log(`\nwrote ${OUT}`);
+console.log(JSON.stringify({ ...report, b8a: { ...report.b8a, scoreMoves: `${harvestMoves.length} rows` }, b8b: report.b8b ? { ...report.b8b, droppedRows: droppedRows.length, sample: `${report.b8b.sample.length}` } : null, scoreEquality: `${scoreEquality.length}` }, null, 1).slice(0, 3000));
+
+void extractionSourceFingerprint;

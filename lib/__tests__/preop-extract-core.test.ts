@@ -237,7 +237,10 @@ test('every source field the rail reads is a VERBATIM field on the PAC map — t
 });
 
 test('the rail carries no model id of its own — the label comes off the call', () => {
-  const s = src('lib/preop/extract.ts');
+  // B8b moved the impure half from lib/preop/extract.ts to lib/preop/suggest.ts when the
+  // rail was demoted from assertor to suggester. The three properties pinned here did not
+  // change, which is the point of pinning them.
+  const s = src('lib/preop/suggest.ts');
   assert.ok(s.includes('servedCallForAudit'), 'the served model must be read back');
   assert.ok(s.includes('noLocalFallback: true'), 'a cloud failure must not become a silent local extraction');
   assert.ok(!/model:\s*'gemini/.test(s), 'no typed model label anywhere in the rail');

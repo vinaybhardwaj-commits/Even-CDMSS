@@ -13,6 +13,7 @@
  */
 import { isCareUnlocked } from '../care-cookie';
 import { isAdminUnlocked } from '../admin-cookie';
+import { parseExtractMode, scoreModeReachable, type PreopExtractMode } from '../preop-suggest-core';
 
 /** Both flags, ANDed. PREOP_SURFACE_ENABLED ships OFF; V flips it after deploy verification. */
 export function preopSurfaceEnabled(): boolean {
@@ -25,10 +26,37 @@ export async function preopAuthed(): Promise<boolean> {
   try { return await isAdminUnlocked(); } catch { return false; }
 }
 
-/** Flag state, reported on every payload — never a matter of belief on a clinical screen. */
-export function preopFlagState(): { extraction: 'on' | 'off'; narrative: 'on' | 'off' } {
+/**
+ * Who is recording a decision. The care surface is cookie-gated rather than per-user
+ * authenticated, so the honest label is the ROLE plus the gate that let them in — never a
+ * fabricated name. When an admin session is what unlocked the page, say so.
+ * ⚠️ FLAGGED FOR V: real per-user identity on /care would make the B8d precision measurement
+ * attributable, and this module cannot invent it.
+ */
+export async function preopDecider(): Promise<string> {
+  try { if (await isCareUnlocked()) return 'care-manager'; } catch { /* fall through */ }
+  try { if (await isAdminUnlocked()) return 'admin'; } catch { /* fall through */ }
+  return 'unknown';
+}
+
+/**
+ * Flag state, reported on every payload — never a matter of belief on a clinical screen.
+ *
+ * B8 replaced the extraction boolean with a MODE, and the payload carries the mode itself
+ * rather than an on/off collapse of it: a reader of the case page needs to know the
+ * difference between "the model never ran" and "the model ran and everything it found is
+ * waiting for someone to confirm it".
+ */
+export function preopFlagState(): {
+  extraction: PreopExtractMode;
+  narrative: 'on' | 'off';
+  scoreModeReachable: boolean;
+} {
   return {
-    extraction: process.env.PREOP_EXTRACT_ENABLED === '1' ? 'on' : 'off',
+    extraction: parseExtractMode(process.env.PREOP_EXTRACT_MODE),
     narrative: process.env.PREOP_NARRATIVE_ENABLED === '1' ? 'on' : 'off',
+    // B8d: `score` mode is configured but unreachable until V ratifies a class. Reported so
+    // that a mode of 'score' on a screen can never be mistaken for anything auto-accepting.
+    scoreModeReachable: scoreModeReachable(),
   };
 }

@@ -85,11 +85,17 @@ test('every other case is "PAC — none", including PENDING and an unknown logge
 
 // ── delta 1 · five provenance chips (A1-2) ─────────────────────────────────────
 
-test('there are five provenance chips, and only EXTRACTED is the model boundary', () => {
-  assert.deepEqual(Object.keys(PROVENANCE_CHIPS).sort(), ['BOOKING', 'EXTRACTED', 'LAB', 'OPD', 'PAC']);
+test('there are seven provenance chips, and only EXTRACTED is the model boundary', () => {
+  // B8 added two: RX (a medication class, where the drug IS the instrument item) and HUMAN
+  // (a clinician who confirmed a suggestion on the case page). Neither is a model boundary
+  // and neither may be styled pink — pink is reserved for a reading nobody has confirmed.
+  assert.deepEqual(Object.keys(PROVENANCE_CHIPS).sort(), ['BOOKING', 'EXTRACTED', 'HUMAN', 'LAB', 'OPD', 'PAC', 'RX']);
   assert.equal(PROVENANCE_CHIPS.OPD.label, 'OPD · ICD-10');
   assert.equal(PROVENANCE_CHIPS.OPD.model, false, 'an ICD code has no model near it');
+  assert.equal(PROVENANCE_CHIPS.RX.model, false, 'a medication line has no model near it either');
+  assert.equal(PROVENANCE_CHIPS.HUMAN.model, false, 'a person is not a model');
   assert.equal(PROVENANCE_CHIPS.EXTRACTED.model, true);
+  assert.equal(Object.values(PROVENANCE_CHIPS).filter((c) => c.model).length, 1, 'exactly one model boundary');
   assert.ok(Object.values(PROVENANCE_CHIPS).every((c) => c.label.trim().length > 0), 'colour never carries meaning alone');
   assert.equal(provenanceChip('nope'), null);
   assert.equal(provenanceChip(null), null);

@@ -1,8 +1,8 @@
 // The Pre-op Risk Agent worker (PRD CDMSS-PREOP-RISK-AGENT-v1.1-LOCKED §6; Build Plan B2).
 // Mirrors /api/readmission/worker: same auth guard, same sweep-is-the-retry posture.
 //
-// B5/B6 (27 Aug 2026): the worker CAN now make model calls, and with the flags as they
-// ship — PREOP_EXTRACT_ENABLED and PREOP_NARRATIVE_ENABLED both unset — it makes none.
+// B5/B6 (27 Aug 2026): the worker CAN make model calls, and with PREOP_EXTRACT_MODE unset
+// the only one it makes is the narrative.
 // Every tick is deterministic SQL plus the pure cores and costs ₹0. The rails attach
 // above that floor, never inside it: with both on, the scores are byte-identical and the
 // only difference is coverage (an extraction may fill an input the record left UNKNOWN)
@@ -60,9 +60,10 @@ export const maxDuration = 300;
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import {
-  runPreopSweep, preopExtractEnabled, preopNarrativeEnabled, preopRailsFromEnv,
+  runPreopSweep, preopExtractMode, preopNarrativeEnabled, preopRailsFromEnv,
   PREOP_HORIZON_DAYS, type PreopRails,
 } from '@/lib/preop/run';
+import { parseExtractMode } from '@/lib/preop-suggest-core';
 import { boardCounts, PREOP_ENGINE_VERSION } from '@/lib/preop/store';
 
 /**
@@ -114,9 +115,15 @@ export async function GET(req: NextRequest) {
   let railsOverride: Partial<PreopRails> | undefined;
   if (railsParam) {
     const want = railsParam.split(/[,\s]+/).filter(Boolean);
-    railsOverride = want.includes('none')
-      ? { extract: false, narrative: false }
-      : { extract: want.includes('extract'), narrative: want.includes('narrative') };
+    // B8: the extraction rail is a MODE now. `rails=suggest` and `rails=score` name it
+    // directly; the older `rails=extract` still means "run the model", and it resolves to
+    // `suggest` — the only mode that can actually do anything while PROMOTED_CLASSES is
+    // empty. `rails=none` forces everything off.
+    const mode = want.includes('none') ? 'off'
+      : want.includes('score') ? parseExtractMode('score')
+        : (want.includes('suggest') || want.includes('extract')) ? parseExtractMode('suggest')
+          : 'off';
+    railsOverride = { extract: mode, narrative: !want.includes('none') && want.includes('narrative') };
   }
   // A forced rail is a MEASUREMENT, and a measurement does not write. Not a convention —
   // the OR is right here, so no query string can produce a writing tick with a rail that
@@ -138,7 +145,9 @@ export async function GET(req: NextRequest) {
       // and the OVERRIDE is reported beside them so a probe can never be mistaken for the
       // environment having changed.
       flags: {
-        extraction: preopExtractEnabled() ? 'on' : 'off (PREOP_EXTRACT_ENABLED unset — extractable inputs stay UNKNOWN and instruments widen)',
+        extraction: preopExtractMode() === 'off'
+          ? 'off (PREOP_EXTRACT_MODE unset — the model never runs; the deterministic harvest still does)'
+          : `${preopExtractMode()} (PREOP_EXTRACT_MODE — suggestions only; nothing scores without a human Confirm)`,
         narrative: preopNarrativeEnabled() ? 'on' : 'off (PREOP_NARRATIVE_ENABLED unset — the case page renders the rail as visibly dark)',
       },
       railsFromEnv: preopRailsFromEnv(),

@@ -13,7 +13,7 @@
  */
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
-import { getFinding, listVersionsForEpisode, PREOP_ENGINE_VERSION } from '@/lib/preop/store';
+import { getFinding, listVersionsForEpisode, readDecisions, PREOP_ENGINE_VERSION } from '@/lib/preop/store';
 import { caseDetail } from '@/lib/preop/surface-row';
 import { isEpisodeKeyShape } from '@/lib/preop-versions-core';
 import { preopAuthed, preopFlagState, preopSurfaceEnabled } from '@/lib/preop/gate';
@@ -28,22 +28,35 @@ export async function GET(req: NextRequest) {
   const key = (req.nextUrl.searchParams.get('key') || '').trim();
   if (!key || !isEpisodeKeyShape(key)) return NextResponse.json({ error: 'bad_key' }, { status: 400 });
 
-  const [found, versions] = await Promise.all([getFinding(key), listVersionsForEpisode(key)]);
+  const [found, versions, decided] = await Promise.all([
+    getFinding(key), listVersionsForEpisode(key), readDecisions([key]),
+  ]);
   if (!found.row) {
     return NextResponse.json({ ok: false, error: found.error ?? 'no such episode at this engine version' }, { status: 404 });
   }
-  const { row, snapshot, extraction, narrative, narrativeState } = caseDetail(found.row);
+  const decisions = (decided.byKey.get(key) ?? []).map((d) => ({
+    episodeKey: d.episode_key, inputId: d.input_id as never,
+    status: (d.status === 'absent' ? 'absent' : 'present') as 'present' | 'absent',
+    span: d.span ?? '', field: d.field ?? '',
+    decision: (d.decision === 'dismiss' ? 'dismiss' : 'confirm') as 'confirm' | 'dismiss',
+    decidedBy: d.decided_by, decidedAt: d.decided_at, sourceFingerprint: d.source_fingerprint,
+  }));
+  const { row, snapshot, suggestions, open, sourceFingerprint, narrative, narrativeState } = caseDetail(found.row, decisions);
   return NextResponse.json({
     ok: true,
     engine: PREOP_ENGINE_VERSION,
     row,
     snapshot,
     versions: versions.rows,
-    // B5/B6. `extraction` is returned whether or not the flag is on — a reader who has
-    // just had the rail turned off is owed the reading it left behind, and the page
-    // labels it as inert. `narrative` is returned ONLY when it is renderable; the state
-    // token says why when it is not.
-    extractionRecord: extraction,
+    // B8b. The stored suggestions are returned whether or not the mode is on — a reader
+    // who has just had the rail turned off is owed the reading it left behind, and the page
+    // labels it as inert. `open` is what the panel may offer; `sourceFingerprint` is what a
+    // Confirm must be bound to. `narrative` is returned ONLY when it is renderable; the
+    // state token says why when it is not.
+    suggestionRecord: suggestions,
+    openSuggestions: open,
+    sourceFingerprint,
+    decisions,
     narrativeText: narrative,
     narrativeState,
     ...preopFlagState(),

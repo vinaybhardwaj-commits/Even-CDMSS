@@ -362,69 +362,65 @@ export interface PreopIcdRow {
  * bronchitis). Thin, real, and free — and it grows with every consult.
  */
 /**
- * B5 · the OPD free-text history — the extraction rail's second source, after the PAC's
- * verbatim boxes. `doctor_notes` is a JSON array of { note, doctor }; the note text is the
- * only genuine clinical free text this table carries for this cohort.
+ * B8a · THE SIXTH DETERMINISTIC SOURCE — `individuals-prescriptions.comorbidities`, flagged
+ * unmapped in the B7 report and mapped here. It is NOT free text: it is a structured array
+ * of `{ comorbidity: { uid, name } }` over a small controlled vocabulary ("High BP",
+ * "Thyroid Disorder"). Same table as the ICD codes, same rank, same source label.
  *
- * ⚠️ MEASURED 27 Aug 2026 AND REPORTED RATHER THAN ASSUMED: across the 855 non-draft
- * prescriptions belonging to the surgical cohort, `relevant_medical_history` is filled on
- * 0, `doctor_notes` on 1. The source is wired because the kickoff names it; its yield on
- * today's data is approximately nothing, and the B7 pack says so in those words rather
- * than letting a reader infer coverage from the rail's existence.
- *
- * ⚠️ AND A FINDING FOR V, FLAGGED NOT BUILT: the same table's `comorbidities` column is
- * NOT free text — it is a structured array of { comorbidity: { uid, name } } ("High BP",
- * "Thyroid Disorder"), filled on 9 cohort rows. That is a SIXTH DETERMINISTIC source, of
- * the same class as the booking enum, and it belongs in the deterministic map (B3's side
- * of the D4 line), not in this rail. Mapping it is a decision, not a build detail.
- *
- * Runs ONLY when PREOP_EXTRACT_ENABLED is on, so the dark module costs one query less.
+ * ── AND WHAT THIS REPLACED, recorded rather than deleted ─────────────────────────
+ * B5 wired `doctor_notes` as an OPD FREE-TEXT source for the extraction rail. B8a drops it
+ * on its own measurement: across the 855 non-draft prescriptions belonging to the surgical
+ * cohort, `relevant_medical_history` was filled on 0 and `doctor_notes` on 1. A source that
+ * yields one row in eight hundred is not coverage, it is a query. The rail reads the PAC's
+ * verbatim boxes and nothing else now.
  */
-export interface PreopOpdNarrativeRow { individualUid: string; text: string; at: string | null; ref: string | null }
+export interface PreopOpdComorbidityRow { individualUid: string; names: string[]; at: string | null; ref: string | null }
 
-export async function fetchOpdNarrative(individualUids: string[]): Promise<Fetched<PreopOpdNarrativeRow>> {
+export async function fetchOpdComorbidities(individualUids: string[]): Promise<Fetched<PreopOpdComorbidityRow>> {
   const list = parentPathList(individualUids);
   if (!list) return { rows: [], error: null };
   let rows: Record<string, unknown>[];
   try {
     rows = await metabaseQuery(
       `SELECT replace(p._parent_path, '/individuals/', '') AS individual_uid,
-              p._doc_id, p.uploaded_at::text AS at, p.doctor_notes::text AS notes
+              p._doc_id, p.uploaded_at::text AS at, p.comorbidities::text AS comorbidities
          FROM "individuals-prescriptions" p
         WHERE p._parent_path IN (${list})
           AND p.is_draft = false
-          AND p.doctor_notes IS NOT NULL
-          AND length(p.doctor_notes::text) > 8
+          AND p.comorbidities IS NOT NULL
+          AND length(p.comorbidities::text) > 4
         ORDER BY p.uploaded_at ASC
-        LIMIT 200`);
+        LIMIT 500`);
   } catch (e) {
-    return failed('individuals-prescriptions.doctor_notes', e);
+    return failed('individuals-prescriptions.comorbidities', e);
   }
-  const out: PreopOpdNarrativeRow[] = [];
+  const out: PreopOpdComorbidityRow[] = [];
   for (const r of rows) {
     const uid = s(r.individual_uid);
     if (!uid) continue;
-    const text = opdNoteText(s(r.notes));
-    if (!text) continue;
-    out.push({ individualUid: uid, text, at: s(r.at), ref: s(r._doc_id) });
+    const names = comorbidityNames(s(r.comorbidities));
+    if (!names.length) continue;
+    out.push({ individualUid: uid, names, at: s(r.at), ref: s(r._doc_id) });
   }
   return { rows: out, error: null };
 }
 
-/** Pull the note strings out of the doctor_notes JSON array. Tolerant: a shape we do not
- *  recognise yields NOTHING rather than a stringified blob a model would then read. */
-export function opdNoteText(raw: string | null): string | null {
-  if (!raw) return null;
+/** Pull the comorbidity NAMES out of the JSON array. Tolerant: a shape we do not recognise
+ *  yields nothing rather than a stringified blob for a matcher to trip over. */
+export function comorbidityNames(raw: string | null): string[] {
+  if (!raw) return [];
   let parsed: unknown;
-  try { parsed = JSON.parse(raw); } catch { return null; }
-  if (!Array.isArray(parsed)) return null;
-  const parts: string[] = [];
+  try { parsed = JSON.parse(raw); } catch { return []; }
+  if (!Array.isArray(parsed)) return [];
+  const out: string[] = [];
   for (const item of parsed) {
     if (!item || typeof item !== 'object') continue;
-    const note = (item as Record<string, unknown>).note;
-    if (typeof note === 'string' && note.trim()) parts.push(note.trim());
+    const c = (item as Record<string, unknown>).comorbidity;
+    if (!c || typeof c !== 'object') continue;
+    const name = (c as Record<string, unknown>).name;
+    if (typeof name === 'string' && name.trim()) out.push(name.trim());
   }
-  return parts.length ? parts.join('\n') : null;
+  return out;
 }
 
 export async function fetchOpdIcd(individualUids: string[]): Promise<Fetched<PreopIcdRow>> {

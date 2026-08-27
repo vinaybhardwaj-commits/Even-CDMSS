@@ -10,8 +10,10 @@
 import type { InstrumentScore } from '../preop-instruments-core';
 import type { Tier } from '../preop-tier-core';
 import type { PreopCardRow } from '../preop-surface-core';
-import type { PreopExtraction } from '../preop-extract-core';
 import { narrativeRenderable, type PreopNarrative } from '../preop-narrative-core';
+import {
+  openSuggestions, type PreopDecision, type PreopSuggestion, type PreopSuggestionRecord,
+} from '../preop-suggest-core';
 import type { FindingRow } from './store';
 
 function asObject(v: unknown): Record<string, unknown> | null {
@@ -83,14 +85,19 @@ export function toCardRow(r: FindingRow): PreopCardRow {
  * waiting for this version. An INVALID narrative is likewise never returned — it is stored
  * for review and that is the whole of its life (the R4-4 contract).
  */
-export function caseDetail(r: FindingRow): {
+export function caseDetail(r: FindingRow, decisions: readonly PreopDecision[] = []): {
   row: PreopCardRow;
   snapshot: Record<string, unknown> | null;
-  extraction: PreopExtraction | null;
+  suggestions: PreopSuggestionRecord | null;
+  /** what the panel offers: suggestions nobody has confirmed or dismissed yet */
+  open: PreopSuggestion[];
+  /** what a decision must be bound to — null when there is no stored reading to decide on */
+  sourceFingerprint: string | null;
+  decisions: readonly PreopDecision[];
   narrative: PreopNarrative | null;
   narrativeState: 'none' | 'stale' | 'invalid' | 'shown';
 } {
-  const extraction = asObject(r.extraction) as unknown as PreopExtraction | null;
+  const suggestions = asObject(r.extraction) as unknown as PreopSuggestionRecord | null;
   const stored = asObject(r.narrative) as unknown as PreopNarrative | null;
   const live = (r.snapshot_fingerprint as string | null | undefined) ?? null;
   const narrativeState: 'none' | 'stale' | 'invalid' | 'shown' =
@@ -100,7 +107,10 @@ export function caseDetail(r: FindingRow): {
   return {
     row: toCardRow(r),
     snapshot: asObject(r.snapshot),
-    extraction,
+    suggestions,
+    open: openSuggestions(suggestions, decisions),
+    sourceFingerprint: suggestions?.sourceFingerprint ?? null,
+    decisions,
     narrative: narrativeState === 'shown' ? stored : null,
     narrativeState,
   };

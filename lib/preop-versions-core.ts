@@ -28,7 +28,14 @@
 import type { PreopSnapshot } from './preop-assemble-core';
 
 /** The closed capture-reason set: exactly these two, no others. */
-export const PREOP_CAPTURE_REASONS = ['overwrite', 'replay'] as const;
+/**
+ * The closed capture-reason set. B8b adds `confirm`, deliberately and documented: a
+ * clinician pressing Confirm on a suggestion changes an input's STATUS, which changes the
+ * score, which mints a version — and that step in the timeline is not an overwrite by a
+ * sweep, it is a person deciding something. Calling it 'overwrite' would hide the one
+ * capture reason a reader most wants to see.
+ */
+export const PREOP_CAPTURE_REASONS = ['overwrite', 'replay', 'confirm'] as const;
 export type PreopCaptureReason = (typeof PREOP_CAPTURE_REASONS)[number];
 
 export const PREOP_VERSIONS_RULE_VERSION = 'preop-versions/1';

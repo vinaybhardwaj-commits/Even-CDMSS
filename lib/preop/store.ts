@@ -502,6 +502,95 @@ export async function saveNarrative(
   } catch { return false; }
 }
 
+// ── B8b · suggestion decisions: the only path from a suggestion to a score ──────
+//
+// Every Confirm and every Dismiss lands here, and this table is two things at once.
+// Operationally it is what makes a confirmation durable across sweeps: the sweep re-reads it
+// and turns each confirm into a HUMAN observation. Evidentially it is the gold-label store
+// the B8d promotion gate reads — a field class earns `score` mode by accumulating decisions
+// here with measured precision, not by anyone's confidence in the model.
+//
+// Append-only by convention and by index: a later decision on the same (episode, input,
+// fingerprint) supersedes an earlier one at read time rather than overwriting it, so the
+// record of somebody changing their mind survives.
+
+export interface DecisionRow {
+  episode_key: string;
+  input_id: string;
+  status: string;
+  span: string | null;
+  field: string | null;
+  decision: string;
+  decided_by: string;
+  decided_at: string;
+  source_fingerprint: string;
+}
+
+/** Write one decision. Never fail-safe-silent: the caller reports the failure to the user,
+ *  because a Confirm that vanished is worse than a Confirm that was refused. */
+export async function recordDecision(d: {
+  episodeKey: string; inputId: string; status: string; span: string | null; field: string | null;
+  decision: string; decidedBy: string; sourceFingerprint: string;
+}, engineVersion: string = PREOP_ENGINE_VERSION): Promise<{ ok: boolean; error: string | null }> {
+  try {
+    await sql(
+      `INSERT INTO preop_suggestion_decisions
+         (episode_key, engine_version, input_id, status, span, field, decision, decided_by, source_fingerprint)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [d.episodeKey, engineVersion, d.inputId, d.status, d.span, d.field, d.decision, d.decidedBy, d.sourceFingerprint],
+    );
+    return { ok: true, error: null };
+  } catch (e) {
+    return { ok: false, error: String((e as Error).message).slice(0, 300) };
+  }
+}
+
+/** The latest decision per (episode, input, fingerprint) for a set of episodes. Fail-safe. */
+export async function readDecisions(
+  episodeKeys: string[],
+  engineVersion: string = PREOP_ENGINE_VERSION,
+): Promise<{ byKey: Map<string, DecisionRow[]>; error: string | null }> {
+  const byKey = new Map<string, DecisionRow[]>();
+  if (!episodeKeys.length) return { byKey, error: null };
+  try {
+    const rows = (await sql(
+      `SELECT DISTINCT ON (episode_key, input_id, source_fingerprint)
+              episode_key, input_id, status, span, field, decision, decided_by,
+              source_fingerprint,
+              to_char(decided_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS decided_at
+         FROM preop_suggestion_decisions
+        WHERE engine_version = $1 AND episode_key = ANY($2::text[])
+        ORDER BY episode_key, input_id, source_fingerprint, decided_at DESC`,
+      [engineVersion, episodeKeys],
+    )) as DecisionRow[];
+    for (const r of rows) {
+      const list = byKey.get(r.episode_key) ?? [];
+      list.push(r);
+      byKey.set(r.episode_key, list);
+    }
+    return { byKey, error: null };
+  } catch (e) {
+    return { byKey, error: `preop decisions unavailable: ${String((e as Error).message).slice(0, 300)}` };
+  }
+}
+
+/** Every decision on the board, for the B8d evidence table. Fail-safe. */
+export async function decisionRollup(
+  engineVersion: string = PREOP_ENGINE_VERSION,
+): Promise<{ rows: Array<{ input_id: string; decision: string; n: number }>; error: string | null }> {
+  try {
+    const rows = (await sql(
+      `SELECT input_id, decision, count(*)::int AS n
+         FROM preop_suggestion_decisions WHERE engine_version = $1
+        GROUP BY input_id, decision ORDER BY input_id, decision`,
+      [engineVersion],
+    )) as Array<{ input_id: string; decision: string; n: number }>;
+    return { rows, error: null };
+  } catch (e) {
+    return { rows: [], error: String((e as Error).message).slice(0, 300) };
+  }
+}
+
 // ── the sweep heartbeat ─────────────────────────────────────────────────────────
 
 export interface SweepRecord {

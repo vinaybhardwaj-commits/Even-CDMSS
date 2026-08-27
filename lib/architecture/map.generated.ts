@@ -779,6 +779,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "preop-harvest-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "preop-instruments-core",
     "plane": "unregistered"
   },
@@ -788,6 +792,10 @@ export const MAP_MODULES: MapModule[] = [
   },
   {
     "id": "preop-pac-map-core",
+    "plane": "unregistered"
+  },
+  {
+    "id": "preop-suggest-core",
     "plane": "unregistered"
   },
   {
@@ -1964,6 +1972,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "preop",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "preop-suggest-core",
     "kind": "value"
   },
   {
@@ -4504,11 +4517,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "preop",
     "to": "preop-extract-core",
-    "kind": "type"
+    "kind": "value"
   },
   {
     "from": "preop",
-    "to": "preop-extract-core",
+    "to": "preop-harvest-core",
     "kind": "value"
   },
   {
@@ -4529,6 +4542,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "preop",
     "to": "preop-pac-map-core",
+    "kind": "value"
+  },
+  {
+    "from": "preop",
+    "to": "preop-suggest-core",
     "kind": "value"
   },
   {
@@ -4572,6 +4590,11 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "preop-harvest-core",
+    "to": "preop-assemble-core",
+    "kind": "type"
+  },
+  {
     "from": "preop-narrative-core",
     "to": "preop-assemble-core",
     "kind": "type"
@@ -4585,6 +4608,21 @@ export const MAP_EDGES: MapEdge[] = [
     "from": "preop-pac-map-core",
     "to": "preop-assemble-core",
     "kind": "type"
+  },
+  {
+    "from": "preop-suggest-core",
+    "to": "preop-assemble-core",
+    "kind": "type"
+  },
+  {
+    "from": "preop-suggest-core",
+    "to": "preop-extract-core",
+    "kind": "value"
+  },
+  {
+    "from": "preop-suggest-core",
+    "to": "preop-harvest-core",
+    "kind": "value"
   },
   {
     "from": "preop-surface-core",
@@ -5313,6 +5351,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "PREOP_HARVEST_RULE_VERSION",
+    "value": "preop-harvest/1",
+    "file": "lib/preop-harvest-core.ts",
+    "derived": false
+  },
+  {
     "constName": "PREOP_INSTRUMENTS_VERSION",
     "value": "preop-instruments/1",
     "file": "lib/preop-instruments-core.ts",
@@ -5328,6 +5372,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "constName": "PREOP_PAC_MAP_VERSION",
     "value": "preop-pac-map/1",
     "file": "lib/preop-pac-map-core.ts",
+    "derived": false
+  },
+  {
+    "constName": "PREOP_SUGGEST_RULE_VERSION",
+    "value": "preop-suggest/1",
+    "file": "lib/preop-suggest-core.ts",
     "derived": false
   },
   {
@@ -5442,8 +5492,8 @@ export const VERSION_REGISTRY: VersionRow[] = [
 
 export const COVERAGE = {
   "registered": 21,
-  "unregistered": 35,
-  "total": 56,
+  "unregistered": 37,
+  "total": 58,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
@@ -5465,9 +5515,11 @@ export const COVERAGE = {
     "preop",
     "preop-assemble-core",
     "preop-extract-core",
+    "preop-harvest-core",
     "preop-instruments-core",
     "preop-narrative-core",
     "preop-pac-map-core",
+    "preop-suggest-core",
     "preop-surface-core",
     "preop-tier-core",
     "preop-versions-core",

@@ -67,7 +67,7 @@ export const PREOP_ASSEMBLE_RULE_VERSION = 'preop-assemble/1';
 
 // ── sources and precedence ──────────────────────────────────────────────────────
 
-export type PreopSource = 'LAB' | 'PAC' | 'BOOKING' | 'OPD' | 'EXTRACTED';
+export type PreopSource = 'HUMAN' | 'LAB' | 'PAC' | 'RX' | 'BOOKING' | 'OPD' | 'EXTRACTED';
 
 /**
  * Lower rank wins. LAB and PAC tie at the top on purpose (see the header); BOOKING and
@@ -82,7 +82,26 @@ export type PreopSource = 'LAB' | 'PAC' | 'BOOKING' | 'OPD' | 'EXTRACTED';
  * anywhere near them, so labelling them EXTRACTED would be a lie about where they came
  * from and would wrongly hide them when the extraction flag is off.
  */
-export const SOURCE_RANK: Record<PreopSource, number> = { LAB: 0, PAC: 0, BOOKING: 1, OPD: 1, EXTRACTED: 2 };
+export const SOURCE_RANK: Record<PreopSource, number> = {
+  HUMAN: -1, LAB: 0, PAC: 0, RX: 0, BOOKING: 1, OPD: 1, EXTRACTED: 2,
+};
+
+/**
+ * B8 added two sources at the ends of that scale, and both deserve a sentence.
+ *
+ * HUMAN (-1) outranks everything. It is not "a model, but trusted": it is a named clinician
+ * who was shown a verbatim span on the case page and pressed Confirm, with their identity
+ * and the moment recorded in `preop_suggestion_decisions`. Nothing else in this module has
+ * a person's name attached to it, and if a person who has read the note disagrees with the
+ * record, the person wins. The audit trail is what makes that safe.
+ *
+ * RX (0) ties with LAB and PAC. A medication line is a primary record of what the patient
+ * is actually taking, and the only inputs it may establish are the ones whose published
+ * definition IS a treatment (RX_DEFINITIONAL_INPUTS) — so an RX observation and a mapped
+ * PAC field are two primary records of two different things, exactly like the LAB/PAC tie
+ * above. What RX may never do is name a diagnosis; that ban is a category, enforced in
+ * lib/preop-harvest-core.ts and pinned by test.
+ */
 
 /**
  * Below this, an EXTRACTED observation is dropped and its input reverts to UNKNOWN.

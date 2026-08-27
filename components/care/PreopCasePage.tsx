@@ -41,15 +41,19 @@ interface VersionRow {
   rcri_lo: number | null; rcri_hi: number | null; mfi_lo: number | null; mfi_hi: number | null;
   cci_lo: number | null; cci_hi: number | null;
 }
-interface ExtractedInput {
-  inputId: string; status: string; field: string; rawText: string;
-  confidence: number; note: string | null; polaritySuspect?: boolean;
+interface Suggestion {
+  inputId: string; status: string; label: string; span: string; field: string; fieldLabel: string;
+  reads: Array<string | null>; agreement: string; confidence: string;
+  modelConfidence: number; polaritySuspect: boolean;
 }
-interface ExtractionRecord {
-  version: string; extractedAt: string; model: string | null; provider: string | null;
-  inputs: ExtractedInput[];
-  rejected: Array<{ input: string; field: string; rawText: string; reason: string }>;
-  unstable: string[]; reextractions: number; fieldsSeen: string[];
+interface SuggestionRecord {
+  version: string; generatedAt: string; model: string | null; provider: string | null;
+  readCount: number; suggestions: Suggestion[];
+  dropped: Array<{ inputId: string; span: string; reason: string; detail?: string }>;
+  fieldsSeen: string[];
+}
+interface Decision {
+  inputId: string; status: string; decision: string; decidedBy: string; decidedAt: string; span: string;
 }
 interface NarrativeRecord {
   text: string; citedIds: string[]; factCount: number; generatedAt: string;
@@ -58,9 +62,13 @@ interface NarrativeRecord {
 interface Payload {
   ok: boolean; engine: string; row: PreopCardRow; snapshot: Snapshot | null;
   versions: VersionRow[]; extraction: string; narrative: string; error: string | null;
-  extractionRecord?: ExtractionRecord | null;
+  suggestionRecord?: SuggestionRecord | null;
+  openSuggestions?: Suggestion[];
+  sourceFingerprint?: string | null;
+  decisions?: Decision[];
   narrativeText?: NarrativeRecord | null;
   narrativeState?: 'none' | 'stale' | 'invalid' | 'shown';
+  scoreModeReachable?: boolean;
 }
 
 const TIER_PILL: Record<Tier, string> = {
@@ -230,11 +238,13 @@ export default function PreopCasePage({ episodeKey }: { episodeKey: string }) {
         </div>
         <p className="mt-1.5 text-[11.5px] text-slate-500">
           Pink marks the model boundary; below the confidence floor an extracted input is treated as UNKNOWN and the instrument
-          widens to a range. Extraction is currently <b>{data.extraction}</b>.
+          widens to a range. The extraction rail is currently <b>{data.extraction}</b>
+          {data.extraction === 'score' && !data.scoreModeReachable && <> (configured, but no field class has been ratified for auto-accept, so it behaves as <b>suggest</b>)</>}.
+          A <b>CONFIRMED</b> chip means a person read the source text on this page and said yes.
         </p>
       </Section>
 
-      <ExtractionPanel data={data} />
+      <SuggestionPanel data={data} episodeKey={episodeKey} onDecided={() => void load()} />
 
       <p className="mt-5 border-t border-slate-200 pt-3 text-[11.5px] leading-relaxed text-slate-400">{SCORES_FOOTER}</p>
     </Shell>
@@ -299,74 +309,125 @@ function citedText(text: string) {
 }
 
 /**
- * B5 · what the extraction rail actually did on this case — every accepted reading with the
- * verbatim span it was copied from, and every proposal a gate threw away, with the gate
- * that threw it. The rejected list is not an error log: it is the anti-fabrication gate's
- * receipt, and a case with many rejections is telling a reader something about the rail.
+ * B8b · THE SUGGESTION PANEL — "Possible findings in notes".
+ *
+ * The whole point of this panel is what it CANNOT do. Nothing on it has scored anything.
+ * Every chip is a pink OUTLINE — pink because it is the model boundary, outline because it
+ * is unconfirmed — and the only way any of it reaches an instrument is a person reading the
+ * verbatim span beside it and pressing Confirm.
+ *
+ * The panel deliberately does not sort by the model's own confidence. It shows the
+ * three-read agreement instead, because B7 measured this rail disagreeing with itself on
+ * 40% of identical texts, and "it said so three times out of three" is a claim about
+ * reproducibility that a self-reported 0.9 is not.
  */
-function ExtractionPanel({ data }: { data: Payload }) {
-  const rec = data.extractionRecord ?? null;
-  const on = data.extraction === 'on';
-  if (!rec) {
-    if (!on) return null;
-    return (
-      <Section title="Extraction — nothing read">
-        <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3.5 py-3 text-[12px] text-slate-500">
-          The rail is on and found no free text to read on this episode. Extraction adds coverage where the record is prose; it invents nothing where the record is silent.
-        </div>
-      </Section>
-    );
-  }
+function SuggestionPanel({ data, episodeKey, onDecided }: {
+  data: Payload; episodeKey: string; onDecided: () => void;
+}) {
+  const rec = data.suggestionRecord ?? null;
+  const open = data.openSuggestions ?? [];
+  const decisions = data.decisions ?? [];
+  const mode = data.extraction;
+  const fp = data.sourceFingerprint ?? null;
+  const [busy, setBusy] = useState<string | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+
+  const decide = useCallback(async (s: Suggestion, decision: 'confirm' | 'dismiss') => {
+    if (!fp) return;
+    setBusy(`${s.inputId}:${decision}`);
+    setFailed(null); setDone(null);
+    try {
+      const r = await fetch('/api/care/preop/suggestion', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          episodeKey, inputId: s.inputId, decision, status: s.status,
+          span: s.span, field: s.field, sourceFingerprint: fp,
+        }),
+      });
+      const j = (await r.json().catch(() => ({}))) as { error?: string; effect?: string };
+      if (!r.ok) throw new Error(j.error || `could not save (HTTP ${r.status})`);
+      setDone(j.effect ?? 'recorded');
+      onDecided();
+    } catch (e) { setFailed(String((e as Error).message)); } finally { setBusy(null); }
+  }, [episodeKey, fp, onDecided]);
+
+  if (mode === 'off' && !rec) return null;
+
   return (
-    <Section title={on ? 'Extraction — what the model proposed' : 'Extraction — the last reading, currently inert'}>
-      {!on && (
+    <Section title={mode === 'off'
+      ? 'Possible findings in notes — rail dark'
+      : 'Possible findings in notes — model-suggested; confirm to score'}>
+
+      {mode === 'off' && (
         <p className="mb-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11.5px] text-slate-600">
-          <code className="rounded bg-white px-1 text-[11px]">PREOP_EXTRACT_ENABLED=0</code>. This reading is stored but feeds no
-          instrument: none of it appears in any factor table above, and every score on this page was computed without it.
+          <code className="rounded bg-white px-1 text-[11px]">PREOP_EXTRACT_MODE=off</code>. The reading below is
+          stored but inert: none of it appears in any factor table above, and every score on this page was
+          computed without it.
         </p>
       )}
-      <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
-        <table className="w-full min-w-[560px] text-[12px]">
-          <thead>
-            <tr className="border-b border-slate-200 bg-slate-50 text-[10px] uppercase tracking-wider text-slate-400">
-              <th className="px-3 py-2 text-left font-bold">Input</th>
-              <th className="px-3 py-2 text-left font-bold">Reads</th>
-              <th className="px-3 py-2 text-left font-bold">Verbatim source</th>
-              <th className="px-3 py-2 text-right font-bold">Conf.</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rec.inputs.map((i) => (
-              <tr key={i.inputId} className="border-b border-slate-100 last:border-0">
-                <td className="px-3 py-2 text-slate-800">
-                  {i.inputId}
-                  {rec.unstable.includes(i.inputId) && (
-                    <span className="ml-1.5 rounded border border-amber-200 bg-amber-50 px-1 text-[10px] text-amber-800"
-                      title="a re-read of unchanged text disagreed with this one; the stored reading stands">unstable</span>
-                  )}
-                  {i.polaritySuspect && (
-                    <span className="ml-1.5 rounded border border-amber-200 bg-amber-50 px-1 text-[10px] text-amber-800"
-                      title="the quoted text reads as a negation while the reading asserts presence — marked for a clinician, never auto-corrected">check polarity</span>
-                  )}
-                </td>
-                <td className="px-3 py-2 font-semibold text-slate-700">{i.status.toUpperCase()}</td>
-                <td className="px-3 py-2 text-slate-500">
-                  <span className="text-[10px] uppercase tracking-wide text-slate-400">{i.field}</span>{' '}
-                  <span className="italic">“{i.rawText}”</span>
-                </td>
-                <td className="px-3 py-2 text-right tabular-nums text-slate-700">{i.confidence.toFixed(2)}</td>
-              </tr>
-            ))}
-            {!rec.inputs.length && (
-              <tr><td className="px-3 py-2 text-slate-400" colSpan={4}>Nothing cleared the gates on this episode.</td></tr>
+
+      {!!failed && <p className="mb-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] text-rose-800">{failed}</p>}
+      {!!done && <p className="mb-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-[12px] text-emerald-800">{done}</p>}
+
+      <div className="space-y-1.5">
+        {open.map((s) => (
+          <div key={s.inputId} className="rounded-xl border border-slate-200 bg-white px-3.5 py-3">
+            <div className="flex flex-wrap items-baseline gap-2">
+              {/* pink OUTLINE — the model boundary, unconfirmed. Never a filled chip: a
+                  filled pink chip on this page means an input that is actually scoring. */}
+              <span className="rounded-full border border-pink-300 bg-transparent px-2 py-[2px] text-[10.5px] font-semibold text-pink-700">
+                {s.label} · {s.status.toUpperCase()}
+              </span>
+              <span className={`rounded px-1.5 py-[1px] text-[10px] ${s.confidence === 'high'
+                ? 'border border-slate-200 bg-slate-50 text-slate-600'
+                : 'border border-amber-200 bg-amber-50 text-amber-800'}`}>
+                {s.agreement === 'unanimous' ? `agreed on all ${s.reads.length} reads` : `${s.reads.filter((r) => r === s.status).length} of ${s.reads.length} reads`}
+              </span>
+              {s.polaritySuspect && (
+                <span className="rounded border border-amber-200 bg-amber-50 px-1 text-[10px] text-amber-800"
+                  title="the quoted text reads as a negation while the reading asserts presence">check polarity</span>
+              )}
+            </div>
+            <p className="mt-1.5 text-[12px] text-slate-500">
+              <span className="text-[10px] uppercase tracking-wide text-slate-400">{s.fieldLabel}</span>{' '}
+              <span className="italic">&ldquo;{s.span}&rdquo;</span>
+            </p>
+            {mode !== 'off' && (
+              <div className="mt-2 flex gap-1.5">
+                <button onClick={() => void decide(s, 'confirm')} disabled={!!busy || !fp}
+                  className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-800 disabled:opacity-50">
+                  {busy === `${s.inputId}:confirm` ? 'Saving…' : 'Confirm'}
+                </button>
+                <button onClick={() => void decide(s, 'dismiss')} disabled={!!busy || !fp}
+                  className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] text-slate-500 disabled:opacity-50">
+                  {busy === `${s.inputId}:dismiss` ? 'Saving…' : 'Dismiss'}
+                </button>
+              </div>
             )}
-          </tbody>
-        </table>
+          </div>
+        ))}
+        {!open.length && (
+          <p className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3.5 py-3 text-[12px] text-slate-500">
+            {rec
+              ? 'Nothing outstanding — every suggestion on this note has been confirmed or dismissed.'
+              : 'The rail has not read this episode yet, or found no free text to read.'}
+          </p>
+        )}
       </div>
-      <p className="mt-1.5 text-[11.5px] text-slate-500">
-        Read from {rec.fieldsSeen.length} free-text field{rec.fieldsSeen.length === 1 ? '' : 's'} by {rec.provider ?? '?'}:{rec.model ?? 'model unrecorded'} on {shortDate(rec.extractedAt)}.
-        {rec.rejected.length > 0 && <> {rec.rejected.length} proposal{rec.rejected.length === 1 ? ' was' : 's were'} thrown away by a gate ({[...new Set(rec.rejected.map((r) => r.reason))].join(', ')}).</>}
-        {' '}An extraction may only fill an input the record left UNKNOWN — it cannot overrule a lab, a PAC field, an ICD code or the booking form.
+
+      {!!decisions.length && (
+        <p className="mt-2 text-[11.5px] text-slate-500">
+          Already decided: {decisions.map((d) => `${d.inputId} ${d.decision}ed by ${d.decidedBy}`).join(' · ')}.
+        </p>
+      )}
+
+      <p className="mt-2 border-t border-slate-100 pt-2 text-[11px] leading-relaxed text-slate-400">
+        Nothing in this panel has scored anything. A confirmation becomes an input with{' '}
+        <b>CONFIRMED</b> provenance on the next sweep and mints a new snapshot version; a dismissal hides the
+        suggestion for this version of the note. Both are recorded with who decided and when.
+        {rec && <> Read {rec.readCount}× at temperature 0 by {rec.provider ?? '?'}:{rec.model ?? 'model unrecorded'} on {shortDate(rec.generatedAt)}.</>}
+        {!!rec?.dropped.length && <> {rec.dropped.length} proposal{rec.dropped.length === 1 ? ' was' : 's were'} refused before you saw{rec.dropped.length === 1 ? ' it' : ' them'} ({[...new Set(rec.dropped.map((d) => d.reason))].join(', ')}) — a medication may never suggest a diagnosis.</>}
       </p>
     </Section>
   );
@@ -378,6 +439,8 @@ function sourceClass(source: string | null): string {
     case 'PAC': return 'border-indigo-200 bg-indigo-50 text-indigo-800';
     case 'OPD': return 'border-teal-200 bg-teal-50 text-teal-800';
     case 'BOOKING': return 'border-slate-200 bg-white text-slate-600';
+    case 'RX': return 'border-violet-200 bg-violet-50 text-violet-800';
+    case 'HUMAN': return 'border-emerald-200 bg-emerald-50 text-emerald-800';
     case 'EXTRACTED': return 'border-pink-200 bg-pink-50 text-pink-700';
     default: return 'border-slate-200 bg-white text-slate-400';
   }

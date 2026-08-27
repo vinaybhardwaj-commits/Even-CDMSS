@@ -13,8 +13,12 @@ import {
 } from '../preop-versions-core.ts';
 import { composeSnapshot, type SnapshotInput } from '../preop-assemble-core.ts';
 
-test('the capture-reason set is closed at exactly two', () => {
-  assert.deepEqual([...PREOP_CAPTURE_REASONS], ['overwrite', 'replay']);
+test('the capture-reason set is closed at exactly three, and the third is a person', () => {
+  // B8b added 'confirm' deliberately: a clinician pressing Confirm on a suggestion changes
+  // an input's STATUS, which changes a score, which mints a version — and that step is not
+  // a sweep overwriting itself, it is somebody deciding something. Calling it 'overwrite'
+  // would hide the one capture reason a reader of the timeline most wants to see.
+  assert.deepEqual([...PREOP_CAPTURE_REASONS], ['overwrite', 'replay', 'confirm']);
 });
 
 test('no stored row is not an overwrite — the first write destroys nothing', () => {

@@ -22,7 +22,7 @@ export const PREOP_SURFACE_RULE_VERSION = 'preop-surface/1';
 // ── the row the read routes emit and the components render ─────────────────────
 
 export type PacChipState = 'final' | 'expected' | 'missing' | 'none';
-export type PreopProvenance = 'LAB' | 'PAC' | 'BOOKING' | 'OPD' | 'EXTRACTED';
+export type PreopProvenance = 'HUMAN' | 'LAB' | 'PAC' | 'RX' | 'BOOKING' | 'OPD' | 'EXTRACTED';
 
 export interface PreopCardRow {
   episodeKey: string;
@@ -168,6 +168,8 @@ export const PROVENANCE_CHIPS: Record<PreopProvenance, { label: string; title: s
   LAB: { label: 'LAB · Eka', title: 'a structured lab result', model: false },
   PAC: { label: 'PAC', title: 'the anaesthetist\'s PAC, from a mapped template field', model: false },
   OPD: { label: 'OPD · ICD-10', title: 'a diagnosis code from an OPD consult', model: false },
+  RX: { label: 'RX', title: 'a medication class on the record, where the drug IS the instrument item — never a diagnosis', model: false },
+  HUMAN: { label: 'CONFIRMED', title: 'a clinician read the source text on this page and confirmed it — the confirmer and the moment are recorded', model: false },
   EXTRACTED: { label: 'EXTRACTED', title: 'proposed by a model, with its confidence — the model boundary', model: true },
 };
 

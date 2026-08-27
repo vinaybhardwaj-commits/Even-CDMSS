@@ -126,6 +126,35 @@ export async function POST(req: NextRequest) {
     await sql`ALTER TABLE preop_findings ADD COLUMN IF NOT EXISTS narrative_at TIMESTAMPTZ`;
     await sql`ALTER TABLE preop_findings ADD COLUMN IF NOT EXISTS narrative_valid BOOLEAN`;
     steps.b5_b6_rail_columns = 'ok';
+    // B8b (reference DDL: migrations/0044_preop_suggestions.sql). Every Confirm and every
+    // Dismiss a clinician makes on the case page. Two jobs, and both matter:
+    //   · OPERATIONAL — the sweep re-reads this table and turns each confirm into a HUMAN
+    //     observation, which is what makes a confirmation durable across recomputes. It is
+    //     bound to the SOURCE FINGERPRINT the suggestion was made against, so an edited note
+    //     retires the confirmation instead of silently carrying it onto text nobody read.
+    //   · EVIDENTIAL — this is the gold-label store the B8d promotion gate reads. A field
+    //     class earns `score` mode by accumulating decisions here with measured precision.
+    // Append-only: a later decision supersedes an earlier one at READ time (DISTINCT ON),
+    // so the record of somebody changing their mind survives.
+    await sql`CREATE TABLE IF NOT EXISTS preop_suggestion_decisions (
+      id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      decided_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      app_source         TEXT NOT NULL DEFAULT 'standalone',
+      episode_key        TEXT NOT NULL,
+      engine_version     TEXT NOT NULL,
+      input_id           TEXT NOT NULL,
+      status             TEXT NOT NULL,
+      span               TEXT,
+      field              TEXT,
+      decision           TEXT NOT NULL,
+      decided_by         TEXT NOT NULL,
+      source_fingerprint TEXT NOT NULL
+    )`;
+    await sql`CREATE INDEX IF NOT EXISTS preop_suggestion_decisions_episode_idx
+      ON preop_suggestion_decisions (engine_version, episode_key, input_id, source_fingerprint, decided_at DESC)`;
+    await sql`CREATE INDEX IF NOT EXISTS preop_suggestion_decisions_class_idx
+      ON preop_suggestion_decisions (engine_version, input_id, decision, decided_at DESC)`;
+    steps.b8_decisions = 'ok';
 
     await sql`CREATE TABLE IF NOT EXISTS preop_finding_versions (
       id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -185,6 +214,8 @@ export async function POST(req: NextRequest) {
                            FROM preop_findings`) as Array<{ ex: number; na: number }>;
     steps.rows = `findings ${f[0]?.n ?? 0} · versions ${v[0]?.n ?? 0} · sweeps ${s[0]?.n ?? 0}`;
     steps.rails = `extractions ${r[0]?.ex ?? 0} · narratives ${r[0]?.na ?? 0}`;
+    const dcount = (await sql`SELECT count(*)::int AS n FROM preop_suggestion_decisions`) as Array<{ n: number }>;
+    steps.decisions = `suggestion decisions ${dcount[0]?.n ?? 0}`;
     return NextResponse.json({ ok: true, engine: PREOP_ENGINE_VERSION, steps });
   } catch (e) {
     return NextResponse.json({ ok: false, steps, error: String((e as Error).message) }, { status: 500 });
