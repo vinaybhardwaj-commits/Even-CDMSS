@@ -11,7 +11,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CONDITION_PASS_ONLY_LABEL, DEFAULT_DENOMINATOR, DENOMINATOR_WARNING, DENOMINATORS, FACILITY_EHBR, FACILITY_EHRC, IMMEDIATE_RETURN_COPY,
-  PROPOSED_AVOIDABLE_SUBLINE, STAGED_RETURN_COPY, SURVEILLANCE_START, TRUE_IPD_EXCLUDED_DISPOSITIONS, addDays, computeRates, facilityOfEncounter,
+  PROPOSED_AVOIDABLE_ADVISORY, STAGED_RETURN_COPY, SURVEILLANCE_START, TRUE_IPD_EXCLUDED_DISPOSITIONS, addDays, computeRates, facilityOfEncounter,
   isHeldOutDepartment, isImmediateReturn, istDay, lastDayOfMonth, monthsBetween, nextMonth, returnContext, stagedReturnMatch, wilsonCi,
   type DischargeBucket, type RatePair,
 } from '../readmission-rates-core.ts';
@@ -135,7 +135,7 @@ test('computeRates: numerators — 30d / 90d / reviewable vs held-out / immediat
   assert.equal(e.immediate.numerator, 1); assert.equal(e.immediate.denominator, 147);
   // proposed avoidable: IP-2
   assert.equal(e.proposedAvoidable.numerator, 1);
-  assert.equal(PROPOSED_AVOIDABLE_SUBLINE, "agent's proposal · adjudication pending · advisory");
+  assert.equal(PROPOSED_AVOIDABLE_ADVISORY, 'agent proposal, not the human overlay');
   // all_in_window numerator adds IP-5 (07-20, gap 2)
   const a = r.facilities.find((f) => f.facility === FACILITY_EHRC)!.denominators.all_in_window;
   assert.equal(a.all30.numerator, 5); assert.equal(a.all30.denominator, 172);
@@ -260,18 +260,27 @@ test('stagedReturnMatch: empty sides never match; a return procedure that merely
 
 import { computedAtLabel, fmtCi, fmtPct, judgementStatsLine, moduleFacility, rateCards, returnContextLines, trendBars } from '../readmission-rates-core.ts';
 
-test('rateCards: five cards; rates as % with CI when allowed; counts-only "n / d" when the gate is closed; fifth card carries the advisory sub-line', () => {
+test('rateCards (R9 §12.2 strip): incidence LEAD then episodes secondary, 90-day demoted, immediate as a COUNT, avoidable advisory — no reviewable peer card; no incidence read → the unavailable lead, never a stays number', () => {
   const r = computeRates({ pairs, discharges, ceilingDay: CEILING });
   const ehrc = r.facilities.find((f) => f.facility === FACILITY_EHRC)!;
   const cards = rateCards(ehrc, 'eligible');
   assert.equal(cards.length, 5);
-  assert.deepEqual(cards.map((c) => c.key), ['all30', 'reviewable30', 'all90', 'immediate', 'proposedAvoidable']);
-  assert.equal(cards[0].big, '2.72%'); assert.match(cards[0].sub, /^4 of 147 discharges$/); assert.match(cards[0].ci, /^\d+\.\d{2}–\d+\.\d{2}%$/);
-  assert.match(cards[1].sub, /held-out 1\/10 \(10\.00%\)/);
-  assert.equal(cards[4].advisory, PROPOSED_AVOIDABLE_SUBLINE); assert.equal(cards[4].tone, 'advisory'); assert.equal(cards[4].big, '1');
+  assert.deepEqual(cards.map((c) => c.key), ['incidence', 'episodes30', 'all90', 'immediate', 'proposedAvoidable']);
+  // D8 / §3.3 — the reviewable peer card is GONE from the strip.
+  assert.ok(!cards.some((c) => c.key === 'reviewable30' || /reviewable/i.test(c.title)));
+  // T5 — this computeRates had no incidence read at all, so the lead says so and shows NOTHING.
+  assert.equal(cards[0].tone, 'unavailable'); assert.equal(cards[0].big, '—');
+  assert.match(cards[0].sub, /people are not stays/);
+  // The Eligible episode card is the same arithmetic R7 printed on `all30`.
+  assert.equal(cards[1].big, '2.72%'); assert.match(cards[1].sub, /^4 of 147 discharges$/); assert.match(cards[1].ci, /^\d+\.\d{2}–\d+\.\d{2}%$/);
+  assert.equal(cards[1].note, '0–30 including next-morning · stays, not people');
+  // L1 — the Immediate card is a COUNT and its copy does not flatly claim "out of incidence".
+  assert.equal(cards[3].title, 'Immediate / next-morning returns'); assert.equal(cards[3].tone, 'count'); assert.equal(cards[3].ci, '');
+  assert.equal(cards[3].note, 'count, not a rate · includes next-morning returns · <24h same-event returns are out of incidence');
+  assert.equal(cards[4].advisory, PROPOSED_AVOIDABLE_ADVISORY); assert.equal(cards[4].tone, 'advisory'); assert.equal(cards[4].big, '1');
   const ehbr = r.facilities.find((f) => f.facility === FACILITY_EHBR)!;
   const closed = rateCards(ehbr, 'eligible');
-  assert.equal(closed[0].big, '1 / 47'); assert.match(closed[0].sub, /^counts only/); assert.equal(closed[0].ci, '');
+  assert.equal(closed[1].big, '1 / 47'); assert.match(closed[1].sub, /^counts only/); assert.equal(closed[1].ci, '');
   assert.equal(fmtPct(null), '—'); assert.equal(fmtPct(5.6), '5.60%'); assert.equal(fmtCi(null), ''); assert.equal(fmtCi({ lo: 4.33, hi: 6.93 }), '4.33–6.93%');
 });
 

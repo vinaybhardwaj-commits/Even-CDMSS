@@ -75,7 +75,17 @@ export function returnContextOf(r: SurfaceRow, blob: FindingBlob | null, indexEx
   });
 }
 
-export function toFinding(r: SurfaceRow, id: Identity | undefined, indexCase: IndexCaseSummary | null = null, returnBill: ReturnBill | null = null, returnCtx: ReturnContext | null = null): SurfaceFinding {
+export function toFinding(
+  r: SurfaceRow,
+  id: Identity | undefined,
+  indexCase: IndexCaseSummary | null = null,
+  returnBill: ReturnBill | null = null,
+  returnCtx: ReturnContext | null = null,
+  /** R9 / D14 — the human overlay's decision, joined by the route from its own fail-safe read (the
+   *  surface SELECT is deliberately NOT widened: before the migration runs those columns do not exist,
+   *  and a missing column on that read would empty the whole board). */
+  clinicalReviewDecision: string | null = null,
+): SurfaceFinding {
   const blob = asJson<FindingBlob>(r.finding);
   return {
     dedupKey: String(r.dedup_key),
@@ -119,5 +129,7 @@ export function toFinding(r: SurfaceRow, id: Identity | undefined, indexCase: In
     returnBill,
     // R7 — the return context (immediate / staged markers), derived by code at read time.
     returnContext: returnCtx,
+    // R9 — the human overlay's verdict, beside the agent's `avoidable` above and never merged into it.
+    clinicalReviewDecision,
   };
 }

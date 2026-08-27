@@ -6,6 +6,17 @@
  * model fault) · route source-reads (gates, the case-route read set, no identity to the model, no
  * store write) · UI pins (placeholder gone, chips, working copy, advisory) · both fingerprint sets
  * unchanged.
+ *
+ * R9 (CDMSS-READMISSIONS-R9-DUAL-CONTRACT PRD, GO 27 Aug 2026) moved four of these pins ON PURPOSE and
+ * this file follows them, so the change is recorded where it can fail rather than only in a memo:
+ * ASK_QUESTION_MAX_CHARS 500 → 2,000 (O2) · ASK_HISTORY_MAX_TURNS 6 → 20 with the token cap raised to
+ * match (O1) · the user's line in the prompt is "CARE MANAGER'S TURN:" now that the box takes findings
+ * as well as questions (§12.3) · the advisory sentence flipped from "nothing you ask changes the case"
+ * to the saved-as-clinical-review wording, because the old one is no longer true. Everything the R4.3
+ * suite existed to protect — the fence, the citation verdict, the withhold path, no identity, no store
+ * write from the model call — is asserted unchanged.
+ * The R9-only behaviour (persistence, the overlay gate, the incidence contract) lives in its own file,
+ * lib/__tests__/readmission-r9-dual-contract.test.ts.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -55,10 +66,12 @@ test('buildAskPrompt: answer ONLY from the material, say plainly when the record
   assert.match(p.user, /negligence: Unknown \(advisory — not a court or council finding\)/);
   assert.match(p.user, /LOOKED FOR AND NOT FOUND: pac_note — no row in db13/);
   assert.match(p.user, /First stay: total ₹150000 over 1 line\(s\) — IP Package ₹150000 \[hospital bill\]\. Return stay: not available\./);
-  assert.match(p.user, /QUESTION: Why is negligence unknown\?$/);
+  assert.match(p.user, /CARE MANAGER'S TURN: Why is negligence unknown\?$/);
   assert.ok(!/Asha|Khan|UH-|UHID/.test(p.system + p.user), 'no identity in the prompt');
   const withHistory = buildAskPrompt(material, [{ question: 'Q one', answer: 'A one [S1].' }], 'And then?');
-  assert.match(withHistory.user, /EARLIER IN THIS CONVERSATION \(context only — do not repeat\):\nQ1: Q one\nA1: A one \[S1\]\./);
+  // R9 §5.3 — the history block now LABELS the care manager's own assertions as reviewer-stated, so
+  // the model may use them as his account and may never write them as though a record said them.
+  assert.match(withHistory.user, /EARLIER IN THIS CONVERSATION \(context only — do not repeat\)\. Anything the care manager asserts here is REVIEWER-STATED: you may use it as his account, always labelled as his, and you may never write it as though a hospital record said it:\nQ1: Q one\nA1: A one \[S1\]\./);
   const noAccount = buildAskPrompt({ ...material, account: null, ledger: [] }, [], 'x');
   assert.match(noAccount.user, /\(no ledger stored for this case\)/); assert.match(noAccount.user, /\(no valid account stored for this case\)/);
 });
@@ -70,18 +83,22 @@ test('normaliseQuestion: trims, collapses whitespace, strips control chars, reje
   assert.equal(normaliseQuestion('').ok, false); assert.equal(normaliseQuestion(null).ok, false); assert.equal(normaliseQuestion(42).ok, false);
   assert.equal(normaliseQuestion('a'.repeat(ASK_QUESTION_MAX_CHARS)).ok, true);
   const long = normaliseQuestion('a'.repeat(ASK_QUESTION_MAX_CHARS + 1));
-  assert.equal(long.ok, false); assert.match((long as { error: string }).error, /too long — 500 characters/);
-  assert.equal(ASK_QUESTION_MAX_CHARS, 500); assert.equal(ASK_PER_LOAD_LIMIT, 8);
+  assert.equal(long.ok, false); assert.match((long as { error: string }).error, /too long — 2000 characters/);
+  // R9 / O2 — 2,000, and the per-load brake stays CLIENT-side at 8 (O1).
+  assert.equal(ASK_QUESTION_MAX_CHARS, 2_000); assert.equal(ASK_PER_LOAD_LIMIT, 8);
 });
 
-test('capHistory: junk skipped, last ≤ 6 turns kept, then oldest dropped until the token cap fits', () => {
+test('capHistory: junk skipped, last ≤ 20 turns kept (R9 / O1), then oldest dropped until the token cap fits', () => {
   assert.deepEqual(capHistory(null), []); assert.deepEqual(capHistory('x'), []); assert.deepEqual(capHistory([{ question: 'q' }, { answer: 'a' }, 7]), []);
-  const many = Array.from({ length: 10 }, (_, i) => ({ question: `q${i}`, answer: `a${i}` }));
-  assert.deepEqual(capHistory(many).map((t) => t.question), ['q4', 'q5', 'q6', 'q7', 'q8', 'q9']);
-  assert.equal(ASK_HISTORY_MAX_TURNS, 6);
-  const fat = Array.from({ length: 6 }, (_, i) => ({ question: `q${i}`, answer: 'x'.repeat(4_000) }));   // 6 × ~1000 tokens > 3000
+  const many = Array.from({ length: 25 }, (_, i) => ({ question: `q${i}`, answer: `a${i}` }));
+  assert.deepEqual(capHistory(many).map((t) => t.question), Array.from({ length: 20 }, (_, i) => `q${i + 5}`));
+  assert.equal(ASK_HISTORY_MAX_TURNS, 20);
+  // O1's cap was raised WITH the window: 20 turns cannot fit inside R4.3's 3,000, so leaving the token
+  // cap alone would have trimmed the window straight back and made the raise cosmetic.
+  assert.equal(ASK_HISTORY_MAX_TOKENS, 12_000);
+  const fat = Array.from({ length: 20 }, (_, i) => ({ question: `q${i}`, answer: 'x'.repeat(4_000) }));   // 20 × ~1000 tokens > 12000
   const kept = capHistory(fat);
-  assert.ok(kept.length < 6 && kept.length >= 1); assert.equal(kept[kept.length - 1].question, 'q5');   // newest survives
+  assert.ok(kept.length < 20 && kept.length >= 1); assert.equal(kept[kept.length - 1].question, 'q19');   // newest survives
   assert.ok(Math.ceil(kept.reduce((n, t) => n + t.question.length + t.answer.length, 0) / 4) <= ASK_HISTORY_MAX_TOKENS);
 });
 
@@ -111,7 +128,7 @@ test('askVerdict: valid citations → shown; any unresolved id → withheld; no 
 
 test('answerCaseQuestion through the seam: answered with citedIds; withheld on an invented id (never rendered, never retried); withheld on a model fault; the prompt carries the question and capped history', async () => {
   let calls = 0;
-  const ok = await answerCaseQuestion({ dedupKey: 'k', material, history: [{ question: 'Q1', answer: 'A1 [S1].' }], question: 'Why is negligence unknown?', call: async (p) => { calls++; assert.match(p.user, /Q1: Q1\nA1: A1 \[S1\]\./); assert.match(p.user, /QUESTION: Why is negligence unknown\?/); return '{"answer":"The rule fires only on a named intra-operative event in usable operative-note text on an unplanned same-condition return; here the note records a calcar crack and cerclage wire [OT1] and the audit still read negligence as unknown [S1].","answerable":true}'; } });
+  const ok = await answerCaseQuestion({ dedupKey: 'k', material, history: [{ question: 'Q1', answer: 'A1 [S1].' }], question: 'Why is negligence unknown?', call: async (p) => { calls++; assert.match(p.user, /Q1: Q1\nA1: A1 \[S1\]\./); assert.match(p.user, /CARE MANAGER'S TURN: Why is negligence unknown\?/); return '{"answer":"The rule fires only on a named intra-operative event in usable operative-note text on an unplanned same-condition return; here the note records a calcar crack and cerclage wire [OT1] and the audit still read negligence as unknown [S1].","answerable":true}'; } });
   assert.equal(ok.outcome, 'answered'); assert.deepEqual(ok.verdict?.citedIds, ['OT1', 'S1']); assert.equal(calls, 1);
   const bad = await answerCaseQuestion({ dedupKey: 'k', material, history: [], question: 'What grew on culture?', call: async () => { calls++; return '{"answer":"MRSA grew on the swab [R7].","answerable":true}'; } });
   assert.equal(bad.outcome, 'withheld'); assert.equal(bad.reason, 'unresolved_ids'); assert.deepEqual(bad.verdict?.invalidIds, ['R7']); assert.equal(calls, 2, 'no silent retry');
@@ -166,12 +183,12 @@ test('ask route: gates identical to the case route; reads = the case-route set o
 test('UI: the placeholder string is gone from the repo; the three chips, the working copy, the advisory line and the per-load limit are wired', () => {
   const page = code('components/care/ReadmissionCasePage.tsx');
   assert.ok(!/coming in R4\.2|not yet available/.test(page));
-  assert.match(page, /<AskTheAgent dedupKey=\{dedupKey\} known=\{known\} onJump=\{jump\} \/>/);
+  assert.match(page, /<AskTheAgent dedupKey=\{dedupKey\} known=\{known\} onJump=\{jump\} onReview=\{onReview\} \/>/);
   assert.match(page, /ASK_SUGGESTIONS\.map/); assert.match(page, /\{ASK_WORKING_COPY\}/); assert.match(page, /\{ASK_ADVISORY\}/); assert.match(page, /ASK_PER_LOAD_LIMIT/); assert.match(page, /maxLength=\{ASK_QUESTION_MAX_CHARS\}/);
   assert.match(page, /\/api\/care\/readmissions\/ask/);
   assert.deepEqual([...ASK_SUGGESTIONS], ['Why was this case flagged?', 'What does the operative note show?', 'Why is negligence unknown?']);
   assert.equal(ASK_WORKING_COPY, 'The agent is reading the case — this takes about half a minute');
-  // no persistence of the conversation anywhere
+  // R9 — the conversation persists on the SERVER and nowhere else: still no browser storage.
   assert.ok(!/localStorage|sessionStorage/.test(page));
 });
 

@@ -6,13 +6,23 @@
  * held-out with censored months as dashed ghosts · facility tabs (honouring R6's hospital filter when
  * one is set) · the this-hospital-only footnote with a pointer to the definitions doc · computed-at.
  *
+ * R9 (CDMSS-READMISSIONS-R9-DUAL-CONTRACT-PRD-27-AUG-2026-GO §12.2, D2 / D8, L1) republishes the strip
+ * as TWO contracts from one spine, and the copy is the deliverable:
+ *   · the LEAD is CAT incidence — unique PEOPLE, clock ≥24h and ≤30d, onco and ObGyn excluded — and it
+ *     carries the neonate / ophthal footnote. When the distinct-people denominator cannot be read it
+ *     says so and shows nothing (T5): a people rate is never printed off a stays denominator.
+ *   · the SECONDARY is today's Eligible episode rate, unchanged arithmetic, labelled as stays.
+ *   · the reviewable peer card is GONE (D8 / §3.3). CAT's 45 and revenue's 45 are two different 45s,
+ *     so it must not sit next to incidence as though the two boards agreed. Hold-out lives on as the
+ *     board's list filter, where it belongs.
+ * Every number still comes from the pure core; nothing is computed here beyond bar heights.
+ *
  * Its own fetch of /api/care/readmissions/rates, independent of the card list: a rates fault shows
- * "rates unavailable right now" inside the module and the board is unaffected. Every number comes from
- * the pure core (readmission-rates-core) — nothing is computed here beyond bar heights.
+ * "rates unavailable right now" inside the module and the board is unaffected.
  */
 import { useEffect, useMemo, useState } from 'react';
 import {
-  DEFAULT_DENOMINATOR, DENOMINATORS, DENOMINATOR_LABEL, EHBR_GATE_COPY, RATES_UNAVAILABLE_COPY, THIS_HOSPITAL_ONLY_FOOTNOTE,
+  DEFAULT_DENOMINATOR, DENOMINATORS, DENOMINATOR_LABEL, EHBR_GATE_COPY, INCIDENCE_FOOTNOTE, RATES_UNAVAILABLE_COPY, THIS_HOSPITAL_ONLY_FOOTNOTE,
   computedAtLabel, judgementStatsLine, moduleFacility, rateCards, trendBars, type DenominatorKey, type RatesResult,
 } from '@/lib/readmission-rates-core';
 
@@ -81,15 +91,23 @@ export default function ReadmissionRatesModule({ facility }: { facility: string 
         <>
           <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-5">
             {cards.map((c) => (
-              <div key={c.key} className={`rounded-lg border p-2.5 ${c.tone === 'advisory' ? 'border-dashed border-amber-300 bg-amber-50/40' : 'border-line bg-white'}`}>
-                <div className="text-[10.5px] uppercase tracking-wide text-slate-500">{c.title}</div>
-                <div className="mt-0.5 text-[20px] font-semibold tabular-nums text-slate-900">{c.big}</div>
+              <div key={c.key} className={`rounded-lg border p-2.5 ${
+                c.tone === 'advisory' ? 'border-dashed border-amber-300 bg-amber-50/40'
+                : c.tone === 'lead' ? 'border-brand/40 bg-brand-faint/40 ring-1 ring-brand/20'
+                : c.tone === 'unavailable' ? 'border-dashed border-slate-300 bg-slate-50'
+                : 'border-line bg-white'}`}>
+                <div className={`text-[10.5px] uppercase tracking-wide ${c.tone === 'lead' ? 'font-semibold text-brand-dark' : 'text-slate-500'}`}>{c.title}</div>
+                <div className={`mt-0.5 font-semibold tabular-nums ${c.tone === 'lead' ? 'text-[24px] text-slate-900' : 'text-[20px] text-slate-900'}`}>{c.big}</div>
                 {c.ci && <div className="text-[10.5px] tabular-nums text-slate-500">95% CI {c.ci}</div>}
                 <div className="mt-0.5 text-[11px] text-slate-600">{c.sub}</div>
+                {c.note && <div className="mt-0.5 text-[10.5px] leading-snug text-slate-500">{c.note}</div>}
                 {c.advisory && <div className="mt-1 text-[10.5px] font-medium italic text-amber-800">{c.advisory}</div>}
               </div>
             ))}
           </div>
+          {/* D6 — required on the incidence card: the two exclusions this spine cannot tag, and the
+              sentence that stops the lead number being read as the insurer's calendar. */}
+          <p className="mt-1.5 text-[10.5px] leading-relaxed text-slate-500">{INCIDENCE_FOOTNOTE}</p>
 
           {/* Monthly trend — complete months as split bars (reviewable / held-out, stacked to the month's
               all-cause 30-day rate); incomplete months as dashed ghosts with counts only. */}

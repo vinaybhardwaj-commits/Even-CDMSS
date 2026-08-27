@@ -50,6 +50,7 @@ import {
 import { composeBrief, type BillBreakdown, type ExtractSubset } from '@/lib/readmission/brief';
 import {
   activeFilterChips, applyFilters, decodeFilters, departmentOptions, effectiveFilters, encodeFilters, facilityOptions, hasActiveFilters, laneOptions, showingLine,
+  REVIEW_FILTERS, REVIEW_FILTER_LABEL,
   EMPTY_FILTERS, GAP_PRESETS, VERDICTS, VERDICT_LABEL, type FilterState,
 } from '@/lib/readmission-filter-core';
 import { classifyLoadFailure, LOAD_TIMEOUT_MS, LOADING_COPY, REFRESH_FAILED_COPY, RETRY_LABEL, SLOW_AFTER_MS, SLOW_LOAD_COPY, type LoadFailure } from '@/lib/readmission-load-core';
@@ -412,6 +413,12 @@ export default function ReadmissionsBoard() {
               <input type="checkbox" checked={filters.flags} onChange={(e) => set('flags', e.target.checked)} className="h-3.5 w-3.5" />
               Serious flags only
             </label>
+            {/* R9 (§12.2) — the same-event class the incidence lead collapses out. The CLOCK, from the
+                two stored timestamps: not the Immediate card's wider gap ≤ 1 day union. */}
+            <label className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-white px-2 py-1 text-[11.5px] text-slate-600" title="Returns under 24 clock hours — the same-event class that is out of the incidence numerator. A case with a missing timestamp cannot be judged and is not shown.">
+              <input type="checkbox" checked={filters.lt24h} onChange={(e) => set('lt24h', e.target.checked)} className="h-3.5 w-3.5" />
+              Within 24 hours
+            </label>
             <select value={filters.lane ?? ''} onChange={(e) => set('lane', e.target.value || null)}
               className="rounded-lg border border-line bg-white px-2 py-1 text-[11.5px] text-slate-600" title="Case type (detection lane)">
               <option value="">Case type: all</option>
@@ -428,6 +435,13 @@ export default function ReadmissionsBoard() {
               className={`rounded-lg border px-2 py-1 text-[11.5px] ${facs.length === 0 ? 'border-line bg-slate-50 text-slate-300' : 'border-line bg-white text-slate-600'}`} title="Hospital — a case whose hospital is not known always stays visible">
               <option value="">All hospitals</option>
               {facs.map((h) => <option key={h} value={h}>{h}</option>)}
+            </select>
+            {/* R9 (D14) — the HUMAN's verdict, its own select beside the agent's. Two different
+                questions: what the agent proposed, and what a care manager actually decided. */}
+            <select value={filters.review ?? ''} onChange={(e) => set('review', (e.target.value || null) as FilterState['review'])}
+              className="rounded-lg border border-line bg-white px-2 py-1 text-[11.5px] text-slate-600" title="Clinical review — a care manager's own stated verdict, stored beside the agent's proposal">
+              <option value="">Clinical review: all</option>
+              {REVIEW_FILTERS.map((v) => <option key={v} value={v}>{REVIEW_FILTER_LABEL[v]}</option>)}
             </select>
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-2">

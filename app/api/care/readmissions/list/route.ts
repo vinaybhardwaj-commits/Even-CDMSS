@@ -38,6 +38,7 @@ import { fetchStayBillTotals } from '@/lib/readmission/db13';
 import { asJson, indexDocumentIdOf, readmitDocumentIdOf, returnContextOf, toFinding, toIndexCaseSummary, type Identity } from '@/lib/readmission/surface-row';
 import { caseLine, computeTiles, groupByLane, returnBillFor, toFindingClass, type FindingBlob } from '@/lib/readmission-surface-core';
 import { stripCaseArtefacts } from '@/lib/readmission-narrative-core';
+import { readClinicalReviewDecisions } from '@/lib/readmission/ask-store';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -187,12 +188,17 @@ export async function GET() {
 
   // R3: fetchStayBillTotals resolves { ok:false, empty Map } on a db13 fault — the route
   // then emits every card as `unknown` and billsResolved:false; nothing rejects here.
-  const [adt, summaries, denominator, extracts, bills] = await Promise.all([
+  // R9 (D14): the human overlay's decisions, as their OWN fail-safe Neon read rather than columns on
+  // the surface SELECT — before the migration runs those columns do not exist, and widening that read
+  // would turn a missing column into an empty BOARD. An empty map = no overlays visible, which renders
+  // as today's board exactly.
+  const [adt, summaries, denominator, extracts, bills, reviews] = await Promise.all([
     namesFromAdt(ids),
     identityFromSummaries(ids),
     ipDischargeDenominator(),
     fetchExtractedCases(indexDocIds),
     fetchStayBillTotals(readmitIds),
+    readClinicalReviewDecisions(),
   ]);
 
   const rows = read.rows.map((r) => {
@@ -218,7 +224,7 @@ export async function GET() {
       total: readmitId ? bills.totals.get(readmitId) : null,
     });
     // R7 (R7-5 / R7-6): the return context — code-derived markers, nothing stored, no verdict touched.
-    const f = toFinding(r, id, indexCase, returnBill, returnContextOf(r, blob, indexExtracted, readmitExtracted));
+    const f = toFinding(r, id, indexCase, returnBill, returnContextOf(r, blob, indexExtracted, readmitExtracted), reviews[String(r.dedup_key)] ?? null);
     // R4: the card renders neither the evidence ledger nor the narrative text — strip them from
     // the list payload (the case route emits them in full). The small facts (narrative present /
     // valid, relatedLvc state + denominator) stay so a later card affordance can read them.

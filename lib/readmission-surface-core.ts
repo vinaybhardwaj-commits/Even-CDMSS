@@ -96,6 +96,11 @@ export interface SurfaceFinding {
    *  Marker only: no judgement is overridden, the situation line stays, queue and badge unchanged.
    *  Absent (pre-R7 caller / fixture) = no marker. */
   returnContext?: ReturnContext | null;
+  /** R9 (CDMSS-READMISSIONS-R9-DUAL-CONTRACT PRD, D14): the care manager's own stored verdict —
+   *  `readmission_findings.clinical_review_decision`, joined at read time by the list route from its
+   *  own fail-safe read. It sits BESIDE `avoidable`, which it never overwrites, and no rate reads it
+   *  (acceptance #6). Absent / null = nobody has stated anything about this case yet. */
+  clinicalReviewDecision?: string | null;
 }
 
 /** R7 — see lib/readmission-rates-core.ts (returnContext). Re-declared structurally here so the

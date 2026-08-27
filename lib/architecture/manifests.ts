@@ -269,10 +269,14 @@ export const UNREGISTERED: string[] = [
   'readmission',            // readmission analysis agent Phase 1 (readmission/0.1 — detect + reconcile + Vertex worker)
   'readmission-reconcile-core', // pure Stage-2 reconciliation + R1 advisory judgements (readmit-judgement/1) —
                             // surfaced as its own versioned subsystem the day JUDGEMENT_RULE_VERSION was exported
+  'readmission-ask-core',   // R4.3 ask-the-agent decisions + the R9 human overlay (clinical_review/1):
+                            // the caps, the citation verdict, and gateOverlay — the ONE door to a stored
+                            // clinical review; registered here the day CLINICAL_REVIEW_VERSION was exported
   'readmission-narrative-core', // R4 pure cores (narrative/1, ledger/1, related-lvc/1): citation validator,
                             // relatedLvc reducer, three-hop join helpers — versioned by its exported *_VERSION consts
-  'readmission-rates-core', // R7 pure rates definitions (rates/1): denominators, Wilson CI, monthly cohorts,
-                            // EHBR gate, staged-return matcher — the 19-Aug rate report's method, codified once
+  'readmission-rates-core', // R7 + R9 pure rates definitions (rates/2): the two published contracts —
+                            // incidence (people, clock, D5 exclusions) and Eligible episodes — plus Wilson CI,
+                            // monthly cohorts, the EHBR gate and the staged-return matcher, codified once
   'readmission-versions-core', // R8.1 pure finding-versions logic (readmit-versions/1): capture reasons,
                             // snapshot shapes, replay validation, the overwrite-snapshot decision
   'reasoning',              // prompt-registry sidecar + export core (Reasoning Observability Stage 0)

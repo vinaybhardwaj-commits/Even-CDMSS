@@ -5,9 +5,14 @@
  * same citation validator that guards narratives) before anything is returned. Called by
  * app/api/care/readmissions/ask/route.ts and by the dry-run script; never from a page render.
  *
- * THE FENCE: no re-audit, no regeneration, no write to the finding, no db13 read beyond the case
- * route's set. The conversation is ephemeral (the caller passes ≤ 6 capped turns back in). PHI
- * (R43-8): no identity is passed to the model — the material is de-identified by construction.
+ * THE FENCE: no re-audit, no regeneration, no db13 read beyond the case route's set. PHI (R43-8): no
+ * identity is passed to the model — the material is de-identified by construction.
+ *
+ * R9: the conversation is no longer ephemeral, and this file still writes NOTHING. It gained exactly
+ * one field — `overlayRaw`, the model's un-gated report of what the care manager just stated. Gating
+ * it (readmission-ask-core.gateOverlay) and storing it (readmission/ask-store) both happen in the
+ * route. Keeping the model call free of storage is what lets the answer path stay identical to R4.3's:
+ * one Opus call, one citation verdict, a fault is a withheld answer and never a throw.
  */
 import { startTrace, finishTrace, tracedChat } from '../trace';
 import { modelsAgree, TEXT_MODEL } from '../llm';
@@ -20,7 +25,7 @@ import type { toFinding } from './surface-row';
 import { chipText, coverageChips, judgementLabel, justificationCell, returnStayBill, type FindingBlob } from '../readmission-surface-core';
 import { renderableNarrative, NARRATIVE_MODEL_ID, NARRATIVE_PROVIDER, type CaseArtefacts } from '../readmission-narrative-core';
 import {
-  askVerdict, parseAskReply, ASK_BUDGET_MS, ASK_MAX_TOKENS, ASK_MAX_TRIES, ASK_TEMPERATURE,
+  askVerdict, parseAskReply, parseAskOverlay, ASK_BUDGET_MS, ASK_MAX_TOKENS, ASK_MAX_TRIES, ASK_TEMPERATURE,
   type AskMaterial, type AskTurn, type AskVerdict,
 } from '../readmission-ask-core';
 
@@ -56,6 +61,10 @@ export interface AskAnswer {
   cost: { tokensIn: number; tokensOut: number; usd: number; model: string; provider: string } | null;
   traceId: string;
   latencyMs: number;
+  /** R9 — the model's RAW overlay report, exactly as it sent it, gated by the caller and by nothing
+   *  here. Present even when the answer was withheld: the two decisions are independent, and a care
+   *  manager's stated judgement should not be lost because the agent miscited its reply. */
+  overlayRaw?: unknown;
   /** Test / dry-run seam: the prompt as sent. */
   prompt?: { system: string; user: string };
 }
@@ -99,8 +108,9 @@ export async function answerCaseQuestion(a: {
     cost = { tokensIn: usage.tokensIn, tokensOut: usage.tokensOut, usd: Number(costUsd(served.model ?? NARRATIVE_MODEL_ID, usage.tokensIn, usage.tokensOut, false, PRICING).toFixed(4)), model: served.model ?? NARRATIVE_MODEL_ID, provider: served.provider ?? NARRATIVE_PROVIDER };
   }
   const parsed = parseAskReply(text);
+  const overlayRaw = parseAskOverlay(text);
   const verdict = askVerdict(parsed, ledgerIds);
   if (!a.call) await finishTrace(traceId, verdict.ok ? 'success' : 'partial', verdict.ok ? undefined : `answer withheld: ${verdict.reason}`).catch(() => {});
-  if (!verdict.ok) return { outcome: 'withheld', verdict, reason: verdict.reason ?? 'unresolved', cost, traceId, latencyMs: Date.now() - t0, ...(a.call ? { prompt } : {}) };
-  return { outcome: 'answered', verdict, answerable: parsed?.answerable !== false, cost, traceId, latencyMs: Date.now() - t0, ...(a.call ? { prompt } : {}) };
+  if (!verdict.ok) return { outcome: 'withheld', verdict, reason: verdict.reason ?? 'unresolved', cost, traceId, latencyMs: Date.now() - t0, overlayRaw, ...(a.call ? { prompt } : {}) };
+  return { outcome: 'answered', verdict, answerable: parsed?.answerable !== false, cost, traceId, latencyMs: Date.now() - t0, overlayRaw, ...(a.call ? { prompt } : {}) };
 }

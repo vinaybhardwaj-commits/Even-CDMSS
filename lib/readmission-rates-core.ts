@@ -23,12 +23,24 @@
  *     completed 30-day follow-up; before that the module shows counts only. Computed, never hardcoded.
  *   · Staged-return marker (R7-6) + immediate-return predicate (R7-5): deterministic, no model verdict
  *     touched, no engine bump.
+ *
+ * R9 (CDMSS-READMISSIONS-R9-DUAL-CONTRACT PRD, GO 27 Aug 2026) — the SECOND published contract.
+ * The same detection spine now feeds two aggregators (D1):
+ *   · INCIDENCE (the LEAD, D2/D3/D4/D5): unique PEOPLE, clock hours from the stored
+ *     `index_discharge_at` / `readmit_admit_at` (never floor-days — T1), <24h collapsed as the same
+ *     event, index department not in INCIDENCE_EXCLUDED_DEPARTMENTS. Denominator = distinct people
+ *     among Even completed IP discharges in the same window, read by its own query. People are not
+ *     stays: when the distinct-person count cannot be read the card says so and shows NOTHING (T5).
+ *   · ELIGIBLE EPISODES (the SECONDARY): today's `rates/1` math, BYTE-STABLE. Everything below the
+ *     incidence block is unchanged arithmetic; only the card strip's presentation moved.
+ * RATES_VERSION is 'rates/2' because the card strip's semantics changed (the reviewable peer card is
+ * gone, the lead is a different measure) — not because any Eligible number moved.
  */
 import { EXCLUDED_DEPARTMENTS } from './readmission-detect-core';
 
 // ── constants ────────────────────────────────────────────────────────────────────────────
 
-export const RATES_VERSION = 'rates/1';
+export const RATES_VERSION = 'rates/2';
 /** Left truncation (report caveat 4): surveillance starts 22 Sep 2025 IST. */
 export const SURVEILLANCE_START = '2025-09-22';
 export const FOLLOW_UP_30 = 30;
@@ -60,14 +72,82 @@ export const DENOMINATOR_WARNING: Readonly<Record<DenominatorKey, string | null>
 };
 export const DEFAULT_DENOMINATOR: DenominatorKey = 'eligible';
 
-/** R7-3 — the fifth card's sub-line. */
-export const PROPOSED_AVOIDABLE_SUBLINE = "agent's proposal · adjudication pending · advisory";
 /** The footnote (report caveat 1): an Even-return rate, not a true readmission rate. */
 export const THIS_HOSPITAL_ONLY_FOOTNOTE = 'These are returns to THIS hospital only — returns to other hospitals are invisible except by patient report, so the true all-hospital rate is higher by an unknown margin. Definitions: CDMSS-EHRC-READMISSION-RATE-REPORT-19-AUG-2026 (codified in readmission-rates-core).';
 export const RATES_UNAVAILABLE_COPY = 'rates unavailable right now';
 export const EHBR_GATE_COPY = 'counts only — rates are shown once the first full month of discharges has completed its 30-day follow-up';
 /** R7-7 — condition-pass-only audits are labelled, never "no judgement". */
 export const CONDITION_PASS_ONLY_LABEL = 'condition-pass only';
+
+// ── R9 — the incidence contract (D2 … D6, L1, O4, T1, T3, T4, T5) ─────────────────────────
+
+/**
+ * R9 / D5 (O4) — the departments dropped from the INCIDENCE numerator, matched on the INDEX stay's
+ * `treating_sub_department_name`, exact strings: the four oncology strings plus all Obstetrics and
+ * Gynecology (maternity is not splittable into delivery vs other gynae on this spine — D6).
+ *
+ * ⚠️ THIS DELIBERATELY AMENDS THE R7 INVARIANT "EXCLUDED_DEPARTMENTS is reused, never redeclared".
+ * Two lists now exist and they are not the same list, on purpose:
+ *   · the DETECTOR's six-string `EXCLUDED_DEPARTMENTS` (readmission-detect-core) still drives
+ *     detection hold-out and the board's held-out list filter, and it still contains 'Nephrology';
+ *   · this five-string list drives the INCIDENCE numerator only, and Nephrology is NOT in it —
+ *     Mohsin named oncology and maternity, never CKD (D5, refuse list).
+ * Neither list may be derived from the other; a change to one is not a change to the other.
+ */
+export const INCIDENCE_EXCLUDED_DEPARTMENTS: readonly string[] = [
+  'Oncology',
+  'Medical Oncology',
+  'Radiation Oncology',
+  'Surgical Oncology & Oncoplastic Breast Surgery',
+  'Obstetrics and Gynecology',
+];
+
+/** D5 — exact string match on the trimmed index department. Null / unknown department → NOT excluded. */
+export function isIncidenceExcludedDepartment(department: string | null | undefined): boolean {
+  return department != null && INCIDENCE_EXCLUDED_DEPARTMENTS.includes(department.trim());
+}
+
+/** D4 — the incidence clock window, in HOURS: <24h is the same event; >30 days is out of window. */
+export const INCIDENCE_MIN_HOURS = 24;
+export const INCIDENCE_MAX_HOURS = FOLLOW_UP_30 * 24;
+
+/**
+ * T1 — CLOCK hours between two stored instants, NEVER floor-days. Either side missing or
+ * unparseable → null, and a null is NOT countable: the pair simply cannot be judged for incidence
+ * and is reported as such (never silently re-judged with `gap_days`).
+ */
+export function clockHoursBetween(fromIso: string | null | undefined, toIso: string | null | undefined): number | null {
+  const parse = (v: string | null | undefined): number | null => {
+    if (v == null || v === '') return null;
+    const t = Date.parse(/^\d{4}-\d{2}-\d{2} /.test(String(v)) ? String(v).replace(' ', 'T') : String(v));
+    return Number.isFinite(t) ? t : null;
+  };
+  const a = parse(fromIso), b = parse(toIso);
+  if (a == null || b == null) return null;
+  return (b - a) / 3_600_000;
+}
+
+/** D4 — the pair's clock gap is inside the incidence window: ≥ 24 h and ≤ 30 days. */
+export function isIncidenceClockGap(hours: number | null | undefined): boolean {
+  return typeof hours === 'number' && Number.isFinite(hours) && hours >= INCIDENCE_MIN_HOURS && hours <= INCIDENCE_MAX_HOURS;
+}
+
+// ── R9 card copy (§12.2; L1 for the Immediate card) ───────────────────────────────────────
+
+export const INCIDENCE_LEAD_LABEL = '30-day incidence · unique patients';
+export const INCIDENCE_LEAD_NOTE = 'clock ≥24h and ≤30d · onco and ObGyn excluded';
+/** D6 — the two exclusions that cannot be tagged on this spine. Required on the incidence card. */
+export const INCIDENCE_FOOTNOTE = 'Neonate and ophthal/cataract cannot be tagged on completed IP discharges. This is CAT incidence on the CAT spine, not the insurer calendar.';
+/** T5 — people are NEVER approximated as stays: the card says it cannot count people. */
+export const INCIDENCE_UNAVAILABLE_COPY = 'incidence unavailable — the unique-patient count could not be read; people are not stays, so nothing is shown';
+export const EPISODES_SECONDARY_LABEL = '30-day episodes · warranty / clinical';
+export const EPISODES_SECONDARY_NOTE = '0–30 including next-morning · stays, not people';
+export const EPISODES_90_LABEL = '90-day episodes';
+/** L1 — the Immediate card's label and copy. The union test itself is UNCHANGED (see isImmediateReturn). */
+export const IMMEDIATE_CARD_LABEL = 'Immediate / next-morning returns';
+export const IMMEDIATE_CARD_COPY = 'count, not a rate · includes next-morning returns · <24h same-event returns are out of incidence';
+/** §12.2 — the advisory card's sub-line under the dual contract. */
+export const PROPOSED_AVOIDABLE_ADVISORY = 'agent proposal, not the human overlay';
 
 // ── small pure helpers ───────────────────────────────────────────────────────────────────
 
@@ -108,7 +188,15 @@ export function isHeldOutDepartment(department: string | null | undefined): bool
   return department != null && (EXCLUDED_DEPARTMENTS as readonly string[]).includes(department.trim());
 }
 
-/** R7-5 — immediate return: a pair with gap ≤ 1 day (same / next-day). Null gap → false. */
+/**
+ * R7-5 — immediate return: a pair with gap ≤ 1 day (same / next-day). Null gap → false.
+ *
+ * L1 / acceptance #9 keep the UNION test "clock < 24 h OR gap_days ≤ 1", and this single predicate
+ * already IS that union, exactly: gap_days is floor((admit − discharge) / 24 h), so a clock gap under
+ * 24 h floors to 0 and is therefore always inside `gap_days ≤ 1`. {clock < 24h} ⊂ {gap_days ≤ 1}, so
+ * the union equals {gap_days ≤ 1}. The card's LABEL and COPY change under R9; this arithmetic does
+ * not, and the Immediate count is byte-stable.
+ */
 export function isImmediateReturn(gapDays: number | null | undefined): boolean {
   return typeof gapDays === 'number' && Number.isFinite(gapDays) && gapDays <= 1;
 }
@@ -152,9 +240,55 @@ export interface DischargeBucket {
   n: number;
 }
 
+/**
+ * R9 — one detected Even→Even pair as the INCIDENCE aggregator needs it (D3/D4/D5).
+ *
+ * `person` is the stored `uhid`. It is the ONLY identifier this core ever receives, it is used for
+ * exactly one thing — counting a repeater once (D3) — and it is NEVER emitted: `Incidence` carries
+ * counts only. This is the same posture as `index_encounter_id`, which the R7 core already reads
+ * server-side solely to resolve a facility and never puts in the payload.
+ */
+export interface IncidencePair {
+  person: string | null;
+  index_encounter_id: string;
+  /** IST calendar day of the index discharge. */
+  index_day: string | null;
+  index_department: string | null;
+  /** The stored instants — the ONLY source of the incidence clock (T1). */
+  index_discharge_at: string | null;
+  readmit_admit_at: string | null;
+  facility?: string | null;
+}
+
 // ── outputs ───────────────────────────────────────────────────────────────────────────────
 
 export interface Measure { numerator: number; denominator: number; rate: number | null; ci: { lo: number; hi: number } | null }
+
+/**
+ * R9 — the incidence contract's result. AGGREGATES ONLY.
+ *
+ * `available` is the T5 fail-closed switch: false means the distinct-PEOPLE denominator could not be
+ * read, and the card must show INCIDENCE_UNAVAILABLE_COPY. It must never fall back to the stays
+ * denominator — a people rate printed off a stays denominator is a number neither board publishes.
+ * The three drop counters exist so the recipe can be audited from the payload without any identifier.
+ */
+export interface Incidence {
+  available: boolean;
+  /** Distinct people with a qualifying return. 0 is a real answer; unavailable is not 0. */
+  numerator: number;
+  /** Distinct people discharged in the window, or null when the read failed (T5). */
+  denominator: number | null;
+  rate: number | null;
+  ci: { lo: number; hi: number } | null;
+  windowStart: string;
+  windowEnd: string;
+  /** Pairs in the window dropped because the index department is in INCIDENCE_EXCLUDED_DEPARTMENTS. */
+  excludedByDepartment: number;
+  /** Pairs in the window whose clock gap is outside [24 h, 30 d] — the <24h same-event collapse (D4). */
+  outOfClockWindow: number;
+  /** Pairs in the window that cannot be judged at all: a missing timestamp or a missing person key (T1). */
+  notCountable: number;
+}
 export interface DenominatorSet {
   key: DenominatorKey;
   label: string;
@@ -191,6 +325,9 @@ export interface FacilityRates {
   months: MonthCohort[];
   judgements: JudgementStats;
   gapDistribution: { d0_1: number; d2_7: number; d8_30: number; d31_90: number };
+  /** R9 — the incidence LEAD. Non-null only where an incidence read was supplied for this facility
+   *  (today: Even / EHRC only — EHBR stays its own tab and its own gate). */
+  incidence: Incidence | null;
 }
 export interface RatesResult {
   version: typeof RATES_VERSION;
@@ -204,7 +341,74 @@ export interface RatesResult {
 const measure = (k: number, n: number): Measure => ({ numerator: k, denominator: n, rate: pct(k, n), ci: wilsonCi(k, n) });
 const inWindow = (day: string | null, start: string, endInclusive: string): boolean => !!day && day >= start && day <= endInclusive;
 
-export function computeRates(input: { pairs: readonly RatePair[]; discharges: readonly DischargeBucket[]; ceilingDay: string; start?: string }): RatesResult {
+/**
+ * R9 — the INCIDENCE aggregator (D2 … D5, T1, T5). PURE, and deliberately its own function so the
+ * recipe can be read in one place:
+ *
+ *   denominator  distinct PEOPLE discharged from this facility with complete 30-day follow-up
+ *                (index day in [start, ceiling − 30]); supplied by the caller because a distinct
+ *                count cannot be recovered from the day × department × disposition buckets, and
+ *                NULL when that read failed — which fails the whole card closed (T5).
+ *   numerator    distinct PEOPLE among this facility's even_even pairs whose index day is in the
+ *                same window, whose index department is not in INCIDENCE_EXCLUDED_DEPARTMENTS, and
+ *                whose CLOCK gap is in [24 h, 30 d]. A person with two qualifying returns counts once.
+ *
+ * A pair with a missing timestamp, an unparseable timestamp, or no person key is NOT countable and is
+ * reported in `notCountable` — never re-judged with `gap_days` (T1), never quietly dropped.
+ */
+export function computeIncidence(input: {
+  pairs: readonly IncidencePair[];
+  denominator: number | null | undefined;
+  ceilingDay: string;
+  start?: string;
+  facility?: string;
+}): Incidence {
+  const start = input.start ?? SURVEILLANCE_START;
+  const end30 = addDays(input.ceilingDay, -FOLLOW_UP_30);
+  const fac = input.facility ?? FACILITY_EHRC;
+  const people = new Set<string>();
+  let excludedByDepartment = 0, outOfClockWindow = 0, notCountable = 0;
+  for (const p of input.pairs) {
+    if ((p.facility ?? facilityOfEncounter(p.index_encounter_id)) !== fac) continue;
+    if (!inWindow(p.index_day, start, end30)) continue;
+    if (isIncidenceExcludedDepartment(p.index_department)) { excludedByDepartment++; continue; }
+    const hours = clockHoursBetween(p.index_discharge_at, p.readmit_admit_at);
+    if (hours == null) { notCountable++; continue; }
+    if (!isIncidenceClockGap(hours)) { outOfClockWindow++; continue; }
+    const person = typeof p.person === 'string' ? p.person.trim() : '';
+    if (!person) { notCountable++; continue; }
+    people.add(person);
+  }
+  const denom = typeof input.denominator === 'number' && Number.isFinite(input.denominator) && input.denominator >= 0 ? Math.floor(input.denominator) : null;
+  const numerator = people.size;
+  const available = denom != null && denom > 0;
+  return {
+    available,
+    numerator,
+    denominator: denom,
+    rate: available ? pct(numerator, denom) : null,
+    ci: available ? wilsonCi(Math.min(numerator, denom), denom) : null,
+    windowStart: start,
+    windowEnd: end30,
+    excludedByDepartment,
+    outOfClockWindow,
+    notCountable,
+  };
+}
+
+/**
+ * `incidencePairs` / `incidenceDenominator` are OPTIONAL and additive: omit them and every facility
+ * gets `incidence: null` and every Eligible / 90-day / immediate / proposed-avoidable number below is
+ * bit-for-bit what `rates/1` produced for the same input.
+ */
+export function computeRates(input: {
+  pairs: readonly RatePair[];
+  discharges: readonly DischargeBucket[];
+  ceilingDay: string;
+  start?: string;
+  incidencePairs?: readonly IncidencePair[] | null;
+  incidenceDenominator?: number | null;
+}): RatesResult {
   const start = input.start ?? SURVEILLANCE_START;
   const ceiling = input.ceilingDay;
   const end30 = addDays(ceiling, -FOLLOW_UP_30);
@@ -283,10 +487,15 @@ export function computeRates(input: { pairs: readonly RatePair[]; discharges: re
       d8_30: count(pairs, (p) => p.gap_days != null && p.gap_days > 7 && p.gap_days <= 30),
       d31_90: count(pairs, (p) => p.gap_days != null && p.gap_days > 30 && p.gap_days <= 90),
     };
+    // R9 — the incidence lead. Only the facility the incidence denominator was read FOR (Even) can
+    // have one: a people-denominator read for one hospital is not a denominator for another.
+    const incidence = input.incidencePairs && fac === FACILITY_EHRC
+      ? computeIncidence({ pairs: input.incidencePairs, denominator: input.incidenceDenominator, ceilingDay: ceiling, start, facility: fac })
+      : null;
     facilities.push({
       facility: fac, pairs: pairs.length, ratesAllowed,
       gate: { firstDischargeDay: firstDay, firstFullMonth, opensOn, reason: ratesAllowed ? null : EHBR_GATE_COPY },
-      denominators, months, judgements, gapDistribution,
+      denominators, months, judgements, gapDistribution, incidence,
     });
   }
   return { version: RATES_VERSION, ceilingDay: ceiling, surveillanceStart: start, facilities };
@@ -353,22 +562,53 @@ export const fmtPct = (v: number | null): string => (v == null ? '—' : `${v.to
 export const fmtCi = (ci: { lo: number; hi: number } | null): string => (ci == null ? '' : `${ci.lo.toFixed(2)}–${ci.hi.toFixed(2)}%`);
 export const fmtCount = (n: number): string => n.toLocaleString('en-IN');
 
-export interface RateCard { key: string; title: string; big: string; sub: string; ci: string; advisory: string | null; tone: 'plain' | 'red' | 'advisory' }
+export interface RateCard {
+  key: string;
+  title: string;
+  big: string;
+  sub: string;
+  ci: string;
+  /** The static method line under the sub (the recipe, not the numbers). */
+  note: string | null;
+  advisory: string | null;
+  tone: 'lead' | 'plain' | 'count' | 'advisory' | 'unavailable';
+}
 
-/** The five cards for one facility × denominator. Rates are NUMBERS only when the facility has earned
- *  them (R7-4); otherwise every card shows counts and the big figure is "n / d" with "counts only". */
+/**
+ * R9 §12.2 — the Even-tab card strip. The reviewable card is GONE from the strip (D8 / §3.3): the
+ * hold-out is a list filter, not a peer rate, because CAT's 45 and revenue's 45 are two different 45s.
+ *
+ *   [LEAD]      30-day incidence · unique patients      people, clock ≥24h and ≤30d, onco + ObGyn out
+ *   [SECONDARY] 30-day episodes · warranty / clinical   today's Eligible stay rate, 0–30 inclusive
+ *   [PLAIN]     90-day episodes                         demoted, kept (§3.2 "may remain, demoted")
+ *   [COUNT]     Immediate / next-morning returns        L1 label + copy; a COUNT, never a rate
+ *   [ADVISORY]  Proposed avoidable                      agent proposal, not the human overlay (D14)
+ *
+ * The lead card renders ONLY from `f.incidence`. No incidence read, or a read that could not produce a
+ * distinct-people denominator, gives the unavailable card (T5) — never the stays number wearing a
+ * people label. Rates stay NUMBERS only when the facility has earned them (R7-4); otherwise counts.
+ */
 export function rateCards(f: FacilityRates, key: DenominatorKey): RateCard[] {
   const d = f.denominators[key];
   const ok = f.ratesAllowed;
   const big = (m: Measure) => (ok ? fmtPct(m.rate) : `${fmtCount(m.numerator)} / ${fmtCount(m.denominator)}`);
   const sub = (m: Measure, what: string) => (ok ? `${fmtCount(m.numerator)} of ${fmtCount(m.denominator)} ${what}` : `counts only · ${what}`);
   const ci = (m: Measure) => (ok ? fmtCi(m.ci) : '');
+  const inc = f.incidence;
+  const lead: RateCard = inc && inc.available && inc.denominator != null
+    ? {
+        key: 'incidence', title: INCIDENCE_LEAD_LABEL,
+        big: ok ? fmtPct(inc.rate) : `${fmtCount(inc.numerator)} / ${fmtCount(inc.denominator)}`,
+        sub: ok ? `${fmtCount(inc.numerator)} of ${fmtCount(inc.denominator)} people` : `counts only · ${fmtCount(inc.numerator)} of ${fmtCount(inc.denominator)} people`,
+        ci: ok ? fmtCi(inc.ci) : '', note: INCIDENCE_LEAD_NOTE, advisory: null, tone: 'lead',
+      }
+    : { key: 'incidence', title: INCIDENCE_LEAD_LABEL, big: '—', sub: INCIDENCE_UNAVAILABLE_COPY, ci: '', note: null, advisory: null, tone: 'unavailable' };
   return [
-    { key: 'all30', title: '30-day return rate', big: big(d.all30), sub: sub(d.all30, 'discharges'), ci: ci(d.all30), advisory: null, tone: 'plain' },
-    { key: 'reviewable30', title: '30-day · reviewable', big: big(d.reviewable30), sub: `${sub(d.reviewable30, 'discharges')} · held-out ${fmtCount(d.heldOut30.numerator)}/${fmtCount(d.heldOut30.denominator)}${ok && d.heldOut30.rate != null ? ` (${fmtPct(d.heldOut30.rate)})` : ''}`, ci: ci(d.reviewable30), advisory: null, tone: 'plain' },
-    { key: 'all90', title: '90-day return rate', big: big(d.all90), sub: sub(d.all90, 'discharges with 90-day follow-up'), ci: ci(d.all90), advisory: null, tone: 'plain' },
-    { key: 'immediate', title: 'Immediate returns (≤ 1 day)', big: ok ? fmtCount(d.immediate.numerator) : `${fmtCount(d.immediate.numerator)} / ${fmtCount(d.immediate.denominator)}`, sub: ok ? `${fmtPct(d.immediate.rate)} of ${fmtCount(d.immediate.denominator)} · possible transfers or deferred surgery` : 'counts only · possible transfers or deferred surgery', ci: ci(d.immediate), advisory: null, tone: 'plain' },
-    { key: 'proposedAvoidable', title: 'Proposed avoidable', big: ok ? fmtCount(d.proposedAvoidable.numerator) : `${fmtCount(d.proposedAvoidable.numerator)} / ${fmtCount(d.proposedAvoidable.denominator)}`, sub: ok ? `${fmtPct(d.proposedAvoidable.rate)} of ${fmtCount(d.proposedAvoidable.denominator)} eligible discharges` : 'counts only', ci: '', advisory: PROPOSED_AVOIDABLE_SUBLINE, tone: 'advisory' },
+    lead,
+    { key: 'episodes30', title: EPISODES_SECONDARY_LABEL, big: big(d.all30), sub: sub(d.all30, 'discharges'), ci: ci(d.all30), note: EPISODES_SECONDARY_NOTE, advisory: null, tone: 'plain' },
+    { key: 'all90', title: EPISODES_90_LABEL, big: big(d.all90), sub: sub(d.all90, 'discharges with 90-day follow-up'), ci: ci(d.all90), note: 'stays, not people', advisory: null, tone: 'plain' },
+    { key: 'immediate', title: IMMEDIATE_CARD_LABEL, big: fmtCount(d.immediate.numerator), sub: `of ${fmtCount(d.immediate.denominator)} discharges`, ci: '', note: IMMEDIATE_CARD_COPY, advisory: null, tone: 'count' },
+    { key: 'proposedAvoidable', title: 'Proposed avoidable', big: fmtCount(d.proposedAvoidable.numerator), sub: ok ? `${fmtPct(d.proposedAvoidable.rate)} of ${fmtCount(d.proposedAvoidable.denominator)} eligible discharges` : `of ${fmtCount(d.proposedAvoidable.denominator)} eligible discharges`, ci: '', note: null, advisory: PROPOSED_AVOIDABLE_ADVISORY, tone: 'advisory' },
   ];
 }
 

@@ -355,6 +355,17 @@ export function parseNarrativeOutput(text: string | null | undefined): Narrative
 // account, the judgements, the coverage, the two bills). Nothing here re-audits, regenerates or
 // stores anything. The patient's name is never in it (R43-8): the material is de-identified by
 // construction and the route never passes an identity.
+//
+// R9 (CDMSS-READMISSIONS-R9-DUAL-CONTRACT PRD, D13 / §6 / §5.3) adds a SECOND job to the same single
+// call: alongside the answer, the model reports what the care manager has just STATED, as a
+// `clinical_review` overlay. Two things about it are load-bearing.
+//   · It reports; it does not decide. Code gates every field afterwards (gateOverlay, §12.4), and a
+//     model that guesses `stated: true` on a pure question is caught by the assertion test in code.
+//   · It NEVER moves the answer's own rules. The answer still cites or dies. A reviewer-stated fact
+//     is reviewer-stated: the model may use it as context, labelled as such, and may never write it
+//     back as though a discharge note had said it.
+// The four recon builders and the narrative builder stay byte-identical; the refresh-gate fingerprint
+// still does not include this builder.
 
 export interface AskPromptMaterial {
   ledger: Array<{ id: string; source: string; side: string | null; at: string | null; weight: string; text: string }>;
@@ -387,7 +398,15 @@ export function buildAskPrompt(material: AskPromptMaterial, history: readonly As
 3. No diagnosis and no treatment advice for the patient. No legal conclusion: the audit's negligence and preventable-injury judgements are advisory rule outputs, not a court or council finding — say so if asked what they mean.
 4. Plain clinical English. Never internal system vocabulary (lane names, "even_even", "findingClass", tier names, "detection lane"). Say "the first stay", "the return admission", "the treating team".
 5. Be brief: two to six sentences, or a short list if the question asks for a list. Do not repeat the whole account. Plain text only — no markdown (no **bold**, no headings, no bullet characters); a list is plain numbered lines.
-Return STRICT JSON only: {"answer": "<your answer with [id] markers>", "answerable": true|false} — nothing before or after it.`,
+6. Separately from the answer, report what the care manager has JUST STATED about this case, as "overlay". This is a record of HIS judgement, not yours, and it is stored beside the audit's own — it never replaces it and it never changes any rate.
+   · If his turn only asks a question, or only argues without landing on a verdict, return "overlay": null. Never infer a verdict he did not state.
+   · "stated" is true only when he said it himself. Anything you worked out from the record is not stated.
+   · "decision": "justified" (he says the return was clinically justified) | "not_justified" | "insufficient" (he says there is not enough here to say, or he contradicts himself).
+   · "clock_class": "lt24h" | "d1_30" | "d31_90" | null — the window he is talking about.
+   · "lt24h_kind": "paper_admin" | "deferred_staged" | "medical" | null — for a same-day return, what kind he says it was.
+   · "exclusion_claim": "none" | "onco" | "obgyn" | "neonate" | "ophthal" | null — a category he claims this case belongs to.
+   · "quote": the shortest run of HIS OWN WORDS, copied exactly from his turn, that carries the judgement. Copy it; do not paraphrase it. An overlay whose quote is not in his turn is discarded.
+Return STRICT JSON only: {"answer": "<your answer with [id] markers>", "answerable": true|false, "overlay": null | {"stated": true, "decision": "...", "clock_class": null, "lt24h_kind": null, "exclusion_claim": null, "quote": "..."}} — nothing before or after it.`,
     user: `CASE FACTS: ${oon ? 'the return was at another hospital; only the first stay is in evidence' : `readmitted ${j.gapDays ?? 'an unknown number of'} days after discharge`}. STORED JUDGEMENTS (advisory, from the audit's rules): planned ${j.planned ?? 'unknown'} · same condition ${j.sameCondition ?? 'unknown'} · medical justification: ${j.justification} · preventable injury: ${j.preventableInjury} · negligence: ${j.negligence} (advisory — not a court or council finding). Return stay bill on the card: ${material.bills.returnCell}.
 
 ARTEFACT COVERAGE (what the audit had): ${material.coverage.map((c) => `${c.label}: ${c.state}`).join(' · ') || 'unknown'}.
@@ -400,7 +419,7 @@ THE AGENT'S STORED ACCOUNT (written at audit time; its markers are ledger ids):
 ${material.account ?? '(no valid account stored for this case)'}
 
 BILLS: ${askBill('First stay', material.bills.index)}. ${askBill('Return stay', material.bills.readmit)}.
-${history.length ? `\nEARLIER IN THIS CONVERSATION (context only — do not repeat):\n${history.map((t, i) => `Q${i + 1}: ${t.question}\nA${i + 1}: ${t.answer}`).join('\n')}\n` : ''}
-QUESTION: ${question}`,
+${history.length ? `\nEARLIER IN THIS CONVERSATION (context only — do not repeat). Anything the care manager asserts here is REVIEWER-STATED: you may use it as his account, always labelled as his, and you may never write it as though a hospital record said it:\n${history.map((t, i) => `Q${i + 1}: ${t.question}\nA${i + 1}: ${t.answer}`).join('\n')}\n` : ''}
+CARE MANAGER'S TURN: ${question}`,
   };
 }

@@ -2032,11 +2032,6 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "readmission-narrative-core",
-    "kind": "type"
-  },
-  {
-    "from": "app/api",
-    "to": "readmission-narrative-core",
     "kind": "value"
   },
   {
@@ -5129,6 +5124,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": true
   },
   {
+    "constName": "CLINICAL_REVIEW_VERSION",
+    "value": "clinical_review/1",
+    "file": "lib/readmission-ask-core.ts",
+    "derived": false
+  },
+  {
     "constName": "CLINICAL_STATE_VERSION",
     "value": "clinical-state/1.2",
     "file": "lib/clinical-state/schema.ts",
@@ -5430,7 +5431,7 @@ export const VERSION_REGISTRY: VersionRow[] = [
   },
   {
     "constName": "RATES_VERSION",
-    "value": "rates/1",
+    "value": "rates/2",
     "file": "lib/readmission-rates-core.ts",
     "derived": false
   },
@@ -5492,8 +5493,8 @@ export const VERSION_REGISTRY: VersionRow[] = [
 
 export const COVERAGE = {
   "registered": 21,
-  "unregistered": 37,
-  "total": 58,
+  "unregistered": 38,
+  "total": 59,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
@@ -5526,6 +5527,7 @@ export const COVERAGE = {
     "prognosis-core",
     "proms",
     "readmission",
+    "readmission-ask-core",
     "readmission-narrative-core",
     "readmission-rates-core",
     "readmission-reconcile-core",
