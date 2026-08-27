@@ -271,6 +271,10 @@ export const UNREGISTERED: string[] = [
   'preop-versions-core',    // pre-op snapshot versions (preop-versions/1) — the R8.1 rail, keyed on
                             // the fingerprint rather than a trace because there is no model to trace
   'proms',                  // PROMs catalog/scheduling/scoring
+  'stay-library',           // the per-stay ClinicalState document library (stay-library/1): one row per
+                            // discharge / OT / PAC / progress document, with not_auditable rows recording
+                            // an ABSENCE as a fact. Reads db13 through the readmission fetchers; writes
+                            // clinical_states and nothing else
   'readmission',            // readmission analysis agent Phase 1 (readmission/0.1 — detect + reconcile + Vertex worker)
   'readmission-reconcile-core', // pure Stage-2 reconciliation + R1 advisory judgements (readmit-judgement/1) —
                             // surfaced as its own versioned subsystem the day JUDGEMENT_RULE_VERSION was exported

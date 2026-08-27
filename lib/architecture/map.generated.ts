@@ -979,6 +979,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "stay-library",
+    "plane": "unregistered"
+  },
+  {
     "id": "stream",
     "plane": "unregistered"
   },
@@ -2150,6 +2154,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "sql-guard-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "stay-library",
     "kind": "value"
   },
   {
@@ -5103,6 +5112,41 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "stay-library",
+    "to": "clinical-state",
+    "kind": "value"
+  },
+  {
+    "from": "stay-library",
+    "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "stay-library",
+    "to": "discharge-extract-store",
+    "kind": "value"
+  },
+  {
+    "from": "stay-library",
+    "to": "doc-audit-core",
+    "kind": "type"
+  },
+  {
+    "from": "stay-library",
+    "to": "ipd-audit",
+    "kind": "value"
+  },
+  {
+    "from": "stay-library",
+    "to": "readmission",
+    "kind": "value"
+  },
+  {
+    "from": "stay-library",
+    "to": "readmission-template-core",
+    "kind": "value"
+  },
+  {
     "from": "trace",
     "to": "bedrock",
     "kind": "value"
@@ -5552,6 +5596,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "STAY_LIBRARY_VERSION",
+    "value": "stay-library/1",
+    "file": "lib/stay-library/core.ts",
+    "derived": false
+  },
+  {
     "constName": "TRIAL_PROMPT_VERSION",
     "value": "ml-label-trial/1.0",
     "file": "lib/ml-label-trial/core.ts",
@@ -5567,8 +5617,8 @@ export const VERSION_REGISTRY: VersionRow[] = [
 
 export const COVERAGE = {
   "registered": 21,
-  "unregistered": 40,
-  "total": 61,
+  "unregistered": 41,
+  "total": 62,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
@@ -5609,7 +5659,8 @@ export const COVERAGE = {
     "readmission-reconcile-core",
     "readmission-versions-core",
     "reasoning",
-    "right-care-ground-eval-core"
+    "right-care-ground-eval-core",
+    "stay-library"
   ]
 } as const;
 

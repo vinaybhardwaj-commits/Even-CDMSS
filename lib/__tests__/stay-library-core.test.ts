@@ -1,0 +1,369 @@
+// lib/__tests__/stay-library-core.test.ts — the per-stay ClinicalState library, P2
+// (CDMSS-CASE-AGENTS-SPINE-PRD-v1.0-27-AUG-2026 §7: "library writer (per-document, not_auditable
+// paths, fail-soft store)").
+//
+// The behavioural tests carry the rules the PRD makes falsifiable in §8: a stay with three
+// documents yields three states with spans (#6); a stay with only a discharge records OT as
+// not_auditable and invents no procedure (#6); no stay without a MAR produces an `administered`
+// assertion (#7). The source tests carry what a behavioural test cannot see — that this module
+// writes exactly one table, invents no Metabase table, and neither bumps nor forks the ClinicalState
+// schema. Run: npm test.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import {
+  absentSourceUid, assertNoAdministered, dischargeState, isAbsentSourceUid, narrativeDocState,
+  notAuditableState, otState, procedureFactsOf, stayDocMetaOf,
+  DOC_KINDS, DOC_KIND_SOURCE, NOT_AUDITABLE_COPY, STAY_LIBRARY_VERSION,
+  type Deidentifier,
+} from '../stay-library/core';
+import { spanReport, type BuiltDoc } from '../stay-library/build';
+import { CLINICAL_STATE_VERSION, validateClinicalState } from '../clinical-state/schema';
+import type { ExtractedCase } from '../doc-audit-core';
+
+const ROOT = process.cwd();
+const read = (p: string) => readFileSync(join(ROOT, p), 'utf8');
+/** The file's CODE, comments stripped — a pin that reads prose fails on a file honest enough to
+ *  document what it refuses to do (the P1 lesson, re-applied). */
+const code = (p: string) => read(p)
+  .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '').replace(/^\s*--.*$/gm, '');
+
+/** Identity-preserving scrubber for the cases where de-id is not what is under test. */
+const noop: Deidentifier = (t) => t;
+/** A real one: the stay's patient is "Ramesh Kumar", UHID "EVN-99812". */
+const scrub: Deidentifier = (t) => t
+  .replace(/Ramesh Kumar|Ramesh|Kumar/gi, '[PATIENT]')
+  .replace(/EVN-99812/gi, '[UHID]');
+
+const extracted = (over: Partial<ExtractedCase> = {}): ExtractedCase => ({
+  docType: 'discharge_summary', detectedDocType: 'discharge_summary', confidence: 0.8,
+  patient: { age: 54, sex: 'M' },
+  diagnosis: 'Cholelithiasis', indication: null, procedure: null,
+  investigations: ['USG abdomen'], treatments: [], medications: [],
+  courseSummary: '', disposition: 'home', followUp: null, rawNotes: '',
+  ...over,
+});
+
+// ══ discharge ═══════════════════════════════════════════════════════════════════════════
+
+test('discharge: the stored extract maps through the EXISTING to-audit-family path', () => {
+  const st = dischargeState({
+    extracted: extracted({ medications: ['Tab Pan 40 OD'], procedure: 'Laparoscopic cholecystectomy' }),
+    documentId: 'doc-1', encounterRef: 'IPNO-19', deid: noop, at: '2026-08-01T00:00:00Z',
+  });
+  assert.equal(st.version, CLINICAL_STATE_VERSION, 'the schema version is NOT bumped by this ship');
+  assert.equal(st.surface, 'doc_audit');
+  assert.equal(stayDocMetaOf(st)?.docKind, 'discharge');
+  assert.equal(stayDocMetaOf(st)?.sourceUid, 'doc-1');
+  assert.equal(stayDocMetaOf(st)?.status, 'ok');
+  // the adapter's own extras survive alongside the library header
+  assert.equal((st.surfaceExtras as Record<string, unknown>).docType, 'discharge_summary');
+  assert.deepEqual(st.positives.map((p) => p.concept), ['Cholelithiasis']);
+});
+
+test('discharge: a procedure the extract NAMES but cannot span is recorded unverified, not dropped and not trusted', () => {
+  // The extractor keeps no span into the PDF. Recording spanVerified:true here would make P4's
+  // trust gate vacuous; dropping the fact would lose a real clinical claim. So: kept, marked false.
+  const st = dischargeState({
+    extracted: extracted({ procedure: 'Laparoscopic cholecystectomy', rawNotes: 'admitted with biliary colic' }),
+    documentId: 'doc-1', encounterRef: 'IPNO-19', deid: noop,
+  });
+  const [p] = procedureFactsOf(st);
+  assert.equal(p.conceptRaw, 'Laparoscopic cholecystectomy');
+  assert.equal(p.spanVerified, false);
+  assert.equal(p.provenance.extractionMethod, 'llm');
+  assert.equal(p.provenance.trust, 'clinician_documented');
+  assert.equal(p.setting, 'unknown', 'a named procedure is not evidence of a theatre episode');
+  assert.equal(p.laterality, null, 'laterality never comes from a discharge summary');
+});
+
+test('discharge: a procedure that IS in the extract narrative verifies its span, with offsets', () => {
+  const st = dischargeState({
+    extracted: extracted({
+      procedure: 'Laparoscopic cholecystectomy',
+      rawNotes: 'Underwent Laparoscopic cholecystectomy on day 2. Uneventful.',
+    }),
+    documentId: 'doc-1', encounterRef: 'IPNO-19', deid: noop,
+  });
+  const [p] = procedureFactsOf(st);
+  assert.equal(p.spanVerified, true);
+  assert.equal(typeof p.provenance.startOffset, 'number');
+  assert.ok((p.provenance.endOffset ?? 0) > (p.provenance.startOffset ?? 0));
+});
+
+test('discharge: the medication list is PRESCRIBED and can never be administered (§8 #7)', () => {
+  const st = dischargeState({
+    extracted: extracted({ medications: ['Tab Pan 40 OD', 'Tab Ultracet SOS'] }),
+    documentId: 'doc-1', encounterRef: 'IPNO-19', deid: noop,
+  });
+  assert.equal(st.medicationAssertions.length, 2);
+  for (const m of st.medicationAssertions) assert.equal(m.status, 'prescribed');
+  assert.ok(!st.medicationAssertions.some((m) => m.status === 'administered'));
+});
+
+// ══ OT — the deterministic-first class ══════════════════════════════════════════════════
+
+const otRow = (over: Partial<Parameters<typeof otState>[0]> = {}) => otState({
+  sourceUid: 'ot-uid-1', encounterRef: 'IPNO-19',
+  surgeryName: 'Laparoscopic cholecystectomy',
+  facts: [{ name: 'surgery-name', label: 'surgery', value: 'Laparoscopic cholecystectomy' }],
+  narrative: 'Port sites closed. Blood loss minimal.',
+  templateName: 'OT Notes', at: '2026-08-02T05:00:00Z', deid: noop,
+  ...over,
+});
+
+test('OT: the structured surgery_name column is the procedure, at structured_db trust', () => {
+  const st = otRow();
+  assert.deepEqual(st.procedures, ['Laparoscopic cholecystectomy']);
+  const [p] = procedureFactsOf(st);
+  assert.equal(p.provenance.trust, 'structured_db');
+  assert.equal(p.provenance.extractionMethod, 'deterministic');
+  assert.equal(p.provenance.sourceField, 'kx_clinical_template_ot_notes.surgery_name');
+  assert.equal(p.setting, 'ot');
+  assert.equal(p.spanVerified, true, 'a structured column IS the named source field');
+});
+
+test('OT: laterality comes ONLY from the row\'s right-left fact — never from the title', () => {
+  const guessable = otRow({
+    surgeryName: 'Left inguinal hernia repair',
+    facts: [{ name: 'surgery-name', label: 'surgery', value: 'Left inguinal hernia repair' }],
+  });
+  assert.equal(procedureFactsOf(guessable)[0].laterality, null, 'a title that says "left" is a title, not a side');
+
+  const stated = otRow({
+    surgeryName: 'Inguinal hernia repair',
+    facts: [
+      { name: 'surgery-name', label: 'surgery', value: 'Inguinal hernia repair' },
+      { name: 'right-left', label: 'side', value: 'Left' },
+    ],
+  });
+  assert.equal(procedureFactsOf(stated)[0].laterality, 'Left');
+});
+
+test('OT: operative findings become a finding with a real source field', () => {
+  const st = otRow({
+    facts: [
+      { name: 'surgery-name', label: 'surgery', value: 'Laparoscopic cholecystectomy' },
+      { name: 'opfinf', label: 'operative findings', value: 'Distended gallbladder, multiple calculi' },
+    ],
+  });
+  const f = st.positives.find((x) => x.concept.startsWith('Distended'));
+  assert.ok(f, 'operative findings must reach the state');
+  assert.equal(f!.provenance.sourceField, 'kx_clinical_template_ot_notes.component_json.opfinf');
+  assert.equal(f!.provenance.extractionMethod, 'deterministic');
+});
+
+test('OT: a row with no structured surgery name yields NO procedure and says so', () => {
+  const st = otRow({ surgeryName: null, facts: [] });
+  assert.deepEqual(procedureFactsOf(st), []);
+  assert.deepEqual(st.procedures ?? [], []);
+  assert.ok(st.missingCriticalData.some((m) => /no structured surgery name/i.test(m)));
+});
+
+test('OT: every string that becomes state passes through the de-identifier', () => {
+  const st = otState({
+    sourceUid: 'ot-uid-1', encounterRef: 'IPNO-19',
+    surgeryName: 'Cholecystectomy for Ramesh Kumar',
+    facts: [{ name: 'opfinf', label: 'operative findings', value: 'EVN-99812 — calculi seen' }],
+    narrative: 'Ramesh Kumar tolerated the procedure well.',
+    templateName: 'OT Notes', at: null, deid: scrub,
+  });
+  const blob = JSON.stringify(st);
+  assert.ok(!/Ramesh/i.test(blob), 'a patient name reached stored state');
+  assert.ok(!/EVN-99812/i.test(blob), 'a UHID reached stored state');
+  assert.ok(blob.includes('[PATIENT]') && blob.includes('[UHID]'));
+});
+
+// ══ PAC / progress — narrative only, and never a procedure ══════════════════════════════
+
+test('PAC and progress carry narrative and NEVER a procedure, however surgical the text', () => {
+  for (const docKind of ['pac', 'progress'] as const) {
+    const st = narrativeDocState({
+      docKind, sourceUid: `${docKind}-1`, encounterRef: 'IPNO-19',
+      narrative: 'Planned for laparoscopic cholecystectomy tomorrow. Fit for GA.',
+      templateName: 'PAC', at: '2026-08-01T09:00:00Z', deid: noop,
+    });
+    assert.deepEqual(procedureFactsOf(st), [], `${docKind} must not evidence a procedure`);
+    assert.deepEqual(st.procedures ?? [], []);
+    assert.equal(stayDocMetaOf(st)?.docKind, docKind);
+    assert.match(String((st.surfaceExtras as Record<string, unknown>).narrative), /cholecystectomy/);
+  }
+});
+
+// ══ not_auditable — the absence rows ════════════════════════════════════════════════════
+
+test('not_auditable: the four reasons stay APART, and none of them reads as a clean result', () => {
+  for (const reason of ['absent', 'unavailable', 'empty', 'no_document'] as const) {
+    const st = notAuditableState({ docKind: 'ot', reason, encounterRef: 'IPNO-19' });
+    const meta = stayDocMetaOf(st)!;
+    assert.equal(meta.status, 'not_auditable');
+    assert.equal(meta.reason, reason);
+    assert.deepEqual(st.positives, [], 'an absence carries no findings');
+    assert.deepEqual(procedureFactsOf(st), [], 'an absence NEVER invents a procedure');
+    assert.deepEqual(st.medicationAssertions, []);
+    assert.ok(st.missingCriticalData.some((m) => m.includes('operative note')), 'the class must be named as missing');
+  }
+  // The load-bearing distinction: a faulted look must never read as "the document is not filed".
+  assert.match(NOT_AUDITABLE_COPY.unavailable, /not evidence the document is missing/);
+  assert.notEqual(NOT_AUDITABLE_COPY.unavailable, NOT_AUDITABLE_COPY.absent);
+});
+
+test('not_auditable: the sentinel key is derived from the STAY, so a rebuild replaces it in place', () => {
+  const a = absentSourceUid('ot', 'IPNO-19');
+  assert.equal(a, absentSourceUid('ot', 'IPNO-19'), 'the sentinel must be stable across runs');
+  assert.notEqual(a, absentSourceUid('pac', 'IPNO-19'), 'classes must not collide');
+  assert.notEqual(a, absentSourceUid('ot', 'IPNO-20'), 'stays must not collide');
+  assert.ok(isAbsentSourceUid(a) && !isAbsentSourceUid('ot-uid-1'));
+  assert.equal(absentSourceUid('ot', null), 'absent:ot:unknown-stay');
+});
+
+// ══ MAR ═════════════════════════════════════════════════════════════════════════════════
+
+test('§8 #7: an administered assertion is refused loudly, not logged and continued', () => {
+  const st = dischargeState({ extracted: extracted({ medications: ['Inj Ceftriaxone 1g'] }), documentId: 'd', encounterRef: null, deid: noop });
+  st.medicationAssertions[0].status = 'administered';   // simulate a future builder learning to lie
+  assert.throws(() => assertNoAdministered(st), /no MAR exists in this substrate/);
+});
+
+test('§8 #7: no builder in this module produces an administered status', () => {
+  const states = [
+    dischargeState({ extracted: extracted({ medications: ['Tab Pan 40'] }), documentId: 'd', encounterRef: null, deid: noop }),
+    otRow(),
+    narrativeDocState({ docKind: 'progress', sourceUid: 'p1', encounterRef: null, narrative: 'Inj Ceftriaxone given at 8am.', templateName: null, at: null, deid: noop }),
+    notAuditableState({ docKind: 'ot', reason: 'absent', encounterRef: 'IPNO-19' }),
+  ];
+  for (const st of states) {
+    assert.doesNotThrow(() => assertNoAdministered(st));
+    assert.ok(!st.medicationAssertions.some((m) => m.status === 'administered'));
+  }
+  // A progress note SAYING a drug was given is narrative, not a MAR row: it must not become an
+  // assertion at all.
+  assert.deepEqual(states[2].medicationAssertions, []);
+});
+
+// ══ §8 #6 — the stay-shaped assertions ══════════════════════════════════════════════════
+
+test('§8 #6: discharge + OT + progress yields three states with spans', () => {
+  const docs = [
+    dischargeState({ extracted: extracted({ procedure: 'Laparoscopic cholecystectomy', rawNotes: 'Laparoscopic cholecystectomy done.' }), documentId: 'doc-1', encounterRef: 'IPNO-19', deid: noop }),
+    otRow(),
+    narrativeDocState({ docKind: 'progress', sourceUid: 'p1', encounterRef: 'IPNO-19', narrative: 'Afebrile. Tolerating orals.', templateName: null, at: null, deid: noop }),
+  ];
+  assert.equal(docs.length, 3);
+  for (const st of docs) {
+    assert.equal(stayDocMetaOf(st)?.status, 'ok');
+    // every finding on every state carries a source field — the "with spans" half of #6
+    for (const f of st.positives) assert.ok(f.provenance.sourceField.length > 0 && f.provenance.rawText.length > 0);
+  }
+  assert.equal(procedureFactsOf(docs[1])[0].provenance.trust, 'structured_db');
+});
+
+test('§8 #6: discharge only ⇒ OT records not_auditable and invents no procedure', () => {
+  const built: BuiltDoc[] = [
+    { docKind: 'discharge', sourceUid: 'doc-1', status: 'ok', state: dischargeState({ extracted: extracted(), documentId: 'doc-1', encounterRef: 'IPNO-19', deid: noop }) },
+    { docKind: 'ot', sourceUid: absentSourceUid('ot', 'IPNO-19'), status: 'not_auditable', reason: 'absent', state: notAuditableState({ docKind: 'ot', reason: 'absent', encounterRef: 'IPNO-19' }) },
+  ];
+  const ot = built.find((d) => d.docKind === 'ot')!;
+  assert.equal(ot.status, 'not_auditable');
+  assert.deepEqual(procedureFactsOf(ot.state), []);
+  assert.equal(spanReport(built).total, 0, 'no procedure was evidenced, so none is reported');
+});
+
+test('the span report counts what verified and NAMES what did not', () => {
+  const built: BuiltDoc[] = [
+    { docKind: 'ot', sourceUid: 'ot-1', status: 'ok', state: otRow() },
+    { docKind: 'discharge', sourceUid: 'doc-1', status: 'ok', state: dischargeState({ extracted: extracted({ procedure: 'ERCP', rawNotes: 'no mention' }), documentId: 'doc-1', encounterRef: 'IPNO-19', deid: noop }) },
+  ];
+  const r = spanReport(built);
+  assert.equal(r.total, 2);
+  assert.equal(r.verified, 1);
+  assert.deepEqual(r.unverified.map((u) => u.conceptRaw), ['ERCP']);
+  assert.equal(r.unverified[0].sourceField, 'discharge_extract.procedure');
+});
+
+// ══ schema discipline ═══════════════════════════════════════════════════════════════════
+
+test('every built state validates against the LIVE zod schema, unforked and unbumped', () => {
+  const states = [
+    dischargeState({ extracted: extracted({ medications: ['Tab Pan 40'], procedure: 'ERCP' }), documentId: 'd', encounterRef: 'IPNO-19', deid: noop }),
+    otRow(),
+    narrativeDocState({ docKind: 'pac', sourceUid: 'pac-1', encounterRef: 'IPNO-19', narrative: 'Fit for GA.', templateName: 'PAC', at: null, deid: noop }),
+    notAuditableState({ docKind: 'progress', reason: 'empty', encounterRef: 'IPNO-19' }),
+  ];
+  for (const st of states) {
+    assert.doesNotThrow(() => validateClinicalState(st), `a built state failed zClinicalState`);
+    assert.equal(st.version, 'clinical-state/1.2');
+  }
+});
+
+test('the library does not fork lib/clinical-state — the stay facts ride in surfaceExtras', () => {
+  const schema = read('lib/clinical-state/schema.ts');
+  assert.ok(schema.includes("CLINICAL_STATE_VERSION = 'clinical-state/1.2'"), 'the schema version must not be bumped');
+  for (const f of ['lib/stay-library/core.ts', 'lib/stay-library/build.ts', 'lib/stay-library/store.ts']) {
+    const src = code(f);
+    assert.ok(!/CLINICAL_STATE_VERSION\s*=\s*'/.test(src), `${f} redeclares the schema version`);
+  }
+  assert.equal(STAY_LIBRARY_VERSION, 'stay-library/1');
+  assert.deepEqual([...DOC_KINDS], ['discharge', 'ot', 'pac', 'progress'], 'O10 — four classes, no more');
+});
+
+// ══ source pins ═════════════════════════════════════════════════════════════════════════
+
+test('the store names exactly one table, and no audit / feedback / spine table', () => {
+  const store = code('lib/stay-library/store.ts');
+  assert.ok(store.includes('clinical_states'));
+  for (const forbidden of [
+    'ipd_discharge_audits', 'opd_note_audits', 'ipd_audit_feedback', 'opd_audit_feedback',
+    'readmission_findings', 'episode_states', 'member_state', 'case_ask_turns',
+  ]) {
+    assert.ok(!store.includes(forbidden), `store.ts names ${forbidden}`);
+  }
+  // Every write verb that names a table must name THIS one. `ON CONFLICT ... DO UPDATE SET` names
+  // no table (it is still the INSERT's target), so it is removed before the scan rather than
+  // matched as a bare UPDATE — the first version of this pin failed on the module's own upsert.
+  const sqlish = store.replace(/DO\s+UPDATE/gi, 'DO_UPSERT');
+  const targets = [...sqlish.matchAll(/(?:INSERT\s+INTO|DELETE\s+FROM|UPDATE)\s+([a-z_][a-z0-9_]*)/gi)].map((m) => m[1]);
+  assert.ok(targets.length > 0, 'the store must actually write something');
+  for (const t of targets) assert.equal(t, 'clinical_states', `the store writes ${t}`);
+});
+
+test('§4 — no Metabase table is invented: the three kx template tables and nothing else', () => {
+  const src = code('lib/stay-library/core.ts') + code('lib/stay-library/build.ts');
+  const kxTables = [...src.matchAll(/kx_[a-z_]+/g)].map((m) => m[0]);
+  assert.deepEqual([...new Set(kxTables)].sort(), [
+    'kx_clinical_template_ot_notes', 'kx_clinical_template_pac_reports', 'kx_clinical_template_progress_reports',
+  ], 'a fifth table appeared — the PRD says STOP and flag, not add one');
+  // and the reads themselves are the EXISTING fetchers, not new SQL
+  const build = code('lib/stay-library/build.ts');
+  for (const fetcher of ['fetchOtNotes', 'fetchPacNotes', 'fetchProgressNotes', 'fetchExtractedCase']) {
+    assert.ok(build.includes(fetcher), `build.ts must reuse ${fetcher}`);
+  }
+  assert.ok(!/metabaseQuery/.test(build), 'build.ts must not query db13 directly — it calls the existing fetchers');
+  assert.equal(DOC_KIND_SOURCE.ot, 'kx_clinical_template_ot_notes');
+});
+
+test('migration 0047 is additive: it creates one table and ALTERs nothing', () => {
+  for (const f of ['migrations/0047_clinical_states.sql', 'app/api/admin/migrate-clinical-states/route.ts']) {
+    const src = code(f);
+    assert.ok(!/\bALTER\s+TABLE\b/i.test(src), `${f} ALTERs a table`);
+    assert.ok(!/\bDROP\b/i.test(src), `${f} contains DROP`);
+    assert.ok(src.includes('CREATE TABLE IF NOT EXISTS clinical_states'));
+    assert.ok(src.includes('clinical_states_doc_idx'), 'O9\'s unique key must be created');
+  }
+});
+
+test('P2 runs no model and cannot rescore: the module holds no LLM call and no engine version', () => {
+  const src = code('lib/stay-library/core.ts') + code('lib/stay-library/build.ts') + code('lib/stay-library/store.ts')
+    + code('app/api/admin/build-stay-library/route.ts') + code('app/api/admin/migrate-clinical-states/route.ts');
+  for (const banned of ['tracedChat', 'governedChat', 'normalizeWithLlm', 'analyzeCase', 'extractCase(', 'IPD_ENGINE_VERSION', 'care_value_index']) {
+    assert.ok(!src.includes(banned), `P2 names ${banned} — this slice neither runs a model nor rescores`);
+  }
+  for (const banned of ['gpt-5.6', 'terra', 'mantle']) assert.ok(!src.toLowerCase().includes(banned));
+});
+
+test('the build route is dry-run by default — storing is opt-in and explicit', () => {
+  const route = code('app/api/admin/build-stay-library/route.ts');
+  assert.ok(route.includes('body.write === true'), 'writing must require an explicit true');
+  assert.ok(route.includes('requireAdmin(req)') && route.includes('isAdminUnlocked()'), 'admin-gated like ipd-audit-feedback');
+});
