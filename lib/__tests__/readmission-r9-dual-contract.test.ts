@@ -577,9 +577,16 @@ test('migration: the admin route and the migrations/0045 reference copy carry th
   // No engine bump anywhere on the branch.
   assert.ok(!/READMIT_ENGINE_VERSION\s*=\s*'readmission\/0\.3'/.test(code('lib/readmission/store.ts')));
   assert.match(code('lib/readmission/store.ts'), /READMIT_ENGINE_VERSION = 'readmission\/0\.2'/);
-  // 0045 is the next free number.
+  // R9 took 0045, and nothing has renumbered it since. This originally asserted 0045 was the
+  // HIGHEST migration on disk, which was true the day R9 shipped and is a claim about the future
+  // that R9 had no business making: CASE-AGENTS-SPINE P1 (27 Aug 2026) added 0046_case_ask_turns
+  // for the OPD/IPD Ask, touching nothing of R9's. What R9 actually needs pinned is that ITS
+  // migration is still 0045 and still there — so that is what is pinned. (Edit flagged in the P1
+  // report: a readmission-adjacent test file, changed only because its assertion forbade any
+  // later migration existing at all.)
   const used = readdirSync(join(process.cwd(), 'migrations')).filter((f) => /^\d{4}_/.test(f)).map((f) => Number(f.slice(0, 4)));
-  assert.equal(Math.max(...used), 45);
+  assert.ok(used.includes(45), '0045 must still be on disk');
+  assert.equal(used.filter((n) => n === 45).length, 1, '0045 must not be duplicated');
   assert.ok(statSync(join(process.cwd(), 'migrations/0045_readmission_ask_turns.sql')).size > 0);
 });
 

@@ -128,8 +128,13 @@ test('count invariant: counts match the committed artifact contents (33 prompts 
   //   preop-narrative-core/PREOP_NARRATIVE_SYSTEM + buildNarrativePrompt (32→33, 39→40, +1 feature)
   // Both ship behind flags that are OFF, and both are registered anyway: the registry
   // records what the codebase CAN reason with, not what is currently switched on.
+  // CASE-AGENTS-SPINE P1 (27 Aug 2026) adds ONE builder, buildCaseAskPrompt in case-ask-core —
+  // the shared persisted Ask on the OPD note-audit and IPD discharge-audit cases (40→41). No new
+  // PROMPT const: like the readmission Ask it extracts from, its system text is assembled inside
+  // the builder rather than bound to a standing _SYSTEM const, so prompts stay 33. No new feature
+  // row either — case-ask-core is not in the generator's FEATURE_OF map, so it labels itself.
   assert.equal(gen.counts.prompts, 33);
   assert.equal(gen.counts.rubrics, 7);
-  assert.equal(gen.counts.user_message_builders, 40);
+  assert.equal(gen.counts.user_message_builders, 41);
   assert.equal(gen.counts.features, 22);
 });

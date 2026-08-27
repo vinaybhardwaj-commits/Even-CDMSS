@@ -22,6 +22,7 @@ import { fetchMemberOpdRows } from '@/lib/ipd-audit/member-opd-fetch';
 import { computeMedRecView } from '@/lib/member-state-adapters/med-rec-view';
 import { admissionAdapterEnabled } from '@/lib/member-state-adapters/discharge-evidence';
 import OutcomePanel, { type ComplicationOption, type OutcomeRowView } from './outcome-panel';
+import CaseAskPanel from './case-ask-panel';
 import { outcomesForSource } from '@/lib/prognosis-outcomes-store';
 import { complicationHash, resolveComplicationHash } from '@/lib/prognosis-outcomes-core';
 
@@ -256,6 +257,14 @@ export default async function IpdAuditReport({ params }: { params: Promise<{ id:
                 unavailable={outcomesUnavailable}
               />
             )}
+
+            {/* Ask the agent — the shared persisted case conversation (CASE-AGENTS-SPINE PRD P1).
+                Additive and read-only with respect to everything above it: no chat turn moves
+                care_value_index, the band, completeness, ipd_audit_feedback, EpisodeState or
+                MemberState (§3.3), and there is no re-run control in the box — a stay-level
+                re-audit is P3's job under its own named engine version (O11). Before migration
+                0046 has run the box is simply empty and its turns do not persist. */}
+            <CaseAskPanel auditId={id} />
 
             <div className="mt-5 flex flex-wrap items-center gap-3 text-[11px] text-slate-400">
               <span>engine {String(r.engine_version)}</span>

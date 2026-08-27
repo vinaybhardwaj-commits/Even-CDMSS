@@ -139,6 +139,14 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "case-ask",
+    "plane": "unregistered"
+  },
+  {
+    "id": "case-ask-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "ccb-apikey",
     "plane": "unregistered"
   },
@@ -1411,6 +1419,16 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/api",
+    "to": "case-ask",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "case-ask-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
     "to": "ccb-apikey",
     "kind": "value"
   },
@@ -1558,6 +1576,11 @@ export const MAP_EDGES: MapEdge[] = [
     "from": "app/api",
     "to": "doc-audit",
     "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "doc-audit-core",
+    "kind": "type"
   },
   {
     "from": "app/api",
@@ -2442,6 +2465,51 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "care-tracks-store",
     "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "case-ask",
+    "to": "backfill-runs",
+    "kind": "value"
+  },
+  {
+    "from": "case-ask",
+    "to": "case-ask-core",
+    "kind": "type"
+  },
+  {
+    "from": "case-ask",
+    "to": "case-ask-core",
+    "kind": "value"
+  },
+  {
+    "from": "case-ask",
+    "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "case-ask",
+    "to": "doc-audit-core",
+    "kind": "type"
+  },
+  {
+    "from": "case-ask",
+    "to": "llm",
+    "kind": "value"
+  },
+  {
+    "from": "case-ask",
+    "to": "llm-cost",
+    "kind": "value"
+  },
+  {
+    "from": "case-ask",
+    "to": "llm-cost-core",
+    "kind": "value"
+  },
+  {
+    "from": "case-ask",
+    "to": "trace",
     "kind": "value"
   },
   {
@@ -5112,6 +5180,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "CASE_ASK_VERSION",
+    "value": "case-ask/1",
+    "file": "lib/case-ask-core.ts",
+    "derived": false
+  },
+  {
     "constName": "CCB_ENGINE_VERSION",
     "value": "care-brief/0.1",
     "file": "lib/ccb-brief-core.ts",
@@ -5493,11 +5567,13 @@ export const VERSION_REGISTRY: VersionRow[] = [
 
 export const COVERAGE = {
   "registered": 21,
-  "unregistered": 38,
-  "total": 59,
+  "unregistered": 40,
+  "total": 61,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
+    "case-ask",
+    "case-ask-core",
     "ccb-brief-core",
     "ccb-dossier-cache-core",
     "cdsco-banned-fdc",

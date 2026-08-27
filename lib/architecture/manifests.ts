@@ -223,6 +223,11 @@ export const UNREGISTERED: string[] = [
   'care-call-core',         // care-call engine (ask-set/0.1, care-call/0.1)
   'cdsco-banned-fdc',       // CDSCO banned-FDC seed check (cdsco-banned-fdc/0.0, dormant stage 1)
   'ccb-brief-core',         // care-brief engine (care-brief/0.1)
+  'case-ask',               // the shared persisted case conversation's IO + request half
+                            // (store / model call / ceiling) — writes case_ask_turns and nothing else
+  'case-ask-core',          // the shared case Ask shell's pure decisions (case-ask/1): caps, the
+                            // citation gate, the de-id fence, the O7 daily ceiling. No overlay: OPD
+                            // and IPD get no clinical_review, so this core has no write path at all
   'ccb-dossier-cache-core', // dossier snapshot cache (schema v2)
   'ddx-eval-core',          // DDx frozen evaluator (ddx-eval/3, ddx-case-bank/1.0)
   'discharge-extract-store',// shared de-identified extracted-case store (doc-extract/1) — pure IO,

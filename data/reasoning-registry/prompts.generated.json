@@ -7,7 +7,7 @@
   "counts": {
     "prompts": 33,
     "rubrics": 7,
-    "user_message_builders": 40,
+    "user_message_builders": 41,
     "features": 22
   },
   "prompts": [
@@ -607,6 +607,11 @@
     }
   ],
   "user_message_builders": [
+    {
+      "fn": "buildCaseAskPrompt",
+      "file": "lib/case-ask-core.ts",
+      "feature": "case-ask-core"
+    },
     {
       "fn": "buildClinicalUser",
       "file": "lib/ccb-brief-core.ts",
