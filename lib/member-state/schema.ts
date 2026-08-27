@@ -67,10 +67,19 @@ export interface EncounterEvidence {
   procedures?: EncounterProcedure[];
 }
 
-/** 1.2 (§6.1) — one procedure as a single encounter evidenced it. */
+/**
+ * 1.2 (§6.1) — one procedure as a single encounter evidenced it.
+ *
+ * P2.1 (addendum A6): `laterality` is one of three CANONICAL words or nothing. It was `string` in
+ * the first cut, which let KX's raw multi-select widget (`["on-left"]`) reach the spine as an
+ * opaque serialised array — readable by nobody and comparable by nothing. Canonicalisation happens
+ * at WRITE, in the library's OT reader; an unrecognised widget shape yields no side at all.
+ */
+export type Laterality = 'left' | 'right' | 'bilateral';
+
 export interface EncounterProcedure {
   conceptRaw: string;
-  laterality?: string | null;
+  laterality?: Laterality | null;
   setting?: 'ot' | 'ward' | 'unknown';
   provenance: Provenance;
 }
@@ -119,7 +128,7 @@ export interface LongitudinalAllergy {
 export interface ProcedureOccurrence {
   encounterRef: string;
   date: string;
-  laterality?: string | null;
+  laterality?: Laterality | null;
   setting?: 'ot' | 'ward' | 'unknown';
   provenance: Provenance;
 }
@@ -248,7 +257,8 @@ const zLongitudinalProcedure = z.object({
   lastSeen: z.string(),
   occurrences: z.array(z.object({
     encounterRef: z.string(), date: z.string(),
-    laterality: z.string().nullable().optional(),
+    // P2.1 — the closed set. A raw widget string now fails validation rather than reaching a reader.
+    laterality: z.enum(['left', 'right', 'bilateral']).nullable().optional(),
     setting: z.enum(['ot', 'ward', 'unknown']).optional(),
     provenance: zProvenance,
   }).passthrough()),

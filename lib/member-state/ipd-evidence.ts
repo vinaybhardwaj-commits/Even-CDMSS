@@ -37,7 +37,7 @@
  * keeping strict, so the text is worked around rather than the test loosened.
  */
 import type { Provenance } from '../clinical-state/schema';
-import type { EncounterEvidence, EncounterProcedure } from './schema';
+import type { EncounterEvidence, EncounterProcedure, Laterality } from './schema';
 
 /** §6.2 — the ONLY slots with a promote path. A closed set; membership is condition 1. */
 export const PROMOTE_ALLOW_LIST = ['problems', 'medications', 'allergies', 'followUps', 'procedures'] as const;
@@ -117,7 +117,8 @@ export function promotable(c: PromotionCandidate): GateResult {
  *  StayProcedureFact, restated structurally so this file imports nothing from that module). */
 export interface StayProcedureInput {
   conceptRaw: string;
-  laterality: string | null;
+  /** P2.1 — canonical, or absent. The library parses KX's widget; this layer never sees the raw. */
+  laterality: Laterality | null;
   setting: 'ot' | 'ward' | 'unknown';
   provenance: Provenance;
   spanVerified: boolean;

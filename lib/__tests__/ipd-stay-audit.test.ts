@@ -46,7 +46,7 @@ const otDoc = (): StayLibraryDoc => ({
     sourceUid: 'ot-1', encounterRef: 'IPNO-19', surgeryName: 'Laparoscopic cholecystectomy',
     facts: [
       { name: 'surgery-name', label: 'surgery', value: 'Laparoscopic cholecystectomy' },
-      { name: 'right-left', label: 'side', value: 'Left' },
+      { name: 'right-left', label: 'side', value: '["on-left"]' },   // the shape KX actually stores
       { name: 'opfinf', label: 'operative findings', value: 'Distended gallbladder, multiple calculi' },
     ],
     narrative: 'Port sites closed.', templateName: 'OT Notes', at: null, deid: noop,
@@ -96,7 +96,9 @@ test('a FAULTED look never reads as an absent document, in the material or the c
 
 test('the OT structured fields reach the material as STRUCTURED, with the stated side only', () => {
   const { text } = composeStayMaterial([dischargeDoc(), otDoc()]);
-  assert.match(text, /procedure \(structured field\): Laparoscopic cholecystectomy — side: Left/);
+  // P2.1 — the prompt now carries the CANONICAL side, not KX's raw multi-select widget.
+  assert.match(text, /procedure \(structured field\): Laparoscopic cholecystectomy — side: left/);
+  assert.ok(!text.includes('on-left'), 'the raw widget string must not reach the model');
   assert.match(text, /operative findings: Distended gallbladder, multiple calculi/);
   // the surgery is stated once, as the procedure — not repeated as a loose fact line
   assert.equal((text.match(/Laparoscopic cholecystectomy/g) ?? []).length, 1);

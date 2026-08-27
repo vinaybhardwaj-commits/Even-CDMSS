@@ -151,7 +151,14 @@ export function composeStayMaterial(documents: readonly StayLibraryDoc[]): { tex
         lines.push(`  - procedure (structured field): ${p.conceptRaw}${p.laterality ? ` — side: ${p.laterality}` : ''}`);
       }
       for (const f of otFactsOf(d.state)) {
-        if (f.label.toLowerCase() === 'surgery') continue;   // already stated as the procedure
+        // Already stated on the procedure line above, in canonical form. `side` is skipped for a
+        // sharper reason than `surgery` (P2.1 / A6): its stored value is KX's raw multi-select
+        // widget — `["on-left"]` — and showing that to the model alongside the canonical `side:
+        // left` would put the same fact in front of it twice, once in a shape nothing can read.
+        // The verbatim string is kept in the ClinicalState provenance, which is where an auditor
+        // looks; it is not prompt material.
+        const label = f.label.toLowerCase();
+        if (label === 'surgery' || label === 'side') continue;
         lines.push(`  - ${f.label}: ${f.value}`);
       }
       const narrative = extra(d.state, 'narrative');

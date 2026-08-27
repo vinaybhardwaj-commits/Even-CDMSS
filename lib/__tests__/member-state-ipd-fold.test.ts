@@ -109,13 +109,13 @@ const stayInput = (over: Partial<StayEvidenceInput> = {}): StayEvidenceInput => 
 
 test('the fold emits a kind:"ipd" encounter and never touches investigations', () => {
   const { encounter } = stayToEncounter(stayInput({
-    procedures: [{ conceptRaw: 'Laparoscopic cholecystectomy', laterality: 'Left', setting: 'ot', provenance: prov(), spanVerified: true }],
+    procedures: [{ conceptRaw: 'Laparoscopic cholecystectomy', laterality: 'left', setting: 'ot', provenance: prov(), spanVerified: true }],
   }));
   assert.equal(encounter.kind, 'ipd');
   assert.equal(encounter.encounterRef, 'IPNO-19');
   assert.deepEqual(encounter.investigations, [], '§6.2 — NOTHING new on investigations, ever');
   assert.equal(encounter.procedures?.length, 1);
-  assert.equal(encounter.procedures?.[0].laterality, 'Left');
+  assert.equal(encounter.procedures?.[0].laterality, 'left');
   assert.equal(encounter.procedures?.[0].setting, 'ot');
 });
 
@@ -177,7 +177,7 @@ const libraryStay = () => ({
         sourceUid: 'ot-1', encounterRef: 'IPNO-19', surgeryName: 'Laparoscopic cholecystectomy',
         facts: [
           { name: 'surgery-name', label: 'surgery', value: 'Laparoscopic cholecystectomy' },
-          { name: 'right-left', label: 'side', value: 'Left' },
+          { name: 'right-left', label: 'side', value: '["on-left"]' },   // the shape KX actually stores
         ],
         narrative: null, templateName: 'OT Notes', at: null, deid: noop,
       }),
@@ -198,7 +198,7 @@ test('precedence: the OT structured procedure comes first; the span-less dischar
   assert.equal(built.encounter.procedures?.length, 1, 'only the OT procedure survives the gate');
   assert.equal(built.encounter.procedures?.[0].conceptRaw, 'Laparoscopic cholecystectomy');
   assert.equal(built.encounter.procedures?.[0].setting, 'ot');
-  assert.equal(built.encounter.procedures?.[0].laterality, 'Left');
+  assert.equal(built.encounter.procedures?.[0].laterality, 'left');
   // the discharge-named ERCP had no span into the extract narrative, so it did not promote
   assert.ok(built.refused.some((r) => r.concept === 'ERCP' && r.reason === 'span_unverified'));
 });
@@ -228,7 +228,7 @@ const evidenceWith = (encounters: EncounterEvidence[]): MemberEvidence =>
 const ipdEncounter = (over: Partial<EncounterEvidence> = {}): EncounterEvidence => ({
   encounterRef: 'IPNO-19', date: '2026-07-04', kind: 'ipd',
   problems: [], medicationAssertions: [], allergyAssertions: [], investigations: [],
-  procedures: [{ conceptRaw: 'Laparoscopic cholecystectomy', laterality: 'Left', setting: 'ot', provenance: prov() }],
+  procedures: [{ conceptRaw: 'Laparoscopic cholecystectomy', laterality: 'left', setting: 'ot', provenance: prov() }],
   ...over,
 });
 
@@ -240,7 +240,7 @@ test('acceptance #10: an OT surgery yields ONE LongitudinalProcedure on the snap
   assert.equal(p.firstSeen, '2026-07-04');
   assert.equal(p.lastSeen, '2026-07-04');
   assert.equal(p.occurrences[0].setting, 'ot');
-  assert.equal(p.occurrences[0].laterality, 'Left');
+  assert.equal(p.occurrences[0].laterality, 'left');
   assert.doesNotThrow(() => validateMemberStateSnapshot(snap));
 });
 
@@ -267,8 +267,8 @@ test('approaches are NEVER merged: open and laparoscopic are different operation
 
 test('§6.1: a procedure conflict is raised ONLY when two sides collide on one day', () => {
   const clash = buildMemberState(evidenceWith([
-    ipdEncounter({ encounterRef: 'A', procedures: [{ conceptRaw: 'Inguinal hernia repair', laterality: 'Left', setting: 'ot', provenance: prov() }] }),
-    ipdEncounter({ encounterRef: 'B', procedures: [{ conceptRaw: 'Inguinal hernia repair', laterality: 'Right', setting: 'ot', provenance: prov() }] }),
+    ipdEncounter({ encounterRef: 'A', procedures: [{ conceptRaw: 'Inguinal hernia repair', laterality: 'left', setting: 'ot', provenance: prov() }] }),
+    ipdEncounter({ encounterRef: 'B', procedures: [{ conceptRaw: 'Inguinal hernia repair', laterality: 'right', setting: 'ot', provenance: prov() }] }),
   ]), '2026-07-05T00:00:00Z');
   const c = clash.conflicts.filter((x) => x.domain === 'procedure');
   assert.equal(c.length, 1, 'a wrong-side disagreement is a safety_critical conflict');
@@ -276,17 +276,62 @@ test('§6.1: a procedure conflict is raised ONLY when two sides collide on one d
 
   // the same operation on two DIFFERENT days with different sides is two operations, not a conflict
   const twoDays = buildMemberState(evidenceWith([
-    ipdEncounter({ encounterRef: 'A', date: '2025-01-01', procedures: [{ conceptRaw: 'Inguinal hernia repair', laterality: 'Left', setting: 'ot', provenance: prov() }] }),
-    ipdEncounter({ encounterRef: 'B', date: '2026-07-04', procedures: [{ conceptRaw: 'Inguinal hernia repair', laterality: 'Right', setting: 'ot', provenance: prov() }] }),
+    ipdEncounter({ encounterRef: 'A', date: '2025-01-01', procedures: [{ conceptRaw: 'Inguinal hernia repair', laterality: 'left', setting: 'ot', provenance: prov() }] }),
+    ipdEncounter({ encounterRef: 'B', date: '2026-07-04', procedures: [{ conceptRaw: 'Inguinal hernia repair', laterality: 'right', setting: 'ot', provenance: prov() }] }),
   ]), '2026-07-05T00:00:00Z');
   assert.deepEqual(twoDays.conflicts.filter((x) => x.domain === 'procedure'), []);
 
   // and silence is not a disagreement
   const oneSilent = buildMemberState(evidenceWith([
-    ipdEncounter({ encounterRef: 'A', procedures: [{ conceptRaw: 'Inguinal hernia repair', laterality: 'Left', setting: 'ot', provenance: prov() }] }),
+    ipdEncounter({ encounterRef: 'A', procedures: [{ conceptRaw: 'Inguinal hernia repair', laterality: 'left', setting: 'ot', provenance: prov() }] }),
     ipdEncounter({ encounterRef: 'B', procedures: [{ conceptRaw: 'Inguinal hernia repair', laterality: null, setting: 'ot', provenance: prov() }] }),
   ]), '2026-07-05T00:00:00Z');
   assert.deepEqual(oneSilent.conflicts.filter((x) => x.domain === 'procedure'), []);
+});
+
+test('P2.1: the side-conflict check compares CANONICAL values only', () => {
+  // bilateral vs left on one day IS a genuine disagreement about what was operated.
+  const mixed = buildMemberState(evidenceWith([
+    ipdEncounter({ encounterRef: 'A', procedures: [{ conceptRaw: 'Inguinal hernia repair', laterality: 'bilateral', setting: 'ot', provenance: prov() }] }),
+    ipdEncounter({ encounterRef: 'B', procedures: [{ conceptRaw: 'Inguinal hernia repair', laterality: 'left', setting: 'ot', provenance: prov() }] }),
+  ]), '2026-07-05T00:00:00Z');
+  assert.equal(mixed.conflicts.filter((c) => c.domain === 'procedure').length, 1);
+
+  // the same canonical side twice is agreement, however many sources say it
+  const agreeing = buildMemberState(evidenceWith([
+    ipdEncounter({ encounterRef: 'A', procedures: [{ conceptRaw: 'Inguinal hernia repair', laterality: 'left', setting: 'ot', provenance: prov() }] }),
+    ipdEncounter({ encounterRef: 'B', procedures: [{ conceptRaw: 'Inguinal hernia repair', laterality: 'left', setting: 'ot', provenance: prov() }] }),
+  ]), '2026-07-05T00:00:00Z');
+  assert.deepEqual(agreeing.conflicts.filter((c) => c.domain === 'procedure'), []);
+});
+
+test('P2.1: the detector stays SILENT when either side lacks a canonical value', () => {
+  // One side known, the other unreadable (the widget shape was unrecognised, so P2 stored null).
+  // Before P2.1 this compared raw strings and an unparsed widget could read as a disagreement.
+  for (const other of [null, undefined]) {
+    const snap = buildMemberState(evidenceWith([
+      ipdEncounter({ encounterRef: 'A', procedures: [{ conceptRaw: 'Inguinal hernia repair', laterality: 'left', setting: 'ot', provenance: prov() }] }),
+      ipdEncounter({ encounterRef: 'B', procedures: [{ conceptRaw: 'Inguinal hernia repair', laterality: other, setting: 'ot', provenance: prov() }] }),
+    ]), '2026-07-05T00:00:00Z');
+    assert.deepEqual(snap.conflicts.filter((c) => c.domain === 'procedure'), [],
+      'an absent side is not a disagreement — it is an absent side');
+  }
+  // and NEITHER side known is likewise silent
+  const both = buildMemberState(evidenceWith([
+    ipdEncounter({ encounterRef: 'A', procedures: [{ conceptRaw: 'Inguinal hernia repair', laterality: null, setting: 'ot', provenance: prov() }] }),
+    ipdEncounter({ encounterRef: 'B', procedures: [{ conceptRaw: 'Inguinal hernia repair', laterality: null, setting: 'ot', provenance: prov() }] }),
+  ]), '2026-07-05T00:00:00Z');
+  assert.deepEqual(both.conflicts.filter((c) => c.domain === 'procedure'), []);
+});
+
+test('P2.1: zod refuses a raw widget string as a laterality value', () => {
+  const snap = buildMemberState(evidenceWith([ipdEncounter()]), '2026-07-05T00:00:00Z');
+  assert.doesNotThrow(() => validateMemberStateSnapshot(snap));
+  // hand-poison the snapshot with what KX actually stores, and the schema must reject it
+  const poisoned = JSON.parse(JSON.stringify(snap));
+  poisoned.procedures[0].occurrences[0].laterality = '["on-left"]';
+  assert.throws(() => validateMemberStateSnapshot(poisoned), /laterality|invalid/i,
+    'the closed set is what stops an opaque array reaching a reader');
 });
 
 // ══ acceptance #9 — flag off ════════════════════════════════════════════════════════════

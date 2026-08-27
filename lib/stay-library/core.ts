@@ -107,12 +107,37 @@ export interface StayDocMeta {
  * This is the ONLY shape P4 may read a procedure from — the core's `procedures: string[]` carries
  * no provenance and must never be promoted on its own.
  */
+/**
+ * P2.1 (addendum A6) — the ONLY laterality values that may leave this library. KX stores the OT
+ * `right-left` widget as a JSON-array-shaped string; parsing that structured widget into one of
+ * three canonical words is READING A FORM FIELD, not deriving a clinical fact, so trust stays
+ * `structured_db`. Anything the allowlist does not recognise yields NO canonical value.
+ */
+export const LATERALITY_VALUES = ['left', 'right', 'bilateral'] as const;
+export type Laterality = (typeof LATERALITY_VALUES)[number];
+
 export interface StayProcedureFact {
   conceptRaw: string;
-  /** ONLY from the OT row's own `right-left` fact. Never guessed from a surgery title (§6.2). */
-  laterality: string | null;
+  /**
+   * ONLY from the OT row's own `right-left` widget, canonicalised by `canonicalLaterality`. Never
+   * guessed from a surgery title (§6.2), and `null` whenever the widget was absent, empty, or in a
+   * shape the allowlist does not recognise — an unreadable side is no side, never a guessed one.
+   */
+  laterality: Laterality | null;
   setting: 'ot' | 'ward' | 'unknown';
   provenance: Provenance;
+  /**
+   * P2.1 — where the side came from, and what it literally said. Present whenever the widget
+   * carried ANY text, INCLUDING when the shape was unrecognised and `laterality` is therefore null:
+   * that is the case where the verbatim string is the only record of what the form held, and A6
+   * requires it be kept.
+   *
+   * It is a second Provenance rather than a field on the procedure's own, because `zProvenance` in
+   * lib/clinical-state/schema.ts is `.strict()` and §7 forbids forking that schema. A separate
+   * provenance is also the more honest shape: the side and the operation are two facts from two
+   * fields, and only one of them is the `surgery_name` column.
+   */
+  lateralityProvenance?: Provenance;
   /**
    * Did `provenance.rawText` verify as a verbatim substring of the named source field?
    * `true` for a structured column (it IS the field). For an LLM-extracted discharge procedure this
@@ -128,6 +153,60 @@ export interface StaySurfaceExtras extends Record<string, unknown> {
   procedureFacts?: StayProcedureFact[];
   /** The allowlisted OT facts, verbatim, for P3's reader. */
   otFacts?: Array<{ name: string; label: string; value: string }>;
+}
+
+// ── laterality (P2.1, addendum A6) ───────────────────────────────────────────────────────
+
+/** The widget tokens KX actually writes. A STRICT allowlist: nothing else is interpreted. */
+const LATERALITY_TOKENS: Readonly<Record<string, 'left' | 'right'>> = Object.freeze({
+  'on-left': 'left',
+  'on-right': 'right',
+});
+
+/**
+ * PURE — the OT `right-left` widget string → one canonical side, or null.
+ *
+ * MEASURED SHAPES on live db13 (27 Aug): `["on-left"]`, `["on-right","on-left"]`, and absent. The
+ * value is a JSON-array-shaped STRING because the KX component is a multi-select; a single-select
+ * reading of it would have silently mistaken a bilateral case for a left one.
+ *
+ * THE RULE IS AN ALLOWLIST, AND IT IS DELIBERATELY UNFORGIVING. Both known tokens present →
+ * `bilateral`. One → that side. Absent, empty, unparseable, or carrying ANY token the allowlist
+ * does not know → `null`, and the caller keeps the verbatim string instead. A side is the field a
+ * wrong-side-surgery review turns on, so the failure mode has to be "we do not know" rather than
+ * "our best guess" — and a new KX token must show up as a missing side, never as a wrong one.
+ */
+export function canonicalLaterality(raw: unknown): Laterality | null {
+  const text = raw == null ? '' : String(raw).trim();
+  if (!text) return null;
+
+  let tokens: string[];
+  const parsed = tryParseJson(text);
+  if (Array.isArray(parsed)) {
+    // Every element must be a string; a nested object/array is an unrecognised shape, not a side.
+    if (!parsed.every((x) => typeof x === 'string')) return null;
+    tokens = (parsed as string[]).map((x) => x.trim().toLowerCase()).filter(Boolean);
+  } else if (parsed === undefined) {
+    // Not JSON at all. A bare token is still a legitimate widget value on an older row.
+    tokens = [text.toLowerCase()];
+  } else {
+    return null;   // valid JSON but not an array (a number, a string, an object) — unrecognised
+  }
+  if (!tokens.length) return null;
+
+  const sides = new Set<'left' | 'right'>();
+  for (const t of tokens) {
+    const side = LATERALITY_TOKENS[t];
+    if (!side) return null;          // ONE unknown token disqualifies the whole value
+    sides.add(side);
+  }
+  if (sides.size === 2) return 'bilateral';
+  return sides.has('left') ? 'left' : 'right';
+}
+
+/** JSON.parse that reports "not JSON" as `undefined` rather than throwing. */
+function tryParseJson(text: string): unknown {
+  try { return JSON.parse(text); } catch { return undefined; }
 }
 
 // ── ids ──────────────────────────────────────────────────────────────────────────────────
@@ -300,7 +379,21 @@ export function otState(a: {
     .filter((f): f is OtFactInput => !!f.value);
 
   const surgery = clean(a.deid, a.surgeryName, 300) ?? facts.find((f) => f.name === 'surgery-name')?.value ?? null;
-  const laterality = facts.find((f) => f.name === 'right-left')?.value ?? null;
+  // P2.1 — the widget is PARSED here, at write time, so every stored row carries a canonical side
+  // and the verbatim string both. `lateralityRaw` is what the form literally held; `laterality` is
+  // null unless the allowlist recognised it.
+  const lateralityRaw = facts.find((f) => f.name === 'right-left')?.value ?? null;
+  const laterality = canonicalLaterality(lateralityRaw);
+  const lateralityProvenance: Provenance | undefined = lateralityRaw
+    ? {
+      sourceField: `${DOC_KIND_SOURCE.ot}.component_json.right-left`,
+      rawText: lateralityRaw,
+      extractionMethod: 'deterministic',
+      confidence: 1,
+      reporter: 'clinician',
+      trust: 'structured_db',
+    }
+    : undefined;
   const procedureFacts: StayProcedureFact[] = [];
 
   if (surgery) {
@@ -308,6 +401,7 @@ export function otState(a: {
     procedureFacts.push({
       conceptRaw: surgery,
       laterality,
+      ...(lateralityProvenance ? { lateralityProvenance } : {}),
       setting: 'ot',
       spanVerified: true,   // a structured column IS the named source field
       provenance: {
@@ -323,7 +417,7 @@ export function otState(a: {
       id: mkFindingId(surgery, `${DOC_KIND_SOURCE.ot}.surgery_name`, 'present'),
       concept: surgery,
       status: 'present',
-      ...(laterality ? { value: laterality } : {}),
+      ...(laterality ? { value: laterality } : {}),   // canonical, or absent — never the raw widget
       provenance: procedureFacts[0].provenance,
     } satisfies ClinicalFinding);
   }

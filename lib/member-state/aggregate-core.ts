@@ -12,7 +12,7 @@ import type {
   LongitudinalProblem, LongitudinalStatus, ProblemCourse, ProblemOccurrence,
   LongitudinalMedication, MedicationOccurrence, LongitudinalAllergy, AllergyOccurrence,
   LongitudinalInvestigation, InvestigationPoint, Discrepancy, EvidenceRef,
-  LongitudinalProcedure, ProcedureOccurrence,
+  LongitudinalProcedure, ProcedureOccurrence, Laterality,
 } from './schema';
 import { MEMBER_STATE_VERSION, NORMALIZATION_VERSION } from './schema';
 import type { MedicationStatus, AllergyStatus, FollowUpAssertion } from '../clinical-state/schema';
@@ -113,6 +113,9 @@ export function buildMemberState(evidence: MemberEvidence, computedAt: string): 
   };
 }
 
+/** P2.1 — the closed set the side-conflict detector will compare. Anything else is "no side". */
+const CANONICAL_SIDES: ReadonlySet<Laterality> = new Set<Laterality>(['left', 'right', 'bilateral']);
+
 // ── Procedures (1.2, §6.1) — the LongitudinalProcedure projection ──────────────────────────────
 //
 // A deliberate MIRROR of buildMedications: same grouping by normalized concept, same
@@ -152,17 +155,24 @@ function buildProcedures(encounters: EncounterEvidence[], pushConflict: (d: Omit
   for (const [, g] of groups) {
     const occ = g.occ.slice().sort(byDateRef);
     // Side disagreement on one day, and only that.
-    const byDay = new Map<string, Set<string>>();
+    //
+    // P2.1 (addendum A6) — CANONICAL VALUES ONLY. `laterality` is now 'left' | 'right' |
+    // 'bilateral' or nothing, parsed at write time from the source widget, and this comparison
+    // trusts nothing else: an occurrence WITHOUT a canonical side is skipped entirely, so the
+    // detector stays SILENT when either side lacks one. Before P2.1 it compared raw widget strings,
+    // which meant `["on-left"]` and `left` read as a disagreement and two spellings of the same
+    // side could have raised a safety_critical conflict that was not one.
+    const byDay = new Map<string, Set<Laterality>>();
     for (const o of occ) {
-      const side = (o.laterality ?? '').trim().toLowerCase();
-      if (!side) continue;                                  // silence is not a disagreement
-      const set = byDay.get(o.date) ?? new Set<string>();
+      const side = o.laterality;
+      if (!side || !CANONICAL_SIDES.has(side)) continue;     // no canonical side ⇒ no opinion
+      const set = byDay.get(o.date) ?? new Set<Laterality>();
       set.add(side);
       byDay.set(o.date, set);
     }
     for (const [date, sides] of byDay) {
       if (sides.size < 2) continue;
-      const sameDay = occ.filter((o) => o.date === date && (o.laterality ?? '').trim());
+      const sameDay = occ.filter((o) => o.date === date && o.laterality && CANONICAL_SIDES.has(o.laterality));
       pushConflict({
         domain: 'procedure', type: 'value_conflict', severity: 'safety_critical', resolutionStatus: 'open',
         assertions: sameDay.map((o) => ({

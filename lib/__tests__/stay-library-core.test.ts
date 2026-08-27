@@ -16,6 +16,7 @@ import {
   absentSourceUid, assertNoAdministered, dischargeState, isAbsentSourceUid, narrativeDocState,
   notAuditableState, otState, procedureFactsOf, stayDocMetaOf,
   DOC_KINDS, DOC_KIND_SOURCE, NOT_AUDITABLE_COPY, STAY_LIBRARY_VERSION,
+  canonicalLaterality, LATERALITY_VALUES,
   type Deidentifier,
 } from '../stay-library/core';
 import { spanReport, type BuiltDoc } from '../stay-library/build';
@@ -135,10 +136,88 @@ test('OT: laterality comes ONLY from the row\'s right-left fact — never from t
     surgeryName: 'Inguinal hernia repair',
     facts: [
       { name: 'surgery-name', label: 'surgery', value: 'Inguinal hernia repair' },
-      { name: 'right-left', label: 'side', value: 'Left' },
+      { name: 'right-left', label: 'side', value: '["on-left"]' },
     ],
   });
-  assert.equal(procedureFactsOf(stated)[0].laterality, 'Left');
+  assert.equal(procedureFactsOf(stated)[0].laterality, 'left');
+});
+
+// ══ P2.1 (addendum A6) — the laterality widget ══════════════════════════════════════════
+
+test('P2.1: the THREE shapes measured on live db13 canonicalise correctly', () => {
+  // Measured 27 Aug on the four orchestrator-picked stays: IP-1486, IPNO-641, IPNO-657.
+  assert.equal(canonicalLaterality('["on-left"]'), 'left');
+  assert.equal(canonicalLaterality('["on-right"]'), 'right');
+  assert.equal(canonicalLaterality('["on-right","on-left"]'), 'bilateral', 'a multi-select with both sides IS bilateral');
+  assert.equal(canonicalLaterality('["on-left","on-right"]'), 'bilateral', 'order must not matter');
+  assert.equal(canonicalLaterality(null), null);
+  assert.equal(canonicalLaterality(''), null);
+  assert.equal(canonicalLaterality('[]'), null);
+  assert.deepEqual([...LATERALITY_VALUES], ['left', 'right', 'bilateral']);
+});
+
+test('P2.1: an UNRECOGNISED shape yields NO side — a new token must never become a wrong one', () => {
+  for (const shape of [
+    '["on-middle"]',            // a token the allowlist does not know
+    '["on-left","on-middle"]',  // one unknown token disqualifies the whole value
+    '{"side":"left"}',          // valid JSON, wrong shape
+    '["on-left", 3]',           // a non-string element
+    '[["on-left"]]',            // nested
+    '42',
+    'left-ish',
+    'both',
+  ]) {
+    assert.equal(canonicalLaterality(shape), null, `${shape} must not resolve to a side`);
+  }
+});
+
+test('P2.1: a bare legacy token still reads, because an older row may not be JSON', () => {
+  assert.equal(canonicalLaterality('on-left'), 'left');
+  assert.equal(canonicalLaterality('ON-RIGHT'), 'right');
+});
+
+test('P2.1: the verbatim widget string is KEPT even when the shape is unrecognised', () => {
+  const weird = otRow({
+    facts: [
+      { name: 'surgery-name', label: 'surgery', value: 'Inguinal hernia repair' },
+      { name: 'right-left', label: 'side', value: '["on-middle"]' },
+    ],
+  });
+  const [p] = procedureFactsOf(weird);
+  assert.equal(p.laterality, null, 'no canonical value survives an unrecognised shape');
+  assert.equal(p.lateralityProvenance?.rawText, '["on-middle"]', 'the verbatim string is the only record of what the form held');
+  assert.equal(p.lateralityProvenance?.sourceField, 'kx_clinical_template_ot_notes.component_json.right-left');
+  assert.equal(p.lateralityProvenance?.trust, 'structured_db', 'parsing a widget is reading a field, not deriving a fact');
+  assert.equal(p.lateralityProvenance?.extractionMethod, 'deterministic');
+  // and the raw value is still recoverable from the stored facts, as it was before P2.1
+  const otFacts = (weird.surfaceExtras as Record<string, unknown>).otFacts as Array<{ name: string; value: string }>;
+  assert.ok(otFacts.some((f) => f.name === 'right-left' && f.value === '["on-middle"]'));
+});
+
+test('P2.1: a recognised widget carries BOTH the canonical side and its verbatim provenance', () => {
+  const [p] = procedureFactsOf(otRow({
+    facts: [
+      { name: 'surgery-name', label: 'surgery', value: 'Inguinal hernia repair' },
+      { name: 'right-left', label: 'side', value: '["on-right","on-left"]' },
+    ],
+  }));
+  assert.equal(p.laterality, 'bilateral');
+  assert.equal(p.lateralityProvenance?.rawText, '["on-right","on-left"]');
+});
+
+test('P2.1: no raw widget string can reach the stored state as a laterality VALUE', () => {
+  const st = otRow({
+    surgeryName: 'Inguinal hernia repair',
+    facts: [
+      { name: 'surgery-name', label: 'surgery', value: 'Inguinal hernia repair' },
+      { name: 'right-left', label: 'side', value: '["on-left"]' },
+    ],
+  });
+  const [p] = procedureFactsOf(st);
+  assert.ok(!/\[|\]/.test(String(p.laterality)), 'the canonical side must not be an array-shaped string');
+  // the finding's display value is the canonical word too
+  const finding = st.positives.find((f) => f.concept === 'Inguinal hernia repair');
+  assert.equal(finding?.value, 'left');
 });
 
 test('OT: operative findings become a finding with a real source field', () => {
