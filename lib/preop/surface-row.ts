@@ -12,7 +12,8 @@ import type { Tier } from '../preop-tier-core';
 import type { PreopCardRow } from '../preop-surface-core';
 import { narrativeRenderable, type PreopNarrative } from '../preop-narrative-core';
 import {
-  openSuggestions, type PreopDecision, type PreopSuggestion, type PreopSuggestionRecord,
+  openSuggestions, redundantSuggestions,
+  type PreopDecision, type PreopSuggestion, type PreopSuggestionRecord,
 } from '../preop-suggest-core';
 import type { FindingRow } from './store';
 
@@ -91,6 +92,8 @@ export function caseDetail(r: FindingRow, decisions: readonly PreopDecision[] = 
   suggestions: PreopSuggestionRecord | null;
   /** what the panel offers: suggestions nobody has confirmed or dismissed yet */
   open: PreopSuggestion[];
+  /** suggestions that agreed with the record and are therefore not offered */
+  redundant: number;
   /** what a decision must be bound to — null when there is no stored reading to decide on */
   sourceFingerprint: string | null;
   decisions: readonly PreopDecision[];
@@ -104,11 +107,19 @@ export function caseDetail(r: FindingRow, decisions: readonly PreopDecision[] = 
     !stored ? 'none'
       : !stored.valid ? 'invalid'
         : narrativeRenderable(stored, live) ? 'shown' : 'stale';
+  const snapshot = asObject(r.snapshot);
+  // The current resolved status per input, so the panel can drop a suggestion that agrees
+  // with what the record already says (see openSuggestions).
+  const resolved: Record<string, string> = {};
+  for (const i of (snapshot?.inputs as Array<{ inputId: string; status: string }> | undefined) ?? []) {
+    resolved[i.inputId] = i.status;
+  }
   return {
     row: toCardRow(r),
-    snapshot: asObject(r.snapshot),
+    snapshot,
     suggestions,
-    open: openSuggestions(suggestions, decisions),
+    open: openSuggestions(suggestions, decisions, resolved),
+    redundant: redundantSuggestions(suggestions, resolved),
     sourceFingerprint: suggestions?.sourceFingerprint ?? null,
     decisions,
     narrative: narrativeState === 'shown' ? stored : null,

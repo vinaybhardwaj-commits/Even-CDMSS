@@ -7,6 +7,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   buildOverwriteSnapshot, buildReplaySnapshot, describeChange, isEpisodeKeyShape,
   needsOverwriteSnapshot, nextVersionNo, PREOP_CAPTURE_REASONS, PREOP_VERSIONS_RULE_VERSION,
@@ -100,4 +101,19 @@ test('describeChange narrates the timeline in clinical words, not hashes', () =>
   assert.equal(describeChange(null, v1), 'first snapshot');
   assert.equal(describeChange(v1, v2), 'creatinine over 2: 1.4 → unknown → absent');
   assert.equal(describeChange(v2, v2), 'recomputed — no input changed status');
+});
+
+// ── B8b · why a version minted ──────────────────────────────────────────────────
+
+test('a version whose HUMAN inputs moved is captured as `confirm`, not `overwrite`', () => {
+  // Pinned at the source, because the store is the only place holding both readings at once
+  // and there is no way to exercise it without Neon. A sweep overwriting itself and a
+  // clinician deciding something are different events; the timeline must not call them the
+  // same thing.
+  const store = readFileSync('lib/preop/store.ts', 'utf8');
+  const save = store.slice(store.indexOf('export async function saveSnapshot'), store.indexOf('// ── reads'));
+  assert.match(save, /humanIds\(row\.snapshot\) !== humanIds\(snap\) \? 'confirm' : 'overwrite'/);
+  assert.match(save, /i\.source === 'HUMAN'/);
+  // and it reaches the version row rather than being computed and dropped
+  assert.match(save, /\}\), captureReason \}\)/);
 });

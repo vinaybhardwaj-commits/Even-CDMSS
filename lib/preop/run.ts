@@ -43,7 +43,7 @@ import {
 } from './suggest';
 import { narrateOne, preopNarrativeEnabled, type NarrativeCall } from './narrative';
 import {
-  autoAcceptable, decisionObservations, openSuggestions,
+  autoAcceptable, decisionObservations, openSuggestions, redundantSuggestions,
   type PreopDecision, type PreopExtractMode, type PreopSuggestionRecord,
 } from '../preop-suggest-core';
 import { extractionSourceFingerprint } from '../preop-extract-core';
@@ -356,8 +356,10 @@ export interface PreopCaseTrace {
   charlson: [number | null, number | null];
   snapshot?: PreopSnapshot;
   suggestions?: PreopSuggestionRecord | null;
-  /** suggestions not yet confirmed or dismissed against the current source fingerprint */
+  /** suggestions not yet decided AND not already agreed with by the record */
   open?: number;
+  /** suggestions the record already answered the same way — counted, never offered */
+  redundant?: number;
   decisions?: PreopDecision[];
   narrative?: PreopNarrative | null;
   extractOutcome?: string;
@@ -392,8 +394,12 @@ export interface PreopSweepResult {
     comorbidityMatched: Record<string, number>;
     comorbidityUnmapped: Record<string, number>;
   };
-  /** B8b — suggestions OFFERED, by input id. None of these scored anything. */
+  /** B8b — suggestions MADE, by input id. None of these scored anything. */
   suggestedInputs: Record<string, number>;
+  /** B8b — of those, how many a clinician would actually be shown, and how many the record
+   *  had already answered the same way (counted, never offered). */
+  suggestionsOffered: number;
+  suggestionsRedundant: number;
   /** B8b — classes where the three reads did not agree unanimously somewhere on the board */
   splitSuggestions: string[];
   /** B8b — proposals a gate threw away before they were ever offered, by reason.
@@ -530,6 +536,8 @@ export async function runPreopSweep(opts: PreopSweepOptions = {}): Promise<Preop
   const confirmedInputs: Record<string, number> = {};
   const droppedByGate: Record<string, number> = {};
   const splitSuggestions = new Set<string>();
+  let redundantSuggestionCount = 0;
+  let openSuggestionCount = 0;
   const harvestTally = {
     rxObservations: 0, diseaseObservations: 0,
     negationSuppressed: {} as Record<string, number>,
@@ -701,6 +709,13 @@ export async function runPreopSweep(opts: PreopSweepOptions = {}): Promise<Preop
       }
     }
 
+    // The resolved status per input, so a suggestion that merely agrees with the record can
+    // be counted rather than put in front of a clinician (see openSuggestions).
+    const resolvedStatus: Record<string, string> = {};
+    for (const i of snap.inputs) resolvedStatus[i.inputId] = i.status;
+    redundantSuggestionCount += redundantSuggestions(suggestions, resolvedStatus);
+    openSuggestionCount += openSuggestions(suggestions, decisions, resolvedStatus).length;
+
     if (opts.collect) {
       cases.push({
         episodeKey: ep.docId,
@@ -711,7 +726,8 @@ export async function runPreopSweep(opts: PreopSweepOptions = {}): Promise<Preop
         charlson: [snap.charlson.lo, snap.charlson.hi],
         ...(opts.collectSnapshots ? { snapshot: snap } : {}),
         suggestions,
-        open: openSuggestions(suggestions, decisions).length,
+        open: openSuggestions(suggestions, decisions, resolvedStatus).length,
+        redundant: redundantSuggestions(suggestions, resolvedStatus),
         decisions,
         narrative, extractOutcome,
       });
@@ -728,6 +744,8 @@ export async function runPreopSweep(opts: PreopSweepOptions = {}): Promise<Preop
     rails: { requested: rails, extraction: extractTally, narrative: narrativeTally },
     harvest: harvestTally,
     suggestedInputs,
+    suggestionsOffered: openSuggestionCount,
+    suggestionsRedundant: redundantSuggestionCount,
     splitSuggestions: [...splitSuggestions].sort(),
     droppedByGate,
     confirmedInputs,

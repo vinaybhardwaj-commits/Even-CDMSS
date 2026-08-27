@@ -38,7 +38,7 @@ import { sql } from '../db';
 import type { PreopSnapshot } from '../preop-assemble-core';
 import {
   buildOverwriteSnapshot, needsOverwriteSnapshot, nextVersionNo,
-  PREOP_CAPTURE_REASONS, type PreopVersionSnapshot,
+  PREOP_CAPTURE_REASONS, type PreopCaptureReason, type PreopVersionSnapshot,
 } from '../preop-versions-core';
 import { within7d } from '../preop-tier-core';
 
@@ -184,8 +184,21 @@ export async function saveSnapshot(
       return { outcome: 'unchanged', versionNo: row.version_no ?? 1, snapshotted: false };
     }
 
+    // ── WHY did this version mint? (B8b) ────────────────────────────────────────
+    // A sweep overwriting itself and a clinician deciding something are different events,
+    // and the timeline must not call them both 'overwrite'. The set of HUMAN-sourced inputs
+    // is compared old-vs-new: if it moved, a person is the reason, and the version says so.
+    // Computed HERE rather than passed in, because the store is the only place that holds
+    // both readings at once.
+    const humanIds = (o: unknown): string => {
+      const inputs = (asObject(o)?.inputs as Array<{ inputId: string; source: string | null }> | undefined) ?? [];
+      return inputs.filter((i) => i.source === 'HUMAN').map((i) => i.inputId).sort().join(',');
+    };
+    const captureReason: PreopCaptureReason =
+      humanIds(row.snapshot) !== humanIds(snap) ? 'confirm' : 'overwrite';
+
     // A real change: keep the reading we are about to destroy, THEN overwrite.
-    await insertVersion(buildOverwriteSnapshot({
+    await insertVersion({ ...buildOverwriteSnapshot({
       episodeKey: row.episode_key,
       engineVersion: row.engine_version,
       versionNo: row.version_no,
@@ -194,7 +207,7 @@ export async function saveSnapshot(
       snapshotFingerprint: row.snapshot_fingerprint,
       computedAt: row.computed_at,
       traceId: row.trace_id,
-    }));
+    }), captureReason });
 
     const versionNo = nextVersionNo(row, true);
     await sql(

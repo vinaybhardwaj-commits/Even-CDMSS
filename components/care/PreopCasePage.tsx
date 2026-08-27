@@ -64,6 +64,7 @@ interface Payload {
   versions: VersionRow[]; extraction: string; narrative: string; error: string | null;
   suggestionRecord?: SuggestionRecord | null;
   openSuggestions?: Suggestion[];
+  redundant?: number;
   sourceFingerprint?: string | null;
   decisions?: Decision[];
   narrativeText?: NarrativeRecord | null;
@@ -291,8 +292,12 @@ function NarrativePanel({ data }: { data: Payload }) {
         <p className="whitespace-pre-line text-[13px] leading-relaxed text-slate-800">{citedText(n.text)}</p>
         <p className="mt-2 border-t border-slate-100 pt-2 text-[11px] text-slate-400">
           Written from the factor tables above and nothing else — the model was shown the computed result, not the record.
-          Every sentence is cited; code checked that all {n.citedIds.length} citation{n.citedIds.length === 1 ? '' : 's'} resolve
-          to one of {n.factCount} computed facts. {n.provider ?? '?'}:{n.model ?? 'model unrecorded'} · {shortDate(n.generatedAt)}.
+          {/* Two different numbers, and they are named separately on purpose: a paragraph
+              that cites 12 of 13 available facts is not a paragraph with an unresolved
+              citation. Measured 27 Aug across all 15 live narratives: 0 unresolved. */}
+          Every sentence is cited, and <b>every citation resolves</b> — {n.citedIds.length} distinct fact
+          {n.citedIds.length === 1 ? '' : 's'} cited of {n.factCount} available.
+          {' '}{n.provider ?? '?'}:{n.model ?? 'model unrecorded'} · {shortDate(n.generatedAt)}.
         </p>
       </div>
     </Section>
@@ -409,9 +414,11 @@ function SuggestionPanel({ data, episodeKey, onDecided }: {
         ))}
         {!open.length && (
           <p className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3.5 py-3 text-[12px] text-slate-500">
-            {rec
-              ? 'Nothing outstanding — every suggestion on this note has been confirmed or dismissed.'
-              : 'The rail has not read this episode yet, or found no free text to read.'}
+            {!rec
+              ? 'The rail has not read this episode yet, or found no free text to read.'
+              : (data.redundant ?? 0) > 0
+                ? `Nothing to decide — every reading on this note agrees with what the record already says (${data.redundant}).`
+                : 'Nothing outstanding — every suggestion on this note has been confirmed or dismissed.'}
           </p>
         )}
       </div>
@@ -427,6 +434,7 @@ function SuggestionPanel({ data, episodeKey, onDecided }: {
         <b>CONFIRMED</b> provenance on the next sweep and mints a new snapshot version; a dismissal hides the
         suggestion for this version of the note. Both are recorded with who decided and when.
         {rec && <> Read {rec.readCount}× at temperature 0 by {rec.provider ?? '?'}:{rec.model ?? 'model unrecorded'} on {shortDate(rec.generatedAt)}.</>}
+        {(data.redundant ?? 0) > 0 && <> {data.redundant} further reading{data.redundant === 1 ? '' : 's'} agreed with what the record already says and {data.redundant === 1 ? 'is' : 'are'} not shown — confirming {data.redundant === 1 ? 'it' : 'them'} would move nothing.</>}
         {!!rec?.dropped.length && <> {rec.dropped.length} proposal{rec.dropped.length === 1 ? ' was' : 's were'} refused before you saw{rec.dropped.length === 1 ? ' it' : ' them'} ({[...new Set(rec.dropped.map((d) => d.reason))].join(', ')}) — a medication may never suggest a diagnosis.</>}
       </p>
     </Section>

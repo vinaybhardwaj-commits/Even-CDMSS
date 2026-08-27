@@ -41,7 +41,7 @@ export async function GET(req: NextRequest) {
     decision: (d.decision === 'dismiss' ? 'dismiss' : 'confirm') as 'confirm' | 'dismiss',
     decidedBy: d.decided_by, decidedAt: d.decided_at, sourceFingerprint: d.source_fingerprint,
   }));
-  const { row, snapshot, suggestions, open, sourceFingerprint, narrative, narrativeState } = caseDetail(found.row, decisions);
+  const { row, snapshot, suggestions, open, redundant, sourceFingerprint, narrative, narrativeState } = caseDetail(found.row, decisions);
   return NextResponse.json({
     ok: true,
     engine: PREOP_ENGINE_VERSION,
@@ -55,6 +55,7 @@ export async function GET(req: NextRequest) {
     // state token says why when it is not.
     suggestionRecord: suggestions,
     openSuggestions: open,
+    redundant,
     sourceFingerprint,
     decisions,
     narrativeText: narrative,

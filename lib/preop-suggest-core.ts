@@ -334,10 +334,30 @@ export function decisionObservations(
     }));
 }
 
-/** Suggestions the case page should still offer: not yet decided against this fingerprint. */
+/**
+ * Suggestions the case page should still offer.
+ *
+ * Three things are filtered out, and the third was found on the live board rather than
+ * reasoned about in advance:
+ *
+ *   1 · anything already confirmed or dismissed against this same source text;
+ *   2 · (by construction, upstream) anything a gate refused;
+ *   3 · ⚠️ ANYTHING THAT AGREES WITH WHAT THE RECORD ALREADY SAYS. Measured 27 Aug on a
+ *       Preview probe: one misspelt span — "no comorbities" — produced NINETEEN unanimous
+ *       ABSENT suggestions on a single episode, every one of which the booking form's
+ *       closed world had already settled the same way. Confirming them would move nothing
+ *       and dismissing them is nineteen clicks. A panel that asks a clinician to adjudicate
+ *       what the record already answered will simply not be used, and a suggestion nobody
+ *       reads is worse than no suggestion at all.
+ *
+ * So the panel offers only what would CHANGE something: a reading that differs from the
+ * current resolved status, or one on an input still UNKNOWN. The rest are counted, not
+ * shown — `redundantSuggestions` is what the footer reports.
+ */
 export function openSuggestions(
   rec: PreopSuggestionRecord | null,
   decisions: readonly PreopDecision[],
+  resolved: Readonly<Record<string, string>> = {},
 ): PreopSuggestion[] {
   if (!rec) return [];
   const settled = new Set(
@@ -346,5 +366,14 @@ export function openSuggestions(
   // `?? []` is not defensive noise: a record written by the B5 rail (preop-extract/1) has
   // no `suggestions` at all, and a reader must degrade to "nothing to offer" rather than
   // throw on a clinical page. suggestOne() re-reads such a record on the next sweep.
-  return (rec.suggestions ?? []).filter((s) => !settled.has(s.inputId));
+  return (rec.suggestions ?? []).filter((s) => !settled.has(s.inputId) && resolved[s.inputId] !== s.status);
+}
+
+/** How many suggestions agreed with the record and were therefore not shown. Reported so
+ *  the rail's yield is never mistaken for the rail's output. */
+export function redundantSuggestions(
+  rec: PreopSuggestionRecord | null,
+  resolved: Readonly<Record<string, string>> = {},
+): number {
+  return (rec?.suggestions ?? []).filter((s) => resolved[s.inputId] === s.status).length;
 }

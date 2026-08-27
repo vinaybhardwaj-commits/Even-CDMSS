@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   autoAcceptable, decisionObservations, openSuggestions, parseExtractMode, reconcileReads,
-  scoreModeReachable, spanIsMedicationOnly, spanNamesADrug, stabilityByClass,
+  redundantSuggestions, scoreModeReachable, spanIsMedicationOnly, spanNamesADrug, stabilityByClass,
   PREOP_DECISIONS, PREOP_EXTRACT_MODES, PROMOTED_CLASSES, SUGGEST_EXCLUDED, SUGGEST_TARGET_IDS,
   type PreopDecision, type PreopSuggestionRecord,
 } from '../preop-suggest-core.ts';
@@ -154,7 +154,7 @@ test('a CONFIRM becomes an observation with HUMAN provenance, carrying who and w
 
 test('a DISMISS produces no observation, and hides the suggestion for that text', () => {
   assert.deepEqual(decisionObservations([decision({ decision: 'dismiss' })], 'fp1'), []);
-  const rec = { sourceFingerprint: 'fp1', suggestions: [{ inputId: 'functional_status_dependent' }] } as unknown as PreopSuggestionRecord;
+  const rec = { sourceFingerprint: 'fp1', suggestions: [{ inputId: 'functional_status_dependent', status: 'present' }] } as unknown as PreopSuggestionRecord;
   assert.deepEqual(openSuggestions(rec, [decision({ decision: 'dismiss' })]), []);
   assert.equal(openSuggestions(rec, []).length, 1);
 });
@@ -214,4 +214,47 @@ test('the panel never recomputes — it posts a decision and reloads what the se
   for (const forbidden of ['computeRcri', 'computeMfi5', 'computeCharlson', 'composeSnapshot']) {
     assert.ok(!panel.includes(forbidden), `the panel must never ${forbidden}`);
   }
+});
+
+// ── the flood, found on the live board ──────────────────────────────────────────
+
+test('a suggestion that AGREES with the record is counted, never put in front of a clinician', () => {
+  // ⚠️ Measured on a Preview probe, 27 Aug: one misspelt span — "no comorbities" — produced
+  // NINETEEN unanimous ABSENT suggestions on a single episode, every one already settled the
+  // same way by the booking form's closed world. Confirming them moves nothing; dismissing
+  // them is nineteen clicks. A panel that asks a clinician to adjudicate what the record has
+  // already answered will not be used.
+  const s = (inputId: string, status: 'present' | 'absent') => ({
+    inputId, status, reads: [status, status, status], agreement: 'unanimous' as const,
+    confidence: 'high' as const, span: 'no comorbities', field: 'pac_other_history',
+    fieldLabel: 'PAC · other medical history', label: inputId, modelConfidence: 1, polaritySuspect: false,
+  });
+  const rec = {
+    version: 'preop-suggest/1', sourceFingerprint: 'fp1', generatedAt: 'n', model: 'm',
+    provider: 'p', traceIds: [], readCount: 3, dropped: [], fieldsSeen: [],
+    suggestions: [s('dementia', 'absent'), s('aids', 'absent'), s('functional_status_dependent', 'present')],
+  } as unknown as PreopSuggestionRecord;
+
+  const resolved = { dementia: 'absent', aids: 'absent', functional_status_dependent: 'unknown' };
+  const offered = openSuggestions(rec, [], resolved);
+  assert.deepEqual(offered.map((o) => o.inputId), ['functional_status_dependent'],
+    'only the reading that would CHANGE something is offered');
+  assert.equal(redundantSuggestions(rec, resolved), 2);
+
+  // with no resolved map at all, nothing is filtered — the caller decides, not the core
+  assert.equal(openSuggestions(rec, []).length, 3);
+});
+
+test('a suggestion that CONTRADICTS the record is always offered — that is the interesting case', () => {
+  const contradicts = {
+    version: 'preop-suggest/1', sourceFingerprint: 'fp1', generatedAt: 'n', model: 'm', provider: 'p',
+    traceIds: [], readCount: 3, dropped: [], fieldsSeen: [],
+    suggestions: [{
+      inputId: 'copd_or_pneumonia', status: 'present', reads: ['present', 'present', 'present'],
+      agreement: 'unanimous', confidence: 'high', span: 'known COPD on inhalers',
+      field: 'pac_other_history', fieldLabel: 'F', label: 'COPD', modelConfidence: 0.9, polaritySuspect: false,
+    }],
+  } as unknown as PreopSuggestionRecord;
+  assert.equal(openSuggestions(contradicts, [], { copd_or_pneumonia: 'absent' }).length, 1);
+  assert.equal(redundantSuggestions(contradicts, { copd_or_pneumonia: 'absent' }), 0);
 });
