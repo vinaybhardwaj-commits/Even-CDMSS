@@ -140,6 +140,28 @@ test('FLAG ON: the WEAK form-negative is the one absence a cited extraction may 
   assert.equal(copd.conflict, true, 'the form disagrees, and the card must say so rather than printing the model reading alone');
 });
 
+test('an extraction that AGREES with the form’s silence corroborates — it does not take the input over', () => {
+  // Measured on the golden set: one anaesthetist's "NO KNOWN COMORBIDITIES" produced
+  // twelve absent readings on a single case. Every one of them agreed with the booking
+  // form, moved no score — and, before this rule, replaced BOOKING with EXTRACTED as the
+  // input's source. Source is inside the snapshot fingerprint, so flipping the flag would
+  // have minted a version row saying nothing happened.
+  const agrees: Observation = {
+    inputId: 'copd_or_pneumonia', status: 'absent', source: 'EXTRACTED', confidence: 0.9,
+    sourceSpan: 'NO KNOWN COMORBIDITIES',
+  };
+  const off = composeSnapshot(base({ observations: [...DETERMINISTIC, agrees] }));
+  const on = composeSnapshot(base({ includeExtracted: true, observations: [...DETERMINISTIC, agrees] }));
+
+  const copd = on.inputs.find((i) => i.inputId === 'copd_or_pneumonia')!;
+  assert.equal(copd.status, 'absent');
+  assert.equal(copd.source, 'BOOKING', 'the deterministic provenance is kept');
+  assert.equal(copd.closedWorld, true);
+  assert.equal(copd.corroborating.length, 1, 'the model reading is shown as corroboration');
+  assert.equal(copd.conflict, false);
+  assert.equal(on.fingerprint, off.fingerprint, 'and no version is minted by agreement');
+});
+
 test('a BELOW-FLOOR extraction cannot overturn even a weak form-negative', () => {
   const weak: Observation = { inputId: 'copd_or_pneumonia', status: 'present', source: 'EXTRACTED', confidence: 0.5, sourceSpan: 'maybe some wheeze' };
   const s = composeSnapshot(base({ includeExtracted: true, observations: [...DETERMINISTIC, weak] }));

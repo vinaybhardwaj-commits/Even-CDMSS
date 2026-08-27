@@ -307,10 +307,20 @@ export function resolveInputs(observations: Observation[], opts: ResolveOptions)
     // `deciding` fall back to [] rather than to `ext` when the world is closed — and the
     // mockup fixture then needs `notClosedBy` for Shobha's two pink chips.
     //
+    // ⚠️ AND ONLY WHEN IT DISAGREES. An extraction that AGREES with the form's silence
+    // has nothing to overturn, so it corroborates and the closed world keeps the input.
+    // Letting it take over would move no score and still change the PROVENANCE — which is
+    // inside the snapshot fingerprint — so flipping the flag would mint a version row on
+    // every case where an anaesthetist wrote "NO KNOWN COMORBIDITIES", a timeline step
+    // that says nothing happened. Measured on the golden set before this clause existed:
+    // one "NO KNOWN COMORBIDITIES" span produced twelve such takeovers on a single case.
+    const extDeciding = closed ? ext.filter((o) => o.status !== 'absent') : ext;
+    const extAgreeing = closed ? ext.filter((o) => o.status === 'absent') : [];
+
     // A weak form-negative therefore stands whenever nothing else speaks: `deciding` is
-    // empty exactly when there is neither a deterministic observation nor a surviving
+    // empty exactly when there is neither a deterministic observation nor a DISSENTING
     // extraction, and that is the branch the closed world lives in.
-    const deciding = det.length ? det : ext;
+    const deciding = det.length ? det : extDeciding;
     // Only a deterministic ANSWER overrules an extraction. A silence does not.
     const overruled = det.length ? ext : [];
 
@@ -319,7 +329,7 @@ export function resolveInputs(observations: Observation[], opts: ResolveOptions)
         inputId: id, status: closed ? 'absent' : 'unknown', detail: null, value: null,
         source: closed ? 'BOOKING' : null, provenanceRef: null, observedAt: null,
         confidence: null, extractedBy: null,
-        corroborating: [], conflict: false,
+        corroborating: extAgreeing, conflict: false,
         droppedBelowFloor: droppedHere, closedWorld: closed,
         sourceSpan: null, unstable: false, polaritySuspect: false,
         extractionOverruled: overruled, overturnedFormNegative: false,
@@ -331,7 +341,7 @@ export function resolveInputs(observations: Observation[], opts: ResolveOptions)
       if (rank(o) < rank(win)) { win = o; continue; }
       if (rank(o) === rank(win) && newer(o, win)) win = o;
     }
-    const rest = [...deciding.filter((o) => o !== win), ...overruled];
+    const rest = [...deciding.filter((o) => o !== win), ...overruled, ...extAgreeing];
     // A form-negative the extraction has just overturned is itself a dissenting source:
     // the card must say the booking form disagrees, not merely print the model's answer.
     const overturned = closed && !det.length && win.source === 'EXTRACTED' && win.status !== 'absent';

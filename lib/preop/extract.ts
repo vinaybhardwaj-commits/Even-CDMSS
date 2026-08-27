@@ -38,6 +38,23 @@ export const PREOP_EXTRACT_STAGE = 'preop_extract';
 export const PREOP_EXTRACT_BUDGET_MS = 60_000;
 export const PREOP_EXTRACT_MAX_TRIES = 1;
 
+/**
+ * ⚠️ THE REASONING CAP, AND WHY IT EXISTS — MEASURED, NOT GUESSED. The first golden-set
+ * pass ran uncapped and Gemini 2.5 Pro spent 1,727 and 1,794 completion tokens on inputs
+ * whose whole source text averaged 140 characters, at 43 s and 48 s per call. Against a
+ * 60 s per-leg ceiling that is a coin toss, and against an hourly cron it is a bill.
+ *
+ * This is not a quality trade: the task is to COPY a verbatim span and name which of a
+ * fixed list of history items it asserts. There is nothing to deliberate about, and every
+ * gate that matters — span verification, the target whitelist, the confidence floor —
+ * runs in code afterwards regardless. The ClinicalState rail caps the same shape of call
+ * at 4,096; this one is smaller because its prompt is smaller.
+ *
+ * Raise it with PREOP_EXTRACT_THINKING to re-measure; the golden-set harness reports
+ * latency and token counts per pass, so a change here is answerable with a number.
+ */
+export const PREOP_EXTRACT_THINKING_BUDGET = Number(process.env.PREOP_EXTRACT_THINKING) || 512;
+
 /** PREOP_EXTRACT_ENABLED (PRD §7). Ships OFF. */
 export function preopExtractEnabled(): boolean {
   return process.env.PREOP_EXTRACT_ENABLED === '1';
@@ -79,6 +96,8 @@ async function geminiCall(traceId: string, prompt: { system: string; user: strin
     messages: [{ role: 'system', content: prompt.system }, { role: 'user', content: prompt.user }],
     temperature: 0,                    // the anti-flap rail wants the least creative setting there is
     max_tokens: 1600,
+    // Applies only on the Gemini path; every other backend ignores an unknown field.
+    ...(preopExtractModel() ? { google: { thinking_config: { thinking_budget: PREOP_EXTRACT_THINKING_BUDGET } } } : {}),
   }, {
     gemini: preopExtractModel(),
     promptRef: 'preop-extract/EXTRACT_SYSTEM',

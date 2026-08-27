@@ -120,3 +120,47 @@ inferring a clinical fact from prose is the B5 extraction rail, not this map.
   the computed score are both mapped and both display-only, exactly as PRD §3 anticipated.
 - **Six template keys have never been filled** in 95 reports. They are mapped rather than
   ignored, so the day one is used it appears here instead of arriving as an unknown key.
+
+---
+
+## Addendum · refreshed 27 Aug 2026 (B7)
+
+The KareXpert scraper fetches daily around 06:47 IST and was a day behind when the table
+above was measured. Re-pulled through the same code path (`lib/preop-pac-map-core.ts`
+over every row of `kx_clinical_template_pac_reports`) on 27 Aug. **The table above is not
+superseded — nothing about the MAP changed. What changed is the corpus underneath it.**
+
+| | 26 Aug | 27 Aug |
+|---|---|---|
+| PAC reports in the table | 95 | **98** |
+| …bridged to an Even individual | 95 | **95** (98 reports / 97 patients; 3 UHIDs still unbridged) |
+| …in the surgical cohort | 52 | **54** |
+| Reports yielding ≥1 instrument input | 47 / 95 · 11 / 52 cohort | **49 / 98 · 12 / 54 cohort** |
+| Parse errors | 0 | **0** |
+| Template keys still unmapped | 0 | **0** |
+
+The cohort's headline finding is unchanged and is the number V should carry into any
+decision about the extraction rail: **only about a fifth of PAC reports on surgical
+patients fill the review-of-systems block the instruments read** (12 of 54). Two more
+reports landed and one more of them was filled.
+
+The two corrected estimates hold and both grew: **ASA 92/98 (49/54 cohort)**, **Mallampati
+67/98 (28/54)**. Both remain `provisional` and wired to no instrument.
+
+### The six verbatim fields the B5 extraction rail reads
+
+These are the boxes `preop-pac-map-core.ts` deliberately refuses to interpret, and they are
+therefore exactly the substrate B5 was built for. Fill rates as of 27 Aug:
+
+| Field | All (98) | Cohort (54) |
+|---|---|---|
+| pac_other_history | 65 | **41** |
+| pac_examination | 43 | 19 |
+| pac_airway_note | 14 | 10 |
+| pac_cvs_note | 11 | 10 |
+| pac_endo_note | 10 | 7 |
+| pac_meds_note | 9 | 3 |
+
+`pac_other_history` is where the comorbidity narratives live and is the only one of the six
+with cohort reach worth the name. The B7 pack measures what the rail actually gets out of
+them.

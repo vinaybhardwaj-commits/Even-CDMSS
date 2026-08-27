@@ -42,7 +42,9 @@ test('the worker’s rails override IMPLIES dry run — enforced in code, not in
     'the OR must be on the dryRun line itself; a separate guard could be reordered away');
   // and there is exactly one call site, so the flag cannot be recomputed after the check
   assert.equal((w.match(/runPreopSweep\(/g) ?? []).length, 1);
-  assert.match(w, /runPreopSweep\(\{ horizonDays, dryRun, rails: railsOverride \}\)/);
+  assert.match(w, /runPreopSweep\(\{ horizonDays, dryRun, rails: railsOverride,/);
+  // and the heavy per-episode sample is offered on a probe only — never on a writing tick
+  assert.match(w, /const collect = p\.get\('sample'\) === '1' && !!railsOverride;/);
 });
 
 test('the sweep guards every write behind dryRun — snapshot, extraction, narrative and heartbeat', () => {

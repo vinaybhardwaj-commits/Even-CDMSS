@@ -333,3 +333,60 @@ test('procedure risk class — the mockup\'s own arithmetic is what settles each
   assert.equal(classifyProcedureRisk('').status, 'unknown');
   assert.equal(classifyProcedureRisk(null).status, 'unknown');
 });
+
+// ── B7 · the synthetic half of the golden set ───────────────────────────────────
+//
+// The kickoff's golden set is the PAC-covered cohort plus these four hand-computed
+// patients plus booking-only synthetics. The four above ARE that second half, and they
+// run with `includeExtracted: true` — which is why they are also where the D4 equality
+// claim gets its synthetic arm: the rail is on, and it still cannot move an instrument
+// unless there is an extracted observation to move it with.
+
+const shobhaDeterministicOnly = shobhaBooking.filter((o) => o.source !== 'EXTRACTED');
+
+test('B7 golden set · a booking-only synthetic scores identically with the rail on and off', () => {
+  const args = {
+    episode: {
+      episodeKey: 'SC-2026-0918', individualUid: 'IND-0918', uhid: 'UHID-403544',
+      patientName: 'Lakshmamma H', age: 71, sex: 'F',
+      procedure: 'Cataract surgery (right)', hospital: 'EHBR',
+      surgeryDate: '2026-09-04', surgeon: 'Dr S Nair', department: 'Ophthalmology',
+    },
+    observations: [
+      { inputId: 'high_risk_surgery' as const, status: 'absent' as const, source: 'BOOKING' as const },
+      { inputId: 'hypertension_on_medication' as const, status: 'present' as const, source: 'BOOKING' as const },
+    ],
+    daysToSurgery: 9,
+    bookingOnly: true,
+  };
+  const on = snap(args);
+  const off = snap({ ...args, includeExtracted: false });
+  assert.equal(on.fingerprint, off.fingerprint);
+  assert.deepEqual(JSON.parse(JSON.stringify(on)), JSON.parse(JSON.stringify(off)));
+});
+
+test('B7 golden set · Shobha K is the case the extraction rail is FOR, and the mockup drew it that way', () => {
+  // Her ischaemic heart disease ("MI 2019") and her hypertension ("Telmisartan 40") are
+  // both pink EXTRACTED chips on the approved card. Turn the rail off and the module
+  // reports LESS — which is the honest degraded behaviour Slice 1 ships with, not a bug.
+  const withRail = snap({
+    episode: shobhaEpisode,
+    observations: [...shobhaBooking, ...shobhaLab, ...shobhaPac],
+    pac: SHOBHA_PAC_FINAL, daysToSurgery: 6,
+  });
+  const withoutRail = snap({
+    episode: shobhaEpisode,
+    observations: [...shobhaDeterministicOnly, ...shobhaLab, ...shobhaPac],
+    pac: SHOBHA_PAC_FINAL, daysToSurgery: 6,
+    includeExtracted: false,
+  });
+
+  assert.equal(withRail.rcri.lo, 2, 'the approved card says RCRI 2');
+  assert.equal(withoutRail.rcri.lo, 2, 'RCRI survives the rail being off — her PAC states the MI deterministically, so only mFI-5 depended on a model');
+  assert.equal(withRail.mfi5.lo, 2);
+  assert.equal(withoutRail.mfi5.lo, 1, 'the hypertension item was extraction-only ("Telmisartan 40"); without the rail the module knows less and says so');
+  // Both are honest readings of different evidence. Neither is the model scoring: every
+  // point in both comes from the same arithmetic over a different set of input STATUSES.
+  assert.equal(withRail.tier.tier, 'RED');
+  assert.equal(withoutRail.tier.tier, 'RED', 'the tier holds — one frailty point was the whole difference');
+});

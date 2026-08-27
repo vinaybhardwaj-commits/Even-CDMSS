@@ -100,21 +100,55 @@ export interface PreopEpisodeRow {
  * FINANCIAL_PENDING 5. Only CANCELLED is excluded — a LEAD with a booked date is still
  * a patient with a surgery date, and hiding thin cases is exactly what §8 forbids.
  */
+/**
+ * The episode SELECT, written ONCE. Two callers use it — the sweep's upcoming window and
+ * the B7 golden set — and they differ only in their WHERE clause. Sharing the projection
+ * and the mapper is what makes the golden-set measurement a measurement OF PRODUCTION
+ * rather than of a second implementation that happens to resemble it.
+ */
+const EPISODE_SELECT = `
+      SELECT sc._doc_id, sc.individual_uid, sc.procedure_name, sc.financial__procedure_name,
+             sc.status, sc.clinical__urgency, sc.pac__status,
+             sc.clinical__comorbidities::text AS comorbidities,
+             sc.hospital_info__hospital_uid,
+             sc.planned_surgery_date::date::text AS surgery_date,
+             sc.created_at::text AS created_at, sc._update_time::text AS updated_at,
+             i.kx_uhid, i.display_name, i.first_name, i.last_name, i.gender,
+             date_part('year', age((NOW() AT TIME ZONE 'Asia/Kolkata')::date, i.dob::date))::int AS age_years
+        FROM surgery_cases sc
+        JOIN individuals i ON i._doc_id = sc.individual_uid`;
+
+function toEpisodeRow(r: Record<string, unknown>): PreopEpisodeRow | null {
+  const docId = s(r._doc_id);
+  const individualUid = s(r.individual_uid);
+  if (!docId || !individualUid) return null;     // unusable row — dropped, never guessed
+  return {
+    docId, individualUid,
+    uhid: s(r.kx_uhid),
+    // VALIDATED 26 Aug 2026: individuals.display_name is EMPTY on this cohort (0-length
+    // or NULL on all 19 upcoming). first_name/last_name carry the name, so the board
+    // would have rendered nineteen anonymous cards off display_name alone.
+    patientName: s(r.display_name) ?? (s([s(r.first_name), s(r.last_name)].filter(Boolean).join(' '))),
+    age: n(r.age_years),
+    sex: s(r.gender),
+    procedure: s(r.procedure_name) ?? s(r.financial__procedure_name),
+    hospitalUid: s(r.hospital_info__hospital_uid),
+    surgeryDate: s(r.surgery_date),
+    status: s(r.status),
+    urgency: s(r.clinical__urgency),
+    pacWorkflowStatus: s(r.pac__status),
+    pacWorkflowLoggedAt: s(r.updated_at),
+    comorbidities: parsePgArray(r.comorbidities),
+    createdAt: s(r.created_at),
+  };
+}
+
 export async function fetchUpcomingEpisodes(horizonDays = 60): Promise<Fetched<PreopEpisodeRow>> {
   const days = Math.max(1, Math.min(365, Math.round(horizonDays)));
   let rows: Record<string, unknown>[];
   try {
     rows = await metabaseQuery(
-      `SELECT sc._doc_id, sc.individual_uid, sc.procedure_name, sc.financial__procedure_name,
-              sc.status, sc.clinical__urgency, sc.pac__status,
-              sc.clinical__comorbidities::text AS comorbidities,
-              sc.hospital_info__hospital_uid,
-              sc.planned_surgery_date::date::text AS surgery_date,
-              sc.created_at::text AS created_at, sc._update_time::text AS updated_at,
-              i.kx_uhid, i.display_name, i.first_name, i.last_name, i.gender,
-              date_part('year', age((NOW() AT TIME ZONE 'Asia/Kolkata')::date, i.dob::date))::int AS age_years
-         FROM surgery_cases sc
-         JOIN individuals i ON i._doc_id = sc.individual_uid
+      `${EPISODE_SELECT}
         WHERE sc.planned_surgery_date >= (NOW() AT TIME ZONE 'Asia/Kolkata')::date
           AND sc.planned_surgery_date < (NOW() AT TIME ZONE 'Asia/Kolkata')::date + INTERVAL '${days} days'
           AND sc.status <> 'CANCELLED'
@@ -125,28 +159,39 @@ export async function fetchUpcomingEpisodes(horizonDays = 60): Promise<Fetched<P
   }
   const out: PreopEpisodeRow[] = [];
   for (const r of rows) {
-    const docId = s(r._doc_id);
-    const individualUid = s(r.individual_uid);
-    if (!docId || !individualUid) continue;     // unusable row — dropped, never guessed
-    out.push({
-      docId, individualUid,
-      uhid: s(r.kx_uhid),
-      // VALIDATED 26 Aug 2026: individuals.display_name is EMPTY on this cohort (0-length
-      // or NULL on all 19 upcoming). first_name/last_name carry the name, so the board
-      // would have rendered nineteen anonymous cards off display_name alone.
-      patientName: s(r.display_name) ?? (s([s(r.first_name), s(r.last_name)].filter(Boolean).join(' '))),
-      age: n(r.age_years),
-      sex: s(r.gender),
-      procedure: s(r.procedure_name) ?? s(r.financial__procedure_name),
-      hospitalUid: s(r.hospital_info__hospital_uid),
-      surgeryDate: s(r.surgery_date),
-      status: s(r.status),
-      urgency: s(r.clinical__urgency),
-      pacWorkflowStatus: s(r.pac__status),
-      pacWorkflowLoggedAt: s(r.updated_at),
-      comorbidities: parsePgArray(r.comorbidities),
-      createdAt: s(r.created_at),
-    });
+    const row = toEpisodeRow(r);
+    if (row) out.push(row);
+  }
+  return { rows: out, error: null };
+}
+
+/**
+ * B7 · THE GOLDEN SET's real half: every surgical episode belonging to a patient the UHID
+ * bridge reaches a KareXpert PAC report for, whatever its surgery date. The upcoming
+ * window is 15 episodes on 27 Aug; the PAC-covered cohort is much larger, and it is the
+ * only population where the extraction rail has anything to read — so a golden set drawn
+ * from the board alone would measure the rail on the cases it cannot help.
+ *
+ * Read-only, and used only by the harness. The sweep never calls it.
+ */
+export async function fetchPacCoveredEpisodes(limit = 300): Promise<Fetched<PreopEpisodeRow>> {
+  const n = Math.max(1, Math.min(500, Math.round(limit)));
+  let rows: Record<string, unknown>[];
+  try {
+    rows = await metabaseQuery(
+      `${EPISODE_SELECT}
+        WHERE sc.status <> 'CANCELLED'
+          AND i.kx_uhid IS NOT NULL
+          AND EXISTS (SELECT 1 FROM kx_clinical_template_pac_reports p WHERE p.uhid = i.kx_uhid)
+        ORDER BY sc.planned_surgery_date DESC NULLS LAST, sc._doc_id ASC
+        LIMIT ${n}`);
+  } catch (e) {
+    return failed('surgery_cases (golden set)', e);
+  }
+  const out: PreopEpisodeRow[] = [];
+  for (const r of rows) {
+    const row = toEpisodeRow(r);
+    if (row) out.push(row);
   }
   return { rows: out, error: null };
 }

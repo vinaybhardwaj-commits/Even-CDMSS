@@ -87,6 +87,11 @@ import { boardCounts, PREOP_ENGINE_VERSION } from '@/lib/preop/store';
  *                    honest way to meet it before V flips a production flag is a tick that
  *                    runs the real provider path and stores nothing. `rails=none` forces
  *                    both OFF, for the flag-off arm of the same comparison.
+ *   ?sample=1      → return the per-episode detail the B7 validation pack is built from:
+ *                    each episode's tier, instrument bounds, extraction record with its
+ *                    verbatim spans, and narrative. Rails-probe only — it is refused on a
+ *                    tick that is allowed to write, so the heavy payload can never be
+ *                    produced by the cron.
  */
 
 // Execution guard — byte-for-byte the readmission worker's: Vercel Cron (un-spoofable
@@ -121,7 +126,9 @@ export async function GET(req: NextRequest) {
   const horizonDays = Number.isFinite(horizonRaw) ? Math.max(1, Math.min(365, Math.round(horizonRaw))) : PREOP_HORIZON_DAYS;
 
   try {
-    const sweep = await runPreopSweep({ horizonDays, dryRun, rails: railsOverride });
+    // The sample is the pack's raw material and is only ever offered on a probe.
+    const collect = p.get('sample') === '1' && !!railsOverride;
+    const sweep = await runPreopSweep({ horizonDays, dryRun, rails: railsOverride, collect });
     const counts = dryRun ? null : await boardCounts();
     return NextResponse.json({
       ok: true,
