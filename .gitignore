@@ -82,3 +82,16 @@ ipd-audit-s4-theme-rescore*.md
 !/machinery-payoff-ablation.md
 !/source-authority-measurement.md
 !/source-authority-postactivation.md
+
+# ── Scratch probes and one-off eval arms (added 27 Aug 2026) ────────────────────
+# These are single-question scripts written against LIVE db13 to settle an argument,
+# and they routinely carry a real record id — and sometimes a real patient's values
+# in a comment — because that is the point of them. They are working-tree tools, not
+# repository content. Two of them reached a PUBLIC repo on 27 Aug and had to be
+# stripped from history; see docs/TECH-DEBT.md entry 3.
+scripts/probe-*.mjs
+scripts/probe-*.mts
+scripts/rerank-ab/
+scripts/corpus-eval/*-ab.mjs
+scripts/corpus-eval/*-ab-*.mjs
+scripts/corpus-eval/*-golden.mjs

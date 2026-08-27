@@ -65,3 +65,49 @@ invisible in it. The gate still works; it is measuring something blurrier than i
 
 **What fixing it takes.** Real per-user auth on `/care`. That is a product decision, not a
 module one.
+
+---
+
+## 3 · PHI reached a public repo through an over-broad `git add`
+
+**Found:** 27 Aug 2026, reading the fast-forward's own file list before pushing the B8 merge.
+**Status:** history rewritten under V's authorization; the rule below is the fix.
+
+### What happened
+
+`git add -A -- lib app scripts migrations components` staged everything untracked under
+`scripts/`, sweeping eleven files belonging to unrelated work into a B8 commit. Nine were
+harmless. Two were not:
+
+- `scripts/probe-vitals-live.mjs` — a real OPD note id **and a comment publishing that
+  patient's vitals**: `BP 112/69, pulse 72, SpO2 98, temp 98.6, EWS 0`.
+- `scripts/probe-antibiotic-class.mjs` — two real note ids, each bound to the antibiotic
+  prescribed on it.
+
+`Even-CDMSS` is public. The blobs were reachable on `main` and on the feature branch from
+09:28 to 10:57 IST, and remained fetchable by SHA after the files were un-tracked, because
+removing a file from the tree does nothing to history.
+
+### THE RULE
+
+> **Never `git add -A -- <directory>`. Name the files.**
+
+`-A` means "and everything in here you have never looked at". A path scope feels like a
+safety rail and is the opposite: it makes the blast radius a directory rather than a
+changeset. `git add path/to/file.ts path/to/other.ts` — or `git add -p` — every time.
+
+Two habits that would each have caught this independently:
+
+1. **Read `git status --short` before every commit**, not after. The eleven `A ` lines were
+   there to be seen.
+2. **Read the fast-forward's file list before pushing a merge.** That is what actually
+   caught it, one step from a public push.
+
+### Why the scratch probes are the specific hazard
+
+A probe script exists to settle one argument against LIVE db13, so it carries a real record
+id *by design*, and often a real value in a comment as evidence. They are working-tree
+tools, not repository content. `.gitignore` now covers `scripts/probe-*`, `scripts/rerank-ab/`
+and the `corpus-eval` A/B arms — but the ignore file is a backstop, not the rule. The rule is
+above.
+
