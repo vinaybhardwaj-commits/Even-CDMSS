@@ -531,10 +531,13 @@ test('the branch is grep-clean of the refused transports (gpt-5.6 / terra / mant
   // to spell out the strings it forbids. 9e3397c added the first entry (this file) the day it was
   // committed and became one of the files the sweep walks; CASE-AGENTS-SPINE P1 (27 Aug 2026) added
   // the second the same way — lib/__tests__/case-ask-core.test.ts runs the identical sweep over the
-  // new Ask shell. Each exemption is paid for by the assertion below that the string really is in
-  // the file, so an exemption can never quietly become a sweep that matches nothing.
+  // new Ask shell — and P2 and P3 each added one more for the same reason. Each exemption is paid
+  // for by the assertion below that the string really is in the file, so an exemption can never
+  // quietly become a sweep that matches nothing. Expect this list to grow by one per slice that
+  // ships its own transport sweep; that is the rule working, not the rule eroding.
   const SELF = 'lib/__tests__/readmission-r9-dual-contract.test.ts';
-  const EXEMPT = [SELF, 'lib/__tests__/case-ask-core.test.ts'];
+  const EXEMPT = [SELF, 'lib/__tests__/case-ask-core.test.ts',
+    'lib/__tests__/stay-library-core.test.ts', 'lib/__tests__/ipd-stay-audit.test.ts'];
   const changed = execFileSync('git', ['diff', '--name-only', 'f4a67ee', '--'], { encoding: 'utf8' })
     .split('\n').filter((f) => f && !EXEMPT.includes(f) && /\.(ts|tsx|sql|json)$/.test(f));
   assert.ok(changed.length > 0, 'the branch changed something');

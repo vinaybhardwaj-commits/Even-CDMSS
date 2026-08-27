@@ -23,6 +23,9 @@ import { computeMedRecView } from '@/lib/member-state-adapters/med-rec-view';
 import { admissionAdapterEnabled } from '@/lib/member-state-adapters/discharge-evidence';
 import OutcomePanel, { type ComplicationOption, type OutcomeRowView } from './outcome-panel';
 import CaseAskPanel from './case-ask-panel';
+import StayPanel, { type StaySiblingView } from './stay-panel';
+import { getIpdAuditByVersion, IPD_ENGINE_VERSION, IPD_STAY_ENGINE_VERSION } from '@/lib/ipd-audit/store';
+import type { StayAuditReport } from '@/lib/ipd-audit/assemble';
 import { outcomesForSource } from '@/lib/prognosis-outcomes-store';
 import { complicationHash, resolveComplicationHash } from '@/lib/prognosis-outcomes-core';
 
@@ -70,7 +73,33 @@ export default async function IpdAuditReport({ params }: { params: Promise<{ id:
   const review = reviewMap[id] ?? null;
   const w = weighted[0];
 
-  const report = (typeof r.report === 'string' ? JSON.parse(r.report) : r.report) as AuditReport | null;
+  const report = (typeof r.report === 'string' ? JSON.parse(r.report) : r.report) as StayAuditReport | null;
+
+  // ── CASE-AGENTS-SPINE P3 (§5) — the stay-level reading, beside this one ──────────────────────
+  // This row is one ENGINE VERSION's reading of the stay; the other version's row, if it exists, is
+  // a second reading of the same admission from different material. Both are shown and neither is
+  // rewritten: they are separate rows under the composite PK (document_id, engine_version).
+  // Best-effort — a sibling lookup that faults returns null and this panel simply says no stay audit
+  // has been run, never breaking the report above it.
+  const thisEngine = String(r.engine_version ?? '');
+  const isStayRow = thisEngine === IPD_STAY_ENGINE_VERSION;
+  const siblingRow = await getIpdAuditByVersion(documentId, isStayRow ? IPD_ENGINE_VERSION : IPD_STAY_ENGINE_VERSION);
+  const siblingReport = siblingRow
+    ? ((typeof siblingRow.report === 'string' ? JSON.parse(String(siblingRow.report)) : siblingRow.report) as StayAuditReport | null)
+    : null;
+  const sibling: StaySiblingView | null = siblingRow
+    ? {
+      id: String(siblingRow.id), engineVersion: String(siblingRow.engine_version ?? ''),
+      careValueIndex: siblingRow.care_value_index == null ? null : Number(siblingRow.care_value_index),
+      band: siblingRow.band == null ? null : String(siblingRow.band),
+      nFindings: siblingRow.n_findings == null ? null : Number(siblingRow.n_findings),
+      nLowValue: siblingRow.n_low_value == null ? null : Number(siblingRow.n_low_value),
+      auditedAt: siblingRow.audited_at == null ? null : String(siblingRow.audited_at),
+      coverage: siblingReport?.stayCoverage ?? null,
+    }
+    : null;
+  // The coverage to render: this row's own when it IS the stay audit, otherwise the sibling's.
+  const stayCoverageView = (isStayRow ? report?.stayCoverage : siblingReport?.stayCoverage) ?? null;
   const findings = (report?.findings ?? (typeof r.findings === 'string' ? JSON.parse(String(r.findings)) : r.findings) ?? []) as AuditFinding[];
   const lvcFindings = findings.filter((f) => f.verdict === 'low-value' || f.verdict === 'context-dependent');
   const band = String(r.band);
@@ -257,6 +286,12 @@ export default async function IpdAuditReport({ params }: { params: Promise<{ id:
                 unavailable={outcomesUnavailable}
               />
             )}
+
+            {/* The stay, document by document — CASE-AGENTS-SPINE P3 (§5). Additive: it sits beside
+                the report above and replaces nothing. The parked list / calendar / search and the
+                gold pills are untouched; a stay run APPENDS a row under ipd-stay-audit/0.1 and
+                cannot rewrite the ipd-discharge-audit/0.2 row this page is showing. */}
+            <StayPanel documentId={documentId} coverage={stayCoverageView} sibling={sibling} isStayRow={isStayRow} />
 
             {/* Ask the agent — the shared persisted case conversation (CASE-AGENTS-SPINE PRD P1).
                 Additive and read-only with respect to everything above it: no chat turn moves

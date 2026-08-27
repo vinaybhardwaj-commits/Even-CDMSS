@@ -3373,6 +3373,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "ipd-audit",
+    "to": "clinical-state",
+    "kind": "type"
+  },
+  {
+    "from": "ipd-audit",
     "to": "db",
     "kind": "value"
   },
@@ -3429,6 +3434,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "ipd-audit",
     "to": "scoring-policy",
+    "kind": "value"
+  },
+  {
+    "from": "ipd-audit",
+    "to": "stay-library",
     "kind": "value"
   },
   {
@@ -5342,6 +5352,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "value": "`${IPD_ENGINE_VERSION}-mini`",
     "file": "lib/ipd-audit/store.ts",
     "derived": true
+  },
+  {
+    "constName": "IPD_STAY_ENGINE_VERSION",
+    "value": "ipd-stay-audit/0.1",
+    "file": "lib/ipd-audit/stay-material.ts",
+    "derived": false
   },
   {
     "constName": "JUDGEMENT_RULE_VERSION",
