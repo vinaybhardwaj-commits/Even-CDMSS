@@ -46,7 +46,23 @@ import {
   type EpisodeContext, type TierResult,
 } from './preop-tier-core';
 
-/** Bumped when precedence, the floor, the closed-world set or the snapshot shape change. */
+/**
+ * Bumped when precedence, the floor, the closed-world set or the snapshot shape change.
+ *
+ * ⚠️ B5 (27 Aug 2026) CHANGED THE RESOLUTION AND DELIBERATELY DID NOT BUMP THIS. The rule
+ * now resolves deterministic observations first and alone, and lets an extraction decide
+ * only where they are silent. With PREOP_EXTRACT_ENABLED off — how Slice 1 ships — there
+ * are no extracted observations to resolve, so the reading is byte-identical to
+ * preop-assemble/1 as shipped, proven by the whole-snapshot equality assertion in
+ * preop-d4-boundary.test.ts and by the four mockup patients reproducing unchanged.
+ *
+ * This constant is INSIDE the snapshot fingerprint. Bumping it for a change that provably
+ * moves no reading would mint a version row for every episode on the board and put a step
+ * into a clinical timeline that says nothing happened — the same trap B4 hit when the PAC
+ * workflow status briefly entered the fingerprint. The flip of the extraction flag is
+ * itself the A/B boundary, and the snapshots that re-mint on that day will re-mint for a
+ * reason a reader can see.
+ */
 export const PREOP_ASSEMBLE_RULE_VERSION = 'preop-assemble/1';
 
 // ── sources and precedence ──────────────────────────────────────────────────────
@@ -126,6 +142,16 @@ export interface Observation {
   confidence?: number | null;
   /** EXTRACTED only; the DERIVED model label, never a typed one (house rule) */
   extractedBy?: string | null;
+  /** EXTRACTED only (B5); the VERBATIM source span the model copied. Displayed on the
+   *  factor row; deliberately NOT part of the snapshot fingerprint, so a re-worded
+   *  quotation that carries the same answer mints no version. */
+  sourceSpan?: string | null;
+  /** EXTRACTED only (B5); a re-extraction of UNCHANGED text disagreed with the stored
+   *  reading. The stored reading still stands — this says it is not reproducible. */
+  unstable?: boolean;
+  /** EXTRACTED only (B5); the span reads as a negation while the status says present.
+   *  MARKED, never removed — see lib/preop-extract-core.ts. */
+  polaritySuspect?: boolean;
 }
 
 export interface ResolvedInput {
@@ -147,6 +173,28 @@ export interface ResolvedInput {
   droppedBelowFloor: Observation[];
   /** true when 'absent' came from the closed-world rule rather than from an observation */
   closedWorld: boolean;
+  /** B5: the winning observation's verbatim source span (EXTRACTED only) */
+  sourceSpan: string | null;
+  /** B5: the winning EXTRACTED reading is not reproducible on unchanged text */
+  unstable: boolean;
+  /** B5: the winning EXTRACTED span reads as a negation while asserting presence */
+  polaritySuspect: boolean;
+  /**
+   * B5: EXTRACTED observations that cleared the floor and were still NOT allowed to score,
+   * because a DETERMINISTIC SOURCE had already answered this input — a lab, a mapped PAC
+   * field, an ICD code, or a booking form that positively asserted something. They are
+   * shown, with their spans, and they move nothing. The precedence rule made visible
+   * rather than silent.
+   */
+  extractionOverruled: Observation[];
+  /**
+   * B5: this input was ABSENT only because a booking form that enumerated comorbidities
+   * did not list it — Amendment A1-6's "weak form-negative" — and an above-floor
+   * extraction with a verbatim citation asserted it after all. The extraction wins, the
+   * conflict flag is raised, and the card shows both. See resolveInputs for why this is
+   * the ONE thing a model may overturn.
+   */
+  overturnedFormNegative: boolean;
 }
 
 export interface ResolveOptions {
@@ -217,30 +265,88 @@ export function resolveInputs(observations: Observation[], opts: ResolveOptions)
   for (const id of ALL_INPUT_IDS) {
     const list = byInput.get(id) ?? [];
     const droppedHere = dropped.get(id) ?? [];
-    if (!list.length) {
-      const closed = opts.bookingEnumerated && ENUMERATED_INPUTS.has(id) && !NEVER_ENUMERATED.has(id)
-        && !(opts.notClosedBy ?? []).includes(id);
+
+    // ── B5, THE PRECEDENCE RULE, ENFORCED STRUCTURALLY ──────────────────────────
+    //
+    // The deterministic observations are resolved FIRST and ALONE. Only if they say
+    // nothing at all does an extraction get to decide the input. SOURCE_RANK would put
+    // EXTRACTED last among competing observations anyway; splitting the passes makes the
+    // rule a property of the code rather than of the ranking table, and — more to the
+    // point — makes it survivable when someone adds a source.
+    const det = list.filter((o) => o.source !== 'EXTRACTED');
+    const ext = list.filter((o) => o.source === 'EXTRACTED');
+
+    // The closed world: a booking form that ENUMERATES comorbidities and does not list
+    // this one is asserting its absence by omission.
+    const closed = opts.bookingEnumerated && ENUMERATED_INPUTS.has(id) && !NEVER_ENUMERATED.has(id)
+      && !(opts.notClosedBy ?? []).includes(id);
+
+    // ⚠️ THE ONE PLACE A MODEL MAY OVERTURN AN ABSENCE — and it is a reading of two
+    // ratified sentences against each other, so it is written out here rather than left
+    // to be inferred from behaviour.
+    //
+    // The B5 kickoff says "an extraction may only fill an input that is UNKNOWN after the
+    // deterministic pass", citing the mockup's precedence note (LAB/PAC > BOOKING >
+    // EXTRACTED). Amendment A1-6, ratified in the same kickoff, calls a closed-world
+    // absence "a WEAK form-negative with its basis on display".
+    //
+    // Read strictly, the first sentence makes a form's SILENCE unbeatable — and the
+    // binding mockup's own worked example breaks on it: Shobha K's ischaemic heart disease
+    // ("MI 2019") and her hypertension ("Telmisartan 40") are both drawn as pink EXTRACTED
+    // chips against a booking form that enumerated neither. Applied strictly, this module
+    // would score her RCRI 1 where the approved mockup says 2.
+    //
+    // So the rule implemented here distinguishes an ASSERTION from a SILENCE:
+    //   · a lab, a mapped PAC field, an ICD code, or a booking form's POSITIVE assertion
+    //     is a deterministic source and outranks any extraction, always;
+    //   · a weak form-negative — an absence inferred from an enumeration's silence — is
+    //     the one thing an above-floor extraction with a verbatim citation may overturn,
+    //     and when it does, the conflict flag is raised and BOTH are shown on the card.
+    // A medication list naming telmisartan beats a form that was never asked the question.
+    // FLAGGED FOR V: if the strict reading was meant, the change is one line — make
+    // `deciding` fall back to [] rather than to `ext` when the world is closed — and the
+    // mockup fixture then needs `notClosedBy` for Shobha's two pink chips.
+    //
+    // A weak form-negative therefore stands whenever nothing else speaks: `deciding` is
+    // empty exactly when there is neither a deterministic observation nor a surviving
+    // extraction, and that is the branch the closed world lives in.
+    const deciding = det.length ? det : ext;
+    // Only a deterministic ANSWER overrules an extraction. A silence does not.
+    const overruled = det.length ? ext : [];
+
+    if (!deciding.length) {
       out[id] = {
         inputId: id, status: closed ? 'absent' : 'unknown', detail: null, value: null,
         source: closed ? 'BOOKING' : null, provenanceRef: null, observedAt: null,
-        confidence: null, extractedBy: null, corroborating: [], conflict: false,
+        confidence: null, extractedBy: null,
+        corroborating: [], conflict: false,
         droppedBelowFloor: droppedHere, closedWorld: closed,
+        sourceSpan: null, unstable: false, polaritySuspect: false,
+        extractionOverruled: overruled, overturnedFormNegative: false,
       };
       continue;
     }
-    let win = list[0];
-    for (const o of list.slice(1)) {
+    let win = deciding[0];
+    for (const o of deciding.slice(1)) {
       if (rank(o) < rank(win)) { win = o; continue; }
       if (rank(o) === rank(win) && newer(o, win)) win = o;
     }
-    const rest = list.filter((o) => o !== win);
+    const rest = [...deciding.filter((o) => o !== win), ...overruled];
+    // A form-negative the extraction has just overturned is itself a dissenting source:
+    // the card must say the booking form disagrees, not merely print the model's answer.
+    const overturned = closed && !det.length && win.source === 'EXTRACTED' && win.status !== 'absent';
     out[id] = {
       inputId: id, status: win.status, detail: win.detail ?? null, value: win.value ?? null,
       source: win.source, provenanceRef: win.provenanceRef ?? null, observedAt: win.observedAt ?? null,
       confidence: win.confidence ?? null, extractedBy: win.extractedBy ?? null,
       corroborating: rest.filter((o) => o.status === win.status),
-      conflict: rest.some((o) => o.status !== win.status),
+      conflict: overturned || rest.some((o) => o.status !== win.status),
       droppedBelowFloor: droppedHere, closedWorld: false,
+      sourceSpan: win.sourceSpan ?? null,
+      unstable: win.unstable === true,
+      polaritySuspect: win.polaritySuspect === true,
+      extractionOverruled: overruled,
+      overturnedFormNegative: overturned,
     };
   }
   return out;

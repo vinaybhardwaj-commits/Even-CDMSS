@@ -248,6 +248,11 @@ export const UNREGISTERED: string[] = [
                             // floor, the two CRITICAL escalations, the derived card lines
   'preop-assemble-core',    // pre-op input assembly (preop-assemble/1): source precedence, conflict
                             // tagging, the extraction floor, the closed-world rule, the fingerprint
+  'preop-extract-core',     // the pre-op extraction rail's gates (preop-extract/1): target whitelist,
+                            // span verification, the confidence floor, the source-fingerprint
+                            // anti-flap rule — a model may fill an UNKNOWN and nothing else
+  'preop-narrative-core',   // the pre-op narrative rail (preop-narrative/1): facts built FROM the
+                            // computed snapshot, every-sentence-cites enforced in code, fail closed
   'preop-pac-map-core',     // the one KareXpert PAC template's key→semantic map (preop-pac-map/1) —
                             // deterministic reads only; ASA and Mallampati decoded but display-only
   'preop-surface-core',     // pre-op board/case judgement (preop-surface/1): bands, tiles, the dual-fact

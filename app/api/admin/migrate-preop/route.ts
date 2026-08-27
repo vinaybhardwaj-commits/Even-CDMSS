@@ -100,6 +100,32 @@ export async function POST(req: NextRequest) {
     await sql`ALTER TABLE preop_findings ADD COLUMN IF NOT EXISTS pac_workflow_status TEXT`;
     await sql`ALTER TABLE preop_findings ADD COLUMN IF NOT EXISTS pac_workflow_logged_at TIMESTAMPTZ`;
     steps.b4_pac_workflow_columns = 'ok';
+    // B5 + B6 (reference DDL: migrations/0043_preop_rails.sql). The two LLM rails'
+    // artefacts, each in its own column and each deliberately OUTSIDE the snapshot
+    // fingerprint — so neither rail can mint a snapshot version merely by existing, and
+    // the flag-off/flag-on score-equality proof is a property of the schema, not of care.
+    //   extraction_*  the stored reading + the fingerprint OF ITS SOURCE TEXT. That
+    //                 fingerprint is the anti-flap key: unchanged text ⇒ the stored
+    //                 reading is reused verbatim and no model runs at all.
+    //   narrative_*   the stored prose + the SNAPSHOT fingerprint it was written for, so
+    //                 a narrative that has fallen behind its score is detectable rather
+    //                 than merely old, and `narrative_valid` records CODE's verdict on
+    //                 citation integrity (an invalid narrative is kept for review and
+    //                 never rendered).
+    // Additive and nullable throughout; every existing row reads NULL and behaves as it
+    // did before the columns existed.
+    await sql`ALTER TABLE preop_findings ADD COLUMN IF NOT EXISTS extraction JSONB`;
+    await sql`ALTER TABLE preop_findings ADD COLUMN IF NOT EXISTS extraction_fingerprint TEXT`;
+    await sql`ALTER TABLE preop_findings ADD COLUMN IF NOT EXISTS extraction_model TEXT`;
+    await sql`ALTER TABLE preop_findings ADD COLUMN IF NOT EXISTS extraction_provider TEXT`;
+    await sql`ALTER TABLE preop_findings ADD COLUMN IF NOT EXISTS extracted_at TIMESTAMPTZ`;
+    await sql`ALTER TABLE preop_findings ADD COLUMN IF NOT EXISTS narrative JSONB`;
+    await sql`ALTER TABLE preop_findings ADD COLUMN IF NOT EXISTS narrative_fingerprint TEXT`;
+    await sql`ALTER TABLE preop_findings ADD COLUMN IF NOT EXISTS narrative_model TEXT`;
+    await sql`ALTER TABLE preop_findings ADD COLUMN IF NOT EXISTS narrative_provider TEXT`;
+    await sql`ALTER TABLE preop_findings ADD COLUMN IF NOT EXISTS narrative_at TIMESTAMPTZ`;
+    await sql`ALTER TABLE preop_findings ADD COLUMN IF NOT EXISTS narrative_valid BOOLEAN`;
+    steps.b5_b6_rail_columns = 'ok';
 
     await sql`CREATE TABLE IF NOT EXISTS preop_finding_versions (
       id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -154,7 +180,11 @@ export async function POST(req: NextRequest) {
     const f = (await sql`SELECT count(*)::int AS n FROM preop_findings`) as Array<{ n: number }>;
     const v = (await sql`SELECT count(*)::int AS n FROM preop_finding_versions`) as Array<{ n: number }>;
     const s = (await sql`SELECT count(*)::int AS n FROM preop_sweeps`) as Array<{ n: number }>;
+    const r = (await sql`SELECT count(*) FILTER (WHERE extraction IS NOT NULL)::int AS ex,
+                                count(*) FILTER (WHERE narrative IS NOT NULL)::int AS na
+                           FROM preop_findings`) as Array<{ ex: number; na: number }>;
     steps.rows = `findings ${f[0]?.n ?? 0} · versions ${v[0]?.n ?? 0} · sweeps ${s[0]?.n ?? 0}`;
+    steps.rails = `extractions ${r[0]?.ex ?? 0} · narratives ${r[0]?.na ?? 0}`;
     return NextResponse.json({ ok: true, engine: PREOP_ENGINE_VERSION, steps });
   } catch (e) {
     return NextResponse.json({ ok: false, steps, error: String((e as Error).message) }, { status: 500 });

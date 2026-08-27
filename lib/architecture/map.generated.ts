@@ -775,7 +775,15 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "preop-extract-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "preop-instruments-core",
+    "plane": "unregistered"
+  },
+  {
+    "id": "preop-narrative-core",
     "plane": "unregistered"
   },
   {
@@ -4460,12 +4468,22 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "preop",
+    "to": "backfill-runs",
+    "kind": "value"
+  },
+  {
+    "from": "preop",
     "to": "care-cookie",
     "kind": "value"
   },
   {
     "from": "preop",
     "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "preop",
+    "to": "llm",
     "kind": "value"
   },
   {
@@ -4485,7 +4503,27 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "preop",
+    "to": "preop-extract-core",
+    "kind": "type"
+  },
+  {
+    "from": "preop",
+    "to": "preop-extract-core",
+    "kind": "value"
+  },
+  {
+    "from": "preop",
     "to": "preop-instruments-core",
+    "kind": "type"
+  },
+  {
+    "from": "preop",
+    "to": "preop-narrative-core",
+    "kind": "value"
+  },
+  {
+    "from": "preop",
+    "to": "preop-pac-map-core",
     "kind": "type"
   },
   {
@@ -4514,6 +4552,11 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "preop",
+    "to": "trace",
+    "kind": "value"
+  },
+  {
     "from": "preop-assemble-core",
     "to": "preop-instruments-core",
     "kind": "value"
@@ -4522,6 +4565,21 @@ export const MAP_EDGES: MapEdge[] = [
     "from": "preop-assemble-core",
     "to": "preop-tier-core",
     "kind": "value"
+  },
+  {
+    "from": "preop-extract-core",
+    "to": "preop-assemble-core",
+    "kind": "value"
+  },
+  {
+    "from": "preop-narrative-core",
+    "to": "preop-assemble-core",
+    "kind": "type"
+  },
+  {
+    "from": "preop-narrative-core",
+    "to": "preop-instruments-core",
+    "kind": "type"
   },
   {
     "from": "preop-pac-map-core",
@@ -5249,9 +5307,21 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "PREOP_EXTRACT_RULE_VERSION",
+    "value": "preop-extract/1",
+    "file": "lib/preop-extract-core.ts",
+    "derived": false
+  },
+  {
     "constName": "PREOP_INSTRUMENTS_VERSION",
     "value": "preop-instruments/1",
     "file": "lib/preop-instruments-core.ts",
+    "derived": false
+  },
+  {
+    "constName": "PREOP_NARRATIVE_VERSION",
+    "value": "preop-narrative/1",
+    "file": "lib/preop-narrative-core.ts",
     "derived": false
   },
   {
@@ -5372,8 +5442,8 @@ export const VERSION_REGISTRY: VersionRow[] = [
 
 export const COVERAGE = {
   "registered": 21,
-  "unregistered": 33,
-  "total": 54,
+  "unregistered": 35,
+  "total": 56,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
@@ -5394,7 +5464,9 @@ export const COVERAGE = {
     "patient-summary-core",
     "preop",
     "preop-assemble-core",
+    "preop-extract-core",
     "preop-instruments-core",
+    "preop-narrative-core",
     "preop-pac-map-core",
     "preop-surface-core",
     "preop-tier-core",

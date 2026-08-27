@@ -10,6 +10,8 @@
 import type { InstrumentScore } from '../preop-instruments-core';
 import type { Tier } from '../preop-tier-core';
 import type { PreopCardRow } from '../preop-surface-core';
+import type { PreopExtraction } from '../preop-extract-core';
+import { narrativeRenderable, type PreopNarrative } from '../preop-narrative-core';
 import type { FindingRow } from './store';
 
 function asObject(v: unknown): Record<string, unknown> | null {
@@ -71,7 +73,35 @@ export function toCardRow(r: FindingRow): PreopCardRow {
   };
 }
 
-/** The case page additionally needs the resolved input list and the factor tables. */
-export function caseDetail(r: FindingRow): { row: PreopCardRow; snapshot: Record<string, unknown> | null } {
-  return { row: toCardRow(r), snapshot: asObject(r.snapshot) };
+/**
+ * The case page additionally needs the resolved input list and the factor tables — and,
+ * from B5/B6, the two rails' stored artefacts.
+ *
+ * The narrative is returned ONLY when it is renderable: valid by CODE's own citation check
+ * AND written for the reading currently on the row. A narrative that has fallen behind its
+ * score is not shrunk to a caveat, it is not returned at all; the page says the rail is
+ * waiting for this version. An INVALID narrative is likewise never returned — it is stored
+ * for review and that is the whole of its life (the R4-4 contract).
+ */
+export function caseDetail(r: FindingRow): {
+  row: PreopCardRow;
+  snapshot: Record<string, unknown> | null;
+  extraction: PreopExtraction | null;
+  narrative: PreopNarrative | null;
+  narrativeState: 'none' | 'stale' | 'invalid' | 'shown';
+} {
+  const extraction = asObject(r.extraction) as unknown as PreopExtraction | null;
+  const stored = asObject(r.narrative) as unknown as PreopNarrative | null;
+  const live = (r.snapshot_fingerprint as string | null | undefined) ?? null;
+  const narrativeState: 'none' | 'stale' | 'invalid' | 'shown' =
+    !stored ? 'none'
+      : !stored.valid ? 'invalid'
+        : narrativeRenderable(stored, live) ? 'shown' : 'stale';
+  return {
+    row: toCardRow(r),
+    snapshot: asObject(r.snapshot),
+    extraction,
+    narrative: narrativeState === 'shown' ? stored : null,
+    narrativeState,
+  };
 }

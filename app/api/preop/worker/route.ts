@@ -1,7 +1,12 @@
 // The Pre-op Risk Agent worker (PRD CDMSS-PREOP-RISK-AGENT-v1.1-LOCKED §6; Build Plan B2).
-// Mirrors /api/readmission/worker: same auth guard, same sweep-is-the-retry posture —
-// with one difference that matters, stated plainly: THIS WORKER MAKES NO MODEL CALL.
-// Every tick is deterministic SQL plus the pure cores, and it costs ₹0.
+// Mirrors /api/readmission/worker: same auth guard, same sweep-is-the-retry posture.
+//
+// B5/B6 (27 Aug 2026): the worker CAN now make model calls, and with the flags as they
+// ship — PREOP_EXTRACT_ENABLED and PREOP_NARRATIVE_ENABLED both unset — it makes none.
+// Every tick is deterministic SQL plus the pure cores and costs ₹0. The rails attach
+// above that floor, never inside it: with both on, the scores are byte-identical and the
+// only difference is coverage (an extraction may fill an input the record left UNKNOWN)
+// and prose (a narrative written FROM the computed factor table).
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
@@ -25,9 +30,27 @@ export const runtime = 'nodejs';
 //   box                                                             300,000 ms
 //   margin against the slow tick                                    ~244,000 ms   PASS
 //
-// The steady state is cheaper than the first tick, not more expensive: an 'unchanged'
-// episode makes ONE Neon read and zero writes, so a board that has stopped moving costs
-// almost nothing. The scaling term is the per-episode round trip and the episode query
+// ── AND THE SAME COVENANT FOR THE MODEL LEGS (B5 + B6, 27 Aug 2026) ──
+// The rails are bounded BEFORE they start, not trimmed after they overrun. Three bounds,
+// all in lib/preop/run.ts, and any change to one of them moves this block in the same
+// commit:
+//   PREOP_LLM_BUDGET_MS             180,000 ms  a leg is begun only if its own ceiling
+//                                               still fits inside what is left of this
+//   PREOP_EXTRACT_MAX_PER_TICK            8     × PREOP_EXTRACT_BUDGET_MS   60,000 ms
+//   PREOP_NARRATIVE_MAX_PER_TICK          3     × PREOP_NARRATIVE_BUDGET_MS 80,000 ms
+// The caps alone would allow 8×60 + 3×80 = 720,000 ms, which is why the BUDGET rather
+// than the caps is the binding constraint: the box check refuses the leg that would not
+// fit, so the worst case is 180,000 ms of model time plus the slow deterministic tick —
+// 235,383 ms against a 300,000 ms box. PASS, with the caps as the pacing rule and the
+// budget as the wall.
+//
+// And the model term, like the SQL one, shrinks as the board settles: an extraction runs
+// only when the SOURCE TEXT changed and a narrative only when the SNAPSHOT FINGERPRINT
+// moved, so a board that has stopped moving makes zero calls on both rails. Measured, not
+// assumed — every tick reports `rails.extraction.called` and `rails.narrative.called`.
+//
+// The same is true of the writes: an 'unchanged' episode makes ONE Neon read and zero
+// writes. The scaling term is the per-episode round trip and the episode query
 // caps at 500 rows, so the worst case is ~26× today's 19 — still inside the box against
 // the measured per-episode cost, and the 55 s outlier says the real risk is Metabase
 // latency rather than episode count. If the upcoming window ever approaches the 500-row
@@ -36,7 +59,10 @@ export const maxDuration = 300;
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
-import { runPreopSweep, preopExtractEnabled, PREOP_HORIZON_DAYS } from '@/lib/preop/run';
+import {
+  runPreopSweep, preopExtractEnabled, preopNarrativeEnabled, preopRailsFromEnv,
+  PREOP_HORIZON_DAYS, type PreopRails,
+} from '@/lib/preop/run';
 import { boardCounts, PREOP_ENGINE_VERSION } from '@/lib/preop/store';
 
 /**
@@ -53,6 +79,14 @@ import { boardCounts, PREOP_ENGINE_VERSION } from '@/lib/preop/store';
  *
  *   ?dry_run=1     → compute and report the tally, write nothing (the pre-migration probe)
  *   ?horizon=<n>   → look n days ahead instead of the default 60
+ *   ?rails=extract,narrative
+ *                  → MEASURE a rail without committing to it. Forces the named rails on
+ *                    for this tick only. It IMPLIES dry_run and the implication is
+ *                    enforced here, not documented: a forced rail may never write. This
+ *                    exists because "flag-on over the golden set" is a gate, and the only
+ *                    honest way to meet it before V flips a production flag is a tick that
+ *                    runs the real provider path and stores nothing. `rails=none` forces
+ *                    both OFF, for the flag-off arm of the same comparison.
  */
 
 // Execution guard — byte-for-byte the readmission worker's: Vercel Cron (un-spoofable
@@ -70,20 +104,38 @@ async function authed(req: NextRequest): Promise<boolean> {
 export async function GET(req: NextRequest) {
   if (!(await authed(req))) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   const p = req.nextUrl.searchParams;
-  const dryRun = p.get('dry_run') === '1';
+  // The rails override and its non-negotiable consequence.
+  const railsParam = (p.get('rails') || '').trim().toLowerCase();
+  let railsOverride: Partial<PreopRails> | undefined;
+  if (railsParam) {
+    const want = railsParam.split(/[,\s]+/).filter(Boolean);
+    railsOverride = want.includes('none')
+      ? { extract: false, narrative: false }
+      : { extract: want.includes('extract'), narrative: want.includes('narrative') };
+  }
+  // A forced rail is a MEASUREMENT, and a measurement does not write. Not a convention —
+  // the OR is right here, so no query string can produce a writing tick with a rail that
+  // production has not flipped.
+  const dryRun = p.get('dry_run') === '1' || !!railsOverride;
   const horizonRaw = Number(p.get('horizon') || PREOP_HORIZON_DAYS);
   const horizonDays = Number.isFinite(horizonRaw) ? Math.max(1, Math.min(365, Math.round(horizonRaw))) : PREOP_HORIZON_DAYS;
 
   try {
-    const sweep = await runPreopSweep({ horizonDays, dryRun });
+    const sweep = await runPreopSweep({ horizonDays, dryRun, rails: railsOverride });
     const counts = dryRun ? null : await boardCounts();
     return NextResponse.json({
       ok: true,
       engine: PREOP_ENGINE_VERSION,
-      mode: dryRun ? 'dry_run' : 'sweep',
-      // The flags are reported on every tick so their state is never a matter of belief.
-      extraction: preopExtractEnabled() ? 'on' : 'off (PREOP_EXTRACT_ENABLED unset — extractable inputs stay UNKNOWN and instruments widen)',
-      narrative: 'off (B6 has not been built; there is no model in this worker at all)',
+      mode: railsOverride ? 'rails_probe (dry run — nothing written)' : dryRun ? 'dry_run' : 'sweep',
+      // The flags are reported on every tick so their state is never a matter of belief,
+      // and the OVERRIDE is reported beside them so a probe can never be mistaken for the
+      // environment having changed.
+      flags: {
+        extraction: preopExtractEnabled() ? 'on' : 'off (PREOP_EXTRACT_ENABLED unset — extractable inputs stay UNKNOWN and instruments widen)',
+        narrative: preopNarrativeEnabled() ? 'on' : 'off (PREOP_NARRATIVE_ENABLED unset — the case page renders the rail as visibly dark)',
+      },
+      railsFromEnv: preopRailsFromEnv(),
+      railsThisTick: sweep.rails.requested,
       sweep,
       counts,
     });

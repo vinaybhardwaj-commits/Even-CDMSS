@@ -264,6 +264,13 @@ export interface FindingRow extends Record<string, unknown> {
   pac_finalized_at?: string | null;
   pac_workflow_status?: string | null;
   pac_workflow_logged_at?: string | null;
+  /** B5/B6: the two rails' stored artefacts. Both live in their own columns, both are
+   *  OUTSIDE the snapshot fingerprint, and neither is ever written by saveSnapshot. */
+  extraction?: unknown;
+  extraction_fingerprint?: string | null;
+  narrative?: unknown;
+  narrative_fingerprint?: string | null;
+  snapshot_fingerprint?: string | null;
 }
 
 const LIST_LIMIT = 500;
@@ -394,6 +401,105 @@ export async function markReviewed(
   } catch (e) {
     return { ok: false, error: String((e as Error).message).slice(0, 300) };
   }
+}
+
+// ── the two rails' artefacts (B5 / B6) ──────────────────────────────────────────
+//
+// Both rails write to their OWN columns on the live row and NEVER through saveSnapshot.
+// Three properties follow, and all three are load-bearing:
+//
+//   · the snapshot fingerprint does not move when an extraction or a narrative is written,
+//     so neither rail can mint a version by existing;
+//   · the extraction is READ BACK before the next snapshot is composed, which is what makes
+//     "unchanged source text ⇒ no model call ⇒ no re-mint" true across ticks rather than
+//     only within one;
+//   · a narrative carries the fingerprint it was written for, so a stale one is detectable
+//     rather than merely old.
+//
+// Fail-safe like every other reader/writer here: a fault returns empty/false and the sweep
+// reports it. The rails are enrichment; nothing about the deterministic engine depends on
+// either of them succeeding.
+
+export interface StoredRails {
+  extraction: Record<string, unknown> | null;
+  extractionFingerprint: string | null;
+  narrative: Record<string, unknown> | null;
+  narrativeFingerprint: string | null;
+  snapshotFingerprint: string | null;
+}
+
+/** Every stored rail artefact for the episodes about to be swept, in ONE round trip. */
+export async function readRails(
+  episodeKeys: string[],
+  engineVersion: string = PREOP_ENGINE_VERSION,
+): Promise<{ byKey: Map<string, StoredRails>; error: string | null }> {
+  const byKey = new Map<string, StoredRails>();
+  if (!episodeKeys.length) return { byKey, error: null };
+  try {
+    const rows = (await sql(
+      `SELECT episode_key, extraction, extraction_fingerprint, narrative, narrative_fingerprint,
+              snapshot_fingerprint
+         FROM preop_findings
+        WHERE engine_version = $1 AND episode_key = ANY($2::text[])`,
+      [engineVersion, episodeKeys],
+    )) as Array<Record<string, unknown>>;
+    for (const r of rows) {
+      byKey.set(String(r.episode_key), {
+        extraction: asObject(r.extraction),
+        extractionFingerprint: (r.extraction_fingerprint as string | null) ?? null,
+        narrative: asObject(r.narrative),
+        narrativeFingerprint: (r.narrative_fingerprint as string | null) ?? null,
+        snapshotFingerprint: (r.snapshot_fingerprint as string | null) ?? null,
+      });
+    }
+    return { byKey, error: null };
+  } catch (e) {
+    return { byKey, error: `preop rails unavailable: ${String((e as Error).message).slice(0, 300)}` };
+  }
+}
+
+/** Write one episode's extraction record. The model/provider columns are copies of the
+ *  DERIVED labels inside the blob, kept as columns only so the pack can group on them. */
+export async function saveExtraction(
+  episodeKey: string,
+  rec: { sourceFingerprint: string; model: string | null; provider: string | null; extractedAt: string },
+  blob: unknown,
+  engineVersion: string = PREOP_ENGINE_VERSION,
+): Promise<boolean> {
+  try {
+    const rows = (await sql(
+      `UPDATE preop_findings
+          SET extraction = $3::jsonb, extraction_fingerprint = $4,
+              extraction_model = $5, extraction_provider = $6, extracted_at = $7
+        WHERE episode_key = $1 AND engine_version = $2
+        RETURNING episode_key`,
+      [episodeKey, engineVersion, JSON.stringify(blob), rec.sourceFingerprint,
+       rec.model, rec.provider, rec.extractedAt],
+    )) as Array<{ episode_key: string }>;
+    return rows.length > 0;
+  } catch { return false; }
+}
+
+/** Write one episode's narrative. Stored whether or not it is valid (R4-4: kept for
+ *  review, never rendered); `narrative_valid` is the column the pack counts on. */
+export async function saveNarrative(
+  episodeKey: string,
+  rec: { snapshotFingerprint: string; model: string | null; provider: string | null; generatedAt: string; valid: boolean },
+  blob: unknown,
+  engineVersion: string = PREOP_ENGINE_VERSION,
+): Promise<boolean> {
+  try {
+    const rows = (await sql(
+      `UPDATE preop_findings
+          SET narrative = $3::jsonb, narrative_fingerprint = $4, narrative_model = $5,
+              narrative_provider = $6, narrative_at = $7, narrative_valid = $8
+        WHERE episode_key = $1 AND engine_version = $2
+        RETURNING episode_key`,
+      [episodeKey, engineVersion, JSON.stringify(blob), rec.snapshotFingerprint,
+       rec.model, rec.provider, rec.generatedAt, rec.valid],
+    )) as Array<{ episode_key: string }>;
+    return rows.length > 0;
+  } catch { return false; }
 }
 
 // ── the sweep heartbeat ─────────────────────────────────────────────────────────

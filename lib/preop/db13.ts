@@ -316,6 +316,72 @@ export interface PreopIcdRow {
  * 23 distinct codes, of which the Charlson-relevant one today is J42 (chronic
  * bronchitis). Thin, real, and free — and it grows with every consult.
  */
+/**
+ * B5 · the OPD free-text history — the extraction rail's second source, after the PAC's
+ * verbatim boxes. `doctor_notes` is a JSON array of { note, doctor }; the note text is the
+ * only genuine clinical free text this table carries for this cohort.
+ *
+ * ⚠️ MEASURED 27 Aug 2026 AND REPORTED RATHER THAN ASSUMED: across the 855 non-draft
+ * prescriptions belonging to the surgical cohort, `relevant_medical_history` is filled on
+ * 0, `doctor_notes` on 1. The source is wired because the kickoff names it; its yield on
+ * today's data is approximately nothing, and the B7 pack says so in those words rather
+ * than letting a reader infer coverage from the rail's existence.
+ *
+ * ⚠️ AND A FINDING FOR V, FLAGGED NOT BUILT: the same table's `comorbidities` column is
+ * NOT free text — it is a structured array of { comorbidity: { uid, name } } ("High BP",
+ * "Thyroid Disorder"), filled on 9 cohort rows. That is a SIXTH DETERMINISTIC source, of
+ * the same class as the booking enum, and it belongs in the deterministic map (B3's side
+ * of the D4 line), not in this rail. Mapping it is a decision, not a build detail.
+ *
+ * Runs ONLY when PREOP_EXTRACT_ENABLED is on, so the dark module costs one query less.
+ */
+export interface PreopOpdNarrativeRow { individualUid: string; text: string; at: string | null; ref: string | null }
+
+export async function fetchOpdNarrative(individualUids: string[]): Promise<Fetched<PreopOpdNarrativeRow>> {
+  const list = parentPathList(individualUids);
+  if (!list) return { rows: [], error: null };
+  let rows: Record<string, unknown>[];
+  try {
+    rows = await metabaseQuery(
+      `SELECT replace(p._parent_path, '/individuals/', '') AS individual_uid,
+              p._doc_id, p.uploaded_at::text AS at, p.doctor_notes::text AS notes
+         FROM "individuals-prescriptions" p
+        WHERE p._parent_path IN (${list})
+          AND p.is_draft = false
+          AND p.doctor_notes IS NOT NULL
+          AND length(p.doctor_notes::text) > 8
+        ORDER BY p.uploaded_at ASC
+        LIMIT 200`);
+  } catch (e) {
+    return failed('individuals-prescriptions.doctor_notes', e);
+  }
+  const out: PreopOpdNarrativeRow[] = [];
+  for (const r of rows) {
+    const uid = s(r.individual_uid);
+    if (!uid) continue;
+    const text = opdNoteText(s(r.notes));
+    if (!text) continue;
+    out.push({ individualUid: uid, text, at: s(r.at), ref: s(r._doc_id) });
+  }
+  return { rows: out, error: null };
+}
+
+/** Pull the note strings out of the doctor_notes JSON array. Tolerant: a shape we do not
+ *  recognise yields NOTHING rather than a stringified blob a model would then read. */
+export function opdNoteText(raw: string | null): string | null {
+  if (!raw) return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { return null; }
+  if (!Array.isArray(parsed)) return null;
+  const parts: string[] = [];
+  for (const item of parsed) {
+    if (!item || typeof item !== 'object') continue;
+    const note = (item as Record<string, unknown>).note;
+    if (typeof note === 'string' && note.trim()) parts.push(note.trim());
+  }
+  return parts.length ? parts.join('\n') : null;
+}
+
 export async function fetchOpdIcd(individualUids: string[]): Promise<Fetched<PreopIcdRow>> {
   const list = parentPathList(individualUids);
   if (!list) return { rows: [], error: null };

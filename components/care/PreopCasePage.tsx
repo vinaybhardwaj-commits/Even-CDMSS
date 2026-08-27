@@ -24,6 +24,11 @@ interface ResolvedInput {
   inputId: string; status: string; detail: string | null; value: string | number | null;
   source: string | null; confidence: number | null; conflict: boolean; closedWorld: boolean;
   corroborating?: Array<{ source: string }>;
+  // B5: the model boundary, made visible on the row it moved.
+  sourceSpan?: string | null;
+  unstable?: boolean;
+  polaritySuspect?: boolean;
+  extractionOverruled?: Array<{ inputId: string; status: string; sourceSpan?: string | null }>;
 }
 interface Snapshot {
   inputs?: ResolvedInput[];
@@ -36,9 +41,26 @@ interface VersionRow {
   rcri_lo: number | null; rcri_hi: number | null; mfi_lo: number | null; mfi_hi: number | null;
   cci_lo: number | null; cci_hi: number | null;
 }
+interface ExtractedInput {
+  inputId: string; status: string; field: string; rawText: string;
+  confidence: number; note: string | null; polaritySuspect?: boolean;
+}
+interface ExtractionRecord {
+  version: string; extractedAt: string; model: string | null; provider: string | null;
+  inputs: ExtractedInput[];
+  rejected: Array<{ input: string; field: string; rawText: string; reason: string }>;
+  unstable: string[]; reextractions: number; fieldsSeen: string[];
+}
+interface NarrativeRecord {
+  text: string; citedIds: string[]; factCount: number; generatedAt: string;
+  model: string | null; provider: string | null;
+}
 interface Payload {
   ok: boolean; engine: string; row: PreopCardRow; snapshot: Snapshot | null;
   versions: VersionRow[]; extraction: string; narrative: string; error: string | null;
+  extractionRecord?: ExtractionRecord | null;
+  narrativeText?: NarrativeRecord | null;
+  narrativeState?: 'none' | 'stale' | 'invalid' | 'shown';
 }
 
 const TIER_PILL: Record<Tier, string> = {
@@ -192,14 +214,11 @@ export default function PreopCasePage({ episodeKey }: { episodeKey: string }) {
 
       <p className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11.5px] text-slate-600">{CORRELATED_LENSES_NOTE}</p>
 
-      {/* the narrative rail, rendered visibly OFF (mockup note 6) */}
-      <Section title="Narrative — rail dark">
-        <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3.5 py-3 text-[12px] text-slate-500">
-          Ships behind <code className="rounded bg-white px-1 text-[11px]">PREOP_NARRATIVE_ENABLED={data.narrative === 'on' ? '1' : '0'}</code>.
-          When flipped, prose is written from the factor tables above — the model summarises a computed result, it never scores.
-          Model label derived from the call, never typed.
-        </div>
-      </Section>
+      {/* B6 · the narrative rail. Dark until the flag is flipped, and — this is the part
+          that matters — still silent when the flag IS on but the prose has not earned its
+          place: a narrative is rendered only when CODE verified every sentence cites a row
+          of the tables above AND it was written for the reading currently on this page. */}
+      <NarrativePanel data={data} />
 
       {/* provenance legend — five chips (Amendment A1-2) */}
       <Section title="Every input above carries provenance">
@@ -215,8 +234,141 @@ export default function PreopCasePage({ episodeKey }: { episodeKey: string }) {
         </p>
       </Section>
 
+      <ExtractionPanel data={data} />
+
       <p className="mt-5 border-t border-slate-200 pt-3 text-[11.5px] leading-relaxed text-slate-400">{SCORES_FOOTER}</p>
     </Shell>
+  );
+}
+
+/**
+ * The narrative rail's four states, each said out loud rather than rendered as absence.
+ * The dark panel is the mockup's own (note 6); the other three exist because a rail that
+ * is ON and still showing nothing is a different fact from a rail that is off, and a
+ * clinician reading a risk card is owed the difference.
+ */
+function NarrativePanel({ data }: { data: Payload }) {
+  const on = data.narrative === 'on';
+  const state = data.narrativeState ?? 'none';
+  const n = data.narrativeText ?? null;
+
+  if (!on) {
+    return (
+      <Section title="Narrative — rail dark">
+        <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3.5 py-3 text-[12px] text-slate-500">
+          Ships behind <code className="rounded bg-white px-1 text-[11px]">PREOP_NARRATIVE_ENABLED=0</code>.
+          When flipped, prose is written from the factor tables above — the model summarises a computed result, it never scores.
+          Model label derived from the call, never typed.
+        </div>
+      </Section>
+    );
+  }
+  if (state !== 'shown' || !n) {
+    const why = state === 'stale'
+      ? 'The stored narrative was written for an earlier version of this reading. It is not shown against a score it does not describe; the next sweep rewrites it.'
+      : state === 'invalid'
+        ? 'A narrative was written but did not pass the citation check — at least one sentence cited nothing, or cited a fact that does not exist. It is kept for review and never rendered.'
+        : 'No narrative has been written for this reading yet. The next sweep writes one.';
+    return (
+      <Section title="Narrative — nothing to show">
+        <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3.5 py-3 text-[12px] text-slate-500">{why}</div>
+      </Section>
+    );
+  }
+  return (
+    <Section title="Narrative">
+      <div className="rounded-xl border border-slate-200 bg-white px-3.5 py-3">
+        <p className="whitespace-pre-line text-[13px] leading-relaxed text-slate-800">{citedText(n.text)}</p>
+        <p className="mt-2 border-t border-slate-100 pt-2 text-[11px] text-slate-400">
+          Written from the factor tables above and nothing else — the model was shown the computed result, not the record.
+          Every sentence is cited; code checked that all {n.citedIds.length} citation{n.citedIds.length === 1 ? '' : 's'} resolve
+          to one of {n.factCount} computed facts. {n.provider ?? '?'}:{n.model ?? 'model unrecorded'} · {shortDate(n.generatedAt)}.
+        </p>
+      </div>
+    </Section>
+  );
+}
+
+/** Render [F4] markers as quiet tokens rather than stripping them: the citation IS the
+ *  claim's warrant, and hiding it would leave prose that looks unsourced. */
+function citedText(text: string) {
+  const parts = String(text).split(/(\[F\d+\])/g);
+  return parts.map((p, i) => (/^\[F\d+\]$/.test(p)
+    ? <span key={i} className="mx-0.5 rounded bg-slate-100 px-1 text-[10px] align-super text-slate-400">{p.slice(1, -1)}</span>
+    : <span key={i}>{p}</span>));
+}
+
+/**
+ * B5 · what the extraction rail actually did on this case — every accepted reading with the
+ * verbatim span it was copied from, and every proposal a gate threw away, with the gate
+ * that threw it. The rejected list is not an error log: it is the anti-fabrication gate's
+ * receipt, and a case with many rejections is telling a reader something about the rail.
+ */
+function ExtractionPanel({ data }: { data: Payload }) {
+  const rec = data.extractionRecord ?? null;
+  const on = data.extraction === 'on';
+  if (!rec) {
+    if (!on) return null;
+    return (
+      <Section title="Extraction — nothing read">
+        <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3.5 py-3 text-[12px] text-slate-500">
+          The rail is on and found no free text to read on this episode. Extraction adds coverage where the record is prose; it invents nothing where the record is silent.
+        </div>
+      </Section>
+    );
+  }
+  return (
+    <Section title={on ? 'Extraction — what the model proposed' : 'Extraction — the last reading, currently inert'}>
+      {!on && (
+        <p className="mb-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11.5px] text-slate-600">
+          <code className="rounded bg-white px-1 text-[11px]">PREOP_EXTRACT_ENABLED=0</code>. This reading is stored but feeds no
+          instrument: none of it appears in any factor table above, and every score on this page was computed without it.
+        </p>
+      )}
+      <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+        <table className="w-full min-w-[560px] text-[12px]">
+          <thead>
+            <tr className="border-b border-slate-200 bg-slate-50 text-[10px] uppercase tracking-wider text-slate-400">
+              <th className="px-3 py-2 text-left font-bold">Input</th>
+              <th className="px-3 py-2 text-left font-bold">Reads</th>
+              <th className="px-3 py-2 text-left font-bold">Verbatim source</th>
+              <th className="px-3 py-2 text-right font-bold">Conf.</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rec.inputs.map((i) => (
+              <tr key={i.inputId} className="border-b border-slate-100 last:border-0">
+                <td className="px-3 py-2 text-slate-800">
+                  {i.inputId}
+                  {rec.unstable.includes(i.inputId) && (
+                    <span className="ml-1.5 rounded border border-amber-200 bg-amber-50 px-1 text-[10px] text-amber-800"
+                      title="a re-read of unchanged text disagreed with this one; the stored reading stands">unstable</span>
+                  )}
+                  {i.polaritySuspect && (
+                    <span className="ml-1.5 rounded border border-amber-200 bg-amber-50 px-1 text-[10px] text-amber-800"
+                      title="the quoted text reads as a negation while the reading asserts presence — marked for a clinician, never auto-corrected">check polarity</span>
+                  )}
+                </td>
+                <td className="px-3 py-2 font-semibold text-slate-700">{i.status.toUpperCase()}</td>
+                <td className="px-3 py-2 text-slate-500">
+                  <span className="text-[10px] uppercase tracking-wide text-slate-400">{i.field}</span>{' '}
+                  <span className="italic">“{i.rawText}”</span>
+                </td>
+                <td className="px-3 py-2 text-right tabular-nums text-slate-700">{i.confidence.toFixed(2)}</td>
+              </tr>
+            ))}
+            {!rec.inputs.length && (
+              <tr><td className="px-3 py-2 text-slate-400" colSpan={4}>Nothing cleared the gates on this episode.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <p className="mt-1.5 text-[11.5px] text-slate-500">
+        Read from {rec.fieldsSeen.length} free-text field{rec.fieldsSeen.length === 1 ? '' : 's'} by {rec.provider ?? '?'}:{rec.model ?? 'model unrecorded'} on {shortDate(rec.extractedAt)}.
+        {rec.rejected.length > 0 && <> {rec.rejected.length} proposal{rec.rejected.length === 1 ? ' was' : 's were'} thrown away by a gate ({[...new Set(rec.rejected.map((r) => r.reason))].join(', ')}).</>}
+        {' '}An extraction may only fill an input the record left UNKNOWN — it cannot overrule a lab, a PAC field, an ICD code or the booking form.
+      </p>
+    </Section>
   );
 }
 
@@ -263,6 +415,14 @@ function FactorTable({ title, score, byId, footer, onlyScoring }: {
                     </span>
                     {input?.detail && <span className="ml-1.5 text-slate-500">{input.detail}</span>}
                     {input?.conflict && <span className="ml-1.5 rounded border border-amber-200 bg-amber-50 px-1 text-[10px] text-amber-800">sources conflict</span>}
+                    {input?.unstable && <span className="ml-1.5 rounded border border-amber-200 bg-amber-50 px-1 text-[10px] text-amber-800" title="a re-read of unchanged text disagreed; the stored reading stands">unstable</span>}
+                    {input?.polaritySuspect && <span className="ml-1.5 rounded border border-amber-200 bg-amber-50 px-1 text-[10px] text-amber-800" title="the quoted text reads as a negation while the reading asserts presence">check polarity</span>}
+                    {/* B5 · the verbatim span, on the row it moved. Shown inline, not on
+                        hover alone: a claim whose warrant needs a mouse is a claim a
+                        clinician reading down a list will not check. */}
+                    {input?.sourceSpan && (
+                      <span className="ml-1.5 italic text-pink-700" title={input.sourceSpan}>“{input.sourceSpan}”</span>
+                    )}
                   </td>
                   <td className="px-3 py-2">
                     {input?.source
@@ -272,6 +432,16 @@ function FactorTable({ title, score, byId, footer, onlyScoring }: {
                         </span>
                       : <span className="text-[10.5px] text-slate-300">— not observed</span>}
                     {input?.closedWorld && <span className="ml-1 text-[10px] text-slate-400">(not listed on the booking form)</span>}
+                    {/* B5 · the precedence rule, made visible. A model proposed this input
+                        and the record had already answered it, so the proposal moved
+                        nothing. Shown rather than dropped: silence here would look like
+                        the rail had never spoken. */}
+                    {!!input?.extractionOverruled?.length && (
+                      <span className="ml-1 rounded border border-pink-200 bg-pink-50 px-1 text-[10px] text-pink-700"
+                        title={input.extractionOverruled.map((o) => `${o.status}${o.sourceSpan ? `: “${o.sourceSpan}”` : ''}`).join(' | ')}>
+                        model proposal not scored
+                      </span>
+                    )}
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums text-slate-700">{f.points}</td>
                 </tr>

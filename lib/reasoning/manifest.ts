@@ -117,6 +117,17 @@ export const UNREGISTERED_PROMPTS: string[] = [
   'pathway-core/ENRICH_CRITIQUE_SYSTEM',
   'pathway-core/ENRICH_REVISE_SYSTEM',
   'pathway-core/SKELETON_SYSTEM',
+  // Pre-op Risk B5 + B6 (27 Aug 2026), both shipped behind flags that are OFF. Neither is
+  // rubric-scored, and for opposite reasons: the extraction prompt makes no clinical
+  // judgement to score — it copies verbatim spans and names which of a fixed list of
+  // history items each one asserts, and CODE (span verification, the target whitelist, the
+  // confidence floor) decides what survives. The narrative prompt is scored by a rule
+  // rather than a rubric: every sentence must cite a row of the computed factor table, and
+  // an uncited one invalidates the whole paragraph. Both stay unregistered until the B7
+  // validation pack yields a gold — V's clinical read of the extraction sample is exactly
+  // the signal a manifest entry would need.
+  'preop-extract-core/EXTRACT_SYSTEM',
+  'preop-narrative-core/PREOP_NARRATIVE_SYSTEM',
   'prognosis-core/PX_CRITIQUE_SYSTEM',
   'prognosis-core/PX_REVISE_SYSTEM',
   'prognosis-core/PX_SYSTEM',

@@ -91,7 +91,7 @@ test('rubric inclusion: nabh/6e external-json + the five embedded-in-prompt rubr
   }
 });
 
-test('count invariant: counts match the committed artifact contents (31 prompts / 7 rubrics / 38 builders)', () => {
+test('count invariant: counts match the committed artifact contents (33 prompts / 7 rubrics / 40 builders)', () => {
   const gen = GENERATED as {
     counts: { prompts: number; rubrics: number; user_message_builders: number; features: number };
     prompts: Array<{ feature: string }>; rubrics: unknown[]; user_message_builders: unknown[];
@@ -122,8 +122,14 @@ test('count invariant: counts match the committed artifact contents (31 prompts 
   // operator (Opus 4.6 on Bedrock), a genuinely new reasoning surface (30→31 prompts, +1 feature).
   // Builders are UNCHANGED at 38: its user message is assembled by operatorUserMessage(), which the
   // generator does not count as a builder, and no existing builder moved.
-  assert.equal(gen.counts.prompts, 31);
+  // Pre-op Risk B5 + B6 (27 Aug 2026) add the module's two LLM rails, and they are the
+  // module's ONLY reasoning surfaces — everything else in it is arithmetic:
+  //   preop-extract-core/EXTRACT_SYSTEM         + buildExtractPrompt    (31→32, 38→39, +1 feature)
+  //   preop-narrative-core/PREOP_NARRATIVE_SYSTEM + buildNarrativePrompt (32→33, 39→40, +1 feature)
+  // Both ship behind flags that are OFF, and both are registered anyway: the registry
+  // records what the codebase CAN reason with, not what is currently switched on.
+  assert.equal(gen.counts.prompts, 33);
   assert.equal(gen.counts.rubrics, 7);
-  assert.equal(gen.counts.user_message_builders, 38);
-  assert.equal(gen.counts.features, 20);
+  assert.equal(gen.counts.user_message_builders, 40);
+  assert.equal(gen.counts.features, 22);
 });
