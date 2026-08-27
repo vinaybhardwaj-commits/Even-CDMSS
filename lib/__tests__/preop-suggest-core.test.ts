@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  autoAcceptable, decisionObservations, openSuggestions, parseExtractMode, reconcileReads,
+  autoAcceptable, decisionObservations, definitionalFor, openSuggestions, parseExtractMode, reconcileReads,
   redundantSuggestions, scoreModeReachable, spanIsMedicationOnly, spanNamesADrug, stabilityByClass,
   PREOP_DECISIONS, PREOP_EXTRACT_MODES, PROMOTED_CLASSES, SUGGEST_EXCLUDED, SUGGEST_TARGET_IDS,
   type PreopDecision, type PreopSuggestionRecord,
@@ -257,4 +257,29 @@ test('a suggestion that CONTRADICTS the record is always offered — that is the
   } as unknown as PreopSuggestionRecord;
   assert.equal(openSuggestions(contradicts, [], { copd_or_pneumonia: 'absent' }).length, 1);
   assert.equal(redundantSuggestions(contradicts, { copd_or_pneumonia: 'absent' }), 0);
+});
+
+test('an ORAL agent may not suggest insulin status — in either direction', () => {
+  // ⚠️ Measured on the 48-episode golden set: three suggestions of insulin_treated_diabetes
+  // ABSENT survived the first cut of this gate, on spans naming metformin and glimepiride.
+  // The definitional carve-out has to be per-CLASS, not per-input: an oral agent is
+  // definitional for diabetes and definitional for nothing about insulin.
+  for (const span of ['TAB GLYCOMET GP1', 'DIABETES SINCE 15 YEARS ,TAB METFORMIN 500MG 1-0-1', 'TAB GLIMIPRIDE + METFORMIN']) {
+    const { suggestions, dropped } = reconcileReads([1, 2, 3].map(() => verifyExtraction([{
+      input: 'insulin_treated_diabetes', status: 'absent', field: 'pac_other_history',
+      rawText: span, confidence: 1, note: null,
+    }], { pac_other_history: span })));
+    assert.deepEqual(suggestions, [], `${span} must suggest nothing about insulin`);
+    assert.equal(dropped[0]?.reason, 'medication_inference');
+  }
+  // …while an INSULIN span still may, because there the drug IS the factor.
+  const ins = 'INJ MIXTARD 30/70 12-0-8';
+  const { suggestions } = reconcileReads([1, 2, 3].map(() => verifyExtraction([{
+    input: 'insulin_treated_diabetes', status: 'present', field: 'pac_other_history',
+    rawText: ins, confidence: 1, note: null,
+  }], { pac_other_history: ins })));
+  assert.equal(suggestions.length, 1);
+  assert.equal(definitionalFor(ins, 'insulin_treated_diabetes'), true);
+  assert.equal(definitionalFor('TAB METFORMIN 500', 'insulin_treated_diabetes'), false);
+  assert.equal(definitionalFor('TAB METFORMIN 500', 'diabetes_mellitus'), true);
 });

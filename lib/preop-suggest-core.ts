@@ -129,6 +129,19 @@ export function spanNamesADrug(span: string): string | null {
 }
 
 /**
+ * True when THIS span names the drug class whose definition IS this input. A span naming an
+ * oral hypoglycaemic is definitional for `diabetes_mellitus`; it is NOT definitional for
+ * `insulin_treated_diabetes`, in either direction.
+ */
+export function definitionalFor(span: string, inputId: PreopInputId): boolean {
+  if (!RX_DEFINITIONAL_INPUTS.has(inputId)) return false;
+  const t = String(span ?? '').toLowerCase();
+  return RX_RULES.some((r) =>
+    r.present.includes(inputId)
+    && r.names.some((n) => new RegExp(`(^|[^a-z])${n}([^a-z]|$)`, 'i').test(t)));
+}
+
+/**
  * The gate. A span is medication-ONLY when it reads as a pharmacy line AND names no disease
  * — because the prompt's rule is "if the only evidence you can copy is a drug name, return
  * nothing for that item". A span that says "IHD, on TAB ECOSPRIN 75" carries a disease name,
@@ -209,11 +222,19 @@ export function reconcileReads(reads: VerifyResult[]): { suggestions: PreopSugge
     const first = seen[0];
     if (!first) continue;
 
-    // GATE — the banned inference, applied before anything else. A span that names a drug
-    // may only ever suggest an input whose definition IS that drug class; B8a owns those
-    // deterministically, so in practice this drops the suggestion entirely.
+    // GATE — the banned inference, applied before anything else. A span that reads as a
+    // pharmacy line may only support an input whose definition IS *that* drug class.
+    //
+    // ⚠️ AND "that" IS DOING REAL WORK. The first cut allowed any input in
+    // RX_DEFINITIONAL_INPUTS through, which let three suggestions of
+    // insulin_treated_diabetes ABSENT survive on spans naming ORAL agents — "TAB GLYCOMET
+    // GP1", "TAB METFORMIN 500MG 1-0-1", "TAB GLIMIPRIDE + METFORMIN". That is precisely
+    // the inference B8a refuses to make deterministically (a type-2 diabetic on metformin
+    // plus basal insulin is an ordinary patient, and a list may be incomplete), and a
+    // human confirming it would collapse an RCRI range on the reasoning B7 got wrong.
+    // Found on the 48-episode golden set, not reasoned about in advance.
     const drug = spanIsMedicationOnly(first.rawText);
-    if (drug && !RX_DEFINITIONAL_INPUTS.has(inputId)) {
+    if (drug && !definitionalFor(first.rawText, inputId)) {
       dropped.push({ inputId, span: first.rawText, reason: 'medication_inference', detail: drug });
       continue;
     }

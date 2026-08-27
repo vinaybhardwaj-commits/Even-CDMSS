@@ -139,6 +139,75 @@ clinical rail must never be switched on by a typo, and a test asserts it.
   deterministically now, and asking a model for a fact a table already has is how the
   rabeprazole reading happened.
 
+### Measured on the golden set — 48 episodes with text, 144 reads
+
+| | |
+|---|---|
+| Cold reads | **144** (48 episodes × 3) |
+| **Warm reads, same text** | **0** — the anti-flap rail, unchanged and holding |
+| Proposals refused by the medication gate | **0** |
+| Rabeprazole-class suggestions | **0** |
+
+**The gate never had to fire, and that is the result.** Told rule 6a in so many words — *"NEVER
+derive a condition from a medication name… if the only evidence you can copy is a drug name,
+return nothing"* — the model stopped making the inference. Across 48 episodes it proposed no
+diagnosis off a pharmacy line. The gate stands behind that as the thing that does not depend
+on the model continuing to behave.
+
+### …and one hole the golden set found in the gate itself
+
+Three suggestions of **insulin-treated diabetes ABSENT** survived, on spans naming ORAL
+agents — `"TAB GLYCOMET GP1"`, `"DIABETES SINCE 15 YEARS ,TAB METFORMIN 500MG 1-0-1"`,
+`"TAB GLIMIPRIDE + METFORMIN"`.
+
+They survived because the carve-out was written per-INPUT (`insulin_treated_diabetes` is a
+definitional input) rather than per-CLASS. But an oral agent is definitional for *diabetes*
+and definitional for **nothing about insulin** — which is exactly the inference B8a refuses
+to make deterministically, and exactly the reasoning B7 got wrong. A clinician confirming one
+would collapse an RCRI range on it.
+
+Fixed: `definitionalFor(span, input)` now requires the span to name the drug class whose
+definition **is** that input. An insulin span may still support the RCRI factor; a metformin
+span may not, in either direction. Found on the corpus, not reasoned about in advance.
+
+### THE STABILITY TABLE — and what it says about B8d
+
+Three reads of the same text at temperature 0, agreement per field class:
+
+| Class | n | unanimous | majority | split | **stability** |
+|---|---|---|---|---|---|
+| insulin_treated_diabetes | 13 | 7 | 2 | 4 | **0.538** |
+| functional_status_dependent | 16 | 7 | 4 | 5 | **0.438** |
+| cerebrovascular_disease | 10 | 4 | 3 | 3 | 0.400 |
+| chronic_pulmonary_disease | 10 | 4 | 3 | 3 | 0.400 |
+| congestive_heart_failure | 9 | 3 | 3 | 3 | 0.333 |
+| ischaemic_heart_disease | 9 | 3 | 3 | 3 | 0.333 |
+| any_tumour · connective_tissue_disease | 10 | 3 | 3 | 4 | 0.300 |
+| dementia | 14 | 4 | 4 | 6 | 0.286 |
+| hemiplegia | 11 | 3 | 4 | 4 | 0.273 |
+| aids · leukaemia · lymphoma · metastatic_solid_tumour · moderate_severe_liver_disease | 8 | 2 | 2 | 4 | 0.250 |
+| copd_or_pneumonia · diabetes_end_organ_damage · mild_liver_disease · moderate_severe_renal_disease · peripheral_vascular_disease | 9 | 2 | 3 | 4 | 0.222 |
+| peptic_ulcer_disease | 10 | 2 | 3 | 5 | 0.200 |
+| myocardial_infarction | 7 | 1 | 3 | 3 | **0.143** |
+
+**No class is remotely near the 100% bar B8d requires. The best is 0.54; the median is
+0.27.** B7 measured 40% disagreement between two reads of the same text; three reads make it
+sharper — roughly **70% of readings are not unanimous**.
+
+This is the single most important number in the slice, and it settles two things:
+
+1. **B8's design is the right one.** A rail this unstable had no business asserting inputs,
+   and the demotion is not a precaution — it is a response to a measurement.
+2. **`score` mode will not open on this evidence.** Not for functional status, not for
+   insulin, not for anything. The promotion gate exists to be shut, and it is shut.
+
+It also tells a clinician something useful before the flag is flipped: the chips they see are
+one draw from a wide distribution. They are stable *on the page* — the stored record means
+the same note always shows the same chips — but a different run of the same note would have
+shown different ones. That is why every chip carries its agreement count in words
+("agreed on all 3 reads" / "2 of 3 reads") rather than a percentage that would imply more
+than it means.
+
 ### Cost
 
 Three reads cost almost nothing because the anti-flap rail is unchanged: the record is keyed
@@ -162,6 +231,21 @@ A class is promotable only when **all** of:
 No UI, deliberately: it is a constant changed by pull request, because a promotion is a
 clinical decision with a paper trail rather than a toggle somebody can find at 2am. A test
 asserts no component or route touches the list.
+
+---
+
+## 4a · The flood, and what the panel does about it
+
+A Preview probe with the rail on found one misspelt span — `"no comorbities"` — producing
+**nineteen unanimous ABSENT suggestions on a single episode**, every one already settled the
+same way by the booking form's closed world. Confirming them moves nothing. Dismissing them
+is nineteen clicks.
+
+So the panel offers only what would **change** something: a reading that differs from the
+current resolved status, or one on an input still UNKNOWN. The rest are counted and said out
+loud in the footer — *"N further readings agreed with what the record already says and are
+not shown"* — rather than quietly dropped. It is the B5 corroboration rule applied to a
+clinician's attention, and without it this rail would have been unusable on its first day.
 
 ---
 
@@ -223,12 +307,17 @@ is already 0. It becomes observable the first time a RED case comes inside a wee
    status that deserves a conscious yes.
 3. **HUMAN is ranked above everything (−1).** A confirmation can overturn a mapped PAC field
    or a lab. That is deliberate and audited, and it is the strongest claim in the module.
-4. **`preop-assemble/1` was not bumped again.** B8a adds sources; it does not change how
+4. **At today's stability, even the SUGGESTIONS are noisy.** §3's table is not only a B8d
+   verdict — it is a warning about what `suggest` mode will feel like. The chips are stable
+   on the page (the stored record guarantees it), but they are one draw from a wide
+   distribution. Worth knowing before the flag is flipped, and worth a second look after a
+   week of real decisions.
+5. **`preop-assemble/1` was not bumped again.** B8a adds sources; it does not change how
    sources are resolved. Flag-off readings for episodes with no harvestable text are
    byte-identical, and the six that move do so because new evidence was read, not because
    the rule changed.
-5. **Migration 0044 has not been run on production** — the branch is unmerged and the table
-   is only needed when the mode is flipped.
+6. **Migration 0044 HAS been run on production**, twice and idempotently, from the Preview —
+   the table is additive, empty, and read by nothing until the mode is flipped.
 
 ---
 
