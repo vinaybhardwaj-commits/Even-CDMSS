@@ -52,6 +52,52 @@ export const REEXTRACT_MAX_DOCS_PER_REQUEST = 20;
 export const REEXTRACT_DEFAULT_DOCS_PER_REQUEST = 6;
 /** Stop starting new documents past this wall — the request must return a report, not a timeout. */
 export const REEXTRACT_WALL_BUDGET_MS = 210_000;
+/** The refresh leg's per-request ceiling and default — one Opus case is ~200 s of work. */
+export const REFRESH_MAX_CASES_PER_REQUEST = 3;
+export const REFRESH_DEFAULT_CASES_PER_REQUEST = 1;
+
+/**
+ * R10.1 — resolve a `?limit=` query value.
+ *
+ * THE RULE (identical on both legs): a limit must be a finite parse of at least 1. Anything else —
+ * absent, null, empty string, 0, negative, NaN, non-numeric — takes the fallback. A present value
+ * above `max` clamps to `max`.
+ *
+ * Why this exists: the previous helper wrote `Number.isFinite(Number(v)) ? … : fallback`, and
+ * `Number(null)` is 0, which IS finite. So an ABSENT param passed the guard and resolved to 0, and
+ * the fallback was unreachable. Both cores defensively floor at `Math.max(1, …)`, so nothing ever
+ * no-opped — but extract silently ran at ONE document per call instead of six (measured in
+ * production: 154 rows took 47 calls / 153 min), and the operator hint printed `limit=0`, teaching
+ * whoever copied it to keep doing that. An explicit `?limit=0` is coerced to the fallback too:
+ * a zero-document walk has no legitimate use, and `?action=scan` already covers read-only counting.
+ */
+export const resolveLimit = (v: string | null, fallback: number, max: number): number => {
+  if (v === null || v.trim() === '') return fallback;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  const floored = Math.floor(n);
+  if (floored < 1) return fallback;
+  return Math.min(floored, max);
+};
+
+/** `?offset=` — a finite parse of at least 0, else 0. Absent means "start at the beginning". */
+export const resolveOffset = (v: string | null): number => {
+  if (v === null || v.trim() === '') return 0;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.floor(n));
+};
+
+/**
+ * The operator's next step, said in the response so nobody has to hold the loop in their head.
+ * Takes the ALREADY-RESOLVED limit, so the hint can never disagree with the limit actually spent
+ * and can never print `limit=0`.
+ */
+export const nextHint = (a: { totalRows: number | null; nextOffset: number; limit: number }): string =>
+  a.totalRows != null && a.nextOffset >= a.totalRows
+    ? 'cohort complete — every finding at this engine has been walked'
+    : `call again with ?offset=${a.nextOffset}&limit=${a.limit}`;
+
 /** Rows scanned per request while spending the document budget (the cursor's window). */
 const ROW_WINDOW = 60;
 
@@ -259,7 +305,7 @@ export async function refreshGainedTextCases(opts: { limit?: number; engineVersi
   ok: boolean; reason?: string; pending: number; scanned: number; refreshed: GainedTextRefreshResult[];
 }> {
   const engine = opts.engineVersion ?? READMIT_ENGINE_VERSION;
-  const limit = Math.max(1, Math.min(3, Math.floor(opts.limit ?? 1)));
+  const limit = Math.max(1, Math.min(REFRESH_MAX_CASES_PER_REQUEST, Math.floor(opts.limit ?? REFRESH_DEFAULT_CASES_PER_REQUEST)));
   if (!probeReachable('bedrock')) {
     return { ok: false, reason: 'bedrock is not reachable in this deployment — refusing to start a refresh that cannot run', pending: 0, scanned: 0, refreshed: [] };
   }

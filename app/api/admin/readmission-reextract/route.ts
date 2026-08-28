@@ -34,17 +34,14 @@ import { DOC_EXTRACT_VERSION } from '@/lib/discharge-extract-store';
 import { READMIT_ENGINE_VERSION } from '@/lib/readmission/store';
 import {
   REEXTRACT_DEFAULT_DOCS_PER_REQUEST, REEXTRACT_MAX_DOCS_PER_REQUEST,
+  REFRESH_DEFAULT_CASES_PER_REQUEST, REFRESH_MAX_CASES_PER_REQUEST,
+  nextHint, resolveLimit, resolveOffset,
   refreshGainedTextCases, runReextractBatch, scanGainedTextPending,
 } from '@/lib/readmission/reextract';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
-
-const num = (v: string | null, fallback: number): number => {
-  const n = Number(v);
-  return Number.isFinite(n) ? Math.floor(n) : fallback;
-};
 
 export async function POST(req: NextRequest) {
   const denied = requireAdmin(req);
@@ -62,7 +59,9 @@ export async function POST(req: NextRequest) {
   }
 
   if (action === 'refresh') {
-    const r = await refreshGainedTextCases({ limit: num(p.get('limit'), 1) });
+    const r = await refreshGainedTextCases({
+      limit: resolveLimit(p.get('limit'), REFRESH_DEFAULT_CASES_PER_REQUEST, REFRESH_MAX_CASES_PER_REQUEST),
+    });
     return NextResponse.json({ action, engineVersion: READMIT_ENGINE_VERSION, ...r }, { status: r.ok ? 200 : 409 });
   }
 
@@ -70,16 +69,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: `unknown action '${action}' — extract | scan | refresh` }, { status: 400 });
   }
 
-  const batch = await runReextractBatch({
-    offset: num(p.get('offset'), 0),
-    limit: num(p.get('limit'), REEXTRACT_DEFAULT_DOCS_PER_REQUEST),
-  });
+  // Resolved ONCE and reused for both the walk and the hint, so the hint can never advertise a
+  // limit the request did not actually spend (R10.1).
+  const limit = resolveLimit(p.get('limit'), REEXTRACT_DEFAULT_DOCS_PER_REQUEST, REEXTRACT_MAX_DOCS_PER_REQUEST);
+  const batch = await runReextractBatch({ offset: resolveOffset(p.get('offset')), limit });
   return NextResponse.json({
     action,
     ...batch,
-    // Said in the response so an operator never has to hold the loop in their head.
-    next: batch.totalRows != null && batch.nextOffset >= batch.totalRows
-      ? 'cohort complete — every finding at this engine has been walked'
-      : `call again with ?offset=${batch.nextOffset}&limit=${Math.min(REEXTRACT_MAX_DOCS_PER_REQUEST, num(p.get('limit'), REEXTRACT_DEFAULT_DOCS_PER_REQUEST))}`,
+    next: nextHint({ totalRows: batch.totalRows, nextOffset: batch.nextOffset, limit }),
   });
 }
