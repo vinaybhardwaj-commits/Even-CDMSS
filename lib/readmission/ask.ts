@@ -41,7 +41,7 @@ import {
   unknownRecordCopy,
   ASK_BUDGET_MS, ASK_MAX_TOKENS, ASK_MAX_TRIES, ASK_TEMPERATURE, ASK_TOOL_CALL_BUDGET_MS,
   ASK_TOOL_TOTAL_BUDGET_MS, FETCH_RECORD_INPUT_SCHEMA, FETCH_RECORD_TOOL_DESCRIPTION,
-  FETCH_RECORD_TOOL_NAME, RECORD_FETCH_MAX,
+  FETCH_RECORD_TOOL_NAME, RECORD_FETCH_MAX, RECORD_HELD_IN_PROMPT_MAX,
   type AskMaterial, type AskTurn, type AskVerdict, type RetrievedArtefact,
 } from '../readmission-ask-core';
 import { toolCallsOf, type ChatCompletionLike, type ConverseContentBlock, type ConverseToolConfig } from '../bedrock';
@@ -128,8 +128,15 @@ export async function answerCaseQuestion(a: {
   const held = [...(a.held ?? [])];
   const indexText = a.reach && a.reach.index.entries.length ? renderRecordIndex(a.reach.index) : '';
   const canFetch = indexText !== '';
+  // Only the most recent RECORD_HELD_IN_PROMPT_MAX are re-shown in full; the rest stay CITABLE (see
+  // `recordIds` below) and their absence from the prompt is stated rather than hidden.
+  const shown = held.slice(-RECORD_HELD_IN_PROMPT_MAX);
   const prompt = buildAskPrompt(a.material, a.history, a.question, canFetch || held.length
-    ? { index: indexText, retrieved: held.map((r) => ({ id: r.id, label: r.label, date: r.date, text: r.text })) }
+    ? {
+      index: indexText,
+      retrieved: shown.map((r) => ({ id: r.id, label: r.label, date: r.date, text: r.text })),
+      olderNotShown: held.length - shown.length,
+    }
     : undefined);
   const traceId = a.call ? 'test-trace' : await startTrace(ASK_STAGE, { dedupKey: a.dedupKey, model: `bedrock:${NARRATIVE_MODEL_ID}`, turns: a.history.length });
   const fetched: RetrievedArtefact[] = [];

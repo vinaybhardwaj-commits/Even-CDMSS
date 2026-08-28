@@ -38,7 +38,8 @@ import { artefactStateWord, chipText, templateChipState } from '../readmission-s
 import { deidText, docOperativeItems } from '../readmission/assemble.ts';
 import { reconPromptFingerprints } from '../readmission-refresh-core.ts';
 import {
-  EMPTY_RECORD_INDEX, FETCH_RECORD_INPUT_SCHEMA, FETCH_RECORD_TOOL_NAME, RECORD_FETCH_MAX,
+  EMPTY_RECORD_INDEX, FETCH_RECORD_INPUT_SCHEMA, FETCH_RECORD_TOOL_NAME, RECORD_ARTEFACT_MAX_CHARS,
+  RECORD_FETCH_MAX, RECORD_HELD_IN_PROMPT_MAX,
   RECORD_KINDS, RECORD_MAX_PER_KIND, askVerdict, isRecordId, loopExhaustedCopy, mintRecordIndex,
   parseFetchRecordArgs, renderRecordIndex, retrievedChipLabel, unknownRecordCopy,
   ASK_ADVISORY, ASK_TOOL_CALL_BUDGET_MS, ASK_TOOL_TOTAL_BUDGET_MS,
@@ -467,4 +468,19 @@ test('the backfill route offers exactly three actions and REFUSES anything else,
   // And it reports the R8.1 snapshot ids R10-D3 asks for by name.
   assert.match(lib, /listVersionsForCase/);
   assert.match(lib, /snapshotId/);
+});
+
+test('a long thread cannot grow its own prompt without bound: only the most recent held artefacts are reprinted, the omission is STATED, and every held id stays citable', () => {
+  // The hazard: 200 stored artefacts × 6,000 chars re-injected on every later turn is a conversation
+  // that gets silently worse the longer it runs, and then fails outright.
+  assert.ok(RECORD_HELD_IN_PROMPT_MAX * RECORD_ARTEFACT_MAX_CHARS < 60_000, 'the reprint must stay bounded');
+  const ask = code('lib/readmission/ask.ts');
+  assert.match(ask, /const shown = held\.slice\(-RECORD_HELD_IN_PROMPT_MAX\);/);
+  // Citation resolution reads the WHOLE held set, not the reprinted slice — an answer that refers
+  // back to an artefact fetched ten turns ago is still a valid citation.
+  assert.match(ask, /const recordIds = \[\.\.\.held\.map\(\(r\) => r\.id\), \.\.\.fetched\.map\(\(r\) => r\.id\)\];/);
+  // And the cut is said out loud, so the model never reads it as "those records are gone".
+  const prompts = code('lib/readmission-prompts.ts');
+  assert.match(prompts, /are not reprinted above/);
+  assert.match(prompts, /you may still cite them by their X id/);
 });

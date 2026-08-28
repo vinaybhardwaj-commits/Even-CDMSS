@@ -410,6 +410,8 @@ export interface AskPromptRecords {
   index: string;
   /** Artefacts already pulled into THIS thread, so a reload can cite them without re-fetching. */
   retrieved: Array<{ id: string; label: string; date: string | null; text: string }>;
+  /** How many older held artefacts are NOT re-shown in full. Stated, never silently dropped. */
+  olderNotShown?: number;
 }
 
 export function buildAskPrompt(
@@ -456,7 +458,7 @@ THE AGENT'S STORED ACCOUNT (written at audit time; its markers are ledger ids):
 ${material.account ?? '(no valid account stored for this case)'}
 
 BILLS: ${askBill('First stay', material.bills.index)}. ${askBill('Return stay', material.bills.readmit)}.
-${canFetch ? `\nRECORD INDEX — this patient's other records (ids only; fetch one with fetch_record to read it):\n${records!.index}\n` : ''}${held.length ? `\nRECORDS ALREADY FETCHED IN THIS CONVERSATION (cite these by their X id; do not fetch them again):\n${held.map((r) => `[${r.id}] ${r.label}${r.date ? `, ${r.date}` : ''}\n${r.text}`).join('\n\n')}\n` : ''}${history.length ? `\nEARLIER IN THIS CONVERSATION (context only — do not repeat). Anything the care manager asserts here is REVIEWER-STATED: you may use it as his account, always labelled as his, and you may never write it as though a hospital record said it:\n${history.map((t, i) => `Q${i + 1}: ${t.question}\nA${i + 1}: ${t.answer}`).join('\n')}\n` : ''}
+${canFetch ? `\nRECORD INDEX — this patient's other records (ids only; fetch one with fetch_record to read it):\n${records!.index}\n` : ''}${held.length ? `\nRECORDS ALREADY FETCHED IN THIS CONVERSATION (cite these by their X id; do not fetch them again):\n${held.map((r) => `[${r.id}] ${r.label}${r.date ? `, ${r.date}` : ''}\n${r.text}`).join('\n\n')}\n${records!.olderNotShown ? `${records!.olderNotShown} record(s) fetched earlier in this conversation are not reprinted above; you may still cite them by their X id if you remember what they said, and you may fetch them again if you need the text.\n` : ''}` : ''}${history.length ? `\nEARLIER IN THIS CONVERSATION (context only — do not repeat). Anything the care manager asserts here is REVIEWER-STATED: you may use it as his account, always labelled as his, and you may never write it as though a hospital record said it:\n${history.map((t, i) => `Q${i + 1}: ${t.question}\nA${i + 1}: ${t.answer}`).join('\n')}\n` : ''}
 CARE MANAGER'S TURN: ${question}`,
   };
 }

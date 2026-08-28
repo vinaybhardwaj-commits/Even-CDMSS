@@ -359,6 +359,17 @@ export const RECORD_MAX_PER_KIND = 20;
 export const RECORD_FETCH_MAX = 5;
 /** One retrieved artefact's text cap, applied before storage and before the model sees it. */
 export const RECORD_ARTEFACT_MAX_CHARS = 6_000;
+/**
+ * How many ALREADY-FETCHED artefacts are re-shown in full on a later turn.
+ *
+ * ⚠️ THIS CAP IS NOT COSMETIC. A thread may accumulate up to 200 stored artefacts; re-injecting all
+ * of them at RECORD_ARTEFACT_MAX_CHARS each would put over a megabyte of prompt on turn six and the
+ * call would fail — a conversation that got slowly, silently worse the longer it went on. The most
+ * recent 8 are re-shown; EVERY held id still resolves for citation, so an answer that refers back to
+ * an older artefact is still valid, and the prompt says how many are not shown so the model never
+ * reads the cut as "those records are gone".
+ */
+export const RECORD_HELD_IN_PROMPT_MAX = 8;
 
 /** Plain clinical English for each kind (R4.2's language rule: no system vocabulary on a surface). */
 export const RECORD_KIND_LABEL: Readonly<Record<RecordKind, string>> = {
