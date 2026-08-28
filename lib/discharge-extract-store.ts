@@ -32,8 +32,20 @@ import type { ExtractedCase } from './doc-audit-core';
  * extract prompt changes in a way that makes an old row unusable — the upsert key is
  * (document_id, extraction_version), so a bump re-extracts rather than overwriting,
  * and both readers move together.
+ *
+ * doc-extract/1 → doc-extract/2 (R10-A, 28 Aug 2026; PRD R10-D2). `verbatim_sections` was added
+ * to the extract contract, so a doc-extract/1 row is not merely thinner — it CANNOT answer the
+ * question R10 asks of it ("does this document print an operative block?"). Reading one as if it
+ * could would reproduce the exact defect R10 fixes: silence read as absence.
+ *
+ * ⚠️ THE BUMP COSTS BOTH READERS, ON PURPOSE. The store is shared with the IPD discharge audit
+ * (lib/ipd-audit/run.ts), so its next read of any document also finds no row at doc-extract/2 and
+ * re-extracts. That is the price of one shared extraction and it is the same price the store's own
+ * doc comment names; the readmission backfill (POST /api/admin/readmission-reextract) pays it up
+ * front for the ~190 documents the readmission cohort actually needs, and every other document is
+ * re-read lazily, once, by whichever reader gets there first.
  */
-export const DOC_EXTRACT_VERSION = 'doc-extract/1';
+export const DOC_EXTRACT_VERSION = 'doc-extract/2';
 
 export interface StoredExtractedCase {
   documentId: string;

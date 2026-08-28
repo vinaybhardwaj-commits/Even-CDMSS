@@ -5291,7 +5291,7 @@ export const VERSION_REGISTRY: VersionRow[] = [
   },
   {
     "constName": "DOC_EXTRACT_VERSION",
-    "value": "doc-extract/1",
+    "value": "doc-extract/2",
     "file": "lib/discharge-extract-store.ts",
     "derived": false
   },

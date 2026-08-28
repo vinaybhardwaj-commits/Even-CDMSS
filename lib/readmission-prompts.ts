@@ -27,6 +27,12 @@ const sourceLabel = (i: EvidenceItem): string => {
     // R2 source 4: weight by SIDE (R2-2), exactly as the two summaries are weighed.
     case 'ot_note': case 'pac_note': case 'progress_note':
       return `${i.source === 'ot_note' ? 'OT note' : i.source === 'pac_note' ? 'pre-anaesthesia check' : 'progress note'} — ${i.side === 'readmit' ? 'the readmit team\'s contemporaneous record (disinterested)' : 'the treating team\'s contemporaneous record (interested)'}`;
+    // R10-A: operative text PRINTED IN a discharge document. The label says where it came from and
+    // what it is not, so the model can quote it without ever calling it a structured OT record.
+    // NOTE (deliberate): the R4.1 probe-gate fingerprints are computed over a FIXTURE catalog that
+    // carries no DOT item, so adding this case does not move them and the armed probe stays armed.
+    case 'doc_operative_text':
+      return 'operative text found in the discharge document (the treating team\'s own printed account, interested) — NOT a structured OT note';
     default: return 'evidence';
   }
 };
@@ -380,6 +386,8 @@ export interface AskPromptTurn { question: string; answer: string }
 const askSource = (s: string): string => ({
   index_summary: 'discharge summary — first stay', readmit_summary: 'discharge summary — return stay', lab: 'lab', adt: 'admission record',
   cm_form: 'care-manager follow-up form (patient-reported)', ot_note: 'operative note', pac_note: 'pre-anaesthesia check', progress_note: 'ward progress note',
+  // R10-A — plain clinical English (R4.2's rule), and it names the document, not a theatre record.
+  doc_operative_text: 'operative text printed in the discharge document',
 } as Record<string, string>)[s] ?? s;
 const askWeight = (w: string): string => ({ interested: "treating team's own account", disinterested: 'independent record', neither: 'patient-reported account' } as Record<string, string>)[w] ?? w;
 const askBill = (label: string, b: AskPromptMaterial['bills']['index']): string => {

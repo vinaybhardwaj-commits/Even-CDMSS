@@ -84,6 +84,9 @@ const CHIP_STATE: Record<ChipState, string> = {
   present: 'bg-emerald-100 text-emerald-800 border border-emerald-200',
   empty: 'bg-transparent text-amber-800 border border-amber-300',
   absent: 'bg-transparent text-slate-600 border border-slate-300',
+  // R10-A — "OT in document": the text exists and is cited, it is just not a structured OT row.
+  // Solid enough to read as evidence, sky rather than emerald so it is never mistaken for a db13 row.
+  document_text: 'bg-sky-50 text-sky-800 border border-sky-200',
   unknown: 'bg-transparent text-slate-500 border border-slate-200 border-dashed',
   'n/a': 'bg-slate-50 text-slate-400 border border-slate-100 line-through',
 };

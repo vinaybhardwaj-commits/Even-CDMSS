@@ -164,7 +164,7 @@ async function vertexPass(
  * second edit to the protected module, and decision 7.1 permits exactly one (the
  * persistence write). Eight lines of duplication is the cheaper price. Flagged.
  */
-async function fetchPdfBytes(url: string): Promise<Buffer> {
+export async function fetchPdfBytes(url: string): Promise<Buffer> {
   let res = await fetch(url).catch(() => null);
   if (!res?.ok) {
     const token = await getVertexAccessToken();
@@ -174,7 +174,7 @@ async function fetchPdfBytes(url: string): Promise<Buffer> {
   return Buffer.from(await res.arrayBuffer());
 }
 
-interface LoadedCase {
+export interface LoadedCase {
   extracted: ExtractedCase | null;
   source: CaseSource;
   documentId: string | null;
@@ -187,8 +187,14 @@ interface LoadedCase {
  *
  * Never throws: every failure path returns a null case, which the tier resolver turns
  * into TIER 3 (not auditable) rather than a guess.
+ *
+ * R10-A: EXPORTED (was module-private) so the re-extraction backfill
+ * (lib/readmission/reextract.ts) re-uses this exact path rather than restating it. That reuse is
+ * what makes the backfill idempotent by version for free: DOC_EXTRACT_VERSION bumped, so the
+ * store-first read misses once, extracts, writes back — and every later call hits the store and
+ * pays nothing. There is no second definition of "read this stay's discharge document".
  */
-async function loadExtractedCase(encounterId: string | null): Promise<LoadedCase> {
+export async function loadExtractedCase(encounterId: string | null): Promise<LoadedCase> {
   const miss: LoadedCase = { extracted: null, source: null, documentId: null };
   if (!encounterId) return miss;
   try {

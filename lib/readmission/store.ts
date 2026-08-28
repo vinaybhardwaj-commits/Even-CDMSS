@@ -654,6 +654,59 @@ export async function auditedRowForNarrative(dedupKey: string, engineVersion: st
   }
 }
 
+// ── R10-A (CDMSS-READMISSIONS-R10-RECORD-REACH PRD §3.3, R10-D2) — the re-extraction cohort ──
+//
+// EVERY finding at the engine, whatever its audit status, with the two encounter ids and its
+// finding blob. Deliberately NOT filtered to `audited`: R10-D2 says re-extract all stored cases —
+// "93 audited + pending" — and a pending pair whose document prints operative text is exactly the
+// pair that must not be audited from a blind extraction in the first place.
+//
+// Ordered by dedup_key so the backfill's `offset` cursor is stable across requests, which is the
+// only thing that makes "call it again until next_offset === total" an honest instruction.
+//
+// ⚠️ INFERRED SQL. Fail-safe: [] on any fault — the backfill then reports zero rows to consider
+// rather than claiming the cohort is finished.
+export interface ReextractRow extends Record<string, unknown> {
+  dedup_key: string;
+  finding_class: string;
+  audit_status: string | null;
+  index_encounter_id: string;
+  readmit_encounter_id: string | null;
+  finding: unknown;
+}
+
+export async function rowsForReextract(opts: { engineVersion?: string; limit?: number; offset?: number } = {}): Promise<ReextractRow[]> {
+  const engine = opts.engineVersion ?? READMIT_ENGINE_VERSION;
+  const limit = Math.max(1, Math.min(500, Math.floor(opts.limit ?? 500)));
+  const offset = Math.max(0, Math.floor(opts.offset ?? 0));
+  try {
+    return (await sql(
+      `SELECT dedup_key, finding_class, audit_status, index_encounter_id, readmit_encounter_id, finding
+         FROM readmission_findings
+        WHERE engine_version = $1
+        ORDER BY dedup_key ASC
+        LIMIT ${limit} OFFSET ${offset}`,
+      [engine],
+    )) as ReextractRow[];
+  } catch {
+    return [];
+  }
+}
+
+/** How many findings the re-extraction cohort holds at this engine. Null on fault — the backfill
+ *  reports "total unknown" rather than a zero that would read as "nothing to do". */
+export async function reextractCohortSize(engineVersion: string = READMIT_ENGINE_VERSION): Promise<number | null> {
+  try {
+    const rows = (await sql(
+      `SELECT count(*)::int AS n FROM readmission_findings WHERE engine_version = $1`,
+      [engineVersion],
+    )) as Array<{ n: number }>;
+    return Number(rows[0]?.n ?? 0);
+  } catch {
+    return null;
+  }
+}
+
 // ── R4.1 (CDMSS-READMISSIONS-R4.1-PRD v1.0 R41-4) — the refresh detector's read ─────────────
 //
 // Every AUDITED finding at the engine (optionally on one audited_at UTC day), WITH its finding blob
