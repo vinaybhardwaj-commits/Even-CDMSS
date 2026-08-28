@@ -1584,11 +1584,6 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "doc-audit-core",
-    "kind": "type"
-  },
-  {
-    "from": "app/api",
-    "to": "doc-audit-core",
     "kind": "value"
   },
   {
@@ -1680,6 +1675,11 @@ export const MAP_EDGES: MapEdge[] = [
     "from": "app/api",
     "to": "investigations",
     "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "ipd-audit",
+    "kind": "type"
   },
   {
     "from": "app/api",
@@ -2500,6 +2500,11 @@ export const MAP_EDGES: MapEdge[] = [
     "from": "case-ask",
     "to": "doc-audit-core",
     "kind": "type"
+  },
+  {
+    "from": "case-ask",
+    "to": "ipd-audit",
+    "kind": "value"
   },
   {
     "from": "case-ask",

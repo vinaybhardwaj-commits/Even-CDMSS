@@ -25,6 +25,15 @@
  * their own thread rather than inheriting an argument about the discharge-only numbers, while the
  * 0.2 rows and their threads stay exactly as they are.
  *
+ * P3.1 (addendum A7) — THE MATERIAL IS THE READING THE PAGE LEADS WITH. One row is opened, by the
+ * id in the URL, and everything the box says comes from that row: its findings, its numbers, and —
+ * new here — the `stayCoverage` its own report stores, which is the same block the stay panel on
+ * the page renders. Nothing is borrowed from the sibling row: a stay-level reading and a
+ * discharge-only reading are two different audits with two different Care-Value Indices, and an
+ * answer citing one while the page renders the other would be the same contradiction A7 caught,
+ * moved rather than fixed. The thread key is untouched, so every thread stored before this ship
+ * stays readable under its own (case, engine) key.
+ *
  * ⚠️ INFERRED SQL: this sandbox has no live Neon. The one query below is listed verbatim in the
  * slice report for validation against the live system.
  */
@@ -33,7 +42,7 @@ import type { NextRequest } from 'next/server';
 import { requireAdmin } from '@/lib/admin-gate';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { sql } from '@/lib/db';
-import type { AuditReport } from '@/lib/doc-audit-core';
+import type { StayAuditReport } from '@/lib/ipd-audit/assemble';
 import { probeReachable } from '@/lib/lab-override';
 import { normaliseQuestion } from '@/lib/case-ask-core';
 import { ipdAskMaterial, type IpdAuditMaterialRow } from '@/lib/case-ask/ask';
@@ -50,10 +59,12 @@ const IPD_ENGINE_FALLBACK = 'ipd-discharge-audit/0.2';
 /** O8 — role-only attribution; this ship does not invent a person. */
 const ACTOR = 'admin';
 
-function parseReport(v: unknown): AuditReport | null {
+/** The stored report. Typed as the STAY report — the superset that may carry `stayCoverage` — so
+ *  a 0.2 row simply has none and the discharge-only reading is described honestly (P3.1). */
+function parseReport(v: unknown): StayAuditReport | null {
   if (v == null) return null;
-  if (typeof v !== 'string') return v as AuditReport;
-  try { return JSON.parse(v) as AuditReport; } catch { return null; }
+  if (typeof v !== 'string') return v as StayAuditReport;
+  try { return JSON.parse(v) as StayAuditReport; } catch { return null; }
 }
 
 /** Load ONE IPD audit row and turn it into material. A miss is a 404 that never reaches the model
@@ -73,7 +84,11 @@ function loadIpdCase(auditId: string): () => Promise<CaseAskLoad> {
     const r = rows[0] as (IpdAuditMaterialRow & { report?: unknown }) | undefined;
     if (!r) return { ok: false, status: 404, error: 'not found' };
     const engineVersion = String(r.engine_version ?? '') || IPD_ENGINE_FALLBACK;
-    return { ok: true, engineVersion, material: ipdAskMaterial(r, parseReport(r.report), engineVersion) };
+    const report = parseReport(r.report);
+    // P3.1 — this row's OWN coverage, or null. A 0.2 row has none and says so; a stay row has the
+    // block the page renders beside this box.
+    const coverage = report?.stayCoverage ?? null;
+    return { ok: true, engineVersion, material: ipdAskMaterial(r, report, engineVersion, coverage) };
   };
 }
 

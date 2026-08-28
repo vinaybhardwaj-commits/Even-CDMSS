@@ -25,6 +25,9 @@ import { PRICING } from '../llm-cost';
 import { costUsd } from '../llm-cost-core';
 import type { AuditFinding, AuditReport } from '../doc-audit-core';
 import {
+  IPD_STAY_ENGINE_VERSION, STAY_ABSENCE_INSTRUCTION, type StayCoverageBlock,
+} from '../ipd-audit/stay-material';
+import {
   buildCaseAskPrompt, caseAskVerdict, parseAskReply,
   CASE_ASK_BUDGET_MS, CASE_ASK_MAX_TOKENS, CASE_ASK_MAX_TRIES, CASE_ASK_MODEL_ID, CASE_ASK_PROVIDER,
   CASE_ASK_TEMPERATURE,
@@ -143,8 +146,21 @@ export interface IpdAuditMaterialRow {
  * PURE — the IPD case's material. Same shape as the OPD one; the numbers differ (CVI + band +
  * completeness rather than NQI + the five domain scores) and the gaps come from the report's
  * `completeness.missingMandatory`, which is the audit's own honest list of what the summary omitted.
+ *
+ * P3.1 (addendum A7) — `coverage` IS THE READING'S OWN `stayCoverage`, the block the row's report
+ * stores and the case page renders. It is what makes the answer able to agree with the stay panel
+ * instead of contradicting it: before this, the material ended with a hard-coded P1 sentence saying
+ * the audit had read the discharge summary only, which was true of `ipd-discharge-audit/0.2` and
+ * FALSE of an `ipd-stay-audit/0.1` row that had read four documents. Pass the coverage of THIS row's
+ * report and nothing else — a sibling row's coverage describes a different reading, and lending it
+ * to this one would put a document in the answer that this audit never opened.
  */
-export function ipdAskMaterial(row: IpdAuditMaterialRow, report: AuditReport | null, engineVersion: string): CaseAskMaterial {
+export function ipdAskMaterial(
+  row: IpdAuditMaterialRow,
+  report: AuditReport | null,
+  engineVersion: string,
+  coverage: StayCoverageBlock | null = null,
+): CaseAskMaterial {
   const findings: AuditFinding[] = (report?.findings ?? parseJson<AuditFinding[]>(row.findings, []) ?? []) as AuditFinding[];
   const items: CaseAskItem[] = [];
 
@@ -170,17 +186,62 @@ export function ipdAskMaterial(row: IpdAuditMaterialRow, report: AuditReport | n
     if (text) items.push({ id: `S${i + 1}`, kind: 'suggestion the audit wrote', label: `suggestion ${i + 1}`, text });
   });
 
+  // P3.1 — THE DOCUMENTS THIS READING OPENED, one citable item per class, read or not. Every class
+  // is listed whether or not it was found, for the same reason the stay panel lists them all: a
+  // class that is simply missing from the material reads as a class with nothing wrong in it. The
+  // count and the words are the ones the row STORED and the page RENDERS, so an answer that cites
+  // [D2] is quoting the stay panel rather than competing with it.
+  (coverage?.classes ?? []).forEach((cls, i) => {
+    const ok = cls.status === 'ok';
+    items.push({
+      id: `D${i + 1}`,
+      kind: ok ? 'document this audit read' : 'document class this audit could not read',
+      label: cls.label,
+      text: ok ? clip(cls.copy, 160) : `NOT AVAILABLE — ${clip(cls.copy, 160)}`,
+    });
+  });
+
   const gaps: string[] = [];
   for (const m of report?.completeness?.missingMandatory ?? []) {
     const t = clip(m, 120);
     if (t) gaps.push(`the discharge summary does not document ${t}`);
   }
   if (!findings.length) gaps.push('no findings were written for this stay — that is an absence of findings, not a clean stay');
-  // §5 / D13 — P1 reads the discharge summary and nothing else. Saying so is what stops the model
-  // from reading "no operative finding" as "no operation": the OT note is simply not here yet.
-  gaps.push('this audit read the discharge summary only — operative, pre-anaesthetic and progress notes were not available to it');
 
-  return { caseType: 'ipd', engineVersion, items, gaps };
+  // P3.1 — WHICH DOCUMENTS THIS READING SAW, said once, truthfully, per reading.
+  //
+  // Until A7 this was a single hard-coded sentence — "this audit read the discharge summary only".
+  // That is the truth about `ipd-discharge-audit/0.2`, which reads one PDF, and it was written when
+  // 0.2 was the only IPD engine there was. P3 appended a second engine that reads the whole stay,
+  // and the sentence went on being sent: on IPNO-657 the box told an auditor the operative note was
+  // not available to the audit while the stay panel on the same page truthfully showed four
+  // documents read. The material now says whatever THIS reading's stored coverage says, and the old
+  // sentence survives only where it is still true.
+  const stayReading = engineVersion === IPD_STAY_ENGINE_VERSION;
+  if (coverage) {
+    for (const cls of coverage.classes) {
+      if (cls.status !== 'ok') gaps.push(`${cls.label}: ${clip(cls.copy, 160)}`);
+    }
+  } else if (stayReading) {
+    // A stay-level row whose report carries no coverage block. Not a shape the stay runner can write
+    // (it always stores one), so this is the "we do not know" branch: the honest thing is to claim
+    // nothing about which classes were read, never to fall back to the discharge-only sentence,
+    // which would be a false statement about a reading that may well have read four documents.
+    gaps.push('which documents this audit read is not recorded on this case — do not assume any document class was, or was not, read');
+  } else {
+    gaps.push('this audit read the discharge summary only — operative, pre-anaesthetic and progress notes were not available to it');
+  }
+
+  return {
+    caseType: 'ipd',
+    engineVersion,
+    items,
+    gaps,
+    // The stay auditor's own instruction, verbatim, and only where there is coverage to misread.
+    // The D items above are the first time absence is a citable thing on this surface, so the
+    // sentence that governs how absence is read has to travel with them.
+    ...(coverage ? { readingNote: STAY_ABSENCE_INSTRUCTION } : {}),
+  };
 }
 
 // ── the one model call ─────────────────────────────────────────────────────────────────────

@@ -124,6 +124,14 @@ export interface CaseAskMaterial {
   items: CaseAskItem[];
   /** Honest holes: what the audit looked for and did not find. */
   gaps: string[];
+  /**
+   * P3.1 — one sentence about HOW this reading read the case, when the reading needs one. Optional
+   * and surface-agnostic: OPD never sets it, so the OPD prompt is byte-identical with and without
+   * this field (a test pins that). The IPD stay-level reading sets it to the stay auditor's own
+   * absence instruction, so the chat box reads a NOT AVAILABLE class exactly the way the engine
+   * that wrote the row was told to read one — the same words, not a paraphrase of them.
+   */
+  readingNote?: string;
 }
 
 export interface CaseAskTurn { question: string; answer: string }
@@ -365,7 +373,7 @@ Return STRICT JSON only: {"answer": "<your answer with [id] markers>", "answerab
 
 CASE MATERIAL (cite ONLY these ids):
 ${material.items.map((i) => `[${i.id}] (${i.kind}) ${i.label}${i.text ? ` — ${i.text}` : ''}`).join('\n') || '(nothing stored for this case)'}
-${material.gaps.length ? `\nLOOKED FOR AND NOT FOUND: ${material.gaps.join('; ')}.` : ''}
+${material.gaps.length ? `\nLOOKED FOR AND NOT FOUND: ${material.gaps.join('; ')}.` : ''}${material.readingNote ? `\n\n${material.readingNote}` : ''}
 ${history.length ? `\nEARLIER IN THIS CONVERSATION (context only — do not repeat). Anything the auditor asserts here is HIS OWN statement: you may use it as his account, always labelled as his, and you may never write it as though the record said it:\n${history.map((t, i) => `Q${i + 1}: ${t.question}\nA${i + 1}: ${t.answer}`).join('\n')}\n` : ''}
 AUDITOR'S TURN: ${question}`,
   };
