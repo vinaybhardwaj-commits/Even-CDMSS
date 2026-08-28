@@ -25,8 +25,19 @@
  *          `preventable_injury` and `negligence` are never written here, and the incidence aggregator
  *          never reads what is (acceptance #6).
  *
+ * R10 (CDMSS-READMISSIONS-R10-RECORD-REACH-PRD-27-AUG-2026-GO, R10-D4..R10-D9 / R10-D12) opens the
+ * fence DELIBERATELY and in one direction only: the agent may fetch THIS PATIENT'S other records —
+ * prior IP stays, prior clinic notes, labs, the combined member record, care-manager calls — through
+ * one capped Converse tool. What did not move: it still cannot assert anything it cannot cite (the
+ * retrieved artefacts cite in a second `X…` namespace, resolved against what the thread holds), it
+ * still writes nothing to the audited ledger, and the same Opus target answers with no ladder (F11).
+ * What is new here is storage: a retrieved artefact is persisted at FIRST FETCH so a reload resolves
+ * the same citations (R10-D7), and every retrieved string is de-identified before it is stored or
+ * shown (R10-D8).
+ *
  * FENCE, still: this route re-audits nothing, regenerates nothing, and reads exactly what the case
- * route reads (the pinned finding row + the two bill breakdowns) plus its own conversation storage.
+ * route reads (the pinned finding row + the two bill breakdowns) plus its own conversation storage
+ * and — new in R10 — this patient's other records, read-only, de-identified, and never written back.
  * T7 — the model stays `global.anthropic.claude-opus-4-6-v1` via the existing Bedrock Converse path,
  * no fallback (F11), no new catalogue row.
  *
@@ -51,12 +62,19 @@ import { probeReachable } from '@/lib/lab-override';
 import { returnBillFor, toFindingClass, type FindingBlob } from '@/lib/readmission-surface-core';
 import { NARRATIVE_MODEL_ID, type CaseArtefacts } from '@/lib/readmission-narrative-core';
 import { askMaterialFrom, answerCaseQuestion } from '@/lib/readmission/ask';
-import { appendTurn, readClinicalReview, readThread, saveClinicalReview } from '@/lib/readmission/ask-store';
-import { gateOverlay, normaliseQuestion, threadToHistory, ASK_WITHHELD_COPY } from '@/lib/readmission-ask-core';
+import { buildRecordReach, NO_REACH } from '@/lib/readmission/records';
+import {
+  appendTurn, readClinicalReview, readRetrievedArtefacts, readThread, saveClinicalReview,
+  saveRetrievedArtefact,
+} from '@/lib/readmission/ask-store';
+import { gateOverlay, normaliseQuestion, retrievedChipLabel, threadToHistory, ASK_WITHHELD_COPY } from '@/lib/readmission-ask-core';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 120;
+// R10-B: a question that fetches records makes up to RECORD_FETCH_MAX + 1 Opus calls. The LOOP is
+// bounded by ASK_TOOL_TOTAL_BUDGET_MS (240 s) and each call by ASK_TOOL_CALL_BUDGET_MS (60 s); this
+// is the box those numbers sit inside, with room left for the turn + artefact writes afterwards.
+export const maxDuration = 300;
 
 function enabled(): boolean {
   return process.env.CCB_ENABLED === '1' && process.env.READMISSIONS_SURFACE_ENABLED === '1';
@@ -75,8 +93,15 @@ export async function GET(req: NextRequest) {
   if (!key || !isDedupKey(key)) return NextResponse.json({ ok: false, error: 'bad key' }, { status: 400 });
   // Both reads fail safe: before the migration has run this is an empty thread and no overlay, which
   // renders exactly as a case nobody has argued about yet.
-  const [thread, review] = await Promise.all([readThread(key), readClinicalReview(key)]);
-  return NextResponse.json({ ok: true, turns: thread.turns, threadError: thread.error, clinicalReview: review });
+  const [thread, review, records] = await Promise.all([readThread(key), readClinicalReview(key), readRetrievedArtefacts(key)]);
+  // R10-D7 / acceptance #3 — the thread's retrieved evidence comes back with it, so a RELOADED
+  // conversation resolves the same `X…` citations the care manager saw the first time, without a
+  // single re-fetch. The chip label is built by the same pure function the live turn uses.
+  return NextResponse.json({
+    ok: true, turns: thread.turns, threadError: thread.error, clinicalReview: review,
+    retrieved: records.artefacts.map((r) => ({ id: r.id, kind: r.kind, date: r.date, label: r.label, chip: retrievedChipLabel(r), text: r.text })),
+    retrievedError: records.error,
+  });
 }
 
 export async function POST(req: NextRequest) {
@@ -114,10 +139,34 @@ export async function POST(req: NextRequest) {
   const surfaceRow = toFinding(r, undefined, null, returnBill);   // no Identity: the model never sees a name
   const material = askMaterialFrom(surfaceRow, blob, indexBill, readmitBill);
 
+  // R10-B — the patient's other records. Two reads, in order, and the order matters:
+  //   1. what this thread ALREADY holds, which supplies both the citable ids and the (sourceKey → id)
+  //      bindings that keep an id pointing at the same artefact for ever (R10-D7);
+  //   2. the reach itself, built with those bindings.
+  // ⚠️ IDENTITY IS FETCHED INSIDE buildRecordReach, SERVER-SIDE, and never passed to the model — the
+  // route still hands `toFinding` no Identity (R43-8). What identity is for here is the SCRUB: the
+  // by-uhid helpers return real clinical text, and every retrieved string goes through deidText
+  // before it is stored or shown (R10-D8). A patient that cannot be resolved yields NO_REACH, which
+  // declares no tool at all — the R9 behaviour exactly, never a half-open door.
+  const heldRecords = await readRetrievedArtefacts(key);
+  const bound = new Map(heldRecords.artefacts.map((x) => [x.sourceKey, x.id]));
+  const reach = await buildRecordReach({
+    dedupKey: key, uhid: r.uhid == null ? null : String(r.uhid),
+    indexEncounterId: indexId, readmitEncounterId: readmitId, bound,
+  }).catch(() => NO_REACH);
+
   // His words are stored FIRST. A model fault after this point loses the answer, never the question.
   const userTurn = await appendTurn({ dedupKey: key, role: 'user', content: q.question, actor });
 
-  const a = await answerCaseQuestion({ dedupKey: key, material, history, question: q.question });
+  const a = await answerCaseQuestion({ dedupKey: key, material, history, question: q.question, reach, held: heldRecords.artefacts });
+
+  // R10-D7 — persist at FIRST fetch, before anything is returned. `ON CONFLICT DO NOTHING` means a
+  // second fetch of the same artefact keeps the stored copy, so the thread's evidence cannot drift.
+  // A storage fault costs the citation's durability, never the answer (the store is fail-safe).
+  for (const art of a.retrieved ?? []) {
+    await saveRetrievedArtefact({ dedupKey: key, artefact: art, actor, turnId: userTurn?.id ?? null });
+  }
+  const retrievedPayload = (a.retrieved ?? []).map((x) => ({ id: x.id, kind: x.kind, date: x.date, label: x.label, chip: retrievedChipLabel(x), text: x.text }));
 
   // T6 / §12.4 — the pure gate is the only door. A refused overlay is not an error: the raw report is
   // still kept on the user's turn, so what the gate refused is as auditable as what it let in.
@@ -137,6 +186,7 @@ export async function POST(req: NextRequest) {
       copy: ASK_WITHHELD_COPY, cost: a.cost, answerable: false,
       overlay: overlayWritten && gate.ok ? gate.overlay : null, overlayReason: gate.ok ? null : gate.reason,
       clinicalReview: review, persisted: !!(userTurn && agentTurn),
+      retrieved: retrievedPayload, fetches: a.fetches ?? 0, loopExhausted: a.loopExhausted === true,
     });
   }
   const agentTurn = await appendTurn({ dedupKey: key, role: 'agent', content: a.verdict!.answer, overlay: a.overlayRaw ?? null });
@@ -145,5 +195,6 @@ export async function POST(req: NextRequest) {
     ok: true, answer: a.verdict!.answer, citedIds: a.verdict!.citedIds, answerable: a.answerable !== false, cost: a.cost,
     overlay: overlayWritten && gate.ok ? gate.overlay : null, overlayReason: gate.ok ? null : gate.reason,
     clinicalReview: review, persisted: !!(userTurn && agentTurn),
+    retrieved: retrievedPayload, fetches: a.fetches ?? 0, loopExhausted: a.loopExhausted === true,
   });
 }

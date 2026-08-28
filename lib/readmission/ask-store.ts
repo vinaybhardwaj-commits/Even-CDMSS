@@ -26,7 +26,9 @@ import { READMIT_ENGINE_VERSION } from './store';
 import {
   CLINICAL_REVIEW_DECISIONS, CLINICAL_REVIEW_CLOCK_CLASSES, CLINICAL_REVIEW_LT24H_KINDS,
   CLINICAL_REVIEW_EXCLUSION_CLAIMS, CLINICAL_REVIEW_QUOTE_MAX_CHARS,
-  type AskThreadTurn, type AskTurnRole, type ClinicalReview, type StoredClinicalReview,
+  RECORD_ARTEFACT_MAX_CHARS, RECORD_KINDS, isRecordId,
+  type AskThreadTurn, type AskTurnRole, type ClinicalReview, type RecordKind,
+  type RetrievedArtefact, type StoredClinicalReview,
 } from '../readmission-ask-core';
 
 /** One page-load never reads more than this many turns back. Well above O1's 20-turn model window:
@@ -236,3 +238,110 @@ function toStoredReview(row: Record<string, unknown> | undefined): StoredClinica
     model: s(row.clinical_review_model),
   };
 }
+
+// ── R10-D7 — the retrieved-artefact store (table `readmission_retrieved_artefacts`) ────────────
+//
+// (CDMSS-READMISSIONS-R10-RECORD-REACH PRD §4.2/§4.3; created by
+// POST /api/admin/migrate-readmission-records; reference DDL in
+// migrations/0048_readmission_retrieved_artefacts.sql.)
+//
+// WHY PERSIST AT ALL. Without this the `X…` namespace would be a promise the system could not keep:
+// a citation resolved against whatever the retrieval happened to return this second, and a reload —
+// or one new OPD note landing in db13 — would silently re-point it at a different artefact. Storing
+// the artefact AT FIRST FETCH makes re-fetch drift impossible mid-thread and makes a reloaded thread
+// resolve exactly what the care manager read the first time (acceptance #3).
+//
+// FIRST FETCH WINS, ABSOLUTELY. The insert is ON CONFLICT DO NOTHING on BOTH keys — the id and the
+// artefact — so a stored artefact is never rewritten. A later fetch reads the stored copy back; it
+// does not overwrite it with a fresher one. "The thread's evidence is stable" is not a convention
+// here, it is the only thing the statement can do.
+//
+// PHI: `content` arrives ALREADY de-identified (lib/readmission/records.ts runs every retrieved
+// string through assemble.ts's `deidText` before it reaches this file or a prompt), and this file
+// stores it as given. Same posture as `readmission_ask_turns`.
+//
+// FAIL-SAFE like the rest of this file: every function returns an honest empty / false. Before the
+// migration has run the reach simply has no memory, the tool still answers from a live fetch, and
+// `askVerdict` resolves nothing in the X namespace — so an uncited whole-record claim is WITHHELD.
+// Degrading closed is the right direction for a citation gate.
+//
+// ⚠️ INFERRED SQL.
+
+const isKind = (k: unknown): k is RecordKind => (RECORD_KINDS as readonly string[]).includes(String(k));
+
+/**
+ * Persist ONE retrieved artefact at first fetch. Returns 'inserted' | 'existed' | 'skipped'.
+ * Never throws; a storage fault costs the citation's persistence, never the answer.
+ */
+export async function saveRetrievedArtefact(a: {
+  dedupKey: string;
+  engineVersion?: string;
+  artefact: RetrievedArtefact;
+  actor?: string | null;
+  turnId?: string | null;
+}): Promise<'inserted' | 'existed' | 'skipped'> {
+  const r = a.artefact;
+  if (!a.dedupKey || !r?.id || !isRecordId(r.id) || !isKind(r.kind) || !r.sourceKey) return 'skipped';
+  try {
+    const rows = (await sql(
+      `INSERT INTO readmission_retrieved_artefacts
+         (dedup_key, engine_version, artefact_id, source_key, kind, artefact_date, label, content, actor, turn_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       ON CONFLICT DO NOTHING
+       RETURNING artefact_id`,
+      [
+        a.dedupKey, a.engineVersion ?? READMIT_ENGINE_VERSION, r.id, r.sourceKey, r.kind,
+        r.date ?? null, String(r.label ?? '').slice(0, 500),
+        String(r.text ?? '').slice(0, RECORD_ARTEFACT_MAX_CHARS),
+        a.actor ?? null, a.turnId ?? null,
+      ],
+    )) as Array<{ artefact_id: string }>;
+    return rows.length ? 'inserted' : 'existed';
+  } catch {
+    return 'skipped';
+  }
+}
+
+/**
+ * Every artefact retrieved into THIS thread, oldest first. Two jobs, both load-bearing:
+ *   · `askVerdict` resolves the `X…` namespace against these ids (R10-D6), so a citation survives a
+ *     reload without the artefact being re-fetched;
+ *   · `mintRecordIndex` reuses their (sourceKey → id) bindings, so an id never re-points (R10-D7).
+ * Fail-safe: `[]` with an honest error line.
+ */
+export async function readRetrievedArtefacts(
+  dedupKey: string,
+  engineVersion: string = READMIT_ENGINE_VERSION,
+): Promise<{ artefacts: RetrievedArtefact[]; error: string | null }> {
+  if (!dedupKey) return { artefacts: [], error: 'dedup_key required' };
+  try {
+    const rows = (await sql(
+      `SELECT artefact_id, source_key, kind, artefact_date, label, content
+         FROM readmission_retrieved_artefacts
+        WHERE dedup_key = $1 AND engine_version = $2
+        ORDER BY created_at ASC
+        LIMIT ${ARTEFACT_LIMIT}`,
+      [dedupKey, engineVersion],
+    )) as Array<Record<string, unknown>>;
+    const artefacts: RetrievedArtefact[] = [];
+    for (const r of rows) {
+      const id = s(r.artefact_id);
+      const kind = r.kind;
+      if (!id || !isRecordId(id) || !isKind(kind)) continue;
+      artefacts.push({
+        id,
+        kind,
+        date: s(r.artefact_date),
+        label: s(r.label) ?? '',
+        sourceKey: s(r.source_key) ?? '',
+        text: s(r.content) ?? '',
+      });
+    }
+    return { artefacts, error: null };
+  } catch (e) {
+    return { artefacts: [], error: `retrieved records unavailable: ${String((e as Error).message).slice(0, 300)}` };
+  }
+}
+
+/** One thread never holds more than this many retrieved artefacts on a read. */
+const ARTEFACT_LIMIT = 200;

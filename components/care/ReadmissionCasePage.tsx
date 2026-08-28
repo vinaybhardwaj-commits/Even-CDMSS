@@ -33,7 +33,8 @@ import { denominatorLine, relatedLvcCopy, segmentNarrative } from '@/lib/readmis
 import { returnContextLines } from '@/lib/readmission-rates-core';
 import {
   ASK_ADVISORY, ASK_PER_LOAD_LIMIT, ASK_QUESTION_MAX_CHARS, ASK_SUGGESTIONS, ASK_WORKING_COPY, ASK_WITHHELD_COPY,
-  ASK_THREAD_UNAVAILABLE_COPY, CLINICAL_REVIEW_CHIP_NOTE, CLINICAL_REVIEW_DECISION_LABEL, type StoredClinicalReview,
+  ASK_THREAD_UNAVAILABLE_COPY, CLINICAL_REVIEW_CHIP_NOTE, CLINICAL_REVIEW_DECISION_LABEL,
+  RECORD_FETCH_MAX, type StoredClinicalReview,
 } from '@/lib/readmission-ask-core';
 import type { BillBreakdown, ExtractSubset } from '@/lib/readmission/brief';
 import { downloadBrief } from './ReadmissionsBoard';
@@ -123,13 +124,19 @@ function BillTable({ heading, bill }: { heading: string; bill: BillBreakdown | n
   );
 }
 
+/** R10-B — one artefact the agent pulled out of the patient's record, as both endpoints return it. */
+type RetrievedRecord = { id: string; kind: string; date: string | null; label: string; chip: string; text: string };
 type AskResponse = {
   ok: boolean; error?: string; withheld?: boolean; reason?: string; copy?: string; answer?: string;
   citedIds?: string[]; answerable?: boolean; cost?: { usd: number } | null;
   overlay?: unknown; overlayReason?: string | null; clinicalReview?: StoredClinicalReview | null; persisted?: boolean;
+  retrieved?: RetrievedRecord[]; fetches?: number; loopExhausted?: boolean;
 };
 type ThreadTurn = { turnIndex: number; role: 'user' | 'agent'; content: string; actor: string | null; withheld: boolean; at: string | null };
-type ThreadPayload = { ok: boolean; turns?: ThreadTurn[]; threadError?: string | null; clinicalReview?: StoredClinicalReview | null; error?: string };
+type ThreadPayload = {
+  ok: boolean; turns?: ThreadTurn[]; threadError?: string | null; clinicalReview?: StoredClinicalReview | null; error?: string;
+  retrieved?: RetrievedRecord[]; retrievedError?: string | null;
+};
 type AskEntry = { question: string; answer: string | null; citedIds: string[]; withheld: boolean; copy?: string };
 
 /** The stored thread, folded back into the question/answer pairs this component renders. A user turn
@@ -174,7 +181,18 @@ function AskTheAgent({ dedupKey, known, onJump, onReview }: { dedupKey: string; 
   const [err, setErr] = useState<string | null>(null);
   const [threadErr, setThreadErr] = useState<string | null>(null);
   const [asked, setAsked] = useState(0);
+  // R10-B §4.4 — the records the agent pulled INTO this conversation, keyed by their `X…` id. Loaded
+  // with the thread (so a reload shows the same evidence, acceptance #3) and extended by each turn.
+  const [records, setRecords] = useState<Record<string, RetrievedRecord>>({});
   const left = Math.max(0, ASK_PER_LOAD_LIMIT - asked);
+  // The citable universe of THIS box: the audited ledger plus the retrieved records. Two namespaces,
+  // one set — exactly as `askVerdict` resolves them server-side, so a marker the server accepted can
+  // never render here as an unresolved one.
+  const citable = useMemo(() => new Set([...known, ...Object.keys(records)]), [known, records]);
+  const mergeRecords = useCallback((xs: RetrievedRecord[] | undefined) => {
+    if (!xs?.length) return;
+    setRecords((prev) => { const next = { ...prev }; for (const x of xs) next[x.id] = x; return next; });
+  }, []);
 
   // The stored thread. A failure here is not an error the care manager must act on: the box still
   // works and the next turn still persists, so it says exactly that.
@@ -186,11 +204,12 @@ function AskTheAgent({ dedupKey, known, onJump, onReview }: { dedupKey: string; 
         if (!alive || !j?.ok) return;
         setEntries(entriesFromThread(j.turns ?? []));
         setThreadErr(j.threadError ?? null);
+        mergeRecords(j.retrieved);
         onReview(j.clinicalReview ?? null);
       })
       .catch(() => { if (alive) setThreadErr(ASK_THREAD_UNAVAILABLE_COPY); });
     return () => { alive = false; };
-  }, [dedupKey, onReview]);
+  }, [dedupKey, mergeRecords, onReview]);
 
   const ask = useCallback(async (question: string) => {
     const text = question.trim();
@@ -204,6 +223,9 @@ function AskTheAgent({ dedupKey, known, onJump, onReview }: { dedupKey: string; 
       });
       const j = (await r.json()) as AskResponse;
       if (!r.ok || !j.ok) throw new Error(String(j.error || `status ${r.status}`));
+      // Merge BEFORE the entry is pushed: the answer's `X…` markers must already resolve when the
+      // new turn first renders, or a freshly-fetched citation would flash as unknown.
+      mergeRecords(j.retrieved);
       if (j.withheld) setEntries((xs) => [...xs, { question: text, answer: null, citedIds: [], withheld: true, copy: j.copy ?? ASK_WITHHELD_COPY }]);
       else setEntries((xs) => [...xs, { question: text, answer: j.answer ?? '', citedIds: j.citedIds ?? [], withheld: false }]);
       if (j.clinicalReview) onReview(j.clinicalReview);
@@ -212,7 +234,7 @@ function AskTheAgent({ dedupKey, known, onJump, onReview }: { dedupKey: string; 
       setQ('');
     } catch (e) { setErr(String((e as Error).message)); }
     finally { setBusy(false); }
-  }, [busy, dedupKey, left, onReview]);
+  }, [busy, dedupKey, left, mergeRecords, onReview]);
 
   return (
     <div>
@@ -227,11 +249,27 @@ function AskTheAgent({ dedupKey, known, onJump, onReview }: { dedupKey: string; 
                   <div className="mt-1 rounded-lg border border-line bg-canvas px-3 py-2 text-[13px] leading-relaxed text-slate-800">
                     {segmentNarrative(e.answer ?? '').map((seg, si) => seg.kind === 'text'
                       ? <span key={si}>{seg.text}</span>
-                      : <span key={si}>[{seg.ids.map((id, k) => <span key={id}>{k > 0 && ','}<CiteLink id={id} known={known.has(id)} onJump={onJump} /></span>)}]</span>)}
+                      : <span key={si}>[{seg.ids.map((id, k) => <span key={id}>{k > 0 && ','}<CiteLink id={id} known={citable.has(id)} onJump={onJump} /></span>)}]</span>)}
                   </div>
                 )}
             </div>
           ))}
+        </div>
+      )}
+      {/* R10-B §4.4 — retrieved evidence, labelled. It sits BELOW the thread and above the box, in its
+          own frame, so it reads as what it is: this patient's other records, pulled in and cited —
+          never part of the audited case ledger, which chat does not touch. */}
+      {Object.keys(records).length > 0 && (
+        <div className="mb-3 rounded-lg border border-sky-200 bg-sky-50/60 px-3 py-2">
+          <div className="text-[11.5px] font-medium text-sky-900">From this patient&apos;s other records · fetched into this conversation · cited above by id</div>
+          <div className="mt-1.5 space-y-1.5">
+            {Object.values(records).sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true })).map((rec) => (
+              <div key={rec.id} id={`ev-${rec.id}`} className="rounded border border-sky-200 bg-white px-2.5 py-1.5">
+                <div className="text-[11px] text-sky-800"><span className="font-semibold">[{rec.id}]</span> {rec.chip}</div>
+                <div className="mt-0.5 whitespace-pre-wrap text-[12px] leading-relaxed text-slate-700">{rec.text}</div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
       {busy && <p className="mb-2 text-[12px] italic text-slate-500">{ASK_WORKING_COPY}</p>}
@@ -252,7 +290,7 @@ function AskTheAgent({ dedupKey, known, onJump, onReview }: { dedupKey: string; 
         <button type="submit" disabled={busy || left <= 0 || !q.trim()}
           className="rounded-lg border border-line bg-white px-3 py-1.5 text-[12px] font-medium text-slate-600 transition hover:border-brand/40 hover:text-brand disabled:opacity-50">Ask</button>
       </form>
-      <p className="mt-2 text-[10.5px] italic text-slate-500">{ASK_ADVISORY} · {left} of {ASK_PER_LOAD_LIMIT} questions left on this page load · {entries.length} saved turn{entries.length === 1 ? '' : 's'} on this case</p>
+      <p className="mt-2 text-[10.5px] italic text-slate-500">{ASK_ADVISORY} · at most {RECORD_FETCH_MAX} records fetched per question · {left} of {ASK_PER_LOAD_LIMIT} questions left on this page load · {entries.length} saved turn{entries.length === 1 ? '' : 's'} on this case</p>
     </div>
   );
 }

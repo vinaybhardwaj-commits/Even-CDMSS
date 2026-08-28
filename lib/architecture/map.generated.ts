@@ -4808,6 +4808,16 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "readmission",
+    "to": "bedrock",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
+    "to": "care-call-store",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
     "to": "db",
     "kind": "value"
   },
@@ -4833,6 +4843,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "readmission",
+    "to": "ipd-audit",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
     "to": "lab-override",
     "kind": "value"
   },
@@ -4854,6 +4869,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "readmission",
     "to": "llm-cost-core",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
+    "to": "member-state",
     "kind": "value"
   },
   {
@@ -4943,6 +4963,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "readmission",
+    "to": "stay-library",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
     "to": "trace",
     "kind": "value"
   },
@@ -4969,6 +4994,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "readmission-narrative-core",
     "to": "readmission-reconcile-core",
+    "kind": "value"
+  },
+  {
+    "from": "readmission-prompts",
+    "to": "readmission-ask-core",
     "kind": "value"
   },
   {

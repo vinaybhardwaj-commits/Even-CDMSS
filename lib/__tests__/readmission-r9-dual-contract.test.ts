@@ -471,8 +471,13 @@ test('the clinical_review write surface names nine clinical_review_* columns and
 test('ask-store is fail-safe throughout — every exported function catches and degrades; nothing throws into the answer path', () => {
   const store = code('lib/readmission/ask-store.ts');
   const bodies = store.split(/export (?:async )?function /).slice(1);
+  // R10-B extended this store rather than forking one (the kickoff's instruction), so the list grew
+  // by the two retrieved-artefact functions. The ASSERTION is unchanged in kind: it is an exhaustive
+  // roll-call, so a new exported function has to be added here deliberately and is then held to the
+  // same fail-safe rule as every other one by the loop below.
   assert.deepEqual(bodies.map((b) => b.slice(0, b.indexOf('('))),
-    ['readThread', 'appendTurn', 'saveClinicalReview', 'readClinicalReview', 'readClinicalReviewDecisions']);
+    ['readThread', 'appendTurn', 'saveClinicalReview', 'readClinicalReview', 'readClinicalReviewDecisions',
+     'saveRetrievedArtefact', 'readRetrievedArtefacts']);
   for (const b of bodies) {
     const name = b.slice(0, b.indexOf('('));
     assert.match(b, /} catch/, `${name} must catch`);
@@ -519,9 +524,24 @@ test('T7 — the model pin: the ask path still targets NARRATIVE_MODEL_ID via Be
   const route = code('app/api/care/readmissions/ask/route.ts');
   assert.match(route, /model: NARRATIVE_MODEL_ID/);
   assert.ok(!/global\.anthropic\.claude/.test(body('app/api/care/readmissions/ask/route.ts')), 'the pin is the constant, never a literal');
-  // lib/bedrock-core.ts is untouched on this branch.
+  // THE BEDROCK ALLOWLIST must not change.
+  //
+  // ⚠️ AMENDED BY R10-B (28 Aug 2026), and the amendment is a narrowing, not a loosening. R9 proved
+  // "the allowlist did not change" with the proxy "lib/bedrock-core.ts did not change", which was
+  // exact while nothing else in that file could move. R10-B adds Converse TOOL-USE mapping to the
+  // same file (its kickoff names the file and forbids the allowlist), so the proxy would now fail
+  // for a reason that has nothing to do with the catalogue. The assertion below tests the CLAIM
+  // itself — the BEDROCK_MODELS literal, byte for byte, against f4a67ee — which is strictly more
+  // specific than the file-level proxy it replaces.
+  const allowlist = (src: string): string => {
+    const a = src.indexOf('export const BEDROCK_MODELS');
+    const b = src.indexOf('});', a);
+    assert.ok(a >= 0 && b > a, 'BEDROCK_MODELS literal not found');
+    return src.slice(a, b + 3);
+  };
+  const bedrockThen = execFileSync('git', ['show', 'f4a67ee:lib/bedrock-core.ts'], { encoding: 'utf8' });
+  assert.equal(allowlist(code('lib/bedrock-core.ts')), allowlist(bedrockThen), 'the Bedrock allowlist must not change');
   const changed = execFileSync('git', ['diff', '--name-only', 'f4a67ee', '--'], { encoding: 'utf8' }).split('\n').filter(Boolean);
-  assert.ok(!changed.includes('lib/bedrock-core.ts'), 'the Bedrock allowlist must not change');
   assert.ok(!changed.includes('package.json'), 'no dependency change');
   assert.ok(!changed.some((f) => f.startsWith('lib/readmission-detect-core')), 'detect-core pairing untouched');
 });
@@ -668,6 +688,11 @@ test('§12.3: the Ask box loads its thread from the server, sends no history, an
   // The advisory no longer says nothing changes — it says what IS saved and what is not affected.
   assert.ok(!ASK_ADVISORY.includes('nothing you ask changes the case'));
   assert.match(ASK_ADVISORY, /your stated judgement is saved as clinical review/);
-  assert.match(ASK_ADVISORY, /it does not change incidence/);
+  // R10-D12 rewrote the closing clause ("it does not change incidence" → "nothing here changes
+  // incidence") when the advisory gained the record-reach sentence. The CLAIM is what R9 pinned and
+  // the claim is unchanged, so the pin now tests the claim rather than one phrasing of it.
+  assert.match(ASK_ADVISORY, /chang(es|e) incidence/);
+  assert.match(ASK_ADVISORY, /fetch this patient's other records into the conversation/);
+  assert.match(ASK_ADVISORY, /retrieved evidence is labelled and cited/);
   assert.equal(ASK_QUESTION_MAX_CHARS, 2_000);
 });

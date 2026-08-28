@@ -14,6 +14,9 @@
  */
 
 import type { EvidenceCatalog, EvidenceItem, PassClaims } from './readmission-reconcile-core';
+// R10-B: ONE definition of the fetch cap. The prompt states the number the loop enforces, so the
+// two cannot drift — a model told "at most 8" while code stops at 5 would look like it disobeyed.
+import { RECORD_FETCH_MAX } from './readmission-ask-core';
 
 // ── Evidence rendering ──────────────────────────────────────────────────────────
 
@@ -396,13 +399,33 @@ const askBill = (label: string, b: AskPromptMaterial['bills']['index']): string 
   return `${label}: total ₹${b.totalRs} over ${b.lines} line(s) — ${b.groups.map((g) => `${g.serviceType} ₹${g.netRs}`).join(', ')} [hospital bill]`;
 };
 
-export function buildAskPrompt(material: AskPromptMaterial, history: readonly AskPromptTurn[], question: string): { system: string; user: string } {
+/**
+ * R10-B (§4.1/§4.2, R10-D5..R10-D8) — the prompt gains a RECORD INDEX and a fetch rule, and ONLY
+ * when the reach actually offers something. `recordIndex` absent / empty ⇒ every line below is
+ * byte-identical to R9's prompt, which is the property that lets a deployment with no reachable
+ * record behave exactly as it did before R10 rather than talk about a tool it does not have.
+ */
+export interface AskPromptRecords {
+  /** The rendered index (renderRecordIndex). Empty string ⇒ no record section, no fetch rule. */
+  index: string;
+  /** Artefacts already pulled into THIS thread, so a reload can cite them without re-fetching. */
+  retrieved: Array<{ id: string; label: string; date: string | null; text: string }>;
+}
+
+export function buildAskPrompt(
+  material: AskPromptMaterial,
+  history: readonly AskPromptTurn[],
+  question: string,
+  records?: AskPromptRecords,
+): { system: string; user: string } {
   const j = material.judgements;
   const oon = j.findingClass === 'out_of_network';
+  const canFetch = !!records?.index;
+  const held = records?.retrieved ?? [];
   return {
-    system: `You are answering a care manager's question about ONE hospital readmission case, in a review room. Your entire world is the case material below — the evidence ledger, the agent's stored account, the audit's stored judgements, the artefact coverage, and the hospital bills. Rules, in order:
+    system: `You are answering a care manager's question about ONE hospital readmission case, in a review room. Your entire world is the case material below — the evidence ledger, the agent's stored account, the audit's stored judgements, the artefact coverage, and the hospital bills${canFetch ? ", plus any of this patient's other records you fetch with the fetch_record tool" : ''}. Rules, in order:
 1. Answer ONLY from that material. If the material does not answer the question, say plainly that the case record does not show it — never fill the gap from general medical knowledge, never guess.
-2. Every factual sentence you write must carry a citation marker naming ledger ids in square brackets — [S4], [L2], [OT1], or a list [S4, R2]. You may cite NOTHING that is not in the ledger; a single invented id discards the whole answer. When you say the record does not show something, set "answerable": false and cite nothing.
+2. Every factual sentence you write must carry a citation marker naming ledger ids in square brackets — [S4], [L2], [OT1], or a list [S4, R2]. You may cite NOTHING that is not in the ledger${canFetch ? ' or in a record you actually fetched (those are cited by their X id, e.g. [X3])' : ''}; a single invented id discards the whole answer. When you say the record does not show something, set "answerable": false and cite nothing.
 3. No diagnosis and no treatment advice for the patient. No legal conclusion: the audit's negligence and preventable-injury judgements are advisory rule outputs, not a court or council finding — say so if asked what they mean.
 4. Plain clinical English. Never internal system vocabulary (lane names, "even_even", "findingClass", tier names, "detection lane"). Say "the first stay", "the return admission", "the treating team".
 5. Be brief: two to six sentences, or a short list if the question asks for a list. Do not repeat the whole account. Plain text only — no markdown (no **bold**, no headings, no bullet characters); a list is plain numbered lines.
@@ -414,7 +437,13 @@ export function buildAskPrompt(material: AskPromptMaterial, history: readonly As
    · "lt24h_kind": "paper_admin" | "deferred_staged" | "medical" | null — for a same-day return, what kind he says it was.
    · "exclusion_claim": "none" | "onco" | "obgyn" | "neonate" | "ophthal" | null — a category he claims this case belongs to.
    · "quote": the shortest run of HIS OWN WORDS, copied exactly from his turn, that carries the judgement. Copy it; do not paraphrase it. An overlay whose quote is not in his turn is discarded.
-Return STRICT JSON only: {"answer": "<your answer with [id] markers>", "answerable": true|false, "overlay": null | {"stated": true, "decision": "...", "clock_class": null, "lt24h_kind": null, "exclusion_claim": null, "quote": "..."}} — nothing before or after it.`,
+${canFetch ? `7. THIS PATIENT'S OTHER RECORDS. The RECORD INDEX below lists them by id, type and date — it carries no clinical text. Call fetch_record with one id to read one record. Fetch only what the question actually needs, at most ${RECORD_FETCH_MAX} records per question. Rules that do not bend:
+   · Fetch only ids that appear in the index. Never guess an id, never assume a record exists because it usually would.
+   · A record you fetched is cited as [X<n>], exactly like a ledger id, and only after you have fetched it — an X id you did not fetch is an invented id.
+   · Retrieved records are about the SAME PATIENT but a DIFFERENT episode. Say which episode a fact came from; never write a fact from another visit as though this stay's record said it.
+   · A record the index does not list, or one that could not be read, is UNKNOWN. It is never an absence and never evidence that something did not happen.
+   · If you run out of fetches, answer from what you have and say plainly how many records you read.
+` : ''}Return STRICT JSON only: {"answer": "<your answer with [id] markers>", "answerable": true|false, "overlay": null | {"stated": true, "decision": "...", "clock_class": null, "lt24h_kind": null, "exclusion_claim": null, "quote": "..."}} — nothing before or after it.`,
     user: `CASE FACTS: ${oon ? 'the return was at another hospital; only the first stay is in evidence' : `readmitted ${j.gapDays ?? 'an unknown number of'} days after discharge`}. STORED JUDGEMENTS (advisory, from the audit's rules): planned ${j.planned ?? 'unknown'} · same condition ${j.sameCondition ?? 'unknown'} · medical justification: ${j.justification} · preventable injury: ${j.preventableInjury} · negligence: ${j.negligence} (advisory — not a court or council finding). Return stay bill on the card: ${material.bills.returnCell}.
 
 ARTEFACT COVERAGE (what the audit had): ${material.coverage.map((c) => `${c.label}: ${c.state}`).join(' · ') || 'unknown'}.
@@ -427,7 +456,7 @@ THE AGENT'S STORED ACCOUNT (written at audit time; its markers are ledger ids):
 ${material.account ?? '(no valid account stored for this case)'}
 
 BILLS: ${askBill('First stay', material.bills.index)}. ${askBill('Return stay', material.bills.readmit)}.
-${history.length ? `\nEARLIER IN THIS CONVERSATION (context only — do not repeat). Anything the care manager asserts here is REVIEWER-STATED: you may use it as his account, always labelled as his, and you may never write it as though a hospital record said it:\n${history.map((t, i) => `Q${i + 1}: ${t.question}\nA${i + 1}: ${t.answer}`).join('\n')}\n` : ''}
+${canFetch ? `\nRECORD INDEX — this patient's other records (ids only; fetch one with fetch_record to read it):\n${records!.index}\n` : ''}${held.length ? `\nRECORDS ALREADY FETCHED IN THIS CONVERSATION (cite these by their X id; do not fetch them again):\n${held.map((r) => `[${r.id}] ${r.label}${r.date ? `, ${r.date}` : ''}\n${r.text}`).join('\n\n')}\n` : ''}${history.length ? `\nEARLIER IN THIS CONVERSATION (context only — do not repeat). Anything the care manager asserts here is REVIEWER-STATED: you may use it as his account, always labelled as his, and you may never write it as though a hospital record said it:\n${history.map((t, i) => `Q${i + 1}: ${t.question}\nA${i + 1}: ${t.answer}`).join('\n')}\n` : ''}
 CARE MANAGER'S TURN: ${question}`,
   };
 }

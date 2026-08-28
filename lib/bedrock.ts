@@ -45,8 +45,9 @@ import {
 } from './bedrock-core';
 
 export {
-  BEDROCK_MODELS, bedrockModelLabel, isKnownBedrockModel, singleChunkStream,
-  type ChatCompletionLike,
+  BEDROCK_MODELS, bedrockModelLabel, isKnownBedrockModel, singleChunkStream, toolCallsOf,
+  type ChatCompletionLike, type ChatToolCall, type ConverseContentBlock, type ConverseToolConfig,
+  type ConverseToolResult, type ConverseToolUse,
 } from './bedrock-core';
 
 /** The role session name AWS records for every assumed session (integration reference §1.1). */
@@ -167,7 +168,13 @@ export async function bedrockConverse(params: ChatParams, opts: BedrockConverseO
   const input = toConverseInput(params, opts.model);
   const { ConverseCommand } = await import('@aws-sdk/client-bedrock-runtime');
   const client = await bedrockClient();
-  const res = await client.send(new ConverseCommand(input), { abortSignal: opts.signal });
+  // R10-B: the SDK types `content` as its own CLOSED ContentBlock union (which carries an internal
+  // `$unknown` member), so the structural block type the pure core produces is not assignable to it
+  // even though every value we build is a valid member. ONE cast, here at the wire boundary — the
+  // alternative is modelling AWS's union inside lib/bedrock-core.ts, which would put an SDK type in
+  // the file whose whole point is having none.
+  const cmdInput = input as unknown as ConstructorParameters<typeof ConverseCommand>[0];
+  const res = await client.send(new ConverseCommand(cmdInput), { abortSignal: opts.signal });
   return fromConverseOutput(res as ConverseOutput, opts.model);
 }
 
