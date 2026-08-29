@@ -162,6 +162,18 @@ export interface CaseAskMaterial {
    * that wrote the row was told to read one — the same words, not a paraphrase of them.
    */
   readingNote?: string;
+  /**
+   * S4 — the OVERLAY CLAUSE, for a surface whose reviewer is allowed to state a judgement that gets
+   * stored. Optional and surface-agnostic in exactly the way `readingNote` is: OPD and IPD never set
+   * it, so their prompts do not move a byte (a test pins that), and O5's "no overlay on those two
+   * surfaces this ship" stays true by construction rather than by review.
+   *
+   * The shell renders what it is handed and knows nothing about standings: `clause` becomes an extra
+   * rule and `schema` replaces the reply shape. The words, the closed enum and the gate that decides
+   * whether anything is written all live with the surface that owns them
+   * (lib/physician-standing-core.ts), which is why this field is two strings rather than a concept.
+   */
+  overlay?: { clause: string; schema: string };
 }
 
 export interface CaseAskTurn { question: string; answer: string }
@@ -227,7 +239,17 @@ export function extractCitedIds(text: string | null | undefined): string[] {
 
 export type CaseAskCitationReason = 'none' | 'empty' | 'no_citations' | 'unresolved_ids';
 
-export interface CaseAskParsed { answer: string; answerable: boolean }
+export interface CaseAskParsed {
+  answer: string;
+  answerable: boolean;
+  /**
+   * S4 — whatever the model put under "overlay", UNVALIDATED and untyped on purpose. This shell
+   * does not know what an overlay means; it carries the claim to the surface that asked for one,
+   * and that surface's gate decides whether it becomes a stored row. Absent on every reply that
+   * did not ask for one.
+   */
+  overlay?: unknown;
+}
 
 /** PURE: parse the model's reply — strict JSON {answer, answerable} preferred; a bare-text reply is
  *  taken as the answer with answerable:true (so it must cite). Empty → null. */
@@ -242,7 +264,12 @@ export function parseAskReply(text: string | null | undefined): CaseAskParsed | 
         if (o && typeof o === 'object' && !Array.isArray(o)) {
           // A JSON object IS the reply: an empty / missing answer is an empty reply, never bare text.
           const ans = typeof o.answer === 'string' ? o.answer.trim() : '';
-          return ans ? { answer: ans, answerable: o.answerable !== false } : null;
+          if (!ans) return null;
+          // The overlay rides along untouched. A reply with no overlay key produces a parsed object
+          // with no overlay key, so a surface that never asked for one cannot receive one.
+          return o.overlay !== undefined
+            ? { answer: ans, answerable: o.answerable !== false, overlay: o.overlay }
+            : { answer: ans, answerable: o.answerable !== false };
         }
         break;
       } catch { /* keep shrinking */ }
@@ -403,8 +430,8 @@ export function buildCaseAskPrompt(
 4. No diagnosis and no treatment advice for the patient. The audit's findings and its score are advisory rule and model outputs, not a peer-review or disciplinary conclusion — say so if asked what they mean.
 5. Never write a patient name, a UHID, an IP or OP number, or any other identifier. None is in the material; if the auditor types one, do not repeat it.
 6. Nothing said in this conversation changes the audit. You cannot rescore, re-run, or re-verdict anything, and you must not offer to.
-7. Plain clinical English. Never internal system vocabulary (engine ids, column names, "signal_type", tier names). Be brief: two to six sentences, or a short list if the question asks for one. Plain text only — no markdown (no **bold**, no headings, no bullet characters); a list is plain numbered lines.
-Return STRICT JSON only: {"answer": "<your answer with [id] markers>", "answerable": true|false} — nothing before or after it.`,
+7. Plain clinical English. Never internal system vocabulary (engine ids, column names, "signal_type", tier names). Be brief: two to six sentences, or a short list if the question asks for one. Plain text only — no markdown (no **bold**, no headings, no bullet characters); a list is plain numbered lines.${material.overlay ? `\n8. ${material.overlay.clause}` : ''}
+${material.overlay ? material.overlay.schema : 'Return STRICT JSON only: {"answer": "<your answer with [id] markers>", "answerable": true|false} — nothing before or after it.'}`,
     user: `THIS CASE was audited by the ${material.engineVersion} engine.
 
 CASE MATERIAL (cite ONLY these ids):

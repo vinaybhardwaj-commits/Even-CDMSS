@@ -251,6 +251,9 @@ export interface CaseAskAnswer {
   verdict: CaseAskVerdict | null;
   reason?: string;
   answerable?: boolean;
+  /** S4 — the overlay claim the model reported, UNVALIDATED. Present only when the surface asked
+   *  for one (material.overlay) and the model supplied one. The surface's gate decides. */
+  overlay?: unknown;
   cost: { tokensIn: number; tokensOut: number; usd: number; model: string; provider: string } | null;
   traceId: string;
   latencyMs: number;
@@ -317,5 +320,12 @@ export async function answerCaseAsk(a: {
   const verdict = caseAskVerdict(parsed, knownIds);
   if (!a.call) await finishTrace(traceId, verdict.ok ? 'success' : 'partial', verdict.ok ? undefined : `answer withheld: ${verdict.reason}`).catch(() => {});
   if (!verdict.ok) return { outcome: 'withheld', verdict, reason: verdict.reason ?? 'unresolved', cost, traceId, latencyMs: Date.now() - t0, ...(a.call ? { prompt } : {}) };
-  return { outcome: 'answered', verdict, answerable: parsed?.answerable !== false, cost, traceId, latencyMs: Date.now() - t0, ...(a.call ? { prompt } : {}) };
+  return {
+    outcome: 'answered', verdict, answerable: parsed?.answerable !== false,
+    // Only an ANSWERED turn carries its overlay forward. A withheld answer is one whose markers
+    // failed the citation gate, and a model that invented an id on the same reply is not a model
+    // whose reading of the auditor's sentence should become a stored judgement about a clinician.
+    ...(parsed?.overlay !== undefined ? { overlay: parsed.overlay } : {}),
+    cost, traceId, latencyMs: Date.now() - t0, ...(a.call ? { prompt } : {}),
+  };
 }

@@ -32,6 +32,23 @@ export interface CaseAskServeArgs {
   /** The role the request proved. O8 — role-only, never a person. */
   actor: string;
   load: () => Promise<CaseAskLoad>;
+  /**
+   * S4 — an optional hook for a surface whose reviewer may state a judgement that gets stored.
+   * Called ONCE, after the answer has been stored, and only on an ANSWERED turn.
+   *
+   * The shell does not know what an overlay is and does not decide whether one is written: it hands
+   * over the raw claim, the auditor's own words and the turn they were said in, and the surface's
+   * gate does the rest. O5 stays true for OPD and IPD by construction — those two routes pass no
+   * hook, so there is no path for one of their turns to write anything but a turn.
+   *
+   * It is awaited inside a try/catch: an overlay fault must never cost the auditor the answer.
+   */
+  onStatedOverlay?: (a: {
+    overlay: unknown;
+    question: string;
+    userTurnId: string | null;
+    engineVersion: string;
+  }) => Promise<void>;
 }
 
 export interface CaseAskThreadPayload {
@@ -142,6 +159,20 @@ export async function serveCaseAskAnswer(
   }
 
   const agentTurn = await appendTurn({ ...key, role: 'agent', content: answered.verdict!.answer });
+
+  // S4 — the overlay, last and fenced. The turn is already stored and the answer is already earned;
+  // whatever happens here, neither is lost.
+  if (a.onStatedOverlay) {
+    try {
+      await a.onStatedOverlay({
+        overlay: answered.overlay,
+        question: a.question,
+        userTurnId: userTurn?.id ?? null,
+        engineVersion: loaded.engineVersion,
+      });
+    } catch { /* an overlay is never worth a 500 (§12.3) */ }
+  }
+
   return {
     status: 200,
     body: {

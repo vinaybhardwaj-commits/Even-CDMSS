@@ -39,6 +39,10 @@ import { probeReachable } from '@/lib/lab-override';
 import { isCaseAskType, normaliseQuestion, type CaseAskType } from '@/lib/case-ask-core';
 import { isStewardshipCaseType, loadStewardshipCase, parseDeptCaseKey } from '@/lib/case-ask/stewardship-material';
 import { serveCaseAskAnswer, serveCaseAskThread } from '@/lib/case-ask/serve';
+import { CASE_ASK_MODEL_ID } from '@/lib/case-ask-core';
+import { STEWARDSHIP_WINDOW_DAYS } from '@/lib/stewardship-canonical';
+import { standingDecision, standingRow } from '@/lib/physician-standing-core';
+import { appendStanding } from '@/lib/physician-standing-store';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -111,6 +115,21 @@ export async function POST(req: NextRequest) {
   const { status, body: payload } = await serveCaseAskAnswer({
     caseType: c.caseType, caseKey: c.caseKey, actor: ACTOR,
     load: loadStewardshipCase(c.caseType, c.caseKey), question: q.question,
+
+    // S4 — the standing overlay (spec §6.3 / §12.3). The shell hands over the raw claim and the
+    // auditor's own words; the gate here decides, and a refusal is silent by design: the turn is
+    // already stored, the answer is already shown, and "he asked a question" and "he made no
+    // judgement" are the same state. Nothing on this path writes a score, a band or a pill.
+    onStatedOverlay: async ({ overlay, question, userTurnId, engineVersion }) => {
+      const decision = standingDecision(question, overlay as never);
+      if (!decision.write) return;
+      const row = standingRow({
+        caseType: c.caseType, caseKey: c.caseKey, engineVersion,
+        decision, actor: ACTOR, turnId: userTurnId ?? '', model: CASE_ASK_MODEL_ID,
+        windowDays: STEWARDSHIP_WINDOW_DAYS,
+      });
+      if (row) await appendStanding(row);
+    },
   });
   return NextResponse.json(payload, { status });
 }

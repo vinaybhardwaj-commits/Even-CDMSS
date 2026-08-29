@@ -241,6 +241,9 @@ export const UNREGISTERED: string[] = [
   'opd-note-audit',         // audit engine wrapper (mini engine)
   'opd-feedback-rollup-core', // pure feedback rollup core (surfaced as a subsystem by the LAB-MCP Phase 1 import edge)
   'opd-note-audit-core',    // the OPD audit engine (opd-note-audit/0.81.8)
+  'physician-standing-core', // the MS standing overlay's pure gate (physician_standing/1). Named a
+                            // subsystem by its version export; it holds §12.3's five conditions and
+                            // no write path — the store beside it owns the one table, append-only
   'patient-summary-core',   // Patient Summary API contract for Pulse (patient-summary/1.0) — the
                             // namespaced package shape + degraded/provenance rules over the
                             // preserved (retired-surface) CCB mechanics

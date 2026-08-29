@@ -32,6 +32,7 @@
  */
 import { sql } from '../db';
 import { deidentify, type CaseAskItem, type CaseAskMaterial, type CaseAskType } from '../case-ask-core';
+import { STANDING_PROMPT_CLAUSE, STANDING_REPLY_SCHEMA } from '../physician-standing-core';
 import {
   IPD_DEPT_LABEL_SQL, IPD_DEPT_UNASSIGNED, OPD_DEPT_LABEL_SQL, OPD_DEPT_UNSPECIFIED,
   STEWARDSHIP_WINDOW_DAYS, ipdCanonParams, ipdCanonical90d, opdCanonParams, opdCanonical90d,
@@ -43,6 +44,14 @@ const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Reco
 async function rowsOf(text: string, params: unknown[]): Promise<Record<string, unknown>[]> {
   try { return await run(text, params); } catch { return []; }
 }
+
+/**
+ * S4 — the overlay clause, on BOTH stewardship materials and on no others. It is the only surface
+ * whose reviewer is a medical superintendent adjudicating a clinician, which is the only thing the
+ * standing overlay records. OPD and IPD keep O5's "no overlay this ship" by simply never setting
+ * this field, and a test pins that their prompts do not move a byte.
+ */
+const OVERLAY = Object.freeze({ clause: STANDING_PROMPT_CLAUSE, schema: STANDING_REPLY_SCHEMA });
 
 const num = (v: unknown): number => { const n = Number(v ?? 0); return Number.isFinite(n) ? n : 0; };
 const str = (v: unknown): string => (v == null ? '' : String(v));
@@ -203,6 +212,7 @@ export function physicianAskMaterial(f: PhysicianFacts): CaseAskMaterial {
     engineVersion: STEWARDSHIP_THREAD_ENGINE,
     items,
     gaps,
+    overlay: OVERLAY,
     readingNote: aggregateReadingNote(
       `This record is ONE named clinician's own audited OPD work over the last ${STEWARDSHIP_WINDOW_DAYS} days${f.doctorName ? `: ${clip(f.doctorName, 80)}` : ''}${f.speciality ? `, ${clip(f.speciality, 80)}` : ''}.`,
     ),
@@ -232,6 +242,7 @@ export function deptOpdAskMaterial(f: DeptOpdFacts): CaseAskMaterial {
     engineVersion: STEWARDSHIP_THREAD_ENGINE,
     items,
     gaps,
+    overlay: OVERLAY,
     readingNote: aggregateReadingNote(
       `This record is ONE department's audited OPD work over the last ${STEWARDSHIP_WINDOW_DAYS} days: ${clip(f.label, 80)}, as the OPD speciality vocabulary names it.`,
     ),
@@ -263,6 +274,7 @@ export function deptIpdAskMaterial(f: DeptIpdFacts): CaseAskMaterial {
     engineVersion: STEWARDSHIP_THREAD_ENGINE,
     items,
     gaps,
+    overlay: OVERLAY,
     readingNote: aggregateReadingNote(
       `This record is ONE department's audited inpatient work over the last ${STEWARDSHIP_WINDOW_DAYS} days: ${clip(f.label, 80)}, as the inpatient speciality vocabulary names it.`,
     ),

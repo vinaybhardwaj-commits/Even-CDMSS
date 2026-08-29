@@ -36,6 +36,8 @@ import {
 } from '@/lib/stewardship-board';
 import { hopCoverageLine } from '@/lib/ipd-doctor-hop';
 import { fetchOpsPane } from '@/lib/stewardship-ops';
+import { currentStandings } from '@/lib/physician-standing-store';
+import { STANDING_ADVISORY, STANDING_HELP, STANDING_LABEL, type PhysicianStanding } from '@/lib/physician-standing-core';
 import OpsPane from './ops-pane';
 import {
   DANGER_QUEUE_UNIT, IPD_SPLIT_BANNER, IPD_UNJOINED_CELL, STEWARDSHIP_HONESTY,
@@ -118,6 +120,28 @@ const BOARD_HEADERS = (
   </>
 );
 
+/**
+ * S4 — the MS standing chip. §6.3: show BOTH the stored numbers and the human judgement, and the
+ * human wins the CHIP. It wins nothing else: it is not in the sort, not in any mean, and the scores
+ * beside it are exactly what they were before the conversation that produced it.
+ */
+const STANDING_TONE: Record<PhysicianStanding, string> = {
+  standing: 'border-emerald-200 bg-emerald-50 text-emerald-800',
+  concern: 'border-amber-200 bg-amber-50 text-amber-900',
+  'restricted-review': 'border-red-200 bg-red-50 text-red-800',
+  insufficient: 'border-slate-200 bg-slate-50 text-slate-600',
+};
+
+function StandingChip({ s }: { s: { standing: PhysicianStanding; quote: string; at: string | null } | undefined }) {
+  if (!s) return <span className="text-[11px] text-slate-300" title="no medical superintendent has recorded a standing">—</span>;
+  return (
+    <span
+      className={`rounded-full border px-2 py-0.5 text-[10.5px] font-medium ${STANDING_TONE[s.standing]}`}
+      title={`${STANDING_HELP[s.standing]}${s.quote ? ` — “${s.quote}”` : ''}${s.at ? ` (${s.at.slice(0, 10)})` : ''}`}
+    >{STANDING_LABEL[s.standing]}</span>
+  );
+}
+
 /** One danger row. Opening it stays inside /admin/* — the OPD note case or the IPD stay case. */
 function DangerLine({ r }: { r: DangerRow }) {
   const tone = r.open ? 'border-red-200 bg-red-50' : r.state === 'confirmed' ? 'border-slate-200 bg-white' : 'border-slate-200 bg-slate-50';
@@ -161,7 +185,7 @@ export default async function StewardshipPage({ searchParams }: { searchParams: 
   // resolution seen three times rather than three that can disagree.
   const ipd = await fetchIpdSlice();
   const queue = await fetchDangerQueue(ipd);
-  const [doctorRows, deptRows, totals, lvcCells, rcExclusions, rcCoverage, ops] = await Promise.all([
+  const [doctorRows, deptRows, totals, lvcCells, rcExclusions, rcCoverage, ops, standings] = await Promise.all([
     view === 'doctor' ? fetchDoctorBoard(queue, ipd) : Promise.resolve([] as BoardDoctorRow[]),
     view === 'dept' ? fetchDeptBoard(queue) : Promise.resolve([] as BoardDeptRow[]),
     fetchBoardTotals(),
@@ -169,6 +193,10 @@ export default async function StewardshipPage({ searchParams }: { searchParams: 
     // D-ops — the SECOND pane, on the same route and behind the same gate. Unscoped here: the whole
     // room's ops. The department route passes its own clinicians.
     fetchOpsPane(),
+    // S4 — the MS standing. Read HERE, in the page, and deliberately NOT inside
+    // lib/stewardship-board.ts: §6.3 forbids an aggregator reading this blob, and the surest way to
+    // keep that true is that the module which computes means and sorts rows cannot see it at all.
+    currentStandings(view === 'doctor' ? 'physician' : 'dept'),
   ]);
   const rowsCount = view === 'doctor' ? doctorRows.length : deptRows.length;
 
@@ -249,6 +277,7 @@ export default async function StewardshipPage({ searchParams }: { searchParams: 
                       <th className="px-3 py-2.5 text-right font-medium">Clinicians</th>
                     </>
                   )}
+                  <th className="px-3 py-2.5 font-medium" title={STANDING_ADVISORY}>MS standing</th>
                   {BOARD_HEADERS}
                   {view === 'doctor' && <th className="px-3 py-2.5 text-right font-medium" title="observed minus case-mix-expected LVC rate, in points">vs expected</th>}
                 </tr>
@@ -265,6 +294,7 @@ export default async function StewardshipPage({ searchParams }: { searchParams: 
                         )}
                       </td>
                       <td className="px-3 py-2.5 text-slate-500">{r.speciality}</td>
+                      <td className="px-3 py-2.5"><StandingChip s={standings[r.doctorUid]} /></td>
                       <BoardCells r={r} />
                       {(() => { const v = vsExpected(r.doctorUid); return <td className={`px-3 py-2.5 text-right tabular-nums ${v.tone}`} title={v.title}>{v.txt}</td>; })()}
                     </tr>
@@ -275,6 +305,7 @@ export default async function StewardshipPage({ searchParams }: { searchParams: 
                         <Link href={`/admin/stewardship/dept/${encodeURIComponent(r.dept)}`} className="hover:text-brand hover:underline">{r.dept}</Link>
                       </td>
                       <td className="px-3 py-2.5 text-right text-slate-500">{r.nDoctors}</td>
+                      <td className="px-3 py-2.5"><StandingChip s={standings[`opd_speciality:${r.dept}`]} /></td>
                       <BoardCells r={r} />
                     </tr>
                   ))}
@@ -405,7 +436,7 @@ export default async function StewardshipPage({ searchParams }: { searchParams: 
             not counted open. That column counts OPD findings only — inpatient findings appear in the queue with a clinician's
             name where the hop resolved the stay, but they do not enter the sort, because fewer than half of stays resolve and
             a clinician must not rank safer for having an ambiguous practitioner id. “vs expected” = observed minus
-            case-mix-expected LVC rate (points); em-dash when n&lt;{FUNNEL_MIN_N} or excluded.
+            case-mix-expected LVC rate (points); em-dash when n&lt;{FUNNEL_MIN_N} or excluded. {STANDING_ADVISORY}
             {' '}Right Care banded coverage {rcCoverage.banded.toLocaleString()}/{rcCoverage.total.toLocaleString()}.
             {rcExclusions.length > 0 && ` ${rcExclusions.length} house/non-clinician account(s) excluded from vs-expected.`}
           </p>

@@ -91,7 +91,7 @@ test('rubric inclusion: nabh/6e external-json + the five embedded-in-prompt rubr
   }
 });
 
-test('count invariant: counts match the committed artifact contents (33 prompts / 7 rubrics / 40 builders)', () => {
+test('count invariant: counts match the committed artifact contents (34 prompts / 7 rubrics / 41 builders)', () => {
   const gen = GENERATED as {
     counts: { prompts: number; rubrics: number; user_message_builders: number; features: number };
     prompts: Array<{ feature: string }>; rubrics: unknown[]; user_message_builders: unknown[];
@@ -133,8 +133,16 @@ test('count invariant: counts match the committed artifact contents (33 prompts 
   // PROMPT const: like the readmission Ask it extracts from, its system text is assembled inside
   // the builder rather than bound to a standing _SYSTEM const, so prompts stay 33. No new feature
   // row either — case-ask-core is not in the generator's FEATURE_OF map, so it labels itself.
-  assert.equal(gen.counts.prompts, 33);
+  // STEWARDSHIP S4 (29 Aug 2026) adds physician-standing-core/STANDING_PROMPT_CLAUSE — the medical
+  // superintendent's standing overlay (33→34 prompts, +1 feature; physician-standing-core is not in
+  // the generator's FEATURE_OF map, so it labels itself). Builders stay 41: the clause is appended
+  // to the SHARED buildCaseAskPrompt as an optional material field, so no new builder exists and
+  // buildCaseAskPrompt itself is unchanged for OPD and IPD (pinned byte-for-byte in
+  // physician-standing.test.ts and case-ask-core.test.ts). It is a genuinely new reasoning surface
+  // and it is counted as one — but note what it asks for: the model REPORTS what a named reviewer
+  // asserted in his own words, and code discards anything it cannot find inside that turn.
+  assert.equal(gen.counts.prompts, 34);
   assert.equal(gen.counts.rubrics, 7);
   assert.equal(gen.counts.user_message_builders, 41);
-  assert.equal(gen.counts.features, 22);
+  assert.equal(gen.counts.features, 23);
 });

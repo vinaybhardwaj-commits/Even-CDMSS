@@ -775,6 +775,14 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "physician-standing-core",
+    "plane": "unregistered"
+  },
+  {
+    "id": "physician-standing-store",
+    "plane": "unregistered"
+  },
+  {
     "id": "plos",
     "plane": "unregistered"
   },
@@ -1313,6 +1321,16 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/admin",
     "to": "opd-note-score-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
+    "to": "physician-standing-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
+    "to": "physician-standing-store",
     "kind": "value"
   },
   {
@@ -2057,6 +2075,16 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/api",
+    "to": "physician-standing-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "physician-standing-store",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
     "to": "plos",
     "kind": "value"
   },
@@ -2223,6 +2251,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "stay-library",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "stewardship-canonical",
     "kind": "value"
   },
   {
@@ -2583,6 +2616,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "case-ask",
     "to": "llm-cost-core",
+    "kind": "value"
+  },
+  {
+    "from": "case-ask",
+    "to": "physician-standing-core",
     "kind": "value"
   },
   {
@@ -4646,6 +4684,16 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "physician-standing-store",
+    "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "physician-standing-store",
+    "to": "physician-standing-core",
+    "kind": "value"
+  },
+  {
     "from": "preop",
     "to": "admin-cookie",
     "kind": "value"
@@ -5657,6 +5705,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "PHYSICIAN_STANDING_VERSION",
+    "value": "physician_standing/1",
+    "file": "lib/physician-standing-core.ts",
+    "derived": false
+  },
+  {
     "constName": "PREOP_ASSEMBLE_RULE_VERSION",
     "value": "preop-assemble/1",
     "file": "lib/preop-assemble-core.ts",
@@ -5822,8 +5876,8 @@ export const VERSION_REGISTRY: VersionRow[] = [
 
 export const COVERAGE = {
   "registered": 21,
-  "unregistered": 41,
-  "total": 62,
+  "unregistered": 42,
+  "total": 63,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
@@ -5844,6 +5898,7 @@ export const COVERAGE = {
     "opd-note-audit",
     "opd-note-audit-core",
     "patient-summary-core",
+    "physician-standing-core",
     "preop",
     "preop-assemble-core",
     "preop-extract-core",

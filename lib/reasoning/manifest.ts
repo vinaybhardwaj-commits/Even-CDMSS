@@ -131,5 +131,12 @@ export const UNREGISTERED_PROMPTS: string[] = [
   'prognosis-core/PX_CRITIQUE_SYSTEM',
   'prognosis-core/PX_REVISE_SYSTEM',
   'prognosis-core/PX_SYSTEM',
+  // Stewardship S4 (CDMSS-STEWARDSHIP-MS-AGENT kickoff v2, 29 Aug 2026). Not rubric-scored, and the
+  // reason is structural rather than "not yet": this clause asks the model to REPORT what a named
+  // reviewer asserted in his own turn, never to judge anything. Everything it produces is then
+  // discarded unless code can find the quote inside the reviewer's own words (§12.3), so the thing a
+  // rubric would score — a clinical judgement — is not made here at all. It stays unregistered
+  // permanently unless the gate's refusal rates ever become a signal worth grading.
+  'physician-standing-core/STANDING_PROMPT_CLAUSE',
   'right-care-ground-eval-core/PAIR_JUDGE_SYSTEM',
 ];
