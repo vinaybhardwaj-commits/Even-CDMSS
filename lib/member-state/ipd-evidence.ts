@@ -10,13 +10,24 @@
  *
  * THE GATE IS THE POINT. A spine write is not reverted by a code revert — a wrong fact promoted
  * onto a member's longitudinal record is there until someone finds it. So `promotable` is a pure
- * function with five conjunctive conditions and a NAMED refusal reason for each, and every default
+ * function with SIX conjunctive conditions and a NAMED refusal reason for each, and every default
  * is refusal:
  *   1. the slot is on the §6.2 allow-list                      (nothing else has a promote path)
  *   2. provenance.trust ∈ { structured_db, clinician_documented }
  *   3. an LLM-extracted fact must carry a VERIFIED verbatim span in its named source field
  *   4. `inferred` is absent or false                            (D12: inferred NEVER promotes)
  *   5. the caller resolved a SINGLE individual_uid              (checked by the caller, asserted here)
+ *   6. the fact is not `contaminationSuspect`                   (H-D5: see below)
+ *
+ * CONDITION 6 IS NEW AND IT EXISTS BECAUSE CONDITION 3 IS NOT ENOUGH
+ * (CDMSS-STAY-LIBRARY-HARDENING-PRD-v1.0-29-AUG-2026, H-D5). R10 found a cholecystectomy operative
+ * note printed word for word inside a hernioplasty discharge summary — hospital template
+ * contamination. That discharge procedure is verbatim, so it PASSES condition 3, and it is
+ * clinician-documented, so it passes condition 2. Until H2 the only thing keeping the wrong
+ * operation off the spine was that discharge spans usually fail to verify, which is luck. The
+ * library now compares the discharge's procedure against the stay's own structured OT
+ * `surgery_name` at write time and stamps the discharge side when they share no substantive word;
+ * this gate refuses anything so stamped, permanently, whatever else is true of it.
  *
  * WHAT CONDITION 3 ACTUALLY CHECKS, stated plainly because it is easy to make vacuous. The rule is
  * that `rawText` occurs verbatim in the text of the field the provenance NAMES. That text must be
@@ -58,6 +69,7 @@ export type RefusalReason =
   | 'span_unverified'
   | 'inferred'
   | 'identity_unresolved'
+  | 'contamination_suspect'
   | 'empty';
 
 export type GateResult = { ok: true } | { ok: false; reason: RefusalReason };
@@ -77,6 +89,14 @@ export interface PromotionCandidate {
   identityResolved: boolean;
   /** D12 — an inferred fact never promotes, whatever else is true of it. */
   inferred?: boolean;
+  /**
+   * H-D5 (CDMSS-STAY-LIBRARY-HARDENING-PRD-v1.0-29-AUG-2026) — the library stamped this fact at
+   * write time because the discharge summary named an operation sharing no substantive word with
+   * this stay's own OT note. R10 measured that shape in production: a cholecystectomy operative
+   * note printed verbatim inside a hernioplasty discharge summary. Absent or false means what it
+   * meant before H2, so every fact stamped before this ship reads exactly as it did.
+   */
+  contaminationSuspect?: boolean;
 }
 
 /** Whitespace-insensitive verbatim containment. Case-insensitive because a source routinely
@@ -97,6 +117,14 @@ export function promotable(c: PromotionCandidate): GateResult {
   if (!(PROMOTE_ALLOW_LIST as readonly string[]).includes(c.slot)) return { ok: false, reason: 'slot_not_allowed' };
   // 4 — inferred never promotes (checked early: it outranks everything else)
   if (c.inferred === true) return { ok: false, reason: 'inferred' };
+  // 6 — H-D5: a contaminated discharge procedure NEVER promotes. Checked here, beside `inferred`
+  // and ahead of trust and span, because that ordering IS the rule: the R10 case had a verbatim
+  // span and clinician_documented trust, so a taint that only applied after conditions 2 and 3 had
+  // passed would be a taint that never fired on the case it was written for. It also holds when the
+  // OT row that produced the flag has since disappeared — the stamp is on the stored fact, not on
+  // a comparison re-run at fold time, and a stay whose theatre record is now unreadable is not a
+  // stay whose discharge became trustworthy.
+  if (c.contaminationSuspect === true) return { ok: false, reason: 'contamination_suspect' };
   // 2 — trust channel
   const trust = c.provenance.trust;
   if (!trust || !(PROMOTABLE_TRUST as readonly string[]).includes(trust)) return { ok: false, reason: 'trust_not_promotable' };
@@ -122,6 +150,10 @@ export interface StayProcedureInput {
   setting: 'ot' | 'ward' | 'unknown';
   provenance: Provenance;
   spanVerified: boolean;
+  /** H-D5 — the library's write-time contamination stamp, carried through from the stored fact's
+   *  passthrough. Only a discharge-sourced fact ever carries it; an OT fact is the structured row
+   *  the comparison was made against. */
+  contaminationSuspect?: boolean;
 }
 
 /** One medication the stay library evidenced. */
@@ -193,7 +225,10 @@ export function stayToEncounter(input: StayEvidenceInput): StayEvidenceResult {
   for (const p of input.procedures ?? []) {
     const raw = (p?.conceptRaw ?? '').trim();
     if (!raw) continue;
-    if (!gate('procedures', raw, { provenance: p.provenance, spanVerified: p.spanVerified })) continue;
+    if (!gate('procedures', raw, {
+      provenance: p.provenance, spanVerified: p.spanVerified,
+      contaminationSuspect: p.contaminationSuspect,     // H-D5 — condition 6
+    })) continue;
     procedures.push({
       conceptRaw: raw,
       laterality: p.laterality ?? null,     // copied from the source row's own side field, never derived

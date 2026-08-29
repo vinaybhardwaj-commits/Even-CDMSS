@@ -40,6 +40,7 @@ import {
   procedureFactsOf, stayDocMetaOf,
   type Deidentifier, type DocKind, type NotAuditableReason, type OtFactInput, type StayDocStatus,
 } from './core';
+import { contaminationNotice, type ContaminationNotice } from './contamination';
 import { upsertClinicalState, type UpsertOutcome } from './store';
 
 /** One built document, before it is written. */
@@ -172,6 +173,19 @@ export async function buildStayLibrary(a: {
   if (progress.outcome === 'fetch_failed') notes.push('the progress-note look FAULTED — recorded unavailable');
   if (pac.outcome === 'ok' && !window) notes.push('PAC rested on the encounter hop alone — no admit/discharge dates, so the pre-admit window hop could not run');
 
+  // ── contamination guard (H2) ───────────────────────────────────────────────────────────
+  // THE ONLY PLACE IN THE PROGRAMME WHERE BOTH SIDES ARE IN HAND. `dischargeState` and `otState`
+  // are built independently and neither can see the other, so the comparison H-D4 asks for cannot
+  // live in either. Here it can: the stay's documents are all built and none is written yet, which
+  // is also the moment H-D5 requires — the taint must be stamped at WRITE time so it travels with
+  // the stored fact and is still true when the OT row is later gone.
+  const notice = stampContamination(documents);
+  if (notice) {
+    notes.push(
+      `possible template contamination: the discharge names "${notice.dischargeProcedure}" and this stay's OT note names "${notice.otSurgery}" — they share no substantive term. The discharge-sourced procedure is stamped and will not promote to the spine.`,
+    );
+  }
+
   // ── write ──────────────────────────────────────────────────────────────────────────────
   const written: Record<string, UpsertOutcome> = {};
   if (a.write) {
@@ -189,6 +203,44 @@ export async function buildStayLibrary(a: {
 
 /** A hop that could not even be attempted reads exactly like one that faulted: we know nothing. */
 const failed = (): TemplateFetchResult => ({ outcome: 'fetch_failed', rows: [] });
+
+/**
+ * H2 (H-D4 / H-D5 / H-D6) — compare this stay's structured OT `surgery_name` against its discharge
+ * `ExtractedCase.procedure` and, if they share no substantive word, stamp the DISCHARGE side.
+ *
+ * WHAT IT STAMPS, AND WHERE. Two places, both passthrough, neither a new required field:
+ *   · the discharge procedure FACT gets `contaminationSuspect: true` plus both token sets, so the
+ *     taint travels with the fact into P4's gate (condition 6) wherever that fact is later read;
+ *   · the discharge DOCUMENT's `surfaceExtras` gets the notice, so the stay panel can say one
+ *     sentence about it.
+ * `clinical-state/1.2` does not bump, no schema is forked, no engine version moves, and nothing
+ * here reaches a prompt, a finding or the Care-Value Index.
+ *
+ * ONLY THE DISCHARGE SIDE IS EVER STAMPED. The OT fact is the stay's own structured row — the thing
+ * being compared against, and precedence rank 1 anyway. Marking it would be marking the witness.
+ *
+ * Returns the notice it stamped, or null. Mutates the freshly-built documents in place: they are
+ * locals of the caller, nothing has read them yet, and nothing has been written.
+ */
+function stampContamination(documents: readonly BuiltDoc[]): ContaminationNotice | null {
+  const otTitles = documents
+    .filter((d) => d.docKind === 'ot' && d.status === 'ok')
+    .flatMap((d) => procedureFactsOf(d.state).map((p) => p.conceptRaw));
+  const discharge = documents.find((d) => d.docKind === 'discharge' && d.status === 'ok');
+  if (!discharge || !otTitles.length) return null;
+
+  const facts = procedureFactsOf(discharge.state);
+  const fact = facts[0];
+  if (!fact) return null;
+
+  const notice = contaminationNotice(otTitles, fact.conceptRaw);
+  if (!notice) return null;
+
+  fact.contaminationSuspect = true;
+  fact.contaminationTokens = { ot: notice.otTokens, discharge: notice.dischargeTokens };
+  discharge.state.surfaceExtras = { ...(discharge.state.surfaceExtras ?? {}), contamination: notice };
+  return notice;
+}
 
 /**
  * Turn one class's fetch result into stored documents. The three outcomes stay apart:

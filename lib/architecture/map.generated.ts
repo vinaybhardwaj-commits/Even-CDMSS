@@ -1333,6 +1333,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/admin",
+    "to": "stay-library",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
     "to": "value-score-core",
     "kind": "value"
   },

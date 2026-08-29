@@ -141,6 +141,12 @@ export function stayEvidenceInputFrom(stay: StayLibraryRead, identityResolved: b
     setting: p.setting,
     provenance: p.provenance,
     spanVerified: p.spanVerified,
+    // H-D5 / addendum H-A2 — the library's write-time contamination stamp, carried from the stored
+    // fact's passthrough into the gate's input. It cannot travel on `provenance` (that schema is
+    // `.strict()` and this ship bumps nothing), and it cannot be re-derived here: the flag is often
+    // true precisely when the OT row that produced it is no longer readable. Carrying it is the
+    // whole of this file's H2 change.
+    contaminationSuspect: p.contaminationSuspect,
   })));
 
   // Medications: the discharge list only, and the source text the gate checks against is the list

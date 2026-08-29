@@ -24,6 +24,8 @@ import { admissionAdapterEnabled } from '@/lib/member-state-adapters/discharge-e
 import OutcomePanel, { type ComplicationOption, type OutcomeRowView } from './outcome-panel';
 import CaseAskPanel from './case-ask-panel';
 import StayPanel, { type StaySiblingView } from './stay-panel';
+import { readStayLibrary } from '@/lib/stay-library/store';
+import { contaminationOf } from '@/lib/stay-library/core';
 import { getIpdAuditByVersion, IPD_ENGINE_VERSION, IPD_STAY_ENGINE_VERSION } from '@/lib/ipd-audit/store';
 import type { StayAuditReport } from '@/lib/ipd-audit/assemble';
 import { outcomesForSource } from '@/lib/prognosis-outcomes-store';
@@ -100,6 +102,18 @@ export default async function IpdAuditReport({ params }: { params: Promise<{ id:
     : null;
   // The coverage to render: this row's own when it IS the stay audit, otherwise the sibling's.
   const stayCoverageView = (isStayRow ? report?.stayCoverage : siblingReport?.stayCoverage) ?? null;
+
+  // STAY-LIBRARY-HARDENING H2 (H-D3) — the contamination stamp, read off the STORED discharge
+  // document in the stay library rather than off the audit report. Two reasons it is read here and
+  // not carried on the report: the stamp is a property of the LIBRARY, so it appears as soon as the
+  // library is rebuilt and does not wait for a stay audit to be re-run; and reading it here keeps it
+  // out of the engine entirely — it reaches no prompt, no finding and no Care-Value Index.
+  // Best-effort, like every other read on this page: `readStayLibrary` returns an empty library on
+  // any fault, so a Neon hiccup costs one advisory line and never the report above it.
+  const stayLibrary = ipUid ? await readStayLibrary(ipUid).catch(() => ({ documents: [] })) : { documents: [] };
+  const contamination = stayLibrary.documents
+    .map((d) => contaminationOf(d.state))
+    .find((c) => c != null) ?? null;
   const findings = (report?.findings ?? (typeof r.findings === 'string' ? JSON.parse(String(r.findings)) : r.findings) ?? []) as AuditFinding[];
   const lvcFindings = findings.filter((f) => f.verdict === 'low-value' || f.verdict === 'context-dependent');
   const band = String(r.band);
@@ -291,7 +305,7 @@ export default async function IpdAuditReport({ params }: { params: Promise<{ id:
                 the report above and replaces nothing. The parked list / calendar / search and the
                 gold pills are untouched; a stay run APPENDS a row under ipd-stay-audit/0.1 and
                 cannot rewrite the ipd-discharge-audit/0.2 row this page is showing. */}
-            <StayPanel documentId={documentId} coverage={stayCoverageView} sibling={sibling} isStayRow={isStayRow} />
+            <StayPanel documentId={documentId} coverage={stayCoverageView} sibling={sibling} isStayRow={isStayRow} contamination={contamination} />
 
             {/* Ask the agent — the shared persisted case conversation (CASE-AGENTS-SPINE PRD P1).
                 Additive and read-only with respect to everything above it: no chat turn moves

@@ -21,6 +21,7 @@
 import Link from 'next/link';
 import type { StayCoverageBlock } from '@/lib/ipd-audit/stay-material';
 import { stayCoverageLine } from '@/lib/ipd-audit/stay-material';
+import { CONTAMINATION_COPY, type ContaminationNotice } from '@/lib/stay-library/contamination';
 import StayAuditRunButton from './stay-run-button';
 
 /** The sibling stay-audit row, when one has been run for this document. */
@@ -54,7 +55,7 @@ function ClassRow({ label, status, copy, count }: { label: string; status: strin
 }
 
 export default function StayPanel({
-  documentId, coverage, sibling, isStayRow,
+  documentId, coverage, sibling, isStayRow, contamination,
 }: {
   documentId: string;
   /** The coverage to render — the sibling stay row's, or this row's own when it IS the stay row. */
@@ -62,6 +63,15 @@ export default function StayPanel({
   sibling: StaySiblingView | null;
   /** True when the row being viewed is itself the stay audit (so the "other reading" is the 0.2 one). */
   isStayRow: boolean;
+  /**
+   * H2 (CDMSS-STAY-LIBRARY-HARDENING-PRD-v1.0-29-AUG-2026, H-D3) — the stay library's write-time
+   * contamination stamp, read off the STORED discharge document. Null for every stay built before
+   * H2 and for every stay whose documents agree, which is almost all of them.
+   *
+   * It renders in the coverage area and nowhere else: it is not a finding, it carries no score, and
+   * the Care-Value Index above it is untouched by it.
+   */
+  contamination?: ContaminationNotice | null;
 }) {
   return (
     <div className="mt-2 rounded-xl border border-slate-200 bg-white">
@@ -71,6 +81,25 @@ export default function StayPanel({
           {isStayRow ? 'this report is the stay-level audit' : 'the report above read the discharge summary only'}
         </span>
       </div>
+
+      {/* H2 — one line, in the coverage area, above the per-class rows. It is deliberately worded
+          as a DISAGREEMENT between two documents rather than as a verdict on either: the discharge
+          may be the contaminated one, but the OT note may equally be filed against the wrong stay,
+          and this guard cannot tell which. What it can say is that the spine will not take the
+          discharge's word for the operation, and it says exactly that. */}
+      {contamination && (
+        <div className="mx-4 mt-3 rounded-lg border px-3 py-2 text-[11.5px]" style={{ borderColor: GAP.line, background: GAP.bg, color: GAP.ink }}>
+          <b>{CONTAMINATION_COPY}</b>
+          <div className="mt-1 text-slate-600">
+            Discharge: <span className="font-medium text-slate-800">{contamination.dischargeProcedure}</span>
+            {' · '}Operative note: <span className="font-medium text-slate-800">{contamination.otSurgery}</span>
+          </div>
+          <div className="mt-1 text-[10.5px] text-slate-500">
+            Compared after dropping approach, side and document words. This changes no finding and no
+            Care-Value Index; it stops the discharge-named procedure reaching the longitudinal record.
+          </div>
+        </div>
+      )}
 
       {coverage ? (
         <>

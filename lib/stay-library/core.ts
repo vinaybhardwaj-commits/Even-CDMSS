@@ -34,6 +34,7 @@ import {
 } from '../clinical-state/schema';
 import { extractedCaseToState } from '../clinical-state/to-audit-family';
 import type { ExtractedCase } from '../doc-audit-core';
+import type { ContaminationNotice } from './contamination';
 
 /** The library's own version. Not an engine version and not a schema version: it names the
  *  BUILDER, so a later change to how a document becomes a state is visible without touching
@@ -146,6 +147,21 @@ export interface StayProcedureFact {
    * recording it as anything other than measured would make that gate vacuous.
    */
   spanVerified: boolean;
+  /**
+   * H2 (CDMSS-STAY-LIBRARY-HARDENING-PRD-v1.0-29-AUG-2026, H-D5 / H-D6) — this DISCHARGE-sourced
+   * procedure shares no substantive word with the stay's own OT note, which is what a template
+   * that carried another patient's operative text looks like. Stamped at library-WRITE time, so
+   * the taint travels with the stored fact and is still true when the OT row is later gone.
+   *
+   * OPTIONAL, and it rides in `surfaceExtras` (an unvalidated passthrough) rather than on
+   * `Provenance`, which is `.strict()`: H-D6 forbids forking or bumping `clinical-state/1.2`, and
+   * an absent flag reads exactly as it did before H2. An OT-sourced fact never carries it — it IS
+   * the structured row the comparison is made against.
+   */
+  contaminationSuspect?: boolean;
+  /** Both normalized token sets, kept for auditability (§2) so a reviewer can see what was
+   *  compared and argue with the flag rather than only with its conclusion. */
+  contaminationTokens?: { ot: string[]; discharge: string[] };
 }
 
 export interface StaySurfaceExtras extends Record<string, unknown> {
@@ -153,6 +169,10 @@ export interface StaySurfaceExtras extends Record<string, unknown> {
   procedureFacts?: StayProcedureFact[];
   /** The allowlisted OT facts, verbatim, for P3's reader. */
   otFacts?: Array<{ name: string; label: string; value: string }>;
+  /** H2 — present ONLY on a discharge document whose procedure is contamination-suspect. The stay
+   *  panel reads this to render one line; nothing in the audit engine reads it, and it reaches no
+   *  prompt, no finding and no CVI. */
+  contamination?: ContaminationNotice;
 }
 
 // ── laterality (P2.1, addendum A6) ───────────────────────────────────────────────────────
@@ -548,6 +568,18 @@ export function stayDocMetaOf(state: ClinicalState | null | undefined): StayDocM
 export function procedureFactsOf(state: ClinicalState | null | undefined): StayProcedureFact[] {
   const p = (state?.surfaceExtras as StaySurfaceExtras | undefined)?.procedureFacts;
   return Array.isArray(p) ? p : [];
+}
+
+/**
+ * H2 — the contamination notice on a stored DISCHARGE state, or null. The one door the surface
+ * reads the taint through, so a stored row written before H2 (which has no such key) reads as "no
+ * notice" rather than as an error, and a row whose passthrough holds something unexpected reads the
+ * same way. Absence is the safe answer here: a missing notice renders nothing.
+ */
+export function contaminationOf(state: ClinicalState | null | undefined): ContaminationNotice | null {
+  const c = (state?.surfaceExtras as StaySurfaceExtras | undefined)?.contamination;
+  if (!c || typeof c !== 'object' || c.suspect !== true) return null;
+  return typeof c.dischargeProcedure === 'string' && typeof c.otSurgery === 'string' ? c : null;
 }
 
 /** Whitespace-insensitive verbatim span search. Returns offsets into the ORIGINAL haystack, or null.
