@@ -101,6 +101,10 @@ export interface StayDocMeta {
   /** The document's own timestamp, as the source carried it. */
   at: string | null;
   templateName?: string | null;
+  /** H4 — which extraction version this discharge state was actually built from. Present on
+   *  discharge rows only. Recorded because the library accepts more than one version, and a reader
+   *  asking "why does this row have no verbatim sections" deserves the answer rather than a guess. */
+  extractionVersion?: string | null;
 }
 
 /**
@@ -318,6 +322,8 @@ export function dischargeState(a: {
   encounterRef: string | null;
   deid: Deidentifier;
   at?: string | null;
+  /** H4 — the extraction version the caller actually read this from. */
+  extractionVersion?: string | null;
 }): ClinicalState {
   const state = extractedCaseToState(a.extracted);
   const adapterExtras = state.surfaceExtras ?? {};
@@ -363,6 +369,7 @@ export function dischargeState(a: {
     status: 'ok',
     lookedFor: `${DOC_KIND_LABEL.discharge} in ${DOC_KIND_SOURCE.discharge}`,
     at: a.at ?? null,
+    ...(a.extractionVersion ? { extractionVersion: a.extractionVersion } : {}),
   };
   state.surfaceExtras = { ...adapterExtras, stayDoc: meta, ...(procedureFacts.length ? { procedureFacts } : {}) };
   return state;

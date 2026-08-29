@@ -31,7 +31,7 @@ import {
   OT_FACT_LABELS, allowlistedOtFacts, flattenTemplateRow, hasUsableText, pacWindow,
   parseComponentJson, type KxTemplateRow,
 } from '../readmission-template-core';
-import { fetchExtractedCase } from '../discharge-extract-store';
+import { readExtractedCaseAcrossVersions, DOC_EXTRACT_VERSION } from '../discharge-extract-store';
 import { fetchIpdAdmissionHeader } from '../ipd-audit/db13';
 import { sql } from '../db';
 import { CLINICAL_STATE_VERSION, type ClinicalState } from '../clinical-state/schema';
@@ -41,7 +41,7 @@ import {
   type Deidentifier, type DocKind, type NotAuditableReason, type OtFactInput, type StayDocStatus,
 } from './core';
 import { contaminationNotice, type ContaminationNotice } from './contamination';
-import { upsertClinicalState, type UpsertOutcome } from './store';
+import { readClinicalState, upsertClinicalState, type UpsertOutcome } from './store';
 
 /** One built document, before it is written. */
 export interface BuiltDoc {
@@ -52,14 +52,19 @@ export interface BuiltDoc {
   state: ClinicalState;
 }
 
+/** H4 — the upsert's three outcomes plus the one this file can decide on its own. */
+export type BuildWriteOutcome = UpsertOutcome | 'refused_degrade';
+
 export interface StayLibraryResult {
   encounterRef: string | null;
   memberUid: string | null;
   documents: BuiltDoc[];
   /** Per-class outcome in plain words, for the build report. */
   coverage: Record<DocKind, { status: StayDocStatus; reason?: NotAuditableReason; count: number }>;
-  /** What was written, when `write` was set. Empty on a dry run. */
-  written: Record<string, UpsertOutcome>;
+  /** What was written, when `write` was set. Empty on a dry run. `refused_degrade` is H4's
+   *  fourth outcome: the rebuild would have replaced a healthy stored row with a not_auditable
+   *  one, and refused. */
+  written: Record<string, BuildWriteOutcome>;
   /** Honest notes: a faulted hop, a missing header, a stay with no identity to scrub against. */
   notes: string[];
 }
@@ -133,23 +138,45 @@ export async function buildStayLibrary(a: {
   const documents: BuiltDoc[] = [];
 
   // ── discharge ──────────────────────────────────────────────────────────────────────────
-  const stored = await fetchExtractedCase(a.documentId).catch(() => null);
-  if (stored?.extracted) {
+  // H4 — THREE OUTCOMES, KEPT APART, and the version list is deliberate.
+  //
+  // The library reads diagnosis, procedure, medications, `rawNotes` and `courseSummary`. Every one
+  // of those is present in a `doc-extract/1` row, so a `/1` row is fully usable HERE even though
+  // R10 bumped the shared constant to `/2` for `verbatim_sections`, which this library never reads
+  // (and which H-D12 puts in the DOT ship, not this one). Asking only for the default version made
+  // a bump owned by another reader read as "this stay has no discharge summary" — measured on
+  // production 29 Aug, deterministic, on 560 of 843 rows in the store. Newest usable version wins.
+  const READABLE_EXTRACT_VERSIONS = [DOC_EXTRACT_VERSION, 'doc-extract/1'] as const;
+  const read = await readExtractedCaseAcrossVersions(a.documentId, READABLE_EXTRACT_VERSIONS);
+  if (read.outcome === 'found') {
     documents.push({
       docKind: 'discharge', sourceUid: a.documentId, status: 'ok',
       state: dischargeState({
-        extracted: stored.extracted, documentId: a.documentId,
-        encounterRef: a.encounterRef, deid, at: stored.extractedAt,
+        extracted: read.stored.extracted, documentId: a.documentId,
+        encounterRef: a.encounterRef, deid, at: read.stored.extractedAt,
+        extractionVersion: read.version,
       }),
     });
+    if (read.version !== DOC_EXTRACT_VERSION) {
+      notes.push(`the discharge summary was read at ${read.version}, not ${DOC_EXTRACT_VERSION} — the library's fields are all present at that version, and a bump made for another reader is not evidence this stay has no discharge summary`);
+    }
+  } else if (read.outcome === 'fetch_failed') {
+    // A FAULT IS NOT AN ABSENCE. `unavailable` says the look failed; `no_document` would claim the
+    // extract does not exist, which we have no basis for. The refuse-to-degrade guard below is what
+    // stops this row replacing a healthy one.
+    documents.push({
+      docKind: 'discharge', sourceUid: a.documentId, status: 'not_auditable', reason: 'unavailable',
+      state: notAuditableState({ docKind: 'discharge', reason: 'unavailable', encounterRef: a.encounterRef, sourceUid: a.documentId }),
+    });
+    notes.push(`the discharge extract look FAULTED (${read.error}) — recorded unavailable; this is not evidence the summary was never read`);
   } else {
-    // No stored extract: the discharge summary has not been read at this extraction version. That
-    // is an honest gap in OUR library, not a claim about the document.
+    // Genuinely no usable row at ANY version the library can read. An honest gap in OUR library,
+    // not a claim about the document.
     documents.push({
       docKind: 'discharge', sourceUid: a.documentId, status: 'not_auditable', reason: 'no_document',
       state: notAuditableState({ docKind: 'discharge', reason: 'no_document', encounterRef: a.encounterRef, sourceUid: a.documentId }),
     });
-    notes.push('no stored discharge extract for this document — run the IPD audit first, or the summary is unread at doc-extract/1');
+    notes.push(`no stored discharge extract for this document at ${READABLE_EXTRACT_VERSIONS.join(' or ')} — run the IPD audit first`);
   }
 
   // ── OT / PAC / progress ────────────────────────────────────────────────────────────────
@@ -186,11 +213,35 @@ export async function buildStayLibrary(a: {
     );
   }
 
+  // ── refuse to degrade (H4) ─────────────────────────────────────────────────────────────
+  // ONLY THE DISCHARGE LEG NEEDS THIS, and the asymmetry is the reason it went wrong. An OT, PAC or
+  // progress absence is written under an `absent:<kind>:<stay>` sentinel, so it lands BESIDE the
+  // real rows and can never replace one. A discharge absence is keyed on the DOCUMENT ID — the same
+  // key the healthy row uses — so it overwrites in place. That is how a rebuild turned IP-1486's
+  // read discharge summary into "no stored extract exists" on 29 Aug, and with MEMBERSTATE_IPD_FOLD
+  // on, took the member's discharge-sourced medications off the spine with it.
+  //
+  // So: a rebuild may improve a discharge row, and may leave it alone, but it may NOT replace a
+  // stored `ok` reading with a `not_auditable` one. If today's look cannot do better than what is
+  // already stored, the stored row stands and the refusal is reported. Checked on dry runs too, so
+  // a dry run predicts what the write would do rather than merely rehearsing the fetch.
+  const degrades = documents.find((d) => d.docKind === 'discharge' && d.status === 'not_auditable');
+  let refuseDegrade = false;
+  if (degrades) {
+    const stored = await readClinicalState('discharge', degrades.sourceUid, CLINICAL_STATE_VERSION);
+    if (stored?.status === 'ok') {
+      refuseDegrade = true;
+      notes.push(`REFUSED to overwrite this stay's stored discharge summary with a ${degrades.reason} row — the stored reading is healthier than today's look, so it stands. Nothing about the stored row changed.`);
+    }
+  }
+
   // ── write ──────────────────────────────────────────────────────────────────────────────
-  const written: Record<string, UpsertOutcome> = {};
+  const written: Record<string, BuildWriteOutcome> = {};
   if (a.write) {
     for (const d of documents) {
-      written[`${d.docKind}:${d.sourceUid}`] = await upsertClinicalState({
+      const key = `${d.docKind}:${d.sourceUid}`;
+      if (refuseDegrade && d === degrades) { written[key] = 'refused_degrade'; continue; }
+      written[key] = await upsertClinicalState({
         docKind: d.docKind, sourceUid: d.sourceUid, memberUid: a.memberUid,
         encounterRef: a.encounterRef, status: d.status, state: d.state,
         schemaVersion: CLINICAL_STATE_VERSION,

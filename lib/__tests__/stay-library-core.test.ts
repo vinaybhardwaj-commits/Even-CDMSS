@@ -426,9 +426,17 @@ test('§4 — no Metabase table is invented: the three kx template tables and no
   ], 'a fifth table appeared — the PRD says STOP and flag, not add one');
   // and the reads themselves are the EXISTING fetchers, not new SQL
   const build = code('lib/stay-library/build.ts');
-  for (const fetcher of ['fetchOtNotes', 'fetchPacNotes', 'fetchProgressNotes', 'fetchExtractedCase']) {
+  // `fetchExtractedCase` was named here until H4 (CDMSS-STAY-LIBRARY-HARDENING-PRD-v1.0-29-AUG-2026):
+  // the library now uses `readExtractedCaseAcrossVersions` from the SAME store module, reading the
+  // SAME table, because the old reader deliberately collapses "no row" with "the database faulted"
+  // and the library's answer to those two is not the same one. The exemption is paid for by an
+  // assertion, per the house rule: the replacement must come from the shared store and must not be
+  // a query this module invented, and stay-library-hardening.test.ts pins the taxonomy separately.
+  for (const fetcher of ['fetchOtNotes', 'fetchPacNotes', 'fetchProgressNotes', 'readExtractedCaseAcrossVersions']) {
     assert.ok(build.includes(fetcher), `build.ts must reuse ${fetcher}`);
   }
+  assert.match(build, /from '\.\.\/discharge-extract-store'/, 'the discharge read stays the shared store\'s');
+  assert.ok(!/discharge_extracted_cases/.test(build), 'build.ts must not name the extract table itself');
   assert.ok(!/metabaseQuery/.test(build), 'build.ts must not query db13 directly — it calls the existing fetchers');
   assert.equal(DOC_KIND_SOURCE.ot, 'kx_clinical_template_ot_notes');
 });

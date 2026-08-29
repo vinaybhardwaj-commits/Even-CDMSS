@@ -32,7 +32,11 @@ import {
   contaminationSuspect, contaminationNotice, significantTokens,
   CONTAMINATION_STOPLIST, CONTAMINATION_COPY, MIN_TOKEN_LENGTH, SHORT_SITE_ALLOWLIST,
 } from '../stay-library/contamination';
-import { contaminationOf, STAY_LIBRARY_VERSION } from '../stay-library/core';
+import {
+  contaminationOf, STAY_LIBRARY_VERSION, NOT_AUDITABLE_COPY, absentSourceUid, isAbsentSourceUid,
+  notAuditableState, dischargeState, stayDocMetaOf, type Deidentifier,
+} from '../stay-library/core';
+import type { ExtractedCase } from '../doc-audit-core';
 import { promotable, stayToEncounter } from '../member-state/ipd-evidence';
 import { stayEvidenceInputFrom } from '../member-state/ipd-fold';
 import { emptyClinicalState } from '../clinical-state/schema';
@@ -78,6 +82,17 @@ function relookRunner(o: { rows: Array<Record<string, unknown>> }) {
   const run: SqlRunner = async (query, params) => { calls.push({ query, params }); return o.rows; };
   return { run, calls };
 }
+
+/** H4 fixtures: an identity scrubber and a minimal ExtractedCase, shaped like P2's own test. */
+const noop: Deidentifier = (t) => t;
+const extracted = (over: Partial<ExtractedCase> = {}): ExtractedCase => ({
+  docType: 'discharge_summary', detectedDocType: 'discharge_summary', confidence: 0.8,
+  patient: { age: 54, sex: 'M' },
+  diagnosis: 'Cholelithiasis', indication: null, procedure: null,
+  investigations: [], treatments: [], medications: [],
+  courseSummary: '', disposition: 'home', followUp: null, rawNotes: '',
+  ...over,
+} as ExtractedCase);
 
 // ══ H1 — snapshot before overwrite ═══════════════════════════════════════════════════════
 
@@ -614,4 +629,90 @@ test('H3 migration 0049 is additive: ADD COLUMN IF NOT EXISTS, and nothing is dr
   const ddl = code('migrations/0049_stay_library_hardening.sql');
   assert.match(ddl, /check_count\s+INTEGER NOT NULL DEFAULT 0/);
   assert.match(ddl, /last_checked_at TIMESTAMPTZ;/, 'last_checked_at must be nullable with no default');
+});
+
+// ══ H4 — the discharge leg: a version bump is not an absence, a fault is not an absence ═══
+
+test('H4 root cause: the library accepts every extract version whose fields it actually reads', () => {
+  const build = code('lib/stay-library/build.ts');
+  // MEASURED ON PRODUCTION, 29 Aug: R10-A (9b3862a, 28 Aug) bumped the SHARED constant to
+  // doc-extract/2 for `verbatim_sections`. The library reads diagnosis, procedure, medications,
+  // rawNotes and courseSummary — all present at /1 — but asked for the DEFAULT version, so 560 of
+  // the store's 843 rows read as "this stay has no discharge summary".
+  assert.match(build, /READABLE_EXTRACT_VERSIONS = \[DOC_EXTRACT_VERSION, 'doc-extract\/1'\]/,
+    'newest first, then the older version the library can still read in full');
+  assert.ok(!/fetchExtractedCase\(/.test(build),
+    'the library must not use the collapse-absent-with-error reader — it cannot tell the two apart');
+  // The library never reads `verbatim_sections`, which is the ONLY thing /2 adds. If it ever does,
+  // this assertion fails and the version list has to be reconsidered rather than silently widened.
+  assert.ok(!/verbatim_sections|verbatimSections/.test(build + code('lib/stay-library/core.ts')),
+    'the field that justified the /2 bump is not read here — that is why /1 is acceptable');
+});
+
+test('H4 taxonomy: found / absent / fetch_failed are THREE outcomes, and a fault is never no_document', async () => {
+  const build = code('lib/stay-library/build.ts');
+  const leg = build.slice(build.indexOf('readExtractedCaseAcrossVersions'), build.indexOf('const enc ='));
+  assert.match(leg, /read\.outcome === 'fetch_failed'/);
+  // The fault branch must reach `unavailable`, and `no_document` must be the ELSE — a fault claims
+  // nothing about whether the extract exists.
+  const faultBranch = leg.slice(leg.indexOf("read.outcome === 'fetch_failed'"), leg.indexOf('} else {'));
+  assert.match(faultBranch, /reason: 'unavailable'/);
+  assert.ok(!/no_document/.test(faultBranch), 'a faulted look must never be recorded as no_document');
+  assert.match(NOT_AUDITABLE_COPY.unavailable, /the look for this document failed/);
+  assert.match(NOT_AUDITABLE_COPY.no_document, /no stored extract exists/);
+
+  // ...and the reader itself keeps them apart, which fetchExtractedCase deliberately does not.
+  const store = code('lib/discharge-extract-store.ts');
+  const fn = store.slice(store.indexOf('export async function readExtractedCaseAcrossVersions'));
+  assert.match(fn, /outcome: 'fetch_failed'/);
+  assert.match(fn, /outcome: 'absent'/);
+  assert.match(fn, /outcome: 'found'/);
+  // PURELY ADDITIVE: the original reader's contract is untouched.
+  const original = store.slice(store.indexOf('export async function fetchExtractedCase('), store.indexOf('export type ExtractReadOutcome'));
+  assert.match(original, /return rowToStoredCase\(rows\[0\]\);/);
+  assert.match(original, /catch \{\s*return null;/, 'fetchExtractedCase still collapses both to null for its own caller');
+});
+
+test('H4 refuse-to-degrade: a rebuild may improve a discharge row but may not replace a healthy one', () => {
+  const build = code('lib/stay-library/build.ts');
+  const guard = build.slice(build.indexOf('const degrades ='), build.indexOf('const written'));
+  // The guard fires only when TODAY'S look is not_auditable and the STORED row is ok.
+  assert.match(guard, /d\.docKind === 'discharge' && d\.status === 'not_auditable'/);
+  assert.match(guard, /stored\?\.status === 'ok'/);
+  assert.match(guard, /readClinicalState\('discharge'/);
+  // It is checked on dry runs too, so a dry run predicts the write rather than rehearsing the fetch.
+  assert.ok(build.indexOf('const degrades =') < build.indexOf('if (a.write)'),
+    'the refusal must be decided before, and independently of, whether we are writing');
+  // The refusal is REPORTED, not silent — the whole defect was a silent degrade.
+  assert.match(guard, /REFUSED to overwrite/);
+  const writeLoop = build.slice(build.indexOf('if (a.write) {'));
+  assert.match(writeLoop, /if \(refuseDegrade && d === degrades\) \{ written\[key\] = 'refused_degrade'; continue; \}/);
+  // Scoped to discharge ON PURPOSE, and the reason is asymmetry of KEYS, not of importance.
+  assert.ok(!/refuseDegrade.*'ot'|'ot'.*refuseDegrade/.test(build),
+    'ot/pac/progress absences are written under an absent: sentinel and cannot overwrite a real row');
+});
+
+test('H4: an absence sentinel can never collide with a real document key — the asymmetry, pinned', () => {
+  // This is WHY the discharge leg alone needed a guard: its absence row shares the healthy row's
+  // key, so it overwrites in place, while every other class lands beside its real rows.
+  assert.equal(absentSourceUid('ot', 'IP-1486'), 'absent:ot:IP-1486');
+  assert.equal(absentSourceUid('pac', 'IP-1486'), 'absent:pac:IP-1486');
+  assert.ok(isAbsentSourceUid(absentSourceUid('progress', 'IP-1486')));
+  // A discharge absence keeps the DOCUMENT id — not a sentinel — which is the collision.
+  const st = notAuditableState({ docKind: 'discharge', reason: 'no_document', encounterRef: 'IP-1486', sourceUid: '8cDGLZhU2fotHKbw6P1Y' });
+  assert.equal(stayDocMetaOf(st)?.sourceUid, '8cDGLZhU2fotHKbw6P1Y');
+  assert.ok(!isAbsentSourceUid(stayDocMetaOf(st)?.sourceUid), 'a discharge absence is NOT sentinel-keyed');
+});
+
+test('H4: a discharge state records which extraction version it was actually built from', () => {
+  const st = dischargeState({
+    extracted: extracted({ procedure: 'LAPAROSCOPIC CHOLECYSTECTOMY' }),
+    documentId: 'doc-1', encounterRef: 'IP-1486', deid: noop, at: null,
+    extractionVersion: 'doc-extract/1',
+  });
+  assert.equal(stayDocMetaOf(st)?.extractionVersion, 'doc-extract/1',
+    'a reader asking why this row has no verbatim sections gets the answer, not a guess');
+  // Absent when the caller does not say, so a pre-H4 stored row reads unchanged.
+  const bare = dischargeState({ extracted: extracted(), documentId: 'doc-1', encounterRef: 'IP-1486', deid: noop });
+  assert.equal(stayDocMetaOf(bare)?.extractionVersion, undefined);
 });
