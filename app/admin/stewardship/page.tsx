@@ -174,7 +174,10 @@ export default async function StewardshipPage({ searchParams }: { searchParams: 
     return { txt, tone, title: `observed ${Math.round(oe.raw_rate * 100)}% vs case-mix expected ${Math.round(oe.expected_rate * 100)}% (n=${oe.n} banded)` };
   };
 
-  const openTotal = queue.rows.filter((r) => r.open).length;
+  // ⚠️ From the queue's UNCAPPED count, not from the rendered rows. The 29 Aug validation found the
+  // inpatient leg reporting 500 of 1,248 dangerous findings because the headline number was counted
+  // over the display slice. A number on a board must not be a function of a display limit.
+  const openTotal = queue.openTotal;
 
   return (
     <div>
@@ -271,7 +274,9 @@ export default async function StewardshipPage({ searchParams }: { searchParams: 
           <div className="mt-5 rounded-xl border border-slate-200 bg-white p-4">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <h2 className="font-serif text-[15px] font-semibold text-slate-900">Danger queue</h2>
-              <span className="text-[11px] text-slate-500">{openTotal} open · {queue.rows.length} shown</span>
+              <span className="text-[11px] text-slate-500">
+                {openTotal} open ({queue.opdOpen} OPD · {queue.ipdOpen} inpatient) · {queue.rows.length} shown
+              </span>
             </div>
             <p className="mt-0.5 text-[11.5px] text-slate-500">
               Tier-1 escalations from the ratified severity table, safety-domain inpatient findings, and findings a
@@ -286,7 +291,9 @@ export default async function StewardshipPage({ searchParams }: { searchParams: 
             )}
             {queue.capped && (
               <p className="mt-2 text-[11px] italic text-amber-800">
-                More rows matched than one page load reads — this is the newest slice of the queue, not all of it.
+                More rows matched than one page load renders — this is the newest slice of the queue, not all of it.
+                {queue.ipdShown < queue.ipdEligible && ` Inpatient: showing ${queue.ipdShown} of ${queue.ipdEligible} eligible findings, newest audit first.`}
+                {' '}The open counts above are over every eligible finding, not over this list.
               </p>
             )}
             {queue.rows.length === 0

@@ -17,10 +17,13 @@ import { join } from 'node:path';
 import { escalationMatch, tierFor } from '../severity-tier-core';
 import {
   ipdDangerVerdict, ipdPillState, opdDangerVerdict, opdPillState, sortBoardRows,
-  DANGER_QUEUE_UNIT, IPD_PILL_STATE, IPD_SPLIT_BANNER, IPD_STORED_VERDICTS, IPD_UNJOINED_CELL,
-  OPD_PILL_STATE, STEWARDSHIP_HONESTY,
+  DANGER_QUEUE_UNIT, DISPUTE_PILLS, IPD_PILL_STATE, IPD_SPLIT_BANNER, IPD_STORED_VERDICTS,
+  IPD_UNJOINED_CELL, OPD_PILL_STATE, STEWARDSHIP_HONESTY,
 } from '../stewardship-danger-core';
 import { BOARD_ESCALATION_PREFILTER, BOARD_INFERRED_SQL } from '../stewardship-board';
+import { OPD_CANON_WHERE, OPD_TAIL_SHAPE_SQL, opdCanonical90d } from '../stewardship-canonical';
+import { CANONICAL_RANK_SQL } from '../audit-canonical';
+import { OPD_ENGINE_VERSIONS_CURRENT } from '../opd-note-audit-core';
 
 const ROOT = process.cwd();
 const read = (p: string) => readFileSync(join(ROOT, p), 'utf8');
@@ -72,10 +75,83 @@ test('A5 / §7: the IPD feedback route is UNTOUCHED — it still accepts what it
 test('spec §4: the OPD mapping keeps confirmed visible and drops noise off the open count', () => {
   assert.equal(opdPillState('true_positive'), 'confirmed');
   assert.equal(opdPillState('contested'), 'open');
+  assert.equal(opdPillState('needs_action'), 'open');
   assert.equal(opdPillState('nitpick'), 'dropped');
   assert.equal(opdPillState('false'), 'dropped');
   assert.equal(opdPillState(null), 'open');
-  assert.deepEqual(Object.keys(OPD_PILL_STATE).sort(), ['contested', 'false', 'nitpick', 'true_positive']);
+  assert.deepEqual(Object.keys(OPD_PILL_STATE).sort(), ['contested', 'false', 'needs_action', 'nitpick', 'true_positive']);
+});
+
+// ── the pill-CLOSURE truth table, exhaustive (validation gap: opd_audit_feedback is PHI-blocked
+// from the orchestrator's tool, so neither pill leg could be run end-to-end against the live DB.
+// These are the compensating unit tests the validation asked for.) ────────────────────────────
+
+test('closure: OPEN is no pill, contested, or needs_action — on BOTH legs', () => {
+  for (const pill of [null, undefined, '', 'contested', 'needs_action']) {
+    assert.equal(opdPillState(pill), 'open', `OPD: ${String(pill)} must be open`);
+    assert.equal(ipdPillState(pill), 'open', `IPD: ${String(pill)} must be open`);
+  }
+});
+
+test('closure: CLOSED is false, nitpick, and (inpatient) disagree', () => {
+  for (const pill of ['false', 'nitpick']) {
+    assert.equal(opdPillState(pill), 'dropped', `OPD: ${pill} must drop off the open count`);
+    assert.equal(ipdPillState(pill), 'dropped', `IPD: ${pill} must drop off the open count`);
+  }
+  assert.equal(ipdPillState('disagree'), 'dropped');
+});
+
+test('closure: CONFIRMED is true_positive, and on the inpatient leg also agree', () => {
+  assert.equal(opdPillState('true_positive'), 'confirmed');
+  assert.equal(ipdPillState('true_positive'), 'confirmed');
+  assert.equal(ipdPillState('agree'), 'confirmed');
+  // confirmed is visible and NOT open — the distinction the board column depends on
+  assert.equal(opdDangerVerdict(ESCALATED, 'true_positive').open, false);
+  assert.equal(ipdDangerVerdict({ subject: 's', domain: 'safety', verdict: 'low-value' }, 'agree').open, false);
+});
+
+test('closure: praise never enters, at any pill value, on either leg', () => {
+  for (const pill of [null, 'contested', 'needs_action', 'true_positive', 'agree', 'false', 'nitpick', 'disagree']) {
+    assert.equal(opdDangerVerdict(PRAISE, pill).included, false, `OPD praise entered at pill ${String(pill)}`);
+    assert.equal(
+      ipdDangerVerdict({ subject: 'Standard prophylaxis given', domain: 'safety', verdict: 'high-value' }, pill).included,
+      false, `IPD praise entered at pill ${String(pill)}`);
+  }
+});
+
+// ── A5 fix (29 Aug validation §3.3): needs_action OPENS the queue on both legs ─────────────
+
+test('A5: needs_action opens the OPD leg — today\'s count is 0 and the route still must exist', () => {
+  // Measured 29 Aug: needs_action is an AUDIT-scope verdict and the current audit-scope count is 0,
+  // so nothing is missed right now. There was also no route at all for one to enter if filed. There
+  // is now.
+  const v = opdDangerVerdict(TIER3, 'needs_action');
+  assert.equal(v.included, true);
+  assert.equal(v.leg, 'contested');
+  assert.equal(v.open, true);
+  assert.match(v.reason, /still needing action/);
+  // and it does not pretend to be an argument — needs_action is agreement plus unfinished work
+  assert.ok(!/contested/.test(v.reason));
+});
+
+test('A5: needs_action opens the inpatient leg — the one live row measured on 29 Aug', () => {
+  // ipd_audit_feedback carries needs_action n=1 alongside contested 77. A NON-safety finding pilled
+  // needs_action was excluded by the old outer filter. That is the exact shape of the live row.
+  const nonSafety = ipdDangerVerdict(
+    { subject: 'Discharge advice omits the anticoagulant stop date', domain: 'documentation', verdict: 'low-value' },
+    'needs_action',
+  );
+  assert.equal(nonSafety.included, true, 'A5 says needs_action counts as open — membership must admit it');
+  assert.equal(nonSafety.open, true);
+  assert.equal(nonSafety.leg, 'contested');
+  // and the SQL that finds it must admit it too, or the membership rule never sees the row
+  for (const key of ['danger_contested', 'danger_ipd', 'danger_ipd_count'] as const) {
+    assert.match(BOARD_INFERRED_SQL[key], /pill = ANY\(\$\d::text\[\]\)/,
+      `${key} must filter on the dispute list, not on a single hard-coded verdict`);
+    assert.ok(!/pill = 'contested'/.test(BOARD_INFERRED_SQL[key]),
+      `${key} still hard-codes contested as the only dispute`);
+  }
+  assert.deepEqual([...DISPUTE_PILLS], ['contested', 'needs_action']);
 });
 
 // ── membership (acceptance #7) ────────────────────────────────────────────────────────────
@@ -256,6 +332,121 @@ test('§8: every read of opd_audit_feedback carries the study predicate', () => 
     const preds = (q.match(/study IS NOT DISTINCT FROM/g) ?? []).length;
     assert.equal(reads, preds, `${name}: ${reads} read(s) of opd_audit_feedback, ${preds} study predicate(s)`);
   }
+});
+
+// ── the three 29 Aug defects, each with the shape that would let it back in ───────────────
+
+test('defect 1: the inpatient COUNT is uncapped and the LIST is deterministic, newest first', () => {
+  const count = BOARD_INFERRED_SQL.danger_ipd_count;
+  const list = BOARD_INFERRED_SQL.danger_ipd;
+
+  // The count must not carry a LIMIT at all — the board's headline number must not be a function of
+  // a display slice. It groups instead, so the result stays small however large the corpus grows.
+  assert.ok(!/\bLIMIT\b/i.test(count.replace(/LIMIT 1\n/g, '')),
+    'the eligible-row COUNT must be uncapped (the 29 Aug defect: 500 counted, 1248 eligible)');
+  assert.match(count, /GROUP BY 1, 2, 3, 4/);
+  assert.match(count, /count\(\*\)::int AS n/);
+
+  // The list may cap, but never arbitrarily: newest audit first, with a deterministic tiebreak.
+  assert.match(list, /ORDER BY q\.audited_at_raw DESC NULLS LAST, q\.audit_id, q\.subject/);
+  assert.ok(!/ORDER BY q\.audit_id, q\.subject\s*\n\s*LIMIT/.test(list),
+    'ordering a capped list by row uuid drops findings by primary key');
+
+  // and the two must agree on what "eligible" means — one clause, two readers
+  const eligible = /q\.domain = 'safety' OR q\.pill = ANY\(\$3::text\[\]\)/;
+  assert.match(count, eligible);
+  assert.match(list, eligible);
+});
+
+test('defect 1: no queue query orders a capped list by a primary key', () => {
+  for (const [name, q] of Object.entries(BOARD_INFERRED_SQL)) {
+    if (!/\bLIMIT \d/.test(q)) continue;
+    const order = q.match(/ORDER BY ([^\n]*)\n\s*LIMIT/);
+    if (!order) continue;
+    const key = order[1];
+    assert.ok(/DESC|note_date|note_day|audited_at|n_notes/.test(key),
+      `${name} caps on an arbitrary ordering: ORDER BY ${key}`);
+  }
+});
+
+test('defect 2: pills are found through the NOTE uid, never through the canonical row id', () => {
+  // 23% of window rows are non-canonical (29,255 rows over 22,404 uids). A pill left on one of them
+  // was invisible: on the contested leg a dispute vanished from the queue, and on the escalation leg
+  // a finding CLOSED as `false` went on being counted open.
+  const esc = BOARD_INFERRED_SQL.danger_escalation;
+  const con = BOARD_INFERRED_SQL.danger_contested;
+
+  assert.match(esc, /JOIN opd_note_audits av ON av\.id = v\.audit_id/);
+  assert.match(esc, /WHERE av\.uid = t\.uid/);
+  assert.ok(!/v\.audit_id = t\.id/.test(esc), 'the escalation pill lateral still keys on the canonical row id');
+
+  assert.match(con, /JOIN opd_note_audits a ON a\.id = fb\.audit_id/);
+  assert.match(con, /JOIN \( SELECT DISTINCT ON \(uid\)[\s\S]*?\) t ON t\.uid = a\.uid/);
+  assert.ok(!/ON t\.id = fb\.audit_id/.test(con), 'the contested leg still joins feedback to the canonical row id');
+
+  // current-state must now be settled per NOTE, not per audit row: once pills from every row of a
+  // note count, two rows of one note could otherwise contribute a contested AND a false at once.
+  assert.match(con, /SELECT DISTINCT ON \(t\.uid, fb\.finding_ref\)/);
+  assert.match(con, /ORDER BY t\.uid, fb\.finding_ref, fb\.created_at DESC/);
+
+  // and the finding TEXT comes from the row the reviewer actually pilled
+  assert.match(con, /jsonb_typeof\(a\.findings\)/);
+});
+
+// ── defect 4: the version-sort cast must survive a suffixed family entry ──────────────────
+
+/** Postgres' `string_to_array(split_part(v,'/',2),'.')::int[]`, including the RAISE that a
+ *  non-numeric component produces. Mirrors the simulator in audit-canonical-sql-twin.test.ts. */
+const castTail = (v: string): number[] => v.split('/')[1].split('.').map((c) => {
+  if (!/^\d+$/.test(c)) throw new Error(`invalid input syntax for type integer: "${c}"`);
+  return Number(c);
+});
+/** The exported shape guard, evaluated the way Postgres would evaluate the `~` operator. */
+const shapeGuardAdmits = (v: string): boolean => /^[0-9]+(\.[0-9]+)*$/.test(v.split('/')[1] ?? '');
+
+test('defect 4: a suffixed entry in the engine family cannot crash the board queries', () => {
+  // MEASURED 29 Aug: `opd-note-audit/0.81.20-mini` exists with 236 rows, and an independent
+  // recompute that reached it died with `invalid input syntax for type integer: "20-mini"`. Today
+  // the explicit family list is all that stops it. One append to OPD_ENGINE_VERSIONS_CURRENT would
+  // make every board query and every Ask-material query throw at once.
+  const SUFFIXED = 'opd-note-audit/0.81.20-mini';
+
+  // 1. the cast really does raise on it — the test is discriminating, not decorative
+  assert.throws(() => castTail(SUFFIXED), /invalid input syntax for type integer: "20-mini"/);
+  assert.deepEqual(castTail('opd-note-audit/0.81.21'), [0, 81, 21]);
+
+  // 2. the shape guard excludes it BEFORE the cast can see it, and admits every real family member
+  assert.equal(shapeGuardAdmits(SUFFIXED), false);
+  assert.equal(shapeGuardAdmits('opd-note-audit/0.5-verify'), false, 'the non-mini trap tail too');
+  for (const v of OPD_ENGINE_VERSIONS_CURRENT) assert.equal(shapeGuardAdmits(v), true, `${v} must still be admitted`);
+
+  // 3. the guard is actually in the shared WHERE, ahead of the ORDER BY that carries the cast
+  assert.ok(OPD_CANON_WHERE.includes(OPD_TAIL_SHAPE_SQL), 'the shared basis must carry the tail-shape guard');
+  assert.match(CANONICAL_RANK_SQL, /::int\[\] DESC/, 'the fragment this guards still casts');
+  const q = opdCanonical90d('doctor_uid');
+  assert.ok(q.indexOf(OPD_TAIL_SHAPE_SQL) < q.indexOf('ORDER BY'), 'the guard must be in the WHERE, not the ORDER BY');
+
+  // 4. every composed query carries it — a guard on one string is not a guard
+  for (const [name, sqlText] of Object.entries(BOARD_INFERRED_SQL)) {
+    if (!sqlText.includes('opd_note_audits')) continue;
+    assert.ok(sqlText.includes(OPD_TAIL_SHAPE_SQL), `${name} would crash on a suffixed family entry`);
+  }
+});
+
+// ── F-2 (V locked): one window basis everywhere ───────────────────────────────────────────
+
+test('F-2: the board window is the IST calendar day, matching lib/opd-audit-doctor.ts', () => {
+  assert.match(OPD_CANON_WHERE,
+    /\(note_date AT TIME ZONE 'Asia\/Kolkata'\)::date >= \(now\(\) AT TIME ZONE 'Asia\/Kolkata'\)::date - \(\$2\)::int/);
+  assert.ok(!/NOW\(\) - \(\$2 \|\| ' days'\)::interval/.test(OPD_CANON_WHERE),
+    'the instant-based window is gone — one basis everywhere (V, 29 Aug)');
+  // the same shape the dept helpers already used (they interpolate the IST cast, so the pin is on
+  // the template they compose, not on a rendered copy of it)
+  const helpers = read('lib/opd-audit-doctor.ts');
+  assert.ok(helpers.includes("const IST = \"AT TIME ZONE 'Asia/Kolkata'\""),
+    'the dept helpers must still build their window from the IST cast');
+  assert.ok(helpers.includes('const WIN90 = `(note_date ${IST})::date >= (now() ${IST})::date - 90`'),
+    'the basis being matched must still be the calendar-day window in lib/opd-audit-doctor.ts');
 });
 
 test('A6: the inpatient danger read cannot see the stay auditor\'s rows', () => {

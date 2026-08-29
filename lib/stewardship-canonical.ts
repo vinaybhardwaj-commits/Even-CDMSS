@@ -13,12 +13,22 @@
  * one of THREE different rules over one table, and `lib/audit-canonical.ts` exists because two
  * counts sitting side by side were each computed their own way. One fragment, three readers.
  *
- * ⚠️ A WINDOW DIVERGENCE THAT ALREADY EXISTS, and is NOT resolved here (flagged, not improvised):
- * the board page's window is `note_date >= NOW() - 90 days` (an instant-based interval) while the
- * dept helpers in `lib/opd-audit-doctor.ts` use `(note_date AT TIME ZONE 'Asia/Kolkata')::date >=
- * (now() AT TIME ZONE 'Asia/Kolkata')::date - 90` (an IST calendar-day window). They can differ by
- * up to a day at the edge. This module carries the BOARD's form, because the board is what the
- * room's numbers must agree with. Reconciling the two is a product call for V, not a builder's.
+ * ⚠️ THE WINDOW IS THE IST CALENDAR DAY — V's ruling on flag F-2, 29 Aug 2026. The board page used
+ * an INSTANT window (`note_date >= NOW() - 90 days`) while the dept helpers in
+ * `lib/opd-audit-doctor.ts` used an IST CALENDAR-DAY one. The 29 Aug validation measured both at
+ * 25,157 distinct uids — identical today, and that is exactly why it had to be settled rather than
+ * left: a divergence with no visible effect is one that gets discovered at the edge of a day, in
+ * production, by someone comparing two screens. One basis everywhere; this module carries the
+ * calendar-day form the dept helpers already used.
+ *
+ * ⚠️ THE VERSION-SORT CAST IS GUARDED BY SHAPE, not by the engine list. `CANONICAL_RANK_SQL` orders
+ * by `string_to_array(split_part(engine_version, '/', 2), '.')::int[]`, and Postgres RAISES on a
+ * non-numeric component rather than mis-ranking. Today the explicit family list is what keeps the
+ * cast safe — but `opd-note-audit/0.81.20-mini` already exists in the table with 236 rows, and one
+ * append to `OPD_ENGINE_VERSIONS_CURRENT` would make every board query and every Ask-material query
+ * throw at once. The tail-SHAPE test below excludes such a version by construction, the way
+ * `lib/learning.ts` already does. It changes no number today (no family entry has a suffix) and it
+ * removes a config edit's ability to take the room down.
  *
  * ⚠️ INFERRED SQL: this sandbox has no live DB. Every string here is listed verbatim in the slice
  * report. Nothing in this file executes anything — it composes fragments; the callers run them.
@@ -39,9 +49,22 @@ export const STEWARDSHIP_APP = process.env.APP_SOURCE || 'standalone';
  *  makes the int[] cast in CANONICAL_RANK_SQL safe. Verbatim from the board page. */
 const OPD_ENG_FAMILY_SQL = `ANY(ARRAY[${OPD_ENGINE_VERSIONS_CURRENT.map((v) => `'${v}'`).join(', ')}])`;
 
-/** Verbatim from `app/admin/stewardship/page.tsx`. $1 = app_source, $2 = window days (as text). */
+/**
+ * $1 = app_source, $2 = window days (as text — cast to int for the calendar-day subtraction).
+ *
+ * Four clauses, each load-bearing:
+ *   · the app partition;
+ *   · the engine FAMILY (decision 21) — which also excludes `-mini` before ranking;
+ *   · the tail-SHAPE guard, so a suffixed family entry is excluded rather than crashing the cast;
+ *   · the IST CALENDAR-DAY window (F-2, V's ruling), matching `lib/opd-audit-doctor.ts`;
+ *   · `excluded_reason IS NULL`, which is how a marked row leaves every canonical surface.
+ */
+export const OPD_TAIL_SHAPE_SQL = String.raw`split_part(engine_version, '/', 2) ~ '^[0-9]+(\.[0-9]+)*$'`;
+
 export const OPD_CANON_WHERE =
-  `app_source = $1 AND engine_version = ${OPD_ENG_FAMILY_SQL} AND excluded_reason IS NULL AND note_date >= NOW() - ($2 || ' days')::interval`;
+  `app_source = $1 AND engine_version = ${OPD_ENG_FAMILY_SQL} AND ${OPD_TAIL_SHAPE_SQL}`
+  + ` AND excluded_reason IS NULL`
+  + ` AND (note_date AT TIME ZONE 'Asia/Kolkata')::date >= (now() AT TIME ZONE 'Asia/Kolkata')::date - ($2)::int`;
 
 /**
  * The canonical inner subquery: ONE row per note over the window, ranked by THE RULE

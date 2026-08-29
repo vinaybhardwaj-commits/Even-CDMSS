@@ -48,9 +48,20 @@ export type DangerPillState = 'confirmed' | 'open' | 'dropped';
 export const OPD_PILL_STATE: Readonly<Record<string, DangerPillState>> = Object.freeze({
   true_positive: 'confirmed',
   contested: 'open',
+  needs_action: 'open',
   nitpick: 'dropped',
   false: 'dropped',
 });
+
+/**
+ * The pill values that OPEN a finding, as a set the SQL and the membership rule both read. It exists
+ * because "which verdicts open the queue" was, until the 29 Aug validation, expressed three times —
+ * in this table, in `opdDangerVerdict`'s `=== 'contested'` test, and in two SQL WHERE clauses — and
+ * the three had already drifted: `needs_action` mapped to `open` here and opened nothing there.
+ * One list, four readers.
+ */
+export const DISPUTE_PILLS = ['contested', 'needs_action'] as const;
+const isDispute = (v: unknown): boolean => (DISPUTE_PILLS as readonly string[]).includes(String(v ?? '').trim());
 
 /**
  * IPD, A5 verbatim: "`agree` counts as confirmed (like `true_positive`), `disagree` and `false` and
@@ -116,7 +127,7 @@ export function opdDangerVerdict(finding: TierableFinding, pillVerdict: unknown)
   if (t.tier === 'praise') return NOT_INCLUDED(state, 'praise', 'praise — never a danger row, whatever pill it carries');
 
   const escalated = t.tier === 1;
-  const contested = String(pillVerdict ?? '').trim() === 'contested';
+  const contested = isDispute(pillVerdict);
   if (!escalated && !contested) {
     return NOT_INCLUDED(state, t.tier, `tier ${t.tier} and not contested — the tiered action list, not the danger queue`);
   }
@@ -128,7 +139,9 @@ export function opdDangerVerdict(finding: TierableFinding, pillVerdict: unknown)
     open: state === 'open',
     tier: t.tier,
     ...(t.escalatedBy ? { escalatedBy: t.escalatedBy } : {}),
-    reason: escalated ? `escalated by ${t.escalatedBy}${contested ? ' and contested' : ''}` : 'a reviewer contested this finding and nobody has resolved it',
+    reason: escalated
+      ? `escalated by ${t.escalatedBy}${contested ? ' and disputed by a reviewer' : ''}`
+      : disputeReason(pillVerdict),
   };
 }
 
@@ -150,8 +163,8 @@ export function ipdDangerVerdict(finding: IpdDangerFinding, pillVerdict: unknown
   if (praise) return NOT_INCLUDED(state, 'praise', 'high-value — the inpatient side\'s praise, never a danger row');
 
   const safety = String(finding?.domain ?? '').trim().toLowerCase() === 'safety';
-  const contested = String(pillVerdict ?? '').trim() === 'contested';
-  if (!safety && !contested) return NOT_INCLUDED(state, 2, 'not a safety-domain finding and not contested');
+  const contested = isDispute(pillVerdict);
+  if (!safety && !contested) return NOT_INCLUDED(state, 2, 'not a safety-domain finding and carries no open dispute');
   const leg: DangerVerdict['leg'] = safety && contested ? 'both' : safety ? 'escalation' : 'contested';
   return {
     included: true,
@@ -161,8 +174,20 @@ export function ipdDangerVerdict(finding: IpdDangerFinding, pillVerdict: unknown
     // No tier is claimed for an inpatient finding, because no ratified inpatient tier table exists.
     // `2` is the placeholder the shared shape needs, and the surface renders the DOMAIN, not this.
     tier: 2,
-    reason: safety ? 'a safety-domain finding on this stay' : 'a reviewer contested this finding and nobody has resolved it',
+    reason: safety ? 'a safety-domain finding on this stay' : disputeReason(pillVerdict),
   };
+}
+
+/**
+ * A5 draws a real distinction between the two dispute pills and the queue should not flatten it.
+ * `contested` says a reviewer disagrees with the engine and nobody has settled who is right;
+ * `needs_action` says a reviewer AGREES enough that something still has to happen. Both are open.
+ * Only one of them is an argument.
+ */
+function disputeReason(pillVerdict: unknown): string {
+  return String(pillVerdict ?? '').trim() === 'needs_action'
+    ? 'a reviewer marked this as still needing action and nobody has closed it'
+    : 'a reviewer contested this finding and nobody has resolved it';
 }
 
 // ── the board's sort (D-no-composite, spec §4) ────────────────────────────────────────────

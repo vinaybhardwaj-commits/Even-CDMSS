@@ -35,6 +35,7 @@ import { sql } from '@/lib/db';
 import { dedupeTwins } from '@/lib/severity-tier-core';
 import {
   opdDangerVerdict, ipdDangerVerdict, sortBoardRows,
+  DISPUTE_PILLS,
   type DangerPillState, type DangerVerdict,
 } from '@/lib/stewardship-danger-core';
 import {
@@ -47,9 +48,19 @@ const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Reco
 const num = (v: unknown): number => { const n = Number(v ?? 0); return Number.isFinite(n) ? n : 0; };
 const str = (v: unknown): string => (v == null ? '' : String(v));
 
-/** How many prefilter candidates and how many queue rows one page load will look at. Both are
- *  reported honestly on the surface when they bite, because a silently truncated danger queue is a
- *  danger queue that has stopped being one. */
+/**
+ * How many rows one page load RENDERS. Not how many it counts.
+ *
+ * ⚠️ THE 29 AUG VALIDATION CAUGHT THIS AS A LIVE DEFECT and it is worth keeping the lesson at the
+ * constant. The inpatient leg had 1,248 eligible findings, a 500 cap, and an `ORDER BY audit_id` —
+ * so 748 dangerous findings were dropped, and which 748 was decided by row uuid. A contested
+ * inpatient finding could sit outside the queue purely because of its primary key.
+ *
+ * Two things changed. The open COUNT is now computed over EVERY eligible row, uncapped, by a
+ * grouped aggregate that returns a handful of rows however large the corpus is — a number on a board
+ * must not be a function of a display limit. And every capped LIST is ordered newest-first with a
+ * deterministic tiebreak, so a cap that bites drops the OLDEST rows and drops the same ones twice.
+ */
 const CANDIDATE_CAP = 4_000;
 const QUEUE_CAP = 500;
 
@@ -120,8 +131,18 @@ const FINDING_LATERAL = (col: string) =>
 
 const NOTE_DAY = `to_char((t.note_date AT TIME ZONE 'Asia/Kolkata')::date, 'YYYY-MM-DD')`;
 
-/** D1 — the escalation candidates, with each finding's CURRENT pill. $1 app · $2 days · $3 prefilter
- *  · $4 study (NULL = production rows only; §8's always-present predicate). */
+/**
+ * D1 — the escalation candidates, with each finding's CURRENT pill. $1 app · $2 days · $3 prefilter
+ * · $4 study (NULL = production rows only; §8's always-present predicate).
+ *
+ * ⚠️ THE PILL IS FOUND THROUGH THE NOTE, NOT THROUGH THE CANONICAL ROW. This lateral used to read
+ * `v.audit_id = t.id`, which only sees pills left on the row the canonical rule happens to select.
+ * The 29 Aug validation measured 29,255 rows over 22,404 distinct uids in the window — 23% of rows
+ * are non-canonical — so a reviewer who pilled a finding on an earlier audit of the same note had
+ * that pill silently ignored. Here that direction of the error INFLATES the open count: a finding
+ * closed as `false` on a superseded row went on being counted open. The join now goes through the
+ * note's `uid`, so any pill on any audit of that note is the pill.
+ */
 const DANGER_ESCALATION_SQL = `
   SELECT t.id AS audit_id, t.doctor_uid,
          COALESCE(NULLIF(dd.doctor_name, ''), '(unknown)') AS doctor_name,
@@ -141,22 +162,44 @@ const DANGER_ESCALATION_SQL = `
   LEFT JOIN LATERAL (
     SELECT v.verdict
       FROM opd_audit_feedback v
-     WHERE v.audit_id = t.id AND v.scope = 'finding' AND v.finding_ref = f->>'finding_ref'
+      JOIN opd_note_audits av ON av.id = v.audit_id
+     WHERE av.uid = t.uid AND v.scope = 'finding' AND v.finding_ref = f->>'finding_ref'
        AND v.app_source = $1 AND v.study IS NOT DISTINCT FROM $4
      ORDER BY v.created_at DESC
      LIMIT 1
   ) fb ON true
   WHERE COALESCE(f->>'subject', '') <> ''
     AND (COALESCE(f->>'subject', '') || ' ' || COALESCE(f->>'rationale', '')) ILIKE ANY ($3::text[])
-  ORDER BY t.note_date DESC
+  ORDER BY t.note_date DESC, t.id, f->>'subject'
   LIMIT ${CANDIDATE_CAP}`;
 
-/** D2 — every finding whose CURRENT pill is `contested`, whatever its tier. The inner query settles
- *  "current" (latest row per audit + finding_ref); the outer one keeps only the disputes, so a
- *  finding contested and then confirmed does not appear. $1 app · $2 days · $3 study. */
+/**
+ * D2 — every finding whose CURRENT pill is an OPEN DISPUTE, whatever its tier. The inner query
+ * settles "current"; the outer one keeps only the disputes, so a finding contested and then
+ * confirmed does not appear. $1 app · $2 days · $3 study · $4 dispute pills.
+ *
+ * ⚠️ THREE THINGS THE 29 AUG VALIDATION CHANGED HERE, all the same defect wearing three hats.
+ *
+ * 1. The join is through the note's `uid`, not the canonical row's `id`. Feedback is keyed to an
+ *    AUDIT ROW; the canonical basis keeps one row per NOTE. 23% of window rows are non-canonical, so
+ *    a pill left on any of them vanished — and on this leg that means a contested finding simply not
+ *    appearing in the queue at all. `a` is the row the reviewer was actually looking at; `t` is the
+ *    canonical row that owns the note's identity, its clinician and its department.
+ *
+ * 2. "Current" is now settled per (note uid, finding_ref) rather than per (audit_id, finding_ref).
+ *    Once pills from every row of a note count, two rows of one note can each carry a verdict on the
+ *    same finding — and latest-wins has to mean latest across the note, or one note could contribute
+ *    a `contested` and a `false` for the same finding at the same time.
+ *
+ * 3. The finding TEXT is read from `a.findings` — the row that was pilled — not from the canonical
+ *    row. The reviewer adjudicated the words in front of them.
+ *
+ * The outer filter is `= ANY($4)` rather than `= 'contested'`: A5 opens on `needs_action` too, and
+ * that list lives in one place (DISPUTE_PILLS) rather than in each WHERE clause.
+ */
 const DANGER_CONTESTED_SQL = `
   SELECT * FROM (
-    SELECT DISTINCT ON (fb.audit_id, fb.finding_ref)
+    SELECT DISTINCT ON (t.uid, fb.finding_ref)
            t.id AS audit_id, t.doctor_uid,
            COALESCE(NULLIF(dd.doctor_name, ''), '(unknown)') AS doctor_name,
            ${OPD_DEPT_LABEL_SQL} AS dept,
@@ -168,32 +211,41 @@ const DANGER_CONTESTED_SQL = `
            COALESCE(fj.f->>'verdict', '') AS verdict,
            COALESCE(fj.f->>'domain', '') AS domain
     FROM opd_audit_feedback fb
-    JOIN ( ${opdCanonical90d('id, doctor_uid, note_date, findings')} ) t ON t.id = fb.audit_id
+    JOIN opd_note_audits a ON a.id = fb.audit_id
+    JOIN ( ${opdCanonical90d('id, doctor_uid, note_date, findings')} ) t ON t.uid = a.uid
     LEFT JOIN doctor_directory dd ON dd.doctor_uid = t.doctor_uid
     LEFT JOIN LATERAL (
-      SELECT x AS f FROM ${FINDING_LATERAL('t.findings')} x
+      SELECT x AS f FROM ${FINDING_LATERAL('a.findings')} x
        WHERE x->>'finding_ref' = fb.finding_ref
        LIMIT 1
     ) fj ON true
     WHERE fb.scope = 'finding' AND fb.finding_ref IS NOT NULL
       AND fb.app_source = $1 AND fb.study IS NOT DISTINCT FROM $3
-    ORDER BY fb.audit_id, fb.finding_ref, fb.created_at DESC
+    ORDER BY t.uid, fb.finding_ref, fb.created_at DESC
   ) q
-  WHERE q.pill = 'contested'
-  ORDER BY q.note_day DESC
+  WHERE q.pill = ANY($4::text[])
+  ORDER BY q.note_day DESC, q.audit_id, q.finding_ref
   LIMIT ${QUEUE_CAP}`;
 
-/** D3 — the inpatient leg: safety-domain findings and contested ones, on A6's canonical stays.
- *  $1 engine · $2 app. No clinician is attributed: the hop is S3's and the queue says so. */
-const DANGER_IPD_SQL = `
-  SELECT * FROM (
-    SELECT t.id AS audit_id, t.ip_uid,
+/**
+ * D3 — the inpatient leg: safety-domain findings and open disputes, on A6's canonical stays.
+ * $1 engine · $2 app · $3 dispute pills. No clinician is attributed: the hop is S3's.
+ *
+ * ⚠️ SPLIT IN TWO ON 29 AUG, because one query was doing two jobs and doing one of them wrong. The
+ * COUNT on the board must be the truth about the whole window; the LIST on the page is what fits on
+ * a page. When they were the same query, the count inherited the list's cap and the board reported
+ * 500 of 1,248 dangerous inpatient findings as though 500 were all of them.
+ *
+ * The shared body is `IPD_DANGER_BODY`, so the two can never disagree about what "eligible" means.
+ */
+const IPD_DANGER_BODY = `
+    SELECT t.id AS audit_id, t.ip_uid, t.audited_at AS audited_at_raw,
            COALESCE(NULLIF(t.speciality, ''), '${IPD_DEPT_UNASSIGNED}') AS dept,
            f->>'subject' AS subject,
            COALESCE(f->>'domain', '') AS domain,
            COALESCE(f->>'verdict', '') AS verdict,
            fb.verdict AS pill
-    FROM ( ${ipdCanonical90d('id, speciality, findings')} ) t
+    FROM ( ${ipdCanonical90d('id, speciality, findings, audited_at')} ) t
     CROSS JOIN LATERAL ${FINDING_LATERAL('t.findings')} f
     LEFT JOIN LATERAL (
       SELECT v.verdict
@@ -202,10 +254,31 @@ const DANGER_IPD_SQL = `
        ORDER BY v.created_at DESC
        LIMIT 1
     ) fb ON true
-    WHERE COALESCE(f->>'subject', '') <> ''
+    WHERE COALESCE(f->>'subject', '') <> ''`;
+
+/** The eligibility rule, written once and used by both the count and the list. */
+const IPD_DANGER_ELIGIBLE = `q.domain = 'safety' OR q.pill = ANY($3::text[])`;
+
+/**
+ * D3a — THE COUNT, over every eligible row, uncapped. It groups rather than returning rows, so the
+ * result stays a handful of rows however large the corpus grows, and the membership decision still
+ * belongs to `ipdDangerVerdict` in TypeScript: the group key carries exactly the three fields that
+ * function reads.
+ */
+const DANGER_IPD_COUNT_SQL = `
+  SELECT q.dept, q.domain, q.verdict, q.pill, count(*)::int AS n
+  FROM (${IPD_DANGER_BODY}
   ) q
-  WHERE q.domain = 'safety' OR q.pill = 'contested'
-  ORDER BY q.audit_id, q.subject
+  WHERE ${IPD_DANGER_ELIGIBLE}
+  GROUP BY 1, 2, 3, 4`;
+
+/** D3b — THE LIST. Newest audit first, with a deterministic tiebreak, so a cap that bites drops the
+ *  oldest rows and drops the same ones on every load. */
+const DANGER_IPD_SQL = `
+  SELECT * FROM (${IPD_DANGER_BODY}
+  ) q
+  WHERE ${IPD_DANGER_ELIGIBLE}
+  ORDER BY q.audited_at_raw DESC NULLS LAST, q.audit_id, q.subject
   LIMIT ${QUEUE_CAP}`;
 
 // ── shapes ────────────────────────────────────────────────────────────────────────────────
@@ -245,11 +318,23 @@ export interface DangerRow {
   href: string;
 }
 export interface DangerQueue {
+  /** The rows the surface RENDERS. The OPD legs are complete at today's volumes; the inpatient list
+   *  is capped, newest-audit-first, and says so through `ipdEligible` vs `ipdShown`. */
   rows: DangerRow[];
   /** doctor_uid → counts, for the board column. Only the OPD leg can key a clinician today. */
   byDoctor: Record<string, { open: number; confirmed: number }>;
   /** department label → counts. The OPD and inpatient vocabularies are kept apart by surface. */
   byOpdDept: Record<string, { open: number; confirmed: number }>;
+  /** inpatient department label → counts, from the UNCAPPED grouped count. Its own vocabulary. */
+  byIpdDept: Record<string, { open: number; confirmed: number }>;
+  /** ⚠️ COUNTED OVER EVERY ELIGIBLE ROW, not over `rows`. The board's headline number must not be a
+   *  function of how many rows fit on a page — that was the 29 Aug defect. */
+  openTotal: number;
+  opdOpen: number;
+  ipdOpen: number;
+  /** How many inpatient findings were eligible in the whole window, and how many are rendered. */
+  ipdEligible: number;
+  ipdShown: number;
   /** True when a cap bit, so the surface can say the queue is partial rather than imply it is whole. */
   capped: boolean;
   /** True when a read failed: the section degrades to empty WITH a note (§6a). */
@@ -272,20 +357,20 @@ const metricsOf = (r: Record<string, unknown>): BoardMetrics => ({
 export async function fetchDangerQueue(): Promise<DangerQueue> {
   const p = opdCanonParams();
   const ipdP = ipdCanonParams();
+  const disputes = [...DISPUTE_PILLS];
   let unavailable = false;
   const guard = async (text: string, params: unknown[]): Promise<Record<string, unknown>[]> => {
     try { return await run(text, params); } catch { unavailable = true; return []; }
   };
 
-  const [escRows, conRows, ipdRows] = await Promise.all([
+  const [escRows, conRows, ipdCountRows, ipdRows] = await Promise.all([
     guard(DANGER_ESCALATION_SQL, [...p, ESCALATION_PREFILTER, null]),
-    guard(DANGER_CONTESTED_SQL, [...p, null]),
-    guard(DANGER_IPD_SQL, [...ipdP, STEWARDSHIP_APP]),
+    guard(DANGER_CONTESTED_SQL, [...p, null, disputes]),
+    guard(DANGER_IPD_COUNT_SQL, [...ipdP, STEWARDSHIP_APP, disputes]),
+    guard(DANGER_IPD_SQL, [...ipdP, STEWARDSHIP_APP, disputes]),
   ]);
 
-  const capped = escRows.length >= CANDIDATE_CAP || conRows.length >= QUEUE_CAP || ipdRows.length >= QUEUE_CAP;
-
-  // ── OPD. The two legs can name the same finding (an escalated finding that was also contested),
+  // ── OPD. The two legs can name the same finding (an escalated finding that was also disputed),
   // so they are merged on (audit_id, finding_ref | subject) before anything is counted.
   const opd = new Map<string, DangerRow & { _twinRef: string | null }>();
   const addOpd = (r: Record<string, unknown>) => {
@@ -333,8 +418,23 @@ export async function fetchDangerQueue(): Promise<DangerQueue> {
     return { ...row, occurrences };
   });
 
-  // ── IPD. No clinician key exists on this spine (A1), so these rows carry a department and no
-  // person. They never enter the per-doctor column.
+  // ── IPD, the COUNT: every eligible row in the window, grouped. The membership decision is still
+  // `ipdDangerVerdict`'s — the group key carries exactly the three fields it reads.
+  const byIpdDept: Record<string, { open: number; confirmed: number }> = {};
+  let ipdOpen = 0;
+  let ipdEligible = 0;
+  for (const g of ipdCountRows) {
+    const n = num(g.n);
+    ipdEligible += n;
+    const v = ipdDangerVerdict({ subject: 'x', domain: str(g.domain), verdict: str(g.verdict) }, g.pill);
+    if (!v.included) continue;
+    const dept = str(g.dept) || IPD_DEPT_UNASSIGNED;
+    const cell = byIpdDept[dept] ?? (byIpdDept[dept] = { open: 0, confirmed: 0 });
+    if (v.open) { ipdOpen += n; cell.open += n; } else if (v.state === 'confirmed') cell.confirmed += n;
+  }
+
+  // ── IPD, the LIST. No clinician key exists on this spine (A1), so these rows carry a department
+  // and no person. They never enter the per-doctor column.
   const ipd: DangerRow[] = [];
   for (const r of ipdRows) {
     const subject = str(r.subject);
@@ -344,7 +444,8 @@ export async function fetchDangerQueue(): Promise<DangerQueue> {
     const auditId = str(r.audit_id);
     ipd.push({
       surface: 'ipd', auditId, subject, signalType: '', domain: str(r.domain),
-      doctorUid: null, doctorName: '', dept: str(r.dept) || IPD_DEPT_UNASSIGNED, day: '',
+      doctorUid: null, doctorName: '', dept: str(r.dept) || IPD_DEPT_UNASSIGNED,
+      day: str(r.audited_at_raw).slice(0, 10),
       occurrences: 1, state: v.state, open: v.open, leg: v.leg, reason: v.reason,
       href: `/admin/ipd-audit/${auditId}`,
     });
@@ -352,8 +453,10 @@ export async function fetchDangerQueue(): Promise<DangerQueue> {
 
   const byDoctor: Record<string, { open: number; confirmed: number }> = {};
   const byOpdDept: Record<string, { open: number; confirmed: number }> = {};
+  let opdOpen = 0;
   for (const r of opdRows) {
     if (r.state === 'dropped') continue;
+    if (r.open) opdOpen += r.occurrences;
     const bump = (m: Record<string, { open: number; confirmed: number }>, k: string) => {
       const cell = m[k] ?? (m[k] = { open: 0, confirmed: 0 });
       if (r.open) cell.open += r.occurrences; else if (r.state === 'confirmed') cell.confirmed += r.occurrences;
@@ -367,7 +470,14 @@ export async function fetchDangerQueue(): Promise<DangerQueue> {
   const rows = [...opdRows, ...ipd].sort((a, b) =>
     rank(a) - rank(b) || b.day.localeCompare(a.day) || a.subject.localeCompare(b.subject));
 
-  return { rows, byDoctor, byOpdDept, capped, unavailable };
+  const capped = escRows.length >= CANDIDATE_CAP || conRows.length >= QUEUE_CAP || ipd.length < ipdEligible;
+
+  return {
+    rows, byDoctor, byOpdDept, byIpdDept,
+    openTotal: opdOpen + ipdOpen, opdOpen, ipdOpen,
+    ipdEligible, ipdShown: ipd.length,
+    capped, unavailable,
+  };
 }
 
 /** The named-clinician board rows, already sorted by the D-no-composite rule. */
@@ -420,6 +530,7 @@ export const BOARD_INFERRED_SQL: Readonly<Record<string, string>> = Object.freez
   board_totals: TOTAL_SQL,
   danger_escalation: DANGER_ESCALATION_SQL,
   danger_contested: DANGER_CONTESTED_SQL,
+  danger_ipd_count: DANGER_IPD_COUNT_SQL,
   danger_ipd: DANGER_IPD_SQL,
 });
 
