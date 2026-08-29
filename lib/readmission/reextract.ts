@@ -155,19 +155,47 @@ export interface ReextractBatch {
 }
 
 /**
+ * The seams the R10.2 regression test drives the walk through. Production passes NONE of these —
+ * every one defaults to the real db13 / store call. They exist because the cursor invariant below
+ * ("a row is counted only when all of its documents were processed") is a property of the LOOP,
+ * and a property of the loop can only be proven by running the loop over a cohort a test controls.
+ */
+export interface ReextractDeps {
+  cohortSize?: (engineVersion: string) => Promise<number | null>;
+  listRows?: (a: { engineVersion: string; limit: number; offset: number }) => Promise<ReextractRow[]>;
+  loadDoc?: (encounterId: string) => Promise<{ extracted: ExtractedCase | null; source: string | null; documentId: string | null }>;
+  now?: () => number;
+}
+
+/**
  * ONE batch. Walks findings from `offset` in dedup_key order, re-reading each stay's discharge
  * document through the shared store, until the document budget or the wall budget is spent.
  * `nextOffset` is where the next call resumes; the caller repeats until `nextOffset >= totalRows`.
+ *
+ * R10.2 — THE CURSOR INVARIANT: a row is counted in `rowsScanned` only when EVERY one of its
+ * documents has been processed, so `nextOffset` can never step past a row this call left half-read.
+ * The budget is therefore a gate on STARTING a row, not a hard cap inside one: the check runs once,
+ * before the row, and a row that has been started is always walked to its end. Two consequences,
+ * both deliberate:
+ *   · `documents.touched` may exceed `limit` by at most (documents per row − 1) = 1. That one extra
+ *     read is the price of never leaving a stay half-walked, and the wall budget is set 90 s below
+ *     the route's 300 s box precisely so one more document still fits.
+ *   · every call makes forward progress — it always finishes at least one whole row — so a walk at
+ *     `limit=1` still terminates and still reads every document. The previous shape could not
+ *     promise either: it broke mid-row after incrementing the counter, so the boundary row of a
+ *     batch was counted, skipped, and its second document never read at all.
  */
 export async function runReextractBatch(opts: {
-  offset?: number; limit?: number; engineVersion?: string; dryRun?: boolean;
+  offset?: number; limit?: number; engineVersion?: string; dryRun?: boolean; deps?: ReextractDeps;
 } = {}): Promise<ReextractBatch> {
-  const t0 = Date.now();
+  const now = opts.deps?.now ?? Date.now;
+  const readDoc = opts.deps?.loadDoc ?? loadExtractedCase;
+  const t0 = now();
   const engine = opts.engineVersion ?? READMIT_ENGINE_VERSION;
   const budget = Math.max(1, Math.min(REEXTRACT_MAX_DOCS_PER_REQUEST, Math.floor(opts.limit ?? REEXTRACT_DEFAULT_DOCS_PER_REQUEST)));
   const offset = Math.max(0, Math.floor(opts.offset ?? 0));
-  const totalRows = await reextractCohortSize(engine);
-  const rows = await rowsForReextract({ engineVersion: engine, limit: ROW_WINDOW, offset });
+  const totalRows = await (opts.deps?.cohortSize ?? reextractCohortSize)(engine);
+  const rows = await (opts.deps?.listRows ?? rowsForReextract)({ engineVersion: engine, limit: ROW_WINDOW, offset });
 
   const perDocument: ReextractDocResult[] = [];
   const gainedText: string[] = [];
@@ -175,8 +203,8 @@ export async function runReextractBatch(opts: {
   let spent = 0, rowsScanned = 0, budgetSpent = false;
 
   for (const row of rows) {
-    if (spent >= budget || Date.now() - t0 > REEXTRACT_WALL_BUDGET_MS) { budgetSpent = true; break; }
-    rowsScanned += 1;
+    // R10.2 — the ONE budget gate, and it stands BEFORE the row rather than inside it.
+    if (spent >= budget || now() - t0 > REEXTRACT_WALL_BUDGET_MS) { budgetSpent = true; break; }
     const oon = row.finding_class === 'out_of_network';
     const sides: Array<{ side: 'index' | 'readmit'; encounterId: string | null }> = [
       { side: 'index', encounterId: row.index_encounter_id },
@@ -187,7 +215,7 @@ export async function runReextractBatch(opts: {
       if (!encounterId) continue;
       // The store-first read IS the idempotence: a document already at DOC_EXTRACT_VERSION costs a
       // SELECT. Only a MISS spends the document budget, because only a miss pays Gemini.
-      const doc = await loadExtractedCase(encounterId).catch(() => null);
+      const doc = await readDoc(encounterId).catch(() => null);
       const extracted: ExtractedCase | null = doc?.extracted ?? null;
       const n = operativeVerbatimSections(extracted?.verbatimSections).length;
       sections += n;
@@ -197,8 +225,11 @@ export async function runReextractBatch(opts: {
             : doc.source === 'store' ? 'already_at_version' : 'reextracted';
       if (outcome === 'reextracted' || outcome === 'extract_failed') spent += 1;
       perDocument.push({ dedupKey: row.dedup_key, side, encounterId, documentId: doc?.documentId ?? null, outcome, operativeSections: n });
-      if (spent >= budget || Date.now() - t0 > REEXTRACT_WALL_BUDGET_MS) { budgetSpent = true; break; }
     }
+    // Counted HERE and nowhere else — every document of this row has now been processed, so the
+    // cursor may pass it. `sections` is likewise a complete count, which is what the gained-text
+    // decision below needs: a partial count could have called a gained case un-gained (R10.2).
+    rowsScanned += 1;
     if (hasDocOperativeItem(row)) alreadyRefreshed.push(row.dedup_key);
     else if (gainedOperativeText({ otStatus: otStatusOf(row), sections })) gainedText.push(row.dedup_key);
   }
@@ -223,7 +254,7 @@ export async function runReextractBatch(opts: {
     alreadyRefreshed,
     perDocument,
     budgetSpent,
-    ms: Date.now() - t0,
+    ms: now() - t0,
   };
 }
 
