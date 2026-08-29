@@ -77,6 +77,7 @@ const DOCTOR_SQL = `
   FROM ( ${opdCanonical90d(AGG_COLS)} ) t
   LEFT JOIN doctor_directory dd ON dd.doctor_uid = t.doctor_uid
   GROUP BY t.doctor_uid, dd.doctor_name, dd.speciality
+  ORDER BY n_notes DESC, doctor_name
   LIMIT 400`;
 
 const DEPT_SQL = `
@@ -204,6 +205,7 @@ const DANGER_IPD_SQL = `
     WHERE COALESCE(f->>'subject', '') <> ''
   ) q
   WHERE q.domain = 'safety' OR q.pill = 'contested'
+  ORDER BY q.audit_id, q.subject
   LIMIT ${QUEUE_CAP}`;
 
 // ── shapes ────────────────────────────────────────────────────────────────────────────────
