@@ -983,6 +983,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "stewardship-canonical",
+    "plane": "unregistered"
+  },
+  {
     "id": "stream",
     "plane": "unregistered"
   },
@@ -1044,6 +1048,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/admin",
     "to": "care-cookie",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
+    "to": "case-ask",
     "kind": "value"
   },
   {
@@ -2524,6 +2533,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "case-ask",
     "to": "llm-cost-core",
+    "kind": "value"
+  },
+  {
+    "from": "case-ask",
+    "to": "stewardship-canonical",
     "kind": "value"
   },
   {
@@ -5209,6 +5223,21 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "stay-library",
     "to": "readmission-template-core",
+    "kind": "value"
+  },
+  {
+    "from": "stewardship-canonical",
+    "to": "audit-canonical",
+    "kind": "value"
+  },
+  {
+    "from": "stewardship-canonical",
+    "to": "ipd-audit",
+    "kind": "value"
+  },
+  {
+    "from": "stewardship-canonical",
+    "to": "opd-note-audit-core",
     "kind": "value"
   },
   {

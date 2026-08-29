@@ -5,6 +5,7 @@ import { fetchLvcCells, readRightCareExclusions, fetchRightCareCoverage } from '
 import { computeDoctorOE, FUNNEL_MIN_N, type DoctorOE } from '@/lib/opd-funnel-core';
 import { canonicalDistinctOnSql } from '@/lib/audit-canonical';
 import { OPD_ENGINE_VERSIONS_CURRENT } from '@/lib/opd-note-audit-core';
+import { PhysicianAskPanel } from './stewardship-ask-panel';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Stewardship · Admin · CAT' };
@@ -155,10 +156,13 @@ const METRIC_HEADERS = (
   </>
 );
 
-export default async function StewardshipPage({ searchParams }: { searchParams: Promise<{ view?: string }> }) {
+export default async function StewardshipPage({ searchParams }: { searchParams: Promise<{ view?: string; doctor?: string }> }) {
   if (!(await isAdminUnlocked())) { adminTokenConfigured(); return <Locked />; }
   const sp = await searchParams;
   const view = sp.view === 'doctor' ? 'doctor' : 'dept';
+  // S1 (A2 / A3) — which physician case the composer is open on, if any. The uid shape is checked
+  // here so a hand-typed query string cannot mount a panel against a key the route will refuse.
+  const askDoctor = /^[A-Za-z0-9_-]{6,64}$/.test(String(sp.doctor ?? '')) ? String(sp.doctor) : null;
 
   const [breakdownRaw, totalRaw, lvcCells, rcExclusions, rcCoverage] = await Promise.all([
     run(view === 'doctor' ? DOCTOR_SQL : DEPT_SQL, [APP, String(WINDOW_DAYS)]).catch(() => []),
@@ -237,6 +241,10 @@ export default async function StewardshipPage({ searchParams }: { searchParams: 
                         <tr key={r.doctor_uid || r.doctor_name} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
                           <td className="px-3 py-2.5 font-medium text-slate-800">
                             {r.doctor_uid ? <Link href={`/admin/opd-audit/doctor/${r.doctor_uid}`} className="hover:text-brand hover:underline">{r.doctor_name}</Link> : r.doctor_name}
+                            {r.doctor_uid && (
+                              <Link href={`/admin/stewardship?view=doctor&doctor=${encodeURIComponent(r.doctor_uid)}#ask`}
+                                className="ml-2 text-[11px] font-normal text-slate-400 hover:text-brand hover:underline">ask</Link>
+                            )}
                           </td>
                           <td className="px-3 py-2.5 text-slate-500">{r.speciality}</td>
                           <MetricCells r={r} />
@@ -258,6 +266,23 @@ export default async function StewardshipPage({ searchParams }: { searchParams: 
               </tbody>
             </table>
           </div>
+
+          {/* S1 (A2 / A3) — the persisted MS conversation, keyed to ONE named physician. The thread
+              survives an OPD patch bump by design (A3): the engine half of the key is a family
+              string, not a version. Nothing said in the box changes a number in the table above. */}
+          {askDoctor && (
+            <div id="ask" className="mt-4 scroll-mt-4">
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <h2 className="font-serif text-[15px] font-semibold text-slate-900">Ask about this clinician</h2>
+                <Link href={`/admin/stewardship?view=${view}`} className="text-[12px] text-brand hover:underline">close</Link>
+              </div>
+              <p className="mt-0.5 text-[11.5px] text-slate-500">
+                Answers cite what the audits already stored for this clinician over the window. The inpatient
+                side is not joined to this key yet, so nothing here describes their inpatient stays.
+              </p>
+              <PhysicianAskPanel doctorUid={askDoctor} />
+            </div>
+          )}
 
           <p className="mt-4 text-[11px] text-slate-400">
             Scores 0–100; green ≥80, amber 60–79, red &lt;60. {view === 'doctor' ? 'Clinicians' : 'Departments'} with few audited notes read noisily until volume builds.

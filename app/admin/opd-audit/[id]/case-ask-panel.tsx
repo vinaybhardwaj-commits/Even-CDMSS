@@ -15,5 +15,5 @@
 import CaseAskPanel from '@/components/case-ask/CaseAskPanel';
 
 export default function OpdCaseAskPanel({ auditId }: { auditId: string }) {
-  return <CaseAskPanel caseType="opd" auditId={auditId} endpoint="/api/admin/opd-audit-ask" />;
+  return <CaseAskPanel caseType="opd" query={{ audit_id: auditId }} endpoint="/api/admin/opd-audit-ask" />;
 }

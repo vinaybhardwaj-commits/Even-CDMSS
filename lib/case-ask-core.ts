@@ -44,10 +44,36 @@ export const CASE_ASK_VERSION = 'case-ask/1';
 export const CASE_ASK_MODEL_ID = 'global.anthropic.claude-opus-4-6-v1';
 export const CASE_ASK_PROVIDER = 'bedrock';
 
-/** O6 — the two case types this shell serves. Readmissions is NOT one of them: it keeps its own
- *  route, its own table and its own core, untouched by this ship. */
-export const CASE_ASK_TYPES = ['opd', 'ipd'] as const;
+/**
+ * O6 — the case types this shell serves. Readmissions is NOT one of them: it keeps its own route,
+ * its own table and its own core, untouched by this ship.
+ *
+ * STEWARDSHIP A2 (kickoff v2, 29 Aug 2026) added `physician` and `dept`. They are a DIFFERENT SHAPE
+ * of case from `opd` / `ipd` and the difference is worth naming: the first two are ONE audited
+ * artefact (one note, one stay), and these two are a 90-day AGGREGATE over many of them. Everything
+ * the shell guarantees still holds — the citation gate, the caps, the daily ceiling, the de-id
+ * fence, the withheld discipline — because none of them knows or cares what a case is; they know
+ * only that code minted the ids the answer must cite. What changes is the material builder, and
+ * that lives in ONE new file (lib/case-ask/stewardship-material.ts), not in a fork of this shell.
+ *
+ * This union is the runtime boundary as well as the type: `isCaseAskType` below is what the
+ * stewardship route uses to refuse an unknown case_type with a 400 BEFORE anything is persisted
+ * (kickoff acceptance #19). The three exhaustive records keyed on it — CASE_ASK_SUGGESTIONS,
+ * CASE_LABEL, and any future one — make TypeScript force an entry for every member, so a fifth
+ * case type cannot be added and then silently render or prompt as nothing.
+ */
+export const CASE_ASK_TYPES = ['opd', 'ipd', 'physician', 'dept'] as const;
 export type CaseAskType = (typeof CASE_ASK_TYPES)[number];
+
+/**
+ * PURE — the runtime half of the union (A2). `badKey()` in the store rejects an EMPTY case type;
+ * it cannot reject an UNKNOWN one, because at the store the value has already been typed as a
+ * CaseAskType by a cast somewhere upstream. A route that reads a case type off a query string is
+ * exactly such an upstream, so the check has to exist as a value, not only as a type.
+ */
+export function isCaseAskType(v: unknown): v is CaseAskType {
+  return typeof v === 'string' && (CASE_ASK_TYPES as readonly string[]).includes(v);
+}
 
 // ── caps (O7 — the R9 numbers, plus the new ceiling) ─────────────────────────────────────
 
@@ -90,6 +116,10 @@ export const CASE_ASK_CEILING_COPY =
 export const CASE_ASK_SUGGESTIONS: Readonly<Record<CaseAskType, readonly string[]>> = Object.freeze({
   opd: ['Why did this finding fire?', 'Which findings are informational?', 'What lowered the score most?'],
   ipd: ['Why is the Care-Value Index where it is?', 'What is missing from the summary?', 'Which findings are low-value?'],
+  // A2 — the stewardship grains. Deliberately about PATTERNS over the 90-day window rather than
+  // about one artefact, because that is the only thing the aggregate material can honestly answer.
+  physician: ['What recurs across this clinician\'s notes?', 'Which findings are still open?', 'How does this clinician read against the department?'],
+  dept: ['What recurs across this department?', 'Where are this department\'s open dangerous findings?', 'What is pulling this department\'s note quality down?'],
 });
 
 // ── the material the model may see (§3.1) ────────────────────────────────────────────────
@@ -345,6 +375,12 @@ export function overDailyCeiling(turns: readonly CaseAskThreadTurn[], now: strin
 const CASE_LABEL: Readonly<Record<CaseAskType, string>> = Object.freeze({
   opd: "an OPD consultation note's audit",
   ipd: "an inpatient stay's discharge-summary audit",
+  // A2 — the two stewardship grains. The surrounding sentence says "ONE clinical case", which reads
+  // a little oddly over an aggregate; it is left byte-identical on purpose, because the OPD and IPD
+  // prompts are pinned by test and a reworded shared sentence would move them for no gain. Flagged
+  // in the S1 slice report.
+  physician: "one named clinician's own audited work over the last 90 days",
+  dept: "one department's audited work over the last 90 days",
 });
 
 /**

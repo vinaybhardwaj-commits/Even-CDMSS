@@ -100,13 +100,27 @@ function Answer({ text, known }: { text: string; known: Set<string> }) {
 }
 
 export default function CaseAskPanel({
-  caseType, auditId, endpoint,
+  caseType, query, endpoint,
 }: {
   caseType: CaseAskType;
-  auditId: string;
+  /**
+   * WHICH CASE this box is about, as the endpoint names it. The per-note surfaces send
+   * `{ audit_id }`; the stewardship room sends `{ case, key }`, because a physician case and a
+   * department case are two grains on one route (A3) and one id field cannot say which.
+   *
+   * It is a bag rather than a fixed pair on purpose: the chrome does not know, and must not learn,
+   * what identifies a case on any particular surface. It forwards what the mount handed it — as the
+   * GET query string and, verbatim, as the POST body beside the question — so a new grain is a new
+   * mount, never an edit here. What the chrome DOES still own is the rule that the server is the
+   * thread's truth: no history is ever sent, whatever this bag contains.
+   */
+  query: Readonly<Record<string, string>>;
   /** O4 — each surface has its OWN admin-gated endpoint; the panel is told which. */
   endpoint: string;
 }) {
+  // One stable string for the effect dependency and the request: a fresh object literal from the
+  // mount would otherwise re-fetch the thread on every parent render.
+  const qs = new URLSearchParams(query).toString();
   const [q, setQ] = useState('');
   const [entries, setEntries] = useState<Entry[]>([]);
   const [busy, setBusy] = useState(false);
@@ -127,7 +141,7 @@ export default function CaseAskPanel({
   // simply an empty thread — the fail-safe store returns one rather than throwing.
   useEffect(() => {
     let alive = true;
-    fetch(`${endpoint}?audit_id=${encodeURIComponent(auditId)}`)
+    fetch(`${endpoint}?${qs}`)
       .then((r) => r.json() as Promise<ThreadPayload>)
       .then((j) => {
         if (!alive || !j?.ok) return;
@@ -138,7 +152,7 @@ export default function CaseAskPanel({
       })
       .catch(() => { if (alive) setThreadErr(CASE_ASK_THREAD_UNAVAILABLE_COPY); });
     return () => { alive = false; };
-  }, [auditId, endpoint]);
+  }, [qs, endpoint]);
 
   const ask = useCallback(async (question: string) => {
     const text = question.trim();
@@ -148,7 +162,7 @@ export default function CaseAskPanel({
       // No history in the body: the server reads the thread it stored.
       const r = await fetch(endpoint, {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ audit_id: auditId, question: text }),
+        body: JSON.stringify({ ...query, question: text }),
       });
       const j = (await r.json()) as AnswerPayload;
       if (!r.ok || !j.ok) throw new Error(String(j.error || `status ${r.status}`));
@@ -161,7 +175,10 @@ export default function CaseAskPanel({
       setQ('');
     } catch (e) { setErr(String((e as Error).message)); }
     finally { setBusy(false); }
-  }, [auditId, busy, endpoint, left]);
+    // `query` is read through `qs` for identity: the bag's CONTENT is what selects a case, and a
+    // parent that rebuilds an equal object must not invalidate this callback.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qs, busy, endpoint, left]);
 
   return (
     <div className="mt-2 rounded-xl border border-slate-200 bg-white">

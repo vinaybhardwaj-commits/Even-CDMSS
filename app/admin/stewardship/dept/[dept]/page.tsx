@@ -16,6 +16,7 @@ import {
 import { computeDoctorOE, FUNNEL_MIN_N, type DoctorOE } from '@/lib/opd-funnel-core';
 import { LVC_CATEGORY_LABELS } from '@/lib/opd-lvc-classify-core';
 import { FunnelCard } from '../../../opd-audit/doctor/[uid]/funnel-card';
+import { DeptAskPanel } from '../../stewardship-ask-panel';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Stewardship · Department · Admin' };
@@ -190,6 +191,13 @@ export default async function DeptDetail({ params }: { params: Promise<{ dept: s
               </ul>
             </div>
           )}
+
+          {/* S1 (A2 / A3) — the persisted MS conversation, keyed to THIS department in the OPD
+              speciality vocabulary. The inpatient vocabulary is a different case key and never
+              merges with this one. Nothing said in the box changes a number on this page. */}
+          <div className="mt-4">
+            <DeptAskPanel vocab="opd_speciality" label={dept} />
+          </div>
 
           <p className="mt-4 text-[11px] text-slate-400">
             “vs exp” = observed minus case-mix-expected LVC rate (points); “O/E” = observed / expected. Clinicians with n&lt;{FUNNEL_MIN_N} banded notes are greyed. Case-mix adjustment uses the complexity-band strata (§4). Advisory — not an outcomes measure or clinician scorecard.

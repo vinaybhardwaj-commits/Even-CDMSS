@@ -23,6 +23,7 @@
  * ⚠️ INFERRED SQL throughout: this sandbox has no live Neon.
  */
 import { sql } from '../db';
+import { isCaseAskType } from '../case-ask-core';
 import type { CaseAskThreadTurn, CaseAskTurnRole, CaseAskType } from '../case-ask-core';
 
 /** One page-load never reads more than this many turns back. Well above the 20-turn model window:
@@ -40,7 +41,20 @@ export interface CaseAskThreadKey {
   engineVersion: string;
 }
 
-const badKey = (k: CaseAskThreadKey): boolean => !k || !k.caseType || !k.caseKey || !k.engineVersion;
+/**
+ * A2 / kickoff acceptance #19 — the LAST gate before persist. This used to test `!k.caseType`, which
+ * accepts any non-empty string: `case_type` is a TEXT column with no constraint, so a route that
+ * read a case type off a query string and cast it could open a thread under a type this shell has
+ * never heard of, and nothing downstream would notice until someone counted the rows. The type is
+ * now checked as a VALUE against the union.
+ *
+ * The route rejects first, with a 400 (a 500 from the store would be a worse answer to a bad
+ * request, and a soft-failed append would look to the caller like a DB outage). This is the second
+ * of the two checks, and it is the one that holds for a caller that never existed when it was
+ * written.
+ */
+const badKey = (k: CaseAskThreadKey): boolean =>
+  !k || !isCaseAskType(k.caseType) || !k.caseKey || !k.engineVersion;
 
 /**
  * The whole stored thread for one case at one engine version, oldest first. Fail-safe: any DB error
