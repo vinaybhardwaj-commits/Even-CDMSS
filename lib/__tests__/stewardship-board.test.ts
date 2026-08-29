@@ -309,8 +309,15 @@ test('A1: the split banner is on the board, and the IPD cell is a banner rather 
 });
 
 test('§1.4: the danger queue states its reporting unit', () => {
-  assert.match(DANGER_QUEUE_UNIT, /One row per finding/);
-  assert.match(DANGER_QUEUE_UNIT, /one day is one row, with a count/);
+  // TWO units, and the sentence must name both: the counts are over every eligible finding
+  // (`opdOpen += r.occurrences` re-expands twins; the inpatient count never groups at all), while
+  // only the LIST collapses a twin into one row. The earlier wording named only the second and
+  // invited the reader to assume the headline shared it.
+  assert.match(DANGER_QUEUE_UNIT, /Open counts are over every eligible finding/);
+  assert.match(DANGER_QUEUE_UNIT, /In the list below/);
+  assert.match(DANGER_QUEUE_UNIT, /grouped into one row, with a count/);
+  assert.ok(!/^One row per finding/.test(DANGER_QUEUE_UNIT),
+    'the sentence must not open by claiming one unit for both the count and the list');
   assert.ok(code(BOARD_PAGE).includes('DANGER_QUEUE_UNIT'));
   assert.ok(code(BOARD_LIB).includes('dedupeTwins'), 'the canonical twin helper is what collapses them');
 });

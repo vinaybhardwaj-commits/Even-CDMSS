@@ -245,6 +245,16 @@ export const IPD_SPLIT_BANNER =
 /** The cell that stands where an inpatient number would be, until the hop resolves. */
 export const IPD_UNJOINED_CELL = 'IPD unjoined';
 
-/** §1.4 — the reporting unit, stated on the surface that renders cross-note finding rows. */
+/**
+ * §1.4 — the reporting unit, stated on the surface that renders cross-note finding rows. TWO units,
+ * because the queue has two: the COUNTS are over every eligible finding, and only the LIST groups.
+ *
+ * The old sentence said "one row per finding" and stopped, which invited the reader to assume the
+ * headline number was counted the same way the rows were. It is not, on either leg. `opdOpen`
+ * accumulates `r.occurrences`, so a twin collapsed into one row still counts twice; the inpatient
+ * count comes from a grouped SQL aggregate over every eligible row and does no twin grouping at all.
+ * Both are deliberate — a danger COUNT should not shrink because two findings landed on one day —
+ * but a surface that shows 12 above a list of 9 rows has to say which is which.
+ */
 export const DANGER_QUEUE_UNIT =
-  'One row per finding. The same finding written twice for one clinician on one day is one row, with a count.';
+  'Open counts are over every eligible finding. In the list below, the same finding written twice for one clinician on one day is grouped into one row, with a count.';
