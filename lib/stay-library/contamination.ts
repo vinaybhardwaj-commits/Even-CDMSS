@@ -37,25 +37,49 @@ export const CONTAMINATION_STOPLIST: ReadonlySet<string> = new Set([
   'PROCEDURE', 'OPERATION', 'NOTE', 'NOTES', 'REPAIR', 'WITH', 'AND',
 ]);
 
-/** H-D4 — alphabetic tokens shorter than this are dropped. Surgical acronyms live below it (TAPP,
- *  TEP, LSCS, TURP), and an acronym match is not evidence two operations are the same one. */
+/** H-D4 — alphabetic tokens shorter than this are dropped, unless the allowlist below rescues them.
+ *  Surgical acronyms live under it (TAPP, TEP, LSCS, TURP), and an acronym match is not evidence
+ *  two operations are the same one. */
 export const MIN_TOKEN_LENGTH = 5;
 
 /**
- * PURE — one procedure title → its SIGNIFICANT tokens, per H-D4: uppercase, strip punctuation, drop
- * the stoplist, keep alphabetic tokens of length ≥ 5. Sorted and de-duplicated so a stored token set
- * is comparable across two readings of the same stay.
+ * H2.1 (addendum H-A3) — anatomical sites too SHORT to survive the length rule, kept anyway.
+ *
+ * MEASURED DEFECT, NOT A HUNCH. H2 shipped with the bare length rule and a test that pinned its
+ * cost: OT "TOTAL KNEE REPLACEMENT LEFT" against discharge "REVISION KNEE ARTHROPLASTY" shares only
+ * the word KNEE, which is four letters, so the two readings normalised to disjoint sets and an
+ * honest pair of documents about the same knee was flagged as template contamination. The length
+ * rule exists to stop ACRONYMS matching across specialities; a body part is not an acronym, and
+ * agreement on the site is real agreement.
+ *
+ * The list is anatomical sites ONLY. Nothing here describes an operation, an approach or a side —
+ * adding a verb or an approach word to this list would let two different operations on the same
+ * ground look like one, which is the failure H-D4 exists to catch.
+ */
+export const SHORT_SITE_ALLOWLIST: ReadonlySet<string> = new Set([
+  'KNEE', 'HIP', 'EYE', 'TOE', 'EAR', 'JAW', 'RIB', 'ARM', 'LEG', 'NAIL', 'FOOT', 'HAND', 'NECK',
+]);
+
+/**
+ * PURE — one procedure title → its SIGNIFICANT tokens, per H-D4 as amended by H2.1: uppercase, strip
+ * punctuation, drop the stoplist, keep alphabetic tokens of length ≥ 5 PLUS any token on the
+ * anatomical short-site allowlist. Sorted and de-duplicated so a stored token set is comparable
+ * across two readings of the same stay.
  *
  * Punctuation becomes a SPACE rather than being deleted: deleting it would fuse "HERNIA/REPAIR" into
  * one token that matches nothing, which is a silent way to manufacture a zero-overlap flag.
+ *
+ * THE STOPLIST OUTRANKS THE ALLOWLIST. The two sets are disjoint today, but the order is written
+ * down rather than left to luck: a word that ever appeared on both would be a word that describes
+ * how an operation was done, and those never count as agreement.
  */
 export function significantTokens(title: string | null | undefined): string[] {
   const cleaned = String(title ?? '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ');
   const kept = new Set<string>();
   for (const token of cleaned.split(' ')) {
-    if (token.length < MIN_TOKEN_LENGTH) continue;
     if (!/^[A-Z]+$/.test(token)) continue;          // alphabetic only — a code is not a word
     if (CONTAMINATION_STOPLIST.has(token)) continue;
+    if (token.length < MIN_TOKEN_LENGTH && !SHORT_SITE_ALLOWLIST.has(token)) continue;
     kept.add(token);
   }
   return [...kept].sort();

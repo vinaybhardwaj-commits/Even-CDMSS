@@ -21,7 +21,7 @@ import { join } from 'node:path';
 import { upsertClinicalState, SNAPSHOT_REASONS, type SqlRunner } from '../stay-library/store';
 import {
   contaminationSuspect, contaminationNotice, significantTokens,
-  CONTAMINATION_STOPLIST, CONTAMINATION_COPY, MIN_TOKEN_LENGTH,
+  CONTAMINATION_STOPLIST, CONTAMINATION_COPY, MIN_TOKEN_LENGTH, SHORT_SITE_ALLOWLIST,
 } from '../stay-library/contamination';
 import { contaminationOf, STAY_LIBRARY_VERSION } from '../stay-library/core';
 import { promotable, stayToEncounter } from '../member-state/ipd-evidence';
@@ -228,19 +228,30 @@ test('H-D4 stoplist edge: ONE shared substantive token is enough to clear the wh
     'TOTAL/REVISION differ, but they agree on REPLACEMENT — one shared term is enough');
 });
 
-test('H-D4 measured property: the >= 5 rule drops SHORT ANATOMICAL SITES, so a site-only agreement flags', () => {
-  // MEASURED, NOT DESIGNED, and reported to the orchestrator rather than worked around: H-D4 fixes
-  // the length threshold at 5, and KNEE, HIP, EYE, TOE, EAR are shorter than that. Two honest
-  // readings of the same knee operation that agree ONLY on the word KNEE therefore share zero
-  // significant tokens and are flagged suspect.
-  assert.deepEqual(significantTokens('TOTAL KNEE REPLACEMENT LEFT'), ['REPLACEMENT', 'TOTAL']);
-  assert.equal(contaminationSuspect('TOTAL KNEE REPLACEMENT LEFT', 'REVISION KNEE ARTHROPLASTY'), true);
-  // The consequence is bounded and it is the SAFE direction: a false flag suppresses one
-  // discharge-sourced procedure from the spine and prints one advisory line. It changes no finding,
-  // no CVI, and never the OT-sourced fact — which for any stay with an operative note is the fact
-  // that actually promotes (precedence rank 1). H-D4 is settled; this is its cost, stated.
-  assert.equal(contaminationSuspect('TOTAL KNEE REPLACEMENT', 'TOTAL KNEE ARTHROPLASTY'), false,
-    'agreement on any longer word still clears it');
+test('H2.1 (H-A3): a shared SHORT ANATOMICAL SITE clears the flag — the H2 defect, fixed', () => {
+  // THIS TEST WAS THE DEFECT REPORT AND IS NOW THE FIX. H2 shipped the bare length rule and this
+  // case measured its cost: two honest readings of the same knee operation agree only on KNEE,
+  // four letters, so they normalised to disjoint sets and an uncontaminated stay was flagged. The
+  // length rule is there to stop ACRONYMS matching across specialities; a body part is not an
+  // acronym, and agreement on the site is real agreement.
+  assert.deepEqual(significantTokens('TOTAL KNEE REPLACEMENT LEFT'), ['KNEE', 'REPLACEMENT', 'TOTAL']);
+  assert.equal(contaminationSuspect('TOTAL KNEE REPLACEMENT LEFT', 'REVISION KNEE ARTHROPLASTY'), false,
+    'REPLACEMENT/ARTHROPLASTY differ and TOTAL/REVISION differ, but both documents say KNEE');
+  assert.equal(contaminationSuspect('TOTAL KNEE REPLACEMENT', 'TOTAL KNEE ARTHROPLASTY'), false);
+  // Every allowlisted site survives normalisation on its own...
+  for (const site of ['KNEE', 'HIP', 'EYE', 'TOE', 'EAR', 'JAW', 'RIB', 'ARM', 'LEG', 'NAIL', 'FOOT', 'HAND', 'NECK']) {
+    assert.ok(SHORT_SITE_ALLOWLIST.has(site), `${site} must be on the H2.1 allowlist`);
+    assert.deepEqual(significantTokens(site), [site], `${site} must survive the length rule`);
+  }
+  assert.equal(SHORT_SITE_ALLOWLIST.size, 13, 'the allowlist is H-A3\'s thirteen sites and no more');
+  // ...and the allowlist is SITES ONLY. A verb or an approach word here would let two different
+  // operations on the same ground look like one, which is the failure H-D4 exists to catch.
+  for (const notASite of ['TOTAL', 'OPEN', 'REPAIR', 'LEFT', 'RIGHT', 'TAPP', 'LSCS', 'REVISION']) {
+    assert.ok(!SHORT_SITE_ALLOWLIST.has(notASite), `${notASite} is not an anatomical site`);
+  }
+  // The stoplist still outranks the allowlist, and a short site does NOT rescue a contaminated pair.
+  assert.equal(contaminationSuspect('TOTAL KNEE REPLACEMENT', 'LAPAROSCOPIC CHOLECYSTECTOMY'), true,
+    'a stay whose documents share no site and no operation is still suspect');
 });
 
 test('H-D4 normalisation: punctuation becomes a boundary, not a join', () => {
@@ -270,8 +281,8 @@ test('H2: a stay with SEVERAL operative notes is clean if the discharge matches 
   const flagged = contaminationNotice(['INGUINAL HERNIOPLASTY', 'TOTAL KNEE REPLACEMENT'], discharge);
   assert.ok(flagged, 'sharing nothing with EVERY operative note is the suspect shape');
   assert.deepEqual(flagged.dischargeTokens, ['CHOLECYSTECTOMY']);
-  assert.deepEqual(flagged.otTokens, ['HERNIOPLASTY', 'INGUINAL', 'REPLACEMENT', 'TOTAL'],
-    'KNEE is four letters and does not survive H-D4\'s length rule');
+  assert.deepEqual(flagged.otTokens, ['HERNIOPLASTY', 'INGUINAL', 'KNEE', 'REPLACEMENT', 'TOTAL'],
+    'KNEE survives on H2.1\'s short-site allowlist; the discharge still shares none of them');
   assert.equal(flagged.otSurgery, 'INGUINAL HERNIOPLASTY');
 });
 
