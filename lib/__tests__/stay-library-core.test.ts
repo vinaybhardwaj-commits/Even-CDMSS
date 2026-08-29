@@ -389,7 +389,7 @@ test('the library does not fork lib/clinical-state — the stay facts ride in su
 
 // ══ source pins ═════════════════════════════════════════════════════════════════════════
 
-test('the store names exactly one table, and no audit / feedback / spine table', () => {
+test('the store names its own tables, and no audit / feedback / spine table', () => {
   const store = code('lib/stay-library/store.ts');
   assert.ok(store.includes('clinical_states'));
   for (const forbidden of [
@@ -398,13 +398,24 @@ test('the store names exactly one table, and no audit / feedback / spine table',
   ]) {
     assert.ok(!store.includes(forbidden), `store.ts names ${forbidden}`);
   }
-  // Every write verb that names a table must name THIS one. `ON CONFLICT ... DO UPDATE SET` names
-  // no table (it is still the INSERT's target), so it is removed before the scan rather than
-  // matched as a bare UPDATE — the first version of this pin failed on the module's own upsert.
+  // Every write verb that names a table must name one of TWO. This pin read "exactly one" until
+  // H1 (CDMSS-STAY-LIBRARY-HARDENING-PRD-v1.0-29-AUG-2026, H-D2) gave the library a snapshot
+  // trail, `clinical_state_versions`, which the upsert writes in the same statement as the
+  // overwrite it guards. The exemption is paid for by an assertion, as the house rule requires:
+  // the trail is APPEND-ONLY here, and stay-library-hardening.test.ts asserts that separately.
+  // `ON CONFLICT ... DO UPDATE SET` names no table (it is still the INSERT's target), so it is
+  // removed before the scan rather than matched as a bare UPDATE — the first version of this pin
+  // failed on the module's own upsert.
   const sqlish = store.replace(/DO\s+UPDATE/gi, 'DO_UPSERT');
   const targets = [...sqlish.matchAll(/(?:INSERT\s+INTO|DELETE\s+FROM|UPDATE)\s+([a-z_][a-z0-9_]*)/gi)].map((m) => m[1]);
   assert.ok(targets.length > 0, 'the store must actually write something');
-  for (const t of targets) assert.equal(t, 'clinical_states', `the store writes ${t}`);
+  for (const t of targets) {
+    assert.ok(['clinical_states', 'clinical_state_versions'].includes(t), `the store writes ${t}`);
+  }
+  const versionWrites = [...sqlish.matchAll(/(INSERT\s+INTO|DELETE\s+FROM|UPDATE)\s+clinical_state_versions/gi)];
+  for (const m of versionWrites) {
+    assert.match(m[1], /INSERT\s+INTO/i, 'the version trail is never rewritten or deleted from');
+  }
 });
 
 test('§4 — no Metabase table is invented: the three kx template tables and nothing else', () => {
