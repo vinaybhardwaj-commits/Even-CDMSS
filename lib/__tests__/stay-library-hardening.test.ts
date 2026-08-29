@@ -13,12 +13,21 @@
 // pinned as fixtures BY THEIR TOKEN SETS as well as their verdicts — a rule that flagged for the
 // wrong reason would satisfy a verdict-only assertion — and the gate tests each state their
 // precondition, so a gate that refused everything could not pass them.
+//
+// H3 (H-D7..H-D10): the absence re-look. The limit table is exercised as ONE case with sixteen
+// degenerate inputs, the walk's ordering and predicates are asserted on the SQL that would be sent,
+// and the two writers are asserted apart: a still-absent row bumps counters and is NOT snapshotted,
+// a supersede is snapshotted, points at the real row, and deletes nothing.
 // Run: npm test.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { upsertClinicalState, SNAPSHOT_REASONS, type SqlRunner } from '../stay-library/store';
+import {
+  upsertClinicalState, SNAPSHOT_REASONS, type SqlRunner,
+  listAbsenceRows, markAbsenceChecked, supersedeAbsenceRow, countRemainingAbsences,
+  clinicalStateIdFor, parseRelookLimit, RELOOK_DEFAULT_LIMIT, RELOOK_MAX_LIMIT,
+} from '../stay-library/store';
 import {
   contaminationSuspect, contaminationNotice, significantTokens,
   CONTAMINATION_STOPLIST, CONTAMINATION_COPY, MIN_TOKEN_LENGTH, SHORT_SITE_ALLOWLIST,
@@ -59,6 +68,14 @@ function fakeRunner(o: { priorRows?: number; failOn?: string } = {}) {
     }
     return [{ inserted: (o.priorRows ?? 0) === 0 }];
   };
+  return { run, calls };
+}
+
+/** A recording fake for the H3 store reads and writes: it returns `rows` for every statement and
+ *  keeps what it was asked. */
+function relookRunner(o: { rows: Array<Record<string, unknown>> }) {
+  const calls: Array<{ query: string; params: unknown[] }> = [];
+  const run: SqlRunner = async (query, params) => { calls.push({ query, params }); return o.rows; };
   return { run, calls };
 }
 
@@ -433,4 +450,168 @@ test('H2 touches lib/member-state ONLY in ipd-evidence.ts and the one permitted 
     'normalize-core.ts', 'schema.ts', 'care-call-evidence.ts', 'present-augment.ts', 'vitals-read.ts']) {
     assert.ok(!/contaminat/i.test(read(`lib/member-state/${f}`)), `lib/member-state/${f} was touched by H2`);
   }
+});
+
+// ══ H3 — absence re-look ═════════════════════════════════════════════════════════════════
+
+test('H-D9 rule 3: the limit table — absent, null, 0, -1 and junk are ONE case', () => {
+  // Six near-identical branches is how one of them ends up meaning zero. There is one branch.
+  for (const degenerate of [undefined, null, '', '  ', '0', 0, '-1', -1, 'abc', NaN, Infinity, -Infinity,
+    true, false, {}, [], '1e400']) {
+    assert.equal(parseRelookLimit(degenerate), RELOOK_DEFAULT_LIMIT, `${JSON.stringify(degenerate)} must be the default`);
+  }
+  assert.equal(RELOOK_DEFAULT_LIMIT, 10);
+  assert.equal(RELOOK_MAX_LIMIT, 50);
+  // A real value is honoured, floored, and capped.
+  assert.equal(parseRelookLimit(1), 1);
+  assert.equal(parseRelookLimit('7'), 7);
+  assert.equal(parseRelookLimit(7.9), 7, 'a float is floored, never rounded up past what was asked');
+  assert.equal(parseRelookLimit(50), 50);
+  assert.equal(parseRelookLimit(51), RELOOK_MAX_LIMIT);
+  assert.equal(parseRelookLimit('99999'), RELOOK_MAX_LIMIT);
+  // The cap is never below the default, or a capped request would be smaller than no request.
+  assert.ok(RELOOK_MAX_LIMIT >= RELOOK_DEFAULT_LIMIT);
+});
+
+test('H-D8: the walk selects absence rows only, oldest-checked first, and never a retired one', async () => {
+  const { run, calls } = relookRunner({ rows: [] });
+  await listAbsenceRows(5, 'clinical-state/1.2', run);
+  const q = calls[0].query;
+  assert.match(q, /status = 'not_auditable'/);
+  assert.match(q, /source_uid LIKE 'absent:%'/, 'only sentinel rows are absences');
+  assert.match(q, /superseded_by IS NULL/, 'a row whose substrate arrived is not walked again');
+  assert.match(q, /ORDER BY last_checked_at ASC NULLS FIRST, created_at ASC/,
+    'never-looked outranks looked-long-ago outranks looked-today');
+  assert.match(q, /LIMIT 5/);
+  // The limit is parsed by the SAME rule the route uses — a degenerate one cannot reach the SQL.
+  const second = relookRunner({ rows: [] });
+  await listAbsenceRows(0, 'clinical-state/1.2', second.run);
+  assert.match(second.calls[0].query, new RegExp(`LIMIT ${RELOOK_DEFAULT_LIMIT}$`, 'm'));
+});
+
+test('H-D8: a still-absent row bumps the two counters and NOTHING else — and is not snapshotted', async () => {
+  const { run, calls } = relookRunner({ rows: [{ id: 'row-1' }] });
+  assert.equal(await markAbsenceChecked('row-1', run), true);
+  const q = calls[0].query;
+  assert.match(q, /SET last_checked_at = NOW\(\), check_count = COALESCE\(check_count, 0\) \+ 1/);
+  assert.ok(!/state_json|status\s*=|source_uid\s*=|superseded_by\s*=/.test(q),
+    'a re-look that found nothing must not touch the row\'s state, status or supersession');
+  assert.ok(!q.includes('clinical_state_versions'),
+    'H-D2 names the upsert arm and the SUPERSEDE writes; a counter bump changes no state, so the trail stays a state diff and not a log of looks');
+  assert.match(q, /superseded_by IS NULL/, 'a retired row is not re-stamped');
+  // Fault ⇒ false, which the route counts as `failed`: an unrecorded look happens again.
+  const bad: SqlRunner = async () => { throw new Error('down'); };
+  assert.equal(await markAbsenceChecked('row-1', bad), false);
+  assert.equal(await markAbsenceChecked('', run), false, 'an empty id never reaches the database');
+});
+
+test('H-D2 + H-D8: a supersede is SNAPSHOTTED, points at the real row, and DELETES NOTHING', async () => {
+  const { run, calls } = relookRunner({ rows: [{ id: 'absence-1' }] });
+  assert.equal(await supersedeAbsenceRow('absence-1', 'real-row-9', run), true);
+  const q = calls[0].query;
+  assert.match(q, /^\s*WITH cur AS \(/, 'the snapshot leads the statement it guards');
+  assert.match(q, /INSERT INTO clinical_state_versions/);
+  assert.match(q, /'superseded'/, 'and it is filed under the reason H-D2 names for this path');
+  assert.equal(q.split(';').length, 1, 'snapshot and update travel as ONE statement');
+  assert.match(q, /SET superseded_by = \$2::uuid/);
+  assert.ok(!/\bDELETE\b/i.test(q), 'H-D8: an absence row is never deleted');
+  assert.deepEqual(calls[0].params, ['absence-1', 'real-row-9']);
+  // Idempotent: the guard makes a second call a no-op rather than a second snapshot.
+  assert.match(q, /superseded_by IS NULL/);
+  // Fail-safe, both directions.
+  const bad: SqlRunner = async () => { throw new Error('down'); };
+  assert.equal(await supersedeAbsenceRow('absence-1', 'real-row-9', bad), false);
+  assert.equal(await supersedeAbsenceRow('absence-1', '', run), false, 'a supersede with no target row is refused');
+});
+
+test('H-D9 rule 2: `remaining` counts WORK LEFT, not a cursor position', async () => {
+  const { run, calls } = relookRunner({ rows: [{ n: 12 }] });
+  assert.equal(await countRemainingAbsences('clinical-state/1.2', run), 12);
+  const q = calls[0].query;
+  assert.match(q, /count\(\*\)::int AS n/);
+  assert.match(q, /superseded_by IS NULL/, 'a retired absence is not remaining work');
+  assert.ok(!/OFFSET|LIMIT|created_at >/.test(q), 'a count is not a position');
+  const bad: SqlRunner = async () => { throw new Error('down'); };
+  assert.equal(await countRemainingAbsences('clinical-state/1.2', bad), 0,
+    'an uncountable remainder promises nothing, rather than 500ing');
+});
+
+test('H3: every store read fail-safes to empty — a route run before the migration reports zeros', async () => {
+  // The H3 columns do not exist until an operator runs 0049. Until then every read faults, and
+  // every fault must read as "no work", never as a 500 at whoever ran the routes in order.
+  const down: SqlRunner = async () => { throw new Error('column "last_checked_at" does not exist'); };
+  assert.deepEqual(await listAbsenceRows(10, 'clinical-state/1.2', down), []);
+  assert.equal(await countRemainingAbsences('clinical-state/1.2', down), 0);
+  assert.equal(await clinicalStateIdFor('ot', 'ot-1', 'clinical-state/1.2', down), null);
+});
+
+test('H3 route: the response counts work and the self-documentation prints no parsed value', () => {
+  const route = code('app/api/admin/relook-stay-library/route.ts');
+  for (const key of ['rechecked', 'superseded', 'failed', 'remaining']) {
+    assert.ok(route.includes(key), `the response must carry ${key}`);
+  }
+  // Rule 3 — the GET advertises the CONSTANTS, so it can never advertise a degenerate parse.
+  assert.ok(route.includes('${RELOOK_DEFAULT_LIMIT}') && route.includes('${RELOOK_MAX_LIMIT}'));
+  const getBody = route.slice(route.indexOf('export async function GET'), route.indexOf('export async function POST'));
+  assert.ok(!getBody.includes('parseRelookLimit'), 'the self-documentation must not echo a parsed limit');
+  // Rule 2 — completion is stated in work, not position.
+  assert.ok(route.includes('superseded === 0 && failed === 0'));
+  // There is no cursor to be wrong about. The word `cursor` DOES appear in the route — inside the
+  // GET's own prose, quoting the R10 rule it obeys — so string literals are stripped before this
+  // scan, the same prose-vs-code trap that has bitten a pin on this repo before.
+  const routeCode = route
+    .replace(/'(?:[^'\\]|\\.)*'/g, "''").replace(/"(?:[^"\\]|\\.)*"/g, '""')
+    .replace(/`(?:[^`\\]|\\.)*`/g, '``');
+  assert.ok(!/\bOFFSET\b/i.test(routeCode), 'a work count is not an offset');
+  assert.ok(!/cursor/i.test(routeCode), 'no cursor variable exists to drift');
+  // Rule 4 — a faulted look stamps nothing. The failure branch reaches neither writer.
+  const failBranch = route.slice(route.indexOf("looked.outcome === 'failed'"), route.indexOf("looked.outcome === 'still_absent'"));
+  assert.ok(!/markAbsenceChecked|supersedeAbsenceRow|upsertClinicalState/.test(failBranch),
+    'a faulted look must store nothing and stamp nothing — it is retried');
+  // H-D8 — nothing anywhere deletes.
+  assert.ok(!/\bDELETE\b/i.test(route), 'the re-look deletes nothing');
+  // Rule 1 — the row is walked whole: a partial store abandons the row before the supersede.
+  assert.ok(route.includes('if (!allStored || !firstRealId)'));
+});
+
+test('H-D8: relookClass keeps the three outcomes apart and calls only the db13 fetchers', () => {
+  const build = code('lib/stay-library/build.ts');
+  const fn = build.slice(build.indexOf('export async function relookClass'));
+  for (const fetcher of ['fetchOtNotes', 'fetchProgressNotes', 'fetchPacNotes']) {
+    assert.ok(fn.includes(fetcher), `the re-look must reuse ${fetcher}`);
+  }
+  assert.ok(!/metabaseQuery/.test(build), 'the re-look invents no db13 read of its own');
+  // A FAULT is never recorded as absence — that is how "the OT hop timed out" becomes "there was
+  // no operation" (D13). The three outcomes are distinct values, not two.
+  assert.ok(fn.includes("outcome: 'failed'") && fn.includes("outcome: 'still_absent'") && fn.includes("outcome: 'found'"));
+  const faultLine = fn.slice(fn.indexOf("fetched.outcome === 'fetch_failed'"));
+  assert.match(faultLine.slice(0, 320), /outcome: 'failed'/, 'a faulted fetch must not fall through to still_absent');
+  // §4 still holds: no fifth Metabase table anywhere in the module.
+  const kx = [...(code('lib/stay-library/core.ts') + build).matchAll(/kx_[a-z_]+/g)].map((m) => m[0]);
+  assert.deepEqual([...new Set(kx)].sort(), [
+    'kx_clinical_template_ot_notes', 'kx_clinical_template_pac_reports', 'kx_clinical_template_progress_reports',
+  ], 'a fifth table appeared — the PRD says STOP and flag, not add one');
+});
+
+test('H3 migration 0049 is additive: ADD COLUMN IF NOT EXISTS, and nothing is dropped', () => {
+  for (const f of ['migrations/0049_stay_library_hardening.sql', 'app/api/admin/migrate-stay-library-hardening/route.ts']) {
+    const src = code(f);
+    assert.ok(!/\bDROP\b/i.test(src), `${f} contains DROP`);
+    for (const col of ['last_checked_at', 'check_count', 'superseded_by']) {
+      assert.match(src, new RegExp(`ADD COLUMN IF NOT EXISTS\\s+${col}`), `${f} must add ${col} idempotently`);
+    }
+    // Every ALTER on this migration is an additive ADD COLUMN — no type change, no rename, no
+    // constraint that could reject a row a fail-soft store is trying to write.
+    for (const m of src.matchAll(/ALTER\s+TABLE\s+(\w+)\s+([\s\S]*?);/gi)) {
+      assert.equal(m[1], 'clinical_states', `an ALTER touched ${m[1]}`);
+      assert.match(m[2], /^ADD COLUMN IF NOT EXISTS/, 'only additive ALTERs');
+    }
+    assert.ok(!/FOREIGN KEY|REFERENCES/i.test(src), 'no FK: a constraint must never reject a fail-soft write');
+    assert.ok(src.includes('clinical_states_relook_idx'));
+  }
+  // check_count is NOT NULL DEFAULT 0 and last_checked_at is nullable — "never looked" must stay
+  // distinguishable from "looked and found nothing", which a DEFAULT NOW() would destroy.
+  const ddl = code('migrations/0049_stay_library_hardening.sql');
+  assert.match(ddl, /check_count\s+INTEGER NOT NULL DEFAULT 0/);
+  assert.match(ddl, /last_checked_at TIMESTAMPTZ;/, 'last_checked_at must be nullable with no default');
 });

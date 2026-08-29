@@ -205,6 +205,71 @@ export async function buildStayLibrary(a: {
 const failed = (): TemplateFetchResult => ({ outcome: 'fetch_failed', rows: [] });
 
 /**
+ * H3 (H-D8) — re-run ONE document class's fetch for ONE stay, and build whatever it finds.
+ *
+ * WHY IT LIVES HERE AND NOT IN THE ROUTE. This is the same fetch, the same de-identifier and the
+ * same pure builders the original build used — `fetchOtNotes` / `fetchPacNotes` /
+ * `fetchProgressNotes` from lib/readmission/db13.ts, unmodified, plus the admission header that
+ * binds the scrubber to this stay's identity. Re-implementing that in an admin route would
+ * duplicate the PHI choke point, and a duplicated choke point is one that can drift open. No new
+ * Metabase table is named here and none is reachable from here; a fifth table is a STOP, not an
+ * addition (§4).
+ *
+ * THREE OUTCOMES, KEPT APART, exactly as the original build keeps them:
+ *   'found'      — readable documents, already built and ready to store;
+ *   'still_absent' — the look ran and there is still nothing (the absence row is re-stamped);
+ *   'failed'     — the look FAULTED, so we know nothing. It must never be recorded as absence:
+ *                  that is how "the OT hop timed out" becomes "there was no operation". The caller
+ *                  counts it `failed`, stores nothing, and the row is walked again next pass.
+ *
+ * Discharge is not re-lookable here and cannot reach this function: its absence row is keyed on the
+ * document id rather than the `absent:` sentinel, so the walk never selects one.
+ */
+export type RelookOutcome =
+  | { outcome: 'found'; documents: BuiltDoc[] }
+  | { outcome: 'still_absent' }
+  | { outcome: 'failed'; reason: string };
+
+export async function relookClass(a: {
+  docKind: 'ot' | 'pac' | 'progress';
+  encounterRef: string | null;
+}): Promise<RelookOutcome> {
+  const enc = a.encounterRef ?? '';
+  if (!enc) return { outcome: 'failed', reason: 'this absence row carries no encounter id — there is nothing to look for it with' };
+
+  // The header binds the scrubber to this stay and gives PAC its pre-admit window. A header we
+  // cannot read is a look we cannot safely run: without it the de-identifier falls back to
+  // shape-only, and the original build recorded that as a NOTE on a stay it was building anyway.
+  // Here it would silently store less-scrubbed text than the first pass did, so it fails instead.
+  const header = await fetchIpdAdmissionHeader(enc).catch(() => null);
+  if (!header) return { outcome: 'failed', reason: 'no admission header for this stay — the de-identifier could not be bound, so nothing was stored' };
+
+  const identity = { names: [header.patientName ?? null], uhids: [header.uhid ?? null] };
+  const deid: Deidentifier = (text: string) => deidText(text, identity);
+  const uhid = header.uhid ?? null;
+
+  let fetched: TemplateFetchResult;
+  try {
+    fetched = a.docKind === 'ot'
+      ? await fetchOtNotes(enc, uhid ? { uhid, ipdNo: enc } : null)
+      : a.docKind === 'progress'
+        ? await fetchProgressNotes(enc, uhid ? { uhid, ipdNo: enc } : null)
+        : await fetchPacNotes(enc, uhid, pacWindow(header.admitDate ?? null, header.dischargeDate ?? null));
+  } catch {
+    fetched = failed();
+  }
+  if (fetched.outcome === 'fetch_failed') {
+    return { outcome: 'failed', reason: 'the look FAULTED — this is not evidence the document is missing, and nothing was stored' };
+  }
+
+  // `templateDocs` returns ONE absence document when the class is still empty or all-blank; that is
+  // not a document to store, it is the row we already have.
+  const built = templateDocs(a.docKind, fetched, a.encounterRef, deid);
+  const real = built.filter((d) => d.status === 'ok');
+  return real.length ? { outcome: 'found', documents: real } : { outcome: 'still_absent' };
+}
+
+/**
  * H2 (H-D4 / H-D5 / H-D6) — compare this stay's structured OT `surgery_name` against its discharge
  * `ExtractedCase.procedure` and, if they share no substantive word, stamp the DISCHARGE side.
  *

@@ -52,6 +52,26 @@ const isDocKind = (v: unknown): v is DocKind => typeof v === 'string' && (DOC_KI
 export type SqlRunner = (query: string, params: unknown[]) => Promise<Array<Record<string, unknown>>>;
 const liveSql: SqlRunner = (query, params) => (sql as unknown as SqlRunner)(query, params);
 
+/**
+ * H3 (H-D9) — the re-look's limit bounds, in ONE place so the route, the store and the route's own
+ * self-documentation cannot disagree about them. `limit` is a finite parse ≥ 1 or the default:
+ * absent, null, empty, zero, negative and junk are ONE case, not six.
+ */
+export const RELOOK_DEFAULT_LIMIT = 10;
+export const RELOOK_MAX_LIMIT = 50;
+
+/**
+ * H-D9 rule 3, as ONE function, so the route, the walk and the route's self-documentation cannot
+ * disagree about what a limit means. Absent, null, empty, zero, negative, a float, junk and a
+ * boolean are all the SAME case — the default — because six near-identical branches is how one of
+ * them ends up meaning zero. A finite parse of at least 1 is floored and capped at the maximum.
+ */
+export function parseRelookLimit(raw: unknown): number {
+  const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw.trim()) : NaN;
+  if (!Number.isFinite(n) || n < 1) return RELOOK_DEFAULT_LIMIT;
+  return Math.min(Math.floor(n), RELOOK_MAX_LIMIT);
+}
+
 /** H-D2 — the closed set of reasons a prior reading is kept. Two, and a test enumerates them. */
 export const SNAPSHOT_REASONS = ['upsert_overwrite', 'superseded'] as const;
 export type SnapshotReason = (typeof SNAPSHOT_REASONS)[number];
@@ -226,6 +246,179 @@ export async function readClinicalState(
       [docKind, sourceUid, schemaVersion],
     )) as Array<Record<string, unknown>>;
     return toStored(rows[0]);
+  } catch {
+    return null;
+  }
+}
+
+// ── H3 (H-D7 / H-D8) — absence re-look ────────────────────────────────────────────────────
+//
+// "not_auditable is forever" was the third hole. 32 of R10's 45 blind cases were rows that arrived
+// in db13 AFTER the audit ran, and IP-1472's absent OT row would never be looked at again — so a
+// late-arriving operative note never reaches the stay audit or the spine. These functions give an
+// absence row three things it did not have: a date it was last looked for, a count of how often, and
+// a pointer to the real row that eventually replaced it.
+//
+// AN ABSENCE ROW IS NEVER DELETED (H-D8). "We looked on 29 August and it was not there" stays true
+// after the note arrives; deleting the row would erase the evidence that we looked, which is the
+// exact confusion between "nobody built this stay" and "this stay has no OT note" that the row was
+// created to prevent. Supersession is an UPDATE, and therefore snapshotted under H-D2.
+
+/** One absence row, as the re-look walk reads it. */
+export interface AbsenceRow {
+  id: string;
+  docKind: DocKind;
+  sourceUid: string;
+  memberUid: string | null;
+  encounterRef: string | null;
+  schemaVersion: string;
+  checkCount: number;
+  lastCheckedAt: string | null;
+}
+
+/**
+ * The absence rows to re-look, OLDEST-CHECKED FIRST — `last_checked_at NULLS FIRST, created_at ASC`,
+ * so a row nobody has ever re-looked outranks one checked last week, which outranks one checked
+ * today. A row already superseded is not walked again: its substrate arrived and the real row is on
+ * the table.
+ *
+ * Fail-safe: any fault — including the H3 columns not existing yet because the migration has not
+ * run — returns an EMPTY list. The re-look then finds no work and reports honest zeros, rather than
+ * 500ing at an operator who ran a route in the wrong order.
+ */
+export async function listAbsenceRows(
+  limit: number,
+  schemaVersion: string = CLINICAL_STATE_VERSION,
+  run: SqlRunner = liveSql,
+): Promise<AbsenceRow[]> {
+  const n = parseRelookLimit(limit);
+  try {
+    const rows = await run(
+      `SELECT id, doc_kind, source_uid, member_uid, encounter_ref, schema_version,
+              COALESCE(check_count, 0)::int AS check_count,
+              to_char(last_checked_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS last_checked_at
+         FROM clinical_states
+        WHERE schema_version = $1
+          AND status = 'not_auditable'
+          AND source_uid LIKE 'absent:%'
+          AND superseded_by IS NULL
+        ORDER BY last_checked_at ASC NULLS FIRST, created_at ASC
+        LIMIT ${n}`,
+      [schemaVersion],
+    );
+    return rows
+      .map((r): AbsenceRow | null => (isDocKind(r.doc_kind) ? {
+        id: String(r.id ?? ''), docKind: r.doc_kind, sourceUid: String(r.source_uid ?? ''),
+        memberUid: s(r.member_uid), encounterRef: s(r.encounter_ref),
+        schemaVersion: String(r.schema_version ?? ''),
+        checkCount: Number(r.check_count ?? 0), lastCheckedAt: s(r.last_checked_at),
+      } : null))
+      .filter((r): r is AbsenceRow => r != null && r.id !== '');
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * "We looked again on this date, and it is still not there." Bumps `last_checked_at` and
+ * `check_count` and NOTHING else — the row's status, reason and state are what they were.
+ *
+ * NOT SNAPSHOTTED, deliberately. H-D2 names the upsert's DO UPDATE arm and H3's SUPERSEDE writes;
+ * this is neither. A snapshot per re-look would fill the trail with thousands of identical copies of
+ * the same absence, and the fact this write records — that we looked and found nothing — is already
+ * fully described by the two counters it sets. The trail exists to diff STATE, and no state changed.
+ *
+ * Returns false on any fault, which the caller counts as `failed`: an unrecorded look is a look that
+ * will happen again, which is the safe direction.
+ */
+export async function markAbsenceChecked(id: string, run: SqlRunner = liveSql): Promise<boolean> {
+  if (!id) return false;
+  try {
+    const rows = await run(
+      `UPDATE clinical_states
+          SET last_checked_at = NOW(), check_count = COALESCE(check_count, 0) + 1
+        WHERE id = $1::uuid AND superseded_by IS NULL
+        RETURNING id`,
+      [id],
+    );
+    return rows.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The substrate finally arrived. Point the absence row at the real row that replaced it, and stamp
+ * the look that found it — in the SAME statement as the H-D2 snapshot, so the reading being retired
+ * is on the trail before it is retired.
+ *
+ * THE ROW IS UPDATED, NEVER DELETED (H-D8). `superseded_by` is how a reader tells "we looked on the
+ * 29th and it was absent, and the note turned up later" from "we never looked" — both of which are
+ * true statements about different stays, and only one of them is this one.
+ *
+ * `WHERE superseded_by IS NULL` makes a second call a no-op rather than a second snapshot: a re-look
+ * that races itself retires the row once.
+ */
+export async function supersedeAbsenceRow(
+  id: string,
+  newRowId: string,
+  run: SqlRunner = liveSql,
+): Promise<boolean> {
+  if (!id || !newRowId) return false;
+  try {
+    const rows = await run(
+      snapshotCte('id = $1::uuid AND superseded_by IS NULL', 'superseded')
+      + `UPDATE clinical_states
+            SET superseded_by = $2::uuid, last_checked_at = NOW(),
+                check_count = COALESCE(check_count, 0) + 1
+          WHERE id = $1::uuid AND superseded_by IS NULL
+          RETURNING id`,
+      [id, newRowId],
+    );
+    return rows.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** How many absence rows are still waiting for their substrate. WORK LEFT, not a cursor position
+ *  (H-D9). Zero on any fault — an uncountable remainder is reported as nothing to promise. */
+export async function countRemainingAbsences(
+  schemaVersion: string = CLINICAL_STATE_VERSION,
+  run: SqlRunner = liveSql,
+): Promise<number> {
+  try {
+    const rows = await run(
+      `SELECT count(*)::int AS n
+         FROM clinical_states
+        WHERE schema_version = $1
+          AND status = 'not_auditable'
+          AND source_uid LIKE 'absent:%'
+          AND superseded_by IS NULL`,
+      [schemaVersion],
+    );
+    return Number(rows[0]?.n ?? 0);
+  } catch {
+    return 0;
+  }
+}
+
+/** Read one row's id by its own key — how the re-look learns the id of the row it just inserted,
+ *  so the absence row can point at it. Null on absent OR on fault; the caller counts that failed. */
+export async function clinicalStateIdFor(
+  docKind: DocKind,
+  sourceUid: string,
+  schemaVersion: string = CLINICAL_STATE_VERSION,
+  run: SqlRunner = liveSql,
+): Promise<string | null> {
+  if (!isDocKind(docKind) || !sourceUid) return null;
+  try {
+    const rows = await run(
+      `SELECT id FROM clinical_states WHERE doc_kind = $1 AND source_uid = $2 AND schema_version = $3 LIMIT 1`,
+      [docKind, sourceUid, schemaVersion],
+    );
+    const id = s(rows[0]?.id);
+    return id;
   } catch {
     return null;
   }
