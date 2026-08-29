@@ -443,6 +443,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "audit-engine"
   },
   {
+    "id": "ipd-doctor-hop",
+    "plane": "unregistered"
+  },
+  {
     "id": "jats-chunk",
     "plane": "unregistered"
   },
@@ -1131,6 +1135,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/admin",
     "to": "ipd-audit",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
+    "to": "ipd-doctor-hop",
     "kind": "value"
   },
   {
@@ -3489,6 +3498,11 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "type"
   },
   {
+    "from": "ipd-doctor-hop",
+    "to": "metabase",
+    "kind": "value"
+  },
+  {
     "from": "lab",
     "to": "db",
     "kind": "value"
@@ -5246,6 +5260,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "stewardship-board",
     "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "stewardship-board",
+    "to": "ipd-doctor-hop",
     "kind": "value"
   },
   {

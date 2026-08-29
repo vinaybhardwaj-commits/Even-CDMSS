@@ -457,3 +457,47 @@ test('A6: the inpatient danger read cannot see the stay auditor\'s rows', () => 
   // and no clinician is attributed on that leg — the hop is S3's
   assert.ok(!/doctor_uid|doctor_directory/.test(q), 'the inpatient leg must not claim a clinician');
 });
+
+// ── S3: the inpatient column, the slice, and the one decision worth arguing with ───────────
+
+test('S3: the board reads the canonical stays on A6\'s recipe and joins no clinician in SQL', () => {
+  const q = BOARD_INFERRED_SQL.ipd_board_stays;
+  assert.match(q, /SELECT DISTINCT ON \(ip_uid\) ip_uid/);
+  assert.match(q, /engine_version = \$1/);
+  assert.match(q, /ORDER BY ip_uid, audited_at DESC/);
+  assert.ok(!q.includes('ipd-stay-audit'), 'the stay engine never enters the board aggregate (A6)');
+  // A1 — the clinician cannot be in this query: the column does not exist and the hop is in db13.
+  assert.ok(!/doctor_uid|doctor_directory|practitioner/i.test(q),
+    'the inpatient stay read must claim no clinician — the hop is read-time and lives elsewhere');
+});
+
+test('S3: an unresolved clinician keeps a NULL inpatient cell, which sorts last', () => {
+  // The board type says `number | null` and the sort treats null as "no measurement". A zero here
+  // would rank an unjoined clinician as the worst inpatient performer in the hospital.
+  const sorted = sortBoardRows([
+    row(0, 70, null, 'no stays resolved'),
+    row(0, 70, 30, 'resolved and poor'),
+  ]);
+  assert.deepEqual(sorted.map((r) => r.label), ['resolved and poor', 'no stays resolved']);
+});
+
+test('S3: the per-clinician danger count stays OPD-only, and the code says why', () => {
+  // The one S3 judgement call, flagged for V. Folding a 46%-resolvable hop into the leaderboard's
+  // PRIMARY SORT KEY would rank a clinician safer for having an ambiguous practitioner id.
+  const src = read(BOARD_LIB);
+  assert.match(src, /THE PER-CLINICIAN COUNT IS OPD-ONLY, DELIBERATELY/);
+  assert.match(src, /rank a clinician safer for having an ambiguous practitioner id/);
+  // the inpatient rows still carry a NAME where the hop resolved — visibility without ranking
+  assert.match(code(BOARD_LIB), /const resolvedUid = res\?\.reason === 'resolved' \? res\.doctorUid : null/);
+});
+
+test('S3: the department roll-up never borrows an inpatient number for an OPD label', () => {
+  // F-10 confirmed hard on 29 Aug: only 2 of 14 labels match as exact strings across the two
+  // vocabularies. Rolling resolved stays up through a clinician's OPD department would perform the
+  // merge by the back door.
+  const src = read(BOARD_LIB);
+  assert.match(src, /stays NULL by decision, not by omission/);
+  const deptFn = src.slice(src.indexOf('export async function fetchDeptBoard'));
+  assert.match(deptFn.slice(0, deptFn.indexOf('\n}')), /ipdCvi: null, ipdStays: 0/,
+    'the department roll-up must leave the inpatient cell unfilled');
+});

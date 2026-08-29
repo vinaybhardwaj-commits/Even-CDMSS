@@ -33,6 +33,7 @@
  */
 import { sql } from '@/lib/db';
 import { dedupeTwins } from '@/lib/severity-tier-core';
+import { fetchIpdDoctorHop, hopCoverage, type HopCoverage, type HopResult } from '@/lib/ipd-doctor-hop';
 import {
   opdDangerVerdict, ipdDangerVerdict, sortBoardRows,
   DISPUTE_PILLS,
@@ -97,6 +98,13 @@ const DEPT_SQL = `
   FROM ( ${opdCanonical90d(AGG_COLS)} ) t
   LEFT JOIN doctor_directory dd ON dd.doctor_uid = t.doctor_uid
   GROUP BY 1`;
+
+/** The directory, for naming a clinician the inpatient hop resolved. One row per clinician; the
+ *  board's own rows carry names already, but the danger queue is built before them and must not
+ *  depend on which board grain the page happens to be rendering. */
+const NAMES_SQL = `
+  SELECT doctor_uid, COALESCE(NULLIF(doctor_name, ''), '(unknown)') AS doctor_name
+    FROM doctor_directory`;
 
 const TOTAL_SQL = `
   SELECT count(*)::int AS n_notes,
@@ -281,6 +289,24 @@ const DANGER_IPD_SQL = `
   ORDER BY q.audited_at_raw DESC NULLS LAST, q.audit_id, q.subject
   LIMIT ${QUEUE_CAP}`;
 
+/**
+ * S3 — the canonical inpatient stays the board reads, on A6's recipe: one row per `ip_uid`, latest
+ * `audited_at`, `ipd-discharge-audit/0.2` only, 90 IST days. `ipd-stay-audit/0.1` rows are drill
+ * context on the case page and never enter this aggregate.
+ *
+ * The clinician is NOT in this query and cannot be: `ipd_discharge_audits` has no `doctor_uid`
+ * column, the hop lives in db13, and A1 says read time. This returns stays; lib/ipd-doctor-hop.ts
+ * says who was treating them; nothing joins the two in storage.
+ *
+ * $1 = engine version.
+ */
+const IPD_BOARD_STAYS_SQL = `
+  SELECT t.ip_uid,
+         COALESCE(NULLIF(t.speciality, ''), '${IPD_DEPT_UNASSIGNED}') AS dept,
+         t.care_value_index, t.band
+  FROM ( ${ipdCanonical90d('speciality, care_value_index, band, audited_at')} ) t
+  ORDER BY t.audited_at DESC`;
+
 // ── shapes ────────────────────────────────────────────────────────────────────────────────
 
 export interface BoardMetrics {
@@ -291,13 +317,42 @@ export interface BoardMetrics {
 export interface BoardDoctorRow extends BoardMetrics {
   doctorUid: string; doctorName: string; speciality: string;
   openDangerous: number; confirmedDangerous: number;
-  /** A1 — null until the practitioner-id hop lands (S3). Never a zero, never a guess. */
+  /** A1 — the mean CVI over the stays the practitioner-id hop RESOLVED to this clinician, or null
+   *  when none resolved. Null is a refusal, never a zero: an unjoined clinician has no measured
+   *  inpatient quality, which is a different statement from a poor one, and it sorts last. */
   ipdCvi: number | null; ipdStays: number;
 }
 export interface BoardDeptRow extends BoardMetrics {
   dept: string; nDoctors: number;
   openDangerous: number; confirmedDangerous: number;
+  /** The department roll-up's inpatient cell stays NULL by decision, not by omission: this label is
+   *  the OPD speciality vocabulary and the stays carry the inpatient one. Rolling resolved stays up
+   *  through their clinician's OPD department would put an inpatient number under an OPD label and
+   *  quietly perform the vocabulary merge F-10 forbids. The inpatient slice below shows that side in
+   *  its OWN vocabulary instead. */
   ipdCvi: number | null; ipdStays: number;
+}
+
+/** One inpatient department, in the INPATIENT vocabulary, with what the hop could and could not
+ *  attribute. This is A1's "IPD-only slice with the split banner for the unresolved remainder". */
+export interface IpdSliceRow {
+  dept: string;
+  stays: number;
+  joined: number;
+  avgCvi: number | null;
+  pctAb: number;
+}
+
+export interface IpdSlice {
+  rows: IpdSliceRow[];
+  coverage: HopCoverage;
+  /** ip_uid -> who is treating, or a named refusal. Shared with the danger queue so the two agree. */
+  byIpUid: Record<string, HopResult>;
+  /** doctor_uid -> inpatient quality, for the board column. Only resolved stays are in here. */
+  byDoctor: Record<string, { stays: number; avgCvi: number }>;
+  ambiguousIds: string[];
+  /** True when the Neon stay read failed (as distinct from the db13 hop failing). */
+  unavailable: boolean;
 }
 export interface DangerRow {
   surface: 'opd' | 'ipd';
@@ -354,7 +409,7 @@ const metricsOf = (r: Record<string, unknown>): BoardMetrics => ({
  * every pill. Fail-safe: any read that throws contributes nothing and sets `unavailable`, and the
  * board then shows an empty queue with a visible note instead of a 500 or a false zero.
  */
-export async function fetchDangerQueue(): Promise<DangerQueue> {
+export async function fetchDangerQueue(ipd0: IpdSlice): Promise<DangerQueue> {
   const p = opdCanonParams();
   const ipdP = ipdCanonParams();
   const disputes = [...DISPUTE_PILLS];
@@ -363,12 +418,14 @@ export async function fetchDangerQueue(): Promise<DangerQueue> {
     try { return await run(text, params); } catch { unavailable = true; return []; }
   };
 
-  const [escRows, conRows, ipdCountRows, ipdRows] = await Promise.all([
+  const [escRows, conRows, ipdCountRows, ipdRows, nameRows] = await Promise.all([
     guard(DANGER_ESCALATION_SQL, [...p, ESCALATION_PREFILTER, null]),
     guard(DANGER_CONTESTED_SQL, [...p, null, disputes]),
     guard(DANGER_IPD_COUNT_SQL, [...ipdP, STEWARDSHIP_APP, disputes]),
     guard(DANGER_IPD_SQL, [...ipdP, STEWARDSHIP_APP, disputes]),
+    guard(NAMES_SQL, []),
   ]);
+  const nameOf = new Map(nameRows.map((r) => [str(r.doctor_uid), str(r.doctor_name)]));
 
   // ── OPD. The two legs can name the same finding (an escalated finding that was also disputed),
   // so they are merged on (audit_id, finding_ref | subject) before anything is counted.
@@ -435,6 +492,7 @@ export async function fetchDangerQueue(): Promise<DangerQueue> {
 
   // ── IPD, the LIST. No clinician key exists on this spine (A1), so these rows carry a department
   // and no person. They never enter the per-doctor column.
+  const ipdRowsByStay = ipd0.byIpUid;
   const ipd: DangerRow[] = [];
   for (const r of ipdRows) {
     const subject = str(r.subject);
@@ -442,15 +500,29 @@ export async function fetchDangerQueue(): Promise<DangerQueue> {
     const v = ipdDangerVerdict({ subject, domain: str(r.domain), verdict: str(r.verdict) }, r.pill);
     if (!v.included) continue;
     const auditId = str(r.audit_id);
+    // A1 — the clinician appears on this row ONLY when the practitioner-id hop resolved the stay.
+    // Everything else stays unattributed and renders as the split banner, which is the difference
+    // between "this stay is Dr X's" and "we do not know whose stay this is".
+    const res = ipdRowsByStay[str(r.ip_uid)];
+    const resolvedUid = res?.reason === 'resolved' ? res.doctorUid : null;
     ipd.push({
       surface: 'ipd', auditId, subject, signalType: '', domain: str(r.domain),
-      doctorUid: null, doctorName: '', dept: str(r.dept) || IPD_DEPT_UNASSIGNED,
+      doctorUid: resolvedUid,
+      doctorName: resolvedUid ? (nameOf.get(resolvedUid) || '(unknown)') : '',
+      dept: str(r.dept) || IPD_DEPT_UNASSIGNED,
       day: str(r.audited_at_raw).slice(0, 10),
       occurrences: 1, state: v.state, open: v.open, leg: v.leg, reason: v.reason,
       href: `/admin/ipd-audit/${auditId}`,
     });
   }
 
+  // ⚠️ THE PER-CLINICIAN COUNT IS OPD-ONLY, DELIBERATELY, and this is the one S3 decision worth
+  // arguing with. Resolved inpatient danger rows DO carry a clinician's name in the queue, so an MS
+  // can see whose stay it is. They are NOT added to the board's open-dangerous column, because that
+  // column is the leaderboard's primary SORT KEY and the hop resolves 46% of stays: folding it in
+  // would rank a clinician safer for having an ambiguous practitioner id. Two clinicians with the
+  // same risk must not rank differently on join luck. Flagged for V in the S3 report; reversing it
+  // is one `bump()` call.
   const byDoctor: Record<string, { open: number; confirmed: number }> = {};
   const byOpdDept: Record<string, { open: number; confirmed: number }> = {};
   let opdOpen = 0;
@@ -480,21 +552,90 @@ export async function fetchDangerQueue(): Promise<DangerQueue> {
   };
 }
 
+/**
+ * S3 — the inpatient side: the canonical stays (Neon, A6), who was treating them (db13, A1), and
+ * the honest counts for both. ONE db13 call for the whole window.
+ *
+ * TWO FAILURE MODES, KEPT APART ON PURPOSE. If the Neon stay read fails there are no stays to talk
+ * about and `unavailable` says so. If the db13 HOP fails there are stays but no clinicians, and
+ * `coverage.unavailable` says THAT — the slice still renders every stay, in its own vocabulary, all
+ * unjoined. Collapsing the two would let "db13 is down" render as "this ward had no admissions".
+ */
+export async function fetchIpdSlice(): Promise<IpdSlice> {
+  let stayRows: Record<string, unknown>[];
+  try { stayRows = await run(IPD_BOARD_STAYS_SQL, ipdCanonParams()); }
+  catch {
+    return {
+      rows: [], coverage: hopCoverage(0, {}), byIpUid: {}, byDoctor: {},
+      ambiguousIds: [], unavailable: true,
+    };
+  }
+
+  const stays = stayRows.map((r) => ({
+    ipUid: str(r.ip_uid),
+    dept: str(r.dept) || IPD_DEPT_UNASSIGNED,
+    cvi: r.care_value_index == null ? null : num(r.care_value_index),
+    band: str(r.band),
+  })).filter((x) => x.ipUid);
+
+  const hop = await fetchIpdDoctorHop(stays.map((x) => x.ipUid));
+
+  // Per inpatient department, in the INPATIENT vocabulary. `joined` is what the hop resolved, and it
+  // travels beside `stays` so the number is never read as a whole-department figure.
+  const byDept = new Map<string, { stays: number; joined: number; sum: number; n: number; ab: number }>();
+  const byDoctor: Record<string, { stays: number; sum: number }> = {};
+  for (const st of stays) {
+    const d = byDept.get(st.dept) ?? { stays: 0, joined: 0, sum: 0, n: 0, ab: 0 };
+    d.stays += 1;
+    if (st.cvi != null) { d.sum += st.cvi; d.n += 1; }
+    if (st.band === 'A' || st.band === 'B') d.ab += 1;
+    const res = hop.byIpUid[st.ipUid];
+    if (res?.reason === 'resolved' && res.doctorUid) {
+      d.joined += 1;
+      if (st.cvi != null) {
+        const cell = byDoctor[res.doctorUid] ?? (byDoctor[res.doctorUid] = { stays: 0, sum: 0 });
+        cell.stays += 1; cell.sum += st.cvi;
+      }
+    }
+    byDept.set(st.dept, d);
+  }
+
+  const rows: IpdSliceRow[] = [...byDept.entries()]
+    .map(([dept, d]) => ({
+      dept, stays: d.stays, joined: d.joined,
+      avgCvi: d.n ? Math.round(d.sum / d.n) : null,
+      pctAb: d.stays ? Math.round((100 * d.ab) / d.stays) : 0,
+    }))
+    .sort((a, b) => b.stays - a.stays || a.dept.localeCompare(b.dept));
+
+  return {
+    rows,
+    coverage: hopCoverage(stays.length, hop.byIpUid, hop.coverage.unavailable),
+    byIpUid: hop.byIpUid,
+    byDoctor: Object.fromEntries(Object.entries(byDoctor).map(([uid, c]) => [uid, { stays: c.stays, avgCvi: Math.round(c.sum / c.stays) }])),
+    ambiguousIds: hop.ambiguousIds,
+    unavailable: false,
+  };
+}
+
 /** The named-clinician board rows, already sorted by the D-no-composite rule. */
-export async function fetchDoctorBoard(queue: DangerQueue): Promise<BoardDoctorRow[]> {
+export async function fetchDoctorBoard(queue: DangerQueue, ipd: IpdSlice): Promise<BoardDoctorRow[]> {
   const rows = await run(DOCTOR_SQL, opdCanonParams()).catch(() => []);
   const built: BoardDoctorRow[] = rows.map((r) => {
     const uid = str(r.doctor_uid);
     const d = queue.byDoctor[uid] ?? { open: 0, confirmed: 0 };
+    // A1 — the inpatient cell is populated ONLY from stays the practitioner-id hop resolved to this
+    // clinician. A clinician with no resolved stay keeps `null`, which renders as the split banner's
+    // cell and sorts last; it is not a zero and it must never be read as one.
+    const ipdCell = ipd.byDoctor[uid];
     return {
       ...metricsOf(r),
       doctorUid: uid,
       doctorName: str(r.doctor_name) || '(unknown)',
       speciality: str(r.speciality) || OPD_DEPT_UNSPECIFIED,
       openDangerous: d.open, confirmedDangerous: d.confirmed,
-      // A1 — the inpatient column has no key to resolve yet. `null` renders as the split banner's
-      // cell; it is not a zero and it does not sort as one.
-      ipdCvi: null, ipdStays: 0,
+      ipdCvi: ipdCell ? ipdCell.avgCvi : null,
+      ipdStays: ipdCell ? ipdCell.stays : 0,
     };
   });
   return sortBoardRows(built.map((r) => ({ ...r, avgNqi: r.avgNqi, label: r.doctorName })))
@@ -532,6 +673,7 @@ export const BOARD_INFERRED_SQL: Readonly<Record<string, string>> = Object.freez
   danger_contested: DANGER_CONTESTED_SQL,
   danger_ipd_count: DANGER_IPD_COUNT_SQL,
   danger_ipd: DANGER_IPD_SQL,
+  ipd_board_stays: IPD_BOARD_STAYS_SQL,
 });
 
 /** The prefilter, exported so the test can prove it is a superset of the ratified patterns. */

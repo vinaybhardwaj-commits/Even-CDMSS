@@ -31,9 +31,10 @@ import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
 import { fetchLvcCells, readRightCareExclusions, fetchRightCareCoverage } from '@/lib/opd-audit-doctor';
 import { computeDoctorOE, FUNNEL_MIN_N, type DoctorOE } from '@/lib/opd-funnel-core';
 import {
-  fetchBoardTotals, fetchDangerQueue, fetchDeptBoard, fetchDoctorBoard,
+  fetchBoardTotals, fetchDangerQueue, fetchDeptBoard, fetchDoctorBoard, fetchIpdSlice,
   BOARD_WINDOW_DAYS, type BoardDeptRow, type BoardDoctorRow, type DangerRow,
 } from '@/lib/stewardship-board';
+import { hopCoverageLine } from '@/lib/ipd-doctor-hop';
 import {
   DANGER_QUEUE_UNIT, IPD_SPLIT_BANNER, IPD_UNJOINED_CELL, STEWARDSHIP_HONESTY,
 } from '@/lib/stewardship-danger-core';
@@ -84,8 +85,10 @@ function BoardCells({ r }: { r: BoardDoctorRow | BoardDeptRow }) {
         )}
       </td>
       <td className={`px-3 py-2.5 text-right font-medium ${scoreClass(r.avgNqi)}`}>{r.avgNqi}</td>
-      <td className="px-3 py-2.5 text-right text-[11px] text-slate-400" title={IPD_SPLIT_BANNER}>
-        {r.ipdCvi == null ? IPD_UNJOINED_CELL : r.ipdCvi}
+      <td className="px-3 py-2.5 text-right" title={r.ipdCvi == null ? IPD_SPLIT_BANNER : `mean CVI over ${r.ipdStays} stay(s) the practitioner-id hop resolved to this clinician`}>
+        {r.ipdCvi == null
+          ? <span className="text-[11px] text-slate-400">{IPD_UNJOINED_CELL}</span>
+          : <><span className={`font-medium ${scoreClass(r.ipdCvi)}`}>{r.ipdCvi}</span><span className="ml-1 text-[10.5px] text-slate-400">n={r.ipdStays}</span></>}
       </td>
       <td className="px-3 py-2.5 text-right text-slate-600">{r.nNotes.toLocaleString()}</td>
       <td className="px-3 py-2.5 text-right text-slate-600">{r.pctAb}%</td>
@@ -150,11 +153,14 @@ export default async function StewardshipPage({ searchParams }: { searchParams: 
   // here so a hand-typed query string cannot mount a panel against a key the route will refuse.
   const askDoctor = /^[A-Za-z0-9_-]{6,64}$/.test(String(sp.doctor ?? '')) ? String(sp.doctor) : null;
 
-  // The danger queue is read FIRST: both board grains take their open-dangerous column from it, so
-  // the number in the column and the rows in the queue are the same computation seen twice.
-  const queue = await fetchDangerQueue();
+  // Read order is a dependency chain, not a preference. The inpatient slice resolves the
+  // practitioner-id hop ONCE (A1); the danger queue uses it to attribute the stays it can and the
+  // board uses it for the inpatient column, so the column, the queue and the slice are one
+  // resolution seen three times rather than three that can disagree.
+  const ipd = await fetchIpdSlice();
+  const queue = await fetchDangerQueue(ipd);
   const [doctorRows, deptRows, totals, lvcCells, rcExclusions, rcCoverage] = await Promise.all([
-    view === 'doctor' ? fetchDoctorBoard(queue) : Promise.resolve([] as BoardDoctorRow[]),
+    view === 'doctor' ? fetchDoctorBoard(queue, ipd) : Promise.resolve([] as BoardDoctorRow[]),
     view === 'dept' ? fetchDeptBoard(queue) : Promise.resolve([] as BoardDeptRow[]),
     fetchBoardTotals(),
     fetchLvcCells(), readRightCareExclusions(), fetchRightCareCoverage(),
@@ -192,12 +198,13 @@ export default async function StewardshipPage({ searchParams }: { searchParams: 
         note-quality (worst first), then inpatient. There is no combined index and there will not be one.
       </p>
 
-      {/* A1 / D-identity — the split, stated once at the top of the room. */}
+      {/* A1 / D-identity — the split, stated once at the top of the room, WITH its measured size.
+          A partial join that does not say how partial is worse than no join at all. */}
       <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11.5px] text-amber-900">
-        {IPD_SPLIT_BANNER} The inpatient column reads “{IPD_UNJOINED_CELL}” on every clinician row: the OPD note key
-        and the inpatient treating-consultant key are different namespaces, and no clinician is joined across them on
-        a display name. Inpatient findings appear in the danger queue below, attributed to a department and to no
-        named person.
+        {IPD_SPLIT_BANNER} The inpatient column is filled only where a KarExpert practitioner id resolves to exactly
+        one clinician; a shared or unknown id stays “{IPD_UNJOINED_CELL}”, and no clinician is ever joined on a
+        display name. {hopCoverageLine(ipd.coverage)}
+        {ipd.ambiguousIds.length > 0 && ` ${ipd.ambiguousIds.length} practitioner id(s) are claimed by two clinicians and resolve to neither.`}
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -270,6 +277,66 @@ export default async function StewardshipPage({ searchParams }: { searchParams: 
             </table>
           </div>
 
+          {/* A1 — THE INPATIENT SLICE, in the inpatient vocabulary and in no other. This is the
+              "IPD-only slice with the split banner for the unresolved remainder": every stay in the
+              window appears here, joined or not, under the department label the discharge audit
+              stored. It is deliberately NOT merged into the department roll-up above — that table's
+              labels come from the OPD speciality vocabulary, and the two lists overlap on two
+              strings out of fourteen. A department that reads the same in both is a coincidence of
+              spelling, not a fact about the hospital. */}
+          <div className="mt-5 rounded-xl border border-slate-200 bg-white p-4">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h2 className="font-serif text-[15px] font-semibold text-slate-900">Inpatient stays</h2>
+              <span className="text-[11px] text-slate-500">{ipd.coverage.resolved} of {ipd.coverage.asked} joined to a clinician</span>
+            </div>
+            <p className="mt-0.5 text-[11.5px] text-slate-500">
+              Departments as the discharge audits label them — a different vocabulary from the table above, never
+              merged with it. Discharge-summary audits only; the stay-level reading of the same stays is drill
+              context on the case page and is not in these numbers.
+            </p>
+            {ipd.unavailable && (
+              <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11.5px] text-amber-900">
+                The inpatient audits could not be read just now. This is not a statement that there were no stays.
+              </p>
+            )}
+            {ipd.coverage.unavailable && !ipd.unavailable && (
+              <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11.5px] text-amber-900">
+                The clinician hop could not be read just now, so every stay below is unjoined. The stays themselves
+                are real; only the attribution is missing.
+              </p>
+            )}
+            {ipd.rows.length === 0
+              ? <p className="mt-3 text-[12px] text-slate-500">No audited inpatient stays in the window.</p>
+              : (
+                <div className="mt-3 overflow-x-auto">
+                  <table className="w-full text-[12.5px]">
+                    <thead>
+                      <tr className="border-b border-slate-200 text-left text-[10.5px] uppercase tracking-wide text-slate-400">
+                        <th className="px-3 py-2 font-medium">Department (inpatient vocabulary)</th>
+                        <th className="px-3 py-2 text-right font-medium">Stays</th>
+                        <th className="px-3 py-2 text-right font-medium" title="stays whose practitioner id resolved to exactly one clinician">Joined</th>
+                        <th className="px-3 py-2 text-right font-medium">Mean CVI</th>
+                        <th className="px-3 py-2 text-right font-medium">% A–B</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ipd.rows.map((r) => (
+                        <tr key={r.dept} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
+                          <td className="px-3 py-2 font-medium text-slate-800">{r.dept}</td>
+                          <td className="px-3 py-2 text-right text-slate-600">{r.stays}</td>
+                          <td className={`px-3 py-2 text-right ${r.joined === 0 ? 'text-slate-400' : 'text-slate-600'}`}>
+                            {r.joined}<span className="ml-1 text-[10.5px] text-slate-400">of {r.stays}</span>
+                          </td>
+                          <td className={`px-3 py-2 text-right ${r.avgCvi == null ? 'text-slate-400' : scoreClass(r.avgCvi)}`}>{r.avgCvi ?? '—'}</td>
+                          <td className="px-3 py-2 text-right text-slate-600">{r.pctAb}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+          </div>
+
           {/* D-escalate — the danger queue, on the same page. Opening a row never leaves /admin/*. */}
           <div className="mt-5 rounded-xl border border-slate-200 bg-white p-4">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -325,8 +392,11 @@ export default async function StewardshipPage({ searchParams }: { searchParams: 
 
           <p className="mt-4 text-[11px] text-slate-400">
             Scores 0–100; green ≥80, amber 60–79, red &lt;60. {view === 'doctor' ? 'Clinicians' : 'Departments'} with few audited
-            notes read noisily until volume builds. Open dangerous counts a finding with no reviewer pill or a contested one;
-            a finding confirmed by a reviewer is shown as confirmed and is not counted open. “vs expected” = observed minus
+            notes read noisily until volume builds. Open dangerous counts a finding with no reviewer pill, a contested one,
+            or one a reviewer marked as still needing action; a finding confirmed by a reviewer is shown as confirmed and is
+            not counted open. That column counts OPD findings only — inpatient findings appear in the queue with a clinician's
+            name where the hop resolved the stay, but they do not enter the sort, because fewer than half of stays resolve and
+            a clinician must not rank safer for having an ambiguous practitioner id. “vs expected” = observed minus
             case-mix-expected LVC rate (points); em-dash when n&lt;{FUNNEL_MIN_N} or excluded.
             {' '}Right Care banded coverage {rcCoverage.banded.toLocaleString()}/{rcCoverage.total.toLocaleString()}.
             {rcExclusions.length > 0 && ` ${rcExclusions.length} house/non-clinician account(s) excluded from vs-expected.`}
