@@ -113,7 +113,7 @@ export interface TwoBasis<T> {
 }
 
 export const DECK_NOTES = Object.freeze({
-  rx: 'deck basis: the slide’s dpipe-join replica. It matches 99.98% of prescriptions that exist, so it measures whether a prescription id is present rather than whether one was shared.',
+  rx: 'deck basis: the slide’s dpipe-join replica, over the same denominator. Its numerator is a strict subset of the primary’s — a prescription id found in the pipeline is by definition a prescription id that is present — so it reads EQUAL OR LOWER, never higher. Measured across the window: equal for 142 of 148 clinicians, lower for 6, higher for none. It is a reconciliation figure, not a second measurement.',
   csat: 'deck basis: the slide’s figure, which scores an unrated consult as zero. Zero is not a rating and this number is deflated by roughly the share of unrated consults.',
   tc: 'deck basis: the slide’s replica, which counts only patients on gmail addresses. It drops about 8% of otherwise measurable consults and biases the sample by e-mail domain.',
 });
@@ -243,7 +243,10 @@ export function buildOpsRow(
     doctorNoShowRate: c ? rate(c.doctorNoShow, c.booked) : ZERO_RATE,
     tcShare: c ? rate(c.teleconsults, c.booked) : ZERO_RATE,
 
-    // A7 — primary over COMPLETED consults; the replica is the card's dpipe join.
+    // A7 — primary over COMPLETED consults; the replica is the card's dpipe join over the SAME
+    // denominator. The replica's numerator is a strict subset of the primary's, so `deck <= primary`
+    // always; a deck figure that exceeded its primary would mean the pipeline held a prescription
+    // the event did not, which is not a thing that can be true.
     rxShare: {
       primary: c ? rate(c.rxPresent, completed) : ZERO_RATE,
       deck: c ? rate(c.rxPresentDeck, completed) : null,

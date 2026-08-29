@@ -519,7 +519,8 @@ export async function fetchDangerQueue(ipd0: IpdSlice): Promise<DangerQueue> {
   // ⚠️ THE PER-CLINICIAN COUNT IS OPD-ONLY, DELIBERATELY, and this is the one S3 decision worth
   // arguing with. Resolved inpatient danger rows DO carry a clinician's name in the queue, so an MS
   // can see whose stay it is. They are NOT added to the board's open-dangerous column, because that
-  // column is the leaderboard's primary SORT KEY and the hop resolves 46% of stays: folding it in
+  // column is the leaderboard's primary SORT KEY and the hop resolves 41% of AUDITED stays (281 of
+  // 685, round-2 validation F-1 — the 46% figure is the admissions-table basis): folding it in
   // would rank a clinician safer for having an ambiguous practitioner id. Two clinicians with the
   // same risk must not rank differently on join luck. Flagged for V in the S3 report; reversing it
   // is one `bump()` call.

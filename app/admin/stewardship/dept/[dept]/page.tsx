@@ -5,6 +5,7 @@
  * Admin-gated (identical to the parent page). Weekly trend = inline SVG. Reuses funnel-card + the O/E
  * fns (no reimplementation, decision 18). Fail-safe: any section that errors degrades to empty/hidden.
  */
+import { Suspense } from 'react';
 import Link from 'next/link';
 import { sql } from '@/lib/db';
 import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
@@ -16,8 +17,7 @@ import {
 import { computeDoctorOE, FUNNEL_MIN_N, type DoctorOE } from '@/lib/opd-funnel-core';
 import { LVC_CATEGORY_LABELS } from '@/lib/opd-lvc-classify-core';
 import { STEWARDSHIP_HONESTY } from '@/lib/stewardship-danger-core';
-import { fetchOpsPane } from '@/lib/stewardship-ops';
-import OpsPane from '../../ops-pane';
+import OpsSection, { OpsSectionFallback } from '../../ops-section';
 import { FunnelCard } from '../../../opd-audit/doctor/[uid]/funnel-card';
 import { DeptAskPanel } from '../../stewardship-ask-panel';
 
@@ -87,7 +87,6 @@ export default async function DeptDetail({ params }: { params: Promise<{ dept: s
   // (INTERNAL_MEDICINE_SPECIALIST and the like), it is computed over all history rather than the
   // window, and one doctor in five carries a compound value. It is not this page's department.
   const deptUids = Object.entries(specMap).filter(([, sp]) => sp === dept).map(([u]) => u);
-  const ops = await fetchOpsPane(deptUids);
   const exclSet = new Set(rcExclusions);
   const oeAll = computeDoctorOE(lvcCells, exclSet);
   const deptDoctors: DoctorOE[] = oeAll
@@ -209,7 +208,9 @@ export default async function DeptDetail({ params }: { params: Promise<{ dept: s
           {/* D-ops — the ops pane, scoped to this department's clinicians as the OPD directory
               assigns them. The two department dictionaries stay two: nothing here reads 8747's
               `mapped_speciality`, and no ops row is attributed to a department by it. */}
-          <OpsPane data={ops} scope={dept} />
+          <Suspense fallback={<OpsSectionFallback />}>
+            <OpsSection scope={dept} only={deptUids} />
+          </Suspense>
 
           {/* S1 (A2 / A3) — the persisted MS conversation, keyed to THIS department in the OPD
               speciality vocabulary. The inpatient vocabulary is a different case key and never

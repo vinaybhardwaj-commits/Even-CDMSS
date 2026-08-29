@@ -142,8 +142,12 @@ test('A1: the coverage line names every kind of not-knowing, with a denominator'
   assert.match(line, /IPD joined for 1 of 6 stays/);
   assert.match(line, /5 unjoined/);
   assert.match(line, /2 not found in the admissions table/);
-  // a rate on its own is how 46% becomes "most of them"
+  // F-1 — the rate is quoted, and it is quoted over what was ASKED, which is the board's audited
+  // stays. 1 of 6 is 17%, not some other population's number.
+  assert.match(line, /\(17% of audited stays\)/);
+  // and it never leads with a bare percentage: a rate on its own is how 41% becomes "most of them"
   assert.ok(!/^\d+%/.test(line));
+  assert.ok(line.indexOf('of 6 stays') < line.indexOf('17%'), 'the fraction must come before the rate');
 });
 
 test('A1: db13 unreachable means EVERY stay unjoined, and the line says so', () => {
@@ -214,13 +218,23 @@ test('refusal: `resolveDoctor` in lib/ipd-audit/doctor-lookup.ts is untouched (�
 
 // ── the checked-in measure (acceptance #6, first clause) ──────────────────────────────────
 
-test('acceptance #6: the hop measure at this cut is checked in beside the code', () => {
+test('acceptance #6: the hop measure at this cut is checked in beside the code — BOTH bases', () => {
   // The measure is a FACT about a date, so it lives in the file it constrains. If someone widens the
   // hop's rule, this comment is what says what the rule was worth when it was written.
+  //
+  // TWO BASES, and the round-2 validation's F-1 is the reason both must be present. The admissions
+  // table's 1,045 filled stays give 46.2%; the board's population is the 685 AUDITED stays and gives
+  // 41.0%. Quoting only the first on a board drawn from the second overstates the join by five
+  // points — small, and exactly the kind of number that gets repeated in a meeting.
   const src = read(HOP);
   for (const fact of ['1267', '1045', '110', '68 / 110', '483 / 1045', '46.2%']) {
-    assert.ok(src.includes(fact), `the checked-in measure is missing "${fact}"`);
+    assert.ok(src.includes(fact), `the admissions-basis measure is missing "${fact}"`);
   }
+  for (const fact of ['685', '281', '41.0%', '320', '77']) {
+    assert.ok(src.includes(fact), `the AUDITED-STAY basis measure is missing "${fact}"`);
+  }
+  assert.match(src, /the ADMISSIONS-table basis/);
+  assert.match(src, /the AUDITED-STAY basis/);
   assert.ok(src.includes('CDMSS-STEWARDSHIP-SQL-VALIDATION-AND-HOP-MEASURE-29-AUG-2026'),
     'the measure must name the document it came from');
   // 0/110 on both of the rejected key columns — the two joins that look right and are not

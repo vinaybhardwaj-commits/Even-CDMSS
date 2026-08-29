@@ -137,6 +137,13 @@ SELECT lower(trim(ce.employee_email)) AS email,
  * `rating__submitted_at` is cast to timestamptz before ordering: it is stored as TEXT and the card's
  * ordering is a lexical string sort that happens to work while every row shares one fixed-width
  * format.
+ *
+ * ⚠️ THE DENOMINATOR IS COMPLETED CONSULTS (round-2 validation, finding F-2). Without the status
+ * filter a cancelled or no-showed event that happens to carry a `prescription_uid` entered `n_rx` —
+ * 80 of 39,322 rx-bearing events in the window, 0.2%. Small, and wrong in a way that would have been
+ * invisible: it deflates the response rate by counting consults that never happened as consults
+ * nobody rated. It now matches the Rx-share denominator exactly, so the two rates on one row are
+ * over one population.
  */
 const CSAT_SCORE_CASE = `CASE f.rating__value
          WHEN 'HIGHLY_SATISFIED'   THEN 5
@@ -152,6 +159,7 @@ WITH ev AS (
     FROM "accounts-members-calendar_events" ce
    WHERE ce.employee_email IS NOT NULL AND trim(ce.employee_email) <> ''
      AND ce.prescription_uid IS NOT NULL AND trim(ce.prescription_uid) <> ''
+     AND ce.status NOT IN ${NOT_COMPLETED}
      AND ${EV_WINDOW}
 ),
 fb AS (

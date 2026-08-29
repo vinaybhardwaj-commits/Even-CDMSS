@@ -26,6 +26,7 @@
  * verbatim in the S2 slice report. Every section is fail-safe — a failed read degrades to empty with
  * a visible note, never a 500.
  */
+import { Suspense } from 'react';
 import Link from 'next/link';
 import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
 import { fetchLvcCells, readRightCareExclusions, fetchRightCareCoverage } from '@/lib/opd-audit-doctor';
@@ -35,10 +36,9 @@ import {
   BOARD_WINDOW_DAYS, type BoardDeptRow, type BoardDoctorRow, type DangerRow,
 } from '@/lib/stewardship-board';
 import { hopCoverageLine } from '@/lib/ipd-doctor-hop';
-import { fetchOpsPane } from '@/lib/stewardship-ops';
+import OpsSection, { OpsSectionFallback } from './ops-section';
 import { currentStandings } from '@/lib/physician-standing-store';
 import { STANDING_ADVISORY, STANDING_HELP, STANDING_LABEL, type PhysicianStanding } from '@/lib/physician-standing-core';
-import OpsPane from './ops-pane';
 import {
   DANGER_QUEUE_UNIT, IPD_SPLIT_BANNER, IPD_UNJOINED_CELL, STEWARDSHIP_HONESTY,
 } from '@/lib/stewardship-danger-core';
@@ -185,14 +185,11 @@ export default async function StewardshipPage({ searchParams }: { searchParams: 
   // resolution seen three times rather than three that can disagree.
   const ipd = await fetchIpdSlice();
   const queue = await fetchDangerQueue(ipd);
-  const [doctorRows, deptRows, totals, lvcCells, rcExclusions, rcCoverage, ops, standings] = await Promise.all([
+  const [doctorRows, deptRows, totals, lvcCells, rcExclusions, rcCoverage, standings] = await Promise.all([
     view === 'doctor' ? fetchDoctorBoard(queue, ipd) : Promise.resolve([] as BoardDoctorRow[]),
     view === 'dept' ? fetchDeptBoard(queue) : Promise.resolve([] as BoardDeptRow[]),
     fetchBoardTotals(),
     fetchLvcCells(), readRightCareExclusions(), fetchRightCareCoverage(),
-    // D-ops — the SECOND pane, on the same route and behind the same gate. Unscoped here: the whole
-    // room's ops. The department route passes its own clinicians.
-    fetchOpsPane(),
     // S4 — the MS standing. Read HERE, in the page, and deliberately NOT inside
     // lib/stewardship-board.ts: §6.3 forbids an aggregator reading this blob, and the surest way to
     // keep that true is that the module which computes means and sorts rows cannot see it at all.
@@ -410,8 +407,13 @@ export default async function StewardshipPage({ searchParams }: { searchParams: 
               : <ul className="mt-3 space-y-1.5">{queue.rows.slice(0, 100).map((r, i) => <DangerLine key={`${r.surface}-${r.auditId}-${r.subject}-${i}`} r={r} />)}</ul>}
           </div>
 
-          {/* D-ops — the ops pane. Same room, same gate, second pane. Never a rank column. */}
-          <OpsPane data={ops} scope="all clinicians" />
+          {/* D-ops — the ops pane. Same room, same gate, second pane. Never a rank column.
+              It awaits its own six db13 reads behind a Suspense boundary so the audit pane above —
+              the board, the danger queue, the inpatient slice — does not wait on a consult-ops
+              number. Unscoped here: the whole room's ops. The department route passes its own. */}
+          <Suspense fallback={<OpsSectionFallback />}>
+            <OpsSection scope="all clinicians" />
+          </Suspense>
 
           {/* S1 (A2 / A3) — the persisted MS conversation, keyed to ONE named physician. */}
           {askDoctor && (
@@ -434,8 +436,8 @@ export default async function StewardshipPage({ searchParams }: { searchParams: 
             notes read noisily until volume builds. Open dangerous counts a finding with no reviewer pill, a contested one,
             or one a reviewer marked as still needing action; a finding confirmed by a reviewer is shown as confirmed and is
             not counted open. That column counts OPD findings only — inpatient findings appear in the queue with a clinician's
-            name where the hop resolved the stay, but they do not enter the sort, because fewer than half of stays resolve and
-            a clinician must not rank safer for having an ambiguous practitioner id. “vs expected” = observed minus
+            name where the hop resolved the stay, but they do not enter the sort, because the hop resolves about two in five
+            audited stays and a clinician must not rank safer for having an ambiguous practitioner id. “vs expected” = observed minus
             case-mix-expected LVC rate (points); em-dash when n&lt;{FUNNEL_MIN_N} or excluded. {STANDING_ADVISORY}
             {' '}Right Care banded coverage {rcCoverage.banded.toLocaleString()}/{rcCoverage.total.toLocaleString()}.
             {rcExclusions.length > 0 && ` ${rcExclusions.length} house/non-clinician account(s) excluded from vs-expected.`}

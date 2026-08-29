@@ -21,10 +21,26 @@
  *   match `karexpert_metadata__uid`        0 / 110
  *   match the practitioner-id union       68 / 110
  *   practitioner ids that are AMBIGUOUS     7   (each maps to exactly 2 doctors.uid)
- *   stays resolvable                     483 / 1045   (46.2%)
+ *   stays resolvable                     483 / 1045   (46.2%)   ← the ADMISSIONS-table basis
  *
- * So this hop resolves fewer than half the stays, and that is the honest ceiling — not a bug to be
- * engineered away with a looser rule.
+ * ⚠️ THE BOARD'S BASIS IS SMALLER, AND IT IS THE ONE THE BANNER MUST QUOTE (round-2 validation,
+ * finding F-1, 29 Aug). The numbers above are over the admissions table's 1,045 filled stays. The
+ * board's population is the AUDITED stays — `ipd_board_stays`, engine 0.2, 90 IST days — and over
+ * that population the same hop measures:
+ *
+ *   audited stays in the window          685
+ *   resolved to one clinician            281   (41.0%)   ← the AUDITED-STAY basis
+ *   unmatched practitioner id            320
+ *   no treating id / not in admissions    77
+ *   ambiguous practitioner id              7
+ *   ambiguous stay                         0   (unit-test-only today)
+ *
+ * The two bases are both true and they answer different questions; the board must quote the second,
+ * because that is the population its column is drawn from. `hopCoverageLine` computes the rate LIVE
+ * from what was actually asked, so the banner cannot fall out of date with either number.
+ *
+ * So this hop resolves well under half the audited stays, and that is the honest ceiling — not a bug
+ * to be engineered away with a looser rule.
  *
  * THE FOUR REFUSALS, each of which has a name because each has been proposed:
  *
@@ -176,12 +192,17 @@ export function hopCoverage(asked: number, byIpUid: Record<string, HopResult>, u
   return c;
 }
 
-/** The one sentence the board shows beside the inpatient column. Never a percentage on its own —
- *  a rate with no denominator is how "46%" becomes "most of them". */
+/**
+ * The one sentence the board shows beside the inpatient column. The rate is computed from what was
+ * actually ASKED — the audited stays the board reads — so it is the audited-stay basis by
+ * construction and cannot drift from the file header. It never appears without its fraction beside
+ * it: a rate with no denominator is how "41%" becomes "most of them".
+ */
 export function hopCoverageLine(c: HopCoverage): string {
   if (c.unavailable) return 'The inpatient clinician hop could not be read just now, so every stay is shown unjoined.';
   const unresolved = c.asked - c.resolved;
-  return `IPD joined for ${c.resolved} of ${c.asked} stays · ${unresolved} unjoined `
+  const share = c.asked > 0 ? ` (${Math.round((100 * c.resolved) / c.asked)}% of audited stays)` : '';
+  return `IPD joined for ${c.resolved} of ${c.asked} stays${share} · ${unresolved} unjoined `
     + `(${c.unmatched} practitioner id not in the roster, ${c.ambiguousPractitioner} id claimed by two clinicians, `
     + `${c.ambiguousStay} stay naming two clinicians, ${c.noTreatingId} with no treating clinician recorded, `
     + `${Math.max(0, c.asked - c.known)} not found in the admissions table).`;

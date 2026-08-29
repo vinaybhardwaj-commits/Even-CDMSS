@@ -103,15 +103,36 @@ test('acceptance #20: TC adherence shows its telemetry coverage beside it (A10)'
 
 test('acceptance #17: a deck figure is a FIELD of its primary — there is no shape where it is alone', () => {
   const row = buildOpsRow('a@b.c', {
-    calendar: { booked: 10, cancelled: 1, patientNoShow: 1, doctorNoShow: 0, rescheduled: 0, completed: 8, teleconsults: 6, rxPresent: 5, rxPresentDeck: 8 },
+    calendar: { booked: 10, cancelled: 1, patientNoShow: 1, doctorNoShow: 0, rescheduled: 0, completed: 8, teleconsults: 6, rxPresent: 5, rxPresentDeck: 4 },
   }, noMap, nameOf);
   for (const two of [row.rxShare, row.csat, row.tcAdherence]) {
     assert.ok('primary' in two && 'deck' in two && 'deckNote' in two);
     assert.ok(two.deckNote.startsWith('deck basis:'), 'every deck note names itself as one');
   }
   assert.deepEqual(row.rxShare.primary, { n: 5, of: 8, pct: 63 }, 'A7 primary is over COMPLETED consults');
-  assert.deepEqual(row.rxShare.deck, { n: 8, of: 8, pct: 100 });
-  assert.match(DECK_NOTES.rx, /99\.98%/, 'the replica must say why it does not discriminate');
+  assert.deepEqual(row.rxShare.deck, { n: 4, of: 8, pct: 50 });
+});
+
+test('A7: the Rx deck basis reads EQUAL OR LOWER than its primary, never higher', () => {
+  // Measured across the window: equal for 142 of 148 clinicians, lower for 6, higher for NONE. It
+  // is arithmetic, not a coincidence — the replica's numerator is a strict subset of the primary's
+  // over the same denominator, because a prescription id found in the pipeline is by definition a
+  // prescription id that is present. The earlier fixture here had deck ABOVE primary, which is a
+  // shape the data cannot produce; the copy is now explicit about the direction.
+  assert.match(DECK_NOTES.rx, /EQUAL OR LOWER, never higher/);
+  assert.match(DECK_NOTES.rx, /strict subset/);
+  assert.match(DECK_NOTES.rx, /142 of 148/);
+  assert.ok(!/higher than|exceeds|over-?states/i.test(DECK_NOTES.rx.replace('never higher', '')),
+    'no wording may suggest the replica can read higher');
+
+  // the same denominator on both sides, whatever the numerators are
+  for (const [primaryN, deckN] of [[5, 5], [5, 4], [0, 0], [12, 11]]) {
+    const r = buildOpsRow('a@b.c', {
+      calendar: { booked: 20, cancelled: 0, patientNoShow: 0, doctorNoShow: 0, rescheduled: 0, completed: 20, teleconsults: 0, rxPresent: primaryN, rxPresentDeck: deckN },
+    }, noMap, nameOf);
+    assert.equal(r.rxShare.primary.of, r.rxShare.deck!.of, 'both bases share one denominator');
+    assert.ok(r.rxShare.deck!.n <= r.rxShare.primary.n, 'the replica is a subset of the primary');
+  }
 });
 
 test('acceptance #17 / D-ops-not-rank: no deck figure and no ops metric reaches a sort', () => {
@@ -207,6 +228,18 @@ test('A4: the Chart services read is DEDUPED before anything joins it', () => {
   assert.ok(!/count\(\*\)::int AS booked/.test(OPS_INFERRED_SQL.ops_calendar));
 });
 
+test('A8: the CSAT denominator is COMPLETED consults, same as Rx share', () => {
+  // Round-2 finding F-2: without this filter a cancelled or no-showed event carrying a
+  // prescription_uid entered n_rx — 80 of 39,322 in the window. It deflates the response rate by
+  // counting consults that never happened as consults nobody rated.
+  const q = OPS_INFERRED_SQL.ops_csat;
+  assert.match(q, /AND ce\.status NOT IN \('CANCELED', 'NO_SHOW', 'DOCTOR_NO_SHOW', 'RESCHEDULED'\)/);
+  // and it is the SAME predicate the Rx-share denominator uses, so one row's two rates are over one
+  // population rather than two that nearly agree
+  const rxDenom = OPS_INFERRED_SQL.ops_calendar.match(/ce\.status NOT IN \([^)]*\)/)![0];
+  assert.ok(q.includes(rxDenom), 'the two denominators must be the same predicate, not two copies');
+});
+
 test('A8: CSAT averages RATED rows, and the text timestamp is cast before ordering', () => {
   const q = OPS_INFERRED_SQL.ops_csat;
   assert.match(q, /avg\(fb\.score\) FILTER \(WHERE fb\.rating__value IS NOT NULL\)/, 'the primary excludes unrated rows');
@@ -274,8 +307,15 @@ test('§6a: the pane is mounted on BOTH routes, and the dept route scopes by the
   const board = code('app/admin/stewardship/page.tsx');
   const dept = code('app/admin/stewardship/dept/[dept]/page.tsx');
   for (const [f, src] of [['board', board], ['dept', dept]] as const) {
-    assert.ok(src.includes('<OpsPane'), `the ${f} route does not render the ops pane`);
+    assert.ok(src.includes('<OpsSection'), `the ${f} route does not render the ops pane`);
+    // round-2 note: the pane awaits six db13 reads, one of which 504'd on a single run. It is behind
+    // its own Suspense boundary so the AUDIT pane — the board, the queue, the inpatient slice — is
+    // never waiting on a consult-ops number.
+    assert.ok(/<Suspense fallback=\{<OpsSectionFallback \/>\}>/.test(src),
+      `the ${f} route blocks its audit pane on the ops reads`);
   }
+  assert.ok(!/await fetchOpsPane/.test(board + dept), 'neither page may await the ops reads inline');
+  assert.match(code('app/admin/stewardship/ops-section.tsx'), /await fetchOpsPane\(only\)/);
   // D-ops-identity — the dept route scopes by doctor_directory.speciality, never by mapped_speciality
   assert.match(dept, /const deptUids = Object\.entries\(specMap\)/);
   assert.ok(!/mapped_speciality/.test(dept + board + code(OPS_LIB)),
