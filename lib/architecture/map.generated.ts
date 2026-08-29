@@ -983,7 +983,15 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "stewardship-board",
+    "plane": "unregistered"
+  },
+  {
     "id": "stewardship-canonical",
+    "plane": "unregistered"
+  },
+  {
+    "id": "stewardship-danger-core",
     "plane": "unregistered"
   },
   {
@@ -1343,6 +1351,16 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/admin",
     "to": "stay-library",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
+    "to": "stewardship-board",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
+    "to": "stewardship-danger-core",
     "kind": "value"
   },
   {
@@ -5226,6 +5244,26 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "stewardship-board",
+    "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "stewardship-board",
+    "to": "severity-tier-core",
+    "kind": "value"
+  },
+  {
+    "from": "stewardship-board",
+    "to": "stewardship-canonical",
+    "kind": "value"
+  },
+  {
+    "from": "stewardship-board",
+    "to": "stewardship-danger-core",
+    "kind": "value"
+  },
+  {
     "from": "stewardship-canonical",
     "to": "audit-canonical",
     "kind": "value"
@@ -5238,6 +5276,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "stewardship-canonical",
     "to": "opd-note-audit-core",
+    "kind": "value"
+  },
+  {
+    "from": "stewardship-danger-core",
+    "to": "severity-tier-core",
     "kind": "value"
   },
   {

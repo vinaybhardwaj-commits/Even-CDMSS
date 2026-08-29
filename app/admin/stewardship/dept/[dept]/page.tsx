@@ -15,6 +15,7 @@ import {
 } from '@/lib/opd-audit-doctor';
 import { computeDoctorOE, FUNNEL_MIN_N, type DoctorOE } from '@/lib/opd-funnel-core';
 import { LVC_CATEGORY_LABELS } from '@/lib/opd-lvc-classify-core';
+import { STEWARDSHIP_HONESTY } from '@/lib/stewardship-danger-core';
 import { FunnelCard } from '../../../opd-audit/doctor/[uid]/funnel-card';
 import { DeptAskPanel } from '../../stewardship-ask-panel';
 
@@ -94,7 +95,12 @@ export default async function DeptDetail({ params }: { params: Promise<{ dept: s
         <h1 className="font-serif text-[26px] font-semibold text-slate-900">{dept}</h1>
         <Link href="/admin/stewardship" className="text-[12.5px] text-brand hover:underline">← All departments</Link>
       </div>
-      <p className="mt-1 max-w-3xl text-sm text-slate-500">Last 90 days, latest audit per note. Advisory — a process &amp; appropriateness lens, not a clinician score. Banded coverage {kpis.banded.toLocaleString()}/{kpis.n.toLocaleString()}.</p>
+      {/* Acceptance #3 — the internal-MS honesty line, the same sentence the board carries. The
+          "not a clinician score" clause is deliberately gone on this page too: it is the same
+          extra-gated room, one level down, and two different claims about what the room is would be
+          worse than either. */}
+      <p className="mt-1 max-w-3xl text-sm text-slate-600">{STEWARDSHIP_HONESTY}</p>
+      <p className="mt-1 max-w-3xl text-[12px] text-slate-500">Last 90 days, latest audit per note. Banded coverage {kpis.banded.toLocaleString()}/{kpis.n.toLocaleString()}. This department label is the OPD speciality vocabulary; the inpatient vocabulary is a different list and is never merged with it.</p>
 
       {kpis.n === 0 ? (
         <div className="mt-4 rounded-xl border border-slate-200 bg-white p-6 text-center text-[13px] text-slate-500">No audited notes for {dept} in the window.</div>
@@ -200,7 +206,7 @@ export default async function DeptDetail({ params }: { params: Promise<{ dept: s
           </div>
 
           <p className="mt-4 text-[11px] text-slate-400">
-            “vs exp” = observed minus case-mix-expected LVC rate (points); “O/E” = observed / expected. Clinicians with n&lt;{FUNNEL_MIN_N} banded notes are greyed. Case-mix adjustment uses the complexity-band strata (§4). Advisory — not an outcomes measure or clinician scorecard.
+            “vs exp” = observed minus case-mix-expected LVC rate (points); “O/E” = observed / expected. Clinicians with n&lt;{FUNNEL_MIN_N} banded notes are greyed. Case-mix adjustment uses the complexity-band strata (§4). These are process and appropriateness measures on the notes a clinician wrote — not an outcomes measure, and never shown to the clinician being reviewed.
             {rcExclusions.length > 0 && ` ${rcExclusions.length} house/non-clinician account(s) excluded.`}
           </p>
         </>
