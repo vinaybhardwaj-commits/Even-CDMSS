@@ -35,6 +35,8 @@ import {
   BOARD_WINDOW_DAYS, type BoardDeptRow, type BoardDoctorRow, type DangerRow,
 } from '@/lib/stewardship-board';
 import { hopCoverageLine } from '@/lib/ipd-doctor-hop';
+import { fetchOpsPane } from '@/lib/stewardship-ops';
+import OpsPane from './ops-pane';
 import {
   DANGER_QUEUE_UNIT, IPD_SPLIT_BANNER, IPD_UNJOINED_CELL, STEWARDSHIP_HONESTY,
 } from '@/lib/stewardship-danger-core';
@@ -159,11 +161,14 @@ export default async function StewardshipPage({ searchParams }: { searchParams: 
   // resolution seen three times rather than three that can disagree.
   const ipd = await fetchIpdSlice();
   const queue = await fetchDangerQueue(ipd);
-  const [doctorRows, deptRows, totals, lvcCells, rcExclusions, rcCoverage] = await Promise.all([
+  const [doctorRows, deptRows, totals, lvcCells, rcExclusions, rcCoverage, ops] = await Promise.all([
     view === 'doctor' ? fetchDoctorBoard(queue, ipd) : Promise.resolve([] as BoardDoctorRow[]),
     view === 'dept' ? fetchDeptBoard(queue) : Promise.resolve([] as BoardDeptRow[]),
     fetchBoardTotals(),
     fetchLvcCells(), readRightCareExclusions(), fetchRightCareCoverage(),
+    // D-ops — the SECOND pane, on the same route and behind the same gate. Unscoped here: the whole
+    // room's ops. The department route passes its own clinicians.
+    fetchOpsPane(),
   ]);
   const rowsCount = view === 'doctor' ? doctorRows.length : deptRows.length;
 
@@ -373,6 +378,9 @@ export default async function StewardshipPage({ searchParams }: { searchParams: 
               )
               : <ul className="mt-3 space-y-1.5">{queue.rows.slice(0, 100).map((r, i) => <DangerLine key={`${r.surface}-${r.auditId}-${r.subject}-${i}`} r={r} />)}</ul>}
           </div>
+
+          {/* D-ops — the ops pane. Same room, same gate, second pane. Never a rank column. */}
+          <OpsPane data={ops} scope="all clinicians" />
 
           {/* S1 (A2 / A3) — the persisted MS conversation, keyed to ONE named physician. */}
           {askDoctor && (

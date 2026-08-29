@@ -16,6 +16,8 @@ import {
 import { computeDoctorOE, FUNNEL_MIN_N, type DoctorOE } from '@/lib/opd-funnel-core';
 import { LVC_CATEGORY_LABELS } from '@/lib/opd-lvc-classify-core';
 import { STEWARDSHIP_HONESTY } from '@/lib/stewardship-danger-core';
+import { fetchOpsPane } from '@/lib/stewardship-ops';
+import OpsPane from '../../ops-pane';
 import { FunnelCard } from '../../../opd-audit/doctor/[uid]/funnel-card';
 import { DeptAskPanel } from '../../stewardship-ask-panel';
 
@@ -80,6 +82,12 @@ export default async function DeptDetail({ params }: { params: Promise<{ dept: s
 
   const specMap: Record<string, string> = {}, nameMap: Record<string, string> = {};
   for (const r of dirRows) { const u = String(r.doctor_uid); specMap[u] = String(r.spec || 'Unspecified'); if (r.name) nameMap[u] = String(r.name); }
+  // D-ops-identity — the ops pane on this route is scoped by the DIRECTORY's clinicians for this
+  // department, never by card 8747's `mapped_speciality`. That column is a calendar mode
+  // (INTERNAL_MEDICINE_SPECIALIST and the like), it is computed over all history rather than the
+  // window, and one doctor in five carries a compound value. It is not this page's department.
+  const deptUids = Object.entries(specMap).filter(([, sp]) => sp === dept).map(([u]) => u);
+  const ops = await fetchOpsPane(deptUids);
   const exclSet = new Set(rcExclusions);
   const oeAll = computeDoctorOE(lvcCells, exclSet);
   const deptDoctors: DoctorOE[] = oeAll
@@ -197,6 +205,11 @@ export default async function DeptDetail({ params }: { params: Promise<{ dept: s
               </ul>
             </div>
           )}
+
+          {/* D-ops — the ops pane, scoped to this department's clinicians as the OPD directory
+              assigns them. The two department dictionaries stay two: nothing here reads 8747's
+              `mapped_speciality`, and no ops row is attributed to a department by it. */}
+          <OpsPane data={ops} scope={dept} />
 
           {/* S1 (A2 / A3) — the persisted MS conversation, keyed to THIS department in the OPD
               speciality vocabulary. The inpatient vocabulary is a different case key and never

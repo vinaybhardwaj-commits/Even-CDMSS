@@ -999,6 +999,14 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "stewardship-ops",
+    "plane": "unregistered"
+  },
+  {
+    "id": "stewardship-ops-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "stream",
     "plane": "unregistered"
   },
@@ -1370,6 +1378,21 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/admin",
     "to": "stewardship-danger-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
+    "to": "stewardship-ops",
+    "kind": "type"
+  },
+  {
+    "from": "app/admin",
+    "to": "stewardship-ops",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
+    "to": "stewardship-ops-core",
     "kind": "value"
   },
   {
@@ -5300,6 +5323,26 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "stewardship-danger-core",
     "to": "severity-tier-core",
+    "kind": "value"
+  },
+  {
+    "from": "stewardship-ops",
+    "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "stewardship-ops",
+    "to": "metabase",
+    "kind": "value"
+  },
+  {
+    "from": "stewardship-ops",
+    "to": "stewardship-canonical",
+    "kind": "value"
+  },
+  {
+    "from": "stewardship-ops",
+    "to": "stewardship-ops-core",
     "kind": "value"
   },
   {
