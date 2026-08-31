@@ -71,11 +71,11 @@ function StatusChip({ status }: { status: WalkCutStatus }) {
   return <span title={m.hint} className={`rounded border px-1.5 py-0.5 text-[10.5px] font-medium ${m.cls}`}>{m.label}</span>;
 }
 
-function Chip({ children, tone = 'slate' }: { children: React.ReactNode; tone?: 'slate' | 'amber' | 'brand' }) {
+function Chip({ children, tone = 'slate', title }: { children: React.ReactNode; tone?: 'slate' | 'amber' | 'brand'; title?: string }) {
   const cls = tone === 'amber' ? 'border-amber-200 bg-amber-50 text-amber-800'
     : tone === 'brand' ? 'border-brand/30 bg-brand/5 text-brand'
     : 'border-slate-200 bg-slate-50 text-slate-600';
-  return <span className={`rounded border px-1.5 py-0.5 text-[10.5px] ${cls}`}>{children}</span>;
+  return <span title={title} className={`rounded border px-1.5 py-0.5 text-[10.5px] ${cls}`}>{children}</span>;
 }
 
 /** One snapshot slot. `n` is always shown — an empty slot is a fact, not a blank. */
@@ -273,10 +273,24 @@ export default async function WorldModelWalkPage({ searchParams }: { searchParam
         </div>
       </div>
 
-      {/* THE TWO ALWAYS-VISIBLE LABELS — rendered whether or not a walk has been run. */}
+      {/* THE ALWAYS-VISIBLE LABELS — rendered whether or not a walk has been run.
+          Two honesty chips now, and they say different things: C1 is about WHEN evidence is dated,
+          B.1 is about WHICH evidence exists at all. A reader who trusts the dates can still be
+          misled by a lab slot that looks empty because the assembler dropped the rows. */}
       <div className="mt-4 flex flex-wrap items-center gap-1.5">
         <Chip tone="slate">grain: {GRAIN_LABEL}</Chip>
         <Chip tone="amber">{HONESTY_CHIP}</Chip>
+        {/* CAT Design ratification, 31 Aug 2026 (invisible-labs, B.1). A thin `investigations`
+            slot is NOT evidence of a member who had no tests — lib/member-state/assemble-core.ts
+            skips any joined lab row with no `investigation_name` (the `if (!analyteRaw …) continue`
+            at labRowsToEncounters). Recovery is a separate spine PRD; this chip is the interim
+            honesty, and it is deliberately ADMIN-ONLY — no doctor-facing banner is implied. */}
+        <Chip
+          tone="amber"
+          title="NULL investigation_name rows (42% of joined lab rows all-time, ongoing) are silently skipped by the frozen assembler. Recovery is a separate spine PRD. Evidence: 31 Aug 2026."
+        >
+          lab coverage incomplete: rows with no analyte name are dropped at assembly — thin or empty investigations are not evidence the member had no tests
+        </Chip>
         <Chip tone="slate">{WORLD_MODEL_WALK_VERSION}</Chip>
       </div>
 
