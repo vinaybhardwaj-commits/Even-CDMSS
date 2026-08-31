@@ -4,6 +4,12 @@
    `git add -A`, never a bare directory. If your work needed a file outside the
    contract, flag it in your report and stage it only if the kickoff's deviation
    rule covers it.
+1a. Carve-out for gate-forced edits: you may stage a file outside the kickoff's
+    list ONLY when all four hold: (i) the gate itself fails without it, (ii) the
+    failure is caused directly by a file the kickoff does name, (iii) the edit
+    is mechanical — a regenerated artifact, a count/pin, a comment — never
+    logic, and (iv) your report names the file, quotes this rule, and shows the
+    diff is minimal. Anything beyond mechanical still stops under rule 6.
 2. No commit without the full gate green: tests, typecheck for your files,
    production build, architecture:check where it applies.
 3. Never push unless the order in front of you says push. Push only the branch
