@@ -2,10 +2,16 @@
  * GET/POST /api/admin/shadow-sweep — run one bounded WM1 shadow sweep.
  *
  * POST           = run one batch (≤200 events). Auth: ADMIN_TOKEN (Bearer / ?token=) or admin session.
- * GET  ?auto=1   = unattended cron tick (every 6h via vercel.json). Cron-auth mirrors
- *                  complexity-backfill EXACTLY: the Vercel cron header, a CRON_SECRET Bearer/?secret,
- *                  or an admin session. That pattern already exists in this repo and is reused
- *                  verbatim rather than reinvented.
+ * GET  ?auto=1   = the unattended-tick form. Cron-auth mirrors complexity-backfill EXACTLY: the
+ *                  Vercel cron header, a CRON_SECRET Bearer/?secret, or an admin session. That
+ *                  pattern already exists in this repo and is reused verbatim rather than reinvented.
+ *
+ *                  ⚠️ NO CRON IS SCHEDULED. WM1 ships with NO vercel.json entry, by V's ruling: the
+ *                  first sweeps are run BY HAND and the burden numbers are read off the Shadow page
+ *                  before anything is allowed to run on its own. An agent whose ask rate has never
+ *                  been looked at should not be waking up every six hours. This form exists so that
+ *                  scheduling it later is one line in vercel.json and no code change — and two
+ *                  cron-count tests will notice when that line lands.
  * GET            = status only. Reports the policy/schema versions and budgets without writing.
  *
  * ⚠️ SHADOW ONLY — NO DOCTOR IS CONTACTED. This route writes rows to cognition_shadow_events and

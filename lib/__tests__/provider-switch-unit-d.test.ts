@@ -268,10 +268,14 @@ test('exactly one cron entry moved, and it is the OPD worker path', () => {
   // 15 → 16 on 5 Aug 2026: the readmission worker cron landed (sanctioned, additive).
   // 16 → 17 on 26 Aug 2026: the pre-op risk worker's cron landed, additive in the same
   // way and in the same commit as its route's maxDuration (the cron ↔ box covenant).
-  // 17 → 18 on 31 Aug 2026: WM1's shadow-agent sweep landed — the one sanctioned vercel.json
-  // line in that ship, 6-hourly, additive, and writing to a table no doctor-facing path reads.
+  // STILL 17 after WM1 (31 Aug 2026). The shadow-agent sweep deliberately ships WITHOUT a cron:
+  // V's call, so the first sweeps are run by hand and the burden numbers are inspected before
+  // anything runs unattended. The route still serves ?auto=1, so scheduling it later is a
+  // one-line change here — and this count is what will notice.
   // The point of this test — the OPD entry and the original fourteen — is unchanged.
-  assert.equal(cfg.crons.length, 18);
+  assert.equal(cfg.crons.length, 17);
+  assert.ok(!cfg.crons.some((c) => c.path.startsWith('/api/admin/shadow-sweep')),
+    'WM1 ships no cron — the shadow sweep is manual until its numbers are trusted');
   // The OPD entry drops ?conc=4 so the route's new defaults (max=8, conc=8) apply. Production was
   // running conc=4 against a default max of 15 — four waves, not the three anyone had assumed.
   assert.ok(cfg.crons.some((c) => c.path === '/api/opd-audit/worker' && c.schedule === '*/4 18-23,0-2 * * *'));
