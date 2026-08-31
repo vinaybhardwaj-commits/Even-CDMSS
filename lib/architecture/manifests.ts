@@ -59,6 +59,15 @@ export const MODULE_MANIFESTS: ModuleManifest[] = [
     versionConst: 'MEMBER_STATE_VERSION',
   },
   {
+    id: 'world-model',
+    title: 'The record, replayed day by day',
+    blurb: 'Walks a patient’s history one day at a time, showing what the record held on each of those days — and saying plainly when it could not tell.',
+    plane: 'spine',
+    paths: ['lib/world-model/**'],
+    lifecycle: 'implemented', // WM0 W0.1/W0.2 — admin-only readout; no clinician surface, no live validation yet
+    versionConst: 'WORLD_MODEL_WALK_VERSION',
+  },
+  {
     id: 'opd-note-score-core',
     title: 'The scoring engine',
     blurb: 'Turns the quality findings on a note into the 0–100 grade. This is the one and only place the score is worked out.',

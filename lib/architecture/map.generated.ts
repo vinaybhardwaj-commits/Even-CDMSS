@@ -1029,6 +1029,10 @@ export const MAP_MODULES: MapModule[] = [
   {
     "id": "vitals-coverage-core",
     "plane": "unregistered"
+  },
+  {
+    "id": "world-model",
+    "plane": "spine"
   }
 ];
 
@@ -1192,6 +1196,11 @@ export const MAP_EDGES: MapEdge[] = [
     "from": "app/admin",
     "to": "lvc-rule-merge",
     "kind": "value"
+  },
+  {
+    "from": "app/admin",
+    "to": "member-state",
+    "kind": "type"
   },
   {
     "from": "app/admin",
@@ -1421,6 +1430,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/admin",
     "to": "vitals-coverage-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
+    "to": "world-model",
     "kind": "value"
   },
   {
@@ -5442,6 +5456,31 @@ export const MAP_EDGES: MapEdge[] = [
     "from": "value-score-core",
     "to": "doc-audit-core",
     "kind": "type"
+  },
+  {
+    "from": "world-model",
+    "to": "ccb-dossier-core",
+    "kind": "value"
+  },
+  {
+    "from": "world-model",
+    "to": "ccb-resolve",
+    "kind": "value"
+  },
+  {
+    "from": "world-model",
+    "to": "member-state",
+    "kind": "type"
+  },
+  {
+    "from": "world-model",
+    "to": "member-state",
+    "kind": "value"
+  },
+  {
+    "from": "world-model",
+    "to": "metabase",
+    "kind": "value"
   }
 ];
 
@@ -5871,13 +5910,19 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "value": "readmit-versions/1",
     "file": "lib/readmission-versions-core.ts",
     "derived": false
+  },
+  {
+    "constName": "WORLD_MODEL_WALK_VERSION",
+    "value": "world-model-walk-o/0.1",
+    "file": "lib/world-model/walk-o.ts",
+    "derived": false
   }
 ];
 
 export const COVERAGE = {
-  "registered": 21,
+  "registered": 22,
   "unregistered": 42,
-  "total": 63,
+  "total": 64,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
