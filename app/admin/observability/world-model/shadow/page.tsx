@@ -205,9 +205,9 @@ export default async function ShadowAgentPage() {
       )}
 
       <p className="mt-5 text-[11px] text-slate-400">
-        Sweeps are <b>manual</b> — there is no schedule yet. Run one with <code className="rounded bg-slate-100 px-1">POST /api/admin/shadow-sweep</code>.
-        Idempotent: re-running over the same backlog writes nothing new. Nothing here runs unattended until these
-        numbers have been looked at.
+        Sweeps run <b>every 6 hours</b>, first verified manually on 31 Aug 2026, or on demand via{' '}
+        <code className="rounded bg-slate-100 px-1">POST /api/admin/shadow-sweep</code>.
+        Idempotent: re-running over the same backlog writes nothing new.
       </p>
     </div>
   );
