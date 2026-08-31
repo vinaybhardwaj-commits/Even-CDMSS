@@ -68,6 +68,15 @@ export const MODULE_MANIFESTS: ModuleManifest[] = [
     versionConst: 'WORLD_MODEL_WALK_VERSION',
   },
   {
+    id: 'cognition',
+    title: 'The agent that decides when to stay quiet',
+    blurb: 'Works out when it would be worth asking a doctor a question — and, almost always, decides it is not. Runs in shadow: it writes down what it would have asked, and asks nobody.',
+    plane: 'spine',
+    paths: ['lib/cognition/**'],
+    lifecycle: 'implemented', // WM1 shadow only — admin readout, no doctor-facing surface, no live validation yet
+    versionConst: 'COGNITION_SCHEMA_VERSION',
+  },
+  {
     id: 'opd-note-score-core',
     title: 'The scoring engine',
     blurb: 'Turns the quality findings on a note into the 0–100 grade. This is the one and only place the score is worked out.',

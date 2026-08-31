@@ -266,7 +266,11 @@ export default async function WorldModelWalkPage({ searchParams }: { searchParam
             nothing clinical of its own. Read-only, internal.
           </p>
         </div>
-        <Link href="/admin/observability" className="whitespace-nowrap text-xs font-medium text-brand hover:underline">← Observability</Link>
+        <div className="flex items-center gap-3">
+          {/* WM1 — the shadow agent's readout. Shadow only; nothing there is doctor-facing. */}
+          <Link href="/admin/observability/world-model/shadow" className="whitespace-nowrap text-xs font-medium text-brand hover:underline">Shadow Agent →</Link>
+          <Link href="/admin/observability" className="whitespace-nowrap text-xs font-medium text-brand hover:underline">← Observability</Link>
+        </div>
       </div>
 
       {/* THE TWO ALWAYS-VISIBLE LABELS — rendered whether or not a walk has been run. */}

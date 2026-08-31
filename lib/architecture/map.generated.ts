@@ -259,6 +259,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "cognition",
+    "plane": "spine"
+  },
+  {
     "id": "concordance",
     "plane": "unregistered"
   },
@@ -1104,6 +1108,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/admin",
+    "to": "cognition",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
     "to": "concordance-store",
     "kind": "value"
   },
@@ -1615,6 +1624,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "coach",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "cognition",
     "kind": "value"
   },
   {
@@ -2940,6 +2954,21 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "coach",
     "to": "llm",
+    "kind": "value"
+  },
+  {
+    "from": "cognition",
+    "to": "audit-canonical",
+    "kind": "value"
+  },
+  {
+    "from": "cognition",
+    "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "cognition",
+    "to": "member-state",
     "kind": "value"
   },
   {
@@ -5510,6 +5539,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "BURDEN_POLICY_VERSION",
+    "value": "burden-policy/0.1",
+    "file": "lib/cognition/schema.ts",
+    "derived": false
+  },
+  {
     "constName": "CASE_ASK_VERSION",
     "value": "case-ask/1",
     "file": "lib/case-ask-core.ts",
@@ -5537,6 +5572,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "constName": "CLINICAL_STATE_VERSION",
     "value": "clinical-state/1.2",
     "file": "lib/clinical-state/schema.ts",
+    "derived": false
+  },
+  {
+    "constName": "COGNITION_SCHEMA_VERSION",
+    "value": "cognition/0.1",
+    "file": "lib/cognition/schema.ts",
     "derived": false
   },
   {
@@ -5920,9 +5961,9 @@ export const VERSION_REGISTRY: VersionRow[] = [
 ];
 
 export const COVERAGE = {
-  "registered": 22,
+  "registered": 23,
   "unregistered": 42,
-  "total": 64,
+  "total": 65,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
