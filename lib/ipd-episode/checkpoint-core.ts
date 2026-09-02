@@ -80,9 +80,17 @@ export function buildCheckpointUser(input: CheckpointUserInput): string {
     ? `EPISODE-LEVEL CHECKPOINT (${input.checkpointId}). Everything documented up to the last recorded moment of this admission is below. The admission has not been closed for you: you are not told how it ended.`
     : `DAY ${input.dayIndex} CHECKPOINT (${input.checkpointId}). Everything documented BEFORE ${input.cutoffAt} is below, and nothing after it.`;
 
-  const excerpts = input.excerpts.length
-    ? `\nNORMATIVE EXCERPTS (cite by number in citation_ids):\n${input.excerpts.map((x, i) => `[${i + 1}] ${x.label}\n${x.text}`).join('\n\n')}`
-    : `\nNORMATIVE EXCERPTS: none were retrieved for this checkpoint. Leave citation_ids empty throughout.`;
+  const k = input.excerpts.length;
+  // THE RANGE IS STATED AS A NUMBER, not implied by how many blocks follow. 42 of 42 entries came
+  // back uncited on the first live episode, and the prompt at the time both invited empty arrays
+  // and never said what the legal numbers were. A model cannot cite a range it was not given.
+  const excerpts = k
+    ? `\nNORMATIVE EXCERPTS — excerpts are numbered 1 to ${k}. Every entry you return must carry at least one of these numbers in its citation_ids.\n${input.excerpts.map((x, i) => `[${i + 1}] ${x.label}\n${x.text}`).join('\n\n')}`
+    : `\nNORMATIVE EXCERPTS: none were retrieved for this checkpoint. There are no numbers to cite, so leave citation_ids empty throughout — this is the one case where that is expected.`;
+
+  const closer = k
+    ? `State the expected next 24 hours as the JSON object described in your instructions. Every entry must carry at least one citation_ids value between 1 and ${k}.`
+    : 'State the expected next 24 hours as the JSON object described in your instructions.';
 
   return `${head}
 
@@ -93,7 +101,7 @@ DOCUMENTED SO FAR (${input.events.length} event${input.events.length === 1 ? '' 
 ${input.events.length ? input.events.map(renderEvent).join('\n') : '(nothing beyond the admission itself)'}
 ${excerpts}
 
-State the expected next 24 hours as the JSON object described in your instructions.`;
+${closer}`;
 }
 
 /** The admission context line every checkpoint gets. Carries no outcome field by construction. */
@@ -209,6 +217,37 @@ export function parseExpectedCourse(text: string, chunkIds: readonly number[]): 
     || course.expected_monitoring.length || course.escalation_triggers.length
     || course.expected_disposition || course.uncertainty.length;
   return any ? course : null;
+}
+
+/**
+ * How many entries of an expected course came back with no usable citation, and how many entries
+ * there were at all.
+ *
+ * ⚠️ THIS COUNTS. IT NEVER REPAIRS. The obvious "fix" for an uncited entry is to look for an
+ * excerpt whose text overlaps the item and attach it — and that would be fabrication with extra
+ * steps: a citation asserts "this expectation was DERIVED FROM that passage", which a string
+ * overlap cannot establish. An invented citation is worse than a missing one, because the missing
+ * one is caught by the uncited cap and the invented one silently lifts it.
+ *
+ * So the count is surfaced instead — `uncited_entry_count` on the checkpoint row — which makes the
+ * failure visible in a scalar column without anyone reading jsonb, and lets a validator ask "how
+ * many entries did this checkpoint ground?" of the whole cohort in one query.
+ */
+export function countUncitedEntries(course: ExpectedCourse | null): { uncited: number; total: number } {
+  if (!course) return { uncited: 0, total: 0 };
+  const lists: { citation_ids: number[] }[] = [
+    ...course.expected_diagnostics, ...course.expected_therapeutics,
+    ...course.expected_monitoring, ...course.escalation_triggers,
+  ];
+  return { uncited: lists.filter((e) => e.citation_ids.length === 0).length, total: lists.length };
+}
+
+/** True when a checkpoint had excerpts to cite, produced entries, and cited NONE of them — the
+ *  failure mode measured on IP-1286, and the trigger for the one retry in checkpoint.ts. */
+export function everyEntryUncited(course: ExpectedCourse | null, excerptCount: number): boolean {
+  if (!course || excerptCount <= 0) return false;
+  const { uncited, total } = countUncitedEntries(course);
+  return total > 0 && uncited === total;
 }
 
 // ── checkpoint entry references (the uncited-entry cap's key, PRD §4.4) ──────────────────────

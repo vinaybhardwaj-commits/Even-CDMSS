@@ -77,6 +77,43 @@ const oneOf = <T extends string>(allowed: readonly T[], v: unknown): T | null =>
   (allowed as readonly string[]).includes(String(v)) ? (String(v) as T) : null;
 
 /**
+ * ⚠️ COERCION, NARROWLY. Measured on IP-1286: 5 of 15 A1 findings — a third of the divergence pass
+ * — were discarded whole because ONE enum value was off. Throwing away a well-formed clinical
+ * finding over a spelling is a worse error than the spelling, so a value that names exactly one
+ * legal option is repaired. A value that names none, or more than one, is still dropped: the
+ * alternative is deciding on the model's behalf what it meant, which manufactures a finding.
+ *
+ * Matching is deliberately dumb and total: exact, then case-insensitive, then singular/plural and
+ * prefix. No fuzzy distance — "commission" and "omission" are one edit apart and mean opposite
+ * things, and an edit-distance matcher would confidently swap them.
+ */
+function coerceEnum<T extends string>(allowed: readonly T[], v: unknown): { value: T | null; repaired: boolean } {
+  const exact = oneOf(allowed, v);
+  if (exact) return { value: exact, repaired: false };
+  const raw = String(v ?? '').trim().toLowerCase();
+  if (!raw) return { value: null, repaired: false };
+  const hits = allowed.filter((a) => {
+    const t = a.toLowerCase();
+    if (t === raw) return true;
+    // singular/plural and prefix, both directions: 'diagnostic' ↔ 'diagnostics', 'escalate' → 'escalation'
+    if (t.startsWith(raw) && raw.length >= 4) return true;
+    if (raw.startsWith(t) && t.length >= 4) return true;
+    return false;
+  });
+  // exactly one legal option, or nothing — ambiguity is never resolved by guessing
+  return hits.length === 1 ? { value: hits[0], repaired: true } : { value: null, repaired: false };
+}
+
+/** An unreadable severity becomes `moderate`: the middle of the scale, so a repair can neither
+ *  inflate a finding to the 8-point band nor bury it in the 1-point one. */
+const SEVERITY_FALLBACK: Severity = 'moderate';
+
+/** An unreadable verdict becomes `unassessable`, NEVER a scoring one. A verdict IS the claim, and
+ *  the honest reading of "we could not parse the claim" is that the record did not answer —
+ *  which scores nothing. Coercing to `divergent` would manufacture a penalty out of a typo. */
+const VERDICT_FALLBACK: Verdict = 'unassessable';
+
+/**
  * `lvc_category` validation. PRD §3.4.2 names `asCategory()` in lib/opd-lvc-classify-core.ts, but
  * that helper is module-private there and that file is on the UNTOUCHED list — so this is the same
  * one-line membership test against the same exported `LVC_CATEGORIES` constant (12 values), which
@@ -110,6 +147,33 @@ export interface ParseFindingsOptions {
   idPrefix: string;
 }
 
+/** What was discarded and why. Persisted (`raw_judge_error`) and traced — see run.ts. */
+export interface ParseFailure {
+  /** The offending fragment, truncated. Enough to see what the model actually sent. */
+  fragment: string;
+  error: string;
+}
+
+export interface ParseFindingsResult {
+  findings: EpisodeFinding[];
+  /** Findings discarded outright, after the repair pass had its chance. */
+  unparseable: number;
+  /** Findings kept only because a coercion repaired them. */
+  repaired: number;
+  failures: ParseFailure[];
+}
+
+export const PARSE_FRAGMENT_CHARS = 1000;
+
+/** One discarded fragment, capped. JSON so an object survives readably; never the whole response. */
+function fragmentOf(raw: unknown): string {
+  try {
+    return (typeof raw === 'string' ? raw : JSON.stringify(raw) ?? '').slice(0, PARSE_FRAGMENT_CHARS);
+  } catch {
+    return String(raw).slice(0, PARSE_FRAGMENT_CHARS);
+  }
+}
+
 /**
  * Parse a findings response into well-formed findings. A finding missing a required enum value or
  * a statement is DROPPED here — an unparseable finding is not a finding, and inventing a default
@@ -126,21 +190,62 @@ export interface ParseFindingsOptions {
  * checkpoint's own excerpt list by `resolveFindingCitations`, which is the only place that knows
  * which list a given ordinal was numbered against.
  */
-export function parseFindings(text: string, opts: ParseFindingsOptions): { findings: EpisodeFinding[]; unparseable: number } {
+export function parseFindings(text: string, opts: ParseFindingsOptions): ParseFindingsResult {
   const o = extractJsonObject(text);
   const list = Array.isArray((objOf(o)).findings) ? (objOf(o).findings as unknown[]) : null;
-  if (!list) return { findings: [], unparseable: 0 };
+  if (!list) {
+    return {
+      findings: [], unparseable: 0, repaired: 0,
+      failures: text.trim() ? [{ fragment: fragmentOf(text), error: 'the response carried no findings array' }] : [],
+    };
+  }
 
   const findings: EpisodeFinding[] = [];
+  const failures: ParseFailure[] = [];
   let unparseable = 0;
+  let repaired = 0;
   list.slice(0, 120).forEach((raw, i) => {
     const f = objOf(raw);
-    const finding_type = oneOf(FINDING_TYPES, f.finding_type);
-    const verdict = oneOf(VERDICTS, f.verdict);
-    const domain = oneOf(DOMAINS, f.domain);
-    const severity = oneOf(SEVERITIES, f.severity);
     const statement = asText(f.statement);
-    if (!finding_type || !verdict || !domain || !severity || !statement) { unparseable++; return; }
+
+    // A statement is the finding. There is nothing to repair a missing one into.
+    if (!statement) {
+      unparseable++;
+      failures.push({ fragment: fragmentOf(raw), error: 'no statement — a finding without one is not a finding' });
+      return;
+    }
+
+    const typeRes = coerceEnum(FINDING_TYPES, f.finding_type);
+    const domainRes = coerceEnum(DOMAINS, f.domain);
+    const sevRes = coerceEnum(SEVERITIES, f.severity);
+    const verdictRes = coerceEnum(VERDICTS, f.verdict);
+
+    // severity and verdict have safe fallbacks (see the consts): an unreadable severity lands
+    // mid-scale, an unreadable verdict lands on `unassessable`, which scores nothing.
+    const severity: Severity = sevRes.value ?? SEVERITY_FALLBACK;
+    const verdict: Verdict = verdictRes.value ?? VERDICT_FALLBACK;
+    const severityFallback = sevRes.value == null;
+    const verdictFallback = verdictRes.value == null;
+
+    // finding_type and domain have NO safe fallback — both change what the finding is about, and
+    // domain decides whether A2's fence caught it. Ambiguous or absent ⇒ drop.
+    if (!typeRes.value || !domainRes.value) {
+      unparseable++;
+      failures.push({
+        fragment: fragmentOf(raw),
+        error: !typeRes.value
+          ? `finding_type ${JSON.stringify(f.finding_type)} matches no legal value unambiguously`
+          : `domain ${JSON.stringify(f.domain)} matches no legal value unambiguously`,
+      });
+      return;
+    }
+    const finding_type = typeRes.value;
+    const domain = domainRes.value;
+
+    if (typeRes.repaired || domainRes.repaired || sevRes.repaired || verdictRes.repaired
+        || severityFallback || verdictFallback) {
+      repaired++;
+    }
 
     const rawId = asText(f.finding_id, 80);
     // ORDINALS, unresolved. Only a positive-integer sanity filter here — the ceiling belongs to
@@ -174,7 +279,7 @@ export function parseFindings(text: string, opts: ParseFindingsOptions): { findi
       citation_ids,
     });
   });
-  return { findings, unparseable };
+  return { findings, unparseable, repaired, failures };
 }
 
 // ── the code-enforced rules ──────────────────────────────────────────────────────────────────
@@ -241,9 +346,18 @@ export function normalizeFidelityFindings(findings: EpisodeFinding[]): { kept: E
   for (const f of findings) {
     if (f.pass !== 'fidelity') { kept.push(f); continue; }
     if (f.domain !== 'documentation') { dropped++; continue; }
-    if (f.finding_type !== 'commission' || f.checkpoint_ref !== null) {
+
+    // ⚠️ A CONCORDANT FINDING IS NOT A COMMISSION. §3.5 fixes finding_type for this pass because
+    // every A2 finding is a claim the record does not support — but a `concordant` A2 finding says
+    // the opposite: the summary's claim IS supported, and it was worth recording that. Forcing it
+    // to `commission` asserted an unsupported claim that the same row denies, and inflated
+    // n_commission with confirmations. Its checkpoint_ref is still normalised — A2 has no
+    // checkpoints either way.
+    const wantsCommission = f.verdict !== 'concordant';
+    const typeWrong = wantsCommission && f.finding_type !== 'commission';
+    if (typeWrong || f.checkpoint_ref !== null) {
       normalized++;
-      kept.push({ ...f, finding_type: 'commission', checkpoint_ref: null });
+      kept.push({ ...f, finding_type: wantsCommission ? 'commission' : f.finding_type, checkpoint_ref: null });
       continue;
     }
     kept.push(f);
@@ -357,24 +471,44 @@ export interface FindingCounters {
   n_unassessable: number;
   n_concordant: number;
   n_low_value: number;
+  /** EVERY discarded finding: A2 domain drops PLUS parse failures. No discard leaves it at 0. */
   n_dropped_invalid: number;
+  /** The parse-failure half of the above, kept separately so the two causes stay distinguishable. */
+  n_parse_failed: number;
 }
 
-/** `droppedInvalid` is the A2 domain-drop count and nothing else (see `parseFindings`). */
-export function countFindings(findings: EpisodeFinding[], droppedInvalid: number): FindingCounters {
+/**
+ * `domainDropped` is the A2 domain-drop count; `parseFailed` is the number of findings the parser
+ * discarded after its repair pass. BOTH land in `n_dropped_invalid` (item 5: no discard may leave
+ * every counter at 0), and `n_parse_failed` keeps the second cause separately readable.
+ *
+ * ⚠️ THIS REVERSES round 2's item 7, deliberately and on the orchestrator's instruction. That round
+ * separated them so `n_dropped_invalid` would mean only "A2 broke its fence"; IP-1286 then lost 5
+ * findings with every counter reading 0, which is the worse failure. Two columns give both
+ * readings: the total discard rate, and its breakdown.
+ */
+export function countFindings(findings: EpisodeFinding[], domainDropped: number, parseFailed = 0): FindingCounters {
   const c: FindingCounters = {
     n_findings: findings.length,
     n_divergence_pass: 0, n_fidelity_pass: 0,
     n_omission: 0, n_commission: 0, n_timing: 0, n_sequencing: 0,
     n_divergent: 0, n_context_dependent: 0, n_unassessable: 0, n_concordant: 0,
-    n_low_value: 0, n_dropped_invalid: droppedInvalid,
+    n_low_value: 0,
+    n_dropped_invalid: domainDropped + parseFailed,
+    n_parse_failed: parseFailed,
   };
   for (const f of findings) {
     if (f.pass === 'divergence') c.n_divergence_pass++; else c.n_fidelity_pass++;
-    if (f.finding_type === 'omission') c.n_omission++;
-    else if (f.finding_type === 'commission') c.n_commission++;
-    else if (f.finding_type === 'timing') c.n_timing++;
-    else c.n_sequencing++;
+    // ⚠️ THE TYPE COUNTERS EXCLUDE `concordant` FINDINGS (item 6). A concordant finding records
+    // that expectation and course AGREE — it is not an omission, a commission, a timing error or a
+    // sequencing error, and counting it as one inflated n_commission with confirmations. So
+    // n_omission + n_commission + n_timing + n_sequencing = n_findings − n_concordant, by design.
+    if (f.verdict !== 'concordant') {
+      if (f.finding_type === 'omission') c.n_omission++;
+      else if (f.finding_type === 'commission') c.n_commission++;
+      else if (f.finding_type === 'timing') c.n_timing++;
+      else c.n_sequencing++;
+    }
     if (f.verdict === 'divergent') c.n_divergent++;
     else if (f.verdict === 'context_dependent') c.n_context_dependent++;
     else if (f.verdict === 'unassessable') c.n_unassessable++;
@@ -405,13 +539,11 @@ export interface FinalizeResult {
   n_fidelity_normalized: number;
 }
 
-/**
- * `n_dropped_invalid` is passed ONE number and it means ONE thing: A2 findings written outside the
- * documentation domain. Unparseable findings are counted by the caller and reported separately —
- * see the note on `parseFindings`.
- */
+/** `parseFailed` is the count of findings the parser discarded; it joins the A2 domain drops in
+ *  `n_dropped_invalid` and is also reported alone in `n_parse_failed`. */
 export function finalizeFindings(
   raw: EpisodeFinding[], entryRefs: Map<string, CheckpointEntryRef>, events: EpisodeEvent[],
+  parseFailed = 0,
 ): FinalizeResult {
   const { kept, dropped, normalized } = normalizeFidelityFindings(raw);
   let rewritten = 0;
@@ -428,7 +560,7 @@ export function finalizeFindings(
   });
   return {
     findings,
-    counters: countFindings(findings, dropped),
+    counters: countFindings(findings, dropped, parseFailed),
     divergence_index: divergenceIndex(findings),
     n_tier_c_rewritten: rewritten,
     n_uncited_capped: capped,

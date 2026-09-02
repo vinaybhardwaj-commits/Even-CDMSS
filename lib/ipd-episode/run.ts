@@ -310,18 +310,45 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
     // Ordinals → real chunk ids FIRST, per referencing checkpoint, so everything downstream (the
     // uncited cap, the stored findings, the UI) speaks one vocabulary.
     const raw: EpisodeFinding[] = resolveFindingCitations([...a1.findings, ...a2.findings], checkpointChunkIds);
-    const final = finalizeFindings(raw, entryRefs, events);
 
-    // Findings the engine could not read. Deliberately NOT folded into n_dropped_invalid, which
-    // means "A2 wrote outside its domain" and nothing else. This is an integration fact, so it goes
-    // where integration facts are read: the trace, and the audit row's error_detail.
+    // Findings discarded after the repair pass. These now COUNT (item 5): they join the A2 domain
+    // drops in n_dropped_invalid and are reported alone in n_parse_failed, so no discard can leave
+    // every counter reading 0 the way IP-1286's five did.
     const unparseable = a1.unparseable + a2.unparseable;
+    const final = finalizeFindings(raw, entryRefs, events, unparseable);
+    const repaired = a1.repaired + a2.repaired;
+    // Every discarded fragment, tagged with the pass that produced it. This is the record that did
+    // not exist when IP-1286 lost 5 of its 15 A1 findings with nothing written down anywhere.
+    const failures = [
+      ...a1.failures.map((x) => ({ pass: 'divergence' as const, ...x })),
+      ...a2.failures.map((x) => ({ pass: 'fidelity' as const, ...x })),
+    ];
     const errorDetail: string[] = [];
+    if (repaired > 0) {
+      errorDetail.push(`${repaired} finding(s) kept after repairing one bad enum value (A1 ${a1.repaired}, A2 ${a2.repaired})`);
+    }
     if (unparseable > 0) {
-      errorDetail.push(`${unparseable} finding(s) returned by the judge could not be parsed (A1 ${a1.unparseable}, A2 ${a2.unparseable})`);
+      errorDetail.push(`${unparseable} finding(s) discarded as unparseable after the repair pass (A1 ${a1.unparseable}, A2 ${a2.unparseable})`);
       if (traceId) {
         await logEvent(traceId, 'ipd_episode_unparseable_findings', 'judge', {
-          encounter_id: encounterId, a1_unparseable: a1.unparseable, a2_unparseable: a2.unparseable,
+          encounter_id: encounterId,
+          a1_unparseable: a1.unparseable, a2_unparseable: a2.unparseable,
+          a1_repaired: a1.repaired, a2_repaired: a2.repaired,
+          failures,
+        }).catch(() => {});
+      }
+    }
+    // Checkpoint grounding, surfaced on the audit row too: 42 of 42 uncited was invisible until
+    // someone read the jsonb.
+    const uncitedEntries = checkpoints.reduce((n, c) => n + c.uncitedEntryCount, 0);
+    const totalEntries = checkpoints.reduce((n, c) => n + c.entryCount, 0);
+    if (totalEntries > 0 && uncitedEntries === totalEntries) {
+      errorDetail.push(`every expected-course entry (${totalEntries}) came back uncited`);
+      if (traceId) {
+        await logEvent(traceId, 'ipd_episode_all_entries_uncited', 'checkpoint', {
+          encounter_id: encounterId, entries: totalEntries,
+          checkpoints_with_excerpts: checkpoints.filter((c) => c.citationIds.length > 0).length,
+          retried: checkpoints.filter((c) => c.retriedForCitations).length,
         }).catch(() => {});
       }
     }
@@ -352,6 +379,8 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       errorDetail: c.errorDetail,
       model: c.model,
       traceId: traceId ?? null,
+      uncitedEntryCount: c.uncitedEntryCount,
+      entryCount: c.entryCount,
     }));
 
     const saved = await saveEpisodeAudit({
@@ -379,6 +408,7 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       modelJudge,
       traceId: traceId ?? null,
       errorDetail: errorDetail.length ? errorDetail.join(' · ') : null,
+      rawJudgeError: failures.length ? failures : null,
     }, checkpointRows);
     if (saved.failedCheckpoints > 0) {
       // The checkpoint rows carry the blinding proof, so a write that failed is worth a trace
@@ -408,7 +438,9 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
         ...(final.n_tier_c_rewritten ? [`${final.n_tier_c_rewritten} finding(s) rewritten to unassessable by the Tier C rule`] : []),
         ...(final.n_uncited_capped ? [`${final.n_uncited_capped} finding(s) capped by the uncited-expectation rule`] : []),
         ...(final.n_fidelity_normalized ? [`${final.n_fidelity_normalized} fidelity finding(s) normalised to commission / no checkpoint`] : []),
-        ...(unparseable ? [`${unparseable} finding(s) could not be parsed — see error_detail and the trace`] : []),
+        ...(repaired ? [`${repaired} finding(s) kept by the enum repair pass`] : []),
+        ...(unparseable ? [`${unparseable} finding(s) discarded — see raw_judge_error and the trace`] : []),
+        ...(totalEntries && uncitedEntries === totalEntries ? [`all ${totalEntries} expected-course entries are uncited`] : []),
         ...(saved.failedCheckpoints ? [`${saved.failedCheckpoints} of ${checkpointRows.length} checkpoint row(s) failed to write`] : []),
       ],
     };

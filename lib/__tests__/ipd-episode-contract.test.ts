@@ -391,15 +391,89 @@ test('a failed checkpoint write is counted and reported — those rows carry the
 
 // ── unparseable findings are not the A2 domain counter ───────────────────────────────────────
 
-test('unparseable findings go to a trace event and error_detail, never to n_dropped_invalid', () => {
+test('unparseable findings reach the trace, error_detail, raw_judge_error AND the counters', () => {
+  // ⚠️ THIS REPLACES round 2's assertion, which required the opposite. Round 2 separated the two
+  // causes so n_dropped_invalid would mean only "A2 broke its fence"; IP-1286 then discarded 5 of
+  // 15 divergence findings with every counter reading 0 and no record anywhere. Round 3 reverses
+  // it on the orchestrator's instruction: no discard may leave every counter at 0. Both readings
+  // survive because there are now two columns.
   const run = code('lib/ipd-episode/run.ts');
-  assert.ok(run.includes('ipd_episode_unparseable_findings'), 'a trace event carries the count');
-  assert.ok(run.includes('errorDetail'), 'and it reaches the audit row’s error_detail');
-  // finalizeFindings is given no second drop count to fold in
-  assert.ok(!/finalizeFindings\([^)]*unparseable/.test(run), 'unparseable counts are never passed into the counter');
+  assert.ok(run.includes('ipd_episode_unparseable_findings'), 'a trace event carries the fragments');
+  assert.ok(run.includes('errorDetail'), 'prose reaches error_detail');
+  assert.ok(run.includes('rawJudgeError'), 'the raw fragments reach raw_judge_error');
+  assert.ok(/finalizeFindings\(raw, entryRefs, events, unparseable\)/.test(run),
+    'and the count IS passed into the counters');
   const core = code('lib/ipd-episode/judge-core.ts');
-  assert.ok(core.includes('countFindings(findings, dropped)'),
-    'n_dropped_invalid is fed the A2 domain-drop count and nothing else');
+  assert.ok(core.includes('countFindings(findings, dropped, parseFailed)'),
+    'n_dropped_invalid is fed both causes; n_parse_failed isolates the second');
+});
+
+// ── round 3: nothing this engine discards may disappear ─────────────────────────────────────
+
+test('the checkpoint pass retries ONCE when the whole course comes back uncited and retrieval worked', () => {
+  const src = code('lib/ipd-episode/checkpoint.ts');
+  assert.ok(src.includes('everyEntryUncited('), 'the retry is triggered by that exact shape');
+  assert.ok(src.includes('excerpts.length > 0 && everyEntryUncited('),
+    'and only when there were excerpts to cite — no excerpts is not a failure');
+  // one retry, not a loop
+  assert.equal((src.match(/await askOnce\(/g) ?? []).length, 2, 'exactly two asks: the first and one retry');
+  assert.ok(src.includes('if (second.course && !everyEntryUncited('),
+    'a retry that also cites nothing is discarded and the first answer stands');
+  assert.ok(src.includes('uncitedEntryCount'), 'and the count is recorded either way');
+});
+
+test('an uncited entry is never repaired by guessing — the count is the whole response', () => {
+  const core = code('lib/ipd-episode/checkpoint-core.ts');
+  assert.ok(core.includes('export function countUncitedEntries('), 'it counts');
+  // nothing in the engine attaches a citation on a text overlap
+  for (const f of ENGINE_FILES) {
+    const src = code(f);
+    assert.ok(!/overlap|fuzzy|similar/i.test(src.replace(/citation_ids/g, '')),
+      `${f} must not infer a citation from text similarity`);
+  }
+});
+
+test('the checkpoint row carries grounding as scalars, in the DDL and in the writer', () => {
+  const sqlText = read(join('migrations', '0052_ipd_episode_audits.sql'));
+  const route = read('app/api/admin/migrate-ipd-episode-audits/route.ts');
+  for (const col of ['uncited_entry_count', 'entry_count']) {
+    assert.ok(sqlText.includes(col), `.sql declares ${col}`);
+    assert.ok(route.includes(col), `the route declares and back-fills ${col}`);
+    assert.ok(route.includes(`ADD COLUMN IF NOT EXISTS ${col}`), `${col} is added to an existing table`);
+  }
+  const store = code('lib/ipd-episode/store.ts');
+  assert.ok(store.includes('uncitedEntryCount') && store.includes('$14,$15'), 'the insert writes both');
+});
+
+test('discarded findings are persisted with their raw fragment, and traced', () => {
+  const sqlText = read(join('migrations', '0052_ipd_episode_audits.sql'));
+  const route = read('app/api/admin/migrate-ipd-episode-audits/route.ts');
+  assert.ok(sqlText.includes('raw_judge_error       JSONB'), '.sql declares raw_judge_error');
+  assert.ok(route.includes('ADD COLUMN IF NOT EXISTS raw_judge_error JSONB'), 'and the route back-fills it');
+  const run = code('lib/ipd-episode/run.ts');
+  assert.ok(run.includes('rawJudgeError: failures.length ? failures : null'), 'the pipeline persists the failures');
+  assert.ok(run.includes('ipd_episode_unparseable_findings'), 'and raises a trace event');
+  assert.ok(run.includes('failures,'), 'the trace event carries the fragments, not just a count');
+  const core = code('lib/ipd-episode/judge-core.ts');
+  assert.ok(core.includes('PARSE_FRAGMENT_CHARS = 1000'), 'fragments are truncated to 1000 chars');
+});
+
+test('n_parse_failed exists in the DDL and every discard reaches n_dropped_invalid', () => {
+  const sqlText = read(join('migrations', '0052_ipd_episode_audits.sql'));
+  const route = read('app/api/admin/migrate-ipd-episode-audits/route.ts');
+  assert.ok(/n_parse_failed\s+INTEGER DEFAULT 0/.test(sqlText) && /n_parse_failed\s+INTEGER DEFAULT 0/.test(route));
+  assert.ok(route.includes('ADD COLUMN IF NOT EXISTS n_parse_failed INTEGER DEFAULT 0'));
+  const core = code('lib/ipd-episode/judge-core.ts');
+  assert.ok(core.includes('n_dropped_invalid: domainDropped + parseFailed'),
+    'the counter is the SUM — item 5 reverses round 2 deliberately');
+  const store = code('lib/ipd-episode/store.ts');
+  assert.ok(store.includes('n_parse_failed'), 'and the writer persists it');
+});
+
+test('an all-uncited episode raises its own trace event and says so on the row', () => {
+  const run = code('lib/ipd-episode/run.ts');
+  assert.ok(run.includes('ipd_episode_all_entries_uncited'), 'the grounding failure is traceable');
+  assert.ok(run.includes('came back uncited'), 'and stated in error_detail');
 });
 
 // ── the batch driver: skips must not consume a slot (fix round 2, items 4 and 6) ─────────────

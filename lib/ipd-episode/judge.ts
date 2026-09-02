@@ -13,7 +13,7 @@ import { governedChat } from '../trace';
 import { assertKnownBedrockModel } from '../bedrock-core';
 import {
   buildCommentaryUser, buildDiffUser, buildFidelityUser, parseFindings, validateCommentary,
-  type Commentary, type EpisodeFinding,
+  type Commentary, type EpisodeFinding, type ParseFailure,
 } from './judge-core';
 import {
   IPD_EPISODE_COMMENTARY_SYSTEM, IPD_EPISODE_DIFF_SYSTEM, IPD_EPISODE_FIDELITY_SYSTEM,
@@ -57,8 +57,12 @@ async function callWithRetry(
 
 export interface PassResult {
   findings: EpisodeFinding[];
-  /** Findings the engine could not read. NOT `n_dropped_invalid` — see parseFindings' note. */
+  /** Findings discarded after the repair pass had its chance. */
   unparseable: number;
+  /** Findings kept ONLY because a coercion repaired one bad enum value. */
+  repaired: number;
+  /** What was discarded and why — persisted to raw_judge_error and traced. */
+  failures: ParseFailure[];
   ok: boolean;
   error: string | null;
 }
@@ -73,12 +77,15 @@ export async function runDiffPass(a: {
 }): Promise<PassResult> {
   const user = buildDiffUser({ admissionContext: a.admissionContext, events: a.events, checkpointBlocks: a.checkpointBlocks });
   const { text, error } = await callWithRetry(a.traceId, 'ipd_episode_diff', IPD_EPISODE_DIFF_SYSTEM, user, a.model, 'prompts/IPD_EPISODE_DIFF_SYSTEM', 8000);
-  if (error) return { findings: [], unparseable: 0, ok: false, error };
+  if (error) return { findings: [], unparseable: 0, repaired: 0, failures: [], ok: false, error };
   const parsed = parseFindings(text, { pass: 'divergence', idPrefix: 'a1' });
   // An empty findings list is a legitimate result — a concordant admission. Only a call or parse
   // FAILURE skips the episode (§8), so "no divergence found" must not look like a failure here.
   const usable = /\bfindings\b/.test(text);
-  return { findings: parsed.findings, unparseable: parsed.unparseable, ok: usable, error: usable ? null : 'the response carried no findings array' };
+  return {
+    findings: parsed.findings, unparseable: parsed.unparseable, repaired: parsed.repaired,
+    failures: parsed.failures, ok: usable, error: usable ? null : 'the response carried no findings array',
+  };
 }
 
 /** Pass A2 — fidelity. Reads the discharge summary; writes `documentation` findings only. */
@@ -95,10 +102,13 @@ export async function runFidelityPass(a: {
     extractedCase: a.extractedCase, extractionVersion: a.extractionVersion,
   });
   const { text, error } = await callWithRetry(a.traceId, 'ipd_episode_fidelity', IPD_EPISODE_FIDELITY_SYSTEM, user, a.model, 'prompts/IPD_EPISODE_FIDELITY_SYSTEM', 8000);
-  if (error) return { findings: [], unparseable: 0, ok: false, error };
+  if (error) return { findings: [], unparseable: 0, repaired: 0, failures: [], ok: false, error };
   const parsed = parseFindings(text, { pass: 'fidelity', idPrefix: 'a2' });
   const usable = /\bfindings\b/.test(text);
-  return { findings: parsed.findings, unparseable: parsed.unparseable, ok: usable, error: usable ? null : 'the response carried no findings array' };
+  return {
+    findings: parsed.findings, unparseable: parsed.unparseable, repaired: parsed.repaired,
+    failures: parsed.failures, ok: usable, error: usable ? null : 'the response carried no findings array',
+  };
 }
 
 /**

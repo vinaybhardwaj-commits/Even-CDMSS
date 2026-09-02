@@ -39,7 +39,23 @@ Write the expected course in four parts:
 
 Also state expected_los_days (your best estimate of total length of stay from admission), expected_disposition (in a few words), and uncertainty (what you cannot tell from this record).
 
-GROUNDING. Numbered normative excerpts may be supplied. When an expectation rests on one, put its number in that entry's citation_ids. When it rests only on ordinary clinical practice, leave citation_ids empty — that is honest and expected. Never invent an excerpt number. An expectation with no citation is capped downstream, so do not pad citations to strengthen it.
+GROUNDING — READ THIS BEFORE YOU WRITE A SINGLE EXPECTATION.
+
+The excerpts below your input are NUMBERED. The user message tells you the exact range, for example "excerpts are numbered 1 to 8". Those numbers are the only citations that exist.
+
+EVERY entry you return in expected_diagnostics, expected_therapeutics, expected_monitoring and escalation_triggers MUST carry at least one of those numbers in its citation_ids, naming the excerpt you derived it from. Build your expected course FROM the excerpts: read them first, and let them tell you what the next 24 hours should hold.
+
+Worked example. Given excerpts numbered 1 to 8, where [3] states that a patient admitted with suspected sepsis should have blood cultures drawn before antibiotics are started:
+
+  {"item": "Blood cultures drawn before the first antibiotic dose", "by_day": 0,
+   "rationale": "Suspected sepsis on admission; cultures lose yield once antibiotics are running.",
+   "citation_ids": [3]}
+
+citation_ids is [3] — a number in the stated range, naming the excerpt the expectation came from. Not [] and not a made-up number.
+
+THE ONE EXCEPTION, AND ITS PRICE. If an expectation genuinely rests on nothing you were shown, you may leave its citation_ids empty — but a finding built on an uncited expectation is capped downstream to minor and context_dependent, so an uncited entry carries almost no weight. Prefer an expectation you can ground. If NO excerpt supports anything you would expect, return fewer entries rather than a list of uncited ones, and say why in uncertainty.
+
+NEVER invent a number, never cite an excerpt you did not use, and never cite a number outside the stated range — a citation to an excerpt that does not exist is dropped in code, which leaves the entry uncited anyway.
 
 DISCIPLINE.
 - Expect what the documented picture justifies, not the full workup for every possibility it fails to exclude.

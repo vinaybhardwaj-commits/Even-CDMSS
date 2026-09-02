@@ -17,7 +17,8 @@ import { governedChat } from '../trace';
 import { retrieve } from '../retrieve';
 import { assertKnownBedrockModel } from '../bedrock-core';
 import {
-  buildCheckpointUser, buildRetrievalQuery, checkpointEntryRefs, parseExpectedCourse,
+  buildCheckpointUser, buildRetrievalQuery, checkpointEntryRefs, countUncitedEntries,
+  everyEntryUncited, parseExpectedCourse,
   RETRIEVAL_TOP_K, type CheckpointEntryRef, type ExpectedCourse, type RetrievedExcerpt,
 } from './checkpoint-core';
 import { IPD_EPISODE_CHECKPOINT_SYSTEM } from './prompts';
@@ -61,6 +62,12 @@ export interface CheckpointResult {
   status: 'ok' | 'error';
   errorDetail: string | null;
   model: string;
+  /** Entries this checkpoint produced that cite nothing, and how many entries there were — scalars
+   *  so the grounding failure is visible without anyone parsing the expected_course jsonb. */
+  uncitedEntryCount: number;
+  entryCount: number;
+  /** True when the whole course came back uncited and the one retry was spent on it. */
+  retriedForCitations: boolean;
 }
 
 /** Retrieval, degraded to "no excerpts" on any fault. Never throws. */
@@ -97,7 +104,7 @@ export async function runCheckpoint(input: RunCheckpointInput): Promise<Checkpoi
   const query = buildRetrievalQuery(input.retrievalQueryInput);
   const { excerpts, ids, failed } = await retrieveExcerpts(query);
 
-  const base: Omit<CheckpointResult, 'expectedCourse' | 'entryRefs' | 'status' | 'errorDetail'> = {
+  const base: Omit<CheckpointResult, 'expectedCourse' | 'entryRefs' | 'status' | 'errorDetail' | 'uncitedEntryCount' | 'entryCount' | 'retriedForCitations'> = {
     checkpointId: input.checkpointId,
     dayIndex: input.dayIndex,
     checkpointType: input.checkpointType,
@@ -119,36 +126,72 @@ export async function runCheckpoint(input: RunCheckpointInput): Promise<Checkpoi
     excerpts,
   });
 
-  let lastError = 'no attempt was made';
-  for (let attempt = 0; attempt < 3; attempt++) {
-    if (attempt > 0) await new Promise((r) => setTimeout(r, 750 * Math.pow(2, attempt - 1)));
-    try {
-      const res = await governedChat(input.traceId, `ipd_episode_checkpoint_${input.checkpointId}`, {
-        messages: [
-          { role: 'system', content: IPD_EPISODE_CHECKPOINT_SYSTEM },
-          { role: 'user', content: user },
-        ],
-        temperature: 0,
-        max_tokens: 3000,
-      }, { bedrock: input.model, promptRef: 'prompts/IPD_EPISODE_CHECKPOINT_SYSTEM' });
+  const askOnce = async (extraInstruction: string | null): Promise<{ course: ExpectedCourse | null; error: string | null }> => {
+    let lastError = 'no attempt was made';
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, 750 * Math.pow(2, attempt - 1)));
+      try {
+        const res = await governedChat(input.traceId, `ipd_episode_checkpoint_${input.checkpointId}`, {
+          messages: [
+            { role: 'system', content: IPD_EPISODE_CHECKPOINT_SYSTEM },
+            { role: 'user', content: extraInstruction ? `${user}\n\n${extraInstruction}` : user },
+          ],
+          temperature: 0,
+          max_tokens: 3000,
+        }, { bedrock: input.model, promptRef: 'prompts/IPD_EPISODE_CHECKPOINT_SYSTEM' });
 
-      const text = String(res?.choices?.[0]?.message?.content ?? '');
-      // ids, not the count: the parser resolves each cited ordinal to the chunk id it stood for
-      const course = parseExpectedCourse(text, ids);
-      if (!course) { lastError = 'the response carried no usable expected course'; continue; }
-      return {
-        ...base,
-        expectedCourse: course,
-        entryRefs: checkpointEntryRefs(input.checkpointId, course),
-        status: 'ok',
-        errorDetail: null,
-      };
-    } catch (e) {
-      lastError = String((e as Error).message).slice(0, 400);
+        const text = String(res?.choices?.[0]?.message?.content ?? '');
+        // ids, not the count: the parser resolves each cited ordinal to the chunk id it stood for
+        const course = parseExpectedCourse(text, ids);
+        if (!course) { lastError = 'the response carried no usable expected course'; continue; }
+        return { course, error: null };
+      } catch (e) {
+        lastError = String((e as Error).message).slice(0, 400);
+      }
     }
+    return { course: null, error: lastError };
+  };
+
+  const first = await askOnce(null);
+  if (!first.course) {
+    return {
+      ...base, expectedCourse: null, entryRefs: [], status: 'error', errorDetail: first.error,
+      uncitedEntryCount: 0, entryCount: 0, retriedForCitations: false,
+    };
   }
 
-  return { ...base, expectedCourse: null, entryRefs: [], status: 'error', errorDetail: lastError };
+  // ── item 2: ONE retry when the WHOLE course came back uncited and retrieval had succeeded ──
+  // Measured on IP-1286: 42 of 42 entries cited nothing while every checkpoint row carried 8 real
+  // chunk ids and retrieval_failed was false. Retrying only in that exact shape costs one extra
+  // Haiku call on the episodes where the pass demonstrably failed, and nothing on the ones where it
+  // worked. A second failure is KEPT, not discarded — an uncited course is still an expected
+  // course, and the uncited cap already limits what any finding built on it can score.
+  let course = first.course;
+  let retried = false;
+  if (excerpts.length > 0 && everyEntryUncited(course, excerpts.length)) {
+    retried = true;
+    const second = await askOnce(
+      'YOUR PREVIOUS RESPONSE CITED NOTHING. Every entry came back with citation_ids: [], although '
+      + `${excerpts.length} numbered excerpts were supplied above. Answer again, and give every entry `
+      + `at least one citation_ids value between 1 and ${excerpts.length}, naming the excerpt it was `
+      + 'derived from. If an expectation truly rests on no excerpt shown to you, drop that entry '
+      + 'rather than returning it uncited.',
+    );
+    // Keep the retry only if it actually grounded something; otherwise the first answer stands.
+    if (second.course && !everyEntryUncited(second.course, excerpts.length)) course = second.course;
+  }
+
+  const { uncited, total } = countUncitedEntries(course);
+  return {
+    ...base,
+    expectedCourse: course,
+    entryRefs: checkpointEntryRefs(input.checkpointId, course),
+    status: 'ok',
+    errorDetail: null,
+    uncitedEntryCount: uncited,
+    entryCount: total,
+    retriedForCitations: retried,
+  };
 }
 
 export { assertKnownBedrockModel };

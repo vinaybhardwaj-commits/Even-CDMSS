@@ -12,16 +12,19 @@ import {
   applyTierCRule, applyUncitedCap, attachAttribution, attributedParty, completenessPct,
   countFindings, divergenceIndex, normalizeFidelityFindings, evidenceTiersOf, finalizeFindings,
   parseFindings, resolveFindingCitations, validateCommentary, asLvcCategory, SEVERITY_PENALTY,
+  PARSE_FRAGMENT_CHARS,
   type EpisodeFinding, type Severity, type Verdict, type Domain, type AuditPass,
 } from '../ipd-episode/judge-core';
 import {
   checkpointEntryRefs, parseExpectedCourse, buildRetrievalQuery, renderExpectedCourse,
-  ordinalForChunkId, type CheckpointEntryRef,
+  ordinalForChunkId, countUncitedEntries, everyEntryUncited, buildCheckpointUser,
+  type CheckpointEntryRef,
 } from '../ipd-episode/checkpoint-core';
 import { checkpointModel, IPD_EPISODE_CHECKPOINT_MODEL_DEFAULT } from '../ipd-episode/checkpoint';
 import { judgeModel, IPD_EPISODE_JUDGE_MODEL_DEFAULT } from '../ipd-episode/judge';
 import { assertKnownBedrockModel, isKnownBedrockModel } from '../bedrock-core';
 import { skipIsRetryable, SKIP_RETRY_DAYS } from '../ipd-episode/store';
+import { IPD_EPISODE_CHECKPOINT_SYSTEM } from '../ipd-episode/prompts';
 import type { EpisodeEvent } from '../ipd-episode/assemble-core';
 
 const f = (o: Partial<EpisodeFinding> & { finding_id: string }): EpisodeFinding => ({
@@ -226,6 +229,70 @@ test('the diff prompt is rendered back in ORDINALS, from the stored chunk ids', 
   assert.equal(ordinalForChunkId(999, CHUNKS), 0, 'a chunk this checkpoint never carried has no ordinal');
 });
 
+// ── items 1 and 2: the citation grounding failure measured on IP-1286 ────────────────────────
+
+test('the checkpoint user message states the ordinal range as a NUMBER, twice', () => {
+  const msg = buildCheckpointUser({
+    checkpointId: 'cp-d0', checkpointType: 'daily', dayIndex: 0,
+    cutoffAt: '2026-08-01T18:20:00.000Z', admissionContext: 'Speciality: General Medicine',
+    events: [],
+    excerpts: [1, 2, 3].map((n) => ({ id: n * 100, label: `src ${n}`, text: `excerpt ${n}` })),
+  });
+  assert.match(msg, /excerpts are numbered 1 to 3/, 'the legal range is stated, not implied by the block count');
+  assert.match(msg, /citation_ids value between 1 and 3/, 'and restated in the closing instruction');
+  assert.match(msg, /\[1\] src 1/, 'the excerpts themselves are numbered');
+});
+
+test('with no excerpts retrieved, the message says empty citations are expected — the one honest case', () => {
+  const msg = buildCheckpointUser({
+    checkpointId: 'cp-d0', checkpointType: 'daily', dayIndex: 0,
+    cutoffAt: '2026-08-01T18:20:00.000Z', admissionContext: 'x', events: [], excerpts: [],
+  });
+  assert.match(msg, /none were retrieved/);
+  assert.ok(!/numbered 1 to 0/.test(msg), 'it must not ask for a citation in an empty range');
+});
+
+test('the checkpoint prompt requires a citation per entry and shows a worked example', () => {
+  assert.match(IPD_EPISODE_CHECKPOINT_SYSTEM, /MUST carry at least one of those numbers/);
+  assert.match(IPD_EPISODE_CHECKPOINT_SYSTEM, /"citation_ids": \[3\]/, 'a worked example with a real number');
+  // ⚠️ THE OLD TEXT INVITED THE FAILURE. It read "leave citation_ids empty — that is honest and
+  // expected" and "do not pad citations". 42 of 42 entries came back uncited: the prompt working
+  // as written. Neither sentence may return.
+  assert.ok(!IPD_EPISODE_CHECKPOINT_SYSTEM.includes('that is honest and expected'));
+  assert.ok(!IPD_EPISODE_CHECKPOINT_SYSTEM.includes('do not pad citations'));
+});
+
+test('uncited entries are COUNTED, never repaired by guessing a citation', () => {
+  const course = parseExpectedCourse(JSON.stringify({
+    expected_diagnostics: [
+      { item: 'CBC', by_day: 0, rationale: 'r', citation_ids: [1] },
+      { item: 'CRP', by_day: 1, rationale: 'r', citation_ids: [] },
+    ],
+    expected_therapeutics: [{ item: 'IV fluids', by_day: 0, rationale: 'r', citation_ids: [] }],
+  }), CHUNKS);
+  const { uncited, total } = countUncitedEntries(course);
+  assert.equal(total, 3);
+  assert.equal(uncited, 2);
+  // the uncited entries keep their empty arrays — nothing was attached on a text overlap
+  assert.deepEqual(course!.expected_diagnostics[1].citation_ids, []);
+  assert.deepEqual(course!.expected_therapeutics[0].citation_ids, []);
+});
+
+test('everyEntryUncited detects the IP-1286 shape, and only that shape', () => {
+  const all = parseExpectedCourse(JSON.stringify({
+    expected_diagnostics: [{ item: 'CBC', by_day: 0, rationale: 'r', citation_ids: [] }],
+    expected_therapeutics: [{ item: 'fluids', by_day: 0, rationale: 'r', citation_ids: [] }],
+  }), CHUNKS);
+  assert.equal(everyEntryUncited(all, 3), true, 'excerpts were available and nothing cited them');
+  // not the shape: retrieval returned nothing, so there was nothing to cite
+  assert.equal(everyEntryUncited(all, 0), false);
+  const some = parseExpectedCourse(JSON.stringify({
+    expected_diagnostics: [{ item: 'CBC', by_day: 0, rationale: 'r', citation_ids: [1] }, { item: 'CRP', by_day: 0, rationale: 'r', citation_ids: [] }],
+  }), CHUNKS);
+  assert.equal(everyEntryUncited(some, 3), false, 'one grounded entry is not the failure');
+  assert.equal(everyEntryUncited(null, 3), false);
+});
+
 // ── item 6: per-checkpoint ordinal resolution ────────────────────────────────────────────────
 
 test('A1 citations are resolved against the checkpoint the finding REFERENCES, not a global ceiling', () => {
@@ -316,18 +383,127 @@ test('n_dropped_invalid counts A2 DOMAIN drops only — nothing else is folded i
   assert.equal(res.counters.n_findings, 2);
 });
 
-test('an unparseable finding is NOT n_dropped_invalid — it is the pass’s own `unparseable` count', () => {
+test('every discard is counted: parse failures join A2 domain drops in n_dropped_invalid (item 5)', () => {
   const text = JSON.stringify({ findings: [
     { finding_id: 'ok', finding_type: 'commission', verdict: 'divergent', domain: 'documentation', severity: 'minor', statement: 'a' },
-    { finding_id: 'junk', finding_type: 'vibes', verdict: 'divergent', domain: 'documentation', severity: 'minor', statement: 'a' },
-    { finding_id: 'junk2', verdict: 'divergent', domain: 'documentation', severity: 'minor' },
+    // no statement, and no domain that resolves — both unrepairable
+    { finding_id: 'junk', finding_type: 'commission', verdict: 'divergent', domain: 'vibes', severity: 'minor', statement: 'a' },
+    { finding_id: 'junk2', finding_type: 'commission', verdict: 'divergent', domain: 'documentation', severity: 'minor' },
   ] });
   const parsed = parseFindings(text, { pass: 'fidelity', idPrefix: 'a2' });
-  assert.equal(parsed.unparseable, 2, 'reported by the parser');
-  // and the counter stays at zero: no A2 finding here left the documentation domain
-  const res = finalizeFindings(parsed.findings, new Map(), []);
-  assert.equal(res.counters.n_dropped_invalid, 0,
-    'a finding the engine could not read is an integration fact, not evidence that A2 broke its fence');
+  assert.equal(parsed.unparseable, 2);
+  const res = finalizeFindings(parsed.findings, new Map(), [], parsed.unparseable);
+  // ⚠️ this REVERSES round 2's separation, on the orchestrator's instruction: a discard that leaves
+  // every counter at 0 is indistinguishable from a clean run
+  assert.equal(res.counters.n_dropped_invalid, 2, 'the total discard count');
+  assert.equal(res.counters.n_parse_failed, 2, 'broken out by cause');
+  assert.ok(res.counters.n_dropped_invalid > 0, 'no discard may leave every counter at 0');
+});
+
+test('n_dropped_invalid is the SUM of both causes, and n_parse_failed isolates the second', () => {
+  const list = [
+    f({ finding_id: 'kept', pass: 'fidelity', domain: 'documentation', finding_type: 'commission' }),
+    f({ finding_id: 'domain-drop', pass: 'fidelity', domain: 'escalation', finding_type: 'commission' }),
+  ];
+  const res = finalizeFindings(list, new Map(), [], 3);
+  assert.equal(res.counters.n_parse_failed, 3);
+  assert.equal(res.counters.n_dropped_invalid, 4, '1 domain drop + 3 parse failures');
+});
+
+// ── item 4: the repair pass ──────────────────────────────────────────────────────────────────
+
+test('a finding that is well-formed except for ONE bad enum value is repaired, not discarded', () => {
+  const text = JSON.stringify({ findings: [
+    // plural/singular drift on domain — resolves to exactly one legal value
+    { finding_id: 'd', finding_type: 'omission', verdict: 'divergent', domain: 'diagnostic', severity: 'major', statement: 'a' },
+    // unknown severity → moderate, the middle of the scale
+    { finding_id: 's', finding_type: 'omission', verdict: 'divergent', domain: 'diagnostics', severity: 'severe', statement: 'a' },
+    // unknown verdict → unassessable, never a scoring one
+    { finding_id: 'v', finding_type: 'omission', verdict: 'wrong', domain: 'diagnostics', severity: 'minor', statement: 'a' },
+  ] });
+  const { findings, unparseable, repaired } = parseFindings(text, { pass: 'divergence', idPrefix: 'a1' });
+  assert.equal(unparseable, 0, 'all three survive');
+  assert.equal(repaired, 3);
+  assert.equal(findings[0].domain, 'diagnostics');
+  assert.equal(findings[1].severity, 'moderate');
+  assert.equal(findings[2].verdict, 'unassessable', 'an unreadable verdict must never become a scoring one');
+});
+
+test('the repair never resolves an ambiguous or absent value — it drops, and says why', () => {
+  const text = JSON.stringify({ findings: [
+    { finding_id: 'a', finding_type: 'omission', verdict: 'divergent', domain: 'vibes', severity: 'minor', statement: 'a' },
+    { finding_id: 'b', finding_type: 'nonsense', verdict: 'divergent', domain: 'diagnostics', severity: 'minor', statement: 'a' },
+    { finding_id: 'c', finding_type: 'omission', verdict: 'divergent', domain: 'diagnostics', severity: 'minor' },
+  ] });
+  const { findings, unparseable, failures } = parseFindings(text, { pass: 'divergence', idPrefix: 'a1' });
+  assert.equal(findings.length, 0);
+  assert.equal(unparseable, 3);
+  assert.equal(failures.length, 3, 'every discard is recorded');
+  assert.match(failures[0].error, /no statement|domain/);
+  assert.ok(failures.every((x) => x.fragment.length > 0), 'each carries the raw fragment');
+});
+
+test('the repair never swaps a near-miss for its opposite', () => {
+  // 'omission' and 'commission' are one edit apart and mean opposite things — an edit-distance
+  // matcher would confidently pick the wrong one. Prefix matching cannot.
+  const text = JSON.stringify({ findings: [
+    { finding_id: 'x', finding_type: 'ommission', verdict: 'divergent', domain: 'diagnostics', severity: 'minor', statement: 'a' },
+  ] });
+  const { findings, unparseable } = parseFindings(text, { pass: 'divergence', idPrefix: 'a1' });
+  assert.equal(findings.length, 0, 'a typo that could be either is dropped, never guessed');
+  assert.equal(unparseable, 1);
+});
+
+// ── item 3: what was discarded is kept ───────────────────────────────────────────────────────
+
+test('every discarded finding is captured with its raw fragment and the error that killed it', () => {
+  const long = 'x'.repeat(4000);
+  const text = JSON.stringify({ findings: [
+    { finding_id: 'big', finding_type: 'omission', verdict: 'divergent', domain: 'vibes', severity: 'minor', statement: long },
+  ] });
+  const { failures } = parseFindings(text, { pass: 'divergence', idPrefix: 'a1' });
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].fragment.length, PARSE_FRAGMENT_CHARS, 'truncated to 1000 chars');
+  assert.match(failures[0].error, /domain/);
+});
+
+test('a response with no findings array is itself recorded as a failure, not a silent zero', () => {
+  const { failures, findings } = parseFindings('I could not complete this task.', { pass: 'divergence', idPrefix: 'a1' });
+  assert.equal(findings.length, 0);
+  assert.equal(failures.length, 1);
+  assert.match(failures[0].error, /no findings array/);
+});
+
+// ── item 6: a concordant finding is not a commission ─────────────────────────────────────────
+
+test('a concordant fidelity finding is NOT forced to commission and does not inflate n_commission', () => {
+  const list = [
+    f({ finding_id: 'unsupported', pass: 'fidelity', domain: 'documentation', finding_type: 'commission', verdict: 'divergent' }),
+    f({ finding_id: 'confirmed', pass: 'fidelity', domain: 'documentation', finding_type: 'omission', verdict: 'concordant' }),
+  ];
+  const { kept } = normalizeFidelityFindings(list);
+  const confirmed = kept.find((x) => x.finding_id === 'confirmed')!;
+  assert.notEqual(confirmed.finding_type, 'commission',
+    'a confirmation that the summary IS supported must not be relabelled an unsupported claim');
+  assert.equal(confirmed.checkpoint_ref, null, 'its checkpoint_ref is still normalised — A2 has none either way');
+  const c = countFindings(kept, 0);
+  assert.equal(c.n_commission, 1, 'only the real commission counts');
+  assert.equal(c.n_concordant, 1);
+});
+
+test('the four type counters exclude concordant findings, and sum to n_findings − n_concordant', () => {
+  const list = [
+    f({ finding_id: '1', finding_type: 'omission', verdict: 'divergent' }),
+    f({ finding_id: '2', finding_type: 'commission', verdict: 'context_dependent' }),
+    f({ finding_id: '3', finding_type: 'commission', verdict: 'concordant' }),
+    f({ finding_id: '4', finding_type: 'timing', verdict: 'concordant' }),
+  ];
+  const c = countFindings(list, 0);
+  assert.equal(c.n_commission, 1, 'the concordant commission is excluded');
+  assert.equal(c.n_timing, 0);
+  assert.equal(c.n_omission, 1);
+  assert.equal(c.n_concordant, 2);
+  assert.equal(c.n_omission + c.n_commission + c.n_timing + c.n_sequencing, c.n_findings - c.n_concordant);
 });
 
 // ── 9. completeness ──────────────────────────────────────────────────────────────────────────
@@ -429,18 +605,22 @@ test('commentary: an empty or unparseable response is rejected rather than store
 
 // ── parsing and enums ────────────────────────────────────────────────────────────────────────
 
-test('finding parsing drops a malformed finding rather than inventing a default verdict for it', () => {
+test('parsing repairs what it can and drops what it cannot, never inventing a scoring verdict', () => {
   const text = JSON.stringify({ findings: [
     { finding_id: 'ok', finding_type: 'omission', verdict: 'divergent', domain: 'diagnostics', severity: 'minor', statement: 'a', day_index: 1, evidence_basis: [{ source_table: 'kx_billing_records', source_record_id: 'b1' }] },
+    // REPAIRED (item 4): an unreadable verdict lands on unassessable, which scores nothing
     { finding_id: 'bad-verdict', finding_type: 'omission', verdict: 'terrible', domain: 'diagnostics', severity: 'minor', statement: 'a' },
+    // DROPPED: no statement, and no domain that resolves to exactly one legal value
     { finding_id: 'no-statement', finding_type: 'omission', verdict: 'divergent', domain: 'diagnostics', severity: 'minor' },
     { finding_id: 'bad-domain', finding_type: 'omission', verdict: 'divergent', domain: 'vibes', severity: 'minor', statement: 'a' },
   ] });
-  const { findings, unparseable } = parseFindings(text, { pass: 'divergence', idPrefix: 'a1' });
-  assert.equal(findings.length, 1);
-  assert.equal(unparseable, 3);
+  const { findings, unparseable, repaired } = parseFindings(text, { pass: 'divergence', idPrefix: 'a1' });
+  assert.equal(findings.length, 2);
+  assert.equal(unparseable, 2);
+  assert.equal(repaired, 1);
   assert.equal(findings[0].finding_id, 'a1-ok');
   assert.equal(findings[0].pass, 'divergence');
+  assert.equal(findings[1].verdict, 'unassessable', 'the repaired one cannot carry a penalty');
 });
 
 test('lvc_category rides only on a commission finding in therapeutics or diagnostics, and only a known value', () => {
@@ -472,7 +652,8 @@ test('counters tally every dimension the audit row stores', () => {
   assert.equal(c.n_omission, 1);
   assert.equal(c.n_commission, 2);
   assert.equal(c.n_timing, 1);
-  assert.equal(c.n_sequencing, 1);
+  // finding '3' is a CONCORDANT sequencing finding — a confirmation, not a sequencing error (item 6)
+  assert.equal(c.n_sequencing, 0);
   assert.equal(c.n_divergent, 2);
   assert.equal(c.n_context_dependent, 1);
   assert.equal(c.n_unassessable, 1);
@@ -491,8 +672,9 @@ test('finalizeFindings applies the whole chain in one place, so its order cannot
     f({ finding_id: 'tierc', severity: 'major', checkpoint_ref: 'cp-d0/diagnostics/1', evidence_basis: [] }),
     // dropped: a fidelity finding outside documentation
     f({ finding_id: 'dropped', pass: 'fidelity', domain: 'monitoring', finding_type: 'commission', severity: 'major' }),
-    // normalised, not dropped: right domain, wrong finding_type
-    f({ finding_id: 'normalised', pass: 'fidelity', domain: 'documentation', finding_type: 'omission', severity: 'minor', verdict: 'concordant' }),
+    // normalised, not dropped: right domain, wrong finding_type, and NOT concordant — so §3.5's
+    // fixed type applies to it (a concordant A2 finding is left alone, per item 6)
+    f({ finding_id: 'normalised', pass: 'fidelity', domain: 'documentation', finding_type: 'omission', severity: 'minor', verdict: 'context_dependent' }),
     // the only finding that actually scores
     f({ finding_id: 'real', severity: 'moderate', checkpoint_ref: 'cp-d0/diagnostics/1' }),
   ], map, [NOTE_EVENT]);

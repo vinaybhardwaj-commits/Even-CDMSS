@@ -214,9 +214,12 @@ export interface EpisodeAuditRow {
   modelCheckpoint: string | null;
   modelJudge: string | null;
   traceId: string | null;
-  /** Integration facts about an episode that still produced a row: unparseable findings, a
-   *  rejected commentary, a normalised fidelity shape. NEVER a count of A2 domain drops. */
+  /** Integration facts about an episode that still produced a row: discarded findings, a
+   *  rejected commentary, a normalised fidelity shape. */
   errorDetail?: string | null;
+  /** Per discarded finding: the raw fragment (truncated) and the validation error that killed it.
+   *  A silent loss on the divergence pass is how a third of an episode's findings disappear. */
+  rawJudgeError?: unknown;
 }
 
 export interface CheckpointWriteRow {
@@ -232,6 +235,10 @@ export interface CheckpointWriteRow {
   errorDetail: string | null;
   model: string | null;
   traceId: string | null;
+  /** Entries that cited nothing, and how many there were — scalars, so the grounding failure the
+   *  IP-1286 run exposed is queryable without parsing expected_course. */
+  uncitedEntryCount: number;
+  entryCount: number;
 }
 
 /**
@@ -251,12 +258,12 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
          divergence_index, completeness_pct,
          n_findings, n_divergence_pass, n_fidelity_pass, n_omission, n_commission, n_timing,
          n_sequencing, n_divergent, n_context_dependent, n_unassessable, n_concordant,
-         n_low_value, n_dropped_invalid,
+         n_low_value, n_dropped_invalid, n_parse_failed,
          checkpoint_count, evidence_tiers, real_course, findings, commentary,
-         model_checkpoint, model_judge, trace_id, error_detail)
+         model_checkpoint, model_judge, trace_id, error_detail, raw_judge_error)
        VALUES ($1,$2,$3,$4,$5,$6, $7,$8,$9,$10,$11, $12,$13,
-               $14,$15,$16,$17,$18,$19, $20,$21,$22,$23,$24, $25,$26,
-               $27,$28::jsonb,$29::jsonb,$30::jsonb,$31::jsonb, $32,$33,$34,$35)
+               $14,$15,$16,$17,$18,$19, $20,$21,$22,$23,$24, $25,$26,$27,
+               $28,$29::jsonb,$30::jsonb,$31::jsonb,$32::jsonb, $33,$34,$35,$36,$37::jsonb)
        ON CONFLICT (encounter_id, engine_version) DO UPDATE SET
          audited_at = NOW(),
          ip_uid = EXCLUDED.ip_uid, member_id = EXCLUDED.member_id,
@@ -271,12 +278,12 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
          n_sequencing = EXCLUDED.n_sequencing, n_divergent = EXCLUDED.n_divergent,
          n_context_dependent = EXCLUDED.n_context_dependent, n_unassessable = EXCLUDED.n_unassessable,
          n_concordant = EXCLUDED.n_concordant, n_low_value = EXCLUDED.n_low_value,
-         n_dropped_invalid = EXCLUDED.n_dropped_invalid,
+         n_dropped_invalid = EXCLUDED.n_dropped_invalid, n_parse_failed = EXCLUDED.n_parse_failed,
          checkpoint_count = EXCLUDED.checkpoint_count, evidence_tiers = EXCLUDED.evidence_tiers,
          real_course = EXCLUDED.real_course, findings = EXCLUDED.findings,
          commentary = EXCLUDED.commentary, model_checkpoint = EXCLUDED.model_checkpoint,
          model_judge = EXCLUDED.model_judge, trace_id = EXCLUDED.trace_id,
-         error_detail = EXCLUDED.error_detail
+         error_detail = EXCLUDED.error_detail, raw_judge_error = EXCLUDED.raw_judge_error
        RETURNING id, (xmax = 0) AS inserted`,
       [
         row.engineVersion, row.encounterId, row.ipUid, row.memberId, row.facilityName, row.speciality,
@@ -288,10 +295,11 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
         num(c.n_findings), num(c.n_divergence_pass), num(c.n_fidelity_pass), num(c.n_omission),
         num(c.n_commission), num(c.n_timing), num(c.n_sequencing), num(c.n_divergent),
         num(c.n_context_dependent), num(c.n_unassessable), num(c.n_concordant),
-        num(c.n_low_value), num(c.n_dropped_invalid),
+        num(c.n_low_value), num(c.n_dropped_invalid), num(c.n_parse_failed),
         num(row.checkpointCount), JSON.stringify(row.evidenceTiers ?? null), JSON.stringify(row.realCourse ?? null),
         JSON.stringify(row.findings ?? []), row.commentary == null ? null : JSON.stringify(row.commentary),
         row.modelCheckpoint, row.modelJudge, row.traceId, row.errorDetail ?? null,
+        row.rawJudgeError == null ? null : JSON.stringify(row.rawJudgeError),
       ],
     );
     const first = res[0];
@@ -310,13 +318,14 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
         `INSERT INTO ipd_episode_checkpoints (
            episode_audit_id, day_index, checkpoint_type, input_cutoff_at, input_event_count,
            retrieval_query, retrieval_failed, citation_ids, expected_course, status, error_detail,
-           model, trace_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::int[],$9::jsonb,$10,$11,$12,$13)`,
+           model, trace_id, uncited_entry_count, entry_count)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::int[],$9::jsonb,$10,$11,$12,$13,$14,$15)`,
         [
           auditId, cp.dayIndex, cp.checkpointType, cp.inputCutoffAt, cp.inputEventCount,
           cp.retrievalQuery, cp.retrievalFailed, cp.citationIds,
           cp.expectedCourse == null ? null : JSON.stringify(cp.expectedCourse),
           cp.status, cp.errorDetail, cp.model, cp.traceId,
+          num(cp.uncitedEntryCount), num(cp.entryCount),
         ],
       ).catch((e: unknown) => {
         warn(`saveEpisodeAudit checkpoint day ${cp.dayIndex} (${cp.checkpointType})`, e);
@@ -362,7 +371,8 @@ export async function checkpointsForAudit(auditId: string): Promise<EpisodeListR
   if (!/^[0-9a-fA-F-]{10,64}$/.test(auditId)) return [];
   return run(
     `SELECT day_index, checkpoint_type, generated_at, input_cutoff_at, input_event_count,
-            retrieval_query, retrieval_failed, citation_ids, expected_course, status, error_detail, model
+            retrieval_query, retrieval_failed, citation_ids, expected_course, status, error_detail, model,
+            uncited_entry_count, entry_count
      FROM ipd_episode_checkpoints
      WHERE episode_audit_id = $1
      ORDER BY (checkpoint_type = 'episode'), day_index ASC`, [auditId],

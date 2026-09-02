@@ -199,6 +199,9 @@ export function CheckpointPanels({ checkpoints }: { checkpoints: Row[] }) {
                 <span className="ml-2 text-[10.5px] font-normal text-slate-400">
                   cut-off {fmtStamp(c.input_cutoff_at)} · {s(c.input_event_count)} event(s) in · {s(c.status)}
                   {c.retrieval_failed ? ' · retrieval failed' : ''}
+                  {Number(c.entry_count ?? 0) > 0
+                    ? ` · ${Number(c.entry_count) - Number(c.uncited_entry_count ?? 0)}/${s(c.entry_count)} entries cited`
+                    : ''}
                 </span>
               </summary>
               {s(c.status) === 'error' ? (
@@ -222,6 +225,13 @@ export function CheckpointPanels({ checkpoints }: { checkpoints: Row[] }) {
                   <div className="mt-2 text-[10.5px] text-slate-400">
                     {ids.length ? `Retrieved chunk ids: ${ids.join(', ')}` : 'No normative excerpts were retrieved for this checkpoint.'}
                   </div>
+                  {ids.length > 0 && Number(c.entry_count ?? 0) > 0 && Number(c.uncited_entry_count ?? 0) === Number(c.entry_count)
+                    ? (
+                      <p className="mt-1 text-[11px] text-amber-800">
+                        Every entry in this checkpoint cites nothing, although {ids.length} excerpts were retrieved.
+                        Findings measured against it are capped at minor and context-dependent.
+                      </p>
+                    ) : null}
                 </div>
               )}
             </details>

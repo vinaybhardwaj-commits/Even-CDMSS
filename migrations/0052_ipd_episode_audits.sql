@@ -59,7 +59,12 @@ CREATE TABLE IF NOT EXISTS ipd_episode_audits (
   n_unassessable        INTEGER DEFAULT 0,
   n_concordant          INTEGER DEFAULT 0,
   n_low_value           INTEGER DEFAULT 0,
+  -- EVERY discarded finding: A2 domain drops plus parse failures. n_parse_failed breaks out the
+  -- second cause. Both exist because an episode once lost 5 of 15 divergence findings with every
+  -- counter reading 0 — a discard that leaves no number anywhere is indistinguishable from a clean
+  -- run, and it was only found by reading a trace.
   n_dropped_invalid     INTEGER DEFAULT 0,
+  n_parse_failed        INTEGER DEFAULT 0,
 
   checkpoint_count      INTEGER DEFAULT 0,
   evidence_tiers        JSONB,
@@ -72,11 +77,14 @@ CREATE TABLE IF NOT EXISTS ipd_episode_audits (
   trace_id              TEXT,
   de_identified         BOOLEAN DEFAULT TRUE,
 
-  -- Whatever went wrong on an episode that still produced a row: a pass that returned findings
-  -- this engine could not parse, a commentary that was rejected. These are NOT counted in
-  -- n_dropped_invalid — that counter means one thing only, "an A2 finding was written outside the
-  -- documentation domain", and a parse failure is a different fact about a different actor.
-  error_detail          TEXT
+  -- Whatever went wrong on an episode that still produced a row, in prose: findings repaired,
+  -- findings discarded, a rejected commentary, an entirely uncited expected course.
+  error_detail          TEXT,
+
+  -- The evidence behind error_detail: one entry per DISCARDED finding, carrying the raw fragment
+  -- (truncated to 1000 chars) and the validation error that killed it, tagged with its pass. The
+  -- counter says how many were lost; this says what they were.
+  raw_judge_error       JSONB
 );
 
 -- Idempotency: a re-run at the same engine version refreshes the row in place; a future engine
@@ -111,7 +119,14 @@ CREATE TABLE IF NOT EXISTS ipd_episode_checkpoints (
   status             TEXT,
   error_detail       TEXT,
   model              TEXT,
-  trace_id           TEXT
+  trace_id           TEXT,
+
+  -- Grounding, as SCALARS. An expected course whose every entry cites nothing is a failed
+  -- checkpoint that looks successful — it has a status of 'ok', a real retrieval_query and eight
+  -- real citation_ids on the row itself. These two columns make "how many entries did this
+  -- checkpoint actually ground?" answerable across the cohort in one query, with no jsonb parsing.
+  uncited_entry_count INTEGER DEFAULT 0,
+  entry_count         INTEGER DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS ipd_episode_checkpoints_audit_idx ON ipd_episode_checkpoints (episode_audit_id);

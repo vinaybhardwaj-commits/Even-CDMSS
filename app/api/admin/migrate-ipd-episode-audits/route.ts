@@ -53,6 +53,7 @@ export async function POST(req: NextRequest) {
       n_concordant          INTEGER DEFAULT 0,
       n_low_value           INTEGER DEFAULT 0,
       n_dropped_invalid     INTEGER DEFAULT 0,
+      n_parse_failed        INTEGER DEFAULT 0,
       checkpoint_count      INTEGER DEFAULT 0,
       evidence_tiers        JSONB,
       real_course           JSONB,
@@ -62,7 +63,8 @@ export async function POST(req: NextRequest) {
       model_judge           TEXT,
       trace_id              TEXT,
       de_identified         BOOLEAN DEFAULT TRUE,
-      error_detail          TEXT
+      error_detail          TEXT,
+      raw_judge_error       JSONB
     )`;
     steps.audits_table = 'ok';
 
@@ -71,6 +73,8 @@ export async function POST(req: NextRequest) {
     // added after the first successful run has to be applied explicitly. Same shape as the 0014
     // `report` column added to ipd_discharge_audits. All of this is idempotent.
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS error_detail TEXT`;
+    await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS raw_judge_error JSONB`;
+    await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS n_parse_failed INTEGER DEFAULT 0`;
     await sql`ALTER TABLE ipd_episode_audits ALTER COLUMN app_source SET DEFAULT 'standalone'`;
     steps.audits_columns = 'ok';
 
@@ -79,7 +83,8 @@ export async function POST(req: NextRequest) {
     for (const col of [
       'divergence_index', 'completeness_pct', 'n_findings', 'n_divergence_pass', 'n_fidelity_pass',
       'n_omission', 'n_commission', 'n_timing', 'n_sequencing', 'n_divergent', 'n_context_dependent',
-      'n_unassessable', 'n_concordant', 'n_low_value', 'n_dropped_invalid', 'checkpoint_count',
+      'n_unassessable', 'n_concordant', 'n_low_value', 'n_dropped_invalid', 'n_parse_failed',
+      'checkpoint_count',
     ]) {
       // identifier interpolation, not a value: `col` comes from this literal list and never from a
       // request, so there is nothing here for a caller to influence.
@@ -108,9 +113,13 @@ export async function POST(req: NextRequest) {
       status             TEXT,
       error_detail       TEXT,
       model              TEXT,
-      trace_id           TEXT
+      trace_id           TEXT,
+      uncited_entry_count INTEGER DEFAULT 0,
+      entry_count         INTEGER DEFAULT 0
     )`;
     await sql`CREATE INDEX IF NOT EXISTS ipd_episode_checkpoints_audit_idx ON ipd_episode_checkpoints (episode_audit_id)`;
+    await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS uncited_entry_count INTEGER DEFAULT 0`;
+    await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS entry_count INTEGER DEFAULT 0`;
     steps.checkpoints_table = 'ok';
 
     // ── citation_ids must be INTEGER[] ────────────────────────────────────────────────────────
