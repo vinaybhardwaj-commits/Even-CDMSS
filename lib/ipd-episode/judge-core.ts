@@ -36,6 +36,7 @@ import {
   type EpisodeEvent, type EvidenceTier,
 } from './assemble-core';
 import { renderEvent, type CheckpointEntryRef, type ExpectedCourse } from './checkpoint-core';
+import type { Resolution, ResolvableEntry, ResolvedOutcome } from './resolve-core';
 
 // ── enums (PRD §3.4.2) ───────────────────────────────────────────────────────────────────────
 
@@ -95,6 +96,17 @@ export interface EpisodeFinding {
   verdict_before_cap: Verdict | null;
   severity_before_cap: Severity | null;
   capped: boolean;
+  /**
+   * HOW THIS FINDING WAS DECIDED (decision 33). Non-null on every finding the deterministic
+   * resolver produced; null on the judged findings (commission / timing / sequencing) and on
+   * fidelity findings, which no lookup can settle.
+   */
+  resolution: Resolution | null;
+  /** The matcher that resolved it, and what it matched — so the lookup is re-runnable by hand. */
+  matcher_kind: string | null;
+  matcher_terms: string[] | null;
+  matched_term: string | null;
+  confound: string | null;
 }
 
 const oneOf = <T extends string>(allowed: readonly T[], v: unknown): T | null =>
@@ -339,9 +351,58 @@ export function parseFindings(text: string, opts: ParseFindingsOptions): ParseFi
       verdict_before_cap: verdict,
       severity_before_cap: severity,
       capped: false,
+      resolution: null,
+      matcher_kind: null, matcher_terms: null, matched_term: null, confound: null,
     });
   });
   return { findings, unparseable, repaired, failures };
+}
+
+/**
+ * §3.4 as amended by decision 33: the diff pass no longer decides omissions, so an `omission`
+ * finding from A1 is a second answer to a question the resolver has already settled — and an
+ * unstable one, which is the whole reason the resolver exists. Dropped and counted.
+ *
+ * Fidelity findings are untouched: A2 is normalised to `commission` by its own rule and never
+ * produces omissions in the first place.
+ */
+export function dropJudgedOmissions(findings: EpisodeFinding[]): { kept: EpisodeFinding[]; dropped: number } {
+  const kept: EpisodeFinding[] = [];
+  let dropped = 0;
+  for (const f of findings) {
+    // ⚠️ ONLY THE JUDGED ONES. The resolver's findings are omissions too — that is precisely what
+    // it decides — and they are identified by carrying a `resolution`. Dropping those would delete
+    // the entire omission analysis the decision was made to create.
+    const judged = f.resolution == null;
+    if (judged && f.pass === 'divergence' && f.finding_type === 'omission') { dropped++; continue; }
+    kept.push(f);
+  }
+  return { kept, dropped };
+}
+
+/**
+ * §4.2 as a HARD POSTCONDITION, in the other direction (item 4).
+ *
+ * §4.2 already stops a `divergent` claim that rests on nothing. This stops the opposite abuse, and
+ * it is the one that actually happened: across three runs of IP-1286 the judge returned 23
+ * `unassessable` verdicts, and NOT ONE of them had an empty evidence_basis or rested on a Tier C
+ * source — ten cited Tier A. `unassessable` was being used to mean "I would rather not say",
+ * which silently zeroes a finding that the evidence could have supported.
+ *
+ * A finding may claim `unassessable` only if the record genuinely cannot answer: empty basis, or
+ * every cited source Tier C. Anything else is rewritten to `context_dependent` — the verdict that
+ * actually means "unclear" — and counted in `n_unassessable_rejected`.
+ *
+ * Resolver findings are exempt: `absent_class_missing` IS the honest gap, and it is established by
+ * code rather than claimed by a model.
+ */
+export function enforceUnassessable(f: EpisodeFinding): { finding: EpisodeFinding; rejected: boolean } {
+  if (f.verdict !== 'unassessable') return { finding: f, rejected: false };
+  if (f.resolution === 'absent_class_missing') return { finding: f, rejected: false };
+  const tiers = f.evidence_basis.map((b) => tierForTable(b.source_table));
+  const genuinelyUnanswerable = tiers.length === 0 || tiers.every((t) => t === 'C');
+  if (genuinelyUnanswerable) return { finding: f, rejected: false };
+  return { finding: { ...f, verdict: 'context_dependent' }, rejected: true };
 }
 
 // ── the code-enforced rules ──────────────────────────────────────────────────────────────────
@@ -355,6 +416,13 @@ export function parseFindings(text: string, opts: ParseFindingsOptions): ParseFi
  */
 export function applyTierCRule(f: EpisodeFinding): { finding: EpisodeFinding; rewritten: boolean } {
   if (f.verdict !== 'divergent') return { finding: f, rewritten: false };
+  // ⚠️ RESOLVER FINDINGS ARE EXEMPT (decision 33). This rule exists to stop a MODEL asserting a
+  // divergence it cannot evidence. A resolver `absent_class_present` is the opposite: code looked,
+  // the class was represented, nothing matched — and an absence has nothing to cite BY DEFINITION,
+  // so an empty evidence_basis is the correct and only honest shape for it. Without this exemption
+  // §4.2 would rewrite every code-established omission to `unassessable` and delete the entire
+  // signal the decision was made to produce.
+  if (f.resolution != null) return { finding: f, rewritten: false };
   const tiers = f.evidence_basis.map((b) => tierForTable(b.source_table));
   const onlyC = tiers.length === 0 || tiers.every((t) => t === 'C');
   if (!onlyC) return { finding: f, rewritten: false };
@@ -459,17 +527,29 @@ export function normalizeFidelityFindings(findings: EpisodeFinding[]): { kept: E
  */
 export function resolveFindingCitations(
   findings: EpisodeFinding[], checkpointChunkIds: Map<string, readonly number[]>,
+  entryRefs?: Map<string, CheckpointEntryRef>,
 ): EpisodeFinding[] {
   return findings.map((f) => {
     if (f.pass !== 'divergence' || !f.checkpoint_ref) return { ...f, citation_ids: [] };
     const checkpointId = f.checkpoint_ref.split('/')[0];
     const chunkIds = checkpointChunkIds.get(checkpointId);
-    if (!chunkIds || !chunkIds.length) return { ...f, citation_ids: [] };
     const out: number[] = [];
-    for (const ordinal of f.citation_ids) {
-      if (!Number.isInteger(ordinal) || ordinal < 1 || ordinal > chunkIds.length) continue;
-      const chunkId = chunkIds[ordinal - 1];
-      if (Number.isFinite(chunkId) && !out.includes(chunkId)) out.push(chunkId);
+    if (chunkIds && chunkIds.length) {
+      for (const ordinal of f.citation_ids) {
+        if (!Number.isInteger(ordinal) || ordinal < 1 || ordinal > chunkIds.length) continue;
+        const chunkId = chunkIds[ordinal - 1];
+        if (Number.isFinite(chunkId) && !out.includes(chunkId)) out.push(chunkId);
+      }
+    }
+    // ⚠️ INHERIT FROM THE ENTRY — THIS IS WHERE THE CITATION WAS BEING LOST (item 8). 26 of 30
+    // findings were uncited while every checkpoint carried 8 chunk ids, and the reason is that
+    // NOTHING CARRIED THEM ACROSS. The prompt asks the model to repeat the entry's citation
+    // numbers onto the finding, and models mostly do not bother; the entry itself was cited all
+    // along. A finding measured against an entry stands on that entry's evidence by construction,
+    // so when it names no citation of its own it inherits the entry's.
+    if (!out.length) {
+      const entry = entryRefs?.get(f.checkpoint_ref);
+      if (entry) for (const id of entry.citation_ids) if (!out.includes(id)) out.push(id);
     }
     return { ...f, citation_ids: out };
   });
@@ -599,6 +679,10 @@ export interface FindingCounters {
   n_dropped_invalid: number;
   /** The parse-failure half of the above, kept separately so the two causes stay distinguishable. */
   n_parse_failed: number;
+  /** `unassessable` verdicts the postcondition rewrote to context_dependent (item 4). */
+  n_unassessable_rejected: number;
+  /** Omission findings the diff pass emitted anyway, dropped under decision 33 (item 3). */
+  n_judged_omissions_dropped: number;
 }
 
 /**
@@ -620,6 +704,8 @@ export function countFindings(findings: EpisodeFinding[], domainDropped: number,
     n_low_value: 0,
     n_dropped_invalid: domainDropped + parseFailed,
     n_parse_failed: parseFailed,
+    n_unassessable_rejected: 0,
+    n_judged_omissions_dropped: 0,
   };
   for (const f of findings) {
     if (f.pass === 'divergence') c.n_divergence_pass++; else c.n_fidelity_pass++;
@@ -663,6 +749,8 @@ export interface FinalizeResult {
   n_fidelity_normalized: number;
   /** Findings whose severity was cut from major because only literature backed them. */
   n_literature_capped: number;
+  n_unassessable_rejected: number;
+  n_judged_omissions_dropped: number;
   /** Ids of findings that ANY cap touched — the input to `scoringStatusFor`, and the source of
    *  `capped_count` on the audit row. */
   capped_finding_ids: Set<string>;
@@ -678,8 +766,10 @@ export function finalizeFindings(
   sourceById: Map<number, string> = new Map(),
   normativeSources: readonly string[] = [],
 ): FinalizeResult {
-  const { kept, dropped, normalized } = normalizeFidelityFindings(raw);
+  const omissionDrop = dropJudgedOmissions(raw);
+  const { kept, dropped, normalized } = normalizeFidelityFindings(omissionDrop.kept);
   let rewritten = 0;
+  let unassessableRejected = 0;
   let capped = 0;
   let litCapped = 0;
   const capped_finding_ids = new Set<string>();
@@ -701,10 +791,14 @@ export function finalizeFindings(
     const tierRes = applyTierCRule(litRes.finding);
     if (tierRes.rewritten) rewritten++;
 
+    // §4.2 in the other direction: `unassessable` must be earned, not asserted (item 4).
+    const unRes = enforceUnassessable(tierRes.finding);
+    if (unRes.rejected) unassessableRejected++;
+
     // Stamp the audit trail from what the MODEL said, before any of the three rules ran, so the
     // caps can be recounted from the stored row rather than trusted from a log line.
     const stamped: EpisodeFinding = {
-      ...tierRes.finding,
+      ...unRes.finding,
       verdict_before_cap: f0.verdict,
       severity_before_cap: f0.severity,
       capped: capRes.capped || litRes.capped,
@@ -713,12 +807,18 @@ export function finalizeFindings(
   });
   return {
     findings,
-    counters: countFindings(findings, dropped, parseFailed),
+    counters: {
+      ...countFindings(findings, dropped, parseFailed),
+      n_unassessable_rejected: unassessableRejected,
+      n_judged_omissions_dropped: omissionDrop.dropped,
+    },
     divergence_index: divergenceIndex(findings),
     n_tier_c_rewritten: rewritten,
     n_uncited_capped: capped,
     n_fidelity_normalized: normalized,
     n_literature_capped: litCapped,
+    n_unassessable_rejected: unassessableRejected,
+    n_judged_omissions_dropped: omissionDrop.dropped,
     capped_finding_ids,
     provenance_counts,
   };
@@ -761,6 +861,75 @@ export function scoringStatusFor(a: {
  *  null is the only honest way to say that in an integer column. */
 export function storedDivergenceIndex(index: number, status: ScoringStatus): number | null {
   return status === 'no_expectations' ? null : index;
+}
+
+// ── resolver findings (decision 33) ─────────────────────────────────────────────────────────
+
+/**
+ * Turn the deterministic resolver's output into findings, in the §3.4.2 shape.
+ *
+ * These carry `pass = 'divergence'` because that is what they are — a divergence between the
+ * expected course and the record — but nothing in them was judged. Verdict, severity and statement
+ * all come from the resolver; `resolution` records which of its four paths produced them; the
+ * matcher and matched term are stored so any reader can re-run the lookup by hand.
+ *
+ * `evidence_basis` is the matched event when there was one. On an ABSENCE there is deliberately
+ * nothing to cite — the claim is that no such record exists, and citing an unrelated row to dress
+ * it up would be worse than an empty basis. §4.2's Tier C rule does not fire on these because
+ * their verdicts are set by lookup, not asserted from evidence.
+ */
+export function findingsFromResolved(
+  resolved: readonly { entry: ResolvableEntry; outcome: ResolvedOutcome }[],
+  domainForSection: (section: string) => Domain,
+): EpisodeFinding[] {
+  return resolved.map((r, i) => {
+    const { entry, outcome } = r;
+    const basis: EvidenceBasisItem[] = outcome.matchedEvent
+      ? [{
+          source_table: outcome.matchedEvent.provenance.source_table,
+          source_record_id: outcome.matchedEvent.provenance.source_record_id,
+          source_timestamp: outcome.matchedEvent.provenance.source_timestamp,
+        }]
+      : [];
+    return {
+      finding_id: `r-${i + 1}-${entry.ref}`,
+      pass: 'divergence',
+      // The resolver answers "did the expected thing happen", so every finding it makes is an
+      // omission question — including the ones where the answer is "yes".
+      finding_type: 'omission',
+      verdict: outcome.verdict,
+      domain: domainForSection(entry.section),
+      day_index: entry.dayIndex,
+      checkpoint_ref: entry.ref,
+      statement: outcome.statement,
+      severity: outcome.severity,
+      evidence_tier: outcome.matchedEvent ? outcome.matchedEvent.evidence_tier : 'C',
+      evidence_basis: basis,
+      author_name: null, author_role: null, responsible_clinician_id: null,
+      lvc_category: null,
+      citation_ids: entry.citationIds,
+      citation_provenance: null,
+      verdict_before_cap: outcome.verdict,
+      severity_before_cap: outcome.severity,
+      capped: false,
+      resolution: outcome.resolution,
+      matcher_kind: entry.matcher?.kind ?? null,
+      matcher_terms: entry.matcher?.terms ?? null,
+      matched_term: outcome.matchedTerm,
+      confound: outcome.confound,
+    };
+  });
+}
+
+/** Checkpoint section → finding domain. The four sections map one-to-one onto §3.4.2's domains. */
+export function domainForSection(section: string): Domain {
+  switch (section) {
+    case 'diagnostics': return 'diagnostics';
+    case 'therapeutics': return 'therapeutics';
+    case 'monitoring': return 'monitoring';
+    case 'escalation': return 'escalation';
+    default: return 'documentation';
+  }
 }
 
 // ── commentary (PRD §3.6) ────────────────────────────────────────────────────────────────────

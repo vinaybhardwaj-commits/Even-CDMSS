@@ -35,7 +35,7 @@ import {
 } from './db13';
 import {
   buildOrderEvents, componentValue, dayIndexFor, isoFromEpochMs, isoFromTimestamp, losDaysFor,
-  noteSummaryFrom, normalizeAuthorName, parseComponentJson, sortEvents,
+  noteSummaryFrom, normalizeAuthorName, parseComponentJson, queryNarrativeFrom, sortEvents,
   type BillingOrderRow, type EpisodeEvent, type EpisodeEventType,
 } from './assemble-core';
 
@@ -100,6 +100,10 @@ function templateEvent(
     detail: {
       template_name: s(row.template_name),
       status: s(row.status),
+      // ⚠️ THE RETRIEVAL-SAFE NARRATIVE, built from the whitelist and carried on the event so the
+      // query builder never has to strip the full summary again (item 7). The full `summary` above
+      // remains the RECORD — everything the note said — and is what the prompts and the UI read.
+      query_narrative: queryNarrativeFrom(entries),
       ...extraDetail,
     },
     author_name: normalizeAuthorName(row.finalized_by_username),

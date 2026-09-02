@@ -211,6 +211,10 @@ export interface EpisodeAuditRow {
   counters: FindingCounters;
   /** How many findings any cap touched — recountable from `findings[].capped`. */
   cappedCount: number;
+  /** The diff pass's temperature, recorded so the claim is checkable from the row (item 9). */
+  judgeTemperature?: number | null;
+  /** present / absent_class_present / absent_class_missing / ambiguous_confounded counts. */
+  resolutionCounts?: unknown;
   checkpointCount: number;
   evidenceTiers: unknown;
   realCourse: unknown;
@@ -234,6 +238,8 @@ export interface CheckpointWriteRow {
   inputEventCount: number;
   retrievalQuery: string | null;
   retrievalFailed: boolean;
+  /** No retrieval was attempted — the query was empty. Not the same as a failure. */
+  retrievalSkipped: boolean;
   citationIds: number[];
   expectedCourse: unknown;
   status: 'ok' | 'error';
@@ -309,12 +315,15 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
          n_findings, n_divergence_pass, n_fidelity_pass, n_omission, n_commission, n_timing,
          n_sequencing, n_divergent, n_context_dependent, n_unassessable, n_concordant,
          n_low_value, n_dropped_invalid, n_parse_failed,
+         n_unassessable_rejected, n_judged_omissions_dropped,
+         judge_temperature, resolution_counts,
          capped_count, checkpoint_count, evidence_tiers, real_course, findings, commentary,
          model_checkpoint, model_judge, trace_id, error_detail, raw_judge_error)
        VALUES ($1,TRUE,
                $2,$3,$4,$5,$6,$7, $8,$9,$10,$11,$12, $13,$14,$15,
                $16,$17,$18,$19,$20,$21, $22,$23,$24,$25,$26, $27,$28,$29,
-               $30,$31,$32::jsonb,$33::jsonb,$34::jsonb,$35::jsonb, $36,$37,$38,$39,$40::jsonb)
+               $30,$31, $32,$33::jsonb,
+               $34,$35,$36::jsonb,$37::jsonb,$38::jsonb,$39::jsonb, $40,$41,$42,$43,$44::jsonb)
        RETURNING id`,
       [
         runSeq,
@@ -331,6 +340,8 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
         num(c.n_commission), num(c.n_timing), num(c.n_sequencing), num(c.n_divergent),
         num(c.n_context_dependent), num(c.n_unassessable), num(c.n_concordant),
         num(c.n_low_value), num(c.n_dropped_invalid), num(c.n_parse_failed),
+        num(c.n_unassessable_rejected), num(c.n_judged_omissions_dropped),
+        row.judgeTemperature ?? null, JSON.stringify(row.resolutionCounts ?? null),
         num(row.cappedCount), num(row.checkpointCount), JSON.stringify(row.evidenceTiers ?? null), JSON.stringify(row.realCourse ?? null),
         JSON.stringify(row.findings ?? []), row.commentary == null ? null : JSON.stringify(row.commentary),
         row.modelCheckpoint, row.modelJudge, row.traceId, row.errorDetail ?? null,
@@ -355,9 +366,9 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
            retrieval_query, retrieval_failed, citation_ids, expected_course, status, error_detail,
            model, trace_id, uncited_entry_count, entry_count, citation_sources,
            retrieved_titles, retrieval_offtopic, offtopic_excerpt_count, day0_query_from_ot,
-           temperature, seed)
+           temperature, seed, retrieval_skipped)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8::int[],$9::jsonb,$10,$11,$12,$13,$14,$15,$16::jsonb,
-                 $17::text[],$18,$19,$20,$21,$22)`,
+                 $17::text[],$18,$19,$20,$21,$22,$23)`,
         [
           auditId, cp.dayIndex, cp.checkpointType, cp.inputCutoffAt, cp.inputEventCount,
           cp.retrievalQuery, cp.retrievalFailed, cp.citationIds,
@@ -366,7 +377,7 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
           num(cp.uncitedEntryCount), num(cp.entryCount), JSON.stringify(cp.citationSources ?? {}),
           cp.retrievedTitles ?? [], cp.retrievalOffTopic ?? false,
           num(cp.offTopicExcerptCount), cp.day0QueryFromOt ?? false,
-          cp.temperature, cp.seed,
+          cp.temperature, cp.seed, cp.retrievalSkipped ?? false,
         ],
       ).catch((e: unknown) => {
         warn(`saveEpisodeAudit checkpoint day ${cp.dayIndex} (${cp.checkpointType})`, e);
@@ -415,7 +426,7 @@ export async function checkpointsForAudit(auditId: string): Promise<EpisodeListR
     `SELECT day_index, checkpoint_type, generated_at, input_cutoff_at, input_event_count,
             retrieval_query, retrieval_failed, citation_ids, expected_course, status, error_detail, model,
             uncited_entry_count, entry_count, citation_sources, retrieved_titles, retrieval_offtopic,
-            offtopic_excerpt_count, day0_query_from_ot, temperature, seed
+            offtopic_excerpt_count, day0_query_from_ot, temperature, seed, retrieval_skipped
      FROM ipd_episode_checkpoints
      WHERE episode_audit_id = $1
      ORDER BY (checkpoint_type = 'episode'), day_index ASC`, [auditId],

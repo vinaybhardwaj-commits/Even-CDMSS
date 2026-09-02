@@ -27,12 +27,13 @@ import {
 import { assembleEpisode, type AssembledEpisode } from './assemble';
 import { admissionContextLine, renderExpectedCourse, type CheckpointEntryRef } from './checkpoint-core';
 import { checkpointModel, normativeSourcesForProvenance, runCheckpoint, type CheckpointResult } from './checkpoint';
-import { judgeModel, runCommentaryPass, runDiffPass, runFidelityPass } from './judge';
+import { judgeModel, runCommentaryPass, runDiffPass, runFidelityPass, JUDGE_TEMPERATURE } from './judge';
 import {
   evidenceTiersOf, finalizeFindings, completenessPct, resolveFindingCitations,
-  scoringStatusFor, storedDivergenceIndex,
+  scoringStatusFor, storedDivergenceIndex, findingsFromResolved, domainForSection,
   type EpisodeFinding,
 } from './judge-core';
+import { resolveAll, resolutionCounts, type ResolvableEntry } from './resolve-core';
 import { fetchProgressNotes, fetchDischargeSummary } from './db13';
 import {
   IPD_EPISODE_ENGINE_VERSION, fetchExtractionByIpUid, recordSkip, clearSkip, saveEpisodeAudit,
@@ -319,6 +320,34 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
     }
     const normativeSources = normativeSourcesForProvenance();
 
+    // ── 3b. RESOLVE THE EXPECTATIONS DETERMINISTICALLY (decision 33) ──────────────────────────
+    // Every expected entry becomes a finding by LOOKUP, not by judgement. This is the whole of the
+    // omission analysis now: code asks whether a matching event exists, and the four answers are
+    // fixed. Nothing here can differ between two runs on the same checkpoints.
+    const resolvableEntries: ResolvableEntry[] = [];
+    for (const c of checkpoints) {
+      const course = c.expectedCourse;
+      if (!course) continue;
+      const push = (section: string, idx: number, item: string, rationale: string, byDay: number | null,
+                    citationIds: number[], matcher: ResolvableEntry['matcher'], sev: ResolvableEntry['proposedSeverity']) => {
+        resolvableEntries.push({
+          ref: `${c.checkpointId}/${section}/${idx + 1}`,
+          checkpointId: c.checkpointId, dayIndex: c.dayIndex, section,
+          item, rationale, byDay, citationIds, matcher, proposedSeverity: sev,
+        });
+      };
+      course.expected_diagnostics.forEach((e, i) => push('diagnostics', i, e.item, e.rationale, e.by_day, e.citation_ids, e.matcher, e.proposed_severity));
+      course.expected_therapeutics.forEach((e, i) => push('therapeutics', i, e.item, e.rationale, e.by_day, e.citation_ids, e.matcher, e.proposed_severity));
+      course.expected_monitoring.forEach((e, i) => push('monitoring', i, e.item, e.rationale, null, e.citation_ids, e.matcher, e.proposed_severity));
+      course.escalation_triggers.forEach((e, i) => push('escalation', i, `${e.trigger} → ${e.action}`, e.action, null, e.citation_ids, e.matcher, e.proposed_severity));
+    }
+    // Resolved against the SAME filtered list the diff pass sees — no discharge event, so an
+    // expectation cannot be satisfied by something recorded only in the discharge summary.
+    const resolverEvents = diffPassEvents(events);
+    const resolved = resolveAll(resolvableEntries, resolverEvents);
+    const resolverFindings = findingsFromResolved(resolved, domainForSection);
+    const resolution_counts = resolutionCounts(resolved);
+
     // ── 4. diff (A1) — blind: the discharge event is filtered out ──
     const a1 = await runDiffPass({
       traceId, admissionContext, events: diffPassEvents(events), checkpointBlocks, model: modelJudge,
@@ -343,7 +372,12 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
     // ── code-enforced rules, then the score ──
     // Ordinals → real chunk ids FIRST, per referencing checkpoint, so everything downstream (the
     // uncited cap, the stored findings, the UI) speaks one vocabulary.
-    const raw: EpisodeFinding[] = resolveFindingCitations([...a1.findings, ...a2.findings], checkpointChunkIds);
+    const raw: EpisodeFinding[] = [
+      // the deterministic half: already carries its entry's citations, so it bypasses the
+      // ordinal resolution the judged findings need
+      ...resolverFindings,
+      ...resolveFindingCitations([...a1.findings, ...a2.findings], checkpointChunkIds, entryRefs),
+    ];
 
     // Findings discarded after the repair pass. These now COUNT (item 5): they join the A2 domain
     // drops in n_dropped_invalid and are reported alone in n_parse_failed, so no discard can leave
@@ -442,6 +476,7 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       inputEventCount: c.inputEventCount,
       retrievalQuery: c.retrievalQuery || null,
       retrievalFailed: c.retrievalFailed,
+      retrievalSkipped: c.retrievalSkipped,
       citationIds: c.citationIds,
       expectedCourse: c.expectedCourse,
       status: c.status,
@@ -477,6 +512,8 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       completenessPct: completenessPct(sourcesPresent),
       counters: final.counters,
       cappedCount: final.capped_finding_ids.size,
+      judgeTemperature: JUDGE_TEMPERATURE,
+      resolutionCounts: resolution_counts,
       checkpointCount: checkpoints.length,
       evidenceTiers: evidenceTiersOf(sourcesPresent),
       realCourse: events,
@@ -524,6 +561,11 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
         ...(day0FromOt ? ['day 0 retrieval fell back to the OT surgery name'] : []),
         `${final.capped_finding_ids.size} of ${final.counters.n_findings} finding(s) capped`,
         `citations by provenance: ${Object.entries(final.provenance_counts).filter(([, n]) => n > 0).map(([k, n]) => `${k} ${n}`).join(', ') || 'none'}`,
+        `resolver: ${Object.entries(resolution_counts).map(([k, n]) => `${k} ${n}`).join(', ')}`,
+        `pass contribution: resolver ${resolverFindings.length}, diff ${a1.findings.length}, fidelity ${a2.findings.length}`,
+        ...(final.counters.n_judged_omissions_dropped ? [`${final.counters.n_judged_omissions_dropped} omission finding(s) from the diff pass dropped — code owns omissions now`] : []),
+        ...(final.counters.n_unassessable_rejected ? [`${final.counters.n_unassessable_rejected} unassessable verdict(s) rewritten to context_dependent — evidence did not support the claim`] : []),
+        ...(checkpoints.filter((c) => c.retrievalSkipped).length ? [`${checkpoints.filter((c) => c.retrievalSkipped).length} checkpoint(s) generated with NO retrieval — the query was empty`] : []),
         ...(repaired ? [`${repaired} finding(s) kept by the enum repair pass`] : []),
         ...(unparseable ? [`${unparseable} finding(s) discarded — see raw_judge_error and the trace`] : []),
         ...(totalEntries && uncitedEntries === totalEntries ? [`all ${totalEntries} expected-course entries are uncited`] : []),

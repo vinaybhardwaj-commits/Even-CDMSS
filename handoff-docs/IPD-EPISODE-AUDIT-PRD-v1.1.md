@@ -60,6 +60,29 @@ This PRD specifies a second IPD engine. It assembles the whole episode, builds a
 29. **Progress notes are read by a new reader**, not by `fetchProgressNotes` in `lib/readmission/db13.ts`. That reader orders by `created_at`, which matches the clinical time in 20 percent of rows, and does not select the author fields.
 30. **Note text passes through the repo's existing de-identifier** before it reaches an event summary or a prompt.
 
+### 1.5 Decision 33 — omission is a database question (V, 2026-09-02, after fix round 6)
+
+33. **Whether an expected action happened is decided by CODE, not by the model.** The checkpoint model proposes what to expect, emits a machine-checkable `matcher` and a `proposed_severity` for each expectation while it is still blinded, and reasons about what it cannot check. A deterministic resolver (`lib/ipd-episode/resolve-core.ts`) then answers whether it happened, by lookup against the assembled event list.
+
+**The evidence for the change.** Three runs of IP-1286 on byte-identical checkpoints (`md5(expected_course)`, `md5(retrieval_query)`, `md5(citation_ids)` each `distinct = 1`) produced `divergence_index` 96, 100 and 80. Across those runs **zero** findings had an empty `evidence_basis` and **zero** rested on a Tier C source, yet the judge emitted 0, 12 and 11 `unassessable` verdicts, ten of them citing Tier A. The Haiku layer was reproducible; the entire spread sat in the Opus diff pass, on a question that is not a judgement.
+
+**The four resolutions**, recorded on every resolver finding in a new `resolution` field, together with the matcher that decided it:
+
+| resolution | condition | verdict |
+|---|---|---|
+| `present` | a matching event exists at or after the entry's `by_day` | `concordant` |
+| `absent_class_present` | no match, and the data class IS represented in this episode | `divergent`, at the severity proposed at generation |
+| `absent_class_missing` | no match, and the class is not represented at all | `unassessable` — **the only path that may produce it** |
+| `ambiguous_confounded` | the class exists but cannot settle this question | `context_dependent` |
+
+`vitals` and `imaging` are never represented: neither is in the KX mirror (reference §1.7 — "treat radiology as unavailable"; the Even-native `chart_*` layer's encounter namespace does not join). Confounds are enumerated in code — a bundled billing line can hide a dispensed drug, a panel order can contain an analyte without naming it, an operative step inside a recorded procedure is not separately billed.
+
+**Consequences.** §3.4's diff pass no longer emits `omission` findings; it keeps `commission`, `timing` and `sequencing`, and the appropriateness judgement on those. §3.5's fidelity pass is unchanged. §4.2 is additionally enforced as a postcondition in the other direction (§4.2a below), and is exempted for resolver findings, since an absence has nothing to cite by definition.
+
+### 4.2a `unassessable` must be earned (added 2026-09-02, decision 33)
+
+A finding may carry `unassessable` only if its `evidence_basis` is empty or every cited source is Tier C. Anything else is rewritten to `context_dependent` in code and counted in `n_unassessable_rejected`. Resolver findings with `resolution = 'absent_class_missing'` are exempt: that gap was established by code rather than claimed by a model.
+
 ### 1.4 Settled with V on 2026-09-02, after v1.1 was drafted
 
 31. **Build on branch `ipd-episode-audit`, not on main.** V chose this over the direct-to-main standing rule for this build. The builder creates the branch from the current `main`, commits there, and pushes the branch. Vercel builds a preview deployment. Preview and Production share the same `DATABASE_URL`, `METABASE_API_KEY`, and Bedrock variables (V confirmed), so the migration and the validation run on the preview URL write to the real Neon database. The branch merges to `main` after the orchestrator's verification in §14 passes and before V's clinical gate. The flag is off throughout, so the merge shows nothing to clinicians.

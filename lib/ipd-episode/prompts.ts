@@ -73,12 +73,30 @@ DISCIPLINE.
 - If the record is too thin to expect anything in a category, return an empty array for it and say so in uncertainty.
 - Never name a patient. Never write an identifier that is not already in the input.
 
+EVERY EXPECTATION MUST BE MACHINE-CHECKABLE. Code, not a model, decides whether an expected action happened — it looks the answer up in the record. For that it needs two things from you, on every entry:
+
+- matcher: {"kind": one of lab | drug | imaging | procedure | note | vitals | other, "terms": ["...", "..."]}
+  The terms are what a matching record would be CALLED. Give the generic drug name and the common brand, the test as a lab would name it, the procedure as an operation note would name it. Two or three terms is usually right. Do not put a sentence in a term.
+  Choose the kind by where the evidence would live: a drug order is "drug", a blood test is "lab", an X-ray or scan is "imaging", an operation or bedside procedure is "procedure", something documented in a note is "note", a pulse or blood pressure is "vitals". Use "other" only when none of those fit — an entry with "other" cannot be checked and will be reported as uncheckable.
+
+- proposed_severity: minor | moderate | major — HOW SERIOUS IT WOULD BE IF THIS DID NOT HAPPEN. Decide it NOW, while you still do not know how the admission ended. That is the point: a severity chosen here cannot be coloured by hindsight, because you do not have any.
+  major: plausible serious harm, or a missed escalation. moderate: a real departure with limited consequence. minor: small or arguable.
+
+Worked example of a complete therapeutic entry:
+
+  {"item": "Pharmacological VTE prophylaxis within 24 hours of surgery unless contraindicated",
+   "by_day": 0,
+   "rationale": "Abdominal surgery in a diabetic hypertensive patient; moderate-to-high VTE risk.",
+   "citation_ids": [3],
+   "matcher": {"kind": "drug", "terms": ["enoxaparin", "heparin", "clexane", "dalteparin"]},
+   "proposed_severity": "major"}
+
 Return ONE JSON object and nothing else:
 {
-  "expected_diagnostics": [{"item": "string", "by_day": 0, "rationale": "string", "citation_ids": []}],
-  "expected_therapeutics": [{"item": "string", "by_day": 0, "rationale": "string", "citation_ids": []}],
-  "expected_monitoring": [{"item": "string", "frequency": "string", "rationale": "string", "citation_ids": []}],
-  "escalation_triggers": [{"trigger": "string", "action": "string", "citation_ids": []}],
+  "expected_diagnostics": [{"item": "string", "by_day": 0, "rationale": "string", "citation_ids": [], "matcher": {"kind": "lab", "terms": []}, "proposed_severity": "moderate"}],
+  "expected_therapeutics": [{"item": "string", "by_day": 0, "rationale": "string", "citation_ids": [], "matcher": {"kind": "drug", "terms": []}, "proposed_severity": "moderate"}],
+  "expected_monitoring": [{"item": "string", "frequency": "string", "rationale": "string", "citation_ids": [], "matcher": {"kind": "note", "terms": []}, "proposed_severity": "minor"}],
+  "escalation_triggers": [{"trigger": "string", "action": "string", "citation_ids": [], "matcher": {"kind": "other", "terms": []}, "proposed_severity": "moderate"}],
   "expected_los_days": 0,
   "expected_disposition": "string",
   "uncertainty": ["string"]
@@ -94,18 +112,22 @@ YOUR TASK: report each place where the real course left the expected one.
 
 FINDING TYPES AND VERDICTS ARE TWO DIFFERENT FIELDS. finding_type says WHAT KIND of departure this is; verdict says WHAT YOU CONCLUDE about it. "concordant" is a VERDICT. It is never a finding_type, and a finding whose type reads "concordant" is malformed.
 
-finding_type is always exactly one of: omission | commission | timing | sequencing.
-- omission: a checkpoint expected an action and no matching event exists.
+⚠️ DO NOT REPORT OMISSIONS. Whether an expected action happened is decided by CODE, which looks it up in the record; a separate deterministic resolver has already answered that question for every expectation, and any omission you report here would be a second, unstable answer to a settled one. Report only what a lookup cannot settle.
+
+finding_type is exactly one of: commission | timing | sequencing.
 - commission: an event happened that no checkpoint expected and no later evidence justifies.
 - timing: the expected action happened, but later than expected.
 - sequencing: expected actions happened in an order that inverts a stated dependency.
+
+The value "omission" is not available to you. A finding you return with finding_type "omission" is dropped.
 
 To record that something went RIGHT — the diet was tolerated, the dressing stayed dry, glucose was monitored as expected — keep a finding_type from the four above (the kind of departure you looked for) and set verdict to "concordant". Do not put "concordant" in finding_type.
 
 VERDICTS.
 - divergent: the record shows the course left the expectation, and the evidence supports saying so.
 - context_dependent: it may be a divergence, but a legitimate reason is plausible and unrecorded.
-- unassessable: the record cannot answer the question. Say this rather than guessing.
+- unassessable: THE MIRROR CANNOT ANSWER — the entire data class is absent from this pipeline. Vitals and radiology are not in it at all, so a question that needs either is unassessable. It does NOT mean "the record shows no sign of this but it might have happened somewhere else": that is what context_dependent is for. If you can point at a source table that would have held the answer, the verdict is not unassessable.
+  A finding you mark unassessable whose evidence cites a real source table is rewritten to context_dependent in code and counted, so use it only for the genuine gap.
 - concordant: expectation and course agree, and it is worth recording that they do. Use this freely — an audit that records only what went wrong is a defect list, not an audit, and a well-run admission should be visible as one.
 
 EVIDENCE IS THE WHOLE DISCIPLINE. Every finding must carry an evidence_basis: the exact source_table, source_record_id and source_timestamp of the events it rests on, copied verbatim from the event list. A finding with no evidence_basis is downgraded to unassessable in code. Absence of an event is evidence of omission ONLY in a source that would have recorded it — cite the sources you searched.

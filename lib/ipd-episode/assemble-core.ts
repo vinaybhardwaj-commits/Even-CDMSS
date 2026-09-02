@@ -278,6 +278,45 @@ export const NOTE_SUMMARY_EXCLUDED_NAMES = [
 ] as const;
 
 /**
+ * ⚠️ THE CLINICAL-NARRATIVE WHITELIST (item 7, third attempt). The first two attempts STRIPPED a
+ * blob: take the whole concatenated note and remove identifiers, then names, then non-words. Each
+ * pass removed what it had been told about and let the next thing through — `ABSTACK`, `SODIUM`,
+ * a literal `false`, and the RMO's name all reached retrieval anyway, because a deny-list can only
+ * ever exclude what someone already noticed.
+ *
+ * This inverts it. A component field contributes to a retrieval query only if its NAME is on this
+ * list. `doctor`, `role`, `speciality_code`, `isDischarge`, `tag_data` and every future field
+ * nobody has seen yet are excluded by DEFAULT, because they are not on it.
+ *
+ * The opaque template ids are here because the reference measured them as where the narrative
+ * actually lives (§1.2: "Clinical narrative sits in fields named T-3, T-35, and T-2").
+ */
+export const QUERY_NARRATIVE_FIELDS: readonly string[] = [
+  'T-2', 'T-3', 'T-35',
+  'patient_remarks', 'chief_complaints', 'presenting_complaints', 'complaints',
+  'history_of_present_illness', 'hopi', 'diagnosis', 'provisional_diagnosis',
+  'final_diagnosis', 'impression', 'indication', 'examination', 'findings',
+  'procedure', 'procedure_details', 'plan_of_management', 'treatment_plan',
+];
+
+/**
+ * The retrieval-safe narrative of one component block: whitelisted fields only, values only, no
+ * field names, no identifiers, no person fields. Bounded and boring by construction.
+ */
+export function queryNarrativeFrom(entries: ComponentEntry[], cap = 400): string {
+  const allow = new Set(QUERY_NARRATIVE_FIELDS.map((f) => f.toLowerCase()));
+  const parts: string[] = [];
+  for (const e of entries) {
+    if (!allow.has(e.name.toLowerCase())) continue;
+    const v = e.valueString.trim();
+    // a bare boolean or number is a flag, not narrative
+    if (!v || /^(true|false|null|\d+(\.\d+)?)$/i.test(v)) continue;
+    parts.push(v);
+  }
+  return collapseSpaces(parts.join(' ')).slice(0, cap);
+}
+
+/**
  * A note's `summary`: every non-empty valueString in component_json except the excluded names,
  * joined. The caller passes the de-identifier; this function never sees an identity to scrub
  * against, which is exactly why the scrub is an argument rather than a step (the stay-library idiom).

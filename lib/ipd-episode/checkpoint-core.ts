@@ -13,6 +13,7 @@
 
 import { extractJsonObject } from '../lvc-value-core';
 import { collapseSpaces, PHARMACY_SERVICE_TYPE, type EpisodeEvent } from './assemble-core';
+import { MATCHER_KINDS, type MatcherKind } from './resolve-core';
 
 export const RETRIEVAL_TOP_K = 8;
 const NOTE_QUERY_CHARS = 400;
@@ -237,13 +238,19 @@ export function buildRetrievalQuery(input: RetrievalQueryInput): RetrievalQueryR
   )).slice(0, Q_SURGERY_MAX);
   for (const sx of surgeries) push(sx);
 
-  // Every narrative string passes through the same three filters, in order: drop identifier
-  // fields, drop person names, keep clinical words only.
+  // ⚠️ WHITELIST, NOT STRIP (item 7). Narrative now arrives pre-selected on the event as
+  // `query_narrative` — only fields whose NAME is on QUERY_NARRATIVE_FIELDS, values only. The
+  // strip-based cleaners below still run as a second pass over the admission `remarks`, which is a
+  // free-text column with no field structure to whitelist against.
   const names = input.authorNames ?? [];
-  const narrative = (t: string) => clinicalWordsOnly(stripPersonNames(clinicalTextForQuery(t), names)).slice(0, Q_NARRATIVE_CHARS);
+  const scrub = (t: string) => clinicalWordsOnly(stripPersonNames(clinicalTextForQuery(t), names)).slice(0, Q_NARRATIVE_CHARS);
+  const whitelisted = (e: EpisodeEvent) => {
+    const v = (e.detail as Record<string, unknown>)?.query_narrative;
+    return v == null ? '' : stripPersonNames(String(v), names).slice(0, Q_NARRATIVE_CHARS);
+  };
 
   // 2. the admission remarks — the presenting picture, written at the door
-  push(input.remarks ? narrative(input.remarks) : null);
+  push(input.remarks ? scrub(input.remarks) : null);
 
   // 3. the initial assessment — the admission-time picture. Taken SEPARATELY from the progress
   //    notes below rather than competing with them for one slot: at day 0 it is frequently the
@@ -252,27 +259,29 @@ export function buildRetrievalQuery(input: RetrievalQueryInput): RetrievalQueryR
   const assessment = [...events]
     .filter((e) => e.event_type === 'initial_assessment' && e.summary.trim())
     .sort((a, b) => String(a.occurred_at ?? '').localeCompare(String(b.occurred_at ?? '')))[0];
-  if (assessment) push(narrative(assessment.summary));
+  if (assessment) push(whitelisted(assessment));
 
   // 4. the most recent progress note before the cut-off
   const note = [...events]
     .filter((e) => e.event_type === 'note' && e.occurred_at && e.summary.trim())
     .sort((a, b) => String(a.occurred_at).localeCompare(String(b.occurred_at)))
     .pop();
-  if (note) push(narrative(note.summary));
+  if (note) push(whitelisted(note));
 
-  // 5. the drugs actually ordered on the latest documented day, as BASE NAMES — a SKU string
-  //    retrieves packaging literature, which is the same defect as querying on a department.
-  const drugEvents = events.filter((e) => e.event_type === 'order' && detailStr(e, 'service_type') === PHARMACY_SERVICE_TYPE);
-  const latestDrugDay = drugEvents.reduce((m, e) => Math.max(m, e.day_index), -1);
-  const drugs = Array.from(new Set(
-    drugEvents.filter((e) => e.day_index === latestDrugDay)
-      .map((e) => clinicalWordsOnly(drugBaseName(detailStr(e, 'ordered_item_name'))))
-      .filter(Boolean),
-  )).slice(0, Q_DRUGS_MAX);
-  for (const d of drugs) push(d);
+  // ⚠️ PHARMACY ITEM NAMES ARE NO LONGER IN THE QUERY, and that is the honest end of three
+  // attempts. `ordered_item_name` is an inventory string: "ABSTACK 30-.-5MM-COVIDEN-1's" is a
+  // surgical stapler, "SODIUM CHLORIDE 0.9%" is a fluid, and neither is distinguishable from a
+  // drug brand by any rule that does not know the item category — the one field that would tell
+  // them apart is the `kx_medicine_items` join decision 17 measured at 1.9% yield and dropped.
+  // Base-name truncation reduced the noise and could not remove it: ABSTACK and SODIUM survived
+  // into the day-1 and day-2 queries and were the last two tokens of each.
+  //
+  // They also bought little. Surgery name, admission remarks and the whitelisted narrative already
+  // carry the topical signal — measured: the queries built from those retrieved eight on-topic
+  // hernia sources per checkpoint. Drug names are still fully available to the RESOLVER, which
+  // matches on them exactly and does not care that they are ugly.
 
-  // 6. what was investigated
+  // 5. what was investigated
   const labs = Array.from(new Set(
     events.filter((e) => e.event_type === 'lab_order').map((e) => clinicalWordsOnly(drugBaseName(detailStr(e, 'service_name')))).filter(Boolean),
   )).slice(0, Q_LABS_MAX);
@@ -475,9 +484,45 @@ export function admissionContextLine(a: {
 
 // ── output (PRD §3.3.4) ──────────────────────────────────────────────────────────────────────
 
-export interface ExpectedItem { item: string; by_day: number | null; rationale: string; citation_ids: number[] }
-export interface ExpectedMonitoring { item: string; frequency: string; rationale: string; citation_ids: number[] }
-export interface EscalationTrigger { trigger: string; action: string; citation_ids: number[] }
+/** The machine-checkable half of every expectation (decision 33). Null when the model failed to
+ *  emit one — the resolver reports that as uncheckable rather than guessing at it. */
+export interface EntryMatcher { kind: MatcherKind; terms: string[] }
+
+export interface ExpectedItem {
+  item: string; by_day: number | null; rationale: string; citation_ids: number[];
+  matcher: EntryMatcher | null;
+  /** Chosen at GENERATION time, while the model is still blind to the outcome. */
+  proposed_severity: 'minor' | 'moderate' | 'major';
+}
+export interface ExpectedMonitoring {
+  item: string; frequency: string; rationale: string; citation_ids: number[];
+  matcher: EntryMatcher | null; proposed_severity: 'minor' | 'moderate' | 'major';
+}
+export interface EscalationTrigger {
+  trigger: string; action: string; citation_ids: number[];
+  matcher: EntryMatcher | null; proposed_severity: 'minor' | 'moderate' | 'major';
+}
+
+const SEVERITY_VALUES = ['minor', 'moderate', 'major'] as const;
+
+function asMatcher(v: unknown): EntryMatcher | null {
+  if (!v || typeof v !== 'object') return null;
+  const o = v as Record<string, unknown>;
+  const kind = String(o.kind ?? '').trim().toLowerCase();
+  if (!(MATCHER_KINDS as readonly string[]).includes(kind)) return null;
+  const terms = Array.isArray(o.terms)
+    ? Array.from(new Set((o.terms as unknown[]).map((t) => collapseSpaces(String(t ?? '')).toLowerCase()).filter((t) => t.length >= 3))).slice(0, 12)
+    : [];
+  if (!terms.length) return null;
+  return { kind: kind as MatcherKind, terms };
+}
+
+/** An unreadable proposed severity lands mid-scale — the same reasoning as the judge's fallback:
+ *  a repair may neither inflate an expectation into the 8-point band nor bury it in the 1-point one. */
+function asProposedSeverity(v: unknown): 'minor' | 'moderate' | 'major' {
+  const t = String(v ?? '').trim().toLowerCase();
+  return (SEVERITY_VALUES as readonly string[]).includes(t) ? (t as 'minor' | 'moderate' | 'major') : 'moderate';
+}
 
 export interface ExpectedCourse {
   expected_diagnostics: ExpectedItem[];
@@ -544,17 +589,29 @@ export function parseExpectedCourse(text: string, chunkIds: readonly number[]): 
 
   const items = (v: unknown): ExpectedItem[] => arr(v).map((raw) => {
     const e = obj(raw);
-    return { item: asText(e.item), by_day: asNum(e.by_day), rationale: asText(e.rationale), citation_ids: asCitationIds(e.citation_ids, chunkIds) };
+    return {
+      item: asText(e.item), by_day: asNum(e.by_day), rationale: asText(e.rationale),
+      citation_ids: asCitationIds(e.citation_ids, chunkIds),
+      matcher: asMatcher(e.matcher), proposed_severity: asProposedSeverity(e.proposed_severity),
+    };
   }).filter((e) => e.item !== '');
 
   const monitoring: ExpectedMonitoring[] = arr(r.expected_monitoring).map((raw) => {
     const e = obj(raw);
-    return { item: asText(e.item), frequency: asText(e.frequency, 200), rationale: asText(e.rationale), citation_ids: asCitationIds(e.citation_ids, chunkIds) };
+    return {
+      item: asText(e.item), frequency: asText(e.frequency, 200), rationale: asText(e.rationale),
+      citation_ids: asCitationIds(e.citation_ids, chunkIds),
+      matcher: asMatcher(e.matcher), proposed_severity: asProposedSeverity(e.proposed_severity),
+    };
   }).filter((e) => e.item !== '');
 
   const triggers: EscalationTrigger[] = arr(r.escalation_triggers).map((raw) => {
     const e = obj(raw);
-    return { trigger: asText(e.trigger), action: asText(e.action), citation_ids: asCitationIds(e.citation_ids, chunkIds) };
+    return {
+      trigger: asText(e.trigger), action: asText(e.action),
+      citation_ids: asCitationIds(e.citation_ids, chunkIds),
+      matcher: asMatcher(e.matcher), proposed_severity: asProposedSeverity(e.proposed_severity),
+    };
   }).filter((e) => e.trigger !== '');
 
   const course: ExpectedCourse = {

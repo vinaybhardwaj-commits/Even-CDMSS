@@ -29,6 +29,18 @@ export function judgeModel(env: Record<string, string | undefined>): string {
   return override || IPD_EPISODE_JUDGE_MODEL_DEFAULT;
 }
 
+/**
+ * ⚠️ IT WAS ALREADY 0, and item 9's answer is that this was never the source of the spread. All
+ * three Opus passes have passed `temperature: 0` since the first commit; the 96/100/80 variance
+ * happened at temperature 0 on byte-identical checkpoints. Naming it as a constant and recording
+ * it on the audit row does not make the pass reproducible — it makes the claim checkable, so the
+ * next investigation starts from the row instead of from someone's memory of the code.
+ *
+ * A seed is not available: Bedrock Converse's inferenceConfig accepts maxTokens and temperature
+ * and nothing else (lib/bedrock-core.ts toConverseInput, UNTOUCHED).
+ */
+export const JUDGE_TEMPERATURE = 0;
+
 const content = (res: unknown): string =>
   String((res as { choices?: { message?: { content?: unknown } }[] })?.choices?.[0]?.message?.content ?? '');
 
@@ -42,7 +54,7 @@ async function callWithRetry(
     try {
       const res = await governedChat(traceId, label, {
         messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-        temperature: 0,
+        temperature: JUDGE_TEMPERATURE,
         max_tokens: maxTokens,
       }, { bedrock: model, promptRef });
       const text = content(res);

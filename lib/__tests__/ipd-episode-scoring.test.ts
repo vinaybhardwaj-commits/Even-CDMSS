@@ -14,6 +14,7 @@ import {
   parseFindings, resolveFindingCitations, validateCommentary, asLvcCategory, SEVERITY_PENALTY,
   PARSE_FRAGMENT_CHARS, classifyCitationProvenance, applyLiteratureCap, scoringStatusFor,
   storedDivergenceIndex, impliedFindingType, capSeverityAt, CAP_SEVERITY_CEILING,
+  dropJudgedOmissions, enforceUnassessable, findingsFromResolved, domainForSection,
   type EpisodeFinding, type Severity, type Verdict, type Domain, type AuditPass,
 } from '../ipd-episode/judge-core';
 import {
@@ -31,13 +32,16 @@ import { IPD_EPISODE_CHECKPOINT_SYSTEM, IPD_EPISODE_DIFF_SYSTEM } from '../ipd-e
 import type { EpisodeEvent } from '../ipd-episode/assemble-core';
 
 const f = (o: Partial<EpisodeFinding> & { finding_id: string }): EpisodeFinding => ({
-  pass: 'divergence' as AuditPass, finding_type: 'omission', verdict: 'divergent' as Verdict,
+  // NB: defaults to `commission` since decision 33 — a JUDGED omission is dropped, so an
+  // omission-by-default fixture would silently test nothing. Resolver findings set `resolution`.
+  pass: 'divergence' as AuditPass, finding_type: 'commission', verdict: 'divergent' as Verdict,
   domain: 'diagnostics' as Domain, day_index: 0, checkpoint_ref: null, statement: 'a statement',
   severity: 'minor' as Severity, evidence_tier: 'A',
   evidence_basis: [{ source_table: 'kx_clinical_template_progress_reports', source_record_id: 'n1', source_timestamp: null }],
   author_name: null, author_role: null, responsible_clinician_id: null, lvc_category: null,
   citation_ids: [], citation_provenance: null,
   verdict_before_cap: null, severity_before_cap: null, capped: false,
+  resolution: null, matcher_kind: null, matcher_terms: null, matched_term: null, confound: null,
   ...o,
 });
 
@@ -347,7 +351,8 @@ test('the checkpoint prompt states the cap correctly — severity only, not verd
 test('the diff prompt states that concordant is a VERDICT, not a finding_type', () => {
   assert.match(IPD_EPISODE_DIFF_SYSTEM, /"concordant" is a VERDICT/);
   assert.match(IPD_EPISODE_DIFF_SYSTEM, /Do not put "concordant" in finding_type/);
-  assert.match(IPD_EPISODE_DIFF_SYSTEM, /finding_type is always exactly one of: omission \| commission \| timing \| sequencing/);
+  assert.match(IPD_EPISODE_DIFF_SYSTEM, /finding_type is exactly one of: commission \| timing \| sequencing/);
+  assert.match(IPD_EPISODE_DIFF_SYSTEM, /DO NOT REPORT OMISSIONS/, 'decision 33: code owns them');
   assert.match(IPD_EPISODE_DIFF_SYSTEM, /an audit that records only what went wrong is a defect list/);
 });
 
@@ -401,6 +406,122 @@ test('everyEntryUncited detects the IP-1286 shape, and only that shape', () => {
   }), CHUNKS);
   assert.equal(everyEntryUncited(some, 3), false, 'one grounded entry is not the failure');
   assert.equal(everyEntryUncited(null, 3), false);
+});
+
+// ── decision 33: code owns omissions, and unassessable must be earned ────────────────────────
+
+test('the diff pass may no longer emit omissions — code decided them, a second answer is dropped', () => {
+  const list = [
+    f({ finding_id: 'a1-om', pass: 'divergence', finding_type: 'omission' }),
+    f({ finding_id: 'a1-com', pass: 'divergence', finding_type: 'commission' }),
+    f({ finding_id: 'a1-tim', pass: 'divergence', finding_type: 'timing' }),
+    f({ finding_id: 'a2', pass: 'fidelity', domain: 'documentation', finding_type: 'commission' }),
+  ];
+  const { kept, dropped } = dropJudgedOmissions(list);
+  assert.equal(dropped, 1);
+  assert.deepEqual(kept.map((x) => x.finding_id), ['a1-com', 'a1-tim', 'a2']);
+});
+
+test('but a RESOLVER omission survives — it is the omission analysis, not a second opinion', () => {
+  const list = [
+    f({ finding_id: 'judged', pass: 'divergence', finding_type: 'omission', resolution: null }),
+    f({ finding_id: 'resolved', pass: 'divergence', finding_type: 'omission', resolution: 'absent_class_present' }),
+  ];
+  const { kept, dropped } = dropJudgedOmissions(list);
+  assert.equal(dropped, 1);
+  assert.deepEqual(kept.map((x) => x.finding_id), ['resolved']);
+});
+
+test('unassessable must be EARNED: a claim citing Tier A evidence is rewritten to context_dependent', () => {
+  // the IP-1286 defect exactly: 23 unassessable verdicts across three runs, none with an empty
+  // basis, ten of them citing Tier A
+  const lying = f({ finding_id: 'x', verdict: 'unassessable',
+    evidence_basis: [{ source_table: 'kx_billing_records', source_record_id: 'b1', source_timestamp: null }] });
+  const r = enforceUnassessable(lying);
+  assert.equal(r.rejected, true);
+  assert.equal(r.finding.verdict, 'context_dependent', 'the verdict that actually means "unclear"');
+});
+
+test('unassessable stands when the record genuinely cannot answer', () => {
+  const empty = f({ finding_id: 'a', verdict: 'unassessable', evidence_basis: [] });
+  assert.equal(enforceUnassessable(empty).rejected, false);
+  const onlyC = f({ finding_id: 'b', verdict: 'unassessable',
+    evidence_basis: [{ source_table: 'kx_radiology_reports', source_record_id: 'r1', source_timestamp: null }] });
+  assert.equal(enforceUnassessable(onlyC).rejected, false);
+  // and a resolver finding is exempt — code established the gap, it was not claimed
+  const resolved = f({ finding_id: 'c', verdict: 'unassessable', resolution: 'absent_class_missing',
+    evidence_basis: [{ source_table: 'kx_billing_records', source_record_id: 'b1', source_timestamp: null }] });
+  assert.equal(enforceUnassessable(resolved).rejected, false);
+});
+
+test('both rules run inside finalizeFindings and are counted', () => {
+  const res = finalizeFindings([
+    f({ finding_id: 'om', pass: 'divergence', finding_type: 'omission' }),
+    f({ finding_id: 'un', pass: 'divergence', finding_type: 'commission', verdict: 'unassessable',
+        evidence_basis: [{ source_table: 'kx_lab_reports', source_record_id: 'l1', source_timestamp: null }] }),
+  ], new Map(), [], 0, SOURCES, NORMATIVE);
+  assert.equal(res.n_judged_omissions_dropped, 1);
+  assert.equal(res.counters.n_judged_omissions_dropped, 1);
+  assert.equal(res.n_unassessable_rejected, 1);
+  assert.equal(res.counters.n_unassessable_rejected, 1);
+  assert.equal(res.findings.length, 1);
+  assert.equal(res.findings[0].verdict, 'context_dependent');
+});
+
+test('resolver outcomes become findings that carry how they were decided', () => {
+  const events: EpisodeEvent[] = [];
+  const built = findingsFromResolved([{
+    entry: { ref: 'cp-d0/therapeutics/1', checkpointId: 'cp-d0', dayIndex: 0, section: 'therapeutics',
+             item: 'VTE prophylaxis', rationale: 'r', byDay: 0, citationIds: [4021],
+             matcher: { kind: 'drug', terms: ['enoxaparin'] }, proposedSeverity: 'major' },
+    outcome: { resolution: 'absent_class_present', verdict: 'divergent', severity: 'major',
+               statement: 'no matching drug record', matchedEvent: null, matchedTerm: null, confound: null },
+  }], domainForSection);
+  const [fd] = built;
+  assert.equal(fd.resolution, 'absent_class_present');
+  assert.equal(fd.verdict, 'divergent');
+  assert.equal(fd.severity, 'major');
+  assert.equal(fd.domain, 'therapeutics');
+  assert.equal(fd.matcher_kind, 'drug');
+  assert.deepEqual(fd.matcher_terms, ['enoxaparin']);
+  assert.deepEqual(fd.citation_ids, [4021], 'it inherits the entry’s citations by construction');
+  assert.equal(fd.checkpoint_ref, 'cp-d0/therapeutics/1');
+  assert.equal(events.length, 0);
+});
+
+test('a resolver DIVERGENT finding scores — this is the omission signal the audit exists for', () => {
+  const built = findingsFromResolved([{
+    entry: { ref: 'cp-d0/therapeutics/1', checkpointId: 'cp-d0', dayIndex: 0, section: 'therapeutics',
+             item: 'VTE prophylaxis', rationale: 'r', byDay: 0, citationIds: [4021],
+             matcher: { kind: 'drug', terms: ['enoxaparin'] }, proposedSeverity: 'major' },
+    outcome: { resolution: 'absent_class_present', verdict: 'divergent', severity: 'major',
+               statement: 's', matchedEvent: null, matchedTerm: null, confound: null },
+  }], domainForSection);
+  const map = refs([['cp-d0/therapeutics/1', [4021]]]);
+  const res = finalizeFindings(built, map, [], 0, SOURCES, NORMATIVE);
+  assert.equal(res.findings[0].verdict, 'divergent', 'the Tier C rule must not erase a code-established absence');
+  assert.equal(res.divergence_index, 92, 'a major divergence costs 8');
+});
+
+// ── item 8: the citation that was being lost ────────────────────────────────────────────────
+
+test('a finding with no citations of its own INHERITS its entry’s — where the id was lost', () => {
+  const entries = refs([['cp-d0/diagnostics/1', [4021, 7788]]]);
+  const chunks = new Map<string, readonly number[]>([['cp-d0', [4021, 7788, 1503]]]);
+  const out = resolveFindingCitations(
+    [f({ finding_id: 'x', checkpoint_ref: 'cp-d0/diagnostics/1', citation_ids: [] })], chunks, entries,
+  );
+  assert.deepEqual(out[0].citation_ids, [4021, 7788],
+    '26 of 30 findings were uncited while every checkpoint carried 8 ids — nothing carried them across');
+});
+
+test('a finding that DID cite keeps its own citation, not the entry’s', () => {
+  const entries = refs([['cp-d0/diagnostics/1', [4021, 7788]]]);
+  const chunks = new Map<string, readonly number[]>([['cp-d0', [4021, 7788, 1503]]]);
+  const out = resolveFindingCitations(
+    [f({ finding_id: 'x', checkpoint_ref: 'cp-d0/diagnostics/1', citation_ids: [3] })], chunks, entries,
+  );
+  assert.deepEqual(out[0].citation_ids, [1503], 'ordinal 3 of that checkpoint');
 });
 
 // ── item 6: per-checkpoint ordinal resolution ────────────────────────────────────────────────
@@ -630,12 +751,15 @@ test('clinicalWordsOnly drops the residue that made a query end in a code or a u
 test('names and identifiers are stripped end to end, in the built query', () => {
   const { query } = buildRetrievalQuery({
     eventsBeforeCutoff: [
-      ev({ event_id: 'n', summary: 'speciality_code: SURG-01 · T-3: Dr Testperson Alpha notes reducible right groin lump', author_name: 'Dr Testperson Alpha' }),
+      // the whitelist already dropped speciality_code at assembly; the name arrives inside the
+      // narrative itself, which is what stripPersonNames is for
+      ev({ event_id: 'n', summary: 'x', author_name: 'Dr Testperson Alpha',
+           detail: { query_narrative: 'Dr Testperson Alpha notes reducible right groin lump' } }),
     ],
     authorNames: ['Dr Testperson Alpha'],
   });
   assert.ok(query.includes('reducible right groin lump'));
-  for (const noise of ['Testperson', 'Alpha', 'SURG-01', 'speciality_code']) {
+  for (const noise of ['Testperson', 'Alpha']) {
     assert.ok(!query.includes(noise), `'${noise}' must not reach retrieval`);
   }
 });
@@ -1057,8 +1181,8 @@ const ev = (o: Partial<EpisodeEvent> & { event_id: string }): EpisodeEvent => ({
 
 const CLINICAL_EVENTS: EpisodeEvent[] = [
   ev({ event_id: 'ot', event_type: 'ot_note', detail: { surgery_name: 'Open inguinal hernia repair' } }),
-  ev({ event_id: 'n-old', occurred_at: '2026-08-01T20:00:00.000Z', summary: 'older note' }),
-  ev({ event_id: 'n-new', occurred_at: '2026-08-02T04:00:00.000Z', summary: 'right groin swelling, reducible' }),
+  ev({ event_id: 'n-old', occurred_at: '2026-08-01T20:00:00.000Z', summary: 'older note', detail: { query_narrative: 'older note' } }),
+  ev({ event_id: 'n-new', occurred_at: '2026-08-02T04:00:00.000Z', summary: 'right groin swelling, reducible', detail: { query_narrative: 'right groin swelling, reducible' } }),
   ev({ event_id: 'p1', event_type: 'order', day_index: 1, detail: { service_type: 'Pharmacy', ordered_item_name: 'CEFAZOLIN 1G' } }),
   ev({ event_id: 'p2', event_type: 'order', day_index: 1, detail: { service_type: 'Pharmacy', ordered_item_name: 'PARACETAMOL 1G' } }),
   ev({ event_id: 'p-old', event_type: 'order', day_index: 0, detail: { service_type: 'Pharmacy', ordered_item_name: 'OLDER DRUG' } }),
@@ -1071,8 +1195,9 @@ test('the query is built from clinical content in the stated priority', () => {
   assert.match(q, /^Open inguinal hernia repair/);
   assert.ok(q.includes('right groin swelling'), 'the latest progress note before the cut-off');
   assert.ok(!q.includes('older note'));
-  assert.ok(q.includes('CEFAZOLIN') && q.includes('PARACETAMOL'), 'the latest day’s drugs, as base names');
-  assert.ok(!q.includes('1G'), 'pack sizes and doses are inventory text, not clinical terms');
+  // ⚠️ PHARMACY ITEM NAMES ARE NO LONGER IN THE QUERY (round 7 item 7): a SKU cannot be told from
+  // a drug brand without the category join decision 17 dropped, and ABSTACK/SODIUM proved it twice
+  assert.ok(!q.includes('CEFAZOLIN') && !q.includes('PARACETAMOL'), 'drug names are the resolver’s job, not retrieval’s');
   assert.ok(!q.includes('OLDER DRUG'), 'only the latest documented drug day');
   assert.ok(q.includes('Complete Blood Count'), 'lab service names');
 });
@@ -1087,8 +1212,8 @@ test('the extracted case CANNOT reach the query — hindsight is not a retrieval
 
 test('the initial assessment survives alongside the notes — it is often day 0’s only clinical text', () => {
   const withAssessment: EpisodeEvent[] = [
-    ev({ event_id: 'ia', event_type: 'initial_assessment', occurred_at: '2026-08-01T19:00:00.000Z', summary: 'painful irreducible right groin lump, vomiting' }),
-    ev({ event_id: 'n', occurred_at: '2026-08-02T04:00:00.000Z', summary: 'post-op observation' }),
+    ev({ event_id: 'ia', event_type: 'initial_assessment', occurred_at: '2026-08-01T19:00:00.000Z', summary: 'x', detail: { query_narrative: 'painful irreducible right groin lump, vomiting' } }),
+    ev({ event_id: 'n', occurred_at: '2026-08-02T04:00:00.000Z', summary: 'x', detail: { query_narrative: 'post-op observation' } }),
   ];
   const { query: q } = buildRetrievalQuery({ eventsBeforeCutoff: withAssessment });
   assert.ok(q.includes('painful irreducible right groin lump'), 'the admission-time picture is kept');
@@ -1124,7 +1249,7 @@ test('the query works with no OT note — notes, drugs and labs alone', () => {
   const { query: q } = buildRetrievalQuery({
     eventsBeforeCutoff: CLINICAL_EVENTS.filter((e) => e.event_type !== 'ot_note'),
   });
-  assert.ok(q.includes('right groin swelling') && q.includes('CEFAZOLIN') && q.includes('Complete Blood Count'));
+  assert.ok(q.includes('right groin swelling') && q.includes('Complete Blood Count'));
   assert.ok(!q.includes('hernia repair'));
 });
 
@@ -1183,12 +1308,13 @@ test('identifiers and codes never reach the query, only narrative does', () => {
 test('the SKU and identifier stripping actually reaches the built query', () => {
   const { query } = buildRetrievalQuery({
     eventsBeforeCutoff: [
-      ev({ event_id: 'n', summary: 'speciality_code: SURG-01 · T-3: reducible right groin lump' }),
+      ev({ event_id: 'n', summary: 'x', detail: { query_narrative: 'reducible right groin lump' } }),
       ev({ event_id: 'p', event_type: 'order', detail: { service_type: 'Pharmacy', ordered_item_name: "EMESET 2ML INJ-1's" } }),
     ],
   });
-  assert.ok(query.includes('reducible right groin lump') && query.includes('EMESET'));
-  assert.ok(!query.includes('SURG-01') && !query.includes("1's") && !query.includes('2ML'));
+  assert.ok(query.includes('reducible right groin lump'));
+  assert.ok(!query.includes('EMESET') && !query.includes("1's") && !query.includes('2ML'),
+    'inventory strings do not reach retrieval at all any more');
 });
 
 // ── round 5 item 6: topicality that can actually fire ────────────────────────────────────────

@@ -79,6 +79,12 @@ CREATE TABLE IF NOT EXISTS ipd_episode_audits (
   -- run, and it was only found by reading a trace.
   n_dropped_invalid     INTEGER DEFAULT 0,
   n_parse_failed        INTEGER DEFAULT 0,
+  -- decision 33: unassessable verdicts the postcondition rejected, and omission findings
+  -- the diff pass emitted after code took ownership of omissions.
+  n_unassessable_rejected INTEGER DEFAULT 0,
+  n_judged_omissions_dropped INTEGER DEFAULT 0,
+  judge_temperature     DOUBLE PRECISION,
+  resolution_counts     JSONB,
 
   -- How many findings any cap touched. Recountable from findings[].capped / verdict_before_cap —
   -- the point being that "5 capped" is now a number in the row rather than a sentence in a
@@ -164,6 +170,9 @@ CREATE TABLE IF NOT EXISTS ipd_episode_checkpoints (
   -- checkpoint still generates, and the uncited cap already bounds what a finding built on
   -- off-topic material may score.
   retrieval_offtopic  BOOLEAN DEFAULT FALSE,
+  -- no retrieval was ATTEMPTED (empty query) — distinct from retrieval_failed, which means it
+  -- was attempted and threw. A checkpoint generated with no evidence now says so.
+  retrieval_skipped   BOOLEAN DEFAULT FALSE,
   -- How many of the k excerpts shared no clinical term with the query. The boolean fires on a
   -- MAJORITY; the count is what makes the boolean checkable. The all-or-nothing version could not
   -- fire and never did, while half a slate was unrelated.

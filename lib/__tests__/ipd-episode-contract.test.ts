@@ -33,7 +33,8 @@ const code = (p: string) => read(p).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\
 const ENGINE_FILES = [
   'lib/ipd-episode/assemble-core.ts', 'lib/ipd-episode/assemble.ts', 'lib/ipd-episode/checkpoint-core.ts',
   'lib/ipd-episode/checkpoint.ts', 'lib/ipd-episode/db13.ts', 'lib/ipd-episode/judge-core.ts',
-  'lib/ipd-episode/judge.ts', 'lib/ipd-episode/prompts.ts', 'lib/ipd-episode/run.ts', 'lib/ipd-episode/store.ts',
+  'lib/ipd-episode/judge.ts', 'lib/ipd-episode/prompts.ts', 'lib/ipd-episode/resolve-core.ts',
+  'lib/ipd-episode/run.ts', 'lib/ipd-episode/store.ts',
 ];
 
 // ── the blinding is structural ───────────────────────────────────────────────────────────────
@@ -460,6 +461,98 @@ test('the extracted case is UNREACHABLE from the checkpoint retrieval path (§3.
   for (const banned of ['extractedDiagnosis', 'extractedProcedure', 'extraction.']) {
     assert.ok(!call.includes(banned), `run.ts must not pass '${banned}' into the query`);
   }
+});
+
+// ── decision 33: omission is a lookup, not a judgement ──────────────────────────────────────
+
+test('the resolver is pure — no db, no model, no Next, nothing that could vary between runs', () => {
+  const src = code('lib/ipd-episode/resolve-core.ts');
+  for (const banned of ['governedChat', 'metabaseQuery', 'from \'../db\'', 'next/', 'Math.random', 'Date.now', 'new Date(']) {
+    assert.ok(!src.includes(banned), `resolve-core must not contain '${banned}' — determinism is the point`);
+  }
+  // it imports exactly one thing, and it is a type
+  const imports = [...src.matchAll(/^import .*$/gm)].map((m) => m[0]);
+  assert.equal(imports.length, 1, 'one import');
+  assert.ok(imports[0].startsWith('import type'), 'and it is type-only');
+});
+
+test('the resolver is the ONLY producer of unassessable, and code owns omissions', () => {
+  const run = code('lib/ipd-episode/run.ts');
+  assert.ok(run.includes('resolveAll(resolvableEntries'), 'the pipeline resolves every expectation');
+  assert.ok(run.includes('findingsFromResolved('), 'and turns the outcomes into findings');
+  // the diff pass's omissions are dropped
+  const core = code('lib/ipd-episode/judge-core.ts');
+  assert.ok(core.includes('export function dropJudgedOmissions('));
+  assert.ok(core.includes('const judged = f.resolution == null;'),
+    'only JUDGED omissions are dropped — the resolver’s own are the analysis');
+  // and unassessable is enforced
+  assert.ok(core.includes('export function enforceUnassessable('));
+  assert.ok(core.includes("if (f.resolution === 'absent_class_missing') return { finding: f, rejected: false };"),
+    'the one honest gap is exempt because code established it');
+});
+
+test('the Tier C rule cannot erase a code-established absence', () => {
+  const core = code('lib/ipd-episode/judge-core.ts');
+  const fn = core.slice(core.indexOf('export function applyTierCRule'), core.indexOf('export function applyUncitedCap'));
+  assert.ok(fn.includes('if (f.resolution != null) return { finding: f, rewritten: false };'),
+    'an absence has nothing to cite by definition — §4.2 would delete every omission without this');
+});
+
+test('the resolver runs against the SAME blinded event list the diff pass sees', () => {
+  const run = code('lib/ipd-episode/run.ts');
+  assert.ok(run.includes('const resolverEvents = diffPassEvents(events);'),
+    'no discharge event — an expectation cannot be satisfied by the discharge summary');
+});
+
+test('the checkpoint prompt asks for a matcher and a severity, both at generation time', () => {
+  assert.match(IPD_EPISODE_CHECKPOINT_SYSTEM, /EVERY EXPECTATION MUST BE MACHINE-CHECKABLE/);
+  assert.match(IPD_EPISODE_CHECKPOINT_SYSTEM, /"matcher": \{"kind": "drug", "terms": \[\]\}/);
+  assert.match(IPD_EPISODE_CHECKPOINT_SYSTEM, /proposed_severity/);
+  assert.match(IPD_EPISODE_CHECKPOINT_SYSTEM, /while you still do not know how the admission ended/,
+    'severity chosen blind cannot be coloured by hindsight');
+});
+
+test('the unassessable definition is the mirror-gap one, in the pass that emits verdicts', () => {
+  // the checkpoint prompt emits no verdicts, so the definition belongs in the DIFF prompt
+  assert.match(IPD_EPISODE_DIFF_SYSTEM, /THE MIRROR CANNOT ANSWER/);
+  assert.match(IPD_EPISODE_DIFF_SYSTEM, /the entire data class is absent from this pipeline/);
+  assert.match(IPD_EPISODE_DIFF_SYSTEM, /If you can point at a source table that would have held the answer, the verdict is not unassessable/);
+  assert.ok(!/unassessable: the record cannot answer the question/.test(IPD_EPISODE_DIFF_SYSTEM),
+    'the old loose definition is what produced 23 unearned unassessable verdicts');
+});
+
+test('a checkpoint generated with no retrieval says so', () => {
+  const cp = code('lib/ipd-episode/checkpoint.ts');
+  assert.ok(cp.includes('retrievalSkipped: !query.trim()'), 'an empty query means no search was attempted');
+  const sqlText = read(join('migrations', '0052_ipd_episode_audits.sql'));
+  const route = read('app/api/admin/migrate-ipd-episode-audits/route.ts');
+  assert.ok(sqlText.includes('retrieval_skipped'), '.sql declares it');
+  assert.ok(route.includes('ADD COLUMN IF NOT EXISTS retrieval_skipped'), 'and the route back-fills it');
+});
+
+test('the query is built from a WHITELIST of clinical fields, not by stripping a blob', () => {
+  const core = code('lib/ipd-episode/assemble-core.ts');
+  assert.ok(core.includes('export const QUERY_NARRATIVE_FIELDS'), 'the whitelist exists');
+  assert.ok(core.includes('export function queryNarrativeFrom('), 'and the builder that applies it');
+  // fields nobody has thought of are excluded by default, which a deny-list can never do
+  for (const excluded of ["'doctor'", "'role'", "'tag_data'", "'isDischarge'"]) {
+    const list = core.slice(core.indexOf('QUERY_NARRATIVE_FIELDS'), core.indexOf('queryNarrativeFrom'));
+    assert.ok(!list.includes(excluded), `${excluded} must not be whitelisted`);
+  }
+  // and pharmacy SKUs no longer reach retrieval at all
+  const cpCore = code('lib/ipd-episode/checkpoint-core.ts');
+  assert.ok(!cpCore.includes("detailStr(e, 'ordered_item_name')"),
+    'ABSTACK and SODIUM proved twice that a SKU cannot be cleaned into a clinical term');
+});
+
+test('the diff temperature is named and recorded on the row', () => {
+  const judge = code('lib/ipd-episode/judge.ts');
+  assert.ok(judge.includes('export const JUDGE_TEMPERATURE = 0'));
+  assert.ok(judge.includes('temperature: JUDGE_TEMPERATURE'));
+  const sqlText = read(join('migrations', '0052_ipd_episode_audits.sql'));
+  assert.ok(sqlText.includes('judge_temperature'), 'stored, so the claim is checkable from the row');
+  const store = code('lib/ipd-episode/store.ts');
+  assert.ok(store.includes('judge_temperature') && store.includes('resolution_counts'));
 });
 
 // ── round 5 ─────────────────────────────────────────────────────────────────────────────────

@@ -57,6 +57,10 @@ export async function POST(req: NextRequest) {
       n_low_value           INTEGER DEFAULT 0,
       n_dropped_invalid     INTEGER DEFAULT 0,
       n_parse_failed        INTEGER DEFAULT 0,
+      n_unassessable_rejected INTEGER DEFAULT 0,
+      n_judged_omissions_dropped INTEGER DEFAULT 0,
+      judge_temperature     DOUBLE PRECISION,
+      resolution_counts     JSONB,
       capped_count          INTEGER DEFAULT 0,
       checkpoint_count      INTEGER DEFAULT 0,
       evidence_tiers        JSONB,
@@ -81,6 +85,10 @@ export async function POST(req: NextRequest) {
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS n_parse_failed INTEGER DEFAULT 0`;
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS scoring_status TEXT NOT NULL DEFAULT 'ok'`;
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS capped_count INTEGER DEFAULT 0`;
+    await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS n_unassessable_rejected INTEGER DEFAULT 0`;
+    await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS n_judged_omissions_dropped INTEGER DEFAULT 0`;
+    await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS judge_temperature DOUBLE PRECISION`;
+    await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS resolution_counts JSONB`;
     await sql`ALTER TABLE ipd_episode_audits ALTER COLUMN app_source SET DEFAULT 'standalone'`;
     steps.audits_columns = 'ok';
 
@@ -93,7 +101,7 @@ export async function POST(req: NextRequest) {
       'completeness_pct', 'n_findings', 'n_divergence_pass', 'n_fidelity_pass',
       'n_omission', 'n_commission', 'n_timing', 'n_sequencing', 'n_divergent', 'n_context_dependent',
       'n_unassessable', 'n_concordant', 'n_low_value', 'n_dropped_invalid', 'n_parse_failed',
-      'capped_count', 'checkpoint_count',
+      'capped_count', 'n_unassessable_rejected', 'n_judged_omissions_dropped', 'checkpoint_count',
     ]) {
       // identifier interpolation, not a value: `col` comes from this literal list and never from a
       // request, so there is nothing here for a caller to influence.
@@ -140,6 +148,7 @@ export async function POST(req: NextRequest) {
       citation_sources    JSONB,
       retrieved_titles    TEXT[],
       retrieval_offtopic  BOOLEAN DEFAULT FALSE,
+      retrieval_skipped   BOOLEAN DEFAULT FALSE,
       offtopic_excerpt_count INTEGER DEFAULT 0,
       day0_query_from_ot  BOOLEAN DEFAULT FALSE,
       temperature         DOUBLE PRECISION,
@@ -155,6 +164,7 @@ export async function POST(req: NextRequest) {
     await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS day0_query_from_ot BOOLEAN DEFAULT FALSE`;
     await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS temperature DOUBLE PRECISION`;
     await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS seed INTEGER`;
+    await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS retrieval_skipped BOOLEAN DEFAULT FALSE`;
     steps.checkpoints_table = 'ok';
 
     // ── citation_ids must be INTEGER[] ────────────────────────────────────────────────────────

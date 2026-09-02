@@ -89,8 +89,16 @@ export interface CheckpointResult {
   retrievalOffTopic: boolean;
   /** How many of them, so the boolean can be checked rather than trusted. */
   offTopicExcerptCount: number;
-  /** Normative chunks dropped for failing the similarity floor (item 5). */
+  /** Normative chunks dropped for failing the similarity floor. */
   normativeDropped: number;
+  /**
+   * ⚠️ NO RETRIEVAL WAS ATTEMPTED, because the query was empty. Distinct from `retrievalFailed`,
+   * which means retrieval was tried and threw. On IP-1286 the day 0 checkpoint had a NULL query,
+   * zero excerpts and empty citation_sources while reporting status ok and retrieval_failed false
+   * — a checkpoint generated with no evidence at all, saying nothing about it. Both booleans now
+   * exist so "we could not search" and "we searched and it broke" stay separate facts.
+   */
+  retrievalSkipped: boolean;
   /** The day 0 query was empty and fell back to an in-window OT surgery_name. */
   day0QueryFromOt: boolean;
   /** The generation settings this checkpoint actually ran with. */
@@ -222,6 +230,7 @@ export async function runCheckpoint(input: RunCheckpointInput): Promise<Checkpoi
     inputEventCount: input.events.length,
     retrievalQuery: query,
     retrievalFailed: failed,
+    retrievalSkipped: !query.trim(),
     citationIds: ids,
     citationSources: sources,
     retrievedTitles: retrievedTitles(excerpts),
