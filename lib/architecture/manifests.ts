@@ -253,6 +253,14 @@ export const UNREGISTERED: string[] = [
   'doc-audit-core',         // Right Care record-audit engine (named by rule 5's scored-core globs)
   'dose-limits',            // dose-limits reference table
   'formulary-match-core',   // formulary matcher (named by rule 5's scored-core globs)
+  'ipd-episode',            // the IPD EPISODE audit engine (ipd-episode-audit/0.1) — assembles a
+                            // whole admission, regenerates a blinded expected course at each day
+                            // boundary, and reports where the real course left it. Listed here
+                            // rather than given a ModuleManifest because its build's file contract
+                            // (IPD-EPISODE-AUDIT-PRD-v1.1 §11) does not authorise editing this
+                            // file beyond what the coverage rule forces: a new lib/ directory is a
+                            // subsystem by construction, so architecture:check fails without a
+                            // line here. Registering it properly is a one-entry follow-up.
   'mcp-server',             // MCP protocol surface
   'ml-label-trial',         // ML Phase 1 retrospective validation (ml-label-trial/1.0 — measures only, writes lab_analyses)
   'opd-audit',              // OPD read-side db13 joins (investigations-ordered lookup, Phase C §7.1)

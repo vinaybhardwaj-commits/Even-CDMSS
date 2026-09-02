@@ -451,6 +451,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "ipd-episode",
+    "plane": "unregistered"
+  },
+  {
     "id": "jats-chunk",
     "plane": "unregistered"
   },
@@ -1173,6 +1177,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/admin",
+    "to": "ipd-episode",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
     "to": "learning",
     "kind": "value"
   },
@@ -1794,6 +1803,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "ipd-audit",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "ipd-episode",
     "kind": "value"
   },
   {
@@ -3604,6 +3618,56 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "ipd-doctor-hop",
     "to": "metabase",
+    "kind": "value"
+  },
+  {
+    "from": "ipd-episode",
+    "to": "bedrock-core",
+    "kind": "value"
+  },
+  {
+    "from": "ipd-episode",
+    "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "ipd-episode",
+    "to": "ipd-audit",
+    "kind": "value"
+  },
+  {
+    "from": "ipd-episode",
+    "to": "lvc-value-core",
+    "kind": "value"
+  },
+  {
+    "from": "ipd-episode",
+    "to": "metabase",
+    "kind": "value"
+  },
+  {
+    "from": "ipd-episode",
+    "to": "opd-lvc-classify-core",
+    "kind": "value"
+  },
+  {
+    "from": "ipd-episode",
+    "to": "readmission",
+    "kind": "value"
+  },
+  {
+    "from": "ipd-episode",
+    "to": "retrieve",
+    "kind": "value"
+  },
+  {
+    "from": "ipd-episode",
+    "to": "stay-library",
+    "kind": "type"
+  },
+  {
+    "from": "ipd-episode",
+    "to": "trace",
     "kind": "value"
   },
   {
@@ -5659,9 +5723,21 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "IPD_DISCHARGE_ENGINE_VERSION_FOR_JOIN",
+    "value": "ipd-discharge-audit/0.2",
+    "file": "lib/ipd-episode/store.ts",
+    "derived": false
+  },
+  {
     "constName": "IPD_ENGINE_VERSION",
     "value": "ipd-discharge-audit/0.2",
     "file": "lib/ipd-audit/store.ts",
+    "derived": false
+  },
+  {
+    "constName": "IPD_EPISODE_ENGINE_VERSION",
+    "value": "ipd-episode-audit/0.1",
+    "file": "lib/ipd-episode/store.ts",
     "derived": false
   },
   {
@@ -5962,8 +6038,8 @@ export const VERSION_REGISTRY: VersionRow[] = [
 
 export const COVERAGE = {
   "registered": 23,
-  "unregistered": 42,
-  "total": 65,
+  "unregistered": 43,
+  "total": 66,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
@@ -5977,6 +6053,7 @@ export const COVERAGE = {
     "doc-audit-core",
     "dose-limits",
     "formulary-match-core",
+    "ipd-episode",
     "mcp-server",
     "ml-label-trial",
     "opd-audit",
