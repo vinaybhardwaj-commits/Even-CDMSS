@@ -130,16 +130,37 @@ export interface ExpectedCourse {
 const asText = (v: unknown, cap = 600): string => (v == null ? '' : collapseSpaces(String(v)).slice(0, cap));
 const asNum = (v: unknown): number | null => { const n = Number(v); return Number.isFinite(n) ? n : null; };
 
-/** Citation ids, clamped to the excerpts actually supplied. An id outside [1..k] is dropped, not
- *  renumbered — a citation to an excerpt that was never shown is not a citation. */
-function asCitationIds(v: unknown, k: number): number[] {
+/**
+ * The model cites by ORDINAL — the prompt numbers its excerpts [1]…[k] — and what gets STORED is
+ * the real `mksap_chunks` id that ordinal stood for.
+ *
+ * ⚠️ THIS IS WHY THE TWO citation_ids FIELDS MEAN THE SAME THING. The checkpoint ROW stores the
+ * chunk ids retrieval returned; before this mapping, each expected-course ENTRY stored a small
+ * integer between 1 and 8. Both were called `citation_ids`, both were `int[]`, and neither the UI
+ * nor a validator could tell them apart — entry "3" meant "the third excerpt of this checkpoint"
+ * while the row's "3" would have meant chunk 3, a different passage entirely. Mapping here makes
+ * one vocabulary: everything downstream of this function speaks chunk ids.
+ *
+ * An ordinal outside [1..k] is DROPPED, never renumbered and never passed through as if it were
+ * already an id — a citation to an excerpt that was never shown is not a citation.
+ */
+function asCitationIds(v: unknown, chunkIds: readonly number[]): number[] {
   if (!Array.isArray(v)) return [];
   const out: number[] = [];
   for (const raw of v.slice(0, 16)) {
-    const n = Number(raw);
-    if (Number.isInteger(n) && n >= 1 && n <= k && !out.includes(n)) out.push(n);
+    const ordinal = Number(raw);
+    if (!Number.isInteger(ordinal) || ordinal < 1 || ordinal > chunkIds.length) continue;
+    const chunkId = chunkIds[ordinal - 1];
+    if (Number.isFinite(chunkId) && !out.includes(chunkId)) out.push(chunkId);
   }
   return out;
+}
+
+/** The inverse, for rendering: a stored chunk id back to the ordinal the next prompt shows for it.
+ *  0 when this checkpoint did not carry that chunk — the caller drops it rather than printing a
+ *  number the reader cannot look up. */
+export function ordinalForChunkId(chunkId: number, chunkIds: readonly number[]): number {
+  return chunkIds.indexOf(chunkId) + 1;
 }
 
 const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v.slice(0, 40) : []);
@@ -150,26 +171,28 @@ const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object'
  * `status = 'error'` on the row and carries on, because one failed checkpoint is a gap in the
  * expected course, not a failed episode.
  *
- * `excerptCount` is the k the prompt actually showed, so citations are clamped to it.
+ * `chunkIds` is the ORDERED list of `mksap_chunks` ids the prompt showed as [1]…[k], so a cited
+ * ordinal is resolved to the id it stood for and every stored `citation_ids` — on the entry and on
+ * the checkpoint row alike — is a chunk id.
  */
-export function parseExpectedCourse(text: string, excerptCount: number): ExpectedCourse | null {
+export function parseExpectedCourse(text: string, chunkIds: readonly number[]): ExpectedCourse | null {
   const o = extractJsonObject(text);
   if (!o || typeof o !== 'object') return null;
   const r = o as Record<string, unknown>;
 
   const items = (v: unknown): ExpectedItem[] => arr(v).map((raw) => {
     const e = obj(raw);
-    return { item: asText(e.item), by_day: asNum(e.by_day), rationale: asText(e.rationale), citation_ids: asCitationIds(e.citation_ids, excerptCount) };
+    return { item: asText(e.item), by_day: asNum(e.by_day), rationale: asText(e.rationale), citation_ids: asCitationIds(e.citation_ids, chunkIds) };
   }).filter((e) => e.item !== '');
 
   const monitoring: ExpectedMonitoring[] = arr(r.expected_monitoring).map((raw) => {
     const e = obj(raw);
-    return { item: asText(e.item), frequency: asText(e.frequency, 200), rationale: asText(e.rationale), citation_ids: asCitationIds(e.citation_ids, excerptCount) };
+    return { item: asText(e.item), frequency: asText(e.frequency, 200), rationale: asText(e.rationale), citation_ids: asCitationIds(e.citation_ids, chunkIds) };
   }).filter((e) => e.item !== '');
 
   const triggers: EscalationTrigger[] = arr(r.escalation_triggers).map((raw) => {
     const e = obj(raw);
-    return { trigger: asText(e.trigger), action: asText(e.action), citation_ids: asCitationIds(e.citation_ids, excerptCount) };
+    return { trigger: asText(e.trigger), action: asText(e.action), citation_ids: asCitationIds(e.citation_ids, chunkIds) };
   }).filter((e) => e.trigger !== '');
 
   const course: ExpectedCourse = {
@@ -213,11 +236,26 @@ export function checkpointEntryRefs(checkpointId: string, course: ExpectedCourse
   return out;
 }
 
-/** An expected course, rendered for the diff pass with its entry references attached. */
-export function renderExpectedCourse(checkpointId: string, dayIndex: number, type: 'daily' | 'episode', course: ExpectedCourse | null): string {
+/**
+ * An expected course, rendered for the diff pass with its entry references attached.
+ *
+ * CITATIONS ARE RENDERED BACK AS ORDINALS, from the stored chunk ids via this checkpoint's own id
+ * list. The diff pass is shown the same [1]…[k] numbering the checkpoint pass was, so it cites the
+ * way it is told to; run.ts then resolves those ordinals against THE CHECKPOINT THE FINDING
+ * REFERENCES, which is the only list they were ever numbered against. Showing raw chunk ids here
+ * would ask a model to copy five-digit numbers exactly, which is a transcription error waiting to
+ * become a citation to someone else's passage.
+ */
+export function renderExpectedCourse(
+  checkpointId: string, dayIndex: number, type: 'daily' | 'episode',
+  course: ExpectedCourse | null, chunkIds: readonly number[] = [],
+): string {
   if (!course) return `${checkpointId} (${type}, day ${dayIndex}): no expected course was produced for this checkpoint.`;
   const lines: string[] = [`${checkpointId} (${type}, day ${dayIndex}) — expected course:`];
-  const cite = (ids: number[]) => (ids.length ? ` [citations ${ids.join(', ')}]` : ' [no citation]');
+  const cite = (ids: number[]) => {
+    const ordinals = ids.map((id) => ordinalForChunkId(id, chunkIds)).filter((o) => o > 0);
+    return ordinals.length ? ` [citations ${ordinals.join(', ')}]` : ' [no citation]';
+  };
   course.expected_diagnostics.forEach((e, i) => lines.push(`  ${checkpointId}/diagnostics/${i + 1} · by day ${e.by_day ?? '?'} · ${e.item} — ${e.rationale}${cite(e.citation_ids)}`));
   course.expected_therapeutics.forEach((e, i) => lines.push(`  ${checkpointId}/therapeutics/${i + 1} · by day ${e.by_day ?? '?'} · ${e.item} — ${e.rationale}${cite(e.citation_ids)}`));
   course.expected_monitoring.forEach((e, i) => lines.push(`  ${checkpointId}/monitoring/${i + 1} · ${e.item} (${e.frequency}) — ${e.rationale}${cite(e.citation_ids)}`));

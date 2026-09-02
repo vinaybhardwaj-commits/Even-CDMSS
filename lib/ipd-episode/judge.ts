@@ -57,7 +57,8 @@ async function callWithRetry(
 
 export interface PassResult {
   findings: EpisodeFinding[];
-  dropped: number;
+  /** Findings the engine could not read. NOT `n_dropped_invalid` — see parseFindings' note. */
+  unparseable: number;
   ok: boolean;
   error: string | null;
 }
@@ -68,17 +69,16 @@ export async function runDiffPass(a: {
   admissionContext: string;
   events: EpisodeEvent[];
   checkpointBlocks: string[];
-  excerptCount: number;
   model: string;
 }): Promise<PassResult> {
   const user = buildDiffUser({ admissionContext: a.admissionContext, events: a.events, checkpointBlocks: a.checkpointBlocks });
   const { text, error } = await callWithRetry(a.traceId, 'ipd_episode_diff', IPD_EPISODE_DIFF_SYSTEM, user, a.model, 'prompts/IPD_EPISODE_DIFF_SYSTEM', 8000);
-  if (error) return { findings: [], dropped: 0, ok: false, error };
-  const parsed = parseFindings(text, { pass: 'divergence', idPrefix: 'a1', excerptCount: a.excerptCount });
+  if (error) return { findings: [], unparseable: 0, ok: false, error };
+  const parsed = parseFindings(text, { pass: 'divergence', idPrefix: 'a1' });
   // An empty findings list is a legitimate result — a concordant admission. Only a call or parse
   // FAILURE skips the episode (§8), so "no divergence found" must not look like a failure here.
   const usable = /\bfindings\b/.test(text);
-  return { findings: parsed.findings, dropped: parsed.dropped, ok: usable, error: usable ? null : 'the response carried no findings array' };
+  return { findings: parsed.findings, unparseable: parsed.unparseable, ok: usable, error: usable ? null : 'the response carried no findings array' };
 }
 
 /** Pass A2 — fidelity. Reads the discharge summary; writes `documentation` findings only. */
@@ -95,10 +95,10 @@ export async function runFidelityPass(a: {
     extractedCase: a.extractedCase, extractionVersion: a.extractionVersion,
   });
   const { text, error } = await callWithRetry(a.traceId, 'ipd_episode_fidelity', IPD_EPISODE_FIDELITY_SYSTEM, user, a.model, 'prompts/IPD_EPISODE_FIDELITY_SYSTEM', 8000);
-  if (error) return { findings: [], dropped: 0, ok: false, error };
-  const parsed = parseFindings(text, { pass: 'fidelity', idPrefix: 'a2', excerptCount: 0 });
+  if (error) return { findings: [], unparseable: 0, ok: false, error };
+  const parsed = parseFindings(text, { pass: 'fidelity', idPrefix: 'a2' });
   const usable = /\bfindings\b/.test(text);
-  return { findings: parsed.findings, dropped: parsed.dropped, ok: usable, error: usable ? null : 'the response carried no findings array' };
+  return { findings: parsed.findings, unparseable: parsed.unparseable, ok: usable, error: usable ? null : 'the response carried no findings array' };
 }
 
 /**

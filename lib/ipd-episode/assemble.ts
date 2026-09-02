@@ -14,6 +14,15 @@
  * lib/ipd-audit/db13.ts — the one place in the repo licensed to see a name — and is used only to
  * build the scrubber. It is never stored, never returned, and never reaches a prompt. Without it
  * the scrub falls back to shape-only and that fact is recorded in `notes`, never hidden.
+ *
+ * ⚠️ THIS IS LITERALLY THE STAY-LIBRARY DE-IDENTIFIER, and it is worth naming why it arrives in two
+ * imports rather than one. PRD §12 lists the de-identifier as "the `Deidentifier` used by
+ * lib/stay-library/core.ts" — but that module exports `Deidentifier` only as a TYPE
+ * (core.ts:259). It holds no concrete scrubber to import: the function it is bound to is
+ * `deidText` from lib/readmission/assemble.ts, wired up in lib/stay-library/build.ts:134 as
+ * `(text) => deidText(text, identity)`. The two lines below are that same construction, taking the
+ * type from core.ts and the function from where build.ts takes it, so this engine and the stay
+ * library scrub through one implementation. Nothing on the UNTOUCHED list had to change for it.
  */
 
 import { deidText } from '../readmission/assemble';

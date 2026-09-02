@@ -19,7 +19,7 @@
  */
 
 import { assertKnownBedrockModel } from '../bedrock-core';
-import { startTrace, finishTraceIfRunning } from '../trace';
+import { startTrace, finishTraceIfRunning, logEvent } from '../trace';
 import {
   checkpointPlan, dayStartIso, diffPassEvents, episodeLevelEvents, eventsBeforeDayStart,
   fidelityPassEvents, isDischargeEvent, type EpisodeEvent,
@@ -28,7 +28,10 @@ import { assembleEpisode, type AssembledEpisode } from './assemble';
 import { admissionContextLine, renderExpectedCourse, type CheckpointEntryRef } from './checkpoint-core';
 import { checkpointModel, runCheckpoint, type CheckpointResult } from './checkpoint';
 import { judgeModel, runCommentaryPass, runDiffPass, runFidelityPass } from './judge';
-import { evidenceTiersOf, finalizeFindings, completenessPct, type EpisodeFinding } from './judge-core';
+import {
+  evidenceTiersOf, finalizeFindings, completenessPct, resolveFindingCitations,
+  type EpisodeFinding,
+} from './judge-core';
 import { fetchProgressNotes, fetchDischargeSummary } from './db13';
 import {
   IPD_EPISODE_ENGINE_VERSION, fetchExtractionByIpUid, recordSkip, clearSkip, saveEpisodeAudit,
@@ -183,14 +186,20 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
 
     const checkpointBlocks = checkpoints
       .filter((c) => c.expectedCourse)
-      .map((c) => renderExpectedCourse(c.checkpointId, c.dayIndex, c.checkpointType, c.expectedCourse));
+      .map((c) => renderExpectedCourse(c.checkpointId, c.dayIndex, c.checkpointType, c.expectedCourse, c.citationIds));
     const entryRefs = new Map<string, CheckpointEntryRef>();
     for (const c of checkpoints) for (const r of c.entryRefs) entryRefs.set(r.ref, r);
-    const excerptCount = Math.max(0, ...checkpoints.map((c) => c.citationIds.length));
+    // Each checkpoint's OWN ordered excerpt ids, keyed by checkpoint id. A1 cites by ordinal
+    // against the checkpoint it names, so the ceiling and the mapping are per checkpoint — a single
+    // max across the episode would let an ordinal from the widest checkpoint survive on the
+    // narrowest and resolve to a passage that checkpoint never showed.
+    const checkpointChunkIds = new Map<string, readonly number[]>(
+      checkpoints.map((c) => [c.checkpointId, c.citationIds] as const),
+    );
 
     // ── 4. diff (A1) — blind: the discharge event is filtered out ──
     const a1 = await runDiffPass({
-      traceId, admissionContext, events: diffPassEvents(events), checkpointBlocks, excerptCount, model: modelJudge,
+      traceId, admissionContext, events: diffPassEvents(events), checkpointBlocks, model: modelJudge,
     });
     if (!a1.ok) {
       await recordSkip({ encounterId, reason: 'diff_failed', dischargedAt: envelope.dischargedAt, engineVersion });
@@ -210,8 +219,27 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
     }
 
     // ── code-enforced rules, then the score ──
-    const raw: EpisodeFinding[] = [...a1.findings, ...a2.findings];
-    const final = finalizeFindings(raw, entryRefs, events, a1.dropped + a2.dropped);
+    // Ordinals → real chunk ids FIRST, per referencing checkpoint, so everything downstream (the
+    // uncited cap, the stored findings, the UI) speaks one vocabulary.
+    const raw: EpisodeFinding[] = resolveFindingCitations([...a1.findings, ...a2.findings], checkpointChunkIds);
+    const final = finalizeFindings(raw, entryRefs, events);
+
+    // Findings the engine could not read. Deliberately NOT folded into n_dropped_invalid, which
+    // means "A2 wrote outside its domain" and nothing else. This is an integration fact, so it goes
+    // where integration facts are read: the trace, and the audit row's error_detail.
+    const unparseable = a1.unparseable + a2.unparseable;
+    const errorDetail: string[] = [];
+    if (unparseable > 0) {
+      errorDetail.push(`${unparseable} finding(s) returned by the judge could not be parsed (A1 ${a1.unparseable}, A2 ${a2.unparseable})`);
+      if (traceId) {
+        await logEvent(traceId, 'ipd_episode_unparseable_findings', 'judge', {
+          encounter_id: encounterId, a1_unparseable: a1.unparseable, a2_unparseable: a2.unparseable,
+        }).catch(() => {});
+      }
+    }
+    if (final.n_fidelity_normalized > 0) {
+      errorDetail.push(`${final.n_fidelity_normalized} fidelity finding(s) had finding_type or checkpoint_ref normalised to the values §3.5 fixes`);
+    }
 
     // ── 6. comment (B) — outcome-aware, prose only, never fatal ──
     const b = await runCommentaryPass({
@@ -219,6 +247,8 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       outcomeLine: outcomeLineFrom(events, envelope.losDays),
       expectedCourses: checkpointBlocks, model: modelJudge,
     });
+
+    if (!b.commentary && b.error) errorDetail.push(`commentary not stored: ${b.error}`);
 
     // ── 7. persist ──
     const checkpointRows: CheckpointWriteRow[] = checkpoints.map((c) => ({
@@ -260,7 +290,17 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       modelCheckpoint,
       modelJudge,
       traceId: traceId ?? null,
+      errorDetail: errorDetail.length ? errorDetail.join(' · ') : null,
     }, checkpointRows);
+    if (saved.failedCheckpoints > 0) {
+      // The checkpoint rows carry the blinding proof, so a write that failed is worth a trace
+      // event even though the audit row itself landed.
+      if (traceId) {
+        await logEvent(traceId, 'ipd_episode_checkpoint_write_failed', 'persist', {
+          encounter_id: encounterId, failed: saved.failedCheckpoints, of: checkpointRows.length,
+        }).catch(() => {});
+      }
+    }
 
     if (saved.status !== 'skipped') await clearSkip(encounterId, engineVersion);
     await finishTraceIfRunning(traceId, saved.status === 'skipped' ? 'partial' : 'success');
@@ -279,6 +319,9 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
         ...(b.commentary ? [] : [`commentary was not stored: ${b.error ?? 'rejected'}`]),
         ...(final.n_tier_c_rewritten ? [`${final.n_tier_c_rewritten} finding(s) rewritten to unassessable by the Tier C rule`] : []),
         ...(final.n_uncited_capped ? [`${final.n_uncited_capped} finding(s) capped by the uncited-expectation rule`] : []),
+        ...(final.n_fidelity_normalized ? [`${final.n_fidelity_normalized} fidelity finding(s) normalised to commission / no checkpoint`] : []),
+        ...(unparseable ? [`${unparseable} finding(s) could not be parsed — see error_detail and the trace`] : []),
+        ...(saved.failedCheckpoints ? [`${saved.failedCheckpoints} of ${checkpointRows.length} checkpoint row(s) failed to write`] : []),
       ],
     };
   } catch (e) {

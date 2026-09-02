@@ -10,11 +10,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   applyTierCRule, applyUncitedCap, attachAttribution, attributedParty, completenessPct,
-  countFindings, divergenceIndex, dropInvalidFidelityFindings, evidenceTiersOf, finalizeFindings,
-  parseFindings, validateCommentary, asLvcCategory, SEVERITY_PENALTY,
+  countFindings, divergenceIndex, normalizeFidelityFindings, evidenceTiersOf, finalizeFindings,
+  parseFindings, resolveFindingCitations, validateCommentary, asLvcCategory, SEVERITY_PENALTY,
   type EpisodeFinding, type Severity, type Verdict, type Domain, type AuditPass,
 } from '../ipd-episode/judge-core';
-import { checkpointEntryRefs, parseExpectedCourse, buildRetrievalQuery, type CheckpointEntryRef } from '../ipd-episode/checkpoint-core';
+import {
+  checkpointEntryRefs, parseExpectedCourse, buildRetrievalQuery, renderExpectedCourse,
+  ordinalForChunkId, type CheckpointEntryRef,
+} from '../ipd-episode/checkpoint-core';
 import { checkpointModel, IPD_EPISODE_CHECKPOINT_MODEL_DEFAULT } from '../ipd-episode/checkpoint';
 import { judgeModel, IPD_EPISODE_JUDGE_MODEL_DEFAULT } from '../ipd-episode/judge';
 import { assertKnownBedrockModel, isKnownBedrockModel } from '../bedrock-core';
@@ -129,14 +132,33 @@ test('uncited cap: a CITED entry leaves the finding alone', () => {
   assert.equal(res.finding.severity, 'major');
 });
 
-test('uncited cap: an UNRESOLVABLE checkpoint_ref is not evidence the entry was uncited, so nothing is capped', () => {
-  const map = refs([['cp-d1/diagnostics/1', []]]);
-  for (const ref of ['cp-d9/diagnostics/7', null]) {
-    const res = applyUncitedCap(f({ finding_id: '1', severity: 'major', checkpoint_ref: ref }), map);
-    assert.equal(res.capped, false, String(ref));
-    assert.equal(res.finding.severity, 'major');
-  }
+test('uncited cap: a NULL checkpoint_ref is capped — an A1 finding measured against nothing is the case the cap exists for', () => {
+  const map = refs([['cp-d1/diagnostics/1', [4021]]]);
+  const res = applyUncitedCap(f({ finding_id: '1', severity: 'major', checkpoint_ref: null }), map);
+  assert.equal(res.capped, true);
+  assert.equal(res.finding.severity, 'minor');
+  assert.equal(res.finding.verdict, 'context_dependent');
 });
+
+test('uncited cap: an UNRESOLVABLE checkpoint_ref is capped too — citing nothing must not beat citing badly', () => {
+  const map = refs([['cp-d1/diagnostics/1', [4021]]]);
+  const res = applyUncitedCap(f({ finding_id: '1', severity: 'major', checkpoint_ref: 'cp-d9/diagnostics/7' }), map);
+  assert.equal(res.capped, true);
+  assert.equal(res.finding.severity, 'minor');
+  assert.equal(res.finding.verdict, 'context_dependent');
+});
+
+test('uncited cap: capping the ungrounded cases removes the evasion — a major A1 finding cannot score by citing nothing', () => {
+  const map = refs([['cp-d0/diagnostics/1', [4021]]]);
+  const grounded = f({ finding_id: 'grounded', severity: 'major', checkpoint_ref: 'cp-d0/diagnostics/1' });
+  const evasive = f({ finding_id: 'evasive', severity: 'major', checkpoint_ref: null });
+  const res = finalizeFindings([grounded, evasive], map, []);
+  assert.equal(res.n_uncited_capped, 1);
+  assert.equal(res.divergence_index, 92, 'only the grounded major finding scores its 8');
+});
+
+// the ordered mksap_chunks ids a checkpoint's retrieval returned; the prompt showed them as [1][2][3]
+const CHUNKS = [4021, 7788, 1503];
 
 test('checkpoint entry refs address every entry of an expected course, section by section', () => {
   const course = parseExpectedCourse(JSON.stringify({
@@ -145,45 +167,167 @@ test('checkpoint entry refs address every entry of an expected course, section b
     expected_monitoring: [{ item: 'hourly urine output', frequency: 'hourly', rationale: 'r', citation_ids: [2] }],
     escalation_triggers: [{ trigger: 'SBP < 90', action: 'escalate', citation_ids: [] }],
     expected_los_days: 3, expected_disposition: 'home', uncertainty: ['no vitals in this substrate'],
-  }), 3);
+  }), CHUNKS);
   assert.ok(course);
   const r = checkpointEntryRefs('cp-d0', course);
   assert.deepEqual(r.map((x) => x.ref), [
     'cp-d0/diagnostics/1', 'cp-d0/diagnostics/2', 'cp-d0/therapeutics/1', 'cp-d0/monitoring/1', 'cp-d0/escalation/1',
   ]);
-  assert.deepEqual(r.find((x) => x.ref === 'cp-d0/diagnostics/1')!.citation_ids, [1]);
+  assert.deepEqual(r.find((x) => x.ref === 'cp-d0/diagnostics/1')!.citation_ids, [4021]);
   assert.deepEqual(r.find((x) => x.ref === 'cp-d0/diagnostics/2')!.citation_ids, []);
 });
 
-test('checkpoint parsing clamps a citation to the excerpts actually shown — never renumbers one', () => {
+test('an entry’s citation ordinal is resolved to the REAL chunk id it stood for', () => {
+  const course = parseExpectedCourse(JSON.stringify({
+    expected_diagnostics: [{ item: 'CBC', by_day: 0, rationale: 'r', citation_ids: [1, 3] }],
+    expected_monitoring: [{ item: 'urine output', frequency: 'hourly', rationale: 'r', citation_ids: [2] }],
+  }), CHUNKS);
+  assert.deepEqual(course!.expected_diagnostics[0].citation_ids, [4021, 1503]);
+  assert.deepEqual(course!.expected_monitoring[0].citation_ids, [7788]);
+});
+
+test('the entry and the checkpoint row now speak ONE vocabulary — both are chunk ids', () => {
+  const course = parseExpectedCourse(JSON.stringify({
+    expected_diagnostics: [{ item: 'CBC', by_day: 0, rationale: 'r', citation_ids: [2] }],
+  }), CHUNKS);
+  const entryIds = course!.expected_diagnostics[0].citation_ids;
+  // before the mapping this was [2], which the row's citation_ids would have read as chunk 2 —
+  // a real passage nobody was shown
+  assert.deepEqual(entryIds, [7788]);
+  for (const id of entryIds) assert.ok(CHUNKS.includes(id), 'every entry citation is one of the row’s own chunk ids');
+});
+
+test('an ordinal outside [1..k] is dropped, never renumbered and never passed through as an id', () => {
   const course = parseExpectedCourse(JSON.stringify({
     expected_diagnostics: [{ item: 'CBC', by_day: 0, rationale: 'r', citation_ids: [1, 9, 0, -2, 3] }],
-  }), 3);
-  assert.deepEqual(course!.expected_diagnostics[0].citation_ids, [1, 3], 'ids outside [1..k] are dropped');
+  }), CHUNKS);
+  assert.deepEqual(course!.expected_diagnostics[0].citation_ids, [4021, 1503]);
+  // 9 must not survive as the literal 9 — that would be a citation to chunk 9
+  assert.ok(!course!.expected_diagnostics[0].citation_ids.includes(9));
+});
+
+test('with no excerpts retrieved, every entry citation resolves to nothing', () => {
+  const course = parseExpectedCourse(JSON.stringify({
+    expected_diagnostics: [{ item: 'CBC', by_day: 0, rationale: 'r', citation_ids: [1, 2] }],
+  }), []);
+  assert.deepEqual(course!.expected_diagnostics[0].citation_ids, []);
+});
+
+test('the diff prompt is rendered back in ORDINALS, from the stored chunk ids', () => {
+  const course = parseExpectedCourse(JSON.stringify({
+    expected_diagnostics: [{ item: 'CBC', by_day: 0, rationale: 'r', citation_ids: [1, 3] }],
+    expected_therapeutics: [{ item: 'IV fluids', by_day: 0, rationale: 'r', citation_ids: [] }],
+  }), CHUNKS);
+  const rendered = renderExpectedCourse('cp-d0', 0, 'daily', course, CHUNKS);
+  assert.match(rendered, /\[citations 1, 3\]/, 'the model is shown the numbering it is asked to cite by');
+  assert.match(rendered, /\[no citation\]/);
+  assert.ok(!rendered.includes('4021'), 'raw chunk ids are never put in front of a model to transcribe');
+  assert.equal(ordinalForChunkId(7788, CHUNKS), 2);
+  assert.equal(ordinalForChunkId(999, CHUNKS), 0, 'a chunk this checkpoint never carried has no ordinal');
+});
+
+// ── item 6: per-checkpoint ordinal resolution ────────────────────────────────────────────────
+
+test('A1 citations are resolved against the checkpoint the finding REFERENCES, not a global ceiling', () => {
+  const map = new Map<string, readonly number[]>([
+    ['cp-d0', [4021, 7788, 1503, 66, 77, 88, 99, 100]],  // k = 8
+    ['cp-d3', [5150, 5151]],                              // k = 2
+  ]);
+  const out = resolveFindingCitations([
+    f({ finding_id: 'wide', checkpoint_ref: 'cp-d0/diagnostics/1', citation_ids: [1, 3] }),
+    f({ finding_id: 'narrow', checkpoint_ref: 'cp-d3/therapeutics/1', citation_ids: [2] }),
+  ], map);
+  assert.deepEqual(out[0].citation_ids, [4021, 1503]);
+  assert.deepEqual(out[1].citation_ids, [5151]);
+});
+
+test('an ordinal valid on the WIDEST checkpoint is dropped on a narrow one — the bug a global max hid', () => {
+  const map = new Map<string, readonly number[]>([
+    ['cp-d0', [4021, 7788, 1503, 66, 77, 88, 99, 100]],
+    ['cp-d3', [5150, 5151]],
+  ]);
+  // "[6]" was legitimate against cp-d0's eight excerpts; against cp-d3's two it means nothing
+  const out = resolveFindingCitations([f({ finding_id: 'x', checkpoint_ref: 'cp-d3/diagnostics/1', citation_ids: [6] })], map);
+  assert.deepEqual(out[0].citation_ids, [], 'it resolves to nothing rather than to chunk 6 or to cp-d0’s sixth');
+});
+
+test('a finding whose ref names no known checkpoint keeps no citations, and fidelity findings carry none', () => {
+  const map = new Map<string, readonly number[]>([['cp-d0', [4021, 7788]]]);
+  const out = resolveFindingCitations([
+    f({ finding_id: 'orphan', checkpoint_ref: 'cp-d9/diagnostics/1', citation_ids: [1] }),
+    f({ finding_id: 'noref', checkpoint_ref: null, citation_ids: [1] }),
+    f({ finding_id: 'a2', pass: 'fidelity', domain: 'documentation', finding_type: 'commission', checkpoint_ref: null, citation_ids: [1] }),
+  ], map);
+  for (const o of out) assert.deepEqual(o.citation_ids, [], o.finding_id);
 });
 
 // ── 8. the A2 domain drop ────────────────────────────────────────────────────────────────────
 
-test('A2 domain drop: a fidelity finding in therapeutics is DROPPED and counted, never relabelled', () => {
+test('A2 DOMAIN is a drop: a fidelity finding in therapeutics is dropped and counted, never relabelled', () => {
   const list = [
     f({ finding_id: 'a2-1', pass: 'fidelity', domain: 'documentation', finding_type: 'commission' }),
     f({ finding_id: 'a2-2', pass: 'fidelity', domain: 'therapeutics', finding_type: 'commission' }),
     f({ finding_id: 'a1-1', pass: 'divergence', domain: 'therapeutics' }),
   ];
-  const { kept, dropped } = dropInvalidFidelityFindings(list);
+  const { kept, dropped, normalized } = normalizeFidelityFindings(list);
   assert.equal(dropped, 1);
+  assert.equal(normalized, 0);
   assert.deepEqual(kept.map((x) => x.finding_id), ['a2-1', 'a1-1']);
   assert.ok(!kept.some((x) => x.pass === 'fidelity' && x.domain !== 'documentation'));
 });
 
-test('the A2 drop count lands in n_dropped_invalid, where a reader can see it', () => {
+test('A2 SHAPE is a normalisation: a wrong finding_type or a stray checkpoint_ref is fixed, not thrown away', () => {
+  const list = [
+    f({ finding_id: 'a2-type', pass: 'fidelity', domain: 'documentation', finding_type: 'omission', checkpoint_ref: null }),
+    f({ finding_id: 'a2-ref', pass: 'fidelity', domain: 'documentation', finding_type: 'commission', checkpoint_ref: 'cp-d0/diagnostics/1' }),
+    f({ finding_id: 'a2-both', pass: 'fidelity', domain: 'documentation', finding_type: 'timing', checkpoint_ref: 'cp-d1/therapeutics/2' }),
+  ];
+  const { kept, dropped, normalized } = normalizeFidelityFindings(list);
+  assert.equal(dropped, 0, 'a mislabelled field is not a reason to discard a real finding');
+  assert.equal(normalized, 3);
+  for (const k of kept) {
+    assert.equal(k.finding_type, 'commission');
+    assert.equal(k.checkpoint_ref, null);
+    assert.equal(k.domain, 'documentation');
+  }
+});
+
+test('normalisation leaves a well-formed A2 finding and every A1 finding completely alone', () => {
+  const list = [
+    f({ finding_id: 'a2-ok', pass: 'fidelity', domain: 'documentation', finding_type: 'commission', checkpoint_ref: null }),
+    f({ finding_id: 'a1-1', pass: 'divergence', finding_type: 'omission', checkpoint_ref: 'cp-d0/diagnostics/1' }),
+  ];
+  const { kept, dropped, normalized } = normalizeFidelityFindings(list);
+  assert.equal(dropped, 0);
+  assert.equal(normalized, 0);
+  assert.deepEqual(kept, list);
+});
+
+test('n_dropped_invalid counts A2 DOMAIN drops only — nothing else is folded into it', () => {
   const list = [
     f({ finding_id: 'a2-1', pass: 'fidelity', domain: 'documentation', finding_type: 'commission' }),
     f({ finding_id: 'a2-2', pass: 'fidelity', domain: 'escalation', finding_type: 'commission' }),
+    // a normalised A2 finding is KEPT, so it must not appear in the counter either
+    f({ finding_id: 'a2-3', pass: 'fidelity', domain: 'documentation', finding_type: 'omission' }),
   ];
   const res = finalizeFindings(list, new Map(), []);
-  assert.equal(res.counters.n_dropped_invalid, 1);
-  assert.equal(res.counters.n_findings, 1);
+  assert.equal(res.counters.n_dropped_invalid, 1, 'exactly the one domain violation');
+  assert.equal(res.n_fidelity_normalized, 1);
+  assert.equal(res.counters.n_findings, 2);
+});
+
+test('an unparseable finding is NOT n_dropped_invalid — it is the pass’s own `unparseable` count', () => {
+  const text = JSON.stringify({ findings: [
+    { finding_id: 'ok', finding_type: 'commission', verdict: 'divergent', domain: 'documentation', severity: 'minor', statement: 'a' },
+    { finding_id: 'junk', finding_type: 'vibes', verdict: 'divergent', domain: 'documentation', severity: 'minor', statement: 'a' },
+    { finding_id: 'junk2', verdict: 'divergent', domain: 'documentation', severity: 'minor' },
+  ] });
+  const parsed = parseFindings(text, { pass: 'fidelity', idPrefix: 'a2' });
+  assert.equal(parsed.unparseable, 2, 'reported by the parser');
+  // and the counter stays at zero: no A2 finding here left the documentation domain
+  const res = finalizeFindings(parsed.findings, new Map(), []);
+  assert.equal(res.counters.n_dropped_invalid, 0,
+    'a finding the engine could not read is an integration fact, not evidence that A2 broke its fence');
 });
 
 // ── 9. completeness ──────────────────────────────────────────────────────────────────────────
@@ -292,9 +436,9 @@ test('finding parsing drops a malformed finding rather than inventing a default 
     { finding_id: 'no-statement', finding_type: 'omission', verdict: 'divergent', domain: 'diagnostics', severity: 'minor' },
     { finding_id: 'bad-domain', finding_type: 'omission', verdict: 'divergent', domain: 'vibes', severity: 'minor', statement: 'a' },
   ] });
-  const { findings, dropped } = parseFindings(text, { pass: 'divergence', idPrefix: 'a1', excerptCount: 4 });
+  const { findings, unparseable } = parseFindings(text, { pass: 'divergence', idPrefix: 'a1' });
   assert.equal(findings.length, 1);
-  assert.equal(dropped, 3);
+  assert.equal(unparseable, 3);
   assert.equal(findings[0].finding_id, 'a1-ok');
   assert.equal(findings[0].pass, 'divergence');
 });
@@ -303,7 +447,7 @@ test('lvc_category rides only on a commission finding in therapeutics or diagnos
   const mk = (domain: string, finding_type: string, lvc_category: string) => JSON.stringify({ findings: [
     { finding_id: 'x', finding_type, verdict: 'divergent', domain, severity: 'minor', statement: 'a', lvc_category },
   ] });
-  const one = (t: string) => parseFindings(t, { pass: 'divergence', idPrefix: 'a1', excerptCount: 0 }).findings[0];
+  const one = (t: string) => parseFindings(t, { pass: 'divergence', idPrefix: 'a1' }).findings[0];
   assert.equal(one(mk('therapeutics', 'commission', 'antibiotic')).lvc_category, 'antibiotic');
   assert.equal(one(mk('diagnostics', 'commission', 'imaging')).lvc_category, 'imaging');
   assert.equal(one(mk('monitoring', 'commission', 'antibiotic')).lvc_category, null, 'wrong domain');
@@ -338,22 +482,37 @@ test('counters tally every dimension the audit row stores', () => {
 });
 
 test('finalizeFindings applies the whole chain in one place, so its order cannot drift between callers', () => {
-  const map = refs([['cp-d1/diagnostics/1', []]]);
+  // cp-d1/… carried no citation; cp-d0/… did — so only findings against cp-d0 escape the cap
+  const map = refs([['cp-d1/diagnostics/1', []], ['cp-d0/diagnostics/1', [4021]]]);
   const res = finalizeFindings([
     // capped by the uncited rule (major → minor / context_dependent), so it scores 0
     f({ finding_id: 'capped', severity: 'major', checkpoint_ref: 'cp-d1/diagnostics/1' }),
-    // rewritten by the Tier C rule, so it scores 0
-    f({ finding_id: 'tierc', severity: 'major', evidence_basis: [] }),
+    // grounded, so the cap does not fire — but its basis is empty, so the Tier C rule rewrites it
+    f({ finding_id: 'tierc', severity: 'major', checkpoint_ref: 'cp-d0/diagnostics/1', evidence_basis: [] }),
     // dropped: a fidelity finding outside documentation
     f({ finding_id: 'dropped', pass: 'fidelity', domain: 'monitoring', finding_type: 'commission', severity: 'major' }),
+    // normalised, not dropped: right domain, wrong finding_type
+    f({ finding_id: 'normalised', pass: 'fidelity', domain: 'documentation', finding_type: 'omission', severity: 'minor', verdict: 'concordant' }),
     // the only finding that actually scores
-    f({ finding_id: 'real', severity: 'moderate' }),
+    f({ finding_id: 'real', severity: 'moderate', checkpoint_ref: 'cp-d0/diagnostics/1' }),
   ], map, [NOTE_EVENT]);
   assert.equal(res.n_uncited_capped, 1);
   assert.equal(res.n_tier_c_rewritten, 1);
-  assert.equal(res.counters.n_dropped_invalid, 1);
-  assert.equal(res.counters.n_findings, 3);
+  assert.equal(res.n_fidelity_normalized, 1);
+  assert.equal(res.counters.n_dropped_invalid, 1, 'the domain violation, and only it');
+  assert.equal(res.counters.n_findings, 4);
   assert.equal(res.divergence_index, 96, 'one moderate divergent finding only');
+});
+
+test('the cap runs before the Tier C rule, and a capped finding is therefore no longer the Tier C rule’s business', () => {
+  // ungrounded AND unsupported: the cap fires first and moves it off `divergent`, so the Tier C
+  // rewrite has nothing left to correct. Both rules exist to stop an unsupported divergent claim,
+  // and one of them stopping it is enough. (Accepted as-is by the orchestrator.)
+  const res = finalizeFindings([f({ finding_id: 'both', severity: 'major', checkpoint_ref: null, evidence_basis: [] })], new Map(), []);
+  assert.equal(res.n_uncited_capped, 1);
+  assert.equal(res.n_tier_c_rewritten, 0);
+  assert.equal(res.findings[0].verdict, 'context_dependent');
+  assert.equal(res.divergence_index, 100, 'either way it scores nothing');
 });
 
 // ── retrieval query ──────────────────────────────────────────────────────────────────────────

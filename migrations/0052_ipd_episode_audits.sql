@@ -1,4 +1,4 @@
--- 0051_ipd_episode_audits — the IPD EPISODE audit's three tables (engine `ipd-episode-audit/0.1`,
+-- 0052_ipd_episode_audits — the IPD EPISODE audit's three tables (engine `ipd-episode-audit/0.1`,
 -- PRD §7). ADDITIVE IN FULL: no existing table is altered and nothing here touches
 -- ipd_discharge_audits, which this engine only ever READS (its score is shown beside this one,
 -- labelled as the discharge engine's, per decision 14).
@@ -18,7 +18,7 @@
 CREATE TABLE IF NOT EXISTS ipd_episode_audits (
   id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   audited_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  app_source            TEXT,
+  app_source            TEXT NOT NULL DEFAULT 'standalone',
 
   engine_version        TEXT NOT NULL,
 
@@ -63,7 +63,13 @@ CREATE TABLE IF NOT EXISTS ipd_episode_audits (
   model_checkpoint      TEXT,
   model_judge           TEXT,
   trace_id              TEXT,
-  de_identified         BOOLEAN DEFAULT TRUE
+  de_identified         BOOLEAN DEFAULT TRUE,
+
+  -- Whatever went wrong on an episode that still produced a row: a pass that returned findings
+  -- this engine could not parse, a commentary that was rejected. These are NOT counted in
+  -- n_dropped_invalid — that counter means one thing only, "an A2 finding was written outside the
+  -- documentation domain", and a parse failure is a different fact about a different actor.
+  error_detail          TEXT
 );
 
 -- Idempotency: a re-run at the same engine version refreshes the row in place; a future engine

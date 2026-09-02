@@ -1,6 +1,6 @@
 /**
  * lib/ipd-episode/store.ts — Neon reads and writes for the IPD Episode Audit engine
- * (`ipd_episode_audits`, `ipd_episode_checkpoints`, `ipd_episode_skips`; migrations/0051).
+ * (`ipd_episode_audits`, `ipd_episode_checkpoints`, `ipd_episode_skips`; migrations/0052).
  *
  * ⚠️ EVERY SQL STRING HERE IS INFERRED against the DDL this build ships in the same commit. It has
  * not been run against Neon — the sandbox has no database. Every path is therefore FAIL-SAFE: a
@@ -24,6 +24,13 @@ import type { EpisodeFinding, FindingCounters } from './judge-core';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 
+/** Every degraded path in this file says so. A reader of the logs can tell "no rows" from
+ *  "this query has been failing since someone renamed a column", which a bare `.catch(() => [])`
+ *  cannot. Truncated: an error string is a log line, not a payload. */
+function warn(label: string, e: unknown): void {
+  console.warn(`[ipd-episode/store] ${label} failed (degraded): ${String((e as Error)?.message ?? e).slice(0, 300)}`);
+}
+
 /** Engine version (decision 27). A bump audits an admission again BESIDE its old row, never over it. */
 export const IPD_EPISODE_ENGINE_VERSION = 'ipd-episode-audit/0.1';
 
@@ -43,7 +50,7 @@ export const SKIP_RETRY_DAYS = 14;
 export async function auditedEncounterIds(engineVersion = IPD_EPISODE_ENGINE_VERSION): Promise<string[]> {
   const rows = await run(
     `SELECT encounter_id FROM ipd_episode_audits WHERE engine_version = $1`, [engineVersion],
-  ).catch(() => []);
+  ).catch((e: unknown) => { warn('auditedEncounterIds', e); return [] as Record<string, unknown>[]; });
   return rows.map((r) => String(r.encounter_id));
 }
 
@@ -52,7 +59,7 @@ export interface SkipRow { encounter_id: string; reason: string; attempts: numbe
 export async function skipRows(engineVersion = IPD_EPISODE_ENGINE_VERSION): Promise<SkipRow[]> {
   const rows = await run(
     `SELECT encounter_id, reason, attempts, discharged_at FROM ipd_episode_skips WHERE engine_version = $1`, [engineVersion],
-  ).catch(() => []);
+  ).catch((e: unknown) => { warn('skipRows', e); return [] as Record<string, unknown>[]; });
   return rows.map((r) => ({
     encounter_id: String(r.encounter_id),
     reason: String(r.reason),
@@ -87,14 +94,17 @@ export async function recordSkip(a: {
       [a.encounterId, a.engineVersion ?? IPD_EPISODE_ENGINE_VERSION, a.reason, a.dischargedAt],
     );
     return 'recorded';
-  } catch {
+  } catch (e) {
+    // A skip that cannot be recorded means this episode is retried forever with no trace of why.
+    warn('recordSkip', e);
     return 'skipped';
   }
 }
 
 /** An episode that now qualifies has no business keeping a skip row. Best-effort. */
 export async function clearSkip(encounterId: string, engineVersion = IPD_EPISODE_ENGINE_VERSION): Promise<void> {
-  await run(`DELETE FROM ipd_episode_skips WHERE encounter_id = $1 AND engine_version = $2`, [encounterId, engineVersion]).catch(() => {});
+  await run(`DELETE FROM ipd_episode_skips WHERE encounter_id = $1 AND engine_version = $2`, [encounterId, engineVersion])
+    .catch((e: unknown) => { warn('clearSkip', e); return [] as Record<string, unknown>[]; });
 }
 
 // ── the stored extraction (§3.1 condition 3) ─────────────────────────────────────────────────
@@ -118,7 +128,7 @@ export async function fetchExtractionByIpUid(ipUid: string): Promise<StoredExtra
               (extraction_version = 'doc-extract/1') DESC,
               extracted_at DESC NULLS LAST
      LIMIT 1`, [ipUid],
-  ).catch(() => []);
+  ).catch((e: unknown) => { warn('fetchExtractionByIpUid', e); return [] as Record<string, unknown>[]; });
   const r = rows[0];
   if (!r) return null;
   return {
@@ -144,9 +154,16 @@ export async function dischargeEngineScores(encounterIds: string[]): Promise<Rec
   const rows = await run(
     `SELECT DISTINCT ON (ip_uid) ip_uid, care_value_index, band
      FROM ipd_discharge_audits
-     WHERE engine_version = $1 AND ip_uid = ANY($2)
+     WHERE engine_version = $1 AND ip_uid = ANY($2::text[])
      ORDER BY ip_uid, audited_at DESC`, [IPD_DISCHARGE_ENGINE_VERSION_FOR_JOIN, ids],
-  ).catch(() => []);
+  ).catch((e: unknown) => {
+    // NOT a silent catch. This read is decoration — the surface renders "not audited by discharge
+    // engine" without it — but a query that has been failing since a schema change would look
+    // exactly the same as a cohort the discharge engine has genuinely never audited, and the
+    // second is a fact while the first is a bug. Say which one it is.
+    warn('dischargeEngineScores', e);
+    return [] as Record<string, unknown>[];
+  });
   const out: Record<string, DischargeEngineScore> = {};
   for (const r of rows) {
     out[String(r.ip_uid)] = {
@@ -182,6 +199,9 @@ export interface EpisodeAuditRow {
   modelCheckpoint: string | null;
   modelJudge: string | null;
   traceId: string | null;
+  /** Integration facts about an episode that still produced a row: unparseable findings, a
+   *  rejected commentary, a normalised fidelity shape. NEVER a count of A2 domain drops. */
+  errorDetail?: string | null;
 }
 
 export interface CheckpointWriteRow {
@@ -206,7 +226,7 @@ export interface CheckpointWriteRow {
  *
  * Returns 'skipped' on any fault. The caller logs it; nothing throws.
  */
-export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: CheckpointWriteRow[]): Promise<{ status: 'inserted' | 'updated' | 'skipped'; auditId: string | null }> {
+export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: CheckpointWriteRow[]): Promise<{ status: 'inserted' | 'updated' | 'skipped'; auditId: string | null; failedCheckpoints: number }> {
   try {
     const c = row.counters;
     const res = await run(
@@ -218,10 +238,10 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
          n_sequencing, n_divergent, n_context_dependent, n_unassessable, n_concordant,
          n_low_value, n_dropped_invalid,
          checkpoint_count, evidence_tiers, real_course, findings, commentary,
-         model_checkpoint, model_judge, trace_id)
+         model_checkpoint, model_judge, trace_id, error_detail)
        VALUES ($1,$2,$3,$4,$5,$6, $7,$8,$9,$10,$11, $12,$13,
                $14,$15,$16,$17,$18,$19, $20,$21,$22,$23,$24, $25,$26,
-               $27,$28::jsonb,$29::jsonb,$30::jsonb,$31::jsonb, $32,$33,$34)
+               $27,$28::jsonb,$29::jsonb,$30::jsonb,$31::jsonb, $32,$33,$34,$35)
        ON CONFLICT (encounter_id, engine_version) DO UPDATE SET
          audited_at = NOW(),
          ip_uid = EXCLUDED.ip_uid, member_id = EXCLUDED.member_id,
@@ -240,7 +260,8 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
          checkpoint_count = EXCLUDED.checkpoint_count, evidence_tiers = EXCLUDED.evidence_tiers,
          real_course = EXCLUDED.real_course, findings = EXCLUDED.findings,
          commentary = EXCLUDED.commentary, model_checkpoint = EXCLUDED.model_checkpoint,
-         model_judge = EXCLUDED.model_judge, trace_id = EXCLUDED.trace_id
+         model_judge = EXCLUDED.model_judge, trace_id = EXCLUDED.trace_id,
+         error_detail = EXCLUDED.error_detail
        RETURNING id, (xmax = 0) AS inserted`,
       [
         row.engineVersion, row.encounterId, row.ipUid, row.memberId, row.facilityName, row.speciality,
@@ -251,33 +272,43 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
         c.n_low_value, c.n_dropped_invalid,
         row.checkpointCount, JSON.stringify(row.evidenceTiers ?? null), JSON.stringify(row.realCourse ?? null),
         JSON.stringify(row.findings ?? []), row.commentary == null ? null : JSON.stringify(row.commentary),
-        row.modelCheckpoint, row.modelJudge, row.traceId,
+        row.modelCheckpoint, row.modelJudge, row.traceId, row.errorDetail ?? null,
       ],
     );
     const first = res[0];
     const auditId = first?.id == null ? null : String(first.id);
-    if (!auditId) return { status: 'skipped', auditId: null };
+    if (!auditId) return { status: 'skipped', auditId: null, failedCheckpoints: checkpoints.length };
 
-    await run(`DELETE FROM ipd_episode_checkpoints WHERE episode_audit_id = $1`, [auditId]).catch(() => {});
+    await run(`DELETE FROM ipd_episode_checkpoints WHERE episode_audit_id = $1`, [auditId])
+      .catch((e: unknown) => { warn('saveEpisodeAudit clear checkpoints', e); return [] as Record<string, unknown>[]; });
+    let failedCheckpoints = 0;
     for (const cp of checkpoints) {
+      // $8::int[] — the driver sends a JS array as a Postgres array literal, and without the cast
+      // an empty one is ambiguous enough for the server to reject the whole statement. A checkpoint
+      // row that vanishes takes input_cutoff_at and input_event_count with it, and those two ARE
+      // the blinding proof (§14 step 8) — so this insert must never fail quietly.
       await run(
         `INSERT INTO ipd_episode_checkpoints (
            episode_audit_id, day_index, checkpoint_type, input_cutoff_at, input_event_count,
            retrieval_query, retrieval_failed, citation_ids, expected_course, status, error_detail,
            model, trace_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13)`,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::int[],$9::jsonb,$10,$11,$12,$13)`,
         [
           auditId, cp.dayIndex, cp.checkpointType, cp.inputCutoffAt, cp.inputEventCount,
           cp.retrievalQuery, cp.retrievalFailed, cp.citationIds,
           cp.expectedCourse == null ? null : JSON.stringify(cp.expectedCourse),
           cp.status, cp.errorDetail, cp.model, cp.traceId,
         ],
-      ).catch(() => {});
+      ).catch((e: unknown) => {
+        warn(`saveEpisodeAudit checkpoint day ${cp.dayIndex} (${cp.checkpointType})`, e);
+        failedCheckpoints++;
+        return [] as Record<string, unknown>[];
+      });
     }
-    return { status: first?.inserted ? 'inserted' : 'updated', auditId };
+    return { status: first?.inserted ? 'inserted' : 'updated', auditId, failedCheckpoints };
   } catch (e) {
-    console.warn(`[ipd-episode/store] saveEpisodeAudit failed (no row written): ${String((e as Error).message).slice(0, 300)}`);
-    return { status: 'skipped', auditId: null };
+    warn('saveEpisodeAudit (no row written)', e);
+    return { status: 'skipped', auditId: null, failedCheckpoints: checkpoints.length };
   }
 }
 
@@ -297,13 +328,14 @@ export async function episodeWorklist(a: { limit?: number; sort?: 'divergence' |
      WHERE engine_version = $1
      ORDER BY discharged_at DESC NULLS LAST
      LIMIT ${lim}`, [IPD_EPISODE_ENGINE_VERSION],
-  ).catch(() => []);
+  ).catch((e: unknown) => { warn('episodeWorklist', e); return [] as Record<string, unknown>[]; });
   return rows;
 }
 
 export async function episodeAuditById(id: string): Promise<EpisodeListRow | null> {
   if (!/^[0-9a-fA-F-]{10,64}$/.test(id)) return null;
-  const rows = await run(`SELECT * FROM ipd_episode_audits WHERE id = $1 LIMIT 1`, [id]).catch(() => []);
+  const rows = await run(`SELECT * FROM ipd_episode_audits WHERE id = $1 LIMIT 1`, [id])
+    .catch((e: unknown) => { warn('episodeAuditById', e); return [] as Record<string, unknown>[]; });
   return rows[0] ?? null;
 }
 
@@ -315,5 +347,5 @@ export async function checkpointsForAudit(auditId: string): Promise<EpisodeListR
      FROM ipd_episode_checkpoints
      WHERE episode_audit_id = $1
      ORDER BY (checkpoint_type = 'episode'), day_index ASC`, [auditId],
-  ).catch(() => []);
+  ).catch((e: unknown) => { warn('checkpointsForAudit', e); return [] as Record<string, unknown>[]; });
 }

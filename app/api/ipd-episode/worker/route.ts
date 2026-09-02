@@ -30,7 +30,7 @@ export const maxDuration = 800;
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
-import { getSettings, setSetting, lockHeld } from '@/lib/mini-backfill';
+import { getSettings, setSetting } from '@/lib/mini-backfill';
 import { fetchClosedEpisodes, isEncounterId } from '@/lib/ipd-episode/db13';
 import {
   IPD_EPISODE_ENGINE_VERSION, auditedEncounterIds, skipIsRetryable, skipRows,
@@ -38,20 +38,39 @@ import {
 import { runEpisodeAudit, type RunEpisodeResult } from '@/lib/ipd-episode/run';
 
 /**
- * The soft lock. `app_settings` key `ipd_episode_lock`, with the TTL mechanics the IPD module
- * already uses (lib/mini-backfill's lockHeld / MB_LOCK_TTL_MS = 210 s, shared by
- * lib/ipd-audit/backfill.ts). The lock is written at the start of a tick and released in
- * `finally`, so the TTL only matters when a tick dies without releasing.
+ * The soft lock. `app_settings` key `ipd_episode_lock`, written at the start of a tick and released
+ * in `finally`, so the TTL only decides what happens when a tick DIES without releasing.
  *
- * ⚠️ THE TTL IS SHORTER THAN THIS ROUTE'S BOX (210 s against 800 s). That is a deliberate,
- * ACCEPTED limitation and not an oversight: a tick that runs longer than 210 s can have its lock
- * treated as stale by a second tick. Nothing here is a queue and nothing double-writes — the
- * (encounter_id, engine_version) unique index makes a duplicate audit an UPSERT of the same row,
- * not a second one — so the cost of a stale-lock overlap is duplicated model spend on one
- * episode, not a corrupt row. Sharing the module's one lock helper was preferred over inventing a
- * second TTL constant; a dedicated TTL belongs with the cron entry, which decision 19 defers.
+ * ⚠️ ITS OWN TTL, AND THE ARITHMETIC IS THE WHOLE REASON. The IPD module's shared helper
+ * (lib/mini-backfill's `lockHeld` / MB_LOCK_TTL_MS) uses 210 s, sized for a tick that audits two
+ * OPD notes inside a 300 s function cap. THIS route's box is 800 s and one episode can legitimately
+ * run ~520 s — so a shared 210 s TTL declared a perfectly healthy tick dead at the four-minute mark
+ * and let a second tick start beside it. Two ticks each holding three Opus calls is exactly the
+ * request storm the IPD discharge worker's header documents at length.
+ *
+ * 780 s sits just under the 800 s box: long enough that no tick which is still inside its own
+ * invocation is ever called stale, short enough that a crashed tick's lock clears before the next
+ * cadence rather than wedging the worker until someone clears the key by hand.
+ *
+ * The lock is advisory, not a queue. If it ever were bypassed, the (encounter_id, engine_version)
+ * unique index still makes a duplicate audit an UPSERT of the same row — never a second one.
  */
 const LOCK_KEY = 'ipd_episode_lock';
+
+/** 780 s. Coupled to `maxDuration` above: raise the box and this must move with it, in the same
+ *  commit — a TTL shorter than the work it guards is the defect this constant exists to fix.
+ *  Module-local, not exported: Next.js allows a route file to export only its handlers and route
+ *  config, so the contract test reads this file as source (the idiom this build already uses for
+ *  the PHI and no-id-rewriting assertions). */
+const IPD_EPISODE_LOCK_TTL_MS = 780 * 1000;
+
+/** True when a lock fresher than the TTL exists — i.e. another tick is still running. Local, not
+ *  the 210 s shared helper: see the note above. */
+function lockHeld(lockTs: string | null, now: Date = new Date(), ttlMs: number = IPD_EPISODE_LOCK_TTL_MS): boolean {
+  if (!lockTs) return false;
+  const t = Date.parse(lockTs);
+  return Number.isFinite(t) && now.getTime() - t < ttlMs;
+}
 
 /** Execution guard (this route spends LLM compute): Vercel Cron, Bearer/query CRON_SECRET, or a
  *  logged-in admin session. Byte-identical in shape to the IPD discharge worker's. */

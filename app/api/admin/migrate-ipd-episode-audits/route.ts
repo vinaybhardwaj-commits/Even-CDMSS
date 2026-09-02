@@ -8,7 +8,7 @@ export const runtime = 'nodejs';
 
 /**
  * Creates the three IPD Episode Audit tables (PRD §7). Idempotent — every statement is
- * IF NOT EXISTS, so running it twice is a no-op. Mirrors migrations/0051_ipd_episode_audits.sql
+ * IF NOT EXISTS, so running it twice is a no-op. Mirrors migrations/0052_ipd_episode_audits.sql
  * byte-for-byte in intent; the .sql file is the reference copy, this route is the executable
  * path, because `migrations/` is not bundled into the Vercel serverless function.
  *
@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
     await sql`CREATE TABLE IF NOT EXISTS ipd_episode_audits (
       id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       audited_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      app_source            TEXT,
+      app_source            TEXT NOT NULL DEFAULT 'standalone',
       engine_version        TEXT NOT NULL,
       encounter_id          TEXT NOT NULL,
       ip_uid                TEXT NOT NULL,
@@ -61,9 +61,17 @@ export async function POST(req: NextRequest) {
       model_checkpoint      TEXT,
       model_judge           TEXT,
       trace_id              TEXT,
-      de_identified         BOOLEAN DEFAULT TRUE
+      de_identified         BOOLEAN DEFAULT TRUE,
+      error_detail          TEXT
     )`;
     steps.audits_table = 'ok';
+
+    // ADD COLUMN for a table that already exists from an earlier run of this route — CREATE TABLE
+    // IF NOT EXISTS is a no-op there and would leave the column behind. Same shape as the 0014
+    // `report` column added to ipd_discharge_audits.
+    await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS error_detail TEXT`;
+    await sql`ALTER TABLE ipd_episode_audits ALTER COLUMN app_source SET DEFAULT 'standalone'`;
+    steps.audits_columns = 'ok';
 
     await sql`CREATE UNIQUE INDEX IF NOT EXISTS ipd_episode_audits_encounter_engine_uq ON ipd_episode_audits (encounter_id, engine_version)`;
     await sql`CREATE INDEX IF NOT EXISTS ipd_episode_audits_discharged_idx ON ipd_episode_audits (discharged_at DESC)`;

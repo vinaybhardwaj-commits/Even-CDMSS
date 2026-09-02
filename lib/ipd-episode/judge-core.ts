@@ -108,22 +108,31 @@ export interface ParseFindingsOptions {
   pass: AuditPass;
   /** Uniquifies model-supplied finding ids across passes. */
   idPrefix: string;
-  excerptCount: number;
 }
 
 /**
  * Parse a findings response into well-formed findings. A finding missing a required enum value or
  * a statement is DROPPED here — an unparseable finding is not a finding, and inventing a default
- * verdict for it would manufacture a score. Drops at this stage are counted by the caller as
- * `n_dropped_invalid` alongside the A2 domain drops.
+ * verdict for it would manufacture a score.
+ *
+ * ⚠️ THESE DROPS ARE NOT `n_dropped_invalid`, AND CONFLATING THEM HID A REAL SIGNAL. That counter
+ * means exactly one thing — "A2 wrote a finding outside the documentation domain", a fence being
+ * tested — and it is read as a rate of that specific misbehaviour. An unparseable finding is a
+ * different fact about a different actor: the model returned something this engine could not read,
+ * which is an integration problem, not a blinding one. It is reported through the pass's own
+ * `unparseable` count, onto a trace event and onto the audit row's `error_detail`.
+ *
+ * Citation ids are left as the ORDINALS the model wrote. They are resolved against the referencing
+ * checkpoint's own excerpt list by `resolveFindingCitations`, which is the only place that knows
+ * which list a given ordinal was numbered against.
  */
-export function parseFindings(text: string, opts: ParseFindingsOptions): { findings: EpisodeFinding[]; dropped: number } {
+export function parseFindings(text: string, opts: ParseFindingsOptions): { findings: EpisodeFinding[]; unparseable: number } {
   const o = extractJsonObject(text);
   const list = Array.isArray((objOf(o)).findings) ? (objOf(o).findings as unknown[]) : null;
-  if (!list) return { findings: [], dropped: 0 };
+  if (!list) return { findings: [], unparseable: 0 };
 
   const findings: EpisodeFinding[] = [];
-  let dropped = 0;
+  let unparseable = 0;
   list.slice(0, 120).forEach((raw, i) => {
     const f = objOf(raw);
     const finding_type = oneOf(FINDING_TYPES, f.finding_type);
@@ -131,12 +140,14 @@ export function parseFindings(text: string, opts: ParseFindingsOptions): { findi
     const domain = oneOf(DOMAINS, f.domain);
     const severity = oneOf(SEVERITIES, f.severity);
     const statement = asText(f.statement);
-    if (!finding_type || !verdict || !domain || !severity || !statement) { dropped++; return; }
+    if (!finding_type || !verdict || !domain || !severity || !statement) { unparseable++; return; }
 
     const rawId = asText(f.finding_id, 80);
+    // ORDINALS, unresolved. Only a positive-integer sanity filter here — the ceiling belongs to
+    // whichever checkpoint this finding references, and this function does not know which that is.
     const citation_ids = Array.isArray(f.citation_ids)
       ? Array.from(new Set((f.citation_ids as unknown[]).map(Number)
-          .filter((n) => Number.isInteger(n) && n >= 1 && n <= opts.excerptCount))).slice(0, 16)
+          .filter((n) => Number.isInteger(n) && n >= 1))).slice(0, 16)
       : [];
 
     // lvc_category rides ONLY on a commission finding in therapeutics or diagnostics (§3.4.2);
@@ -163,7 +174,7 @@ export function parseFindings(text: string, opts: ParseFindingsOptions): { findi
       citation_ids,
     });
   });
-  return { findings, dropped };
+  return { findings, unparseable };
 }
 
 // ── the code-enforced rules ──────────────────────────────────────────────────────────────────
@@ -184,33 +195,94 @@ export function applyTierCRule(f: EpisodeFinding): { finding: EpisodeFinding; re
 }
 
 /**
- * §4.4, the uncited-entry cap. A DIVERGENCE finding whose referenced checkpoint entry carried no
- * citation is capped at severity `minor` and verdict `context_dependent`.
+ * §4.4, the uncited-entry cap. A DIVERGENCE finding is capped at severity `minor` and verdict
+ * `context_dependent` unless it is measured against a checkpoint entry that actually carried a
+ * citation.
  *
- * Deliberately narrow in two directions. It is not applied to fidelity findings (§4.4 says so
- * outright). And it is applied only when the `checkpoint_ref` RESOLVES to a known entry: a
- * reference to nothing is not evidence that the entry was uncited, so an unresolvable ref leaves
- * the finding alone rather than being capped on a guess.
+ * ⚠️ THREE CASES CAP, NOT ONE, AND THE TWO NEW ONES ARE THE IMPORTANT ONES. §3.4 requires every
+ * A1 finding to carry a non-null `checkpoint_ref`, but a requirement in a prompt is a request. A
+ * finding with a NULL ref, or one naming an entry that does not exist, is not measured against any
+ * expectation this engine can produce — so it is exactly the thing the cap exists for, and leaving
+ * it uncapped let the weakest findings in the set carry the heaviest penalty. Capping only the
+ * resolvable-and-uncited case meant a model could evade the cap by citing nothing at all.
+ *
+ * Still not applied to fidelity findings: §4.4 says so outright, and the reason holds — A2 is
+ * measured against the record, not against an expectation, so an expectation's citations say
+ * nothing about it.
  */
 export function applyUncitedCap(f: EpisodeFinding, entryRefs: Map<string, CheckpointEntryRef>): { finding: EpisodeFinding; capped: boolean } {
   if (f.pass !== 'divergence') return { finding: f, capped: false };
-  if (!f.checkpoint_ref) return { finding: f, capped: false };
-  const entry = entryRefs.get(f.checkpoint_ref);
-  if (!entry) return { finding: f, capped: false };
-  if (entry.citation_ids.length > 0) return { finding: f, capped: false };
+  const entry = f.checkpoint_ref ? entryRefs.get(f.checkpoint_ref) : undefined;
+  // capped when: no ref at all · a ref naming nothing · a ref naming an entry with no citation
+  const grounded = !!entry && entry.citation_ids.length > 0;
+  if (grounded) return { finding: f, capped: false };
   if (f.severity === 'minor' && f.verdict === 'context_dependent') return { finding: f, capped: false };
   return { finding: { ...f, severity: 'minor', verdict: 'context_dependent' }, capped: true };
 }
 
-/** §3.5: a fidelity finding outside `documentation` is dropped, and the drop is counted. */
-export function dropInvalidFidelityFindings(findings: EpisodeFinding[]): { kept: EpisodeFinding[]; dropped: number } {
+/**
+ * §3.5, in two halves that are deliberately NOT the same operation.
+ *
+ * DOMAIN → DROP. A fidelity finding outside `documentation` is a clinical verdict written with the
+ * discharge summary in view. There is no honest way to keep it: it is the thing A2 is fenced away
+ * from, and relabelling it `documentation` would launder an outcome-aware judgement into the
+ * blinded set. It is dropped and counted in `n_dropped_invalid`, which means this and nothing else.
+ *
+ * SHAPE → NORMALISE. `finding_type` and `checkpoint_ref` are different: §3.5 FIXES them for this
+ * pass — every A2 finding is a `commission` against the record with no checkpoint behind it — so a
+ * model returning `omission`, or a stray ref copied from the schema, has not made a different
+ * claim, it has mislabelled the one claim this pass can make. Dropping those would throw away real
+ * findings over a field the spec already determines. They are set to the only values they can have.
+ */
+export function normalizeFidelityFindings(findings: EpisodeFinding[]): { kept: EpisodeFinding[]; dropped: number; normalized: number } {
   const kept: EpisodeFinding[] = [];
   let dropped = 0;
+  let normalized = 0;
   for (const f of findings) {
-    if (f.pass === 'fidelity' && f.domain !== 'documentation') { dropped++; continue; }
+    if (f.pass !== 'fidelity') { kept.push(f); continue; }
+    if (f.domain !== 'documentation') { dropped++; continue; }
+    if (f.finding_type !== 'commission' || f.checkpoint_ref !== null) {
+      normalized++;
+      kept.push({ ...f, finding_type: 'commission', checkpoint_ref: null });
+      continue;
+    }
     kept.push(f);
   }
-  return { kept, dropped };
+  return { kept, dropped, normalized };
+}
+
+/**
+ * Resolve each divergence finding's citation ORDINALS against THE CHECKPOINT IT REFERENCES, and
+ * map them to that checkpoint's real `mksap_chunks` ids.
+ *
+ * ⚠️ WHY PER CHECKPOINT AND NOT ONE GLOBAL CEILING. Every checkpoint retrieves its own excerpts:
+ * day 0 may get 8 and day 3 may get 2, and each was numbered [1]…[k] against its OWN list. Clamping
+ * to the largest k across the episode let a "[6]" written against the two-excerpt checkpoint
+ * survive and then resolve against nothing — or worse, be read later as a chunk id. Resolving
+ * against the referencing checkpoint's own list is the only reading under which the number the
+ * model wrote and the passage it meant are the same thing.
+ *
+ * A finding whose ref names no known checkpoint loses its citations entirely, which is correct: it
+ * has nothing to have cited against. The uncited cap then catches the finding itself.
+ *
+ * Fidelity findings carry no citations — A2 is shown no excerpts — so they are emptied here too.
+ */
+export function resolveFindingCitations(
+  findings: EpisodeFinding[], checkpointChunkIds: Map<string, readonly number[]>,
+): EpisodeFinding[] {
+  return findings.map((f) => {
+    if (f.pass !== 'divergence' || !f.checkpoint_ref) return { ...f, citation_ids: [] };
+    const checkpointId = f.checkpoint_ref.split('/')[0];
+    const chunkIds = checkpointChunkIds.get(checkpointId);
+    if (!chunkIds || !chunkIds.length) return { ...f, citation_ids: [] };
+    const out: number[] = [];
+    for (const ordinal of f.citation_ids) {
+      if (!Number.isInteger(ordinal) || ordinal < 1 || ordinal > chunkIds.length) continue;
+      const chunkId = chunkIds[ordinal - 1];
+      if (Number.isFinite(chunkId) && !out.includes(chunkId)) out.push(chunkId);
+    }
+    return { ...f, citation_ids: out };
+  });
 }
 
 // ── attribution (PRD §5) ─────────────────────────────────────────────────────────────────────
@@ -288,6 +360,7 @@ export interface FindingCounters {
   n_dropped_invalid: number;
 }
 
+/** `droppedInvalid` is the A2 domain-drop count and nothing else (see `parseFindings`). */
 export function countFindings(findings: EpisodeFinding[], droppedInvalid: number): FindingCounters {
   const c: FindingCounters = {
     n_findings: findings.length,
@@ -329,12 +402,18 @@ export interface FinalizeResult {
   divergence_index: number;
   n_tier_c_rewritten: number;
   n_uncited_capped: number;
+  n_fidelity_normalized: number;
 }
 
+/**
+ * `n_dropped_invalid` is passed ONE number and it means ONE thing: A2 findings written outside the
+ * documentation domain. Unparseable findings are counted by the caller and reported separately —
+ * see the note on `parseFindings`.
+ */
 export function finalizeFindings(
-  raw: EpisodeFinding[], entryRefs: Map<string, CheckpointEntryRef>, events: EpisodeEvent[], alreadyDropped = 0,
+  raw: EpisodeFinding[], entryRefs: Map<string, CheckpointEntryRef>, events: EpisodeEvent[],
 ): FinalizeResult {
-  const { kept, dropped } = dropInvalidFidelityFindings(raw);
+  const { kept, dropped, normalized } = normalizeFidelityFindings(raw);
   let rewritten = 0;
   let capped = 0;
   const findings = kept.map((f0) => {
@@ -349,10 +428,11 @@ export function finalizeFindings(
   });
   return {
     findings,
-    counters: countFindings(findings, dropped + alreadyDropped),
+    counters: countFindings(findings, dropped),
     divergence_index: divergenceIndex(findings),
     n_tier_c_rewritten: rewritten,
     n_uncited_capped: capped,
+    n_fidelity_normalized: normalized,
   };
 }
 

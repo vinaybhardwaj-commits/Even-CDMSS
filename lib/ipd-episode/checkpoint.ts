@@ -68,14 +68,18 @@ async function retrieveExcerpts(query: string): Promise<{ excerpts: RetrievedExc
   if (!query.trim()) return { excerpts: [], ids: [], failed: false };
   try {
     const res = await retrieve(query, { topK: RETRIEVAL_TOP_K });
-    const hits = (res?.hits ?? []).slice(0, RETRIEVAL_TOP_K);
+    // ⚠️ ONE FILTERED LIST, TWO VIEWS OF IT. `excerpts` is what the prompt numbers [1]…[k] and
+    // `ids` is what those ordinals resolve to, so they MUST stay index-aligned. Filtering a hit
+    // out of one list and not the other would silently shift every ordinal after it onto the wrong
+    // passage — a citation that points at real text nobody was shown.
+    const hits = (res?.hits ?? []).slice(0, RETRIEVAL_TOP_K).filter((h) => Number.isFinite(Number(h.id)));
     return {
       excerpts: hits.map((h) => ({
         id: Number(h.id),
         label: [h.book, h.chapter, h.section].filter(Boolean).join(' · ') || String(h.source ?? 'source'),
         text: String(h.text ?? '').slice(0, EXCERPT_CHARS),
       })),
-      ids: hits.map((h) => Number(h.id)).filter((n) => Number.isFinite(n)),
+      ids: hits.map((h) => Number(h.id)),
       failed: false,
     };
   } catch {
@@ -129,7 +133,8 @@ export async function runCheckpoint(input: RunCheckpointInput): Promise<Checkpoi
       }, { bedrock: input.model, promptRef: 'prompts/IPD_EPISODE_CHECKPOINT_SYSTEM' });
 
       const text = String(res?.choices?.[0]?.message?.content ?? '');
-      const course = parseExpectedCourse(text, excerpts.length);
+      // ids, not the count: the parser resolves each cited ordinal to the chunk id it stood for
+      const course = parseExpectedCourse(text, ids);
       if (!course) { lastError = 'the response carried no usable expected course'; continue; }
       return {
         ...base,
