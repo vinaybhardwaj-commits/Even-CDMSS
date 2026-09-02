@@ -218,6 +218,7 @@ export function CheckpointPanels({ checkpoints }: { checkpoints: Row[] }) {
                   {c.retrieval_failed ? ' · retrieval failed' : ''}
                   {c.retrieval_offtopic ? ` · ${s(c.offtopic_excerpt_count)} off-topic excerpt(s)` : ''}
                   {c.day0_query_from_ot ? ' · day 0 query from OT note' : ''}
+                  {c.temperature != null ? ` · temp ${s(c.temperature)}${c.seed == null ? ', no seed' : `, seed ${s(c.seed)}`}` : ''}
                   {Number(c.entry_count ?? 0) > 0
                     ? ` · ${Number(c.entry_count) - Number(c.uncited_entry_count ?? 0)}/${s(c.entry_count)} entries cited`
                     : ''}

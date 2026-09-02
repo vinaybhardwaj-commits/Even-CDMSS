@@ -28,6 +28,8 @@ export async function POST(req: NextRequest) {
       audited_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       app_source            TEXT NOT NULL DEFAULT 'standalone',
       engine_version        TEXT NOT NULL,
+      run_seq               INTEGER NOT NULL DEFAULT 1,
+      is_current            BOOLEAN NOT NULL DEFAULT TRUE,
       encounter_id          TEXT NOT NULL,
       ip_uid                TEXT NOT NULL,
       member_id             TEXT,
@@ -100,7 +102,18 @@ export async function POST(req: NextRequest) {
     await sql`ALTER TABLE ipd_episode_audits ALTER COLUMN divergence_index DROP DEFAULT`;
     steps.audits_defaults = 'ok';
 
-    await sql`CREATE UNIQUE INDEX IF NOT EXISTS ipd_episode_audits_encounter_engine_uq ON ipd_episode_audits (encounter_id, engine_version)`;
+    // ── every run is kept (V, 2026-09-02) ────────────────────────────────────────────────────
+    // Order matters on an existing table: add the columns, BACKFILL is_current for rows written
+    // under the old upsert (each encounter had exactly one row, so every one of them is current
+    // and run_seq 1 is correct), THEN drop the old unique index, THEN add the new ones. Dropping
+    // first would allow a concurrent writer to create the duplicate the new index then rejects.
+    await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS run_seq INTEGER NOT NULL DEFAULT 1`;
+    await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS is_current BOOLEAN NOT NULL DEFAULT TRUE`;
+    await sql`UPDATE ipd_episode_audits SET is_current = TRUE WHERE is_current IS NULL`;
+    await sql`DROP INDEX IF EXISTS ipd_episode_audits_encounter_engine_uq`;
+    await sql`CREATE UNIQUE INDEX IF NOT EXISTS ipd_episode_audits_encounter_engine_run_uq ON ipd_episode_audits (encounter_id, engine_version, run_seq)`;
+    await sql`CREATE UNIQUE INDEX IF NOT EXISTS ipd_episode_audits_current_uq ON ipd_episode_audits (encounter_id, engine_version) WHERE is_current`;
+    steps.audits_runs = 'ok';
     await sql`CREATE INDEX IF NOT EXISTS ipd_episode_audits_discharged_idx ON ipd_episode_audits (discharged_at DESC)`;
     await sql`CREATE INDEX IF NOT EXISTS ipd_episode_audits_speciality_idx ON ipd_episode_audits (speciality)`;
     await sql`CREATE INDEX IF NOT EXISTS ipd_episode_audits_ip_uid_idx ON ipd_episode_audits (ip_uid)`;
@@ -128,7 +141,9 @@ export async function POST(req: NextRequest) {
       retrieved_titles    TEXT[],
       retrieval_offtopic  BOOLEAN DEFAULT FALSE,
       offtopic_excerpt_count INTEGER DEFAULT 0,
-      day0_query_from_ot  BOOLEAN DEFAULT FALSE
+      day0_query_from_ot  BOOLEAN DEFAULT FALSE,
+      temperature         DOUBLE PRECISION,
+      seed                INTEGER
     )`;
     await sql`CREATE INDEX IF NOT EXISTS ipd_episode_checkpoints_audit_idx ON ipd_episode_checkpoints (episode_audit_id)`;
     await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS uncited_entry_count INTEGER DEFAULT 0`;
@@ -138,6 +153,8 @@ export async function POST(req: NextRequest) {
     await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS retrieval_offtopic BOOLEAN DEFAULT FALSE`;
     await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS offtopic_excerpt_count INTEGER DEFAULT 0`;
     await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS day0_query_from_ot BOOLEAN DEFAULT FALSE`;
+    await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS temperature DOUBLE PRECISION`;
+    await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS seed INTEGER`;
     steps.checkpoints_table = 'ok';
 
     // ── citation_ids must be INTEGER[] ────────────────────────────────────────────────────────

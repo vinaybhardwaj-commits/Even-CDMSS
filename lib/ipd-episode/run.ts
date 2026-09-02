@@ -241,13 +241,11 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
     // read it. A revision that fed its diagnosis and procedure into the checkpoint retrieval query
     // was reverted on 2026-09-02 — a discharge summary is written after the fact, so choosing
     // excerpts with it puts hindsight into a blinded pass through the retrieved text. §3.3.3 stands.
-    // The episode's OT surgery names, from the WHOLE event list. Used by one caller only — the
-    // day 0 fallback in buildRetrievalQuery, when nothing clinical exists before the door and the
-    // alternative is an empty query. Every row it touches is stamped day0_query_from_ot.
-    const episodeSurgeryNames = Array.from(new Set(
-      events.filter((e) => e.event_type === 'ot_note')
-        .map((e) => String((e.detail as Record<string, unknown>)?.surgery_name ?? '').trim())
-        .filter(Boolean),
+    // ⚠️ AUTHOR NAMES, COLLECTED SO THEY CAN BE REMOVED (item 7). A progress note's narrative can
+    // carry the RMO's name inside the text, where no field names it, so the query builder is given
+    // every author this episode has and strips them all.
+    const authorNames = Array.from(new Set(
+      events.map((e) => e.author_name).filter((n): n is string => !!n && n.trim().length >= 3),
     ));
 
     const plan = checkpointPlan(envelope.losDays);
@@ -277,9 +275,18 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
           eventsBeforeCutoff: input_events,
           // Written at admission, so it carries the presenting picture and no hindsight.
           remarks: envelope.remarks,
-          // Day 0 last resort only, and stamped on the row when it fires.
+          authorNames,
+          // ⚠️ THE DAY 0 FALLBACK NOW READS THE SAME FILTERED WINDOW AS EVERYTHING ELSE (item 8).
+          // It used to be handed the EPISODE's OT names, and on IP-1286 that meant an OT note
+          // timestamped 11:53 selecting the evidence for a 03:03 cut-off — day 0 retrieved with
+          // knowledge of an operation that had not happened. Sourcing it from `input_events` makes
+          // the fallback a deliberate no-op (rule 1 already reads in-window OT notes); it is kept,
+          // tested and stamped so the leak cannot return by someone widening this argument again.
           isDayZero: entry.checkpoint_type === 'daily' && entry.day_index === 0,
-          episodeSurgeryNames,
+          episodeSurgeryNames: input_events
+            .filter((e) => e.event_type === 'ot_note')
+            .map((e) => String((e.detail as Record<string, unknown>)?.surgery_name ?? '').trim())
+            .filter(Boolean),
         },
         model: modelCheckpoint,
       }));
@@ -448,6 +455,8 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       retrievalOffTopic: c.retrievalOffTopic,
       offTopicExcerptCount: c.offTopicExcerptCount,
       day0QueryFromOt: c.day0QueryFromOt,
+      temperature: c.temperature,
+      seed: c.seed,
     }));
 
     const saved = await saveEpisodeAudit({

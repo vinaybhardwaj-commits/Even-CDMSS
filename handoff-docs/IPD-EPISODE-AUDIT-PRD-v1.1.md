@@ -317,7 +317,17 @@ They are an output. The UI lists them under their own heading.
 
 ### 4.4 Uncited expectations
 
-An A1 finding whose referenced checkpoint entry has an empty `citation_ids` is capped in code at `severity = 'minor'` and `verdict = 'context_dependent'`. This cap does not apply to A2 findings.
+**Amended by V on 2026-09-02 (fix round 6 item 1). The text below supersedes the original rule, which read: "capped in code at `severity = 'minor'` and `verdict = 'context_dependent'`."**
+
+An A1 finding is *grounded* when **both** the finding itself and the checkpoint entry it is measured against carry a non-empty `citation_ids`. An ungrounded finding is capped **in severity only**, at `severity = 'moderate'` — never `major`. **Its verdict is not touched**, and it may hold any verdict including `divergent`. This cap does not apply to A2 findings.
+
+Why the verdict override was removed: rewriting an ungrounded finding's verdict to `context_dependent` did not weaken it, it deleted it. On IP-1286 nine of thirteen `concordant` findings were erased, because "the course matched the expectation" is a conclusion about the record, and an expectation's citations say nothing about whether it matched. A citation bears on how much weight a divergence should carry — severity — and on nothing else.
+
+This ceiling is **the same ceiling** as §4.4a. A finding subject to both lands on `moderate` and stops there; the two do not stack down to `minor`.
+
+### 4.4a Non-normative evidence (added 2026-09-02, decision on the widened corpus)
+
+Retrieval is not restricted to the normative allowlist, so a citation may be a guideline (a standard) or a journal or textbook passage (evidence). A finding whose citations are **all** non-normative may hold any verdict, including `divergent`, but is capped at `severity = 'moderate'` — never `major`, because `major` asserts serious harm against a standard and literature is not one. A single normative citation lifts the ceiling. Each finding records `citation_provenance` as `normative | literature | mixed`, null when it cites nothing.
 
 ---
 

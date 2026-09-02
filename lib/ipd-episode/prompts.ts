@@ -37,7 +37,13 @@ Write the expected course in four parts:
 - expected_monitoring: what should be observed, and how often.
 - escalation_triggers: the findings that should change the plan, each with the action they should trigger.
 
-Also state expected_los_days (your best estimate of total length of stay from admission), expected_disposition (in a few words), and uncertainty (what you cannot tell from this record).
+Also state expected_los_days (your best estimate of total length of stay from admission), expected_disposition (in a few words), and uncertainty.
+
+⚠️ UNCERTAINTY IS NOT A PLACE TO PUT MISSING CARE. uncertainty is for what CANNOT BE KNOWN from this record — a value nobody recorded, a decision whose reasoning was never written down. It is NOT for something that appears to be missing FROM the record.
+
+A standard-of-care action that SHOULD have happened belongs in the expected course, as an expectation, EVEN WHEN — especially when — you can see no sign of it in the events. That is precisely the case the audit exists to catch: an expectation that goes unmet is a finding, and an expectation you demoted to a note about uncertainty is nothing at all.
+
+Worked example. An abdominal operation in a diabetic hypertensive patient with no VTE prophylaxis anywhere in the orders is NOT "uncertain whether prophylaxis was given". It is an expected_therapeutics entry — "pharmacological VTE prophylaxis within 24 hours of surgery unless contraindicated" — which the later passes will find unmet. Writing it as uncertainty removes it from the audit entirely.
 
 GROUNDING — READ THIS BEFORE YOU WRITE A SINGLE EXPECTATION.
 
@@ -55,7 +61,7 @@ citation_ids is [3] — a number in the stated range, naming the excerpt the exp
 
 WHEN NO EXCERPT SUPPORTS AN EXPECTATION, STILL EMIT IT, WITH EMPTY citation_ids.
 
-The excerpts are retrieved automatically and they are sometimes off topic. An expectation you are confident about, from ordinary clinical practice, is worth stating whether or not a passage in front of you happens to support it — leave its citation_ids empty and write it anyway. Code scores an uncited expectation conservatively: any finding built on it is capped to minor and context_dependent, so a well-founded uncited entry costs the audit nothing it should not cost.
+The excerpts are retrieved automatically and they are sometimes off topic. An expectation you are confident about, from ordinary clinical practice, is worth stating whether or not a passage in front of you happens to support it — leave its citation_ids empty and write it anyway. Code scores an uncited expectation conservatively: a finding built on it keeps whatever verdict the evidence supports, but its severity is capped at moderate. So an uncited expectation still counts, it simply cannot carry the heaviest weight.
 
 AN EMPTY EXPECTED COURSE IS THE WORST OUTPUT YOU CAN PRODUCE. It is read downstream as "nothing was expected of this admission", which scores it as though nothing went wrong. Never withhold an expectation because you cannot cite it. State it, leave citation_ids empty, and note in uncertainty that the excerpts did not speak to it.
 

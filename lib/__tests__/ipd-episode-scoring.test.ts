@@ -13,14 +13,14 @@ import {
   countFindings, divergenceIndex, normalizeFidelityFindings, evidenceTiersOf, finalizeFindings,
   parseFindings, resolveFindingCitations, validateCommentary, asLvcCategory, SEVERITY_PENALTY,
   PARSE_FRAGMENT_CHARS, classifyCitationProvenance, applyLiteratureCap, scoringStatusFor,
-  storedDivergenceIndex, impliedFindingType,
+  storedDivergenceIndex, impliedFindingType, capSeverityAt, CAP_SEVERITY_CEILING,
   type EpisodeFinding, type Severity, type Verdict, type Domain, type AuditPass,
 } from '../ipd-episode/judge-core';
 import {
   checkpointEntryRefs, parseExpectedCourse, buildRetrievalQuery, renderExpectedCourse,
   ordinalForChunkId, countUncitedEntries, everyEntryUncited, buildCheckpointUser,
   clinicalTerms, retrievalIsOffTopic, assessTopicality, retrievedTitles, RETRIEVED_TITLE_CHARS,
-  drugBaseName, clinicalTextForQuery,
+  drugBaseName, clinicalTextForQuery, stripPersonNames, clinicalWordsOnly, MIN_SHARED_TERMS,
   type CheckpointEntryRef,
 } from '../ipd-episode/checkpoint-core';
 import { checkpointModel, IPD_EPISODE_CHECKPOINT_MODEL_DEFAULT } from '../ipd-episode/checkpoint';
@@ -117,12 +117,12 @@ test('Tier C rule touches only `divergent` findings — a context_dependent one 
 
 // ── 7. the uncited cap ───────────────────────────────────────────────────────────────────────
 
-test('uncited cap: an A1 finding on an entry with no citations is capped to minor / context_dependent', () => {
+test('uncited cap: an A1 finding on an entry with no citations is capped to moderate, verdict intact', () => {
   const map = refs([['cp-d1/diagnostics/1', []]]);
-  const res = applyUncitedCap(f({ finding_id: '1', severity: 'major', checkpoint_ref: 'cp-d1/diagnostics/1' }), map);
+  const res = applyUncitedCap(f({ finding_id: '1', severity: 'major', verdict: 'divergent', checkpoint_ref: 'cp-d1/diagnostics/1' }), map);
   assert.equal(res.capped, true);
-  assert.equal(res.finding.severity, 'minor');
-  assert.equal(res.finding.verdict, 'context_dependent');
+  assert.equal(res.finding.severity, 'moderate');
+  assert.equal(res.finding.verdict, 'divergent');
 });
 
 test('uncited cap does NOT apply to a fidelity finding — A2 measures against the record, not an expectation', () => {
@@ -143,36 +143,71 @@ test('uncited cap: BOTH the finding and its entry must cite — one alone is not
   // only the entry — so the major VTE finding kept full weight and supplied 8 of 12 penalty points
   const findingUncited = applyUncitedCap(f({ finding_id: '2', severity: 'major', checkpoint_ref: 'cp-d1/diagnostics/1', citation_ids: [] }), map);
   assert.equal(findingUncited.capped, true, 'a finding that cites nothing is not grounded, whatever its entry did');
-  assert.equal(findingUncited.finding.severity, 'minor');
+  assert.equal(findingUncited.finding.severity, 'moderate');
+  assert.equal(findingUncited.finding.verdict, 'divergent', 'and its verdict is untouched');
 
   const entryUncited = applyUncitedCap(f({ finding_id: '3', severity: 'major', checkpoint_ref: 'cp-d1/therapeutics/9', citation_ids: [4021] }), refs([['cp-d1/therapeutics/9', []]]));
   assert.equal(entryUncited.capped, true, 'an ungrounded expectation caps too');
 });
 
-test('SEVERITY IS NOT AN EXEMPTION — major is capped on the same terms as minor', () => {
+test('THE CAP TOUCHES SEVERITY ONLY — an uncited finding keeps its verdict, including divergent', () => {
   const map = refs([['cp-d0/diagnostics/1', []]]);
-  for (const severity of ['major', 'moderate', 'minor'] as const) {
-    const r = applyUncitedCap(f({ finding_id: severity, severity, verdict: 'divergent', checkpoint_ref: 'cp-d0/diagnostics/1' }), map);
-    assert.equal(r.capped, true, `${severity} must cap`);
-    assert.equal(r.finding.severity, 'minor');
-    assert.equal(r.finding.verdict, 'context_dependent');
+  const r = applyUncitedCap(f({ finding_id: 'x', severity: 'major', verdict: 'divergent', checkpoint_ref: 'cp-d0/diagnostics/1' }), map);
+  assert.equal(r.capped, true);
+  assert.equal(r.finding.severity, 'moderate', 'the ceiling is moderate, not minor');
+  assert.equal(r.finding.verdict, 'divergent', 'the verdict is not the cap’s business');
+});
+
+test('the cap no longer ERASES concordant findings — the defect that cost IP-1286 nine of thirteen', () => {
+  const map = refs([['cp-d0/diagnostics/1', []]]);
+  for (const verdict of ['concordant', 'unassessable', 'context_dependent', 'divergent'] as const) {
+    const r = applyUncitedCap(f({ finding_id: verdict, severity: 'minor', verdict, checkpoint_ref: 'cp-d0/diagnostics/1' }), map);
+    assert.equal(r.finding.verdict, verdict, `${verdict} must survive the cap intact`);
+    assert.equal(r.capped, false, 'a minor finding is already at the ceiling, so nothing changes');
   }
+});
+
+test('the ceiling lowers a major and leaves moderate and minor alone', () => {
+  const map = refs([['cp-d0/diagnostics/1', []]]);
+  const at = (severity: 'major' | 'moderate' | 'minor') =>
+    applyUncitedCap(f({ finding_id: severity, severity, verdict: 'divergent', checkpoint_ref: 'cp-d0/diagnostics/1' }), map);
+  assert.equal(at('major').finding.severity, 'moderate');
+  assert.equal(at('major').capped, true);
+  assert.equal(at('moderate').capped, false);
+  assert.equal(at('minor').finding.severity, 'minor');
+});
+
+test('THE TWO CEILINGS ARE ONE CEILING — they do not stack down to minor', () => {
+  assert.equal(CAP_SEVERITY_CEILING, 'moderate');
+  assert.equal(capSeverityAt('major', 'moderate'), 'moderate');
+  assert.equal(capSeverityAt('minor', 'moderate'), 'minor', 'a ceiling never raises');
+  assert.equal(capSeverityAt(capSeverityAt('major', 'moderate'), 'moderate'), 'moderate', 'idempotent');
+
+  // uncited AND literature-only: both caps fire, and the result is moderate — not minor
+  const map = refs([['cp-d0/diagnostics/1', []]]);
+  const res = finalizeFindings([
+    f({ finding_id: 'both', severity: 'major', verdict: 'divergent', checkpoint_ref: 'cp-d0/diagnostics/1', citation_ids: [7788] }),
+  ], map, [], 0, SOURCES, NORMATIVE);
+  const only = res.findings[0];
+  assert.equal(only.severity, 'moderate', 'stacking would have produced minor');
+  assert.equal(only.verdict, 'divergent');
+  assert.equal(only.citation_provenance, 'literature');
+  assert.equal(res.divergence_index, 96, 'one moderate divergent finding');
 });
 
 test('uncited cap: a NULL checkpoint_ref is capped — an A1 finding measured against nothing is the case the cap exists for', () => {
   const map = refs([['cp-d1/diagnostics/1', [4021]]]);
-  const res = applyUncitedCap(f({ finding_id: '1', severity: 'major', checkpoint_ref: null }), map);
+  const res = applyUncitedCap(f({ finding_id: '1', severity: 'major', verdict: 'divergent', checkpoint_ref: null }), map);
   assert.equal(res.capped, true);
-  assert.equal(res.finding.severity, 'minor');
-  assert.equal(res.finding.verdict, 'context_dependent');
+  assert.equal(res.finding.severity, 'moderate');
+  assert.equal(res.finding.verdict, 'divergent');
 });
 
 test('uncited cap: an UNRESOLVABLE checkpoint_ref is capped too — citing nothing must not beat citing badly', () => {
   const map = refs([['cp-d1/diagnostics/1', [4021]]]);
-  const res = applyUncitedCap(f({ finding_id: '1', severity: 'major', checkpoint_ref: 'cp-d9/diagnostics/7' }), map);
+  const res = applyUncitedCap(f({ finding_id: '1', severity: 'major', verdict: 'divergent', checkpoint_ref: 'cp-d9/diagnostics/7' }), map);
   assert.equal(res.capped, true);
-  assert.equal(res.finding.severity, 'minor');
-  assert.equal(res.finding.verdict, 'context_dependent');
+  assert.equal(res.finding.severity, 'moderate');
 });
 
 test('uncited cap: capping the ungrounded cases removes the evasion — a major A1 finding cannot score by citing nothing', () => {
@@ -181,7 +216,8 @@ test('uncited cap: capping the ungrounded cases removes the evasion — a major 
   const evasive = f({ finding_id: 'evasive', severity: 'major', checkpoint_ref: null });
   const res = finalizeFindings([grounded, evasive], map, [], 0, SOURCES, NORMATIVE);
   assert.equal(res.n_uncited_capped, 1);
-  assert.equal(res.divergence_index, 92, 'only the grounded major finding scores its 8');
+  // the grounded major scores 8; the ungrounded one is now moderate and divergent, so it scores 4
+  assert.equal(res.divergence_index, 100 - 12);
 });
 
 test('the cap is auditable from the stored finding, not from a response string', () => {
@@ -194,7 +230,8 @@ test('the cap is auditable from the stored finding, not from a response string',
   assert.equal(capped.capped, true);
   assert.equal(capped.verdict_before_cap, 'divergent', 'what the model said, before code intervened');
   assert.equal(capped.severity_before_cap, 'major');
-  assert.equal(capped.verdict, 'context_dependent', 'and what it says now');
+  assert.equal(capped.verdict, 'divergent', 'the verdict survives — only severity moved');
+  assert.equal(capped.severity, 'moderate');
   const clean = res.findings.find((x) => x.finding_id === 'clean')!;
   assert.equal(clean.capped, false);
   assert.equal(clean.verdict_before_cap, 'divergent');
@@ -292,6 +329,19 @@ test('with no excerpts retrieved, the message says empty citations are expected 
   });
   assert.match(msg, /none were retrieved/);
   assert.ok(!/numbered 1 to 0/.test(msg), 'it must not ask for a citation in an empty range');
+});
+
+test('the checkpoint prompt forbids filing missing care as uncertainty', () => {
+  assert.match(IPD_EPISODE_CHECKPOINT_SYSTEM, /UNCERTAINTY IS NOT A PLACE TO PUT MISSING CARE/);
+  assert.match(IPD_EPISODE_CHECKPOINT_SYSTEM, /belongs in the expected course, as an expectation, EVEN WHEN/);
+  assert.match(IPD_EPISODE_CHECKPOINT_SYSTEM, /VTE prophylaxis/, 'the worked example is the case that vanished');
+  assert.match(IPD_EPISODE_CHECKPOINT_SYSTEM, /an expectation you demoted to a note about uncertainty is nothing at all/);
+});
+
+test('the checkpoint prompt states the cap correctly — severity only, not verdict', () => {
+  assert.match(IPD_EPISODE_CHECKPOINT_SYSTEM, /its severity is capped at moderate/);
+  assert.ok(!IPD_EPISODE_CHECKPOINT_SYSTEM.includes('capped to minor and context_dependent'),
+    'the old verdict-overriding text must not survive anywhere');
 });
 
 test('the diff prompt states that concordant is a VERDICT, not a finding_type', () => {
@@ -512,6 +562,105 @@ test('the repair never swaps a near-miss for its opposite', () => {
   const { findings, unparseable } = parseFindings(text, { pass: 'divergence', idPrefix: 'a1' });
   assert.equal(findings.length, 0, 'a typo that could be either is dropped, never guessed');
   assert.equal(unparseable, 1);
+});
+
+// ── round 6 item 6: the detector, against THIS RUN's actual retrieved titles ─────────────────
+
+test('an ICMR hospital-acquired-pneumonia chunk is OFF TOPIC for a clean elective hernia case', () => {
+  // the query IP-1286 actually built for a hernia repair
+  const query = 'Open inguinal hernia repair reducible right groin lump CEFAZOLIN PARACETAMOL Complete Blood Count';
+  // the four chunks that took slots 2, 4, 6, 8 of every checkpoint in trace 0a5551e6
+  const icmr = [
+    { label: 'ICMR AMR — Hospital-acquired pneumonia', text: 'Empirical antimicrobial therapy for hospital-acquired and ventilator-associated pneumonia in adult patients; de-escalation and duration of therapy.' },
+    { label: 'ICMR AMR — Pelvic inflammatory disease', text: 'Antimicrobial management of pelvic infections; culture and susceptibility guidance for organisms implicated in pelvic inflammatory disease.' },
+    { label: 'ICMR AMR — Hospital-acquired pneumonia (2)', text: 'Risk factors for multidrug-resistant organisms in hospital-acquired pneumonia; empirical regimen selection.' },
+    { label: 'ICMR AMR — Hospital-acquired pneumonia (3)', text: 'Duration of antimicrobial therapy in nosocomial pneumonia and criteria for stopping treatment.' },
+  ];
+  const r = assessTopicality(query, icmr);
+  assert.equal(r.offTopicCount, 4, 'every one of them is unrelated to a hernia repair');
+  assert.equal(r.offTopic, true);
+});
+
+test('sharing ONE generic clinical word is not topicality — the reason the detector read 1, 0, 1, 0', () => {
+  const query = 'Open inguinal hernia repair CEFAZOLIN';
+  // it shares "antimicrobial"/"therapy"/"infection" with the query's antibiotic — and nothing else.
+  // The old any-one-term rule scored this on topic and reported a slate half like it as fine.
+  const one = assessTopicality(query, [
+    { label: 'ICMR AMR', text: 'Empirical antimicrobial therapy for hospital-acquired pneumonia; infection management in adults.' },
+  ]);
+  assert.equal(one.offTopicCount, 1);
+  assert.ok(MIN_SHARED_TERMS >= 2, 'two distinctive terms, because one is coincidence often enough');
+});
+
+test('a genuinely relevant chunk still reads as on topic', () => {
+  const query = 'Open inguinal hernia repair reducible right groin lump CEFAZOLIN';
+  const r = assessTopicality(query, [
+    { label: 'StatPearls — Inguinal hernia', text: 'Open inguinal hernia repair with mesh; groin anatomy and recurrence.' },
+  ]);
+  assert.equal(r.offTopicCount, 0);
+  assert.equal(r.offTopic, false);
+});
+
+test('a mixed slate counts precisely, and the boolean follows the majority', () => {
+  const query = 'inguinal hernia repair groin mesh';
+  const on = { label: 'Inguinal hernia', text: 'mesh repair of the groin' };
+  const off = { label: 'ICMR AMR pneumonia', text: 'nosocomial pneumonia antimicrobial therapy' };
+  assert.equal(assessTopicality(query, [on, on, on, on, off, off, off, off]).offTopicCount, 4);
+  assert.equal(assessTopicality(query, [on, on, on, on, off, off, off, off]).offTopic, false, 'half is not a majority');
+  assert.equal(assessTopicality(query, [on, on, on, off, off, off, off, off]).offTopic, true);
+});
+
+// ── round 6 item 7: names and inventory residue never reach retrieval ────────────────────────
+
+test('an author name is stripped from the query — it is never a clinical term', () => {
+  const text = 'Dr Testperson Alpha reviewed the patient; reducible right groin lump, for repair';
+  const stripped = stripPersonNames(text, ['Dr Testperson Alpha']);
+  assert.ok(!stripped.includes('Testperson') && !stripped.includes('Alpha'));
+  assert.ok(stripped.includes('reducible right groin lump'), 'the clinical content survives');
+  // and the Dr-title shape catches a name no field declared
+  assert.ok(!stripPersonNames('Seen by Dr Testperson Beta overnight', []).includes('Testperson'));
+});
+
+test('clinicalWordsOnly drops the residue that made a query end in a code or a unit', () => {
+  assert.equal(clinicalWordsOnly('SODIUM CHLORIDE 0.9% 500ML'), 'SODIUM CHLORIDE');
+  assert.equal(clinicalWordsOnly('CBC 2 x 500 mg'), '');
+  assert.equal(clinicalWordsOnly('reducible right groin lump'), 'reducible right groin lump');
+});
+
+test('names and identifiers are stripped end to end, in the built query', () => {
+  const { query } = buildRetrievalQuery({
+    eventsBeforeCutoff: [
+      ev({ event_id: 'n', summary: 'speciality_code: SURG-01 · T-3: Dr Testperson Alpha notes reducible right groin lump', author_name: 'Dr Testperson Alpha' }),
+    ],
+    authorNames: ['Dr Testperson Alpha'],
+  });
+  assert.ok(query.includes('reducible right groin lump'));
+  for (const noise of ['Testperson', 'Alpha', 'SURG-01', 'speciality_code']) {
+    assert.ok(!query.includes(noise), `'${noise}' must not reach retrieval`);
+  }
+});
+
+// ── round 6 item 8: the day 0 fallback cannot reach past the cut-off ─────────────────────────
+
+test('the day 0 fallback takes OT names from the CUT-OFF WINDOW, so it can never add hindsight', () => {
+  // an in-window OT note is already picked up by rule 1, so the fallback is a deliberate no-op —
+  // which is the point: there is no path by which a post-cut-off surgery name selects day 0 evidence
+  const inWindow = buildRetrievalQuery({
+    eventsBeforeCutoff: [ev({ event_id: 'ot', event_type: 'ot_note', detail: { surgery_name: 'Open inguinal hernia repair' } })],
+    isDayZero: true,
+    episodeSurgeryNames: ['Open inguinal hernia repair'],
+  });
+  assert.equal(inWindow.query, 'Open inguinal hernia repair');
+  assert.equal(inWindow.day0FromOt, false, 'rule 1 supplied it — the fallback was never reached');
+
+  // nothing in the window and nothing passed: the query stays thin, as instructed
+  const thin = buildRetrievalQuery({
+    eventsBeforeCutoff: [ev({ event_id: 'adm', event_type: 'admission', summary: 'x' })],
+    isDayZero: true,
+    episodeSurgeryNames: [],
+  });
+  assert.equal(thin.query, '', 'a thin day 0 query is the honest answer');
+  assert.equal(thin.day0FromOt, false);
 });
 
 // ── round 5 item 2: an audit that cannot record what went right is not an audit ──────────────
@@ -878,18 +1027,21 @@ test('finalizeFindings applies the whole chain in one place, so its order cannot
   assert.equal(res.n_fidelity_normalized, 1);
   assert.equal(res.counters.n_dropped_invalid, 1, 'the domain violation, and only it');
   assert.equal(res.counters.n_findings, 4);
-  assert.equal(res.divergence_index, 96, 'one moderate divergent finding only');
+  // 'capped' is now moderate + divergent (4), 'real' is moderate + divergent (4), 'tierc' is
+  // unassessable (0) — the cap no longer zeroes a finding by rewriting its verdict
+  assert.equal(res.divergence_index, 100 - 8);
 });
 
-test('the cap runs before the Tier C rule, and a capped finding is therefore no longer the Tier C rule’s business', () => {
-  // ungrounded AND unsupported: the cap fires first and moves it off `divergent`, so the Tier C
-  // rewrite has nothing left to correct. Both rules exist to stop an unsupported divergent claim,
-  // and one of them stopping it is enough. (Accepted as-is by the orchestrator.)
-  const res = finalizeFindings([f({ finding_id: 'both', severity: 'major', checkpoint_ref: null, evidence_basis: [] })], new Map(), []);
-  assert.equal(res.n_uncited_capped, 1);
-  assert.equal(res.n_tier_c_rewritten, 0);
-  assert.equal(res.findings[0].verdict, 'context_dependent');
-  assert.equal(res.divergence_index, 100, 'either way it scores nothing');
+test('the cap and the Tier C rule now do different jobs, so both apply', () => {
+  // ungrounded AND unsupported. The cap lowers severity and leaves the verdict; the Tier C rule
+  // then rewrites the verdict, because a divergent claim resting on no evidence is still
+  // unassessable. They no longer collide over one field.
+  const res = finalizeFindings([f({ finding_id: 'both', severity: 'major', verdict: 'divergent', checkpoint_ref: null, evidence_basis: [] })], new Map(), []);
+  assert.equal(res.n_uncited_capped, 1, 'severity capped');
+  assert.equal(res.n_tier_c_rewritten, 1, 'and the verdict rewritten, by the rule that owns verdicts');
+  assert.equal(res.findings[0].severity, 'moderate');
+  assert.equal(res.findings[0].verdict, 'unassessable');
+  assert.equal(res.divergence_index, 100, 'unassessable scores nothing');
 });
 
 // ── retrieval query ──────────────────────────────────────────────────────────────────────────

@@ -57,6 +57,8 @@ export interface RetrievalQueryInput {
    * record at that hour, and is not to be backfilled with hindsight.
    */
   eventsBeforeCutoff: EpisodeEvent[];
+  /** Author display names to strip out of narrative before it becomes a query term (item 7). */
+  authorNames?: string[];
   /**
    * The admission `remarks`, restored 2026-09-02 after an over-strip. It was removed with the four
    * administrative fields, but it does not belong with them: remarks is free text WRITTEN AT
@@ -66,12 +68,16 @@ export interface RetrievalQueryInput {
    */
   remarks?: string | null;
   /**
-   * ⚠️ THE DAY 0 LAST RESORT, AND IT REACHES OUTSIDE THE WINDOW. When the query would otherwise be
-   * EMPTY at day 0, the episode's OT `surgery_name` is used even though that OT note may post-date
-   * the cut-off. This is a deliberate, bounded exception on V's instruction: an empty query means
-   * the day 0 checkpoint retrieves nothing and can cite nothing, which is a worse failure than a
-   * narrow one. It applies ONLY when nothing else exists, and every row it touches is stamped
-   * `day0_query_from_ot` so the frequency is measurable rather than assumed.
+   * ⚠️ THE DAY 0 FALLBACK, NOW RESTRICTED TO OT NOTES INSIDE THE CUT-OFF (item 8). The previous
+   * revision passed the EPISODE's OT surgery names, and on IP-1286 that meant a note timestamped
+   * 11:53 selecting the evidence for a 03:03 cut-off: day 0's excerpts were retrieved with
+   * knowledge of an operation that had not happened yet. The caller now passes names taken from
+   * the SAME filtered window as everything else.
+   *
+   * That makes this path a deliberate no-op — an in-window OT note is already picked up by rule 1
+   * above, so the fallback can never add anything — and it is kept, tested and stamped precisely
+   * so the leak cannot quietly return by someone widening the caller again. A day 0 query with
+   * nothing clinical before it stays thin, and retrieval_offtopic reports it.
    */
   episodeSurgeryNames?: string[];
   /** True for the day 0 checkpoint only — the fallback above applies nowhere else. */
@@ -143,6 +149,63 @@ export function clinicalTextForQuery(summary: string): string {
   return collapseSpaces(kept.join(' '));
 }
 
+/**
+ * ⚠️ AN AUTHOR NAME IS NEVER A CLINICAL TERM. The day-1 and episode queries on IP-1286 carried a
+ * whole progress note including the RMO's name. A person's name retrieves nothing clinical and
+ * displaces words that would — and it should not be travelling to a retrieval service at all.
+ *
+ * Two passes, because names arrive two ways. The KNOWN names (each event's `finalized_by_username`,
+ * already normalised) are removed literally, longest first so a full name goes before its parts.
+ * Then the `Dr <Name>` shape catches the rest, since a name that appears only inside narrative text
+ * has no field to be read from.
+ *
+ * Patient names are already gone — the de-identifier ran at assembly. This is staff data, which the
+ * repo deliberately retains on the RECORD; it just has no business in a query.
+ */
+export function stripPersonNames(text: string, knownNames: readonly string[] = []): string {
+  let out = text || '';
+  const tokens = new Set<string>();
+  for (const n of knownNames) {
+    const full = (n ?? '').trim();
+    if (full.length >= 3) tokens.add(full);
+    for (const part of full.split(/\s+/)) if (part.length >= 3 && !/^dr$/i.test(part)) tokens.add(part);
+  }
+  for (const t of Array.from(tokens).sort((a, b) => b.length - a.length)) {
+    out = out.split(t).join(' ');
+    const lower = t.toLowerCase();
+    if (lower !== t) out = out.split(lower).join(' ');
+  }
+  // "Dr Testperson Alpha" / "Dr. Testperson" — up to two capitalised words after a Dr title
+  out = out.split(/\bDr\.?\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?/g).join(' ');
+  return collapseSpaces(out);
+}
+
+/**
+ * The last gate before a term reaches retrieval: keep CLINICAL WORDS ONLY. Drops bare numbers,
+ * codes, percentages, units and one-to-three character fragments that survive earlier cleaning —
+ * the residue that made a query end in "ABSTACK" or "SODIUM" with nothing after it.
+ *
+ * ⚠️ A KNOWN RESIDUAL LIMIT, STATED RATHER THAN PAPERED OVER. This cannot tell a stapler brand
+ * ("ABSTACK") from a drug brand: both are alphabetic proper nouns of the same shape, and the only
+ * field that would distinguish them is the `item_category` this engine deliberately does not join
+ * (decision 17, which measured that join as repairing 1.9% of blank categories). Consumable brand
+ * names will still reach the query. What is fixed here is everything that IS mechanically
+ * separable: pack sizes, codes, units, identifiers and names.
+ */
+export function clinicalWordsOnly(text: string): string {
+  const kept: string[] = [];
+  for (const raw of (text || '').split(/\s+/)) {
+    const w = raw.replace(/[(),;:]/g, '').trim();
+    if (!w) continue;
+    if (w.length < 4) continue;                    // fragments and units
+    if (/^\d/.test(w)) continue;                   // 500ML, 0.9%, 30-5MM
+    if (!/[a-zA-Z]{4,}/.test(w)) continue;         // must contain a real word
+    if (/^\d+[a-z]*$/i.test(w)) continue;
+    kept.push(w);
+  }
+  return collapseSpaces(kept.join(' '));
+}
+
 const detailStr = (e: EpisodeEvent, key: string): string => {
   const v = (e.detail as Record<string, unknown>)?.[key];
   return v == null ? '' : String(v).trim();
@@ -174,8 +237,13 @@ export function buildRetrievalQuery(input: RetrievalQueryInput): RetrievalQueryR
   )).slice(0, Q_SURGERY_MAX);
   for (const sx of surgeries) push(sx);
 
+  // Every narrative string passes through the same three filters, in order: drop identifier
+  // fields, drop person names, keep clinical words only.
+  const names = input.authorNames ?? [];
+  const narrative = (t: string) => clinicalWordsOnly(stripPersonNames(clinicalTextForQuery(t), names)).slice(0, Q_NARRATIVE_CHARS);
+
   // 2. the admission remarks — the presenting picture, written at the door
-  push(input.remarks ? clinicalTextForQuery(input.remarks).slice(0, Q_NARRATIVE_CHARS) : null);
+  push(input.remarks ? narrative(input.remarks) : null);
 
   // 3. the initial assessment — the admission-time picture. Taken SEPARATELY from the progress
   //    notes below rather than competing with them for one slot: at day 0 it is frequently the
@@ -184,14 +252,14 @@ export function buildRetrievalQuery(input: RetrievalQueryInput): RetrievalQueryR
   const assessment = [...events]
     .filter((e) => e.event_type === 'initial_assessment' && e.summary.trim())
     .sort((a, b) => String(a.occurred_at ?? '').localeCompare(String(b.occurred_at ?? '')))[0];
-  if (assessment) push(clinicalTextForQuery(assessment.summary).slice(0, Q_NARRATIVE_CHARS));
+  if (assessment) push(narrative(assessment.summary));
 
   // 4. the most recent progress note before the cut-off
   const note = [...events]
     .filter((e) => e.event_type === 'note' && e.occurred_at && e.summary.trim())
     .sort((a, b) => String(a.occurred_at).localeCompare(String(b.occurred_at)))
     .pop();
-  if (note) push(clinicalTextForQuery(note.summary).slice(0, Q_NARRATIVE_CHARS));
+  if (note) push(narrative(note.summary));
 
   // 5. the drugs actually ordered on the latest documented day, as BASE NAMES — a SKU string
   //    retrieves packaging literature, which is the same defect as querying on a department.
@@ -199,14 +267,14 @@ export function buildRetrievalQuery(input: RetrievalQueryInput): RetrievalQueryR
   const latestDrugDay = drugEvents.reduce((m, e) => Math.max(m, e.day_index), -1);
   const drugs = Array.from(new Set(
     drugEvents.filter((e) => e.day_index === latestDrugDay)
-      .map((e) => drugBaseName(detailStr(e, 'ordered_item_name')))
+      .map((e) => clinicalWordsOnly(drugBaseName(detailStr(e, 'ordered_item_name'))))
       .filter(Boolean),
   )).slice(0, Q_DRUGS_MAX);
   for (const d of drugs) push(d);
 
   // 6. what was investigated
   const labs = Array.from(new Set(
-    events.filter((e) => e.event_type === 'lab_order').map((e) => drugBaseName(detailStr(e, 'service_name'))).filter(Boolean),
+    events.filter((e) => e.event_type === 'lab_order').map((e) => clinicalWordsOnly(drugBaseName(detailStr(e, 'service_name')))).filter(Boolean),
   )).slice(0, Q_LABS_MAX);
   for (const l of labs) push(l);
 
@@ -245,8 +313,32 @@ const Q_STOPWORDS = new Set([
   'mg', 'ml', 'gm', 'iv', 'po', 'bd', 'od', 'tds', 'qid', 'stat', 'inj', 'tab', 'cap', 'syp',
 ]);
 
-/** Clinical terms of a text: lowercase words of 4+ characters that are not stopwords and not
- *  bare numbers. Pure, and shared by both sides of the comparison so the test is symmetric. */
+/**
+ * ⚠️ GENERIC CLINICAL VOCABULARY, EXCLUDED FROM OVERLAP SCORING. These are real clinical words, so
+ * `clinicalTerms` still returns them — but they are shared by almost any two medical texts, and
+ * matching on one of them is not evidence that an excerpt is about the case.
+ *
+ * This is what let an ICMR hospital-acquired-pneumonia chunk pass as on-topic for a hernia repair:
+ * the query carried CEFAZOLIN and the chunk discussed antimicrobials, so they shared "antibiotic",
+ * "infection", "therapy" — and one shared word was enough. Half a slate of pneumonia guidance
+ * scored as topical, and the detector reported 1, 0, 1, 0 while three to four excerpts per
+ * checkpoint were unrelated.
+ */
+const Q_GENERIC = new Set([
+  'antibiotic', 'antibiotics', 'antimicrobial', 'antimicrobials', 'infection', 'infections',
+  'infective', 'therapy', 'treatment', 'treated', 'management', 'clinical', 'care', 'hospital',
+  'ward', 'unit', 'risk', 'factors', 'guideline', 'guidelines', 'recommendation', 'recommendations',
+  'study', 'studies', 'evidence', 'dose', 'dosing', 'duration', 'prophylaxis', 'empirical',
+  'empiric', 'resistance', 'susceptibility', 'culture', 'cultures', 'organism', 'organisms',
+  'disease', 'condition', 'symptoms', 'signs', 'diagnosis', 'diagnostic', 'assessment',
+  'monitoring', 'surgery', 'surgical', 'operative', 'procedure', 'medication', 'medications',
+  'drug', 'drugs', 'adult', 'adults', 'severe', 'acute', 'chronic', 'should', 'shall', 'must',
+]);
+
+/** How many DISTINCTIVE terms an excerpt must share with the query to count as on topic. Two,
+ *  because one distinctive word can still be coincidence and two rarely is. */
+export const MIN_SHARED_TERMS = 2;
+
 export function clinicalTerms(text: string): Set<string> {
   const out = new Set<string>();
   for (const raw of (text || '').toLowerCase().split(/[^a-z0-9]+/)) {
@@ -277,14 +369,24 @@ export function clinicalTerms(text: string): Set<string> {
 export function assessTopicality(
   query: string, excerpts: { label: string; text: string }[],
 ): { offTopic: boolean; offTopicCount: number; total: number } {
-  const q = clinicalTerms(query);
+  // DISTINCTIVE terms only: generic clinical vocabulary is dropped from BOTH sides, so an overlap
+  // has to be on something that actually identifies this case.
+  const distinctive = (t: string) => {
+    const out = new Set<string>();
+    for (const w of clinicalTerms(t)) if (!Q_GENERIC.has(w)) out.add(w);
+    return out;
+  };
+  const q = distinctive(query);
   if (q.size === 0 || excerpts.length === 0) return { offTopic: false, offTopicCount: 0, total: excerpts.length };
   let off = 0;
   for (const x of excerpts) {
-    const terms = clinicalTerms(`${x.label} ${x.text}`);
-    let shares = false;
-    for (const t of terms) if (q.has(t)) { shares = true; break; }
-    if (!shares) off++;
+    const terms = distinctive(`${x.label} ${x.text}`);
+    let shared = 0;
+    for (const t of terms) if (q.has(t)) { shared++; if (shared >= MIN_SHARED_TERMS) break; }
+    // A single shared distinctive word is coincidence often enough to be worthless as a signal —
+    // and when the query has only one distinctive term of its own, one match IS the whole overlap.
+    const need = Math.min(MIN_SHARED_TERMS, q.size);
+    if (shared < need) off++;
   }
   return { offTopic: off * 2 > excerpts.length, offTopicCount: off, total: excerpts.length };
 }

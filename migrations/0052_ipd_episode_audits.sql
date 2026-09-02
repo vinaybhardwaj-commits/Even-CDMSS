@@ -22,6 +22,13 @@ CREATE TABLE IF NOT EXISTS ipd_episode_audits (
 
   engine_version        TEXT NOT NULL,
 
+  -- EVERY RUN IS KEPT (V, 2026-09-02). The upsert this replaces overwrote an episode's previous
+  -- row, so two runs of the same episode could never be compared — which is the only way a
+  -- reproducibility problem becomes visible. run_seq orders the runs; is_current marks the one
+  -- every reader uses.
+  run_seq               INTEGER NOT NULL DEFAULT 1,
+  is_current            BOOLEAN NOT NULL DEFAULT TRUE,
+
   -- link-back keys (re-identification path into db13; never sent to a model)
   encounter_id          TEXT NOT NULL,
   ip_uid                TEXT NOT NULL,
@@ -98,10 +105,13 @@ CREATE TABLE IF NOT EXISTS ipd_episode_audits (
   raw_judge_error       JSONB
 );
 
--- Idempotency: a re-run at the same engine version refreshes the row in place; a future engine
--- version audits the same admission again beside it rather than over it.
-CREATE UNIQUE INDEX IF NOT EXISTS ipd_episode_audits_encounter_engine_uq
-  ON ipd_episode_audits (encounter_id, engine_version);
+-- One row per RUN, and exactly one current row per (encounter_id, engine_version). The partial
+-- unique index is what makes "exactly one" a database guarantee rather than a convention the
+-- writer is trusted to keep.
+CREATE UNIQUE INDEX IF NOT EXISTS ipd_episode_audits_encounter_engine_run_uq
+  ON ipd_episode_audits (encounter_id, engine_version, run_seq);
+CREATE UNIQUE INDEX IF NOT EXISTS ipd_episode_audits_current_uq
+  ON ipd_episode_audits (encounter_id, engine_version) WHERE is_current;
 CREATE INDEX IF NOT EXISTS ipd_episode_audits_discharged_idx ON ipd_episode_audits (discharged_at DESC);
 CREATE INDEX IF NOT EXISTS ipd_episode_audits_speciality_idx ON ipd_episode_audits (speciality);
 CREATE INDEX IF NOT EXISTS ipd_episode_audits_ip_uid_idx     ON ipd_episode_audits (ip_uid);
@@ -160,7 +170,14 @@ CREATE TABLE IF NOT EXISTS ipd_episode_checkpoints (
   offtopic_excerpt_count INTEGER DEFAULT 0,
   -- The day 0 query was empty and fell back to the episode's OT surgery_name. That fallback reaches
   -- outside the cut-off window, so every row it touches says so and the frequency is measurable.
-  day0_query_from_ot  BOOLEAN DEFAULT FALSE
+  day0_query_from_ot  BOOLEAN DEFAULT FALSE,
+
+  -- What this checkpoint actually ran with. Temperature has been 0 since the first commit, so it
+  -- does not explain the run-to-run variance; it is recorded so the next investigation does not
+  -- have to take that on trust. `seed` is NULL by necessity: Bedrock's Converse inferenceConfig
+  -- accepts maxTokens and temperature and nothing else, so AUDIT_LLM_SEED has no wire field here.
+  temperature         DOUBLE PRECISION,
+  seed                INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS ipd_episode_checkpoints_audit_idx ON ipd_episode_checkpoints (episode_audit_id);

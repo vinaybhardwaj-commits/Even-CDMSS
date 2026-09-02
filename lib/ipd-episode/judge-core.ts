@@ -362,38 +362,43 @@ export function applyTierCRule(f: EpisodeFinding): { finding: EpisodeFinding; re
 }
 
 /**
- * §4.4, the uncited cap. ONE RULE, and this is it:
+ * §4.4, the uncited cap, as V ruled on 2026-09-02:
  *
- *   A DIVERGENCE finding is capped to severity `minor` and verdict `context_dependent` unless
- *   BOTH the finding itself AND the checkpoint entry it is measured against carry a citation.
- *   SEVERITY IS NOT AN EXEMPTION. A `major` finding is capped on exactly the same terms as a
- *   `minor` one.
+ *   AN UNCITED FINDING MAY HOLD ANY VERDICT, INCLUDING `divergent`. The cap touches SEVERITY only,
+ *   and its ceiling is `moderate` — never `major`. It is grounded when BOTH the finding and the
+ *   checkpoint entry it is measured against carry a citation.
  *
- * ⚠️ WHAT WAS INCONSISTENT, AND WHY IT WAS NOT ABOUT SEVERITY. On IP-1286 ten uncited findings
- * were capped and one — the major VTE-prophylaxis finding, with zero citations of its own — was
- * not, and it supplied 8 of the run's 12 penalty points. The cap read the ENTRY's `citation_ids`
- * while `citation_provenance` and the literature cap read the FINDING's, so a finding that cited
- * nothing could still count as grounded because the expectation behind it happened to be cited.
- * Two notions of "grounded" in one pipeline is how the loudest finding in a run ended up the least
- * evidenced. There is now one notion, and it requires both halves.
+ * ⚠️ WHY THE VERDICT OVERRIDE HAD TO GO. Rewriting the verdict to `context_dependent` did not make
+ * a weak finding weaker, it DELETED findings: on IP-1286 nine of thirteen concordant findings were
+ * erased, because "the course matched the expectation" is a conclusion about the RECORD, and an
+ * expectation's citations say nothing about whether it matched. The cap was answering a question
+ * nobody asked it. A citation bears on how much WEIGHT a divergence should carry, which is
+ * severity, and on nothing else.
  *
- * NO SEVERITY EXEMPTION, deliberately. Exempting `major` would mean the findings that move the
- * score most are the ones held to the weakest evidential standard — precisely backwards, and it
- * would have preserved the exact defect being fixed. A major finding that genuinely stands on
- * evidence keeps its weight by citing it.
- *
- * Still not applied to fidelity findings: §4.4 says so outright, and the reason holds — A2 is shown
- * no excerpts at all, so an expectation's citations say nothing about it and capping every A2
- * finding would silently zero the fidelity pass.
+ * ⚠️ THE TWO CEILINGS ARE ONE CEILING. This cap and the literature cap (round 4 item 8) both cap at
+ * `moderate`, and a finding subject to both is capped at `moderate` — NOT stacked down to `minor`.
+ * Stacking would invent a third severity band nobody defined and would punish a finding twice for
+ * one property of its evidence.
  */
+export const CAP_SEVERITY_CEILING: Severity = 'moderate';
+
+/** Apply a severity ceiling. Idempotent, and it can only ever lower — applying two ceilings of the
+ *  same height changes nothing the second time, which is what "do not stack them" means in code. */
+export function capSeverityAt(severity: Severity, ceiling: Severity): Severity {
+  const order: Severity[] = ['minor', 'moderate', 'major'];
+  return order.indexOf(severity) > order.indexOf(ceiling) ? ceiling : severity;
+}
+
 export function applyUncitedCap(f: EpisodeFinding, entryRefs: Map<string, CheckpointEntryRef>): { finding: EpisodeFinding; capped: boolean } {
   if (f.pass !== 'divergence') return { finding: f, capped: false };
   const entry = f.checkpoint_ref ? entryRefs.get(f.checkpoint_ref) : undefined;
   const entryGrounded = !!entry && entry.citation_ids.length > 0;
   const findingGrounded = f.citation_ids.length > 0;
   if (entryGrounded && findingGrounded) return { finding: f, capped: false };
-  if (f.severity === 'minor' && f.verdict === 'context_dependent') return { finding: f, capped: false };
-  return { finding: { ...f, severity: 'minor', verdict: 'context_dependent' }, capped: true };
+  const severity = capSeverityAt(f.severity, CAP_SEVERITY_CEILING);
+  if (severity === f.severity) return { finding: f, capped: false };
+  // VERDICT UNTOUCHED, deliberately. See the note above.
+  return { finding: { ...f, severity }, capped: true };
 }
 
 /**
@@ -503,12 +508,19 @@ export function classifyCitationProvenance(
   return n > 0 ? 'normative' : 'literature';
 }
 
-/** The literature cap: `major` becomes `moderate` when nothing normative backs the finding.
- *  Verdict is untouched — this bounds how loudly a finding may speak, not whether it may. */
+/**
+ * The literature cap: the SAME `moderate` ceiling as the uncited cap, applied when nothing
+ * normative backs the finding. Verdict untouched — this bounds how loudly a finding may speak,
+ * never whether it may speak.
+ *
+ * Because both caps use `capSeverityAt` against the same ceiling, a finding subject to both lands
+ * on `moderate` and stops there. That is the whole of "do not stack them".
+ */
 export function applyLiteratureCap(f: EpisodeFinding): { finding: EpisodeFinding; capped: boolean } {
   if (f.citation_provenance !== 'literature') return { finding: f, capped: false };
-  if (f.severity !== 'major') return { finding: f, capped: false };
-  return { finding: { ...f, severity: 'moderate' }, capped: true };
+  const severity = capSeverityAt(f.severity, CAP_SEVERITY_CEILING);
+  if (severity === f.severity) return { finding: f, capped: false };
+  return { finding: { ...f, severity }, capped: true };
 }
 
 // ── attribution (PRD §5) ─────────────────────────────────────────────────────────────────────

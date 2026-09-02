@@ -40,6 +40,25 @@ const EXCERPT_CHARS = 1100;
  *  number, and a change to either is visible at both. */
 export const RETRIEVAL_MIN_SIMILARITY = 0.3;
 
+/**
+ * The generation settings, recorded on every checkpoint row so a variance investigation has the
+ * settings in front of it rather than having to trust that they were what someone said.
+ *
+ * ⚠️ TEMPERATURE WAS ALREADY 0 ON BOTH CALLS, so item 3 does not explain the run-to-run variance
+ * that produced VTE prophylaxis as an expectation in one run and an uncertainty note in the next.
+ * Temperature 0 is not a determinism guarantee on these models; it removes sampling spread, not
+ * every source of variation.
+ *
+ * ⚠️ AND A SEED CANNOT BE PASSED. The Bedrock Converse API's `inferenceConfig` accepts `maxTokens`
+ * and `temperature` and nothing else — `lib/bedrock-core.ts`'s `toConverseInput` builds exactly
+ * those two, and it is on the UNTOUCHED list. AUDIT_LLM_SEED reaches OpenRouter and Gemini callers;
+ * there is no wire field to put it in here. `seed` is therefore recorded as NULL, honestly, rather
+ * than stamped with a number that never left the process. The real mitigation for item 4's defect
+ * is the prompt change, not a seed.
+ */
+export const CHECKPOINT_TEMPERATURE = 0;
+export const CHECKPOINT_SEED: number | null = null;
+
 export interface RunCheckpointInput {
   traceId: string | undefined;
   checkpointId: string;
@@ -72,8 +91,11 @@ export interface CheckpointResult {
   offTopicExcerptCount: number;
   /** Normative chunks dropped for failing the similarity floor (item 5). */
   normativeDropped: number;
-  /** The day 0 query was empty and fell back to the episode's OT surgery_name (item 3). */
+  /** The day 0 query was empty and fell back to an in-window OT surgery_name. */
   day0QueryFromOt: boolean;
+  /** The generation settings this checkpoint actually ran with. */
+  temperature: number;
+  seed: number | null;
   expectedCourse: ExpectedCourse | null;
   entryRefs: CheckpointEntryRef[];
   status: 'ok' | 'error';
@@ -90,17 +112,32 @@ export interface CheckpointResult {
 /**
  * Retrieval, degraded to "no excerpts" on any fault. Never throws.
  *
- * ⚠️ WIDE CORPUS PLUS THE NORMATIVE LEG (V, 2026-09-02). The main legs are unrestricted, so this
- * engine may cite anything retrieval returns — StatPearls chapters, surgical journal content,
- * textbook passages. `useNormativeLeg` adds a THIRD leg restricted to the normative sources into
- * the same RRF union, so a terse guideline statement still earns a pool seat instead of being
- * outranked by dense literature that happens to share more vocabulary with the query.
+ * ⚠️ THE NORMATIVE LEG IS OFF, AND THIS IS THE FIX FOR THE FIXED ICMR INTERLEAVE. On IP-1286 the
+ * same four ICMR antimicrobial chunks — three of them hospital-acquired-pneumonia sections — took
+ * slots 2, 4, 6 and 8 of every single checkpoint on a clean elective hernia case: half the evidence
+ * window, regardless of the clinical question, and the only chunks any finding ever cited.
  *
- * The two are not in tension: widening decides what MAY be cited, the normative leg decides what
- * ranks. What keeps them honest is that the difference is recorded rather than assumed — every
- * cited chunk's `source` is stored on the checkpoint row, and a finding standing only on
- * literature is capped in code (see `applyLiteratureCap`). A journal abstract is evidence; a
- * guideline is a standard; the score should be able to tell you which one it rests on.
+ * THE MECHANISM, read out of lib/retrieve.ts rather than guessed. The normative leg is a separate
+ * SQL query (`normativeVectorSql`) that re-ranks the normative SUBSET with
+ * `ROW_NUMBER() OVER (ORDER BY distance)` and returns its own top N. RRF then scores every leg's
+ * rank identically as `1/(60 + rank)` — so the closest NORMATIVE chunk scores exactly what the
+ * closest chunk overall scores, and the leg's ranks 2, 3, 4 tie with the main leg's 2, 3, 4. That
+ * tie is the interleave. Being "the nearest of the four ICMR chunks" is a fact about a tiny subset,
+ * not about the query, so with only a handful of normative chunks in the corpus the SAME four win
+ * the SAME slots for every question ever asked.
+ *
+ * ⚠️ AND THE 0.3 GATE COULD NOT HAVE STOPPED IT. `normativeVectorSql` already applies
+ * `1 - distance > minSim`, so those chunks clear 0.3 on their own; the round-5 gate was working and
+ * the floor was simply never the binding constraint. A similarity floor cannot undo a rank tie.
+ *
+ * lib/retrieve.ts is UNTOUCHED, so the reservation cannot be removed where it is built. It is
+ * removed by NOT USING THE LEG: with `useNormativeLeg` off, normative chunks compete in the
+ * unrestricted main vector and BM25 legs on their true rank against the whole corpus. A normative
+ * chunk now earns its slot on relevance or it does not appear — which is exactly the rule asked
+ * for, and the corpus stays wide, so nothing has become uncitable.
+ *
+ * The round-5 similarity gate below is KEPT as a backstop: it costs nothing and still catches a
+ * low-similarity normative chunk that wins a slot on BM25 alone.
  */
 async function retrieveExcerpts(query: string): Promise<{
   excerpts: RetrievedExcerpt[]; ids: number[]; sources: Record<string, string>;
@@ -108,7 +145,7 @@ async function retrieveExcerpts(query: string): Promise<{
 }> {
   if (!query.trim()) return { excerpts: [], ids: [], sources: {}, normativeDropped: 0, failed: false };
   try {
-    const res = await retrieve(query, { topK: RETRIEVAL_TOP_K, useNormativeLeg: true, minSimilarity: RETRIEVAL_MIN_SIMILARITY });
+    const res = await retrieve(query, { topK: RETRIEVAL_TOP_K, minSimilarity: RETRIEVAL_MIN_SIMILARITY });
     // ⚠️ ONE FILTERED LIST, TWO VIEWS OF IT. `excerpts` is what the prompt numbers [1]…[k] and
     // `ids` is what those ordinals resolve to, so they MUST stay index-aligned. Filtering a hit
     // out of one list and not the other would silently shift every ordinal after it onto the wrong
@@ -192,6 +229,8 @@ export async function runCheckpoint(input: RunCheckpointInput): Promise<Checkpoi
     offTopicExcerptCount: topicality.offTopicCount,
     normativeDropped,
     day0QueryFromOt: day0FromOt,
+    temperature: CHECKPOINT_TEMPERATURE,
+    seed: CHECKPOINT_SEED,
     model: input.model,
   };
 
@@ -215,7 +254,7 @@ export async function runCheckpoint(input: RunCheckpointInput): Promise<Checkpoi
             { role: 'system', content: IPD_EPISODE_CHECKPOINT_SYSTEM },
             { role: 'user', content: extraInstruction ? `${user}\n\n${extraInstruction}` : user },
           ],
-          temperature: 0,
+          temperature: CHECKPOINT_TEMPERATURE,
           max_tokens: 3000,
         }, { bedrock: input.model, promptRef: 'prompts/IPD_EPISODE_CHECKPOINT_SYSTEM' });
 

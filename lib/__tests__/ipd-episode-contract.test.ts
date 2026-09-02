@@ -251,7 +251,9 @@ test('the migration route and the reference .sql create the same three tables', 
     assert.ok(route.includes(`CREATE TABLE IF NOT EXISTS ${table}`), `the route creates ${table}`);
     assert.ok(sqlText.includes(`CREATE TABLE IF NOT EXISTS ${table}`), `the .sql creates ${table}`);
   }
-  assert.ok(route.includes('ipd_episode_audits_encounter_engine_uq') && sqlText.includes('ipd_episode_audits_encounter_engine_uq'));
+  // the (encounter_id, engine_version) unique index is gone as of round 6 item 2 — every run is
+  // its own row now, and uniqueness moved to (…, run_seq) plus a partial index on is_current
+  assert.ok(route.includes('ipd_episode_audits_encounter_engine_run_uq') && sqlText.includes('ipd_episode_audits_encounter_engine_run_uq'));
   assert.ok(sqlText.includes('PRIMARY KEY (encounter_id, engine_version)'), 'the skips table is keyed as §7.3 says');
   // every statement is idempotent, so the route can be run twice
   assert.ok(!/CREATE TABLE (?!IF NOT EXISTS)/.test(route) && !/CREATE TABLE (?!IF NOT EXISTS)/.test(sqlText));
@@ -448,8 +450,8 @@ test('the extracted case is UNREACHABLE from the checkpoint retrieval path (§3.
   // the builder takes ONE input, and it is the filtered event list
   const iface = cpCore.slice(cpCore.indexOf('export interface RetrievalQueryInput'), cpCore.indexOf('export interface RetrievalQueryResult'));
   const fields = [...iface.matchAll(/^\s{2}(\w+)[?]?:/gm)].map((m) => m[1]);
-  assert.deepEqual(fields.sort(), ['episodeSurgeryNames', 'eventsBeforeCutoff', 'isDayZero', 'remarks'],
-    'the builder takes the cut-off window, admission remarks, and the day 0 OT fallback — no extraction');
+  assert.deepEqual(fields.sort(), ['authorNames', 'episodeSurgeryNames', 'eventsBeforeCutoff', 'isDayZero', 'remarks'],
+    'the cut-off window, admission remarks, author names to strip, the day 0 OT fallback — no extraction');
 
   // and run.ts passes exactly those, nothing more
   const run = code('lib/ipd-episode/run.ts');
@@ -488,14 +490,66 @@ test('the cap trail is persisted on every finding, and capped_count on the row',
   assert.ok(run.includes('cappedCount: final.capped_finding_ids.size'), 'from the same set the status uses');
 });
 
-test('the normative leg is gated on the same similarity floor as the literature legs', () => {
+test('the normative leg is OFF — a normative chunk earns its slot on relevance or does not appear', () => {
   const cp = code('lib/ipd-episode/checkpoint.ts');
-  assert.ok(cp.includes('export const RETRIEVAL_MIN_SIMILARITY = 0.3'), 'one number');
-  assert.ok(cp.includes('minSimilarity: RETRIEVAL_MIN_SIMILARITY'), 'passed to retrieve, so the floors cannot drift');
-  assert.ok(cp.includes('sim >= RETRIEVAL_MIN_SIMILARITY'), 'and applied to normative hits in the engine');
+  assert.ok(!cp.includes('useNormativeLeg: true'),
+    'the leg reserves slots by construction: RRF scores its rank 1 exactly as the main leg’s rank 1');
+  assert.ok(cp.includes('minSimilarity: RETRIEVAL_MIN_SIMILARITY'), 'the floor is still passed explicitly');
+  assert.ok(cp.includes('sim >= RETRIEVAL_MIN_SIMILARITY'), 'and the gate is kept as a backstop');
   assert.ok(cp.includes('normativeDropped'), 'drops are counted, not silent');
-  // lib/retrieve.ts is UNTOUCHED — the gate lives here by necessity
-  assert.ok(!existsSync('lib/retrieve.ts.orig'), 'sanity');
+  // the corpus stays WIDE — nothing became uncitable, the reservation just went away
+  assert.ok(!cp.includes('restrictSources'), 'the main legs are still unrestricted');
+  assert.ok(!/source:\s*'/.test(cp), 'no single-source filter');
+});
+
+test('the generation settings are recorded on every checkpoint row', () => {
+  const cp = code('lib/ipd-episode/checkpoint.ts');
+  assert.ok(cp.includes('export const CHECKPOINT_TEMPERATURE = 0'), 'temperature 0 on the checkpoint call');
+  assert.ok(cp.includes('export const CHECKPOINT_SEED: number | null = null'),
+    'seed is null because Bedrock Converse has no wire field for one');
+  // and the transport really has no seed — toConverseInput builds maxTokens + temperature only
+  const core = readFileSync(join(process.cwd(), 'lib/bedrock-core.ts'), 'utf8');
+  const cfg = core.slice(core.indexOf('const inferenceConfig'), core.indexOf('const inferenceConfig') + 400);
+  assert.ok(!cfg.includes('seed'), 'lib/bedrock-core.ts confirms there is nowhere to put a seed');
+  const sqlText = read(join('migrations', '0052_ipd_episode_audits.sql'));
+  const route = read('app/api/admin/migrate-ipd-episode-audits/route.ts');
+  for (const col of ['temperature', 'seed']) {
+    assert.ok(sqlText.includes(col), `.sql declares ${col}`);
+    assert.ok(route.includes(`ADD COLUMN IF NOT EXISTS ${col}`), `the route back-fills ${col}`);
+  }
+});
+
+test('EVERY RUN IS KEPT: run_seq, is_current, and no upsert', () => {
+  const sqlText = read(join('migrations', '0052_ipd_episode_audits.sql'));
+  const route = read('app/api/admin/migrate-ipd-episode-audits/route.ts');
+  assert.ok(sqlText.includes('run_seq               INTEGER NOT NULL DEFAULT 1'));
+  assert.ok(sqlText.includes('is_current            BOOLEAN NOT NULL DEFAULT TRUE'));
+  assert.ok(sqlText.includes('ipd_episode_audits_current_uq') && sqlText.includes('WHERE is_current'),
+    'exactly one current row is a database guarantee, not a convention');
+  assert.ok(!sqlText.includes('ipd_episode_audits_encounter_engine_uq'), 'the old unique index is gone');
+
+  // the route migrates an existing table in the right ORDER: add, backfill, drop, recreate
+  const addAt = route.indexOf('ADD COLUMN IF NOT EXISTS is_current');
+  const fillAt = route.indexOf('SET is_current = TRUE WHERE is_current IS NULL');
+  const dropAt = route.indexOf('DROP INDEX IF EXISTS ipd_episode_audits_encounter_engine_uq');
+  const newAt = route.indexOf('ipd_episode_audits_current_uq');
+  assert.ok(addAt > 0 && fillAt > addAt && dropAt > fillAt && newAt > dropAt,
+    'backfill before dropping the old index, and drop before adding the new one');
+
+  const store = code('lib/ipd-episode/store.ts');
+  const insert = store.slice(store.indexOf('INSERT INTO ipd_episode_audits'), store.indexOf('RETURNING id'));
+  assert.ok(!insert.includes('ON CONFLICT'), 'the audits write is a plain INSERT — every run is its own row');
+  assert.ok(store.includes('SET is_current = FALSE'), 'the previous run is demoted first');
+  assert.ok(!store.includes('DELETE FROM ipd_episode_checkpoints'),
+    'no checkpoint DELETE: a new run owns a new audit id, so there is nothing to clear');
+});
+
+test('worker selection and the UI list read is_current only', () => {
+  const store = code('lib/ipd-episode/store.ts');
+  const audited = store.slice(store.indexOf('export async function auditedEncounterIds'), store.indexOf('export interface SkipRow'));
+  assert.ok(audited.includes('is_current = TRUE'), 'the worker watermark counts current rows only');
+  const worklist = store.slice(store.indexOf('export async function episodeWorklist'), store.indexOf('export async function episodeAuditById'));
+  assert.ok(worklist.includes('is_current = TRUE'), 'and so does the list surface');
 });
 
 test('topicality is per excerpt, with a count beside the boolean', () => {
@@ -510,13 +564,16 @@ test('topicality is per excerpt, with a count beside the boolean', () => {
   }
 });
 
-test('the day 0 OT fallback is the ONLY place retrieval reaches outside the cut-off, and it is stamped', () => {
+test('NOTHING in retrieval reaches outside the cut-off — the day 0 fallback reads the filtered window', () => {
   const core = code('lib/ipd-episode/checkpoint-core.ts');
-  assert.ok(core.includes('input.isDayZero && input.episodeSurgeryNames?.length'),
-    'day 0 only, and only when the query is otherwise empty');
+  assert.ok(core.includes('input.isDayZero && input.episodeSurgeryNames?.length'), 'day 0 only');
   const run = code('lib/ipd-episode/run.ts');
-  assert.ok(run.includes('isDayZero: entry.checkpoint_type === \'daily\' && entry.day_index === 0'));
-  assert.ok(run.includes('const episodeSurgeryNames'), 'the episode-wide list is built once, for this one caller');
+  // ⚠️ the fallback used to be handed `events` (the WHOLE episode), so an OT note at 11:53 selected
+  // day 0's evidence against a 03:03 cut-off. It now reads input_events, the same filtered list
+  // every other rule uses.
+  assert.ok(run.includes('episodeSurgeryNames: input_events'), 'sourced from the cut-off window');
+  assert.ok(!/episodeSurgeryNames: events\b/.test(run) && !run.includes('const episodeSurgeryNames = Array.from(new Set(\n      events'),
+    'never from the unfiltered episode list');
   const store = code('lib/ipd-episode/store.ts');
   assert.ok(store.includes('day0QueryFromOt'), 'and every row it touches records it');
 });
@@ -588,13 +645,13 @@ test('scoring_status is stored and the UI refuses to render a number without one
 
 // ── V's 2026-09-02 widening: cite anything, but price it ─────────────────────────────────────
 
-test('retrieval is no longer restricted to the normative allowlist, and keeps the normative leg', () => {
+test('retrieval is not restricted to the normative allowlist', () => {
   const src = code('lib/ipd-episode/checkpoint.ts');
-  assert.ok(src.includes('useNormativeLeg: true'), 'the normative leg is ON so guideline text still ranks');
   // the MAIN legs are unrestricted: neither knob that would fence the corpus is set
   assert.ok(!src.includes('restrictSources'), 'the main legs are not restricted to a source list');
   assert.ok(!/source:\s*'/.test(src), 'no single-source filter — StatPearls and journal content are citable');
   assert.ok(src.includes('topK: RETRIEVAL_TOP_K'), 'k is still 8');
+  // round 6 item 5 turned the normative LEG off; its own test explains why
 });
 
 test('the normative source list is the shipped one, never a local copy that can drift', () => {
@@ -626,8 +683,10 @@ test('the literature cap is enforced in code and runs inside the one finalise ch
   const core = code('lib/ipd-episode/judge-core.ts');
   assert.ok(core.includes('export function applyLiteratureCap('), 'the cap exists');
   assert.ok(core.includes("if (f.citation_provenance !== 'literature') return { finding: f, capped: false };"));
-  assert.ok(core.includes("if (f.severity !== 'major') return { finding: f, capped: false };"),
-    'it caps major only — it never touches a verdict');
+  assert.ok(core.includes('capSeverityAt(f.severity, CAP_SEVERITY_CEILING)'),
+    'it applies the SHARED ceiling, so the two caps cannot stack into something lower');
+  const litFn = core.slice(core.indexOf('export function applyLiteratureCap'), core.indexOf('export function applyLiteratureCap') + 500);
+  assert.ok(!litFn.includes('verdict'), 'it never touches a verdict');
   assert.ok(core.includes('applyLiteratureCap(withProv)'), 'and it runs inside finalizeFindings');
   // provenance must be classified before the cap can read it
   assert.ok(core.indexOf('classifyCitationProvenance(capRes.finding') < core.indexOf('applyLiteratureCap(withProv)'));

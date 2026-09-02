@@ -64,7 +64,7 @@ export const SKIP_RETRY_DAYS = 14;
 /** Encounter ids already audited at this engine version — condition 4's silent skip (§3.1). */
 export async function auditedEncounterIds(engineVersion = IPD_EPISODE_ENGINE_VERSION): Promise<string[]> {
   const rows = await run(
-    `SELECT encounter_id FROM ipd_episode_audits WHERE engine_version = $1`, [engineVersion],
+    `SELECT DISTINCT encounter_id FROM ipd_episode_audits WHERE engine_version = $1 AND is_current = TRUE`, [engineVersion],
   ).catch((e: unknown) => { warn('auditedEncounterIds', e); return [] as Record<string, unknown>[]; });
   return rows.map((r) => String(r.encounter_id));
 }
@@ -253,20 +253,56 @@ export interface CheckpointWriteRow {
   retrievalOffTopic: boolean;
   offTopicExcerptCount: number;
   day0QueryFromOt: boolean;
+  /** The generation settings this checkpoint ran with — recorded so a variance investigation has
+   *  them rather than trusting that they were what someone said. */
+  temperature: number;
+  seed: number | null;
 }
 
 /**
- * Write one audit and its checkpoints. UPSERT on (encounter_id, engine_version), and the
- * checkpoints for that audit are replaced wholesale so a re-run cannot leave a stale checkpoint
- * from a previous, differently-shaped run sitting beside the new ones.
+ * Write one audit and its checkpoints. EVERY RUN IS KEPT (V, 2026-09-02).
+ *
+ * ⚠️ THIS WAS AN UPSERT, AND THE UPSERT WAS DESTROYING THE EVIDENCE. Re-running an episode
+ * overwrote its previous row, so the run that scored 88 and the run that scored 96 could not be
+ * compared — and comparing them is the only way to see a reproducibility problem at all. Each run
+ * is now an INSERT with its own `run_seq`; `is_current` marks exactly one row per
+ * (encounter_id, engine_version), and worker selection and the UI list read only that.
+ *
+ * ⚠️ THE CHECKPOINT FOREIGN KEY NEEDED NO CHANGE, which is worth stating rather than assuming.
+ * `ipd_episode_checkpoints.episode_audit_id` references `ipd_episode_audits(id)` — the surrogate
+ * uuid, not the (encounter_id, engine_version) pair — so a new run gets a new audit id and its
+ * checkpoints attach to it. Previous runs keep their own checkpoint rows intact, and ON DELETE
+ * CASCADE still means deleting a run takes its checkpoints with it. The old DELETE-then-insert of
+ * checkpoints is gone with the upsert: there is nothing to clear, because the rows it would have
+ * cleared belong to a different run.
+ *
+ * The two writes are sequenced — demote the current row, then insert the new one as current. These
+ * are separate statements on the Neon HTTP driver, so a fault between them leaves NO current row
+ * rather than two; the UI renders that as an absent episode and the next run repairs it. Two rows
+ * claiming to be current would be worse, and the partial unique index makes it impossible anyway.
  *
  * Returns 'skipped' on any fault. The caller logs it; nothing throws.
  */
 export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: CheckpointWriteRow[]): Promise<{ status: 'inserted' | 'updated' | 'skipped'; auditId: string | null; failedCheckpoints: number }> {
   try {
     const c = row.counters;
+    const seqRows = await run(
+      `SELECT COALESCE(MAX(run_seq), 0) + 1 AS next FROM ipd_episode_audits
+       WHERE encounter_id = $1 AND engine_version = $2`,
+      [row.encounterId, row.engineVersion],
+    ).catch((e: unknown) => { warn('saveEpisodeAudit run_seq', e); return [] as Record<string, unknown>[]; });
+    const runSeq = Number(seqRows[0]?.next ?? 1) || 1;
+
+    // Demote whatever is current BEFORE inserting, so the partial unique index never sees two.
+    await run(
+      `UPDATE ipd_episode_audits SET is_current = FALSE
+       WHERE encounter_id = $1 AND engine_version = $2 AND is_current = TRUE`,
+      [row.encounterId, row.engineVersion],
+    ).catch((e: unknown) => { warn('saveEpisodeAudit demote', e); return [] as Record<string, unknown>[]; });
+
     const res = await run(
       `INSERT INTO ipd_episode_audits (
+         run_seq, is_current,
          engine_version, encounter_id, ip_uid, member_id, facility_name, speciality,
          admitted_at, discharged_at, los_days, discharge_type, extraction_version,
          divergence_index, scoring_status, completeness_pct,
@@ -275,33 +311,13 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
          n_low_value, n_dropped_invalid, n_parse_failed,
          capped_count, checkpoint_count, evidence_tiers, real_course, findings, commentary,
          model_checkpoint, model_judge, trace_id, error_detail, raw_judge_error)
-       VALUES ($1,$2,$3,$4,$5,$6, $7,$8,$9,$10,$11, $12,$13,$14,
-               $15,$16,$17,$18,$19,$20, $21,$22,$23,$24,$25, $26,$27,$28,
-               $29,$30,$31::jsonb,$32::jsonb,$33::jsonb,$34::jsonb, $35,$36,$37,$38,$39::jsonb)
-       ON CONFLICT (encounter_id, engine_version) DO UPDATE SET
-         audited_at = NOW(),
-         ip_uid = EXCLUDED.ip_uid, member_id = EXCLUDED.member_id,
-         facility_name = EXCLUDED.facility_name, speciality = EXCLUDED.speciality,
-         admitted_at = EXCLUDED.admitted_at, discharged_at = EXCLUDED.discharged_at,
-         los_days = EXCLUDED.los_days, discharge_type = EXCLUDED.discharge_type,
-         extraction_version = EXCLUDED.extraction_version,
-         divergence_index = EXCLUDED.divergence_index, scoring_status = EXCLUDED.scoring_status,
-         completeness_pct = EXCLUDED.completeness_pct,
-         n_findings = EXCLUDED.n_findings, n_divergence_pass = EXCLUDED.n_divergence_pass,
-         n_fidelity_pass = EXCLUDED.n_fidelity_pass, n_omission = EXCLUDED.n_omission,
-         n_commission = EXCLUDED.n_commission, n_timing = EXCLUDED.n_timing,
-         n_sequencing = EXCLUDED.n_sequencing, n_divergent = EXCLUDED.n_divergent,
-         n_context_dependent = EXCLUDED.n_context_dependent, n_unassessable = EXCLUDED.n_unassessable,
-         n_concordant = EXCLUDED.n_concordant, n_low_value = EXCLUDED.n_low_value,
-         n_dropped_invalid = EXCLUDED.n_dropped_invalid, n_parse_failed = EXCLUDED.n_parse_failed,
-         capped_count = EXCLUDED.capped_count, checkpoint_count = EXCLUDED.checkpoint_count,
-         evidence_tiers = EXCLUDED.evidence_tiers,
-         real_course = EXCLUDED.real_course, findings = EXCLUDED.findings,
-         commentary = EXCLUDED.commentary, model_checkpoint = EXCLUDED.model_checkpoint,
-         model_judge = EXCLUDED.model_judge, trace_id = EXCLUDED.trace_id,
-         error_detail = EXCLUDED.error_detail, raw_judge_error = EXCLUDED.raw_judge_error
-       RETURNING id, (xmax = 0) AS inserted`,
+       VALUES ($1,TRUE,
+               $2,$3,$4,$5,$6,$7, $8,$9,$10,$11,$12, $13,$14,$15,
+               $16,$17,$18,$19,$20,$21, $22,$23,$24,$25,$26, $27,$28,$29,
+               $30,$31,$32::jsonb,$33::jsonb,$34::jsonb,$35::jsonb, $36,$37,$38,$39,$40::jsonb)
+       RETURNING id`,
       [
+        runSeq,
         row.engineVersion, row.encounterId, row.ipUid, row.memberId, row.facilityName, row.speciality,
         row.admittedAt, row.dischargedAt, row.losDays, row.dischargeType, row.extractionVersion,
         // NEVER NULL. The DDL defaults these to 0, but a DEFAULT only applies to a column the
@@ -325,8 +341,8 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
     const auditId = first?.id == null ? null : String(first.id);
     if (!auditId) return { status: 'skipped', auditId: null, failedCheckpoints: checkpoints.length };
 
-    await run(`DELETE FROM ipd_episode_checkpoints WHERE episode_audit_id = $1`, [auditId])
-      .catch((e: unknown) => { warn('saveEpisodeAudit clear checkpoints', e); return [] as Record<string, unknown>[]; });
+    // No DELETE here any more: this audit id is brand new, so it owns no checkpoint rows, and the
+    // previous run's belong to the previous run.
     let failedCheckpoints = 0;
     for (const cp of checkpoints) {
       // $8::int[] — the driver sends a JS array as a Postgres array literal, and without the cast
@@ -338,9 +354,10 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
            episode_audit_id, day_index, checkpoint_type, input_cutoff_at, input_event_count,
            retrieval_query, retrieval_failed, citation_ids, expected_course, status, error_detail,
            model, trace_id, uncited_entry_count, entry_count, citation_sources,
-           retrieved_titles, retrieval_offtopic, offtopic_excerpt_count, day0_query_from_ot)
+           retrieved_titles, retrieval_offtopic, offtopic_excerpt_count, day0_query_from_ot,
+           temperature, seed)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8::int[],$9::jsonb,$10,$11,$12,$13,$14,$15,$16::jsonb,
-                 $17::text[],$18,$19,$20)`,
+                 $17::text[],$18,$19,$20,$21,$22)`,
         [
           auditId, cp.dayIndex, cp.checkpointType, cp.inputCutoffAt, cp.inputEventCount,
           cp.retrievalQuery, cp.retrievalFailed, cp.citationIds,
@@ -349,6 +366,7 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
           num(cp.uncitedEntryCount), num(cp.entryCount), JSON.stringify(cp.citationSources ?? {}),
           cp.retrievedTitles ?? [], cp.retrievalOffTopic ?? false,
           num(cp.offTopicExcerptCount), cp.day0QueryFromOt ?? false,
+          cp.temperature, cp.seed,
         ],
       ).catch((e: unknown) => {
         warn(`saveEpisodeAudit checkpoint day ${cp.dayIndex} (${cp.checkpointType})`, e);
@@ -356,7 +374,7 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
         return [] as Record<string, unknown>[];
       });
     }
-    return { status: first?.inserted ? 'inserted' : 'updated', auditId, failedCheckpoints };
+    return { status: 'inserted', auditId, failedCheckpoints };
   } catch (e) {
     warn('saveEpisodeAudit (no row written)', e);
     return { status: 'skipped', auditId: null, failedCheckpoints: checkpoints.length };
@@ -374,10 +392,10 @@ export async function episodeWorklist(a: { limit?: number; sort?: 'divergence' |
     `SELECT id, encounter_id, ip_uid, speciality, facility_name, admitted_at, discharged_at,
             los_days, discharge_type, divergence_index, completeness_pct,
             n_findings, n_divergent, n_unassessable, n_low_value, n_divergence_pass, n_fidelity_pass,
-            n_concordant, capped_count,
+            n_concordant, capped_count, run_seq,
             checkpoint_count, audited_at
      FROM ipd_episode_audits
-     WHERE engine_version = $1
+     WHERE engine_version = $1 AND is_current = TRUE
      ORDER BY discharged_at DESC NULLS LAST
      LIMIT ${lim}`, [IPD_EPISODE_ENGINE_VERSION],
   ).catch((e: unknown) => { warn('episodeWorklist', e); return [] as Record<string, unknown>[]; });
@@ -397,7 +415,7 @@ export async function checkpointsForAudit(auditId: string): Promise<EpisodeListR
     `SELECT day_index, checkpoint_type, generated_at, input_cutoff_at, input_event_count,
             retrieval_query, retrieval_failed, citation_ids, expected_course, status, error_detail, model,
             uncited_entry_count, entry_count, citation_sources, retrieved_titles, retrieval_offtopic,
-            offtopic_excerpt_count, day0_query_from_ot
+            offtopic_excerpt_count, day0_query_from_ot, temperature, seed
      FROM ipd_episode_checkpoints
      WHERE episode_audit_id = $1
      ORDER BY (checkpoint_type = 'episode'), day_index ASC`, [auditId],
